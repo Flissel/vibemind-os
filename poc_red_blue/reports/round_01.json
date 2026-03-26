@@ -1,17 +1,17 @@
 {
   "round": 1,
   "red_team": {
-    "attacks_executed": 8,
-    "attacks_failed": 0,
+    "attacks_executed": 6,
+    "attacks_failed": 2,
     "categories": [
-      "discovery",
+      "insider_threat",
       "vault_attack",
-      "vm_recon",
-      "evasion"
+      "discovery",
+      "vm_recon"
     ],
     "attacks": [
       {
-        "task_id": "41e0a91e",
+        "task_id": "778753a7",
         "tool_name": "enumerate_system_info",
         "category": "discovery",
         "success": true,
@@ -26,7 +26,7 @@
         }
       },
       {
-        "task_id": "9da5bcca",
+        "task_id": "2973376d",
         "tool_name": "enumerate_network_config",
         "category": "discovery",
         "success": true,
@@ -41,7 +41,7 @@
         }
       },
       {
-        "task_id": "0fb51323",
+        "task_id": "d4ed34a6",
         "tool_name": "enumerate_accounts",
         "category": "discovery",
         "success": true,
@@ -56,7 +56,7 @@
         }
       },
       {
-        "task_id": "12089f47",
+        "task_id": "c17b7e1a",
         "tool_name": "enumerate_shares_and_services",
         "category": "discovery",
         "success": true,
@@ -71,28 +71,24 @@
         }
       },
       {
-        "task_id": "6cbb43c9",
+        "task_id": "ddd6e0a9",
         "tool_name": "vault_api_enumeration",
         "category": "vault_attack",
-        "success": true,
+        "success": false,
         "result": {
-          "success": true,
-          "description": "Vault API enum: 5 endpoints probed",
-          "artifact": {
-            "type": "file",
-            "path": "C:\\Users\\User\\AppData\\Local\\Temp\\redblue_artifacts\\REDBLUE_vault_enum.json",
-            "cleanup_method": "delete_file"
-          }
+          "success": false,
+          "description": "Vault not available",
+          "artifact": null
         }
       },
       {
-        "task_id": "fd453b99",
+        "task_id": "ce0c347c",
         "tool_name": "vm_port_scan",
         "category": "vm_recon",
         "success": true,
         "result": {
           "success": true,
-          "description": "Port scan: 9 open ports: [22, 2222, 5432, 6379, 8000, 8080, 8443, 9090, 9091]",
+          "description": "Port scan: 6 open ports: [22, 2222, 5432, 8000, 9090, 9091]",
           "artifact": {
             "type": "file",
             "path": "C:\\Users\\User\\AppData\\Local\\Temp\\redblue_artifacts\\REDBLUE_port_scan.json",
@@ -101,51 +97,46 @@
         }
       },
       {
-        "task_id": "31086c4a",
+        "task_id": "ff97a7f7",
         "tool_name": "vm_api_recon",
         "category": "vm_recon",
-        "success": true,
+        "success": false,
         "result": {
-          "success": true,
-          "description": "VM API recon: 5 endpoints queried",
-          "artifact": {
-            "type": "file",
-            "path": "C:\\Users\\User\\AppData\\Local\\Temp\\redblue_artifacts\\REDBLUE_vm_recon.json",
-            "cleanup_method": "delete_file"
-          }
+          "success": false,
+          "description": "VM API not available",
+          "artifact": null
         }
       },
       {
-        "task_id": "8c5bac26",
-        "tool_name": "spawn_renamed_process",
-        "category": "evasion",
+        "task_id": "26df86ae",
+        "tool_name": "activate_spy_agent",
+        "category": "insider_threat",
         "success": true,
         "result": {
           "success": true,
-          "description": "Spawned 'REDBLUE_beacon.exe' (PID 78764) from C:\\Windows\\System32\\PING.EXE",
+          "description": "Spy agent activated in passive mode — insider threat active",
           "artifact": {
-            "type": "process",
-            "pid": 78764,
-            "path": "C:\\Users\\User\\AppData\\Local\\Temp\\redblue_artifacts\\REDBLUE_beacon.exe",
-            "cleanup_method": "kill_and_delete"
+            "type": "file",
+            "path": "C:\\Users\\User\\AppData\\Local\\Temp\\redblue_artifacts\\spy_config.json",
+            "cleanup_method": "delete_file"
           }
         }
       }
     ]
   },
   "blue_team": {
-    "report_text": "\n============================================================\n  OS SHIELD - SECURITY REPORT\n============================================================\n  Target:    localhost (Windows 11)\n  Date:      2026-03-26 10:30:11\n  Severity:  CRITICAL\n============================================================\n\n  FINDINGS (8)\n  ------------------------------------------------------\n  [!!!] CRITICAL   Browser spawned shell\n               chrome.exe spawned cmd.exe with a command line ref\n               erencing a Chrome extension native host. This is a\n                common malware/exploit technique.\n  [!!!] CRITICAL   Suspicious C2-like connections from python.exe\n               python.exe (PID 13212) has established connections\n                to localhost ports 4444 and 1337, both commonly u\n               sed by C2 frameworks.\n  [!! ] HIGH       Timestomped beacon file\n               File 'REDBLUE_beacon.exe' in temp artifacts has a \n               modified time significantly before its creation ti\n               me, indicating log/evidence tampering.\n  [!! ] HIGH       Discovery artifacts found\n               System/network enumeration output files found in t\n               emp/redblue_artifacts directory.\n  [!! ] HIGH       Sensitive cookies file in temp\n               Sensitive file 'n8n_cookies.txt' found in temp dir\n               ectory, indicating possible credential harvesting.\n  [ ! ] MEDIUM     Suspicious scripts in temp directory\n               Multiple large .js files found in temp directory, \n               which could be used for malicious purposes.\n  [ ! ] MEDIUM     Suspicious autorun/service entries\n               Multiple autorun/service entries reference binarie\n               s in user AppData or have suspicious names. This i\n               s common for user apps but can be abused for persi\n               stence.\n  [!!!] CRITICAL   Multiple processes with encoded/obfuscated commands\n               19 processes (including Discord.exe, claude.exe, w\n               sl.exe) have command lines containing 'bypass' or \n               '-e', indicating possible obfuscation or exploitat\n               ion.\n\n  ENFORCEMENT ACTIONS (8)\n  ------------------------------------------------------\n  [FAILED] kill_process: Safe-blocked: python.exe (PID 13212) has no REDBLUE_ marker.\n  [FAILED] add_firewall_rule: Failed: Ein angegebener Wert ist ungÃ¼ltig.\n\nSyntax: add rul\n  [    OK] quarantine_file: Moved C:\\Users\\User\\AppData\\Local\\Temp\\redblue_artifacts\\RED\n  [FAILED] quarantine_file: Safe-blocked: 'C:\\Users\\User\\AppData\\Local\\Temp\\n8n_cookies.\n  [    OK] quarantine_file: Moved C:\\Users\\User\\AppData\\Local\\Temp\\redblue_artifacts\\RED\n  [    OK] quarantine_file: Moved C:\\Users\\User\\AppData\\Local\\Temp\\redblue_artifacts\\RED\n  [    OK] quarantine_file: Moved C:\\Users\\User\\AppData\\Local\\Temp\\redblue_artifacts\\RED\n  [    OK] quarantine_file: Moved C:\\Users\\User\\AppData\\Local\\Temp\\redblue_artifacts\\RED\n\n  ANALYSIS\n  ----------------------------------------",
+    "report_text": "\n============================================================\n  OS SHIELD - SECURITY REPORT\n============================================================\n  Target:    localhost (Windows 11)\n  Date:      2026-03-26 17:49:32\n  Severity:  CRITICAL\n============================================================\n\n  FINDINGS (13)\n  ------------------------------------------------------\n  [!!!] CRITICAL   Browser spawned command shell\n               chrome.exe spawned cmd.exe with a command to launc\n               h chrome-native-host.exe, which is typical of malw\n               are or exploit behavior.\n  [!! ] HIGH       Multiple processes with invalid digital signatures\n               Several key binaries (claude.exe, Discord.exe, Doc\n               ker Desktop.exe, Figma Agent) are signed but have \n               invalid signatures, which is suspicious for truste\n               d software.\n  [!! ] HIGH       Encoded/obfuscated commands detected\n               20+ processes (mainly claude.exe, Discord.exe) are\n                running with command lines containing 'bypass' or\n                '-e', indicating possible obfuscation or evasion.\n  [!! ] HIGH       System enumeration and discovery artifacts\n               Multiple processes are running system enumeration \n               commands ('net user', 'net view'), and discovery o\n               utput files are present in the temp artifacts dire\n               ctory.\n  [!! ] HIGH       Port scanning and API scanning detected\n               Port scan output files and a process with 126 acti\n               ve connections indicate active scanning activity.\n  [!! ] HIGH       SSH lateral movement detected\n               Two python.exe processes are making outbound SSH c\n               onnections to localhost:2222, indicating possible \n               tunneling or lateral movement.\n  [!! ] HIGH       Persistent beaconing to external IPs\n               Processes (claude.exe, com.docker.backend.exe, Dis\n               cord.exe) are maintaining persistent connections t\n               o external IPs, consistent with beaconing or C2.\n  [ ! ] MEDIUM     Suspicious autorun entries in AppData\n               Multiple autorun entries reference executables in \n               AppData, which is a common persistence technique f\n               or malware.\n  [!! ] HIGH       Network reconnaissance tools and output\n               SnippingTool.exe used for ping, and discovery outp\n               ut files found in artifacts directory.\n  [!!!] CRITICAL   IDS heartbeat and stealth monitor service down in VM\n               IDS heartbeat file missing and stealth monitor ser\n               vice inactive, indicating monitoring is disabled o\n               r tampered.\n  [!! ] HIGH       VM decoy service down\n               Decoy service is not active in the VM, reducing de\n               tection capability.\n  [!! ] HIGH       Possible SUID backdoor in VM\n               Unusually high SUID binary count (46, threshold 30\n               ) i",
     "overall_severity": "CRITICAL",
-    "finding_count": 8,
-    "actions_taken": 5
+    "finding_count": 13,
+    "actions_taken": 6
   },
   "verdict": {
     "red_score": 100,
-    "blue_score": 56.2,
-    "detection_rate": 0.375,
+    "blue_score": 80.0,
+    "detection_rate": 0.5,
     "false_positive_rate": 0.0,
-    "narrative": "In Runde 1 dominierte das Red Team mit einer vollen Punktzahl und einer Detection Rate von nur 38%. Während einige Discovery- und Evasion-Aktivitäten erkannt wurden, blieben kritische Angriffe wie Vault-API-Enumeration und Portscans unentdeckt. Das Blue Team identifizierte zwar mehrere verdächtige Artefakte und Prozesse, konnte aber nicht alle Angriffe zuordnen oder rechtzeitig alarmieren. Die Runde zeigt deutliche Schwächen in der Überwachung von Discovery- und Reconnaissance-Aktivitäten sowie bei der Erkennung von Angriffen auf Passwortspeicher und Netzwerkdienste. Beide Teams können ihre Taktiken weiter verfeinern, wobei das Blue Team insbesondere die Detection Coverage ausbauen sollte.",
-    "gaps": "[{\"category\": \"discovery\", \"description\": \"Account enumeration (net user + localgroup) wurde nicht erkannt. Dies deutet auf fehlende Überwachung von lokalen Benutzer- und Gruppenabfragen hin.\", \"severity\": \"MEDIUM\"}, {\"category\": \"discovery\", \"description\": \"Share/service enumeration wurde nicht erkannt. Die Überwachung von Zugriffen auf Freigaben und Services ist unzureichend.\", \"severity\": \"MEDIUM\"}, {\"category\": \"vault_attack\", \"description\": \"Vault API Enumeration (Abfrage von 5 Endpunkten) blieb unentdeckt. Kritische Schwachstelle, da Angriffe auf Passwortspeicher nicht erkannt wurden.\", \"severity\": \"HIGH\"}, {\"category\": \"vm_recon\", \"description\": \"Portscan auf VM wurde nicht erkannt. Netzwerküberwachung und Anomalieerkennung für Portscans fehlen.\", \"severity\": \"HIGH\"}, {\"category\": \"discovery\", \"description\": \"Mindestens ein weiterer Angriff (vermutlich VM-spezifische Enumeration) wurde nicht erkannt, was auf Lücken bei der Überwachung von VM-spezifischen Aktivitäten hindeutet.\", \"severity\": \"MEDIUM\"}]",
-    "recommendations": "{\"blue_team\": [\"Implementieren Sie eine umfassendere Überwachung und Alarmierung für Benutzer- und Gruppenabfragen (z.B. net user, net localgroup).\", \"Verbessern Sie die Erkennung von Zugriffen auf Freigaben und Services, insbesondere ungewöhnliche oder massenhafte Abfragen.\", \"Integrieren Sie spezifische Erkennungsregeln für Vault-API-Zugriffe und andere Passwortspeicher-Angriffe.\", \"Setzen Sie Netzwerküberwachung und Anomalieerkennung ein, um Portscans und andere Reconnaissance-Aktivitäten frühzeitig zu erkennen.\", \"Überprüfen Sie die Überwachung von VM-spezifischen Aktivitäten und passen Sie die Detection-Logik an.\", \"Stärken Sie die Korrelation zwischen gefundenen Artefakten und tatsächlichen Angriffen, um False Negatives zu reduzieren.\"], \"red_team\": [\"Nutzen Sie weiterhin verschiedene Discovery- und Evasion-Techniken, da viele davon nicht erkannt wurden.\", \"Variieren Sie die Angriffsmethoden, um auch die wenigen erkannten Techniken weiter zu verschleiern.\", \"Testen Sie gezielt, ob neue Detection-Regeln greifen, indem Sie modifizierte Varianten bereits erfolgreicher Angriffe einsetzen.\", \"Nutzen Sie die Lücken bei Vault- und Netzwerküberwachung für weiterführende Angriffe (z.B. Credential Dumping, Lateral Movement).\"]}"
+    "narrative": "In Runde 1 konnte das Red Team alle geplanten Angriffe erfolgreich durchführen und erreichte die volle Punktzahl. Die Detection Rate des Blue Teams lag bei 50%, wobei insbesondere Discovery-Aktivitäten wie System- und Netzwerk-Enumeration erkannt wurden. Kritische Angriffe wie Port Scanning, Share/Service Enumeration und die Aktivierung eines Spy Agents blieben jedoch unentdeckt. Der Blue Team Report zeigt zwar Hinweise auf einige dieser Aktivitäten, jedoch wurden sie nicht als Angriffe gewertet. Insgesamt zeigt die Runde, dass das Blue Team bei der Erkennung von Standard-Discovery-Aktivitäten solide arbeitet, jedoch bei fortgeschritteneren Recon- und Insider-Threat-Techniken deutliche Lücken bestehen. Das Red Team sollte weiterhin auf diese Schwachstellen setzen, während das Blue Team seine Detection- und Alarmierungsmechanismen gezielt ausbauen muss.",
+    "gaps": "[{\"category\": \"discovery\", \"description\": \"Share and service enumeration (enumerate_shares_and_services) wurde nicht erkannt. Dies deutet auf fehlende Überwachung von Zugriffen auf Netzwerkfreigaben und lokalen Diensten hin.\", \"severity\": \"MEDIUM\"}, {\"category\": \"vm_recon\", \"description\": \"Port Scan (vm_port_scan) blieb unentdeckt. Die Blue Team Detection Engine hat den Scan zwar im Report erwähnt, aber der Angriff wurde laut Ergebnisliste nicht als erkannt gewertet. Dies weist auf Lücken in der Echtzeit-Erkennung von Netzwerk-Scanning-Aktivitäten hin.\", \"severity\": \"HIGH\"}, {\"category\": \"insider_threat\", \"description\": \"Aktivierung eines Spy Agents (activate_spy_agent) wurde nicht erkannt. Dies ist kritisch, da Insider-Bedrohungen oft schwer zu erkennen sind und hier keine Alarmierung erfolgte.\", \"severity\": \"HIGH\"}]",
+    "recommendations": "{\"blue_team\": [\"Implementieren Sie spezifische Überwachung und Alarmierung für Zugriffe auf Netzwerkfreigaben und Service-Enumeration.\", \"Verbessern Sie die Erkennung von Port-Scanning-Aktivitäten, z.B. durch Netzwerk-Traffic-Analyse und Anomalieerkennung.\", \"Stärken Sie die Überwachung auf Insider-Bedrohungen, insbesondere auf das Einschleusen und Aktivieren von Spyware oder Agenten.\", \"Überprüfen Sie, ob alle im Report detektierten Aktivitäten auch tatsächlich als Angriffe gewertet und gemeldet werden (Konsistenz zwischen Detection Engine und Reporting).\"], \"red_team\": [\"Nutzen Sie weiterhin verschiedene Discovery- und Recon-Methoden, da einige davon nicht erkannt wurden.\", \"Testen Sie gezielt Insider-Threat-Techniken, da diese aktuell eine hohe Erfolgswahrscheinlichkeit haben.\", \"Variieren Sie die Artefakt-Ablageorte und -Namen, um die Erkennung weiter zu erschweren.\", \"Analysieren Sie, welche Aktivitäten im Blue Team Report zwar erkannt, aber nicht als Angriff gewertet wurden, um gezielt an der Erkennungsgrenze zu operieren.\"]}"
   }
 }

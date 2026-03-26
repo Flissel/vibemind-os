@@ -442,7 +442,7 @@ async def manage_firewall_rule(
         try:
             if action == "list":
                 cmd = ["netsh", "advfirewall", "firewall", "show", "rule", "name=all"]
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace")
                 result["success"] = proc.returncode == 0
                 # Only return first 5000 chars to avoid flooding
                 result["output"] = proc.stdout[:5000]
@@ -465,7 +465,7 @@ async def manage_firewall_rule(
                 if program:
                     cmd.append(f"program={program}")
 
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace")
                 result["success"] = proc.returncode == 0
                 result["output"] = proc.stdout.strip()
                 if proc.stderr:
@@ -480,7 +480,7 @@ async def manage_firewall_rule(
                     "netsh", "advfirewall", "firewall", "delete", "rule",
                     f"name={rule_name}",
                 ]
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace")
                 result["success"] = proc.returncode == 0
                 result["output"] = proc.stdout.strip()
 
@@ -1389,7 +1389,7 @@ async def detect_service_tampering() -> dict:
             import subprocess
             out = subprocess.run(
                 ["schtasks.exe", "/query", "/fo", "CSV", "/nh"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
             )
             if out.returncode == 0:
                 for line in out.stdout.strip().split("\n"):
@@ -1843,7 +1843,7 @@ async def detect_service_disruption() -> dict:
         try:
             out = subprocess.run(
                 ["schtasks.exe", "/query", "/fo", "CSV", "/v", "/nh"],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
             )
             if out.returncode == 0:
                 for line in out.stdout.strip().split("\n"):

@@ -132,7 +132,7 @@ class GameControllerAgent(RoutedAgent):
         )
 
         # Print round summary
-        print(f"\n  {'─' * 50}", flush=True)
+        print(f"\n  {'-' * 50}", flush=True)
         print(f"  ROUND {round_num} VERDICT:", flush=True)
         print(f"    Red Score:  {verdict.red_score:.0f}/100", flush=True)
         print(f"    Blue Score: {verdict.blue_score:.0f}/100", flush=True)
@@ -140,7 +140,7 @@ class GameControllerAgent(RoutedAgent):
         print(f"    FP Rate:    {verdict.false_positive_rate:.0%}", flush=True)
         if verdict.narrative:
             print(f"    {verdict.narrative[:200]}", flush=True)
-        print(f"  {'─' * 50}", flush=True)
+        print(f"  {'-' * 50}", flush=True)
 
         # ---- Phase 5: Cleanup ----
         print(f"  [GAME] Phase 5: Cleanup...", flush=True)
