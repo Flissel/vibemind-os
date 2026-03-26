@@ -280,10 +280,20 @@ def main():
 
     print()
     print("=" * 62)
-    print("  EXERCISE BEENDET")
+    print("  EXERCISE BEENDET — Issue Agent startet...")
     print("=" * 62)
     print()
+
+    # Auto-run Issue Agent to create GitHub Issues from reports
+    print("  [ISSUE AGENT] Analysiere Reports und erstelle GitHub Issues...")
+    subprocess.call(
+        [sys.executable, os.path.join(SCRIPT_DIR, "issue_agent.py")],
+        cwd=SCRIPT_DIR,
+    )
+
+    print()
     print("  Reports in: poc_red_blue/reports/")
+    print("  Issues in:  https://github.com/Flissel/vibemind-os/issues")
     print("  Guard + Dashboard laufen noch (Fenster schliessen zum Beenden)")
     print()
 
