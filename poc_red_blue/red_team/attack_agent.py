@@ -22,8 +22,14 @@ try:
 except ImportError:
     VM_TOOL_DISPATCH = {}
 
+# Load Spy Agent tools
+try:
+    from spy_agent import SPY_TOOL_DISPATCH
+except ImportError:
+    SPY_TOOL_DISPATCH = {}
+
 # Merge all dispatchers
-ALL_TOOL_DISPATCH = {**RED_TOOL_DISPATCH, **VM_TOOL_DISPATCH}
+ALL_TOOL_DISPATCH = {**RED_TOOL_DISPATCH, **VM_TOOL_DISPATCH, **SPY_TOOL_DISPATCH}
 
 
 class AttackAgent(RoutedAgent):

@@ -95,6 +95,10 @@ TOOL_DETECTION_KEYWORDS = {
     "vm_kill_decoy_ids": ["ids", "decoy", "service stop", "security monitor"],
     "vm_hunt_stealth_ids": ["stealth", "hidden", "hunt", "dbus"],
     "vm_tamper_ids_logs": ["log tamper", "metrics", "heartbeat", "ids blind"],
+    # Spy Agent (insider threat)
+    "activate_spy_agent": ["spy", "insider", "mole", "infiltrat"],
+    "spy_read_intel": ["spy", "intel", "leak", "insider"],
+    "spy_escalate_to_active": ["spy", "escalat", "sabotage", "insider", "suppress"],
 }
 
 

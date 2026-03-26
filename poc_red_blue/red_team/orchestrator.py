@@ -36,6 +36,14 @@ from botnet import run_botnet
 from code_executor import CODE_TOOL_DEFINITIONS, handle_code_execution
 from win_conditions import check_win_conditions, declare_red_wins
 
+# Spy Agent tools (insider threat)
+try:
+    from spy_agent import SPY_TOOL_DEFINITIONS
+    _SPY_AVAILABLE = True
+except ImportError:
+    SPY_TOOL_DEFINITIONS = []
+    _SPY_AVAILABLE = False
+
 # VM Attack Tools (unrestricted, loaded if VM available)
 try:
     from infra import check_vm_ssh_available
@@ -151,6 +159,10 @@ TOOL_CATEGORIES = {
     "vm_tamper_ids_logs": "ids_evasion",
     # Code Execution
     "execute_attack_code": "code_execution",
+    # Spy Agent (insider threat)
+    "activate_spy_agent": "insider_threat",
+    "spy_read_intel": "insider_threat",
+    "spy_escalate_to_active": "insider_threat",
 }
 
 
@@ -212,7 +224,7 @@ class RedTeamOrchestrator(RoutedAgent):
                 model=RED_TEAM_MODEL,
                 temperature=0.7,  # Creative attack planning
                 messages=messages_history,
-                tools=RED_TOOL_DEFINITIONS + CODE_TOOL_DEFINITIONS + (VM_TOOL_DEFINITIONS if _VM_AVAILABLE else []),
+                tools=RED_TOOL_DEFINITIONS + CODE_TOOL_DEFINITIONS + (VM_TOOL_DEFINITIONS if _VM_AVAILABLE else []) + (SPY_TOOL_DEFINITIONS if _SPY_AVAILABLE else []),
                 tool_choice="auto",
             )
 
