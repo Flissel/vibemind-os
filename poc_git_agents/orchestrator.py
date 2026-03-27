@@ -10,6 +10,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
+from gh_client import GhClientError
 from utils.safety import SafetyGuard
 from agents.triage_agent import TriageAgent
 from agents.review_agent import ReviewAgent
@@ -55,8 +56,15 @@ class Orchestrator:
             for repo in repos:
                 repo_name = repo["nameWithOwner"]
                 print(f"\n  [{agent_name.upper()}] Scanning {repo_name}...")
-                result = agent.run(repo_name)
-                results.append(result)
+                try:
+                    result = agent.run(repo_name)
+                    results.append(result)
+                except GhClientError as e:
+                    results.append({
+                        "repo": repo_name,
+                        "agent": agent_name,
+                        "actions": [f"SKIPPED: {e}"],
+                    })
 
         return results
 

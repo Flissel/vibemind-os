@@ -19,7 +19,7 @@ class GhClient:
     def _run(self, args: list[str], parse_json: bool = True):
         """Run a gh command and return parsed output."""
         cmd = ["gh"] + args
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout, encoding="utf-8", errors="replace")
         if result.returncode != 0:
             raise GhClientError(f"gh {' '.join(args[:3])}: {result.stderr.strip()[:200]}")
         if parse_json and result.stdout.strip():
@@ -116,7 +116,7 @@ class GhClient:
 
     def secret_set(self, repo: str, name: str, value: str) -> str:
         cmd = ["gh", "secret", "set", "-R", repo, name]
-        result = subprocess.run(cmd, input=value, capture_output=True, text=True, timeout=self.timeout)
+        result = subprocess.run(cmd, input=value, capture_output=True, text=True, timeout=self.timeout, encoding="utf-8", errors="replace")
         if result.returncode != 0:
             raise GhClientError(f"secret set: {result.stderr.strip()[:200]}")
         return "ok"
