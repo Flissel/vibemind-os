@@ -7,7 +7,12 @@ results, then forwards to AnalyzerAgent and ReporterAgent.
 """
 
 import json
+import os
+import sys
 import uuid
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from llm_client import get_model
 
 from openai import AsyncOpenAI
 
@@ -71,7 +76,7 @@ class OrchestratorAgent(RoutedAgent):
             print(f"\n  [ORCHESTRATOR] OpenAI call #{iteration + 1}...", flush=True)
 
             response = await self._llm_client.chat.completions.create(
-                model="gpt-4o",
+                model=get_model("default", "poc_security_scanner"),
                 temperature=0,
                 messages=messages_history,
                 tools=TOOL_DEFINITIONS,

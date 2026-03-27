@@ -7,6 +7,8 @@ forwards to ThreatAnalyzerAgent, EnforcerAgent, and ReporterAgent.
 """
 
 import json
+import os
+import sys
 import uuid
 
 from openai import AsyncOpenAI
@@ -24,8 +26,10 @@ from messages import (
     EnforceRequest, EnforceResult,
     ReportRequest, SecurityReport,
 )
-from config import LLM_MODEL
 from tools import TOOL_DEFINITIONS, think
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from llm_client import get_model
 
 
 class OrchestratorAgent(RoutedAgent):
@@ -159,7 +163,7 @@ class OrchestratorAgent(RoutedAgent):
             print(f"\n  [ORCHESTRATOR] LLM call #{iteration + 1}...", flush=True)
 
             response = await self._llm_client.chat.completions.create(
-                model=LLM_MODEL,
+                model=get_model("blue_team"),
                 temperature=0,
                 messages=messages_history,
                 tools=TOOL_DEFINITIONS,

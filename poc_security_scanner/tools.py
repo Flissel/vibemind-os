@@ -7,9 +7,14 @@ Each returns a dict of findings.
 
 import asyncio
 import json
+import os
 import socket
 import ssl
 import struct
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from llm_client import get_model
 
 from openai import AsyncOpenAI
 
@@ -248,7 +253,7 @@ async def check_docker_bind(host: str, ports: list = None) -> dict:
 async def think(reasoning_prompt: str, llm_client: AsyncOpenAI) -> dict:
     """Use OpenAI to reason step-by-step about security implications."""
     response = await llm_client.chat.completions.create(
-        model="gpt-4o",
+        model=get_model("default", "poc_security_scanner"),
         temperature=0,
         messages=[
             {

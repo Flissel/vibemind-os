@@ -19,10 +19,9 @@ import subprocess
 import sys
 from datetime import datetime
 
-from openai import OpenAI
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from config import OPENAI_API_KEY, JUDGE_MODEL
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from llm_client import get_client_sync, get_model
 
 logging.getLogger("paramiko").setLevel(logging.CRITICAL)
 
@@ -98,7 +97,7 @@ def get_existing_issues():
     return set()
 
 
-def analyze_report(report: dict, round_num: int, client: OpenAI) -> list[dict]:
+def analyze_report(report: dict, round_num: int, client) -> list[dict]:
     """Use LLM to analyze a report and generate issue proposals."""
     # Build concise report summary for LLM
     red_team = report.get("red_team", {})
@@ -140,7 +139,7 @@ def analyze_report(report: dict, round_num: int, client: OpenAI) -> list[dict]:
     }, indent=2, ensure_ascii=False, default=str)
 
     response = client.chat.completions.create(
-        model=JUDGE_MODEL,
+        model=get_model("issue_agent"),
         temperature=0,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -216,7 +215,7 @@ def create_issue(issue: dict, dry_run: bool = False) -> str:
         return ""
 
 
-def process_report(filepath: str, client: OpenAI, existing_titles: set, dry_run: bool = False) -> list[str]:
+def process_report(filepath: str, client, existing_titles: set, dry_run: bool = False) -> list[str]:
     """Process a single report file. Returns list of created issue URLs."""
     basename = os.path.basename(filepath)
     round_match = basename.replace("round_", "").replace(".json", "")
@@ -267,11 +266,7 @@ def main():
     print(f"  Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
 
-    if not OPENAI_API_KEY:
-        print("\n  [ERROR] OPENAI_API_KEY not set!")
-        sys.exit(1)
-
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = get_client_sync("issue_agent")
 
     # Get existing issues for deduplication
     print("\n  Fetching existing issues...")

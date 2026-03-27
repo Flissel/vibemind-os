@@ -23,8 +23,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env")
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from llm_client import get_client, get_model
+
 import psutil
-from openai import AsyncOpenAI
 from tools import (
     list_processes, list_network_connections, check_registry_autoruns,
     detect_parent_child_anomalies, detect_encoded_commands,
@@ -32,7 +34,7 @@ from tools import (
     detect_beaconing, detect_data_exfiltration,
     list_usb_devices,
 )
-from config import LLM_MODEL, OPENAI_API_KEY
+from config import OPENAI_API_KEY
 
 
 REPORT_TEMPLATE = """<!DOCTYPE html>
@@ -671,7 +673,7 @@ async def generate_report(output_path: str = None):
 
     # LLM Analysis
     print("  [3/4] LLM Tiefenanalyse...", flush=True)
-    llm_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    llm_client = get_client("report")
 
     all_data = {
         "issues": all_issues,
@@ -686,7 +688,7 @@ async def generate_report(output_path: str = None):
     }
 
     llm_resp = await llm_client.chat.completions.create(
-        model=LLM_MODEL,
+        model=get_model("report"),
         temperature=0,
         messages=[
             {

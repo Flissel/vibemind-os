@@ -6,13 +6,17 @@ produce a structured verdict, and recommend enforcement actions.
 """
 
 import json
+import os
+import sys
 
 from openai import AsyncOpenAI
 
 from autogen_core import RoutedAgent, message_handler, MessageContext
 
-from config import LLM_MODEL
 from messages import ThreatAnalysisRequest, ThreatAnalysis
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from llm_client import get_model
 
 
 class ThreatAnalyzerAgent(RoutedAgent):
@@ -28,7 +32,7 @@ class ThreatAnalyzerAgent(RoutedAgent):
         print(f"  [ANALYZER] Analyzing threat findings ({message.context})...", flush=True)
 
         response = await self._llm_client.chat.completions.create(
-            model=LLM_MODEL,
+            model=get_model("analyzer"),
             temperature=0,
             messages=[
                 {

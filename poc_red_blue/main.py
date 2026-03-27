@@ -18,16 +18,17 @@ import os
 import sys
 from datetime import datetime
 
-from openai import AsyncOpenAI
 from autogen_core import AgentId, SingleThreadedAgentRuntime
 
 # Ensure our package is importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 from config import (
     OPENAI_API_KEY, RED_TEAM_MODEL, BLUE_TEAM_MODEL, JUDGE_MODEL,
     NUM_ROUNDS,
 )
+from llm_client import get_client, get_provider_info
 from messages import GameRoundStart, JudgeVerdict, GameSummary
 from game_controller import GameControllerAgent
 from cleanup import cleanup_by_prefix
@@ -108,15 +109,18 @@ def is_admin() -> bool:
 
 
 def print_banner(num_rounds: int):
+    red_info = get_provider_info("red_team")
+    blue_info = get_provider_info("blue_team")
+    judge_info = get_provider_info("judge")
     print()
     print("=" * 60)
     print("  RED TEAM vs BLUE TEAM")
     print("  Autonomous Adversarial Security Exercise")
     print("=" * 60)
     print(f"  Rounds:     {num_rounds}")
-    print(f"  Red Team:   {RED_TEAM_MODEL} (Attacker)")
-    print(f"  Blue Team:  {BLUE_TEAM_MODEL} (Defender)")
-    print(f"  Judge:      {JUDGE_MODEL} (Evaluator)")
+    print(f"  Red Team:   {RED_TEAM_MODEL} via {red_info['provider']} (Attacker)")
+    print(f"  Blue Team:  {BLUE_TEAM_MODEL} via {blue_info['provider']} (Defender)")
+    print(f"  Judge:      {JUDGE_MODEL} via {judge_info['provider']} (Evaluator)")
     print(f"  Started:    {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
     print()
@@ -218,13 +222,7 @@ async def main():
         print("         Some Blue Team checks will have limited access.")
     print()
 
-    # API key
-    if not OPENAI_API_KEY:
-        print("  [ERROR] OPENAI_API_KEY not set!")
-        print("  Add it to .env: OPENAI_API_KEY=sk-...")
-        sys.exit(1)
-
-    llm_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    llm_client = get_client("blue_team")  # Used by all agents
 
     # Register failsafe cleanup
     atexit.register(lambda: asyncio.run(cleanup_by_prefix()))

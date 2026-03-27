@@ -2256,7 +2256,7 @@ def _get_infra():
         VAULT_URL, VAULT_HOST, VAULT_PORT,
         VM_SSH_HOST, VM_SSH_PORT, VM_SSH_USER, VM_SSH_PASS,
         VM_API_HOST, VM_API_PORT, VM_WS_PORT,
-        LLM_TARGET_TYPE, LLM_TARGET_MODEL, OPENAI_API_KEY,
+        LLM_TARGET_TYPE,
         check_vault_available, check_vm_ssh_available,
         check_vm_api_available, check_llm_target_available,
     )
@@ -2266,8 +2266,6 @@ def _get_infra():
         "VM_SSH_PASS": VM_SSH_PASS, "VM_API_HOST": VM_API_HOST,
         "VM_API_PORT": VM_API_PORT, "VM_WS_PORT": VM_WS_PORT,
         "LLM_TARGET_TYPE": LLM_TARGET_TYPE,
-        "LLM_TARGET_MODEL": LLM_TARGET_MODEL,
-        "OPENAI_API_KEY": OPENAI_API_KEY,
         "check_vault": check_vault_available,
         "check_vm_ssh": check_vm_ssh_available,
         "check_vm_api": check_vm_api_available,
@@ -2564,39 +2562,27 @@ async def vm_shared_folder_exploit() -> dict:
 # ================================================================
 
 async def _llm_call(infra: dict, prompt: str, system: str = "", timeout: int = 30) -> str:
-    """Send a prompt to the LLM target (OpenAI Cloud or local Ollama)."""
-    if infra["LLM_TARGET_TYPE"] == "openai":
-        import urllib.request
-        messages = []
-        if system:
-            messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
-        data = json.dumps({
-            "model": infra["LLM_TARGET_MODEL"],
-            "messages": messages,
-            "max_tokens": 500,
-        }).encode()
-        req = urllib.request.Request(
-            "https://api.openai.com/v1/chat/completions",
-            data=data,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {infra['OPENAI_API_KEY']}",
-            },
-        )
-        resp = urllib.request.urlopen(req, timeout=timeout)
-        result = json.loads(resp.read())
-        return result["choices"][0]["message"]["content"]
-    else:
-        import urllib.request
-        data = json.dumps({"model": "llama3.2", "prompt": prompt, "stream": False}).encode()
-        req = urllib.request.Request(
-            f"http://127.0.0.1:11434/api/generate",
-            data=data,
-            headers={"Content-Type": "application/json"},
-        )
-        resp = urllib.request.urlopen(req, timeout=timeout)
-        return json.loads(resp.read()).get("response", "")
+    """Send a prompt to the LLM target via llm_client central factory."""
+    import sys as _sys
+    _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if _root not in _sys.path:
+        _sys.path.insert(0, _root)
+    from llm_client import get_client_sync, get_model
+
+    client = get_client_sync("llm_target")
+    model = get_model("llm_target")
+
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        max_tokens=500,
+    )
+    return response.choices[0].message.content or ""
 
 
 @safe_attack

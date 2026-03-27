@@ -22,7 +22,9 @@ import json
 import os
 import sys
 
-from openai import AsyncOpenAI
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from llm_client import get_client, get_model
+
 from autogen_core import AgentId, SingleThreadedAgentRuntime
 
 from messages import ShieldRequest, SecurityReport
@@ -32,7 +34,7 @@ from analyzer import ThreatAnalyzerAgent
 from enforcer import EnforcerAgent
 from reporter import ReporterAgent
 from baselines import capture_baseline, save_baseline, load_baseline
-from config import WATCH_INTERVAL, OPENAI_API_KEY, LLM_MODEL
+from config import WATCH_INTERVAL, OPENAI_API_KEY
 
 
 def is_admin() -> bool:
@@ -118,8 +120,8 @@ async def main():
         print("  Add it to .env or: export OPENAI_API_KEY=sk-...")
         sys.exit(1)
 
-    print(f"  [OK] LLM Model: {LLM_MODEL}")
-    llm_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    print(f"  [OK] LLM Model: {get_model('blue_team')}")
+    llm_client = get_client("blue_team")
 
     # Setup runtime
     print("  [SETUP] Registering agents...", flush=True)

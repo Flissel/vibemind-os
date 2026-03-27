@@ -5,6 +5,7 @@ Central constants for the autonomous OS security system.
 """
 
 import os
+import sys
 from pathlib import Path
 
 import winreg
@@ -14,12 +15,15 @@ from dotenv import load_dotenv
 _env_path = Path(__file__).parent.parent / ".env"
 load_dotenv(_env_path)
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from llm_client import get_model
+
 # ================================================================
 # LLM Configuration
 # ================================================================
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-LLM_MODEL = "gpt-4.1"  # Standard-Modell fuer alle Agents
+LLM_MODEL = get_model("blue_team")
 
 # ================================================================
 # Severity Levels

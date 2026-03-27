@@ -10,6 +10,7 @@ All targets are optional — the game degrades gracefully.
 """
 
 import os
+import sys
 import socket
 import urllib.request
 import urllib.error
@@ -19,6 +20,9 @@ from dotenv import load_dotenv
 from pathlib import Path
 
 load_dotenv(Path(__file__).parent.parent / ".env")
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from llm_client import get_model
 
 # ================================================================
 # Connection Constants
@@ -41,7 +45,7 @@ VM_WS_PORT = 9091
 # LLM Target — Cloud (OpenAI API)
 # No local Ollama needed. Uses the same OPENAI_API_KEY.
 LLM_TARGET_TYPE = "openai"   # "openai" or "ollama"
-LLM_TARGET_MODEL = "gpt-4.1"
+LLM_TARGET_MODEL = get_model("llm_target")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 

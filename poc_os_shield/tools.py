@@ -32,9 +32,12 @@ import psutil
 from openai import AsyncOpenAI
 
 from config import (
-    AUTORUN_KEYS, HIVE_NAMES, LLM_MODEL, MAX_FILES_PER_DIR,
+    AUTORUN_KEYS, HIVE_NAMES, MAX_FILES_PER_DIR,
     SUSPICIOUS_OUTBOUND_PORTS, SUSPICIOUS_PROCESS_NAMES,
 )
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from llm_client import get_model
 
 
 # ================================================================
@@ -1087,7 +1090,7 @@ async def detect_data_exfiltration() -> dict:
 async def think(reasoning_prompt: str, llm_client: AsyncOpenAI) -> dict:
     """Use LLM to reason step-by-step about OS security implications."""
     response = await llm_client.chat.completions.create(
-        model=LLM_MODEL,
+        model=get_model("think"),
         temperature=0,
         messages=[
             {

@@ -5,6 +5,7 @@ Central constants for the adversarial loop system.
 """
 
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -18,10 +19,13 @@ load_dotenv(_env_path)
 # LLM Configuration
 # ================================================================
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from llm_client import get_model
+
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-RED_TEAM_MODEL = "gpt-5.4"    # Red Team Orchestrator
-BLUE_TEAM_MODEL = "gpt-4.1"   # Blue Team (unchanged from poc_os_shield)
-JUDGE_MODEL = "gpt-4.1"       # Judge Agent
+RED_TEAM_MODEL = get_model("red_team")    # Red Team Orchestrator
+BLUE_TEAM_MODEL = get_model("blue_team")  # Blue Team (unchanged from poc_os_shield)
+JUDGE_MODEL = get_model("judge")          # Judge Agent
 
 # ================================================================
 # Game Settings
