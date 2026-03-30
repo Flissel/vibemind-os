@@ -29,7 +29,7 @@ from pathlib import Path
 # Win Condition Definitions
 # ================================================================
 
-DESKTOP_PATH = os.path.join(os.environ.get("USERPROFILE", "C:\\Users\\User"), "Desktop")
+DESKTOP_PATH = os.path.join(tempfile.gettempdir(), "redblue_artifacts")  # NICHT Desktop!
 ARTIFACT_DIR = os.path.join(tempfile.gettempdir(), "redblue_artifacts")
 
 WIN_CONDITIONS = {
@@ -264,12 +264,8 @@ def _verify_ssh_compromise(evidence: str) -> tuple[bool, str]:
 def declare_red_wins(win_info: dict):
     """Write RED WINS banner to Desktop and print to console."""
     banner = (
-        "██████╗ ███████╗██████╗     ██╗    ██╗██╗███╗   ██╗███████╗\n"
-        "██╔══██╗██╔════╝██╔══██╗    ██║    ██║██║████╗  ██║██╔════╝\n"
-        "██████╔╝█████╗  ██║  ██║    ██║ █╗ ██║██║██╔██╗ ██║███████╗\n"
-        "██╔══██╗██╔══╝  ██║  ██║    ██║███╗██║██║██║╚██╗██║╚════██║\n"
-        "██║  ██║███████╗██████╔╝    ╚███╔███╔╝██║██║ ╚████║███████║\n"
-        "╚═╝  ╚═╝╚══════╝╚═════╝      ╚══╝╚══╝ ╚═╝╚═╝  ╚═══╝╚══════╝\n"
+        "RED WINS RED WINS RED WINS RED WINS\n"
+        "===================================\n"
     )
 
     report = (

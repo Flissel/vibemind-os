@@ -28,18 +28,31 @@ from llm_client import get_model
 # Connection Constants
 # ================================================================
 
-# Secret-Vault runs inside VM on :8000, forwarded to host :18000 (Docker uses 8000)
-VAULT_HOST = "127.0.0.1"
-VAULT_PORT = 18000
+# Detect if running inside the VM (set by vm_exercise.py runner)
+_VM_LOCAL_MODE = os.environ.get("VM_MODE") == "local"
+
+if _VM_LOCAL_MODE:
+    # Running INSIDE the VM — use localhost directly, no SSH needed
+    VAULT_HOST = "127.0.0.1"
+    VAULT_PORT = 8000                  # Direct, no NAT forwarding
+    VM_SSH_HOST = "127.0.0.1"
+    VM_SSH_PORT = 22                   # Local SSH
+    VM_API_HOST = "127.0.0.1"
+    VM_API_PORT = 9090                 # Direct
+else:
+    # Running on Windows host — use NAT forwarded ports
+    VAULT_HOST = "127.0.0.1"
+    VAULT_PORT = 18000                 # NAT: host 18000 -> VM 8000
+    VM_SSH_HOST = "127.0.0.1"
+    VM_SSH_PORT = 2222                 # NAT: host 2222 -> VM 22
+    VM_API_HOST = "127.0.0.1"
+    VM_API_PORT = 19090                # NAT: host 19090 -> VM 9090
+
 VAULT_URL = f"http://{VAULT_HOST}:{VAULT_PORT}"
 
 # MultiseatOS VM
-VM_SSH_HOST = "127.0.0.1"
-VM_SSH_PORT = 2222
 VM_SSH_USER = "vibemind"
 VM_SSH_PASS = "logitech66"
-VM_API_HOST = "127.0.0.1"
-VM_API_PORT = 19090   # VM :9090 forwarded to host :19090 (Docker uses 9090)
 VM_WS_PORT = 9091
 
 # LLM Target — Cloud (OpenAI API)

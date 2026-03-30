@@ -188,7 +188,16 @@ class OrchestratorAgent(RoutedAgent):
 
             for tool_call in choice.message.tool_calls:
                 fn_name = tool_call.function.name
-                fn_args = json.loads(tool_call.function.arguments)
+                try:
+                    fn_args = json.loads(tool_call.function.arguments)
+                except (json.JSONDecodeError, TypeError):
+                    print(f"  [ORCHESTRATOR] -> {fn_name}(INVALID JSON -- skipping)", flush=True)
+                    messages_history.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": json.dumps({"error": "Invalid JSON in tool arguments"}),
+                    })
+                    continue
                 task_id = str(uuid.uuid4())[:8]
 
                 print(

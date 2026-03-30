@@ -254,7 +254,16 @@ class RedTeamOrchestrator(RoutedAgent):
                     continue
 
                 fn_name = tool_call.function.name
-                fn_args = json.loads(tool_call.function.arguments)
+                try:
+                    fn_args = json.loads(tool_call.function.arguments)
+                except (json.JSONDecodeError, TypeError):
+                    print(f"  [RED TEAM] -> {fn_name}(INVALID JSON — skipping)", flush=True)
+                    messages_history.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": json.dumps({"error": "Invalid JSON in tool arguments"}),
+                    })
+                    continue
                 task_id = str(uuid.uuid4())[:8]
                 category = TOOL_CATEGORIES.get(fn_name, "unknown")
 
