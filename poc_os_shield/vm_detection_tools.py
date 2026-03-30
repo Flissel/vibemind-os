@@ -97,8 +97,22 @@ def _check_vm_backdoors(ssh: paramiko.SSHClient) -> dict:
                 "message": f"Suspicious crontab entry: {stripped[:200]}",
             })
 
+    # --- /etc/cron.d/ directory ---
+    crond_out = _ssh_run(ssh, "ls /etc/cron.d/ 2>/dev/null || true")
+    for entry in crond_out.splitlines():
+        entry = entry.strip()
+        if entry and entry not in ("e2scrub_all", ".placeholder", "popularity-contest"):
+            content = _ssh_run(ssh, f"cat /etc/cron.d/{entry} 2>/dev/null | grep -v '^#' | grep -v '^$' || true")
+            if content and any(kw in content.lower() for kw in suspicious_cron_keywords):
+                alerts.append({
+                    "type": "backdoor_crond",
+                    "severity": "high",
+                    "message": f"Suspicious /etc/cron.d/{entry}: {content[:200]}",
+                })
+
     # --- .bashrc keywords ---
-    bashrc_keywords = ["REDBLUE", "reverse", "backdoor"]
+    bashrc_keywords = ["REDBLUE", "reverse", "backdoor", "nc ", "ncat", "python -c", "perl -e",
+                       "base64 -d", "/dev/tcp", "bash -i", "exec "]
     for kw in bashrc_keywords:
         result = _ssh_run(ssh, f"grep -i '{kw}' ~/.bashrc 2>/dev/null || true")
         if result:
@@ -591,6 +605,40 @@ def _check_ids_heartbeat(ssh: paramiko.SSHClient) -> dict:
         "heartbeat_info": heartbeat_info,
         "alerts": alerts,
     }
+
+
+# ================================================================
+# Check 10: Auditd Alerts (bridges vm_hardening rules with detection)
+# ================================================================
+
+def _check_auditd_alerts(ssh: paramiko.SSHClient) -> dict:
+    """Read recent auditd alerts for security-relevant events."""
+    alerts: list[dict] = []
+    audit_keys = {
+        "crontab_mod": ("Crontab modification detected", "critical"),
+        "shadow_access": ("/etc/shadow accessed", "critical"),
+        "systemd_mod": ("Systemd service file changed", "high"),
+        "bashrc_mod": (".bashrc modified", "high"),
+        "ssh_key_access": ("SSH key accessed", "high"),
+        "log_tamper": ("Log file tampered", "critical"),
+        "suid_change": ("SUID permission changed", "high"),
+        "sudoers_access": ("sudoers file accessed", "high"),
+        "process_kill": ("Process killed with signal 9", "medium"),
+    }
+    for key, (msg, severity) in audit_keys.items():
+        result = _ssh_run(ssh, f"echo 'logitech66' | sudo -S ausearch -k {key} --start recent 2>/dev/null | grep -c 'type=SYSCALL'")
+        try:
+            count = int(result.strip())
+        except (ValueError, TypeError):
+            count = 0
+        if count > 0:
+            alerts.append({
+                "type": f"auditd_{key}",
+                "severity": severity,
+                "message": f"{msg}: {count} events",
+                "count": count,
+            })
+    return {"check": "auditd_alerts", "alerts": alerts, "total_events": sum(a.get("count", 0) for a in alerts)}
 
 
 # ================================================================

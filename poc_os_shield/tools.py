@@ -25,6 +25,7 @@ import json
 import os
 import struct
 import subprocess
+import sys
 import winreg
 from datetime import datetime
 
