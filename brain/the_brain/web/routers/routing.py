@@ -31,6 +31,21 @@ async def brain_route(request: Request) -> JSONResponse:
         body = _json.loads(raw.decode('utf-8', errors='replace'))
     user_text = body.get("user_text", "")
     event_type = body.get("event_type", "")
+    context = body.get("context", {})
+
+    # Enrich user_text with workspace context for context-aware embeddings
+    if context:
+        prefix_parts = []
+        if context.get("current_space"):
+            prefix_parts.append(f"space:{context['current_space']}")
+        if context.get("current_bubble"):
+            prefix_parts.append(f"bubble:{context['current_bubble']}")
+        if context.get("idea_count"):
+            prefix_parts.append(f"ideas:{context['idea_count']}")
+        if context.get("active_task_count"):
+            prefix_parts.append(f"tasks:{context['active_task_count']}")
+        if prefix_parts:
+            user_text = f"[{' '.join(prefix_parts)}] {user_text}"
 
     agent_loop = getattr(request.app.state, 'agent_loop', None)
     routing_head = getattr(request.app.state, 'space_routing_head', None)
@@ -124,6 +139,15 @@ async def brain_route_train(request: Request) -> JSONResponse:
 
         ring3 = result['ring_activations'][2]
         applied = routing_head.train_supervised(ring3, correct_space)
+
+        # Autosave periodically so accumulated training survives a crash
+        if applied and hasattr(routing_head, 'should_autosave') and routing_head.should_autosave():
+            try:
+                ckpt_path = getattr(request.app.state, 'space_routing_head_ckpt', None)
+                if ckpt_path:
+                    routing_head.save(ckpt_path)
+            except Exception as save_err:
+                logger.warning(f"Space autosave failed: {save_err}")
 
         return JSONResponse({"ok": applied, "trained_space": correct_space})
 

@@ -102,6 +102,7 @@ class SpaceRoutingHead(nn.Module):
         self._lock = threading.Lock()
         self._total_routes = 0
         self._total_rewards = 0
+        self._train_count_since_save = 0
 
     def forward(self, ring3_activation: torch.Tensor) -> torch.Tensor:
         """Cosine similarity between Ring 3 output and all space centroids.
@@ -168,6 +169,7 @@ class SpaceRoutingHead(nn.Module):
             self.centroids.data[space_idx] += lr * reward_val * emb.squeeze(0)
 
         self._total_rewards += 1
+        self._train_count_since_save += 1
         logger.info(f"Routing reward: {rec['space']} {'SUCCESS' if success else 'FAIL'} "
                      f"(routing_id={routing_id}, reward={reward_val})")
         return True
@@ -193,7 +195,63 @@ class SpaceRoutingHead(nn.Module):
                 if i != correct_idx:
                     self.centroids.data[i] -= (lr * 0.2) * emb
         self._total_rewards += 1
+        self._train_count_since_save += 1
         return True
+
+    # ------------------------------------------------------------------
+    # Persistence (mirrors EventRoutingHead.save/load)
+    # ------------------------------------------------------------------
+
+    def save(self, path: str) -> None:
+        """Persist centroids and space_names to disk."""
+        import os
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        torch.save({
+            'centroids': self.centroids.data,
+            'space_names': self.space_names,
+            'total_routes': self._total_routes,
+            'total_rewards': self._total_rewards,
+            'version': 1,
+        }, path)
+        self._train_count_since_save = 0
+        logger.info(f"SpaceRoutingHead saved to {path}")
+
+    def load(self, path: str) -> bool:
+        """Load centroids from disk. Returns True on success.
+
+        Rejects the load if the saved space_names differ from the current
+        list (e.g. new spaces were added since the checkpoint was written),
+        so we never silently feed misaligned centroids.
+        """
+        try:
+            ckpt = torch.load(path, map_location='cpu', weights_only=False)
+        except Exception as e:
+            logger.warning(f"SpaceRoutingHead load failed ({path}): {e}")
+            return False
+
+        saved_names = ckpt.get('space_names', [])
+        if saved_names != self.space_names:
+            logger.warning(
+                f"SpaceRoutingHead checkpoint space_names differ "
+                f"(saved={len(saved_names)}, current={len(self.space_names)}). "
+                f"Refusing to load — re-seed instead."
+            )
+            return False
+
+        with torch.no_grad():
+            self.centroids.data = ckpt['centroids'].clone()
+        self._total_routes = int(ckpt.get('total_routes', 0))
+        self._total_rewards = int(ckpt.get('total_rewards', 0))
+        self._train_count_since_save = 0
+        logger.info(
+            f"SpaceRoutingHead loaded from {path} "
+            f"({len(self.space_names)} spaces, {self._total_routes} prior routes)"
+        )
+        return True
+
+    def should_autosave(self, every_n: int = 100) -> bool:
+        """Whether enough training has accumulated to warrant an autosave."""
+        return self._train_count_since_save >= every_n
 
     def cleanup_stale(self, max_age: float = 300.0) -> int:
         """Remove pending routes older than max_age seconds. Returns count removed."""

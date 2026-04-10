@@ -28,3 +28,18 @@
 [submodule "coding-engine"]
 	path = coding-engine
 	url = https://github.com/Flissel/DaveFelix-Coding-Engine.git
+[submodule "spaces/mirofish/mirofish"]
+	path = spaces/mirofish/mirofish
+	url = https://github.com/Flissel/MiroFish.git
+[submodule "spaces/video/vibevideo"]
+	path = spaces/video/vibevideo
+	url = https://github.com/Flissel/vibevideo.git
+[submodule "spaces/video/vibevideo_deepfake"]
+	path = spaces/video/vibevideo_deepfake
+	url = https://github.com/Flissel/vibevideo-deepfake.git
+[submodule "spaces/flowzen/flowzen"]
+	path = spaces/flowzen/flowzen
+	url = https://github.com/Flissel/flowzen.git
+[submodule "spaces/shuttles/swe_desgine"]
+	path = spaces/shuttles/swe_desgine
+	url = https://github.com/Flissel/swe_desgine.git

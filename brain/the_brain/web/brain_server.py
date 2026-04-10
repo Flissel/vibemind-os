@@ -8,6 +8,7 @@ server can start — and be tested — without heavyweight dependencies.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from collections import deque
@@ -564,15 +565,78 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
 
             # SpaceRoutingHead: learned space centroids for intent routing
             try:
+                from pathlib import Path as _Path
                 from core.space_routing_head import SpaceRoutingHead
                 routing_head = SpaceRoutingHead()
-                # Pre-train centroids from the complete event_type → space mapping
-                seeded = routing_head.seed_from_event_map(planner.agent_loop)
+                # Determine checkpoint path (same dir as EventRoutingHead)
+                _space_ckpt_dir = _Path("data/brain_checkpoints")
+                _space_ckpt_dir.mkdir(parents=True, exist_ok=True)
+                _space_ckpt_path = str(_space_ckpt_dir / "space_routing_head.pt")
+                state.space_routing_head_ckpt = _space_ckpt_path
+
+                if not routing_head.load(_space_ckpt_path):
+                    # Fresh seed from the event_type → space mapping
+                    seeded = routing_head.seed_from_event_map(planner.agent_loop)
+                    print(f"  [OK] SpaceRoutingHead wired ({len(routing_head.space_names)} spaces, "
+                          f"freshly seeded from {seeded} events)")
+                else:
+                    print(f"  [OK] SpaceRoutingHead wired ({len(routing_head.space_names)} spaces, "
+                          f"loaded from {_space_ckpt_path})")
                 state.space_routing_head = routing_head
-                print(f"  [OK] SpaceRoutingHead wired ({len(routing_head.space_names)} spaces, seeded {seeded} events)")
             except Exception as e:
                 state.space_routing_head = None
+                state.space_routing_head_ckpt = None
                 print(f"  [WARN] SpaceRoutingHead init failed: {e}")
+
+            # EventRoutingHead: learned event_type centroids for intent classification
+            # (the stage *before* SpaceRoutingHead — text → event_type → space).
+            # Embeddings come from sentence-transformers (MiniLM, 384-dim) — the
+            # Brain's native SeedEncoder was tested first but proved too weak
+            # for 123-way classification.
+            try:
+                from pathlib import Path as _Path
+                import torch as _torch
+                from core.event_routing_head import EventRoutingHead
+
+                # Lazy-load multilingual SBERT once and cache on app.state.
+                # paraphrase-multilingual-MiniLM-L12-v2 keeps DE and EN
+                # greetings in the same cluster (cf. all-MiniLM-L6-v2 which
+                # is English-only and put 'hallo' far from 'hello').
+                sbert = None
+                try:
+                    from sentence_transformers import SentenceTransformer
+                    sbert = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+                    print(f"  [OK] SBERT loaded (dim={sbert.get_sentence_embedding_dimension()})")
+                except Exception as sb_err:
+                    print(f"  [WARN] SBERT load failed: {sb_err}")
+                state.sbert_encoder = sbert
+
+                event_head = EventRoutingHead(embed_dim=384)
+                # Determine checkpoint path
+                _ckpt_dir = _Path("data/brain_checkpoints")
+                _ckpt_dir.mkdir(parents=True, exist_ok=True)
+                _ckpt_path = str(_ckpt_dir / "event_routing_head.pt")
+                state.event_routing_head_ckpt = _ckpt_path
+
+                if not event_head.load(_ckpt_path):
+                    if sbert is not None:
+                        def _embed_fn(text: str):
+                            vec = sbert.encode([text[:200]], convert_to_numpy=True)
+                            return _torch.tensor(vec, dtype=_torch.float32)
+                        seeded_e = event_head.seed(_embed_fn, lr=0.20)
+                        print(f"  [OK] EventRoutingHead wired ({len(event_head.event_names)} events, "
+                              f"seeded {seeded_e} phrases via SBERT)")
+                    else:
+                        print(f"  [WARN] EventRoutingHead built but no SBERT — head is random!")
+                else:
+                    print(f"  [OK] EventRoutingHead wired ({len(event_head.event_names)} events, "
+                          f"loaded from {_ckpt_path})")
+                state.event_routing_head = event_head
+            except Exception as e:
+                state.event_routing_head = None
+                state.event_routing_head_ckpt = None
+                state.sbert_encoder = None
+                print(f"  [WARN] EventRoutingHead init failed: {e}")
 
         elif cte is None:
             print("  [--] ContinuousThinking not available, radial_tick not connected")
@@ -613,12 +677,61 @@ async def _lifespan(app: FastAPI):
     except Exception as e:
         print(f"  [WARN] ContinuousThinking auto-start failed: {e}")
 
+    # Periodic log retrainer — scans logs/intents/*.jsonl every N seconds
+    # and incrementally trains the EventRoutingHead on new entries so the
+    # Brain's feedback loop closes without manual bootstrap.
+    app.state.log_retrainer_task = None
+    try:
+        import os as _os
+        from core.log_retrainer import periodic_retrainer_loop
+        _retrain_interval = int(_os.getenv("BRAIN_RETRAIN_INTERVAL_SECONDS", "3600"))
+        if _retrain_interval > 0 and getattr(app.state, 'event_routing_head', None) is not None:
+            app.state.log_retrainer_task = asyncio.create_task(
+                periodic_retrainer_loop(app.state, interval_seconds=_retrain_interval)
+            )
+            print(f"  [OK] Log retrainer scheduled (interval={_retrain_interval}s)")
+        else:
+            print(f"  [--] Log retrainer disabled (interval={_retrain_interval}, event_head missing)")
+    except Exception as e:
+        print(f"  [WARN] Log retrainer init failed: {e}")
+
     yield  # ---- app is running ----
+
+    # Cancel the log retrainer task
+    _retrain_task = getattr(app.state, 'log_retrainer_task', None)
+    if _retrain_task is not None:
+        _retrain_task.cancel()
+        try:
+            await _retrain_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        print("  [OK] Log retrainer stopped")
+
     # Teardown: persist all memory to disk
     consolidator = getattr(app.state, 'memory_consolidator', None)
     if consolidator:
         consolidator.stop()
         print("  [OK] Memory persisted to disk on shutdown")
+
+    # Persist EventRoutingHead centroids so learning survives restart
+    event_head = getattr(app.state, 'event_routing_head', None)
+    ckpt_path = getattr(app.state, 'event_routing_head_ckpt', None)
+    if event_head is not None and ckpt_path:
+        try:
+            event_head.save(ckpt_path)
+            print(f"  [OK] EventRoutingHead saved to {ckpt_path}")
+        except Exception as e:
+            print(f"  [WARN] EventRoutingHead save failed: {e}")
+
+    # Persist SpaceRoutingHead centroids so learning survives restart
+    space_head = getattr(app.state, 'space_routing_head', None)
+    space_ckpt_path = getattr(app.state, 'space_routing_head_ckpt', None)
+    if space_head is not None and space_ckpt_path:
+        try:
+            space_head.save(space_ckpt_path)
+            print(f"  [OK] SpaceRoutingHead saved to {space_ckpt_path}")
+        except Exception as e:
+            print(f"  [WARN] SpaceRoutingHead save failed: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -709,6 +822,9 @@ def create_app(testing: bool = False) -> FastAPI:
 
     from web.routers.routing import router as routing_router
     app.include_router(routing_router)
+
+    from web.routers.classification import router as classification_router
+    app.include_router(classification_router)
 
     @app.get("/radial", response_class=HTMLResponse)
     async def radial_dashboard(request: Request):
