@@ -73,6 +73,10 @@ EVENT_SEED_PHRASES: Dict[str, List[str]] = {
         "verlasse bubble", "bubble verlassen", "raus aus der bubble",
         "zurück aus bubble", "leave the current bubble",
     ],
+    "bubble.promote": [
+        "promote bubble to project", "upgrade bubble", "convert bubble to project",
+        "bubble zum projekt machen", "bubble befoerdern",
+    ],
     "bubble.find": [
         "find bubble", "search for bubble", "where is bubble",
         "finde bubble", "suche bubble",
@@ -249,6 +253,48 @@ EVENT_SEED_PHRASES: Dict[str, List[str]] = {
     "mirofish.evaluate": [
         "evaluate bubble", "rate this bubble", "is this bubble ready",
         "bewerte bubble", "ist die bubble bereit", "bubble evaluation",
+    ],
+
+    # ── OpenClaw (browser + messaging + research) ─────────────────────
+    "openclaw.browse": [
+        "open website", "go to website", "browse to", "navigate to url",
+        "oeffne webseite", "geh auf die seite", "zeig mir die website",
+    ],
+    "openclaw.scrape": [
+        "scrape website", "read the page", "extract data from website",
+        "lies die seite aus", "daten von der website holen",
+    ],
+    "openclaw.research": [
+        "research this topic", "do web research", "find information about",
+        "recherchiere das thema", "finde infos ueber", "web recherche",
+    ],
+    "openclaw.message.send": [
+        "send whatsapp message", "send telegram message", "schick eine nachricht",
+        "whatsapp an", "telegram an", "slack nachricht senden",
+    ],
+    "openclaw.message.read": [
+        "read my messages", "check whatsapp", "read telegram",
+        "lies meine nachrichten", "zeig whatsapp", "neue nachrichten",
+    ],
+    "openclaw.linkedin.search": [
+        "search linkedin", "find people on linkedin", "linkedin suche",
+        "finde leute auf linkedin", "linkedin jobs suchen",
+    ],
+    "openclaw.enrich": [
+        "enrich this idea with research", "add web research to idea",
+        "reichere die idee an", "recherchiere mehr zu dieser idee",
+    ],
+    "openclaw.pitch": [
+        "create a pitch", "write a pitch deck", "pitch erstellen",
+        "mach einen pitch fuer die bubble", "investor pitch schreiben",
+    ],
+    "openclaw.compare": [
+        "compare prices", "compare services", "which is better",
+        "vergleiche preise", "was ist besser", "vergleich",
+    ],
+    "openclaw.monitor": [
+        "monitor website", "watch this url", "alert me if down",
+        "ueberwache die seite", "benachrichtige mich wenn offline",
     ],
 
     # ── n8n ────────────────────────────────────────────────────────────

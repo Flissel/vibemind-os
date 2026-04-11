@@ -34,6 +34,14 @@ EVENT_SPACE_MAP = {
     "web.search": "desktop", "web.fetch": "desktop",
     "openclaw.status": "desktop", "openclaw.notifications": "desktop",
     "openclaw.prompt": "desktop",
+    # OpenClaw browser + messaging events
+    "openclaw.browse": "desktop", "openclaw.scrape": "desktop",
+    "openclaw.screenshot.web": "desktop", "openclaw.fill_form": "desktop",
+    "openclaw.research": "research", "openclaw.compare": "research",
+    "openclaw.message.send": "desktop", "openclaw.message.read": "desktop",
+    "openclaw.linkedin.search": "desktop",
+    "openclaw.enrich": "ideas", "openclaw.pitch": "ideas",
+    "openclaw.monitor": "desktop", "openclaw.cron": "schedule",
     # Bubbles
     "bubble.list": "bubbles", "bubble.create": "bubbles", "bubble.enter": "bubbles",
     "bubble.exit": "bubbles", "bubble.back": "bubbles", "bubble.delete": "bubbles",
