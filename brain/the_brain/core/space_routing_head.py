@@ -33,6 +33,7 @@ EVENT_SPACE_MAP = {
     "messaging.whatsapp": "desktop", "messaging.telegram": "desktop", "messaging.send": "desktop",
     "web.search": "desktop", "web.fetch": "desktop",
     "openclaw.status": "desktop", "openclaw.notifications": "desktop",
+    "openclaw.prompt": "desktop",
     # Bubbles
     "bubble.list": "bubbles", "bubble.create": "bubbles", "bubble.enter": "bubbles",
     "bubble.exit": "bubbles", "bubble.back": "bubbles", "bubble.delete": "bubbles",
