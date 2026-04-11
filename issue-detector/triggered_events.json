@@ -1,0 +1,90 @@
+{
+  "next_id": 5,
+  "events": [
+    {
+      "id": "E0001",
+      "source": "windows_eventlog",
+      "event_type": "Fehler",
+      "details": {
+        "RecordId": 314788,
+        "TimeCreated": "/Date(1775920287566)/",
+        "LevelDisplayName": "Fehler",
+        "LogName": "System",
+        "ProviderName": "Service Control Manager",
+        "Message": "Der Dienst \"Google Update-Dienst (gupdate)\" wurde aufgrund folgenden Fehlers nicht gestartet: \r\nDer Dienst antwortete nicht rechtzeitig auf die Start- oder Steuerungsanforderung."
+      },
+      "triggered_at": "2026-04-11T21:35:56.247870+00:00",
+      "processed": true,
+      "reaction": {
+        "findings_count": 1,
+        "pending_ids": [
+          "P0002"
+        ],
+        "deep_scan_available": true,
+        "auto_issued": false
+      }
+    },
+    {
+      "id": "E0002",
+      "source": "windows_eventlog",
+      "event_type": "Fehler",
+      "details": {
+        "RecordId": 8393855,
+        "TimeCreated": "/Date(1775920179170)/",
+        "LevelDisplayName": "Fehler",
+        "LogName": "Application",
+        "ProviderName": "Microsoft-Windows-CertificateServicesClient-CertEnroll",
+        "Message": "Fehler bei der Initialisierung der SCEP-Zertifikatregistrierung f\u00fcr WORKGROUP\\DESKTOP-P303RIA$ \u00fcber https://INTC-KeyId-c55417548b3c58d1681ad669cc622afab27f352a.microsoftaik.azure.net/templates/Aik/scep:\r\n\r\nGetCACaps\nGetCACaps: Not Found\n{\"Message\":\"The authority \\\"intc-keyid-c55417548b3c58d1681ad669cc622afab27f352a.microsoftaik.azure.net\\\" does not exist.\"}\nHTTP/1.1 404 Not Found\nDate: Sat, 11 Apr 2026 15:09:39 GMT\nContent-Length: 122\nContent-Type: application/json; charset=utf-8\nX-Content-Type-Options: nosniff\nStrict-Transport-Security: max-age=31536000;includeSubDomains\nx-ms-request-id: 46b0ac99-51c1-49d8-bbbc-092051370a53\n\r\nMethode: GET(609ms)\r\nPhase: GetCACaps\r\nNicht gefunden (404). 0x80190194 (-2145844844 HTTP_E_STATUS_NOT_FOUND)"
+      },
+      "triggered_at": "2026-04-11T21:35:56.271216+00:00",
+      "processed": false,
+      "reaction": null
+    },
+    {
+      "id": "E0003",
+      "source": "windows_eventlog",
+      "event_type": "Fehler",
+      "details": {
+        "RecordId": 314787,
+        "TimeCreated": "/Date(1775920287566)/",
+        "LevelDisplayName": "Fehler",
+        "LogName": "System",
+        "ProviderName": "Service Control Manager",
+        "Message": "Das Zeitlimit (30000 ms) wurde beim Verbindungsversuch mit dem Dienst Google Update-Dienst (gupdate) erreicht."
+      },
+      "triggered_at": "2026-04-11T21:35:56.272196+00:00",
+      "processed": true,
+      "reaction": {
+        "findings_count": 1,
+        "pending_ids": [
+          "P0003"
+        ],
+        "deep_scan_available": true,
+        "auto_issued": false
+      }
+    },
+    {
+      "id": "E0004",
+      "source": "windows_eventlog",
+      "event_type": "Fehler",
+      "details": {
+        "RecordId": 8393855,
+        "TimeCreated": "/Date(1775920179170)/",
+        "LevelDisplayName": "Fehler",
+        "LogName": "Application",
+        "ProviderName": "Microsoft-Windows-CertificateServicesClient-CertEnroll",
+        "Message": "Fehler bei der Initialisierung der SCEP-Zertifikatregistrierung f\u00fcr WORKGROUP\\DESKTOP-P303RIA$ \u00fcber https://INTC-KeyId-c55417548b3c58d1681ad669cc622afab27f352a.microsoftaik.azure.net/templates/Aik/scep:\r\n\r\nGetCACaps\nGetCACaps: Not Found\n{\"Message\":\"The authority \\\"intc-keyid-c55417548b3c58d1681ad669cc622afab27f352a.microsoftaik.azure.net\\\" does not exist.\"}\nHTTP/1.1 404 Not Found\nDate: Sat, 11 Apr 2026 15:09:39 GMT\nContent-Length: 122\nContent-Type: application/json; charset=utf-8\nX-Content-Type-Options: nosniff\nStrict-Transport-Security: max-age=31536000;includeSubDomains\nx-ms-request-id: 46b0ac99-51c1-49d8-bbbc-092051370a53\n\r\nMethode: GET(609ms)\r\nPhase: GetCACaps\r\nNicht gefunden (404). 0x80190194 (-2145844844 HTTP_E_STATUS_NOT_FOUND)"
+      },
+      "triggered_at": "2026-04-11T21:35:56.301871+00:00",
+      "processed": true,
+      "reaction": {
+        "findings_count": 1,
+        "pending_ids": [
+          "P0004"
+        ],
+        "deep_scan_available": true,
+        "auto_issued": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "next_id": 5,
+  "findings": {
+    "P0001": {
+      "title": "[windows_eventlog] Fehler [Service Control Manager]",
+      "details": "**Source:** windows_eventlog\n**Event ID:** E0002\n**Triggered at:** 2026-04-11T21:35:56.219380+00:00\n\n## Details\n\n```json\n{\n  \"RecordId\": 314788,\n  \"TimeCreated\": \"/Date(1775920287566)/\",\n  \"LevelDisplayName\": \"Fehler\",\n  \"LogName\": \"System\",\n  \"ProviderName\": \"Service Control Manager\",\n  \"Message\": \"Der Dienst \\\"Google Update-Dienst (gupdate)\\\" wurde aufgrund folgenden Fehlers nicht gestartet: \\r\\nDer Dienst antwortete nicht rechtzeitig auf die Start- oder Steuerungsanforderung.\"\n}\n```\n\n## Next steps\n\nTo run a deeper scan for this event, use:\n`deep_scan_for_event('E0002')`",
+      "severity": "HIGH",
+      "source": "event:windows_eventlog",
+      "category": "triggered",
+      "event_id": "E0002",
+      "id": "P0001",
+      "pending_since": "2026-04-11T21:35:56.225847+00:00",
+      "status": "pending"
+    },
+    "P0002": {
+      "title": "[windows_eventlog] Fehler [Service Control Manager]",
+      "details": "**Source:** windows_eventlog\n**Event ID:** E0001\n**Triggered at:** 2026-04-11T21:35:56.247870+00:00\n\n## Details\n\n```json\n{\n  \"RecordId\": 314788,\n  \"TimeCreated\": \"/Date(1775920287566)/\",\n  \"LevelDisplayName\": \"Fehler\",\n  \"LogName\": \"System\",\n  \"ProviderName\": \"Service Control Manager\",\n  \"Message\": \"Der Dienst \\\"Google Update-Dienst (gupdate)\\\" wurde aufgrund folgenden Fehlers nicht gestartet: \\r\\nDer Dienst antwortete nicht rechtzeitig auf die Start- oder Steuerungsanforderung.\"\n}\n```\n\n## Next steps\n\nTo run a deeper scan for this event, use:\n`deep_scan_for_event('E0001')`",
+      "severity": "HIGH",
+      "source": "event:windows_eventlog",
+      "category": "triggered",
+      "event_id": "E0001",
+      "id": "P0002",
+      "pending_since": "2026-04-11T21:35:56.254359+00:00",
+      "status": "pending"
+    },
+    "P0003": {
+      "title": "[windows_eventlog] Fehler [Microsoft-Windows-CertificateServicesClient-CertEnroll]",
+      "details": "**Source:** windows_eventlog\n**Event ID:** E0002\n**Triggered at:** 2026-04-11T21:35:56.271216+00:00\n\n## Details\n\n```json\n{\n  \"RecordId\": 8393855,\n  \"TimeCreated\": \"/Date(1775920179170)/\",\n  \"LevelDisplayName\": \"Fehler\",\n  \"LogName\": \"Application\",\n  \"ProviderName\": \"Microsoft-Windows-CertificateServicesClient-CertEnroll\",\n  \"Message\": \"Fehler bei der Initialisierung der SCEP-Zertifikatregistrierung f\\u00fcr WORKGROUP\\\\DESKTOP-P303RIA$ \\u00fcber https://INTC-KeyId-c55417548b3c58d1681ad669cc622afab27f352a.microsoftaik.azure.net/templates/Aik/scep:\\r\\n\\r\\nGetCACaps\\nGetCACaps: Not Found\\n{\\\"Message\\\":\\\"The authority \\\\\\\"intc-keyid-c55417548b3c58d1681ad669cc622afab27f352a.microsoftaik.azure.net\\\\\\\" does not exist.\\\"}\\nHTTP/1.1 404 Not Found\\nDate: Sat, 11 Apr 2026 15:09:39 GMT\\nContent-Length: 122\\nContent-Type: application/json; charset=utf-8\\nX-Content-Type-Options: nosniff\\nStrict-Transport-Security: max-age=31536000;includeSubDomains\\nx-ms-request-id: 46b0ac99-51c1-49d8-bbbc-092051370a53\\n\\r\\nMethode: GET(609ms)\\r\\nPhase: GetCACaps\\r\\nNicht gefunden (404). 0x80190194 (-2145844844 HTTP_E_STATUS_NOT_FOUND)\"\n}\n```\n\n## Next steps\n\nTo run a deeper scan for this event, use:\n`deep_scan_for_event('E0002')`",
+      "severity": "HIGH",
+      "source": "event:windows_eventlog",
+      "category": "triggered",
+      "event_id": "E0002",
+      "id": "P0003",
+      "pending_since": "2026-04-11T21:35:56.277106+00:00",
+      "status": "pending"
+    },
+    "P0004": {
+      "title": "[windows_eventlog] Fehler [Microsoft-Windows-CertificateServicesClient-CertEnroll]",
+      "details": "**Source:** windows_eventlog\n**Event ID:** E0004\n**Triggered at:** 2026-04-11T21:35:56.301871+00:00\n\n## Details\n\n```json\n{\n  \"RecordId\": 8393855,\n  \"TimeCreated\": \"/Date(1775920179170)/\",\n  \"LevelDisplayName\": \"Fehler\",\n  \"LogName\": \"Application\",\n  \"ProviderName\": \"Microsoft-Windows-CertificateServicesClient-CertEnroll\",\n  \"Message\": \"Fehler bei der Initialisierung der SCEP-Zertifikatregistrierung f\\u00fcr WORKGROUP\\\\DESKTOP-P303RIA$ \\u00fcber https://INTC-KeyId-c55417548b3c58d1681ad669cc622afab27f352a.microsoftaik.azure.net/templates/Aik/scep:\\r\\n\\r\\nGetCACaps\\nGetCACaps: Not Found\\n{\\\"Message\\\":\\\"The authority \\\\\\\"intc-keyid-c55417548b3c58d1681ad669cc622afab27f352a.microsoftaik.azure.net\\\\\\\" does not exist.\\\"}\\nHTTP/1.1 404 Not Found\\nDate: Sat, 11 Apr 2026 15:09:39 GMT\\nContent-Length: 122\\nContent-Type: application/json; charset=utf-8\\nX-Content-Type-Options: nosniff\\nStrict-Transport-Security: max-age=31536000;includeSubDomains\\nx-ms-request-id: 46b0ac99-51c1-49d8-bbbc-092051370a53\\n\\r\\nMethode: GET(609ms)\\r\\nPhase: GetCACaps\\r\\nNicht gefunden (404). 0x80190194 (-2145844844 HTTP_E_STATUS_NOT_FOUND)\"\n}\n```\n\n## Next steps\n\nTo run a deeper scan for this event, use:\n`deep_scan_for_event('E0004')`",
+      "severity": "HIGH",
+      "source": "event:windows_eventlog",
+      "category": "triggered",
+      "event_id": "E0004",
+      "id": "P0004",
+      "pending_since": "2026-04-11T21:35:56.310117+00:00",
+      "status": "pending"
+    }
+  }
+}
