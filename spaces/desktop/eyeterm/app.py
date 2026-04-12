@@ -9,6 +9,7 @@ Usage:
 import argparse
 import logging
 import time
+from pathlib import Path
 from typing import Optional
 
 import cv2
@@ -71,6 +72,16 @@ class EyeTermApp:
         # MJPEG camera stream server (for Electron embedding)
         self._camera_server: Optional[CameraStreamServer] = None
 
+        # Face-swap / virtual camera (opt-in, heavy deps lazy-loaded)
+        self._face_swapper = None
+        self._aligner = None
+        self._particle_overlay = None
+        self._virtual_cam = None
+        self._last_particle_state = None
+
+        # Video recorder (UI frames → ~/.rowboat/Videos/*.mp4)
+        self._recorder = None
+
         # Runtime state
         self._transcript_partial = ""
         self._transcript_final = ""
@@ -120,6 +131,55 @@ class EyeTermApp:
             deadzone_px=self._config.cursor.deadzone_px,
             require_face=self._config.cursor.require_face,
         )
+
+        # Face-swap pipeline (opt-in) — must init BEFORE deepfake-detector so we
+        # can disable the detector when we're intentionally producing a fake.
+        if self._config.faceswap.enabled and self._config.faceswap.target_face:
+            try:
+                from .faceswap.swapper import FaceSwapper
+                from .faceswap.aligner import ParticleAligner
+                from .faceswap.particle_overlay import ParticleOverlay
+                self._face_swapper = FaceSwapper(
+                    target_face_path=self._config.faceswap.target_face,
+                    providers=self._config.faceswap.providers,
+                )
+                if self._config.faceswap.alignment_enabled:
+                    self._aligner = ParticleAligner(
+                        smoothing_alpha=self._config.faceswap.alignment_alpha,
+                        debug_export_path=self._config.faceswap.particle_export,
+                    )
+                    self._particle_overlay = ParticleOverlay()
+                logger.info("Face-swap pipeline active (alignment=%s)",
+                            bool(self._aligner))
+            except Exception as e:
+                logger.error("Face-swap init failed: %s — running without swap", e)
+                self._face_swapper = None
+                self._aligner = None
+                self._particle_overlay = None
+
+        if self._config.faceswap.virtual_cam_enabled:
+            from .stream.virtual_cam import VirtualCamSink
+            self._virtual_cam = VirtualCamSink(
+                width=self._config.window_width,
+                height=self._config.window_height,
+                fps=self._config.target_fps,
+                backends=self._config.faceswap.virtual_cam_backends,
+            )
+
+        # Deepfake detection (opt-in) — skipped when we're producing our own swap
+        self._deepfake = None
+        if self._face_swapper is not None:
+            logger.info("Deepfake detector disabled (face-swap active)")
+        elif self._config.deepfake.enabled:
+            from .vision.deepfake_detect import DeepfakeDetector
+            self._deepfake = DeepfakeDetector(
+                window_frames=self._config.deepfake.window_frames,
+                pixel_check_interval=self._config.deepfake.pixel_check_interval,
+                alert_threshold=self._config.deepfake.alert_threshold,
+                alert_cooldown_ms=self._config.deepfake.alert_cooldown_ms,
+            )
+            logger.info("Deepfake detection enabled (threshold=%.2f)",
+                        self._config.deepfake.alert_threshold)
 
     def _init_audio(self):
         """Initialize Vosk STT (lazy — only when needed)."""
@@ -404,6 +464,12 @@ class EyeTermApp:
         if self._config.stream.enabled:
             self._camera_server = CameraStreamServer(port=self._config.stream.port)
             self._camera_server.start()
+            # If face-swap was configured via CLI/env, report the active preset
+            # name. This doesn't affect the swap pipeline (already built in
+            # _init_vision), only the /status and /presets responses.
+            if self._face_swapper is not None and self._config.faceswap.target_face:
+                preset_name = Path(self._config.faceswap.target_face).stem
+                self._camera_server.set_active_preset(preset_name)
 
         # Start always-on STT if model configured
         self._init_audio()
@@ -420,16 +486,36 @@ class EyeTermApp:
         while self._running:
             t_start = time.perf_counter_ns()
 
+            # 0. Drain any queued HTTP commands (runtime preset switch etc.)
+            self._process_commands()
+
             # 1. Capture frame
             frame = self._camera.read() if self._camera else None
             if frame is None:
                 time.sleep(0.01)
                 continue
 
-            # 2. Gaze estimation
+            # 2. Gaze estimation on the RAW frame — we need SOLL landmarks
+            # from the real face before swapping (swap would perturb them).
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             gaze_result = self._gaze.estimate(frame_rgb)
             now_ms = int(time.time() * 1000)
+
+            # 2a. Face-swap + particle alignment (opt-in)
+            if self._face_swapper is not None and gaze_result and gaze_result.landmarks:
+                swapped, ist_face = self._face_swapper.swap(frame)
+                if self._aligner is not None and ist_face is not None:
+                    frame, self._last_particle_state = self._aligner.align(
+                        swapped, gaze_result.landmarks, ist_face
+                    )
+                else:
+                    frame = swapped
+                    self._last_particle_state = None
+            elif self._face_swapper is not None:
+                # No landmarks this frame — just swap without alignment
+                swapped, _ = self._face_swapper.swap(frame)
+                frame = swapped
+                self._last_particle_state = None
 
             screen_x, screen_y = None, None
             if gaze_result is not None:
@@ -455,6 +541,23 @@ class EyeTermApp:
                         _, action = self._sm.transition(event)
                         if action:
                             self._handle_action(action)
+
+                    # Deepfake detection
+                    if self._deepfake:
+                        df_alert = self._deepfake.update(
+                            frame=frame,
+                            landmarks=gaze_result.landmarks,
+                            ear_values=self._ear_values,
+                            head_pose=self._head_pose,
+                            iris_pos=(gaze_result.x, gaze_result.y),
+                            timestamp_ms=now_ms,
+                        )
+                        if df_alert:
+                            logger.warning(
+                                "DEEPFAKE ALERT: score=%.2f signals=%s",
+                                df_alert["authenticity_score"],
+                                df_alert["signals"],
+                            )
 
                 # Focus routing (skip during POLISHING/PREVIEWING — user is busy)
                 if self._sm.state in (State.IDLE, State.FOCUSED):
@@ -501,12 +604,37 @@ class EyeTermApp:
                 wink_event=self._last_wink_event,
                 cursor_enabled=self._cursor_driver.enabled if self._cursor_driver else False,
                 polish_preview=self._polish_preview,
+                deepfake_score=self._deepfake.composite_score if self._deepfake else None,
+                deepfake_signals=self._deepfake.signal_scores if self._deepfake else None,
+                particle_state=self._last_particle_state,
+                particle_overlay=self._particle_overlay,
             )
             self._last_wink_event = None  # consume after rendering
 
             # Push frame to MJPEG stream for Electron
             if self._camera_server:
                 self._camera_server.update_frame(ui_frame)
+
+            # Recording: lazy-start if armed, then write this frame
+            if self._recorder is not None:
+                if not self._recorder.active and getattr(self._recorder, "_pending_hint", None) is not None:
+                    try:
+                        hint = self._recorder._pending_hint
+                        self._recorder._pending_hint = None
+                        self._recorder.start(ui_frame, name_hint=hint)
+                        self._camera_server.set_recording_state(self._recorder.state)
+                    except Exception as e:
+                        logger.error("Recorder start failed: %s", e)
+                if self._recorder.active:
+                    self._recorder.write(ui_frame)
+                    # Lightweight state-refresh every 30 frames (~1s @ 30fps)
+                    if self._recorder._frame_count % 30 == 0:
+                        self._camera_server.set_recording_state(self._recorder.state)
+
+            # Push frame to virtual camera (what Zoom/Teams/Meet see)
+            if self._virtual_cam is not None:
+                out = frame if self._config.faceswap.virtual_cam_clean else ui_frame
+                self._virtual_cam.send(out)
 
             cv2.imshow("eyeTerm", ui_frame)
 
@@ -522,11 +650,118 @@ class EyeTermApp:
                 if self._cursor_driver:
                     state = self._cursor_driver.toggle()
                     logger.info("Cursor control: %s", "ON" if state else "OFF")
+            elif key == ord('f'):
+                # Toggle deepfake detection on/off
+                if self._deepfake:
+                    self._deepfake = None
+                    logger.info("Deepfake detection: OFF")
+                else:
+                    from .vision.deepfake_detect import DeepfakeDetector
+                    self._deepfake = DeepfakeDetector(
+                        window_frames=self._config.deepfake.window_frames,
+                        pixel_check_interval=self._config.deepfake.pixel_check_interval,
+                        alert_threshold=self._config.deepfake.alert_threshold,
+                        alert_cooldown_ms=self._config.deepfake.alert_cooldown_ms,
+                    )
+                    logger.info("Deepfake detection: ON")
             elif key == ord('r'):
                 self._sm.reset()
                 self._stop_stt()
 
         self._cleanup()
+
+    def _process_commands(self) -> None:
+        """Drain any queued HTTP commands and apply them to the pipeline.
+
+        Called once per frame at the top of the main loop. Empty-queue case
+        is ~free (one lock acquire, one list check). Heavy work (FaceSwapper
+        init) only runs when an actual command arrives.
+        """
+        if self._camera_server is None:
+            return
+        cmds = self._camera_server.pop_commands()
+        for cmd in cmds:
+            ctype = cmd.get("type")
+            try:
+                if ctype == "set_preset":
+                    self._apply_set_preset(cmd.get("name"))
+                elif ctype == "start_recording":
+                    self._apply_start_recording(cmd.get("name_hint"))
+                elif ctype == "stop_recording":
+                    self._apply_stop_recording()
+                else:
+                    logger.warning("Unknown command type: %r", ctype)
+            except Exception as e:
+                logger.exception("Command %r failed: %s", ctype, e)
+
+    def _apply_set_preset(self, name: Optional[str]) -> None:
+        """Activate/switch/deactivate face-swap at runtime."""
+        if name is None:
+            if self._face_swapper is not None:
+                logger.info("Deactivating face-swap")
+            self._face_swapper = None
+            self._aligner = None
+            self._particle_overlay = None
+            self._last_particle_state = None
+            self._camera_server.set_active_preset(None)
+            return
+
+        from .faceswap.presets import resolve_preset
+        target_path = resolve_preset(name)
+
+        if self._face_swapper is not None:
+            # Hot-swap target: keep loaded models, just re-extract target embedding
+            self._face_swapper.set_target(target_path)
+            self._camera_server.set_active_preset(name)
+            logger.info("Switched face-swap target to preset=%s", name)
+            return
+
+        # Cold-start: build FaceSwapper + Aligner + ParticleOverlay
+        from .faceswap.swapper import FaceSwapper
+        from .faceswap.aligner import ParticleAligner
+        from .faceswap.particle_overlay import ParticleOverlay
+        self._face_swapper = FaceSwapper(
+            target_face_path=target_path,
+            providers=self._config.faceswap.providers,
+        )
+        if self._config.faceswap.alignment_enabled:
+            self._aligner = ParticleAligner(
+                smoothing_alpha=self._config.faceswap.alignment_alpha,
+                debug_export_path=self._config.faceswap.particle_export,
+            )
+            self._particle_overlay = ParticleOverlay()
+        # If the deepfake detector was running, disable it — we're now producing
+        # the fake ourselves; leaving the detector on would trigger its own alerts.
+        if self._deepfake is not None:
+            logger.info("Disabling deepfake detector (face-swap activated)")
+            self._deepfake = None
+        self._camera_server.set_active_preset(name)
+        logger.info("Activated face-swap with preset=%s", name)
+
+    def _apply_start_recording(self, name_hint: Optional[str]) -> None:
+        """Start writing ui_frames to an MP4 in ~/.rowboat/Videos/."""
+        if self._recorder is not None and self._recorder.active:
+            logger.warning("Recording already active, ignoring start")
+            return
+        if self._recorder is None:
+            from .stream.recorder import VideoRecorder
+            self._recorder = VideoRecorder(fps=self._config.target_fps)
+        # Defer file creation until we have a real frame (first write call handles start)
+        self._recorder._pending_hint = name_hint
+        logger.info("Recording armed (hint=%s) — will start on next frame", name_hint)
+        self._camera_server.set_recording_state(self._recorder.state)
+
+    def _apply_stop_recording(self) -> None:
+        if self._recorder is None or not self._recorder.active:
+            # Also clear any armed-but-not-started state
+            if self._recorder is not None:
+                self._recorder._pending_hint = None
+            logger.info("Stop recording requested but none active")
+            self._camera_server.set_recording_state({"active": False})
+            return
+        summary = self._recorder.stop()
+        logger.info("Recording saved: %s", summary.get("path"))
+        self._camera_server.set_recording_state(summary)
 
     def _cleanup(self):
         """Release all resources."""
@@ -535,6 +770,13 @@ class EyeTermApp:
             self._polisher.shutdown()
         if self._camera_server:
             self._camera_server.stop()
+        if self._virtual_cam:
+            self._virtual_cam.close()
+        if self._recorder is not None and self._recorder.active:
+            try:
+                self._recorder.stop()
+            except Exception as e:
+                logger.warning("Recorder cleanup error: %s", e)
         if self._camera:
             self._camera.stop()
         if self._gaze:
@@ -550,7 +792,26 @@ def main():
     parser.add_argument("--dirs", nargs="+", help="Working directories for Claude Code panes")
     parser.add_argument("--camera", type=int, default=0, help="Camera index")
     parser.add_argument("--vosk-model", help="Path to Vosk model directory")
+    parser.add_argument("--deepfake-target", help="Path to target face image — enables live face-swap")
+    parser.add_argument("--target-preset", help="Name of a preset in faceswap/targets/ (alternative to --deepfake-target)")
+    parser.add_argument("--list-presets", action="store_true", help="List available target-face presets and exit")
+    parser.add_argument("--virtual-cam", action="store_true",
+                        help="Push output to OBS/Unity virtual camera for Zoom/Teams/Meet")
+    parser.add_argument("--particle-export", help="Write particle alignment state to this JSON path")
+    parser.add_argument("--no-alignment", action="store_true",
+                        help="Disable particle-based warp correction (raw swap only)")
     args = parser.parse_args()
+
+    if args.list_presets:
+        from .faceswap.presets import list_presets, TARGETS_DIR
+        presets = list_presets()
+        if presets:
+            print(f"Target presets in {TARGETS_DIR}:")
+            for p in presets:
+                print(f"  {p}")
+        else:
+            print(f"No presets installed. Drop face images into {TARGETS_DIR}")
+        return
 
     if args.dirs:
         config = AppConfig.from_dirs(args.dirs, camera_index=args.camera)
@@ -561,6 +822,23 @@ def main():
         config.audio.vosk_model_path = args.vosk_model
 
     config.camera_index = args.camera
+
+    if args.deepfake_target or args.target_preset:
+        from pathlib import Path
+        if args.target_preset:
+            from .faceswap.presets import resolve_preset
+            target_path = resolve_preset(args.target_preset)
+        else:
+            target_path = Path(args.deepfake_target).expanduser()
+        config.faceswap.enabled = True
+        config.faceswap.target_face = target_path
+    if args.virtual_cam:
+        config.faceswap.virtual_cam_enabled = True
+    if args.particle_export:
+        from pathlib import Path
+        config.faceswap.particle_export = Path(args.particle_export).expanduser()
+    if args.no_alignment:
+        config.faceswap.alignment_enabled = False
 
     app = EyeTermApp(config)
     app.run()

@@ -9,6 +9,7 @@ export default defineConfig(({ mode }) => {
   const apiTarget = process.env.VITE_PROXY_TARGET || 'http://localhost:8000';
 
   return {
+  base: './',
   server: {
     host: "::",
     port: 5173,

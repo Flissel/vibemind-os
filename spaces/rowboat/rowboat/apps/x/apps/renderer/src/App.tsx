@@ -3611,7 +3611,7 @@ function App() {
         graphFilePaths.map(async (path) => {
           try {
             const result = await window.ipc.invoke('workspace:readFile', { path })
-            return { path, data: result.data as string }
+            return { path, data: (typeof result?.data === 'string' ? result.data : '') }
           } catch (err) {
             console.error('Failed to read file for graph:', path, err)
             return { path, data: '' }

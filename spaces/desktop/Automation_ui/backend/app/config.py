@@ -86,15 +86,24 @@ class Settings(BaseSettings):
     @validator("llm_model", pre=True, always=True)
     def _default_llm_model(cls, v):
         if v is None:
-            from llm_config import get_model as _get_model
-            return _get_model("desktop_reasoning")
+            try:
+                from llm_config import get_model as _get_model
+                return _get_model("desktop_reasoning")
+            except ImportError:
+                # llm_config lived at repo root before the move into
+                # vibemind-os/spaces/desktop/. Fall back to a sane default
+                # so the backend can still boot.
+                return "openrouter/anthropic/claude-sonnet-4"
         return v
 
     @validator("compaction_model", pre=True, always=True)
     def _default_compaction_model(cls, v):
         if v is None:
-            from llm_config import get_model as _get_model
-            return _get_model("desktop_reasoning")
+            try:
+                from llm_config import get_model as _get_model
+                return _get_model("desktop_reasoning")
+            except ImportError:
+                return "openrouter/anthropic/claude-sonnet-4"
         return v
 
     video_agent_default: bool = Field(default=True, env="VIDEO_AGENT_DEFAULT")

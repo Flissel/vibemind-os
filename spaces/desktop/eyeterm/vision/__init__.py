@@ -15,6 +15,9 @@ def __getattr__(name):
     if name == "CalibrationRunner":
         from .calibrate import CalibrationRunner
         return CalibrationRunner
+    if name == "DeepfakeDetector":
+        from .deepfake_detect import DeepfakeDetector
+        return DeepfakeDetector
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -26,4 +29,5 @@ __all__ = [
     "FocusRouter",
     "WinkDetector",
     "CalibrationRunner",
+    "DeepfakeDetector",
 ]

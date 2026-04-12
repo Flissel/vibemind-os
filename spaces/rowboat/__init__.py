@@ -52,11 +52,15 @@ from .broadcast import (
     get_roarboot_broadcast_agent,
 )
 
-# Workers (background monitoring)
-from .workers import (
-    HealthCheckWorker,
-    create_roarboot_workers,
-)
+# Workers (background monitoring) — depends on swarm.workers which may not exist
+try:
+    from .workers import (
+        HealthCheckWorker,
+        create_roarboot_workers,
+    )
+except ImportError:
+    HealthCheckWorker = None
+    create_roarboot_workers = None
 
 # Knowledge & Content Tools
 from .tools import (

@@ -2,7 +2,7 @@
 Adapted Desktop Tools for AutoGen Swarm
 
 Typed wrappers that route desktop automation through the Automation_ui
-FastAPI backend (localhost:8009). Simple actions (type, key, scroll) use
+FastAPI backend (localhost:8007). Simple actions (type, key, scroll) use
 direct REST endpoints; vision-based actions (click_element, execute_task,
 moire_scan) use the agentic LLM intent endpoint.
 

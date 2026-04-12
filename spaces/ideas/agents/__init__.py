@@ -6,7 +6,14 @@ Backend and User agents for bubble and idea management.
 
 from .ideas_agent import IdeasAgent, get_ideas_agent
 from .bubbles_agent import BubblesAgent, get_bubbles_agent
-from .rachel_agent import RachelAgent, create_rachel_agent, RACHEL_VOICE_PROMPT
+
+# RachelAgent depends on swarm.user_agents (removed in dead code cleanup)
+try:
+    from .rachel_agent import RachelAgent, create_rachel_agent, RACHEL_VOICE_PROMPT
+except ImportError:
+    RachelAgent = None
+    create_rachel_agent = None
+    RACHEL_VOICE_PROMPT = ""
 
 __all__ = [
     # Backend Agents

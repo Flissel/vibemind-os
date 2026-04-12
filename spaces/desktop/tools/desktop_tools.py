@@ -26,8 +26,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 logger = logging.getLogger(__name__)
 
-# Import external MoireTracker bridge
-import moire_external as moire
+# Import external MoireTracker bridge (optional)
+try:
+    import moire_external as moire
+    _MOIRE_AVAILABLE = True
+except ImportError:
+    moire = None
+    _MOIRE_AVAILABLE = False
 
 
 # ==================== Client Tool Functions ====================

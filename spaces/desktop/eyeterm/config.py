@@ -95,9 +95,38 @@ class CursorConfig:
 
 
 @dataclass
+class DeepfakeConfig:
+    enabled: bool = False              # opt-in via EYETERM_DEEPFAKE_DETECT=true
+    window_frames: int = 90            # sliding window size (3s at 30fps)
+    pixel_check_interval: int = 10     # pixel analysis every N frames
+    alert_threshold: float = 0.4       # below this = suspected deepfake
+    alert_cooldown_ms: int = 5000      # ms between alerts
+    show_overlay: bool = True          # show authenticity bar in overlay
+
+
+@dataclass
 class StreamConfig:
     enabled: bool = True        # MJPEG stream for Electron PiP
     port: int = 8099
+
+
+@dataclass
+class FaceSwapConfig:
+    enabled: bool = False
+    target_face: Optional[Path] = None
+    providers: List[str] = field(
+        default_factory=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    )
+    # Particle-based alignment — warps swapped frame onto eyeTerm landmarks
+    alignment_enabled: bool = True
+    alignment_alpha: float = 0.6        # EMA smoothing for error delta
+    particle_export: Optional[Path] = None   # JSON export for HTML viewer
+    # Virtual camera output
+    virtual_cam_enabled: bool = False
+    virtual_cam_clean: bool = True      # Meeting mode: no HUD in output
+    virtual_cam_backends: List[str] = field(
+        default_factory=lambda: ["unitycapture", "obs"]
+    )
 
 
 @dataclass
@@ -108,7 +137,9 @@ class AppConfig:
     dictation: DictationConfig = field(default_factory=DictationConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
     cursor: CursorConfig = field(default_factory=CursorConfig)
+    deepfake: DeepfakeConfig = field(default_factory=DeepfakeConfig)
     stream: StreamConfig = field(default_factory=StreamConfig)
+    faceswap: FaceSwapConfig = field(default_factory=FaceSwapConfig)
     camera_index: int = 0
     window_width: int = 1280
     window_height: int = 720
@@ -163,6 +194,34 @@ class AppConfig:
         click_res_frac = float(os.environ.get("EYETERM_CLICK_MAX_RESIDUAL_FRAC", "0.25"))
         poly_ridge = float(os.environ.get("EYETERM_POLY_RIDGE_LAMBDA", "0.01"))
 
+        # Deepfake detection
+        df_enabled = os.environ.get("EYETERM_DEEPFAKE_DETECT", "false").lower() == "true"
+        df_threshold = float(os.environ.get("EYETERM_DEEPFAKE_THRESHOLD", "0.4"))
+        df_cooldown = int(os.environ.get("EYETERM_DEEPFAKE_COOLDOWN_MS", "5000"))
+
+        # Face-swap (deepfake) config
+        fs_enabled = os.environ.get("EYETERM_FACESWAP", "false").lower() == "true"
+        fs_target_raw = os.environ.get("EYETERM_FACESWAP_TARGET", "").strip()
+        fs_target = Path(fs_target_raw).expanduser() if fs_target_raw else None
+        fs_providers_raw = os.environ.get("EYETERM_FACESWAP_PROVIDERS", "").strip()
+        fs_providers = (
+            [p.strip() for p in fs_providers_raw.split(",") if p.strip()]
+            if fs_providers_raw
+            else ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        )
+        fs_align = os.environ.get("EYETERM_FACESWAP_ALIGN", "true").lower() == "true"
+        fs_align_alpha = float(os.environ.get("EYETERM_FACESWAP_ALIGN_ALPHA", "0.6"))
+        fs_export_raw = os.environ.get("EYETERM_FACESWAP_PARTICLE_EXPORT", "").strip()
+        fs_export = Path(fs_export_raw).expanduser() if fs_export_raw else None
+        fs_vcam = os.environ.get("EYETERM_VIRTUAL_CAM", "false").lower() == "true"
+        fs_vcam_clean = os.environ.get("EYETERM_VIRTUAL_CAM_CLEAN", "true").lower() == "true"
+        fs_vcam_backends_raw = os.environ.get("EYETERM_VIRTUAL_CAM_BACKENDS", "").strip()
+        fs_vcam_backends = (
+            [b.strip() for b in fs_vcam_backends_raw.split(",") if b.strip()]
+            if fs_vcam_backends_raw
+            else ["unitycapture", "obs"]
+        )
+
         # Gaze range (auto-range uses these as initial defaults)
         range_x_min = float(os.environ.get("EYETERM_GAZE_RANGE_X_MIN", "0.20"))
         range_x_max = float(os.environ.get("EYETERM_GAZE_RANGE_X_MAX", "0.80"))
@@ -188,7 +247,23 @@ class AppConfig:
                 click_max_residual_frac=click_res_frac,
                 poly_ridge_lambda=poly_ridge,
             ),
+            deepfake=DeepfakeConfig(
+                enabled=df_enabled,
+                alert_threshold=df_threshold,
+                alert_cooldown_ms=df_cooldown,
+            ),
             stream=StreamConfig(enabled=stream_enabled),
+            faceswap=FaceSwapConfig(
+                enabled=fs_enabled,
+                target_face=fs_target,
+                providers=fs_providers,
+                alignment_enabled=fs_align,
+                alignment_alpha=fs_align_alpha,
+                particle_export=fs_export,
+                virtual_cam_enabled=fs_vcam,
+                virtual_cam_clean=fs_vcam_clean,
+                virtual_cam_backends=fs_vcam_backends,
+            ),
             gaze=GazeConfig(
                 min_cutoff=min_cutoff,
                 beta=beta,

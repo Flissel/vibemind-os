@@ -1,0 +1,6 @@
+*.jpg
+*.jpeg
+*.png
+*.webp
+!README.md
+!.gitignore

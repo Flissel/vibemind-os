@@ -102,6 +102,10 @@ class OverlayRenderer:
         wink_event: Optional[str] = None,
         cursor_enabled: bool = False,
         polish_preview: Optional[Dict[str, str]] = None,
+        deepfake_score: Optional[float] = None,
+        deepfake_signals: Optional[Dict[str, float]] = None,
+        particle_state: Any = None,
+        particle_overlay: Any = None,
     ) -> np.ndarray:
         """Compose the full UI frame."""
         logger.debug("render called: state=%s focused_pane=%s", state_name, focused_pane)
@@ -135,7 +139,8 @@ class OverlayRenderer:
 
         # 4. Top header bar
         self._draw_header(canvas, state_name, element_summary, header_h,
-                          cursor_enabled=cursor_enabled)
+                          cursor_enabled=cursor_enabled,
+                          deepfake_score=deepfake_score)
 
         # 5. Bottom transcript bar
         self._draw_transcript(canvas, transcript_partial, transcript_final, transcript_h)
@@ -143,6 +148,25 @@ class OverlayRenderer:
         # 6. Polish preview overlay (on top of everything)
         if polish_preview:
             self._draw_polish_preview(canvas, polish_preview)
+
+        # 6b. Particle alignment debug overlay — draws SOLL/IST error cloud
+        # on top of the camera preview when swap+align is active.
+        if show_debug and particle_state is not None and particle_overlay is not None:
+            # Scale: camera frame is resized into cam_w × (body_bottom-body_top) area
+            if camera_frame is not None:
+                src_h, src_w = camera_frame.shape[:2]
+                preview_h = body_bottom - body_top
+                scale_x = cam_w / float(src_w)
+                scale_y = preview_h / float(src_h)
+                # Offset the drawing onto canvas region (preview starts at x=0, y=body_top)
+                preview_region = canvas[body_top:body_bottom, 0:cam_w]
+                particle_overlay.draw(preview_region, particle_state, scale_x, scale_y)
+
+        # 7. Deepfake debug panel (bottom-left of camera area)
+        if show_debug and deepfake_signals is not None:
+            self._draw_deepfake_debug(canvas, deepfake_score or 0.0,
+                                      deepfake_signals, 4, body_bottom - 160,
+                                      cam_w - 8)
 
         return canvas
 
@@ -419,7 +443,8 @@ class OverlayRenderer:
 
     def _draw_header(self, canvas: np.ndarray, state_name: str,
                      element_summary: str, header_h: int,
-                     cursor_enabled: bool = False) -> None:
+                     cursor_enabled: bool = False,
+                     deepfake_score: Optional[float] = None) -> None:
         # Dark header background
         cv2.rectangle(canvas, (0, 0), (self._w, header_h), (20, 18, 18), -1)
 
@@ -443,10 +468,118 @@ class OverlayRenderer:
                         _FONT, 0.45, (0, 0, 0), 1)
             next_x += cw + pad * 2 + 10
 
+        # Deepfake authenticity badge (right-aligned in header)
+        if deepfake_score is not None:
+            self._draw_deepfake_badge(canvas, deepfake_score, header_h)
+
         # Element info (to the right of badges)
         if element_summary:
             text = element_summary[:90]
             cv2.putText(canvas, text, (next_x, 20), _FONT, 0.4, COLOR_TEXT, 1)
+
+    # ------------------------------------------------------------------
+    # Deepfake detection overlay
+    # ------------------------------------------------------------------
+
+    def _draw_deepfake_badge(self, canvas: np.ndarray, score: float,
+                             header_h: int) -> None:
+        """Authenticity badge in the header bar (right-aligned)."""
+        is_alert = score < 0.4
+        pad = 5
+
+        if is_alert:
+            label = f"!! DEEPFAKE {score:.2f} !!"
+            bg_color = (0, 0, 200)  # red
+            fg_color = (255, 255, 255)
+        else:
+            label = f"AUTHENTIC {score:.2f}"
+            # Green-to-yellow gradient based on score
+            g = int(200 * score)
+            r = int(200 * (1.0 - score))
+            bg_color = (0, g, r)  # BGR
+            fg_color = (0, 0, 0)
+
+        (tw, th), _ = cv2.getTextSize(label, _FONT, 0.45, 1)
+
+        # Bar dimensions
+        bar_total_w = 60
+        badge_w = tw + pad * 2 + bar_total_w + 6
+        bx = self._w - badge_w - 8
+        by = 4
+
+        # Badge background
+        cv2.rectangle(canvas, (bx, by),
+                      (bx + badge_w, by + th + pad * 2), bg_color, -1)
+
+        # Label text
+        cv2.putText(canvas, label, (bx + pad, by + th + pad),
+                    _FONT, 0.45, fg_color, 1)
+
+        # Mini progress bar
+        bar_x = bx + tw + pad * 2 + 4
+        bar_y = by + pad - 1
+        bar_h = th + 2
+        # Background
+        cv2.rectangle(canvas, (bar_x, bar_y),
+                      (bar_x + bar_total_w, bar_y + bar_h),
+                      (40, 40, 40), -1)
+        # Fill
+        fill_w = max(1, int(bar_total_w * max(0.0, min(1.0, score))))
+        fill_g = int(255 * score)
+        fill_r = int(255 * (1.0 - score))
+        cv2.rectangle(canvas, (bar_x, bar_y),
+                      (bar_x + fill_w, bar_y + bar_h),
+                      (0, fill_g, fill_r), -1)
+
+    def _draw_deepfake_debug(self, canvas: np.ndarray, score: float,
+                             signals: Dict[str, float],
+                             x: int, y: int, width: int) -> None:
+        """Debug panel showing per-signal breakdown bars."""
+        line_h = 16
+        pad = 4
+        bar_w = width - 90  # space for label + value
+
+        # Semi-transparent background
+        panel_h = (len(signals) + 1) * line_h + pad * 2
+        overlay = canvas[y:y + panel_h, x:x + width].copy()
+        cv2.rectangle(overlay, (0, 0), (width, panel_h), (0, 0, 0), -1)
+        canvas[y:y + panel_h, x:x + width] = cv2.addWeighted(
+            canvas[y:y + panel_h, x:x + width], 0.3, overlay, 0.7, 0
+        )
+
+        # Title
+        title = f"DEEPFAKE DETECT: {score:.2f}"
+        title_color = (0, 200, 0) if score >= 0.6 else (0, 200, 255) if score >= 0.4 else (0, 0, 255)
+        cv2.putText(canvas, title, (x + pad, y + line_h),
+                    _FONT_MONO, 0.9, title_color, 1)
+
+        # Per-signal bars
+        signal_order = ["jitter", "blink", "eye_head", "symmetry",
+                        "fft", "hf_energy", "boundary", "color"]
+        for i, name in enumerate(signal_order):
+            val = signals.get(name, 0.0)
+            row_y = y + (i + 2) * line_h
+
+            # Label (8 chars, right-padded)
+            label = f"{name[:8]:<8s}"
+            cv2.putText(canvas, label, (x + pad, row_y),
+                        _FONT_MONO, 0.8, COLOR_DIM, 1)
+
+            # Bar
+            bx = x + 75
+            by_bar = row_y - line_h + 5
+            cv2.rectangle(canvas, (bx, by_bar), (bx + bar_w, by_bar + 10),
+                          (40, 40, 40), -1)
+            fill = max(1, int(bar_w * max(0.0, min(1.0, val))))
+            g = int(255 * val)
+            r = int(255 * (1.0 - val))
+            cv2.rectangle(canvas, (bx, by_bar), (bx + fill, by_bar + 10),
+                          (0, g, r), -1)
+
+            # Value text
+            val_text = f"{val:.2f}"
+            cv2.putText(canvas, val_text, (bx + bar_w + 4, row_y),
+                        _FONT_MONO, 0.8, COLOR_TEXT, 1)
 
     # ------------------------------------------------------------------
     # Transcript bar

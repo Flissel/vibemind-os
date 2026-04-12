@@ -2,7 +2,7 @@
 AutomationUIClient - HTTP bridge to Automation_ui FastAPI backend.
 
 Provides synchronous methods that map VibeMind desktop tool calls
-to Automation_ui REST API endpoints at localhost:8009.
+to Automation_ui REST API endpoints at localhost:8007.
 
 Uses httpx for sync HTTP with timeout/retry/health-check support.
 """
@@ -32,7 +32,7 @@ class AutomationUIClient:
     ):
         self.base_url = (
             base_url
-            or os.getenv("AUTOMATION_UI_URL", "http://localhost:8009")
+            or os.getenv("AUTOMATION_UI_URL", "http://localhost:8007")
         ).rstrip("/")
         self.timeout = timeout or float(os.getenv("AUTOMATION_UI_TIMEOUT", "30"))
         self.intent_timeout = intent_timeout or float(

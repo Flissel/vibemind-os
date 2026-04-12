@@ -15,6 +15,7 @@ import { ChartBlockExtension } from '@/extensions/chart-block'
 import { TableBlockExtension } from '@/extensions/table-block'
 import { CalendarBlockExtension } from '@/extensions/calendar-block'
 import { EmailBlockExtension } from '@/extensions/email-block'
+import { VideoLinkExtension } from '@/extensions/video-link'
 import { Markdown } from 'tiptap-markdown'
 import { useEffect, useCallback, useMemo, useRef, useState } from 'react'
 import { Calendar, ChevronDown, ExternalLink } from 'lucide-react'
@@ -567,6 +568,7 @@ export function MarkdownEditor({
       TableBlockExtension,
       CalendarBlockExtension,
       EmailBlockExtension,
+      VideoLinkExtension,
       WikiLink.configure({
         onCreate: wikiLinks?.onCreate
           ? (path) => {

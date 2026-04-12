@@ -1,6 +1,19 @@
 # Environment & secrets
 .env
 *.env.local
+*.sanitized
+
+# LLM config (only .example tracked, real config is per-machine)
+llm_config.yml
+!llm_config.yml.example
+
+# Migration / audit artifacts
+LLM_AUDIT_REPORT.md
+LLM_AUDIT_*.md
+SECRETS_REPORT.md
+
+# Indexed search caches
+.fungus_cache/
 
 # Python
 __pycache__/
@@ -28,3 +41,9 @@ Thumbs.db
 *.sqlite
 data/
 logs/
+
+# Issue-detector runtime state (auto-updating)
+issue-detector/pending_findings.json
+issue-detector/triggered_events.json
+issue-detector/watcher_state.json
+issue-detector/vibemind_inbox.md
