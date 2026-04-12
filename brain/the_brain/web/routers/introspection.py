@@ -49,6 +49,8 @@ def convert_numpy(obj: Any) -> Any:
         return int(obj)
     elif isinstance(obj, (np.floating,)):
         return float(obj)
+    elif isinstance(obj, (np.bool_,)):
+        return bool(obj)
     elif isinstance(obj, dict):
         return {k: convert_numpy(v) for k, v in obj.items()}
     elif isinstance(obj, (list, tuple)):
@@ -198,13 +200,39 @@ async def cognitive_loop(request: Request):
 
 @router.get("/api/brain/agent_loop_state")
 async def agent_loop_state(request: Request):
-    """Agent loop state — graceful fallback."""
-    return JSONResponse({
-        "enabled": False,
-        "state": None,
-        "message": "agent loop not connected to unified brain",
-        "timestamp": time.time(),
-    })
+    """Agent loop state — reads live AgentLoop if wired, else graceful fallback."""
+    al = getattr(request.app.state, "agent_loop", None)
+    if al is None:
+        return JSONResponse({
+            "enabled": False,
+            "state": None,
+            "message": "agent loop not connected to unified brain",
+            "timestamp": time.time(),
+        })
+    try:
+        get_state = getattr(al, "get_state", None) or getattr(al, "state", None)
+        if callable(get_state):
+            state_snapshot = get_state()
+        else:
+            state_snapshot = {
+                "state": getattr(al, "_state", None) or str(getattr(al, "state", "unknown")),
+                "tick_count": getattr(al, "_tick_count", None),
+                "has_radial": getattr(al, "radial_network", None) is not None,
+                "has_seed_encoder": getattr(al, "seed_encoder", None) is not None,
+                "has_experience_buffer": getattr(al, "experience_buffer", None) is not None,
+            }
+        return JSONResponse({
+            "enabled": True,
+            "state": convert_numpy(state_snapshot),
+            "timestamp": time.time(),
+        })
+    except Exception as exc:
+        return JSONResponse({
+            "enabled": True,
+            "state": None,
+            "error": str(exc),
+            "timestamp": time.time(),
+        })
 
 
 @router.post("/api/brain/agent_loop/submit")
@@ -540,6 +568,38 @@ async def health_liveness(request: Request):
 # Group 6 — LLM Stats
 # ===================================================================
 
+@router.get("/api/llm/probe")
+async def llm_probe(request: Request):
+    """Diagnostic probe: is MicroAgentPool wired + can it call LLM?"""
+    state = request.app.state
+    pool = getattr(state, "micro_agent_pool", None)
+    init_error = getattr(state, "micro_agent_pool_error", None)
+    bc = getattr(state, "brain_chat", None)
+    bc_pool = getattr(bc, "_micro_agent_pool", None) if bc else None
+
+    result = {
+        "state_pool_present": pool is not None,
+        "brain_chat_pool_present": bc_pool is not None,
+        "pool_same_instance": (pool is bc_pool) if (pool and bc_pool) else False,
+        "init_error": init_error,
+    }
+    if pool is not None:
+        result["pool_router_present"] = pool._router is not None
+        result["pool_agents"] = list(pool._agents.keys()) if hasattr(pool, "_agents") else []
+        result["pool_total_runs"] = getattr(pool, "_total_runs", None)
+        result["pool_total_failures"] = getattr(pool, "_total_failures", None)
+        # Try a live call with the responder
+        try:
+            txt = pool._call_agent("responder", "Say the word PONG and nothing else.")
+            result["live_responder_call"] = txt[:200] if txt else None
+            result["live_ok"] = bool(txt)
+        except Exception as exc:
+            result["live_responder_call"] = None
+            result["live_ok"] = False
+            result["live_error"] = str(exc)
+    return JSONResponse(result)
+
+
 @router.get("/api/llm/stats")
 async def llm_stats(request: Request):
     """LLM routing statistics."""
@@ -550,7 +610,7 @@ async def llm_stats(request: Request):
             status_code=503,
         )
     try:
-        stats = lr.get_stats()
+        stats = lr.get_statistics()
         return JSONResponse({
             "stats": convert_numpy(stats),
             "timestamp": time.time(),
@@ -561,6 +621,232 @@ async def llm_stats(request: Request):
             "error": str(exc),
             "timestamp": time.time(),
         })
+
+
+# ===================================================================
+# Group 6b — Knowledge Graph (Qdrant-backed unified KG)
+# ===================================================================
+
+@router.get("/api/kg/stats")
+async def kg_stats(request: Request):
+    """Stats about the unified knowledge graph."""
+    kg = getattr(request.app.state, "qdrant_kg", None)
+    if kg is None:
+        return JSONResponse(
+            {"error": "qdrant_kg not initialized", "timestamp": time.time()},
+            status_code=503,
+        )
+    try:
+        from core.qdrant_kg import COLLECTIONS
+        per_coll: Dict[str, Any] = {}
+        total = 0
+        for logical, name in COLLECTIONS.items():
+            try:
+                info = kg.client.get_collection(name)
+                per_coll[logical] = {
+                    "qdrant_name": name,
+                    "points_count": info.points_count,
+                }
+                total += info.points_count
+            except Exception as e:
+                per_coll[logical] = {
+                    "qdrant_name": name,
+                    "points_count": 0,
+                    "error": str(e),
+                }
+        return JSONResponse({
+            "collections": per_coll,
+            "total_points": total,
+            "stats": convert_numpy(dict(kg.stats)),
+            "timestamp": time.time(),
+        })
+    except Exception as exc:
+        return JSONResponse({
+            "error": str(exc), "timestamp": time.time(),
+        }, status_code=500)
+
+
+@router.get("/api/kg/search")
+async def kg_search(
+    request: Request, q: str, node_type: str = "", collection: str = "",
+    limit: int = 10, threshold: float = 0.0,
+):
+    """Semantic kNN search across cognitive collections.
+
+    Query params:
+        q: text query (multilingual via Qwen)
+        node_type: optional filter (thought/response/bubble/idea/space/event/snapshot)
+        collection: optional logical collection name
+            (episodic|semantic|procedural|state|artifacts). If empty,
+            searches all cognitive collections and merges by score.
+        limit: max hits
+        threshold: min cosine score
+    """
+    kg = getattr(request.app.state, "qdrant_kg", None)
+    if kg is None:
+        return JSONResponse(
+            {"error": "qdrant_kg not initialized", "timestamp": time.time()},
+            status_code=503,
+        )
+    try:
+        nt = node_type or None
+        coll = collection or None
+        hits = kg.search(q, node_type=nt, collection=coll,
+                         limit=int(limit), score_threshold=float(threshold))
+        return JSONResponse({
+            "query": q, "node_type": nt, "collection": coll,
+            "count": len(hits),
+            "hits": convert_numpy(hits), "timestamp": time.time(),
+        })
+    except Exception as exc:
+        return JSONResponse({
+            "error": str(exc), "timestamp": time.time(),
+        }, status_code=500)
+
+
+@router.get("/api/kg/route")
+async def kg_route(
+    request: Request, q: str, limit: int = 3, threshold: float = 0.3,
+):
+    """Replace space_routing_head.pt / event_routing_head.pt with graph
+    kNN search.
+
+    Returns top-k spaces AND top-k events with scores. Brain can blend
+    these into its Thalamus routing priors. Every successful route can
+    later bump activation_strength on the chosen space/event point,
+    yielding usage-weighted routing without gradient descent.
+    """
+    kg = getattr(request.app.state, "qdrant_kg", None)
+    if kg is None:
+        return JSONResponse(
+            {"error": "qdrant_kg not initialized", "timestamp": time.time()},
+            status_code=503,
+        )
+    try:
+        spaces = kg.search(q, node_type="space", limit=int(limit),
+                           score_threshold=float(threshold))
+        events = kg.search(q, node_type="event", limit=int(limit),
+                           score_threshold=float(threshold))
+        # Normalize: show only id, score, title for a clean routing payload
+        def _trim(hits, id_key):
+            return [{
+                "id": h["payload"].get(id_key) or h["id"],
+                "score": h["score"],
+                "title": h["payload"].get("title", ""),
+                "target_space": h["payload"].get("target_space"),
+            } for h in hits]
+        return JSONResponse({
+            "query": q,
+            "spaces": _trim(spaces, "space_id"),
+            "events": _trim(events, "event_id"),
+            "timestamp": time.time(),
+        })
+    except Exception as exc:
+        return JSONResponse({
+            "error": str(exc), "timestamp": time.time(),
+        }, status_code=500)
+
+
+@router.post("/api/kg/confirm_route")
+async def kg_confirm_route(request: Request):
+    """Bump activation_strength on a chosen space/event after a route
+    actually worked. Body: {"kind": "space|event", "id": "<external_id>",
+    "delta": 1.0}. No gradient descent — just usage-weighted priors that
+    rise over time and make future kNN searches gravitate toward
+    historically successful choices.
+    """
+    kg = getattr(request.app.state, "qdrant_kg", None)
+    if kg is None:
+        return JSONResponse(
+            {"error": "qdrant_kg not initialized"}, status_code=503,
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    kind = body.get("kind") or ""
+    ext_id = body.get("id") or ""
+    delta = float(body.get("delta", 1.0))
+    if kind not in ("space", "event") or not ext_id:
+        return JSONResponse({
+            "error": "need kind=space|event and id",
+        }, status_code=400)
+    try:
+        import hashlib, uuid as _uuid
+        # Spaces + events both live in the procedural collection.
+        coll_name = kg.collection_for(kind)
+        pid = str(_uuid.UUID(
+            hashlib.sha256(ext_id.encode("utf-8")).hexdigest()[:32]
+        ))
+        rec = kg.client.retrieve(
+            collection_name=coll_name, ids=[pid], with_payload=True,
+        )
+        if not rec:
+            return JSONResponse({
+                "error": f"no point for {kind}:{ext_id} in {coll_name}",
+            }, status_code=404)
+        payload = rec[0].payload or {}
+        current = float(payload.get("activation_strength", 0.0) or 0.0)
+        new_val = current + delta
+        kg.client.set_payload(
+            collection_name=coll_name,
+            payload={"activation_strength": new_val},
+            points=[pid],
+        )
+        return JSONResponse({
+            "kind": kind, "id": ext_id, "collection": coll_name,
+            "prev": current, "new": new_val, "delta": delta,
+            "timestamp": time.time(),
+        })
+    except Exception as exc:
+        return JSONResponse({
+            "error": str(exc), "timestamp": time.time(),
+        }, status_code=500)
+
+
+@router.get("/api/kg/related")
+async def kg_related(request: Request, point_id: str):
+    """Return the linked.* edges of a point by its Qdrant UUID."""
+    kg = getattr(request.app.state, "qdrant_kg", None)
+    if kg is None:
+        return JSONResponse(
+            {"error": "qdrant_kg not initialized", "timestamp": time.time()},
+            status_code=503,
+        )
+    try:
+        from core.qdrant_kg import COLLECTIONS
+        # Scan all cognitive collections until we find the point.
+        rec = None
+        found_coll = None
+        for logical, name in COLLECTIONS.items():
+            try:
+                r = kg.client.retrieve(
+                    collection_name=name, ids=[point_id], with_payload=True,
+                )
+                if r:
+                    rec = r
+                    found_coll = logical
+                    break
+            except Exception:
+                continue
+        if not rec:
+            return JSONResponse({
+                "point_id": point_id, "found": False,
+                "timestamp": time.time(),
+            })
+        payload = rec[0].payload or {}
+        return JSONResponse({
+            "collection": found_coll,
+            "point_id": point_id, "found": True,
+            "node_type": payload.get("node_type"),
+            "content": (payload.get("content") or "")[:500],
+            "linked": payload.get("linked") or {},
+            "timestamp": time.time(),
+        })
+    except Exception as exc:
+        return JSONResponse({
+            "error": str(exc), "timestamp": time.time(),
+        }, status_code=500)
 
 
 # ===================================================================

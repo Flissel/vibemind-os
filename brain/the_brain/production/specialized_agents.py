@@ -472,8 +472,9 @@ You execute:
 
 # Example usage
 if __name__ == "__main__":
-    import os
     from dotenv import load_dotenv
+    from vibemind_shared import get_model, get_provider_info
+    from vibemind_shared.llm_client import _get_api_key
 
     load_dotenv()
 
@@ -481,10 +482,12 @@ if __name__ == "__main__":
         print("AutoGen not installed. Install with: pip install autogen-agentchat autogen-ext")
         exit(1)
 
-    # Create model client
+    # Pull model + provider config from llm_config.yml (centralized)
+    info = get_provider_info("brain_planning")
     model_client = OpenAIChatCompletionClient(
-        model="gpt-4o",
-        api_key=os.getenv("OPENAI_API_KEY"),
+        model=get_model("brain_planning"),
+        api_key=_get_api_key(info["provider"]),
+        base_url=info["base_url"],
         model_kwargs={"parallel_tool_calls": False}
     )
 

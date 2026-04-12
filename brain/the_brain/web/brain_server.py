@@ -219,7 +219,7 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
         moltbook_store = state.moltbook_store  # may be None
         cte = ContinuousThinkingEngine(
             moltbook=moltbook_store,
-            interval_ms=500,
+            interval_ms=5000,
         )
         state.continuous_thinking = cte
 
@@ -295,11 +295,36 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
         try:
             pool = MicroAgentPool(llm_router=state.llm_router)
             state.brain_chat.set_micro_agent_pool(pool)
+            state.micro_agent_pool = pool
             n_agents = len(pool._agents) if hasattr(pool, '_agents') else '?'
             has_router = pool._router is not None
             print(f"  [OK] MicroAgentPool ({n_agents} agents, router={'YES' if has_router else 'NO'})")
-        except Exception:
-            pass
+        except Exception as e:
+            state.micro_agent_pool = None
+            state.micro_agent_pool_error = str(e)
+            import traceback
+            print(f"  [FAIL] MicroAgentPool init: {e}")
+            traceback.print_exc()
+
+        # QdrantKG: unified knowledge graph (semantic-only for now).
+        # Best-effort — if Qdrant is unreachable, Brain still runs.
+        state.qdrant_kg = None
+        try:
+            from core.qdrant_kg import QdrantKG, COLLECTIONS
+            kg = QdrantKG()
+            kg.ensure_collections()
+            kg.start()
+            # Wire CTE callback so every new thought flows into the graph
+            cte.on_thought(kg.make_thought_callback())
+            # Wire BrainChat so every response is upserted + edge-linked
+            state.brain_chat.set_qdrant_kg(kg)
+            state.qdrant_kg = kg
+            coll_names = ", ".join(COLLECTIONS.values())
+            print(f"  [OK] QdrantKG connected (5 cognitive collections: {coll_names}; CTE->KG + BrainChat->KG wired)")
+        except Exception as e:
+            state.qdrant_kg = None
+            state.qdrant_kg_error = str(e)
+            print(f"  [WARN] QdrantKG unavailable: {e}")
 
         # ThoughtEvolutionEngine: evolutionary thought refinement
         try:
@@ -665,8 +690,118 @@ async def _lifespan(app: FastAPI):
         stats = app.state._rowboat_data.get("stats", {})
         print(f"  [OK] Rowboat data ingested: {stats.get('bubble_count', 0)} bubbles, "
               f"{stats.get('idea_count', 0)} ideas")
+
+        # Push bubbles + ideas into the unified KG in a background thread
+        # so Brain startup doesn't wait for ~300 embeddings (~30-60s).
+        kg = getattr(app.state, "qdrant_kg", None)
+        if kg is not None:
+            rowboat_data = app.state._rowboat_data
+            def _bulk_rowboat_to_kg():
+                try:
+                    from core.qdrant_kg import BubbleDoc, IdeaDoc
+                    bub_n = idea_n = 0
+                    for b in rowboat_data.get("bubbles", []):
+                        edges_raw = b.edges or []
+                        edges_str = [
+                            (e.get("target") or e.get("to") or str(e)) if isinstance(e, dict) else str(e)
+                            for e in edges_raw
+                        ]
+                        kg.upsert_bubble(BubbleDoc(
+                            bubble_id=b.id,
+                            title=b.title,
+                            description=b.description,
+                            notes=[n.title for n in b.notes[:20]],
+                            bubble_edges=edges_str,
+                            metadata={"published_at": b.published_at},
+                        ))
+                        bub_n += 1
+                    for idea in rowboat_data.get("all_ideas", []):
+                        kg.upsert_idea(IdeaDoc(
+                            idea_id=idea.id,
+                            title=idea.title,
+                            content=idea.content,
+                            tags=idea.tags,
+                            bubble_id=idea.bubble_id,
+                            node_subtype=idea.node_type,
+                            metadata={"bubble_title": idea.bubble_title},
+                        ))
+                        idea_n += 1
+                    print(f"  [OK-async] Rowboat -> KG: {bub_n} bubbles, {idea_n} ideas upserted")
+                except Exception as e:
+                    print(f"  [WARN-async] Rowboat -> KG bulk upsert failed: {e}")
+            import threading as _threading
+            _threading.Thread(
+                target=_bulk_rowboat_to_kg, daemon=True,
+                name="RowboatToKG-bulk",
+            ).start()
+            print("  [OK] Rowboat -> KG bulk import scheduled (background)")
     except Exception as e:
         print(f"  [WARN] Rowboat ingest failed: {e}")
+
+    # Seed 13 spaces + ~150 events into the KG so Graph kNN routing can
+    # replace space_routing_head.pt / event_routing_head.pt.
+    try:
+        kg = getattr(app.state, "qdrant_kg", None)
+        if kg is not None:
+            from core.qdrant_kg import SpaceDoc, EventDoc
+            from core.space_routing_head import SPACE_NAMES, EVENT_SPACE_MAP
+
+            SPACE_DESCRIPTIONS = {
+                "ideas": "Ideas space: capturing, exploring, expanding, linking thoughts",
+                "bubbles": "Bubbles: containers for related ideas, with create/find/evaluate/promote operations",
+                "coding": "Code generation, modification, preview, projects — anything code-like",
+                "desktop": "Desktop automation: clicks, types, apps, screenshots, messaging, browser, moire",
+                "research": "Web research, scraping, summarization, comparison, fact-finding",
+                "n8n": "n8n workflow automation: create, list, status, execute workflows",
+                "agentfarm": "Multi-agent teams: create_team, run, collaborate, results, templates",
+                "schedule": "Scheduling: cron jobs, reminders, snooze, time-based triggers",
+                "roarboot": "Knowledge graph Roarboot: search, query, email drafts, meeting briefs, decks",
+                "minibook": "Minibook collaborative agent discussions and projects",
+                "video": "Video generation: vision, demo building, lip-sync, voice clone, TTS",
+                "flowzen": "Flowzen Rose recommender: recommend, accept, status",
+                "mirofish": "MiroFish simulation + graph reasoning: predict, build graphs, interview",
+            }
+
+            def _bulk_spaces_events_to_kg():
+                try:
+                    space_n = event_n = 0
+                    for space in SPACE_NAMES:
+                        kg.upsert_space(SpaceDoc(
+                            space_id=space,
+                            title=space,
+                            description=SPACE_DESCRIPTIONS.get(space, space),
+                            source="manifest",
+                        ))
+                        space_n += 1
+                    for event_id, space_id in EVENT_SPACE_MAP.items():
+                        # Rich-ify: description + strategy derived from event_id.
+                        parts = event_id.split(".")
+                        verb = parts[-1].replace("_", " ") if parts else event_id
+                        domain = parts[0] if parts else ""
+                        desc = f"Event '{event_id}' — {verb} action in {domain} domain"
+                        strat = f"Route to space '{space_id}' and execute {verb}"
+                        kg.upsert_event(EventDoc(
+                            event_id=event_id,
+                            title=event_id,
+                            trigger_description=desc,
+                            typical_response_strategy=strat,
+                            source="manifest",
+                            metadata={"target_space": space_id},
+                        ))
+                        event_n += 1
+                    print(f"  [OK-async] Spaces + Events -> KG: "
+                          f"{space_n} spaces, {event_n} events upserted")
+                except Exception as e:
+                    print(f"  [WARN-async] Spaces/Events -> KG failed: {e}")
+
+            import threading as _threading
+            _threading.Thread(
+                target=_bulk_spaces_events_to_kg, daemon=True,
+                name="SpacesEventsToKG-bulk",
+            ).start()
+            print("  [OK] Spaces+Events -> KG bulk import scheduled (background)")
+    except Exception as e:
+        print(f"  [WARN] Spaces/Events KG sync failed: {e}")
 
     # Auto-start thinking — no reason to boot the brain and NOT think
     try:

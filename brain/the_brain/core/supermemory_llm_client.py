@@ -39,7 +39,14 @@ Architecture:
 import os
 import sys
 from typing import List, Dict, Optional, Any
+
+# NOTE: This file intentionally uses raw OpenAI() instead of vibemind_shared.get_client().
+# Reason: Supermemory is a transparent proxy that wraps any OpenAI-compatible provider
+# by rewriting the base_url to https://api.supermemory.ai/v3/<provider_url>. The factory
+# does not support per-instance base_url override + custom headers, so we keep the direct
+# instantiation here. Models still come from llm_config.yml via get_model().
 from openai import OpenAI
+from vibemind_shared import get_model
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -66,7 +73,7 @@ class SupermemoryLLM:
         provider: str = "openai",
         api_key: str = None,
         supermemory_api_key: str = None,
-        model: str = "gpt-4o-mini"
+        model: str = None
     ):
         """
         Initialize Supermemory LLM client.
@@ -76,11 +83,11 @@ class SupermemoryLLM:
             provider: LLM provider (openai, anthropic, google)
             api_key: Provider API key (or from env)
             supermemory_api_key: Supermemory API key (or from env)
-            model: Default model to use
+            model: Default model (defaults to brain_supermemory role from llm_config.yml)
         """
         self.user_id = user_id
         self.provider = provider
-        self.model = model
+        self.model = model or get_model("brain_supermemory")
 
         # Get API keys
         self.api_key = api_key or self._get_provider_api_key(provider)
@@ -283,11 +290,8 @@ if __name__ == "__main__":
     print("=" * 70)
     print()
 
-    # Initialize client for a user
-    llm = SupermemoryLLM(
-        user_id="test_user_123",
-        model="gpt-4o-mini"
-    )
+    # Initialize client for a user (model from llm_config.yml)
+    llm = SupermemoryLLM(user_id="test_user_123")
 
     print()
     print("[1] Testing simple chat...")

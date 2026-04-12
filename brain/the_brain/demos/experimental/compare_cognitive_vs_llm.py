@@ -166,7 +166,7 @@ def demo_cognitive_only():
     print()
 
 
-def demo_llm_enhanced(use_real_llm=False, api_key=None):
+def demo_llm_enhanced(use_real_llm=False):
     """
     Demonstrate LLM-enhanced question generation
     """
@@ -176,14 +176,14 @@ def demo_llm_enhanced(use_real_llm=False, api_key=None):
     print()
 
     # Create LLM client (mock or real)
-    if use_real_llm and api_key:
-        print("Using REAL LLM (Anthropic Claude)")
+    if use_real_llm:
+        print("Using REAL LLM via vibemind_shared (brain_planning role)")
         try:
-            from anthropic import Anthropic
-            llm = Anthropic(api_key=api_key)
-        except ImportError:
-            print("  [ERROR] anthropic package not installed")
-            print("  Install with: pip install anthropic")
+            from vibemind_shared import get_client_sync
+            llm = get_client_sync("brain_planning")
+        except Exception as e:
+            print(f"  [ERROR] vibemind_shared get_client_sync failed: {e}")
+            print("  Check llm_config.yml and ensure ANTHROPIC_API_KEY is set in .env")
             return
     else:
         print("Using MOCK LLM (demonstration)")
@@ -253,8 +253,7 @@ def demo_llm_enhanced(use_real_llm=False, api_key=None):
 
 def main():
     parser = argparse.ArgumentParser(description="Compare cognitive-only vs LLM-enhanced question generation")
-    parser.add_argument('--use-llm', action='store_true', help='Use real LLM instead of mock')
-    parser.add_argument('--api-key', type=str, help='Anthropic API key (if using real LLM)')
+    parser.add_argument('--use-llm', action='store_true', help='Use real LLM via vibemind_shared (set keys in .env)')
     parser.add_argument('--interactive', action='store_true', help='Use interactive prompts')
     args = parser.parse_args()
 
@@ -283,7 +282,7 @@ def main():
     print()
 
     # Demo 2: LLM-enhanced
-    demo_llm_enhanced(use_real_llm=args.use_llm, api_key=args.api_key)
+    demo_llm_enhanced(use_real_llm=args.use_llm)
 
     print()
     print("=" * 70)

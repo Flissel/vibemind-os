@@ -1321,18 +1321,21 @@ class MicroAgentPool:
 
     # Free model assignments
     _FREE_MODELS = {
-        # openrouter/free auto-routes to best available free model (200k ctx)
-        'summarizer':   'openrouter/free',
+        # Groq direct (prefix 'groq::') bypasses OpenRouter rate-limits
+        # entirely. Chat-critical agents use Groq so chat always works.
+        # Background agents stay on openrouter/free for diversity (fall
+        # through gracefully when free tier is exhausted).
+        'summarizer':   'groq::llama-3.1-8b-instant',
         'connector':    'openrouter/free',
         'critic':       'openrouter/free',
         'enricher':     'openrouter/free',
-        'responder':    'openrouter/free',
-        'fallback':     'openrouter/free',
+        'responder':    'groq::llama-3.3-70b-versatile',
+        'fallback':     'groq::llama-3.1-8b-instant',
         'researcher':   'openrouter/free',
         'reflector':    'openrouter/free',
         'explorer':     'openrouter/free',
-        'analyst':      'openrouter/free',
-        'user_analyst': 'openrouter/free',
+        'analyst':      'groq::llama-3.3-70b-versatile',
+        'user_analyst': 'groq::llama-3.1-8b-instant',
     }
 
     # System prompts for each agent
@@ -1584,12 +1587,15 @@ class MicroAgentPool:
             if t > two_hours_ago
         ]
 
-    def _call_agent(self, agent_name: str, user_prompt: str) -> Optional[str]:
+    def _call_agent(self, agent_name: str, user_prompt: str,
+                    force: bool = False) -> Optional[str]:
         """Call a micro-agent via the LLM router.
 
         Args:
             agent_name: Which agent to call
             user_prompt: The content prompt for the agent
+            force: If True, bypass cooldown/hourly caps (for user-facing
+                chat where the user is actively waiting).
 
         Returns:
             Agent response text, or None if unavailable/rate-limited
@@ -1598,7 +1604,9 @@ class MicroAgentPool:
             return None
 
         agent = self._agents.get(agent_name)
-        if not agent or not self._can_run(agent_name):
+        if not agent:
+            return None
+        if not force and not self._can_run(agent_name):
             return None
 
         # Build prompt with system context
@@ -1752,16 +1760,22 @@ class MicroAgentPool:
 
     def enhance_response(self, question: str,
                          entry_texts: List[str]) -> Optional[RefinedKnowledge]:
-        """Run Responder agent to enhance a response."""
+        """Run Responder agent to enhance a response.
+
+        User is actively waiting on this call — bypass cooldown/hourly caps.
+        (Daily provider limits still apply at the HTTP layer.)
+        """
         entries_str = "\n".join(
             f"- {e[:150]}" for e in entry_texts[:3]
         )
         prompt = (
-            f"User question: {question[:200]}\n\n"
+            f"User question: {question[:400]}\n\n"
             f"Relevant knowledge:\n{entries_str}\n\n"
-            f"Synthesize a brief insight addressing the question."
+            f"Answer the question directly and accurately in 2-4 sentences. "
+            f"If the knowledge above is irrelevant or empty, answer from your "
+            f"own understanding. Do not hedge or add disclaimers."
         )
-        result = self._call_agent('responder', prompt)
+        result = self._call_agent('responder', prompt, force=True)
         if not result:
             return None
         return RefinedKnowledge(
@@ -2761,7 +2775,7 @@ class ContinuousThinkingEngine:
 
     def __init__(self, thought_stream=None, moltbook=None,
                  knowledge_augmentor=None,
-                 interval_ms: int = 500,
+                 interval_ms: int = 5000,
                  max_thoughts: int = 500):
         self._thought_stream = thought_stream  # ThoughtStream (existing)
         self._moltbook = moltbook              # MoltbookStore
@@ -3831,6 +3845,9 @@ class BrainChat:
         # Memory consolidator — sleep-cycle persistence (set externally)
         self._memory_consolidator = None
 
+        # Qdrant knowledge graph — unified semantic+neural store (set externally)
+        self._qdrant_kg = None
+
         # Thalamic adapter — ThalamoPC6-based routing (set externally)
         self._thalamic_adapter = None  # Optional[ThalamicAdapter]
 
@@ -3885,6 +3902,11 @@ class BrainChat:
         self._memory_consolidator = consolidator
         if self._continuous_thinking:
             self._continuous_thinking._memory_consolidator = consolidator
+
+    def set_qdrant_kg(self, kg) -> None:
+        """Wire in the QdrantKG so chat responses get persisted to the
+        unified knowledge graph with bidirectional edges."""
+        self._qdrant_kg = kg
 
     def _detect_user_feedback_reward(self, message: str) -> None:
         """Detect short affirmative/negative feedback and retroactively reward the previous thought."""
@@ -4075,32 +4097,55 @@ class BrainChat:
                 logger.debug(f"Synthesis check failed: {e}")
 
         # ── Step 3.35: LLM Response Enhancement (Responder Agent) ──
+        # Fire for any non-trivial query, even with zero internal entries.
+        # Greetings / identity short-circuits skip the LLM.
         response_enhancement: Optional[RefinedKnowledge] = None
-        if (self._micro_agent_pool and entries and message
-                and len(entries) >= 2):
+        task_type = routing_info.get('task_type', 'general') if routing_info else 'general'
+        is_trivial = task_type in ('greeting', 'identity', 'acknowledgement')
+        if self._micro_agent_pool and message and not is_trivial:
             try:
                 entry_texts = [
-                    e.content[:150] for e in entries[:3]
+                    e.content[:150] for e in (entries or [])[:3]
                     if hasattr(e, 'content')
                 ]
-                if entry_texts:
-                    response_enhancement = (
-                        self._micro_agent_pool.enhance_response(
-                            message[:200], entry_texts
-                        )
+                # Inject Wikipedia/external knowledge as synthetic entry so
+                # the responder LLM has something to anchor on when internal
+                # knowledge is empty.
+                if augmented_answer and len(augmented_answer) > 20:
+                    entry_texts.insert(0, f"[external] {augmented_answer[:600]}")
+                response_enhancement = (
+                    self._micro_agent_pool.enhance_response(
+                        message[:400], entry_texts
                     )
-                    if response_enhancement:
-                        trace.append(ThoughtTrace(
-                            timestamp=time.time(), category="refine",
-                            content=(
-                                f"LLM Enhancement: "
-                                f"{response_enhancement.refined[:80]}"
-                            ),
-                            module="MicroAgentPool",
-                            confidence=response_enhancement.confidence,
-                        ))
+                )
+                if response_enhancement:
+                    trace.append(ThoughtTrace(
+                        timestamp=time.time(), category="refine",
+                        content=(
+                            f"LLM Enhancement: "
+                            f"{response_enhancement.refined[:80]}"
+                        ),
+                        module="MicroAgentPool",
+                        confidence=response_enhancement.confidence,
+                    ))
+                else:
+                    # LLM returned None — likely upstream rate-limit (daily/min)
+                    # or provider error. Surface this in the trace so the
+                    # user-facing response still has context.
+                    trace.append(ThoughtTrace(
+                        timestamp=time.time(), category="refine",
+                        content="LLM Enhancement skipped (no result; rate-limit or provider error)",
+                        module="MicroAgentPool",
+                        confidence=0.0,
+                    ))
             except Exception as e:
                 logger.debug(f"Response enhancement failed: {e}")
+                trace.append(ThoughtTrace(
+                    timestamp=time.time(), category="refine",
+                    content=f"LLM Enhancement error: {str(e)[:100]}",
+                    module="MicroAgentPool",
+                    confidence=0.0,
+                ))
 
         # ── Step 3.5: Assemble Full Context ──
         context_bundle = self._assemble_context(
@@ -4160,16 +4205,22 @@ class BrainChat:
                                 + context_bundle.conversation_context
                             )
 
-                # Inject augmented knowledge
-                if augmented_answer:
+                # Inject augmented knowledge. LLM-refined response (if any)
+                # takes priority over raw Wikipedia augmentation.
+                primary_answer = ''
+                if response_enhancement and response_enhancement.refined:
+                    primary_answer = response_enhancement.refined
+                elif augmented_answer:
+                    primary_answer = augmented_answer
+                if primary_answer:
                     if isinstance(thought_input, dict):
-                        thought_input['augmented_answer'] = augmented_answer
+                        thought_input['augmented_answer'] = primary_answer
                         thought_input['confidence'] = max(
-                            thought_input.get('confidence', 0.5), 0.7
+                            thought_input.get('confidence', 0.5), 0.75
                         )
                     else:
-                        thought_input.augmented_answer = augmented_answer
-                        thought_input.confidence = max(thought_input.confidence, 0.7)
+                        thought_input.augmented_answer = primary_answer
+                        thought_input.confidence = max(thought_input.confidence, 0.75)
 
                 talker_response = self._talker.speak(
                     thought_input, context=message, complexity=0.5,
@@ -4199,6 +4250,31 @@ class BrainChat:
 
         # Record in continuous thinking
         self._record_response(response, original_message=message)
+
+        # Push response into Qdrant KG (unified graph with bidirectional edges).
+        # Async internally (batches + threading); non-blocking for us.
+        if self._qdrant_kg and response.response_text:
+            try:
+                from core.qdrant_kg import ResponseDoc
+                import uuid as _uuid
+                self._qdrant_kg.upsert_response(ResponseDoc(
+                    response_id=str(_uuid.uuid4()),
+                    content=response.response_text[:2000],
+                    user_query=message[:500],
+                    routing_mode=response.routing_mode or "",
+                    task_type=response.task_type or "",
+                    confidence=float(response.confidence or 0.0),
+                    llm_model=(
+                        response_enhancement.agent
+                        if response_enhancement else ""
+                    ),
+                    thinking_time_ms=float(response.thinking_time_ms or 0.0),
+                    source="brain_chat",
+                    tags=[],
+                    metadata={},
+                ))
+            except Exception as e:
+                logger.debug(f"KG response upsert failed: {e}")
 
         # Queue brain event for memory consolidation
         if self._memory_consolidator:
@@ -4264,6 +4340,62 @@ class BrainChat:
             'predicted_sequence': [],
             'confidence': 0.5,
         }
+
+        # Attach a graph-kNN-based routing prior if the KG is available.
+        # This replaces the learned space_routing_head.pt / event_routing_head.pt
+        # with a usage-weighted, gradient-free prior derived from the unified
+        # knowledge graph. ThalamoPC6 still makes the final modality decision,
+        # but downstream modules can read `routing_info['kg_prior']`.
+        if self._qdrant_kg is not None:
+            try:
+                # Route lookups hit only the procedural collection. This
+                # keeps user-facing routing queries clear of thought/
+                # bubble noise that shares semantic space.
+                spaces = self._qdrant_kg.search(
+                    message, node_type="space", collection="procedural",
+                    limit=3, score_threshold=0.3,
+                )
+                events = self._qdrant_kg.search(
+                    message, node_type="event", collection="procedural",
+                    limit=3, score_threshold=0.3,
+                )
+                kg_prior = {
+                    "spaces": [{
+                        "id": s["payload"].get("space_id"),
+                        "score": s["score"],
+                        "activation": s["payload"].get("activation_strength", 0.0),
+                    } for s in spaces],
+                    "events": [{
+                        "id": e["payload"].get("event_id"),
+                        "score": e["score"],
+                        "target_space": e["payload"].get("target_space"),
+                    } for e in events],
+                }
+                routing_info['kg_prior'] = kg_prior
+                # Top event drives the task_type suggestion when confident.
+                if events and events[0]["score"] >= 0.5:
+                    routing_info['task_type'] = events[0]["payload"].get("event_id", "general")
+                    routing_info['space_hint'] = events[0]["payload"].get("target_space")
+                if spaces:
+                    top_space = spaces[0]['payload'].get('space_id', '?')
+                    top_space_score = spaces[0]['score']
+                    if events:
+                        top_event = events[0]['payload'].get('event_id', '?')
+                        top_event_score = events[0]['score']
+                    else:
+                        top_event = '-'
+                        top_event_score = 0.0
+                    trace.append(ThoughtTrace(
+                        timestamp=time.time(), category="routing",
+                        content=(
+                            f"KG prior: space={top_space} ({top_space_score:.2f}), "
+                            f"event={top_event} ({top_event_score:.2f})"
+                        ),
+                        module="QdrantKG",
+                        confidence=top_space_score,
+                    ))
+            except Exception as e:
+                logger.debug(f"KG routing prior failed: {e}")
 
         # PRIMARY: ThalamoPC6 via ThalamicAdapter
         if self._thalamic_adapter:

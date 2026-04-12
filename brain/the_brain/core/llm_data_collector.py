@@ -67,28 +67,26 @@ class LLMProvider(ABC):
 
 
 class AnthropicProvider(LLMProvider):
-    """Anthropic Claude API provider."""
+    """Anthropic Claude API provider — backed by vibemind_shared factory."""
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        model: str = "claude-3-haiku-20240307",
+        api_key: Optional[str] = None,  # kept for backwards-compat, ignored
+        model: Optional[str] = None,
         max_tokens: int = 256
     ):
-        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        self.model = model
+        from vibemind_shared import get_client_sync, get_model
+        try:
+            self.client = get_client_sync("brain_data_collector_anthropic")
+            self.model = model or get_model("brain_data_collector_anthropic")
+        except Exception as e:
+            print(f"[AnthropicProvider] factory failed: {e}")
+            self.client = None
+            self.model = model or "claude-haiku-4-5-20251001"
         self.max_tokens = max_tokens
-        self.client = None
-
-        if self.api_key:
-            try:
-                import anthropic
-                self.client = anthropic.Anthropic(api_key=self.api_key)
-            except ImportError:
-                print("[AnthropicProvider] anthropic package not installed")
 
     def is_available(self) -> bool:
-        return self.client is not None and self.api_key is not None
+        return self.client is not None
 
     async def generate(self, prompt: str, **kwargs) -> LLMResponse:
         if not self.is_available():
@@ -119,28 +117,26 @@ class AnthropicProvider(LLMProvider):
 
 
 class OpenAIProvider(LLMProvider):
-    """OpenAI GPT API provider."""
+    """OpenAI GPT API provider — backed by vibemind_shared factory."""
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        model: str = "gpt-4o-mini",
+        api_key: Optional[str] = None,  # kept for backwards-compat, ignored
+        model: Optional[str] = None,
         max_tokens: int = 256
     ):
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
-        self.model = model
+        from vibemind_shared import get_client_sync, get_model
+        try:
+            self.client = get_client_sync("brain_data_collector")
+            self.model = model or get_model("brain_data_collector")
+        except Exception as e:
+            print(f"[OpenAIProvider] factory failed: {e}")
+            self.client = None
+            self.model = model or "gpt-4o-mini"
         self.max_tokens = max_tokens
-        self.client = None
-
-        if self.api_key:
-            try:
-                import openai
-                self.client = openai.OpenAI(api_key=self.api_key)
-            except ImportError:
-                print("[OpenAIProvider] openai package not installed")
 
     def is_available(self) -> bool:
-        return self.client is not None and self.api_key is not None
+        return self.client is not None
 
     async def generate(self, prompt: str, **kwargs) -> LLMResponse:
         if not self.is_available():

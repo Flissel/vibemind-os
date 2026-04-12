@@ -86,6 +86,11 @@ class MultiLLMRouter:
         # OpenRouter API endpoint
         self.api_url = "https://openrouter.ai/api/v1/chat/completions"
 
+        # Groq direct API (OpenAI-compatible). Used when a model ID is
+        # prefixed with "groq::" — bypasses OpenRouter rate-limits / credits.
+        self.groq_api_key = os.environ.get("GROQ_API_KEY", "")
+        self.groq_api_url = "https://api.groq.com/openai/v1/chat/completions"
+
         # Supermemory LLM client (lazy initialization)
         self._supermemory_llm = None
 
@@ -394,10 +399,12 @@ class MultiLLMRouter:
         temperature: float
     ) -> str:
         """
-        Call OpenRouter API directly (without memory injection)
+        Call OpenRouter (or Groq direct if model is prefixed "groq::").
 
         Args:
-            model: Model name (e.g., 'groq/llama-3.1-70b-versatile')
+            model: Model name. Prefix with "groq::" to hit api.groq.com
+                   directly (e.g. "groq::llama-3.3-70b-versatile"). Otherwise
+                   uses OpenRouter (e.g. "openrouter/free", "anthropic/...").
             prompt: Prompt text
             max_tokens: Max tokens to generate
             temperature: Temperature
@@ -405,13 +412,27 @@ class MultiLLMRouter:
         Returns:
             Generated text
         """
+        # Route to Groq direct if prefixed
+        if model.startswith("groq::"):
+            if not self.groq_api_key:
+                raise RuntimeError(
+                    "model requests groq:: prefix but GROQ_API_KEY is not set"
+                )
+            real_model = model[len("groq::"):]
+            api_url = self.groq_api_url
+            api_key = self.groq_api_key
+        else:
+            real_model = model
+            api_url = self.api_url
+            api_key = self.api_key
+
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
 
         data = {
-            "model": model,
+            "model": real_model,
             "messages": [
                 {"role": "user", "content": prompt}
             ],
@@ -420,7 +441,7 @@ class MultiLLMRouter:
         }
 
         response = requests.post(
-            self.api_url,
+            api_url,
             headers=headers,
             json=data,
             timeout=30

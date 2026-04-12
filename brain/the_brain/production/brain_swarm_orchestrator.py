@@ -175,22 +175,30 @@ class BrainSwarmOrchestrator:
         """
         Create model client for agents.
 
-        Uses OpenRouter exclusively for unified access to 100+ models.
+        Pulls model + base_url + api_key from llm_config.yml via vibemind_shared.
+        Returns an autogen OpenAIChatCompletionClient (autogen has its own client class
+        that we can't replace with vibemind_shared.get_client, but we can centralize
+        the config so swapping providers requires only editing llm_config.yml).
         """
-        if not self.openrouter_api_key:
+        from vibemind_shared import get_model, get_provider_info
+        from vibemind_shared.llm_client import _get_api_key
+
+        info = get_provider_info("brain_planning")
+        api_key = _get_api_key(info["provider"])
+
+        if not api_key:
             raise ValueError(
-                "OPENROUTER_API_KEY required for AutoGen swarm agents.\n"
-                "Add to .env: OPENROUTER_API_KEY=sk-or-v1-...\n"
-                "Get key at: https://openrouter.ai/keys"
+                f"No API key found for provider '{info['provider']}'.\n"
+                "Set the corresponding *_API_KEY in .env, or change the brain_planning "
+                "role in llm_config.yml to use a provider with a key set."
             )
 
-        # Use GPT-4o via OpenRouter (use model name without provider prefix for compatibility)
-        logger.info("Using OpenRouter for swarm agents (gpt-4o)")
+        logger.info(f"Using {info['provider']}/{info['model']} for swarm agents")
 
         return OpenAIChatCompletionClient(
-            model="gpt-4o",  # Via OpenRouter (OpenAI-compatible name)
-            api_key=self.openrouter_api_key,
-            base_url="https://openrouter.ai/api/v1",
+            model=get_model("brain_planning"),
+            api_key=api_key,
+            base_url=info["base_url"],
             # Disable parallel tool calls to prevent multiple handoffs
             model_kwargs={
                 "parallel_tool_calls": False,

@@ -88,7 +88,7 @@ class MockLLM:
             ])
 
 
-def create_llm_enhanced_planner(use_real_llm=False, api_key=None):
+def create_llm_enhanced_planner(use_real_llm=False):
     """
     Create hierarchical planner with LLM-enhanced active inference
     """
@@ -96,13 +96,13 @@ def create_llm_enhanced_planner(use_real_llm=False, api_key=None):
     print()
 
     # Create LLM client
-    if use_real_llm and api_key:
-        print("  Using REAL LLM (Anthropic Claude)")
+    if use_real_llm:
+        print("  Using REAL LLM via vibemind_shared (brain_planning role)")
         try:
-            from anthropic import Anthropic
-            llm = Anthropic(api_key=api_key)
-        except ImportError:
-            print("  [ERROR] anthropic package not installed")
+            from vibemind_shared import get_client_sync
+            llm = get_client_sync("brain_planning")
+        except Exception as e:
+            print(f"  [ERROR] vibemind_shared get_client_sync failed: {e}")
             print("  Falling back to mock LLM")
             llm = MockLLM()
     else:
@@ -219,8 +219,7 @@ def test_task(planner, task_description):
 
 def main():
     parser = argparse.ArgumentParser(description="Test LLM-enhanced hierarchical planner")
-    parser.add_argument('--use-llm', action='store_true', help='Use real LLM instead of mock')
-    parser.add_argument('--api-key', type=str, help='Anthropic API key')
+    parser.add_argument('--use-llm', action='store_true', help='Use real LLM via vibemind_shared (set keys in .env)')
     args = parser.parse_args()
 
     print()
@@ -233,10 +232,7 @@ def main():
     print()
 
     # Create planner
-    planner = create_llm_enhanced_planner(
-        use_real_llm=args.use_llm,
-        api_key=args.api_key
-    )
+    planner = create_llm_enhanced_planner(use_real_llm=args.use_llm)
 
     print("[2/3] Testing with real tasks...")
     print("=" * 70)

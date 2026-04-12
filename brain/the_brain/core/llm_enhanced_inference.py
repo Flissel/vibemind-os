@@ -157,12 +157,11 @@ Return ONLY a JSON array of questions:
         """
         Call LLM API (abstracted for different providers)
 
-        Examples:
-        - MultiLLMRouter: router.route(...)
-        - Anthropic Claude: anthropic.messages.create(...)
-        - OpenAI: openai.chat.completions.create(...)
-        - Local: ollama.generate(...)
+        Models come from llm_config.yml via vibemind_shared.get_model().
+        Recommended: pass `vibemind_shared.get_client_sync("brain_planning")` as llm_client.
         """
+        from vibemind_shared import get_model
+
         if not self.llm:
             raise ValueError("LLM client not configured")
 
@@ -170,20 +169,20 @@ Return ONLY a JSON array of questions:
         if hasattr(self.llm, 'route'):
             return self.llm.route('question_generation', prompt, temperature=0.8)
 
-        # Example for Anthropic Claude
+        # Anthropic-style client (sync or async messages.create)
         elif hasattr(self.llm, 'messages'):
             response = self.llm.messages.create(
-                model="claude-3-5-sonnet-20241022",
+                model=get_model("brain_planning"),
                 max_tokens=500,
                 temperature=0.7,
                 messages=[{"role": "user", "content": prompt}]
             )
             return response.content[0].text
 
-        # Example for OpenAI
+        # OpenAI-style client (chat.completions.create)
         elif hasattr(self.llm, 'chat'):
             response = self.llm.chat.completions.create(
-                model="gpt-4",
+                model=get_model("brain_communication"),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.7,
                 max_tokens=500

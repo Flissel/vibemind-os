@@ -115,10 +115,8 @@ def new_approach_infinite_chat():
 
     # Single step: Initialize LLM client with Supermemory proxy
     print("[1] Initializing LLM with Supermemory proxy...")
-    llm = SupermemoryLLM(
-        user_id="user_alice",
-        model="gpt-4o-mini"
-    )
+    # Model comes from llm_config.yml (brain_supermemory role)
+    llm = SupermemoryLLM(user_id="user_alice")
     print()
 
     # That's it! Just call the LLM
@@ -159,10 +157,8 @@ def demonstrate_multi_turn_conversation():
     print("=" * 70)
     print()
 
-    llm = SupermemoryLLM(
-        user_id="user_bob",
-        model="gpt-4o-mini"
-    )
+    # Model comes from llm_config.yml (brain_supermemory role)
+    llm = SupermemoryLLM(user_id="user_bob")
 
     print("[Conversation 1] User asks about Docker...")
     response1 = llm.chat_simple("What is Docker?")
@@ -215,10 +211,10 @@ def compare_approaches():
     # 3. Build prompt
     prompt = f"Task: {task}\\n\\nContext:\\n{memory_text}"
 
-    # 4. Call LLM
+    # 4. Call LLM (old way: direct OpenAI instantiation with hardcoded model)
     client = OpenAI(api_key=openai_key)
     response = client.chat.completions.create(
-        model="gpt-4",
+        model="some-model-id",
         messages=[{"role": "user", "content": prompt}]
     )
 
