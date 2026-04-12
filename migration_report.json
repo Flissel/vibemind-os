@@ -1,0 +1,95 @@
+{
+  "summary": {
+    "ok": 9,
+    "fail": 1,
+    "skip": 3,
+    "total": 13,
+    "est_cost_usd": 0.88
+  },
+  "results": [
+    {
+      "file": "coding-engine\\src\\agents\\base_agent.py",
+      "status": "DRY_RUN",
+      "preview": "C:\\Users\\User\\Desktop\\Vibemind_V1\\vibemind-os\\coding-engine\\src\\agents\\base_agent.py.migrated",
+      "patches": 3,
+      "elapsed": 65.81749439239502
+    },
+    {
+      "file": "coding-engine\\src\\agents\\fungus_completeness_agent.py",
+      "status": "DRY_RUN",
+      "preview": "C:\\Users\\User\\Desktop\\Vibemind_V1\\vibemind-os\\coding-engine\\src\\agents\\fungus_completeness_agent.py.migrated",
+      "patches": 2,
+      "elapsed": 58.994529724121094
+    },
+    {
+      "file": "coding-engine\\src\\api\\routes\\vibe.py",
+      "status": "DRY_RUN",
+      "preview": "C:\\Users\\User\\Desktop\\Vibemind_V1\\vibemind-os\\coding-engine\\src\\api\\routes\\vibe.py.migrated",
+      "patches": 2,
+      "elapsed": 27.17801809310913
+    },
+    {
+      "file": "coding-engine\\src\\api\\routes\\vision.py",
+      "status": "DRY_RUN",
+      "preview": "C:\\Users\\User\\Desktop\\Vibemind_V1\\vibemind-os\\coding-engine\\src\\api\\routes\\vision.py.migrated",
+      "patches": 6,
+      "elapsed": 81.97011160850525
+    },
+    {
+      "file": "coding-engine\\src\\autogen\\billing_agents.py",
+      "status": "DRY_RUN",
+      "preview": "C:\\Users\\User\\Desktop\\Vibemind_V1\\vibemind-os\\coding-engine\\src\\autogen\\billing_agents.py.migrated",
+      "patches": 8,
+      "elapsed": 158.21501517295837
+    },
+    {
+      "file": "coding-engine\\src\\autogen\\schema_discoverer.py",
+      "status": "DRY_RUN",
+      "preview": "C:\\Users\\User\\Desktop\\Vibemind_V1\\vibemind-os\\coding-engine\\src\\autogen\\schema_discoverer.py.migrated",
+      "patches": 4,
+      "elapsed": 29.36058735847473
+    },
+    {
+      "file": "coding-engine\\src\\autogen\\task_mapper.py",
+      "status": "PARSE_FAIL",
+      "error": "```json\n[\n  {\"old\": \"try:\\n    import anthropic\\nexcept ImportError:\\n    anthropic = None  # type: ignore[assignment]\\n\\nfrom src.llm_config import get_model\", \"new\": \"from vibemind_shared import get",
+      "elapsed": 35.50139379501343
+    },
+    {
+      "file": "coding-engine\\src\\mcp\\planner.py",
+      "status": "DRY_RUN",
+      "preview": "C:\\Users\\User\\Desktop\\Vibemind_V1\\vibemind-os\\coding-engine\\src\\mcp\\planner.py.migrated",
+      "patches": 5,
+      "elapsed": 84.60550141334534
+    },
+    {
+      "file": "coding-engine\\src\\monitoring\\claude_monitor.py",
+      "status": "DRY_RUN",
+      "preview": "C:\\Users\\User\\Desktop\\Vibemind_V1\\vibemind-os\\coding-engine\\src\\monitoring\\claude_monitor.py.migrated",
+      "patches": 5,
+      "elapsed": 54.74017405509949
+    },
+    {
+      "file": "coding-engine\\src\\tools\\vision_analysis_tool.py",
+      "status": "DRY_RUN",
+      "preview": "C:\\Users\\User\\Desktop\\Vibemind_V1\\vibemind-os\\coding-engine\\src\\tools\\vision_analysis_tool.py.migrated",
+      "patches": 2,
+      "elapsed": 23.326951503753662
+    },
+    {
+      "file": "coding-engine\\tests\\test_llm_config.py",
+      "status": "NO_CHANGES",
+      "elapsed": 17.77833604812622
+    },
+    {
+      "file": "coding-engine\\web-app\\backend-app\\app\\core\\gemini_thought_signature_client.py",
+      "status": "NO_CHANGES",
+      "elapsed": 34.545501470565796
+    },
+    {
+      "file": "coding-engine\\web-app\\backend-app\\core\\gemini_thought_signature_client.py",
+      "status": "NO_CHANGES",
+      "elapsed": 33.86971116065979
+    }
+  ]
+}
