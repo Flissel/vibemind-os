@@ -394,7 +394,30 @@ def create_idea(params: Dict[str, Any]) -> str:
     bubble_id = _get_current_bubble_id()
 
     if bubble_id is None:
-        return "Enter a space first before adding notes."
+        # Auto-fallback: create/enter "Inbox" bubble for quick notes.
+        # Avoids blocking the user with "Enter a space first" when they just
+        # want to jot something down fast.
+        from spaces.ideas.tools import bubble_tools as _bt
+        ideas_repo = _bt._get_ideas_repo()
+        inbox = ideas_repo.get_by_title("Inbox")
+        if not inbox:
+            inbox = ideas_repo.create(
+                title="Inbox",
+                description="Default space for quick notes",
+                source="auto",
+            )
+            logger.info(f"Auto-created Inbox bubble (id={inbox.id}) for quick-note")
+            _broadcast_to_electron({
+                "type": "node_added",
+                "node": {
+                    "id": inbox.id,
+                    "title": inbox.title,
+                    "node_type": "bubble",
+                },
+            })
+        _bt._current_bubble_db_id = inbox.id
+        bubble_id = inbox.id
+        logger.info(f"Auto-entered Inbox bubble {inbox.id} for quick-note")
 
     repo = _get_canvas_repo()
 

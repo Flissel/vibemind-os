@@ -204,7 +204,9 @@ def list_bubbles(params: Dict[str, Any]) -> str:
 
     logger.info(f"    Total bubbles found: {len(ideas)}")
     for idea in ideas[:5]:
-        logger.info(f"      - {idea.title} (score: {idea.score:.0f}, id: {idea.id[:8]}...)")
+        _score = idea.score or 0
+        _id_preview = (idea.id or "?")[:8]
+        logger.info(f"      - {idea.title} (score: {_score:.0f}, id: {_id_preview}...)")
 
     if not ideas:
         logger.info("    Result: No bubbles exist yet")
@@ -218,13 +220,14 @@ def list_bubbles(params: Dict[str, Any]) -> str:
     titles = []
     indexed_bubbles = []
     for i, idea in enumerate(ideas, 1):
-        score_str = f" (score: {idea.score:.0f})" if idea.score > 0 else ""
+        score = idea.score or 0
+        score_str = f" (score: {score:.0f})" if score > 0 else ""
         titles.append(f"{i}. {idea.title}{score_str}")
         indexed_bubbles.append({
             "index": i,
             "id": idea.id,
             "title": idea.title,
-            "score": idea.score
+            "score": score,
         })
 
     # Broadcast indexed list to Electron UI so numbers are visible
