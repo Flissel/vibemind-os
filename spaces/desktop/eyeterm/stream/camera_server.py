@@ -112,14 +112,16 @@ class _StreamHandler(BaseHTTPRequestHandler):
     def _serve_presets(self):
         import json
         try:
-            # Lazy import — faceswap package has lazy deps
-            from ..faceswap.presets import list_presets
-            presets = list_presets()
+            from ..faceswap.presets import list_presets, list_presets_detailed
+            presets = list_presets()          # legacy: list[str] of slugs
+            presets_v2 = list_presets_detailed()   # [{id, name}, ...]
         except Exception as e:
             logger.debug("list_presets failed: %s", e)
             presets = []
+            presets_v2 = []
         body = json.dumps({
-            "presets": presets,
+            "presets": presets,            # kept for backwards-compat
+            "presets_v2": presets_v2,      # new UI uses this (id + display name)
             "active": self.server.get_active_preset(),
         }).encode()
         self.send_response(200)

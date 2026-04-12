@@ -119,7 +119,7 @@ class FaceSwapConfig:
     )
     # Particle-based alignment — warps swapped frame onto eyeTerm landmarks
     alignment_enabled: bool = True
-    alignment_alpha: float = 0.6        # EMA smoothing for error delta
+    alignment_alpha: float = 0.8        # EMA smoothing for SOLL+IST (higher = calmer)
     particle_export: Optional[Path] = None   # JSON export for HTML viewer
     # Virtual camera output
     virtual_cam_enabled: bool = False

@@ -986,69 +986,34 @@ class EyeTermHeadless:
                     except Exception:
                         pass
 
-        # Render composited frame for MJPEG (or raw frame if overlay unavailable)
-        if self._overlay:
-            if self._calibration_mgr and self._calibration_mgr.is_active:
-                ui_frame = self._overlay.render_calibration(
-                    camera_frame=frame,
-                    instruction=self._calibration_mgr.current_instruction,
-                    point_index=self._calibration_mgr.current_point_index,
-                    total_points=self._calibration_mgr.total_points,
-                    progress=self._calibration_mgr.progress_fraction,
-                )
-            else:
-                try:
-                    element_summary = self._current_element.summary() if self._current_element else ""
-                except Exception:
-                    element_summary = ""
-                ui_frame = self._overlay.render(
-                    camera_frame=frame,
-                    state_name=self._sm.state.value,
-                    focused_pane=self._sm.focused_pane,
-                    element_summary=element_summary,
-                    pane_statuses=[],
-                    transcript_partial=self._transcript_partial,
-                    transcript_final=self._transcript_final,
-                    gaze_point=gaze_point,
-                    ear_values=self._ear_values,
-                    show_debug=False,
-                    cursor_enabled=self._cursor_driver.enabled if self._cursor_driver else False,
-                )
+        # MJPEG stream must show the CLEAN face-swapped frame (no mesh/transcript
+        # debug overlay) so Vibemind's PiP + any meeting tool reading :8099
+        # sees only what a viewer would see. Gaze dots and click markers are
+        # already broadcast separately as IPC to the Electron overlay on the
+        # real Windows desktop — that's where debug visualisation lives now.
+        #
+        # Only exception: during calibration, the UI must still show the
+        # calibration targets, otherwise the user can't see where to look.
+        if self._overlay and self._calibration_mgr and self._calibration_mgr.is_active:
+            ui_frame = self._overlay.render_calibration(
+                camera_frame=frame,
+                instruction=self._calibration_mgr.current_instruction,
+                point_index=self._calibration_mgr.current_point_index,
+                total_points=self._calibration_mgr.total_points,
+                progress=self._calibration_mgr.progress_fraction,
+            )
         else:
-            # No overlay — send raw camera frame
-            _, jpeg = cv2.imencode(".jpg", frame)
+            # Clean: the frame has already been face-swapped + aligned upstream
             ui_frame = frame
 
         # Draw click markers on MJPEG frame (predicted vs actual)
+        # Click-marker rendering on the MJPEG frame is disabled — keep MJPEG
+        # clean for face-swap output. Click markers still go to the Electron
+        # desktop-stream overlay (via _broadcast_fn below) and to the CSV log.
         if self._click_collector and isinstance(ui_frame, np.ndarray):
             recent_clicks = self._click_collector.get_recent(10)
-            fh, fw = ui_frame.shape[:2]
-            sx = fw / max(self._screen_width, 1)
-            sy = fh / max(self._screen_height, 1)
 
             for i, sample in enumerate(recent_clicks):
-                # Fade: newest = full opacity, oldest = dim
-                age_factor = 1.0 - (i / max(len(recent_clicks), 1)) * 0.7
-                green = (0, int(255 * age_factor), 0)
-                red = (0, 0, int(255 * age_factor))
-
-                # Map screen coords to frame coords
-                cx = int(sample.click_x * sx)
-                cy = int(sample.click_y * sy)
-                px = int(sample.predicted_x * sx)
-                py = int(sample.predicted_y * sy)
-
-                # Green circle = actual click, Red circle = predicted
-                cv2.circle(ui_frame, (cx, cy), 6, green, 2)
-                cv2.circle(ui_frame, (px, py), 4, red, -1)
-                # Line between them = error vector
-                cv2.line(ui_frame, (px, py), (cx, cy), (100, 100, 100), 1)
-                # Residual text on newest 3
-                if i < 3:
-                    cv2.putText(ui_frame, f"{int(sample.residual_px)}px",
-                                (cx + 8, cy - 4), cv2.FONT_HERSHEY_SIMPLEX,
-                                0.35, green, 1)
-
                 # Write new clicks to persistent CSV
                 if sample.timestamp > self._last_processed_click_ts:
                     if self._click_csv_writer:

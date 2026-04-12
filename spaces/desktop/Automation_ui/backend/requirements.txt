@@ -1,8 +1,10 @@
 # TRAE Backend Requirements
 # Core framework
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-python-multipart==0.0.6
+# fastapi pinned >=0.115 because mcp>=1.x pulls starlette>=1.0 which dropped
+# the on_startup/on_shutdown kwargs that fastapi 0.104 still passed.
+fastapi>=0.115
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
 
 # WebSocket support
 websockets==12.0
@@ -20,8 +22,8 @@ mss>=9.0.0
 pytesseract==0.3.10
 opencv-python==4.6.0.66
 easyocr==1.7.0
-paddlepaddle==2.5.2
-paddleocr==2.7.0.3
+paddlepaddle>=2.6.2
+paddleocr>=2.7.0.3
 
 # File system monitoring
 watchdog==3.0.0
@@ -37,6 +39,10 @@ aiohttp==3.9.1
 # Utilities
 python-dotenv==1.0.0
 typing-extensions==4.8.0
+aiofiles>=23.0.0
+
+# MCP (used by moire_agents/mcp_server_handoff.py; llm_intent router imports it at startup)
+mcp>=1.0
 
 # Development and testing
 pytest==7.4.3
