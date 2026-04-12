@@ -1,6 +1,6 @@
 """
 media_server.py - Lokaler HTTP Fileserver fuer Video/Audio Assets
-Served ~/.rowboat/Videos/ auf http://localhost:9877/
+Served ~/.rowboat/Videos/ auf http://localhost:8977/
 
 Supports HTTP Range Requests fuer sofortiges Video-Streaming.
 
@@ -24,7 +24,7 @@ from functools import partial
 
 logger = logging.getLogger(__name__)
 
-PORT = int(os.environ.get("MEDIA_SERVER_PORT", "9877"))
+PORT = int(os.environ.get("MEDIA_SERVER_PORT", "8977"))
 MEDIA_ROOT = Path.home() / ".rowboat" / "Videos"
 
 # Ensure video MIME types are registered

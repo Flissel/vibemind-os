@@ -18,6 +18,7 @@ deployed workflow_id, and the current phase.
 import json
 import logging
 import os
+import sys
 import time
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -526,6 +527,243 @@ class WorkflowChatManager:
             "workflow_name": session.workflow_name,
             "workflow_url": f"{client.base_url}/workflow/{session.workflow_id}",
             "state": "iterating",
+        }
+
+    def claude_build(self, session_id: str) -> Dict[str, Any]:
+        """Build and deploy an n8n workflow by delegating to Claude CLI with n8n-MCP.
+
+        Reads the session's checklist, constructs a directive prompt, and spawns
+        `claude` via subprocess. Claude Code has access to the project's .mcp.json
+        which includes the n8n MCP server, so it can search nodes, validate, and
+        deploy the workflow autonomously.
+        """
+        import subprocess
+        import shutil
+
+        session = self._sessions.get(session_id)
+        if not session:
+            return {"success": False, "message": f"Session '{session_id}' nicht gefunden."}
+
+        missing = [
+            item["label"] for item in CHECKLIST_ITEMS
+            if item["required"] and not session.checklist.get(item["id"])
+        ]
+        if missing:
+            return {
+                "success": False,
+                "session_id": session_id,
+                "message": f"Pflichtfelder fehlen: {', '.join(missing)}",
+                "missing": missing,
+            }
+
+        # Backend: "openclaude" (OpenAI-compatible, uses OPENROUTER_API_KEY by
+        # default) or "claude" (Anthropic, needs credit balance).
+        backend = os.getenv("VIBECODER_CLI_BACKEND", "openclaude").lower()
+        extra_env: Dict[str, str] = {}
+
+        # On Windows, invoke node directly with the CLI's cli.js to avoid .cmd
+        # wrapper quirks (WinError 193, shell=True argument escaping, stdin tty probing).
+        def _resolve_node_cli(bin_name: str, pkg_path_parts: tuple) -> Optional[List[str]]:
+            if sys.platform != "win32":
+                return None
+            cmd_path = shutil.which(f"{bin_name}.cmd")
+            if not cmd_path:
+                return None
+            npm_dir = os.path.dirname(cmd_path)
+            # Try local node_modules (npm link points into linked dir)
+            cli_js = os.path.join(npm_dir, "node_modules", *pkg_path_parts)
+            if not os.path.isfile(cli_js):
+                return None
+            node_bin = shutil.which("node")
+            if not node_bin:
+                return None
+            return [node_bin, cli_js]
+
+        claude_argv: Optional[List[str]] = None
+        if backend == "openclaude":
+            claude_argv = _resolve_node_cli(
+                "openclaude", ("@gitlawb", "openclaude", "dist", "cli.mjs")
+            )
+            # Fallback: run the linked bin directly via node (bin/openclaude → dist/cli.mjs)
+            if claude_argv is None:
+                bin_path = shutil.which("openclaude.cmd") or shutil.which("openclaude")
+                if bin_path and sys.platform == "win32":
+                    # Locate dist/cli.mjs relative to the linked source
+                    link_target = os.path.realpath(bin_path)
+                    # npm link on Windows creates a .cmd shim; resolve the actual repo
+                    candidate = os.path.join(
+                        r"C:\Users\User\Desktop\Vibemind_V1\vibemind-os\openclaude",
+                        "dist", "cli.mjs",
+                    )
+                    if os.path.isfile(candidate):
+                        node_bin = shutil.which("node")
+                        if node_bin:
+                            claude_argv = [node_bin, candidate]
+                elif bin_path:
+                    claude_argv = [bin_path]
+            if claude_argv is None:
+                return {
+                    "success": False,
+                    "session_id": session_id,
+                    "message": "OpenClaude nicht gefunden. Installiere mit: cd vibemind-os/openclaude && npm link",
+                }
+            # OpenClaude needs these env vars to route via OpenRouter (which has credits)
+            extra_env = {
+                "CLAUDE_CODE_USE_OPENAI": "1",
+                "OPENAI_API_KEY": os.getenv("OPENROUTER_API_KEY", ""),
+                "OPENAI_BASE_URL": os.getenv(
+                    "VIBECODER_OPENAI_BASE_URL", "https://openrouter.ai/api/v1"
+                ),
+                "OPENAI_MODEL": os.getenv(
+                    "VIBECODER_MODEL", "anthropic/claude-sonnet-4.5"
+                ),
+            }
+            if not extra_env["OPENAI_API_KEY"]:
+                return {
+                    "success": False,
+                    "session_id": session_id,
+                    "message": "OPENROUTER_API_KEY fehlt in .env für OpenClaude.",
+                }
+        else:
+            claude_argv = _resolve_node_cli(
+                "claude", ("@anthropic-ai", "claude-code", "cli.js")
+            )
+            if claude_argv is None:
+                claude_bin = shutil.which("claude")
+                if not claude_bin:
+                    return {
+                        "success": False,
+                        "session_id": session_id,
+                        "message": "Claude CLI nicht gefunden. Installiere: npm install -g @anthropic-ai/claude-code",
+                    }
+                claude_argv = [claude_bin]
+
+        context = _build_context_from_checklist(session.checklist)
+        prompt = f"""Du bist in einem Repo, dessen .mcp.json einen n8n-MCP-Server
+konfiguriert hat (Tools: mcp__n8n__*). Nutze NUR diese Tools.
+
+Baue folgenden n8n-Workflow und deploye ihn in die lokale n8n-Instanz:
+
+{context}
+
+Vorgehen:
+1. `mcp__n8n__search_nodes` — passende Nodes finden (Trigger, Actions)
+2. `mcp__n8n__get_node` — Details & erforderliche Properties holen
+3. Workflow-JSON zusammenbauen (nodes + connections)
+4. `mcp__n8n__n8n_validate_workflow` ODER direkt `mcp__n8n__n8n_create_workflow`
+5. Falls Validierung Fehler meldet: Nodes anpassen und erneut versuchen
+6. Bei Erfolg: Workflow-ID, Name und die URL
+   (http://localhost:15678/workflow/<ID>) in DIESER EXAKTEN FORM am Ende ausgeben:
+
+   ```result
+   {{"workflow_id": "...", "workflow_name": "...", "workflow_url": "..."}}
+   ```
+
+Antworte auf Deutsch, halte dich kurz, mach keine Rückfragen.
+"""
+
+        session.state = "claude_building"
+        _broadcast_to_electron({
+            "type": "n8n_vibecoder_claude_started",
+            "session_id": session_id,
+        })
+
+        # Resolve repo root where .mcp.json (with n8n MCP server) lives.
+        # Falls back through several candidates so it works regardless of cwd.
+        repo_root = os.getenv("VIBEMIND_REPO_ROOT")
+        if not repo_root:
+            for candidate in (
+                r"C:\Users\User\Desktop\Vibemind_V1",
+                os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")),
+                os.getcwd(),
+            ):
+                if os.path.isfile(os.path.join(candidate, ".mcp.json")):
+                    repo_root = candidate
+                    break
+            if not repo_root:
+                repo_root = os.getcwd()
+
+        full_argv = claude_argv + [
+            "-p", prompt,
+            "--permission-mode", "bypassPermissions",
+            "--output-format", "text",
+        ]
+        merged_env = {**os.environ, **extra_env}
+        try:
+            proc = subprocess.run(
+                full_argv,
+                capture_output=True,
+                text=True,
+                timeout=600,
+                cwd=repo_root,
+                encoding="utf-8",
+                errors="replace",
+                stdin=subprocess.DEVNULL,
+                shell=False,
+                env=merged_env,
+            )
+        except subprocess.TimeoutExpired:
+            session.state = "chat"
+            return {
+                "success": False,
+                "session_id": session_id,
+                "message": "Claude CLI Timeout (>10 min).",
+            }
+        except Exception as e:
+            session.state = "chat"
+            return {
+                "success": False,
+                "session_id": session_id,
+                "message": f"Claude CLI Fehler: {e}",
+            }
+
+        output = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+        session.messages.append({"role": "user", "content": "[VibeCoder starten]"})
+        session.messages.append({"role": "assistant", "content": output})
+
+        import re
+        result_match = re.search(r'```result\s*\n(.*?)\n```', output, re.DOTALL)
+        workflow_id = None
+        workflow_name = None
+        workflow_url = None
+        if result_match:
+            try:
+                parsed = json.loads(result_match.group(1))
+                workflow_id = parsed.get("workflow_id")
+                workflow_name = parsed.get("workflow_name")
+                workflow_url = parsed.get("workflow_url")
+            except json.JSONDecodeError:
+                pass
+
+        if workflow_id:
+            session.workflow_id = workflow_id
+            session.workflow_name = workflow_name or session.workflow_name
+            session.state = "iterating"
+            _broadcast_to_electron({
+                "type": "n8n_workflow_created",
+                "workflow_id": workflow_id,
+                "workflow_name": workflow_name or "VibeCoder Workflow",
+                "n8n_url": workflow_url or f"http://localhost:15678/workflow/{workflow_id}",
+            })
+            return {
+                "success": True,
+                "session_id": session_id,
+                "workflow_id": workflow_id,
+                "workflow_name": workflow_name,
+                "workflow_url": workflow_url,
+                "response": output,
+                "state": "iterating",
+                "message": f"Workflow '{workflow_name or workflow_id}' deployed.",
+            }
+
+        session.state = "chat"
+        return {
+            "success": proc.returncode == 0,
+            "session_id": session_id,
+            "response": output,
+            "state": session.state,
+            "message": "Claude hat kein ```result```-Block geliefert — Output prüfen.",
+            "exit_code": proc.returncode,
         }
 
     def _extract_workflow_json(self, text: str) -> Optional[Dict]:

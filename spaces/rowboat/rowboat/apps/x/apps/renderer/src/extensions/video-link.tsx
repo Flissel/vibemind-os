@@ -4,7 +4,7 @@
  * Detects markdown links pointing to .mp4/.webm/.mov files and renders
  * them as inline <video> players instead of clickable text links.
  *
- * Works with the VibeMind media server (localhost:9877) and any other
+ * Works with the VibeMind media server (localhost:8977) and any other
  * video URL.
  */
 
