@@ -376,7 +376,9 @@ deno_version = 2
 # secret_key = "env(SECRET_VALUE)"
 
 [analytics]
-enabled = true
+# Disabled on Windows: supabase_vector can't access Docker socket via Unix path
+# Analytics/Vector logging is not needed for local dev and causes crash loops
+enabled = false
 port = 54327
 # Configure one of the supported backends: `postgres`, `bigquery`.
 backend = "postgres"
