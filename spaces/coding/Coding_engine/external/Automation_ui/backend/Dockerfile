@@ -45,8 +45,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxext6 \
     libxrender-dev \
     libgl1 \
-<<<<<<< HEAD
-=======
     # Für PyAV (aiortc dependency)
     pkg-config \
     libavformat-dev \
@@ -56,7 +54,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libswscale-dev \
     libswresample-dev \
     libavfilter-dev \
->>>>>>> 8df31a1d44ad033e99adfe4ddd8c290de7a40ad0
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================
