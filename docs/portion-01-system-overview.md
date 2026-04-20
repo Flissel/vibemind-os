@@ -380,27 +380,72 @@ Dieser Ueberblick bewusst flach gehalten. Fuer Details siehe:
 
 ---
 
-## 13. Architektur-Roadmap: Migration zu 1 MCP pro Space
+## 13. Architektur-Roadmap: Aktive Migrationen
 
-**Status:** Entschieden. Noch nicht umgesetzt. Vollstaendige Migration geplant.
+**Zwei Bewegungen sind entschieden aber noch nicht umgesetzt.** Beide sind
+im Code mit `grep`-baren TODO-Tags markiert.
 
-Das aktuelle N:M-Mapping zwischen Spaces und geteilten MCP-Servern soll durch
-**1 dedizierten MCP pro Space** + einer kleinen Menge **Core-MCPs** (memory,
-time, db, filesystem) ersetzt werden. Das bringt:
+### 13.1 Space-MCP-Migration (`TODO(space-mcp-migration)`)
 
+**Was:** N:M-Mapping (Spaces ↔ geteilte MCP-Server) → 1 MCP pro Space +
+kleine Menge Core-MCPs (memory, time, db, filesystem).
+
+**Warum:**
 - Brain kennt live die Capabilities jedes Space (via MCP `tools/list`)
 - Fallback-Logik in der Bridge entfaellt (Fail-Fast wird ehrlich)
 - `scripts/sync_openfang_agents.py` wird obsolet
 - `space_agent_mapper.py` wird obsolet
 - `config/space_agent_registry.yml` schrumpft von 272 auf ~30 Zeilen
 
-Vollstaendiger Plan: **`docs/migration-to-space-mcps.md`**
+**Plan:** `docs/migration-to-space-mcps.md`
 
-TODO-Anekdoten im Code (per `grep -rn "space-mcp-migration" .` auffindbar):
+**Code-Anekdoten** (`grep -rn "space-mcp-migration" .`):
 - `config/space_agent_registry.yml`
 - `scripts/sync_openfang_agents.py`
 - `bridge/src/bridge/router.py` (Fallback-Block)
 - `bridge/src/bridge/space_agent_mapper.py`
+
+---
+
+### 13.2 LLM-Config-Konsolidierung (`TODO(llm-config-consolidation)`)
+
+**Was:** Parallele `system/llm_*` Dateien → alles ueber die kanonische
+`llm_config.yml` (Root) und `vibemind_shared` Factory. **Schlussendlich
+brauchen wir nur den Root.**
+
+**Warum:**
+- Heute existieren zwei LLM-Config-Systeme: Root (CI-validiert, 33 moderne
+  Rollen, Provider google) und `system/` (nicht CI-validiert, 10 alte Rollen,
+  Provider gemini+groq)
+- Drift-Gefahr: System-Config kann divergieren, ohne dass CI das meldet
+- Alte Rollen-Namen (`red_team`, `blue_team`, ...) widersprechen der neuen
+  `<subsystem>_<purpose>` Konvention
+- Code-Duplikation: `system/llm_client.py` ist Reimplementierung von
+  `vibemind_shared`
+
+**Zielzustand:**
+- `system/llm_config.yml` als `overrides.system:` in Root-Config migriert
+- `system/llm_client.py` geloescht, alle PoCs importieren `from vibemind_shared`
+- Alte Rollen umbenannt: `red_team` → `security_red_team`, etc.
+- Entscheidung: `groq` als Provider behalten oder streichen?
+
+**Plan:** `docs/portion-02-llm-config.md` Abschnitt 12 + 15
+
+**Code-Anekdoten** (`grep -rn "llm-config-consolidation" .`):
+- `system/llm_client.py`
+- `system/llm_config.yml`
+
+---
+
+### Tracking aller aktiven Migrationen
+
+```bash
+grep -rn "TODO(" --include="*.py" --include="*.yml" --include="*.md" .
+```
+
+findet jede Stelle, die nach einer dieser Migrationen verschwinden oder sich
+aendern muss. Faustregel: **keine Migration ohne TODO-Tag, kein TODO-Tag
+ohne Migration-Doc in `docs/`.**
 
 ---
 
