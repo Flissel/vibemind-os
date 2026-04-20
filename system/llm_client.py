@@ -16,6 +16,55 @@ Usage:
 
     # Sync client:
     client = get_client_sync("issue_agent")  # OpenAI (sync)
+
+================================================================================
+KONSOLIDIERUNGS-ANEKDOTE: Warum dieser File Parallelgleis ist
+================================================================================
+
+Es gibt zwei LLM-Client-Factories im Repo: diese hier (`system/llm_client.py`)
+und die kanonische in `shared/src/vibemind_shared/llm_client.py`. Beide machen
+im Grunde das Gleiche - aus einer YAML-Datei + einer Rolle ein Client-Objekt
+herauszaubern. Aber sie unterscheiden sich in Details:
+
+  - Provider-Liste: Diese hier kennt `groq` und `gemini` als Provider.
+    Die kanonische Version kennt `google` statt `gemini` (API ist gleich,
+    nur der Schluesselname ist anders) und hat kein groq.
+  - Rollen: Diese hier listet `red_team, blue_team, judge, analyzer, think,
+    report, issue_agent, llm_target, email_personalizer, email_response`.
+    Die kanonische Version hat 33 moderne Rollen nach `<subsystem>_<purpose>`
+    Konvention. Die alten Namen hier sind historisch gewachsen.
+  - CI-Validation: Der GitHub-Workflow `.github/workflows/check-config.yml`
+    validiert nur die kanonische Root-Config. Diese System-Config kann driften,
+    ohne dass CI es merkt.
+
+Warum das aktuell so ist: Historisch hatte jedes PoC in `system/poc_*/` seinen
+eigenen LLM-Client gehabt. Felix hat irgendwann einen gemeinsamen System-Client
+gebaut, um den Code-Duplikations-Schmerz zu reduzieren. Spaeter kam das
+kanonische `vibemind_shared`-Paket dazu. Dass der System-Client existiert, ist
+ein Ueberbleibsel - er haette von Anfang an `from vibemind_shared import ...`
+tun sollen.
+
+Ziel-Zustand:
+  1. `system/poc_*/mcp_server.py` importieren aus `vibemind_shared` statt aus
+     `system/llm_client.py`
+  2. Die Rollen aus `system/llm_config.yml` werden als
+     `overrides.system.<role>` in die Root-Config migriert
+  3. `groq` Provider entweder in Root aufnehmen oder aus System entfernen
+     (Design-Entscheidung noetig: brauchen wir Groq-Direkt oder reicht
+     OpenRouter als Gateway?)
+  4. Alte Rollen-Namen umbenennen:
+       red_team         -> security_red_team
+       blue_team        -> security_blue_team
+       judge            -> security_judge
+       analyzer         -> security_analyzer
+       issue_agent      -> coding_issue_agent (oder Space-MCP-Roll-Name)
+       think/report     -> entscheiden: brauchen die eigene Rolle?
+  5. Diese Datei komplett loeschen
+
+Siehe: docs/portion-02-llm-config.md Abschnitt 12 "Drift & Warnings"
+TODO(llm-config-consolidation): Datei deleten, sobald alle PoCs auf
+                                vibemind_shared migriert sind.
+================================================================================
 """
 
 import os

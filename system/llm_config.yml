@@ -9,6 +9,30 @@
 #
 # Reihenfolge: overrides[dir][role] > roles[role] > default
 # ============================================================
+#
+# ============================================================
+# KONSOLIDIERUNGS-TODO: Dieser File ist Parallelgleis
+# ------------------------------------------------------------
+# Diese Config existiert parallel zur kanonischen Root-Config
+# (/llm_config.yml.example). Unterschiede:
+#   - Hier: Provider `gemini` + `groq`
+#     Root: Provider `google` (kein groq)
+#   - Hier: 10 alte Rollen (red_team, blue_team, judge, ...)
+#     Root: 33 moderne Rollen nach <subsystem>_<purpose>
+#   - Hier: wird NICHT von der CI validiert
+#     Root: wird von .github/workflows/check-config.yml geprueft
+#
+# Ziel: Diese Datei auflösen, Inhalt als overrides.system.*
+# in die Root-Config migrieren. Alte Namen umbenennen:
+#   red_team  -> security_red_team
+#   blue_team -> security_blue_team
+#   judge     -> security_judge
+#   analyzer  -> security_analyzer
+# Siehe: docs/portion-02-llm-config.md Abschnitt 12
+#
+# TODO(llm-config-consolidation): in Root-Config migrieren,
+#                                 dann diese Datei löschen.
+# ============================================================
 
 # === API Keys (aus .env oder direkt) ===
 keys:
