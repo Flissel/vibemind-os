@@ -8,6 +8,46 @@ Usage:
   python scripts/sync_openfang_agents.py              # write + report
   python scripts/sync_openfang_agents.py --dry-run    # report only
   python scripts/sync_openfang_agents.py --check      # exit 1 if drift
+
+================================================================================
+MIGRATION ANEKDOTE: Ein Script, das sich selbst obsolet macht
+================================================================================
+
+Dies ist ein gutes Script. Es macht genau das, was es soll: nimmt die Registry
+als Source-of-Truth, generiert daraus agent.toml-Dateien pro OpenFang-Agent,
+und laesst sich per --check in die CI haengen, um Drift zu erkennen. Felix hat
+es im Februar 2026 gebaut, weil das haendische Pflegen von 14 agent.toml
+Dateien und einer zentralen Registry zur Hoelle wurde: jede Aenderung an einem
+Tool musste an drei Stellen gemacht werden -- in der Registry, im
+shared-MCP-Server, und in der Agent-TOML. Das Script hat diesen Schmerz auf
+zwei Stellen reduziert.
+
+Aber es loest nicht das Kernproblem. Es ist eine Abkuerzung, keine Architektur.
+Die echte Frage lautet: Warum haben Tools ueberhaupt eine Existenz ausserhalb
+ihres Spaces? Warum muss ein bubble-Tool in einem shared vibemind-db-MCP leben
+und von dort per Registry an den bubbles-Agent weitergereicht werden?
+
+Der Zielzustand ist einfacher: jeder Space hat seinen eigenen MCP-Server,
+dieser MCP exposed seine Tools selbst via `tools/list`, und die agent.toml
+braucht kein generiertes `[mcp_allowed]` mehr -- sie referenziert einfach
+`own_space = "bubbles"`, und OpenFang findet den zugehoerigen MCP via Registry
+(die dann nur noch eine Liste von Space->URL Mappings ist, ~30 Zeilen statt
+272).
+
+Wenn diese Migration durch ist, wird dieses Script deleted. Die
+AGENT_TOML_TEMPLATE Konstante mit ihrem 40-Zeilen Prompt-Boilerplate
+verschwindet. Der `_skip_reason`-Mechanismus fuer die 3 protected Agents wird
+ueberfluessig, weil agent.toml-Dateien dann eh trivial sind.
+
+Faustregel: Jeder neue Space ab jetzt bekommt einen dedizierten MCP und taucht
+in diesem Script gar nicht erst auf. Bestehende Spaces werden Schritt fuer
+Schritt migriert, und mit jedem Schritt schrumpft die Registry und dieses
+Script wird irrelevanter.
+
+Siehe: docs/migration-to-space-mcps.md
+TODO(space-mcp-migration): Script loeschen, sobald alle 14 Spaces dedizierte
+                           MCP-Server haben.
+================================================================================
 """
 from __future__ import annotations
 

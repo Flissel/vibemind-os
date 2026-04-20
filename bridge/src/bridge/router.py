@@ -39,6 +39,35 @@ async def route_task(request: BridgeRequest):
 
     # 3. Ensure agent is running
     agent_id = await openfang_client.ensure_agent(agent_template)
+    # ==========================================================================
+    # MIGRATION ANEKDOTE: Das hier ist die Fallback-Kette und sie wird sterben.
+    # --------------------------------------------------------------------------
+    # Warum gibt es sie? Weil das Brain heute blind routet. Es schaut in seine
+    # Hebbian-Matrix, waehlt den Space mit hoechster Konfidenz und uebergibt.
+    # Ob der Space ueberhaupt einen lebenden Agent hat, ist fuer das Brain kein
+    # Faktor. Die Bridge faengt die Schmerzen ab: Agent nicht spawnbar? Dann
+    # brain-fallback. Brain-fallback auch down? 503.
+    #
+    # Dadurch lernt das Brain falsches. Jeder Fallback-Route, die funktioniert,
+    # schiebt die Matrix in Richtung "brain-fallback kann alles", was natuerlich
+    # Unsinn ist. Das Reward-Signal wird unehrlich.
+    #
+    # Mit der geplanten 1-MCP-pro-Space-Migration wird dieses Szenario unmoeglich:
+    # Brain bekommt live Capability-Introspection von jedem MCP. Routet ein Space
+    # nicht? Brain weiss es vorher und filtert ihn aus seinen Kandidaten raus,
+    # bevor die Entscheidung faellt. Kein Fallback noetig. Failure wird ehrlich:
+    # Wenn wirklich kein Space kann, bekommt der User einen echten 404 statt
+    # einer stillen Fallback-Antwort, die nach Erfolg aussieht.
+    #
+    # Wenn die Migration fertig ist:
+    #   - dieser Fallback-Block entfaellt komplett
+    #   - `brain-fallback` Agent-Template wird deleted
+    #   - `space_agent_mapper` wird deleted
+    #   - `ensure_agent` kann einfach raisen wenn MCP tot ist
+    #
+    # Siehe: docs/migration-to-space-mcps.md
+    # TODO(space-mcp-migration): Fallback entfernen, ehrliche Fehler zulassen.
+    # ==========================================================================
     if not agent_id:
         # Fallback: try brain-fallback
         if agent_template != "brain-fallback":

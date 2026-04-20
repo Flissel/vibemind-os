@@ -6,6 +6,47 @@
 #   - scripts/sync_openfang_agents.py (generates openfang/agents/brain-*/agent.toml)
 #
 # Schema: version 1
+#
+# ==============================================================================
+# MIGRATION ANEKDOTE: Diese Datei wird eines Tages sehr viel kuerzer
+# ------------------------------------------------------------------------------
+# 272 Zeilen. Das ist die aktuelle Groesse dieser Datei, und jede einzelne davon
+# ist haendisch gepflegte Wahrheit: welcher Space, welcher Agent, welcher Event
+# ruft welches Tool mit welchen Pflichtparametern. Wenn jemand ein neues Tool zu
+# einem Space hinzufuegt, muessen drei Dinge gleichzeitig passieren: die
+# Tool-Funktion im shared-MCP-Server implementieren, hier einen Event-Eintrag
+# hinzufuegen, und via sync_openfang_agents.py die agent.toml regenerieren.
+# Vergisst man einen Schritt, bricht die Routing-Chain still.
+#
+# Das ist nicht falsch. Es funktioniert. Es ist aber ein Zeichen dafuer, dass
+# die Tools an der falschen Stelle leben: in geteilten MCP-Servern statt bei
+# ihren Spaces. Die Registry kompensiert die fehlende Ortsbindung durch eine
+# haendische Map.
+#
+# Der geplante Zielzustand: jeder Space hat einen dedizierten MCP, dieser MCP
+# exposed seine Tools selbst via MCP `tools/list`-Endpoint. Dann reicht in
+# dieser Datei pro Space eine Zeile:
+#
+#   spaces:
+#     bubbles: { mcp_url: "http://localhost:5201" }
+#     ideas:   { mcp_url: "http://localhost:5202" }
+#     coding:  { mcp_url: "http://localhost:5214" }
+#
+# Keine events:-Sektion mehr. Kein tool:-Mapping. Kein required_params:. Das
+# alles faellt weg, weil der MCP selbst diese Information hat und Brain es live
+# via `tools/list` erfaehrt. Die 272 Zeilen schrumpfen auf ~30.
+#
+# Solange das noch nicht durch ist, lebt dieses File und muss gepflegt werden.
+# Aber: jeder neue Space ab jetzt bekommt einen dedizierten MCP und taucht
+# nicht mehr in der events:-Sektion auf. Er landet nur in der schlanken
+# Space->MCP-URL Map am Ende. Bestehende Spaces werden Schritt fuer Schritt
+# migriert; mit jedem Schritt schrumpft dieser File.
+#
+# Siehe: docs/migration-to-space-mcps.md
+# TODO(space-mcp-migration): Schema auf version 2 heben (nur MCP-URLs),
+#                            events:- und tool:-Felder pro Space entfernen,
+#                            sobald dieser Space migriert ist.
+# ==============================================================================
 
 version: 1
 

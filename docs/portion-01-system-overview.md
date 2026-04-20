@@ -380,7 +380,31 @@ Dieser Ueberblick bewusst flach gehalten. Fuer Details siehe:
 
 ---
 
-## 13. Offene Fragen / TODOs fuer Weiterentwicklung
+## 13. Architektur-Roadmap: Migration zu 1 MCP pro Space
+
+**Status:** Entschieden. Noch nicht umgesetzt. Vollstaendige Migration geplant.
+
+Das aktuelle N:M-Mapping zwischen Spaces und geteilten MCP-Servern soll durch
+**1 dedizierten MCP pro Space** + einer kleinen Menge **Core-MCPs** (memory,
+time, db, filesystem) ersetzt werden. Das bringt:
+
+- Brain kennt live die Capabilities jedes Space (via MCP `tools/list`)
+- Fallback-Logik in der Bridge entfaellt (Fail-Fast wird ehrlich)
+- `scripts/sync_openfang_agents.py` wird obsolet
+- `space_agent_mapper.py` wird obsolet
+- `config/space_agent_registry.yml` schrumpft von 272 auf ~30 Zeilen
+
+Vollstaendiger Plan: **`docs/migration-to-space-mcps.md`**
+
+TODO-Anekdoten im Code (per `grep -rn "space-mcp-migration" .` auffindbar):
+- `config/space_agent_registry.yml`
+- `scripts/sync_openfang_agents.py`
+- `bridge/src/bridge/router.py` (Fallback-Block)
+- `bridge/src/bridge/space_agent_mapper.py`
+
+---
+
+## 14. Offene Fragen / TODOs fuer Weiterentwicklung
 
 - [ ] Architektur-Diagramm als SVG/PNG erstellen (derzeit nur ASCII)
 - [ ] Health-Check-Endpunkte in Markdown-Tabelle mit erwarteten Antworten
