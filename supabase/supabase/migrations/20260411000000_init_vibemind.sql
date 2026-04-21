@@ -1,6 +1,34 @@
 -- VibeMind Database Schema for Supabase (Postgres)
 -- Complete migration from SQLite schema v22 (22 tables)
 -- Generated: 2026-04-11
+--
+-- ============================================================
+-- ARCHITEKTUR-TODOS (siehe docs/portion-03-database.md §14)
+-- ============================================================
+-- Dieses Schema hat drei bekannte Schwachstellen, die als TODO
+-- markiert sind und spaeter angegangen werden muessen:
+--
+-- 1. TODO(rls-production-hardening)
+--    Der DO-Block ganz unten setzt `allow_all`-Policies auf alle
+--    Tabellen. Das ist DEV-MODE. Jeder mit Anon-Key darf alles.
+--    Vor Prod: per-user / per-space Policies, Auth-Flow
+--    aktivieren.
+--
+-- 2. TODO(embedding-dim-coupling)
+--    `vector(384)` ist hier drei Mal hardgecoded (ideas,
+--    exploration_nodes, search_ideas_by_embedding). Muss mit
+--    `embeddings.default.dimension` aus llm_config.yml (Portion
+--    2) matchen. Wechsel auf openai_large (3072) oder
+--    ollama_local (768) erfordert Schema-Migration + Re-Embed.
+--    Erster Schritt: CI-Guard, der die Werte abgleicht.
+--
+-- 3. TODO(duplicate-migrations)
+--    Diese Datei existiert auch unter
+--    `supabase/migrations/20260411_init_vibemind.sql`
+--    byte-identisch. Einer der beiden Ordner muss weg.
+--    Kanonisch ist `supabase/supabase/migrations/` (Supabase-CLI-
+--    Projektroot).
+-- ============================================================
 
 -- ═══════════════════════════════════════════════════════════
 -- 1. Ideas / Bubbles

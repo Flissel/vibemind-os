@@ -2,6 +2,28 @@
 # Supabase Self-Healing Script
 # Restart crashed containers, flush Kong DNS cache.
 # Run when `curl http://localhost:54321/rest/v1/...` returns 503.
+#
+# ============================================================
+# ANEKDOTE: Der Key, der nicht im Repo sein wollte
+# ------------------------------------------------------------
+# Unten in der Health-Check-Schleife steht ein `sb_publishable_...`
+# Key direkt im Script. Jeder andere Teil vom System liest diesen
+# Key aus `.env` als `$SUPABASE_ANON_KEY` — nur dieses Script
+# tanzt aus der Reihe. Warum? Weil das Script als Quick-Hack
+# entstanden ist, als Kong auf Windows wieder mal seinen DNS-Cache
+# verloren hatte. "Ich fix das jetzt schnell" — und dann blieb der
+# Key da. Schlimm ist es nicht (der Anon-Key ist oeffentlich
+# dokumentiert), aber es ist ein schlechtes Signal:
+#   1. der Key rotiert nicht mit dem Rest des Setups
+#   2. beim Secrets-Scan loest er Alarm aus
+#   3. wenn Auth/RLS spaeter restriktiv wird, muss hier geaendert
+#      werden, was sonst in einer `.env` steht
+# Fix: `source "$(dirname "$0")/../.env"` am Anfang, dann
+# `$SUPABASE_ANON_KEY` im curl verwenden.
+#
+# TODO(supabase-anon-key-envvar): heal.sh auf env-Variable
+# umstellen. Siehe docs/portion-03-database.md Abschnitt 14.2
+# ============================================================
 
 set -e
 

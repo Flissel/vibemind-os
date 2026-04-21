@@ -437,6 +437,29 @@ brauchen wir nur den Root.**
 
 ---
 
+### 13.3 Data-Layer-Cleanups (Portion 3)
+
+Bei der Dokumentation der Datenbank (Portion 3) sind vier kleinere
+Architektur-Schwachstellen aufgefallen. Sie sind keine grossen Migrationen,
+aber sollen nicht in Vergessenheit geraten. Jede hat einen eigenen
+grep-baren Tag:
+
+| TODO-Tag                          | Datei / Ort                                                              | Was zu tun ist |
+|-----------------------------------|--------------------------------------------------------------------------|----------------|
+| `TODO(rls-production-hardening)`  | `supabase/supabase/migrations/20260411000000_init_vibemind.sql`          | `allow_all`-Policies vor Prod durch User/Space-scoped Policies ersetzen |
+| `TODO(supabase-anon-key-envvar)`  | `supabase/heal.sh`                                                        | Hardgecodeten Anon-Key durch `$SUPABASE_ANON_KEY` aus `.env` ersetzen |
+| `TODO(duplicate-migrations)`      | `supabase/migrations/` (Duplikat-Ordner)                                  | Duplikat-Ordner loeschen, kanonisch ist `supabase/supabase/migrations/` |
+| `TODO(embedding-dim-coupling)`    | `supabase/supabase/migrations/20260411000000_init_vibemind.sql` (`vector(384)`) | CI-Guard, der `vector(N)` gegen `embeddings.default.dimension` aus `llm_config.yml` prueft |
+
+**Offene Design-Frage für die Space-MCP-Migration:** sollen Space-spezifische
+Tabellen (`flowzen_*`, `video*`, ...) in eigene Schemata wandern? Aktuelle
+Empfehlung: auf Phase 2 aufschieben. Siehe `docs/portion-03-database.md`
+Abschnitt 15.
+
+**Plan:** `docs/portion-03-database.md` Abschnitt 14
+
+---
+
 ### Tracking aller aktiven Migrationen
 
 ```bash

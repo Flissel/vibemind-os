@@ -3,6 +3,29 @@
 Usage:
     python migrate_sqlite_to_supabase.py
     python migrate_sqlite_to_supabase.py --supabase-url http://localhost:54321 --anon-key <key>
+
+================================================================================
+EINMALIGE BRUECKE ZWISCHEN ZWEI WELTEN
+================================================================================
+Dieses Script ist eine One-Shot-Bruecke, keine laufende Integration. Historisch
+hatte VibeMind-OS eine SQLite-Datei unter `voice/python/vibemind.db` als einzige
+Persistenz-Schicht. Mit der Umstellung auf Supabase wurden die 22 Tabellen in
+Postgres nachgebaut und dieses Script schiebt die bestehenden Daten rueber.
+
+Reihenfolge ist kritisch: Parent-Tables zuerst (ideas vor projects,
+conversation_sessions vor conversation_history, video_projects vor den drei
+abhaengigen Video-Tabellen). Die TABLES-Liste unten ist bewusst in
+Abhaengigkeits-Reihenfolge sortiert.
+
+JSON-Spalten: SQLite speichert JSON als TEXT. Das Script parst diese Felder
+vor dem POST an die Supabase-REST-API, sonst landen sie als String statt als
+JSONB.
+
+Wenn dieses Script nicht mehr gebraucht wird (weil SQLite-Quelle weg ist),
+kann es weg. Solange noch alte `vibemind.db`-Files im Feld sind, bleibt es.
+
+Siehe: docs/portion-03-database.md Abschnitt 12.
+================================================================================
 """
 import argparse
 import json
