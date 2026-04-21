@@ -369,13 +369,13 @@ einzelne Spaces oder die Coding-Engine koennen aber trotzdem standalone genutzt 
 Dieser Ueberblick bewusst flach gehalten. Fuer Details siehe:
 
 - **Portion 2** - LLM-Config, Shared-Infra, Role-System
-- **Portion 3** - Brain / Tahlamus interne Architektur
-- **Portion 4** - Bridge Routing-Details + OpenFang
-- **Portion 5** - Coding Engine 37+ Agents, EventBus
-- **Portion 6** - Desktop Automation TRAE
-- **Portion 7** - Forge Agents + Minibook
-- **Portion 8** - Frontends / Dashboards
-- **Portion 9** - Datenbank-Schema
+- **Portion 3** - Datenbank, Supabase, Data Layer
+- **Portion 4** - Brain / Tahlamus — Kognitives Routing (5 Ringe, 10 Bridges, 9 Phasen, FSM)
+- **Portion 5** - Bridge Routing-Details + OpenFang
+- **Portion 6** - Coding Engine 37+ Agents, EventBus
+- **Portion 7** - Desktop Automation (TRAE)
+- **Portion 8** - Forge Agents + Minibook
+- **Portion 9** - Frontends / Dashboards
 - **Portion 10** - Spezialisierte Spaces, DevOps, System-PoCs
 
 ---
