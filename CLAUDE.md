@@ -78,6 +78,14 @@ User speaks / types / messages
   └─────────────────────────────────────┘
 ```
 
+## The 14 Domain Spaces
+
+The "14 domain spaces" referenced throughout VoiceDialog are:
+
+`coding` · `security` · `search` · `email` · `pitch` · `voice` · `social` · `chat` · `ops` · `research` · `data` · `creative` · `planning` · `enterprise`
+
+Each space has one backend agent routed through OpenFang. Full definitions with intents, I/O types, and boundaries: see `docs/architecture/space-definitions.md`.
+
 ## Tech Stack Summary
 
 - **Primary languages**: Python (majority), Rust (openfang), TypeScript/Node.js (clawcode, openclaw, openclaude)
