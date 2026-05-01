@@ -696,12 +696,20 @@ def evaluate_bubble_readiness(bubble_name: str) -> Dict[str, Any]:
         if graph_summary:
             eval_content += f"\n\n=== Knowledge Graph ===\n{graph_summary}"
 
-        # GPT-5+ uses max_completion_tokens, older models use max_tokens
+        # GPT-5+ uses max_completion_tokens, older models use max_tokens.
+        # GPT-5+ also rejects custom temperature — only default (1) is allowed.
+        # GPT-5+ is a reasoning model: hidden chain-of-thought consumes tokens
+        # before the visible response, so 500 is too tight (returns empty
+        # message). 4000 leaves headroom for ~200-token JSON answer + reasoning.
         token_param = {}
+        extra_param = {}
+        is_gpt5plus = bool(model and (model.startswith("gpt-5") or model.startswith("o1") or model.startswith("o3")))
         if model and model.startswith("gpt-"):
-            token_param["max_completion_tokens"] = 500
+            token_param["max_completion_tokens"] = 4000 if is_gpt5plus else 500
         else:
             token_param["max_tokens"] = 500
+        if not is_gpt5plus:
+            extra_param["temperature"] = 0.3
 
         for space_key in target_spaces:
             agent_name = agent_label_map[space_key]
@@ -714,7 +722,7 @@ def evaluate_bubble_readiness(bubble_name: str) -> Dict[str, Any]:
                         {"role": "system", "content": prompt},
                         {"role": "user", "content": eval_content},
                     ],
-                    temperature=0.3,
+                    **extra_param,
                     **token_param,
                 )
                 raw = response.choices[0].message.content or ""

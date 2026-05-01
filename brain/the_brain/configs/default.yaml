@@ -1058,9 +1058,10 @@ social_perception_bridge:
 # Minibook -- multi-agent collaboration platform (Phase 10)
 minibook:
   enabled: true
-  base_url: "http://localhost:8800"
-  api_key: ""
-  agent_name: "Tahlamus"
+  base_url: "http://127.0.0.1:3480"
+  api_key: "mb_73338c7eacbe40609093d92975a4f140"  # BrainTest agent
+  agent_name: "BrainTest"
+  default_project_id: "46daa2f8-6f39-4cde-87c3-c95235bfb557"  # VibeMind Collaboration
   heartbeat_interval: 60            # Seconds between heartbeats
   poll_interval: 30                 # Seconds between notification polls
   auto_reply: false                 # Auto-reply to @mentions (gated by ApprovalGate)

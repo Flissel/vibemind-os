@@ -74,6 +74,8 @@ COLLECTIONS: Dict[str, str] = {
     "procedural": "brain-procedural",  # spaces, events — basal-ganglia-like
     "state":      "brain-state",       # snapshots — working memory
     "artifacts":  "rowboat-artifacts", # bubbles, ideas — external refs (read-mostly)
+    "aggregated": "aggregated-kg",     # topic/finding/decision from discourse aggregator (R.4)
+    "mirofish":   "mirofish-kg",       # read-only mirror of Mirofish Neo4j entities (R.6)
 }
 
 # Back-compat: legacy single-collection code paths fall back to 'episodic'.
@@ -90,10 +92,17 @@ NT_IDEA = "idea"
 NT_SPACE = "space"
 NT_EVENT = "event"
 NT_SNAPSHOT = "snapshot"
+NT_TOPIC = "topic"             # R.4 — aggregator output
+NT_FINDING = "finding"         # R.4 — aggregator output
+NT_DECISION = "decision"       # R.4 — aggregator output
+NT_META_TOPIC = "meta_topic"   # S.5 — cross-session theme, lives in aggregated
+NT_MIROFISH_ENTITY = "mirofish_entity"  # R.6 — Neo4j mirror
 
 ALL_NODE_TYPES = (
     NT_THOUGHT, NT_RESPONSE, NT_FACT, NT_CONCEPT,
     NT_BUBBLE, NT_IDEA, NT_SPACE, NT_EVENT, NT_SNAPSHOT,
+    NT_TOPIC, NT_FINDING, NT_DECISION, NT_META_TOPIC,
+    NT_MIROFISH_ENTITY,
 )
 
 NODE_TYPE_TO_COLLECTION: Dict[str, str] = {
@@ -106,6 +115,11 @@ NODE_TYPE_TO_COLLECTION: Dict[str, str] = {
     NT_SNAPSHOT: "state",
     NT_BUBBLE:   "artifacts",
     NT_IDEA:     "artifacts",
+    NT_TOPIC:    "aggregated",
+    NT_FINDING:  "aggregated",
+    NT_DECISION: "aggregated",
+    NT_META_TOPIC: "aggregated",  # S.5 cross-session
+    NT_MIROFISH_ENTITY: "mirofish",
 }
 
 # Brain-owned collections (not rowboat-artifacts / fungus-code).
@@ -385,17 +399,34 @@ class QdrantKG:
         payload_extra: Dict[str, Any],
     ) -> Optional[str]:
         """Embed + upsert one point synchronously. Returns point id.
-        Routes to the right cognitive collection based on node_type."""
+        Routes to the right cognitive collection based on node_type.
+
+        IMPORTANT: Preserves existing `linked` payload on re-upserts so
+        repeated bulk-imports (Rowboat startup, etc.) don't wipe back-edges
+        that other nodes have already attached.
+        """
         qm = self._qm
         coll = self.collection_for(node_type)
         try:
             vec = self._embedder_ready().encode(text)
             pid = _point_id(external_id)
+
+            # Preserve existing linked.* if the point already exists
+            existing_linked = None
+            try:
+                rec = self.client.retrieve(
+                    collection_name=coll, ids=[pid], with_payload=True,
+                )
+                if rec and rec[0].payload:
+                    existing_linked = rec[0].payload.get("linked")
+            except Exception:
+                pass
+
             payload: Dict[str, Any] = {
                 "node_type": node_type,
                 "content": text[:2000],
                 "created_at": int(payload_extra.get("created_at", time.time())),
-                "linked": _empty_linked(),
+                "linked": existing_linked or _empty_linked(),
                 **payload_extra,
             }
             self.client.upsert(
@@ -522,9 +553,22 @@ class QdrantKG:
         coll = COLLECTIONS["episodic"]
         try:
             vectors = self._embedder_ready().encode_batch([t.content for t in batch])
+            # Read existing linked to avoid wiping back-edges on duplicate ids
+            pids = [_point_id(t.thought_id) for t in batch]
+            existing_links: Dict[str, Dict[str, list]] = {}
+            try:
+                recs = self.client.retrieve(
+                    collection_name=coll, ids=pids, with_payload=True,
+                )
+                for r in recs:
+                    if r.payload and r.payload.get("linked"):
+                        existing_links[str(r.id)] = r.payload["linked"]
+            except Exception:
+                pass
+
             points: List[Any] = []
             for i, t in enumerate(batch):
-                pid = _point_id(t.thought_id)
+                pid = pids[i]
                 payload = {
                     "node_type": NT_THOUGHT,
                     "thought_id": t.thought_id,
@@ -538,7 +582,7 @@ class QdrantKG:
                     "tags": t.tags,
                     "space_hint": t.space_hint,
                     "bridge_levels": t.bridge_levels,
-                    "linked": _empty_linked(),
+                    "linked": existing_links.get(pid) or _empty_linked(),
                     **t.metadata,
                 }
                 points.append(qm.PointStruct(

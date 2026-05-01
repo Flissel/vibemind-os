@@ -82,12 +82,8 @@ class EyeTermHeadless:
 
         self._command_router = None  # Lazy — created in _init_components
 
-        # Face-swap pipeline (opt-in, all driven by HTTP commands at runtime)
-        self._face_swapper = None
-        self._aligner = None
-        self._particle_overlay = None
-        self._last_particle_state = None
-        self._recorder = None
+        # (Face-swap pipeline lives in vibevideo_deepfake/faceswap/ now —
+        # eyeTerm is back to pure eye-tracking + cursor + wink.)
 
         # Runtime state
         self._current_element = None
@@ -660,100 +656,10 @@ class EyeTermHeadless:
     # HTTP command processing (face-swap preset switch, recording)
     # ──────────────────────────────────────────────────────────────────
 
-    def _process_commands(self):
-        """Drain pending HTTP commands from camera_server's queue."""
-        if self._camera_server is None:
-            return
-        try:
-            cmds = self._camera_server.pop_commands()
-        except Exception:
-            return
-        for cmd in cmds:
-            ctype = cmd.get("type")
-            try:
-                if ctype == "set_preset":
-                    self._apply_set_preset(cmd.get("name"))
-                elif ctype == "start_recording":
-                    self._apply_start_recording(cmd.get("name_hint"))
-                elif ctype == "stop_recording":
-                    self._apply_stop_recording()
-                else:
-                    logger.warning("Unknown command type: %r", ctype)
-            except Exception as e:
-                logger.exception("Command %r failed: %s", ctype, e)
-
-    def _apply_set_preset(self, name):
-        """Activate/switch/deactivate face-swap at runtime."""
-        if name is None:
-            if self._face_swapper is not None:
-                self._log("Deactivating face-swap")
-            self._face_swapper = None
-            self._aligner = None
-            self._particle_overlay = None
-            self._last_particle_state = None
-            if self._camera_server:
-                self._camera_server.set_active_preset(None)
-            return
-
-        from .faceswap.presets import resolve_preset
-        target_path = resolve_preset(name)
-
-        if self._face_swapper is not None:
-            self._face_swapper.set_target(target_path)
-            if self._camera_server:
-                self._camera_server.set_active_preset(name)
-            self._log(f"Switched face-swap target to preset={name}")
-            return
-
-        from .faceswap.swapper import FaceSwapper
-        from .faceswap.aligner import ParticleAligner
-        from .faceswap.particle_overlay import ParticleOverlay
-        self._face_swapper = FaceSwapper(
-            target_face_path=target_path,
-            providers=self._config.faceswap.providers,
-        )
-        if self._config.faceswap.alignment_enabled:
-            self._aligner = ParticleAligner(
-                smoothing_alpha=self._config.faceswap.alignment_alpha,
-                debug_export_path=self._config.faceswap.particle_export,
-            )
-            self._particle_overlay = ParticleOverlay()
-        if self._camera_server:
-            self._camera_server.set_active_preset(name)
-        self._log(f"Activated face-swap with preset={name}")
-
-    def _apply_start_recording(self, name_hint):
-        """Arm the recorder — it lazily opens its MP4 on next frame."""
-        if self._recorder is not None and self._recorder.active:
-            self._log("Recording already active, ignoring start")
-            return
-        if self._recorder is None:
-            from .stream.recorder import VideoRecorder
-            self._recorder = VideoRecorder(fps=self._config.target_fps)
-        self._recorder._pending_hint = name_hint
-        self._log(f"Recording armed (hint={name_hint})")
-        if self._camera_server:
-            self._camera_server.set_recording_state(self._recorder.state)
-
-    def _apply_stop_recording(self):
-        if self._recorder is None or not self._recorder.active:
-            if self._recorder is not None:
-                self._recorder._pending_hint = None
-            if self._camera_server:
-                self._camera_server.set_recording_state({"active": False})
-            return
-        summary = self._recorder.stop()
-        self._log(f"Recording saved: {summary.get('path')}")
-        if self._camera_server:
-            self._camera_server.set_recording_state(summary)
-
     def _tick(self):
         """One frame of the main loop."""
         import cv2
         import numpy as np
-
-        # Drain any queued HTTP commands (preset switch, recording toggle)
-        self._process_commands()
 
         # Camera retry: if camera failed at startup, try again every 5s
         if self._camera is None:
@@ -788,31 +694,6 @@ class EyeTermHeadless:
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             gaze_result = self._gaze.estimate(frame_rgb)
             now_ms = int(time.time() * 1000)
-
-            # Face-swap + particle alignment (opt-in via HTTP command)
-            # Runs AFTER gaze estimation so MediaPipe's 478-point mesh (SOLL)
-            # is computed on the raw frame, and the swapped frame replaces
-            # `frame` for all downstream rendering + MJPEG push.
-            if self._face_swapper is not None and gaze_result and gaze_result.landmarks:
-                try:
-                    swapped, ist_face = self._face_swapper.swap(frame)
-                    if self._aligner is not None and ist_face is not None:
-                        frame, self._last_particle_state = self._aligner.align(
-                            swapped, gaze_result.landmarks, ist_face
-                        )
-                    else:
-                        frame = swapped
-                        self._last_particle_state = None
-                except Exception as swap_err:
-                    logger.exception("FaceSwap failed this frame: %s", swap_err)
-                    self._last_particle_state = None
-            elif self._face_swapper is not None:
-                try:
-                    swapped, _ = self._face_swapper.swap(frame)
-                    frame = swapped
-                except Exception:
-                    pass
-                self._last_particle_state = None
 
             if gaze_result is not None:
                 raw_x, raw_y = gaze_result.x, gaze_result.y
@@ -1091,21 +972,6 @@ class EyeTermHeadless:
                 self._screen_width, self._screen_height,
             )
 
-            # Recording: lazy-start if armed, then write this frame
-            if self._recorder is not None:
-                if not self._recorder.active and getattr(self._recorder, "_pending_hint", None) is not None:
-                    try:
-                        hint = self._recorder._pending_hint
-                        self._recorder._pending_hint = None
-                        self._recorder.start(ui_frame, name_hint=hint)
-                        self._camera_server.set_recording_state(self._recorder.state)
-                    except Exception as rec_err:
-                        logger.error("Recorder start failed: %s", rec_err)
-                if self._recorder.active:
-                    self._recorder.write(ui_frame)
-                    if self._recorder._frame_count % 30 == 0:
-                        self._camera_server.set_recording_state(self._recorder.state)
-
         # CSV data logging (first 900 frames only)
         if self._csv_writer and self._csv_frame_count < self._csv_max_frames:
             move_info = self._cursor_driver._last_move_info if self._cursor_driver else {}
@@ -1289,11 +1155,6 @@ class EyeTermHeadless:
                 self._stt.stop()
             except Exception:
                 pass
-        if self._recorder is not None and self._recorder.active:
-            try:
-                self._recorder.stop()
-            except Exception as e:
-                logger.warning("Recorder cleanup error: %s", e)
         if self._camera_server:
             self._camera_server.stop()
         if self._camera:

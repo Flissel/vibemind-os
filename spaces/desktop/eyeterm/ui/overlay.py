@@ -104,8 +104,6 @@ class OverlayRenderer:
         polish_preview: Optional[Dict[str, str]] = None,
         deepfake_score: Optional[float] = None,
         deepfake_signals: Optional[Dict[str, float]] = None,
-        particle_state: Any = None,
-        particle_overlay: Any = None,
     ) -> np.ndarray:
         """Compose the full UI frame."""
         logger.debug("render called: state=%s focused_pane=%s", state_name, focused_pane)
@@ -148,19 +146,6 @@ class OverlayRenderer:
         # 6. Polish preview overlay (on top of everything)
         if polish_preview:
             self._draw_polish_preview(canvas, polish_preview)
-
-        # 6b. Particle alignment debug overlay — draws SOLL/IST error cloud
-        # on top of the camera preview when swap+align is active.
-        if show_debug and particle_state is not None and particle_overlay is not None:
-            # Scale: camera frame is resized into cam_w × (body_bottom-body_top) area
-            if camera_frame is not None:
-                src_h, src_w = camera_frame.shape[:2]
-                preview_h = body_bottom - body_top
-                scale_x = cam_w / float(src_w)
-                scale_y = preview_h / float(src_h)
-                # Offset the drawing onto canvas region (preview starts at x=0, y=body_top)
-                preview_region = canvas[body_top:body_bottom, 0:cam_w]
-                particle_overlay.draw(preview_region, particle_state, scale_x, scale_y)
 
         # 7. Deepfake debug panel (bottom-left of camera area)
         if show_debug and deepfake_signals is not None:

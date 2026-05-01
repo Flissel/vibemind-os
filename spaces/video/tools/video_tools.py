@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 
 VIBEVIDEO_DIR = Path(__file__).parent.parent / "vibevideo"
 DEEPFAKE_DIR = Path(__file__).parent.parent / "vibevideo_deepfake"
+# Media root — same path media_server.py serves on :8977. New batch tools
+# (faceswap, future ones) write directly here so the Gallery picks them up
+# without needing a per-tool subdir.
+MEDIA_ROOT = Path.home() / ".rowboat" / "Videos"
 
 
 def _run_cli(script: Path, args: List[str], cwd: Path = None) -> Dict[str, Any]:
@@ -166,6 +170,19 @@ def _categorize_root(filepath: Path) -> str:
     return "Other"
 
 
+def _categorize_media_root(filepath: Path) -> str:
+    """Categorize files dropped directly into ~/.rowboat/Videos/.
+
+    The faceswap batch tool writes ``<input>_swap_<target>_<timestamp>.mp4``,
+    eyeTerm recordings used to be ``eyeterm_*.mp4`` (legacy). Anything else
+    falls through as 'Library' so newly imported files are still visible.
+    """
+    name = filepath.stem.lower()
+    if "_swap_" in name or name.startswith("eyeterm_"):
+        return "FaceSwap"
+    return "Library"
+
+
 def _human_size(size_bytes: int) -> str:
     """Format bytes as human-readable string."""
     for unit in ("B", "KB", "MB", "GB"):
@@ -211,15 +228,26 @@ def scan_video_outputs(**kwargs) -> Dict[str, Any]:
             (DEEPFAKE_DIR / "lip_sync", lambda _f: "Deepfake Lipsync"),
         ])
 
+    # MEDIA_ROOT — tools (faceswap batch, recordings, manual drops) write here.
+    # Non-recursive scan of the root only; subdirs are handled above explicitly
+    # so we don't double-list.
+    if MEDIA_ROOT.exists():
+        scan_dirs.append((MEDIA_ROOT, _categorize_media_root))
+
+    seen_paths = set()  # de-dup if any subdir is also reachable via MEDIA_ROOT
     for directory, categorizer in scan_dirs:
         if not directory.exists():
             continue
         for mp4 in directory.glob("*.mp4"):
             if not mp4.is_file():
                 continue
+            resolved = str(mp4.resolve())
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
             stat = mp4.stat()
             videos.append({
-                "path": str(mp4.resolve()),
+                "path": resolved,
                 "filename": mp4.name,
                 "size_bytes": stat.st_size,
                 "size_human": _human_size(stat.st_size),

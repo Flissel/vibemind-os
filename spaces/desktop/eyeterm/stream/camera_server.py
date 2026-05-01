@@ -29,26 +29,16 @@ class _StreamHandler(BaseHTTPRequestHandler):
             self._serve_status()
         elif self.path == "/gaze":
             self._serve_gaze()
-        elif self.path == "/presets":
-            self._serve_presets()
-        elif self.path == "/recording":
-            self._serve_recording()
         elif self.path == "/":
             self._serve_index()
         else:
             self.send_error(404)
 
-    def do_POST(self):
-        if self.path == "/command":
-            self._handle_command()
-        else:
-            self.send_error(404)
-
     def do_OPTIONS(self):
-        # CORS preflight
+        # CORS preflight — harmless to keep even without POST endpoints.
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
@@ -96,74 +86,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
         body = json.dumps({
             "status": "running",
             "has_frame": self.server.get_current_jpeg() is not None,
-            "active_preset": self.server.get_active_preset(),
-            "recording": self.server.get_recording_state(),
         }).encode()
         self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        try:
-            self.wfile.write(body)
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
-            pass
-
-    def _serve_presets(self):
-        import json
-        try:
-            from ..faceswap.presets import list_presets, list_presets_detailed
-            presets = list_presets()          # legacy: list[str] of slugs
-            presets_v2 = list_presets_detailed()   # [{id, name}, ...]
-        except Exception as e:
-            logger.debug("list_presets failed: %s", e)
-            presets = []
-            presets_v2 = []
-        body = json.dumps({
-            "presets": presets,            # kept for backwards-compat
-            "presets_v2": presets_v2,      # new UI uses this (id + display name)
-            "active": self.server.get_active_preset(),
-        }).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        try:
-            self.wfile.write(body)
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
-            pass
-
-    def _serve_recording(self):
-        import json
-        body = json.dumps(self.server.get_recording_state()).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        try:
-            self.wfile.write(body)
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
-            pass
-
-    def _handle_command(self):
-        import json
-        length = int(self.headers.get("Content-Length", "0"))
-        raw = self.rfile.read(length) if length > 0 else b"{}"
-        try:
-            cmd = json.loads(raw.decode() or "{}")
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            self.send_error(400, f"Bad JSON: {e}")
-            return
-        if not isinstance(cmd, dict) or "type" not in cmd:
-            self.send_error(400, "Missing 'type' field")
-            return
-        self.server.push_command(cmd)
-        body = json.dumps({"queued": True, "type": cmd.get("type")}).encode()
-        self.send_response(202)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -220,9 +144,6 @@ class CameraStreamServer(_ThreadingHTTPServer):
         self._thread: Optional[threading.Thread] = None
         self.shutdown_flag = threading.Event()
         self._gaze: dict = {"x": 0, "y": 0, "valid": False, "sw": 1920, "sh": 1080}
-        self._command_queue: list = []
-        self._active_preset: Optional[str] = None
-        self._recording_state: dict = {"active": False}
 
         self.allow_reuse_address = True  # Must be set BEFORE __init__ calls server_bind()
 
@@ -301,34 +222,6 @@ class CameraStreamServer(_ThreadingHTTPServer):
     def get_gaze(self) -> dict:
         """Get current gaze position for REST endpoint."""
         return self._gaze
-
-    def push_command(self, cmd: dict) -> None:
-        """HTTP thread enqueues a command for the main loop to process."""
-        with self._frame_lock:
-            self._command_queue.append(cmd)
-
-    def pop_commands(self) -> list:
-        """Main loop drains pending commands (thread-safe)."""
-        with self._frame_lock:
-            if not self._command_queue:
-                return []
-            cmds = self._command_queue
-            self._command_queue = []
-            return cmds
-
-    def set_active_preset(self, name: Optional[str]) -> None:
-        """Main loop reports which preset is currently active (or None if off)."""
-        self._active_preset = name
-
-    def get_active_preset(self) -> Optional[str]:
-        return self._active_preset
-
-    def set_recording_state(self, state: dict) -> None:
-        """Main loop reports recorder state (active, filename, duration_s, ...)."""
-        self._recording_state = dict(state or {"active": False})
-
-    def get_recording_state(self) -> dict:
-        return dict(self._recording_state)
 
     def start(self) -> None:
         """Start serving in a background daemon thread."""

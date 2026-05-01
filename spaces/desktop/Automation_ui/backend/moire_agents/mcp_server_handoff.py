@@ -33,6 +33,17 @@ from datetime import datetime
 # Add parent to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Add voice/python to path so transitive imports of llm_config resolve
+# (core/openrouter_client.py uses `from llm_config import get_model`).
+_VOICE_PYTHON = os.path.normpath(
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "..", "..", "..", "..", "voice", "python",
+    )
+)
+if os.path.isdir(_VOICE_PYTHON) and _VOICE_PYTHON not in sys.path:
+    sys.path.insert(0, _VOICE_PYTHON)
+
 # Load production config
 try:
     from config import load_config, get_config

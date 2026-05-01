@@ -125,13 +125,29 @@ def _get_canvas_repo() -> CanvasRepository:
 
 
 def _get_current_bubble_id() -> Optional[str]:
-    """Get the current bubble ID from electron backend state."""
+    """Get the current bubble ID.
+
+    Prefers the module-level _current_bubble_db_id (DB UUID, set by
+    enter_bubble/find_bubble) over electron_backend._current_bubble_id
+    (local int from the Electron canvas). Without this fallback, headless
+    runs (no electron_backend module) silently lost the focus state and
+    create_idea routed everything into the "Inbox" fallback bubble.
+    """
+    if _current_bubble_db_id:
+        return _current_bubble_db_id
     try:
         import electron_backend
         bubble_id = electron_backend._current_bubble_id
-        return str(bubble_id) if bubble_id else None
+        if bubble_id:
+            # electron returns a local int — resolve to DB UUID
+            try:
+                db_id = electron_backend.get_db_id_by_bubble(bubble_id)
+                return str(db_id) if db_id else None
+            except (AttributeError, Exception):
+                return str(bubble_id)
     except (ImportError, AttributeError):
-        return None
+        pass
+    return None
 
 
 def _signal_agent_switch(agent_id: str, bubble_id: Optional[str], bubble_title: str):

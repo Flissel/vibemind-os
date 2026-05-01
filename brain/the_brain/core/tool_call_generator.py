@@ -52,6 +52,7 @@ class ToolType(Enum):
     SHELL = "shell"
     SEARCH = "search"
     VALIDATION = "validation"
+    LLM_AGENT = "llm_agent"  # Phase E: dispatch subtasks to LLM-backed agents (Claude, Groq, etc.)
 
 
 @dataclass
@@ -410,6 +411,100 @@ class ToolLibrary:
             description="Execute arbitrary shell command",
             confidence_threshold=0.4,
             task_type_keywords=["execute", "run", "command", "shell"]
+        ))
+
+        # Phase E — Claude as subagent
+        # Brain dispatches a focused subtask to Claude (Anthropic API via OpenRouter
+        # or direct). Use for: code generation, complex reasoning, refactoring,
+        # text composition that exceeds Brain's heuristic responder.
+        self.add_tool(ToolTemplate(
+            tool_name="claude_subagent",
+            tool_type=ToolType.LLM_AGENT,
+            intervention_type="execute",
+            parameters=[
+                ToolParameter(
+                    name="prompt",
+                    param_type="str",
+                    required=True,
+                    description="Subtask prompt (clear, focused, single-shot)",
+                ),
+                ToolParameter(
+                    name="system",
+                    param_type="str",
+                    required=False,
+                    default="",
+                    description="Optional system prompt (role/persona)",
+                ),
+                ToolParameter(
+                    name="model",
+                    param_type="str",
+                    required=False,
+                    default="anthropic/claude-haiku-4.5",
+                    description="OpenRouter model id (default: claude-haiku-4.5)",
+                ),
+                ToolParameter(
+                    name="max_tokens",
+                    param_type="int",
+                    required=False,
+                    default=1024,
+                    description="Max output tokens",
+                ),
+                ToolParameter(
+                    name="temperature",
+                    param_type="int",  # ToolParameter doesn't have float — int OK for now
+                    required=False,
+                    default=0,
+                    description="Sampling temperature (0=deterministic)",
+                ),
+            ],
+            description=(
+                "Dispatch a focused subtask to Claude as Brain's coding/reasoning "
+                "subagent. Returns the LLM response. Use for tasks that exceed "
+                "Brain's internal responder (code, complex reasoning, refactoring)."
+            ),
+            confidence_threshold=0.5,
+            task_type_keywords=[
+                "code", "refactor", "rewrite", "explain", "design",
+                "implement", "review", "debug", "claude",
+            ],
+        ))
+
+        # Groq fast-reasoning subagent (for cheap, fast subtasks)
+        self.add_tool(ToolTemplate(
+            tool_name="groq_subagent",
+            tool_type=ToolType.LLM_AGENT,
+            intervention_type="execute",
+            parameters=[
+                ToolParameter(
+                    name="prompt",
+                    param_type="str",
+                    required=True,
+                    description="Subtask prompt",
+                ),
+                ToolParameter(
+                    name="model",
+                    param_type="str",
+                    required=False,
+                    default="groq::llama-3.3-70b-versatile",
+                    description="Groq model (groq:: prefix routes via direct API)",
+                ),
+                ToolParameter(
+                    name="max_tokens",
+                    param_type="int",
+                    required=False,
+                    default=512,
+                    description="Max output tokens",
+                ),
+            ],
+            description=(
+                "Dispatch a fast/cheap subtask to Groq (Llama 3.3 70B). "
+                "Use for: classification, summarization, quick reasoning, "
+                "anything where Brain's existing responder agent would do."
+            ),
+            confidence_threshold=0.4,
+            task_type_keywords=[
+                "summarize", "classify", "extract", "quick", "fast", "groq",
+            ],
         ))
 
     def add_tool(self, template: ToolTemplate) -> None:

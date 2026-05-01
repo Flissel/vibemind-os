@@ -20,7 +20,7 @@ See: docs/plans/cached-brewing-swan.md (Phase 10, Tasks 6-9)
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -275,8 +275,15 @@ class MinibookClient:
 
     def create_post(
         self, project_id: str, title: str, content: str,
+        post_type: str = "discussion",
     ) -> Optional[str]:
         """Create a new post in a Minibook project.
+
+        Args:
+            project_id: target project
+            title: post title
+            content: body (supports @mentions like '@vibemind_ideas ...')
+            post_type: 'discussion' (default) or 'task' for dispatchable work
 
         Returns post_id on success, None on failure.
         """
@@ -290,6 +297,7 @@ class MinibookClient:
                     "agent_id": self._agent_id,
                     "title": title,
                     "content": content,
+                    "type": post_type,
                     "author_name": self._agent_name,
                 },
                 headers=self._headers(),
@@ -297,7 +305,8 @@ class MinibookClient:
             )
             self._online = True
             if resp.status_code in (200, 201):
-                return resp.json().get("post_id")
+                data = resp.json()
+                return data.get("post_id") or data.get("id")
             return None
         except Exception:
             self._online = False
@@ -316,6 +325,102 @@ class MinibookClient:
             )
             self._online = True
             return resp.status_code in (200, 204)
+        except Exception:
+            self._online = False
+            return False
+
+    # ------------------------------------------------------------------
+    # Bidirectional Dispatch (Brain → Minibook agents)
+    # ------------------------------------------------------------------
+
+    def dispatch_task(
+        self,
+        project_id: str,
+        target_agents: List[str],
+        intent: str,
+        task_spec: Optional[Dict[str, Any]] = None,
+        title: Optional[str] = None,
+    ) -> Optional[str]:
+        """Push a task to one or more Minibook agents and return the post_id.
+
+        The post is created with type='task' and the body starts with
+        @mentions of the targets so Minibook routes it via notifications.
+        Brain can later call get_comments(post_id) to retrieve agent replies.
+
+        Args:
+            project_id: Minibook project to post in
+            target_agents: agent names to @mention (e.g. ['vibemind_ideas'])
+            intent: short human-readable intent (1-2 sentences)
+            task_spec: optional structured payload appended as JSON code block
+            title: post title (auto-generated from intent if omitted)
+
+        Returns post_id (str) on success, None on failure.
+        """
+        if not HAS_REQUESTS:
+            return None
+
+        mentions = " ".join(f"@{a.lstrip('@')}" for a in target_agents)
+        body_lines = [f"{mentions} {intent}".strip()]
+        if task_spec:
+            try:
+                import json as _json
+                body_lines.append("")
+                body_lines.append("```json")
+                body_lines.append(_json.dumps(task_spec, indent=2, ensure_ascii=False))
+                body_lines.append("```")
+            except Exception:
+                pass
+        content = "\n".join(body_lines)
+        post_title = title or intent[:80]
+        return self.create_post(
+            project_id=project_id,
+            title=post_title,
+            content=content,
+            post_type="task",
+        )
+
+    def get_comments(self, post_id: str) -> List[Dict[str, Any]]:
+        """Fetch comments on a post (typically agent replies to a task).
+
+        Returns list of comment dicts; empty list on failure.
+        """
+        if not HAS_REQUESTS:
+            return []
+        try:
+            resp = requests.get(
+                f"{self._base_url}/api/v1/posts/{post_id}/comments",
+                headers=self._headers(),
+                timeout=self._timeout,
+            )
+            self._online = True
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list):
+                    return data
+                if isinstance(data, dict):
+                    return data.get("comments") or data.get("results") or []
+            return []
+        except Exception:
+            self._online = False
+            return []
+
+    def post_comment(self, post_id: str, content: str) -> bool:
+        """Post a comment on an existing post (e.g. follow-up from Brain)."""
+        if not HAS_REQUESTS:
+            return False
+        try:
+            resp = requests.post(
+                f"{self._base_url}/api/v1/posts/{post_id}/comments",
+                json={
+                    "agent_id": self._agent_id,
+                    "content": content,
+                    "author_name": self._agent_name,
+                },
+                headers=self._headers(),
+                timeout=self._timeout,
+            )
+            self._online = True
+            return resp.status_code in (200, 201)
         except Exception:
             self._online = False
             return False

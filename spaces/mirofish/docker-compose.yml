@@ -18,8 +18,8 @@ services:
       dockerfile: Dockerfile
     container_name: mirofish-app
     ports:
-      - "5001:5001"   # Flask API
-      - "3001:3000"   # Vue.js frontend (3001 to avoid conflict with Rowboat)
+      - "${MIROFISH_HOST_PORT:-5101}:5001"   # Flask API (host port overridable)
+      - "3500:3000"   # Vue.js frontend (Win port 3001 reserved by Hyper-V)
     environment:
       - LLM_API_KEY=${MIROFISH_LLM_API_KEY:-${OPENAI_API_KEY}}
       - LLM_BASE_URL=${MIROFISH_LLM_BASE_URL:-https://api.openai.com/v1}

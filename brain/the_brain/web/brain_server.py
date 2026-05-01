@@ -321,10 +321,326 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
             state.qdrant_kg = kg
             coll_names = ", ".join(COLLECTIONS.values())
             print(f"  [OK] QdrantKG connected (5 cognitive collections: {coll_names}; CTE->KG + BrainChat->KG wired)")
+
+            # MCMP graph gardener: random walks + decay + prune on brain-episodic
+            # and brain-semantic. Keeps the graph self-curating.
+            try:
+                from core.mcmp_gardener import MCMPGardener
+                gardener = MCMPGardener(kg)
+                gardener.start()
+                state.mcmp_gardener = gardener
+                print("  [OK] MCMP gardener started (pheromone walks on episodic+semantic)")
+            except Exception as e:
+                state.mcmp_gardener = None
+                print(f"  [WARN] MCMP gardener failed to start: {e}")
         except Exception as e:
             state.qdrant_kg = None
             state.qdrant_kg_error = str(e)
             print(f"  [WARN] QdrantKG unavailable: {e}")
+
+        # SubagentDispatcher: Phase E. Brain dispatches subtasks to Claude/Groq.
+        state.subagent_dispatcher = None
+        try:
+            from core.subagent_dispatcher import SubagentDispatcher
+            state.subagent_dispatcher = SubagentDispatcher(state.llm_router)
+            n_router = "YES" if state.llm_router else "NO"
+            print(f"  [OK] SubagentDispatcher ready (router={n_router}, tools=claude_subagent, groq_subagent)")
+        except Exception as e:
+            state.subagent_dispatcher_error = str(e)
+            print(f"  [WARN] SubagentDispatcher unavailable: {e}")
+
+        # ConsolidationEngine: Phase L. Episodic -> Semantic.
+        state.consolidation_engine = None
+        try:
+            from core.consolidation_engine import ConsolidationEngine
+            ce = ConsolidationEngine(kg, state.subagent_dispatcher)
+            ce.start()
+            state.consolidation_engine = ce
+            print("  [OK] ConsolidationEngine started (DBSCAN + groq_subagent synth, every 5min)")
+        except Exception as e:
+            state.consolidation_engine_error = str(e)
+            print(f"  [WARN] ConsolidationEngine unavailable: {e}")
+
+        # SnapshotEngine: Phase M. Periodic Brain self-state -> brain-state.
+        state.snapshot_engine = None
+        try:
+            from core.snapshot_engine import SnapshotEngine
+            import requests as _rq
+            _base = "http://127.0.0.1:5000"
+
+            def _bridges_provider():
+                try:
+                    return _rq.get(f"{_base}/api/bridges", timeout=2).json()
+                except Exception:
+                    return {}
+
+            def _state_provider():
+                try:
+                    return _rq.get(f"{_base}/api/brain/state", timeout=2).json()
+                except Exception:
+                    return {}
+
+            def _modulation_provider():
+                try:
+                    return _rq.get(f"{_base}/api/modulation", timeout=2).json()
+                except Exception:
+                    return {}
+
+            se = SnapshotEngine(
+                kg,
+                bridges_provider=_bridges_provider,
+                state_provider=_state_provider,
+                modulation_provider=_modulation_provider,
+            )
+            se.start()
+            state.snapshot_engine = se
+            print("  [OK] SnapshotEngine started (every 5min -> brain-state)")
+        except Exception as e:
+            state.snapshot_engine_error = str(e)
+            print(f"  [WARN] SnapshotEngine unavailable: {e}")
+
+        # Standalone MinibookClient (when agent_loop isn't used).
+        state.minibook_client = None
+        try:
+            from core.minibook_client import MinibookClient
+            import yaml as _yaml
+            _cfg_path = Path(__file__).resolve().parent.parent / "configs" / "default.yaml"
+            _mb_cfg = {}
+            try:
+                with open(_cfg_path, "r", encoding="utf-8") as _f:
+                    _full = _yaml.safe_load(_f) or {}
+                _mb_cfg = (_full.get("minibook") or {})
+            except Exception:
+                pass
+            if _mb_cfg.get("enabled", True):
+                mb_client = MinibookClient(
+                    base_url=_mb_cfg.get("base_url", "http://127.0.0.1:3480"),
+                    api_key=_mb_cfg.get("api_key", ""),
+                    agent_name=_mb_cfg.get("agent_name", "Brain"),
+                )
+                state.minibook_client = mb_client
+                print(f"  [OK] MinibookClient ready ({_mb_cfg.get('base_url')})")
+        except Exception as e:
+            state.minibook_client_error = str(e)
+            print(f"  [WARN] MinibookClient unavailable: {e}")
+
+        # IdeasClient: Phase O.1. Brain <-> Ideas-Space HTTP wrapper.
+        state.ideas_client = None
+        try:
+            from core.ideas_client import IdeasClient
+            ic = IdeasClient()
+            h = ic.health()
+            state.ideas_client = ic
+            if ic.is_online:
+                print(f"  [OK] IdeasClient ready ({ic.base_url}, "
+                      f"{h.get('idea_count', '?')} ideas)")
+            else:
+                print(f"  [WARN] IdeasClient initialised but offline ({ic.base_url})")
+            # Q.5 — wire into BrainChat for reward routing
+            if state.brain_chat is not None and hasattr(state.brain_chat, "set_ideas_client"):
+                state.brain_chat.set_ideas_client(ic)
+        except Exception as e:
+            state.ideas_client_error = str(e)
+            print(f"  [WARN] IdeasClient unavailable: {e}")
+
+        # DiscourseEngine: Phase R.3 + R+.1 (three-mode). Idle-loop +
+        # intent-mode (sync) + response-tick (background-loop).
+        state.discourse_engine = None
+        try:
+            from core.discourse_engine import DiscourseEngine
+            de = DiscourseEngine(kg, dispatcher=state.subagent_dispatcher)
+            de.start()
+            state.discourse_engine = de
+            # R+.2 wire into BrainChat for response-queue (post-hoc agent
+            # assessment of every Brain response).
+            if state.brain_chat is not None and hasattr(state.brain_chat, "set_discourse_engine"):
+                state.brain_chat.set_discourse_engine(de)
+            print("  [OK] DiscourseEngine started "
+                  "(idle 30s + response queue + intent on-demand)")
+        except Exception as e:
+            state.discourse_engine_error = str(e)
+            print(f"  [WARN] DiscourseEngine unavailable: {e}")
+
+        # DiscourseAggregator: Phase R.4. Every 3h — condense tweets into
+        # Topic/Finding/Decision nodes via groq_subagent.
+        state.discourse_aggregator = None
+        try:
+            from core.discourse_aggregator import DiscourseAggregator
+            agg = DiscourseAggregator(
+                kg=kg,
+                dispatcher=state.subagent_dispatcher,
+                cte=state.continuous_thinking,
+            )
+            agg.start()
+            state.discourse_aggregator = agg
+            print("  [OK] DiscourseAggregator started (every 3h, groq+md+kg)")
+        except Exception as e:
+            state.discourse_aggregator_error = str(e)
+            print(f"  [WARN] DiscourseAggregator unavailable: {e}")
+
+        # MirofishKGSync: Phase R.6. Mirror Mirofish Neo4j into Brain's
+        # `mirofish-kg` Qdrant collection every 5min, read-only.
+        state.mirofish_kg_sync = None
+        try:
+            from core.mirofish_kg_sync import MirofishKGSync
+            mfs = MirofishKGSync(kg)
+            mfs.start()
+            state.mirofish_kg_sync = mfs
+            print("  [OK] MirofishKGSync started (Neo4j -> mirofish-kg, 5min)")
+        except Exception as e:
+            state.mirofish_kg_sync_error = str(e)
+            print(f"  [WARN] MirofishKGSync unavailable: {e}")
+
+        # Phase S.3: FungusClient — semantic code-search backend for the
+        # DiscourseEngine query-round resolver. Lazy-loads the persistent
+        # FAISS index built by build_vibemind_index.py. Defaults to CPU.
+        state.fungus_client = None
+        try:
+            from core.fungus_client import FungusClient
+            fc = FungusClient()
+            state.fungus_client = fc
+            if fc.is_online:
+                # Wire into DiscourseEngine if it's running
+                de = getattr(state, "discourse_engine", None)
+                if de is not None and hasattr(de, "set_fungus_client"):
+                    de.set_fungus_client(fc)
+                print(f"  [OK] FungusClient online ({fc.stats_dict().get('doc_count')} docs)")
+            else:
+                print(f"  [WARN] FungusClient offline: {fc.error}")
+        except Exception as e:
+            state.fungus_client_error = str(e)
+            print(f"  [WARN] FungusClient init failed: {e}")
+
+        # Phase 1: CapabilityRouter — narrows intent dispatches from broadcast
+        # to a focused agent subset based on data/capabilities.yaml. Falls
+        # back to broadcast on no-match (existing behaviour preserved).
+        state.capability_router = None
+        try:
+            from core.capability_router import CapabilityRouter
+            from pathlib import Path as _P
+            _brain_dir = _P(__file__).resolve().parent.parent
+            cap_path = _brain_dir / "data" / "capabilities.yaml"
+            cr = CapabilityRouter(cap_path)
+            state.capability_router = cr
+            if cr.stats_dict().get("registry_size", 0) > 0:
+                de = getattr(state, "discourse_engine", None)
+                if de is not None and hasattr(de, "set_capability_router"):
+                    de.set_capability_router(cr)
+                # Phase 1.5 — validate execution_targets at startup so
+                # registry-rot (typo'd module path, missing function) is
+                # visible immediately, not on first user-triggered call.
+                try:
+                    from core.capability_executor import DirectExecutor
+                    direct_caps = [
+                        c for c in cr.list_capabilities()
+                        if c.get("has_execution_target")
+                    ]
+                    bad = []
+                    for c in direct_caps:
+                        cap_meta = next(
+                            (e for e in cr._capabilities if e.capability == c["capability"]),
+                            None,
+                        )
+                        if cap_meta and cap_meta.execution_target:
+                            try:
+                                exe = DirectExecutor(cap_meta.execution_target)
+                                if not exe.is_resolvable():
+                                    bad.append(
+                                        f"{c['capability']} -> {cap_meta.execution_target}"
+                                    )
+                            except Exception as exe_err:
+                                bad.append(f"{c['capability']}: {exe_err}")
+                    if bad:
+                        print(
+                            f"  [WARN] {len(bad)} unresolvable execution_target(s): "
+                            + "; ".join(bad)
+                        )
+                    else:
+                        direct_n = len(direct_caps)
+                        print(
+                            f"  [OK] CapabilityRouter loaded "
+                            f"({cr.stats_dict()['registry_size']} capabilities, "
+                            f"{direct_n} direct-execution)"
+                        )
+                except Exception as exe_err:
+                    print(
+                        f"  [OK] CapabilityRouter loaded "
+                        f"({cr.stats_dict()['registry_size']} capabilities); "
+                        f"could not validate executors: {exe_err}"
+                    )
+            else:
+                print(
+                    f"  [WARN] CapabilityRouter loaded with 0 capabilities "
+                    f"(check {cap_path})"
+                )
+        except Exception as e:
+            state.capability_router_error = str(e)
+            print(f"  [WARN] CapabilityRouter init failed: {e}")
+
+        # Phase S.4: SelfAwarenessWatcher — periodic re-seed of architecture
+        # substrate when source files change.
+        state.self_awareness_watcher = None
+        try:
+            from core.self_awareness_watcher import SelfAwarenessWatcher
+            saw = SelfAwarenessWatcher(kg)
+            saw.start()
+            state.self_awareness_watcher = saw
+            print("  [OK] SelfAwarenessWatcher started (1h tick, hash-based reseed)")
+        except Exception as e:
+            state.self_awareness_watcher_error = str(e)
+            print(f"  [WARN] SelfAwarenessWatcher unavailable: {e}")
+
+        # Phase S.5: DiscourseMemoryConsolidator — cross-session theme
+        # detection over aggregated-kg topics. 6h tick, DBSCAN-cluster +
+        # groq_subagent synthesis into meta_topic nodes.
+        state.discourse_memory_consolidator = None
+        try:
+            from core.discourse_memory_consolidator import DiscourseMemoryConsolidator
+            dmc = DiscourseMemoryConsolidator(kg, dispatcher=state.subagent_dispatcher)
+            dmc.start()
+            state.discourse_memory_consolidator = dmc
+            # Wire into BrainChat so self-queries can recall historical memory.
+            if state.brain_chat is not None and hasattr(
+                state.brain_chat, "set_discourse_memory_consolidator"
+            ):
+                state.brain_chat.set_discourse_memory_consolidator(dmc)
+            print("  [OK] DiscourseMemoryConsolidator started (6h tick, cross-session meta_topics)")
+        except Exception as e:
+            state.discourse_memory_consolidator_error = str(e)
+            print(f"  [WARN] DiscourseMemoryConsolidator unavailable: {e}")
+
+        # AutoDispatcher: Phase F.4. BrainChat -> Minibook on @mentions.
+        state.auto_dispatcher = None
+        try:
+            from core.auto_dispatcher import AutoDispatcher
+
+            def _mb_provider():
+                # Prefer standalone client; fall back to agent_loop's client.
+                mb = getattr(state, "minibook_client", None)
+                if mb is not None:
+                    return mb
+                al = getattr(state, "agent_loop", None)
+                if al is None:
+                    return None
+                return getattr(al, "minibook_client", None)
+
+            def _ideas_provider():
+                return getattr(state, "ideas_client", None)
+
+            ad = AutoDispatcher(
+                minibook_client_provider=_mb_provider,
+                ideas_client_provider=_ideas_provider,
+            )
+            if state.brain_chat is not None:
+                state.brain_chat.set_auto_dispatcher(ad)
+            state.auto_dispatcher = ad
+            print(
+                "  [OK] AutoDispatcher wired "
+                "(@vibemind_ideas -> local Ideas HTTP, others -> Minibook)"
+            )
+        except Exception as e:
+            state.auto_dispatcher_error = str(e)
+            print(f"  [WARN] AutoDispatcher unavailable: {e}")
 
         # ThoughtEvolutionEngine: evolutionary thought refinement
         try:

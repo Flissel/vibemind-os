@@ -101,6 +101,12 @@ class BrainChatResponse:
     augmented: bool = False
     augment_source: str = ""
 
+    # Auto-dispatch (Phase F.4): if user @-mentioned Minibook agents
+    auto_dispatch: Optional[Dict[str, Any]] = None
+
+    # Phase R+ — Discourse-based decision (intent-mode)
+    discourse_decision: Optional[Dict[str, Any]] = None
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             'response': self.response_text,
@@ -130,6 +136,8 @@ class BrainChatResponse:
             'sources': self.sources,
             'augmented': self.augmented,
             'augment_source': self.augment_source,
+            'auto_dispatch': self.auto_dispatch,
+            'discourse_decision': self.discourse_decision,
         }
 
 
@@ -204,6 +212,49 @@ class RefinedKnowledge:
     refinement_type: str             # "summary", "connection", "critique", "enrichment", "response_enhancement"
     confidence: float = 0.0          # Quality score
     timestamp: float = 0.0
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase S — Self-awareness query detection
+# ═══════════════════════════════════════════════════════════════════
+
+_SELF_QUERY_KEYWORDS = (
+    # English
+    "who are you", "what are you", "what do you do", "what can you",
+    "your architecture", "your modules", "your code", "yourself",
+    "describe yourself", "tell me about yourself", "your design",
+    "what's brain", "what is brain", "how do you work", "how are you built",
+    # German
+    "was bist du", "wer bist du", "was machst du", "deine architektur",
+    "dein code", "deine module", "über dich", "wie funktionierst",
+    "wie bist du aufgebaut", "was ist brain", "was ist vibemind",
+    "dein system", "deine rolle", "deine aufgabe",
+)
+
+
+def _looks_like_self_query(message: str) -> bool:
+    """Lightweight heuristic: does the message ask about Brain itself?
+
+    Returns True for messages that trigger the self-awareness lookup path
+    (S.1 substrate concepts + S.5 historical memory). Conservative — false
+    positives just mean an extra cheap KG lookup.
+    """
+    if not message:
+        return False
+    t = message.lower().strip()
+    if any(kw in t for kw in _SELF_QUERY_KEYWORDS):
+        return True
+    # Heuristic: "@brain" or "@vibemind" mention
+    if "@brain" in t or "@vibemind" in t:
+        return True
+    # Very short pronoun questions
+    if len(t) < 80 and any(
+        f" {p}" in f" {t} "
+        for p in ("you", "yourself", "yours", "du", "dich", "dein", "deine")
+    ):
+        if "?" in t:
+            return True
+    return False
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -3848,6 +3899,17 @@ class BrainChat:
         # Qdrant knowledge graph — unified semantic+neural store (set externally)
         self._qdrant_kg = None
 
+        # Auto-dispatcher — Phase F.4, forwards @mentioned tasks to Minibook agents
+        self._auto_dispatcher = None
+
+        # Phase Q.5 — IdeasClient for reward routing
+        self._ideas_client = None
+
+        # Phase R+ — DiscourseEngine for intent/response discourse
+        self._discourse_engine = None
+        # Phase S.5 — cross-session memory consolidator
+        self._discourse_memory_consolidator = None
+
         # Thalamic adapter — ThalamoPC6-based routing (set externally)
         self._thalamic_adapter = None  # Optional[ThalamicAdapter]
 
@@ -3908,24 +3970,73 @@ class BrainChat:
         unified knowledge graph with bidirectional edges."""
         self._qdrant_kg = kg
 
+    def set_auto_dispatcher(self, dispatcher) -> None:
+        """Wire in the AutoDispatcher (Phase F.4) so explicit @mentions
+        of Minibook agents in user messages auto-forward as tasks."""
+        self._auto_dispatcher = dispatcher
+
+    def set_ideas_client(self, ic) -> None:
+        """Phase Q.5 — wire IdeasClient so feedback rewards can flow to
+        the ideas-kg via record_reward()."""
+        self._ideas_client = ic
+
+    def set_discourse_engine(self, de) -> None:
+        """Phase R+ — wire DiscourseEngine so user intents can trigger
+        a multi-agent decision discourse, and Brain responses can be
+        queued for post-hoc agent assessment."""
+        self._discourse_engine = de
+
+    def set_discourse_memory_consolidator(self, dmc) -> None:
+        """Phase S.5 — wire cross-session memory consolidator so self-aware
+        queries can recall what Brain has thought about a topic across
+        past discourse aggregations."""
+        self._discourse_memory_consolidator = dmc
+
     def _detect_user_feedback_reward(self, message: str) -> None:
         """Detect short affirmative/negative feedback and retroactively reward the previous thought."""
-        if not self._continuous_thinking:
-            return
-        bridge = getattr(self._continuous_thinking, '_thought_radial_bridge', None)
-        last = getattr(self._continuous_thinking, '_last_processed_thought', None)
-        if not bridge or not last or not getattr(last, 'thought_id', ''):
-            return
         words = message.lower().strip().rstrip('!?.').split()
         if len(words) > 5:
             return
         word_set = set(words)
-        if word_set & self._POSITIVE_FEEDBACK:
-            bridge.record_reward(last.thought_id, 0.9, "user_positive")
-            logger.info(f"User positive feedback -> reward=0.9 for thought {last.thought_id}")
-        elif word_set & self._NEGATIVE_FEEDBACK:
-            bridge.record_reward(last.thought_id, -0.3, "user_negative")
-            logger.info(f"User negative feedback -> reward=-0.3 for thought {last.thought_id}")
+        is_positive = bool(word_set & self._POSITIVE_FEEDBACK)
+        is_negative = bool(word_set & self._NEGATIVE_FEEDBACK)
+        if not (is_positive or is_negative):
+            return
+
+        # Reward path 1: existing — thought reward via radial bridge
+        if self._continuous_thinking:
+            bridge = getattr(self._continuous_thinking, '_thought_radial_bridge', None)
+            last = getattr(self._continuous_thinking, '_last_processed_thought', None)
+            if bridge and last and getattr(last, 'thought_id', ''):
+                if is_positive:
+                    bridge.record_reward(last.thought_id, 0.9, "user_positive")
+                    logger.info(f"User positive feedback -> reward=0.9 for thought {last.thought_id}")
+                elif is_negative:
+                    bridge.record_reward(last.thought_id, -0.3, "user_negative")
+                    logger.info(f"User negative feedback -> reward=-0.3 for thought {last.thought_id}")
+
+        # Reward path 2: Phase Q.5 — ideas-kg reward when last response
+        # was an auto-dispatch-create. Pulls last_idea_id from dispatcher
+        # stats so the reward attaches to the just-captured idea.
+        ad = getattr(self, '_auto_dispatcher', None)
+        ic = getattr(self, '_ideas_client', None)
+        if ad is not None and ic is not None:
+            last_target = (ad.stats or {}).get("last_target") or ""
+            last_idea_id = (ad.stats or {}).get("last_idea_id")
+            if last_idea_id and last_target.startswith("ideas_local"):
+                delta = 0.7 if is_positive else (-0.5 if is_negative else 0.0)
+                if delta != 0.0:
+                    try:
+                        ic.record_reward(last_idea_id, delta, reason=(
+                            "user_positive" if is_positive else "user_negative"
+                        ))
+                        logger.info(
+                            f"User feedback -> idea {last_idea_id} delta={delta}"
+                        )
+                        # consume so a second 'ok' doesn't double-reward
+                        ad.stats["last_idea_id"] = None
+                    except Exception as e:
+                        logger.debug(f"reward to ideas failed: {e}")
 
     def send(self, message: str) -> BrainChatResponse:
         """
@@ -4297,6 +4408,39 @@ class BrainChat:
             except Exception:
                 pass
 
+        # Phase F.4 — Auto-dispatch: if user @-mentioned a known Minibook
+        # agent, forward the task in parallel to Brain's own response.
+        if self._auto_dispatcher is not None:
+            try:
+                dr = self._auto_dispatcher.maybe_dispatch(message)
+                if dr:
+                    response.auto_dispatch = dr
+                    trace.append(ThoughtTrace(
+                        timestamp=time.time(), category="dispatch",
+                        content=(
+                            f"Auto-dispatched to {dr.get('agents')} "
+                            f"(post {dr.get('post_id')})"
+                        ),
+                        module="AutoDispatcher",
+                        confidence=0.9,
+                    ))
+            except Exception as e:
+                logger.debug(f"AutoDispatcher hook failed: {e}")
+
+        # Phase R+ — Discourse-Response queue: every Brain response
+        # gets queued for a 30s-tick post-hoc agent assessment ("was
+        # the answer good, what's missing"). Light-weight, async.
+        try:
+            de = getattr(self, "_discourse_engine", None)
+            if de is not None and response.response_text:
+                de.queue_response(response.response_text, {
+                    "task_type": response.task_type,
+                    "confidence": response.confidence,
+                    "user_message": message[:200],
+                })
+        except Exception as e:
+            logger.debug(f"DiscourseEngine response queue failed: {e}")
+
         return response
 
     def _quick_intent(self, text: str) -> tuple:
@@ -4396,6 +4540,68 @@ class BrainChat:
                     ))
             except Exception as e:
                 logger.debug(f"KG routing prior failed: {e}")
+
+            # Phase S — self-awareness lookup. When the user asks about Brain
+            # itself ("was bist du?", "deine architektur", "what do you do"),
+            # surface the self-awareness substrate (S.1) + cross-session memory
+            # (S.5 recall) so the response can quote actual modules and past
+            # discourse instead of hallucinating.
+            if _looks_like_self_query(message):
+                try:
+                    self_concepts = self._qdrant_kg.search(
+                        message, collection="semantic",
+                        node_type="concept", limit=5, score_threshold=0.25,
+                    )
+                    # Filter to seeded architecture concepts only
+                    self_concepts = [
+                        c for c in self_concepts
+                        if (c.get("payload") or {}).get("self_awareness")
+                    ]
+                    routing_info['self_awareness'] = {
+                        "concepts": [{
+                            "title": c["payload"].get("title"),
+                            "subsystem": c["payload"].get("subsystem"),
+                            "snippet": (c["payload"].get("content") or "")[:200],
+                            "score": c["score"],
+                        } for c in self_concepts[:5]],
+                    }
+                    if self_concepts:
+                        trace.append(ThoughtTrace(
+                            timestamp=time.time(), category="self_awareness",
+                            content=(
+                                f"Self-aware concepts: "
+                                + ", ".join(
+                                    c["payload"].get("title", "?")
+                                    for c in self_concepts[:3]
+                                )
+                            ),
+                            module="QdrantKG",
+                            confidence=self_concepts[0]["score"],
+                        ))
+                    # S.5 recall — historical memory of what Brain has thought
+                    # about this topic across past discourse aggregations.
+                    dmc = getattr(self, "_discourse_memory_consolidator", None)
+                    if dmc is not None:
+                        try:
+                            recall = dmc.recall(message, days=14, limit=3)
+                            if recall.get("ok") and recall.get("results"):
+                                routing_info['self_awareness']['recall'] = (
+                                    recall["results"]
+                                )
+                                trace.append(ThoughtTrace(
+                                    timestamp=time.time(),
+                                    category="self_awareness_recall",
+                                    content=(
+                                        f"Recalled {len(recall['results'])} "
+                                        f"past discourse items"
+                                    ),
+                                    module="DiscourseMemoryConsolidator",
+                                    confidence=recall["results"][0].get("score", 0.0),
+                                ))
+                        except Exception as e:
+                            logger.debug(f"recall failed: {e}")
+                except Exception as e:
+                    logger.debug(f"self-awareness lookup failed: {e}")
 
         # PRIMARY: ThalamoPC6 via ThalamicAdapter
         if self._thalamic_adapter:
@@ -4804,3 +5010,4 @@ class BrainChat:
                 self._micro_agent_pool.get_stats()
             )
         return stats
+
