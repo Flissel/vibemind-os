@@ -818,9 +818,53 @@ That's the proof of the pattern. After that, every domain that has a python eval
 
 ## Generic Phase 2-5 followups (own plan-files later)
 
-- Add `_semantic_fallback` using FungusClient's embedder (already on cpu, already has cosine search) — no new model load needed.
-- Add embedding cache for capability descriptions at router-load time.
-- Track `semantic_matches` separately in stats so we see how often regex-coverage was insufficient.
-- When semantic fallback fires too often (≥30% of intents), surface as a self-awareness substrate concept "registry has gaps" → discourse can discuss what new capability to add.
+- ~~Add `_semantic_fallback` using FungusClient's embedder~~ → **done in Phase 2** (2026-05-01).
+- ~~Add embedding cache for capability descriptions at router-load time~~ → **done**.
+- ~~Track `semantic_matches` separately in stats~~ → **done** (`regex_matches` vs `semantic_matches` in stats_dict).
+- When semantic fallback fires too often (≥30% of intents), surface as a self-awareness substrate concept "registry has gaps" → discourse can discuss what new capability to add. *(still pending)*
+
+## Phase 2.5 — Anchor phrases (implemented 2026-05-01)
+
+After Phase 2 went live, semantic recall on paraphrase-style intents
+plateaued at ~55%. Diagnosed cause: a single description embedding has
+to span the whole semantic surface of a capability, but that surface is
+too wide for a single 1024-dim Qwen vector to cover well.
+
+Fix: each capability declares 3-7 short **anchor phrases** in YAML — each
+phrase represents a distinct way a user might phrase that intent. They get
+embedded alongside the description, and `_semantic_route()` takes the
+**max cosine across all of them** (description + anchors).
+
+YAML schema extension:
+
+```yaml
+- capability: code_search
+  description: "find code locate function class method..."
+  anchor_phrases:
+    - "find me the implementation of a function"
+    - "locate where a piece of code is defined"
+    - "show me the source for the X module"
+    - "where is the auth code"
+    - "search the codebase for a function"
+  match_patterns: [...]
+  agents: {...}
+```
+
+Effects measured on the 29-intent semantic stress test:
+
+- Recall: 16/29 (55%) → 27/29 (93%)
+- 21 semantic matches (vs 12 with description-only)
+- 0 false positives on off-domain queries
+- `anchors_embedded` count exposed in `/api/capabilities/stats`
+- `matched_pattern` includes `via desc` or `via anchor[N]` provenance
+
+The two remaining stress fails are **legitimate intent overlaps**
+(architecture_question vs code_search; idea_add vs email_action) — not
+recall failures. To resolve those would need either a tie-breaker rule
+or finer-grained capabilities, both Phase 3+ territory.
+
+Cost: 37 anchor embeddings on top of 15 description embeddings = 52 cached
+1024-dim vectors per Brain boot. Negligible memory + 200ms extra to embed
+on `set_embedder()`.
 
 - **ConsensusGate als deterministischer Aggregator**: ThoughtJury (`core/thought_jury.py`) hat schon ein 5-judge-pattern mit gewichteter aggregation für CTE thoughts (cosine-based, kein LLM). Prinzip ist 1:1 übertragbar auf zukünftige multi-evaluator capabilities: 5 evaluator agents → 5 verdict-vectors → ConsensusGate aggregates → deterministisches reward-signal. Das wäre cheaper + reproducible als die aktuelle Groq-llama-Aggregation. Phase 3 oder 4 — braucht erst stable Phase-2-data um die judge-weights zu kalibrieren. (Hinweis: `bubble_evaluate` macht bereits weighted aggregation in `_format_readiness_report()`; ConsensusGate-pattern wäre eher für neue capabilities die discourse-based bleiben.)

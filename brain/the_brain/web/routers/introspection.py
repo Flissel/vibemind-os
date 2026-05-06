@@ -23,6 +23,8 @@ no HTTP proxying to localhost:5003.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import time
 from typing import Any, Dict, Optional
 
@@ -1586,11 +1588,56 @@ async def capability_list(request: Request):
     return JSONResponse({"loaded": True, "capabilities": cr.list_capabilities()})
 
 
+@router.get("/api/capabilities/by_name/{name}")
+async def capability_detail(name: str, request: Request):
+    """Show full detail of a single capability — its patterns, anchor
+    phrases, agents, execution target, embedding status. Useful when
+    debugging why an intent did or didn't match a specific capability.
+
+    Path uses /by_name/ prefix to avoid clashing with literal sub-routes
+    like /api/capabilities/targets, /api/capabilities/validator/stats etc."""
+    cr = getattr(request.app.state, "capability_router", None)
+    if cr is None:
+        return JSONResponse({"error": "capability_router not loaded"}, status_code=503)
+    detail = cr.get_capability(name)
+    if detail is None:
+        return JSONResponse({"error": f"capability '{name}' not found"}, status_code=404)
+    return JSONResponse(detail)
+
+
+@router.post("/api/capabilities/reload")
+async def capability_reload(request: Request):
+    """Phase 1+2 — re-read data/capabilities.yaml without restarting Brain.
+    Re-builds embeddings if the embedder is wired. Useful for iterating on
+    YAML pattern + description tuning.
+
+    Phase 11.M — `cr.reload()` is sync and CPU-heavy (re-embeds 100+ anchors
+    via SentenceTransformer). Running it inline blocks the asyncio event
+    loop for 30-60s on first reload, freezing every other endpoint. Move it
+    to a worker thread so other requests keep flowing.
+    """
+    import asyncio
+    cr = getattr(request.app.state, "capability_router", None)
+    if cr is None:
+        return JSONResponse({"error": "capability_router not loaded"}, status_code=503)
+    try:
+        await asyncio.to_thread(cr.reload)
+        return JSONResponse({"ok": True, **cr.stats_dict()})
+    except Exception as e:
+        return JSONResponse(
+            {"ok": False, "error": f"{type(e).__name__}: {e}"},
+            status_code=500,
+        )
+
+
 @router.post("/api/capabilities/test")
 async def capability_test(request: Request):
     """Phase 1 — test the router without running discourse. Body:
     {"intent": "..."}. Returns the match (or no-match) so the YAML
-    registry can be debugged without hitting the full discourse stack."""
+    registry can be debugged without hitting the full discourse stack.
+
+    Phase 5 — also feeds the curator's telemetry so /test can be used
+    to populate the cluster pool from outside DiscourseEngine."""
     cr = getattr(request.app.state, "capability_router", None)
     if cr is None:
         return JSONResponse({"error": "capability_router not loaded"}, status_code=503)
@@ -1602,6 +1649,20 @@ async def capability_test(request: Request):
     if not intent:
         return JSONResponse({"error": "intent required"}, status_code=400)
     m = cr.route(intent)
+
+    # Phase 5 — record into curator if wired
+    cur = getattr(request.app.state, "capability_curator", None)
+    if cur is not None:
+        try:
+            cur.record_intent(
+                intent,
+                matched=bool(m),
+                capability=m.capability if m else None,
+                match_method=m.match_method if m else None,
+            )
+        except Exception:
+            pass
+
     if m is None:
         return JSONResponse({"matched": False, "intent": intent})
     return JSONResponse({
@@ -1615,7 +1676,550 @@ async def capability_test(request: Request):
         "match_method": m.match_method,
         "is_direct": m.is_direct,
         "execution_target": m.execution_target,
+        "validator": m.validator,
     })
+
+
+# ── Phase 3: Validator endpoints ──────────────────────────────────────
+
+
+@router.get("/api/capabilities/validator/stats")
+async def validator_stats(request: Request):
+    """Phase 3 — validator activity counters."""
+    cv = getattr(request.app.state, "capability_validator", None)
+    if cv is None:
+        return JSONResponse({"loaded": False, "message": "validator not initialised"})
+    return JSONResponse({"loaded": True, **cv.stats_dict()})
+
+
+@router.post("/api/capabilities/validator/test")
+async def validator_test(request: Request):
+    """Phase 3 — test a validator config without running discourse. Body:
+        {"validator": {...}, "intent": "...", "raw_result": {...}}
+    Returns the verdict envelope (valid, reason, kind, on_fail, elapsed_s).
+    """
+    cv = getattr(request.app.state, "capability_validator", None)
+    if cv is None:
+        return JSONResponse({"error": "validator not loaded"}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    validator_cfg = body.get("validator") or {}
+    intent = (body.get("intent") or "").strip()
+    raw_result = body.get("raw_result")
+    arg = body.get("arg")
+    if not validator_cfg or not isinstance(validator_cfg, dict):
+        return JSONResponse({"error": "validator config required"}, status_code=400)
+    verdict = cv.validate(validator_cfg, intent=intent, arg=arg, raw_result=raw_result)
+    return JSONResponse(verdict)
+
+
+# ── Phase 4: Execution-targets introspection ──────────────────────────
+
+
+@router.get("/api/capabilities/targets")
+async def capability_targets(request: Request):
+    """Phase 4 — show which target kinds are supported and per-target stats
+    for any executors that have been instantiated so far."""
+    try:
+        from core.capability_targets import supported_kinds
+        kinds = supported_kinds()
+    except Exception as e:
+        return JSONResponse({"error": f"targets module unavailable: {e}"}, status_code=503)
+    de = getattr(request.app.state, "discourse_engine", None)
+    cache = {}
+    if de is not None and hasattr(de, "_executor_cache") and de._executor_cache:
+        for tgt, exe in de._executor_cache.items():
+            if exe is None:
+                cache[tgt] = {"target": tgt, "resolvable": False}
+                continue
+            try:
+                cache[tgt] = exe.stats_dict()
+            except Exception as e:
+                cache[tgt] = {"target": tgt, "error": str(e)}
+    return JSONResponse({
+        "supported_kinds": kinds,
+        "instantiated_executors": list(cache.values()),
+    })
+
+
+# ── Phase 5: Curator endpoints ────────────────────────────────────────
+
+
+@router.get("/api/capabilities/curator/stats")
+async def curator_stats(request: Request):
+    """Phase 5 — curator counters: intents logged, no-matches, suggestions
+    generated/accepted/rejected, last cluster run."""
+    cur = getattr(request.app.state, "capability_curator", None)
+    if cur is None:
+        return JSONResponse({"loaded": False, "message": "curator not initialised"})
+    return JSONResponse({"loaded": True, **cur.stats_dict()})
+
+
+@router.post("/api/capabilities/curator/suggest")
+async def curator_suggest(request: Request):
+    """Phase 5 — run a clustering pass over no-match intents and produce
+    suggestions for new capabilities. Body (optional):
+        {"max_suggestions": 5, "min_age_s": 0}
+    Returns the list of pending suggestion dicts."""
+    cur = getattr(request.app.state, "capability_curator", None)
+    if cur is None:
+        return JSONResponse({"error": "curator not loaded"}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    max_n = int(body.get("max_suggestions") or 5)
+    min_age = float(body.get("min_age_s") or 0)
+    suggestions = cur.suggest(max_suggestions=max_n, min_age_s=min_age)
+    return JSONResponse({
+        "ok": True,
+        "generated": len(suggestions),
+        "suggestions": suggestions,
+    })
+
+
+@router.get("/api/capabilities/curator/suggestions")
+async def curator_list_suggestions(request: Request):
+    """Phase 5 — list all suggestions, optional ?status=pending|accepted|rejected."""
+    cur = getattr(request.app.state, "capability_curator", None)
+    if cur is None:
+        return JSONResponse({"error": "curator not loaded"}, status_code=503)
+    status_filter = request.query_params.get("status")
+    items = cur.list_suggestions(status=status_filter)
+    return JSONResponse({"count": len(items), "suggestions": items})
+
+
+@router.post("/api/capabilities/curator/suggestions/{suggestion_id}/accept")
+async def curator_accept(suggestion_id: str, request: Request):
+    """Phase 5 — accept a suggestion. Optional body lets the user pin
+    agent names or an execution target before the YAML write:
+        {"agents_primary": [...], "agents_supporting": [...],
+         "execution_target": "...", "reason": "..."}"""
+    cur = getattr(request.app.state, "capability_curator", None)
+    if cur is None:
+        return JSONResponse({"error": "curator not loaded"}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    out = cur.accept(
+        suggestion_id,
+        agents_primary=body.get("agents_primary"),
+        agents_supporting=body.get("agents_supporting"),
+        execution_target=body.get("execution_target"),
+        reason=body.get("reason"),
+    )
+    code = 200 if out.get("ok") else 400
+    return JSONResponse(out, status_code=code)
+
+
+@router.post("/api/capabilities/curator/suggestions/{suggestion_id}/reject")
+async def curator_reject(suggestion_id: str, request: Request):
+    """Phase 5 — reject a suggestion."""
+    cur = getattr(request.app.state, "capability_curator", None)
+    if cur is None:
+        return JSONResponse({"error": "curator not loaded"}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    out = cur.reject(suggestion_id, reason=body.get("reason"))
+    code = 200 if out.get("ok") else 400
+    return JSONResponse(out, status_code=code)
+
+
+# ── Phase 6: Multi-hop endpoints ──────────────────────────────────────
+
+
+@router.get("/api/multihop/provider_scores")
+async def multihop_provider_scores(request: Request):
+    """Phase 7.3 — per-(capability, target-kind) success rate. Adaptive
+    Routing reads this to break ties when multiple providers can serve a
+    capability."""
+    pe = getattr(request.app.state, "plan_executor", None)
+    if pe is None:
+        return JSONResponse({"loaded": False, "scores": {}})
+    return JSONResponse({"loaded": True, "scores": pe.get_provider_scores()})
+
+
+@router.post("/api/multihop/plan/{plan_id}/reward")
+async def multihop_plan_reward(plan_id: str, request: Request):
+    """Phase 7.1 — manually attach a reward delta to a plan. Body: {delta, reason}."""
+    pe = getattr(request.app.state, "plan_executor", None)
+    if pe is None:
+        return JSONResponse({"error": "plan_executor not loaded"}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    delta = float(body.get("delta") or 0.0)
+    reason = body.get("reason") or "manual"
+    out = pe.record_plan_reward(plan_id, delta, reason=reason)
+    code = 200 if out.get("ok") else 404
+    return JSONResponse(out, status_code=code)
+
+
+# ── Phase 8: Cluster Engine endpoints ───────────────────────────────
+
+
+@router.get("/api/clusters/activations")
+async def clusters_activations(request: Request):
+    """Phase 8.1 — per-cluster activation snapshot used by Galaxy UI
+    + Self-Steerer."""
+    ce = getattr(request.app.state, "cluster_engine", None)
+    if ce is None:
+        return JSONResponse({"loaded": False, "clusters": []})
+    return JSONResponse({"loaded": True, "clusters": ce.get_activations()})
+
+
+@router.get("/api/clusters/co_activations")
+async def clusters_co_activations(request: Request):
+    """Phase 8.1 — pairs of clusters that co-activated recently
+    (renders as edges in the galaxy UI)."""
+    ce = getattr(request.app.state, "cluster_engine", None)
+    if ce is None:
+        return JSONResponse({"loaded": False, "pairs": []})
+    return JSONResponse({"loaded": True, "pairs": ce.get_co_activations()})
+
+
+@router.get("/api/clusters/stats")
+async def clusters_stats(request: Request):
+    """Phase 8.1 — engine ticker / decay / running state."""
+    ce = getattr(request.app.state, "cluster_engine", None)
+    if ce is None:
+        return JSONResponse({"loaded": False})
+    return JSONResponse({"loaded": True, **ce.stats_dict()})
+
+
+@router.post("/api/clusters/bump")
+async def clusters_bump(request: Request):
+    """Phase 8.1 — manually nudge a cluster's activation. Used by smoke
+    tests and a 'fire cluster' button in the UI. Body: {cluster_id, delta}."""
+    ce = getattr(request.app.state, "cluster_engine", None)
+    if ce is None:
+        return JSONResponse({"error": "cluster_engine not loaded"}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    cid = (body.get("cluster_id") or "").strip()
+    delta = float(body.get("delta") or 0.0)
+    if not cid:
+        return JSONResponse({"error": "cluster_id required"}, status_code=400)
+    out = ce.bump(cid, delta)
+    code = 200 if out.get("ok") else 404
+    return JSONResponse(out, status_code=code)
+
+
+@router.post("/api/clusters/tick_now")
+async def clusters_tick_now(request: Request):
+    """Phase 8.1 — manual one-shot tick (for tests; usually runs auto every 60s)."""
+    ce = getattr(request.app.state, "cluster_engine", None)
+    if ce is None:
+        return JSONResponse({"error": "cluster_engine not loaded"}, status_code=503)
+    import asyncio as _asyncio
+    loop = _asyncio.get_running_loop()
+    out = await loop.run_in_executor(None, ce.tick_once)
+    return JSONResponse(out)
+
+
+# ── Phase 8.B: Decision-Graph endpoints (Neo4j) ──────────────────────
+
+
+@router.get("/api/decision_graph/query")
+async def decision_graph_query(request: Request, limit: int = 200, min_activation: float = 0.05):
+    """Phase 8.B — Cytoscape-formatted subgraph for the decision-theatre UI.
+
+    Filters by min_activation (only show clusters above this threshold).
+    Returns recent plans/hops/dispatches from the last 24h."""
+    dg = getattr(request.app.state, "decision_graph", None)
+    if dg is None:
+        return JSONResponse({"connected": False, "nodes": [], "edges": []})
+    import asyncio as _asyncio
+    loop = _asyncio.get_running_loop()
+    out = await loop.run_in_executor(
+        None, dg.query_subgraph, int(limit), float(min_activation),
+    )
+    return JSONResponse(out)
+
+
+@router.get("/api/decision_graph/stats")
+async def decision_graph_stats(request: Request):
+    """Phase 8.B — counts per label + connection state."""
+    dg = getattr(request.app.state, "decision_graph", None)
+    if dg is None:
+        return JSONResponse({"connected": False})
+    return JSONResponse(dg.stats())
+
+
+# ── Phase 9.0.4: Approval-Gate endpoints ──────────────────────────
+
+
+@router.post("/api/approvals/{tool_call_id}")
+async def approve_tool_call(tool_call_id: str, request: Request):
+    """Phase 9.0.4 — user clicks Approve/Deny in the UI modal. Body:
+        {"decision": "approve" | "deny"}
+    Stores decision in-memory + writes approval_status to Neo4j ToolCall."""
+    ag = getattr(request.app.state, "approval_gate", None)
+    if ag is None:
+        return JSONResponse({"error": "approval_gate not loaded"}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    decision = (body.get("decision") or "").strip().lower()
+    if decision not in ("approve", "deny"):
+        return JSONResponse({"error": "decision must be 'approve' or 'deny'"}, status_code=400)
+    out = ag.submit(tool_call_id, decision)
+    return JSONResponse(out)
+
+
+@router.get("/api/approvals/stats")
+async def approvals_stats(request: Request):
+    """Phase 9.0.4 — counts of approved/denied/requested decisions."""
+    ag = getattr(request.app.state, "approval_gate", None)
+    if ag is None:
+        return JSONResponse({"loaded": False})
+    return JSONResponse({"loaded": True, **ag.stats_dict()})
+
+
+@router.post("/api/decision_graph/prune")
+async def decision_graph_prune(request: Request, older_than_s: float = 604800):
+    """Phase 8.B — drop ancient nodes. Default TTL 7d."""
+    dg = getattr(request.app.state, "decision_graph", None)
+    if dg is None:
+        return JSONResponse({"error": "decision_graph not loaded"}, status_code=503)
+    import asyncio as _asyncio
+    loop = _asyncio.get_running_loop()
+    out = await loop.run_in_executor(None, dg.prune, float(older_than_s))
+    return JSONResponse(out)
+
+
+# ── Phase 8.3: Self-Steerer endpoints ───────────────────────────────
+
+
+@router.get("/api/self_steer/stats")
+async def self_steer_stats(request: Request):
+    """Phase 8.3 — autonomous-dispatch counters + last decision."""
+    ss = getattr(request.app.state, "self_steerer", None)
+    if ss is None:
+        return JSONResponse({"loaded": False})
+    return JSONResponse({"loaded": True, **ss.stats_dict()})
+
+
+@router.post("/api/self_steer/tick_now")
+async def self_steer_tick_now(request: Request):
+    """Phase 8.3 — manual scan-and-dispatch (skip 30s wait)."""
+    ss = getattr(request.app.state, "self_steerer", None)
+    if ss is None:
+        return JSONResponse({"error": "self_steerer not loaded"}, status_code=503)
+    import asyncio as _asyncio
+    loop = _asyncio.get_running_loop()
+    out = await loop.run_in_executor(None, ss.tick_once)
+    return JSONResponse(out)
+
+
+@router.post("/api/self_steer/reload_mappings")
+async def self_steer_reload(request: Request):
+    """Phase 8.3 — reload cluster_capabilities.yaml live (no Brain restart)."""
+    ss = getattr(request.app.state, "self_steerer", None)
+    if ss is None:
+        return JSONResponse({"error": "self_steerer not loaded"}, status_code=503)
+    n = ss.reload_mappings()
+    return JSONResponse({"ok": True, "mappings_loaded": n})
+
+
+@router.get("/api/multihop/busy")
+async def multihop_busy(request: Request):
+    """Phase 6.14.1 — is a plan currently running? UI uses this to
+    enable/disable the Plan+Execute button. Cheap check."""
+    pe = getattr(request.app.state, "plan_executor", None)
+    if pe is None:
+        return JSONResponse({"loaded": False, "busy": False})
+    return JSONResponse({"loaded": True, **pe.busy_status()})
+
+
+@router.get("/api/multihop/stats")
+async def multihop_stats(request: Request):
+    """Phase 6 — combined counters from advisor, planner, executor, synthesizer."""
+    state = request.app.state
+    out: Dict[str, Any] = {"loaded": False}
+    parts: Dict[str, Any] = {}
+    adv = getattr(state, "multihop_advisor", None)
+    if adv is not None:
+        parts["advisor"] = adv.stats_dict()
+    pl = getattr(state, "multihop_planner", None)
+    if pl is not None:
+        parts["planner"] = pl.stats_dict()
+    pe = getattr(state, "plan_executor", None)
+    if pe is not None:
+        parts["executor"] = pe.stats_dict()
+    syn = getattr(state, "final_synthesizer", None)
+    if syn is not None:
+        parts["synthesizer"] = syn.stats_dict()
+    if parts:
+        out = {"loaded": True, **parts}
+    return JSONResponse(out)
+
+
+@router.post("/api/multihop/plan")
+async def multihop_plan_only(request: Request):
+    """Phase 6 — produce a plan without executing it. Body: {intent}."""
+    pl = getattr(request.app.state, "multihop_planner", None)
+    if pl is None:
+        return JSONResponse({"error": "planner not loaded"}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    intent = (body.get("intent") or body.get("message") or "").strip()
+    if not intent:
+        return JSONResponse({"error": "intent required"}, status_code=400)
+    import asyncio as _asyncio
+    loop = _asyncio.get_running_loop()
+    plan = await loop.run_in_executor(None, pl.plan, intent)
+    if plan is None:
+        return JSONResponse({"ok": False, "error": pl.stats_dict().get("last_error")})
+    return JSONResponse({"ok": True, "plan": plan.to_dict()})
+
+
+@router.post("/api/multihop/execute")
+async def multihop_execute(request: Request):
+    """Phase 6 — full intent → plan → execute → synth pipeline. Body:
+        {intent}                  produce plan + execute
+        {plan: {...}}             execute a hand-built plan (skip planner)
+    Returns the executed plan summary plus optional final synthesis."""
+    state = request.app.state
+    pe = getattr(state, "plan_executor", None)
+    pl = getattr(state, "multihop_planner", None)
+    syn = getattr(state, "final_synthesizer", None)
+    if pe is None:
+        return JSONResponse({"error": "plan_executor not loaded"}, status_code=503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+
+    plan_dict = body.get("plan")
+    intent = (body.get("intent") or body.get("message") or "").strip()
+
+    from core.plan_schema import Plan as _Plan
+    plan = None
+    if plan_dict:
+        try:
+            plan = _Plan.from_dict(plan_dict)
+        except Exception as e:
+            return JSONResponse({"error": f"invalid plan: {e}"}, status_code=400)
+    elif intent:
+        if pl is None:
+            return JSONResponse({"error": "planner not loaded — pass a 'plan' instead"}, status_code=503)
+        plan = pl.plan(intent)
+    else:
+        return JSONResponse({"error": "intent or plan required"}, status_code=400)
+
+    if plan is None:
+        return JSONResponse({"ok": False, "error": "planner returned no plan"})
+
+    # Run executor in a thread so FastAPI's main loop is free to handle
+    # any nested HTTP calls (brain:GET:/api/X targets recurse into us).
+    import asyncio as _asyncio
+    loop = _asyncio.get_running_loop()
+    exec_result = await loop.run_in_executor(None, pe.execute, plan)
+    out: Dict[str, Any] = {"ok": exec_result.get("ok"), **exec_result}
+
+    # Optional final synthesis (also off-thread to avoid blocking)
+    if syn is not None and (intent or plan.intent):
+        try:
+            text = await loop.run_in_executor(
+                None,
+                lambda: syn.synthesize(
+                    intent=intent or plan.intent,
+                    plan=plan,
+                    executed=exec_result.get("executed", {}),
+                    state=exec_result.get("state", {}),
+                    custom_prompt=plan.final_synthesis_prompt or None,
+                ),
+            )
+            out["final_text"] = text
+        except Exception as e:
+            out["synthesis_error"] = f"{type(e).__name__}: {e}"
+
+    return JSONResponse(out)
+
+
+@router.get("/api/multihop/history")
+async def multihop_history(request: Request, limit: int = 20):
+    """Phase 6.12 — last N plans (compact). Use /plan/{plan_id} for detail."""
+    pe = getattr(request.app.state, "plan_executor", None)
+    if pe is None:
+        return JSONResponse({"plans": []})
+    return JSONResponse({"plans": pe.recorder.list(limit=int(limit))})
+
+
+@router.get("/api/multihop/plan/{plan_id}")
+async def multihop_plan_detail(plan_id: str, request: Request):
+    """Phase 6.12 — full plan snapshot incl. per-hop results + state. For
+    UI replay."""
+    pe = getattr(request.app.state, "plan_executor", None)
+    if pe is None:
+        return JSONResponse({"error": "plan_executor not loaded"}, status_code=503)
+    p = pe.recorder.get(plan_id)
+    if p is None:
+        return JSONResponse({"error": f"plan '{plan_id}' not found"}, status_code=404)
+    return JSONResponse(p)
+
+
+@router.get("/api/multihop/stream")
+async def multihop_stream(request: Request):
+    """Phase 6.11 — Server-Sent Events stream. Subscribers get plan/hop
+    progress in real time. Events:
+      plan_started   payload: full Plan dict
+      hop_started    payload: hop spec + rendered_arg
+      hop_completed  payload: HopResult preview (incl. kg_hits, validator)
+      plan_replanned payload: trigger_step + new_hop_ids
+      plan_completed payload: ok + elapsed_s + plan_id
+    Connect via JS:  new EventSource('/api/multihop/stream')
+    """
+    import asyncio as _asyncio
+    import json as _json
+
+    pe = getattr(request.app.state, "plan_executor", None)
+    if pe is None:
+        return JSONResponse({"error": "plan_executor not loaded"}, status_code=503)
+
+    # Bind FastAPI's running loop so background-thread publishes can reach
+    # the queue safely. attach_loop() is idempotent.
+    loop = _asyncio.get_running_loop()
+    if hasattr(pe, "attach_loop"):
+        pe.attach_loop(loop)
+
+    q = pe.subscribe()
+
+    async def gen():
+        try:
+            yield ":connected\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await _asyncio.wait_for(q.get(), timeout=15)
+                except _asyncio.TimeoutError:
+                    yield ":keepalive\n\n"
+                    continue
+                kind = event.get("kind", "message")
+                payload = event.get("payload", {})
+                yield f"event: {kind}\ndata: {_json.dumps(payload, default=str)}\n\n"
+        finally:
+            try:
+                pe.unsubscribe(q)
+            except Exception:
+                pass
+
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 @router.get("/api/self_awareness/state")
@@ -2167,6 +2771,824 @@ async def predict_path(request: Request):
             "error": str(exc),
             "timestamp": time.time(),
         })
+
+
+# ===================================================================
+# Phase 10 — Self-Reflective Decision Loop endpoints
+# ===================================================================
+
+@router.get("/api/decisions/recall")
+async def decisions_recall(request: Request, q: str = "", k: int = 5) -> JSONResponse:
+    """Recall past decisions for an intent. ?q=<intent>&k=5"""
+    kg = getattr(request.app.state, "qdrant_kg", None)
+    if not q.strip() or kg is None:
+        return JSONResponse({"hits": [], "count": 0})
+    try:
+        from core import decision_recall
+        hits = decision_recall.recall(q, kg, k=k)
+        return JSONResponse({
+            "hits": hits, "count": len(hits), "query": q, "timestamp": time.time(),
+        })
+    except Exception as e:
+        return JSONResponse({"hits": [], "error": str(e)}, status_code=500)
+
+
+@router.post("/api/decisions/reward")
+async def decisions_reward(request: Request) -> JSONResponse:
+    """Attach an explicit reward to a past decision and propagate to self-model.
+    Body: {plan_id, reward: -1..1, comment?}"""
+    body = await request.json()
+    plan_id = (body or {}).get("plan_id", "")
+    reward = float((body or {}).get("reward", 0.0))
+    if not plan_id:
+        return JSONResponse({"ok": False, "error": "plan_id required"}, status_code=400)
+    kg = getattr(request.app.state, "qdrant_kg", None)
+    if kg is None:
+        return JSONResponse({"ok": False, "error": "kg unavailable"}, status_code=503)
+    try:
+        # Update decision_record reward field
+        from core.qdrant_kg import _point_id
+        ext_id = f"decision::{plan_id}"
+        pid = _point_id(ext_id)
+        recs = kg.client.retrieve(
+            collection_name="brain-decisions", ids=[pid],
+            with_payload=True, with_vectors=False,
+        )
+        if not recs:
+            return JSONResponse({"ok": False, "error": "decision not found"}, status_code=404)
+        existing = dict(recs[0].payload or {})
+        existing["reward"] = reward
+        existing["reward_comment"] = (body or {}).get("comment", "")[:300]
+        # Re-upsert via plain payload-set (no re-embed needed)
+        from qdrant_client.http.models import PointStruct  # type: ignore
+        kg.client.set_payload(
+            collection_name="brain-decisions",
+            payload=existing, points=[pid],
+        )
+        # Propagate to self-model: update each capability used
+        from core import decision_self_prior
+        intent = existing.get("intent", "")
+        for cap in (existing.get("capability_chain") or []):
+            decision_self_prior.update(
+                intent_text=intent, capability=cap,
+                success=(reward > 0), reward=reward,
+                plan_id=plan_id, kg=kg,
+            )
+        return JSONResponse({
+            "ok": True, "plan_id": plan_id, "reward": reward,
+            "capabilities_updated": len(existing.get("capability_chain") or []),
+        })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@router.get("/api/self/prior")
+async def self_prior(request: Request, q: str = "", k: int = 8) -> JSONResponse:
+    """Get capability-confidence prior for an intent. ?q=<intent>&k=8"""
+    kg = getattr(request.app.state, "qdrant_kg", None)
+    if not q.strip() or kg is None:
+        return JSONResponse({"capabilities": [], "best_capability": None})
+    try:
+        from core import decision_self_prior
+        return JSONResponse(decision_self_prior.prior(q, kg, k=k))
+    except Exception as e:
+        return JSONResponse({"capabilities": [], "error": str(e)}, status_code=500)
+
+
+@router.get("/api/self/snapshot")
+async def self_snapshot(request: Request, limit: int = 200) -> JSONResponse:
+    """Full self-model dump (sorted by n_observations desc)."""
+    kg = getattr(request.app.state, "qdrant_kg", None)
+    if kg is None:
+        return JSONResponse({"traits": [], "count": 0})
+    try:
+        from core import decision_self_prior
+        traits = decision_self_prior.snapshot(kg, limit=limit)
+        return JSONResponse({
+            "traits": traits, "count": len(traits), "timestamp": time.time(),
+        })
+    except Exception as e:
+        return JSONResponse({"traits": [], "error": str(e)}, status_code=500)
+
+
+@router.post("/api/critic/preview")
+async def critic_preview(request: Request) -> JSONResponse:
+    """Run plan_critic on an arbitrary intent without executing.
+    Body: {intent} -> generates a quick plan via planner then critiques it."""
+    body = await request.json()
+    intent = (body or {}).get("intent", "")
+    if not intent.strip():
+        return JSONResponse({"ok": False, "error": "intent required"}, status_code=400)
+    pe = getattr(request.app.state, "plan_executor", None)
+    planner = getattr(request.app.state, "multihop_planner", None) or \
+              getattr(request.app.state, "plan_generator", None)
+    if pe is None or planner is None:
+        return JSONResponse({"ok": False, "error": "planner unavailable"}, status_code=503)
+    try:
+        plan = planner.plan(intent) if hasattr(planner, "plan") else None
+        if plan is None:
+            return JSONResponse({"ok": False, "error": "plan generation failed"}, status_code=500)
+        from core import plan_critic
+        verdict = plan_critic.critique(plan, intent, pe.dispatcher)
+        return JSONResponse({
+            "ok": True, "intent": intent,
+            "plan_id": getattr(plan, "plan_id", None),
+            "verdict": verdict,
+            "plan": plan.to_dict() if hasattr(plan, "to_dict") else None,
+        })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+# ===================================================================
+# Phase 11.C — Event Mapping (Event → Agent → MCP-Tool)
+# ===================================================================
+
+@router.get("/api/events/mapping")
+async def events_mapping(request: Request) -> JSONResponse:
+    """Join all events with their claiming agents and MCP-tools.
+
+    Phase 11.D — uses two new sources:
+      - AgentYamlRegistry (configs/agents/*.yaml) for explicit event->agent
+        mappings. Auto-seeded from namespace-defaults on first call.
+      - McpDiscovery (data/mcp_tools_cache.json) for live tool inventory.
+
+    Returns per event: {event_id, namespace, agent, agent_source,
+                        tool, tool_description, tool_args, coverage}
+    Plus: per-namespace stats, full agent list, full tool inventory.
+    """
+    import os, re, json
+    kg = getattr(request.app.state, "qdrant_kg", None)
+    if kg is None:
+        return JSONResponse({"events": [], "agents": [], "tools": [],
+                             "namespaces": {}, "error": "kg unavailable"})
+
+    try:
+        from core.agent_yaml_registry import get_registry
+        from core.mcp_discovery import get_discovery
+        registry = get_registry()
+        discovery = get_discovery()
+        registry.reload_if_changed()
+        # 1. Pull all 137 events from procedural collection
+        events = []
+        try:
+            recs, _ = kg.client.scroll(
+                collection_name="brain-procedural",
+                limit=400,
+                with_payload=True, with_vectors=False,
+            )
+            for r in recs or []:
+                p = dict(r.payload or {})
+                if p.get("node_type") == "event":
+                    eid = p.get("event_id") or p.get("title") or ""
+                    if not eid:
+                        continue
+                    ns = eid.split(".", 1)[0] if "." in eid else "(other)"
+                    events.append({
+                        "event_id": eid,
+                        "namespace": ns,
+                        "title": p.get("title", eid),
+                        "description": (p.get("description") or "")[:200],
+                    })
+        except Exception as e:
+            return JSONResponse({"events": [], "error": f"kg scroll: {e}"},
+                                status_code=500)
+
+        # 2. Read OpenFang agent manifests from filesystem
+        agents = []
+        try:
+            agent_dir = "C:/Users/User/Desktop/Vibemind_V1/vibemind-os/openfang/agents"
+            if os.path.isdir(agent_dir):
+                for sub in sorted(os.listdir(agent_dir)):
+                    sub_path = os.path.join(agent_dir, sub)
+                    toml_path = os.path.join(sub_path, "agent.toml")
+                    if not os.path.isfile(toml_path):
+                        continue
+                    txt = open(toml_path, encoding="utf-8").read()
+                    name_m = re.search(r'^name\s*=\s*"([^"]+)"', txt, re.M)
+                    desc_m = re.search(r'^description\s*=\s*"([^"]+)"', txt, re.M)
+                    tags_m = re.search(r'^tags\s*=\s*\[([^\]]+)\]', txt, re.M)
+                    mcp_m = re.search(
+                        r'\[mcp_allowed\]\s*\nservers\s*=\s*\[([^\]]+)\]', txt
+                    )
+                    model_m = re.search(r'^model\s*=\s*"([^"]+)"', txt, re.M)
+                    tags = []
+                    if tags_m:
+                        tags = [t.strip().strip('"') for t in tags_m.group(1).split(",")]
+                    mcp_servers = []
+                    if mcp_m:
+                        mcp_servers = [t.strip().strip('"')
+                                       for t in mcp_m.group(1).split(",")]
+                    spaces_in_tags = [t for t in tags if t.startswith("space:")]
+                    agents.append({
+                        "name": name_m.group(1) if name_m else sub,
+                        "description": desc_m.group(1) if desc_m else "",
+                        "tags": tags,
+                        "spaces": [s.replace("space:", "") for s in spaces_in_tags],
+                        "mcp_servers": mcp_servers,
+                        "model": model_m.group(1) if model_m else "",
+                    })
+        except Exception as e:
+            agents = []
+            err_agents = str(e)
+
+        # 3. Compute namespace -> default agent (legacy heuristic) for fallback.
+        # Events use singular namespaces (bubble.create) but agents use plural
+        # space tags (space:bubbles). Strip trailing 's' on space tag for match.
+        def _normalize_ns(ns: str) -> list:
+            """Return possible normalisations: ['bubbles', 'bubble'] etc."""
+            out = [ns]
+            if ns.endswith("s") and len(ns) > 2:
+                out.append(ns[:-1])
+            return out
+        ns_to_agent_default = {}
+        for a in agents:
+            for s in a.get("spaces", []):
+                for variant in _normalize_ns(s):
+                    ns_to_agent_default.setdefault(variant, []).append(a["name"])
+            n = a["name"].replace("brain-", "").replace("-phi3", "")
+            if n:
+                for variant in _normalize_ns(n):
+                    if variant not in ns_to_agent_default:
+                        ns_to_agent_default.setdefault(variant, []).append(a["name"])
+
+        # 4. Auto-seed registry from namespace defaults (idempotent)
+        events_by_ns: Dict[str, list] = {}
+        for ev in events:
+            events_by_ns.setdefault(ev["namespace"], []).append(ev["event_id"])
+        # Pick first agent per namespace as the default for seeding
+        ns_to_agent_seed = {
+            ns: agents_list[0] for ns, agents_list in ns_to_agent_default.items()
+            if agents_list
+        }
+        if registry.stats_dict().get("events_total", 0) == 0:
+            registry.auto_seed(ns_to_agent_seed, events_by_ns)
+
+        # 5. Build per-event mapping using registry (explicit) + discovery (tool)
+        mapped = []
+        agent_lookup = {a["name"]: a for a in agents}
+        for ev in events:
+            ns = ev["namespace"]
+            # 5a. Resolve agent: explicit YAML claim > namespace default
+            assigned_agent = registry.get_event_agent(ev["event_id"])
+            agent_source = "yaml" if assigned_agent else None
+            if not assigned_agent:
+                claims = ns_to_agent_default.get(ns, [])
+                if claims:
+                    assigned_agent = claims[0]
+                    agent_source = "namespace_default"
+
+            # 5b. Resolve tool via live discovery using agent's mcp_allowed
+            tool_info = None
+            if assigned_agent and assigned_agent in agent_lookup:
+                mcp_srv = agent_lookup[assigned_agent].get("mcp_servers", [])
+                tool_info = discovery.find_tool_for_event(ev["event_id"], mcp_srv)
+
+            tool = ""
+            tool_desc = ""
+            tool_args = {}
+            if tool_info:
+                tool = f"{tool_info['server']}/{tool_info['tool']}"
+                tool_desc = tool_info.get("description", "")
+                tool_args = tool_info.get("input_schema", {})
+
+            coverage = "full" if (assigned_agent and tool) else (
+                "partial" if assigned_agent else "none"
+            )
+            mapped.append({
+                "event_id": ev["event_id"],
+                "namespace": ns,
+                "title": ev["title"],
+                "description": ev["description"],
+                "agents_claiming": ns_to_agent_default.get(ns, []),
+                "agent": assigned_agent or "",
+                "agent_source": agent_source or "",
+                "tool": tool,
+                "tool_description": tool_desc,
+                "tool_args": tool_args,
+                "coverage": coverage,
+            })
+
+        # 6. Aggregate stats
+        ns_stats = {}
+        for m in mapped:
+            ns = m["namespace"]
+            ns_stats.setdefault(ns, {"total": 0, "full": 0, "partial": 0, "none": 0})
+            ns_stats[ns]["total"] += 1
+            ns_stats[ns][m["coverage"]] += 1
+
+        return JSONResponse({
+            "ok": True,
+            "events_count": len(mapped),
+            "agents_count": len(agents),
+            "events": mapped,
+            "agents": agents,
+            "mcp_servers": discovery.list_servers(),
+            "namespaces": ns_stats,
+            "registry_stats": registry.stats_dict(),
+            "discovery_stats": discovery.stats_dict(),
+            "timestamp": time.time(),
+        })
+
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@router.post("/api/events/assign")
+async def events_assign(request: Request) -> JSONResponse:
+    """Move an event from one agent to another.
+    Body: {event_id, to_agent, from_agent? (auto-resolved if missing)}
+    """
+    try:
+        from core.agent_yaml_registry import get_registry
+        body = await request.json()
+        event_id = (body or {}).get("event_id", "").strip()
+        to_agent = (body or {}).get("to_agent", "").strip()
+        from_agent = (body or {}).get("from_agent", "").strip()
+        if not event_id or not to_agent:
+            return JSONResponse(
+                {"ok": False, "error": "event_id and to_agent required"},
+                status_code=400,
+            )
+        registry = get_registry()
+        if not from_agent:
+            from_agent = registry.get_event_agent(event_id) or ""
+        result = registry.move_event(event_id, from_agent, to_agent)
+        return JSONResponse(result)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@router.post("/api/events/unassign")
+async def events_unassign(request: Request) -> JSONResponse:
+    """Remove an event's claim from an agent.
+    Body: {event_id, from_agent}
+    """
+    try:
+        from core.agent_yaml_registry import get_registry
+        body = await request.json()
+        event_id = (body or {}).get("event_id", "").strip()
+        from_agent = (body or {}).get("from_agent", "").strip()
+        if not event_id or not from_agent:
+            return JSONResponse(
+                {"ok": False, "error": "event_id and from_agent required"},
+                status_code=400,
+            )
+        registry = get_registry()
+        return JSONResponse(registry.remove_event(event_id, from_agent))
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@router.get("/api/agents/yaml/list")
+async def agents_yaml_list(request: Request) -> JSONResponse:
+    """List all agent-YAML manifests with their claimed events."""
+    try:
+        from core.agent_yaml_registry import get_registry
+        registry = get_registry()
+        registry.reload_if_changed()
+        return JSONResponse({
+            "ok": True,
+            "agents": registry.list_agents(),
+            "stats": registry.stats_dict(),
+        })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@router.get("/api/agents/{agent_name}/tools")
+async def agent_tools(request: Request, agent_name: str) -> JSONResponse:
+    """Detailed tool list for one agent: all tools from all servers in
+    that agent's mcp_allowed list. Used by UI to show 'alternative tools
+    available' when default tool-resolution doesn't pick the right one.
+    """
+    import os, re
+    try:
+        from core.mcp_discovery import get_discovery
+        # Read agent.toml to get mcp_allowed
+        agent_dir = "C:/Users/User/Desktop/Vibemind_V1/vibemind-os/openfang/agents/" + agent_name
+        toml_path = os.path.join(agent_dir, "agent.toml")
+        if not os.path.isfile(toml_path):
+            return JSONResponse({"ok": False, "error": "agent not found"},
+                                status_code=404)
+        txt = open(toml_path, encoding="utf-8").read()
+        mcp_m = re.search(r'\[mcp_allowed\]\s*\nservers\s*=\s*\[([^\]]+)\]', txt)
+        mcp_servers = []
+        if mcp_m:
+            mcp_servers = [t.strip().strip('"')
+                           for t in mcp_m.group(1).split(",")]
+        discovery = get_discovery()
+        tools_by_server = {}
+        for srv in mcp_servers:
+            tools_by_server[srv] = discovery.list_tools(srv)
+        return JSONResponse({
+            "ok": True,
+            "agent": agent_name,
+            "mcp_servers": mcp_servers,
+            "tools_by_server": tools_by_server,
+        })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@router.post("/api/mcp/discover")
+async def mcp_discover(request: Request) -> JSONResponse:
+    """Trigger fresh MCP-tool discovery (parallel spawn all servers).
+    Takes 5-15s depending on server count. Updates cache."""
+    try:
+        from core.mcp_discovery import get_discovery
+        discovery = get_discovery()
+        result = discovery.discover_all()
+        return JSONResponse(result)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@router.get("/api/events/mapping.xlsx")
+async def events_mapping_xlsx(request: Request):
+    """Phase 11.E — Excel export of the full event-mapping inventory.
+
+    Returns a 4-sheet workbook:
+      Sheet 1 'Events'   — all 137 events × namespace × agent × tool × coverage
+      Sheet 2 'Agents'   — all OpenFang agents (name, model, tags, mcp_servers)
+      Sheet 3 'Tools'    — all discovered MCP tools (server, name, description, args)
+      Sheet 4 'Coverage' — pivot summary per namespace
+    """
+    from fastapi.responses import Response
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    except Exception:
+        return JSONResponse({"ok": False, "error": "openpyxl not installed"},
+                            status_code=500)
+    try:
+        from core.agent_yaml_registry import get_registry
+        from core.mcp_discovery import get_discovery
+        registry = get_registry()
+        discovery = get_discovery()
+        registry.reload_if_changed()
+
+        # Re-fetch the same data the JSON endpoint produces
+        # (simplified: we call ourselves internally via direct python calls)
+        kg = getattr(request.app.state, "qdrant_kg", None)
+        if kg is None:
+            return JSONResponse({"ok": False, "error": "kg unavailable"},
+                                status_code=503)
+
+        # 1. Events
+        events = []
+        recs, _ = kg.client.scroll(
+            collection_name="brain-procedural", limit=400,
+            with_payload=True, with_vectors=False,
+        )
+        for r in recs or []:
+            p = dict(r.payload or {})
+            if p.get("node_type") == "event":
+                eid = p.get("event_id") or p.get("title") or ""
+                if not eid:
+                    continue
+                ns = eid.split(".", 1)[0] if "." in eid else "(other)"
+                events.append({
+                    "event_id": eid, "namespace": ns,
+                    "title": p.get("title", eid),
+                    "description": (p.get("description") or "")[:200],
+                })
+
+        # 2. Agents from OpenFang manifests
+        import os, re
+        agents = []
+        agent_dir = "C:/Users/User/Desktop/Vibemind_V1/vibemind-os/openfang/agents"
+        if os.path.isdir(agent_dir):
+            for sub in sorted(os.listdir(agent_dir)):
+                toml_path = os.path.join(agent_dir, sub, "agent.toml")
+                if not os.path.isfile(toml_path):
+                    continue
+                txt = open(toml_path, encoding="utf-8").read()
+                name_m = re.search(r'^name\s*=\s*"([^"]+)"', txt, re.M)
+                desc_m = re.search(r'^description\s*=\s*"([^"]+)"', txt, re.M)
+                tags_m = re.search(r'^tags\s*=\s*\[([^\]]+)\]', txt, re.M)
+                mcp_m = re.search(
+                    r'\[mcp_allowed\]\s*\nservers\s*=\s*\[([^\]]+)\]', txt
+                )
+                model_m = re.search(r'^model\s*=\s*"([^"]+)"', txt, re.M)
+                tags = []
+                if tags_m:
+                    tags = [t.strip().strip('"') for t in tags_m.group(1).split(",")]
+                mcp_servers = []
+                if mcp_m:
+                    mcp_servers = [t.strip().strip('"')
+                                   for t in mcp_m.group(1).split(",")]
+                agents.append({
+                    "name": name_m.group(1) if name_m else sub,
+                    "description": desc_m.group(1) if desc_m else "",
+                    "tags": tags,
+                    "mcp_servers": mcp_servers,
+                    "model": model_m.group(1) if model_m else "",
+                })
+
+        agent_lookup = {a["name"]: a for a in agents}
+
+        # Build agent-resolution like events_mapping does
+        def _normalize_ns(ns: str) -> list:
+            out = [ns]
+            if ns.endswith("s") and len(ns) > 2:
+                out.append(ns[:-1])
+            return out
+        ns_to_agent_default = {}
+        for a in agents:
+            for tag in a.get("tags", []):
+                if tag.startswith("space:"):
+                    s = tag.replace("space:", "")
+                    for variant in _normalize_ns(s):
+                        ns_to_agent_default.setdefault(variant, []).append(a["name"])
+            n = a["name"].replace("brain-", "").replace("-phi3", "")
+            if n:
+                for variant in _normalize_ns(n):
+                    if variant not in ns_to_agent_default:
+                        ns_to_agent_default.setdefault(variant, []).append(a["name"])
+
+        # ── Build the workbook ──────────────────────────────────────
+        wb = openpyxl.Workbook()
+        # Styling helpers
+        HEADER_FILL = PatternFill(start_color="0F1923", end_color="0F1923", fill_type="solid")
+        HEADER_FONT = Font(bold=True, color="4FC3F7", size=11)
+        FULL_FILL = PatternFill(start_color="1B4D2A", end_color="1B4D2A", fill_type="solid")
+        PARTIAL_FILL = PatternFill(start_color="4D3D14", end_color="4D3D14", fill_type="solid")
+        NONE_FILL = PatternFill(start_color="4D1A1A", end_color="4D1A1A", fill_type="solid")
+        thin = Side(border_style="thin", color="2A3F54")
+        BORDER = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        def _style_header_row(ws, row=1):
+            for cell in ws[row]:
+                cell.fill = HEADER_FILL
+                cell.font = HEADER_FONT
+                cell.alignment = Alignment(horizontal="left", vertical="center")
+                cell.border = BORDER
+            ws.freeze_panes = "A2"
+
+        # ─── Sheet 1: Events ─────────────────────────────────────────
+        ws_events = wb.active
+        ws_events.title = "Events"
+        ws_events.append([
+            "Namespace", "Event ID", "Event Description",
+            "Agent", "Agent Source", "MCP Server", "MCP Tool",
+            "Tool Description", "Tool Args (JSON)", "Coverage",
+        ])
+        _style_header_row(ws_events)
+        col_widths = [14, 32, 50, 22, 18, 18, 28, 60, 40, 12]
+        for i, w in enumerate(col_widths, start=1):
+            ws_events.column_dimensions[
+                openpyxl.utils.get_column_letter(i)
+            ].width = w
+
+        full_count = partial_count = none_count = 0
+        for ev in sorted(events, key=lambda e: (e["namespace"], e["event_id"])):
+            assigned_agent = registry.get_event_agent(ev["event_id"])
+            agent_source = "yaml" if assigned_agent else None
+            if not assigned_agent:
+                claims = ns_to_agent_default.get(ev["namespace"], [])
+                if claims:
+                    assigned_agent = claims[0]
+                    agent_source = "namespace_default"
+
+            tool_info = None
+            if assigned_agent and assigned_agent in agent_lookup:
+                mcp_srv = agent_lookup[assigned_agent].get("mcp_servers", [])
+                tool_info = discovery.find_tool_for_event(
+                    ev["event_id"], mcp_srv,
+                )
+
+            mcp_server = tool_info["server"] if tool_info else ""
+            tool_name = tool_info["tool"] if tool_info else ""
+            tool_desc = (tool_info or {}).get("description", "")
+            tool_args = (tool_info or {}).get("input_schema", {})
+            try:
+                tool_args_str = json.dumps(tool_args, ensure_ascii=False)[:500]
+            except Exception:
+                tool_args_str = ""
+
+            coverage = "full" if (assigned_agent and tool_name) else (
+                "partial" if assigned_agent else "none"
+            )
+            if coverage == "full":
+                full_count += 1
+            elif coverage == "partial":
+                partial_count += 1
+            else:
+                none_count += 1
+
+            row = [
+                ev["namespace"], ev["event_id"], ev["description"],
+                assigned_agent or "", agent_source or "",
+                mcp_server, tool_name, tool_desc[:300], tool_args_str,
+                coverage,
+            ]
+            ws_events.append(row)
+            # Color the coverage cell
+            row_idx = ws_events.max_row
+            cov_cell = ws_events.cell(row=row_idx, column=10)
+            cov_cell.fill = (
+                FULL_FILL if coverage == "full" else
+                PARTIAL_FILL if coverage == "partial" else NONE_FILL
+            )
+            cov_cell.font = Font(bold=True, color="FFFFFF")
+            cov_cell.alignment = Alignment(horizontal="center")
+
+        ws_events.auto_filter.ref = ws_events.dimensions
+
+        # ─── Sheet 2: Agents ─────────────────────────────────────────
+        ws_agents = wb.create_sheet("Agents")
+        ws_agents.append([
+            "Agent Name", "Description", "Model",
+            "Tags", "MCP Servers Allowed",
+            "Events Claimed (from YAML)", "Events Count",
+        ])
+        _style_header_row(ws_agents)
+        for i, w in enumerate([28, 50, 30, 35, 35, 60, 12], start=1):
+            ws_agents.column_dimensions[
+                openpyxl.utils.get_column_letter(i)
+            ].width = w
+        for a in sorted(agents, key=lambda x: x["name"]):
+            claimed = registry.get_agent_events(a["name"])
+            ws_agents.append([
+                a["name"], a.get("description", ""), a.get("model", ""),
+                ", ".join(a.get("tags") or []),
+                ", ".join(a.get("mcp_servers") or []),
+                ", ".join(claimed),
+                len(claimed),
+            ])
+        ws_agents.auto_filter.ref = ws_agents.dimensions
+
+        # ─── Sheet 3: Tools ──────────────────────────────────────────
+        ws_tools = wb.create_sheet("Tools")
+        ws_tools.append([
+            "MCP Server", "Tool Name", "Description", "Args Schema (JSON)",
+        ])
+        _style_header_row(ws_tools)
+        for i, w in enumerate([22, 32, 70, 50], start=1):
+            ws_tools.column_dimensions[
+                openpyxl.utils.get_column_letter(i)
+            ].width = w
+        all_tools = discovery.all_tools_flat()
+        for t in sorted(all_tools, key=lambda x: (x.get("server", ""), x.get("name", ""))):
+            try:
+                args_str = json.dumps(t.get("input_schema") or {}, ensure_ascii=False)[:500]
+            except Exception:
+                args_str = ""
+            ws_tools.append([
+                t.get("server", ""), t.get("name", ""),
+                (t.get("description") or "")[:400],
+                args_str,
+            ])
+        ws_tools.auto_filter.ref = ws_tools.dimensions
+
+        # ─── Sheet 4: Coverage Pivot ────────────────────────────────
+        ws_cov = wb.create_sheet("Coverage")
+        ws_cov.append(["Namespace", "Total", "Full", "Partial", "None", "Coverage %"])
+        _style_header_row(ws_cov)
+        for i, w in enumerate([16, 10, 10, 10, 10, 14], start=1):
+            ws_cov.column_dimensions[
+                openpyxl.utils.get_column_letter(i)
+            ].width = w
+        ns_stats: Dict[str, Dict[str, int]] = {}
+        for ev in events:
+            ns = ev["namespace"]
+            assigned_agent = registry.get_event_agent(ev["event_id"])
+            if not assigned_agent:
+                claims = ns_to_agent_default.get(ns, [])
+                if claims:
+                    assigned_agent = claims[0]
+            tool_info = None
+            if assigned_agent and assigned_agent in agent_lookup:
+                tool_info = discovery.find_tool_for_event(
+                    ev["event_id"], agent_lookup[assigned_agent].get("mcp_servers", []),
+                )
+            cov = "full" if (assigned_agent and tool_info) else (
+                "partial" if assigned_agent else "none"
+            )
+            ns_stats.setdefault(ns, {"total": 0, "full": 0, "partial": 0, "none": 0})
+            ns_stats[ns]["total"] += 1
+            ns_stats[ns][cov] += 1
+
+        for ns in sorted(ns_stats.keys()):
+            s = ns_stats[ns]
+            pct = round(100 * s["full"] / max(1, s["total"]), 1)
+            row_idx = ws_cov.max_row + 1
+            ws_cov.append([ns, s["total"], s["full"], s["partial"], s["none"], pct])
+            # Color full cell green, partial yellow, none red
+            ws_cov.cell(row=row_idx, column=3).fill = FULL_FILL
+            ws_cov.cell(row=row_idx, column=4).fill = PARTIAL_FILL
+            ws_cov.cell(row=row_idx, column=5).fill = NONE_FILL
+            for c in range(3, 6):
+                ws_cov.cell(row=row_idx, column=c).font = Font(bold=True, color="FFFFFF")
+                ws_cov.cell(row=row_idx, column=c).alignment = Alignment(horizontal="center")
+        # Totals row
+        total_row = ws_cov.max_row + 1
+        ws_cov.append(["TOTAL", len(events), full_count, partial_count, none_count,
+                       round(100 * full_count / max(1, len(events)), 1)])
+        for c in range(1, 7):
+            cell = ws_cov.cell(row=total_row, column=c)
+            cell.font = Font(bold=True, color="4FC3F7")
+            cell.fill = HEADER_FILL
+
+        # ─── Stream as binary ───────────────────────────────────────
+        from io import BytesIO
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        from datetime import datetime
+        fname = f"vibemind_event_mapping_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+        return Response(
+            content=buf.read(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+    except Exception as e:
+        import traceback
+        return JSONResponse(
+            {"ok": False, "error": str(e), "trace": traceback.format_exc()[:1000]},
+            status_code=500,
+        )
+
+
+@router.post("/api/events/publish")
+async def events_publish(request: Request) -> JSONResponse:
+    """Phase 11.F — receive an event from a tool (in any process).
+    Body: {event_id, params?, result?, ok?, source?, agent?, plan_id?, context?}
+    """
+    try:
+        from core.space_event_bus import get_bus
+        body = await request.json()
+        bus = get_bus()
+        if bus._publish_loop is None:
+            try:
+                bus.attach_loop(asyncio.get_running_loop())
+            except Exception:
+                pass
+        return JSONResponse(bus.publish(body or {}))
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@router.get("/api/events/stream")
+async def events_stream(request: Request):
+    """Phase 11.F — SSE stream of all space-events (bubble.*, idea.*, etc).
+    First message is the recent ring (last 30); subsequent are live."""
+    from fastapi.responses import StreamingResponse
+    from core.space_event_bus import get_bus
+
+    bus = get_bus()
+    try:
+        bus.attach_loop(asyncio.get_running_loop())
+    except Exception:
+        pass
+    q = bus.subscribe()
+
+    async def gen():
+        try:
+            recent = bus.recent(30)
+            yield f"event: recent\ndata: {json.dumps(recent)}\n\n"
+            yield "event: ready\ndata: {}\n\n"
+            while True:
+                try:
+                    ev = await asyncio.wait_for(q.get(), timeout=20.0)
+                    yield f"event: space_event\ndata: {json.dumps(ev)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            raise
+        finally:
+            bus.unsubscribe(q)
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
+
+
+@router.get("/api/events/recent")
+async def events_recent(request: Request, limit: int = 50) -> JSONResponse:
+    try:
+        from core.space_event_bus import get_bus
+        return JSONResponse({
+            "ok": True,
+            "events": get_bus().recent(limit=limit),
+            "stats": get_bus().stats_dict(),
+        })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@router.get("/api/mcp/discovery_stats")
+async def mcp_discovery_stats(request: Request) -> JSONResponse:
+    try:
+        from core.mcp_discovery import get_discovery
+        return JSONResponse({
+            "ok": True,
+            "stats": get_discovery().stats_dict(),
+            "servers": get_discovery().list_servers(),
+        })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
 # ===================================================================

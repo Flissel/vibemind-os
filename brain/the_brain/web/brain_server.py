@@ -333,6 +333,75 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
             except Exception as e:
                 state.mcmp_gardener = None
                 print(f"  [WARN] MCMP gardener failed to start: {e}")
+
+            # Phase 8.B: DecisionGraph — Neo4j-backed persistent
+            # cluster/plan/dispatch history for the Cytoscape UI.
+            state.decision_graph = None
+            try:
+                from core.decision_graph import DecisionGraph
+                dg = DecisionGraph()
+                state.decision_graph = dg
+                if dg.is_connected():
+                    print(f"  [OK] DecisionGraph connected (Neo4j {dg.stats().get('uri','?')})")
+                else:
+                    print(f"  [WARN] DecisionGraph disconnected: {dg._connect_error}")
+            except Exception as e:
+                state.decision_graph_error = str(e)
+                print(f"  [WARN] DecisionGraph init failed: {e}")
+
+            # Phase 9.0.4: ToolCallApprovalGate — risk-tagging + post-hoc
+            # approval tracker for sensitive MCP tool-calls. Named uniquely
+            # to avoid collision with AgentLoop's older `ApprovalGate`.
+            state.approval_gate = None
+            try:
+                from core.approval_gate import ToolCallApprovalGate
+                state.approval_gate = ToolCallApprovalGate(decision_graph=state.decision_graph)
+                print("  [OK] ToolCallApprovalGate ready (high-risk tool-calls flagged)")
+            except Exception as e:
+                state.approval_gate_error = str(e)
+                print(f"  [WARN] ToolCallApprovalGate init failed: {e}")
+
+            # Phase 8.1: ClusterEngine — per-cluster activation aggregator
+            # over thought-evolution UMAP+DBSCAN. Drives Self-Steerer (8.3)
+            # and Galaxy UI (8.2).
+            state.cluster_engine = None
+            try:
+                from core.cluster_engine import ClusterEngine
+                ce = ClusterEngine(
+                    brain_chat=state.brain_chat,
+                    kg=kg,
+                    decision_graph=state.decision_graph,
+                )
+                ce.start()
+                state.cluster_engine = ce
+                print("  [OK] ClusterEngine started (cluster activation, 60s tick)")
+            except Exception as e:
+                state.cluster_engine_error = str(e)
+                print(f"  [WARN] ClusterEngine failed to start: {e}")
+
+            # Phase 8.3: SelfSteerer — autonomous capability dispatch when
+            # cluster activations cross threshold. Closes the loop:
+            # cluster activation → execute → result back as thought.
+            state.self_steerer = None
+            try:
+                if state.cluster_engine is not None:
+                    from core.self_steerer import SelfSteerer
+                    ss = SelfSteerer(
+                        cluster_engine=state.cluster_engine,
+                        capability_router=getattr(state, "capability_router", None),
+                        brain_chat=state.brain_chat,
+                        decision_graph=state.decision_graph,
+                    )
+                    ss.start()
+                    state.self_steerer = ss
+                    print(
+                        f"  [OK] SelfSteerer started "
+                        f"({ss.stats_dict()['mappings_loaded']} cluster->capability mappings, "
+                        f"30s tick)"
+                    )
+            except Exception as e:
+                state.self_steerer_error = str(e)
+                print(f"  [WARN] SelfSteerer failed to start: {e}")
         except Exception as e:
             state.qdrant_kg = None
             state.qdrant_kg_error = str(e)
@@ -522,10 +591,25 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
             cap_path = _brain_dir / "data" / "capabilities.yaml"
             cr = CapabilityRouter(cap_path)
             state.capability_router = cr
+            # Phase 8.3 — inject router into SelfSteerer (init order: SelfSteerer
+            # is built before CapabilityRouter, so we backfill here).
+            ss = getattr(state, "self_steerer", None)
+            if ss is not None and hasattr(ss, "set_capability_router"):
+                ss.set_capability_router(cr)
             if cr.stats_dict().get("registry_size", 0) > 0:
                 de = getattr(state, "discourse_engine", None)
                 if de is not None and hasattr(de, "set_capability_router"):
                     de.set_capability_router(cr)
+                # Phase 2 — wire FungusClient embedder for semantic fallback.
+                # Reuses the already-loaded sentence-transformer (no second
+                # 1.2 GB model loaded). Falls back to regex-only if fungus
+                # is offline.
+                fc = getattr(state, "fungus_client", None)
+                if fc is not None and getattr(fc, "is_online", False):
+                    try:
+                        cr.set_embedder(fc)
+                    except Exception as embed_err:
+                        print(f"  [WARN] CapabilityRouter semantic wiring failed: {embed_err}")
                 # Phase 1.5 — validate execution_targets at startup so
                 # registry-rot (typo'd module path, missing function) is
                 # visible immediately, not on first user-triggered call.
@@ -576,6 +660,106 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
         except Exception as e:
             state.capability_router_error = str(e)
             print(f"  [WARN] CapabilityRouter init failed: {e}")
+
+        # Phase 3: CapabilityValidator — post-execution sanity check for
+        # direct-execution capabilities. Wired into DiscourseEngine; runs
+        # only when a capability has a `validator` block in YAML.
+        state.capability_validator = None
+        try:
+            from core.capability_validator import CapabilityValidator
+            cv = CapabilityValidator()
+            state.capability_validator = cv
+            de = getattr(state, "discourse_engine", None)
+            if de is not None and hasattr(de, "set_validator"):
+                de.set_validator(cv)
+            print("  [OK] CapabilityValidator wired (rule + agent kinds available)")
+        except Exception as e:
+            state.capability_validator_error = str(e)
+            print(f"  [WARN] CapabilityValidator init failed: {e}")
+
+        # Phase 6: Multi-hop Plan Executor — advisor + planner + executor +
+        # synthesizer. Wired into BrainChat so connective intents become
+        # multi-hop DAGs instead of single-hop routes.
+        state.multihop_advisor = None
+        state.multihop_planner = None
+        state.plan_executor = None
+        state.final_synthesizer = None
+        try:
+            from core.multihop_advisor import MultiHopAdvisor
+            from core.planner_llm import PlannerLLM
+            from core.plan_executor import PlanExecutor
+            from core.final_synthesizer import FinalSynthesizer
+            adv = MultiHopAdvisor()
+            pl = PlannerLLM(
+                dispatcher=getattr(state, "subagent_dispatcher", None),
+                capability_router=getattr(state, "capability_router", None),
+            )
+            pe = PlanExecutor(
+                capability_router=getattr(state, "capability_router", None),
+                validator=getattr(state, "capability_validator", None),
+                dispatcher=getattr(state, "subagent_dispatcher", None),
+                kg=getattr(state, "qdrant_kg", None),
+            )
+            # Phase 6.14.2 — wire DiscourseEngine for plan-time pause/resume
+            de_for_plan = getattr(state, "discourse_engine", None)
+            if de_for_plan is not None and hasattr(pe, "attach_discourse_engine"):
+                pe.attach_discourse_engine(de_for_plan)
+            # Phase 7.5 — wire CTE so plan completions/rewards seed the thought stream
+            cte_for_events = getattr(state, "continuous_thinking", None)
+            if cte_for_events is not None:
+                if hasattr(pe, "attach_continuous_thinking"):
+                    pe.attach_continuous_thinking(cte_for_events)
+                if de_for_plan is not None and hasattr(cte_for_events, "set_discourse_engine_ref"):
+                    cte_for_events.set_discourse_engine_ref(de_for_plan)
+            # Phase 8.B — wire DecisionGraph so plans/hops are persisted in Neo4j
+            dg_for_plan = getattr(state, "decision_graph", None)
+            if dg_for_plan is not None and hasattr(pe, "attach_decision_graph"):
+                pe.attach_decision_graph(dg_for_plan)
+            syn = FinalSynthesizer(dispatcher=getattr(state, "subagent_dispatcher", None))
+            state.multihop_advisor = adv
+            state.multihop_planner = pl
+            state.plan_executor = pe
+            state.final_synthesizer = syn
+            # Wire into BrainChat so /api/brain/chat goes through it
+            bc = getattr(state, "brain_chat", None)
+            if bc is not None and hasattr(bc, "set_multihop"):
+                bc.set_multihop(advisor=adv, planner=pl, executor=pe, synthesizer=syn)
+            print("  [OK] MultiHopExecutor wired (advisor + planner + executor + synth)")
+        except Exception as e:
+            state.multihop_error = str(e)
+            print(f"  [WARN] MultiHopExecutor init failed: {e}")
+
+        # Phase 5: CapabilityCurator — telemetry recorder + cluster-based
+        # suggestion generator over no-match intents. Wired into
+        # DiscourseEngine so every routing decision is logged.
+        state.capability_curator = None
+        try:
+            from core.capability_curator import CapabilityCurator
+            from pathlib import Path as _P2
+            _brain_dir2 = _P2(__file__).resolve().parent.parent
+            cap_path2 = _brain_dir2 / "data" / "capabilities.yaml"
+            cur = CapabilityCurator(
+                registry_path=cap_path2,
+                embedder=getattr(state, "fungus_client", None),
+                capability_router=getattr(state, "capability_router", None),
+            )
+            state.capability_curator = cur
+            de2 = getattr(state, "discourse_engine", None)
+            if de2 is not None and hasattr(de2, "set_curator"):
+                de2.set_curator(cur)
+            # Phase 7.5 — wire CTE so cluster suggestions seed thought stream
+            cte_for_curator = getattr(state, "continuous_thinking", None)
+            if cte_for_curator is not None and hasattr(cur, "attach_continuous_thinking"):
+                cur.attach_continuous_thinking(cte_for_curator)
+            cur_stats = cur.stats_dict()
+            print(
+                f"  [OK] CapabilityCurator wired "
+                f"(loaded {cur_stats['intents_logged']} historical intents, "
+                f"{cur_stats['no_match_logged']} no-matches)"
+            )
+        except Exception as e:
+            state.capability_curator_error = str(e)
+            print(f"  [WARN] CapabilityCurator init failed: {e}")
 
         # Phase S.4: SelfAwarenessWatcher — periodic re-seed of architecture
         # substrate when source files change.
@@ -1304,8 +1488,11 @@ app = create_app(testing=False)
 
 if __name__ == "__main__":
     import uvicorn
+    # Pass the app object directly so uvicorn doesn't fork a subprocess that
+    # re-imports via the import-string (which would resolve PATH-first python,
+    # in our case pyenv-3.11 instead of the active venv).
     uvicorn.run(
-        "web.brain_server:app",
+        app,
         host="0.0.0.0",
         port=5000,
         reload=False,

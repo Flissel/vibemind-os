@@ -141,6 +141,18 @@ class DirectExecutor:
                 "target": self.target,
             }
 
+    def call_with_arg(self, arg: Any, arg_kwarg: Optional[str] = None) -> Dict[str, Any]:
+        """Convenience: shape the extracted arg according to the YAML's
+        `arg_kwarg` field. Two patterns covered:
+
+        - arg_kwarg=None        → fn(arg)         positional
+        - arg_kwarg='title'     → fn({"title": arg})   single-dict for legacy
+                                                       voice-tool API
+        """
+        if arg_kwarg:
+            return self.call({arg_kwarg: arg})
+        return self.call(arg)
+
     def stats_dict(self) -> Dict[str, Any]:
         avg_ms = 0.0
         if self._stats["calls"] > 0:

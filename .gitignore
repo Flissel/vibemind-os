@@ -39,7 +39,26 @@ Thumbs.db
 # Data
 *.db
 *.sqlite
-data/
+# Phase 11 — runtime/generated data, never tracked.
+# capabilities.yaml IS source-of-truth and explicitly added.
+brain/the_brain/data/brain_checkpoints/
+brain/the_brain/data/ctm_checkpoints/
+brain/the_brain/data/oscillator_checkpoints/
+brain/the_brain/data/moltbook/
+brain/the_brain/data/episodic_memory/
+brain/the_brain/data/rowboat_dump/
+brain/the_brain/data/snapshots/
+brain/the_brain/data/discourse/
+brain/the_brain/data/runs/
+brain/the_brain/data/logs/
+brain/the_brain/data/*.jsonl
+brain/the_brain/data/capability_suggestions.json
+brain/the_brain/data/discourse_sim.json
+brain/the_brain/data/mcp_tools_cache.json
+brain/the_brain/data/self_awareness_manifest.json
+brain/the_brain/data/self_steer_budget.json
+data/cache/
+data/dump/
 logs/
 
 # Issue-detector runtime state (auto-updating)
@@ -47,3 +66,8 @@ issue-detector/pending_findings.json
 issue-detector/triggered_events.json
 issue-detector/watcher_state.json
 issue-detector/vibemind_inbox.md
+
+# === Crash dumps ===
+*.stackdump
+bash.exe.stackdump
+*.dmp
