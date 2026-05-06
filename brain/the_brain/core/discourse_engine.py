@@ -308,20 +308,62 @@ class DiscourseEngine:
         self._executor_cache = {}
 
     def _get_executor(self, target: str):
-        """Get or create a DirectExecutor for the given target string.
-        Cached per-target so we don't re-import the module on every call."""
+        """Get or create an executor for the given target string. Cached
+        per-target so we don't re-import or re-resolve on every call.
+
+        Phase 4 — falls through to capability_targets.build_executor which
+        handles direct:/http:/n8n:/coding-engine:/openfang:/brain:/mcp:
+        kinds. The original DirectExecutor still owns the `direct:` path."""
         cache = getattr(self, "_executor_cache", None)
         if cache is None:
             cache = {}
             self._executor_cache = cache
         if target not in cache:
-            from core.capability_executor import DirectExecutor
             try:
-                cache[target] = DirectExecutor(target)
+                from core.capability_targets import build_executor
+                cache[target] = build_executor(target)
             except Exception as e:
                 logger.warning(f"[discourse] cannot build executor for {target!r}: {e}")
                 cache[target] = None
         return cache[target]
+
+    def set_validator(self, validator) -> None:
+        """Phase 3 — wire a CapabilityValidator that gets called after every
+        direct-execution result. No-op if None; existing direct path stays
+        identical."""
+        self._validator = validator
+
+    def record_user_topic(self, intent_text: str) -> None:
+        """Phase 7.2 — accumulate domain-words from recent user intents
+        so idle-discourse can bias slice picking towards what the user
+        is currently working on."""
+        if not hasattr(self, "_recent_user_topics"):
+            from collections import deque as _deque
+            self._recent_user_topics = _deque(maxlen=20)
+        if not intent_text:
+            return
+        # Trivial keyword extraction: keep nouns ≥4 chars, drop common stop
+        # words. Doesn't need to be perfect — semantic-search forgives.
+        stop = {
+            "create", "make", "add", "then", "evaluate", "have", "would",
+            "with", "from", "this", "that", "about", "into", "onto",
+            "what", "where", "when", "which", "what's", "could", "should",
+            "really", "very", "much", "more", "less", "über", "the", "and",
+            "for", "but", "not", "you", "your", "his", "her", "ihr", "its",
+            "are", "were", "was", "wer", "wie", "the", "der", "die", "das",
+            "ein", "eine", "einer", "und", "oder", "aber", "ist", "sind",
+            "haben", "kann", "können", "müssen", "sollte", "would", "could",
+        }
+        for w in intent_text.lower().split():
+            w = w.strip(".,!?;:'\"()[]{}").strip()
+            if len(w) < 4 or w in stop or w.isdigit():
+                continue
+            self._recent_user_topics.append(w)
+
+    def set_curator(self, curator) -> None:
+        """Phase 5 — wire a CapabilityCurator. record_intent() will be
+        called on every routing decision (match or no-match)."""
+        self._curator = curator
 
     def _handle_direct_capability(
         self, cap_match, intent_text: str, ctx_block: str,
@@ -353,14 +395,16 @@ class DiscourseEngine:
             f"target={target} arg={arg!r}"
         )
 
-        # Call the python function directly
+        # Call the python function directly. arg_kwarg (from YAML) shapes
+        # the call: positional fn(arg) by default, or fn({arg_kwarg: arg})
+        # for legacy voice-tools that take a params dict.
+        arg_kwarg = getattr(cap_match, "arg_kwarg", None)
         if arg is not None:
-            exec_result = executor.call(arg)
+            exec_result = executor.call_with_arg(arg, arg_kwarg=arg_kwarg)
         else:
             # No arg extractor configured or extraction failed — call with
-            # the raw intent text as the only positional argument and let
-            # the target deal with parsing.
-            exec_result = executor.call(intent_text)
+            # the raw intent text as the only argument.
+            exec_result = executor.call_with_arg(intent_text, arg_kwarg=arg_kwarg)
 
         self.stats["intent_ticks"] += 1
         self.stats.setdefault("direct_executions", 0)
@@ -384,6 +428,80 @@ class DiscourseEngine:
             }
 
         raw_result = exec_result.get("result")
+
+        # Phase 3 — Validator. Read the validator config off cap_match (set
+        # by capability_router from YAML) and run it. The result is added to
+        # the record under `validation`. on_fail='retry' triggers one
+        # re-call; on_fail='block' converts the record to ok=False.
+        validation = None
+        validator_cfg = getattr(cap_match, "validator", None)
+        if validator_cfg is None and isinstance(getattr(cap_match, "feedback_loop", None), dict):
+            # Backwards compat — accept inline 'validator' under feedback_loop too
+            validator_cfg = cap_match.feedback_loop.get("validator")
+        validator = getattr(self, "_validator", None)
+        if validator and validator_cfg:
+            try:
+                validation = validator.validate(
+                    validator_cfg,
+                    intent=intent_text,
+                    arg=arg or "",
+                    raw_result=raw_result,
+                )
+            except Exception as e:
+                logger.warning(f"[discourse] validator threw: {e}")
+                validation = {
+                    "valid": False,
+                    "reason": f"validator error: {e}",
+                    "kind": validator_cfg.get("kind") if isinstance(validator_cfg, dict) else "?",
+                    "on_fail": "report",
+                    "elapsed_s": 0.0,
+                    "error": f"{type(e).__name__}: {e}",
+                }
+
+            # Retry once if validator said invalid AND on_fail='retry'
+            if validation and not validation.get("valid") and validation.get("on_fail") == "retry":
+                logger.info(
+                    f"[discourse] validator rejected, retrying once: "
+                    f"{validation.get('reason')}"
+                )
+                self.stats.setdefault("validator_retries", 0)
+                self.stats["validator_retries"] += 1
+                if arg is not None:
+                    exec_result = executor.call_with_arg(arg, arg_kwarg=arg_kwarg)
+                else:
+                    exec_result = executor.call_with_arg(intent_text, arg_kwarg=arg_kwarg)
+                raw_result = exec_result.get("result")
+                try:
+                    validation = validator.validate(
+                        validator_cfg,
+                        intent=intent_text,
+                        arg=arg or "",
+                        raw_result=raw_result,
+                    )
+                except Exception as e:
+                    logger.warning(f"[discourse] validator threw on retry: {e}")
+
+            # Block if validator says invalid AND on_fail='block'
+            if validation and not validation.get("valid") and validation.get("on_fail") == "block":
+                self.stats.setdefault("validator_blocks", 0)
+                self.stats["validator_blocks"] += 1
+                return {
+                    "ok": False,
+                    "intent": intent_text[:300],
+                    "capability": cap_match.capability,
+                    "matched_pattern": cap_match.matched_pattern,
+                    "is_direct": True,
+                    "direct_target": target,
+                    "direct_elapsed_s": round(exec_result.get("elapsed_s") or 0.0, 2),
+                    "result": raw_result,
+                    "validation": validation,
+                    "blocked_by_validator": True,
+                    "tweets": [],
+                    "tweet_count": 0,
+                    "decision": {},
+                    "high_confidence": False,
+                    "ts": time.time(),
+                }
 
         # Feedback loop — run a small reflective discourse round over the
         # raw result so the user gets a coherent recommendation, not a
@@ -415,6 +533,7 @@ class DiscourseEngine:
             "direct_target": target,
             "direct_elapsed_s": round(exec_result.get("elapsed_s") or 0.0, 2),
             "result": raw_result,
+            "validation": validation,
             "tweets": feedback_tweets[:30],
             "tweet_count": len(feedback_tweets),
             "decision": feedback_decision or {},
@@ -604,10 +723,12 @@ class DiscourseEngine:
 
     def _loop(self) -> None:
         # Initial delay so Mirofish has fully booted + we re-load if sim got created late
-        self._stop.wait(INITIAL_DELAY_S)
+        self._sleep_interruptible(INITIAL_DELAY_S)
         while not self._stop.is_set():
             if self._paused.is_set():
-                self._stop.wait(TICK_INTERVAL_S)
+                # Phase 6.14.2 — short responsive sleep instead of full
+                # tick interval so resume() takes effect within ~1s.
+                self._sleep_interruptible(1.0)
                 continue
             try:
                 self.tick_idle()
@@ -617,14 +738,14 @@ class DiscourseEngine:
                 self.stats["errors"] += 1
                 self.stats["last_error"] = f"tick: {type(e).__name__}: {e}"
                 logger.warning(f"[discourse] tick failed: {e}")
-            self._stop.wait(TICK_INTERVAL_S)
+            self._sleep_interruptible(TICK_INTERVAL_S)
 
     def _response_loop(self) -> None:
         # Slight stagger after idle-loop boot
-        self._stop_response.wait(INITIAL_DELAY_S + 15)
+        self._sleep_interruptible(INITIAL_DELAY_S + 15, response=True)
         while not self._stop_response.is_set():
             if self._paused.is_set():
-                self._stop_response.wait(RESPONSE_TICK_INTERVAL_S)
+                self._sleep_interruptible(1.0, response=True)
                 continue
             try:
                 if self._response_queue:
@@ -633,7 +754,27 @@ class DiscourseEngine:
                 self.stats["errors"] += 1
                 self.stats["last_error"] = f"response_tick: {type(e).__name__}: {e}"
                 logger.warning(f"[discourse] response tick failed: {e}")
-            self._stop_response.wait(RESPONSE_TICK_INTERVAL_S)
+            self._sleep_interruptible(RESPONSE_TICK_INTERVAL_S, response=True)
+
+    def _sleep_interruptible(self, seconds: float, *, response: bool = False) -> None:
+        """Phase 6.14.2 — sleep that wakes on stop OR pause-state-change.
+        Response-loop variant uses its own stop event."""
+        stop_evt = self._stop_response if response else self._stop
+        # Wake every 0.5s to recheck pause flag — bounded latency for resume.
+        # We don't add a separate wake-event because creating one per tick
+        # interval is cheaper than another threading.Event refcount path.
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            remaining = deadline - time.time()
+            if stop_evt.wait(min(remaining, 0.5)):
+                return
+            # Fast resume: if we were paused but now aren't, exit early
+            # so the loop body re-enters and runs immediately.
+            if not self._paused.is_set() and seconds > 1.0:
+                # Only short-circuit on long sleeps (the regular tick),
+                # not on the 1.0s pause-poll which already covers itself.
+                if seconds >= TICK_INTERVAL_S - 0.1:
+                    return
 
     # ── Initialization helpers ───────────────────────────────────────
 
@@ -746,6 +887,11 @@ class DiscourseEngine:
         payload_filter: optional {key: value} that further narrows the scroll
         (Phase S.2: e.g. {"self_awareness": True} to only sample seeded
         architecture concepts).
+
+        Phase 7.2 — biases slice towards recent user topics: if any user
+        intent in the last hour mentioned domain words, 50% chance we
+        run a semantic search for one of those words instead of random
+        scrolling. Otherwise behaviour is unchanged.
         """
         try:
             from core.qdrant_kg import COLLECTIONS
@@ -754,6 +900,35 @@ class DiscourseEngine:
         coll_name = COLLECTIONS.get(coll_logical)
         if not coll_name:
             return None
+
+        # Phase 7.2 — topic-biased slice
+        if hasattr(self, "_recent_user_topics") and self._recent_user_topics:
+            if random.random() < 0.5:
+                topic = random.choice(list(self._recent_user_topics))
+                try:
+                    hits = self.kg.search(
+                        topic, limit=5, score_threshold=0.4,
+                        collection=coll_logical, node_type=node_type,
+                    )
+                except TypeError:
+                    try:
+                        hits = self.kg.search(topic, limit=5)
+                    except Exception:
+                        hits = []
+                except Exception:
+                    hits = []
+                if hits:
+                    h = random.choice(hits[:5])
+                    return {
+                        "id": str(h.get("id") or h.get("point_id") or ""),
+                        "title": h.get("title")
+                            or (h.get("content", "") or "")[:80],
+                        "node_type": h.get("node_type") or node_type,
+                        "content": h.get("content", "") or h.get("text", ""),
+                        "subsystem": h.get("subsystem"),
+                        "_topic_biased": True,
+                        "_source_topic": topic,
+                    }
         try:
             qm = self.kg._qm
             must_conds = []
@@ -952,12 +1127,28 @@ class DiscourseEngine:
                 logger.warning(f"[discourse] capability router failed: {e}")
                 cap_match = None
 
+        # Phase 5 — telemetry. Record every routing decision so the
+        # curator can later cluster missed intents and propose new
+        # capabilities. Safe no-op if curator is unwired.
+        curator = getattr(self, "_curator", None)
+        if curator is not None:
+            try:
+                curator.record_intent(
+                    intent_text,
+                    matched=bool(cap_match),
+                    capability=cap_match.capability if cap_match else None,
+                    match_method=cap_match.match_method if cap_match else None,
+                )
+            except Exception as e:
+                logger.debug(f"[discourse] curator log failed: {e}")
+
         # Phase 1.5 — direct execution short-circuit. If the matched
         # capability has an `execution_target: direct:...`, call the python
         # function directly instead of running discourse, then optionally
         # run a feedback-loop round to synthesise the structured result
         # into a coherent recommendation.
-        if cap_match is not None and cap_match.is_direct:
+        # Phase 4 — same path now also handles http:/n8n:/coding-engine:/etc.
+        if cap_match is not None and getattr(cap_match, "has_execution_target", False):
             return self._handle_direct_capability(cap_match, intent_text, ctx_block)
 
         if cap_match is not None and cap_match.all_agent_names:
