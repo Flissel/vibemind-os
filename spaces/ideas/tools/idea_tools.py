@@ -461,6 +461,27 @@ def create_idea(params: Dict[str, Any]) -> str:
         pass
 
     logger.info(f"Created note '{title}' in bubble {bubble_id}")
+
+    # Phase 11.F — publish to brain space-event bus so dashboard + Vibemind app
+    # see it live regardless of caller (direct call vs spaces-ideas MCP)
+    try:
+        import importlib.util as _ilu, os as _os
+        _here = _os.path.dirname(__file__)
+        _bep_path = _os.path.join(_here, "_brain_event_publisher.py")
+        if _os.path.isfile(_bep_path):
+            _spec = _ilu.spec_from_file_location("_brain_event_publisher", _bep_path)
+            _bep = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(_bep)
+            _bep.publish(
+                event_id="idea.create",
+                params={"title": title, "content": content, "bubble_id": bubble_id},
+                result=f"Added '{title}' to bubble {bubble_id}",
+                ok=True,
+                source="idea_tools/create_idea",
+            )
+    except Exception:
+        pass
+
     return f"Added '{title}'"
 
 
@@ -1557,12 +1578,11 @@ async def _generate_expansions(ideas_context: str, count: int) -> List[Dict]:
     """
     Call LLM to generate idea expansions.
 
-    Args:
-        ideas_context: Formatted string of existing ideas
-        count: Number of expansions to generate
-
-    Returns:
-        List of dicts with title, content, source_title
+    Phase 11.J — multi-provider fallback chain:
+      1. Groq (free tier, generous limits)
+      2. OpenAI (direct)
+      3. OpenRouter (last resort — often quota-limited)
+    First provider with valid creds + successful response wins.
     """
     import os
     import json
@@ -1573,16 +1593,6 @@ async def _generate_expansions(ideas_context: str, count: int) -> List[Dict]:
     except ImportError:
         logger.error("OpenAI package not installed")
         return []
-
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        logger.error("OPENROUTER_API_KEY not set")
-        return []
-
-    client = OpenAI(
-        api_key=api_key,
-        base_url="https://openrouter.ai/api/v1"
-    )
 
     prompt = f"""Analysiere diese bestehenden Ideen und generiere {count} verwandte/erweiterte Ideen.
 
@@ -1598,28 +1608,43 @@ Antworte NUR als JSON-Array, keine Erklaerungen:
 [{{"title": "...", "content": "...", "source_title": "..."}}]
 """
 
-    try:
-        response = client.chat.completions.create(
-            model=get_model("idea_enrichment"),
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=1000,
-        )
+    # Provider chain: (name, env_var, base_url, model)
+    providers = [
+        ("groq", "GROQ_API_KEY", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
+        ("openai", "OPENAI_API_KEY", None, "gpt-4o-mini"),
+        ("openrouter", "OPENROUTER_API_KEY", "https://openrouter.ai/api/v1", "anthropic/claude-haiku-4.5"),
+    ]
 
-        content = response.choices[0].message.content
-        logger.info(f"LLM expansion response: {content[:200]}...")
+    last_error = None
+    for name, env_var, base_url, model in providers:
+        api_key = os.getenv(env_var)
+        if not api_key:
+            continue
+        try:
+            kwargs = {"api_key": api_key}
+            if base_url:
+                kwargs["base_url"] = base_url
+            client = OpenAI(**kwargs)
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=1000,
+            )
+            content = response.choices[0].message.content
+            logger.info(f"LLM expansion via {name}: {content[:200]}...")
+            json_match = re.search(r'\[.*\]', content, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group())
+            logger.warning(f"No JSON array found in {name} response")
+            return []
+        except Exception as e:
+            last_error = e
+            logger.warning(f"{name} failed: {e}")
+            continue
 
-        # Extract JSON from response
-        json_match = re.search(r'\[.*\]', content, re.DOTALL)
-        if json_match:
-            return json.loads(json_match.group())
-
-        logger.warning("No JSON array found in LLM response")
-        return []
-
-    except Exception as e:
-        logger.error(f"LLM call failed: {e}")
-        return []
+    logger.error(f"All providers failed. Last error: {last_error}")
+    return []
 
 
 # =============================================================================
