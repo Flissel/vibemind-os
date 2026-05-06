@@ -10,6 +10,7 @@ eyeTerm is now pure eye-tracking + cursor + wink.
 
 import httpx
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 
 router = APIRouter(prefix="/api/eyeterm", tags=["eyeterm"])
 
@@ -50,3 +51,29 @@ async def toggle_cursor():
     """Toggle cursor control on/off."""
     _eyeterm_state["cursor_enabled"] = not _eyeterm_state["cursor_enabled"]
     return {"cursor_enabled": _eyeterm_state["cursor_enabled"]}
+
+
+@router.get("/stream")
+async def eyeterm_stream():
+    """Same-origin proxy of the eyeTerm MJPEG stream.
+
+    Browsers refuse to render <img src=http://127.0.0.1:8099/stream> from a
+    file:// or different-origin renderer in some configurations even with
+    Access-Control-Allow-Origin:* set. Routing through the backend gives
+    the UI a same-origin :8007 endpoint that always works.
+    """
+    client = httpx.AsyncClient(timeout=None)
+
+    async def gen():
+        try:
+            async with client.stream("GET", f"{EYETERM_BASE}/stream") as r:
+                async for chunk in r.aiter_raw():
+                    yield chunk
+        finally:
+            await client.aclose()
+
+    return StreamingResponse(
+        gen(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )

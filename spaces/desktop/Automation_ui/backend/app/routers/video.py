@@ -39,9 +39,9 @@ router = APIRouter(prefix="/api/video", tags=["video"])
 # ──────────────────────────────────────────────────────────────────────
 
 # This file: vibemind-os/spaces/desktop/Automation_ui/backend/app/routers/video.py
-# 6 parents up → repo root containing vibemind-os/
-_REPO_ROOT = Path(__file__).resolve().parents[6]
-_VIBEMIND_OS = _REPO_ROOT / "vibemind-os"
+# parents[6] → vibemind-os/ ; parents[7] → repo root
+_VIBEMIND_OS = Path(__file__).resolve().parents[6]
+_REPO_ROOT = _VIBEMIND_OS.parent
 _DEEPFAKE_DIR = _VIBEMIND_OS / "spaces" / "video" / "vibevideo_deepfake"
 _DEEPFAKE_CLI = _DEEPFAKE_DIR / "deepfake.py"
 _MEDIA_ROOT = Path.home() / ".rowboat" / "Videos"
@@ -50,6 +50,23 @@ _MEDIA_ROOT = Path.home() / ".rowboat" / "Videos"
 _FACESWAP_SRC = _DEEPFAKE_DIR
 if str(_FACESWAP_SRC) not in sys.path:
     sys.path.insert(0, str(_FACESWAP_SRC))
+
+
+def _resolve_faceswap_python() -> str:
+    """Return a Python interpreter that has the full deepfake ML stack
+    (insightface + onnxruntime-gpu) installed. Backend's own .venv
+    deliberately doesn't carry the multi-GB CUDA stack — face-swap runs
+    out of vibemind-os/voice/.venv312 which keeps it isolated."""
+    candidates = [
+        # Voice venv has the curated insightface 0.7.3 + onnxruntime-gpu install
+        _VIBEMIND_OS / "voice" / ".venv312" / "Scripts" / "python.exe",
+        # Fallback: shared root venv (only works if user installed insightface there)
+        Path(sys.executable),
+    ]
+    for cand in candidates:
+        if cand.exists():
+            return str(cand)
+    return sys.executable
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -91,6 +108,28 @@ async def list_presets():
     except Exception as e:
         logger.warning("Failed to import faceswap.presets: %s", e)
         return {"presets": [], "error": str(e)}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Gallery — HTTP fallback for the Electron IPC video_list call
+# ──────────────────────────────────────────────────────────────────────
+
+# Make spaces/video reachable so we can import scan_video_outputs
+_VIDEO_TOOLS_DIR = _VIBEMIND_OS / "spaces" / "video"
+if str(_VIDEO_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_VIDEO_TOOLS_DIR))
+
+
+@router.get("/gallery")
+async def list_gallery_videos():
+    """List all videos in the gallery (Rowboat Videos + vibevideo + deepfake outputs).
+    Same payload as the Electron IPC ``video_list`` call — UI can use either."""
+    try:
+        from tools.video_tools import scan_video_outputs  # type: ignore
+        return scan_video_outputs()
+    except Exception as e:
+        logger.warning("scan_video_outputs failed: %s", e)
+        return {"success": False, "error": str(e), "videos": []}
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -138,7 +177,7 @@ async def start_faceswap(body: FaceswapStartBody):
         }
 
     args = [
-        sys.executable,
+        _resolve_faceswap_python(),
         str(_DEEPFAKE_CLI),
         "faceswap", "batch",
         str(input_path),
@@ -281,6 +320,52 @@ def _resolve_ffmpeg() -> Optional[str]:
     return None
 
 
+def _resolve_audio_device(ffmpeg_bin: str) -> Optional[str]:
+    """Pick a DirectShow audio input device for live capture.
+
+    Resolution order:
+    1. ``LIVE_AUDIO_DEVICE`` env var (exact dshow name; empty disables audio)
+    2. First device matching a curated quality preference (HyperX, Yeti, etc.)
+    3. First detected ``(audio)`` device
+    Returns ``None`` if no devices are available — recording then runs silent.
+    """
+    override = os.environ.get("LIVE_AUDIO_DEVICE", "").strip()
+    if override:
+        return override if override.lower() != "none" else None
+    try:
+        result = subprocess.run(
+            [ffmpeg_bin, "-hide_banner", "-list_devices", "true",
+             "-f", "dshow", "-i", "dummy"],
+            capture_output=True, text=True, timeout=8,
+        )
+        # ffmpeg writes device list to stderr
+        text = (result.stderr or "") + (result.stdout or "")
+    except Exception as e:
+        logger.warning("dshow device probe failed: %s", e)
+        return None
+
+    audio_names: list[str] = []
+    for line in text.splitlines():
+        m = re.search(r'"([^"]+)"\s*\(audio\)', line)
+        if m:
+            audio_names.append(m.group(1))
+
+    if not audio_names:
+        return None
+
+    # Curated quality preference — pick the first match
+    preferred = ["hyperx", "yeti", "shure", "rode", "elgato"]
+    for needle in preferred:
+        for name in audio_names:
+            if needle in name.lower():
+                return name
+    # Fallback: first non-virtual device
+    for name in audio_names:
+        if "virtual" not in name.lower() and "stereomix" not in name.lower():
+            return name
+    return audio_names[0]
+
+
 # Single global recorder (only one live capture at a time)
 _LIVE_REC: dict = {
     "proc": None,            # subprocess.Popen | None
@@ -342,18 +427,29 @@ async def live_record_start(body: LiveRecordStartBody):
     safe_hint = "".join(c if c.isalnum() or c in "_-" else "_" for c in hint)[:32]
     output_path = _MEDIA_ROOT / f"eyeterm_live_{safe_hint}_{ts}.mp4"
 
-    # ffmpeg: MJPEG input → H.264 video, no audio, mp4 fragmented for recoverability
+    # ffmpeg: MJPEG input + DirectShow microphone → H.264 + AAC mp4
+    audio_device = _resolve_audio_device(ffmpeg_bin)
     args = [
         ffmpeg_bin, "-y",
         "-loglevel", "warning",
+        # video input
         "-f", "mjpeg",
         "-i", "http://127.0.0.1:8099/stream",
+    ]
+    if audio_device:
+        args += [
+            "-f", "dshow",
+            "-i", f"audio={audio_device}",
+        ]
+    args += [
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-pix_fmt", "yuv420p",
         "-movflags", "+faststart+frag_keyframe+empty_moov",
-        str(output_path),
     ]
+    if audio_device:
+        args += ["-c:a", "aac", "-b:a", "128k", "-shortest"]
+    args.append(str(output_path))
 
     try:
         proc = subprocess.Popen(

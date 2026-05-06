@@ -30,6 +30,25 @@ import logging
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 
+# Windows: opt into Per-Monitor DPI awareness *before* importing pyautogui/PIL
+# or ImageGrab. Without this, GDI screen capture from a non-DPI-aware process
+# only sees the bare desktop background — modern hardware-accelerated windows
+# (browsers, VS Code, Electron apps) are composited by DWM and don't appear
+# in the captured frame, so every screenshot is a uniform desktop-background
+# color (e.g. Win 11 dark mode = (25, 26, 27)). Setting awareness here makes
+# all child capture libs (pyautogui, mss, ImageGrab) see the real composited
+# desktop.
+if sys.platform == "win32":
+    try:
+        import ctypes
+        # PROCESS_PER_MONITOR_DPI_AWARE = 2  (Win 8.1+)
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
 # Add parent to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -66,6 +85,1128 @@ try:
 except ImportError:
     print("MCP package not installed. Run: pip install mcp", file=sys.stderr)
     sys.exit(1)
+
+
+# ── Adaptive-skill helpers ──────────────────────────────────────────────
+# Loaded lazily so we don't slow down server startup when skills are unused.
+_SKILL_LIB_ROOT = os.path.normpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "..", "..", "..", "..", "skills",
+))
+
+
+def _ensure_skill_lib_on_path() -> bool:
+    if os.path.isdir(_SKILL_LIB_ROOT) and _SKILL_LIB_ROOT not in sys.path:
+        sys.path.insert(0, _SKILL_LIB_ROOT)
+    return os.path.isdir(_SKILL_LIB_ROOT)
+
+
+def _skill_search(query: str, agent: Optional[str] = None, limit: int = 5) -> Dict[str, Any]:
+    if not _ensure_skill_lib_on_path():
+        return {"success": False, "error": f"skill library not found at {_SKILL_LIB_ROOT}"}
+    try:
+        import _indexer  # type: ignore[import-not-found]
+        results = _indexer.search(query=query, agent=agent, limit=limit)
+        return {
+            "success": True,
+            "query": query,
+            "results": [
+                {
+                    "name": r["payload"].get("name"),
+                    "app": r["payload"].get("app"),
+                    "description": r["payload"].get("description"),
+                    "confidence": r["payload"].get("confidence", 0.0),
+                    "file_path": r["payload"].get("file_path"),
+                    "score": r.get("score"),
+                }
+                for r in results
+            ],
+        }
+    except Exception as exc:
+        return {"success": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+# ── App lifecycle (launch/focus/list) ──────────────────────────────────
+# Whitelist of allowed app names → command. Prevents arbitrary process spawn.
+# Resolved via `where` on Windows so we don't hardcode install paths.
+_APP_WHITELIST: Dict[str, list[str]] = {
+    "notepad": ["notepad.exe"],
+    "calc": ["calc.exe"],
+    "explorer": ["explorer.exe"],
+    "chrome": ["chrome.exe"],
+    "msedge": ["msedge.exe"],
+    "firefox": ["firefox.exe"],
+    "code": ["code.cmd", "code.exe"],
+    "vscode": ["code.cmd", "code.exe"],
+    "winword": ["winword.exe"],
+    "word": ["winword.exe"],
+    "excel": ["excel.exe"],
+    "powerpnt": ["powerpnt.exe"],
+    "powerpoint": ["powerpnt.exe"],
+    "outlook": ["outlook.exe"],
+    "claude": ["claude.exe", "Claude.exe"],
+    "claude-desktop": ["claude.exe", "Claude.exe"],
+    "telegram": ["Telegram.exe", "telegram.exe"],
+    "spotify": ["Spotify.exe"],
+    "powershell": ["powershell.exe", "pwsh.exe"],
+}
+
+
+def _query_app_paths_registry(exe_name: str) -> Optional[str]:
+    """Look up an executable in the Windows ``App Paths`` registry.
+
+    Windows applications register themselves under
+    ``HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\<exe>``
+    (and the HKCU equivalent). The default value of that key is the full
+    install path. This is the *authoritative* discovery source — nicer
+    than scanning Program Files.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+    except ImportError:
+        return None
+    sub = rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{exe_name}"
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        for flag in (0, getattr(winreg, "KEY_WOW64_64KEY", 0), getattr(winreg, "KEY_WOW64_32KEY", 0)):
+            try:
+                with winreg.OpenKey(hive, sub, 0, winreg.KEY_READ | flag) as key:
+                    value, _type = winreg.QueryValueEx(key, "")
+                    value = os.path.expandvars(str(value).strip().strip('"'))
+                    if value and os.path.isfile(value):
+                        return value
+            except OSError:
+                continue
+    return None
+
+
+def _scan_start_menu(exe_name: str) -> Optional[str]:
+    """Search Start Menu .lnk shortcuts for one whose target matches exe_name.
+
+    Cheap, no dependencies — just walks the two Start Menu trees and reads
+    .lnk files via the ``win32com.client`` Shell32 helper if available.
+    Otherwise we read raw bytes and string-search for the exe name.
+    """
+    if sys.platform != "win32":
+        return None
+    roots = [
+        os.path.expandvars(r"%ProgramData%\Microsoft\Windows\Start Menu\Programs"),
+        os.path.expandvars(r"%APPDATA%\Microsoft\Windows\Start Menu\Programs"),
+    ]
+    target_lower = exe_name.lower()
+    try:
+        import win32com.client  # type: ignore[import-not-found]
+        shell = win32com.client.Dispatch("WScript.Shell")
+        for root in roots:
+            if not os.path.isdir(root):
+                continue
+            for dirpath, _dirs, files in os.walk(root):
+                for fn in files:
+                    if not fn.lower().endswith(".lnk"):
+                        continue
+                    lnk_path = os.path.join(dirpath, fn)
+                    try:
+                        sc = shell.CreateShortcut(lnk_path)
+                        target = (sc.TargetPath or "").strip()
+                        if target.lower().endswith(target_lower) and os.path.isfile(target):
+                            return target
+                    except Exception:
+                        continue
+        return None
+    except ImportError:
+        # Fallback: byte-scan .lnk files for the exe name. Not perfect but
+        # works for most apps because Windows stores the path in clear text
+        # inside the shortcut binary.
+        for root in roots:
+            if not os.path.isdir(root):
+                continue
+            for dirpath, _dirs, files in os.walk(root):
+                for fn in files:
+                    if not fn.lower().endswith(".lnk"):
+                        continue
+                    lnk_path = os.path.join(dirpath, fn)
+                    try:
+                        raw = open(lnk_path, "rb").read()
+                    except OSError:
+                        continue
+                    # Find UTF-16-LE encoded path that ends in our exe name
+                    needle = ("\\" + exe_name).encode("utf-16-le").lower()
+                    blob = raw.lower()
+                    idx = blob.find(needle)
+                    if idx == -1:
+                        continue
+                    # Walk backwards to find drive letter (A-Z + ':')
+                    start = max(0, idx - 600)
+                    seg = raw[start: idx + len(needle)]
+                    # Try decode + extract last \X:\... path
+                    try:
+                        text = seg.decode("utf-16-le", errors="ignore")
+                    except Exception:
+                        continue
+                    # Find rightmost drive letter
+                    for i in range(len(text) - 2, 0, -1):
+                        if text[i] == ":" and text[i + 1] == "\\" and text[i - 1].isalpha():
+                            null_idx = text.find("\x00", i)
+                            if null_idx == -1:
+                                null_idx = len(text)
+                            candidate = text[i - 1: null_idx]
+                            candidate = candidate.split("\x00", 1)[0]
+                            if os.path.isfile(candidate):
+                                return candidate
+                            break
+        return None
+
+
+def _scan_standard_dirs(exe_name: str) -> Optional[str]:
+    """Last resort: walk ProgramFiles / LocalAppData two levels deep."""
+    roots = [
+        os.environ.get("ProgramFiles", r"C:\Program Files"),
+        os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+        os.environ.get("LOCALAPPDATA", os.path.expandvars(r"%LOCALAPPDATA%")),
+        os.environ.get("APPDATA", os.path.expandvars(r"%APPDATA%")),
+    ]
+    target_lower = exe_name.lower()
+    for root in roots:
+        if not root or not os.path.isdir(root):
+            continue
+        # Limit walk depth to 5 to avoid slow scans of huge trees
+        for dirpath, _dirs, files in os.walk(root):
+            depth = dirpath[len(root):].count(os.sep)
+            if depth > 5:
+                _dirs[:] = []
+                continue
+            for fn in files:
+                if fn.lower() == target_lower:
+                    candidate = os.path.join(dirpath, fn)
+                    if os.path.isfile(candidate):
+                        return candidate
+    return None
+
+
+# Cache resolved paths so the (potentially slow) start-menu walk runs once.
+_RESOLVED_CACHE: Dict[str, str] = {}
+
+
+def _resolve_app_command(app_name: str) -> Optional[str]:
+    """Look up the executable for a whitelisted app name.
+
+    Discovery cascade (first match wins, result cached):
+      1. ``shutil.which()`` — PATH / current dir.
+      2. Windows ``App Paths`` registry — apps register themselves here.
+      3. Start Menu .lnk shortcuts — most installed apps have one.
+      4. Standard install dirs (Program Files, LocalAppData) — last resort.
+    """
+    import shutil
+
+    key = app_name.lower().strip()
+    cached = _RESOLVED_CACHE.get(key)
+    if cached and os.path.isfile(cached):
+        return cached
+
+    candidates = _APP_WHITELIST.get(key)
+    if not candidates:
+        return None
+
+    for cand in candidates:
+        # 1. PATH
+        path = shutil.which(cand)
+        if path:
+            _RESOLVED_CACHE[key] = path
+            return path
+        # 2. App Paths registry
+        path = _query_app_paths_registry(cand)
+        if path:
+            _RESOLVED_CACHE[key] = path
+            return path
+        # 3. Start Menu shortcut
+        path = _scan_start_menu(cand)
+        if path:
+            _RESOLVED_CACHE[key] = path
+            return path
+        # 4. Standard dirs (slowest, only if everything else failed)
+        path = _scan_standard_dirs(cand)
+        if path:
+            _RESOLVED_CACHE[key] = path
+            return path
+    return None
+
+
+def _list_top_level_windows() -> list[Dict[str, Any]]:
+    """Enumerate visible top-level windows on Windows (title, hwnd, pid)."""
+    if sys.platform != "win32":
+        return []
+    try:
+        import ctypes
+        import ctypes.wintypes as wt
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        EnumWindows = user32.EnumWindows
+        EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HWND, wt.LPARAM)
+        GetWindowTextW = user32.GetWindowTextW
+        GetWindowTextLengthW = user32.GetWindowTextLengthW
+        IsWindowVisible = user32.IsWindowVisible
+        GetWindowThreadProcessId = user32.GetWindowThreadProcessId
+
+        windows: list[Dict[str, Any]] = []
+
+        def callback(hwnd, _lparam):
+            if not IsWindowVisible(hwnd):
+                return True
+            length = GetWindowTextLengthW(hwnd)
+            if length == 0:
+                return True
+            buf = ctypes.create_unicode_buffer(length + 1)
+            GetWindowTextW(hwnd, buf, length + 1)
+            pid = wt.DWORD()
+            GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            windows.append({"hwnd": int(hwnd), "title": buf.value, "pid": int(pid.value)})
+            return True
+
+        EnumWindows(EnumWindowsProc(callback), 0)
+        return windows
+    except Exception as exc:
+        logger.warning("EnumWindows failed: %s", exc)
+        return []
+
+
+def _focus_window(hwnd: int) -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        # SW_RESTORE = 9 → un-minimize if minimized
+        user32.ShowWindow(hwnd, 9)
+        # Windows blocks SetForegroundWindow unless our process is itself the
+        # foreground process. The well-known workaround is to attach our input
+        # queue to the queue of the current foreground window and bring our
+        # target to top from inside that joint queue — then detach.
+        kernel32 = ctypes.windll.kernel32
+        cur_fg = user32.GetForegroundWindow()
+        cur_thread = kernel32.GetCurrentThreadId()
+        fg_thread = user32.GetWindowThreadProcessId(cur_fg, None) if cur_fg else 0
+        attached = False
+        if fg_thread and fg_thread != cur_thread:
+            attached = bool(user32.AttachThreadInput(cur_thread, fg_thread, True))
+        try:
+            user32.BringWindowToTop(hwnd)
+            ok = bool(user32.SetForegroundWindow(hwnd))
+        finally:
+            if attached:
+                user32.AttachThreadInput(cur_thread, fg_thread, False)
+        return ok
+    except Exception as exc:
+        logger.warning("SetForegroundWindow failed for hwnd=%s: %s", hwnd, exc)
+        return False
+
+
+def _app_launch(app_name: str, args: Optional[list[str]] = None) -> Dict[str, Any]:
+    cmd = _resolve_app_command(app_name)
+    if cmd is None:
+        return {
+            "success": False,
+            "error": f"app '{app_name}' not whitelisted or executable not found on PATH",
+            "whitelist": list(_APP_WHITELIST.keys()),
+        }
+    try:
+        import subprocess
+        full = [cmd, *(args or [])]
+        # Use CREATE_NEW_CONSOLE on Windows so the child has its own window
+        creationflags = 0x00000010 if sys.platform == "win32" else 0  # CREATE_NEW_CONSOLE
+        proc = subprocess.Popen(full, creationflags=creationflags, close_fds=True)
+        return {"success": True, "app": app_name, "pid": proc.pid, "command": cmd, "args": args or []}
+    except Exception as exc:
+        return {"success": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _app_focus(title_substring: str) -> Dict[str, Any]:
+    sub = title_substring.lower().strip()
+    candidates = [w for w in _list_top_level_windows() if sub in w["title"].lower()]
+    if not candidates:
+        return {"success": False, "error": f"no visible window matched '{title_substring}'"}
+    # Prefer the most recently used (last in EnumWindows order is roughly the front)
+    target = candidates[0]
+    ok = _focus_window(target["hwnd"])
+    return {
+        "success": ok,
+        "matched": target,
+        "candidates": candidates if len(candidates) > 1 else None,
+    }
+
+
+def _app_list_running() -> Dict[str, Any]:
+    windows = _list_top_level_windows()
+    return {"success": True, "count": len(windows), "windows": windows}
+
+
+def _app_launch_or_focus(app_name: str, title_hint: Optional[str] = None,
+                         args: Optional[list[str]] = None) -> Dict[str, Any]:
+    """Convenience: focus the app if a window is already open, else launch it."""
+    hint = (title_hint or app_name).lower().strip()
+    candidates = [w for w in _list_top_level_windows() if hint in w["title"].lower()]
+    if candidates:
+        ok = _focus_window(candidates[0]["hwnd"])
+        return {"success": ok, "action": "focused", "matched": candidates[0]}
+    launched = _app_launch(app_name, args=args)
+    if launched.get("success"):
+        launched["action"] = "launched"
+    return launched
+
+
+def _window_maximize(title_substring: str) -> Dict[str, Any]:
+    """Maximize a window matching the title substring (Win32 ShowWindow SW_MAXIMIZE)."""
+    if sys.platform != "win32":
+        return {"success": False, "error": "windows-only"}
+    sub = title_substring.lower().strip()
+    candidates = [w for w in _list_top_level_windows() if sub in w["title"].lower()]
+    if not candidates:
+        return {"success": False, "error": f"no window matches '{title_substring}'"}
+    target = candidates[0]
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        # SW_MAXIMIZE = 3
+        user32.ShowWindow(target["hwnd"], 3)
+        # Plus bring to foreground
+        _focus_window(target["hwnd"])
+        return {"success": True, "matched": target, "action": "maximized"}
+    except Exception as exc:
+        return {"success": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _populate_sheet(ws, rows: list[list[Any]], bold_rows: Optional[list[int]],
+                    auto_width: bool, cell_styles: Optional[list[dict]] = None,
+                    freeze_pane: Optional[str] = None) -> Optional[str]:
+    """Populate one openpyxl worksheet from rows + styling. Returns error str on failure."""
+    from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+    from openpyxl.utils import get_column_letter
+
+    bold_set = set(int(r) for r in (bold_rows or []))
+    bold_font = Font(bold=True)
+
+    for row_idx, row in enumerate(rows, start=1):
+        if not isinstance(row, list):
+            return f"row {row_idx} is not a list"
+        for col_idx, cell in enumerate(row, start=1):
+            value = "" if cell is None else cell
+            # Formula detection: a string starting with "=" is written as a
+            # formula by openpyxl (it does this automatically — we just don't
+            # need to escape it). Numbers and bare strings stay as-is.
+            target = ws.cell(row=row_idx, column=col_idx, value=value)
+            if row_idx in bold_set:
+                target.font = bold_font
+
+    if cell_styles:
+        thin = Side(border_style="thin", color="666666")
+        full_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        for style in cell_styles:
+            range_str = style.get("range")
+            if not range_str:
+                continue
+            try:
+                cell_block = ws[range_str]
+            except Exception:
+                continue
+            # ws[range] returns a tuple-of-tuples for ranges, single cell otherwise
+            if not isinstance(cell_block, tuple):
+                cell_block = ((cell_block,),)
+            elif cell_block and not isinstance(cell_block[0], tuple):
+                cell_block = (cell_block,)
+
+            fill_color = style.get("fill_color")
+            font_color = style.get("font_color")
+            bold_flag = style.get("bold")
+            italic_flag = style.get("italic")
+            border_flag = style.get("border")
+            align = style.get("align")  # left | center | right
+            number_format = style.get("number_format")
+
+            fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type="solid") if fill_color else None
+            font_kwargs: dict[str, Any] = {}
+            if font_color:
+                font_kwargs["color"] = font_color
+            if bold_flag is not None:
+                font_kwargs["bold"] = bool(bold_flag)
+            if italic_flag is not None:
+                font_kwargs["italic"] = bool(italic_flag)
+            font = Font(**font_kwargs) if font_kwargs else None
+            alignment = Alignment(horizontal=align) if align in ("left", "center", "right") else None
+
+            for cell_row in cell_block:
+                for c in cell_row:
+                    if fill is not None:
+                        c.fill = fill
+                    if font is not None:
+                        # Merge with existing font traits we already applied (bold)
+                        prev = c.font
+                        merged = Font(
+                            name=prev.name,
+                            size=prev.size,
+                            bold=font.bold if font.bold is not None else prev.bold,
+                            italic=font.italic if font.italic is not None else prev.italic,
+                            color=font.color if font.color else prev.color,
+                        )
+                        c.font = merged
+                    if border_flag:
+                        c.border = full_border
+                    if alignment is not None:
+                        c.alignment = alignment
+                    if number_format:
+                        c.number_format = number_format
+
+    if freeze_pane:
+        try:
+            ws.freeze_panes = freeze_pane
+        except Exception:
+            pass  # invalid coord, silently ignore
+
+    if auto_width:
+        for col_idx in range(1, (ws.max_column or 0) + 1):
+            max_len = 0
+            for row_idx in range(1, (ws.max_row or 0) + 1):
+                v = ws.cell(row=row_idx, column=col_idx).value
+                if v is None:
+                    continue
+                ln = len(str(v))
+                if ln > max_len:
+                    max_len = ln
+            if max_len > 0:
+                ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 4, 60)
+
+    return None
+
+
+def _xlsx_create_from_data(file_path: str, rows: Optional[list[list[Any]]] = None,
+                           sheet_name: Optional[str] = None,
+                           bold_rows: Optional[list[int]] = None,
+                           auto_width: bool = True,
+                           overwrite: bool = True,
+                           sheets: Optional[list[dict]] = None,
+                           cell_styles: Optional[list[dict]] = None,
+                           freeze_pane: Optional[str] = None) -> Dict[str, Any]:
+    """Create an .xlsx file directly via openpyxl — no Excel UI needed.
+
+    Args (all optional except file_path):
+      - ``rows``: 2-D list for a single-sheet workbook
+      - ``sheet_name``: name for that sheet
+      - ``bold_rows``: 1-based row numbers to bold
+      - ``cell_styles``: list of {range, fill_color (hex without #), font_color,
+        bold, italic, border, align, number_format}
+      - ``freeze_pane``: cell coord (e.g. ``"A2"``) — rows above + cols left frozen
+      - ``sheets``: alternative to ``rows`` — list of {name, rows, bold_rows,
+        cell_styles, freeze_pane} for multi-sheet workbooks. First sheet
+        becomes the active one.
+
+    Strings starting with ``=`` are written as Excel formulas automatically.
+    """
+    if not file_path:
+        return {"success": False, "error": "file_path required"}
+    if not rows and not sheets:
+        return {"success": False, "error": "either rows or sheets must be provided"}
+    if rows and sheets:
+        return {"success": False, "error": "rows and sheets are mutually exclusive — pick one"}
+
+    file_path = os.path.abspath(os.path.expandvars(os.path.expanduser(file_path)))
+    if os.path.isfile(file_path) and not overwrite:
+        return {"success": False, "error": f"file exists and overwrite=False: {file_path}"}
+    parent = os.path.dirname(file_path)
+    if parent and not os.path.isdir(parent):
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except Exception as exc:
+            return {"success": False, "error": f"cannot create parent dir: {exc}"}
+
+    try:
+        from openpyxl import Workbook
+    except ImportError:
+        return {"success": False, "error": "openpyxl not installed"}
+
+    wb = Workbook()
+    sheets_written: list[str] = []
+
+    if sheets:
+        # Remove the default sheet, replace with requested ones
+        default = wb.active
+        wb.remove(default)
+        for i, sh in enumerate(sheets):
+            name = (sh.get("name") or f"Sheet{i+1}")[:31]
+            ws = wb.create_sheet(title=name, index=i)
+            err = _populate_sheet(
+                ws,
+                sh.get("rows") or [],
+                sh.get("bold_rows"),
+                auto_width,
+                sh.get("cell_styles"),
+                sh.get("freeze_pane"),
+            )
+            if err:
+                wb.close()
+                return {"success": False, "error": f"sheet {name!r}: {err}"}
+            sheets_written.append(name)
+        # Ensure first sheet is active
+        wb.active = 0
+    else:
+        ws = wb.active
+        if sheet_name:
+            ws.title = sheet_name[:31]
+        err = _populate_sheet(ws, rows or [], bold_rows, auto_width, cell_styles, freeze_pane)
+        if err:
+            wb.close()
+            return {"success": False, "error": err}
+        sheets_written.append(ws.title)
+
+    try:
+        wb.save(file_path)
+    except Exception as exc:
+        wb.close()
+        return {"success": False, "error": f"save failed: {type(exc).__name__}: {exc}"}
+    wb.close()
+
+    return {
+        "success": True,
+        "file_path": file_path,
+        "sheets": sheets_written,
+        "size_bytes": os.path.getsize(file_path),
+    }
+
+
+def _docx_create_from_data(file_path: str, blocks: list[dict],
+                           overwrite: bool = True) -> Dict[str, Any]:
+    """Create a .docx file via python-docx from a list of structured blocks.
+
+    Block types:
+      - {type: "heading", level: 1|2|3, text: "..."}
+      - {type: "paragraph", text: "...", bold: false, italic: false}
+      - {type: "table", rows: [[...]], header_row: true}
+      - {type: "page_break"}
+      - {type: "list", items: ["..."], style: "bullet"|"number"}
+    """
+    if not file_path:
+        return {"success": False, "error": "file_path required"}
+    file_path = os.path.abspath(os.path.expandvars(os.path.expanduser(file_path)))
+    if os.path.isfile(file_path) and not overwrite:
+        return {"success": False, "error": f"file exists and overwrite=False: {file_path}"}
+    parent = os.path.dirname(file_path)
+    if parent and not os.path.isdir(parent):
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except Exception as exc:
+            return {"success": False, "error": f"cannot create parent dir: {exc}"}
+
+    try:
+        from docx import Document
+        from docx.shared import Pt
+    except ImportError:
+        return {"success": False, "error": "python-docx not installed"}
+
+    doc = Document()
+    counts = {"headings": 0, "paragraphs": 0, "tables": 0, "lists": 0, "page_breaks": 0}
+
+    for i, block in enumerate(blocks):
+        if not isinstance(block, dict):
+            return {"success": False, "error": f"block {i} is not a dict"}
+        btype = block.get("type")
+        try:
+            if btype == "heading":
+                doc.add_heading(str(block.get("text", "")), level=int(block.get("level", 1)))
+                counts["headings"] += 1
+            elif btype == "paragraph":
+                p = doc.add_paragraph()
+                run = p.add_run(str(block.get("text", "")))
+                if block.get("bold"):
+                    run.bold = True
+                if block.get("italic"):
+                    run.italic = True
+                counts["paragraphs"] += 1
+            elif btype == "table":
+                rows = block.get("rows") or []
+                if not rows:
+                    continue
+                tbl = doc.add_table(rows=len(rows), cols=max((len(r) for r in rows), default=1))
+                tbl.style = "Light Grid Accent 1"
+                header_row = block.get("header_row", False)
+                for r_idx, row in enumerate(rows):
+                    for c_idx, cell in enumerate(row):
+                        c = tbl.rows[r_idx].cells[c_idx]
+                        c.text = "" if cell is None else str(cell)
+                        if header_row and r_idx == 0:
+                            for run in c.paragraphs[0].runs:
+                                run.bold = True
+                counts["tables"] += 1
+            elif btype == "page_break":
+                doc.add_page_break()
+                counts["page_breaks"] += 1
+            elif btype == "list":
+                style = "List Bullet" if block.get("style", "bullet") == "bullet" else "List Number"
+                for item in block.get("items") or []:
+                    doc.add_paragraph(str(item), style=style)
+                counts["lists"] += 1
+            else:
+                return {"success": False, "error": f"block {i}: unknown type {btype!r}"}
+        except Exception as exc:
+            return {"success": False, "error": f"block {i} ({btype}): {type(exc).__name__}: {exc}"}
+
+    try:
+        doc.save(file_path)
+    except Exception as exc:
+        return {"success": False, "error": f"save failed: {type(exc).__name__}: {exc}"}
+
+    return {
+        "success": True,
+        "file_path": file_path,
+        "blocks_written": len(blocks),
+        "counts": counts,
+        "size_bytes": os.path.getsize(file_path),
+    }
+
+
+def _csv_create_from_data(file_path: str, rows: list[list[Any]],
+                          delimiter: str = ",", encoding: str = "utf-8-sig",
+                          overwrite: bool = True) -> Dict[str, Any]:
+    """Write rows as CSV. utf-8-sig is Excel-friendly (preserves BOM for German chars)."""
+    if not file_path:
+        return {"success": False, "error": "file_path required"}
+    file_path = os.path.abspath(os.path.expandvars(os.path.expanduser(file_path)))
+    if os.path.isfile(file_path) and not overwrite:
+        return {"success": False, "error": f"file exists and overwrite=False: {file_path}"}
+    parent = os.path.dirname(file_path)
+    if parent and not os.path.isdir(parent):
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except Exception as exc:
+            return {"success": False, "error": f"cannot create parent dir: {exc}"}
+
+    import csv
+
+    try:
+        with open(file_path, "w", encoding=encoding, newline="") as f:
+            writer = csv.writer(f, delimiter=delimiter)
+            for row in rows:
+                writer.writerow(["" if c is None else c for c in row])
+    except Exception as exc:
+        return {"success": False, "error": f"write failed: {type(exc).__name__}: {exc}"}
+
+    return {
+        "success": True,
+        "file_path": file_path,
+        "rows_written": len(rows),
+        "size_bytes": os.path.getsize(file_path),
+        "encoding": encoding,
+        "delimiter": delimiter,
+    }
+
+
+def _docx_verify_file(file_path: str,
+                      expected_substrings: Optional[list[str]] = None,
+                      min_paragraphs: Optional[int] = None,
+                      min_tables: Optional[int] = None,
+                      expected_table_cells: Optional[list[dict]] = None) -> Dict[str, Any]:
+    """Read-only verification of a .docx file.
+
+    expected_table_cells: list of {table_index, row, col, expected_substring}
+    """
+    if not file_path or not os.path.isfile(file_path):
+        return {"success": False, "exists": False, "file_path": file_path,
+                "error": f"file does not exist: {file_path}"}
+    try:
+        from docx import Document
+    except ImportError:
+        return {"success": False, "error": "python-docx not installed"}
+    try:
+        doc = Document(file_path)
+    except Exception as exc:
+        return {"success": False, "exists": True, "valid": False,
+                "error": f"docx load failed: {type(exc).__name__}: {exc}"}
+
+    paragraphs = [p.text for p in doc.paragraphs]
+    tables = doc.tables
+    full_text = "\n".join(paragraphs + [c.text for t in tables for r in t.rows for c in r.cells]).lower()
+
+    failures: list[str] = []
+    checks: Dict[str, Any] = {
+        "paragraph_count": len(paragraphs),
+        "table_count": len(tables),
+    }
+
+    if expected_substrings:
+        sub_results: dict[str, bool] = {}
+        for needle in expected_substrings:
+            ok = needle.lower() in full_text
+            sub_results[needle] = ok
+            if not ok:
+                failures.append(f"substring not found: {needle!r}")
+        checks["expected_substrings"] = sub_results
+
+    if min_paragraphs is not None:
+        ok = len(paragraphs) >= int(min_paragraphs)
+        checks["min_paragraphs"] = {"required": min_paragraphs, "actual": len(paragraphs), "ok": ok}
+        if not ok:
+            failures.append(f"only {len(paragraphs)} paragraphs, need {min_paragraphs}")
+
+    if min_tables is not None:
+        ok = len(tables) >= int(min_tables)
+        checks["min_tables"] = {"required": min_tables, "actual": len(tables), "ok": ok}
+        if not ok:
+            failures.append(f"only {len(tables)} tables, need {min_tables}")
+
+    if expected_table_cells:
+        cell_results = []
+        for spec in expected_table_cells:
+            t_idx = int(spec.get("table_index", 0))
+            r = int(spec.get("row", 0))
+            c = int(spec.get("col", 0))
+            expected = str(spec.get("expected_substring", ""))
+            actual = None
+            ok = False
+            try:
+                actual = tables[t_idx].rows[r].cells[c].text
+                ok = expected.lower() in actual.lower()
+            except Exception as exc:
+                actual = f"<error: {exc}>"
+            cell_results.append({
+                "table_index": t_idx, "row": r, "col": c,
+                "expected_substring": expected, "actual": actual, "ok": ok,
+            })
+            if not ok:
+                failures.append(f"table[{t_idx}][{r}][{c}]: expected {expected!r}, got {actual!r}")
+        checks["expected_table_cells"] = cell_results
+
+    success = len(failures) == 0
+    return {
+        "success": success,
+        "exists": True,
+        "valid": True,
+        "file_path": file_path,
+        "checks": checks,
+        "failures": failures,
+        "summary": (
+            f"OK ({len(paragraphs)} paragraphs, {len(tables)} tables)"
+            if success else f"FAIL ({len(failures)} issues): {'; '.join(failures[:3])}"
+        ),
+    }
+
+
+def _rowboat_upload(file_path: str, title: Optional[str] = None,
+                    tags: Optional[list[str]] = None) -> Dict[str, Any]:
+    """Upload a file to the Rowboat knowledge backend at :3000.
+
+    Reads ROWBOAT_URL (default http://localhost:3000), ROWBOAT_API_KEY,
+    ROWBOAT_PROJECT_ID from environment. If any of those are missing, returns
+    a graceful failure (not an exception).
+    """
+    if not file_path or not os.path.isfile(file_path):
+        return {"success": False, "error": f"file not found: {file_path}"}
+
+    rowboat_url = os.environ.get("ROWBOAT_URL", "http://localhost:3000")
+    api_key = os.environ.get("ROWBOAT_API_KEY", "")
+    project_id = os.environ.get("ROWBOAT_PROJECT_ID", "")
+    if not api_key or not project_id:
+        return {
+            "success": False,
+            "skipped": True,
+            "reason": "rowboat not configured",
+            "missing": [k for k in ("ROWBOAT_API_KEY", "ROWBOAT_PROJECT_ID")
+                        if not os.environ.get(k)],
+            "hint": "Set ROWBOAT_API_KEY and ROWBOAT_PROJECT_ID in env to enable.",
+        }
+
+    try:
+        import requests
+    except ImportError:
+        return {"success": False, "error": "requests not installed"}
+
+    upload_url = f"{rowboat_url.rstrip('/')}/api/v1/{project_id}/upload"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    filename = os.path.basename(file_path)
+    data: dict[str, str] = {}
+    if title:
+        data["title"] = str(title)
+    if tags:
+        data["tags"] = ",".join(str(t) for t in tags)
+    try:
+        with open(file_path, "rb") as fh:
+            files = {"file": (filename, fh)}
+            resp = requests.post(upload_url, headers=headers, data=data, files=files, timeout=30)
+        return {
+            "success": 200 <= resp.status_code < 300,
+            "status_code": resp.status_code,
+            "url": upload_url,
+            "filename": filename,
+            "response_text": resp.text[:500] if resp.text else "",
+        }
+    except Exception as exc:
+        return {"success": False, "error": f"{type(exc).__name__}: {exc}", "url": upload_url}
+
+
+def _excel_verify_file(file_path: str, expected_cells: Optional[Dict[str, str]] = None,
+                       min_rows: Optional[int] = None,
+                       must_contain_text: Optional[list[str]] = None) -> Dict[str, Any]:
+    """Hard disk-level verification of an Excel file.
+
+    Reads the .xlsx with openpyxl and checks:
+      - file exists and parses as valid xlsx
+      - optionally specific cells contain expected values (substring match)
+      - optionally the active sheet has at least min_rows rows
+      - optionally each string in must_contain_text appears somewhere in the sheet
+
+    Returns ``{exists, valid, checks: {...}, summary}``.
+    """
+    if not file_path:
+        return {"success": False, "exists": False, "error": "file_path required"}
+    if not os.path.isfile(file_path):
+        return {
+            "success": False,
+            "exists": False,
+            "file_path": file_path,
+            "error": f"file does not exist on disk: {file_path}",
+        }
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        return {"success": False, "error": "openpyxl not installed"}
+    try:
+        wb = load_workbook(file_path, read_only=True, data_only=False)
+    except Exception as exc:
+        return {
+            "success": False,
+            "exists": True,
+            "valid": False,
+            "file_path": file_path,
+            "error": f"openpyxl load failed: {type(exc).__name__}: {exc}",
+        }
+
+    ws = wb.active
+    max_row = ws.max_row or 0
+    max_col = ws.max_column or 0
+    checks: Dict[str, Any] = {}
+    failures: list[str] = []
+
+    if expected_cells:
+        cell_results: Dict[str, Any] = {}
+        for coord, expected in expected_cells.items():
+            try:
+                actual = ws[coord].value
+            except Exception:
+                actual = None
+            actual_str = "" if actual is None else str(actual)
+            ok = str(expected) in actual_str
+            cell_results[coord] = {"expected_substring": expected, "actual": actual_str, "ok": ok}
+            if not ok:
+                failures.append(f"cell {coord}: expected substring {expected!r}, got {actual_str!r}")
+        checks["expected_cells"] = cell_results
+
+    if min_rows is not None:
+        # Use the largest sheet, not just the active one — multi-sheet
+        # workbooks often have a small summary on the active sheet and the
+        # bulk data on a sibling sheet.
+        max_rows_any = max(
+            (wb[sn].max_row or 0) for sn in wb.sheetnames
+        )
+        ok = max_rows_any >= int(min_rows)
+        checks["min_rows"] = {
+            "required": min_rows,
+            "actual_largest_sheet": max_rows_any,
+            "actual_active_sheet": max_row,
+            "ok": ok,
+        }
+        if not ok:
+            failures.append(f"largest sheet has {max_rows_any} rows, need {min_rows}")
+
+    if must_contain_text:
+        # Build a lower-case haystack across ALL sheets — multi-sheet
+        # workbooks would otherwise miss substrings on non-active sheets.
+        # Sheet names are included in the haystack too, so substrings that
+        # are tab-names (e.g. 'KW18', 'Resturlaub') match correctly.
+        haystack: list[str] = []
+        for sheet_name in wb.sheetnames:
+            haystack.append(sheet_name.lower())
+            ws_iter = wb[sheet_name]
+            for row in ws_iter.iter_rows(values_only=True):
+                for v in row:
+                    if v is not None:
+                        haystack.append(str(v).lower())
+        joined = "\n".join(haystack)
+        text_results: Dict[str, bool] = {}
+        for needle in must_contain_text:
+            ok = needle.lower() in joined
+            text_results[needle] = ok
+            if not ok:
+                failures.append(f"text {needle!r} not found anywhere in workbook")
+        checks["must_contain_text"] = text_results
+
+    wb.close()
+
+    success = len(failures) == 0
+    return {
+        "success": success,
+        "exists": True,
+        "valid": True,
+        "file_path": file_path,
+        "sheet_name": ws.title,
+        "max_row": max_row,
+        "max_col": max_col,
+        "checks": checks,
+        "failures": failures,
+        "summary": (
+            f"OK ({max_row} rows, {max_col} cols)" if success
+            else f"FAIL ({len(failures)} issues): {'; '.join(failures[:3])}"
+        ),
+    }
+
+
+def _excel_paste_table(rows: list[list[Any]], start_cell: Optional[str] = None) -> Dict[str, Any]:
+    """Paste a 2-D table into Excel via clipboard (Tab-separated TSV).
+
+    Excel's paste handler interprets Tab as column-separator and Newline as
+    row-separator, so a TSV blob in the clipboard pastes into a rectangular
+    cell range starting from the active selection. Much more reliable than
+    typing each cell + Tab + ... .
+
+    If ``start_cell`` is provided (e.g. ``"A1"``), we Ctrl+G to it first so
+    the paste lands in the right place.
+    """
+    if sys.platform != "win32":
+        return {"success": False, "error": "excel_paste_table only supported on Windows"}
+    try:
+        import pyautogui
+        import pyperclip
+    except ImportError as exc:
+        return {"success": False, "error": f"pyautogui/pyperclip missing: {exc}"}
+
+    if not rows or not isinstance(rows, list):
+        return {"success": False, "error": "rows must be a non-empty list of lists"}
+
+    # Build TSV. Cells with newlines/tabs get sanitized by replacing.
+    tsv_lines: list[str] = []
+    for row in rows:
+        if not isinstance(row, list):
+            return {"success": False, "error": f"each row must be a list, got {type(row).__name__}"}
+        cells: list[str] = []
+        for cell in row:
+            s = str(cell) if cell is not None else ""
+            s = s.replace("\t", "    ").replace("\r", "").replace("\n", " ")
+            cells.append(s)
+        tsv_lines.append("\t".join(cells))
+    tsv = "\n".join(tsv_lines)
+
+    # Optional: navigate to start cell
+    import time
+
+    if start_cell:
+        pyautogui.hotkey("ctrl", "g")
+        time.sleep(0.4)
+        pyperclip.copy(start_cell)
+        pyautogui.hotkey("ctrl", "v")
+        time.sleep(0.2)
+        pyautogui.press("enter")
+        time.sleep(0.3)
+
+    pyperclip.copy(tsv)
+    time.sleep(0.1)
+    pyautogui.hotkey("ctrl", "v")
+    time.sleep(0.4)
+    return {
+        "success": True,
+        "rows_pasted": len(rows),
+        "cols_per_row": len(rows[0]) if rows else 0,
+        "start_cell": start_cell,
+        "tsv_size_chars": len(tsv),
+    }
+
+
+def _skill_save_and_index(app: str, skill_name: str, frontmatter: Dict[str, Any],
+                          body: str) -> Dict[str, Any]:
+    """Atomic write + index: SKILL.md to disk, then upsert to Qdrant.
+
+    Replaces the multi-step "write file then call indexer" dance — the
+    coordinator emits one tool call and gets back both the file_path and
+    the Qdrant point id.
+    """
+    if not _ensure_skill_lib_on_path():
+        return {"success": False, "error": f"skill library not found at {_SKILL_LIB_ROOT}"}
+    try:
+        import yaml
+    except ImportError:
+        return {"success": False, "error": "PyYAML not installed"}
+
+    safe_app = "".join(c for c in app.lower() if c.isalnum() or c in "-_")
+    safe_name = "".join(c for c in skill_name.lower() if c.isalnum() or c in "-_")
+    if not safe_app or not safe_name:
+        return {"success": False, "error": "app and skill_name must be non-empty alnum/dash"}
+
+    target_dir = os.path.join(_SKILL_LIB_ROOT, safe_app, safe_name)
+    target_file = os.path.join(target_dir, "SKILL.md")
+    os.makedirs(target_dir, exist_ok=True)
+
+    # Stamp metadata if not provided
+    fm = dict(frontmatter or {})
+    fm.setdefault("name", f"{safe_app}-{safe_name}")
+    fm.setdefault("app", safe_app)
+    fm.setdefault("agents", ["*"])
+    fm.setdefault("confidence", 0.0)
+    fm.setdefault("attempts", 0)
+    fm.setdefault("successes", 0)
+    if "last_adjusted" not in fm:
+        from datetime import datetime, timezone
+        fm["last_adjusted"] = datetime.now(timezone.utc).isoformat()
+
+    # YAML dump deterministic
+    fm_yaml = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).rstrip()
+    content = f"---\n{fm_yaml}\n---\n\n{body.strip()}\n"
+    with open(target_file, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    # Now upsert to Qdrant
+    try:
+        import _indexer  # type: ignore[import-not-found]
+        import _loader  # type: ignore[import-not-found]
+        skill_obj = _loader.parse_skill_file(__import__("pathlib").Path(target_file))
+        _indexer.upsert_skill(skill_obj)
+        indexed = True
+        index_error = None
+    except Exception as exc:
+        indexed = False
+        index_error = f"{type(exc).__name__}: {exc}"
+
+    return {
+        "success": True,
+        "file_path": target_file,
+        "indexed": indexed,
+        "index_error": index_error,
+        "frontmatter": fm,
+    }
+
+
+def _skill_list(app: Optional[str] = None) -> Dict[str, Any]:
+    if not _ensure_skill_lib_on_path():
+        return {"success": False, "error": f"skill library not found at {_SKILL_LIB_ROOT}"}
+    try:
+        import _loader  # type: ignore[import-not-found]
+        skills = _loader.discover_skills()
+        if app:
+            skills = [s for s in skills if s.app == app]
+        return {
+            "success": True,
+            "count": len(skills),
+            "skills": [
+                {
+                    "name": s.name,
+                    "app": s.app,
+                    "description": s.description,
+                    "confidence": s.confidence,
+                    "attempts": s.attempts,
+                    "successes": s.successes,
+                    "agents": s.agents,
+                    "file_path": str(s.path),
+                }
+                for s in skills
+            ],
+        }
+    except Exception as exc:
+        return {"success": False, "error": f"{type(exc).__name__}: {exc}"}
 
 # Handoff system imports
 from agents.handoff import (
@@ -181,31 +1322,34 @@ TOOLS = [
     ),
     Tool(
         name="handoff_action",
-        description="Execute a direct automation action (hotkey, type, press, click, sleep, scroll).",
+        description=(
+            "Execute a direct automation action. Pass `action_type` and the "
+            "relevant args either flat (`{action_type: 'type', text: 'Hi'}`) "
+            "OR nested in `params` (`{action_type: 'type', params: {text: 'Hi'}}`). "
+            "Both forms work."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
                 "action_type": {
                     "type": "string",
                     "enum": ["hotkey", "type", "press", "click", "sleep", "scroll"],
-                    "description": "Type of action to perform"
+                    "description": "Type of action: hotkey | type | press | click | sleep | scroll."
                 },
+                "keys": {"type": "string", "description": "For hotkey: keys like 'ctrl+alt+space' (flat or under params)."},
+                "text": {"type": "string", "description": "For type: text to type (clipboard-pasted, supports newlines/tabs)."},
+                "key": {"type": "string", "description": "For press: key name like 'enter'."},
+                "x": {"type": "integer", "description": "For click/scroll: x coordinate (absolute pixel)."},
+                "y": {"type": "integer", "description": "For click/scroll: y coordinate."},
+                "seconds": {"type": "number", "description": "For sleep: duration in seconds."},
+                "direction": {"type": "string", "enum": ["up", "down"], "description": "For scroll: direction."},
+                "amount": {"type": "integer", "description": "For scroll: number of scroll clicks (default 3)."},
                 "params": {
                     "type": "object",
-                    "description": "Action parameters (keys, text, key, x/y, seconds, direction/amount for scroll)",
-                    "properties": {
-                        "keys": {"type": "string", "description": "For hotkey: keys like 'ctrl+alt+space'"},
-                        "text": {"type": "string", "description": "For type: text to type"},
-                        "key": {"type": "string", "description": "For press: key name like 'enter'"},
-                        "x": {"type": "integer", "description": "For click/scroll: x coordinate"},
-                        "y": {"type": "integer", "description": "For click/scroll: y coordinate"},
-                        "seconds": {"type": "number", "description": "For sleep: duration"},
-                        "direction": {"type": "string", "enum": ["up", "down"], "description": "For scroll: direction"},
-                        "amount": {"type": "integer", "description": "For scroll: number of scroll clicks (default 3)"}
-                    }
+                    "description": "Optional: nested params dict (legacy form). If omitted, top-level keys are used."
                 }
             },
-            "required": ["action_type", "params"]
+            "required": ["action_type"]
         }
     ),
     Tool(
@@ -490,6 +1634,413 @@ TOOLS = [
                 }
             },
             "required": ["findings"]
+        }
+    ),
+    # Clarify (ask the user via HTML form, used by adaptive skills for credentials)
+    Tool(
+        name="handoff_clarify",
+        description="Ask the human user a question via Telegram/UI and (optionally) collect "
+                    "structured form input. Returns a clarify_id and form_url; the caller must "
+                    "poll handoff_clarify_check until status='answered'. Use form_schema for "
+                    "credentials/secrets — values flagged as type=password (or with a "
+                    "credential_id field) are stored DPAPI-encrypted and only a vault token is "
+                    "returned in the answer payload.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The question shown to the user."
+                },
+                "options": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional list of multiple-choice answers."
+                },
+                "form_schema": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "label": {"type": "string"},
+                            "type": {"type": "string", "enum": ["text", "password", "email", "url", "number", "vault"]},
+                            "required": {"type": "boolean"},
+                            "placeholder": {"type": "string"}
+                        },
+                        "required": ["name", "type"]
+                    },
+                    "description": "Optional list of form-field descriptors for collecting structured input."
+                }
+            },
+            "required": ["question"]
+        }
+    ),
+    Tool(
+        name="handoff_clarify_check",
+        description="Check whether a previously-issued handoff_clarify has been answered. "
+                    "Returns {status, answer} — status is 'pending' until the user submits.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "clarify_id": {
+                    "type": "string",
+                    "description": "ID returned by a prior handoff_clarify call."
+                }
+            },
+            "required": ["clarify_id"]
+        }
+    ),
+    Tool(
+        name="handoff_approval_request",
+        description="Pre-authorisation prompt: asks the user via Telegram + HTML one-click form "
+                    "(Approve / Decline buttons) and BLOCKS until either an answer arrives or "
+                    "the timeout (default 60s) elapses. On timeout, the configured default is "
+                    "returned (default: 'approved' — optimistic, since the user explicitly opted "
+                    "into autonomy). Use this BEFORE the first destructive tool call in a skill "
+                    "(launching apps, typing/clicking, sending messages, file writes). For "
+                    "read-only operations (read_screen, vision_analyze, get_focus, skill_search) "
+                    "DO NOT call this — just go ahead.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "Short imperative description of what you are about to do, e.g. 'Word starten und 5 Zellen mit Werten füllen'."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Optional context: why this is needed (e.g. which skill, which expected effect)."
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "description": "Seconds to wait for user input before falling back to default. Default 60."
+                },
+                "default_on_timeout": {
+                    "type": "string",
+                    "enum": ["approved", "declined"],
+                    "description": "What to return if the user doesn't respond. Default 'approved'."
+                }
+            },
+            "required": ["action"]
+        }
+    ),
+    # Skill library lookups — talks to the dedicated `vibemind_skills` Qdrant
+    # collection (the qdrant MCP is bound to a different default collection
+    # so it can't reach this one without re-config).
+    Tool(
+        name="skill_search",
+        description="Semantic search over the VibeMind adaptive-skill library "
+                    "(SKILL.md files indexed in the 'vibemind_skills' Qdrant collection). "
+                    "Returns the top-K matches with name, app, description, confidence, file_path, score.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Natural-language description of what the user wants to do."},
+                "agent": {"type": "string", "description": "Optional: only return skills whose 'agents' frontmatter contains this name (or '*')."},
+                "limit": {"type": "integer", "description": "Max results, default 5."}
+            },
+            "required": ["query"]
+        }
+    ),
+    Tool(
+        name="skill_list",
+        description="List skills in the library, optionally filtered by app. Reads filesystem directly (no Qdrant call).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "app": {"type": "string", "description": "Optional: only show skills for this app (e.g. 'excel')."}
+            }
+        }
+    ),
+    Tool(
+        name="window_maximize",
+        description=(
+            "Maximize a window matching the title substring (Win32 ShowWindow "
+            "SW_MAXIMIZE). Use this before screen-driven skills so the app fills "
+            "the screen and Vision can see all UI elements."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "title_substring": {"type": "string", "description": "Case-insensitive title fragment, e.g. 'Excel'."}
+            },
+            "required": ["title_substring"]
+        }
+    ),
+    Tool(
+        name="xlsx_create_from_data",
+        description=(
+            "DETERMINISTIC: Create an .xlsx file directly via openpyxl — no Excel UI, "
+            "no SendKeys. Single-sheet via `rows` OR multi-sheet via `sheets`. "
+            "Strings starting with `=` are written as Excel formulas (e.g. '=SUM(A1:A3)' "
+            "or '=Tabelle2!B5*0.19'). `cell_styles` allows fill colors, font colors, "
+            "borders, alignment, number_format. `freeze_pane` fixes rows/cols above and "
+            "left of the given coordinate."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Absolute output path, e.g. 'C:/Users/User/Desktop/HR/foo.xlsx'."},
+                "rows": {
+                    "type": "array",
+                    "items": {"type": "array", "items": {"type": "string"}},
+                    "description": "2-D list of cell values for SINGLE-sheet workbook. Use either rows OR sheets."
+                },
+                "sheets": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
+                            "bold_rows": {"type": "array", "items": {"type": "integer"}},
+                            "freeze_pane": {"type": "string"},
+                            "cell_styles": {"type": "array", "items": {"type": "object"}}
+                        }
+                    },
+                    "description": "Multi-sheet alternative to rows. List of {name, rows, bold_rows, freeze_pane, cell_styles}."
+                },
+                "sheet_name": {"type": "string", "description": "Sheet name when using `rows`."},
+                "bold_rows": {"type": "array", "items": {"type": "integer"}, "description": "1-based row numbers to bold."},
+                "freeze_pane": {"type": "string", "description": "Cell coord (e.g. 'A2' to freeze row 1, 'B2' to freeze row 1 + col A)."},
+                "cell_styles": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "range": {"type": "string", "description": "A1-notation, e.g. 'A1:E1' or 'C2:C20'."},
+                            "fill_color": {"type": "string", "description": "6-hex without #, e.g. 'FFEB9C'."},
+                            "font_color": {"type": "string", "description": "6-hex without #."},
+                            "bold": {"type": "boolean"},
+                            "italic": {"type": "boolean"},
+                            "border": {"type": "boolean", "description": "Thin border around each cell in the range."},
+                            "align": {"type": "string", "enum": ["left", "center", "right"]},
+                            "number_format": {"type": "string", "description": "Excel format code, e.g. '#,##0.00 €' or 'YYYY-MM-DD'."}
+                        },
+                        "required": ["range"]
+                    }
+                },
+                "auto_width": {"type": "boolean", "description": "Auto-fit column widths. Default true."},
+                "overwrite": {"type": "boolean", "description": "Overwrite if file exists. Default true."}
+            },
+            "required": ["file_path"]
+        }
+    ),
+    Tool(
+        name="docx_create_from_data",
+        description=(
+            "DETERMINISTIC: Create a .docx file via python-docx from a list of "
+            "structured blocks. Use this for HR documents like Arbeitszeugnisse, "
+            "Mitarbeitergespräch-Protokolle, Verträge, Kündigungsschreiben. Block types: "
+            "heading (level 1-3), paragraph (bold/italic), table (rows[][], header_row), "
+            "page_break, list (bullet/number)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Absolute output path, e.g. 'C:/Users/User/Desktop/HR/zeugnis.docx'."},
+                "blocks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {"type": "string", "enum": ["heading", "paragraph", "table", "page_break", "list"]},
+                            "text": {"type": "string"},
+                            "level": {"type": "integer", "description": "For heading: 1, 2 or 3."},
+                            "bold": {"type": "boolean"},
+                            "italic": {"type": "boolean"},
+                            "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}, "description": "For table."},
+                            "header_row": {"type": "boolean", "description": "For table: bold first row."},
+                            "items": {"type": "array", "items": {"type": "string"}, "description": "For list."},
+                            "style": {"type": "string", "enum": ["bullet", "number"], "description": "For list."}
+                        },
+                        "required": ["type"]
+                    }
+                },
+                "overwrite": {"type": "boolean", "description": "Default true."}
+            },
+            "required": ["file_path", "blocks"]
+        }
+    ),
+    Tool(
+        name="csv_create_from_data",
+        description=(
+            "Write rows as CSV. Default encoding utf-8-sig (BOM) so Excel opens "
+            "German umlauts correctly. Use this for DATEV exports, "
+            "Sozialversicherungs-Meldungen, Mitarbeiter-Imports."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string"},
+                "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
+                "delimiter": {"type": "string", "description": "Default ','. Use ';' for German Excel."},
+                "encoding": {"type": "string", "description": "Default 'utf-8-sig'."},
+                "overwrite": {"type": "boolean"}
+            },
+            "required": ["file_path", "rows"]
+        }
+    ),
+    Tool(
+        name="docx_verify_file",
+        description=(
+            "Read-only verification of a .docx file. Pendant to excel_verify_file. "
+            "Confirms the file exists, is valid, and contains expected content "
+            "(substrings, min paragraph/table counts, specific table cell values)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string"},
+                "expected_substrings": {"type": "array", "items": {"type": "string"}, "description": "All must appear somewhere in the body (case-insensitive)."},
+                "min_paragraphs": {"type": "integer"},
+                "min_tables": {"type": "integer"},
+                "expected_table_cells": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "table_index": {"type": "integer"},
+                            "row": {"type": "integer"},
+                            "col": {"type": "integer"},
+                            "expected_substring": {"type": "string"}
+                        }
+                    }
+                }
+            },
+            "required": ["file_path"]
+        }
+    ),
+    Tool(
+        name="rowboat_upload",
+        description=(
+            "Upload a file to the Rowboat knowledge backend at :3000. Returns "
+            "{success, status_code, url}. If ROWBOAT_API_KEY/ROWBOAT_PROJECT_ID "
+            "env vars are missing, returns {skipped: true} gracefully — no crash. "
+            "Use this AFTER xlsx_create/docx_create to publish HR artifacts to "
+            "the central knowledge graph for cross-system retrieval."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Absolute path of an already-saved file (.xlsx, .docx, .csv, .pdf)."},
+                "title": {"type": "string", "description": "Display title in Rowboat. Defaults to filename."},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional tag list, e.g. ['hr','onboarding','2026']."}
+            },
+            "required": ["file_path"]
+        }
+    ),
+    Tool(
+        name="excel_verify_file",
+        description=(
+            "HARD disk-level verification of an Excel file via openpyxl. "
+            "Use this INSTEAD of vision_analyze when you need to confirm a "
+            "save actually persisted with the right content. Vision can "
+            "hallucinate; openpyxl reading the .xlsx cannot. Returns "
+            "{success, exists, valid, checks, failures, summary}."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Absolute path to the .xlsx file."},
+                "expected_cells": {
+                    "type": "object",
+                    "description": "Map of cell coordinates ('A1') to expected substring ('Onboarding'). The cell value must contain the substring.",
+                    "additionalProperties": {"type": "string"}
+                },
+                "min_rows": {"type": "integer", "description": "Minimum number of rows the active sheet must have."},
+                "must_contain_text": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of strings that must appear somewhere in the sheet (case-insensitive substring search)."
+                }
+            },
+            "required": ["file_path"]
+        }
+    ),
+    Tool(
+        name="excel_paste_table",
+        description=(
+            "Paste a 2-D table into Excel via clipboard TSV. Way more reliable "
+            "than typing cells one-by-one. Pre-condition: Excel must be the "
+            "foreground window with a workbook open. If start_cell is given "
+            "(e.g. 'A1'), the table is pasted starting there; otherwise it "
+            "pastes at the current selection."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "rows": {
+                    "type": "array",
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    },
+                    "description": "2-D list of cell values (strings). Inner lists = rows, length must match across rows."
+                },
+                "start_cell": {
+                    "type": "string",
+                    "description": "Optional A1-notation cell to navigate to before pasting (e.g. 'B5'). If omitted, paste lands at current selection."
+                }
+            },
+            "required": ["rows"]
+        }
+    ),
+    Tool(
+        name="skill_save_and_index",
+        description="ATOMIC: write a SKILL.md file under skills/<app>/<skill_name>/SKILL.md AND upsert it to the Qdrant 'vibemind_skills' collection in one go. This is the canonical 'persist a learned skill' tool — coordinators MUST use it instead of separate filesystem write + indexer calls. Auto-stamps last_adjusted, defaults missing fields (agents=['*'], confidence=0.0, attempts=0, successes=0).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "app": {"type": "string", "description": "App slug (e.g. 'excel', 'word', 'chrome'). Used as directory name."},
+                "skill_name": {"type": "string", "description": "Skill slug, e.g. 'fill-cell'. The full SKILL.md name will be set to '<app>-<skill_name>' if not provided in frontmatter."},
+                "frontmatter": {"type": "object", "description": "YAML frontmatter dict: description, requires_approval, agents, trigger, inputs, expected_state, secrets, confidence, attempts, successes."},
+                "body": {"type": "string", "description": "Markdown body — the actual steps the skill performs."}
+            },
+            "required": ["app", "skill_name", "frontmatter", "body"]
+        }
+    ),
+    # App lifecycle tools — launch/focus/list desktop apps from the whitelist
+    Tool(
+        name="app_launch",
+        description="Launch a desktop application from the whitelist (notepad, calc, excel, winword, chrome, msedge, code/vscode, explorer, claude, telegram, spotify, ...). Returns {pid, command} on success.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "app": {"type": "string", "description": "Whitelisted app name."},
+                "args": {"type": "array", "items": {"type": "string"}, "description": "Optional CLI args."}
+            },
+            "required": ["app"]
+        }
+    ),
+    Tool(
+        name="app_focus",
+        description="Bring an already-running window matching the title substring to the foreground.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "title_substring": {"type": "string", "description": "Case-insensitive fragment of the window title (e.g. 'Excel', 'Visual Studio Code')."}
+            },
+            "required": ["title_substring"]
+        }
+    ),
+    Tool(
+        name="app_list_running",
+        description="Enumerate all visible top-level windows (title, hwnd, pid). Useful before deciding whether to focus or launch.",
+        inputSchema={"type": "object", "properties": {}}
+    ),
+    Tool(
+        name="app_launch_or_focus",
+        description="Convenience wrapper: if a window matching title_hint (or app name) is already open, focus it; otherwise launch the app from the whitelist. Returns {action: 'focused'|'launched', ...}.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "app": {"type": "string", "description": "Whitelisted app name."},
+                "title_hint": {"type": "string", "description": "Optional title fragment to match against running windows. Defaults to the app name."},
+                "args": {"type": "array", "items": {"type": "string"}, "description": "Optional CLI args."}
+            },
+            "required": ["app"]
         }
     )
 ]
@@ -1453,10 +3004,15 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
                 expected_state=arguments.get("expected_state")
             )
         elif name == "handoff_action":
-            result = await handle_action(
-                action_type=arguments.get("action_type", ""),
-                params=arguments.get("params", {})
-            )
+            # LLMs frequently pass action params at the top level (e.g.
+            # ``{"action_type": "type", "text": "Hi"}``) instead of nested
+            # in ``params``. Be tolerant: collect any non-action_type key
+            # as a fallback ``params`` so the call still works.
+            action_type = arguments.get("action_type", "")
+            params = arguments.get("params")
+            if params is None or not params:
+                params = {k: v for k, v in arguments.items() if k != "action_type"}
+            result = await handle_action(action_type=action_type, params=params)
         elif name == "handoff_status":
             result = await handle_status()
         elif name == "handoff_read_screen":
@@ -1531,6 +3087,108 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
                 recipient=arguments.get("recipient"),
                 platform=arguments.get("platform"),
                 title=arguments.get("title")
+            )
+        # Clarify (HTML form for credentials / structured user input)
+        elif name == "handoff_clarify":
+            from agents.handoff.clarify_notify import handoff_clarify as _clarify
+            result = _clarify(
+                question=arguments.get("question", ""),
+                options=arguments.get("options"),
+                form_schema=arguments.get("form_schema"),
+            )
+        elif name == "handoff_clarify_check":
+            from agents.handoff.clarify_notify import handoff_clarify_check as _clarify_check
+            result = _clarify_check(clarify_id=arguments.get("clarify_id", ""))
+        elif name == "handoff_approval_request":
+            from agents.handoff.clarify_notify import handoff_approval_request as _approve
+            result = _approve(
+                action=arguments.get("action", ""),
+                reason=arguments.get("reason"),
+                timeout_seconds=int(arguments.get("timeout_seconds", 60)),
+                default_on_timeout=arguments.get("default_on_timeout", "approved"),
+            )
+        # Adaptive-skill library lookups
+        elif name == "skill_search":
+            result = _skill_search(
+                query=arguments.get("query", ""),
+                agent=arguments.get("agent"),
+                limit=int(arguments.get("limit", 5)),
+            )
+        elif name == "skill_list":
+            result = _skill_list(app=arguments.get("app"))
+        elif name == "excel_paste_table":
+            result = _excel_paste_table(
+                rows=arguments.get("rows") or [],
+                start_cell=arguments.get("start_cell"),
+            )
+        elif name == "window_maximize":
+            result = _window_maximize(title_substring=arguments.get("title_substring", ""))
+        elif name == "xlsx_create_from_data":
+            result = _xlsx_create_from_data(
+                file_path=arguments.get("file_path", ""),
+                rows=arguments.get("rows"),
+                sheet_name=arguments.get("sheet_name"),
+                bold_rows=arguments.get("bold_rows"),
+                auto_width=arguments.get("auto_width", True),
+                overwrite=arguments.get("overwrite", True),
+                sheets=arguments.get("sheets"),
+                cell_styles=arguments.get("cell_styles"),
+                freeze_pane=arguments.get("freeze_pane"),
+            )
+        elif name == "docx_create_from_data":
+            result = _docx_create_from_data(
+                file_path=arguments.get("file_path", ""),
+                blocks=arguments.get("blocks") or [],
+                overwrite=arguments.get("overwrite", True),
+            )
+        elif name == "csv_create_from_data":
+            result = _csv_create_from_data(
+                file_path=arguments.get("file_path", ""),
+                rows=arguments.get("rows") or [],
+                delimiter=arguments.get("delimiter", ","),
+                encoding=arguments.get("encoding", "utf-8-sig"),
+                overwrite=arguments.get("overwrite", True),
+            )
+        elif name == "docx_verify_file":
+            result = _docx_verify_file(
+                file_path=arguments.get("file_path", ""),
+                expected_substrings=arguments.get("expected_substrings"),
+                min_paragraphs=arguments.get("min_paragraphs"),
+                min_tables=arguments.get("min_tables"),
+                expected_table_cells=arguments.get("expected_table_cells"),
+            )
+        elif name == "rowboat_upload":
+            result = _rowboat_upload(
+                file_path=arguments.get("file_path", ""),
+                title=arguments.get("title"),
+                tags=arguments.get("tags"),
+            )
+        elif name == "excel_verify_file":
+            result = _excel_verify_file(
+                file_path=arguments.get("file_path", ""),
+                expected_cells=arguments.get("expected_cells"),
+                min_rows=arguments.get("min_rows"),
+                must_contain_text=arguments.get("must_contain_text"),
+            )
+        elif name == "skill_save_and_index":
+            result = _skill_save_and_index(
+                app=arguments.get("app", ""),
+                skill_name=arguments.get("skill_name", ""),
+                frontmatter=arguments.get("frontmatter") or {},
+                body=arguments.get("body", ""),
+            )
+        # App lifecycle
+        elif name == "app_launch":
+            result = _app_launch(app_name=arguments.get("app", ""), args=arguments.get("args"))
+        elif name == "app_focus":
+            result = _app_focus(title_substring=arguments.get("title_substring", ""))
+        elif name == "app_list_running":
+            result = _app_list_running()
+        elif name == "app_launch_or_focus":
+            result = _app_launch_or_focus(
+                app_name=arguments.get("app", ""),
+                title_hint=arguments.get("title_hint"),
+                args=arguments.get("args"),
             )
         else:
             result = {"error": f"Unknown tool: {name}"}

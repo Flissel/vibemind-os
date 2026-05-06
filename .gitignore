@@ -71,3 +71,8 @@ issue-detector/vibemind_inbox.md
 *.stackdump
 bash.exe.stackdump
 *.dmp
+
+# === Runtime data dirs in spaces (not source) ===
+spaces/coding/Coding_engine/Data/
+spaces/coding/Coding_engine/infra/data/
+spaces/rowboat/data/

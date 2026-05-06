@@ -79,17 +79,68 @@ class OpenRouterClient:
     - Claude 3.5 Sonnet für schnelle Aktionen
     """
     
-    BASE_URL = "https://openrouter.ai/api/v1"
-    
+    OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+    OPENAI_BASE_URL = "https://api.openai.com/v1"
+
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.getenv('OPENROUTER_API_KEY')
-        if not self.api_key:
-            logger.warning("No OPENROUTER_API_KEY found - LLM calls will fail")
-        
+        # Prefer OpenRouter if its key is present; otherwise fall back to OpenAI
+        # directly. OpenRouter speaks the OpenAI chat-completions schema, so
+        # the rest of the client's request shape is identical between them.
+        # We only need to swap the base URL and the auth key.
+        explicit = api_key
+        or_key = os.getenv('OPENROUTER_API_KEY')
+        oai_key = os.getenv('OPENAI_API_KEY')
+
+        if explicit:
+            self.api_key = explicit
+            self.BASE_URL = self.OPENROUTER_BASE_URL
+            self.provider_label = "openrouter (explicit)"
+        elif or_key:
+            self.api_key = or_key
+            self.BASE_URL = self.OPENROUTER_BASE_URL
+            self.provider_label = "openrouter"
+        elif oai_key:
+            self.api_key = oai_key
+            self.BASE_URL = self.OPENAI_BASE_URL
+            self.provider_label = "openai"
+            logger.info("OpenRouter key not set; using OpenAI directly via OPENAI_API_KEY")
+        else:
+            self.api_key = None
+            self.BASE_URL = self.OPENROUTER_BASE_URL
+            self.provider_label = "none"
+            logger.warning("No OPENROUTER_API_KEY or OPENAI_API_KEY found - LLM calls will fail")
+
         self.session: Optional[aiohttp.ClientSession] = None
         self._request_count = 0
         self._total_tokens = 0
-    
+
+    def _adapt_model_name(self, model_name: str) -> str:
+        """Translate OpenRouter-style model names to OpenAI-direct names.
+
+        Used when the client is talking to api.openai.com directly (because no
+        OPENROUTER_API_KEY is set). OpenRouter prefixes models with the vendor
+        (e.g. "openai/gpt-4o", "anthropic/claude-sonnet-4") but OpenAI's API
+        only accepts the bare OpenAI model id ("gpt-4o").
+        """
+        if self.provider_label != "openai":
+            return model_name
+        # Strip any vendor prefix
+        if "/" in model_name:
+            vendor, _, rest = model_name.partition("/")
+            if vendor == "openai":
+                return rest.split(":")[0]  # drop ":free" or similar suffixes
+            # Anthropic/Google/etc. — translate to nearest OpenAI peer
+            mapping = {
+                "anthropic/claude-sonnet-4": "gpt-4o",
+                "anthropic/claude-3.5-sonnet": "gpt-4o",
+                "anthropic/claude-3-opus": "gpt-4o",
+                "anthropic/claude-3-haiku": "gpt-4o-mini",
+                "google/gemini-2.0-flash": "gpt-4o-mini",
+                "google/gemini-2.0-flash-exp:free": "gpt-4o-mini",
+            }
+            return mapping.get(model_name, "gpt-4o")
+        return model_name
+
     async def _ensure_session(self):
         """Erstellt Session wenn nötig."""
         if self.session is None or self.session.closed:
@@ -133,7 +184,8 @@ class OpenRouterClient:
         await self._ensure_session()
         
         model_name = model.value if isinstance(model, ModelType) else model
-        
+        model_name = self._adapt_model_name(model_name)
+
         payload = {
             "model": model_name,
             "messages": messages,
@@ -214,8 +266,9 @@ class OpenRouterClient:
         
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        
+
         model_name = model.value if isinstance(model, ModelType) else model
+        model_name = self._adapt_model_name(model_name)
 
         # OpenRouter uses OpenAI-compatible API format for ALL models
         # Always use image_url format (not Anthropic-native format)

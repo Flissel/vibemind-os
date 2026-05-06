@@ -120,6 +120,58 @@ async def configure_live_desktop(request: Request, config: LiveDesktopConfig):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/monitors")
+@log_api_request(logger)
+async def get_desktop_monitors(request: Request):
+    """Return monitor count + per-monitor geometry.
+
+    Schema matches what the renderer (multiverse.js) expects:
+        { count: int, monitors: [{ index, geometry: {left, top, width, height} }] }
+
+    Index numbering follows mss convention:
+        - 0 is reserved for the virtual "all monitors combined" rectangle
+        - 1..N are physical monitors (index 1 = primary)
+
+    The renderer iterates 1..count, so we exclude index 0 from the list but
+    keep it implicit in `count` semantics by reporting the physical count.
+    """
+    try:
+        import mss
+        with mss.mss() as sct:
+            # mss.monitors[0] is the combined virtual rect; physical monitors
+            # start at index 1.
+            physical = sct.monitors[1:]
+            monitors = [
+                {
+                    "index": i + 1,                     # 1-based for renderer
+                    "geometry": {
+                        "left": int(m.get("left", 0)),
+                        "top": int(m.get("top", 0)),
+                        "width": int(m.get("width", 0)),
+                        "height": int(m.get("height", 0)),
+                    },
+                }
+                for i, m in enumerate(physical)
+            ]
+            return JSONResponse(content={
+                "success": True,
+                "count": len(monitors),
+                "monitors": monitors,
+            })
+    except Exception as e:
+        logger.error(f"Get monitors failed: {e}", exc_info=True)
+        # Fallback: single primary monitor so the renderer still tries to stream
+        return JSONResponse(content={
+            "success": False,
+            "error": str(e),
+            "count": 1,
+            "monitors": [{
+                "index": 1,
+                "geometry": {"left": 0, "top": 0, "width": 1920, "height": 1080},
+            }],
+        })
+
+
 @router.get("/screen-info")
 @log_api_request(logger)
 async def get_desktop_screen_info(request: Request):
