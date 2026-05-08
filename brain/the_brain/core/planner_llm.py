@@ -105,62 +105,59 @@ _TARGET_KINDS_DOC = """\
 
 
 _EXAMPLE_PLAN = """\
-Example A — bubble + ideas + evaluate (uses repeat-block instead of N hops):
-USER INTENT:
-  "create a bubble called RoutingTest, add 3 ideas about routing, then evaluate it"
+RULES:
 
+1. ECHO THE USER INTENT EXACTLY in the `intent` field. Do not change it.
+2. Use ONE of the registered capabilities (listed below) with `execution_target: null`.
+3. Single-action intents = ONE hop.
+4. Multi-step intents = multiple hops with `depends_on`.
+5. Repeat-blocks (`repeat: {items: [...]}`) for "create N items" intents.
+6. Format capabilities (`idea_format_*`) are TERMINAL — do not append bubble_evaluate.
+7. NEVER fabricate execution_target URLs.
+
+REGISTERED CAPABILITIES (exact names):
+  Bubble: bubble_create, bubble_list, bubble_find, bubble_update, bubble_delete,
+          bubble_delete_all, bubble_enter, bubble_exit, bubble_stats, bubble_score,
+          bubble_evaluate, bubble_promote, bubble_generate_embeddings.
+  Idea:   idea_add (alias idea_create), idea_create_batch, idea_list, idea_count,
+          idea_find, idea_update, idea_delete, idea_explain, idea_classify, idea_expand,
+          idea_connect, idea_disconnect, idea_link_to_root, idea_move, idea_auto_link,
+          idea_analyze_links.
+  Format: idea_format_table, idea_format_note, idea_format_action_list,
+          idea_format_pros_cons, idea_format_hierarchy, idea_format_specs,
+          idea_format_kanban, idea_format_mindmap, idea_format_swot,
+          idea_format_user_story, idea_format_flowchart, idea_convert_format,
+          idea_format_revert, idea_format_list, idea_format_get.
+
+INTENT-TO-CAPABILITY HINTS:
+  "verlasse die bubble" / "exit bubble"               → bubble_exit (no arg)
+  "geh in die bubble X" / "enter bubble X"            → bubble_enter, arg_kwarg=bubble_name, arg_template=X
+  "wie reif ist bubble X" / "score bubble X"          → bubble_score,  arg_kwarg=bubble_name, arg_template=X
+  "stats für bubble X"                                 → bubble_stats,  arg_kwarg=bubble_name, arg_template=X
+  "lege bubble X an" / "create bubble X"              → bubble_create, arg_kwarg=title,        arg_template=X
+  "lösche bubble X"                                    → bubble_delete, arg_kwarg=bubble_name, arg_template=X
+  "lösche alle bubbles"                                → bubble_delete_all, no arg
+  "benenne bubble X um nach Y"                         → bubble_update, arg_kwarg=title,        arg_template=Y
+  "fuege idee X hinzu" / "add idea X"                  → idea_add,      arg_kwarg=title,        arg_template=X
+  "format idee X als Y"                                → idea_format_<Y>, arg_kwarg=idea_name,  arg_template=X
+
+ONE shape reference (do NOT copy these strings, only the structure):
+
+USER_INTENT_PLACEHOLDER → "Erstelle bubble FOO und füge 3 ideen über bar hinzu"
 PLAN:
 {
   "plan_id": "auto",
-  "intent": "create a bubble called RoutingTest, add 3 ideas about routing, then evaluate it",
-  "rationale": "Three sequential hops: create the bubble, add 3 ideas via a repeat-block, then evaluate the bubble.",
-  "estimated_cost_usd": 0.10,
-  "final_synthesis_prompt": "",
-  "hops": [
-    {"step_id": "s1", "description": "create bubble RoutingTest", "capability": "bubble_create", "execution_target": null, "arg_kwarg": "title", "arg_template": "RoutingTest", "depends_on": [], "output_var": "bubble", "on_fail": "abort", "timeout_s": 30, "retries": 1, "repeat": null},
-    {"step_id": "s2", "description": "add 3 ideas about routing", "capability": "idea_add", "execution_target": null, "arg_kwarg": "title", "arg_template": "Idea {{loop.index}}: {{item}}", "depends_on": ["s1"], "output_var": "ideas", "on_fail": "continue", "timeout_s": 30, "retries": 1, "repeat": {"items": ["regex routing with anchor phrases", "semantic fallback via cosine on embeddings", "multi-hop DAG decomposition for complex intents"]}},
-    {"step_id": "s3", "description": "evaluate RoutingTest bubble", "capability": "bubble_evaluate", "execution_target": null, "arg_kwarg": null, "arg_template": "evaluate the RoutingTest bubble", "depends_on": ["s2"], "output_var": "score", "on_fail": "abort", "timeout_s": 120, "retries": 1, "repeat": null}
-  ]
-}
-
-Example B — format an existing idea (notice: terminal hop is the format capability, NOT bubble_evaluate):
-USER INTENT:
-  "Mach mir aus der Idee 'Brain Federation' eine Pro-Contra-Liste"
-
-PLAN:
-{
-  "plan_id": "auto",
-  "intent": "Mach mir aus der Idee 'Brain Federation' eine Pro-Contra-Liste",
-  "rationale": "Single-hop: idea already exists, just call the format capability with the idea name. No bubble_create or idea_add needed.",
-  "estimated_cost_usd": 0.02,
-  "final_synthesis_prompt": "",
-  "hops": [
-    {"step_id": "s1", "description": "format 'Brain Federation' as pros/cons", "capability": "idea_format_pros_cons", "execution_target": null, "arg_kwarg": "idea_name", "arg_template": "Brain Federation", "depends_on": [], "output_var": "formatted", "on_fail": "abort", "timeout_s": 60, "retries": 1, "repeat": null}
-  ]
-}
-
-Example C — format-after-create (intent creates AND formats):
-USER INTENT:
-  "Lege Idee 'API Spec' an und wandle sie in eine technische Spezifikation um"
-
-PLAN:
-{
-  "plan_id": "auto",
-  "intent": "Lege Idee 'API Spec' an und wandle sie in eine technische Spezifikation um",
-  "rationale": "Two hops: create the idea, then run the specs format capability on it. The format hop is terminal — do NOT add bubble_evaluate.",
+  "intent": "Erstelle bubble FOO und füge 3 ideen über bar hinzu",
+  "rationale": "Two hops: create the bubble, then add 3 ideas via repeat-block.",
   "estimated_cost_usd": 0.05,
   "final_synthesis_prompt": "",
   "hops": [
-    {"step_id": "s1", "description": "create idea API Spec", "capability": "idea_add", "execution_target": null, "arg_kwarg": "title", "arg_template": "API Spec", "depends_on": [], "output_var": "idea", "on_fail": "abort", "timeout_s": 30, "retries": 1, "repeat": null},
-    {"step_id": "s2", "description": "format API Spec as technical specification", "capability": "idea_format_specs", "execution_target": null, "arg_kwarg": "idea_name", "arg_template": "API Spec", "depends_on": ["s1"], "output_var": "formatted", "on_fail": "abort", "timeout_s": 60, "retries": 1, "repeat": null}
+    {"step_id": "s1", "description": "create bubble FOO", "capability": "bubble_create", "execution_target": null, "arg_kwarg": "title", "arg_template": "FOO", "depends_on": [], "output_var": "bubble", "on_fail": "abort", "timeout_s": 30, "retries": 1, "repeat": null},
+    {"step_id": "s2", "description": "add 3 ideas about bar", "capability": "idea_add", "execution_target": null, "arg_kwarg": "title", "arg_template": "Idea {{loop.index}}: {{item}}", "depends_on": ["s1"], "output_var": "ideas", "on_fail": "continue", "timeout_s": 30, "retries": 1, "repeat": {"items": ["bar concept 1", "bar concept 2", "bar concept 3"]}}
   ]
 }
 
-CRITICAL ROUTING RULES:
-- When the intent says "format / mach / wandle / strukturiere ... als <X>" or "<X>-Liste / <X>-Diagramm", the LAST hop MUST be the matching idea_format_<X> capability — NEVER bubble_evaluate as a default tail.
-- Available format capabilities: idea_format_table, idea_format_note, idea_format_action_list, idea_format_pros_cons, idea_format_hierarchy, idea_format_specs, idea_format_kanban, idea_format_mindmap, idea_format_swot, idea_format_user_story, idea_format_flowchart, idea_convert_format, idea_format_revert.
-- Format capabilities take arg_kwarg="idea_name" and arg_template=<the idea title>. Do not pass the bubble — the dispatcher resolves the idea by name within the active bubble.
-- bubble_evaluate is ONLY for "evaluate the bubble", "is this ready", "score the bubble" intents. Do not use it as a generic plan-terminator.
+REMEMBER: the placeholder above is NOT the user's actual intent. Substitute the user's actual intent from the request and produce a NEW plan that matches it.
 """
 
 

@@ -1034,12 +1034,22 @@ class PlanExecutor:
 
         # Call with retry support
         last = None
+        # Phase 11.P — pass plan intent + step description as `_intent`/`_description`
+        # so tools can re-extract auxiliary args the planner couldn't fit
+        # into a single (arg_kwarg, arg_template) pair (e.g. update_bubble
+        # needs both source-name AND new-name).
+        _extra = {
+            "_intent": getattr(self, "_current_plan_intent", "") or "",
+            "_description": hop.description or "",
+            "_step_id": hop.step_id or "",
+        }
         for attempt in range(max(1, hop.retries)):
             try:
                 if hop.arg_kwarg:
-                    last = exe.call_with_arg(rendered_arg, arg_kwarg=hop.arg_kwarg)
+                    last = exe.call_with_arg(rendered_arg, arg_kwarg=hop.arg_kwarg,
+                                             extra_params=_extra)
                 else:
-                    last = exe.call_with_arg(rendered_arg)
+                    last = exe.call_with_arg(rendered_arg, extra_params=_extra)
             except Exception as e:
                 last = {
                     "ok": False,

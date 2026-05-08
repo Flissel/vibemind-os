@@ -510,7 +510,29 @@ def update_bubble(params: Dict[str, Any]) -> str:
     bubble_name = params.get("bubble_name", "").strip()
     new_title = params.get("new_title", params.get("title", "")).strip()
     new_description = params.get("new_description", params.get("description", "")).strip()
-    logger.debug("update_bubble: bubble_name=%s, new_title=%s", bubble_name, new_title)
+    intent = params.get("_intent", "").strip()
+    logger.debug("update_bubble: bubble_name=%s, new_title=%s, intent=%s",
+                 bubble_name, new_title, intent[:80])
+
+    # Phase 11.P — Single-arg fallback. The Brain plan-executor schema
+    # supports only one (arg_kwarg, arg_template) per hop, but rename
+    # needs both source-name AND new-name. Try to extract the source-name
+    # from the intent text if it wasn't passed explicitly.
+    if not bubble_name and intent:
+        import re
+        # "rename bubble X to Y" / "benenne bubble X um nach Y" / "bubble X umbenennen in Y"
+        patterns = [
+            r"(?:rename|benenne)\s+(?:the\s+|die\s+)?bubble\s+([\w\-]+)\s+(?:to|nach|in|zu|um\s+nach)\s+",
+            r"(?:bubble|space)\s+([\w\-]+)\s+(?:umbenennen\s+(?:in|nach|zu)|rename\s+to)",
+            r"benenne\s+([\w\-]+)\s+um",
+            r"update\s+(?:the\s+)?bubble\s+([\w\-]+)",
+        ]
+        for pat in patterns:
+            m = re.search(pat, intent, re.IGNORECASE)
+            if m:
+                bubble_name = m.group(1).strip()
+                logger.info(f"update_bubble: extracted bubble_name='{bubble_name}' from intent")
+                break
 
     if not new_title and not new_description:
         return "What should I change? Please tell me the new name or the new description."
@@ -548,7 +570,7 @@ def update_bubble(params: Dict[str, Any]) -> str:
 
     repo.update(bubble)
 
-    # Broadcast to Electron
+    # Broadcast to Electron (voice subprocess path)
     _broadcast_to_electron({
         "type": "bubble_updated",
         "bubble": {
@@ -561,6 +583,50 @@ def update_bubble(params: Dict[str, Any]) -> str:
     if new_title and new_title != old_title:
         _unpublish_bubble(old_title)  # Remove old-named manifest
     _publish_bubble(bubble.id)
+
+    # Phase 11.P — also publish to brain's space-event bus so the Electron
+    # brain-event-bridge surfaces the rename even when called from Brain
+    # (multi-hop / direct executor) rather than the voice subprocess.
+    # Mirrors Phase 11.F bubble.create + Phase 11.O bubble.delete paths.
+    try:
+        from . import _brain_event_publisher as _bep  # type: ignore
+        _bep.publish(
+            event_id="bubble.update",
+            params={
+                "bubble_name": old_title,
+                "new_title": bubble.title,
+                "new_description": bubble.description,
+                "bubble_id": bubble.id,
+            },
+            result=f"Renamed bubble '{old_title}' -> '{bubble.title}'",
+            ok=True,
+            source="bubble_tools/update_bubble",
+        )
+    except Exception:
+        try:
+            import importlib.util as _ilu, os as _os
+            _here = _os.path.dirname(__file__)
+            _spec = _ilu.spec_from_file_location(
+                "_brain_event_publisher_fallback",
+                _os.path.join(_here, "_brain_event_publisher.py"),
+            )
+            if _spec:
+                _bep2 = _ilu.module_from_spec(_spec)
+                _spec.loader.exec_module(_bep2)
+                _bep2.publish(
+                    event_id="bubble.update",
+                    params={
+                        "bubble_name": old_title,
+                        "new_title": bubble.title,
+                        "new_description": bubble.description,
+                        "bubble_id": bubble.id,
+                    },
+                    result=f"Renamed bubble '{old_title}' -> '{bubble.title}'",
+                    ok=True,
+                    source="bubble_tools/update_bubble",
+                )
+        except Exception:
+            pass
 
     if new_title:
         return f"Space renamed from '{old_title}' to '{new_title}'"

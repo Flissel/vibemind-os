@@ -879,3 +879,101 @@
   validator:
     kind: rule:string_nonempty
     on_fail: report
+
+# ─── Phase 11.P: Restliche Ideas-Space utility caps ─────────────────
+
+- capability: bubble_generate_embeddings
+  description: "rebuild or regenerate the semantic embeddings for all ideas inside a bubble, refresh embeddings, re-index the bubble"
+  anchor_phrases:
+    - "regenerate embeddings for the bubble"
+    - "rebuild embeddings"
+    - "re-index the bubble"
+    - "embeddings neu berechnen"
+    - "embeddings rebuilden"
+    - "bubble neu indizieren"
+  match_patterns:
+    - "(regenerate|rebuild|refresh|reindex|re[-\\s]?index|neu\\s+(berechnen|indizieren))\\s+(?:the\\s+|der\\s+|alle\\s+)?(embeddings?|index)"
+    - "embeddings?\\s+(rebuild|regenerate|neu)"
+    - "bubble\\s+(reindex|neu\\s+indizieren)"
+  execution_target: "direct:spaces.ideas.tools.bubble_tools:generate_bubble_embeddings"
+  arg_kwarg: bubble_name
+  validator:
+    kind: rule:string_nonempty
+    on_fail: report
+
+- capability: idea_analyze_links
+  description: "analyze existing connections in a bubble and suggest improvements, find missing links, recommend new edges, link analysis report (read-only — does NOT auto-create like idea_auto_link)"
+  anchor_phrases:
+    - "analyze the connections between ideas"
+    - "analyze the existing links"
+    - "suggest new links between ideas"
+    - "untersuche die verbindungen"
+    - "analysiere die verbindungen zwischen den ideen"
+    - "link analyse report"
+    - "schlage neue verbindungen vor"
+  match_patterns:
+    # Stricter than idea_auto_link: requires the analyze/untersuche verb
+    # AND a connections/verbindungen object. Plus optional "zwischen" /
+    # "between" that disambiguates from auto-link (which uses "verbinde").
+    - "(analy(s|z)e|analyz(e|ier)|untersuche|inspect|review)\\s+(?:the\\s+|die\\s+|alle\\s+)?(connections?|links?|verbindungen|edges?)"
+    - "(suggest|empfehle?|vorschla[gn]e?|schlage?\\s+vor)\\s+(?:new\\s+|weitere\\s+|zusaetzliche\\s+|neue\\s+)(connections?|links?|verbindungen|edges?)"
+    - "(link|verbindungs?)[\\s-]+(analy(s|z)e|analyse|report|review)"
+    - "(connections?|verbindungen|links?)\\s+(analy(s|z)e|analyse|untersuchen|review)"
+  execution_target: "direct:spaces.ideas.tools.idea_tools:analyze_and_suggest_links"
+  arg_kwarg: bubble_id
+  validator:
+    kind: rule:string_nonempty
+    on_fail: report
+
+- capability: idea_format_list
+  description: "list all available format types for ideas (table, note, action_list, pros_cons, hierarchy, specs, kanban, mindmap, swot, user_story, flowchart), show available formats, welche formate gibt es"
+  anchor_phrases:
+    - "list available formats"
+    - "show me the formats"
+    - "welche formate gibt es"
+    - "verfuegbare formate"
+    - "alle formate auflisten"
+  match_patterns:
+    - "(list|liste|zeig(e)?|show\\s+me)\\s+(?:all\\s+|alle\\s+|verfuegbar(e|en)\\s+|available\\s+)?formate?n?"
+    - "(welche|which)\\s+formate?n?"
+    - "(verfuegbar(e|en)|available)\\s+formate?n?"
+  execution_target: "direct:spaces.ideas.tools.format_dispatcher:list_available_formats"
+  arg_kwarg: ""
+  validator:
+    kind: rule:string_nonempty
+    on_fail: report
+
+- capability: idea_format_get
+  description: "query the current format of an idea (note, table, action_list, hierarchy, specs, ...), what format is the idea in, welches format hat die idee"
+  anchor_phrases:
+    - "what format is the idea"
+    - "current format of the idea"
+    - "welches format hat die idee"
+    - "in welchem format ist die idee"
+  match_patterns:
+    - "(what|welches?)\\s+format\\s+(is|ist|hat|hat\\s+die)\\s+(?:the\\s+|die\\s+)?ide[ea]n?"
+    - "(current|aktuelles?)\\s+format\\s+(of|der|von)\\s+(?:the\\s+|die\\s+)?ide[ea]n?"
+    - "in\\s+welchem\\s+format\\s+ist\\s+(?:die\\s+)?ide[ea]n?"
+  execution_target: "direct:spaces.ideas.tools.format_dispatcher:get_idea_format"
+  arg_kwarg: idea_name
+  validator:
+    kind: rule:string_nonempty
+    on_fail: report
+
+- capability: idea_create_batch
+  description: "create multiple ideas at once with a list of titles or contents, batch idea creation, leg N ideen mit titeln X, Y, Z an"
+  anchor_phrases:
+    - "create multiple ideas"
+    - "batch create ideas"
+    - "lege mehrere ideen an"
+    - "erstelle mehrere ideen"
+    - "alle diese ideen anlegen"
+  match_patterns:
+    - "(create|leg(e)?|erstelle)\\s+(multiple|several|mehrere|viele|alle)\\s+ide[ea]n?"
+    - "batch\\s+create\\s+ide[ea]n?"
+    - "(create|leg(e)?|erstelle)\\s+ide[ea]n?:\\s*\\["
+  execution_target: "direct:spaces.ideas.tools.idea_tools:create_idea_batch"
+  arg_kwarg: ideas
+  validator:
+    kind: rule:string_nonempty
+    on_fail: report
