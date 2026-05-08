@@ -143,11 +143,39 @@ class CapabilityRouter:
     def set_embedder(self, embedder) -> None:
         """Wire any object with a `.embed(text) -> List[float]` method.
         In Brain we pass FungusClient's MCMPRetriever embedding model
-        wrapper so we don't load a second sentence-transformer."""
+        wrapper so we don't load a second sentence-transformer.
+
+        Phase 11.R — embedding build runs in a daemon background thread
+        so brain-server boot doesn't block on 100+ anchor embeddings.
+        Regex-only routing works immediately; semantic-fallback comes
+        online when the build finishes (typically 30-90s after boot).
+        """
         self._embedder = embedder
         self._stats["embedder_attached"] = bool(embedder is not None)
+        self._stats["embedding_build_state"] = "idle"
         if embedder is not None:
-            self._build_embeddings()
+            self._start_embedding_build_async()
+
+    def _start_embedding_build_async(self) -> None:
+        """Kick off the (potentially long) _build_embeddings() in a daemon
+        thread. The router stays usable for regex matches the whole time;
+        only semantic-fallback waits for `_stats[embedding_build_state]`
+        to flip to 'done'."""
+        import threading
+        if getattr(self, "_embedding_thread", None) and self._embedding_thread.is_alive():
+            return  # already running
+        self._stats["embedding_build_state"] = "running"
+        def _worker():
+            try:
+                self._build_embeddings()
+                self._stats["embedding_build_state"] = "done"
+            except Exception as e:
+                self._stats["embedding_build_state"] = f"error:{type(e).__name__}"
+                logger.warning(f"[cap-router] async embedding build failed: {e}")
+        t = threading.Thread(target=_worker, name="cap-router-embedder", daemon=True)
+        self._embedding_thread = t
+        t.start()
+        logger.info("[cap-router] embedding build started (background thread)")
 
     def _build_embeddings(self) -> None:
         """Embed each capability description + any anchor_phrases listed in
@@ -312,7 +340,7 @@ class CapabilityRouter:
 
     def reload(self) -> None:
         """Force re-read of YAML — useful when watcher detects changes.
-        Re-embeds descriptions if an embedder is wired."""
+        Re-embeds descriptions in a background thread (Phase 11.R)."""
         self._capabilities = []
         # Reset structural counters but keep query counters so reloads don't
         # erase historical match stats.
@@ -321,7 +349,7 @@ class CapabilityRouter:
         self._stats["descriptions_embedded"] = 0
         self._load()
         if self._embedder is not None:
-            self._build_embeddings()
+            self._start_embedding_build_async()
 
     # ── Routing ───────────────────────────────────────────────────────
 
