@@ -25,12 +25,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import re
 import time
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -2085,6 +2088,151 @@ async def multihop_plan_only(request: Request):
     return JSONResponse({"ok": True, "plan": plan.to_dict()})
 
 
+# ─── Phase 11.Q2 — Capability-Router shortcut helper ───────────────────
+
+# Multi-action signal: count distinct command-verbs. Two+ verbs = LLM path
+# (multi-hop plan). One verb = single-action, eligible for shortcut.
+_SHORTCUT_VERB_RE = re.compile(
+    # Note: "format" is BOTH a verb and a common noun ("table-format",
+    # "the format of"). Excluded from multi-action detection — better
+    # to under-count and shortcut more often than to over-count and
+    # send everything to LLM.
+    r"\b(create|delete|remove|add|update|find|search|list|show|"
+    r"connect|disconnect|trenne|verbinde|wandle|mach(?:e)?|"
+    r"erstelle|leg(?:e)?|loesche|lösche|"
+    r"benenne|umbenenne|geh|enter|verlasse|exit|"
+    r"explain|erklaere|erkläre|expand|erweitere|"
+    r"score|rate|bewerte|evaluate|analyze|analysiere|untersuche|"
+    r"rebuild|regenerate|reindex)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_multi_action(intent_lower: str) -> bool:
+    """Heuristic: ≥2 distinct command-verbs → multi-action (use LLM).
+    Note: 'und' between items (e.g. 'trenne A und B') is single-action,
+    so we count verbs, not 'und' occurrences."""
+    verbs = set(_SHORTCUT_VERB_RE.findall(intent_lower))
+    if len(verbs) >= 2:
+        return True
+    if " then " in intent_lower or " dann " in intent_lower:
+        return True
+    if intent_lower.count(",") >= 2:  # "A, B, C" style batch
+        return True
+    if ";" in intent_lower:
+        return True
+    return False
+
+
+def _extract_arg_template(intent: str, capability: str) -> str:
+    """Extract the most plausible argument from the intent string.
+    Quoted spans win; otherwise prefer last capitalised/identifier-like
+    token. Returns empty string when we can't find a candidate."""
+    # 1. Quoted span ("foo bar" or 'foo bar')
+    qm = re.search(r"['\"]([^'\"]+)['\"]", intent)
+    if qm:
+        return qm.group(1).strip()
+    # 2. Last capitalised or underscore-containing token
+    tokens = re.findall(r"\b[\w_-]+\b", intent)
+    if not tokens:
+        return ""
+    for tok in reversed(tokens):
+        if tok and (tok[0].isupper() or "_" in tok):
+            # Skip stop-words even if capitalised
+            if tok.lower() in {"a", "an", "the", "und", "and", "die", "der", "das"}:
+                continue
+            return tok
+    # 3. Fall back to last token
+    return tokens[-1]
+
+
+def _try_capability_shortcut(state, intent: str):
+    """Phase 11.Q2 — try to short-circuit the LLM planner for trivial
+    single-action intents.
+
+    Returns a `Plan` object on success, `None` to fall through to the
+    LLM planner. Never raises (wraps everything in try/except).
+
+    Strategy:
+      - Multi-action intents (verb count ≥ 2) → None (use LLM)
+      - Capability-Router regex match + is_direct → 1-hop plan
+      - Anything else → None (LLM gets a chance to disambiguate)
+    """
+    cr = getattr(state, "capability_router", None)
+    if cr is None:
+        return None
+
+    intent_lower = intent.lower()
+    if _looks_like_multi_action(intent_lower):
+        logger.debug(f"[shortcut] multi-action intent, deferring to LLM: {intent!r}")
+        return None
+
+    # Route via capability-router
+    try:
+        m = cr.route(intent)
+    except Exception as e:
+        logger.warning(f"[shortcut] cr.route crashed: {e}")
+        return None
+    if m is None:
+        return None
+
+    # Only accept regex matches (deterministic). Semantic-pull is too
+    # noisy for the shortcut — let the LLM disambiguate those.
+    method = getattr(m, "match_method", "")
+    if method != "regex":
+        logger.debug(f"[shortcut] non-regex match ({method}), deferring to LLM")
+        return None
+
+    # Must be is_direct so the executor can resolve target via registry
+    if not getattr(m, "is_direct", False):
+        return None
+
+    # Look up arg_kwarg from the registry (arg_template gets extracted
+    # from intent text). Use empty defaults if anything fails.
+    arg_kwarg = None
+    try:
+        cap_detail = cr.get_capability(m.capability)
+        if cap_detail:
+            arg_kwarg = cap_detail.get("arg_kwarg")
+    except Exception as e:
+        logger.debug(f"[shortcut] get_capability failed: {e}")
+
+    arg_template = ""
+    if arg_kwarg:
+        try:
+            arg_template = _extract_arg_template(intent, m.capability)
+        except Exception as e:
+            logger.debug(f"[shortcut] arg extraction failed: {e}")
+            arg_template = ""
+
+    # Build a clean 1-hop plan
+    from core.plan_schema import Plan as _Plan, HopSpec as _HopSpec
+    try:
+        plan = _Plan(
+            plan_id=f"shortcut_{int(time.time() * 1000)}",
+            intent=intent,
+            rationale=f"single-cap shortcut: {m.capability} (regex)",
+            hops=[_HopSpec(
+                step_id="s1",
+                description=f"{m.capability} via shortcut",
+                capability=m.capability,
+                arg_kwarg=arg_kwarg,
+                arg_template=arg_template,
+            )],
+            final_synthesis_prompt="",
+            estimated_cost_usd=0.0,
+        )
+    except Exception as e:
+        logger.warning(f"[shortcut] plan build failed: {e}")
+        return None
+
+    logger.info(
+        f"[shortcut] {m.capability!r} arg_kwarg={arg_kwarg!r} "
+        f"arg={arg_template!r} (regex)"
+    )
+    return plan
+
+
 @router.post("/api/multihop/execute")
 async def multihop_execute(request: Request):
     """Phase 6 — full intent → plan → execute → synth pipeline. Body:
@@ -2105,6 +2253,7 @@ async def multihop_execute(request: Request):
 
     plan_dict = body.get("plan")
     intent = (body.get("intent") or body.get("message") or "").strip()
+    skip_shortcut = bool(body.get("force_planner"))
 
     from core.plan_schema import Plan as _Plan
     plan = None
@@ -2114,9 +2263,22 @@ async def multihop_execute(request: Request):
         except Exception as e:
             return JSONResponse({"error": f"invalid plan: {e}"}, status_code=400)
     elif intent:
-        if pl is None:
-            return JSONResponse({"error": "planner not loaded — pass a 'plan' instead"}, status_code=503)
-        plan = pl.plan(intent)
+        # Phase 11.Q2 — Capability-Router shortcut. If the router has a
+        # high-confidence regex match for a single-action intent, skip
+        # the LLM planner and build a 1-hop plan directly. Wrapped in
+        # try/except so any bug here falls through to the LLM path
+        # instead of 500'ing the whole request.
+        if not skip_shortcut:
+            try:
+                plan = _try_capability_shortcut(state, intent)
+            except Exception as e:
+                logger.exception(f"[multihop] shortcut crashed for intent={intent!r}: {e}")
+                plan = None  # fall through to LLM
+
+        if plan is None:
+            if pl is None:
+                return JSONResponse({"error": "planner not loaded — pass a 'plan' instead"}, status_code=503)
+            plan = pl.plan(intent)
     else:
         return JSONResponse({"error": "intent or plan required"}, status_code=400)
 

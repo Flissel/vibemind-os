@@ -340,8 +340,9 @@
     - "elaborate on this note"
     - "give a written explanation of the idea"
   match_patterns:
-    - "(explain|describe|elaborate)\\s+(?:on\\s+)?(?:the\\s+|this\\s+|each\\s+)?idea"
-    - "(erkläre|beschreibe|elaboriere)\\s+(?:die\\s+|jede\\s+)?idee"
+    - "(explain|describe|elaborate)\\s+(?:on\\s+)?(?:the\\s+|this\\s+|each\\s+|me\\s+)?ide[ea]n?"
+    - "(erkl(ä|ae)re|erkl(ä|ae)r|beschreibe|elaboriere)\\s+(?:die\\s+|jede\\s+|mir\\s+)?ide[ea]n?"
+    - "what\\s+(?:does|is)\\s+(?:the\\s+)?ide[ea]\\s+(?:mean|about)"
   execution_target: "direct:spaces.ideas.tools.idea_tools:explain_idea"
   arg_kwarg: idea_id
   validator:
@@ -528,8 +529,10 @@
     - "wandle die idee um in"
     - "format the idea differently"
   match_patterns:
-    - "convert\\s+(?:the\\s+)?idea\\s+(?:to|into)"
-    - "wandle\\s+(?:die\\s+)?idee\\s+(?:in|um)"
+    - "convert\\s+(?:the\\s+)?ide[ea]n?\\s+(?:to|into|in)"
+    - "wandle\\s+(?:die\\s+)?ide[ea]n?\\s+(?:in|um|in\\s+das)"
+    - "(wandle|convert)\\s+(?:die\\s+|the\\s+)?ide[ea]n?.*?(format|tabelle|table|note|mindmap|hierarchy|specs|kanban|swot)"
+    - "(format|wandle|umwandeln)\\s+(?:die\\s+)?ide[ea]n?\\s+(?:in|als|to|into)\\s+\\w+"
   execution_target: "direct:spaces.ideas.tools.format_dispatcher:convert_format"
   arg_kwarg: idea_name
   validator:
@@ -544,6 +547,8 @@
     - "mach das format rückgängig"
   match_patterns:
     - "(undo|revert|r(ü|ue)ckg(ä|ae)ngig)\\s+(?:the\\s+|das\\s+)?format"
+    - "format\\s+(?:r(ü|ue)ckg(ä|ae)ngig|undo|revert)"
+    - "(mach(e)?|make)\\s+(?:das\\s+|the\\s+)?format\\s+(r(ü|ue)ckg(ä|ae)ngig|undo|revert)"
   execution_target: "direct:spaces.ideas.tools.format_dispatcher:revert_format"
   arg_kwarg: idea_name
   validator:
@@ -840,8 +845,9 @@
     - "trenne die ideen"
     - "lösche die verbindung"
   match_patterns:
-    - "(disconnect|unlink|trenne|entferne\\s+(die\\s+)?verbindung|l(ö|oe)sche?\\s+(die\\s+)?verbindung)\\s+(?:the\\s+|die\\s+)?ideas?n?"
+    - "(disconnect|unlink|trenne|entferne\\s+(die\\s+)?verbindung|l(ö|oe)sche?\\s+(die\\s+)?verbindung)\\s+(?:the\\s+|die\\s+)?ide[ea]n?"
     - "remove\\s+(?:the\\s+)?(connection|edge|link)\\s+between"
+    - "trenne\\s+\\S+\\s+und\\s+\\S+"
   execution_target: "direct:spaces.ideas.tools.idea_tools:disconnect_ideas"
   arg_kwarg: source_id  # Phase 11.N — idea_disconnect
   validator:
