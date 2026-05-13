@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import requests
 from mcp.server.fastmcp import FastMCP
@@ -860,6 +860,212 @@ def minibook_dispatch_comments(post_id: str) -> Dict[str, Any]:
     """
     from urllib.parse import quote
     return _get(f"/api/brain/dispatch/{quote(post_id)}/comments")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Multi-hop Plan Executor (Phase 6)
+# ──────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def multihop_plan(intent: str) -> Dict[str, Any]:
+    """Phase 6 — produce a multi-hop plan for a complex intent WITHOUT
+    executing it. Useful for inspecting how Brain would decompose the
+    request before running anything.
+
+    Args:
+        intent: user intent text (≥4 words; connectives like 'und dann',
+                multiple imperative verbs, or an explicit @plan trigger)
+    Returns: {ok, plan: {plan_id, intent, rationale, hops:[...]}}
+    """
+    return _post("/api/multihop/plan", {"intent": intent}, timeout=60)
+
+
+@mcp.tool()
+def multihop_execute(intent: str) -> Dict[str, Any]:
+    """Phase 6 — full multi-hop pipeline: plan → execute (with state-
+    passing through {{state.X}} templates) → final synthesis.
+
+    Each hop walks the existing capability_router → capability_targets →
+    capability_validator pipeline. Falls back to single-hop if planner
+    or executor fails.
+
+    Returns: {ok, executed:{step_id->HopResult}, state, elapsed_s,
+              replans, final_text}
+    """
+    return _post("/api/multihop/execute", {"intent": intent}, timeout=300)
+
+
+@mcp.tool()
+def multihop_stats() -> Dict[str, Any]:
+    """Phase 6 — combined counters from advisor, planner, executor,
+    synthesizer. Useful for telemetry + tuning."""
+    return _get("/api/multihop/stats")
+
+
+@mcp.tool()
+def multihop_history(limit: int = 20) -> Dict[str, Any]:
+    """Phase 6 — last N executed plans (compact: id, intent, hop_count,
+    ok, elapsed). Use multihop_plan_detail for the full snapshot."""
+    return _get(f"/api/multihop/history?limit={int(limit)}")
+
+
+@mcp.tool()
+def multihop_plan_detail(plan_id: str) -> Dict[str, Any]:
+    """Phase 6 — full snapshot of an executed plan: every hop's
+    HopResult, threaded state, KG-hits per hop, validator verdicts."""
+    return _get(f"/api/multihop/plan/{plan_id}")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Phase 10 — Self-Reflective Decision Loop
+# ──────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def decisions_recall(query: str, k: int = 5) -> Dict[str, Any]:
+    """Phase 10.1 — Find past decisions on similar intents. Returns hits
+    with capability_chain, outcome, success_rate, age."""
+    return _get(f"/api/decisions/recall?q={query}&k={k}")
+
+
+@mcp.tool()
+def decisions_reward(plan_id: str, reward: float, comment: str = "") -> Dict[str, Any]:
+    """Phase 10.1 — Attach an explicit reward in [-1, 1] to a past decision.
+    Propagates to the self-model so future similar decisions are biased
+    toward (or away from) the capabilities used."""
+    return _post("/api/decisions/reward", {
+        "plan_id": plan_id, "reward": reward, "comment": comment,
+    })
+
+
+@mcp.tool()
+def self_prior(query: str, k: int = 8) -> Dict[str, Any]:
+    """Phase 10.2 — Get Brain's self-model prior for an intent: which
+    capabilities does Brain trust for this kind of request, with what
+    confidence."""
+    return _get(f"/api/self/prior?q={query}&k={k}")
+
+
+@mcp.tool()
+def self_snapshot(limit: int = 200) -> Dict[str, Any]:
+    """Phase 10.2 — Full self-model dump. Lists every (intent_pattern,
+    capability) pair Brain has learned, sorted by n_observations."""
+    return _get(f"/api/self/snapshot?limit={limit}")
+
+
+@mcp.tool()
+def critic_preview(intent: str) -> Dict[str, Any]:
+    """Phase 10.3 — Generate a plan for the intent and run the critic
+    on it WITHOUT executing. Useful for "would this work?" questions."""
+    return _post("/api/critic/preview", {"intent": intent})
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Autopilot Control — full orchestration handles for evaluation
+# These give Claude Code the same control surface the dashboard has,
+# so we can drive Brain end-to-end + watch what happens, before
+# building an autonomous goal-pursuit loop.
+# ──────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def capabilities_list() -> Dict[str, Any]:
+    """List every capability Brain knows about, grouped by execution
+    target (bubble/idea/openfang-agent/brain-internal/n8n/etc).
+    Use this BEFORE planning to know what Brain can actually do."""
+    return _get("/api/capabilities/list")
+
+
+@mcp.tool()
+def capabilities_by_name(name: str) -> Dict[str, Any]:
+    """Inspect a single capability — its bridges, validator, target,
+    arg schema, forbid_tools list."""
+    return _get(f"/api/capabilities/by_name/{name}")
+
+
+@mcp.tool()
+def capabilities_test(capability: str, arg: str = "") -> Dict[str, Any]:
+    """Dry-run a capability without committing side-effects (where the
+    target supports it). Useful for evaluating reach before a plan."""
+    return _post("/api/capabilities/test", {"capability": capability, "arg": arg})
+
+
+@mcp.tool()
+def plan_active() -> Dict[str, Any]:
+    """Returns whether a plan is currently executing (mutex held), with
+    the plan_id and how long it's been active. Use this before triggering
+    a new plan to avoid the busy-envelope bounce."""
+    return _get("/api/multihop/busy")
+
+
+@mcp.tool()
+def plan_history(limit: int = 20) -> Dict[str, Any]:
+    """Recent executed plans (rolling buffer, most recent first). Each
+    item has plan_id, intent, ok, hop_count, elapsed_s, replans."""
+    return _get(f"/api/multihop/history?limit={limit}")
+
+
+@mcp.tool()
+def plan_inspect(plan_id: str) -> Dict[str, Any]:
+    """Full snapshot of one executed plan: every hop's HopResult with
+    tool_calls, kg_hits, threaded state, validator verdicts, plus the
+    Phase-10 decision_context (recall+self_prior+critic) attached.
+    The single richest tool for evaluating what Brain actually did."""
+    return _get(f"/api/multihop/plan/{plan_id}")
+
+
+@mcp.tool()
+def plan_reward(plan_id: str, reward: float, comment: str = "") -> Dict[str, Any]:
+    """Apply explicit reward in [-1, 1] to a past plan. Propagates
+    through Phase 10 to update self-model confidence per capability
+    used in that plan. This is the feedback channel that lets Brain
+    learn 'I'm good at X / weak at Y' over time."""
+    return _post(f"/api/multihop/plan/{plan_id}/reward", {
+        "reward": reward, "comment": comment,
+    })
+
+
+@mcp.tool()
+def clusters_activations() -> Dict[str, Any]:
+    """Phase 8 cluster engine — current cluster activation snapshot.
+    Each cluster has dominant_topic, member_count, activation_score,
+    co_activation_pairs. High-activation clusters trigger SelfSteerer
+    autonomous dispatch."""
+    return _get("/api/clusters/activations")
+
+
+@mcp.tool()
+def clusters_bump(cluster_id: int, delta: float = 1.0) -> Dict[str, Any]:
+    """Manually boost a cluster's activation. Useful for testing the
+    SelfSteerer dispatch path: bump > threshold for ≥2 ticks → Brain
+    auto-dispatches a capability mapped to that cluster's topic."""
+    return _post("/api/clusters/bump", {
+        "cluster_id": cluster_id, "delta": delta,
+    })
+
+
+@mcp.tool()
+def orchestrate(intent: str, want_critic: bool = True) -> Dict[str, Any]:
+    """Full orchestration in one call:
+       1. Critic-preview the intent → returns risks + recommend
+       2. If recommend != 'replan' (or want_critic=False), execute
+       3. Returns combined {critic_verdict, execution_result}
+
+    This is the 'one-shot orchestrator' tool — the closest thing to a
+    poor-man's autopilot. Build the autonomous loop ON TOP of this."""
+    out: Dict[str, Any] = {}
+    if want_critic:
+        try:
+            preview = _post("/api/critic/preview", {"intent": intent})
+            out["critic_verdict"] = preview
+            verdict = (preview or {}).get("verdict") or {}
+            if verdict.get("recommend") == "replan":
+                out["aborted"] = True
+                out["reason"] = "critic recommended replan; aborting before execution"
+                return out
+        except Exception as e:
+            out["critic_error"] = str(e)
+    # Execute
+    out["execution_result"] = _post("/api/multihop/execute", {"intent": intent})
+    return out
 
 
 # ──────────────────────────────────────────────────────────────────────

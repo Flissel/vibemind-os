@@ -107,6 +107,9 @@ class BrainChatResponse:
     # Phase R+ — Discourse-based decision (intent-mode)
     discourse_decision: Optional[Dict[str, Any]] = None
 
+    # Phase 6 — Multi-hop plan execution metadata (plan_id, hop_count, etc.)
+    multihop: Optional[Dict[str, Any]] = None
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             'response': self.response_text,
@@ -138,6 +141,7 @@ class BrainChatResponse:
             'augment_source': self.augment_source,
             'auto_dispatch': self.auto_dispatch,
             'discourse_decision': self.discourse_decision,
+            'multihop': self.multihop,
         }
 
 
@@ -2853,6 +2857,15 @@ class ContinuousThinkingEngine:
         # Each entry: {'topic': str, 'knowledge': str, 'source': str, 'timestamp': float}
         self._learned_knowledge: deque = deque(maxlen=30)
 
+        # Phase 7.5 — meaningful event queue. Other subsystems push events
+        # here (plan completed, plan rewarded, capability no-match cluster,
+        # provider drift). _think_tick prefers these as seeds before
+        # falling back to random knowledge reflection.
+        # Each entry: {kind, payload, ts}
+        self._event_queue: deque = deque(maxlen=50)
+        # Optional reference to DiscourseEngine so we can read recent_user_topics
+        self._discourse_engine_ref = None
+
         # Knowledge expander — proactive exploration (set by BrainChat)
         self._knowledge_expander: Optional[KnowledgeExpander] = None
 
@@ -2959,6 +2972,33 @@ class ContinuousThinkingEngine:
                 knowledge=response,
                 source=source or "conversation",
             )
+
+    def record_event(self, kind: str, payload: Dict[str, Any]) -> None:
+        """Phase 7.5 — push a meaningful runtime event onto the priority
+        thinking queue. Subsystems use this to make Brain reflect on its
+        own behaviour:
+
+          kind='plan_completed'    payload={plan_id, intent, ok, hop_count, elapsed_s}
+          kind='plan_rewarded'     payload={plan_id, intent, score, reason}
+          kind='no_match_cluster'  payload={signature, sample_intents, capability}
+          kind='provider_drift'    payload={capability, target, before, after}
+
+        The next idle tick will preferentially pull from this queue and
+        produce a thought that REFERS to the event, instead of random
+        knowledge reflection. Bounded queue (50) drops oldest on overflow."""
+        try:
+            self._event_queue.append({
+                "kind": kind,
+                "payload": payload or {},
+                "ts": time.time(),
+            })
+        except Exception as e:
+            logger.debug(f"[CTE] record_event failed: {e}")
+
+    def set_discourse_engine_ref(self, de) -> None:
+        """Phase 7.5 — read-only ref so CTE can pull `_recent_user_topics`
+        when picking what to think about."""
+        self._discourse_engine_ref = de
 
     def record_knowledge(self, topic: str, knowledge: str,
                          source: str = "unknown") -> None:
@@ -3156,6 +3196,31 @@ class ContinuousThinkingEngine:
     def _think_tick(self) -> Optional[ContinuousThought]:
         """Generate one background thought."""
         self._total_ticks += 1
+
+        # Phase 7.5 — meaningful events have first priority. We dequeue at
+        # most 1 event per tick; if it produces a thought, return it.
+        if self._event_queue:
+            try:
+                evt = self._event_queue.popleft()
+                result = self._think_event(evt)
+                if result:
+                    return result
+            except Exception as e:
+                logger.debug(f"[CTE] _think_event failed: {e}")
+
+        # Phase 7.5 — fall back to recent user topics if no event but
+        # the user is actively working on something. ~25% chance to seed
+        # idle reflection from there.
+        de_ref = getattr(self, "_discourse_engine_ref", None)
+        if de_ref is not None and self._mode != "active":
+            recent = getattr(de_ref, "_recent_user_topics", None)
+            if recent and len(recent) >= 3 and random.random() < 0.25:
+                topic = random.choice(list(recent))
+                # Use the explore template seeded with user-current topic
+                self._current_topic = topic[:80]
+                result = self._think_explore()
+                if result:
+                    return result
 
         # Determine what to think about
         if self._mode == "active" and self._current_topic:
@@ -3656,6 +3721,87 @@ class ContinuousThinkingEngine:
         # Nothing to expand — fall back to regular exploration
         return self._think_explore()
 
+    def _think_event(self, evt: Dict[str, Any]) -> Optional[ContinuousThought]:
+        """Phase 7.5 — turn a runtime event into a meaningful thought.
+        Different event kinds produce different reflection styles."""
+        kind = evt.get("kind", "")
+        p = evt.get("payload") or {}
+
+        if kind == "plan_completed":
+            ok = bool(p.get("ok"))
+            hop_count = p.get("hop_count") or "?"
+            elapsed = p.get("elapsed_s") or "?"
+            intent = (p.get("intent") or "")[:120]
+            if ok:
+                content = (
+                    f"Plan {p.get('plan_id','?')} done — {hop_count} hops in {elapsed}s. "
+                    f"Intent: '{intent}'. What pattern made this work?"
+                )
+                relevance = 0.7
+            else:
+                content = (
+                    f"Plan {p.get('plan_id','?')} FAILED after {hop_count} hops. "
+                    f"Intent: '{intent}'. Need to find the failing capability."
+                )
+                relevance = 0.85  # failures get more attention
+            return ContinuousThought(
+                timestamp=time.time(), category="plan_reflection",
+                content=content, relevance=relevance,
+            )
+
+        if kind == "plan_rewarded":
+            score = p.get("score", 0)
+            reason = p.get("reason", "")
+            intent = (p.get("intent") or "")[:120]
+            sign = "+" if score > 0 else ""
+            mood = "User liked" if score > 0 else "User rejected"
+            content = (
+                f"{mood} plan: '{intent}' got {sign}{score} ({reason}). "
+                f"Should reinforce this kind of decomposition for similar intents."
+            )
+            return ContinuousThought(
+                timestamp=time.time(), category="reward_reflection",
+                content=content, relevance=0.9,
+            )
+
+        if kind == "no_match_cluster":
+            samples = p.get("sample_intents") or []
+            sig = p.get("signature") or "?"
+            count = len(samples)
+            example = samples[0][:80] if samples else ""
+            content = (
+                f"Coverage gap: {count} similar intents I couldn't route. "
+                f"Cluster '{sig}'. Example: '{example}'. "
+                f"What capability would cover this?"
+            )
+            return ContinuousThought(
+                timestamp=time.time(), category="curator_reflection",
+                content=content, relevance=0.75,
+            )
+
+        if kind == "provider_drift":
+            cap = p.get("capability") or "?"
+            target = p.get("target") or "?"
+            before = p.get("before", 0)
+            after = p.get("after", 0)
+            direction = "improving" if after > before else "degrading"
+            content = (
+                f"Provider {target} on {cap} is {direction}: "
+                f"{before:.0%} -> {after:.0%}. "
+                f"Worth checking why."
+            )
+            return ContinuousThought(
+                timestamp=time.time(), category="provider_reflection",
+                content=content, relevance=0.6,
+            )
+
+        # Unknown event kind — produce a generic note so the queue empties
+        return ContinuousThought(
+            timestamp=time.time(), category="event",
+            content=f"Event {kind}: {str(p)[:160]}",
+            relevance=0.4,
+        )
+
     def _think_explore(self) -> Optional[ContinuousThought]:
         """Autonomous exploration with more diverse thought generation."""
         thought = ContinuousThought(
@@ -3992,6 +4138,15 @@ class BrainChat:
         past discourse aggregations."""
         self._discourse_memory_consolidator = dmc
 
+    def set_multihop(self, advisor=None, planner=None, executor=None, synthesizer=None) -> None:
+        """Phase 6 — wire the multi-hop pipeline. All four are needed for
+        the integration to fire; missing any one falls back to single-hop."""
+        self._multihop_advisor = advisor
+        self._multihop_planner = planner
+        self._last_plan_id = None  # Phase 7.1 — for retroactive plan reward
+        self._multihop_executor = executor
+        self._multihop_synthesizer = synthesizer
+
     def _detect_user_feedback_reward(self, message: str) -> None:
         """Detect short affirmative/negative feedback and retroactively reward the previous thought."""
         words = message.lower().strip().rstrip('!?.').split()
@@ -4038,6 +4193,29 @@ class BrainChat:
                     except Exception as e:
                         logger.debug(f"reward to ideas failed: {e}")
 
+        # Reward path 3: Phase 7.1 — plan-outcome reward. If the previous
+        # response was a multi-hop plan, attach a reward score to that
+        # plan's recorder snapshot AND its episodic node, so:
+        # - History UI shows green/red marker per plan
+        # - Provider-success-routing (7.3) updates per-capability success
+        # - Curator (Phase 5) can prioritise plan patterns the user liked
+        pe = getattr(self, '_multihop_executor', None)
+        if pe is not None:
+            last_plan_id = getattr(self, '_last_plan_id', None)
+            if last_plan_id:
+                delta = 1.0 if is_positive else (-1.0 if is_negative else 0.0)
+                if delta != 0.0:
+                    try:
+                        pe.record_plan_reward(last_plan_id, delta, reason=(
+                            "user_positive" if is_positive else "user_negative"
+                        ))
+                        logger.info(
+                            f"User feedback -> plan {last_plan_id} delta={delta}"
+                        )
+                        self._last_plan_id = None  # consume
+                    except Exception as e:
+                        logger.debug(f"reward to plan failed: {e}")
+
     def send(self, message: str) -> BrainChatResponse:
         """
         Send a message to the brain. This is THE entry point.
@@ -4053,6 +4231,15 @@ class BrainChat:
 
         # Retroactive reward: detect user feedback on previous response
         self._detect_user_feedback_reward(message)
+
+        # Phase 7.2 — feed user keywords to DiscourseEngine so its idle
+        # ticks bias their KG-slice picking towards what the user works on.
+        de_for_topics = getattr(self, "_discourse_engine", None)
+        if de_for_topics is not None and hasattr(de_for_topics, "record_user_topic"):
+            try:
+                de_for_topics.record_user_topic(message)
+            except Exception:
+                pass
 
         response = BrainChatResponse()
         trace = []
@@ -4079,6 +4266,79 @@ class BrainChat:
             response.total_time_ms = (time.time() - t0) * 1000
             self._record_response(response, original_message=message)
             return response
+
+        # ── Step 0.5: Phase 6 — Multi-hop intercept ──
+        # When the advisor says this intent is multi-step (connectives,
+        # multiple verbs, explicit @plan), decompose into a DAG and
+        # execute. On any failure → graceful fall-through to single-hop.
+        adv = getattr(self, "_multihop_advisor", None)
+        planner = getattr(self, "_multihop_planner", None)
+        pe = getattr(self, "_multihop_executor", None)
+        synth = getattr(self, "_multihop_synthesizer", None)
+        if adv and planner and pe and synth:
+            try:
+                verdict = adv.should_decompose(message)
+                if verdict.should_decompose:
+                    trace.append(ThoughtTrace(
+                        timestamp=time.time(), category="routing",
+                        content=f"Multi-hop trigger ({verdict.triggered_by}): {verdict.reason}",
+                        module="MultiHopAdvisor", confidence=0.7,
+                    ))
+                    plan = planner.plan(message)
+                    if plan is not None:
+                        trace.append(ThoughtTrace(
+                            timestamp=time.time(), category="planning",
+                            content=f"Plan {plan.plan_id} with {len(plan.hops)} hops: {plan.rationale[:120]}",
+                            module="PlannerLLM", confidence=0.8,
+                        ))
+                        exec_result = pe.execute(plan)
+                        # Synthesize final user-facing answer
+                        final_text = synth.synthesize(
+                            intent=message,
+                            plan=plan,
+                            executed=exec_result.get("executed", {}),
+                            state=exec_result.get("state", {}),
+                            custom_prompt=plan.final_synthesis_prompt or None,
+                        )
+                        response.response_text = final_text
+                        response.confidence = 0.85 if exec_result.get("ok") else 0.5
+                        response.routing_mode = "multihop"
+                        response.task_type = "multihop"
+                        response.multihop = {
+                            "plan_id": plan.plan_id,
+                            "hop_count": len(plan.hops),
+                            "ok": exec_result.get("ok"),
+                            "elapsed_s": exec_result.get("elapsed_s"),
+                            "replans": exec_result.get("replans", 0),
+                            "trigger": verdict.triggered_by,
+                        }
+                        # Phase 7.1 — track for retroactive reward
+                        self._last_plan_id = plan.plan_id
+                        trace.append(ThoughtTrace(
+                            timestamp=time.time(), category="execution",
+                            content=(
+                                f"Multi-hop done: {len(exec_result.get('executed') or {})} hops, "
+                                f"ok={exec_result.get('ok')}, {exec_result.get('elapsed_s')}s"
+                            ),
+                            module="PlanExecutor", confidence=response.confidence,
+                        ))
+                        response.thought_trace = trace
+                        response.total_time_ms = (time.time() - t0) * 1000
+                        self._record_response(response, original_message=message)
+                        return response
+                    else:
+                        trace.append(ThoughtTrace(
+                            timestamp=time.time(), category="planning",
+                            content="Planner returned no plan — falling back to single-hop",
+                            module="PlannerLLM", confidence=0.3,
+                        ))
+            except Exception as _mh_err:
+                # Defensive: never block the user on a multi-hop bug
+                trace.append(ThoughtTrace(
+                    timestamp=time.time(), category="error",
+                    content=f"Multi-hop failed: {type(_mh_err).__name__}: {_mh_err} — fallback",
+                    module="MultiHop", confidence=0.0,
+                ))
 
         # ── Step 1: Thalamus Routing (3-Layer) ──
         t_route = time.time()

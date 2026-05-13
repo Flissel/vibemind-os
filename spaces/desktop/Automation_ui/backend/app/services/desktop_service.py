@@ -157,11 +157,14 @@ class LiveDesktopService:
                     return base64.b64encode(screenshot_data).decode("utf-8")
                 return screenshot_data
 
-            logger.warning("⚠️ Screenshot capture returned no data")
+            logger.warning(
+                "⚠️ Screenshot capture returned no data (monitor=%s, capture_data=%r)",
+                monitor_index, screenshot_data,
+            )
             return None
 
         except Exception as e:
-            logger.error(f"❌ Screenshot capture failed: {e}")
+            logger.error(f"❌ Screenshot capture failed: {e}", exc_info=True)
             return None
 
     async def _capture_desktop(self, monitor_index: int = 0) -> Optional[bytes]:

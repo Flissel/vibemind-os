@@ -534,6 +534,118 @@ def _format_readiness_report(
     return "\n".join(lines)
 
 
+def _flatten_content_json(cj: Dict[str, Any], max_chars: int = 1500) -> str:
+    """Render a content_json structure to readable markdown so the eval
+    panel sees actual specs/SWOT/flowchart content (not just titles).
+
+    Supports the formats from format-renderer.js: swot, specs, kanban,
+    mindmap, table, action_list, pros_cons, hierarchy, flowchart,
+    user_story. Falls back to JSON dump for unknown shapes.
+    """
+    try:
+        ctype = cj.get("type", "")
+        lines: list = []
+
+        if ctype == "swot" or "strengths" in cj:
+            for k in ("strengths", "weaknesses", "opportunities", "threats"):
+                items = cj.get(k) or []
+                if items:
+                    lines.append(f"**{k.capitalize()}:** " + "; ".join(str(x) for x in items[:6]))
+
+        elif ctype in ("specs", "specifications") or "specifications" in cj or "sections" in cj:
+            specs = cj.get("specifications") or []
+            if specs:
+                for s in specs[:12]:
+                    if isinstance(s, dict):
+                        cat = s.get("category", "")
+                        prio = s.get("priority", "")
+                        req = s.get("requirement", "")
+                        lines.append(f"- [{cat}/{prio}] {req}")
+                    else:
+                        lines.append(f"- {s}")
+            for sec in cj.get("sections") or []:
+                if isinstance(sec, dict):
+                    lines.append(f"**{sec.get('title','')}**: {sec.get('content','')}")
+
+        elif ctype in ("user_story",) or "stories" in cj:
+            if cj.get("epic"):
+                lines.append(f"**Epic:** {cj.get('epic')}")
+            for st in cj.get("stories") or []:
+                if isinstance(st, dict):
+                    lines.append(
+                        f"- As a **{st.get('role','user')}**, I want {st.get('want','')}, "
+                        f"so that {st.get('benefit','')}"
+                    )
+
+        elif ctype == "flowchart" or "steps" in cj or ("nodes" in cj and "edges" in cj):
+            for s in cj.get("steps") or []:
+                lines.append(f"- {s if isinstance(s, str) else s.get('label', s)}")
+            for n in cj.get("nodes") or []:
+                if isinstance(n, dict):
+                    lines.append(f"- [{n.get('id','')}] {n.get('label','')}")
+            for e in cj.get("edges") or []:
+                if isinstance(e, dict):
+                    lines.append(f"  {e.get('from','')} -> {e.get('to','')} ({e.get('label','')})")
+
+        elif ctype == "pros_cons":
+            for k in ("pros", "cons"):
+                items = cj.get(k) or []
+                if items:
+                    lines.append(f"**{k.capitalize()}:** " + "; ".join(str(x) for x in items[:8]))
+
+        elif ctype == "hierarchy" or "root" in cj:
+            def walk(n, depth=0):
+                if not isinstance(n, dict):
+                    return
+                lines.append("  " * depth + f"- {n.get('label', n.get('title', ''))}")
+                for c in n.get("children") or []:
+                    walk(c, depth + 1)
+            walk(cj.get("root") or cj)
+
+        elif ctype == "mindmap" or "branches" in cj:
+            lines.append(f"**Central:** {cj.get('central') or cj.get('center') or ''}")
+            for b in cj.get("branches") or []:
+                if isinstance(b, dict):
+                    lines.append(f"- {b.get('label','')}")
+                    for sb in b.get("subbranches") or b.get("children") or []:
+                        lines.append(f"  - {sb if isinstance(sb, str) else sb.get('label','')}")
+
+        elif ctype == "kanban" or "columns" in cj:
+            for col in cj.get("columns") or []:
+                if isinstance(col, dict):
+                    items = col.get("items") or col.get("cards") or []
+                    lines.append(f"**{col.get('title','')}**: " + "; ".join(
+                        str(x) if isinstance(x, str) else x.get("title","") for x in items[:6]
+                    ))
+
+        elif ctype == "table" or "rows" in cj:
+            headers = cj.get("headers") or cj.get("columns") or []
+            if headers:
+                lines.append("| " + " | ".join(str(h) for h in headers) + " |")
+            for row in (cj.get("rows") or [])[:10]:
+                if isinstance(row, dict):
+                    lines.append("| " + " | ".join(str(row.get(h, "")) for h in headers) + " |")
+                elif isinstance(row, list):
+                    lines.append("| " + " | ".join(str(c) for c in row) + " |")
+
+        elif ctype == "action_list" or "actions" in cj:
+            for a in cj.get("actions") or []:
+                if isinstance(a, dict):
+                    lines.append(f"- [ ] {a.get('action', a.get('title',''))} ({a.get('priority','')})")
+                else:
+                    lines.append(f"- [ ] {a}")
+
+        else:
+            # Unknown format — JSON dump as last resort
+            import json as _json
+            lines.append(_json.dumps(cj, ensure_ascii=False)[:max_chars])
+
+        out = "\n".join(lines)
+        return out[:max_chars] if len(out) > max_chars else out
+    except Exception as e:
+        return f"_(failed to render content_json: {e})_"
+
+
 def _create_missing_ideas(bubble_id: str, missing_items: list) -> list:
     """Append missing items to the bubble's description instead of creating separate nodes."""
     created = []
@@ -574,7 +686,7 @@ def _create_missing_ideas(bubble_id: str, missing_items: list) -> list:
     return created
 
 
-def evaluate_bubble_readiness(bubble_name: str) -> Dict[str, Any]:
+def evaluate_bubble_readiness(bubble_name) -> Dict[str, Any]:
     """
     Evaluate a bubble's readiness for code generation using
     MiroFish knowledge graph + Minibook expert panel.
@@ -586,13 +698,40 @@ def evaluate_bubble_readiness(bubble_name: str) -> Dict[str, Any]:
     4. Aggregate scores into Go/No-Go report
 
     Args:
-        bubble_name: Name of the bubble to evaluate
+        bubble_name: Name of the bubble to evaluate. May arrive as a dict
+            envelope from Brain plan_executor (Phase 11.P wraps args in
+            {"value": ..., "_intent": ..., "_description": ...}). Unwrap.
 
     Returns:
         VibeMind result dict with scores, prediction, missing items
     """
     import time
+    import re as _re
     from data import IdeasRepository
+
+    # Brain Phase 11.P sends a dict envelope when arg_kwarg is None.
+    # Accept str, dict (with 'value'/'bubble_name'/'title'), or try to
+    # re-extract from '_intent'/'_description' as last resort.
+    if isinstance(bubble_name, dict):
+        envelope = bubble_name
+        bubble_name = (
+            envelope.get("bubble_name")
+            or envelope.get("title")
+            or envelope.get("value")
+            or ""
+        )
+        if not bubble_name:
+            # Re-extract from intent text (e.g. "Evaluate bubble E-Ticketing_DE")
+            text = (envelope.get("_intent") or envelope.get("_description") or "")
+            m = _re.search(r"bubble\s+['\"]?([A-Za-z0-9_\-]+)['\"]?", text, _re.I)
+            if m:
+                bubble_name = m.group(1)
+    if not isinstance(bubble_name, str) or not bubble_name.strip():
+        return {
+            "success": False,
+            "message": "Bubble-Name fehlt fuer evaluate.",
+            "response_hint": "Bitte einen Bubble-Namen angeben (z.B. 'Evaluate bubble Foo').",
+        }
 
     logger.info(f"mirofish.evaluate: bubble='{bubble_name}'")
 
@@ -615,9 +754,17 @@ def evaluate_bubble_readiness(bubble_name: str) -> Dict[str, Any]:
         bubble_data = {"metadata": {"bubble_title": bubble.title}, "nodes": [], "edges": []}
 
     # Build content text — include child ideas + canvas nodes
+    # Strip previous MiroFish eval-output from the description so re-eval
+    # doesn't treat its own past TODO-list as user-authored "offene Punkte"
+    # (self-pollution observed in earlier runs: score dropped because the
+    # LLM panel re-read the TODO appendix and judged it as a gap-inventory).
+    _desc = bubble.description or ""
+    _marker = "--- MiroFish Evaluation: Offene Punkte ---"
+    if _marker in _desc:
+        _desc = _desc[:_desc.index(_marker)].rstrip()
     content_parts = [
         f"# Bubble: {bubble.title}",
-        f"Beschreibung: {bubble.description or 'Keine'}",
+        f"Beschreibung: {_desc or 'Keine'}",
     ]
 
     # Load child ideas (ideas with parent_id = bubble.id)
@@ -634,14 +781,46 @@ def evaluate_bubble_readiness(bubble_name: str) -> Dict[str, Any]:
     except Exception as e:
         logger.warning(f"mirofish.evaluate: child ideas load failed: {e}")
 
-    # Canvas nodes from bubble_requirements_tool
-    for node in bubble_data.get("nodes", []):
-        title = node.get("title", "")
-        content = node.get("content", "") or node.get("description", "")
-        if title:
-            content_parts.append(f"\n## {title}")
-        if content:
-            content_parts.append(content[:500])
+    # Canvas nodes — read directly from CanvasRepository so we can access
+    # content_json + format_schema (the previous bubble_requirements_tool path
+    # only exposed plain `node.content`, which hid SWOT/specs/flowcharts and
+    # caused the eval-panel to misjudge well-formatted nodes as "missing").
+    try:
+        from data import CanvasRepository
+        canvas_repo = CanvasRepository()
+        all_nodes = canvas_repo.list_nodes(limit=2000)
+        bubble_nodes = [n for n in all_nodes if n.linked_idea_id == bubble.id]
+        if bubble_nodes:
+            content_parts.append(f"\n## Canvas-Knoten ({len(bubble_nodes)} Stueck)")
+            for node in bubble_nodes:
+                title = node.title or ""
+                if title:
+                    content_parts.append(f"\n### {title}")
+                # Prefer structured content if available — flatten to readable
+                # markdown so the LLM panel sees the actual specs/SWOT/etc.
+                cj = node.content_json
+                fs = node.format_schema
+                fmt_type = (cj.get("type") if isinstance(cj, dict) else None) \
+                           or (fs.get("type") if isinstance(fs, dict) else None) \
+                           or node.node_type
+                if isinstance(cj, dict) and cj:
+                    content_parts.append(f"_Format: {fmt_type}_")
+                    content_parts.append(_flatten_content_json(cj))
+                elif node.content:
+                    content_parts.append(node.content[:800])
+                elif node.summary:
+                    content_parts.append(node.summary[:400])
+        logger.info(f"mirofish.evaluate: loaded {len(bubble_nodes)} canvas nodes with content_json")
+    except Exception as e:
+        logger.warning(f"mirofish.evaluate: canvas repo load failed: {e}")
+        # Fallback to old path
+        for node in bubble_data.get("nodes", []):
+            title = node.get("title", "")
+            content = node.get("content", "") or node.get("description", "")
+            if title:
+                content_parts.append(f"\n## {title}")
+            if content:
+                content_parts.append(content[:500])
     if bubble_data.get("requirements"):
         content_parts.append("\n## Requirements")
         for req in bubble_data["requirements"][:10]:
@@ -775,12 +954,61 @@ def evaluate_bubble_readiness(bubble_name: str) -> Dict[str, Any]:
     bubble.urgency = ideas_score / 2.5          # 0-10
     bubble.score = bubble.calculate_score()
     bubble.status = "scored"
+
+    # Persist eval-history in metadata so users can track reifegrad over time
+    # without losing prior runs (was lost on every overwrite before).
+    if bubble.metadata is None:
+        bubble.metadata = {}
+    eval_history = bubble.metadata.get("eval_history") or []
+    eval_history.append({
+        "ts": int(time.time()),
+        "total_score": total_score,
+        "prediction": prediction,
+        "per_agent": {k: v.get("score", 0) for k, v in per_agent_scores.items()},
+        "missing_count": len(missing_items),
+        "graph_id": graph_id,
+    })
+    # Cap to last 20 runs to keep metadata bounded.
+    bubble.metadata["eval_history"] = eval_history[-20:]
+    bubble.metadata["last_eval"] = {
+        "ts": int(time.time()),
+        "total_score": total_score,
+        "prediction": prediction,
+        "per_agent_full": per_agent_scores,   # incl. assessment text
+        "missing_items": missing_items,
+    }
     ideas_repo.update(bubble)
 
     # ── Step 7: Auto-create missing items as ideas in the bubble ──
     created_ideas = []
     if missing_items:
         created_ideas = _create_missing_ideas(bubble.id, missing_items)
+
+    # ── Step 8: Auto-sync to Rowboat manifest (Obsidian-readable export) ──
+    # Force-enable publishing for this call regardless of host-process env
+    # (Brain spawns mirofish_tools without loading voice/.env where
+    # ROWBOAT_PUBLISH_ENABLED=true is set — without this the get-publisher
+    # returns _NoOpPublisher and the manifest never lands on disk).
+    try:
+        import os as _os
+        _prev_enabled = _os.environ.get("ROWBOAT_PUBLISH_ENABLED")
+        _os.environ["ROWBOAT_PUBLISH_ENABLED"] = "true"
+        # Force fresh publisher instance — module-level singleton may have
+        # cached _NoOpPublisher from when env was still false.
+        from publishing import _ideas_publisher as _pub_global  # noqa
+        import publishing as _pub_mod
+        _pub_mod._ideas_publisher = None
+        try:
+            from publishing import get_ideas_publisher
+            get_ideas_publisher().publish_bubble(bubble_id=bubble.id)
+            logger.info(f"mirofish.evaluate: Rowboat-synced bubble {bubble.id}")
+        finally:
+            if _prev_enabled is None:
+                _os.environ.pop("ROWBOAT_PUBLISH_ENABLED", None)
+            else:
+                _os.environ["ROWBOAT_PUBLISH_ENABLED"] = _prev_enabled
+    except Exception as e:
+        logger.warning(f"mirofish.evaluate: Rowboat sync failed: {e}")
 
     report_text = _format_readiness_report(
         bubble_name, total_score, prediction, per_agent_scores, missing_items,
@@ -791,12 +1019,15 @@ def evaluate_bubble_readiness(bubble_name: str) -> Dict[str, Any]:
         "type": "mirofish_result",
         "action": "evaluate_readiness",
         "bubble_name": bubble_name,
+        "bubble_id": bubble.id,
         "total_score": total_score,
         "prediction": prediction,
         "per_agent": per_agent_scores,
         "missing_items": missing_items,
         "created_ideas": created_ideas,
         "graph_id": graph_id,
+        "eval_history_count": len(eval_history),
+        "eval_history": eval_history,  # for side-panel history chart
     })
 
     return {
@@ -808,6 +1039,7 @@ def evaluate_bubble_readiness(bubble_name: str) -> Dict[str, Any]:
         "per_agent_scores": per_agent_scores,
         "missing_items": missing_items,
         "created_ideas": created_ideas,
+        "eval_run_number": len(eval_history),
     }
 
 

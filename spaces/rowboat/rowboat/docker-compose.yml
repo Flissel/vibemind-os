@@ -65,25 +65,27 @@ services:
     volumes:
       - uploads:/app/uploads
 
-  # rowboat_agents:
-  #   build:
-  #     context: ./apps/rowboat_agents
-  #     dockerfile: Dockerfile
-  #   ports:
-  #     - "3001:3001"
-  #   environment:
-  #     - OPENAI_API_KEY=${OPENAI_API_KEY}
-  #     - API_KEY=${AGENTS_API_KEY}
-  #     - REDIS_URL=redis://redis:6379
-  #     - MONGODB_URI=mongodb://mongo:27017/rowboat
-  #     - QDRANT_URL=http://qdrant:6333
-  #     - QDRANT_API_KEY=${QDRANT_API_KEY}
-  #     - PROVIDER_BASE_URL=${PROVIDER_BASE_URL}
-  #     - PROVIDER_API_KEY=${PROVIDER_API_KEY}
-  #     - PROVIDER_DEFAULT_MODEL=${PROVIDER_DEFAULT_MODEL}
-  #     - MAX_CALLS_PER_CHILD_AGENT=${MAX_CALLS_PER_CHILD_AGENT}
-  #     - ENABLE_TRACING=${ENABLE_TRACING}
-  #   restart: unless-stopped
+  rowboat_agents:
+    build:
+      context: ./apps/rowboat_agents
+      dockerfile: Dockerfile
+    ports:
+      # Host port 3101 (Windows reserves 2951-3050). Container still listens on 3001
+      # so AGENTS_API_URL=http://rowboat_agents:3001 (compose internal DNS) works.
+      - "3101:3001"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - API_KEY=${AGENTS_API_KEY}
+      - REDIS_URL=redis://redis:6379
+      - MONGODB_URI=mongodb://mongo:27017/rowboat
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - PROVIDER_BASE_URL=${PROVIDER_BASE_URL}
+      - PROVIDER_API_KEY=${PROVIDER_API_KEY}
+      - PROVIDER_DEFAULT_MODEL=${PROVIDER_DEFAULT_MODEL}
+      - MAX_CALLS_PER_CHILD_AGENT=${MAX_CALLS_PER_CHILD_AGENT}
+      - ENABLE_TRACING=${ENABLE_TRACING}
+    restart: unless-stopped
 
   # copilot:
   #   build:

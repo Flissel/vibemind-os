@@ -141,6 +141,32 @@ class DirectExecutor:
                 "target": self.target,
             }
 
+    def call_with_arg(self, arg: Any, arg_kwarg: Optional[str] = None,
+                      extra_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Convenience: shape the extracted arg according to the YAML's
+        `arg_kwarg` field. Two patterns covered:
+
+        - arg_kwarg=None        → fn(arg)         positional
+        - arg_kwarg='title'     → fn({"title": arg, **extra_params})   single-dict
+                                                       for legacy voice-tool API
+
+        Phase 11.P — `extra_params` lets the plan-executor pass auxiliary
+        context (e.g. `_intent` so tools can re-extract args the planner
+        couldn't fit into a single (arg_kwarg, arg_template) pair).
+        """
+        if arg_kwarg:
+            payload = {arg_kwarg: arg}
+            if extra_params:
+                # Merge but don't overwrite the primary arg.
+                for k, v in extra_params.items():
+                    if k != arg_kwarg and v not in (None, ""):
+                        payload[k] = v
+            return self.call(payload)
+        if extra_params:
+            payload = {"value": arg, **extra_params}
+            return self.call(payload)
+        return self.call(arg)
+
     def stats_dict(self) -> Dict[str, Any]:
         avg_ms = 0.0
         if self._stats["calls"] > 0:

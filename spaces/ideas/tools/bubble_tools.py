@@ -408,14 +408,14 @@ def create_bubble(params: Dict[str, Any]) -> str:
     skip_agent_creation = params.get("skip_agent_creation", False)
 
     if not title:
-        return "What should I call this new space?"
+        return "What should I call this new bubble?"
 
     repo = _get_ideas_repo()
 
     # Check for duplicate
     existing = repo.get_by_title(title)
     if existing:
-        return f"A space called '{title}' already exists"
+        return f"A bubble called '{title}' already exists"
 
     idea = repo.create(
         title=title,
@@ -438,7 +438,58 @@ def create_bubble(params: Dict[str, Any]) -> str:
     })
     _publish_bubble(idea.id)
 
-    return f"Created new space '{title}'"
+    # Phase 11.F — also publish to brain's space-event bus so the dashboard
+    # + brain-event-bridge see it regardless of who called us (direct vs MCP)
+    try:
+        from . import _brain_event_publisher as _bep  # type: ignore
+        _bep.publish(
+            event_id="bubble.create",
+            params={"title": title, "description": description},
+            result=f"Created bubble '{title}' (id={idea.id})",
+            ok=True,
+            source="bubble_tools/create_bubble",
+        )
+    except Exception:
+        try:
+            # Fallback: import via path (for direct module loads)
+            import importlib.util as _ilu, os as _os
+            _here = _os.path.dirname(__file__)
+            _spec = _ilu.spec_from_file_location(
+                "_brain_event_publisher_fallback",
+                _os.path.join(_here, "_brain_event_publisher.py"),
+            )
+            if _spec:
+                _bep2 = _ilu.module_from_spec(_spec)
+                _spec.loader.exec_module(_bep2)
+                _bep2.publish(
+                    event_id="bubble.create",
+                    params={"title": title, "description": description},
+                    result=f"Created bubble '{title}' (id={idea.id})",
+                    ok=True,
+                    source="bubble_tools/create_bubble",
+                )
+        except Exception:
+            pass
+
+    # Auto-enter the freshly-created bubble so subsequent idea_create calls
+    # (in the same plan/session) attach to THIS bubble instead of falling
+    # back to the Inbox. Side-effect mirrors user's mental model.
+    try:
+        global _current_bubble_db_id
+        _current_bubble_db_id = idea.id
+        # Also update legacy electron_backend tracker if available
+        try:
+            from voice.python import electron_backend as _eb
+            local = _eb.get_bubble_by_db_id(idea.id) if hasattr(_eb, "get_bubble_by_db_id") else None
+            if local:
+                _eb._current_bubble_id = local
+        except Exception:
+            pass
+        logger.info(f"Auto-entered bubble {idea.id} ('{title}') after creation")
+    except Exception as e:
+        logger.debug(f"Auto-enter failed: {e}")
+
+    return f"Created bubble '{title}' (id={idea.id})"
 
 
 def update_bubble(params: Dict[str, Any]) -> str:
@@ -459,7 +510,29 @@ def update_bubble(params: Dict[str, Any]) -> str:
     bubble_name = params.get("bubble_name", "").strip()
     new_title = params.get("new_title", params.get("title", "")).strip()
     new_description = params.get("new_description", params.get("description", "")).strip()
-    logger.debug("update_bubble: bubble_name=%s, new_title=%s", bubble_name, new_title)
+    intent = params.get("_intent", "").strip()
+    logger.debug("update_bubble: bubble_name=%s, new_title=%s, intent=%s",
+                 bubble_name, new_title, intent[:80])
+
+    # Phase 11.P — Single-arg fallback. The Brain plan-executor schema
+    # supports only one (arg_kwarg, arg_template) per hop, but rename
+    # needs both source-name AND new-name. Try to extract the source-name
+    # from the intent text if it wasn't passed explicitly.
+    if not bubble_name and intent:
+        import re
+        # "rename bubble X to Y" / "benenne bubble X um nach Y" / "bubble X umbenennen in Y"
+        patterns = [
+            r"(?:rename|benenne)\s+(?:the\s+|die\s+)?bubble\s+([\w\-]+)\s+(?:to|nach|in|zu|um\s+nach)\s+",
+            r"(?:bubble|space)\s+([\w\-]+)\s+(?:umbenennen\s+(?:in|nach|zu)|rename\s+to)",
+            r"benenne\s+([\w\-]+)\s+um",
+            r"update\s+(?:the\s+)?bubble\s+([\w\-]+)",
+        ]
+        for pat in patterns:
+            m = re.search(pat, intent, re.IGNORECASE)
+            if m:
+                bubble_name = m.group(1).strip()
+                logger.info(f"update_bubble: extracted bubble_name='{bubble_name}' from intent")
+                break
 
     if not new_title and not new_description:
         return "What should I change? Please tell me the new name or the new description."
@@ -497,7 +570,7 @@ def update_bubble(params: Dict[str, Any]) -> str:
 
     repo.update(bubble)
 
-    # Broadcast to Electron
+    # Broadcast to Electron (voice subprocess path)
     _broadcast_to_electron({
         "type": "bubble_updated",
         "bubble": {
@@ -510,6 +583,50 @@ def update_bubble(params: Dict[str, Any]) -> str:
     if new_title and new_title != old_title:
         _unpublish_bubble(old_title)  # Remove old-named manifest
     _publish_bubble(bubble.id)
+
+    # Phase 11.P — also publish to brain's space-event bus so the Electron
+    # brain-event-bridge surfaces the rename even when called from Brain
+    # (multi-hop / direct executor) rather than the voice subprocess.
+    # Mirrors Phase 11.F bubble.create + Phase 11.O bubble.delete paths.
+    try:
+        from . import _brain_event_publisher as _bep  # type: ignore
+        _bep.publish(
+            event_id="bubble.update",
+            params={
+                "bubble_name": old_title,
+                "new_title": bubble.title,
+                "new_description": bubble.description,
+                "bubble_id": bubble.id,
+            },
+            result=f"Renamed bubble '{old_title}' -> '{bubble.title}'",
+            ok=True,
+            source="bubble_tools/update_bubble",
+        )
+    except Exception:
+        try:
+            import importlib.util as _ilu, os as _os
+            _here = _os.path.dirname(__file__)
+            _spec = _ilu.spec_from_file_location(
+                "_brain_event_publisher_fallback",
+                _os.path.join(_here, "_brain_event_publisher.py"),
+            )
+            if _spec:
+                _bep2 = _ilu.module_from_spec(_spec)
+                _spec.loader.exec_module(_bep2)
+                _bep2.publish(
+                    event_id="bubble.update",
+                    params={
+                        "bubble_name": old_title,
+                        "new_title": bubble.title,
+                        "new_description": bubble.description,
+                        "bubble_id": bubble.id,
+                    },
+                    result=f"Renamed bubble '{old_title}' -> '{bubble.title}'",
+                    ok=True,
+                    source="bubble_tools/update_bubble",
+                )
+        except Exception:
+            pass
 
     if new_title:
         return f"Space renamed from '{old_title}' to '{new_title}'"
@@ -827,6 +944,40 @@ def delete_bubble(params: Dict[str, Any]) -> str:
     })
     _unpublish_bubble(title)
 
+    # Phase 11.N — publish to brain's space-event bus so the Electron
+    # brain-event-bridge can also surface the delete (path used when the
+    # tool is called from Brain rather than Voice subprocess). Mirrors
+    # Phase 11.F bubble.create publish path.
+    try:
+        from . import _brain_event_publisher as _bep  # type: ignore
+        _bep.publish(
+            event_id="bubble.delete",
+            params={"bubble_name": bubble_name, "bubble_id": idea_id},
+            result=f"Deleted bubble '{title}'",
+            ok=True,
+            source="bubble_tools/delete_bubble",
+        )
+    except Exception:
+        try:
+            import importlib.util as _ilu, os as _os
+            _here = _os.path.dirname(__file__)
+            _spec = _ilu.spec_from_file_location(
+                "_brain_event_publisher_fallback",
+                _os.path.join(_here, "_brain_event_publisher.py"),
+            )
+            if _spec:
+                _bep2 = _ilu.module_from_spec(_spec)
+                _spec.loader.exec_module(_bep2)
+                _bep2.publish(
+                    event_id="bubble.delete",
+                    params={"bubble_name": bubble_name, "bubble_id": idea_id},
+                    result=f"Deleted bubble '{title}'",
+                    ok=True,
+                    source="bubble_tools/delete_bubble",
+                )
+        except Exception:
+            pass
+
     logger.info(f"Cascade deleted bubble '{title}': {deleted_nodes} nodes, {deleted_edges} edges")
     return f"Deleted space '{title}' with {deleted_nodes} notes and {deleted_edges} connections"
 
@@ -948,8 +1099,11 @@ def delete_all_bubbles_except(params: Dict[str, Any] = None) -> str:
             if cleaned:
                 exceptions.append(cleaned)
 
+    # Phase 11.N — empty exceptions = wirklich alle löschen.
+    # Old voice-prompt asked "which to keep" — now we honour the literal
+    # "delete all" intent. Caller can still pass exceptions to spare some.
     if not exceptions:
-        return "Which Spaces should be kept? Please say e.g. 'Delete all except VibeMind'."
+        logger.info("delete_all_bubbles_except: no exceptions → deleting ALL bubbles")
 
     logger.info(f"Keeping bubbles (lowercase): {exceptions}")
 
@@ -989,7 +1143,7 @@ def delete_all_bubbles_except(params: Dict[str, Any] = None) -> str:
                 total_nodes += stats.get("nodes_deleted", 0)
                 total_edges += stats.get("edges_deleted", 0)
 
-                # Broadcast deletion to UI
+                # Broadcast deletion to UI (voice subprocess path)
                 _broadcast_to_electron({
                     "type": "bubble_deleted",
                     "bubble_id": idea.id,
@@ -997,6 +1151,23 @@ def delete_all_bubbles_except(params: Dict[str, Any] = None) -> str:
                     "deleted_nodes": stats.get("nodes_deleted", 0),
                     "deleted_edges": stats.get("edges_deleted", 0)
                 })
+
+                # Phase 11.N — also publish to brain's space-event bus so
+                # the Electron brain-event-bridge sees this even when called
+                # from Brain (multi-hop / direct executor) rather than the
+                # voice subprocess. Each bubble emits its own delete event.
+                try:
+                    from . import _brain_event_publisher as _bep  # type: ignore
+                    _bep.publish(
+                        event_id="bubble.delete",
+                        params={"bubble_name": idea.title, "bubble_id": idea.id},
+                        result=f"Deleted bubble '{idea.title}'",
+                        ok=True,
+                        source="bubble_tools/delete_all_bubbles_except",
+                    )
+                except Exception:
+                    pass
+
                 logger.info(f"Deleted bubble: {idea.title}")
             else:
                 errors.append(idea.title)

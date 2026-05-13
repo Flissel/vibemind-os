@@ -76,6 +76,8 @@ COLLECTIONS: Dict[str, str] = {
     "artifacts":  "rowboat-artifacts", # bubbles, ideas — external refs (read-mostly)
     "aggregated": "aggregated-kg",     # topic/finding/decision from discourse aggregator (R.4)
     "mirofish":   "mirofish-kg",       # read-only mirror of Mirofish Neo4j entities (R.6)
+    "decisions":  "brain-decisions",   # Phase 10.1 — past Plans + outcomes for recall
+    "self":       "brain-self",        # Phase 10.2 — self-model: capability-confidence over time
 }
 
 # Back-compat: legacy single-collection code paths fall back to 'episodic'.
@@ -97,12 +99,15 @@ NT_FINDING = "finding"         # R.4 — aggregator output
 NT_DECISION = "decision"       # R.4 — aggregator output
 NT_META_TOPIC = "meta_topic"   # S.5 — cross-session theme, lives in aggregated
 NT_MIROFISH_ENTITY = "mirofish_entity"  # R.6 — Neo4j mirror
+NT_DECISION_RECORD = "decision_record"  # Phase 10.1 — past plan with outcome
+NT_SELF_TRAIT = "self_trait"            # Phase 10.2 — capability-confidence belief
 
 ALL_NODE_TYPES = (
     NT_THOUGHT, NT_RESPONSE, NT_FACT, NT_CONCEPT,
     NT_BUBBLE, NT_IDEA, NT_SPACE, NT_EVENT, NT_SNAPSHOT,
     NT_TOPIC, NT_FINDING, NT_DECISION, NT_META_TOPIC,
     NT_MIROFISH_ENTITY,
+    NT_DECISION_RECORD, NT_SELF_TRAIT,
 )
 
 NODE_TYPE_TO_COLLECTION: Dict[str, str] = {
@@ -120,6 +125,9 @@ NODE_TYPE_TO_COLLECTION: Dict[str, str] = {
     NT_DECISION: "aggregated",
     NT_META_TOPIC: "aggregated",  # S.5 cross-session
     NT_MIROFISH_ENTITY: "mirofish",
+    "plan_execution": "episodic",  # Phase 6.14.4 — multi-hop plan summaries
+    NT_DECISION_RECORD: "decisions",   # Phase 10.1
+    NT_SELF_TRAIT:      "self",        # Phase 10.2
 }
 
 # Brain-owned collections (not rowboat-artifacts / fungus-code).

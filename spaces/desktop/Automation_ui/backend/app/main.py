@@ -17,10 +17,12 @@ from .routers import (
     mcp_bridge_router, node_configs_router, ocr_router, shell_router,
     websocket_router, workflows_router)
 from .routers.automation import router as automation_router
+from .routers.clarify_form import router as clarify_form_router
 from .routers.clawdbot import router as clawdbot_router
 from .routers.clawhub import router as clawhub_router
 from .routers.configs import router as configs_router
 from .routers.eyeterm import router as eyeterm_router
+from .routers.face_targets import router as face_targets_router
 from .routers.llm_intent import router as llm_intent_router
 from .routers.video import router as video_router
 from .services.client_manager_service import get_client_manager
@@ -173,6 +175,10 @@ def create_app() -> FastAPI:
     # eyeTerm camera/gaze control
     app.include_router(eyeterm_router)
     app.include_router(video_router)
+    app.include_router(face_targets_router)
+
+    # Adaptive-skills clarify form (HTML form for handoff_clarify with form_schema)
+    app.include_router(clarify_form_router, prefix="/api/clarify", tags=["Clarify"])
 
     # Enable workflow and API v1 routers
     app.include_router(workflows_router, prefix="/api/workflows", tags=["Workflows"])

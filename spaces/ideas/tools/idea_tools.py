@@ -399,7 +399,14 @@ def create_idea(params: Dict[str, Any]) -> str:
         # want to jot something down fast.
         from spaces.ideas.tools import bubble_tools as _bt
         ideas_repo = _bt._get_ideas_repo()
-        inbox = ideas_repo.get_by_title("Inbox")
+        # Phase 11.U — exact-match avoids dup-Inbox under parallel load.
+        # Plus second exact-match check after create as belt-and-suspenders
+        # in case another worker created one between get and create.
+        inbox = (
+            ideas_repo.get_by_title_exact("Inbox")
+            if hasattr(ideas_repo, "get_by_title_exact")
+            else ideas_repo.get_by_title("Inbox")
+        )
         if not inbox:
             inbox = ideas_repo.create(
                 title="Inbox",
@@ -461,6 +468,27 @@ def create_idea(params: Dict[str, Any]) -> str:
         pass
 
     logger.info(f"Created note '{title}' in bubble {bubble_id}")
+
+    # Phase 11.F — publish to brain space-event bus so dashboard + Vibemind app
+    # see it live regardless of caller (direct call vs spaces-ideas MCP)
+    try:
+        import importlib.util as _ilu, os as _os
+        _here = _os.path.dirname(__file__)
+        _bep_path = _os.path.join(_here, "_brain_event_publisher.py")
+        if _os.path.isfile(_bep_path):
+            _spec = _ilu.spec_from_file_location("_brain_event_publisher", _bep_path)
+            _bep = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(_bep)
+            _bep.publish(
+                event_id="idea.create",
+                params={"title": title, "content": content, "bubble_id": bubble_id},
+                result=f"Added '{title}' to bubble {bubble_id}",
+                ok=True,
+                source="idea_tools/create_idea",
+            )
+    except Exception:
+        pass
+
     return f"Added '{title}'"
 
 
@@ -943,15 +971,72 @@ def connect_ideas(params: Dict[str, Any]) -> str:
                    "Verbinde Marketing mit Social Media"
 
     Args (via params):
-        idea1 / source: First idea name (fuzzy matched)
-        idea2 / target: Second idea name (fuzzy matched)
+        idea1 / source / source_id / from_idea: First idea name (fuzzy matched)
+        idea2 / target / target_id / to_idea: Second idea name (fuzzy matched)
+
+    Phase 11.U.C — also accepts `source_id`/`target_id` (Brain's capability
+    YAML emits these). When only one of the two is provided, falls back to
+    re-extracting the second from `_intent` (Phase 11.P pattern).
 
     Returns:
         str: Confirmation message or helpful error with available ideas
     """
-    # Support both parameter naming conventions
-    idea1 = params.get("idea1", params.get("source", "")).strip()
-    idea2 = params.get("idea2", params.get("target", "")).strip()
+    idea1 = (
+        params.get("idea1") or
+        params.get("source") or
+        params.get("source_id") or  # Phase 11.U.C — Brain YAML arg_kwarg
+        params.get("from_idea") or
+        ""
+    ).strip()
+    idea2 = (
+        params.get("idea2") or
+        params.get("target") or
+        params.get("target_id") or  # Phase 11.U.C
+        params.get("to_idea") or
+        ""
+    ).strip()
+
+    # Phase 11.U.C — fallback: re-extract ideas from `_intent` if Brain
+    # used unknown arg_kwarg names (the LLM planner sometimes invents
+    # 'idea1_name' / 'source_node' / etc.) or only filled ONE arg.
+    # This makes the tool robust to whatever shape the planner emits.
+    if not idea1 or not idea2:
+        intent = (params.get("_intent") or "").strip()
+        # Also peek at any param value that looks like an idea name
+        # (i.e. a non-empty string under an unknown key).
+        if not idea1:
+            for k, v in (params or {}).items():
+                if k.startswith("_"):       # skip _intent, _description etc
+                    continue
+                if k in {"idea1", "idea2", "source", "target", "source_id",
+                         "target_id", "from_idea", "to_idea", "von", "zu"}:
+                    continue
+                if isinstance(v, str) and v.strip():
+                    idea1 = v.strip()
+                    break
+        if intent:
+            import re as _re
+            # English: "connect X with/to/and Y"
+            # German:  "verbinde X mit Y" / "linke X mit Y"
+            patterns = [
+                r"(?:connect|link)\s+(?:idea(?:s)?\s+)?([\w\d_-]+).+?(?:with|to|and|und)\s+(?:idea\s+)?([\w\d_-]+)",
+                r"(?:verbinde|verkn[uü]pfe|linke)\s+(?:idee\s+)?([\w\d_-]+).+?(?:mit|und)\s+(?:idee\s+)?([\w\d_-]+)",
+            ]
+            for pat in patterns:
+                m = _re.search(pat, intent, _re.IGNORECASE)
+                if m:
+                    a, b = m.group(1).strip(), m.group(2).strip()
+                    if not idea1:
+                        idea1 = a
+                        idea2 = b
+                    elif not idea2:
+                        if a.lower() == idea1.lower():
+                            idea2 = b
+                        elif b.lower() == idea1.lower():
+                            idea2 = a
+                        else:
+                            idea1, idea2 = a, b
+                    break
 
     bubble_id = _get_current_bubble_id()
     repo = _get_canvas_repo()
@@ -1002,7 +1087,8 @@ def connect_ideas(params: Dict[str, Any]) -> str:
     # Create edge
     edge = repo.create_edge(node1.id, node2.id, "related")
 
-    # Broadcast
+    # Broadcast (works only inside the voice subprocess; brain-direct calls
+    # rely on the Phase 11.F publish below to reach Electron via brain SSE)
     _broadcast_to_electron({
         "type": "edge_added",
         "edge": {
@@ -1011,6 +1097,30 @@ def connect_ideas(params: Dict[str, Any]) -> str:
             "label": "related"
         }
     })
+
+    # Phase 11.U.C — publish to brain space-event bus so the bridge can map
+    # idea.connect → IPC edge_added regardless of caller (direct/MCP)
+    try:
+        import importlib.util as _ilu, os as _os
+        _here = _os.path.dirname(__file__)
+        _bep_path = _os.path.join(_here, "_brain_event_publisher.py")
+        if _os.path.isfile(_bep_path):
+            _spec = _ilu.spec_from_file_location("_brain_event_publisher", _bep_path)
+            _bep = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(_bep)
+            _bep.publish(
+                event_id="idea.connect",
+                params={
+                    "from_id": node1.id, "to_id": node2.id,
+                    "from_title": node1.title, "to_title": node2.title,
+                    "label": "related",
+                },
+                result=f"Connected '{node1.title}' to '{node2.title}'",
+                ok=True,
+                source="idea_tools/connect_ideas",
+            )
+    except Exception:
+        pass
 
     logger.info(f"Connected '{node1.title}' to '{node2.title}'")
     return f"'{node1.title}' and '{node2.title}' are now connected."
@@ -1034,6 +1144,7 @@ def disconnect_ideas(params: Dict[str, Any]) -> str:
     idea1 = (
         params.get("idea1") or
         params.get("source") or
+        params.get("source_id") or  # Phase 11.U.C — Brain YAML arg_kwarg
         params.get("from_idea") or
         params.get("von") or
         ""
@@ -1042,10 +1153,31 @@ def disconnect_ideas(params: Dict[str, Any]) -> str:
     idea2 = (
         params.get("idea2") or
         params.get("target") or
+        params.get("target_id") or  # Phase 11.U.C
         params.get("to_idea") or
         params.get("zu") or
         ""
     ).strip()
+
+    # Phase 11.U.C — fallback: extract second name from _intent
+    if idea1 and not idea2:
+        intent = (params.get("_intent") or "").strip()
+        if intent:
+            import re as _re
+            patterns = [
+                r"(?:disconnect|unlink|trenne|entferne)\s+(?:idea(?:s)?\s+)?([\w\d_-]+).+?(?:from|with|von|und)\s+(?:idea\s+)?([\w\d_-]+)",
+            ]
+            for pat in patterns:
+                m = _re.search(pat, intent, _re.IGNORECASE)
+                if m:
+                    a, b = m.group(1).strip(), m.group(2).strip()
+                    if a.lower() == idea1.lower():
+                        idea2 = b
+                    elif b.lower() == idea1.lower():
+                        idea2 = a
+                    else:
+                        idea1, idea2 = a, b
+                    break
 
     bubble_id = _get_current_bubble_id()
     repo = _get_canvas_repo()
@@ -1111,6 +1243,30 @@ def disconnect_ideas(params: Dict[str, Any]) -> str:
         "from_node_id": str(edge_found.from_node_id),
         "to_node_id": str(edge_found.to_node_id)
     })
+
+    # Phase 11.U.C — also publish to brain space-event bus
+    try:
+        import importlib.util as _ilu, os as _os
+        _here = _os.path.dirname(__file__)
+        _bep_path = _os.path.join(_here, "_brain_event_publisher.py")
+        if _os.path.isfile(_bep_path):
+            _spec = _ilu.spec_from_file_location("_brain_event_publisher", _bep_path)
+            _bep = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(_bep)
+            _bep.publish(
+                event_id="idea.disconnect",
+                params={
+                    "edge_id": str(edge_found.id),
+                    "from_id": str(edge_found.from_node_id),
+                    "to_id": str(edge_found.to_node_id),
+                    "from_title": node1.title, "to_title": node2.title,
+                },
+                result=f"Disconnected '{node1.title}' from '{node2.title}'",
+                ok=True,
+                source="idea_tools/disconnect_ideas",
+            )
+    except Exception:
+        pass
 
     logger.info(f"Disconnected '{node1.title}' from '{node2.title}'")
     return f"Connection between '{node1.title}' and '{node2.title}' removed."
@@ -1219,12 +1375,40 @@ def connect_ideas_multi(params: Dict[str, Any]) -> str:
                 "label": "related"
             }
         })
-        created.append(target_node.title or target)
+        created.append({"id": target_node.id, "title": target_node.title or target})
+
+    # Phase 11.U.C — single batch publish for all created edges
+    if created:
+        try:
+            import importlib.util as _ilu, os as _os
+            _here = _os.path.dirname(__file__)
+            _bep_path = _os.path.join(_here, "_brain_event_publisher.py")
+            if _os.path.isfile(_bep_path):
+                _spec = _ilu.spec_from_file_location("_brain_event_publisher", _bep_path)
+                _bep = _ilu.module_from_spec(_spec)
+                _spec.loader.exec_module(_bep)
+                _bep.publish(
+                    event_id="idea.connect",
+                    params={
+                        "from_id": source_node.id,
+                        "from_title": source_node.title,
+                        "edges": [
+                            {"to_id": c["id"], "to_title": c["title"], "label": "related"}
+                            for c in created
+                        ],
+                    },
+                    result=f"Multi-connect from '{source_node.title}': {len(created)} edges",
+                    ok=True,
+                    source="idea_tools/connect_ideas_multi",
+                )
+        except Exception:
+            pass
 
     # Build response message
     parts = []
     if created:
-        parts.append(f"'{source_node.title}' connected with {len(created)} ideas: {', '.join(created)}")
+        created_titles = [c["title"] for c in created]
+        parts.append(f"'{source_node.title}' connected with {len(created)} ideas: {', '.join(created_titles)}")
     if already_connected:
         parts.append(f"Already connected: {', '.join(already_connected)}")
     if failed:
@@ -1557,12 +1741,11 @@ async def _generate_expansions(ideas_context: str, count: int) -> List[Dict]:
     """
     Call LLM to generate idea expansions.
 
-    Args:
-        ideas_context: Formatted string of existing ideas
-        count: Number of expansions to generate
-
-    Returns:
-        List of dicts with title, content, source_title
+    Phase 11.J — multi-provider fallback chain:
+      1. Groq (free tier, generous limits)
+      2. OpenAI (direct)
+      3. OpenRouter (last resort — often quota-limited)
+    First provider with valid creds + successful response wins.
     """
     import os
     import json
@@ -1573,16 +1756,6 @@ async def _generate_expansions(ideas_context: str, count: int) -> List[Dict]:
     except ImportError:
         logger.error("OpenAI package not installed")
         return []
-
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        logger.error("OPENROUTER_API_KEY not set")
-        return []
-
-    client = OpenAI(
-        api_key=api_key,
-        base_url="https://openrouter.ai/api/v1"
-    )
 
     prompt = f"""Analysiere diese bestehenden Ideen und generiere {count} verwandte/erweiterte Ideen.
 
@@ -1598,28 +1771,43 @@ Antworte NUR als JSON-Array, keine Erklaerungen:
 [{{"title": "...", "content": "...", "source_title": "..."}}]
 """
 
-    try:
-        response = client.chat.completions.create(
-            model=get_model("idea_enrichment"),
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=1000,
-        )
+    # Provider chain: (name, env_var, base_url, model)
+    providers = [
+        ("groq", "GROQ_API_KEY", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
+        ("openai", "OPENAI_API_KEY", None, "gpt-4o-mini"),
+        ("openrouter", "OPENROUTER_API_KEY", "https://openrouter.ai/api/v1", "anthropic/claude-haiku-4.5"),
+    ]
 
-        content = response.choices[0].message.content
-        logger.info(f"LLM expansion response: {content[:200]}...")
+    last_error = None
+    for name, env_var, base_url, model in providers:
+        api_key = os.getenv(env_var)
+        if not api_key:
+            continue
+        try:
+            kwargs = {"api_key": api_key}
+            if base_url:
+                kwargs["base_url"] = base_url
+            client = OpenAI(**kwargs)
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=1000,
+            )
+            content = response.choices[0].message.content
+            logger.info(f"LLM expansion via {name}: {content[:200]}...")
+            json_match = re.search(r'\[.*\]', content, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group())
+            logger.warning(f"No JSON array found in {name} response")
+            return []
+        except Exception as e:
+            last_error = e
+            logger.warning(f"{name} failed: {e}")
+            continue
 
-        # Extract JSON from response
-        json_match = re.search(r'\[.*\]', content, re.DOTALL)
-        if json_match:
-            return json.loads(json_match.group())
-
-        logger.warning("No JSON array found in LLM response")
-        return []
-
-    except Exception as e:
-        logger.error(f"LLM call failed: {e}")
-        return []
+    logger.error(f"All providers failed. Last error: {last_error}")
+    return []
 
 
 # =============================================================================
@@ -1859,11 +2047,46 @@ def auto_link_ideas(params: Dict[str, Any]) -> str:
             })
 
             link_info = f"'{node1.title}' ↔ '{node2.title}' ({score:.0%})"
-            created_links.append(link_info)
+            created_links.append({
+                "from_id": node1.id, "to_id": node2.id,
+                "from_title": node1.title, "to_title": node2.title,
+                "score": round(float(score), 3),
+                "info": link_info,
+            })
             logger.info(f"[auto_link_ideas] Created: {link_info}")
 
         except Exception as e:
             logger.error(f"Failed to create edge: {e}")
+
+    # Phase 11.U.C — single batch publish for all auto-linked edges
+    if created_links:
+        try:
+            import importlib.util as _ilu, os as _os
+            _here = _os.path.dirname(__file__)
+            _bep_path = _os.path.join(_here, "_brain_event_publisher.py")
+            if _os.path.isfile(_bep_path):
+                _spec = _ilu.spec_from_file_location("_brain_event_publisher", _bep_path)
+                _bep = _ilu.module_from_spec(_spec)
+                _spec.loader.exec_module(_bep)
+                _bep.publish(
+                    event_id="idea.auto_link",
+                    params={
+                        "bubble_id": bubble_id,
+                        "edges": [
+                            {"from_id": cl["from_id"], "to_id": cl["to_id"],
+                             "from_title": cl["from_title"], "to_title": cl["to_title"],
+                             "score": cl["score"], "label": "related"}
+                            for cl in created_links
+                        ],
+                        "count": len(created_links),
+                        "threshold": threshold,
+                    },
+                    result=f"auto-linked {len(created_links)} edges in bubble {bubble_id}",
+                    ok=True,
+                    source="idea_tools/auto_link_ideas",
+                )
+        except Exception:
+            pass
 
     # 8. Return summary
     if not created_links:
@@ -1871,7 +2094,7 @@ def auto_link_ideas(params: Dict[str, Any]) -> str:
 
     summary = f"I created {len(created_links)} connections:\n"
     for link in created_links[:5]:  # Show max 5 in response
-        summary += f"  • {link}\n"
+        summary += f"  • {link['info']}\n"
 
     if len(created_links) > 5:
         summary += f"  ... and {len(created_links) - 5} more."
