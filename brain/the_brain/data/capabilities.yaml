@@ -999,24 +999,36 @@
 # ──────────────────────────────────────────────────────────────────────────
 
 - capability: coding_task
-  description: "generate edit refactor code, write a python/js/ts/rust function, fix a bug in code, implement a feature, git commit and push, create a github repo, deploy to vercel, build or test code"
+  description: "EXECUTE CODE TASK — actually write/edit/run real source code on disk via the openclaude coding agent. NOT for adding ideas/notes to the knowledge graph (that's idea_add). NOT for searching code (that's code_search). NOT for reviewing code (that's code_review). USE THIS when the user wants the system to actually CREATE OR MODIFY a code file: write a python/js/ts/rust function or script, fix a bug in a specific source file, refactor existing code, implement an API endpoint, run git commit/push, create a github repo, deploy to vercel. The dispatch target is openclaude-coder which runs the openclaude CLI subprocess against gpt-4o-mini, writes real files to disk, runs them, returns output."
   anchor_phrases:
-    - "write a python script that does X"
-    - "fix the bug in agent_loop"
-    - "refactor this function"
-    - "implement a new feature in the API"
-    - "create a github repo for my project"
-    - "deploy this to vercel"
-    - "schreib mir eine python funktion"
-    - "code mir ein script das X macht"
+    - "write a python script that prints hello and save it as hello.py"
+    - "create a function add_two in src/main.py and run the file"
+    - "fix the failing test in tests/test_foo.py"
+    - "refactor the parse_url function in utils.py to handle edge cases"
+    - "implement a /health endpoint in src/main.py"
+    - "create a github repository for my project and push the code"
+    - "deploy this project to vercel as a preview"
+    - "schreib mir ein lauffähiges python script das hello.py heißt und Hello druckt"
+    - "erstelle die funktion add_two in src/main.py und führe sie aus"
+    - "leg mir ein github repo an und pushe den code dorthin"
   match_patterns:
-    - "(write|create|schreib|erstell)\\s+(a|an|me|ein|eine)?\\s*(python|js|ts|rust|go|java)\\s+(function|class|script|module)"
-    - "(fix|debug)\\s+(the|a)?\\s*(bug|error|issue)\\s+in"
-    - "refactor\\s+(this|the)?\\s*(function|class|file|module)"
+    # File-extension is a strong signal that the user wants ACTUAL code on disk
+    - "\\.(py|js|ts|tsx|jsx|rs|go|java|cpp|c|h|hpp|rb|php|sh|cmd)\\b"
+    # German + English code-creation verbs with stack keyword nearby
+    - "(write|create|schreib|erstell)\\s+(a|an|me|mir|ein|eine)?\\s*(python|js|ts|rust|go|java)\\s+(function|class|script|module|funktion|klasse)"
+    - "(write|schreib)\\s+(me|mir)\\s+(a|an|ein|eine)?\\s*(python|js|ts)\\s+(function|funktion|script|skript)"
+    # Verb + stack-name (looser — catches "schreib mir ein python script das X")
+    - "(write|create|schreib|erstell)\\s+\\w+\\s+(python|js|ts|rust|go|java)\\s+\\w+"
+    # Bug-fix style
+    - "(fix|debug)\\s+(the|a)?\\s*(bug|error|issue|fehler)\\s+in"
+    - "refactor\\s+(this|the)?\\s*(function|class|file|module|funktion|datei)"
     - "implement\\s+(a|the|new)?\\s*(feature|endpoint|api)"
-    - "(create|setup|init)\\s+(a|my)?\\s*github\\s+repo"
-    - "deploy\\s+(to|on)\\s+vercel"
-    - "(commit|push)\\s+(this|my)?\\s*changes?"
+    # Concrete git/deploy operations
+    - "(create|setup|init|erstell|leg)\\s+(a|my|ein|mein)?\\s*github\\s+repo"
+    - "deploy\\s+(to|on|auf)\\s+vercel"
+    - "(commit|push)\\s+(this|my|den|meinen)?\\s*(changes?|änderung)"
+    # Last-resort: stack + thing-noun pair
+    - "(eine?|a|ein)\\s+(python|js|ts|rust|go)\\s+(funktion|function|script|skript|class|klasse)"
   execution_target: "openfang:openclaude-coder"
 
 - capability: desktop_skill
