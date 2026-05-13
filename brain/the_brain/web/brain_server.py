@@ -614,7 +614,11 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
                 # registry-rot (typo'd module path, missing function) is
                 # visible immediately, not on first user-triggered call.
                 try:
-                    from core.capability_executor import DirectExecutor
+                    # Phase 11.U.E — use multi-kind build_executor so
+                    # `supabase:`, `http:`, `openfang:` etc. don't get
+                    # flagged as broken (the legacy check only handled
+                    # `direct:`).
+                    from core.capability_targets import build_executor
                     direct_caps = [
                         c for c in cr.list_capabilities()
                         if c.get("has_execution_target")
@@ -627,7 +631,9 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
                         )
                         if cap_meta and cap_meta.execution_target:
                             try:
-                                exe = DirectExecutor(cap_meta.execution_target)
+                                exe = build_executor(cap_meta.execution_target)
+                                # is_resolvable only meaningful for direct:
+                                # — remote kinds return True unconditionally
                                 if not exe.is_resolvable():
                                     bad.append(
                                         f"{c['capability']} -> {cap_meta.execution_target}"
@@ -914,9 +920,12 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
         except Exception as e:
             print(f"  [WARN] Moltbook Agents failed: {e}")
 
-        # Start continuous thinking
-        cte.start()
-        print("  [OK] ContinuousThinking STARTED")
+        # Start continuous thinking (Phase 11.U.E — env-gated for load tests)
+        if os.environ.get("CONTINUOUS_THINKING_ENABLED", "1").lower() in ("1", "true", "yes"):
+            cte.start()
+            print("  [OK] ContinuousThinking STARTED")
+        else:
+            print("  [SKIP] ContinuousThinking disabled via CONTINUOUS_THINKING_ENABLED=0")
 
     except Exception as e:
         print(f"  [--] BrainChat setup failed: {e}")

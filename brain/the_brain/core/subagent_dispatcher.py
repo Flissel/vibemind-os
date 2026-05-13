@@ -281,6 +281,231 @@ class SubagentDispatcher:
                 "error": f"{type(e).__name__}: {e}",
             }
 
+    # ─── Phase 11.T.2 — Async siblings ────────────────────────────────────
+    # adispatch() mirrors dispatch() but never blocks the event loop on the
+    # underlying HTTP round-trip. All three provider paths (router, openai,
+    # ollama) get an _a* variant. Sync API stays for non-async callers.
+
+    async def adispatch(self, tool_name: str, **kwargs: Any) -> Dict[str, Any]:
+        """Async dispatch — mirrors dispatch() exactly but uses async paths."""
+        with self._lock:
+            self.stats["calls_total"] += 1
+            self.stats["calls_per_tool"][tool_name] = (
+                self.stats["calls_per_tool"].get(tool_name, 0) + 1
+            )
+            self.stats["last_call_ts"] = time.time()
+
+        _NEEDS_ROUTER = {"claude_subagent", "groq_subagent"}
+        if self._router is None and tool_name in _NEEDS_ROUTER:
+            self._record_failure(tool_name, "no router")
+            return {"ok": False, "tool": tool_name, "text": "",
+                    "error": "MultiLLMRouter not available"}
+
+        if tool_name == "claude_subagent":
+            return await self._adispatch_llm(
+                tool_name=tool_name,
+                prompt=kwargs.get("prompt", ""),
+                system=kwargs.get("system", ""),
+                model=kwargs.get("model", "anthropic/claude-haiku-4.5"),
+                max_tokens=int(kwargs.get("max_tokens", 1024)),
+                temperature=float(kwargs.get("temperature", 0)),
+            )
+        elif tool_name == "groq_subagent":
+            return await self._adispatch_llm(
+                tool_name=tool_name,
+                prompt=kwargs.get("prompt", ""),
+                system=kwargs.get("system", ""),
+                model=kwargs.get("model", "groq::llama-3.3-70b-versatile"),
+                max_tokens=int(kwargs.get("max_tokens", 512)),
+                temperature=float(kwargs.get("temperature", 0.3)),
+            )
+        elif tool_name == "openai_subagent":
+            return await self._adispatch_openai(
+                prompt=kwargs.get("prompt", ""),
+                system=kwargs.get("system", ""),
+                model=kwargs.get("model", "gpt-4o-mini"),
+                max_tokens=int(kwargs.get("max_tokens", 1500)),
+                temperature=float(kwargs.get("temperature", 0.1)),
+            )
+        elif tool_name == "ollama_subagent":
+            return await self._adispatch_ollama(
+                prompt=kwargs.get("prompt", ""),
+                system=kwargs.get("system", ""),
+                model=kwargs.get("model", "llama3.1:latest"),
+                max_tokens=int(kwargs.get("max_tokens", 1500)),
+                temperature=float(kwargs.get("temperature", 0.1)),
+            )
+        else:
+            self._record_failure(tool_name, "unknown tool")
+            return {"ok": False, "tool": tool_name, "text": "",
+                    "error": f"unknown LLM_AGENT tool: {tool_name}"}
+
+    async def _adispatch_llm(
+        self,
+        tool_name: str,
+        prompt: str,
+        system: str,
+        model: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> Dict[str, Any]:
+        """Async _dispatch_llm via MultiLLMRouter._acall_openrouter."""
+        if not prompt or len(prompt.strip()) < 1:
+            self._record_failure(tool_name, "empty prompt")
+            return {"ok": False, "tool": tool_name, "model": model, "text": "",
+                    "error": "empty prompt"}
+
+        full_prompt = f"[System: {system}]\n\n{prompt}" if system else prompt
+        t0 = time.time()
+        try:
+            text = await self._router._acall_openrouter(
+                model=model,
+                prompt=full_prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            latency_ms = (time.time() - t0) * 1000.0
+            return {
+                "ok": True, "tool": tool_name, "model": model,
+                "text": (text or "").strip(),
+                "latency_ms": round(latency_ms, 1),
+                "prompt_len": len(full_prompt),
+            }
+        except Exception as e:
+            latency_ms = (time.time() - t0) * 1000.0
+            self._record_failure(tool_name, f"{type(e).__name__}: {e}")
+            return {
+                "ok": False, "tool": tool_name, "model": model, "text": "",
+                "latency_ms": round(latency_ms, 1),
+                "error": f"{type(e).__name__}: {e}",
+            }
+
+    async def _adispatch_openai(
+        self,
+        prompt: str,
+        system: str,
+        model: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> Dict[str, Any]:
+        """Async direct OpenAI call."""
+        import os as _os
+        from core.multi_llm_router import _get_async_client
+
+        if not prompt or len(prompt.strip()) < 1:
+            self._record_failure("openai_subagent", "empty prompt")
+            return {"ok": False, "tool": "openai_subagent", "model": model,
+                    "text": "", "error": "empty prompt"}
+
+        api_key = _os.environ.get("OPENAI_API_KEY", "").strip()
+        if not api_key:
+            self._record_failure("openai_subagent", "OPENAI_API_KEY not set")
+            return {"ok": False, "tool": "openai_subagent", "model": model,
+                    "text": "", "error": "OPENAI_API_KEY env var not set"}
+
+        clean_model = model.split("/", 1)[1] if model.startswith("openai/") else model
+        is_reasoning = any(clean_model.startswith(p) for p in ("gpt-5", "o1", "o3"))
+
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        body: Dict[str, Any] = {"model": clean_model, "messages": messages}
+        if is_reasoning:
+            body["max_completion_tokens"] = max(max_tokens, 2000)
+        else:
+            body["max_tokens"] = max_tokens
+            body["temperature"] = temperature
+
+        t0 = time.time()
+        try:
+            from core.multi_llm_router import _get_provider_semaphore
+            sem = _get_provider_semaphore("openai")
+            client = _get_async_client()
+            async with sem:
+                resp = await client.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=body,
+                    timeout=120.0,
+                )
+            resp.raise_for_status()
+            data = resp.json()
+            text = (
+                (data.get("choices") or [{}])[0]
+                .get("message", {})
+                .get("content", "") or ""
+            ).strip()
+            return {
+                "ok": True, "tool": "openai_subagent", "model": clean_model,
+                "text": text, "latency_ms": round((time.time()-t0)*1000.0, 1),
+                "error": None,
+            }
+        except Exception as e:
+            self._record_failure("openai_subagent", f"{type(e).__name__}: {e}")
+            return {
+                "ok": False, "tool": "openai_subagent", "model": clean_model,
+                "text": "", "latency_ms": round((time.time()-t0)*1000.0, 1),
+                "error": f"{type(e).__name__}: {e}",
+            }
+
+    async def _adispatch_ollama(
+        self,
+        prompt: str,
+        system: str,
+        model: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> Dict[str, Any]:
+        """Async local Ollama call."""
+        import os as _os
+        from core.multi_llm_router import _get_async_client
+
+        if not prompt or len(prompt.strip()) < 1:
+            self._record_failure("ollama_subagent", "empty prompt")
+            return {"ok": False, "tool": "ollama_subagent", "model": model,
+                    "text": "", "error": "empty prompt"}
+
+        clean_model = model.split("/", 1)[1] if model.startswith("ollama/") else model
+        base = _os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        body = {
+            "model": clean_model, "messages": messages, "stream": False,
+            "options": {"temperature": temperature, "num_predict": max_tokens},
+        }
+
+        t0 = time.time()
+        try:
+            from core.multi_llm_router import _get_provider_semaphore
+            sem = _get_provider_semaphore("ollama")
+            client = _get_async_client()
+            async with sem:
+                resp = await client.post(f"{base}/api/chat", json=body, timeout=240.0)
+            resp.raise_for_status()
+            data = resp.json()
+            text = ((data.get("message") or {}).get("content", "") or "").strip()
+            return {
+                "ok": True, "tool": "ollama_subagent", "model": clean_model,
+                "text": text, "latency_ms": round((time.time()-t0)*1000.0, 1),
+                "error": None,
+            }
+        except Exception as e:
+            self._record_failure("ollama_subagent", f"{type(e).__name__}: {e}")
+            return {
+                "ok": False, "tool": "ollama_subagent", "model": clean_model,
+                "text": "", "latency_ms": round((time.time()-t0)*1000.0, 1),
+                "error": f"{type(e).__name__}: {e}",
+            }
+
     def _dispatch_ollama(
         self,
         prompt: str,

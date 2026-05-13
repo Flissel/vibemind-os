@@ -2,6 +2,41 @@
 
 App-specific desktop-automation skills, indexed semantically in Qdrant and selected by a coordinator agent.
 
+**📊 [Full catalog: INDEX.md](INDEX.md)** — 278 skills across 21 namespaces (auto-generated).
+
+## Use as a git submodule
+
+```bash
+# In any other VibeMind-compatible project
+git submodule add https://github.com/Flissel/Vibemind_V1.git vibemind  # full monorepo
+# OR pin only the skills directory using sparse-checkout
+
+# Then point your loader / coordinator at <repo>/vibemind-os/skills/
+```
+
+The skill format (`name`, `description` + body) is **compatible** with
+[Anthropic Claude Skills](https://github.com/anthropics/skills), so any
+loader that consumes that format will also accept these skills.
+
+## Importing more skills from the community
+
+```bash
+# Install any skill pack listed in awesome-claude-skills
+python scripts/install_skill_pack.py \
+  --repo https://github.com/<owner>/<pack> \
+  --app <your-namespace>
+
+# Re-index Qdrant after import
+QDRANT_URL=http://localhost:6730 \
+  python vibemind-os/skills/_indexer.py --rebuild
+
+# Refresh the human-readable catalog
+python scripts/generate_skill_catalog.py
+```
+
+Bidirectional format conversion (between vibemind, anthropic, and OpenClaw
+formats) is in `scripts/skill_format_bridge.py`.
+
 ## Layout
 
 ```

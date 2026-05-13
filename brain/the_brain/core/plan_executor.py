@@ -134,11 +134,18 @@ class PlanExecutor:
         self._subscribers: "weakref.WeakSet[asyncio.Queue]" = weakref.WeakSet()
         self._publish_loop: Optional[asyncio.AbstractEventLoop] = None
         self._lock = threading.RLock()
-        # Phase 6.14.1 — single-plan-at-a-time mutex. Prevents two
-        # parallel plans from racing on shared in-memory state, KG, or
-        # Supabase writes. Non-blocking acquire; second concurrent
-        # caller gets a clean "busy" envelope.
-        self._exec_lock = threading.Lock()
+        # Phase 11.U.A — multi-plan execution. Replaces the single-plan
+        # mutex from Phase 6.14.1 with a bounded semaphore (N concurrent
+        # plans) plus a tracking dict. Per-plan context (was instance
+        # attrs) now flows as a parameter through _exec_hop.
+        # Backward-compat: _exec_lock retained as Lock() for callers using
+        # is_busy() during attach-phase, but no longer enforces serialisation.
+        self._max_concurrent = int(os.environ.get("PLAN_MAX_CONCURRENT", "3"))
+        self._exec_semaphore = threading.BoundedSemaphore(self._max_concurrent)
+        self._exec_lock = threading.Lock()  # legacy, used only for is_busy reads
+        self._active_plans: Dict[str, Dict[str, Any]] = {}
+        self._active_plans_lock = threading.Lock()
+        # Backward-compat shims read by stats / busy_status
         self._active_plan_id: Optional[str] = None
         self._active_plan_started_at: Optional[float] = None
         # Phase 6.14.2 — DiscourseEngine reference, set via attach_discourse_engine
@@ -259,16 +266,31 @@ class PlanExecutor:
         return {"ok": True, "plan_id": plan_id, "reward_score": new_score, "delta": delta}
 
     def is_busy(self) -> bool:
-        return self._exec_lock.locked()
+        """Phase 11.U.A — busy means: at the concurrency cap. Below the
+        cap, more plans are still acceptable."""
+        with self._active_plans_lock:
+            return len(self._active_plans) >= self._max_concurrent
 
     def busy_status(self) -> Dict[str, Any]:
+        with self._active_plans_lock:
+            active_list = [
+                {
+                    "plan_id": pid,
+                    "intent_preview": (info.get("intent") or "")[:80],
+                    "active_for_s": round(time.time() - info["started_at"], 2),
+                }
+                for pid, info in self._active_plans.items()
+            ]
+            in_flight = len(active_list)
         return {
-            "busy": self._exec_lock.locked(),
-            "active_plan_id": self._active_plan_id,
-            "active_for_s": (
-                round(time.time() - self._active_plan_started_at, 2)
-                if self._active_plan_started_at else None
-            ),
+            # `busy` semantics now: at-cap (no more plans accepted)
+            "busy": in_flight >= self._max_concurrent,
+            "in_flight": in_flight,
+            "max_concurrent": self._max_concurrent,
+            "active_plans": active_list,
+            # Back-compat fields (most-recent plan if any)
+            "active_plan_id": active_list[0]["plan_id"] if active_list else None,
+            "active_for_s": active_list[0]["active_for_s"] if active_list else None,
         }
 
     def _expand_repeat_hop(
@@ -466,35 +488,50 @@ class PlanExecutor:
         Phase 6.14.2 — pauses DiscourseEngine for the duration of the run
         so idle/response ticks don't compete for KG/Supabase writes.
         """
-        # Plan-Mutex: acquire-or-busy-envelope
-        if not self._exec_lock.acquire(blocking=False):
+        # Phase 11.U.A — Plan-Concurrency: bounded semaphore. Up to N plans
+        # may run concurrently (default 3, env PLAN_MAX_CONCURRENT). Beyond
+        # the cap, callers receive a `busy` envelope so the UI knows.
+        if not self._exec_semaphore.acquire(blocking=False):
             with self._lock:
                 self.stats["rejected_busy"] += 1
+            with self._active_plans_lock:
+                in_flight = len(self._active_plans)
             return {
                 "ok": False,
                 "busy": True,
-                "active_plan_id": self._active_plan_id,
-                "active_for_s": (
-                    round(time.time() - (self._active_plan_started_at or time.time()), 2)
+                "in_flight": in_flight,
+                "max_concurrent": self._max_concurrent,
+                "error": (
+                    f"plan-executor at concurrency cap "
+                    f"({in_flight}/{self._max_concurrent}) — try again shortly"
                 ),
-                "error": "another plan is already executing — try again when it completes",
                 "plan_id": plan.plan_id,
             }
 
         t0 = time.time()
-        self._active_plan_id = plan.plan_id
-        self._active_plan_started_at = t0
+        # Register this plan in the active-plans dict
+        with self._active_plans_lock:
+            self._active_plans[plan.plan_id] = {
+                "started_at": t0,
+                "intent": plan.intent or "",
+            }
+            # Maintain back-compat instance attrs (point to most recent plan)
+            self._active_plan_id = plan.plan_id
+            self._active_plan_started_at = t0
         with self._lock:
             self.stats["plans_executed"] += 1
 
-        # Phase 6.14.2 — pause idle/response discourse loops
+        # Phase 11.U.A — pause discourse only when *first* concurrent plan
+        # arrives. Last-out resumes. With multi-plan execution we can't
+        # rely on the de.is_paused() heuristic anymore — track ourselves.
         de = self._discourse_engine
-        de_was_paused = False
+        is_first_plan = False
         try:
-            if de is not None and not de.is_paused():
-                de.pause()
-            elif de is not None:
-                de_was_paused = True
+            if de is not None:
+                with self._active_plans_lock:
+                    is_first_plan = len(self._active_plans) == 1
+                if is_first_plan and not de.is_paused():
+                    de.pause()
         except Exception:
             de = None  # broken engine — proceed without pause
 
@@ -538,12 +575,15 @@ class PlanExecutor:
             logger.debug(f"[plan-executor] phase-10 pre-context failed: {e}")
         # End Phase 10 pre-context
 
-        # Phase 11.B — expose context to _execute_hop via instance attrs
-        # so the hop-level OpenFang routing can build the envelope.
-        self._current_decision_context = decision_context
-        self._current_plan_intent = plan.intent or ""
-        self._current_plan_rationale = getattr(plan, "rationale", "") or ""
-        self._current_plan_id = plan.plan_id
+        # Phase 11.U.A — context as a per-call dict instead of instance attrs.
+        # Pre-11.U.A this lived on `self`, which clobbered if two plans ran
+        # concurrently. Per-call context = race-free multi-plan execution.
+        plan_ctx: Dict[str, Any] = {
+            "decision_context": decision_context,
+            "plan_intent": plan.intent or "",
+            "plan_rationale": getattr(plan, "rationale", "") or "",
+            "plan_id": plan.plan_id,
+        }
 
         executed: Dict[str, HopResult] = {}
         state: Dict[str, Any] = {}
@@ -628,7 +668,7 @@ class PlanExecutor:
                 # Run ready batch in parallel
                 with ThreadPoolExecutor(max_workers=_MAX_PARALLEL) as pool:
                     futures: Dict[Future, HopSpec] = {
-                        pool.submit(self._exec_hop, h, state): h
+                        pool.submit(self._exec_hop, h, state, plan_ctx): h
                         for h in still_ready
                     }
                     self._publish_started(still_ready, state)
@@ -869,18 +909,32 @@ class PlanExecutor:
                 except Exception as e:
                     logger.debug(f"[plan-executor] episodic write failed: {e}")
 
-            # Phase 6.14.2 — resume discourse if we paused it
+            # Phase 11.U.A — drop from active-plans dict, then resume
+            # discourse only if this was the LAST plan running.
+            is_last_plan = False
+            with self._active_plans_lock:
+                self._active_plans.pop(plan.plan_id, None)
+                is_last_plan = len(self._active_plans) == 0
+                # Update back-compat shims to point at remaining plan or None
+                if self._active_plans:
+                    pid, info = min(
+                        self._active_plans.items(),
+                        key=lambda kv: kv[1]["started_at"],
+                    )
+                    self._active_plan_id = pid
+                    self._active_plan_started_at = info["started_at"]
+                else:
+                    self._active_plan_id = None
+                    self._active_plan_started_at = None
+
             try:
-                if de is not None and not de_was_paused:
+                if de is not None and is_last_plan:
                     de.resume()
             except Exception:
                 pass
 
-            # Phase 6.14.1 — release the plan-mutex
-            self._active_plan_id = None
-            self._active_plan_started_at = None
             try:
-                self._exec_lock.release()
+                self._exec_semaphore.release()
             except Exception:
                 pass
 
@@ -897,8 +951,17 @@ class PlanExecutor:
 
     # ── Internals ──────────────────────────────────────────────
 
-    def _exec_hop(self, hop: HopSpec, state: Dict[str, Any]) -> HopResult:
-        """Resolve template, build executor, call, validate, capture KG hits."""
+    def _exec_hop(
+        self, hop: HopSpec, state: Dict[str, Any],
+        plan_ctx: Optional[Dict[str, Any]] = None,
+    ) -> HopResult:
+        """Resolve template, build executor, call, validate, capture KG hits.
+
+        Phase 11.U.A — `plan_ctx` carries the per-plan info (decision_context,
+        intent, rationale, plan_id) that used to live as instance attrs. Passing
+        it explicitly makes multi-plan execution race-free.
+        """
+        plan_ctx = plan_ctx or {}
         t0 = time.time()
         repeat_ctx = getattr(hop, "_repeat_ctx", None)
         rendered_arg = _render_template(hop.arg_template, state, repeat_ctx=repeat_ctx)
@@ -984,13 +1047,13 @@ class PlanExecutor:
                                 params = {"value": params}
                         except Exception:
                             params = {"value": rendered_arg}
-                    dc = getattr(self, "_current_decision_context", {}) or {}
+                    dc = plan_ctx.get("decision_context") or {}
                     envelope = _envelope_mod.build_envelope(
                         event_id=event_id,
                         params=params,
-                        plan_intent=getattr(self, "_current_plan_intent", ""),
-                        plan_rationale=getattr(self, "_current_plan_rationale", ""),
-                        plan_id=getattr(self, "_current_plan_id", ""),
+                        plan_intent=plan_ctx.get("plan_intent", ""),
+                        plan_rationale=plan_ctx.get("plan_rationale", ""),
+                        plan_id=plan_ctx.get("plan_id", ""),
                         step_id=hop.step_id,
                         preferred_tool=hop.capability or "",
                         decision_context=dc,
@@ -1039,7 +1102,7 @@ class PlanExecutor:
         # into a single (arg_kwarg, arg_template) pair (e.g. update_bubble
         # needs both source-name AND new-name).
         _extra = {
-            "_intent": getattr(self, "_current_plan_intent", "") or "",
+            "_intent": plan_ctx.get("plan_intent", "") or "",
             "_description": hop.description or "",
             "_step_id": hop.step_id or "",
         }

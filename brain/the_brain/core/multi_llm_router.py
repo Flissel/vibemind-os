@@ -17,7 +17,113 @@ import requests
 from dataclasses import dataclass
 import time
 
+try:
+    import httpx
+    _HAS_HTTPX = True
+except ImportError:
+    _HAS_HTTPX = False
+
+import asyncio as _asyncio
+import os as _os
+
 logger = logging.getLogger(__name__)
+
+# Phase 11.T.1 — Module-level async client cache (process-scoped, lazy init).
+# httpx pools connections per-client, so a single shared AsyncClient is the
+# correct primitive — opening one per call defeats keep-alive.
+_async_client: Optional["httpx.AsyncClient"] = None
+
+
+# Phase 11.T.5 — Per-provider async semaphores. Caps in-flight LLM calls
+# per provider to avoid hammering rate-limited APIs (Groq is the worst
+# offender at 30 RPM). Created lazily inside the running event loop —
+# asyncio.Semaphore can't be constructed at module import time without a
+# loop on Windows. Use _provider_key() to get a normalised key.
+_provider_semaphores: Dict[str, "_asyncio.Semaphore"] = {}
+# Defaults: Groq is the chokepoint, Anthropic/OpenAI are roomier.
+_PROVIDER_LIMITS = {
+    "groq": int(_os.environ.get("BRAIN_LLM_LIMIT_GROQ", "3")),
+    "anthropic": int(_os.environ.get("BRAIN_LLM_LIMIT_ANTHROPIC", "8")),
+    "openai": int(_os.environ.get("BRAIN_LLM_LIMIT_OPENAI", "8")),
+    "google": int(_os.environ.get("BRAIN_LLM_LIMIT_GOOGLE", "6")),
+    "openrouter": int(_os.environ.get("BRAIN_LLM_LIMIT_OPENROUTER", "8")),
+    "ollama": int(_os.environ.get("BRAIN_LLM_LIMIT_OLLAMA", "4")),
+}
+
+
+def _provider_key(model: str, api_url: str) -> str:
+    """Bucket the request to the right semaphore.
+
+    Logic: groq:: prefix or groq host wins first (it's the rate-limited
+    one we care about most). Then check model prefixes for direct routes.
+    Default is 'openrouter' which is the actual API the model travels through.
+    """
+    m = (model or "").lower()
+    u = (api_url or "").lower()
+    if m.startswith("groq::") or "api.groq.com" in u:
+        return "groq"
+    if m.startswith("anthropic/") or m.startswith("claude"):
+        return "anthropic"
+    if m.startswith("openai/") or m.startswith("gpt-") or m.startswith("o1") or m.startswith("o3"):
+        return "openai"
+    if m.startswith("google/") or m.startswith("gemini"):
+        return "google"
+    if m.startswith("ollama/") or m.startswith("llama3") or m.startswith("phi3") or m.startswith("qwen"):
+        return "ollama"
+    return "openrouter"
+
+
+def _get_provider_semaphore(provider: str) -> "_asyncio.Semaphore":
+    """Lazy-init per-provider Semaphore. Must be called from within an
+    event loop — uses the current loop's policy."""
+    sem = _provider_semaphores.get(provider)
+    if sem is None:
+        limit = _PROVIDER_LIMITS.get(provider, 6)
+        sem = _asyncio.Semaphore(limit)
+        _provider_semaphores[provider] = sem
+    return sem
+
+
+def get_llm_concurrency_stats() -> Dict[str, Any]:
+    """Snapshot of per-provider semaphore state. For /api/llm/stats."""
+    out: Dict[str, Any] = {"limits": dict(_PROVIDER_LIMITS), "providers": {}}
+    for prov, sem in _provider_semaphores.items():
+        # asyncio.Semaphore exposes _value (available slots)
+        try:
+            avail = sem._value  # noqa: SLF001 (cpython internal but stable)
+            limit = _PROVIDER_LIMITS.get(prov, 6)
+            out["providers"][prov] = {
+                "limit": limit,
+                "available": avail,
+                "in_flight": max(0, limit - avail),
+            }
+        except Exception:
+            out["providers"][prov] = {"limit": _PROVIDER_LIMITS.get(prov, 6)}
+    return out
+
+
+def _get_async_client() -> "httpx.AsyncClient":
+    """Lazy-init the shared httpx.AsyncClient. Call from inside an event loop."""
+    global _async_client
+    if not _HAS_HTTPX:
+        raise RuntimeError("httpx not installed — cannot use async LLM path")
+    if _async_client is None or _async_client.is_closed:
+        _async_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(60.0, connect=10.0),
+            limits=httpx.Limits(max_connections=64, max_keepalive_connections=16),
+        )
+    return _async_client
+
+
+async def _close_async_client() -> None:
+    """Optional cleanup hook for shutdown handlers."""
+    global _async_client
+    if _async_client is not None and not _async_client.is_closed:
+        try:
+            await _async_client.aclose()
+        except Exception:
+            pass
+        _async_client = None
 
 # --- Zentrale LLM-Config via vibemind_shared ---
 try:
@@ -451,6 +557,113 @@ class MultiLLMRouter:
         result = response.json()
 
         return result['choices'][0]['message']['content']
+
+    # ─── Phase 11.T.1 — Async sibling path ────────────────────────────────
+    # The sync route()/_call_openrouter() above stay untouched (many callers).
+    # New async-aware code paths (PlanExecutor, SubagentDispatcher, etc.) call
+    # aroute()/`_acall_openrouter` instead so the FastAPI worker thread isn't
+    # blocked on the LLM round-trip (~500-3000ms per call).
+
+    async def aroute(
+        self,
+        function: str,
+        prompt: str,
+        user_id: Optional[str] = None,
+        **kwargs,
+    ) -> str:
+        """Async version of route(). Same fallback-on-error semantics."""
+        llm_name = self.function_map.get(function, 'planning')
+        config = self.llm_configs[llm_name]
+        self.call_counts[llm_name] += 1
+
+        start_time = time.time()
+        try:
+            response = await self._acall_llm(
+                model=config.model,
+                prompt=prompt,
+                max_tokens=kwargs.get('max_tokens', config.max_tokens),
+                temperature=kwargs.get('temperature', config.temperature),
+                user_id=user_id,
+            )
+            if response is None:
+                response = ""
+            latency = (time.time() - start_time) * 1000
+            self.latencies[llm_name].append(latency)
+            estimated_tokens = (len(prompt) + len(response)) / 4
+            self.total_tokens_used[llm_name] += estimated_tokens
+            return response
+        except Exception as e:
+            self.failures[llm_name] += 1
+            logger.warning(f"[MultiLLM async] {llm_name} failed: {e}")
+            if llm_name != 'planning':
+                logger.info("[MultiLLM async] Falling back to planning LLM")
+                return await self.aroute('path_planning', prompt, user_id=user_id, **kwargs)
+            raise
+
+    async def _acall_llm(
+        self,
+        model: str,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        user_id: Optional[str] = None,
+    ) -> str:
+        """Async _call_llm. Supermemory path stays sync-only for now (rare)
+        — falls through to direct OpenRouter for the common path."""
+        # Note: Supermemory's chat_simple is sync. If needed for a given user_id,
+        # callers should use the sync route(). For now we skip Supermemory in
+        # the async path to avoid blocking the loop on its sync HTTP call.
+        return await self._acall_openrouter(
+            model=model,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
+    async def _acall_openrouter(
+        self,
+        model: str,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> str:
+        """Async OpenRouter / Groq call. Mirrors _call_openrouter logic.
+
+        Phase 11.T.5 — per-provider semaphore prevents 429 cascades when
+        many parallel requests hit the same backend.
+        """
+        if model.startswith("groq::"):
+            if not self.groq_api_key:
+                raise RuntimeError(
+                    "model requests groq:: prefix but GROQ_API_KEY is not set"
+                )
+            real_model = model[len("groq::"):]
+            api_url = self.groq_api_url
+            api_key = self.groq_api_key
+        else:
+            real_model = model
+            api_url = self.api_url
+            api_key = self.api_key
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        data = {
+            "model": real_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+
+        provider = _provider_key(model, api_url)
+        sem = _get_provider_semaphore(provider)
+        client = _get_async_client()
+        async with sem:
+            response = await client.post(api_url, headers=headers, json=data)
+            response.raise_for_status()
+            result = response.json()
+            return result['choices'][0]['message']['content']
 
     def _call_openrouter_with_tools(
         self,

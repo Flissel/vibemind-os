@@ -83,9 +83,28 @@ class _BaseRemoteExecutor:
                 "target": self.target,
             }
 
-    def call_with_arg(self, arg: Any, arg_kwarg: Optional[str] = None) -> Dict[str, Any]:
+    def call_with_arg(
+        self, arg: Any, arg_kwarg: Optional[str] = None,
+        extra_params: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Phase 11.U.C.11 — accept extra_params symmetrically with
+        DirectExecutor.call_with_arg so the plan-executor can pass auxiliary
+        context (_intent, _description, ...) to any kind of target.
+        Remote executors fold extra_params into the payload alongside the
+        primary arg."""
         if arg_kwarg:
-            return self.call(**{arg_kwarg: arg})
+            payload = {arg_kwarg: arg}
+            if extra_params:
+                for k, v in extra_params.items():
+                    if k != arg_kwarg and v not in (None, ""):
+                        payload[k] = v
+            return self.call(**payload)
+        if extra_params:
+            # Positional arg becomes "value" so we can mix it with extras
+            payload = {"value": arg, **{
+                k: v for k, v in extra_params.items() if v not in (None, "")
+            }}
+            return self.call(**payload)
         return self.call(arg)
 
     def is_resolvable(self) -> bool:
@@ -449,6 +468,51 @@ class McpExecutor(_BaseRemoteExecutor):
         return resp.json()
 
 
+# ── Supabase executor (Phase 11.U.C.8) ───────────────────────────────
+
+
+class SupabaseExecutor(_BaseRemoteExecutor):
+    """Execute idea-graph operations directly against Supabase REST.
+
+    Spec: `supabase:<operation>` — operation is one of:
+      - `idea.connect`        params: idea1, idea2 (titles, fuzzy)
+      - `idea.disconnect`     params: idea1, idea2 (titles, fuzzy)
+      - `idea.auto_link`      params: bubble (title or id), threshold (opt)
+
+    Returns a string suitable for the rule:string_nonempty validator and
+    publishes a brain space-event so the UI bridge can render the new edge.
+    """
+
+    OPERATIONS = {"idea.connect", "idea.disconnect", "idea.auto_link"}
+
+    def __init__(self, target: str) -> None:
+        super().__init__(target)
+        op = target.split(":", 1)[1] if target.startswith("supabase:") else target
+        op = op.strip().lower()
+        if op not in self.OPERATIONS:
+            raise ValueError(
+                f"supabase: unknown operation {op!r} "
+                f"(supported: {sorted(self.OPERATIONS)})"
+            )
+        self.operation = op
+
+    def _call(self, payload: Dict[str, Any]) -> Any:
+        import asyncio as _asyncio
+        from .supabase_ideas_client import SupabaseIdeasClient
+        from . import supabase_ideas_ops as _ops
+
+        client = SupabaseIdeasClient()
+        # Run async logic in a fresh event loop (we're already in a
+        # ThreadPoolExecutor worker — asyncio.run is safe here).
+        if self.operation == "idea.connect":
+            return _asyncio.run(_ops.connect_op(client, payload))
+        if self.operation == "idea.disconnect":
+            return _asyncio.run(_ops.disconnect_op(client, payload))
+        if self.operation == "idea.auto_link":
+            return _asyncio.run(_ops.auto_link_op(client, payload))
+        raise ValueError(f"unhandled operation: {self.operation!r}")
+
+
 # ── Factory + registry ───────────────────────────────────────────────
 
 
@@ -459,6 +523,7 @@ _EXECUTOR_KINDS: Dict[str, type] = {
     "openfang": OpenFangExecutor,
     "brain": BrainSelfExecutor,
     "mcp": McpExecutor,
+    "supabase": SupabaseExecutor,
 }
 
 
@@ -486,4 +551,5 @@ def supported_kinds() -> Dict[str, str]:
         "openfang": "openfang:<agent_name>",
         "brain": "brain:<METHOD>:<route>",
         "mcp": "mcp:<server>:<tool>",
+        "supabase": "supabase:<op>  (idea.connect|idea.disconnect|idea.auto_link)",
     }

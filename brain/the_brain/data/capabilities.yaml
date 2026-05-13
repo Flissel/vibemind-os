@@ -244,11 +244,18 @@
   arg_kwarg: bubble_name
 
 - capability: bubble_score
-  description: "score or rate a bubble across impact feasibility novelty urgency dimensions"
+  description: "score or rate a bubble across impact feasibility novelty urgency dimensions, how mature/ready/reif is a bubble, give me the score, wie reif"
+  anchor_phrases:
+    - "score the bubble"
+    - "rate the bubble"
+    - "wie reif ist die bubble"
+    - "wie gut ist die bubble"
+    - "wie weit ist die bubble"
   match_patterns:
     - "score\\s+(?:the\\s+|this\\s+|my\\s+)?(?:bubble|idea)"
     - "rate\\s+(?:the\\s+|this\\s+|my\\s+)?(?:bubble|idea)"
-    - "wie gut ist (?:die|diese|meine)\\s+bubble"
+    - "wie\\s+(gut|reif|weit|fortgeschritten)\\s+ist\\s+(?:die|diese|meine)\\s+bubble"
+    - "(maturity|readiness)\\s+(?:of\\s+)?(?:the\\s+)?bubble"
   execution_target: "direct:spaces.ideas.tools.bubble_tools:score_bubble"
   # Try multiple extractors in priority order: explicit name, then bare bubble word
   result_arg_extractor: 'regex:(?:bubble|idea|StressBubble)\s+([\w\d\s\-]+?)(?:\s+(?:we|that|which|bubble))?$'
@@ -326,8 +333,8 @@
   match_patterns:
     - "(connect|link)\\s+(?:these\\s+|the\\s+)?(?:two\\s+)?ideas?"
     - "(verbinde|verknüpfe|linke)\\s+(?:die\\s+|zwei\\s+)?ideen"
-  execution_target: "direct:spaces.ideas.tools.idea_tools:connect_ideas"
-  arg_kwarg: source_id  # Phase 11.N — idea_disconnect
+  execution_target: "supabase:idea.connect"  # Phase 11.U.C.10
+  arg_kwarg: idea1  # primary; idea2 re-extracted from _intent
   validator:
     kind: rule:string_nonempty
     on_fail: report
@@ -564,8 +571,8 @@
   match_patterns:
     - "(auto[-\\s]?link|automatically\\s+(?:connect|link))\\s+(?:the\\s+)?ideas"
     - "verbinde\\s+(?:die\\s+|alle\\s+)?ideen\\s+automatisch"
-  execution_target: "direct:spaces.ideas.tools.idea_tools:auto_link_ideas"
-  arg_kwarg: bubble_id
+  execution_target: "supabase:idea.auto_link"  # Phase 11.U.C.10
+  arg_kwarg: bubble
   validator:
     kind: rule:string_nonempty
     on_fail: report
@@ -848,8 +855,8 @@
     - "(disconnect|unlink|trenne|entferne\\s+(die\\s+)?verbindung|l(ö|oe)sche?\\s+(die\\s+)?verbindung)\\s+(?:the\\s+|die\\s+)?ide[ea]n?"
     - "remove\\s+(?:the\\s+)?(connection|edge|link)\\s+between"
     - "trenne\\s+\\S+\\s+und\\s+\\S+"
-  execution_target: "direct:spaces.ideas.tools.idea_tools:disconnect_ideas"
-  arg_kwarg: source_id  # Phase 11.N — idea_disconnect
+  execution_target: "supabase:idea.disconnect"  # Phase 11.U.C.10
+  arg_kwarg: idea1  # primary; idea2 re-extracted from _intent
   validator:
     kind: rule:string_nonempty
     on_fail: report

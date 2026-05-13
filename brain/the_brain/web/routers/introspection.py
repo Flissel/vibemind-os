@@ -616,6 +616,12 @@ async def llm_stats(request: Request):
         )
     try:
         stats = lr.get_statistics()
+        # Phase 11.T.5 — surface concurrency state alongside call counts.
+        try:
+            from core.multi_llm_router import get_llm_concurrency_stats
+            stats["concurrency"] = get_llm_concurrency_stats()
+        except Exception:
+            pass
         return JSONResponse({
             "stats": convert_numpy(stats),
             "timestamp": time.time(),
@@ -696,8 +702,12 @@ async def kg_search(
     try:
         nt = node_type or None
         coll = collection or None
-        hits = kg.search(q, node_type=nt, collection=coll,
-                         limit=int(limit), score_threshold=float(threshold))
+        # Phase 11.U.B — kg.search hits a sync embedder + sync Qdrant client.
+        # Run in a thread so the FastAPI event loop stays responsive.
+        hits = await asyncio.to_thread(
+            kg.search, q, node_type=nt, collection=coll,
+            limit=int(limit), score_threshold=float(threshold),
+        )
         return JSONResponse({
             "query": q, "node_type": nt, "collection": coll,
             "count": len(hits),
@@ -728,10 +738,18 @@ async def kg_route(
             status_code=503,
         )
     try:
-        spaces = kg.search(q, node_type="space", limit=int(limit),
-                           score_threshold=float(threshold))
-        events = kg.search(q, node_type="event", limit=int(limit),
-                           score_threshold=float(threshold))
+        # Phase 11.U.B — both kg.search calls offloaded to threads. They run
+        # in parallel via asyncio.gather to keep total latency unchanged.
+        spaces, events = await asyncio.gather(
+            asyncio.to_thread(
+                kg.search, q, node_type="space", limit=int(limit),
+                score_threshold=float(threshold),
+            ),
+            asyncio.to_thread(
+                kg.search, q, node_type="event", limit=int(limit),
+                score_threshold=float(threshold),
+            ),
+        )
         # Normalize: show only id, score, title for a clean routing payload
         def _trim(hits, id_key):
             return [{
@@ -2080,9 +2098,17 @@ async def multihop_plan_only(request: Request):
     intent = (body.get("intent") or body.get("message") or "").strip()
     if not intent:
         return JSONResponse({"error": "intent required"}, status_code=400)
-    import asyncio as _asyncio
-    loop = _asyncio.get_running_loop()
-    plan = await loop.run_in_executor(None, pl.plan, intent)
+
+    # Phase 11.T.4 — prefer the async path so we don't burn a threadpool
+    # worker on the LLM round-trip. Falls back to threadpool wrapper only
+    # if planner instance predates the aplan() addition.
+    aplan = getattr(pl, "aplan", None)
+    if aplan is not None:
+        plan = await aplan(intent)
+    else:
+        import asyncio as _asyncio
+        loop = _asyncio.get_running_loop()
+        plan = await loop.run_in_executor(None, pl.plan, intent)
     if plan is None:
         return JSONResponse({"ok": False, "error": pl.stats_dict().get("last_error")})
     return JSONResponse({"ok": True, "plan": plan.to_dict()})
@@ -2183,6 +2209,72 @@ def _try_capability_shortcut(state, intent: str):
         logger.debug(f"[shortcut] non-regex match ({method}), deferring to LLM")
         return None
 
+    # Phase 11.U.C — multi-arg caps the shortcut can't extract correctly.
+    # Shortcut grabs ONE token from the intent; these need TWO+ (source+target,
+    # bubble+name, etc.) and must go through the LLM planner.
+    _MULTI_ARG_CAPS = {
+        "idea_connect", "idea_disconnect", "idea_connect_multi",
+        "bubble_update",  # needs old_name + new_name
+        "idea_move",      # needs idea + target_bubble
+        "idea_add",       # Phase 11.U.D — needs (title, bubble_name)
+        "idea_create",    # same
+    }
+    if m.capability in _MULTI_ARG_CAPS:
+        logger.debug(f"[shortcut] {m.capability!r} is multi-arg, deferring to LLM")
+        return None
+
+    # Phase 11.U.K — state-dependent caps. These read voice-process-local
+    # `_current_bubble_db_id`, so the MCP-direct dispatch path won't see the
+    # bubble context. We must let the LLM planner produce a `bubble_enter`-
+    # first multi-hop plan, OR if the intent already names a bubble, the
+    # planner emits a 2-hop plan (bubble_enter, then the operation).
+    # Single-hop shortcut → empty bubble state → "Please enter a Space first."
+    _STATE_DEPENDENT_CAPS = {
+        # idea-formatters all call _get_current_bubble_id() internally
+        "idea_format_table", "idea_format_note", "idea_format_action_list",
+        "idea_format_pros_cons", "idea_format_hierarchy", "idea_format_specs",
+        "idea_format_kanban", "idea_format_mindmap", "idea_format_swot",
+        "idea_format_user_story", "idea_format_flowchart",
+        "idea_convert_format", "idea_format_revert",
+        "idea_format_get", "idea_format_list",
+        # content-tools that work on "the idea in the current bubble"
+        "idea_explain", "idea_classify", "idea_expand", "idea_update",
+        "idea_find", "idea_count", "idea_list", "idea_delete",
+        "idea_link_to_root",
+        # analysis-tools that scan current bubble
+        "idea_auto_link", "idea_analyze_links",
+        "bubble_generate_embeddings",
+        # bubble lifecycle inside-context
+        "bubble_exit",
+    }
+    # State-dependent caps need a bubble context. If the intent already names
+    # a bubble OR a specific idea, defer to the LLM planner — it'll produce
+    # bubble_enter (or idea_find→bubble) as the first hop. Otherwise we'd
+    # dispatch into an empty voice-process bubble state and get "Please
+    # enter a Space first."
+    intent_lower = intent.lower()
+    # Bubble mentions: cover dative + accusative + English
+    mentions_bubble = any(
+        kw in intent_lower for kw in (
+            "bubble ", "space ", "raum ", "blase ",
+            "geh in", "geh zur", "betrete", "go to ", "enter ",
+        )
+    )
+    # Idea mentions: "die idee X", "formatiere X", "expand idea X", etc.
+    # An all-caps or PascalCase token (≥ 2 chars + at least 1 underscore OR
+    # uppercase letter) is a strong signal that the intent names a specific idea.
+    import re as _re
+    has_named_idea = bool(
+        _re.search(r"\b[A-Z][A-Za-z0-9_]*[_A-Z][A-Za-z0-9_]*\b", intent)
+        or any(kw in intent_lower for kw in ("die idee ", "the idea ", "idea "))
+    )
+    if m.capability in _STATE_DEPENDENT_CAPS and (mentions_bubble or has_named_idea):
+        logger.info(
+            f"[shortcut] {m.capability!r} is state-dependent and intent mentions "
+            f"bubble={mentions_bubble} named_idea={has_named_idea} — deferring to LLM"
+        )
+        return None
+
     # Must be is_direct so the executor can resolve target via registry
     if not getattr(m, "is_direct", False):
         return None
@@ -2278,7 +2370,14 @@ async def multihop_execute(request: Request):
         if plan is None:
             if pl is None:
                 return JSONResponse({"error": "planner not loaded — pass a 'plan' instead"}, status_code=503)
-            plan = pl.plan(intent)
+            # Phase 11.T.4 — async planning path; falls back to threadpool
+            aplan_fn = getattr(pl, "aplan", None)
+            if aplan_fn is not None:
+                plan = await aplan_fn(intent)
+            else:
+                import asyncio as _asyncio
+                loop = _asyncio.get_running_loop()
+                plan = await loop.run_in_executor(None, pl.plan, intent)
     else:
         return JSONResponse({"error": "intent or plan required"}, status_code=400)
 
@@ -2287,24 +2386,34 @@ async def multihop_execute(request: Request):
 
     # Run executor in a thread so FastAPI's main loop is free to handle
     # any nested HTTP calls (brain:GET:/api/X targets recurse into us).
+    # NOTE: pe.execute remains sync (ThreadPoolExecutor + thread-mutexes
+    # internally) — wrapping it in to_thread is the right call.
     import asyncio as _asyncio
-    loop = _asyncio.get_running_loop()
-    exec_result = await loop.run_in_executor(None, pe.execute, plan)
+    exec_result = await _asyncio.to_thread(pe.execute, plan)
     out: Dict[str, Any] = {"ok": exec_result.get("ok"), **exec_result}
 
-    # Optional final synthesis (also off-thread to avoid blocking)
+    # Optional final synthesis — Phase 11.T.4 uses asynthesize() so the
+    # synth LLM call doesn't burn a threadpool worker.
     if syn is not None and (intent or plan.intent):
         try:
-            text = await loop.run_in_executor(
-                None,
-                lambda: syn.synthesize(
+            asynth = getattr(syn, "asynthesize", None)
+            if asynth is not None:
+                text = await asynth(
                     intent=intent or plan.intent,
                     plan=plan,
                     executed=exec_result.get("executed", {}),
                     state=exec_result.get("state", {}),
                     custom_prompt=plan.final_synthesis_prompt or None,
-                ),
-            )
+                )
+            else:
+                text = await _asyncio.to_thread(
+                    syn.synthesize,
+                    intent=intent or plan.intent,
+                    plan=plan,
+                    executed=exec_result.get("executed", {}),
+                    state=exec_result.get("state", {}),
+                    custom_prompt=plan.final_synthesis_prompt or None,
+                )
             out["final_text"] = text
         except Exception as e:
             out["synthesis_error"] = f"{type(e).__name__}: {e}"
@@ -2517,8 +2626,10 @@ async def discourse_intent(request: Request):
     auto = bool(body.get("auto_dispatch", True))
     ctx = body.get("context") or {}
 
-    # Run the discourse — synchronous; can take 30-60s
-    discourse = de.tick_intent(msg, ctx)
+    # Phase 11.U.B — tick_intent is synchronous and can take 30-60s
+    # (parallel agent calls + groq aggregator). Offload to thread so the
+    # FastAPI event loop keeps serving /api/health, SSE streams, etc.
+    discourse = await asyncio.to_thread(de.tick_intent, msg, ctx)
 
     out = {
         "ok":              bool(discourse.get("ok", True)),
@@ -2541,11 +2652,14 @@ async def discourse_intent(request: Request):
     }
 
     # Confidence-aware dispatch (R+.8) — Mode A in plan
+    # Phase 11.U.B — also off-thread; the OpenFang call has timeout=600s
     if auto and discourse.get("high_confidence"):
         decision = discourse.get("decision") or {}
         primary = decision.get("primary")
         if primary:
-            dispatched = _dispatch_to_openfang(primary, msg, decision)
+            dispatched = await asyncio.to_thread(
+                _dispatch_to_openfang, primary, msg, decision,
+            )
             out["dispatched"] = dispatched
 
     return JSONResponse(out)
@@ -3671,6 +3785,38 @@ async def events_mapping_xlsx(request: Request):
             {"ok": False, "error": str(e), "trace": traceback.format_exc()[:1000]},
             status_code=500,
         )
+
+
+@router.post("/api/ui/refresh-bubbles")
+async def ui_refresh_bubbles(request: Request) -> JSONResponse:
+    """Phase 11.U — force the UI to re-fetch bubbles from the source of
+    truth. Useful after external mutations (direct DB wipe, supabase
+    UI delete, manual rowboat manifest cleanup) where no per-bubble
+    bubble.delete event was emitted.
+
+    Publishes a single `ui.refresh_bubbles` space-event. The Electron
+    brain-event-bridge maps this to an IPC `force_resync_bubbles`
+    message which the renderer responds to by calling
+    `vibemind.requestBubbles()`. The Voice subprocess then re-loads
+    from Supabase (Phase 11.P force_reload=True) and ships back
+    `bubbles_sync` to the renderer."""
+    try:
+        from core.space_event_bus import get_bus
+        bus = get_bus()
+        if bus._publish_loop is None:
+            try:
+                bus.attach_loop(asyncio.get_running_loop())
+            except Exception:
+                pass
+        return JSONResponse(bus.publish({
+            "event_id": "ui.refresh_bubbles",
+            "params": {},
+            "ok": True,
+            "result": "force resync requested",
+            "source": "api/ui/refresh-bubbles",
+        }))
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
 @router.post("/api/events/publish")

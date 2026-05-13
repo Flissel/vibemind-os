@@ -79,8 +79,25 @@ class SpaceEventBus:
         with self._lock:
             return list(self._buffer)[-limit:]
 
+    # Phase 11.U.E — events that mutate canvas state. After publishing
+    # one of these, automatically follow up with a `ui.refresh_bubbles`
+    # tick so the renderer pulls fresh truth from the DB. This bypasses
+    # IPC-schema drift (e.g. node_added with wrong title field) — the
+    # renderer just re-fetches and re-renders the affected bubble.
+    _AUTO_REFRESH_TRIGGERS = {
+        "bubble.create", "bubble.update", "bubble.delete",
+        "idea.create",  "idea.update",  "idea.delete",
+        "idea.connect", "idea.disconnect", "idea.auto_link",
+        "idea.move",
+    }
+
     def publish(self, event: Dict[str, Any]) -> Dict[str, Any]:
-        """Add an event to the ring and broadcast to all subscribers."""
+        """Add an event to the ring and broadcast to all subscribers.
+
+        Phase 11.U.E — mutating events trigger an auto-follow-up
+        `ui.refresh_bubbles` event so the renderer pulls fresh state.
+        Skipped when the event IS `ui.refresh_bubbles` (no recursion).
+        """
         if not isinstance(event, dict) or not event.get("event_id"):
             self.stats["events_dropped"] += 1
             return {"ok": False, "error": "missing event_id"}
@@ -101,6 +118,25 @@ class SpaceEventBus:
                     loop.call_soon_threadsafe(q.put_nowait, event)
                 except Exception:
                     pass
+
+        # Auto follow-up refresh (recurses through self.publish once, but
+        # the recursion stops because `ui.refresh_bubbles` is NOT in the
+        # _AUTO_REFRESH_TRIGGERS set).
+        eid = event.get("event_id", "")
+        if eid in self._AUTO_REFRESH_TRIGGERS:
+            try:
+                self.publish({
+                    "event_id": "ui.refresh_bubbles",
+                    "params": {
+                        "trigger": eid,
+                        "trigger_seq": event["_seq"],
+                    },
+                    "ok": True,
+                    "result": "auto-resync after " + eid,
+                    "source": "space_event_bus/auto_refresh",
+                })
+            except Exception:
+                pass
 
         return {"ok": True, "seq": event["_seq"]}
 

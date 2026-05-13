@@ -71,9 +71,22 @@ class HopSpec:
     repeat: Optional[Dict[str, Any]] = None
 
     def template_refs(self) -> List[str]:
-        """Return list of `state.X` paths referenced by this hop's arg_template."""
+        """Return list of `state.X` paths referenced by this hop's arg_template.
+
+        Phase 11.U.E — coerce non-string arg_template (GPT-4o sometimes emits
+        a dict like `{"idea1": "...", "idea2": "..."}` instead of a literal
+        string). We stringify so findall works; if there are no template-refs
+        in the rendered form, findall returns [] anyway.
+        """
         if not self.arg_template:
             return []
+        if not isinstance(self.arg_template, str):
+            try:
+                import json as _json
+                arg_str = _json.dumps(self.arg_template, ensure_ascii=False)
+            except Exception:
+                arg_str = str(self.arg_template)
+            return _TEMPLATE_REF_RE.findall(arg_str)
         return _TEMPLATE_REF_RE.findall(self.arg_template)
 
 
@@ -102,7 +115,40 @@ class Plan:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "Plan":
-        hops = [HopSpec(**h) for h in (d.get("hops") or [])]
+        # Phase 11.U.E — robust handling of LLM-emitted arg_template.
+        # GPT-4o sometimes emits a dict (multi-arg cases like idea_connect):
+        #   "arg_template": {"idea1": "Payment_Layer", "idea2": "Stripe"}
+        # Strategy:
+        #   - if dict + we have multiple keys: JSON-stringify (so it lands
+        #     as a JSON-blob param value the tool can re-parse). Also drop
+        #     arg_kwarg so the base executor passes it as a dict payload
+        #     rather than wrapping it again.
+        #   - if dict with 1 key: pull the value out as the primary arg
+        #     (matches the single-arg shape the planner usually emits).
+        import json as _json
+        cleaned_hops = []
+        for h in (d.get("hops") or []):
+            if isinstance(h, dict):
+                at = h.get("arg_template")
+                if at is not None and not isinstance(at, str):
+                    if isinstance(at, dict) and len(at) == 1:
+                        # collapse single-key dict to its value
+                        h = {**h, "arg_template": str(list(at.values())[0])}
+                    elif isinstance(at, dict):
+                        # multi-key: JSON-encode + null arg_kwarg so the
+                        # base executor uses the dict as the full payload
+                        try:
+                            h = {
+                                **h,
+                                "arg_template": _json.dumps(at, ensure_ascii=False),
+                                "arg_kwarg": None,
+                            }
+                        except Exception:
+                            h = {**h, "arg_template": str(at)}
+                    else:
+                        h = {**h, "arg_template": str(at)}
+            cleaned_hops.append(h)
+        hops = [HopSpec(**h) for h in cleaned_hops]
         return cls(
             plan_id=d.get("plan_id") or cls.make_id(),
             intent=d.get("intent") or "",

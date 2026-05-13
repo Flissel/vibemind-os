@@ -502,14 +502,38 @@ def _populate_sheet(ws, rows: list[list[Any]], bold_rows: Optional[list[int]],
     if cell_styles:
         thin = Side(border_style="thin", color="666666")
         full_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        # Snapshot current sheet bounds — accessing ws[range] for a range
+        # wider than max_column *materializes* empty cells and permanently
+        # extends the sheet. We clamp the range to existing data instead.
+        snap_max_col = ws.max_column or 0
+        snap_max_row = ws.max_row or 0
         for style in cell_styles:
             range_str = style.get("range")
             if not range_str:
                 continue
+            # Clamp range like 'A1:Z1' to actual data: if user requested
+            # cols past snap_max_col, truncate. Same for rows.
             try:
-                cell_block = ws[range_str]
+                from openpyxl.utils import range_boundaries, get_column_letter
+                min_col, min_row, max_col, max_row = range_boundaries(range_str)
+                if snap_max_col > 0:
+                    max_col = min(max_col, snap_max_col)
+                if snap_max_row > 0:
+                    max_row = min(max_row, snap_max_row)
+                if max_col < min_col or max_row < min_row:
+                    # Range was entirely outside data — skip silently.
+                    continue
+                clamped = (
+                    f"{get_column_letter(min_col)}{min_row}"
+                    f":{get_column_letter(max_col)}{max_row}"
+                )
+                cell_block = ws[clamped]
             except Exception:
-                continue
+                # Fallback: try the original range. May still extend dims.
+                try:
+                    cell_block = ws[range_str]
+                except Exception:
+                    continue
             # ws[range] returns a tuple-of-tuples for ranges, single cell otherwise
             if not isinstance(cell_block, tuple):
                 cell_block = ((cell_block,),)
@@ -939,6 +963,734 @@ def _rowboat_upload(file_path: str, title: Optional[str] = None,
         }
     except Exception as exc:
         return {"success": False, "error": f"{type(exc).__name__}: {exc}", "url": upload_url}
+
+
+def _rowboat_search(query: str, folder: Optional[str] = None,
+                    limit: int = 20) -> Dict[str, Any]:
+    """Search the local Rowboat MongoDB for documents matching ``query``.
+
+    Goes directly to the MongoDB collection ``rowboat.source_docs`` rather
+    than via Rowboat's HTTP API (the HTTP /api/v1/<project>/chat path is
+    auth-protected and wasn't usable in our local docker setup as of
+    2026-05-07: returns "Invalid API key").
+
+    The MongoDB schema (verified from a live local instance) is:
+      sources(_id, projectId, name, description, data{type}, status, ...)
+      source_docs(_id, sourceId, projectId, name, version, status, content,
+                  data{type, content, ...}, createdAt, lastUpdatedAt)
+
+    We do a case-insensitive substring search on the document content + name,
+    skipping deleted docs. ``folder`` filters by source name (e.g. "Bewerbung"
+    only returns docs whose source.name contains that substring).
+
+    Returns ``{success, count, results: [{name, source_name, content_excerpt,
+    created_at, _id}]}``.
+    """
+    if not query or not isinstance(query, str):
+        return {"success": False, "error": "query must be a non-empty string"}
+    try:
+        from pymongo import MongoClient
+    except ImportError:
+        return {"success": False, "error": "pymongo not installed"}
+
+    uri = os.environ.get("ROWBOAT_MONGODB_URI", "mongodb://localhost:27017")
+    db_name = os.environ.get("ROWBOAT_MONGODB_DB", "rowboat")
+    project_id = os.environ.get("ROWBOAT_PROJECT_ID", "")
+
+    try:
+        client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+        db = client[db_name]
+
+        # Resolve folder filter to source ids (as STRINGS — source_docs.sourceId
+        # is stored as a string while sources._id is an ObjectId).
+        source_ids: Optional[list] = None
+        if folder:
+            cursor = db["sources"].find(
+                {"name": {"$regex": folder, "$options": "i"}},
+                {"_id": 1, "name": 1},
+            )
+            source_ids = [str(s["_id"]) for s in cursor]
+            if not source_ids:
+                return {
+                    "success": True,
+                    "count": 0,
+                    "results": [],
+                    "note": f"no sources matched folder filter {folder!r}",
+                }
+
+        # Note (2026-05-07): source_docs has 1673 entries with status='deleted'
+        # that the UI still surfaces — so we don't filter by status. If you
+        # need only live docs, post-filter the results.
+        mongo_query: Dict[str, Any] = {
+            "$or": [
+                {"data.content": {"$regex": query, "$options": "i"}},
+                {"name": {"$regex": query, "$options": "i"}},
+            ],
+        }
+        if project_id:
+            mongo_query["projectId"] = project_id
+        if source_ids is not None:
+            mongo_query["sourceId"] = {"$in": source_ids}
+
+        # Build a sourceId(string) -> source.name map so the result has
+        # human-readable bubble names.
+        src_filter: Dict[str, Any] = {}
+        if project_id:
+            src_filter["projectId"] = project_id
+        src_map = {str(s["_id"]): s.get("name", "") for s in
+                   db["sources"].find(src_filter, {"_id": 1, "name": 1})}
+
+        # Fetch more than `limit` so we have enough candidates AFTER dedup.
+        # source_docs in this MongoDB store every version of a doc — same
+        # `name` appears N times across edits. Without dedup, a search for
+        # 'Brain' returns 9× the same overview-snapshot.
+        # Dedup strategy: group by (sourceId, name), keep the entry with
+        # the highest lastUpdatedAt (or createdAt fallback). Cap at `limit`
+        # AFTER dedup.
+        fetch_n = max(int(limit) * 5, 50)
+        cursor = db["source_docs"].find(mongo_query).limit(fetch_n)
+        bucket: Dict[tuple, dict] = {}
+        for d in cursor:
+            key = (d.get("sourceId", ""), d.get("name", ""))
+            ts = str(d.get("lastUpdatedAt") or d.get("createdAt") or "")
+            existing = bucket.get(key)
+            if existing is None or ts > existing.get("_ts", ""):
+                content = ""
+                data = d.get("data") or {}
+                if isinstance(data, dict):
+                    content = data.get("content") or ""
+                bucket[key] = {
+                    "_id": str(d.get("_id", "")),
+                    "name": d.get("name", ""),
+                    "source_name": src_map.get(d.get("sourceId"), ""),
+                    "content_excerpt": content[:500],
+                    "content_full_length": len(content),
+                    "created_at": str(d.get("createdAt", "")),
+                    "last_updated_at": str(d.get("lastUpdatedAt", "")),
+                    "_ts": ts,
+                }
+        # Sort by recency (newest first) and cap at limit.
+        results = sorted(bucket.values(), key=lambda r: r.get("_ts", ""), reverse=True)[:int(limit)]
+        for r in results:
+            r.pop("_ts", None)
+        return {"success": True, "count": len(results), "query": query,
+                "folder": folder, "results": results,
+                "dedup_note": f"deduped from {fetch_n} raw matches by (sourceId,name), kept newest"}
+    except Exception as exc:
+        return {"success": False, "error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
+_ROARBOOT_KNOWLEDGE_ROOT = os.path.expanduser("~/.rowboat/knowledge")
+
+
+def _roarboot_list_folders(root: Optional[str] = None) -> Dict[str, Any]:
+    """List the top-level folders in the Roarboot knowledge tree.
+
+    These are the folders shown in the Roarboot Electron UI sidebar
+    (Bewerbung, Investor Programs, Notes, Organizations, People, Projects,
+    Topics, Videos, Voice Memos, vibemind-discourse). They live as actual
+    directories under ``~/.rowboat/knowledge/`` (.md files in subfolders)
+    and are git-versioned. Returns ``{success, root, folders: [{name,
+    file_count, subdir_count}]}``.
+    """
+    base = os.path.abspath(root or _ROARBOOT_KNOWLEDGE_ROOT)
+    if not os.path.isdir(base):
+        return {"success": False, "error": f"knowledge root not found: {base}"}
+
+    folders = []
+    try:
+        for entry in sorted(os.listdir(base)):
+            if entry.startswith(".") or entry == "Welcome.md":
+                continue
+            full = os.path.join(base, entry)
+            if not os.path.isdir(full):
+                continue
+            file_count = 0
+            subdir_count = 0
+            for dirpath, dirs, files in os.walk(full):
+                if "/.git" in dirpath.replace("\\", "/") or os.path.basename(dirpath).startswith("."):
+                    continue
+                file_count += sum(1 for f in files if f.endswith(".md"))
+                subdir_count += sum(1 for d in dirs if not d.startswith("."))
+            folders.append({
+                "name": entry,
+                "file_count": file_count,
+                "subdir_count": subdir_count,
+            })
+        return {"success": True, "root": base, "folders": folders}
+    except Exception as exc:
+        return {"success": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _roarboot_read_knowledge(folder: str, query: Optional[str] = None,
+                             limit: int = 20,
+                             name_pattern: Optional[str] = None,
+                             root: Optional[str] = None) -> Dict[str, Any]:
+    """Read .md files from a Roarboot knowledge folder.
+
+    The ``folder`` argument is a top-level folder name (e.g. 'Bewerbung',
+    'People', 'Projects') OR a subpath ('Projects/VibeMind - Brain Capability
+    Router'). When ``query`` is given, only files whose path or content
+    matches the case-insensitive substring are returned. When ``name_pattern``
+    is given (e.g. '_overview.md'), only files whose **filename** matches the
+    case-insensitive substring are returned — useful to grab *only* the
+    overview files of every subfolder without diving into sub-pages.
+
+    Returns ``{success, folder, root, count, files: [{path, name,
+    content_excerpt, content_full_length, modified_at}]}``.
+    """
+    if not folder:
+        return {"success": False, "error": "folder required"}
+
+    base = os.path.abspath(root or _ROARBOOT_KNOWLEDGE_ROOT)
+    if not os.path.isdir(base):
+        return {"success": False, "error": f"knowledge root not found: {base}"}
+
+    target = os.path.normpath(os.path.join(base, folder))
+    # Path-traversal guard: target must stay inside base.
+    if not target.startswith(base):
+        return {"success": False, "error": "folder must be inside knowledge root"}
+    if not os.path.isdir(target):
+        return {"success": False, "error": f"folder not found: {folder} (resolved: {target})"}
+
+    q_lower = (query or "").lower().strip()
+    np_lower = (name_pattern or "").lower().strip()
+    try:
+        results = []
+        for dirpath, dirs, files in os.walk(target):
+            # Skip hidden dirs (.git etc).
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            for f in sorted(files):
+                if not f.endswith(".md"):
+                    continue
+                # name_pattern filters by FILENAME only (case-insensitive
+                # substring). Used to grab only e.g. '_overview.md' files.
+                if np_lower and np_lower not in f.lower():
+                    continue
+                full = os.path.join(dirpath, f)
+                rel = os.path.relpath(full, base).replace("\\", "/")
+                # Read content (small md files, 100KB cap is plenty).
+                try:
+                    with open(full, "r", encoding="utf-8", errors="replace") as fh:
+                        content = fh.read(100_000)
+                except Exception as exc:
+                    content = f"<read failed: {exc}>"
+
+                if q_lower:
+                    haystack = (rel + "\n" + content).lower()
+                    if q_lower not in haystack:
+                        continue
+
+                stat = os.stat(full)
+                results.append({
+                    "path": rel,
+                    "name": os.path.splitext(f)[0],
+                    "content_excerpt": content[:600],
+                    "content_full_length": len(content),
+                    "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+                })
+                if len(results) >= int(limit):
+                    return {"success": True, "folder": folder, "root": base,
+                            "count": len(results), "results": results,
+                            "truncated": True}
+        return {"success": True, "folder": folder, "root": base,
+                "count": len(results), "results": results, "truncated": False}
+    except Exception as exc:
+        return {"success": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _xlsx_to_markdown(file_path: str, max_rows_per_sheet: int = 50,
+                      max_chars_per_cell: int = 200) -> str:
+    """Render an xlsx as a markdown report (one table per sheet) for LLM input.
+
+    Uses ``data_only=False`` so that formulas are visible (e.g.
+    ``=SUMME(F2:F6)`` instead of ``None``). When openpyxl-generated files
+    have not been opened in Excel yet, the cached formula values are
+    missing, and ``data_only=True`` would render those cells as empty —
+    which would mislead a critic LLM into saying "values are missing".
+    """
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        return f"<openpyxl not installed>"
+    if not os.path.isfile(file_path):
+        return f"<file not found: {file_path}>"
+    try:
+        wb = load_workbook(file_path, read_only=True, data_only=False)
+    except Exception as exc:
+        return f"<load failed: {exc}>"
+
+    parts: list[str] = []
+    parts.append(f"## File: {os.path.basename(file_path)}\n")
+    parts.append(
+        "_Note: cells starting with `=` are formulas (will be evaluated by "
+        "Excel on open). Don't flag them as 'empty' or 'missing values'._\n"
+    )
+    for sn in wb.sheetnames:
+        ws = wb[sn]
+        parts.append(f"\n### Sheet: {sn}  ({ws.max_row}x{ws.max_column})\n")
+        rows = []
+        for r_idx, row in enumerate(ws.iter_rows(values_only=True), 1):
+            if r_idx > int(max_rows_per_sheet):
+                rows.append(f"_(... {ws.max_row - max_rows_per_sheet} more rows omitted)_")
+                break
+            cells = []
+            for v in row:
+                if v is None:
+                    s = ""
+                else:
+                    s = str(v)
+                    if len(s) > max_chars_per_cell:
+                        s = s[: max_chars_per_cell - 3] + "..."
+                    s = s.replace("|", "\\|").replace("\n", " ")
+                cells.append(s)
+            rows.append("| " + " | ".join(cells) + " |")
+        if rows:
+            # Insert markdown header separator after first row
+            sep = "| " + " | ".join(["---"] * (ws.max_column or 1)) + " |"
+            parts.append(rows[0])
+            parts.append(sep)
+            parts.extend(rows[1:])
+    wb.close()
+    return "\n".join(parts)
+
+
+def _docx_to_markdown(file_path: str, max_chars: int = 8000) -> str:
+    """Render a .docx as markdown for LLM input."""
+    try:
+        from docx import Document
+    except ImportError:
+        return f"<python-docx not installed>"
+    if not os.path.isfile(file_path):
+        return f"<file not found: {file_path}>"
+    try:
+        d = Document(file_path)
+    except Exception as exc:
+        return f"<load failed: {exc}>"
+
+    parts = [f"## File: {os.path.basename(file_path)}\n"]
+    parts.append(f"_paragraphs: {len(d.paragraphs)}, tables: {len(d.tables)}_\n")
+    for p in d.paragraphs:
+        if not p.text.strip():
+            continue
+        # Style hints
+        style = (p.style.name if p.style else "") or ""
+        if style.startswith("Heading"):
+            level = "".join(c for c in style if c.isdigit()) or "1"
+            parts.append(f"{'#' * (int(level) + 2)} {p.text}")
+        else:
+            parts.append(p.text)
+    for i, tbl in enumerate(d.tables):
+        parts.append(f"\n### Table {i+1} ({len(tbl.rows)}x{len(tbl.columns)})\n")
+        for r_idx, row in enumerate(tbl.rows):
+            cells = [c.text.replace("|", "\\|").replace("\n", " ") for c in row.cells]
+            parts.append("| " + " | ".join(cells) + " |")
+            if r_idx == 0:
+                parts.append("| " + " | ".join(["---"] * len(row.cells)) + " |")
+    out = "\n".join(parts)
+    if len(out) > int(max_chars):
+        out = out[: int(max_chars) - 50] + "\n\n_(truncated)_"
+    return out
+
+
+def _file_evaluate(file_path: str, expected_intent: str,
+                   source_data_description: Optional[str] = None,
+                   criteria: Optional[list[str]] = None,
+                   model: str = "gpt-4o-mini") -> Dict[str, Any]:
+    """Critically evaluate an .xlsx or .docx file against an intent.
+
+    Reads the file, renders it as markdown, sends to a critic LLM with
+    instructions to find issues. Returns a structured report:
+      {success, score (0-100), issues: [{severity, issue, fix}],
+       completeness, recommendations, model, tokens}.
+
+    The critic is told to be skeptical: prefer false-positives in issues
+    over silent passes. Best paired with a clear `expected_intent` and
+    `source_data_description` so the critic knows what to expect.
+    """
+    if not os.path.isfile(file_path):
+        return {"success": False, "error": f"file not found: {file_path}"}
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        return {"success": False, "skipped": True,
+                "reason": "OPENAI_API_KEY not set"}
+
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == ".xlsx":
+        rendered = _xlsx_to_markdown(file_path)
+    elif ext == ".docx":
+        rendered = _docx_to_markdown(file_path)
+    else:
+        return {"success": False, "error": f"unsupported file type: {ext}"}
+
+    default_criteria = [
+        "Vollstaendigkeit: sind alle erwarteten Eintraege drin?",
+        "Korrektheit: keine erfundenen oder dupliziert-fehl-extrahierten Felder?",
+        "Datenqualitaet: konsistente Datentypen, sinnvolle Werte?",
+        "Spalten-/Sektions-Wahl passt zum Intent?",
+        "Praxistauglichkeit: koennte ein Fachanwender das so nutzen?",
+    ]
+    crit_list = criteria or default_criteria
+
+    system_prompt = (
+        "Du bist ein kritischer Reviewer fuer Office-Dateien (Excel/Word) die "
+        "automatisiert generiert wurden. Deine Aufgabe ist Probleme zu finden, "
+        "nicht zu loben. Sei skeptisch. Wenn etwas nicht passt — sag es klar. "
+        "Antworte AUSSCHLIESSLICH als gueltiges JSON mit dem Schema:\n"
+        '{"score": <0-100>, '
+        '"completeness": "<kurze Bewertung>", '
+        '"issues": [{"severity": "high|medium|low", "issue": "<beschreibung>", '
+        '"fix_suggestion": "<optional konkreter fix>"}], '
+        '"recommendations": ["<optional>"], '
+        '"summary": "<1-2 saetze>"}\n'
+        "Score-Heuristik: 90-100 = produktionsreif, 70-89 = brauchbar mit "
+        "kleinen Maengeln, 50-69 = nur Konzept-Demo, <50 = nicht akzeptabel. "
+        "KEIN Markdown, KEINE Erklaerungen ausserhalb des JSON."
+    )
+
+    user_msg_parts = [
+        f"INTENT: {expected_intent}",
+    ]
+    if source_data_description:
+        user_msg_parts.append(f"\nSOURCE-DATEN: {source_data_description}")
+    user_msg_parts.append("\nKRITERIEN:")
+    for c in crit_list:
+        user_msg_parts.append(f"- {c}")
+    user_msg_parts.append("\nDATEI-INHALT:\n")
+    user_msg_parts.append(rendered)
+
+    try:
+        import requests
+    except ImportError:
+        return {"success": False, "error": "requests not installed"}
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "\n".join(user_msg_parts)},
+        ],
+        "response_format": {"type": "json_object"},
+    }
+    if not model.startswith(("gpt-5", "o1", "o3", "o4")):
+        payload["temperature"] = 0.2
+
+    try:
+        resp = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}",
+                     "Content-Type": "application/json"},
+            json=payload, timeout=120,
+        )
+    except Exception as exc:
+        return {"success": False, "error": f"openai call: {type(exc).__name__}: {exc}"}
+
+    if resp.status_code != 200:
+        return {"success": False, "error": f"openai HTTP {resp.status_code}",
+                "response_text": resp.text[:500]}
+    data = resp.json()
+    try:
+        raw_answer = data["choices"][0]["message"]["content"]
+        report = json.loads(raw_answer)
+    except Exception as exc:
+        return {"success": False, "error": f"could not parse LLM JSON: {exc}",
+                "raw": data.get("choices", [{}])[0].get("message", {}).get("content", "")[:500]}
+
+    usage = data.get("usage", {})
+    return {
+        "success": True,
+        "file_path": file_path,
+        "score": report.get("score"),
+        "completeness": report.get("completeness"),
+        "issues": report.get("issues", []),
+        "recommendations": report.get("recommendations", []),
+        "summary": report.get("summary"),
+        "model": model,
+        "tokens": {
+            "input": usage.get("prompt_tokens"),
+            "output": usage.get("completion_tokens"),
+        },
+    }
+
+
+def _roarboot_ask(question: str, folder: Optional[str] = None,
+                  max_files: int = 10, max_chars_per_file: int = 4000,
+                  model: str = "gpt-4o-mini",
+                  root: Optional[str] = None) -> Dict[str, Any]:
+    """Ask a natural-language question over Roarboot knowledge.
+
+    Reads ``.md`` files from the Roarboot knowledge tree (optionally filtered
+    by ``folder``), concatenates them into a context, then calls an LLM with
+    the user's question. Returns ``{success, answer, files_used: [...],
+    model, total_input_chars}``.
+
+    This is the alternative to ``rowboat_chat`` (which would need the
+    ``rowboat_agents`` Python service that isn't in the repo). Here we read
+    the same .md files the Roarboot Electron app uses and ask OpenAI directly
+    — no container chat-service needed.
+
+    Reads ``OPENAI_API_KEY`` from env. Graceful fail when missing.
+    """
+    if not question:
+        return {"success": False, "error": "question required"}
+
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        return {"success": False, "skipped": True,
+                "reason": "OPENAI_API_KEY not set"}
+
+    # Step 1: collect .md files. If folder is given, scope to that folder;
+    # otherwise scan all top-level folders.
+    base = os.path.abspath(root or _ROARBOOT_KNOWLEDGE_ROOT)
+    if not os.path.isdir(base):
+        return {"success": False, "error": f"knowledge root not found: {base}"}
+
+    target = os.path.normpath(os.path.join(base, folder)) if folder else base
+    if not target.startswith(base):
+        return {"success": False, "error": "folder must be inside knowledge root"}
+    if not os.path.isdir(target):
+        return {"success": False, "error": f"folder not found: {folder}"}
+
+    # Walk and pick most-recently-modified .md files first.
+    candidates = []
+    for dirpath, dirs, files in os.walk(target):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for f in files:
+            if f.endswith(".md"):
+                full = os.path.join(dirpath, f)
+                try:
+                    mtime = os.path.getmtime(full)
+                except OSError:
+                    continue
+                candidates.append((mtime, full))
+    candidates.sort(reverse=True)  # newest first
+    chosen = candidates[: int(max_files)]
+
+    if not chosen:
+        return {"success": False, "error": f"no .md files in {folder or base}"}
+
+    # Step 2: build context.
+    parts: list[str] = []
+    files_used: list[str] = []
+    for _mtime, full in chosen:
+        rel = os.path.relpath(full, base).replace("\\", "/")
+        try:
+            with open(full, "r", encoding="utf-8", errors="replace") as fh:
+                content = fh.read(int(max_chars_per_file))
+        except Exception:
+            continue
+        parts.append(f"### File: {rel}\n\n{content}\n")
+        files_used.append(rel)
+
+    context = "\n---\n\n".join(parts)
+
+    # Step 3: call OpenAI Chat Completions.
+    try:
+        import requests
+    except ImportError:
+        return {"success": False, "error": "requests not installed"}
+
+    system_prompt = (
+        "Du bist ein Assistent der Fragen ueber die persoenliche Knowledge-Base "
+        "des Users beantwortet. Antworte praezise auf Deutsch und beziehe dich "
+        "konkret auf den Inhalt der Dateien. Wenn die Antwort nicht im Kontext "
+        "steht, sag das ehrlich. Nenne die Datei-Pfade die du als Quelle nutzt."
+    )
+    user_message = (
+        f"Frage: {question}\n\n"
+        f"--- KNOWLEDGE-BASE ({len(files_used)} Dateien) ---\n\n{context}"
+    )
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+    }
+    # gpt-5.x doesn't support custom temperature, gpt-4o does.
+    if not model.startswith(("gpt-5", "o1", "o3", "o4")):
+        payload["temperature"] = 0.2
+
+    try:
+        resp = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}",
+                     "Content-Type": "application/json"},
+            json=payload,
+            timeout=120,
+        )
+    except Exception as exc:
+        return {"success": False, "error": f"openai call failed: {type(exc).__name__}: {exc}"}
+
+    if resp.status_code != 200:
+        return {"success": False, "error": f"openai HTTP {resp.status_code}",
+                "response_text": resp.text[:500]}
+    data = resp.json()
+    answer = ""
+    try:
+        answer = data["choices"][0]["message"]["content"]
+    except Exception:
+        return {"success": False, "error": "could not extract answer", "raw": data}
+
+    usage = data.get("usage", {})
+    return {
+        "success": True,
+        "answer": answer,
+        "files_used": files_used,
+        "model": model,
+        "total_input_chars": len(user_message),
+        "tokens": {
+            "input": usage.get("prompt_tokens"),
+            "output": usage.get("completion_tokens"),
+        },
+    }
+
+
+def _rowboat_list_folders(limit: int = 50) -> Dict[str, Any]:
+    """List bubble/source names from Rowboat MongoDB.
+
+    Each entry is one bubble (=Rowboat source). Returns ``{success, count,
+    folders: [{name, doc_count, _id}]}``. Filtered by ``ROWBOAT_PROJECT_ID``
+    when set.
+
+    Note (2026-05-07): the source_docs.sourceId field is stored as a *string*
+    while sources._id is an ObjectId — we match by string.
+    Note: source_docs has 1673 'deleted' status entries that the UI still
+    shows, so we count *all* statuses, not only non-deleted.
+    """
+    try:
+        from pymongo import MongoClient
+    except ImportError:
+        return {"success": False, "error": "pymongo not installed"}
+
+    uri = os.environ.get("ROWBOAT_MONGODB_URI", "mongodb://localhost:27017")
+    db_name = os.environ.get("ROWBOAT_MONGODB_DB", "rowboat")
+    project_id = os.environ.get("ROWBOAT_PROJECT_ID", "")
+
+    try:
+        client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+        db = client[db_name]
+        src_filter: Dict[str, Any] = {}
+        if project_id:
+            src_filter["projectId"] = project_id
+        sources = list(db["sources"].find(src_filter, {"_id": 1, "name": 1}).limit(int(limit)))
+
+        # Count source_docs per source. Match sourceId-as-string because
+        # that's how it's stored in source_docs (vs ObjectId in sources).
+        folders = []
+        for s in sources:
+            sid_str = str(s["_id"])
+            count = db["source_docs"].count_documents({"sourceId": sid_str})
+            folders.append({
+                "_id": sid_str,
+                "name": s.get("name", ""),
+                "doc_count": int(count),
+            })
+        folders.sort(key=lambda f: -f["doc_count"])
+        return {"success": True, "count": len(folders), "folders": folders}
+    except Exception as exc:
+        return {"success": False, "error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
+def _rowboat_chat(message: str, context: str = "default",
+                  conversation_id: Optional[str] = None,
+                  timeout: int = 120) -> Dict[str, Any]:
+    """Send a chat message to the Rowboat backend and return its answer.
+
+    This is the read path counterpart to ``rowboat_upload``: ``upload`` pushes
+    a file into the knowledge graph, ``chat`` asks Rowboat a natural-language
+    question whose answer is RAG-augmented over the entire knowledge graph
+    (Notes/Bewerbung/Investor Programs/People/Projects/Topics/etc.).
+
+    Returns ``{success, response, conversation_id, context}``. Conversation IDs
+    are *not* persisted across MCP calls — pass ``conversation_id`` back in if
+    you want to continue a thread within the same skill run.
+
+    Reads ``ROWBOAT_URL`` (default ``http://localhost:3000``), ``ROWBOAT_API_KEY``,
+    ``ROWBOAT_PROJECT_ID`` from env. Graceful failure (not exception) on
+    missing config.
+    """
+    if not message or not isinstance(message, str):
+        return {"success": False, "error": "message must be a non-empty string"}
+
+    rowboat_url = os.environ.get("ROWBOAT_URL", "http://localhost:3000")
+    api_key = os.environ.get("ROWBOAT_API_KEY", "")
+    project_id = os.environ.get("ROWBOAT_PROJECT_ID", "")
+    if not api_key or not project_id:
+        return {
+            "success": False,
+            "skipped": True,
+            "reason": "rowboat not configured",
+            "missing": [k for k in ("ROWBOAT_API_KEY", "ROWBOAT_PROJECT_ID")
+                        if not os.environ.get(k)],
+        }
+
+    try:
+        import requests
+    except ImportError:
+        return {"success": False, "error": "requests not installed"}
+
+    chat_url = f"{rowboat_url.rstrip('/')}/api/v1/{project_id}/chat"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    payload: Dict[str, Any] = {"messages": [{"role": "user", "content": message}]}
+    if conversation_id:
+        payload["conversationId"] = conversation_id
+
+    try:
+        resp = requests.post(chat_url, json=payload, headers=headers, timeout=timeout)
+    except requests.exceptions.ConnectionError:
+        return {"success": False, "error": "connection refused — is Rowboat running on :3100?"}
+    except requests.exceptions.Timeout:
+        return {"success": False, "error": f"timeout after {timeout}s"}
+    except Exception as exc:
+        return {"success": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    if resp.status_code != 200:
+        return {
+            "success": False,
+            "error": f"HTTP {resp.status_code}",
+            "status_code": resp.status_code,
+            "url": chat_url,
+            "response_text": resp.text[:500] if resp.text else "",
+        }
+
+    try:
+        data = resp.json()
+    except Exception as exc:
+        return {"success": False, "error": f"non-JSON response: {exc}", "raw": resp.text[:500]}
+
+    # Walk the turn output backwards to find the assistant's last content.
+    response_text = ""
+    turn = data.get("turn") if isinstance(data, dict) else None
+    if isinstance(turn, dict):
+        for msg in reversed(turn.get("output") or []):
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") == "assistant" and msg.get("content"):
+                response_text = str(msg["content"])
+                break
+
+    return {
+        "success": bool(response_text),
+        "response": response_text,
+        "conversation_id": (data.get("conversationId") if isinstance(data, dict) else None),
+        "context": context,
+        "status_code": resp.status_code,
+    }
 
 
 def _excel_verify_file(file_path: str, expected_cells: Optional[Dict[str, str]] = None,
@@ -1929,6 +2681,167 @@ TOOLS = [
                 "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional tag list, e.g. ['hr','onboarding','2026']."}
             },
             "required": ["file_path"]
+        }
+    ),
+    Tool(
+        name="rowboat_chat",
+        description=(
+            "Ask a natural-language question to the Rowboat HTTP backend "
+            "(RAG-augmented over Notes/Bewerbung/Investor Programs/People/Projects/"
+            "Topics/etc.). Note: as of 2026-05-07 the local Rowboat container "
+            "rejects external API calls with 'Invalid API key' — prefer "
+            "rowboat_search (direct MongoDB) for now. This tool stays here so "
+            "we can switch to it once the auth setup is fixed. Returns "
+            "{success, response, conversation_id}."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "Natural-language question."},
+                "context": {"type": "string", "description": "Optional context tag for telemetry. Default: 'default'."},
+                "conversation_id": {"type": "string", "description": "Optional conversation continuation id."},
+                "timeout": {"type": "integer", "description": "HTTP timeout in seconds. Default 120."}
+            },
+            "required": ["message"]
+        }
+    ),
+    Tool(
+        name="rowboat_search",
+        description=(
+            "Search the Rowboat knowledge base for documents matching a "
+            "substring query. Goes directly against the local MongoDB "
+            "(rowboat.source_docs collection) — fast, no auth needed, returns "
+            "structured results. The 'folder' filter matches against bubble names "
+            "(=sources.name in MongoDB; e.g. 'MiroFish', 'Phase 11', 'Brain'). "
+            "It is NOT the same as the Roarboot UI sidebar (those are a UI "
+            "concept not stored in Mongo). To list available folders run "
+            "rowboat_list_folders first. "
+            "Use this BEFORE xlsx_create_from_data when the Excel should "
+            "contain *real user data* from Rowboat instead of hardcoded "
+            "examples: search → parse → xlsx. "
+            "Returns {success, count, results: [{name, source_name, "
+            "content_excerpt, content_full_length, created_at, _id}]}."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Case-insensitive substring to find in document content or name. Use a single character like 'a' to match all docs in a folder."},
+                "folder": {"type": "string", "description": "Optional substring of bubble/source name (e.g. 'MiroFish', 'Phase 11', 'Brain'). When omitted, searches all bubbles."},
+                "limit": {"type": "integer", "description": "Max number of documents to return. Default 20."}
+            },
+            "required": ["query"]
+        }
+    ),
+    Tool(
+        name="rowboat_list_folders",
+        description=(
+            "List all available bubble/source names in Rowboat. Use this "
+            "before rowboat_search to discover what folders/bubbles are "
+            "available to filter on. Returns {success, count, folders: "
+            "[{name, doc_count, _id}]}."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max number of folders to return. Default 50."}
+            },
+        }
+    ),
+    Tool(
+        name="roarboot_list_folders",
+        description=(
+            "List the top-level folders in the *Roarboot* (Electron app) "
+            "knowledge tree at ~/.rowboot/knowledge/. These are the folders "
+            "you see in the Roarboot sidebar (Bewerbung, Investor Programs, "
+            "Notes, Organizations, People, Projects, Topics, Videos, Voice "
+            "Memos, vibemind-discourse). They are real .md files on disk, "
+            "git-versioned. Different from rowboat_list_folders which lists "
+            "the RAG sources in the rowboat MongoDB. Returns {success, root, "
+            "folders: [{name, file_count, subdir_count}]}."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "root": {"type": "string", "description": "Optional override of the knowledge root. Default: ~/.rowboat/knowledge"}
+            },
+        }
+    ),
+    Tool(
+        name="file_evaluate",
+        description=(
+            "Critically evaluate a generated .xlsx or .docx file against an "
+            "expected intent. A second LLM (default gpt-4o-mini) reads the "
+            "rendered file content + the intent + optional source-data "
+            "description, and returns a structured quality report: "
+            "{score 0-100, issues: [{severity, issue, fix_suggestion}], "
+            "completeness, recommendations, summary}. Use this AFTER "
+            "xlsx_create_from_data / docx_create_from_data to catch "
+            "semantic problems that excel_verify_file misses (wrong row "
+            "counts, hallucinated fields, duplicated entries, "
+            "type mismatches). Best paired with a clear expected_intent "
+            "and source_data_description."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Absolute path to the .xlsx or .docx file."},
+                "expected_intent": {"type": "string", "description": "What the file should contain. E.g. 'List of all job applicants from Bewerbung folder, one row per person, with name/position/email/skills'."},
+                "source_data_description": {"type": "string", "description": "Optional description of the source data the file was generated from (e.g. 'Roarboot Bewerbung folder, 1 .md file with Felix Baumann CV'). Helps the critic judge completeness."},
+                "criteria": {"type": "array", "items": {"type": "string"}, "description": "Optional list of evaluation criteria (German or English). Defaults to a generic set covering completeness/correctness/data-quality/practicality."},
+                "model": {"type": "string", "description": "OpenAI model. Default gpt-4o-mini."}
+            },
+            "required": ["file_path", "expected_intent"]
+        }
+    ),
+    Tool(
+        name="roarboot_ask",
+        description=(
+            "Ask a natural-language question over the Roarboot knowledge "
+            "base (.md files in ~/.rowboat/knowledge/). Reads the most "
+            "recent files (optionally scoped to one folder), packs them "
+            "into a context, and calls OpenAI to produce an answer. This "
+            "is the alternative to rowboat_chat — no container/redis/"
+            "rowboat_agents service needed; uses your OPENAI_API_KEY env. "
+            "Returns {success, answer, files_used, model, tokens}. "
+            "Cheaper and faster than the coordinator looping over "
+            "roarboot_read_knowledge results manually."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "Natural-language question, e.g. 'Welche Skills hat Felix Baumann?'"},
+                "folder": {"type": "string", "description": "Optional folder to scope the answer to (e.g. 'Bewerbung', 'People', 'Projects'). Default: search across all folders."},
+                "max_files": {"type": "integer", "description": "Max number of files to include in context (newest first). Default 10."},
+                "max_chars_per_file": {"type": "integer", "description": "Max chars from each file. Default 4000."},
+                "model": {"type": "string", "description": "OpenAI model. Default gpt-4o-mini (cheap+fast). Options: gpt-4o-mini, gpt-4o, gpt-5.5."}
+            },
+            "required": ["question"]
+        }
+    ),
+    Tool(
+        name="roarboot_read_knowledge",
+        description=(
+            "Read .md files from a Roarboot knowledge folder. Use this "
+            "AFTER roarboot_list_folders to drill into a specific folder. "
+            "Optional 'query' filters by case-insensitive substring match "
+            "against path+content. Use this BEFORE xlsx_create_from_data "
+            "when the Excel should contain *real* user data from Roarboot. "
+            "Examples: folder='Bewerbung' (all Bewerbung entries), "
+            "folder='People' (all people profiles), folder='Projects' "
+            "with query='VibeMind - Brain' (just Brain-Router project files). "
+            "Returns {success, folder, root, count, results: [{path, name, "
+            "content_excerpt, content_full_length, modified_at}]}."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "folder": {"type": "string", "description": "Top-level folder name (e.g. 'Bewerbung', 'People', 'Projects') or subpath ('Projects/VibeMind - Brain Capability Router')."},
+                "query": {"type": "string", "description": "Optional case-insensitive substring filter on path+content."},
+                "name_pattern": {"type": "string", "description": "Optional case-insensitive substring match against FILENAME only. Use '_overview.md' to grab only the overview files of every subfolder."},
+                "limit": {"type": "integer", "description": "Max number of files to return. Default 20."},
+                "root": {"type": "string", "description": "Optional override of knowledge root. Default ~/.rowboat/knowledge"}
+            },
+            "required": ["folder"]
         }
     ),
     Tool(
@@ -3162,6 +4075,48 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
                 file_path=arguments.get("file_path", ""),
                 title=arguments.get("title"),
                 tags=arguments.get("tags"),
+            )
+        elif name == "rowboat_chat":
+            result = _rowboat_chat(
+                message=arguments.get("message", ""),
+                context=arguments.get("context", "default"),
+                conversation_id=arguments.get("conversation_id"),
+                timeout=int(arguments.get("timeout", 120)),
+            )
+        elif name == "rowboat_search":
+            result = _rowboat_search(
+                query=arguments.get("query", ""),
+                folder=arguments.get("folder"),
+                limit=int(arguments.get("limit", 20)),
+            )
+        elif name == "rowboat_list_folders":
+            result = _rowboat_list_folders(limit=int(arguments.get("limit", 50)))
+        elif name == "roarboot_list_folders":
+            result = _roarboot_list_folders(root=arguments.get("root"))
+        elif name == "roarboot_ask":
+            result = _roarboot_ask(
+                question=arguments.get("question", ""),
+                folder=arguments.get("folder"),
+                max_files=int(arguments.get("max_files", 10)),
+                max_chars_per_file=int(arguments.get("max_chars_per_file", 4000)),
+                model=arguments.get("model", "gpt-4o-mini"),
+                root=arguments.get("root"),
+            )
+        elif name == "file_evaluate":
+            result = _file_evaluate(
+                file_path=arguments.get("file_path", ""),
+                expected_intent=arguments.get("expected_intent", ""),
+                source_data_description=arguments.get("source_data_description"),
+                criteria=arguments.get("criteria"),
+                model=arguments.get("model", "gpt-4o-mini"),
+            )
+        elif name == "roarboot_read_knowledge":
+            result = _roarboot_read_knowledge(
+                folder=arguments.get("folder", ""),
+                query=arguments.get("query"),
+                limit=int(arguments.get("limit", 20)),
+                name_pattern=arguments.get("name_pattern"),
+                root=arguments.get("root"),
             )
         elif name == "excel_verify_file":
             result = _excel_verify_file(

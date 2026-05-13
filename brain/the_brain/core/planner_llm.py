@@ -141,23 +141,54 @@ INTENT-TO-CAPABILITY HINTS:
   "fuege idee X hinzu" / "add idea X"                  → idea_add,      arg_kwarg=title,        arg_template=X
   "format idee X als Y"                                → idea_format_<Y>, arg_kwarg=idea_name,  arg_template=X
 
-ONE shape reference (do NOT copy these strings, only the structure):
+DECISION TREE (apply IN ORDER, take FIRST match):
 
-USER_INTENT_PLACEHOLDER → "Erstelle bubble FOO und füge 3 ideen über bar hinzu"
-PLAN:
+  Step 1 — Does the intent contain MULTIPLE distinct verbs (e.g.
+           "create AND add" / "lege AN UND fuege HINZU")?
+            → YES: multi-hop plan (one hop per verb).
+            → NO:  single-hop plan (one hop only). STOP HERE.
+
+  Step 2 — Does the intent ask for "N items"
+           (e.g. "3 ideas", "drei ideen", "5 entries")?
+            → YES: ONE hop with repeat-block.
+            → NO:  ONE plain hop, no repeat.
+
+  Most user intents fall into Step 1=NO + Step 2=NO → ONE plain hop.
+
+SHAPE REFERENCE (copy structure only, NEVER strings):
+
+Single-hop (most common):
 {
   "plan_id": "auto",
-  "intent": "Erstelle bubble FOO und füge 3 ideen über bar hinzu",
-  "rationale": "Two hops: create the bubble, then add 3 ideas via repeat-block.",
-  "estimated_cost_usd": 0.05,
+  "intent": "<echo user intent>",
+  "rationale": "<one short sentence>",
+  "estimated_cost_usd": 0.01,
   "final_synthesis_prompt": "",
   "hops": [
-    {"step_id": "s1", "description": "create bubble FOO", "capability": "bubble_create", "execution_target": null, "arg_kwarg": "title", "arg_template": "FOO", "depends_on": [], "output_var": "bubble", "on_fail": "abort", "timeout_s": 30, "retries": 1, "repeat": null},
-    {"step_id": "s2", "description": "add 3 ideas about bar", "capability": "idea_add", "execution_target": null, "arg_kwarg": "title", "arg_template": "Idea {{loop.index}}: {{item}}", "depends_on": ["s1"], "output_var": "ideas", "on_fail": "continue", "timeout_s": 30, "retries": 1, "repeat": {"items": ["bar concept 1", "bar concept 2", "bar concept 3"]}}
+    {"step_id":"s1","description":"<short>","capability":"<from list>","execution_target":null,"arg_kwarg":"<from hints>","arg_template":"<extracted from intent>","depends_on":[],"output_var":"out","on_fail":"abort","timeout_s":30,"retries":1,"repeat":null}
   ]
 }
 
-REMEMBER: the placeholder above is NOT the user's actual intent. Substitute the user's actual intent from the request and produce a NEW plan that matches it.
+Multi-hop (only when intent has multiple verbs):
+{
+  "plan_id": "auto",
+  "intent": "<echo user intent>",
+  "rationale": "Two hops: <action 1>, then <action 2>.",
+  "estimated_cost_usd": 0.05,
+  "final_synthesis_prompt": "",
+  "hops": [
+    {"step_id":"s1","description":"<verb 1>","capability":"<cap1>","execution_target":null,"arg_kwarg":"<key>","arg_template":"<value>","depends_on":[],"output_var":"r1","on_fail":"abort","timeout_s":30,"retries":1,"repeat":null},
+    {"step_id":"s2","description":"<verb 2>","capability":"<cap2>","execution_target":null,"arg_kwarg":"<key>","arg_template":"<value>","depends_on":["s1"],"output_var":"r2","on_fail":"abort","timeout_s":30,"retries":1,"repeat":null}
+  ]
+}
+
+Repeat (only when intent says "N items"):
+   …a single hop with `repeat: {"items": ["a","b","c"]}` and arg_template "Idea {{loop.index}}: {{item}}".
+
+REMEMBER:
+- `intent` field = the user's exact text. Do NOT rephrase or substitute.
+- `arg_template` = extracted from THE USER'S intent (a name, a title, a topic). Never use shape-reference placeholders like FOO/bar.
+- Default to single-hop when in doubt.
 """
 
 
@@ -262,6 +293,124 @@ class PlannerLLM:
         self.stats["fallback_failures"] += 1
         self._record_latency(t0)
         return None
+
+    # ─── Phase 11.T.3 — Async sibling ─────────────────────────────────────
+    # aplan() lets endpoints await planning without burning a thread.
+    # Same retry/fallback chain as plan(), just dispatcher.adispatch().
+
+    async def aplan(self, intent: str, *, context: Optional[Dict[str, Any]] = None) -> Optional[Plan]:
+        """Async version of plan() — uses adispatch()."""
+        if not intent or not intent.strip():
+            self.stats["last_error"] = "empty intent"
+            return None
+        self.stats["calls"] += 1
+        t0 = time.time()
+        prompt = self._build_prompt(intent, context, retry_errors=None)
+
+        plan = await self._acall_and_parse(prompt, model=self.model)
+        if plan is not None:
+            errs = self._validate(plan)
+            if not errs:
+                self.stats["successes"] += 1
+                self._record_latency(t0)
+                return plan
+            self.stats["validation_errors"] += 1
+            self.stats["retries"] += 1
+            retry_prompt = self._build_prompt(intent, context, retry_errors=errs)
+            plan2 = await self._acall_and_parse(retry_prompt, model=self.model)
+            if plan2 is not None and not self._validate(plan2):
+                self.stats["successes"] += 1
+                self._record_latency(t0)
+                return plan2
+
+        if self.fallback_model and self.fallback_model != self.model:
+            logger.info(
+                f"[planner async] primary {self.model!r} failed, trying fallback "
+                f"{self.fallback_model!r} ({self.stats.get('last_error')!r})"
+            )
+            plan_fb = await self._acall_and_parse(prompt, model=self.fallback_model)
+            if plan_fb is not None and not self._validate(plan_fb):
+                self.stats["successes"] += 1
+                self.stats["fallback_used"] += 1
+                self._record_latency(t0)
+                return plan_fb
+
+        ollama_model = os.environ.get("PLANNER_OLLAMA_FALLBACK", "llama3.1:latest")
+        if ollama_model and ollama_model != self.model and ollama_model != self.fallback_model:
+            logger.info(
+                f"[planner async] both cloud models failed; trying local Ollama "
+                f"{ollama_model!r} as last resort"
+            )
+            plan_ol = await self._acall_and_parse(prompt, model=ollama_model)
+            if plan_ol is not None and not self._validate(plan_ol):
+                self.stats["successes"] += 1
+                self.stats["fallback_used"] += 1
+                self.stats["ollama_fallback_used"] = self.stats.get("ollama_fallback_used", 0) + 1
+                self._record_latency(t0)
+                return plan_ol
+
+        self.stats["fallback_failures"] += 1
+        self._record_latency(t0)
+        return None
+
+    async def _acall_and_parse(self, prompt: Dict[str, str], *, model: Optional[str] = None) -> Optional[Plan]:
+        """Async _call_and_parse — uses dispatcher.adispatch() if available,
+        otherwise falls back to running sync dispatch in a thread."""
+        use_model = model or self.model
+        lower = use_model.lower()
+        if lower.startswith("ollama/") or lower.startswith("llama3") or lower.startswith("phi3") or lower.startswith("qwen2"):
+            tool_name = "ollama_subagent"
+        elif lower.startswith("openai/") or lower.startswith("gpt-") or lower.startswith("o1") or lower.startswith("o3"):
+            tool_name = "openai_subagent"
+        elif lower.startswith("anthropic/") or lower.startswith("claude") or "haiku" in lower or "sonnet" in lower or "opus" in lower:
+            tool_name = "claude_subagent"
+        else:
+            tool_name = "groq_subagent"
+
+        adispatch = getattr(self.dispatcher, "adispatch", None)
+        try:
+            if adispatch is not None:
+                resp = await adispatch(
+                    tool_name,
+                    prompt=prompt["user"],
+                    system=prompt["system"],
+                    model=use_model,
+                    max_tokens=self.max_tokens,
+                    temperature=self.temperature,
+                )
+            else:
+                import asyncio as _asyncio
+                resp = await _asyncio.to_thread(
+                    self.dispatcher.dispatch, tool_name,
+                    prompt=prompt["user"],
+                    system=prompt["system"],
+                    model=use_model,
+                    max_tokens=self.max_tokens,
+                    temperature=self.temperature,
+                )
+        except Exception as e:
+            self.stats["last_error"] = f"dispatch ({tool_name}): {type(e).__name__}: {e}"
+            return None
+        if not resp.get("ok"):
+            self.stats["last_error"] = f"{tool_name} error: {resp.get('error')}"
+            return None
+        text = (resp.get("text") or "").strip()
+        if not text:
+            self.stats["last_error"] = "empty response"
+            return None
+        plan_dict = self._extract_json(text)
+        if plan_dict is None:
+            self.stats["parse_errors"] += 1
+            self.stats["last_error"] = "could not parse JSON from response"
+            return None
+        try:
+            if not plan_dict.get("plan_id") or plan_dict.get("plan_id") in ("auto", "<auto>"):
+                plan_dict["plan_id"] = Plan.make_id()
+            return Plan.from_dict(plan_dict)
+        except Exception as e:
+            self.stats["parse_errors"] += 1
+            self.stats["last_error"] = f"plan dataclass build: {e}"
+            return None
 
     def stats_dict(self) -> Dict[str, Any]:
         s = dict(self.stats)
