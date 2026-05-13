@@ -990,3 +990,75 @@
   validator:
     kind: rule:string_nonempty
     on_fail: report
+
+# ──────────────────────────────────────────────────────────────────────────
+# Phase 11+ — OpenFang-agent dispatch via `openfang:<agent>` execution_target
+# Added 2026-05-13. Bridge: Voice/User → Brain.think → CapRouter → OpenFangExecutor
+# → POST /api/agents/<id>/message. The executor (capability_targets.py) resolves
+# agent_name → agent_id via /api/agents.
+# ──────────────────────────────────────────────────────────────────────────
+
+- capability: coding_task
+  description: "generate edit refactor code, write a python/js/ts/rust function, fix a bug in code, implement a feature, git commit and push, create a github repo, deploy to vercel, build or test code"
+  anchor_phrases:
+    - "write a python script that does X"
+    - "fix the bug in agent_loop"
+    - "refactor this function"
+    - "implement a new feature in the API"
+    - "create a github repo for my project"
+    - "deploy this to vercel"
+    - "schreib mir eine python funktion"
+    - "code mir ein script das X macht"
+  match_patterns:
+    - "(write|create|schreib|erstell)\\s+(a|an|me|ein|eine)?\\s*(python|js|ts|rust|go|java)\\s+(function|class|script|module)"
+    - "(fix|debug)\\s+(the|a)?\\s*(bug|error|issue)\\s+in"
+    - "refactor\\s+(this|the)?\\s*(function|class|file|module)"
+    - "implement\\s+(a|the|new)?\\s*(feature|endpoint|api)"
+    - "(create|setup|init)\\s+(a|my)?\\s*github\\s+repo"
+    - "deploy\\s+(to|on)\\s+vercel"
+    - "(commit|push)\\s+(this|my)?\\s*changes?"
+  execution_target: "openfang:openclaude-coder"
+
+- capability: desktop_skill
+  description: "automate excel word powerpoint outlook chrome desktop apps, fill cells type text click buttons, hr workflows like onboarding offboarding timesheet payroll, anything requiring UI automation on the user's Windows desktop with telegram approval"
+  anchor_phrases:
+    - "fill excel cell A1 with hello"
+    - "open word and write a letter"
+    - "create the hr onboarding checklist"
+    - "fülle die zelle A1 mit hallo"
+    - "öffne excel und mach X"
+    - "erstelle einen stundenzettel"
+    - "klick auf den OK button"
+  match_patterns:
+    - "(fill|set|fülle|setze)\\s+.*\\b(zelle|cell)\\s+[A-Z]\\d+"
+    - "(open|öffne|starte)\\s+(excel|word|powerpoint|outlook|chrome|firefox)"
+    - "(create|erstelle)\\s+.*\\b(stundenzettel|onboarding|offboarding|gehaltsabrechnung|payroll|timesheet)"
+    - "(click|klick)\\s+(on|auf)?\\s+(the|den|die|das)?\\s*\\w+\\s+(button|knopf)"
+    - "type\\s+\\\".+\\\"\\s+in\\s+(the|der|die|das)?\\s*\\w+\\s+(field|feld)"
+    - "screenshot"
+    - "(automate|automatisier)\\s+\\w+"
+  execution_target: "openfang:skill-coordinator"
+
+- capability: browser_automation
+  description: "browse the web, navigate to a url, scrape a page, fill out a web form, click links in browser, take a screenshot of a website, do web research, login to a website, extract data from a webpage"
+  anchor_phrases:
+    - "navigate to https://example.com"
+    - "open the website X and screenshot it"
+    - "fill out the contact form on Y"
+    - "scrape product prices from Z"
+    - "gehe auf die webseite X und klick auf Y"
+    - "such mir im web nach X"
+    - "log dich bei X ein"
+    - "extrahier alle links von dieser seite"
+  match_patterns:
+    - "(navigate|go|open|browse)\\s+(to)?\\s*https?://"
+    - "(scrape|extract|grab)\\s+.*\\b(page|website|webpage|site)"
+    - "(fill|complete)\\s+.*\\b(form|formular)\\b"
+    - "(login|log in|einlog)\\s+(to|in|bei)\\s+\\w+"
+    - "(take|grab)\\s+(a)?\\s*screenshot\\s+of\\s+(the|a)?\\s*(website|page|webpage)"
+    - "(gehe|geh|navigate|öffne)\\s+(zur?|auf|to)\\s+(webseite|website|seite|url)"
+    - "deep research"
+  # NOTE: openclaw agent not yet registered as OpenFang-agent. This cap is
+  # currently a "future" entry — kept for documentation. Once
+  # `openclaw-coder` agent.toml exists and the agent is spawned, this routes.
+  execution_target: "openfang:openclaw-coder"

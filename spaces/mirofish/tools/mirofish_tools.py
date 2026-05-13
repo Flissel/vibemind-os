@@ -954,12 +954,61 @@ def evaluate_bubble_readiness(bubble_name) -> Dict[str, Any]:
     bubble.urgency = ideas_score / 2.5          # 0-10
     bubble.score = bubble.calculate_score()
     bubble.status = "scored"
+
+    # Persist eval-history in metadata so users can track reifegrad over time
+    # without losing prior runs (was lost on every overwrite before).
+    if bubble.metadata is None:
+        bubble.metadata = {}
+    eval_history = bubble.metadata.get("eval_history") or []
+    eval_history.append({
+        "ts": int(time.time()),
+        "total_score": total_score,
+        "prediction": prediction,
+        "per_agent": {k: v.get("score", 0) for k, v in per_agent_scores.items()},
+        "missing_count": len(missing_items),
+        "graph_id": graph_id,
+    })
+    # Cap to last 20 runs to keep metadata bounded.
+    bubble.metadata["eval_history"] = eval_history[-20:]
+    bubble.metadata["last_eval"] = {
+        "ts": int(time.time()),
+        "total_score": total_score,
+        "prediction": prediction,
+        "per_agent_full": per_agent_scores,   # incl. assessment text
+        "missing_items": missing_items,
+    }
     ideas_repo.update(bubble)
 
     # ── Step 7: Auto-create missing items as ideas in the bubble ──
     created_ideas = []
     if missing_items:
         created_ideas = _create_missing_ideas(bubble.id, missing_items)
+
+    # ── Step 8: Auto-sync to Rowboat manifest (Obsidian-readable export) ──
+    # Force-enable publishing for this call regardless of host-process env
+    # (Brain spawns mirofish_tools without loading voice/.env where
+    # ROWBOAT_PUBLISH_ENABLED=true is set — without this the get-publisher
+    # returns _NoOpPublisher and the manifest never lands on disk).
+    try:
+        import os as _os
+        _prev_enabled = _os.environ.get("ROWBOAT_PUBLISH_ENABLED")
+        _os.environ["ROWBOAT_PUBLISH_ENABLED"] = "true"
+        # Force fresh publisher instance — module-level singleton may have
+        # cached _NoOpPublisher from when env was still false.
+        from publishing import _ideas_publisher as _pub_global  # noqa
+        import publishing as _pub_mod
+        _pub_mod._ideas_publisher = None
+        try:
+            from publishing import get_ideas_publisher
+            get_ideas_publisher().publish_bubble(bubble_id=bubble.id)
+            logger.info(f"mirofish.evaluate: Rowboat-synced bubble {bubble.id}")
+        finally:
+            if _prev_enabled is None:
+                _os.environ.pop("ROWBOAT_PUBLISH_ENABLED", None)
+            else:
+                _os.environ["ROWBOAT_PUBLISH_ENABLED"] = _prev_enabled
+    except Exception as e:
+        logger.warning(f"mirofish.evaluate: Rowboat sync failed: {e}")
 
     report_text = _format_readiness_report(
         bubble_name, total_score, prediction, per_agent_scores, missing_items,
@@ -970,12 +1019,15 @@ def evaluate_bubble_readiness(bubble_name) -> Dict[str, Any]:
         "type": "mirofish_result",
         "action": "evaluate_readiness",
         "bubble_name": bubble_name,
+        "bubble_id": bubble.id,
         "total_score": total_score,
         "prediction": prediction,
         "per_agent": per_agent_scores,
         "missing_items": missing_items,
         "created_ideas": created_ideas,
         "graph_id": graph_id,
+        "eval_history_count": len(eval_history),
+        "eval_history": eval_history,  # for side-panel history chart
     })
 
     return {
@@ -987,6 +1039,7 @@ def evaluate_bubble_readiness(bubble_name) -> Dict[str, Any]:
         "per_agent_scores": per_agent_scores,
         "missing_items": missing_items,
         "created_ideas": created_ideas,
+        "eval_run_number": len(eval_history),
     }
 
 
