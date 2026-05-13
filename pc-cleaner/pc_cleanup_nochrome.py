@@ -42,32 +42,62 @@ def clean_dir(path):
 
 def main():
     la = os.environ.get("LOCALAPPDATA", "")
+    appdata = os.environ.get("APPDATA", "")
+    programdata = os.environ.get("PROGRAMDATA", r"C:\ProgramData")
+    windir = os.environ.get("WINDIR", r"C:\Windows")
     home = os.path.expanduser("~")
 
     targets = [
+        # Always-safe user caches
         (os.path.join(la, "Temp"), "User Temp"),
         (os.path.join(la, "pip", "cache"), "pip Cache"),
+        (os.path.join(la, "uv", "cache"), "uv Cache"),
         (os.path.join(la, "npm-cache"), "npm Cache"),
+        (os.path.join(appdata, "npm-cache"), "npm Cache (Roaming)"),
         (os.path.join(la, "pnpm", "store"), "pnpm Store"),
+        (os.path.join(la, "yarn", "Cache"), "Yarn Cache"),
+        (os.path.join(la, "NuGet", "Cache"), "NuGet Cache"),
+        (os.path.join(home, ".cargo", "registry", "cache"), "Cargo Registry Cache"),
+        (os.path.join(home, ".cargo", "registry", "src"), "Cargo Registry Src"),
+        (os.path.join(la, "ms-playwright"), "Playwright Browsers"),
         (os.path.join(home, ".cache"), ".cache"),
         (os.path.join(home, ".pyenv", "pyenv-win", "install_cache"), "pyenv Cache"),
         (os.path.join(la, "CrashDumps"), "Crash Dumps"),
         (os.path.join(la, "Temp", "vscode-stable-user-x64"), "VSCode Update Cache"),
         (os.path.join(la, "Microsoft", "Windows", "Explorer"), "Thumbnail Cache"),
+        (os.path.join(la, "Microsoft", "Edge", "User Data", "Default", "Cache"), "Edge Cache"),
+        (os.path.join(la, "Microsoft", "Edge", "User Data", "Default", "Code Cache"), "Edge Code Cache"),
+        # Windows system-level (require admin — silently skipped if no rights)
+        (os.path.join(windir, "SoftwareDistribution", "Download"), "Windows Update Downloads"),
+        (os.path.join(windir, "Logs", "CBS"), "CBS Logs"),
+        (os.path.join(programdata, "Microsoft", "Windows", "WER", "ReportQueue"), "WER ReportQueue"),
+        (os.path.join(programdata, "Microsoft", "Windows", "WER", "ReportArchive"), "WER ReportArchive"),
     ]
 
     print()
     print("  Cleaning (ohne Chrome)...")
     total = 0
+    admin_failed = []
     for path, name in targets:
         if os.path.exists(path):
             freed, errors = clean_dir(path)
             total += freed
             err = f" ({errors} locked)" if errors else ""
             print(f"    {name:<35} {fmt(freed):>10}{err}")
+            # Detect admin-required folders that mostly failed
+            if errors > 0 and freed == 0 and ("Windows" in path or "ProgramData" in path):
+                admin_failed.append(name)
 
     print()
     print(f"  TOTAL FREED: {fmt(total)}")
+    if admin_failed:
+        print()
+        print("  HINWEIS: Folgende Ordner brauchen Admin-Rechte (uebersprungen):")
+        for n in admin_failed:
+            print(f"     - {n}")
+        print("     -> PowerShell als Admin starten und Skript erneut ausfuehren.")
+    print()
+    print("  Tipp: 'powercfg /h off' (Admin) entfernt hiberfil.sys (~RAM-Groesse).")
     print()
 
 
