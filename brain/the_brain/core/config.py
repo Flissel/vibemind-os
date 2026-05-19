@@ -125,6 +125,19 @@ def qdrant_url() -> str:
     return get_secret("QDRANT_URL", "http://127.0.0.1:16333") or "http://127.0.0.1:16333"
 
 
+def learner_url() -> Optional[str]:
+    """Phase D2: where an inference replica forwards reward/train to.
+
+    Returns the learner's base URL (e.g. ``http://brain-learner:5000``) or
+    ``None`` when unset. ``None`` is the safe default: a mono/learner brain
+    never forwards (it applies locally), and an inference replica with no
+    learner configured falls back to the D1 202 "not applied" behaviour
+    rather than silently losing the signal to a wrong target.
+    """
+    v = (os.environ.get("BRAIN_LEARNER_URL", "") or "").strip().rstrip("/")
+    return v or None
+
+
 # ---------------------------------------------------------------------------
 # Identity (BRAIN_ID / SPACE_ID / BRAIN_ROLE)
 # ---------------------------------------------------------------------------

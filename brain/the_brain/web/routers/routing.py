@@ -25,6 +25,41 @@ def _inference_replica() -> bool:
         return False
 
 
+async def _forward_to_learner(path: str, body: dict) -> JSONResponse:
+    """Phase D2: an inference replica forwards a reward/train POST to the
+    learner so the (single) learner owns all centroid mutation.
+
+    - learner URL unset  → 202 not-applied (D1 behaviour; signal not lost
+      to a wrong target, caller can decide what to do).
+    - learner unreachable → 502 (explicit; caller may retry).
+    Short timeout: reward is fire-and-forget-ish, must not block routing.
+    """
+    try:
+        from core import config as _cfg
+        lurl = _cfg.learner_url()
+    except Exception:
+        lurl = None
+    if not lurl:
+        return JSONResponse(
+            {"ok": False, "role": "inference", "applied": False,
+             "note": "inference replica is read-only; BRAIN_LEARNER_URL unset"},
+            status_code=202)
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.post(f"{lurl}{path}", json=body)
+        return JSONResponse(
+            {"ok": r.status_code == 200, "role": "inference",
+             "forwarded_to": lurl, "learner_status": r.status_code},
+            status_code=200 if r.status_code == 200 else 502)
+    except Exception as e:
+        logger.warning(f"reward forward to learner failed: {e}")
+        return JSONResponse(
+            {"ok": False, "role": "inference", "forwarded_to": lurl,
+             "error": "learner unreachable"},
+            status_code=502)
+
+
 @router.post("/api/cortex/route")
 async def brain_route(request: Request) -> JSONResponse:
     """Fast routing via RadialNetwork + SpaceRoutingHead.
@@ -113,14 +148,12 @@ async def brain_route_reward(request: Request) -> JSONResponse:
     if not routing_id:
         return JSONResponse({"error": "routing_id required"}, status_code=400)
 
-    # Phase D: inference replica does not learn. Report clearly so the
-    # caller can forward to the learner (D2). 202 = accepted-not-applied.
+    # Phase D2: inference replica does not learn — forward to the learner
+    # (or 202 if no learner configured). The learner owns all mutation.
     if _inference_replica():
-        return JSONResponse(
-            {"ok": False, "routing_id": routing_id,
-             "role": "inference", "applied": False,
-             "note": "inference replica is read-only; forward to learner"},
-            status_code=202)
+        return await _forward_to_learner(
+            "/api/cortex/route/reward",
+            {"routing_id": routing_id, "success": success})
 
     applied = routing_head.reward(routing_id, success)
     return JSONResponse({"ok": applied, "routing_id": routing_id})
@@ -151,13 +184,11 @@ async def brain_route_train(request: Request) -> JSONResponse:
     if not user_text or not correct_space:
         return JSONResponse({"error": "user_text and correct_space required"}, status_code=400)
 
-    # Phase D: inference replica does not train (read-only).
+    # Phase D2: inference replica forwards train to the learner.
     if _inference_replica():
-        return JSONResponse(
-            {"ok": False, "trained_space": correct_space,
-             "role": "inference", "applied": False,
-             "note": "inference replica is read-only; forward to learner"},
-            status_code=202)
+        return await _forward_to_learner(
+            "/api/cortex/route/train",
+            {"user_text": user_text, "correct_space": correct_space})
 
     try:
         seed_np = agent_loop.seed_encoder.encode_from_description(user_text[:200])
