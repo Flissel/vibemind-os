@@ -13,6 +13,18 @@ logger = logging.getLogger('brain.routing')
 router = APIRouter()
 
 
+def _inference_replica() -> bool:
+    """Phase D: an inference replica must not apply reward/train locally
+    (the routing-head methods already no-op, but returning an explicit
+    response lets the caller — Bridge/forwarder — know to send it to the
+    learner instead). Fail-safe → False (mono behaves as before)."""
+    try:
+        from core import config as _cfg
+        return not _cfg.is_learner()
+    except Exception:
+        return False
+
+
 @router.post("/api/cortex/route")
 async def brain_route(request: Request) -> JSONResponse:
     """Fast routing via RadialNetwork + SpaceRoutingHead.
@@ -101,6 +113,15 @@ async def brain_route_reward(request: Request) -> JSONResponse:
     if not routing_id:
         return JSONResponse({"error": "routing_id required"}, status_code=400)
 
+    # Phase D: inference replica does not learn. Report clearly so the
+    # caller can forward to the learner (D2). 202 = accepted-not-applied.
+    if _inference_replica():
+        return JSONResponse(
+            {"ok": False, "routing_id": routing_id,
+             "role": "inference", "applied": False,
+             "note": "inference replica is read-only; forward to learner"},
+            status_code=202)
+
     applied = routing_head.reward(routing_id, success)
     return JSONResponse({"ok": applied, "routing_id": routing_id})
 
@@ -129,6 +150,14 @@ async def brain_route_train(request: Request) -> JSONResponse:
         return JSONResponse({"error": "routing not available"}, status_code=503)
     if not user_text or not correct_space:
         return JSONResponse({"error": "user_text and correct_space required"}, status_code=400)
+
+    # Phase D: inference replica does not train (read-only).
+    if _inference_replica():
+        return JSONResponse(
+            {"ok": False, "trained_space": correct_space,
+             "role": "inference", "applied": False,
+             "note": "inference replica is read-only; forward to learner"},
+            status_code=202)
 
     try:
         seed_np = agent_loop.seed_encoder.encode_from_description(user_text[:200])

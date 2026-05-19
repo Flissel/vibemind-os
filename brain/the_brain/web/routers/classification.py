@@ -20,6 +20,16 @@ logger = logging.getLogger('brain.classification')
 router = APIRouter()
 
 
+def _inference_replica() -> bool:
+    """Phase D: inference replicas don't learn (event-centroid reward/train).
+    Fail-safe → False (mono behaves exactly as before)."""
+    try:
+        from core import config as _cfg
+        return not _cfg.is_learner()
+    except Exception:
+        return False
+
+
 def _embed(text: str, sbert) -> torch.Tensor:
     """Encode text via SBERT into a (1, 384) tensor."""
     vec = sbert.encode([text[:200]], convert_to_numpy=True)
@@ -99,6 +109,14 @@ async def brain_classify_reward(request: Request) -> JSONResponse:
     if not routing_id:
         return JSONResponse({"error": "routing_id required"}, status_code=400)
 
+    # Phase D: inference replica is read-only — forward to learner (D2).
+    if _inference_replica():
+        return JSONResponse(
+            {"ok": False, "routing_id": routing_id,
+             "role": "inference", "applied": False,
+             "note": "inference replica is read-only; forward to learner"},
+            status_code=202)
+
     applied = event_head.reward(routing_id, success)
     return JSONResponse({"ok": applied, "routing_id": routing_id})
 
@@ -130,6 +148,14 @@ async def brain_classify_train(request: Request) -> JSONResponse:
         return JSONResponse(
             {"error": "user_text and correct_event_type required"}, status_code=400
         )
+
+    # Phase D: inference replica is read-only — forward to learner (D2).
+    if _inference_replica():
+        return JSONResponse(
+            {"ok": False, "trained_event": correct_event,
+             "role": "inference", "applied": False,
+             "note": "inference replica is read-only; forward to learner"},
+            status_code=202)
 
     try:
         emb = _embed(user_text, sbert)

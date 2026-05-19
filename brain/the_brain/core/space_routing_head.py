@@ -13,6 +13,18 @@ import torch.nn.functional as F
 
 logger = logging.getLogger('brain.space_routing_head')
 
+
+def _is_learner() -> bool:
+    """Phase D: only the learner / a mono brain may mutate or persist
+    space centroids. Inference replicas stay read-only. Fail-safe → True
+    (legacy mono behaviour unchanged for a single brain)."""
+    try:
+        from core import config as _cfg
+        return _cfg.is_learner()
+    except Exception:
+        return True
+
+
 SPACE_NAMES = [
     "ideas", "bubbles", "coding", "desktop", "research",
     "n8n", "agentfarm", "schedule", "roarboot", "minibook",
@@ -163,8 +175,11 @@ class SpaceRoutingHead(nn.Module):
             success: Whether the agent succeeded
             lr: Learning rate for centroid update
         Returns:
-            True if reward was applied, False if routing_id not found
+            True if reward was applied, False if routing_id not found OR
+            this is an inference replica (read-only — Phase D).
         """
+        if not _is_learner():
+            return False  # inference replica: never mutate centroids
         with self._lock:
             rec = self._pending_routes.pop(routing_id, None)
         if rec is None:
@@ -192,6 +207,8 @@ class SpaceRoutingHead(nn.Module):
 
         Returns True if training was applied.
         """
+        if not _is_learner():
+            return False  # inference replica: read-only (Phase D)
         if correct_space not in self.space_names:
             return False
         correct_idx = self.space_names.index(correct_space)
@@ -212,7 +229,13 @@ class SpaceRoutingHead(nn.Module):
     # ------------------------------------------------------------------
 
     def save(self, path: str) -> None:
-        """Persist centroids and space_names to disk."""
+        """Persist centroids and space_names to disk.
+
+        Phase D: only the learner persists (avoids inference replicas
+        racing the learner on a shared checkpoint volume).
+        """
+        if not _is_learner():
+            return
         import os
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         torch.save({
