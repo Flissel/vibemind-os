@@ -418,14 +418,38 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
             state.subagent_dispatcher_error = str(e)
             print(f"  [WARN] SubagentDispatcher unavailable: {e}")
 
+        # ── Phase C4: Tier boundary ──────────────────────────────────────
+        # The 6 periodic engines below WRITE to Qdrant / disk on a timer
+        # (Consolidation, Snapshot, DiscourseAggregator, MirofishKGSync,
+        # SelfAwarenessWatcher, DiscourseMemoryConsolidator). Only one
+        # instance may own these writes or N replicas corrupt shared state.
+        # config.is_learner() is True for mono (default → unchanged) and
+        # learner; False only for inference replicas. The engine OBJECTS are
+        # still constructed (so app.state.* stays populated and the rest of
+        # the code keeps working) — only their .start() background thread is
+        # gated, i.e. an inference replica simply never writes.
+        try:
+            from core import config as _cfg
+            _tier_writers_enabled = _cfg.is_learner()
+            _role = _cfg.brain_role()
+        except Exception:
+            _tier_writers_enabled = True   # fail-safe = legacy behaviour
+            _role = "mono"
+        if not _tier_writers_enabled:
+            print(f"  [TIER] BRAIN_ROLE={_role} — periodic writer threads "
+                  f"(consolidation/snapshot/discourse/mirofish/self-aware) "
+                  f"DISABLED (inference replica: read-only).")
+
         # ConsolidationEngine: Phase L. Episodic -> Semantic.
         state.consolidation_engine = None
         try:
             from core.consolidation_engine import ConsolidationEngine
             ce = ConsolidationEngine(kg, state.subagent_dispatcher)
-            ce.start()
+            if _tier_writers_enabled:
+                ce.start()
             state.consolidation_engine = ce
-            print("  [OK] ConsolidationEngine started (DBSCAN + groq_subagent synth, every 5min)")
+            _st = "started" if _tier_writers_enabled else "constructed (writer disabled: inference)"
+            print(f"  [OK] ConsolidationEngine {_st} (DBSCAN + groq_subagent synth, every 5min)")
         except Exception as e:
             state.consolidation_engine_error = str(e)
             print(f"  [WARN] ConsolidationEngine unavailable: {e}")
@@ -461,9 +485,11 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
                 state_provider=_state_provider,
                 modulation_provider=_modulation_provider,
             )
-            se.start()
+            if _tier_writers_enabled:
+                se.start()
             state.snapshot_engine = se
-            print("  [OK] SnapshotEngine started (every 5min -> brain-state)")
+            _st = "started" if _tier_writers_enabled else "constructed (writer disabled: inference)"
+            print(f"  [OK] SnapshotEngine {_st} (every 5min -> brain-state)")
         except Exception as e:
             state.snapshot_engine_error = str(e)
             print(f"  [WARN] SnapshotEngine unavailable: {e}")
@@ -540,9 +566,11 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
                 dispatcher=state.subagent_dispatcher,
                 cte=state.continuous_thinking,
             )
-            agg.start()
+            if _tier_writers_enabled:
+                agg.start()
             state.discourse_aggregator = agg
-            print("  [OK] DiscourseAggregator started (every 3h, groq+md+kg)")
+            _st = "started" if _tier_writers_enabled else "constructed (writer disabled: inference)"
+            print(f"  [OK] DiscourseAggregator {_st} (every 3h, groq+md+kg)")
         except Exception as e:
             state.discourse_aggregator_error = str(e)
             print(f"  [WARN] DiscourseAggregator unavailable: {e}")
@@ -553,9 +581,11 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
         try:
             from core.mirofish_kg_sync import MirofishKGSync
             mfs = MirofishKGSync(kg)
-            mfs.start()
+            if _tier_writers_enabled:
+                mfs.start()
             state.mirofish_kg_sync = mfs
-            print("  [OK] MirofishKGSync started (Neo4j -> mirofish-kg, 5min)")
+            _st = "started" if _tier_writers_enabled else "constructed (writer disabled: inference)"
+            print(f"  [OK] MirofishKGSync {_st} (Neo4j -> mirofish-kg, 5min)")
         except Exception as e:
             state.mirofish_kg_sync_error = str(e)
             print(f"  [WARN] MirofishKGSync unavailable: {e}")
@@ -773,9 +803,11 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
         try:
             from core.self_awareness_watcher import SelfAwarenessWatcher
             saw = SelfAwarenessWatcher(kg)
-            saw.start()
+            if _tier_writers_enabled:
+                saw.start()
             state.self_awareness_watcher = saw
-            print("  [OK] SelfAwarenessWatcher started (1h tick, hash-based reseed)")
+            _st = "started" if _tier_writers_enabled else "constructed (writer disabled: inference)"
+            print(f"  [OK] SelfAwarenessWatcher {_st} (1h tick, hash-based reseed)")
         except Exception as e:
             state.self_awareness_watcher_error = str(e)
             print(f"  [WARN] SelfAwarenessWatcher unavailable: {e}")
@@ -787,14 +819,16 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
         try:
             from core.discourse_memory_consolidator import DiscourseMemoryConsolidator
             dmc = DiscourseMemoryConsolidator(kg, dispatcher=state.subagent_dispatcher)
-            dmc.start()
+            if _tier_writers_enabled:
+                dmc.start()
             state.discourse_memory_consolidator = dmc
             # Wire into BrainChat so self-queries can recall historical memory.
             if state.brain_chat is not None and hasattr(
                 state.brain_chat, "set_discourse_memory_consolidator"
             ):
                 state.brain_chat.set_discourse_memory_consolidator(dmc)
-            print("  [OK] DiscourseMemoryConsolidator started (6h tick, cross-session meta_topics)")
+            _st = "started" if _tier_writers_enabled else "constructed (writer disabled: inference)"
+            print(f"  [OK] DiscourseMemoryConsolidator {_st} (6h tick, cross-session meta_topics)")
         except Exception as e:
             state.discourse_memory_consolidator_error = str(e)
             print(f"  [WARN] DiscourseMemoryConsolidator unavailable: {e}")
@@ -1101,9 +1135,12 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
             try:
                 from pathlib import Path as _Path
                 from core.space_routing_head import SpaceRoutingHead
+                from core import config as _cfg
                 routing_head = SpaceRoutingHead()
-                # Determine checkpoint path (same dir as EventRoutingHead)
-                _space_ckpt_dir = _Path("data/brain_checkpoints")
+                # Checkpoint path is identity-namespaced (Phase C). With the
+                # default identity this is byte-identical to the legacy
+                # "data/brain_checkpoints" so existing .pt files keep loading.
+                _space_ckpt_dir = _Path(_cfg.checkpoint_dir("brain_checkpoints"))
                 _space_ckpt_dir.mkdir(parents=True, exist_ok=True)
                 _space_ckpt_path = str(_space_ckpt_dir / "space_routing_head.pt")
                 state.space_routing_head_ckpt = _space_ckpt_path
@@ -1146,8 +1183,10 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
                 state.sbert_encoder = sbert
 
                 event_head = EventRoutingHead(embed_dim=384)
-                # Determine checkpoint path
-                _ckpt_dir = _Path("data/brain_checkpoints")
+                # Identity-namespaced checkpoint path (Phase C); legacy-
+                # identical under the default identity.
+                from core import config as _cfg
+                _ckpt_dir = _Path(_cfg.checkpoint_dir("brain_checkpoints"))
                 _ckpt_dir.mkdir(parents=True, exist_ok=True)
                 _ckpt_path = str(_ckpt_dir / "event_routing_head.pt")
                 state.event_routing_head_ckpt = _ckpt_path

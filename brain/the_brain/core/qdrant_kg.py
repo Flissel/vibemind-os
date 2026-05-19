@@ -80,6 +80,25 @@ COLLECTIONS: Dict[str, str] = {
     "self":       "brain-self",        # Phase 10.2 — self-model: capability-confidence over time
 }
 
+# Identity stamping (Phase C). Returns {} for the default identity so every
+# payload stays BYTE-IDENTICAL to before — fields only appear once BRAIN_ID/
+# SPACE_ID are explicitly set (Phase D/E multi-brain). Fail-safe: if the
+# config module can't import, identity stamping is simply a no-op.
+def _identity_payload() -> Dict[str, Any]:
+    try:
+        from core import config as _cfg
+        out: Dict[str, Any] = {}
+        bid = _cfg.brain_id()
+        if bid and bid != _cfg.BRAIN_ID_DEFAULT:
+            out["brain_id"] = bid
+        sid = _cfg.space_id()
+        if sid:
+            out["space_id"] = sid
+        return out
+    except Exception:
+        return {}
+
+
 # Back-compat: legacy single-collection code paths fall back to 'episodic'.
 # This is what old `BRAIN_KG_COLLECTION=brain-kg` users now default to.
 LEGACY_COLLECTION = os.environ.get("BRAIN_KG_COLLECTION", "brain-kg")
@@ -371,6 +390,11 @@ class QdrantKG:
             ("space_hint", qm.PayloadSchemaType.KEYWORD),
             ("bubble_id", qm.PayloadSchemaType.KEYWORD),
             ("created_at", qm.PayloadSchemaType.INTEGER),
+            # Phase C: per-brain / per-space filtering for Phase D/E multi-brain.
+            # Harmless on existing collections (index of an absent field is a
+            # no-op until points carry it).
+            ("brain_id", qm.PayloadSchemaType.KEYWORD),
+            ("space_id", qm.PayloadSchemaType.KEYWORD),
         ]
         for field_name, schema in index_specs:
             try:
@@ -435,6 +459,10 @@ class QdrantKG:
                 "content": text[:2000],
                 "created_at": int(payload_extra.get("created_at", time.time())),
                 "linked": existing_linked or _empty_linked(),
+                # Phase C identity stamp — {} (no-op) for the default identity,
+                # so payloads stay byte-identical until BRAIN_ID/SPACE_ID set.
+                # Placed before payload_extra so an explicit caller value wins.
+                **_identity_payload(),
                 **payload_extra,
             }
             self.client.upsert(
