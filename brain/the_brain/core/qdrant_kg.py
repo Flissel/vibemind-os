@@ -49,7 +49,14 @@ logger = logging.getLogger(__name__)
 # Config
 # ──────────────────────────────────────────────────────────────────────
 
-QDRANT_URL = os.environ.get("QDRANT_URL", "http://127.0.0.1:16333")
+# Phase B3: via central config (Swarm /run/secrets -> env -> .env). The
+# config default is the SAME literal, so this is behaviour-neutral. Fail-safe
+# fallback keeps the module importable if config can't load.
+try:
+    from core import config as _cfg_qd
+    QDRANT_URL = _cfg_qd.qdrant_url()
+except Exception:
+    QDRANT_URL = os.environ.get("QDRANT_URL", "http://127.0.0.1:16333")
 EMBED_MODEL = os.environ.get(
     "BRAIN_KG_EMBED_MODEL",
     "Qwen/Qwen3-Embedding-0.6B",

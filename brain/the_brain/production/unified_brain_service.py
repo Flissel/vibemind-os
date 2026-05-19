@@ -208,10 +208,19 @@ def get_unified_brain() -> ProductionPlanner:
 
                 enable_cognitive_loop = os.getenv("ENABLE_COGNITIVE_LOOP", "false").lower() == "true"
 
+                # Phase B3: resolve via central config (Swarm secret -> env ->
+                # .env). MultiLLMRouter also resolves via config so None would
+                # be harmless, but passing it explicitly keeps the flow clear.
+                try:
+                    from core import config as _cfg
+                    _or_key = _cfg.openrouter_key()
+                except Exception:
+                    _or_key = os.getenv("OPENROUTER_API_KEY")
+
                 unified_brain = ProductionPlanner(
                     session_log_dir="data/logs",
                     user_id="unified_brain",
-                    openrouter_api_key=os.getenv("OPENROUTER_API_KEY"),
+                    openrouter_api_key=_or_key,
                     enable_continuous_learning=True,
                     enable_semantic_coherence=True,
                     embedding_type="hash",

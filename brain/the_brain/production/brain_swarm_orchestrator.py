@@ -490,10 +490,16 @@ if __name__ == "__main__":
 
     async def demo():
         # Initialize orchestrator
+        # Phase B3: central config (Swarm secret -> env -> .env).
+        try:
+            from core import config as _cfg
+            _or_key = _cfg.openrouter_key()
+        except Exception:
+            _or_key = os.getenv("OPENROUTER_API_KEY")
         orchestrator = BrainSwarmOrchestrator(
             session_log_dir="data/logs",
             user_id="demo_user",
-            openrouter_api_key=os.getenv("OPENROUTER_API_KEY")
+            openrouter_api_key=_or_key
         )
 
         # Initialize swarm agents

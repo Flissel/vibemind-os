@@ -184,7 +184,17 @@ class MultiLLMRouter:
             user_id: User ID for memory isolation (optional, can be set per-call)
         """
         import os
-        self.api_key = openrouter_api_key or os.environ.get("OPENROUTER_API_KEY", "")
+        # Phase B3: resolve keys via the central config (Swarm /run/secrets ->
+        # env -> .env). Fail-safe — if config can't import, fall back to the
+        # exact previous os.environ behaviour so boot never breaks.
+        try:
+            from core import config as _cfg
+            _or_key = _cfg.openrouter_key()
+            _groq_key = _cfg.groq_key()
+        except Exception:
+            _or_key = os.environ.get("OPENROUTER_API_KEY")
+            _groq_key = os.environ.get("GROQ_API_KEY")
+        self.api_key = openrouter_api_key or _or_key or ""
         self.default_provider = default_provider
         self.enable_infinite_chat = enable_infinite_chat
         self.user_id = user_id
@@ -194,7 +204,7 @@ class MultiLLMRouter:
 
         # Groq direct API (OpenAI-compatible). Used when a model ID is
         # prefixed with "groq::" — bypasses OpenRouter rate-limits / credits.
-        self.groq_api_key = os.environ.get("GROQ_API_KEY", "")
+        self.groq_api_key = _groq_key or ""
         self.groq_api_url = "https://api.groq.com/openai/v1/chat/completions"
 
         # Supermemory LLM client (lazy initialization)
