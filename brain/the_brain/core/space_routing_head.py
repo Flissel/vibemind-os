@@ -285,6 +285,24 @@ class SpaceRoutingHead(nn.Module):
         """Whether enough training has accumulated to warrant an autosave."""
         return self._train_count_since_save >= every_n
 
+    def maybe_reload(self, path: str) -> bool:
+        """Phase D3: reload centroids from disk if the file changed (mtime).
+        Inference replicas poll this to pick up the learner's save() on a
+        shared volume without restarting. Returns True if reloaded."""
+        import os
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            return False
+        last = getattr(self, "_ckpt_mtime", None)
+        if last is not None and mtime <= last:
+            return False
+        ok = self.load(path)
+        if ok:
+            self._ckpt_mtime = mtime
+            logger.info(f"SpaceRoutingHead reloaded from {path} (mtime changed)")
+        return ok
+
     def cleanup_stale(self, max_age: float = 300.0) -> int:
         """Remove pending routes older than max_age seconds. Returns count removed."""
         cutoff = time.time() - max_age

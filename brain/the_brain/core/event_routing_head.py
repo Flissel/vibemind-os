@@ -672,6 +672,29 @@ class EventRoutingHead(nn.Module):
         """Whether enough training has accumulated to warrant an autosave."""
         return self._train_count_since_save >= every_n
 
+    def maybe_reload(self, path: str) -> bool:
+        """Phase D3: reload centroids from disk IF the file changed since the
+        last load. Used by inference replicas to pick up the learner's
+        periodic save() on a shared volume — without restarting.
+
+        Returns True if a reload actually happened. mtime-cached so a no-op
+        poll is just one os.stat (cheap enough for a ~30s tick). load()
+        itself stays the single source of truth for the parse/validation.
+        """
+        import os
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            return False  # file not there yet — nothing to reload
+        last = getattr(self, "_ckpt_mtime", None)
+        if last is not None and mtime <= last:
+            return False  # unchanged since last (re)load
+        ok = self.load(path)
+        if ok:
+            self._ckpt_mtime = mtime
+            logger.info(f"EventRoutingHead reloaded from {path} (mtime changed)")
+        return ok
+
     # ------------------------------------------------------------------
     # Diagnostics
     # ------------------------------------------------------------------

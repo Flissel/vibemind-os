@@ -1211,6 +1211,48 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
                 state.sbert_encoder = None
                 print(f"  [WARN] EventRoutingHead init failed: {e}")
 
+            # Phase D3: inference replicas poll the shared checkpoint volume
+            # so they pick up the learner's periodic save() WITHOUT a restart.
+            # Only inference runs this tick — a learner/mono brain writes its
+            # own centroids and must not reload them out from under itself.
+            try:
+                from core import config as _cfg
+                _is_inf = not _cfg.is_learner()
+            except Exception:
+                _is_inf = False  # fail-safe: mono/legacy never reloads
+            if _is_inf:
+                import threading as _thr
+                _reload_secs = 30
+                try:
+                    _reload_secs = int(__import__("os").environ.get(
+                        "BRAIN_CKPT_RELOAD_SECS", "30"))
+                except Exception:
+                    pass
+
+                def _ckpt_reload_loop(_state, _interval):
+                    import time as _t
+                    while True:
+                        _t.sleep(_interval)
+                        try:
+                            sh = getattr(_state, "space_routing_head", None)
+                            sp = getattr(_state, "space_routing_head_ckpt", None)
+                            if sh is not None and sp:
+                                sh.maybe_reload(sp)
+                            eh = getattr(_state, "event_routing_head", None)
+                            ep = getattr(_state, "event_routing_head_ckpt", None)
+                            if eh is not None and ep:
+                                eh.maybe_reload(ep)
+                        except Exception as _re:
+                            print(f"  [WARN] ckpt reload tick: {_re}")
+
+                _t = _thr.Thread(
+                    target=_ckpt_reload_loop, args=(state, _reload_secs),
+                    name="ckpt-reload", daemon=True)
+                _t.start()
+                state.ckpt_reload_thread = _t
+                print(f"  [OK] Phase D3 inference ckpt-reload tick "
+                      f"started (every {_reload_secs}s, mtime-gated)")
+
         elif cte is None:
             print("  [--] ContinuousThinking not available, radial_tick not connected")
         else:
