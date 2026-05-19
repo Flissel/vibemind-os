@@ -1,0 +1,63 @@
+# =============================================================================
+# Tahlamus Brain — Phase A containerised core (brain-core)
+# =============================================================================
+# Replaces the native venv Brain Dashboard with a single container that runs
+# the PATCHED clean entrypoint `start_server.py <port>` (passes the app OBJECT
+# to uvicorn — no import-string fork, so NO pyenv-3.11 double-spawn).
+#
+# Why a separate compose file (not docker-compose.yml)?
+#   The legacy docker-compose.yml wires `dashboard` -> web/brain_dashboard_server.py
+#   which DOES NOT EXIST. Keeping this file separate makes Phase A a clean,
+#   revertible step; the Phase B swarm stack supersedes both.
+#
+# Usage (matches Vibemind.debug.ps1 integration in A2):
+#   docker compose --env-file ../../../.env -f docker-compose.brain-core.yml \
+#       -p vibemind-brain up -d
+#
+# Host services the container must reach (Ollama :11434, Qdrant :6730) are
+# resolved via host.docker.internal (extra_hosts) — same pattern as
+# vibemind-os/spaces/desktop/Automation_ui/docker-compose.yml.
+# =============================================================================
+
+services:
+  brain-core:
+    build:
+      # Context = vibemind-os/ so the local `shared/` (vibemind-shared) package
+      # is reachable; vibemind-os/.dockerignore keeps the context lean.
+      context: ../..
+      dockerfile: brain/the_brain/Dockerfile
+    image: vibemind-brain-core:latest
+    container_name: vibemind-brain-core
+    ports:
+      - "5000:5000"
+    environment:
+      # start_server.py reads argv[1] OR BRAIN_PORT (start_server.py:38-49)
+      - BRAIN_PORT=5000
+      - PYTHONUNBUFFERED=1
+      # localhost in .env points at the container itself — rewrite host-bound
+      # infra to host.docker.internal so the container reaches the host's
+      # Qdrant (:6730) and (if used) the Brain URL.
+      - QDRANT_URL=http://host.docker.internal:6730
+      - BRAIN_URL=http://host.docker.internal:5000
+    env_file:
+      # All LLM keys (OPENROUTER/OPENAI/ANTHROPIC/GROQ) + flags come from the
+      # repo .env. The two overrides above win over any same-named .env line
+      # because `environment:` takes precedence over `env_file:`.
+      - ../../../.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Checkpoint persistence — EventRoutingHead/SpaceRoutingHead .pt files,
+      # ctm_checkpoints, snapshots. MUST survive container restarts.
+      - ./data:/app/data
+    command: python start_server.py 5000
+    healthcheck:
+      # Real endpoint confirmed at web/brain_server.py:1425 — the same one
+      # Vibemind.debug.ps1 probes for Gate A.
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      # SBERT + RadialNetwork cold start is ~35s; give generous slack.
+      start_period: 60s
+    restart: unless-stopped
