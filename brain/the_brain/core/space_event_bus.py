@@ -54,7 +54,16 @@ class SpaceEventBus:
             "events_published": 0,
             "events_dropped": 0,
             "subscribers_alive": 0,
+            "auto_refresh_fired": 0,
+            "auto_refresh_coalesced": 0,
         }
+        # Phase 11.U.H — debounce the auto ui.refresh_bubbles. A batch of
+        # mutating events (e.g. 3 idea.create in <1s) must collapse to ONE
+        # refresh, not 3. Without this, every node write triggered a full
+        # renderer canvas reload, and combined with the SSE bridge's ~2s
+        # reconnect storm it produced the runaway auto-routing the user saw.
+        self._last_refresh_ts: float = 0.0
+        self._refresh_min_interval_s: float = 2.5
 
     def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Set the asyncio loop on which subscriber-queues live (the FastAPI loop)."""
@@ -124,19 +133,35 @@ class SpaceEventBus:
         # _AUTO_REFRESH_TRIGGERS set).
         eid = event.get("event_id", "")
         if eid in self._AUTO_REFRESH_TRIGGERS:
-            try:
-                self.publish({
-                    "event_id": "ui.refresh_bubbles",
-                    "params": {
-                        "trigger": eid,
-                        "trigger_seq": event["_seq"],
-                    },
-                    "ok": True,
-                    "result": "auto-resync after " + eid,
-                    "source": "space_event_bus/auto_refresh",
-                })
-            except Exception:
-                pass
+            now = time.time()
+            with self._lock:
+                elapsed = now - self._last_refresh_ts
+                if elapsed >= self._refresh_min_interval_s:
+                    self._last_refresh_ts = now
+                    fire = True
+                else:
+                    fire = False
+                    self.stats["auto_refresh_coalesced"] += 1
+            if fire:
+                self.stats["auto_refresh_fired"] += 1
+                try:
+                    self.publish({
+                        "event_id": "ui.refresh_bubbles",
+                        "params": {
+                            "trigger": eid,
+                            "trigger_seq": event["_seq"],
+                        },
+                        "ok": True,
+                        "result": "auto-resync after " + eid,
+                        "source": "space_event_bus/auto_refresh",
+                    })
+                except Exception:
+                    pass
+            # When coalesced we deliberately drop the refresh: the renderer
+            # already pulls the bubble list on the FIRST refresh of the
+            # window, and in-place canvas refresh covers the open bubble.
+            # A trailing-edge timer would re-introduce a late surprise
+            # refresh — not worth the complexity here.
 
         return {"ok": True, "seq": event["_seq"]}
 

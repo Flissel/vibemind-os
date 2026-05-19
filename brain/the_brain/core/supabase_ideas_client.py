@@ -167,6 +167,88 @@ class SupabaseIdeasClient:
             params["linked_idea_id"] = "is.null"
         return await self._request("GET", "/canvas_nodes", params=params) or []
 
+    async def create_canvas_node(
+        self,
+        bubble_id: str,
+        title: str,
+        content: str = "",
+        *,
+        node_type: str = "note",
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Insert a node into a bubble's canvas. Idempotent on (bubble, title):
+        if a node with the same title already exists in this bubble it is
+        returned untouched instead of creating a duplicate.
+
+        Columns mirror the live schema (verified against a real E-Ticketing
+        node): id, node_type, title, content, x, y, linked_idea_id, metadata.
+        Voice's canvas_manager and the renderer key off linked_idea_id +
+        title; metadata.width/height keep the 3D box sized like every other
+        node.
+        """
+        bid = (bubble_id or "").strip()
+        t = (title or "").strip()
+        if not bid or not t:
+            return None
+        # Dedup: same title already in this bubble → return it, don't insert.
+        existing = await self._request(
+            "GET", "/canvas_nodes",
+            params={
+                "select": "*",
+                "linked_idea_id": f"eq.{bid}",
+                "title": f"ilike.{t}",
+                "limit": "1",
+            },
+        )
+        if existing:
+            return existing[0]
+        # Spread new nodes deterministically so they don't all stack at 0,0.
+        # Voice re-layouts on enter anyway; this is just a sane initial spot.
+        import random as _random
+        node = {
+            "id": uuid.uuid4().hex[:8],
+            "node_type": node_type,
+            "title": t,
+            "content": content or t,
+            "x": int(x) if x is not None else _random.randint(120, 900),
+            "y": int(y) if y is not None else _random.randint(80, 600),
+            "linked_idea_id": bid,
+            "metadata": {"width": 200.0, "height": 100.0},
+        }
+        result = await self._request(
+            "POST", "/canvas_nodes",
+            json=node, prefer="return=representation",
+        )
+        if result:
+            self.stats["nodes_created"] = self.stats.get("nodes_created", 0) + 1
+            return result[0] if isinstance(result, list) and result else node
+        return None
+
+    async def update_canvas_node(
+        self, node_id: str, fields: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """PATCH a node by id. `fields` is a whitelist-checked partial
+        (title/content/summary/x/y/node_type/metadata). Returns the updated
+        row or None."""
+        nid = (node_id or "").strip()
+        if not nid or not isinstance(fields, dict) or not fields:
+            return None
+        allowed = {"title", "content", "summary", "x", "y",
+                   "node_type", "metadata"}
+        patch = {k: v for k, v in fields.items() if k in allowed}
+        if not patch:
+            return None
+        result = await self._request(
+            "PATCH", "/canvas_nodes",
+            params={"id": f"eq.{nid}"},
+            json=patch, prefer="return=representation",
+        )
+        if result:
+            self.stats["nodes_updated"] = self.stats.get("nodes_updated", 0) + 1
+            return result[0] if isinstance(result, list) and result else True
+        return None
+
     # ── canvas_edges ──────────────────────────────────────────────────────
 
     async def list_edges(
@@ -255,3 +337,262 @@ class SupabaseIdeasClient:
                 "limit": str(limit),
             },
         ) or []
+
+    async def get_idea(self, idea_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch a single idea (bubble) row by id."""
+        nid = (idea_id or "").strip()
+        if not nid:
+            return None
+        hits = await self._request(
+            "GET", "/ideas",
+            params={"select": "*", "id": f"eq.{nid}", "limit": "1"},
+        )
+        return hits[0] if hits else None
+
+    async def find_bubble_by_title(
+        self, title: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve a top-level bubble by exact (case-insensitive) title."""
+        t = (title or "").strip()
+        if not t:
+            return None
+        hits = await self._request(
+            "GET", "/ideas",
+            params={
+                "select": "id,title,parent_id,score,status,metadata",
+                "title": f"ilike.{t}",
+                "parent_id": "is.null",
+                "limit": "1",
+            },
+        )
+        return hits[0] if hits else None
+
+    async def update_idea_eval(
+        self,
+        idea_id: str,
+        ai_eval: Dict[str, Any],
+        score: float,
+        *,
+        status: str = "scored",
+    ) -> Optional[Dict[str, Any]]:
+        """Merge an ai_eval block into ideas.metadata and set score/status.
+
+        Reads the current metadata first so we never clobber sibling keys
+        (impact/novelty/position/eval_history/last_eval). Mirrors exactly
+        what the spaces-ideas evaluate_bubble_evolution path used to write,
+        so the renderer's `bubble_evolution_scored` handler + DB-fallback
+        keep working unchanged.
+        """
+        nid = (idea_id or "").strip()
+        if not nid or not isinstance(ai_eval, dict):
+            return None
+        row = await self.get_idea(nid)
+        meta = dict((row or {}).get("metadata") or {})
+        meta["ai_eval"] = ai_eval
+        # Keep a small rolling eval_history so trend is visible.
+        hist = list(meta.get("eval_history") or [])
+        hist.append({
+            "ts": int(__import__("time").time()),
+            "score": round(float(score), 1),
+            "dims": {k: ai_eval.get(k) for k in
+                     ("completeness", "structure", "actionability", "depth")},
+        })
+        meta["eval_history"] = hist[-20:]
+        patch = {
+            "metadata": meta,
+            "score": round(float(score), 1),
+            "status": status,
+        }
+        result = await self._request(
+            "PATCH", "/ideas",
+            params={"id": f"eq.{nid}"},
+            json=patch, prefer="return=representation",
+        )
+        if result:
+            self.stats["evals_written"] = self.stats.get("evals_written", 0) + 1
+            return result[0] if isinstance(result, list) and result else True
+        return None
+
+    # ── Phase 11.U.H — generic CRUD for the full-cap migration ──────────
+    # These back the 36 capabilities that used to call direct:spaces.* (a
+    # code path that does not exist in the Brain container). Everything is
+    # REST against Supabase — the single source of truth.
+
+    async def create_bubble(
+        self, title: str, *, description: str = "",
+        tags: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Insert a top-level bubble (ideas row, parent_id NULL).
+        Idempotent on title — returns the existing one if present."""
+        t = (title or "").strip()
+        if not t:
+            return None
+        existing = await self.find_bubble_by_title(t)
+        if existing:
+            return existing
+        row = {
+            "id": uuid.uuid4().hex[:8],
+            "title": t,
+            "description": (description or "").strip(),
+            "parent_id": None,
+            "score": 0,
+            "status": "active",
+            "source": "brain",
+            "tags": tags or [],
+            "metadata": {},
+        }
+        result = await self._request(
+            "POST", "/ideas", json=row, prefer="return=representation",
+        )
+        if result:
+            self.stats["bubbles_created"] = self.stats.get("bubbles_created", 0) + 1
+            return result[0] if isinstance(result, list) and result else row
+        return None
+
+    async def list_top_bubbles(
+        self, *, limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        return await self._request(
+            "GET", "/ideas",
+            params={
+                "select": "id,title,score,status,parent_id",
+                "parent_id": "is.null",
+                "order": "title",
+                "limit": str(limit),
+            },
+        ) or []
+
+    async def find_bubbles_like(
+        self, query: str, *, limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        q = (query or "").strip()
+        if not q:
+            return await self.list_top_bubbles(limit=limit)
+        return await self._request(
+            "GET", "/ideas",
+            params={
+                "select": "id,title,score,status",
+                "title": f"ilike.*{q}*",
+                "parent_id": "is.null",
+                "limit": str(limit),
+            },
+        ) or []
+
+    async def update_idea(
+        self, idea_id: str, fields: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """PATCH an ideas row (whitelist-checked)."""
+        nid = (idea_id or "").strip()
+        if not nid or not isinstance(fields, dict) or not fields:
+            return None
+        allowed = {"title", "description", "status", "score",
+                   "tags", "metadata", "parent_id"}
+        patch = {k: v for k, v in fields.items() if k in allowed}
+        if not patch:
+            return None
+        result = await self._request(
+            "PATCH", "/ideas",
+            params={"id": f"eq.{nid}"},
+            json=patch, prefer="return=representation",
+        )
+        return (result[0] if isinstance(result, list) and result else True) \
+            if result else None
+
+    async def delete_idea_row(self, idea_id: str) -> bool:
+        nid = (idea_id or "").strip()
+        if not nid:
+            return False
+        ok = await self._request(
+            "DELETE", "/ideas", params={"id": f"eq.{nid}"},
+        )
+        return ok is not None and ok is not False
+
+    async def bubble_node_stats(
+        self, bubble_id: str,
+    ) -> Dict[str, Any]:
+        """Count + node-type breakdown + edge count for a bubble."""
+        nodes = await self.list_canvas_nodes_in_bubble(bubble_id, limit=1000)
+        full: List[Dict[str, Any]] = []
+        for n in nodes[:1000]:
+            full.append(n)
+        types: Dict[str, int] = {}
+        for n in full:
+            nt = n.get("node_type") or "note"
+            types[nt] = types.get(nt, 0) + 1
+        edges = await self.list_edges(limit=1000)
+        node_ids = {n["id"] for n in full}
+        edge_ct = sum(
+            1 for e in edges
+            if e.get("from_node_id") in node_ids
+            or e.get("to_node_id") in node_ids
+        )
+        return {
+            "node_count": len(full),
+            "by_type": types,
+            "edge_count": edge_ct,
+        }
+
+    async def find_node_by_title(
+        self, title: str, *, bubble_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve a single canvas node by title, optionally scoped to a
+        bubble. Returns the full row."""
+        t = (title or "").strip()
+        if not t:
+            return None
+        params = {"select": "*", "title": f"ilike.{t}", "limit": "1"}
+        if bubble_id:
+            params["linked_idea_id"] = f"eq.{bubble_id}"
+        hits = await self._request("GET", "/canvas_nodes", params=params)
+        if hits:
+            return hits[0]
+        # fall back to substring
+        params["title"] = f"ilike.*{t}*"
+        hits = await self._request("GET", "/canvas_nodes", params=params)
+        return hits[0] if hits else None
+
+    async def delete_canvas_node(self, node_id: str) -> bool:
+        nid = (node_id or "").strip()
+        if not nid:
+            return False
+        # remove dangling edges first
+        await self._request(
+            "DELETE", "/canvas_edges",
+            params={"from_node_id": f"eq.{nid}"},
+        )
+        await self._request(
+            "DELETE", "/canvas_edges",
+            params={"to_node_id": f"eq.{nid}"},
+        )
+        ok = await self._request(
+            "DELETE", "/canvas_nodes", params={"id": f"eq.{nid}"},
+        )
+        return ok is not None and ok is not False
+
+    async def format_canvas_node(
+        self, node_id: str, fmt: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Set a node's format_schema.type + last_formatted. The renderer
+        re-renders on the realtime UPDATE. Content stays; the visual
+        format flips. Stores the previous content_json for revert."""
+        node = await self.get_canvas_node(node_id)
+        if node is None:
+            return None
+        prev = node.get("content_json") or {"text": node.get("content", ""),
+                                            "type": node.get("node_type", "note")}
+        import time as _t
+        patch = {
+            "format_schema": {"type": fmt},
+            "content_json": {"type": fmt, "title": node.get("title", ""),
+                             "text": node.get("content", "")},
+            "previous_content_json": prev,
+            "last_formatted": __import__("datetime").datetime.utcnow()
+            .isoformat() + "+00:00",
+        }
+        result = await self._request(
+            "PATCH", "/canvas_nodes",
+            params={"id": f"eq.{node_id}"},
+            json=patch, prefer="return=representation",
+        )
+        return (result[0] if isinstance(result, list) and result else True) \
+            if result else None

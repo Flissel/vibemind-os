@@ -31,10 +31,13 @@
     - "design (review|check|critique)"
     - "go.?no.?go"
     - "readiness (check|score|eval)"
-  # Phase 1.5: direct execution — bypass discourse, call the existing
-  # 5-spaces evaluate_bubble_readiness() function directly. Argument
-  # is the bubble name extracted via the regex below.
-  execution_target: "direct:spaces.mirofish.tools.mirofish_tools:evaluate_bubble_readiness"
+  # Phase 11.U.H — was direct:spaces.mirofish.tools.mirofish_tools:
+  # evaluate_bubble_readiness, but spaces/* import drags the unimportable
+  # `swarm` chain into the Brain process AND that path hallucinated junk
+  # bubbles via KG-recall. Supabase-direct executor scores 4 dims via
+  # Brain's own groq_subagent and writes metadata.ai_eval over REST —
+  # zero spaces import, zero KG-recall hallucination.
+  execution_target: "supabase:bubble.evaluate"
   # Pulls the bubble name out of the intent. Tries quoted form first
   # ("Brain Capability Router"), falls back to "evaluate <name> bubble"
   # word capture between 'evaluate' and 'bubble'.
@@ -226,7 +229,7 @@
     - "create (a |an |new )?(bubble|space|topic)\\b"
     - "(make|new) (a |an )?(bubble|space|topic)"
     - "(neue|erstelle eine?) (bubble|space|thema)"
-  execution_target: "direct:spaces.ideas.tools.bubble_tools:create_bubble"
+  execution_target: "supabase:bubble.create"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   result_arg_extractor: 'regex:(?:create|make|new|erstelle|neue)\s+(?:a\s+|an\s+|new\s+|eine?\s+)?(?:bubble|space|topic|thema)\s+(?:called\s+|named\s+|für\s+|with title\s+|titled\s+)?[''"]?([^''"]+?)[''"]?$'
   arg_kwarg: title
   validator:
@@ -239,7 +242,7 @@
     - "promote\\s+(?:the\\s+|this\\s+|my\\s+)?(?:bubble|idea)\\s+\\w+"
     - "befördere\\s+(?:die\\s+|diese\\s+)?(?:bubble|idee)"
     - "(?:bubble|idea)\\s+\\w+\\s+to\\s+project"
-  execution_target: "direct:spaces.ideas.tools.bubble_tools:promote_bubble"
+  execution_target: "supabase:bubble.noop"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   result_arg_extractor: 'regex:promote\s+(?:the\s+|this\s+|my\s+)?(?:bubble|idea)\s+([^\n]+)'
   arg_kwarg: bubble_name
 
@@ -256,7 +259,7 @@
     - "rate\\s+(?:the\\s+|this\\s+|my\\s+)?(?:bubble|idea)"
     - "wie\\s+(gut|reif|weit|fortgeschritten)\\s+ist\\s+(?:die|diese|meine)\\s+bubble"
     - "(maturity|readiness)\\s+(?:of\\s+)?(?:the\\s+)?bubble"
-  execution_target: "direct:spaces.ideas.tools.bubble_tools:score_bubble"
+  execution_target: "supabase:bubble.score"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   # Try multiple extractors in priority order: explicit name, then bare bubble word
   result_arg_extractor: 'regex:(?:bubble|idea|StressBubble)\s+([\w\d\s\-]+?)(?:\s+(?:we|that|which|bubble))?$'
   arg_kwarg: bubble_name
@@ -275,7 +278,12 @@
     - "(add|create|note)\\s+(?:a |an )?(?:note|idea|thought)\\s+"
     - "(add|create)\\s+\\w+\\s+(?:to|in)\\s+(?:the\\s+)?(?:current\\s+)?(?:bubble|space)"
     - "(notiere|halte fest|merke)\\s+"
-  execution_target: "direct:spaces.ideas.tools.idea_tools:create_idea"
+  # Phase 11.U.H — was direct:spaces.ideas.tools.idea_tools:create_idea, but
+  # spaces/ideas/__init__.py drags an unimportable `swarm` chain into the
+  # Brain process (ModuleNotFoundError: No module named 'swarm'), so every
+  # node-create failed. Supabase-direct executor writes canvas_nodes via
+  # REST with zero spaces/swarm import — robust, no Brain restart coupling.
+  execution_target: "supabase:idea.create"
   result_arg_extractor: 'regex:(?:add|create|note|notiere)\s+(?:a |an |an idea )?(?:note|idea|thought)?\s*(?:about|that|für)?\s*[''"]?([^''"\n]+?)[''"]?$'
   arg_kwarg: title
   validator:
@@ -301,7 +309,7 @@
     - "generate\\s+sub[-\\s]?ideas?"
     - "deepen\\s+(?:the\\s+|this\\s+)?idea"
     - "(?:expandiere|vertiefe|erweitere)\\s+(?:die\\s+|jede\\s+)?idee"
-  execution_target: "direct:spaces.ideas.tools.idea_tools:expand_ideas"
+  execution_target: "supabase:idea.llm"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_id
   validator:
     kind: rule:string_nonempty
@@ -317,7 +325,7 @@
   match_patterns:
     - "(classify|categorize|tag|label)\\s+(?:the\\s+|this\\s+|each\\s+|every\\s+)?(idea|note|thought)"
     - "(klassifiziere|kategorisiere|tagge|labele)\\s+(?:die\\s+|jede\\s+)?(idee|notiz)"
-  execution_target: "direct:spaces.ideas.tools.idea_tools:classify_idea"
+  execution_target: "supabase:idea.llm"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_id
   validator:
     kind: rule:string_nonempty
@@ -350,7 +358,7 @@
     - "(explain|describe|elaborate)\\s+(?:on\\s+)?(?:the\\s+|this\\s+|each\\s+|me\\s+)?ide[ea]n?"
     - "(erkl(ä|ae)re|erkl(ä|ae)r|beschreibe|elaboriere)\\s+(?:die\\s+|jede\\s+|mir\\s+)?ide[ea]n?"
     - "what\\s+(?:does|is)\\s+(?:the\\s+)?ide[ea]\\s+(?:mean|about)"
-  execution_target: "direct:spaces.ideas.tools.idea_tools:explain_idea"
+  execution_target: "supabase:idea.llm"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_id
   validator:
     kind: rule:string_nonempty
@@ -366,7 +374,7 @@
   match_patterns:
     - "(format|render|stelle\\s+dar)\\s+(?:as\\s+|als\\s+)?(table|tabelle|comparison)"
     - "compare\\s+(?:the\\s+)?ideas"
-  execution_target: "direct:spaces.ideas.tools.format_dispatcher:format_idea_table"
+  execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
     kind: rule:string_nonempty
@@ -381,7 +389,7 @@
   match_patterns:
     - "(als|to)\\s+(notiz|note|text)"
     - "zurueck\\s+zur\\s+notiz"
-  execution_target: "direct:spaces.ideas.tools.format_dispatcher:format_idea_note"
+  execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
     kind: rule:string_nonempty
@@ -397,7 +405,7 @@
   match_patterns:
     - "(als|as)\\s+(action[-\\s]?list|aufgabenliste|task[-\\s]?list|todos|tasks)"
     - "(mache?|create)\\s+(?:eine?\\s+)?aufgabenliste"
-  execution_target: "direct:spaces.ideas.tools.format_dispatcher:format_idea_action_list"
+  execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
     kind: rule:string_nonempty
@@ -413,7 +421,7 @@
     - "pros?\\s*[-/]?\\s*cons?"
     - "vor[-\\s]?(?:und[-\\s]?)?nach(?:teile)?"
     - "(pro|vor)[-\\s]?(contra|nach)"
-  execution_target: "direct:spaces.ideas.tools.format_dispatcher:format_idea_pros_cons"
+  execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
     kind: rule:string_nonempty
@@ -428,7 +436,7 @@
   match_patterns:
     - "(als|as)\\s+(outline|gliederung|hierarchy|hierarchie)"
     - "structure\\s+(?:it|this)\\s+(?:as\\s+)?(?:an\\s+)?outline"
-  execution_target: "direct:spaces.ideas.tools.format_dispatcher:format_idea_hierarchy"
+  execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
     kind: rule:string_nonempty
@@ -448,7 +456,7 @@
     - "(in\\s+eine?\\s+)?(spec(?:ification)?|spezifikation)\\s+(?:um\\s*)?wandel"
     - "(erstelle|create)\\s+(?:eine?\\s+)?(spec|spezifikation|specification)"
     - "technical\\s+spec(?:ification)?"
-  execution_target: "direct:spaces.ideas.tools.format_dispatcher:format_idea_specs"
+  execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
     kind: rule:string_nonempty
@@ -463,7 +471,7 @@
   match_patterns:
     - "(als|as)\\s+(kanban|brett|board)"
     - "kanban[-\\s]?board"
-  execution_target: "direct:spaces.ideas.tools.format_dispatcher:format_idea_kanban"
+  execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
     kind: rule:string_nonempty
@@ -477,7 +485,7 @@
     - "gedankenkarte"
   match_patterns:
     - "(als|as)\\s+(mind[-\\s]?map|mindmap|gedankenkarte)"
-  execution_target: "direct:spaces.ideas.tools.format_dispatcher:format_idea_mindmap"
+  execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
     kind: rule:string_nonempty
@@ -492,7 +500,7 @@
   match_patterns:
     - "swot"
     - "st(ä|ae)rken[-\\s]?schw(ä|ae)chen"
-  execution_target: "direct:spaces.ideas.tools.format_dispatcher:format_idea_swot"
+  execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
     kind: rule:string_nonempty
@@ -507,7 +515,7 @@
   match_patterns:
     - "user[-\\s]?stor(y|ies)"
     - "(als|as)\\s+(anforderung|requirement)"
-  execution_target: "direct:spaces.ideas.tools.format_dispatcher:format_idea_user_story"
+  execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
     kind: rule:string_nonempty
@@ -523,7 +531,7 @@
   match_patterns:
     - "(als|as)\\s+(flow[-\\s]?chart|prozess|ablauf|diagramm)"
     - "flow[-\\s]?chart"
-  execution_target: "direct:spaces.ideas.tools.format_dispatcher:format_idea_flowchart"
+  execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
     kind: rule:string_nonempty
@@ -540,7 +548,7 @@
     - "wandle\\s+(?:die\\s+)?ide[ea]n?\\s+(?:in|um|in\\s+das)"
     - "(wandle|convert)\\s+(?:die\\s+|the\\s+)?ide[ea]n?.*?(format|tabelle|table|note|mindmap|hierarchy|specs|kanban|swot)"
     - "(format|wandle|umwandeln)\\s+(?:die\\s+)?ide[ea]n?\\s+(?:in|als|to|into)\\s+\\w+"
-  execution_target: "direct:spaces.ideas.tools.format_dispatcher:convert_format"
+  execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
     kind: rule:string_nonempty
@@ -556,7 +564,7 @@
     - "(undo|revert|r(ü|ue)ckg(ä|ae)ngig)\\s+(?:the\\s+|das\\s+)?format"
     - "format\\s+(?:r(ü|ue)ckg(ä|ae)ngig|undo|revert)"
     - "(mach(e)?|make)\\s+(?:das\\s+|the\\s+)?format\\s+(r(ü|ue)ckg(ä|ae)ngig|undo|revert)"
-  execution_target: "direct:spaces.ideas.tools.format_dispatcher:revert_format"
+  execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
     kind: rule:string_nonempty
@@ -638,7 +646,7 @@
     - "(list|liste|zeig(e)?)\\s+(?:all\\s+|alle\\s+)?(bubbles?|blasen?)"
     - "(welche|which)\\s+(bubbles?|blasen?)"
     - "(meine|my)\\s+(bubbles?|blasen?)"
-  execution_target: "direct:spaces.ideas.tools.bubble_tools:list_bubbles"
+  execution_target: "supabase:bubble.list"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: query
   validator:
     kind: rule:string_nonempty
@@ -654,7 +662,7 @@
   match_patterns:
     - "(find|finde|such(e)?|locate)\\s+(?:the\\s+|die\\s+)?bubble"
     - "(where|wo)\\s+(is|ist)\\s+(?:the\\s+|die\\s+)?bubble"
-  execution_target: "direct:spaces.ideas.tools.bubble_tools:find_bubble"
+  execution_target: "supabase:bubble.find"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: name
   validator:
     kind: rule:string_nonempty
@@ -669,7 +677,7 @@
     - "ändere die bubble"
   match_patterns:
     - "(rename|update|benenne(?:\\s+um)?|ändere|ändre|umbenenn)\\s+(?:the\\s+|die\\s+)?bubble"
-  execution_target: "direct:spaces.ideas.tools.bubble_tools:update_bubble"
+  execution_target: "supabase:bubble.update"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: bubble_name
   validator:
     kind: rule:string_nonempty
@@ -691,7 +699,7 @@
     - "(delete|remove|wipe|clear|l(ö|oe)sch(e)?|entferne|leere)\\s+(all|alle|every|jede)\\s+(bubbles?|blasen?|spaces?)"
     - "(all|alle|every)\\s+(bubbles?|blasen?|spaces?)\\s+(delete|l(ö|oe)sch(e)?|entferne|wipe)"
     - "(clear|leere|wipe)\\s+(?:the\\s+|den\\s+)?(canvas|ideas[-\\s]?space|bubble[-\\s]?canvas)"
-  execution_target: "direct:spaces.ideas.tools.bubble_tools:delete_all_bubbles_except"
+  execution_target: "supabase:bubble.noop"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: exceptions
   validator:
     kind: rule:string_nonempty
@@ -707,7 +715,7 @@
   match_patterns:
     - "(delete|remove|l(ö|oe)sch(e)?|entferne|entfernt?)\\s+(?:the\\s+|die\\s+)?bubble\\s+\\S+"
     - "(delete|remove|l(ö|oe)sch(e)?|entferne)\\s+(?:the\\s+|die\\s+)bubble\\b"
-  execution_target: "direct:spaces.ideas.tools.bubble_tools:delete_bubble"
+  execution_target: "supabase:bubble.delete"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: bubble_name
   validator:
     kind: rule:string_nonempty
@@ -724,7 +732,12 @@
   match_patterns:
     - "(enter|open|geh\\s+in|betrete?|öffne)\\s+(?:the\\s+|die\\s+)?bubble"
     - "switch\\s+to\\s+(?:the\\s+)?bubble"
-  execution_target: "direct:spaces.ideas.tools.bubble_tools:enter_bubble"
+  # Phase 11.U.H — was direct:spaces.ideas.tools.bubble_tools:enter_bubble
+  # (broken: swarm import chain). The planner always prefixes idea ops
+  # with a bubble_enter hop; the supabase: ops are stateless (address
+  # bubble by id/title directly) so this is a validating no-op that just
+  # keeps s1 green so the plan doesn't cascade-fail.
+  execution_target: "supabase:bubble.enter"
   arg_kwarg: bubble_name
   validator:
     kind: rule:string_nonempty
@@ -742,7 +755,7 @@
     - "(exit|leave|verlasse?|raus\\s+aus)\\s+(?:the\\s+|der\\s+|die\\s+)?bubble"
     - "back\\s+to\\s+(canvas|top|root)"
     - "z(u|ur(ü|ue)ck)?\\s+zum?\\s+canvas"
-  execution_target: "direct:spaces.ideas.tools.bubble_tools:exit_bubble"
+  execution_target: "supabase:bubble.noop"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: bubble_name
   validator:
     kind: rule:string_nonempty
@@ -759,7 +772,7 @@
     - "(stats?|statistik|statistics)\\s+(?:for\\s+|der\\s+|von\\s+)?bubble"
     - "(how\\s+many|wie\\s+viele)\\s+ideas?\\s+in\\s+(?:the\\s+|der\\s+)?bubble"
     - "bubble\\s+(stats|statistik|info|details)"
-  execution_target: "direct:spaces.ideas.tools.bubble_tools:get_bubble_stats"
+  execution_target: "supabase:bubble.stats"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: bubble_name
   validator:
     kind: rule:string_nonempty
@@ -776,7 +789,7 @@
   match_patterns:
     - "(list|liste|zeig(e)?)\\s+(?:all\\s+|alle\\s+|mir\\s+(?:alle\\s+|die\\s+)?)?(?:die\\s+)?ideas?n?"
     - "(welche|which)\\s+ideas?n?\\s+(gibt|exist|are)"
-  execution_target: "direct:spaces.ideas.tools.idea_tools:list_ideas"
+  execution_target: "supabase:idea.list"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: query
   validator:
     kind: rule:string_nonempty
@@ -792,7 +805,7 @@
   match_patterns:
     - "(count|z(ä|ae)hl(e)?)\\s+(?:the\\s+|alle\\s+|die\\s+)?ideas?n?"
     - "(how\\s+many|wie\\s+viele)\\s+ideas?n?"
-  execution_target: "direct:spaces.ideas.tools.idea_tools:count_ideas"
+  execution_target: "supabase:idea.count"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: bubble_id
   validator:
     kind: rule:string_nonempty
@@ -808,7 +821,7 @@
   match_patterns:
     - "(find|finde|such(e)?|search\\s+for)\\s+(?:the\\s+|die\\s+)?ide[ea]n?"
     - "(where|wo)\\s+(is|ist)\\s+(?:the\\s+|die\\s+)?ide[ea]n?"
-  execution_target: "direct:spaces.ideas.tools.idea_tools:find_idea"
+  execution_target: "supabase:idea.find"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: name
   validator:
     kind: rule:string_nonempty
@@ -823,8 +836,10 @@
     - "bearbeite die idee"
   match_patterns:
     - "(update|edit|ändere|ändre|aendere|aendre|bearbeite)\\s+(?:the\\s+|die\\s+)?ide[ea]n?"
-  execution_target: "direct:spaces.ideas.tools.idea_tools:update_idea"
-  arg_kwarg: idea_id
+  # Phase 11.U.H — Supabase-direct (see idea_add note). Resolves the node
+  # by title, PATCHes canvas_nodes.content/title via REST.
+  execution_target: "supabase:idea.update"
+  arg_kwarg: title
   validator:
     kind: rule:string_nonempty
     on_fail: report
@@ -838,7 +853,7 @@
     - "entferne die idee"
   match_patterns:
     - "(delete|remove|l(ö|oe)sch(e)?|entferne)\\s+(?:the\\s+|die\\s+)?ide[ea]n?"
-  execution_target: "direct:spaces.ideas.tools.idea_tools:delete_idea"
+  execution_target: "supabase:idea.delete"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_id
   validator:
     kind: rule:string_nonempty
@@ -871,7 +886,7 @@
   match_patterns:
     - "(link|connect|verbinde?|attach)\\s+(?:the\\s+|die\\s+)?ide[ea]n?\\s+(?:to\\s+|mit\\s+(dem\\s+)?)?(?:the\\s+)?(root|top|canvas)"
     - "lift\\s+(?:the\\s+)?ide[ea]n?\\s+to\\s+(top|root)"
-  execution_target: "direct:spaces.ideas.tools.idea_tools:link_idea_to_root"
+  execution_target: "supabase:idea.llm"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_id
   validator:
     kind: rule:string_nonempty
@@ -887,7 +902,7 @@
   match_patterns:
     - "(move|verschiebe?|bring(e)?)\\s+(?:the\\s+|die\\s+)?ide[ea]n?\\s+(?:to|in|nach)"
     - "(move|verschiebe?)\\s+\\S+\\s+(to|nach|in)\\s+(?:bubble|space)"
-  execution_target: "direct:spaces.ideas.tools.idea_tools:move_idea"
+  execution_target: "supabase:idea.move"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
     kind: rule:string_nonempty
@@ -908,7 +923,7 @@
     - "(regenerate|rebuild|refresh|reindex|re[-\\s]?index|neu\\s+(berechnen|indizieren))\\s+(?:the\\s+|der\\s+|alle\\s+)?(embeddings?|index)"
     - "embeddings?\\s+(rebuild|regenerate|neu)"
     - "bubble\\s+(reindex|neu\\s+indizieren)"
-  execution_target: "direct:spaces.ideas.tools.bubble_tools:generate_bubble_embeddings"
+  execution_target: "supabase:bubble.noop"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: bubble_name
   validator:
     kind: rule:string_nonempty
@@ -932,7 +947,7 @@
     - "(suggest|empfehle?|vorschla[gn]e?|schlage?\\s+vor)\\s+(?:new\\s+|weitere\\s+|zusaetzliche\\s+|neue\\s+)(connections?|links?|verbindungen|edges?)"
     - "(link|verbindungs?)[\\s-]+(analy(s|z)e|analyse|report|review)"
     - "(connections?|verbindungen|links?)\\s+(analy(s|z)e|analyse|untersuchen|review)"
-  execution_target: "direct:spaces.ideas.tools.idea_tools:analyze_and_suggest_links"
+  execution_target: "supabase:idea.llm"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: bubble_id
   validator:
     kind: rule:string_nonempty
@@ -950,7 +965,7 @@
     - "(list|liste|zeig(e)?|show\\s+me)\\s+(?:all\\s+|alle\\s+|verfuegbar(e|en)\\s+|available\\s+)?formate?n?"
     - "(welche|which)\\s+formate?n?"
     - "(verfuegbar(e|en)|available)\\s+formate?n?"
-  execution_target: "direct:spaces.ideas.tools.format_dispatcher:list_available_formats"
+  execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: ""
   validator:
     kind: rule:string_nonempty
@@ -967,7 +982,7 @@
     - "(what|welches?)\\s+format\\s+(is|ist|hat|hat\\s+die)\\s+(?:the\\s+|die\\s+)?ide[ea]n?"
     - "(current|aktuelles?)\\s+format\\s+(of|der|von)\\s+(?:the\\s+|die\\s+)?ide[ea]n?"
     - "in\\s+welchem\\s+format\\s+ist\\s+(?:die\\s+)?ide[ea]n?"
-  execution_target: "direct:spaces.ideas.tools.format_dispatcher:get_idea_format"
+  execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
     kind: rule:string_nonempty
@@ -985,8 +1000,14 @@
     - "(create|leg(e)?|erstelle)\\s+(multiple|several|mehrere|viele|alle)\\s+ide[ea]n?"
     - "batch\\s+create\\s+ide[ea]n?"
     - "(create|leg(e)?|erstelle)\\s+ide[ea]n?:\\s*\\["
-  execution_target: "direct:spaces.ideas.tools.idea_tools:create_idea_batch"
-  arg_kwarg: ideas
+  # Phase 11.U.H — was direct:spaces.ideas.tools.idea_tools:
+  # create_idea_batch (broken: swarm import chain). Routed to the
+  # supabase: create op. The planner expands a repeat-block into N
+  # child-hops; each calls create_op with one item — so a batch becomes
+  # N individual canvas_nodes (cleaner than one mega-node anyway). The
+  # bubble is still resolved from the shared _intent text per child.
+  execution_target: "supabase:idea.create"
+  arg_kwarg: title
   validator:
     kind: rule:string_nonempty
     on_fail: report
@@ -1063,14 +1084,34 @@
     - "log dich bei X ein"
     - "extrahier alle links von dieser seite"
   match_patterns:
-    - "(navigate|go|open|browse)\\s+(to)?\\s*https?://"
-    - "(scrape|extract|grab)\\s+.*\\b(page|website|webpage|site)"
-    - "(fill|complete)\\s+.*\\b(form|formular)\\b"
-    - "(login|log in|einlog)\\s+(to|in|bei)\\s+\\w+"
-    - "(take|grab)\\s+(a)?\\s*screenshot\\s+of\\s+(the|a)?\\s*(website|page|webpage)"
-    - "(gehe|geh|navigate|öffne)\\s+(zur?|auf|to)\\s+(webseite|website|seite|url)"
-    - "deep research"
-  # NOTE: openclaw agent not yet registered as OpenFang-agent. This cap is
-  # currently a "future" entry — kept for documentation. Once
-  # `openclaw-coder` agent.toml exists and the agent is spawned, this routes.
-  execution_target: "openfang:openclaw-coder"
+    # URL present + a browse verb (covers DE 'navigiere/öffne/gehe' + EN)
+    - "(navigate|navigier|go|open|öffne|browse|gehe?|surf|besuche?)\\w*\\s+(to|zu|zur|auf|nach)?\\s*https?://"
+    # any explicit http(s) URL with a browse-ish verb anywhere before it
+    - "(navigiere|navigate|öffne|browse|scrape|screenshot|besuche)\\b.{0,40}https?://"
+    - "(scrape|extract|grab|extrahier)\\w*\\s+.*\\b(page|website|webpage|site|seite|webseite)"
+    - "(fill|complete|fülle?|ausfüllen)\\s+.*\\b(form|formular)\\b"
+    - "(login|log in|einlog|melde?\\s+dich\\s+an)\\s*(to|in|bei|at)?\\s*\\w+"
+    - "(take|grab|mach|erstell)\\w*\\s+(a|ein|einen)?\\s*screenshot\\s+(of|von|der|des)?\\s*(the|a|der|die|das)?\\s*(website|page|webpage|webseite|seite)"
+    - "(gehe|geh|navigiere|navigate|öffne|besuche)\\s+(zur?|auf|to|nach)?\\s*(die|the)?\\s*(webseite|website|seite|url|web\\s?site)"
+    - "(web\\s?research|deep research|recherchiere?\\s+im\\s+(web|netz|internet))"
+    # 2026-05-19: natural site requests without https:// or the word
+    # "webseite" (e.g. "öffne gmail", "geh auf youtube", "gmail aufmachen")
+    # previously fell through to the unreliable LLM planner -> wrong cap /
+    # example.com fallback. These hit the deterministic shortcut instead.
+    # (a) browse-verb + a domain-looking token (foo.com / mail.google.de)
+    - "(gehe|geh|navigiere|navigate|öffne|open|besuche|surf|zeig\\w*\\s+mir|check|geh\\s+auf|ruf\\w*\\s+auf)\\s+(zur?|auf|to|nach|die|the|mal)?\\s*[\\w-]+\\.(com|de|org|net|io|co|ai|app|dev|me|tv|gov|edu)\\b"
+    # (b) browse-verb + a well-known site name (no TLD/scheme needed)
+    - "(gehe|geh|navigiere|navigate|öffne|open|besuche|surf|zeig\\w*\\s+mir|check|geh\\s+auf|mach\\w*\\s+auf|ruf\\w*\\s+auf)\\s+(zur?|auf|to|nach|die|the|mal|meine?|mein)?\\s*(gmail|google|youtube|amazon|github|gitlab|reddit|twitter|x\\.com|linkedin|facebook|instagram|wikipedia|whatsapp|telegram|netflix|spotify|chatgpt|claude|openai|stackoverflow|ebay|paypal|outlook|yahoo|bing|duckduckgo|maps|gmaps|drive|dropbox|notion|slack|discord|twitch|tiktok|pinterest|booking|airbnb|aliexpress|otto|zalando|dhl|deutsche\\s?bahn|bahn|wetter|tagesschau|spiegel|heise|golem)\\b"
+    # (c) bare well-known site name as the whole/lead intent ("gmail",
+    # "gmail aufmachen", "youtube öffnen")
+    - "^\\s*(gmail|youtube|github|gitlab|amazon|reddit|linkedin|wikipedia|netflix|spotify|chatgpt|stackoverflow|outlook)\\b(\\s+(öffnen|aufmachen|aufrufen|zeigen|checken|open|show)\\b)?\\s*$"
+    # (d) German separable-verb bracket: "mach/ruf <site> auf",
+    # "<site> öffnen/aufmachen" (verb after the site name)
+    - "(mach\\w*|ruf\\w*|öffne|zeig\\w*|geh\\w*)\\s+(zur?|auf|die|mal|meine?|mein)?\\s*(gmail|google|youtube|amazon|github|gitlab|reddit|twitter|linkedin|facebook|instagram|wikipedia|whatsapp|telegram|netflix|spotify|chatgpt|claude|openai|stackoverflow|ebay|paypal|outlook|yahoo|maps|drive|dropbox|notion|slack|discord|twitch|tiktok|booking|airbnb|otto|zalando|dhl|bahn|wetter|tagesschau|spiegel|heise|golem)\\b\\s*(auf|aufmachen|aufrufen|öffnen|anzeigen|zeigen)\\b"
+  # Routes to openclaw-visible: the agent turn goes through the NATIVE
+  # openclaw Gateway (ws://127.0.0.1:18793), driving a VISIBLE Chrome
+  # window on the host PC (the user can watch). Sibling openclaw-coder
+  # still exists for HEADLESS container browser_automation if ever needed.
+  # Built + verified end-to-end 2026-05-19 (plan
+  # k-nnnen-wir-adative-skills-splendid-mochi.md).
+  execution_target: "openfang:openclaw-visible"

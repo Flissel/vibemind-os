@@ -242,8 +242,17 @@ class OpenFangExecutor(_BaseRemoteExecutor):
         self.base = os.environ.get("OPENFANG_URL", "http://127.0.0.1:4200").rstrip("/")
         self._agent_id: Optional[str] = None
 
-    def _resolve_id(self) -> Optional[str]:
-        if self._agent_id:
+    def _resolve_id(self, force: bool = False) -> Optional[str]:
+        """Resolve agent_name -> id via GET /api/agents.
+
+        The id is cached for latency, BUT OpenFang regenerates agent ids on
+        every respawn (OpenFang restart, agent re-register). A permanently
+        cached id goes stale -> all calls fail `agent not found` until Brain
+        restarts. `force=True` bypasses + refreshes the cache; callers do
+        this once when a call 404s, making the bridge self-healing against
+        agent respawns (the real root-cause of the brain-gateway last-mile
+        blocker, 2026-05-19)."""
+        if self._agent_id and not force:
             return self._agent_id
         try:
             resp = requests.get(f"{self.base}/api/agents", timeout=10)
@@ -255,44 +264,97 @@ class OpenFangExecutor(_BaseRemoteExecutor):
                 if (a.get("name") or "").lower() == self.agent_name.lower():
                     self._agent_id = a.get("id") or a.get("agent_id")
                     return self._agent_id
+            # Name not present at all — clear any stale cache so a later
+            # call (after the agent (re)spawns) re-resolves cleanly.
+            if force:
+                self._agent_id = None
         except Exception as e:
             logger.debug(f"[targets:openfang] resolve {self.agent_name}: {e}")
         return None
 
+    @staticmethod
+    def _is_agent_gone(exc: Exception) -> bool:
+        """True if the exception looks like the cached agent id is stale
+        (OpenFang 404 / 'not found' for that agent id)."""
+        msg = str(exc).lower()
+        if "not found" in msg or "no such agent" in msg:
+            return True
+        resp = getattr(exc, "response", None)
+        return resp is not None and getattr(resp, "status_code", None) == 404
+
     def _call(self, payload: Dict[str, Any]) -> Any:
-        agent_id = self._resolve_id()
-        if not agent_id:
-            raise RuntimeError(f"openfang agent '{self.agent_name}' not found")
         message = payload.get("message") or payload.get("input") or json.dumps(payload)
         timeout = float(os.environ.get("CAPABILITY_HTTP_TIMEOUT_S", "120"))
-        # Phase 9.0 — prefer streaming endpoint so we capture tool_use events.
-        # Falls back to blocking /message when streaming fails or env opts out.
-        use_stream = os.environ.get("OPENFANG_STREAM", "1") not in ("0", "false", "False")
-        if use_stream:
-            try:
-                return self._call_streaming(agent_id, message, timeout)
-            except Exception as e:
-                logger.debug(f"[targets:openfang] streaming failed, falling back: {e}")
-        # Blocking fallback
-        url = f"{self.base}/api/agents/{agent_id}/message"
-        resp = requests.post(url, json={"message": message}, timeout=timeout)
-        resp.raise_for_status()
-        ct = resp.headers.get("content-type", "")
-        if ct.startswith("application/json"):
-            data = resp.json()
-            # Normalise to streaming-shape so callers don't care
+
+        def _send(agent_id: str) -> Any:
+            # Phase 9.0 — prefer streaming endpoint so we capture tool_use
+            # events. Falls back to blocking /message when streaming fails
+            # or env opts out.  Streaming swallows its own errors and
+            # falls through to blocking; blocking raises, so a stale-id
+            # 404 always surfaces from the blocking POST below.
+            use_stream = os.environ.get("OPENFANG_STREAM", "1") not in (
+                "0", "false", "False",
+            )
+            if use_stream:
+                try:
+                    return self._call_streaming(agent_id, message, timeout)
+                except Exception as e:
+                    if self._is_agent_gone(e):
+                        raise  # let _call retry with a fresh id
+                    logger.debug(
+                        f"[targets:openfang] streaming failed, falling back: {e}"
+                    )
+            url = f"{self.base}/api/agents/{agent_id}/message"
+            resp = requests.post(url, json={"message": message}, timeout=timeout)
+            resp.raise_for_status()
+            ct = resp.headers.get("content-type", "")
+            if ct.startswith("application/json"):
+                data = resp.json()
+                # Normalise to streaming-shape so callers don't care
+                return {
+                    "response": data.get("response") or data.get("text") or "",
+                    "tool_calls": [],
+                    "usage": {
+                        "input_tokens": data.get("input_tokens"),
+                        "output_tokens": data.get("output_tokens"),
+                        "iterations": data.get("iterations"),
+                        "cost_usd": data.get("cost_usd"),
+                    },
+                    "stream": False,
+                }
             return {
-                "response": data.get("response") or data.get("text") or "",
-                "tool_calls": [],
-                "usage": {
-                    "input_tokens": data.get("input_tokens"),
-                    "output_tokens": data.get("output_tokens"),
-                    "iterations": data.get("iterations"),
-                    "cost_usd": data.get("cost_usd"),
-                },
+                "response": resp.text, "tool_calls": [], "usage": {},
                 "stream": False,
             }
-        return {"response": resp.text, "tool_calls": [], "usage": {}, "stream": False}
+
+        agent_id = self._resolve_id()
+        if not agent_id:
+            # Not in cache and not resolvable now — one forced refresh in
+            # case the cache held a stale miss.
+            agent_id = self._resolve_id(force=True)
+            if not agent_id:
+                raise RuntimeError(
+                    f"openfang agent '{self.agent_name}' not found"
+                )
+        try:
+            return _send(agent_id)
+        except Exception as e:
+            # Self-heal: the cached id is stale (agent respawned with a new
+            # id). Drop the cache, re-resolve ONCE, retry. If still gone,
+            # the original error stands.
+            if not self._is_agent_gone(e):
+                raise
+            logger.info(
+                f"[targets:openfang] '{self.agent_name}' id stale "
+                f"({agent_id}); re-resolving"
+            )
+            fresh = self._resolve_id(force=True)
+            if not fresh or fresh == agent_id:
+                raise RuntimeError(
+                    f"openfang agent '{self.agent_name}' not found "
+                    f"(stale id {agent_id}, no fresh id available)"
+                )
+            return _send(fresh)
 
     def _call_streaming(
         self, agent_id: str, message: str, timeout: float,
@@ -483,7 +545,16 @@ class SupabaseExecutor(_BaseRemoteExecutor):
     publishes a brain space-event so the UI bridge can render the new edge.
     """
 
-    OPERATIONS = {"idea.connect", "idea.disconnect", "idea.auto_link"}
+    OPERATIONS = {
+        "idea.connect", "idea.disconnect", "idea.auto_link",
+        "idea.create", "idea.update", "bubble.evaluate",
+        "bubble.enter",
+        # Phase 11.U.H — full-cap migration ops
+        "bubble.create", "bubble.list", "bubble.find", "bubble.update",
+        "bubble.delete", "bubble.stats", "bubble.score", "bubble.noop",
+        "idea.list", "idea.count", "idea.find", "idea.delete", "idea.move",
+        "idea.format", "idea.llm",
+    }
 
     def __init__(self, target: str) -> None:
         super().__init__(target)
@@ -504,13 +575,37 @@ class SupabaseExecutor(_BaseRemoteExecutor):
         client = SupabaseIdeasClient()
         # Run async logic in a fresh event loop (we're already in a
         # ThreadPoolExecutor worker — asyncio.run is safe here).
-        if self.operation == "idea.connect":
-            return _asyncio.run(_ops.connect_op(client, payload))
-        if self.operation == "idea.disconnect":
-            return _asyncio.run(_ops.disconnect_op(client, payload))
-        if self.operation == "idea.auto_link":
-            return _asyncio.run(_ops.auto_link_op(client, payload))
-        raise ValueError(f"unhandled operation: {self.operation!r}")
+        # Phase 11.U.H — operation → ops-coroutine mapping (replaces the
+        # if-ladder; the format/llm ops read payload['_capability'] to know
+        # which of their 15/6 variants to run).
+        op_map = {
+            "idea.connect": _ops.connect_op,
+            "idea.disconnect": _ops.disconnect_op,
+            "idea.auto_link": _ops.auto_link_op,
+            "idea.create": _ops.create_op,
+            "idea.update": _ops.update_op,
+            "bubble.evaluate": _ops.evaluate_op,
+            "bubble.enter": _ops.enter_op,
+            "bubble.create": _ops.bubble_create_op,
+            "bubble.list": _ops.bubble_list_op,
+            "bubble.find": _ops.bubble_find_op,
+            "bubble.update": _ops.bubble_update_op,
+            "bubble.delete": _ops.bubble_delete_op,
+            "bubble.stats": _ops.bubble_stats_op,
+            "bubble.score": _ops.bubble_score_op,
+            "bubble.noop": _ops.bubble_noop_op,
+            "idea.list": _ops.idea_list_op,
+            "idea.count": _ops.idea_count_op,
+            "idea.find": _ops.idea_find_op,
+            "idea.delete": _ops.idea_delete_op,
+            "idea.move": _ops.idea_move_op,
+            "idea.format": _ops.idea_format_op,
+            "idea.llm": _ops.idea_llm_op,
+        }
+        fn = op_map.get(self.operation)
+        if fn is None:
+            raise ValueError(f"unhandled operation: {self.operation!r}")
+        return _asyncio.run(fn(client, payload))
 
 
 # ── Factory + registry ───────────────────────────────────────────────

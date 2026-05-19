@@ -93,6 +93,17 @@ class PlanRecorder:
                     f.write(json.dumps(snapshot, ensure_ascii=False, default=str) + "\n")
             except Exception as e:
                 logger.debug(f"[plan-recorder] persist failed: {e}")
+            # 2026-05-19 — Approach B routing-matrix auto-train. Fire-and-
+            # forget: feeds ONLY trustworthy shortcut+ok decisions to the
+            # :5001 ProductionPlanner so the matrix learns organically from
+            # live routing without cementing LLM-planner mistakes. Fully
+            # best-effort — import + call are guarded so a missing/broken
+            # hook can never disturb plan execution.
+            try:
+                from core.routing_matrix_autotrain import maybe_autotrain
+                maybe_autotrain(snapshot)
+            except Exception as e:
+                logger.debug(f"[plan-recorder] autotrain skipped: {e}")
 
     def list(self, *, limit: int = 20) -> List[Dict[str, Any]]:
         with self._lock:
@@ -1105,6 +1116,10 @@ class PlanExecutor:
             "_intent": plan_ctx.get("plan_intent", "") or "",
             "_description": hop.description or "",
             "_step_id": hop.step_id or "",
+            # Phase 11.U.H — supabase: idea.format / idea.llm serve 15 / 6
+            # capability variants from one op; they read _capability to
+            # pick the right one (idea_format_mindmap vs _swot, etc).
+            "_capability": getattr(hop, "capability", "") or "",
         }
         for attempt in range(max(1, hop.retries)):
             try:
