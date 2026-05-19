@@ -255,6 +255,24 @@ export class JobsWorker implements IJobsWorker {
             // We run both operations concurrently - the subscription will handle immediate jobs
             // while polling will catch any jobs that slipped through
             await this.startPolling();
+
+            // startSubscription/startPolling both return immediately (they
+            // only register a subscription + a recursive setTimeout). Without
+            // the await below, run() resolves right away → the jobs-worker.ts
+            // entrypoint IIFE falls through → Node exits with no open handle
+            // (the worker container died instantly under Swarm; the old
+            // standalone only "ran" via restart:unless-stopped looping on
+            // ECONNREFUSED). Keep run() pending until stop() flips isRunning,
+            // reusing the existing isRunning + stop() machinery (no new
+            // pattern). 1s tick is negligible vs the polling cadence.
+            await new Promise<void>((resolve) => {
+                const tick = setInterval(() => {
+                    if (!this.isRunning) {
+                        clearInterval(tick);
+                        resolve();
+                    }
+                }, 1000);
+            });
         } catch (error) {
             this.logger.log(`Error in worker run loop: ${error instanceof Error ? error.message : 'Unknown error'}`);
         } finally {
