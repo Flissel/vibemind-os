@@ -116,6 +116,32 @@ LIVE_SWAP_BASE = f"http://127.0.0.1:{LIVE_SWAP_PORT}"
 _LIVE_PROC: Optional[subprocess.Popen] = None
 _LIVE_LOCK = threading.Lock()
 
+# GPU-offload switch — same env contract as video.py (read independently,
+# no cross-router import). local = spawn live_server subprocess on this
+# host; remote = proxy to a GPU server's live-swap endpoint (Phase 1).
+# See tasks/gpu-offload-architecture-plan.md.
+_FACESWAP_BACKEND = os.environ.get("FACESWAP_BACKEND", "local").strip().lower()
+# For the live stream the remote endpoint is the live_server base URL on
+# the GPU host (e.g. http://gpuhost:8098). Falls back to FACESWAP_REMOTE_URL
+# if a dedicated live URL isn't given.
+_LIVE_SWAP_REMOTE = (
+    os.environ.get("FACESWAP_LIVE_REMOTE_URL", "").strip()
+    or os.environ.get("FACESWAP_REMOTE_URL", "").strip()
+)
+
+
+def _resolve_live_swap_base() -> Optional[str]:
+    """Where the live-swap MJPEG server lives.
+
+    local  → local subprocess base (spawned on demand, today's behaviour)
+    remote → the GPU host's live_server base (no local spawn). Returns
+             None if remote is selected but no URL configured, so the
+             caller can fail loud instead of silently spawning locally.
+    """
+    if _FACESWAP_BACKEND == "remote":
+        return _LIVE_SWAP_REMOTE or None
+    return LIVE_SWAP_BASE
+
 
 def _live_server_alive() -> bool:
     """Quick health probe."""
@@ -174,8 +200,19 @@ async def eyeterm_swap_stream(target: str):
     because that's where InsightFace lives. First call per target pays
     ~12s init; subsequent calls reuse the cached FaceSwapper.
     """
+    swap_base = _resolve_live_swap_base()
+    if swap_base is None:
+        raise HTTPException(
+            503,
+            "FACESWAP_BACKEND=remote but no FACESWAP_LIVE_REMOTE_URL / "
+            "FACESWAP_REMOTE_URL configured — remote live-swap not set up "
+            "(Phase 1, see tasks/gpu-offload-architecture-plan.md)",
+        )
+
     loop = asyncio.get_running_loop()
-    if not _live_server_alive():
+    # Only spawn a local subprocess in local mode; in remote mode the
+    # GPU host already runs live_server — we just proxy to it.
+    if _FACESWAP_BACKEND != "remote" and not _live_server_alive():
         ok = await loop.run_in_executor(None, _spawn_live_server)
         if not ok:
             raise HTTPException(503, "live-swap subprocess failed to start")
@@ -184,7 +221,7 @@ async def eyeterm_swap_stream(target: str):
 
     async def gen():
         try:
-            url = f"{LIVE_SWAP_BASE}/stream?target={target}"
+            url = f"{swap_base}/stream?target={target}"
             async with client.stream("GET", url) as r:
                 if r.status_code != 200:
                     body = (await r.aread())[:200].decode("ascii", "ignore")

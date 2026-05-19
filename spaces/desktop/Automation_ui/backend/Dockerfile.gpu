@@ -1,0 +1,90 @@
+# =============================================================================
+# GPU FACE-SWAP WORKER — RECIPE / NOT IN DEFAULT DEPLOY
+# =============================================================================
+# Phase-1 build plan for the dedicated GPU server/VM. See:
+#   tasks/gpu-offload-architecture-plan.md
+#   tasks/host-native-ml-tools.md
+#
+# THIS IMAGE IS INTENTIONALLY NOT REFERENCED by any docker-compose.yml,
+# infra/swarm/vibemind-stack.yml, or the launcher. It is the vetted
+# blueprint to build the GPU-side swap worker WHEN a Linux GPU host
+# exists. Building it on the current Windows/RTX-3060 box is NOT the
+# goal — it documents the target so the Phase-1 move is execution, not
+# design.
+#
+# Scope: this is the *GPU worker* (insightface inswapper engine), NOT
+# the API backend. The API backend stays the slim CPU image
+# (./Dockerfile, python:3.11-slim) and dispatches jobs here via
+# FACESWAP_BACKEND=remote (video.py _dispatch_swap_job).
+#
+# FaceFusion is deliberately NOT vendored: upstream ships no image and
+# its ~5GB install is not Docker-native. On the GPU host it is either
+# host-installed and bind-mounted (-v /opt/facefusion:ro) or its CLI is
+# invoked over the same job API. The portable engine is inswapper.
+#
+# Build (Phase 1, on the GPU host — requires nvidia-container-toolkit):
+#   docker build -f Dockerfile.gpu -t vibemind-faceswap-gpu .
+# Run (one container PER physical GPU):
+#   docker run --gpus device=0 \
+#     -v /srv/hf-cache:/root/.cache/huggingface \
+#     -v /srv/insightface:/root/.insightface \
+#     -e FACE_DB_URL=postgresql://user:pass@db:5432/postgres \
+#     -p 8098:8098 vibemind-faceswap-gpu
+# Swarm device reservation precedent (copy when wiring Phase 1):
+#   openclaw/docker-compose.hotel.yml:76-81  (Ollama nvidia block)
+# =============================================================================
+
+# CUDA 12.x runtime — matches the onnxruntime-gpu / torch cu124 wheels
+# the host venvs already use (voice/.venv312, E:\Vibemind_Tools\*_venv).
+# This is the documented EXCEPTION to STANDARDS.md "python:3.11-slim pin"
+# (GPU Services section — base image must carry CUDA userspace libs).
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04 AS gpu-base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    # HF + insightface caches are VOLUMES, never baked (≈30GB). The
+    # Phase-1 run mounts host dirs here so model pulls happen once and
+    # are shared read-only across GPU workers.
+    HF_HOME=/root/.cache/huggingface \
+    INSIGHTFACE_HOME=/root/.insightface
+
+WORKDIR /opt/faceswap
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 python3.11-venv python3-pip \
+    ffmpeg \
+    libglib2.0-0 libsm6 libxext6 libxrender1 libgl1 \
+    curl git \
+    && rm -rf /var/lib/apt/lists/* && apt-get clean
+
+# --- ML deps: kept in a SEPARATE requirements file so the slim API
+#     Dockerfile stays CPU-only / portable. requirements-gpu.txt is the
+#     Phase-1 deliverable (insightface, onnxruntime-gpu, torch cu124,
+#     facexlib, timm — mirrors what E:\Vibemind_Tools venvs hold).
+#     NOT created now: this recipe documents WHERE it plugs in.
+# COPY requirements-gpu.txt ./
+# RUN python3.11 -m pip install --no-cache-dir -r requirements-gpu.txt
+
+# The vibevideo_deepfake package (inswapper engine) + faceswap live_server.
+# Phase-1 build copies these from the repo so the worker is self-contained:
+# COPY --from=repo vibemind-os/spaces/video/vibevideo_deepfake ./vibevideo_deepfake
+
+EXPOSE 8098
+
+# GPU readiness probe — fail the container if CUDA isn't actually visible
+# (catches a missing --gpus flag / wrong nvidia-container-toolkit early,
+# instead of a confusing CPU-fallback OOM later).
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD nvidia-smi -L >/dev/null 2>&1 && curl -f http://localhost:8098/health || exit 1
+
+# Phase-1: run the live_server (MJPEG swap) — same module the host
+# subprocess spawns today (eyeterm.py _spawn_live_server). Batch jobs
+# come in over the same :8098 job API.
+# CMD ["python3.11", "-m", "faceswap.live_server", "--port", "8098", "--host", "0.0.0.0"]
+
+# Until Phase 1 this image has no active CMD by design — it is a recipe,
+# not a running service. Building it must be a deliberate Phase-1 act.
+CMD ["python3.11", "-c", "import sys; sys.stderr.write('Dockerfile.gpu is a Phase-1 recipe, not a runnable image yet — see tasks/gpu-offload-architecture-plan.md\\n'); sys.exit(1)"]

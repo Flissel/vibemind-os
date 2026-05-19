@@ -52,6 +52,26 @@ if str(_FACESWAP_SRC) not in sys.path:
     sys.path.insert(0, str(_FACESWAP_SRC))
 
 
+# ──────────────────────────────────────────────────────────────────────
+# GPU-offload switch (Phase 0 — prep only, see tasks/gpu-offload-architecture-plan.md)
+#
+#   FACESWAP_BACKEND = "local"  (default) → run the swap as a local
+#                                            subprocess on this host's GPU
+#                                            (unchanged behaviour)
+#   FACESWAP_BACKEND = "remote"          → POST the job to a dedicated
+#                                            GPU server at FACESWAP_REMOTE_URL
+#                                            (NOT yet implemented — stub that
+#                                            fails loud so it can't silently
+#                                            fall back to local)
+#
+# This indirection means the future move to a GPU server/VM is a config
+# switch, not a rewrite. eyeTerm (webcam) always stays host-side.
+# ──────────────────────────────────────────────────────────────────────
+
+_FACESWAP_BACKEND = os.environ.get("FACESWAP_BACKEND", "local").strip().lower()
+_FACESWAP_REMOTE_URL = os.environ.get("FACESWAP_REMOTE_URL", "").strip()
+
+
 def _resolve_faceswap_python() -> str:
     """Return a Python interpreter that has the full deepfake ML stack
     (insightface + onnxruntime-gpu) installed. Backend's own .venv
@@ -267,6 +287,49 @@ class FaceswapStartBody(BaseModel):
     ff_enhancer_blend: int = 80          # 0-100, how much enhancer to mix in
 
 
+def _dispatch_swap_job(job_id: str, args: list, env_extra: dict,
+                       engine: str) -> None:
+    """Run a prepared swap job via the configured backend.
+
+    Single seam between the API layer and *where* the GPU work happens.
+    Today both paths produce the same job-state updates via _run_job; the
+    only difference is locality. Phase 1 (when a GPU server exists) swaps
+    the "remote" branch for an HTTP enqueue — the API/job-state contract
+    above this function does not change.
+
+    local  : spawn the subprocess on this host (today's behaviour, verbatim)
+    remote : POST to FACESWAP_REMOTE_URL — intentionally a hard failure
+             until implemented, so a misconfigured deploy fails loudly
+             instead of silently doing local GPU work.
+    """
+    if _FACESWAP_BACKEND == "remote":
+        if not _FACESWAP_REMOTE_URL:
+            _set_job(
+                job_id, state="failed",
+                error="FACESWAP_BACKEND=remote but FACESWAP_REMOTE_URL is "
+                      "unset — remote GPU dispatch not configured (Phase 1, "
+                      "see tasks/gpu-offload-architecture-plan.md)",
+            )
+            return
+        # Phase 1 stub: real implementation will POST {args/engine/input}
+        # to the GPU server's job API and stream status back into _set_job.
+        _set_job(
+            job_id, state="failed",
+            error="FACESWAP_BACKEND=remote not yet implemented "
+                  "(Phase 1 — GPU server does not exist yet). "
+                  "Set FACESWAP_BACKEND=local for now.",
+        )
+        return
+
+    # Default: local subprocess on this host's GPU (unchanged path)
+    threading.Thread(
+        target=_run_job,
+        args=(job_id, args, env_extra, engine),
+        daemon=True,
+        name=f"faceswap-{job_id}",
+    ).start()
+
+
 @router.post("/faceswap")
 async def start_faceswap(body: FaceswapStartBody):
     input_path = Path(body.input_path).expanduser()
@@ -354,12 +417,9 @@ async def start_faceswap(body: FaceswapStartBody):
         if body.no_audio:
             args.append("--no-audio")
 
-    threading.Thread(
-        target=_run_job,
-        args=(job_id, args, env_extra, engine),
-        daemon=True,
-        name=f"faceswap-{job_id}",
-    ).start()
+    # Dispatch via the configured backend (local subprocess today;
+    # remote GPU server in Phase 1 — same job-state contract either way).
+    _dispatch_swap_job(job_id, args, env_extra, engine)
 
     return {"job_id": job_id, "output_path": str(output_path), "engine": engine}
 
