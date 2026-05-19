@@ -40,6 +40,19 @@ from .capability_executor import DirectExecutor
 logger = logging.getLogger(__name__)
 
 
+class OpenFangUnavailable(RuntimeError):
+    """OpenFang HTTP API unreachable / transiently failing (connection
+    refused, timeout, 5xx) — distinct from the agent being genuinely
+    absent from a successfully-returned list.
+
+    Subclasses RuntimeError so _BaseRemoteExecutor.call still catches it
+    as Exception and surfaces {"ok": False, "error": ...} unchanged; the
+    distinct message lets operators tell an OpenFang outage apart from a
+    genuinely-missing agent (2026-05-19 fix — the marathon-session
+    'agent not found' bug was OpenFang being transiently down, NOT the
+    agent missing; proven via OpenFang SQLite DB inspection)."""
+
+
 # ── Per-kind executor classes ────────────────────────────────────────
 
 
@@ -254,22 +267,67 @@ class OpenFangExecutor(_BaseRemoteExecutor):
         blocker, 2026-05-19)."""
         if self._agent_id and not force:
             return self._agent_id
+        # 2026-05-19: distinguish a TRANSPORT failure (OpenFang down /
+        # timeout / 5xx / non-JSON) from a clean enumeration where the
+        # agent is genuinely absent. The old broad `except Exception ->
+        # return None` conflated both -> spurious "agent not found" every
+        # time OpenFang was transiently down. Transport failure now
+        # raises OpenFangUnavailable (caller retries); only a 2xx list
+        # that truly lacks the name returns None.
         try:
-            resp = requests.get(f"{self.base}/api/agents", timeout=10)
+            # 2026-05-19: 10s was too long for a retry loop. The agent
+            # LIST is a cheap call; a healthy OpenFang answers in <1s, and
+            # connection-refused fails instantly. (connect=3s, read=4s)
+            # keeps the bounded resolve_budget (~8s) actually enforceable
+            # across 4 attempts.
+            resp = requests.get(
+                f"{self.base}/api/agents", timeout=(3.05, 4)
+            )
             resp.raise_for_status()
-            agents = resp.json() if resp.ok else []
-            if isinstance(agents, dict):
-                agents = agents.get("agents") or []
-            for a in agents or []:
-                if (a.get("name") or "").lower() == self.agent_name.lower():
-                    self._agent_id = a.get("id") or a.get("agent_id")
-                    return self._agent_id
-            # Name not present at all — clear any stale cache so a later
-            # call (after the agent (re)spawns) re-resolves cleanly.
-            if force:
-                self._agent_id = None
-        except Exception as e:
-            logger.debug(f"[targets:openfang] resolve {self.agent_name}: {e}")
+        except requests.exceptions.RequestException as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            # Connection refused / timeout / no HTTP response, or a 5xx
+            # (OpenFang up but mid-boot) -> transient, retryable.
+            if status is None or status >= 500:
+                logger.warning(
+                    f"[targets:openfang] OpenFang unreachable at "
+                    f"{self.base}: {e}"
+                )
+                raise OpenFangUnavailable(
+                    f"OpenFang unreachable at {self.base}: {e}"
+                ) from e
+            # A non-5xx HTTP error on the LIST endpoint is not a clean
+            # enumeration either — treat as transient, don't claim absent.
+            logger.warning(
+                f"[targets:openfang] OpenFang list endpoint HTTP {status} "
+                f"at {self.base}: {e}"
+            )
+            raise OpenFangUnavailable(
+                f"OpenFang list endpoint HTTP {status} at {self.base}: {e}"
+            ) from e
+        try:
+            agents = resp.json()
+        except ValueError as e:
+            # 2xx but body isn't JSON -> OpenFang misbehaving, not a
+            # trustworthy enumeration. Transient.
+            logger.warning(
+                f"[targets:openfang] OpenFang returned non-JSON agent list "
+                f"at {self.base}: {e}"
+            )
+            raise OpenFangUnavailable(
+                f"OpenFang returned non-JSON agent list at {self.base}: {e}"
+            ) from e
+        if isinstance(agents, dict):
+            agents = agents.get("agents") or []
+        for a in agents or []:
+            if (a.get("name") or "").lower() == self.agent_name.lower():
+                self._agent_id = a.get("id") or a.get("agent_id")
+                return self._agent_id
+        # Clean 2xx list, name genuinely not present. Clear any stale
+        # cache (when forced) so a later call after the agent (re)spawns
+        # re-resolves cleanly — preserved exactly from the prior behaviour.
+        if force:
+            self._agent_id = None
         return None
 
     @staticmethod
@@ -327,15 +385,75 @@ class OpenFangExecutor(_BaseRemoteExecutor):
                 "stream": False,
             }
 
-        agent_id = self._resolve_id()
+        # 2026-05-19: bounded resolve-retry. OpenFang (host process)
+        # falls over transiently; a single resolve attempt that hits a
+        # dead window used to raise a hard, permanent-sounding "not
+        # found". Retry across a short bounded budget so a brief outage
+        # self-recovers, but short-circuit a CLEAN absence immediately
+        # (it won't self-fix inside the window — only burns budget).
+        resolve_budget = min(8.0, timeout)
+        sleeps = [0.25, 0.5, 1.0, 2.0]
+        # Reserve a GET cost so we stop BEFORE a GET that would overrun
+        # the budget. The actual cost varies wildly by failure mode:
+        # connection-refused on Windows ~2s (OS TCP behaviour, not
+        # tunable), fast 5xx ~0.01s. Use the MEASURED cost of the prior
+        # attempt as the prediction for the next; bootstrap with a small
+        # floor so attempt 0 doesn't preempt itself.
+        get_cost_est = 0.1
+        t0 = time.monotonic()
+        agent_id: Optional[str] = None
+        last_unavail: Optional[OpenFangUnavailable] = None
+        attempt = -1
+        while True:
+            attempt += 1
+            # Stop before an attempt whose GET can't finish in budget
+            # (always allow attempt 0). The hard 8-attempt cap is just a
+            # safety net — the real gate is the elapsed-time budget,
+            # which is what matters for keeping the call snappy.
+            if attempt > 0 and (
+                attempt >= 8
+                or time.monotonic() - t0 + get_cost_est >= resolve_budget
+            ):
+                break
+            t_get = time.monotonic()
+            try:
+                agent_id = self._resolve_id(force=(attempt > 0))
+            except OpenFangUnavailable as e:
+                last_unavail = e
+                # Update the cost estimate from this failed attempt.
+                get_cost_est = max(get_cost_est, time.monotonic() - t_get)
+                # Sleep before the next try only if a following
+                # attempt+GET could still finish within budget.
+                nxt = sleeps[min(attempt, len(sleeps) - 1)]
+                if time.monotonic() - t0 + nxt + get_cost_est < resolve_budget:
+                    time.sleep(nxt)
+                    continue
+                break
+            # Successful (or clean-absence) GET — also update estimate.
+            get_cost_est = max(get_cost_est, time.monotonic() - t_get)
+            if agent_id:
+                break
+            # Clean 2xx list, agent genuinely absent. One forced confirm
+            # if we haven't already forced, then fail FAST — no retry.
+            if attempt == 0:
+                try:
+                    agent_id = self._resolve_id(force=True)
+                except OpenFangUnavailable as e:
+                    last_unavail = e
+                    break
+                if agent_id:
+                    break
+            raise RuntimeError(
+                f"openfang agent '{self.agent_name}' not registered "
+                f"(OpenFang reachable, agent absent)"
+            )
         if not agent_id:
-            # Not in cache and not resolvable now — one forced refresh in
-            # case the cache held a stale miss.
-            agent_id = self._resolve_id(force=True)
-            if not agent_id:
-                raise RuntimeError(
-                    f"openfang agent '{self.agent_name}' not found"
-                )
+            elapsed = time.monotonic() - t0
+            raise OpenFangUnavailable(
+                f"OpenFang unreachable at {self.base} after "
+                f"{attempt + 1} attempt(s) ({elapsed:.1f}s) — agent "
+                f"'{self.agent_name}' could not be resolved"
+            ) from last_unavail
         try:
             return _send(agent_id)
         except Exception as e:
@@ -348,7 +466,12 @@ class OpenFangExecutor(_BaseRemoteExecutor):
                 f"[targets:openfang] '{self.agent_name}' id stale "
                 f"({agent_id}); re-resolving"
             )
-            fresh = self._resolve_id(force=True)
+            try:
+                fresh = self._resolve_id(force=True)
+            except OpenFangUnavailable:
+                # OpenFang went down mid-self-heal — the original send
+                # error stands (don't mask the real 404/gone).
+                raise e
             if not fresh or fresh == agent_id:
                 raise RuntimeError(
                     f"openfang agent '{self.agent_name}' not found "

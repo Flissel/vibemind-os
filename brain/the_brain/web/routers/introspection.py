@@ -2275,8 +2275,15 @@ def _try_capability_shortcut(state, intent: str):
         )
         return None
 
-    # Must be is_direct so the executor can resolve target via registry
-    if not getattr(m, "is_direct", False):
+    # Must have a registered execution_target so an executor can run the hop
+    # without the LLM planner. Phase 11.Q2 originally restricted this to
+    # `direct:` (in-process Python) caps; but `openfang:`, `coding-engine:`,
+    # `http:`, `n8n:`, `mcp:` executors resolve their own targets just as well
+    # (e.g. OpenFangExecutor looks up the agent via /api/agents). Restricting
+    # to is_direct sent every openfang:/openclaw cap to the LLM planner, which
+    # then hallucinated bubble-creation plans out of a recall saturated with
+    # old bubble_create plans. Accept any registered execution-target kind.
+    if not getattr(m, "has_execution_target", False):
         return None
 
     # Look up arg_kwarg from the registry (arg_template gets extracted
