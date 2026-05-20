@@ -107,9 +107,16 @@
     <div class="log" id="log"></div>
   </div>
 
-  <script type="module">
-    const { invoke } = window.__TAURI__.core;
-    const { listen } = window.__TAURI__.event;
+  <script>
+    // withGlobalTauri=true in tauri.conf.json exposes window.__TAURI__.
+    // We resolve invoke/listen lazily so the canvas animation can start
+    // even if the Tauri runtime injection is briefly missing (first
+    // paint, dev-reload, etc.) — never blank the hero.
+    function getTauri() {
+      return (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.event)
+        ? { invoke: window.__TAURI__.core.invoke, listen: window.__TAURI__.event.listen }
+        : null;
+    }
 
     // ── Animated star-circle ─────────────────────────────────────────
     // Mirrors the screenshot: dark background, faint green circle outline,
@@ -263,11 +270,13 @@
     }
 
     $btnStart.addEventListener('click', async () => {
+      const T = getTauri();
+      if (!T) { appendLog('Tauri runtime not ready — refresh window', 'err'); return; }
       if (busy) return;
       setBusy('start');
       appendLog('=== start clicked ===', 'exit');
       try {
-        await invoke('start_stack');
+        await T.invoke('start_stack');
       } catch (e) {
         appendLog('invoke error: ' + e, 'err');
         setIdle(false, -1, 'start');
@@ -275,11 +284,13 @@
     });
 
     $btnStop.addEventListener('click', async () => {
+      const T = getTauri();
+      if (!T) { appendLog('Tauri runtime not ready — refresh window', 'err'); return; }
       if (busy) return;
       setBusy('stop');
       appendLog('=== stop clicked ===', 'exit');
       try {
-        await invoke('stop_stack');
+        await T.invoke('stop_stack');
       } catch (e) {
         appendLog('invoke error: ' + e, 'err');
         setIdle(false, -1, 'stop');
@@ -288,24 +299,37 @@
 
     $btnClear.addEventListener('click', () => { $log.innerHTML = ''; });
 
-    // Subscribe to live stdout/stderr/exit events from Rust
-    await listen('log', (event) => {
-      const { stream, line } = event.payload;
-      appendLog(line, stream === 'err' ? 'err' : '');
-    });
-    await listen('exit', (event) => {
-      const { kind, code } = event.payload;
-      appendLog(`=== ${kind} exited code=${code} ===`, 'exit');
-      setIdle(code === 0, code, kind);
-    });
-
-    invoke('repo_root_path').then(p => {
-      appendLog('repo root: ' + p, 'warn');
-    }).catch(e => {
-      appendLog('repo root NOT FOUND: ' + e, 'err');
-      $status.textContent = 'Repo root not found — see log.';
-      $status.className = 'bubble err';
-    });
+    // Subscribe to live stdout/stderr/exit events from Rust — retry
+    // briefly because withGlobalTauri injection runs on DOM ready and
+    // can race the inline script.
+    (async function wireTauri(attempt = 0) {
+      const T = getTauri();
+      if (!T) {
+        if (attempt > 20) {
+          appendLog('Tauri runtime never appeared — buttons inert', 'err');
+          return;
+        }
+        setTimeout(() => wireTauri(attempt + 1), 100);
+        return;
+      }
+      await T.listen('log', (event) => {
+        const { stream, line } = event.payload;
+        appendLog(line, stream === 'err' ? 'err' : '');
+      });
+      await T.listen('exit', (event) => {
+        const { kind, code } = event.payload;
+        appendLog(`=== ${kind} exited code=${code} ===`, 'exit');
+        setIdle(code === 0, code, kind);
+      });
+      try {
+        const p = await T.invoke('repo_root_path');
+        appendLog('repo root: ' + p, 'warn');
+      } catch (e) {
+        appendLog('repo root NOT FOUND: ' + e, 'err');
+        $status.textContent = 'Repo root not found — see log.';
+        $status.className = 'bubble err';
+      }
+    })();
   </script>
 </body>
 </html>
