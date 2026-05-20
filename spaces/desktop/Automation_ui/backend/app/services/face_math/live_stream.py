@@ -169,6 +169,31 @@ def passthrough_frame(bgr: np.ndarray) -> bytes:
     return encode_mjpeg_frame(bgr, quality=80)
 
 
+def _frame_iter_webcam(device_index: int = 0):
+    """Local cv2.VideoCapture source — synchronous generator yielding
+    BGR frames. Useful for Phase-D live tests without depending on
+    eyeTerm's MJPEG server.
+
+    Trade-off: holds an exclusive lock on the webcam device for the
+    duration of the stream. If eyeTerm or any other process also wants
+    the camera, one of them will fail.
+    """
+    cap = cv2.VideoCapture(device_index, cv2.CAP_DSHOW)
+    if not cap.isOpened():
+        # Fall back to default backend
+        cap = cv2.VideoCapture(device_index)
+    if not cap.isOpened():
+        raise RuntimeError(f"webcam device {device_index} could not be opened")
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            yield frame
+    finally:
+        cap.release()
+
+
 async def region_math_stream(
     target_id: str,
     profile: str = "inner_face",
@@ -178,6 +203,8 @@ async def region_math_stream(
     warp_method: str = "affine",
     upstream: str = DEFAULT_UPSTREAM,
     quality: int = 78,
+    source: str = "eyeterm",
+    webcam_device: int = 0,
 ):
     """Async generator yielding MJPEG chunks.
 
@@ -216,6 +243,65 @@ async def region_math_stream(
     t0 = time.time()
     last_log = t0
 
+    def _process_frame(frame_bgr: np.ndarray) -> bytes:
+        nonlocal frame_count, detected_count, last_log
+        frame_count += 1
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        user_result = detector.detect(rgb)
+        if user_result is None:
+            return passthrough_frame(frame_bgr)
+        detected_count += 1
+        try:
+            if warp_method == "affine" and blend_mode == "alpha" and color_match_method == "histogram":
+                composed_bgr = compose_fast(
+                    target_frame_bgr=frame_bgr,
+                    target_landmarks_px=user_result.landmarks_px,
+                    source_image_bgr=target_face.image_bgr,
+                    source_landmarks_px=target_face.landmarks_px,
+                    profile=profile,
+                    feather_px=feather_px,
+                    blend_mode=blend_mode,
+                )
+            else:
+                result = compose(
+                    target_frame_bgr=frame_bgr,
+                    target_landmarks_px=user_result.landmarks_px,
+                    source_image_bgr=target_face.image_bgr,
+                    source_landmarks_px=target_face.landmarks_px,
+                    profile=profile,
+                    feather_px=feather_px,
+                    warp_method=warp_method,
+                    apply_color_match=True,
+                    color_match_method=color_match_method,
+                    blend_mode=blend_mode,
+                )
+                composed_bgr = result.composite
+        except Exception as e:
+            logger.exception("face_math: compose failed: %s", e)
+            return passthrough_frame(frame_bgr)
+        out = encode_mjpeg_frame(composed_bgr, quality=quality)
+        now = time.time()
+        if now - last_log >= 5.0:
+            fps = frame_count / max(now - t0, 1e-6)
+            det_rate = detected_count / max(frame_count, 1)
+            logger.info(
+                "face_math stream %s/%s: %d frames, %.1f fps, %.0f%% face-detect",
+                target_id, profile, frame_count, fps, det_rate * 100,
+            )
+            last_log = now
+        return out
+
+    # ----- Source selection ----------------------------------------
+    if source == "webcam":
+        # Local cv2.VideoCapture — bypasses eyeTerm entirely.
+        import asyncio
+        loop = asyncio.get_event_loop()
+        for frame in _frame_iter_webcam(webcam_device):
+            chunk = await loop.run_in_executor(None, _process_frame, frame)
+            yield chunk
+        return
+
+    # Default: MJPEG over HTTP (eyeTerm proxy)
     client = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=None))
     try:
         async with client.stream("GET", upstream) as response:
@@ -223,8 +309,6 @@ async def region_math_stream(
                 raise RuntimeError(
                     f"upstream {upstream} returned {response.status_code}"
                 )
-            # We need to iterate bytes — convert async iterator to sync-friendly
-            # via aiter_raw, then feed parse_mjpeg.
             buf = bytearray()
             async for chunk in response.aiter_raw():
                 buf.extend(chunk)
@@ -241,11 +325,9 @@ async def region_math_stream(
                         continue
 
                     frame_count += 1
-                    # Per-frame swap
                     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     user_result = detector.detect(rgb)
                     if user_result is None:
-                        # No face → pass through unmodified
                         yield passthrough_frame(frame)
                         continue
                     detected_count += 1

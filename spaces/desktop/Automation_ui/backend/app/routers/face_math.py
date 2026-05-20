@@ -121,6 +121,8 @@ async def swap_stream(
     feather_px: int = Query(12, ge=0, le=60),
     warp_method: str = Query("affine", description="affine (fast, default) | tps (slow, pixel-exact)"),
     quality: int = Query(78, ge=30, le=95),
+    source: str = Query("eyeterm", description="eyeterm (MJPEG proxy) | webcam (direct cv2.VideoCapture, exclusive lock)"),
+    webcam_device: int = Query(0, description="cv2.VideoCapture device index when source=webcam"),
 ):
     """Live region-math face-swap MJPEG stream.
 
@@ -145,6 +147,8 @@ async def swap_stream(
             feather_px=feather_px,
             warp_method=warp_method,
             quality=quality,
+            source=source,
+            webcam_device=webcam_device,
         )
     except (RuntimeError, ValueError) as e:
         raise HTTPException(400, str(e))
