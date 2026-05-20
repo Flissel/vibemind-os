@@ -119,6 +119,7 @@ async def swap_stream(
     blend_mode: str = Query("alpha", description="alpha | poisson | hybrid"),
     color_match_method: str = Query("histogram", description="histogram | mean_std"),
     feather_px: int = Query(12, ge=0, le=60),
+    warp_method: str = Query("affine", description="affine (fast, default) | tps (slow, pixel-exact)"),
     quality: int = Query(78, ge=30, le=95),
 ):
     """Live region-math face-swap MJPEG stream.
@@ -142,6 +143,7 @@ async def swap_stream(
             blend_mode=blend_mode,
             color_match_method=color_match_method,
             feather_px=feather_px,
+            warp_method=warp_method,
             quality=quality,
         )
     except (RuntimeError, ValueError) as e:

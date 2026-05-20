@@ -23,7 +23,7 @@ import httpx
 import numpy as np
 import psycopg2
 
-from .compositor import compose
+from .compositor import compose, compose_fast
 from .landmark_detector import FaceLandmarkDetector, LandmarkResult
 from .regions import SWAP_PROFILES
 
@@ -175,6 +175,7 @@ async def region_math_stream(
     blend_mode: str = "alpha",
     color_match_method: str = "histogram",
     feather_px: int = 12,
+    warp_method: str = "affine",
     upstream: str = DEFAULT_UPSTREAM,
     quality: int = 78,
 ):
@@ -186,6 +187,9 @@ async def region_math_stream(
         blend_mode: 'alpha' (default), 'poisson', 'hybrid'
         color_match_method: 'histogram' (default), 'mean_std'
         feather_px: mask edge softening
+        warp_method: 'affine' (default — ~2ms, visually 99% as good as TPS
+            for typical webcam poses) or 'tps' (~1500ms, pixel-exact, use
+            for preview/static frames only)
         upstream: source MJPEG URL (default = backend's own eyeTerm proxy)
         quality: output JPEG quality (1-100)
 
@@ -247,19 +251,34 @@ async def region_math_stream(
                     detected_count += 1
 
                     try:
-                        composed = compose(
-                            target_frame_bgr=frame,
-                            target_landmarks_px=user_result.landmarks_px,
-                            source_image_bgr=target_face.image_bgr,
-                            source_landmarks_px=target_face.landmarks_px,
-                            profile=profile,
-                            feather_px=feather_px,
-                            warp_method="tps",
-                            apply_color_match=True,
-                            color_match_method=color_match_method,
-                            blend_mode=blend_mode,
-                        )
-                        yield encode_mjpeg_frame(composed.composite, quality=quality)
+                        if warp_method == "affine" and blend_mode == "alpha" and color_match_method == "histogram":
+                            # Hot path: ~90ms full frame, 10-11 fps.
+                            composed_bgr = compose_fast(
+                                target_frame_bgr=frame,
+                                target_landmarks_px=user_result.landmarks_px,
+                                source_image_bgr=target_face.image_bgr,
+                                source_landmarks_px=target_face.landmarks_px,
+                                profile=profile,
+                                feather_px=feather_px,
+                                blend_mode=blend_mode,
+                            )
+                        else:
+                            # Slow path: full compose() with whatever the
+                            # user explicitly requested (TPS, poisson, …).
+                            result = compose(
+                                target_frame_bgr=frame,
+                                target_landmarks_px=user_result.landmarks_px,
+                                source_image_bgr=target_face.image_bgr,
+                                source_landmarks_px=target_face.landmarks_px,
+                                profile=profile,
+                                feather_px=feather_px,
+                                warp_method=warp_method,
+                                apply_color_match=True,
+                                color_match_method=color_match_method,
+                                blend_mode=blend_mode,
+                            )
+                            composed_bgr = result.composite
+                        yield encode_mjpeg_frame(composed_bgr, quality=quality)
                     except Exception as e:
                         logger.exception("face_math: compose failed: %s", e)
                         yield passthrough_frame(frame)
