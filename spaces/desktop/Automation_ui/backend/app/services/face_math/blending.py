@@ -24,10 +24,31 @@ import cv2
 import numpy as np
 
 
+def _valid_source_pixels(source_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Boolean array: pixels that are BOTH inside the mask AND have real
+    source content (not BORDER_CONSTANT zero).
+
+    The TPS-pre-aligned warped source has black BORDER_CONSTANT regions
+    where the source image didn't cover the destination canvas. If we
+    feed those into histogram-match or Poisson, they bias the statistics
+    toward black → pink/red tint in the composite. Excluding them is
+    the single fix that makes both face_oval (large mask) and Poisson
+    blending photoreal.
+
+    "Zero" check is permissive (max channel ≤ 6) to also catch
+    near-black noise from JPEG re-encoding around the border.
+    """
+    in_mask = mask > 0.1
+    max_chan = source_bgr.max(axis=2)
+    has_content = max_chan > 6
+    return in_mask & has_content
+
+
 def histogram_match_lab(
     source_bgr: np.ndarray,
     target_bgr: np.ndarray,
     mask: np.ndarray,
+    luminance_only: bool = False,
 ) -> np.ndarray:
     """Match source's LAB channel CDFs to target's, inside the mask.
 
@@ -35,20 +56,31 @@ def histogram_match_lab(
     becomes the target value at percentile p. Preserves rank-ordering
     (texture detail) — only re-maps the value range.
 
-    More robust than mean+std for sources with very different luma
-    distributions (e.g. B&W Marshall photo onto colour webcam frame).
+    By default operates on the L (luminance) channel only — re-lights
+    Marshall so his skin matches your ambient lighting, but keeps his
+    own a/b chroma. Matching all three channels independently used to
+    pull Marshall's neutral-tone skin toward webcam-pink and produced
+    the long-standing "magenta-blob" tint over face_oval profiles.
+
+    Set luminance_only=False to restore the legacy three-channel behaviour
+    when the source is genuinely B&W and you want it tinted toward the
+    target's chroma.
+
+    Samples ONLY pixels with real warped-source content — black
+    BORDER_CONSTANT regions are excluded from the CDF.
     """
     if mask.max() <= 0:
         return source_bgr
-    sample = mask > 0.1
+    sample = _valid_source_pixels(source_bgr, mask)
     if sample.sum() < 50:
         return source_bgr
 
     src_lab = cv2.cvtColor(source_bgr, cv2.COLOR_BGR2LAB)
     tgt_lab = cv2.cvtColor(target_bgr, cv2.COLOR_BGR2LAB)
     out = src_lab.copy()
+    channels = [0] if luminance_only else [0, 1, 2]
 
-    for ch in range(3):
+    for ch in channels:
         src_vals = src_lab[..., ch][sample]
         tgt_vals = tgt_lab[..., ch][sample]
         if src_vals.size == 0 or tgt_vals.size == 0:
@@ -106,20 +138,22 @@ def poisson_blend(
     Returns:
         Blended BGR image.
 
-    Caveat: cv2.seamlessClone expects a binary mask. We threshold the
-    soft α-mask at 0.5. The boundary smoothness comes from Poisson
-    itself — no need to pre-feather.
+    Caveat: cv2.seamlessClone expects a binary mask. We intersect the
+    soft α-mask (>0.5) with the warped source's actual content area —
+    BORDER_CONSTANT black pixels would otherwise feed zero-gradients
+    into Poisson and produce a red/pink tint over the whole region.
     """
     if mask.max() <= 0:
         return target_bgr
 
-    # Binary mask for seamlessClone
-    binary = (mask > 0.5).astype(np.uint8) * 255
+    # Binary mask = inside α AND has real warped-source content
+    valid = _valid_source_pixels(source_bgr, mask)
+    binary = valid.astype(np.uint8) * 255
 
-    # Find the centroid of the masked region — required argument
     ys, xs = np.where(binary > 0)
-    if ys.size == 0:
-        return target_bgr
+    if ys.size < 100:
+        # Too little real content to integrate gradients meaningfully
+        return alpha_blend(target_bgr, source_bgr, mask)
     center = (int(xs.mean()), int(ys.mean()))
 
     flag = {
@@ -154,15 +188,17 @@ def hybrid_blend(
     if mask.max() <= 0:
         return target_bgr
 
-    # Erode the mask inward to find the "core" (Poisson) area
-    binary = (mask > 0.5).astype(np.uint8) * 255
+    # Erode the mask-and-content intersection to find the "core"
+    # Poisson area. Excluding BORDER_CONSTANT zero pixels — same
+    # reason as poisson_blend.
+    valid = _valid_source_pixels(source_bgr, mask)
+    binary = valid.astype(np.uint8) * 255
     kernel = np.ones((feather_at_edge * 2 + 1,) * 2, np.uint8)
     core = cv2.erode(binary, kernel)
-    if core.sum() == 0:
-        # Mask too thin for Poisson — just alpha-blend
+    if core.sum() < 100 * 255:
+        # Mask too thin / source content too sparse for Poisson
         return alpha_blend(target_bgr, source_bgr, mask)
 
-    # Poisson the core area onto target
     ys, xs = np.where(core > 0)
     center = (int(xs.mean()), int(ys.mean()))
     flag = {
