@@ -31,6 +31,7 @@ from .blending import (
 )
 from .landmark_detector import FaceLandmarkDetector, LandmarkResult
 from .regions import SWAP_PROFILES
+from .source_prep import normalise_source
 from .warp import apply_affine, estimate_affine, warp_source_to_target
 
 
@@ -106,6 +107,7 @@ def compose(
     apply_color_match: bool = True,
     color_match_method: str = "mean_std",
     blend_mode: str = "alpha",
+    normalise_src: bool = True,
 ) -> CompositeResult:
     """Build a region-composite face swap.
 
@@ -135,6 +137,12 @@ def compose(
         CompositeResult with everything you need to inspect the math.
     """
     h, w = target_frame_bgr.shape[:2]
+
+    # 0. Normalise the source (gray-world + contrast damp) — see
+    #    compose_fast for the rationale. Neutralises the colour cast of
+    #    stylised/AI sources so the composite stays photoreal.
+    if normalise_src:
+        source_image_bgr = normalise_source(source_image_bgr)
 
     # 1. Build the α-mask
     if region_names is not None:
@@ -209,6 +217,7 @@ def compose_fast(
     profile: str = "inner_face",
     feather_px: int = 12,
     blend_mode: str = "alpha",
+    normalise_src: bool = True,
 ) -> np.ndarray:
     """Realtime-tier composite: affine warp + bbox-localised color/blend.
 
@@ -226,6 +235,14 @@ def compose_fast(
     Suitable for 10-15 fps live preview.
     """
     h, w = target_frame_bgr.shape[:2]
+
+    # 0. Normalise the source — gray-world white balance + contrast damp.
+    #    A stylised / AI-generated source (sepia cast, cranked contrast)
+    #    is what causes the pink/yellow tint after compositing; this
+    #    pulls it toward a neutral photograph. A real photo passes
+    #    through almost unchanged. Cheap (two small per-pixel ops).
+    if normalise_src:
+        source_image_bgr = normalise_source(source_image_bgr)
 
     # 1. Mask in full-frame coords (cheap — mostly a fillPoly).
     mask = make_profile_mask(
