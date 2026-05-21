@@ -301,11 +301,13 @@ async def create_op(
     params = _decode_multiarg(params)
     bubble_arg = (
         params.get("bubble") or params.get("bubble_id") or
-        params.get("bubble_name") or params.get("parent") or ""
+        params.get("bubble_name") or params.get("bubble_title") or
+        params.get("space") or params.get("parent") or ""
     ).strip() if isinstance(params, dict) else ""
     title = (
         params.get("title") or params.get("name") or
-        params.get("node_title") or params.get("idea") or ""
+        params.get("node_title") or params.get("note_title") or
+        params.get("idea") or ""
     ).strip() if isinstance(params, dict) else ""
     content = (
         params.get("content") or params.get("description") or
@@ -362,60 +364,101 @@ async def create_op(
             if m:
                 bubble_arg = m.group(1)
             else:
-                mq = re.search(
-                    r'bubble\s+["„“»]?([\w\s.\-]+?)["“”«]?\s*[\(:]',
-                    intent_txt, re.I,
-                )
-                if mq:
-                    bubble_arg = mq.group(1).strip()
+                # Phase 11.W2 (A.4) — the old pattern required a '(' or ':'
+                # right after the bubble name, so "… in der Bubble Foo_Bar."
+                # (trailing period / end-of-string) never matched and the op
+                # early-returned. Accept quote-delimited, or a bare token up
+                # to a terminator (punctuation / 'mit'/'with' / EOL).
+                for pat in (
+                    r'bubble\s+["„“»]([^"“”«]+)["“”«]',           # quoted
+                    r'(?:bubble|space|raum)\s+([\w.\-]+)',         # bare token
+                ):
+                    mq = re.search(pat, intent_txt, re.I)
+                    if mq:
+                        bubble_arg = mq.group(1).strip().rstrip(".,;:")
+                        break
         if not title:
             mt = re.search(
-                r'(?:Titel|title)\s+["„“»]([^"“”«]+)',
+                r'(?:Titel|title|Note|Notiz)\s+["„“»]([^"“”«]+)',
                 intent_txt, re.I,
             )
             if mt:
                 title = mt.group(1).strip()[:120]
         if not content:
             mc = re.search(
-                r"(?:Inhalt|content)\s*:\s*(.+)", intent_txt,
-                re.I | re.S,
+                r"(?:Inhalt|content|body|text)\s*:?\s*[\"„“»]?([^\"“”«]+)",
+                intent_txt, re.I | re.S,
             )
             if mc:
                 content = mc.group(1).strip()
 
     if not bubble_arg:
-        return (
-            "Need a bubble (title or id) to create a node in. "
-            f"Got params keys: {sorted(params.keys()) if isinstance(params, dict) else params!r}"
-        )
+        return {
+            "ok": False,
+            "error": (
+                "Need a bubble (title or id) to create a node in. "
+                f"Got params keys: "
+                f"{sorted(params.keys()) if isinstance(params, dict) else params!r}"
+            ),
+        }
     if not title:
-        return f"Need a node title. Got bubble={bubble_arg!r} but no title."
+        return {
+            "ok": False,
+            "error": f"Need a node title. Got bubble={bubble_arg!r} but no title.",
+        }
 
     bubble_id = await _resolve_bubble_id(client, bubble_arg)
     if not bubble_id:
-        return f"Bubble {bubble_arg!r} not found."
+        return {"ok": False, "error": f"Bubble {bubble_arg!r} not found."}
 
     node = await client.create_canvas_node(bubble_id, title, content)
-    if not node:
-        return f"Failed to create node '{title}' in bubble {bubble_arg!r}."
+    if not node or not node.get("id"):
+        return {
+            "ok": False,
+            "error": f"Failed to create node '{title}' in bubble {bubble_arg!r}.",
+        }
 
-    created_new = (node.get("content") or "") == (content or title) or True
+    # Phase 11.W2 (A.3) — read-back verify. create_canvas_node can return a
+    # locally-built dict on an ambiguous POST response; the only honest
+    # confirmation that the row is really persisted is to read it back from
+    # the DB. The hard validator rule:canvas_node_persisted keys off the
+    # `node_id` in this dict, so we MUST NOT report one we can't re-fetch.
+    node_id = node.get("id")
+    verified = await client.get_canvas_node_in_bubble(bubble_id, title)
+    if not verified or not verified.get("id"):
+        return {
+            "ok": False,
+            "error": (
+                f"Node '{title}' POST returned id={node_id} but the row is "
+                f"not readable back from bubble {bubble_arg!r} — treating as "
+                f"NOT persisted."
+            ),
+        }
+    node_id = verified.get("id") or node_id
+
     _publish(
         event_id="idea.create",
         params={
-            "node_id": node.get("id"),
+            "node_id": node_id,
             "bubble_id": bubble_id,
-            "title": node.get("title", title),
-            "content": node.get("content", content),
-            "x": node.get("x"), "y": node.get("y"),
+            "title": verified.get("title", title),
+            "content": verified.get("content", content),
+            "x": verified.get("x"), "y": verified.get("y"),
         },
         result=f"Created node '{title}' in bubble {bubble_arg}",
         ok=True,
     )
-    return (
-        f"Node '{node.get('title', title)}' "
-        f"(id={node.get('id')}) is now in bubble '{bubble_arg}'."
-    )
+    return {
+        "ok": True,
+        "created": True,
+        "node_id": node_id,
+        "bubble_id": bubble_id,
+        "title": verified.get("title", title),
+        "message": (
+            f"Node '{verified.get('title', title)}' (id={node_id}) "
+            f"verified in bubble '{bubble_arg}'."
+        ),
+    }
 
 
 async def update_op(

@@ -290,6 +290,33 @@
     kind: rule:idea_created
     on_fail: report
 
+# ─── Phase 11.W2 — verified component-note write ───────────────────────
+# Dedicated write capability for the E-Ticketing component-fill workflow
+# (and any "fill a named note in a named bubble" task). Same supabase
+# executor as idea_add, but with the STRICT validator: idea_add's
+# rule:idea_created + on_fail:report let Brain claim success while
+# nothing persisted. component_note_write uses rule:canvas_node_persisted
+# + on_fail:block — the hop (and the whole plan) fails honestly unless
+# create_op's read-back verify confirmed the row in canvas_nodes.
+# create_op already mines bubble/title/content from the param-bag and
+# the _intent text, so the single arg_kwarg is fine.
+- capability: component_note_write
+  description: "write a verified note into a named bubble, fill a component note with its spec, persist a component requirement as a canvas note, schreibe eine geprüfte Notiz in eine Bubble, fülle eine Komponenten-Note mit Inhalt"
+  anchor_phrases:
+    - "write the spec for Auth_Identity into the E-Ticketing bubble"
+    - "fill the Payment_Layer note with its requirements"
+    - "persist this component requirement as a note"
+    - "schreibe die Spec für Auth in die Bubble"
+    - "fülle die Komponenten-Note mit Inhalt"
+  match_patterns:
+    - "(write|fill|persist|schreib|fülle|befülle)\\s+.*\\b(note|notiz|spec|component|komponente)\\b"
+    - "(note|notiz|spec)\\s+.*\\b(into|in|in die|in der)\\s+.*\\b(bubble|space)\\b"
+  execution_target: "supabase:idea.create"
+  arg_kwarg: title
+  validator:
+    kind: rule:canvas_node_persisted
+    on_fail: block
+
 # ─── Phase 11.H — Idea content-validation capabilities ─────────────────
 # These give the plan-generator access to the rich idea_tools.py functions
 # beyond plain creation: AI-tree-search expansion, classification,
@@ -1115,3 +1142,32 @@
   # Built + verified end-to-end 2026-05-19 (plan
   # k-nnnen-wir-adative-skills-splendid-mochi.md).
   execution_target: "openfang:openclaw-visible"
+
+- capability: openfang_agent_create
+  description: "create a new OpenFang agent, spawn agent from template, build agent for task X, configure agent tools/MCP servers/system prompt — wraps :4200/api/agents/* via the openfang-agents MCP server"
+  match_patterns:
+    # English: create/spawn/build [an] [openfang] agent
+    - "(create|spawn|build|make)\\s+(an?\\s+)?(new\\s+)?(openfang\\s+)?agent\\b"
+    # German: erstelle/baue/starte/spawn [einen] [neuen] [openfang] agent[en]
+    - "(erstelle|baue|spawn|starte|create)\\s+(einen?\\s+)?(neuen?\\s+)?(openfang[- ]?)?agent(en)?\\b"
+    # Explicit "openfang agent" subject + verb in any order
+    - "openfang[- ]?agent\\s+(create|spawn|build|erstelle|anlegen|bauen|starten)"
+    # List request — also routes here for the "what's running" sub-question
+    - "(list|zeig\\w*|show|liste)\\s+(all\\s+|alle\\s+)?(openfang\\s+)?agents?\\b"
+  # Phase 2 (Sofort-Fix 2026-05-20): route to fungus-search (Running, claude-code
+  # provider, has MCP access via :4200/mcp aggregator). The agent sees the user
+  # intent via /api/agents/{id}/message and uses its MCP tools (incl. the new
+  # openfang-agents server) to spawn/patch/kill via natural language.
+  # → Brain → OpenFang Claude-Agent → MCP-Tools → :4200/api/agents (Variante 2)
+  #
+  # Phase 4 follow-up (deferred — needs /api/mcp/dispatch route in Brain):
+  # execution_target: "mcp:openfang-agents:openfang_agent_spawn_from_template"
+  # would be the deterministic direct-call variant. McpExecutor in
+  # capability_targets.py:621 is currently a Phase-4 stub that POSTs to a
+  # non-existent /api/mcp/dispatch route. Until that route is implemented,
+  # use the openfang: target above.
+  execution_target: "openfang:fungus-search"
+  # Try to extract the template/role name from the intent:
+  # "agent for code-review", "agent namens X", "agent named X"
+  result_arg_extractor: 'regex:agent\s+(?:for|für|named|namens)\s+(.+?)(?:\s+(?:with|mit|using|und|and)|$)'
+

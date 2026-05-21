@@ -167,6 +167,31 @@ class SupabaseIdeasClient:
             params["linked_idea_id"] = "is.null"
         return await self._request("GET", "/canvas_nodes", params=params) or []
 
+    async def get_canvas_node_in_bubble(
+        self, bubble_id: str, title: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Phase 11.W2 — read-back a single node by (bubble, exact title).
+
+        Used by create_op to VERIFY a write actually persisted before
+        reporting success. Scoped to the bubble (linked_idea_id) and a
+        case-insensitive exact title — same key the dedup in
+        create_canvas_node uses. Returns the row or None.
+        """
+        bid = (bubble_id or "").strip()
+        t = (title or "").strip()
+        if not bid or not t:
+            return None
+        rows = await self._request(
+            "GET", "/canvas_nodes",
+            params={
+                "select": "*",
+                "linked_idea_id": f"eq.{bid}",
+                "title": f"ilike.{t}",
+                "limit": "1",
+            },
+        )
+        return rows[0] if rows else None
+
     async def create_canvas_node(
         self,
         bubble_id: str,

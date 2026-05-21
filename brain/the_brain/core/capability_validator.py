@@ -106,14 +106,61 @@ def _rule_bubble_id_present(raw: Any, **_) -> Dict[str, Any]:
 
 
 def _rule_idea_created(raw: Any, **_) -> Dict[str, Any]:
-    """Pass if the idea-creation tool returned a positive confirmation."""
+    """Pass if the idea-creation tool returned a positive confirmation.
+
+    Phase 11.W2 — the hardened create_op returns {ok, node_id, ...}. An
+    error dict has ok=False, so check that explicitly before the id keys
+    (an error dict has no id key, but be defensive). For a brand-new
+    write the strict `rule:canvas_node_persisted` is preferred; this rule
+    stays the lenient default for the legacy idea_add capability.
+    """
     if isinstance(raw, dict):
+        if raw.get("ok") is False:
+            return {
+                "valid": False,
+                "reason": raw.get("error") or "create reported ok=False",
+            }
         ok = raw.get("ok") or raw.get("success") or raw.get("created")
-        if ok or raw.get("idea_id") or raw.get("id"):
+        if ok or raw.get("idea_id") or raw.get("id") or raw.get("node_id"):
             return {"valid": True, "reason": "idea creation confirmed"}
     if isinstance(raw, str) and re.search(r"(created|added|saved|got it)", raw, re.IGNORECASE):
         return {"valid": True, "reason": "string confirms idea creation"}
     return {"valid": False, "reason": "no idea-creation confirmation"}
+
+
+def _rule_canvas_node_persisted(raw: Any, **_) -> Dict[str, Any]:
+    """Phase 11.W2 (A.2) — HARD verification that a canvas_node write
+    actually persisted to the DB.
+
+    Unlike `idea_created`, this does NOT accept a bare string with the
+    word "created" — the old rule passed on a freely-worded success
+    string AND failed to catch create_op's early-return error strings,
+    so Brain reported "ok" while nothing was written. This rule only
+    passes for the structured dict that the hardened create_op returns
+    AFTER its read-back verify: it requires `ok is True` AND a real
+    `node_id`. Anything else (error dict, string, None) is a hard fail —
+    pair it with `on_fail: block` so the plan reports the truth.
+    """
+    if not isinstance(raw, dict):
+        return {
+            "valid": False,
+            "reason": f"expected a dict from create_op, got {type(raw).__name__}",
+        }
+    if raw.get("ok") is not True:
+        return {
+            "valid": False,
+            "reason": (
+                f"create_op reported ok={raw.get('ok')!r}: "
+                f"{raw.get('error') or raw.get('message') or 'no detail'}"
+            ),
+        }
+    node_id = raw.get("node_id")
+    if not node_id or not isinstance(node_id, str):
+        return {
+            "valid": False,
+            "reason": "create_op ok=True but no node_id — write not verified",
+        }
+    return {"valid": True, "reason": f"canvas node {node_id} verified in DB"}
 
 
 def _rule_score_in_range(raw: Any, **_) -> Dict[str, Any]:
@@ -140,6 +187,8 @@ RULES: Dict[str, Callable[..., Dict[str, Any]]] = {
     "score_in_range": _rule_score_in_range,
     "bubble_id_present": _rule_bubble_id_present,
     "idea_created": _rule_idea_created,
+    # Phase 11.W2 — hard, read-back-verified canvas-node write check.
+    "canvas_node_persisted": _rule_canvas_node_persisted,
 }
 
 
