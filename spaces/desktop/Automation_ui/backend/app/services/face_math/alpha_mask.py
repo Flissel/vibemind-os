@@ -105,8 +105,27 @@ def make_composite_mask(
         np.maximum(out, sub, out=out)
 
     if feather_px > 0:
+        # Erode the hard mask inward by HALF the feather radius before
+        # blurring. A plain GaussianBlur spreads the soft edge
+        # symmetrically — half lands outside the polygon, so the swap
+        # bleeds past the landmark (the "bright halo around the brows").
+        # Eroding by feather_px/2 re-centres the transition on the
+        # original contour: it fades from ~full alpha just inside the
+        # edge to zero just outside. Eroding by the FULL radius would
+        # eat thin regions (lips/eyes are only 10-20 px wide) down to
+        # nothing — half is the safe compromise.
+        erode_k = max(1, feather_px // 2)
+        hard = (out > 0.5).astype(np.uint8)
+        kernel = np.ones((erode_k * 2 + 1, erode_k * 2 + 1), np.uint8)
+        eroded = cv2.erode(hard, kernel)
+        # Guard: if erosion wiped a region out entirely (very thin mask
+        # vs large feather), fall back to the un-eroded hard mask so the
+        # swap still happens — a small halo beats no swap at all.
+        if eroded.sum() < hard.sum() * 0.15:
+            eroded = hard
+        eroded_f = eroded.astype(np.float32) * out  # carry per-region alpha
         ksize = feather_px * 2 + 1
-        out = cv2.GaussianBlur(out, (ksize, ksize), feather_px / 3.0)
+        out = cv2.GaussianBlur(eroded_f, (ksize, ksize), feather_px / 3.0)
     return np.clip(out, 0.0, 1.0)
 
 

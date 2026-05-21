@@ -104,7 +104,7 @@ def compose(
     feather_px: int = 12,
     warp_method: str = "tps",
     apply_color_match: bool = True,
-    color_match_method: str = "histogram",
+    color_match_method: str = "mean_std",
     blend_mode: str = "alpha",
 ) -> CompositeResult:
     """Build a region-composite face swap.
@@ -252,8 +252,11 @@ def compose_fast(
     crop_src = warped_full[y0:y1, x0:x1]
     crop_mask = mask[y0:y1, x0:x1]
 
-    # 5. Color-match in bbox.
-    crop_src = histogram_match_lab(crop_src, crop_tgt, crop_mask)
+    # 5. Color-match in bbox. Reinhard mean+std transfer (color_match_lab)
+    #    — clamped, balanced. Histogram-CDF matching used to tip Marshall's
+    #    sepia-toned AI source into a red/yellow cast; mean+std with a
+    #    scale clamp keeps the masked region on the target's skin tone.
+    crop_src = color_match_lab(crop_src, crop_tgt, crop_mask)
 
     # 6. Blend in bbox.
     if blend_mode == "alpha":
