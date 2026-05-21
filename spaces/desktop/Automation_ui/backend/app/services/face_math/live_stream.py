@@ -302,7 +302,12 @@ async def region_math_stream(
         return
 
     # Default: MJPEG over HTTP (eyeTerm proxy)
-    client = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=None))
+    # httpx.Timeout needs either a default or all four explicit params.
+    # connect bounded (10s), read None so the long-lived MJPEG stream
+    # never times out mid-frame.
+    client = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
+    )
     try:
         async with client.stream("GET", upstream) as response:
             if response.status_code != 200:
