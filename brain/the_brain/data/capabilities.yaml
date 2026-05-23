@@ -300,6 +300,31 @@
 # create_op's read-back verify confirmed the row in canvas_nodes.
 # create_op already mines bubble/title/content from the param-bag and
 # the _intent text, so the single arg_kwarg is fine.
+# ─── Phase 11.W2 Stage B — component requirements lookup ──────────────
+# Antwortet auf "Auth", "Payment_Layer", "was braucht <X>", "requirements
+# for <X>" mit Soll-Anforderungen aus data/component_specs.yaml + dem
+# Ist-Stand aus der Bubble (welche pro-requirement Notes schon da sind).
+# Reine Lese-Operation, keine DB-Mutation.
+- capability: component_requirements
+  description: "list the required parts of a component, show what a component needs, was braucht eine Komponente, requirements for Auth or Payment_Layer, list gaps in the E-Ticketing bubble for a component"
+  anchor_phrases:
+    - "what does Auth need"
+    - "requirements for Payment_Layer"
+    - "was braucht Auth_Identity"
+    - "welche Anforderungen hat Routing_Search"
+    - "show me the gaps in DB_REST_API"
+    - "list what is missing in DSGVO_Datenschutz"
+  match_patterns:
+    - "\\b(was|what)\\s+(braucht|needs?|requires?)\\b"
+    - "\\brequirements?\\s+(for|of|von|für)\\b"
+    - "\\b(luecken|lücken|gaps?|missing|fehlt)\\s+(in|für|for)\\b"
+    - "\\bspec(s|ifications?)?\\s+(of|for|von|für)\\s+\\w+"
+  execution_target: "supabase:component.requirements"
+  arg_kwarg: component
+  validator:
+    kind: rule:non_empty_result
+    on_fail: report
+
 - capability: component_note_write
   description: "write a verified note into a named bubble, fill a component note with its spec, persist a component requirement as a canvas note, schreibe eine geprüfte Notiz in eine Bubble, fülle eine Komponenten-Note mit Inhalt"
   anchor_phrases:

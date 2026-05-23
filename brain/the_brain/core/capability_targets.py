@@ -677,6 +677,9 @@ class SupabaseExecutor(_BaseRemoteExecutor):
         "bubble.delete", "bubble.stats", "bubble.score", "bubble.noop",
         "idea.list", "idea.count", "idea.find", "idea.delete", "idea.move",
         "idea.format", "idea.llm",
+        # Phase 11.W2 Stage B — component-spec lookup (reuses SupabaseExecutor
+        # because it needs the same Supabase client to read the bubble's IST-state)
+        "component.requirements",
     }
 
     def __init__(self, target: str) -> None:
@@ -725,6 +728,12 @@ class SupabaseExecutor(_BaseRemoteExecutor):
             "idea.format": _ops.idea_format_op,
             "idea.llm": _ops.idea_llm_op,
         }
+        # Phase 11.W2 Stage B — component_specs lookup (separate module so
+        # the YAML cache is contained; reuses the same Supabase client to
+        # read the bubble's IST-state).
+        if self.operation == "component.requirements":
+            from . import component_specs_ops as _cso
+            return _asyncio.run(_cso.lookup_op(client, payload))
         fn = op_map.get(self.operation)
         if fn is None:
             raise ValueError(f"unhandled operation: {self.operation!r}")
