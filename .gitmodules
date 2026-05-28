@@ -1,9 +1,6 @@
 [submodule "voice"]
 	path = voice
 	url = https://github.com/Flissel/VibeMind-VoiceDialog.git
-[submodule "ops"]
-	path = ops
-	url = https://github.com/Flissel/vibemind-os.git
 [submodule "shared"]
 	path = shared
 	url = https://github.com/Flissel/vibemind-shared.git
