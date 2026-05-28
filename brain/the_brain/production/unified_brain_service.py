@@ -21,9 +21,7 @@ Usage:
     python production/unified_brain_service.py
 
     # Then start other services:
-    python web/brain_dashboard_server.py
     python production/api_server.py
-    python web/autonomous_swarm_server.py
 """
 
 from flask import Flask, jsonify, request
