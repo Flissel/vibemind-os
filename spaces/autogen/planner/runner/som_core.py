@@ -182,13 +182,32 @@ def resume(run_id: str, answers: dict[str, str] | None = None, cancel: bool = Fa
       lassen. Re-plant MIT den Antworten + Daten-Kontext. run_id bleibt stabil
       (Session), Artefakt-Versionen bumpen.
 
-    Der Resume FÜHRT NICHTS AUS — er plant/validiert nur neu (Execution-Rückkanal
-    bleibt Phase 6). Pusht das Ergebnis wie run() an Telegram.
+    Zwei Modi (unterschieden an run_meta.phase):
+    - phase == "executing" + awaiting_approval → EXEC-FREIGABE: die Antwort ist
+      ja/nein für ein Approval-Gate → som_execute.continue_run (Phase 6), KEIN
+      Re-Plan.
+    - sonst → PLAN-FRAGE: re-plant mit den Antworten als Fakten (Phase 5).
+    Pusht das Ergebnis wie run() an Telegram.
     """
     meta = _state.run_meta(run_id)
     intent = meta.get("intent") or ""
     if not intent:
         return {"run_id": run_id, "status": "failed", "error": "unbekannter run_id / kein Intent"}
+
+    # ── EXEC-Freigabe (Phase 6): pausierter Ausführungs-Lauf am Approval-Gate ──
+    if meta.get("phase") == "executing" and meta.get("status") == "awaiting_approval":
+        approved = (not cancel)
+        if answers:
+            txt = " ".join(str(v) for v in answers.values()).lower()
+            if any(w in txt for w in ("nein", "no", "stop", "abbruch")):
+                approved = False
+            elif any(w in txt for w in ("ja", "yes", "ok", "freigabe", "los")):
+                approved = True
+        try:
+            somx = _load("som_execute_resume", _PLANNER / "runner" / "som_execute.py")
+            return somx.continue_run(run_id, approved=approved)
+        except Exception as e:  # noqa: BLE001
+            return {"run_id": run_id, "status": "failed", "error": f"exec-resume: {e}"}
 
     if cancel:
         _state.run_meta_update(run_id, status="cancelled")

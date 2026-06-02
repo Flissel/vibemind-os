@@ -1296,3 +1296,19 @@
   execution_target: "openfang:som-resume"
   agents:
     primary: [som-resume]
+
+- capability: som_execute
+  description: "Führt einen fertigen (ready) SoM-Plan tatsächlich aus — Schritt für Schritt über die zuständigen Agenten, mit Approval-Gates die vor sensiblen Aktionen (Speichern/Versand) anhalten. Für 'führe den Plan aus', 'los, mach das', 'starte die Ausführung'. Nimmt den jüngsten ready-Plan."
+  anchor_phrases:
+    - "führe den plan aus"
+    - "starte die ausführung"
+    - "mach das jetzt"
+    - "los, ausführen"
+    - "plan ausführen"
+  match_patterns:
+    - "(führe|fuehre|starte|mach)\\s+.{0,20}(plan|aus|ausführung|ausfuehrung)"
+    - "plan\\s+ausf(ü|ue)hren"
+    - "^\\s*(los|ausführen|ausfuehren|mach\\s+es)\\s*$"
+  execution_target: "openfang:som-execute"
+  agents:
+    primary: [som-execute]

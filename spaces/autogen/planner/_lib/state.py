@@ -241,6 +241,41 @@ def answers_message_id(run_id: str, message_id: int) -> dict[str, Any]:
     return data
 
 
+# ── Execution-State (Phase 6: ready-Plan ausführen) ──────────────────────────
+# exec_state.yaml hält pro Run den Ausführungs-Fortschritt: je Schritt
+# {status, output, error}. Quelle der Wahrheit fürs Resume eines Exec-Laufs.
+def exec_state_path(run_id: str) -> Path:
+    return run_dir(run_id) / "exec_state.yaml"
+
+
+def exec_state_read(run_id: str) -> dict[str, Any]:
+    return _load(exec_state_path(run_id))
+
+
+def exec_state_init(run_id: str, step_ids: list[str]) -> dict[str, Any]:
+    """Legt exec_state.yaml an (alle Schritte pending) — idempotent: vorhandene
+    done/failed-Stati bleiben erhalten (Resume eines abgebrochenen Exec-Laufs)."""
+    with _run_lock(run_id):
+        data = exec_state_read(run_id)
+        steps = data.get("steps") or {}
+        for sid in step_ids:
+            steps.setdefault(sid, {"status": "pending", "output": None, "error": None})
+        data["steps"] = steps
+        data.setdefault("phase", "executing")
+        _atomic_dump(exec_state_path(run_id), data)
+    return data
+
+
+def exec_step_update(run_id: str, step_id: str, **fields: Any) -> dict[str, Any]:
+    with _run_lock(run_id):
+        data = exec_state_read(run_id)
+        steps = data.setdefault("steps", {})
+        st = steps.setdefault(step_id, {"status": "pending"})
+        st.update(fields)
+        _atomic_dump(exec_state_path(run_id), data)
+    return data
+
+
 # ── message_id -> run_id Reply-Map (Schritt 4, global über alle Runs) ─────────
 def _answers_map_path() -> Path:
     return state_root() / "answers_map.json"
