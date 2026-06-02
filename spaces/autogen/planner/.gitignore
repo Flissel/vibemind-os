@@ -1,0 +1,9 @@
+# SoM-Planner — Laufzeit-Artefakte NIEMALS committen.
+# state/runs/ enthält echte Pläne mit potenziell sensiblen Daten (Namen, Akten-
+# Pfade, Antworten). Bleibt lokal — wie ~/Documents/Buergergeld.
+state/
+__pycache__/
+*.pyc
+.run.lock
+answers_map.json
+telegram_offset.json

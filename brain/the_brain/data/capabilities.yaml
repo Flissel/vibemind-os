@@ -1196,3 +1196,82 @@
   # "agent for code-review", "agent namens X", "agent named X"
   result_arg_extractor: 'regex:agent\s+(?:for|für|named|namens)\s+(.+?)(?:\s+(?:with|mit|using|und|and)|$)'
 
+# ============================================================
+# Bürgergeld Skill-Suite (Phase 1 — CLI-First)
+# ============================================================
+# Diese Capabilities sind als Routen für künftige Voice/Brain-Integration
+# vorbereitet. CLI-Aufruf der Skills funktioniert heute schon ohne Brain:
+#   python skills/buergergeld/parse-eingang/run.py <pdf>
+#   python skills/buergergeld/status-abgleich/run.py <forderungen.yaml>
+#
+# Daten liegen LOKAL in ~/Documents/Buergergeld/ (sensitive Sozialdaten,
+# NIE in Rowboat-KB / Mongo / Qdrant — siehe Memory feedback-sensitive-data-not-in-rowboat-kb).
+#
+# Phase 4 wird execution_target aktivieren wenn Voice-Layer integriert ist.
+
+- capability: buergergeld_parse_eingang
+  description: "Parse Behörden-PDF (Jobcenter, Agentur für Arbeit, etc.) aus dem Bürgergeld-Eingang in strukturierte Forderungsliste mit Frist, Absender und Kategorien. Liest Mitwirkungsersuchen (MWS), Bescheide, Aufforderungen — extrahiert was gefordert ist."
+  anchor_phrases:
+    - "lies das Schreiben vom Jobcenter"
+    - "parse den neuen Brief"
+    - "was will das Jobcenter"
+    - "neue Post vom Jobcenter"
+    - "Mitwirkungsersuchen auswerten"
+  match_patterns:
+    - "(lies|lese|parse|werte\\s+aus|auswerten)\\s+.{0,20}(brief|schreiben|post|mws|mitwirkungs|bescheid|jobcenter)"
+    - "(neue|neues|aktuelles)\\s+(schreiben|post|brief|mws)\\s+.{0,20}(jobcenter|buergergeld|arge|agentur)"
+    - "was\\s+(will|fordert|verlangt)\\s+(das\\s+)?(jobcenter|amt|behörde)"
+  # Phase 4 aktiviert: delegiert an OpenFang-Agent auf dem Host (Skills + Akte
+  # leben dort, nicht im Brain-Container). Der Agent-Wrapper routet den Intent
+  # selbst zur richtigen Pipeline-Funktion.
+  execution_target: "openfang:brain-buergergeld"
+  agents:
+    primary: [brain-buergergeld]
+    supporting: [rowboat-knowledge]
+
+- capability: buergergeld_status_abgleich
+  description: "Vergleicht eine geparste Forderungsliste mit dem aktuellen Akten-Stand (todo.yaml + vorhandene Nachweise/Dokumente). Identifiziert was schon eingereicht ist (erfüllt), was noch fehlt (offen), und optionale Items. Gibt Diff-Report als Markdown + YAML aus."
+  anchor_phrases:
+    - "Status meines Bürgergeld-Antrags"
+    - "was fehlt noch"
+    - "Stand der Nachreichungen"
+    - "Lücken im Antrag finden"
+    - "Akten-Abgleich"
+  match_patterns:
+    - "(was|welche).{0,15}(fehlt|fehlen|offen|noch\\s+ausstehend)"
+    - "(status|stand|abgleich)\\s+.{0,15}(antrag|buergergeld|nachreichung|akten?)"
+    - "(lücken?|gaps?)\\s+.{0,10}(antrag|akte|buergergeld)"
+    - "buergergeld.{0,15}(status|stand|fortschritt)"
+  # Phase 4 aktiviert: gleicher OpenFang-Agent. Der Wrapper erkennt am Intent
+  # ("status/fehlt") dass nur der Abgleich gemeint ist.
+  execution_target: "openfang:brain-buergergeld"
+  agents:
+    primary: [brain-buergergeld]
+    supporting: [rowboat-knowledge]
+
+# ============================================================
+# Society-of-Mind Planner (Phase 3 — Telegram/Voice triggerbar)
+# ============================================================
+# Generischer Multi-Agent-Planner für komplexe/mehrstufige Aufträge. Telegram-
+# Nachrichten (via brain-gateway) + Voice (via multihop) die nach einem Plan
+# verlangen, werden hierher geroutet → som-planner OpenFang-Agent → SoM-Pipeline
+# (Planner→Executor→Validator→Matrix, mit Feedback-Loop). Status-Push zurück an
+# Telegram automatisch. Sensible Daten lokal, Pläne stoppen am Approval-Gate.
+
+- capability: som_plan
+  description: "Society-of-Mind Multi-Agent-Planung für komplexe oder mehrstufige Aufträge: zerlegt einen Auftrag in Schritte, bestimmt Ausführung+Agenten, validiert, baut eine Ausführungs-Matrix. Für 'plane X', 'erstelle einen Plan für Y', 'orchestriere Z', mehrstufige Vorhaben mit mehreren Capabilities."
+  anchor_phrases:
+    - "plane das für mich"
+    - "erstelle einen Plan für"
+    - "orchestriere die Aufgabe"
+    - "wie gehe ich X an"
+    - "mach einen Multi-Agent-Plan"
+    - "society of mind plan"
+  match_patterns:
+    - "(plane|erstelle\\s+(?:einen|den)?\\s*plan|orchestriere)\\s+"
+    - "(multi.?agent|society.?of.?mind|som)\\s+plan"
+    - "wie\\s+(gehe\\s+ich|geht\\s+man|sollte\\s+ich)\\s+.{0,30}(an|vor)"
+  execution_target: "openfang:som-planner"
+  agents:
+    primary: [som-planner]
+    supporting: [rowboat-knowledge]
