@@ -41,6 +41,7 @@ _tools = _load("som_tools", _PLANNER / "_lib" / "tools.py")
 _matrix = _load("som_matrix", _PLANNER / "_lib" / "matrix.py")
 _notify = _load("som_notify", _PLANNER / "_lib" / "notify.py")
 _sources = _load("som_sources", _PLANNER / "_lib" / "sources.py")
+_questions = _load("som_questions", _PLANNER / "_lib" / "questions.py")
 
 
 def _call_agent(role: str, user_input: str, run_id: str = "") -> dict:
@@ -142,6 +143,14 @@ def _derive_questions(exec_plan: dict | None, verdict: dict | None) -> list[dict
             frage = f"Freigabe: {gate}"
         questions.append({"id": f"gate_{i}", "frage": frage, "typ": "approval"})
 
+    # Aufbereitung: interne Notizen raus, Tech/Pfade weg, menschlich formuliert,
+    # dedupliziert (User-Feedback 2026-06-02 — Telegram zeigte Validator-Jargon).
+    try:
+        cleaned = _questions.clean_questions(questions)
+        if cleaned:                       # nur ersetzen wenn was übrig bleibt
+            return cleaned
+    except Exception:  # noqa: BLE001 — Aufbereitung darf den Run nie brechen
+        pass
     return questions
 
 

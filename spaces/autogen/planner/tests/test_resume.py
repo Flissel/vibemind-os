@@ -149,7 +149,7 @@ def test_detail_output():
         ],
     }
     text = _notify.format_run_summary(result)
-    check("Fragen nummeriert (1) ... 2) ...)", "1)" in text and "2)" in text)
+    check("Fragen nummeriert (Emoji-Ziffern 1️⃣ 2️⃣)", "1️⃣" in text and "2️⃣" in text)
     check("Antwort-Anleitung vorhanden", "Antworte" in text)
     check("Abbruch-Hinweis vorhanden", " x " in text or "x  zum Abbrechen" in text)
     check("Unter 4096 Zeichen", len(text) <= 4096)

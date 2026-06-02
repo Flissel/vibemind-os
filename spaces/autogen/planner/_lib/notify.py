@@ -24,6 +24,17 @@ _STATUS_EMOJI = {
     "awaiting_approval": "⏸️",
     "needs_human": "🚧",
     "failed": "❌",
+    "cancelled": "🚫",
+}
+
+# Menschliche Status-Zeile statt "needs_input | WARN | 1 Gate"
+_STATUS_LINE = {
+    "ready": "Plan ist fertig.",
+    "needs_input": "Ich brauche noch ein paar Infos von dir:",
+    "awaiting_approval": "Ich brauche deine Freigabe:",
+    "needs_human": "Ich komme hier nicht allein weiter:",
+    "failed": "Das hat leider nicht geklappt.",
+    "cancelled": "Abgebrochen.",
 }
 
 
@@ -33,88 +44,77 @@ def _enabled() -> bool:
 
 def _shorten(text: str, n: int = 180) -> str:
     text = " ".join((text or "").split())
-    return text if len(text) <= n else text[: n - 1].rstrip() + "…"
+    # an Wortgrenze kürzen, nicht mitten im Wort
+    if len(text) <= n:
+        return text
+    cut = text[: n - 1]
+    if " " in cut:
+        cut = cut[: cut.rfind(" ")]
+    return cut.rstrip(" .,;:-—") + "…"
+
+
+def _intent_title(intent: str) -> str:
+    """Kurzer, menschlicher Titel aus dem Intent (erste sinnvolle Zeile)."""
+    t = " ".join((intent or "").split())
+    return _shorten(t, 90) or "Plan"
+
+
+_NUM_EMOJI = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 
 
 def format_questions(result: dict) -> list[str]:
-    """Baut die nummerierte Frage-Liste (Entscheidungsgrundlage) aus dem Result.
+    """Nummerierte, menschliche Fragen-Zeilen (mit Emoji-Ziffern).
 
-    Quelle: result['offene_fragen'] — von som_core aus exec.benoetigte_daten_fehlen
-    + verdict.approval_gates abgeleitet. Plaintext (notify kann kein Markdown)."""
+    Quelle: result['offene_fragen'] — bereits via questions.clean_questions
+    aufbereitet (kein Jargon/Technik/Pfade). Plaintext (notify kann kein Markdown)."""
     fragen = result.get("offene_fragen") or []
     out = []
     for i, q in enumerate(fragen, 1):
+        num = _NUM_EMOJI[i - 1] if i <= len(_NUM_EMOJI) else f"{i})"
         if isinstance(q, dict):
-            out.append(f"{i}) {_shorten(q.get('frage') or q.get('text') or str(q))}")
+            out.append(f"{num} {_shorten(q.get('frage') or q.get('text') or str(q), 160)}")
         else:
-            out.append(f"{i}) {_shorten(str(q))}")
+            out.append(f"{num} {_shorten(str(q), 160)}")
     return out
 
 
 def format_run_summary(result: dict) -> str:
-    """Baut eine Telegram-Zusammenfassung aus einem som_core-Run-Result.
+    """Baut eine FREUNDLICHE, menschliche Telegram-Nachricht aus einem Run-Result.
 
-    Bei needs_input/awaiting_approval werden die offenen Fragen NUMMERIERT
-    aufgelistet (die Entscheidungsgrundlage, die vorher fehlte) + eine
-    Antwort-Anleitung angehängt, damit der Nutzer direkt per Reply antworten
-    kann. 4096-Limit wird respektiert (Fragen werden notfalls gekürzt)."""
+    Kein Validator-Jargon, kein run-id/Status-Code, keine Matrix-Internas — nur:
+    Titel (was geplant wird), eine menschliche Status-Zeile, und bei Bedarf die
+    echten Nutzer-Fragen (schon via questions.clean_questions aufbereitet) +
+    eine knappe Antwort-Anleitung. 4096-Limit wird respektiert."""
     status = result.get("status", "?")
-    intent = result.get("intent", "")
-    run_id = result.get("run_id", "")
     emoji = _STATUS_EMOJI.get(status, "•")
-    head = f"{emoji} SoM-Plan {run_id}: {status}".strip()
-    lines = [head, f"Intent: {_shorten(intent, 120)}"]
+    title = _intent_title(result.get("intent", ""))
 
-    steps = result.get("steps", {})
-    pl = steps.get("planner", {})
-    val = steps.get("validator", {})
-    mx = steps.get("matrix", {})
-    if pl.get("n_steps") is not None:
-        lines.append(f"Schritte: {pl['n_steps']}")
-    if val.get("verdict"):
-        gates = val.get("n_gates", 0)
-        lines.append(f"Verdict: {val['verdict']}" + (f" | {gates} Approval-Gate(s)" if gates else ""))
-    if mx.get("ok"):
-        iso = mx.get("isolated") or []
-        lines.append(f"Matrix: {mx.get('n_nodes')} Schritte, {mx.get('n_edges')} Abhängigkeiten"
-                     + (f" | ⚠ verwaist: {iso}" if iso else ""))
+    lines = [f"{emoji} {title}"]
+    statusline = _STATUS_LINE.get(status)
+    if statusline:
+        lines.append(statusline)
 
-    fb = [k for k in steps if k.startswith("feedback_")]
-    if fb:
-        lines.append(f"Korrektur-Runden: {len(fb)}")
-    if result.get("feedback_exhausted"):
-        lines.append("⚠ Feedback-Limit erreicht — Mensch muss ran.")
-
-    # ── Entscheidungsgrundlage: nummerierte offene Fragen (das Kern-Feature) ──
     fragen = format_questions(result)
-    if fragen and status in ("needs_input", "awaiting_approval", "needs_human"):
+    has_q = bool(fragen) and status in ("needs_input", "awaiting_approval", "needs_human")
+
+    if has_q:
         lines.append("")
-        lines.append(f"Ich brauche {len(fragen)} Info(s):")
         lines.extend(fragen)
-        # Antwort-Anleitung. Die Antwort läuft via brain-gateway -> som_resume-
-        # Capability -> wird dem jüngsten wartenden Run zugeordnet (kein
-        # ID-Tippen). Die gezeigten Formen matchen die som_resume-match_patterns.
         lines.append("")
+        # Antwort-Anleitung: läuft via brain-gateway -> som_resume -> jüngster
+        # wartender Run (kein ID-Tippen). Formen matchen som_resume-match_patterns.
         if len(fragen) > 1:
-            beispiel = "  " + "  ".join(f"{i}: …" for i in range(1, min(len(fragen), 3) + 1))
-            lines.append("Antworte z.B. so:")
-            lines.append(beispiel)
+            beispiel = "  ".join(f"{i}: …" for i in range(1, min(len(fragen), 3) + 1))
+            lines.append(f"↩️ Antworte z.B.:  {beispiel}")
         else:
-            lines.append("Antworte einfach mit:  antwort: <deine Angabe>")
-        lines.append("oder  x  zum Abbrechen.")
-    else:
-        hint = {
-            "needs_input": "→ Fehlende Daten ergänzen, dann erneut.",
-            "awaiting_approval": "→ Approval-Gate(s) prüfen + freigeben.",
-            "needs_human": "→ Plan manuell prüfen.",
-            "ready": "→ Bereit.",
-            "cancelled": "→ Abgebrochen.",
-        }.get(status)
-        if hint:
-            lines.append(hint)
+            lines.append("↩️ Antworte mit:  antwort: deine Angabe")
+        lines.append("(oder  x  zum Abbrechen)")
+    elif status == "ready":
+        n = (result.get("steps", {}).get("planner") or {}).get("n_steps")
+        if n:
+            lines.append(f"({n} Schritte geplant — bereit zur Ausführung.)")
 
     text = "\n".join(lines)
-    # 4096 hard limit (notify_telegram chunkt nicht) — notfalls hinten kürzen.
     if len(text) > 4000:
         text = text[:3990].rstrip() + "\n…(gekürzt)"
     return text
