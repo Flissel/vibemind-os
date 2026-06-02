@@ -91,11 +91,16 @@ def format_run_summary(result: dict) -> str:
         lines.append("")
         lines.append(f"Ich brauche {len(fragen)} Info(s):")
         lines.extend(fragen)
-        # Antwort-Anleitung — Reply auf DIESE Nachricht (Schritt-4-Poller)
+        # Antwort-Anleitung. Die Antwort läuft via brain-gateway -> som_resume-
+        # Capability -> wird dem jüngsten wartenden Run zugeordnet (kein
+        # ID-Tippen). Die gezeigten Formen matchen die som_resume-match_patterns.
         lines.append("")
-        lines.append("Antworte als Reply auf diese Nachricht, z.B.:")
-        beispiel = "  " + "  ".join(f"{i}: …" for i in range(1, min(len(fragen), 3) + 1))
-        lines.append(beispiel)
+        if len(fragen) > 1:
+            beispiel = "  " + "  ".join(f"{i}: …" for i in range(1, min(len(fragen), 3) + 1))
+            lines.append("Antworte z.B. so:")
+            lines.append(beispiel)
+        else:
+            lines.append("Antworte einfach mit:  antwort: <deine Angabe>")
         lines.append("oder  x  zum Abbrechen.")
     else:
         hint = {

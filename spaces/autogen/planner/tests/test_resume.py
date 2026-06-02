@@ -150,9 +150,32 @@ def test_detail_output():
     }
     text = _notify.format_run_summary(result)
     check("Fragen nummeriert (1) ... 2) ...)", "1)" in text and "2)" in text)
-    check("Antwort-Anleitung vorhanden", "Antworte als Reply" in text)
+    check("Antwort-Anleitung vorhanden", "Antworte" in text)
     check("Abbruch-Hinweis vorhanden", " x " in text or "x  zum Abbrechen" in text)
     check("Unter 4096 Zeichen", len(text) <= 4096)
+
+
+# ── Test 6: latest_awaiting_run — Telegram-Antwort findet den wartenden Run ──
+def test_latest_awaiting_run():
+    print("Test 6: latest_awaiting_run (run-id-freie Telegram-Antwort)")
+    import time as _t
+    # Saubere Ausgangslage: aus früheren Tests übrige awaiting-Runs abräumen
+    # (latest_awaiting_run schaut über ALLE Runs — Sekunden-Timestamps können
+    # kollidieren, daher hier deterministisch isolieren).
+    for rid in _state.list_runs():
+        if _state.answers_read(rid).get("status") == "awaiting_answers":
+            _state.answers_set(rid, {q["id"]: "x" for q in _state.answers_read(rid).get("questions", [])})
+            _state.run_meta_update(rid, status="ready")
+    _state.run_create("aw_old", "fertig"); _state.run_meta_update("aw_old", status="ready")
+    _state.run_create("aw_1", "wartet")
+    _state.answers_write("aw_1", [{"id": "daten_1", "frage": "X?", "typ": "daten"}])
+    check("findet wartenden Run", _state.latest_awaiting_run() == "aw_1")
+    _t.sleep(1.05)
+    _state.run_create("aw_2", "neuer wartet")
+    _state.answers_write("aw_2", [{"id": "daten_1", "frage": "Y?", "typ": "daten"}])
+    check("nimmt den jüngsten wartenden", _state.latest_awaiting_run() == "aw_2")
+    _state.answers_set("aw_2", {"1": "beantwortet"})
+    check("beantworteter Run fällt raus", _state.latest_awaiting_run() == "aw_1")
 
 
 if __name__ == "__main__":
@@ -161,6 +184,7 @@ if __name__ == "__main__":
     test_resume_cancel()
     test_reply_map()
     test_detail_output()
+    test_latest_awaiting_run()
     print()
     print(f"=== {len(_passed)} PASSED, {len(_failed)} FAILED ===")
     if _failed:

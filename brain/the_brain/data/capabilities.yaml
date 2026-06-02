@@ -1275,3 +1275,24 @@
   agents:
     primary: [som-planner]
     supporting: [rowboat-knowledge]
+
+- capability: som_resume
+  description: "Beantwortet eine offene SoM-Plan-Rückfrage und nimmt den wartenden Plan wieder auf (oder bricht ihn ab). Greift wenn der SoM-Planner zuvor nach fehlenden Infos / Freigaben gefragt hat. Die Antwort wird dem jüngsten wartenden Run zugeordnet (kein ID-Tippen nötig), 'x' bricht ab."
+  anchor_phrases:
+    - "antwort"
+    - "antworte"
+    - "freigabe"
+    - "fortsetzen"
+    - "weiter mit dem plan"
+    - "nimm den plan wieder auf"
+  match_patterns:
+    # explizite Antwort-Formen (nummeriert, run-Präfix, Abbruch) + 'antwort:'-Trigger
+    - "^\\s*antwort\\s*[:=]"
+    - "^\\s*run_\\d+\\s*[:.]"
+    - "^\\s*\\d+\\s*[:.)]\\s*\\S"
+    - "^\\s*x\\s*$"
+    - "(setze|nimm)\\s+.{0,20}(plan|run)\\s+.{0,12}(fort|wieder\\s+auf)"
+    - "freigabe\\s+(erteilt|ja|ok)"
+  execution_target: "openfang:som-resume"
+  agents:
+    primary: [som-resume]

@@ -195,6 +195,25 @@ def answers_read(run_id: str) -> dict[str, Any]:
     return _load(answers_path(run_id))
 
 
+def latest_awaiting_run() -> str | None:
+    """Jüngster Run der auf Antworten wartet (answers_needed.status ==
+    awaiting_answers). Das ist der Kern der run-id-freien Telegram-Antwort:
+    der Frage-Push hat den Run als wartend markiert, die nächste eingehende
+    Nachricht beantwortet genau diesen. Sortiert nach run_meta.updated_at, sonst
+    nach Ordner-Name (run_0021 > run_0020).
+    """
+    candidates: list[tuple[str, str]] = []
+    for run_id in list_runs():
+        a = answers_read(run_id)
+        if a.get("status") == "awaiting_answers":
+            updated = run_meta(run_id).get("updated_at") or ""
+            candidates.append((f"{updated}|{run_id}", run_id))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
 def answers_set(run_id: str, antworten: dict[str, str]) -> dict[str, Any]:
     """Trägt Antworten ein (Mapping question-id ODER 1-basierter Index -> Text).
     Akzeptiert sowohl {"daten_1": "..."} als auch {"1": "..."}."""
