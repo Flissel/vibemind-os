@@ -2374,19 +2374,57 @@ async def multihop_execute(request: Request):
                 logger.exception(f"[multihop] shortcut crashed for intent={intent!r}: {e}")
                 plan = None  # fall through to LLM
 
+        # SoM⊕Brain-Merge (2026-06-03): der Capability-Shortcut hat nicht
+        # gegriffen (kein direkter 1-Hop-Match ODER multi-action). Statt jetzt
+        # den unzuverlässigen Groq-Multihop-LLM-Planner zu fragen (gab bei
+        # WhatsApp-Tasks reproduzierbar "no plan" nach ~38s), routen wir
+        # MEHRSTUFIGE Intents direkt an den robusten SoM-Planner. SoM liest
+        # dieselbe capabilities.yaml, plant aber zuverlässig (claude statt Groq).
+        # SOM_AS_PLANNER=1 (default): SoM ist der Planer für Mehrstufiges.
+        # =0: altes Verhalten (Groq primär, SoM nur als no-plan-Fallback unten).
+        som_route = False
         if plan is None:
-            if pl is None:
-                return JSONResponse({"error": "planner not loaded — pass a 'plan' instead"}, status_code=503)
-            # Phase 11.T.4 — async planning path; falls back to threadpool
-            aplan_fn = getattr(pl, "aplan", None)
-            if aplan_fn is not None:
-                plan = await aplan_fn(intent)
+            use_som = os.environ.get("SOM_AS_PLANNER", "1") not in ("0", "false", "False")
+            multi = _looks_like_multi_action(intent.lower())
+            if use_som and (multi or pl is None):
+                som_route = True  # -> SoM-Dispatch unten, KEIN Groq-Versuch
             else:
-                import asyncio as _asyncio
-                loop = _asyncio.get_running_loop()
-                plan = await loop.run_in_executor(None, pl.plan, intent)
+                if pl is None:
+                    return JSONResponse({"error": "planner not loaded — pass a 'plan' instead"}, status_code=503)
+                # Phase 11.T.4 — async planning path; falls back to threadpool
+                aplan_fn = getattr(pl, "aplan", None)
+                if aplan_fn is not None:
+                    plan = await aplan_fn(intent)
+                else:
+                    import asyncio as _asyncio
+                    loop = _asyncio.get_running_loop()
+                    plan = await loop.run_in_executor(None, pl.plan, intent)
     else:
         return JSONResponse({"error": "intent or plan required"}, status_code=400)
+
+    # SoM-Dispatch: einheitlicher Pfad für (a) mehrstufige Intents (som_route)
+    # und (b) Groq-Multihop-Versagen ("no plan", SOM_NOPLAN_FALLBACK=1 default).
+    # som-planner ist async (antwortet sofort, Ergebnis kommt per Telegram) —
+    # blockiert diesen Handler nicht. Reuse build_executor (self-healing gg
+    # OpenFang-Agent-respawns).
+    if plan is None and intent and (
+        som_route or os.environ.get("SOM_NOPLAN_FALLBACK", "1") not in ("0", "false", "False")
+    ):
+        try:
+            from core.capability_targets import build_executor
+            ex = build_executor("openfang:som-planner")
+            res = ex.call_with_arg(intent, extra_params={"_intent": intent})
+            reply = ""
+            if isinstance(res, dict):
+                reply = res.get("response") or res.get("final_text") or ""
+            return JSONResponse({
+                "ok": True, "som": True, "executed": {},
+                "final_text": (reply.strip() if isinstance(reply, str) and reply.strip()
+                               else "An den SoM-Planner übergeben — das Ergebnis kommt per Telegram, sobald der Plan fertig ist."),
+            })
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[multihop] som-planner dispatch failed for intent={intent!r}: {e}")
+            # fällt durch auf den "no plan"-Pfad unten
 
     if plan is None:
         return JSONResponse({"ok": False, "error": "planner returned no plan"})
