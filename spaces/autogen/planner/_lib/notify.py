@@ -112,7 +112,10 @@ def format_run_summary(result: dict) -> str:
     elif status == "ready":
         n = (result.get("steps", {}).get("planner") or {}).get("n_steps")
         if n:
-            lines.append(f"({n} Schritte geplant — bereit zur Ausführung.)")
+            schritt = "Schritt" if n == 1 else "Schritte"
+            lines.append(f"Ich habe {n} {schritt} vorbereitet.")
+        lines.append("")
+        lines.append("▶️ Sag »führe den Plan aus«, wenn ich loslegen soll.")
 
     text = "\n".join(lines)
     if len(text) > 4000:
