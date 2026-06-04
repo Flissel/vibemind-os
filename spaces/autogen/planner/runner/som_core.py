@@ -158,6 +158,17 @@ def run(intent: str, run_id: str | None = None, context_file: str | None = None)
     """Öffentlicher Entrypoint: führt die Pipeline aus + pusht das Ergebnis an
     Telegram (best-effort, ereignis-getrieben — hält den Nutzer pro Run aktuell).
     Notify abschaltbar via env SOM_NOTIFY=0."""
+    # ── Phase D (Kill-Switch SOM_LANGGRAPH): Erststart über den Graph, damit ein
+    #    needs_input-Lauf einen durable Checkpoint anlegt, den resume() lädt.
+    #    context_file wird hier nicht über den Graph gereicht (nur der Resume-Pfad
+    #    braucht Checkpointing) → bei gesetztem context_file imperativer Pfad.
+    if os.environ.get("SOM_LANGGRAPH") in ("1", "true", "True") and not context_file:
+        try:
+            somg = _load("som_graph_run", _PLANNER / "runner" / "som_graph.py")
+            return somg.run(intent, run_id=run_id)
+        except Exception as e:  # noqa: BLE001 — Graph-Fehler darf den Erststart nicht killen
+            print(f"[som_core.run] LangGraph-Pfad fiel zurück: {e}", file=sys.stderr)
+
     result = _run_inner(intent, run_id=run_id, context_file=context_file)
     try:
         mid = _notify.notify_run(result)
@@ -217,6 +228,18 @@ def resume(run_id: str, answers: dict[str, str] | None = None, cancel: bool = Fa
         except Exception:  # noqa: BLE001
             pass
         return result
+
+    # ── Phase D (Kill-Switch SOM_LANGGRAPH): Plan-Frage-Resume über den
+    #    LangGraph-StateGraph (durable interrupt/checkpoint). Default aus →
+    #    imperativer Pfad unten bleibt. Nur für Plan-Fragen (Exec-Freigabe oben
+    #    ist bereits an som_execute delegiert).
+    if os.environ.get("SOM_LANGGRAPH") in ("1", "true", "True"):
+        try:
+            somg = _load("som_graph_resume", _PLANNER / "runner" / "som_graph.py")
+            return somg.resume(run_id, answers=answers)
+        except Exception as e:  # noqa: BLE001 — Graph-Fehler darf den Resume nicht killen
+            # Fallback auf den imperativen Pfad (nie schlechter als heute)
+            print(f"[som_core.resume] LangGraph-Pfad fiel zurück: {e}", file=sys.stderr)
 
     # Antworten eintragen + als Kontext-Block formatieren
     answers_context = ""
