@@ -2338,6 +2338,7 @@ async def multihop_execute(request: Request):
         {intent}                  produce plan + execute
         {plan: {...}}             execute a hand-built plan (skip planner)
     Returns the executed plan summary plus optional final synthesis."""
+    import os  # modulweit nicht importiert in dieser Datei — für SoM-Merge-Routing
     state = request.app.state
     pe = getattr(state, "plan_executor", None)
     pl = getattr(state, "multihop_planner", None)
