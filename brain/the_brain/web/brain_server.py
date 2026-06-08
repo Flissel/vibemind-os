@@ -1486,6 +1486,23 @@ async def _lifespan(app: FastAPI):
     except Exception as e:
         print(f"  [WARN] Log retrainer init failed: {e}")
 
+    # Embedder-Warmup (2026-06-08): der Difficulty-Router laedt das Qwen3-Modell
+    # beim ERSTEN classify lazy (~148s) — das verzoegerte den ersten echten Request
+    # massiv. Hier im Hintergrund-Thread vorwaermen, damit das Modell bereit ist,
+    # bevor der erste Intent kommt. Best-effort, blockiert den Start nicht.
+    try:
+        import threading as _thr
+        def _warm_embedder():
+            try:
+                from core.difficulty_router import get_router
+                get_router().classify("warmup")   # zieht Embedder.get() + encode einmal
+                print("  [OK] Difficulty-Embedder vorgewaermt (Qwen geladen)")
+            except Exception as _e:  # noqa: BLE001
+                print(f"  [--] Embedder-Warmup uebersprungen: {_e}")
+        _thr.Thread(target=_warm_embedder, daemon=True, name="EmbedderWarmup").start()
+    except Exception:  # noqa: BLE001
+        pass
+
     yield  # ---- app is running ----
 
     # Cancel the log retrainer task

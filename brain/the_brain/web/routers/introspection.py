@@ -2391,7 +2391,14 @@ async def multihop_execute(request: Request):
             if diff_on:
                 try:
                     from core.difficulty_router import get_router, handler_for
-                    cls = get_router().classify(intent)
+                    # classify() macht einen Qwen-Embedding-Forward-Pass (CPU-schwer)
+                    # + beim ersten Call den ~148s-Modell-Cold-Load. SYNC auf dem
+                    # async Event-Loop wuerde das ALLE Requests blockieren (jeder
+                    # classify pegte einen Core + starvte HTTP — root-caused 2026-06-08).
+                    # In den Threadpool offloaden, wie die SoM/som-team-Dispatches.
+                    import asyncio as _asyncio
+                    _loop = _asyncio.get_running_loop()
+                    cls = await _loop.run_in_executor(None, get_router().classify, intent)
                     level = cls.get("level")
                     handler = handler_for(level)
                     logger.info(f"[multihop] difficulty={level} handler={handler} "
