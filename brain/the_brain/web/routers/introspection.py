@@ -2434,10 +2434,30 @@ async def multihop_execute(request: Request):
                                    else "Alles klar."),
                 })
 
+            if level == "insane" and os.environ.get("INSANE_AUTOGEN", "0") in ("1", "true", "True"):
+                # Phase B: vage/explorative Intents → dynamisches AutoGen-Capability-
+                # Team (SelectorGroupChat). async wie SoM (Ergebnis per Telegram).
+                # Default AUS (INSANE_AUTOGEN=0) → insane fällt unten auf SoM zurück
+                # (sicher, solange das Team-Geschütz nicht breit verifiziert ist).
+                try:
+                    from core.capability_targets import build_executor
+                    ex = build_executor("openfang:som-team")
+                    res = ex.call_with_arg(intent, extra_params={"_intent": intent})
+                    reply = ""
+                    if isinstance(res, dict):
+                        reply = res.get("response") or res.get("final_text") or ""
+                    return JSONResponse({
+                        "ok": True, "difficulty": "insane", "autogen": True, "executed": {},
+                        "final_text": (reply.strip() if isinstance(reply, str) and reply.strip()
+                                       else "An das Multi-Agent-Team übergeben — das Ergebnis kommt per Telegram."),
+                    })
+                except Exception as e:  # noqa: BLE001 — Team-Dispatch-Fehler → SoM-Fallback
+                    logger.warning(f"[multihop] som-team dispatch failed ({e}), Fallback SoM")
+
             if use_som and (level in ("hard", "insane") or
                             (level is None and _looks_like_multi_action(intent.lower())) or
                             pl is None):
-                # hard/insane → SoM (insane→AutoGen folgt in Phase B; bis dahin SoM).
+                # hard → SoM; insane → SoM-Fallback (wenn INSANE_AUTOGEN aus/fehlgeschlagen).
                 # level None (Klassifikation aus/fehlgeschlagen) → alte Verb-Heuristik.
                 som_route = True  # -> SoM-Dispatch unten, KEIN Groq-Versuch
             else:
