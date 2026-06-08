@@ -122,6 +122,17 @@ def _init_brain_state(state: Any, testing: bool = False) -> None:
     state.testing = testing
 
 
+def _loops_enabled() -> bool:
+    """Master-Gate für die CPU-gebundenen Hintergrund-Loops (Contention-Fix
+    2026-06-08). Default an (=heutiges Single-Process-Verhalten). brain-core
+    (HTTP) setzt BRAIN_BACKGROUND_LOOPS=0 → die Loop-OBJEKTE werden weiter
+    konstruiert (state.* bleibt gefüllt, Routen funktionieren), nur ihr
+    .start()-Thread wird übersprungen. Der separate brain-loops-Worker-Prozess
+    setzt =1 und fährt die Loops in eigenem Prozess/GIL → der async HTTP-Server
+    verhungert nicht mehr. Muster wie is_learner()-Gating der Writer-Threads."""
+    return os.environ.get("BRAIN_BACKGROUND_LOOPS", "1") not in ("0", "false", "False")
+
+
 def _init_production_modules(state: Any) -> None:  # pragma: no cover
     """Best-effort lazy loading of every production module.
 
@@ -334,9 +345,12 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
             try:
                 from core.mcmp_gardener import MCMPGardener
                 gardener = MCMPGardener(kg)
-                gardener.start()
                 state.mcmp_gardener = gardener
-                print("  [OK] MCMP gardener started (pheromone walks on episodic+semantic)")
+                if _loops_enabled():
+                    gardener.start()
+                    print("  [OK] MCMP gardener started (pheromone walks on episodic+semantic)")
+                else:
+                    print("  [SKIP] MCMP gardener (BRAIN_BACKGROUND_LOOPS=0)")
             except Exception as e:
                 state.mcmp_gardener = None
                 print(f"  [WARN] MCMP gardener failed to start: {e}")
@@ -379,9 +393,12 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
                     kg=kg,
                     decision_graph=state.decision_graph,
                 )
-                ce.start()
                 state.cluster_engine = ce
-                print("  [OK] ClusterEngine started (cluster activation, 60s tick)")
+                if _loops_enabled():
+                    ce.start()
+                    print("  [OK] ClusterEngine started (cluster activation, 60s tick)")
+                else:
+                    print("  [SKIP] ClusterEngine (BRAIN_BACKGROUND_LOOPS=0)")
             except Exception as e:
                 state.cluster_engine_error = str(e)
                 print(f"  [WARN] ClusterEngine failed to start: {e}")
@@ -399,13 +416,16 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
                         brain_chat=state.brain_chat,
                         decision_graph=state.decision_graph,
                     )
-                    ss.start()
                     state.self_steerer = ss
-                    print(
-                        f"  [OK] SelfSteerer started "
-                        f"({ss.stats_dict()['mappings_loaded']} cluster->capability mappings, "
-                        f"30s tick)"
-                    )
+                    if _loops_enabled():
+                        ss.start()
+                        print(
+                            f"  [OK] SelfSteerer started "
+                            f"({ss.stats_dict()['mappings_loaded']} cluster->capability mappings, "
+                            f"30s tick)"
+                        )
+                    else:
+                        print("  [SKIP] SelfSteerer (BRAIN_BACKGROUND_LOOPS=0)")
             except Exception as e:
                 state.self_steerer_error = str(e)
                 print(f"  [WARN] SelfSteerer failed to start: {e}")
@@ -551,8 +571,11 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
         try:
             from core.discourse_engine import DiscourseEngine
             de = DiscourseEngine(kg, dispatcher=state.subagent_dispatcher)
-            de.start()
             state.discourse_engine = de
+            if _loops_enabled():
+                de.start()
+            else:
+                print("  [SKIP] DiscourseEngine loop (BRAIN_BACKGROUND_LOOPS=0)")
             # R+.2 wire into BrainChat for response-queue (post-hoc agent
             # assessment of every Brain response).
             if state.brain_chat is not None and hasattr(state.brain_chat, "set_discourse_engine"):
@@ -961,10 +984,15 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
         except Exception as e:
             print(f"  [WARN] Moltbook Agents failed: {e}")
 
-        # Start continuous thinking (Phase 11.U.E — env-gated for load tests)
-        if os.environ.get("CONTINUOUS_THINKING_ENABLED", "1").lower() in ("1", "true", "yes"):
+        # Start continuous thinking (Phase 11.U.E — env-gated for load tests;
+        # 2026-06-08 zusätzlich BRAIN_BACKGROUND_LOOPS-Master-Gate → im HTTP-Prozess
+        # aus, im brain-loops-Worker an).
+        if (os.environ.get("CONTINUOUS_THINKING_ENABLED", "1").lower() in ("1", "true", "yes")
+                and _loops_enabled()):
             cte.start()
             print("  [OK] ContinuousThinking STARTED")
+        elif not _loops_enabled():
+            print("  [SKIP] ContinuousThinking (BRAIN_BACKGROUND_LOOPS=0)")
         else:
             print("  [SKIP] ContinuousThinking disabled via CONTINUOUS_THINKING_ENABLED=0")
 
@@ -1052,10 +1080,13 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
         state.memory_consolidator = consolidator
         if state.brain_chat:
             state.brain_chat.set_memory_consolidator(consolidator)
-        consolidator.start()
-        print("  [OK] MemoryConsolidator (interval=%ss, meta-graph=%s)" %
-              (os.environ.get("BRAIN_CONSOLIDATION_INTERVAL_S", "300"),
-               'YES' if getattr(state, 'meta_knowledge_graph', None) else 'NO'))
+        if _loops_enabled():
+            consolidator.start()
+            print("  [OK] MemoryConsolidator (interval=%ss, meta-graph=%s)" %
+                  (os.environ.get("BRAIN_CONSOLIDATION_INTERVAL_S", "300"),
+                   'YES' if getattr(state, 'meta_knowledge_graph', None) else 'NO'))
+        else:
+            print("  [SKIP] MemoryConsolidator (BRAIN_BACKGROUND_LOOPS=0)")
     except Exception as e:
         print(f"  [WARN] MemoryConsolidator failed: {e}")
 
@@ -1413,11 +1444,15 @@ async def _lifespan(app: FastAPI):
         print(f"  [WARN] Spaces/Events KG sync failed: {e}")
 
     # Auto-start thinking — no reason to boot the brain and NOT think
+    # (2026-06-08: respektiert BRAIN_BACKGROUND_LOOPS — im HTTP-Prozess aus,
+    # damit der zweite Auto-Start das Master-Gate nicht umgeht).
     try:
         cte = getattr(app.state, 'continuous_thinking', None)
-        if cte and not cte.is_running:
+        if cte and not cte.is_running and _loops_enabled():
             cte.start()
             print(f"  [OK] ContinuousThinking auto-started")
+        elif not _loops_enabled():
+            print(f"  [SKIP] ContinuousThinking auto-start (BRAIN_BACKGROUND_LOOPS=0)")
     except Exception as e:
         print(f"  [WARN] ContinuousThinking auto-start failed: {e}")
 
@@ -1429,11 +1464,14 @@ async def _lifespan(app: FastAPI):
         import os as _os
         from core.log_retrainer import periodic_retrainer_loop
         _retrain_interval = int(_os.getenv("BRAIN_RETRAIN_INTERVAL_SECONDS", "3600"))
-        if _retrain_interval > 0 and getattr(app.state, 'event_routing_head', None) is not None:
+        if (_retrain_interval > 0 and getattr(app.state, 'event_routing_head', None) is not None
+                and _loops_enabled()):
             app.state.log_retrainer_task = asyncio.create_task(
                 periodic_retrainer_loop(app.state, interval_seconds=_retrain_interval)
             )
             print(f"  [OK] Log retrainer scheduled (interval={_retrain_interval}s)")
+        elif not _loops_enabled():
+            print(f"  [SKIP] Log retrainer (BRAIN_BACKGROUND_LOOPS=0)")
         else:
             print(f"  [--] Log retrainer disabled (interval={_retrain_interval}, event_head missing)")
     except Exception as e:
