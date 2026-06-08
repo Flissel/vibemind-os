@@ -25,7 +25,14 @@ except Exception as _e:
 import uvicorn
 from web.brain_server import create_app
 
-app = create_app(testing=False)
+# Modul-Level-App nur fuer den Single-Process-Pfad (direktes App-Objekt) +
+# fuer `python -m web.brain_server`-Importe. Bei BRAIN_HTTP_WORKERS>1 baut JEDER
+# uvicorn-Worker die App selbst via Factory-Import-String — der Master-Prozess
+# braucht sie dann NICHT (spart ~1.5GB + einen Embedder-Load im Master).
+if int(os.environ.get("BRAIN_HTTP_WORKERS", "1")) > 1:
+    app = None
+else:
+    app = create_app(testing=False)
 
 if __name__ == "__main__":
     # Port is overridable via argv[1] or BRAIN_PORT so the debug launcher can
@@ -40,5 +47,25 @@ if __name__ == "__main__":
         _port = int(sys.argv[1])
     elif os.environ.get("BRAIN_PORT", "").isdigit():
         _port = int(os.environ["BRAIN_PORT"])
-    print(f"[brain-start] starting uvicorn on 0.0.0.0:{_port}")
-    uvicorn.run(app, host="0.0.0.0", port=_port)
+
+    # Multi-Worker (2026-06-09, struktureller Contention-Fix): der Single-Process-
+    # async-Server staut bei JEDER synchronen schweren Handler-Op (Qwen-embed,
+    # torch-route, serielle Qdrant-Sweeps) alle Requests. Mehrere uvicorn-Worker
+    # halten dann nur EINEN Worker pro blockierendem Request, die anderen bedienen
+    # weiter. Single-Writer bleibt erfuellt: brain-core laeuft BRAIN_BACKGROUND_LOOPS=0
+    # + inference (NULL State-schreibende Loops im HTTP-Prozess; der brain-loops-
+    # Worker ist der einzige Writer), also kollidieren N HTTP-Worker NICHT.
+    #
+    # workers>1 ERFORDERT einen Import-String (uvicorn forkt Worker-Prozesse, die
+    # die App neu importieren) — NICHT das App-Objekt. Der frueher dokumentierte
+    # venv-PATH-Konflikt galt nur fuer den lokalen debug.ps1-Start; IM CONTAINER
+    # gibt es nur einen Python (kein pyenv), daher ist der Import-String hier sicher.
+    # Default 1 (=lokales Verhalten unveraendert, direktes App-Objekt).
+    _workers = int(os.environ.get("BRAIN_HTTP_WORKERS", "1"))
+    if _workers > 1:
+        print(f"[brain-start] starting uvicorn on 0.0.0.0:{_port} ({_workers} workers, factory)")
+        uvicorn.run("web.brain_server:create_app", factory=True,
+                    host="0.0.0.0", port=_port, workers=_workers)
+    else:
+        print(f"[brain-start] starting uvicorn on 0.0.0.0:{_port} (single process)")
+        uvicorn.run(app, host="0.0.0.0", port=_port)
