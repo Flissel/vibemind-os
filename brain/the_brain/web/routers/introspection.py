@@ -2562,6 +2562,41 @@ async def multihop_plan_detail(plan_id: str, request: Request):
     return JSONResponse(p)
 
 
+# ── Phase C — SoM/Team Progress (Push-Modell, Container-Boundary-sicher) ──────
+# Die Detached-SoM/Team-Runner POSTen Phasen-Fortschritt hierher (sie sehen den
+# Brain via BRAIN_URL/:5000); GET liefert das Live-Dashboard. Kein Mount, kein
+# Minibook-Revival nötig — siehe core/som_progress.SomProgressRegistry.
+@router.post("/api/som/progress")
+async def som_progress_push(request: Request):
+    """Runner meldet eine Status-Transition: {run_id, status, intent?, source?}."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    run_id = (body.get("run_id") or "").strip()
+    status = (body.get("status") or "").strip()
+    if not run_id or not status:
+        return JSONResponse({"error": "run_id and status required"}, status_code=400)
+    try:
+        from core.som_progress import get_registry
+        get_registry().record(run_id, status,
+                              intent=body.get("intent"), source=body.get("source"))
+    except Exception as e:  # noqa: BLE001 — Progress darf nie 500'en
+        logger.warning(f"[som-progress] record failed: {e}")
+        return JSONResponse({"ok": False, "error": str(e)[:200]})
+    return JSONResponse({"ok": True})
+
+
+@router.get("/api/som/runs")
+async def som_runs_dashboard(request: Request):
+    """Live-Dashboard: laufende + zuletzt fertige SoM/Team-Runs (Push-Registry)."""
+    try:
+        from core.som_progress import get_registry
+        return JSONResponse(get_registry().snapshot())
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"runs": [], "active": [], "done": [], "error": str(e)[:200]})
+
+
 @router.get("/api/multihop/stream")
 async def multihop_stream(request: Request):
     """Phase 6.11 — Server-Sent Events stream. Subscribers get plan/hop

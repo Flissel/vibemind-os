@@ -44,6 +44,22 @@ _sources = _load("som_sources", _PLANNER / "_lib" / "sources.py")
 _questions = _load("som_questions", _PLANNER / "_lib" / "questions.py")
 
 
+# ── Phase C — Live-Fortschritt an den Brain pushen (Container-Boundary-sicher) ─
+# Der Detached-Runner schreibt run_meta nur lokal; der Brain-Container sieht das
+# nicht. Wir POSTen jede Status-Transition zusätzlich an POST /api/som/progress
+# (best-effort, kurzes Timeout — Progress darf den Run NIE blockieren/brechen).
+def _publish_progress(run_id: str, status: str, intent: str = "", source: str = "som") -> None:
+    if os.environ.get("SOM_PROGRESS_PUSH", "1") in ("0", "false", "False"):
+        return
+    try:
+        import requests
+        url = os.environ.get("BRAIN_URL", "http://localhost:5000").rstrip("/") + "/api/som/progress"
+        requests.post(url, json={"run_id": run_id, "status": status,
+                                 "intent": intent, "source": source}, timeout=2)
+    except Exception:  # noqa: BLE001 — Push best-effort, nie blockierend
+        pass
+
+
 def _call_agent(role: str, user_input: str, run_id: str = "") -> dict:
     """Ruft den SoM-Wrapper für eine Rolle. Nutzt venv312-Python.
     Übergibt run_id, damit der aktive Agent via plan_write in den richtigen
@@ -278,6 +294,7 @@ def _run_inner(intent: str, run_id: str | None = None, context_file: str | None 
     # die versionierten Artefakte (plan/exec/...) bleiben + bumpen weiter. Intent
     # bleibt stabil (gleiche Session).
     _state.run_create(run_id, intent)
+    _publish_progress(run_id, "planning", intent)   # Phase C — Dashboard sieht den Run ab Start
     caps_block = _capabilities_block()
     skills = _tools.skill_search(intent, limit=6)
     skills_block = "\n".join(f"- {s['name']}: {s['description'][:80]}" for s in skills) or "(keine)"
@@ -326,6 +343,7 @@ def _run_inner(intent: str, run_id: str | None = None, context_file: str | None 
 
         # ── 2. EXECUTOR ──────────────────────────────────────────────────────
         _state.run_meta_update(run_id, status="executing")
+        _publish_progress(run_id, "executing", intent)
         executor_input = (
             f"Plan:\n{json.dumps(plan, ensure_ascii=False, indent=2)}\n\n"
             f"Verfügbare Capabilities (mit execution_targets):\n{caps_block}"
@@ -341,6 +359,7 @@ def _run_inner(intent: str, run_id: str | None = None, context_file: str | None 
 
         # ── 3. VALIDATOR ─────────────────────────────────────────────────────
         _state.run_meta_update(run_id, status="validating")
+        _publish_progress(run_id, "validating", intent)
         validator_input = (
             f"Plan:\n{json.dumps(plan, ensure_ascii=False, indent=2)}\n\n"
             f"Executor-Plan:\n{json.dumps(exec_plan, ensure_ascii=False, indent=2)}"
@@ -462,6 +481,7 @@ def _run_inner(intent: str, run_id: str | None = None, context_file: str | None 
     else:
         final_status = "ready"
     _state.run_meta_update(run_id, status=final_status)
+    _publish_progress(run_id, final_status, intent)
     result["status"] = final_status
     result["needs_input"] = daten_fehlen
     result["run_dir"] = str(_state.run_dir(run_id))
