@@ -43,6 +43,30 @@ def _load(name: str, file: Path):
 
 _tools = _load("team_tools", _PLANNER / "_lib" / "tools.py")
 _team = _load("team_helpers", _PLANNER / "_lib" / "som_team.py")
+_state = _load("team_state", _PLANNER / "_lib" / "state.py")
+
+
+def _publish_progress(run_id: str, status: str, intent: str = "") -> None:
+    """Phase C — Team-Fortschritt an den Brain pushen (source=team). Best-effort,
+    nie blockierend. Spiegelt som_core._publish_progress."""
+    if os.environ.get("SOM_PROGRESS_PUSH", "1") in ("0", "false", "False"):
+        return
+    try:
+        import requests
+        url = os.environ.get("BRAIN_URL", "http://localhost:5000").rstrip("/") + "/api/som/progress"
+        requests.post(url, json={"run_id": run_id, "status": status,
+                                 "intent": intent, "source": "team"}, timeout=2)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _team_run_id() -> str:
+    """Synthetische, stabile id für einen Team-Lauf (team_NNNN), ohne Date.now."""
+    try:
+        n = len([r for r in _state.list_runs() if r.startswith("team_")])
+    except Exception:  # noqa: BLE001
+        n = 0
+    return f"team_{n + 1:04d}"
 
 
 def _default_capability_list() -> list[dict]:
@@ -177,12 +201,21 @@ class CapabilityTeamBuilder:
 
 # ── Öffentlicher Entrypoint (vom Wrapper gerufen) ─────────────────────────────
 async def run_team_async(intent: str, top_n: int = 4) -> dict:
+    run_id = _team_run_id()
+    _publish_progress(run_id, "planning", intent)   # Phase C — Dashboard sieht den Team-Lauf
     builder = CapabilityTeamBuilder()
     team = builder.build_team(intent, top_n=top_n)
     if team is None:
+        _publish_progress(run_id, "failed", intent)
         return {"ok": False, "error": "keine Capabilities für das Team"}
-    out = await _team.run_team(team, intent)
-    return {"ok": True, "intent": intent, "team": out,
+    _publish_progress(run_id, "executing", intent)
+    try:
+        out = await _team.run_team(team, intent)
+    except Exception as e:  # noqa: BLE001
+        _publish_progress(run_id, "failed", intent)
+        raise
+    _publish_progress(run_id, "ready", intent)
+    return {"ok": True, "run_id": run_id, "intent": intent, "team": out,
             "final_text": out.get("last_text") if isinstance(out, dict) else ""}
 
 
