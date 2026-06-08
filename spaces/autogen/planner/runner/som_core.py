@@ -170,10 +170,32 @@ def _derive_questions(exec_plan: dict | None, verdict: dict | None) -> list[dict
     return questions
 
 
+def _unwrap_envelope(text: str) -> str:
+    """Packt das Brain-Argument-Envelope aus ({"value":...,"_intent":...}), falls
+    es bis hierher durchgerutscht ist. Defense-in-depth: der Wrapper unwrapped
+    schon, aber andere Pfade (build_executor direkt) liefern den rohen Envelope —
+    sonst steht er im run_meta + Dashboard (kosmetischer Bug 2026-06-08)."""
+    t = (text or "").strip()
+    if not (t.startswith("{") and t.endswith("}")):
+        return text
+    try:
+        obj = json.loads(t)
+    except (json.JSONDecodeError, ValueError):
+        return text
+    if not isinstance(obj, dict):
+        return text
+    for key in ("value", "_intent", "intent", "message"):
+        v = obj.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return text
+
+
 def run(intent: str, run_id: str | None = None, context_file: str | None = None) -> dict:
     """Öffentlicher Entrypoint: führt die Pipeline aus + pusht das Ergebnis an
     Telegram (best-effort, ereignis-getrieben — hält den Nutzer pro Run aktuell).
     Notify abschaltbar via env SOM_NOTIFY=0."""
+    intent = _unwrap_envelope(intent)   # Envelope nie in State/Dashboard/Telegram
     # ── Phase D (Kill-Switch SOM_LANGGRAPH): Erststart über den Graph, damit ein
     #    needs_input-Lauf einen durable Checkpoint anlegt, den resume() lädt.
     #    context_file wird hier nicht über den Graph gereicht (nur der Resume-Pfad

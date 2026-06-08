@@ -2442,7 +2442,14 @@ async def multihop_execute(request: Request):
                 try:
                     from core.capability_targets import build_executor
                     ex = build_executor("openfang:som-team")
-                    res = ex.call_with_arg(intent, extra_params={"_intent": intent})
+                    # call_with_arg ist SYNC (requests.post an OpenFang). Auf dem
+                    # async Event-Loop wuerde das ALLE Requests blockieren
+                    # (Handler-Starvation, root-caused 2026-06-08) → in den
+                    # Threadpool offloaden, wie der easy/SoM-Pfad.
+                    import asyncio as _asyncio
+                    _loop = _asyncio.get_running_loop()
+                    res = await _loop.run_in_executor(
+                        None, lambda: ex.call_with_arg(intent, extra_params={"_intent": intent}))
                     reply = ""
                     if isinstance(res, dict):
                         reply = res.get("response") or res.get("final_text") or ""
@@ -2487,7 +2494,13 @@ async def multihop_execute(request: Request):
         try:
             from core.capability_targets import build_executor
             ex = build_executor("openfang:som-planner")
-            res = ex.call_with_arg(intent, extra_params={"_intent": intent})
+            # SYNC call_with_arg (requests.post) → in den Threadpool, sonst
+            # blockiert es den Event-Loop + starvt alle anderen Requests
+            # (Handler-Starvation, root-caused 2026-06-08).
+            import asyncio as _asyncio
+            _loop = _asyncio.get_running_loop()
+            res = await _loop.run_in_executor(
+                None, lambda: ex.call_with_arg(intent, extra_params={"_intent": intent}))
             reply = ""
             if isinstance(res, dict):
                 reply = res.get("response") or res.get("final_text") or ""
