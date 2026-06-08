@@ -1035,14 +1035,20 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
             klotski_ctm=getattr(state, 'klotski_ctm', None),
             knowledge_synthesizer=getattr(state.brain_chat, '_knowledge_synthesizer', None) if state.brain_chat else None,
             continuous_thinking_engine=getattr(state, 'continuous_thinking', None),
-            interval_s=30.0,
+            # Intervall env-konfigurierbar; Default 300s (5 min) statt vormals
+            # hartkodiert 30s. Bei 30s lief der 7-Phasen-Zyklus (inkl. dual_graph
+            # n-gram-Mining + qdrant-scroll über alle Collections, ~6s @188% CPU)
+            # quasi dauernd → starvte den async HTTP-Layer, multihop-Requests
+            # timeouteten (root-caused 2026-06-08). 300s = HTTP atmet.
+            interval_s=float(os.environ.get("BRAIN_CONSOLIDATION_INTERVAL_S", "300")),
         )
         state.memory_consolidator = consolidator
         if state.brain_chat:
             state.brain_chat.set_memory_consolidator(consolidator)
         consolidator.start()
-        print("  [OK] MemoryConsolidator (30s sleep cycle, meta-graph=%s)" %
-              ('YES' if getattr(state, 'meta_knowledge_graph', None) else 'NO'))
+        print("  [OK] MemoryConsolidator (interval=%ss, meta-graph=%s)" %
+              (os.environ.get("BRAIN_CONSOLIDATION_INTERVAL_S", "300"),
+               'YES' if getattr(state, 'meta_knowledge_graph', None) else 'NO'))
     except Exception as e:
         print(f"  [WARN] MemoryConsolidator failed: {e}")
 
@@ -1062,7 +1068,13 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
 
     # --- AgentLoop + RadialAttentionNetwork (from ProductionPlanner) ---
     try:
-        import os
+        # NOTE: do NOT `import os` here — Python's scope rules then treat `os`
+        # as a local in the WHOLE _init_production_modules function, and the
+        # earlier reference at line ~958 (`os.environ.get("CONTINUOUS_THINKING_ENABLED")`)
+        # raises "cannot access local variable 'os' where it is not associated
+        # with a value", which silently swallows the entire BrainChat setup block
+        # (its except handler reports "BrainChat setup failed: ..."). The
+        # module-level import on line 12 is what we use. Phase 11.U.K (2026-06-02).
         os.environ.setdefault('ENABLE_AGENT_LOOP', 'true')
         from production.production_planner import ProductionPlanner
         planner = ProductionPlanner(session_log_dir="production/session_logs")
