@@ -2400,6 +2400,16 @@ async def multihop_execute(request: Request):
                     logger.warning(f"[multihop] difficulty classify failed ({e}), Verb-Heuristik")
                     level = None
 
+            if level == "meta":
+                # System-/Meta-Nachricht (Konversations-Summary, zurückgespielter
+                # Transcript) — KEIN planbarer Intent. NIE an SoM/Groq geben (war
+                # Root-Cause des SoM-Run-Storms 2026-06-08). Höflich abweisen.
+                logger.info(f"[multihop] meta-Nachricht abgewiesen (kein Plan): {intent[:60]!r}")
+                return JSONResponse({
+                    "ok": True, "difficulty": "meta", "executed": {}, "skipped": True,
+                    "final_text": "",
+                })
+
             if level == "easy":
                 # einfache Frage/Smalltalk → direkte Chat-Antwort, KEIN Planer.
                 # brain_chat.send(msg) -> BrainChatResponse (.to_dict()), sync →

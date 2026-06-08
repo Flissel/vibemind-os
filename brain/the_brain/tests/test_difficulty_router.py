@@ -128,12 +128,36 @@ def test_empty_intent_safe():
     check("leerer Intent liefert Level", out["level"] in ("easy", "medium", "hard", "insane"))
 
 
+# ── Test 6: Meta-Nachrichten (Summary/Transcript) → meta, NICHT planen ────────
+# Root-Cause des SoM-Run-Storms: der Telegram-Gateway schickte Konversations-
+# Summaries + "[Previous conversation context]"-Transcript an multihop_execute;
+# die wurden als hard eingestuft → SoM-Run. Meta-Nachrichten dürfen NIE planen.
+def test_meta_messages_not_planned():
+    print("Test 6: Meta-Nachrichten → level=meta (kein SoM-Run)")
+    r = _router_with_stub()  # Embedder darf egal sein — Meta-Filter greift VOR Cosine
+    metas = [
+        "Summarize the following conversation preserving key facts, decisions, "
+        "user preferences, and important context. Output only the summary.",
+        "[Previous conversation context]\nAn den SoM-Planner übergeben — das Ergebnis kommt per Telegram.",
+        "[From: Felix] # deadzone — Hardware-Readiness\nStand: 2026-05-27",
+        "[Assistant]\nplanner returned no plan\n\n[User]\nReply with exactly the digit 4",
+    ]
+    for m in metas:
+        out = r.classify(m)
+        check(f"meta erkannt: «{m[:35]}…»", out["level"] == "meta")
+        check("handler(meta) plant nicht", _dr.handler_for("meta") in ("chat", "reject"))
+    # Gegenprobe: ein echter Intent der ZUFÄLLIG ein Schlüsselwort enthält bleibt planbar
+    out = r.classify("[[hard]] erstelle eine Zusammenfassung meiner Bewerbung als PDF")
+    check("echter Intent mit 'Zusammenfassung' bleibt planbar (nicht meta)", out["level"] != "meta")
+
+
 if __name__ == "__main__":
     test_four_levels_classify()
     test_excel_case_is_hard()
     test_heuristic_fallback()
     test_dispatch_mapping()
     test_empty_intent_safe()
+    test_meta_messages_not_planned()
     print()
     print(f"=== {len(_passed)} PASSED, {len(_failed)} FAILED ===")
     if _failed:

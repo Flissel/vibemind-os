@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, Optional
 
 import numpy as np
@@ -42,12 +43,53 @@ _HANDLER = {
     "medium": "shortcut",
     "hard": "som",
     "insane": "autogen",
+    "meta": "reject",   # System-/Meta-Nachricht — NIE planen
 }
 
 
 def handler_for(level: str) -> str:
-    """Mappt ein Schwierigkeits-Level auf den Dispatch-Handler."""
-    return _HANDLER.get(level, "som")  # unbekannt → sicher mehrstufig (SoM)
+    """Mappt ein Level auf den Dispatch-Handler. Unbekannt → SoM (sicher mehrstufig)."""
+    return _HANDLER.get(level, "som")
+
+
+# ── Meta-Nachrichten-Filter ───────────────────────────────────────────────────
+# Root-Cause des SoM-Run-Storms (2026-06-08): der Telegram-Brain-Gateway schickte
+# Konversations-Management-Nachrichten an multihop_execute, die KEINE planbaren
+# Intents sind — Konversations-Summaries ("Summarize the following conversation…")
+# und Transcript-Kontext ("[Previous conversation context]", "[From: X]", eingebettete
+# [Assistant]/[User]-Rollenmarker). Der Difficulty-Router stufte sie als hard ein →
+# SoM-Run pro Nachricht. Diese Nachrichten müssen VOR der Klassifikation als `meta`
+# erkannt + abgewiesen werden (handler=reject), nie geplant.
+_META_SIGNATURES = (
+    # Konversations-Summarization-Direktive (LLM-Memory-Management)
+    re.compile(r"summari[sz]e\s+the\s+following\s+conversation", re.IGNORECASE),
+    re.compile(r"preserving\s+key\s+facts,?\s+decisions", re.IGNORECASE),
+    re.compile(r"output\s+only\s+the\s+summary", re.IGNORECASE),
+    # Gateway-Transcript-Wrapper
+    re.compile(r"\[previous\s+conversation\s+context\]", re.IGNORECASE),
+    re.compile(r"^\s*\[from:\s*[^\]]+\]", re.IGNORECASE),
+    # Eingebettete Rollen-Marker MITTEN im Text = zurückgespielter Transcript
+    # (ein echter User-Intent hat keine [Assistant]/[User]-Blöcke im Body)
+    re.compile(r"\[assistant\]\s*\n", re.IGNORECASE),
+)
+# Mehrere [User]/[Assistant]-Marker = definitiv Transcript (ein einzelner führender
+# [User]-Marker kann legitimes OpenFang-Prefixing sein → erst ab 2 als meta werten)
+_ROLE_MARKER = re.compile(r"\[(?:user|assistant)\]", re.IGNORECASE)
+
+
+def is_meta_message(text: str) -> bool:
+    """True wenn der Text eine System-/Meta-Nachricht ist (Summary-Direktive oder
+    zurückgespielter Konversations-Transcript), kein planbarer User-Intent."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    for sig in _META_SIGNATURES:
+        if sig.search(t):
+            return True
+    # ≥2 Rollen-Marker → Transcript (ein einzelner führender ist ok)
+    if len(_ROLE_MARKER.findall(t)) >= 2:
+        return True
+    return False
 
 
 # Kuratierte Anker je Level (DE + EN). Der Cosine-nächste Cluster bestimmt das
@@ -167,6 +209,12 @@ class DifficultyRouter:
         if not intent:
             return {"level": "easy", "score": 0.0, "method": "default",
                     "reason": "leerer Intent"}
+
+        # Meta-Nachrichten (Summary/Transcript) VOR der Klassifikation abfangen —
+        # sie sind keine planbaren Intents (Root-Cause SoM-Run-Storm 2026-06-08).
+        if is_meta_message(intent):
+            return {"level": "meta", "score": 0.0, "method": "meta-filter",
+                    "reason": "System-/Meta-Nachricht (Summary/Transcript) — nicht geplant"}
 
         embedder = self._get_embedder()
         if embedder is not None and self._ensure_anchor_matrix(embedder):
