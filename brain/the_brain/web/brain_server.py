@@ -215,11 +215,18 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
             BrainChat, ContinuousThinkingEngine, MicroAgentPool,
         )
 
-        # ContinuousThinkingEngine: brain ALWAYS thinks
+        # ContinuousThinkingEngine: brain ALWAYS thinks — aber das interval_ms war
+        # hartkodiert 5000ms. Der radial_tick (radiales Netz + ~13 Qdrant-Collection-
+        # Queries pro Tick) ist CPU-gebunden, haelt den GIL → bei 5s effektiv
+        # dauer-Last → der async HTTP-Server (Single-Process) verhungert (root-caused
+        # 2026-06-08: auch mit BRAIN_ROLE=inference/Writer aus blieb CPU 100%).
+        # Env-konfigurierbar, Default 30000ms (Brain denkt weiter, nur seltener →
+        # HTTP atmet). BRAIN_THINK_INTERVAL_MS=0 schaltet das Ticking ganz ab.
         moltbook_store = state.moltbook_store  # may be None
+        _think_ms = int(os.environ.get("BRAIN_THINK_INTERVAL_MS", "30000"))
         cte = ContinuousThinkingEngine(
             moltbook=moltbook_store,
-            interval_ms=5000,
+            interval_ms=_think_ms,
         )
         state.continuous_thinking = cte
 
