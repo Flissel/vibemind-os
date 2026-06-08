@@ -2375,21 +2375,64 @@ async def multihop_execute(request: Request):
                 logger.exception(f"[multihop] shortcut crashed for intent={intent!r}: {e}")
                 plan = None  # fall through to LLM
 
-        # SoM⊕Brain-Merge (2026-06-03): der Capability-Shortcut hat nicht
-        # gegriffen (kein direkter 1-Hop-Match ODER multi-action). Statt jetzt
-        # den unzuverlässigen Groq-Multihop-LLM-Planner zu fragen (gab bei
-        # WhatsApp-Tasks reproduzierbar "no plan" nach ~38s), routen wir
-        # MEHRSTUFIGE Intents direkt an den robusten SoM-Planner. SoM liest
-        # dieselbe capabilities.yaml, plant aber zuverlässig (claude statt Groq).
-        # SOM_AS_PLANNER=1 (default): SoM ist der Planer für Mehrstufiges.
-        # =0: altes Verhalten (Groq primär, SoM nur als no-plan-Fallback unten).
+        # Phase A (2026-06-08): SEMANTISCHES schwierigkeits-basiertes Routing.
+        # Ersetzt das fragile Verb-Zählen (_looks_like_multi_action) durch einen
+        # Qwen-Cosine-Klassifikator (difficulty_router): easy→Chat, medium→
+        # Shortcut/Groq, hard→SoM, insane→AutoGen(Phase B; bis dahin SoM). Löst
+        # den Fall "erstelle Excel" (1 Verb, aber komplex → hard → SoM) der am
+        # Verb-Zählen vorbeirutschte. Kill-Switch DIFFICULTY_ROUTING=0 → altes
+        # Multi-Action-Verhalten. Klassifikation ist robust gekapselt (Fehler →
+        # Heuristik), darf den Handler nie 500'en.
         som_route = False
         if plan is None:
             use_som = os.environ.get("SOM_AS_PLANNER", "1") not in ("0", "false", "False")
-            multi = _looks_like_multi_action(intent.lower())
-            if use_som and (multi or pl is None):
+            diff_on = os.environ.get("DIFFICULTY_ROUTING", "1") not in ("0", "false", "False")
+            level = None
+            if diff_on:
+                try:
+                    from core.difficulty_router import get_router, handler_for
+                    cls = get_router().classify(intent)
+                    level = cls.get("level")
+                    handler = handler_for(level)
+                    logger.info(f"[multihop] difficulty={level} handler={handler} "
+                                f"({cls.get('method')}, {cls.get('reason')}) intent={intent[:60]!r}")
+                except Exception as e:  # noqa: BLE001 — Klassifikation darf nie 500'en
+                    logger.warning(f"[multihop] difficulty classify failed ({e}), Verb-Heuristik")
+                    level = None
+
+            if level == "easy":
+                # einfache Frage/Smalltalk → direkte Chat-Antwort, KEIN Planer.
+                # brain_chat.send(msg) -> BrainChatResponse (.to_dict()), sync →
+                # im Threadpool, damit der Event-Loop frei bleibt.
+                bc = getattr(state, "brain_chat", None)
+                reply = None
+                if bc is not None:
+                    try:
+                        import asyncio as _asyncio
+                        loop = _asyncio.get_running_loop()
+                        resp = await loop.run_in_executor(None, bc.send, intent)
+                        d = resp.to_dict() if hasattr(resp, "to_dict") else (resp or {})
+                        if isinstance(d, dict):
+                            reply = d.get("text") or d.get("reply") or d.get("response") or d.get("message")
+                        elif isinstance(d, str):
+                            reply = d
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(f"[multihop] easy-chat failed ({e})")
+                return JSONResponse({
+                    "ok": True, "difficulty": "easy", "executed": {},
+                    "final_text": (reply.strip() if isinstance(reply, str) and reply.strip()
+                                   else "Alles klar."),
+                })
+
+            if use_som and (level in ("hard", "insane") or
+                            (level is None and _looks_like_multi_action(intent.lower())) or
+                            pl is None):
+                # hard/insane → SoM (insane→AutoGen folgt in Phase B; bis dahin SoM).
+                # level None (Klassifikation aus/fehlgeschlagen) → alte Verb-Heuristik.
                 som_route = True  # -> SoM-Dispatch unten, KEIN Groq-Versuch
             else:
+                # medium (1 klare Aktion) → Shortcut hat schon gegriffen oder
+                # Groq-Multihop versuchen (wie bisher).
                 if pl is None:
                     return JSONResponse({"error": "planner not loaded — pass a 'plan' instead"}, status_code=503)
                 # Phase 11.T.4 — async planning path; falls back to threadpool
