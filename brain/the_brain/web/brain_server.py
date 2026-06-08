@@ -1434,12 +1434,21 @@ async def _lifespan(app: FastAPI):
                 except Exception as e:
                     print(f"  [WARN-async] Spaces/Events -> KG failed: {e}")
 
+            # Gate (2026-06-08): der Bulk-Import re-embedded ~13 Spaces + ~150 Events
+            # via Qwen3-forward-pass (CPU-bound) → pegte brain-core einen Core dauerhaft
+            # + erzeugte die Qdrant-read/write-Flut, die den async HTTP-Server starvte
+            # (per py-spy auf PID 1 als EINZIGE aktive Thread bestaetigt, root-caused
+            # 2026-06-08). Gehoert wie alle KG-schreibenden Loops hinter das Master-Gate
+            # → laeuft jetzt im brain-loops-Worker, NICHT im HTTP-Prozess.
             import threading as _threading
-            _threading.Thread(
-                target=_bulk_spaces_events_to_kg, daemon=True,
-                name="SpacesEventsToKG-bulk",
-            ).start()
-            print("  [OK] Spaces+Events -> KG bulk import scheduled (background)")
+            if _loops_enabled():
+                _threading.Thread(
+                    target=_bulk_spaces_events_to_kg, daemon=True,
+                    name="SpacesEventsToKG-bulk",
+                ).start()
+                print("  [OK] Spaces+Events -> KG bulk import scheduled (background)")
+            else:
+                print("  [SKIP] Spaces+Events -> KG bulk import (BRAIN_BACKGROUND_LOOPS=0)")
     except Exception as e:
         print(f"  [WARN] Spaces/Events KG sync failed: {e}")
 
