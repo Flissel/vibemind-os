@@ -105,6 +105,14 @@ DEFAULT_ANCHORS: dict[str, list[str]] = {
         "speichere diese datei", "suche nach dem letzten bericht",
         "open the dashboard", "send a message to anna", "starte den container",
         "zeig mir den status", "lies die neueste email vor",
+        # Eval-Befund 2026-06-08: 1-Aktions-CRUD/Lookup-Intents landeten faelschlich
+        # in insane — medium braucht breitere Anker fuer count/list/move/scan/expand.
+        "wie viele ideen gibt es", "zähle die ideen", "liste alle bubbles auf",
+        "verschiebe die idee in eine andere bubble", "lösche die bubble",
+        "notiere einen gedanken", "scan for hardcoded api keys",
+        "analysiere die log datei", "expand this idea into sub-ideas",
+        "how many agents are registered", "find the function in the code",
+        "is the website up", "create a bubble called marketing",
     ],
     "hard": [
         "erstelle eine excel mit den spalten name und betrag auf dem desktop",
@@ -225,6 +233,16 @@ class DifficultyRouter:
                 best = int(np.argmax(sims))
                 level = self._anchor_levels[best]
                 score = float(sims[best])
+                # Konfidenz-Schwelle (Eval-Befund 2026-06-08): bei schwachem Match
+                # (niedriger cos) rät der argmax sonst irgendeinen Anker — typisch
+                # in den generischen insane-Anker („wie baue ich…") → Über-Routing.
+                # Unter der Schwelle NICHT raten: auf `medium` fallen (der Capability-
+                # Shortcut probiert dann einen konkreten Cap-Match — der richtige Ort
+                # für „wie viele Ideen"/„scan for keys" usw.). Env DIFFICULTY_MIN_COS.
+                _min_cos = float(os.environ.get("DIFFICULTY_MIN_COS", "0.55"))
+                if score < _min_cos and level in ("hard", "insane"):
+                    return {"level": "medium", "score": score, "method": "qwen-cosine-lowconf",
+                            "reason": f"schwacher Match (cos={score:.2f} < {_min_cos}) → medium statt {level}"}
                 return {"level": level, "score": score, "method": "qwen-cosine",
                         "reason": f"naechster Anker '{self._anchors[level][0][:40]}' (cos={score:.2f})"}
             except Exception as e:  # noqa: BLE001 — Embedding-Fehler → Heuristik
