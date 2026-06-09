@@ -1120,7 +1120,11 @@
     - "(create|erstelle)\\s+.*\\b(stundenzettel|onboarding|offboarding|gehaltsabrechnung|payroll|timesheet)"
     - "(click|klick)\\s+(on|auf)?\\s+(the|den|die|das)?\\s*\\w+\\s+(button|knopf)"
     - "type\\s+\\\".+\\\"\\s+in\\s+(the|der|die|das)?\\s*\\w+\\s+(field|feld)"
-    - "screenshot"
+    # Desktop-Screenshot NUR mit explizitem Desktop/Fenster/App-Bezug. Das nackte
+    # "screenshot" klaute first-match-wins auch Website-Screenshots
+    # ("screenshot von github.com" -> faelschlich skill-coordinator statt
+    # browser_automation/openclaw-visible). Verifiziert Intent-Validierung Kat-6.
+    - "\\b(bildschirm|desktop|screen|fenster|window|monitor|app|anwendung|programm)\\b.{0,15}screenshot|screenshot\\b.{0,20}\\b(bildschirm|desktop|screen|fenster|window|monitor|app|anwendung|programm)"
     - "(automate|automatisier)\\s+\\w+"
   execution_target: "openfang:skill-coordinator"
 
@@ -1144,6 +1148,10 @@
     - "(fill|complete|fülle?|ausfüllen)\\s+.*\\b(form|formular)\\b"
     - "(login|log in|einlog|melde?\\s+dich\\s+an)\\s*(to|in|bei|at)?\\s*\\w+"
     - "(take|grab|mach|erstell)\\w*\\s+(a|ein|einen)?\\s*screenshot\\s+(of|von|der|des)?\\s*(the|a|der|die|das)?\\s*(website|page|webpage|webseite|seite)"
+    # Screenshot einer bloßen Domain ohne http:// und ohne das Wort "website"
+    # ("screenshot von github.com") — sonst faellt es zwischen die Stuehle
+    # (desktop_skill desktop-scoped, browser verlangte website/http). Kat-6-Fix.
+    - "screenshot\\s+(von|of|der|des|the|a|einen?)?\\s*[\\w.-]+\\.(com|org|net|io|de|gov|edu|co|app|dev|ai)"
     - "(gehe|geh|navigiere|navigate|öffne|besuche)\\s+(zur?|auf|to|nach)?\\s*(die|the)?\\s*(webseite|website|seite|url|web\\s?site)"
     - "(web\\s?research|deep research|recherchiere?\\s+im\\s+(web|netz|internet))"
     # 2026-05-19: natural site requests without https:// or the word
@@ -1167,6 +1175,34 @@
   # Built + verified end-to-end 2026-05-19 (plan
   # k-nnnen-wir-adative-skills-splendid-mochi.md).
   execution_target: "openfang:openclaw-visible"
+
+# rowboat_chat (2026-06-08) — talk to the Rowboat KNOWLEDGE ASSISTANT via its GUI
+# chat (the Rowboat space in the VibeMind Multiverse app, driven over CDP by the
+# rowboat-chat agent). For CONTENT questions against the Rowboat knowledge base
+# (Bewerbung/Projects/Notes/People/Topics...). Distinct from knowledge_query,
+# whose regex patterns ("how many agents", "list personas", "what is the router")
+# are SYSTEM/meta lookups and fire first (regex before semantics) — so those stay
+# with rowboat-knowledge/supermemory and are NOT captured here.
+- capability: rowboat_chat
+  description: "ask the Rowboat knowledge assistant a question via chat, consult the Rowboat knowledge base in dialogue about its stored content (Bewerbung, projects, notes, people, topics, investor programs), frag Rowboat, chatte mit Rowboat, was weiß Rowboat über X, lass dir von Rowboat etwas aus der Wissensbasis erklären"
+  anchor_phrases:
+    - "frag Rowboat nach X"
+    - "chatte mit Rowboat"
+    - "ask the rowboat knowledge assistant about X"
+    - "was weiß Rowboat über mein Bewerbungsprofil"
+    - "lass Rowboat die Investor-Programme zusammenfassen"
+    - "consult rowboat about the project notes"
+    - "frag die Wissensbasis was zu X gespeichert ist"
+  match_patterns:
+    - "(frag|frage|befrage?|chatte?|rede)\\s+(?:mal\\s+)?(?:mit\\s+)?rowboat"
+    - "(ask|chat\\s+with|consult|query)\\s+(?:the\\s+)?rowboat"
+    - "(was|what)\\s+(weiß|wei[ßs]t|does|knows?)\\s+rowboat"
+    - "rowboat\\s+(?:knowledge|wissen|chat|assistant|assistent)"
+    - "(aus|from)\\s+(?:der|the)?\\s*rowboat[\\s-]?(?:wissensbasis|knowledge|kb)"
+  execution_target: "openfang:rowboat-chat"
+  agents:
+    primary: [rowboat-chat]
+    supporting: []
 
 - capability: openfang_agent_create
   description: "create a new OpenFang agent, spawn agent from template, build agent for task X, configure agent tools/MCP servers/system prompt — wraps :4200/api/agents/* via the openfang-agents MCP server"
