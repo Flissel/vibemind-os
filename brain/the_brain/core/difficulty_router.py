@@ -61,8 +61,12 @@ def handler_for(level: str) -> str:
 # SoM-Run pro Nachricht. Diese Nachrichten müssen VOR der Klassifikation als `meta`
 # erkannt + abgewiesen werden (handler=reject), nie geplant.
 _META_SIGNATURES = (
-    # Konversations-Summarization-Direktive (LLM-Memory-Management)
-    re.compile(r"summari[sz]e\s+the\s+following\s+conversation", re.IGNORECASE),
+    # Konversations-Summarization-Direktive (LLM-Memory-Management). Positions-
+    # Wort breit (following/previous/above/...), aber NUR mit "conversation" —
+    # damit "summarize the report"/"fasse die Idee zusammen" echte User-Intents
+    # bleiben (verifiziert 2026-06-09: Intent-Validierung Kat-0 #7 war
+    # "previous conversation" → fiel durch das alte "following"-only-Muster).
+    re.compile(r"summari[sz]e\s+(the\s+)?(following|previous|above|prior|preceding|entire|whole)\s+conversation", re.IGNORECASE),
     re.compile(r"preserving\s+key\s+facts,?\s+decisions", re.IGNORECASE),
     re.compile(r"output\s+only\s+the\s+summary", re.IGNORECASE),
     # Gateway-Transcript-Wrapper
