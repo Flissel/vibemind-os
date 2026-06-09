@@ -64,6 +64,10 @@ class PlanRecorder:
         self.path = Path(path)
         self._recent: Deque[Dict[str, Any]] = deque(maxlen=max_in_memory)
         self._by_id: Dict[str, Dict[str, Any]] = {}
+        # E2E-Trace (2026-06-09): trace_id-Index (Spiegel zu _by_id), damit auch
+        # plan-lose Zweige (SoM/som-team/meta/easy/no-plan) per trace_id auffindbar
+        # sind. GET /api/trace/{id} liest hier.
+        self._by_trace: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.RLock()
         self._load()
 
@@ -74,9 +78,12 @@ class PlanRecorder:
                     for line in f.readlines()[-100:]:
                         try:
                             d = json.loads(line)
-                            if d.get("plan_id"):
+                            if d.get("plan_id") or d.get("trace_id"):
                                 self._recent.append(d)
-                                self._by_id[d["plan_id"]] = d
+                                if d.get("plan_id"):
+                                    self._by_id[d["plan_id"]] = d
+                                if d.get("trace_id"):
+                                    self._by_trace[d["trace_id"]] = d
                         except Exception:
                             continue
         except Exception as e:
@@ -87,6 +94,8 @@ class PlanRecorder:
             self._recent.append(snapshot)
             if snapshot.get("plan_id"):
                 self._by_id[snapshot["plan_id"]] = snapshot
+            if snapshot.get("trace_id"):
+                self._by_trace[snapshot["trace_id"]] = snapshot
             try:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 with self.path.open("a", encoding="utf-8") as f:
@@ -123,6 +132,62 @@ class PlanRecorder:
     def get(self, plan_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
             return self._by_id.get(plan_id)
+
+    # ── E2E-Trace (2026-06-09) ────────────────────────────────────────────────
+    def get_by_trace(self, trace_id: str) -> Optional[Dict[str, Any]]:
+        """Volle Trace-Kette per trace_id (eingabe->...->ausgabe). Fuer
+        GET /api/trace/{trace_id}."""
+        with self._lock:
+            return self._by_trace.get(trace_id)
+
+    def attach_final(self, plan_id: str, text: str) -> None:
+        """Haengt die AUSGABE (synthesis final_text) an einen schon recordeten
+        Plan — bisher wurde final_text nie gespeichert. Patcht den in-memory-
+        Snapshot + persistiert eine Patch-Zeile (best-effort)."""
+        with self._lock:
+            snap = self._by_id.get(plan_id)
+            if snap is None:
+                return
+            snap["final_text"] = text
+            try:
+                with self.path.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps({"_patch": "final_text", "plan_id": plan_id,
+                                        "trace_id": snap.get("trace_id"), "final_text": text},
+                                       ensure_ascii=False, default=str) + "\n")
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[plan-recorder] attach_final persist failed: {e}")
+
+    def record_lite(self, trace_id: str, intent: str, routed_via: str,
+                    final_text: str = "") -> None:
+        """Mini-Snapshot fuer plan-lose Zweige (SoM/som-team/meta/easy/no-plan),
+        damit auch sie im Trace auftauchen (trace_id + routed_via + Ausgabe).
+        Per-Schritt-stages der SoM-Worker werden via append_stage gemerged."""
+        import time as _t
+        snap = {"trace_id": trace_id, "intent": (intent or "")[:500],
+                "routed_via": routed_via, "final_text": final_text,
+                "ts": _t.time(), "stages": [
+                    {"stage": "eingabe", "component": "multihop_execute",
+                     "ts": _t.time(), "outcome": "received"},
+                    {"stage": "route", "component": "difficulty_router",
+                     "ts": _t.time(), "outcome": routed_via},
+                ], "ok": True}
+        self.record(snap)
+
+    def append_stage(self, trace_id: str, stage: str, component: str,
+                     outcome: str = "") -> None:
+        """Haengt ein Stage-Event an den Trace (von SoM-Workern via
+        POST /api/trace/{id}/stage + intern). Legt einen leeren Trace an, falls
+        die trace_id noch unbekannt ist (Race: Worker pusht vor record_lite)."""
+        import time as _t
+        with self._lock:
+            snap = self._by_trace.get(trace_id)
+            if snap is None:
+                snap = {"trace_id": trace_id, "intent": "", "routed_via": "",
+                        "stages": [], "ts": _t.time(), "ok": True}
+                self._by_trace[trace_id] = snap
+                self._recent.append(snap)
+            snap.setdefault("stages", []).append(
+                {"stage": stage, "component": component, "ts": _t.time(), "outcome": outcome})
 
 
 # ── Plan executor ─────────────────────────────────────────────────────
@@ -454,6 +519,16 @@ class PlanExecutor:
         except Exception:
             pass
 
+    @staticmethod
+    def _tappend(plan, stage: str, component: str, outcome: str = "") -> None:
+        """E2E-Trace: ein Stage-Event an plan._stages haengen (landet im Recorder-
+        Snapshot). NUR Liste-Append, KEIN I/O, try/except — kein Hot-Path-Risiko."""
+        try:
+            plan._stages.append({"stage": stage, "component": component,
+                                 "ts": time.time(), "outcome": outcome})
+        except Exception:  # noqa: BLE001
+            pass
+
     def _publish(self, kind: str, payload: Dict[str, Any]) -> None:
         if not self._subscribers:
             return
@@ -547,6 +622,7 @@ class PlanExecutor:
             de = None  # broken engine — proceed without pause
 
         self._publish("plan_started", plan.to_dict())
+        self._tappend(plan, "execution", "plan-executor", f"started {len(plan.hops)} hops")
 
         # ── Phase 10 — Self-Reflective pre-execution context ─────────
         # Fire decision-recall + self-prior + critic. All best-effort:
@@ -758,6 +834,10 @@ class PlanExecutor:
                                     f"[plan-executor] sub-hop aggregation failed: {_agg_err}"
                                 )
                         self._publish("hop_completed", _hop_event(h, hr))
+                        self._tappend(plan, "execution",
+                                     f"hop:{getattr(h,'capability','?')}",
+                                     ("ok" if getattr(hr, "ok", False) else "fail")
+                                     + f" ({getattr(h,'execution_target',None) or getattr(h,'capability','?')})")
 
                         # Replan trigger
                         if (
@@ -801,6 +881,8 @@ class PlanExecutor:
                 "elapsed_s": result["elapsed_s"],
                 "hop_count": len(executed),
             })
+            self._tappend(plan, "execution", "plan-executor",
+                         f"completed ok={ok} in {result['elapsed_s']}s")
 
             # Phase 8.B — sync to Neo4j decision graph
             dg = getattr(self, "_decision_graph", None)
@@ -907,6 +989,11 @@ class PlanExecutor:
                     "ok": all(hr.ok for hr in executed.values()) if executed else False,
                     "elapsed_s": round(elapsed_total, 2),
                     "replans": replan_count,
+                    # E2E-Trace (2026-06-09): trace_id + per-stage events in den
+                    # persistenten Snapshot, damit GET /api/trace/{id} die Kette zeigt.
+                    "trace_id": getattr(plan, "trace_id", ""),
+                    "routed_via": "plan-executor",
+                    "stages": list(getattr(plan, "_stages", [])),
                 }
                 self.recorder.record(snapshot)
             except Exception as e:

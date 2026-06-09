@@ -51,11 +51,17 @@ def _publish_progress(run_id: str, status: str, intent: str = "") -> None:
     nie blockierend. Spiegelt som_core._publish_progress."""
     if os.environ.get("SOM_PROGRESS_PUSH", "1") in ("0", "false", "False"):
         return
+    base = os.environ.get("BRAIN_URL", "http://localhost:5000").rstrip("/")
     try:
         import requests
-        url = os.environ.get("BRAIN_URL", "http://localhost:5000").rstrip("/") + "/api/som/progress"
-        requests.post(url, json={"run_id": run_id, "status": status,
+        requests.post(base + "/api/som/progress", json={"run_id": run_id, "status": status,
                                  "intent": intent, "source": "team"}, timeout=2)
+        # E2E-Trace (Phase 2b): Team-Stufen unter der durchgaengigen trace_id.
+        _trace = os.environ.get("SOM_TRACE_ID", "").strip()
+        if _trace:
+            requests.post(f"{base}/api/trace/{_trace}/stage",
+                          json={"stage": status, "component": "som-team", "outcome": run_id},
+                          timeout=2)
     except Exception:  # noqa: BLE001
         pass
 

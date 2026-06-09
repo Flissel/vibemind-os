@@ -51,11 +51,19 @@ _questions = _load("som_questions", _PLANNER / "_lib" / "questions.py")
 def _publish_progress(run_id: str, status: str, intent: str = "", source: str = "som") -> None:
     if os.environ.get("SOM_PROGRESS_PUSH", "1") in ("0", "false", "False"):
         return
+    base = os.environ.get("BRAIN_URL", "http://localhost:5000").rstrip("/")
     try:
         import requests
-        url = os.environ.get("BRAIN_URL", "http://localhost:5000").rstrip("/") + "/api/som/progress"
-        requests.post(url, json={"run_id": run_id, "status": status,
+        requests.post(base + "/api/som/progress", json={"run_id": run_id, "status": status,
                                  "intent": intent, "source": source}, timeout=2)
+        # E2E-Trace (Phase 2b): wenn vom Brain eine trace_id mitkam, jede SoM-Stufe
+        # auch als Stage-Event an den durchgaengigen Trace pushen — so erscheint die
+        # HEAVY-Kette (planner/executor/validator/matrix) per-Schritt in /api/trace/{id}.
+        _trace = os.environ.get("SOM_TRACE_ID", "").strip()
+        if _trace:
+            requests.post(f"{base}/api/trace/{_trace}/stage",
+                          json={"stage": status, "component": source, "outcome": run_id},
+                          timeout=2)
     except Exception:  # noqa: BLE001 — Push best-effort, nie blockierend
         pass
 

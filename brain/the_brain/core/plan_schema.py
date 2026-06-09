@@ -98,6 +98,12 @@ class Plan:
     hops: List[HopSpec]
     final_synthesis_prompt: str = ""
     estimated_cost_usd: float = 0.0
+    # E2E-Trace (2026-06-09): durchgaengige Correlation-ID, am multihop_execute-
+    # Entry gesetzt (auch fuer SoM/som-team/no-plan-Zweige, die kein plan_id haben).
+    trace_id: str = ""
+    # Laufzeit-Stage-Events (PLAN/EXECUTION/...): {stage, component, ts, outcome}.
+    # Nicht in to_dict serialisiert (der PlanRecorder-Snapshot zieht es separat).
+    _stages: List[Dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def make_id(cls) -> str:
@@ -111,6 +117,7 @@ class Plan:
             "hops": [asdict(h) for h in self.hops],
             "final_synthesis_prompt": self.final_synthesis_prompt,
             "estimated_cost_usd": self.estimated_cost_usd,
+            "trace_id": self.trace_id,
         }
 
     @classmethod
@@ -156,6 +163,7 @@ class Plan:
             hops=hops,
             final_synthesis_prompt=d.get("final_synthesis_prompt") or "",
             estimated_cost_usd=float(d.get("estimated_cost_usd") or 0.0),
+            trace_id=d.get("trace_id") or "",
         )
 
 

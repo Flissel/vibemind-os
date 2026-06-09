@@ -37,6 +37,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _trace_lite(pe, trace_id: str, intent: str, routed_via: str, final_text: str = "") -> None:
+    """E2E-Trace (2026-06-09): plan-lose Zweige (meta/easy/som/som-team/no-plan) in
+    den Trace schreiben, damit GET /api/trace/{id} JEDE Anfrage zeigt — nicht nur
+    die mit PlanExecutor-Plan. Best-effort, nie blockierend/500."""
+    try:
+        rec = getattr(pe, "recorder", None)
+        if rec is not None:
+            rec.record_lite(trace_id, intent, routed_via, final_text)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[trace] record_lite skipped: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -2355,13 +2367,21 @@ async def multihop_execute(request: Request):
     intent = (body.get("intent") or body.get("message") or "").strip()
     skip_shortcut = bool(body.get("force_planner"))
 
+    # E2E-Trace (2026-06-09): EINE durchgaengige Correlation-ID am Eingang. Faedelt
+    # durch ALLE Zweige (auch SoM/som-team/no-plan, die kein plan_id haben) - sie
+    # steht in jeder Response + (wo ein Plan existiert) in plan.trace_id, sodass
+    # GET /api/trace/{trace_id} die ganze Kette eingabe->...->ausgabe zeigt.
+    import uuid as _uuid
+    trace_id = "tr_" + _uuid.uuid4().hex[:12]
+    _routed_via = None   # wird je Zweig gesetzt (groq/som/som-team/no-plan/easy/meta)
+
     from core.plan_schema import Plan as _Plan
     plan = None
     if plan_dict:
         try:
             plan = _Plan.from_dict(plan_dict)
         except Exception as e:
-            return JSONResponse({"error": f"invalid plan: {e}"}, status_code=400)
+            return JSONResponse({"error": f"invalid plan: {e}", "trace_id": trace_id}, status_code=400)
     elif intent:
         # Phase 11.Q2 — Capability-Router shortcut. If the router has a
         # high-confidence regex match for a single-action intent, skip
@@ -2412,9 +2432,10 @@ async def multihop_execute(request: Request):
                 # Transcript) — KEIN planbarer Intent. NIE an SoM/Groq geben (war
                 # Root-Cause des SoM-Run-Storms 2026-06-08). Höflich abweisen.
                 logger.info(f"[multihop] meta-Nachricht abgewiesen (kein Plan): {intent[:60]!r}")
+                _trace_lite(pe, trace_id, intent, "meta-reject", "")
                 return JSONResponse({
                     "ok": True, "difficulty": "meta", "executed": {}, "skipped": True,
-                    "final_text": "",
+                    "final_text": "", "trace_id": trace_id,
                 })
 
             if level == "easy":
@@ -2435,10 +2456,11 @@ async def multihop_execute(request: Request):
                             reply = d
                     except Exception as e:  # noqa: BLE001
                         logger.warning(f"[multihop] easy-chat failed ({e})")
+                _final = (reply.strip() if isinstance(reply, str) and reply.strip() else "Alles klar.")
+                _trace_lite(pe, trace_id, intent, "easy-chat", _final)
                 return JSONResponse({
                     "ok": True, "difficulty": "easy", "executed": {},
-                    "final_text": (reply.strip() if isinstance(reply, str) and reply.strip()
-                                   else "Alles klar."),
+                    "final_text": _final, "trace_id": trace_id,
                 })
 
             if level == "insane" and os.environ.get("INSANE_AUTOGEN", "0") in ("1", "true", "True"):
@@ -2455,15 +2477,19 @@ async def multihop_execute(request: Request):
                     # Threadpool offloaden, wie der easy/SoM-Pfad.
                     import asyncio as _asyncio
                     _loop = _asyncio.get_running_loop()
+                    # _trace_id mitgeben (Phase 2b): der som-team-Worker pusht seine
+                    # Stage-Events unter derselben trace_id zurueck an den Trace.
                     res = await _loop.run_in_executor(
-                        None, lambda: ex.call_with_arg(intent, extra_params={"_intent": intent}))
+                        None, lambda: ex.call_with_arg(intent, extra_params={"_intent": intent, "_trace_id": trace_id}))
                     reply = ""
                     if isinstance(res, dict):
                         reply = res.get("response") or res.get("final_text") or ""
+                    _final = (reply.strip() if isinstance(reply, str) and reply.strip()
+                              else "An das Multi-Agent-Team übergeben — das Ergebnis kommt per Telegram.")
+                    _trace_lite(pe, trace_id, intent, "som-team", _final)
                     return JSONResponse({
                         "ok": True, "difficulty": "insane", "autogen": True, "executed": {},
-                        "final_text": (reply.strip() if isinstance(reply, str) and reply.strip()
-                                       else "An das Multi-Agent-Team übergeben — das Ergebnis kommt per Telegram."),
+                        "final_text": _final, "trace_id": trace_id,
                     })
                 except Exception as e:  # noqa: BLE001 — Team-Dispatch-Fehler → SoM-Fallback
                     logger.warning(f"[multihop] som-team dispatch failed ({e}), Fallback SoM")
@@ -2507,29 +2533,40 @@ async def multihop_execute(request: Request):
             import asyncio as _asyncio
             _loop = _asyncio.get_running_loop()
             res = await _loop.run_in_executor(
-                None, lambda: ex.call_with_arg(intent, extra_params={"_intent": intent}))
+                None, lambda: ex.call_with_arg(intent, extra_params={"_intent": intent, "_trace_id": trace_id}))
             reply = ""
             if isinstance(res, dict):
                 reply = res.get("response") or res.get("final_text") or ""
+            _final = (reply.strip() if isinstance(reply, str) and reply.strip()
+                      else "An den SoM-Planner übergeben — das Ergebnis kommt per Telegram, sobald der Plan fertig ist.")
+            _trace_lite(pe, trace_id, intent, "som-planner", _final)
             return JSONResponse({
                 "ok": True, "som": True, "executed": {},
-                "final_text": (reply.strip() if isinstance(reply, str) and reply.strip()
-                               else "An den SoM-Planner übergeben — das Ergebnis kommt per Telegram, sobald der Plan fertig ist."),
+                "final_text": _final, "trace_id": trace_id,
             })
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[multihop] som-planner dispatch failed for intent={intent!r}: {e}")
             # fällt durch auf den "no plan"-Pfad unten
 
     if plan is None:
-        return JSONResponse({"ok": False, "error": "planner returned no plan"})
+        _trace_lite(pe, trace_id, intent, "no-plan", "")
+        return JSONResponse({"ok": False, "error": "planner returned no plan", "trace_id": trace_id})
 
     # Run executor in a thread so FastAPI's main loop is free to handle
     # any nested HTTP calls (brain:GET:/api/X targets recurse into us).
     # NOTE: pe.execute remains sync (ThreadPoolExecutor + thread-mutexes
     # internally) — wrapping it in to_thread is the right call.
     import asyncio as _asyncio
+    # E2E-Trace: trace_id auf den Plan setzen, bevor der Executor laeuft — so landet
+    # sie im PlanRecorder-Snapshot (plan_executor finally) + stages[] tragen sie.
+    try:
+        plan.trace_id = trace_id
+        plan._stages.append({"stage": "plan", "component": "multihop_execute",
+                             "ts": __import__("time").time(), "outcome": "plan_ready"})
+    except Exception:  # noqa: BLE001
+        pass
     exec_result = await _asyncio.to_thread(pe.execute, plan)
-    out: Dict[str, Any] = {"ok": exec_result.get("ok"), **exec_result}
+    out: Dict[str, Any] = {"ok": exec_result.get("ok"), "trace_id": trace_id, **exec_result}
 
     # Optional final synthesis — Phase 11.T.4 uses asynthesize() so the
     # synth LLM call doesn't burn a threadpool worker.
@@ -2554,6 +2591,12 @@ async def multihop_execute(request: Request):
                     custom_prompt=plan.final_synthesis_prompt or None,
                 )
             out["final_text"] = text
+            # E2E-Trace: die Ausgabe (synthesis) zurueck an den Recorder haengen —
+            # bisher wurde final_text NICHT gespeichert (Recon-Befund 2026-06-09).
+            try:
+                pe.recorder.attach_final(plan.plan_id, text)
+            except Exception:  # noqa: BLE001
+                pass
         except Exception as e:
             out["synthesis_error"] = f"{type(e).__name__}: {e}"
 
@@ -2567,6 +2610,78 @@ async def multihop_history(request: Request, limit: int = 20):
     if pe is None:
         return JSONResponse({"plans": []})
     return JSONResponse({"plans": pe.recorder.list(limit=int(limit))})
+
+
+# ─── E2E-Trace (2026-06-09): eingabe -> plan -> approval -> execution -> ausgabe ─
+@router.get("/api/trace/{trace_id}")
+async def trace_get(trace_id: str, request: Request):
+    """Volle Nachvollziehbarkeit einer Anfrage: welcher App-Teil (component) hat
+    in welcher Stufe (stage) wann (ts) was (outcome) gemacht, plus routed_via +
+    final_text (Ausgabe). Funktioniert fuer ALLE Zweige (PlanExecutor + SoM/team
+    via Push). 404 wenn unbekannt, nie 500."""
+    pe = getattr(request.app.state, "plan_executor", None)
+    if pe is None:
+        return JSONResponse({"error": "plan_executor not loaded"}, status_code=503)
+    try:
+        snap = pe.recorder.get_by_trace(trace_id)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"error": str(e)[:200]}, status_code=500)
+    if snap is None:
+        return JSONResponse({"error": f"trace '{trace_id}' not found"}, status_code=404)
+    # stages chronologisch sortieren (PlanExecutor + SoM-Push koennen verzahnt sein)
+    stages = sorted(snap.get("stages", []), key=lambda s: s.get("ts", 0))
+    return JSONResponse({
+        "trace_id": trace_id,
+        "intent": snap.get("intent", ""),
+        "routed_via": snap.get("routed_via", ""),
+        "plan_id": snap.get("plan_id"),
+        "ok": snap.get("ok"),
+        "elapsed_s": snap.get("elapsed_s"),
+        "stages": stages,
+        "executed": snap.get("executed"),
+        "final_text": snap.get("final_text", ""),
+    })
+
+
+@router.post("/api/trace/{trace_id}/stage")
+async def trace_append_stage(trace_id: str, request: Request):
+    """Stage-Push von den detached SoM/som-team-Workern (Phase 2b): {stage,
+    component, outcome}. So landen die per-Schritt-Stufen der HEAVY-Kette
+    (planner/executor/validator/matrix) unter derselben trace_id im Trace."""
+    pe = getattr(request.app.state, "plan_executor", None)
+    if pe is None:
+        return JSONResponse({"error": "plan_executor not loaded"}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    stage = (body.get("stage") or "").strip()
+    component = (body.get("component") or "").strip() or "som"
+    if not stage:
+        return JSONResponse({"error": "stage required"}, status_code=400)
+    try:
+        pe.recorder.append_stage(trace_id, stage, component, body.get("outcome", ""))
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": str(e)[:200]})
+    return JSONResponse({"ok": True})
+
+
+@router.get("/api/trace")
+async def trace_list(request: Request, limit: int = 20):
+    """Letzte N Traces (trace-zentriert, mit routed_via). Detail via /api/trace/{id}."""
+    pe = getattr(request.app.state, "plan_executor", None)
+    if pe is None:
+        return JSONResponse({"traces": []})
+    try:
+        with pe.recorder._lock:
+            items = [s for s in list(pe.recorder._recent) if s.get("trace_id")][-int(limit):][::-1]
+        return JSONResponse({"traces": [
+            {"trace_id": s.get("trace_id"), "intent": (s.get("intent") or "")[:120],
+             "routed_via": s.get("routed_via"), "ok": s.get("ok"),
+             "n_stages": len(s.get("stages", [])), "ts": s.get("ts")}
+            for s in items]})
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"traces": [], "error": str(e)[:200]})
 
 
 @router.get("/api/multihop/plan/{plan_id}")
