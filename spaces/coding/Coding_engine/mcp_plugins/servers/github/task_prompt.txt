@@ -1,4 +1,0 @@
-Use the available GitHub tools to accomplish the goal.
-Be explicit about which repository you're working with (format: owner/repo).
-Provide progress updates and handle authentication properly.
-If you encounter rate limits or authentication errors, report them clearly.

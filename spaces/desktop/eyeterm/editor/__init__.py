@@ -1,1 +1,0 @@
-"""eyeTerm editor: patch handling."""

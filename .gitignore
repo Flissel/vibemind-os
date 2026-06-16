@@ -76,3 +76,7 @@ bash.exe.stackdump
 spaces/coding/Coding_engine/Data/
 spaces/coding/Coding_engine/infra/data/
 spaces/rowboat/data/
+
+# Live MongoDB data dir (314 MB) — never commit DB state
+spaces/rowboat/rowboat/data/
+**/data/mongo/

@@ -1,1 +1,0 @@
-export { VibeChat } from './VibeChat'
