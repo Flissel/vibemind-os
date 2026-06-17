@@ -149,6 +149,11 @@ INTENT-TO-CAPABILITY HINTS:
   "lösche alle bubbles"                                → bubble_delete_all, no arg
   "benenne bubble X um nach Y"                         → bubble_update, arg_kwarg=title,        arg_template=Y
   "fuege idee X hinzu" / "add idea X"                  → idea_add,      arg_kwarg=title,        arg_template=X
+  "such/finde/wo ist die idee X" / "find idea X"      → idea_find,     arg_kwarg=query,        arg_template=X
+       (NICHT bubble_evaluate! "such die idee" = idea_find suchen,
+        NICHT eine Bubble auf Projekt-Reife bewerten.)
+  "bewerte/evaluate bubble X" / "ist X reif/ready"    → bubble_evaluate, arg_kwarg=bubble_name, arg_template=X
+       (NUR bei expliziter Bewertungs-/Reife-/go-no-go-Absicht, NICHT beim Suchen.)
   "format idee X als Y"                                → idea_format_<Y>, arg_kwarg=idea_name,  arg_template=X
 
 DECISION TREE (apply IN ORDER, take FIRST match):
