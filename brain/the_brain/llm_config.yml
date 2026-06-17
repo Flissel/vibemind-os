@@ -9,12 +9,17 @@
 
 keys:
   openrouter: ${OPENROUTER_API_KEY}
+  openai: ${OPENAI_API_KEY}
 
 providers:
   openrouter:
     type: openai
     base_url: https://openrouter.ai/api/v1
     key_ref: openrouter
+  openai:
+    type: openai
+    base_url: https://api.openai.com/v1
+    key_ref: openai
 
 # === Default (dev mode — Groq direct) ===
 default:
@@ -52,6 +57,14 @@ roles:
     provider: openrouter
     model: gpt-4o-mini
     temperature: 0.5
+  # Canvas reformat (publishing/bubble_sync/format_engine.py): regenerate a
+  # canvas node's rich content_json from FS-edited prose. OpenAI-direct so the
+  # standard get_client_sync path (NOT the brain MultiLLMRouter) reaches it; low
+  # temperature for deterministic schema-following JSON.
+  format_generation:
+    provider: openai
+    model: gpt-4o-mini
+    temperature: 0.2
 
 # === Production Overrides ===
 overrides:
