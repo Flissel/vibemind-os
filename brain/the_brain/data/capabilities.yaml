@@ -1153,6 +1153,11 @@
     # (desktop_skill desktop-scoped, browser verlangte website/http). Kat-6-Fix.
     - "screenshot\\s+(von|of|der|des|the|a|einen?)?\\s*[\\w.-]+\\.(com|org|net|io|de|gov|edu|co|app|dev|ai)"
     - "(gehe|geh|navigiere|navigate|öffne|besuche)\\s+(zur?|auf|to|nach)?\\s*(die|the)?\\s*(webseite|website|seite|url|web\\s?site)"
+    # "öffne (sichtbar) (die) seite/website X" — fiel sonst durch zu site_check
+    # (broadcast-only, kein execution_target -> Fehler). Verb + opt. Fueller
+    # (sichtbar/mir/zur/...) + seite/website. Faengt NICHT "öffne excel" (Desktop)
+    # oder "ist die seite erreichbar" (site_check). Intent-Validierung Kat-6.
+    - "(öffne|oeffne|zeig\\w*|besuche?|navigiere|geh\\w*|open|show|visit)\\s+(sichtbar\\s+|visible\\s+|mir\\s+|mal\\s+|uns\\s+|zur?\\s+|auf\\s+|to\\s+|nach\\s+)*(die\\s+|the\\s+|von\\s+)?(seite|website|webseite|web\\s?site|url|page)\\b"
     - "(web\\s?research|deep research|recherchiere?\\s+im\\s+(web|netz|internet))"
     # 2026-05-19: natural site requests without https:// or the word
     # "webseite" (e.g. "öffne gmail", "geh auf youtube", "gmail aufmachen")
