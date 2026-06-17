@@ -1146,7 +1146,10 @@
     - "(navigiere|navigate|öffne|browse|scrape|screenshot|besuche)\\b.{0,40}https?://"
     - "(scrape|extract|grab|extrahier)\\w*\\s+.*\\b(page|website|webpage|site|seite|webseite)"
     - "(fill|complete|fülle?|ausfüllen)\\s+.*\\b(form|formular)\\b"
-    - "(login|log in|einlog|melde?\\s+dich\\s+an)\\s*(to|in|bei|at)?\\s*\\w+"
+    # login: deckt "logge dich bei X ein" / "melde dich bei X an" mit Woertern
+    # dazwischen ab (alte Form verlangte "melde dich an" als Block, "logge..ein"
+    # fehlte ganz). Intent-Validierung Kat-6.
+    - "(login|log\\s?in|einlog\\w*|logg?e?\\s+(dich|mich)\\s+.{0,25}\\bein\\b|melde?\\s+(dich|mich)\\s+.{0,25}\\ban\\b|melde?\\s+(dich|mich)\\s+an)"
     - "(take|grab|mach|erstell)\\w*\\s+(a|ein|einen)?\\s*screenshot\\s+(of|von|der|des)?\\s*(the|a|der|die|das)?\\s*(website|page|webpage|webseite|seite)"
     # Screenshot einer bloßen Domain ohne http:// und ohne das Wort "website"
     # ("screenshot von github.com") — sonst faellt es zwischen die Stuehle
