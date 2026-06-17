@@ -4198,3 +4198,35 @@ async def brain_ui(request: Request) -> HTMLResponse:
     return request.app.state.templates.TemplateResponse(
         request, "brain_dashboard.html"
     )
+
+
+@router.get("/api/toolscope")
+async def toolscope_debug(intent: str, agent: str = "skill-coordinator", top_n: int = 8):
+    """Debug/Verifikation der dynamischen Tool-Auswahl (plans/dynamic-agent-tools-prompt.md).
+
+    Ruft den ToolScopeSelector mit dem WARMEN Prozess-Embedder (uvicorn hat ihn
+    geladen) und gibt die gewaehlten Tools + Prompt-Focus sofort zurueck — umgeht
+    den langsamen openfang-/execute-Roundtrip. Read-only, kein Seiteneffekt.
+    Beantwortet: 'waehlt der Selektor live sinnvolle Tools fuer diesen Intent?'.
+    """
+    import time as _t
+    t0 = _t.time()
+    try:
+        from core.tool_scope_selector import get_selector
+        # Embedder im Threadpool ziehen, falls (auf diesem Worker) noch kalt —
+        # blockiert dann nicht den Event-Loop.
+        import asyncio as _a
+        loop = _a.get_running_loop()
+        allow, focus = await loop.run_in_executor(
+            None, lambda: get_selector().select_tools(intent, agent_name=agent, top_n=top_n))
+        return JSONResponse({
+            "intent": intent, "agent": agent, "top_n": top_n,
+            "tool_count": len(allow), "tools": allow,
+            "prompt_focus": focus,
+            "elapsed_s": round(_t.time() - t0, 2),
+        })
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({
+            "intent": intent, "agent": agent, "error": str(exc),
+            "elapsed_s": round(_t.time() - t0, 2),
+        }, status_code=500)
