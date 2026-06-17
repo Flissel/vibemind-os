@@ -1208,6 +1208,27 @@ class PlanExecutor:
             # pick the right one (idea_format_mindmap vs _swot, etc).
             "_capability": getattr(hop, "capability", "") or "",
         }
+        # Dynamic tool scope (plans/dynamic-agent-tools-prompt.md, Phase 2):
+        # Fuer openfang:-Agenten (skill-coordinator/desktop/openclaude/...) waehlt
+        # der ToolScopeSelector pro Intent SEMANTISCH die relevanten Tools + baut
+        # einen Prompt-Focus, den OpenFangExecutor als message-Praefix setzt
+        # (lenkt das Agent-LLM weg vom 71-Tool-Loop). Default-off via
+        # DYNAMIC_TOOL_SCOPE; graceful — bei jedem Fehler bleibt _extra unveraendert
+        # (= heutiges Verhalten). _tool_allowlist wird mitgegeben fuer den spaeteren
+        # per-Request-Rust-Filter; heute wirkt nur _system_prompt_focus.
+        if (os.environ.get("DYNAMIC_TOOL_SCOPE", "0") not in ("0", "false", "False")
+                and isinstance(target, str) and target.startswith("openfang:")):
+            try:
+                from .tool_scope_selector import get_selector
+                _agent = target.split(":", 1)[1].strip()
+                _allow, _focus = get_selector().select_tools(
+                    _extra["_intent"] or rendered_arg or "", agent_name=_agent)
+                if _focus:
+                    _extra["_system_prompt_focus"] = _focus
+                if _allow:
+                    _extra["_tool_allowlist"] = _allow
+            except Exception as e:  # noqa: BLE001 — nie den Hop daran scheitern lassen
+                logger.warning(f"[plan_exec] tool-scope skipped ({e})")
         for attempt in range(max(1, hop.retries)):
             try:
                 if hop.arg_kwarg:

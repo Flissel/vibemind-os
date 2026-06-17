@@ -342,6 +342,15 @@ class OpenFangExecutor(_BaseRemoteExecutor):
 
     def _call(self, payload: Dict[str, Any]) -> Any:
         message = payload.get("message") or payload.get("input") or json.dumps(payload)
+        # Dynamic tool scope (plans/dynamic-agent-tools-prompt.md, Phase 2):
+        # Brain kann via extra_params einen _system_prompt_focus mitgeben (vom
+        # ToolScopeSelector) — die per-Intent relevanten Tools. Wir praefixen ihn
+        # vor die message, damit das Agent-LLM sich auf diese Tools fokussiert
+        # (lenkt gpt-5.5 weg vom 71-Tool-Loop). Wirkt OHNE Rust/per-Request-Filter;
+        # die echte tool_allowlist-Durchsetzung kommt spaeter (Rust, zurueckgestellt).
+        focus = payload.get("_system_prompt_focus")
+        if isinstance(focus, str) and focus.strip():
+            message = f"{focus.strip()}\n\n---\n\n{message}"
         timeout = float(os.environ.get("CAPABILITY_HTTP_TIMEOUT_S", "120"))
 
         def _send(agent_id: str) -> Any:
