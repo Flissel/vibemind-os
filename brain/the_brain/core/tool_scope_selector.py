@@ -43,9 +43,14 @@ _CORE_TOOLS: dict[str, list[str]] = {
 }
 
 _DEFAULT_TOP_N = int(os.environ.get("TOOL_SCOPE_TOP_N", "8"))
-# /api/tools-Cache: einmal ziehen + embedden, dann TTL-gecacht (Tool-Defs ändern
-# sich selten; embedden von 328 Tools ist teuer genug um es zu cachen).
-_TOOLS_CACHE_TTL_S = int(os.environ.get("TOOL_SCOPE_CACHE_TTL_S", "1800"))
+# /api/tools-Cache: einmal ziehen + embedden (328 Tools), dann gecacht. TTL EFFEKTIV
+# EINMALIG pro Prozess (Default ~1 Jahr): das encode_batch(328) kostet auf der
+# CPU-Maschine ~17 MIN (gemessen 2026-06-18, kein CUDA) — es darf NIE im Request
+# laufen, sondern wird beim Startup vorgewärmt (brain_server _warm_embedder). Ein
+# kurzer TTL (vorher 1800s) ließ den 17-min-Build alle 30 min im ersten Request
+# nach Ablauf neu feuern → Hang. Tool-Defs ändern sich zur Laufzeit praktisch nie;
+# ein Prozess-Neustart baut die Matrix ohnehin frisch.
+_TOOLS_CACHE_TTL_S = int(os.environ.get("TOOL_SCOPE_CACHE_TTL_S", str(365 * 24 * 3600)))
 
 
 def _now() -> float:

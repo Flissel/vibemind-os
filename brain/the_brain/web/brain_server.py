@@ -1499,6 +1499,19 @@ async def _lifespan(app: FastAPI):
                 print("  [OK] Difficulty-Embedder vorgewaermt (Qwen geladen)")
             except Exception as _e:  # noqa: BLE001
                 print(f"  [--] Embedder-Warmup uebersprungen: {_e}")
+            # ToolScope (plans/dynamic-agent-tools-prompt.md): die 328-Tool-Matrix EINMALIG
+            # hier vorberechnen — encode_batch(328) kostet auf CPU ~17 MIN und DARF NIE im
+            # Request laufen (sonst Hang/Container-Kill, root-caused 2026-06-18). Nur wenn
+            # DYNAMIC_TOOL_SCOPE an ist (sonst sinnlose 17 min). Embedder ist jetzt warm.
+            if os.environ.get("DYNAMIC_TOOL_SCOPE", "0") not in ("0", "false", "False"):
+                try:
+                    import time as _t
+                    from core.tool_scope_selector import get_selector
+                    _t0 = _t.time()
+                    get_selector()._tool_matrix()   # fuellt den (one-shot-TTL) Cache
+                    print(f"  [OK] ToolScope-Matrix vorgewaermt ({_t.time() - _t0:.0f}s, 328 Tools)")
+                except Exception as _e:  # noqa: BLE001
+                    print(f"  [--] ToolScope-Vorwaermung uebersprungen: {_e}")
         _thr.Thread(target=_warm_embedder, daemon=True, name="EmbedderWarmup").start()
     except Exception:  # noqa: BLE001
         pass
