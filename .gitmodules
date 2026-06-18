@@ -44,3 +44,6 @@
 [submodule "spaces/desktop/Automation_ui/moire_tracker"]
 	path = spaces/desktop/Automation_ui/moire_tracker
 	url = https://github.com/Flissel/Vibemind_Moire_Tracker.git
+[submodule "spaces/desktop/Automation_ui"]
+	path = spaces/desktop/Automation_ui
+	url = https://github.com/Flissel/Automation_ui.git
