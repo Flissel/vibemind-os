@@ -180,12 +180,25 @@ class Embedder:
 
     def __init__(self) -> None:
         from sentence_transformers import SentenceTransformer
-        logger.info(f"[KG] loading embed model: {EMBED_MODEL} ({SEMANTIC_DIM}-dim)")
+        # Device-Auswahl (plans/brain-cuda-migration.md): CUDA nutzen WENN verfügbar,
+        # sonst CPU-Fallback. Auf der CPU-only-Maschine (torch+cpu) ist cuda.is_available()
+        # False -> "cpu" wie bisher (kein Verhaltensänderung). Mit torch+cu121 + GPU-
+        # Passthrough (RTX 3060) -> "cuda" → Qwen ~100-300x schneller (encode ~20ms statt
+        # ~4-5s). Override via EMBED_DEVICE env (cpu|cuda) für Test/Kill-Switch.
+        _device = os.environ.get("EMBED_DEVICE", "").strip().lower()
+        if _device not in ("cpu", "cuda"):
+            try:
+                import torch
+                _device = "cuda" if torch.cuda.is_available() else "cpu"
+            except Exception:  # noqa: BLE001 — torch-Import-Problem → CPU
+                _device = "cpu"
+        logger.info(f"[KG] loading embed model: {EMBED_MODEL} ({SEMANTIC_DIM}-dim) on {_device}")
         t0 = time.time()
-        self._model = SentenceTransformer(EMBED_MODEL)
+        self._model = SentenceTransformer(EMBED_MODEL, device=_device)
+        self._device = _device
         self._encode_lock = threading.Lock()
         dt = time.time() - t0
-        logger.info(f"[KG] embed model loaded in {dt:.1f}s")
+        logger.info(f"[KG] embed model loaded in {dt:.1f}s (device={_device})")
 
     def encode(self, text: str) -> List[float]:
         with self._encode_lock:
