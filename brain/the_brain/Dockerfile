@@ -39,12 +39,17 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # 2. ML stack — torch is boot-critical (web/routers/routing.py:7 hard-imports
 #    it inside create_app) but requirements.txt:53 has it COMMENTED OUT, and
 #    sentence-transformers/transformers are in NO requirements file (the native
-#    venv had them installed manually). Install the CPU-only torch wheel: the
-#    container has no GPU passthrough, so the +cu121 wheel (~2GB) would be dead
-#    weight. Version line tracks requirements-tahlamus.txt (torch>=2.0).
+#    venv had them installed manually). Version line tracks requirements-tahlamus.txt.
+#    torch-Variante via build-arg BRAIN_TORCH_VARIANT (plans/brain-cuda-migration.md):
+#      cu121 (DEFAULT) — CUDA-Wheel (~2GB) fuer GPU-Hosts (RTX 3060 da + Launcher
+#                        Invoke-GpuSetup gibt brain-core die GPU). Qwen ~100-300x.
+#      cpu             — CPU-only-Wheel (kleiner) fuer GPU-lose Build-Hosts.
+#    Embedder waehlt device=cuda-if-available zur Laufzeit (qdrant_kg.py) — ein
+#    cu121-Image auf GPU-losem Host faellt also auf CPU zurueck (laeuft, nur kein Speed).
+ARG BRAIN_TORCH_VARIANT=cu121
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir \
-        --index-url https://download.pytorch.org/whl/cpu \
+        --index-url "https://download.pytorch.org/whl/${BRAIN_TORCH_VARIANT}" \
         "torch>=2.0,<2.6" && \
     pip install --no-cache-dir \
         "sentence-transformers>=2.2,<6" \
