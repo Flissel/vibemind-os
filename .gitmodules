@@ -22,10 +22,6 @@
 [submodule "coding-engine"]
 	path = coding-engine
 	url = https://github.com/Flissel/DaveFelix-Coding-Engine.git
-[submodule "spaces/mirofish/mirofish"]
-	path = spaces/mirofish/mirofish
-	url = https://github.com/Flissel/MiroFish.git
-	branch = backup-local-2026-04-12
 [submodule "spaces/video/vibevideo"]
 	path = spaces/video/vibevideo
 	url = https://github.com/Flissel/vibevideo.git
