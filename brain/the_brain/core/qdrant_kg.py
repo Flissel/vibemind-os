@@ -68,6 +68,26 @@ BATCH_SIZE = int(os.environ.get("BRAIN_KG_BATCH_SIZE", "8"))
 BATCH_FLUSH_MS = int(os.environ.get("BRAIN_KG_BATCH_FLUSH_MS", "3000"))
 MAX_LINKED = 50
 
+
+def _flag(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).lower() in ("1", "true", "yes")
+
+
+# TriBE integration flags (all default OFF — see docs plan tribe-active-integration).
+# TRIBE_PROFILE_ENABLED      → compute & store the 8-bridge profile per thought
+# TRIBE_NEURAL_VECTOR_ENABLED → also write the full 20484-dim vector into the Qdrant `neural` slot
+# Both run only inside the async flush worker, so the CTE/BrainChat hot paths stay fast.
+TRIBE_PROFILE_ENABLED = _flag("TRIBE_PROFILE_ENABLED")
+TRIBE_NEURAL_VECTOR_ENABLED = _flag("TRIBE_NEURAL_VECTOR_ENABLED")
+# Baustein C — prefix the recognised intent to the TriBE input, so the neural
+# profile reflects the absicht behind a thought, not only its wording.
+TRIBE_INTENT_GROUNDING = _flag("TRIBE_INTENT_GROUNDING")
+# Store the 16 cortical ROIs (finer than the 8 bridges) per thought. Empirically
+# discriminates functional/motor thoughts better than bridges alone.
+TRIBE_ROI_ENABLED = _flag("TRIBE_ROI_ENABLED")
+# Cap the text length handed to TriBE — predict latency scales with tokens.
+TRIBE_PROFILE_MAXLEN = int(os.environ.get("TRIBE_PROFILE_MAXLEN", "400"))
+
 # ──────────────────────────────────────────────────────────────────────
 # Cognitive Collections (Modell C)
 # ──────────────────────────────────────────────────────────────────────
@@ -86,6 +106,14 @@ COLLECTIONS: Dict[str, str] = {
     "decisions":  "brain-decisions",   # Phase 10.1 — past Plans + outcomes for recall
     "self":       "brain-self",        # Phase 10.2 — self-model: capability-confidence over time
 }
+
+# Baustein D.2 — execution-log collection (RAG-index over multihop history).
+# Only registered when EXECUTION_LOG_ENABLED, so existing deployments don't get
+# a new collection unless they opt in. Stores one embedded summary per step with
+# the claimed-vs-verified diff, queryable via search() and direct payload filters.
+EXECUTION_LOG_ENABLED = _flag("EXECUTION_LOG_ENABLED")
+if EXECUTION_LOG_ENABLED:
+    COLLECTIONS["execlog"] = "brain-execution-log"
 
 # Identity stamping (Phase C). Returns {} for the default identity so every
 # payload stays BYTE-IDENTICAL to before — fields only appear once BRAIN_ID/
@@ -127,13 +155,14 @@ NT_META_TOPIC = "meta_topic"   # S.5 — cross-session theme, lives in aggregate
 NT_MIROFISH_ENTITY = "mirofish_entity"  # R.6 — Neo4j mirror
 NT_DECISION_RECORD = "decision_record"  # Phase 10.1 — past plan with outcome
 NT_SELF_TRAIT = "self_trait"            # Phase 10.2 — capability-confidence belief
+NT_EXEC_STEP = "exec_step"              # Baustein D.2 — one execution-trace step
 
 ALL_NODE_TYPES = (
     NT_THOUGHT, NT_RESPONSE, NT_FACT, NT_CONCEPT,
     NT_BUBBLE, NT_IDEA, NT_SPACE, NT_EVENT, NT_SNAPSHOT,
     NT_TOPIC, NT_FINDING, NT_DECISION, NT_META_TOPIC,
     NT_MIROFISH_ENTITY,
-    NT_DECISION_RECORD, NT_SELF_TRAIT,
+    NT_DECISION_RECORD, NT_SELF_TRAIT, NT_EXEC_STEP,
 )
 
 NODE_TYPE_TO_COLLECTION: Dict[str, str] = {
@@ -154,6 +183,7 @@ NODE_TYPE_TO_COLLECTION: Dict[str, str] = {
     "plan_execution": "episodic",  # Phase 6.14.4 — multi-hop plan summaries
     NT_DECISION_RECORD: "decisions",   # Phase 10.1
     NT_SELF_TRAIT:      "self",        # Phase 10.2
+    NT_EXEC_STEP:       "execlog",     # Baustein D.2
 }
 
 # Brain-owned collections (not rowboat-artifacts / fungus-code).
@@ -238,6 +268,12 @@ class ThoughtDoc:
     tags: List[str] = field(default_factory=list)
     space_hint: Optional[str] = None
     bridge_levels: Dict[str, float] = field(default_factory=dict)
+    # 16 cortical ROIs (finer than the 8 bridges — discriminate better, esp.
+    # functional/motor). Stored alongside bridge_levels when TRIBE_ROI_ENABLED.
+    rois: Dict[str, float] = field(default_factory=dict)
+    # Baustein C — intent grounding: the intent/task_type this thought is about.
+    intent: str = ""
+    task_type: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -625,6 +661,33 @@ class QdrantKG:
             points: List[Any] = []
             for i, t in enumerate(batch):
                 pid = pids[i]
+                # TriBE neural signature (async, flag-gated, failure-safe). Computes
+                # the 8-bridge interpretable profile and optionally the full 20484-dim
+                # fMRI vector. Never let a TriBE error drop the thought — semantic
+                # upsert must always proceed.
+                bridge_levels = t.bridge_levels
+                rois = t.rois
+                neural_vec = None
+                if (TRIBE_PROFILE_ENABLED or TRIBE_NEURAL_VECTOR_ENABLED or TRIBE_ROI_ENABLED) and t.content:
+                    try:
+                        from core.tribe_encoder import TribeEncoder
+                        enc = TribeEncoder.get()
+                        # Baustein C — ground the profile in the intent.
+                        if TRIBE_INTENT_GROUNDING and getattr(t, "intent", ""):
+                            text = (f"[intent: {t.intent}] {t.content}")[:TRIBE_PROFILE_MAXLEN]
+                        else:
+                            text = t.content[:TRIBE_PROFILE_MAXLEN]
+                        vec = enc.predict(text)
+                        if vec is not None:
+                            if TRIBE_PROFILE_ENABLED and not bridge_levels:
+                                bridge_levels = enc.bridge_levels(vec)
+                            if TRIBE_ROI_ENABLED and not rois:
+                                rois = {k: round(float(v), 6)
+                                        for k, v in enc.aggregate_roi(vec).items()}
+                            if TRIBE_NEURAL_VECTOR_ENABLED and len(vec) == NEURAL_DIM:
+                                neural_vec = vec.tolist()
+                    except Exception as te:
+                        logger.debug(f"[KG] TriBE profile skipped: {te}")
                 payload = {
                     "node_type": NT_THOUGHT,
                     "thought_id": t.thought_id,
@@ -637,13 +700,22 @@ class QdrantKG:
                     "created_at": int(t.created_at),
                     "tags": t.tags,
                     "space_hint": t.space_hint,
-                    "bridge_levels": t.bridge_levels,
+                    "bridge_levels": bridge_levels,
+                    "rois": rois,  # 16 cortical ROIs (finer than bridges)
+                    # Baustein C — intent↔profil association: store the intent/
+                    # task_type next to the bridge profile so {intent, profile}
+                    # tuples are queryable + become training data for Baustein A.
+                    "intent": getattr(t, "intent", "") or "",
+                    "task_type": getattr(t, "task_type", "") or "",
                     "linked": existing_links.get(pid) or _empty_linked(),
                     **t.metadata,
                 }
+                vector_payload: Dict[str, Any] = {"semantic": vectors[i]}
+                if neural_vec is not None:
+                    vector_payload["neural"] = neural_vec
                 points.append(qm.PointStruct(
                     id=pid,
-                    vector={"semantic": vectors[i]},
+                    vector=vector_payload,
                     payload=payload,
                 ))
             self.client.upsert(collection_name=coll, points=points, wait=True)
@@ -781,12 +853,60 @@ class QdrantKG:
             pass
         return pid
 
+    def get_thought_profile(self, thought_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch the stored TriBE bridge-profile for a thought (interpretation).
+
+        Returns {thought_id, content, bridge_levels, profile, has_neural} or
+        None if the thought isn't found. profile is the human-readable summary.
+        """
+        try:
+            from core.tribe_encoder import describe_profile
+        except Exception:
+            describe_profile = lambda bl: ""  # noqa: E731
+        coll = COLLECTIONS["episodic"]
+        pid = _point_id(thought_id)
+        try:
+            recs = self.client.retrieve(
+                collection_name=coll, ids=[pid],
+                with_payload=True, with_vectors=False,
+            )
+        except Exception as e:
+            logger.debug(f"[KG] get_thought_profile retrieve failed: {e}")
+            return None
+        if not recs:
+            return None
+        p = recs[0].payload or {}
+        bl = p.get("bridge_levels") or {}
+        # has_neural: cheap check whether the 20484-dim slot was populated
+        has_neural = False
+        try:
+            vrecs = self.client.retrieve(
+                collection_name=coll, ids=[pid],
+                with_payload=False, with_vectors=["neural"],
+            )
+            if vrecs and getattr(vrecs[0], "vector", None):
+                nv = vrecs[0].vector
+                has_neural = bool(nv.get("neural")) if isinstance(nv, dict) else bool(nv)
+        except Exception:
+            pass
+        return {
+            "thought_id": thought_id,
+            "content": p.get("content", ""),
+            "bridge_levels": bl,
+            "rois": p.get("rois") or {},   # 16 cortical ROIs (finer resolution)
+            "intent": p.get("intent", ""),
+            "task_type": p.get("task_type", ""),
+            "profile": describe_profile(bl),
+            "has_neural": has_neural,
+        }
+
     # ── Search API ───────────────────────────────────────────────────
 
     def search(
         self, query: str, node_type: Optional[str] = None,
         collection: Optional[str] = None,
         limit: int = 10, score_threshold: float = 0.0,
+        payload_filter: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Semantic search across cognitive collections.
 
@@ -820,15 +940,18 @@ class QdrantKG:
             else:
                 colls_to_query = [COLLECTIONS[c] for c in COLLECTIONS]
 
-            # Optional node_type filter (only meaningful when searching broader)
-            qfilter = None
+            # Optional node_type + payload filters (must-conditions)
+            must = []
             if node_type:
-                qfilter = qm.Filter(must=[
-                    qm.FieldCondition(
-                        key="node_type",
-                        match=qm.MatchValue(value=node_type),
-                    ),
-                ])
+                must.append(qm.FieldCondition(
+                    key="node_type", match=qm.MatchValue(value=node_type),
+                ))
+            if payload_filter:
+                for k, v in payload_filter.items():
+                    must.append(qm.FieldCondition(
+                        key=k, match=qm.MatchValue(value=v),
+                    ))
+            qfilter = qm.Filter(must=must) if must else None
 
             # Reverse lookup: qdrant collection name → logical name (for payload)
             name_to_logical = {v: k for k, v in COLLECTIONS.items()}
@@ -919,6 +1042,8 @@ class QdrantKG:
                     created = float(get("timestamp", time.time()))
                     tags = list(get("tags") or [])
                     space_hint = get("space_hint")
+                    intent = get("intent") or ""
+                    task_type = get("task_type") or ""
                 else:
                     g = lambda k, d=None: getattr(thought, k, d)
                     content = g("content") or g("text") or ""
@@ -930,6 +1055,8 @@ class QdrantKG:
                     created = float(g("timestamp", time.time()))
                     tags = list(g("tags") or [])
                     space_hint = g("space_hint")
+                    intent = g("intent") or ""
+                    task_type = g("task_type") or ""
 
                 if not content or len(content.strip()) < 3:
                     return
@@ -945,6 +1072,8 @@ class QdrantKG:
                     created_at=created,
                     tags=tags,
                     space_hint=space_hint,
+                    intent=str(intent)[:200],
+                    task_type=str(task_type)[:80],
                 ))
             except Exception as e:
                 logger.debug(f"[KG] thought callback failed: {e}")

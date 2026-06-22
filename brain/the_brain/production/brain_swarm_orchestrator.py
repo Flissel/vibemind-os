@@ -183,20 +183,25 @@ class BrainSwarmOrchestrator:
         from vibemind_shared import get_model, get_provider_info
         from vibemind_shared.llm_client import _get_api_key
 
-        info = get_provider_info("brain_planning")
+        # Role is "planning" (defined in llm_config.yml, with a production override
+        # to openai/gpt-5-pro). The earlier "brain_planning" did NOT exist as a
+        # role, so this silently fell back to `default` (groq llama, temp 0.5) —
+        # the swarm never used the configured planning model. (Baustein D.3 fix.)
+        _PLANNING_ROLE = "planning"
+        info = get_provider_info(_PLANNING_ROLE)
         api_key = _get_api_key(info["provider"])
 
         if not api_key:
             raise ValueError(
                 f"No API key found for provider '{info['provider']}'.\n"
-                "Set the corresponding *_API_KEY in .env, or change the brain_planning "
+                "Set the corresponding *_API_KEY in .env, or change the planning "
                 "role in llm_config.yml to use a provider with a key set."
             )
 
-        logger.info(f"Using {info['provider']}/{info['model']} for swarm agents")
+        logger.info(f"Using {info['provider']}/{info['model']} for swarm agents (role={_PLANNING_ROLE})")
 
         return OpenAIChatCompletionClient(
-            model=get_model("brain_planning"),
+            model=get_model(_PLANNING_ROLE),
             api_key=api_key,
             base_url=info["base_url"],
             # Disable parallel tool calls to prevent multiple handoffs

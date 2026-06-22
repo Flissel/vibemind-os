@@ -954,8 +954,18 @@ class AgentLoop:
             )
             seed_tensor = torch.tensor(seed_np, dtype=torch.float32).unsqueeze(0)  # [1, 384]
 
+            # TriBE neural-signature modulation (Phase 2). The thought's 8-bridge
+            # profile + optional per-user bias are passed through; forward() makes
+            # them a no-op unless TRIBE_MODULATION_ENABLED.
+            tribe_bridges = metadata.get('tribe_bridges') if metadata else None
+            tribe_bias = metadata.get('tribe_personal_bias') if metadata else None
+
             with torch.no_grad():
-                result = self.radial_network.forward(seed_tensor)
+                result = self.radial_network.forward(
+                    seed_tensor,
+                    tribe_bridges=tribe_bridges,
+                    tribe_personal_bias=tribe_bias,
+                )
 
             self._last_radial_output = result
 

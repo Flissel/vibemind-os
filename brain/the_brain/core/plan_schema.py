@@ -59,6 +59,12 @@ class HopSpec:
     validator: Optional[Dict[str, Any]] = None
     timeout_s: float = 60.0
     retries: int = 1
+    # Baustein B — workflow contract: conditions that MUST hold before this hop
+    # may run (pre-execution enforcement, not just depends_on advice). Each is a
+    # string like "s1.completed" | "s1.verified" | "s1.ok". Checked against the
+    # executed-state before run; if unmet, the hop is blocked. Only enforced when
+    # CONTRACT_ENFORCEMENT_ENABLED (default OFF, fail-open).
+    start_when: List[str] = field(default_factory=list)
     # Phase 6.15.1 — Iteration support. When set, executor expands this
     # hop into N sub-hops at runtime, one per item.
     #

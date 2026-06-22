@@ -113,6 +113,14 @@ class PlanRecorder:
                 maybe_autotrain(snapshot)
             except Exception as e:
                 logger.debug(f"[plan-recorder] autotrain skipped: {e}")
+            # Baustein A — learn agent SEQUENCES per intent. Fire-and-forget;
+            # no-op unless SEQUENCE_LEARNER_ENABLED. Uses ok=True (= verified
+            # with Baustein D) as the success signal.
+            try:
+                from core.sequence_learner import maybe_observe
+                maybe_observe(snapshot)
+            except Exception as e:
+                logger.debug(f"[plan-recorder] seq-learn skipped: {e}")
 
     def list(self, *, limit: int = 20) -> List[Dict[str, Any]]:
         with self._lock:
@@ -206,6 +214,14 @@ class PlanExecutor:
         self.validator = validator
         self.dispatcher = dispatcher
         self.kg = kg                               # for KG-hit capture per hop
+        # Baustein D.2 — execution-log (RAG index over the trace). Lazy; no-op
+        # unless EXECUTION_LOG_ENABLED + a KG is present.
+        self._exec_log = None
+        try:
+            from core.execution_log import ExecutionLog
+            self._exec_log = ExecutionLog(kg)
+        except Exception:
+            self._exec_log = None
         self.recorder = recorder or PlanRecorder()
         self._subscribers: "weakref.WeakSet[asyncio.Queue]" = weakref.WeakSet()
         self._publish_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -670,6 +686,7 @@ class PlanExecutor:
             "plan_intent": plan.intent or "",
             "plan_rationale": getattr(plan, "rationale", "") or "",
             "plan_id": plan.plan_id,
+            "trace_id": getattr(plan, "trace_id", "") or "",
         }
 
         executed: Dict[str, HopResult] = {}
@@ -751,6 +768,40 @@ class PlanExecutor:
 
                 if not still_ready:
                     continue
+
+                # Baustein B — pre-execution contract gate. A hop with a
+                # `start_when` contract is only allowed to run once its
+                # conditions hold against executed-state. Fail-open: no-op unless
+                # CONTRACT_ENFORCEMENT_ENABLED. Blocked hops become an explicit
+                # failed result (never a silent hang).
+                try:
+                    from core.contract_gate import (
+                        check_start_when, CONTRACT_ENFORCEMENT_ENABLED,
+                    )
+                    if CONTRACT_ENFORCEMENT_ENABLED:
+                        allowed_ready = []
+                        for h in still_ready:
+                            dec = check_start_when(h, executed)
+                            if dec.allowed:
+                                allowed_ready.append(h)
+                            else:
+                                blocked = HopResult(
+                                    step_id=h.step_id, ok=False,
+                                    error=f"contract blocked: {dec.reason}",
+                                    capability=h.capability,
+                                    target=h.execution_target,
+                                )
+                                executed[h.step_id] = blocked
+                                with self._lock:
+                                    self.stats["hops_executed"] += 1
+                                    self.stats.setdefault("contract_blocks", 0)
+                                    self.stats["contract_blocks"] += 1
+                                self._publish("hop_completed", _hop_event(h, blocked))
+                        still_ready = allowed_ready
+                        if not still_ready:
+                            continue
+                except Exception as _ce:
+                    logger.debug(f"[plan-executor] contract gate skipped: {_ce}")
 
                 # Run ready batch in parallel
                 with ThreadPoolExecutor(max_workers=_MAX_PARALLEL) as pool:
@@ -971,6 +1022,19 @@ class PlanExecutor:
                     })
                 except Exception:
                     pass
+            # Baustein D.2 — plan-level trace stage (finish | plan_aborted).
+            try:
+                if self._exec_log is not None and self._exec_log.enabled:
+                    self._exec_log.record_step(
+                        plan_id=plan.plan_id, hop_k=None,
+                        intent=plan.intent or "",
+                        stage=("finish" if ok else "plan_aborted"),
+                        source="executor", claimed_ok=ok, verified=None,
+                        reason=f"{len(executed)} hops, {result.get('replans', 0)} replans",
+                        trace_id=getattr(plan, "trace_id", "") or "",
+                    )
+            except Exception:
+                pass
             return result
 
         finally:
@@ -1279,6 +1343,46 @@ class PlanExecutor:
                 logger.warning(f"[plan-executor] validator threw: {e}")
                 verdict = {"valid": False, "reason": f"validator error: {e}"}
 
+        # Baustein D.1 — ground-truth → thought-stream. If the validator ran a
+        # `truth:` check, push the WORLD-observed verdict (not the claim) back
+        # into the thinking loop as an event, so reflections are grounded in
+        # what actually happened. Best-effort; never affects execution.
+        if verdict is not None and ("verified" in verdict):
+            v = verdict.get("verified")
+            try:
+                cte = getattr(self, "_continuous_thinking", None)
+                if cte is not None:
+                    kind = ("action_verified" if v is True
+                            else "action_unverified" if v is None
+                            else "action_refuted")
+                    cte.record_event(kind, {
+                        "intent": hop.description,
+                        "capability": hop.capability,
+                        "claimed_ok": bool(ok),
+                        "verified": v,
+                        "signal": verdict.get("verify_signal") or {},
+                        "reason": verdict.get("reason", ""),
+                    })
+            except Exception:
+                pass
+            # Baustein D.2 — mirror the verified step into the execution-log
+            # collection (claimed-vs-verified diff is queryable via RAG).
+            try:
+                if self._exec_log is not None and self._exec_log.enabled:
+                    pc = plan_ctx or {}
+                    self._exec_log.record_step(
+                        plan_id=pc.get("plan_id", "") or "",
+                        hop_k=getattr(hop, "step_id", None),
+                        intent=hop.description, stage="verify",
+                        capability=hop.capability, source="validator",
+                        claimed_ok=bool(ok), verified=v,
+                        verify_signal=verdict.get("verify_signal") or {},
+                        reason=verdict.get("reason", ""),
+                        trace_id=pc.get("trace_id", "") or "",
+                    )
+            except Exception:
+                pass
+
         # Phase 6.13 — Optional TriBE bio-grounding. Off by default; opt
         # in via MULTIHOP_TRIBE_GROUNDING=1. Captures Brain's 8 bridge
         # activations (cortex/limbic/defense/motor/visceral/social/
@@ -1294,6 +1398,25 @@ class PlanExecutor:
             time.sleep(self._kg_settle_s)
             with self._lock:
                 self.stats["kg_settles"] += 1
+
+        # Baustein D.2 — trace stage `hop_failed`. Capture every failed hop with
+        # its error + source so failures (esp. planner-team) are RAG-queryable.
+        if not ok:
+            try:
+                if self._exec_log is not None and self._exec_log.enabled:
+                    pc = plan_ctx or {}
+                    src = "planner" if "plan" in (hop.capability or "").lower() else "executor"
+                    self._exec_log.record_step(
+                        plan_id=pc.get("plan_id", "") or "",
+                        hop_k=getattr(hop, "step_id", None),
+                        intent=hop.description, stage="hop_failed",
+                        capability=hop.capability, source=src,
+                        claimed_ok=False, verified=None,
+                        reason=str(err or "hop failed")[:400],
+                        trace_id=pc.get("trace_id", "") or "",
+                    )
+            except Exception:
+                pass
 
         # Phase 7.3 — record provider outcome for adaptive routing
         try:

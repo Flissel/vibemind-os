@@ -1190,6 +1190,84 @@ async def tribe_status(request: Request):
         return JSONResponse({"enabled": False, "error": str(exc)})
 
 
+@router.get("/api/kg/thought/{thought_id}/profile")
+async def kg_thought_profile(thought_id: str, request: Request):
+    """Interpretation: the stored TriBE bridge-profile for a thought.
+
+    Returns the 8-bridge activation levels plus a human-readable summary
+    ("high social + memory, low defense"). Populated only when thoughts were
+    ingested with TRIBE_PROFILE_ENABLED=1.
+    """
+    kg = getattr(request.app.state, "qdrant_kg", None)
+    if kg is None:
+        return JSONResponse({"error": "knowledge graph unavailable"}, status_code=503)
+    try:
+        prof = kg.get_thought_profile(thought_id)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    if prof is None:
+        return JSONResponse({"error": "thought not found"}, status_code=404)
+    if not prof.get("bridge_levels"):
+        prof["note"] = "no neural profile stored (TRIBE_PROFILE_ENABLED off at ingest?)"
+    return JSONResponse(prof)
+
+
+@router.get("/api/execution-log/search")
+async def execution_log_search(request: Request, q: str = "", diff: str = "",
+                               source: str = "", limit: int = 20):
+    """RAG over the execution trace (Baustein D.2).
+
+    Query params:
+      q      — semantic query (free text); empty → recent/any
+      diff   — filter MATCH | MISMATCH | UNVERIFIED (claimed-vs-verified)
+      source — filter planner | executor | validator
+      limit  — max hits
+
+    Example: /api/execution-log/search?diff=MISMATCH → actions that claimed
+    success but the world didn't confirm. Only populated with EXECUTION_LOG_ENABLED=1.
+    """
+    kg = getattr(request.app.state, "qdrant_kg", None)
+    if kg is None:
+        return JSONResponse({"error": "knowledge graph unavailable"}, status_code=503)
+    try:
+        from core.execution_log import ExecutionLog, EXECUTION_LOG_ENABLED
+        if not EXECUTION_LOG_ENABLED:
+            return JSONResponse({
+                "enabled": False,
+                "note": "set EXECUTION_LOG_ENABLED=1 to record + query the execution trace",
+                "results": [],
+            })
+        log = ExecutionLog(kg)
+        hits = log.search(q or "execution step", diff=diff or None,
+                          source=source or None, limit=limit)
+        return JSONResponse({
+            "enabled": True,
+            "query": {"q": q, "diff": diff, "source": source, "limit": limit},
+            "count": len(hits),
+            "results": hits,
+        })
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@router.get("/api/sequence-learner/status")
+async def sequence_learner_status(request: Request, intent: str = "", task_type: str = ""):
+    """Baustein A — learned agent-sequence stats + optional suggestion.
+
+    Pass ?intent=... or ?task_type=... to see what sequence the learner would
+    suggest. Empty → just the learner state. Populated with SEQUENCE_LEARNER_ENABLED=1.
+    """
+    try:
+        from core.sequence_learner import get_learner, SEQUENCE_LEARNER_ENABLED
+        learner = get_learner()
+        out = {"enabled": SEQUENCE_LEARNER_ENABLED, "state": learner.get_state()}
+        if intent or task_type:
+            out["suggestion"] = learner.suggest(intent=intent, task_type=task_type)
+        return JSONResponse(out)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
 @router.get("/api/brain/auto_dispatch_stats")
 async def auto_dispatch_stats(request: Request):
     """Stats about Phase F.4 AutoDispatcher (BrainChat -> Minibook)."""
@@ -2505,14 +2583,32 @@ async def multihop_execute(request: Request):
                 # Groq-Multihop versuchen (wie bisher).
                 if pl is None:
                     return JSONResponse({"error": "planner not loaded — pass a 'plan' instead"}, status_code=503)
+                # Baustein A — inject the learned agent-sequence as a planner prior
+                # (no-op unless SEQUENCE_LEARNER_ENABLED). The LLM stays in control;
+                # this only hints the proven decomposition.
+                _plan_ctx = None
+                try:
+                    from core.sequence_learner import suggest_sequence
+                    _sug = suggest_sequence(intent=intent)
+                    if _sug and _sug.get("sequence"):
+                        _seq = " → ".join(_sug["sequence"])
+                        _plan_ctx = {"hint": (
+                            f"A similar intent succeeded {_sug['ok']}x with this agent "
+                            f"sequence: {_seq}. Prefer it unless the intent clearly differs."
+                        )}
+                except Exception:
+                    _plan_ctx = None
                 # Phase 11.T.4 — async planning path; falls back to threadpool
                 aplan_fn = getattr(pl, "aplan", None)
                 if aplan_fn is not None:
-                    plan = await aplan_fn(intent)
+                    plan = await (aplan_fn(intent, context=_plan_ctx) if _plan_ctx else aplan_fn(intent))
                 else:
                     import asyncio as _asyncio
                     loop = _asyncio.get_running_loop()
-                    plan = await loop.run_in_executor(None, pl.plan, intent)
+                    if _plan_ctx:
+                        plan = await loop.run_in_executor(None, lambda: pl.plan(intent, context=_plan_ctx))
+                    else:
+                        plan = await loop.run_in_executor(None, pl.plan, intent)
     else:
         return JSONResponse({"error": "intent or plan required"}, status_code=400)
 

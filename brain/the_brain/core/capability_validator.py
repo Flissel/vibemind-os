@@ -278,6 +278,15 @@ class CapabilityValidator:
                     on_fail=on_fail,
                     t0=t0,
                 )
+            if kind.startswith("truth:"):
+                # Ground-truth check (Baustein D.1): observe the real world via a
+                # declared post-condition, NOT the claimed result. The check spec
+                # lives on the validator cfg (or `kind` carries the check name).
+                # UNVERIFIED never blocks — only an explicit REFUTED fails.
+                return self._run_truth_validator(
+                    kind=kind, validator_cfg=validator_cfg or {},
+                    on_fail=on_fail, t0=t0,
+                )
             self.stats["errors"] += 1
             return self._envelope(
                 valid=False, reason=f"unsupported validator kind '{kind}'",
@@ -304,13 +313,15 @@ class CapabilityValidator:
         on_fail: str,
         t0: float,
         error: Optional[str] = None,
+        verified: Optional[bool] = None,
+        verify_signal: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if valid:
             self.stats["valid"] += 1
         else:
             self.stats["invalid"] += 1
             self.stats["last_invalid_reason"] = reason
-        return {
+        env = {
             "valid": valid,
             "reason": reason,
             "kind": kind,
@@ -318,6 +329,52 @@ class CapabilityValidator:
             "elapsed_s": round(time.time() - t0, 3),
             "error": error,
         }
+        # Ground-truth fields (Baustein D.1): `verified` is the world-observed
+        # truth (True/False/None=unobserved), distinct from claim-based `valid`.
+        if verified is not None or verify_signal is not None:
+            env["verified"] = verified
+            env["verify_signal"] = verify_signal or {}
+        return env
+
+    def _run_truth_validator(
+        self,
+        *,
+        kind: str,
+        validator_cfg: Dict[str, Any],
+        on_fail: str,
+        t0: float,
+    ) -> Dict[str, Any]:
+        """Ground-truth validator (Baustein D.1) — observe the real world.
+
+        The post-condition spec is taken from `validator_cfg["postcondition"]`,
+        or built from `kind` ("truth:<check>") + the remaining cfg keys.
+        UNVERIFIED is treated as valid=True (we couldn't observe → don't block),
+        REFUTED is valid=False, VERIFIED is valid=True.
+        """
+        try:
+            from core import world_observer as wo
+        except Exception as e:
+            return self._envelope(
+                valid=True, reason=f"world_observer unavailable: {e}",
+                kind=kind, on_fail=on_fail, t0=t0, verified=None,
+            )
+        # Resolve the post-condition spec.
+        pc = validator_cfg.get("postcondition")
+        if not pc:
+            check = kind.split(":", 1)[1] if ":" in kind else ""
+            pc = {k: v for k, v in validator_cfg.items()
+                  if k not in ("kind", "on_fail", "prompt_template", "postcondition")}
+            if check:
+                pc["check"] = check
+        v = wo.observe(pc)
+        verified = v.verified_ok  # True | False | None
+        # UNVERIFIED (None) must NOT fail the action — only REFUTED does.
+        valid = (verified is not False)
+        return self._envelope(
+            valid=valid, reason=f"ground-truth {v.verdict}: {v.reason}",
+            kind=kind, on_fail=on_fail, t0=t0,
+            verified=verified, verify_signal=v.signal,
+        )
 
     def _run_agent_validator(
         self,
