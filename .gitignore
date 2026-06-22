@@ -52,6 +52,7 @@ brain/the_brain/data/discourse/
 brain/the_brain/data/runs/
 brain/the_brain/data/logs/
 brain/the_brain/data/*.jsonl
+brain/the_brain/data/sequence_learner.json
 brain/the_brain/data/capability_suggestions.json
 brain/the_brain/data/discourse_sim.json
 brain/the_brain/data/mcp_tools_cache.json
