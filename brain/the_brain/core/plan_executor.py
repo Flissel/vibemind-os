@@ -1418,6 +1418,33 @@ class PlanExecutor:
             except Exception:
                 pass
 
+        # C2 — Timeout-Sentinel: a timed-out hop -> ONE GitHub issue per capability.
+        # Flag-gated (CAPABILITY_TIMEOUT_ISSUE_ENABLED); fire-and-forget in a daemon
+        # thread so the gh-subprocess filing never blocks plan execution. Filing is
+        # OpenFang-free on purpose (a timeout is often OpenFang itself being down).
+        if not ok:
+            try:
+                from core.timeout_sentinel import (
+                    ENABLED as _TO_ENABLED, is_timeout as _is_to,
+                    on_hop_timeout as _on_to,
+                )
+                if _TO_ENABLED and _is_to(err):
+                    import threading
+                    _pc = plan_ctx or {}
+                    threading.Thread(
+                        target=_on_to,
+                        args=(hop.capability or "",),
+                        kwargs=dict(
+                            intent=hop.description, target=target,
+                            trace_id=_pc.get("trace_id", "") or "",
+                            elapsed_s=round(time.time() - t0, 2),
+                            error=str(err or ""),
+                        ),
+                        daemon=True,
+                    ).start()
+            except Exception:
+                pass  # never let C2 break execution
+
         # Phase 7.3 — record provider outcome for adaptive routing
         try:
             self.record_provider_outcome(hop.capability, target, ok)
