@@ -63,6 +63,37 @@ def assess_no_tool(intent: str, routed_capability: Optional[str]) -> Optional[Di
                     failure_patterns=["capability_router.route() -> None (no match)"])
 
 
+# Error substrings that mean the brain has NO tool for this (a real capability
+# gap). Kept distinct from TRANSIENT outages (OpenFang down, timeout, connection
+# refused) which are NOT a missing capability and must never file a NO_TOOL issue —
+# those are C2/transient territory. Used by the multihop plan_executor hook so a
+# genuinely-unresolvable hop (planner-hallucinated capability, no executor) files a
+# gap, while an OpenFang outage or timeout does not.
+_NO_TOOL_MARKERS = (
+    "no execution target",  # plan_executor's exact error for an unresolvable capability
+    "unknown capability", "no capability", "not registered", "no executor",
+    "no tool", "route() -> none", "no such capability", "capability not found",
+    "unsupported capability", "no matching capability",
+)
+_TRANSIENT_MARKERS = (
+    "openfangunavailable", "unreachable", "timeout", "timed out", "connection",
+    "temporarily", "refused", "503", "502", "transient",
+)
+
+
+def is_no_tool_error(error: Any) -> bool:
+    """True only if a hop-failure error indicates a genuinely MISSING capability/tool
+    (not a transient outage). The multihop GapSentinel hook uses this so a real 'no
+    tool' failure files a NO_TOOL gap, while OpenFang-down / timeout (C2's domain)
+    does not. Conservative: a transient marker anywhere wins (returns False)."""
+    s = str(error or "").lower()
+    if not s:
+        return False
+    if any(m in s for m in _TRANSIENT_MARKERS):
+        return False
+    return any(m in s for m in _NO_TOOL_MARKERS)
+
+
 def assess_reliability(capability: str, reliability: Dict[str, int]) -> Optional[Dict[str, Any]]:
     """From D.2 reliability {match, mismatch, unverified, n}: a capability that keeps
     claiming success while the world disagrees (UNRELIABLE), or can never be verified

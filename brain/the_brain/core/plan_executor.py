@@ -1236,6 +1236,31 @@ class PlanExecutor:
             logger.debug(f"[plan-executor] Phase 11.B routing skipped: {e}")
 
         if not target:
+            # L4 — GapSentinel (the REAL multihop NO_TOOL point). A hop whose capability
+            # resolves to NO execution_target = the brain has no tool to run it (the
+            # planner referenced an unknown/unresolvable capability). This is the multihop
+            # analog of the discourse route()->None signal, grounded in execution (not the
+            # answer text). Flag-gated (CAPABILITY_GAP_ENABLED); fire-and-forget daemon
+            # dispatch to the gap-filer agent (files ONE issue per capability, dedup'd).
+            try:
+                from core import capability_gap as _gap
+                if _gap.ENABLED:
+                    import threading
+                    _pc = plan_ctx or {}
+                    _g = _gap.make_gap(
+                        _gap.NO_TOOL,
+                        missing_capability=hop.capability or hop.description,
+                        intent=hop.description,
+                        failure_patterns=[f"no execution target for capability '{hop.capability}'"],
+                        evidence=f"trace_id={_pc.get('trace_id', '') or ''}",
+                    )
+                    threading.Thread(
+                        target=_gap.handle, args=(_g,),
+                        kwargs=dict(live=False, dispatcher=_gap.default_dispatcher),
+                        daemon=True,
+                    ).start()
+            except Exception:
+                pass  # never let L4 break execution
             return HopResult(
                 step_id=hop.step_id, ok=False,
                 error=f"no execution target for capability '{hop.capability}'",
@@ -1444,6 +1469,35 @@ class PlanExecutor:
                     ).start()
             except Exception:
                 pass  # never let C2 break execution
+
+        # L4 — GapSentinel in the REAL execution path. The multihop planner is a
+        # catch-all (it always plans *something*), so the clean NO_TOOL signal is not
+        # route()->None but an EXECUTION failure that proves no tool exists: a hop that
+        # fails because the capability/agent is genuinely unresolvable (planner
+        # hallucinated a cap, no executor) — NOT a transient outage (C2 owns timeouts;
+        # is_no_tool_error filters OpenFang-down/connection). Grounded in the failed
+        # hop (D's verdict), never the answer text. Flag-gated (CAPABILITY_GAP_ENABLED),
+        # fire-and-forget daemon dispatch to the gap-filer (files ONE issue, dedup'd).
+        if not ok:
+            try:
+                from core import capability_gap as _gap
+                if _gap.ENABLED and _gap.is_no_tool_error(err):
+                    import threading
+                    _pc = plan_ctx or {}
+                    _g = _gap.make_gap(
+                        _gap.NO_TOOL,
+                        missing_capability=hop.capability or hop.description,
+                        intent=hop.description,
+                        failure_patterns=[str(err or "")[:200]],
+                        evidence=f"trace_id={_pc.get('trace_id', '') or ''}",
+                    )
+                    threading.Thread(
+                        target=_gap.handle, args=(_g,),
+                        kwargs=dict(live=False, dispatcher=_gap.default_dispatcher),
+                        daemon=True,
+                    ).start()
+            except Exception:
+                pass  # never let L4 break execution
 
         # Phase 7.3 — record provider outcome for adaptive routing
         try:
