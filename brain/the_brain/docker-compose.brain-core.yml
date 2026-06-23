@@ -47,16 +47,15 @@ services:
       # silently returns "Failed to create node". Same rewrite rationale
       # as QDRANT_URL/BRAIN_URL above.
       - SUPABASE_URL=http://host.docker.internal:54321
-      # OpenFang runs on the HOST. The repo .env has OPENFANG_URL=
-      # http://localhost:4200 which (a) points at the container itself
-      # from here and (b) has the wrong port — OpenFang's HTTP API binds
-      # :50051, not :4200 (documented port-drift; .env OPENFANG_GRPC_URL
-      # already correctly says 50051). Brain's OpenFangExecutor
-      # (core/capability_targets.py) GETs <OPENFANG_URL>/api/agents to
-      # resolve openfang:<agent> targets; with the wrong URL EVERY
-      # openfang: capability fails "agent not found" (this was the
-      # brain-gateway / openclaw-visible last-mile blocker, 2026-05-19).
-      - OPENFANG_URL=http://host.docker.internal:50051
+      # OpenFang runs on the HOST and binds its HTTP API on :4200
+      # (openfang.vibemind.toml api_listen = 127.0.0.1:4200). From a
+      # container reach it via host.docker.internal:4200. Brain's
+      # OpenFangExecutor (core/capability_targets.py) POSTs
+      # <OPENFANG_URL>/api/agents/<id>/message to dispatch openfang:<agent>.
+      # 2026-06-23: corrected from the stale :50051 port-drift — that old
+      # gRPC-bridge port is dead; :4200 is the SOURCE OF TRUTH, verified
+      # live (gap-filer + coding_task dispatch resolve + run over :4200).
+      - OPENFANG_URL=http://host.docker.internal:4200
       # Routing-matrix auto-train (Approach B, 2026-05-19): the
       # ProductionPlanner REST API (:5001) runs as a HOST venv process,
       # so from this container it's host.docker.internal — same rewrite
@@ -124,7 +123,8 @@ services:
       - QDRANT_URL=http://host.docker.internal:6730
       - BRAIN_URL=http://host.docker.internal:5000
       - SUPABASE_URL=http://host.docker.internal:54321
-      - OPENFANG_URL=http://host.docker.internal:50051
+      # :4200 source of truth (2026-06-23, was stale :50051 port-drift)
+      - OPENFANG_URL=http://host.docker.internal:4200
       # Same Swarm-ignores-env_file rule as brain-core: pass keys
       # explicitly via ${VAR} substitution (docker stack deploy).
       - GROQ_API_KEY=${GROQ_API_KEY}
