@@ -128,6 +128,42 @@ def build_inventory(
     }
 
 
+_fungus_mod = None  # cache the (heavy) fungus module across calls
+
+
+def default_fungus_query(query: str, top_k: int = 8,
+                         fungus_path: Optional[str] = None) -> List[Dict]:
+    """C3b wiring — query the la-fungus-search index for code symbols (proven live
+    2026-06-23 over the 56k-chunk index). Lazy-loads + caches the fungus MCMP
+    retriever (heavy: Qwen3-Embedding-0.6B), runs a semantic search, extracts
+    def/class symbols from the hits. Pass as discover_latent(default_fungus_query).
+    Returns [] on any error (fungus index/embedder unavailable)."""
+    global _fungus_mod
+    import os
+    import re
+    try:
+        if _fungus_mod is None:
+            import importlib.util
+            here = os.path.dirname(os.path.abspath(__file__))
+            path = fungus_path or os.path.normpath(os.path.join(
+                here, "..", "..", "..", "la-fungus-search", "mcp_server.py"))
+            spec = importlib.util.spec_from_file_location("vibemind_fungus", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)  # loads embedder + persistent index
+            _fungus_mod = mod
+        res = _fungus_mod._sync_search(query, top_k=top_k)
+        out: List[Dict] = []
+        for h in (res.get("results") or []):
+            txt = h.get("text") or h.get("content") or h.get("chunk") or ""
+            file = h.get("file") or h.get("path") or (h.get("metadata") or {}).get("file")
+            for sym in re.findall(r"(?:def|class)\s+([A-Za-z_]\w+)", txt)[:3]:
+                out.append({"symbol": sym, "file": file, "score": h.get("score")})
+        return out
+    except Exception as exc:
+        logger.debug("[discovery] fungus query failed: %s", exc)
+        return []
+
+
 def discover_latent(
     fungus_query_fn: Optional[Callable[[str], List[Dict]]] = None,
     inventory: Optional[Dict] = None,
