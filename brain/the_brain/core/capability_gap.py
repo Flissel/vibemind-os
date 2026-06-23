@@ -132,3 +132,15 @@ def handle(gap: Optional[Dict[str, Any]], *, live: bool,
     except Exception as exc:  # fail-safe — a gap-handling error must not break the turn
         logger.warning("[gap-sentinel] handle failed: %s", exc)
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def default_dispatcher(gap: Dict[str, Any]) -> Any:
+    """Dispatch a gap to the capability-gap-filer agent (C1, live-green) via the brain's
+    OpenFangExecutor. The agent (Groq LLM, no GPU) turns the gap into a GitHub issue via
+    issue-detector. dry_run defaults true. Used as the `dispatcher` for autonomous handle()."""
+    import json
+    from core.capability_targets import build_executor
+    payload = dict(gap)
+    payload.setdefault("dry_run", True)
+    exe = build_executor(_GAP_AGENT_TARGET)
+    return exe.call_with_arg(json.dumps(payload))

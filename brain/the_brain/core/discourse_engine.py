@@ -1142,6 +1142,25 @@ class DiscourseEngine:
             except Exception as e:
                 logger.debug(f"[discourse] curator log failed: {e}")
 
+        # L4 GapSentinel — no capability matched this intent (route() -> None) = NO_TOOL.
+        # Detect + autonomously dispatch to the capability-gap-filer agent (C1, live-green)
+        # to file an issue. Flag-gated (CAPABILITY_GAP_ENABLED), fire-and-forget (daemon
+        # thread) so it never blocks discourse; the gap-filer dedups (one issue per cap).
+        if cap_match is None:
+            try:
+                from core import capability_gap as _gap
+                if _gap.ENABLED:
+                    _g = _gap.assess_no_tool(intent_text, None)
+                    if _g:
+                        import threading
+                        threading.Thread(
+                            target=_gap.handle, args=(_g,),
+                            kwargs=dict(live=False, dispatcher=_gap.default_dispatcher),
+                            daemon=True,
+                        ).start()
+            except Exception:
+                pass  # never let gap detection break discourse
+
         # Phase 1.5 — direct execution short-circuit. If the matched
         # capability has an `execution_target: direct:...`, call the python
         # function directly instead of running discourse, then optionally
