@@ -56,6 +56,36 @@ class OpenFangUnavailable(RuntimeError):
 # ── Per-kind executor classes ────────────────────────────────────────
 
 
+# ─── Honest-ok: detect op-results that are actually FAILURES ──────────────────
+# Root-caused 2026-06-24: _BaseRemoteExecutor.call set ok=True whenever _call()
+# returned WITHOUT raising — even when the op returned "Failed to create bubble"
+# or {'ok': False, 'error': ...}. So supabase write failures (and a down DB) were
+# masked as hop ok=True, which silently undermines D.2 / GapSentinel / reliability
+# (a claimed-ok hop that changed nothing). This makes the hop ok reflect the result.
+_FAILURE_DETECTION = os.environ.get("HOP_RESULT_FAILURE_DETECTION", "1") != "0"
+
+_FAIL_PREFIXES = (
+    "failed to", "need a ", "could not", "couldn't", "cannot ", "can't ",
+    "unable to", "error:", "no execution target", "does not exist",
+)
+
+
+def result_indicates_failure(result: Any) -> bool:
+    """True if an executor op-result CLEARLY represents a failure (→ hop ok=False).
+    Conservative on purpose: an explicit dict ``ok: False`` (or an ``error`` with
+    ok not True), or a string starting with a clear failure phrase. Does NOT flag
+    ambiguous-empty reads ("No bubbles found." = a valid empty DB, not a failure)
+    nor "(unverified ...)" (that is D.2's UNVERIFIED case, a different signal)."""
+    if isinstance(result, dict):
+        if result.get("ok") is False:
+            return True
+        return bool(result.get("error")) and result.get("ok") is not True
+    if isinstance(result, str):
+        s = result.strip().lower()
+        return any(s.startswith(p) for p in _FAIL_PREFIXES)
+    return False
+
+
 class _BaseRemoteExecutor:
     """Common HTTP-style executor base. Subclasses define `_call()`."""
 
@@ -78,12 +108,20 @@ class _BaseRemoteExecutor:
             out = self._call(payload)
             elapsed = time.time() - t0
             self._stats["total_elapsed_s"] += elapsed
-            return {
-                "ok": True,
+            # Honest-ok: a non-raising _call that returned a failure result
+            # (e.g. "Failed to create bubble", {'ok': False}) is NOT a success.
+            failed = _FAILURE_DETECTION and result_indicates_failure(out)
+            if failed:
+                self._stats["errors"] += 1
+            resp = {
+                "ok": not failed,
                 "result": out,
                 "elapsed_s": elapsed,
                 "target": self.target,
             }
+            if failed:
+                resp["error"] = f"op result indicates failure: {str(out)[:160]}"
+            return resp
         except Exception as e:
             elapsed = time.time() - t0
             self._stats["errors"] += 1
