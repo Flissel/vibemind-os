@@ -4,9 +4,6 @@
 [submodule "shared"]
 	path = shared
 	url = https://github.com/Flissel/vibemind-shared.git
-[submodule "clawcode"]
-	path = clawcode
-	url = https://github.com/Flissel/ClawCode.git
 [submodule "openclaw"]
 	path = openclaw
 	url = https://github.com/Flissel/openclaw.git

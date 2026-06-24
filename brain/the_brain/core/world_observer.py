@@ -269,9 +269,11 @@ def _check_supabase_node_in_bubble(spec: Dict[str, Any]):
         if not brows:
             return None, {"bubble": bubble_title}, "target bubble not found (cannot verify)"
         bid = brows[0]["id"]
+        # canvas_nodes link to their bubble via linked_idea_id (the bubble is an
+        # ideas row); confirmed against the live schema 2026-06-24.
         r2 = requests.get(
             f"{base}/rest/v1/canvas_nodes?title=eq.{_u.quote(node_title)}"
-            f"&bubble_id=eq.{bid}&select=id&limit=1",
+            f"&linked_idea_id=eq.{bid}&select=id&limit=1",
             headers=hdr, timeout=OBSERVE_TIMEOUT)
         if r2.status_code >= 400:
             return None, {"status_code": r2.status_code}, f"node re-query {r2.status_code}"
