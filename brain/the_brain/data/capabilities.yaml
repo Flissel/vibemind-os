@@ -818,8 +818,17 @@
   execution_target: "supabase:bubble.enter"
   arg_kwarg: bubble_name
   validator:
-    kind: rule:string_nonempty
+    # truth: ground-truth (2026-06-24) — confirm the entered bubble actually exists
+    # ("entered bubble 'X' (id=...)"). on_fail:report so a non-existent bubble is
+    # surfaced (REFUTED) without cascade-aborting; an "unverified" enter result has
+    # no id -> {result_id} empty -> UNVERIFIED (honest, never a fabricated VERIFIED).
+    kind: truth:supabase_row
     on_fail: report
+    postcondition:
+      check: supabase_row
+      table: ideas
+      match: "id=eq.{result_id}"
+      expect: present
 
 - capability: bubble_exit
   description: "exit the current bubble back to top-level canvas, verlasse die bubble, raus aus der bubble"
