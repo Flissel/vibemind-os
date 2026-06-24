@@ -741,8 +741,17 @@
   execution_target: "supabase:bubble.update"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: bubble_name
   validator:
-    kind: rule:string_nonempty
+    # truth: ground-truth (2026-06-24) — re-query that a row with the NEW title
+    # exists. {result_title} = the updated title the op reports ("Bubble 'X'
+    # updated."), so VERIFIED only if the rename actually persisted (LIVE-verified:
+    # claimed-but-not-persisted -> REFUTED).
+    kind: truth:supabase_row
     on_fail: report
+    postcondition:
+      check: supabase_row
+      table: ideas
+      match: "title=eq.{result_title}"
+      expect: present
 
 - capability: bubble_delete_all
   description: "delete ALL bubbles (with optional exceptions to keep), wipe all bubbles, lösche alle bubbles, alle blasen entfernen, clear the canvas, leere ideas space, broadcasts a bubble_deleted UI event for each removed bubble so the canvas updates live"
@@ -910,8 +919,15 @@
   execution_target: "supabase:idea.update"
   arg_kwarg: title
   validator:
-    kind: rule:string_nonempty
+    # truth: ground-truth (2026-06-24) — re-query that a node with the title the op
+    # reports ("Node 'X' updated.") exists; VERIFIED only if it persisted.
+    kind: truth:supabase_row
     on_fail: report
+    postcondition:
+      check: supabase_row
+      table: ideas
+      match: "title=eq.{result_title}"
+      expect: present
 
 - capability: idea_delete
   description: "delete an idea, lösche die idee, entferne die idee"
