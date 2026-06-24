@@ -405,8 +405,16 @@
   execution_target: "supabase:idea.connect"  # Phase 11.U.C.10
   arg_kwarg: idea1  # primary; idea2 re-extracted from _intent
   validator:
-    kind: rule:string_nonempty
+    # truth: ground-truth (2026-06-24) — confirm an edge between the two ideas the op
+    # reports connecting now exists. {result_title}+{result_title2} from "'X' and 'Y'
+    # are now connected." -> resolve titles -> query canvas_edges (LIVE-verified).
+    kind: truth:supabase_edge
     on_fail: report
+    postcondition:
+      check: supabase_edge
+      title_a: "{result_title}"
+      title_b: "{result_title2}"
+      expect: present
 
 - capability: idea_explain
   description: "explain an idea in natural language with context, give a written description of the idea, narrate what an idea means, elaborate on a note"
@@ -1058,8 +1066,15 @@
   execution_target: "supabase:idea.disconnect"  # Phase 11.U.C.10
   arg_kwarg: idea1  # primary; idea2 re-extracted from _intent
   validator:
-    kind: rule:string_nonempty
+    # truth: ground-truth (2026-06-24) — confirm the edge between the two ideas is GONE.
+    # {result_title}+{result_title2} from "Connection between 'X' and 'Y' removed."
+    kind: truth:supabase_edge
     on_fail: report
+    postcondition:
+      check: supabase_edge
+      title_a: "{result_title}"
+      title_b: "{result_title2}"
+      expect: absent
 
 - capability: idea_link_to_root
   description: "link an idea to the canvas root or back to top-level, verbinde die idee mit dem root"

@@ -349,14 +349,17 @@ class CapabilityValidator:
         # {result_title}: the FIRST quoted name in the result — ops name the row they
         # actually touched ("Bubble 'X' deleted."), so an absent/present re-query on it
         # is grounded in the op's own target, not a guessed filter.
-        mt = re.search(r"['\"]([^'\"]{1,80})['\"]", rs)
+        # all quoted names, in order — {result_title} (first) + {result_title2}
+        # (second) feed two-endpoint checks like edges ("'X' and 'Y' connected").
+        quoted = re.findall(r"['\"]([^'\"]{1,80})['\"]", rs)
         # {result_format}: the format an idea_format_* op reports applying
         # ("... formatted as kanban.") — lets a truth: check confirm the stored
         # format_schema->>type actually matches, uniformly for all formatters.
         mf = re.search(r"formatted as (\w+)", rs)
         subs = {"arg": str(arg or "").strip(), "result": rs[:200],
                 "result_id": m.group(1) if m else "",
-                "result_title": mt.group(1) if mt else "",
+                "result_title": quoted[0] if quoted else "",
+                "result_title2": quoted[1] if len(quoted) > 1 else "",
                 "result_format": mf.group(1) if mf else ""}
         out = {}
         for k, val in (pc or {}).items():

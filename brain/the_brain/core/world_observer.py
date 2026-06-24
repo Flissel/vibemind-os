@@ -195,6 +195,53 @@ def _check_supabase_row(spec: Dict[str, Any]):
         return None, {"match": match}, f"supabase probe error: {e}"
 
 
+def _check_supabase_edge(spec: Dict[str, Any]):
+    """Ground-truth for idea connect/disconnect — resolve the two node TITLES to ids,
+    then check whether an edge exists between them (bidirectional). spec:
+        {check: supabase_edge, title_a: X, title_b: Y, expect: present|absent}
+    A missing endpoint / transport error → None (UNVERIFIED, fail-safe)."""
+    title_a = (spec.get("title_a") or "").strip()
+    title_b = (spec.get("title_b") or "").strip()
+    expect = (spec.get("expect") or "present").lower()
+    if not title_a or not title_b:
+        return None, {}, "missing edge endpoints (cannot verify)"
+    base = os.environ.get("SUPABASE_URL", "http://localhost:54321").rstrip("/")
+    key = os.environ.get("SUPABASE_ANON_KEY", "anon")
+    try:
+        import requests  # lazy
+        import urllib.parse as _u
+    except Exception:
+        return None, {}, "requests not available"
+    hdr = {"apikey": key}
+
+    def _node_id(title):
+        r = requests.get(
+            f"{base}/rest/v1/canvas_nodes?title=eq.{_u.quote(title)}&select=id&limit=1",
+            headers=hdr, timeout=OBSERVE_TIMEOUT)
+        rows = r.json() if (r.status_code < 400 and r.content) else []
+        return rows[0]["id"] if rows else None
+
+    try:
+        a, b = _node_id(title_a), _node_id(title_b)
+        if not a or not b:
+            return None, {"id_a": a, "id_b": b}, "edge endpoint node not found (cannot verify)"
+        flt = (f"or=(and(from_node_id.eq.{a},to_node_id.eq.{b}),"
+               f"and(from_node_id.eq.{b},to_node_id.eq.{a}))")
+        r = requests.get(f"{base}/rest/v1/canvas_edges?{flt}&select=id&limit=1",
+                         headers=hdr, timeout=OBSERVE_TIMEOUT)
+        if r.status_code >= 400:
+            return None, {"status_code": r.status_code}, f"edge re-query {r.status_code}"
+        rows = r.json() if r.content else []
+        present = isinstance(rows, list) and len(rows) > 0
+        ok = present if expect == "present" else (not present)
+        return ok, {
+            "title_a": title_a, "title_b": title_b, "expect": expect,
+            "edges_found": len(rows) if isinstance(rows, list) else 0,
+        }, f"supabase: edge {'present' if present else 'absent'} (expected {expect})"
+    except Exception as e:  # fail-safe
+        return None, {"a": title_a, "b": title_b}, f"edge probe error: {e}"
+
+
 # Map of check-name → fn. To add a check, add one function above + an entry here.
 _CHECKS = {
     "process_running": _check_process_running,
@@ -202,6 +249,7 @@ _CHECKS = {
     "file_exists": _check_file_exists,
     "http_ok": _check_http_ok,
     "supabase_row": _check_supabase_row,
+    "supabase_edge": _check_supabase_edge,
 }
 
 
