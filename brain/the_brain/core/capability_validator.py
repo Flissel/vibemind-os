@@ -350,9 +350,14 @@ class CapabilityValidator:
         # actually touched ("Bubble 'X' deleted."), so an absent/present re-query on it
         # is grounded in the op's own target, not a guessed filter.
         mt = re.search(r"['\"]([^'\"]{1,80})['\"]", rs)
+        # {result_format}: the format an idea_format_* op reports applying
+        # ("... formatted as kanban.") — lets a truth: check confirm the stored
+        # format_schema->>type actually matches, uniformly for all formatters.
+        mf = re.search(r"formatted as (\w+)", rs)
         subs = {"arg": str(arg or "").strip(), "result": rs[:200],
                 "result_id": m.group(1) if m else "",
-                "result_title": mt.group(1) if mt else ""}
+                "result_title": mt.group(1) if mt else "",
+                "result_format": mf.group(1) if mf else ""}
         out = {}
         for k, val in (pc or {}).items():
             if isinstance(val, str):

@@ -438,8 +438,15 @@
   execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
-    kind: rule:string_nonempty
+    # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
+    # format the op reports applying ("...formatted as X." -> {result_format}).
+    kind: truth:supabase_row
     on_fail: report
+    postcondition:
+      check: supabase_row
+      table: canvas_nodes
+      match: "title=eq.{result_title}&format_schema->>type=eq.{result_format}"
+      expect: present
 
 - capability: idea_format_note
   description: "format an idea as a simple note, revert structured idea back to plain text"
@@ -453,8 +460,15 @@
   execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
-    kind: rule:string_nonempty
+    # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
+    # format the op reports applying ("...formatted as X." -> {result_format}).
+    kind: truth:supabase_row
     on_fail: report
+    postcondition:
+      check: supabase_row
+      table: canvas_nodes
+      match: "title=eq.{result_title}&format_schema->>type=eq.{result_format}"
+      expect: present
 
 - capability: idea_format_action_list
   description: "format an idea as an action list / task checklist with todos"
@@ -469,8 +483,15 @@
   execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
-    kind: rule:string_nonempty
+    # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
+    # format the op reports applying ("...formatted as X." -> {result_format}).
+    kind: truth:supabase_row
     on_fail: report
+    postcondition:
+      check: supabase_row
+      table: canvas_nodes
+      match: "title=eq.{result_title}&format_schema->>type=eq.{result_format}"
+      expect: present
 
 - capability: idea_format_pros_cons
   description: "format an idea as a pros and cons list, vor- und nachteile, advantages disadvantages"
@@ -485,8 +506,15 @@
   execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
-    kind: rule:string_nonempty
+    # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
+    # format the op reports applying ("...formatted as X." -> {result_format}).
+    kind: truth:supabase_row
     on_fail: report
+    postcondition:
+      check: supabase_row
+      table: canvas_nodes
+      match: "title=eq.{result_title}&format_schema->>type=eq.{result_format}"
+      expect: present
 
 - capability: idea_format_hierarchy
   description: "format an idea as a hierarchy or outline structure"
@@ -500,8 +528,15 @@
   execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
-    kind: rule:string_nonempty
+    # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
+    # format the op reports applying ("...formatted as X." -> {result_format}).
+    kind: truth:supabase_row
     on_fail: report
+    postcondition:
+      check: supabase_row
+      table: canvas_nodes
+      match: "title=eq.{result_title}&format_schema->>type=eq.{result_format}"
+      expect: present
 
 - capability: idea_format_specs
   description: "format an idea as a technical specification, requirements doc, format the idea as specs, wandle die idee in eine technische spezifikation um, erstelle eine spezifikation aus der idee"
@@ -520,8 +555,15 @@
   execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
-    kind: rule:string_nonempty
+    # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
+    # format the op reports applying ("...formatted as X." -> {result_format}).
+    kind: truth:supabase_row
     on_fail: report
+    postcondition:
+      check: supabase_row
+      table: canvas_nodes
+      match: "title=eq.{result_title}&format_schema->>type=eq.{result_format}"
+      expect: present
 
 - capability: idea_format_kanban
   description: "format an idea as a kanban board with todo doing done columns"
@@ -535,8 +577,15 @@
   execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
-    kind: rule:string_nonempty
+    # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
+    # format the op reports applying ("...formatted as X." -> {result_format}).
+    kind: truth:supabase_row
     on_fail: report
+    postcondition:
+      check: supabase_row
+      table: canvas_nodes
+      match: "title=eq.{result_title}&format_schema->>type=eq.{result_format}"
+      expect: present
 
 - capability: idea_format_mindmap
   description: "format an idea as a mind map with central topic and branches"
@@ -549,8 +598,15 @@
   execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
-    kind: rule:string_nonempty
+    # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
+    # format the op reports applying ("...formatted as X." -> {result_format}).
+    kind: truth:supabase_row
     on_fail: report
+    postcondition:
+      check: supabase_row
+      table: canvas_nodes
+      match: "title=eq.{result_title}&format_schema->>type=eq.{result_format}"
+      expect: present
 
 - capability: idea_format_swot
   description: "format an idea as a SWOT analysis (strengths weaknesses opportunities threats)"
@@ -564,8 +620,15 @@
   execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
-    kind: rule:string_nonempty
+    # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
+    # format the op reports applying ("...formatted as X." -> {result_format}).
+    kind: truth:supabase_row
     on_fail: report
+    postcondition:
+      check: supabase_row
+      table: canvas_nodes
+      match: "title=eq.{result_title}&format_schema->>type=eq.{result_format}"
+      expect: present
 
 - capability: idea_format_user_story
   description: "format an idea as user stories or requirements"
@@ -579,8 +642,15 @@
   execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
-    kind: rule:string_nonempty
+    # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
+    # format the op reports applying ("...formatted as X." -> {result_format}).
+    kind: truth:supabase_row
     on_fail: report
+    postcondition:
+      check: supabase_row
+      table: canvas_nodes
+      match: "title=eq.{result_title}&format_schema->>type=eq.{result_format}"
+      expect: present
 
 - capability: idea_format_flowchart
   description: "format an idea as a flowchart or process diagram"
@@ -595,8 +665,15 @@
   execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
-    kind: rule:string_nonempty
+    # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
+    # format the op reports applying ("...formatted as X." -> {result_format}).
+    kind: truth:supabase_row
     on_fail: report
+    postcondition:
+      check: supabase_row
+      table: canvas_nodes
+      match: "title=eq.{result_title}&format_schema->>type=eq.{result_format}"
+      expect: present
 
 - capability: idea_convert_format
   description: "convert an idea between any supported formats (table, note, action_list, pros_cons, hierarchy, specs, kanban, mindmap, swot, user_story, flowchart)"
@@ -612,8 +689,15 @@
   execution_target: "supabase:idea.format"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
-    kind: rule:string_nonempty
+    # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
+    # format the op reports applying ("...formatted as X." -> {result_format}).
+    kind: truth:supabase_row
     on_fail: report
+    postcondition:
+      check: supabase_row
+      table: canvas_nodes
+      match: "title=eq.{result_title}&format_schema->>type=eq.{result_format}"
+      expect: present
 
 - capability: idea_format_revert
   description: "undo the last format change on an idea, revert to previous format"
