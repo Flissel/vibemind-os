@@ -346,8 +346,13 @@ class CapabilityValidator:
         import re
         rs = str(raw_result) if raw_result is not None else ""
         m = re.search(r"id['\"]?\s*[=:]\s*['\"]?([\w-]{6,})", rs)
+        # {result_title}: the FIRST quoted name in the result — ops name the row they
+        # actually touched ("Bubble 'X' deleted."), so an absent/present re-query on it
+        # is grounded in the op's own target, not a guessed filter.
+        mt = re.search(r"['\"]([^'\"]{1,80})['\"]", rs)
         subs = {"arg": str(arg or "").strip(), "result": rs[:200],
-                "result_id": m.group(1) if m else ""}
+                "result_id": m.group(1) if m else "",
+                "result_title": mt.group(1) if mt else ""}
         out = {}
         for k, val in (pc or {}).items():
             if isinstance(val, str):

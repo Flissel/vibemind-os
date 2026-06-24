@@ -233,8 +233,17 @@
   result_arg_extractor: 'regex:(?:create|make|new|erstelle|neue)\s+(?:a\s+|an\s+|new\s+|eine?\s+)?(?:bubble|space|topic|thema)\s+(?:called\s+|named\s+|für\s+|with title\s+|titled\s+)?[''"]?([^''"]+?)[''"]?$'
   arg_kwarg: title
   validator:
-    kind: rule:bubble_id_present
+    # truth: ground-truth (2026-06-24) — independently RE-QUERY supabase that the
+    # created row really exists, instead of trusting the op's self-reported id.
+    # {result_id} = id from the op result (supabase return=representation). Active
+    # only under GROUND_TRUTH_ENABLED; else UNVERIFIED (=valid, never blocks).
+    kind: truth:supabase_row
     on_fail: report
+    postcondition:
+      check: supabase_row
+      table: ideas
+      match: "id=eq.{result_id}"
+      expect: present
 
 - capability: bubble_promote
   description: "promote a bubble to a project, advance lifecycle from idea to actual project"
@@ -770,8 +779,16 @@
   execution_target: "supabase:bubble.delete"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: bubble_name
   validator:
-    kind: rule:string_nonempty
+    # truth: ground-truth (2026-06-24) — re-query that the deleted row is GONE.
+    # {result_title} = the title the op reported deleting ("Bubble 'X' deleted.") so
+    # the absent-check is grounded in the op's own target, not a guessed filter.
+    kind: truth:supabase_row
     on_fail: report
+    postcondition:
+      check: supabase_row
+      table: ideas
+      match: "title=eq.{result_title}"
+      expect: absent
 
 - capability: bubble_enter
   description: "enter a bubble so subsequent idea operations target it, geh in die bubble, betrete die bubble"
@@ -908,8 +925,15 @@
   execution_target: "supabase:idea.delete"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_id
   validator:
-    kind: rule:string_nonempty
+    # truth: ground-truth (2026-06-24) — re-query that the deleted idea is GONE.
+    # {result_title} = the title the op reported deleting ("Idea 'X' deleted.").
+    kind: truth:supabase_row
     on_fail: report
+    postcondition:
+      check: supabase_row
+      table: ideas
+      match: "title=eq.{result_title}"
+      expect: absent
 
 - capability: idea_disconnect
   description: "disconnect or unlink two ideas, trenne die idee A von B, remove the connection between"
