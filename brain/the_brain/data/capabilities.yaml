@@ -1105,8 +1105,15 @@
   execution_target: "supabase:idea.move"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_name
   validator:
-    kind: rule:string_nonempty
+    # truth: ground-truth (2026-06-24) — confirm the idea is now under the target bubble.
+    # {result_title}=idea, {result_title2}=bubble from "Idea 'X' moved to bubble 'Y'."
+    kind: truth:supabase_node_in_bubble
     on_fail: report
+    postcondition:
+      check: supabase_node_in_bubble
+      node_title: "{result_title}"
+      bubble_title: "{result_title2}"
+      expect: present
 
 # ─── Phase 11.P: Restliche Ideas-Space utility caps ─────────────────
 

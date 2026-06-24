@@ -242,6 +242,50 @@ def _check_supabase_edge(spec: Dict[str, Any]):
         return None, {"a": title_a, "b": title_b}, f"edge probe error: {e}"
 
 
+def _check_supabase_node_in_bubble(spec: Dict[str, Any]):
+    """Ground-truth for idea_move — confirm the node is now under the target bubble.
+    Resolve the bubble TITLE to its id (ideas row), then check canvas_nodes for the
+    node under that bubble_id. spec:
+        {check: supabase_node_in_bubble, node_title: X, bubble_title: Y, expect: present}
+    Unresolved bubble / transport error → None (UNVERIFIED, fail-safe)."""
+    node_title = (spec.get("node_title") or "").strip()
+    bubble_title = (spec.get("bubble_title") or "").strip()
+    expect = (spec.get("expect") or "present").lower()
+    if not node_title or not bubble_title:
+        return None, {}, "missing node/bubble (cannot verify)"
+    base = os.environ.get("SUPABASE_URL", "http://localhost:54321").rstrip("/")
+    key = os.environ.get("SUPABASE_ANON_KEY", "anon")
+    try:
+        import requests  # lazy
+        import urllib.parse as _u
+    except Exception:
+        return None, {}, "requests not available"
+    hdr = {"apikey": key}
+    try:
+        r = requests.get(
+            f"{base}/rest/v1/ideas?title=eq.{_u.quote(bubble_title)}&select=id&limit=1",
+            headers=hdr, timeout=OBSERVE_TIMEOUT)
+        brows = r.json() if (r.status_code < 400 and r.content) else []
+        if not brows:
+            return None, {"bubble": bubble_title}, "target bubble not found (cannot verify)"
+        bid = brows[0]["id"]
+        r2 = requests.get(
+            f"{base}/rest/v1/canvas_nodes?title=eq.{_u.quote(node_title)}"
+            f"&bubble_id=eq.{bid}&select=id&limit=1",
+            headers=hdr, timeout=OBSERVE_TIMEOUT)
+        if r2.status_code >= 400:
+            return None, {"status_code": r2.status_code}, f"node re-query {r2.status_code}"
+        rows = r2.json() if r2.content else []
+        present = isinstance(rows, list) and len(rows) > 0
+        ok = present if expect == "present" else (not present)
+        return ok, {
+            "node": node_title, "bubble": bubble_title, "expect": expect,
+            "found": len(rows) if isinstance(rows, list) else 0,
+        }, f"supabase: node {'in' if present else 'not in'} bubble (expected {expect})"
+    except Exception as e:  # fail-safe
+        return None, {"node": node_title, "bubble": bubble_title}, f"node-in-bubble probe error: {e}"
+
+
 # Map of check-name → fn. To add a check, add one function above + an entry here.
 _CHECKS = {
     "process_running": _check_process_running,
@@ -250,6 +294,7 @@ _CHECKS = {
     "http_ok": _check_http_ok,
     "supabase_row": _check_supabase_row,
     "supabase_edge": _check_supabase_edge,
+    "supabase_node_in_bubble": _check_supabase_node_in_bubble,
 }
 
 
