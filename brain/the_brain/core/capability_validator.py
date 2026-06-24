@@ -286,6 +286,7 @@ class CapabilityValidator:
                 return self._run_truth_validator(
                     kind=kind, validator_cfg=validator_cfg or {},
                     on_fail=on_fail, t0=t0,
+                    arg=arg, raw_result=raw_result,
                 )
             self.stats["errors"] += 1
             return self._envelope(
@@ -336,6 +337,29 @@ class CapabilityValidator:
             env["verify_signal"] = verify_signal or {}
         return env
 
+    @staticmethod
+    def _template_postcondition(pc: Dict[str, Any], arg: Any, raw_result: Any) -> Dict[str, Any]:
+        """Fill {arg} / {result} / {result_id} placeholders in a post-condition from
+        the op's arg + result, so a truth: check can re-query the SPECIFIC row the op
+        just touched. {result_id} extracts the first id-like token from the result
+        (supabase return=representation gives it). Returns a new dict."""
+        import re
+        rs = str(raw_result) if raw_result is not None else ""
+        m = re.search(r"id['\"]?\s*[=:]\s*['\"]?([\w-]{6,})", rs)
+        subs = {"arg": str(arg or "").strip(), "result": rs[:200],
+                "result_id": m.group(1) if m else ""}
+        out = {}
+        for k, val in (pc or {}).items():
+            if isinstance(val, str):
+                for sk, sv in subs.items():
+                    # only fill when the value resolved to something — an empty
+                    # fill leaves "{placeholder}" so the caller's guard → UNVERIFIED
+                    # (never a malformed re-query like "id=eq." → false REFUTED)
+                    if sv:
+                        val = val.replace("{" + sk + "}", sv)
+            out[k] = val
+        return out
+
     def _run_truth_validator(
         self,
         *,
@@ -343,6 +367,8 @@ class CapabilityValidator:
         validator_cfg: Dict[str, Any],
         on_fail: str,
         t0: float,
+        arg: Any = None,
+        raw_result: Any = None,
     ) -> Dict[str, Any]:
         """Ground-truth validator (Baustein D.1) — observe the real world.
 
@@ -366,6 +392,15 @@ class CapabilityValidator:
                   if k not in ("kind", "on_fail", "prompt_template", "postcondition")}
             if check:
                 pc["check"] = check
+        # Fill {arg}/{result}/{result_id} from the op so the check re-queries the
+        # exact row touched. If a placeholder can't resolve (left as "{...}"), we
+        # cannot observe honestly → UNVERIFIED (never a false REFUTED).
+        pc = self._template_postcondition(pc, arg, raw_result)
+        if any(isinstance(val, str) and "{" in val for val in pc.values()):
+            return self._envelope(
+                valid=True, reason="ground-truth UNVERIFIED: postcondition placeholder unresolved",
+                kind=kind, on_fail=on_fail, t0=t0, verified=None,
+            )
         v = wo.observe(pc)
         verified = v.verified_ok  # True | False | None
         # UNVERIFIED (None) must NOT fail the action — only REFUTED does.

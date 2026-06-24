@@ -156,12 +156,52 @@ def _check_http_ok(spec: Dict[str, Any]):
         return None, {"url": url}, f"http probe error: {e}"
 
 
+def _check_supabase_row(spec: Dict[str, Any]):
+    """Ground-truth for supabase ops via an INDEPENDENT re-query (Baustein D.1).
+
+    Instead of trusting the op's self-reported result, ask supabase directly
+    whether the expected end-state holds. spec:
+        {check: supabase_row, table: ideas, match: "id=eq.<x>", expect: present}
+        {check: supabase_row, table: ideas, match: "title=eq.<x>", expect: absent}
+    `match` is a PostgREST filter; `expect` ∈ {present, absent}. Returns
+    (ok|None, signal, reason). Observer/transport errors → None (UNVERIFIED,
+    fail-safe — a probe failure must never fail the action itself)."""
+    table = (spec.get("table") or "ideas").strip()
+    match = (spec.get("match") or "").strip()
+    expect = (spec.get("expect") or "present").lower()
+    if not match:
+        return None, {}, "no match filter (nothing to re-query)"
+    base = os.environ.get("SUPABASE_URL", "http://localhost:54321").rstrip("/")
+    key = os.environ.get("SUPABASE_ANON_KEY", "anon")
+    try:
+        import requests  # lazy
+    except Exception:
+        return None, {}, "requests not available"
+    try:
+        r = requests.get(
+            f"{base}/rest/v1/{table}?{match}&select=id&limit=1",
+            headers={"apikey": key}, timeout=OBSERVE_TIMEOUT,
+        )
+        if r.status_code >= 400:
+            return None, {"status_code": r.status_code}, f"supabase re-query {r.status_code}"
+        rows = r.json() if r.content else []
+        present = isinstance(rows, list) and len(rows) > 0
+        ok = present if expect == "present" else (not present)
+        return ok, {
+            "table": table, "match": match, "expect": expect,
+            "rows_found": len(rows) if isinstance(rows, list) else 0,
+        }, f"supabase: {'row present' if present else 'row absent'} (expected {expect})"
+    except Exception as e:  # fail-safe
+        return None, {"match": match}, f"supabase probe error: {e}"
+
+
 # Map of check-name → fn. To add a check, add one function above + an entry here.
 _CHECKS = {
     "process_running": _check_process_running,
     "port_open": _check_port_open,
     "file_exists": _check_file_exists,
     "http_ok": _check_http_ok,
+    "supabase_row": _check_supabase_row,
 }
 
 
