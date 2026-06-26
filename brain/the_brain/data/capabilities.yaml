@@ -1258,6 +1258,17 @@
     # Last-resort: stack + thing-noun pair
     - "(eine?|a|ein)\\s+(python|js|ts|rust|go)\\s+(funktion|function|script|skript|class|klasse)"
   execution_target: "openfang:openclaude-coder"
+  validator:
+    # truth: ground-truth (2026-06-25) — the coding agent CLAIMS it wrote a file;
+    # confirm the file actually exists on disk (same host: brain + openclaude run
+    # locally). {result_path} = first absolute path in the result ("written to
+    # `C:/.../x.py`"). No path in the result -> UNVERIFIED (honest). Beyond supabase:
+    # first openfang/file-backed truth: signal, reusing world_observer.file_exists.
+    kind: truth:file_exists
+    on_fail: report
+    postcondition:
+      check: file_exists
+      path: "{result_path}"
 
 - capability: desktop_skill
   description: "automate excel word powerpoint outlook chrome desktop apps, fill cells type text click buttons, hr workflows like onboarding offboarding timesheet payroll, anything requiring UI automation on the user's Windows desktop with telegram approval"

@@ -356,11 +356,16 @@ class CapabilityValidator:
         # ("... formatted as kanban.") — lets a truth: check confirm the stored
         # format_schema->>type actually matches, uniformly for all formatters.
         mf = re.search(r"formatted as (\w+)", rs)
+        # {result_path}: first absolute file path in the result (Windows drive or
+        # /-rooted, with an extension) — lets a file_exists check confirm a coding
+        # agent's "written to `C:/.../x.py`" actually produced the file.
+        mp = re.search(r"([A-Za-z]:[\\/][^\s`'\"<>]+\.\w{1,6}|/[\w./\-]+\.\w{1,6})", rs)
         subs = {"arg": str(arg or "").strip(), "result": rs[:200],
                 "result_id": m.group(1) if m else "",
                 "result_title": quoted[0] if quoted else "",
                 "result_title2": quoted[1] if len(quoted) > 1 else "",
-                "result_format": mf.group(1) if mf else ""}
+                "result_format": mf.group(1) if mf else "",
+                "result_path": mp.group(1) if mp else ""}
         out = {}
         for k, val in (pc or {}).items():
             if isinstance(val, str):
