@@ -2662,7 +2662,16 @@ async def multihop_execute(request: Request):
     except Exception:  # noqa: BLE001
         pass
     exec_result = await _asyncio.to_thread(pe.execute, plan)
-    out: Dict[str, Any] = {"ok": exec_result.get("ok"), "trace_id": trace_id, **exec_result}
+    # MH-5a (Phase 0) — top-level plan_id: the reward-capable correlate.
+    # POST /api/multihop/plan/{plan_id}/reward and /api/decisions/reward both
+    # key on plan_id; the voice bridge reads data.get("plan_id") — nested-only
+    # (plan.plan_id) meant a voice-side reward could never fire.
+    out: Dict[str, Any] = {
+        "ok": exec_result.get("ok"),
+        "trace_id": trace_id,
+        "plan_id": plan.plan_id,
+        **exec_result,
+    }
 
     # Optional final synthesis — Phase 11.T.4 uses asynthesize() so the
     # synth LLM call doesn't burn a threadpool worker.
