@@ -665,3 +665,78 @@ class TestKotlinGraphEdgeCases:
             assert 'state_hash' in attrs
             assert 'first_seen' in attrs
             assert 'visit_count' in attrs
+
+
+# ===================================================================
+# Concurrency (KG-C1, Phase 0) — add_event under parallel hop threads
+# ===================================================================
+
+class TestKotlinGraphConcurrency:
+    """KG-C1: plan_executor runs hops in a ThreadPoolExecutor batch
+    (plan_executor.py:807-811); the future multihop ingest adapter will call
+    add_event from those worker threads. add_event allocates
+    `event_id = len(self.events)` (kotlin_graph.py:131) separately from the
+    append (:149) and closes episodes non-atomically (:208-210) — all without
+    a lock. This test drives that interleaving and asserts the invariants
+    that MUST survive parallel ingestion.
+
+    RED against today's lock-free add_event (duplicate/lost event_ids,
+    drifting counters). GREEN after KG-C2 (one critical section incl. the
+    done=True episode boundary).
+    """
+
+    def test_parallel_add_event_one_done_consistent(self):
+        import sys
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        N = 200
+        WORKERS = 8
+        ITERATIONS = 20
+
+        # Force frequent thread preemption so the interleaving windows in
+        # add_event are actually hit (GIL default switch interval hides them).
+        old_interval = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)
+        try:
+            for iteration in range(ITERATIONS):
+                kg = KotlinGraph()
+                barrier = threading.Barrier(WORKERS)
+
+                def worker(indices):
+                    barrier.wait()
+                    for j in indices:
+                        kg.add_event(
+                            state=make_state(f"s{j}", x=j),
+                            action=f"a{j}",
+                            next_state=make_state(f"s{j}_next", x=j),
+                            reward=0.0,
+                            # exactly ONE done=True across the whole batch
+                            done=(j == N - 1),
+                        )
+
+                chunks = [list(range(k, N, WORKERS)) for k in range(WORKERS)]
+                with ThreadPoolExecutor(max_workers=WORKERS) as ex:
+                    futures = [ex.submit(worker, c) for c in chunks]
+                    for f in futures:
+                        f.result()
+
+                ctx = f"iteration {iteration}"
+                assert kg.stats['total_events'] == N, (
+                    f"{ctx}: total_events {kg.stats['total_events']} != {N}")
+                assert len(kg.events) == N, (
+                    f"{ctx}: events list {len(kg.events)} != {N}")
+                ids = [e.event_id for e in kg.events]
+                assert len(set(ids)) == N, (
+                    f"{ctx}: duplicate/lost event_ids "
+                    f"({N - len(set(ids))} collisions)")
+                assert kg.stats['total_transitions'] == N, (
+                    f"{ctx}: total_transitions {kg.stats['total_transitions']} != {N}")
+                assert kg.stats['total_episodes'] == 1, (
+                    f"{ctx}: total_episodes {kg.stats['total_episodes']} != 1")
+                assert kg.current_episode_id == 1, (
+                    f"{ctx}: current_episode_id {kg.current_episode_id} != 1")
+                assert sum(len(v) for v in kg.episodes.values()) == N, (
+                    f"{ctx}: episode membership sum != {N}")
+        finally:
+            sys.setswitchinterval(old_interval)

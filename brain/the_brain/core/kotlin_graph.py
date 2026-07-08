@@ -14,6 +14,8 @@ Removed torch dependency entirely.
 """
 
 import json
+import threading
+
 import networkx as nx
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
@@ -76,6 +78,11 @@ class KotlinGraph:
     """
 
     def __init__(self):
+        # KG-C2 (Phase 0): add_event is called from parallel _exec_hop worker
+        # threads (plan_executor ThreadPoolExecutor). ID allocation, graph
+        # mutation and the done=True episode close must be ONE critical
+        # section — RLock (re-entrant) like plan_executor's own locks.
+        self._lock = threading.RLock()
         self.graph = nx.MultiDiGraph()  # Multi-graph allows duplicate edges
 
         # Event log (chronological)
@@ -128,89 +135,94 @@ class KotlinGraph:
         Returns:
             event_id: Sequential ID of the added event.
         """
-        event_id = len(self.events)
-        event = BrainEvent(
-            event_id=event_id,
-            timestamp=datetime.now().isoformat(),
-            state=state,
-            action=action,
-            next_state=next_state,
-            reward=reward,
-            done=done,
-            value=value,
-            policy_entropy=policy_entropy,
-            consciousness=consciousness,
-            dmn_energy=dmn_energy,
-            episode_id=self.current_episode_id,
-            step_in_episode=len(self.episodes.get(self.current_episode_id, [])),
-            metadata=metadata or {},
-        )
-
-        self.events.append(event)
-
-        # Add states as graph nodes if new
-        s_hash = event.state_hash()
-        ns_hash = event.next_state_hash()
-
-        if s_hash not in self.state_index:
-            node_id = self.next_node_id
-            self.next_node_id += 1
-            self.state_index[s_hash] = node_id
-            self.graph.add_node(
-                node_id,
+        # KG-C2: one critical section — event-ID allocation, graph/state-index
+        # mutation, episode membership AND the done-triggered episode close
+        # must not interleave across hop threads (observed: 85/200 duplicate
+        # event_ids under an 8-thread batch before the lock).
+        with self._lock:
+            event_id = len(self.events)
+            event = BrainEvent(
+                event_id=event_id,
+                timestamp=datetime.now().isoformat(),
                 state=state,
-                state_hash=s_hash,
-                first_seen=event.timestamp,
-                visit_count=0,
+                action=action,
+                next_state=next_state,
+                reward=reward,
+                done=done,
+                value=value,
+                policy_entropy=policy_entropy,
+                consciousness=consciousness,
+                dmn_energy=dmn_energy,
+                episode_id=self.current_episode_id,
+                step_in_episode=len(self.episodes.get(self.current_episode_id, [])),
+                metadata=metadata or {},
             )
-            self.stats['total_states'] += 1
 
-        if ns_hash not in self.state_index:
-            node_id = self.next_node_id
-            self.next_node_id += 1
-            self.state_index[ns_hash] = node_id
-            self.graph.add_node(
-                node_id,
-                state=next_state,
-                state_hash=ns_hash,
-                first_seen=event.timestamp,
-                visit_count=0,
+            self.events.append(event)
+
+            # Add states as graph nodes if new
+            s_hash = event.state_hash()
+            ns_hash = event.next_state_hash()
+
+            if s_hash not in self.state_index:
+                node_id = self.next_node_id
+                self.next_node_id += 1
+                self.state_index[s_hash] = node_id
+                self.graph.add_node(
+                    node_id,
+                    state=state,
+                    state_hash=s_hash,
+                    first_seen=event.timestamp,
+                    visit_count=0,
+                )
+                self.stats['total_states'] += 1
+
+            if ns_hash not in self.state_index:
+                node_id = self.next_node_id
+                self.next_node_id += 1
+                self.state_index[ns_hash] = node_id
+                self.graph.add_node(
+                    node_id,
+                    state=next_state,
+                    state_hash=ns_hash,
+                    first_seen=event.timestamp,
+                    visit_count=0,
+                )
+                self.stats['total_states'] += 1
+
+            # Get node IDs for this transition
+            from_node = self.state_index[s_hash]
+            to_node = self.state_index[ns_hash]
+
+            # Update visit count on source node
+            self.graph.nodes[from_node]['visit_count'] += 1
+
+            # Add directed edge (transition)
+            self.graph.add_edge(
+                from_node,
+                to_node,
+                event_id=event_id,
+                action=action,
+                reward=reward,
+                timestamp=event.timestamp,
+                value=value,
+                consciousness=consciousness,
+                episode_id=self.current_episode_id,
             )
-            self.stats['total_states'] += 1
+            self.stats['total_transitions'] += 1
 
-        # Get node IDs for this transition
-        from_node = self.state_index[s_hash]
-        to_node = self.state_index[ns_hash]
+            # Track episode membership
+            if self.current_episode_id not in self.episodes:
+                self.episodes[self.current_episode_id] = []
+            self.episodes[self.current_episode_id].append(event_id)
 
-        # Update visit count on source node
-        self.graph.nodes[from_node]['visit_count'] += 1
+            # Advance episode counter when done
+            if done:
+                self.stats['total_episodes'] += 1
+                self.current_episode_id += 1
 
-        # Add directed edge (transition)
-        self.graph.add_edge(
-            from_node,
-            to_node,
-            event_id=event_id,
-            action=action,
-            reward=reward,
-            timestamp=event.timestamp,
-            value=value,
-            consciousness=consciousness,
-            episode_id=self.current_episode_id,
-        )
-        self.stats['total_transitions'] += 1
-
-        # Track episode membership
-        if self.current_episode_id not in self.episodes:
-            self.episodes[self.current_episode_id] = []
-        self.episodes[self.current_episode_id].append(event_id)
-
-        # Advance episode counter when done
-        if done:
-            self.stats['total_episodes'] += 1
-            self.current_episode_id += 1
-
-        self.stats['total_events'] += 1
-        return event_id
+            self.stats['total_events'] += 1
+            return event_id
 
     def get_event(self, event_id: int) -> BrainEvent:
         """Get event by ID."""
@@ -402,15 +414,16 @@ class KotlinGraph:
 
     def clear(self) -> None:
         """Clear all data, resetting to initial empty state."""
-        self.graph.clear()
-        self.events.clear()
-        self.state_index.clear()
-        self.episodes.clear()
-        self.next_node_id = 0
-        self.current_episode_id = 0
-        self.stats = {
-            'total_events': 0,
-            'total_episodes': 0,
-            'total_states': 0,
-            'total_transitions': 0,
-        }
+        with self._lock:
+            self.graph.clear()
+            self.events.clear()
+            self.state_index.clear()
+            self.episodes.clear()
+            self.next_node_id = 0
+            self.current_episode_id = 0
+            self.stats = {
+                'total_events': 0,
+                'total_episodes': 0,
+                'total_states': 0,
+                'total_transitions': 0,
+            }
