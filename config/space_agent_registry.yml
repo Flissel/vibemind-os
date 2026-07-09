@@ -209,7 +209,11 @@ spaces:
 
   # ─── AgentFarm (multi-agent teams) ──────────────────────────────────
   agentfarm:
-    agent: brain-orchestrator
+    # REG-3 (2026-07-02): canonicalized brain-orchestrator -> vibemind against
+    # the LIVE OpenFang agent list (71 agents; brain-orchestrator NOT deployed,
+    # vibemind IS — openrouter/llama-3.3-70b). Registry is the single truth;
+    # LEGACY_SPACE_AGENT_MAP derives/validates against this (ABSORB-7).
+    agent: vibemind
     enabled: true
     description: "AutoGen multi-agent team coordination."
     mcp_servers: [vibemind-db]
