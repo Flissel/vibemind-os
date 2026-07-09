@@ -134,6 +134,17 @@ class KotlinGraph:
 
         Returns:
             event_id: Sequential ID of the added event.
+
+        Caller contract for `done` on TASK episodes (KG-C3, Phase 0):
+            done=True closes the episode and MUST only be passed when ALL
+            three hold — use `KotlinGraph.is_episode_done(...)` to decide:
+              (1) this is the LAST hop of the plan,
+              (2) if a truth-validator ran, it PASSED
+                  (verdict `verified is True`; no validator = vacuously
+                  satisfied; `verified is None` = NOT passed), and
+              (3) ZERO further hops are pending/queued.
+            KuroGraph mines success-patterns per episode — a wrong done
+            boundary poisons every pattern that touches the episode.
         """
         # KG-C2: one critical section — event-ID allocation, graph/state-index
         # mutation, episode membership AND the done-triggered episode close
@@ -223,6 +234,25 @@ class KotlinGraph:
 
             self.stats['total_events'] += 1
             return event_id
+
+    @staticmethod
+    def is_episode_done(
+        is_last_hop: bool,
+        validator_present: bool,
+        validator_passed: Optional[bool],
+        pending_hops: int,
+    ) -> bool:
+        """KG-C3 (Phase 0) — the 3-condition rule for task-episode `done`.
+
+        Centralizes the caller contract (see add_event docstring) for the
+        multihop ingest adapter: True only when (1) last hop, (2) validator
+        passed if one was present (None = unobserved = NOT passed), and
+        (3) no pending hops. Pure function, no state."""
+        if not is_last_hop or pending_hops > 0:
+            return False
+        if validator_present:
+            return validator_passed is True
+        return True
 
     def get_event(self, event_id: int) -> BrainEvent:
         """Get event by ID."""

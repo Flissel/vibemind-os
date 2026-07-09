@@ -740,3 +740,31 @@ class TestKotlinGraphConcurrency:
                     f"{ctx}: episode membership sum != {N}")
         finally:
             sys.setswitchinterval(old_interval)
+
+
+# ===================================================================
+# Episode-done rule (KG-C3, Phase 0)
+# ===================================================================
+
+class TestIsEpisodeDone:
+    """KG-C3: the 3-condition done rule for task episodes — last hop AND
+    validator passed (if present; None = unobserved = NOT passed) AND zero
+    pending hops. Centralized so the future multihop ingest adapter cannot
+    invent its own episode boundary."""
+
+    def test_is_episode_done_three_condition_rule(self):
+        cases = [
+            # (is_last, validator_present, validator_passed, pending) -> expected
+            ((True, False, None, 0), True),    # last, no validator -> vacuous
+            ((True, True, True, 0), True),     # last, validator passed
+            ((True, True, False, 0), False),   # validator refuted
+            ((True, True, None, 0), False),    # validator present but unobserved
+            ((True, True, True, 3), False),    # hops still pending
+            ((True, False, None, 1), False),   # pending beats vacuous
+            ((False, False, None, 0), False),  # not the last hop
+            ((False, True, True, 0), False),   # not last, even if verified
+        ]
+        for args, expected in cases:
+            assert KotlinGraph.is_episode_done(*args) is expected, (
+                f"is_episode_done{args} != {expected}"
+            )
