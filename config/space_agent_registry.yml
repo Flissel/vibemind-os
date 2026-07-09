@@ -20,6 +20,8 @@ spaces:
   # ─── Bubbles (canvas CRUD) ─────────────────────────────────────────
   bubbles:
     agent: brain-bubbles
+    # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
+    prefixes: [bubble.]
     enabled: true
     description: "Bubble CRUD + navigation on the VibeMind canvas."
     mcp_servers: [vibemind-db, vibemind]
@@ -44,6 +46,8 @@ spaces:
   # ─── Ideas (notes inside bubbles) ───────────────────────────────────
   ideas:
     agent: brain-ideas
+    # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
+    prefixes: [idea.]
     enabled: true
     description: "Idea notes inside bubbles — create, update, link, format."
     mcp_servers: [vibemind-db]
@@ -78,6 +82,8 @@ spaces:
   # ─── Coding (code gen + edits) ──────────────────────────────────────
   coding:
     agent: brain-coder
+    # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
+    prefixes: [code.]
     enabled: true
     description: "Code generation, editing, testing, review."
     mcp_servers: [vibemind-db, filesystem, git, github, context7, qdrant, fetch, brain, issue-detector]
@@ -95,6 +101,9 @@ spaces:
   # ─── Desktop automation ─────────────────────────────────────────────
   desktop:
     agent: brain-desktop
+    # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
+    prefixes: [desktop., web., messaging., openclaw.]
+    keywords: ["screenshot|bildschirm|klick|browser|click"]
     enabled: true
     description: "Desktop/window automation via pyautogui/moire."
     mcp_servers: [vibemind-db, desktop-automation]
@@ -132,6 +141,8 @@ spaces:
   # ─── Research (web + ideas) ─────────────────────────────────────────
   research:
     agent: brain-researcher
+    # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
+    prefixes: [research.]
     enabled: true
     description: "Web research + summarization into ideas."
     mcp_servers: [vibemind-db, fetch, qdrant]
@@ -147,6 +158,8 @@ spaces:
   # ─── Roarboot (Knowledge Graph) ─────────────────────────────────────
   roarboot:
     agent: rowboat-knowledge
+    # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
+    prefixes: [roarboot.]
     enabled: true
     description: "Knowledge graph queries, email drafts, decks."
     mcp_servers: [vibemind-db, fetch]
@@ -164,6 +177,8 @@ spaces:
   # ─── Minibook (collaboration) ───────────────────────────────────────
   minibook:
     agent: brain-knowledge
+    # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
+    prefixes: [minibook.]
     enabled: true
     description: "Minibook collaboration hub."
     mcp_servers: [vibemind-db, fetch]
@@ -177,6 +192,9 @@ spaces:
   # ─── Schedule (APScheduler tasks) ───────────────────────────────────
   schedule:
     agent: brain-scheduler
+    # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
+    prefixes: [schedule.]
+    keywords: ["termin|erinnerung|wecker|timer|schedule|reminder"]
     enabled: true
     description: "Scheduled tasks and reminders."
     mcp_servers: [vibemind-db, scheduled-tasks]
@@ -193,6 +211,9 @@ spaces:
   # ─── n8n (workflow automation) ──────────────────────────────────────
   n8n:
     agent: brain-n8n
+    # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
+    prefixes: [n8n.]
+    keywords: ["workflow|automatisierung|n8n|automation"]
     enabled: true
     description: "n8n workflow CRUD + execution."
     mcp_servers: [vibemind-db, n8n]
@@ -214,6 +235,9 @@ spaces:
     # vibemind IS — openrouter/llama-3.3-70b). Registry is the single truth;
     # LEGACY_SPACE_AGENT_MAP derives/validates against this (ABSORB-7).
     agent: vibemind
+    # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
+    prefixes: [agentfarm.]
+    keywords: ["agent.?farm|pipeline|forge|swarm.?team|agent.?team"]
     enabled: true
     description: "AutoGen multi-agent team coordination."
     mcp_servers: [vibemind-db]
@@ -231,6 +255,8 @@ spaces:
   # ─── Video (generation + vision) ────────────────────────────────────
   video:
     agent: brain-video
+    # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
+    prefixes: [video.]
     enabled: true
     description: "Video generation, vision, lipsync."
     mcp_servers: [vibemind-db]
@@ -249,6 +275,8 @@ spaces:
   # ─── Flowzen (wellness, check-ins) ──────────────────────────────────
   flowzen:
     agent: brain-wellness
+    # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
+    prefixes: [rose.]
     enabled: true
     description: "Wellness check-ins, diary, daily flow."
     mcp_servers: [vibemind-db]
@@ -261,6 +289,8 @@ spaces:
   # ─── MiroFish (prediction + graphs) ─────────────────────────────────
   mirofish:
     agent: brain-forecaster
+    # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
+    prefixes: [mirofish.]
     enabled: true
     description: "Forecasting, graph queries, predictions."
     mcp_servers: [vibemind-db]
