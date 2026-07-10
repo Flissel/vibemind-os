@@ -379,7 +379,7 @@ def _bump_skill_usage(path: str) -> bool:
         if not found_last_searched:
             new_lines.append(f'last_searched: "{datetime.utcnow().isoformat()}"')
 
-        new_text = "---\n" + "\n".join(new_lines) + rest
+        new_text = "---" + "\n".join(new_lines) + rest
         with open(path, "w", encoding="utf-8") as f:
             f.write(new_text)
         return True
@@ -387,6 +387,8 @@ def _bump_skill_usage(path: str) -> bool:
         logger.error(f"_bump_skill_usage failed for {path}: {e}")
         return False
 ```
+
+(`new_lines[0]` is an empty string — `text[3:end]` starts at the `\n` right after the opening `---`, so `splitlines()`'s first element is `""`. Joining with `"\n"` already supplies that newline; prepending `"---\n"` instead of `"---"` would double it, and since the empty first element is preserved every call, it would compound by one blank line per bump.)
 
 - [ ] **Step 4: Wire the bump into `_skill_search`**
 
@@ -425,7 +427,7 @@ In `_skill_save_and_index`, insert this block right after the `path = os.path.jo
             # New skill: mark it agent-created and seed curator bookkeeping
             # fields server-side — never trust the caller-supplied dict for
             # this. See docs/superpowers/specs/2026-07-10-skill-curator-design.md.
-            frontmatter.setdefault("agent_created", True)
+            frontmatter["agent_created"] = True  # unconditional: never let a caller-supplied False win
             frontmatter.setdefault("attempts", 0)
             frontmatter.setdefault("curator_status", "active")
             frontmatter.setdefault("last_searched", None)
