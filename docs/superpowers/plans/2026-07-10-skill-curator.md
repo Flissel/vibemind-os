@@ -712,6 +712,12 @@ def _write_frontmatter(path: Path, fm: dict) -> None:
 def _archive_skill(skill: Skill, archive_root: Path) -> Path:
     dest_dir = archive_root / skill.app / skill.name
     dest_dir.parent.mkdir(parents=True, exist_ok=True)
+    if (dest_dir / "SKILL.md").exists():
+        # A prior run already completed the move but crashed before cleaning
+        # up the original — finish the cleanup instead of re-archiving
+        # (os.replace below would otherwise raise on an existing dest_dir).
+        shutil.rmtree(skill.path.parent)
+        return dest_dir / "SKILL.md"
     tmp_dest = dest_dir.with_name(dest_dir.name + ".tmp-move")
     if tmp_dest.exists():
         shutil.rmtree(tmp_dest)
