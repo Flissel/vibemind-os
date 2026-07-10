@@ -38,6 +38,10 @@ class Skill:
     body: str
     path: Path
     raw_frontmatter: dict[str, Any] = field(default_factory=dict)
+    agent_created: bool = False
+    last_searched: str | None = None
+    curator_status: str = "active"
+    pinned: bool = False
 
     def visible_to(self, agent_name: str) -> bool:
         return "*" in self.agents or agent_name in self.agents
@@ -55,6 +59,9 @@ def parse_skill_file(path: Path) -> Skill:
     fm_text, body = match.group(1), match.group(2).strip()
     fm = yaml.safe_load(fm_text) or {}
 
+    def _iso_or_none(value: Any) -> str | None:
+        return value.isoformat() if hasattr(value, "isoformat") else value
+
     return Skill(
         name=fm["name"],
         description=fm["description"],
@@ -67,14 +74,14 @@ def parse_skill_file(path: Path) -> Skill:
         confidence=float(fm.get("confidence", 0.0)),
         attempts=int(fm.get("attempts", 0)),
         successes=int(fm.get("successes", 0)),
-        last_adjusted=(
-            fm.get("last_adjusted").isoformat()
-            if hasattr(fm.get("last_adjusted"), "isoformat")
-            else fm.get("last_adjusted")
-        ),
+        last_adjusted=_iso_or_none(fm.get("last_adjusted")),
         body=body,
         path=path,
         raw_frontmatter=fm,
+        agent_created=bool(fm.get("agent_created", False)),
+        last_searched=_iso_or_none(fm.get("last_searched")),
+        curator_status=str(fm.get("curator_status", "active")),
+        pinned=bool(fm.get("pinned", False)),
     )
 
 
