@@ -72,6 +72,12 @@ def _idle_days(skill: Skill, now: datetime) -> float:
 
 
 def _write_frontmatter(path: Path, fm: dict) -> None:
+    # Defensive normalization: guard against live datetime objects sneaking
+    # into raw_frontmatter (e.g. an unquoted "field: 2026-05-04T..." in the
+    # source YAML gets parsed by PyYAML as a datetime, not a str). yaml.dump
+    # can serialize datetimes, but round-tripping them as native YAML
+    # timestamps is a needless format change; normalize to ISO strings.
+    fm = {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in fm.items()}
     match = FRONTMATTER_RE.match(path.read_text(encoding="utf-8"))
     original_body = match.group(2) if match else ""
     new_text = "---\n" + yaml.safe_dump(fm, sort_keys=False).rstrip("\n") + "\n---\n" + original_body
@@ -81,6 +87,14 @@ def _write_frontmatter(path: Path, fm: dict) -> None:
 def _archive_skill(skill: Skill, archive_root: Path) -> Path:
     dest_dir = archive_root / skill.app / skill.name
     dest_dir.parent.mkdir(parents=True, exist_ok=True)
+    if (dest_dir / "SKILL.md").exists():
+        # A prior run already completed the move (os.replace succeeded) but
+        # crashed/died before removing the original directory. Don't
+        # re-archive (dest_dir already exists, so os.replace would raise);
+        # just finish the interrupted cleanup so the skill stops appearing
+        # in both locations on every future run.
+        shutil.rmtree(skill.path.parent)
+        return dest_dir / "SKILL.md"
     tmp_dest = dest_dir.with_name(dest_dir.name + ".tmp-move")
     if tmp_dest.exists():
         shutil.rmtree(tmp_dest)

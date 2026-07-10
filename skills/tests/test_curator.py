@@ -1,3 +1,4 @@
+import shutil
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -140,6 +141,40 @@ def test_maybe_run_curator_skips_when_interval_not_elapsed(tmp_path):
 
     second = maybe_run_curator(root=tmp_path, now=NOW + timedelta(hours=1))
     assert second is None
+
+
+def test_review_recovers_from_crash_between_move_and_original_cleanup(tmp_path):
+    # Regression test: a prior run can crash after os.replace() has already
+    # moved the skill into the archive but before the leftover original
+    # directory gets removed. The next review() must finish the cleanup
+    # instead of raising when it finds dest_dir already occupied.
+    _write_skill(
+        tmp_path, "app1", "crash-skill", agent_created=True,
+        last_searched=(NOW - timedelta(days=120)).isoformat(),
+    )
+
+    first_report = review(root=tmp_path, now=NOW)
+
+    assert first_report.archived == ["app1/crash-skill"]
+    assert first_report.errors == []
+    archived_dir = tmp_path / "_archive" / "app1" / "crash-skill"
+    original_dir = tmp_path / "app1" / "crash-skill"
+    assert archived_dir.exists()
+    assert not original_dir.exists()
+
+    # Simulate the crash: re-create the original directory with the
+    # already-archived content, so both locations exist simultaneously —
+    # exactly the state a crash between os.replace() and shutil.rmtree()
+    # would leave behind.
+    shutil.copytree(archived_dir, original_dir)
+    archived_content_before = (archived_dir / "SKILL.md").read_text(encoding="utf-8")
+
+    second_report = review(root=tmp_path, now=NOW)
+
+    assert second_report.errors == []
+    assert not original_dir.exists()
+    assert archived_dir.exists()
+    assert (archived_dir / "SKILL.md").read_text(encoding="utf-8") == archived_content_before
 
 
 def test_maybe_run_curator_runs_again_after_interval(tmp_path):
