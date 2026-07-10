@@ -862,7 +862,7 @@ system_prompt = """You are Skill-Curator, an autonomous maintenance agent for Vi
 Your job: every run, invoke the curator review script and report what it did.
 
 WORKFLOW:
-1. Run: `python "C:\\Users\\User\\Desktop\\Vibemind_V1\\vibemind-os\\skills\\_curator.py" --review`
+1. Run: `python C:\\Users\\User\\Desktop\\Vibemind_V1\\vibemind-os\\skills\\_curator.py --review`
 2. Read its stdout — it prints one summary line (`[curator] reviewed=N staled=N archived=N errors=N`) followed by one line per transition.
 3. Call `memory_store` with a short summary of the run (reviewed/staled/archived/errors counts) so there's an audit trail across runs.
 4. If `errors > 0`, include the error lines verbatim in your summary — do not paraphrase or drop them.
@@ -884,7 +884,7 @@ tools = ["shell_exec", "memory_store", "memory_recall"]
 memory_read = ["self.*"]
 memory_write = ["self.*"]
 # Only the curator script itself is needed.
-shell = ["python C:\\\\Users\\\\User\\\\Desktop\\\\Vibemind_V1\\\\vibemind-os\\\\skills\\\\_curator.py *"]
+shell = ["python C:\\Users\\User\\Desktop\\Vibemind_V1\\vibemind-os\\skills\\_curator.py *"]
 ```
 
 - [ ] **Step 2: Verify the TOML parses**
