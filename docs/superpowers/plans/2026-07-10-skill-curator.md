@@ -906,3 +906,12 @@ git commit -m "feat(openfang): register skill-curator as a weekly periodic agent
 ## After all tasks
 
 Dispatch a final code reviewer subagent for the entire diff across all three repos touched (`vibemind-os` for Tasks 1/3, the `Automation_ui` submodule for Task 2, the `openfang` submodule for Task 4), then use `superpowers:finishing-a-development-branch` — paying attention to the fact that this spans a parent worktree plus two nested submodules, each with its own branch/commit to reconcile.
+
+## Post-implementation fixes found by final cross-repo review
+
+The final holistic review (checking integration between repos, which per-task review in isolation couldn't see) found 2 more bugs in Task 2's `_skill_save_and_index`/`_yaml_scalar` in `mcp_server_handoff.py`, fixed in a follow-up commit on top of Task 2's original + first-fix commits:
+
+1. `_yaml_scalar(None)` had no `None` branch, so `last_searched: None` (the literal word, not YAML's `null`) was written for every new agent-created skill — PyYAML parses that back as the Python string `"None"`, not `NoneType`. Fix: added `if v is None: return "null"` as `_yaml_scalar`'s first branch.
+2. Editing an existing skill via `_skill_save_and_index` only wrote whatever frontmatter dict the caller supplied, with no merge against the file's existing frontmatter — so re-editing an agent-created skill without re-supplying `agent_created`/`attempts`/`curator_status`/`last_searched`/`pinned` silently dropped them, defaulting `agent_created` back to `false` on next parse and permanently exiting that skill from curator management. Fix: added a `_read_curator_fields(path)` helper (dependency-light, same style as `_bump_skill_usage`) and an `else` branch in `_skill_save_and_index` that preserves any of the 5 curator fields the caller didn't explicitly resupply.
+
+See the actual commit in the `Automation_ui` submodule for the exact diff — this section is a pointer for anyone reading this plan after the fact, not a repeat of the full code.
