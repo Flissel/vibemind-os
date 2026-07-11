@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple
 
 from .plan_schema import (
-    HopResult, HopSpec, Plan,
+    HopResult, HopSpec, Plan, contract_pass_from,
     ON_FAIL_ABORT, ON_FAIL_CONTINUE, ON_FAIL_REPLAN,
 )
 
@@ -282,6 +282,11 @@ class PlanExecutor:
         """Phase 8.B — wire Neo4j decision graph so plans/hops are visible
         in the decision-theatre UI."""
         self._decision_graph = dg
+
+    def attach_dual_graph(self, dg) -> None:
+        """Phase 1 — wire the episodic task diary (KotlinGraph via DualGraph)
+        so every executed plan is recorded as one episode."""
+        self._dual_graph = dg
 
     # Phase 7.3 — provider success tracker. Maps (capability, target_kind)
     # to {success, fail} counts. After each hop we update the score; the
@@ -719,6 +724,7 @@ class PlanExecutor:
                             error=f"dependency failed: {failed_deps}",
                             capability=h.capability,
                             target=h.execution_target,
+                            contract_pass=False, reward=-1.0,
                         )
                         executed[h.step_id] = skipped
                         with self._lock:
@@ -790,6 +796,7 @@ class PlanExecutor:
                                     error=f"contract blocked: {dec.reason}",
                                     capability=h.capability,
                                     target=h.execution_target,
+                                    contract_pass=False, reward=-1.0,
                                 )
                                 executed[h.step_id] = blocked
                                 with self._lock:
@@ -819,6 +826,7 @@ class PlanExecutor:
                                 step_id=h.step_id, ok=False,
                                 error=f"executor crash: {type(e).__name__}: {e}",
                                 capability=h.capability, target=h.execution_target,
+                                contract_pass=False, reward=-1.0,
                             )
                         executed[h.step_id] = hr
                         with self._lock:
@@ -1071,6 +1079,16 @@ class PlanExecutor:
                 except Exception as e:
                     logger.debug(f"[plan-executor] episodic write failed: {e}")
 
+            # Phase 1 — episodic task diary: one KotlinGraph episode per plan
+            try:
+                from core.multihop_kotlin_adapter import record_plan
+                dg = getattr(self, "_dual_graph", None)
+                if dg is not None and executed:
+                    record_plan(dg, plan, executed,
+                                trace_id=getattr(plan, "trace_id", "") or "")
+            except Exception as e:
+                logger.debug(f"[plan-executor] kotlin ingest skipped: {e}")
+
             # Phase 11.U.A — drop from active-plans dict, then resume
             # discourse only if this was the LAST plan running.
             is_last_plan = False
@@ -1143,12 +1161,14 @@ class PlanExecutor:
                     if not hop.validator and detail.get("validator"):
                         hop.validator = detail.get("validator")
             except Exception as e:
+                # Phase 1 — hard failure: gate False (see contract_pass_from)
                 return HopResult(
                     step_id=hop.step_id, ok=False,
                     error=f"capability lookup: {type(e).__name__}: {e}",
                     capability=hop.capability, target=None,
                     rendered_arg=rendered_arg, kg_hits=kg_hits,
                     elapsed_s=time.time() - t0,
+                    contract_pass=False, reward=-1.0,
                 )
 
         # Phase 11.B — if registry maps this capability/event to an OpenFang agent,
@@ -1267,6 +1287,7 @@ class PlanExecutor:
                 capability=hop.capability, target=None,
                 rendered_arg=rendered_arg, kg_hits=kg_hits,
                 elapsed_s=time.time() - t0,
+                contract_pass=False, reward=-1.0,
             )
 
         # Build the right executor for the target prefix (Phase 4)
@@ -1280,6 +1301,7 @@ class PlanExecutor:
                 capability=hop.capability, target=target,
                 rendered_arg=rendered_arg, kg_hits=kg_hits,
                 elapsed_s=time.time() - t0,
+                contract_pass=False, reward=-1.0,
             )
 
         # Call with retry support
@@ -1505,6 +1527,10 @@ class PlanExecutor:
         except Exception:
             pass
 
+        # Phase 1 — gate-derived learning signal (outcome-gate semantics — UNVERIFIED
+        # never trains positive). contract_pass mirrors the truth-validator verdict
+        # when one ran; ok=False always fails the contract regardless of a validator.
+        _cp = contract_pass_from(ok, verdict)
         return HopResult(
             step_id=hop.step_id, ok=ok, result=result_payload, error=err,
             elapsed_s=round(time.time() - t0, 2),
@@ -1514,6 +1540,8 @@ class PlanExecutor:
             retried=max(0, attempt),
             bridges=bridges,
             tool_calls=captured_tool_calls,
+            contract_pass=_cp,
+            reward=(1.0 if _cp is True else (-1.0 if _cp is False else 0.0)),
         )
 
     def _maybe_tribe_bridges(

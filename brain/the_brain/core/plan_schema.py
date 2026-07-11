@@ -195,6 +195,34 @@ class HopResult:
     # cortex, limbic, defense, motor, visceral, social, integration, memory).
     # None when TriBE hook is disabled or fails.
     bridges: Optional[Dict[str, float]] = None
+    # Phase 1 — gate-derived learning signal (outcome-gate semantics, mirrors
+    # voice/python/swarm/routing/outcome_gate.py without importing across the
+    # voice/brain boundary). None means UNVERIFIED, never a success.
+    contract_pass: Optional[bool] = None
+    reward: float = 0.0  # mirrors contract_pass: True->1.0, False->-1.0, None->0.0
+
+
+def contract_pass_from(ok: bool, verdict: Optional[Dict[str, Any]]) -> Optional[bool]:
+    """Phase 1 — derive the outcome-gate verdict for a hop from its raw `ok`
+    flag and the (optional) `truth:` validator verdict dict.
+
+    - `ok` falsy -> False (the hop itself failed; no need for a validator).
+    - `ok` truthy but no validator ran (verdict is None/not a dict/no usable
+      `verified` key) -> None. UNVERIFIED must NEVER become True — "did not
+      crash" is not proof of success.
+    - `ok` truthy and validator ran -> mirrors `verdict['verified']` exactly
+      (True -> True, False -> False, anything else incl. missing -> None).
+    """
+    if not ok:
+        return False
+    if not isinstance(verdict, dict):
+        return None
+    verified = verdict.get("verified")
+    if verified is True:
+        return True
+    if verified is False:
+        return False
+    return None
 
 
 # ── Validator ─────────────────────────────────────────────────────────

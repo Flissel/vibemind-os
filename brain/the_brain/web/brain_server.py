@@ -1032,6 +1032,17 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
         except Exception as e:
             print(f"  [WARN] Episodic memory load failed: {e}")
 
+        # Phase 1 — wire episodic task diary into the plan executor.
+        # FOLLOW-UP (review 2026-07-03): dual_graph keeps auto_mine_interval=10
+        # — every 10th done-episode pays a synchronous full-history KuroGraph
+        # mining pass inside execute()'s finally (under the adapter write lock,
+        # blocking concurrent plans' ingest). Cost grows with uptime (no event
+        # eviction). Before production plan volume: raise the interval or move
+        # mining to a background thread. Not changed here because the cortical
+        # ResponseAgent writer shares this DualGraph/mining cadence.
+        if state.plan_executor is not None:
+            state.plan_executor.attach_dual_graph(state.dual_graph)
+
         # Create response agent
         state.response_agent = ResponseAgent(ResponseAgentConfig(top_k=3))
         state.response_agent.memory = state.kotlin_graph
