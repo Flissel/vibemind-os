@@ -59,6 +59,36 @@ def test_never_raises_on_broken_embedder():
     assert c.cluster_id("whatever") == ""
 
 
+class _FixedScoreStore(_StubStore):
+    """Store, dessen search() einen exakt kontrollierten Score liefert —
+    so laesst sich die >=-Grenze pinnen, ohne mit Float-Cosinus zu kaempfen."""
+    def __init__(self, score):
+        super().__init__()
+        self._score = score
+    def search(self, vector, limit=1):
+        if not self.points:
+            return []
+        return [{"id": self.points[0][0], "score": self._score}]
+
+
+def test_score_exactly_at_threshold_matches_existing_class():
+    store = _FixedScoreStore(0.85)  # == threshold -> >= -> MATCH
+    c = TaskClassClusterer(embedder=_StubEmbedder(), client=store, threshold=0.85)
+    a = c.cluster_id("review my docker image")
+    b = c.cluster_id("erstelle eine bubble")
+    assert a.startswith("tc_") and b == a
+    assert len(store.points) == 1  # keine neue Klasse angelegt
+
+
+def test_score_just_below_threshold_creates_new_class():
+    store = _FixedScoreStore(0.849)  # < threshold -> NEUE Klasse
+    c = TaskClassClusterer(embedder=_StubEmbedder(), client=store, threshold=0.85)
+    a = c.cluster_id("review my docker image")
+    b = c.cluster_id("erstelle eine bubble")
+    assert b.startswith("tc_") and b != a
+    assert len(store.points) == 2
+
+
 def test_adapter_threads_task_class_into_metadata(tmp_path):
     from core.dual_graph import DualGraph
     from core.multihop_kotlin_adapter import record_plan

@@ -5,17 +5,37 @@ und ohne Qdrant). Live: core.qdrant_kg.Embedder.get()-Singleton (NIE ein
 zweites Modell laden — ~3GB VRAM) + Qdrant-Collection "brain-task-classes".
 Wirft nie — Fallback "" (kein Clustering ist besser als ein Crash im
 Executor-finally).
+
+Grenzen (bewusst akzeptiert)
+---------------------------
+Das hier ist GREEDY nearest-neighbour-Zuordnung, kein echtes inkrementelles
+Clustering. Drei reale Limitierungen:
+
+- DRIFT: der Klassen-Vektor wird nie aktualisiert — der ZUERST gesehene Intent
+  definiert die Klasse dauerhaft (kein Zentroid-Update).
+- ORDER-DEPENDENCE: dieselbe Intent-Menge kann je nach Ankunftsreihenfolge
+  unterschiedliche Klassen ergeben.
+- NO-MERGE: zwei Klassen, die sich später als ähnlich erweisen, werden nie
+  zusammengeführt.
+
+Für den aktuellen Zweck (Episoden für Pattern-Mining grob gruppieren) ist das
+akzeptabel. Bekannter Upgrade-Pfad, falls die Klassen zu grob/zerfasert werden:
+Moving-Average-Zentroid pro Klasse + periodisches Re-Clustering.
 """
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_COLLECTION = "brain-task-classes"
-DEFAULT_THRESHOLD = 0.85
+# Cosine-Schwelle auf Qwen-Embeddings. 0.85 = "klar dieselbe Task-Art";
+# darunter fangen unterschiedliche Arten an zu verschmelzen. Für Ops ohne
+# Code-Änderung nachjustierbar (Stil wie TASK_CLASS_CLUSTERING).
+DEFAULT_THRESHOLD = float(os.environ.get("TASK_CLASS_THRESHOLD", "0.85"))
 
 
 class _QdrantStoreAdapter:
