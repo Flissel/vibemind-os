@@ -138,6 +138,14 @@ def learner_url() -> Optional[str]:
     return v or None
 
 
+def embedding_service_url() -> str:
+    """Base URL of the embedding-service (docs/superpowers/specs/2026-07-13-
+    brain-embedder-external-api-design.md). Default matches the Docker Swarm
+    service name on the vibemind-shared overlay network."""
+    v = (os.environ.get("EMBEDDING_SERVICE_URL", "") or "").strip().rstrip("/")
+    return v or "http://embedding-service:8080"
+
+
 # ---------------------------------------------------------------------------
 # Identity (BRAIN_ID / SPACE_ID / BRAIN_ROLE)
 # ---------------------------------------------------------------------------
