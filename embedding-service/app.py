@@ -13,7 +13,14 @@ import time
 from typing import List
 
 from fastapi import FastAPI, HTTPException
-from openai import APIConnectionError, APIError, APITimeoutError, OpenAI
+from openai import (
+    APIConnectionError,
+    APIError,
+    APIStatusError,
+    APITimeoutError,
+    OpenAI,
+    RateLimitError,
+)
 from pydantic import BaseModel
 
 MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
@@ -71,6 +78,16 @@ def health():
     return {"status": "ok", "model": MODEL}
 
 
+def _is_transient(e: APIError) -> bool:
+    """Network/timeout errors, rate limits, and 5xx are worth a retry.
+    Everything else (4xx client errors like bad request/auth) is not."""
+    if isinstance(e, (APIConnectionError, APITimeoutError, RateLimitError)):
+        return True
+    if isinstance(e, APIStatusError) and e.status_code >= 500:
+        return True
+    return False
+
+
 def _embed_with_retry(inputs: List[str]) -> List[List[float]]:
     last_exc: Exception | None = None
     for attempt in range(MAX_RETRIES + 1):
@@ -78,14 +95,12 @@ def _embed_with_retry(inputs: List[str]) -> List[List[float]]:
             client = get_client()
             resp = client.embeddings.create(model=MODEL, input=inputs)
             return [d.embedding for d in resp.data]
-        except (APIConnectionError, APITimeoutError) as e:
+        except APIError as e:
             last_exc = e
-            if attempt < MAX_RETRIES:
+            if _is_transient(e) and attempt < MAX_RETRIES:
                 time.sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
                 continue
             raise
-        except APIError:
-            raise  # non-transient (4xx etc.) — no retry
     raise last_exc  # pragma: no cover — loop always returns or raises above
 
 
@@ -93,7 +108,8 @@ def _embed_with_retry(inputs: List[str]) -> List[List[float]]:
 def embed(req: EmbedRequest):
     try:
         vectors = _embed_with_retry([req.text])
+        vector = vectors[0]
     except Exception as e:
         logger.warning(f"/embed failed: {e}")
-        raise HTTPException(status_code=502, detail=f"embedding failed: {e}")
-    return EmbedResponse(vector=vectors[0])
+        raise HTTPException(status_code=502, detail="embedding request failed")
+    return EmbedResponse(vector=vector)
