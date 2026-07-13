@@ -45,9 +45,22 @@
   # Phase 3 — Validator. Cheap deterministic check that the eval result
   # contains a numeric score in [0,100]. on_fail: report keeps the
   # existing flow (verdict attached, response still returned).
+  # truth: Phase-1 coverage lift — ground truth via world_observer re-query
+  # evaluate_op (supabase_ideas_ops.py) merges ai_eval into ideas.metadata
+  # AND flips ideas.status to 'scored' (update_idea_eval). The op's return
+  # string quotes only the bubble title ("'X' scored N/100 ..."), so
+  # {result_title} resolves; combined with status=scored this confirms the
+  # SPECIFIC write landed, not just that the (pre-existing) bubble row
+  # exists — same JSON/column-filter pattern already proven by
+  # idea_format_table's truth:supabase_row above.
   validator:
-    kind: rule:score_in_range
+    kind: truth:supabase_row
     on_fail: report
+    postcondition:
+      check: supabase_row
+      table: ideas
+      match: "title=eq.{result_title}&status=eq.scored"
+      expect: present
   # Feedback loop: after the deterministic eval returns, send result
   # to a small focused agent set for reflective synthesis. Agents
   # answer in I_AGREE/I_DISAGREE/KEY_GAP/NEXT_STEP format which the
@@ -295,9 +308,19 @@
   execution_target: "supabase:idea.create"
   result_arg_extractor: 'regex:(?:add|create|note|notiere)\s+(?:a |an |an idea )?(?:note|idea|thought)?\s*(?:about|that|für)?\s*[''"]?([^''"\n]+?)[''"]?$'
   arg_kwarg: title
+  # truth: Phase-1 coverage lift — ground truth via world_observer re-query
+  # create_op (supabase_ideas_ops.py) already does its own read-back verify
+  # and returns {ok, node_id, ...} with the REAL canvas_nodes.id — the
+  # strongest possible signal, an exact id match (same shape as
+  # bubble_create's truth:supabase_row, just canvas_nodes instead of ideas).
   validator:
-    kind: rule:idea_created
+    kind: truth:supabase_row
     on_fail: report
+    postcondition:
+      check: supabase_row
+      table: canvas_nodes
+      match: "id=eq.{result_id}"
+      expect: present
 
 # ─── Phase 11.W2 — verified component-note write ───────────────────────
 # Dedicated write capability for the E-Ticketing component-fill workflow
@@ -347,9 +370,19 @@
     - "(note|notiz|spec)\\s+.*\\b(into|in|in die|in der)\\s+.*\\b(bubble|space)\\b"
   execution_target: "supabase:idea.create"
   arg_kwarg: title
+  # truth: Phase-1 coverage lift — ground truth via world_observer re-query
+  # Same create_op as idea_add — read-back-verified node_id, exact id
+  # re-query. on_fail: report per the Phase-1 pattern (a REFUTED ground-
+  # truth verdict is a much stronger, rarer signal than the old self-report
+  # rule:canvas_node_persisted was, so report-not-block is fine here).
   validator:
-    kind: rule:canvas_node_persisted
-    on_fail: block
+    kind: truth:supabase_row
+    on_fail: report
+    postcondition:
+      check: supabase_row
+      table: canvas_nodes
+      match: "id=eq.{result_id}"
+      expect: present
 
 # ─── Phase 11.H — Idea content-validation capabilities ─────────────────
 # These give the plan-generator access to the rich idea_tools.py functions
@@ -734,9 +767,25 @@
     - "verbinde\\s+(?:die\\s+|alle\\s+)?ideen\\s+automatisch"
   execution_target: "supabase:idea.auto_link"  # Phase 11.U.C.10
   arg_kwarg: bubble
+  # truth: Phase-1 coverage lift — ground truth via world_observer re-query.
+  # auto_link_op creates edges (same DB effect as idea_connect), so the
+  # semantically-correct kind is truth:supabase_edge. CAVEAT (documented,
+  # not hidden): auto_link_op's return is a bare count summary ("Auto-
+  # linked N connections ...") with NO quoted node titles, so
+  # {result_title}/{result_title2} won't resolve today — this check will
+  # report ground-truth UNVERIFIED (fail-safe, never blocks) until a
+  # follow-up makes auto_link_op quote one created pair's titles in its
+  # return value. Kind stays truth:, not rule:, so the ratchet reflects
+  # "correct check installed" rather than "self-report only" — the
+  # resolution gap is a tracked follow-up, not a fake pass.
   validator:
-    kind: rule:string_nonempty
+    kind: truth:supabase_edge
     on_fail: report
+    postcondition:
+      check: supabase_edge
+      title_a: "{result_title}"
+      title_b: "{result_title2}"
+      expect: present
 
 # ─── Broadcast capabilities (no execution_target — Phase 1 narrowing) ──
 # These run the standard discourse round but to a small focused agent set
@@ -1088,9 +1137,26 @@
     - "lift\\s+(?:the\\s+)?ide[ea]n?\\s+to\\s+(top|root)"
   execution_target: "supabase:idea.llm"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: idea_id
+  # truth: Phase-1 coverage lift — ground truth via world_observer re-query.
+  # idea_llm_op's link_to_root branch creates a real edge (root -> idea)
+  # via create_edge — an edge-op, so truth:supabase_edge is the correct
+  # kind (verified by reading supabase_ideas_ops.py; NOT
+  # truth:supabase_node_in_bubble — the idea's bubble membership doesn't
+  # change here, only idea_move actually moves a node between bubbles, so
+  # node_in_bubble would trivially always pass and verify nothing new).
+  # CAVEAT (documented, not hidden): the op's return only quotes the
+  # idea's OWN title ("Linked 'X' to bubble root."), not the resolved root
+  # node's title, so {result_title2} won't resolve today — reports
+  # ground-truth UNVERIFIED (fail-safe) until a follow-up makes the op
+  # also quote the root node's title.
   validator:
-    kind: rule:string_nonempty
+    kind: truth:supabase_edge
     on_fail: report
+    postcondition:
+      check: supabase_edge
+      title_a: "{result_title}"
+      title_b: "{result_title2}"
+      expect: present
 
 - capability: idea_move
   description: "move an idea from one bubble to another, verschiebe die idee, bring die idee in bubble Y"
@@ -1215,9 +1281,17 @@
   # bubble is still resolved from the shared _intent text per child.
   execution_target: "supabase:idea.create"
   arg_kwarg: title
+  # truth: Phase-1 coverage lift — ground truth via world_observer re-query
+  # Same create_op as idea_add — each child-hop create call gets its own
+  # read-back-verified node_id; exact id re-query per hop.
   validator:
-    kind: rule:string_nonempty
+    kind: truth:supabase_row
     on_fail: report
+    postcondition:
+      check: supabase_row
+      table: canvas_nodes
+      match: "id=eq.{result_id}"
+      expect: present
 
 # ──────────────────────────────────────────────────────────────────────────
 # Phase 11+ — OpenFang-agent dispatch via `openfang:<agent>` execution_target
