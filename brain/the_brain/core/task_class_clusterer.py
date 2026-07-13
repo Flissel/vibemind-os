@@ -1,10 +1,23 @@
 """Phase 1 — TaskClassClusterer: Intent -> stabile task_class_id.
 
 Injection-first: embedder/client sind injizierbar (Tests laufen ohne Modell
-und ohne Qdrant). Live: core.qdrant_kg.Embedder.get()-Singleton (NIE ein
-zweites Modell laden — ~3GB VRAM) + Qdrant-Collection "brain-task-classes".
+und ohne Qdrant). Live: core.qdrant_kg.Embedder.get()-Singleton (jetzt ein
+HTTP-Client zum embedding-service, siehe docs/superpowers/specs/2026-07-13-
+brain-embedder-external-api-design.md) + Qdrant-Collection "brain-task-classes".
 Wirft nie — Fallback "" (kein Clustering ist besser als ein Crash im
 Executor-finally).
+
+ACHTUNG (2026-07-13, embedder-Migration): "brain-task-classes" ist NICHT im
+COLLECTIONS-Dict in qdrant_kg.py registriert — ensure_collections()'s
+Alias-Logik und scripts/migrate_embeddings_v3072.py sehen diese Collection
+NICHT. _QdrantStoreAdapter._ensure_collection() liest SEMANTIC_DIM live, legt
+also auf einer frischen Umgebung korrekt 3072-dim an. Nur falls diese
+Collection irgendwo bereits im ALTEN 1024-dim existiert (TASK_CLASS_CLUSTERING
+war zum Zeitpunkt der Migration überall aus, per Default) UND der Flag später
+aktiviert wird: erst manuell prüfen/migrieren, sonst schlägt der erste upsert()
+mit einem Dimension-Mismatch fehl. Gleiche Kategorie Sonderfall wie
+EventRoutingHead (siehe project memory project_eventroutinghead_stays_local),
+nur hier: schlicht vergessene fünfte Collection statt bewusster Ausnahme.
 
 Grenzen (bewusst akzeptiert)
 ---------------------------
@@ -32,7 +45,8 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 DEFAULT_COLLECTION = "brain-task-classes"
-# Cosine-Schwelle auf Qwen-Embeddings. 0.85 = "klar dieselbe Task-Art";
+# Cosine-Schwelle auf den Embedder.get()-Vektoren (embedding-service seit der
+# 2026-07-13-Migration, davor Qwen lokal). 0.85 = "klar dieselbe Task-Art";
 # darunter fangen unterschiedliche Arten an zu verschmelzen. Für Ops ohne
 # Code-Änderung nachjustierbar (Stil wie TASK_CLASS_CLUSTERING).
 DEFAULT_THRESHOLD = float(os.environ.get("TASK_CLASS_THRESHOLD", "0.85"))
