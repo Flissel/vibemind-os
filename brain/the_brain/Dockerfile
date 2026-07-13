@@ -36,17 +36,20 @@ COPY shared/ /opt/vibemind-shared/
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir /opt/vibemind-shared/
 
-# 2. ML stack — torch is boot-critical (web/routers/routing.py:7 hard-imports
-#    it inside create_app) but requirements.txt:53 has it COMMENTED OUT, and
-#    sentence-transformers/transformers are in NO requirements file (the native
-#    venv had them installed manually). Version line tracks requirements-tahlamus.txt.
-#    torch-Variante via build-arg BRAIN_TORCH_VARIANT (plans/brain-cuda-migration.md):
-#      cu121 (DEFAULT) — CUDA-Wheel (~2GB) fuer GPU-Hosts (RTX 3060 da + Launcher
-#                        Invoke-GpuSetup gibt brain-core die GPU). Qwen ~100-300x.
-#      cpu             — CPU-only-Wheel (kleiner) fuer GPU-lose Build-Hosts.
-#    Embedder waehlt device=cuda-if-available zur Laufzeit (qdrant_kg.py) — ein
-#    cu121-Image auf GPU-losem Host faellt also auf CPU zurueck (laeuft, nur kein Speed).
-ARG BRAIN_TORCH_VARIANT=cu121
+# 2. torch: kept for web/routers/routing.py's RadialNetwork/SpaceRoutingHead.
+#    sentence-transformers/transformers: ALSO kept, deliberately — brain-core
+#    has two independent local-embedding consumers, not one. qdrant_kg.py's
+#    Qwen KG-embedder has moved to embedding-service (see docs/superpowers/
+#    specs/2026-07-13-brain-embedder-external-api-design.md), but
+#    EventRoutingHead (web/brain_server.py, core/event_routing_head.py)
+#    still needs local sentence-transformers for its <100ms real-time
+#    intent-classification path (web/routers/classification.py) — a network
+#    hop to embedding-service would blow that latency budget. See the
+#    design spec's "Addendum" section for the full reasoning.
+#    Default build-arg flips from cu121 to cpu: Qwen was the only reason
+#    this defaulted to a CUDA wheel; neither the routing heads nor
+#    EventRoutingHead's MiniLM model have a documented GPU requirement.
+ARG BRAIN_TORCH_VARIANT=cpu
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir \
         --index-url "https://download.pytorch.org/whl/${BRAIN_TORCH_VARIANT}" \
