@@ -7,9 +7,15 @@ point IDs and payload — only the `semantic` vector changes (any existing
 Prerequisite: the embedding-service container must be reachable (this
 script re-embeds via core.qdrant_kg.Embedder, the same client brain-core
 uses) and brain-core (+ siblings) should be scaled to replicas:0 for the
-duration of a --commit / --cutover run, so no new writes land in the old
-collections mid-migration (see docs/superpowers/specs/2026-07-13-brain-
-embedder-external-api-design.md, "Migration" section).
+ENTIRE migration window — from before the first --commit run until
+--cutover actually reports "cutover done: '<name>' now aliases '<new>'"
+for every collection, NOT just until --commit finishes. Because --cutover
+never auto-deletes, it can stop partway at an intermediate state
+("... already archived as '<archive>' — delete it manually ...") that
+persists indefinitely until a human deletes the old raw collection and
+re-runs --cutover; don't scale brain-core back up while any collection is
+still in that intermediate state (see docs/superpowers/specs/2026-07-13-
+brain-embedder-external-api-design.md, "Migration" section).
 
 Usage:
     # 1. Show what would happen, no writes (safe to run any time)
@@ -71,8 +77,11 @@ def main() -> int:
     ap.add_argument("--commit", action="store_true",
                      help="re-embed and populate new 3072-dim collections "
                           "(old ones untouched). Scale brain-core + siblings to "
-                          "replicas:0 first so nothing writes to the old "
-                          "collections mid-migration.")
+                          "replicas:0 first and keep them there until --cutover "
+                          "reports every collection's swap complete — not just "
+                          "until this command finishes; --cutover can stop at an "
+                          "intermediate 'archived, delete manually' state that "
+                          "isn't done yet.")
     ap.add_argument("--cutover", action="store_true",
                      help="archive the old raw collection under an alias (kept, "
                           "never auto-deleted) and attempt to swap the logical "
@@ -212,6 +221,15 @@ def main() -> int:
 
     embedder = None
     existing_collections: Set[str] = set()
+    try:
+        # Needed even in --dry-run so a collection already cut over (old_name
+        # aliases new_name) is reported as skipped instead of re-scanned.
+        existing_aliases = {a.alias_name: a.collection_name
+                             for a in client.get_aliases().aliases}
+    except Exception as e:
+        print(f"[migrate] ERROR: could not reach Qdrant at '{args.url}': {e}")
+        return 1
+
     if args.commit:
         if args.embedding_service_url:
             # Embedder (core.qdrant_kg) reads its base URL from core.config at
@@ -230,6 +248,12 @@ def main() -> int:
     total_migrated = 0
     for logical, old_name in COLLECTIONS.items():
         new_name = f"{old_name}{PHYSICAL_VERSION_SUFFIX}"
+
+        if existing_aliases.get(old_name) == new_name:
+            print(f"[migrate] '{old_name}' already cut over to '{new_name}' — "
+                  f"skipping (nothing to re-migrate).")
+            continue
+
         try:
             old_info = client.get_collection(old_name)
         except Exception as e:
