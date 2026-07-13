@@ -1023,7 +1023,18 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
 
         # Create shared memory
         state.kotlin_graph = KotlinGraph()
-        state.dual_graph = DualGraph(save_dir='data/moltbook')
+        state.dual_graph = DualGraph(
+            save_dir='data/moltbook',
+            # Phase 1 — keep auto-mine off the hot path: the default (10) mined
+            # the FULL event history synchronously inside plan_executor's finally
+            # (under the ingest write lock) every 10th episode, growing with
+            # uptime. 200 keeps mining alive at 1/20th the cadence; force_mine()
+            # covers on-demand needs. This DualGraph is used ONLY by the multihop
+            # diary (the cortical ResponseAgent writes to the separate
+            # state.kotlin_graph instance), so the cadence change affects nothing
+            # else.
+            auto_mine_interval=200,
+        )
         # Load persisted episodic memory
         try:
             if state.dual_graph.load('memory'):
@@ -1033,13 +1044,8 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
             print(f"  [WARN] Episodic memory load failed: {e}")
 
         # Phase 1 — wire episodic task diary into the plan executor.
-        # FOLLOW-UP (review 2026-07-03): dual_graph keeps auto_mine_interval=10
-        # — every 10th done-episode pays a synchronous full-history KuroGraph
-        # mining pass inside execute()'s finally (under the adapter write lock,
-        # blocking concurrent plans' ingest). Cost grows with uptime (no event
-        # eviction). Before production plan volume: raise the interval or move
-        # mining to a background thread. Not changed here because the cortical
-        # ResponseAgent writer shares this DualGraph/mining cadence.
+        # (auto-mine cadence: see the DualGraph construction above; moving
+        # mining to a background thread remains an option if plan volume grows.)
         if state.plan_executor is not None:
             state.plan_executor.attach_dual_graph(state.dual_graph)
 
