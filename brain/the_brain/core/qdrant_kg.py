@@ -196,7 +196,10 @@ BRAIN_COLLECTIONS = ("episodic", "semantic", "procedural", "state")
 # ──────────────────────────────────────────────────────────────────────
 
 class Embedder:
-    """Singleton Qwen3-Embedding. Thread-safe."""
+    """Singleton HTTP client for the embedding-service (docs/superpowers/specs/
+    2026-07-13-brain-embedder-external-api-design.md). Thread-safe. Replaces
+    the former local sentence-transformers/Qwen model — same public interface
+    (encode/encode_batch), so callers are unaffected by this swap."""
 
     _instance: Optional["Embedder"] = None
     _lock = threading.Lock()
@@ -209,46 +212,27 @@ class Embedder:
             return cls._instance
 
     def __init__(self) -> None:
-        from sentence_transformers import SentenceTransformer
-        # Device-Auswahl (plans/brain-cuda-migration.md): CUDA nutzen WENN verfügbar,
-        # sonst CPU-Fallback. Auf der CPU-only-Maschine (torch+cpu) ist cuda.is_available()
-        # False -> "cpu" wie bisher (kein Verhaltensänderung). Mit torch+cu121 + GPU-
-        # Passthrough (RTX 3060) -> "cuda" → Qwen ~100-300x schneller (encode ~20ms statt
-        # ~4-5s). Override via EMBED_DEVICE env (cpu|cuda) für Test/Kill-Switch.
-        _device = os.environ.get("EMBED_DEVICE", "").strip().lower()
-        if _device not in ("cpu", "cuda"):
-            try:
-                import torch
-                _device = "cuda" if torch.cuda.is_available() else "cpu"
-            except Exception:  # noqa: BLE001 — torch-Import-Problem → CPU
-                _device = "cpu"
-        logger.info(f"[KG] loading embed model: {EMBED_MODEL} ({SEMANTIC_DIM}-dim) on {_device}")
-        t0 = time.time()
-        self._model = SentenceTransformer(EMBED_MODEL, device=_device)
-        self._device = _device
-        self._encode_lock = threading.Lock()
-        dt = time.time() - t0
-        logger.info(f"[KG] embed model loaded in {dt:.1f}s (device={_device})")
+        import requests
+        from core import config as _cfg_embed
+
+        self._base_url = _cfg_embed.embedding_service_url()
+        self._session = requests.Session()
+        self._timeout = float(os.environ.get("EMBEDDING_HTTP_TIMEOUT", "30"))
+        logger.info(f"[KG] embedding-service client configured: {self._base_url}")
 
     def encode(self, text: str) -> List[float]:
-        with self._encode_lock:
-            vec = self._model.encode(
-                text,
-                normalize_embeddings=True,
-                convert_to_numpy=True,
-                show_progress_bar=False,
-            )
-        return vec.tolist()
+        resp = self._session.post(
+            f"{self._base_url}/embed", json={"text": text}, timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()["vector"]
 
     def encode_batch(self, texts: List[str]) -> List[List[float]]:
-        with self._encode_lock:
-            vecs = self._model.encode(
-                texts,
-                normalize_embeddings=True,
-                convert_to_numpy=True,
-                show_progress_bar=False,
-            )
-        return [v.tolist() for v in vecs]
+        resp = self._session.post(
+            f"{self._base_url}/embed/batch", json={"texts": texts}, timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()["vectors"]
 
 
 # ──────────────────────────────────────────────────────────────────────
