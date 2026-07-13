@@ -139,6 +139,7 @@ def _close_aborted_episode(
     completed_hops: int,
     total: int,
     context_hash: str,
+    task_class_id: str = "",
 ) -> None:
     """Best-effort synthetic done=True event so a mid-write failure does not
     leave the KotlinGraph episode OPEN (which would fold the NEXT plan's
@@ -151,20 +152,23 @@ def _close_aborted_episode(
             "context_hash": context_hash,
         }
         next_state = dict(state)
+        metadata: Dict[str, Any] = {
+            "source": "multihop",
+            "plan_id": plan_id,
+            "trace_id": trace_id,
+            "aborted": True,
+            "episode_success": False,
+            "plan_ok": False,
+        }
+        if task_class_id:
+            metadata["task_class_id"] = task_class_id
         dual_graph.record_event(
             state,
             "none::aborted",
             next_state,
             -1.0,
             True,
-            metadata={
-                "source": "multihop",
-                "plan_id": plan_id,
-                "trace_id": trace_id,
-                "aborted": True,
-                "episode_success": False,
-                "plan_ok": False,
-            },
+            metadata=metadata,
         )
     except Exception:
         logger.warning(
@@ -175,7 +179,10 @@ def _close_aborted_episode(
         )
 
 
-def record_plan(dual_graph: Any, plan: Any, executed: Optional[Dict[str, Any]], *, trace_id: str = "") -> int:
+def record_plan(
+    dual_graph: Any, plan: Any, executed: Optional[Dict[str, Any]], *,
+    trace_id: str = "", task_class_id: str = "",
+) -> int:
     """Write one KotlinGraph event per completed hop of `plan`.
 
     Returns the number of events written: 0 on no-op (flag off, no
@@ -251,6 +258,8 @@ def record_plan(dual_graph: Any, plan: Any, executed: Optional[Dict[str, Any]], 
                     # actually drove reward/episode_success
                     "contract_pass": effective_contract_pass,
                 }
+                if task_class_id:
+                    metadata["task_class_id"] = task_class_id
 
                 done = is_last
                 if is_last:
@@ -297,7 +306,8 @@ def record_plan(dual_graph: Any, plan: Any, executed: Optional[Dict[str, Any]], 
             # lock, so no other plan can interleave before the close).
             if written > 0 and not episode_closed:
                 _close_aborted_episode(
-                    dual_graph, plan_id, eff_trace_id, written, total, h
+                    dual_graph, plan_id, eff_trace_id, written, total, h,
+                    task_class_id=task_class_id,
                 )
 
     return written

@@ -1084,8 +1084,18 @@ class PlanExecutor:
                 from core.multihop_kotlin_adapter import record_plan
                 dg = getattr(self, "_dual_graph", None)
                 if dg is not None and executed:
+                    _tc = ""
+                    # Default OFF: CPU-Encode kostet 4-5s pro Intent — erst
+                    # aktivieren, wenn der Embedder nachweislich auf GPU laeuft.
+                    if os.environ.get("TASK_CLASS_CLUSTERING", "0") in ("1", "true", "True"):
+                        try:
+                            from core.task_class_clusterer import TaskClassClusterer
+                            _tc = TaskClassClusterer().cluster_id(plan.intent or "")
+                        except Exception:
+                            _tc = ""
                     record_plan(dg, plan, executed,
-                                trace_id=getattr(plan, "trace_id", "") or "")
+                                trace_id=getattr(plan, "trace_id", "") or "",
+                                task_class_id=_tc)
             except Exception as e:
                 logger.debug(f"[plan-executor] kotlin ingest skipped: {e}")
 
