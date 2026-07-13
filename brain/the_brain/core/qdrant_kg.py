@@ -3,7 +3,7 @@ Unified Brain Knowledge Graph on Qdrant.
 
 One collection `brain-kg` hosts every node type (thought / response /
 bubble / idea / space / event / snapshot) with:
-  - `semantic` vector (1024-dim, Qwen3-Embedding-0.6B) — live
+  - `semantic` vector (3072-dim, OpenAI text-embedding-3-large) — live
   - `neural` vector  (20484-dim, TriBE fMRI) — reserved slot, filled
     later when TriBE runs through the voice/STT path (phase G.5+).
 
@@ -62,12 +62,17 @@ EMBED_MODEL = os.environ.get(
     "BRAIN_KG_EMBED_MODEL",
     "Qwen/Qwen3-Embedding-0.6B",
 )
-SEMANTIC_DIM = 1024
+SEMANTIC_DIM = 3072
 NEURAL_DIM = int(os.environ.get("BRAIN_KG_NEURAL_DIM", "20484"))
 EDGE_THRESHOLD = float(os.environ.get("BRAIN_KG_EDGE_THRESHOLD", "0.55"))
 BATCH_SIZE = int(os.environ.get("BRAIN_KG_BATCH_SIZE", "8"))
 BATCH_FLUSH_MS = int(os.environ.get("BRAIN_KG_BATCH_FLUSH_MS", "3000"))
 MAX_LINKED = 50
+
+# Bump this suffix any time SEMANTIC_DIM changes again — ensure_collections()
+# creates a fresh physical collection per suffix and aliases the logical name
+# to it, so a dimension change never requires a caller-visible rename.
+PHYSICAL_VERSION_SUFFIX = "-3072-v1"
 
 
 def _flag(name: str, default: str = "0") -> bool:
@@ -93,7 +98,7 @@ TRIBE_PROFILE_MAXLEN = int(os.environ.get("TRIBE_PROFILE_MAXLEN", "400"))
 # Cognitive Collections (Modell C)
 # ──────────────────────────────────────────────────────────────────────
 # Each Brain memory kind lives in its own Qdrant collection. All share
-# the same Qwen 1024-dim semantic space, so a UUID from one collection
+# the same 3072-dim semantic space, so a UUID from one collection
 # can be referenced as `linked.*` in another.
 
 COLLECTIONS: Dict[str, str] = {
@@ -193,7 +198,7 @@ BRAIN_COLLECTIONS = ("episodic", "semantic", "procedural", "state")
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Embedder — 1024-dim Qwen3 multilingual, lazy-loaded
+# Embedder — 3072-dim, embedding-service client, lazy-loaded
 # ──────────────────────────────────────────────────────────────────────
 
 class Embedder:
@@ -402,11 +407,24 @@ class QdrantKG:
     def ensure_collections(self) -> None:
         """Create every cognitive collection if missing. Idempotent.
 
-        Each collection has the same dual-vector schema (semantic 1024d,
-        neural 20484d on-disk) so IDs are interchangeable across them.
+        Each logical name in COLLECTIONS is always addressed as a Qdrant
+        ALIAS, never a raw collection name — the alias resolves to a
+        versioned physical collection (see PHYSICAL_VERSION_SUFFIX). This
+        lets a future embedding-dimension change swap the alias onto a
+        freshly migrated physical collection without touching any caller.
+
+        Three states are handled per logical name:
+          1. Alias already exists -> already migrated/set up, leave alone.
+          2. Raw collection exists under that exact name, no alias -> a
+             pre-migration deployment; leave it exactly as-is (this is
+             what scripts/migrate_embeddings_v3072.py cuts over).
+          3. Neither exists -> fresh deploy: create the physical collection
+             and alias it.
         """
         qm = self._qm
-        existing = {c.name for c in self.client.get_collections().collections}
+        existing_collections = {c.name for c in self.client.get_collections().collections}
+        existing_aliases = {a.alias_name: a.collection_name
+                             for a in self.client.get_aliases().aliases}
         vectors_config = {
             "semantic": qm.VectorParams(
                 size=SEMANTIC_DIM, distance=qm.Distance.COSINE,
@@ -416,20 +434,34 @@ class QdrantKG:
                 on_disk=True,
             ),
         }
-        for logical_name, qdrant_name in COLLECTIONS.items():
-            if qdrant_name in existing:
-                logger.debug(f"[KG] collection '{qdrant_name}' already exists")
+        for logical_name, alias_name in COLLECTIONS.items():
+            if alias_name in existing_aliases:
+                logger.debug(
+                    f"[KG] alias '{alias_name}' -> "
+                    f"'{existing_aliases[alias_name]}' already set up"
+                )
+            elif alias_name in existing_collections:
+                logger.debug(
+                    f"[KG] '{alias_name}' exists as a raw collection "
+                    f"(pre-migration) — leaving as-is"
+                )
             else:
+                physical_name = f"{alias_name}{PHYSICAL_VERSION_SUFFIX}"
                 self.client.create_collection(
-                    collection_name=qdrant_name,
+                    collection_name=physical_name,
                     vectors_config=vectors_config,
                 )
+                self.client.update_collection_aliases(change_aliases_operations=[
+                    qm.CreateAliasOperation(create_alias=qm.CreateAlias(
+                        collection_name=physical_name, alias_name=alias_name,
+                    )),
+                ])
                 logger.info(
-                    f"[KG] created collection '{qdrant_name}' "
+                    f"[KG] created '{physical_name}', aliased as '{alias_name}' "
                     f"(logical={logical_name}, semantic={SEMANTIC_DIM}d, "
                     f"neural={NEURAL_DIM}d on-disk)"
                 )
-            self._ensure_payload_indexes(qdrant_name)
+            self._ensure_payload_indexes(alias_name)
 
     # Back-compat: old brain_server.py code still calls ensure_collection().
     def ensure_collection(self) -> None:
