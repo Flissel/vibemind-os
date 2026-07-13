@@ -129,6 +129,10 @@ def embed_batch(req: EmbedBatchRequest):
         return EmbedBatchResponse(vectors=[])
     try:
         vectors = _embed_with_retry(req.texts)
+        if len(vectors) != len(req.texts):
+            raise ValueError(
+                f"expected {len(req.texts)} embeddings, got {len(vectors)}"
+            )
     except Exception as e:
         logger.warning(f"/embed/batch failed: {e}")
         raise HTTPException(status_code=502, detail="embedding request failed")

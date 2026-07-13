@@ -210,6 +210,19 @@ def test_embed_batch_returns_vectors(monkeypatch):
     )
 
 
+def test_embed_batch_502_on_length_mismatched_upstream_response(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
+    app_module._client = None
+    fake_client = MagicMock()
+    fake_client.embeddings.create.return_value = _FakeEmbeddingResponse([[0.1, 0.2]])
+    monkeypatch.setattr(app_module, "get_client", lambda: fake_client)
+
+    client = TestClient(app_module.app)
+    resp = client.post("/embed/batch", json={"texts": ["a", "b"]})
+
+    assert resp.status_code == 502
+
+
 def test_embed_batch_empty_list_short_circuits(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
     app_module._client = None
