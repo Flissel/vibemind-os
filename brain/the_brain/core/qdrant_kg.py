@@ -3,7 +3,7 @@ Unified Brain Knowledge Graph on Qdrant.
 
 One collection `brain-kg` hosts every node type (thought / response /
 bubble / idea / space / event / snapshot) with:
-  - `semantic` vector (3072-dim, OpenAI text-embedding-3-large) — live
+  - `semantic` vector (3072-dim, embedding-service) — live
   - `neural` vector  (20484-dim, TriBE fMRI) — reserved slot, filled
     later when TriBE runs through the voice/STT path (phase G.5+).
 
