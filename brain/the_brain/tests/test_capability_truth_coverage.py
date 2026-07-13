@@ -2,7 +2,8 @@
 
 Zählt Caps mit truth:-Validator in capabilities.yaml. Der Ratchet darf NUR
 steigen — sinkt er, hat jemand Ground-Truth entfernt (Reward-Blindheit).
-Ziel-Trajektorie: 22 (vorher) -> 28 (dieser Task) -> >=53 (~80%, braucht das
+Ziel-Trajektorie: 22 -> 27 (dieser Task; component_note_write behält seinen
+blockierenden rule-Validator, siehe YAML) -> >=53 (~80%, braucht das
 openfang:-Default-Contract-Design, eigener Plan).
 """
 from pathlib import Path
@@ -10,9 +11,9 @@ from pathlib import Path
 import yaml
 
 CAPS_PATH = Path(__file__).resolve().parents[1] / "data" / "capabilities.yaml"
-MIN_TRUTH_VALIDATORS = 28
+MIN_TRUTH_VALIDATORS = 27
 EXPECTED_NEW = {
-    "idea_add", "idea_create_batch", "component_note_write",
+    "idea_add", "idea_create_batch",
     "bubble_evaluate", "idea_auto_link", "idea_link_to_root",
 }
 

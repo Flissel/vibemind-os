@@ -370,19 +370,13 @@
     - "(note|notiz|spec)\\s+.*\\b(into|in|in die|in der)\\s+.*\\b(bubble|space)\\b"
   execution_target: "supabase:idea.create"
   arg_kwarg: title
-  # truth: Phase-1 coverage lift — ground truth via world_observer re-query
-  # Same create_op as idea_add — read-back-verified node_id, exact id
-  # re-query. on_fail: report per the Phase-1 pattern (a REFUTED ground-
-  # truth verdict is a much stronger, rarer signal than the old self-report
-  # rule:canvas_node_persisted was, so report-not-block is fine here).
+  # Phase 1: stays rule:+block on purpose — a truth: check short-circuits to
+  # UNVERIFIED (valid=True) when the op returns no id, i.e. exactly the failure
+  # case this gate must BLOCK. Upgrading needs create_op to emit a hard
+  # success/failure marker first (follow-up).
   validator:
-    kind: truth:supabase_row
-    on_fail: report
-    postcondition:
-      check: supabase_row
-      table: canvas_nodes
-      match: "id=eq.{result_id}"
-      expect: present
+    kind: rule:canvas_node_persisted
+    on_fail: block
 
 # ─── Phase 11.H — Idea content-validation capabilities ─────────────────
 # These give the plan-generator access to the rich idea_tools.py functions
@@ -769,15 +763,11 @@
   arg_kwarg: bubble
   # truth: Phase-1 coverage lift — ground truth via world_observer re-query.
   # auto_link_op creates edges (same DB effect as idea_connect), so the
-  # semantically-correct kind is truth:supabase_edge. CAVEAT (documented,
-  # not hidden): auto_link_op's return is a bare count summary ("Auto-
-  # linked N connections ...") with NO quoted node titles, so
-  # {result_title}/{result_title2} won't resolve today — this check will
-  # report ground-truth UNVERIFIED (fail-safe, never blocks) until a
-  # follow-up makes auto_link_op quote one created pair's titles in its
-  # return value. Kind stays truth:, not rule:, so the ratchet reflects
-  # "correct check installed" rather than "self-report only" — the
-  # resolution gap is a tracked follow-up, not a fake pass.
+  # semantically-correct kind is truth:supabase_edge. auto_link_op now names
+  # one concretely created pair in its result ("... first_pair='A' <-> 'B'"),
+  # so {result_title}/{result_title2} resolve and the edge re-query actually
+  # fires. When the op linked nothing there is no pair to name and the check
+  # stays UNVERIFIED — the honest outcome (nothing was written to verify).
   validator:
     kind: truth:supabase_edge
     on_fail: report
@@ -1144,11 +1134,8 @@
   # truth:supabase_node_in_bubble — the idea's bubble membership doesn't
   # change here, only idea_move actually moves a node between bubbles, so
   # node_in_bubble would trivially always pass and verify nothing new).
-  # CAVEAT (documented, not hidden): the op's return only quotes the
-  # idea's OWN title ("Linked 'X' to bubble root."), not the resolved root
-  # node's title, so {result_title2} won't resolve today — reports
-  # ground-truth UNVERIFIED (fail-safe) until a follow-up makes the op
-  # also quote the root node's title.
+  # The op now quotes BOTH endpoints ("Linked 'X' to root 'Y'."), so
+  # {result_title}/{result_title2} resolve and the edge re-query fires.
   validator:
     kind: truth:supabase_edge
     on_fail: report

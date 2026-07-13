@@ -855,10 +855,23 @@ async def auto_link_op(
             ok=True,
         )
 
-    return (
+    summary = (
         f"Auto-linked {len(created)} connections "
         f"(threshold {threshold:.0%}, scanned {len(nodes)} nodes)."
     )
+    # Ground truth (Phase 1): name ONE concretely created pair, quoted. The
+    # truth:supabase_edge validator fills {result_title}/{result_title2} from
+    # the quoted substrings of this string and re-queries canvas_edges for that
+    # pair. Without a quoted pair the postcondition keeps its placeholders and
+    # capability_validator short-circuits to UNVERIFIED — the check could never
+    # fire. If nothing was created there is nothing to verify, so we leave the
+    # summary bare on purpose (UNVERIFIED is then the honest outcome).
+    if created:
+        first = created[0]
+        summary += (
+            f" first_pair='{first['from_title']}' <-> '{first['to_title']}'"
+        )
+    return summary
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1237,7 +1250,13 @@ async def idea_llm_op(client: SupabaseIdeasClient,
         _publish("idea.connect",
                  {"from_id": root["id"], "to_id": node["id"]},
                  f"Linked '{node.get('title')}' to root", True)
-        return f"Linked '{node.get('title')}' to bubble root."
+        # Ground truth (Phase 1): quote BOTH edge endpoints — the resolved root's
+        # title too, not just the idea's. truth:supabase_edge fills
+        # {result_title}/{result_title2} from the quoted substrings in order; with
+        # only one quoted title {result_title2} stayed unresolved and the check
+        # short-circuited to UNVERIFIED, so it could never fire.
+        return (f"Linked '{node.get('title')}' to root "
+                f"'{root.get('title')}'.")
 
     if node is None:
         return f"Idea '{name}' not found."
