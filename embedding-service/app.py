@@ -113,3 +113,23 @@ def embed(req: EmbedRequest):
         logger.warning(f"/embed failed: {e}")
         raise HTTPException(status_code=502, detail="embedding request failed")
     return EmbedResponse(vector=vector)
+
+
+class EmbedBatchRequest(BaseModel):
+    texts: List[str]
+
+
+class EmbedBatchResponse(BaseModel):
+    vectors: List[List[float]]
+
+
+@app.post("/embed/batch", response_model=EmbedBatchResponse)
+def embed_batch(req: EmbedBatchRequest):
+    if not req.texts:
+        return EmbedBatchResponse(vectors=[])
+    try:
+        vectors = _embed_with_retry(req.texts)
+    except Exception as e:
+        logger.warning(f"/embed/batch failed: {e}")
+        raise HTTPException(status_code=502, detail="embedding request failed")
+    return EmbedBatchResponse(vectors=vectors)

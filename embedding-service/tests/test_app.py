@@ -189,3 +189,55 @@ def test_embed_502_detail_does_not_leak_internal_exception_text(monkeypatch):
     detail = resp.json()["detail"]
     assert "OPENAI_API_KEY" not in detail
     assert "Connection error" not in detail
+
+
+def test_embed_batch_returns_vectors(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
+    app_module._client = None
+    fake_client = MagicMock()
+    fake_client.embeddings.create.return_value = _FakeEmbeddingResponse(
+        [[0.1, 0.2], [0.3, 0.4]]
+    )
+    monkeypatch.setattr(app_module, "get_client", lambda: fake_client)
+
+    client = TestClient(app_module.app)
+    resp = client.post("/embed/batch", json={"texts": ["a", "b"]})
+
+    assert resp.status_code == 200
+    assert resp.json()["vectors"] == [[0.1, 0.2], [0.3, 0.4]]
+    fake_client.embeddings.create.assert_called_once_with(
+        model=app_module.MODEL, input=["a", "b"],
+    )
+
+
+def test_embed_batch_empty_list_short_circuits(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
+    app_module._client = None
+    fake_client = MagicMock()
+    monkeypatch.setattr(app_module, "get_client", lambda: fake_client)
+
+    client = TestClient(app_module.app)
+    resp = client.post("/embed/batch", json={"texts": []})
+
+    assert resp.status_code == 200
+    assert resp.json()["vectors"] == []
+    fake_client.embeddings.create.assert_not_called()
+
+
+def test_embed_batch_502_detail_does_not_leak_internal_exception_text(monkeypatch):
+    from openai import BadRequestError
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
+    app_module._client = None
+    fake_client = MagicMock()
+    fake_client.embeddings.create.side_effect = _fake_status_error(BadRequestError, 400)
+    monkeypatch.setattr(app_module, "get_client", lambda: fake_client)
+    monkeypatch.setattr(app_module.time, "sleep", lambda _seconds: None)
+
+    client = TestClient(app_module.app)
+    resp = client.post("/embed/batch", json={"texts": ["a", "b"]})
+
+    assert resp.status_code == 502
+    detail = resp.json()["detail"]
+    assert "BadRequestError" not in detail
+    assert detail == "embedding request failed"
