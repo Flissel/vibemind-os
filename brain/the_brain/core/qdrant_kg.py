@@ -36,6 +36,7 @@ import hashlib
 import logging
 import os
 import queue
+import requests
 import threading
 import time
 import uuid
@@ -197,9 +198,12 @@ BRAIN_COLLECTIONS = ("episodic", "semantic", "procedural", "state")
 
 class Embedder:
     """Singleton HTTP client for the embedding-service (docs/superpowers/specs/
-    2026-07-13-brain-embedder-external-api-design.md). Thread-safe. Replaces
-    the former local sentence-transformers/Qwen model — same public interface
-    (encode/encode_batch), so callers are unaffected by this swap."""
+    2026-07-13-brain-embedder-external-api-design.md). Replaces the former
+    local sentence-transformers/Qwen model — same public interface
+    (encode/encode_batch), so callers are unaffected by this swap.
+
+    Concurrency: safe for concurrent GET/POST via requests.Session's
+    connection pooling; no additional locking is applied by this class."""
 
     _instance: Optional["Embedder"] = None
     _lock = threading.Lock()
@@ -225,14 +229,27 @@ class Embedder:
             f"{self._base_url}/embed", json={"text": text}, timeout=self._timeout,
         )
         resp.raise_for_status()
-        return resp.json()["vector"]
+        vec = resp.json()["vector"]
+        if len(vec) != SEMANTIC_DIM:
+            raise RuntimeError(
+                f"embedding-service returned {len(vec)}-dim vector, expected "
+                f"{SEMANTIC_DIM} (SEMANTIC_DIM) — collection/model mismatch"
+            )
+        return vec
 
     def encode_batch(self, texts: List[str]) -> List[List[float]]:
         resp = self._session.post(
             f"{self._base_url}/embed/batch", json={"texts": texts}, timeout=self._timeout,
         )
         resp.raise_for_status()
-        return resp.json()["vectors"]
+        vecs = resp.json()["vectors"]
+        for v in vecs:
+            if len(v) != SEMANTIC_DIM:
+                raise RuntimeError(
+                    f"embedding-service returned {len(v)}-dim vector, expected "
+                    f"{SEMANTIC_DIM} (SEMANTIC_DIM) — collection/model mismatch"
+                )
+        return vecs
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -515,6 +532,13 @@ class QdrantKG:
                 wait=True,
             )
             return pid
+        except (requests.exceptions.RequestException, RuntimeError) as e:
+            self.stats["errors"] += 1
+            self.stats["last_error"] = f"upsert_point({node_type}->{coll}): {e}"
+            logger.error(
+                f"[KG] embedding-service call failed in upsert_point({node_type}->{coll}): {e}"
+            )
+            return None
         except Exception as e:
             self.stats["errors"] += 1
             self.stats["last_error"] = f"upsert_point({node_type}->{coll}): {e}"
@@ -708,6 +732,10 @@ class QdrantKG:
             for i, t in enumerate(batch):
                 pid = _point_id(t.thought_id)
                 self._build_edges(pid, t.content, NT_THOUGHT, vector=vectors[i])
+        except (requests.exceptions.RequestException, RuntimeError) as e:
+            self.stats["errors"] += 1
+            self.stats["last_error"] = f"flush_thoughts: {e}"
+            logger.error(f"[KG] embedding-service call failed in flush_thoughts: {e}")
         except Exception as e:
             self.stats["errors"] += 1
             self.stats["last_error"] = f"flush_thoughts: {e}"
@@ -809,6 +837,10 @@ class QdrantKG:
                     self.stats["edges_built"] += 1
                 except Exception as e:
                     logger.debug(f"[KG] back-edge update in '{coll_name}' failed: {e}")
+        except (requests.exceptions.RequestException, RuntimeError) as e:
+            self.stats["errors"] += 1
+            self.stats["last_error"] = f"build_edges: {e}"
+            logger.error(f"[KG] embedding-service call failed in build_edges: {e}")
         except Exception as e:
             self.stats["errors"] += 1
             self.stats["last_error"] = f"build_edges: {e}"
@@ -965,6 +997,9 @@ class QdrantKG:
                     })
             all_hits.sort(key=lambda x: x["score"], reverse=True)
             return all_hits[:limit] if len(colls_to_query) == 1 else all_hits
+        except (requests.exceptions.RequestException, RuntimeError) as e:
+            logger.error(f"[KG] embedding-service call failed in search: {e}")
+            return []
         except Exception as e:
             logger.warning(f"[KG] search failed: {e}")
             return []

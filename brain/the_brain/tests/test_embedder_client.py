@@ -43,15 +43,17 @@ def _fresh_embedder(fake_post) -> "_kg.Embedder":
 
 def test_encode_calls_embed_endpoint():
     print("Test 1: encode() POSTs to /embed and returns the vector")
+    # Vector must match SEMANTIC_DIM or the dimension-mismatch guard raises.
+    fake_vec = [0.1] * _kg.SEMANTIC_DIM
     fake_resp = MagicMock()
     fake_resp.raise_for_status.return_value = None
-    fake_resp.json.return_value = {"vector": [0.1, 0.2, 0.3]}
+    fake_resp.json.return_value = {"vector": fake_vec}
     fake_post = MagicMock(return_value=fake_resp)
 
     embedder = _fresh_embedder(fake_post)
     vec = embedder.encode("hello")
 
-    check("returns the vector from the response", vec == [0.1, 0.2, 0.3])
+    check("returns the vector from the response", vec == fake_vec)
     called_url = fake_post.call_args.args[0]
     check("posts to the /embed path", called_url.endswith("/embed"))
     called_json = fake_post.call_args.kwargs.get("json")
@@ -60,15 +62,18 @@ def test_encode_calls_embed_endpoint():
 
 def test_encode_batch_calls_batch_endpoint():
     print("Test 2: encode_batch() POSTs to /embed/batch and returns vectors")
+    # Vectors must match SEMANTIC_DIM or the dimension-mismatch guard raises.
+    fake_v1 = [0.1] * _kg.SEMANTIC_DIM
+    fake_v2 = [0.3] * _kg.SEMANTIC_DIM
     fake_resp = MagicMock()
     fake_resp.raise_for_status.return_value = None
-    fake_resp.json.return_value = {"vectors": [[0.1, 0.2], [0.3, 0.4]]}
+    fake_resp.json.return_value = {"vectors": [fake_v1, fake_v2]}
     fake_post = MagicMock(return_value=fake_resp)
 
     embedder = _fresh_embedder(fake_post)
     vecs = embedder.encode_batch(["a", "b"])
 
-    check("returns both vectors", vecs == [[0.1, 0.2], [0.3, 0.4]])
+    check("returns both vectors", vecs == [fake_v1, fake_v2])
     called_url = fake_post.call_args.args[0]
     check("posts to the /embed/batch path", called_url.endswith("/embed/batch"))
     called_json = fake_post.call_args.kwargs.get("json")
@@ -90,10 +95,33 @@ def test_encode_raises_on_http_error():
     check("raises instead of returning a degraded/empty result", raised)
 
 
+def test_encode_raises_on_dimension_mismatch():
+    print("Test 4: encode() raises when the returned vector dim != SEMANTIC_DIM")
+    # Deliberately wrong length (SEMANTIC_DIM is 1024) to simulate a
+    # collection/model version mismatch (e.g. mid-rollout of Task 7).
+    fake_resp = MagicMock()
+    fake_resp.raise_for_status.return_value = None
+    fake_resp.json.return_value = {"vector": [0.1, 0.2, 0.3]}
+    fake_post = MagicMock(return_value=fake_resp)
+
+    embedder = _fresh_embedder(fake_post)
+
+    raised = False
+    message = ""
+    try:
+        embedder.encode("hello")
+    except RuntimeError as e:
+        raised = True
+        message = str(e)
+    check("raises RuntimeError instead of returning a mismatched vector", raised)
+    check("error names SEMANTIC_DIM for a clear diagnosis", "SEMANTIC_DIM" in message)
+
+
 if __name__ == "__main__":
     test_encode_calls_embed_endpoint()
     test_encode_batch_calls_batch_endpoint()
     test_encode_raises_on_http_error()
+    test_encode_raises_on_dimension_mismatch()
     print(f"\n{len(_passed)} passed, {len(_failed)} failed")
     if _failed:
         sys.exit(1)
