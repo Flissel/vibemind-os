@@ -7,16 +7,32 @@ rowboat-rag-worker) could adopt later without a redesign.
 """
 from __future__ import annotations
 
+import logging
 import os
+import time
+from typing import List
 
 from fastapi import FastAPI, HTTPException
-from openai import OpenAI
+from openai import APIConnectionError, APIError, APITimeoutError, OpenAI
+from pydantic import BaseModel
 
 MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
+MAX_RETRIES = int(os.environ.get("EMBEDDING_MAX_RETRIES", "2"))
+RETRY_BACKOFF_SECONDS = float(os.environ.get("EMBEDDING_RETRY_BACKOFF", "0.5"))
+
+logger = logging.getLogger("embedding_service")
 
 app = FastAPI(title="embedding-service")
 
 _client: OpenAI | None = None
+
+
+class EmbedRequest(BaseModel):
+    text: str
+
+
+class EmbedResponse(BaseModel):
+    vector: List[float]
 
 
 def _read_secret(name: str) -> str:
@@ -53,3 +69,31 @@ def health():
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
     return {"status": "ok", "model": MODEL}
+
+
+def _embed_with_retry(inputs: List[str]) -> List[List[float]]:
+    last_exc: Exception | None = None
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            client = get_client()
+            resp = client.embeddings.create(model=MODEL, input=inputs)
+            return [d.embedding for d in resp.data]
+        except (APIConnectionError, APITimeoutError) as e:
+            last_exc = e
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
+                continue
+            raise
+        except APIError:
+            raise  # non-transient (4xx etc.) — no retry
+    raise last_exc  # pragma: no cover — loop always returns or raises above
+
+
+@app.post("/embed", response_model=EmbedResponse)
+def embed(req: EmbedRequest):
+    try:
+        vectors = _embed_with_retry([req.text])
+    except Exception as e:
+        logger.warning(f"/embed failed: {e}")
+        raise HTTPException(status_code=502, detail=f"embedding failed: {e}")
+    return EmbedResponse(vector=vectors[0])
