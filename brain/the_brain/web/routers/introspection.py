@@ -4305,6 +4305,37 @@ async def brain_ui(request: Request) -> HTMLResponse:
     )
 
 
+@router.get("/api/diary/stats")
+async def diary_stats(request: Request):
+    """Phase 1 — Read-only Blick ins episodische Tagebuch (KotlinGraph).
+    Grundlage für den Live-Beweis: schreibt der Multihop-Ingest real?"""
+    dg = getattr(request.app.state, "dual_graph", None)
+    if dg is None:
+        return JSONResponse({"error": "dual_graph not loaded"}, status_code=503)
+    try:
+        kg = dg.kotlingraph
+        multihop = sum(
+            1 for e in kg.events
+            if (getattr(e, "metadata", None) or {}).get("source") == "multihop"
+        )
+        last = kg.events[-1] if kg.events else None
+        return JSONResponse({
+            "total_events": kg.stats.get("total_events", 0),
+            "total_episodes": kg.stats.get("total_episodes", 0),
+            "multihop_events": multihop,
+            "current_episode_id": kg.current_episode_id,
+            "last_event": ({
+                "action": last.action,
+                "done": last.done,
+                "reward": last.reward,
+                "plan_id": (last.metadata or {}).get("plan_id"),
+                "episode_success": (last.metadata or {}).get("episode_success"),
+            } if last else None),
+        })
+    except Exception as e:  # noqa: BLE001 — Introspection darf nie crashen
+        return JSONResponse({"error": str(e)[:200]}, status_code=500)
+
+
 @router.get("/api/toolscope")
 async def toolscope_debug(intent: str, agent: str = "skill-coordinator", top_n: int = 8):
     """Debug/Verifikation der dynamischen Tool-Auswahl (plans/dynamic-agent-tools-prompt.md).
