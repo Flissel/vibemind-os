@@ -768,3 +768,150 @@ class TestIsEpisodeDone:
             assert KotlinGraph.is_episode_done(*args) is expected, (
                 f"is_episode_done{args} != {expected}"
             )
+
+
+# ===========================================================================
+# Crash-safe persistence (tmp + fsync + replace)
+#
+# WHY: save() used to write straight onto the destination with open(path,'w'),
+# which TRUNCATES immediately. A crash/kill mid-save therefore left a
+# truncated, unparseable file -- i.e. the whole diary gone, not one episode.
+# ===========================================================================
+
+class TestAtomicSave:
+    def _graph_with_events(self, n: int = 3) -> KotlinGraph:
+        kg = KotlinGraph()
+        for i in range(n):
+            kg.add_event(
+                state=make_state(f"s{i}"),
+                action=f"act_{i}",
+                next_state=make_state(f"s{i+1}"),
+                reward=1.0,
+                done=(i == n - 1),
+                metadata={"source": "multihop", "plan_id": f"plan_{i}"},
+            )
+        return kg
+
+    def test_save_is_atomic_no_partial_file_on_failure(self, tmp_path, monkeypatch):
+        """Ein Crash MITTEN im Speichern darf die bestehende Datei nicht
+        zerstoeren: entweder die alte vollstaendige oder die neue
+        vollstaendige -- niemals ein Fragment."""
+        import core.kotlin_graph as kgmod
+
+        dest = tmp_path / "memory_kotlingraph.json"
+        kg = self._graph_with_events(3)
+        kg.save(str(dest))
+        original = dest.read_text(encoding="utf-8")
+        assert json.loads(original)  # Baseline: parsebar
+
+        # Der naechste save() stirbt mitten im Schreiben.
+        real_dump = kgmod.json.dump
+
+        def _exploding_dump(data, f, **kw):
+            f.write('{"events": [{"partial": ')   # halb rausgeschrieben...
+            raise RuntimeError("kill -9 mid-save")
+
+        monkeypatch.setattr(kgmod.json, "dump", _exploding_dump)
+        kg.add_event(
+            state=make_state("s99"), action="act_99",
+            next_state=make_state("s100"), reward=1.0, done=True,
+        )
+        with pytest.raises(RuntimeError):
+            kg.save(str(dest))
+        monkeypatch.setattr(kgmod.json, "dump", real_dump)
+
+        # Das Ziel muss UNVERSEHRT sein (frueher: leer/abgeschnitten).
+        assert dest.exists()
+        assert dest.read_text(encoding="utf-8") == original
+        data = json.loads(dest.read_text(encoding="utf-8"))   # parsed sauber
+        assert len(data["events"]) == 3
+
+        # Und die Datei muss danach wieder normal ladbar sein.
+        reloaded = KotlinGraph()
+        reloaded.load(str(dest))
+        assert reloaded.stats["total_events"] == 3
+
+    def test_save_leaves_no_tmp_file_behind(self, tmp_path):
+        dest = tmp_path / "memory_kotlingraph.json"
+        kg = self._graph_with_events(2)
+        kg.save(str(dest))
+
+        assert dest.exists()
+        leftovers = [p.name for p in tmp_path.iterdir() if p.name != dest.name]
+        assert leftovers == [], f"Temp-Reste liegen herum: {leftovers}"
+
+    def test_concurrent_saves_never_leave_a_fragment(self, tmp_path):
+        """Zwei Threads speichern denselben Graphen -- das Ziel muss zu JEDEM
+        Zeitpunkt parsebar sein (last-write-wins ist ok, ein Fragment nicht).
+
+        Die EINZIGE harte Aussage ist: NIE ein Fragment (JSONDecodeError).
+        Ein PermissionError im Saver ist ein reines WINDOWS-Artefakt -- dort
+        scheitert os.replace() mit einer Sharing-Violation, solange ein Reader
+        die Zieldatei offen haelt (POSIX-Reader behalten den alten Inode, dort
+        tritt das nie auf). atomic_write_json retryt das kurz; unter einem
+        Reader OHNE Pause kann der Retry auf Windows trotzdem auslaufen. Das
+        ist kein Datenverlust im Sinne dieses Tests -- die Zieldatei bleibt
+        vollstaendig -- und Produktion ist Linux. Deshalb: Fragmente = hart,
+        Windows-Locks = separat und nur dort toleriert.
+        """
+        import threading
+        import time as _t
+
+        dest = tmp_path / "memory_kotlingraph.json"
+        kg = self._graph_with_events(5)
+        kg.save(str(dest))
+
+        errors: list = []          # echte Korruption -> immer hart
+        lock_errors: list = []     # Windows-Sharing-Violation im Saver
+        stop = threading.Event()
+
+        def _saver():
+            for _ in range(15):
+                try:
+                    kg.save(str(dest))
+                except PermissionError as e:
+                    lock_errors.append(e)
+                except Exception as e:           # pragma: no cover
+                    errors.append(e)
+
+        def _reader():
+            while not stop.is_set():
+                try:
+                    raw = dest.read_text(encoding="utf-8")
+                except PermissionError:
+                    continue                     # s. Docstring: Windows-Artefakt
+                except OSError as e:
+                    errors.append(e)
+                    return
+                try:
+                    if raw:
+                        json.loads(raw)          # darf NIE ein Fragment sein
+                except json.JSONDecodeError as e:
+                    errors.append(e)
+                    return
+                # kurze Pause: ein Reader OHNE Pause haelt die Zieldatei auf
+                # Windows dauerhaft offen und laesst os.replace() nie durch --
+                # das testet dann den Scheduler, nicht die Atomaritaet.
+                _t.sleep(0.002)
+
+        readers = [threading.Thread(target=_reader) for _ in range(2)]
+        savers = [threading.Thread(target=_saver) for _ in range(2)]
+        for t in readers:
+            t.start()
+        for t in savers:
+            t.start()
+        for t in savers:
+            t.join()
+        stop.set()
+        for t in readers:
+            t.join()
+
+        # HART: nie ein Fragment -- das ist die Zusage von atomic_write_json.
+        assert not errors, f"Datei war zwischenzeitlich kaputt: {errors[:3]}"
+        # Die Zieldatei ist am Ende vollstaendig -- auch wenn ein Save auf
+        # Windows an einer Sharing-Violation scheiterte (last-write-wins).
+        assert json.loads(dest.read_text(encoding="utf-8"))["stats"]["total_events"] == 5
+        # Auf POSIX (Produktion) darf os.replace() NIE an offenen Readern
+        # scheitern. Schlaegt das hier fehl, ist die Atomaritaet echt kaputt.
+        if os.name != "nt":
+            assert not lock_errors, f"os.replace scheiterte auf POSIX: {lock_errors[:3]}"

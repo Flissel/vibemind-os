@@ -14,13 +14,58 @@ Removed torch dependency entirely.
 """
 
 import json
+import os
 import threading
+import time
 
 import networkx as nx
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass, field
 from datetime import datetime
+
+
+def atomic_write_json(filepath: str, data: Any, **dump_kwargs: Any) -> None:
+    """Write `data` as JSON to `filepath` CRASH-SAFELY.
+
+    A plain `open(filepath, 'w')` TRUNCATES the destination before the first
+    byte is written, so a crash/kill mid-save leaves a fragment — for the
+    episodic diary that means the WHOLE memory file is destroyed, not one
+    episode. Here the bytes go to a temp file, are fsync'd (really on disk),
+    and only then atomically renamed over the destination. The destination is
+    therefore always either the old complete file or the new complete file.
+
+    The temp name is UNIQUE PER WRITER (pid + thread id): MemoryConsolidator
+    and the diary drain save the same graph from different threads, and a
+    shared "<dest>.tmp" would let one rename the other's half-written bytes
+    onto the destination — reintroducing the very corruption we remove.
+    """
+    tmp = f"{filepath}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, **dump_kwargs)
+            f.flush()
+            os.fsync(f.fileno())      # durable BEFORE the rename
+        # os.replace is atomic on POSIX and Windows. On WINDOWS only, it
+        # fails with PermissionError if a reader currently holds the
+        # destination open (POSIX readers just keep the old inode). That is a
+        # transient sharing violation, not corruption — retry briefly.
+        for attempt in range(5):
+            try:
+                os.replace(tmp, filepath)
+                return
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.05)
+    except BaseException:
+        # Failed write -> drop the half-built tmp. The destination is
+        # untouched and still holds the last complete save.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 @dataclass
@@ -406,8 +451,9 @@ class KotlinGraph:
             'stats': self.stats,
         }
 
-        with open(filepath, 'w') as f:
-            json.dump(data, f, indent=2, default=str)
+        # Crash-safe: tmp + fsync + atomic replace. A truncate-then-write
+        # would destroy the whole diary on a kill mid-save.
+        atomic_write_json(filepath, data, indent=2, default=str)
 
     def load(self, filepath: str) -> None:
         """Load graph from disk."""
