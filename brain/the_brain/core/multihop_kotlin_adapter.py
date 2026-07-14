@@ -64,10 +64,13 @@ Design notes
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import threading
-from typing import Any, Dict, Optional
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from core.kotlin_graph import KotlinGraph
 from core.plan_schema import contract_pass_from
@@ -77,6 +80,24 @@ logger = logging.getLogger(__name__)
 # Guards the whole per-plan write so two concurrently-executing plans never
 # interleave their events into a single KotlinGraph episode.
 _WRITE_LOCK = threading.Lock()
+
+# Guards appends to the diary queue file (Phase 1: brain-core enqueues one
+# JSON line per plan here; a later drain, running in brain-loops — the only
+# process with BRAIN_BACKGROUND_LOOPS=1 and a MemoryConsolidator that ever
+# calls dual_graph.save() — replays it into the KotlinGraph that actually
+# gets persisted. See routing_matrix_autotrain.py for the proven pattern
+# this mirrors: hook appends, separate drain worker consumes.
+_ENQUEUE_LOCK = threading.Lock()
+
+# data/ is the bind-mounted volume shared host<->container, same idiom as
+# routing_matrix_autotrain.py's _QUEUE_PATH (core/ -> ../data).
+QUEUE_PATH = Path(
+    os.environ.get(
+        "MULTIHOP_DIARY_QUEUE",
+        str(Path(__file__).resolve().parent.parent / "data"
+            / "multihop_diary_queue.jsonl"),
+    )
+)
 
 _DISABLE_VALUES = {"0", "false", "False"}
 
@@ -179,6 +200,119 @@ def _close_aborted_episode(
         )
 
 
+def build_episode(
+    plan: Any, executed: Optional[Dict[str, Any]], *,
+    trace_id: str = "", task_class_id: str = "",
+) -> Dict[str, Any]:
+    """PURE: turn one completed plan's hops into the episode dict this
+    module writes — either directly via `record_plan`'s `dual_graph.
+    record_event(**event)` calls, or as a queue line via `enqueue_plan`.
+
+    No I/O, no locking, never touches a dual_graph. Same event order and
+    semantics `record_plan` used to build inline: `done=True` only on the
+    last event, `episode_success`/`plan_ok` only in the last event's
+    metadata, `task_class_id` in every event's metadata only when
+    non-empty. Safe to call with `executed` falsy — yields `events: []`.
+    """
+    plan_id = getattr(plan, "plan_id", "") or ""
+    eff_trace_id = trace_id or getattr(plan, "trace_id", "") or ""
+
+    events: List[Dict[str, Any]] = []
+    if executed:
+        items = list(executed.items())
+        total = len(items)
+        intent = getattr(plan, "intent", "") or ""
+
+        h = hashlib.sha256(intent.encode()).hexdigest()[:16]
+        all_ok = True
+
+        for i, (step_id, hop) in enumerate(items):
+            ok = bool(_get(hop, "ok", False))
+            contract_pass = _get(hop, "contract_pass", None)
+            reward_field = _get(hop, "reward", None)
+            verdict = _get(hop, "validator_verdict", None)
+            capability = _get(hop, "capability", None)
+            target = _get(hop, "target", None)
+
+            all_ok = all_ok and ok
+
+            action = _action_for(target, capability)
+            effective_contract_pass = _effective_contract_pass(ok, contract_pass, verdict)
+            reward = _reward_for(reward_field, effective_contract_pass)
+
+            is_last = i == total - 1
+            next_h = hashlib.sha256(
+                (h + action + ("ok" if ok else "fail")).encode()
+            ).hexdigest()[:16]
+
+            state = {
+                "capability": capability or "",
+                "completed_hops": i,
+                "plan_hops": total,
+                "context_hash": h,
+            }
+            next_state = {
+                "capability": capability or "",
+                "completed_hops": i + 1,
+                "plan_hops": total,
+                "context_hash": next_h,
+            }
+
+            metadata: Dict[str, Any] = {
+                "source": "multihop",
+                "plan_id": plan_id,
+                "trace_id": eff_trace_id,
+                "step_id": step_id,
+                "capability": capability or "",
+                "target": target,
+                "ok": ok,
+                # the COMPUTED effective gate verdict — the value that
+                # actually drove reward/episode_success
+                "contract_pass": effective_contract_pass,
+            }
+            if task_class_id:
+                metadata["task_class_id"] = task_class_id
+
+            done = is_last
+            if is_last:
+                # validator_present widens beyond "verdict is a dict": a
+                # hard hop failure (ok=False) is a DEFINITE non-pass, not
+                # an ambiguous/unverified case, so it must not fall into
+                # KG-C3's vacuous-truth-when-unverified branch. Both
+                # effective_contract_pass=False (from a failing verdict
+                # OR from ok=False) and =True (verdict passed) count as
+                # "a validator ran"; only None (truly unverified success)
+                # is vacuously satisfied.
+                validator_present = effective_contract_pass is not None
+                validator_passed = effective_contract_pass is True
+                metadata["episode_success"] = KotlinGraph.is_episode_done(
+                    is_last_hop=True,
+                    validator_present=validator_present,
+                    validator_passed=validator_passed,
+                    pending_hops=0,
+                )
+                metadata["plan_ok"] = all_ok
+
+            events.append({
+                "state": state,
+                "action": action,
+                "next_state": next_state,
+                "reward": reward,
+                "done": done,
+                "metadata": metadata,
+            })
+            h = next_h
+
+    return {
+        "v": 1,
+        "plan_id": plan_id,
+        "trace_id": eff_trace_id,
+        "task_class_id": task_class_id,
+        "ts": time.time(),
+        "events": events,
+    }
+
+
 def record_plan(
     dual_graph: Any, plan: Any, executed: Optional[Dict[str, Any]], *,
     trace_id: str = "", task_class_id: str = "",
@@ -207,92 +341,28 @@ def record_plan(
         try:
             plan_id = getattr(plan, "plan_id", "") or ""
             eff_trace_id = trace_id or getattr(plan, "trace_id", "") or ""
-            items = list(executed.items())
-            total = len(items)
             intent = getattr(plan, "intent", "") or ""
-
             h = hashlib.sha256(intent.encode()).hexdigest()[:16]
-            all_ok = True
 
-            for i, (step_id, hop) in enumerate(items):
-                ok = bool(_get(hop, "ok", False))
-                contract_pass = _get(hop, "contract_pass", None)
-                reward_field = _get(hop, "reward", None)
-                verdict = _get(hop, "validator_verdict", None)
-                capability = _get(hop, "capability", None)
-                target = _get(hop, "target", None)
+            episode = build_episode(
+                plan, executed, trace_id=trace_id, task_class_id=task_class_id,
+            )
+            events = episode["events"]
+            total = len(events)
 
-                all_ok = all_ok and ok
-
-                action = _action_for(target, capability)
-                effective_contract_pass = _effective_contract_pass(ok, contract_pass, verdict)
-                reward = _reward_for(reward_field, effective_contract_pass)
-
-                is_last = i == total - 1
-                next_h = hashlib.sha256(
-                    (h + action + ("ok" if ok else "fail")).encode()
-                ).hexdigest()[:16]
-
-                state = {
-                    "capability": capability or "",
-                    "completed_hops": i,
-                    "plan_hops": total,
-                    "context_hash": h,
-                }
-                next_state = {
-                    "capability": capability or "",
-                    "completed_hops": i + 1,
-                    "plan_hops": total,
-                    "context_hash": next_h,
-                }
-
-                metadata: Dict[str, Any] = {
-                    "source": "multihop",
-                    "plan_id": plan_id,
-                    "trace_id": eff_trace_id,
-                    "step_id": step_id,
-                    "capability": capability or "",
-                    "target": target,
-                    "ok": ok,
-                    # the COMPUTED effective gate verdict — the value that
-                    # actually drove reward/episode_success
-                    "contract_pass": effective_contract_pass,
-                }
-                if task_class_id:
-                    metadata["task_class_id"] = task_class_id
-
-                done = is_last
-                if is_last:
-                    # validator_present widens beyond "verdict is a dict": a
-                    # hard hop failure (ok=False) is a DEFINITE non-pass, not
-                    # an ambiguous/unverified case, so it must not fall into
-                    # KG-C3's vacuous-truth-when-unverified branch. Both
-                    # effective_contract_pass=False (from a failing verdict
-                    # OR from ok=False) and =True (verdict passed) count as
-                    # "a validator ran"; only None (truly unverified success)
-                    # is vacuously satisfied.
-                    validator_present = effective_contract_pass is not None
-                    validator_passed = effective_contract_pass is True
-                    metadata["episode_success"] = KotlinGraph.is_episode_done(
-                        is_last_hop=True,
-                        validator_present=validator_present,
-                        validator_passed=validator_passed,
-                        pending_hops=0,
-                    )
-                    metadata["plan_ok"] = all_ok
-
+            for event in events:
                 dual_graph.record_event(
-                    state,
-                    action,
-                    next_state,
-                    reward,
-                    done,
-                    metadata=metadata,
+                    event["state"],
+                    event["action"],
+                    event["next_state"],
+                    event["reward"],
+                    event["done"],
+                    metadata=event["metadata"],
                 )
                 written += 1
-                if done:
+                if event["done"]:
                     episode_closed = True
-                h = next_h
+                h = event["next_state"]["context_hash"]
 
         except Exception:
             logger.warning(
@@ -311,3 +381,45 @@ def record_plan(
                 )
 
     return written
+
+
+def enqueue_plan(
+    plan: Any, executed: Optional[Dict[str, Any]], *,
+    trace_id: str = "", task_class_id: str = "",
+    queue_path: Optional[Any] = None,
+) -> bool:
+    """Append ONE JSON line (the `build_episode` dict) to the diary queue.
+
+    Phase 1 of the swarm fix: brain-core (2 uvicorn workers, no background
+    loops, nothing ever calls dual_graph.save()) enqueues here instead of
+    writing straight into its own doomed in-memory graph. A later drain
+    (brain-loops, the only process that persists) replays these lines. Same
+    idiom as `routing_matrix_autotrain.py::maybe_autotrain` — a trivial,
+    lock-guarded append-mode write, never disturbs the caller's path.
+
+    True on success; False on flag-off, empty `executed`, or any failure
+    (bad path, disk full, ...). Never raises — the executor calls this in a
+    `finally` block.
+    """
+    if not ingest_enabled():
+        return False
+    if not executed:
+        return False
+    try:
+        episode = build_episode(
+            plan, executed, trace_id=trace_id, task_class_id=task_class_id,
+        )
+        line = json.dumps(episode, ensure_ascii=False, default=str)
+        path = Path(queue_path) if queue_path is not None else QUEUE_PATH
+        with _ENQUEUE_LOCK:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        return True
+    except Exception:
+        logger.warning(
+            "enqueue_plan: failed to enqueue plan %s",
+            getattr(plan, "plan_id", ""),
+            exc_info=True,
+        )
+        return False
