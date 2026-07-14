@@ -21,7 +21,9 @@ Env:  BRAIN_BACKGROUND_LOOPS=1 (hier erzwungen), BRAIN_ROLE=learner (Writer an),
 """
 
 import os
+import signal
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -84,13 +86,57 @@ def main() -> int:
             print(f"[brain-loops] Log retrainer konnte nicht starten: {e}", flush=True)
 
     print("[brain-loops] Loops laufen. Heartbeat (kein HTTP-Server in diesem Prozess).", flush=True)
+
+    # Graceful shutdown. Dieser Prozess hat KEINE FastAPI-Lifespan, d.h. das
+    # dortige diary_drain.stop() lief hier nie — und Docker/Swarm schickt beim
+    # Reschedule SIGTERM, nie KeyboardInterrupt. Ohne Handler stirbt der
+    # Drain-Thread mitten im Zyklus. Dank persist-then-commit + idempotentem
+    # Replay ist das kein Datenverlust mehr, aber ein sauberer letzter Drain
+    # (inkl. Persist) spart beim Neustart einen kompletten Retry-Zyklus.
+    _stopping = threading.Event()
+
+    def _shutdown(signum, _frame):  # noqa: ANN001
+        if _stopping.is_set():
+            return
+        _stopping.set()
+        print(f"[brain-loops] Signal {signum} — fahre sauber herunter...", flush=True)
+        drain = getattr(state, "diary_drain", None)
+        try:
+            if drain is not None:
+                drain.stop()
+        except Exception as e:  # noqa: BLE001
+            print(f"[brain-loops] diary_drain.stop() fehlgeschlagen: {e}", flush=True)
+        # EIN letzter Drain — drain_once persistiert selbst (persist-then-commit).
+        try:
+            dg = getattr(state, "dual_graph", None)
+            if dg is not None:
+                from core.multihop_diary_drain import drain_once
+                out = drain_once(dg)
+                print(f"[brain-loops] finaler Drain: {out}", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"[brain-loops] finaler Drain fehlgeschlagen: {e}", flush=True)
+        # MemoryConsolidator persistiert beim stop() ebenfalls.
+        try:
+            mc = getattr(state, "memory_consolidator", None)
+            if mc is not None:
+                mc.stop()
+        except Exception as e:  # noqa: BLE001
+            print(f"[brain-loops] memory_consolidator.stop() fehlgeschlagen: {e}", flush=True)
+
+    for _sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(_sig, _shutdown)
+        except (ValueError, OSError, AttributeError) as e:  # noqa: PERF203
+            print(f"[brain-loops] kein Handler fuer {_sig}: {e}", flush=True)
+
     # Daemon-Threads am Leben halten — der Hauptthread idlet.
     try:
-        while True:
-            time.sleep(60)
+        while not _stopping.is_set():
+            time.sleep(1)
     except KeyboardInterrupt:
-        print("[brain-loops] beende.", flush=True)
-        return 0
+        _shutdown(signal.SIGINT, None)
+    print("[brain-loops] beende.", flush=True)
+    return 0
 
 
 if __name__ == "__main__":

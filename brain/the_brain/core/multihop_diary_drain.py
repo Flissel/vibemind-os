@@ -55,17 +55,49 @@ observing a write in progress.
    file. We reset the offset to 0 if the size is smaller than the stored
    offset OR the current head_sha differs from the stored one — the head
    bytes change iff the file was replaced/rotated, at any size.
-4. **Corrupt line.** A line that fails `json.loads` is logged and skipped
-   (the offset still advances past it -- a permanently malformed line must
-   not stall the queue forever); every other line keeps draining.
-5. **A failing replay.** If replaying an episode's events into `dual_graph`
-   raises partway through, we log a warning and STOP the cycle right there
-   -- the offset is NOT advanced past that episode's line, so it is retried
-   whole on the next cycle. Whatever was cleanly drained earlier in the same
-   cycle is still counted and persisted.
+4. **A permanently broken LINE is skipped.** Two flavours: a line that fails
+   `json.loads`, and a line that is valid JSON but structurally unusable
+   (an event missing `state`, a non-numeric `reward`, ...) -- see
+   `_episode_problem`. Both are logged and SKIPPED, offset advancing past
+   them. This distinction matters enormously: without the structural check,
+   such a line would land in rule 5 below and park the offset in front of
+   itself FOREVER, starving every good episode queued behind it.
+5. **A failing GRAPH stops the cycle.** If `record_event` raises on an
+   episode we already validated, the problem is the graph, not the line: we
+   log a warning and STOP right there. The offset is NOT advanced past that
+   episode, so it is retried whole next cycle. Whatever was cleanly drained
+   earlier in the same cycle is still persisted and committed.
+   **Backstop:** if the SAME offset fails `_MAX_STALL` times in a row
+   (tracked as `stall_offset`/`stall_count` in the state file) we log an
+   ERROR, skip that line and move on. That deliberately trades one lost
+   episode for an unblocked queue -- an unforeseen *permanent* record_event
+   failure would otherwise cost us every future episode, which is far worse.
 6. **Never raises.** `drain_once` is wrapped end to end; any unexpected
    failure yields `{"episodes": 0, "events": 0, "offset": 0}` rather than
    propagating into the caller's (daemon-thread) loop.
+
+Durability: PERSIST-THEN-COMMIT + IDEMPOTENT REPLAY
+----------------------------------------------------
+The state file's own write is atomic (tmp + `os.replace`), but do not mistake
+that for the durability story -- it only means the offset file is never torn.
+The real property comes from two things working TOGETHER:
+
+- **Persist-then-commit** (`_persist`): we call `dual_graph.save('memory')`
+  BEFORE writing the advanced offset, and refuse to advance if the save
+  fails. Committing first was a silent data-loss bug: the drain advances the
+  offset every 30s, but `MemoryConsolidator` (the only other saver) persists
+  only every 300s -- a 10x window in which a swarm reschedule would leave the
+  state file claiming episodes were "drained" that never reached the disk.
+- **Idempotent replay** (`_seen_plan_ids`): before replaying, we skip any
+  episode whose `plan_id` is already in the graph. This is what MAKES
+  persist-then-commit safe -- the reordering means a crash can now leave
+  episodes persisted but not committed, so they WILL be re-read, and
+  re-reading must be a harmless no-op rather than a duplicate.
+
+Neither half is sufficient alone. Note also that `DualGraph.save` ->
+`KotlinGraph.save` writes with a plain `open(path, 'w')` (no tmp+rename), so
+it is NOT atomic; `_SAVE_LOCK` serializes the drain's own saves, but the
+MemoryConsolidator saves the same graph from its own thread without it.
 
 Replay strategy
 ----------------
@@ -105,9 +137,112 @@ _EMPTY_RESULT: Dict[str, int] = {"episodes": 0, "events": 0, "offset": 0}
 # How many leading bytes of the queue identify "this file, not a new one".
 _HEAD_BYTES = 256
 
+# Rule-5 backstop: how often we may fail to replay THE SAME line before we
+# give up on it, skip it and move on. See `drain_once`.
+_MAX_STALL = 5
+
+# The queue is never rotated (rotation is only DETECTED, never performed), so
+# it grows without bound. Warn once we are past this — nobody watches a file
+# that silently becomes a disk-filler.
+_QUEUE_WARN_BYTES = 100 * 1024 * 1024  # 100 MB
+
+# Serializes OUR dual_graph.save() calls. NOTE: DualGraph.save -> KotlinGraph
+# .save writes with a plain `open(path, 'w')` + json.dump — it is NOT atomic
+# (no tmp+rename), so two concurrent savers can interleave and leave a
+# truncated/corrupt JSON file. This lock only protects drain-vs-drain. The
+# MemoryConsolidator calls dual_graph.save('memory') from ITS OWN thread in
+# the same process and does not take this lock, so drain-vs-consolidator
+# remains unprotected — flagged for a separate decision.
+_SAVE_LOCK = threading.Lock()
+
+# Structural contract of one queued event (what DualGraph.record_event needs).
+_REQUIRED_EVENT_KEYS = ("state", "action", "next_state", "reward", "done")
+
 
 def _default_state_path(queue_path: Path) -> Path:
     return Path(str(queue_path) + ".state.json")
+
+
+def _seen_plan_ids(dual_graph: Any) -> set:
+    """Every multihop plan_id ALREADY present in the graph.
+
+    This is what makes replay idempotent (and therefore makes
+    persist-then-commit safe): after a crash we may legitimately re-read
+    lines we already ingested, and re-adding them would silently duplicate
+    the diary. The graph itself is the source of truth — we derive the set
+    from it rather than trusting any bookkeeping we wrote earlier."""
+    out: set = set()
+    try:
+        kg = getattr(dual_graph, "kotlingraph", None)
+        for e in (getattr(kg, "events", None) or []):
+            md = getattr(e, "metadata", None) or {}
+            if md.get("source") == "multihop":
+                pid = md.get("plan_id")
+                if pid:
+                    out.add(pid)
+    except Exception:
+        logger.warning("multihop_diary_drain: could not read existing "
+                        "plan_ids from the graph; replay may duplicate",
+                        exc_info=True)
+    return out
+
+
+def _episode_problem(episode: Any) -> str:
+    """Structural validation. Returns "" if the episode is replayable, else a
+    short reason.
+
+    WHY this exists: a JSON-VALID but schema-corrupt line (say, an event with
+    no "state") would make record_event raise — and rule 5 reads every
+    record_event failure as "transient, retry next cycle", which would park
+    the offset in front of that line FOREVER and starve every good episode
+    behind it. Validating up front lets us tell a permanently-broken LINE
+    (skip it, rule 4) apart from a sick GRAPH (stop, rule 5)."""
+    if not isinstance(episode, dict):
+        return "episode is not an object"
+    events = episode.get("events")
+    if not isinstance(events, list):
+        return "'events' is not a list"
+    if not events:
+        return "'events' is empty"
+    for i, ev in enumerate(events):
+        if not isinstance(ev, dict):
+            return f"event {i} is not an object"
+        for key in _REQUIRED_EVENT_KEYS:
+            if key not in ev:
+                return f"event {i} is missing '{key}'"
+        if not isinstance(ev["state"], dict):
+            return f"event {i}: 'state' is not an object"
+        if not isinstance(ev["next_state"], dict):
+            return f"event {i}: 'next_state' is not an object"
+        if not isinstance(ev["action"], str):
+            return f"event {i}: 'action' is not a string"
+        if isinstance(ev["reward"], bool) or not isinstance(ev["reward"], (int, float)):
+            return f"event {i}: 'reward' is not a number"
+        if not isinstance(ev["done"], bool):
+            return f"event {i}: 'done' is not a bool"
+        md = ev.get("metadata")
+        if md is not None and not isinstance(md, dict):
+            return f"event {i}: 'metadata' is neither an object nor null"
+    return ""
+
+
+def _persist(dual_graph: Any) -> bool:
+    """Save the graph to disk — the SAME call MemoryConsolidator._phase_persist
+    makes (`dual_graph.save('memory')`, core/memory_consolidation.py:580).
+
+    This is the "persist" half of persist-then-commit: the offset may only
+    advance AFTER the episodes behind it are actually on disk. Never raises;
+    False means "not persisted -> do not commit the offset"."""
+    try:
+        with _SAVE_LOCK:
+            dual_graph.save('memory')
+        return True
+    except Exception:
+        logger.warning("multihop_diary_drain: persisting the graph failed — "
+                        "NOT advancing the offset; the episodes stay queued "
+                        "and will be retried (replay is idempotent)",
+                        exc_info=True)
+        return False
 
 
 def _head_sha(queue_path: Path, offset: int) -> str:
@@ -149,6 +284,10 @@ def _load_state(state_path: Path) -> Dict[str, Any]:
         "last_plan_id": "",
         "last_ts": 0.0,
         "head_sha": "",
+        # Rule-5 backstop bookkeeping: how many cycles in a row a replay has
+        # failed at `stall_offset`. Reset whenever we make progress.
+        "stall_offset": -1,
+        "stall_count": 0,
     }
     try:
         if not state_path.exists():
@@ -244,11 +383,37 @@ def drain_once(
         else:
             complete = chunk[: last_nl + 1]
 
+        if file_size > _QUEUE_WARN_BYTES:
+            # Rotation is only DETECTED here, never PERFORMED — so nothing
+            # ever shrinks this file. Say so out loud before it eats the disk.
+            logger.warning(
+                "multihop_diary_drain: queue %s is %.1f MB — it is never "
+                "rotated, only appended to; consider truncating it (the drain "
+                "handles rotation) or adding a rotation policy",
+                q_path, file_size / (1024 * 1024),
+            )
+
         cumulative_offset = offset
         episodes_this = 0
         events_this = 0
         last_plan_id = prev.get("last_plan_id", "")
         last_ts = prev.get("last_ts", 0.0)
+        stalled_at = -1          # offset of a rule-5 failure in THIS cycle
+
+        # Fix 1a: the graph is the source of truth for what is already in it.
+        seen = _seen_plan_ids(dual_graph)
+        # NB: no `or -1` fallback here — offset 0 is a perfectly valid stall
+        # position (it is where the FIRST queue line lives), and `0 or -1`
+        # would silently turn it into "no stall", so the backstop could never
+        # fire for it.
+        try:
+            prev_stall_offset = int(prev.get("stall_offset", -1))
+        except (TypeError, ValueError):
+            prev_stall_offset = -1
+        try:
+            prev_stall_count = int(prev.get("stall_count", 0))
+        except (TypeError, ValueError):
+            prev_stall_count = 0
 
         if complete:
             # `complete` always ends in b"\n" -> the final split element is
@@ -276,26 +441,96 @@ def drain_once(
                     cumulative_offset += line_len
                     continue
 
+                # Rule 4 (extended): JSON-valid but structurally unusable.
+                # A permanently malformed LINE must be skipped, never retried
+                # forever — otherwise it starves every good episode behind it.
+                problem = _episode_problem(episode)
+                if problem:
+                    logger.warning(
+                        "multihop_diary_drain: unusable episode %r at offset "
+                        "%d in %s (%s); skipping the line",
+                        episode.get("plan_id") if isinstance(episode, dict) else None,
+                        cumulative_offset, q_path, problem,
+                    )
+                    cumulative_offset += line_len
+                    continue
+
+                plan_id = episode.get("plan_id") or ""
+
+                # Fix 1a: already in the graph (e.g. we persisted it, then
+                # crashed before committing the offset). Re-adding it would
+                # duplicate the diary. Advance past it — it IS drained.
+                if plan_id and plan_id in seen:
+                    logger.debug(
+                        "multihop_diary_drain: plan %r already in the graph; "
+                        "skipping replay (idempotent)", plan_id,
+                    )
+                    episodes_this += 1
+                    last_plan_id = plan_id or last_plan_id
+                    last_ts = episode.get("ts", last_ts)
+                    cumulative_offset += line_len
+                    continue
+
+                # Rule-5 backstop: we have already failed on THIS line
+                # _MAX_STALL times. record_event is evidently never going to
+                # take it. Losing one episode beats losing every future one.
+                if (cumulative_offset == prev_stall_offset
+                        and prev_stall_count >= _MAX_STALL):
+                    logger.error(
+                        "multihop_diary_drain: giving up on episode %r at "
+                        "offset %d in %s after %d failed replays — SKIPPING "
+                        "it (one episode lost, queue unblocked)",
+                        plan_id, cumulative_offset, q_path, prev_stall_count,
+                    )
+                    cumulative_offset += line_len
+                    prev_stall_offset, prev_stall_count = -1, 0
+                    continue
+
                 try:
                     events_this += _replay_episode(dual_graph, episode)
                 except Exception:
-                    # Rule 5: replay failed partway -- STOP here, do not
-                    # advance the offset past this episode's line, so it is
-                    # retried whole next cycle. Whatever this cycle already
-                    # drained cleanly stays counted/persisted below.
+                    # Rule 5: the GRAPH failed (the line is structurally fine,
+                    # we validated it above) -- STOP here, do not advance past
+                    # this episode, retry it whole next cycle. Whatever this
+                    # cycle already drained cleanly is still persisted+
+                    # committed below.
                     logger.warning(
                         "multihop_diary_drain: replay failed for plan %r "
                         "at offset %d in %s; stopping this cycle, will "
                         "retry",
-                        episode.get("plan_id"), cumulative_offset, q_path,
+                        plan_id, cumulative_offset, q_path,
                         exc_info=True,
                     )
+                    stalled_at = cumulative_offset
                     break
 
                 episodes_this += 1
-                last_plan_id = episode.get("plan_id", "") or last_plan_id
+                if plan_id:
+                    seen.add(plan_id)
+                last_plan_id = plan_id or last_plan_id
                 last_ts = episode.get("ts", last_ts)
                 cumulative_offset += line_len
+
+        # --- Fix 1b: PERSIST, THEN COMMIT ------------------------------------
+        # The offset may only move past episodes that are actually ON DISK.
+        # Committing first (as we used to) meant: DiaryDrain marks 30s of
+        # episodes "drained", MemoryConsolidator only saves every 300s, the
+        # swarm reschedules in between -> the state file says "consumed" but
+        # the graph on disk never had them. Silently gone. So we save here,
+        # and on failure we simply do not advance — the episodes stay queued
+        # and the next cycle retries them (harmless, replay is idempotent).
+        if episodes_this > 0 and not _persist(dual_graph):
+            return {
+                "episodes": episodes_this,
+                "events": events_this,
+                "offset": offset,          # NOT committed
+            }
+
+        if stalled_at >= 0:
+            stall_count = (prev_stall_count + 1
+                            if stalled_at == prev_stall_offset else 1)
+        else:
+            stall_count = 0
 
         new_state = {
             "offset": cumulative_offset,
@@ -306,6 +541,8 @@ def drain_once(
             # Fingerprint the prefix we have now consumed — that is exactly
             # the region the next cycle will re-check for rotation.
             "head_sha": _head_sha(q_path, cumulative_offset),
+            "stall_offset": stalled_at if stalled_at >= 0 else -1,
+            "stall_count": stall_count,
         }
         _write_state(s_path, new_state)
 
