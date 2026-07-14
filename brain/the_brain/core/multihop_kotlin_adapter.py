@@ -81,16 +81,22 @@ logger = logging.getLogger(__name__)
 # interleave their events into a single KotlinGraph episode.
 _WRITE_LOCK = threading.Lock()
 
-# Guards appends to the diary queue file (Phase 1: brain-core enqueues one
-# JSON line per plan here; a later drain, running in brain-loops — the only
-# process with BRAIN_BACKGROUND_LOOPS=1 and a MemoryConsolidator that ever
-# calls dual_graph.save() — replays it into the KotlinGraph that actually
-# gets persisted. See routing_matrix_autotrain.py for the proven pattern
-# this mirrors: hook appends, separate drain worker consumes.
+# Serializes queue appends BETWEEN THREADS OF THIS PROCESS only, and guards
+# the mkdir race. It does NOT and CANNOT provide the cross-process guarantee:
+# brain-core runs TWO uvicorn worker PROCESSES appending to the same file, and
+# a threading.Lock is per-interpreter. The cross-process atomicity comes from
+# the OS file lock in `_locked_append` — not from this.
 _ENQUEUE_LOCK = threading.Lock()
 
 # data/ is the bind-mounted volume shared host<->container, same idiom as
 # routing_matrix_autotrain.py's _QUEUE_PATH (core/ -> ../data).
+#
+# ONE LINE = ONE WHOLE EPISODE, and an episode can be LARGE: a 50-hop plan
+# (MULTIHOP_REPEAT_MAX=50 is a real shipped code path) measures ~33 KB — 8x
+# over PIPE_BUF (4096). So the usual "small appends are atomic" argument does
+# NOT hold here; not even a single os.write() is reliably atomic at that size
+# on every filesystem. That is precisely why `_locked_append` takes a real
+# cross-process file lock instead of relying on write size.
 QUEUE_PATH = Path(
     os.environ.get(
         "MULTIHOP_DIARY_QUEUE",
@@ -100,6 +106,96 @@ QUEUE_PATH = Path(
 )
 
 _DISABLE_VALUES = {"0", "false", "False"}
+
+# Logged at most once: we could not take a cross-process lock on this platform.
+_lock_warning_emitted = False
+
+
+def _locked_append(path: Path, data: bytes) -> None:
+    """Append `data` to `path` as ONE atomic unit, safe across PROCESSES.
+
+    Two defenses, both required (belt and braces):
+
+    (a) A single `os.write()` syscall on a raw O_APPEND fd, instead of
+        Python's buffered TextIOWrapper. A buffered `f.write()` may split
+        into several write() syscalls at arbitrary boundaries — another
+        process can land its bytes in the gap, tearing both lines.
+
+    (b) A real OS-level exclusive file lock around that write (flock on
+        POSIX / msvcrt.locking on Windows), so the append is serialized
+        across processes REGARDLESS of line size. (a) alone is insufficient
+        because our lines run ~33 KB, far past any atomic-append guarantee.
+
+    If neither locking primitive is importable, fall back to the bare
+    single os.write and warn ONCE — degraded, but still the best available.
+    Raises only on genuine I/O failure; the caller turns that into False.
+    """
+    global _lock_warning_emitted
+
+    try:
+        import fcntl  # POSIX (the container)
+
+        def _acquire(fd: int) -> None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+
+        def _release(fd: int) -> None:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except ImportError:
+        try:
+            import msvcrt  # Windows (native dev host)
+
+            # msvcrt.locking locks a byte range at the CURRENT file offset, so
+            # both lock and unlock must be pinned to the SAME byte — we use
+            # byte 0, giving every process one shared mutex. os.write() under
+            # O_APPEND leaves the offset at EOF, hence the explicit lseek(0)
+            # on release; without it we would unlock the wrong byte.
+            def _acquire(fd: int) -> None:
+                os.lseek(fd, 0, os.SEEK_SET)
+                # LK_LOCK blocks (retries ~10x/1s) until the holder releases.
+                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+
+            def _release(fd: int) -> None:
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        except ImportError:
+            if not _lock_warning_emitted:
+                _lock_warning_emitted = True
+                logger.warning(
+                    "diary queue: neither fcntl nor msvcrt available — "
+                    "cross-process append atomicity is NOT guaranteed on this "
+                    "platform; concurrent writers may tear a line (= silently "
+                    "lost episode)"
+                )
+
+            def _acquire(fd: int) -> None:
+                return None
+
+            def _release(fd: int) -> None:
+                return None
+
+    fd = os.open(str(path), os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
+    try:
+        try:
+            _acquire(fd)
+        except OSError:
+            # Lock unavailable (e.g. flock on some network filesystems). The
+            # single os.write below is still our best effort — do not lose the
+            # episode over a failed lock.
+            logger.warning(
+                "diary queue: could not take file lock on %s — appending "
+                "unlocked", path, exc_info=True,
+            )
+            os.write(fd, data)
+            return
+        try:
+            os.write(fd, data)
+        finally:
+            try:
+                _release(fd)
+            except OSError:
+                pass
+    finally:
+        os.close(fd)
 
 
 def ingest_enabled() -> bool:
@@ -394,8 +490,16 @@ def enqueue_plan(
     loops, nothing ever calls dual_graph.save()) enqueues here instead of
     writing straight into its own doomed in-memory graph. A later drain
     (brain-loops, the only process that persists) replays these lines. Same
-    idiom as `routing_matrix_autotrain.py::maybe_autotrain` — a trivial,
-    lock-guarded append-mode write, never disturbs the caller's path.
+    idiom as `routing_matrix_autotrain.py::maybe_autotrain`: hook appends,
+    separate drain worker consumes.
+
+    ONE LINE = ONE WHOLE EPISODE, and it can be LARGE (~33 KB for a 50-hop
+    repeat-plan — see QUEUE_PATH). This queue is the SOLE path to
+    persistence, so a torn line is a silently lost episode. The append
+    therefore goes through `_locked_append`: a cross-process file lock plus
+    a single os.write() syscall. Plain buffered `open("a").write()` is NOT
+    safe here — brain-core is two processes, and the lines are far past any
+    atomic-append size guarantee.
 
     True on success; False on flag-off, empty `executed`, or any failure
     (bad path, disk full, ...). Never raises — the executor calls this in a
@@ -410,11 +514,13 @@ def enqueue_plan(
             plan, executed, trace_id=trace_id, task_class_id=task_class_id,
         )
         line = json.dumps(episode, ensure_ascii=False, default=str)
+        data = (line + "\n").encode("utf-8")
         path = Path(queue_path) if queue_path is not None else QUEUE_PATH
+        # The threading.Lock only serializes THIS process's threads (and the
+        # mkdir race). Cross-process safety is _locked_append's file lock.
         with _ENQUEUE_LOCK:
             path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as f:
-                f.write(line + "\n")
+            _locked_append(path, data)
         return True
     except Exception:
         logger.warning(

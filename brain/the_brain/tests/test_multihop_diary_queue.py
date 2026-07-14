@@ -5,8 +5,17 @@ persistiert. Also schreibt brain-core die Episode als EINE Zeile in eine
 geteilte Queue, die brain-loops drainiert.
 """
 import json
+import os
+import sys
+from pathlib import Path
 
-from core.multihop_kotlin_adapter import build_episode, enqueue_plan
+# Muss VOR dem core-Import stehen: der cross-process-Test unten startet
+# via multiprocessing "spawn" (Default auf Windows) Kindprozesse, die
+# dieses Modul eigenstaendig re-importieren — ohne pytests rootdir-
+# sys.path-Injection. Ohne diesen Bootstrap scheitert dort `import core`.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from core.multihop_kotlin_adapter import build_episode, enqueue_plan  # noqa: E402
 
 
 class _Plan:
@@ -21,6 +30,40 @@ EXECUTED = {
     "s2": {"ok": True, "contract_pass": None, "reward": 0.0,
            "capability": "idea_add", "target": "supabase:idea.create"},
 }
+
+
+# --- cross-process fixtures (module-level: muessen spawn-picklebar sein) ---
+
+def _big_executed(hops: int = 50) -> dict:
+    """Ein REALER 50-Hop-Plan (MULTIHOP_REPEAT_MAX=50 ist ein ausgelieferter
+    Code-Pfad). Die daraus gebaute JSON-Zeile ist ~33 KB — weit ueber
+    PIPE_BUF (4096), d.h. selbst ein einzelner os.write() ist auf keinem
+    Dateisystem verlaesslich atomar. Groesse allein traegt die Sicherheit
+    also NICHT; der cross-process File-Lock muss es tun."""
+    return {
+        f"s{i}": {
+            "ok": True, "contract_pass": True, "reward": 1.0,
+            "capability": f"capability_number_{i}",
+            "target": f"supabase:some.long.target.name.number.{i}",
+        }
+        for i in range(hops)
+    }
+
+
+class _MPPlan:
+    def __init__(self, plan_id: str) -> None:
+        self.plan_id = plan_id
+        self.intent = "cross process queue test"
+        self.trace_id = "tr_mp"
+
+
+def _mp_worker(queue_path_str: str, k: int) -> None:
+    """Laeuft in einem EIGENEN Prozess (kein geteilter threading.Lock!)."""
+    from core.multihop_kotlin_adapter import enqueue_plan as _enq
+    executed = _big_executed()
+    q = Path(queue_path_str)
+    for i in range(20):
+        _enq(_MPPlan(f"mp_{k}_{i}"), executed, queue_path=q)
 
 
 class TestBuildEpisode:
@@ -87,7 +130,16 @@ class TestEnqueuePlan:
         assert enqueue_plan(_Plan(), EXECUTED, queue_path=blocker / "sub" / "q.jsonl") is False
 
     def test_concurrent_appends_do_not_interleave(self, tmp_path):
-        """8 Threads, 25 Plaene each -> 200 intakte JSON-Zeilen, keine zerrissene."""
+        """8 Threads, 25 Plaene each -> 200 intakte JSON-Zeilen, keine zerrissene.
+
+        GRENZE DIESES TESTS (ehrlich): er beweist nur INTRA-Prozess-/Thread-
+        Sicherheit, und das quasi per Konstruktion — alle 8 Threads teilen
+        sich denselben modul-globalen threading.Lock, der sie serialisiert.
+        Die ECHTE Gefahr in Produktion ist eine andere: brain-core laeuft mit
+        ZWEI uvicorn-Worker-PROZESSEN, die dieselbe Datei anhaengen. Ein
+        threading.Lock reicht dort per Definition nicht. Diese Luecke deckt
+        test_concurrent_process_appends_are_not_torn ab.
+        """
         import threading
         q = tmp_path / "diary.jsonl"
         barrier = threading.Barrier(8)
@@ -108,3 +160,43 @@ class TestEnqueuePlan:
         assert len(lines) == 200
         ids = {json.loads(l)["plan_id"] for l in lines}
         assert len(ids) == 200
+
+    def test_concurrent_process_appends_are_not_torn(self, tmp_path):
+        """4 ECHTE Prozesse x 20 grosse Episoden (~33 KB/Zeile) -> 80 intakte
+        JSON-Zeilen. Das ist der Fall, der in Produktion wirklich auftritt
+        (brain-core = 2 uvicorn-Worker-Prozesse auf DERSELBEN Queue-Datei):
+        kein geteilter threading.Lock, Zeilen weit ueber PIPE_BUF. Nur der
+        cross-process File-Lock (flock/msvcrt) haelt das zusammen — eine
+        zerrissene Zeile waere eine still verlorene Episode, denn diese
+        Queue ist der EINZIGE Pfad zur Persistenz."""
+        import multiprocessing as mp
+
+        q = tmp_path / "diary.jsonl"
+        ctx = mp.get_context("spawn")  # Windows-Default, explizit fuer POSIX
+        procs = [ctx.Process(target=_mp_worker, args=(str(q), k)) for k in range(4)]
+        for p in procs:
+            p.start()
+        for p in procs:
+            p.join(timeout=120)
+        assert all(p.exitcode == 0 for p in procs), \
+            f"worker exitcodes: {[p.exitcode for p in procs]}"
+
+        raw = q.read_text(encoding="utf-8")
+        lines = raw.strip().split("\n")
+        assert len(lines) == 80, f"erwartet 80 Zeilen, bekommen {len(lines)}"
+
+        # Jede Zeile muss fuer sich allein parsen — genau das, was der Drain tut.
+        ids = set()
+        for n, line in enumerate(lines):
+            try:
+                ep = json.loads(line)
+            except json.JSONDecodeError as e:
+                raise AssertionError(
+                    f"ZERRISSENE Zeile {n} ({len(line)} bytes): {e}"
+                ) from e
+            assert len(ep["events"]) == 50
+            ids.add(ep["plan_id"])
+        assert len(ids) == 80
+
+        # Beweis, dass die Zeilen wirklich gross sind (Groesse != Sicherheit).
+        assert max(len(l.encode("utf-8")) for l in lines) > 4096
