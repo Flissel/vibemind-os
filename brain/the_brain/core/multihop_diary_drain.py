@@ -126,7 +126,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
-from core.multihop_kotlin_adapter import QUEUE_PATH as _DEFAULT_QUEUE_PATH
+from core.multihop_kotlin_adapter import resolve_queue_path
 
 logger = logging.getLogger(__name__)
 
@@ -348,7 +348,13 @@ def drain_once(
     file). Never raises; see module docstring rules 1-6.
     """
     try:
-        q_path = Path(queue_path) if queue_path is not None else _DEFAULT_QUEUE_PATH
+        # CALL-time resolution, exactly like the write side (enqueue_plan).
+        # Both halves MUST land on the same file; if the drain froze its path
+        # at import time while the appender read the env var (or vice versa),
+        # a MULTIHOP_DIARY_QUEUE set on only one of brain-core/brain-loops
+        # would leave the drain watching a file nobody writes — silently, and
+        # with no test able to catch it.
+        q_path = resolve_queue_path(queue_path)
         s_path = Path(state_path) if state_path is not None else _default_state_path(q_path)
 
         if not q_path.exists():

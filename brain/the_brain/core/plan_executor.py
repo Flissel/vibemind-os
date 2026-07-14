@@ -49,6 +49,10 @@ logger = logging.getLogger(__name__)
 _TEMPLATE_RE = re.compile(r"\{\{\s*state\.([a-zA-Z_][\w.\[\]]*?)\s*\}\}")
 _MAX_REPLANS = int(os.environ.get("PLAN_MAX_REPLANS", "1"))
 _MAX_PARALLEL = int(os.environ.get("PLAN_MAX_PARALLEL", "4"))
+# A failing diary enqueue means a permanently lost episode, so it must be
+# loud — but a queue that is broken is broken for EVERY plan, so logging each
+# one would be a log bomb. First failure + every Nth after it.
+_DIARY_FAIL_LOG_EVERY = 50
 
 
 # ── Plan recording (Phase 6.12) ──────────────────────────────────────
@@ -260,6 +264,12 @@ class PlanExecutor:
             "rejected_busy": 0,
             "kg_settles": 0,
             "episodic_writes": 0,
+            # Phase 1 diary queue. The queue is the ONLY path an executed plan
+            # has to persistent memory, so a dropped enqueue is a permanently
+            # lost episode. enqueue_plan never raises and only logs, which
+            # makes "1 lost" and "10.000 lost" look identical — count them.
+            "diary_enqueued": 0,
+            "diary_enqueue_failures": 0,
         }
 
     # ── Pub/Sub for SSE (Phase 6.11) ───────────────────────────────
@@ -1083,7 +1093,9 @@ class PlanExecutor:
             # Schreiber ins dual_graph, das persistiert wird.
             # enqueue_plan wirft nie.
             try:
-                from core.multihop_kotlin_adapter import enqueue_plan
+                from core.multihop_kotlin_adapter import (
+                    enqueue_plan, ingest_enabled,
+                )
                 if executed:
                     _tc = ""
                     if os.environ.get("TASK_CLASS_CLUSTERING", "0") in ("1", "true", "True"):
@@ -1092,11 +1104,33 @@ class PlanExecutor:
                             _tc = TaskClassClusterer().cluster_id(plan.intent or "")
                         except Exception:
                             _tc = ""
-                    enqueue_plan(
+                    _queued = enqueue_plan(
                         plan, executed,
                         trace_id=getattr(plan, "trace_id", "") or "",
                         task_class_id=_tc,
                     )
+                    # A False here is only a FAILURE if we actually expected a
+                    # write: `executed` is non-empty (checked above) and the
+                    # ingest flag is on. A False from a flag-off ingest is a
+                    # deliberate no-op, not a lost episode — do not count it.
+                    if _queued:
+                        with self._lock:
+                            self.stats["diary_enqueued"] += 1
+                    elif ingest_enabled():
+                        with self._lock:
+                            self.stats["diary_enqueue_failures"] += 1
+                            _fails = self.stats["diary_enqueue_failures"]
+                        # Loud on the FIRST failure (a broken queue = every
+                        # future episode is lost, that must not hide in debug
+                        # logs), then only every 50th — a persistent failure
+                        # should be visible, not a log bomb.
+                        if _fails == 1 or _fails % _DIARY_FAIL_LOG_EVERY == 0:
+                            logger.warning(
+                                "[plan-executor] diary enqueue FAILED for plan "
+                                "%s — the episode is lost (the queue is the only "
+                                "path to persistent memory). Running failures: %d",
+                                plan.plan_id, _fails,
+                            )
             except Exception as e:
                 logger.debug(f"[plan-executor] diary enqueue skipped: {e}")
 

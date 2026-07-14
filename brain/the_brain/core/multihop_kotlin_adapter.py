@@ -11,6 +11,13 @@ domain-agnostic episodic memory (`core/kotlin_graph.py`, coordinated by
 plan's hops (in completion order) into one `add_event` call per hop via
 `dual_graph.record_event`.
 
+NOTE — `record_plan` is NOT the live production write path any more. The
+PlanExecutor enqueues (`enqueue_plan`), and the drain
+(`core/multihop_diary_drain.py`) replays the queued events into the graph
+directly. `record_plan` is kept for the tests and for non-swarm callers that
+genuinely want a direct, in-process write into a dual_graph they own — do not
+mistake it for how episodes reach memory in production.
+
 Design notes
 ------------
 - **State is a small, size-bounded fingerprint, not raw results.** Each
@@ -97,6 +104,14 @@ _ENQUEUE_LOCK = threading.Lock()
 # NOT hold here; not even a single os.write() is reliably atomic at that size
 # on every filesystem. That is precisely why `_locked_append` takes a real
 # cross-process file lock instead of relying on write size.
+#
+# NOTE — this is only the DEFAULT. Prefer `resolve_queue_path()`, which reads
+# MULTIHOP_DIARY_QUEUE at CALL time. If the queue IS pinned via that env var,
+# it MUST be set IDENTICALLY on brain-core (which appends) AND brain-loops
+# (which drains): the two halves talk to each other through this one file, and
+# nothing else detects a mismatch. Pin it on one service only — or fat-finger
+# one of the two paths — and the drain simply never sees an episode, silently
+# and forever.
 QUEUE_PATH = Path(
     os.environ.get(
         "MULTIHOP_DIARY_QUEUE",
@@ -104,6 +119,24 @@ QUEUE_PATH = Path(
             / "multihop_diary_queue.jsonl"),
     )
 )
+
+
+def resolve_queue_path(queue_path: Optional[Any] = None) -> Path:
+    """Queue path, resolved at CALL time.
+
+    The env var must therefore be set identically on every process that
+    touches the queue (brain-core appends, brain-loops drains). Reading it at
+    import time — as the QUEUE_PATH constant above does, kept for back-compat
+    — would freeze whatever the environment happened to be when the module
+    was first imported, which makes a brain-core/brain-loops path MISMATCH
+    both invisible at runtime and untestable (a test's monkeypatch.setenv
+    could not affect an already-imported module without an importlib.reload
+    dance). Resolving here means the env var actually works.
+    """
+    if queue_path is not None:
+        return Path(queue_path)
+    env = os.environ.get("MULTIHOP_DIARY_QUEUE")
+    return Path(env) if env else QUEUE_PATH
 
 _DISABLE_VALUES = {"0", "false", "False"}
 
@@ -570,7 +603,11 @@ def enqueue_plan(
         )
         line = json.dumps(episode, ensure_ascii=False, default=str)
         data = (line + "\n").encode("utf-8")
-        path = Path(queue_path) if queue_path is not None else QUEUE_PATH
+        # CALL-time resolution (not the import-time QUEUE_PATH constant): the
+        # env var is what pins this file to the shared volume in the swarm, and
+        # brain-core/brain-loops must land on the SAME file. See
+        # resolve_queue_path.
+        path = resolve_queue_path(queue_path)
         # The threading.Lock only serializes THIS process's threads (and the
         # mkdir race). Cross-process safety is _locked_append's file lock.
         with _ENQUEUE_LOCK:

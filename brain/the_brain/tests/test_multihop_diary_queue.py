@@ -215,3 +215,70 @@ class TestEnqueuePlan:
 
         # Beweis, dass die Zeilen wirklich gross sind (Groesse != Sicherheit).
         assert max(len(l.encode("utf-8")) for l in lines) > 4096
+
+
+class TestQueuePathResolvedAtCallTime:
+    """MULTIHOP_DIARY_QUEUE muss zur AUFRUFZEIT gelesen werden, nicht beim
+    Modul-Import.
+
+    Warum das zaehlt: der Stack pinnt die Env-Variable auf brain-core (haengt
+    an) UND brain-loops (drainiert). Wuerde der Pfad beim Import einfrieren,
+    koennte ein spaeterer Edit, der die Variable nur auf EINEM der beiden
+    Services setzt (das Schwester-`ROUTING_AUTOTRAIN_QUEUE` ist genau so von
+    Hand in zwei Services gepinnt), die beiden Haelften auf VERSCHIEDENE
+    Dateien zeigen lassen — der Drain saehe nie eine Episode, still und
+    dauerhaft. Import-Zeit-Aufloesung macht genau diesen Fehler unsichtbar
+    UND untestbar (kein monkeypatch.setenv koennte ihn je nachstellen).
+    """
+
+    def test_enqueue_uses_env_var_set_after_import(self, tmp_path, monkeypatch):
+        from core.multihop_kotlin_adapter import enqueue_plan as _eq
+
+        q = tmp_path / "from_env.jsonl"
+        monkeypatch.setenv("MULTIHOP_DIARY_QUEUE", str(q))
+
+        # KEIN importlib.reload: genau das ist der Punkt.
+        assert _eq(_Plan(), EXECUTED) is True
+
+        lines = q.read_text(encoding="utf-8").strip().split("\n")
+        assert len(lines) == 1
+        assert json.loads(lines[0])["plan_id"] == "plan_q1"
+
+    def test_explicit_queue_path_still_wins_over_env(self, tmp_path, monkeypatch):
+        from core.multihop_kotlin_adapter import enqueue_plan as _eq
+
+        env_q = tmp_path / "from_env.jsonl"
+        explicit_q = tmp_path / "explicit.jsonl"
+        monkeypatch.setenv("MULTIHOP_DIARY_QUEUE", str(env_q))
+
+        assert _eq(_Plan(), EXECUTED, queue_path=explicit_q) is True
+
+        assert explicit_q.exists()
+        assert not env_q.exists()
+
+    def test_resolve_falls_back_to_default_without_env(self, monkeypatch):
+        from core.multihop_kotlin_adapter import QUEUE_PATH, resolve_queue_path
+
+        monkeypatch.delenv("MULTIHOP_DIARY_QUEUE", raising=False)
+        assert resolve_queue_path() == QUEUE_PATH
+
+    def test_drain_resolves_the_same_env_path_at_call_time(self, tmp_path, monkeypatch):
+        """Die andere Haelfte: der Drain muss dieselbe Env zur Aufrufzeit
+        aufloesen — sonst koennen Schreiber und Leser trotz identischer Env
+        auseinanderlaufen."""
+        from core.dual_graph import DualGraph
+        from core.multihop_diary_drain import drain_once
+        from core.multihop_kotlin_adapter import enqueue_plan as _eq
+
+        q = tmp_path / "shared.jsonl"
+        monkeypatch.setenv("MULTIHOP_DIARY_QUEUE", str(q))
+
+        assert _eq(_Plan(), EXECUTED) is True
+
+        dg = DualGraph(save_dir=str(tmp_path / "mb"), auto_mine_interval=10_000)
+        # weder queue_path noch state_path: beide muessen aus der Env kommen
+        out = drain_once(dg)
+
+        assert out["episodes"] == 1
+        assert out["events"] == 2
+        assert dg.kotlingraph.events[-1].metadata["plan_id"] == "plan_q1"
