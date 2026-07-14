@@ -109,6 +109,23 @@ _DISABLE_VALUES = {"0", "false", "False"}
 
 # Logged at most once: we could not take a cross-process lock on this platform.
 _lock_warning_emitted = False
+# Logged at most once WITH a traceback: the lock CALL failed. That failure is
+# persistent (e.g. flock unsupported on a network/overlay FS), not transient,
+# so an unguarded warning would emit a stack trace on every single enqueue.
+_lock_failure_warning_emitted = False
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    """os.write() may write FEWER bytes than requested — notably on ENOSPC it
+    returns a SHORT COUNT instead of raising. A fragment left in the file would
+    be permanently corrupt: the next writer appends straight after it, and the
+    drain (which waits for a `\\n`) would glue the fragment onto the following
+    episode into one unparseable line — losing TWO episodes, not one. So loop
+    until everything is out. Looping is safe precisely because atomicity here
+    is carried by the FILE LOCK, not by the number of syscalls."""
+    n = 0
+    while n < len(data):
+        n += os.write(fd, data[n:])
 
 
 def _locked_append(path: Path, data: bytes) -> None:
@@ -116,19 +133,27 @@ def _locked_append(path: Path, data: bytes) -> None:
 
     Two defenses, both required (belt and braces):
 
-    (a) A single `os.write()` syscall on a raw O_APPEND fd, instead of
-        Python's buffered TextIOWrapper. A buffered `f.write()` may split
-        into several write() syscalls at arbitrary boundaries — another
-        process can land its bytes in the gap, tearing both lines.
+    (a) A raw O_APPEND fd written via `_write_all`, instead of Python's
+        buffered TextIOWrapper. A buffered `f.write()` may split into
+        several write() syscalls at arbitrary boundaries — another process
+        can land its bytes in the gap, tearing both lines.
 
     (b) A real OS-level exclusive file lock around that write (flock on
         POSIX / msvcrt.locking on Windows), so the append is serialized
         across processes REGARDLESS of line size. (a) alone is insufficient
         because our lines run ~33 KB, far past any atomic-append guarantee.
 
-    If neither locking primitive is importable, fall back to the bare
-    single os.write and warn ONCE — degraded, but still the best available.
-    Raises only on genuine I/O failure; the caller turns that into False.
+    The two platform paths are NOT equally strong. POSIX `flock` blocks
+    indefinitely until the holder releases — that is the strong path, and it
+    is what production (Linux container) runs. Windows `msvcrt.locking(LK_LOCK)`
+    only blocks ~10s (10 retries at 1s) and then RAISES, which drops us into
+    the degraded unlocked write below — so under heavy contention on the
+    Windows dev host a torn line remains possible. Do not read the Windows
+    path as a production guarantee; it is a dev-host convenience.
+
+    If neither locking primitive is importable, fall back to the unlocked
+    write and warn ONCE — degraded, but still the best available. Raises only
+    on genuine I/O failure; the caller turns that into False.
     """
     global _lock_warning_emitted
 
@@ -173,22 +198,36 @@ def _locked_append(path: Path, data: bytes) -> None:
             def _release(fd: int) -> None:
                 return None
 
+    global _lock_failure_warning_emitted
+
     fd = os.open(str(path), os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
     try:
         try:
             _acquire(fd)
         except OSError:
-            # Lock unavailable (e.g. flock on some network filesystems). The
-            # single os.write below is still our best effort — do not lose the
-            # episode over a failed lock.
-            logger.warning(
-                "diary queue: could not take file lock on %s — appending "
-                "unlocked", path, exc_info=True,
-            )
-            os.write(fd, data)
+            # Lock unavailable (flock unsupported on a network/overlay FS, or
+            # Windows LK_LOCK timed out). The write below is still our best
+            # effort — do not lose the episode over a failed lock. This
+            # condition is typically PERSISTENT, so only the first occurrence
+            # carries a traceback; after that we stay quiet-ish rather than
+            # dumping a stack trace on every enqueue.
+            if not _lock_failure_warning_emitted:
+                _lock_failure_warning_emitted = True
+                logger.warning(
+                    "diary queue: could not take file lock on %s — appending "
+                    "unlocked; cross-process tears are possible from here on "
+                    "(further occurrences logged without traceback)",
+                    path, exc_info=True,
+                )
+            else:
+                logger.warning(
+                    "diary queue: appending unlocked to %s (lock unavailable)",
+                    path,
+                )
+            _write_all(fd, data)
             return
         try:
-            os.write(fd, data)
+            _write_all(fd, data)
         finally:
             try:
                 _release(fd)
@@ -497,7 +536,7 @@ def enqueue_plan(
     repeat-plan — see QUEUE_PATH). This queue is the SOLE path to
     persistence, so a torn line is a silently lost episode. The append
     therefore goes through `_locked_append`: a cross-process file lock plus
-    a single os.write() syscall. Plain buffered `open("a").write()` is NOT
+    a short-write-safe raw write. Plain buffered `open("a").write()` is NOT
     safe here — brain-core is two processes, and the lines are far past any
     atomic-append size guarantee.
 
