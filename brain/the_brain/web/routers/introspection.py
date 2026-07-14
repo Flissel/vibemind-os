@@ -4305,10 +4305,92 @@ async def brain_ui(request: Request) -> HTMLResponse:
     )
 
 
+def _count_complete_lines(path) -> int:
+    """Count COMPLETE (newline-terminated) lines in `path` without loading
+    the whole file into memory — streams in fixed-size chunks and counts
+    b'\\n' occurrences. A trailing partial line (no terminating '\\n', i.e.
+    an in-flight write) is deliberately NOT counted: we tally newlines seen,
+    not "lines" in the naive splitlines() sense, so a dangling fragment
+    after the last '\\n' never contributes."""
+    count = 0
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            count += chunk.count(b"\n")
+    return count
+
+
+def _diary_queue_block() -> Dict[str, Any]:
+    """Worker-independent queue/drain snapshot — reads the shared-volume
+    FILES (queue + drain state), never in-memory state, so it reflects
+    reality regardless of which brain-core worker process answers this
+    request. Degrades to zeros on any failure; never raises."""
+    try:
+        from core.multihop_kotlin_adapter import resolve_queue_path
+        from core.multihop_diary_drain import _default_state_path
+
+        q_path = resolve_queue_path()
+        enqueued = _count_complete_lines(q_path) if q_path.exists() else 0
+
+        drained = 0
+        last_plan_id = None
+        state_path = _default_state_path(q_path)
+        if state_path.exists():
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                if isinstance(state, dict):
+                    drained = int(state.get("episodes_drained", 0) or 0)
+                    last_plan_id = state.get("last_plan_id") or None
+            except Exception:
+                pass
+
+        return {
+            "episodes_enqueued": enqueued,
+            "episodes_drained": drained,
+            "pending": max(0, enqueued - drained),
+            "last_plan_id": last_plan_id,
+            "path": str(q_path),
+        }
+    except Exception:
+        return {
+            "episodes_enqueued": 0,
+            "episodes_drained": 0,
+            "pending": 0,
+            "last_plan_id": None,
+            "path": "",
+        }
+
+
+def _diary_enqueue_block(request: Request) -> Dict[str, Any]:
+    """plan_executor's diary_enqueued/diary_enqueue_failures counters — a
+    failed enqueue is a silently dropped episode, so this is the last place
+    to notice that data loss. Degrades to zeros on any failure."""
+    try:
+        pe = getattr(request.app.state, "plan_executor", None)
+        if pe is None:
+            return {"ok": 0, "failures": 0}
+        stats = pe.stats_dict() or {}
+        return {
+            "ok": int(stats.get("diary_enqueued", 0) or 0),
+            "failures": int(stats.get("diary_enqueue_failures", 0) or 0),
+        }
+    except Exception:
+        return {"ok": 0, "failures": 0}
+
+
 @router.get("/api/diary/stats")
 async def diary_stats(request: Request):
     """Phase 1 — Read-only Blick ins episodische Tagebuch (KotlinGraph).
-    Grundlage für den Live-Beweis: schreibt der Multihop-Ingest real?"""
+    Grundlage für den Live-Beweis: schreibt der Multihop-Ingest real?
+
+    brain-core no longer writes episodes into its own in-memory dual_graph
+    (2 uvicorn workers, never persists) — it appends to a shared queue that
+    a separate drain process replays. So `multihop_events` etc. below stay
+    honestly empty on brain-core; the `queue`/`enqueue` blocks are the
+    worker-independent, file-based signal that actually shows episodes
+    flowing."""
     dg = getattr(request.app.state, "dual_graph", None)
     if dg is None:
         return JSONResponse({"error": "dual_graph not loaded"}, status_code=503)
@@ -4331,6 +4413,8 @@ async def diary_stats(request: Request):
                 "plan_id": (last.metadata or {}).get("plan_id"),
                 "episode_success": (last.metadata or {}).get("episode_success"),
             } if last else None),
+            "queue": _diary_queue_block(),
+            "enqueue": _diary_enqueue_block(request),
         })
     except Exception as e:  # noqa: BLE001 — Introspection darf nie crashen
         return JSONResponse({"error": str(e)[:200]}, status_code=500)
