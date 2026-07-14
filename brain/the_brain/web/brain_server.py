@@ -113,6 +113,7 @@ def _init_brain_state(state: Any, testing: bool = False) -> None:
     state.dual_graph = None
     state.response_agent = None
     state.memory_consolidator = None
+    state.diary_drain = None
     state.socialization_metrics = None
 
     state._rowboat_data = None
@@ -1107,6 +1108,21 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
     except Exception as e:
         print(f"  [WARN] MemoryConsolidator failed: {e}")
 
+    # --- Tagebuch-Drain (Queue -> dual_graph). NUR im Loop-Prozess:
+    # brain-core (BRAIN_BACKGROUND_LOOPS=0) haengt nur an die Queue an; hier
+    # (brain-loops / nativ) wird sie drainiert und danach persistiert.
+    state.diary_drain = None
+    try:
+        from core.multihop_diary_drain import DiaryDrain
+        if _loops_enabled() and getattr(state, "dual_graph", None) is not None:
+            state.diary_drain = DiaryDrain(state.dual_graph)
+            state.diary_drain.start()
+            print("  [OK] DiaryDrain gestartet (multihop queue -> dual_graph)")
+        else:
+            print("  [SKIP] DiaryDrain (BRAIN_BACKGROUND_LOOPS=0 -> nur enqueue)")
+    except Exception as e:
+        print(f"  [WARN] DiaryDrain unavailable: {e}")
+
     # --- SocializationMetrics (6 learning metrics from Moltbook paper) ---
     try:
         from core.socialization_metrics import SocializationMetrics
@@ -1550,6 +1566,11 @@ async def _lifespan(app: FastAPI):
     if consolidator:
         consolidator.stop()
         print("  [OK] Memory persisted to disk on shutdown")
+
+    diary_drain = getattr(app.state, 'diary_drain', None)
+    if diary_drain:
+        diary_drain.stop()
+        print("  [OK] DiaryDrain stopped on shutdown")
 
     # Persist EventRoutingHead centroids so learning survives restart
     event_head = getattr(app.state, 'event_routing_head', None)
