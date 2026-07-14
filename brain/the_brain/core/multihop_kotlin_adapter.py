@@ -107,6 +107,11 @@ QUEUE_PATH = Path(
 
 _DISABLE_VALUES = {"0", "false", "False"}
 
+# Windows: open the queue fd in BINARY mode so the CRT does not translate our
+# '\n' into '\r\n' (which would corrupt the drain's byte-offset math — see
+# _locked_append). The flag does not exist on POSIX, where 0 makes it a no-op.
+_O_BINARY = getattr(os, "O_BINARY", 0)
+
 # Logged at most once: we could not take a cross-process lock on this platform.
 _lock_warning_emitted = False
 # Logged at most once WITH a traceback: the lock CALL failed. That failure is
@@ -200,7 +205,18 @@ def _locked_append(path: Path, data: bytes) -> None:
 
     global _lock_failure_warning_emitted
 
-    fd = os.open(str(path), os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
+    # O_BINARY is REQUIRED on Windows: without it the CRT opens the fd in text
+    # mode and translates every '\n' we write into '\r\n'. The drain
+    # (core/multihop_diary_drain.py) resumes from a BYTE offset and splits on
+    # b'\n', so a silently-injected extra byte per line makes every offset it
+    # computes wrong — episodes get mis-sliced or lost. Production is Linux
+    # (where the flag does not exist and getattr yields 0, i.e. a no-op), so
+    # this is a DEV-HOST correctness fix, not a production one.
+    fd = os.open(
+        str(path),
+        os.O_APPEND | os.O_CREAT | os.O_WRONLY | _O_BINARY,
+        0o644,
+    )
     try:
         try:
             _acquire(fd)

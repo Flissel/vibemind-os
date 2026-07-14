@@ -108,6 +108,21 @@ class TestEnqueuePlan:
         assert json.loads(lines[0])["plan_id"] == "plan_q1"
         assert len(json.loads(lines[0])["events"]) == 2
 
+    def test_no_crlf_translation_in_the_queue_bytes(self, tmp_path):
+        """Der Drain rechnet in BYTE-Offsets. Ohne O_BINARY uebersetzt die
+        Windows-CRT jedes \\n zu \\r\\n -> jeder Offset ist um 1 Byte pro Zeile
+        falsch. Die Queue muss BYTE-genau LF-terminiert sein."""
+        q = tmp_path / "diary.jsonl"
+        enqueue_plan(_Plan(), EXECUTED, queue_path=q)
+        enqueue_plan(_Plan(), EXECUTED, queue_path=q)
+
+        data = q.read_bytes()
+        assert b"\r\n" not in data
+        assert b"\r" not in data
+        assert data.endswith(b"}\n")
+        # Byte-Laenge == Summe der Zeilen + genau 1 LF pro Zeile
+        assert len(data) == sum(len(l) + 1 for l in data.split(b"\n")[:-1])
+
     def test_creates_parent_dir(self, tmp_path):
         q = tmp_path / "nested" / "deep" / "diary.jsonl"
         assert enqueue_plan(_Plan(), EXECUTED, queue_path=q) is True

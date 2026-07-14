@@ -47,9 +47,14 @@ observing a write in progress.
    complete, on the next cycle once the writer finishes its `\n`.
 2. **Idempotent.** The offset is a monotonically advancing watermark; a
    second drain with nothing new past it does no work and writes nothing.
-3. **Rotation.** If the queue file's current size is SMALLER than the
-   stored offset, the file was truncated/rotated out from under us -> reset
-   offset to 0 and start over.
+3. **Rotation.** Size alone is NOT a rotation signal: a queue that is
+   truncated and then refilled can coincidentally reach the same (or a
+   larger) size than the offset we stored, and we would then happily resume
+   mid-file and skip real episodes. So we also fingerprint the file's HEAD
+   (`head_sha`: sha256 of its first `min(256, size)` bytes) into the state
+   file. We reset the offset to 0 if the size is smaller than the stored
+   offset OR the current head_sha differs from the stored one — the head
+   bytes change iff the file was replaced/rotated, at any size.
 4. **Corrupt line.** A line that fails `json.loads` is logged and skipped
    (the offset still advances past it -- a permanently malformed line must
    not stall the queue forever); every other line keeps draining.
@@ -82,6 +87,7 @@ needs `_WRITE_LOCK` for concurrent in-process writers.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import threading
@@ -96,9 +102,41 @@ PathLike = Union[str, Path]
 
 _EMPTY_RESULT: Dict[str, int] = {"episodes": 0, "events": 0, "offset": 0}
 
+# How many leading bytes of the queue identify "this file, not a new one".
+_HEAD_BYTES = 256
+
 
 def _default_state_path(queue_path: Path) -> Path:
     return Path(str(queue_path) + ".state.json")
+
+
+def _head_sha(queue_path: Path, offset: int) -> str:
+    """Fingerprint of the queue's first `min(_HEAD_BYTES, offset)` bytes.
+
+    This is the ROTATION signal. Size cannot serve that role: a queue that is
+    truncated and refilled may land at a coincidentally identical size, and
+    resuming from the stale offset would then silently skip real episodes.
+    The head bytes, by contrast, change whenever the file is replaced.
+
+    We deliberately hash a prefix of the bytes we have ALREADY CONSUMED
+    (bounded by `offset`), not of the file's current size. Under an
+    append-only queue the consumed prefix is IMMUTABLE, so the fingerprint is
+    stable across cycles by construction. Hashing `min(_HEAD_BYTES, size)`
+    instead would be unstable whenever the file is still shorter than
+    _HEAD_BYTES: the next append would change those head bytes, we would read
+    that as a rotation, reset to 0 and REPLAY already-drained episodes twice.
+
+    offset<=0 -> "" (nothing consumed yet, so there is nothing to protect and
+    no reset can be warranted). Unreadable -> "" (unknown; never forces a
+    spurious reset)."""
+    n = min(_HEAD_BYTES, int(offset))
+    if n <= 0:
+        return ""
+    try:
+        with queue_path.open("rb") as f:
+            return hashlib.sha256(f.read(n)).hexdigest()
+    except Exception:
+        return ""
 
 
 def _load_state(state_path: Path) -> Dict[str, Any]:
@@ -110,6 +148,7 @@ def _load_state(state_path: Path) -> Dict[str, Any]:
         "events_written": 0,
         "last_plan_id": "",
         "last_ts": 0.0,
+        "head_sha": "",
     }
     try:
         if not state_path.exists():
@@ -180,8 +219,17 @@ def drain_once(
         offset = int(prev.get("offset", 0) or 0)
 
         file_size = q_path.stat().st_size
-        if file_size < offset:
-            # Rule 3: rotated/truncated out from under us.
+        prev_head = prev.get("head_sha", "") or ""
+        # Fingerprint the SAME prefix the stored head_sha covered, i.e. one
+        # bounded by the offset we are about to resume from.
+        current_head = _head_sha(q_path, offset)
+
+        # Rule 3: rotated/truncated out from under us. Two independent
+        # signals, because size alone is insufficient — a truncate-and-refill
+        # can coincidentally reach the same size, and we would resume from a
+        # stale offset in the middle of a BRAND NEW file, silently skipping
+        # every episode before it. The head fingerprint catches exactly that.
+        if file_size < offset or (prev_head and current_head != prev_head):
             offset = 0
 
         with q_path.open("rb") as f:
@@ -255,6 +303,9 @@ def drain_once(
             "events_written": int(prev.get("events_written", 0) or 0) + events_this,
             "last_plan_id": last_plan_id,
             "last_ts": last_ts,
+            # Fingerprint the prefix we have now consumed — that is exactly
+            # the region the next cycle will re-check for rotation.
+            "head_sha": _head_sha(q_path, cumulative_offset),
         }
         _write_state(s_path, new_state)
 
