@@ -142,6 +142,45 @@ def test_corrupt_line_is_skipped_not_fatal(tmp_path, dg):
     assert out["episodes"] == 1
 
 
+def test_skipped_lines_are_counted_in_the_state_file(tmp_path, dg):
+    """A skipped line is CONSUMED but never `drained` — without its own
+    counter the books do not balance and `pending` (derived elsewhere) can
+    never reach 0. Both skip flavours (corrupt JSON, structurally unusable)
+    must land in `lines_skipped`."""
+    q = tmp_path / "d.jsonl"
+    st = tmp_path / "d.state.json"
+    q.write_text('{"broken":\n', encoding="utf-8")           # corrupt JSON
+    with q.open("a", encoding="utf-8") as f:                  # valid JSON, no events
+        f.write(json.dumps({"v": 1, "plan_id": "p_bad", "events": []}) + "\n")
+    enqueue_plan(_Plan("plan_a"), EXEC_OK, queue_path=q)
+
+    out = drain_once(dg, queue_path=q, state_path=st)
+
+    assert out["episodes"] == 1
+    state = json.loads(st.read_text(encoding="utf-8"))
+    assert state["lines_skipped"] == 2
+    assert state["episodes_drained"] == 1
+
+
+def test_rotation_resets_the_cumulative_counters(tmp_path, dg):
+    """After a rotation the old file's totals describe a file that no longer
+    exists — keeping them makes every derived number (pending, skipped) lie."""
+    q = tmp_path / "d.jsonl"
+    st = tmp_path / "d.state.json"
+    enqueue_plan(_Plan("plan_a"), EXEC_OK, queue_path=q)
+    drain_once(dg, queue_path=q, state_path=st)
+    assert json.loads(st.read_text(encoding="utf-8"))["episodes_drained"] == 1
+
+    q.write_text("", encoding="utf-8")   # rotated out from under us
+    enqueue_plan(_Plan("plan_b"), EXEC_OK, queue_path=q)
+    drain_once(dg, queue_path=q, state_path=st)
+
+    state = json.loads(st.read_text(encoding="utf-8"))
+    # 1, not 2: the counter was reset with the file, then re-counted this cycle.
+    assert state["episodes_drained"] == 1
+    assert state["lines_skipped"] == 0
+
+
 def test_missing_queue_is_a_noop(tmp_path, dg):
     out = drain_once(dg, queue_path=tmp_path / "nope.jsonl",
                      state_path=tmp_path / "nope.state.json")

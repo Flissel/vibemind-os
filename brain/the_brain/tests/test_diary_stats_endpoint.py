@@ -163,3 +163,93 @@ def test_enqueue_block_reports_executor_counters(tmp_path, monkeypatch):
     body2 = resp2.json()
     assert body2["enqueue"]["ok"] == 0
     assert body2["enqueue"]["failures"] == 0
+
+
+# --- pending is derived from the drain OFFSET, not from `drained` ----------
+# The drain ADVANCES the offset past corrupt / structurally-unusable /
+# backstop-abandoned lines but never counts them in `episodes_drained`. So
+# `enqueued - drained` permanently overstates the backlog and can never reach
+# 0. The authoritative "how far consumed" marker is the byte offset.
+
+
+def _append_raw(queue_path, text):
+    with open(queue_path, "a", encoding="utf-8") as f:
+        f.write(text)
+
+
+def test_pending_is_zero_when_drain_skipped_a_corrupt_line(tmp_path, monkeypatch):
+    queue_path = tmp_path / "diary_queue.jsonl"
+    monkeypatch.setenv("MULTIHOP_DIARY_QUEUE", str(queue_path))
+
+    assert enqueue_plan(_Plan(), _EXECUTED) is True
+    _append_raw(queue_path, "this is not json at all\n")
+    assert enqueue_plan(_Plan2(), _EXECUTED) is True
+
+    dg = DualGraph(save_dir=str(tmp_path / "graph"), auto_mine_interval=10_000)
+    drain_once(dg, queue_path=queue_path)
+
+    body = _client(dg).get("/api/diary/stats").json()
+    queue = body["queue"]
+
+    assert queue["episodes_enqueued"] == 3
+    assert queue["episodes_drained"] == 2
+    # The corrupt line was CONSUMED (offset advanced past it) — it is not
+    # backlog. Deriving pending from `enqueued - drained` would say 1 forever.
+    assert queue["pending"] == 0
+    assert queue["skipped"] == 1
+    # The books balance.
+    assert (queue["episodes_enqueued"]
+            == queue["episodes_drained"] + queue["skipped"] + queue["pending"])
+
+
+def test_pending_counts_only_the_undrained_tail(tmp_path, monkeypatch):
+    queue_path = tmp_path / "diary_queue.jsonl"
+    monkeypatch.setenv("MULTIHOP_DIARY_QUEUE", str(queue_path))
+
+    for _ in range(3):
+        assert enqueue_plan(_Plan(), _EXECUTED) is True
+
+    dg = DualGraph(save_dir=str(tmp_path / "graph"), auto_mine_interval=10_000)
+    drain_once(dg, queue_path=queue_path)
+
+    for _ in range(2):
+        assert enqueue_plan(_Plan2(), _EXECUTED) is True
+
+    queue = _client(dg).get("/api/diary/stats").json()["queue"]
+    assert queue["episodes_enqueued"] == 5
+    assert queue["pending"] == 2
+
+
+def test_pending_equals_enqueued_when_state_file_missing(tmp_path, monkeypatch):
+    queue_path = tmp_path / "diary_queue.jsonl"
+    monkeypatch.setenv("MULTIHOP_DIARY_QUEUE", str(queue_path))
+
+    assert enqueue_plan(_Plan(), _EXECUTED) is True
+    assert enqueue_plan(_Plan2(), _EXECUTED) is True
+    # No drain has ever run -> no state file -> offset 0 -> everything pending.
+    assert not (tmp_path / "diary_queue.jsonl.state.json").exists()
+
+    dg = DualGraph(save_dir=str(tmp_path / "graph"), auto_mine_interval=10_000)
+    queue = _client(dg).get("/api/diary/stats").json()["queue"]
+    assert queue["episodes_enqueued"] == 2
+    assert queue["pending"] == 2
+    assert queue["skipped"] == 0
+
+
+def test_corrupt_state_file_degrades_to_offset_zero(tmp_path, monkeypatch):
+    queue_path = tmp_path / "diary_queue.jsonl"
+    monkeypatch.setenv("MULTIHOP_DIARY_QUEUE", str(queue_path))
+
+    assert enqueue_plan(_Plan(), _EXECUTED) is True
+    assert enqueue_plan(_Plan2(), _EXECUTED) is True
+    # A truncated/garbage state file must not 500 the endpoint — it degrades
+    # to offset 0, i.e. "we cannot prove anything was drained".
+    _append_raw(tmp_path / "diary_queue.jsonl.state.json", '{"offset": 12')
+
+    dg = DualGraph(save_dir=str(tmp_path / "graph"), auto_mine_interval=10_000)
+    resp = _client(dg).get("/api/diary/stats")
+    assert resp.status_code == 200
+    queue = resp.json()["queue"]
+    assert queue["episodes_enqueued"] == 2
+    assert queue["pending"] == 2
+    assert queue["episodes_drained"] == 0

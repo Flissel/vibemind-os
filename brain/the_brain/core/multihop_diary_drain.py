@@ -281,6 +281,13 @@ def _load_state(state_path: Path) -> Dict[str, Any]:
         "offset": 0,
         "episodes_drained": 0,
         "events_written": 0,
+        # Lines we CONSUMED (offset advanced past them) but never replayed:
+        # corrupt JSON, structurally-unusable episodes, and rule-5-backstop
+        # abandonments. They are not backlog and they are not drained — without
+        # their own counter the books cannot balance, and a reader deriving
+        # "pending = enqueued - drained" would overstate the backlog forever.
+        # A non-zero value here is an ALARM: episodes were thrown away.
+        "lines_skipped": 0,
         "last_plan_id": "",
         "last_ts": 0.0,
         "head_sha": "",
@@ -376,6 +383,16 @@ def drain_once(
         # every episode before it. The head fingerprint catches exactly that.
         if file_size < offset or (prev_head and current_head != prev_head):
             offset = 0
+            # The cumulative counters describe the OLD file, which no longer
+            # exists. Carrying them across a rotation makes every number
+            # derived from them lie: `episodes_drained` would keep climbing
+            # against a queue that restarted at line 0, so a reader comparing
+            # it to the queue's line count would see a phantom surplus (and
+            # `max(0, ...)`-style clamping would HIDE a real backlog). Reset
+            # them with the file they describe.
+            prev["episodes_drained"] = 0
+            prev["events_written"] = 0
+            prev["lines_skipped"] = 0
 
         with q_path.open("rb") as f:
             f.seek(offset)
@@ -402,6 +419,7 @@ def drain_once(
         cumulative_offset = offset
         episodes_this = 0
         events_this = 0
+        skipped_this = 0
         last_plan_id = prev.get("last_plan_id", "")
         last_ts = prev.get("last_ts", 0.0)
         stalled_at = -1          # offset of a rule-5 failure in THIS cycle
@@ -445,6 +463,7 @@ def drain_once(
                         cumulative_offset, q_path, exc_info=True,
                     )
                     cumulative_offset += line_len
+                    skipped_this += 1
                     continue
 
                 # Rule 4 (extended): JSON-valid but structurally unusable.
@@ -459,6 +478,7 @@ def drain_once(
                         cumulative_offset, q_path, problem,
                     )
                     cumulative_offset += line_len
+                    skipped_this += 1
                     continue
 
                 plan_id = episode.get("plan_id") or ""
@@ -489,6 +509,7 @@ def drain_once(
                         plan_id, cumulative_offset, q_path, prev_stall_count,
                     )
                     cumulative_offset += line_len
+                    skipped_this += 1
                     prev_stall_offset, prev_stall_count = -1, 0
                     continue
 
@@ -542,6 +563,7 @@ def drain_once(
             "offset": cumulative_offset,
             "episodes_drained": int(prev.get("episodes_drained", 0) or 0) + episodes_this,
             "events_written": int(prev.get("events_written", 0) or 0) + events_this,
+            "lines_skipped": int(prev.get("lines_skipped", 0) or 0) + skipped_this,
             "last_plan_id": last_plan_id,
             "last_ts": last_ts,
             # Fingerprint the prefix we have now consumed — that is exactly

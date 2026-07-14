@@ -4305,15 +4305,17 @@ async def brain_ui(request: Request) -> HTMLResponse:
     )
 
 
-def _count_complete_lines(path) -> int:
-    """Count COMPLETE (newline-terminated) lines in `path` without loading
-    the whole file into memory — streams in fixed-size chunks and counts
-    b'\\n' occurrences. A trailing partial line (no terminating '\\n', i.e.
-    an in-flight write) is deliberately NOT counted: we tally newlines seen,
-    not "lines" in the naive splitlines() sense, so a dangling fragment
-    after the last '\\n' never contributes."""
+def _count_complete_lines(path, start_offset: int = 0) -> int:
+    """Count COMPLETE (newline-terminated) lines in `path` from byte
+    `start_offset` to EOF, without loading the file into memory — seek, then
+    stream 1 MB chunks counting b'\\n'. A trailing partial line (no
+    terminating '\\n', i.e. an in-flight write) is deliberately NOT counted:
+    we tally newlines seen, not "lines" in the naive splitlines() sense, so a
+    dangling fragment after the last '\\n' never contributes."""
     count = 0
     with open(path, "rb") as f:
+        if start_offset > 0:
+            f.seek(start_offset)
         while True:
             chunk = f.read(1024 * 1024)
             if not chunk:
@@ -4326,30 +4328,69 @@ def _diary_queue_block() -> Dict[str, Any]:
     """Worker-independent queue/drain snapshot — reads the shared-volume
     FILES (queue + drain state), never in-memory state, so it reflects
     reality regardless of which brain-core worker process answers this
-    request. Degrades to zeros on any failure; never raises."""
+    request. Degrades to zeros on any failure; never raises.
+
+    `pending` is derived from the drain's byte OFFSET, not from
+    `enqueued - episodes_drained`. Those two counters do NOT reconcile: the
+    drain advances the offset past corrupt / structurally-unusable /
+    backstop-abandoned lines (they are consumed and gone) but never counts
+    them as drained. Subtracting would therefore overstate the backlog by the
+    number of permanently-skipped lines and never reach 0 even when the drain
+    is fully caught up. The offset is the authoritative "how far consumed"
+    marker, so the exact, skip-immune backlog is the number of complete lines
+    in [offset, EOF) — which is also cheaper, since we only scan the
+    un-drained tail.
+    """
     try:
         from core.multihop_kotlin_adapter import resolve_queue_path
         from core.multihop_diary_drain import _default_state_path
 
         q_path = resolve_queue_path()
-        enqueued = _count_complete_lines(q_path) if q_path.exists() else 0
+        if not q_path.exists():
+            return {
+                "episodes_enqueued": 0, "episodes_drained": 0, "skipped": 0,
+                "pending": 0, "last_plan_id": None, "path": str(q_path),
+            }
 
+        enqueued = _count_complete_lines(q_path)
+
+        # Missing OR corrupt state file -> offset 0: we cannot prove anything
+        # was drained, so everything in the queue counts as pending. Honest
+        # under-confidence beats a fabricated number.
+        offset = 0
         drained = 0
+        skipped = 0
         last_plan_id = None
         state_path = _default_state_path(q_path)
         if state_path.exists():
             try:
                 state = json.loads(state_path.read_text(encoding="utf-8"))
                 if isinstance(state, dict):
+                    offset = int(state.get("offset", 0) or 0)
+                    # NOTE: `episodes_drained` = episodes actually REPLAYED
+                    # (incl. idempotent duplicates). It is informative, but it
+                    # is NOT the complement of `pending` — do not re-derive
+                    # pending from it (see the docstring). `skipped` is what
+                    # makes the books balance:
+                    #     enqueued ≈ drained + skipped + pending
                     drained = int(state.get("episodes_drained", 0) or 0)
+                    skipped = int(state.get("lines_skipped", 0) or 0)
                     last_plan_id = state.get("last_plan_id") or None
             except Exception:
                 pass
 
+        size = q_path.stat().st_size
+        if offset < 0 or offset > size:
+            # Rotation/truncation: mirror the drain's own reset rule rather
+            # than counting backwards into a negative pending.
+            offset = 0
+        pending = _count_complete_lines(q_path, start_offset=offset)
+
         return {
             "episodes_enqueued": enqueued,
             "episodes_drained": drained,
-            "pending": max(0, enqueued - drained),
+            "skipped": skipped,
+            "pending": pending,
             "last_plan_id": last_plan_id,
             "path": str(q_path),
         }
@@ -4357,6 +4398,7 @@ def _diary_queue_block() -> Dict[str, Any]:
         return {
             "episodes_enqueued": 0,
             "episodes_drained": 0,
+            "skipped": 0,
             "pending": 0,
             "last_plan_id": None,
             "path": "",
