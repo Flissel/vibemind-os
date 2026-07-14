@@ -1044,11 +1044,11 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
         except Exception as e:
             print(f"  [WARN] Episodic memory load failed: {e}")
 
-        # Phase 1 — wire episodic task diary into the plan executor.
-        # (auto-mine cadence: see the DualGraph construction above; moving
-        # mining to a background thread remains an option if plan volume grows.)
-        if state.plan_executor is not None:
-            state.plan_executor.attach_dual_graph(state.dual_graph)
+        # Phase 1 — the executor no longer holds a dual_graph reference: it
+        # enqueues each executed plan into the shared diary queue instead
+        # (core/multihop_kotlin_adapter.py::enqueue_plan). state.dual_graph
+        # is still needed here — the DiaryDrain below (loop-process only)
+        # is the sole writer into it.
 
         # Create response agent
         state.response_agent = ResponseAgent(ResponseAgentConfig(top_k=3))

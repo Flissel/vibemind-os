@@ -283,11 +283,6 @@ class PlanExecutor:
         in the decision-theatre UI."""
         self._decision_graph = dg
 
-    def attach_dual_graph(self, dg) -> None:
-        """Phase 1 — wire the episodic task diary (KotlinGraph via DualGraph)
-        so every executed plan is recorded as one episode."""
-        self._dual_graph = dg
-
     # Phase 7.3 — provider success tracker. Maps (capability, target_kind)
     # to {success, fail} counts. After each hop we update the score; the
     # planner can later read it to break ties when multiple targets are
@@ -1079,25 +1074,31 @@ class PlanExecutor:
                 except Exception as e:
                     logger.debug(f"[plan-executor] episodic write failed: {e}")
 
-            # Phase 1 — episodic task diary: one KotlinGraph episode per plan
+            # Phase 1 — episodisches Tagebuch: EINE Zeile pro Plan in die
+            # geteilte Queue. NICHT direkt ins dual_graph: der HTTP-Prozess
+            # (brain-core) hat N uvicorn-Worker und startet den
+            # MemoryConsolidator nicht (BRAIN_BACKGROUND_LOOPS=0) — solche
+            # Writes sind fluechtig und pro Worker verschieden. Der Drain im
+            # Loop-Prozess (core/multihop_diary_drain.py) ist der einzige
+            # Schreiber ins dual_graph, das persistiert wird.
+            # enqueue_plan wirft nie.
             try:
-                from core.multihop_kotlin_adapter import record_plan
-                dg = getattr(self, "_dual_graph", None)
-                if dg is not None and executed:
+                from core.multihop_kotlin_adapter import enqueue_plan
+                if executed:
                     _tc = ""
-                    # Default OFF: CPU-Encode kostet 4-5s pro Intent — erst
-                    # aktivieren, wenn der Embedder nachweislich auf GPU laeuft.
                     if os.environ.get("TASK_CLASS_CLUSTERING", "0") in ("1", "true", "True"):
                         try:
                             from core.task_class_clusterer import TaskClassClusterer
                             _tc = TaskClassClusterer().cluster_id(plan.intent or "")
                         except Exception:
                             _tc = ""
-                    record_plan(dg, plan, executed,
-                                trace_id=getattr(plan, "trace_id", "") or "",
-                                task_class_id=_tc)
+                    enqueue_plan(
+                        plan, executed,
+                        trace_id=getattr(plan, "trace_id", "") or "",
+                        task_class_id=_tc,
+                    )
             except Exception as e:
-                logger.debug(f"[plan-executor] kotlin ingest skipped: {e}")
+                logger.debug(f"[plan-executor] diary enqueue skipped: {e}")
 
             # Phase 11.U.A — drop from active-plans dict, then resume
             # discourse only if this was the LAST plan running.
