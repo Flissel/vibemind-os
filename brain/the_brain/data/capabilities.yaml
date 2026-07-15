@@ -259,12 +259,12 @@
       expect: present
 
 - capability: bubble_promote
-  description: "promote a bubble to a project, advance lifecycle from idea to actual project"
+  description: "promote a bubble to a project, advance lifecycle from idea to actual project — NOT IMPLEMENTED (supabase-direct path): the op was a no-op that faked success — disabled 2026-07-14 so the planner routes elsewhere and the gap is reported."
   match_patterns:
     - "promote\\s+(?:the\\s+|this\\s+|my\\s+)?(?:bubble|idea)\\s+\\w+"
     - "befördere\\s+(?:die\\s+|diese\\s+)?(?:bubble|idee)"
     - "(?:bubble|idea)\\s+\\w+\\s+to\\s+project"
-  execution_target: "supabase:bubble.noop"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
+  # execution_target removed 2026-07-14: was supabase:bubble.noop (faked success). No real op → GapSentinel reports the gap.
   result_arg_extractor: 'regex:promote\s+(?:the\s+|this\s+|my\s+)?(?:bubble|idea)\s+([^\n]+)'
   arg_kwarg: bubble_name
 
@@ -885,7 +885,7 @@
       expect: present
 
 - capability: bubble_delete_all
-  description: "delete ALL bubbles (with optional exceptions to keep), wipe all bubbles, lösche alle bubbles, alle blasen entfernen, clear the canvas, leere ideas space, broadcasts a bubble_deleted UI event for each removed bubble so the canvas updates live"
+  description: "delete ALL bubbles (with optional exceptions to keep), wipe all bubbles, lösche alle bubbles, alle blasen entfernen, clear the canvas, leere ideas space, broadcasts a bubble_deleted UI event for each removed bubble so the canvas updates live — NOT IMPLEMENTED (supabase-direct path): the op was a no-op that faked success — disabled 2026-07-14 so the planner routes elsewhere and the gap is reported."
   anchor_phrases:
     - "delete all bubbles"
     - "remove all bubbles"
@@ -900,7 +900,7 @@
     - "(delete|remove|wipe|clear|l(ö|oe)sch(e)?|entferne|leere)\\s+(all|alle|every|jede)\\s+(bubbles?|blasen?|spaces?)"
     - "(all|alle|every)\\s+(bubbles?|blasen?|spaces?)\\s+(delete|l(ö|oe)sch(e)?|entferne|wipe)"
     - "(clear|leere|wipe)\\s+(?:the\\s+|den\\s+)?(canvas|ideas[-\\s]?space|bubble[-\\s]?canvas)"
-  execution_target: "supabase:bubble.noop"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
+  # execution_target removed 2026-07-14: was supabase:bubble.noop (faked success). No real op → GapSentinel reports the gap.
   arg_kwarg: exceptions
   validator:
     kind: rule:string_nonempty
@@ -1171,7 +1171,7 @@
 # ─── Phase 11.P: Restliche Ideas-Space utility caps ─────────────────
 
 - capability: bubble_generate_embeddings
-  description: "rebuild or regenerate the semantic embeddings for all ideas inside a bubble, refresh embeddings, re-index the bubble"
+  description: "rebuild or regenerate the semantic embeddings for all ideas inside a bubble, refresh embeddings, re-index the bubble — NOT IMPLEMENTED (supabase-direct path): the op was a no-op that faked success — disabled 2026-07-14 so the planner routes elsewhere and the gap is reported."
   anchor_phrases:
     - "regenerate embeddings for the bubble"
     - "rebuild embeddings"
@@ -1183,7 +1183,7 @@
     - "(regenerate|rebuild|refresh|reindex|re[-\\s]?index|neu\\s+(berechnen|indizieren))\\s+(?:the\\s+|der\\s+|alle\\s+)?(embeddings?|index)"
     - "embeddings?\\s+(rebuild|regenerate|neu)"
     - "bubble\\s+(reindex|neu\\s+indizieren)"
-  execution_target: "supabase:bubble.noop"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
+  # execution_target removed 2026-07-14: was supabase:bubble.noop (faked success). No real op → GapSentinel reports the gap.
   arg_kwarg: bubble_name
   validator:
     kind: rule:string_nonempty

@@ -1047,9 +1047,14 @@ async def bubble_score_op(client: SupabaseIdeasClient,
 
 async def bubble_noop_op(client: SupabaseIdeasClient,
                          params: Dict[str, Any]) -> str:
-    """bubble_exit / bubble_generate_embeddings / bubble_promote /
-    bubble_delete_all — stateless or out-of-scope for the REST path.
-    Return a benign ok so plans don't cascade-fail."""
+    """bubble_exit — stateless navigation, there is genuinely nothing to write.
+
+    A no-op may ONLY back a capability where nothing is supposed to happen.
+    For a write capability, a fabricated "ok" is a FAKE SIGNAL: the user
+    believes the write happened and the diary learns "this capability works".
+    The write-caps that used to route here lost their execution_target on
+    2026-07-14 (see data/capabilities.yaml) so the planner routes elsewhere
+    and the GapSentinel reports the real gap instead."""
     return "ok (no-op in supabase-direct mode — stateless or deferred)."
 
 
