@@ -46,7 +46,7 @@ services:
       # canvas_nodes via REST; without this rewrite every node-write
       # silently returns "Failed to create node". Same rewrite rationale
       # as QDRANT_URL/BRAIN_URL above.
-      - SUPABASE_URL=http://host.docker.internal:54321
+      - SUPABASE_URL=http://192.168.178.65:54321
       # OpenFang runs on the HOST and binds its HTTP API on :4200
       # (openfang.vibemind.toml api_listen = 127.0.0.1:4200). From a
       # container reach it via host.docker.internal:4200. Brain's
@@ -122,7 +122,7 @@ services:
       - PYTHONUNBUFFERED=1
       - QDRANT_URL=http://host.docker.internal:6730
       - BRAIN_URL=http://host.docker.internal:5000
-      - SUPABASE_URL=http://host.docker.internal:54321
+      - SUPABASE_URL=http://192.168.178.65:54321
       # :4200 source of truth (2026-06-23, was stale :50051 port-drift)
       - OPENFANG_URL=http://host.docker.internal:4200
       # Same Swarm-ignores-env_file rule as brain-core: pass keys

@@ -171,7 +171,7 @@ def _check_supabase_row(spec: Dict[str, Any]):
     expect = (spec.get("expect") or "present").lower()
     if not match:
         return None, {}, "no match filter (nothing to re-query)"
-    base = os.environ.get("SUPABASE_URL", "http://localhost:54321").rstrip("/")
+    base = os.environ.get("SUPABASE_URL", "http://192.168.178.65:54321").rstrip("/")
     key = os.environ.get("SUPABASE_ANON_KEY", "anon")
     try:
         import requests  # lazy
@@ -205,7 +205,7 @@ def _check_supabase_edge(spec: Dict[str, Any]):
     expect = (spec.get("expect") or "present").lower()
     if not title_a or not title_b:
         return None, {}, "missing edge endpoints (cannot verify)"
-    base = os.environ.get("SUPABASE_URL", "http://localhost:54321").rstrip("/")
+    base = os.environ.get("SUPABASE_URL", "http://192.168.178.65:54321").rstrip("/")
     key = os.environ.get("SUPABASE_ANON_KEY", "anon")
     try:
         import requests  # lazy
@@ -253,7 +253,7 @@ def _check_supabase_node_in_bubble(spec: Dict[str, Any]):
     expect = (spec.get("expect") or "present").lower()
     if not node_title or not bubble_title:
         return None, {}, "missing node/bubble (cannot verify)"
-    base = os.environ.get("SUPABASE_URL", "http://localhost:54321").rstrip("/")
+    base = os.environ.get("SUPABASE_URL", "http://192.168.178.65:54321").rstrip("/")
     key = os.environ.get("SUPABASE_ANON_KEY", "anon")
     try:
         import requests  # lazy
