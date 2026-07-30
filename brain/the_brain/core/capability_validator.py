@@ -192,6 +192,30 @@ def _rule_flowzen_result(raw: Any, **_) -> Dict[str, Any]:
     else:
         valid = False
     return {"valid": valid, "reason": f"Flowzen {event_id or 'unknown'} contract {'valid' if valid else 'invalid'}"}
+def _rule_mirofish_evidence(raw: Any, **_) -> Dict[str, Any]:
+    """Require real transport evidence and the operation's durable identity."""
+    if not isinstance(raw, dict):
+        return {"valid": False, "reason": "expected MiroFish result envelope"}
+    operation = raw.get("operation")
+    evidence = raw.get("evidence")
+    if not isinstance(evidence, dict):
+        return {"valid": False, "reason": "missing MiroFish transport evidence"}
+    if evidence.get("service") != "mirofish" or evidence.get("response_success") is not True:
+        return {"valid": False, "reason": "MiroFish backend did not confirm success"}
+    if not evidence.get("endpoint") or not raw.get("state"):
+        return {"valid": False, "reason": "missing MiroFish endpoint/state evidence"}
+    if operation in {"graph.build", "simulate", "predict", "evaluate", "status"}:
+        if not raw.get("job_id"):
+            return {"valid": False, "reason": f"{operation} has no durable job identity"}
+    if operation == "graph.build" and not raw.get("project_id"):
+        return {"valid": False, "reason": "graph build has no project identity"}
+    if operation == "graph.search" and not raw.get("graph_id"):
+        return {"valid": False, "reason": "graph search has no graph identity"}
+    if operation == "interview" and not raw.get("simulation_id"):
+        return {"valid": False, "reason": "interview has no simulation identity"}
+    if operation in {"simulate", "predict", "evaluate"} and not raw.get("model_id"):
+        return {"valid": False, "reason": f"{operation} has no model identity"}
+    return {"valid": True, "reason": "MiroFish identity and transport evidence verified"}
 
 
 # Registry — extend by adding to this dict, then reference from YAML as
@@ -209,6 +233,7 @@ RULES: Dict[str, Callable[..., Dict[str, Any]]] = {
     # Phase 11.W2 — hard, read-back-verified canvas-node write check.
     "canvas_node_persisted": _rule_canvas_node_persisted,
     "flowzen_result": _rule_flowzen_result,
+    "mirofish_evidence": _rule_mirofish_evidence,
 }
 
 

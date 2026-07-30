@@ -855,6 +855,203 @@ class N8nMcpExecutor(_BaseRemoteExecutor):
             "request_id": request_id,
             "result": provider_result,
         }
+class MiroFishExecutor(_BaseRemoteExecutor):
+    """Execute canonical MiroFish space operations against its real backend.
+
+    Long-running operations return a job envelope instead of waiting inside a
+    Brain hop.  A 2xx response is not sufficient for success: the backend must
+    assert ``success=true`` and return the operation-specific identities.
+    """
+
+    OPERATIONS = {
+        "simulate", "predict", "graph.build", "graph.search",
+        "status", "evaluate", "interview",
+    }
+
+    def __init__(self, target: str, base_url: Optional[str] = None) -> None:
+        super().__init__(target)
+        operation = target.split(":", 1)[1] if target.startswith("mirofish:") else target
+        operation = operation.strip().lower()
+        if operation not in self.OPERATIONS:
+            raise ValueError(
+                f"mirofish: unknown operation {operation!r} "
+                f"(supported: {sorted(self.OPERATIONS)})"
+            )
+        self.operation = operation
+        self.base = (
+            base_url
+            or os.environ.get("MIROFISH_BASE_URL", "http://127.0.0.1:5001")
+        ).rstrip("/")
+
+    @staticmethod
+    def _require(payload: Dict[str, Any], *fields: str) -> None:
+        missing = [field for field in fields if payload.get(field) in (None, "")]
+        if missing:
+            raise ValueError(f"mirofish operation requires {', '.join(missing)}")
+
+    def _request(
+        self, method: str, endpoint: str, payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        timeout = float(os.environ.get("MIROFISH_HTTP_TIMEOUT_S", "30"))
+        kwargs: Dict[str, Any] = {"timeout": timeout}
+        if method == "GET":
+            kwargs["params"] = payload
+        else:
+            kwargs["json"] = payload
+        response = requests.request(method, f"{self.base}{endpoint}", **kwargs)
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            raise RuntimeError("MiroFish returned a non-object response")
+        if data.get("success") is not True:
+            raise RuntimeError(str(data.get("error") or "MiroFish did not confirm success"))
+        body = data.get("data")
+        if not isinstance(body, dict):
+            raise RuntimeError("MiroFish success response has no data object")
+        return body
+
+    @staticmethod
+    def _envelope(
+        operation: str,
+        endpoint: str,
+        body: Dict[str, Any],
+        *,
+        state: str,
+        job_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        graph_id: Optional[str] = None,
+        simulation_id: Optional[str] = None,
+        model_id: Optional[str] = None,
+        include_data: bool = False,
+    ) -> Dict[str, Any]:
+        result: Dict[str, Any] = {
+            "operation": operation,
+            "state": state,
+            "job_id": job_id,
+            "project_id": project_id,
+            "graph_id": graph_id,
+            "simulation_id": simulation_id,
+            "model_id": model_id,
+            "evidence": {
+                "service": "mirofish",
+                "endpoint": endpoint,
+                "response_success": True,
+            },
+        }
+        if include_data:
+            result["data"] = body
+        return result
+
+    def _call(self, payload: Dict[str, Any]) -> Any:
+        operation = self.operation
+
+        # PlanExecutor carries the canonical voice/API text as `_intent`.  Use
+        # it only for secondary fields; durable IDs still come from explicit
+        # regex-extracted arguments and are always validated below.
+        intent = str(payload.pop("_intent", "") or "")
+        payload.pop("_description", None)
+        payload.pop("_step_id", None)
+        payload.pop("_capability", None)
+        if operation == "graph.search" and not payload.get("query"):
+            payload["query"] = intent
+        if operation == "interview":
+            if not payload.get("prompt"):
+                payload["prompt"] = intent
+            if payload.get("agent_id") in (None, ""):
+                match = re.search(r"\bagent(?:\s+id)?\s*[:#]?\s*(\d+)\b", intent, re.IGNORECASE)
+                if match:
+                    payload["agent_id"] = int(match.group(1))
+
+        if operation == "graph.build":
+            self._require(payload, "project_id")
+            endpoint = "/api/graph/build"
+            body = self._request("POST", endpoint, payload)
+            task_id = body.get("task_id")
+            project_id = body.get("project_id")
+            if not task_id or project_id != payload["project_id"]:
+                raise RuntimeError("MiroFish graph build response lacks matching project_id/task_id")
+            return self._envelope(
+                operation, endpoint, body, state="queued", job_id=str(task_id),
+                project_id=str(project_id), graph_id=body.get("graph_id"),
+            )
+
+        if operation == "simulate":
+            self._require(payload, "simulation_id")
+            endpoint = "/api/simulation/start"
+            body = self._request("POST", endpoint, payload)
+            simulation_id = body.get("simulation_id")
+            if simulation_id != payload["simulation_id"]:
+                raise RuntimeError("MiroFish simulation response has mismatched simulation_id")
+            state = str(body.get("runner_status") or "running")
+            return self._envelope(
+                operation, endpoint, body, state=state, job_id=str(simulation_id),
+                simulation_id=str(simulation_id),
+                model_id=str(payload.get("model") or simulation_id),
+            )
+
+        if operation in {"predict", "evaluate"}:
+            self._require(payload, "simulation_id")
+            endpoint = "/api/report/generate"
+            body = self._request("POST", endpoint, payload)
+            simulation_id = body.get("simulation_id")
+            task_id = body.get("task_id")
+            report_id = body.get("report_id")
+            if simulation_id != payload["simulation_id"] or not (task_id or report_id):
+                raise RuntimeError(
+                    "MiroFish report response lacks matching simulation_id and task_id/report_id"
+                )
+            state = str(body.get("status") or ("queued" if task_id else "completed"))
+            return self._envelope(
+                operation, endpoint, body, state=state,
+                job_id=str(task_id or report_id), simulation_id=str(simulation_id),
+                model_id=str(payload.get("model") or simulation_id), include_data=True,
+            )
+
+        if operation == "graph.search":
+            self._require(payload, "graph_id", "query")
+            endpoint = "/api/report/tools/search"
+            body = self._request("POST", endpoint, payload)
+            return self._envelope(
+                operation, endpoint, body, state="completed",
+                graph_id=str(payload["graph_id"]), include_data=True,
+            )
+
+        if operation == "interview":
+            self._require(payload, "simulation_id", "agent_id", "prompt")
+            endpoint = "/api/simulation/interview"
+            body = self._request("POST", endpoint, payload)
+            if body.get("agent_id") != payload["agent_id"]:
+                raise RuntimeError("MiroFish interview response has mismatched agent_id")
+            return self._envelope(
+                operation, endpoint, body, state="completed",
+                simulation_id=str(payload["simulation_id"]), include_data=True,
+            )
+
+        # status supports each durable identity exposed by the backend.
+        identifier = (
+            payload.get("job_id") or payload.get("task_id")
+            or payload.get("simulation_id") or payload.get("report_id")
+        )
+        if not identifier:
+            raise ValueError(
+                "mirofish status requires job_id, task_id, simulation_id, or report_id"
+            )
+        identifier = str(identifier)
+        if identifier.startswith("sim_"):
+            endpoint = f"/api/simulation/{identifier}/run-status"
+            identity = {"simulation_id": identifier}
+        elif identifier.startswith("report_"):
+            endpoint = f"/api/report/{identifier}"
+            identity = {}
+        else:
+            endpoint = f"/api/graph/task/{identifier}"
+            identity = {}
+        body = self._request("GET", endpoint, {})
+        state = str(body.get("status") or body.get("runner_status") or "unknown")
+        return self._envelope(
+            operation, endpoint, body, state=state, job_id=identifier,
+            simulation_id=identity.get("simulation_id"), include_data=True,
+        )
 
 
 # ── Supabase executor (Phase 11.U.C.8) ───────────────────────────────
@@ -967,6 +1164,7 @@ _EXECUTOR_KINDS: Dict[str, type] = {
     "brain": BrainSelfExecutor,
     "mcp": McpExecutor,
     "n8n-mcp": N8nMcpExecutor,
+    "mirofish": MiroFishExecutor,
     "supabase": SupabaseExecutor,
 }
 
@@ -999,6 +1197,7 @@ def supported_kinds() -> Dict[str, str]:
         "brain": "brain:<METHOD>:<route>",
         "mcp": "mcp:<server>:<tool>",
         "n8n-mcp": "n8n-mcp:<canonical_event>",
+        "mirofish": "mirofish:<simulate|predict|graph.build|graph.search|status|evaluate|interview>",
         "supabase": "supabase:<op>  (idea.connect|idea.disconnect|idea.auto_link)",
         "research": "research:<web|scrape|summarize|to_idea>",
     }

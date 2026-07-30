@@ -61,6 +61,68 @@
   match_patterns:
     - "(list|show|zeige).*(scheduled|schedule|reminders|termine|erinnerungen)"
   execution_target: "direct:spaces.schedule.execution:list_tasks"
+- capability: mirofish.simulate
+  description: "start an existing MiroFish simulation as a durable job"
+  match_patterns: ["\\bmirofish\\b.*\\b(simulate|simulation starten|simulieren)\\b"]
+  agents: { primary: [brain-forecaster], supporting: [] }
+  execution_target: "mirofish:simulate"
+  result_arg_extractor: 'regex:\b(sim_[A-Za-z0-9_-]+)\b'
+  arg_kwarg: simulation_id
+  validator: { kind: "rule:mirofish_evidence", on_fail: "block" }
+
+- capability: mirofish.predict
+  description: "generate a prediction report for an existing MiroFish simulation"
+  match_patterns: ["\\bmirofish\\b.*\\b(predict|prediction|forecast|vorhersage)\\b"]
+  agents: { primary: [brain-forecaster], supporting: [] }
+  execution_target: "mirofish:predict"
+  result_arg_extractor: 'regex:\b(sim_[A-Za-z0-9_-]+)\b'
+  arg_kwarg: simulation_id
+  validator: { kind: "rule:mirofish_evidence", on_fail: "block" }
+
+- capability: mirofish.graph.build
+  description: "start a MiroFish graph build job for an existing project"
+  match_patterns: ["\\bmirofish\\b.*\\b(graph build|build graph|graph bauen)\\b"]
+  agents: { primary: [brain-forecaster], supporting: [] }
+  execution_target: "mirofish:graph.build"
+  result_arg_extractor: 'regex:\b(proj_[A-Za-z0-9_-]+)\b'
+  arg_kwarg: project_id
+  validator: { kind: "rule:mirofish_evidence", on_fail: "block" }
+
+- capability: mirofish.graph.search
+  description: "search an identified MiroFish knowledge graph"
+  match_patterns: ["\\bmirofish\\b.*\\b(graph search|search graph|graph durchsuchen)\\b"]
+  agents: { primary: [brain-forecaster], supporting: [] }
+  execution_target: "mirofish:graph.search"
+  result_arg_extractor: 'regex:\b([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\b'
+  arg_kwarg: graph_id
+  validator: { kind: "rule:mirofish_evidence", on_fail: "block" }
+
+- capability: mirofish.status
+  description: "query a MiroFish task, simulation, or report job status"
+  match_patterns: ["\\bmirofish\\b.*\\b(status|progress|fortschritt)\\b"]
+  agents: { primary: [brain-forecaster], supporting: [] }
+  execution_target: "mirofish:status"
+  result_arg_extractor: 'regex:\b((?:task|sim|report)_[A-Za-z0-9_-]+)\b'
+  arg_kwarg: job_id
+  validator: { kind: "rule:mirofish_evidence", on_fail: "block" }
+
+- capability: mirofish.evaluate
+  description: "generate an evidence-backed evaluation report for a MiroFish simulation"
+  match_patterns: ["\\bmirofish\\b.*\\b(evaluate|evaluation|bewerten)\\b"]
+  agents: { primary: [brain-forecaster], supporting: [] }
+  execution_target: "mirofish:evaluate"
+  result_arg_extractor: 'regex:\b(sim_[A-Za-z0-9_-]+)\b'
+  arg_kwarg: simulation_id
+  validator: { kind: "rule:mirofish_evidence", on_fail: "block" }
+
+- capability: mirofish.interview
+  description: "interview an identified agent in a running MiroFish simulation"
+  match_patterns: ["\\bmirofish\\b.*\\b(interview|befrage)\\b"]
+  agents: { primary: [brain-forecaster], supporting: [] }
+  execution_target: "mirofish:interview"
+  result_arg_extractor: 'regex:\b(sim_[A-Za-z0-9_-]+)\b'
+  arg_kwarg: simulation_id
+  validator: { kind: "rule:mirofish_evidence", on_fail: "block" }
 
 - capability: bubble_evaluate
   description: "evaluate a bubble idea readiness for project promotion through 5 expert perspectives, is this idea mature enough is this ready to build, project gate go/no-go assessment, score and missing_items report"
