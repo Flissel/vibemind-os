@@ -1260,6 +1260,14 @@ class PlanExecutor:
                 "idea_expand": "idea.expand",
                 "idea_connect": "idea.connect",
                 "idea_to_project": "idea.to_project",
+                "code_generate": "code.generate",
+                "code_modify": "code.modify",
+                "code_status": "code.status",
+                "code_show": "code.show",
+                "code_preview_start": "code.preview.start",
+                "code_preview_stop": "code.preview.stop",
+                "code_list": "code.list",
+                "code_cancel": "code.cancel",
             }
             event_id = cap_to_event.get(hop.capability or "", hop.capability or "")
             desktop_route = None
@@ -1290,12 +1298,14 @@ class PlanExecutor:
                 pass
             assigned_agent = _registry.get_event_agent(event_id) if event_id else None
 
-            # Minibook targets return a structured, redacted truth envelope from
-            # the external service. Re-routing them through an LLM agent would
-            # discard that contract and could turn prose into apparent success.
+            # Explicit remote executors already are the execution authority
+            # (n8n-mcp, coding-engine). Minibook targets return a structured,
+            # redacted truth envelope from the external service. Re-routing any
+            # of them through an LLM agent would discard that contract and
+            # could turn prose into apparent success.
             preserve_structured_target = event_id.startswith("minibook.")
             if (assigned_agent and target
-                    and not target.startswith(("openfang:", "n8n-mcp:"))
+                    and not target.startswith(("openfang:", "n8n-mcp:", "coding-engine:"))
                     and not preserve_structured_target):
                 # Probe: is the agent reachable in OpenFang? If not, skip
                 # Phase 11.B routing and fall through to the direct target.

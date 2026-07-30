@@ -1440,6 +1440,57 @@
 # agent_name → agent_id via /api/agents.
 # ──────────────────────────────────────────────────────────────────────────
 
+- capability: code_generate
+  description: "Generate code through the health-checked coding-engine control server."
+  match_patterns: ["^code\\.generate$", "^(generate|create|erstelle?|generiere?)\\s+(code|projekt|project)"]
+  execution_target: "coding-engine:POST:/api/start"
+  arg_kwarg: description
+  validator: {kind: "rule:non_empty_result", on_fail: report}
+
+- capability: code_modify
+  description: "Modify code through the health-checked coding-engine control server."
+  match_patterns: ["^code\\.modify$", "^(modify|edit|ändere?|bearbeite?)\\s+(code|datei|file)"]
+  execution_target: "coding-engine:POST:/api/start"
+  arg_kwarg: description
+  validator: {kind: "rule:non_empty_result", on_fail: report}
+
+- capability: code_status
+  description: "Read the current coding-engine execution status."
+  match_patterns: ["^code\\.status$", "^(code|coding)[ -]?(status|fortschritt)$"]
+  execution_target: "coding-engine:GET:/api/status"
+  validator: {kind: "rule:non_empty_result", on_fail: report}
+
+- capability: code_show
+  description: "Show coding-engine execution logs and visible results."
+  match_patterns: ["^code\\.show$", "^(show|zeige?)\\s+(code|coding)[ -]?(result|ergebnis|logs?)"]
+  execution_target: "coding-engine:GET:/api/logs"
+  validator: {kind: "rule:non_empty_result", on_fail: report}
+
+- capability: code_preview_start
+  description: "Start a preview for a coding-engine project."
+  match_patterns: ["^code\\.preview\\.start$", "^(start|starte?)\\s+(code|coding)[ -]?preview"]
+  execution_target: "coding-engine:POST:/api/preview/create"
+  validator: {kind: "rule:non_empty_result", on_fail: report}
+
+- capability: code_preview_stop
+  description: "Stop a preview for a coding-engine project."
+  match_patterns: ["^code\\.preview\\.stop$", "^(stop|stoppe?)\\s+(code|coding)[ -]?preview"]
+  execution_target: "coding-engine:POST:/api/preview/{project_id}/stop"
+  arg_kwarg: project_id
+  validator: {kind: "rule:non_empty_result", on_fail: report}
+
+- capability: code_list
+  description: "List coding-engine previews and queryable results."
+  match_patterns: ["^code\\.list$", "^(list|liste|zeige?)\\s+(code|coding)[ -]?(projects?|projekte?|previews?)"]
+  execution_target: "coding-engine:GET:/api/preview/"
+  validator: {kind: "rule:non_empty_result", on_fail: report}
+
+- capability: code_cancel
+  description: "Cancel the active coding-engine execution."
+  match_patterns: ["^code\\.cancel$", "^(cancel|abort|brich|breche)\\s+(code|coding)"]
+  execution_target: "coding-engine:POST:/api/stop"
+  validator: {kind: "rule:non_empty_result", on_fail: report}
+
 - capability: coding_task
   description: "EXECUTE CODE TASK — actually write/edit/run real source code on disk via the openclaude coding agent. NOT for adding ideas/notes to the knowledge graph (that's idea_add). NOT for searching code (that's code_search). NOT for reviewing code (that's code_review). USE THIS when the user wants the system to actually CREATE OR MODIFY a code file: write a python/js/ts/rust function or script, fix a bug in a specific source file, refactor existing code, implement an API endpoint, run git commit/push, create a github repo, deploy to vercel. The dispatch target is openclaude-coder which runs the openclaude CLI subprocess against gpt-4o-mini, writes real files to disk, runs them, returns output."
   anchor_phrases:
