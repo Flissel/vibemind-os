@@ -39,6 +39,10 @@ _CORE_TOOLS: dict[str, list[str]] = {
         "handoff_action", "handoff_read_screen", "vision_analyze",
         "app_launch_or_focus",
     ],
+    "openclaw-visible": [
+        "handoff_action", "handoff_read_screen", "vision_analyze",
+        "app_launch_or_focus",
+    ],
     "_default": ["file_read", "memory_recall"],
 }
 
