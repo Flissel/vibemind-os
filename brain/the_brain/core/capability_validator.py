@@ -192,6 +192,8 @@ def _rule_flowzen_result(raw: Any, **_) -> Dict[str, Any]:
     else:
         valid = False
     return {"valid": valid, "reason": f"Flowzen {event_id or 'unknown'} contract {'valid' if valid else 'invalid'}"}
+
+
 def _rule_mirofish_evidence(raw: Any, **_) -> Dict[str, Any]:
     """Require real transport evidence and the operation's durable identity."""
     if not isinstance(raw, dict):
@@ -218,6 +220,23 @@ def _rule_mirofish_evidence(raw: Any, **_) -> Dict[str, Any]:
     return {"valid": True, "reason": "MiroFish identity and transport evidence verified"}
 
 
+def _rule_minibook_verified_result(raw: Any, **_) -> Dict[str, Any]:
+    """Accept only a response observed from the real Minibook target."""
+    if not isinstance(raw, dict):
+        return {"valid": False, "reason": "expected Minibook result envelope"}
+    truth = raw.get("truth")
+    verified = (
+        raw.get("ok") is True
+        and isinstance(truth, dict)
+        and truth.get("status") == "verified"
+        and truth.get("source") == "minibook"
+    )
+    return {
+        "valid": verified,
+        "reason": "Minibook target verified the result" if verified else "result is not verified by Minibook",
+    }
+
+
 # Registry — extend by adding to this dict, then reference from YAML as
 #   validator: { kind: "rule:<name>" }
 RULES: Dict[str, Callable[..., Dict[str, Any]]] = {
@@ -234,6 +253,7 @@ RULES: Dict[str, Callable[..., Dict[str, Any]]] = {
     "canvas_node_persisted": _rule_canvas_node_persisted,
     "flowzen_result": _rule_flowzen_result,
     "mirofish_evidence": _rule_mirofish_evidence,
+    "minibook_verified_result": _rule_minibook_verified_result,
 }
 
 
@@ -310,6 +330,7 @@ class CapabilityValidator:
                     valid=bool(verdict.get("valid")),
                     reason=str(verdict.get("reason") or ""),
                     kind=kind, on_fail=on_fail, t0=t0,
+                    verified=(bool(verdict.get("valid")) if rule_name == "minibook_verified_result" else None),
                 )
             if kind.startswith("agent:"):
                 agent_name = kind.split(":", 1)[1]

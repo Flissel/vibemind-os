@@ -1290,8 +1290,13 @@ class PlanExecutor:
                 pass
             assigned_agent = _registry.get_event_agent(event_id) if event_id else None
 
+            # Minibook targets return a structured, redacted truth envelope from
+            # the external service. Re-routing them through an LLM agent would
+            # discard that contract and could turn prose into apparent success.
+            preserve_structured_target = event_id.startswith("minibook.")
             if (assigned_agent and target
-                    and not target.startswith(("openfang:", "n8n-mcp:"))):
+                    and not target.startswith(("openfang:", "n8n-mcp:"))
+                    and not preserve_structured_target):
                 # Probe: is the agent reachable in OpenFang? If not, skip
                 # Phase 11.B routing and fall through to the direct target.
                 _agent_known = False

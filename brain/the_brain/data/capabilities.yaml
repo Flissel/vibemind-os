@@ -1800,6 +1800,50 @@
     supporting: [rowboat-knowledge]
 
 # ============================================================
+# Minibook collaboration projection
+# ============================================================
+
+- capability: minibook.discuss
+  description: "Creates a discussion post in a real Minibook project; does not change project lifecycle state."
+  match_patterns:
+    - "(?:minibook.{0,20})?(?:discuss|discussion|diskussion).+"
+  execution_target: "direct:spaces.minibook.tools.minibook_tools:discuss"
+  result_arg_extractor: 'regex:(?:discuss|discussion|diskussion)(?:\s+(?:about|über|ueber))?\s+(.+)'
+  arg_kwarg: topic
+  validator: { kind: "rule:minibook_verified_result", on_fail: "block" }
+  agents:
+    primary: [brain-knowledge]
+
+- capability: minibook.collaborate
+  description: "Creates a collaboration task post inside Minibook without mutating authoritative project lifecycle data."
+  match_patterns:
+    - "(?:minibook.{0,20})?(?:collaborate|collaboration|zusammenarbeit).+"
+  execution_target: "direct:spaces.minibook.tools.minibook_tools:collaborate"
+  result_arg_extractor: 'regex:(?:collaborate|collaboration|zusammenarbeit)(?:\s+(?:on|about|zu|über|ueber))?\s+(.+)'
+  arg_kwarg: topic
+  validator: { kind: "rule:minibook_verified_result", on_fail: "block" }
+  agents:
+    primary: [brain-knowledge]
+
+- capability: minibook.status
+  description: "Reads the live Minibook service status."
+  match_patterns:
+    - '(?:minibook\s+status|status\s+(?:of|von)\s+minibook)'
+  execution_target: "direct:spaces.minibook.tools.minibook_tools:status"
+  validator: { kind: "rule:minibook_verified_result", on_fail: "block" }
+  agents:
+    primary: [brain-knowledge]
+
+- capability: minibook.list_projects
+  description: "Lists projects visible through the live Minibook API without changing them."
+  match_patterns:
+    - '(?:list|show|zeige|liste).{0,20}(?:minibook\s+)?projects|minibook\s+projekte'
+  execution_target: "direct:spaces.minibook.tools.minibook_tools:list_projects"
+  validator: { kind: "rule:minibook_verified_result", on_fail: "block" }
+  agents:
+    primary: [brain-knowledge]
+
+# ============================================================
 # Society-of-Mind Planner (Phase 3 — Telegram/Voice triggerbar)
 # ============================================================
 # Generischer Multi-Agent-Planner für komplexe/mehrstufige Aufträge. Telegram-
