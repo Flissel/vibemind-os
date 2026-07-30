@@ -1,4 +1,4 @@
-"""Single source of truth for the 14 VibeMind spaces.
+"""Navigator metadata keyed by canonical VibeMind space IDs.
 
 Every space gets:
   - label:        Human-readable name (voice-friendly).
@@ -34,7 +34,7 @@ class SpaceMeta(TypedDict, total=False):
 
 
 SPACES: Dict[str, SpaceMeta] = {
-    "autogen": {
+    "agentfarm": {
         "label": "AgentFarm",
         "event_prefix": "agentfarm.",
         "stream": "events:tasks:agentfarm",
@@ -134,7 +134,7 @@ SPACES: Dict[str, SpaceMeta] = {
         "capabilities": ["research.query", "research.deep"],
         "renderer_id": None,
     },
-    "rowboat": {
+    "roarboot": {
         "label": "Rowboat",
         "event_prefix": "roarboot.",
         "stream": "events:tasks:roarboot",
@@ -154,8 +154,8 @@ SPACES: Dict[str, SpaceMeta] = {
         "capabilities": ["schedule.create", "schedule.list"],
         "renderer_id": None,
     },
-    "shuttles": {
-        "label": "Shuttles",
+    "bubbles": {
+        "label": "Bubbles",
         "event_prefix": "bubble.",
         "stream": None,
         "aliases": ["pipeline", "swe", "requirements", "ship"],
@@ -190,6 +190,12 @@ def resolve_alias(query: str) -> Optional[str]:
     if not query:
         return None
     q = query.strip().lower()
+    legacy_aliases = {
+        "autogen": "agentfarm",
+        "rowboat": "roarboot",
+        "shuttles": "bubbles",
+    }
+    q = legacy_aliases.get(q, q)
     if q in SPACES:
         return q
     for space_id, meta in SPACES.items():
