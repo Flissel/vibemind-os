@@ -1682,3 +1682,55 @@
   execution_target: "openfang:som-execute"
   agents:
     primary: [som-execute]
+
+# ============================================================
+# Video Space — deterministic Brain -> existing Video tools
+# ============================================================
+
+- capability: video_status
+  description: "show Video Space provider and tool availability or query an asynchronous video job"
+  anchor_phrases: ["video status", "status video job"]
+  match_patterns: ["video.{0,20}(status|job)"]
+  execution_target: "direct:spaces.video.execution_target:execute_video"
+
+- capability: video_team_status
+  description: "show the team video pipeline status"
+  anchor_phrases: ["video team status"]
+  match_patterns: ["video.{0,10}team.{0,10}status"]
+  execution_target: "direct:spaces.video.execution_target:execute_video"
+
+- capability: video_team_run
+  description: "run a real team video pipeline step asynchronously"
+  anchor_phrases: ["run video team pipeline"]
+  match_patterns: ["(run|starte|führe).{0,20}video.{0,20}(team|pipeline)"]
+  execution_target: "direct:spaces.video.execution_target:execute_video"
+
+- capability: video_vision
+  description: "generate a vision video through the Video Space provider"
+  anchor_phrases: ["generate vision video"]
+  match_patterns: ["(generate|erstelle).{0,20}(vision|sora).{0,10}video"]
+  execution_target: "direct:spaces.video.execution_target:execute_video"
+
+- capability: video_demo_build
+  description: "build a demo video through the existing Video Space CLI"
+  anchor_phrases: ["build demo video"]
+  match_patterns: ["(build|baue|erstelle).{0,20}demo.{0,10}video"]
+  execution_target: "direct:spaces.video.execution_target:execute_video"
+
+- capability: video_lipsync
+  description: "run lipsync for video and audio media"
+  anchor_phrases: ["lipsync video"]
+  match_patterns: ["(lip.?sync|lippensynchron)"]
+  execution_target: "direct:spaces.video.execution_target:execute_video"
+
+- capability: video_voice_clone
+  description: "clone a voice from reference audio through the Video Space provider"
+  anchor_phrases: ["clone voice from audio"]
+  match_patterns: ["(clone|klone).{0,15}(voice|stimme)"]
+  execution_target: "direct:spaces.video.execution_target:execute_video"
+
+- capability: video_voice_tts
+  description: "generate TTS audio through the Video Space provider"
+  anchor_phrases: ["video voice tts"]
+  match_patterns: ["(tts|text.to.speech).{0,15}(video|voice|stimme)?"]
+  execution_target: "direct:spaces.video.execution_target:execute_video"
