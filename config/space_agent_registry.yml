@@ -159,7 +159,7 @@ spaces:
 
   # ─── Roarboot (Knowledge Graph) ─────────────────────────────────────
   roarboot:
-    agent: rowboat-knowledge
+    agent: rowboat-chat
     # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
     prefixes: [roarboot.]
     enabled: true
@@ -167,11 +167,11 @@ spaces:
     mcp_servers: [vibemind-db, fetch]
     default_context: [current_space, recent_intents]
     events:
-      roarboot.search:       { tool: fetch,      required_params: [query] }
-      roarboot.query:        { tool: fetch,      required_params: [query] }
-      roarboot.email_draft:  { tool: fetch,      required_params: [recipient] }
-      roarboot.meeting_brief: { tool: fetch,      required_params: [topic] }
-      roarboot.deck:         { tool: fetch,      required_params: [topic] }
+      roarboot.search:       { tool: search_knowledge,       required_params: [query] }
+      roarboot.query:        { tool: query_knowledge,        required_params: [query] }
+      roarboot.email_draft:  { tool: draft_email,            required_params: [recipient, topic] }
+      roarboot.meeting_brief: { tool: generate_meeting_brief, required_params: [topic] }
+      roarboot.deck:         { tool: generate_deck,          required_params: [topic] }
       roarboot.status:       { tool: fetch,      required_params: [] }
       roarboot.docker.start: { tool: shell_exec, required_params: [] }
       roarboot.docker.stop:  { tool: shell_exec, required_params: [] }
