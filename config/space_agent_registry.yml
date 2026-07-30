@@ -202,13 +202,13 @@ spaces:
     mcp_servers: [vibemind-db, scheduled-tasks]
     default_context: [current_space, now]
     events:
-      schedule.create:  { tool: db_schedule_create, required_params: [title, trigger_config] }
-      schedule.list:    { tool: db_schedule_list,   required_params: [] }
-      schedule.cancel:  { tool: db_update,          required_params: [task_id] }
-      schedule.modify:  { tool: db_update,          required_params: [task_id] }
-      schedule.status:  { tool: db_schedule_list,   required_params: [] }
-      schedule.snooze:  { tool: db_update,          required_params: [task_id] }
-      openclaw.cron:    { tool: db_schedule_create, required_params: [cron_expr] }
+      schedule.create:  { tool: schedule_create,        required_params: [title, action_text, trigger_config] }
+      schedule.list:    { tool: schedule_list,          required_params: [] }
+      schedule.cancel:  { tool: schedule_cancel,        required_params: [task_id] }
+      schedule.modify:  { tool: schedule_modify,        required_params: [task_id] }
+      schedule.status:  { tool: schedule_status,        required_params: [] }
+      schedule.snooze:  { tool: schedule_snooze,        required_params: [task_id] }
+      openclaw.cron:    { tool: schedule_openclaw_cron, required_params: [cron_expr, prompt] }
 
   # ─── n8n (workflow automation) ──────────────────────────────────────
   n8n:
