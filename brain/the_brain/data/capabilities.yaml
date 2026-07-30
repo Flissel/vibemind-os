@@ -18,6 +18,50 @@
 # Adding a capability: append a new entry, restart Brain. Router validates
 # agent names against OpenFang at startup and warns on registry-rot.
 
+- capability: schedule_openclaw_cron
+  description: "create a persistent OpenClaw cron job with a validated five-field cron expression"
+  match_patterns:
+    - "openclaw\\s+cron"
+    - "cron\\s+(job|task).*(openclaw)"
+  execution_target: "direct:spaces.schedule.execution:openclaw_cron"
+
+- capability: schedule_create
+  description: "create a persistent scheduled task, reminder, timer, alarm or appointment"
+  match_patterns:
+    - "(schedule|create|set|plane|erstelle|stell).*(task|reminder|timer|alarm|termin|erinnerung)"
+    - "erinnere mich"
+  execution_target: "direct:spaces.schedule.execution:create"
+
+- capability: schedule_cancel
+  description: "cancel a scheduled task or reminder"
+  match_patterns:
+    - "(cancel|delete|lösche|storniere).*(schedule|task|reminder|termin|erinnerung)"
+  execution_target: "direct:spaces.schedule.execution:cancel"
+
+- capability: schedule_modify
+  description: "modify or reschedule a scheduled task"
+  match_patterns:
+    - "(modify|change|reschedule|ändere|verschiebe).*(schedule|task|reminder|termin|erinnerung)"
+  execution_target: "direct:spaces.schedule.execution:modify"
+
+- capability: schedule_snooze
+  description: "snooze a scheduled task or reminder"
+  match_patterns:
+    - "(snooze|schlummer|später).*(schedule|task|reminder|termin|erinnerung)?"
+  execution_target: "direct:spaces.schedule.execution:snooze"
+
+- capability: schedule_status
+  description: "show scheduler status and persistent task counts"
+  match_patterns:
+    - "(schedule|scheduler).*(status|health|zustand)"
+  execution_target: "direct:spaces.schedule.execution:status"
+
+- capability: schedule_list
+  description: "list persistent scheduled tasks and reminders"
+  match_patterns:
+    - "(list|show|zeige).*(scheduled|schedule|reminders|termine|erinnerungen)"
+  execution_target: "direct:spaces.schedule.execution:list_tasks"
+
 - capability: bubble_evaluate
   description: "evaluate a bubble idea readiness for project promotion through 5 expert perspectives, is this idea mature enough is this ready to build, project gate go/no-go assessment, score and missing_items report"
   match_patterns:
