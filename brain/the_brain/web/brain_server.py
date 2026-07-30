@@ -1645,6 +1645,13 @@ def create_app(testing: bool = False) -> FastAPI:
             "uptime": time.time() - _BOOT_TIME,
         })
 
+    @app.get("/api/research/health")
+    async def research_health():
+        from spaces.research.execution_target import ResearchTarget
+
+        report = ResearchTarget("research:web").health_check()
+        return JSONResponse(report, status_code=200 if report["ok"] else 503)
+
     @app.get("/", response_class=HTMLResponse)
     async def root(request: Request):
         return templates.TemplateResponse(request, "brain_dashboard.html")
