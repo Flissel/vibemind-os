@@ -93,7 +93,7 @@ class CapabilityMatch:
         if not self.execution_target or ":" not in self.execution_target:
             return False
         kind = self.execution_target.split(":", 1)[0].lower()
-        return kind in {"direct", "http", "n8n", "coding-engine", "openfang", "brain", "mcp"}
+        return kind in {"direct", "http", "n8n", "coding-engine", "openfang", "brain", "mcp", "research"}
 
 
 @dataclass

@@ -970,6 +970,9 @@ def build_executor(target: str):
     kind = target.split(":", 1)[0].lower()
     if kind == "direct":
         return DirectExecutor(target)
+    if kind == "research":
+        from spaces.research.execution_target import ResearchTarget
+        return ResearchTarget(target)
     cls = _EXECUTOR_KINDS.get(kind)
     if cls is None:
         raise ValueError(f"unsupported execution_target kind: {kind!r}")
@@ -988,4 +991,5 @@ def supported_kinds() -> Dict[str, str]:
         "mcp": "mcp:<server>:<tool>",
         "n8n-mcp": "n8n-mcp:<canonical_event>",
         "supabase": "supabase:<op>  (idea.connect|idea.disconnect|idea.auto_link)",
+        "research": "research:<web|scrape|summarize|to_idea>",
     }

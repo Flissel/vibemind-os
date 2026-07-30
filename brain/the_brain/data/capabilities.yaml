@@ -1465,6 +1465,58 @@
 # whose regex patterns ("how many agents", "list personas", "what is the router")
 # are SYSTEM/meta lookups and fire first (regex before semantics) — so those stay
 # with rowboat-knowledge/supermemory and are NOT captured here.
+- capability: research_web
+  description: "research a topic on the web with cited external sources"
+  anchor_phrases:
+    - "research.web latest battery technology"
+  match_patterns:
+    - "research\\.web\\b"
+    - "\\bresearch space\\b.*\\b(web|internet|topic)\\b"
+  execution_target: "research:web"
+  arg_kwarg: query
+  validator:
+    kind: rule:dict_nonempty
+    on_fail: report
+
+- capability: research_scrape
+  description: "scrape a specific URL and return its content with source evidence"
+  anchor_phrases:
+    - "research.scrape https://example.com"
+  match_patterns:
+    - "research\\.scrape\\b"
+    - "\\bresearch space\\b.*\\b(scrape|extract)\\b"
+  execution_target: "research:scrape"
+  arg_kwarg: url
+  validator:
+    kind: rule:dict_nonempty
+    on_fail: report
+
+- capability: research_summarize
+  description: "summarize externally retrieved research with source evidence"
+  anchor_phrases:
+    - "research.summarize this source"
+  match_patterns:
+    - "research\\.summarize\\b"
+    - "\\bresearch space\\b.*\\b(summarize|zusammenfass)"
+  execution_target: "research:summarize"
+  arg_kwarg: url
+  validator:
+    kind: rule:dict_nonempty
+    on_fail: report
+
+- capability: research_to_idea
+  description: "research a topic and persist a sourced result as an idea"
+  anchor_phrases:
+    - "research.to_idea quantum computing"
+  match_patterns:
+    - "research\\.to_idea\\b"
+    - "\\bresearch space\\b.*\\b(to idea|als idee|idee anlegen)\\b"
+  execution_target: "research:to_idea"
+  arg_kwarg: query
+  validator:
+    kind: rule:dict_nonempty
+    on_fail: report
+
 - capability: rowboat_chat
   description: "ask the Rowboat knowledge assistant a question via chat, consult the Rowboat knowledge base in dialogue about its stored content (Bewerbung, projects, notes, people, topics, investor programs), frag Rowboat, chatte mit Rowboat, was weiß Rowboat über X, lass dir von Rowboat etwas aus der Wissensbasis erklären"
   anchor_phrases:
