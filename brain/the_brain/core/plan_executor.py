@@ -1221,6 +1221,23 @@ class PlanExecutor:
                     contract_pass=False, reward=-1.0,
                 )
 
+        # Canonical n8n events are declared in config/space_agent_registry.yml.
+        # Resolve them without duplicating the registry's MCP tool names.
+        if not target and hop.capability:
+            try:
+                from .capability_targets import resolve_registry_execution_target
+                target = resolve_registry_execution_target(hop.capability)
+            except Exception as e:
+                if str(hop.capability).startswith("n8n."):
+                    return HopResult(
+                        step_id=hop.step_id, ok=False,
+                        error=f"n8n registry lookup: {type(e).__name__}: {e}",
+                        capability=hop.capability, target=None,
+                        rendered_arg=rendered_arg, kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False, reward=-1.0,
+                    )
+
         # Phase 11.B — if registry maps this capability/event to an OpenFang agent,
         # build a vibemind.intent.v1 envelope and route through that agent
         # instead of direct-calling. The agent's MCP-allowed list contains the
@@ -1273,7 +1290,8 @@ class PlanExecutor:
                 pass
             assigned_agent = _registry.get_event_agent(event_id) if event_id else None
 
-            if assigned_agent and target and not target.startswith("openfang:"):
+            if (assigned_agent and target
+                    and not target.startswith(("openfang:", "n8n-mcp:"))):
                 # Probe: is the agent reachable in OpenFang? If not, skip
                 # Phase 11.B routing and fall through to the direct target.
                 _agent_known = False
