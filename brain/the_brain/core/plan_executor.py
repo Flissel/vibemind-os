@@ -591,9 +591,13 @@ class PlanExecutor:
         plan: Plan,
         *,
         replanner: Optional[Callable[[Plan, HopResult], Optional[Plan]]] = None,
+        confirmed_events: Optional[Set[str]] = None,
     ) -> Dict[str, Any]:
         """Walk the DAG. Returns a dict with `executed` (step_id → HopResult),
         `state`, `plan`, `ok`, `elapsed_s`, `replans`.
+
+        Desktop-family events listed as mutating in the canonical space registry
+        run only when their exact event id is present in ``confirmed_events``.
 
         Phase 6.14.1 — single-plan-at-a-time: parallel callers get a
         `busy` envelope back instead of stomping on shared state.
@@ -697,6 +701,7 @@ class PlanExecutor:
             "plan_rationale": getattr(plan, "rationale", "") or "",
             "plan_id": plan.plan_id,
             "trace_id": getattr(plan, "trace_id", "") or "",
+            "confirmed_events": set(confirmed_events or ()),
         }
 
         executed: Dict[str, HopResult] = {}
@@ -1257,6 +1262,27 @@ class PlanExecutor:
                 "idea_to_project": "idea.to_project",
             }
             event_id = cap_to_event.get(hop.capability or "", hop.capability or "")
+            desktop_route = None
+            if hop.capability in ("desktop_skill", "browser_automation"):
+                from .desktop_orchestration import DesktopOrchestration
+                desktop_route = DesktopOrchestration.from_repository().resolve_capability(
+                    hop.capability or "", plan_ctx.get("plan_intent", "") or hop.description
+                )
+                event_id = desktop_route.event_id
+                confirmed = event_id in plan_ctx.get("confirmed_events", set())
+                if desktop_route.requires_confirmation and not confirmed:
+                    return HopResult(
+                        step_id=hop.step_id,
+                        ok=False,
+                        error=f"confirmation required for mutating desktop event '{event_id}'",
+                        capability=hop.capability,
+                        target=target,
+                        rendered_arg=rendered_arg,
+                        kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False,
+                        reward=-1.0,
+                    )
             if "." not in event_id:
                 # If the capability already has a namespace.action pattern
                 # in some other form, leave as-is; otherwise it won't match

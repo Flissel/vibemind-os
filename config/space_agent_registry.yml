@@ -111,31 +111,31 @@ spaces:
     mcp_servers: [vibemind-db, desktop-automation]
     default_context: [current_space, active_window]
     events:
-      desktop.open_app:       { tool: desktop_open_app,    required_params: [app_name] }
-      desktop.click:          { tool: desktop_click,       required_params: [element] }
-      desktop.type:           { tool: desktop_type,        required_params: [text] }
-      desktop.press_key:      { tool: desktop_press_key,   required_params: [key] }
+      desktop.open_app:       { tool: desktop_open_app,    required_params: [app_name], requires_confirmation: true, result_validation: external_receipt }
+      desktop.click:          { tool: desktop_click,       required_params: [element], requires_confirmation: true, result_validation: external_receipt }
+      desktop.type:           { tool: desktop_type,        required_params: [text], requires_confirmation: true, result_validation: external_receipt }
+      desktop.press_key:      { tool: desktop_press_key,   required_params: [key], requires_confirmation: true, result_validation: external_receipt }
       desktop.screenshot:     { tool: desktop_screenshot,  required_params: [] }
-      desktop.scroll:         { tool: desktop_scroll,      required_params: [direction] }
-      desktop.task:           { tool: desktop_task,        required_params: [task] }
-      desktop.task.create:    { tool: desktop_task,        required_params: [task] }
-      desktop.task.update:    { tool: desktop_task,        required_params: [task_id] }
+      desktop.scroll:         { tool: desktop_scroll,      required_params: [direction], requires_confirmation: true, result_validation: external_receipt }
+      desktop.task:           { tool: desktop_task,        required_params: [task], requires_confirmation: true, result_validation: external_receipt }
+      desktop.task.create:    { tool: desktop_task,        required_params: [task], requires_confirmation: true, result_validation: external_receipt }
+      desktop.task.update:    { tool: desktop_task,        required_params: [task_id], requires_confirmation: true, result_validation: external_receipt }
       desktop.task.list:      { tool: desktop_task,        required_params: [] }
       desktop.moire.scan:     { tool: desktop_screenshot,  required_params: [] }
       desktop.moire.find:     { tool: desktop_screenshot,  required_params: [query] }
-      messaging.whatsapp:     { tool: desktop_task,        required_params: [message] }
-      messaging.telegram:     { tool: desktop_task,        required_params: [message] }
-      messaging.send:         { tool: desktop_task,        required_params: [message] }
+      messaging.whatsapp:     { tool: desktop_task,        required_params: [message], requires_confirmation: true, result_validation: external_receipt }
+      messaging.telegram:     { tool: desktop_task,        required_params: [message], requires_confirmation: true, result_validation: external_receipt }
+      messaging.send:         { tool: desktop_task,        required_params: [message], requires_confirmation: true, result_validation: external_receipt }
       web.search:             { tool: fetch,               required_params: [query] }
       web.fetch:              { tool: fetch,               required_params: [url] }
       openclaw.status:        { tool: desktop_task,        required_params: [] }
       openclaw.notifications: { tool: desktop_task,        required_params: [] }
-      openclaw.prompt:        { tool: desktop_task,        required_params: [prompt] }
+      openclaw.prompt:        { tool: desktop_task,        required_params: [prompt], requires_confirmation: true, result_validation: external_receipt }
       openclaw.browse:        { tool: fetch,               required_params: [url] }
       openclaw.scrape:        { tool: fetch,               required_params: [url] }
       openclaw.screenshot.web: { tool: desktop_screenshot, required_params: [url] }
-      openclaw.fill_form:     { tool: desktop_type,        required_params: [form_data] }
-      openclaw.message.send:  { tool: desktop_task,        required_params: [message] }
+      openclaw.fill_form:     { tool: desktop_type,        required_params: [form_data], requires_confirmation: true, result_validation: external_receipt }
+      openclaw.message.send:  { tool: desktop_task,        required_params: [message], requires_confirmation: true, result_validation: external_receipt }
       openclaw.message.read:  { tool: desktop_task,        required_params: [] }
       openclaw.linkedin.search: { tool: fetch, required_params: [query] }
       openclaw.monitor:       { tool: desktop_task,        required_params: [] }
