@@ -885,6 +885,7 @@ class SupabaseExecutor(_BaseRemoteExecutor):
         # Phase 11.W2 Stage B — component-spec lookup (reuses SupabaseExecutor
         # because it needs the same Supabase client to read the bubble's IST-state)
         "component.requirements",
+        "rose.recommend", "rose.accept", "rose.status",
     }
 
     def __init__(self, target: str) -> None:
@@ -941,6 +942,14 @@ class SupabaseExecutor(_BaseRemoteExecutor):
         if self.operation == "component.requirements":
             from . import component_specs_ops as _cso
             return _asyncio.run(_cso.lookup_op(client, payload))
+        if self.operation.startswith("rose."):
+            from . import flowzen_ops as _flowzen
+            flowzen_map = {
+                "rose.recommend": _flowzen.recommend_op,
+                "rose.accept": _flowzen.accept_op,
+                "rose.status": _flowzen.status_op,
+            }
+            return _asyncio.run(flowzen_map[self.operation](client, payload))
         fn = op_map.get(self.operation)
         if fn is None:
             raise ValueError(f"unhandled operation: {self.operation!r}")
