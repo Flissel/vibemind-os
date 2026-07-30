@@ -266,23 +266,70 @@ class N8nExecutor(_BaseRemoteExecutor):
 
 
 class CodingEngineExecutor(_BaseRemoteExecutor):
-    """Daves coding-engine HTTP endpoint.
+    """Health-gated coding-engine control-server endpoint.
 
-    Spec: `coding-engine:<endpoint>` — POSTs the payload to
-    CODING_ENGINE_URL/<endpoint>.
-      CODING_ENGINE_URL  (default http://127.0.0.1:5200)
+    Spec: ``coding-engine:<METHOD>:<route>``.  The pinned coding-engine
+    exposes this contract from ``infra/control_server/server.py`` on port
+    8000.  Every operation first checks ``/api/health`` and fails closed if
+    the service cannot prove itself healthy.
     """
 
     def __init__(self, target: str) -> None:
         super().__init__(target)
-        ep = target.split(":", 1)[1] if target.startswith("coding-engine:") else target
-        self.endpoint = ep.strip().lstrip("/")
-        self.base = os.environ.get("CODING_ENGINE_URL", "http://127.0.0.1:5200").rstrip("/")
+        rest = target.split(":", 1)[1] if target.startswith("coding-engine:") else target
+        if ":" not in rest:
+            raise ValueError(f"coding-engine target needs method:route: {target!r}")
+        method, route = rest.split(":", 1)
+        self.method = method.upper().strip()
+        if self.method not in {"GET", "POST", "PUT", "DELETE"}:
+            raise ValueError(f"unsupported coding-engine method: {self.method!r}")
+        self.route = "/" + route.lstrip("/")
+        self.base = os.environ.get(
+            "CODING_ENGINE_URL", "http://127.0.0.1:8000"
+        ).rstrip("/")
+
+    def _assert_healthy(self, timeout: float) -> None:
+        response = requests.request(
+            "GET", f"{self.base}/api/health", timeout=min(timeout, 5.0)
+        )
+        response.raise_for_status()
+        body = response.json()
+        if not isinstance(body, dict) or body.get("healthy") is not True:
+            raise RuntimeError(f"coding-engine unhealthy: {body!r}")
 
     def _call(self, payload: Dict[str, Any]) -> Any:
-        url = f"{self.base}/{self.endpoint}"
         timeout = float(os.environ.get("CAPABILITY_HTTP_TIMEOUT_S", "120"))
-        resp = requests.post(url, json=payload, timeout=timeout)
+        self._assert_healthy(timeout)
+
+        route = self.route
+        request_payload = dict(payload)
+        for name in ("project_id",):
+            marker = "{" + name + "}"
+            if marker in route:
+                value = request_payload.pop(name, None)
+                if value in (None, ""):
+                    raise ValueError(f"coding-engine route requires {name}")
+                route = route.replace(marker, str(value))
+
+        if route == "/api/start" and "requirements_json" not in request_payload:
+            description = (
+                request_payload.pop("description", None)
+                or request_payload.pop("_intent", None)
+                or request_payload.pop("input", None)
+                or request_payload.pop("value", None)
+            )
+            requirements = dict(request_payload)
+            if description not in (None, ""):
+                requirements["description"] = description
+            request_payload = {"requirements_json": requirements}
+
+        url = f"{self.base}{route}"
+        kwargs: Dict[str, Any] = {"timeout": timeout}
+        if self.method in {"GET", "DELETE"}:
+            kwargs["params"] = request_payload
+        else:
+            kwargs["json"] = request_payload
+        resp = requests.request(self.method, url, **kwargs)
         resp.raise_for_status()
         ct = resp.headers.get("content-type", "")
         if ct.startswith("application/json"):
@@ -1192,7 +1239,7 @@ def supported_kinds() -> Dict[str, str]:
         "direct": "direct:<module.path>:<function>",
         "http": "http:<METHOD>:<url>",
         "n8n": "n8n:<workflow_id>",
-        "coding-engine": "coding-engine:<endpoint>",
+        "coding-engine": "coding-engine:<METHOD>:<route>",
         "openfang": "openfang:<agent_name>",
         "brain": "brain:<METHOD>:<route>",
         "mcp": "mcp:<server>:<tool>",
