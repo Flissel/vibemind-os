@@ -69,6 +69,12 @@ _FAIL_PREFIXES = (
     "unable to", "error:", "no execution target", "does not exist",
 )
 
+_FAIL_PATTERNS = (
+    " not found", " are not connected", "nothing to update",
+    "no previous format", "not persisted", "not readable back",
+    " cannot be ",
+)
+
 
 def result_indicates_failure(result: Any) -> bool:
     """True if an executor op-result CLEARLY represents a failure (→ hop ok=False).
@@ -82,7 +88,8 @@ def result_indicates_failure(result: Any) -> bool:
         return bool(result.get("error")) and result.get("ok") is not True
     if isinstance(result, str):
         s = result.strip().lower()
-        return any(s.startswith(p) for p in _FAIL_PREFIXES)
+        return (any(s.startswith(p) for p in _FAIL_PREFIXES)
+                or any(p in s for p in _FAIL_PATTERNS))
     return False
 
 
@@ -724,6 +731,7 @@ class SupabaseExecutor(_BaseRemoteExecutor):
         "bubble.delete", "bubble.stats", "bubble.score", "bubble.noop",
         "idea.list", "idea.count", "idea.find", "idea.delete", "idea.move",
         "idea.format", "idea.llm",
+        "idea.to_project",
         # Phase 11.W2 Stage B — component-spec lookup (reuses SupabaseExecutor
         # because it needs the same Supabase client to read the bubble's IST-state)
         "component.requirements",
@@ -774,6 +782,7 @@ class SupabaseExecutor(_BaseRemoteExecutor):
             "idea.move": _ops.idea_move_op,
             "idea.format": _ops.idea_format_op,
             "idea.llm": _ops.idea_llm_op,
+            "idea.to_project": _ops.idea_to_project_op,
         }
         # Phase 11.W2 Stage B — component_specs lookup (separate module so
         # the YAML cache is contained; reuses the same Supabase client to

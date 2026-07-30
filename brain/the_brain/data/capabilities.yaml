@@ -315,10 +315,32 @@
   # bubble_create's truth:supabase_row, just canvas_nodes instead of ideas).
   validator:
     kind: truth:supabase_row
-    on_fail: report
+    on_fail: block
+    require_verified: true
     postcondition:
       check: supabase_row
       table: canvas_nodes
+      match: "id=eq.{result_id}"
+      expect: present
+
+- capability: idea_to_project
+  description: "promote an existing idea bubble to a real project, convert an idea into a project"
+  anchor_phrases:
+    - "turn this idea into a project"
+    - "promote the idea to a project"
+    - "mache aus dieser Idee ein Projekt"
+  match_patterns:
+    - "(?:turn|convert|promote)\\s+.*(?:idea|bubble)\\s+(?:into|to)\\s+(?:a\\s+)?project"
+    - "(?:idee|bubble)\\s+.*(?:in|zu)\\s+(?:ein(?:em)?\\s+)?projekt"
+  execution_target: "supabase:idea.to_project"
+  arg_kwarg: name
+  validator:
+    kind: truth:supabase_row
+    on_fail: block
+    require_verified: true
+    postcondition:
+      check: supabase_row
+      table: projects
       match: "id=eq.{result_id}"
       expect: present
 
@@ -436,7 +458,8 @@
     # reports connecting now exists. {result_title}+{result_title2} from "'X' and 'Y'
     # are now connected." -> resolve titles -> query canvas_edges (LIVE-verified).
     kind: truth:supabase_edge
-    on_fail: report
+    on_fail: block
+    require_verified: true
     postcondition:
       check: supabase_edge
       title_a: "{result_title}"
@@ -476,7 +499,8 @@
     # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
     # format the op reports applying ("...formatted as X." -> {result_format}).
     kind: truth:supabase_row
-    on_fail: report
+    on_fail: block
+    require_verified: true
     postcondition:
       check: supabase_row
       table: canvas_nodes
@@ -498,7 +522,8 @@
     # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
     # format the op reports applying ("...formatted as X." -> {result_format}).
     kind: truth:supabase_row
-    on_fail: report
+    on_fail: block
+    require_verified: true
     postcondition:
       check: supabase_row
       table: canvas_nodes
@@ -521,7 +546,8 @@
     # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
     # format the op reports applying ("...formatted as X." -> {result_format}).
     kind: truth:supabase_row
-    on_fail: report
+    on_fail: block
+    require_verified: true
     postcondition:
       check: supabase_row
       table: canvas_nodes
@@ -544,7 +570,8 @@
     # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
     # format the op reports applying ("...formatted as X." -> {result_format}).
     kind: truth:supabase_row
-    on_fail: report
+    on_fail: block
+    require_verified: true
     postcondition:
       check: supabase_row
       table: canvas_nodes
@@ -566,7 +593,8 @@
     # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
     # format the op reports applying ("...formatted as X." -> {result_format}).
     kind: truth:supabase_row
-    on_fail: report
+    on_fail: block
+    require_verified: true
     postcondition:
       check: supabase_row
       table: canvas_nodes
@@ -593,7 +621,8 @@
     # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
     # format the op reports applying ("...formatted as X." -> {result_format}).
     kind: truth:supabase_row
-    on_fail: report
+    on_fail: block
+    require_verified: true
     postcondition:
       check: supabase_row
       table: canvas_nodes
@@ -615,7 +644,8 @@
     # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
     # format the op reports applying ("...formatted as X." -> {result_format}).
     kind: truth:supabase_row
-    on_fail: report
+    on_fail: block
+    require_verified: true
     postcondition:
       check: supabase_row
       table: canvas_nodes
@@ -636,7 +666,8 @@
     # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
     # format the op reports applying ("...formatted as X." -> {result_format}).
     kind: truth:supabase_row
-    on_fail: report
+    on_fail: block
+    require_verified: true
     postcondition:
       check: supabase_row
       table: canvas_nodes
@@ -658,7 +689,8 @@
     # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
     # format the op reports applying ("...formatted as X." -> {result_format}).
     kind: truth:supabase_row
-    on_fail: report
+    on_fail: block
+    require_verified: true
     postcondition:
       check: supabase_row
       table: canvas_nodes
@@ -680,7 +712,8 @@
     # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
     # format the op reports applying ("...formatted as X." -> {result_format}).
     kind: truth:supabase_row
-    on_fail: report
+    on_fail: block
+    require_verified: true
     postcondition:
       check: supabase_row
       table: canvas_nodes
@@ -703,7 +736,8 @@
     # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
     # format the op reports applying ("...formatted as X." -> {result_format}).
     kind: truth:supabase_row
-    on_fail: report
+    on_fail: block
+    require_verified: true
     postcondition:
       check: supabase_row
       table: canvas_nodes
@@ -727,7 +761,8 @@
     # truth: ground-truth (2026-06-24) — confirm the idea's stored format matches the
     # format the op reports applying ("...formatted as X." -> {result_format}).
     kind: truth:supabase_row
-    on_fail: report
+    on_fail: block
+    require_verified: true
     postcondition:
       check: supabase_row
       table: canvas_nodes
@@ -770,7 +805,8 @@
   # stays UNVERIFIED — the honest outcome (nothing was written to verify).
   validator:
     kind: truth:supabase_edge
-    on_fail: report
+    on_fail: block
+    require_verified: true
     postcondition:
       check: supabase_edge
       title_a: "{result_title}"
@@ -1062,10 +1098,11 @@
     # truth: ground-truth (2026-06-24) — re-query that a node with the title the op
     # reports ("Node 'X' updated.") exists; VERIFIED only if it persisted.
     kind: truth:supabase_row
-    on_fail: report
+    on_fail: block
+    require_verified: true
     postcondition:
       check: supabase_row
-      table: ideas
+      table: canvas_nodes
       match: "title=eq.{result_title}"
       expect: present
 
@@ -1084,10 +1121,11 @@
     # truth: ground-truth (2026-06-24) — re-query that the deleted idea is GONE.
     # {result_title} = the title the op reported deleting ("Idea 'X' deleted.").
     kind: truth:supabase_row
-    on_fail: report
+    on_fail: block
+    require_verified: true
     postcondition:
       check: supabase_row
-      table: ideas
+      table: canvas_nodes
       match: "title=eq.{result_title}"
       expect: absent
 
@@ -1108,7 +1146,8 @@
     # truth: ground-truth (2026-06-24) — confirm the edge between the two ideas is GONE.
     # {result_title}+{result_title2} from "Connection between 'X' and 'Y' removed."
     kind: truth:supabase_edge
-    on_fail: report
+    on_fail: block
+    require_verified: true
     postcondition:
       check: supabase_edge
       title_a: "{result_title}"

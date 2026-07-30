@@ -421,8 +421,11 @@ class CapabilityValidator:
             )
         v = wo.observe(pc)
         verified = v.verified_ok  # True | False | None
-        # UNVERIFIED (None) must NOT fail the action — only REFUTED does.
-        valid = (verified is not False)
+        # Mutating capabilities may opt into fail-closed truth. Reads and
+        # legacy capabilities retain the historical UNVERIFIED-as-reporting
+        # behavior unless ``require_verified`` is explicitly set.
+        require_verified = validator_cfg.get("require_verified") is True
+        valid = (verified is True) if require_verified else (verified is not False)
         return self._envelope(
             valid=valid, reason=f"ground-truth {v.verdict}: {v.reason}",
             kind=kind, on_fail=on_fail, t0=t0,
