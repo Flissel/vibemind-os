@@ -20,6 +20,8 @@ spaces:
   # ─── Bubbles (canvas CRUD) ─────────────────────────────────────────
   bubbles:
     agent: brain-bubbles
+    # Legacy input spelling only. Persisted/routed identity stays "bubbles".
+    aliases: [shuttles]
     # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
     prefixes: [bubble.]
     enabled: true

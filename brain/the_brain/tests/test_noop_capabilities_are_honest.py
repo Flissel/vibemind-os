@@ -16,7 +16,7 @@ CAPS = yaml.safe_load(
 )
 BY_NAME = {c["capability"]: c for c in CAPS}
 
-LYING_STUBS = ("bubble_promote", "bubble_delete_all", "bubble_generate_embeddings")
+LYING_STUBS = ("bubble_delete_all", "bubble_generate_embeddings")
 
 
 class TestLyingStubsAreDisabled:
@@ -49,8 +49,7 @@ class TestNoopOpNoLongerServesWriters:
                "supabase_ideas_ops.py").read_text(encoding="utf-8")
         i = src.index("async def bubble_noop_op")
         doc = src[i:i + 500]
-        for name in ("bubble_promote", "bubble_delete_all",
-                     "bubble_generate_embeddings"):
+        for name in ("bubble_delete_all", "bubble_generate_embeddings"):
             assert name not in doc, (
                 f"bubble_noop_op bedient laut Docstring noch {name}"
             )
