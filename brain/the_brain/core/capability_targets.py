@@ -30,10 +30,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
+import uuid
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 import requests
+import yaml
 
 from .capability_executor import DirectExecutor
 
@@ -707,6 +711,152 @@ class McpExecutor(_BaseRemoteExecutor):
         return resp.json()
 
 
+_N8N_MUTATING_EVENTS = {
+    "n8n.generate", "n8n.activate", "n8n.deactivate", "n8n.delete", "n8n.execute",
+}
+_N8N_IDENTITY_EVENTS = {
+    "n8n.activate", "n8n.deactivate", "n8n.delete", "n8n.execute", "n8n.describe",
+}
+_REDACTED_KEYS = {
+    "authorization", "token", "apikey", "api_key", "password", "secret",
+    "credential", "credentials", "headers",
+}
+
+
+def _space_registry_path() -> Path:
+    configured = os.environ.get("SPACE_AGENT_REGISTRY_PATH", "").strip()
+    if configured:
+        return Path(configured)
+    return Path(__file__).resolve().parents[3] / "config" / "space_agent_registry.yml"
+
+
+def _n8n_event_specs() -> Dict[str, Dict[str, Any]]:
+    path = _space_registry_path()
+    if not path.is_file():
+        raise RuntimeError(f"canonical space registry unavailable: {path}")
+    with path.open("r", encoding="utf-8") as handle:
+        document = yaml.safe_load(handle) or {}
+    events = (((document.get("spaces") or {}).get("n8n") or {}).get("events") or {})
+    if not isinstance(events, dict):
+        raise RuntimeError("canonical space registry has no n8n events")
+    return events
+
+
+def resolve_registry_execution_target(capability: str) -> Optional[str]:
+    """Resolve canonical n8n event ids without duplicating tool names in Brain."""
+    if not isinstance(capability, str) or not capability.startswith("n8n."):
+        return None
+    return f"n8n-mcp:{capability}" if capability in _n8n_event_specs() else None
+
+
+def _redact_evidence(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): ("[REDACTED]" if str(key).lower() in _REDACTED_KEYS else _redact_evidence(item))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_evidence(item) for item in value]
+    if isinstance(value, str):
+        redacted = re.sub(r"(?i)bearer\s+[a-z0-9._~+/=-]+", "Bearer [REDACTED]", value)
+        runtime_token = os.environ.get("N8N_MCP_TOKEN", "")
+        if runtime_token:
+            redacted = redacted.replace(runtime_token, "[REDACTED]")
+        return redacted
+    return value
+
+
+def _mcp_result_payload(body: Dict[str, Any]) -> Any:
+    if body.get("error"):
+        error = body["error"]
+        message = error.get("message") if isinstance(error, dict) else str(error)
+        raise RuntimeError(f"n8n MCP error: {message}")
+    result = body.get("result")
+    if isinstance(result, dict) and result.get("isError") is True:
+        raise RuntimeError("n8n MCP tool returned isError=true")
+    content = result.get("content") if isinstance(result, dict) else None
+    if isinstance(content, list):
+        for item in content:
+            if not isinstance(item, dict) or item.get("type") != "text":
+                continue
+            text = item.get("text")
+            if isinstance(text, str):
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError:
+                    return {"message": text[:500]}
+    return result
+
+
+class N8nMcpExecutor(_BaseRemoteExecutor):
+    """Execute canonical n8n events through the provider-backed HTTP MCP endpoint."""
+
+    def __init__(self, target: str) -> None:
+        super().__init__(target)
+        event = target.split(":", 1)[1] if target.startswith("n8n-mcp:") else target
+        self.event = event.strip()
+        spec = _n8n_event_specs().get(self.event)
+        if not isinstance(spec, dict) or not spec.get("tool"):
+            raise ValueError(f"unknown canonical n8n event: {self.event!r}")
+        self.tool = str(spec["tool"])
+
+    def _call(self, payload: Dict[str, Any]) -> Any:
+        endpoint = os.environ.get("N8N_MCP_URL", "").strip()
+        if not endpoint:
+            raise RuntimeError("N8N_MCP_URL is required; external n8n MCP is unavailable")
+
+        authorized = payload.pop("authorized", False) is True
+        if self.event in _N8N_MUTATING_EVENTS and not authorized:
+            raise PermissionError(f"explicit authorization required for {self.event}")
+
+        workflow_id = payload.get("workflow_id") or payload.get("id")
+        workflow_name = payload.get("name") or payload.get("workflow_name")
+        if self.event in _N8N_IDENTITY_EVENTS and not (workflow_id or workflow_name):
+            raise ValueError(f"workflow identity required for {self.event} (workflow_id or name)")
+
+        if self.event == "n8n.activate":
+            payload["active"] = True
+        elif self.event == "n8n.deactivate":
+            payload["active"] = False
+
+        request_id = f"brain-n8n-{uuid.uuid4().hex}"
+        headers = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
+        token = os.environ.get("N8N_MCP_TOKEN", "").strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        timeout = float(os.environ.get("CAPABILITY_HTTP_TIMEOUT_S", "60"))
+        response = requests.post(
+            endpoint,
+            json={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "tools/call",
+                "params": {"name": self.tool, "arguments": payload},
+            },
+            headers=headers,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        body = response.json()
+        if not isinstance(body, dict):
+            raise RuntimeError("n8n MCP returned a non-object response")
+        provider_result = _redact_evidence(_mcp_result_payload(body))
+        workflow = {
+            key: value for key, value in {
+                "id": workflow_id or (provider_result.get("id") if isinstance(provider_result, dict) else None),
+                "name": workflow_name or (provider_result.get("name") if isinstance(provider_result, dict) else None),
+            }.items() if value not in (None, "")
+        }
+        return {
+            "event": self.event,
+            "tool": self.tool,
+            "workflow": workflow,
+            "provider_backed": True,
+            "request_id": request_id,
+            "result": provider_result,
+        }
+
+
 # ── Supabase executor (Phase 11.U.C.8) ───────────────────────────────
 
 
@@ -807,6 +957,7 @@ _EXECUTOR_KINDS: Dict[str, type] = {
     "openfang": OpenFangExecutor,
     "brain": BrainSelfExecutor,
     "mcp": McpExecutor,
+    "n8n-mcp": N8nMcpExecutor,
     "supabase": SupabaseExecutor,
 }
 
@@ -835,5 +986,6 @@ def supported_kinds() -> Dict[str, str]:
         "openfang": "openfang:<agent_name>",
         "brain": "brain:<METHOD>:<route>",
         "mcp": "mcp:<server>:<tool>",
+        "n8n-mcp": "n8n-mcp:<canonical_event>",
         "supabase": "supabase:<op>  (idea.connect|idea.disconnect|idea.auto_link)",
     }
