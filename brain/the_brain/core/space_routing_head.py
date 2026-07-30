@@ -35,7 +35,7 @@ _LEGACY_EVENT_SPACE_MAP = {
     # Coding
     "code.generate": "coding", "code.modify": "coding", "code.status": "coding",
     "code.show": "coding", "code.preview.start": "coding", "code.preview.stop": "coding",
-    "code.list": "coding", "code.cancel": "coding", "idea.to_project": "coding",
+    "code.list": "coding", "code.cancel": "coding",
     # Desktop
     "desktop.open_app": "desktop", "desktop.click": "desktop", "desktop.type": "desktop",
     "desktop.press_key": "desktop", "desktop.screenshot": "desktop", "desktop.scroll": "desktop",
@@ -69,7 +69,7 @@ _LEGACY_EVENT_SPACE_MAP = {
     "idea.format_pros_cons": "ideas", "idea.format_hierarchy": "ideas",
     "idea.format_specs": "ideas", "idea.convert_format": "ideas",
     "idea.explore.start": "ideas", "idea.explore.stop": "ideas",
-    "idea.generate_doc": "ideas",
+    "idea.generate_doc": "ideas", "idea.to_project": "ideas",
     # Research
     "research.web": "research", "research.scrape": "research",
     "research.summarize": "research", "research.to_idea": "research",

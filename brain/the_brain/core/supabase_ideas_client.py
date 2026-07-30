@@ -532,6 +532,53 @@ class SupabaseIdeasClient:
         )
         return ok is not None and ok is not False
 
+    async def create_project_from_idea(
+        self, idea: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Create the canonical project row for an idea/bubble."""
+        idea_id = str(idea.get("id") or "").strip()
+        name = str(idea.get("title") or "").strip()
+        if not idea_id or not name:
+            return None
+        existing = await self._request(
+            "GET", "/projects",
+            params={"select": "*", "from_idea_id": f"eq.{idea_id}", "limit": "1"},
+        )
+        if existing:
+            return existing[0]
+        row = {
+            "id": uuid.uuid4().hex,
+            "name": name,
+            "description": str(idea.get("description") or ""),
+            "status": "active",
+            "from_idea_id": idea_id,
+            "progress": 0.0,
+            "metadata": {"source": "brain", "source_space": "ideas"},
+            "generation_status": "pending",
+        }
+        result = await self._request(
+            "POST", "/projects", json=row, prefer="return=representation",
+        )
+        return result[0] if isinstance(result, list) and result else None
+
+    async def get_project(self, project_id: str) -> Optional[Dict[str, Any]]:
+        pid = (project_id or "").strip()
+        if not pid:
+            return None
+        rows = await self._request(
+            "GET", "/projects",
+            params={"select": "*", "id": f"eq.{pid}", "limit": "1"},
+        )
+        return rows[0] if rows else None
+
+    async def mark_idea_promoted(self, idea_id: str, project_id: str) -> bool:
+        result = await self._request(
+            "PATCH", "/ideas", params={"id": f"eq.{idea_id}"},
+            json={"promoted_to_project_id": project_id, "status": "promoted"},
+            prefer="return=representation",
+        )
+        return bool(result)
+
     async def bubble_node_stats(
         self, bubble_id: str,
     ) -> Dict[str, Any]:

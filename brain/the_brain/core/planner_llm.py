@@ -122,7 +122,7 @@ REGISTERED CAPABILITIES (exact names):
   Idea:   idea_add (alias idea_create), idea_create_batch, idea_list, idea_count,
           idea_find, idea_update, idea_delete, idea_explain, idea_classify, idea_expand,
           idea_connect, idea_disconnect, idea_link_to_root, idea_move, idea_auto_link,
-          idea_analyze_links.
+          idea_analyze_links, idea_to_project.
   Format: idea_format_table, idea_format_note, idea_format_action_list,
           idea_format_pros_cons, idea_format_hierarchy, idea_format_specs,
           idea_format_kanban, idea_format_mindmap, idea_format_swot,

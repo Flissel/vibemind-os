@@ -1237,6 +1237,7 @@ class PlanExecutor:
                 "idea_update": "idea.update",
                 "idea_expand": "idea.expand",
                 "idea_connect": "idea.connect",
+                "idea_to_project": "idea.to_project",
             }
             event_id = cap_to_event.get(hop.capability or "", hop.capability or "")
             if "." not in event_id:

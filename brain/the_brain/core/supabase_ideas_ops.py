@@ -1122,6 +1122,42 @@ async def idea_delete_op(client: SupabaseIdeasClient,
     return f"Idea '{node.get('title', name)}' deleted."
 
 
+async def idea_to_project_op(
+    client: SupabaseIdeasClient, params: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Promote an idea/bubble to a Supabase project and verify persistence."""
+    name = _arg(params, "name", "title", "idea", "idea_id")
+    if not name:
+        return {"ok": False, "verified": False,
+                "error": "Need an idea name/id to create a project."}
+    idea = await client.find_bubble_by_title(name)
+    if idea is None:
+        idea = await client.get_idea(name)
+    if idea is None:
+        return {"ok": False, "verified": False,
+                "error": f"Idea {name!r} not found."}
+    project = await client.create_project_from_idea(idea)
+    project_id = str((project or {}).get("id") or "")
+    if not project_id:
+        return {"ok": False, "verified": False,
+                "error": f"Failed to create project from idea {name!r}."}
+    verified = await client.get_project(project_id)
+    if verified is None or verified.get("from_idea_id") != idea.get("id"):
+        return {"ok": False, "verified": False, "project_id": project_id,
+                "idea_id": idea.get("id"),
+                "error": "Project write could not be verified by read-back."}
+    if not await client.mark_idea_promoted(idea["id"], project_id):
+        return {"ok": False, "verified": False, "project_id": project_id,
+                "idea_id": idea.get("id"),
+                "error": "Project persisted but source idea promotion link failed."}
+    result = {"ok": True, "project_id": project_id,
+              "idea_id": idea["id"], "name": verified.get("name") or idea["title"],
+              "verified": True}
+    _publish("idea.to_project", result,
+             f"Promoted idea '{idea.get('title')}' to project {project_id}", True)
+    return result
+
+
 async def idea_move_op(client: SupabaseIdeasClient,
                         params: Dict[str, Any]) -> str:
     name = _arg(params, "idea_name", "name", "idea", "title")
