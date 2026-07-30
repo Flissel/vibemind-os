@@ -298,10 +298,10 @@ spaces:
     mcp_servers: [vibemind-db]
     default_context: [current_space]
     events:
-      mirofish.simulate:     { tool: db_query,  required_params: [model] }
-      mirofish.predict:      { tool: db_query,  required_params: [query] }
-      mirofish.graph.build:  { tool: db_insert, required_params: [graph_name] }
-      mirofish.graph.search: { tool: db_query,  required_params: [query] }
-      mirofish.status:       { tool: db_query,  required_params: [] }
-      mirofish.evaluate:     { tool: db_query,  required_params: [] }
-      mirofish.interview:    { tool: db_query,  required_params: [topic] }
+      mirofish.simulate:     { tool: 'mirofish:simulate',     required_params: [simulation_id] }
+      mirofish.predict:      { tool: 'mirofish:predict',      required_params: [simulation_id] }
+      mirofish.graph.build:  { tool: 'mirofish:graph.build',  required_params: [project_id] }
+      mirofish.graph.search: { tool: 'mirofish:graph.search', required_params: [graph_id, query] }
+      mirofish.status:       { tool: 'mirofish:status',       required_params: [job_id] }
+      mirofish.evaluate:     { tool: 'mirofish:evaluate',     required_params: [simulation_id] }
+      mirofish.interview:    { tool: 'mirofish:interview',    required_params: [simulation_id, agent_id, prompt] }
