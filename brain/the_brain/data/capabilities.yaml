@@ -1672,6 +1672,33 @@
 # (Planner→Executor→Validator→Matrix, mit Feedback-Loop). Status-Push zurück an
 # Telegram automatisch. Sensible Daten lokal, Pläne stoppen am Approval-Gate.
 
+- capability: rose.recommend
+  description: "Flowzen Blue Rose recommendation from the latest mood and energy check-in; read-only and privacy-minimal"
+  anchor_phrases: ["Was empfiehlst du", "Womit soll ich anfangen", "Flowzen Empfehlung"]
+  match_patterns:
+    - "(was|womit).{0,20}(empfiehl|anfangen|starten)"
+    - "(flowzen|rose|blaue rose).{0,20}(empfehl|recommend)"
+  execution_target: "supabase:rose.recommend"
+  validator: { kind: "rule:flowzen_result", on_fail: "block" }
+
+- capability: rose.accept
+  description: "Accept an opaque Flowzen recommendation ID and persist a verified minimal activity marker"
+  anchor_phrases: ["Empfehlung annehmen", "Flowzen Empfehlung akzeptieren"]
+  match_patterns:
+    - "(empfehlung|recommendation).{0,20}(annehmen|akzeptieren|accept)"
+  execution_target: "supabase:rose.accept"
+  arg_kwarg: recommendation_log_id
+  result_arg_extractor: 'regex:(fzr_[0-9a-f]{16})'
+  validator: { kind: "rule:flowzen_result", on_fail: "block" }
+
+- capability: rose.status
+  description: "Read the latest minimal Flowzen check-in and verified activity status"
+  anchor_phrases: ["Flowzen Status", "Status der blauen Rose"]
+  match_patterns:
+    - "(flowzen|rose|blaue rose).{0,20}(status|stand)"
+  execution_target: "supabase:rose.status"
+  validator: { kind: "rule:flowzen_result", on_fail: "block" }
+
 - capability: som_plan
   description: "Society-of-Mind Multi-Agent-Planung für komplexe oder mehrstufige Aufträge: zerlegt einen Auftrag in Schritte, bestimmt Ausführung+Agenten, validiert, baut eine Ausführungs-Matrix. Für 'plane X', 'erstelle einen Plan für Y', 'orchestriere Z', mehrstufige Vorhaben mit mehreren Capabilities."
   anchor_phrases:

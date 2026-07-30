@@ -175,6 +175,25 @@ def _rule_score_in_range(raw: Any, **_) -> Dict[str, Any]:
     return {"valid": False, "reason": f"score {s} out of range"}
 
 
+def _rule_flowzen_result(raw: Any, **_) -> Dict[str, Any]:
+    """Validate the operation-specific Flowzen result envelope."""
+    if not isinstance(raw, dict) or raw.get("ok") is not True:
+        return {"valid": False, "reason": "Flowzen operation did not report ok=true"}
+    event_id = raw.get("event_id")
+    if event_id == "rose.recommend":
+        recommendation = raw.get("recommendation")
+        valid = isinstance(recommendation, dict) and bool(
+            recommendation.get("recommendation_id") and recommendation.get("category")
+        ) and raw.get("mutated") is False
+    elif event_id == "rose.accept":
+        valid = raw.get("status") == "accepted" and raw.get("verified") is True and bool(raw.get("activity_id"))
+    elif event_id == "rose.status":
+        valid = isinstance(raw.get("status"), dict) and raw.get("mutated") is False
+    else:
+        valid = False
+    return {"valid": valid, "reason": f"Flowzen {event_id or 'unknown'} contract {'valid' if valid else 'invalid'}"}
+
+
 # Registry — extend by adding to this dict, then reference from YAML as
 #   validator: { kind: "rule:<name>" }
 RULES: Dict[str, Callable[..., Dict[str, Any]]] = {
@@ -189,6 +208,7 @@ RULES: Dict[str, Callable[..., Dict[str, Any]]] = {
     "idea_created": _rule_idea_created,
     # Phase 11.W2 — hard, read-back-verified canvas-node write check.
     "canvas_node_persisted": _rule_canvas_node_persisted,
+    "flowzen_result": _rule_flowzen_result,
 }
 
 
