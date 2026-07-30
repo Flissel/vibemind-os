@@ -259,14 +259,22 @@
       expect: present
 
 - capability: bubble_promote
-  description: "promote a bubble to a project, advance lifecycle from idea to actual project — NOT IMPLEMENTED (supabase-direct path): the op was a no-op that faked success — disabled 2026-07-14 so the planner routes elsewhere and the gap is reported."
+  description: "promote a bubble to a queryable Supabase project and link the canonical bubble to it"
   match_patterns:
     - "promote\\s+(?:the\\s+|this\\s+|my\\s+)?(?:bubble|idea)\\s+\\w+"
     - "befördere\\s+(?:die\\s+|diese\\s+)?(?:bubble|idee)"
     - "(?:bubble|idea)\\s+\\w+\\s+to\\s+project"
-  # execution_target removed 2026-07-14: was supabase:bubble.noop (faked success). No real op → GapSentinel reports the gap.
+  execution_target: "supabase:bubble.promote"
   result_arg_extractor: 'regex:promote\s+(?:the\s+|this\s+|my\s+)?(?:bubble|idea)\s+([^\n]+)'
   arg_kwarg: bubble_name
+  validator:
+    kind: truth:supabase_row
+    on_fail: report
+    postcondition:
+      check: supabase_row
+      table: projects
+      match: "id=eq.{result_id}"
+      expect: present
 
 - capability: bubble_score
   description: "score or rate a bubble across impact feasibility novelty urgency dimensions, how mature/ready/reif is a bubble, give me the score, wie reif"

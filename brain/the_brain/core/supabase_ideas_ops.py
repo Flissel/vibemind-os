@@ -1045,6 +1045,24 @@ async def bubble_score_op(client: SupabaseIdeasClient,
             f"Run bubble_evaluate for a fresh 4-dim assessment.")
 
 
+async def bubble_promote_op(client: SupabaseIdeasClient,
+                            params: Dict[str, Any]) -> str:
+    row = await _resolve_bubble(client, params, "bubble_name", "bubble",
+                                "bubble_id", "name", "title")
+    if row is None:
+        return "Bubble to promote not found."
+    project = await client.promote_bubble(row)
+    if not project:
+        return f"Failed to promote bubble '{row.get('title')}'."
+    title = row.get("title") or project.get("name") or "?"
+    project_id = project.get("id")
+    _publish("bubble.promote",
+             {"bubble_id": row.get("id"), "title": title,
+              "project_id": project_id, "space": "bubbles"},
+             f"Promoted bubble '{title}' to project {project_id}", True)
+    return f"Bubble '{title}' promoted to project (id={project_id})."
+
+
 async def bubble_noop_op(client: SupabaseIdeasClient,
                          params: Dict[str, Any]) -> str:
     """bubble_exit — stateless navigation, there is genuinely nothing to write.

@@ -724,7 +724,7 @@ class SupabaseExecutor(_BaseRemoteExecutor):
 
     OPERATIONS = {
         "idea.connect", "idea.disconnect", "idea.auto_link",
-        "idea.create", "idea.update", "bubble.evaluate",
+        "idea.create", "idea.update", "bubble.evaluate", "bubble.promote",
         "bubble.enter",
         # Phase 11.U.H — full-cap migration ops
         "bubble.create", "bubble.list", "bubble.find", "bubble.update",
@@ -766,6 +766,7 @@ class SupabaseExecutor(_BaseRemoteExecutor):
             "idea.create": _ops.create_op,
             "idea.update": _ops.update_op,
             "bubble.evaluate": _ops.evaluate_op,
+            "bubble.promote": _ops.bubble_promote_op,
             "bubble.enter": _ops.enter_op,
             "bubble.create": _ops.bubble_create_op,
             "bubble.list": _ops.bubble_list_op,

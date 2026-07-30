@@ -474,6 +474,59 @@ class SupabaseIdeasClient:
             return result[0] if isinstance(result, list) and result else row
         return None
 
+    async def promote_bubble(
+        self, bubble: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Create a project and link the source bubble to it in Supabase.
+
+        The project row is the externally queryable execution result. If the
+        bubble link cannot be persisted, remove the new project so callers do
+        not receive a fabricated successful promotion.
+        """
+        bubble_id = str((bubble or {}).get("id") or "").strip()
+        title = str((bubble or {}).get("title") or "").strip()
+        if not bubble_id or not title:
+            return None
+
+        project_row = {
+            "id": uuid.uuid4().hex[:8],
+            "name": title,
+            "description": str((bubble or {}).get("description") or "").strip(),
+            "status": "active",
+            "from_idea_id": bubble_id,
+            "metadata": {
+                "source_space": "bubbles",
+                "source_bubble_id": bubble_id,
+                "source_score": (bubble or {}).get("score", 0),
+            },
+        }
+        created = await self._request(
+            "POST", "/projects", json=project_row,
+            prefer="return=representation",
+        )
+        if not created:
+            return None
+        project = created[0] if isinstance(created, list) else project_row
+        project_id = str(project.get("id") or project_row["id"])
+
+        linked = await self._request(
+            "PATCH", "/ideas",
+            params={"id": f"eq.{bubble_id}"},
+            json={
+                "status": "promoted",
+                "promoted_to_project_id": project_id,
+            },
+            prefer="return=representation",
+        )
+        if not linked:
+            await self._request(
+                "DELETE", "/projects", params={"id": f"eq.{project_id}"},
+            )
+            return None
+
+        self.stats["bubbles_promoted"] = self.stats.get("bubbles_promoted", 0) + 1
+        return project
+
     async def list_top_bubbles(
         self, *, limit: int = 100,
     ) -> List[Dict[str, Any]]:
