@@ -238,21 +238,29 @@ spaces:
     # LEGACY_SPACE_AGENT_MAP derives/validates against this (ABSORB-7).
     agent: vibemind
     # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
-    prefixes: [agentfarm.]
+    aliases: [autogen]
+    prefixes: [agentfarm., autogen.]
     keywords: ["agent.?farm|pipeline|forge|swarm.?team|agent.?team"]
-    enabled: true
+    # The historical spaces/autogen tree was removed in ec98a0c and its
+    # external/Autogen_AgentFarm source was never versioned.  Keep routing
+    # disabled until a durable runtime replaces the old in-memory runner.
+    enabled: false
     description: "AutoGen multi-agent team coordination."
-    mcp_servers: [vibemind-db]
+    runtime:
+      status: blocked
+      source_path: external/Autogen_AgentFarm
+      blocker: missing_versioned_agentfarm_source
+    mcp_servers: []
     default_context: [current_space]
     events:
-      agentfarm.create_team:    { tool: db_insert, required_params: [team_name] }
-      agentfarm.run:            { tool: db_update, required_params: [team_id, task] }
-      agentfarm.status:         { tool: db_query,  required_params: [] }
-      agentfarm.list_teams:     { tool: db_query,  required_params: [] }
-      agentfarm.stop:           { tool: db_update, required_params: [team_id] }
-      agentfarm.results:        { tool: db_query,  required_params: [team_id] }
-      agentfarm.list_templates: { tool: db_query,  required_params: [] }
-      agentfarm.collaborate:    { tool: db_update, required_params: [team_id] }
+      agentfarm.create_team:    { operation: create_team, required_params: [team_name] }
+      agentfarm.run:            { operation: run, required_params: [team_id, task] }
+      agentfarm.status:         { operation: status, required_params: [] }
+      agentfarm.list_teams:     { operation: list_teams, required_params: [] }
+      agentfarm.stop:           { operation: stop, required_params: [run_id] }
+      agentfarm.results:        { operation: results, required_params: [run_id] }
+      agentfarm.list_templates: { operation: list_templates, required_params: [] }
+      agentfarm.collaborate:    { operation: collaborate, required_params: [task, goal] }
 
   # ─── Video (generation + vision) ────────────────────────────────────
   video:
