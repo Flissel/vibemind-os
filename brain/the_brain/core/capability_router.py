@@ -298,6 +298,12 @@ class CapabilityRouter:
                 logger.warning(f"[cap-router] skipping non-dict entry: {entry!r}")
                 self._stats["load_errors"] += 1
                 continue
+            if entry.get("enabled") is False:
+                logger.info(
+                    "[cap-router] skipping disabled capability %r",
+                    entry.get("capability", "<unnamed>"),
+                )
+                continue
             try:
                 cap_id = entry["capability"]
                 pats_raw = entry.get("match_patterns") or []

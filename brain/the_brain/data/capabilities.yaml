@@ -123,6 +123,67 @@
   result_arg_extractor: 'regex:\b(sim_[A-Za-z0-9_-]+)\b'
   arg_kwarg: simulation_id
   validator: { kind: "rule:mirofish_evidence", on_fail: "block" }
+# ─── AgentFarm contract (canonical; legacy space alias: autogen) ────────────
+# The historical spaces/autogen implementation was removed in ec98a0c.  It
+# kept teams/runs only in process memory and referenced an unversioned external
+# source path, so none of these operations has an honest execution target yet.
+# Keeping the disabled entries makes the Voice/API -> Brain contract explicit
+# without allowing regex or semantic routing to manufacture a live success.
+- capability: agentfarm_create_team
+  space: agentfarm
+  enabled: false
+  runtime_blocker: missing_versioned_agentfarm_source
+  description: "AgentFarm create_team is not implemented: versioned runtime source is missing"
+  match_patterns: ["(agentfarm|autogen).*create.*team"]
+
+- capability: agentfarm_run
+  space: agentfarm
+  enabled: false
+  runtime_blocker: missing_versioned_agentfarm_source
+  description: "AgentFarm run is not implemented: versioned runtime source is missing"
+  match_patterns: ["(agentfarm|autogen).*(run|start).*(team|task)"]
+
+- capability: agentfarm_status
+  space: agentfarm
+  enabled: false
+  runtime_blocker: missing_versioned_agentfarm_source
+  description: "AgentFarm status is not implemented: versioned runtime source is missing"
+  match_patterns: ["(agentfarm|autogen).*status"]
+
+- capability: agentfarm_list_teams
+  space: agentfarm
+  enabled: false
+  runtime_blocker: missing_versioned_agentfarm_source
+  description: "AgentFarm list_teams is not implemented: versioned runtime source is missing"
+  match_patterns: ["(agentfarm|autogen).*list.*teams"]
+
+- capability: agentfarm_stop
+  space: agentfarm
+  enabled: false
+  runtime_blocker: missing_versioned_agentfarm_source
+  description: "AgentFarm stop is not implemented: versioned runtime source is missing"
+  match_patterns: ["(agentfarm|autogen).*(stop|cancel).*(run|team)"]
+
+- capability: agentfarm_results
+  space: agentfarm
+  enabled: false
+  runtime_blocker: missing_versioned_agentfarm_source
+  description: "AgentFarm results is not implemented: versioned runtime source is missing"
+  match_patterns: ["(agentfarm|autogen).*(results|result|ergebnis)"]
+
+- capability: agentfarm_list_templates
+  space: agentfarm
+  enabled: false
+  runtime_blocker: missing_versioned_agentfarm_source
+  description: "AgentFarm list_templates is not implemented: versioned runtime source is missing"
+  match_patterns: ["(agentfarm|autogen).*list.*templates"]
+
+- capability: agentfarm_collaborate
+  space: agentfarm
+  enabled: false
+  runtime_blocker: missing_versioned_agentfarm_source
+  description: "AgentFarm collaborate is not implemented: versioned runtime source is missing"
+  match_patterns: ["(agentfarm|autogen).*collaborat"]
 
 - capability: bubble_evaluate
   description: "evaluate a bubble idea readiness for project promotion through 5 expert perspectives, is this idea mature enough is this ready to build, project gate go/no-go assessment, score and missing_items report"
