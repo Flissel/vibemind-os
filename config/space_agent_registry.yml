@@ -159,7 +159,7 @@ spaces:
 
   # ─── Rowboat (Knowledge Graph) ──────────────────────────────────────
   rowboat:
-    agent: rowboat-knowledge
+    agent: rowboat-chat
     # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
     prefixes: [rowboat.]
     enabled: true
@@ -167,11 +167,11 @@ spaces:
     mcp_servers: [vibemind-db, fetch]
     default_context: [current_space, recent_intents]
     events:
-      rowboat.search:       { tool: fetch,      required_params: [query] }
-      rowboat.query:        { tool: fetch,      required_params: [query] }
-      rowboat.email_draft:  { tool: fetch,      required_params: [recipient] }
-      rowboat.meeting_brief: { tool: fetch,      required_params: [topic] }
-      rowboat.deck:         { tool: fetch,      required_params: [topic] }
+      rowboat.search:       { tool: search_knowledge,       required_params: [query] }
+      rowboat.query:        { tool: query_knowledge,        required_params: [query] }
+      rowboat.email_draft:  { tool: draft_email,            required_params: [recipient, topic] }
+      rowboat.meeting_brief: { tool: generate_meeting_brief, required_params: [topic] }
+      rowboat.deck:         { tool: generate_deck,          required_params: [topic] }
       rowboat.status:       { tool: fetch,      required_params: [] }
       rowboat.docker.start: { tool: shell_exec, required_params: [] }
       rowboat.docker.stop:  { tool: shell_exec, required_params: [] }

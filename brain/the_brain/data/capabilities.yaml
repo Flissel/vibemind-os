@@ -1476,12 +1476,86 @@
     - "consult rowboat about the project notes"
     - "frag die Wissensbasis was zu X gespeichert ist"
   match_patterns:
-    - "(frag|frage|befrage?|chatte?|rede)\\s+(?:mal\\s+)?(?:mit\\s+)?rowboat"
+    - "(chatte?|rede)\\s+(?:mal\\s+)?(?:mit\\s+)?rowboat"
     - "(ask|chat\\s+with|consult|query)\\s+(?:the\\s+)?rowboat"
     - "(was|what)\\s+(weiß|wei[ßs]t|does|knows?)\\s+rowboat"
     - "rowboat\\s+(?:knowledge|wissen|chat|assistant|assistent)"
     - "(aus|from)\\s+(?:der|the)?\\s*rowboat[\\s-]?(?:wissensbasis|knowledge|kb)"
   execution_target: "openfang:rowboat-chat"
+  agents:
+    primary: [rowboat-chat]
+    supporting: []
+
+# Canonical Rowboat operations. "Roarboot" remains accepted only in ingress
+# match patterns. The deployed OpenFang agent retains its rowboat-chat name;
+# execution is always provider-backed and fail-closed.
+- capability: rowboat_search
+  description: "search the Rowboat knowledge graph for relevant stored content"
+  anchor_phrases:
+    - "durchsuche Roarboot nach X"
+    - "search Roarboot for X"
+  match_patterns:
+    - "(?:durchsuch|suche|finde).{0,20}(?:roarboot|rowboat).{0,20}(?:nach|zu|for)"
+    - "(?:roarboot|rowboat)[\\s-]?(?:suche|search)"
+  execution_target: "openfang:rowboat-chat"
+  validator: {kind: "rule:non_empty_result", on_fail: block}
+  agents:
+    primary: [rowboat-chat]
+    supporting: []
+
+- capability: rowboat_query
+  description: "query Rowboat about a person, project, decision, or topic"
+  anchor_phrases:
+    - "frage Roarboot was wir über X wissen"
+    - "query Roarboot about X"
+  match_patterns:
+    - "(?:frag|frage|befrage|query).{0,20}(?:roarboot|rowboat).{0,30}(?:über|about|zu)"
+    - "(?:was|what).{0,15}(?:weiß|weiss|knows?).{0,10}(?:roarboot|rowboat).{0,20}(?:über|about)"
+  execution_target: "openfang:rowboat-chat"
+  validator: {kind: "rule:non_empty_result", on_fail: block}
+  agents:
+    primary: [rowboat-chat]
+    supporting: []
+
+- capability: rowboat_email_draft
+  description: "draft an email with context from the Rowboat knowledge graph"
+  anchor_phrases:
+    - "entwirf mit Roarboot eine Mail an X über Y"
+    - "have Roarboot draft an email to X about Y"
+  match_patterns:
+    - "(?:roarboot|rowboat).{0,25}(?:mail|e-mail|email).{0,15}(?:entwurf|entwirf|draft)"
+    - "(?:entwirf|draft).{0,25}(?:mail|e-mail|email).{0,25}(?:mit|using).{0,10}(?:roarboot|rowboat)"
+    - "(?:entwirf|draft).{0,15}(?:mit|using).{0,10}(?:roarboot|rowboat).{0,20}(?:mail|e-mail|email)"
+  execution_target: "openfang:rowboat-chat"
+  validator: {kind: "rule:non_empty_result", on_fail: block}
+  agents:
+    primary: [rowboat-chat]
+    supporting: []
+
+- capability: rowboat_meeting_brief
+  description: "prepare a meeting brief grounded in the Rowboat knowledge graph"
+  anchor_phrases:
+    - "erstelle mit Roarboot ein Meeting-Briefing zu X"
+    - "ask Roarboot for a meeting brief about X"
+  match_patterns:
+    - "(?:roarboot|rowboat).{0,25}(?:meeting|termin).{0,10}(?:brief|briefing|vorbereitung)"
+    - "(?:meeting|termin).{0,10}(?:brief|briefing|vorbereitung).{0,25}(?:roarboot|rowboat)"
+  execution_target: "openfang:rowboat-chat"
+  validator: {kind: "rule:non_empty_result", on_fail: block}
+  agents:
+    primary: [rowboat-chat]
+    supporting: []
+
+- capability: rowboat_deck
+  description: "create a presentation deck grounded in the Rowboat knowledge graph"
+  anchor_phrases:
+    - "erstelle mit Roarboot ein Deck zu X"
+    - "have Roarboot create a deck about X"
+  match_patterns:
+    - "(?:roarboot|rowboat).{0,25}(?:deck|präsentation|praesentation|slides)"
+    - "(?:deck|präsentation|praesentation|slides).{0,25}(?:mit|using|von).{0,10}(?:roarboot|rowboat)"
+  execution_target: "openfang:rowboat-chat"
+  validator: {kind: "rule:non_empty_result", on_fail: block}
   agents:
     primary: [rowboat-chat]
     supporting: []

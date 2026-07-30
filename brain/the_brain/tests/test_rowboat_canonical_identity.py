@@ -34,7 +34,7 @@ def test_rowboat_is_the_only_canonical_child_space_id() -> None:
         for event_name in space_registry["spaces"]["rowboat"]["events"]
     )
 
-    assert bridge_map["mappings"]["rowboat"] == "vibemind"
+    assert bridge_map["mappings"]["rowboat"] == "rowboat-chat"
     assert "roarboot" not in bridge_map["mappings"]
 
     assert "rowboat" in ROUTING_SPACE_NAMES
