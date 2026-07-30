@@ -11,6 +11,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .space_contract import load_space_contract
+
 logger = logging.getLogger('brain.space_routing_head')
 
 
@@ -25,14 +27,11 @@ def _is_learner() -> bool:
         return True
 
 
-SPACE_NAMES = [
-    "ideas", "bubbles", "coding", "desktop", "research",
-    "n8n", "agentfarm", "schedule", "rowboat", "minibook",
-    "video", "flowzen", "mirofish",
-]
+_SPACE_CONTRACT = load_space_contract()
+SPACE_NAMES = list(_SPACE_CONTRACT.space_ids)
 
 # Complete event_type → space mapping (from EventRouter.STREAM_MAPPING)
-EVENT_SPACE_MAP = {
+_LEGACY_EVENT_SPACE_MAP = {
     # Coding
     "code.generate": "coding", "code.modify": "coding", "code.status": "coding",
     "code.show": "coding", "code.preview.start": "coding", "code.preview.stop": "coding",
@@ -112,6 +111,10 @@ EVENT_SPACE_MAP = {
     "mirofish.status": "mirofish", "mirofish.evaluate": "mirofish",
     "mirofish.interview": "mirofish",
 }
+
+# Registry-owned runtime mapping.  The legacy literal above remains inert as
+# migration documentation and cannot influence routing decisions.
+EVENT_SPACE_MAP = dict(_SPACE_CONTRACT.event_space_map)
 
 
 class SpaceRoutingHead(nn.Module):

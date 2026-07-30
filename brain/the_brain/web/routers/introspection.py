@@ -28,6 +28,7 @@ import json
 import logging
 import re
 import time
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Request
@@ -521,6 +522,17 @@ async def brain_frequency_markers(request: Request):
 # ===================================================================
 # Group 5 — Health (system-level)
 # ===================================================================
+
+@router.get("/api/health/space-registry")
+def space_registry_health():
+    """Canonical space/event/executor catalog consistency (no live fallback)."""
+    import yaml
+
+    from core.space_contract import registry_health
+
+    capabilities_path = Path(__file__).resolve().parents[2] / "data" / "capabilities.yaml"
+    capabilities = yaml.safe_load(capabilities_path.read_text(encoding="utf-8")) or []
+    return JSONResponse(registry_health(capabilities=capabilities))
 
 @router.get("/api/health/components")
 async def health_components(request: Request):
