@@ -38,6 +38,7 @@ import threading
 import weakref
 from collections import deque
 from typing import Any, Dict, List, Optional
+from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
@@ -113,15 +114,39 @@ class SpaceEventBus:
     }
     _COMPLETED_BUBBLES_LIFECYCLES = {"completed", "succeeded"}
 
+    @staticmethod
+    def _is_database_uuid(value: object) -> bool:
+        if not isinstance(value, str) or not value.strip():
+            return False
+        try:
+            UUID(value)
+        except (TypeError, ValueError, AttributeError):
+            return False
+        return True
+
+    @staticmethod
+    def _is_safe_score_snapshot(value: object) -> bool:
+        if not isinstance(value, dict) or not value:
+            return False
+        return all(
+            isinstance(key, str)
+            and key.strip()
+            and (
+                item is None
+                or type(item) in {str, int, float, bool}
+            )
+            for key, item in value.items()
+        )
+
     @classmethod
     def _project_bubbles_operation(cls, event: Dict[str, Any]) -> bool:
-        """Normalize a declared Bubbles operation without asserting execution.
+        """Validate and sanitize the renderer projection envelope only.
 
-        The event stream is a projection boundary, not an execution receipt.
-        A malformed projection remains observable as unverified, but cannot be
-        reported as successful.  Legacy ``shuttle.*`` events never enter this
-        branch because they are workflow aliases rather than canonical Bubbles
-        operations.
+        This does not bind to ``BubblesOrchestrationContract`` and cannot
+        establish its acceptance, provider execution, or terminal success.
+        A malformed envelope remains observable as unverified. Legacy
+        ``shuttle.*`` events never enter this branch because they are workflow
+        aliases rather than canonical Bubbles operations.
         """
         raw_params = event.get("params")
         params = raw_params if isinstance(raw_params, dict) else {}
@@ -131,46 +156,56 @@ class SpaceEventBus:
         lifecycle = params.get("lifecycle")
         score_snapshot = params.get("score_snapshot")
         evidence_refs = params.get("evidence_refs")
+        valid_score_snapshot = cls._is_safe_score_snapshot(score_snapshot)
+        valid_evidence_refs = isinstance(evidence_refs, list) and all(
+            isinstance(reference, str) and reference.strip()
+            for reference in evidence_refs
+        )
 
-        reason = "contract_valid"
+        reason = "renderer_projection_envelope_valid"
         if canonical_space_id != "bubbles":
             reason = (
                 "missing_canonical_space_id"
                 if canonical_space_id is None
                 else "foreign_canonical_space_id"
             )
-        elif not isinstance(bubble_id, str) or not bubble_id.strip():
-            reason = "missing_bubble_id" if bubble_id is None else "invalid_bubble_id"
+        elif bubble_id is None or (isinstance(bubble_id, str) and not bubble_id.strip()):
+            reason = "missing_bubble_id"
+        elif not cls._is_database_uuid(bubble_id):
+            reason = "invalid_bubble_id"
         elif not isinstance(operation_id, str) or not operation_id.strip():
             reason = "missing_operation_id"
         elif not isinstance(lifecycle, str) or lifecycle not in cls._BUBBLES_LIFECYCLES:
             reason = "invalid_lifecycle"
-        elif not isinstance(score_snapshot, dict):
-            reason = "missing_score_snapshot"
-        elif not isinstance(evidence_refs, list) or any(
-            not isinstance(reference, str) or not reference.strip()
-            for reference in evidence_refs
-        ):
+        elif not valid_score_snapshot:
+            reason = "missing_score_snapshot" if score_snapshot is None else "invalid_score_snapshot"
+        elif evidence_refs is None:
+            reason = "missing_evidence_refs"
+        elif not valid_evidence_refs:
             reason = "invalid_evidence_refs"
         elif lifecycle in cls._COMPLETED_BUBBLES_LIFECYCLES and not evidence_refs:
             reason = "completed_requires_evidence"
 
-        verified = reason == "contract_valid"
+        verified = reason == "renderer_projection_envelope_valid"
         event["params"] = {
             "canonical_space_id": "bubbles",
-            "bubble_id": bubble_id if isinstance(bubble_id, str) else None,
-            "operation_id": operation_id if isinstance(operation_id, str) else None,
-            "lifecycle": lifecycle if isinstance(lifecycle, str) else None,
-            "score_snapshot": dict(score_snapshot) if isinstance(score_snapshot, dict) else {},
-            "evidence_refs": list(evidence_refs) if isinstance(evidence_refs, list) else [],
+            "bubble_id": str(UUID(bubble_id)) if cls._is_database_uuid(bubble_id) else None,
+            "operation_id": operation_id.strip() if isinstance(operation_id, str) else None,
+            "lifecycle": (
+                lifecycle
+                if isinstance(lifecycle, str) and lifecycle in cls._BUBBLES_LIFECYCLES
+                else None
+            ),
+            "score_snapshot": dict(score_snapshot) if valid_score_snapshot else {},
+            "evidence_refs": list(evidence_refs) if valid_evidence_refs else [],
             "verified": verified,
             "verification_reason": reason,
         }
         event["ok"] = verified
         event["result"] = (
-            "Contract-valid Bubbles operation projection."
+            "Renderer projection envelope validated; orchestration acceptance and execution are not asserted."
             if verified
-            else "Unverified Bubbles operation projection: " + reason
+            else "Unverified renderer projection envelope: " + reason
         )
         return verified
 
