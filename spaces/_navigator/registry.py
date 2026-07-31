@@ -26,7 +26,8 @@ class SpaceMeta(TypedDict, total=False):
     description: str
     use_when: str
     capabilities: List[str]
-    # Renderer ID = name used by the Electron Multiverse JS scene
+    # Renderer ID = external adapter name used by the Electron Multiverse JS scene.
+    # It is never a canonical Space ID.
     # (window.multiverseApp.spaces keys). None = space exists in the Brain
     # registry but has no 3D representation in the renderer (e.g. minibook,
     # schedule, research). Verified live via CDP 2026-06-02.
@@ -136,12 +137,13 @@ SPACES: Dict[str, SpaceMeta] = {
     },
     "rowboat": {
         "label": "Rowboat",
-        "event_prefix": "roarboot.",
-        "stream": "events:tasks:roarboot",
+        "event_prefix": "rowboat.",
+        "stream": "events:tasks:rowboat",
         "aliases": ["roarboot", "kg", "knowledge-graph", "retrieval"],
         "description": "Knowledge graph retrieval, structured-data queries, Rowboat KG.",
         "use_when": "User wants to query a knowledge graph or retrieve structured facts",
-        "capabilities": ["roarboot.query"],
+        "capabilities": ["rowboat.query"],
+        # Explicit external legacy renderer adapter; never use as a Space ID.
         "renderer_id": "roarboot",
     },
     "schedule": {
