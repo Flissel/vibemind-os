@@ -12,7 +12,7 @@ mappings:
   agentfarm: brain-orchestrator
   n8n: brain-orchestrator
   schedule: vibemind
-  roarboot: vibemind
+  rowboat: vibemind
   video: vibemind
   flowzen: vibemind
   mirofish: vibemind
