@@ -31,6 +31,8 @@ class RecordingIdeasAdapter:
     """In-memory adapter double: records contract calls without side effects."""
 
     calls: list[LifecycleOperation] = field(default_factory=list)
+    health_status: AdapterHealth = AdapterHealth.HEALTHY
+    health_detail: str = ""
     outcome: AdapterOutcome = field(
         default_factory=lambda: AdapterOutcome(
             status=ContractStatus.ACCEPTED,
@@ -42,7 +44,7 @@ class RecordingIdeasAdapter:
 
     def health(self) -> AdapterHealthReport:
         self.calls.append(LifecycleOperation.HEALTH)
-        return AdapterHealthReport(status=AdapterHealth.HEALTHY)
+        return AdapterHealthReport(status=self.health_status, detail=self.health_detail)
 
     def plan(self, request: IdeasRequest) -> AdapterOutcome:
         self.calls.append(LifecycleOperation.PLAN)
@@ -144,7 +146,7 @@ def test_writing_or_costly_start_requires_an_approval_before_adapter_call() -> N
 
     assert approved.status is ContractStatus.ACCEPTED
     assert approved.requires_approval is True
-    assert adapter.calls == [LifecycleOperation.START]
+    assert adapter.calls == [LifecycleOperation.HEALTH, LifecycleOperation.START]
 
 
 def test_unavailable_adapter_blocks_deterministically_without_a_fallback() -> None:
@@ -157,6 +159,40 @@ def test_unavailable_adapter_blocks_deterministically_without_a_fallback() -> No
     assert response.status is ContractStatus.BLOCKED_DEPENDENCY
     assert response.message == "Ideas provider is not configured"
     assert response.operation is LifecycleOperation.START
+
+
+@pytest.mark.parametrize(
+    ("operation", "ideas_request"),
+    [
+        (
+            LifecycleOperation.PLAN,
+            _request(IdeasIntent.LIST_SEARCH),
+        ),
+        (
+            LifecycleOperation.START,
+            _request(IdeasIntent.CAPTURE, approval_ref="approval:ideas-1"),
+        ),
+    ],
+)
+def test_unhealthy_adapter_blocks_before_plan_or_start_operation(
+    operation: LifecycleOperation,
+    ideas_request: IdeasRequest,
+) -> None:
+    adapter = RecordingIdeasAdapter(
+        health_status=AdapterHealth.UNAVAILABLE,
+        health_detail="Ideas provider is unavailable",
+    )
+    contract = IdeasContract(adapter)
+
+    response = (
+        contract.plan(ideas_request)
+        if operation is LifecycleOperation.PLAN
+        else contract.start(ideas_request)
+    )
+
+    assert response.status is ContractStatus.BLOCKED_DEPENDENCY
+    assert response.message == "Ideas provider is unavailable"
+    assert adapter.calls == [LifecycleOperation.HEALTH]
 
 
 def test_lifecycle_operations_delegate_only_after_contract_gates() -> None:
@@ -180,13 +216,57 @@ def test_lifecycle_operations_delegate_only_after_contract_gates() -> None:
     assert contract.result(_request(IdeasIntent.RESULT)).status is ContractStatus.ACCEPTED
     assert adapter.calls == [
         LifecycleOperation.HEALTH,
+        LifecycleOperation.HEALTH,
         LifecycleOperation.PLAN,
+        LifecycleOperation.HEALTH,
         LifecycleOperation.START,
+        LifecycleOperation.HEALTH,
         LifecycleOperation.STATUS,
+        LifecycleOperation.HEALTH,
         LifecycleOperation.CANCEL,
+        LifecycleOperation.HEALTH,
         LifecycleOperation.RESUME,
+        LifecycleOperation.HEALTH,
         LifecycleOperation.RESULT,
     ]
+
+
+@pytest.mark.parametrize(
+    ("operation", "intent", "status_value", "approval_ref"),
+    [
+        (LifecycleOperation.STATUS, IdeasIntent.STATUS, "running", None),
+        (LifecycleOperation.STATUS, IdeasIntent.STATUS, "failed", None),
+        (LifecycleOperation.RESULT, IdeasIntent.RESULT, "succeeded", None),
+        (
+            LifecycleOperation.CANCEL,
+            IdeasIntent.CANCEL,
+            "cancelled",
+            "approval:ideas-1",
+        ),
+    ],
+)
+def test_lifecycle_operations_project_adapter_statuses_unchanged(
+    operation: LifecycleOperation,
+    intent: IdeasIntent,
+    status_value: str,
+    approval_ref: str | None,
+) -> None:
+    expected_status = ContractStatus(status_value)
+    adapter = RecordingIdeasAdapter(
+        outcome=AdapterOutcome(status=expected_status, message="adapter lifecycle state")
+    )
+    contract = IdeasContract(adapter)
+    request = _request(intent, approval_ref=approval_ref)
+
+    response = {
+        LifecycleOperation.STATUS: contract.status,
+        LifecycleOperation.RESULT: contract.result,
+        LifecycleOperation.CANCEL: contract.cancel,
+    }[operation](request)
+
+    assert response.status is expected_status
+    assert response.message == "adapter lifecycle state"
+    assert adapter.calls == [LifecycleOperation.HEALTH, operation]
 
 
 def test_contract_projects_correlation_and_declarative_evidence_and_cost_ids() -> None:

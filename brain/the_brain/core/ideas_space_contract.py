@@ -59,6 +59,10 @@ class ContractStatus(str, Enum):
     APPROVAL_REQUIRED = "approval_required"
     BLOCKED_DEPENDENCY = "blocked_dependency"
     INVALID_REQUEST = "invalid_request"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class AdapterHealth(str, Enum):
@@ -335,6 +339,19 @@ class IdeasContract:
                 correlation=request.correlation,
                 message="An approval reference is required before this operation.",
                 requires_approval=True,
+                evidence_refs=request.evidence_refs,
+                cost_refs=request.cost_refs,
+            )
+
+        health = self._adapter.health()
+        if health.status is not AdapterHealth.HEALTHY:
+            return IdeasContractOutcome(
+                contract_version=self.CONTRACT_VERSION,
+                status=ContractStatus.BLOCKED_DEPENDENCY,
+                operation=operation,
+                correlation=request.correlation,
+                message=health.detail or "Ideas adapter is unavailable.",
+                requires_approval=needs_approval,
                 evidence_refs=request.evidence_refs,
                 cost_refs=request.cost_refs,
             )
