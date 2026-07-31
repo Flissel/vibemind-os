@@ -155,24 +155,24 @@ spaces:
       openclaw.research:    { tool: fetch,           required_params: [query] }
       openclaw.compare:     { tool: fetch,           required_params: [queries] }
 
-  # ─── Roarboot (Knowledge Graph) ─────────────────────────────────────
-  roarboot:
+  # ─── Rowboat (Knowledge Graph) ──────────────────────────────────────
+  rowboat:
     agent: rowboat-knowledge
     # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
-    prefixes: [roarboot.]
+    prefixes: [rowboat.]
     enabled: true
     description: "Knowledge graph queries, email drafts, decks."
     mcp_servers: [vibemind-db, fetch]
     default_context: [current_space, recent_intents]
     events:
-      roarboot.search:       { tool: fetch,      required_params: [query] }
-      roarboot.query:        { tool: fetch,      required_params: [query] }
-      roarboot.email_draft:  { tool: fetch,      required_params: [recipient] }
-      roarboot.meeting_brief: { tool: fetch,      required_params: [topic] }
-      roarboot.deck:         { tool: fetch,      required_params: [topic] }
-      roarboot.status:       { tool: fetch,      required_params: [] }
-      roarboot.docker.start: { tool: shell_exec, required_params: [] }
-      roarboot.docker.stop:  { tool: shell_exec, required_params: [] }
+      rowboat.search:       { tool: fetch,      required_params: [query] }
+      rowboat.query:        { tool: fetch,      required_params: [query] }
+      rowboat.email_draft:  { tool: fetch,      required_params: [recipient] }
+      rowboat.meeting_brief: { tool: fetch,      required_params: [topic] }
+      rowboat.deck:         { tool: fetch,      required_params: [topic] }
+      rowboat.status:       { tool: fetch,      required_params: [] }
+      rowboat.docker.start: { tool: shell_exec, required_params: [] }
+      rowboat.docker.stop:  { tool: shell_exec, required_params: [] }
 
   # ─── Minibook (collaboration) ───────────────────────────────────────
   minibook:
