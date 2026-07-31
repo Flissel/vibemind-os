@@ -253,6 +253,7 @@ class BubblesOrchestrationContract:
             operation=LifecycleOperation.PLAN,
             state=ContractState.PLANNED,
             dependency=dependency,
+            require_promotion_approval=True,
         )
 
     @classmethod
@@ -275,6 +276,7 @@ class BubblesOrchestrationContract:
             evidence_refs=evidence_refs,
             cost_refs=cost_refs,
             stage=stage,
+            require_promotion_approval=False,
         )
 
     @classmethod
@@ -292,6 +294,7 @@ class BubblesOrchestrationContract:
             next_state=ContractState.CANCELLED,
             dependency=dependency,
             operation=LifecycleOperation.CANCEL,
+            require_promotion_approval=False,
         )
 
     @classmethod
@@ -331,6 +334,7 @@ class BubblesOrchestrationContract:
             evidence_refs=evidence_refs,
             cost_refs=cost_refs,
             stage=stage,
+            require_promotion_approval=False,
         )
 
     @classmethod
@@ -344,6 +348,7 @@ class BubblesOrchestrationContract:
         evidence_refs: tuple[EvidenceReference, ...] = (),
         cost_refs: tuple[CostReference, ...] = (),
         operation: LifecycleOperation = LifecycleOperation.STATUS,
+        require_promotion_approval: bool = True,
     ) -> TransitionOutcome:
         """Validate one proposed state transition using only supplied declarations."""
         gate = cls._gate(
@@ -353,6 +358,7 @@ class BubblesOrchestrationContract:
             dependency=dependency,
             evidence_refs=evidence_refs,
             cost_refs=cost_refs,
+            require_promotion_approval=require_promotion_approval,
         )
         rejection = cls._rejection_for(gate)
         if rejection is not None:
@@ -389,6 +395,7 @@ class BubblesOrchestrationContract:
         evidence_refs: tuple[EvidenceReference, ...] = (),
         cost_refs: tuple[CostReference, ...] = (),
         stage: ProjectionStage | None = None,
+        require_promotion_approval: bool = True,
     ) -> BubblesProjection:
         all_evidence = request.evidence_refs + evidence_refs
         all_costs = request.cost_refs + cost_refs
@@ -405,7 +412,11 @@ class BubblesOrchestrationContract:
                 stage=stage,
                 message="Required Bubbles request data is missing.",
             )
-        if request.intent is BubblesIntent.PROMOTE and not cls._has_approval(request):
+        if (
+            require_promotion_approval
+            and request.intent is BubblesIntent.PROMOTE
+            and not cls._has_approval(request)
+        ):
             return cls._projection(
                 request,
                 operation=operation,
@@ -484,7 +495,9 @@ class BubblesOrchestrationContract:
             correlation=request.correlation,
             accepted=accepted,
             clarification_fields=clarification_fields,
-            requires_approval=requires_approval,
+            requires_approval=(
+                requires_approval or request.intent is BubblesIntent.PROMOTE
+            ),
             approval_ref=request.approval_ref if cls._has_approval(request) else None,
             evidence_refs=evidence_refs,
             cost_refs=cost_refs,

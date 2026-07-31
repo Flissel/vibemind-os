@@ -114,6 +114,78 @@ def test_promote_requires_an_explicit_approval_reference() -> None:
     assert not projection.accepted
 
 
+def test_approved_promote_plan_preserves_its_intrinsic_approval_requirement() -> None:
+    projection = BubblesOrchestrationContract.plan(
+        _request(BubblesIntent.PROMOTE, approval_ref="approval:promote-1"),
+        dependency=DependencyHealth.HEALTHY,
+    )
+
+    assert projection.accepted
+    assert projection.state is ContractState.PLANNED
+    assert projection.requires_approval
+    assert projection.approval_ref == "approval:promote-1"
+
+
+@pytest.mark.parametrize(
+    "current_state",
+    [ContractState.PLANNED, ContractState.APPROVAL_REQUIRED],
+)
+def test_promote_cancel_is_allowed_without_approval(
+    current_state: ContractState,
+) -> None:
+    outcome = BubblesOrchestrationContract.cancel(
+        _request(BubblesIntent.PROMOTE),
+        current_state=current_state,
+        dependency=DependencyHealth.HEALTHY,
+    )
+
+    assert outcome.accepted
+    assert outcome.projection.state is ContractState.CANCELLED
+    assert outcome.projection.requires_approval
+
+
+def test_promote_status_and_result_remain_readable_without_approval() -> None:
+    request = _request(BubblesIntent.PROMOTE)
+    status = BubblesOrchestrationContract.status(
+        request,
+        state=ContractState.APPROVAL_REQUIRED,
+        dependency=DependencyHealth.HEALTHY,
+    )
+    result = BubblesOrchestrationContract.result(
+        request,
+        state=ContractState.SUCCEEDED,
+        dependency=DependencyHealth.HEALTHY,
+        evidence_refs=(EvidenceReference("evidence:promote-1"),),
+    )
+
+    assert status.accepted
+    assert status.state is ContractState.APPROVAL_REQUIRED
+    assert result.accepted
+    assert result.state is ContractState.SUCCEEDED
+    assert status.requires_approval
+    assert result.requires_approval
+
+
+def test_promote_resume_and_progression_still_require_approval() -> None:
+    request = _request(BubblesIntent.PROMOTE)
+    resumed = BubblesOrchestrationContract.resume(
+        request,
+        current_state=ContractState.FAILED,
+        dependency=DependencyHealth.HEALTHY,
+    )
+    progressed = BubblesOrchestrationContract.transition(
+        request,
+        current_state=ContractState.APPROVAL_REQUIRED,
+        next_state=ContractState.QUEUED,
+        dependency=DependencyHealth.HEALTHY,
+    )
+
+    assert resumed.rejection is TransitionRejection.APPROVAL_REQUIRED
+    assert progressed.rejection is TransitionRejection.APPROVAL_REQUIRED
+    assert not resumed.accepted
+    assert not progressed.accepted
+
+
 def test_missing_or_unhealthy_dependency_blocks_without_dispatch() -> None:
     request = _request(BubblesIntent.LIST)
 
