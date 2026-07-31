@@ -27,7 +27,7 @@ def _is_learner() -> bool:
 
 SPACE_NAMES = [
     "ideas", "bubbles", "coding", "desktop", "research",
-    "n8n", "agentfarm", "schedule", "roarboot", "minibook",
+    "n8n", "agentfarm", "schedule", "rowboat", "minibook",
     "video", "flowzen", "mirofish",
 ]
 
@@ -74,11 +74,16 @@ EVENT_SPACE_MAP = {
     # Research
     "research.web": "research", "research.scrape": "research",
     "research.summarize": "research", "research.to_idea": "research",
-    # Roarboot (Knowledge Graph)
-    "roarboot.search": "roarboot", "roarboot.query": "roarboot",
-    "roarboot.email_draft": "roarboot", "roarboot.meeting_brief": "roarboot",
-    "roarboot.deck": "roarboot", "roarboot.status": "roarboot",
-    "roarboot.docker.start": "roarboot", "roarboot.docker.stop": "roarboot",
+    # Rowboat (Knowledge Graph)
+    "rowboat.search": "rowboat", "rowboat.query": "rowboat",
+    "rowboat.email_draft": "rowboat", "rowboat.meeting_brief": "rowboat",
+    "rowboat.deck": "rowboat", "rowboat.status": "rowboat",
+    "rowboat.docker.start": "rowboat", "rowboat.docker.stop": "rowboat",
+    # Temporary ingress compatibility: roarboot is never emitted as a Space ID.
+    "roarboot.search": "rowboat", "roarboot.query": "rowboat",
+    "roarboot.email_draft": "rowboat", "roarboot.meeting_brief": "rowboat",
+    "roarboot.deck": "rowboat", "roarboot.status": "rowboat",
+    "roarboot.docker.start": "rowboat", "roarboot.docker.stop": "rowboat",
     # Minibook
     "minibook.discuss": "minibook", "minibook.collaborate": "minibook",
     "minibook.status": "minibook", "minibook.list_projects": "minibook",
