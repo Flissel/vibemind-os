@@ -6,7 +6,7 @@ does not choose an executor, contact a provider, or claim Golden-Path success.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 
 
@@ -288,7 +288,7 @@ class BubblesOrchestrationContract:
         dependency: DependencyHealth | None,
     ) -> TransitionOutcome:
         """Declare a cancellation transition without contacting an executor."""
-        return cls.transition(
+        return cls._transition(
             request,
             current_state=current_state,
             next_state=ContractState.CANCELLED,
@@ -306,12 +306,13 @@ class BubblesOrchestrationContract:
         dependency: DependencyHealth | None,
     ) -> TransitionOutcome:
         """Declare a resumption transition without contacting an executor."""
-        return cls.transition(
+        return cls._transition(
             request,
             current_state=current_state,
             next_state=ContractState.QUEUED,
             dependency=dependency,
             operation=LifecycleOperation.RESUME,
+            require_promotion_approval=True,
         )
 
     @classmethod
@@ -348,9 +349,33 @@ class BubblesOrchestrationContract:
         evidence_refs: tuple[EvidenceReference, ...] = (),
         cost_refs: tuple[CostReference, ...] = (),
         operation: LifecycleOperation = LifecycleOperation.STATUS,
-        require_promotion_approval: bool = True,
     ) -> TransitionOutcome:
         """Validate one proposed state transition using only supplied declarations."""
+        return cls._transition(
+            request,
+            current_state=current_state,
+            next_state=next_state,
+            dependency=dependency,
+            evidence_refs=evidence_refs,
+            cost_refs=cost_refs,
+            operation=operation,
+            require_promotion_approval=True,
+        )
+
+    @classmethod
+    def _transition(
+        cls,
+        request: BubblesRequest,
+        *,
+        current_state: ContractState,
+        next_state: ContractState,
+        dependency: DependencyHealth | None,
+        evidence_refs: tuple[EvidenceReference, ...] = (),
+        cost_refs: tuple[CostReference, ...] = (),
+        operation: LifecycleOperation = LifecycleOperation.STATUS,
+        require_promotion_approval: bool,
+    ) -> TransitionOutcome:
+        """Internal transition path; only protective cancellation skips approval."""
         gate = cls._gate(
             request,
             operation=operation,
@@ -362,16 +387,16 @@ class BubblesOrchestrationContract:
         )
         rejection = cls._rejection_for(gate)
         if rejection is not None:
-            return TransitionOutcome(projection=gate, rejection=rejection)
+            return cls._rejected_transition(gate, rejection)
         if next_state not in cls._ALLOWED_TRANSITIONS[current_state]:
-            return TransitionOutcome(
-                projection=gate,
-                rejection=TransitionRejection.ILLEGAL_TRANSITION,
+            return cls._rejected_transition(
+                gate,
+                TransitionRejection.ILLEGAL_TRANSITION,
             )
         if next_state is ContractState.SUCCEEDED and not gate.evidence_refs:
-            return TransitionOutcome(
-                projection=gate,
-                rejection=TransitionRejection.MISSING_EVIDENCE,
+            return cls._rejected_transition(
+                gate,
+                TransitionRejection.MISSING_EVIDENCE,
             )
         return TransitionOutcome(
             projection=cls._projection(
@@ -557,3 +582,38 @@ class BubblesOrchestrationContract:
         if "requires evidence" in projection.message:
             return TransitionRejection.MISSING_EVIDENCE
         return TransitionRejection.ILLEGAL_TRANSITION
+
+    @staticmethod
+    def _rejected_transition(
+        projection: BubblesProjection,
+        rejection: TransitionRejection,
+    ) -> TransitionOutcome:
+        """Return an explicitly rejected projection while preserving its context."""
+        messages = {
+            TransitionRejection.CLARIFICATION_REQUIRED: (
+                "Bubbles request requires clarification."
+            ),
+            TransitionRejection.APPROVAL_REQUIRED: (
+                "Promotion requires an approval reference."
+            ),
+            TransitionRejection.DEPENDENCY_UNAVAILABLE: (
+                "The declared Bubbles dependency is unavailable or unhealthy."
+            ),
+            TransitionRejection.ILLEGAL_TRANSITION: (
+                "The requested Bubbles state transition is illegal."
+            ),
+            TransitionRejection.MISSING_EVIDENCE: (
+                "Terminal Bubbles success requires evidence."
+            ),
+            TransitionRejection.MISSING_COST_REFERENCE: (
+                "This operation requires a cost reference."
+            ),
+        }
+        return TransitionOutcome(
+            projection=replace(
+                projection,
+                accepted=False,
+                message=messages[rejection],
+            ),
+            rejection=rejection,
+        )

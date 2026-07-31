@@ -186,6 +186,30 @@ def test_promote_resume_and_progression_still_require_approval() -> None:
     assert not progressed.accepted
 
 
+def test_public_transition_does_not_expose_an_approval_bypass() -> None:
+    with pytest.raises(TypeError, match="require_promotion_approval"):
+        BubblesOrchestrationContract.transition(
+            _request(BubblesIntent.PROMOTE),
+            current_state=ContractState.APPROVAL_REQUIRED,
+            next_state=ContractState.QUEUED,
+            dependency=DependencyHealth.HEALTHY,
+            require_promotion_approval=False,
+        )
+
+
+def test_public_transition_cannot_use_cancel_operation_to_bypass_approval() -> None:
+    outcome = BubblesOrchestrationContract.transition(
+        _request(BubblesIntent.PROMOTE),
+        current_state=ContractState.APPROVAL_REQUIRED,
+        next_state=ContractState.QUEUED,
+        dependency=DependencyHealth.HEALTHY,
+        operation=LifecycleOperation.CANCEL,
+    )
+
+    assert outcome.rejection is TransitionRejection.APPROVAL_REQUIRED
+    assert not outcome.projection.accepted
+
+
 def test_missing_or_unhealthy_dependency_blocks_without_dispatch() -> None:
     request = _request(BubblesIntent.LIST)
 
@@ -222,6 +246,10 @@ def test_terminal_success_requires_evidence_and_accepts_a_projection_only() -> N
 
     assert missing_evidence.rejection is TransitionRejection.MISSING_EVIDENCE
     assert not missing_evidence.accepted
+    assert not missing_evidence.projection.accepted
+    assert missing_evidence.projection.message == "Terminal Bubbles success requires evidence."
+    assert missing_evidence.projection.state is ContractState.RUNNING
+    assert missing_evidence.projection.correlation is request.correlation
     assert succeeded.accepted
     assert succeeded.projection.state is ContractState.SUCCEEDED
     assert succeeded.projection.evidence_refs == (evidence,)
@@ -240,6 +268,8 @@ def test_invalid_transition_is_rejected_and_not_reclassified_as_success() -> Non
     assert outcome.rejection is TransitionRejection.ILLEGAL_TRANSITION
     assert outcome.projection.state is ContractState.PLANNED
     assert not outcome.accepted
+    assert not outcome.projection.accepted
+    assert outcome.projection.message == "The requested Bubbles state transition is illegal."
 
 
 def test_cost_required_operation_rejects_a_missing_cost_reference() -> None:
