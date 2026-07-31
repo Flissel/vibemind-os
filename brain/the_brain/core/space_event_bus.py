@@ -99,6 +99,80 @@ class SpaceEventBus:
         "idea.connect", "idea.disconnect", "idea.auto_link",
         "idea.move",
     }
+    _BUBBLES_OPERATION_EVENT_ID = "bubbles.operation_projection"
+    _BUBBLES_LIFECYCLES = {
+        "planned",
+        "approval_required",
+        "queued",
+        "running",
+        "completed",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "blocked_dependency",
+    }
+    _COMPLETED_BUBBLES_LIFECYCLES = {"completed", "succeeded"}
+
+    @classmethod
+    def _project_bubbles_operation(cls, event: Dict[str, Any]) -> bool:
+        """Normalize a declared Bubbles operation without asserting execution.
+
+        The event stream is a projection boundary, not an execution receipt.
+        A malformed projection remains observable as unverified, but cannot be
+        reported as successful.  Legacy ``shuttle.*`` events never enter this
+        branch because they are workflow aliases rather than canonical Bubbles
+        operations.
+        """
+        raw_params = event.get("params")
+        params = raw_params if isinstance(raw_params, dict) else {}
+        canonical_space_id = params.get("canonical_space_id")
+        bubble_id = params.get("bubble_id")
+        operation_id = params.get("operation_id")
+        lifecycle = params.get("lifecycle")
+        score_snapshot = params.get("score_snapshot")
+        evidence_refs = params.get("evidence_refs")
+
+        reason = "contract_valid"
+        if canonical_space_id != "bubbles":
+            reason = (
+                "missing_canonical_space_id"
+                if canonical_space_id is None
+                else "foreign_canonical_space_id"
+            )
+        elif not isinstance(bubble_id, str) or not bubble_id.strip():
+            reason = "missing_bubble_id" if bubble_id is None else "invalid_bubble_id"
+        elif not isinstance(operation_id, str) or not operation_id.strip():
+            reason = "missing_operation_id"
+        elif not isinstance(lifecycle, str) or lifecycle not in cls._BUBBLES_LIFECYCLES:
+            reason = "invalid_lifecycle"
+        elif not isinstance(score_snapshot, dict):
+            reason = "missing_score_snapshot"
+        elif not isinstance(evidence_refs, list) or any(
+            not isinstance(reference, str) or not reference.strip()
+            for reference in evidence_refs
+        ):
+            reason = "invalid_evidence_refs"
+        elif lifecycle in cls._COMPLETED_BUBBLES_LIFECYCLES and not evidence_refs:
+            reason = "completed_requires_evidence"
+
+        verified = reason == "contract_valid"
+        event["params"] = {
+            "canonical_space_id": "bubbles",
+            "bubble_id": bubble_id if isinstance(bubble_id, str) else None,
+            "operation_id": operation_id if isinstance(operation_id, str) else None,
+            "lifecycle": lifecycle if isinstance(lifecycle, str) else None,
+            "score_snapshot": dict(score_snapshot) if isinstance(score_snapshot, dict) else {},
+            "evidence_refs": list(evidence_refs) if isinstance(evidence_refs, list) else [],
+            "verified": verified,
+            "verification_reason": reason,
+        }
+        event["ok"] = verified
+        event["result"] = (
+            "Contract-valid Bubbles operation projection."
+            if verified
+            else "Unverified Bubbles operation projection: " + reason
+        )
+        return verified
 
     def publish(self, event: Dict[str, Any]) -> Dict[str, Any]:
         """Add an event to the ring and broadcast to all subscribers.
@@ -111,6 +185,9 @@ class SpaceEventBus:
             self.stats["events_dropped"] += 1
             return {"ok": False, "error": "missing event_id"}
         event = dict(event)
+        is_verified_projection = True
+        if event.get("event_id") == self._BUBBLES_OPERATION_EVENT_ID:
+            is_verified_projection = self._project_bubbles_operation(event)
         event.setdefault("ts", time.time())
         event["_seq"] = self.stats["events_published"]
 
@@ -163,7 +240,7 @@ class SpaceEventBus:
             # A trailing-edge timer would re-introduce a late surprise
             # refresh — not worth the complexity here.
 
-        return {"ok": True, "seq": event["_seq"]}
+        return {"ok": is_verified_projection, "seq": event["_seq"]}
 
     def stats_dict(self) -> Dict[str, Any]:
         with self._lock:
