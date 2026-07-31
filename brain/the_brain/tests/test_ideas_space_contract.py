@@ -71,6 +71,14 @@ class RecordingIdeasAdapter:
         return self.outcome
 
 
+class RaisingHealthIdeasAdapter(RecordingIdeasAdapter):
+    """In-memory adapter whose health boundary fails before any operation."""
+
+    def health(self) -> AdapterHealthReport:
+        self.calls.append(LifecycleOperation.HEALTH)
+        raise RuntimeError("sensitive transport detail")
+
+
 def _request(intent: IdeasIntent, **overrides: object) -> IdeasRequest:
     values: dict[str, object] = {
         "intent": intent,
@@ -117,13 +125,17 @@ def test_contract_declares_the_stable_v1_intent_vocabulary() -> None:
         (IdeasIntent.PROPOSE_PROJECT, "project_id", ClarificationField.PROJECT_ID),
     ],
 )
+@pytest.mark.parametrize("missing_value", [None, "", " \t "])
 def test_start_requests_required_ideas_clarifications(
     intent: IdeasIntent,
     missing_name: str,
     expected_field: ClarificationField,
+    missing_value: str | None,
 ) -> None:
     adapter = RecordingIdeasAdapter()
-    response = IdeasContract(adapter).start(_request(intent, **{missing_name: None}))
+    response = IdeasContract(adapter).start(
+        _request(intent, **{missing_name: missing_value})
+    )
 
     assert response.status is ContractStatus.CLARIFICATION_REQUIRED
     assert response.clarification_fields == (expected_field,)
@@ -192,6 +204,22 @@ def test_unhealthy_adapter_blocks_before_plan_or_start_operation(
 
     assert response.status is ContractStatus.BLOCKED_DEPENDENCY
     assert response.message == "Ideas provider is unavailable"
+    assert adapter.calls == [LifecycleOperation.HEALTH]
+
+
+def test_health_exception_blocks_without_calling_the_adapter_operation() -> None:
+    adapter = RaisingHealthIdeasAdapter()
+
+    try:
+        response = IdeasContract(adapter).start(
+            _request(IdeasIntent.CAPTURE, approval_ref="approval:ideas-1")
+        )
+    except RuntimeError as error:
+        pytest.fail(f"health exception escaped the contract boundary: {error}")
+
+    assert response.status is ContractStatus.BLOCKED_DEPENDENCY
+    assert response.message == "Ideas adapter health check failed."
+    assert "sensitive transport detail" not in response.message
     assert adapter.calls == [LifecycleOperation.HEALTH]
 
 

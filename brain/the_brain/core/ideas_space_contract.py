@@ -343,7 +343,19 @@ class IdeasContract:
                 cost_refs=request.cost_refs,
             )
 
-        health = self._adapter.health()
+        try:
+            health = self._adapter.health()
+        except Exception:
+            return IdeasContractOutcome(
+                contract_version=self.CONTRACT_VERSION,
+                status=ContractStatus.BLOCKED_DEPENDENCY,
+                operation=operation,
+                correlation=request.correlation,
+                message="Ideas adapter health check failed.",
+                requires_approval=needs_approval,
+                evidence_refs=request.evidence_refs,
+                cost_refs=request.cost_refs,
+            )
         if health.status is not AdapterHealth.HEALTHY:
             return IdeasContractOutcome(
                 contract_version=self.CONTRACT_VERSION,
@@ -390,7 +402,8 @@ class IdeasContract:
     def _missing_fields(self, request: IdeasRequest) -> tuple[ClarificationField, ...]:
         missing: list[ClarificationField] = []
         for field in self._REQUIRED_FIELDS.get(request.intent, ()):
-            if not self._value_for(request, field):
+            value = self._value_for(request, field)
+            if value is None or not value.strip():
                 missing.append(field)
         return tuple(missing)
 
