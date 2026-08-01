@@ -28,6 +28,18 @@ from core.space_routing_head import EVENT_SPACE_MAP
 
 logger = logging.getLogger('brain.event_routing_head')
 
+
+def _is_learner() -> bool:
+    """Phase D: only the learner (or a mono brain) may mutate/persist
+    centroids. Inference replicas must stay read-only or routing diverges.
+    Fail-safe: if config can't import, default to True (= legacy mono
+    behaviour, nothing changes for a single brain)."""
+    try:
+        from core import config as _cfg
+        return _cfg.is_learner()
+    except Exception:
+        return True
+
 # Conversation events — not tied to any space but still real classification
 # targets from the LLM. SpaceRoutingHead ignores these; EventRoutingHead needs
 # them as valid classes, otherwise every "hi" fails with 'event not in list'.
@@ -426,7 +438,13 @@ class EventRoutingHead(nn.Module):
             lr: Learning rate for the centroid update
         Returns:
             True if reward was applied, False if routing_id is unknown/expired
+            OR this is an inference replica (read-only — see Phase D).
         """
+        if not _is_learner():
+            # Inference replica: never mutate centroids. The reward should be
+            # forwarded to the learner by the caller (Phase D2). Returning
+            # False keeps the existing "not applied" contract intact.
+            return False
         with self._lock:
             rec = self._pending_routes.pop(routing_id, None)
         if rec is None:
@@ -469,6 +487,8 @@ class EventRoutingHead(nn.Module):
         given, also updates that user's sparse delta with a larger learning
         rate, so personalization kicks in faster than the shared base.
         """
+        if not _is_learner():
+            return False  # inference replica: read-only (Phase D)
         if correct_event not in self.event_names:
             return False
         correct_idx = self.event_names.index(correct_event)
@@ -577,7 +597,13 @@ class EventRoutingHead(nn.Module):
     # ------------------------------------------------------------------
 
     def save(self, path: str) -> None:
-        """Persist centroids, event_names, and per-user deltas to disk."""
+        """Persist centroids, event_names, and per-user deltas to disk.
+
+        Phase D: only the learner persists. An inference replica writing
+        its (unchanged) centroids would race the learner on a shared volume.
+        """
+        if not _is_learner():
+            return
         import os
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         # Serialize user_deltas as a plain dict-of-dict-of-tensors.
@@ -645,6 +671,29 @@ class EventRoutingHead(nn.Module):
     def should_autosave(self, every_n: int = 100) -> bool:
         """Whether enough training has accumulated to warrant an autosave."""
         return self._train_count_since_save >= every_n
+
+    def maybe_reload(self, path: str) -> bool:
+        """Phase D3: reload centroids from disk IF the file changed since the
+        last load. Used by inference replicas to pick up the learner's
+        periodic save() on a shared volume — without restarting.
+
+        Returns True if a reload actually happened. mtime-cached so a no-op
+        poll is just one os.stat (cheap enough for a ~30s tick). load()
+        itself stays the single source of truth for the parse/validation.
+        """
+        import os
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            return False  # file not there yet — nothing to reload
+        last = getattr(self, "_ckpt_mtime", None)
+        if last is not None and mtime <= last:
+            return False  # unchanged since last (re)load
+        ok = self.load(path)
+        if ok:
+            self._ckpt_mtime = mtime
+            logger.info(f"EventRoutingHead reloaded from {path} (mtime changed)")
+        return ok
 
     # ------------------------------------------------------------------
     # Diagnostics

@@ -3,12 +3,24 @@
 Holds all bridge states and pre-computes 4 composite modulation factors.
 See: docs/plans/2026-03-01-full-bridge-integration-design.md
 """
+import os
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Dict
 
 import numpy as np
 
 from core.hook_coefficients import HookCoefficients
+
+# TriBE modulation (Phase 2 — default OFF). When enabled, a thought's TriBE
+# 8-bridge profile nudges the composite factors. Gain is intentionally small
+# and a neutral profile (values near 0) is a no-op; the existing [0.3,3.0]
+# clamp is the hard safety net.
+TRIBE_MODULATION_ENABLED = os.environ.get(
+    "TRIBE_MODULATION_ENABLED", "0").lower() in ("1", "true", "yes")
+try:
+    TRIBE_MODULATION_GAIN = float(os.environ.get("TRIBE_MODULATION_GAIN", "0.15"))
+except ValueError:
+    TRIBE_MODULATION_GAIN = 0.15
 
 
 @dataclass
@@ -69,6 +81,13 @@ class ModulationContext:
 
     # --- Learnable hook coefficients (optional) ---
     hook_coefficients: Optional[HookCoefficients] = None
+
+    # --- TriBE neural profile (Phase 2). 8-bridge activations from the current
+    # thought's fMRI signature: {cortex, limbic, defense, motor, visceral,
+    # social, integration, memory}. None → TriBE hooks skipped (no-op). ---
+    tribe_bridges: Optional[Dict[str, float]] = None
+    # Per-user personalization bias added to tribe_bridges (Phase 3 / Flowzen).
+    tribe_personal_bias: Optional[Dict[str, float]] = None
 
     def compute(self):
         """Compute composite factors from all active bridge states.
@@ -237,6 +256,26 @@ class ModulationContext:
             else:
                 att *= 0.9 + 0.2 * sc.social_salience                                # H28
                 prec *= 0.9 + 0.2 * sc.familiarity                                   # H29
+
+        # --- TriBE neural-signature hooks (H30-H33, Phase 2) ---
+        # The current thought's fMRI bridge-profile gently nudges the same four
+        # factors. Contribution = 1 + gain*(value+bias); a neutral profile
+        # (values ~0) is a no-op. Small gain + the clamp below keep it stable.
+        if TRIBE_MODULATION_ENABLED and self.tribe_bridges:
+            g = TRIBE_MODULATION_GAIN
+            bias = self.tribe_personal_bias or {}
+
+            def _tb(name: str) -> float:
+                return float(self.tribe_bridges.get(name, 0.0)) + float(bias.get(name, 0.0))
+
+            # H30: cortex + integration (top-down focus) -> attention_gain
+            att *= 1.0 + g * (_tb("cortex") + _tb("integration"))
+            # H31: limbic + defense (caution / urgency) -> threshold_mod
+            thr *= 1.0 + g * (_tb("limbic") + _tb("defense"))
+            # H32: memory + social (relevance weighting) -> precision_boost
+            prec *= 1.0 + g * (_tb("memory") + _tb("social"))
+            # H33: motor + visceral (throughput) -> ffn_throughput
+            ffn *= 1.0 + g * (_tb("motor") + _tb("visceral"))
 
         # Safety clamp to [0.3, 3.0]
         self.attention_gain = max(0.3, min(3.0, att))

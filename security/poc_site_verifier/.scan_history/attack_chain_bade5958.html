@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Red Team Report - http://localhost:4000</title>
+<style>
+  body { font-family: 'Segoe UI', sans-serif; max-width: 1100px; margin: 0 auto; padding: 20px; background: #0d1117; color: #c9d1d9; }
+  h1 { color: #ff4444; border-bottom: 2px solid #ff4444; padding-bottom: 10px; }
+  h2 { color: #ff6b6b; margin-top: 30px; }
+  .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin: 20px 0; }
+  .stat { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; text-align: center; }
+  .stat .value { font-size: 2em; font-weight: bold; color: #ff4444; }
+  .stat .label { color: #8b949e; font-size: 0.9em; }
+  .stat.green .value { color: #3fb950; }
+  .stat.yellow .value { color: #d29922; }
+  table { width: 100%; border-collapse: collapse; margin: 15px 0; }
+  th, td { text-align: left; padding: 10px; border: 1px solid #30363d; }
+  th { background: #161b22; color: #ff6b6b; }
+  tr:nth-child(even) { background: #161b22; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold; color: white; }
+  .evidence { background: #161b22; border-left: 3px solid #ff4444; padding: 10px; margin: 5px 0; font-family: monospace; font-size: 0.85em; }
+  .phase { background: #1f2937; border-radius: 6px; padding: 15px; margin: 10px 0; }
+  .phase-header { color: #ff6b6b; font-weight: bold; font-size: 1.1em; }
+  .cred-cracked { color: #3fb950; font-weight: bold; }
+  .cred-uncracked { color: #8b949e; }
+  .killchain { display: flex; gap: 5px; flex-wrap: wrap; margin: 15px 0; }
+  .killchain .step { background: #21262d; border: 1px solid #30363d; border-radius: 6px; padding: 8px 15px; font-size: 0.85em; }
+  .killchain .step.done { border-color: #3fb950; color: #3fb950; }
+  .killchain .arrow { color: #484f58; font-size: 1.2em; align-self: center; }
+</style>
+</head>
+<body>
+<h1>RED TEAM ENGAGEMENT REPORT</h1>
+<p><strong>Target:</strong> http://localhost:4000 |
+   <strong>Chain ID:</strong> bade5958 |
+   <strong>Date:</strong> 2026-03-31T10:24:55 |
+   <strong>Duration:</strong> 229.3s</p>
+
+<h2>Executive Summary</h2>
+<div class="summary">
+  <div class="stat"><div class="value">46</div><div class="label">Credentials Extracted</div></div>
+  <div class="stat"><div class="value">4</div><div class="label">Passwords Cracked</div></div>
+  <div class="stat green"><div class="value">4</div><div class="label">Tokens Obtained</div></div>
+  <div class="stat yellow"><div class="value">ADMIN</div><div class="label">Privilege Level</div></div>
+</div>
+
+<h2>Kill Chain</h2>
+<div class="killchain">
+  <div class="step done">RECON</div>
+  <div class="arrow">&rarr;</div>
+  <div class="step done">IDENTIFY</div>
+  <div class="arrow">&rarr;</div>
+  <div class="step done">EXTRACT_DATA</div>
+  <div class="arrow">&rarr;</div>
+  <div class="step done">CRACK_CREDENTIALS</div>
+  <div class="arrow">&rarr;</div>
+  <div class="step done">CREDENTIAL_REUSE</div>
+  <div class="arrow">&rarr;</div>
+  <div class="step done">SESSION_HIJACK</div>
+  <div class="arrow">&rarr;</div>
+  <div class="step done">NOSQL_XXE</div>
+  <div class="arrow">&rarr;</div>
+  <div class="step done">SSRF_PIVOT</div>
+  <div class="arrow">&rarr;</div>
+  <div class="step done">EXFILTRATE</div>
+</div>
+<h2>Findings</h2>
+<table><tr><th>Severity</th><th>Title</th></tr>
+<tr><td><span class="badge" style="background:#dc3545">CRITICAL</span></td><td>46 user credentials extracted via SQLi</td></tr>
+<tr><td><span class="badge" style="background:#dc3545">CRITICAL</span></td><td>4 password hashes cracked</td></tr>
+<tr><td><span class="badge" style="background:#dc3545">CRITICAL</span></td><td>4 successful logins with cracked credentials</td></tr>
+<tr><td><span class="badge" style="background:#dc3545">CRITICAL</span></td><td>Privilege escalation via JWT manipulation on 4 endpoint(s)</td></tr>
+<tr><td><span class="badge" style="background:#dc3545">CRITICAL</span></td><td>Pivoted to 19 endpoints with stolen credentials</td></tr>
+<tr><td><span class="badge" style="background:#dc3545">CRITICAL</span></td><td>Data exfiltration PoC: 2784 bytes via http</td></tr>
+<tr><td><span class="badge" style="background:#fd7e14">HIGH</span></td><td>Database schema extracted: 65 tables</td></tr>
+<tr><td><span class="badge" style="background:#fd7e14">HIGH</span></td><td>IDOR via forged JWT — accessed 10 other users' data</td></tr>
+<tr><td><span class="badge" style="background:#fd7e14">HIGH</span></td><td>XXE detected on 4 endpoint(s)</td></tr>
+</table>
+<h2>Extracted Credentials (46 total, 4 cracked)</h2>
+<table><tr><th>Email</th><th>Role</th><th>Hash</th><th>Cracked</th></tr>
+<tr><td>@test.local</td><td>customer</td><td style="font-family:monospace;font-size:0.8em">ecc4208a7778c1d76e7e89c5253128c5...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>@test3989.local</td><td>customer</td><td style="font-family:monospace;font-size:0.8em">ecc4208a7778c1d76e7e89c5253128c5...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>@test4540.local</td><td>customer</td><td style="font-family:monospace;font-size:0.8em">ecc4208a7778c1d76e7e89c5253128c5...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>@test7759.local</td><td>customer</td><td style="font-family:monospace;font-size:0.8em">ecc4208a7778c1d76e7e89c5253128c5...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>@xss5741.local</td><td>customer</td><td style="font-family:monospace;font-size:0.8em">ecc4208a7778c1d76e7e89c5253128c5...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>J12934@juice-sh.op</td><td>admin</td><td style="font-family:monospace;font-size:0.8em">3c2abc04e4a6ea8f1327d0aae3714b7d...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>accountant@juice-sh.op</td><td>accounting</td><td style="font-family:monospace;font-size:0.8em">963e10f92a70b4b463220cb4c5d636dc...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>admin@juice-sh.op</td><td>admin</td><td style="font-family:monospace;font-size:0.8em">0192023a7bbd73250516f069df18b500...</td><td class="cred-cracked">admin123</td></tr>
+<tr><td>admin_1189@test.local</td><td>admin</td><td style="font-family:monospace;font-size:0.8em">ecc4208a7778c1d76e7e89c5253128c5...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>admin_1708@test.local</td><td>admin</td><td style="font-family:monospace;font-size:0.8em">ecc4208a7778c1d76e7e89c5253128c5...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>admin_3422@test.local</td><td>admin</td><td style="font-family:monospace;font-size:0.8em">ecc4208a7778c1d76e7e89c5253128c5...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>amy@juice-sh.op</td><td>customer</td><td style="font-family:monospace;font-size:0.8em">030f05e45e30710c3ad3c32f00de0473...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>authtest99@test.local</td><td>customer</td><td style="font-family:monospace;font-size:0.8em">ecc4208a7778c1d76e7e89c5253128c5...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>bender@juice-sh.op</td><td>customer</td><td style="font-family:monospace;font-size:0.8em">0c36e517e3fa95aabf1bbffc6744a4ef...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>bjoern.kimminich@gmail.com</td><td>admin</td><td style="font-family:monospace;font-size:0.8em">6edd9d726cbdc873c539e41ae8757b8c...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>bjoern@juice-sh.op</td><td>admin</td><td style="font-family:monospace;font-size:0.8em">7f311911af16fa8f418dd1a3051d6810...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>bjoern@owasp.org</td><td>deluxe</td><td style="font-family:monospace;font-size:0.8em">9283f1b2e9669749081963be0462e466...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>chris.pike@juice-sh.op</td><td>customer</td><td style="font-family:monospace;font-size:0.8em">10a783b9ed19ea1c67c3a27699f0095b...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>ciso@juice-sh.op</td><td>deluxe</td><td style="font-family:monospace;font-size:0.8em">861917d5fa5f1172f931dc700d81a8fb...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>emma@juice-sh.op</td><td>customer</td><td style="font-family:monospace;font-size:0.8em">402f1c4a75e316afec5a6ea63147f739...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>ethereum@juice-sh.op</td><td>deluxe</td><td style="font-family:monospace;font-size:0.8em">2c17c6393771ee3048ae34d6b380c5ec...</td><td class="cred-cracked">private</td></tr>
+<tr><td>exploit_18504@test.local</td><td>deluxe</td><td style="font-family:monospace;font-size:0.8em">250d1143fd98ecabe23665a932812858...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>exploit_36969@test.local</td><td>deluxe</td><td style="font-family:monospace;font-size:0.8em">250d1143fd98ecabe23665a932812858...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>exploit_49157@test.local</td><td>deluxe</td><td style="font-family:monospace;font-size:0.8em">250d1143fd98ecabe23665a932812858...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>jim@juice-sh.op</td><td>customer</td><td style="font-family:monospace;font-size:0.8em">e541ca7ecf72b8d1286474fc613e5e45...</td><td class="cred-cracked">ncc-1701</td></tr>
+<tr><td>john@juice-sh.op</td><td>customer</td><td style="font-family:monospace;font-size:0.8em">00479e957b6b42c459ee5746478e4d45...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>mc.safesearch@juice-sh.op</td><td>customer</td><td style="font-family:monospace;font-size:0.8em">b03f4b0ba8b458fa0acdc02cdb953bc8...</td><td class="cred-cracked">Mr. N00dles</td></tr>
+<tr><td>morty@juice-sh.op</td><td>customer</td><td style="font-family:monospace;font-size:0.8em">f2f933d0bb0ba057bc8e33b8ebd6d9e8...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>scanner_test_41025@test.local</td><td>customer</td><td style="font-family:monospace;font-size:0.8em">abf3c22316e3a3dfaf451ec4e0315043...</td><td class="cred-uncracked">-</td></tr>
+<tr><td>scanner_test_45021@test.local</td><td>customer</td><td style="font-family:monospace;font-size:0.8em">abf3c22316e3a3dfaf451ec4e0315043...</td><td class="cred-uncracked">-</td></tr>
+</table>
+<h2>Evidence Timeline (11 entries)</h2>
+<div class="evidence"><span class="badge" style="background:#17a2b8">INFO</span> <strong>[init]</strong> Attack chain started against http://localhost:4000 <span style="color:#484f58;font-size:0.8em">2026-03-31T10:24:55</span></div>
+<div class="evidence"><span class="badge" style="background:#17a2b8">INFO</span> <strong>[recon]</strong> Discovered 58 endpoints, 1 SQLi, 0 tokens, JWT-forge=YES <span style="color:#484f58;font-size:0.8em">2026-03-31T10:26:30</span></div>
+<div class="evidence"><span class="badge" style="background:#fd7e14">HIGH</span> <strong>[identify]</strong> Found 1 SQLi points, 0 tokens <span style="color:#484f58;font-size:0.8em">2026-03-31T10:26:30</span></div>
+<div class="evidence"><span class="badge" style="background:#dc3545">CRITICAL</span> <strong>[extract_data]</strong> Extracted 46 credentials from DB <span style="color:#484f58;font-size:0.8em">2026-03-31T10:26:30</span></div>
+<div class="evidence"><span class="badge" style="background:#dc3545">CRITICAL</span> <strong>[crack_credentials]</strong> Cracked 4 of 46 hashes <span style="color:#484f58;font-size:0.8em">2026-03-31T10:26:30</span></div>
+<div class="evidence"><span class="badge" style="background:#dc3545">CRITICAL</span> <strong>[credential_reuse]</strong> Logged in to 4 accounts <span style="color:#484f58;font-size:0.8em">2026-03-31T10:26:31</span></div>
+<div class="evidence"><span class="badge" style="background:#dc3545">CRITICAL</span> <strong>[session_hijack]</strong> JWT manipulations: 4 <span style="color:#484f58;font-size:0.8em">2026-03-31T10:26:45</span></div>
+<div class="evidence"><span class="badge" style="background:#ffc107">MEDIUM</span> <strong>[nosql_xxe]</strong> NoSQL: 0 bypass, 0 leaks. XXE: 4 findings <span style="color:#484f58;font-size:0.8em">2026-03-31T10:27:24</span></div>
+<div class="evidence"><span class="badge" style="background:#dc3545">CRITICAL</span> <strong>[ssrf_pivot]</strong> SSRF: 0 findings. Pivot: 19 endpoints accessed <span style="color:#484f58;font-size:0.8em">2026-03-31T10:28:44</span></div>
+<div class="evidence"><span class="badge" style="background:#dc3545">CRITICAL</span> <strong>[exfiltrate]</strong> Exfiltration PoC: 2784 bytes via http <span style="color:#484f58;font-size:0.8em">2026-03-31T10:28:44</span></div>
+<div class="evidence"><span class="badge" style="background:#17a2b8">INFO</span> <strong>[complete]</strong> Chain completed in 229.3s — 9 phases, 10 evidence entries <span style="color:#484f58;font-size:0.8em">2026-03-31T10:28:44</span></div>
+
+<hr style="border-color:#30363d;margin-top:40px">
+<p style="color:#484f58;text-align:center;font-size:0.8em">
+  Generated by Red Team MCP Scanner | CONFIDENTIAL
+</p>
+</body></html>

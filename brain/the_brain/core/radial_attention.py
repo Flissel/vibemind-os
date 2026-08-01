@@ -276,11 +276,17 @@ class RadialAttentionNetwork(nn.Module):
         self._consciousness_loop = loop
         logger.info("ConsciousnessLoop attached to RadialAttentionNetwork")
 
-    def forward(self, seed_embedding: torch.Tensor) -> Dict[str, any]:
+    def forward(self, seed_embedding: torch.Tensor,
+                tribe_bridges: Optional[Dict[str, float]] = None,
+                tribe_personal_bias: Optional[Dict[str, float]] = None) -> Dict[str, any]:
         """Full radial pass: bottom-up then top-down.
 
         Args:
             seed_embedding: Input from Moltbook/BrainChat (batch, seed_dim)
+            tribe_bridges: Optional 8-bridge TriBE profile of the seed thought.
+                When TRIBE_MODULATION_ENABLED, it nudges the composite factors.
+            tribe_personal_bias: Optional per-user bias added to tribe_bridges
+                (Flowzen personalization, Phase 3).
 
         Returns:
             Dict with ring_activations, meta_output, thalamic_seed,
@@ -301,6 +307,9 @@ class RadialAttentionNetwork(nn.Module):
         for name, state in self._bridge_states.items():
             if state is not None and hasattr(mod_ctx, name):
                 setattr(mod_ctx, name, state)
+        # TriBE neural-signature modulation (Phase 2; no-op unless flag on + profile given)
+        mod_ctx.tribe_bridges = tribe_bridges
+        mod_ctx.tribe_personal_bias = tribe_personal_bias
         mod_ctx.compute()
 
         # -- Bottom-Up Pass (radial outward) --

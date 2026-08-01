@@ -18,7 +18,6 @@ VibeMind-OS/
 ├── la-fungus-search/ la_fungus_search      Semantic search engine (Qdrant + embeddings)
 ├── openclaude/     openclaude              OpenClaude HTTP service + Docker deployment
 ├── coding-engine/  DaveFelix-Coding-Engine  Autonomous code generation (10 AI agents)
-├── clawcode/       ClawCode                Docker Claude integration
 ├── openclaw/       openclaw                Fork: personal AI assistant (40+ channels)
 └── openfang/       openfang                Fork: Agent OS (Rust, 53 tools, 27 LLMs)
 ```
@@ -73,7 +72,6 @@ python python/electron_backend.py
 | **security** | 30 security PoCs: injection chains, red/blue team, forensics, scanning | Python, AutoGen |
 | **x-pathfinder** | Evolutionary X/Twitter discovery + backer scoring for crowdfunding | Python, genetic algorithms |
 | **langdock-mcp** | MCP server for Langdock API (35 tools), AutoGen multi-agent team | Python, FastMCP |
-| **clawcode** | Docker-based Claude Code integration with credential management | Docker, TypeScript |
 | **davelovable** | AI-powered web development platform with multi-agent orchestration | React, Node.js |
 | **openclaw** | Personal AI assistant across 40+ messaging channels | Node.js (fork) |
 | **openfang** | Agent Operating System — 27 LLMs, 53 tools, WASM sandbox | Rust (fork) |

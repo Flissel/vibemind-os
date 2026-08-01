@@ -1,0 +1,75 @@
+{
+  "url": "http://localhost:4000",
+  "domain": "localhost:4000",
+  "fingerprint": {
+    "site_type": "SPA",
+    "risk_profile": "ESTABLISHED",
+    "tech_stack": [
+      "angular"
+    ],
+    "has_catchall": true,
+    "server": "",
+    "waf_hint": "",
+    "domain_age_days": null
+  },
+  "score": 20,
+  "tls_grade": "F",
+  "issues": [
+    {
+      "severity": "CRITICAL",
+      "category": "TLS",
+      "title": "TLS connection failed",
+      "description": "[Errno 11001] getaddrinfo failed",
+      "fix": "Ensure HTTPS is properly configured."
+    },
+    {
+      "severity": "HIGH",
+      "category": "HTTP Header",
+      "title": "Missing: Strict-Transport-Security",
+      "description": "HSTS not set. Browsers can be tricked into HTTP connections (downgrade attack).",
+      "fix": "Add HSTS header to enforce HTTPS.",
+      "nginx_fix": "add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains; preload\" always;",
+      "apache_fix": "Header always set Strict-Transport-Security \"max-age=31536000; includeSubDomains; preload\""
+    },
+    {
+      "severity": "HIGH",
+      "category": "HTTP Header",
+      "title": "Missing: Content-Security-Policy",
+      "description": "No CSP header. XSS attacks are not mitigated by the browser.",
+      "fix": "Add a Content-Security-Policy header.",
+      "nginx_fix": "add_header Content-Security-Policy \"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self';\" always;",
+      "apache_fix": "Header always set Content-Security-Policy \"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'\""
+    },
+    {
+      "severity": "LOW",
+      "category": "HTTP Header",
+      "title": "Missing: Referrer-Policy",
+      "description": "No Referrer-Policy. Full URL including query params may leak to third parties.",
+      "fix": "Add Referrer-Policy header.",
+      "nginx_fix": "add_header Referrer-Policy \"strict-origin-when-cross-origin\" always;",
+      "apache_fix": "Header always set Referrer-Policy \"strict-origin-when-cross-origin\""
+    },
+    {
+      "severity": "HIGH",
+      "category": "Transport Security",
+      "title": "HTTP does not redirect to HTTPS",
+      "description": "HTTP version of site is accessible without redirect to HTTPS.",
+      "fix": "Add HTTP to HTTPS redirect.",
+      "nginx_fix": "server { listen 80; server_name example.com; return 301 https://$host$request_uri; }",
+      "apache_fix": "RewriteEngine On\nRewriteCond %{HTTPS} off\nRewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]"
+    }
+  ],
+  "total_issues": 5,
+  "ssl_valid": false,
+  "ssl_issuer": null,
+  "spf": false,
+  "dmarc": false,
+  "server": null,
+  "missing_headers": [
+    "Strict-Transport-Security",
+    "Content-Security-Policy",
+    "X-XSS-Protection",
+    "Referrer-Policy",
+    "Permissions-Policy"
+  ]
+}

@@ -1,240 +1,147 @@
+"""Fail-closed REST execution target for canonical Minibook events.
+
+Minibook is a collaboration projection. This boundary may read it and create
+Minibook discussion/task posts, but it exposes no lifecycle or foreign-system
+mutation operation.
 """
-Minibook Tools - Direct voice-controllable tool functions
 
-These are the sync tool functions mapped to minibook.* event types
-in the IntentOrchestrator. They follow the standard VibeMind tool
-return pattern: {"success": bool, "message": str, ...}
-"""
+from __future__ import annotations
 
-import logging
-from typing import Dict, Any, Optional
+import os
+import re
+from typing import Any, Dict, Mapping
+from urllib.parse import quote
 
-_logger = logging.getLogger(__name__)
+import requests
 
 
-def _debug_print(msg: str):
-    _logger.debug("[MinibookTools] %s", msg)
+_ALLOWED_EVENTS = {
+    "minibook.discuss",
+    "minibook.collaborate",
+    "minibook.status",
+    "minibook.list_projects",
+}
+_SENSITIVE_KEYS = {
+    "api_key", "apikey", "authorization", "cookie", "password", "secret", "token",
+}
+_TOKEN_VALUE = re.compile(r"(?i)\b(bearer\s+\S+|(?:api[_-]?key|token|secret)\s*[=:]\s*\S+)")
 
 
-def get_minibook_status() -> Dict[str, Any]:
-    """
-    Check Minibook connection status.
-
-    Event: minibook.status
-    Voice: "Minibook Status", "Ist Minibook verbunden?"
-    """
-    _logger.debug("get_minibook_status called")
-    from .minibook_client import get_minibook_client
-
-    client = get_minibook_client()
-    status = client.get_status()
-
-    if status.get("success"):
-        agent_count = status.get("agent_count", 0)
-        registered = status.get("registered_agents", [])
-        reg_str = ", ".join(registered) if registered else "none"
+def _redact(value: Any) -> Any:
+    if isinstance(value, Mapping):
         return {
-            "success": True,
-            "message": f"Minibook connected ({status['url']})",
-            "response_hint": (
-                f"Minibook is connected. "
-                f"{agent_count} agents total, "
-                f"{len(registered)} registered by VibeMind: {reg_str}."
-            ),
-            **status,
+            str(key): "[REDACTED]" if str(key).lower() in _SENSITIVE_KEYS else _redact(item)
+            for key, item in value.items()
         }
-    else:
-        return {
-            "success": False,
-            "message": f"Minibook not reachable: {status.get('error', '?')}",
-            "response_hint": (
-                f"Minibook is currently not reachable at {status.get('url', '?')}. "
-                "Make sure Minibook is running."
-            ),
-            **status,
-        }
+    if isinstance(value, list):
+        return [_redact(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact(item) for item in value)
+    if isinstance(value, str):
+        return _TOKEN_VALUE.sub("[REDACTED]", value)
+    return value
 
 
-def start_discussion(
-    message: str = "",
-    topic: str = "",
-) -> Dict[str, Any]:
-    """
-    Start a discussion in Minibook.
+def _envelope(*, event: str, ok: bool, status: str, result: Any = None,
+              error: str | None = None) -> Dict[str, Any]:
+    return {
+        "ok": ok,
+        "space": "minibook",
+        "event": event,
+        "truth": {"status": status, "source": "minibook"},
+        "result": _redact(result),
+        "error": error,
+    }
 
-    Event: minibook.discuss
-    Voice: "Bespreche X in Minibook", "Starte eine Diskussion zu X"
-    """
-    from .minibook_client import get_minibook_client
 
-    client = get_minibook_client()
+def _params(raw: Any) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, str) and raw.strip():
+        return {"topic": raw.strip()}
+    return {}
 
-    # Check connection
-    status = client.get_status()
-    if not status.get("success"):
-        return {
-            "success": False,
-            "response_hint": "Minibook is not reachable.",
-        }
 
-    project_id = client.project_id
-    if not project_id:
-        return {
-            "success": False,
-            "response_hint": "No Minibook project configured.",
-        }
-
-    content = message or topic or "New discussion"
-
-    try:
-        post_data = client.create_post(
-            project_id=project_id,
-            content=content,
-            agent_name="vibemind_orchestrator",
-            post_type="discussion",
+def execute(raw: Any) -> Dict[str, Any]:
+    params = _params(raw)
+    event = str(params.get("event") or "")
+    if event not in _ALLOWED_EVENTS:
+        return _envelope(
+            event=event,
+            ok=False,
+            status="rejected",
+            error="event is outside the canonical Minibook execution boundary",
         )
-        post_id = post_data.get("id", "")
-        _debug_print(f"Discussion started: post_id={post_id}")
 
-        return {
-            "success": True,
-            "post_id": post_id,
-            "response_hint": f"Discussion started: {content[:100]}",
+    # The destination is operator configuration, never caller-controlled.
+    # This keeps a voice/API payload inside the Minibook boundary.
+    base_url = str(os.environ.get("MINIBOOK_URL") or "http://127.0.0.1:8800").rstrip("/")
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    api_key = os.environ.get("MINIBOOK_API_KEY")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    method = "GET"
+    url = f"{base_url}/api/v1/status"
+    request_kwargs: Dict[str, Any] = {}
+
+    if event == "minibook.list_projects":
+        url = f"{base_url}/api/v1/projects"
+    elif event in {"minibook.discuss", "minibook.collaborate"}:
+        topic = str(params.get("topic") or params.get("value") or "").strip()
+        project_id = str(params.get("project_id") or os.environ.get("MINIBOOK_PROJECT_ID") or "").strip()
+        if not topic or not project_id:
+            return _envelope(
+                event=event,
+                ok=False,
+                status="rejected",
+                error="topic and project_id are required",
+            )
+        method = "POST"
+        url = f"{base_url}/api/v1/projects/{quote(project_id, safe='')}/posts"
+        post_type = "discussion" if event == "minibook.discuss" else "task"
+        body = {
+            "title": str(params.get("title") or topic)[:120],
+            "content": topic,
+            "type": post_type,
+            "author_name": "VibeMind Brain",
         }
-
-    except Exception as e:
-        _logger.error(f"Failed to start discussion: {e}")
-        return {
-            "success": False,
-            "response_hint": f"Could not start discussion: {e}",
-        }
-
-
-def get_discussion_results(discussion_id: str = "") -> Dict[str, Any]:
-    """
-    Get results of a Minibook discussion.
-
-    Event: minibook.results
-    Voice: "Was kam bei der Diskussion raus?", "Ergebnisse der Zusammenarbeit"
-    """
-    from .minibook_client import get_minibook_client
-
-    client = get_minibook_client()
-
-    if not discussion_id:
-        # Try to get the most recent discussion
-        project_id = client.project_id
-        if not project_id:
-            return {
-                "success": False,
-                "response_hint": "No project configured.",
-            }
-
-        try:
-            posts = client.get_posts(project_id)
-            if not posts:
-                return {
-                    "success": True,
-                    "response_hint": "No discussions available.",
-                }
-            # Take the most recent post
-            discussion_id = posts[-1].get("id", "")
-        except Exception as e:
-            return {
-                "success": False,
-                "response_hint": f"Error fetching discussions: {e}",
-            }
-
-    if not discussion_id:
-        return {
-            "success": False,
-            "response_hint": "No discussion ID available.",
-        }
+        if event == "minibook.collaborate" and isinstance(params.get("target_agents"), list):
+            body["target_agents"] = [str(agent) for agent in params["target_agents"]]
+        request_kwargs["json"] = body
 
     try:
-        comments = client.get_comments(discussion_id)
+        response = requests.request(
+            method,
+            url,
+            headers=headers,
+            timeout=float(os.environ.get("MINIBOOK_TIMEOUT_S", "10")),
+            **request_kwargs,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        return _envelope(
+            event=event,
+            ok=False,
+            status="unavailable",
+            error="Minibook execution target unavailable",
+        )
 
-        if not comments:
-            return {
-                "success": True,
-                "discussion_id": discussion_id,
-                "comment_count": 0,
-                "response_hint": "No responses to this discussion yet.",
-            }
-
-        # Format results
-        results = []
-        for comment in comments:
-            agent = comment.get("agent_name", "unknown")
-            content = comment.get("content", "")
-            results.append(f"{agent}: {content[:200]}")
-
-        results_str = "\n".join(results)
-        return {
-            "success": True,
-            "discussion_id": discussion_id,
-            "comment_count": len(comments),
-            "results": results,
-            "response_hint": (
-                f"The discussion has {len(comments)} responses:\n{results_str}"
-            ),
-        }
-
-    except Exception as e:
-        _logger.error(f"Failed to get discussion results: {e}")
-        return {
-            "success": False,
-            "response_hint": f"Error fetching results: {e}",
-        }
+    return _envelope(event=event, ok=True, status="verified", result=payload)
 
 
-def list_projects() -> Dict[str, Any]:
-    """
-    List all Minibook projects.
-
-    Event: minibook.list_projects
-    Voice: "Welche Minibook-Projekte gibt es?"
-    """
-    from .minibook_client import get_minibook_client
-
-    client = get_minibook_client()
-
-    status = client.get_status()
-    if not status.get("success"):
-        return {
-            "success": False,
-            "response_hint": "Minibook is not reachable.",
-        }
-
-    try:
-        projects = client.list_projects()
-
-        if not projects:
-            return {
-                "success": True,
-                "projects": [],
-                "response_hint": "No projects available.",
-            }
-
-        names = [p.get("name", "?") for p in projects]
-        return {
-            "success": True,
-            "projects": projects,
-            "project_count": len(projects),
-            "response_hint": f"There are {len(projects)} projects: {', '.join(names)}",
-        }
-
-    except Exception as e:
-        _logger.error(f"Failed to list projects: {e}")
-        return {
-            "success": False,
-            "response_hint": f"Error fetching projects: {e}",
-        }
+def discuss(raw: Any) -> Dict[str, Any]:
+    return execute({**_params(raw), "event": "minibook.discuss"})
 
 
-__all__ = [
-    "get_minibook_status",
-    "start_discussion",
-    "get_discussion_results",
-    "list_projects",
-]
+def collaborate(raw: Any) -> Dict[str, Any]:
+    return execute({**_params(raw), "event": "minibook.collaborate"})
+
+
+def status(raw: Any = None) -> Dict[str, Any]:
+    return execute({**_params(raw), "event": "minibook.status"})
+
+
+def list_projects(raw: Any = None) -> Dict[str, Any]:
+    return execute({**_params(raw), "event": "minibook.list_projects"})

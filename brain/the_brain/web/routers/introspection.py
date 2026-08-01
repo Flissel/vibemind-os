@@ -28,6 +28,7 @@ import json
 import logging
 import re
 import time
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Request
@@ -35,6 +36,18 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _trace_lite(pe, trace_id: str, intent: str, routed_via: str, final_text: str = "") -> None:
+    """E2E-Trace (2026-06-09): plan-lose Zweige (meta/easy/som/som-team/no-plan) in
+    den Trace schreiben, damit GET /api/trace/{id} JEDE Anfrage zeigt — nicht nur
+    die mit PlanExecutor-Plan. Best-effort, nie blockierend/500."""
+    try:
+        rec = getattr(pe, "recorder", None)
+        if rec is not None:
+            rec.record_lite(trace_id, intent, routed_via, final_text)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[trace] record_lite skipped: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -509,6 +522,17 @@ async def brain_frequency_markers(request: Request):
 # ===================================================================
 # Group 5 — Health (system-level)
 # ===================================================================
+
+@router.get("/api/health/space-registry")
+def space_registry_health():
+    """Canonical space/event/executor catalog consistency (no live fallback)."""
+    import yaml
+
+    from core.space_contract import registry_health
+
+    capabilities_path = Path(__file__).resolve().parents[2] / "data" / "capabilities.yaml"
+    capabilities = yaml.safe_load(capabilities_path.read_text(encoding="utf-8")) or []
+    return JSONResponse(registry_health(capabilities=capabilities))
 
 @router.get("/api/health/components")
 async def health_components(request: Request):
@@ -1176,6 +1200,84 @@ async def tribe_status(request: Request):
         return JSONResponse(enc.status())
     except Exception as exc:
         return JSONResponse({"enabled": False, "error": str(exc)})
+
+
+@router.get("/api/kg/thought/{thought_id}/profile")
+async def kg_thought_profile(thought_id: str, request: Request):
+    """Interpretation: the stored TriBE bridge-profile for a thought.
+
+    Returns the 8-bridge activation levels plus a human-readable summary
+    ("high social + memory, low defense"). Populated only when thoughts were
+    ingested with TRIBE_PROFILE_ENABLED=1.
+    """
+    kg = getattr(request.app.state, "qdrant_kg", None)
+    if kg is None:
+        return JSONResponse({"error": "knowledge graph unavailable"}, status_code=503)
+    try:
+        prof = kg.get_thought_profile(thought_id)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    if prof is None:
+        return JSONResponse({"error": "thought not found"}, status_code=404)
+    if not prof.get("bridge_levels"):
+        prof["note"] = "no neural profile stored (TRIBE_PROFILE_ENABLED off at ingest?)"
+    return JSONResponse(prof)
+
+
+@router.get("/api/execution-log/search")
+async def execution_log_search(request: Request, q: str = "", diff: str = "",
+                               source: str = "", limit: int = 20):
+    """RAG over the execution trace (Baustein D.2).
+
+    Query params:
+      q      — semantic query (free text); empty → recent/any
+      diff   — filter MATCH | MISMATCH | UNVERIFIED (claimed-vs-verified)
+      source — filter planner | executor | validator
+      limit  — max hits
+
+    Example: /api/execution-log/search?diff=MISMATCH → actions that claimed
+    success but the world didn't confirm. Only populated with EXECUTION_LOG_ENABLED=1.
+    """
+    kg = getattr(request.app.state, "qdrant_kg", None)
+    if kg is None:
+        return JSONResponse({"error": "knowledge graph unavailable"}, status_code=503)
+    try:
+        from core.execution_log import ExecutionLog, EXECUTION_LOG_ENABLED
+        if not EXECUTION_LOG_ENABLED:
+            return JSONResponse({
+                "enabled": False,
+                "note": "set EXECUTION_LOG_ENABLED=1 to record + query the execution trace",
+                "results": [],
+            })
+        log = ExecutionLog(kg)
+        hits = log.search(q or "execution step", diff=diff or None,
+                          source=source or None, limit=limit)
+        return JSONResponse({
+            "enabled": True,
+            "query": {"q": q, "diff": diff, "source": source, "limit": limit},
+            "count": len(hits),
+            "results": hits,
+        })
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@router.get("/api/sequence-learner/status")
+async def sequence_learner_status(request: Request, intent: str = "", task_type: str = ""):
+    """Baustein A — learned agent-sequence stats + optional suggestion.
+
+    Pass ?intent=... or ?task_type=... to see what sequence the learner would
+    suggest. Empty → just the learner state. Populated with SEQUENCE_LEARNER_ENABLED=1.
+    """
+    try:
+        from core.sequence_learner import get_learner, SEQUENCE_LEARNER_ENABLED
+        learner = get_learner()
+        out = {"enabled": SEQUENCE_LEARNER_ENABLED, "state": learner.get_state()}
+        if intent or task_type:
+            out["suggestion"] = learner.suggest(intent=intent, task_type=task_type)
+        return JSONResponse(out)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
 
 
 @router.get("/api/brain/auto_dispatch_stats")
@@ -2275,8 +2377,15 @@ def _try_capability_shortcut(state, intent: str):
         )
         return None
 
-    # Must be is_direct so the executor can resolve target via registry
-    if not getattr(m, "is_direct", False):
+    # Must have a registered execution_target so an executor can run the hop
+    # without the LLM planner. Phase 11.Q2 originally restricted this to
+    # `direct:` (in-process Python) caps; but `openfang:`, `coding-engine:`,
+    # `http:`, `n8n:`, `mcp:` executors resolve their own targets just as well
+    # (e.g. OpenFangExecutor looks up the agent via /api/agents). Restricting
+    # to is_direct sent every openfang:/openclaw cap to the LLM planner, which
+    # then hallucinated bubble-creation plans out of a recall saturated with
+    # old bubble_create plans. Accept any registered execution-target kind.
+    if not getattr(m, "has_execution_target", False):
         return None
 
     # Look up arg_kwarg from the registry (arg_template gets extracted
@@ -2331,6 +2440,7 @@ async def multihop_execute(request: Request):
         {intent}                  produce plan + execute
         {plan: {...}}             execute a hand-built plan (skip planner)
     Returns the executed plan summary plus optional final synthesis."""
+    import os  # modulweit nicht importiert in dieser Datei — für SoM-Merge-Routing
     state = request.app.state
     pe = getattr(state, "plan_executor", None)
     pl = getattr(state, "multihop_planner", None)
@@ -2347,13 +2457,21 @@ async def multihop_execute(request: Request):
     intent = (body.get("intent") or body.get("message") or "").strip()
     skip_shortcut = bool(body.get("force_planner"))
 
+    # E2E-Trace (2026-06-09): EINE durchgaengige Correlation-ID am Eingang. Faedelt
+    # durch ALLE Zweige (auch SoM/som-team/no-plan, die kein plan_id haben) - sie
+    # steht in jeder Response + (wo ein Plan existiert) in plan.trace_id, sodass
+    # GET /api/trace/{trace_id} die ganze Kette eingabe->...->ausgabe zeigt.
+    import uuid as _uuid
+    trace_id = "tr_" + _uuid.uuid4().hex[:12]
+    _routed_via = None   # wird je Zweig gesetzt (groq/som/som-team/no-plan/easy/meta)
+
     from core.plan_schema import Plan as _Plan
     plan = None
     if plan_dict:
         try:
             plan = _Plan.from_dict(plan_dict)
         except Exception as e:
-            return JSONResponse({"error": f"invalid plan: {e}"}, status_code=400)
+            return JSONResponse({"error": f"invalid plan: {e}", "trace_id": trace_id}, status_code=400)
     elif intent:
         # Phase 11.Q2 — Capability-Router shortcut. If the router has a
         # high-confidence regex match for a single-action intent, skip
@@ -2367,30 +2485,205 @@ async def multihop_execute(request: Request):
                 logger.exception(f"[multihop] shortcut crashed for intent={intent!r}: {e}")
                 plan = None  # fall through to LLM
 
+        # Phase A (2026-06-08): SEMANTISCHES schwierigkeits-basiertes Routing.
+        # Ersetzt das fragile Verb-Zählen (_looks_like_multi_action) durch einen
+        # Qwen-Cosine-Klassifikator (difficulty_router): easy→Chat, medium→
+        # Shortcut/Groq, hard→SoM, insane→AutoGen(Phase B; bis dahin SoM). Löst
+        # den Fall "erstelle Excel" (1 Verb, aber komplex → hard → SoM) der am
+        # Verb-Zählen vorbeirutschte. Kill-Switch DIFFICULTY_ROUTING=0 → altes
+        # Multi-Action-Verhalten. Klassifikation ist robust gekapselt (Fehler →
+        # Heuristik), darf den Handler nie 500'en.
+        som_route = False
         if plan is None:
-            if pl is None:
-                return JSONResponse({"error": "planner not loaded — pass a 'plan' instead"}, status_code=503)
-            # Phase 11.T.4 — async planning path; falls back to threadpool
-            aplan_fn = getattr(pl, "aplan", None)
-            if aplan_fn is not None:
-                plan = await aplan_fn(intent)
+            use_som = os.environ.get("SOM_AS_PLANNER", "1") not in ("0", "false", "False")
+            diff_on = os.environ.get("DIFFICULTY_ROUTING", "1") not in ("0", "false", "False")
+            level = None
+            if diff_on:
+                try:
+                    from core.difficulty_router import get_router, handler_for
+                    # classify() macht einen Qwen-Embedding-Forward-Pass (CPU-schwer)
+                    # + beim ersten Call den ~148s-Modell-Cold-Load. SYNC auf dem
+                    # async Event-Loop wuerde das ALLE Requests blockieren (jeder
+                    # classify pegte einen Core + starvte HTTP — root-caused 2026-06-08).
+                    # In den Threadpool offloaden, wie die SoM/som-team-Dispatches.
+                    import asyncio as _asyncio
+                    _loop = _asyncio.get_running_loop()
+                    cls = await _loop.run_in_executor(None, get_router().classify, intent)
+                    level = cls.get("level")
+                    handler = handler_for(level)
+                    logger.info(f"[multihop] difficulty={level} handler={handler} "
+                                f"({cls.get('method')}, {cls.get('reason')}) intent={intent[:60]!r}")
+                except Exception as e:  # noqa: BLE001 — Klassifikation darf nie 500'en
+                    logger.warning(f"[multihop] difficulty classify failed ({e}), Verb-Heuristik")
+                    level = None
+
+            if level == "meta":
+                # System-/Meta-Nachricht (Konversations-Summary, zurückgespielter
+                # Transcript) — KEIN planbarer Intent. NIE an SoM/Groq geben (war
+                # Root-Cause des SoM-Run-Storms 2026-06-08). Höflich abweisen.
+                logger.info(f"[multihop] meta-Nachricht abgewiesen (kein Plan): {intent[:60]!r}")
+                _trace_lite(pe, trace_id, intent, "meta-reject", "")
+                return JSONResponse({
+                    "ok": True, "difficulty": "meta", "executed": {}, "skipped": True,
+                    "final_text": "", "trace_id": trace_id,
+                })
+
+            if level == "easy":
+                # einfache Frage/Smalltalk → direkte Chat-Antwort, KEIN Planer.
+                # brain_chat.send(msg) -> BrainChatResponse (.to_dict()), sync →
+                # im Threadpool, damit der Event-Loop frei bleibt.
+                bc = getattr(state, "brain_chat", None)
+                reply = None
+                if bc is not None:
+                    try:
+                        import asyncio as _asyncio
+                        loop = _asyncio.get_running_loop()
+                        resp = await loop.run_in_executor(None, bc.send, intent)
+                        d = resp.to_dict() if hasattr(resp, "to_dict") else (resp or {})
+                        if isinstance(d, dict):
+                            reply = d.get("text") or d.get("reply") or d.get("response") or d.get("message")
+                        elif isinstance(d, str):
+                            reply = d
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(f"[multihop] easy-chat failed ({e})")
+                _final = (reply.strip() if isinstance(reply, str) and reply.strip() else "Alles klar.")
+                _trace_lite(pe, trace_id, intent, "easy-chat", _final)
+                return JSONResponse({
+                    "ok": True, "difficulty": "easy", "executed": {},
+                    "final_text": _final, "trace_id": trace_id,
+                })
+
+            if level == "insane" and os.environ.get("INSANE_AUTOGEN", "0") in ("1", "true", "True"):
+                # Phase B: vage/explorative Intents → dynamisches AutoGen-Capability-
+                # Team (SelectorGroupChat). async wie SoM (Ergebnis per Telegram).
+                # Default AUS (INSANE_AUTOGEN=0) → insane fällt unten auf SoM zurück
+                # (sicher, solange das Team-Geschütz nicht breit verifiziert ist).
+                try:
+                    from core.capability_targets import build_executor
+                    ex = build_executor("openfang:som-team")
+                    # call_with_arg ist SYNC (requests.post an OpenFang). Auf dem
+                    # async Event-Loop wuerde das ALLE Requests blockieren
+                    # (Handler-Starvation, root-caused 2026-06-08) → in den
+                    # Threadpool offloaden, wie der easy/SoM-Pfad.
+                    import asyncio as _asyncio
+                    _loop = _asyncio.get_running_loop()
+                    # _trace_id mitgeben (Phase 2b): der som-team-Worker pusht seine
+                    # Stage-Events unter derselben trace_id zurueck an den Trace.
+                    res = await _loop.run_in_executor(
+                        None, lambda: ex.call_with_arg(intent, extra_params={"_intent": intent, "_trace_id": trace_id}))
+                    reply = ""
+                    if isinstance(res, dict):
+                        reply = res.get("response") or res.get("final_text") or ""
+                    _final = (reply.strip() if isinstance(reply, str) and reply.strip()
+                              else "An das Multi-Agent-Team übergeben — das Ergebnis kommt per Telegram.")
+                    _trace_lite(pe, trace_id, intent, "som-team", _final)
+                    return JSONResponse({
+                        "ok": True, "difficulty": "insane", "autogen": True, "executed": {},
+                        "final_text": _final, "trace_id": trace_id,
+                    })
+                except Exception as e:  # noqa: BLE001 — Team-Dispatch-Fehler → SoM-Fallback
+                    logger.warning(f"[multihop] som-team dispatch failed ({e}), Fallback SoM")
+
+            if use_som and (level in ("hard", "insane") or
+                            (level is None and _looks_like_multi_action(intent.lower())) or
+                            pl is None):
+                # hard → SoM; insane → SoM-Fallback (wenn INSANE_AUTOGEN aus/fehlgeschlagen).
+                # level None (Klassifikation aus/fehlgeschlagen) → alte Verb-Heuristik.
+                som_route = True  # -> SoM-Dispatch unten, KEIN Groq-Versuch
             else:
-                import asyncio as _asyncio
-                loop = _asyncio.get_running_loop()
-                plan = await loop.run_in_executor(None, pl.plan, intent)
+                # medium (1 klare Aktion) → Shortcut hat schon gegriffen oder
+                # Groq-Multihop versuchen (wie bisher).
+                if pl is None:
+                    return JSONResponse({"error": "planner not loaded — pass a 'plan' instead"}, status_code=503)
+                # Baustein A — inject the learned agent-sequence as a planner prior
+                # (no-op unless SEQUENCE_LEARNER_ENABLED). The LLM stays in control;
+                # this only hints the proven decomposition.
+                _plan_ctx = None
+                try:
+                    from core.sequence_learner import suggest_sequence
+                    _sug = suggest_sequence(intent=intent)
+                    if _sug and _sug.get("sequence"):
+                        _seq = " → ".join(_sug["sequence"])
+                        _plan_ctx = {"hint": (
+                            f"A similar intent succeeded {_sug['ok']}x with this agent "
+                            f"sequence: {_seq}. Prefer it unless the intent clearly differs."
+                        )}
+                except Exception:
+                    _plan_ctx = None
+                # Phase 11.T.4 — async planning path; falls back to threadpool
+                aplan_fn = getattr(pl, "aplan", None)
+                if aplan_fn is not None:
+                    plan = await (aplan_fn(intent, context=_plan_ctx) if _plan_ctx else aplan_fn(intent))
+                else:
+                    import asyncio as _asyncio
+                    loop = _asyncio.get_running_loop()
+                    if _plan_ctx:
+                        plan = await loop.run_in_executor(None, lambda: pl.plan(intent, context=_plan_ctx))
+                    else:
+                        plan = await loop.run_in_executor(None, pl.plan, intent)
     else:
         return JSONResponse({"error": "intent or plan required"}, status_code=400)
 
+    # SoM-Dispatch: einheitlicher Pfad für (a) mehrstufige Intents (som_route)
+    # und (b) Groq-Multihop-Versagen ("no plan", SOM_NOPLAN_FALLBACK=1 default).
+    # som-planner ist async (antwortet sofort, Ergebnis kommt per Telegram) —
+    # blockiert diesen Handler nicht. Reuse build_executor (self-healing gg
+    # OpenFang-Agent-respawns).
+    if plan is None and intent and (
+        som_route or os.environ.get("SOM_NOPLAN_FALLBACK", "1") not in ("0", "false", "False")
+    ):
+        try:
+            from core.capability_targets import build_executor
+            ex = build_executor("openfang:som-planner")
+            # SYNC call_with_arg (requests.post) → in den Threadpool, sonst
+            # blockiert es den Event-Loop + starvt alle anderen Requests
+            # (Handler-Starvation, root-caused 2026-06-08).
+            import asyncio as _asyncio
+            _loop = _asyncio.get_running_loop()
+            res = await _loop.run_in_executor(
+                None, lambda: ex.call_with_arg(intent, extra_params={"_intent": intent, "_trace_id": trace_id}))
+            reply = ""
+            if isinstance(res, dict):
+                reply = res.get("response") or res.get("final_text") or ""
+            _final = (reply.strip() if isinstance(reply, str) and reply.strip()
+                      else "An den SoM-Planner übergeben — das Ergebnis kommt per Telegram, sobald der Plan fertig ist.")
+            _trace_lite(pe, trace_id, intent, "som-planner", _final)
+            return JSONResponse({
+                "ok": True, "som": True, "executed": {},
+                "final_text": _final, "trace_id": trace_id,
+            })
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[multihop] som-planner dispatch failed for intent={intent!r}: {e}")
+            # fällt durch auf den "no plan"-Pfad unten
+
     if plan is None:
-        return JSONResponse({"ok": False, "error": "planner returned no plan"})
+        _trace_lite(pe, trace_id, intent, "no-plan", "")
+        return JSONResponse({"ok": False, "error": "planner returned no plan", "trace_id": trace_id})
 
     # Run executor in a thread so FastAPI's main loop is free to handle
     # any nested HTTP calls (brain:GET:/api/X targets recurse into us).
     # NOTE: pe.execute remains sync (ThreadPoolExecutor + thread-mutexes
     # internally) — wrapping it in to_thread is the right call.
     import asyncio as _asyncio
+    # E2E-Trace: trace_id auf den Plan setzen, bevor der Executor laeuft — so landet
+    # sie im PlanRecorder-Snapshot (plan_executor finally) + stages[] tragen sie.
+    try:
+        plan.trace_id = trace_id
+        plan._stages.append({"stage": "plan", "component": "multihop_execute",
+                             "ts": __import__("time").time(), "outcome": "plan_ready"})
+    except Exception:  # noqa: BLE001
+        pass
     exec_result = await _asyncio.to_thread(pe.execute, plan)
-    out: Dict[str, Any] = {"ok": exec_result.get("ok"), **exec_result}
+    # MH-5a (Phase 0) — top-level plan_id: the reward-capable correlate.
+    # POST /api/multihop/plan/{plan_id}/reward and /api/decisions/reward both
+    # key on plan_id; the voice bridge reads data.get("plan_id") — nested-only
+    # (plan.plan_id) meant a voice-side reward could never fire.
+    out: Dict[str, Any] = {
+        "ok": exec_result.get("ok"),
+        "trace_id": trace_id,
+        "plan_id": plan.plan_id,
+        **exec_result,
+    }
 
     # Optional final synthesis — Phase 11.T.4 uses asynthesize() so the
     # synth LLM call doesn't burn a threadpool worker.
@@ -2415,6 +2708,12 @@ async def multihop_execute(request: Request):
                     custom_prompt=plan.final_synthesis_prompt or None,
                 )
             out["final_text"] = text
+            # E2E-Trace: die Ausgabe (synthesis) zurueck an den Recorder haengen —
+            # bisher wurde final_text NICHT gespeichert (Recon-Befund 2026-06-09).
+            try:
+                pe.recorder.attach_final(plan.plan_id, text)
+            except Exception:  # noqa: BLE001
+                pass
         except Exception as e:
             out["synthesis_error"] = f"{type(e).__name__}: {e}"
 
@@ -2430,6 +2729,78 @@ async def multihop_history(request: Request, limit: int = 20):
     return JSONResponse({"plans": pe.recorder.list(limit=int(limit))})
 
 
+# ─── E2E-Trace (2026-06-09): eingabe -> plan -> approval -> execution -> ausgabe ─
+@router.get("/api/trace/{trace_id}")
+async def trace_get(trace_id: str, request: Request):
+    """Volle Nachvollziehbarkeit einer Anfrage: welcher App-Teil (component) hat
+    in welcher Stufe (stage) wann (ts) was (outcome) gemacht, plus routed_via +
+    final_text (Ausgabe). Funktioniert fuer ALLE Zweige (PlanExecutor + SoM/team
+    via Push). 404 wenn unbekannt, nie 500."""
+    pe = getattr(request.app.state, "plan_executor", None)
+    if pe is None:
+        return JSONResponse({"error": "plan_executor not loaded"}, status_code=503)
+    try:
+        snap = pe.recorder.get_by_trace(trace_id)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"error": str(e)[:200]}, status_code=500)
+    if snap is None:
+        return JSONResponse({"error": f"trace '{trace_id}' not found"}, status_code=404)
+    # stages chronologisch sortieren (PlanExecutor + SoM-Push koennen verzahnt sein)
+    stages = sorted(snap.get("stages", []), key=lambda s: s.get("ts", 0))
+    return JSONResponse({
+        "trace_id": trace_id,
+        "intent": snap.get("intent", ""),
+        "routed_via": snap.get("routed_via", ""),
+        "plan_id": snap.get("plan_id"),
+        "ok": snap.get("ok"),
+        "elapsed_s": snap.get("elapsed_s"),
+        "stages": stages,
+        "executed": snap.get("executed"),
+        "final_text": snap.get("final_text", ""),
+    })
+
+
+@router.post("/api/trace/{trace_id}/stage")
+async def trace_append_stage(trace_id: str, request: Request):
+    """Stage-Push von den detached SoM/som-team-Workern (Phase 2b): {stage,
+    component, outcome}. So landen die per-Schritt-Stufen der HEAVY-Kette
+    (planner/executor/validator/matrix) unter derselben trace_id im Trace."""
+    pe = getattr(request.app.state, "plan_executor", None)
+    if pe is None:
+        return JSONResponse({"error": "plan_executor not loaded"}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    stage = (body.get("stage") or "").strip()
+    component = (body.get("component") or "").strip() or "som"
+    if not stage:
+        return JSONResponse({"error": "stage required"}, status_code=400)
+    try:
+        pe.recorder.append_stage(trace_id, stage, component, body.get("outcome", ""))
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": str(e)[:200]})
+    return JSONResponse({"ok": True})
+
+
+@router.get("/api/trace")
+async def trace_list(request: Request, limit: int = 20):
+    """Letzte N Traces (trace-zentriert, mit routed_via). Detail via /api/trace/{id}."""
+    pe = getattr(request.app.state, "plan_executor", None)
+    if pe is None:
+        return JSONResponse({"traces": []})
+    try:
+        with pe.recorder._lock:
+            items = [s for s in list(pe.recorder._recent) if s.get("trace_id")][-int(limit):][::-1]
+        return JSONResponse({"traces": [
+            {"trace_id": s.get("trace_id"), "intent": (s.get("intent") or "")[:120],
+             "routed_via": s.get("routed_via"), "ok": s.get("ok"),
+             "n_stages": len(s.get("stages", [])), "ts": s.get("ts")}
+            for s in items]})
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"traces": [], "error": str(e)[:200]})
+
+
 @router.get("/api/multihop/plan/{plan_id}")
 async def multihop_plan_detail(plan_id: str, request: Request):
     """Phase 6.12 — full plan snapshot incl. per-hop results + state. For
@@ -2441,6 +2812,41 @@ async def multihop_plan_detail(plan_id: str, request: Request):
     if p is None:
         return JSONResponse({"error": f"plan '{plan_id}' not found"}, status_code=404)
     return JSONResponse(p)
+
+
+# ── Phase C — SoM/Team Progress (Push-Modell, Container-Boundary-sicher) ──────
+# Die Detached-SoM/Team-Runner POSTen Phasen-Fortschritt hierher (sie sehen den
+# Brain via BRAIN_URL/:5000); GET liefert das Live-Dashboard. Kein Mount, kein
+# Minibook-Revival nötig — siehe core/som_progress.SomProgressRegistry.
+@router.post("/api/som/progress")
+async def som_progress_push(request: Request):
+    """Runner meldet eine Status-Transition: {run_id, status, intent?, source?}."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    run_id = (body.get("run_id") or "").strip()
+    status = (body.get("status") or "").strip()
+    if not run_id or not status:
+        return JSONResponse({"error": "run_id and status required"}, status_code=400)
+    try:
+        from core.som_progress import get_registry
+        get_registry().record(run_id, status,
+                              intent=body.get("intent"), source=body.get("source"))
+    except Exception as e:  # noqa: BLE001 — Progress darf nie 500'en
+        logger.warning(f"[som-progress] record failed: {e}")
+        return JSONResponse({"ok": False, "error": str(e)[:200]})
+    return JSONResponse({"ok": True})
+
+
+@router.get("/api/som/runs")
+async def som_runs_dashboard(request: Request):
+    """Live-Dashboard: laufende + zuletzt fertige SoM/Team-Runs (Push-Registry)."""
+    try:
+        from core.som_progress import get_registry
+        return JSONResponse(get_registry().snapshot())
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"runs": [], "active": [], "done": [], "error": str(e)[:200]})
 
 
 @router.get("/api/multihop/stream")
@@ -3909,3 +4315,192 @@ async def brain_ui(request: Request) -> HTMLResponse:
     return request.app.state.templates.TemplateResponse(
         request, "brain_dashboard.html"
     )
+
+
+def _count_complete_lines(path, start_offset: int = 0) -> int:
+    """Count COMPLETE (newline-terminated) lines in `path` from byte
+    `start_offset` to EOF, without loading the file into memory — seek, then
+    stream 1 MB chunks counting b'\\n'. A trailing partial line (no
+    terminating '\\n', i.e. an in-flight write) is deliberately NOT counted:
+    we tally newlines seen, not "lines" in the naive splitlines() sense, so a
+    dangling fragment after the last '\\n' never contributes."""
+    count = 0
+    with open(path, "rb") as f:
+        if start_offset > 0:
+            f.seek(start_offset)
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            count += chunk.count(b"\n")
+    return count
+
+
+def _diary_queue_block() -> Dict[str, Any]:
+    """Worker-independent queue/drain snapshot — reads the shared-volume
+    FILES (queue + drain state), never in-memory state, so it reflects
+    reality regardless of which brain-core worker process answers this
+    request. Degrades to zeros on any failure; never raises.
+
+    `pending` is derived from the drain's byte OFFSET, not from
+    `enqueued - episodes_drained`. Those two counters do NOT reconcile: the
+    drain advances the offset past corrupt / structurally-unusable /
+    backstop-abandoned lines (they are consumed and gone) but never counts
+    them as drained. Subtracting would therefore overstate the backlog by the
+    number of permanently-skipped lines and never reach 0 even when the drain
+    is fully caught up. The offset is the authoritative "how far consumed"
+    marker, so the exact, skip-immune backlog is the number of complete lines
+    in [offset, EOF) — which is also cheaper, since we only scan the
+    un-drained tail.
+    """
+    try:
+        from core.multihop_kotlin_adapter import resolve_queue_path
+        from core.multihop_diary_drain import _default_state_path
+
+        q_path = resolve_queue_path()
+        if not q_path.exists():
+            return {
+                "episodes_enqueued": 0, "episodes_drained": 0, "skipped": 0,
+                "pending": 0, "last_plan_id": None, "path": str(q_path),
+            }
+
+        enqueued = _count_complete_lines(q_path)
+
+        # Missing OR corrupt state file -> offset 0: we cannot prove anything
+        # was drained, so everything in the queue counts as pending. Honest
+        # under-confidence beats a fabricated number.
+        offset = 0
+        drained = 0
+        skipped = 0
+        last_plan_id = None
+        state_path = _default_state_path(q_path)
+        if state_path.exists():
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                if isinstance(state, dict):
+                    offset = int(state.get("offset", 0) or 0)
+                    # NOTE: `episodes_drained` = episodes actually REPLAYED
+                    # (incl. idempotent duplicates). It is informative, but it
+                    # is NOT the complement of `pending` — do not re-derive
+                    # pending from it (see the docstring). `skipped` is what
+                    # makes the books balance:
+                    #     enqueued ≈ drained + skipped + pending
+                    drained = int(state.get("episodes_drained", 0) or 0)
+                    skipped = int(state.get("lines_skipped", 0) or 0)
+                    last_plan_id = state.get("last_plan_id") or None
+            except Exception:
+                pass
+
+        size = q_path.stat().st_size
+        if offset < 0 or offset > size:
+            # Rotation/truncation: mirror the drain's own reset rule rather
+            # than counting backwards into a negative pending.
+            offset = 0
+        pending = _count_complete_lines(q_path, start_offset=offset)
+
+        return {
+            "episodes_enqueued": enqueued,
+            "episodes_drained": drained,
+            "skipped": skipped,
+            "pending": pending,
+            "last_plan_id": last_plan_id,
+            "path": str(q_path),
+        }
+    except Exception:
+        return {
+            "episodes_enqueued": 0,
+            "episodes_drained": 0,
+            "skipped": 0,
+            "pending": 0,
+            "last_plan_id": None,
+            "path": "",
+        }
+
+
+def _diary_enqueue_block(request: Request) -> Dict[str, Any]:
+    """plan_executor's diary_enqueued/diary_enqueue_failures counters — a
+    failed enqueue is a silently dropped episode, so this is the last place
+    to notice that data loss. Degrades to zeros on any failure."""
+    try:
+        pe = getattr(request.app.state, "plan_executor", None)
+        if pe is None:
+            return {"ok": 0, "failures": 0}
+        stats = pe.stats_dict() or {}
+        return {
+            "ok": int(stats.get("diary_enqueued", 0) or 0),
+            "failures": int(stats.get("diary_enqueue_failures", 0) or 0),
+        }
+    except Exception:
+        return {"ok": 0, "failures": 0}
+
+
+@router.get("/api/diary/stats")
+async def diary_stats(request: Request):
+    """Phase 1 — Read-only Blick ins episodische Tagebuch (KotlinGraph).
+    Grundlage für den Live-Beweis: schreibt der Multihop-Ingest real?
+
+    brain-core no longer writes episodes into its own in-memory dual_graph
+    (2 uvicorn workers, never persists) — it appends to a shared queue that
+    a separate drain process replays. So `multihop_events` etc. below stay
+    honestly empty on brain-core; the `queue`/`enqueue` blocks are the
+    worker-independent, file-based signal that actually shows episodes
+    flowing."""
+    dg = getattr(request.app.state, "dual_graph", None)
+    if dg is None:
+        return JSONResponse({"error": "dual_graph not loaded"}, status_code=503)
+    try:
+        kg = dg.kotlingraph
+        multihop = sum(
+            1 for e in kg.events
+            if (getattr(e, "metadata", None) or {}).get("source") == "multihop"
+        )
+        last = kg.events[-1] if kg.events else None
+        return JSONResponse({
+            "total_events": kg.stats.get("total_events", 0),
+            "total_episodes": kg.stats.get("total_episodes", 0),
+            "multihop_events": multihop,
+            "current_episode_id": kg.current_episode_id,
+            "last_event": ({
+                "action": last.action,
+                "done": last.done,
+                "reward": last.reward,
+                "plan_id": (last.metadata or {}).get("plan_id"),
+                "episode_success": (last.metadata or {}).get("episode_success"),
+            } if last else None),
+            "queue": _diary_queue_block(),
+            "enqueue": _diary_enqueue_block(request),
+        })
+    except Exception as e:  # noqa: BLE001 — Introspection darf nie crashen
+        return JSONResponse({"error": str(e)[:200]}, status_code=500)
+
+
+@router.get("/api/toolscope")
+async def toolscope_debug(intent: str, agent: str = "skill-coordinator", top_n: int = 8):
+    """Debug/Verifikation der dynamischen Tool-Auswahl (plans/dynamic-agent-tools-prompt.md).
+
+    Ruft den ToolScopeSelector mit dem WARMEN Prozess-Embedder (uvicorn hat ihn
+    geladen) und gibt die gewaehlten Tools + Prompt-Focus sofort zurueck — umgeht
+    den langsamen openfang-/execute-Roundtrip. Read-only, kein Seiteneffekt.
+    Beantwortet: 'waehlt der Selektor live sinnvolle Tools fuer diesen Intent?'.
+    """
+    import time as _t
+    t0 = _t.time()
+    try:
+        from core.tool_scope_selector import get_selector
+        # Embedder im Threadpool ziehen, falls (auf diesem Worker) noch kalt —
+        # blockiert dann nicht den Event-Loop.
+        import asyncio as _a
+        loop = _a.get_running_loop()
+        allow, focus = await loop.run_in_executor(
+            None, lambda: get_selector().select_tools(intent, agent_name=agent, top_n=top_n))
+        return JSONResponse({
+            "intent": intent, "agent": agent, "top_n": top_n,
+            "tool_count": len(allow), "tools": allow,
+            "prompt_focus": focus,
+            "elapsed_s": round(_t.time() - t0, 2),
+        })
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({
+            "intent": intent, "agent": agent, "error": str(exc),
+            "elapsed_s": round(_t.time() - t0, 2),
+        }, status_code=500)
