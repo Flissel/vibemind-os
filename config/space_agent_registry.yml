@@ -20,6 +20,8 @@ spaces:
   # ─── Bubbles (canvas CRUD) ─────────────────────────────────────────
   bubbles:
     agent: brain-bubbles
+    # Legacy input spelling only. Persisted/routed identity stays "bubbles".
+    aliases: [shuttles]
     # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
     prefixes: [bubble.]
     enabled: true
@@ -89,14 +91,14 @@ spaces:
     mcp_servers: [vibemind-db, filesystem, git, github, context7, qdrant, fetch, brain, issue-detector]
     default_context: [current_space, recent_intents]
     events:
-      code.generate:         { tool: shell_exec,  required_params: [description] }
-      code.modify:           { tool: apply_patch, required_params: [file_path] }
-      code.status:           { tool: shell_exec,  required_params: [] }
-      code.show:             { tool: file_read,   required_params: [file_path] }
-      code.preview.start:    { tool: shell_exec,  required_params: [] }
-      code.preview.stop:     { tool: shell_exec,  required_params: [] }
-      code.list:             { tool: db_projects_list, required_params: [] }
-      code.cancel:           { tool: shell_exec,  required_params: [] }
+      code.generate:      { tool: "coding-engine:POST:/api/start", required_params: [description] }
+      code.modify:        { tool: "coding-engine:POST:/api/start", required_params: [description, file_path] }
+      code.status:        { tool: "coding-engine:GET:/api/status", required_params: [] }
+      code.show:          { tool: "coding-engine:GET:/api/logs", required_params: [] }
+      code.preview.start: { tool: "coding-engine:POST:/api/preview/create", required_params: [project_id, project_path] }
+      code.preview.stop:  { tool: "coding-engine:POST:/api/preview/{project_id}/stop", required_params: [project_id] }
+      code.list:          { tool: "coding-engine:GET:/api/preview/", required_params: [] }
+      code.cancel:        { tool: "coding-engine:POST:/api/stop", required_params: [] }
 
   # ─── Desktop automation ─────────────────────────────────────────────
   desktop:
@@ -109,31 +111,31 @@ spaces:
     mcp_servers: [vibemind-db, desktop-automation]
     default_context: [current_space, active_window]
     events:
-      desktop.open_app:       { tool: desktop_open_app,    required_params: [app_name] }
-      desktop.click:          { tool: desktop_click,       required_params: [element] }
-      desktop.type:           { tool: desktop_type,        required_params: [text] }
-      desktop.press_key:      { tool: desktop_press_key,   required_params: [key] }
+      desktop.open_app:       { tool: desktop_open_app,    required_params: [app_name], requires_confirmation: true, result_validation: external_receipt }
+      desktop.click:          { tool: desktop_click,       required_params: [element], requires_confirmation: true, result_validation: external_receipt }
+      desktop.type:           { tool: desktop_type,        required_params: [text], requires_confirmation: true, result_validation: external_receipt }
+      desktop.press_key:      { tool: desktop_press_key,   required_params: [key], requires_confirmation: true, result_validation: external_receipt }
       desktop.screenshot:     { tool: desktop_screenshot,  required_params: [] }
-      desktop.scroll:         { tool: desktop_scroll,      required_params: [direction] }
-      desktop.task:           { tool: desktop_task,        required_params: [task] }
-      desktop.task.create:    { tool: desktop_task,        required_params: [task] }
-      desktop.task.update:    { tool: desktop_task,        required_params: [task_id] }
+      desktop.scroll:         { tool: desktop_scroll,      required_params: [direction], requires_confirmation: true, result_validation: external_receipt }
+      desktop.task:           { tool: desktop_task,        required_params: [task], requires_confirmation: true, result_validation: external_receipt }
+      desktop.task.create:    { tool: desktop_task,        required_params: [task], requires_confirmation: true, result_validation: external_receipt }
+      desktop.task.update:    { tool: desktop_task,        required_params: [task_id], requires_confirmation: true, result_validation: external_receipt }
       desktop.task.list:      { tool: desktop_task,        required_params: [] }
       desktop.moire.scan:     { tool: desktop_screenshot,  required_params: [] }
       desktop.moire.find:     { tool: desktop_screenshot,  required_params: [query] }
-      messaging.whatsapp:     { tool: desktop_task,        required_params: [message] }
-      messaging.telegram:     { tool: desktop_task,        required_params: [message] }
-      messaging.send:         { tool: desktop_task,        required_params: [message] }
+      messaging.whatsapp:     { tool: desktop_task,        required_params: [message], requires_confirmation: true, result_validation: external_receipt }
+      messaging.telegram:     { tool: desktop_task,        required_params: [message], requires_confirmation: true, result_validation: external_receipt }
+      messaging.send:         { tool: desktop_task,        required_params: [message], requires_confirmation: true, result_validation: external_receipt }
       web.search:             { tool: fetch,               required_params: [query] }
       web.fetch:              { tool: fetch,               required_params: [url] }
       openclaw.status:        { tool: desktop_task,        required_params: [] }
       openclaw.notifications: { tool: desktop_task,        required_params: [] }
-      openclaw.prompt:        { tool: desktop_task,        required_params: [prompt] }
+      openclaw.prompt:        { tool: desktop_task,        required_params: [prompt], requires_confirmation: true, result_validation: external_receipt }
       openclaw.browse:        { tool: fetch,               required_params: [url] }
       openclaw.scrape:        { tool: fetch,               required_params: [url] }
       openclaw.screenshot.web: { tool: desktop_screenshot, required_params: [url] }
-      openclaw.fill_form:     { tool: desktop_type,        required_params: [form_data] }
-      openclaw.message.send:  { tool: desktop_task,        required_params: [message] }
+      openclaw.fill_form:     { tool: desktop_type,        required_params: [form_data], requires_confirmation: true, result_validation: external_receipt }
+      openclaw.message.send:  { tool: desktop_task,        required_params: [message], requires_confirmation: true, result_validation: external_receipt }
       openclaw.message.read:  { tool: desktop_task,        required_params: [] }
       openclaw.linkedin.search: { tool: fetch, required_params: [query] }
       openclaw.monitor:       { tool: desktop_task,        required_params: [] }
@@ -157,7 +159,7 @@ spaces:
 
   # ─── Rowboat (Knowledge Graph) ──────────────────────────────────────
   rowboat:
-    agent: rowboat-knowledge
+    agent: rowboat-chat
     # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
     prefixes: [rowboat.]
     enabled: true
@@ -165,11 +167,11 @@ spaces:
     mcp_servers: [vibemind-db, fetch]
     default_context: [current_space, recent_intents]
     events:
-      rowboat.search:       { tool: fetch,      required_params: [query] }
-      rowboat.query:        { tool: fetch,      required_params: [query] }
-      rowboat.email_draft:  { tool: fetch,      required_params: [recipient] }
-      rowboat.meeting_brief: { tool: fetch,      required_params: [topic] }
-      rowboat.deck:         { tool: fetch,      required_params: [topic] }
+      rowboat.search:       { tool: search_knowledge,       required_params: [query] }
+      rowboat.query:        { tool: query_knowledge,        required_params: [query] }
+      rowboat.email_draft:  { tool: draft_email,            required_params: [recipient, topic] }
+      rowboat.meeting_brief: { tool: generate_meeting_brief, required_params: [topic] }
+      rowboat.deck:         { tool: generate_deck,          required_params: [topic] }
       rowboat.status:       { tool: fetch,      required_params: [] }
       rowboat.docker.start: { tool: shell_exec, required_params: [] }
       rowboat.docker.stop:  { tool: shell_exec, required_params: [] }
@@ -200,13 +202,13 @@ spaces:
     mcp_servers: [vibemind-db, scheduled-tasks]
     default_context: [current_space, now]
     events:
-      schedule.create:  { tool: db_schedule_create, required_params: [title, trigger_config] }
-      schedule.list:    { tool: db_schedule_list,   required_params: [] }
-      schedule.cancel:  { tool: db_update,          required_params: [task_id] }
-      schedule.modify:  { tool: db_update,          required_params: [task_id] }
-      schedule.status:  { tool: db_schedule_list,   required_params: [] }
-      schedule.snooze:  { tool: db_update,          required_params: [task_id] }
-      openclaw.cron:    { tool: db_schedule_create, required_params: [cron_expr] }
+      schedule.create:  { tool: schedule_create,        required_params: [title, action_text, trigger_config] }
+      schedule.list:    { tool: schedule_list,          required_params: [] }
+      schedule.cancel:  { tool: schedule_cancel,        required_params: [task_id] }
+      schedule.modify:  { tool: schedule_modify,        required_params: [task_id] }
+      schedule.status:  { tool: schedule_status,        required_params: [] }
+      schedule.snooze:  { tool: schedule_snooze,        required_params: [task_id] }
+      openclaw.cron:    { tool: schedule_openclaw_cron, required_params: [cron_expr, prompt] }
 
   # ─── n8n (workflow automation) ──────────────────────────────────────
   n8n:
@@ -236,21 +238,29 @@ spaces:
     # LEGACY_SPACE_AGENT_MAP derives/validates against this (ABSORB-7).
     agent: vibemind
     # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
-    prefixes: [agentfarm.]
+    aliases: [autogen]
+    prefixes: [agentfarm., autogen.]
     keywords: ["agent.?farm|pipeline|forge|swarm.?team|agent.?team"]
-    enabled: true
+    # The historical spaces/autogen tree was removed in ec98a0c and its
+    # external/Autogen_AgentFarm source was never versioned.  Keep routing
+    # disabled until a durable runtime replaces the old in-memory runner.
+    enabled: false
     description: "AutoGen multi-agent team coordination."
-    mcp_servers: [vibemind-db]
+    runtime:
+      status: blocked
+      source_path: external/Autogen_AgentFarm
+      blocker: missing_versioned_agentfarm_source
+    mcp_servers: []
     default_context: [current_space]
     events:
-      agentfarm.create_team:    { tool: db_insert, required_params: [team_name] }
-      agentfarm.run:            { tool: db_update, required_params: [team_id, task] }
-      agentfarm.status:         { tool: db_query,  required_params: [] }
-      agentfarm.list_teams:     { tool: db_query,  required_params: [] }
-      agentfarm.stop:           { tool: db_update, required_params: [team_id] }
-      agentfarm.results:        { tool: db_query,  required_params: [team_id] }
-      agentfarm.list_templates: { tool: db_query,  required_params: [] }
-      agentfarm.collaborate:    { tool: db_update, required_params: [team_id] }
+      agentfarm.create_team:    { operation: create_team, required_params: [team_name] }
+      agentfarm.run:            { operation: run, required_params: [team_id, task] }
+      agentfarm.status:         { operation: status, required_params: [] }
+      agentfarm.list_teams:     { operation: list_teams, required_params: [] }
+      agentfarm.stop:           { operation: stop, required_params: [run_id] }
+      agentfarm.results:        { operation: results, required_params: [run_id] }
+      agentfarm.list_templates: { operation: list_templates, required_params: [] }
+      agentfarm.collaborate:    { operation: collaborate, required_params: [task, goal] }
 
   # ─── Video (generation + vision) ────────────────────────────────────
   video:
@@ -296,10 +306,10 @@ spaces:
     mcp_servers: [vibemind-db]
     default_context: [current_space]
     events:
-      mirofish.simulate:     { tool: db_query,  required_params: [model] }
-      mirofish.predict:      { tool: db_query,  required_params: [query] }
-      mirofish.graph.build:  { tool: db_insert, required_params: [graph_name] }
-      mirofish.graph.search: { tool: db_query,  required_params: [query] }
-      mirofish.status:       { tool: db_query,  required_params: [] }
-      mirofish.evaluate:     { tool: db_query,  required_params: [] }
-      mirofish.interview:    { tool: db_query,  required_params: [topic] }
+      mirofish.simulate:     { tool: 'mirofish:simulate',     required_params: [simulation_id] }
+      mirofish.predict:      { tool: 'mirofish:predict',      required_params: [simulation_id] }
+      mirofish.graph.build:  { tool: 'mirofish:graph.build',  required_params: [project_id] }
+      mirofish.graph.search: { tool: 'mirofish:graph.search', required_params: [graph_id, query] }
+      mirofish.status:       { tool: 'mirofish:status',       required_params: [job_id] }
+      mirofish.evaluate:     { tool: 'mirofish:evaluate',     required_params: [simulation_id] }
+      mirofish.interview:    { tool: 'mirofish:interview',    required_params: [simulation_id, agent_id, prompt] }

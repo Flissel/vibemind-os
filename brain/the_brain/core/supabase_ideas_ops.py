@@ -1045,6 +1045,24 @@ async def bubble_score_op(client: SupabaseIdeasClient,
             f"Run bubble_evaluate for a fresh 4-dim assessment.")
 
 
+async def bubble_promote_op(client: SupabaseIdeasClient,
+                            params: Dict[str, Any]) -> str:
+    row = await _resolve_bubble(client, params, "bubble_name", "bubble",
+                                "bubble_id", "name", "title")
+    if row is None:
+        return "Bubble to promote not found."
+    project = await client.promote_bubble(row)
+    if not project:
+        return f"Failed to promote bubble '{row.get('title')}'."
+    title = row.get("title") or project.get("name") or "?"
+    project_id = project.get("id")
+    _publish("bubble.promote",
+             {"bubble_id": row.get("id"), "title": title,
+              "project_id": project_id, "space": "bubbles"},
+             f"Promoted bubble '{title}' to project {project_id}", True)
+    return f"Bubble '{title}' promoted to project (id={project_id})."
+
+
 async def bubble_noop_op(client: SupabaseIdeasClient,
                          params: Dict[str, Any]) -> str:
     """bubble_exit — stateless navigation, there is genuinely nothing to write.
@@ -1120,6 +1138,42 @@ async def idea_delete_op(client: SupabaseIdeasClient,
              {"node_id": node["id"], "title": node.get("title")},
              f"Deleted idea '{node.get('title')}'", True)
     return f"Idea '{node.get('title', name)}' deleted."
+
+
+async def idea_to_project_op(
+    client: SupabaseIdeasClient, params: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Promote an idea/bubble to a Supabase project and verify persistence."""
+    name = _arg(params, "name", "title", "idea", "idea_id")
+    if not name:
+        return {"ok": False, "verified": False,
+                "error": "Need an idea name/id to create a project."}
+    idea = await client.find_bubble_by_title(name)
+    if idea is None:
+        idea = await client.get_idea(name)
+    if idea is None:
+        return {"ok": False, "verified": False,
+                "error": f"Idea {name!r} not found."}
+    project = await client.create_project_from_idea(idea)
+    project_id = str((project or {}).get("id") or "")
+    if not project_id:
+        return {"ok": False, "verified": False,
+                "error": f"Failed to create project from idea {name!r}."}
+    verified = await client.get_project(project_id)
+    if verified is None or verified.get("from_idea_id") != idea.get("id"):
+        return {"ok": False, "verified": False, "project_id": project_id,
+                "idea_id": idea.get("id"),
+                "error": "Project write could not be verified by read-back."}
+    if not await client.mark_idea_promoted(idea["id"], project_id):
+        return {"ok": False, "verified": False, "project_id": project_id,
+                "idea_id": idea.get("id"),
+                "error": "Project persisted but source idea promotion link failed."}
+    result = {"ok": True, "project_id": project_id,
+              "idea_id": idea["id"], "name": verified.get("name") or idea["title"],
+              "verified": True}
+    _publish("idea.to_project", result,
+             f"Promoted idea '{idea.get('title')}' to project {project_id}", True)
+    return result
 
 
 async def idea_move_op(client: SupabaseIdeasClient,

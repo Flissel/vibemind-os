@@ -11,6 +11,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .space_contract import load_space_contract
+
 logger = logging.getLogger('brain.space_routing_head')
 
 
@@ -25,18 +27,15 @@ def _is_learner() -> bool:
         return True
 
 
-SPACE_NAMES = [
-    "ideas", "bubbles", "coding", "desktop", "research",
-    "n8n", "agentfarm", "schedule", "rowboat", "minibook",
-    "video", "flowzen", "mirofish",
-]
+_SPACE_CONTRACT = load_space_contract()
+SPACE_NAMES = list(_SPACE_CONTRACT.space_ids)
 
 # Complete event_type → space mapping (from EventRouter.STREAM_MAPPING)
-EVENT_SPACE_MAP = {
+_LEGACY_EVENT_SPACE_MAP = {
     # Coding
     "code.generate": "coding", "code.modify": "coding", "code.status": "coding",
     "code.show": "coding", "code.preview.start": "coding", "code.preview.stop": "coding",
-    "code.list": "coding", "code.cancel": "coding", "idea.to_project": "coding",
+    "code.list": "coding", "code.cancel": "coding",
     # Desktop
     "desktop.open_app": "desktop", "desktop.click": "desktop", "desktop.type": "desktop",
     "desktop.press_key": "desktop", "desktop.screenshot": "desktop", "desktop.scroll": "desktop",
@@ -70,7 +69,7 @@ EVENT_SPACE_MAP = {
     "idea.format_pros_cons": "ideas", "idea.format_hierarchy": "ideas",
     "idea.format_specs": "ideas", "idea.convert_format": "ideas",
     "idea.explore.start": "ideas", "idea.explore.stop": "ideas",
-    "idea.generate_doc": "ideas",
+    "idea.generate_doc": "ideas", "idea.to_project": "ideas",
     # Research
     "research.web": "research", "research.scrape": "research",
     "research.summarize": "research", "research.to_idea": "research",
@@ -112,6 +111,10 @@ EVENT_SPACE_MAP = {
     "mirofish.status": "mirofish", "mirofish.evaluate": "mirofish",
     "mirofish.interview": "mirofish",
 }
+
+# Registry-owned runtime mapping.  The legacy literal above remains inert as
+# migration documentation and cannot influence routing decisions.
+EVENT_SPACE_MAP = dict(_SPACE_CONTRACT.event_space_map)
 
 
 class SpaceRoutingHead(nn.Module):

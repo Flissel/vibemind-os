@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "http://localhost:54321").rstrip("/")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "http://192.168.178.65:54321").rstrip("/")
 SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY", "anon").strip()
 
 
@@ -474,6 +474,59 @@ class SupabaseIdeasClient:
             return result[0] if isinstance(result, list) and result else row
         return None
 
+    async def promote_bubble(
+        self, bubble: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Create a project and link the source bubble to it in Supabase.
+
+        The project row is the externally queryable execution result. If the
+        bubble link cannot be persisted, remove the new project so callers do
+        not receive a fabricated successful promotion.
+        """
+        bubble_id = str((bubble or {}).get("id") or "").strip()
+        title = str((bubble or {}).get("title") or "").strip()
+        if not bubble_id or not title:
+            return None
+
+        project_row = {
+            "id": uuid.uuid4().hex[:8],
+            "name": title,
+            "description": str((bubble or {}).get("description") or "").strip(),
+            "status": "active",
+            "from_idea_id": bubble_id,
+            "metadata": {
+                "source_space": "bubbles",
+                "source_bubble_id": bubble_id,
+                "source_score": (bubble or {}).get("score", 0),
+            },
+        }
+        created = await self._request(
+            "POST", "/projects", json=project_row,
+            prefer="return=representation",
+        )
+        if not created:
+            return None
+        project = created[0] if isinstance(created, list) else project_row
+        project_id = str(project.get("id") or project_row["id"])
+
+        linked = await self._request(
+            "PATCH", "/ideas",
+            params={"id": f"eq.{bubble_id}"},
+            json={
+                "status": "promoted",
+                "promoted_to_project_id": project_id,
+            },
+            prefer="return=representation",
+        )
+        if not linked:
+            await self._request(
+                "DELETE", "/projects", params={"id": f"eq.{project_id}"},
+            )
+            return None
+
+        self.stats["bubbles_promoted"] = self.stats.get("bubbles_promoted", 0) + 1
+        return project
+
     async def list_top_bubbles(
         self, *, limit: int = 100,
     ) -> List[Dict[str, Any]]:
@@ -531,6 +584,53 @@ class SupabaseIdeasClient:
             "DELETE", "/ideas", params={"id": f"eq.{nid}"},
         )
         return ok is not None and ok is not False
+
+    async def create_project_from_idea(
+        self, idea: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Create the canonical project row for an idea/bubble."""
+        idea_id = str(idea.get("id") or "").strip()
+        name = str(idea.get("title") or "").strip()
+        if not idea_id or not name:
+            return None
+        existing = await self._request(
+            "GET", "/projects",
+            params={"select": "*", "from_idea_id": f"eq.{idea_id}", "limit": "1"},
+        )
+        if existing:
+            return existing[0]
+        row = {
+            "id": uuid.uuid4().hex,
+            "name": name,
+            "description": str(idea.get("description") or ""),
+            "status": "active",
+            "from_idea_id": idea_id,
+            "progress": 0.0,
+            "metadata": {"source": "brain", "source_space": "ideas"},
+            "generation_status": "pending",
+        }
+        result = await self._request(
+            "POST", "/projects", json=row, prefer="return=representation",
+        )
+        return result[0] if isinstance(result, list) and result else None
+
+    async def get_project(self, project_id: str) -> Optional[Dict[str, Any]]:
+        pid = (project_id or "").strip()
+        if not pid:
+            return None
+        rows = await self._request(
+            "GET", "/projects",
+            params={"select": "*", "id": f"eq.{pid}", "limit": "1"},
+        )
+        return rows[0] if rows else None
+
+    async def mark_idea_promoted(self, idea_id: str, project_id: str) -> bool:
+        result = await self._request(
+            "PATCH", "/ideas", params={"id": f"eq.{idea_id}"},
+            json={"promoted_to_project_id": project_id, "status": "promoted"},
+            prefer="return=representation",
+        )
+        return bool(result)
 
     async def bubble_node_stats(
         self, bubble_id: str,

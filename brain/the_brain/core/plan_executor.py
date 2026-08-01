@@ -591,9 +591,13 @@ class PlanExecutor:
         plan: Plan,
         *,
         replanner: Optional[Callable[[Plan, HopResult], Optional[Plan]]] = None,
+        confirmed_events: Optional[Set[str]] = None,
     ) -> Dict[str, Any]:
         """Walk the DAG. Returns a dict with `executed` (step_id → HopResult),
         `state`, `plan`, `ok`, `elapsed_s`, `replans`.
+
+        Desktop-family events listed as mutating in the canonical space registry
+        run only when their exact event id is present in ``confirmed_events``.
 
         Phase 6.14.1 — single-plan-at-a-time: parallel callers get a
         `busy` envelope back instead of stomping on shared state.
@@ -697,6 +701,7 @@ class PlanExecutor:
             "plan_rationale": getattr(plan, "rationale", "") or "",
             "plan_id": plan.plan_id,
             "trace_id": getattr(plan, "trace_id", "") or "",
+            "confirmed_events": set(confirmed_events or ()),
         }
 
         executed: Dict[str, HopResult] = {}
@@ -1216,6 +1221,23 @@ class PlanExecutor:
                     contract_pass=False, reward=-1.0,
                 )
 
+        # Canonical n8n events are declared in config/space_agent_registry.yml.
+        # Resolve them without duplicating the registry's MCP tool names.
+        if not target and hop.capability:
+            try:
+                from .capability_targets import resolve_registry_execution_target
+                target = resolve_registry_execution_target(hop.capability)
+            except Exception as e:
+                if str(hop.capability).startswith("n8n."):
+                    return HopResult(
+                        step_id=hop.step_id, ok=False,
+                        error=f"n8n registry lookup: {type(e).__name__}: {e}",
+                        capability=hop.capability, target=None,
+                        rendered_arg=rendered_arg, kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False, reward=-1.0,
+                    )
+
         # Phase 11.B — if registry maps this capability/event to an OpenFang agent,
         # build a vibemind.intent.v1 envelope and route through that agent
         # instead of direct-calling. The agent's MCP-allowed list contains the
@@ -1237,8 +1259,38 @@ class PlanExecutor:
                 "idea_update": "idea.update",
                 "idea_expand": "idea.expand",
                 "idea_connect": "idea.connect",
+                "idea_to_project": "idea.to_project",
+                "code_generate": "code.generate",
+                "code_modify": "code.modify",
+                "code_status": "code.status",
+                "code_show": "code.show",
+                "code_preview_start": "code.preview.start",
+                "code_preview_stop": "code.preview.stop",
+                "code_list": "code.list",
+                "code_cancel": "code.cancel",
             }
             event_id = cap_to_event.get(hop.capability or "", hop.capability or "")
+            desktop_route = None
+            if hop.capability in ("desktop_skill", "browser_automation"):
+                from .desktop_orchestration import DesktopOrchestration
+                desktop_route = DesktopOrchestration.from_repository().resolve_capability(
+                    hop.capability or "", plan_ctx.get("plan_intent", "") or hop.description
+                )
+                event_id = desktop_route.event_id
+                confirmed = event_id in plan_ctx.get("confirmed_events", set())
+                if desktop_route.requires_confirmation and not confirmed:
+                    return HopResult(
+                        step_id=hop.step_id,
+                        ok=False,
+                        error=f"confirmation required for mutating desktop event '{event_id}'",
+                        capability=hop.capability,
+                        target=target,
+                        rendered_arg=rendered_arg,
+                        kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False,
+                        reward=-1.0,
+                    )
             if "." not in event_id:
                 # If the capability already has a namespace.action pattern
                 # in some other form, leave as-is; otherwise it won't match
@@ -1246,7 +1298,13 @@ class PlanExecutor:
                 pass
             assigned_agent = _registry.get_event_agent(event_id) if event_id else None
 
-            if assigned_agent and target and not target.startswith("openfang:"):
+            # Minibook targets return a structured, redacted truth envelope from
+            # the external service. Re-routing them through an LLM agent would
+            # discard that contract and could turn prose into apparent success.
+            preserve_structured_target = event_id.startswith("minibook.")
+            if (assigned_agent and target
+                    and not target.startswith(("openfang:", "n8n-mcp:", "coding-engine:"))
+                    and not preserve_structured_target):
                 # Probe: is the agent reachable in OpenFang? If not, skip
                 # Phase 11.B routing and fall through to the direct target.
                 _agent_known = False

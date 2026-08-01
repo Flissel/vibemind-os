@@ -32,6 +32,17 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
+_SPACE_INPUT_ALIASES = {
+    "shuttles": "bubbles",
+}
+
+
+def normalize_space_id(space: str) -> str:
+    """Normalize legacy input spellings before routing or persistence."""
+    normalized = (space or "").strip().lower()
+    return _SPACE_INPUT_ALIASES.get(normalized, normalized)
+
+
 def _truncate(s: str, n: int = 240) -> str:
     if not s:
         return ""
@@ -61,7 +72,7 @@ def build_envelope(
     """
     # Infer space from event_id namespace (e.g. bubble.create -> "bubbles")
     namespace = event_id.split(".", 1)[0] if "." in event_id else "general"
-    space = space_override or namespace
+    space = normalize_space_id(space_override or namespace)
 
     # Pluralize to match agent.toml conventions (space:bubbles, space:ideas)
     if space and not space.endswith("s"):

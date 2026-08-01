@@ -175,6 +175,68 @@ def _rule_score_in_range(raw: Any, **_) -> Dict[str, Any]:
     return {"valid": False, "reason": f"score {s} out of range"}
 
 
+def _rule_flowzen_result(raw: Any, **_) -> Dict[str, Any]:
+    """Validate the operation-specific Flowzen result envelope."""
+    if not isinstance(raw, dict) or raw.get("ok") is not True:
+        return {"valid": False, "reason": "Flowzen operation did not report ok=true"}
+    event_id = raw.get("event_id")
+    if event_id == "rose.recommend":
+        recommendation = raw.get("recommendation")
+        valid = isinstance(recommendation, dict) and bool(
+            recommendation.get("recommendation_id") and recommendation.get("category")
+        ) and raw.get("mutated") is False
+    elif event_id == "rose.accept":
+        valid = raw.get("status") == "accepted" and raw.get("verified") is True and bool(raw.get("activity_id"))
+    elif event_id == "rose.status":
+        valid = isinstance(raw.get("status"), dict) and raw.get("mutated") is False
+    else:
+        valid = False
+    return {"valid": valid, "reason": f"Flowzen {event_id or 'unknown'} contract {'valid' if valid else 'invalid'}"}
+
+
+def _rule_mirofish_evidence(raw: Any, **_) -> Dict[str, Any]:
+    """Require real transport evidence and the operation's durable identity."""
+    if not isinstance(raw, dict):
+        return {"valid": False, "reason": "expected MiroFish result envelope"}
+    operation = raw.get("operation")
+    evidence = raw.get("evidence")
+    if not isinstance(evidence, dict):
+        return {"valid": False, "reason": "missing MiroFish transport evidence"}
+    if evidence.get("service") != "mirofish" or evidence.get("response_success") is not True:
+        return {"valid": False, "reason": "MiroFish backend did not confirm success"}
+    if not evidence.get("endpoint") or not raw.get("state"):
+        return {"valid": False, "reason": "missing MiroFish endpoint/state evidence"}
+    if operation in {"graph.build", "simulate", "predict", "evaluate", "status"}:
+        if not raw.get("job_id"):
+            return {"valid": False, "reason": f"{operation} has no durable job identity"}
+    if operation == "graph.build" and not raw.get("project_id"):
+        return {"valid": False, "reason": "graph build has no project identity"}
+    if operation == "graph.search" and not raw.get("graph_id"):
+        return {"valid": False, "reason": "graph search has no graph identity"}
+    if operation == "interview" and not raw.get("simulation_id"):
+        return {"valid": False, "reason": "interview has no simulation identity"}
+    if operation in {"simulate", "predict", "evaluate"} and not raw.get("model_id"):
+        return {"valid": False, "reason": f"{operation} has no model identity"}
+    return {"valid": True, "reason": "MiroFish identity and transport evidence verified"}
+
+
+def _rule_minibook_verified_result(raw: Any, **_) -> Dict[str, Any]:
+    """Accept only a response observed from the real Minibook target."""
+    if not isinstance(raw, dict):
+        return {"valid": False, "reason": "expected Minibook result envelope"}
+    truth = raw.get("truth")
+    verified = (
+        raw.get("ok") is True
+        and isinstance(truth, dict)
+        and truth.get("status") == "verified"
+        and truth.get("source") == "minibook"
+    )
+    return {
+        "valid": verified,
+        "reason": "Minibook target verified the result" if verified else "result is not verified by Minibook",
+    }
+
+
 # Registry — extend by adding to this dict, then reference from YAML as
 #   validator: { kind: "rule:<name>" }
 RULES: Dict[str, Callable[..., Dict[str, Any]]] = {
@@ -189,6 +251,9 @@ RULES: Dict[str, Callable[..., Dict[str, Any]]] = {
     "idea_created": _rule_idea_created,
     # Phase 11.W2 — hard, read-back-verified canvas-node write check.
     "canvas_node_persisted": _rule_canvas_node_persisted,
+    "flowzen_result": _rule_flowzen_result,
+    "mirofish_evidence": _rule_mirofish_evidence,
+    "minibook_verified_result": _rule_minibook_verified_result,
 }
 
 
@@ -265,6 +330,7 @@ class CapabilityValidator:
                     valid=bool(verdict.get("valid")),
                     reason=str(verdict.get("reason") or ""),
                     kind=kind, on_fail=on_fail, t0=t0,
+                    verified=(bool(verdict.get("valid")) if rule_name == "minibook_verified_result" else None),
                 )
             if kind.startswith("agent:"):
                 agent_name = kind.split(":", 1)[1]
@@ -421,8 +487,11 @@ class CapabilityValidator:
             )
         v = wo.observe(pc)
         verified = v.verified_ok  # True | False | None
-        # UNVERIFIED (None) must NOT fail the action — only REFUTED does.
-        valid = (verified is not False)
+        # Mutating capabilities may opt into fail-closed truth. Reads and
+        # legacy capabilities retain the historical UNVERIFIED-as-reporting
+        # behavior unless ``require_verified`` is explicitly set.
+        require_verified = validator_cfg.get("require_verified") is True
+        valid = (verified is True) if require_verified else (verified is not False)
         return self._envelope(
             valid=valid, reason=f"ground-truth {v.verdict}: {v.reason}",
             kind=kind, on_fail=on_fail, t0=t0,
