@@ -135,7 +135,7 @@ SPACES: Dict[str, SpaceMeta] = {
         "capabilities": ["research.query", "research.deep"],
         "renderer_id": None,
     },
-    "roarboot": {
+    "rowboat": {
         "label": "Rowboat",
         "event_prefix": "rowboat.",
         "stream": "events:tasks:rowboat",
@@ -194,7 +194,7 @@ def resolve_alias(query: str) -> Optional[str]:
     q = query.strip().lower()
     legacy_aliases = {
         "autogen": "agentfarm",
-        "rowboat": "roarboot",
+        "roarboot": "rowboat",
         "shuttles": "bubbles",
     }
     q = legacy_aliases.get(q, q)

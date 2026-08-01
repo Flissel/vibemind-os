@@ -15,7 +15,7 @@ import yaml
 
 CANONICAL_ALIASES: Dict[str, str] = {
     "autogen": "agentfarm",
-    "rowboat": "roarboot",
+    "roarboot": "rowboat",
     "shuttles": "bubbles",
 }
 
@@ -49,6 +49,11 @@ def load_space_contract(path: Path = DEFAULT_REGISTRY_PATH) -> SpaceContract:
             if event_type in event_space_map:
                 raise ValueError(f"duplicate event ownership: {event_type}")
             event_space_map[event_type] = space_id
+
+    for event_type, space_id in tuple(event_space_map.items()):
+        if space_id == "rowboat" and event_type.startswith("rowboat."):
+            legacy_event = f"roarboot.{event_type.removeprefix('rowboat.')}"
+            event_space_map.setdefault(legacy_event, space_id)
 
     return SpaceContract(
         version=int(raw.get("version", 0)),
