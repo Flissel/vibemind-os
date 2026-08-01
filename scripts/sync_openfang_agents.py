@@ -31,8 +31,8 @@ module = "builtin:chat"
 tags = ["vibemind", "brain-routed", "space:{space}"]
 
 [model]
-provider = "openrouter"
-model = "anthropic/claude-3.5-sonnet"
+provider = "openai"
+model = "gpt-4o-mini"
 max_tokens = 4096
 temperature = 0.2
 system_prompt = \"\"\"You are {name}, the VibeMind agent for the "{space}" space.
@@ -98,7 +98,7 @@ def _skip_reason(space: str, spec: dict) -> str | None:
     if not spec.get("enabled", True):
         return "disabled"
     # Don't overwrite pre-existing hand-curated agents
-    for protected in ("brain-coder", "rowboat-knowledge", "brain-fallback"):
+    for protected in ("brain-coder", "rowboat-chat", "brain-fallback"):
         if agent == protected:
             return f"protected (pre-existing): {agent}"
     return None

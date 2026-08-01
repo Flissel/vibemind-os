@@ -26,7 +26,7 @@ spaces:
     prefixes: [bubble.]
     enabled: true
     description: "Bubble CRUD + navigation on the VibeMind canvas."
-    mcp_servers: [vibemind-db, vibemind]
+    mcp_servers: [vibemind-db, vibemind, spaces-ideas]
     system_prompt_hint: "You manage bubbles (idea clusters) on the VibeMind canvas. Use the preferred_tool hint in the intent envelope; only call other tools if the hint fails."
     default_context: [current_space, current_bubble, idea_count]
     events:
@@ -52,7 +52,7 @@ spaces:
     prefixes: [idea.]
     enabled: true
     description: "Idea notes inside bubbles — create, update, link, format."
-    mcp_servers: [vibemind-db]
+    mcp_servers: [vibemind-db, spaces-ideas]
     default_context: [current_space, current_bubble, idea_titles]
     events:
       idea.list:                { tool: db_ideas_list,   required_params: [] }
