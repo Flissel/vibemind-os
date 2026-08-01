@@ -57,8 +57,29 @@ class ThoughtRadialBridge:
         if not content:
             return None
 
+        # TriBE neural-signature modulation (Phase 2). Reuse the thought's
+        # pre-computed bridge profile if present, else compute it here — but only
+        # when modulation is enabled, to avoid paying TriBE latency for nothing.
+        metadata = None
+        try:
+            from core.modulation_context import (
+                TRIBE_MODULATION_ENABLED as _TM_ON,
+            )
+            if _TM_ON:
+                bl = getattr(thought, 'bridge_levels', None)
+                if not bl:
+                    from core.tribe_encoder import bridge_levels_for_text
+                    bl = bridge_levels_for_text(content[:400])
+                if bl:
+                    metadata = {'tribe_bridges': bl}
+                    pb = getattr(self, '_personal_bias', None)
+                    if pb:
+                        metadata['tribe_personal_bias'] = pb
+        except Exception:
+            metadata = None
+
         # Run the radial forward pass via existing AgentLoop.radial_tick()
-        result = self._agent_loop.radial_tick(content[:200])
+        result = self._agent_loop.radial_tick(content[:200], metadata=metadata)
         if result is None:
             return None
 

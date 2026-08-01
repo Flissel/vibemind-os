@@ -118,6 +118,30 @@ class AgentYamlRegistry:
                         continue
                     self._event_to_agent[ev] = agent_name
 
+            # The space registry is the canonical event/agent source. Agent YAMLs
+            # may add metadata, but cannot leave whole event families unroutable.
+            canonical = self.dir.parents[3] / "config" / "space_agent_registry.yml"
+            if canonical.exists():
+                try:
+                    space_data = _yaml.safe_load(canonical.read_text(encoding="utf-8")) or {}
+                    for space in (space_data.get("spaces") or {}).values():
+                        if not isinstance(space, dict) or not space.get("enabled", True):
+                            continue
+                        agent_name = space.get("agent")
+                        events = space.get("events") or {}
+                        if not agent_name or not isinstance(events, dict):
+                            continue
+                        for event_id in events:
+                            owner = self._event_to_agent.get(event_id)
+                            if owner and owner != agent_name:
+                                conflicts.append(
+                                    f"canonical event '{event_id}' maps to '{agent_name}' "
+                                    f"but agent YAML claims '{owner}'"
+                                )
+                            self._event_to_agent[event_id] = agent_name
+                except Exception as e:
+                    conflicts.append(f"canonical space registry parse error: {e}")
+
             self._stats = {
                 "agents_loaded": len(self._agents),
                 "events_total": len(self._event_to_agent),

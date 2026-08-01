@@ -59,9 +59,27 @@ TICK_INTERVAL_S = float(os.environ.get("CLUSTER_ENGINE_TICK_S", "60"))
 DECAY = float(os.environ.get("CLUSTER_ACTIVATION_DECAY", "0.95"))
 EMA_ALPHA = float(os.environ.get("CLUSTER_EMA_ALPHA", "0.4"))
 CO_THRESHOLD = float(os.environ.get("CLUSTER_CO_ACTIVATION_THRESHOLD", "0.4"))
+def _default_cluster_state_path() -> str:
+    """Identity-namespaced cluster_state.jsonl (Phase C).
+
+    ClusterEngine ticks every 60s and appends to this file. It's NOT gated
+    by BRAIN_ROLE (the cluster activations drive SelfSteerer/routing, which
+    inference replicas still need) — instead the FILE is per-identity so N
+    brains never append to the same file. Default identity ->
+    "<brain>/data/cluster_state.jsonl" exactly as before.
+    """
+    base = str(Path(__file__).resolve().parent.parent / "data")
+    try:
+        from core import config as _cfg
+        d = _cfg.checkpoint_dir(kind="", base=base)  # base/<ns?>
+        return str(Path(d) / "cluster_state.jsonl")
+    except Exception:
+        return str(Path(base) / "cluster_state.jsonl")
+
+
 JSONL_PATH = Path(os.environ.get(
     "CLUSTER_STATE_PATH",
-    str(Path(__file__).resolve().parent.parent / "data" / "cluster_state.jsonl"),
+    _default_cluster_state_path(),
 ))
 JSONL_MAX_LINES = int(os.environ.get("CLUSTER_STATE_MAX_LINES", "1000"))
 

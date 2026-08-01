@@ -122,14 +122,24 @@ REGISTERED CAPABILITIES (exact names):
   Idea:   idea_add (alias idea_create), idea_create_batch, idea_list, idea_count,
           idea_find, idea_update, idea_delete, idea_explain, idea_classify, idea_expand,
           idea_connect, idea_disconnect, idea_link_to_root, idea_move, idea_auto_link,
-          idea_analyze_links.
+          idea_analyze_links, idea_to_project.
   Format: idea_format_table, idea_format_note, idea_format_action_list,
           idea_format_pros_cons, idea_format_hierarchy, idea_format_specs,
           idea_format_kanban, idea_format_mindmap, idea_format_swot,
           idea_format_user_story, idea_format_flowchart, idea_convert_format,
           idea_format_revert, idea_format_list, idea_format_get.
+  Exec:   coding_task (write/edit/run real code, git, github, vercel),
+          desktop_skill (excel/word/hr/UI automation),
+          browser_automation (navigate/scrape/fill web pages).
+          These have a built-in execution_target — ALWAYS set
+          execution_target:null for them; the router resolves the agent.
+          arg_kwarg for all three is "task", arg_template = the user's
+          full request verbatim (the executing agent reads natural language).
 
 INTENT-TO-CAPABILITY HINTS:
+  "schreib/erstelle <code/script/funktion>" / "fix bug in X.py"  → coding_task,  arg_kwarg=task,  arg_template=<full intent>
+  "öffne excel/word, fülle zelle, hr checklist"                  → desktop_skill, arg_kwarg=task,  arg_template=<full intent>
+  "navigiere zu URL, scrape, fülle web-formular"                 → browser_automation, arg_kwarg=task, arg_template=<full intent>
   "verlasse die bubble" / "exit bubble"               → bubble_exit (no arg)
   "geh in die bubble X" / "enter bubble X"            → bubble_enter, arg_kwarg=bubble_name, arg_template=X
   "wie reif ist bubble X" / "score bubble X"          → bubble_score,  arg_kwarg=bubble_name, arg_template=X
@@ -139,6 +149,11 @@ INTENT-TO-CAPABILITY HINTS:
   "lösche alle bubbles"                                → bubble_delete_all, no arg
   "benenne bubble X um nach Y"                         → bubble_update, arg_kwarg=title,        arg_template=Y
   "fuege idee X hinzu" / "add idea X"                  → idea_add,      arg_kwarg=title,        arg_template=X
+  "such/finde/wo ist die idee X" / "find idea X"      → idea_find,     arg_kwarg=query,        arg_template=X
+       (NICHT bubble_evaluate! "such die idee" = idea_find suchen,
+        NICHT eine Bubble auf Projekt-Reife bewerten.)
+  "bewerte/evaluate bubble X" / "ist X reif/ready"    → bubble_evaluate, arg_kwarg=bubble_name, arg_template=X
+       (NUR bei expliziter Bewertungs-/Reife-/go-no-go-Absicht, NICHT beim Suchen.)
   "format idee X als Y"                                → idea_format_<Y>, arg_kwarg=idea_name,  arg_template=X
 
 DECISION TREE (apply IN ORDER, take FIRST match):
@@ -435,6 +450,14 @@ class PlannerLLM:
                 + "\n\nProduce a CORRECTED plan that fixes all listed errors."
             )
 
+        # Ground the plan in caller-supplied context (e.g. the bubble the
+        # user is currently inside, its db_id, existing node titles). This
+        # was previously accepted but silently discarded — a context-blind
+        # planner can't resolve "evaluate THIS bubble" / "add to it" and is
+        # forced to invent generic targets. We render only the few keys the
+        # planner can act on, capped, so the prompt stays small.
+        context_block = self._render_context(context)
+
         system = (
             "You decompose user intents into 2-5 step DAGs that Brain "
             "executes via its capability router and target executors. "
@@ -443,6 +466,7 @@ class PlannerLLM:
         )
         user = (
             f"USER INTENT:\n{intent.strip()}\n\n"
+            f"{context_block}"
             f"AVAILABLE CAPABILITIES:\n{caps_block}\n\n"
             f"AVAILABLE TARGET KINDS:\n{_TARGET_KINDS_DOC}\n\n"
             f"PLAN JSON SCHEMA (use exactly these fields):\n{_PLAN_SCHEMA_DOC}\n\n"
@@ -451,6 +475,56 @@ class PlannerLLM:
             "Now produce the plan for the USER INTENT above. JSON only."
         )
         return {"system": system, "user": user}
+
+    @staticmethod
+    def _render_context(context: Optional[Dict[str, Any]]) -> str:
+        """Render caller context as a compact, actionable prompt block.
+
+        Returns "" when there is nothing useful, so the prompt is unchanged
+        for context-free callers (the common path). Only whitelisted keys
+        are surfaced and values are truncated — we never dump arbitrary
+        state into the planner prompt.
+        """
+        if not context or not isinstance(context, dict):
+            return ""
+        lines: List[str] = []
+
+        # Current bubble the user is inside — lets the planner target
+        # "this bubble" by name/id instead of inventing one.
+        cur = context.get("current_bubble") or context.get("bubble")
+        if isinstance(cur, dict):
+            title = str(cur.get("title") or cur.get("name") or "").strip()
+            bid = str(cur.get("db_id") or cur.get("id") or "").strip()
+            if title or bid:
+                tag = f"{title!r}" if title else ""
+                if bid:
+                    tag += f" (db_id={bid})"
+                lines.append(f"- The user is currently INSIDE bubble {tag}.")
+                lines.append(
+                    "  For intents like 'evaluate it' / 'add to this bubble' "
+                    "use THIS bubble — do NOT create a new one."
+                )
+
+        # Existing node/idea titles in scope — prevents duplicate creation
+        # and lets the planner reference real items.
+        nodes = context.get("node_titles") or context.get("existing_titles")
+        if isinstance(nodes, (list, tuple)) and nodes:
+            sample = [str(n)[:60] for n in list(nodes)[:15] if n]
+            if sample:
+                more = "" if len(nodes) <= 15 else f" (+{len(nodes) - 15} more)"
+                lines.append(
+                    "- Existing items already in scope (do NOT recreate): "
+                    + "; ".join(sample) + more
+                )
+
+        # Free-form hint the caller wants the planner to honour.
+        hint = context.get("hint") or context.get("note")
+        if isinstance(hint, str) and hint.strip():
+            lines.append(f"- Caller hint: {hint.strip()[:200]}")
+
+        if not lines:
+            return ""
+        return "EXECUTION CONTEXT (ground the plan in this — do not ignore):\n" + "\n".join(lines) + "\n\n"
 
     def _render_capabilities(self) -> str:
         if self.cap_router is None:

@@ -1,14 +1,6 @@
 agent: brain-orchestrator
-description: Auto-seeded for agentfarm.* events
-default_namespace: agentfarm
-events:
-- agentfarm.collaborate
-- agentfarm.create_team
-- agentfarm.list_teams
-- agentfarm.list_templates
-- agentfarm.results
-- agentfarm.run
-- agentfarm.status
-- agentfarm.stop
+description: Dormant AgentFarm orchestrator manifest
+default_namespace: ''
+events: []
 fallback_agent: ''
-notes: Auto-seeded from namespace='agentfarm'.
+notes: AgentFarm runtime source is missing; do not claim events until a real worker is deployed.

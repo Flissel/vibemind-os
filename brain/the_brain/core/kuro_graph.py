@@ -14,12 +14,13 @@ Generalized from int actions + np.ndarray states to str actions + Dict states.
 """
 
 import json
+
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any, Set
 from dataclasses import dataclass, field
 from collections import Counter, defaultdict
 
-from core.kotlin_graph import KotlinGraph, BrainEvent
+from core.kotlin_graph import KotlinGraph, BrainEvent, atomic_write_json
 
 
 @dataclass
@@ -427,8 +428,10 @@ class KuroGraph:
             'stats': self.stats,
         }
 
-        with open(filepath, 'w') as f:
-            json.dump(data, f, indent=2)
+        # Crash-safe: tmp + fsync + atomic replace (see atomic_write_json).
+        # A truncate-then-write would lose the mined patterns on a kill
+        # mid-save.
+        atomic_write_json(filepath, data, indent=2)
 
     def load(self, filepath: str) -> None:
         """Load KuroGraph from disk."""

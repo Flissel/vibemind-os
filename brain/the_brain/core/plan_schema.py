@@ -59,6 +59,12 @@ class HopSpec:
     validator: Optional[Dict[str, Any]] = None
     timeout_s: float = 60.0
     retries: int = 1
+    # Baustein B — workflow contract: conditions that MUST hold before this hop
+    # may run (pre-execution enforcement, not just depends_on advice). Each is a
+    # string like "s1.completed" | "s1.verified" | "s1.ok". Checked against the
+    # executed-state before run; if unmet, the hop is blocked. Only enforced when
+    # CONTRACT_ENFORCEMENT_ENABLED (default OFF, fail-open).
+    start_when: List[str] = field(default_factory=list)
     # Phase 6.15.1 — Iteration support. When set, executor expands this
     # hop into N sub-hops at runtime, one per item.
     #
@@ -98,6 +104,12 @@ class Plan:
     hops: List[HopSpec]
     final_synthesis_prompt: str = ""
     estimated_cost_usd: float = 0.0
+    # E2E-Trace (2026-06-09): durchgaengige Correlation-ID, am multihop_execute-
+    # Entry gesetzt (auch fuer SoM/som-team/no-plan-Zweige, die kein plan_id haben).
+    trace_id: str = ""
+    # Laufzeit-Stage-Events (PLAN/EXECUTION/...): {stage, component, ts, outcome}.
+    # Nicht in to_dict serialisiert (der PlanRecorder-Snapshot zieht es separat).
+    _stages: List[Dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def make_id(cls) -> str:
@@ -111,6 +123,7 @@ class Plan:
             "hops": [asdict(h) for h in self.hops],
             "final_synthesis_prompt": self.final_synthesis_prompt,
             "estimated_cost_usd": self.estimated_cost_usd,
+            "trace_id": self.trace_id,
         }
 
     @classmethod
@@ -156,6 +169,7 @@ class Plan:
             hops=hops,
             final_synthesis_prompt=d.get("final_synthesis_prompt") or "",
             estimated_cost_usd=float(d.get("estimated_cost_usd") or 0.0),
+            trace_id=d.get("trace_id") or "",
         )
 
 
@@ -181,6 +195,34 @@ class HopResult:
     # cortex, limbic, defense, motor, visceral, social, integration, memory).
     # None when TriBE hook is disabled or fails.
     bridges: Optional[Dict[str, float]] = None
+    # Phase 1 — gate-derived learning signal (outcome-gate semantics, mirrors
+    # voice/python/swarm/routing/outcome_gate.py without importing across the
+    # voice/brain boundary). None means UNVERIFIED, never a success.
+    contract_pass: Optional[bool] = None
+    reward: float = 0.0  # mirrors contract_pass: True->1.0, False->-1.0, None->0.0
+
+
+def contract_pass_from(ok: bool, verdict: Optional[Dict[str, Any]]) -> Optional[bool]:
+    """Phase 1 — derive the outcome-gate verdict for a hop from its raw `ok`
+    flag and the (optional) `truth:` validator verdict dict.
+
+    - `ok` falsy -> False (the hop itself failed; no need for a validator).
+    - `ok` truthy but no validator ran (verdict is None/not a dict/no usable
+      `verified` key) -> None. UNVERIFIED must NEVER become True — "did not
+      crash" is not proof of success.
+    - `ok` truthy and validator ran -> mirrors `verdict['verified']` exactly
+      (True -> True, False -> False, anything else incl. missing -> None).
+    """
+    if not ok:
+        return False
+    if not isinstance(verdict, dict):
+        return None
+    verified = verdict.get("verified")
+    if verified is True:
+        return True
+    if verified is False:
+        return False
+    return None
 
 
 # ── Validator ─────────────────────────────────────────────────────────

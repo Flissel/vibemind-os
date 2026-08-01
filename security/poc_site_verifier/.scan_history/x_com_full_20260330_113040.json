@@ -1,0 +1,142 @@
+{
+  "url": "https://x.com/fissel_mac_fly",
+  "domain": "x.com",
+  "fingerprint": {
+    "site_type": "SPA",
+    "risk_profile": "CORPORATE",
+    "tech_stack": [
+      "angular",
+      "react",
+      "express",
+      "django"
+    ],
+    "has_catchall": false,
+    "server": "cloudflare envoy",
+    "waf_hint": "cloudflare",
+    "domain_age_days": null
+  },
+  "score": 41,
+  "total_issues": 14,
+  "severity_counts": {
+    "CRITICAL": 1,
+    "HIGH": 6,
+    "MEDIUM": 4,
+    "LOW": 2,
+    "INFO": 1
+  },
+  "checks_run": 20,
+  "issues": [
+    {
+      "severity": "HIGH",
+      "category": "HTTP Header",
+      "title": "Missing: Strict-Transport-Security",
+      "description": "HSTS not set. Browsers can be tricked into HTTP connections (downgrade attack).",
+      "fix": "Add HSTS header to enforce HTTPS.",
+      "nginx_fix": "add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains; preload\" always;",
+      "apache_fix": "Header always set Strict-Transport-Security \"max-age=31536000; includeSubDomains; preload\""
+    },
+    {
+      "severity": "HIGH",
+      "category": "HTTP Header",
+      "title": "Missing: Content-Security-Policy",
+      "description": "No CSP header. XSS attacks are not mitigated by the browser.",
+      "fix": "Add a Content-Security-Policy header.",
+      "nginx_fix": "add_header Content-Security-Policy \"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self';\" always;",
+      "apache_fix": "Header always set Content-Security-Policy \"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'\""
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "HTTP Header",
+      "title": "Missing: X-Frame-Options",
+      "description": "No X-Frame-Options. Site can be embedded in iframes (clickjacking risk).",
+      "fix": "Add X-Frame-Options header.",
+      "nginx_fix": "add_header X-Frame-Options \"SAMEORIGIN\" always;",
+      "apache_fix": "Header always set X-Frame-Options \"SAMEORIGIN\""
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "HTTP Header",
+      "title": "Missing: X-Content-Type-Options",
+      "description": "No X-Content-Type-Options. Browser may MIME-sniff responses into executable content.",
+      "fix": "Add nosniff header.",
+      "nginx_fix": "add_header X-Content-Type-Options \"nosniff\" always;",
+      "apache_fix": "Header always set X-Content-Type-Options \"nosniff\""
+    },
+    {
+      "severity": "LOW",
+      "category": "HTTP Header",
+      "title": "Missing: Referrer-Policy",
+      "description": "No Referrer-Policy. Full URL including query params may leak to third parties.",
+      "fix": "Add Referrer-Policy header.",
+      "nginx_fix": "add_header Referrer-Policy \"strict-origin-when-cross-origin\" always;",
+      "apache_fix": "Header always set Referrer-Policy \"strict-origin-when-cross-origin\""
+    },
+    {
+      "severity": "HIGH",
+      "category": "Attack Surface",
+      "title": "1 risky subdomain(s) found",
+      "description": "Potentially sensitive subdomains are publicly resolvable: dev.x.com. These may expose admin panels, databases, or development environments."
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "Network Exposure",
+      "title": "Port 8080 (HTTP-Alt) is open",
+      "description": "Service HTTP-Alt on port 8080 is publicly accessible. Banner: None",
+      "fix": "Restrict port 8080 via firewall unless public access is required. Use VPN for admin services."
+    },
+    {
+      "severity": "LOW",
+      "category": "Network Exposure",
+      "title": "Port 8443 (HTTPS-Alt) is open",
+      "description": "Service HTTPS-Alt on port 8443 is publicly accessible. Banner: None",
+      "fix": "Restrict port 8443 via firewall unless public access is required. Use VPN for admin services."
+    },
+    {
+      "severity": "HIGH",
+      "category": "HTTP Methods",
+      "title": "Dangerous HTTP methods enabled: PUT, DELETE",
+      "description": "HTTP PUT, DELETE method(s) are accepted. PUT can upload files, DELETE can remove resources. Unless this is an intentional API, these should be disabled.",
+      "fix": "Disable PUT, DELETE methods unless needed for API functionality."
+    },
+    {
+      "severity": "HIGH",
+      "category": "Cookie Security",
+      "title": "Session cookies with missing security flags: guest_id",
+      "description": "Session cookies lack: Missing HttpOnly flag, Excessively long lifetime (396 days). Allows session theft via XSS or MITM.",
+      "fix": "Set Secure, HttpOnly, and SameSite=Strict on all session cookies."
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "Cookie Security",
+      "title": "2 non-session cookie(s) missing security flags",
+      "description": "Non-session cookies are missing recommended security attributes.",
+      "fix": "Apply Secure, HttpOnly, and SameSite attributes to all cookies."
+    },
+    {
+      "severity": "CRITICAL",
+      "category": "CSP Analysis",
+      "title": "CSP Grade F \u2014 13 weakness(es)",
+      "description": "Weaknesses: connect-src: blob:; img-src: blob:; img-src: data:; img-src: blob:; img-src: data:. 1 bypass vector(s).",
+      "fix": "Remove 'unsafe-inline'/'unsafe-eval', use nonces/hashes, restrict origins."
+    },
+    {
+      "severity": "HIGH",
+      "category": "CSP Analysis",
+      "title": "1 CSP bypass vector(s)",
+      "description": "https://apis.google.com/js/api.js \u2014 Google APIs have JSONP endpoints for script execution",
+      "fix": "Remove overly permissive CDN origins from script-src."
+    },
+    {
+      "severity": "INFO",
+      "category": "SQL Injection",
+      "title": "No SQL injection indicators found (48 tests)",
+      "description": "No SQL error messages or timing anomalies detected. Basic SQL injection appears mitigated."
+    }
+  ],
+  "tls_grade": "A+",
+  "waf": "Cloudflare",
+  "subdomains_found": 10,
+  "secrets_found": 0,
+  "pages_crawled": 15,
+  "forms_found": 3
+}

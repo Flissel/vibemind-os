@@ -189,8 +189,10 @@ class MultiCTMEnsemble:
                 max_reasoning_steps=max_reasoning_steps,
                 device=device
             )
-            # Load trained weights
-            logic_weights_path = "data/ctm_checkpoints/logic_brain_epoch_24.pth"
+            # Load trained weights (identity-namespaced; legacy path under
+            # the default identity — see core/config.checkpoint_path).
+            from core import config as _cfg
+            logic_weights_path = _cfg.checkpoint_path("logic_brain_epoch_24.pth", "ctm_checkpoints")
             if self.ctms[CTMDomain.LOGIC].load_weights(logic_weights_path):
                 print("[MultiCTMEnsemble] LogicCTM weights loaded successfully")
             else:
@@ -209,8 +211,9 @@ class MultiCTMEnsemble:
                 max_reasoning_steps=max_reasoning_steps,
                 device=device
             )
-            # Load trained weights
-            temporal_weights_path = "data/ctm_checkpoints/temporal_brain_epoch_46.pth"
+            # Load trained weights (identity-namespaced)
+            from core import config as _cfg
+            temporal_weights_path = _cfg.checkpoint_path("temporal_brain_epoch_46.pth", "ctm_checkpoints")
             if self.ctms[CTMDomain.TEMPORAL].load_weights(temporal_weights_path):
                 print("[MultiCTMEnsemble] TemporalCTM weights loaded successfully")
             else:
@@ -229,8 +232,9 @@ class MultiCTMEnsemble:
                 max_reasoning_steps=max_reasoning_steps,
                 device=device
             )
-            # Load trained weights
-            value_weights_path = "data/ctm_checkpoints/value_brain_epoch_30.pth"
+            # Load trained weights (identity-namespaced)
+            from core import config as _cfg
+            value_weights_path = _cfg.checkpoint_path("value_brain_epoch_30.pth", "ctm_checkpoints")
             if self.ctms[CTMDomain.VALUE].load_weights(value_weights_path):
                 print("[MultiCTMEnsemble] ValueCTM weights loaded successfully")
             else:

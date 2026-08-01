@@ -191,7 +191,105 @@ class IdeasClient:
     # ── Bubbles (Block 1) ─────────────────────────────────────────────
 
     def list_bubbles(self, limit: int = 50) -> Dict[str, Any]:
-        return self._get("/api/bubbles", params={"limit": limit})
+        # Phase 11.U.J: HTTP path first, then Supabase fallback when
+        # Ideas-HTTP :5102 is offline. Keeps the Brain Dashboard alive
+        # even if the legacy SQLite-fronted service hasn't been started.
+        result = self._get("/api/bubbles", params={"limit": limit})
+        if isinstance(result, dict) and result.get("error") == "ideas_offline":
+            sb = self._supabase_list_bubbles(limit=limit)
+            if sb is not None:
+                return sb
+        return result
+
+    # ── Supabase fallback (Phase 11.U.J) ──────────────────────────────────
+    # When the Ideas-HTTP wrapper on :5102 is down, read the same data
+    # straight from Supabase REST. Keeps the UI alive even if the legacy
+    # SQLite-fronted service hasn't been started. Uses requests (sync) —
+    # SupabaseIdeasClient is async and would need a fresh loop here.
+
+    def _supabase_base(self) -> Optional[str]:
+        url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+        return url or None
+
+    def _supabase_headers(self) -> Optional[Dict[str, str]]:
+        # Two resolution paths: direct env var, or docker secret file via
+        # the *_FILE convention (compose mounts /run/secrets/<name> and
+        # sets SUPABASE_ANON_KEY_FILE to that path).
+        key = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+        if not key:
+            key_file = os.environ.get("SUPABASE_ANON_KEY_FILE", "").strip()
+            if key_file:
+                try:
+                    with open(key_file, "r", encoding="utf-8") as f:
+                        key = f.read().strip()
+                except OSError:
+                    key = ""
+        if not key:
+            return None
+        h = {"apikey": key, "Content-Type": "application/json"}
+        # Bearer only for real JWTs (3 dot-separated parts). Local Supabase
+        # rejects "Bearer anon" with 401 PGRST301 — apikey header alone is
+        # enough for anon RLS. Same logic as SupabaseIdeasClient._headers.
+        if key.count(".") == 2:
+            h["Authorization"] = f"Bearer {key}"
+        return h
+
+    def _supabase_list_bubbles(self, *, limit: int = 50) -> Optional[Dict[str, Any]]:
+        if not HAS_REQUESTS:
+            return None
+        base = self._supabase_base()
+        headers = self._supabase_headers()
+        if not base or not headers:
+            return None
+        try:
+            r = requests.get(
+                f"{base}/rest/v1/ideas",
+                params={
+                    "select": "id,title,parent_id,score,status",
+                    "parent_id": "is.null",
+                    "limit": str(limit),
+                },
+                headers=headers,
+                timeout=5,
+            )
+            if r.status_code >= 400:
+                return None
+            rows = r.json() or []
+            return {"bubbles": rows, "count": len(rows), "source": "supabase"}
+        except Exception:
+            return None
+
+    def _supabase_state(self) -> Optional[Dict[str, Any]]:
+        """Approximate the Ideas-HTTP /api/state shape from Supabase counts."""
+        if not HAS_REQUESTS:
+            return None
+        base = self._supabase_base()
+        headers = self._supabase_headers()
+        if not base or not headers:
+            return None
+        try:
+            counts: Dict[str, int] = {}
+            for table in ("ideas", "canvas_nodes", "canvas_edges", "projects"):
+                rr = requests.head(
+                    f"{base}/rest/v1/{table}",
+                    headers={**headers, "Prefer": "count=exact"},
+                    timeout=5,
+                )
+                # PostgREST returns count in Content-Range: "0-N/<total>"
+                cr = rr.headers.get("Content-Range", "")
+                total = cr.rsplit("/", 1)[-1] if "/" in cr else ""
+                try:
+                    counts[table] = int(total) if total.isdigit() else 0
+                except Exception:
+                    counts[table] = 0
+            return {
+                "source": "supabase",
+                "counts": counts,
+                "active_bubble": None,  # not tracked in Supabase
+                "stale_ideas": 0,       # not computed here
+            }
+        except Exception:
+            return None
 
     def create_bubble(
         self,
@@ -264,7 +362,12 @@ class IdeasClient:
 
     def state(self) -> Dict[str, Any]:
         """Mini-Brain state snapshot (counts, active bubbles, stale ideas)."""
-        return self._get("/api/state")
+        result = self._get("/api/state")
+        if isinstance(result, dict) and result.get("error") == "ideas_offline":
+            sb = self._supabase_state()
+            if sb is not None:
+                return sb
+        return result
 
     def sync_stats(self) -> Dict[str, Any]:
         return self._get("/api/sync/stats")

@@ -1,0 +1,25 @@
+{
+  "url": "https://www.bnd.bund.de",
+  "domain": "www.bnd.bund.de",
+  "fingerprint": {
+    "site_type": "SPA",
+    "risk_profile": "CORPORATE",
+    "tech_stack": [
+      "angular"
+    ],
+    "has_catchall": false,
+    "server": "Apache",
+    "waf_hint": "",
+    "domain_age_days": null
+  },
+  "score": 100,
+  "tls_grade": "A+",
+  "issues": [],
+  "total_issues": 0,
+  "ssl_valid": true,
+  "ssl_issuer": "Hellenic Academic and Research Institutions CA",
+  "spf": true,
+  "dmarc": false,
+  "server": null,
+  "missing_headers": []
+}

@@ -542,3 +542,65 @@ class TestLogging:
         dg.force_mine()
         captured = capsys.readouterr()
         assert captured.out == ""
+
+
+# ===================================================================
+# Concurrency regression (KG-C4, Phase 0)
+# ===================================================================
+
+class TestDualGraphConcurrency:
+    """KG-C4: DualGraph.record_event inherits KotlinGraph's thread-safety
+    (KG-C2 lock) WITHOUT changes to DualGraph itself. Primary asserts are
+    the KotlinGraph counters reached THROUGH DualGraph. DualGraph's own
+    `total_events_recorded += 1` (:112) stays lock-free by design — if it
+    undercounts under contention that is a documented follow-up, not a
+    silent scope expansion (plan KG-C4)."""
+
+    def test_dualgraph_record_event_parallel_consistent(self, tmp_path):
+        import sys
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        N = 200
+        WORKERS = 8
+        # auto_mine_interval high so _auto_mine never fires mid-test
+        dg = DualGraph(save_dir=str(tmp_path), auto_mine_interval=10_000)
+        barrier = threading.Barrier(WORKERS)
+
+        def worker(indices):
+            barrier.wait()
+            for j in indices:
+                dg.record_event(
+                    state={"label": f"s{j}", "x": j},
+                    action=f"a{j}",
+                    next_state={"label": f"s{j}n", "x": j},
+                    reward=0.0,
+                    done=(j == N - 1),
+                )
+
+        old_interval = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)
+        try:
+            chunks = [list(range(k, N, WORKERS)) for k in range(WORKERS)]
+            with ThreadPoolExecutor(max_workers=WORKERS) as ex:
+                futures = [ex.submit(worker, c) for c in chunks]
+                for f in futures:
+                    f.result()
+        finally:
+            sys.setswitchinterval(old_interval)
+
+        kg = dg.kotlingraph
+        assert kg.stats['total_events'] == N
+        assert len(kg.events) == N
+        assert len({e.event_id for e in kg.events}) == N
+        assert kg.stats['total_episodes'] == 1
+        # DualGraph's own counter: report-only (lock-free by design)
+        if dg.stats['total_events_recorded'] != N:
+            import warnings
+            warnings.warn(
+                f"DualGraph.total_events_recorded undercounts under "
+                f"contention ({dg.stats['total_events_recorded']} != {N}) "
+                f"— documented follow-up per KG-C4, KotlinGraph counters "
+                f"are the source of truth",
+                stacklevel=1,
+            )

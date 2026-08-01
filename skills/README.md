@@ -71,6 +71,10 @@ YAML frontmatter + Markdown body. Required fields:
 | `confidence` | float 0..1 | success rate, updated by coordinator |
 | `attempts` / `successes` | int | counters |
 | `last_adjusted` | iso8601 \| null | timestamp of last adjustment |
+| `agent_created` | bool | set server-side by `_skill_save_and_index` when the file is first written; never trust a caller-supplied value. Human-curated skills are `false`. |
+| `last_searched` | iso8601 \| null | updated on every `skill_search` hit; drives curator idle-time decay |
+| `curator_status` | `active` \| `stale` \| `archived` | lifecycle state written by `_curator.py` |
+| `pinned` | bool | exempts an `agent_created` skill from curator decay/archival |
 
 The Markdown body holds the **steps** — sequential instructions that the executor LLM follows to perform the action via desktop-automation MCP tools (`handoff_action`, `handoff_get_focus`, `vision_analyze`, etc.).
 
@@ -81,7 +85,7 @@ The Markdown body holds the **steps** — sequential instructions that the execu
 3. **Selection** — Skill-Coordinator queries Qdrant with the user's natural-language request, gets top-K candidates filtered by `agents` whitelist.
 4. **Execution** — selected SKILL.md is injected into the executor agent's prompt, the agent runs the steps via MCP.
 5. **Validation** — coordinator runs `vision_analyze` against `expected_state.description`; success=True → increment `successes`, recompute `confidence`. Failure → diagnose + adjust + retry.
-6. **Decay** — skills not used in N days have their `confidence` multiplied by `(1 - decay_rate)` to prefer fresh patterns.
+6. **Decay** — `_curator.py` reviews `agent_created && !pinned` skills on a schedule: unused for `VIBEMIND_CURATOR_STALE_DAYS` (default 30) → `curator_status: stale` + one-time confidence decay; unused for `VIBEMIND_CURATOR_ARCHIVE_DAYS` (default 90) → moved under `skills/_archive/<app>/<skill_name>/` (never deleted). Human-curated skills (`agent_created: false`, the default) are never touched. See `docs/superpowers/specs/2026-07-10-skill-curator-design.md`.
 
 ## Secrets
 

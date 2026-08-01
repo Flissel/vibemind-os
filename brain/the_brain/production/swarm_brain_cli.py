@@ -36,7 +36,12 @@ class SwarmBrainCLI:
     def _ensure_orchestrator(self):
         """Initialize orchestrator if not already done"""
         if self.orchestrator is None:
-            openrouter_key = os.getenv("OPENROUTER_API_KEY")
+            # Phase B3: central config (Swarm secret -> env -> .env).
+            try:
+                from core import config as _cfg
+                openrouter_key = _cfg.openrouter_key()
+            except Exception:
+                openrouter_key = os.getenv("OPENROUTER_API_KEY")
 
             # Check if OpenRouter key exists
             if not openrouter_key:
