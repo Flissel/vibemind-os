@@ -47,3 +47,9 @@
 [submodule "brain/the_brain/tribe"]
 	path = brain/the_brain/tribe
 	url = https://github.com/Flissel/tribev2.git
+[submodule "spaces/coding/Coding_engine/external/Automation_ui/moire_tracker"]
+	path = spaces/coding/Coding_engine/external/Automation_ui/moire_tracker
+	url = https://github.com/Flissel/Vibemind_Moire_Tracker.git
+[submodule "spaces/desktop/Automation_ui/moire_tracker"]
+	path = spaces/desktop/Automation_ui/moire_tracker
+	url = https://github.com/Flissel/Vibemind_Moire_Tracker.git
