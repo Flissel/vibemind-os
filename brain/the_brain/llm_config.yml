@@ -9,44 +9,62 @@
 
 keys:
   openrouter: ${OPENROUTER_API_KEY}
+  openai: ${OPENAI_API_KEY}
 
 providers:
   openrouter:
     type: openai
     base_url: https://openrouter.ai/api/v1
     key_ref: openrouter
+  openai:
+    type: openai
+    base_url: https://api.openai.com/v1
+    key_ref: openai
 
-# === Default (dev mode — free models) ===
+# === Default (dev mode — Groq direct) ===
 default:
   provider: openrouter
-  model: openrouter/free
+  model: groq::llama-3.3-70b-versatile
   temperature: 0.5
 
+# dev roles routed directly to Groq via the `groq::` model-id prefix.
+# MultiLLMRouter (_provider_of, multi_llm_router.py:63) detects this
+# prefix and bypasses OpenRouter, calling Groq's API directly with
+# GROQ_API_KEY. This is the path every successful eval used before the
+# config drifted to the invalid `openrouter/free`.
 roles:
   fast_reasoning:
     provider: openrouter
-    model: openrouter/free
+    model: groq::llama-3.3-70b-versatile
     temperature: 0.3
   planning:
     provider: openrouter
-    model: openrouter/free
+    model: groq::llama-3.3-70b-versatile
     temperature: 0.7
   context_tracking:
     provider: openrouter
-    model: openrouter/free
+    model: groq::llama-3.3-70b-versatile
     temperature: 0.5
   communication:
     provider: openrouter
-    model: openrouter/free
+    model: groq::llama-3.3-70b-versatile
     temperature: 0.8
   long_term_memory:
     provider: openrouter
-    model: openrouter/free
+    model: groq::llama-3.3-70b-versatile
     temperature: 0.5
   supermemory:
     provider: openrouter
     model: gpt-4o-mini
     temperature: 0.5
+  # Canvas reformat (publishing/bubble_sync/format_engine.py): regenerate a
+  # canvas node's rich content_json from FS-edited prose. OpenAI-direct so the
+  # standard get_client_sync path (NOT the brain MultiLLMRouter) reaches it; low
+  # temperature for deterministic schema-following JSON.
+  format_generation:
+    provider: openai
+    model: gpt-4o-mini
+    temperature: 0.2
 
 # === Production Overrides ===
 overrides:

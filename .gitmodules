@@ -1,24 +1,15 @@
 [submodule "voice"]
 	path = voice
 	url = https://github.com/Flissel/VibeMind-VoiceDialog.git
-[submodule "ops"]
-	path = ops
-	url = https://github.com/Flissel/vibemind-os.git
 [submodule "shared"]
 	path = shared
 	url = https://github.com/Flissel/vibemind-shared.git
-[submodule "clawcode"]
-	path = clawcode
-	url = https://github.com/Flissel/ClawCode.git
 [submodule "openclaw"]
 	path = openclaw
 	url = https://github.com/Flissel/openclaw.git
 [submodule "openfang"]
 	path = openfang
 	url = https://github.com/Flissel/openfang.git
-[submodule "security"]
-	path = security
-	url = https://github.com/Flissel/vibemind-security.git
 [submodule "openclaude"]
 	path = openclaude
 	url = https://github.com/Flissel/openclaude.git
@@ -28,22 +19,18 @@
 [submodule "coding-engine"]
 	path = coding-engine
 	url = https://github.com/Flissel/DaveFelix-Coding-Engine.git
-[submodule "spaces/mirofish/mirofish"]
-	path = spaces/mirofish/mirofish
-	url = https://github.com/Flissel/MiroFish.git
-	branch = backup-local-2026-04-12
 [submodule "spaces/video/vibevideo"]
 	path = spaces/video/vibevideo
 	url = https://github.com/Flissel/vibevideo.git
 [submodule "spaces/video/vibevideo_deepfake"]
 	path = spaces/video/vibevideo_deepfake
 	url = https://github.com/Flissel/vibevideo-deepfake.git
-[submodule "spaces/flowzen/flowzen"]
-	path = spaces/flowzen/flowzen
-	url = https://github.com/Flissel/flowzen.git
 [submodule "spaces/shuttles/swe_desgine"]
 	path = spaces/shuttles/swe_desgine
 	url = https://github.com/Flissel/swe_desgine.git
 [submodule "brain/the_brain/tribe"]
 	path = brain/the_brain/tribe
 	url = https://github.com/Flissel/tribev2.git
+[submodule "spaces/desktop/Automation_ui"]
+	path = spaces/desktop/Automation_ui
+	url = https://github.com/Flissel/Automation_ui.git

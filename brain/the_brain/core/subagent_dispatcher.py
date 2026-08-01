@@ -215,7 +215,11 @@ class SubagentDispatcher:
             return {"ok": False, "tool": "openai_subagent", "model": model,
                     "text": "", "error": "empty prompt"}
 
-        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        try:
+            from core import config as _cfg
+            api_key = (_cfg.openai_key() or "").strip()
+        except Exception:
+            api_key = os.environ.get("OPENAI_API_KEY", "").strip()
         if not api_key:
             self._record_failure("openai_subagent", "OPENAI_API_KEY not set")
             return {"ok": False, "tool": "openai_subagent", "model": model,
@@ -397,7 +401,11 @@ class SubagentDispatcher:
             return {"ok": False, "tool": "openai_subagent", "model": model,
                     "text": "", "error": "empty prompt"}
 
-        api_key = _os.environ.get("OPENAI_API_KEY", "").strip()
+        try:
+            from core import config as _cfg
+            api_key = (_cfg.openai_key() or "").strip()
+        except Exception:
+            api_key = _os.environ.get("OPENAI_API_KEY", "").strip()
         if not api_key:
             self._record_failure("openai_subagent", "OPENAI_API_KEY not set")
             return {"ok": False, "tool": "openai_subagent", "model": model,

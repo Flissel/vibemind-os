@@ -160,6 +160,11 @@ class ContinuousThought:
     fitness: float = -1.0            # -1 = unscored, 0.0-1.0 = scored
     generation: int = 0              # 0 = original, 1+ = evolved offspring
     parent_ids: List[str] = field(default_factory=list)  # lineage tracking
+    # ── Intent grounding (Baustein C) ──
+    # The intent/task_type that the thought is about (e.g. from a plan event),
+    # so reflections carry the absicht, and TriBE can profile intent+content.
+    intent: str = ""
+    task_type: str = ""
     # ── Radial integration ──
     _ring_signature: Any = None      # RingSignature, set by ThoughtRadialBridge
 
@@ -3747,6 +3752,7 @@ class ContinuousThinkingEngine:
             return ContinuousThought(
                 timestamp=time.time(), category="plan_reflection",
                 content=content, relevance=relevance,
+                intent=intent,  # Baustein C — ground the reflection in its intent
             )
 
         if kind == "plan_rewarded":
@@ -3762,6 +3768,36 @@ class ContinuousThinkingEngine:
             return ContinuousThought(
                 timestamp=time.time(), category="reward_reflection",
                 content=content, relevance=0.9,
+                intent=intent,  # Baustein C
+            )
+
+        # Baustein D.1/C — ground-truth verification events become reflections
+        # that carry the intent and the claimed-vs-verified diff.
+        if kind in ("action_verified", "action_unverified", "action_refuted"):
+            intent = (p.get("intent") or "")[:120]
+            cap = p.get("capability", "")
+            verified = p.get("verified")
+            if kind == "action_refuted":
+                content = (
+                    f"Action for '{intent}' ({cap}) claimed success but the world "
+                    f"REFUTED it: {p.get('reason','')}. The tool lied or broke silently."
+                )
+                relevance = 0.9
+            elif kind == "action_unverified":
+                content = (
+                    f"Action for '{intent}' ({cap}) ran but I couldn't verify it "
+                    f"against the world. Worth adding a post-condition check."
+                )
+                relevance = 0.6
+            else:
+                content = (
+                    f"Action for '{intent}' ({cap}) confirmed by the world "
+                    f"({p.get('reason','')}). Verified success."
+                )
+                relevance = 0.55
+            return ContinuousThought(
+                timestamp=time.time(), category="verification_reflection",
+                content=content, relevance=relevance, intent=intent,
             )
 
         if kind == "no_match_cluster":

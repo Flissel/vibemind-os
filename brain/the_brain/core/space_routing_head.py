@@ -11,20 +11,31 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .space_contract import load_space_contract
+
 logger = logging.getLogger('brain.space_routing_head')
 
-SPACE_NAMES = [
-    "ideas", "bubbles", "coding", "desktop", "research",
-    "n8n", "agentfarm", "schedule", "roarboot", "minibook",
-    "video", "flowzen", "mirofish",
-]
+
+def _is_learner() -> bool:
+    """Phase D: only the learner / a mono brain may mutate or persist
+    space centroids. Inference replicas stay read-only. Fail-safe → True
+    (legacy mono behaviour unchanged for a single brain)."""
+    try:
+        from core import config as _cfg
+        return _cfg.is_learner()
+    except Exception:
+        return True
+
+
+_SPACE_CONTRACT = load_space_contract()
+SPACE_NAMES = list(_SPACE_CONTRACT.space_ids)
 
 # Complete event_type → space mapping (from EventRouter.STREAM_MAPPING)
-EVENT_SPACE_MAP = {
+_LEGACY_EVENT_SPACE_MAP = {
     # Coding
     "code.generate": "coding", "code.modify": "coding", "code.status": "coding",
     "code.show": "coding", "code.preview.start": "coding", "code.preview.stop": "coding",
-    "code.list": "coding", "code.cancel": "coding", "idea.to_project": "coding",
+    "code.list": "coding", "code.cancel": "coding",
     # Desktop
     "desktop.open_app": "desktop", "desktop.click": "desktop", "desktop.type": "desktop",
     "desktop.press_key": "desktop", "desktop.screenshot": "desktop", "desktop.scroll": "desktop",
@@ -58,15 +69,20 @@ EVENT_SPACE_MAP = {
     "idea.format_pros_cons": "ideas", "idea.format_hierarchy": "ideas",
     "idea.format_specs": "ideas", "idea.convert_format": "ideas",
     "idea.explore.start": "ideas", "idea.explore.stop": "ideas",
-    "idea.generate_doc": "ideas",
+    "idea.generate_doc": "ideas", "idea.to_project": "ideas",
     # Research
     "research.web": "research", "research.scrape": "research",
     "research.summarize": "research", "research.to_idea": "research",
-    # Roarboot (Knowledge Graph)
-    "roarboot.search": "roarboot", "roarboot.query": "roarboot",
-    "roarboot.email_draft": "roarboot", "roarboot.meeting_brief": "roarboot",
-    "roarboot.deck": "roarboot", "roarboot.status": "roarboot",
-    "roarboot.docker.start": "roarboot", "roarboot.docker.stop": "roarboot",
+    # Rowboat (Knowledge Graph)
+    "rowboat.search": "rowboat", "rowboat.query": "rowboat",
+    "rowboat.email_draft": "rowboat", "rowboat.meeting_brief": "rowboat",
+    "rowboat.deck": "rowboat", "rowboat.status": "rowboat",
+    "rowboat.docker.start": "rowboat", "rowboat.docker.stop": "rowboat",
+    # Temporary ingress compatibility: roarboot is never emitted as a Space ID.
+    "roarboot.search": "rowboat", "roarboot.query": "rowboat",
+    "roarboot.email_draft": "rowboat", "roarboot.meeting_brief": "rowboat",
+    "roarboot.deck": "rowboat", "roarboot.status": "rowboat",
+    "roarboot.docker.start": "rowboat", "roarboot.docker.stop": "rowboat",
     # Minibook
     "minibook.discuss": "minibook", "minibook.collaborate": "minibook",
     "minibook.status": "minibook", "minibook.list_projects": "minibook",
@@ -95,6 +111,10 @@ EVENT_SPACE_MAP = {
     "mirofish.status": "mirofish", "mirofish.evaluate": "mirofish",
     "mirofish.interview": "mirofish",
 }
+
+# Registry-owned runtime mapping.  The legacy literal above remains inert as
+# migration documentation and cannot influence routing decisions.
+EVENT_SPACE_MAP = dict(_SPACE_CONTRACT.event_space_map)
 
 
 class SpaceRoutingHead(nn.Module):
@@ -163,8 +183,11 @@ class SpaceRoutingHead(nn.Module):
             success: Whether the agent succeeded
             lr: Learning rate for centroid update
         Returns:
-            True if reward was applied, False if routing_id not found
+            True if reward was applied, False if routing_id not found OR
+            this is an inference replica (read-only — Phase D).
         """
+        if not _is_learner():
+            return False  # inference replica: never mutate centroids
         with self._lock:
             rec = self._pending_routes.pop(routing_id, None)
         if rec is None:
@@ -192,6 +215,8 @@ class SpaceRoutingHead(nn.Module):
 
         Returns True if training was applied.
         """
+        if not _is_learner():
+            return False  # inference replica: read-only (Phase D)
         if correct_space not in self.space_names:
             return False
         correct_idx = self.space_names.index(correct_space)
@@ -212,7 +237,13 @@ class SpaceRoutingHead(nn.Module):
     # ------------------------------------------------------------------
 
     def save(self, path: str) -> None:
-        """Persist centroids and space_names to disk."""
+        """Persist centroids and space_names to disk.
+
+        Phase D: only the learner persists (avoids inference replicas
+        racing the learner on a shared checkpoint volume).
+        """
+        if not _is_learner():
+            return
         import os
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         torch.save({
@@ -261,6 +292,24 @@ class SpaceRoutingHead(nn.Module):
     def should_autosave(self, every_n: int = 100) -> bool:
         """Whether enough training has accumulated to warrant an autosave."""
         return self._train_count_since_save >= every_n
+
+    def maybe_reload(self, path: str) -> bool:
+        """Phase D3: reload centroids from disk if the file changed (mtime).
+        Inference replicas poll this to pick up the learner's save() on a
+        shared volume without restarting. Returns True if reloaded."""
+        import os
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            return False
+        last = getattr(self, "_ckpt_mtime", None)
+        if last is not None and mtime <= last:
+            return False
+        ok = self.load(path)
+        if ok:
+            self._ckpt_mtime = mtime
+            logger.info(f"SpaceRoutingHead reloaded from {path} (mtime changed)")
+        return ok
 
     def cleanup_stale(self, max_age: float = 300.0) -> int:
         """Remove pending routes older than max_age seconds. Returns count removed."""

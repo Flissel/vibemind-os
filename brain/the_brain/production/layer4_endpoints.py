@@ -19,6 +19,16 @@ import json
 import os
 import traceback
 
+# Identity-namespaced checkpoint paths (Phase C). Legacy-identical under the
+# default identity. Fallback keeps the module importable if config is absent.
+try:
+    from core import config as _cfg
+    def _layer4_dir() -> str:
+        return _cfg.checkpoint_dir("layer4_checkpoints")
+except Exception:
+    def _layer4_dir() -> str:
+        return "data/layer4_checkpoints"
+
 # Layer 4 imports (conditional for graceful degradation)
 try:
     from core.layer4_temporal_router import Layer4TemporalRouter, TemporalRoutingResult
@@ -96,7 +106,7 @@ def get_layer4_trainer() -> Optional['TemporalCTMTrainer']:
                     batch_size=16,
                     learning_rate=1e-4,
                     num_epochs=50,
-                    checkpoint_dir='data/layer4_checkpoints',
+                    checkpoint_dir=_layer4_dir(),
                     enable_phase4=PHASE4_AVAILABLE
                 )
                 layer4_trainer = TemporalCTMTrainer(config)
@@ -423,7 +433,7 @@ def stop_layer4_training():
 @layer4_bp.route('/training/checkpoints')
 def list_layer4_checkpoints():
     """List available Temporal CTM checkpoints"""
-    checkpoint_dir = 'data/layer4_checkpoints'
+    checkpoint_dir = _layer4_dir()
 
     if not os.path.exists(checkpoint_dir):
         return jsonify({
@@ -493,7 +503,7 @@ def load_layer4_checkpoint():
 
         # Determine path
         if version:
-            checkpoint_path = f'data/layer4_checkpoints/layer4_{version}.pt'
+            checkpoint_path = os.path.join(_layer4_dir(), f'layer4_{version}.pt')
 
         if not os.path.exists(checkpoint_path):
             return jsonify({

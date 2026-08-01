@@ -31,7 +31,7 @@ REQUIRED_SPACE_ROLES = {
     "coding": "space_coding",
     "desktop": "space_desktop",
     "research": "space_research",
-    "roarboot": "space_rowboat",
+    "rowboat": "space_rowboat",
     "minibook": "space_minibook",
     "schedule": "space_schedule",
     "n8n": "space_n8n",

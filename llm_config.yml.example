@@ -91,11 +91,11 @@ roles:
   space_coding:            { provider: openfang, model: "openfang:brain-coder",        temperature: 0.2 }
   space_desktop:           { provider: openfang, model: "openfang:brain-desktop",      temperature: 0.2 }
   space_research:          { provider: openfang, model: "openfang:brain-researcher",   temperature: 0.2 }
-  space_rowboat:           { provider: openfang, model: "openfang:rowboat-knowledge",  temperature: 0.2 }
+  space_rowboat:           { provider: openfang, model: "openfang:rowboat-chat",       temperature: 0.2 }
   space_minibook:          { provider: openfang, model: "openfang:brain-knowledge",    temperature: 0.2 }
   space_schedule:          { provider: openfang, model: "openfang:brain-scheduler",    temperature: 0.2 }
   space_n8n:               { provider: openfang, model: "openfang:brain-n8n",          temperature: 0.2 }
-  space_agentfarm:         { provider: openfang, model: "openfang:brain-orchestrator", temperature: 0.2 }
+  space_agentfarm:         { provider: openfang, model: "openfang:vibemind",           temperature: 0.2 }
   space_video:             { provider: openfang, model: "openfang:brain-video",        temperature: 0.2 }
   space_flowzen:           { provider: openfang, model: "openfang:brain-wellness",     temperature: 0.2 }
   space_mirofish:          { provider: openfang, model: "openfang:brain-forecaster",   temperature: 0.2 }

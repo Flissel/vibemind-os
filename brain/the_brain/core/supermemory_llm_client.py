@@ -91,7 +91,13 @@ class SupermemoryLLM:
 
         # Get API keys
         self.api_key = api_key or self._get_provider_api_key(provider)
-        self.supermemory_api_key = supermemory_api_key or os.getenv('SUPERMEMORY_API_KEY')
+        # Phase B3: central config (Swarm /run/secrets -> env -> .env).
+        try:
+            from core import config as _cfg
+            _sm_key = _cfg.get_secret('SUPERMEMORY_API_KEY')
+        except Exception:
+            _sm_key = os.getenv('SUPERMEMORY_API_KEY')
+        self.supermemory_api_key = supermemory_api_key or _sm_key
 
         if not self.supermemory_api_key:
             raise ValueError(
@@ -136,7 +142,13 @@ class SupermemoryLLM:
         }
 
         env_var = key_map.get(provider, 'OPENAI_API_KEY')
-        api_key = os.getenv(env_var)
+        # Phase B3: central config (Swarm /run/secrets -> env -> .env).
+        # get_secret(name) resolves the same env var name, swarm-aware.
+        try:
+            from core import config as _cfg
+            api_key = _cfg.get_secret(env_var)
+        except Exception:
+            api_key = os.getenv(env_var)
 
         if not api_key:
             raise ValueError(

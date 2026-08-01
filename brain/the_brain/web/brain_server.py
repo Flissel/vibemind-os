@@ -113,6 +113,7 @@ def _init_brain_state(state: Any, testing: bool = False) -> None:
     state.dual_graph = None
     state.response_agent = None
     state.memory_consolidator = None
+    state.diary_drain = None
     state.socialization_metrics = None
 
     state._rowboat_data = None
@@ -120,6 +121,17 @@ def _init_brain_state(state: Any, testing: bool = False) -> None:
     state._cached_thought_clusters = None
 
     state.testing = testing
+
+
+def _loops_enabled() -> bool:
+    """Master-Gate für die CPU-gebundenen Hintergrund-Loops (Contention-Fix
+    2026-06-08). Default an (=heutiges Single-Process-Verhalten). brain-core
+    (HTTP) setzt BRAIN_BACKGROUND_LOOPS=0 → die Loop-OBJEKTE werden weiter
+    konstruiert (state.* bleibt gefüllt, Routen funktionieren), nur ihr
+    .start()-Thread wird übersprungen. Der separate brain-loops-Worker-Prozess
+    setzt =1 und fährt die Loops in eigenem Prozess/GIL → der async HTTP-Server
+    verhungert nicht mehr. Muster wie is_learner()-Gating der Writer-Threads."""
+    return os.environ.get("BRAIN_BACKGROUND_LOOPS", "1") not in ("0", "false", "False")
 
 
 def _init_production_modules(state: Any) -> None:  # pragma: no cover
@@ -215,11 +227,18 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
             BrainChat, ContinuousThinkingEngine, MicroAgentPool,
         )
 
-        # ContinuousThinkingEngine: brain ALWAYS thinks
+        # ContinuousThinkingEngine: brain ALWAYS thinks — aber das interval_ms war
+        # hartkodiert 5000ms. Der radial_tick (radiales Netz + ~13 Qdrant-Collection-
+        # Queries pro Tick) ist CPU-gebunden, haelt den GIL → bei 5s effektiv
+        # dauer-Last → der async HTTP-Server (Single-Process) verhungert (root-caused
+        # 2026-06-08: auch mit BRAIN_ROLE=inference/Writer aus blieb CPU 100%).
+        # Env-konfigurierbar, Default 30000ms (Brain denkt weiter, nur seltener →
+        # HTTP atmet). BRAIN_THINK_INTERVAL_MS=0 schaltet das Ticking ganz ab.
         moltbook_store = state.moltbook_store  # may be None
+        _think_ms = int(os.environ.get("BRAIN_THINK_INTERVAL_MS", "30000"))
         cte = ContinuousThinkingEngine(
             moltbook=moltbook_store,
-            interval_ms=5000,
+            interval_ms=_think_ms,
         )
         state.continuous_thinking = cte
 
@@ -327,9 +346,12 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
             try:
                 from core.mcmp_gardener import MCMPGardener
                 gardener = MCMPGardener(kg)
-                gardener.start()
                 state.mcmp_gardener = gardener
-                print("  [OK] MCMP gardener started (pheromone walks on episodic+semantic)")
+                if _loops_enabled():
+                    gardener.start()
+                    print("  [OK] MCMP gardener started (pheromone walks on episodic+semantic)")
+                else:
+                    print("  [SKIP] MCMP gardener (BRAIN_BACKGROUND_LOOPS=0)")
             except Exception as e:
                 state.mcmp_gardener = None
                 print(f"  [WARN] MCMP gardener failed to start: {e}")
@@ -372,9 +394,12 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
                     kg=kg,
                     decision_graph=state.decision_graph,
                 )
-                ce.start()
                 state.cluster_engine = ce
-                print("  [OK] ClusterEngine started (cluster activation, 60s tick)")
+                if _loops_enabled():
+                    ce.start()
+                    print("  [OK] ClusterEngine started (cluster activation, 60s tick)")
+                else:
+                    print("  [SKIP] ClusterEngine (BRAIN_BACKGROUND_LOOPS=0)")
             except Exception as e:
                 state.cluster_engine_error = str(e)
                 print(f"  [WARN] ClusterEngine failed to start: {e}")
@@ -392,13 +417,16 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
                         brain_chat=state.brain_chat,
                         decision_graph=state.decision_graph,
                     )
-                    ss.start()
                     state.self_steerer = ss
-                    print(
-                        f"  [OK] SelfSteerer started "
-                        f"({ss.stats_dict()['mappings_loaded']} cluster->capability mappings, "
-                        f"30s tick)"
-                    )
+                    if _loops_enabled():
+                        ss.start()
+                        print(
+                            f"  [OK] SelfSteerer started "
+                            f"({ss.stats_dict()['mappings_loaded']} cluster->capability mappings, "
+                            f"30s tick)"
+                        )
+                    else:
+                        print("  [SKIP] SelfSteerer (BRAIN_BACKGROUND_LOOPS=0)")
             except Exception as e:
                 state.self_steerer_error = str(e)
                 print(f"  [WARN] SelfSteerer failed to start: {e}")
@@ -418,14 +446,38 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
             state.subagent_dispatcher_error = str(e)
             print(f"  [WARN] SubagentDispatcher unavailable: {e}")
 
+        # ── Phase C4: Tier boundary ──────────────────────────────────────
+        # The 6 periodic engines below WRITE to Qdrant / disk on a timer
+        # (Consolidation, Snapshot, DiscourseAggregator, MirofishKGSync,
+        # SelfAwarenessWatcher, DiscourseMemoryConsolidator). Only one
+        # instance may own these writes or N replicas corrupt shared state.
+        # config.is_learner() is True for mono (default → unchanged) and
+        # learner; False only for inference replicas. The engine OBJECTS are
+        # still constructed (so app.state.* stays populated and the rest of
+        # the code keeps working) — only their .start() background thread is
+        # gated, i.e. an inference replica simply never writes.
+        try:
+            from core import config as _cfg
+            _tier_writers_enabled = _cfg.is_learner()
+            _role = _cfg.brain_role()
+        except Exception:
+            _tier_writers_enabled = True   # fail-safe = legacy behaviour
+            _role = "mono"
+        if not _tier_writers_enabled:
+            print(f"  [TIER] BRAIN_ROLE={_role} — periodic writer threads "
+                  f"(consolidation/snapshot/discourse/mirofish/self-aware) "
+                  f"DISABLED (inference replica: read-only).")
+
         # ConsolidationEngine: Phase L. Episodic -> Semantic.
         state.consolidation_engine = None
         try:
             from core.consolidation_engine import ConsolidationEngine
             ce = ConsolidationEngine(kg, state.subagent_dispatcher)
-            ce.start()
+            if _tier_writers_enabled:
+                ce.start()
             state.consolidation_engine = ce
-            print("  [OK] ConsolidationEngine started (DBSCAN + groq_subagent synth, every 5min)")
+            _st = "started" if _tier_writers_enabled else "constructed (writer disabled: inference)"
+            print(f"  [OK] ConsolidationEngine {_st} (DBSCAN + groq_subagent synth, every 5min)")
         except Exception as e:
             state.consolidation_engine_error = str(e)
             print(f"  [WARN] ConsolidationEngine unavailable: {e}")
@@ -461,9 +513,11 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
                 state_provider=_state_provider,
                 modulation_provider=_modulation_provider,
             )
-            se.start()
+            if _tier_writers_enabled:
+                se.start()
             state.snapshot_engine = se
-            print("  [OK] SnapshotEngine started (every 5min -> brain-state)")
+            _st = "started" if _tier_writers_enabled else "constructed (writer disabled: inference)"
+            print(f"  [OK] SnapshotEngine {_st} (every 5min -> brain-state)")
         except Exception as e:
             state.snapshot_engine_error = str(e)
             print(f"  [WARN] SnapshotEngine unavailable: {e}")
@@ -518,8 +572,11 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
         try:
             from core.discourse_engine import DiscourseEngine
             de = DiscourseEngine(kg, dispatcher=state.subagent_dispatcher)
-            de.start()
             state.discourse_engine = de
+            if _loops_enabled():
+                de.start()
+            else:
+                print("  [SKIP] DiscourseEngine loop (BRAIN_BACKGROUND_LOOPS=0)")
             # R+.2 wire into BrainChat for response-queue (post-hoc agent
             # assessment of every Brain response).
             if state.brain_chat is not None and hasattr(state.brain_chat, "set_discourse_engine"):
@@ -540,9 +597,11 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
                 dispatcher=state.subagent_dispatcher,
                 cte=state.continuous_thinking,
             )
-            agg.start()
+            if _tier_writers_enabled:
+                agg.start()
             state.discourse_aggregator = agg
-            print("  [OK] DiscourseAggregator started (every 3h, groq+md+kg)")
+            _st = "started" if _tier_writers_enabled else "constructed (writer disabled: inference)"
+            print(f"  [OK] DiscourseAggregator {_st} (every 3h, groq+md+kg)")
         except Exception as e:
             state.discourse_aggregator_error = str(e)
             print(f"  [WARN] DiscourseAggregator unavailable: {e}")
@@ -553,9 +612,11 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
         try:
             from core.mirofish_kg_sync import MirofishKGSync
             mfs = MirofishKGSync(kg)
-            mfs.start()
+            if _tier_writers_enabled:
+                mfs.start()
             state.mirofish_kg_sync = mfs
-            print("  [OK] MirofishKGSync started (Neo4j -> mirofish-kg, 5min)")
+            _st = "started" if _tier_writers_enabled else "constructed (writer disabled: inference)"
+            print(f"  [OK] MirofishKGSync {_st} (Neo4j -> mirofish-kg, 5min)")
         except Exception as e:
             state.mirofish_kg_sync_error = str(e)
             print(f"  [WARN] MirofishKGSync unavailable: {e}")
@@ -773,9 +834,11 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
         try:
             from core.self_awareness_watcher import SelfAwarenessWatcher
             saw = SelfAwarenessWatcher(kg)
-            saw.start()
+            if _tier_writers_enabled:
+                saw.start()
             state.self_awareness_watcher = saw
-            print("  [OK] SelfAwarenessWatcher started (1h tick, hash-based reseed)")
+            _st = "started" if _tier_writers_enabled else "constructed (writer disabled: inference)"
+            print(f"  [OK] SelfAwarenessWatcher {_st} (1h tick, hash-based reseed)")
         except Exception as e:
             state.self_awareness_watcher_error = str(e)
             print(f"  [WARN] SelfAwarenessWatcher unavailable: {e}")
@@ -787,14 +850,16 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
         try:
             from core.discourse_memory_consolidator import DiscourseMemoryConsolidator
             dmc = DiscourseMemoryConsolidator(kg, dispatcher=state.subagent_dispatcher)
-            dmc.start()
+            if _tier_writers_enabled:
+                dmc.start()
             state.discourse_memory_consolidator = dmc
             # Wire into BrainChat so self-queries can recall historical memory.
             if state.brain_chat is not None and hasattr(
                 state.brain_chat, "set_discourse_memory_consolidator"
             ):
                 state.brain_chat.set_discourse_memory_consolidator(dmc)
-            print("  [OK] DiscourseMemoryConsolidator started (6h tick, cross-session meta_topics)")
+            _st = "started" if _tier_writers_enabled else "constructed (writer disabled: inference)"
+            print(f"  [OK] DiscourseMemoryConsolidator {_st} (6h tick, cross-session meta_topics)")
         except Exception as e:
             state.discourse_memory_consolidator_error = str(e)
             print(f"  [WARN] DiscourseMemoryConsolidator unavailable: {e}")
@@ -920,10 +985,15 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
         except Exception as e:
             print(f"  [WARN] Moltbook Agents failed: {e}")
 
-        # Start continuous thinking (Phase 11.U.E — env-gated for load tests)
-        if os.environ.get("CONTINUOUS_THINKING_ENABLED", "1").lower() in ("1", "true", "yes"):
+        # Start continuous thinking (Phase 11.U.E — env-gated for load tests;
+        # 2026-06-08 zusätzlich BRAIN_BACKGROUND_LOOPS-Master-Gate → im HTTP-Prozess
+        # aus, im brain-loops-Worker an).
+        if (os.environ.get("CONTINUOUS_THINKING_ENABLED", "1").lower() in ("1", "true", "yes")
+                and _loops_enabled()):
             cte.start()
             print("  [OK] ContinuousThinking STARTED")
+        elif not _loops_enabled():
+            print("  [SKIP] ContinuousThinking (BRAIN_BACKGROUND_LOOPS=0)")
         else:
             print("  [SKIP] ContinuousThinking disabled via CONTINUOUS_THINKING_ENABLED=0")
 
@@ -954,7 +1024,18 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
 
         # Create shared memory
         state.kotlin_graph = KotlinGraph()
-        state.dual_graph = DualGraph(save_dir='data/moltbook')
+        state.dual_graph = DualGraph(
+            save_dir='data/moltbook',
+            # Phase 1 — keep auto-mine off the hot path: the default (10) mined
+            # the FULL event history synchronously inside plan_executor's finally
+            # (under the ingest write lock) every 10th episode, growing with
+            # uptime. 200 keeps mining alive at 1/20th the cadence; force_mine()
+            # covers on-demand needs. This DualGraph is used ONLY by the multihop
+            # diary (the cortical ResponseAgent writes to the separate
+            # state.kotlin_graph instance), so the cadence change affects nothing
+            # else.
+            auto_mine_interval=200,
+        )
         # Load persisted episodic memory
         try:
             if state.dual_graph.load('memory'):
@@ -962,6 +1043,12 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
                 print(f"  [OK] Loaded episodic memory ({kg_stats['total_events']} events, {kg_stats['total_episodes']} episodes)")
         except Exception as e:
             print(f"  [WARN] Episodic memory load failed: {e}")
+
+        # Phase 1 — the executor no longer holds a dual_graph reference: it
+        # enqueues each executed plan into the shared diary queue instead
+        # (core/multihop_kotlin_adapter.py::enqueue_plan). state.dual_graph
+        # is still needed here — the DiaryDrain below (loop-process only)
+        # is the sole writer into it.
 
         # Create response agent
         state.response_agent = ResponseAgent(ResponseAgentConfig(top_k=3))
@@ -1001,16 +1088,40 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
             klotski_ctm=getattr(state, 'klotski_ctm', None),
             knowledge_synthesizer=getattr(state.brain_chat, '_knowledge_synthesizer', None) if state.brain_chat else None,
             continuous_thinking_engine=getattr(state, 'continuous_thinking', None),
-            interval_s=30.0,
+            # Intervall env-konfigurierbar; Default 300s (5 min) statt vormals
+            # hartkodiert 30s. Bei 30s lief der 7-Phasen-Zyklus (inkl. dual_graph
+            # n-gram-Mining + qdrant-scroll über alle Collections, ~6s @188% CPU)
+            # quasi dauernd → starvte den async HTTP-Layer, multihop-Requests
+            # timeouteten (root-caused 2026-06-08). 300s = HTTP atmet.
+            interval_s=float(os.environ.get("BRAIN_CONSOLIDATION_INTERVAL_S", "300")),
         )
         state.memory_consolidator = consolidator
         if state.brain_chat:
             state.brain_chat.set_memory_consolidator(consolidator)
-        consolidator.start()
-        print("  [OK] MemoryConsolidator (30s sleep cycle, meta-graph=%s)" %
-              ('YES' if getattr(state, 'meta_knowledge_graph', None) else 'NO'))
+        if _loops_enabled():
+            consolidator.start()
+            print("  [OK] MemoryConsolidator (interval=%ss, meta-graph=%s)" %
+                  (os.environ.get("BRAIN_CONSOLIDATION_INTERVAL_S", "300"),
+                   'YES' if getattr(state, 'meta_knowledge_graph', None) else 'NO'))
+        else:
+            print("  [SKIP] MemoryConsolidator (BRAIN_BACKGROUND_LOOPS=0)")
     except Exception as e:
         print(f"  [WARN] MemoryConsolidator failed: {e}")
+
+    # --- Tagebuch-Drain (Queue -> dual_graph). NUR im Loop-Prozess:
+    # brain-core (BRAIN_BACKGROUND_LOOPS=0) haengt nur an die Queue an; hier
+    # (brain-loops / nativ) wird sie drainiert und danach persistiert.
+    state.diary_drain = None
+    try:
+        from core.multihop_diary_drain import DiaryDrain
+        if _loops_enabled() and getattr(state, "dual_graph", None) is not None:
+            state.diary_drain = DiaryDrain(state.dual_graph)
+            state.diary_drain.start()
+            print("  [OK] DiaryDrain gestartet (multihop queue -> dual_graph)")
+        else:
+            print("  [SKIP] DiaryDrain (BRAIN_BACKGROUND_LOOPS=0 -> nur enqueue)")
+    except Exception as e:
+        print(f"  [WARN] DiaryDrain unavailable: {e}")
 
     # --- SocializationMetrics (6 learning metrics from Moltbook paper) ---
     try:
@@ -1028,7 +1139,13 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
 
     # --- AgentLoop + RadialAttentionNetwork (from ProductionPlanner) ---
     try:
-        import os
+        # NOTE: do NOT `import os` here — Python's scope rules then treat `os`
+        # as a local in the WHOLE _init_production_modules function, and the
+        # earlier reference at line ~958 (`os.environ.get("CONTINUOUS_THINKING_ENABLED")`)
+        # raises "cannot access local variable 'os' where it is not associated
+        # with a value", which silently swallows the entire BrainChat setup block
+        # (its except handler reports "BrainChat setup failed: ..."). The
+        # module-level import on line 12 is what we use. Phase 11.U.K (2026-06-02).
         os.environ.setdefault('ENABLE_AGENT_LOOP', 'true')
         from production.production_planner import ProductionPlanner
         planner = ProductionPlanner(session_log_dir="production/session_logs")
@@ -1101,9 +1218,12 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
             try:
                 from pathlib import Path as _Path
                 from core.space_routing_head import SpaceRoutingHead
+                from core import config as _cfg
                 routing_head = SpaceRoutingHead()
-                # Determine checkpoint path (same dir as EventRoutingHead)
-                _space_ckpt_dir = _Path("data/brain_checkpoints")
+                # Checkpoint path is identity-namespaced (Phase C). With the
+                # default identity this is byte-identical to the legacy
+                # "data/brain_checkpoints" so existing .pt files keep loading.
+                _space_ckpt_dir = _Path(_cfg.checkpoint_dir("brain_checkpoints"))
                 _space_ckpt_dir.mkdir(parents=True, exist_ok=True)
                 _space_ckpt_path = str(_space_ckpt_dir / "space_routing_head.pt")
                 state.space_routing_head_ckpt = _space_ckpt_path
@@ -1146,8 +1266,10 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
                 state.sbert_encoder = sbert
 
                 event_head = EventRoutingHead(embed_dim=384)
-                # Determine checkpoint path
-                _ckpt_dir = _Path("data/brain_checkpoints")
+                # Identity-namespaced checkpoint path (Phase C); legacy-
+                # identical under the default identity.
+                from core import config as _cfg
+                _ckpt_dir = _Path(_cfg.checkpoint_dir("brain_checkpoints"))
                 _ckpt_dir.mkdir(parents=True, exist_ok=True)
                 _ckpt_path = str(_ckpt_dir / "event_routing_head.pt")
                 state.event_routing_head_ckpt = _ckpt_path
@@ -1171,6 +1293,48 @@ def _init_production_modules(state: Any) -> None:  # pragma: no cover
                 state.event_routing_head_ckpt = None
                 state.sbert_encoder = None
                 print(f"  [WARN] EventRoutingHead init failed: {e}")
+
+            # Phase D3: inference replicas poll the shared checkpoint volume
+            # so they pick up the learner's periodic save() WITHOUT a restart.
+            # Only inference runs this tick — a learner/mono brain writes its
+            # own centroids and must not reload them out from under itself.
+            try:
+                from core import config as _cfg
+                _is_inf = not _cfg.is_learner()
+            except Exception:
+                _is_inf = False  # fail-safe: mono/legacy never reloads
+            if _is_inf:
+                import threading as _thr
+                _reload_secs = 30
+                try:
+                    _reload_secs = int(__import__("os").environ.get(
+                        "BRAIN_CKPT_RELOAD_SECS", "30"))
+                except Exception:
+                    pass
+
+                def _ckpt_reload_loop(_state, _interval):
+                    import time as _t
+                    while True:
+                        _t.sleep(_interval)
+                        try:
+                            sh = getattr(_state, "space_routing_head", None)
+                            sp = getattr(_state, "space_routing_head_ckpt", None)
+                            if sh is not None and sp:
+                                sh.maybe_reload(sp)
+                            eh = getattr(_state, "event_routing_head", None)
+                            ep = getattr(_state, "event_routing_head_ckpt", None)
+                            if eh is not None and ep:
+                                eh.maybe_reload(ep)
+                        except Exception as _re:
+                            print(f"  [WARN] ckpt reload tick: {_re}")
+
+                _t = _thr.Thread(
+                    target=_ckpt_reload_loop, args=(state, _reload_secs),
+                    name="ckpt-reload", daemon=True)
+                _t.start()
+                state.ckpt_reload_thread = _t
+                print(f"  [OK] Phase D3 inference ckpt-reload tick "
+                      f"started (every {_reload_secs}s, mtime-gated)")
 
         elif cte is None:
             print("  [--] ContinuousThinking not available, radial_tick not connected")
@@ -1303,21 +1467,34 @@ async def _lifespan(app: FastAPI):
                 except Exception as e:
                     print(f"  [WARN-async] Spaces/Events -> KG failed: {e}")
 
+            # Gate (2026-06-08): der Bulk-Import re-embedded ~13 Spaces + ~150 Events
+            # via Qwen3-forward-pass (CPU-bound) → pegte brain-core einen Core dauerhaft
+            # + erzeugte die Qdrant-read/write-Flut, die den async HTTP-Server starvte
+            # (per py-spy auf PID 1 als EINZIGE aktive Thread bestaetigt, root-caused
+            # 2026-06-08). Gehoert wie alle KG-schreibenden Loops hinter das Master-Gate
+            # → laeuft jetzt im brain-loops-Worker, NICHT im HTTP-Prozess.
             import threading as _threading
-            _threading.Thread(
-                target=_bulk_spaces_events_to_kg, daemon=True,
-                name="SpacesEventsToKG-bulk",
-            ).start()
-            print("  [OK] Spaces+Events -> KG bulk import scheduled (background)")
+            if _loops_enabled():
+                _threading.Thread(
+                    target=_bulk_spaces_events_to_kg, daemon=True,
+                    name="SpacesEventsToKG-bulk",
+                ).start()
+                print("  [OK] Spaces+Events -> KG bulk import scheduled (background)")
+            else:
+                print("  [SKIP] Spaces+Events -> KG bulk import (BRAIN_BACKGROUND_LOOPS=0)")
     except Exception as e:
         print(f"  [WARN] Spaces/Events KG sync failed: {e}")
 
     # Auto-start thinking — no reason to boot the brain and NOT think
+    # (2026-06-08: respektiert BRAIN_BACKGROUND_LOOPS — im HTTP-Prozess aus,
+    # damit der zweite Auto-Start das Master-Gate nicht umgeht).
     try:
         cte = getattr(app.state, 'continuous_thinking', None)
-        if cte and not cte.is_running:
+        if cte and not cte.is_running and _loops_enabled():
             cte.start()
             print(f"  [OK] ContinuousThinking auto-started")
+        elif not _loops_enabled():
+            print(f"  [SKIP] ContinuousThinking auto-start (BRAIN_BACKGROUND_LOOPS=0)")
     except Exception as e:
         print(f"  [WARN] ContinuousThinking auto-start failed: {e}")
 
@@ -1329,15 +1506,48 @@ async def _lifespan(app: FastAPI):
         import os as _os
         from core.log_retrainer import periodic_retrainer_loop
         _retrain_interval = int(_os.getenv("BRAIN_RETRAIN_INTERVAL_SECONDS", "3600"))
-        if _retrain_interval > 0 and getattr(app.state, 'event_routing_head', None) is not None:
+        if (_retrain_interval > 0 and getattr(app.state, 'event_routing_head', None) is not None
+                and _loops_enabled()):
             app.state.log_retrainer_task = asyncio.create_task(
                 periodic_retrainer_loop(app.state, interval_seconds=_retrain_interval)
             )
             print(f"  [OK] Log retrainer scheduled (interval={_retrain_interval}s)")
+        elif not _loops_enabled():
+            print(f"  [SKIP] Log retrainer (BRAIN_BACKGROUND_LOOPS=0)")
         else:
             print(f"  [--] Log retrainer disabled (interval={_retrain_interval}, event_head missing)")
     except Exception as e:
         print(f"  [WARN] Log retrainer init failed: {e}")
+
+    # Embedder-Warmup (2026-06-08): der Difficulty-Router laedt das Qwen3-Modell
+    # beim ERSTEN classify lazy (~148s) — das verzoegerte den ersten echten Request
+    # massiv. Hier im Hintergrund-Thread vorwaermen, damit das Modell bereit ist,
+    # bevor der erste Intent kommt. Best-effort, blockiert den Start nicht.
+    try:
+        import threading as _thr
+        def _warm_embedder():
+            try:
+                from core.difficulty_router import get_router
+                get_router().classify("warmup")   # zieht Embedder.get() + encode einmal
+                print("  [OK] Difficulty-Embedder vorgewaermt (Qwen geladen)")
+            except Exception as _e:  # noqa: BLE001
+                print(f"  [--] Embedder-Warmup uebersprungen: {_e}")
+            # ToolScope (plans/dynamic-agent-tools-prompt.md): die 328-Tool-Matrix EINMALIG
+            # hier vorberechnen — encode_batch(328) kostet auf CPU ~17 MIN und DARF NIE im
+            # Request laufen (sonst Hang/Container-Kill, root-caused 2026-06-18). Nur wenn
+            # DYNAMIC_TOOL_SCOPE an ist (sonst sinnlose 17 min). Embedder ist jetzt warm.
+            if os.environ.get("DYNAMIC_TOOL_SCOPE", "0") not in ("0", "false", "False"):
+                try:
+                    import time as _t
+                    from core.tool_scope_selector import get_selector
+                    _t0 = _t.time()
+                    get_selector()._tool_matrix()   # fuellt den (one-shot-TTL) Cache
+                    print(f"  [OK] ToolScope-Matrix vorgewaermt ({_t.time() - _t0:.0f}s, 328 Tools)")
+                except Exception as _e:  # noqa: BLE001
+                    print(f"  [--] ToolScope-Vorwaermung uebersprungen: {_e}")
+        _thr.Thread(target=_warm_embedder, daemon=True, name="EmbedderWarmup").start()
+    except Exception:  # noqa: BLE001
+        pass
 
     yield  # ---- app is running ----
 
@@ -1356,6 +1566,11 @@ async def _lifespan(app: FastAPI):
     if consolidator:
         consolidator.stop()
         print("  [OK] Memory persisted to disk on shutdown")
+
+    diary_drain = getattr(app.state, 'diary_drain', None)
+    if diary_drain:
+        diary_drain.stop()
+        print("  [OK] DiaryDrain stopped on shutdown")
 
     # Persist EventRoutingHead centroids so learning survives restart
     event_head = getattr(app.state, 'event_routing_head', None)
@@ -1429,6 +1644,13 @@ def create_app(testing: bool = False) -> FastAPI:
             "timestamp": time.time(),
             "uptime": time.time() - _BOOT_TIME,
         })
+
+    @app.get("/api/research/health")
+    async def research_health():
+        from spaces.research.execution_target import ResearchTarget
+
+        report = ResearchTarget("research:web").health_check()
+        return JSONResponse(report, status_code=200 if report["ok"] else 503)
 
     @app.get("/", response_class=HTMLResponse)
     async def root(request: Request):

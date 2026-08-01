@@ -24,7 +24,12 @@ def load_env_file(env_path='.env'):
         print(f"Warning: {env_path} not found")
         return
 
-    with open(env_file, 'r') as f:
+    # .env files are UTF-8 (may contain non-ASCII in values). Without an
+    # explicit encoding Python uses the platform default (cp1252 on Windows)
+    # and a UTF-8 multibyte char raises UnicodeDecodeError — which previously
+    # broke config.get_secret()'s .env layer on Windows. errors='replace'
+    # makes a malformed line degrade gracefully instead of killing boot.
+    with open(env_file, 'r', encoding='utf-8', errors='replace') as f:
         for line in f:
             line = line.strip()
 

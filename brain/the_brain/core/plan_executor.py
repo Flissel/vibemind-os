@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple
 
 from .plan_schema import (
-    HopResult, HopSpec, Plan,
+    HopResult, HopSpec, Plan, contract_pass_from,
     ON_FAIL_ABORT, ON_FAIL_CONTINUE, ON_FAIL_REPLAN,
 )
 
@@ -49,6 +49,10 @@ logger = logging.getLogger(__name__)
 _TEMPLATE_RE = re.compile(r"\{\{\s*state\.([a-zA-Z_][\w.\[\]]*?)\s*\}\}")
 _MAX_REPLANS = int(os.environ.get("PLAN_MAX_REPLANS", "1"))
 _MAX_PARALLEL = int(os.environ.get("PLAN_MAX_PARALLEL", "4"))
+# A failing diary enqueue means a permanently lost episode, so it must be
+# loud — but a queue that is broken is broken for EVERY plan, so logging each
+# one would be a log bomb. First failure + every Nth after it.
+_DIARY_FAIL_LOG_EVERY = 50
 
 
 # ── Plan recording (Phase 6.12) ──────────────────────────────────────
@@ -64,6 +68,10 @@ class PlanRecorder:
         self.path = Path(path)
         self._recent: Deque[Dict[str, Any]] = deque(maxlen=max_in_memory)
         self._by_id: Dict[str, Dict[str, Any]] = {}
+        # E2E-Trace (2026-06-09): trace_id-Index (Spiegel zu _by_id), damit auch
+        # plan-lose Zweige (SoM/som-team/meta/easy/no-plan) per trace_id auffindbar
+        # sind. GET /api/trace/{id} liest hier.
+        self._by_trace: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.RLock()
         self._load()
 
@@ -74,9 +82,12 @@ class PlanRecorder:
                     for line in f.readlines()[-100:]:
                         try:
                             d = json.loads(line)
-                            if d.get("plan_id"):
+                            if d.get("plan_id") or d.get("trace_id"):
                                 self._recent.append(d)
-                                self._by_id[d["plan_id"]] = d
+                                if d.get("plan_id"):
+                                    self._by_id[d["plan_id"]] = d
+                                if d.get("trace_id"):
+                                    self._by_trace[d["trace_id"]] = d
                         except Exception:
                             continue
         except Exception as e:
@@ -87,12 +98,33 @@ class PlanRecorder:
             self._recent.append(snapshot)
             if snapshot.get("plan_id"):
                 self._by_id[snapshot["plan_id"]] = snapshot
+            if snapshot.get("trace_id"):
+                self._by_trace[snapshot["trace_id"]] = snapshot
             try:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 with self.path.open("a", encoding="utf-8") as f:
                     f.write(json.dumps(snapshot, ensure_ascii=False, default=str) + "\n")
             except Exception as e:
                 logger.debug(f"[plan-recorder] persist failed: {e}")
+            # 2026-05-19 — Approach B routing-matrix auto-train. Fire-and-
+            # forget: feeds ONLY trustworthy shortcut+ok decisions to the
+            # :5001 ProductionPlanner so the matrix learns organically from
+            # live routing without cementing LLM-planner mistakes. Fully
+            # best-effort — import + call are guarded so a missing/broken
+            # hook can never disturb plan execution.
+            try:
+                from core.routing_matrix_autotrain import maybe_autotrain
+                maybe_autotrain(snapshot)
+            except Exception as e:
+                logger.debug(f"[plan-recorder] autotrain skipped: {e}")
+            # Baustein A — learn agent SEQUENCES per intent. Fire-and-forget;
+            # no-op unless SEQUENCE_LEARNER_ENABLED. Uses ok=True (= verified
+            # with Baustein D) as the success signal.
+            try:
+                from core.sequence_learner import maybe_observe
+                maybe_observe(snapshot)
+            except Exception as e:
+                logger.debug(f"[plan-recorder] seq-learn skipped: {e}")
 
     def list(self, *, limit: int = 20) -> List[Dict[str, Any]]:
         with self._lock:
@@ -113,6 +145,62 @@ class PlanRecorder:
         with self._lock:
             return self._by_id.get(plan_id)
 
+    # ── E2E-Trace (2026-06-09) ────────────────────────────────────────────────
+    def get_by_trace(self, trace_id: str) -> Optional[Dict[str, Any]]:
+        """Volle Trace-Kette per trace_id (eingabe->...->ausgabe). Fuer
+        GET /api/trace/{trace_id}."""
+        with self._lock:
+            return self._by_trace.get(trace_id)
+
+    def attach_final(self, plan_id: str, text: str) -> None:
+        """Haengt die AUSGABE (synthesis final_text) an einen schon recordeten
+        Plan — bisher wurde final_text nie gespeichert. Patcht den in-memory-
+        Snapshot + persistiert eine Patch-Zeile (best-effort)."""
+        with self._lock:
+            snap = self._by_id.get(plan_id)
+            if snap is None:
+                return
+            snap["final_text"] = text
+            try:
+                with self.path.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps({"_patch": "final_text", "plan_id": plan_id,
+                                        "trace_id": snap.get("trace_id"), "final_text": text},
+                                       ensure_ascii=False, default=str) + "\n")
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[plan-recorder] attach_final persist failed: {e}")
+
+    def record_lite(self, trace_id: str, intent: str, routed_via: str,
+                    final_text: str = "") -> None:
+        """Mini-Snapshot fuer plan-lose Zweige (SoM/som-team/meta/easy/no-plan),
+        damit auch sie im Trace auftauchen (trace_id + routed_via + Ausgabe).
+        Per-Schritt-stages der SoM-Worker werden via append_stage gemerged."""
+        import time as _t
+        snap = {"trace_id": trace_id, "intent": (intent or "")[:500],
+                "routed_via": routed_via, "final_text": final_text,
+                "ts": _t.time(), "stages": [
+                    {"stage": "eingabe", "component": "multihop_execute",
+                     "ts": _t.time(), "outcome": "received"},
+                    {"stage": "route", "component": "difficulty_router",
+                     "ts": _t.time(), "outcome": routed_via},
+                ], "ok": True}
+        self.record(snap)
+
+    def append_stage(self, trace_id: str, stage: str, component: str,
+                     outcome: str = "") -> None:
+        """Haengt ein Stage-Event an den Trace (von SoM-Workern via
+        POST /api/trace/{id}/stage + intern). Legt einen leeren Trace an, falls
+        die trace_id noch unbekannt ist (Race: Worker pusht vor record_lite)."""
+        import time as _t
+        with self._lock:
+            snap = self._by_trace.get(trace_id)
+            if snap is None:
+                snap = {"trace_id": trace_id, "intent": "", "routed_via": "",
+                        "stages": [], "ts": _t.time(), "ok": True}
+                self._by_trace[trace_id] = snap
+                self._recent.append(snap)
+            snap.setdefault("stages", []).append(
+                {"stage": stage, "component": component, "ts": _t.time(), "outcome": outcome})
+
 
 # ── Plan executor ─────────────────────────────────────────────────────
 
@@ -130,6 +218,14 @@ class PlanExecutor:
         self.validator = validator
         self.dispatcher = dispatcher
         self.kg = kg                               # for KG-hit capture per hop
+        # Baustein D.2 — execution-log (RAG index over the trace). Lazy; no-op
+        # unless EXECUTION_LOG_ENABLED + a KG is present.
+        self._exec_log = None
+        try:
+            from core.execution_log import ExecutionLog
+            self._exec_log = ExecutionLog(kg)
+        except Exception:
+            self._exec_log = None
         self.recorder = recorder or PlanRecorder()
         self._subscribers: "weakref.WeakSet[asyncio.Queue]" = weakref.WeakSet()
         self._publish_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -168,6 +264,12 @@ class PlanExecutor:
             "rejected_busy": 0,
             "kg_settles": 0,
             "episodic_writes": 0,
+            # Phase 1 diary queue. The queue is the ONLY path an executed plan
+            # has to persistent memory, so a dropped enqueue is a permanently
+            # lost episode. enqueue_plan never raises and only logs, which
+            # makes "1 lost" and "10.000 lost" look identical — count them.
+            "diary_enqueued": 0,
+            "diary_enqueue_failures": 0,
         }
 
     # ── Pub/Sub for SSE (Phase 6.11) ───────────────────────────────
@@ -443,6 +545,16 @@ class PlanExecutor:
         except Exception:
             pass
 
+    @staticmethod
+    def _tappend(plan, stage: str, component: str, outcome: str = "") -> None:
+        """E2E-Trace: ein Stage-Event an plan._stages haengen (landet im Recorder-
+        Snapshot). NUR Liste-Append, KEIN I/O, try/except — kein Hot-Path-Risiko."""
+        try:
+            plan._stages.append({"stage": stage, "component": component,
+                                 "ts": time.time(), "outcome": outcome})
+        except Exception:  # noqa: BLE001
+            pass
+
     def _publish(self, kind: str, payload: Dict[str, Any]) -> None:
         if not self._subscribers:
             return
@@ -479,9 +591,13 @@ class PlanExecutor:
         plan: Plan,
         *,
         replanner: Optional[Callable[[Plan, HopResult], Optional[Plan]]] = None,
+        confirmed_events: Optional[Set[str]] = None,
     ) -> Dict[str, Any]:
         """Walk the DAG. Returns a dict with `executed` (step_id → HopResult),
         `state`, `plan`, `ok`, `elapsed_s`, `replans`.
+
+        Desktop-family events listed as mutating in the canonical space registry
+        run only when their exact event id is present in ``confirmed_events``.
 
         Phase 6.14.1 — single-plan-at-a-time: parallel callers get a
         `busy` envelope back instead of stomping on shared state.
@@ -536,6 +652,7 @@ class PlanExecutor:
             de = None  # broken engine — proceed without pause
 
         self._publish("plan_started", plan.to_dict())
+        self._tappend(plan, "execution", "plan-executor", f"started {len(plan.hops)} hops")
 
         # ── Phase 10 — Self-Reflective pre-execution context ─────────
         # Fire decision-recall + self-prior + critic. All best-effort:
@@ -583,6 +700,8 @@ class PlanExecutor:
             "plan_intent": plan.intent or "",
             "plan_rationale": getattr(plan, "rationale", "") or "",
             "plan_id": plan.plan_id,
+            "trace_id": getattr(plan, "trace_id", "") or "",
+            "confirmed_events": set(confirmed_events or ()),
         }
 
         executed: Dict[str, HopResult] = {}
@@ -615,6 +734,7 @@ class PlanExecutor:
                             error=f"dependency failed: {failed_deps}",
                             capability=h.capability,
                             target=h.execution_target,
+                            contract_pass=False, reward=-1.0,
                         )
                         executed[h.step_id] = skipped
                         with self._lock:
@@ -665,6 +785,41 @@ class PlanExecutor:
                 if not still_ready:
                     continue
 
+                # Baustein B — pre-execution contract gate. A hop with a
+                # `start_when` contract is only allowed to run once its
+                # conditions hold against executed-state. Fail-open: no-op unless
+                # CONTRACT_ENFORCEMENT_ENABLED. Blocked hops become an explicit
+                # failed result (never a silent hang).
+                try:
+                    from core.contract_gate import (
+                        check_start_when, CONTRACT_ENFORCEMENT_ENABLED,
+                    )
+                    if CONTRACT_ENFORCEMENT_ENABLED:
+                        allowed_ready = []
+                        for h in still_ready:
+                            dec = check_start_when(h, executed)
+                            if dec.allowed:
+                                allowed_ready.append(h)
+                            else:
+                                blocked = HopResult(
+                                    step_id=h.step_id, ok=False,
+                                    error=f"contract blocked: {dec.reason}",
+                                    capability=h.capability,
+                                    target=h.execution_target,
+                                    contract_pass=False, reward=-1.0,
+                                )
+                                executed[h.step_id] = blocked
+                                with self._lock:
+                                    self.stats["hops_executed"] += 1
+                                    self.stats.setdefault("contract_blocks", 0)
+                                    self.stats["contract_blocks"] += 1
+                                self._publish("hop_completed", _hop_event(h, blocked))
+                        still_ready = allowed_ready
+                        if not still_ready:
+                            continue
+                except Exception as _ce:
+                    logger.debug(f"[plan-executor] contract gate skipped: {_ce}")
+
                 # Run ready batch in parallel
                 with ThreadPoolExecutor(max_workers=_MAX_PARALLEL) as pool:
                     futures: Dict[Future, HopSpec] = {
@@ -681,6 +836,7 @@ class PlanExecutor:
                                 step_id=h.step_id, ok=False,
                                 error=f"executor crash: {type(e).__name__}: {e}",
                                 capability=h.capability, target=h.execution_target,
+                                contract_pass=False, reward=-1.0,
                             )
                         executed[h.step_id] = hr
                         with self._lock:
@@ -747,6 +903,10 @@ class PlanExecutor:
                                     f"[plan-executor] sub-hop aggregation failed: {_agg_err}"
                                 )
                         self._publish("hop_completed", _hop_event(h, hr))
+                        self._tappend(plan, "execution",
+                                     f"hop:{getattr(h,'capability','?')}",
+                                     ("ok" if getattr(hr, "ok", False) else "fail")
+                                     + f" ({getattr(h,'execution_target',None) or getattr(h,'capability','?')})")
 
                         # Replan trigger
                         if (
@@ -790,6 +950,8 @@ class PlanExecutor:
                 "elapsed_s": result["elapsed_s"],
                 "hop_count": len(executed),
             })
+            self._tappend(plan, "execution", "plan-executor",
+                         f"completed ok={ok} in {result['elapsed_s']}s")
 
             # Phase 8.B — sync to Neo4j decision graph
             dg = getattr(self, "_decision_graph", None)
@@ -878,6 +1040,19 @@ class PlanExecutor:
                     })
                 except Exception:
                     pass
+            # Baustein D.2 — plan-level trace stage (finish | plan_aborted).
+            try:
+                if self._exec_log is not None and self._exec_log.enabled:
+                    self._exec_log.record_step(
+                        plan_id=plan.plan_id, hop_k=None,
+                        intent=plan.intent or "",
+                        stage=("finish" if ok else "plan_aborted"),
+                        source="executor", claimed_ok=ok, verified=None,
+                        reason=f"{len(executed)} hops, {result.get('replans', 0)} replans",
+                        trace_id=getattr(plan, "trace_id", "") or "",
+                    )
+            except Exception:
+                pass
             return result
 
         finally:
@@ -896,6 +1071,11 @@ class PlanExecutor:
                     "ok": all(hr.ok for hr in executed.values()) if executed else False,
                     "elapsed_s": round(elapsed_total, 2),
                     "replans": replan_count,
+                    # E2E-Trace (2026-06-09): trace_id + per-stage events in den
+                    # persistenten Snapshot, damit GET /api/trace/{id} die Kette zeigt.
+                    "trace_id": getattr(plan, "trace_id", ""),
+                    "routed_via": "plan-executor",
+                    "stages": list(getattr(plan, "_stages", [])),
                 }
                 self.recorder.record(snapshot)
             except Exception as e:
@@ -908,6 +1088,56 @@ class PlanExecutor:
                     self._episodic_write(snapshot)
                 except Exception as e:
                     logger.debug(f"[plan-executor] episodic write failed: {e}")
+
+            # Phase 1 — episodisches Tagebuch: EINE Zeile pro Plan in die
+            # geteilte Queue. NICHT direkt ins dual_graph: der HTTP-Prozess
+            # (brain-core) hat N uvicorn-Worker und startet den
+            # MemoryConsolidator nicht (BRAIN_BACKGROUND_LOOPS=0) — solche
+            # Writes sind fluechtig und pro Worker verschieden. Der Drain im
+            # Loop-Prozess (core/multihop_diary_drain.py) ist der einzige
+            # Schreiber ins dual_graph, das persistiert wird.
+            # enqueue_plan wirft nie.
+            try:
+                from core.multihop_kotlin_adapter import (
+                    enqueue_plan, ingest_enabled,
+                )
+                if executed:
+                    _tc = ""
+                    if os.environ.get("TASK_CLASS_CLUSTERING", "0") in ("1", "true", "True"):
+                        try:
+                            from core.task_class_clusterer import TaskClassClusterer
+                            _tc = TaskClassClusterer().cluster_id(plan.intent or "")
+                        except Exception:
+                            _tc = ""
+                    _queued = enqueue_plan(
+                        plan, executed,
+                        trace_id=getattr(plan, "trace_id", "") or "",
+                        task_class_id=_tc,
+                    )
+                    # A False here is only a FAILURE if we actually expected a
+                    # write: `executed` is non-empty (checked above) and the
+                    # ingest flag is on. A False from a flag-off ingest is a
+                    # deliberate no-op, not a lost episode — do not count it.
+                    if _queued:
+                        with self._lock:
+                            self.stats["diary_enqueued"] += 1
+                    elif ingest_enabled():
+                        with self._lock:
+                            self.stats["diary_enqueue_failures"] += 1
+                            _fails = self.stats["diary_enqueue_failures"]
+                        # Loud on the FIRST failure (a broken queue = every
+                        # future episode is lost, that must not hide in debug
+                        # logs), then only every 50th — a persistent failure
+                        # should be visible, not a log bomb.
+                        if _fails == 1 or _fails % _DIARY_FAIL_LOG_EVERY == 0:
+                            logger.warning(
+                                "[plan-executor] diary enqueue FAILED for plan "
+                                "%s — the episode is lost (the queue is the only "
+                                "path to persistent memory). Running failures: %d",
+                                plan.plan_id, _fails,
+                            )
+            except Exception as e:
+                logger.debug(f"[plan-executor] diary enqueue skipped: {e}")
 
             # Phase 11.U.A — drop from active-plans dict, then resume
             # discourse only if this was the LAST plan running.
@@ -981,13 +1211,32 @@ class PlanExecutor:
                     if not hop.validator and detail.get("validator"):
                         hop.validator = detail.get("validator")
             except Exception as e:
+                # Phase 1 — hard failure: gate False (see contract_pass_from)
                 return HopResult(
                     step_id=hop.step_id, ok=False,
                     error=f"capability lookup: {type(e).__name__}: {e}",
                     capability=hop.capability, target=None,
                     rendered_arg=rendered_arg, kg_hits=kg_hits,
                     elapsed_s=time.time() - t0,
+                    contract_pass=False, reward=-1.0,
                 )
+
+        # Canonical n8n events are declared in config/space_agent_registry.yml.
+        # Resolve them without duplicating the registry's MCP tool names.
+        if not target and hop.capability:
+            try:
+                from .capability_targets import resolve_registry_execution_target
+                target = resolve_registry_execution_target(hop.capability)
+            except Exception as e:
+                if str(hop.capability).startswith("n8n."):
+                    return HopResult(
+                        step_id=hop.step_id, ok=False,
+                        error=f"n8n registry lookup: {type(e).__name__}: {e}",
+                        capability=hop.capability, target=None,
+                        rendered_arg=rendered_arg, kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False, reward=-1.0,
+                    )
 
         # Phase 11.B — if registry maps this capability/event to an OpenFang agent,
         # build a vibemind.intent.v1 envelope and route through that agent
@@ -1010,8 +1259,38 @@ class PlanExecutor:
                 "idea_update": "idea.update",
                 "idea_expand": "idea.expand",
                 "idea_connect": "idea.connect",
+                "idea_to_project": "idea.to_project",
+                "code_generate": "code.generate",
+                "code_modify": "code.modify",
+                "code_status": "code.status",
+                "code_show": "code.show",
+                "code_preview_start": "code.preview.start",
+                "code_preview_stop": "code.preview.stop",
+                "code_list": "code.list",
+                "code_cancel": "code.cancel",
             }
             event_id = cap_to_event.get(hop.capability or "", hop.capability or "")
+            desktop_route = None
+            if hop.capability in ("desktop_skill", "browser_automation"):
+                from .desktop_orchestration import DesktopOrchestration
+                desktop_route = DesktopOrchestration.from_repository().resolve_capability(
+                    hop.capability or "", plan_ctx.get("plan_intent", "") or hop.description
+                )
+                event_id = desktop_route.event_id
+                confirmed = event_id in plan_ctx.get("confirmed_events", set())
+                if desktop_route.requires_confirmation and not confirmed:
+                    return HopResult(
+                        step_id=hop.step_id,
+                        ok=False,
+                        error=f"confirmation required for mutating desktop event '{event_id}'",
+                        capability=hop.capability,
+                        target=target,
+                        rendered_arg=rendered_arg,
+                        kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False,
+                        reward=-1.0,
+                    )
             if "." not in event_id:
                 # If the capability already has a namespace.action pattern
                 # in some other form, leave as-is; otherwise it won't match
@@ -1019,7 +1298,13 @@ class PlanExecutor:
                 pass
             assigned_agent = _registry.get_event_agent(event_id) if event_id else None
 
-            if assigned_agent and target and not target.startswith("openfang:"):
+            # Minibook targets return a structured, redacted truth envelope from
+            # the external service. Re-routing them through an LLM agent would
+            # discard that contract and could turn prose into apparent success.
+            preserve_structured_target = event_id.startswith("minibook.")
+            if (assigned_agent and target
+                    and not target.startswith(("openfang:", "n8n-mcp:", "coding-engine:"))
+                    and not preserve_structured_target):
                 # Probe: is the agent reachable in OpenFang? If not, skip
                 # Phase 11.B routing and fall through to the direct target.
                 _agent_known = False
@@ -1074,12 +1359,38 @@ class PlanExecutor:
             logger.debug(f"[plan-executor] Phase 11.B routing skipped: {e}")
 
         if not target:
+            # L4 — GapSentinel (the REAL multihop NO_TOOL point). A hop whose capability
+            # resolves to NO execution_target = the brain has no tool to run it (the
+            # planner referenced an unknown/unresolvable capability). This is the multihop
+            # analog of the discourse route()->None signal, grounded in execution (not the
+            # answer text). Flag-gated (CAPABILITY_GAP_ENABLED); fire-and-forget daemon
+            # dispatch to the gap-filer agent (files ONE issue per capability, dedup'd).
+            try:
+                from core import capability_gap as _gap
+                if _gap.ENABLED:
+                    import threading
+                    _pc = plan_ctx or {}
+                    _g = _gap.make_gap(
+                        _gap.NO_TOOL,
+                        missing_capability=hop.capability or hop.description,
+                        intent=hop.description,
+                        failure_patterns=[f"no execution target for capability '{hop.capability}'"],
+                        evidence=f"trace_id={_pc.get('trace_id', '') or ''}",
+                    )
+                    threading.Thread(
+                        target=_gap.handle, args=(_g,),
+                        kwargs=dict(live=False, dispatcher=_gap.default_dispatcher),
+                        daemon=True,
+                    ).start()
+            except Exception:
+                pass  # never let L4 break execution
             return HopResult(
                 step_id=hop.step_id, ok=False,
                 error=f"no execution target for capability '{hop.capability}'",
                 capability=hop.capability, target=None,
                 rendered_arg=rendered_arg, kg_hits=kg_hits,
                 elapsed_s=time.time() - t0,
+                contract_pass=False, reward=-1.0,
             )
 
         # Build the right executor for the target prefix (Phase 4)
@@ -1093,6 +1404,7 @@ class PlanExecutor:
                 capability=hop.capability, target=target,
                 rendered_arg=rendered_arg, kg_hits=kg_hits,
                 elapsed_s=time.time() - t0,
+                contract_pass=False, reward=-1.0,
             )
 
         # Call with retry support
@@ -1105,7 +1417,32 @@ class PlanExecutor:
             "_intent": plan_ctx.get("plan_intent", "") or "",
             "_description": hop.description or "",
             "_step_id": hop.step_id or "",
+            # Phase 11.U.H — supabase: idea.format / idea.llm serve 15 / 6
+            # capability variants from one op; they read _capability to
+            # pick the right one (idea_format_mindmap vs _swot, etc).
+            "_capability": getattr(hop, "capability", "") or "",
         }
+        # Dynamic tool scope (plans/dynamic-agent-tools-prompt.md, Phase 2):
+        # Fuer openfang:-Agenten (skill-coordinator/desktop/openclaude/...) waehlt
+        # der ToolScopeSelector pro Intent SEMANTISCH die relevanten Tools + baut
+        # einen Prompt-Focus, den OpenFangExecutor als message-Praefix setzt
+        # (lenkt das Agent-LLM weg vom 71-Tool-Loop). Default-off via
+        # DYNAMIC_TOOL_SCOPE; graceful — bei jedem Fehler bleibt _extra unveraendert
+        # (= heutiges Verhalten). _tool_allowlist wird mitgegeben fuer den spaeteren
+        # per-Request-Rust-Filter; heute wirkt nur _system_prompt_focus.
+        if (os.environ.get("DYNAMIC_TOOL_SCOPE", "0") not in ("0", "false", "False")
+                and isinstance(target, str) and target.startswith("openfang:")):
+            try:
+                from .tool_scope_selector import get_selector
+                _agent = target.split(":", 1)[1].strip()
+                _allow, _focus = get_selector().select_tools(
+                    _extra["_intent"] or rendered_arg or "", agent_name=_agent)
+                if _focus:
+                    _extra["_system_prompt_focus"] = _focus
+                if _allow:
+                    _extra["_tool_allowlist"] = _allow
+            except Exception as e:  # noqa: BLE001 — nie den Hop daran scheitern lassen
+                logger.warning(f"[plan_exec] tool-scope skipped ({e})")
         for attempt in range(max(1, hop.retries)):
             try:
                 if hop.arg_kwarg:
@@ -1156,6 +1493,46 @@ class PlanExecutor:
                 logger.warning(f"[plan-executor] validator threw: {e}")
                 verdict = {"valid": False, "reason": f"validator error: {e}"}
 
+        # Baustein D.1 — ground-truth → thought-stream. If the validator ran a
+        # `truth:` check, push the WORLD-observed verdict (not the claim) back
+        # into the thinking loop as an event, so reflections are grounded in
+        # what actually happened. Best-effort; never affects execution.
+        if verdict is not None and ("verified" in verdict):
+            v = verdict.get("verified")
+            try:
+                cte = getattr(self, "_continuous_thinking", None)
+                if cte is not None:
+                    kind = ("action_verified" if v is True
+                            else "action_unverified" if v is None
+                            else "action_refuted")
+                    cte.record_event(kind, {
+                        "intent": hop.description,
+                        "capability": hop.capability,
+                        "claimed_ok": bool(ok),
+                        "verified": v,
+                        "signal": verdict.get("verify_signal") or {},
+                        "reason": verdict.get("reason", ""),
+                    })
+            except Exception:
+                pass
+            # Baustein D.2 — mirror the verified step into the execution-log
+            # collection (claimed-vs-verified diff is queryable via RAG).
+            try:
+                if self._exec_log is not None and self._exec_log.enabled:
+                    pc = plan_ctx or {}
+                    self._exec_log.record_step(
+                        plan_id=pc.get("plan_id", "") or "",
+                        hop_k=getattr(hop, "step_id", None),
+                        intent=hop.description, stage="verify",
+                        capability=hop.capability, source="validator",
+                        claimed_ok=bool(ok), verified=v,
+                        verify_signal=verdict.get("verify_signal") or {},
+                        reason=verdict.get("reason", ""),
+                        trace_id=pc.get("trace_id", "") or "",
+                    )
+            except Exception:
+                pass
+
         # Phase 6.13 — Optional TriBE bio-grounding. Off by default; opt
         # in via MULTIHOP_TRIBE_GROUNDING=1. Captures Brain's 8 bridge
         # activations (cortex/limbic/defense/motor/visceral/social/
@@ -1172,12 +1549,91 @@ class PlanExecutor:
             with self._lock:
                 self.stats["kg_settles"] += 1
 
+        # Baustein D.2 — trace stage `hop_failed`. Capture every failed hop with
+        # its error + source so failures (esp. planner-team) are RAG-queryable.
+        if not ok:
+            try:
+                if self._exec_log is not None and self._exec_log.enabled:
+                    pc = plan_ctx or {}
+                    src = "planner" if "plan" in (hop.capability or "").lower() else "executor"
+                    self._exec_log.record_step(
+                        plan_id=pc.get("plan_id", "") or "",
+                        hop_k=getattr(hop, "step_id", None),
+                        intent=hop.description, stage="hop_failed",
+                        capability=hop.capability, source=src,
+                        claimed_ok=False, verified=None,
+                        reason=str(err or "hop failed")[:400],
+                        trace_id=pc.get("trace_id", "") or "",
+                    )
+            except Exception:
+                pass
+
+        # C2 — Timeout-Sentinel: a timed-out hop -> ONE GitHub issue per capability.
+        # Flag-gated (CAPABILITY_TIMEOUT_ISSUE_ENABLED); fire-and-forget in a daemon
+        # thread so the gh-subprocess filing never blocks plan execution. Filing is
+        # OpenFang-free on purpose (a timeout is often OpenFang itself being down).
+        if not ok:
+            try:
+                from core.timeout_sentinel import (
+                    ENABLED as _TO_ENABLED, is_timeout as _is_to,
+                    on_hop_timeout as _on_to,
+                )
+                if _TO_ENABLED and _is_to(err):
+                    import threading
+                    _pc = plan_ctx or {}
+                    threading.Thread(
+                        target=_on_to,
+                        args=(hop.capability or "",),
+                        kwargs=dict(
+                            intent=hop.description, target=target,
+                            trace_id=_pc.get("trace_id", "") or "",
+                            elapsed_s=round(time.time() - t0, 2),
+                            error=str(err or ""),
+                        ),
+                        daemon=True,
+                    ).start()
+            except Exception:
+                pass  # never let C2 break execution
+
+        # L4 — GapSentinel in the REAL execution path. The multihop planner is a
+        # catch-all (it always plans *something*), so the clean NO_TOOL signal is not
+        # route()->None but an EXECUTION failure that proves no tool exists: a hop that
+        # fails because the capability/agent is genuinely unresolvable (planner
+        # hallucinated a cap, no executor) — NOT a transient outage (C2 owns timeouts;
+        # is_no_tool_error filters OpenFang-down/connection). Grounded in the failed
+        # hop (D's verdict), never the answer text. Flag-gated (CAPABILITY_GAP_ENABLED),
+        # fire-and-forget daemon dispatch to the gap-filer (files ONE issue, dedup'd).
+        if not ok:
+            try:
+                from core import capability_gap as _gap
+                if _gap.ENABLED and _gap.is_no_tool_error(err):
+                    import threading
+                    _pc = plan_ctx or {}
+                    _g = _gap.make_gap(
+                        _gap.NO_TOOL,
+                        missing_capability=hop.capability or hop.description,
+                        intent=hop.description,
+                        failure_patterns=[str(err or "")[:200]],
+                        evidence=f"trace_id={_pc.get('trace_id', '') or ''}",
+                    )
+                    threading.Thread(
+                        target=_gap.handle, args=(_g,),
+                        kwargs=dict(live=False, dispatcher=_gap.default_dispatcher),
+                        daemon=True,
+                    ).start()
+            except Exception:
+                pass  # never let L4 break execution
+
         # Phase 7.3 — record provider outcome for adaptive routing
         try:
             self.record_provider_outcome(hop.capability, target, ok)
         except Exception:
             pass
 
+        # Phase 1 — gate-derived learning signal (outcome-gate semantics — UNVERIFIED
+        # never trains positive). contract_pass mirrors the truth-validator verdict
+        # when one ran; ok=False always fails the contract regardless of a validator.
+        _cp = contract_pass_from(ok, verdict)
         return HopResult(
             step_id=hop.step_id, ok=ok, result=result_payload, error=err,
             elapsed_s=round(time.time() - t0, 2),
@@ -1187,6 +1643,8 @@ class PlanExecutor:
             retried=max(0, attempt),
             bridges=bridges,
             tool_calls=captured_tool_calls,
+            contract_pass=_cp,
+            reward=(1.0 if _cp is True else (-1.0 if _cp is False else 0.0)),
         )
 
     def _maybe_tribe_bridges(

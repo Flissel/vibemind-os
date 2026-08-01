@@ -98,7 +98,7 @@ def _skip_reason(space: str, spec: dict) -> str | None:
     if not spec.get("enabled", True):
         return "disabled"
     # Don't overwrite pre-existing hand-curated agents
-    for protected in ("brain-coder", "rowboat-knowledge", "brain-fallback"):
+    for protected in ("brain-coder", "rowboat-chat", "brain-fallback"):
         if agent == protected:
             return f"protected (pre-existing): {agent}"
     return None

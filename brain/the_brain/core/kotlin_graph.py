@@ -14,11 +14,58 @@ Removed torch dependency entirely.
 """
 
 import json
+import os
+import threading
+import time
+
 import networkx as nx
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass, field
 from datetime import datetime
+
+
+def atomic_write_json(filepath: str, data: Any, **dump_kwargs: Any) -> None:
+    """Write `data` as JSON to `filepath` CRASH-SAFELY.
+
+    A plain `open(filepath, 'w')` TRUNCATES the destination before the first
+    byte is written, so a crash/kill mid-save leaves a fragment — for the
+    episodic diary that means the WHOLE memory file is destroyed, not one
+    episode. Here the bytes go to a temp file, are fsync'd (really on disk),
+    and only then atomically renamed over the destination. The destination is
+    therefore always either the old complete file or the new complete file.
+
+    The temp name is UNIQUE PER WRITER (pid + thread id): MemoryConsolidator
+    and the diary drain save the same graph from different threads, and a
+    shared "<dest>.tmp" would let one rename the other's half-written bytes
+    onto the destination — reintroducing the very corruption we remove.
+    """
+    tmp = f"{filepath}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, **dump_kwargs)
+            f.flush()
+            os.fsync(f.fileno())      # durable BEFORE the rename
+        # os.replace is atomic on POSIX and Windows. On WINDOWS only, it
+        # fails with PermissionError if a reader currently holds the
+        # destination open (POSIX readers just keep the old inode). That is a
+        # transient sharing violation, not corruption — retry briefly.
+        for attempt in range(5):
+            try:
+                os.replace(tmp, filepath)
+                return
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.05)
+    except BaseException:
+        # Failed write -> drop the half-built tmp. The destination is
+        # untouched and still holds the last complete save.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 @dataclass
@@ -76,6 +123,11 @@ class KotlinGraph:
     """
 
     def __init__(self):
+        # KG-C2 (Phase 0): add_event is called from parallel _exec_hop worker
+        # threads (plan_executor ThreadPoolExecutor). ID allocation, graph
+        # mutation and the done=True episode close must be ONE critical
+        # section — RLock (re-entrant) like plan_executor's own locks.
+        self._lock = threading.RLock()
         self.graph = nx.MultiDiGraph()  # Multi-graph allows duplicate edges
 
         # Event log (chronological)
@@ -127,90 +179,125 @@ class KotlinGraph:
 
         Returns:
             event_id: Sequential ID of the added event.
+
+        Caller contract for `done` on TASK episodes (KG-C3, Phase 0):
+            done=True closes the episode and MUST only be passed when ALL
+            three hold — use `KotlinGraph.is_episode_done(...)` to decide:
+              (1) this is the LAST hop of the plan,
+              (2) if a truth-validator ran, it PASSED
+                  (verdict `verified is True`; no validator = vacuously
+                  satisfied; `verified is None` = NOT passed), and
+              (3) ZERO further hops are pending/queued.
+            KuroGraph mines success-patterns per episode — a wrong done
+            boundary poisons every pattern that touches the episode.
         """
-        event_id = len(self.events)
-        event = BrainEvent(
-            event_id=event_id,
-            timestamp=datetime.now().isoformat(),
-            state=state,
-            action=action,
-            next_state=next_state,
-            reward=reward,
-            done=done,
-            value=value,
-            policy_entropy=policy_entropy,
-            consciousness=consciousness,
-            dmn_energy=dmn_energy,
-            episode_id=self.current_episode_id,
-            step_in_episode=len(self.episodes.get(self.current_episode_id, [])),
-            metadata=metadata or {},
-        )
-
-        self.events.append(event)
-
-        # Add states as graph nodes if new
-        s_hash = event.state_hash()
-        ns_hash = event.next_state_hash()
-
-        if s_hash not in self.state_index:
-            node_id = self.next_node_id
-            self.next_node_id += 1
-            self.state_index[s_hash] = node_id
-            self.graph.add_node(
-                node_id,
+        # KG-C2: one critical section — event-ID allocation, graph/state-index
+        # mutation, episode membership AND the done-triggered episode close
+        # must not interleave across hop threads (observed: 85/200 duplicate
+        # event_ids under an 8-thread batch before the lock).
+        with self._lock:
+            event_id = len(self.events)
+            event = BrainEvent(
+                event_id=event_id,
+                timestamp=datetime.now().isoformat(),
                 state=state,
-                state_hash=s_hash,
-                first_seen=event.timestamp,
-                visit_count=0,
+                action=action,
+                next_state=next_state,
+                reward=reward,
+                done=done,
+                value=value,
+                policy_entropy=policy_entropy,
+                consciousness=consciousness,
+                dmn_energy=dmn_energy,
+                episode_id=self.current_episode_id,
+                step_in_episode=len(self.episodes.get(self.current_episode_id, [])),
+                metadata=metadata or {},
             )
-            self.stats['total_states'] += 1
 
-        if ns_hash not in self.state_index:
-            node_id = self.next_node_id
-            self.next_node_id += 1
-            self.state_index[ns_hash] = node_id
-            self.graph.add_node(
-                node_id,
-                state=next_state,
-                state_hash=ns_hash,
-                first_seen=event.timestamp,
-                visit_count=0,
+            self.events.append(event)
+
+            # Add states as graph nodes if new
+            s_hash = event.state_hash()
+            ns_hash = event.next_state_hash()
+
+            if s_hash not in self.state_index:
+                node_id = self.next_node_id
+                self.next_node_id += 1
+                self.state_index[s_hash] = node_id
+                self.graph.add_node(
+                    node_id,
+                    state=state,
+                    state_hash=s_hash,
+                    first_seen=event.timestamp,
+                    visit_count=0,
+                )
+                self.stats['total_states'] += 1
+
+            if ns_hash not in self.state_index:
+                node_id = self.next_node_id
+                self.next_node_id += 1
+                self.state_index[ns_hash] = node_id
+                self.graph.add_node(
+                    node_id,
+                    state=next_state,
+                    state_hash=ns_hash,
+                    first_seen=event.timestamp,
+                    visit_count=0,
+                )
+                self.stats['total_states'] += 1
+
+            # Get node IDs for this transition
+            from_node = self.state_index[s_hash]
+            to_node = self.state_index[ns_hash]
+
+            # Update visit count on source node
+            self.graph.nodes[from_node]['visit_count'] += 1
+
+            # Add directed edge (transition)
+            self.graph.add_edge(
+                from_node,
+                to_node,
+                event_id=event_id,
+                action=action,
+                reward=reward,
+                timestamp=event.timestamp,
+                value=value,
+                consciousness=consciousness,
+                episode_id=self.current_episode_id,
             )
-            self.stats['total_states'] += 1
+            self.stats['total_transitions'] += 1
 
-        # Get node IDs for this transition
-        from_node = self.state_index[s_hash]
-        to_node = self.state_index[ns_hash]
+            # Track episode membership
+            if self.current_episode_id not in self.episodes:
+                self.episodes[self.current_episode_id] = []
+            self.episodes[self.current_episode_id].append(event_id)
 
-        # Update visit count on source node
-        self.graph.nodes[from_node]['visit_count'] += 1
+            # Advance episode counter when done
+            if done:
+                self.stats['total_episodes'] += 1
+                self.current_episode_id += 1
 
-        # Add directed edge (transition)
-        self.graph.add_edge(
-            from_node,
-            to_node,
-            event_id=event_id,
-            action=action,
-            reward=reward,
-            timestamp=event.timestamp,
-            value=value,
-            consciousness=consciousness,
-            episode_id=self.current_episode_id,
-        )
-        self.stats['total_transitions'] += 1
+            self.stats['total_events'] += 1
+            return event_id
 
-        # Track episode membership
-        if self.current_episode_id not in self.episodes:
-            self.episodes[self.current_episode_id] = []
-        self.episodes[self.current_episode_id].append(event_id)
+    @staticmethod
+    def is_episode_done(
+        is_last_hop: bool,
+        validator_present: bool,
+        validator_passed: Optional[bool],
+        pending_hops: int,
+    ) -> bool:
+        """KG-C3 (Phase 0) — the 3-condition rule for task-episode `done`.
 
-        # Advance episode counter when done
-        if done:
-            self.stats['total_episodes'] += 1
-            self.current_episode_id += 1
-
-        self.stats['total_events'] += 1
-        return event_id
+        Centralizes the caller contract (see add_event docstring) for the
+        multihop ingest adapter: True only when (1) last hop, (2) validator
+        passed if one was present (None = unobserved = NOT passed), and
+        (3) no pending hops. Pure function, no state."""
+        if not is_last_hop or pending_hops > 0:
+            return False
+        if validator_present:
+            return validator_passed is True
+        return True
 
     def get_event(self, event_id: int) -> BrainEvent:
         """Get event by ID."""
@@ -364,8 +451,9 @@ class KotlinGraph:
             'stats': self.stats,
         }
 
-        with open(filepath, 'w') as f:
-            json.dump(data, f, indent=2, default=str)
+        # Crash-safe: tmp + fsync + atomic replace. A truncate-then-write
+        # would destroy the whole diary on a kill mid-save.
+        atomic_write_json(filepath, data, indent=2, default=str)
 
     def load(self, filepath: str) -> None:
         """Load graph from disk."""
@@ -402,15 +490,16 @@ class KotlinGraph:
 
     def clear(self) -> None:
         """Clear all data, resetting to initial empty state."""
-        self.graph.clear()
-        self.events.clear()
-        self.state_index.clear()
-        self.episodes.clear()
-        self.next_node_id = 0
-        self.current_episode_id = 0
-        self.stats = {
-            'total_events': 0,
-            'total_episodes': 0,
-            'total_states': 0,
-            'total_transitions': 0,
-        }
+        with self._lock:
+            self.graph.clear()
+            self.events.clear()
+            self.state_index.clear()
+            self.episodes.clear()
+            self.next_node_id = 0
+            self.current_episode_id = 0
+            self.stats = {
+                'total_events': 0,
+                'total_episodes': 0,
+                'total_states': 0,
+                'total_transitions': 0,
+            }

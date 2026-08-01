@@ -93,7 +93,7 @@ class CapabilityMatch:
         if not self.execution_target or ":" not in self.execution_target:
             return False
         kind = self.execution_target.split(":", 1)[0].lower()
-        return kind in {"direct", "http", "n8n", "coding-engine", "openfang", "brain", "mcp"}
+        return kind in {"direct", "http", "n8n", "coding-engine", "openfang", "brain", "mcp", "research"}
 
 
 @dataclass
@@ -297,6 +297,12 @@ class CapabilityRouter:
             if not isinstance(entry, dict):
                 logger.warning(f"[cap-router] skipping non-dict entry: {entry!r}")
                 self._stats["load_errors"] += 1
+                continue
+            if entry.get("enabled") is False:
+                logger.info(
+                    "[cap-router] skipping disabled capability %r",
+                    entry.get("capability", "<unnamed>"),
+                )
                 continue
             try:
                 cap_id = entry["capability"]

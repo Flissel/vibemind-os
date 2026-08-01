@@ -132,6 +132,71 @@ BRIDGE_ROI_MAP: Dict[str, list] = {
 
 
 # ──────────────────────────────────────────────────────────────────────
+# In-process transcription (robust whisperx replacement for real audio)
+# ──────────────────────────────────────────────────────────────────────
+
+# faster-whisper model name for transcribing REAL audio/video (multimodal path).
+# Default "small" balances speed/accuracy; override via env. Loaded once, cached.
+TRIBE_WHISPER_MODEL = os.environ.get("TRIBE_WHISPER_MODEL", "small")
+_FW_MODEL = None
+_FW_LOCK = threading.Lock()
+
+# TriBE language name -> whisper language code
+_WHISPER_LANG = {
+    "english": "en", "french": "fr", "spanish": "es",
+    "dutch": "nl", "chinese": "zh", "german": "de",
+}
+
+
+def _faster_whisper_transcript(wav_filename, language):
+    """Transcribe a wav to a TriBE word-events DataFrame, IN-PROCESS.
+
+    Replaces TriBE's `uvx whisperx` subprocess (which dies on Windows via the
+    torchcodec/FFmpeg DLL chain). Uses faster-whisper with word timestamps and
+    returns the same columns the original produced:
+    {text, start, duration, sequence_id, sentence}.
+    """
+    import pandas as _pd
+    global _FW_MODEL
+    try:
+        from pathlib import Path as _Path
+        if _FW_MODEL is None:
+            with _FW_LOCK:
+                if _FW_MODEL is None:
+                    from faster_whisper import WhisperModel
+                    import torch as _torch
+                    dev = "cuda" if _torch.cuda.is_available() else "cpu"
+                    ctype = "float16" if dev == "cuda" else "int8"
+                    logger.info("[TriBE] loading faster-whisper '%s' on %s",
+                                TRIBE_WHISPER_MODEL, dev)
+                    _FW_MODEL = WhisperModel(TRIBE_WHISPER_MODEL, device=dev,
+                                             compute_type=ctype)
+        lang = _WHISPER_LANG.get(language)  # None → auto-detect
+        segments, _info = _FW_MODEL.transcribe(
+            str(wav_filename), language=lang, word_timestamps=True,
+        )
+        rows = []
+        for i, seg in enumerate(segments):
+            sentence = (seg.text or "").replace('"', "")[:500]
+            for w in (seg.words or []):
+                if w.start is None:
+                    continue
+                rows.append({
+                    "text": (w.word or "").replace('"', "").strip(),
+                    "start": float(w.start),
+                    "duration": float(w.end) - float(w.start),
+                    "sequence_id": i,
+                    "sentence": sentence,
+                })
+        return _pd.DataFrame(rows)
+    except Exception as e:
+        logger.warning("[TriBE] faster-whisper transcript failed: %s", e)
+        return _pd.DataFrame(
+            columns=["text", "start", "duration", "sequence_id", "sentence"]
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Encoder
 # ──────────────────────────────────────────────────────────────────────
 
@@ -216,29 +281,29 @@ class TribeEncoder:
                     _original = _et.ExtractWordsFromAudio._get_transcript_from_audio
 
                     def _synth_transcript(wav_filename, language):
-                        """Build word-level events from the original text,
-                        skipping the whisperx subprocess entirely."""
+                        """Build word-level events.
+
+                        Two cases:
+                          1. We already hold the source text (gTTS/text path):
+                             synthesise fake per-word timestamps — fast, no model.
+                          2. Real audio/video (we don't know the words): transcribe
+                             the wav IN-PROCESS with faster-whisper (no uvx subprocess,
+                             no torchcodec DLL hell) to get real word timings.
+                        """
                         src_text = getattr(
                             _et.ExtractWordsFromAudio, "_brain_current_text", None
                         )
-                        if not src_text:
-                            # Fallback: try the original path (probably fails).
-                            return _original(wav_filename, language)
-                        # Fake a reading pace: ~2.5 words/sec (typical TTS)
-                        words = [w for w in src_text.split() if w.strip()]
-                        words_per_sec = 2.5
-                        dur = 1.0 / words_per_sec
-                        rows = []
-                        sentence = src_text[:500]
-                        for i, w in enumerate(words):
-                            rows.append({
-                                "text": w,
-                                "start": i * dur,
-                                "duration": dur,
-                                "sequence_id": 0,
-                                "sentence": sentence,
-                            })
-                        return _pd.DataFrame(rows)
+                        if src_text:
+                            # Fake a reading pace: ~2.5 words/sec (typical TTS)
+                            words = [w for w in src_text.split() if w.strip()]
+                            dur = 1.0 / 2.5
+                            sentence = src_text[:500]
+                            return _pd.DataFrame([{
+                                "text": w, "start": i * dur, "duration": dur,
+                                "sequence_id": 0, "sentence": sentence,
+                            } for i, w in enumerate(words)])
+                        # Case 2 — real audio: in-process faster-whisper.
+                        return _faster_whisper_transcript(wav_filename, language)
 
                     _et.ExtractWordsFromAudio._get_transcript_from_audio = (
                         staticmethod(_synth_transcript)
@@ -508,3 +573,23 @@ def bridge_levels_for_text(text: str) -> Dict[str, float]:
     if vec is None:
         return {}
     return TribeEncoder.get().bridge_levels(vec)
+
+
+def describe_profile(bridge_levels: Dict[str, float], top_k: int = 3) -> str:
+    """Human-readable summary of a thought's neural bridge-profile.
+
+    Turns the 8 raw bridge activations into a sentence like
+    "high social + memory, low defense" — the interpretable face of TriBE.
+    Returns "" when no profile is available.
+    """
+    if not bridge_levels:
+        return ""
+    items = sorted(bridge_levels.items(), key=lambda kv: kv[1], reverse=True)
+    if not items:
+        return ""
+    high = [name for name, _ in items[:top_k]]
+    low = items[-1][0] if len(items) > top_k else None
+    txt = "high " + " + ".join(high)
+    if low and low not in high:
+        txt += f", low {low}"
+    return txt
