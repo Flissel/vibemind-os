@@ -1,13 +1,13 @@
 """Truthful execution contracts for the Brain-owned Ideas path."""
 
 import asyncio
-import ast
 from pathlib import Path
 
 import yaml
 
 from core.capability_targets import SupabaseExecutor, result_indicates_failure
 from core.capability_validator import CapabilityValidator
+from core.space_routing_head import EVENT_SPACE_MAP
 from core.supabase_ideas_ops import idea_to_project_op
 
 
@@ -28,16 +28,7 @@ def test_supabase_executor_registers_idea_to_project():
 
 
 def test_idea_to_project_remains_owned_by_ideas_space():
-    path = Path(__file__).resolve().parents[1] / "core" / "space_routing_head.py"
-    module = ast.parse(path.read_text(encoding="utf-8"))
-    assignment = next(
-        node for node in module.body
-        if isinstance(node, ast.Assign)
-        and any(isinstance(target, ast.Name) and target.id == "EVENT_SPACE_MAP"
-                for target in node.targets)
-    )
-    event_space_map = ast.literal_eval(assignment.value)
-    assert event_space_map["idea.to_project"] == "ideas"
+    assert EVENT_SPACE_MAP["idea.to_project"] == "ideas"
 
 
 class _ProjectClient:
