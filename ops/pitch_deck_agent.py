@@ -1970,13 +1970,9 @@ async def main():
                     key, value = line.split("=", 1)
                     os.environ[key.strip()] = value.strip()
 
-    if not os.environ.get("OPENFANG_API_KEY"):
-        print("FEHLER: OPENFANG_API_KEY nicht gesetzt!")
-        sys.exit(1)
-
     # CLI Flags parsen
     quick = len(sys.argv) >= 3
-    flags = {"images": True, "pdf": False, "email": False, "feedback": False}  # images default ON
+    flags = {"images": False, "pdf": False, "email": False, "feedback": False}
 
     if quick:
         company = sys.argv[1]
@@ -1999,6 +1995,13 @@ async def main():
         desc = build_briefing(answers)
         theme = answers.get("theme", "auto")
         flags["images"] = answers.get("images", False)
+
+    if flags["images"]:
+        raise OpenFangUnavailable(IMAGE_UNAVAILABLE_MESSAGE)
+
+    if not os.environ.get("OPENFANG_API_KEY"):
+        print("FEHLER: OPENFANG_API_KEY nicht gesetzt!")
+        sys.exit(1)
 
     print("\n" + "=" * 60)
     print("Pitch Deck Generator v6")

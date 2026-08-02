@@ -45,6 +45,10 @@ class _FailingCompletions:
         raise self.error
 
 
+class _PipelineObserved(RuntimeError):
+    pass
+
+
 def _failing_client(error: Exception, calls: list[dict[str, Any]]) -> Any:
     return types.SimpleNamespace(
         chat=types.SimpleNamespace(
@@ -100,11 +104,16 @@ def pitch_deck_module(monkeypatch: pytest.MonkeyPatch) -> Any:
 
     autogen = types.ModuleType("autogen_core")
 
+    class AgentId:
+        def __init__(self, agent_type: str, key: str) -> None:
+            self.agent_type = agent_type
+            self.key = key
+
     class RoutedAgent:
         def __init__(self, *_: Any) -> None:
             pass
 
-    autogen.AgentId = object
+    autogen.AgentId = AgentId
     autogen.MessageContext = object
     autogen.RoutedAgent = RoutedAgent
     autogen.SingleThreadedAgentRuntime = object
@@ -366,6 +375,125 @@ def test_image_disabled_flow_does_not_require_image_capability(
     )
 
     assert result.slides == []
+
+
+def test_quick_cli_defaults_to_images_disabled_and_starts_pipeline(
+    pitch_deck_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_instances: list[Any] = []
+    registrations: list[str] = []
+    pipeline_requests: list[Any] = []
+
+    class Runtime:
+        def start(self) -> None:
+            pass
+
+        async def send_message(self, message: Any, agent_id: Any) -> Any:
+            pipeline_requests.append(message)
+            raise _PipelineObserved
+
+    def runtime_factory() -> Runtime:
+        runtime = Runtime()
+        runtime_instances.append(runtime)
+        return runtime
+
+    async def register(runtime: Any, name: str, factory: Any) -> None:
+        registrations.append(name)
+
+    monkeypatch.setattr(
+        pitch_deck_module,
+        "SingleThreadedAgentRuntime",
+        runtime_factory,
+    )
+    for agent in (
+        pitch_deck_module.BriefingAgent,
+        pitch_deck_module.SemanticAnalyzerAgent,
+        pitch_deck_module.ResearcherAgent,
+        pitch_deck_module.ContentGeneratorAgent,
+        pitch_deck_module.DesignDirectorAgent,
+        pitch_deck_module.ChartGeneratorAgent,
+        pitch_deck_module.SlideBuilderAgent,
+    ):
+        monkeypatch.setattr(agent, "register", staticmethod(register), raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["pitch_deck_agent.py", "VibeMind", "AI platform"],
+    )
+    monkeypatch.setenv("OPENFANG_API_KEY", "test-key")
+
+    with pytest.raises(_PipelineObserved):
+        asyncio.run(pitch_deck_module.main())
+
+    assert len(runtime_instances) == 1
+    assert len(registrations) == 7
+    assert len(pipeline_requests) == 1
+    assert pipeline_requests[0].images is False
+
+
+def test_explicit_images_cli_fails_before_runtime_or_llm_work(
+    pitch_deck_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_instances: list[Any] = []
+    registrations: list[str] = []
+    client_roles: list[str] = []
+    pipeline_requests: list[Any] = []
+
+    class Runtime:
+        def start(self) -> None:
+            pass
+
+        async def send_message(self, message: Any, agent_id: Any) -> Any:
+            pipeline_requests.append(message)
+            raise pitch_deck_module.OpenFangUnavailable(
+                IMAGE_UNAVAILABLE_MESSAGE
+            )
+
+    def runtime_factory() -> Runtime:
+        runtime = Runtime()
+        runtime_instances.append(runtime)
+        return runtime
+
+    async def register(runtime: Any, name: str, factory: Any) -> None:
+        registrations.append(name)
+
+    monkeypatch.setattr(
+        pitch_deck_module,
+        "SingleThreadedAgentRuntime",
+        runtime_factory,
+    )
+    monkeypatch.setattr(
+        pitch_deck_module,
+        "get_client_sync",
+        lambda role: client_roles.append(role) or _client(),
+    )
+    for agent in (
+        pitch_deck_module.BriefingAgent,
+        pitch_deck_module.SemanticAnalyzerAgent,
+        pitch_deck_module.ResearcherAgent,
+        pitch_deck_module.ContentGeneratorAgent,
+        pitch_deck_module.DesignDirectorAgent,
+        pitch_deck_module.ChartGeneratorAgent,
+        pitch_deck_module.SlideBuilderAgent,
+    ):
+        monkeypatch.setattr(agent, "register", staticmethod(register), raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["pitch_deck_agent.py", "VibeMind", "AI platform", "--images"],
+    )
+    monkeypatch.delenv("OPENFANG_API_KEY", raising=False)
+
+    with pytest.raises(pitch_deck_module.OpenFangUnavailable) as error:
+        asyncio.run(pitch_deck_module.main())
+
+    assert str(error.value) == IMAGE_UNAVAILABLE_MESSAGE
+    assert runtime_instances == []
+    assert registrations == []
+    assert client_roles == []
+    assert pipeline_requests == []
 
 
 def test_source_has_no_direct_provider_or_legacy_role_boundary() -> None:
