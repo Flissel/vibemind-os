@@ -82,7 +82,7 @@ def test_truth_with_world_observer_import_error_is_not_valid(monkeypatch):
 
     def disabled_world_observer(name, globals=None, locals=None, fromlist=(), level=0):
         if name == "core" and "world_observer" in fromlist:
-            raise ImportError("world observer disabled")
+            raise ImportError("world observer disabled: Bearer should-not-leak")
         return original_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", disabled_world_observer)
@@ -102,6 +102,15 @@ def test_truth_with_world_observer_import_error_is_not_valid(monkeypatch):
 
     assert verdict["verified"] is None
     assert verdict["valid"] is False
+    assert verdict["reason"] == "ground-truth UNVERIFIED: world_observer unavailable"
+    assert verdict["verify_signal"] == {
+        "status": "unverified",
+        "reason": "world_observer unavailable",
+    }
+    assert verdict["kind"] == "truth:supabase_row"
+    assert verdict["on_fail"] == "report"
+    assert isinstance(verdict["elapsed_s"], float)
+    assert "should-not-leak" not in str(verdict)
 
 
 def test_truth_with_world_observer_runtime_error_is_unverified_envelope(monkeypatch):

@@ -464,10 +464,10 @@ class CapabilityValidator:
         """
         try:
             from core import world_observer as wo
-        except Exception as e:
+        except Exception:
             return self._envelope(
                 valid=False,
-                reason=f"world_observer unavailable: {e}",
+                reason="ground-truth UNVERIFIED: world_observer unavailable",
                 kind=kind,
                 on_fail=on_fail,
                 t0=t0,
