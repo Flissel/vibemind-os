@@ -132,17 +132,22 @@ def _openai_timeout_with_raw_detail() -> openai.APITimeoutError:
     return failure
 
 
-def test_process_task_reraises_openfang_unavailable_from_stream(
+def test_process_task_redacts_direct_openfang_unavailable_from_stream(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     provider_info = {"provider": "openfang", "model": "openfang:brain-planner"}
     module, _, _ = _load_orchestrator(monkeypatch, _CapturingOpenAIClient, provider_info)
-    failure = module.OpenFangUnavailable("gateway unavailable")
+    failure = module.OpenFangUnavailable(RAW_UPSTREAM_SENTINEL)
 
     with pytest.raises(module.OpenFangUnavailable) as caught:
         asyncio.run(_failing_orchestrator(module, failure).process_task("must fail closed"))
 
-    assert caught.value is failure
+    assert caught.value is not failure
+    assert caught.value.__cause__ is None
+    assert str(caught.value) == "OpenFang unavailable during swarm execution"
+    assert RAW_UPSTREAM_SENTINEL not in caplog.text
+    assert "OpenFangUnavailable" in caplog.text
 
 
 @pytest.mark.parametrize(

@@ -419,9 +419,14 @@ Please coordinate execution of this task."""
                 async for message in self.swarm.run_stream(task=task_message):
                     swarm_messages.append(message)
                     logger.info(f"Swarm message: {message}")
-        except OpenFangUnavailable:
-            logger.exception("OpenFang unavailable during swarm execution")
-            raise
+        except OpenFangUnavailable as error:
+            logger.error(
+                "OpenFang unavailable during swarm execution; error_type=%s",
+                type(error).__name__,
+            )
+            raise OpenFangUnavailable(
+                "OpenFang unavailable during swarm execution"
+            ) from None
         except Exception as error:
             if not is_openfang_provider:
                 logger.exception("Swarm execution failed")
