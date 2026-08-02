@@ -32,12 +32,14 @@ services:
     depends_on:
       host:
         condition: service_healthy
-    env_file:
-      - ../.env
     environment:
-      - SCAN_TARGET=host
-      - SCAN_PORTS=22,80,443,8080,50051,2375,2376,5000,9090,27017,6379
-      - SCAN_TYPES=ports,grpc_auth,tls,docker_bind
+      OPENFANG_URL: ${OPENFANG_URL:?OPENFANG_URL is required}
+      OPENFANG_API_KEY: ${OPENFANG_API_KEY:?OPENFANG_API_KEY is required}
+      SCAN_TARGET: host
+      SCAN_PORTS: 22,80,443,8080,50051,2375,2376,5000,9090,27017,6379
+      SCAN_TYPES: ports,grpc_auth,tls,docker_bind
+    volumes:
+      - ../../llm_config.yml:/config/llm_config.yml:ro
     networks:
       - scanner-net
 

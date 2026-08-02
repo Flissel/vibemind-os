@@ -1,27 +1,19 @@
-"""
-AnalyzerAgent - Deep Security Analysis via Chain-of-Thought
-=============================================================
-Receives all scan results, uses GPT-4o to reason about severity
-and identify critical vulnerability patterns.
-"""
+"""AnalyzerAgent - configured deep security analysis."""
 
 import json
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from llm_client import get_model
-
-from openai import AsyncOpenAI
+from vibemind_shared import get_model
 
 from autogen_core import RoutedAgent, message_handler, MessageContext
 
 from messages import AnalysisRequest, SecurityAnalysis
 
 
+SECURITY_ANALYZER_ROLE = "security_analyzer"
+
+
 class AnalyzerAgent(RoutedAgent):
 
-    def __init__(self, llm_client: AsyncOpenAI):
+    def __init__(self, llm_client):
         super().__init__("AnalyzerAgent")
         self._llm_client = llm_client
 
@@ -32,7 +24,7 @@ class AnalyzerAgent(RoutedAgent):
         print(f"  [ANALYZER] Analyzing findings for {message.target_host}...", flush=True)
 
         response = await self._llm_client.chat.completions.create(
-            model=get_model("default", "poc_security_scanner"),
+            model=get_model(SECURITY_ANALYZER_ROLE),
             temperature=0,
             messages=[
                 {

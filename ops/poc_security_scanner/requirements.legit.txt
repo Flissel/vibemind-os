@@ -1,0 +1,4 @@
+autogen-core==0.7.5
+autogen-ext[grpc]==0.7.5
+grpcio>=1.62.0
+vibemind-shared @ git+https://github.com/Flissel/vibemind-shared.git@609dda92e0f4370c03085a7e2ff6a6f492693d0d

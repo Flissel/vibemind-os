@@ -1,20 +1,9 @@
-"""
-OrchestratorAgent - Scan Planning via OpenAI Function Calling
-==============================================================
-Receives a ScanTarget, uses GPT-4o with tools parameter to decide
-which scans to run. Dispatches ScanTasks to ScannerAgent, collects
-results, then forwards to AnalyzerAgent and ReporterAgent.
-"""
+"""OrchestratorAgent - configured function-calling scan planning."""
 
 import json
-import os
-import sys
 import uuid
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from llm_client import get_model
-
-from openai import AsyncOpenAI
+from vibemind_shared import get_model
 
 from autogen_core import (
     AgentId,
@@ -31,9 +20,12 @@ from messages import (
 from tools import TOOL_DEFINITIONS, think
 
 
+SECURITY_ANALYZER_ROLE = "security_analyzer"
+
+
 class OrchestratorAgent(RoutedAgent):
 
-    def __init__(self, llm_client: AsyncOpenAI):
+    def __init__(self, llm_client):
         super().__init__("OrchestratorAgent")
         self._llm_client = llm_client
 
@@ -73,10 +65,10 @@ class OrchestratorAgent(RoutedAgent):
         max_iterations = 15
 
         for iteration in range(max_iterations):
-            print(f"\n  [ORCHESTRATOR] OpenAI call #{iteration + 1}...", flush=True)
+            print(f"\n  [ORCHESTRATOR] Model call #{iteration + 1}...", flush=True)
 
             response = await self._llm_client.chat.completions.create(
-                model=get_model("default", "poc_security_scanner"),
+                model=get_model(SECURITY_ANALYZER_ROLE),
                 temperature=0,
                 messages=messages_history,
                 tools=TOOL_DEFINITIONS,
@@ -138,7 +130,7 @@ class OrchestratorAgent(RoutedAgent):
                         tool_output = json.dumps({"error": str(e)})
                         print(f"  [ORCHESTRATOR] Scan error: {e}", flush=True)
 
-                # Feed result back to OpenAI
+                # Feed result back to the configured model.
                 messages_history.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
