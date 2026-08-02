@@ -16,6 +16,9 @@ import pytest
 
 OPS_ROOT = Path(__file__).resolve().parents[1]
 PITCH_DECK_ROLE = "agent_pitch_deck"
+IMAGE_UNAVAILABLE_MESSAGE = (
+    "OpenFang gateway does not support AI image generation for pitch decks"
+)
 
 
 class _Completions:
@@ -29,6 +32,57 @@ def _client() -> Any:
     return types.SimpleNamespace(
         chat=types.SimpleNamespace(completions=_Completions()),
         images=types.SimpleNamespace(generate=lambda **_: None),
+    )
+
+
+class _FailingCompletions:
+    def __init__(self, error: Exception, calls: list[dict[str, Any]]) -> None:
+        self.error = error
+        self.calls = calls
+
+    def create(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        raise self.error
+
+
+def _failing_client(error: Exception, calls: list[dict[str, Any]]) -> Any:
+    return types.SimpleNamespace(
+        chat=types.SimpleNamespace(
+            completions=_FailingCompletions(error, calls)
+        )
+    )
+
+
+def _theme_fields(*, images: bool) -> dict[str, Any]:
+    return {
+        "theme_name": "midnight",
+        "primary": "#111111",
+        "secondary": "#222222",
+        "accent": "#333333",
+        "bg_dark": "#000000",
+        "bg_light": "#FFFFFF",
+        "text_light": "#FFFFFF",
+        "text_dark": "#000000",
+        "industry": "AI",
+        "tone": "technical",
+        "images": images,
+    }
+
+
+def _content_result(module: Any, *, images: bool) -> Any:
+    return module.ContentResult(
+        company_name="VibeMind",
+        slides=[],
+        **_theme_fields(images=images),
+    )
+
+
+def _research_result(module: Any) -> Any:
+    return module.ResearchResult(
+        company_name="VibeMind",
+        description="AI platform",
+        research="{}",
+        **_theme_fields(images=False),
     )
 
 
@@ -101,14 +155,11 @@ def test_all_llm_acquisitions_use_the_canonical_pitch_deck_role(
         pitch_deck_module.DesignDirectorAgent,
     ):
         agent()
-    pitch_deck_module.ChartGeneratorAgent()._generate_bg_images(
-        types.SimpleNamespace(slides=[])
-    )
     pitch_deck_module.generate_investor_emails("VibeMind", "{}", tmp_path / "deck.pptx")
     monkeypatch.setattr(builtins, "input", lambda _: "")
     asyncio.run(pitch_deck_module.feedback_loop([], "VibeMind", {}, object()))
 
-    assert roles == [PITCH_DECK_ROLE] * 8
+    assert roles == [PITCH_DECK_ROLE] * 7
 
 
 def test_chat_uses_the_canonical_pitch_deck_model_role(
@@ -163,6 +214,160 @@ def test_openfang_unavailable_from_client_acquisition_propagates(
         pitch_deck_module.BriefingAgent()
 
 
+def test_research_request_reraises_openfang_unavailable_without_retry(
+    pitch_deck_module: Any,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    unavailable = pitch_deck_module.OpenFangUnavailable("research unavailable")
+    agent = pitch_deck_module.ResearcherAgent()
+    agent.client = _failing_client(unavailable, calls)
+
+    with pytest.raises(
+        pitch_deck_module.OpenFangUnavailable,
+        match="research unavailable",
+    ):
+        agent._call("research prompt")
+
+    assert len(calls) == 1
+
+
+def test_content_request_reraises_openfang_unavailable(
+    pitch_deck_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    unavailable = pitch_deck_module.OpenFangUnavailable("content unavailable")
+    agent = pitch_deck_module.ContentGeneratorAgent()
+    agent.client = _failing_client(unavailable, calls)
+    monkeypatch.setattr(
+        pitch_deck_module,
+        "get_rag",
+        lambda: types.SimpleNamespace(
+            get_product_info=lambda: "",
+            get_team_info=lambda: "",
+            get_vision_info=lambda: "",
+        ),
+    )
+
+    with pytest.raises(
+        pitch_deck_module.OpenFangUnavailable,
+        match="content unavailable",
+    ):
+        asyncio.run(agent.handle(_research_result(pitch_deck_module), None))
+
+    assert len(calls) == 1
+
+
+def test_design_request_reraises_openfang_unavailable(
+    pitch_deck_module: Any,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    unavailable = pitch_deck_module.OpenFangUnavailable("design unavailable")
+    agent = pitch_deck_module.DesignDirectorAgent()
+    agent.client = _failing_client(unavailable, calls)
+
+    with pytest.raises(
+        pitch_deck_module.OpenFangUnavailable,
+        match="design unavailable",
+    ):
+        asyncio.run(
+            agent.direct(_content_result(pitch_deck_module, images=False), None)
+        )
+
+    assert len(calls) == 1
+
+
+def test_email_request_reraises_openfang_unavailable(
+    pitch_deck_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    unavailable = pitch_deck_module.OpenFangUnavailable("email unavailable")
+    monkeypatch.setattr(
+        pitch_deck_module,
+        "get_client_sync",
+        lambda role: _failing_client(unavailable, calls),
+    )
+
+    with pytest.raises(
+        pitch_deck_module.OpenFangUnavailable,
+        match="email unavailable",
+    ):
+        pitch_deck_module.generate_investor_emails(
+            "VibeMind", "{}", tmp_path / "deck.pptx"
+        )
+
+    assert len(calls) == 1
+
+
+def test_feedback_request_reraises_openfang_unavailable(
+    pitch_deck_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    unavailable = pitch_deck_module.OpenFangUnavailable("feedback unavailable")
+    monkeypatch.setattr(
+        pitch_deck_module,
+        "get_client_sync",
+        lambda role: _failing_client(unavailable, calls),
+    )
+    monkeypatch.setattr(builtins, "input", lambda _: "revise slide 1")
+
+    with pytest.raises(
+        pitch_deck_module.OpenFangUnavailable,
+        match="feedback unavailable",
+    ):
+        asyncio.run(
+            pitch_deck_module.feedback_loop([], "VibeMind", {}, object())
+        )
+
+    assert len(calls) == 1
+
+
+def test_image_request_fails_before_unsupported_gateway_call(
+    pitch_deck_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client_roles: list[str] = []
+    monkeypatch.setattr(
+        pitch_deck_module,
+        "get_client_sync",
+        lambda role: client_roles.append(role) or _client(),
+    )
+    agent = pitch_deck_module.ChartGeneratorAgent()
+    agent.chart_dir = tmp_path / "charts"
+
+    with pytest.raises(pitch_deck_module.OpenFangUnavailable) as error:
+        asyncio.run(
+            agent.generate(_content_result(pitch_deck_module, images=True), None)
+        )
+
+    assert str(error.value) == IMAGE_UNAVAILABLE_MESSAGE
+    assert client_roles == []
+
+
+def test_image_disabled_flow_does_not_require_image_capability(
+    pitch_deck_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        pitch_deck_module,
+        "get_client_sync",
+        lambda role: pytest.fail(f"unexpected LLM client acquisition for {role}"),
+    )
+    agent = pitch_deck_module.ChartGeneratorAgent()
+    agent.chart_dir = tmp_path / "charts"
+
+    result = asyncio.run(
+        agent.generate(_content_result(pitch_deck_module, images=False), None)
+    )
+
+    assert result.slides == []
+
+
 def test_source_has_no_direct_provider_or_legacy_role_boundary() -> None:
     source_path = OPS_ROOT / "pitch_deck_agent.py"
     source = source_path.read_text(encoding="utf-8")
@@ -176,6 +381,8 @@ def test_source_has_no_direct_provider_or_legacy_role_boundary() -> None:
         and any(alias.name == "openai" for alias in node.names)
     ]
     assert imports_openai == []
+    assert "images.generate" not in source
+    assert "dall-e-3" not in source
 
     forbidden_constructors = [
         node
@@ -207,7 +414,7 @@ def test_source_has_no_direct_provider_or_legacy_role_boundary() -> None:
         and isinstance(node.func, ast.Name)
         and node.func.id == "get_client_sync"
     ]
-    assert len(client_acquisitions) == 8
+    assert len(client_acquisitions) == 7
     assert all(
         len(node.args) == 1
         and isinstance(node.args[0], ast.Name)
@@ -222,7 +429,7 @@ def test_source_has_no_direct_provider_or_legacy_role_boundary() -> None:
         and isinstance(node.func, ast.Name)
         and node.func.id == "get_model"
     ]
-    assert len(model_resolutions) == 8
+    assert len(model_resolutions) == 7
     assert all(
         len(node.args) == 1
         and isinstance(node.args[0], ast.Name)

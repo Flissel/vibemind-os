@@ -41,6 +41,9 @@ from vibemind_shared import OpenFangUnavailable, get_client_sync, get_model
 
 
 PITCH_DECK_ROLE = "agent_pitch_deck"
+IMAGE_UNAVAILABLE_MESSAGE = (
+    "OpenFang gateway does not support AI image generation for pitch decks"
+)
 
 
 # =====================================================================
@@ -788,6 +791,10 @@ class ChartGeneratorAgent(RoutedAgent):
 
     @message_handler
     async def generate(self, message: ContentResult, ctx: MessageContext) -> DeckBuildRequest:
+        # The pinned OpenFang gateway exposes no image-generation capability.
+        if message.images:
+            raise OpenFangUnavailable(IMAGE_UNAVAILABLE_MESSAGE)
+
         self.chart_dir.mkdir(exist_ok=True)
         print(f"  [CHARTS] Generiere Visualisierungen...")
 
@@ -816,58 +823,10 @@ class ChartGeneratorAgent(RoutedAgent):
 
         print(f"  [CHARTS] {count} Charts generiert.")
 
-        # DALL-E Hintergrundbilder fuer Intro + CTA
-        if message.images:
-            self._generate_bg_images(message)
-
         return DeckBuildRequest(
             company_name=message.company_name, slides=message.slides,
             **{f: getattr(message, f) for f in THEME_FIELDS if f != "images"},
         )
-
-    def _generate_bg_images(self, message):
-        import requests as req
-        client = get_client_sync(PITCH_DECK_ROLE)
-        img_dir = Path(__file__).parent / "deck_images"
-        img_dir.mkdir(exist_ok=True)
-
-        for i, s in enumerate(message.slides):
-            st = s.get("slide_type")
-            if st not in ("intro", "cta"):
-                continue
-
-            if st == "intro":
-                prompt = (f"Abstract dark background for an AI startup pitch deck. "
-                          f"3D floating geometric brain-like structure made of glowing neural connections "
-                          f"and interconnected nodes representing 9 distinct spaces/modules. "
-                          f"Deep dark blue-purple gradient with teal and pink accent glows. "
-                          f"Neuroscience-inspired, Three.js aesthetic. 16:9 widescreen. "
-                          f"No text, no logos, no people. Premium, futuristic, clean.")
-            else:
-                prompt = (f"Abstract dark background for a call-to-action slide. "
-                          f"A 3D multiverse visualization: nine glowing orbs/spaces connected by "
-                          f"light paths, arranged in a constellation pattern. "
-                          f"Dark gradient transitioning from deep blue to purple, "
-                          f"with subtle DNA helix patterns and neural pathways. "
-                          f"Forward-looking, inviting. 16:9 widescreen. "
-                          f"No text, no logos, no people. Premium, futuristic.")
-
-            print(f"  [DALLE] Generiere Hintergrund fuer {st}...")
-            try:
-                resp = client.images.generate(
-                    model=get_model(PITCH_DECK_ROLE), prompt=prompt,
-                    size="1792x1024", quality="standard", n=1,
-                )
-                img_resp = req.get(resp.data[0].url, timeout=30)
-                if img_resp.status_code == 200:
-                    path = img_dir / f"bg_{st}_{i}.jpg"
-                    path.write_bytes(img_resp.content)
-                    s["bg_image"] = str(path)
-                    print(f"    {path.name}")
-            except OpenFangUnavailable:
-                raise
-            except Exception as e:
-                print(f"    [WARN] DALL-E: {e}")
 
     def _h(self, c):
         return c if c.startswith("#") else f"#{c}"
