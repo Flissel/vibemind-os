@@ -11,6 +11,11 @@ from types import ModuleType
 
 BACKEND = Path(__file__).resolve().parents[1]
 APP = BACKEND / "app"
+VIBEMIND_SHARED_REPOSITORY = "https://github.com/Flissel/vibemind-shared.git"
+VIBEMIND_SHARED_COMMIT = "609dda92e0f4370c03085a7e2ff6a6f492693d0d"
+VIBEMIND_SHARED_DEPENDENCY = (
+    f"vibemind-shared @ git+{VIBEMIND_SHARED_REPOSITORY}@{VIBEMIND_SHARED_COMMIT}"
+)
 
 
 def _package(monkeypatch, name: str, path: Path) -> None:
@@ -166,3 +171,24 @@ def test_mirofish_request_failures_propagate_without_local_retries(monkeypatch):
             assert str(exc) == "OpenFang request failed"
         else:
             raise AssertionError("OpenFang request failure must propagate")
+
+
+def test_vibemind_shared_installation_pin_is_consistent() -> None:
+    requirements = (BACKEND / "requirements.txt").read_text(encoding="utf-8")
+    pyproject = (BACKEND / "pyproject.toml").read_text(encoding="utf-8")
+    lock = (BACKEND / "uv.lock").read_text(encoding="utf-8")
+
+    assert VIBEMIND_SHARED_DEPENDENCY in requirements.splitlines()
+    assert f'"{VIBEMIND_SHARED_DEPENDENCY}"' in pyproject
+    assert "[tool.hatch.metadata]" in pyproject
+    assert "allow-direct-references = true" in pyproject
+    assert 'name = "vibemind-shared"' in lock
+    locked_source = (
+        f'{VIBEMIND_SHARED_REPOSITORY}?rev={VIBEMIND_SHARED_COMMIT}'
+        f'#{VIBEMIND_SHARED_COMMIT}'
+    )
+    assert f'source = {{ git = "{locked_source}" }}' in lock
+    assert (
+        f'git = "{VIBEMIND_SHARED_REPOSITORY}?rev={VIBEMIND_SHARED_COMMIT}"'
+        in lock
+    )
