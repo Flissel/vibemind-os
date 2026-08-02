@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -87,3 +88,30 @@ def test_checker_rejects_an_ollama_fungus_embedding_provider(tmp_path: Path) -> 
 
     assert result.returncode == 1
     assert "embeddings.fungus_search.provider" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_error"),
+    [
+        (
+            "model",
+            "text-embedding-3-small",
+            "embeddings.fungus_search.model",
+        ),
+        ("dim", 1536, "embeddings.fungus_search.dim"),
+        ("endpoint", "http://localhost:11434", "unsupported fields: endpoint"),
+    ],
+)
+def test_checker_rejects_fungus_embedding_contract_drift(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    expected_error: str,
+) -> None:
+    """Model, dimension, and extra fields may not weaken the exact contract."""
+    root_config = _write_config_with_fungus_embedding(tmp_path, **{field: value})
+
+    result = _run_checker(root_config)
+
+    assert result.returncode == 1
+    assert expected_error in result.stderr
