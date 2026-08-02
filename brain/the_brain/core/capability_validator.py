@@ -502,7 +502,21 @@ class CapabilityValidator:
                     "reason": "postcondition placeholder unresolved",
                 },
             )
-        v = wo.observe(pc)
+        try:
+            v = wo.observe(pc)
+        except Exception:
+            return self._envelope(
+                valid=False,
+                reason="ground-truth UNVERIFIED: world_observer observation failed",
+                kind=kind,
+                on_fail=on_fail,
+                t0=t0,
+                verified=None,
+                verify_signal={
+                    "status": "unverified",
+                    "reason": "world_observer observation failed",
+                },
+            )
         verified = v.verified_ok  # True | False | None
         # A truth validator is successful only when the independent observer
         # conclusively verified the declared postcondition. UNVERIFIED must
