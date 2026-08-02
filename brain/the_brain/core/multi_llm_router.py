@@ -62,7 +62,7 @@ class MultiLLMRouter:
         self.failures = {name: 0 for name in self.llm_configs}
 
         # Cost accounting belongs to OpenFang, which owns provider selection.
-        self.cost_per_million = {name: 0.0 for name in self.llm_configs}
+        self.cost_per_million = {name: None for name in self.llm_configs}
         self.total_tokens_used = {name: 0 for name in self.llm_configs}
 
     def _get_supermemory_llm(self, user_id: Optional[str] = None):
@@ -290,12 +290,13 @@ class MultiLLMRouter:
                 conversation.append({
                     "role": "assistant",
                     "content": content,
-                    "tool_calls": tool_calls,
+                    "tool_calls": [self._tool_call_payload(call) for call in tool_calls],
                 })
                 for call in tool_calls:
-                    function = getattr(call, "function", None)
-                    name = getattr(function, "name", "")
-                    arguments = getattr(function, "arguments", "{}")
+                    payload = self._tool_call_payload(call)
+                    function = payload["function"]
+                    name = function["name"]
+                    arguments = function["arguments"]
                     try:
                         parsed = json.loads(arguments)
                     except (TypeError, json.JSONDecodeError):
@@ -307,17 +308,40 @@ class MultiLLMRouter:
                         result = f"Error: Tool execution failed — {exc}"
                     conversation.append({
                         "role": "tool",
-                        "tool_call_id": getattr(call, "id", ""),
+                        "tool_call_id": payload["id"],
                         "content": str(result),
                     })
                 rounds_used += 1
         except OpenFangUnavailable:
             logger.exception("OpenFang unavailable for Brain tool execution")
             raise
-        except Exception as exc:
-            logger.debug("OpenFang tool execution error: %s", exc)
-            return None, rounds_used
+        except Exception:
+            logger.exception("OpenFang tool execution error")
+            raise
         return last_content, rounds_used
+
+    @staticmethod
+    def _tool_call_payload(call: Any) -> Dict[str, Any]:
+        """Convert an OpenAI SDK tool-call object to the chat request shape."""
+        if isinstance(call, dict):
+            function = call.get("function", {})
+            return {
+                "id": str(call.get("id", "")),
+                "type": str(call.get("type", "function")),
+                "function": {
+                    "name": str(function.get("name", "")),
+                    "arguments": str(function.get("arguments", "{}")),
+                },
+            }
+        function = getattr(call, "function", None)
+        return {
+            "id": str(getattr(call, "id", "")),
+            "type": str(getattr(call, "type", "function")),
+            "function": {
+                "name": str(getattr(function, "name", "")),
+                "arguments": str(getattr(function, "arguments", "{}")),
+            },
+        }
 
     @staticmethod
     def _openfang_model(role: str) -> str:
@@ -657,18 +681,11 @@ Return JSON with:
         """Get usage statistics for all LLMs"""
         stats = {}
 
-        total_cost = 0.0
-
         for llm_name, config in self.llm_configs.items():
             calls = self.call_counts[llm_name]
             latencies = self.latencies[llm_name]
             failures = self.failures[llm_name]
             tokens = self.total_tokens_used[llm_name]
-
-            # Calculate cost
-            cost_per_token = self.cost_per_million.get(llm_name, 0) / 1_000_000
-            estimated_cost = tokens * cost_per_token
-            total_cost += estimated_cost
 
             stats[llm_name] = {
                 'provider': config.provider,
@@ -680,7 +697,8 @@ Return JSON with:
                 'min_latency_ms': min(latencies) if latencies else 0,
                 'max_latency_ms': max(latencies) if latencies else 0,
                 'tokens_used': int(tokens),
-                'estimated_cost_usd': round(estimated_cost, 4),
+                'estimated_cost_usd': None,
+                'cost_authority': 'openfang',
                 'use_for': config.use_for
             }
 
@@ -694,8 +712,9 @@ Return JSON with:
             'total_failures': total_failures,
             'overall_success_rate': (total_calls - total_failures) / max(1, total_calls),
             'total_tokens_used': int(total_tokens),
-            'total_estimated_cost_usd': round(total_cost, 4),
-            'cost_per_call': round(total_cost / max(1, total_calls), 6)
+            'total_estimated_cost_usd': None,
+            'cost_per_call': None,
+            'cost_authority': 'openfang',
         }
 
         return stats

@@ -51,6 +51,16 @@ class _AsyncCompletions:
         )
 
 
+class _SequencedSyncCompletions:
+    def __init__(self, responses: list[Any]) -> None:
+        self.responses = responses
+        self.calls: list[dict[str, Any]] = []
+
+    def create(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        return self.responses.pop(0)
+
+
 def _client(completions: Any) -> Any:
     return types.SimpleNamespace(chat=types.SimpleNamespace(completions=completions))
 
@@ -143,3 +153,71 @@ def test_router_contains_no_direct_provider_execution(router_module: Any) -> Non
 
     for forbidden in ("requests.post", "openrouter.ai", "api.groq.com", "OPENROUTER_API_KEY", "GROQ_API_KEY"):
         assert forbidden not in source
+
+
+def test_statistics_marks_cost_as_openfang_authoritative(router_module: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(router_module, "get_client_sync", lambda role: _client(_SyncCompletions("response")))
+    router = router_module.MultiLLMRouter(enable_infinite_chat=False)
+
+    router.route("question_generation", "estimate non-financial token use")
+    statistics = router.get_statistics()
+
+    assert statistics["communication"]["tokens_used"] > 0
+    assert statistics["communication"]["estimated_cost_usd"] is None
+    assert statistics["communication"]["cost_authority"] == "openfang"
+    assert statistics["overall"]["total_estimated_cost_usd"] is None
+    assert statistics["overall"]["cost_authority"] == "openfang"
+
+
+def test_tool_call_reraises_hard_openfang_error(router_module: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    def fail(**kwargs: Any) -> Any:
+        raise RuntimeError("OpenFang completion failed")
+
+    monkeypatch.setattr(router_module, "get_client_sync", lambda role: _client(types.SimpleNamespace(create=fail)))
+    router = router_module.MultiLLMRouter(enable_infinite_chat=False)
+
+    with pytest.raises(RuntimeError, match="OpenFang completion failed"):
+        router._call_openrouter_with_tools(
+            model="legacy-model",
+            messages=[{"role": "user", "content": "use a tool"}],
+            tools=[],
+            tool_executors={},
+        )
+
+    assert "OpenFang tool execution error" in caplog.text
+
+
+def test_tool_call_keeps_openai_message_shape_across_rounds(router_module: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    tool_call = types.SimpleNamespace(
+        id="call_1",
+        type="function",
+        function=types.SimpleNamespace(name="lookup", arguments='{"id": "42"}'),
+    )
+    completions = _SequencedSyncCompletions([
+        types.SimpleNamespace(choices=[types.SimpleNamespace(message=types.SimpleNamespace(content=None, tool_calls=[tool_call]))]),
+        types.SimpleNamespace(choices=[types.SimpleNamespace(message=types.SimpleNamespace(content="completed", tool_calls=None))]),
+    ])
+    monkeypatch.setattr(router_module, "get_client_sync", lambda role: _client(completions))
+    router = router_module.MultiLLMRouter(enable_infinite_chat=False)
+
+    result, rounds = router._call_openrouter_with_tools(
+        model="legacy-model",
+        messages=[{"role": "user", "content": "find item"}],
+        tools=[{"type": "function", "function": {"name": "lookup"}}],
+        tool_executors={"lookup": lambda arguments: f"found {arguments['id']}"},
+    )
+
+    assert (result, rounds) == ("completed", 1)
+    assert completions.calls[1]["messages"] == [
+        {"role": "user", "content": "find item"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": '{"id": "42"}'},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "found 42"},
+    ]
