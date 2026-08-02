@@ -16,6 +16,7 @@ Key Components:
 """
 
 import asyncio
+import inspect
 import logging
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
@@ -40,6 +41,18 @@ except ImportError:
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _supports_client_option(client_class: Any, option: str) -> bool:
+    """Return whether an AutoGen client constructor accepts an option."""
+    try:
+        parameters = inspect.signature(client_class).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == option or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
 
 
 @dataclass
@@ -200,18 +213,29 @@ class BrainSwarmOrchestrator:
 
         logger.info(f"Using {info['provider']}/{info['model']} for swarm agents (role={_PLANNING_ROLE})")
 
-        return OpenAIChatCompletionClient(
-            model=get_model(_PLANNING_ROLE),
-            api_key=api_key,
-            base_url=info["base_url"],
+        client_kwargs = {
+            "model": get_model(_PLANNING_ROLE),
+            "api_key": api_key,
+            "base_url": info["base_url"],
             # Disable parallel tool calls to prevent multiple handoffs
-            model_kwargs={
+            "model_kwargs": {
                 "parallel_tool_calls": False,
                 "extra_headers": {
                     "HTTP-Referer": "https://github.com/Flissel/the_brain",
                     "X-Title": "Tahlamus Brain Swarm"
                 }
-            }
+            },
+        }
+        transport_options = {
+            "max_retries": info.get("max_retries"),
+            "timeout": info.get("timeout_seconds"),
+        }
+        for option, value in transport_options.items():
+            if value is not None and _supports_client_option(OpenAIChatCompletionClient, option):
+                client_kwargs[option] = value
+
+        return OpenAIChatCompletionClient(
+            **client_kwargs
         )
 
     def _create_brain_context_message(self) -> str:
