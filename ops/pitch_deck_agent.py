@@ -1961,15 +1961,6 @@ def build_briefing(answers):
 # =====================================================================
 
 async def main():
-    env_file = Path(__file__).parent / ".env"
-    if env_file.exists():
-        with open(env_file, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, value = line.split("=", 1)
-                    os.environ[key.strip()] = value.strip()
-
     # CLI Flags parsen
     quick = len(sys.argv) >= 3
     flags = {"images": False, "pdf": False, "email": False, "feedback": False}
@@ -1998,6 +1989,15 @@ async def main():
 
     if flags["images"]:
         raise OpenFangUnavailable(IMAGE_UNAVAILABLE_MESSAGE)
+
+    env_file = Path(__file__).parent / ".env"
+    if env_file.exists():
+        with open(env_file, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, value = line.split("=", 1)
+                    os.environ[key.strip()] = value.strip()
 
     if not os.environ.get("OPENFANG_API_KEY"):
         print("FEHLER: OPENFANG_API_KEY nicht gesetzt!")

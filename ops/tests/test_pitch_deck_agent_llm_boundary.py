@@ -440,6 +440,38 @@ def test_explicit_images_cli_fails_before_runtime_or_llm_work(
     registrations: list[str] = []
     client_roles: list[str] = []
     pipeline_requests: list[Any] = []
+    env_events: list[str] = []
+
+    class ExistingEnvPath:
+        def __init__(self, value: Any) -> None:
+            self.value = value
+
+        @property
+        def parent(self) -> ExistingEnvPath:
+            return self
+
+        def __truediv__(self, name: str) -> ExistingEnvPath:
+            assert name == ".env"
+            return self
+
+        def exists(self) -> bool:
+            env_events.append("exists")
+            return True
+
+    class ExistingEnvFile:
+        def __enter__(self) -> ExistingEnvFile:
+            return self
+
+        def __exit__(self, *_: Any) -> None:
+            pass
+
+        def __iter__(self) -> Any:
+            env_events.append("read")
+            return iter(["OPENFANG_API_KEY=from-env\n"])
+
+    def open_env(*_: Any, **__: Any) -> ExistingEnvFile:
+        env_events.append("open")
+        return ExistingEnvFile()
 
     class Runtime:
         def start(self) -> None:
@@ -464,6 +496,8 @@ def test_explicit_images_cli_fails_before_runtime_or_llm_work(
         "SingleThreadedAgentRuntime",
         runtime_factory,
     )
+    monkeypatch.setattr(pitch_deck_module, "Path", ExistingEnvPath)
+    monkeypatch.setattr(builtins, "open", open_env)
     monkeypatch.setattr(
         pitch_deck_module,
         "get_client_sync",
@@ -494,6 +528,8 @@ def test_explicit_images_cli_fails_before_runtime_or_llm_work(
     assert registrations == []
     assert client_roles == []
     assert pipeline_requests == []
+    assert env_events == []
+    assert "OPENFANG_API_KEY" not in pitch_deck_module.os.environ
 
 
 def test_source_has_no_direct_provider_or_legacy_role_boundary() -> None:
