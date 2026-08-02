@@ -3,6 +3,8 @@
 from pathlib import Path
 import sys
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "brain" / "the_brain"))
@@ -12,12 +14,11 @@ from core.plan_schema import HopSpec
 
 
 class _Registry:
-    def __init__(self, agent: str | None) -> None:
-        self.agent = agent
+    def __init__(self, agents: dict[str, str] | None = None) -> None:
+        self.agents = agents or {}
 
     def get_event_agent(self, event_id: str) -> str | None:
-        assert event_id == "bubble.create"
-        return self.agent
+        return self.agents.get(event_id)
 
 
 class _Executor:
@@ -48,7 +49,8 @@ def test_registered_event_gateway_failure_never_invokes_direct_executor(monkeypa
     built_targets = []
     _disable_kg_hits(monkeypatch)
     monkeypatch.setattr(
-        "core.agent_yaml_registry.get_registry", lambda: _Registry("brain-bubbles")
+        "core.agent_yaml_registry.get_registry",
+        lambda: _Registry({"bubble.create": "brain-bubbles"}),
     )
     monkeypatch.setattr(
         "core.capability_targets.build_executor",
@@ -64,11 +66,21 @@ def test_registered_event_gateway_failure_never_invokes_direct_executor(monkeypa
     assert all(not target.startswith("direct:") for target in built_targets)
 
 
-def test_registered_event_preserves_explicit_mcp_target(monkeypatch):
+@pytest.mark.parametrize(
+    "target",
+    [
+        "mcp:brain-bubbles:spaces-ideas:vibemind_bubble_create",
+        "n8n-mcp:n8n.status",
+        "coding-engine:GET:/api/status",
+        "openfang:brain-bubbles",
+    ],
+)
+def test_registered_event_preserves_explicit_authoritative_target(monkeypatch, target):
     built_targets = []
     _disable_kg_hits(monkeypatch)
     monkeypatch.setattr(
-        "core.agent_yaml_registry.get_registry", lambda: _Registry("brain-bubbles")
+        "core.agent_yaml_registry.get_registry",
+        lambda: _Registry({"bubble.create": "brain-bubbles"}),
     )
     monkeypatch.setattr(
         "core.capability_targets.build_executor",
@@ -76,18 +88,18 @@ def test_registered_event_preserves_explicit_mcp_target(monkeypatch):
     )
 
     result = PlanExecutor()._exec_hop(
-        _hop(target="mcp:brain-bubbles:spaces-ideas:vibemind_bubble_create"), {}
+        _hop(target=target), {}
     )
 
     assert result.ok is True
-    assert built_targets == ["mcp:brain-bubbles:spaces-ideas:vibemind_bubble_create"]
+    assert built_targets == [target]
 
 
 def test_unregistered_capability_keeps_its_existing_target(monkeypatch):
     built_targets = []
     _disable_kg_hits(monkeypatch)
     monkeypatch.setattr(
-        "core.agent_yaml_registry.get_registry", lambda: _Registry(None)
+        "core.agent_yaml_registry.get_registry", lambda: _Registry()
     )
     monkeypatch.setattr(
         "core.capability_targets.build_executor",
@@ -100,6 +112,27 @@ def test_unregistered_capability_keeps_its_existing_target(monkeypatch):
 
     assert result.ok is True
     assert built_targets == ["direct:test:run"]
+
+
+def test_registered_minibook_event_preserves_structured_direct_target(monkeypatch):
+    built_targets = []
+    _disable_kg_hits(monkeypatch)
+    monkeypatch.setattr(
+        "core.agent_yaml_registry.get_registry",
+        lambda: _Registry({"minibook.status": "brain-knowledge"}),
+    )
+    monkeypatch.setattr(
+        "core.capability_targets.build_executor",
+        lambda target: built_targets.append(target) or _Executor({"ok": True, "result": {}}),
+    )
+
+    target = "direct:spaces.minibook.tools.minibook_tools:status"
+    result = PlanExecutor()._exec_hop(
+        _hop(capability="minibook.status", target=target), {}
+    )
+
+    assert result.ok is True
+    assert built_targets == [target]
 
 
 def test_registered_space_registry_load_failure_is_fail_closed(monkeypatch):
