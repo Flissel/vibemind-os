@@ -1,5 +1,5 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 pydantic>=2.0.0
-vibemind-shared @ git+https://github.com/Flissel/vibemind-shared.git@ec1bce5cf22fd12f3c4df996ee545090bf75e5c1
+vibemind-shared @ git+https://github.com/Flissel/vibemind-shared.git@609dda92e0f4370c03085a7e2ff6a6f492693d0d
 pytest>=8.0.0
