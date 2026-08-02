@@ -752,7 +752,6 @@ class McpExecutor(_BaseRemoteExecutor):
                 f"migrate legacy target {target!r}"
             )
         self.agent_name, self.server, self.tool = parts
-        self._agent_id: Optional[str] = None
 
     @staticmethod
     def _tool_namespace_component(value: str) -> str:
@@ -788,11 +787,13 @@ class McpExecutor(_BaseRemoteExecutor):
         *,
         headers: Dict[str, str],
         payload: Optional[Dict[str, Any]] = None,
+        retry_transient: bool = False,
     ) -> Any:
-        """Perform a bounded retry only for transient OpenFang failures."""
+        """Issue one OpenFang request, retrying only safe idempotent GETs."""
         timeout = float(os.environ.get("CAPABILITY_HTTP_TIMEOUT_S", "60"))
         last_error: Optional[requests.exceptions.RequestException] = None
-        for attempt in range(self._RETRY_ATTEMPTS):
+        attempts = self._RETRY_ATTEMPTS if retry_transient else 1
+        for attempt in range(attempts):
             try:
                 if method == "GET":
                     response = requests.get(url, headers=headers, timeout=timeout)
@@ -811,16 +812,18 @@ class McpExecutor(_BaseRemoteExecutor):
                 if not self._is_transient_openfang_error(exc):
                     raise RuntimeError(f"OpenFang request failed at {url}: {exc}") from exc
                 last_error = exc
-                if attempt < self._RETRY_ATTEMPTS - 1:
+                if attempt < attempts - 1:
                     time.sleep(self._RETRY_DELAYS_S[attempt])
         raise OpenFangUnavailable(
-            f"OpenFang unavailable at {url} after {self._RETRY_ATTEMPTS} attempts"
+            f"OpenFang unavailable at {url} after {attempts} attempt(s)"
         ) from last_error
 
     def _resolve_agent_id(self, base: str, headers: Dict[str, str]) -> str:
-        if self._agent_id:
-            return self._agent_id
-        body = self._request_json("GET", f"{base}/api/agents", headers=headers)
+        # Resolve for every execution. OpenFang restart/re-registration changes
+        # agent UUIDs, so caching would leave a permanent stale authority token.
+        body = self._request_json(
+            "GET", f"{base}/api/agents", headers=headers, retry_transient=True,
+        )
         agents = body.get("agents") if isinstance(body, dict) else body
         if not isinstance(agents, list):
             raise RuntimeError("OpenFang /api/agents returned an invalid agent list")
@@ -831,8 +834,7 @@ class McpExecutor(_BaseRemoteExecutor):
                 continue
             agent_id = agent.get("id") or agent.get("agent_id")
             if isinstance(agent_id, str) and agent_id.strip():
-                self._agent_id = agent_id.strip()
-                return self._agent_id
+                return agent_id.strip()
         raise RuntimeError(
             f"OpenFang agent {self.agent_name!r} is not registered; MCP execution denied"
         )
@@ -860,6 +862,9 @@ class McpExecutor(_BaseRemoteExecutor):
                 "method": "tools/call",
                 "params": {"name": self.namespaced_tool, "arguments": payload},
             },
+            # Do not retry tools/call: the outcome may be unknown after a
+            # transport failure and the tool itself may have mutated state.
+            retry_transient=False,
         )
         if not isinstance(response, dict):
             raise RuntimeError("OpenFang MCP returned a non-object JSON-RPC response")

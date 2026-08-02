@@ -122,3 +122,63 @@ def test_transient_agent_resolution_retries_within_openfang_boundary(monkeypatch
 
     assert result["ok"] is True
     assert attempts["agents"] == 2
+
+
+def test_agent_id_is_refreshed_for_each_mcp_call_after_openfang_restart(monkeypatch):
+    monkeypatch.setenv("OPENFANG_URL", "http://openfang.test")
+    monkeypatch.setenv("OPENFANG_API_KEY", "test-token")
+    resolved_ids = iter(["agent-before-restart", "agent-after-restart"])
+    bound_ids = []
+
+    def _get(*args, **kwargs):
+        return _Response([{"name": "brain-ideas", "id": next(resolved_ids)}])
+
+    def _post(*args, **kwargs):
+        bound_ids.append(kwargs["headers"]["X-OpenFang-Agent-Id"])
+        return _Response({"result": {"content": [], "isError": False}})
+
+    monkeypatch.setattr("core.capability_targets.requests.get", _get)
+    monkeypatch.setattr("core.capability_targets.requests.post", _post)
+    executor = McpExecutor("mcp:brain-ideas:vibemind-db:ideas.list")
+
+    assert executor.call()["ok"] is True
+    assert executor.call()["ok"] is True
+    assert bound_ids == ["agent-before-restart", "agent-after-restart"]
+
+
+class _ServerErrorResponse:
+    status_code = 503
+
+    def raise_for_status(self):
+        error = requests.exceptions.HTTPError("OpenFang unavailable")
+        error.response = self
+        raise error
+
+
+@pytest.mark.parametrize("post_failure", [
+    lambda: requests.exceptions.ConnectionError("connection dropped"),
+    _ServerErrorResponse,
+])
+def test_mcp_post_transient_failure_is_never_retried(monkeypatch, post_failure):
+    monkeypatch.setenv("OPENFANG_URL", "http://openfang.test")
+    monkeypatch.setenv("OPENFANG_API_KEY", "test-token")
+    calls = {"agents": 0, "mcp": 0}
+
+    def _get(*args, **kwargs):
+        calls["agents"] += 1
+        return _Response([{"name": "brain-ideas", "id": "agent-uuid"}])
+
+    def _post(*args, **kwargs):
+        calls["mcp"] += 1
+        failure = post_failure()
+        if isinstance(failure, Exception):
+            raise failure
+        return failure
+
+    monkeypatch.setattr("core.capability_targets.requests.get", _get)
+    monkeypatch.setattr("core.capability_targets.requests.post", _post)
+
+    result = McpExecutor("mcp:brain-ideas:vibemind-db:ideas.list").call()
+
+    assert result["ok"] is False
+    assert calls == {"agents": 1, "mcp": 1}
