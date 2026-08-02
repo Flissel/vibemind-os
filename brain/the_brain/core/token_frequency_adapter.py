@@ -413,7 +413,7 @@ Respond with JSON only:
         oscillator: ActionPotentialOscillator,
         llm_router: Optional[Any] = None,
         use_local_fallback: bool = True,
-        use_ollama: bool = True,
+        use_ollama: bool = False,
         ollama_model: str = "llama3.2:1b",
         ollama_host: str = "localhost",
         ollama_port: int = 11434,
