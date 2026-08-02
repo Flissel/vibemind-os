@@ -37,13 +37,26 @@ from autogen_core import (
     RoutedAgent,
     message_handler,
 )
-from vibemind_shared import OpenFangUnavailable, get_client_sync, get_model
-
-
 PITCH_DECK_ROLE = "agent_pitch_deck"
 IMAGE_UNAVAILABLE_MESSAGE = (
     "OpenFang gateway does not support AI image generation for pitch decks"
 )
+
+
+class OpenFangCapabilityUnavailable(RuntimeError):
+    """The configured gateway cannot provide a requested capability."""
+
+
+def get_client_sync(role):
+    from vibemind_shared import get_client_sync as shared_get_client_sync
+
+    return shared_get_client_sync(role)
+
+
+def get_model(role):
+    from vibemind_shared import get_model as shared_get_model
+
+    return shared_get_model(role)
 
 
 # =====================================================================
@@ -573,13 +586,14 @@ ECHTE FIRMENDATEN:
 
     def _call(self, prompt):
         # The OpenFang role is the only LLM path. Do not retry with a direct provider.
+        resp = self.client.chat.completions.create(
+            model=get_model(PITCH_DECK_ROLE),
+            web_search_options={"search_context_size": "medium"},
+            messages=[{"role": "user", "content": prompt + "\n\nAntworte NUR mit validem JSON."}],
+            temperature=0.5,
+        )
+
         try:
-            resp = self.client.chat.completions.create(
-                model=get_model(PITCH_DECK_ROLE),
-                web_search_options={"search_context_size": "medium"},
-                messages=[{"role": "user", "content": prompt + "\n\nAntworte NUR mit validem JSON."}],
-                temperature=0.5,
-            )
             text = resp.choices[0].message.content
             # Bereinige Markdown-Code-Bloecke falls vorhanden
             if "```json" in text:
@@ -587,8 +601,6 @@ ECHTE FIRMENDATEN:
             elif "```" in text:
                 text = text.split("```")[1].split("```")[0]
             return json.loads(text.strip())
-        except OpenFangUnavailable:
-            raise
         except Exception as e:
             print(f"    [WARN] Recherche fehlgeschlagen: {e}")
             return {}
@@ -731,16 +743,17 @@ class DesignDirectorAgent(RoutedAgent):
             ensure_ascii=False,
         )
 
+        resp = self.client.chat.completions.create(
+            model=get_model(PITCH_DECK_ROLE),
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": DESIGN_DIRECTOR_PROMPT},
+                {"role": "user", "content": f"Slides:\n{slides_summary}"},
+            ],
+            temperature=0.6,
+        )
+
         try:
-            resp = self.client.chat.completions.create(
-                model=get_model(PITCH_DECK_ROLE),
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": DESIGN_DIRECTOR_PROMPT},
-                    {"role": "user", "content": f"Slides:\n{slides_summary}"},
-                ],
-                temperature=0.6,
-            )
             data = json.loads(resp.choices[0].message.content)
             designs = {d["slide_index"]: d for d in data.get("designs", [])}
 
@@ -769,8 +782,6 @@ class DesignDirectorAgent(RoutedAgent):
 
             print(f"  [DESIGN] {applied} Slides mit speziellem Layout versehen.")
 
-        except OpenFangUnavailable:
-            raise
         except Exception as e:
             print(f"  [DESIGN] Fehler: {str(e)[:80]} - verwende Standard-Layouts")
 
@@ -793,7 +804,7 @@ class ChartGeneratorAgent(RoutedAgent):
     async def generate(self, message: ContentResult, ctx: MessageContext) -> DeckBuildRequest:
         # The pinned OpenFang gateway exposes no image-generation capability.
         if message.images:
-            raise OpenFangUnavailable(IMAGE_UNAVAILABLE_MESSAGE)
+            raise OpenFangCapabilityUnavailable(IMAGE_UNAVAILABLE_MESSAGE)
 
         self.chart_dir.mkdir(exist_ok=True)
         print(f"  [CHARTS] Generiere Visualisierungen...")
@@ -1758,20 +1769,19 @@ def generate_investor_emails(company, research_json, output_path):
         traction="; ".join(traction_items) or "Early Stage",
     )
 
+    resp = client.chat.completions.create(
+        model=get_model(PITCH_DECK_ROLE),
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.7,
+    )
+
     try:
-        resp = client.chat.completions.create(
-            model=get_model(PITCH_DECK_ROLE),
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-        )
         emails = resp.choices[0].message.content
 
         email_file = Path(output_path).with_suffix(".emails.txt")
         email_file.write_text(emails, encoding="utf-8")
         print(f"  [EMAILS] Gespeichert: {email_file}")
         return str(email_file)
-    except OpenFangUnavailable:
-        raise
     except Exception as e:
         print(f"  [EMAILS] Fehler: {e}")
         return None
@@ -1869,13 +1879,14 @@ async def feedback_loop(slides, company, theme_fields, runtime):
 
         prompt = FEEDBACK_PROMPT.format(slides_json=slides_json, feedback=feedback)
 
+        resp = client.chat.completions.create(
+            model=get_model(PITCH_DECK_ROLE),
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.5,
+        )
+
         try:
-            resp = client.chat.completions.create(
-                model=get_model(PITCH_DECK_ROLE),
-                response_format={"type": "json_object"},
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.5,
-            )
             data = json.loads(resp.choices[0].message.content)
             changed = data.get("changed_indices", [])
             new_slides = data.get("slides", slides)
@@ -1901,8 +1912,6 @@ async def feedback_loop(slides, company, theme_fields, runtime):
                     print(f"  [FEEDBACK] Neues Deck: {result.output_path}")
             else:
                 print(f"  [FEEDBACK] Konnte Slides nicht aktualisieren.")
-        except OpenFangUnavailable:
-            raise
         except Exception as e:
             print(f"  [FEEDBACK] Fehler: {e}")
 
@@ -1988,7 +1997,7 @@ async def main():
         flags["images"] = answers.get("images", False)
 
     if flags["images"]:
-        raise OpenFangUnavailable(IMAGE_UNAVAILABLE_MESSAGE)
+        raise OpenFangCapabilityUnavailable(IMAGE_UNAVAILABLE_MESSAGE)
 
     env_file = Path(__file__).parent / ".env"
     if env_file.exists():

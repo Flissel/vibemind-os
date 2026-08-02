@@ -28,6 +28,26 @@ class _Completions:
         )
 
 
+class _SharedOpenFangUnavailable(RuntimeError):
+    pass
+
+
+class _ResponseCompletions:
+    def __init__(self, text: str, calls: list[dict[str, Any]]) -> None:
+        self.text = text
+        self.calls = calls
+
+    def create(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        return types.SimpleNamespace(
+            choices=[
+                types.SimpleNamespace(
+                    message=types.SimpleNamespace(content=self.text)
+                )
+            ]
+        )
+
+
 def _client() -> Any:
     return types.SimpleNamespace(
         chat=types.SimpleNamespace(completions=_Completions()),
@@ -53,6 +73,14 @@ def _failing_client(error: Exception, calls: list[dict[str, Any]]) -> Any:
     return types.SimpleNamespace(
         chat=types.SimpleNamespace(
             completions=_FailingCompletions(error, calls)
+        )
+    )
+
+
+def _response_client(text: str, calls: list[dict[str, Any]]) -> Any:
+    return types.SimpleNamespace(
+        chat=types.SimpleNamespace(
+            completions=_ResponseCompletions(text, calls)
         )
     )
 
@@ -90,8 +118,9 @@ def _research_result(module: Any) -> Any:
     )
 
 
-@pytest.fixture
-def pitch_deck_module(monkeypatch: pytest.MonkeyPatch) -> Any:
+def _install_non_provider_import_stubs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     matplotlib = types.ModuleType("matplotlib")
     matplotlib.use = lambda *_: None
     monkeypatch.setitem(sys.modules, "matplotlib", matplotlib)
@@ -120,12 +149,13 @@ def pitch_deck_module(monkeypatch: pytest.MonkeyPatch) -> Any:
     autogen.message_handler = lambda function: function
     monkeypatch.setitem(sys.modules, "autogen_core", autogen)
 
+
+@pytest.fixture
+def pitch_deck_module(monkeypatch: pytest.MonkeyPatch) -> Any:
+    _install_non_provider_import_stubs(monkeypatch)
+
     shared = types.ModuleType("vibemind_shared")
-
-    class SharedOpenFangUnavailable(RuntimeError):
-        pass
-
-    shared.OpenFangUnavailable = SharedOpenFangUnavailable
+    shared.OpenFangUnavailable = _SharedOpenFangUnavailable
     shared.get_client_sync = lambda role: _client()
     shared.get_model = lambda role: f"openfang:{role}"
     monkeypatch.setitem(sys.modules, "vibemind_shared", shared)
@@ -141,6 +171,93 @@ def pitch_deck_module(monkeypatch: pytest.MonkeyPatch) -> Any:
         sys.path.insert(0, str(OPS_ROOT))
     sys.modules.pop("pitch_deck_agent", None)
     return importlib.import_module("pitch_deck_agent")
+
+
+def test_import_and_explicit_image_preflight_do_not_touch_shared_or_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared_imports: list[str] = []
+    env_events: list[str] = []
+    original_import = builtins.__import__
+
+    class ForbiddenSharedImport(RuntimeError):
+        pass
+
+    def import_guard(
+        name: str,
+        globals_: Any = None,
+        locals_: Any = None,
+        fromlist: Any = (),
+        level: int = 0,
+    ) -> Any:
+        if name == "vibemind_shared" or name.startswith("vibemind_shared."):
+            shared_imports.append(name)
+            raise ForbiddenSharedImport(name)
+        return original_import(name, globals_, locals_, fromlist, level)
+
+    class ExistingEnvPath:
+        def __init__(self, value: Any) -> None:
+            self.value = value
+
+        @property
+        def parent(self) -> ExistingEnvPath:
+            return self
+
+        def __truediv__(self, name: str) -> ExistingEnvPath:
+            assert name == ".env"
+            return self
+
+        def exists(self) -> bool:
+            env_events.append("exists")
+            return True
+
+    class ExistingEnvFile:
+        def __enter__(self) -> ExistingEnvFile:
+            return self
+
+        def __exit__(self, *_: Any) -> None:
+            pass
+
+        def __iter__(self) -> Any:
+            env_events.append("read")
+            return iter(["OPENFANG_API_KEY=from-env\n"])
+
+    def open_env(*_: Any, **__: Any) -> ExistingEnvFile:
+        env_events.append("open")
+        return ExistingEnvFile()
+
+    _install_non_provider_import_stubs(monkeypatch)
+    monkeypatch.delitem(sys.modules, "vibemind_shared", raising=False)
+    monkeypatch.delitem(sys.modules, "vibemind_shared.llm_client", raising=False)
+    monkeypatch.setattr(builtins, "__import__", import_guard)
+    if str(OPS_ROOT) not in sys.path:
+        sys.path.insert(0, str(OPS_ROOT))
+    sys.modules.pop("pitch_deck_agent", None)
+
+    try:
+        module = importlib.import_module("pitch_deck_agent")
+    except ForbiddenSharedImport:
+        module = None
+
+    assert shared_imports == []
+    assert module is not None
+
+    monkeypatch.setattr(module, "Path", ExistingEnvPath)
+    monkeypatch.setattr(builtins, "open", open_env)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["pitch_deck_agent.py", "VibeMind", "AI platform", "--images"],
+    )
+    monkeypatch.delenv("OPENFANG_API_KEY", raising=False)
+
+    with pytest.raises(module.OpenFangCapabilityUnavailable) as error:
+        asyncio.run(module.main())
+
+    assert str(error.value) == IMAGE_UNAVAILABLE_MESSAGE
+    assert shared_imports == []
+    assert env_events == []
+    assert "OPENFANG_API_KEY" not in module.os.environ
 
 
 def test_all_llm_acquisitions_use_the_canonical_pitch_deck_role(
@@ -210,8 +327,7 @@ def test_openfang_unavailable_from_client_acquisition_propagates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert hasattr(pitch_deck_module, "get_client_sync")
-    assert hasattr(pitch_deck_module, "OpenFangUnavailable")
-    unavailable = pitch_deck_module.OpenFangUnavailable("OpenFang unavailable")
+    unavailable = _SharedOpenFangUnavailable("OpenFang unavailable")
 
     def raise_unavailable(role: str) -> Any:
         assert role == PITCH_DECK_ROLE
@@ -219,35 +335,54 @@ def test_openfang_unavailable_from_client_acquisition_propagates(
 
     monkeypatch.setattr(pitch_deck_module, "get_client_sync", raise_unavailable)
 
-    with pytest.raises(pitch_deck_module.OpenFangUnavailable, match="OpenFang unavailable"):
+    with pytest.raises(_SharedOpenFangUnavailable) as error:
         pitch_deck_module.BriefingAgent()
 
+    assert error.value is unavailable
 
-def test_research_request_reraises_openfang_unavailable_without_retry(
+
+def test_research_request_reraises_generic_provider_failure_without_retry(
     pitch_deck_module: Any,
 ) -> None:
     calls: list[dict[str, Any]] = []
-    unavailable = pitch_deck_module.OpenFangUnavailable("research unavailable")
+    failure = ValueError("research request rejected with 400")
     agent = pitch_deck_module.ResearcherAgent()
-    agent.client = _failing_client(unavailable, calls)
+    agent.client = _failing_client(failure, calls)
 
-    with pytest.raises(
-        pitch_deck_module.OpenFangUnavailable,
-        match="research unavailable",
-    ):
+    with pytest.raises(ValueError) as error:
         agent._call("research prompt")
 
+    assert error.value is failure
     assert len(calls) == 1
 
 
-def test_content_request_reraises_openfang_unavailable(
+def test_shared_openfang_unavailable_request_is_not_converted(
+    pitch_deck_module: Any,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    unavailable = _SharedOpenFangUnavailable("OpenFang unavailable")
+    agent = pitch_deck_module.ResearcherAgent()
+    agent.client = _failing_client(unavailable, calls)
+
+    with pytest.raises(_SharedOpenFangUnavailable) as error:
+        agent._call("research prompt")
+
+    assert error.value is unavailable
+    assert not isinstance(
+        error.value,
+        pitch_deck_module.OpenFangCapabilityUnavailable,
+    )
+    assert len(calls) == 1
+
+
+def test_content_request_reraises_generic_provider_failure(
     pitch_deck_module: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict[str, Any]] = []
-    unavailable = pitch_deck_module.OpenFangUnavailable("content unavailable")
+    failure = ValueError("content request rejected with 422")
     agent = pitch_deck_module.ContentGeneratorAgent()
-    agent.client = _failing_client(unavailable, calls)
+    agent.client = _failing_client(failure, calls)
     monkeypatch.setattr(
         pitch_deck_module,
         "get_rag",
@@ -258,79 +393,119 @@ def test_content_request_reraises_openfang_unavailable(
         ),
     )
 
-    with pytest.raises(
-        pitch_deck_module.OpenFangUnavailable,
-        match="content unavailable",
-    ):
+    with pytest.raises(ValueError) as error:
         asyncio.run(agent.handle(_research_result(pitch_deck_module), None))
 
+    assert error.value is failure
     assert len(calls) == 1
 
 
-def test_design_request_reraises_openfang_unavailable(
+def test_design_request_reraises_generic_provider_failure(
     pitch_deck_module: Any,
 ) -> None:
     calls: list[dict[str, Any]] = []
-    unavailable = pitch_deck_module.OpenFangUnavailable("design unavailable")
+    failure = ValueError("design request rejected with 401")
     agent = pitch_deck_module.DesignDirectorAgent()
-    agent.client = _failing_client(unavailable, calls)
+    agent.client = _failing_client(failure, calls)
 
-    with pytest.raises(
-        pitch_deck_module.OpenFangUnavailable,
-        match="design unavailable",
-    ):
+    with pytest.raises(ValueError) as error:
         asyncio.run(
             agent.direct(_content_result(pitch_deck_module, images=False), None)
         )
 
+    assert error.value is failure
     assert len(calls) == 1
 
 
-def test_email_request_reraises_openfang_unavailable(
+def test_email_request_reraises_generic_provider_failure(
     pitch_deck_module: Any,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     calls: list[dict[str, Any]] = []
-    unavailable = pitch_deck_module.OpenFangUnavailable("email unavailable")
+    failure = ValueError("email request rejected with 403")
     monkeypatch.setattr(
         pitch_deck_module,
         "get_client_sync",
-        lambda role: _failing_client(unavailable, calls),
+        lambda role: _failing_client(failure, calls),
     )
 
-    with pytest.raises(
-        pitch_deck_module.OpenFangUnavailable,
-        match="email unavailable",
-    ):
+    with pytest.raises(ValueError) as error:
         pitch_deck_module.generate_investor_emails(
             "VibeMind", "{}", tmp_path / "deck.pptx"
         )
 
+    assert error.value is failure
     assert len(calls) == 1
 
 
-def test_feedback_request_reraises_openfang_unavailable(
+def test_feedback_request_reraises_generic_provider_failure(
     pitch_deck_module: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict[str, Any]] = []
-    unavailable = pitch_deck_module.OpenFangUnavailable("feedback unavailable")
+    failure = ValueError("feedback request rejected with 429")
     monkeypatch.setattr(
         pitch_deck_module,
         "get_client_sync",
-        lambda role: _failing_client(unavailable, calls),
+        lambda role: _failing_client(failure, calls),
     )
-    monkeypatch.setattr(builtins, "input", lambda _: "revise slide 1")
+    answers = iter(["revise slide 1", ""])
+    monkeypatch.setattr(builtins, "input", lambda _: next(answers))
 
-    with pytest.raises(
-        pitch_deck_module.OpenFangUnavailable,
-        match="feedback unavailable",
-    ):
+    with pytest.raises(ValueError) as error:
         asyncio.run(
             pitch_deck_module.feedback_loop([], "VibeMind", {}, object())
         )
 
+    assert error.value is failure
+    assert len(calls) == 1
+
+
+def test_research_parse_failure_degrades_after_successful_response(
+    pitch_deck_module: Any,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    agent = pitch_deck_module.ResearcherAgent()
+    agent.client = _response_client("not-json", calls)
+
+    assert agent._call("research prompt") == {}
+    assert len(calls) == 1
+
+
+def test_design_parse_failure_keeps_existing_slides(
+    pitch_deck_module: Any,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    message = _content_result(pitch_deck_module, images=False)
+    agent = pitch_deck_module.DesignDirectorAgent()
+    agent.client = _response_client("not-json", calls)
+
+    result = asyncio.run(agent.direct(message, None))
+
+    assert result.slides is message.slides
+    assert len(calls) == 1
+
+
+def test_feedback_parse_failure_keeps_existing_slides(
+    pitch_deck_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    slides = [{"slide_type": "intro", "title": "Original"}]
+    answers = iter(["revise slide 1", ""])
+    monkeypatch.setattr(
+        pitch_deck_module,
+        "get_client_sync",
+        lambda role: _response_client("not-json", calls),
+    )
+    monkeypatch.setattr(builtins, "input", lambda _: next(answers))
+
+    result = asyncio.run(
+        pitch_deck_module.feedback_loop(slides, "VibeMind", {}, object())
+    )
+
+    assert result is slides
     assert len(calls) == 1
 
 
@@ -348,12 +523,14 @@ def test_image_request_fails_before_unsupported_gateway_call(
     agent = pitch_deck_module.ChartGeneratorAgent()
     agent.chart_dir = tmp_path / "charts"
 
-    with pytest.raises(pitch_deck_module.OpenFangUnavailable) as error:
+    with pytest.raises(pitch_deck_module.OpenFangCapabilityUnavailable) as error:
         asyncio.run(
             agent.generate(_content_result(pitch_deck_module, images=True), None)
         )
 
     assert str(error.value) == IMAGE_UNAVAILABLE_MESSAGE
+    assert type(error.value) is pitch_deck_module.OpenFangCapabilityUnavailable
+    assert not isinstance(error.value, _SharedOpenFangUnavailable)
     assert client_roles == []
 
 
@@ -479,7 +656,7 @@ def test_explicit_images_cli_fails_before_runtime_or_llm_work(
 
         async def send_message(self, message: Any, agent_id: Any) -> Any:
             pipeline_requests.append(message)
-            raise pitch_deck_module.OpenFangUnavailable(
+            raise pitch_deck_module.OpenFangCapabilityUnavailable(
                 IMAGE_UNAVAILABLE_MESSAGE
             )
 
@@ -520,7 +697,7 @@ def test_explicit_images_cli_fails_before_runtime_or_llm_work(
     )
     monkeypatch.delenv("OPENFANG_API_KEY", raising=False)
 
-    with pytest.raises(pitch_deck_module.OpenFangUnavailable) as error:
+    with pytest.raises(pitch_deck_module.OpenFangCapabilityUnavailable) as error:
         asyncio.run(pitch_deck_module.main())
 
     assert str(error.value) == IMAGE_UNAVAILABLE_MESSAGE
@@ -538,6 +715,24 @@ def test_source_has_no_direct_provider_or_legacy_role_boundary() -> None:
     tree = ast.parse(source)
 
     assert "from vibemind_shared import" in source
+    top_level_shared_imports = [
+        node
+        for node in tree.body
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module is not None
+            and node.module.startswith("vibemind_shared")
+        )
+        or (
+            isinstance(node, ast.Import)
+            and any(
+                alias.name.startswith("vibemind_shared")
+                for alias in node.names
+            )
+        )
+    ]
+    assert top_level_shared_imports == []
+    assert "OpenFangUnavailable =" not in source
     imports_openai = [
         node
         for node in ast.walk(tree)
