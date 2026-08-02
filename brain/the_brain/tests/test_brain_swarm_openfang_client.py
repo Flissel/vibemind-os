@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from autogen_ext.models.openai import OpenAIChatCompletionClient
 
 
 BRAIN_ROOT = Path(__file__).resolve().parents[1]
@@ -113,12 +114,10 @@ def test_model_client_forwards_planning_openfang_transport_config(
         "base_url": "http://openfang.test/v1",
         "max_retries": max_retries,
         "timeout": timeout_seconds,
-        "model_kwargs": {
-            "parallel_tool_calls": False,
-            "extra_headers": {
-                "HTTP-Referer": "https://github.com/Flissel/the_brain",
-                "X-Title": "Tahlamus Brain Swarm",
-            },
+        "parallel_tool_calls": False,
+        "default_headers": {
+            "HTTP-Referer": "https://github.com/Flissel/the_brain",
+            "X-Title": "Tahlamus Brain Swarm",
         },
     }]
 
@@ -126,12 +125,20 @@ def test_model_client_forwards_planning_openfang_transport_config(
 class _LegacyOpenAIClient:
     calls: list[dict[str, Any]] = []
 
-    def __init__(self, model: str, api_key: str, base_url: str, model_kwargs: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        model: str,
+        api_key: str,
+        base_url: str,
+        parallel_tool_calls: bool,
+        default_headers: dict[str, str],
+    ) -> None:
         self.calls.append({
             "model": model,
             "api_key": api_key,
             "base_url": base_url,
-            "model_kwargs": model_kwargs,
+            "parallel_tool_calls": parallel_tool_calls,
+            "default_headers": default_headers,
         })
 
 
@@ -152,6 +159,31 @@ def test_model_client_skips_transport_options_for_a_legacy_constructor(
 
     assert isinstance(client, _LegacyOpenAIClient)
     assert _LegacyOpenAIClient.calls[0]["base_url"] == "http://openfang.test/v1"
+    assert _LegacyOpenAIClient.calls[0]["parallel_tool_calls"] is False
+    assert _LegacyOpenAIClient.calls[0]["default_headers"] == {
+        "HTTP-Referer": "https://github.com/Flissel/the_brain",
+        "X-Title": "Tahlamus Brain Swarm",
+    }
+
+
+def test_model_client_projects_flat_openai_args_on_autogen_075(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_info = {
+        "provider": "openfang",
+        "model": "gpt-4o",
+        "base_url": "http://openfang.test/v1",
+        "max_retries": 3,
+        "timeout_seconds": 30.0,
+    }
+    module, _, _ = _load_orchestrator(monkeypatch, OpenAIChatCompletionClient, provider_info)
+
+    client = module.BrainSwarmOrchestrator.__new__(module.BrainSwarmOrchestrator)._create_model_client()
+
+    assert client._create_args["parallel_tool_calls"] is False
+    assert "model_kwargs" not in client._create_args
+    assert client._client.default_headers["HTTP-Referer"] == "https://github.com/Flissel/the_brain"
+    assert client._client.default_headers["X-Title"] == "Tahlamus Brain Swarm"
 
 
 def test_model_client_fails_before_constructing_without_an_api_key(

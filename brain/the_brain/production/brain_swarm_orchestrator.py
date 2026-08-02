@@ -218,12 +218,10 @@ class BrainSwarmOrchestrator:
             "api_key": api_key,
             "base_url": info["base_url"],
             # Disable parallel tool calls to prevent multiple handoffs
-            "model_kwargs": {
-                "parallel_tool_calls": False,
-                "extra_headers": {
-                    "HTTP-Referer": "https://github.com/Flissel/the_brain",
-                    "X-Title": "Tahlamus Brain Swarm"
-                }
+            "parallel_tool_calls": False,
+            "default_headers": {
+                "HTTP-Referer": "https://github.com/Flissel/the_brain",
+                "X-Title": "Tahlamus Brain Swarm"
             },
         }
         transport_options = {
