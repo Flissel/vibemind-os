@@ -114,11 +114,12 @@ roles:
 overrides: {}
 
 # =============================================================================
-# Embeddings — transitional inventory
+# Embeddings — bounded Fungus gateway contract plus transitional inventory
 # =============================================================================
-# These entries retain the current behavior until the bounded embedding-service
-# migration. They are not covered by the LLM routing check and are not evidence
-# that embedding consolidation or fail-closed behavior is complete.
+# fungus_search is the sole role covered by the OpenFang embedding contract.
+# The remaining entries retain current behavior until separate bounded migrations;
+# they are not evidence that embedding consolidation or fail-closed behavior is
+# complete for those roles.
 embeddings:
   default:
     driver: sentence_transformers
@@ -126,9 +127,10 @@ embeddings:
     dim: 384
 
   fungus_search:
-    driver: sentence_transformers
-    model: all-MiniLM-L6-v2
-    dim: 384
+    driver: openai
+    provider: openfang
+    model: text-embedding-3-large
+    dim: 3072
 
   openai_large:
     driver: openai

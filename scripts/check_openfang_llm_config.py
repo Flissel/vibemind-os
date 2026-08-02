@@ -24,6 +24,12 @@ OPENFANG_PROVIDER = {
     "max_retries": 3,
     "timeout_seconds": 30,
 }
+FUNGUS_SEARCH_EMBEDDING = {
+    "driver": "openai",
+    "provider": "openfang",
+    "model": "text-embedding-3-large",
+    "dim": 3072,
+}
 DIRECT_EXCEPTIONS = {
     "voice_realtime": ("openai", "gpt-4o-realtime-preview"),
 }
@@ -116,6 +122,31 @@ def _validate_provider_config(config: dict[str, Any], label: str) -> list[str]:
     return errors
 
 
+def _validate_fungus_search_embedding(config: dict[str, Any]) -> list[str]:
+    """Require the bounded Fungus embedding role to use OpenFang exactly."""
+    embeddings = config.get("embeddings")
+    if not isinstance(embeddings, dict):
+        return ["embeddings must be a mapping"]
+
+    fungus_search = embeddings.get("fungus_search")
+    if not isinstance(fungus_search, dict):
+        return ["embeddings.fungus_search must be a mapping"]
+
+    errors: list[str] = []
+    for field, expected in FUNGUS_SEARCH_EMBEDDING.items():
+        if fungus_search.get(field) != expected:
+            errors.append(
+                f"embeddings.fungus_search.{field} must be {expected!r}"
+            )
+    unexpected = set(fungus_search) - set(FUNGUS_SEARCH_EMBEDDING)
+    if unexpected:
+        errors.append(
+            "embeddings.fungus_search contains unsupported fields: "
+            + ", ".join(sorted(unexpected))
+        )
+    return errors
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Validate fail-closed OpenFang LLM config without network calls."
@@ -161,6 +192,8 @@ def main() -> int:
         )
     if providers.get("openfang") != OPENFANG_PROVIDER:
         errors.append("providers.openfang does not match the fail-closed gateway contract")
+
+    errors.extend(_validate_fungus_search_embedding(config))
 
     default = config.get("default", {})
     errors.extend(
