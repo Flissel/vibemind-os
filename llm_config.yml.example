@@ -21,7 +21,7 @@ keys:
 providers:
   openfang:
     type: openai
-    base_url: http://127.0.0.1:4200/v1
+    base_url: ${OPENFANG_URL}/v1
     key_ref: openfang
     fail_closed: true
     max_retries: 3
@@ -40,6 +40,15 @@ default:
 
 roles:
   # Brain
+  # Both the current brain_* names and legacy direct call-site names stay
+  # OpenFang-routed while callers migrate; neither config can select a provider.
+  fast_reasoning:          { provider: openfang, model: "openfang:brain-fallback",   temperature: 0.3 }
+  planning:                { provider: openfang, model: "openfang:brain-planner",    temperature: 0.7 }
+  context_tracking:        { provider: openfang, model: "openfang:brain-knowledge",  temperature: 0.5 }
+  communication:           { provider: openfang, model: "openfang:brain-writer",     temperature: 0.8 }
+  long_term_memory:        { provider: openfang, model: "openfang:brain-knowledge",  temperature: 0.5 }
+  supermemory:             { provider: openfang, model: "openfang:brain-knowledge",  temperature: 0.5 }
+  format_generation:       { provider: openfang, model: "openfang:brain-writer",     temperature: 0.2 }
   brain_fast_reasoning:    { provider: openfang, model: "openfang:brain-fallback",   temperature: 0.3 }
   brain_planning:          { provider: openfang, model: "openfang:brain-planner",    temperature: 0.7 }
   brain_context_tracking:  { provider: openfang, model: "openfang:brain-knowledge",  temperature: 0.5 }
