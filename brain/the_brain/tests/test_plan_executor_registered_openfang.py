@@ -24,8 +24,10 @@ class _Registry:
 class _Executor:
     def __init__(self, result: dict) -> None:
         self.result = result
+        self.calls = 0
 
     def call_with_arg(self, arg, arg_kwarg=None, extra_params=None):
+        self.calls += 1
         return self.result
 
 
@@ -69,6 +71,27 @@ def test_deterministic_bubble_create_gateway_failure_never_invokes_llm_or_direct
         not target.startswith(("openfang:", "direct:", "supabase:"))
         for target in built_targets
     )
+
+
+def test_deterministic_bubble_create_failure_is_never_retried_by_plan(monkeypatch):
+    _disable_kg_hits(monkeypatch)
+    monkeypatch.setattr(
+        "core.agent_yaml_registry.get_registry",
+        lambda: _Registry({"bubble.create": "brain-bubbles"}),
+    )
+    executor = _Executor(
+        {"ok": False, "error": "uncertain outcome after MCP mutation attempt"}
+    )
+    monkeypatch.setattr(
+        "core.capability_targets.build_executor", lambda target: executor
+    )
+    hop = _hop()
+    hop.retries = 3
+
+    result = PlanExecutor()._exec_hop(hop, {})
+
+    assert result.ok is False
+    assert executor.calls == 1
 
 
 @pytest.mark.parametrize(
