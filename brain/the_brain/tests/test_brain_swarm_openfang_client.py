@@ -17,6 +17,7 @@ from autogen_ext.models.openai import OpenAIChatCompletionClient
 
 BRAIN_ROOT = Path(__file__).resolve().parents[1]
 MODULE_NAME = "production.brain_swarm_orchestrator"
+RAW_UPSTREAM_SENTINEL = "raw-upstream-sentinel-91"
 
 
 class _SharedOpenFangUnavailable(RuntimeError):
@@ -123,6 +124,14 @@ def _failing_orchestrator(module: Any, failure: BaseException) -> Any:
     return _orchestrator_with_swarm(module, _FailingSwarm(failure))
 
 
+def _openai_timeout_with_raw_detail() -> openai.APITimeoutError:
+    failure = openai.APITimeoutError(
+        request=httpx.Request("POST", "http://openfang.test/v1/chat/completions")
+    )
+    failure.args = (f"request timed out: {RAW_UPSTREAM_SENTINEL}",)
+    return failure
+
+
 def test_process_task_reraises_openfang_unavailable_from_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -148,31 +157,32 @@ def test_process_task_reraises_openfang_unavailable_from_stream(
 )
 def test_process_task_redacts_serialized_transport_markers_as_generic_failure(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
     marker: str,
 ) -> None:
     provider_info = {"provider": "openfang", "model": "openfang:brain-planner"}
     module, _, _ = _load_orchestrator(monkeypatch, _CapturingOpenAIClient, provider_info)
-    failure = RuntimeError(f"{marker}: sensitive upstream detail")
+    failure = RuntimeError(f"{marker}: {RAW_UPSTREAM_SENTINEL}")
 
     with pytest.raises(RuntimeError) as caught:
         asyncio.run(_failing_orchestrator(module, failure).process_task("must fail closed"))
 
     assert type(caught.value) is RuntimeError
-    assert caught.value.__cause__ is failure
+    assert caught.value.__cause__ is None
     assert str(caught.value) == "Swarm execution failed"
+    assert RAW_UPSTREAM_SENTINEL not in caplog.text
 
 
 @pytest.mark.parametrize(
     "failure",
     [
         openai.APIConnectionError(
+            message=f"connection failed: {RAW_UPSTREAM_SENTINEL}",
             request=httpx.Request("POST", "http://openfang.test/v1/chat/completions")
         ),
-        openai.APITimeoutError(
-            request=httpx.Request("POST", "http://openfang.test/v1/chat/completions")
-        ),
+        _openai_timeout_with_raw_detail(),
         openai.RateLimitError(
-            "rate limited",
+            f"rate limited: {RAW_UPSTREAM_SENTINEL}",
             response=httpx.Response(
                 429,
                 request=httpx.Request("POST", "http://openfang.test/v1/chat/completions"),
@@ -180,7 +190,7 @@ def test_process_task_redacts_serialized_transport_markers_as_generic_failure(
             body=None,
         ),
         openai.InternalServerError(
-            "internal server failure",
+            f"internal server failure: {RAW_UPSTREAM_SENTINEL}",
             response=httpx.Response(
                 500,
                 request=httpx.Request("POST", "http://openfang.test/v1/chat/completions"),
@@ -191,6 +201,7 @@ def test_process_task_redacts_serialized_transport_markers_as_generic_failure(
 )
 def test_process_task_normalizes_typed_openai_transport_errors(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
     failure: BaseException,
 ) -> None:
     provider_info = {"provider": "openfang", "model": "openfang:brain-planner"}
@@ -199,24 +210,29 @@ def test_process_task_normalizes_typed_openai_transport_errors(
     with pytest.raises(module.OpenFangUnavailable) as caught:
         asyncio.run(_failing_orchestrator(module, failure).process_task("must fail closed"))
 
-    assert caught.value.__cause__ is failure
+    assert caught.value.__cause__ is None
     assert str(caught.value) == "OpenFang unavailable during swarm execution"
+    assert RAW_UPSTREAM_SENTINEL not in caplog.text
+    assert type(failure).__name__ in caplog.text
 
 
 def test_process_task_redacts_counterfeit_openai_class_as_generic_failure(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     provider_info = {"provider": "openfang", "model": "openfang:brain-planner"}
     module, _, _ = _load_orchestrator(monkeypatch, _CapturingOpenAIClient, provider_info)
     counterfeit_type = type("APIConnectionError", (RuntimeError,), {})
-    failure = counterfeit_type("sensitive counterfeit detail")
+    failure = counterfeit_type(RAW_UPSTREAM_SENTINEL)
 
     with pytest.raises(RuntimeError) as caught:
         asyncio.run(_failing_orchestrator(module, failure).process_task("must fail closed"))
 
     assert type(caught.value) is RuntimeError
-    assert caught.value.__cause__ is failure
+    assert caught.value.__cause__ is None
     assert str(caught.value) == "Swarm execution failed"
+    assert RAW_UPSTREAM_SENTINEL not in caplog.text
+    assert "APIConnectionError" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -243,10 +259,14 @@ def test_process_task_propagates_errors_unchanged_for_other_providers(
 
 @pytest.mark.parametrize(
     "failure",
-    [asyncio.TimeoutError("swarm timed out"), ValueError("unfamiliar failure")],
+    [
+        asyncio.TimeoutError(f"swarm timed out: {RAW_UPSTREAM_SENTINEL}"),
+        ValueError(f"unfamiliar failure: {RAW_UPSTREAM_SENTINEL}"),
+    ],
 )
 def test_process_task_redacts_unrelated_openfang_stream_failures(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
     failure: BaseException,
 ) -> None:
     provider_info = {"provider": "openfang", "model": "openfang:brain-planner"}
@@ -256,8 +276,10 @@ def test_process_task_redacts_unrelated_openfang_stream_failures(
         asyncio.run(_failing_orchestrator(module, failure).process_task("must not return an error result"))
 
     assert type(caught.value) is RuntimeError
-    assert caught.value.__cause__ is failure
+    assert caught.value.__cause__ is None
     assert str(caught.value) == "Swarm execution failed"
+    assert RAW_UPSTREAM_SENTINEL not in caplog.text
+    assert type(failure).__name__ in caplog.text
 
 
 def test_process_task_preserves_successful_swarm_result(

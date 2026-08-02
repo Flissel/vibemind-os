@@ -435,12 +435,18 @@ Please coordinate execution of this task."""
                     InternalServerError,
                 ),
             ):
-                logger.exception("OpenFang transport failed during swarm execution")
+                logger.error(
+                    "OpenFang transport failed during swarm execution; error_type=%s",
+                    type(error).__name__,
+                )
                 raise OpenFangUnavailable(
                     "OpenFang unavailable during swarm execution"
-                ) from error
-            logger.exception("Swarm execution failed")
-            raise RuntimeError("Swarm execution failed") from error
+                ) from None
+            logger.error(
+                "Swarm execution failed at OpenFang boundary; error_type=%s",
+                type(error).__name__,
+            )
+            raise RuntimeError("Swarm execution failed") from None
 
         # Format swarm result
         swarm_result = "\n".join([str(msg) for msg in swarm_messages])
