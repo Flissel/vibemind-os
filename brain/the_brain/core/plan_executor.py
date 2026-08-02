@@ -1263,6 +1263,8 @@ class PlanExecutor:
                         contract_pass=False, reward=-1.0,
                     )
 
+        single_plan_attempt = False
+
         # A canonical Space event routes through its assigned OpenFang agent.
         # Agent YAMLs remain metadata, while config/space_agent_registry.yml is
         # the authority. A missing/down agent must fail in OpenFangExecutor;
@@ -1318,6 +1320,35 @@ class PlanExecutor:
                 # in some other form, leave as-is; otherwise it won't match
                 # a canonical registry entry and its existing target remains.
                 pass
+            if event_id == "bubble.create":
+                try:
+                    from .capability_targets import resolve_registry_execution_target
+                    deterministic_target = resolve_registry_execution_target(event_id)
+                except Exception as e:
+                    return HopResult(
+                        step_id=hop.step_id, ok=False,
+                        error=f"canonical deterministic MCP routing: {type(e).__name__}: {e}",
+                        capability=hop.capability, target=target,
+                        rendered_arg=rendered_arg, kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False, reward=-1.0,
+                    )
+                if not deterministic_target:
+                    return HopResult(
+                        step_id=hop.step_id, ok=False,
+                        error=(
+                            "canonical deterministic MCP routing: "
+                            "missing MCP execution metadata for bubble.create"
+                        ),
+                        capability=hop.capability, target=target,
+                        rendered_arg=rendered_arg, kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False, reward=-1.0,
+                    )
+                target = deterministic_target
+                # A failed MCP response can follow an already-applied mutation.
+                # Never replay deterministic bubble.create at the Plan layer.
+                single_plan_attempt = True
             assigned_agent = None
             try:
                 assigned_agent = get_registry().get_event_agent(event_id) if event_id else None
@@ -1467,7 +1498,8 @@ class PlanExecutor:
                     _extra["_tool_allowlist"] = _allow
             except Exception as e:  # noqa: BLE001 — nie den Hop daran scheitern lassen
                 logger.warning(f"[plan_exec] tool-scope skipped ({e})")
-        for attempt in range(max(1, hop.retries)):
+        plan_attempts = 1 if single_plan_attempt else max(1, hop.retries)
+        for attempt in range(plan_attempts):
             try:
                 if hop.arg_kwarg:
                     last = exe.call_with_arg(rendered_arg, arg_kwarg=hop.arg_kwarg,

@@ -877,11 +877,21 @@ class McpExecutor(_BaseRemoteExecutor):
         )
         if not isinstance(response, dict):
             raise RuntimeError("OpenFang MCP returned a non-object JSON-RPC response")
-        if response.get("error"):
-            error = response["error"]
+        if response.get("jsonrpc") != "2.0":
+            raise RuntimeError("OpenFang MCP returned an invalid JSON-RPC version")
+        if response.get("id") != request_id:
+            raise RuntimeError("OpenFang MCP returned a mismatched JSON-RPC request id")
+        has_result = "result" in response
+        has_error = "error" in response
+        if has_result == has_error:
+            raise RuntimeError(
+                "OpenFang MCP JSON-RPC response must contain exactly one result or error"
+            )
+        if has_error:
+            error = _redact_evidence(response["error"])
             message = error.get("message") if isinstance(error, dict) else str(error)
             raise RuntimeError(f"OpenFang MCP JSON-RPC error: {message}")
-        result = response.get("result")
+        result = response["result"]
         if not isinstance(result, dict):
             raise RuntimeError("OpenFang MCP JSON-RPC response omitted result")
         if result.get("isError") is True:
@@ -921,10 +931,52 @@ def _n8n_event_specs() -> Dict[str, Dict[str, Any]]:
 
 
 def resolve_registry_execution_target(capability: str) -> Optional[str]:
-    """Resolve canonical n8n event ids without duplicating tool names in Brain."""
-    if not isinstance(capability, str) or not capability.startswith("n8n."):
+    """Resolve explicit deterministic registry events to OpenFang MCP targets.
+
+    Only events which declare ``execution.kind: mcp`` participate.  This keeps
+    other Space routing unchanged while requiring the canonical agent, server,
+    and tool to be complete before a deterministic event can execute.
+    """
+    if not isinstance(capability, str) or not capability:
         return None
-    return f"n8n-mcp:{capability}" if capability in _n8n_event_specs() else None
+
+    if capability.startswith("n8n."):
+        return f"n8n-mcp:{capability}" if capability in _n8n_event_specs() else None
+
+    path = _space_registry_path()
+    if not path.is_file():
+        raise RuntimeError(f"canonical space registry unavailable: {path}")
+    with path.open("r", encoding="utf-8") as handle:
+        document = yaml.safe_load(handle) or {}
+
+    spaces = document.get("spaces") or {}
+    if not isinstance(spaces, dict):
+        raise RuntimeError("canonical space registry has no spaces")
+    for space_id, space in spaces.items():
+        if not isinstance(space, dict):
+            continue
+        events = space.get("events") or {}
+        spec = events.get(capability) if isinstance(events, dict) else None
+        if not isinstance(spec, dict):
+            continue
+        execution = spec.get("execution")
+        if not isinstance(execution, dict) or execution.get("kind") != "mcp":
+            return None
+        agent = space.get("agent")
+        server = execution.get("server")
+        tool = spec.get("tool")
+        missing = [
+            name for name, value in (
+                ("agent", agent), ("server", server), ("tool", tool),
+            ) if not isinstance(value, str) or not value.strip()
+        ]
+        if missing:
+            raise RuntimeError(
+                f"deterministic MCP metadata for '{capability}' is missing "
+                f"{', '.join(missing)}"
+            )
+        return f"mcp:{agent.strip()}:{server.strip()}:{tool.strip()}"
+    return None
 
 
 def _redact_evidence(value: Any) -> Any:
@@ -937,9 +989,10 @@ def _redact_evidence(value: Any) -> Any:
         return [_redact_evidence(item) for item in value]
     if isinstance(value, str):
         redacted = re.sub(r"(?i)bearer\s+[a-z0-9._~+/=-]+", "Bearer [REDACTED]", value)
-        runtime_token = os.environ.get("N8N_MCP_TOKEN", "")
-        if runtime_token:
-            redacted = redacted.replace(runtime_token, "[REDACTED]")
+        for env_name in ("N8N_MCP_TOKEN", "OPENFANG_API_KEY"):
+            runtime_token = os.environ.get(env_name, "")
+            if runtime_token:
+                redacted = redacted.replace(runtime_token, "[REDACTED]")
         return redacted
     return value
 

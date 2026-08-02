@@ -24,8 +24,10 @@ class _Registry:
 class _Executor:
     def __init__(self, result: dict) -> None:
         self.result = result
+        self.calls = 0
 
     def call_with_arg(self, arg, arg_kwarg=None, extra_params=None):
+        self.calls += 1
         return self.result
 
 
@@ -44,8 +46,8 @@ def _disable_kg_hits(monkeypatch) -> None:
     )
 
 
-def test_registered_event_gateway_failure_never_invokes_direct_executor(monkeypatch):
-    """OpenFang outage is surfaced; the previous direct target is never used."""
+def test_deterministic_bubble_create_gateway_failure_never_invokes_llm_or_direct_executor(monkeypatch):
+    """bubble.create reaches only its registry-declared OpenFang MCP tool."""
     built_targets = []
     _disable_kg_hits(monkeypatch)
     monkeypatch.setattr(
@@ -62,20 +64,85 @@ def test_registered_event_gateway_failure_never_invokes_direct_executor(monkeypa
     result = PlanExecutor()._exec_hop(_hop(), {})
 
     assert result.ok is False
-    assert built_targets == ["openfang:brain-bubbles"]
-    assert all(not target.startswith("direct:") for target in built_targets)
+    assert built_targets == [
+        "mcp:brain-bubbles:spaces-ideas:bubble_create"
+    ]
+    assert all(
+        not target.startswith(("openfang:", "direct:", "supabase:"))
+        for target in built_targets
+    )
+
+
+def test_deterministic_bubble_create_failure_is_never_retried_by_plan(monkeypatch):
+    _disable_kg_hits(monkeypatch)
+    monkeypatch.setattr(
+        "core.agent_yaml_registry.get_registry",
+        lambda: _Registry({"bubble.create": "brain-bubbles"}),
+    )
+    executor = _Executor(
+        {"ok": False, "error": "uncertain outcome after MCP mutation attempt"}
+    )
+    monkeypatch.setattr(
+        "core.capability_targets.build_executor", lambda target: executor
+    )
+    hop = _hop()
+    hop.retries = 3
+
+    result = PlanExecutor()._exec_hop(hop, {})
+
+    assert result.ok is False
+    assert executor.calls == 1
 
 
 @pytest.mark.parametrize(
-    "target",
+    "execution_lines",
     [
-        "mcp:brain-bubbles:spaces-ideas:vibemind_bubble_create",
-        "n8n-mcp:n8n.status",
-        "coding-engine:GET:/api/status",
-        "openfang:brain-bubbles",
+        [],
+        ["        execution:", "          kind: mcp"],
     ],
 )
-def test_registered_event_preserves_explicit_authoritative_target(monkeypatch, target):
+def test_deterministic_bubble_create_missing_mcp_metadata_fails_closed(
+    monkeypatch, tmp_path, execution_lines
+):
+    built_targets = []
+    _disable_kg_hits(monkeypatch)
+    registry = tmp_path / "space_agent_registry.yml"
+    registry.write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "spaces:",
+                "  bubbles:",
+                "    agent: brain-bubbles",
+                "    enabled: true",
+                "    events:",
+                "      bubble.create:",
+                "        tool: bubble_create",
+                *execution_lines,
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "core.capability_targets._space_registry_path", lambda: registry
+    )
+    monkeypatch.setattr(
+        "core.agent_yaml_registry.get_registry",
+        lambda: _Registry({"bubble.create": "brain-bubbles"}),
+    )
+    monkeypatch.setattr(
+        "core.capability_targets.build_executor",
+        lambda target: built_targets.append(target) or _Executor({"ok": True, "result": {}}),
+    )
+
+    result = PlanExecutor()._exec_hop(_hop(), {})
+
+    assert result.ok is False
+    assert "deterministic MCP" in (result.error or "")
+    assert built_targets == []
+
+
+def test_deterministic_bubble_create_preserves_exact_mcp_target(monkeypatch):
     built_targets = []
     _disable_kg_hits(monkeypatch)
     monkeypatch.setattr(
@@ -87,12 +154,43 @@ def test_registered_event_preserves_explicit_authoritative_target(monkeypatch, t
         lambda target: built_targets.append(target) or _Executor({"ok": True, "result": {}}),
     )
 
-    result = PlanExecutor()._exec_hop(
-        _hop(target=target), {}
-    )
+    target = "mcp:brain-bubbles:spaces-ideas:bubble_create"
+    result = PlanExecutor()._exec_hop(_hop(target=target), {})
 
     assert result.ok is True
     assert built_targets == [target]
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "direct:test:run",
+        "supabase:bubble.create",
+        "openfang:brain-bubbles",
+        "n8n-mcp:n8n.status",
+        "coding-engine:GET:/api/status",
+    ],
+)
+def test_deterministic_bubble_create_replaces_every_noncanonical_target(
+    monkeypatch, target
+):
+    built_targets = []
+    _disable_kg_hits(monkeypatch)
+    monkeypatch.setattr(
+        "core.agent_yaml_registry.get_registry",
+        lambda: _Registry({"bubble.create": "brain-bubbles"}),
+    )
+    monkeypatch.setattr(
+        "core.capability_targets.build_executor",
+        lambda candidate: built_targets.append(candidate) or _Executor({"ok": True, "result": {}}),
+    )
+
+    result = PlanExecutor()._exec_hop(_hop(target=target), {})
+
+    assert result.ok is True
+    assert built_targets == [
+        "mcp:brain-bubbles:spaces-ideas:bubble_create"
+    ]
 
 
 def test_unregistered_capability_keeps_its_existing_target(monkeypatch):
@@ -153,4 +251,6 @@ def test_registered_space_registry_load_failure_is_fail_closed(monkeypatch):
     result = PlanExecutor()._exec_hop(_hop(), {})
 
     assert result.ok is False
-    assert built_targets == ["openfang:brain-bubbles"]
+    assert built_targets == [
+        "mcp:brain-bubbles:spaces-ideas:bubble_create"
+    ]
