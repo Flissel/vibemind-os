@@ -73,7 +73,7 @@ def dispatcher_module(monkeypatch: pytest.MonkeyPatch) -> Any:
 @pytest.mark.parametrize(("tool_name", "role", "agent"), [
     (tool_name, role, agent) for tool_name, (role, agent) in ROUTES.items()
 ])
-def test_dispatch_routes_legacy_aliases_through_openfang_factory(
+def test_dispatch_routes_legacy_aliases_through_async_openfang_factory(
     dispatcher_module: Any,
     monkeypatch: pytest.MonkeyPatch,
     tool_name: str,
@@ -83,11 +83,11 @@ def test_dispatch_routes_legacy_aliases_through_openfang_factory(
     completions = _SyncCompletions()
     factory_roles: list[str] = []
 
-    def get_client_sync(actual_role: str) -> Any:
+    def get_client(actual_role: str) -> Any:
         factory_roles.append(actual_role)
         return _client(completions)
 
-    monkeypatch.setattr(dispatcher_module, "get_client_sync", get_client_sync)
+    monkeypatch.setattr(dispatcher_module, "get_client", get_client)
     monkeypatch.setattr(dispatcher_module, "get_model", lambda actual_role: MODELS_BY_ROLE[actual_role])
     dispatcher = dispatcher_module.SubagentDispatcher(llm_router=object())
 
@@ -135,8 +135,6 @@ async def test_adispatch_uses_async_openfang_factory(
     result = await dispatcher.adispatch(
         "openai_subagent",
         prompt="write this",
-        model="legacy-openai-model",
-        provider="legacy-openai-provider",
     )
 
     assert result["ok"] is True
@@ -151,7 +149,7 @@ async def test_adispatch_uses_async_openfang_factory(
     {"model": "direct-provider-model"},
     {"provider": "direct-provider"},
 ])
-def test_dispatch_ignores_direct_provider_or_model_overrides(
+def test_dispatch_blocks_direct_provider_or_model_overrides(
     dispatcher_module: Any,
     monkeypatch: pytest.MonkeyPatch,
     override: dict[str, str],
@@ -159,20 +157,24 @@ def test_dispatch_ignores_direct_provider_or_model_overrides(
     completions = _SyncCompletions()
     factory_roles: list[str] = []
 
-    def get_client_sync(role: str) -> Any:
+    def get_client(role: str) -> Any:
         factory_roles.append(role)
         return _client(completions)
 
-    monkeypatch.setattr(dispatcher_module, "get_client_sync", get_client_sync)
+    monkeypatch.setattr(dispatcher_module, "get_client", get_client)
     monkeypatch.setattr(dispatcher_module, "get_model", lambda role: MODELS_BY_ROLE[role])
     dispatcher = dispatcher_module.SubagentDispatcher(llm_router=object())
 
     result = dispatcher.dispatch("claude_subagent", prompt="do not bypass", **override)
 
-    assert result["ok"] is True
-    assert result["model"] == "openfang:brain-planner"
-    assert factory_roles == ["brain_planning"]
-    assert completions.calls[0]["model"] == "openfang:brain-planner"
+    assert result == {
+        "ok": False,
+        "tool": "claude_subagent",
+        "text": "",
+        "error": "direct provider/model overrides are not permitted",
+    }
+    assert factory_roles == []
+    assert completions.calls == []
 
 
 def test_dispatch_provider_failure_keeps_measured_latency(
@@ -186,7 +188,7 @@ def test_dispatch_provider_failure_keeps_measured_latency(
 
     client = _client(types.SimpleNamespace(create=failing_create))
     monkeypatch.setattr(dispatcher_module.time, "time", lambda: next(time_values))
-    monkeypatch.setattr(dispatcher_module, "get_client_sync", lambda role: client)
+    monkeypatch.setattr(dispatcher_module, "get_client", lambda role: client)
     monkeypatch.setattr(dispatcher_module, "get_model", lambda role: MODELS_BY_ROLE[role])
     dispatcher = dispatcher_module.SubagentDispatcher(llm_router=object())
 
@@ -208,7 +210,7 @@ def test_dispatch_logs_and_reraises_openfang_unavailability(
     def unavailable_client(role: str) -> Any:
         raise unavailable
 
-    monkeypatch.setattr(dispatcher_module, "get_client_sync", unavailable_client)
+    monkeypatch.setattr(dispatcher_module, "get_client", unavailable_client)
     monkeypatch.setattr(dispatcher_module, "get_model", lambda role: MODELS_BY_ROLE[role])
     dispatcher = dispatcher_module.SubagentDispatcher(llm_router=object())
 
@@ -216,3 +218,82 @@ def test_dispatch_logs_and_reraises_openfang_unavailability(
         dispatcher.dispatch("claude_subagent", prompt="must not fall back")
 
     assert "OpenFang unavailable" in caplog.text
+
+
+def test_dispatch_retries_openfang_unavailability_with_a_bounded_attempt_count(
+    dispatcher_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared_unavailable = sys.modules["vibemind_shared"].OpenFangUnavailable
+    completions = _SyncCompletions()
+    attempts: list[str] = []
+
+    def flaky_client(role: str) -> Any:
+        attempts.append(role)
+        if len(attempts) == 1:
+            raise shared_unavailable("OpenFang starting")
+        return _client(completions)
+
+    monkeypatch.setattr(dispatcher_module, "get_client", flaky_client)
+    monkeypatch.setattr(dispatcher_module, "get_model", lambda role: MODELS_BY_ROLE[role])
+    dispatcher = dispatcher_module.SubagentDispatcher(llm_router=object())
+
+    result = dispatcher.dispatch("claude_subagent", prompt="retry once")
+
+    assert result["ok"] is True
+    assert attempts == ["brain_planning", "brain_planning"]
+    assert len(completions.calls) == 1
+
+
+def test_dispatch_reraises_after_bounded_openfang_retries(
+    dispatcher_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared_unavailable = sys.modules["vibemind_shared"].OpenFangUnavailable
+    attempts: list[str] = []
+
+    def unavailable_client(role: str) -> Any:
+        attempts.append(role)
+        raise shared_unavailable("OpenFang still unavailable")
+
+    monkeypatch.setattr(dispatcher_module, "get_client", unavailable_client)
+    monkeypatch.setattr(dispatcher_module, "get_model", lambda role: MODELS_BY_ROLE[role])
+    dispatcher = dispatcher_module.SubagentDispatcher(llm_router=object())
+
+    with pytest.raises(shared_unavailable, match="OpenFang still unavailable"):
+        dispatcher.dispatch("claude_subagent", prompt="fail closed")
+
+    assert attempts == ["brain_planning", "brain_planning"]
+
+
+def test_constructor_keeps_legacy_router_reference_without_execution_authority(
+    dispatcher_module: Any,
+) -> None:
+    legacy_router = object()
+
+    dispatcher = dispatcher_module.SubagentDispatcher(llm_router=legacy_router)
+
+    assert dispatcher._router is legacy_router
+
+
+@pytest.mark.asyncio
+async def test_dispatch_uses_openfang_client_from_a_running_event_loop(
+    dispatcher_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    completions = _SyncCompletions()
+    factory_roles: list[str] = []
+
+    def get_client(role: str) -> Any:
+        factory_roles.append(role)
+        return _client(completions)
+
+    monkeypatch.setattr(dispatcher_module, "get_client", get_client)
+    monkeypatch.setattr(dispatcher_module, "get_model", lambda role: MODELS_BY_ROLE[role])
+    dispatcher = dispatcher_module.SubagentDispatcher(llm_router=object())
+
+    result = dispatcher.dispatch("claude_subagent", prompt="endpoint request")
+
+    assert result["ok"] is True
+    assert factory_roles == ["brain_planning"]
+    assert completions.calls[0]["model"] == "openfang:brain-planner"
