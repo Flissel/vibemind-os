@@ -458,17 +458,24 @@ class CapabilityValidator:
 
         The post-condition spec is taken from `validator_cfg["postcondition"]`,
         or built from `kind` ("truth:<check>") + the remaining cfg keys.
-        An unresolved postcondition is invalid because it cannot observe the
-        operation at all. For an executable postcondition, REFUTED is invalid,
-        VERIFIED is valid, and other UNVERIFIED observations retain their
-        configured `require_verified` policy.
+        Every inconclusive outcome is invalid: a truth validator may only pass
+        after an actual VERIFIED observation. `on_fail` still decides whether
+        that invalid verdict blocks execution or is reported alongside it.
         """
         try:
             from core import world_observer as wo
         except Exception as e:
             return self._envelope(
-                valid=True, reason=f"world_observer unavailable: {e}",
-                kind=kind, on_fail=on_fail, t0=t0, verified=None,
+                valid=False,
+                reason=f"world_observer unavailable: {e}",
+                kind=kind,
+                on_fail=on_fail,
+                t0=t0,
+                verified=None,
+                verify_signal={
+                    "status": "unverified",
+                    "reason": "world_observer unavailable",
+                },
             )
         # Resolve the post-condition spec.
         pc = validator_cfg.get("postcondition")
@@ -497,11 +504,10 @@ class CapabilityValidator:
             )
         v = wo.observe(pc)
         verified = v.verified_ok  # True | False | None
-        # Mutating capabilities may opt into fail-closed truth. Reads and
-        # legacy capabilities retain the historical UNVERIFIED-as-reporting
-        # behavior unless ``require_verified`` is explicitly set.
-        require_verified = validator_cfg.get("require_verified") is True
-        valid = (verified is True) if require_verified else (verified is not False)
+        # A truth validator is successful only when the independent observer
+        # conclusively verified the declared postcondition. UNVERIFIED must
+        # remain an explicit non-success regardless of legacy configuration.
+        valid = verified is True
         return self._envelope(
             valid=valid, reason=f"ground-truth {v.verdict}: {v.reason}",
             kind=kind, on_fail=on_fail, t0=t0,
