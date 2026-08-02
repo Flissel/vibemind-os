@@ -25,6 +25,12 @@ import json
 from production.production_planner import ProductionPlanner
 from production.cognitive_feature_agents import CognitiveFeatureAgentFactory
 from production.unified_brain_client import UnifiedBrainClient
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    InternalServerError,
+    RateLimitError,
+)
 from vibemind_shared import OpenFangUnavailable, get_provider_info
 
 # AutoGen imports (will be installed)
@@ -417,27 +423,24 @@ Please coordinate execution of this task."""
             logger.exception("OpenFang unavailable during swarm execution")
             raise
         except Exception as error:
-            markers = (
-                "APIConnectionError",
-                "APITimeoutError",
-                "RateLimitError",
-                "InternalServerError",
-                "OpenFangUnavailable",
-            )
-            error_type = type(error).__name__
-            try:
-                serialized_error = str(error)
-            except Exception:
-                serialized_error = ""
-            if is_openfang_provider and (
-                error_type in markers or serialized_error.startswith(markers)
+            if not is_openfang_provider:
+                logger.exception("Swarm execution failed")
+                raise
+            if isinstance(
+                error,
+                (
+                    APIConnectionError,
+                    APITimeoutError,
+                    RateLimitError,
+                    InternalServerError,
+                ),
             ):
                 logger.exception("OpenFang transport failed during swarm execution")
                 raise OpenFangUnavailable(
                     "OpenFang unavailable during swarm execution"
                 ) from error
             logger.exception("Swarm execution failed")
-            raise
+            raise RuntimeError("Swarm execution failed") from error
 
         # Format swarm result
         swarm_result = "\n".join([str(msg) for msg in swarm_messages])

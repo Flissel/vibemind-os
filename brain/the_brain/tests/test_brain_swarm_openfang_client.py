@@ -100,7 +100,12 @@ class _FailingSwarm:
         raise self.failure
 
 
-def _failing_orchestrator(module: Any, failure: BaseException) -> Any:
+class _SuccessfulSwarm:
+    async def run_stream(self, *, task: str) -> Any:
+        yield f"completed: {task}"
+
+
+def _orchestrator_with_swarm(module: Any, swarm: Any) -> Any:
     orchestrator = module.BrainSwarmOrchestrator.__new__(module.BrainSwarmOrchestrator)
     orchestrator.use_unified_brain = True
     orchestrator.brain_client = types.SimpleNamespace(
@@ -110,8 +115,12 @@ def _failing_orchestrator(module: Any, failure: BaseException) -> Any:
             }
         }
     )
-    orchestrator.swarm = _FailingSwarm(failure)
+    orchestrator.swarm = swarm
     return orchestrator
+
+
+def _failing_orchestrator(module: Any, failure: BaseException) -> Any:
+    return _orchestrator_with_swarm(module, _FailingSwarm(failure))
 
 
 def test_process_task_reraises_openfang_unavailable_from_stream(
@@ -137,7 +146,7 @@ def test_process_task_reraises_openfang_unavailable_from_stream(
         "OpenFangUnavailable",
     ],
 )
-def test_process_task_normalizes_openfang_transport_markers_with_cause(
+def test_process_task_redacts_serialized_transport_markers_as_generic_failure(
     monkeypatch: pytest.MonkeyPatch,
     marker: str,
 ) -> None:
@@ -145,11 +154,12 @@ def test_process_task_normalizes_openfang_transport_markers_with_cause(
     module, _, _ = _load_orchestrator(monkeypatch, _CapturingOpenAIClient, provider_info)
     failure = RuntimeError(f"{marker}: sensitive upstream detail")
 
-    with pytest.raises(module.OpenFangUnavailable) as caught:
+    with pytest.raises(RuntimeError) as caught:
         asyncio.run(_failing_orchestrator(module, failure).process_task("must fail closed"))
 
+    assert type(caught.value) is RuntimeError
     assert caught.value.__cause__ is failure
-    assert str(caught.value) == "OpenFang unavailable during swarm execution"
+    assert str(caught.value) == "Swarm execution failed"
 
 
 @pytest.mark.parametrize(
@@ -160,6 +170,22 @@ def test_process_task_normalizes_openfang_transport_markers_with_cause(
         ),
         openai.APITimeoutError(
             request=httpx.Request("POST", "http://openfang.test/v1/chat/completions")
+        ),
+        openai.RateLimitError(
+            "rate limited",
+            response=httpx.Response(
+                429,
+                request=httpx.Request("POST", "http://openfang.test/v1/chat/completions"),
+            ),
+            body=None,
+        ),
+        openai.InternalServerError(
+            "internal server failure",
+            response=httpx.Response(
+                500,
+                request=httpx.Request("POST", "http://openfang.test/v1/chat/completions"),
+            ),
+            body=None,
         ),
     ],
 )
@@ -177,16 +203,39 @@ def test_process_task_normalizes_typed_openai_transport_errors(
     assert str(caught.value) == "OpenFang unavailable during swarm execution"
 
 
-def test_process_task_does_not_normalize_typed_errors_for_other_providers(
+def test_process_task_redacts_counterfeit_openai_class_as_generic_failure(
     monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_info = {"provider": "openfang", "model": "openfang:brain-planner"}
+    module, _, _ = _load_orchestrator(monkeypatch, _CapturingOpenAIClient, provider_info)
+    counterfeit_type = type("APIConnectionError", (RuntimeError,), {})
+    failure = counterfeit_type("sensitive counterfeit detail")
+
+    with pytest.raises(RuntimeError) as caught:
+        asyncio.run(_failing_orchestrator(module, failure).process_task("must fail closed"))
+
+    assert type(caught.value) is RuntimeError
+    assert caught.value.__cause__ is failure
+    assert str(caught.value) == "Swarm execution failed"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        openai.APIConnectionError(
+            request=httpx.Request("POST", "https://openai.test/v1/chat/completions")
+        ),
+        ValueError("unfamiliar non-openfang failure"),
+    ],
+)
+def test_process_task_propagates_errors_unchanged_for_other_providers(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException,
 ) -> None:
     provider_info = {"provider": "openai", "model": "gpt-4o"}
     module, _, _ = _load_orchestrator(monkeypatch, _CapturingOpenAIClient, provider_info)
-    failure = openai.APIConnectionError(
-        request=httpx.Request("POST", "https://openai.test/v1/chat/completions")
-    )
 
-    with pytest.raises(openai.APIConnectionError) as caught:
+    with pytest.raises(type(failure)) as caught:
         asyncio.run(_failing_orchestrator(module, failure).process_task("must propagate"))
 
     assert caught.value is failure
@@ -196,17 +245,32 @@ def test_process_task_does_not_normalize_typed_errors_for_other_providers(
     "failure",
     [asyncio.TimeoutError("swarm timed out"), ValueError("unfamiliar failure")],
 )
-def test_process_task_propagates_timeout_and_unrelated_stream_failures(
+def test_process_task_redacts_unrelated_openfang_stream_failures(
     monkeypatch: pytest.MonkeyPatch,
     failure: BaseException,
 ) -> None:
     provider_info = {"provider": "openfang", "model": "openfang:brain-planner"}
     module, _, _ = _load_orchestrator(monkeypatch, _CapturingOpenAIClient, provider_info)
 
-    with pytest.raises(type(failure)) as caught:
+    with pytest.raises(RuntimeError) as caught:
         asyncio.run(_failing_orchestrator(module, failure).process_task("must not return an error result"))
 
-    assert caught.value is failure
+    assert type(caught.value) is RuntimeError
+    assert caught.value.__cause__ is failure
+    assert str(caught.value) == "Swarm execution failed"
+
+
+def test_process_task_preserves_successful_swarm_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_info = {"provider": "openfang", "model": "openfang:brain-planner"}
+    module, _, _ = _load_orchestrator(monkeypatch, _CapturingOpenAIClient, provider_info)
+    orchestrator = _orchestrator_with_swarm(module, _SuccessfulSwarm())
+
+    result = asyncio.run(orchestrator.process_task("successful task"))
+
+    assert len(result["swarm_messages"]) == 1
+    assert result["swarm_result"].startswith("completed: Task: successful task")
 
 
 @pytest.mark.parametrize(
