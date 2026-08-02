@@ -37,8 +37,10 @@ from autogen_core import (
     RoutedAgent,
     message_handler,
 )
-from openai import OpenAI
-from llm_client import get_model
+from vibemind_shared import OpenFangUnavailable, get_client_sync, get_model
+
+
+PITCH_DECK_ROLE = "agent_pitch_deck"
 
 
 # =====================================================================
@@ -375,7 +377,7 @@ Antworte NUR mit validem JSON:
 class BriefingAgent(RoutedAgent):
     def __init__(self):
         super().__init__("BriefingGenerator")
-        self.client = OpenAI()
+        self.client = get_client_sync(PITCH_DECK_ROLE)
 
     @message_handler
     async def generate(self, message: PitchDeckRequest, ctx: MessageContext) -> EnrichedBriefing:
@@ -399,7 +401,7 @@ class BriefingAgent(RoutedAgent):
             )
 
         resp = self.client.chat.completions.create(
-            model=get_model("default", "pitch_deck_agent"),
+            model=get_model(PITCH_DECK_ROLE),
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": BRIEFING_PROMPT},
@@ -450,7 +452,7 @@ class BriefingAgent(RoutedAgent):
 class SemanticAnalyzerAgent(RoutedAgent):
     def __init__(self):
         super().__init__("SemanticAnalyzer")
-        self.client = OpenAI()
+        self.client = get_client_sync(PITCH_DECK_ROLE)
 
     @message_handler
     async def analyze(self, message: PitchDeckRequest, ctx: MessageContext) -> AnalysisResult:
@@ -470,7 +472,7 @@ class SemanticAnalyzerAgent(RoutedAgent):
             print(f"  [ANALYZE] Theme manuell: {theme_name}")
         else:
             resp = self.client.chat.completions.create(
-                model=get_model("default", "pitch_deck_agent"),
+                model=get_model(PITCH_DECK_ROLE),
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": ANALYSIS_PROMPT},
@@ -499,7 +501,7 @@ class SemanticAnalyzerAgent(RoutedAgent):
 class ResearcherAgent(RoutedAgent):
     def __init__(self):
         super().__init__("Researcher")
-        self.client = OpenAI()
+        self.client = get_client_sync(PITCH_DECK_ROLE)
 
     @message_handler
     async def research(self, message: AnalysisResult, ctx: MessageContext) -> ResearchResult:
@@ -567,10 +569,10 @@ ECHTE FIRMENDATEN:
         )
 
     def _call(self, prompt):
-        # Versuch 1: Mit Web-Search (gpt-5.4-mini)
+        # The OpenFang role is the only LLM path. Do not retry with a direct provider.
         try:
             resp = self.client.chat.completions.create(
-                model=get_model("default", "pitch_deck_agent"),
+                model=get_model(PITCH_DECK_ROLE),
                 web_search_options={"search_context_size": "medium"},
                 messages=[{"role": "user", "content": prompt + "\n\nAntworte NUR mit validem JSON."}],
                 temperature=0.5,
@@ -582,19 +584,11 @@ ECHTE FIRMENDATEN:
             elif "```" in text:
                 text = text.split("```")[1].split("```")[0]
             return json.loads(text.strip())
+        except OpenFangUnavailable:
+            raise
         except Exception as e:
-            # Fallback: Ohne Web-Search
-            try:
-                resp = self.client.chat.completions.create(
-                    model=get_model("default", "pitch_deck_agent"),
-                    response_format={"type": "json_object"},
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.5,
-                )
-                return json.loads(resp.choices[0].message.content)
-            except Exception as e2:
-                print(f"    [WARN] Recherche fehlgeschlagen: {e2}")
-                return {}
+            print(f"    [WARN] Recherche fehlgeschlagen: {e}")
+            return {}
 
 
 # =====================================================================
@@ -604,7 +598,7 @@ ECHTE FIRMENDATEN:
 class ContentGeneratorAgent(RoutedAgent):
     def __init__(self):
         super().__init__("ContentGenerator")
-        self.client = OpenAI()
+        self.client = get_client_sync(PITCH_DECK_ROLE)
 
     @message_handler
     async def handle(self, message: ResearchResult, ctx: MessageContext) -> ContentResult:
@@ -631,7 +625,7 @@ class ContentGeneratorAgent(RoutedAgent):
         )
 
         resp = self.client.chat.completions.create(
-            model=get_model("default", "pitch_deck_agent"),
+            model=get_model(PITCH_DECK_ROLE),
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": prompt},
@@ -720,7 +714,7 @@ Intro, CTA, Chart-Slides und Team weglassen."""
 class DesignDirectorAgent(RoutedAgent):
     def __init__(self):
         super().__init__("DesignDirector")
-        self.client = OpenAI()
+        self.client = get_client_sync(PITCH_DECK_ROLE)
 
     @message_handler
     async def direct(self, message: ContentResult, ctx: MessageContext) -> ContentResult:
@@ -736,7 +730,7 @@ class DesignDirectorAgent(RoutedAgent):
 
         try:
             resp = self.client.chat.completions.create(
-                model=get_model("default", "pitch_deck_agent"),
+                model=get_model(PITCH_DECK_ROLE),
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": DESIGN_DIRECTOR_PROMPT},
@@ -772,6 +766,8 @@ class DesignDirectorAgent(RoutedAgent):
 
             print(f"  [DESIGN] {applied} Slides mit speziellem Layout versehen.")
 
+        except OpenFangUnavailable:
+            raise
         except Exception as e:
             print(f"  [DESIGN] Fehler: {str(e)[:80]} - verwende Standard-Layouts")
 
@@ -831,7 +827,7 @@ class ChartGeneratorAgent(RoutedAgent):
 
     def _generate_bg_images(self, message):
         import requests as req
-        client = OpenAI()
+        client = get_client_sync(PITCH_DECK_ROLE)
         img_dir = Path(__file__).parent / "deck_images"
         img_dir.mkdir(exist_ok=True)
 
@@ -859,7 +855,7 @@ class ChartGeneratorAgent(RoutedAgent):
             print(f"  [DALLE] Generiere Hintergrund fuer {st}...")
             try:
                 resp = client.images.generate(
-                    model="dall-e-3", prompt=prompt,
+                    model=get_model(PITCH_DECK_ROLE), prompt=prompt,
                     size="1792x1024", quality="standard", n=1,
                 )
                 img_resp = req.get(resp.data[0].url, timeout=30)
@@ -868,6 +864,8 @@ class ChartGeneratorAgent(RoutedAgent):
                     path.write_bytes(img_resp.content)
                     s["bg_image"] = str(path)
                     print(f"    {path.name}")
+            except OpenFangUnavailable:
+                raise
             except Exception as e:
                 print(f"    [WARN] DALL-E: {e}")
 
@@ -1778,7 +1776,7 @@ Betreff: ...
 def generate_investor_emails(company, research_json, output_path):
     """Generiert 3 Investor-Email-Varianten basierend auf Deck-Daten."""
     print(f"\n  [EMAILS] Generiere Investor-Emails...")
-    client = OpenAI()
+    client = get_client_sync(PITCH_DECK_ROLE)
 
     research = json.loads(research_json) if isinstance(research_json, str) else research_json
     market = research.get("market", {})
@@ -1803,7 +1801,7 @@ def generate_investor_emails(company, research_json, output_path):
 
     try:
         resp = client.chat.completions.create(
-            model=get_model("default", "pitch_deck_agent"),
+            model=get_model(PITCH_DECK_ROLE),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
         )
@@ -1813,6 +1811,8 @@ def generate_investor_emails(company, research_json, output_path):
         email_file.write_text(emails, encoding="utf-8")
         print(f"  [EMAILS] Gespeichert: {email_file}")
         return str(email_file)
+    except OpenFangUnavailable:
+        raise
     except Exception as e:
         print(f"  [EMAILS] Fehler: {e}")
         return None
@@ -1891,7 +1891,7 @@ Regeln:
 
 async def feedback_loop(slides, company, theme_fields, runtime):
     """Interaktiver Feedback-Loop zum Verbessern einzelner Slides."""
-    client = OpenAI()
+    client = get_client_sync(PITCH_DECK_ROLE)
 
     while True:
         print("\n  Feedback? (z.B. 'Slide 3 aggressiver' oder Enter zum Beenden)")
@@ -1912,7 +1912,7 @@ async def feedback_loop(slides, company, theme_fields, runtime):
 
         try:
             resp = client.chat.completions.create(
-                model=get_model("default", "pitch_deck_agent"),
+                model=get_model(PITCH_DECK_ROLE),
                 response_format={"type": "json_object"},
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.5,
@@ -1942,6 +1942,8 @@ async def feedback_loop(slides, company, theme_fields, runtime):
                     print(f"  [FEEDBACK] Neues Deck: {result.output_path}")
             else:
                 print(f"  [FEEDBACK] Konnte Slides nicht aktualisieren.")
+        except OpenFangUnavailable:
+            raise
         except Exception as e:
             print(f"  [FEEDBACK] Fehler: {e}")
 
@@ -2009,8 +2011,8 @@ async def main():
                     key, value = line.split("=", 1)
                     os.environ[key.strip()] = value.strip()
 
-    if not os.environ.get("OPENAI_API_KEY"):
-        print("FEHLER: OPENAI_API_KEY nicht gesetzt!")
+    if not os.environ.get("OPENFANG_API_KEY"):
+        print("FEHLER: OPENFANG_API_KEY nicht gesetzt!")
         sys.exit(1)
 
     # CLI Flags parsen
