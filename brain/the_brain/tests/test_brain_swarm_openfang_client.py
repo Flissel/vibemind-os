@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import sys
 import types
@@ -14,6 +15,10 @@ from autogen_ext.models.openai import OpenAIChatCompletionClient
 
 BRAIN_ROOT = Path(__file__).resolve().parents[1]
 MODULE_NAME = "production.brain_swarm_orchestrator"
+
+
+class _SharedOpenFangUnavailable(RuntimeError):
+    """Hermetic stand-in for the shared OpenFang availability boundary."""
 
 
 def _module_with(**attributes: Any) -> types.ModuleType:
@@ -35,6 +40,7 @@ def _load_orchestrator(
     provider_roles: list[str] = []
     model_roles: list[str] = []
     shared = _module_with(
+        OpenFangUnavailable=_SharedOpenFangUnavailable,
         get_model=lambda role: model_roles.append(role) or provider_info["model"],
         get_provider_info=lambda role: provider_roles.append(role) or provider_info,
     )
@@ -80,6 +86,85 @@ class _CapturingOpenAIClient:
 
     def __init__(self, **kwargs: Any) -> None:
         self.calls.append(kwargs)
+
+
+class _FailingSwarm:
+    def __init__(self, failure: BaseException) -> None:
+        self.failure = failure
+
+    async def run_stream(self, *, task: str) -> Any:
+        if False:
+            yield task
+        raise self.failure
+
+
+def _failing_orchestrator(module: Any, failure: BaseException) -> Any:
+    orchestrator = module.BrainSwarmOrchestrator.__new__(module.BrainSwarmOrchestrator)
+    orchestrator.use_unified_brain = True
+    orchestrator.brain_client = types.SimpleNamespace(
+        predict=lambda task: {
+            "result": {
+                "prediction": {"primary_action": "execute", "task_type": "api"},
+            }
+        }
+    )
+    orchestrator.swarm = _FailingSwarm(failure)
+    return orchestrator
+
+
+def test_process_task_reraises_openfang_unavailable_from_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_info = {"provider": "openfang", "model": "openfang:brain-planner"}
+    module, _, _ = _load_orchestrator(monkeypatch, _CapturingOpenAIClient, provider_info)
+    failure = module.OpenFangUnavailable("gateway unavailable")
+
+    with pytest.raises(module.OpenFangUnavailable) as caught:
+        asyncio.run(_failing_orchestrator(module, failure).process_task("must fail closed"))
+
+    assert caught.value is failure
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "APIConnectionError",
+        "APITimeoutError",
+        "RateLimitError",
+        "InternalServerError",
+        "OpenFangUnavailable",
+    ],
+)
+def test_process_task_normalizes_openfang_transport_markers_with_cause(
+    monkeypatch: pytest.MonkeyPatch,
+    marker: str,
+) -> None:
+    provider_info = {"provider": "openfang", "model": "openfang:brain-planner"}
+    module, _, _ = _load_orchestrator(monkeypatch, _CapturingOpenAIClient, provider_info)
+    failure = RuntimeError(f"{marker}: gateway unavailable")
+
+    with pytest.raises(module.OpenFangUnavailable) as caught:
+        asyncio.run(_failing_orchestrator(module, failure).process_task("must fail closed"))
+
+    assert caught.value.__cause__ is failure
+    assert marker in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [asyncio.TimeoutError("swarm timed out"), ValueError("unfamiliar failure")],
+)
+def test_process_task_propagates_timeout_and_unrelated_stream_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException,
+) -> None:
+    provider_info = {"provider": "openfang", "model": "openfang:brain-planner"}
+    module, _, _ = _load_orchestrator(monkeypatch, _CapturingOpenAIClient, provider_info)
+
+    with pytest.raises(type(failure)) as caught:
+        asyncio.run(_failing_orchestrator(module, failure).process_task("must not return an error result"))
+
+    assert caught.value is failure
 
 
 @pytest.mark.parametrize(

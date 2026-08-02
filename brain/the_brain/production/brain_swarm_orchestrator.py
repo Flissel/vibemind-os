@@ -25,6 +25,7 @@ import json
 from production.production_planner import ProductionPlanner
 from production.cognitive_feature_agents import CognitiveFeatureAgentFactory
 from production.unified_brain_client import UnifiedBrainClient
+from vibemind_shared import OpenFangUnavailable, get_provider_info
 
 # AutoGen imports (will be installed)
 try:
@@ -405,18 +406,29 @@ Please coordinate execution of this task."""
 
         # run_stream returns an async generator, need to collect results
         swarm_messages = []
+        is_openfang_provider = get_provider_info("planning").get("provider") == "openfang"
         try:
             # Add 30-second timeout to prevent hanging
             async with asyncio.timeout(30.0):
                 async for message in self.swarm.run_stream(task=task_message):
                     swarm_messages.append(message)
                     logger.info(f"Swarm message: {message}")
-        except asyncio.TimeoutError:
-            logger.warning("Swarm execution timed out after 30 seconds")
-            swarm_messages.append("TIMEOUT: Swarm execution exceeded 30 seconds")
-        except Exception as e:
-            logger.error(f"Swarm execution failed: {e}")
-            swarm_messages.append(f"ERROR: {str(e)}")
+        except OpenFangUnavailable:
+            logger.exception("OpenFang unavailable during swarm execution")
+            raise
+        except Exception as error:
+            markers = (
+                "APIConnectionError",
+                "APITimeoutError",
+                "RateLimitError",
+                "InternalServerError",
+                "OpenFangUnavailable",
+            )
+            if is_openfang_provider and str(error).startswith(markers):
+                logger.exception("OpenFang transport failed during swarm execution")
+                raise OpenFangUnavailable(f"OpenFang unavailable: {error}") from error
+            logger.exception("Swarm execution failed")
+            raise
 
         # Format swarm result
         swarm_result = "\n".join([str(msg) for msg in swarm_messages])
