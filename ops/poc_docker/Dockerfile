@@ -2,8 +2,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install AutoGen + OpenAI
-RUN pip install --no-cache-dir "autogen-core==0.7.5" "autogen-agentchat==0.7.5" "openai>=1.0"
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.legit.txt .
+RUN pip install --no-cache-dir -r requirements.legit.txt
+
+ENV VIBEMIND_CONFIG_DIR=/config
 
 # Copy scripts
 COPY setup_db.py .
@@ -12,5 +18,4 @@ COPY silent_attack_demo.py .
 COPY real_llm_attack.py .
 
 # Default: run the real LLM attack demo
-# Pass OPENAI_API_KEY via: docker run --rm -e OPENAI_API_KEY=sk-... autogen-poc
 CMD ["python", "-u", "real_llm_attack.py"]

@@ -1,0 +1,15 @@
+# SECURITY NOTICE: This demo executes arbitrary model-generated Python with os access.
+# This container is not a strong secret-isolation boundary.
+# Use only a dedicated, least-privilege, revocable OpenFang demo key.
+# Do not expose unrelated secrets. Do not add host mounts beyond the read-only
+# LLM configuration below.
+services:
+  real-llm-attack:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      OPENFANG_URL: ${OPENFANG_URL:?OPENFANG_URL is required}
+      OPENFANG_API_KEY: ${OPENFANG_API_KEY:?OPENFANG_API_KEY is required}
+    volumes:
+      - ../../llm_config.yml:/config/llm_config.yml:ro
