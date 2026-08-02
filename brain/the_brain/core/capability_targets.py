@@ -877,8 +877,12 @@ class McpExecutor(_BaseRemoteExecutor):
         )
         if not isinstance(response, dict):
             raise RuntimeError("OpenFang MCP returned a non-object JSON-RPC response")
+        if response.get("jsonrpc") != "2.0":
+            raise RuntimeError("OpenFang MCP returned an invalid JSON-RPC version")
+        if response.get("id") != request_id:
+            raise RuntimeError("OpenFang MCP returned a mismatched JSON-RPC request id")
         if response.get("error"):
-            error = response["error"]
+            error = _redact_evidence(response["error"])
             message = error.get("message") if isinstance(error, dict) else str(error)
             raise RuntimeError(f"OpenFang MCP JSON-RPC error: {message}")
         result = response.get("result")
@@ -979,9 +983,10 @@ def _redact_evidence(value: Any) -> Any:
         return [_redact_evidence(item) for item in value]
     if isinstance(value, str):
         redacted = re.sub(r"(?i)bearer\s+[a-z0-9._~+/=-]+", "Bearer [REDACTED]", value)
-        runtime_token = os.environ.get("N8N_MCP_TOKEN", "")
-        if runtime_token:
-            redacted = redacted.replace(runtime_token, "[REDACTED]")
+        for env_name in ("N8N_MCP_TOKEN", "OPENFANG_API_KEY"):
+            runtime_token = os.environ.get(env_name, "")
+            if runtime_token:
+                redacted = redacted.replace(runtime_token, "[REDACTED]")
         return redacted
     return value
 

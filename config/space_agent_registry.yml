@@ -32,7 +32,7 @@ spaces:
     events:
       bubble.list:              { tool: vibemind_bubbles,       required_params: [] }
       bubble.create:
-        tool: vibemind_bubble_create
+        tool: bubble_create
         required_params: [title]
         execution: { kind: mcp, server: spaces-ideas }
       bubble.enter:             { tool: vibemind_bubble_enter,  required_params: [bubble_name] }

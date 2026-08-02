@@ -63,7 +63,7 @@ def test_deterministic_bubble_create_gateway_failure_never_invokes_llm_or_direct
 
     assert result.ok is False
     assert built_targets == [
-        "mcp:brain-bubbles:spaces-ideas:vibemind_bubble_create"
+        "mcp:brain-bubbles:spaces-ideas:bubble_create"
     ]
     assert all(
         not target.startswith(("openfang:", "direct:", "supabase:"))
@@ -94,7 +94,7 @@ def test_deterministic_bubble_create_missing_mcp_metadata_fails_closed(
                 "    enabled: true",
                 "    events:",
                 "      bubble.create:",
-                "        tool: vibemind_bubble_create",
+                "        tool: bubble_create",
                 *execution_lines,
             ]
         ),
@@ -131,7 +131,7 @@ def test_deterministic_bubble_create_preserves_exact_mcp_target(monkeypatch):
         lambda target: built_targets.append(target) or _Executor({"ok": True, "result": {}}),
     )
 
-    target = "mcp:brain-bubbles:spaces-ideas:vibemind_bubble_create"
+    target = "mcp:brain-bubbles:spaces-ideas:bubble_create"
     result = PlanExecutor()._exec_hop(_hop(target=target), {})
 
     assert result.ok is True
@@ -166,7 +166,7 @@ def test_deterministic_bubble_create_replaces_every_noncanonical_target(
 
     assert result.ok is True
     assert built_targets == [
-        "mcp:brain-bubbles:spaces-ideas:vibemind_bubble_create"
+        "mcp:brain-bubbles:spaces-ideas:bubble_create"
     ]
 
 
@@ -229,5 +229,5 @@ def test_registered_space_registry_load_failure_is_fail_closed(monkeypatch):
 
     assert result.ok is False
     assert built_targets == [
-        "mcp:brain-bubbles:spaces-ideas:vibemind_bubble_create"
+        "mcp:brain-bubbles:spaces-ideas:bubble_create"
     ]
