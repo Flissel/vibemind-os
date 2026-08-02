@@ -1,160 +1,219 @@
 from __future__ import annotations
 
+import importlib
+import sys
+import types
 from pathlib import Path
+from urllib.error import URLError
 
-import httpx
+import pytest
 from fastapi.testclient import TestClient
 
-import app as app_module
+
+class _Backend:
+    def __init__(self, vectors: list[list[float]]) -> None:
+        self.vectors = vectors
+        self.calls: list[list[str]] = []
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        self.calls.append(texts)
+        return self.vectors
 
 
-def _gateway_response(vectors: list[list[float]], status_code: int = 200) -> httpx.Response:
-    return httpx.Response(
-        status_code,
-        json={"object": "list", "data": [{"embedding": vector} for vector in vectors]},
-        request=httpx.Request("POST", "http://openfang.test/v1/embeddings"),
-    )
+class _HealthResponse:
+    def __init__(self, status: int) -> None:
+        self.status = status
+
+    def __enter__(self) -> _HealthResponse:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        return None
 
 
-class _FakeGatewayClient:
-    def __init__(self, outcomes: list[object]) -> None:
-        self.outcomes = outcomes
-        self.calls: list[tuple[str, dict[str, object]]] = []
-
-    def post(self, path: str, *, json: dict[str, object]) -> httpx.Response:
-        self.calls.append((path, json))
-        outcome = self.outcomes.pop(0)
-        if isinstance(outcome, Exception):
-            raise outcome
-        assert isinstance(outcome, httpx.Response)
-        return outcome
-
-
-def test_service_source_has_no_direct_openai_provider_or_credential_access() -> None:
-    source = Path(app_module.__file__).read_text(encoding="utf-8")
-    direct_provider_key = "OPENAI" + "_API_KEY"
-    direct_provider_import = "from " + "openai"
-    direct_provider_constructor = "Open" + "AI("
-
-    assert direct_provider_key not in source
-    assert direct_provider_import not in source
-    assert direct_provider_constructor not in source
-
-
-def test_health_fails_closed_when_openfang_url_is_missing(monkeypatch) -> None:
-    monkeypatch.delenv("OPENFANG_URL", raising=False)
-    app_module._gateway_client = None
-
-    response = TestClient(app_module.app).get("/health")
-
-    assert response.status_code == 503
-    assert response.json()["detail"] == "OpenFang gateway not configured"
-
-
-def test_openfang_gateway_client_uses_canonical_url_and_optional_gateway_key(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-
-    class _Client:
-        pass
-
-    def create_client(**kwargs: object) -> _Client:
-        captured.update(kwargs)
-        return _Client()
-
-    monkeypatch.setenv("OPENFANG_URL", "http://openfang.test/")
-    monkeypatch.setenv("OPENFANG_API_KEY", "gateway-test-key")
-    monkeypatch.setattr(app_module.httpx, "Client", create_client)
-    app_module._gateway_client = None
-
-    app_module.get_gateway_client()
-
-    assert captured == {
-        "base_url": "http://openfang.test",
-        "headers": {"Authorization": "Bearer gateway-test-key"},
-        "timeout": app_module.REQUEST_TIMEOUT_SECONDS,
+@pytest.fixture
+def service_module(monkeypatch: pytest.MonkeyPatch):
+    backend = _Backend([[0.1, 0.2, 0.3]])
+    shared = types.ModuleType("vibemind_shared")
+    shared.get_embedding_config = lambda role: {
+        "driver": "openai",
+        "provider": "openfang",
+        "model": "text-embedding-3-large",
+        "dim": 3072,
     }
+    shared.get_embedding_model = lambda role: backend
+    shared.get_provider_info = lambda: {
+        "provider": "openfang",
+        "base_url": "http://openfang.test/v1",
+        "timeout_seconds": 8.0,
+    }
+    monkeypatch.setitem(sys.modules, "vibemind_shared", shared)
+    sys.modules.pop("app", None)
+    module = importlib.import_module("app")
+    return module, backend
 
 
-def test_embed_batch_posts_model_and_input_to_openfang_gateway(monkeypatch) -> None:
-    gateway = _FakeGatewayClient([_gateway_response([[0.1, 0.2], [0.3, 0.4]])])
-    monkeypatch.setattr(app_module, "get_gateway_client", lambda: gateway)
+def test_service_source_has_no_service_owned_provider_or_transport_policy(service_module) -> None:
+    module, _ = service_module
+    source = Path(module.__file__).read_text(encoding="utf-8")
 
-    response = TestClient(app_module.app).post(
+    for forbidden in (
+        "OPENFANG_URL",
+        "OPENFANG_API_KEY",
+        "httpx",
+        "EMBEDDING_MODEL",
+        "MAX_RETRIES",
+        "RETRY_BACKOFF",
+    ):
+        assert forbidden not in source
+
+
+def test_container_uses_one_pinned_shared_source_with_the_existing_service_context() -> None:
+    service_dir = Path(__file__).resolve().parents[1]
+    dockerfile = (service_dir / "Dockerfile").read_text(encoding="utf-8")
+    requirements = (service_dir / "requirements.txt").read_text(encoding="utf-8")
+
+    assert "COPY shared/" not in dockerfile
+    assert "COPY requirements.txt ." in dockerfile
+    assert "COPY app.py ." in dockerfile
+    assert "apt-get install -y --no-install-recommends git" in dockerfile
+    assert (
+        "vibemind-shared @ git+https://github.com/Flissel/vibemind-shared.git"
+        "@ec1bce5cf22fd12f3c4df996ee545090bf75e5c1"
+    ) in requirements
+
+
+def test_embed_batch_uses_only_the_fungus_search_shared_factory_role(
+    service_module, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module, backend = service_module
+    roles: list[str] = []
+    monkeypatch.setattr(
+        module,
+        "get_embedding_config",
+        lambda role: roles.append(role) or {
+            "driver": "openai",
+            "provider": "openfang",
+            "model": "text-embedding-3-large",
+            "dim": 3072,
+        },
+    )
+    monkeypatch.setattr(module, "get_embedding_model", lambda role: roles.append(role) or backend)
+    backend.vectors = [[0.1, 0.2], [0.3, 0.4]]
+
+    response = TestClient(module.app).post(
         "/embed/batch", json={"texts": ["first", "second"]}
     )
 
     assert response.status_code == 200
     assert response.json() == {"vectors": [[0.1, 0.2], [0.3, 0.4]]}
-    assert gateway.calls == [
-        (
-            "/v1/embeddings",
-            {"model": app_module.MODEL, "input": ["first", "second"]},
-        )
-    ]
+    assert roles == ["fungus_search", "fungus_search"]
+    assert backend.calls == [["first", "second"]]
 
 
-def test_embed_preserves_single_vector_shape_and_model_compatibility(monkeypatch) -> None:
-    gateway = _FakeGatewayClient([_gateway_response([[0.1, 0.2, 0.3]])])
-    monkeypatch.setattr(app_module, "get_gateway_client", lambda: gateway)
+def test_embed_preserves_fungus_search_model_and_3072_dimension(service_module) -> None:
+    module, backend = service_module
+    backend.vectors = [[0.1] * 3072]
 
-    response = TestClient(app_module.app).post("/embed", json={"text": "one"})
+    response = TestClient(module.app).post("/embed", json={"text": "one"})
 
     assert response.status_code == 200
-    assert response.json() == {"vector": [0.1, 0.2, 0.3]}
-    assert gateway.calls[0][1]["model"] == "text-embedding-3-large"
+    assert len(response.json()["vector"]) == 3072
 
 
-def test_embed_retries_once_per_existing_bounded_retry_policy(monkeypatch) -> None:
-    request = httpx.Request("POST", "http://openfang.test/v1/embeddings")
-    gateway = _FakeGatewayClient(
-        [
-            httpx.ConnectError("OpenFang unreachable", request=request),
-            _gateway_response([[0.4, 0.5]]),
-        ]
+def test_embed_fails_closed_when_shared_embedding_config_is_missing(
+    service_module, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module, backend = service_module
+    monkeypatch.setattr(
+        module,
+        "get_embedding_config",
+        lambda role: (_ for _ in ()).throw(FileNotFoundError("missing llm_config.yml")),
     )
-    monkeypatch.setattr(app_module, "get_gateway_client", lambda: gateway)
-    monkeypatch.setattr(app_module.time, "sleep", lambda _seconds: None)
 
-    response = TestClient(app_module.app).post("/embed", json={"text": "retry"})
-
-    assert response.status_code == 200
-    assert len(gateway.calls) == 2
-
-
-def test_embed_fails_closed_after_bounded_openfang_retries(monkeypatch) -> None:
-    request = httpx.Request("POST", "http://openfang.test/v1/embeddings")
-    gateway = _FakeGatewayClient(
-        [httpx.ConnectError("OpenFang unreachable", request=request)]
-        * (app_module.MAX_RETRIES + 1)
-    )
-    monkeypatch.setattr(app_module, "get_gateway_client", lambda: gateway)
-    monkeypatch.setattr(app_module.time, "sleep", lambda _seconds: None)
-
-    response = TestClient(app_module.app).post("/embed", json={"text": "fail closed"})
+    response = TestClient(module.app).post("/embed", json={"text": "missing config"})
 
     assert response.status_code == 502
     assert response.json()["detail"] == "embedding request failed"
-    assert len(gateway.calls) == app_module.MAX_RETRIES + 1
+    assert backend.calls == []
 
 
-def test_embed_does_not_retry_non_transient_openfang_response(monkeypatch) -> None:
-    gateway = _FakeGatewayClient([_gateway_response([], status_code=400)])
-    monkeypatch.setattr(app_module, "get_gateway_client", lambda: gateway)
-    monkeypatch.setattr(app_module.time, "sleep", lambda _seconds: None)
+def test_embed_does_not_add_a_retry_outside_shared_factory_authority(
+    service_module, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module, _ = service_module
+    calls: list[str] = []
 
-    response = TestClient(app_module.app).post("/embed", json={"text": "bad request"})
+    def unavailable_factory(role: str):
+        calls.append(role)
+        raise RuntimeError("OpenFang unavailable after shared retry budget")
+
+    monkeypatch.setattr(module, "get_embedding_model", unavailable_factory)
+
+    response = TestClient(module.app).post("/embed", json={"text": "fail closed"})
 
     assert response.status_code == 502
-    assert len(gateway.calls) == 1
+    assert calls == ["fungus_search"]
 
 
-def test_embed_batch_rejects_length_mismatched_openfang_response(monkeypatch) -> None:
-    gateway = _FakeGatewayClient([_gateway_response([[0.1, 0.2]])])
-    monkeypatch.setattr(app_module, "get_gateway_client", lambda: gateway)
-
-    response = TestClient(app_module.app).post(
-        "/embed/batch", json={"texts": ["first", "second"]}
+def test_health_fails_closed_when_shared_factory_configuration_is_missing(
+    service_module, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module, _ = service_module
+    monkeypatch.setattr(
+        module,
+        "get_embedding_config",
+        lambda role: (_ for _ in ()).throw(FileNotFoundError("missing llm_config.yml")),
     )
 
-    assert response.status_code == 502
-    assert response.json()["detail"] == "embedding request failed"
+    response = TestClient(module.app).get("/health")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "embedding service unavailable"
+
+
+def test_health_fails_closed_when_configured_openfang_is_unreachable(
+    service_module, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module, _ = service_module
+    calls: list[tuple[str, float]] = []
+
+    def unreachable(url: str, *, timeout: float):
+        calls.append((url, timeout))
+        raise URLError("connection refused")
+
+    monkeypatch.setattr(module, "urlopen", unreachable)
+
+    response = TestClient(module.app).get("/health")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "embedding service unavailable"
+    assert calls == [("http://openfang.test/api/health", 8.0)]
+
+
+def test_health_returns_200_only_when_configured_openfang_is_reachable(
+    service_module, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module, _ = service_module
+    monkeypatch.setattr(module, "urlopen", lambda url, *, timeout: _HealthResponse(200))
+
+    response = TestClient(module.app).get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "model": "text-embedding-3-large",
+        "dim": 3072,
+    }
+
+
+def test_health_fails_closed_on_non_success_openfang_health_response(
+    service_module, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module, _ = service_module
+    monkeypatch.setattr(module, "urlopen", lambda url, *, timeout: _HealthResponse(503))
+
+    response = TestClient(module.app).get("/health")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "embedding service unavailable"
