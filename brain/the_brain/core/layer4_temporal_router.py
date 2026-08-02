@@ -188,7 +188,7 @@ class Layer4TemporalRouter:
             oscillator=self.oscillator,
             llm_router=None,  # Can be set via set_llm_router()
             use_local_fallback=True,
-            use_ollama=True,  # Try Ollama for LLM classification
+            use_ollama=False,
             enable_security_checks=True
         )
 
