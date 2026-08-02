@@ -33,6 +33,9 @@ services:
     depends_on:
       host:
         condition: service_healthy
+    environment:
+      OPENFANG_URL: ${OPENFANG_URL:?OPENFANG_URL must be set}
+      OPENFANG_API_KEY: ${OPENFANG_API_KEY:?OPENFANG_API_KEY must be set}
     volumes:
       - ../../llm_config.yml:/config/llm_config.yml:ro
     networks:

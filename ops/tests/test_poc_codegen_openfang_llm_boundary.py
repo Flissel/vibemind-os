@@ -167,6 +167,31 @@ def test_shared_acquisition_unavailability_propagates_unchanged(
 
 
 @pytest.mark.parametrize(
+    "failure",
+    [
+        FileNotFoundError("/config/llm_config.yml is missing"),
+        ValueError("llm_config.yml is invalid"),
+    ],
+)
+def test_config_acquisition_errors_propagate_unchanged_without_request(
+    worker_module: Any, monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    acquisitions: list[str] = []
+
+    def get_client(role: str) -> Any:
+        acquisitions.append(role)
+        raise failure
+
+    monkeypatch.setattr(worker_module, "get_client", get_client)
+
+    with pytest.raises(type(failure)) as error:
+        worker_module.CodeGenAgent()
+
+    assert error.value is failure
+    assert acquisitions == [EXECUTOR_ROLE]
+
+
+@pytest.mark.parametrize(
     ("agent_name", "message", "role"),
     [
         ("CodeGenAgent", "CodeRequest", EXECUTOR_ROLE),
@@ -246,6 +271,12 @@ def test_legit_packaging_has_exact_shared_pin_and_config_only_wiring() -> None:
     legit_block = compose.split("  legit:\n", 1)[1].split("  malicious:\n", 1)[0]
     assert "env_file:" not in legit_block
     assert "OPENAI_API_KEY" not in legit_block
+    assert "OPENFANG_URL: ${OPENFANG_URL:?" in legit_block
+    assert "OPENFANG_API_KEY: ${OPENFANG_API_KEY:?" in legit_block
+    assert compose.count("      OPENFANG_URL:") == 1
+    assert compose.count("      OPENFANG_API_KEY:") == 1
+    assert "OPENFANG_" not in compose.split("  host:\n", 1)[1].split("  legit:\n", 1)[0]
+    assert "OPENFANG_" not in compose.split("  malicious:\n", 1)[1]
     assert "Dockerfile.worker" in compose.split("  malicious:\n", 1)[1]
     assert "Dockerfile.host" in compose.split("  host:\n", 1)[1].split("  legit:\n", 1)[0]
     assert "50052:50051" in compose
