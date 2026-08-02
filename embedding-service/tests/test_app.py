@@ -42,7 +42,7 @@ def service_module(monkeypatch: pytest.MonkeyPatch):
         "dim": 3072,
     }
     shared.get_embedding_model = lambda role: backend
-    shared.get_provider_info = lambda: {
+    shared.get_provider_info = lambda role: {
         "provider": "openfang",
         "base_url": "http://openfang.test/v1",
         "timeout_seconds": 8.0,
@@ -99,14 +99,14 @@ def test_embed_batch_uses_only_the_fungus_search_shared_factory_role(
         },
     )
     monkeypatch.setattr(module, "get_embedding_model", lambda role: roles.append(role) or backend)
-    backend.vectors = [[0.1, 0.2], [0.3, 0.4]]
+    backend.vectors = [[0.1] * 3072, [0.2] * 3072]
 
     response = TestClient(module.app).post(
         "/embed/batch", json={"texts": ["first", "second"]}
     )
 
     assert response.status_code == 200
-    assert response.json() == {"vectors": [[0.1, 0.2], [0.3, 0.4]]}
+    assert [len(vector) for vector in response.json()["vectors"]] == [3072, 3072]
     assert roles == ["fungus_search", "fungus_search"]
     assert backend.calls == [["first", "second"]]
 
@@ -119,6 +119,58 @@ def test_embed_preserves_fungus_search_model_and_3072_dimension(service_module) 
 
     assert response.status_code == 200
     assert len(response.json()["vector"]) == 3072
+
+
+def test_embed_fails_closed_when_fungus_search_config_dimension_is_not_3072(
+    service_module, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module, _ = service_module
+    monkeypatch.setattr(
+        module,
+        "get_embedding_config",
+        lambda role: {
+            "driver": "openai",
+            "provider": "openfang",
+            "model": "text-embedding-3-large",
+            "dim": 1536,
+        },
+    )
+
+    response = TestClient(module.app).post("/embed", json={"text": "wrong config dim"})
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "embedding request failed"
+
+
+@pytest.mark.parametrize(
+    "vectors",
+    [
+        [[0.1] * 1536],
+        [["not-a-number"] * 3072],
+    ],
+)
+def test_embed_fails_closed_on_invalid_shared_vector_shape_or_values(service_module, vectors) -> None:
+    module, backend = service_module
+    backend.vectors = vectors
+
+    response = TestClient(module.app, raise_server_exceptions=False).post(
+        "/embed", json={"text": "invalid vector"}
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "embedding request failed"
+
+
+def test_embed_batch_fails_closed_when_shared_vector_count_mismatches_input(service_module) -> None:
+    module, backend = service_module
+    backend.vectors = [[0.1] * 3072]
+
+    response = TestClient(module.app).post(
+        "/embed/batch", json={"texts": ["first", "second"]}
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "embedding request failed"
 
 
 def test_embed_fails_closed_when_shared_embedding_config_is_missing(
@@ -191,10 +243,42 @@ def test_health_fails_closed_when_configured_openfang_is_unreachable(
     assert calls == [("http://openfang.test/api/health", 8.0)]
 
 
+def test_health_uses_fungus_search_provider_info_and_fails_closed_on_mismatch(
+    service_module, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module, _ = service_module
+    roles: list[str] = []
+    monkeypatch.setattr(
+        module,
+        "get_provider_info",
+        lambda role: roles.append(role) or {
+            "provider": "openai",
+            "base_url": "http://openfang.test/v1",
+            "timeout_seconds": 8.0,
+        },
+    )
+
+    response = TestClient(module.app).get("/health")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "embedding service unavailable"
+    assert roles == ["fungus_search"]
+
+
 def test_health_returns_200_only_when_configured_openfang_is_reachable(
     service_module, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module, _ = service_module
+    roles: list[str] = []
+    monkeypatch.setattr(
+        module,
+        "get_provider_info",
+        lambda role: roles.append(role) or {
+            "provider": "openfang",
+            "base_url": "http://openfang.test/v1",
+            "timeout_seconds": 8.0,
+        },
+    )
     monkeypatch.setattr(module, "urlopen", lambda url, *, timeout: _HealthResponse(200))
 
     response = TestClient(module.app).get("/health")
@@ -205,6 +289,7 @@ def test_health_returns_200_only_when_configured_openfang_is_reachable(
         "model": "text-embedding-3-large",
         "dim": 3072,
     }
+    assert roles == ["fungus_search"]
 
 
 def test_health_fails_closed_on_non_success_openfang_health_response(

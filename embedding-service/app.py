@@ -15,6 +15,7 @@ from vibemind_shared import (
 )
 
 EMBEDDING_ROLE = "fungus_search"
+EMBEDDING_DIMENSION = 3072
 
 logger = logging.getLogger("embedding_service")
 
@@ -44,7 +45,7 @@ def _embedding_config() -> dict[str, Any]:
         or config.get("provider") != "openfang"
         or not isinstance(config.get("model"), str)
         or not config["model"].strip()
-        or int(config.get("dim", 0)) <= 0
+        or int(config.get("dim", 0)) != EMBEDDING_DIMENSION
     ):
         raise RuntimeError("fungus_search must use a configured OpenFang embedding backend")
     return config
@@ -57,15 +58,20 @@ def _embedding_backend() -> tuple[dict[str, Any], Any]:
 
 def _vectors(encoded: Any) -> List[List[float]]:
     value = encoded.tolist() if hasattr(encoded, "tolist") else encoded
-    if not isinstance(value, list) or any(not isinstance(vector, list) for vector in value):
+    if not isinstance(value, list) or any(
+        not isinstance(vector, list)
+        or len(vector) != EMBEDDING_DIMENSION
+        or any(isinstance(component, bool) or not isinstance(component, (int, float)) for component in vector)
+        for vector in value
+    ):
         raise ValueError("Shared embedding factory returned an invalid vector response")
     return value
 
 
-def _openfang_health_target() -> tuple[str, float]:
-    provider = get_provider_info()
-    if provider.get("provider") != "openfang":
-        raise RuntimeError("Shared default provider is not OpenFang")
+def _openfang_health_target(config: dict[str, Any]) -> tuple[str, float]:
+    provider = get_provider_info(EMBEDDING_ROLE)
+    if provider.get("provider") != config.get("provider") or provider.get("provider") != "openfang":
+        raise RuntimeError("Shared fungus_search provider is not OpenFang")
 
     base_url = str(provider.get("base_url", ""))
     parsed = urlsplit(base_url)
@@ -80,8 +86,8 @@ def _openfang_health_target() -> tuple[str, float]:
     return urlunsplit((parsed.scheme, parsed.netloc, "/api/health", "", "")), timeout
 
 
-def _check_openfang_health() -> None:
-    health_url, timeout = _openfang_health_target()
+def _check_openfang_health(config: dict[str, Any]) -> None:
+    health_url, timeout = _openfang_health_target(config)
     with urlopen(health_url, timeout=timeout) as response:
         if not 200 <= response.status < 300:
             raise RuntimeError(f"OpenFang health returned HTTP {response.status}")
@@ -91,7 +97,7 @@ def _check_openfang_health() -> None:
 def health() -> dict[str, Any]:
     try:
         config, _ = _embedding_backend()
-        _check_openfang_health()
+        _check_openfang_health(config)
     except Exception as exc:
         logger.warning("embedding service health check failed: %s", exc)
         raise HTTPException(status_code=503, detail="embedding service unavailable") from exc
