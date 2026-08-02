@@ -8,9 +8,7 @@ import threading
 import time
 from typing import Any, Dict, Optional
 
-from vibemind_shared import get_client, get_client_sync, get_model
-
-from .capability_targets import OpenFangUnavailable
+from vibemind_shared import OpenFangUnavailable, get_client, get_client_sync, get_model
 
 
 logger = logging.getLogger(__name__)
@@ -54,6 +52,7 @@ class SubagentDispatcher:
         if not prompt.strip():
             return self._failure(tool_name, "empty prompt")
 
+        started_at = time.time()
         try:
             model = self._openfang_model(role)
             client = get_client_sync(role)
@@ -68,9 +67,13 @@ class SubagentDispatcher:
             self._record_failure(tool_name, "OpenFang unavailable")
             raise
         except Exception as exc:  # The configured OpenFang call failed; do not fall back.
-            return self._failure(tool_name, f"{type(exc).__name__}: {exc}")
+            return self._failure(
+                tool_name, f"{type(exc).__name__}: {exc}", self._elapsed_ms(started_at)
+            )
 
-        return self._success(tool_name, model, response, prompt)
+        return self._success(
+            tool_name, model, response, prompt, self._elapsed_ms(started_at)
+        )
 
     async def adispatch(self, tool_name: str, **kwargs: Any) -> Dict[str, Any]:
         """Asynchronously invoke the configured OpenFang agent for an alias."""
@@ -83,6 +86,7 @@ class SubagentDispatcher:
         if not prompt.strip():
             return self._failure(tool_name, "empty prompt")
 
+        started_at = time.time()
         try:
             model = self._openfang_model(role)
             client = get_client(role)
@@ -101,16 +105,22 @@ class SubagentDispatcher:
             self._record_failure(tool_name, "OpenFang unavailable")
             raise
         except Exception as exc:  # The configured OpenFang call failed; do not fall back.
-            return self._failure(tool_name, f"{type(exc).__name__}: {exc}")
+            return self._failure(
+                tool_name, f"{type(exc).__name__}: {exc}", self._elapsed_ms(started_at)
+            )
 
-        return self._success(tool_name, model, response, prompt)
+        return self._success(
+            tool_name, model, response, prompt, self._elapsed_ms(started_at)
+        )
 
     def _resolve_role(
         self, tool_name: str, kwargs: Dict[str, Any]
     ) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
         if "model" in kwargs or "provider" in kwargs:
-            return None, self._failure(
-                tool_name, "direct provider/model override is not allowed"
+            logger.warning(
+                "Ignoring direct provider/model override for subagent %s; "
+                "OpenFang role configuration is authoritative",
+                tool_name,
             )
         role = _LEGACY_ROLE_MAP.get(tool_name)
         if role is None:
@@ -141,18 +151,41 @@ class SubagentDispatcher:
             raise RuntimeError(f"role {role!r} is not configured for OpenFang")
         return model
 
-    def _success(self, tool_name: str, model: str, response: Any, prompt: str) -> Dict[str, Any]:
+    @staticmethod
+    def _elapsed_ms(started_at: float) -> float:
+        return round((time.time() - started_at) * 1000.0, 1)
+
+    def _success(
+        self,
+        tool_name: str,
+        model: str,
+        response: Any,
+        prompt: str,
+        latency_ms: float,
+    ) -> Dict[str, Any]:
         return {
             "ok": True,
             "tool": tool_name,
             "model": model,
             "text": self._response_text(response),
             "prompt_len": len(prompt),
+            "latency_ms": latency_ms,
+            "error": None,
         }
 
-    def _failure(self, tool_name: str, reason: str) -> Dict[str, Any]:
+    def _failure(
+        self, tool_name: str, reason: str, latency_ms: Optional[float] = None
+    ) -> Dict[str, Any]:
         self._record_failure(tool_name, reason)
-        return {"ok": False, "tool": tool_name, "text": "", "error": reason}
+        result: Dict[str, Any] = {
+            "ok": False,
+            "tool": tool_name,
+            "text": "",
+            "error": reason,
+        }
+        if latency_ms is not None:
+            result["latency_ms"] = latency_ms
+        return result
 
     def _record_call(self, tool_name: str) -> None:
         with self._lock:

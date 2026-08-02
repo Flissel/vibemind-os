@@ -58,6 +58,10 @@ def _client(completions: Any) -> Any:
 @pytest.fixture
 def dispatcher_module(monkeypatch: pytest.MonkeyPatch) -> Any:
     shared = types.ModuleType("vibemind_shared")
+    class SharedOpenFangUnavailable(RuntimeError):
+        pass
+
+    shared.OpenFangUnavailable = SharedOpenFangUnavailable
     shared.get_client = lambda role: None
     shared.get_client_sync = lambda role: None
     shared.get_model = lambda role: ROUTES[role][1]
@@ -98,6 +102,8 @@ def test_dispatch_routes_legacy_aliases_through_openfang_factory(
     assert result["ok"] is True
     assert result["tool"] == tool_name
     assert result["model"] == agent
+    assert isinstance(result["latency_ms"], float)
+    assert result["error"] is None
     assert factory_roles == [role]
     assert completions.calls == [{
         "model": agent,
@@ -129,10 +135,14 @@ async def test_adispatch_uses_async_openfang_factory(
     result = await dispatcher.adispatch(
         "openai_subagent",
         prompt="write this",
+        model="legacy-openai-model",
+        provider="legacy-openai-provider",
     )
 
     assert result["ok"] is True
     assert result["model"] == "openfang:brain-writer"
+    assert isinstance(result["latency_ms"], float)
+    assert result["error"] is None
     assert factory_roles == ["brain_communication"]
     assert completions.calls[0]["model"] == "openfang:brain-writer"
 
@@ -141,26 +151,50 @@ async def test_adispatch_uses_async_openfang_factory(
     {"model": "direct-provider-model"},
     {"provider": "direct-provider"},
 ])
-def test_dispatch_rejects_direct_provider_or_model_overrides(
+def test_dispatch_ignores_direct_provider_or_model_overrides(
     dispatcher_module: Any,
     monkeypatch: pytest.MonkeyPatch,
     override: dict[str, str],
 ) -> None:
-    factory_called = False
+    completions = _SyncCompletions()
+    factory_roles: list[str] = []
 
     def get_client_sync(role: str) -> Any:
-        nonlocal factory_called
-        factory_called = True
-        return _client(_SyncCompletions())
+        factory_roles.append(role)
+        return _client(completions)
 
     monkeypatch.setattr(dispatcher_module, "get_client_sync", get_client_sync)
+    monkeypatch.setattr(dispatcher_module, "get_model", lambda role: MODELS_BY_ROLE[role])
     dispatcher = dispatcher_module.SubagentDispatcher(llm_router=object())
 
     result = dispatcher.dispatch("claude_subagent", prompt="do not bypass", **override)
 
+    assert result["ok"] is True
+    assert result["model"] == "openfang:brain-planner"
+    assert factory_roles == ["brain_planning"]
+    assert completions.calls[0]["model"] == "openfang:brain-planner"
+
+
+def test_dispatch_provider_failure_keeps_measured_latency(
+    dispatcher_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    time_values = iter([1.0, 2.0, 2.125])
+
+    def failing_create(**kwargs: Any) -> Any:
+        raise RuntimeError("OpenFang completion failed")
+
+    client = _client(types.SimpleNamespace(create=failing_create))
+    monkeypatch.setattr(dispatcher_module.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(dispatcher_module, "get_client_sync", lambda role: client)
+    monkeypatch.setattr(dispatcher_module, "get_model", lambda role: MODELS_BY_ROLE[role])
+    dispatcher = dispatcher_module.SubagentDispatcher(llm_router=object())
+
+    result = dispatcher.dispatch("claude_subagent", prompt="measure failure")
+
     assert result["ok"] is False
-    assert "override" in result["error"]
-    assert factory_called is False
+    assert result["error"] == "RuntimeError: OpenFang completion failed"
+    assert result["latency_ms"] == 125.0
 
 
 def test_dispatch_logs_and_reraises_openfang_unavailability(
@@ -168,7 +202,8 @@ def test_dispatch_logs_and_reraises_openfang_unavailability(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    unavailable = dispatcher_module.OpenFangUnavailable("OpenFang unavailable")
+    shared_unavailable = sys.modules["vibemind_shared"].OpenFangUnavailable
+    unavailable = shared_unavailable("OpenFang unavailable")
 
     def unavailable_client(role: str) -> Any:
         raise unavailable
@@ -177,7 +212,7 @@ def test_dispatch_logs_and_reraises_openfang_unavailability(
     monkeypatch.setattr(dispatcher_module, "get_model", lambda role: MODELS_BY_ROLE[role])
     dispatcher = dispatcher_module.SubagentDispatcher(llm_router=object())
 
-    with pytest.raises(dispatcher_module.OpenFangUnavailable, match="OpenFang unavailable"):
+    with pytest.raises(shared_unavailable, match="OpenFang unavailable"):
         dispatcher.dispatch("claude_subagent", prompt="must not fall back")
 
     assert "OpenFang unavailable" in caplog.text
