@@ -348,7 +348,7 @@ class CapabilityValidator:
                 # Ground-truth check (Baustein D.1): observe the real world via a
                 # declared post-condition, NOT the claimed result. The check spec
                 # lives on the validator cfg (or `kind` carries the check name).
-                # UNVERIFIED never blocks — only an explicit REFUTED fails.
+                # An unresolved postcondition never passes validation.
                 return self._run_truth_validator(
                     kind=kind, validator_cfg=validator_cfg or {},
                     on_fail=on_fail, t0=t0,
@@ -458,8 +458,10 @@ class CapabilityValidator:
 
         The post-condition spec is taken from `validator_cfg["postcondition"]`,
         or built from `kind` ("truth:<check>") + the remaining cfg keys.
-        UNVERIFIED is treated as valid=True (we couldn't observe → don't block),
-        REFUTED is valid=False, VERIFIED is valid=True.
+        An unresolved postcondition is invalid because it cannot observe the
+        operation at all. For an executable postcondition, REFUTED is invalid,
+        VERIFIED is valid, and other UNVERIFIED observations retain their
+        configured `require_verified` policy.
         """
         try:
             from core import world_observer as wo
@@ -482,8 +484,16 @@ class CapabilityValidator:
         pc = self._template_postcondition(pc, arg, raw_result)
         if any(isinstance(val, str) and "{" in val for val in pc.values()):
             return self._envelope(
-                valid=True, reason="ground-truth UNVERIFIED: postcondition placeholder unresolved",
-                kind=kind, on_fail=on_fail, t0=t0, verified=None,
+                valid=False,
+                reason="ground-truth UNVERIFIED: postcondition placeholder unresolved",
+                kind=kind,
+                on_fail=on_fail,
+                t0=t0,
+                verified=None,
+                verify_signal={
+                    "status": "unverified",
+                    "reason": "postcondition placeholder unresolved",
+                },
             )
         v = wo.observe(pc)
         verified = v.verified_ok  # True | False | None

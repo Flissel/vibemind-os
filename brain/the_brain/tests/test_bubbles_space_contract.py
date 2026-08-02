@@ -1,11 +1,13 @@
 """Canonical bubbles space and its legacy shuttles input alias."""
 
 import asyncio
+import types
 from pathlib import Path
 
 import yaml
 
 from core.capability_targets import SupabaseExecutor
+from core.capability_validator import CapabilityValidator
 from core.intent_envelope import build_envelope
 from core.supabase_ideas_client import SupabaseIdeasClient
 
@@ -82,6 +84,35 @@ def test_promote_uses_real_supabase_project_write_and_returns_queryable_id():
     assert result == "Bubble 'Launch Plan' promoted to project (id=project-1)."
 
 
+class _MissingPromoteClient:
+    async def find_bubble_by_title(self, _title):
+        return None
+
+    async def get_idea(self, _idea_id):
+        return None
+
+
+def test_promote_not_found_returns_structured_failure_and_fails_the_hop():
+    from core.supabase_ideas_ops import bubble_promote_op
+
+    result = asyncio.run(
+        bubble_promote_op(_MissingPromoteClient(), {"bubble_name": "Missing"})
+    )
+
+    assert result == {
+        "ok": False,
+        "error": "Bubble to promote not found.",
+    }
+
+    executor = SupabaseExecutor("supabase:bubble.promote")
+    executor._call = lambda _payload: result
+    hop = executor.call(bubble_name="Missing")
+
+    assert hop["ok"] is False
+    assert hop["result"] == result
+    assert "op result indicates failure" in hop["error"]
+
+
 def test_promote_is_wired_to_supabase_with_project_truth_validation():
     capability = _capability("bubble_promote")
 
@@ -97,6 +128,25 @@ def test_promote_is_wired_to_supabase_with_project_truth_validation():
         },
     }
     assert "bubble.promote" in SupabaseExecutor.OPERATIONS
+
+
+def test_unresolved_promote_postcondition_is_unverified_but_not_valid(monkeypatch):
+    import core
+
+    monkeypatch.setattr(core, "world_observer", types.SimpleNamespace(), raising=False)
+    verdict = CapabilityValidator().validate(
+        _capability("bubble_promote")["validator"],
+        intent="promote bubble Missing",
+        arg="Missing",
+        raw_result={"ok": False, "error": "Bubble to promote not found."},
+    )
+
+    assert verdict["verified"] is None
+    assert verdict["valid"] is False
+    assert verdict["reason"] == (
+        "ground-truth UNVERIFIED: postcondition placeholder unresolved"
+    )
+    assert verdict["verify_signal"]["status"] == "unverified"
 
 
 class _RecordingSupabaseClient(SupabaseIdeasClient):
