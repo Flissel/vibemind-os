@@ -19,14 +19,14 @@ class _Response:
         return self._body
 
 
-def test_canonical_target_calls_openfang_mcp_with_bound_agent_authority(monkeypatch):
+def test_bubble_create_target_calls_openfang_mcp_with_bound_agent_authority(monkeypatch):
     monkeypatch.setenv("OPENFANG_URL", "http://openfang.test")
     monkeypatch.setenv("OPENFANG_API_KEY", "test-token")
     captured = {}
 
     def _get(url, *, headers, timeout):
         captured["get"] = {"url": url, "headers": headers, "timeout": timeout}
-        return _Response({"agents": [{"name": "brain-ideas", "id": "agent-uuid"}]})
+        return _Response({"agents": [{"name": "brain-bubbles", "id": "agent-uuid"}]})
 
     def _post(url, *, json, headers, timeout):
         captured["post"] = {"url": url, "json": json, "headers": headers, "timeout": timeout}
@@ -39,7 +39,9 @@ def test_canonical_target_calls_openfang_mcp_with_bound_agent_authority(monkeypa
     monkeypatch.setattr("core.capability_targets.requests.get", _get)
     monkeypatch.setattr("core.capability_targets.requests.post", _post)
 
-    result = McpExecutor("mcp:brain-ideas:vibemind-db:ideas.list").call(query="focus")
+    result = McpExecutor(
+        "mcp:brain-bubbles:spaces-ideas:vibemind_bubble_create"
+    ).call(title="focus")
 
     assert result["ok"] is True
     assert captured["get"]["url"] == "http://openfang.test/api/agents"
@@ -55,8 +57,8 @@ def test_canonical_target_calls_openfang_mcp_with_bound_agent_authority(monkeypa
     assert captured["post"]["json"]["jsonrpc"] == "2.0"
     assert captured["post"]["json"]["method"] == "tools/call"
     assert captured["post"]["json"]["params"] == {
-        "name": "mcp_vibemind_db_ideas.list",
-        "arguments": {"query": "focus"},
+        "name": "mcp_spaces_ideas_vibemind_bubble_create",
+        "arguments": {"title": "focus"},
     }
 
 
@@ -98,6 +100,31 @@ def test_json_rpc_error_fails_closed_without_local_fallback(monkeypatch):
     assert result["ok"] is False
     assert "json-rpc" in result["error"].lower()
     assert calls == ["agents", "mcp"]
+
+
+def test_missing_bubble_agent_fails_closed_without_mcp_call(monkeypatch):
+    monkeypatch.setenv("OPENFANG_URL", "http://openfang.test")
+    monkeypatch.setenv("OPENFANG_API_KEY", "test-token")
+    calls = []
+
+    def _get(*args, **kwargs):
+        calls.append("agents")
+        return _Response([{"name": "brain-ideas", "id": "other-agent"}])
+
+    def _post(*args, **kwargs):
+        calls.append("mcp")
+        raise AssertionError("MCP dispatch must not run without the bound agent")
+
+    monkeypatch.setattr("core.capability_targets.requests.get", _get)
+    monkeypatch.setattr("core.capability_targets.requests.post", _post)
+
+    result = McpExecutor(
+        "mcp:brain-bubbles:spaces-ideas:vibemind_bubble_create"
+    ).call(title="focus")
+
+    assert result["ok"] is False
+    assert "brain-bubbles" in result["error"]
+    assert calls == ["agents"]
 
 
 def test_transient_agent_resolution_retries_within_openfang_boundary(monkeypatch):

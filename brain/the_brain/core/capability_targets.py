@@ -921,10 +921,52 @@ def _n8n_event_specs() -> Dict[str, Dict[str, Any]]:
 
 
 def resolve_registry_execution_target(capability: str) -> Optional[str]:
-    """Resolve canonical n8n event ids without duplicating tool names in Brain."""
-    if not isinstance(capability, str) or not capability.startswith("n8n."):
+    """Resolve explicit deterministic registry events to OpenFang MCP targets.
+
+    Only events which declare ``execution.kind: mcp`` participate.  This keeps
+    other Space routing unchanged while requiring the canonical agent, server,
+    and tool to be complete before a deterministic event can execute.
+    """
+    if not isinstance(capability, str) or not capability:
         return None
-    return f"n8n-mcp:{capability}" if capability in _n8n_event_specs() else None
+
+    if capability.startswith("n8n."):
+        return f"n8n-mcp:{capability}" if capability in _n8n_event_specs() else None
+
+    path = _space_registry_path()
+    if not path.is_file():
+        raise RuntimeError(f"canonical space registry unavailable: {path}")
+    with path.open("r", encoding="utf-8") as handle:
+        document = yaml.safe_load(handle) or {}
+
+    spaces = document.get("spaces") or {}
+    if not isinstance(spaces, dict):
+        raise RuntimeError("canonical space registry has no spaces")
+    for space_id, space in spaces.items():
+        if not isinstance(space, dict):
+            continue
+        events = space.get("events") or {}
+        spec = events.get(capability) if isinstance(events, dict) else None
+        if not isinstance(spec, dict):
+            continue
+        execution = spec.get("execution")
+        if not isinstance(execution, dict) or execution.get("kind") != "mcp":
+            return None
+        agent = space.get("agent")
+        server = execution.get("server")
+        tool = spec.get("tool")
+        missing = [
+            name for name, value in (
+                ("agent", agent), ("server", server), ("tool", tool),
+            ) if not isinstance(value, str) or not value.strip()
+        ]
+        if missing:
+            raise RuntimeError(
+                f"deterministic MCP metadata for '{capability}' is missing "
+                f"{', '.join(missing)}"
+            )
+        return f"mcp:{agent.strip()}:{server.strip()}:{tool.strip()}"
+    return None
 
 
 def _redact_evidence(value: Any) -> Any:

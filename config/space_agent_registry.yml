@@ -31,7 +31,10 @@ spaces:
     default_context: [current_space, current_bubble, idea_count]
     events:
       bubble.list:              { tool: vibemind_bubbles,       required_params: [] }
-      bubble.create:            { tool: vibemind_bubble_create, required_params: [title] }
+      bubble.create:
+        tool: vibemind_bubble_create
+        required_params: [title]
+        execution: { kind: mcp, server: spaces-ideas }
       bubble.enter:             { tool: vibemind_bubble_enter,  required_params: [bubble_name] }
       bubble.exit:              { tool: vibemind_bubble_exit,   required_params: [] }
       bubble.back:              { tool: vibemind_bubble_exit,   required_params: [] }

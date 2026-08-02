@@ -44,8 +44,8 @@ def _disable_kg_hits(monkeypatch) -> None:
     )
 
 
-def test_registered_event_gateway_failure_never_invokes_direct_executor(monkeypatch):
-    """OpenFang outage is surfaced; the previous direct target is never used."""
+def test_deterministic_bubble_create_gateway_failure_never_invokes_llm_or_direct_executor(monkeypatch):
+    """bubble.create reaches only its registry-declared OpenFang MCP tool."""
     built_targets = []
     _disable_kg_hits(monkeypatch)
     monkeypatch.setattr(
@@ -62,8 +62,53 @@ def test_registered_event_gateway_failure_never_invokes_direct_executor(monkeypa
     result = PlanExecutor()._exec_hop(_hop(), {})
 
     assert result.ok is False
-    assert built_targets == ["openfang:brain-bubbles"]
-    assert all(not target.startswith("direct:") for target in built_targets)
+    assert built_targets == [
+        "mcp:brain-bubbles:spaces-ideas:vibemind_bubble_create"
+    ]
+    assert all(
+        not target.startswith(("openfang:", "direct:", "supabase:"))
+        for target in built_targets
+    )
+
+
+def test_deterministic_bubble_create_missing_mcp_metadata_fails_closed(
+    monkeypatch, tmp_path
+):
+    built_targets = []
+    _disable_kg_hits(monkeypatch)
+    registry = tmp_path / "space_agent_registry.yml"
+    registry.write_text(
+        """
+version: 1
+spaces:
+  bubbles:
+    agent: brain-bubbles
+    enabled: true
+    events:
+      bubble.create:
+        tool: vibemind_bubble_create
+        execution:
+          kind: mcp
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "core.capability_targets._space_registry_path", lambda: registry
+    )
+    monkeypatch.setattr(
+        "core.agent_yaml_registry.get_registry",
+        lambda: _Registry({"bubble.create": "brain-bubbles"}),
+    )
+    monkeypatch.setattr(
+        "core.capability_targets.build_executor",
+        lambda target: built_targets.append(target) or _Executor({"ok": True, "result": {}}),
+    )
+
+    result = PlanExecutor()._exec_hop(_hop(), {})
+
+    assert result.ok is False
+    assert "deterministic MCP" in (result.error or "")
+    assert built_targets == []
 
 
 @pytest.mark.parametrize(
@@ -153,4 +198,6 @@ def test_registered_space_registry_load_failure_is_fail_closed(monkeypatch):
     result = PlanExecutor()._exec_hop(_hop(), {})
 
     assert result.ok is False
-    assert built_targets == ["openfang:brain-bubbles"]
+    assert built_targets == [
+        "mcp:brain-bubbles:spaces-ideas:vibemind_bubble_create"
+    ]

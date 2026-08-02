@@ -1318,6 +1318,24 @@ class PlanExecutor:
                 # in some other form, leave as-is; otherwise it won't match
                 # a canonical registry entry and its existing target remains.
                 pass
+            if event_id == "bubble.create":
+                try:
+                    from .capability_targets import resolve_registry_execution_target
+                    deterministic_target = resolve_registry_execution_target(event_id)
+                except Exception as e:
+                    return HopResult(
+                        step_id=hop.step_id, ok=False,
+                        error=f"canonical deterministic MCP routing: {type(e).__name__}: {e}",
+                        capability=hop.capability, target=target,
+                        rendered_arg=rendered_arg, kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False, reward=-1.0,
+                    )
+                explicit_authoritative_target = isinstance(target, str) and target.startswith(
+                    ("openfang:", "mcp:", "n8n-mcp:", "coding-engine:")
+                )
+                if deterministic_target and not explicit_authoritative_target:
+                    target = deterministic_target
             assigned_agent = None
             try:
                 assigned_agent = get_registry().get_event_agent(event_id) if event_id else None
