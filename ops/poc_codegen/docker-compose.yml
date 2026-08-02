@@ -2,7 +2,7 @@
 #
 # Architecture:
 #   host:       gRPC coordinator (no auth, no TLS)
-#   legit:      Code generation team (CodeGen + Reviewer + Executor with GPT-4o)
+#   legit:      Code generation team (CodeGen + Reviewer + Executor via OpenFang)
 #   malicious:  Attacker (eavesdrop + code injection bypassing reviewer)
 #
 # Usage:
@@ -28,16 +28,13 @@ services:
   legit:
     build:
       context: .
-      dockerfile: Dockerfile.worker
+      dockerfile: Dockerfile.legit
     container_name: codegen-legit
     depends_on:
       host:
         condition: service_healthy
-    env_file:
-      - ../.env
     volumes:
-      - ./legitimate_worker.py:/app/worker.py:ro
-    command: ["python", "-u", "/app/worker.py"]
+      - ../../llm_config.yml:/config/llm_config.yml:ro
     networks:
       - codegen-net
 
