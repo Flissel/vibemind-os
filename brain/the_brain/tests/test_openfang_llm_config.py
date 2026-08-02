@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -12,6 +13,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 CHECKER = REPOSITORY_ROOT / "scripts" / "check_openfang_llm_config.py"
 ROOT_CONFIG = REPOSITORY_ROOT / "llm_config.yml.example"
 BRAIN_CONFIG = REPOSITORY_ROOT / "brain" / "the_brain" / "llm_config.yml"
+SHARED_SOURCE = REPOSITORY_ROOT / "shared" / "src"
 
 
 def test_checker_rejects_direct_provider_in_brain_runtime_config(tmp_path: Path) -> None:
@@ -42,3 +44,43 @@ def test_checker_rejects_direct_provider_in_brain_runtime_config(tmp_path: Path)
 
     assert result.returncode == 1
     assert "brain runtime config" in result.stderr
+
+
+def test_brain_runtime_loader_resolves_openfang_url_and_fails_closed_without_it() -> None:
+    """The pinned shared loader must consume the Brain image's real config."""
+    environment = os.environ.copy()
+    environment["VIBEMIND_CONFIG_DIR"] = str(BRAIN_CONFIG.parent)
+    environment["OPENFANG_URL"] = "http://host.docker.internal:4200"
+    environment["PYTHONPATH"] = os.pathsep.join(
+        filter(None, (str(SHARED_SOURCE), environment.get("PYTHONPATH")))
+    )
+    loader_probe = (
+        "from vibemind_shared import get_provider_info; "
+        "info = get_provider_info('brain_planning'); "
+        "assert info['provider'] == 'openfang'; "
+        "assert info['base_url'] == 'http://host.docker.internal:4200/v1'"
+    )
+
+    resolved = subprocess.run(
+        [sys.executable, "-c", loader_probe],
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert resolved.returncode == 0, resolved.stderr
+
+    environment.pop("OPENFANG_URL")
+    missing = subprocess.run(
+        [sys.executable, "-c", loader_probe],
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = missing.stdout + missing.stderr
+    assert missing.returncode != 0
+    assert "OPENFANG_URL" in output
+    assert "api.openai.com" not in output
