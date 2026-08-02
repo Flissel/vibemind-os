@@ -424,9 +424,18 @@ Please coordinate execution of this task."""
                 "InternalServerError",
                 "OpenFangUnavailable",
             )
-            if is_openfang_provider and str(error).startswith(markers):
+            error_type = type(error).__name__
+            try:
+                serialized_error = str(error)
+            except Exception:
+                serialized_error = ""
+            if is_openfang_provider and (
+                error_type in markers or serialized_error.startswith(markers)
+            ):
                 logger.exception("OpenFang transport failed during swarm execution")
-                raise OpenFangUnavailable(f"OpenFang unavailable: {error}") from error
+                raise OpenFangUnavailable(
+                    "OpenFang unavailable during swarm execution"
+                ) from error
             logger.exception("Swarm execution failed")
             raise
 

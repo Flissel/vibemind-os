@@ -9,6 +9,8 @@ import types
 from pathlib import Path
 from typing import Any
 
+import httpx
+import openai
 import pytest
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 
@@ -141,13 +143,53 @@ def test_process_task_normalizes_openfang_transport_markers_with_cause(
 ) -> None:
     provider_info = {"provider": "openfang", "model": "openfang:brain-planner"}
     module, _, _ = _load_orchestrator(monkeypatch, _CapturingOpenAIClient, provider_info)
-    failure = RuntimeError(f"{marker}: gateway unavailable")
+    failure = RuntimeError(f"{marker}: sensitive upstream detail")
 
     with pytest.raises(module.OpenFangUnavailable) as caught:
         asyncio.run(_failing_orchestrator(module, failure).process_task("must fail closed"))
 
     assert caught.value.__cause__ is failure
-    assert marker in str(caught.value)
+    assert str(caught.value) == "OpenFang unavailable during swarm execution"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        openai.APIConnectionError(
+            request=httpx.Request("POST", "http://openfang.test/v1/chat/completions")
+        ),
+        openai.APITimeoutError(
+            request=httpx.Request("POST", "http://openfang.test/v1/chat/completions")
+        ),
+    ],
+)
+def test_process_task_normalizes_typed_openai_transport_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException,
+) -> None:
+    provider_info = {"provider": "openfang", "model": "openfang:brain-planner"}
+    module, _, _ = _load_orchestrator(monkeypatch, _CapturingOpenAIClient, provider_info)
+
+    with pytest.raises(module.OpenFangUnavailable) as caught:
+        asyncio.run(_failing_orchestrator(module, failure).process_task("must fail closed"))
+
+    assert caught.value.__cause__ is failure
+    assert str(caught.value) == "OpenFang unavailable during swarm execution"
+
+
+def test_process_task_does_not_normalize_typed_errors_for_other_providers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_info = {"provider": "openai", "model": "gpt-4o"}
+    module, _, _ = _load_orchestrator(monkeypatch, _CapturingOpenAIClient, provider_info)
+    failure = openai.APIConnectionError(
+        request=httpx.Request("POST", "https://openai.test/v1/chat/completions")
+    )
+
+    with pytest.raises(openai.APIConnectionError) as caught:
+        asyncio.run(_failing_orchestrator(module, failure).process_task("must propagate"))
+
+    assert caught.value is failure
 
 
 @pytest.mark.parametrize(
