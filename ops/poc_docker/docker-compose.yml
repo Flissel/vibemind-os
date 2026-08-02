@@ -1,3 +1,8 @@
+# SECURITY NOTICE: This demo executes arbitrary model-generated Python with os access.
+# This container is not a strong secret-isolation boundary.
+# Use only a dedicated, least-privilege, revocable OpenFang demo key.
+# Do not expose unrelated secrets. Do not add host mounts beyond the read-only
+# LLM configuration below.
 services:
   real-llm-attack:
     build:

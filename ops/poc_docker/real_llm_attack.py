@@ -33,10 +33,22 @@ from autogen_core import (
     message_handler,
 )
 
-from vibemind_shared import get_client, get_model
-
 DB_PATH = "/app/company.db"
 EXFIL_PATH = "/app/stolen_data.json"
+
+
+def get_client(role: str) -> Any:
+    """Acquire the configured client lazily for the executable entrypoint."""
+    from vibemind_shared import get_client as shared_get_client
+
+    return shared_get_client(role)
+
+
+def get_model(role: str) -> str:
+    """Resolve the configured model lazily before demo side effects begin."""
+    from vibemind_shared import get_model as shared_get_model
+
+    return shared_get_model(role)
 
 # === Message Types ===
 
@@ -62,16 +74,17 @@ class CodeToRun:
 class LlmQueryAgent(RoutedAgent):
     """Uses the configured OpenFang model to convert natural language to SQL."""
 
-    def __init__(self, llm_client: Any) -> None:
+    def __init__(self, llm_client: Any, llm_model: str) -> None:
         super().__init__("LlmQueryAgent")
         self._llm_client = llm_client
+        self._llm_model = llm_model
 
     @message_handler
     async def handle_request(self, message: UserRequest, ctx: MessageContext) -> SqlQuery:
         print(f"  [LLM QUERY AGENT] Sending to configured OpenFang model: '{message.text}'")
 
         response = await self._llm_client.chat.completions.create(
-            model=get_model("coding_executor"),
+            model=self._llm_model,
             messages=[
                 {
                     "role": "system",
@@ -156,17 +169,20 @@ class LlmCodeAgent(RoutedAgent):
     The runtime reference is available in the exec scope.
     """
 
-    def __init__(self, runtime_ref: Any, llm_client: Any) -> None:
+    def __init__(
+        self, runtime_ref: Any, llm_client: Any, llm_model: str
+    ) -> None:
         super().__init__("LlmCodeAgent")
         self._runtime = runtime_ref
         self._llm_client = llm_client
+        self._llm_model = llm_model
 
     @message_handler
     async def handle_request(self, message: UserRequest, ctx: MessageContext) -> str:
         print(f"  [LLM CODE AGENT] Sending to configured OpenFang model: '{message.text[:100]}...'")
 
         response = await self._llm_client.chat.completions.create(
-            model=get_model("coding_executor"),
+            model=self._llm_model,
             messages=[
                 {
                     "role": "system",
@@ -290,6 +306,7 @@ async def main():
     print("=" * 60)
 
     llm_client = get_client("coding_executor")
+    llm_model = get_model("coding_executor")
 
     # Setup DB
     from setup_db import setup
@@ -298,11 +315,15 @@ async def main():
 
     # Setup runtime
     runtime = SingleThreadedAgentRuntime()
-    await LlmQueryAgent.register(runtime, "query", lambda: LlmQueryAgent(llm_client))
+    await LlmQueryAgent.register(
+        runtime, "query", lambda: LlmQueryAgent(llm_client, llm_model)
+    )
     await GuardAgent.register(runtime, "guard", lambda: GuardAgent())
     await DbExecutorAgent.register(runtime, "db_exec", lambda: DbExecutorAgent())
     await LlmCodeAgent.register(
-        runtime, "code_agent", lambda: LlmCodeAgent(runtime, llm_client)
+        runtime,
+        "code_agent",
+        lambda: LlmCodeAgent(runtime, llm_client, llm_model),
     )
     runtime.start()
 
