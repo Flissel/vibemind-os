@@ -881,11 +881,17 @@ class McpExecutor(_BaseRemoteExecutor):
             raise RuntimeError("OpenFang MCP returned an invalid JSON-RPC version")
         if response.get("id") != request_id:
             raise RuntimeError("OpenFang MCP returned a mismatched JSON-RPC request id")
-        if response.get("error"):
+        has_result = "result" in response
+        has_error = "error" in response
+        if has_result == has_error:
+            raise RuntimeError(
+                "OpenFang MCP JSON-RPC response must contain exactly one result or error"
+            )
+        if has_error:
             error = _redact_evidence(response["error"])
             message = error.get("message") if isinstance(error, dict) else str(error)
             raise RuntimeError(f"OpenFang MCP JSON-RPC error: {message}")
-        result = response.get("result")
+        result = response["result"]
         if not isinstance(result, dict):
             raise RuntimeError("OpenFang MCP JSON-RPC response omitted result")
         if result.get("isError") is True:

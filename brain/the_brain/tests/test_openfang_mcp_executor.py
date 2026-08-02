@@ -107,6 +107,41 @@ def test_json_rpc_error_fails_closed_without_local_fallback(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "error",
+    [
+        {},
+        {"code": -32602, "message": "not permitted"},
+    ],
+    ids=["empty-error-member", "result-and-error-members"],
+)
+def test_mcp_response_rejects_ambiguous_json_rpc_result_and_error(
+    monkeypatch, error
+):
+    monkeypatch.setenv("OPENFANG_URL", "http://openfang.test")
+    monkeypatch.setenv("OPENFANG_API_KEY", "test-token")
+    monkeypatch.setattr(
+        "core.capability_targets.requests.get",
+        lambda *args, **kwargs: _Response([
+            {"name": "brain-ideas", "id": "agent-uuid"}
+        ]),
+    )
+    monkeypatch.setattr(
+        "core.capability_targets.requests.post",
+        lambda *args, **kwargs: _Response({
+            "jsonrpc": "2.0",
+            "id": kwargs["json"]["id"],
+            "result": {"content": [], "isError": False},
+            "error": error,
+        }),
+    )
+
+    result = McpExecutor("mcp:brain-ideas:vibemind-db:ideas.list").call()
+
+    assert result["ok"] is False
+    assert "exactly one result or error" in result["error"].lower()
+
+
+@pytest.mark.parametrize(
     ("response_fields", "expected_error"),
     [
         ({"id": "$request"}, "json-rpc version"),
