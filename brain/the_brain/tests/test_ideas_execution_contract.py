@@ -1,6 +1,7 @@
 """Truthful execution contracts for the Brain-owned Ideas path."""
 
 import asyncio
+import builtins
 from pathlib import Path
 
 import yaml
@@ -9,6 +10,176 @@ from core.capability_targets import SupabaseExecutor, result_indicates_failure
 from core.capability_validator import CapabilityValidator
 from core.space_routing_head import EVENT_SPACE_MAP
 from core.supabase_ideas_ops import idea_to_project_op
+
+
+class _UnverifiedTruth:
+    verified_ok = None
+    verdict = "UNVERIFIED"
+    reason = "ground truth unavailable"
+    signal = {"source": "test"}
+
+
+def _truth_validator(postcondition=None):
+    validator = {"kind": "truth:supabase_row", "on_fail": "report"}
+    if postcondition is not None:
+        validator["postcondition"] = postcondition
+    return validator
+
+
+def test_truth_without_postcondition_is_not_valid(monkeypatch):
+    observed = []
+    monkeypatch.setattr(
+        "core.world_observer.observe",
+        lambda postcondition: observed.append(postcondition) or _UnverifiedTruth(),
+    )
+
+    verdict = CapabilityValidator().validate(
+        _truth_validator(), intent="promote bubble", arg="Launch", raw_result="done"
+    )
+
+    assert observed == [{"check": "supabase_row"}]
+    assert verdict["verified"] is None
+    assert verdict["valid"] is False
+
+
+def test_truth_with_incomplete_postcondition_is_not_valid(monkeypatch):
+    monkeypatch.setattr("core.world_observer.observe", lambda _pc: _UnverifiedTruth())
+
+    verdict = CapabilityValidator().validate(
+        _truth_validator({"check": "supabase_row"}),
+        intent="promote bubble",
+        arg="Launch",
+        raw_result="done",
+    )
+
+    assert verdict["verified"] is None
+    assert verdict["valid"] is False
+
+
+def test_truth_with_ground_truth_disabled_is_not_valid(monkeypatch):
+    monkeypatch.setattr("core.world_observer.GROUND_TRUTH_ENABLED", False)
+
+    verdict = CapabilityValidator().validate(
+        _truth_validator(
+            {
+                "check": "supabase_row",
+                "table": "projects",
+                "match": "id=eq.project-1",
+                "expect": "present",
+            }
+        ),
+        intent="promote bubble",
+        arg="Launch",
+        raw_result="done",
+    )
+
+    assert verdict["verified"] is None
+    assert verdict["valid"] is False
+
+
+def test_truth_with_world_observer_import_error_is_not_valid(monkeypatch):
+    original_import = builtins.__import__
+
+    def disabled_world_observer(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "core" and "world_observer" in fromlist:
+            raise ImportError("world observer disabled: Bearer should-not-leak")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", disabled_world_observer)
+    verdict = CapabilityValidator().validate(
+        _truth_validator(
+            {
+                "check": "supabase_row",
+                "table": "projects",
+                "match": "id=eq.project-1",
+                "expect": "present",
+            }
+        ),
+        intent="promote bubble",
+        arg="Launch",
+        raw_result="done",
+    )
+
+    assert verdict["verified"] is None
+    assert verdict["valid"] is False
+    assert verdict["reason"] == "ground-truth UNVERIFIED: world_observer unavailable"
+    assert verdict["verify_signal"] == {
+        "status": "unverified",
+        "reason": "world_observer unavailable",
+    }
+    assert verdict["kind"] == "truth:supabase_row"
+    assert verdict["on_fail"] == "report"
+    assert isinstance(verdict["elapsed_s"], float)
+    assert "should-not-leak" not in str(verdict)
+
+
+def test_truth_with_world_observer_runtime_error_is_unverified_envelope(monkeypatch):
+    def observer_crash(_postcondition):
+        raise RuntimeError("observer transport failed: Bearer should-not-leak")
+
+    monkeypatch.setattr("core.world_observer.observe", observer_crash)
+
+    verdict = CapabilityValidator().validate(
+        _truth_validator(
+            {
+                "check": "supabase_row",
+                "table": "projects",
+                "match": "id=eq.project-1",
+                "expect": "present",
+            }
+        ),
+        intent="promote bubble",
+        arg="Launch",
+        raw_result="done",
+    )
+
+    assert verdict["valid"] is False
+    assert verdict["verified"] is None
+    assert verdict["reason"] == "ground-truth UNVERIFIED: world_observer observation failed"
+    assert verdict["verify_signal"] == {
+        "status": "unverified",
+        "reason": "world_observer observation failed",
+    }
+    assert verdict["kind"] == "truth:supabase_row"
+    assert verdict["on_fail"] == "report"
+    assert isinstance(verdict["elapsed_s"], float)
+    assert "should-not-leak" not in str(verdict)
+
+
+def test_truth_verified_and_refuted_verdicts_remain_conclusive(monkeypatch):
+    class _VerifiedTruth:
+        verified_ok = True
+        verdict = "VERIFIED"
+        reason = "row present"
+        signal = {"rows_found": 1}
+
+    class _RefutedTruth:
+        verified_ok = False
+        verdict = "REFUTED"
+        reason = "row missing"
+        signal = {"rows_found": 0}
+
+    config = _truth_validator(
+        {
+            "check": "supabase_row",
+            "table": "projects",
+            "match": "id=eq.project-1",
+            "expect": "present",
+        }
+    )
+    monkeypatch.setattr("core.world_observer.observe", lambda _pc: _VerifiedTruth())
+    verified = CapabilityValidator().validate(
+        config, intent="promote bubble", arg="Launch", raw_result="done"
+    )
+    monkeypatch.setattr("core.world_observer.observe", lambda _pc: _RefutedTruth())
+    refuted = CapabilityValidator().validate(
+        config, intent="promote bubble", arg="Launch", raw_result="done"
+    )
+
+    assert verified["verified"] is True
+    assert verified["valid"] is True
+    assert refuted["verified"] is False
+    assert refuted["valid"] is False
 
 
 def test_idea_error_strings_are_executor_failures():

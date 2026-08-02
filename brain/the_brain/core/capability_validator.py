@@ -348,7 +348,7 @@ class CapabilityValidator:
                 # Ground-truth check (Baustein D.1): observe the real world via a
                 # declared post-condition, NOT the claimed result. The check spec
                 # lives on the validator cfg (or `kind` carries the check name).
-                # UNVERIFIED never blocks — only an explicit REFUTED fails.
+                # An unresolved postcondition never passes validation.
                 return self._run_truth_validator(
                     kind=kind, validator_cfg=validator_cfg or {},
                     on_fail=on_fail, t0=t0,
@@ -458,15 +458,24 @@ class CapabilityValidator:
 
         The post-condition spec is taken from `validator_cfg["postcondition"]`,
         or built from `kind` ("truth:<check>") + the remaining cfg keys.
-        UNVERIFIED is treated as valid=True (we couldn't observe → don't block),
-        REFUTED is valid=False, VERIFIED is valid=True.
+        Every inconclusive outcome is invalid: a truth validator may only pass
+        after an actual VERIFIED observation. `on_fail` still decides whether
+        that invalid verdict blocks execution or is reported alongside it.
         """
         try:
             from core import world_observer as wo
-        except Exception as e:
+        except Exception:
             return self._envelope(
-                valid=True, reason=f"world_observer unavailable: {e}",
-                kind=kind, on_fail=on_fail, t0=t0, verified=None,
+                valid=False,
+                reason="ground-truth UNVERIFIED: world_observer unavailable",
+                kind=kind,
+                on_fail=on_fail,
+                t0=t0,
+                verified=None,
+                verify_signal={
+                    "status": "unverified",
+                    "reason": "world_observer unavailable",
+                },
             )
         # Resolve the post-condition spec.
         pc = validator_cfg.get("postcondition")
@@ -482,16 +491,37 @@ class CapabilityValidator:
         pc = self._template_postcondition(pc, arg, raw_result)
         if any(isinstance(val, str) and "{" in val for val in pc.values()):
             return self._envelope(
-                valid=True, reason="ground-truth UNVERIFIED: postcondition placeholder unresolved",
-                kind=kind, on_fail=on_fail, t0=t0, verified=None,
+                valid=False,
+                reason="ground-truth UNVERIFIED: postcondition placeholder unresolved",
+                kind=kind,
+                on_fail=on_fail,
+                t0=t0,
+                verified=None,
+                verify_signal={
+                    "status": "unverified",
+                    "reason": "postcondition placeholder unresolved",
+                },
             )
-        v = wo.observe(pc)
+        try:
+            v = wo.observe(pc)
+        except Exception:
+            return self._envelope(
+                valid=False,
+                reason="ground-truth UNVERIFIED: world_observer observation failed",
+                kind=kind,
+                on_fail=on_fail,
+                t0=t0,
+                verified=None,
+                verify_signal={
+                    "status": "unverified",
+                    "reason": "world_observer observation failed",
+                },
+            )
         verified = v.verified_ok  # True | False | None
-        # Mutating capabilities may opt into fail-closed truth. Reads and
-        # legacy capabilities retain the historical UNVERIFIED-as-reporting
-        # behavior unless ``require_verified`` is explicitly set.
-        require_verified = validator_cfg.get("require_verified") is True
-        valid = (verified is True) if require_verified else (verified is not False)
+        # A truth validator is successful only when the independent observer
+        # conclusively verified the declared postcondition. UNVERIFIED must
+        # remain an explicit non-success regardless of legacy configuration.
+        valid = verified is True
         return self._envelope(
             valid=valid, reason=f"ground-truth {v.verdict}: {v.reason}",
             kind=kind, on_fail=on_fail, t0=t0,

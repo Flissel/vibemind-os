@@ -1046,11 +1046,11 @@ async def bubble_score_op(client: SupabaseIdeasClient,
 
 
 async def bubble_promote_op(client: SupabaseIdeasClient,
-                            params: Dict[str, Any]) -> str:
+                            params: Dict[str, Any]) -> str | Dict[str, Any]:
     row = await _resolve_bubble(client, params, "bubble_name", "bubble",
                                 "bubble_id", "name", "title")
     if row is None:
-        return "Bubble to promote not found."
+        return {"ok": False, "error": "Bubble to promote not found."}
     project = await client.promote_bubble(row)
     if not project:
         return f"Failed to promote bubble '{row.get('title')}'."
