@@ -788,9 +788,11 @@ class McpExecutor(_BaseRemoteExecutor):
         headers: Dict[str, str],
         payload: Optional[Dict[str, Any]] = None,
         retry_transient: bool = False,
+        timeout_cap_s: Optional[float] = None,
     ) -> Any:
         """Issue one OpenFang request, retrying only safe idempotent GETs."""
-        timeout = float(os.environ.get("CAPABILITY_HTTP_TIMEOUT_S", "60"))
+        configured_timeout = float(os.environ.get("CAPABILITY_HTTP_TIMEOUT_S", "60"))
+        timeout = min(configured_timeout, timeout_cap_s) if timeout_cap_s else configured_timeout
         last_error: Optional[requests.exceptions.RequestException] = None
         attempts = self._RETRY_ATTEMPTS if retry_transient else 1
         for attempt in range(attempts):
@@ -822,7 +824,14 @@ class McpExecutor(_BaseRemoteExecutor):
         # Resolve for every execution. OpenFang restart/re-registration changes
         # agent UUIDs, so caching would leave a permanent stale authority token.
         body = self._request_json(
-            "GET", f"{base}/api/agents", headers=headers, retry_transient=True,
+            "GET",
+            f"{base}/api/agents",
+            headers=headers,
+            retry_transient=True,
+            # The agent list is a cheap health/control-plane read. Bound each
+            # retry tightly; do not let a generic 60s capability timeout turn
+            # a three-attempt resolve into a multi-minute stall.
+            timeout_cap_s=4.0,
         )
         agents = body.get("agents") if isinstance(body, dict) else body
         if not isinstance(agents, list):

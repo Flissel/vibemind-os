@@ -182,3 +182,26 @@ def test_mcp_post_transient_failure_is_never_retried(monkeypatch, post_failure):
 
     assert result["ok"] is False
     assert calls == {"agents": 1, "mcp": 1}
+
+
+def test_agent_resolution_timeout_is_capped_without_changing_mcp_post_timeout(monkeypatch):
+    monkeypatch.setenv("OPENFANG_URL", "http://openfang.test")
+    monkeypatch.setenv("OPENFANG_API_KEY", "test-token")
+    monkeypatch.setenv("CAPABILITY_HTTP_TIMEOUT_S", "60")
+    captured = {}
+
+    def _get(*args, **kwargs):
+        captured["get_timeout"] = kwargs["timeout"]
+        return _Response([{"name": "brain-ideas", "id": "agent-uuid"}])
+
+    def _post(*args, **kwargs):
+        captured["post_timeout"] = kwargs["timeout"]
+        return _Response({"result": {"content": [], "isError": False}})
+
+    monkeypatch.setattr("core.capability_targets.requests.get", _get)
+    monkeypatch.setattr("core.capability_targets.requests.post", _post)
+
+    result = McpExecutor("mcp:brain-ideas:vibemind-db:ideas.list").call()
+
+    assert result["ok"] is True
+    assert captured == {"get_timeout": 4.0, "post_timeout": 60.0}
