@@ -1,22 +1,14 @@
-"""
-Security Scanning Tools
-========================
-Pure async functions that perform actual network checks.
-Each returns a dict of findings.
-"""
+"""Security scanning tools and configured reasoning support."""
 
 import asyncio
 import json
-import os
 import socket
 import ssl
 import struct
-import sys
+from vibemind_shared import get_model
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from llm_client import get_model
 
-from openai import AsyncOpenAI
+SECURITY_ANALYZER_ROLE = "security_analyzer"
 
 
 # ================================================================
@@ -247,13 +239,13 @@ async def check_docker_bind(host: str, ports: list = None) -> dict:
 
 
 # ================================================================
-# TOOL: think (OpenAI chain-of-thought reasoning)
+# TOOL: think (configured chain-of-thought reasoning)
 # ================================================================
 
-async def think(reasoning_prompt: str, llm_client: AsyncOpenAI) -> dict:
-    """Use OpenAI to reason step-by-step about security implications."""
+async def think(reasoning_prompt: str, llm_client) -> dict:
+    """Reason step-by-step about security implications with the shared client."""
     response = await llm_client.chat.completions.create(
-        model=get_model("default", "poc_security_scanner"),
+        model=get_model(SECURITY_ANALYZER_ROLE),
         temperature=0,
         messages=[
             {
@@ -298,7 +290,7 @@ async def think(reasoning_prompt: str, llm_client: AsyncOpenAI) -> dict:
 
 
 # ================================================================
-# OPENAI TOOL DEFINITIONS (for function calling)
+# TOOL DEFINITIONS (for function calling)
 # ================================================================
 
 TOOL_DEFINITIONS = [
