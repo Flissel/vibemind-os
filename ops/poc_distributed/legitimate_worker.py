@@ -1,25 +1,23 @@
 """
-Legitimate Worker - Database Query Team (with REAL LLM)
+Legitimate Worker - Database Query Team
 ========================================================
 Connects to the gRPC host and processes database queries.
 
 Agents:
-  - QueryAgent: uses GPT-4o to convert natural language to SQL
-  - GuardAgent: uses GPT-4o to review SQL for security risks
+  - QueryAgent: uses the configured executor role to convert natural language to SQL
+  - GuardAgent: uses the configured audit role to review SQL for security risks
   - DbExecutorAgent: executes approved queries on SQLite
 
 The team publishes audit events to "team_events" topic.
 This is standard practice for monitoring/logging.
 
-IMPORTANT: OPENAI_API_KEY must be set as environment variable.
+The image reads provider-neutral configuration from /config/llm_config.yml.
 """
 
 import asyncio
 import sqlite3
 import json
 import os
-
-from openai import AsyncOpenAI
 
 from autogen_core import (
     AgentId,
@@ -40,8 +38,22 @@ from messages import (
 
 DB_PATH = "/app/company.db"
 
-# OpenAI client (initialized in main)
-llm_client: AsyncOpenAI = None
+EXECUTOR_ROLE = "coding_executor"
+SECURITY_AUDIT_ROLE = "coding_security_audit"
+
+
+def get_client(role):
+    """Acquire the configured asynchronous OpenFang client for a role."""
+    from vibemind_shared import get_client as shared_get_client
+
+    return shared_get_client(role)
+
+
+def get_model(role):
+    """Resolve the configured OpenFang model for a role."""
+    from vibemind_shared import get_model as shared_get_model
+
+    return shared_get_model(role)
 
 # Database schema for LLM context
 DB_SCHEMA = """
@@ -148,22 +160,23 @@ def show_db_state(label):
 
 
 # ================================================================
-# AGENTS (with real GPT-4o)
+# AGENTS
 # ================================================================
 
 class QueryAgent(RoutedAgent):
-    """Uses GPT-4o to convert natural language queries to SQL."""
+    """Converts natural language queries to SQL."""
 
     def __init__(self):
         super().__init__("QueryAgent")
+        self.client = get_client("coding_executor")
 
     @message_handler
     async def handle(self, message: UserQuery, ctx: MessageContext) -> SqlQuery:
         print(f"  [QUERY AGENT] User request: '{message.text}'")
-        print(f"  [QUERY AGENT] Calling GPT-4o for NL-to-SQL...")
+        print(f"  [QUERY AGENT] Calling configured NL-to-SQL model...")
 
-        response = await llm_client.chat.completions.create(
-            model="gpt-4o",
+        response = await self.client.chat.completions.create(
+            model=get_model("coding_executor"),
             temperature=0,
             messages=[
                 {
@@ -182,23 +195,24 @@ class QueryAgent(RoutedAgent):
         )
 
         query = response.choices[0].message.content.strip()
-        print(f"  [QUERY AGENT] GPT-4o generated: {query}")
+        print(f"  [QUERY AGENT] Generated: {query}")
         return SqlQuery(query=query)
 
 
 class GuardAgent(RoutedAgent):
-    """Uses GPT-4o to review SQL queries for security risks."""
+    """Reviews SQL queries for security risks."""
 
     def __init__(self):
         super().__init__("GuardAgent")
+        self.client = get_client("coding_security_audit")
 
     @message_handler
     async def handle(self, message: SqlQuery, ctx: MessageContext) -> ApprovedQuery:
         print(f"  [GUARD] Reviewing: {message.query}")
-        print(f"  [GUARD] Calling GPT-4o for security analysis...")
+        print(f"  [GUARD] Calling configured security-audit model...")
 
-        response = await llm_client.chat.completions.create(
-            model="gpt-4o",
+        response = await self.client.chat.completions.create(
+            model=get_model("coding_security_audit"),
             temperature=0,
             messages=[
                 {
@@ -224,7 +238,7 @@ class GuardAgent(RoutedAgent):
         )
 
         verdict = response.choices[0].message.content.strip()
-        print(f"  [GUARD] GPT-4o verdict: {verdict}")
+        print(f"  [GUARD] Model verdict: {verdict}")
 
         if verdict.startswith("BLOCKED"):
             reason = verdict.split(":", 1)[1] if ":" in verdict else "dangerous query"
@@ -293,17 +307,17 @@ async def connect_to_host(host_address, max_retries=30, delay=2):
 
 
 async def process_query(runtime, text):
-    """Run a query through the full pipeline: QueryAgent -> Guard -> DbExecutor."""
+    """Run a query through the full pipeline: QueryAgent -> GuardAgent -> DbExecutor."""
     print(f"\n  [USER] '{text}'")
 
-    # Step 1: GPT-4o generates SQL
+    # Step 1: the configured executor role generates SQL.
     sql = await runtime.send_message(
         UserQuery(text=text),
         recipient=AgentId("query_agent", "default"),
     )
     print(f"  [SQL] {sql.query}")
 
-    # Step 2: GPT-4o reviews the SQL
+    # Step 2: the configured audit role reviews the SQL.
     review = await runtime.send_message(
         sql,
         recipient=AgentId("guard_agent", "default"),
@@ -311,7 +325,7 @@ async def process_query(runtime, text):
 
     if review.query.startswith("__BLOCKED__"):
         reason = review.query.split(":", 1)[1]
-        print(f"  [RESULT] BLOCKED by GPT-4o guard: {reason}")
+        print(f"  [RESULT] BLOCKED by security guard: {reason}")
         # Publish audit event
         await runtime.publish_message(
             TeamEvent(
@@ -347,23 +361,13 @@ async def process_query(runtime, text):
 # ================================================================
 
 async def main():
-    global llm_client
-
     print("=" * 60)
-    print(" LEGITIMATE WORKER - Database Query Team (GPT-4o)")
+    print(" LEGITIMATE WORKER - Database Query Team")
     print("=" * 60)
     print()
 
-    # Check for OpenAI key
-    api_key = os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        print("  ERROR: OPENAI_API_KEY not set!")
-        return
-
-    llm_client = AsyncOpenAI(api_key=api_key)
-    print(f"  OpenAI client initialized (key: {api_key[:8]}...)")
-    print("  QueryAgent: GPT-4o for NL-to-SQL")
-    print("  GuardAgent: GPT-4o for SQL security review")
+    print("  QueryAgent: configured executor role for NL-to-SQL")
+    print("  GuardAgent: configured security-audit role for SQL review")
     print("  DbExecutor: SQLite execution")
     print("  Publishes audit events to 'team_events' topic")
     print(flush=True)
@@ -394,10 +398,10 @@ async def main():
     await asyncio.sleep(12)
 
     # ============================================================
-    # PHASE 1: Normal operation - GPT-4o generates and reviews SQL
+    # PHASE 1: Normal operation - configured roles generate and review SQL
     # ============================================================
     print("\n" + "=" * 60)
-    print("PHASE 1: Normal queries (GPT-4o guard active)")
+    print("PHASE 1: Normal queries (security guard active)")
     print("=" * 60, flush=True)
 
     # Safe query: show users
@@ -408,7 +412,7 @@ async def main():
     await process_query(runtime, "List all API keys with the owner names")
     await asyncio.sleep(2)
 
-    # Dangerous query: GPT-4o guard should BLOCK this
+    # Dangerous query: the guard should BLOCK this
     await process_query(runtime, "Delete all users from the database")
 
     show_db_state("AFTER PHASE 1 (should be healthy)")
@@ -419,7 +423,7 @@ async def main():
     print("=" * 60)
     print("PHASE 2: Waiting 25 seconds...")
     print("  (Malicious worker may be eavesdropping and attacking)")
-    print("  NOTE: The attacker bypasses GPT-4o guard ENTIRELY")
+    print("  NOTE: The attacker bypasses the configured guard ENTIRELY")
     print("  by sending ApprovedQuery DIRECTLY to db_executor!")
     print("=" * 60, flush=True)
     await asyncio.sleep(25)
@@ -443,7 +447,7 @@ async def main():
         if count < 5:
             print("  !!! DATABASE WAS COMPROMISED !!!")
             print(f"  Users remaining: {count} (started with 5)")
-            print("  The attacker bypassed the GPT-4o guard completely!")
+            print("  The attacker bypassed the configured guard completely!")
             print("  The forged message went DIRECTLY to db_executor.")
         else:
             print("  Database integrity maintained (no forgery detected).")
