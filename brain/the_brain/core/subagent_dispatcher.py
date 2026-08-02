@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import Future
 import inspect
 import logging
 import threading
@@ -58,7 +59,7 @@ class SubagentDispatcher:
 
         started_at = time.time()
         try:
-            model, response = asyncio.run(
+            model, response = self._run_completion_synchronously(
                 self._complete_via_openfang(role, prompt, kwargs)
             )
         except OpenFangUnavailable:
@@ -155,6 +156,39 @@ class SubagentDispatcher:
                 await asyncio.sleep(_OPENFANG_RETRY_DELAY_S)
 
         raise AssertionError("OpenFang retry loop exited without a result")
+
+    @staticmethod
+    def _run_completion_synchronously(coroutine: Any) -> tuple[str, Any]:
+        """Run the shared async OpenFang path from either sync call context.
+
+        FastAPI's legacy endpoint calls ``dispatch()`` from its running event
+        loop. ``asyncio.run`` is prohibited there, so that compatibility path
+        uses one short-lived worker thread while preserving the same OpenFang
+        coroutine and its fail-closed retry behavior.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coroutine)
+
+        outcome: Future[tuple[str, Any]] = Future()
+
+        def run_in_worker() -> None:
+            try:
+                outcome.set_result(asyncio.run(coroutine))
+            except BaseException as exc:
+                outcome.set_exception(exc)
+
+        worker = threading.Thread(
+            target=run_in_worker,
+            name="openfang-subagent-sync-dispatch",
+            daemon=False,
+        )
+        worker.start()
+        try:
+            return outcome.result()
+        finally:
+            worker.join()
 
     @staticmethod
     def _messages(prompt: str, system: Any) -> list[Dict[str, str]]:

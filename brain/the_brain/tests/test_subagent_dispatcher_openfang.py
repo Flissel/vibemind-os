@@ -274,3 +274,26 @@ def test_constructor_keeps_legacy_router_reference_without_execution_authority(
     dispatcher = dispatcher_module.SubagentDispatcher(llm_router=legacy_router)
 
     assert dispatcher._router is legacy_router
+
+
+@pytest.mark.asyncio
+async def test_dispatch_uses_openfang_client_from_a_running_event_loop(
+    dispatcher_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    completions = _SyncCompletions()
+    factory_roles: list[str] = []
+
+    def get_client(role: str) -> Any:
+        factory_roles.append(role)
+        return _client(completions)
+
+    monkeypatch.setattr(dispatcher_module, "get_client", get_client)
+    monkeypatch.setattr(dispatcher_module, "get_model", lambda role: MODELS_BY_ROLE[role])
+    dispatcher = dispatcher_module.SubagentDispatcher(llm_router=object())
+
+    result = dispatcher.dispatch("claude_subagent", prompt="endpoint request")
+
+    assert result["ok"] is True
+    assert factory_roles == ["brain_planning"]
+    assert completions.calls[0]["model"] == "openfang:brain-planner"
