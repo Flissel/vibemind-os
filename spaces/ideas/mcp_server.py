@@ -214,11 +214,57 @@ def _request(
         raise ToolError("supabase_invalid_response") from exc
 
 
-def _patch_fields(arguments: Mapping[str, Any], allowed: set[str]) -> dict[str, Any]:
+def _patch_fields(
+    arguments: Mapping[str, Any],
+    allowed: set[str],
+    *,
+    string_fields: set[str],
+    string_list_fields: set[str] | None = None,
+    integer_fields: set[str] | None = None,
+) -> dict[str, Any]:
     fields = {key: arguments[key] for key in allowed if key in arguments}
     if not fields:
         raise ToolError("invalid_arguments: at least one mutable field is required")
+    for field in string_fields & fields.keys():
+        if not isinstance(fields[field], str):
+            raise ToolError(f"invalid_arguments: '{field}' must be a string")
+    for field in (string_list_fields or set()) & fields.keys():
+        value = fields[field]
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise ToolError(f"invalid_arguments: '{field}' must be an array of strings")
+    for field in (integer_fields or set()) & fields.keys():
+        value = fields[field]
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ToolError("invalid_arguments: 'x' and 'y' must be integers")
     return fields
+
+
+def _first_row(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, list) and value and isinstance(value[0], dict):
+        return value[0]
+    return None
+
+
+def _normalize_idea_title_content(title: str, content: str) -> tuple[str, str]:
+    """Keep canvas titles compact using the current SupabaseIdeasClient rules."""
+    if len(title) > 90 and not content:
+        separator_index = -1
+        for separator in (": ", ":\n", "\n", " - ", " — "):
+            index = title.find(separator)
+            if 0 < index <= 90:
+                separator_index = index
+                break
+        if separator_index > 0:
+            content = title[separator_index:].lstrip(":-—\n ").strip()
+            title = title[:separator_index].strip()
+        else:
+            content = title.strip()
+            title = title[:80].rstrip() + "…"
+    if len(title) > 120:
+        if not content:
+            content = title
+        title = title[:117].rstrip() + "…"
+    return title, content
 
 
 def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
@@ -234,7 +280,7 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
             },
         )
     if name == "bubble_get":
-        return _request("GET", "ideas", params={"select": "*", "id": f"eq.{_required_string(arguments, 'id')}", "limit": "1"})
+        return _request("GET", "ideas", params={"select": "*", "id": f"eq.{_required_string(arguments, 'id')}", "parent_id": "is.null", "limit": "1"})
     if name == "bubble_create":
         tags = arguments.get("tags", [])
         if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
@@ -243,6 +289,13 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         description = arguments.get("description", "")
         if not isinstance(description, str):
             raise ToolError("invalid_arguments: 'description' must be a string")
+        existing = _first_row(_request(
+            "GET",
+            "ideas",
+            params={"select": "*", "title": f"ilike.{title}", "parent_id": "is.null", "limit": "1"},
+        ))
+        if existing is not None:
+            return existing
         return _request(
             "POST",
             "ideas",
@@ -262,11 +315,16 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         return _request(
             "PATCH",
             "ideas",
-            params={"id": f"eq.{_required_string(arguments, 'id')}"},
-            body=_patch_fields(arguments, {"title", "description", "tags"}),
+            params={"id": f"eq.{_required_string(arguments, 'id')}", "parent_id": "is.null"},
+            body=_patch_fields(
+                arguments,
+                {"title", "description", "tags"},
+                string_fields={"title", "description"},
+                string_list_fields={"tags"},
+            ),
         )
     if name == "bubble_delete":
-        return _request("DELETE", "ideas", params={"id": f"eq.{_required_string(arguments, 'id')}"})
+        return _request("DELETE", "ideas", params={"id": f"eq.{_required_string(arguments, 'id')}", "parent_id": "is.null"})
     if name == "idea_list":
         bubble_id = arguments.get("bubble_id")
         params = {"select": "*", "limit": str(_bounded_limit(arguments, 50))}
@@ -287,7 +345,17 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
             raise ToolError("invalid_arguments: 'content' must be a string")
         if isinstance(x, bool) or isinstance(y, bool) or not isinstance(x, int) or not isinstance(y, int):
             raise ToolError("invalid_arguments: 'x' and 'y' must be integers")
-        title = _required_string(arguments, "title")
+        title, content = _normalize_idea_title_content(
+            _required_string(arguments, "title"), content,
+        )
+        bubble_id = _required_string(arguments, "bubble_id")
+        existing = _first_row(_request(
+            "GET",
+            "canvas_nodes",
+            params={"select": "*", "linked_idea_id": f"eq.{bubble_id}", "title": f"ilike.{title}", "limit": "1"},
+        ))
+        if existing is not None:
+            return existing
         return _request(
             "POST",
             "canvas_nodes",
@@ -298,7 +366,7 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
                 "content": content,
                 "x": x,
                 "y": y,
-                "linked_idea_id": _required_string(arguments, "bubble_id"),
+                "linked_idea_id": bubble_id,
                 "metadata": {"width": 200.0, "height": 100.0},
             },
         )
@@ -307,7 +375,12 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
             "PATCH",
             "canvas_nodes",
             params={"id": f"eq.{_required_string(arguments, 'id')}"},
-            body=_patch_fields(arguments, {"title", "content", "node_type", "x", "y"}),
+            body=_patch_fields(
+                arguments,
+                {"title", "content", "node_type", "x", "y"},
+                string_fields={"title", "content", "node_type"},
+                integer_fields={"x", "y"},
+            ),
         )
     if name == "idea_delete":
         idea_id = _required_string(arguments, "id")
@@ -322,6 +395,17 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         edge_type = arguments.get("edge_type", "related")
         if not isinstance(edge_type, str) or not edge_type.strip():
             raise ToolError("invalid_arguments: 'edge_type' must be a non-empty string")
+        existing = _first_row(_request(
+            "GET",
+            "canvas_edges",
+            params={
+                "select": "*",
+                "or": f"(and(from_node_id.eq.{from_id},to_node_id.eq.{to_id}),and(from_node_id.eq.{to_id},to_node_id.eq.{from_id}))",
+                "limit": "1",
+            },
+        ))
+        if existing is not None:
+            return existing
         return _request(
             "POST",
             "canvas_edges",

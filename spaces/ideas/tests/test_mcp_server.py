@@ -6,6 +6,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import unittest
 from unittest import mock
 
@@ -116,3 +118,98 @@ class IdeasMcpServerContractTests(unittest.TestCase):
         )
         self.assertEqual(observed["headers"]["Apikey"], "test-service-role-key")
         self.assertNotIn("localhost", observed["url"])
+
+    def test_bubble_reads_and_mutations_are_scoped_to_top_level_rows(self) -> None:
+        server = load_server()
+        calls = []
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs["params"]))
+            return []
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            server.call_tool("bubble_get", {"id": "bubble-1"})
+            server.call_tool("bubble_update", {"id": "bubble-1", "title": "Renamed"})
+            server.call_tool("bubble_delete", {"id": "bubble-1"})
+
+        self.assertEqual(
+            [params.get("parent_id") for _method, _path, params in calls],
+            ["is.null", "is.null", "is.null"],
+        )
+
+    def test_update_fields_are_type_checked_without_schema_enforcement(self) -> None:
+        server = load_server()
+
+        with self.assertRaisesRegex(server.ToolError, "'tags' must be an array of strings"):
+            server.call_tool("bubble_update", {"id": "bubble-1", "tags": "not-a-list"})
+        with self.assertRaisesRegex(server.ToolError, "'content' must be a string"):
+            server.call_tool("idea_update", {"id": "idea-1", "content": {"bad": "type"}})
+        with self.assertRaisesRegex(server.ToolError, "'x' and 'y' must be integers"):
+            server.call_tool("idea_update", {"id": "idea-1", "x": True})
+
+    def test_create_operations_return_existing_rows_without_posting_duplicates(self) -> None:
+        server = load_server()
+        existing_bubble = {"id": "bubble-1", "title": "MVP"}
+        existing_idea = {"id": "idea-1", "title": "Inbox"}
+        existing_edge = {"id": "edge-1", "from_node_id": "idea-1", "to_node_id": "idea-2"}
+
+        def request(method, path, **_kwargs):
+            if path == "ideas" and method == "GET":
+                return [existing_bubble]
+            if path == "canvas_nodes" and method == "GET":
+                return [existing_idea]
+            if path == "canvas_edges" and method == "GET":
+                return [existing_edge]
+            self.fail(f"idempotent create must not issue {method} {path}")
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            self.assertEqual(server.call_tool("bubble_create", {"title": "MVP"}), existing_bubble)
+            self.assertEqual(
+                server.call_tool("idea_create", {"bubble_id": "bubble-1", "title": "Inbox"}),
+                existing_idea,
+            )
+            self.assertEqual(
+                server.call_tool("idea_connect", {"from_id": "idea-1", "to_id": "idea-2"}),
+                existing_edge,
+            )
+
+    def test_idea_create_preserves_long_title_as_content_with_a_short_title(self) -> None:
+        server = load_server()
+        observed = {}
+        original_title = "x" * 121
+
+        def request(method, path, **kwargs):
+            if method == "GET":
+                return []
+            observed["body"] = kwargs["body"]
+            return [{"id": "idea-1"}]
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            server.call_tool("idea_create", {"bubble_id": "bubble-1", "title": original_title})
+
+        self.assertEqual(observed["body"]["title"], "x" * 80 + "…")
+        self.assertEqual(observed["body"]["content"], original_title)
+
+    def test_stdio_process_serves_initialize_and_tools_list(self) -> None:
+        request_lines = "\n".join(
+            [
+                json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize"}),
+                json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+            ]
+        )
+        runtime_env = {"SYSTEMROOT": os.environ["SYSTEMROOT"]}
+
+        completed = subprocess.run(
+            [sys.executable, str(SERVER_PATH)],
+            input=f"{request_lines}\n",
+            text=True,
+            capture_output=True,
+            env=runtime_env,
+            check=False,
+            timeout=10,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        responses = [json.loads(line) for line in completed.stdout.splitlines()]
+        self.assertEqual(responses[0]["result"]["serverInfo"]["name"], "spaces-ideas")
+        self.assertEqual(responses[1]["result"]["tools"][0]["name"], "bubble_list")
