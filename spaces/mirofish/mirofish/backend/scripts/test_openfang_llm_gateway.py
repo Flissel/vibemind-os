@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import importlib.util
 import logging
 import sys
@@ -171,6 +172,56 @@ def test_mirofish_request_failures_propagate_without_local_retries(monkeypatch):
             assert str(exc) == "OpenFang request failed"
         else:
             raise AssertionError("OpenFang request failure must propagate")
+
+
+def test_oasis_batch_failure_does_not_publish_partial_profiles(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _llm, oasis, _simulation, _client, _calls = _load_gateway_modules(monkeypatch)
+    generator = oasis.OasisProfileGenerator()
+
+    class Entity:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.summary = f"Summary for {name}"
+            self.uuid = f"uuid-{name}"
+
+        def get_entity_type(self) -> str:
+            return "person"
+
+    def generate_profile(*, entity, user_id: int, use_llm: bool):
+        del use_llm
+        if entity.name == "failure":
+            raise RuntimeError("OpenFang request failed")
+        return oasis.OasisAgentProfile(
+            user_id=user_id,
+            user_name=entity.name,
+            name=entity.name,
+            bio=entity.summary,
+            persona=entity.summary,
+        )
+
+    monkeypatch.setattr(generator, "generate_profile_from_entity", generate_profile)
+    monkeypatch.setattr(generator, "_print_generated_profile", lambda *_args: None)
+    monkeypatch.setattr(
+        concurrent.futures,
+        "as_completed",
+        lambda futures: iter(futures),
+    )
+    output_path = tmp_path / "profiles.json"
+
+    try:
+        generator.generate_profiles_from_entities(
+            [Entity("success"), Entity("failure")],
+            realtime_output_path=str(output_path),
+            parallel_count=2,
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "OpenFang request failed"
+    else:
+        raise AssertionError("mixed batch must propagate the failed future")
+
+    assert not output_path.exists()
 
 
 def test_vibemind_shared_installation_pin_is_consistent() -> None:

@@ -775,7 +775,7 @@ Important:
             progress_callback: Progress callback function (current, total, message)
             graph_id: Knowledge graph ID for knowledge graph search to get richer context
             parallel_count: Number of parallel generations, default 5
-            realtime_output_path: Real-time output file path (if provided, write after each generation)
+            realtime_output_path: Output file path (published after the full batch succeeds)
             output_platform: Output platform format ("reddit" or "twitter")
 
         Returns:
@@ -793,9 +793,8 @@ Important:
         completed_count = [0]  # Use list for modification in closure
         lock = Lock()
 
-        # Helper function for real-time file writing
-        def save_profiles_realtime():
-            """Real-time save generated profiles to file"""
+        def publish_profiles():
+            """Publish the complete generated batch to the output file."""
             if not realtime_output_path:
                 return
 
@@ -822,7 +821,7 @@ Important:
                                 writer.writeheader()
                                 writer.writerows(profiles_data)
                 except Exception as e:
-                    logger.warning(f"Real-time profile save failed: {e}")
+                    logger.warning(f"Profile publication failed: {e}")
         
         def generate_single_profile(idx: int, entity: EntityNode) -> tuple:
             """Worker function to generate single profile"""
@@ -864,9 +863,6 @@ Important:
                     completed_count[0] += 1
                     current = completed_count[0]
 
-                # Real-time file writing
-                save_profiles_realtime()
-
                 if progress_callback:
                     progress_callback(
                         current,
@@ -875,6 +871,8 @@ Important:
                     )
 
                 logger.info(f"[{current}/{total}] Successfully generated persona: {entity.name} ({entity_type})")
+
+        publish_profiles()
 
         print(f"\n{'='*60}")
         print(f"Persona generation complete! Generated {len([p for p in profiles if p])} agents")
