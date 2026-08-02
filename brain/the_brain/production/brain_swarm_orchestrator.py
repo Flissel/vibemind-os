@@ -25,6 +25,13 @@ import json
 from production.production_planner import ProductionPlanner
 from production.cognitive_feature_agents import CognitiveFeatureAgentFactory
 from production.unified_brain_client import UnifiedBrainClient
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    InternalServerError,
+    RateLimitError,
+)
+from vibemind_shared import OpenFangUnavailable, get_provider_info
 
 # AutoGen imports (will be installed)
 try:
@@ -405,18 +412,46 @@ Please coordinate execution of this task."""
 
         # run_stream returns an async generator, need to collect results
         swarm_messages = []
+        is_openfang_provider = get_provider_info("planning").get("provider") == "openfang"
         try:
             # Add 30-second timeout to prevent hanging
             async with asyncio.timeout(30.0):
                 async for message in self.swarm.run_stream(task=task_message):
                     swarm_messages.append(message)
                     logger.info(f"Swarm message: {message}")
-        except asyncio.TimeoutError:
-            logger.warning("Swarm execution timed out after 30 seconds")
-            swarm_messages.append("TIMEOUT: Swarm execution exceeded 30 seconds")
-        except Exception as e:
-            logger.error(f"Swarm execution failed: {e}")
-            swarm_messages.append(f"ERROR: {str(e)}")
+        except OpenFangUnavailable as error:
+            logger.error(
+                "OpenFang unavailable during swarm execution; error_type=%s",
+                type(error).__name__,
+            )
+            raise OpenFangUnavailable(
+                "OpenFang unavailable during swarm execution"
+            ) from None
+        except Exception as error:
+            if not is_openfang_provider:
+                logger.exception("Swarm execution failed")
+                raise
+            if isinstance(
+                error,
+                (
+                    APIConnectionError,
+                    APITimeoutError,
+                    RateLimitError,
+                    InternalServerError,
+                ),
+            ):
+                logger.error(
+                    "OpenFang transport failed during swarm execution; error_type=%s",
+                    type(error).__name__,
+                )
+                raise OpenFangUnavailable(
+                    "OpenFang unavailable during swarm execution"
+                ) from None
+            logger.error(
+                "Swarm execution failed at OpenFang boundary; error_type=%s",
+                type(error).__name__,
+            )
+            raise RuntimeError("Swarm execution failed") from None
 
         # Format swarm result
         swarm_result = "\n".join([str(msg) for msg in swarm_messages])

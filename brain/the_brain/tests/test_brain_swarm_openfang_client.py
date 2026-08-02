@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import sys
 import types
 from pathlib import Path
 from typing import Any
 
+import httpx
+import openai
 import pytest
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 
 
 BRAIN_ROOT = Path(__file__).resolve().parents[1]
 MODULE_NAME = "production.brain_swarm_orchestrator"
+RAW_UPSTREAM_SENTINEL = "raw-upstream-sentinel-91"
+
+
+class _SharedOpenFangUnavailable(RuntimeError):
+    """Hermetic stand-in for the shared OpenFang availability boundary."""
 
 
 def _module_with(**attributes: Any) -> types.ModuleType:
@@ -35,6 +43,7 @@ def _load_orchestrator(
     provider_roles: list[str] = []
     model_roles: list[str] = []
     shared = _module_with(
+        OpenFangUnavailable=_SharedOpenFangUnavailable,
         get_model=lambda role: model_roles.append(role) or provider_info["model"],
         get_provider_info=lambda role: provider_roles.append(role) or provider_info,
     )
@@ -80,6 +89,215 @@ class _CapturingOpenAIClient:
 
     def __init__(self, **kwargs: Any) -> None:
         self.calls.append(kwargs)
+
+
+class _FailingSwarm:
+    def __init__(self, failure: BaseException) -> None:
+        self.failure = failure
+
+    async def run_stream(self, *, task: str) -> Any:
+        if False:
+            yield task
+        raise self.failure
+
+
+class _SuccessfulSwarm:
+    async def run_stream(self, *, task: str) -> Any:
+        yield f"completed: {task}"
+
+
+def _orchestrator_with_swarm(module: Any, swarm: Any) -> Any:
+    orchestrator = module.BrainSwarmOrchestrator.__new__(module.BrainSwarmOrchestrator)
+    orchestrator.use_unified_brain = True
+    orchestrator.brain_client = types.SimpleNamespace(
+        predict=lambda task: {
+            "result": {
+                "prediction": {"primary_action": "execute", "task_type": "api"},
+            }
+        }
+    )
+    orchestrator.swarm = swarm
+    return orchestrator
+
+
+def _failing_orchestrator(module: Any, failure: BaseException) -> Any:
+    return _orchestrator_with_swarm(module, _FailingSwarm(failure))
+
+
+def _openai_timeout_with_raw_detail() -> openai.APITimeoutError:
+    failure = openai.APITimeoutError(
+        request=httpx.Request("POST", "http://openfang.test/v1/chat/completions")
+    )
+    failure.args = (f"request timed out: {RAW_UPSTREAM_SENTINEL}",)
+    return failure
+
+
+def test_process_task_redacts_direct_openfang_unavailable_from_stream(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    provider_info = {"provider": "openfang", "model": "openfang:brain-planner"}
+    module, _, _ = _load_orchestrator(monkeypatch, _CapturingOpenAIClient, provider_info)
+    failure = module.OpenFangUnavailable(RAW_UPSTREAM_SENTINEL)
+
+    with pytest.raises(module.OpenFangUnavailable) as caught:
+        asyncio.run(_failing_orchestrator(module, failure).process_task("must fail closed"))
+
+    assert caught.value is not failure
+    assert caught.value.__cause__ is None
+    assert str(caught.value) == "OpenFang unavailable during swarm execution"
+    assert RAW_UPSTREAM_SENTINEL not in caplog.text
+    assert "OpenFangUnavailable" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "APIConnectionError",
+        "APITimeoutError",
+        "RateLimitError",
+        "InternalServerError",
+        "OpenFangUnavailable",
+    ],
+)
+def test_process_task_redacts_serialized_transport_markers_as_generic_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    marker: str,
+) -> None:
+    provider_info = {"provider": "openfang", "model": "openfang:brain-planner"}
+    module, _, _ = _load_orchestrator(monkeypatch, _CapturingOpenAIClient, provider_info)
+    failure = RuntimeError(f"{marker}: {RAW_UPSTREAM_SENTINEL}")
+
+    with pytest.raises(RuntimeError) as caught:
+        asyncio.run(_failing_orchestrator(module, failure).process_task("must fail closed"))
+
+    assert type(caught.value) is RuntimeError
+    assert caught.value.__cause__ is None
+    assert str(caught.value) == "Swarm execution failed"
+    assert RAW_UPSTREAM_SENTINEL not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        openai.APIConnectionError(
+            message=f"connection failed: {RAW_UPSTREAM_SENTINEL}",
+            request=httpx.Request("POST", "http://openfang.test/v1/chat/completions")
+        ),
+        _openai_timeout_with_raw_detail(),
+        openai.RateLimitError(
+            f"rate limited: {RAW_UPSTREAM_SENTINEL}",
+            response=httpx.Response(
+                429,
+                request=httpx.Request("POST", "http://openfang.test/v1/chat/completions"),
+            ),
+            body=None,
+        ),
+        openai.InternalServerError(
+            f"internal server failure: {RAW_UPSTREAM_SENTINEL}",
+            response=httpx.Response(
+                500,
+                request=httpx.Request("POST", "http://openfang.test/v1/chat/completions"),
+            ),
+            body=None,
+        ),
+    ],
+)
+def test_process_task_normalizes_typed_openai_transport_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure: BaseException,
+) -> None:
+    provider_info = {"provider": "openfang", "model": "openfang:brain-planner"}
+    module, _, _ = _load_orchestrator(monkeypatch, _CapturingOpenAIClient, provider_info)
+
+    with pytest.raises(module.OpenFangUnavailable) as caught:
+        asyncio.run(_failing_orchestrator(module, failure).process_task("must fail closed"))
+
+    assert caught.value.__cause__ is None
+    assert str(caught.value) == "OpenFang unavailable during swarm execution"
+    assert RAW_UPSTREAM_SENTINEL not in caplog.text
+    assert type(failure).__name__ in caplog.text
+
+
+def test_process_task_redacts_counterfeit_openai_class_as_generic_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    provider_info = {"provider": "openfang", "model": "openfang:brain-planner"}
+    module, _, _ = _load_orchestrator(monkeypatch, _CapturingOpenAIClient, provider_info)
+    counterfeit_type = type("APIConnectionError", (RuntimeError,), {})
+    failure = counterfeit_type(RAW_UPSTREAM_SENTINEL)
+
+    with pytest.raises(RuntimeError) as caught:
+        asyncio.run(_failing_orchestrator(module, failure).process_task("must fail closed"))
+
+    assert type(caught.value) is RuntimeError
+    assert caught.value.__cause__ is None
+    assert str(caught.value) == "Swarm execution failed"
+    assert RAW_UPSTREAM_SENTINEL not in caplog.text
+    assert "APIConnectionError" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        openai.APIConnectionError(
+            request=httpx.Request("POST", "https://openai.test/v1/chat/completions")
+        ),
+        ValueError("unfamiliar non-openfang failure"),
+    ],
+)
+def test_process_task_propagates_errors_unchanged_for_other_providers(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException,
+) -> None:
+    provider_info = {"provider": "openai", "model": "gpt-4o"}
+    module, _, _ = _load_orchestrator(monkeypatch, _CapturingOpenAIClient, provider_info)
+
+    with pytest.raises(type(failure)) as caught:
+        asyncio.run(_failing_orchestrator(module, failure).process_task("must propagate"))
+
+    assert caught.value is failure
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        asyncio.TimeoutError(f"swarm timed out: {RAW_UPSTREAM_SENTINEL}"),
+        ValueError(f"unfamiliar failure: {RAW_UPSTREAM_SENTINEL}"),
+    ],
+)
+def test_process_task_redacts_unrelated_openfang_stream_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure: BaseException,
+) -> None:
+    provider_info = {"provider": "openfang", "model": "openfang:brain-planner"}
+    module, _, _ = _load_orchestrator(monkeypatch, _CapturingOpenAIClient, provider_info)
+
+    with pytest.raises(RuntimeError) as caught:
+        asyncio.run(_failing_orchestrator(module, failure).process_task("must not return an error result"))
+
+    assert type(caught.value) is RuntimeError
+    assert caught.value.__cause__ is None
+    assert str(caught.value) == "Swarm execution failed"
+    assert RAW_UPSTREAM_SENTINEL not in caplog.text
+    assert type(failure).__name__ in caplog.text
+
+
+def test_process_task_preserves_successful_swarm_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_info = {"provider": "openfang", "model": "openfang:brain-planner"}
+    module, _, _ = _load_orchestrator(monkeypatch, _CapturingOpenAIClient, provider_info)
+    orchestrator = _orchestrator_with_swarm(module, _SuccessfulSwarm())
+
+    result = asyncio.run(orchestrator.process_task("successful task"))
+
+    assert len(result["swarm_messages"]) == 1
+    assert result["swarm_result"].startswith("completed: Task: successful task")
 
 
 @pytest.mark.parametrize(
