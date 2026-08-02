@@ -1,256 +1,160 @@
+from __future__ import annotations
+
+from pathlib import Path
+
 import httpx
 from fastapi.testclient import TestClient
-from unittest.mock import MagicMock
 
 import app as app_module
 
 
-def _fake_status_error(cls, status_code, message="error"):
-    """Build a real openai APIStatusError subclass instance with a given
-    HTTP status code, so app.py's isinstance/status_code checks see a
-    realistic object instead of a MagicMock."""
-    request = httpx.Request("POST", "https://api.openai.com/v1/embeddings")
-    response = httpx.Response(status_code, request=request)
-    return cls(message, response=response, body=None)
-
-
-def test_health_ok_when_api_key_present(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
-    app_module._client = None  # reset the lazy singleton between tests
-    client = TestClient(app_module.app)
-    resp = client.get("/health")
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "ok"
-
-
-def test_health_503_when_no_key(monkeypatch):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY_FILE", raising=False)
-    app_module._client = None
-    client = TestClient(app_module.app)
-    resp = client.get("/health")
-    assert resp.status_code == 503
-
-
-class _FakeEmbeddingDatum:
-    def __init__(self, vector):
-        self.embedding = vector
-
-
-class _FakeEmbeddingResponse:
-    def __init__(self, vectors):
-        self.data = [_FakeEmbeddingDatum(v) for v in vectors]
-
-
-def test_embed_returns_vector(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
-    app_module._client = None
-    fake_client = MagicMock()
-    fake_client.embeddings.create.return_value = _FakeEmbeddingResponse([[0.1, 0.2, 0.3]])
-    monkeypatch.setattr(app_module, "get_client", lambda: fake_client)
-
-    client = TestClient(app_module.app)
-    resp = client.post("/embed", json={"text": "hello world"})
-
-    assert resp.status_code == 200
-    assert resp.json()["vector"] == [0.1, 0.2, 0.3]
-    fake_client.embeddings.create.assert_called_once_with(
-        model=app_module.MODEL, input=["hello world"],
+def _gateway_response(vectors: list[list[float]], status_code: int = 200) -> httpx.Response:
+    return httpx.Response(
+        status_code,
+        json={"object": "list", "data": [{"embedding": vector} for vector in vectors]},
+        request=httpx.Request("POST", "http://openfang.test/v1/embeddings"),
     )
 
 
-def test_embed_retries_then_succeeds_on_transient_error(monkeypatch):
-    from openai import APIConnectionError
+class _FakeGatewayClient:
+    def __init__(self, outcomes: list[object]) -> None:
+        self.outcomes = outcomes
+        self.calls: list[tuple[str, dict[str, object]]] = []
 
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
-    app_module._client = None
-    fake_client = MagicMock()
-    fake_request = MagicMock()
-    fake_client.embeddings.create.side_effect = [
-        APIConnectionError(request=fake_request),
-        _FakeEmbeddingResponse([[0.4, 0.5]]),
-    ]
-    monkeypatch.setattr(app_module, "get_client", lambda: fake_client)
-    monkeypatch.setattr(app_module.time, "sleep", lambda _seconds: None)
-
-    client = TestClient(app_module.app)
-    resp = client.post("/embed", json={"text": "retry me"})
-
-    assert resp.status_code == 200
-    assert resp.json()["vector"] == [0.4, 0.5]
-    assert fake_client.embeddings.create.call_count == 2
+    def post(self, path: str, *, json: dict[str, object]) -> httpx.Response:
+        self.calls.append((path, json))
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        assert isinstance(outcome, httpx.Response)
+        return outcome
 
 
-def test_embed_hard_fails_after_exhausting_retries(monkeypatch):
-    from openai import APIConnectionError
+def test_service_source_has_no_direct_openai_provider_or_credential_access() -> None:
+    source = Path(app_module.__file__).read_text(encoding="utf-8")
+    direct_provider_key = "OPENAI" + "_API_KEY"
+    direct_provider_import = "from " + "openai"
+    direct_provider_constructor = "Open" + "AI("
 
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
-    app_module._client = None
-    fake_client = MagicMock()
-    fake_request = MagicMock()
-    fake_client.embeddings.create.side_effect = APIConnectionError(request=fake_request)
-    monkeypatch.setattr(app_module, "get_client", lambda: fake_client)
-    monkeypatch.setattr(app_module.time, "sleep", lambda _seconds: None)
-
-    client = TestClient(app_module.app)
-    resp = client.post("/embed", json={"text": "always fails"})
-
-    assert resp.status_code == 502
-    assert fake_client.embeddings.create.call_count == app_module.MAX_RETRIES + 1
+    assert direct_provider_key not in source
+    assert direct_provider_import not in source
+    assert direct_provider_constructor not in source
 
 
-def test_embed_retries_on_5xx_status_error(monkeypatch):
-    from openai import InternalServerError
+def test_health_fails_closed_when_openfang_url_is_missing(monkeypatch) -> None:
+    monkeypatch.delenv("OPENFANG_URL", raising=False)
+    app_module._gateway_client = None
 
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
-    app_module._client = None
-    fake_client = MagicMock()
-    fake_client.embeddings.create.side_effect = [
-        _fake_status_error(InternalServerError, 500),
-        _FakeEmbeddingResponse([[0.6, 0.7]]),
-    ]
-    monkeypatch.setattr(app_module, "get_client", lambda: fake_client)
-    monkeypatch.setattr(app_module.time, "sleep", lambda _seconds: None)
+    response = TestClient(app_module.app).get("/health")
 
-    client = TestClient(app_module.app)
-    resp = client.post("/embed", json={"text": "server hiccup"})
-
-    assert resp.status_code == 200
-    assert resp.json()["vector"] == [0.6, 0.7]
-    assert fake_client.embeddings.create.call_count == 2
+    assert response.status_code == 503
+    assert response.json()["detail"] == "OpenFang gateway not configured"
 
 
-def test_embed_retries_on_rate_limit_error(monkeypatch):
-    from openai import RateLimitError
+def test_openfang_gateway_client_uses_canonical_url_and_optional_gateway_key(monkeypatch) -> None:
+    captured: dict[str, object] = {}
 
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
-    app_module._client = None
-    fake_client = MagicMock()
-    fake_client.embeddings.create.side_effect = [
-        _fake_status_error(RateLimitError, 429),
-        _FakeEmbeddingResponse([[0.8, 0.9]]),
-    ]
-    monkeypatch.setattr(app_module, "get_client", lambda: fake_client)
-    monkeypatch.setattr(app_module.time, "sleep", lambda _seconds: None)
+    class _Client:
+        pass
 
-    client = TestClient(app_module.app)
-    resp = client.post("/embed", json={"text": "rate limited"})
+    def create_client(**kwargs: object) -> _Client:
+        captured.update(kwargs)
+        return _Client()
 
-    assert resp.status_code == 200
-    assert resp.json()["vector"] == [0.8, 0.9]
-    assert fake_client.embeddings.create.call_count == 2
+    monkeypatch.setenv("OPENFANG_URL", "http://openfang.test/")
+    monkeypatch.setenv("OPENFANG_API_KEY", "gateway-test-key")
+    monkeypatch.setattr(app_module.httpx, "Client", create_client)
+    app_module._gateway_client = None
 
+    app_module.get_gateway_client()
 
-def test_embed_does_not_retry_on_4xx_client_error(monkeypatch):
-    from openai import BadRequestError
-
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
-    app_module._client = None
-    fake_client = MagicMock()
-    fake_client.embeddings.create.side_effect = _fake_status_error(BadRequestError, 400)
-    monkeypatch.setattr(app_module, "get_client", lambda: fake_client)
-    monkeypatch.setattr(app_module.time, "sleep", lambda _seconds: None)
-
-    client = TestClient(app_module.app)
-    resp = client.post("/embed", json={"text": "malformed request"})
-
-    assert resp.status_code == 502
-    assert fake_client.embeddings.create.call_count == 1
+    assert captured == {
+        "base_url": "http://openfang.test",
+        "headers": {"Authorization": "Bearer gateway-test-key"},
+        "timeout": app_module.REQUEST_TIMEOUT_SECONDS,
+    }
 
 
-def test_embed_502_on_empty_upstream_response(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
-    app_module._client = None
-    fake_client = MagicMock()
-    fake_client.embeddings.create.return_value = _FakeEmbeddingResponse([])
-    monkeypatch.setattr(app_module, "get_client", lambda: fake_client)
+def test_embed_batch_posts_model_and_input_to_openfang_gateway(monkeypatch) -> None:
+    gateway = _FakeGatewayClient([_gateway_response([[0.1, 0.2], [0.3, 0.4]])])
+    monkeypatch.setattr(app_module, "get_gateway_client", lambda: gateway)
 
-    client = TestClient(app_module.app)
-    resp = client.post("/embed", json={"text": "malformed upstream"})
-
-    assert resp.status_code == 502
-
-
-def test_embed_502_detail_does_not_leak_internal_exception_text(monkeypatch):
-    from openai import APIConnectionError
-
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
-    app_module._client = None
-    fake_client = MagicMock()
-    fake_request = MagicMock()
-    fake_client.embeddings.create.side_effect = APIConnectionError(request=fake_request)
-    monkeypatch.setattr(app_module, "get_client", lambda: fake_client)
-    monkeypatch.setattr(app_module.time, "sleep", lambda _seconds: None)
-
-    client = TestClient(app_module.app)
-    resp = client.post("/embed", json={"text": "always fails"})
-
-    assert resp.status_code == 502
-    detail = resp.json()["detail"]
-    assert "OPENAI_API_KEY" not in detail
-    assert "Connection error" not in detail
-
-
-def test_embed_batch_returns_vectors(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
-    app_module._client = None
-    fake_client = MagicMock()
-    fake_client.embeddings.create.return_value = _FakeEmbeddingResponse(
-        [[0.1, 0.2], [0.3, 0.4]]
-    )
-    monkeypatch.setattr(app_module, "get_client", lambda: fake_client)
-
-    client = TestClient(app_module.app)
-    resp = client.post("/embed/batch", json={"texts": ["a", "b"]})
-
-    assert resp.status_code == 200
-    assert resp.json()["vectors"] == [[0.1, 0.2], [0.3, 0.4]]
-    fake_client.embeddings.create.assert_called_once_with(
-        model=app_module.MODEL, input=["a", "b"],
+    response = TestClient(app_module.app).post(
+        "/embed/batch", json={"texts": ["first", "second"]}
     )
 
-
-def test_embed_batch_502_on_length_mismatched_upstream_response(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
-    app_module._client = None
-    fake_client = MagicMock()
-    fake_client.embeddings.create.return_value = _FakeEmbeddingResponse([[0.1, 0.2]])
-    monkeypatch.setattr(app_module, "get_client", lambda: fake_client)
-
-    client = TestClient(app_module.app)
-    resp = client.post("/embed/batch", json={"texts": ["a", "b"]})
-
-    assert resp.status_code == 502
+    assert response.status_code == 200
+    assert response.json() == {"vectors": [[0.1, 0.2], [0.3, 0.4]]}
+    assert gateway.calls == [
+        (
+            "/v1/embeddings",
+            {"model": app_module.MODEL, "input": ["first", "second"]},
+        )
+    ]
 
 
-def test_embed_batch_empty_list_short_circuits(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
-    app_module._client = None
-    fake_client = MagicMock()
-    monkeypatch.setattr(app_module, "get_client", lambda: fake_client)
+def test_embed_preserves_single_vector_shape_and_model_compatibility(monkeypatch) -> None:
+    gateway = _FakeGatewayClient([_gateway_response([[0.1, 0.2, 0.3]])])
+    monkeypatch.setattr(app_module, "get_gateway_client", lambda: gateway)
 
-    client = TestClient(app_module.app)
-    resp = client.post("/embed/batch", json={"texts": []})
+    response = TestClient(app_module.app).post("/embed", json={"text": "one"})
 
-    assert resp.status_code == 200
-    assert resp.json()["vectors"] == []
-    fake_client.embeddings.create.assert_not_called()
+    assert response.status_code == 200
+    assert response.json() == {"vector": [0.1, 0.2, 0.3]}
+    assert gateway.calls[0][1]["model"] == "text-embedding-3-large"
 
 
-def test_embed_batch_502_detail_does_not_leak_internal_exception_text(monkeypatch):
-    from openai import BadRequestError
-
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
-    app_module._client = None
-    fake_client = MagicMock()
-    fake_client.embeddings.create.side_effect = _fake_status_error(BadRequestError, 400)
-    monkeypatch.setattr(app_module, "get_client", lambda: fake_client)
+def test_embed_retries_once_per_existing_bounded_retry_policy(monkeypatch) -> None:
+    request = httpx.Request("POST", "http://openfang.test/v1/embeddings")
+    gateway = _FakeGatewayClient(
+        [
+            httpx.ConnectError("OpenFang unreachable", request=request),
+            _gateway_response([[0.4, 0.5]]),
+        ]
+    )
+    monkeypatch.setattr(app_module, "get_gateway_client", lambda: gateway)
     monkeypatch.setattr(app_module.time, "sleep", lambda _seconds: None)
 
-    client = TestClient(app_module.app)
-    resp = client.post("/embed/batch", json={"texts": ["a", "b"]})
+    response = TestClient(app_module.app).post("/embed", json={"text": "retry"})
 
-    assert resp.status_code == 502
-    detail = resp.json()["detail"]
-    assert "BadRequestError" not in detail
-    assert detail == "embedding request failed"
+    assert response.status_code == 200
+    assert len(gateway.calls) == 2
+
+
+def test_embed_fails_closed_after_bounded_openfang_retries(monkeypatch) -> None:
+    request = httpx.Request("POST", "http://openfang.test/v1/embeddings")
+    gateway = _FakeGatewayClient(
+        [httpx.ConnectError("OpenFang unreachable", request=request)]
+        * (app_module.MAX_RETRIES + 1)
+    )
+    monkeypatch.setattr(app_module, "get_gateway_client", lambda: gateway)
+    monkeypatch.setattr(app_module.time, "sleep", lambda _seconds: None)
+
+    response = TestClient(app_module.app).post("/embed", json={"text": "fail closed"})
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "embedding request failed"
+    assert len(gateway.calls) == app_module.MAX_RETRIES + 1
+
+
+def test_embed_does_not_retry_non_transient_openfang_response(monkeypatch) -> None:
+    gateway = _FakeGatewayClient([_gateway_response([], status_code=400)])
+    monkeypatch.setattr(app_module, "get_gateway_client", lambda: gateway)
+    monkeypatch.setattr(app_module.time, "sleep", lambda _seconds: None)
+
+    response = TestClient(app_module.app).post("/embed", json={"text": "bad request"})
+
+    assert response.status_code == 502
+    assert len(gateway.calls) == 1
+
+
+def test_embed_batch_rejects_length_mismatched_openfang_response(monkeypatch) -> None:
+    gateway = _FakeGatewayClient([_gateway_response([[0.1, 0.2]])])
+    monkeypatch.setattr(app_module, "get_gateway_client", lambda: gateway)
+
+    response = TestClient(app_module.app).post(
+        "/embed/batch", json={"texts": ["first", "second"]}
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "embedding request failed"
