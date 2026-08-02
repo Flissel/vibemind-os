@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import threading
 import time
 from typing import Any, Dict, Optional
 
-from vibemind_shared import OpenFangUnavailable, get_client, get_client_sync, get_model
+from vibemind_shared import OpenFangUnavailable, get_client, get_model
 
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,9 @@ _LEGACY_ROLE_MAP = {
     "openai_subagent": "brain_communication",
     "ollama_subagent": "local_fast",
 }
+
+_OPENFANG_ATTEMPTS = 2
+_OPENFANG_RETRY_DELAY_S = 0.1
 
 
 class SubagentDispatcher:
@@ -54,13 +58,8 @@ class SubagentDispatcher:
 
         started_at = time.time()
         try:
-            model = self._openfang_model(role)
-            client = get_client_sync(role)
-            response = client.chat.completions.create(
-                model=model,
-                messages=self._messages(prompt, kwargs.get("system", "")),
-                max_tokens=int(kwargs.get("max_tokens", 1024)),
-                temperature=float(kwargs.get("temperature", 0)),
+            model, response = asyncio.run(
+                self._complete_via_openfang(role, prompt, kwargs)
             )
         except OpenFangUnavailable:
             logger.exception("OpenFang unavailable for subagent %s", tool_name)
@@ -88,18 +87,7 @@ class SubagentDispatcher:
 
         started_at = time.time()
         try:
-            model = self._openfang_model(role)
-            client = get_client(role)
-            if inspect.isawaitable(client):
-                client = await client
-            response = client.chat.completions.create(
-                model=model,
-                messages=self._messages(prompt, kwargs.get("system", "")),
-                max_tokens=int(kwargs.get("max_tokens", 1024)),
-                temperature=float(kwargs.get("temperature", 0)),
-            )
-            if inspect.isawaitable(response):
-                response = await response
+            model, response = await self._complete_via_openfang(role, prompt, kwargs)
         except OpenFangUnavailable:
             logger.exception("OpenFang unavailable for subagent %s", tool_name)
             self._record_failure(tool_name, "OpenFang unavailable")
@@ -116,16 +104,57 @@ class SubagentDispatcher:
     def _resolve_role(
         self, tool_name: str, kwargs: Dict[str, Any]
     ) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
-        if "model" in kwargs or "provider" in kwargs:
-            logger.warning(
-                "Ignoring direct provider/model override for subagent %s; "
-                "OpenFang role configuration is authoritative",
-                tool_name,
-            )
         role = _LEGACY_ROLE_MAP.get(tool_name)
         if role is None:
             return None, self._failure(tool_name, f"unknown LLM_AGENT tool: {tool_name}")
+        if "model" in kwargs or "provider" in kwargs:
+            logger.warning(
+                "Blocking direct provider/model override for subagent %s; "
+                "OpenFang role configuration is authoritative",
+                tool_name,
+            )
+            return None, self._failure(
+                tool_name, "direct provider/model overrides are not permitted"
+            )
         return role, None
+
+    async def _complete_via_openfang(
+        self, role: str, prompt: str, kwargs: Dict[str, Any]
+    ) -> tuple[str, Any]:
+        """Execute one role via OpenFang's OpenAI-compatible client.
+
+        A transient OpenFang outage gets one bounded retry.  When the budget is
+        exhausted, the original ``OpenFangUnavailable`` is deliberately
+        propagated so callers cannot substitute a direct provider or local
+        model.
+        """
+        model = self._openfang_model(role)
+        for attempt in range(_OPENFANG_ATTEMPTS):
+            try:
+                client = get_client(role)
+                if inspect.isawaitable(client):
+                    client = await client
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=self._messages(prompt, kwargs.get("system", "")),
+                    max_tokens=int(kwargs.get("max_tokens", 1024)),
+                    temperature=float(kwargs.get("temperature", 0)),
+                )
+                if inspect.isawaitable(response):
+                    response = await response
+                return model, response
+            except OpenFangUnavailable:
+                if attempt + 1 == _OPENFANG_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "OpenFang unavailable for role %s; retrying (%d/%d)",
+                    role,
+                    attempt + 1,
+                    _OPENFANG_ATTEMPTS,
+                )
+                await asyncio.sleep(_OPENFANG_RETRY_DELAY_S)
+
+        raise AssertionError("OpenFang retry loop exited without a result")
 
     @staticmethod
     def _messages(prompt: str, system: Any) -> list[Dict[str, str]]:
