@@ -253,6 +253,22 @@ def test_packaging_is_pinned_and_isolates_openfang_from_host() -> None:
     assert SHARED_PIN in requirements
 
 
+def test_worker_image_installs_git_before_pip_and_removes_apt_lists() -> None:
+    dockerfile = (POC_ROOT / "Dockerfile.worker").read_text(encoding="utf-8")
+
+    apt_update = "apt-get update"
+    git_install = "apt-get install -y --no-install-recommends git"
+    apt_cleanup = "rm -rf /var/lib/apt/lists/*"
+    pip_install = "pip install --no-cache-dir -r requirements.legit.txt"
+
+    assert apt_update in dockerfile
+    assert git_install in dockerfile
+    assert apt_cleanup in dockerfile
+    assert dockerfile.index(apt_update) < dockerfile.index(git_install)
+    assert dockerfile.index(git_install) < dockerfile.index(apt_cleanup)
+    assert dockerfile.index(apt_cleanup) < dockerfile.index(pip_install)
+
+
 def test_non_scoped_host_service_block_is_byte_equivalent_to_base() -> None:
     current = (POC_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     base = __import__("subprocess").check_output(
