@@ -1331,11 +1331,19 @@ class PlanExecutor:
                         elapsed_s=time.time() - t0,
                         contract_pass=False, reward=-1.0,
                     )
-                explicit_authoritative_target = isinstance(target, str) and target.startswith(
-                    ("openfang:", "mcp:", "n8n-mcp:", "coding-engine:")
-                )
-                if deterministic_target and not explicit_authoritative_target:
-                    target = deterministic_target
+                if not deterministic_target:
+                    return HopResult(
+                        step_id=hop.step_id, ok=False,
+                        error=(
+                            "canonical deterministic MCP routing: "
+                            "missing MCP execution metadata for bubble.create"
+                        ),
+                        capability=hop.capability, target=target,
+                        rendered_arg=rendered_arg, kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False, reward=-1.0,
+                    )
+                target = deterministic_target
             assigned_agent = None
             try:
                 assigned_agent = get_registry().get_event_agent(event_id) if event_id else None
