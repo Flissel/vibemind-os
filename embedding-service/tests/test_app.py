@@ -77,10 +77,15 @@ def test_container_uses_one_pinned_shared_source_with_the_existing_service_conte
     assert "COPY requirements.txt ." in dockerfile
     assert "COPY app.py ." in dockerfile
     assert "apt-get install -y --no-install-recommends git" in dockerfile
-    assert (
+    shared_requirements = [
+        line
+        for line in requirements.splitlines()
+        if line.startswith("vibemind-shared @")
+    ]
+    assert shared_requirements == [
         "vibemind-shared @ git+https://github.com/Flissel/vibemind-shared.git"
-        "@ec1bce5cf22fd12f3c4df996ee545090bf75e5c1"
-    ) in requirements
+        "@609dda92e0f4370c03085a7e2ff6a6f492693d0d"
+    ]
 
 
 def test_embed_batch_uses_only_the_fungus_search_shared_factory_role(
