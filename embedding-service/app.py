@@ -1,37 +1,25 @@
-"""HTTP wrapper around OpenAI's embeddings API.
-
-Sole purpose: one place that holds the OpenAI credential for embedding
-calls, instead of every brain-core variant mounting it separately, and one
-interface (`/embed`, `/embed/batch`) that other consumers (mirofish,
-rowboat-rag-worker) could adopt later without a redesign.
-"""
+"""Fail-closed HTTP wrapper around the Shared OpenFang embedding factory."""
 from __future__ import annotations
 
 import logging
-import os
-import time
-from typing import List
+from typing import Any, List
+from urllib.parse import urlsplit, urlunsplit
+from urllib.request import urlopen
 
 from fastapi import FastAPI, HTTPException
-from openai import (
-    APIConnectionError,
-    APIError,
-    APIStatusError,
-    APITimeoutError,
-    OpenAI,
-    RateLimitError,
-)
 from pydantic import BaseModel
+from vibemind_shared import (
+    get_embedding_config,
+    get_embedding_model,
+    get_provider_info,
+)
 
-MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
-MAX_RETRIES = int(os.environ.get("EMBEDDING_MAX_RETRIES", "2"))
-RETRY_BACKOFF_SECONDS = float(os.environ.get("EMBEDDING_RETRY_BACKOFF", "0.5"))
+EMBEDDING_ROLE = "fungus_search"
+EMBEDDING_DIMENSION = 3072
 
 logger = logging.getLogger("embedding_service")
 
 app = FastAPI(title="embedding-service")
-
-_client: OpenAI | None = None
 
 
 class EmbedRequest(BaseModel):
@@ -42,79 +30,6 @@ class EmbedResponse(BaseModel):
     vector: List[float]
 
 
-def _read_secret(name: str) -> str:
-    """Same precedence as brain-core's core/config.py get_secret(): a
-    Swarm-mounted secret file, then the default /run/secrets mount, then a
-    plain env var."""
-    file_path = os.environ.get(f"{name}_FILE")
-    if file_path and os.path.exists(file_path):
-        with open(file_path, "r", encoding="utf-8") as f:
-            return f.read().strip()
-    default_mount = f"/run/secrets/{name.lower()}"
-    if os.path.exists(default_mount):
-        with open(default_mount, "r", encoding="utf-8") as f:
-            return f.read().strip()
-    return os.environ.get(name, "").strip()
-
-
-def get_client() -> OpenAI:
-    global _client
-    if _client is None:
-        api_key = _read_secret("OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "OPENAI_API_KEY not configured (checked _FILE, /run/secrets, env)"
-            )
-        _client = OpenAI(api_key=api_key)
-    return _client
-
-
-@app.get("/health")
-def health():
-    try:
-        get_client()
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    return {"status": "ok", "model": MODEL}
-
-
-def _is_transient(e: APIError) -> bool:
-    """Network/timeout errors, rate limits, and 5xx are worth a retry.
-    Everything else (4xx client errors like bad request/auth) is not."""
-    if isinstance(e, (APIConnectionError, APITimeoutError, RateLimitError)):
-        return True
-    if isinstance(e, APIStatusError) and e.status_code >= 500:
-        return True
-    return False
-
-
-def _embed_with_retry(inputs: List[str]) -> List[List[float]]:
-    last_exc: Exception | None = None
-    for attempt in range(MAX_RETRIES + 1):
-        try:
-            client = get_client()
-            resp = client.embeddings.create(model=MODEL, input=inputs)
-            return [d.embedding for d in resp.data]
-        except APIError as e:
-            last_exc = e
-            if _is_transient(e) and attempt < MAX_RETRIES:
-                time.sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
-                continue
-            raise
-    raise last_exc  # pragma: no cover — loop always returns or raises above
-
-
-@app.post("/embed", response_model=EmbedResponse)
-def embed(req: EmbedRequest):
-    try:
-        vectors = _embed_with_retry([req.text])
-        vector = vectors[0]
-    except Exception as e:
-        logger.warning(f"/embed failed: {e}")
-        raise HTTPException(status_code=502, detail="embedding request failed")
-    return EmbedResponse(vector=vector)
-
-
 class EmbedBatchRequest(BaseModel):
     texts: List[str]
 
@@ -123,17 +38,99 @@ class EmbedBatchResponse(BaseModel):
     vectors: List[List[float]]
 
 
+def _embedding_config() -> dict[str, Any]:
+    config = get_embedding_config(EMBEDDING_ROLE)
+    if (
+        config.get("driver") != "openai"
+        or config.get("provider") != "openfang"
+        or not isinstance(config.get("model"), str)
+        or not config["model"].strip()
+        or int(config.get("dim", 0)) != EMBEDDING_DIMENSION
+    ):
+        raise RuntimeError("fungus_search must use a configured OpenFang embedding backend")
+    return config
+
+
+def _embedding_backend() -> tuple[dict[str, Any], Any]:
+    config = _embedding_config()
+    return config, get_embedding_model(EMBEDDING_ROLE)
+
+
+def _vectors(encoded: Any) -> List[List[float]]:
+    value = encoded.tolist() if hasattr(encoded, "tolist") else encoded
+    if not isinstance(value, list) or any(
+        not isinstance(vector, list)
+        or len(vector) != EMBEDDING_DIMENSION
+        or any(isinstance(component, bool) or not isinstance(component, (int, float)) for component in vector)
+        for vector in value
+    ):
+        raise ValueError("Shared embedding factory returned an invalid vector response")
+    return value
+
+
+def _openfang_health_target(config: dict[str, Any]) -> tuple[str, float]:
+    provider = get_provider_info(EMBEDDING_ROLE)
+    if provider.get("provider") != config.get("provider") or provider.get("provider") != "openfang":
+        raise RuntimeError("Shared fungus_search provider is not OpenFang")
+
+    base_url = str(provider.get("base_url", ""))
+    parsed = urlsplit(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("Shared OpenFang base URL is invalid")
+    if parsed.path.rstrip("/") != "/v1":
+        raise RuntimeError("Shared OpenFang base URL must resolve the v1 endpoint")
+
+    timeout = float(provider.get("timeout_seconds", 0))
+    if timeout <= 0:
+        raise RuntimeError("Shared OpenFang timeout is invalid")
+    return urlunsplit((parsed.scheme, parsed.netloc, "/api/health", "", "")), timeout
+
+
+def _check_openfang_health(config: dict[str, Any]) -> None:
+    health_url, timeout = _openfang_health_target(config)
+    with urlopen(health_url, timeout=timeout) as response:
+        if not 200 <= response.status < 300:
+            raise RuntimeError(f"OpenFang health returned HTTP {response.status}")
+
+
+@app.get("/health")
+def health() -> dict[str, Any]:
+    try:
+        config, _ = _embedding_backend()
+        _check_openfang_health(config)
+    except Exception as exc:
+        logger.warning("embedding service health check failed: %s", exc)
+        raise HTTPException(status_code=503, detail="embedding service unavailable") from exc
+    return {"status": "ok", "model": config["model"], "dim": int(config["dim"])}
+
+
+def _embed(inputs: List[str]) -> List[List[float]]:
+    _, backend = _embedding_backend()
+    return _vectors(backend.encode(inputs))
+
+
+@app.post("/embed", response_model=EmbedResponse)
+def embed(req: EmbedRequest) -> EmbedResponse:
+    try:
+        vectors = _embed([req.text])
+        vector = vectors[0]
+    except Exception as exc:
+        logger.warning("/embed through Shared OpenFang factory failed: %s", exc)
+        raise HTTPException(status_code=502, detail="embedding request failed") from exc
+    return EmbedResponse(vector=vector)
+
+
 @app.post("/embed/batch", response_model=EmbedBatchResponse)
-def embed_batch(req: EmbedBatchRequest):
+def embed_batch(req: EmbedBatchRequest) -> EmbedBatchResponse:
     if not req.texts:
         return EmbedBatchResponse(vectors=[])
     try:
-        vectors = _embed_with_retry(req.texts)
+        vectors = _embed(req.texts)
         if len(vectors) != len(req.texts):
             raise ValueError(
                 f"expected {len(req.texts)} embeddings, got {len(vectors)}"
             )
-    except Exception as e:
-        logger.warning(f"/embed/batch failed: {e}")
-        raise HTTPException(status_code=502, detail="embedding request failed")
+    except Exception as exc:
+        logger.warning("/embed/batch through Shared OpenFang factory failed: %s", exc)
+        raise HTTPException(status_code=502, detail="embedding request failed") from exc
     return EmbedBatchResponse(vectors=vectors)
