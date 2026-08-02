@@ -16,13 +16,13 @@ from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 
-from openai import OpenAI
-
-from ..config import Config
+from vibemind_shared import get_client_sync, get_model
 from ..utils.logger import get_logger
 from .entity_reader import EntityNode
 
 logger = get_logger('mirofish.simulation_config')
+
+_MIROFISH_ROLE = "space_mirofish"
 
 # Time zone configuration for Chinese work schedules (Beijing Time)
 CHINA_TIMEZONE_CONFIG = {
@@ -227,17 +227,11 @@ class SimulationConfigGenerator:
         base_url: Optional[str] = None,
         model_name: Optional[str] = None
     ):
-        self.api_key = api_key or Config.LLM_API_KEY
-        self.base_url = base_url or Config.LLM_BASE_URL
-        self.model_name = model_name or Config.LLM_MODEL_NAME
-
-        if not self.api_key:
-            raise ValueError("LLM_API_KEY not configured")
-
-        self.client = OpenAI(
-            api_key=self.api_key,
-            base_url=self.base_url
-        )
+        # Retain the public constructor for callers, but gateway configuration is
+        # resolved centrally and cannot be overridden per request.
+        del api_key, base_url, model_name
+        self.model_name = get_model(_MIROFISH_ROLE)
+        self.client = get_client_sync(_MIROFISH_ROLE)
     
     def generate_config(
         self,
@@ -369,7 +363,7 @@ class SimulationConfigGenerator:
             twitter_config=twitter_config,
             reddit_config=reddit_config,
             llm_model=self.model_name,
-            llm_base_url=self.base_url,
+            llm_base_url="",
             generation_reasoning=" | ".join(reasoning_parts)
         )
         
@@ -430,54 +424,30 @@ class SimulationConfigGenerator:
 
         return "\n".join(lines)
     
-    def _call_llm_with_retry(self, prompt: str, system_prompt: str) -> Dict[str, Any]:
-        """LLM call with retry, including JSON repair logic"""
-        import re
+    def _call_llm(self, prompt: str, system_prompt: str) -> Dict[str, Any]:
+        """Make one gateway request; retry policy is owned by Shared."""
+        response = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.7,
+        )
 
-        max_attempts = 3
-        last_error = None
+        content = response.choices[0].message.content
+        if response.choices[0].finish_reason == 'length':
+            logger.warning("LLM output truncated; attempting JSON repair")
+            content = self._fix_truncated_json(content)
 
-        for attempt in range(max_attempts):
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt}
-                    ],
-                    response_format={"type": "json_object"},
-                    temperature=0.7 - (attempt * 0.1)  # Lower temperature with each retry
-                    # Don't set max_tokens, let LLM generate freely
-                )
-
-                content = response.choices[0].message.content
-                finish_reason = response.choices[0].finish_reason
-
-                # Check if output was truncated
-                if finish_reason == 'length':
-                    logger.warning(f"LLM output truncated (attempt {attempt+1})")
-                    content = self._fix_truncated_json(content)
-
-                # Try to parse JSON
-                try:
-                    return json.loads(content)
-                except json.JSONDecodeError as e:
-                    logger.warning(f"JSON parsing failed (attempt {attempt+1}): {str(e)[:80]}")
-
-                    # Try to fix JSON
-                    fixed = self._try_fix_config_json(content)
-                    if fixed:
-                        return fixed
-
-                    last_error = e
-
-            except Exception as e:
-                logger.warning(f"LLM call failed (attempt {attempt+1}): {str(e)[:80]}")
-                last_error = e
-                import time
-                time.sleep(2 * (attempt + 1))
-
-        raise last_error or Exception("LLM call failed")
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            fixed = self._try_fix_config_json(content)
+            if fixed:
+                return fixed
+            raise
     
     def _fix_truncated_json(self, content: str) -> str:
         """Fix truncated JSON"""
@@ -586,11 +556,7 @@ Field description:
 
         system_prompt = "You are a social media simulation expert. Return pure JSON format, time configuration must follow Chinese work schedule habits."
 
-        try:
-            return self._call_llm_with_retry(prompt, system_prompt)
-        except Exception as e:
-            logger.warning(f"Time config LLM generation failed: {e}, using default configuration")
-            return self._get_default_time_config(num_entities)
+        return self._call_llm(prompt, system_prompt)
     
     def _get_default_time_config(self, num_entities: int) -> Dict[str, Any]:
         """Get default time configuration (Chinese work schedule)"""
@@ -702,16 +668,7 @@ Return JSON format (no markdown):
 
         system_prompt = "You are an opinion analysis expert. Return pure JSON format. Note poster_type must match available entity types precisely."
 
-        try:
-            return self._call_llm_with_retry(prompt, system_prompt)
-        except Exception as e:
-            logger.warning(f"Event config LLM generation failed: {e}, using default configuration")
-            return {
-                "hot_topics": [],
-                "narrative_direction": "",
-                "initial_posts": [],
-                "reasoning": "Using default configuration"
-            }
+        return self._call_llm(prompt, system_prompt)
 
     def _parse_event_config(self, result: Dict[str, Any]) -> EventConfig:
         """Parse event configuration result"""
@@ -865,12 +822,8 @@ Return JSON format (no markdown):
 
         system_prompt = "You are a social media behavior analysis expert. Return pure JSON, configuration must follow Chinese work schedule habits."
 
-        try:
-            result = self._call_llm_with_retry(prompt, system_prompt)
-            llm_configs = {cfg["agent_id"]: cfg for cfg in result.get("agent_configs", [])}
-        except Exception as e:
-            logger.warning(f"Agent config batch LLM generation failed: {e}, using rule-based generation")
-            llm_configs = {}
+        result = self._call_llm(prompt, system_prompt)
+        llm_configs = {cfg["agent_id"]: cfg for cfg in result.get("agent_configs", [])}
 
         # Build AgentActivityConfig objects
         configs = []
@@ -984,4 +937,3 @@ Return JSON format (no markdown):
                 "influence_weight": 1.0
             }
     
-
