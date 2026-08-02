@@ -1,0 +1,124 @@
+from __future__ import annotations
+
+import pytest
+import requests
+
+from core.capability_targets import McpExecutor
+
+
+class _Response:
+    status_code = 200
+
+    def __init__(self, body):
+        self._body = body
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._body
+
+
+def test_canonical_target_calls_openfang_mcp_with_bound_agent_authority(monkeypatch):
+    monkeypatch.setenv("OPENFANG_URL", "http://openfang.test")
+    monkeypatch.setenv("OPENFANG_API_KEY", "test-token")
+    captured = {}
+
+    def _get(url, *, headers, timeout):
+        captured["get"] = {"url": url, "headers": headers, "timeout": timeout}
+        return _Response({"agents": [{"name": "brain-ideas", "id": "agent-uuid"}]})
+
+    def _post(url, *, json, headers, timeout):
+        captured["post"] = {"url": url, "json": json, "headers": headers, "timeout": timeout}
+        return _Response({
+            "jsonrpc": "2.0",
+            "id": json["id"],
+            "result": {"content": [{"type": "text", "text": "ok"}], "isError": False},
+        })
+
+    monkeypatch.setattr("core.capability_targets.requests.get", _get)
+    monkeypatch.setattr("core.capability_targets.requests.post", _post)
+
+    result = McpExecutor("mcp:brain-ideas:vibemind-db:ideas.list").call(query="focus")
+
+    assert result["ok"] is True
+    assert captured["get"]["url"] == "http://openfang.test/api/agents"
+    assert captured["get"]["headers"]["Authorization"] == "Bearer test-token"
+    assert captured["post"]["url"] == "http://openfang.test/mcp"
+    assert "/api/mcp/dispatch" not in captured["post"]["url"]
+    assert captured["post"]["headers"] == {
+        "Accept": "application/json",
+        "Authorization": "Bearer test-token",
+        "Content-Type": "application/json",
+        "X-OpenFang-Agent-Id": "agent-uuid",
+    }
+    assert captured["post"]["json"]["jsonrpc"] == "2.0"
+    assert captured["post"]["json"]["method"] == "tools/call"
+    assert captured["post"]["json"]["params"] == {
+        "name": "mcp_vibemind_db_ideas.list",
+        "arguments": {"query": "focus"},
+    }
+
+
+def test_legacy_target_shape_requires_explicit_migration():
+    with pytest.raises(ValueError, match="mcp:<agent>:<server>:<tool>"):
+        McpExecutor("mcp:vibemind-db:ideas.list")
+
+
+@pytest.mark.parametrize("missing", ["OPENFANG_URL", "OPENFANG_API_KEY"])
+def test_missing_openfang_configuration_fails_closed(monkeypatch, missing):
+    monkeypatch.setenv("OPENFANG_URL", "http://openfang.test")
+    monkeypatch.setenv("OPENFANG_API_KEY", "test-token")
+    monkeypatch.delenv(missing, raising=False)
+
+    result = McpExecutor("mcp:brain-ideas:vibemind-db:ideas.list").call()
+
+    assert result["ok"] is False
+    assert missing.lower() in result["error"].lower()
+
+
+def test_json_rpc_error_fails_closed_without_local_fallback(monkeypatch):
+    monkeypatch.setenv("OPENFANG_URL", "http://openfang.test")
+    monkeypatch.setenv("OPENFANG_API_KEY", "test-token")
+    calls = []
+
+    def _get(*args, **kwargs):
+        calls.append("agents")
+        return _Response([{"name": "brain-ideas", "id": "agent-uuid"}])
+
+    def _post(*args, **kwargs):
+        calls.append("mcp")
+        return _Response({"jsonrpc": "2.0", "id": "request", "error": {"code": -32602, "message": "not permitted"}})
+
+    monkeypatch.setattr("core.capability_targets.requests.get", _get)
+    monkeypatch.setattr("core.capability_targets.requests.post", _post)
+
+    result = McpExecutor("mcp:brain-ideas:vibemind-db:ideas.list").call()
+
+    assert result["ok"] is False
+    assert "json-rpc" in result["error"].lower()
+    assert calls == ["agents", "mcp"]
+
+
+def test_transient_agent_resolution_retries_within_openfang_boundary(monkeypatch):
+    monkeypatch.setenv("OPENFANG_URL", "http://openfang.test")
+    monkeypatch.setenv("OPENFANG_API_KEY", "test-token")
+    attempts = {"agents": 0}
+
+    def _get(*args, **kwargs):
+        attempts["agents"] += 1
+        if attempts["agents"] == 1:
+            raise requests.exceptions.ConnectionError("down")
+        return _Response([{"name": "brain-ideas", "id": "agent-uuid"}])
+
+    monkeypatch.setattr("core.capability_targets.requests.get", _get)
+    monkeypatch.setattr(
+        "core.capability_targets.requests.post",
+        lambda *args, **kwargs: _Response({"result": {"content": [], "isError": False}}),
+    )
+    monkeypatch.setattr("core.capability_targets.time.sleep", lambda _: None)
+
+    result = McpExecutor("mcp:brain-ideas:vibemind-db:ideas.list").call()
+
+    assert result["ok"] is True
+    assert attempts["agents"] == 2

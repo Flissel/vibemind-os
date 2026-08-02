@@ -5,7 +5,7 @@ transport kinds:
 
   direct:<module>:<function>           # python in-process call (Phase 1.5)
   http:<METHOD>:<url>                  # generic HTTP webhook
-  mcp:<server>:<tool>                  # local MCP server tool (via brain-core stdio bridge)
+  mcp:<agent>:<server>:<tool>          # OpenFang MCP tool with bound agent authority
   n8n:<workflow_id>                    # n8n workflow trigger
   coding-engine:<endpoint>             # Daves coding-engine HTTP endpoint
   openfang:<agent_name>                # explicit single-agent dispatch via OpenFang
@@ -724,38 +724,155 @@ class BrainSelfExecutor(_BaseRemoteExecutor):
 
 
 class McpExecutor(_BaseRemoteExecutor):
-    """MCP tool call — Phase 4 stub.
+    """Execute a namespaced MCP tool through OpenFang's HTTP MCP endpoint.
 
-    Spec: `mcp:<server>:<tool>` — calls a tool on a stdio MCP server via
-    the brain-core stdio proxy. Implemented as HTTP POST to a future
-    `/api/mcp/dispatch` route on Brain itself, since stdio JSON-RPC
-    requires per-tool wiring that is best done as a follow-up.
+    Spec: ``mcp:<agent>:<server>:<tool>``.  The agent is a canonical
+    OpenFang registry name, resolved to its current UUID through the
+    authenticated control-plane API.  That UUID is bound by OpenFang's
+    ``X-OpenFang-Agent-Id`` transport header; it is never trusted from the
+    JSON-RPC body.  OpenFang applies the agent's tool allowlist, approvals,
+    execution policy, and audit attribution.
 
-    For now, this executor returns ok=False with a clear message so a
-    capability that uses `mcp:` knows to stay broadcast-only until the
-    bridge is finished. The capability still loads cleanly — only calls
-    fail until the bridge lands.
+    This executor deliberately has no local/Brain dispatch fallback.  A
+    missing gateway configuration, unknown agent, JSON-RPC error, or
+    transport failure returns the standard failed envelope from
+    ``_BaseRemoteExecutor``.
     """
+
+    _RETRY_ATTEMPTS = 3
+    _RETRY_DELAYS_S = (0.25, 0.5)
 
     def __init__(self, target: str) -> None:
         super().__init__(target)
         rest = target.split(":", 1)[1] if target.startswith("mcp:") else target
-        if ":" not in rest:
-            raise ValueError(f"mcp target needs <server>:<tool>: {target!r}")
-        self.server, self.tool = rest.split(":", 1)
-        self.base = os.environ.get("BRAIN_SELF_URL", "http://127.0.0.1:5000").rstrip("/")
+        parts = [part.strip() for part in rest.split(":", 2)]
+        if len(parts) != 3 or any(not part for part in parts):
+            raise ValueError(
+                "mcp target requires canonical mcp:<agent>:<server>:<tool>; "
+                f"migrate legacy target {target!r}"
+            )
+        self.agent_name, self.server, self.tool = parts
+        self._agent_id: Optional[str] = None
+
+    @staticmethod
+    def _tool_namespace_component(value: str) -> str:
+        """Match OpenFang's ``normalize_name`` used for MCP tool names."""
+        return value.lower().replace("-", "_")
+
+    @property
+    def namespaced_tool(self) -> str:
+        return "mcp_{}_{}".format(
+            self._tool_namespace_component(self.server),
+            self._tool_namespace_component(self.tool),
+        )
+
+    def _configuration(self) -> tuple[str, str]:
+        base = os.environ.get("OPENFANG_URL", "").strip().rstrip("/")
+        if not base:
+            raise RuntimeError("OPENFANG_URL is required for OpenFang MCP execution")
+        api_key = os.environ.get("OPENFANG_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError("OPENFANG_API_KEY is required for OpenFang MCP execution")
+        return base, api_key
+
+    @staticmethod
+    def _is_transient_openfang_error(exc: requests.exceptions.RequestException) -> bool:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+        return status is None or status in {408, 425, 429} or status >= 500
+
+    def _request_json(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Dict[str, str],
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Perform a bounded retry only for transient OpenFang failures."""
+        timeout = float(os.environ.get("CAPABILITY_HTTP_TIMEOUT_S", "60"))
+        last_error: Optional[requests.exceptions.RequestException] = None
+        for attempt in range(self._RETRY_ATTEMPTS):
+            try:
+                if method == "GET":
+                    response = requests.get(url, headers=headers, timeout=timeout)
+                else:
+                    response = requests.post(
+                        url, json=payload, headers=headers, timeout=timeout,
+                    )
+                response.raise_for_status()
+                try:
+                    return response.json()
+                except ValueError as exc:
+                    raise RuntimeError(
+                        f"OpenFang returned invalid JSON from {url}"
+                    ) from exc
+            except requests.exceptions.RequestException as exc:
+                if not self._is_transient_openfang_error(exc):
+                    raise RuntimeError(f"OpenFang request failed at {url}: {exc}") from exc
+                last_error = exc
+                if attempt < self._RETRY_ATTEMPTS - 1:
+                    time.sleep(self._RETRY_DELAYS_S[attempt])
+        raise OpenFangUnavailable(
+            f"OpenFang unavailable at {url} after {self._RETRY_ATTEMPTS} attempts"
+        ) from last_error
+
+    def _resolve_agent_id(self, base: str, headers: Dict[str, str]) -> str:
+        if self._agent_id:
+            return self._agent_id
+        body = self._request_json("GET", f"{base}/api/agents", headers=headers)
+        agents = body.get("agents") if isinstance(body, dict) else body
+        if not isinstance(agents, list):
+            raise RuntimeError("OpenFang /api/agents returned an invalid agent list")
+        for agent in agents:
+            if not isinstance(agent, dict):
+                continue
+            if str(agent.get("name") or "").lower() != self.agent_name.lower():
+                continue
+            agent_id = agent.get("id") or agent.get("agent_id")
+            if isinstance(agent_id, str) and agent_id.strip():
+                self._agent_id = agent_id.strip()
+                return self._agent_id
+        raise RuntimeError(
+            f"OpenFang agent {self.agent_name!r} is not registered; MCP execution denied"
+        )
 
     def _call(self, payload: Dict[str, Any]) -> Any:
-        url = f"{self.base}/api/mcp/dispatch"
-        body = {"server": self.server, "tool": self.tool, "args": payload}
-        timeout = float(os.environ.get("CAPABILITY_HTTP_TIMEOUT_S", "60"))
-        resp = requests.post(url, json=body, timeout=timeout)
-        if resp.status_code == 404:
-            raise RuntimeError(
-                "mcp dispatch endpoint not enabled — set MCP_DISPATCH_ENABLED=1"
-            )
-        resp.raise_for_status()
-        return resp.json()
+        base, api_key = self._configuration()
+        control_headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+        agent_id = self._resolve_agent_id(base, control_headers)
+        request_id = f"brain-mcp-{uuid.uuid4().hex}"
+        response = self._request_json(
+            "POST",
+            f"{base}/mcp",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "X-OpenFang-Agent-Id": agent_id,
+            },
+            payload={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "tools/call",
+                "params": {"name": self.namespaced_tool, "arguments": payload},
+            },
+        )
+        if not isinstance(response, dict):
+            raise RuntimeError("OpenFang MCP returned a non-object JSON-RPC response")
+        if response.get("error"):
+            error = response["error"]
+            message = error.get("message") if isinstance(error, dict) else str(error)
+            raise RuntimeError(f"OpenFang MCP JSON-RPC error: {message}")
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise RuntimeError("OpenFang MCP JSON-RPC response omitted result")
+        if result.get("isError") is True:
+            raise RuntimeError("OpenFang MCP tool returned isError=true")
+        return result
 
 
 _N8N_MUTATING_EVENTS = {
@@ -1242,7 +1359,7 @@ def supported_kinds() -> Dict[str, str]:
         "coding-engine": "coding-engine:<METHOD>:<route>",
         "openfang": "openfang:<agent_name>",
         "brain": "brain:<METHOD>:<route>",
-        "mcp": "mcp:<server>:<tool>",
+        "mcp": "mcp:<agent>:<server>:<tool>",
         "n8n-mcp": "n8n-mcp:<canonical_event>",
         "mirofish": "mirofish:<simulate|predict|graph.build|graph.search|status|evaluate|interview>",
         "supabase": "supabase:<op>  (idea.connect|idea.disconnect|idea.auto_link)",
