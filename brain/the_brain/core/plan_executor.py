@@ -55,6 +55,31 @@ _MAX_PARALLEL = int(os.environ.get("PLAN_MAX_PARALLEL", "4"))
 _DIARY_FAIL_LOG_EVERY = 50
 
 
+def _canonical_space_event_agent(event_id: str) -> Optional[str]:
+    """Return the enabled canonical Space owner for an event, if any.
+
+    The Space registry is the routing authority. Agent YAMLs can add metadata,
+    but must never make a canonical event fall back to its legacy executor.
+    """
+    if not event_id:
+        return None
+    from .space_contract import load_space_contract
+
+    contract = load_space_contract()
+    space_id = contract.event_space_map.get(event_id)
+    if not space_id:
+        return None
+    space = contract.spaces.get(space_id)
+    if not isinstance(space, dict) or not space.get("enabled", True):
+        return None
+    agent = space.get("agent")
+    if not isinstance(agent, str) or not agent.strip():
+        raise RuntimeError(
+            f"canonical space '{space_id}' has no OpenFang agent for '{event_id}'"
+        )
+    return agent.strip()
+
+
 # ── Plan recording (Phase 6.12) ──────────────────────────────────────
 
 
@@ -1238,16 +1263,13 @@ class PlanExecutor:
                         contract_pass=False, reward=-1.0,
                     )
 
-        # Phase 11.B — if registry maps this capability/event to an OpenFang agent,
-        # build a vibemind.intent.v1 envelope and route through that agent
-        # instead of direct-calling. The agent's MCP-allowed list contains the
-        # right MCP-server (e.g. spaces-ideas), so Sonnet there picks the tool
-        # and runs it with full context (recall+self_prior+previous_outputs).
-        # If registry doesn't claim this event, falls back to direct target.
+        # A canonical Space event routes through its assigned OpenFang agent.
+        # Agent YAMLs remain metadata, while config/space_agent_registry.yml is
+        # the authority. A missing/down agent must fail in OpenFangExecutor;
+        # it must never re-enable the older direct execution target.
         try:
             from .agent_yaml_registry import get_registry
             from . import intent_envelope as _envelope_mod
-            _registry = get_registry()
             # Map capability name to event_id (e.g. bubble_create -> bubble.create)
             cap_to_event = {
                 "bubble_create": "bubble.create",
@@ -1294,69 +1316,71 @@ class PlanExecutor:
             if "." not in event_id:
                 # If the capability already has a namespace.action pattern
                 # in some other form, leave as-is; otherwise it won't match
-                # a registry entry and we'll fall back to direct.
+                # a canonical registry entry and its existing target remains.
                 pass
-            assigned_agent = _registry.get_event_agent(event_id) if event_id else None
+            assigned_agent = None
+            try:
+                assigned_agent = get_registry().get_event_agent(event_id) if event_id else None
+            except Exception as registry_error:
+                logger.warning(
+                    "[plan-executor] agent YAML registry unavailable for %s: %s",
+                    event_id,
+                    registry_error,
+                )
+
+            # Canonical Space ownership wins over Agent-YAML metadata. This
+            # keeps a canonical event fail-closed when the auxiliary YAML
+            # registry cannot load.
+            canonical_agent = _canonical_space_event_agent(event_id)
+            if canonical_agent:
+                assigned_agent = canonical_agent
 
             # Minibook targets return a structured, redacted truth envelope from
             # the external service. Re-routing them through an LLM agent would
             # discard that contract and could turn prose into apparent success.
             preserve_structured_target = event_id.startswith("minibook.")
-            if (assigned_agent and target
-                    and not target.startswith(("openfang:", "n8n-mcp:", "coding-engine:"))
+            authoritative_target = isinstance(target, str) and target.startswith(
+                ("openfang:", "mcp:", "n8n-mcp:", "coding-engine:")
+            )
+            if (assigned_agent and not authoritative_target
                     and not preserve_structured_target):
-                # Probe: is the agent reachable in OpenFang? If not, skip
-                # Phase 11.B routing and fall through to the direct target.
-                _agent_known = False
-                try:
-                    _of_url = os.environ.get("OPENFANG_URL", "http://127.0.0.1:4200")
-                    _r = __import__("requests").get(f"{_of_url}/api/agents", timeout=3)
-                    if _r.ok:
-                        _ag = _r.json()
-                        _ag_list = _ag if isinstance(_ag, list) else _ag.get("agents", [])
-                        _agent_known = any(
-                            a.get("name") == assigned_agent for a in _ag_list
-                        )
-                except Exception as _e:
-                    logger.debug(f"[plan-executor] openfang probe: {_e}")
-
-                if _agent_known:
-                    # Build envelope and override target
-                    params = {}
-                    if isinstance(rendered_arg, dict):
-                        params = rendered_arg
-                    elif isinstance(rendered_arg, str):
-                        try:
-                            params = json.loads(rendered_arg)
-                            if not isinstance(params, dict):
-                                params = {"value": params}
-                        except Exception:
-                            params = {"value": rendered_arg}
-                    dc = plan_ctx.get("decision_context") or {}
-                    envelope = _envelope_mod.build_envelope(
-                        event_id=event_id,
-                        params=params,
-                        plan_intent=plan_ctx.get("plan_intent", ""),
-                        plan_rationale=plan_ctx.get("plan_rationale", ""),
-                        plan_id=plan_ctx.get("plan_id", ""),
-                        step_id=hop.step_id,
-                        preferred_tool=hop.capability or "",
-                        decision_context=dc,
-                        prev_outputs=state if state else {},
-                    )
-                    target = f"openfang:{assigned_agent}"
-                    rendered_arg = _envelope_mod.envelope_to_message(envelope)
-                    hop.arg_kwarg = None
-                    logger.info(
-                        f"[plan-executor] Phase 11.B route: {event_id} via openfang:{assigned_agent}"
-                    )
-                else:
-                    logger.info(
-                        f"[plan-executor] Phase 11.B: agent '{assigned_agent}' "
-                        f"not in OpenFang — using direct target"
-                    )
+                params = {}
+                if isinstance(rendered_arg, dict):
+                    params = rendered_arg
+                elif isinstance(rendered_arg, str):
+                    try:
+                        params = json.loads(rendered_arg)
+                        if not isinstance(params, dict):
+                            params = {"value": params}
+                    except Exception:
+                        params = {"value": rendered_arg}
+                dc = plan_ctx.get("decision_context") or {}
+                envelope = _envelope_mod.build_envelope(
+                    event_id=event_id,
+                    params=params,
+                    plan_intent=plan_ctx.get("plan_intent", ""),
+                    plan_rationale=plan_ctx.get("plan_rationale", ""),
+                    plan_id=plan_ctx.get("plan_id", ""),
+                    step_id=hop.step_id,
+                    preferred_tool=hop.capability or "",
+                    decision_context=dc,
+                    prev_outputs=state if state else {},
+                )
+                target = f"openfang:{assigned_agent}"
+                rendered_arg = _envelope_mod.envelope_to_message(envelope)
+                hop.arg_kwarg = None
+                logger.info(
+                    f"[plan-executor] canonical route: {event_id} via openfang:{assigned_agent}"
+                )
         except Exception as e:
-            logger.debug(f"[plan-executor] Phase 11.B routing skipped: {e}")
+            return HopResult(
+                step_id=hop.step_id, ok=False,
+                error=f"canonical OpenFang routing: {type(e).__name__}: {e}",
+                capability=hop.capability, target=target,
+                rendered_arg=rendered_arg, kg_hits=kg_hits,
+                elapsed_s=time.time() - t0,
+                contract_pass=False, reward=-1.0,
+            )
 
         if not target:
             # L4 — GapSentinel (the REAL multihop NO_TOOL point). A hop whose capability
