@@ -7,14 +7,8 @@ forwards to AnalyzerAgent and ReporterAgent for final verdict.
 """
 
 import json
-import os
-import sys
 import uuid
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from llm_client import get_model
-
-from openai import AsyncOpenAI
+from typing import Any
 
 from autogen_core import (
     AgentId,
@@ -33,9 +27,10 @@ from tools import TOOL_DEFINITIONS, think
 
 class OrchestratorAgent(RoutedAgent):
 
-    def __init__(self, llm_client: AsyncOpenAI):
+    def __init__(self, llm_client: Any, llm_model: str):
         super().__init__("OrchestratorAgent")
         self._llm_client = llm_client
+        self._llm_model = llm_model
 
     @message_handler
     async def handle_verify_target(
@@ -86,7 +81,7 @@ class OrchestratorAgent(RoutedAgent):
             print(f"\n  [ORCHESTRATOR] OpenAI call #{iteration + 1}...", flush=True)
 
             response = await self._llm_client.chat.completions.create(
-                model=get_model("default", "poc_site_verifier"),
+                model=self._llm_model,
                 temperature=0,
                 messages=messages_history,
                 tools=TOOL_DEFINITIONS,
@@ -124,7 +119,7 @@ class OrchestratorAgent(RoutedAgent):
                 if fn_name == "think":
                     # Execute think tool locally (needs LLM client)
                     think_result = await think(
-                        fn_args["reasoning_prompt"], self._llm_client
+                        fn_args["reasoning_prompt"], self._llm_client, self._llm_model
                     )
                     tool_output = json.dumps(think_result)
                     print(

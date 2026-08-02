@@ -13,18 +13,10 @@ Nutzung:
 import asyncio
 import json
 import os
-import sys
 from datetime import datetime
-from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
-from dotenv import load_dotenv
-load_dotenv(Path(__file__).parent.parent / ".env")
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from llm_client import get_model
-
-from openai import AsyncOpenAI
 from tools import (
     security_audit, whois_lookup, check_ssl_cert,
     dns_records, http_headers, page_content_scan,
@@ -41,6 +33,23 @@ from tools import (
     subdomain_takeover_check, secret_validator,
 )
 from browser_verify import browser_verify
+
+
+SITE_VERIFIER_ROLE = "security_analyzer"
+
+
+def get_client(role: str) -> Any:
+    """Resolve the configured client lazily at the report boundary."""
+    from vibemind_shared import get_client as shared_get_client
+
+    return shared_get_client(role)
+
+
+def get_model(role: str) -> str:
+    """Resolve the configured model lazily at the report boundary."""
+    from vibemind_shared import get_model as shared_get_model
+
+    return shared_get_model(role)
 
 
 REPORT_TEMPLATE = """<!DOCTYPE html>
@@ -697,12 +706,43 @@ def build_attack_scenarios_html(issues: list) -> str:
     return html
 
 
+async def _request_llm_report(
+    llm_client: Any,
+    llm_model: str,
+    system_prompt: str,
+    user_prompt: str,
+) -> dict[str, Any]:
+    """Request and decode the configured report without fallback or retry."""
+    llm_response = await llm_client.chat.completions.create(
+        model=llm_model,
+        temperature=0,
+        max_tokens=8000,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    )
+
+    llm_text = llm_response.choices[0].message.content.strip()
+
+    # Strip markdown code fences if present
+    if llm_text.startswith("```"):
+        llm_text = llm_text.split("\n", 1)[1] if "\n" in llm_text else llm_text[3:]
+        if llm_text.endswith("```"):
+            llm_text = llm_text[:-3]
+
+    return json.loads(llm_text)
+
+
 async def generate_report(
     url: str,
     company: str = "Auftraggeber",
     output_path: str = None,
 ) -> str:
     """Run all checks and generate HTML report."""
+
+    llm_client = get_client(SITE_VERIFIER_ROLE)
+    llm_model = get_model(SITE_VERIFIER_ROLE)
 
     domain = urlparse(url).netloc or urlparse(url).path.split("/")[0]
 
@@ -1149,9 +1189,6 @@ async def generate_report(
     # =====================================================
     print("  [8/10] LLM report generation (all sections)...", flush=True)
 
-    api_key = os.environ.get("OPENAI_API_KEY", "")
-    llm_client = AsyncOpenAI(api_key=api_key)
-
     # Collect all raw results for the LLM
     all_results = {
         "whois": whois_result,
@@ -1246,47 +1283,13 @@ async def generate_report(
         f"Write the complete report."
     )
 
-    llm_content = {}
-    try:
-        llm_response = await llm_client.chat.completions.create(
-            model=get_model("default", "poc_site_verifier"),
-            temperature=0,
-            max_tokens=8000,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        )
-
-        llm_text = llm_response.choices[0].message.content.strip()
-
-        # Strip markdown code fences if present
-        if llm_text.startswith("```"):
-            llm_text = llm_text.split("\n", 1)[1] if "\n" in llm_text else llm_text[3:]
-            if llm_text.endswith("```"):
-                llm_text = llm_text[:-3]
-
-        llm_content = json.loads(llm_text)
-        print(f"  [6/8] LLM generated {len(llm_content)} report sections.", flush=True)
-
-    except (json.JSONDecodeError, Exception) as e:
-        print(f"  [!] LLM report generation failed: {e}. Using fallback.", flush=True)
-        # Fallback: generate basic content programmatically
-        fallback_proposal = ""
-        for issue in sorted(issues, key=lambda x: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].index(x.get("severity", "INFO"))):
-            fallback_proposal += f"<li><strong>[{issue['severity']}]</strong> {issue.get('fix', issue.get('title', ''))}</li>\n"
-        llm_content = {
-            "executive_summary": f"<p>Security audit of {domain} completed with a score of {score}/100. {critical_count} critical and {high_count} high severity issues were identified requiring immediate attention.</p>",
-            "domain_info_narrative": "",
-            "investigation_narrative": "",
-            "findings_narrative": "",
-            "tls_narrative": "",
-            "headers_narrative": "",
-            "server_config_narrative": "",
-            "attack_scenarios": build_attack_scenarios_html(issues),
-            "deep_analysis": "",
-            "recommended_actions": fallback_proposal,
-        }
+    llm_content = await _request_llm_report(
+        llm_client,
+        llm_model,
+        system_prompt,
+        user_prompt,
+    )
+    print(f"  [6/8] LLM generated {len(llm_content)} report sections.", flush=True)
 
     # =====================================================
     # FACT-CHECK LLM OUTPUT
