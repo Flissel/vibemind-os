@@ -244,7 +244,7 @@ async def main():
     # Blue Team (reused from poc_os_shield)
     await OrchestratorAgent.register(
         runtime, "orchestrator_agent",
-        lambda: OrchestratorAgent(llm_client),
+        lambda: OrchestratorAgent(llm_client, BLUE_TEAM_MODEL),
     )
     await MonitorAgent.register(
         runtime, "monitor_agent",
@@ -252,7 +252,7 @@ async def main():
     )
     await ThreatAnalyzerAgent.register(
         runtime, "analyzer_agent",
-        lambda: ThreatAnalyzerAgent(llm_client),
+        lambda: ThreatAnalyzerAgent(llm_client, BLUE_TEAM_MODEL),
     )
     await EnforcerAgent.register(
         runtime, "enforcer_agent",
