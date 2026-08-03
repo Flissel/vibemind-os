@@ -3,42 +3,36 @@ Website Authenticity Verifier - Main Entry Point
 ==================================================
 LLM-gesteuerte OSINT-Pruefung von Webseiten auf Echtheit.
 
-Architektur (autogen-core + OpenAI tool calling):
+Architektur (autogen-core + OpenFang tool calling):
 
   [User/CLI]
       |
       v
-  [OrchestratorAgent]  <-- GPT-4o entscheidet welche Tools aufgerufen werden
+  [OrchestratorAgent]  <-- konfiguriertes OpenFang-Modell waehlt Tools
       |         |
       v         v
-  [CheckerAgent]   [think() -> GPT-4o reasoning]
+  [CheckerAgent]   [think() -> OpenFang reasoning]
   (WHOIS, SSL, DNS, HTTP, Wayback, Content, IP)
       |
       v
-  [AnalyzerAgent]  <-- GPT-4o bewertet alle Ergebnisse
+  [AnalyzerAgent]  <-- OpenFang bewertet alle Ergebnisse
       |
       v
-  [ReporterAgent]  <-- GPT-4o formatiert den Report
+  [ReporterAgent]  <-- OpenFang formatiert den Report
       |
       v
   [Final Report]
 
-Nutzung:
-  export OPENAI_API_KEY=sk-...
+Nutzung (OpenFang ueber die zentrale VibeMind-Konfiguration):
   python verify.py https://example.com
   python verify.py https://example.com --checks whois,ssl,dns
 """
 
 import asyncio
 import sys
-import os
-from pathlib import Path
 from urllib.parse import urlparse
+from typing import Any
 
-from dotenv import load_dotenv
-load_dotenv(Path(__file__).parent.parent / ".env")
-
-from openai import AsyncOpenAI
 from autogen_core import AgentId, SingleThreadedAgentRuntime
 
 from messages import VerifyTarget, AuthenticityReport
@@ -49,6 +43,21 @@ from reporter import ReporterAgent
 
 
 DEFAULT_CHECKS = "whois,ssl,dns,http,wayback,content,ip"
+SITE_VERIFIER_ROLE = "security_analyzer"
+
+
+def get_client(role: str) -> Any:
+    """Resolve the configured client lazily at the runtime boundary."""
+    from vibemind_shared import get_client as shared_get_client
+
+    return shared_get_client(role)
+
+
+def get_model(role: str) -> str:
+    """Resolve the configured model lazily at the runtime boundary."""
+    from vibemind_shared import get_model as shared_get_model
+
+    return shared_get_model(role)
 
 
 def extract_domain(url: str) -> str:
@@ -61,6 +70,9 @@ def extract_domain(url: str) -> str:
 
 async def verify_site(url: str, checks: str = DEFAULT_CHECKS) -> AuthenticityReport:
     """Run the full verification pipeline."""
+
+    llm_client = get_client(SITE_VERIFIER_ROLE)
+    llm_model = get_model(SITE_VERIFIER_ROLE)
 
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
@@ -76,15 +88,6 @@ async def verify_site(url: str, checks: str = DEFAULT_CHECKS) -> AuthenticityRep
     print(f"  Checks:  {checks}")
     print()
 
-    # OpenAI client
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        print("[ERROR] OPENAI_API_KEY nicht gesetzt!")
-        print("  export OPENAI_API_KEY=sk-...")
-        sys.exit(1)
-
-    llm_client = AsyncOpenAI(api_key=api_key)
-
     # AutoGen runtime
     runtime = SingleThreadedAgentRuntime()
 
@@ -93,7 +96,7 @@ async def verify_site(url: str, checks: str = DEFAULT_CHECKS) -> AuthenticityRep
 
     await OrchestratorAgent.register(
         runtime, "orchestrator",
-        lambda: OrchestratorAgent(llm_client),
+        lambda: OrchestratorAgent(llm_client, llm_model),
     )
     await CheckerAgent.register(
         runtime, "checker_agent",
@@ -101,27 +104,34 @@ async def verify_site(url: str, checks: str = DEFAULT_CHECKS) -> AuthenticityRep
     )
     await AnalyzerAgent.register(
         runtime, "analyzer_agent",
-        lambda: AnalyzerAgent(llm_client),
+        lambda: AnalyzerAgent(llm_client, llm_model),
     )
     await ReporterAgent.register(
         runtime, "reporter_agent",
-        lambda: ReporterAgent(llm_client),
+        lambda: ReporterAgent(llm_client, llm_model),
     )
 
     runtime.start()
     print("[SETUP] Agents bereit.\n", flush=True)
 
     # Send verification request to orchestrator
-    report: AuthenticityReport = await runtime.send_message(
-        VerifyTarget(
-            url=url,
-            domain=domain,
-            check_types=checks,
-        ),
-        AgentId("orchestrator", "default"),
-    )
-
-    await runtime.stop()
+    try:
+        report: AuthenticityReport = await runtime.send_message(
+            VerifyTarget(
+                url=url,
+                domain=domain,
+                check_types=checks,
+            ),
+            AgentId("orchestrator", "default"),
+        )
+    except BaseException:
+        try:
+            await runtime.stop()
+        except BaseException:
+            pass
+        raise
+    else:
+        await runtime.stop()
 
     # Print final report
     print("\n")

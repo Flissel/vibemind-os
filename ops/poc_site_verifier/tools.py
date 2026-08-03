@@ -12,16 +12,11 @@ import random
 import re
 import socket
 import ssl
-import sys
 import time
 import urllib.request
 from datetime import datetime, timezone
+from typing import Any
 from urllib.parse import urlparse
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from llm_client import get_model
-
-from openai import AsyncOpenAI
 
 
 # ================================================================
@@ -9220,10 +9215,10 @@ async def evolutionary_xss_fuzzer(
 # TOOL: think (reasoning step)
 # ================================================================
 
-async def think(reasoning_prompt: str, llm_client: AsyncOpenAI) -> dict:
+async def think(reasoning_prompt: str, llm_client: Any, llm_model: str) -> dict:
     """Use LLM to reason step-by-step about authenticity implications."""
     response = await llm_client.chat.completions.create(
-        model=get_model("default", "poc_site_verifier"),
+        model=llm_model,
         temperature=0,
         messages=[
             {

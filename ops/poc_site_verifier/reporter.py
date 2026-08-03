@@ -6,13 +6,7 @@ with verdict, findings table, and recommendations.
 """
 
 import json
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from llm_client import get_model
-
-from openai import AsyncOpenAI
+from typing import Any
 
 from autogen_core import RoutedAgent, message_handler, MessageContext
 
@@ -21,9 +15,10 @@ from messages import ReportRequest, AuthenticityReport
 
 class ReporterAgent(RoutedAgent):
 
-    def __init__(self, llm_client: AsyncOpenAI):
+    def __init__(self, llm_client: Any, llm_model: str):
         super().__init__("ReporterAgent")
         self._llm_client = llm_client
+        self._llm_model = llm_model
 
     @message_handler
     async def handle_report(
@@ -32,7 +27,7 @@ class ReporterAgent(RoutedAgent):
         print(f"  [REPORTER] Generating report for {message.domain}...", flush=True)
 
         response = await self._llm_client.chat.completions.create(
-            model=get_model("default", "poc_site_verifier"),
+            model=self._llm_model,
             temperature=0,
             messages=[
                 {
