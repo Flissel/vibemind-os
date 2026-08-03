@@ -14,17 +14,10 @@ import hashlib
 import os
 import re
 import subprocess
-import sys
 import platform
 import socket
 from datetime import datetime
-from pathlib import Path
-
-from dotenv import load_dotenv
-load_dotenv(Path(__file__).parent.parent / ".env")
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from llm_client import get_client, get_model
+from typing import Any
 
 import psutil
 from tools import (
@@ -34,7 +27,23 @@ from tools import (
     detect_beaconing, detect_data_exfiltration,
     list_usb_devices,
 )
-from config import OPENAI_API_KEY
+
+
+SHIELD_ROLE = "security_blue_team"
+
+
+def get_client(role: str) -> Any:
+    """Resolve the configured client lazily at the report boundary."""
+    from vibemind_shared import get_client as shared_get_client
+
+    return shared_get_client(role)
+
+
+def get_model(role: str) -> str:
+    """Resolve the configured model lazily at the report boundary."""
+    from vibemind_shared import get_model as shared_get_model
+
+    return shared_get_model(role)
 
 
 REPORT_TEMPLATE = """<!DOCTYPE html>
@@ -204,6 +213,8 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
 
 
 async def generate_report(output_path: str = None):
+    llm_client = get_client(SHIELD_ROLE)
+    llm_model = get_model(SHIELD_ROLE)
     hostname = socket.gethostname()
     username = os.environ.get("USERNAME", os.environ.get("USER", "unknown"))
     os_info = f"{platform.system()} {platform.version()}"
@@ -673,8 +684,6 @@ async def generate_report(output_path: str = None):
 
     # LLM Analysis
     print("  [3/4] LLM Tiefenanalyse...", flush=True)
-    llm_client = get_client("report")
-
     all_data = {
         "issues": all_issues,
         "parent_child": parent_child_result.get("anomalies", []),
@@ -688,7 +697,7 @@ async def generate_report(output_path: str = None):
     }
 
     llm_resp = await llm_client.chat.completions.create(
-        model=get_model("report"),
+        model=llm_model,
         temperature=0,
         messages=[
             {

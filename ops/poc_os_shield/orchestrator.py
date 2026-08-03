@@ -7,11 +7,8 @@ forwards to ThreatAnalyzerAgent, EnforcerAgent, and ReporterAgent.
 """
 
 import json
-import os
-import sys
 import uuid
-
-from openai import AsyncOpenAI
+from typing import Any
 
 from autogen_core import (
     AgentId,
@@ -28,15 +25,12 @@ from messages import (
 )
 from tools import TOOL_DEFINITIONS, think
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from llm_client import get_model
-
-
 class OrchestratorAgent(RoutedAgent):
 
-    def __init__(self, llm_client: AsyncOpenAI):
+    def __init__(self, llm_client: Any, llm_model: str):
         super().__init__("OrchestratorAgent")
         self._llm_client = llm_client
+        self._llm_model = llm_model
 
     @message_handler
     async def handle_shield_request(
@@ -163,7 +157,7 @@ class OrchestratorAgent(RoutedAgent):
             print(f"\n  [ORCHESTRATOR] LLM call #{iteration + 1}...", flush=True)
 
             response = await self._llm_client.chat.completions.create(
-                model=get_model("blue_team"),
+                model=self._llm_model,
                 temperature=0,
                 messages=messages_history,
                 tools=TOOL_DEFINITIONS,
@@ -207,7 +201,7 @@ class OrchestratorAgent(RoutedAgent):
 
                 if fn_name == "think":
                     think_result = await think(
-                        fn_args["reasoning_prompt"], self._llm_client
+                        fn_args["reasoning_prompt"], self._llm_client, self._llm_model
                     )
                     tool_output = json.dumps(think_result)
                     print(
