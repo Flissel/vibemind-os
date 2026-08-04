@@ -979,6 +979,42 @@ def resolve_registry_execution_target(capability: str) -> Optional[str]:
     return None
 
 
+_CANONICAL_SPACE_EVENT_IDS = {
+    "bubble_create": "bubble.create",
+    "bubble_update": "bubble.update",
+    "bubble_evaluate": "bubble.evaluate",
+    "bubble_delete": "bubble.delete",
+    "idea_create": "idea.create",
+    "idea_add": "idea.create",
+    "idea_update": "idea.update",
+    "idea_expand": "idea.expand",
+    "idea_connect": "idea.connect",
+    "idea_to_project": "idea.to_project",
+    "code_generate": "code.generate",
+    "code_modify": "code.modify",
+    "code_status": "code.status",
+    "code_show": "code.show",
+    "code_preview_start": "code.preview.start",
+    "code_preview_stop": "code.preview.stop",
+    "code_list": "code.list",
+    "code_cancel": "code.cancel",
+}
+
+
+def canonical_space_event_id(capability: str) -> str:
+    """Map capability aliases to their canonical registry event ID."""
+    return _CANONICAL_SPACE_EVENT_IDS.get(capability, capability)
+
+
+def resolve_canonical_execution_target(capability: str) -> tuple[str, Optional[str]]:
+    """Resolve a capability alias through the canonical Space registry once."""
+    event_id = canonical_space_event_id(capability)
+    target = resolve_registry_execution_target(event_id)
+    if event_id == "idea.connect" and target is None:
+        raise RuntimeError("idea.connect requires canonical MCP execution metadata")
+    return event_id, target
+
+
 def _redact_evidence(value: Any) -> Any:
     if isinstance(value, dict):
         return {

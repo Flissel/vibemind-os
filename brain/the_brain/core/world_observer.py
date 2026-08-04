@@ -32,6 +32,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +255,80 @@ def _check_supabase_edge(spec: Dict[str, Any]):
         return None, {"a": title_a, "b": title_b}, f"edge probe error: {e}"
 
 
+def _check_supabase_edge_ids(spec: Dict[str, Any]):
+    """Independently read one exact durable edge with explicit service config."""
+    from core.idea_connect_contract import (
+        is_canonical_durable_id,
+        is_canonical_edge_type,
+    )
+
+    required = ("edge_id", "from_id", "to_id", "edge_type")
+    values = {name: spec.get(name) for name in required}
+    if (not all(is_canonical_durable_id(values[name]) for name in required[:3])
+            or not is_canonical_edge_type(values["edge_type"])
+            or values["from_id"] == values["to_id"]):
+        return None, {"status": "unverified"}, "invalid durable edge receipt"
+    if str(spec.get("expect", "present")).lower() != "present":
+        return None, {"status": "unverified"}, "invalid durable edge expectation"
+    raw_base = os.environ.get("SUPABASE_URL", "")
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    if not raw_base.strip():
+        return None, {"status": "unverified"}, "SUPABASE_URL is required"
+    try:
+        parsed = urlsplit(raw_base)
+        valid_base = (
+            parsed.scheme in {"http", "https"}
+            and bool(parsed.netloc)
+            and bool(parsed.hostname)
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.query
+            and not parsed.fragment
+        )
+        _ = parsed.port
+    except (TypeError, ValueError):
+        valid_base = False
+    if not valid_base:
+        return None, {"status": "unverified"}, "SUPABASE_URL is invalid"
+    base = raw_base.rstrip("/")
+    if not key:
+        return None, {"status": "unverified"}, "SUPABASE_SERVICE_ROLE_KEY is required"
+    try:
+        import requests
+        response = requests.get(
+            f"{base}/rest/v1/canvas_edges",
+            params={
+                "select": "id,from_node_id,to_node_id,edge_type",
+                "id": f"eq.{values['edge_id']}",
+                "limit": "2",
+            },
+            headers={"apikey": key, "Authorization": f"Bearer {key}"},
+            timeout=OBSERVE_TIMEOUT,
+            allow_redirects=False,
+        )
+        if 300 <= response.status_code < 400 or response.status_code >= 400:
+            return None, {"status": "unverified"}, "durable edge read-back unavailable"
+        rows = response.json()
+        if not isinstance(rows, list):
+            return None, {"status": "unverified"}, "durable edge read-back malformed"
+    except Exception:
+        return None, {"status": "unverified"}, "durable edge read-back unavailable"
+    if not rows:
+        return False, {"edge_id": values["edge_id"], "rows_found": 0}, "durable edge not found"
+    if len(rows) != 1 or not isinstance(rows[0], dict):
+        return None, {"status": "unverified"}, "durable edge read-back malformed"
+    row = rows[0]
+    expected = {
+        "id": values["edge_id"],
+        "from_node_id": values["from_id"],
+        "to_node_id": values["to_id"],
+        "edge_type": values["edge_type"],
+    }
+    if any(row.get(field) != value for field, value in expected.items()):
+        return False, {"edge_id": expected["id"], "rows_found": 1}, "durable edge receipt refuted"
+    return True, {"edge_id": expected["id"], "rows_found": 1}, "durable edge verified"
+
+
 def _check_supabase_node_in_bubble(spec: Dict[str, Any]):
     """Ground-truth for idea_move — confirm the node is now under the target bubble.
     Resolve the bubble TITLE to its id (ideas row), then check canvas_nodes for the
@@ -308,6 +383,7 @@ _CHECKS = {
     "http_ok": _check_http_ok,
     "supabase_row": _check_supabase_row,
     "supabase_edge": _check_supabase_edge,
+    "supabase_edge_ids": _check_supabase_edge_ids,
     "supabase_node_in_bubble": _check_supabase_node_in_bubble,
 }
 
