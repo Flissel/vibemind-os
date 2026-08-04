@@ -881,7 +881,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
                     ("GET", "canvas_nodes", {"params": {"select": "id", "id": "eq.idea-2", "limit": "1"}}),
                 ])
 
-    def test_idea_connect_returns_normalized_existing_edge_in_reverse_direction(self) -> None:
+    def test_idea_connect_preserves_pair_idempotency_when_existing_edge_type_differs(self) -> None:
         server = load_server()
         calls = []
 
@@ -898,7 +898,13 @@ class IdeasMcpServerContractTests(unittest.TestCase):
             self.fail(f"unexpected request: {method} {path}")
 
         with mock.patch.object(server, "_request", side_effect=request):
-            result = server.call_tool("idea_connect", {"from_id": "idea-1", "to_id": "idea-2", "edge_type": "blocks"})
+            try:
+                result = server.call_tool(
+                    "idea_connect",
+                    {"from_id": "idea-1", "to_id": "idea-2", "edge_type": "related"},
+                )
+            except server.ToolError as exc:
+                self.fail(f"existing pair must remain idempotent: {exc}")
 
         self.assertEqual(result, {"edge_id": "edge-2", "from_id": "idea-2", "to_id": "idea-1", "edge_type": "blocks"})
         self.assertEqual([(method, path) for method, path, _kwargs in calls], [
