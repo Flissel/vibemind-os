@@ -33,7 +33,7 @@ CHECKIN = {
 }
 ACTIVITY = {
     "id": "activity-private-id",
-    "event_type": "recommendation_accepted:fzr_private",
+    "event_type": "recommendation_accepted:fzr_0123456789abcdef",
     "time_window": "morning",
     "hour": 9,
     "created_at": "2026-08-04T09:01:00Z",
@@ -121,7 +121,7 @@ def test_lists_exactly_one_closed_no_argument_status_tool(mcp_server):
     ["not", "an", "object"],
 ])
 def test_rejects_any_arguments_before_network(mcp_server, monkeypatch, arguments):
-    monkeypatch.setattr(mcp_server.urllib.request, "urlopen", lambda *_args, **_kwargs: pytest.fail("must not request"))
+    monkeypatch.setattr(mcp_server, "_open_without_redirect", lambda *_args, **_kwargs: pytest.fail("must not request"))
 
     response = call_status(mcp_server, arguments=arguments, request_id="bad-arguments")
 
@@ -139,7 +139,7 @@ def test_rejects_any_arguments_before_network(mcp_server, monkeypatch, arguments
     {"SUPABASE_URL": "https://flowzen.example/?token=secret-query", "SUPABASE_SERVICE_ROLE_KEY": "key"},
 ])
 def test_missing_blank_or_invalid_config_fails_closed_before_network(mcp_server, monkeypatch, configured_env):
-    monkeypatch.setattr(mcp_server.urllib.request, "urlopen", lambda *_args, **_kwargs: pytest.fail("must not request"))
+    monkeypatch.setattr(mcp_server, "_open_without_redirect", lambda *_args, **_kwargs: pytest.fail("must not request"))
     with mock.patch.dict(os.environ, configured_env, clear=True):
         response = call_status(mcp_server, request_id="config")
 
@@ -154,8 +154,8 @@ def test_missing_blank_or_invalid_config_fails_closed_before_network(mcp_server,
 def test_uses_exactly_two_independent_get_requests_with_safe_projection(mcp_server, monkeypatch):
     seen = []
     monkeypatch.setattr(
-        mcp_server.urllib.request,
-        "urlopen",
+        mcp_server,
+        "_open_without_redirect",
         opener_for(json.dumps([CHECKIN]), json.dumps([ACTIVITY]), seen=seen),
     )
     with mock.patch.dict(os.environ, ENV, clear=True):
@@ -205,7 +205,7 @@ def test_uses_exactly_two_independent_get_requests_with_safe_projection(mcp_serv
 
 
 def test_empty_lists_project_to_null_without_treating_the_read_as_failure(mcp_server, monkeypatch):
-    monkeypatch.setattr(mcp_server.urllib.request, "urlopen", opener_for("[]", "[]"))
+    monkeypatch.setattr(mcp_server, "_open_without_redirect", opener_for("[]", "[]"))
     with mock.patch.dict(os.environ, ENV, clear=True):
         response = call_status(mcp_server)
 
@@ -215,7 +215,7 @@ def test_empty_lists_project_to_null_without_treating_the_read_as_failure(mcp_se
 
 def test_activity_without_accepted_event_is_safely_observed(mcp_server, monkeypatch):
     activity = {**ACTIVITY, "event_type": "recommendation_presented:fzr_0123456789abcdef"}
-    monkeypatch.setattr(mcp_server.urllib.request, "urlopen", opener_for("[]", json.dumps([activity])))
+    monkeypatch.setattr(mcp_server, "_open_without_redirect", opener_for("[]", json.dumps([activity])))
     with mock.patch.dict(os.environ, ENV, clear=True):
         response = call_status(mcp_server)
 
@@ -239,8 +239,8 @@ def test_real_accept_writer_shape_is_projected_without_its_empty_time_window(mcp
         "created_at": "2026-08-04T09:01:00Z",
     }
     monkeypatch.setattr(
-        mcp_server.urllib.request,
-        "urlopen",
+        mcp_server,
+        "_open_without_redirect",
         opener_for("[]", json.dumps([persisted_activity])),
     )
     with mock.patch.dict(os.environ, ENV, clear=True):
@@ -265,7 +265,7 @@ def test_real_accept_writer_shape_is_projected_without_its_empty_time_window(mcp
 ])
 def test_malformed_or_unknown_activity_event_types_fail_closed(mcp_server, monkeypatch, event_type):
     activity = {**ACTIVITY, "event_type": event_type}
-    monkeypatch.setattr(mcp_server.urllib.request, "urlopen", opener_for("[]", json.dumps([activity])))
+    monkeypatch.setattr(mcp_server, "_open_without_redirect", opener_for("[]", json.dumps([activity])))
     with mock.patch.dict(os.environ, ENV, clear=True):
         response = call_status(mcp_server)
 
@@ -284,7 +284,7 @@ def test_malformed_or_unknown_activity_event_types_fail_closed(mcp_server, monke
     {key: value for key, value in CHECKIN.items() if key != "mood"},
 ])
 def test_checkin_domain_type_and_timestamp_errors_fail_closed(mcp_server, monkeypatch, checkin):
-    monkeypatch.setattr(mcp_server.urllib.request, "urlopen", opener_for(json.dumps([checkin]), "[]"))
+    monkeypatch.setattr(mcp_server, "_open_without_redirect", opener_for(json.dumps([checkin]), "[]"))
     with mock.patch.dict(os.environ, ENV, clear=True):
         response = call_status(mcp_server)
 
@@ -302,7 +302,7 @@ def test_checkin_domain_type_and_timestamp_errors_fail_closed(mcp_server, monkey
     {key: value for key, value in ACTIVITY.items() if key != "event_type"},
 ])
 def test_activity_domain_type_and_timestamp_errors_fail_closed(mcp_server, monkeypatch, activity):
-    monkeypatch.setattr(mcp_server.urllib.request, "urlopen", opener_for("[]", json.dumps([activity])))
+    monkeypatch.setattr(mcp_server, "_open_without_redirect", opener_for("[]", json.dumps([activity])))
     with mock.patch.dict(os.environ, ENV, clear=True):
         response = call_status(mcp_server)
 
@@ -317,7 +317,7 @@ def test_activity_domain_type_and_timestamp_errors_fail_closed(mcp_server, monke
     "not-json",
 ])
 def test_nonlist_multirow_malformed_row_and_invalid_json_fail_closed(mcp_server, monkeypatch, body):
-    monkeypatch.setattr(mcp_server.urllib.request, "urlopen", opener_for(body, "[]"))
+    monkeypatch.setattr(mcp_server, "_open_without_redirect", opener_for(body, "[]"))
     with mock.patch.dict(os.environ, ENV, clear=True):
         response = call_status(mcp_server)
 
@@ -326,7 +326,7 @@ def test_nonlist_multirow_malformed_row_and_invalid_json_fail_closed(mcp_server,
 
 
 def test_activity_nonlist_or_multirow_also_fails_closed_without_partial_result(mcp_server, monkeypatch):
-    monkeypatch.setattr(mcp_server.urllib.request, "urlopen", opener_for(json.dumps([CHECKIN]), json.dumps([ACTIVITY, ACTIVITY])))
+    monkeypatch.setattr(mcp_server, "_open_without_redirect", opener_for(json.dumps([CHECKIN]), json.dumps([ACTIVITY, ACTIVITY])))
     with mock.patch.dict(os.environ, ENV, clear=True):
         response = call_status(mcp_server)
 
@@ -341,7 +341,7 @@ def test_activity_nonlist_or_multirow_also_fails_closed_without_partial_result(m
 def test_http_and_transport_errors_are_stable_and_redacted(mcp_server, monkeypatch, failure):
     if isinstance(failure, urllib.error.HTTPError):
         raise AssertionError("HTTP errors are covered by the HTTPError branch below")
-    monkeypatch.setattr(mcp_server.urllib.request, "urlopen", mock.Mock(side_effect=failure))
+    monkeypatch.setattr(mcp_server, "_open_without_redirect", mock.Mock(side_effect=failure))
     with mock.patch.dict(os.environ, ENV, clear=True):
         response = call_status(mcp_server)
 
@@ -353,7 +353,7 @@ def test_http_and_transport_errors_are_stable_and_redacted(mcp_server, monkeypat
 def test_http_error_body_and_url_are_not_returned(mcp_server, monkeypatch):
     request = urllib.request.Request("https://flowzen.supabase.example/rest/v1/flowzen_checkins")
     error = urllib.error.HTTPError(request.full_url, 503, "secret failure", {}, None)
-    monkeypatch.setattr(mcp_server.urllib.request, "urlopen", mock.Mock(side_effect=error))
+    monkeypatch.setattr(mcp_server, "_open_without_redirect", mock.Mock(side_effect=error))
     with mock.patch.dict(os.environ, ENV, clear=True):
         response = call_status(mcp_server)
 
@@ -363,15 +363,15 @@ def test_http_error_body_and_url_are_not_returned(mcp_server, monkeypatch):
 
 
 def test_unknown_tool_preserves_json_rpc_id_and_fails_closed(mcp_server):
-    response = call_status(mcp_server, name="flowzen_mutate", request_id={"request": 9})
+    response = call_status(mcp_server, name="flowzen_mutate", request_id="unknown-tool")
 
-    assert response["id"] == {"request": 9}
+    assert response["id"] == "unknown-tool"
     assert response["result"]["isError"] is True
     assert payload(response) == {"error": "flowzen_status_unverified"}
 
 
 def test_mcp_executor_treats_flowzen_iserror_as_hard_failure(mcp_server, monkeypatch):
-    monkeypatch.setattr(mcp_server.urllib.request, "urlopen", mock.Mock(side_effect=OSError("offline")))
+    monkeypatch.setattr(mcp_server, "_open_without_redirect", mock.Mock(side_effect=OSError("offline")))
     with mock.patch.dict(os.environ, ENV, clear=True):
         response = call_status(mcp_server)
     executor = McpExecutor("mcp:brain-flowzen:spaces-flowzen:flowzen_status")
@@ -488,7 +488,7 @@ def test_json_rpc_accepts_only_valid_scalar_ids(mcp_server, request_id):
     {"jsonrpc": "2.0", "method": "notifications/initialized"},
 ])
 def test_notifications_without_ids_never_execute_or_reply(mcp_server, monkeypatch, message):
-    monkeypatch.setattr(mcp_server.urllib.request, "urlopen", lambda *_args, **_kwargs: pytest.fail("must not request"))
+    monkeypatch.setattr(mcp_server, "_open_without_redirect", lambda *_args, **_kwargs: pytest.fail("must not request"))
     with mock.patch.dict(os.environ, ENV, clear=True):
         response = mcp_server.handle_message(message)
 

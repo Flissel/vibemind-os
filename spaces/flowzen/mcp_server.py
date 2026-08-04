@@ -5,8 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 import json
 import os
+import re
 import sys
 from typing import Any, Mapping
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -21,6 +23,8 @@ _TIME_WINDOWS = frozenset({
 })
 _CHECKIN_SELECT = "mood,energy,time_window,hour,created_at"
 _ACTIVITY_SELECT = "id,event_type,time_window,hour,created_at"
+_ACCEPTED_EVENT = re.compile(r"^recommendation_accepted:fzr_[0-9a-f]{16}$")
+_OBSERVED_EVENT = re.compile(r"^recommendation_presented:fzr_[0-9a-f]{16}$")
 
 TOOLS: list[dict[str, Any]] = [{
     "name": "flowzen_status",
@@ -35,6 +39,18 @@ class ToolError(Exception):
     def __init__(self) -> None:
         super().__init__("flowzen_status_unverified")
         self.payload = {"error": "flowzen_status_unverified"}
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Expose redirects as failures so service-role headers never follow them."""
+
+    def redirect_request(self, *_args, **_kwargs):
+        return None
+
+
+def _open_without_redirect(request: urllib.request.Request, *, timeout: float):
+    """Issue one request while preserving every redirect as an HTTP error."""
+    return urllib.request.build_opener(_NoRedirectHandler()).open(request, timeout=timeout)
 
 
 def _config(env: Mapping[str, str]) -> tuple[str, str]:
@@ -75,7 +91,7 @@ def _read_latest(base_url: str, service_role_key: str, table: str, select: str) 
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+        with _open_without_redirect(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
             raw = response.read()
         if not isinstance(raw, bytes):
             raise ToolError()
@@ -144,14 +160,26 @@ def _activity_projection(row: Mapping[str, Any] | None) -> dict[str, Any] | None
         or not activity_id.strip()
         or not isinstance(event_type, str)
         or not event_type.strip()
-        or time_window not in _TIME_WINDOWS
         or hour is None
         or created_at is None
     ):
         raise ToolError()
+    if _ACCEPTED_EVENT.fullmatch(event_type) is not None:
+        if time_window == "":
+            projected_time_window = None
+        elif time_window in _TIME_WINDOWS:
+            projected_time_window = time_window
+        else:
+            raise ToolError()
+        status = "accepted"
+    elif _OBSERVED_EVENT.fullmatch(event_type) is not None and time_window in _TIME_WINDOWS:
+        projected_time_window = time_window
+        status = "observed"
+    else:
+        raise ToolError()
     return {
-        "status": "accepted" if event_type.startswith("recommendation_accepted:") else "observed",
-        "time_window": time_window,
+        "status": status,
+        "time_window": projected_time_window,
         "hour": hour,
         "created_at": created_at,
     }
@@ -184,12 +212,14 @@ def _tool_result(payload: Mapping[str, Any], *, is_error: bool = False) -> dict[
 
 def handle_message(message: Any) -> dict[str, Any] | None:
     """Handle the intentionally tiny MCP JSON-RPC surface."""
-    if not isinstance(message, Mapping):
+    if not isinstance(message, Mapping) or message.get("jsonrpc") != "2.0":
         return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "invalid request"}}
-    request_id = message.get("id")
-    method = message.get("method")
-    if method == "notifications/initialized":
+    if "id" not in message:
         return None
+    request_id = message["id"]
+    if isinstance(request_id, bool) or not isinstance(request_id, (str, int, type(None))):
+        return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "invalid request"}}
+    method = message.get("method")
     if method == "initialize":
         return {"jsonrpc": "2.0", "id": request_id, "result": {
             "protocolVersion": PROTOCOL_VERSION,
