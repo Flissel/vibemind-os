@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -22,6 +23,7 @@ SERVER_NAME = "spaces-ideas"
 SERVER_VERSION = "1.0.0"
 PROTOCOL_VERSION = "2024-11-05"
 REQUEST_TIMEOUT_SECONDS = 15
+BUBBLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -68,6 +70,23 @@ TOOLS: list[dict[str, Any]] = [
         "name": "bubble_delete",
         "description": "Delete one top-level bubble by durable id.",
         "inputSchema": {"type": "object", "properties": {"id": {"type": "string", "minLength": 1}}, "required": ["id"]},
+    },
+    {
+        "name": "bubble_promote",
+        "description": "Promote one canonical top-level bubble into a project.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "bubble_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$",
+                },
+            },
+            "required": ["bubble_id"],
+            "additionalProperties": False,
+        },
     },
     {
         "name": "idea_list",
@@ -152,6 +171,18 @@ def _required_string(arguments: Mapping[str, Any], name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ToolError(f"invalid_arguments: '{name}' must be a non-empty string")
     return value.strip()
+
+
+def _canonical_bubble_id(arguments: Mapping[str, Any]) -> str:
+    """Require the stored bubble id verbatim; names and aliases are not accepted."""
+    value = arguments.get("bubble_id")
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ToolError("invalid_arguments: 'bubble_id' must be a canonical non-empty string")
+    if set(arguments) != {"bubble_id"}:
+        raise ToolError("invalid_arguments: bubble_promote only accepts 'bubble_id'")
+    if BUBBLE_ID_PATTERN.fullmatch(value) is None:
+        raise ToolError("invalid_arguments: 'bubble_id' must be a canonical durable id")
+    return value
 
 
 def _bounded_limit(arguments: Mapping[str, Any], default: int) -> int:
@@ -267,6 +298,103 @@ def _normalize_idea_title_content(title: str, content: str) -> tuple[str, str]:
     return title, content
 
 
+def _compensate_project(project_id: str, error: str) -> None:
+    """Remove an unlinked project and never turn an uncertain promotion into success."""
+    try:
+        _request("DELETE", "projects", params={"id": f"eq.{project_id}"})
+    except ToolError as exc:
+        raise ToolError(f"{error}; compensation_failed: {exc}") from exc
+    raise ToolError(error)
+
+
+def _is_definitive_project_post_error(error: ToolError) -> bool:
+    match = re.fullmatch(r"supabase_http_error: status=(\d{3})", str(error))
+    return match is not None and 400 <= int(match.group(1)) < 500
+
+
+def _owned_promotion_project(
+    project: Mapping[str, Any],
+    *,
+    project_id: str,
+    bubble_id: str,
+    promotion_attempt_id: str,
+) -> bool:
+    metadata = project.get("metadata")
+    return (
+        project.get("id") == project_id
+        and project.get("from_idea_id") == bubble_id
+        and isinstance(metadata, Mapping)
+        and metadata.get("promotion_attempt_id") == promotion_attempt_id
+        and metadata.get("source_bubble_id") == bubble_id
+    )
+
+
+def _read_owned_promotion_project(
+    *,
+    project_id: str,
+    bubble_id: str,
+    promotion_attempt_id: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Read back a project and attest it belongs to this promotion attempt."""
+    try:
+        project = _first_row(_request(
+            "GET",
+            "projects",
+            params={"select": "*", "id": f"eq.{project_id}", "limit": "1"},
+        ))
+    except ToolError as exc:
+        return None, f"readback_failed: {exc}"
+    if project is None:
+        return None, "not_found"
+    if not _owned_promotion_project(
+        project,
+        project_id=project_id,
+        bubble_id=bubble_id,
+        promotion_attempt_id=promotion_attempt_id,
+    ):
+        return None, "ownership_mismatch"
+    return project, None
+
+
+def _reconcile_ambiguous_project_post_failure(
+    *,
+    project_id: str,
+    bubble_id: str,
+    promotion_attempt_id: str,
+    create_error: str,
+) -> None:
+    """Clean up only a project conclusively owned by an ambiguous failed POST."""
+    project, reason = _read_owned_promotion_project(
+        project_id=project_id,
+        bubble_id=bubble_id,
+        promotion_attempt_id=promotion_attempt_id,
+    )
+    if project is None:
+        if reason == "not_found":
+            raise ToolError(create_error)
+        if reason is not None and reason.startswith("readback_failed: "):
+            reason = reason.removeprefix("readback_failed: ")
+        raise ToolError(f"{create_error}; cleanup_skipped_unverified: {reason}")
+    _compensate_project(project_id, create_error)
+
+
+def _reconcile_unrepresented_project_create(
+    *,
+    project_id: str,
+    bubble_id: str,
+    promotion_attempt_id: str,
+) -> None:
+    """Fail closed after an HTTP-success create without a verifiable representation."""
+    project, reason = _read_owned_promotion_project(
+        project_id=project_id,
+        bubble_id=bubble_id,
+        promotion_attempt_id=promotion_attempt_id,
+    )
+    if project is None:
+        raise ToolError(f"bubble_promotion_create_unverified: {reason}")
+    _compensate_project(project_id, "bubble_promotion_create_unverified")
+
+
 def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
     """Call one explicit Ideas/Bubbles operation; no arbitrary table access."""
     if name == "bubble_list":
@@ -325,6 +453,86 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         )
     if name == "bubble_delete":
         return _request("DELETE", "ideas", params={"id": f"eq.{_required_string(arguments, 'id')}", "parent_id": "is.null"})
+    if name == "bubble_promote":
+        bubble_id = _canonical_bubble_id(arguments)
+        bubble = _first_row(_request(
+            "GET",
+            "ideas",
+            params={
+                "select": "*",
+                "id": f"eq.{bubble_id}",
+                "parent_id": "is.null",
+                "limit": "1",
+            },
+        ))
+        if bubble is None:
+            raise ToolError("bubble_not_found")
+
+        title = bubble.get("title")
+        if not isinstance(title, str) or not title.strip():
+            raise ToolError("bubble_invalid: title must be a non-empty string")
+        project_id = uuid.uuid4().hex[:8]
+        promotion_attempt_id = uuid.uuid4().hex
+        project_row = {
+            "id": project_id,
+            "name": title.strip(),
+            "description": str(bubble.get("description") or "").strip(),
+            "status": "active",
+            "from_idea_id": bubble_id,
+            "metadata": {
+                "source_space": "bubbles",
+                "source_bubble_id": bubble_id,
+                "source_score": bubble.get("score", 0),
+                "promotion_attempt_id": promotion_attempt_id,
+            },
+        }
+        try:
+            project = _first_row(_request("POST", "projects", body=project_row))
+        except ToolError as exc:
+            create_error = f"bubble_promotion_create_failed: {exc}"
+            if _is_definitive_project_post_error(exc):
+                raise ToolError(create_error) from exc
+            _reconcile_ambiguous_project_post_failure(
+                project_id=project_id,
+                bubble_id=bubble_id,
+                promotion_attempt_id=promotion_attempt_id,
+                create_error=create_error,
+            )
+        if project is None:
+            _reconcile_unrepresented_project_create(
+                project_id=project_id,
+                bubble_id=bubble_id,
+                promotion_attempt_id=promotion_attempt_id,
+            )
+        if not _owned_promotion_project(
+            project,
+            project_id=project_id,
+            bubble_id=bubble_id,
+            promotion_attempt_id=promotion_attempt_id,
+        ):
+            raise ToolError("bubble_promotion_create_unverified")
+
+        link_error: str | None = None
+        try:
+            linked = _first_row(_request(
+                "PATCH",
+                "ideas",
+                params={
+                    "id": f"eq.{bubble_id}",
+                    "parent_id": "is.null",
+                    "promoted_to_project_id": "is.null",
+                },
+                body={"status": "promoted", "promoted_to_project_id": project_id},
+            ))
+            if linked is None:
+                link_error = "link_returned_no_row"
+            elif linked.get("id") != bubble_id or linked.get("promoted_to_project_id") != project_id:
+                link_error = "link_mismatch"
+        except ToolError as exc:
+            link_error = str(exc)
+        if link_error is not None:
+            _compensate_project(project_id, f"bubble_promotion_link_failed: {link_error}")
+        return project
     if name == "idea_list":
         bubble_id = arguments.get("bubble_id")
         params = {"select": "*", "limit": str(_bounded_limit(arguments, 50))}
