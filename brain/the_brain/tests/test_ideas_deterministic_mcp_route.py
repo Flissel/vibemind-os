@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import copy
 import json
 import sys
 
+import pytest
 import yaml
 
 
@@ -16,18 +18,31 @@ from core.capability_targets import resolve_registry_execution_target
 from core.capability_router import CapabilityMatch
 from core.capability_validator import CapabilityValidator
 from core.discourse_engine import DiscourseEngine
+from core.idea_connect_contract import (
+    canonical_idea_connect_arguments,
+    extract_idea_connect_mcp_receipt,
+)
 from core.plan_executor import PlanExecutor
 from core.plan_schema import HopSpec
 from core import world_observer
 
 
+CANONICAL_VALIDATOR = {
+    "kind": "truth:supabase_edge_ids",
+    "on_fail": "block",
+    "require_verified": True,
+    "postcondition": {"check": "supabase_edge_ids", "expect": "present"},
+}
+
+
 class _Executor:
-    def __init__(self) -> None:
+    def __init__(self, result: object | None = None) -> None:
         self.calls: list[tuple[object, object, object]] = []
+        self.result = {} if result is None else result
 
     def call_with_arg(self, arg, arg_kwarg=None, extra_params=None):
         self.calls.append((arg, arg_kwarg, extra_params))
-        return {"ok": True, "result": {}}
+        return {"ok": True, "result": self.result}
 
     def is_resolvable(self) -> bool:
         return True
@@ -43,6 +58,24 @@ def _idea_connect_hop(target: str) -> HopSpec:
             {"from_id": "idea-1", "to_id": "idea-2", "edge_type": "related"}
         ),
     )
+
+
+class _RecordingValidator:
+    def __init__(self, *, raises: bool = False) -> None:
+        self.calls: list[dict] = []
+        self.raises = raises
+
+    def validate(self, config, **_kwargs):
+        self.calls.append(copy.deepcopy(config))
+        config["kind"] = "poisoned"
+        if self.raises:
+            raise RuntimeError("sensitive validator failure")
+        return {
+            "valid": True,
+            "kind": "truth:supabase_edge_ids",
+            "on_fail": "block",
+            "verified": True,
+        }
 
 
 def test_idea_connect_registry_declares_exact_canonical_mcp_target() -> None:
@@ -72,7 +105,8 @@ def test_ideas_bridge_and_capability_have_no_legacy_title_or_supabase_contract()
 
 def test_plan_idea_connect_replaces_legacy_target_and_sends_only_durable_ids(monkeypatch) -> None:
     built_targets: list[str] = []
-    executor = _Executor()
+    executor = _Executor(_mcp_receipt())
+    validator = _RecordingValidator()
     monkeypatch.setattr(
         "core.plan_executor.PlanExecutor._capture_kg_hits", lambda *args: []
     )
@@ -81,7 +115,7 @@ def test_plan_idea_connect_replaces_legacy_target_and_sends_only_durable_ids(mon
         lambda target: built_targets.append(target) or executor,
     )
 
-    result = PlanExecutor()._exec_hop(
+    result = PlanExecutor(validator=validator)._exec_hop(
         _idea_connect_hop("supabase:idea.connect"), {}
     )
 
@@ -90,6 +124,48 @@ def test_plan_idea_connect_replaces_legacy_target_and_sends_only_durable_ids(mon
     assert executor.calls == [
         ({"from_id": "idea-1", "to_id": "idea-2", "edge_type": "related"}, None, None)
     ]
+    assert validator.calls == [CANONICAL_VALIDATOR]
+
+
+def test_plan_idea_connect_requires_validator_before_executor_build(monkeypatch) -> None:
+    built_targets: list[str] = []
+    monkeypatch.setattr("core.plan_executor.PlanExecutor._capture_kg_hits", lambda *args: [])
+    monkeypatch.setattr(
+        "core.capability_targets.build_executor", lambda target: built_targets.append(target)
+    )
+
+    result = PlanExecutor()._exec_hop(_idea_connect_hop("supabase:idea.connect"), {})
+
+    assert result.ok is False
+    assert result.error == "canonical idea.connect validator unavailable"
+    assert built_targets == []
+
+
+def test_plan_idea_connect_overrides_stale_validator_with_fresh_canonical_copy(monkeypatch) -> None:
+    executor = _Executor(_mcp_receipt())
+    validator = _RecordingValidator()
+    monkeypatch.setattr("core.plan_executor.PlanExecutor._capture_kg_hits", lambda *args: [])
+    monkeypatch.setattr("core.capability_targets.build_executor", lambda _target: executor)
+
+    for _ in range(2):
+        hop = _idea_connect_hop("direct:legacy")
+        hop.validator = {"kind": "rule:string_nonempty", "on_fail": "report"}
+        assert PlanExecutor(validator=validator)._exec_hop(hop, {}).ok is True
+
+    assert validator.calls == [CANONICAL_VALIDATOR, CANONICAL_VALIDATOR]
+
+
+def test_plan_idea_connect_validator_exception_blocks_result(monkeypatch) -> None:
+    executor = _Executor(_mcp_receipt())
+    monkeypatch.setattr("core.plan_executor.PlanExecutor._capture_kg_hits", lambda *args: [])
+    monkeypatch.setattr("core.capability_targets.build_executor", lambda _target: executor)
+
+    result = PlanExecutor(validator=_RecordingValidator(raises=True))._exec_hop(
+        _idea_connect_hop("direct:legacy"), {}
+    )
+
+    assert result.ok is False
+    assert "validator" in (result.error or "")
 
 
 def test_plan_idea_connect_rejects_legacy_or_extra_arguments_before_build(monkeypatch) -> None:
@@ -110,7 +186,7 @@ def test_plan_idea_connect_rejects_legacy_or_extra_arguments_before_build(monkey
     assert built_targets == []
 
 
-def _capability_match() -> CapabilityMatch:
+def _capability_match(validator: dict | None = None) -> CapabilityMatch:
     return CapabilityMatch(
         capability="idea_connect",
         description="durable edge",
@@ -119,13 +195,16 @@ def _capability_match() -> CapabilityMatch:
         matched_pattern="test",
         execution_target="supabase:idea.connect",
         arg_kwarg="idea1",
+        validator=validator,
     )
 
 
-def _discourse_with_executor(executor: _Executor) -> DiscourseEngine:
+def _discourse_with_executor(
+    executor: _Executor, validator: object | None = None
+) -> DiscourseEngine:
     engine = DiscourseEngine.__new__(DiscourseEngine)
     engine.stats = {"intent_ticks": 0}
-    engine._validator = None
+    engine._validator = validator
     engine._intent_decisions = []
     engine._get_executor = lambda target: executor
     engine._fallback_to_broadcast = lambda *args: (_ for _ in ()).throw(AssertionError("broadcast"))
@@ -133,8 +212,9 @@ def _discourse_with_executor(executor: _Executor) -> DiscourseEngine:
 
 
 def test_discourse_idea_connect_uses_registry_mcp_and_id_only_payload() -> None:
-    executor = _Executor()
-    engine = _discourse_with_executor(executor)
+    executor = _Executor(_mcp_receipt())
+    validator = _RecordingValidator()
+    engine = _discourse_with_executor(executor, validator)
 
     record = engine._handle_direct_capability(
         _capability_match(),
@@ -145,6 +225,37 @@ def test_discourse_idea_connect_uses_registry_mcp_and_id_only_payload() -> None:
     assert record["ok"] is True
     assert record["direct_target"] == "mcp:brain-ideas:spaces-ideas:idea_connect"
     assert executor.calls == [({"from_id": "idea-1", "to_id": "idea-2"}, None, None)]
+    assert validator.calls == [CANONICAL_VALIDATOR]
+
+
+def test_discourse_idea_connect_requires_validator_before_executor_lookup() -> None:
+    executor = _Executor(_mcp_receipt())
+    engine = _discourse_with_executor(executor)
+    engine._get_executor = lambda _target: (_ for _ in ()).throw(AssertionError("executor lookup"))
+
+    record = engine._handle_direct_capability(
+        _capability_match(), json.dumps({"from_id": "idea-1", "to_id": "idea-2"}), ""
+    )
+
+    assert record["ok"] is False
+    assert record["direct_error"] == "canonical idea.connect validator unavailable"
+    assert executor.calls == []
+
+
+def test_discourse_idea_connect_overrides_stale_validator_and_blocks_exception() -> None:
+    executor = _Executor(_mcp_receipt())
+    validator = _RecordingValidator(raises=True)
+    engine = _discourse_with_executor(executor, validator)
+
+    record = engine._handle_direct_capability(
+        _capability_match({"kind": "rule:string_nonempty", "on_fail": "report"}),
+        json.dumps({"from_id": "idea-1", "to_id": "idea-2"}),
+        "",
+    )
+
+    assert record["ok"] is False
+    assert record["blocked_by_validator"] is True
+    assert validator.calls == [CANONICAL_VALIDATOR]
 
 
 def test_discourse_idea_connect_missing_ids_blocks_without_executor_or_broadcast() -> None:
@@ -156,6 +267,36 @@ def test_discourse_idea_connect_missing_ids_blocks_without_executor_or_broadcast
     assert record["ok"] is False
     assert record["clarification_required"] is True
     assert executor.calls == []
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"from_id": " idea-1", "to_id": "idea-2"},
+        {"from_id": "idea-1 ", "to_id": "idea-2"},
+        {"from_id": "idea.1", "to_id": "idea-2"},
+        {"from_id": "idea-1", "to_id": "idea-2", "edge_type": "related filter"},
+        {"from_id": "a" * 129, "to_id": "idea-2"},
+        {"from_id": "idea-1", "to_id": "idea-1"},
+    ],
+)
+def test_idea_connect_arguments_match_exact_mcp_grammar(arguments) -> None:
+    parsed, _reason = canonical_idea_connect_arguments(arguments)
+    assert parsed is None
+
+
+def test_idea_connect_receipt_uses_exact_mcp_grammar() -> None:
+    receipt = _mcp_receipt()
+    receipt["content"][0]["text"] = json.dumps({
+        "edge_id": " edge-1",
+        "from_id": "idea-1",
+        "to_id": "idea-2",
+        "edge_type": "related",
+    })
+
+    parsed, _reason = extract_idea_connect_mcp_receipt(receipt)
+
+    assert parsed is None
 
 
 def _mcp_receipt() -> dict:
@@ -178,8 +319,8 @@ def test_id_truth_validator_re_reads_exact_mcp_receipt_with_explicit_service_con
         def json(self):
             return [{"id": "edge-1", "from_node_id": "idea-1", "to_node_id": "idea-2", "edge_type": "related"}]
 
-    def get(url, *, params, headers, timeout):
-        calls.append({"url": url, "params": params, "headers": headers, "timeout": timeout})
+    def get(url, *, params, headers, timeout, allow_redirects):
+        calls.append({"url": url, "params": params, "headers": headers, "timeout": timeout, "allow_redirects": allow_redirects})
         return _Response()
 
     import requests
@@ -197,6 +338,7 @@ def test_id_truth_validator_re_reads_exact_mcp_receipt_with_explicit_service_con
     assert result["verified"] is True
     assert calls[0]["url"] == "https://supabase.example/rest/v1/canvas_edges"
     assert calls[0]["params"] == {"select": "id,from_node_id,to_node_id,edge_type", "id": "eq.edge-1", "limit": "2"}
+    assert calls[0]["allow_redirects"] is False
     assert "title" not in str(calls)
 
 
@@ -211,6 +353,59 @@ def test_id_truth_observer_has_no_lan_or_anon_default(monkeypatch) -> None:
 
     assert observed.verdict == world_observer.UNVERIFIED
     assert observed.reason == "SUPABASE_URL is required"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "ftp://supabase.example",
+        "https:///missing-host",
+        "https://user:pass@supabase.example",
+        "https://supabase.example?secret=value",
+        "https://supabase.example/#fragment",
+    ],
+)
+def test_id_truth_observer_rejects_unsafe_supabase_urls(monkeypatch, url) -> None:
+    import requests
+    monkeypatch.setattr(world_observer, "GROUND_TRUTH_ENABLED", True)
+    monkeypatch.setenv("SUPABASE_URL", url)
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-key")
+    monkeypatch.setattr(requests, "get", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("request")))
+
+    observed = world_observer.observe({
+        "check": "supabase_edge_ids", "edge_id": "edge-1", "from_id": "idea-1", "to_id": "idea-2", "edge_type": "related",
+    })
+
+    assert observed.verdict == world_observer.UNVERIFIED
+    assert observed.reason == "SUPABASE_URL is invalid"
+    assert url not in str(observed)
+
+
+def test_id_truth_observer_does_not_follow_or_leak_redirect(monkeypatch) -> None:
+    calls: list[bool] = []
+
+    class _Redirect:
+        status_code = 302
+        headers = {"Location": "https://secret.example/?token=should-not-leak"}
+
+    def get(_url, **kwargs):
+        calls.append(kwargs["allow_redirects"])
+        return _Redirect()
+
+    import requests
+    monkeypatch.setattr(world_observer, "GROUND_TRUTH_ENABLED", True)
+    monkeypatch.setenv("SUPABASE_URL", "http://192.168.178.65:54321")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-key")
+    monkeypatch.setattr(requests, "get", get)
+
+    observed = world_observer.observe({
+        "check": "supabase_edge_ids", "edge_id": "edge-1", "from_id": "idea-1", "to_id": "idea-2", "edge_type": "related",
+    })
+
+    assert calls == [False]
+    assert observed.verdict == world_observer.UNVERIFIED
+    assert observed.reason == "durable edge read-back unavailable"
+    assert "should-not-leak" not in str(observed)
 
 
 def test_id_truth_validator_rejects_malformed_mcp_envelope_before_observer(monkeypatch) -> None:
