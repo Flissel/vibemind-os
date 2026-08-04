@@ -104,7 +104,8 @@ roles:
   space_minibook:          { provider: openfang, model: "openfang:brain-knowledge",    temperature: 0.2 }
   space_schedule:          { provider: openfang, model: "openfang:brain-scheduler",    temperature: 0.2 }
   space_n8n:               { provider: openfang, model: "openfang:brain-n8n",          temperature: 0.2 }
-  space_agentfarm:         { provider: openfang, model: "openfang:vibemind",           temperature: 0.2 }
+  # Reserved chat identity only while AgentFarm remains disabled in the registry.
+  space_agentfarm:         { provider: openfang, model: "openfang:brain-agentfarm",    temperature: 0.2 }
   space_video:             { provider: openfang, model: "openfang:brain-video",        temperature: 0.2 }
   space_flowzen:           { provider: openfang, model: "openfang:brain-wellness",     temperature: 0.2 }
   space_mirofish:          { provider: openfang, model: "openfang:brain-forecaster",   temperature: 0.2 }
