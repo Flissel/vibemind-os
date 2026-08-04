@@ -1759,6 +1759,22 @@
 # Canonical Rowboat operations. "Roarboot" remains accepted only in ingress
 # match patterns. The deployed OpenFang agent retains its rowboat-chat name;
 # execution is always provider-backed and fail-closed.
+- capability: rowboat_status
+  description: "read the configured Rowboat service status without a chat fallback"
+  anchor_phrases:
+    - "Rowboat Status"
+    - "Roarboot Status"
+  match_patterns:
+    - "(?:roarboot|rowboat).*(?:status|health|zustand)"
+  execution_target: "mcp:rowboat-chat:spaces-rowboat:rowboat_status"
+  validator:
+    kind: "truth:http_ok"
+    on_fail: block
+    postcondition: {check: http_ok, url_env: ROWBOAT_URL, method: HEAD}
+  agents:
+    primary: [rowboat-chat]
+    supporting: []
+
 - capability: rowboat_search
   description: "search the Rowboat knowledge graph for relevant stored content"
   anchor_phrases:

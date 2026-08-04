@@ -5,6 +5,8 @@ from pathlib import Path
 import yaml
 
 from core.capability_router import CapabilityRouter
+from core import world_observer
+from core.capability_targets import resolve_registry_execution_target
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -74,6 +76,62 @@ def test_roarboot_is_only_an_input_alias_for_rowboat_capabilities():
             "roarboot" in pattern.lower()
             for pattern in capability.get("match_patterns", [])
         )
+
+
+def test_rowboat_status_uses_only_the_bound_deterministic_mcp_tool_and_independent_truth():
+    registry = _load_yaml(REGISTRY_PATH)
+    event = registry["spaces"]["rowboat"]["events"]["rowboat.status"]
+    assert event == {
+        "tool": "rowboat_status",
+        "required_params": [],
+        "execution": {"kind": "mcp", "server": "spaces-rowboat"},
+    }
+    assert "spaces-rowboat" in registry["spaces"]["rowboat"]["mcp_servers"]
+
+    capabilities = {item["capability"]: item for item in _load_yaml(CAPABILITIES_PATH)}
+    capability = capabilities["rowboat_status"]
+    assert capability["execution_target"] == "mcp:rowboat-chat:spaces-rowboat:rowboat_status"
+    assert capability["validator"] == {
+        "kind": "truth:http_ok",
+        "on_fail": "block",
+        "postcondition": {"check": "http_ok", "url_env": "ROWBOAT_URL", "method": "HEAD"},
+    }
+    assert "openfang:" not in capability["execution_target"]
+    assert "direct:" not in capability["execution_target"]
+    assert resolve_registry_execution_target("rowboat.status") == capability["execution_target"]
+
+
+def test_rowboat_truth_observation_requires_its_own_env_url(monkeypatch):
+    monkeypatch.setattr(world_observer, "GROUND_TRUTH_ENABLED", True)
+    monkeypatch.delenv("ROWBOAT_URL", raising=False)
+    observed = world_observer.observe({"check": "http_ok", "url_env": "ROWBOAT_URL", "method": "HEAD"})
+    assert observed.verdict == world_observer.UNVERIFIED
+    assert observed.reason == "ROWBOAT_URL is required"
+
+
+def test_rowboat_truth_observation_independently_heads_its_env_url(monkeypatch):
+    class Response:
+        status_code = 204
+
+    observed_calls = []
+
+    def head(url, *, timeout, allow_redirects):
+        observed_calls.append((url, timeout, allow_redirects))
+        return Response()
+
+    import requests
+
+    monkeypatch.setattr(world_observer, "GROUND_TRUTH_ENABLED", True)
+    monkeypatch.setenv("ROWBOAT_URL", "https://rowboat.truth.example")
+    monkeypatch.setattr(requests, "head", head)
+    observed = world_observer.observe({"check": "http_ok", "url_env": "ROWBOAT_URL", "method": "HEAD"})
+    assert observed.verdict == world_observer.VERIFIED
+    assert observed.signal == {
+        "url": "https://rowboat.truth.example",
+        "status_code": 204,
+        "method": "HEAD",
+    }
+    assert observed_calls == [("https://rowboat.truth.example", world_observer.OBSERVE_TIMEOUT, False)]
 
 
 def test_voice_and_api_phrases_route_to_canonical_rowboat_capabilities():

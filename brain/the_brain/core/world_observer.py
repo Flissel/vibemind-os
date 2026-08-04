@@ -142,6 +142,12 @@ def _check_file_exists(spec: Dict[str, Any]):
 def _check_http_ok(spec: Dict[str, Any]):
     url = spec.get("url")
     if not url:
+        env_name = (spec.get("url_env") or "").strip()
+        if env_name:
+            url = (os.environ.get(env_name) or "").strip()
+            if not url:
+                return None, {}, f"{env_name} is required"
+    if not url:
         return None, {}, "no url given"
     expect_lt = int(spec.get("expect_status_lt", 400))
     try:
@@ -149,9 +155,15 @@ def _check_http_ok(spec: Dict[str, Any]):
     except Exception:
         return None, {}, "requests not available"
     try:
-        r = requests.get(url, timeout=OBSERVE_TIMEOUT)
+        method = str(spec.get("method", "GET")).upper()
+        if method == "HEAD":
+            r = requests.head(url, timeout=OBSERVE_TIMEOUT, allow_redirects=False)
+        elif method == "GET":
+            r = requests.get(url, timeout=OBSERVE_TIMEOUT)
+        else:
+            return None, {"url": url}, f"unsupported http method {method}"
         ok = r.status_code < expect_lt
-        return ok, {"url": url, "status_code": r.status_code}, f"http {r.status_code}"
+        return ok, {"url": url, "status_code": r.status_code, "method": method}, f"http {r.status_code}"
     except Exception as e:
         return None, {"url": url}, f"http probe error: {e}"
 

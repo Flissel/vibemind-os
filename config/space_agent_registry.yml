@@ -167,7 +167,7 @@ spaces:
     prefixes: [rowboat.]
     enabled: true
     description: "Knowledge graph queries, email drafts, decks."
-    mcp_servers: [vibemind-db, fetch]
+    mcp_servers: [vibemind-db, fetch, spaces-rowboat]
     default_context: [current_space, recent_intents]
     events:
       rowboat.search:       { tool: search_knowledge,       required_params: [query] }
@@ -175,7 +175,10 @@ spaces:
       rowboat.email_draft:  { tool: draft_email,            required_params: [recipient, topic] }
       rowboat.meeting_brief: { tool: generate_meeting_brief, required_params: [topic] }
       rowboat.deck:         { tool: generate_deck,          required_params: [topic] }
-      rowboat.status:       { tool: fetch,      required_params: [] }
+      rowboat.status:
+        tool: rowboat_status
+        required_params: []
+        execution: { kind: mcp, server: spaces-rowboat }
       rowboat.docker.start: { tool: shell_exec, required_params: [] }
       rowboat.docker.stop:  { tool: shell_exec, required_params: [] }
 
