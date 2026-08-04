@@ -81,6 +81,7 @@ def _validate_role(
     known_agents: set[str],
     *,
     allow_direct_exception: bool,
+    allowed_reserved_agents: set[str] | None = None,
 ) -> list[str]:
     if not isinstance(config, dict):
         return [f"roles.{role} must be a mapping"]
@@ -104,7 +105,10 @@ def _validate_role(
     model = config.get("model")
     if not isinstance(model, str) or not model.startswith("openfang:"):
         errors.append(f"roles.{role}.model must use the openfang:<agent> namespace")
-    elif model.removeprefix("openfang:") not in known_agents:
+    elif (
+        model.removeprefix("openfang:") not in known_agents
+        and model.removeprefix("openfang:") not in (allowed_reserved_agents or set())
+    ):
         errors.append(f"roles.{role}.model references unknown agent {model!r}")
     return errors
 
@@ -153,6 +157,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--root-config", type=Path, default=CONFIG_PATH)
     parser.add_argument("--brain-config", type=Path, default=DEFAULT_BRAIN_CONFIG_PATH)
+    parser.add_argument("--registry", type=Path, default=REGISTRY_PATH)
     return parser.parse_args()
 
 
@@ -160,8 +165,12 @@ def main() -> int:
     args = _parse_args()
     config = _load_yaml(args.root_config)
     brain_config = _load_yaml(args.brain_config)
-    registry = _load_yaml(REGISTRY_PATH)
+    registry = _load_yaml(args.registry)
+    errors: list[str] = []
     spaces = registry.get("spaces", {})
+    if not isinstance(spaces, dict):
+        errors.append("registry.spaces must be a mapping")
+        spaces = {}
     known_agents = {
         spec.get("agent")
         for spec in spaces.values()
@@ -182,7 +191,33 @@ def main() -> int:
         }
     )
 
-    errors: list[str] = []
+    reserved_agentfarm_agent: str | None = None
+    agentfarm = spaces.get("agentfarm")
+    if not isinstance(agentfarm, dict):
+        errors.append("spaces.agentfarm must be a mapping")
+        agentfarm = {}
+    else:
+        reserved_chat_agent = agentfarm.get("reserved_chat_agent")
+        if agentfarm.get("enabled") is False:
+            if reserved_chat_agent is None:
+                errors.append(
+                    "spaces.agentfarm.reserved_chat_agent is required when enabled is false"
+                )
+            elif (
+                not isinstance(reserved_chat_agent, str)
+                or not reserved_chat_agent.strip()
+                or reserved_chat_agent != reserved_chat_agent.strip()
+            ):
+                errors.append(
+                    "spaces.agentfarm.reserved_chat_agent must be a non-empty string"
+                )
+            else:
+                reserved_agentfarm_agent = reserved_chat_agent
+        elif reserved_chat_agent is not None:
+            errors.append(
+                "spaces.agentfarm.reserved_chat_agent is only valid when enabled is false"
+            )
+
     if set(config.get("keys", {})) != {"openfang", "openai"}:
         errors.append("keys must contain only openfang and the voice-realtime OpenAI exception")
     providers = config.get("providers", {})
@@ -205,20 +240,53 @@ def main() -> int:
         errors.append("roles must be a mapping")
         roles = {}
     for role, role_config in roles.items():
+        allowed_reserved_agents = (
+            {reserved_agentfarm_agent}
+            if role == "space_agentfarm" and reserved_agentfarm_agent is not None
+            else set()
+        )
         errors.extend(
             _validate_role(
-                str(role), role_config, known_agents, allow_direct_exception=True
+                str(role),
+                role_config,
+                known_agents,
+                allow_direct_exception=True,
+                allowed_reserved_agents=allowed_reserved_agents,
             )
         )
 
+    if reserved_agentfarm_agent is not None:
+        agentfarm_role = roles.get("space_agentfarm")
+        if isinstance(agentfarm_role, dict):
+            allowed_fields = {"provider", "model", "temperature"}
+            if set(agentfarm_role) != allowed_fields:
+                errors.append(
+                    "roles.space_agentfarm must contain only provider, model, temperature"
+                )
+            if agentfarm_role.get("temperature") != 0.2:
+                errors.append("roles.space_agentfarm.temperature must be 0.2")
+
     for space, role in REQUIRED_SPACE_ROLES.items():
         spec = spaces.get(space, {})
-        expected_agent = spec.get("agent") if isinstance(spec, dict) else None
+        if not isinstance(spec, dict):
+            if space != "agentfarm":
+                errors.append(f"spaces.{space} must be a mapping")
+            continue
+        expected_agent = (
+            reserved_agentfarm_agent
+            if space == "agentfarm" and reserved_agentfarm_agent is not None
+            else spec.get("agent")
+        )
         actual = roles.get(role, {})
         if actual.get("model") != f"openfang:{expected_agent}":
-            errors.append(
-                f"roles.{role}.model must follow registry space {space!r}"
-            )
+            if space == "agentfarm" and reserved_agentfarm_agent is not None:
+                errors.append(
+                    f"roles.{role}.model must follow reserved chat agent for disabled registry space {space!r}"
+                )
+            else:
+                errors.append(
+                    f"roles.{role}.model must follow registry space {space!r}"
+                )
 
     overrides = config.get("overrides", {})
     if overrides not in ({}, None):
