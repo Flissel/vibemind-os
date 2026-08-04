@@ -1315,12 +1315,12 @@ class PlanExecutor:
                         contract_pass=False,
                         reward=-1.0,
                     )
-            if "." not in event_id:
-                # If the capability already has a namespace.action pattern
-                # in some other form, leave as-is; otherwise it won't match
-                # a canonical registry entry and its existing target remains.
-                pass
-            if event_id == "bubble.create":
+            # Resolve deterministic MCP metadata after all capability-to-event
+            # mapping (including the desktop route) has completed.  A declared
+            # MCP target is canonical and must replace every legacy target.
+            canonical_agent = _canonical_space_event_agent(event_id)
+            deterministic_target = None
+            if canonical_agent:
                 try:
                     from .capability_targets import resolve_registry_execution_target
                     deterministic_target = resolve_registry_execution_target(event_id)
@@ -1333,19 +1333,21 @@ class PlanExecutor:
                         elapsed_s=time.time() - t0,
                         contract_pass=False, reward=-1.0,
                     )
-                if not deterministic_target:
-                    return HopResult(
-                        step_id=hop.step_id, ok=False,
-                        error=(
-                            "canonical deterministic MCP routing: "
-                            "missing MCP execution metadata for bubble.create"
-                        ),
-                        capability=hop.capability, target=target,
-                        rendered_arg=rendered_arg, kg_hits=kg_hits,
-                        elapsed_s=time.time() - t0,
-                        contract_pass=False, reward=-1.0,
-                    )
+            if deterministic_target:
                 target = deterministic_target
+            elif event_id == "bubble.create":
+                return HopResult(
+                    step_id=hop.step_id, ok=False,
+                    error=(
+                        "canonical deterministic MCP routing: "
+                        "missing MCP execution metadata for bubble.create"
+                    ),
+                    capability=hop.capability, target=target,
+                    rendered_arg=rendered_arg, kg_hits=kg_hits,
+                    elapsed_s=time.time() - t0,
+                    contract_pass=False, reward=-1.0,
+                )
+            if event_id == "bubble.create":
                 # A failed MCP response can follow an already-applied mutation.
                 # Never replay deterministic bubble.create at the Plan layer.
                 single_plan_attempt = True
@@ -1362,7 +1364,6 @@ class PlanExecutor:
             # Canonical Space ownership wins over Agent-YAML metadata. This
             # keeps a canonical event fail-closed when the auxiliary YAML
             # registry cannot load.
-            canonical_agent = _canonical_space_event_agent(event_id)
             if canonical_agent:
                 assigned_agent = canonical_agent
 
