@@ -56,6 +56,16 @@ def test_agentfarm_is_canonical_with_autogen_as_legacy_alias():
     assert contract["prefixes"] == ["agentfarm.", "autogen."]
 
 
+def test_agentfarm_reserves_its_future_chat_identity_without_execution_scope():
+    contract = _space_contract()
+
+    assert contract["reserved_chat_agent"] == "brain-agentfarm"
+    assert contract["agent"] == "vibemind"
+    assert contract["enabled"] is False
+    assert contract["mcp_servers"] == []
+    assert contract["runtime"]["blocker"] == "missing_versioned_agentfarm_source"
+
+
 def test_agentfarm_registry_is_disabled_until_runtime_source_exists():
     contract = _space_contract()
 
