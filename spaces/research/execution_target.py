@@ -1,8 +1,8 @@
-"""Verified Research execution over existing OpenFang/OpenClaw tools.
+"""Verified Research execution over existing OpenFang tools.
 
 The target deliberately rejects prose-only agent answers. A successful result
 must contain an external tool call and at least one source URL, so unavailable
-Fetch/Qdrant/OpenClaw infrastructure cannot be mistaken for live research.
+Fetch/Qdrant infrastructure cannot be mistaken for live research.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import requests
 
 _URL_RE = re.compile(r"https?://[^\s<>()\]\[\"']+")
 _OPERATIONS = {"web", "scrape", "summarize", "to_idea"}
+_CANONICAL_AGENT = "brain-researcher"
 
 
 def _urls(value: Any) -> List[str]:
@@ -44,12 +45,7 @@ class ResearchTarget:
         # Imported lazily to keep the Space boundary independently testable.
         from core.capability_targets import OpenFangExecutor
 
-        default_agent = (
-            "openclaw-visible" if operation in {"web", "scrape"}
-            else "brain-researcher"
-        )
-        agent = os.environ.get("RESEARCH_AGENT", default_agent)
-        self._agent = OpenFangExecutor(f"openfang:{agent}")
+        self._agent = OpenFangExecutor(f"openfang:{_CANONICAL_AGENT}")
 
     def call(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
         try:
@@ -139,7 +135,7 @@ class ResearchTarget:
     def _instruction(self, payload: Dict[str, Any]) -> str:
         return (
             f"Execute research.{self.operation} with the available Fetch, Qdrant, "
-            "OpenClaw and idea tools. Do not answer from memory. Return source URLs "
+            "and idea tools. Do not answer from memory. Return source URLs "
             "and perform the external tool calls required for verifiable evidence. "
             f"Input: {payload!r}"
         )
