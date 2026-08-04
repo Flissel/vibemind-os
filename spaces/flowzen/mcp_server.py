@@ -220,6 +220,8 @@ def handle_message(message: Any) -> dict[str, Any] | None:
     if isinstance(request_id, bool) or not isinstance(request_id, (str, int, type(None))):
         return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "invalid request"}}
     method = message.get("method")
+    if not isinstance(method, str):
+        return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "invalid request"}}
     if method == "initialize":
         return {"jsonrpc": "2.0", "id": request_id, "result": {
             "protocolVersion": PROTOCOL_VERSION,
@@ -227,6 +229,14 @@ def handle_message(message: Any) -> dict[str, Any] | None:
             "capabilities": {"tools": {}},
         }}
     if method == "tools/list":
+        if "params" in message and (
+            not isinstance(message["params"], Mapping) or message["params"]
+        ):
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32602, "message": "invalid params"},
+            }
         return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": TOOLS}}
     if method == "tools/call":
         params = message.get("params")
