@@ -381,8 +381,8 @@ class DiscourseEngine:
         target = cap_match.execution_target
         strict_mcp_arguments = None
         strict_validator_cfg = None
-        from core.idea_connect_contract import CANONICAL_IDEA_CONNECT_TARGET
-        if (target == CANONICAL_IDEA_CONNECT_TARGET
+        from core.idea_connect_contract import is_idea_connect_mcp_target
+        if (is_idea_connect_mcp_target(target)
                 and cap_match.capability != "idea_connect"):
             return {
                 "ok": False,

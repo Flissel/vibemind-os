@@ -14,6 +14,22 @@ _EDGE_TYPE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,63}$")
 CANONICAL_IDEA_CONNECT_TARGET = "mcp:brain-ideas:spaces-ideas:idea_connect"
 
 
+def is_idea_connect_mcp_target(target: Any) -> bool:
+    """Match every target spelling that McpExecutor treats as this authority."""
+    if not isinstance(target, str) or not target.startswith("mcp:"):
+        return False
+    parts = [part.strip() for part in target.split(":", 1)[1].split(":", 2)]
+    if len(parts) != 3 or any(not part for part in parts):
+        return False
+    agent, server, tool = parts
+    normalize = lambda value: value.lower().replace("-", "_")
+    return (
+        agent.lower() == "brain-ideas"
+        and normalize(server) == "spaces_ideas"
+        and normalize(tool) == "idea_connect"
+    )
+
+
 def is_canonical_durable_id(value: Any) -> bool:
     return isinstance(value, str) and _DURABLE_ID_PATTERN.fullmatch(value) is not None
 
