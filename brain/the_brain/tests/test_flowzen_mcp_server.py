@@ -6,10 +6,12 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import threading
 from unittest import mock
 import urllib.error
 import urllib.parse
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -212,7 +214,7 @@ def test_empty_lists_project_to_null_without_treating_the_read_as_failure(mcp_se
 
 
 def test_activity_without_accepted_event_is_safely_observed(mcp_server, monkeypatch):
-    activity = {**ACTIVITY, "event_type": "recommendation_presented:fzr_private"}
+    activity = {**ACTIVITY, "event_type": "recommendation_presented:fzr_0123456789abcdef"}
     monkeypatch.setattr(mcp_server.urllib.request, "urlopen", opener_for("[]", json.dumps([activity])))
     with mock.patch.dict(os.environ, ENV, clear=True):
         response = call_status(mcp_server)
@@ -226,6 +228,49 @@ def test_activity_without_accepted_event_is_safely_observed(mcp_server, monkeypa
             "time_window": "morning",
         },
     }
+
+
+def test_real_accept_writer_shape_is_projected_without_its_empty_time_window(mcp_server, monkeypatch):
+    persisted_activity = {
+        "id": "activity-private-id",
+        "event_type": "recommendation_accepted:fzr_0123456789abcdef",
+        "time_window": "",
+        "hour": 0,
+        "created_at": "2026-08-04T09:01:00Z",
+    }
+    monkeypatch.setattr(
+        mcp_server.urllib.request,
+        "urlopen",
+        opener_for("[]", json.dumps([persisted_activity])),
+    )
+    with mock.patch.dict(os.environ, ENV, clear=True):
+        response = call_status(mcp_server)
+
+    assert response["result"]["isError"] is False
+    assert payload(response)["status"]["latest_activity"] == {
+        "created_at": "2026-08-04T09:01:00Z",
+        "hour": 0,
+        "status": "accepted",
+        "time_window": None,
+    }
+    assert "activity-private-id" not in response["result"]["content"][0]["text"]
+    assert "recommendation_accepted:" not in response["result"]["content"][0]["text"]
+
+
+@pytest.mark.parametrize("event_type", [
+    "recommendation_accepted:",
+    "recommendation_accepted:fzr_not-hex",
+    "recommendation_accepted:fzr_0123456789abcdeg",
+    "unstructured private activity",
+])
+def test_malformed_or_unknown_activity_event_types_fail_closed(mcp_server, monkeypatch, event_type):
+    activity = {**ACTIVITY, "event_type": event_type}
+    monkeypatch.setattr(mcp_server.urllib.request, "urlopen", opener_for("[]", json.dumps([activity])))
+    with mock.patch.dict(os.environ, ENV, clear=True):
+        response = call_status(mcp_server)
+
+    assert response["result"]["isError"] is True
+    assert payload(response) == {"error": "flowzen_status_unverified"}
 
 
 @pytest.mark.parametrize("checkin", [
@@ -344,3 +389,107 @@ def test_mcp_executor_treats_flowzen_iserror_as_hard_failure(mcp_server, monkeyp
 
     assert result["ok"] is False
     assert "iserror" in result["error"].lower()
+
+
+@pytest.mark.parametrize("redirect_kind", ["same-origin", "cross-origin"])
+def test_redirects_are_rejected_before_service_role_headers_reach_a_target(mcp_server, redirect_kind):
+    target_headers = []
+
+    class TargetHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            target_headers.append(dict(self.headers.items()))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"[]")
+
+        def log_message(self, *_args):
+            return
+
+    target = ThreadingHTTPServer(("127.0.0.1", 0), TargetHandler)
+    target_thread = threading.Thread(target=target.serve_forever, daemon=True)
+    target_thread.start()
+
+    class SourceHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path.startswith("/rest/v1/flowzen_checkins"):
+                if redirect_kind == "same-origin":
+                    location = "/redirect-target"
+                else:
+                    location = f"http://127.0.0.1:{target.server_port}/redirect-target"
+                self.send_response(302)
+                self.send_header("Location", location)
+                self.end_headers()
+                return
+            if self.path == "/redirect-target":
+                target_headers.append(dict(self.headers.items()))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"[]")
+
+        def log_message(self, *_args):
+            return
+
+    source = ThreadingHTTPServer(("127.0.0.1", 0), SourceHandler)
+    source_thread = threading.Thread(target=source.serve_forever, daemon=True)
+    source_thread.start()
+    try:
+        env = {**ENV, "SUPABASE_URL": f"http://127.0.0.1:{source.server_port}"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            response = call_status(mcp_server)
+    finally:
+        source.shutdown()
+        source_thread.join(timeout=2)
+        source.server_close()
+        target.shutdown()
+        target_thread.join(timeout=2)
+        target.server_close()
+
+    assert response["result"]["isError"] is True
+    assert payload(response) == {"error": "flowzen_status_unverified"}
+    assert target_headers == []
+
+
+@pytest.mark.parametrize("message", [
+    {"jsonrpc": "1.0", "id": "wrong-version", "method": "tools/list"},
+    {"id": "missing-version", "method": "tools/list"},
+    {"jsonrpc": "2.0", "id": True, "method": "tools/list"},
+    {"jsonrpc": "2.0", "id": {"not": "scalar"}, "method": "tools/list"},
+    {"jsonrpc": "2.0", "id": ["not", "scalar"], "method": "tools/list"},
+])
+def test_invalid_json_rpc_envelopes_are_rejected_without_reusing_invalid_ids(mcp_server, message):
+    response = mcp_server.handle_message(message)
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": None,
+        "error": {"code": -32600, "message": "invalid request"},
+    }
+
+
+@pytest.mark.parametrize("request_id", [None, 0, -7, "request-id"])
+def test_json_rpc_accepts_only_valid_scalar_ids(mcp_server, request_id):
+    response = mcp_server.handle_message({
+        "jsonrpc": "2.0", "id": request_id, "method": "tools/list",
+    })
+
+    assert response["id"] == request_id
+    assert response["result"]["tools"] == mcp_server.TOOLS
+
+
+@pytest.mark.parametrize("message", [
+    {"jsonrpc": "2.0", "method": "tools/list"},
+    {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {"name": "flowzen_status", "arguments": {}},
+    },
+    {"jsonrpc": "2.0", "method": "notifications/initialized"},
+])
+def test_notifications_without_ids_never_execute_or_reply(mcp_server, monkeypatch, message):
+    monkeypatch.setattr(mcp_server.urllib.request, "urlopen", lambda *_args, **_kwargs: pytest.fail("must not request"))
+    with mock.patch.dict(os.environ, ENV, clear=True):
+        response = mcp_server.handle_message(message)
+
+    assert response is None
