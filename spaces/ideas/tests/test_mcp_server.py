@@ -43,6 +43,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
                 "bubble_create",
                 "bubble_update",
                 "bubble_delete",
+                "bubble_promote",
                 "idea_list",
                 "idea_get",
                 "idea_create",
@@ -55,6 +56,21 @@ class IdeasMcpServerContractTests(unittest.TestCase):
         create = response["result"]["tools"][2]
         self.assertEqual(create["inputSchema"]["required"], ["title"])
         self.assertNotIn("OPENAI_API_KEY", json.dumps(response))
+
+        promote = response["result"]["tools"][5]
+        self.assertEqual(promote["inputSchema"], {
+            "type": "object",
+            "properties": {
+                "bubble_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$",
+                },
+            },
+            "required": ["bubble_id"],
+            "additionalProperties": False,
+        })
 
     def test_tool_call_fails_closed_when_proxmox_supabase_credentials_are_missing(self) -> None:
         server = load_server()
@@ -136,6 +152,575 @@ class IdeasMcpServerContractTests(unittest.TestCase):
             [params.get("parent_id") for _method, _path, params in calls],
             ["is.null", "is.null", "is.null"],
         )
+
+    def test_bubble_promote_reads_top_level_bubble_creates_project_then_links_it(self) -> None:
+        server = load_server()
+        calls = []
+        bubble = {
+            "id": "bubble-1",
+            "title": "Launch Plan",
+            "description": "Canonical bubble",
+            "score": 82,
+        }
+        project = {}
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if method == "GET" and path == "ideas":
+                return [bubble]
+            if method == "POST" and path == "projects":
+                project.update(kwargs["body"])
+                return [project]
+            if method == "PATCH" and path == "ideas":
+                return [{
+                    "id": "bubble-1",
+                    "status": "promoted",
+                    "promoted_to_project_id": project["id"],
+                }]
+            self.fail(f"unexpected request: {method} {path}")
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            result = server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+
+        self.assertEqual(result, project)
+        self.assertEqual([(method, path) for method, path, _kwargs in calls], [
+            ("GET", "ideas"),
+            ("POST", "projects"),
+            ("PATCH", "ideas"),
+        ])
+        self.assertEqual(calls[0][2]["params"], {
+            "select": "*",
+            "id": "eq.bubble-1",
+            "parent_id": "is.null",
+            "limit": "1",
+        })
+        self.assertEqual(calls[1][2]["body"], {
+            "id": mock.ANY,
+            "name": "Launch Plan",
+            "description": "Canonical bubble",
+            "status": "active",
+            "from_idea_id": "bubble-1",
+            "metadata": {
+                "source_space": "bubbles",
+                "source_bubble_id": "bubble-1",
+                "source_score": 82,
+                "promotion_attempt_id": mock.ANY,
+            },
+        })
+        self.assertRegex(
+            calls[1][2]["body"]["metadata"]["promotion_attempt_id"],
+            r"^[0-9a-f]{32}$",
+        )
+        self.assertEqual(calls[2][2], {
+            "params": {
+                "id": "eq.bubble-1",
+                "parent_id": "is.null",
+                "promoted_to_project_id": "is.null",
+            },
+            "body": {"status": "promoted", "promoted_to_project_id": project["id"]},
+        })
+
+    def test_bubble_promote_uses_the_legacy_description_coercion_without_content_fallback(self) -> None:
+        server = load_server()
+        observed = {}
+
+        def request(method, path, **kwargs):
+            if method == "GET":
+                return [{"id": "bubble-1", "title": "Launch", "description": None, "content": "ignore me"}]
+            if method == "POST":
+                observed["project"] = kwargs["body"]
+                return [kwargs["body"]]
+            if method == "PATCH":
+                return [{"id": "bubble-1", "promoted_to_project_id": kwargs["body"]["promoted_to_project_id"]}]
+            self.fail(f"unexpected request: {method} {path}")
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+
+        self.assertEqual(observed["project"]["description"], "")
+
+    def test_bubble_promote_coerces_nonstring_legacy_description_without_failing(self) -> None:
+        server = load_server()
+        observed = {}
+
+        def request(method, path, **kwargs):
+            if method == "GET":
+                return [{"id": "bubble-1", "title": "Launch", "description": 42}]
+            if method == "POST":
+                observed["project"] = kwargs["body"]
+                return [kwargs["body"]]
+            if method == "PATCH":
+                return [{"id": "bubble-1", "promoted_to_project_id": kwargs["body"]["promoted_to_project_id"]}]
+            self.fail(f"unexpected request: {method} {path}")
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+
+        self.assertEqual(observed["project"]["description"], "42")
+
+    def test_bubble_promote_rejects_missing_or_noncanonical_id_without_requests(self) -> None:
+        server = load_server()
+
+        with mock.patch.object(server, "_request") as request:
+            for durable_id in (
+                "bubble:1",
+                "abcdef12",
+                "550e8400-e29b-41d4-a716-446655440000",
+            ):
+                with self.subTest(durable_id=durable_id):
+                    self.assertEqual(
+                        server._canonical_bubble_id({"bubble_id": durable_id}),
+                        durable_id,
+                    )
+            with self.assertRaisesRegex(server.ToolError, "'bubble_id' must be a canonical non-empty string"):
+                server.call_tool("bubble_promote", {})
+            with self.assertRaisesRegex(server.ToolError, "'bubble_id' must be a canonical non-empty string"):
+                server.call_tool("bubble_promote", {"bubble_id": " bubble-1 "})
+            with self.assertRaisesRegex(server.ToolError, "only accepts 'bubble_id'"):
+                server.call_tool("bubble_promote", {"bubble_id": "bubble-1", "title": "Launch"})
+            for unsafe_id in ("bubble-1,other", "eq.bubble-1", "bubble-1)", "bubble/1"):
+                with self.subTest(unsafe_id=unsafe_id):
+                    with self.assertRaisesRegex(server.ToolError, "canonical durable id"):
+                        server.call_tool("bubble_promote", {"bubble_id": unsafe_id})
+
+        request.assert_not_called()
+
+    def test_bubble_promote_fails_when_the_canonical_top_level_bubble_is_missing(self) -> None:
+        server = load_server()
+
+        with mock.patch.object(server, "_request", return_value=[]) as request:
+            with self.assertRaisesRegex(server.ToolError, "bubble_not_found"):
+                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+
+        request.assert_called_once_with(
+            "GET",
+            "ideas",
+            params={
+                "select": "*",
+                "id": "eq.bubble-1",
+                "parent_id": "is.null",
+                "limit": "1",
+            },
+        )
+
+    def test_bubble_promote_compensates_when_linking_fails_without_false_success(self) -> None:
+        server = load_server()
+        calls = []
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if method == "GET":
+                return [{"id": "bubble-1", "title": "Launch", "score": 4}]
+            if method == "POST":
+                return [kwargs["body"]]
+            if method == "PATCH":
+                return []
+            if method == "DELETE":
+                return []
+            self.fail(f"unexpected request: {method} {path}")
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            with self.assertRaisesRegex(server.ToolError, "bubble_promotion_link_failed"):
+                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+
+        self.assertEqual([(method, path) for method, path, _kwargs in calls], [
+            ("GET", "ideas"),
+            ("POST", "projects"),
+            ("PATCH", "ideas"),
+            ("DELETE", "projects"),
+        ])
+        self.assertEqual(calls[-1][2]["params"], {"id": f"eq.{calls[1][2]['body']['id']}"})
+        self.assertEqual(calls[2][2]["params"], {
+            "id": "eq.bubble-1",
+            "parent_id": "is.null",
+            "promoted_to_project_id": "is.null",
+        })
+
+    def test_bubble_promote_allows_only_the_conditional_link_winner_to_succeed(self) -> None:
+        server = load_server()
+        calls = []
+        project_uuids = iter(("a" * 32, "b" * 32, "c" * 32, "d" * 32))
+        winner_id = "a" * 8
+        loser_id = "c" * 8
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if method == "GET":
+                return [{"id": "bubble-1", "title": "Launch"}]
+            if method == "POST":
+                return [kwargs["body"]]
+            if method == "PATCH":
+                if kwargs["body"]["promoted_to_project_id"] == winner_id:
+                    return [{"id": "bubble-1", "promoted_to_project_id": winner_id}]
+                return []
+            if method == "DELETE":
+                return []
+            self.fail(f"unexpected request: {method} {path}")
+
+        with mock.patch.object(server, "_request", side_effect=request), mock.patch.object(
+            server.uuid,
+            "uuid4",
+            side_effect=[server.uuid.UUID(value) for value in project_uuids],
+        ):
+            winner = server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+            with self.assertRaisesRegex(server.ToolError, "bubble_promotion_link_failed: link_returned_no_row"):
+                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+
+        self.assertEqual(winner["id"], winner_id)
+        patch_calls = [call for call in calls if call[0] == "PATCH"]
+        self.assertEqual(len(patch_calls), 2)
+        self.assertTrue(all(
+            call[2]["params"] == {
+                "id": "eq.bubble-1",
+                "parent_id": "is.null",
+                "promoted_to_project_id": "is.null",
+            }
+            for call in patch_calls
+        ))
+        self.assertEqual(calls[-1], ("DELETE", "projects", {"params": {"id": f"eq.{loser_id}"}}))
+
+    def test_bubble_promote_compensates_when_the_conditional_link_response_mismatches(self) -> None:
+        server = load_server()
+        calls = []
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if method == "GET":
+                return [{"id": "bubble-1", "title": "Launch"}]
+            if method == "POST":
+                return [kwargs["body"]]
+            if method == "PATCH":
+                return [{
+                    "id": "other-bubble",
+                    "promoted_to_project_id": kwargs["body"]["promoted_to_project_id"],
+                }]
+            if method == "DELETE":
+                return []
+            self.fail(f"unexpected request: {method} {path}")
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            with self.assertRaisesRegex(server.ToolError, "bubble_promotion_link_failed: link_mismatch"):
+                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+
+        self.assertEqual(calls[-1], ("DELETE", "projects", {"params": {"id": f"eq.{calls[1][2]['body']['id']}"}}))
+
+    def test_bubble_promote_compensates_owned_project_after_post_has_no_representation(self) -> None:
+        server = load_server()
+        calls = []
+        fixed_uuid = "a" * 32
+        fixed_id = fixed_uuid[:8]
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if method == "GET" and path == "ideas":
+                return [{"id": "bubble-1", "title": "Launch"}]
+            if method == "POST":
+                return []
+            if method == "GET" and path == "projects":
+                return [{
+                    "id": fixed_id,
+                    "from_idea_id": "bubble-1",
+                    "metadata": {
+                        "source_bubble_id": "bubble-1",
+                        "promotion_attempt_id": fixed_uuid,
+                    },
+                }]
+            if method == "DELETE":
+                return []
+            self.fail(f"unexpected request: {method} {path}")
+
+        with mock.patch.object(server, "_request", side_effect=request), mock.patch.object(
+            server.uuid, "uuid4", return_value=server.uuid.UUID(fixed_uuid),
+        ):
+            with self.assertRaisesRegex(server.ToolError, "bubble_promotion_create_unverified"):
+                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+
+        self.assertEqual([(method, path) for method, path, _kwargs in calls], [
+            ("GET", "ideas"),
+            ("POST", "projects"),
+            ("GET", "projects"),
+            ("DELETE", "projects"),
+        ])
+        self.assertEqual(calls[-1], ("DELETE", "projects", {"params": {"id": f"eq.{fixed_id}"}}))
+
+    def test_bubble_promote_rejects_unowned_create_representation_without_link_or_delete(self) -> None:
+        server = load_server()
+        calls = []
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if method == "GET" and path == "ideas":
+                return [{"id": "bubble-1", "title": "Launch"}]
+            if method == "POST" and path == "projects":
+                return [{**kwargs["body"], "id": "other-project"}]
+            self.fail(f"unexpected request: {method} {path}")
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            with self.assertRaisesRegex(server.ToolError, "^bubble_promotion_create_unverified$"):
+                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+
+        self.assertEqual([(method, path) for method, path, _kwargs in calls], [
+            ("GET", "ideas"),
+            ("POST", "projects"),
+        ])
+
+    def test_bubble_promote_skips_delete_when_empty_create_readback_is_unowned(self) -> None:
+        server = load_server()
+        calls = []
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if method == "GET" and path == "ideas":
+                return [{"id": "bubble-1", "title": "Launch"}]
+            if method == "POST":
+                return []
+            if method == "GET" and path == "projects":
+                return [{"id": "other-project", "from_idea_id": "bubble-1", "metadata": {}}]
+            self.fail(f"unexpected request: {method} {path}")
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            with self.assertRaisesRegex(
+                server.ToolError,
+                "^bubble_promotion_create_unverified: ownership_mismatch$",
+            ):
+                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+
+        self.assertEqual([(method, path) for method, path, _kwargs in calls], [
+            ("GET", "ideas"),
+            ("POST", "projects"),
+            ("GET", "projects"),
+        ])
+
+    def test_bubble_promote_skips_delete_when_empty_create_readback_has_no_project(self) -> None:
+        server = load_server()
+        calls = []
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if method == "GET" and path == "ideas":
+                return [{"id": "bubble-1", "title": "Launch"}]
+            if method == "POST":
+                return []
+            if method == "GET" and path == "projects":
+                return []
+            self.fail(f"unexpected request: {method} {path}")
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            with self.assertRaisesRegex(
+                server.ToolError,
+                "^bubble_promotion_create_unverified: not_found$",
+            ):
+                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+
+        self.assertEqual([(method, path) for method, path, _kwargs in calls], [
+            ("GET", "ideas"),
+            ("POST", "projects"),
+            ("GET", "projects"),
+        ])
+
+    def test_bubble_promote_skips_delete_when_empty_create_readback_fails(self) -> None:
+        server = load_server()
+        calls = []
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if method == "GET" and path == "ideas":
+                return [{"id": "bubble-1", "title": "Launch"}]
+            if method == "POST":
+                return []
+            if method == "GET" and path == "projects":
+                raise server.ToolError("supabase_unreachable")
+            self.fail(f"unexpected request: {method} {path}")
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            with self.assertRaisesRegex(
+                server.ToolError,
+                "^bubble_promotion_create_unverified: readback_failed: supabase_unreachable$",
+            ):
+                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+
+        self.assertEqual([(method, path) for method, path, _kwargs in calls], [
+            ("GET", "ideas"),
+            ("POST", "projects"),
+            ("GET", "projects"),
+        ])
+
+    def test_bubble_promote_does_not_delete_after_definitive_project_post_failure(self) -> None:
+        server = load_server()
+        calls = []
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if method == "GET":
+                return [{"id": "bubble-1", "title": "Launch"}]
+            if method == "POST":
+                raise server.ToolError("supabase_http_error: status=409")
+            self.fail(f"unexpected request: {method} {path}")
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            with self.assertRaisesRegex(
+                server.ToolError,
+                "^bubble_promotion_create_failed: supabase_http_error: status=409$",
+            ):
+                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+
+        self.assertEqual([(method, path) for method, path, _kwargs in calls], [
+            ("GET", "ideas"),
+            ("POST", "projects"),
+        ])
+
+    def test_bubble_promote_reconciles_and_deletes_only_an_owned_project_after_ambiguous_post_error(self) -> None:
+        server = load_server()
+        calls = []
+        project_uuid = "a" * 32
+        attempt_uuid = "b" * 32
+        project_id = project_uuid[:8]
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if method == "GET" and path == "ideas":
+                return [{"id": "bubble-1", "title": "Launch"}]
+            if method == "POST":
+                raise server.ToolError("supabase_unreachable")
+            if method == "GET" and path == "projects":
+                return [{
+                    "id": project_id,
+                    "from_idea_id": "bubble-1",
+                    "metadata": {
+                        "source_bubble_id": "bubble-1",
+                        "promotion_attempt_id": attempt_uuid,
+                    },
+                }]
+            if method == "DELETE" and path == "projects":
+                return []
+            self.fail(f"unexpected request: {method} {path}")
+
+        with mock.patch.object(server, "_request", side_effect=request), mock.patch.object(
+            server.uuid,
+            "uuid4",
+            side_effect=[server.uuid.UUID(project_uuid), server.uuid.UUID(attempt_uuid)],
+        ):
+            with self.assertRaisesRegex(server.ToolError, "^bubble_promotion_create_failed: supabase_unreachable$"):
+                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+
+        self.assertEqual([(method, path) for method, path, _kwargs in calls], [
+            ("GET", "ideas"),
+            ("POST", "projects"),
+            ("GET", "projects"),
+            ("DELETE", "projects"),
+        ])
+        self.assertEqual(calls[2][2]["params"], {
+            "select": "*",
+            "id": f"eq.{project_id}",
+            "limit": "1",
+        })
+        self.assertEqual(calls[3][2]["params"], {"id": f"eq.{project_id}"})
+
+    def test_bubble_promote_skips_cleanup_for_unverified_project_after_ambiguous_post_error(self) -> None:
+        server = load_server()
+        calls = []
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if method == "GET" and path == "ideas":
+                return [{"id": "bubble-1", "title": "Launch"}]
+            if method == "POST":
+                raise server.ToolError("supabase_invalid_response")
+            if method == "GET" and path == "projects":
+                return [{
+                    "id": "different-project",
+                    "from_idea_id": "bubble-1",
+                    "metadata": {"source_bubble_id": "bubble-1"},
+                }]
+            self.fail(f"unexpected request: {method} {path}")
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            with self.assertRaisesRegex(
+                server.ToolError,
+                "^bubble_promotion_create_failed: supabase_invalid_response; cleanup_skipped_unverified: ownership_mismatch$",
+            ):
+                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+
+        self.assertEqual([(method, path) for method, path, _kwargs in calls], [
+            ("GET", "ideas"),
+            ("POST", "projects"),
+            ("GET", "projects"),
+        ])
+
+    def test_bubble_promote_keeps_original_error_when_ambiguous_post_reconciliation_finds_no_project(self) -> None:
+        server = load_server()
+        calls = []
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if method == "GET" and path == "ideas":
+                return [{"id": "bubble-1", "title": "Launch"}]
+            if method == "POST":
+                raise server.ToolError("supabase_http_error: status=500")
+            if method == "GET" and path == "projects":
+                return []
+            self.fail(f"unexpected request: {method} {path}")
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            with self.assertRaisesRegex(
+                server.ToolError,
+                "^bubble_promotion_create_failed: supabase_http_error: status=500$",
+            ):
+                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+
+        self.assertEqual([(method, path) for method, path, _kwargs in calls], [
+            ("GET", "ideas"),
+            ("POST", "projects"),
+            ("GET", "projects"),
+        ])
+
+    def test_bubble_promote_skips_cleanup_when_ambiguous_post_reconciliation_fails(self) -> None:
+        server = load_server()
+        calls = []
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if method == "GET" and path == "ideas":
+                return [{"id": "bubble-1", "title": "Launch"}]
+            if method == "POST":
+                raise server.ToolError("supabase_http_error: status=503")
+            if method == "GET" and path == "projects":
+                raise server.ToolError("supabase_unreachable")
+            self.fail(f"unexpected request: {method} {path}")
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            with self.assertRaisesRegex(
+                server.ToolError,
+                "^bubble_promotion_create_failed: supabase_http_error: status=503; cleanup_skipped_unverified: supabase_unreachable$",
+            ):
+                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+
+        self.assertEqual([(method, path) for method, path, _kwargs in calls], [
+            ("GET", "ideas"),
+            ("POST", "projects"),
+            ("GET", "projects"),
+        ])
+
+    def test_bubble_promote_reports_link_and_compensation_failures_together(self) -> None:
+        server = load_server()
+
+        def request(method, path, **kwargs):
+            if method == "GET":
+                return [{"id": "bubble-1", "title": "Launch"}]
+            if method == "POST":
+                return [kwargs["body"]]
+            if method == "PATCH":
+                return []
+            if method == "DELETE":
+                raise server.ToolError("supabase_unreachable")
+            self.fail(f"unexpected request: {method} {path}")
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            with self.assertRaisesRegex(
+                server.ToolError,
+                "bubble_promotion_link_failed: link_returned_no_row; compensation_failed: supabase_unreachable",
+            ):
+                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
 
     def test_update_fields_are_type_checked_without_schema_enforcement(self) -> None:
         server = load_server()
