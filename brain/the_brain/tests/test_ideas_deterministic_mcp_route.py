@@ -33,6 +33,7 @@ CANONICAL_VALIDATOR = {
     "require_verified": True,
     "postcondition": {"check": "supabase_edge_ids", "expect": "present"},
 }
+CANONICAL_IDEA_CONNECT_TARGET = "mcp:brain-ideas:spaces-ideas:idea_connect"
 
 
 class _Executor:
@@ -186,6 +187,35 @@ def test_plan_idea_connect_rejects_legacy_or_extra_arguments_before_build(monkey
     assert built_targets == []
 
 
+@pytest.mark.parametrize("resolved_by_router", [False, True])
+def test_plan_rejects_canonical_ideas_target_for_non_idea_capability_before_build(
+    monkeypatch, resolved_by_router
+) -> None:
+    built_targets: list[str] = []
+
+    class _Router:
+        def get_capability(self, _capability):
+            return {"execution_target": CANONICAL_IDEA_CONNECT_TARGET}
+
+    monkeypatch.setattr("core.plan_executor.PlanExecutor._capture_kg_hits", lambda *args: [])
+    monkeypatch.setattr(
+        "core.capability_targets.build_executor", lambda target: built_targets.append(target)
+    )
+    hop = HopSpec(
+        step_id="hostile-1",
+        description="attempt canonical Ideas tool confusion",
+        capability="custom_edge_alias",
+        execution_target=None if resolved_by_router else CANONICAL_IDEA_CONNECT_TARGET,
+        arg_template=json.dumps({"from_id": "idea-1", "to_id": "idea-2"}),
+    )
+
+    result = PlanExecutor(capability_router=_Router())._exec_hop(hop, {})
+
+    assert result.ok is False
+    assert result.error == "canonical Ideas MCP target is bound to idea.connect"
+    assert built_targets == []
+
+
 def _capability_match(validator: dict | None = None) -> CapabilityMatch:
     return CapabilityMatch(
         capability="idea_connect",
@@ -256,6 +286,70 @@ def test_discourse_idea_connect_overrides_stale_validator_and_blocks_exception()
     assert record["ok"] is False
     assert record["blocked_by_validator"] is True
     assert validator.calls == [CANONICAL_VALIDATOR]
+    assert record["validation"]["verified"] is None
+    assert "sensitive validator failure" not in str(record)
+
+
+def test_discourse_rejects_canonical_ideas_target_for_non_idea_capability() -> None:
+    executor = _Executor(_mcp_receipt())
+    engine = _discourse_with_executor(executor, _RecordingValidator())
+    engine._get_executor = lambda _target: (_ for _ in ()).throw(AssertionError("executor lookup"))
+    cap_match = CapabilityMatch(
+        capability="custom_edge_alias",
+        description="hostile alias",
+        primary_names=[],
+        supporting_names=[],
+        matched_pattern="test",
+        execution_target=CANONICAL_IDEA_CONNECT_TARGET,
+    )
+
+    record = engine._handle_direct_capability(cap_match, "hostile", "")
+
+    assert record["ok"] is False
+    assert record["direct_error"] == "canonical Ideas MCP target is bound to idea.connect"
+    assert executor.calls == []
+
+
+@pytest.mark.parametrize(
+    ("verified", "reason", "signal"),
+    [
+        (False, "durable edge receipt refuted", {"edge_id": "edge-1", "rows_found": 1}),
+        (None, "durable edge read-back unavailable", {"status": "unverified"}),
+    ],
+)
+def test_discourse_preserves_canonical_truth_failure_envelope(
+    verified, reason, signal
+) -> None:
+    class _VerdictValidator:
+        def validate(self, _config, **_kwargs):
+            return {
+                "valid": False,
+                "verified": verified,
+                "verify_signal": signal,
+                "reason": reason,
+                "kind": "truth:supabase_edge_ids",
+                "on_fail": "report",
+                "elapsed_s": 0.25,
+            }
+
+    engine = _discourse_with_executor(_Executor(_mcp_receipt()), _VerdictValidator())
+    record = engine._handle_direct_capability(
+        _capability_match(),
+        json.dumps({"from_id": "idea-1", "to_id": "idea-2"}),
+        "",
+    )
+
+    assert record["ok"] is False
+    assert record["blocked_by_validator"] is True
+    assert record["validation"] == {
+        "valid": False,
+        "verified": verified,
+        "verify_signal": signal,
+        "reason": reason,
+        "kind": "truth:supabase_edge_ids",
+        "on_fail": "block",
+        "elapsed_s": 0.25,
+    }
 
 
 def test_discourse_idea_connect_missing_ids_blocks_without_executor_or_broadcast() -> None:
