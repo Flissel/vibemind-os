@@ -24,6 +24,8 @@ SERVER_VERSION = "1.0.0"
 PROTOCOL_VERSION = "2024-11-05"
 REQUEST_TIMEOUT_SECONDS = 15
 BUBBLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
+IDEA_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
+EDGE_TYPE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,63}$")
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -147,11 +149,28 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "from_id": {"type": "string", "minLength": 1},
-                "to_id": {"type": "string", "minLength": 1},
-                "edge_type": {"type": "string", "default": "related"},
+                "from_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$",
+                },
+                "to_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$",
+                },
+                "edge_type": {
+                    "type": "string",
+                    "default": "related",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9:_-]{0,63}$",
+                },
             },
             "required": ["from_id", "to_id"],
+            "additionalProperties": False,
         },
     },
     {
@@ -183,6 +202,125 @@ def _canonical_bubble_id(arguments: Mapping[str, Any]) -> str:
     if BUBBLE_ID_PATTERN.fullmatch(value) is None:
         raise ToolError("invalid_arguments: 'bubble_id' must be a canonical durable id")
     return value
+
+
+def _canonical_idea_connect_arguments(arguments: Mapping[str, Any]) -> tuple[str, str, str]:
+    """Validate the opaque edge contract without rewriting caller input."""
+    allowed = {"from_id", "to_id", "edge_type"}
+    if not set(arguments).issubset(allowed):
+        raise ToolError("invalid_arguments: idea_connect only accepts from_id, to_id, and edge_type")
+
+    def _opaque_id(name: str) -> str:
+        value = arguments.get(name)
+        if not isinstance(value, str) or not value or value != value.strip():
+            raise ToolError(f"invalid_arguments: '{name}' must be a canonical durable id")
+        if IDEA_ID_PATTERN.fullmatch(value) is None:
+            raise ToolError(f"invalid_arguments: '{name}' must be a canonical durable id")
+        return value
+
+    from_id = _opaque_id("from_id")
+    to_id = _opaque_id("to_id")
+    if from_id == to_id:
+        raise ToolError("invalid_arguments: an idea cannot connect to itself")
+    edge_type = arguments.get("edge_type", "related")
+    if (
+        not isinstance(edge_type, str)
+        or not edge_type
+        or edge_type != edge_type.strip()
+        or EDGE_TYPE_PATTERN.fullmatch(edge_type) is None
+    ):
+        raise ToolError("invalid_arguments: 'edge_type' must be a canonical safe token")
+    return from_id, to_id, edge_type
+
+
+def _read_exact_canvas_node(durable_id: str, argument_name: str) -> None:
+    """Require one exact node readback before any edge lookup or mutation."""
+    try:
+        response = _request(
+            "GET",
+            "canvas_nodes",
+            params={"select": "id", "id": f"eq.{durable_id}", "limit": "1"},
+        )
+    except ToolError as exc:
+        raise ToolError(f"idea_connect_node_unverified: {argument_name}") from exc
+    if (
+        not isinstance(response, list)
+        or len(response) != 1
+        or not isinstance(response[0], Mapping)
+        or response[0].get("id") != durable_id
+    ):
+        raise ToolError(f"idea_connect_node_unverified: {argument_name}")
+
+
+def _normalize_connected_edge(
+    response: Any,
+    *,
+    from_id: str,
+    to_id: str,
+    edge_type: str,
+    error: str,
+    allow_reverse: bool,
+) -> dict[str, str]:
+    """Accept exactly one attested edge row and expose only its contract fields."""
+    if not isinstance(response, list) or len(response) != 1 or not isinstance(response[0], Mapping):
+        raise ToolError(error)
+    row = response[0]
+    edge_id = row.get("id")
+    actual_from_id = row.get("from_node_id")
+    actual_to_id = row.get("to_node_id")
+    actual_edge_type = row.get("edge_type")
+    if (
+        not isinstance(edge_id, str)
+        or IDEA_ID_PATTERN.fullmatch(edge_id) is None
+        or not isinstance(actual_from_id, str)
+        or not isinstance(actual_to_id, str)
+        or not isinstance(actual_edge_type, str)
+        or EDGE_TYPE_PATTERN.fullmatch(actual_edge_type) is None
+        or actual_edge_type != edge_type
+        or (actual_from_id, actual_to_id) not in (
+            ((from_id, to_id), (to_id, from_id)) if allow_reverse else ((from_id, to_id),)
+        )
+    ):
+        raise ToolError(error)
+    return {
+        "edge_id": edge_id,
+        "from_id": actual_from_id,
+        "to_id": actual_to_id,
+        "edge_type": actual_edge_type,
+    }
+
+
+def _read_existing_connected_edge(
+    from_id: str,
+    to_id: str,
+    edge_type: str,
+) -> dict[str, str] | None:
+    """Perform fixed-direction exact filters; never interpolate a PostgREST expression."""
+    query = {"select": "id,from_node_id,to_node_id,edge_type", "limit": "1"}
+    for source_id, target_id in ((from_id, to_id), (to_id, from_id)):
+        try:
+            response = _request(
+                "GET",
+                "canvas_edges",
+                params={
+                    **query,
+                    "from_node_id": f"eq.{source_id}",
+                    "to_node_id": f"eq.{target_id}",
+                },
+            )
+        except ToolError as exc:
+            raise ToolError("idea_connect_lookup_unverified") from exc
+        if response == []:
+            continue
+        return _normalize_connected_edge(
+            response,
+            from_id=from_id,
+            to_id=to_id,
+            edge_type=edge_type,
+            error="idea_connect_existing_unverified",
+            allow_reverse=True,
+        )
+    return None
 
 
 def _bounded_limit(arguments: Mapping[str, Any], default: int) -> int:
@@ -596,28 +734,32 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         _request("DELETE", "canvas_edges", params={"to_node_id": f"eq.{idea_id}"})
         return _request("DELETE", "canvas_nodes", params={"id": f"eq.{idea_id}"})
     if name == "idea_connect":
-        from_id = _required_string(arguments, "from_id")
-        to_id = _required_string(arguments, "to_id")
-        if from_id == to_id:
-            raise ToolError("invalid_arguments: an idea cannot connect to itself")
-        edge_type = arguments.get("edge_type", "related")
-        if not isinstance(edge_type, str) or not edge_type.strip():
-            raise ToolError("invalid_arguments: 'edge_type' must be a non-empty string")
-        existing = _first_row(_request(
-            "GET",
-            "canvas_edges",
-            params={
-                "select": "*",
-                "or": f"(and(from_node_id.eq.{from_id},to_node_id.eq.{to_id}),and(from_node_id.eq.{to_id},to_node_id.eq.{from_id}))",
-                "limit": "1",
-            },
-        ))
+        from_id, to_id, edge_type = _canonical_idea_connect_arguments(arguments)
+        _read_exact_canvas_node(from_id, "from_id")
+        _read_exact_canvas_node(to_id, "to_id")
+        existing = _read_existing_connected_edge(from_id, to_id, edge_type)
         if existing is not None:
             return existing
-        return _request(
-            "POST",
-            "canvas_edges",
-            body={"id": uuid.uuid4().hex, "from_node_id": from_id, "to_node_id": to_id, "edge_type": edge_type.strip()},
+        try:
+            created = _request(
+                "POST",
+                "canvas_edges",
+                body={
+                    "id": uuid.uuid4().hex,
+                    "from_node_id": from_id,
+                    "to_node_id": to_id,
+                    "edge_type": edge_type,
+                },
+            )
+        except ToolError as exc:
+            raise ToolError("idea_connect_create_unverified") from exc
+        return _normalize_connected_edge(
+            created,
+            from_id=from_id,
+            to_id=to_id,
+            edge_type=edge_type,
+            error="idea_connect_create_unverified",
+            allow_reverse=False,
         )
     if name == "idea_disconnect":
         return _request("DELETE", "canvas_edges", params={"id": f"eq.{_required_string(arguments, 'edge_id')}"})

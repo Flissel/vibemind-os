@@ -764,7 +764,12 @@ class IdeasMcpServerContractTests(unittest.TestCase):
         server = load_server()
         existing_bubble = {"id": "bubble-1", "title": "MVP"}
         existing_idea = {"id": "idea-1", "title": "Inbox"}
-        existing_edge = {"id": "edge-1", "from_node_id": "idea-1", "to_node_id": "idea-2"}
+        existing_edge = {
+            "id": "edge-1",
+            "from_node_id": "idea-1",
+            "to_node_id": "idea-2",
+            "edge_type": "related",
+        }
 
         def request(method, path, **_kwargs):
             if path == "ideas" and method == "GET":
@@ -850,12 +855,19 @@ class IdeasMcpServerContractTests(unittest.TestCase):
     def test_idea_connect_rejects_missing_or_mismatched_nodes_before_edge_requests(self) -> None:
         server = load_server()
 
-        for node_rows, expected_error in (([], "from_id"), ([{"id": "other-id"}], "from_id")):
-            with self.subTest(node_rows=node_rows):
+        cases = (
+            ([], "from_id"),
+            ([{"id": "other-id"}], "from_id"),
+            ([{"id": "idea-1"}], "to_id"),
+        )
+        for node_rows, expected_error in cases:
+            with self.subTest(node_rows=node_rows, expected_error=expected_error):
                 calls = []
 
                 def request(method, path, **kwargs):
                     calls.append((method, path, kwargs))
+                    if expected_error == "to_id" and len(calls) == 1:
+                        return [{"id": "idea-1"}]
                     return node_rows
 
                 with mock.patch.object(server, "_request", side_effect=request):
@@ -864,6 +876,9 @@ class IdeasMcpServerContractTests(unittest.TestCase):
 
                 self.assertEqual(calls, [
                     ("GET", "canvas_nodes", {"params": {"select": "id", "id": "eq.idea-1", "limit": "1"}}),
+                ] if expected_error == "from_id" else [
+                    ("GET", "canvas_nodes", {"params": {"select": "id", "id": "eq.idea-1", "limit": "1"}}),
+                    ("GET", "canvas_nodes", {"params": {"select": "id", "id": "eq.idea-2", "limit": "1"}}),
                 ])
 
     def test_idea_connect_returns_normalized_existing_edge_in_reverse_direction(self) -> None:
@@ -896,7 +911,13 @@ class IdeasMcpServerContractTests(unittest.TestCase):
     def test_idea_connect_fails_closed_for_malformed_or_mismatched_edge_representations(self) -> None:
         server = load_server()
 
-        for edge_response in ([], [{}], [{"id": "", "from_node_id": "idea-1", "to_node_id": "idea-2", "edge_type": "related"}], [{"id": "edge-1", "from_node_id": "other", "to_node_id": "idea-2", "edge_type": "related"}]):
+        for edge_response in (
+            [],
+            [{}],
+            [{"id": "", "from_node_id": "idea-1", "to_node_id": "idea-2", "edge_type": "related"}],
+            [{"id": "edge-1", "from_node_id": "other", "to_node_id": "idea-2", "edge_type": "related"}],
+            [{"id": "edge-1", "from_node_id": "idea-2", "to_node_id": "idea-1", "edge_type": "related"}],
+        ):
             with self.subTest(edge_response=edge_response):
                 calls = []
 
