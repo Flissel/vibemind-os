@@ -249,6 +249,9 @@ spaces:
     # vibemind IS — openrouter/llama-3.3-70b). Registry is the single truth;
     # LEGACY_SPACE_AGENT_MAP derives/validates against this (ABSORB-7).
     agent: vibemind
+    # Reserved only: no AgentFarm chat execution target exists until the
+    # versioned runtime source admission is complete.
+    reserved_chat_agent: brain-agentfarm
     # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
     aliases: [autogen]
     prefixes: [agentfarm., autogen.]
