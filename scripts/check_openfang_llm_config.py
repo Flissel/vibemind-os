@@ -65,6 +65,9 @@ REQUIRED_SPACE_ROLES = {
     "flowzen": "space_flowzen",
     "mirofish": "space_mirofish",
 }
+AGENTFARM_SPACE = "agentfarm"
+AGENTFARM_ROLE = "space_agentfarm"
+AGENTFARM_RESERVED_CHAT_AGENT = "brain-agentfarm"
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -192,13 +195,30 @@ def main() -> int:
     )
 
     reserved_agentfarm_agent: str | None = None
-    agentfarm = spaces.get("agentfarm")
+    for space, spec in spaces.items():
+        if space == AGENTFARM_SPACE or not isinstance(spec, dict):
+            continue
+        for field in ("agent", "reserved_chat_agent"):
+            if spec.get(field) == AGENTFARM_RESERVED_CHAT_AGENT:
+                errors.append(
+                    f"spaces.{space}.{field} must not claim reserved AgentFarm identity"
+                )
+
+    agentfarm = spaces.get(AGENTFARM_SPACE)
     if not isinstance(agentfarm, dict):
         errors.append("spaces.agentfarm must be a mapping")
         agentfarm = {}
     else:
         reserved_chat_agent = agentfarm.get("reserved_chat_agent")
-        if agentfarm.get("enabled") is False:
+        if agentfarm.get("enabled") is not False:
+            errors.append(
+                "spaces.agentfarm.enabled must be false for reservation contract"
+            )
+            if reserved_chat_agent is not None:
+                errors.append(
+                    "spaces.agentfarm.reserved_chat_agent is only valid when enabled is false"
+                )
+        else:
             if reserved_chat_agent is None:
                 errors.append(
                     "spaces.agentfarm.reserved_chat_agent is required when enabled is false"
@@ -211,12 +231,12 @@ def main() -> int:
                 errors.append(
                     "spaces.agentfarm.reserved_chat_agent must be a non-empty string"
                 )
+            elif reserved_chat_agent != AGENTFARM_RESERVED_CHAT_AGENT:
+                errors.append(
+                    "spaces.agentfarm.reserved_chat_agent must be 'brain-agentfarm'"
+                )
             else:
                 reserved_agentfarm_agent = reserved_chat_agent
-        elif reserved_chat_agent is not None:
-            errors.append(
-                "spaces.agentfarm.reserved_chat_agent is only valid when enabled is false"
-            )
 
     if set(config.get("keys", {})) != {"openfang", "openai"}:
         errors.append("keys must contain only openfang and the voice-realtime OpenAI exception")
@@ -242,7 +262,7 @@ def main() -> int:
     for role, role_config in roles.items():
         allowed_reserved_agents = (
             {reserved_agentfarm_agent}
-            if role == "space_agentfarm" and reserved_agentfarm_agent is not None
+            if role == AGENTFARM_ROLE and reserved_agentfarm_agent is not None
             else set()
         )
         errors.extend(
@@ -255,8 +275,18 @@ def main() -> int:
             )
         )
 
+    for role, role_config in roles.items():
+        if (
+            role != AGENTFARM_ROLE
+            and isinstance(role_config, dict)
+            and role_config.get("model") == f"openfang:{AGENTFARM_RESERVED_CHAT_AGENT}"
+        ):
+            errors.append(
+                f"roles.{role}.model must not use reserved AgentFarm identity"
+            )
+
     if reserved_agentfarm_agent is not None:
-        agentfarm_role = roles.get("space_agentfarm")
+        agentfarm_role = roles.get(AGENTFARM_ROLE)
         if isinstance(agentfarm_role, dict):
             allowed_fields = {"provider", "model", "temperature"}
             if set(agentfarm_role) != allowed_fields:
@@ -269,17 +299,19 @@ def main() -> int:
     for space, role in REQUIRED_SPACE_ROLES.items():
         spec = spaces.get(space, {})
         if not isinstance(spec, dict):
-            if space != "agentfarm":
+            if space != AGENTFARM_SPACE:
                 errors.append(f"spaces.{space} must be a mapping")
             continue
         expected_agent = (
             reserved_agentfarm_agent
-            if space == "agentfarm" and reserved_agentfarm_agent is not None
+            if space == AGENTFARM_SPACE and reserved_agentfarm_agent is not None
             else spec.get("agent")
         )
         actual = roles.get(role, {})
+        if not isinstance(actual, dict):
+            continue
         if actual.get("model") != f"openfang:{expected_agent}":
-            if space == "agentfarm" and reserved_agentfarm_agent is not None:
+            if space == AGENTFARM_SPACE and reserved_agentfarm_agent is not None:
                 errors.append(
                     f"roles.{role}.model must follow reserved chat agent for disabled registry space {space!r}"
                 )

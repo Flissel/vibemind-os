@@ -262,3 +262,86 @@ def test_checker_does_not_require_reservation_for_another_disabled_space(
     result = _run_checker(ROOT_CONFIG, path)
 
     assert result.returncode == 0, result.stderr
+
+
+def test_checker_rejects_noncanonical_agentfarm_reservation(tmp_path: Path) -> None:
+    """AgentFarm's reservation is pinned to its sole future chat identity."""
+    registry = _write_registry_with_agentfarm_changes(
+        tmp_path, reserved_chat_agent="brain-ideas"
+    )
+    config = yaml.safe_load(ROOT_CONFIG.read_text(encoding="utf-8"))
+    config["roles"]["space_agentfarm"]["model"] = "openfang:brain-ideas"
+    root_config = tmp_path / "llm_config.yml"
+    root_config.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    result = _run_checker(root_config, registry)
+
+    assert result.returncode == 1
+    assert "spaces.agentfarm.reserved_chat_agent must be 'brain-agentfarm'" in result.stderr
+
+
+@pytest.mark.parametrize("field", ["agent", "reserved_chat_agent"])
+def test_checker_rejects_other_space_claiming_agentfarm_chat_identity(
+    tmp_path: Path, field: str
+) -> None:
+    """The AgentFarm chat identity has exclusive registry ownership."""
+    registry = yaml.safe_load(SPACE_REGISTRY.read_text(encoding="utf-8"))
+    registry["spaces"]["ideas"][field] = "brain-agentfarm"
+    if field == "reserved_chat_agent":
+        registry["spaces"]["ideas"]["enabled"] = False
+    path = tmp_path / "space_agent_registry.yml"
+    path.write_text(yaml.safe_dump(registry, sort_keys=False), encoding="utf-8")
+
+    result = _run_checker(ROOT_CONFIG, path)
+
+    assert result.returncode == 1
+    assert f"spaces.ideas.{field} must not claim reserved AgentFarm identity" in result.stderr
+
+
+def test_checker_rejects_other_role_using_agentfarm_identity_when_registry_knows_it(
+    tmp_path: Path,
+) -> None:
+    """Registry manipulation cannot make the reservation a global LLM target."""
+    registry = yaml.safe_load(SPACE_REGISTRY.read_text(encoding="utf-8"))
+    registry["spaces"]["ideas"]["agent"] = "brain-agentfarm"
+    registry_path = tmp_path / "space_agent_registry.yml"
+    registry_path.write_text(yaml.safe_dump(registry, sort_keys=False), encoding="utf-8")
+    config = yaml.safe_load(ROOT_CONFIG.read_text(encoding="utf-8"))
+    config["roles"]["space_ideas"]["model"] = "openfang:brain-agentfarm"
+    config["roles"]["local_fast"]["model"] = "openfang:brain-agentfarm"
+    root_config = tmp_path / "llm_config.yml"
+    root_config.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    result = _run_checker(root_config, registry_path)
+
+    assert result.returncode == 1
+    assert "roles.local_fast.model must not use reserved AgentFarm identity" in result.stderr
+
+
+def test_checker_rejects_enabled_agentfarm_even_without_reservation(tmp_path: Path) -> None:
+    """This contract is invalid as soon as AgentFarm becomes executable."""
+    registry = _write_registry_with_agentfarm_changes(
+        tmp_path, enabled=True, reserved_chat_agent=None
+    )
+    config = yaml.safe_load(ROOT_CONFIG.read_text(encoding="utf-8"))
+    config["roles"]["space_agentfarm"]["model"] = "openfang:vibemind"
+    root_config = tmp_path / "llm_config.yml"
+    root_config.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    result = _run_checker(root_config, registry)
+
+    assert result.returncode == 1
+    assert "spaces.agentfarm.enabled must be false for reservation contract" in result.stderr
+
+
+def test_checker_rejects_scalar_agentfarm_role_without_crashing(tmp_path: Path) -> None:
+    """Malformed AgentFarm role data fails closed with a diagnostic."""
+    config = yaml.safe_load(ROOT_CONFIG.read_text(encoding="utf-8"))
+    config["roles"]["space_agentfarm"] = "openfang:brain-agentfarm"
+    root_config = tmp_path / "llm_config.yml"
+    root_config.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    result = _run_checker(root_config)
+
+    assert result.returncode == 1
+    assert "roles.space_agentfarm must be a mapping" in result.stderr
