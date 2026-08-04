@@ -72,6 +72,34 @@ class IdeasMcpServerContractTests(unittest.TestCase):
             "additionalProperties": False,
         })
 
+        connect = response["result"]["tools"][11]
+        self.assertEqual(connect["inputSchema"], {
+            "type": "object",
+            "properties": {
+                "from_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$",
+                },
+                "to_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$",
+                },
+                "edge_type": {
+                    "type": "string",
+                    "default": "related",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9:_-]{0,63}$",
+                },
+            },
+            "required": ["from_id", "to_id"],
+            "additionalProperties": False,
+        })
+
     def test_tool_call_fails_closed_when_proxmox_supabase_credentials_are_missing(self) -> None:
         server = load_server()
 
@@ -742,7 +770,9 @@ class IdeasMcpServerContractTests(unittest.TestCase):
             if path == "ideas" and method == "GET":
                 return [existing_bubble]
             if path == "canvas_nodes" and method == "GET":
-                return [existing_idea]
+                if "linked_idea_id" in _kwargs["params"]:
+                    return [existing_idea]
+                return [{"id": "idea-1"}] if _kwargs["params"]["id"] == "eq.idea-1" else [{"id": "idea-2"}]
             if path == "canvas_edges" and method == "GET":
                 return [existing_edge]
             self.fail(f"idempotent create must not issue {method} {path}")
@@ -755,8 +785,136 @@ class IdeasMcpServerContractTests(unittest.TestCase):
             )
             self.assertEqual(
                 server.call_tool("idea_connect", {"from_id": "idea-1", "to_id": "idea-2"}),
-                existing_edge,
+                {"edge_id": "edge-1", "from_id": "idea-1", "to_id": "idea-2", "edge_type": "related"},
             )
+
+    def test_idea_connect_rejects_noncanonical_or_extra_arguments_without_requests(self) -> None:
+        server = load_server()
+
+        invalid_cases = (
+            {},
+            {"from_id": "idea-1", "to_id": "idea-2", "title": "not an id"},
+            {"from_id": "idea-1", "to_id": "idea-2", "index": 0},
+            {"from_id": "idea-1", "to_id": "idea-2", "alias": "idea-3"},
+            {"from_id": " idea-1", "to_id": "idea-2"},
+            {"from_id": "idea-1 ", "to_id": "idea-2"},
+            {"from_id": "idea-1", "to_id": "eq.idea-2"},
+            {"from_id": "idea-1,other", "to_id": "idea-2"},
+            {"from_id": "idea-1", "to_id": "idea/2"},
+            {"from_id": "idea-1", "to_id": "idea-1"},
+            {"from_id": "idea-1", "to_id": "idea-2", "edge_type": " related"},
+            {"from_id": "idea-1", "to_id": "idea-2", "edge_type": "related)"},
+        )
+
+        with mock.patch.object(server, "_request") as request:
+            for arguments in invalid_cases:
+                with self.subTest(arguments=arguments):
+                    with self.assertRaisesRegex(server.ToolError, "^invalid_arguments:"):
+                        server.call_tool("idea_connect", arguments)
+
+        request.assert_not_called()
+
+    def test_idea_connect_reads_exact_nodes_then_uses_safe_deterministic_edge_queries(self) -> None:
+        server = load_server()
+        calls = []
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if path == "canvas_nodes":
+                durable_id = kwargs["params"]["id"].removeprefix("eq.")
+                return [{"id": durable_id, "title": "never used"}]
+            if path == "canvas_edges" and method == "GET":
+                return []
+            if path == "canvas_edges" and method == "POST":
+                return [{"id": "edge-1", "from_node_id": "idea-1", "to_node_id": "idea-2", "edge_type": "related"}]
+            self.fail(f"unexpected request: {method} {path}")
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            result = server.call_tool("idea_connect", {"from_id": "idea-1", "to_id": "idea-2"})
+
+        self.assertEqual(result, {"edge_id": "edge-1", "from_id": "idea-1", "to_id": "idea-2", "edge_type": "related"})
+        self.assertEqual(calls, [
+            ("GET", "canvas_nodes", {"params": {"select": "id", "id": "eq.idea-1", "limit": "1"}}),
+            ("GET", "canvas_nodes", {"params": {"select": "id", "id": "eq.idea-2", "limit": "1"}}),
+            ("GET", "canvas_edges", {"params": {"select": "id,from_node_id,to_node_id,edge_type", "from_node_id": "eq.idea-1", "to_node_id": "eq.idea-2", "limit": "1"}}),
+            ("GET", "canvas_edges", {"params": {"select": "id,from_node_id,to_node_id,edge_type", "from_node_id": "eq.idea-2", "to_node_id": "eq.idea-1", "limit": "1"}}),
+            ("POST", "canvas_edges", {"body": mock.ANY}),
+        ])
+        self.assertEqual(calls[-1][2]["body"], {
+            "id": calls[-1][2]["body"]["id"],
+            "from_node_id": "idea-1",
+            "to_node_id": "idea-2",
+            "edge_type": "related",
+        })
+
+    def test_idea_connect_rejects_missing_or_mismatched_nodes_before_edge_requests(self) -> None:
+        server = load_server()
+
+        for node_rows, expected_error in (([], "from_id"), ([{"id": "other-id"}], "from_id")):
+            with self.subTest(node_rows=node_rows):
+                calls = []
+
+                def request(method, path, **kwargs):
+                    calls.append((method, path, kwargs))
+                    return node_rows
+
+                with mock.patch.object(server, "_request", side_effect=request):
+                    with self.assertRaisesRegex(server.ToolError, f"^idea_connect_node_unverified: {expected_error}$"):
+                        server.call_tool("idea_connect", {"from_id": "idea-1", "to_id": "idea-2"})
+
+                self.assertEqual(calls, [
+                    ("GET", "canvas_nodes", {"params": {"select": "id", "id": "eq.idea-1", "limit": "1"}}),
+                ])
+
+    def test_idea_connect_returns_normalized_existing_edge_in_reverse_direction(self) -> None:
+        server = load_server()
+        calls = []
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if path == "canvas_nodes":
+                return [{"id": kwargs["params"]["id"].removeprefix("eq.")}]
+            if path == "canvas_edges" and method == "GET":
+                if kwargs["params"].get("from_node_id") == "eq.idea-1":
+                    return []
+                return [{"id": "edge-2", "from_node_id": "idea-2", "to_node_id": "idea-1", "edge_type": "blocks"}]
+            if path == "canvas_edges" and method == "POST":
+                return []
+            self.fail(f"unexpected request: {method} {path}")
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            result = server.call_tool("idea_connect", {"from_id": "idea-1", "to_id": "idea-2", "edge_type": "blocks"})
+
+        self.assertEqual(result, {"edge_id": "edge-2", "from_id": "idea-2", "to_id": "idea-1", "edge_type": "blocks"})
+        self.assertEqual([(method, path) for method, path, _kwargs in calls], [
+            ("GET", "canvas_nodes"),
+            ("GET", "canvas_nodes"),
+            ("GET", "canvas_edges"),
+            ("GET", "canvas_edges"),
+        ])
+
+    def test_idea_connect_fails_closed_for_malformed_or_mismatched_edge_representations(self) -> None:
+        server = load_server()
+
+        for edge_response in ([], [{}], [{"id": "", "from_node_id": "idea-1", "to_node_id": "idea-2", "edge_type": "related"}], [{"id": "edge-1", "from_node_id": "other", "to_node_id": "idea-2", "edge_type": "related"}]):
+            with self.subTest(edge_response=edge_response):
+                calls = []
+
+                def request(method, path, **kwargs):
+                    calls.append((method, path, kwargs))
+                    if path == "canvas_nodes":
+                        return [{"id": kwargs["params"]["id"].removeprefix("eq.")}]
+                    if path == "canvas_edges" and method == "GET":
+                        return []
+                    if path == "canvas_edges" and method == "POST":
+                        return edge_response
+                    self.fail(f"unexpected request: {method} {path}")
+
+                with mock.patch.object(server, "_request", side_effect=request):
+                    with self.assertRaisesRegex(server.ToolError, "^idea_connect_create_unverified$"):
+                        server.call_tool("idea_connect", {"from_id": "idea-1", "to_id": "idea-2"})
+
+                self.assertEqual([(method, path) for method, path, _kwargs in calls][-1], ("POST", "canvas_edges"))
 
     def test_idea_create_preserves_long_title_as_content_with_a_short_title(self) -> None:
         server = load_server()
