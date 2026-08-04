@@ -455,6 +455,8 @@ def test_redirects_are_rejected_before_service_role_headers_reach_a_target(mcp_s
     {"jsonrpc": "1.0", "id": "wrong-version", "method": "tools/list"},
     {"id": "missing-version", "method": "tools/list"},
     {"jsonrpc": "2.0", "id": True, "method": "tools/list"},
+    {"jsonrpc": "2.0", "id": 1.5, "method": "tools/list"},
+    {"jsonrpc": "2.0", "id": -0.25, "method": "tools/list"},
     {"jsonrpc": "2.0", "id": {"not": "scalar"}, "method": "tools/list"},
     {"jsonrpc": "2.0", "id": ["not", "scalar"], "method": "tools/list"},
 ])
@@ -493,3 +495,57 @@ def test_notifications_without_ids_never_execute_or_reply(mcp_server, monkeypatc
         response = mcp_server.handle_message(message)
 
     assert response is None
+
+
+@pytest.mark.parametrize("message", [
+    {"jsonrpc": "2.0", "id": "missing-method"},
+    {"jsonrpc": "2.0", "id": "numeric-method", "method": 7},
+    {"jsonrpc": "2.0", "id": "object-method", "method": {"tool": "tools/list"}},
+])
+def test_missing_or_nonscalar_method_is_an_invalid_request_without_network(mcp_server, monkeypatch, message):
+    monkeypatch.setattr(mcp_server, "_open_without_redirect", lambda *_args, **_kwargs: pytest.fail("must not request"))
+    with mock.patch.dict(os.environ, ENV, clear=True):
+        response = mcp_server.handle_message(message)
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": None,
+        "error": {"code": -32600, "message": "invalid request"},
+    }
+
+
+@pytest.mark.parametrize("params", ["unexpected", ["unexpected"], None, {"unexpected": True}])
+def test_tools_list_rejects_present_nonempty_or_nonmapping_params_without_network(mcp_server, monkeypatch, params):
+    monkeypatch.setattr(mcp_server, "_open_without_redirect", lambda *_args, **_kwargs: pytest.fail("must not request"))
+    with mock.patch.dict(os.environ, ENV, clear=True):
+        response = mcp_server.handle_message({
+            "jsonrpc": "2.0", "id": "list-params", "method": "tools/list", "params": params,
+        })
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": "list-params",
+        "error": {"code": -32602, "message": "invalid params"},
+    }
+
+
+@pytest.mark.parametrize("message", [
+    {"jsonrpc": "2.0", "id": "absent-params", "method": "tools/list"},
+    {"jsonrpc": "2.0", "id": "empty-params", "method": "tools/list", "params": {}},
+])
+def test_tools_list_accepts_only_absent_or_empty_mapping_params(mcp_server, message):
+    response = mcp_server.handle_message(message)
+
+    assert response["id"] == message["id"]
+    assert response["result"]["tools"] == mcp_server.TOOLS
+
+
+@pytest.mark.parametrize("params", ["not-a-mapping", ["not-a-mapping"], None])
+def test_tools_call_nonmapping_params_remain_mcp_tool_errors(mcp_server, params):
+    response = mcp_server.handle_message({
+        "jsonrpc": "2.0", "id": "call-params", "method": "tools/call", "params": params,
+    })
+
+    assert response["id"] == "call-params"
+    assert response["result"]["isError"] is True
+    assert payload(response) == {"error": "flowzen_status_unverified"}
