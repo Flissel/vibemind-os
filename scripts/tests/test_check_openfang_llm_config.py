@@ -18,7 +18,9 @@ SPACE_REGISTRY = REPOSITORY_ROOT / "config" / "space_agent_registry.yml"
 
 
 def _run_checker(
-    root_config: Path, registry: Path = SPACE_REGISTRY
+    root_config: Path,
+    registry: Path = SPACE_REGISTRY,
+    brain_config: Path = BRAIN_CONFIG,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -27,7 +29,7 @@ def _run_checker(
             "--root-config",
             str(root_config),
             "--brain-config",
-            str(BRAIN_CONFIG),
+            str(brain_config),
             "--registry",
             str(registry),
         ],
@@ -345,3 +347,40 @@ def test_checker_rejects_scalar_agentfarm_role_without_crashing(tmp_path: Path) 
 
     assert result.returncode == 1
     assert "roles.space_agentfarm must be a mapping" in result.stderr
+
+
+def test_checker_rejects_agentfarm_dispatch_agent_drift(tmp_path: Path) -> None:
+    """The reserved chat identity cannot replace AgentFarm's inert legacy agent."""
+    registry = _write_registry_with_agentfarm_changes(
+        tmp_path, agent="brain-agentfarm"
+    )
+
+    result = _run_checker(ROOT_CONFIG, registry)
+
+    assert result.returncode == 1
+    assert "spaces.agentfarm.agent must be 'vibemind'" in result.stderr
+
+
+def test_checker_rejects_reserved_agent_in_central_and_brain_defaults(
+    tmp_path: Path,
+) -> None:
+    """The future chat identity is not a fallback for either config surface."""
+    registry = _write_registry_with_agentfarm_changes(
+        tmp_path, agent="brain-agentfarm"
+    )
+    config = yaml.safe_load(ROOT_CONFIG.read_text(encoding="utf-8"))
+    config["default"]["model"] = "openfang:brain-agentfarm"
+    root_config = tmp_path / "llm_config.yml"
+    root_config.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    brain_config_data = yaml.safe_load(BRAIN_CONFIG.read_text(encoding="utf-8"))
+    brain_config_data["default"]["model"] = "openfang:brain-agentfarm"
+    brain_config = tmp_path / "brain_llm_config.yml"
+    brain_config.write_text(
+        yaml.safe_dump(brain_config_data, sort_keys=False), encoding="utf-8"
+    )
+
+    result = _run_checker(root_config, registry, brain_config)
+
+    assert result.returncode == 1
+    assert "default.model must not use reserved AgentFarm identity" in result.stderr
+    assert "brain runtime config.default.model must not use reserved AgentFarm identity" in result.stderr

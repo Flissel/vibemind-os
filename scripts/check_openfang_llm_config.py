@@ -209,6 +209,8 @@ def main() -> int:
         errors.append("spaces.agentfarm must be a mapping")
         agentfarm = {}
     else:
+        if agentfarm.get("agent") != "vibemind":
+            errors.append("spaces.agentfarm.agent must be 'vibemind'")
         reserved_chat_agent = agentfarm.get("reserved_chat_agent")
         if agentfarm.get("enabled") is not False:
             errors.append(
@@ -251,6 +253,11 @@ def main() -> int:
     errors.extend(_validate_fungus_search_embedding(config))
 
     default = config.get("default", {})
+    if (
+        isinstance(default, dict)
+        and default.get("model") == f"openfang:{AGENTFARM_RESERVED_CHAT_AGENT}"
+    ):
+        errors.append("default.model must not use reserved AgentFarm identity")
     errors.extend(
         _validate_role("default", default, known_agents, allow_direct_exception=False)
     )
@@ -326,6 +333,14 @@ def main() -> int:
 
     errors.extend(_validate_provider_config(brain_config, "brain runtime config"))
     brain_default = brain_config.get("default")
+    if (
+        isinstance(brain_default, dict)
+        and brain_default.get("model")
+        == f"openfang:{AGENTFARM_RESERVED_CHAT_AGENT}"
+    ):
+        errors.append(
+            "brain runtime config.default.model must not use reserved AgentFarm identity"
+        )
     if brain_default != default:
         errors.append("brain runtime config.default must match the central default")
     else:
