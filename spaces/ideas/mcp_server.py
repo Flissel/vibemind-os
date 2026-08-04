@@ -260,6 +260,7 @@ def _normalize_connected_edge(
     edge_type: str,
     error: str,
     allow_reverse: bool,
+    require_edge_type_match: bool,
 ) -> dict[str, str]:
     """Accept exactly one attested edge row and expose only its contract fields."""
     if not isinstance(response, list) or len(response) != 1 or not isinstance(response[0], Mapping):
@@ -276,7 +277,7 @@ def _normalize_connected_edge(
         or not isinstance(actual_to_id, str)
         or not isinstance(actual_edge_type, str)
         or EDGE_TYPE_PATTERN.fullmatch(actual_edge_type) is None
-        or actual_edge_type != edge_type
+        or (require_edge_type_match and actual_edge_type != edge_type)
         or (actual_from_id, actual_to_id) not in (
             ((from_id, to_id), (to_id, from_id)) if allow_reverse else ((from_id, to_id),)
         )
@@ -319,6 +320,7 @@ def _read_existing_connected_edge(
             edge_type=edge_type,
             error="idea_connect_existing_unverified",
             allow_reverse=True,
+            require_edge_type_match=False,
         )
     return None
 
@@ -760,6 +762,7 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
             edge_type=edge_type,
             error="idea_connect_create_unverified",
             allow_reverse=False,
+            require_edge_type_match=True,
         )
     if name == "idea_disconnect":
         return _request("DELETE", "canvas_edges", params={"id": f"eq.{_required_string(arguments, 'edge_id')}"})

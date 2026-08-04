@@ -914,6 +914,28 @@ class IdeasMcpServerContractTests(unittest.TestCase):
             ("GET", "canvas_edges"),
         ])
 
+    def test_idea_connect_rejects_unsafe_persisted_existing_edge_type_without_posting(self) -> None:
+        server = load_server()
+        calls = []
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if path == "canvas_nodes":
+                return [{"id": kwargs["params"]["id"].removeprefix("eq.")}]
+            if path == "canvas_edges" and method == "GET":
+                return [{"id": "edge-unsafe", "from_node_id": "idea-1", "to_node_id": "idea-2", "edge_type": "blocks!"}]
+            self.fail(f"unexpected request: {method} {path}")
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            with self.assertRaisesRegex(server.ToolError, "^idea_connect_existing_unverified$"):
+                server.call_tool("idea_connect", {"from_id": "idea-1", "to_id": "idea-2"})
+
+        self.assertEqual([(method, path) for method, path, _kwargs in calls], [
+            ("GET", "canvas_nodes"),
+            ("GET", "canvas_nodes"),
+            ("GET", "canvas_edges"),
+        ])
+
     def test_idea_connect_fails_closed_for_malformed_or_mismatched_edge_representations(self) -> None:
         server = load_server()
 
