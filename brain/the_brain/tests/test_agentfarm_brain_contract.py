@@ -18,6 +18,7 @@ from core.capability_router import CapabilityRouter
 
 ROOT = Path(__file__).resolve().parents[3]
 SPACE_REGISTRY = ROOT / "config" / "space_agent_registry.yml"
+LLM_CONFIG = ROOT / "llm_config.yml.example"
 CAPABILITIES = Path(__file__).resolve().parents[1] / "data" / "capabilities.yaml"
 AGENT_MANIFEST = (
     Path(__file__).resolve().parents[1] / "configs" / "agents" / "brain-orchestrator.yaml"
@@ -64,6 +65,18 @@ def test_agentfarm_reserves_its_future_chat_identity_without_execution_scope():
     assert contract["enabled"] is False
     assert contract["mcp_servers"] == []
     assert contract["runtime"]["blocker"] == "missing_versioned_agentfarm_source"
+
+
+def test_agentfarm_llm_role_uses_the_reserved_chat_identity() -> None:
+    """LLM configuration may reserve chat identity but not create execution scope."""
+    contract = _space_contract()
+    config = yaml.safe_load(LLM_CONFIG.read_text(encoding="utf-8"))
+
+    assert contract["enabled"] is False
+    assert config["roles"]["space_agentfarm"]["provider"] == "openfang"
+    assert config["roles"]["space_agentfarm"]["model"] == (
+        f"openfang:{contract['reserved_chat_agent']}"
+    )
 
 
 def test_agentfarm_registry_is_disabled_until_runtime_source_exists():

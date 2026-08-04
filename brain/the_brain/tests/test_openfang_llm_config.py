@@ -8,12 +8,28 @@ import subprocess
 import sys
 from pathlib import Path
 
+import yaml
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 CHECKER = REPOSITORY_ROOT / "scripts" / "check_openfang_llm_config.py"
 ROOT_CONFIG = REPOSITORY_ROOT / "llm_config.yml.example"
 BRAIN_CONFIG = REPOSITORY_ROOT / "brain" / "the_brain" / "llm_config.yml"
 SHARED_SOURCE = REPOSITORY_ROOT / "shared" / "src"
+SPACE_REGISTRY = REPOSITORY_ROOT / "config" / "space_agent_registry.yml"
+
+
+def test_central_agentfarm_role_reserves_the_disabled_chat_identity() -> None:
+    """The central LLM config declares the disabled Space's future chat agent."""
+    config = yaml.safe_load(ROOT_CONFIG.read_text(encoding="utf-8"))
+    registry = yaml.safe_load(SPACE_REGISTRY.read_text(encoding="utf-8"))
+    agentfarm = registry["spaces"]["agentfarm"]
+
+    assert agentfarm["enabled"] is False
+    assert config["roles"]["space_agentfarm"]["provider"] == "openfang"
+    assert config["roles"]["space_agentfarm"]["model"] == (
+        f"openfang:{agentfarm['reserved_chat_agent']}"
+    )
 
 
 def test_checker_rejects_direct_provider_in_brain_runtime_config(tmp_path: Path) -> None:
