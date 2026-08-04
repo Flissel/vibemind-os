@@ -63,7 +63,10 @@ spaces:
       idea.update:              { tool: db_ideas_update, required_params: [idea_id] }
       idea.delete:              { tool: db_ideas_delete, required_params: [idea_id] }
       idea.find:                { tool: db_ideas_list,   required_params: [query] }
-      idea.connect:             { tool: db_canvas_edge_create, required_params: [from_id, to_id] }
+      idea.connect:
+        tool: idea_connect
+        required_params: [from_id, to_id]
+        execution: { kind: mcp, server: spaces-ideas }
       idea.auto_link:           { tool: db_canvas_edge_create, required_params: [] }
       idea.add_image:           { tool: db_ideas_update, required_params: [idea_id] }
       idea.current_space:       { tool: db_ideas_list,   required_params: [] }

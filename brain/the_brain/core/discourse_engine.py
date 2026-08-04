@@ -379,8 +379,67 @@ class DiscourseEngine:
         from core.capability_executor import extract_arg
 
         target = cap_match.execution_target
+        strict_mcp_arguments = None
+        if cap_match.capability == "idea_connect":
+            try:
+                from core.capability_targets import resolve_canonical_execution_target
+                _, deterministic_target = resolve_canonical_execution_target(
+                    cap_match.capability
+                )
+                if not deterministic_target:
+                    raise RuntimeError("idea.connect MCP target is unavailable")
+                target = deterministic_target
+                from core.idea_connect_contract import canonical_idea_connect_arguments
+                strict_mcp_arguments, clarification = canonical_idea_connect_arguments(
+                    intent_text
+                )
+                if strict_mcp_arguments is None:
+                    return {
+                        "ok": False,
+                        "intent": str(intent_text)[:300],
+                        "capability": cap_match.capability,
+                        "matched_pattern": cap_match.matched_pattern,
+                        "is_direct": True,
+                        "direct_target": target,
+                        "direct_error": clarification,
+                        "clarification_required": True,
+                        "tweets": [],
+                        "tweet_count": 0,
+                        "decision": {},
+                        "high_confidence": False,
+                        "ts": time.time(),
+                    }
+            except Exception as e:
+                return {
+                    "ok": False,
+                    "intent": str(intent_text)[:300],
+                    "capability": cap_match.capability,
+                    "matched_pattern": cap_match.matched_pattern,
+                    "is_direct": True,
+                    "direct_error": "canonical idea.connect MCP routing unavailable",
+                    "tweets": [],
+                    "tweet_count": 0,
+                    "decision": {},
+                    "high_confidence": False,
+                    "ts": time.time(),
+                }
         executor = self._get_executor(target)
         if executor is None or not executor.is_resolvable():
+            if strict_mcp_arguments is not None:
+                return {
+                    "ok": False,
+                    "intent": str(intent_text)[:300],
+                    "capability": cap_match.capability,
+                    "matched_pattern": cap_match.matched_pattern,
+                    "is_direct": True,
+                    "direct_target": target,
+                    "direct_error": "canonical idea.connect MCP target is unavailable",
+                    "tweets": [],
+                    "tweet_count": 0,
+                    "decision": {},
+                    "high_confidence": False,
+                    "ts": time.time(),
+                }
             # Fall back to normal discourse if target unresolvable.
             logger.warning(
                 f"[discourse] direct target {target!r} unresolvable, "
@@ -389,7 +448,7 @@ class DiscourseEngine:
             return self._fallback_to_broadcast(cap_match, intent_text, ctx_block)
 
         # Extract the positional arg (e.g. bubble name) from the user's intent
-        arg = extract_arg(intent_text, cap_match.arg_extractor)
+        arg = strict_mcp_arguments or extract_arg(intent_text, cap_match.arg_extractor)
         logger.info(
             f"[discourse] capability={cap_match.capability} direct-execute "
             f"target={target} arg={arg!r}"
@@ -398,7 +457,7 @@ class DiscourseEngine:
         # Call the python function directly. arg_kwarg (from YAML) shapes
         # the call: positional fn(arg) by default, or fn({arg_kwarg: arg})
         # for legacy voice-tools that take a params dict.
-        arg_kwarg = getattr(cap_match, "arg_kwarg", None)
+        arg_kwarg = None if strict_mcp_arguments is not None else getattr(cap_match, "arg_kwarg", None)
         if arg is not None:
             exec_result = executor.call_with_arg(arg, arg_kwarg=arg_kwarg)
         else:

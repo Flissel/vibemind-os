@@ -626,19 +626,15 @@
   match_patterns:
     - "(connect|link)\\s+(?:these\\s+|the\\s+)?(?:two\\s+)?ideas?"
     - "(verbinde|verknüpfe|linke)\\s+(?:die\\s+|zwei\\s+)?ideen"
-  execution_target: "supabase:idea.connect"  # Phase 11.U.C.10
-  arg_kwarg: idea1  # primary; idea2 re-extracted from _intent
+  execution_target: "mcp:brain-ideas:spaces-ideas:idea_connect"
   validator:
-    # truth: ground-truth (2026-06-24) — confirm an edge between the two ideas the op
-    # reports connecting now exists. {result_title}+{result_title2} from "'X' and 'Y'
-    # are now connected." -> resolve titles -> query canvas_edges (LIVE-verified).
-    kind: truth:supabase_edge
+    # Independently re-read the exact durable MCP receipt by ID.  No title
+    # resolution or default/LAN observer settings are valid for this route.
+    kind: truth:supabase_edge_ids
     on_fail: block
     require_verified: true
     postcondition:
-      check: supabase_edge
-      title_a: "{result_title}"
-      title_b: "{result_title2}"
+      check: supabase_edge_ids
       expect: present
 
 - capability: idea_explain

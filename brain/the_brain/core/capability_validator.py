@@ -485,10 +485,35 @@ class CapabilityValidator:
                   if k not in ("kind", "on_fail", "prompt_template", "postcondition")}
             if check:
                 pc["check"] = check
-        # Fill {arg}/{result}/{result_id} from the op so the check re-queries the
-        # exact row touched. If a placeholder can't resolve (left as "{...}"), we
-        # cannot observe honestly → UNVERIFIED (never a false REFUTED).
-        pc = self._template_postcondition(pc, arg, raw_result)
+        if kind == "truth:supabase_edge_ids":
+            # The canonical MCP tool returns a text JSON receipt.  Its IDs are
+            # the only valid source for the independent read-back; titles and
+            # arbitrary YAML filter fields would reintroduce the old path.
+            if not isinstance(pc, dict) or set(pc) - {"check", "expect"}:
+                return self._envelope(
+                    valid=False,
+                    reason="ground-truth UNVERIFIED: invalid ID edge postcondition",
+                    kind=kind, on_fail=on_fail, t0=t0, verified=None,
+                    verify_signal={"status": "unverified", "reason": "invalid ID edge postcondition"},
+                )
+            try:
+                from core.idea_connect_contract import extract_idea_connect_mcp_receipt
+                receipt, receipt_reason = extract_idea_connect_mcp_receipt(raw_result)
+            except Exception:
+                receipt, receipt_reason = None, "MCP result receipt is invalid"
+            if receipt is None:
+                return self._envelope(
+                    valid=False,
+                    reason=f"ground-truth UNVERIFIED: {receipt_reason}",
+                    kind=kind, on_fail=on_fail, t0=t0, verified=None,
+                    verify_signal={"status": "unverified", "reason": receipt_reason},
+                )
+            pc = {"check": "supabase_edge_ids", "expect": pc.get("expect", "present"), **receipt}
+        else:
+            # Fill {arg}/{result}/{result_id} from the op so the check re-queries the
+            # exact row touched. If a placeholder can't resolve (left as "{...}"), we
+            # cannot observe honestly → UNVERIFIED (never a false REFUTED).
+            pc = self._template_postcondition(pc, arg, raw_result)
         if any(isinstance(val, str) and "{" in val for val in pc.values()):
             return self._envelope(
                 valid=False,

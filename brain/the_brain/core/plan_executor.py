@@ -1264,6 +1264,7 @@ class PlanExecutor:
                     )
 
         single_plan_attempt = False
+        strict_mcp_arguments = None
 
         # A canonical Space event routes through its assigned OpenFang agent.
         # Agent YAMLs remain metadata, while config/space_agent_registry.yml is
@@ -1272,28 +1273,8 @@ class PlanExecutor:
         try:
             from .agent_yaml_registry import get_registry
             from . import intent_envelope as _envelope_mod
-            # Map capability name to event_id (e.g. bubble_create -> bubble.create)
-            cap_to_event = {
-                "bubble_create": "bubble.create",
-                "bubble_update": "bubble.update",
-                "bubble_evaluate": "bubble.evaluate",
-                "bubble_delete": "bubble.delete",
-                "idea_create": "idea.create",
-                "idea_add": "idea.create",
-                "idea_update": "idea.update",
-                "idea_expand": "idea.expand",
-                "idea_connect": "idea.connect",
-                "idea_to_project": "idea.to_project",
-                "code_generate": "code.generate",
-                "code_modify": "code.modify",
-                "code_status": "code.status",
-                "code_show": "code.show",
-                "code_preview_start": "code.preview.start",
-                "code_preview_stop": "code.preview.stop",
-                "code_list": "code.list",
-                "code_cancel": "code.cancel",
-            }
-            event_id = cap_to_event.get(hop.capability or "", hop.capability or "")
+            from .capability_targets import canonical_space_event_id
+            event_id = canonical_space_event_id(hop.capability or "")
             desktop_route = None
             if hop.capability in ("desktop_skill", "browser_automation"):
                 from .desktop_orchestration import DesktopOrchestration
@@ -1320,10 +1301,19 @@ class PlanExecutor:
             # MCP target is canonical and must replace every legacy target.
             canonical_agent = _canonical_space_event_agent(event_id)
             deterministic_target = None
+            if event_id == "idea.connect" and not canonical_agent:
+                return HopResult(
+                    step_id=hop.step_id, ok=False,
+                    error="canonical idea.connect MCP routing: registry agent unavailable",
+                    capability=hop.capability, target=target,
+                    rendered_arg=rendered_arg, kg_hits=kg_hits,
+                    elapsed_s=time.time() - t0,
+                    contract_pass=False, reward=-1.0,
+                )
             if canonical_agent:
                 try:
-                    from .capability_targets import resolve_registry_execution_target
-                    deterministic_target = resolve_registry_execution_target(event_id)
+                    from .capability_targets import resolve_canonical_execution_target
+                    _, deterministic_target = resolve_canonical_execution_target(event_id)
                 except Exception as e:
                     return HopResult(
                         step_id=hop.step_id, ok=False,
@@ -1335,7 +1325,21 @@ class PlanExecutor:
                     )
             if deterministic_target:
                 target = deterministic_target
-            elif event_id == "bubble.create":
+            if event_id == "idea.connect":
+                from .idea_connect_contract import canonical_idea_connect_arguments
+                strict_mcp_arguments, clarification = canonical_idea_connect_arguments(rendered_arg)
+                if strict_mcp_arguments is None:
+                    return HopResult(
+                        step_id=hop.step_id, ok=False,
+                        error=clarification,
+                        capability=hop.capability, target=target,
+                        rendered_arg=rendered_arg, kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False, reward=-1.0,
+                    )
+                rendered_arg = strict_mcp_arguments
+                hop.arg_kwarg = None
+            if event_id == "bubble.create" and not deterministic_target:
                 return HopResult(
                     step_id=hop.step_id, ok=False,
                     error=(
@@ -1478,6 +1482,8 @@ class PlanExecutor:
             # pick the right one (idea_format_mindmap vs _swot, etc).
             "_capability": getattr(hop, "capability", "") or "",
         }
+        if strict_mcp_arguments is not None:
+            _extra = {}
         # Dynamic tool scope (plans/dynamic-agent-tools-prompt.md, Phase 2):
         # Fuer openfang:-Agenten (skill-coordinator/desktop/openclaude/...) waehlt
         # der ToolScopeSelector pro Intent SEMANTISCH die relevanten Tools + baut
@@ -1502,7 +1508,9 @@ class PlanExecutor:
         plan_attempts = 1 if single_plan_attempt else max(1, hop.retries)
         for attempt in range(plan_attempts):
             try:
-                if hop.arg_kwarg:
+                if strict_mcp_arguments is not None:
+                    last = exe.call_with_arg(rendered_arg)
+                elif hop.arg_kwarg:
                     last = exe.call_with_arg(rendered_arg, arg_kwarg=hop.arg_kwarg,
                                              extra_params=_extra)
                 else:
