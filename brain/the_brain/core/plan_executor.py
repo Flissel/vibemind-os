@@ -1326,7 +1326,10 @@ class PlanExecutor:
             if deterministic_target:
                 target = deterministic_target
             if event_id == "idea.connect":
-                from .idea_connect_contract import canonical_idea_connect_arguments
+                from .idea_connect_contract import (
+                    canonical_idea_connect_arguments,
+                    canonical_idea_connect_validator_config,
+                )
                 strict_mcp_arguments, clarification = canonical_idea_connect_arguments(rendered_arg)
                 if strict_mcp_arguments is None:
                     return HopResult(
@@ -1339,6 +1342,16 @@ class PlanExecutor:
                     )
                 rendered_arg = strict_mcp_arguments
                 hop.arg_kwarg = None
+                if self.validator is None:
+                    return HopResult(
+                        step_id=hop.step_id, ok=False,
+                        error="canonical idea.connect validator unavailable",
+                        capability=hop.capability, target=target,
+                        rendered_arg=rendered_arg, kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False, reward=-1.0,
+                    )
+                hop.validator = canonical_idea_connect_validator_config()
             if event_id == "bubble.create" and not deterministic_target:
                 return HopResult(
                     step_id=hop.step_id, ok=False,
@@ -1548,15 +1561,33 @@ class PlanExecutor:
                     arg=rendered_arg,
                     raw_result=result_payload,
                 )
+                if strict_mcp_arguments is not None:
+                    if (not isinstance(verdict, dict)
+                            or verdict.get("valid") is not True
+                            or verdict.get("verified") is not True):
+                        ok = False
+                        err = "validator blocked: canonical idea.connect truth unverified"
+                        with self._lock:
+                            self.stats["validator_blocks"] += 1
                 # on_fail=block converts to overall fail
-                if verdict and not verdict.get("valid") and verdict.get("on_fail") == "block":
+                elif verdict and not verdict.get("valid") and verdict.get("on_fail") == "block":
                     ok = False
                     err = f"validator blocked: {verdict.get('reason')}"
                     with self._lock:
                         self.stats["validator_blocks"] += 1
             except Exception as e:
                 logger.warning(f"[plan-executor] validator threw: {e}")
-                verdict = {"valid": False, "reason": f"validator error: {e}"}
+                verdict = {
+                    "valid": False,
+                    "reason": "validator error",
+                    "kind": "truth:supabase_edge_ids" if strict_mcp_arguments is not None else "unknown",
+                    "on_fail": "block" if strict_mcp_arguments is not None else "report",
+                }
+                if strict_mcp_arguments is not None:
+                    ok = False
+                    err = "validator blocked: canonical idea.connect validator error"
+                    with self._lock:
+                        self.stats["validator_blocks"] += 1
 
         # Baustein D.1 — ground-truth → thought-stream. If the validator ran a
         # `truth:` check, push the WORLD-observed verdict (not the claim) back

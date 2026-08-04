@@ -3,20 +3,32 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Optional
 
 
 _ARGUMENT_FIELDS = {"from_id", "to_id", "edge_type"}
 _RECEIPT_FIELDS = {"edge_id", "from_id", "to_id", "edge_type"}
+_DURABLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
+_EDGE_TYPE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,63}$")
 
 
-def _safe_text(value: Any, *, maximum: int) -> Optional[str]:
-    if not isinstance(value, str):
-        return None
-    cleaned = value.strip()
-    if not cleaned or len(cleaned) > maximum or any(ord(char) < 32 for char in cleaned):
-        return None
-    return cleaned
+def is_canonical_durable_id(value: Any) -> bool:
+    return isinstance(value, str) and _DURABLE_ID_PATTERN.fullmatch(value) is not None
+
+
+def is_canonical_edge_type(value: Any) -> bool:
+    return isinstance(value, str) and _EDGE_TYPE_PATTERN.fullmatch(value) is not None
+
+
+def canonical_idea_connect_validator_config() -> dict[str, Any]:
+    """Return a fresh canonical validator config for every execution."""
+    return {
+        "kind": "truth:supabase_edge_ids",
+        "on_fail": "block",
+        "require_verified": True,
+        "postcondition": {"check": "supabase_edge_ids", "expect": "present"},
+    }
 
 
 def canonical_idea_connect_arguments(value: Any) -> tuple[Optional[dict[str, str]], str]:
@@ -30,16 +42,18 @@ def canonical_idea_connect_arguments(value: Any) -> tuple[Optional[dict[str, str
     if not isinstance(candidate, dict) or not set(candidate).issubset(_ARGUMENT_FIELDS):
         return None, "clarification required: only from_id, to_id, and edge_type are accepted"
 
-    from_id = _safe_text(candidate.get("from_id"), maximum=200)
-    to_id = _safe_text(candidate.get("to_id"), maximum=200)
-    if not from_id or not to_id:
+    from_id = candidate.get("from_id")
+    to_id = candidate.get("to_id")
+    if not is_canonical_durable_id(from_id) or not is_canonical_durable_id(to_id):
         return None, "clarification required: from_id and to_id"
+    if from_id == to_id:
+        return None, "clarification required: from_id and to_id must differ"
 
     arguments = {"from_id": from_id, "to_id": to_id}
     if "edge_type" in candidate:
-        edge_type = _safe_text(candidate.get("edge_type"), maximum=80)
-        if not edge_type:
-            return None, "clarification required: edge_type must be a nonblank string"
+        edge_type = candidate.get("edge_type")
+        if not is_canonical_edge_type(edge_type):
+            return None, "clarification required: edge_type is invalid"
         arguments["edge_type"] = edge_type
     return arguments, ""
 
@@ -64,7 +78,8 @@ def extract_idea_connect_mcp_receipt(value: Any) -> tuple[Optional[dict[str, str
     arguments, reason = canonical_idea_connect_arguments({
         name: receipt[name] for name in _ARGUMENT_FIELDS if name in receipt
     })
-    edge_id = _safe_text(receipt.get("edge_id"), maximum=200)
-    if arguments is None or edge_id is None or "edge_type" not in arguments:
+    edge_id = receipt.get("edge_id")
+    if (arguments is None or not is_canonical_durable_id(edge_id)
+            or "edge_type" not in arguments):
         return None, reason or "MCP result receipt is invalid"
     return {"edge_id": edge_id, **arguments}, ""

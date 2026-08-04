@@ -380,6 +380,7 @@ class DiscourseEngine:
 
         target = cap_match.execution_target
         strict_mcp_arguments = None
+        strict_validator_cfg = None
         if cap_match.capability == "idea_connect":
             try:
                 from core.capability_targets import resolve_canonical_execution_target
@@ -389,7 +390,10 @@ class DiscourseEngine:
                 if not deterministic_target:
                     raise RuntimeError("idea.connect MCP target is unavailable")
                 target = deterministic_target
-                from core.idea_connect_contract import canonical_idea_connect_arguments
+                from core.idea_connect_contract import (
+                    canonical_idea_connect_arguments,
+                    canonical_idea_connect_validator_config,
+                )
                 strict_mcp_arguments, clarification = canonical_idea_connect_arguments(
                     intent_text
                 )
@@ -409,6 +413,22 @@ class DiscourseEngine:
                         "high_confidence": False,
                         "ts": time.time(),
                     }
+                if getattr(self, "_validator", None) is None:
+                    return {
+                        "ok": False,
+                        "intent": str(intent_text)[:300],
+                        "capability": cap_match.capability,
+                        "matched_pattern": cap_match.matched_pattern,
+                        "is_direct": True,
+                        "direct_target": target,
+                        "direct_error": "canonical idea.connect validator unavailable",
+                        "tweets": [],
+                        "tweet_count": 0,
+                        "decision": {},
+                        "high_confidence": False,
+                        "ts": time.time(),
+                    }
+                strict_validator_cfg = canonical_idea_connect_validator_config()
             except Exception as e:
                 return {
                     "ok": False,
@@ -493,7 +513,11 @@ class DiscourseEngine:
         # the record under `validation`. on_fail='retry' triggers one
         # re-call; on_fail='block' converts the record to ok=False.
         validation = None
-        validator_cfg = getattr(cap_match, "validator", None)
+        validator_cfg = (
+            strict_validator_cfg
+            if strict_validator_cfg is not None
+            else getattr(cap_match, "validator", None)
+        )
         if validator_cfg is None and isinstance(getattr(cap_match, "feedback_loop", None), dict):
             # Backwards compat — accept inline 'validator' under feedback_loop too
             validator_cfg = cap_match.feedback_loop.get("validator")
@@ -510,11 +534,24 @@ class DiscourseEngine:
                 logger.warning(f"[discourse] validator threw: {e}")
                 validation = {
                     "valid": False,
-                    "reason": f"validator error: {e}",
+                    "reason": "validator error",
                     "kind": validator_cfg.get("kind") if isinstance(validator_cfg, dict) else "?",
-                    "on_fail": "report",
+                    "on_fail": "block" if strict_validator_cfg is not None else "report",
                     "elapsed_s": 0.0,
-                    "error": f"{type(e).__name__}: {e}",
+                    "error": "validator unavailable",
+                }
+
+            if strict_validator_cfg is not None and (
+                not isinstance(validation, dict)
+                or validation.get("valid") is not True
+                or validation.get("verified") is not True
+            ):
+                validation = {
+                    "valid": False,
+                    "reason": "canonical idea.connect truth unverified",
+                    "kind": "truth:supabase_edge_ids",
+                    "on_fail": "block",
+                    "elapsed_s": 0.0,
                 }
 
             # Retry once if validator said invalid AND on_fail='retry'
