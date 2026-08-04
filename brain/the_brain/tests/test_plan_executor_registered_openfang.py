@@ -237,7 +237,7 @@ def test_unregistered_capability_keeps_its_existing_target(monkeypatch):
     assert built_targets == ["direct:test:run"]
 
 
-def test_registered_minibook_event_preserves_structured_direct_target(monkeypatch):
+def test_registered_minibook_status_event_uses_structured_mcp_target(monkeypatch):
     built_targets = []
     _disable_kg_hits(monkeypatch)
     monkeypatch.setattr(
@@ -249,13 +249,14 @@ def test_registered_minibook_event_preserves_structured_direct_target(monkeypatc
         lambda target: built_targets.append(target) or _Executor({"ok": True, "result": {}}),
     )
 
-    target = "direct:spaces.minibook.tools.minibook_tools:status"
+    requested_target = "direct:spaces.minibook.tools.minibook_tools:status"
+    expected_target = "mcp:brain-knowledge:spaces-minibook:minibook_status"
     result = PlanExecutor()._exec_hop(
-        _hop(capability="minibook.status", target=target), {}
+        _hop(capability="minibook.status", target=requested_target), {}
     )
 
     assert result.ok is True
-    assert built_targets == [target]
+    assert built_targets == [expected_target]
 
 
 def test_registered_space_registry_load_failure_is_fail_closed(monkeypatch):

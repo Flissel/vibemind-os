@@ -189,12 +189,15 @@ spaces:
     prefixes: [minibook.]
     enabled: true
     description: "Minibook collaboration hub."
-    mcp_servers: [vibemind-db, fetch]
+    mcp_servers: [vibemind-db, fetch, spaces-minibook]
     default_context: [current_space, session_id]
     events:
       minibook.discuss:       { tool: fetch, required_params: [topic] }
       minibook.collaborate:   { tool: fetch, required_params: [topic] }
-      minibook.status:        { tool: fetch, required_params: [] }
+      minibook.status:
+        tool: minibook_status
+        required_params: []
+        execution: { kind: mcp, server: spaces-minibook }
       minibook.list_projects: { tool: fetch, required_params: [] }
 
   # ─── Schedule (APScheduler tasks) ───────────────────────────────────
