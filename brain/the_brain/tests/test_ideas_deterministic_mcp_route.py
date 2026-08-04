@@ -14,7 +14,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "brain" / "the_brain"))
 
-from core.capability_targets import resolve_registry_execution_target
+from core.capability_targets import McpExecutor, resolve_registry_execution_target
 from core.capability_router import CapabilityMatch
 from core.capability_validator import CapabilityValidator
 from core.discourse_engine import DiscourseEngine
@@ -34,6 +34,7 @@ CANONICAL_VALIDATOR = {
     "postcondition": {"check": "supabase_edge_ids", "expect": "present"},
 }
 CANONICAL_IDEA_CONNECT_TARGET = "mcp:brain-ideas:spaces-ideas:idea_connect"
+SEMANTIC_IDEA_CONNECT_ALIAS = "mcp: BRAIN-IDEAS : spaces_ideas : idea-connect "
 
 
 class _Executor:
@@ -90,6 +91,14 @@ def test_idea_connect_registry_declares_exact_canonical_mcp_target() -> None:
     assert resolve_registry_execution_target("idea.connect") == (
         "mcp:brain-ideas:spaces-ideas:idea_connect"
     )
+
+
+def test_semantic_ideas_alias_has_same_mcp_tool_identity() -> None:
+    canonical = McpExecutor(CANONICAL_IDEA_CONNECT_TARGET)
+    alias = McpExecutor(SEMANTIC_IDEA_CONNECT_ALIAS)
+
+    assert alias.agent_name.lower() == canonical.agent_name.lower()
+    assert alias.namespaced_tool == canonical.namespaced_tool
 
 
 def test_ideas_bridge_and_capability_have_no_legacy_title_or_supabase_contract() -> None:
@@ -187,15 +196,23 @@ def test_plan_idea_connect_rejects_legacy_or_extra_arguments_before_build(monkey
     assert built_targets == []
 
 
-@pytest.mark.parametrize("resolved_by_router", [False, True])
+@pytest.mark.parametrize(
+    ("resolved_by_router", "target"),
+    [
+        (False, CANONICAL_IDEA_CONNECT_TARGET),
+        (True, CANONICAL_IDEA_CONNECT_TARGET),
+        (False, SEMANTIC_IDEA_CONNECT_ALIAS),
+        (True, SEMANTIC_IDEA_CONNECT_ALIAS),
+    ],
+)
 def test_plan_rejects_canonical_ideas_target_for_non_idea_capability_before_build(
-    monkeypatch, resolved_by_router
+    monkeypatch, resolved_by_router, target
 ) -> None:
     built_targets: list[str] = []
 
     class _Router:
         def get_capability(self, _capability):
-            return {"execution_target": CANONICAL_IDEA_CONNECT_TARGET}
+            return {"execution_target": target}
 
     monkeypatch.setattr("core.plan_executor.PlanExecutor._capture_kg_hits", lambda *args: [])
     monkeypatch.setattr(
@@ -205,7 +222,7 @@ def test_plan_rejects_canonical_ideas_target_for_non_idea_capability_before_buil
         step_id="hostile-1",
         description="attempt canonical Ideas tool confusion",
         capability="custom_edge_alias",
-        execution_target=None if resolved_by_router else CANONICAL_IDEA_CONNECT_TARGET,
+        execution_target=None if resolved_by_router else target,
         arg_template=json.dumps({"from_id": "idea-1", "to_id": "idea-2"}),
     )
 
@@ -290,7 +307,10 @@ def test_discourse_idea_connect_overrides_stale_validator_and_blocks_exception()
     assert "sensitive validator failure" not in str(record)
 
 
-def test_discourse_rejects_canonical_ideas_target_for_non_idea_capability() -> None:
+@pytest.mark.parametrize(
+    "target", [CANONICAL_IDEA_CONNECT_TARGET, SEMANTIC_IDEA_CONNECT_ALIAS]
+)
+def test_discourse_rejects_canonical_ideas_target_for_non_idea_capability(target) -> None:
     executor = _Executor(_mcp_receipt())
     engine = _discourse_with_executor(executor, _RecordingValidator())
     engine._get_executor = lambda _target: (_ for _ in ()).throw(AssertionError("executor lookup"))
@@ -300,7 +320,7 @@ def test_discourse_rejects_canonical_ideas_target_for_non_idea_capability() -> N
         primary_names=[],
         supporting_names=[],
         matched_pattern="test",
-        execution_target=CANONICAL_IDEA_CONNECT_TARGET,
+        execution_target=target,
     )
 
     record = engine._handle_direct_capability(cap_match, "hostile", "")
