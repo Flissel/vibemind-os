@@ -11,6 +11,7 @@ _ARGUMENT_FIELDS = {"from_id", "to_id", "edge_type"}
 _RECEIPT_FIELDS = {"edge_id", "from_id", "to_id", "edge_type"}
 _DURABLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
 _EDGE_TYPE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,63}$")
+CANONICAL_IDEA_CONNECT_TARGET = "mcp:brain-ideas:spaces-ideas:idea_connect"
 
 
 def is_canonical_durable_id(value: Any) -> bool:

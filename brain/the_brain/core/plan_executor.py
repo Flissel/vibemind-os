@@ -1325,6 +1325,16 @@ class PlanExecutor:
                     )
             if deterministic_target:
                 target = deterministic_target
+            from .idea_connect_contract import CANONICAL_IDEA_CONNECT_TARGET
+            if target == CANONICAL_IDEA_CONNECT_TARGET and event_id != "idea.connect":
+                return HopResult(
+                    step_id=hop.step_id, ok=False,
+                    error="canonical Ideas MCP target is bound to idea.connect",
+                    capability=hop.capability, target=target,
+                    rendered_arg=rendered_arg, kg_hits=kg_hits,
+                    elapsed_s=time.time() - t0,
+                    contract_pass=False, reward=-1.0,
+                )
             if event_id == "idea.connect":
                 from .idea_connect_contract import (
                     canonical_idea_connect_arguments,

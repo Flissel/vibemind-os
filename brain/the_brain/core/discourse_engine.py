@@ -381,6 +381,23 @@ class DiscourseEngine:
         target = cap_match.execution_target
         strict_mcp_arguments = None
         strict_validator_cfg = None
+        from core.idea_connect_contract import CANONICAL_IDEA_CONNECT_TARGET
+        if (target == CANONICAL_IDEA_CONNECT_TARGET
+                and cap_match.capability != "idea_connect"):
+            return {
+                "ok": False,
+                "intent": str(intent_text)[:300],
+                "capability": cap_match.capability,
+                "matched_pattern": cap_match.matched_pattern,
+                "is_direct": True,
+                "direct_target": target,
+                "direct_error": "canonical Ideas MCP target is bound to idea.connect",
+                "tweets": [],
+                "tweet_count": 0,
+                "decision": {},
+                "high_confidence": False,
+                "ts": time.time(),
+            }
         if cap_match.capability == "idea_connect":
             try:
                 from core.capability_targets import resolve_canonical_execution_target
@@ -531,7 +548,10 @@ class DiscourseEngine:
                     raw_result=raw_result,
                 )
             except Exception as e:
-                logger.warning(f"[discourse] validator threw: {e}")
+                if strict_validator_cfg is not None:
+                    logger.warning("[discourse] canonical idea.connect validator threw")
+                else:
+                    logger.warning(f"[discourse] validator threw: {e}")
                 validation = {
                     "valid": False,
                     "reason": "validator error",
@@ -539,6 +559,11 @@ class DiscourseEngine:
                     "on_fail": "block" if strict_validator_cfg is not None else "report",
                     "elapsed_s": 0.0,
                     "error": "validator unavailable",
+                    "verified": None,
+                    "verify_signal": {
+                        "status": "unverified",
+                        "reason": "validator unavailable",
+                    },
                 }
 
             if strict_validator_cfg is not None and (
@@ -546,13 +571,18 @@ class DiscourseEngine:
                 or validation.get("valid") is not True
                 or validation.get("verified") is not True
             ):
-                validation = {
-                    "valid": False,
-                    "reason": "canonical idea.connect truth unverified",
-                    "kind": "truth:supabase_edge_ids",
-                    "on_fail": "block",
-                    "elapsed_s": 0.0,
-                }
+                original = dict(validation) if isinstance(validation, dict) else {}
+                original["valid"] = False
+                original["on_fail"] = "block"
+                original.setdefault("verified", None)
+                original.setdefault("verify_signal", {
+                    "status": "unverified",
+                    "reason": "validator unavailable",
+                })
+                original.setdefault("reason", "canonical idea.connect truth unverified")
+                original.setdefault("kind", "truth:supabase_edge_ids")
+                original.setdefault("elapsed_s", 0.0)
+                validation = original
 
             # Retry once if validator said invalid AND on_fail='retry'
             if validation and not validation.get("valid") and validation.get("on_fail") == "retry":
