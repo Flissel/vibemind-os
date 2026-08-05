@@ -4252,7 +4252,12 @@ class BrainChat:
                     except Exception as e:
                         logger.debug(f"reward to plan failed: {e}")
 
-    def send(self, message: str) -> BrainChatResponse:
+    def send(
+        self,
+        message: str,
+        *,
+        openfang_handoff_bundle: Optional[Dict[str, Any]] = None,
+    ) -> BrainChatResponse:
         """
         Send a message to the brain. This is THE entry point.
 
@@ -4327,7 +4332,13 @@ class BrainChat:
                             content=f"Plan {plan.plan_id} with {len(plan.hops)} hops: {plan.rationale[:120]}",
                             module="PlannerLLM", confidence=0.8,
                         ))
-                        exec_result = pe.execute(plan)
+                        if openfang_handoff_bundle is None:
+                            exec_result = pe.execute(plan)
+                        else:
+                            exec_result = pe.execute(
+                                plan,
+                                openfang_handoff_bundle=openfang_handoff_bundle,
+                            )
                         # Synthesize final user-facing answer
                         final_text = synth.synthesize(
                             intent=message,
@@ -5306,4 +5317,3 @@ class BrainChat:
                 self._micro_agent_pool.get_stats()
             )
         return stats
-
