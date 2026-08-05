@@ -12,11 +12,18 @@ def _mapping(value: object) -> Mapping[str, object]:
 
 
 def _validated_string_list(value: object) -> list[str]:
-    if not isinstance(value, list) or not all(
-        isinstance(server, str) and server for server in value
-    ):
+    if not isinstance(value, list):
         return []
-    return value
+
+    servers: list[str] = []
+    seen: set[str] = set()
+    for server in value:
+        if not isinstance(server, str) or not server.strip():
+            return []
+        if server not in seen:
+            seen.add(server)
+            servers.append(server)
+    return servers
 
 
 def extract_mcp_servers(manifest: Mapping[str, object]) -> list[str]:
@@ -36,6 +43,6 @@ def load_mcp_servers(path: str | os.PathLike[str]) -> list[str]:
     try:
         with open(path, "rb") as handle:
             manifest = tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         return []
     return extract_mcp_servers(manifest)

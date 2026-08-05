@@ -36,7 +36,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
-from core.openfang_agent_manifest import load_mcp_servers
+from core.openfang_agent_manifest import extract_mcp_servers, load_mcp_servers
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -58,7 +58,7 @@ def _load_openfang_agents(agents_dir: str | None = None) -> list[dict[str, objec
         try:
             with open(toml_path, "rb") as handle:
                 manifest = tomllib.load(handle)
-        except (OSError, tomllib.TOMLDecodeError):
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
             continue
 
         tags = manifest.get("tags", [])
@@ -73,7 +73,7 @@ def _load_openfang_agents(agents_dir: str | None = None) -> list[dict[str, objec
             "description": description if isinstance(description, str) else "",
             "tags": string_tags,
             "spaces": [space.replace("space:", "") for space in spaces_in_tags],
-            "mcp_servers": load_mcp_servers(toml_path),
+            "mcp_servers": extract_mcp_servers(manifest),
             "model": model if isinstance(model, str) else "",
         })
     return agents
@@ -3855,14 +3855,27 @@ async def agent_tools(request: Request, agent_name: str) -> JSONResponse:
     available' when default tool-resolution doesn't pick the right one.
     """
     try:
-        from core.mcp_discovery import get_discovery
         # Read agent.toml to get mcp_servers.
-        agent_dir = os.path.join(_OPENFANG_AGENTS_DIR, agent_name)
-        toml_path = os.path.join(agent_dir, "agent.toml")
+        if (
+            not agent_name
+            or agent_name in {".", ".."}
+            or "/" in agent_name
+            or "\\" in agent_name
+            or os.path.isabs(agent_name)
+        ):
+            return JSONResponse({"ok": False, "error": "agent not found"},
+                                status_code=404)
+        agents_root = Path(_OPENFANG_AGENTS_DIR).resolve()
+        agent_dir = (agents_root / agent_name).resolve()
+        if agent_dir.parent != agents_root:
+            return JSONResponse({"ok": False, "error": "agent not found"},
+                                status_code=404)
+        toml_path = agent_dir / "agent.toml"
         if not os.path.isfile(toml_path):
             return JSONResponse({"ok": False, "error": "agent not found"},
                                 status_code=404)
         mcp_servers = load_mcp_servers(toml_path)
+        from core.mcp_discovery import get_discovery
         discovery = get_discovery()
         tools_by_server = {}
         for srv in mcp_servers:
