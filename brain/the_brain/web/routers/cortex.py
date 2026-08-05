@@ -22,6 +22,30 @@ logger = logging.getLogger('brain.cortex')
 router = APIRouter()
 
 
+_OPENFANG_HANDOFF_DOCUMENTS = (
+    "channel_intent",
+    "brain_plan",
+    "space_execution_contracts",
+    "lifecycle",
+    "handoff",
+)
+
+
+def _server_handoff_bundle(request: Request) -> Dict[str, Any] | None:
+    """Return an upstream-provided handoff bundle without interpreting it.
+
+    The request body is intentionally not consulted: approval and cost
+    references are authority-bearing only when an upstream server component
+    has already attached the complete bundle to request state.
+    """
+    bundle = getattr(request.state, "openfang_handoff_bundle", None)
+    if not isinstance(bundle, dict):
+        return None
+    if not all(document in bundle for document in _OPENFANG_HANDOFF_DOCUMENTS):
+        return None
+    return bundle
+
+
 # ===================================================================
 # Route 1 — POST /api/cortex/chat
 # ===================================================================
@@ -64,7 +88,14 @@ async def cortex_chat(request: Request) -> JSONResponse:
             pass  # Non-critical — don't block chat
 
     try:
-        result = brain_chat.send(message)
+        handoff_bundle = _server_handoff_bundle(request)
+        if handoff_bundle is None:
+            result = brain_chat.send(message)
+        else:
+            result = brain_chat.send(
+                message,
+                openfang_handoff_bundle=handoff_bundle,
+            )
         return JSONResponse({
             **result.to_dict(),
             "timestamp": datetime.now().isoformat(),
