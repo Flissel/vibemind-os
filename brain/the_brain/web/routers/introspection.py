@@ -3642,7 +3642,6 @@ async def events_mapping(request: Request) -> JSONResponse:
                         tool, tool_description, tool_args, coverage}
     Plus: per-namespace stats, full agent list, full tool inventory.
     """
-    import os, re, json
     kg = getattr(request.app.state, "qdrant_kg", None)
     if kg is None:
         return JSONResponse({"events": [], "agents": [], "tools": [],
@@ -3682,9 +3681,8 @@ async def events_mapping(request: Request) -> JSONResponse:
         # 2. Read OpenFang agent manifests from filesystem
         try:
             agents = _load_openfang_agents()
-        except Exception as e:
+        except Exception:
             agents = []
-            err_agents = str(e)
 
         # 3. Compute namespace -> default agent (legacy heuristic) for fallback.
         # Events use singular namespaces (bubble.create) but agents use plural
