@@ -51,12 +51,19 @@ def _write_idea_mcp_registry(tmp_path, *, missing: str | None = None) -> Path:
     lines.extend(
         [
             "    enabled: true",
+            "    mcp_servers: [spaces-ideas]",
+            "    mcp_tools:",
+            "      spaces-ideas: [db_ideas_create]",
             "    events:",
             "      idea.create:",
         ]
     )
     if missing != "tool":
         lines.append("        tool: db_ideas_create")
+    if missing != "approval_ref":
+        lines.append("        approval_ref: approval:test")
+    if missing != "cost_ref":
+        lines.append("        cost_ref: cost:test")
     lines.extend(["        execution:", "          kind: mcp"])
     if missing != "server":
         lines.append("          server: spaces-ideas")
@@ -305,7 +312,7 @@ def test_deterministic_idea_create_overrides_legacy_supabase_target(monkeypatch,
     assert built_targets == ["mcp:brain-ideas:spaces-ideas:db_ideas_create"]
 
 
-@pytest.mark.parametrize("missing", ["agent", "server", "tool"])
+@pytest.mark.parametrize("missing", ["agent", "server", "tool", "approval_ref", "cost_ref"])
 def test_deterministic_idea_create_missing_mcp_identity_fails_closed(
     monkeypatch, tmp_path, missing
 ):
@@ -329,6 +336,76 @@ def test_deterministic_idea_create_missing_mcp_identity_fails_closed(
     assert result.ok is False
     assert "canonical deterministic MCP routing" in (result.error or "")
     assert missing in (result.error or "")
+    assert built_targets == []
+
+
+def test_deterministic_mcp_server_outside_agent_scope_fails_before_executor(
+    monkeypatch, tmp_path
+):
+    built_targets = []
+    _disable_kg_hits(monkeypatch)
+    registry = _write_idea_mcp_registry(tmp_path)
+    registry.write_text(
+        registry.read_text(encoding="utf-8").replace(
+            "    mcp_servers: [spaces-ideas]\n", "    mcp_servers: [vibemind-db]\n"
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("core.capability_targets._space_registry_path", lambda: registry)
+    monkeypatch.setattr("core.plan_executor._canonical_space_event_agent", lambda _: "brain-ideas")
+    monkeypatch.setattr(
+        "core.capability_targets.build_executor",
+        lambda target: built_targets.append(target) or _Executor({"ok": True, "result": {}}),
+    )
+
+    result = PlanExecutor()._exec_hop(_idea_hop(), {})
+
+    assert result.ok is False
+    assert "mcp_servers" in (result.error or "")
+    assert built_targets == []
+
+
+def test_deterministic_unknown_mcp_tool_fails_before_executor(monkeypatch, tmp_path):
+    built_targets = []
+    _disable_kg_hits(monkeypatch)
+    registry = _write_idea_mcp_registry(tmp_path)
+    registry.write_text(
+        registry.read_text(encoding="utf-8").replace(
+            "        tool: db_ideas_create\n", "        tool: unknown_tool\n"
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("core.capability_targets._space_registry_path", lambda: registry)
+    monkeypatch.setattr("core.plan_executor._canonical_space_event_agent", lambda _: "brain-ideas")
+    monkeypatch.setattr(
+        "core.capability_targets.build_executor",
+        lambda target: built_targets.append(target) or _Executor({"ok": True, "result": {}}),
+    )
+
+    result = PlanExecutor()._exec_hop(_idea_hop(), {})
+
+    assert result.ok is False
+    assert "mcp_tools" in (result.error or "")
+    assert built_targets == []
+
+
+def test_deterministic_mcp_agent_scope_drift_fails_before_executor(
+    monkeypatch, tmp_path
+):
+    built_targets = []
+    _disable_kg_hits(monkeypatch)
+    registry = _write_idea_mcp_registry(tmp_path)
+    monkeypatch.setattr("core.capability_targets._space_registry_path", lambda: registry)
+    monkeypatch.setattr("core.plan_executor._canonical_space_event_agent", lambda _: "brain-other")
+    monkeypatch.setattr(
+        "core.capability_targets.build_executor",
+        lambda target: built_targets.append(target) or _Executor({"ok": True, "result": {}}),
+    )
+
+    result = PlanExecutor()._exec_hop(_idea_hop(), {})
+
+    assert result.ok is False
+    assert "agent scope drift" in (result.error or "")
     assert built_targets == []
 
 

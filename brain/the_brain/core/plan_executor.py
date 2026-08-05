@@ -1324,6 +1324,19 @@ class PlanExecutor:
                         contract_pass=False, reward=-1.0,
                     )
             if deterministic_target:
+                expected_target_prefix = f"mcp:{canonical_agent}:"
+                if not deterministic_target.startswith(expected_target_prefix):
+                    return HopResult(
+                        step_id=hop.step_id, ok=False,
+                        error=(
+                            "canonical deterministic MCP routing: agent scope drift "
+                            f"for '{event_id}'"
+                        ),
+                        capability=hop.capability, target=target,
+                        rendered_arg=rendered_arg, kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False, reward=-1.0,
+                    )
                 target = deterministic_target
             from .idea_connect_contract import is_idea_connect_mcp_target
             if is_idea_connect_mcp_target(target) and event_id != "idea.connect":

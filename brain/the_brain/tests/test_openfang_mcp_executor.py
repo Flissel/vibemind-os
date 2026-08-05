@@ -53,6 +53,8 @@ def test_bubble_create_target_calls_openfang_mcp_with_bound_agent_authority(monk
         "Authorization": "Bearer test-token",
         "Content-Type": "application/json",
         "X-OpenFang-Agent-Id": "agent-uuid",
+        "X-OpenFang-Approval-Ref": "approval:openfang-mcp-v1",
+        "X-OpenFang-Cost-Ref": "cost:openfang-mcp-v1",
     }
     assert captured["post"]["json"]["jsonrpc"] == "2.0"
     assert captured["post"]["json"]["method"] == "tools/call"

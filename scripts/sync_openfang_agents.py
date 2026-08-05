@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -104,7 +105,77 @@ def _skip_reason(space: str, spec: dict) -> str | None:
     return None
 
 
+def validate_mcp_authority() -> list[str]:
+    """Validate every registry-declared MCP event before generating agents.
+
+    ``mcp_allowed.servers`` is generated exclusively from ``mcp_servers``.
+    A deterministic event must therefore declare a canonical agent, an
+    explicit tool, an allowed server, and opaque approval/cost provenance.
+    """
+    with open(REGISTRY, "r", encoding="utf-8") as f:
+        data: dict[str, Any] = yaml.safe_load(f) or {}
+    spaces = data.get("spaces", {})
+    if not isinstance(spaces, dict):
+        return ["registry spaces must be a mapping"]
+
+    errors: list[str] = []
+    for space_name, space in spaces.items():
+        if not isinstance(space, dict):
+            errors.append(f"space {space_name!r} must be a mapping")
+            continue
+        events = space.get("events", {})
+        if not isinstance(events, dict):
+            continue
+        allowed_servers = space.get("mcp_servers", [])
+        if not isinstance(allowed_servers, list):
+            allowed_servers = []
+        allowed = {
+            value.strip() for value in allowed_servers
+            if isinstance(value, str) and value.strip()
+        }
+        allowed_tools_by_server = space.get("mcp_tools", {})
+        if not isinstance(allowed_tools_by_server, dict):
+            allowed_tools_by_server = {}
+        for event_name, event in events.items():
+            if not isinstance(event, dict):
+                continue
+            execution = event.get("execution")
+            if not isinstance(execution, dict) or execution.get("kind") != "mcp":
+                continue
+            required = {
+                "agent": space.get("agent"),
+                "server": execution.get("server"),
+                "tool": event.get("tool"),
+                "approval_ref": event.get("approval_ref"),
+                "cost_ref": event.get("cost_ref"),
+            }
+            for name, value in required.items():
+                if not isinstance(value, str) or not value.strip():
+                    errors.append(f"{space_name}.{event_name} missing {name}")
+            server = required["server"]
+            if isinstance(server, str) and server.strip() and server.strip() not in allowed:
+                errors.append(
+                    f"{space_name}.{event_name} server {server.strip()!r} is not in mcp_servers"
+                )
+            tool = required["tool"]
+            server_tools = allowed_tools_by_server.get(server.strip()) if isinstance(server, str) else None
+            allowed_tools = {
+                value.strip() for value in server_tools
+                if isinstance(value, str) and value.strip()
+            } if isinstance(server_tools, list) else set()
+            if not isinstance(tool, str) or not tool.strip() or tool.strip() not in allowed_tools:
+                errors.append(
+                    f"{space_name}.{event_name} tool {tool!r} is not in mcp_tools for {server!r}"
+                )
+    return errors
+
+
 def sync(dry_run: bool = False, check: bool = False) -> int:
+    authority_errors = validate_mcp_authority()
+    if authority_errors:
+        for error in authority_errors:
+            print(f"  INVALID {error}")
+        return 1
     with open(REGISTRY, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     spaces = data.get("spaces", {}) or {}

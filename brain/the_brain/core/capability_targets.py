@@ -33,6 +33,7 @@ import os
 import re
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -850,21 +851,28 @@ class McpExecutor(_BaseRemoteExecutor):
 
     def _call(self, payload: Dict[str, Any]) -> Any:
         base, api_key = self._configuration()
+        authority = find_registered_mcp_authority(
+            self.agent_name, self.server, self.tool
+        )
         control_headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {api_key}",
         }
         agent_id = self._resolve_agent_id(base, control_headers)
         request_id = f"brain-mcp-{uuid.uuid4().hex}"
+        execution_headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "X-OpenFang-Agent-Id": agent_id,
+        }
+        if authority is not None:
+            execution_headers["X-OpenFang-Approval-Ref"] = authority.approval_ref
+            execution_headers["X-OpenFang-Cost-Ref"] = authority.cost_ref
         response = self._request_json(
             "POST",
             f"{base}/mcp",
-            headers={
-                "Accept": "application/json",
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "X-OpenFang-Agent-Id": agent_id,
-            },
+            headers=execution_headers,
             payload={
                 "jsonrpc": "2.0",
                 "id": request_id,
@@ -918,6 +926,100 @@ def _space_registry_path() -> Path:
     return Path(__file__).resolve().parents[3] / "config" / "space_agent_registry.yml"
 
 
+@dataclass(frozen=True)
+class McpAuthority:
+    agent: str
+    server: str
+    tool: str
+    approval_ref: str
+    cost_ref: str
+
+    @property
+    def target(self) -> str:
+        return f"mcp:{self.agent}:{self.server}:{self.tool}"
+
+
+def _load_space_registry() -> Dict[str, Any]:
+    path = _space_registry_path()
+    if not path.is_file():
+        raise RuntimeError(f"canonical space registry unavailable: {path}")
+    with path.open("r", encoding="utf-8") as handle:
+        document = yaml.safe_load(handle) or {}
+    spaces = document.get("spaces") or {}
+    if not isinstance(spaces, dict):
+        raise RuntimeError("canonical space registry has no spaces")
+    return spaces
+
+
+def _mcp_authority(
+    event_id: str, space_id: str, space: Dict[str, Any], spec: Dict[str, Any]
+) -> McpAuthority:
+    execution = spec.get("execution")
+    if not isinstance(execution, dict) or execution.get("kind") != "mcp":
+        raise RuntimeError(f"{event_id!r} is not a deterministic MCP event")
+    values = {
+        "agent": space.get("agent"),
+        "server": execution.get("server"),
+        "tool": spec.get("tool"),
+        "approval_ref": spec.get("approval_ref"),
+        "cost_ref": spec.get("cost_ref"),
+    }
+    missing = [
+        name for name, value in values.items()
+        if not isinstance(value, str) or not value.strip()
+    ]
+    if missing:
+        raise RuntimeError(
+            f"deterministic MCP metadata for '{event_id}' is missing "
+            f"{', '.join(missing)}"
+        )
+    allowed_servers = space.get("mcp_servers")
+    if not isinstance(allowed_servers, list) or values["server"].strip() not in {
+        item.strip() for item in allowed_servers
+        if isinstance(item, str) and item.strip()
+    }:
+        raise RuntimeError(
+            f"deterministic MCP server for '{event_id}' is not in "
+            f"{space_id}.mcp_servers"
+        )
+    allowed_tools_by_server = space.get("mcp_tools")
+    server_tools = (
+        allowed_tools_by_server.get(values["server"].strip())
+        if isinstance(allowed_tools_by_server, dict) else None
+    )
+    if not isinstance(server_tools, list) or values["tool"].strip() not in {
+        item.strip() for item in server_tools
+        if isinstance(item, str) and item.strip()
+    }:
+        raise RuntimeError(
+            f"deterministic MCP tool for '{event_id}' is not in "
+            f"{space_id}.mcp_tools for {values['server'].strip()!r}"
+        )
+    return McpAuthority(**{name: value.strip() for name, value in values.items()})
+
+
+def find_registered_mcp_authority(
+    agent: str, server: str, tool: str,
+) -> Optional[McpAuthority]:
+    """Return provenance for a registered canonical MCP tuple, if any."""
+    for space_id, space in _load_space_registry().items():
+        if not isinstance(space, dict):
+            continue
+        events = space.get("events") or {}
+        if not isinstance(events, dict):
+            continue
+        for event_id, spec in events.items():
+            if not isinstance(spec, dict):
+                continue
+            execution = spec.get("execution")
+            if not isinstance(execution, dict) or execution.get("kind") != "mcp":
+                continue
+            authority = _mcp_authority(str(event_id), str(space_id), space, spec)
+            if (authority.agent, authority.server, authority.tool) == (agent, server, tool):
+                return authority
+    return None
+
+
 def _n8n_event_specs() -> Dict[str, Dict[str, Any]]:
     path = _space_registry_path()
     if not path.is_file():
@@ -943,15 +1045,7 @@ def resolve_registry_execution_target(capability: str) -> Optional[str]:
     if capability.startswith("n8n."):
         return f"n8n-mcp:{capability}" if capability in _n8n_event_specs() else None
 
-    path = _space_registry_path()
-    if not path.is_file():
-        raise RuntimeError(f"canonical space registry unavailable: {path}")
-    with path.open("r", encoding="utf-8") as handle:
-        document = yaml.safe_load(handle) or {}
-
-    spaces = document.get("spaces") or {}
-    if not isinstance(spaces, dict):
-        raise RuntimeError("canonical space registry has no spaces")
+    spaces = _load_space_registry()
     for space_id, space in spaces.items():
         if not isinstance(space, dict):
             continue
@@ -962,20 +1056,7 @@ def resolve_registry_execution_target(capability: str) -> Optional[str]:
         execution = spec.get("execution")
         if not isinstance(execution, dict) or execution.get("kind") != "mcp":
             return None
-        agent = space.get("agent")
-        server = execution.get("server")
-        tool = spec.get("tool")
-        missing = [
-            name for name, value in (
-                ("agent", agent), ("server", server), ("tool", tool),
-            ) if not isinstance(value, str) or not value.strip()
-        ]
-        if missing:
-            raise RuntimeError(
-                f"deterministic MCP metadata for '{capability}' is missing "
-                f"{', '.join(missing)}"
-            )
-        return f"mcp:{agent.strip()}:{server.strip()}:{tool.strip()}"
+        return _mcp_authority(capability, str(space_id), space, spec).target
     return None
 
 
