@@ -1,8 +1,9 @@
 """Sync OpenFang agent.toml files from space_agent_registry.yml.
 
 Reads `config/space_agent_registry.yml` and for each space writes
-`openfang/agents/<agent_name>/agent.toml` with the correct [mcp_allowed]
-scope. Existing files are updated in place; new files are created.
+`openfang/agents/<agent_name>/agent.toml` with the correct top-level
+`mcp_servers` scope from OpenFang's `AgentManifest`. Existing files are
+updated in place; new files are created.
 
 Usage:
   python scripts/sync_openfang_agents.py              # write + report
@@ -30,6 +31,7 @@ description = "{description}"
 author = "vibemind"
 module = "builtin:chat"
 tags = ["vibemind", "brain-routed", "space:{space}"]
+mcp_servers = [{mcp_list}]
 
 [model]
 provider = "openai"
@@ -66,9 +68,6 @@ tools = ["memory_store", "memory_recall"]
 network = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*"]
-
-[mcp_allowed]
-servers = [{mcp_list}]
 """
 
 
@@ -105,10 +104,45 @@ def _skip_reason(space: str, spec: dict) -> str | None:
     return None
 
 
+def validate_generated_agent_mcp_scopes() -> list[str]:
+    """Require non-empty top-level AgentManifest MCP scopes for generated agents.
+
+    OpenFang interprets an empty ``mcp_servers`` list as every connected MCP
+    server. A no-MCP agent must therefore opt in explicitly with ``no_mcp:
+    true`` and an empty list.
+    """
+    with open(REGISTRY, "r", encoding="utf-8") as f:
+        data: dict[str, Any] = yaml.safe_load(f) or {}
+    spaces = data.get("spaces", {})
+    if not isinstance(spaces, dict):
+        return ["registry spaces must be a mapping"]
+
+    errors: list[str] = []
+    for space_name, spec in spaces.items():
+        if not isinstance(spec, dict) or _skip_reason(str(space_name), spec):
+            continue
+        servers = spec.get("mcp_servers")
+        agent = spec.get("agent")
+        if spec.get("no_mcp") is True:
+            if servers != []:
+                errors.append(
+                    f"{space_name} declares no_mcp but must use an empty mcp_servers list"
+                )
+            continue
+        if not isinstance(servers, list) or not all(
+            isinstance(server, str) and server.strip() for server in servers
+        ) or not servers:
+            errors.append(
+                f"{space_name} requires non-empty mcp_servers for generated agent {agent}"
+            )
+    return errors
+
+
 def validate_mcp_authority() -> list[str]:
     """Validate every registry-declared MCP event before generating agents.
 
-    ``mcp_allowed.servers`` is generated exclusively from ``mcp_servers``.
+    Top-level AgentManifest ``mcp_servers`` is generated exclusively from
+    the registry allowlist.
     A deterministic event must therefore declare a canonical agent, an
     explicit tool, an allowed server, and opaque approval/cost provenance.
     """
@@ -174,9 +208,11 @@ def validate_mcp_authority() -> list[str]:
 
 
 def sync(dry_run: bool = False, check: bool = False) -> int:
-    authority_errors = validate_mcp_authority()
-    if authority_errors:
-        for error in authority_errors:
+    validation_errors = (
+        validate_generated_agent_mcp_scopes() + validate_mcp_authority()
+    )
+    if validation_errors:
+        for error in validation_errors:
             print(f"  INVALID {error}")
         return 1
     with open(REGISTRY, "r", encoding="utf-8") as f:
