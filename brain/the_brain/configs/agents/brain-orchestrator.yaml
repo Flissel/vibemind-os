@@ -3,4 +3,4 @@ description: Dormant AgentFarm orchestrator manifest
 default_namespace: ''
 events: []
 fallback_agent: ''
-notes: AgentFarm runtime source is missing; do not claim events until a real worker is deployed.
+notes: AgentFarm versioned source exists; persistent runtime missing; do not claim events until a real worker is deployed.

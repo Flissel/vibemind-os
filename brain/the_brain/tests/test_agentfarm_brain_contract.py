@@ -6,6 +6,7 @@ Brain may understand AgentFarm intents but must not advertise an executable
 target or route them to generic database tools.
 """
 
+import ast
 import json
 from pathlib import Path
 import sys
@@ -134,6 +135,7 @@ def test_agentfarm_source_has_minimal_dependency_free_python_metadata():
     package_init = (RUNTIME_SOURCE / "agentfarm" / "__init__.py").read_text(
         encoding="utf-8"
     )
+    package_tree = ast.parse(package_init)
 
     assert metadata == {
         "project": {
@@ -143,8 +145,11 @@ def test_agentfarm_source_has_minimal_dependency_free_python_metadata():
             "dependencies": [],
         }
     }
-    assert "def " not in package_init
-    assert "import " not in package_init
+    assert len(package_tree.body) == 1
+    statement = package_tree.body[0]
+    assert isinstance(statement, ast.Expr)
+    assert isinstance(statement.value, ast.Constant)
+    assert isinstance(statement.value.value, str)
 
 
 def test_agentfarm_events_name_real_operations_not_generic_database_tools():
@@ -193,9 +198,17 @@ def test_disabled_capabilities_are_not_routable(tmp_path):
 def test_removed_agentfarm_worker_does_not_claim_events():
     manifest = yaml.safe_load(AGENT_MANIFEST.read_text(encoding="utf-8"))
 
-    assert manifest["events"] == []
-    assert manifest["default_namespace"] == ""
-    assert "runtime source is missing" in manifest["notes"]
+    assert manifest == {
+        "agent": "brain-orchestrator",
+        "description": "Dormant AgentFarm orchestrator manifest",
+        "default_namespace": "",
+        "events": [],
+        "fallback_agent": "",
+        "notes": (
+            "AgentFarm versioned source exists; persistent runtime missing; "
+            "do not claim events until a real worker is deployed."
+        ),
+    }
 
 
 def test_removed_autogen_space_is_not_resurrected_by_the_versioned_source():
