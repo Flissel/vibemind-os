@@ -850,10 +850,15 @@ class McpExecutor(_BaseRemoteExecutor):
         )
 
     def _call(self, payload: Dict[str, Any]) -> Any:
-        base, api_key = self._configuration()
         authority = find_registered_mcp_authority(
             self.agent_name, self.server, self.tool
         )
+        if authority is None:
+            raise PermissionError(
+                "MCP agent/server/tool tuple is not registered; execution denied"
+            )
+        tool_payload, provenance = _extract_mcp_provenance(payload)
+        base, api_key = self._configuration()
         control_headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {api_key}",
@@ -866,9 +871,8 @@ class McpExecutor(_BaseRemoteExecutor):
             "Content-Type": "application/json",
             "X-OpenFang-Agent-Id": agent_id,
         }
-        if authority is not None:
-            execution_headers["X-OpenFang-Approval-Ref"] = authority.approval_ref
-            execution_headers["X-OpenFang-Cost-Ref"] = authority.cost_ref
+        execution_headers["X-OpenFang-Approval-Ref"] = provenance["approval_ref"]
+        execution_headers["X-OpenFang-Cost-Ref"] = provenance["cost_ref"]
         response = self._request_json(
             "POST",
             f"{base}/mcp",
@@ -877,7 +881,7 @@ class McpExecutor(_BaseRemoteExecutor):
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "method": "tools/call",
-                "params": {"name": self.namespaced_tool, "arguments": payload},
+                "params": {"name": self.namespaced_tool, "arguments": tool_payload},
             },
             # Do not retry tools/call: the outcome may be unknown after a
             # transport failure and the tool itself may have mutated state.
@@ -931,8 +935,6 @@ class McpAuthority:
     agent: str
     server: str
     tool: str
-    approval_ref: str
-    cost_ref: str
 
     @property
     def target(self) -> str:
@@ -961,8 +963,6 @@ def _mcp_authority(
         "agent": space.get("agent"),
         "server": execution.get("server"),
         "tool": spec.get("tool"),
-        "approval_ref": spec.get("approval_ref"),
-        "cost_ref": spec.get("cost_ref"),
     }
     missing = [
         name for name, value in values.items()
@@ -972,6 +972,11 @@ def _mcp_authority(
         raise RuntimeError(
             f"deterministic MCP metadata for '{event_id}' is missing "
             f"{', '.join(missing)}"
+        )
+    if spec.get("required_provenance") != ["approval_ref", "cost_ref"]:
+        raise RuntimeError(
+            f"deterministic MCP event '{event_id}' requires closed "
+            "required_provenance [approval_ref, cost_ref]"
         )
     allowed_servers = space.get("mcp_servers")
     if not isinstance(allowed_servers, list) or values["server"].strip() not in {
@@ -1001,7 +1006,7 @@ def _mcp_authority(
 def find_registered_mcp_authority(
     agent: str, server: str, tool: str,
 ) -> Optional[McpAuthority]:
-    """Return provenance for a registered canonical MCP tuple, if any."""
+    """Return static allowlist identity for a registered MCP tuple, if any."""
     for space_id, space in _load_space_registry().items():
         if not isinstance(space, dict):
             continue
@@ -1018,6 +1023,22 @@ def find_registered_mcp_authority(
             if (authority.agent, authority.server, authority.tool) == (agent, server, tool):
                 return authority
     return None
+
+
+def _extract_mcp_provenance(
+    payload: Dict[str, Any],
+) -> tuple[Dict[str, Any], Dict[str, str]]:
+    """Extract invocation-specific provenance without exposing it to the tool."""
+    tool_payload = dict(payload)
+    provenance: Dict[str, str] = {}
+    for key in ("approval_ref", "cost_ref"):
+        value = tool_payload.pop(key, None)
+        if not isinstance(value, str) or not value.strip():
+            raise PermissionError(
+                f"MCP invocation requires non-empty {key}; execution denied"
+            )
+        provenance[key] = value.strip()
+    return tool_payload, provenance
 
 
 def _n8n_event_specs() -> Dict[str, Dict[str, Any]]:

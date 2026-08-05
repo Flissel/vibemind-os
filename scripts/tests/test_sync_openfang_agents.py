@@ -16,7 +16,7 @@ def _load_sync_module():
     return module
 
 
-def test_registry_mcp_authority_requires_allowed_server_and_opaque_provenance(tmp_path, monkeypatch):
+def test_registry_mcp_authority_requires_allowed_server_and_provenance_contract(tmp_path, monkeypatch):
     module = _load_sync_module()
     registry = tmp_path / "space_agent_registry.yml"
     registry.write_text(
@@ -41,5 +41,4 @@ spaces:
 
     assert any("mcp_servers" in error for error in errors)
     assert any("mcp_tools" in error for error in errors)
-    assert any("approval_ref" in error for error in errors)
-    assert any("cost_ref" in error for error in errors)
+    assert any("required_provenance" in error for error in errors)

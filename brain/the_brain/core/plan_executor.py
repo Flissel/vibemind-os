@@ -1518,8 +1518,17 @@ class PlanExecutor:
             # pick the right one (idea_format_mindmap vs _swot, etc).
             "_capability": getattr(hop, "capability", "") or "",
         }
+        mcp_provenance = {
+            key: plan_ctx.get(key)
+            for key in ("approval_ref", "cost_ref")
+            if plan_ctx.get(key) not in (None, "")
+        } if isinstance(target, str) and target.startswith("mcp:") else {}
         if strict_mcp_arguments is not None:
+            if mcp_provenance and isinstance(rendered_arg, dict):
+                rendered_arg = {**rendered_arg, **mcp_provenance}
             _extra = {}
+        else:
+            _extra.update(mcp_provenance)
         # Dynamic tool scope (plans/dynamic-agent-tools-prompt.md, Phase 2):
         # Fuer openfang:-Agenten (skill-coordinator/desktop/openclaude/...) waehlt
         # der ToolScopeSelector pro Intent SEMANTISCH die relevanten Tools + baut

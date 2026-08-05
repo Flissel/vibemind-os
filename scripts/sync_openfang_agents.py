@@ -146,8 +146,6 @@ def validate_mcp_authority() -> list[str]:
                 "agent": space.get("agent"),
                 "server": execution.get("server"),
                 "tool": event.get("tool"),
-                "approval_ref": event.get("approval_ref"),
-                "cost_ref": event.get("cost_ref"),
             }
             for name, value in required.items():
                 if not isinstance(value, str) or not value.strip():
@@ -166,6 +164,11 @@ def validate_mcp_authority() -> list[str]:
             if not isinstance(tool, str) or not tool.strip() or tool.strip() not in allowed_tools:
                 errors.append(
                     f"{space_name}.{event_name} tool {tool!r} is not in mcp_tools for {server!r}"
+                )
+            if event.get("required_provenance") != ["approval_ref", "cost_ref"]:
+                errors.append(
+                    f"{space_name}.{event_name} requires closed required_provenance "
+                    "[approval_ref, cost_ref]"
                 )
     return errors
 

@@ -35,8 +35,7 @@ spaces:
       bubble.create:
         tool: bubble_create
         required_params: [title]
-        approval_ref: approval:openfang-mcp-v1
-        cost_ref: cost:openfang-mcp-v1
+        required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: spaces-ideas }
       bubble.enter:             { tool: vibemind_bubble_enter,  required_params: [bubble_name] }
       bubble.exit:              { tool: vibemind_bubble_exit,   required_params: [] }
@@ -70,8 +69,7 @@ spaces:
       idea.connect:
         tool: idea_connect
         required_params: [from_id, to_id]
-        approval_ref: approval:openfang-mcp-v1
-        cost_ref: cost:openfang-mcp-v1
+        required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: spaces-ideas }
       idea.auto_link:           { tool: db_canvas_edge_create, required_params: [] }
       idea.add_image:           { tool: db_ideas_update, required_params: [idea_id] }
@@ -188,8 +186,7 @@ spaces:
       rowboat.status:
         tool: rowboat_status
         required_params: []
-        approval_ref: approval:openfang-mcp-v1
-        cost_ref: cost:openfang-mcp-v1
+        required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: spaces-rowboat }
       rowboat.docker.start: { tool: shell_exec, required_params: [] }
       rowboat.docker.stop:  { tool: shell_exec, required_params: [] }
@@ -210,8 +207,7 @@ spaces:
       minibook.status:
         tool: minibook_status
         required_params: []
-        approval_ref: approval:openfang-mcp-v1
-        cost_ref: cost:openfang-mcp-v1
+        required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: spaces-minibook }
       minibook.list_projects: { tool: fetch, required_params: [] }
 

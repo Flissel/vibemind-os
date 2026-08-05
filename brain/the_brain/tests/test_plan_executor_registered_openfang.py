@@ -25,9 +25,11 @@ class _Executor:
     def __init__(self, result: dict) -> None:
         self.result = result
         self.calls = 0
+        self.extra_params = None
 
     def call_with_arg(self, arg, arg_kwarg=None, extra_params=None):
         self.calls += 1
+        self.extra_params = extra_params
         return self.result
 
 
@@ -60,10 +62,8 @@ def _write_idea_mcp_registry(tmp_path, *, missing: str | None = None) -> Path:
     )
     if missing != "tool":
         lines.append("        tool: db_ideas_create")
-    if missing != "approval_ref":
-        lines.append("        approval_ref: approval:test")
-    if missing != "cost_ref":
-        lines.append("        cost_ref: cost:test")
+    if missing != "required_provenance":
+        lines.append("        required_provenance: [approval_ref, cost_ref]")
     lines.extend(["        execution:", "          kind: mcp"])
     if missing != "server":
         lines.append("          server: spaces-ideas")
@@ -103,6 +103,30 @@ def test_deterministic_bubble_create_gateway_failure_never_invokes_llm_or_direct
         not target.startswith(("openfang:", "direct:", "supabase:"))
         for target in built_targets
     )
+
+
+def test_deterministic_mcp_forwards_per_plan_provenance_to_invocation(
+    monkeypatch,
+):
+    _disable_kg_hits(monkeypatch)
+    monkeypatch.setattr(
+        "core.agent_yaml_registry.get_registry",
+        lambda: _Registry({"bubble.create": "brain-bubbles"}),
+    )
+    executor = _Executor({"ok": True, "result": {}})
+    monkeypatch.setattr("core.capability_targets.build_executor", lambda _: executor)
+
+    result = PlanExecutor()._exec_hop(
+        _hop(), {},
+        plan_ctx={
+            "approval_ref": "approval:plan-1",
+            "cost_ref": "cost:plan-1",
+        },
+    )
+
+    assert result.ok is True
+    assert executor.extra_params["approval_ref"] == "approval:plan-1"
+    assert executor.extra_params["cost_ref"] == "cost:plan-1"
 
 
 def test_deterministic_bubble_create_failure_is_never_retried_by_plan(monkeypatch):
@@ -312,7 +336,7 @@ def test_deterministic_idea_create_overrides_legacy_supabase_target(monkeypatch,
     assert built_targets == ["mcp:brain-ideas:spaces-ideas:db_ideas_create"]
 
 
-@pytest.mark.parametrize("missing", ["agent", "server", "tool", "approval_ref", "cost_ref"])
+@pytest.mark.parametrize("missing", ["agent", "server", "tool", "required_provenance"])
 def test_deterministic_idea_create_missing_mcp_identity_fails_closed(
     monkeypatch, tmp_path, missing
 ):
