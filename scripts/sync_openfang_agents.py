@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -64,7 +65,7 @@ max_llm_tokens_per_hour = 100000
 max_concurrent_tools = 5
 
 [capabilities]
-tools = ["memory_store", "memory_recall"]
+tools = [{tool_list}]
 network = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*"]
@@ -72,7 +73,33 @@ memory_write = ["self.*"]
 
 
 def _mcp_list_literal(servers: list[str]) -> str:
-    return ", ".join(f'"{s}"' for s in servers)
+    return ", ".join(json.dumps(server) for server in servers)
+
+
+def format_mcp_tool_name(server: str, tool: str) -> str:
+    """Return the canonical OpenFang capability name for one MCP tool."""
+    normalized_server = server.lower().replace("-", "_")
+    normalized_tool = tool.lower().replace("-", "_")
+    return f"mcp_{normalized_server}_{normalized_tool}"
+
+
+def _capability_tool_names(spec: dict) -> list[str]:
+    """Return the closed, deterministic capability list for a generated agent."""
+    mcp_tools = spec.get("mcp_tools", {})
+    if not isinstance(mcp_tools, dict):
+        return ["memory_store", "memory_recall"]
+    generated = {
+        format_mcp_tool_name(server.strip(), tool.strip())
+        for server, tools in mcp_tools.items()
+        if isinstance(server, str) and isinstance(tools, list)
+        for tool in tools
+        if isinstance(tool, str)
+    }
+    return ["memory_store", "memory_recall", *sorted(generated)]
+
+
+def _tool_list_literal(tools: list[str]) -> str:
+    return ", ".join(json.dumps(tool) for tool in tools)
 
 
 def _render_agent_toml(space: str, spec: dict) -> str:
@@ -88,6 +115,7 @@ def _render_agent_toml(space: str, spec: dict) -> str:
         description=description,
         prompt_hint=prompt_hint,
         mcp_list=_mcp_list_literal(mcp_servers),
+        tool_list=_tool_list_literal(_capability_tool_names(spec)),
     )
 
 
@@ -135,6 +163,66 @@ def validate_generated_agent_mcp_scopes() -> list[str]:
             errors.append(
                 f"{space_name} requires non-empty mcp_servers for generated agent {agent}"
             )
+    return errors
+
+
+def validate_mcp_tool_scopes() -> list[str]:
+    """Require registry MCP tools to stay within an explicit server allowlist."""
+    with open(REGISTRY, "r", encoding="utf-8") as f:
+        data: dict[str, Any] = yaml.safe_load(f) or {}
+    spaces = data.get("spaces", {})
+    if not isinstance(spaces, dict):
+        return ["registry spaces must be a mapping"]
+
+    errors: list[str] = []
+    for space_name, spec in spaces.items():
+        if not isinstance(spec, dict):
+            errors.append(f"space {space_name!r} must be a mapping")
+            continue
+        mcp_tools = spec.get("mcp_tools", {})
+        if not isinstance(mcp_tools, dict):
+            errors.append(f"{space_name} mcp_tools must be a mapping")
+            continue
+        mcp_servers = spec.get("mcp_servers", [])
+        allowed_servers = {
+            server.strip()
+            for server in mcp_servers
+            if isinstance(server, str) and server.strip()
+        } if isinstance(mcp_servers, list) else set()
+        capability_sources: dict[str, tuple[str, str]] = {}
+        for server, tools in mcp_tools.items():
+            if not isinstance(server, str) or not server.strip():
+                errors.append(f"{space_name} mcp_tools server must be a non-empty string")
+                continue
+            normalized_server = server.strip()
+            if normalized_server not in allowed_servers:
+                errors.append(
+                    f"{space_name} mcp_tools server {normalized_server!r} is not in mcp_servers"
+                )
+            if not isinstance(tools, list) or not tools:
+                errors.append(
+                    f"{space_name} mcp_tools for {normalized_server!r} must be a non-empty list"
+                )
+                continue
+            if not all(isinstance(tool, str) and tool.strip() for tool in tools):
+                errors.append(
+                    f"{space_name} mcp_tools for {normalized_server!r} must contain only non-empty strings"
+                )
+                continue
+            for tool in tools:
+                raw_source = (server, tool)
+                capability = format_mcp_tool_name(
+                    normalized_server, tool.strip()
+                )
+                previous_source = capability_sources.get(capability)
+                if previous_source is None:
+                    capability_sources[capability] = raw_source
+                elif previous_source != raw_source:
+                    errors.append(
+                        f"{space_name} mcp_tools normalization collision: "
+                        f"{previous_source!r} and {raw_source!r} both map to "
+                        f"{capability!r}"
+                    )
     return errors
 
 
@@ -209,7 +297,9 @@ def validate_mcp_authority() -> list[str]:
 
 def sync(dry_run: bool = False, check: bool = False) -> int:
     validation_errors = (
-        validate_generated_agent_mcp_scopes() + validate_mcp_authority()
+        validate_generated_agent_mcp_scopes()
+        + validate_mcp_tool_scopes()
+        + validate_mcp_authority()
     )
     if validation_errors:
         for error in validation_errors:
