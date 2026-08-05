@@ -257,22 +257,21 @@ spaces:
     # vibemind IS — openrouter/llama-3.3-70b). Registry is the single truth;
     # LEGACY_SPACE_AGENT_MAP derives/validates against this (ABSORB-7).
     agent: vibemind
-    # Reserved only: no AgentFarm chat execution target exists until the
-    # versioned runtime source admission is complete.
+    # Reserved only: the versioned source artifact has no executable runtime.
     reserved_chat_agent: brain-agentfarm
     # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
     aliases: [autogen]
     prefixes: [agentfarm., autogen.]
     keywords: ["agent.?farm|pipeline|forge|swarm.?team|agent.?team"]
-    # The historical spaces/autogen tree was removed in ec98a0c and its
-    # external/Autogen_AgentFarm source was never versioned.  Keep routing
-    # disabled until a durable runtime replaces the old in-memory runner.
+    # The historical spaces/autogen tree was removed in ec98a0c.  Keep routing
+    # disabled until the versioned source has a durable persistent runtime.
     enabled: false
     description: "AutoGen multi-agent team coordination."
     runtime:
       status: blocked
-      source_path: external/Autogen_AgentFarm
-      blocker: missing_versioned_agentfarm_source
+      source_path: spaces/agentfarm
+      manifest_path: spaces/agentfarm/runtime-manifest-v1.json
+      blocker: missing_persistent_agentfarm_runtime
     mcp_servers: []
     default_context: [current_space]
     events:

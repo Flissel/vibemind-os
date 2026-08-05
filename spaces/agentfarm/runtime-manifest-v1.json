@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "space_id": "agentfarm",
+  "source_status": "versioned",
+  "runtime_status": "blocked",
+  "enabled": false,
+  "executable_entrypoint": null,
+  "operations": [
+    "create_team",
+    "run",
+    "status",
+    "list_teams",
+    "stop",
+    "results",
+    "list_templates",
+    "collaborate"
+  ],
+  "blocker": "missing_persistent_agentfarm_runtime",
+  "nonclaims": [
+    "no_execution",
+    "no_activation",
+    "no_mcp",
+    "no_deployment"
+  ]
+}
