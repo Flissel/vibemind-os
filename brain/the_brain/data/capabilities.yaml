@@ -132,57 +132,57 @@
 - capability: agentfarm_create_team
   space: agentfarm
   enabled: false
-  runtime_blocker: missing_versioned_agentfarm_source
-  description: "AgentFarm create_team is not implemented: versioned runtime source is missing"
+  runtime_blocker: missing_persistent_agentfarm_runtime
+  description: "AgentFarm runtime source is versioned, but the persistent runtime is missing"
   match_patterns: ["(agentfarm|autogen).*create.*team"]
 
 - capability: agentfarm_run
   space: agentfarm
   enabled: false
-  runtime_blocker: missing_versioned_agentfarm_source
-  description: "AgentFarm run is not implemented: versioned runtime source is missing"
+  runtime_blocker: missing_persistent_agentfarm_runtime
+  description: "AgentFarm runtime source is versioned, but the persistent runtime is missing"
   match_patterns: ["(agentfarm|autogen).*(run|start).*(team|task)"]
 
 - capability: agentfarm_status
   space: agentfarm
   enabled: false
-  runtime_blocker: missing_versioned_agentfarm_source
-  description: "AgentFarm status is not implemented: versioned runtime source is missing"
+  runtime_blocker: missing_persistent_agentfarm_runtime
+  description: "AgentFarm runtime source is versioned, but the persistent runtime is missing"
   match_patterns: ["(agentfarm|autogen).*status"]
 
 - capability: agentfarm_list_teams
   space: agentfarm
   enabled: false
-  runtime_blocker: missing_versioned_agentfarm_source
-  description: "AgentFarm list_teams is not implemented: versioned runtime source is missing"
+  runtime_blocker: missing_persistent_agentfarm_runtime
+  description: "AgentFarm runtime source is versioned, but the persistent runtime is missing"
   match_patterns: ["(agentfarm|autogen).*list.*teams"]
 
 - capability: agentfarm_stop
   space: agentfarm
   enabled: false
-  runtime_blocker: missing_versioned_agentfarm_source
-  description: "AgentFarm stop is not implemented: versioned runtime source is missing"
+  runtime_blocker: missing_persistent_agentfarm_runtime
+  description: "AgentFarm runtime source is versioned, but the persistent runtime is missing"
   match_patterns: ["(agentfarm|autogen).*(stop|cancel).*(run|team)"]
 
 - capability: agentfarm_results
   space: agentfarm
   enabled: false
-  runtime_blocker: missing_versioned_agentfarm_source
-  description: "AgentFarm results is not implemented: versioned runtime source is missing"
+  runtime_blocker: missing_persistent_agentfarm_runtime
+  description: "AgentFarm runtime source is versioned, but the persistent runtime is missing"
   match_patterns: ["(agentfarm|autogen).*(results|result|ergebnis)"]
 
 - capability: agentfarm_list_templates
   space: agentfarm
   enabled: false
-  runtime_blocker: missing_versioned_agentfarm_source
-  description: "AgentFarm list_templates is not implemented: versioned runtime source is missing"
+  runtime_blocker: missing_persistent_agentfarm_runtime
+  description: "AgentFarm runtime source is versioned, but the persistent runtime is missing"
   match_patterns: ["(agentfarm|autogen).*list.*templates"]
 
 - capability: agentfarm_collaborate
   space: agentfarm
   enabled: false
-  runtime_blocker: missing_versioned_agentfarm_source
-  description: "AgentFarm collaborate is not implemented: versioned runtime source is missing"
+  runtime_blocker: missing_persistent_agentfarm_runtime
+  description: "AgentFarm runtime source is versioned, but the persistent runtime is missing"
   match_patterns: ["(agentfarm|autogen).*collaborat"]
 
 - capability: bubble_evaluate
