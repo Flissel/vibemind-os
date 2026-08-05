@@ -67,6 +67,8 @@ def _load_openfang_agents(agents_dir: str | None = None) -> list[dict[str, objec
         name = manifest.get("name")
         description = manifest.get("description")
         model = manifest.get("model")
+        if isinstance(model, dict):
+            model = model.get("model")
         spaces_in_tags = [tag for tag in string_tags if tag.startswith("space:")]
         agents.append({
             "name": name if isinstance(name, str) else sub,

@@ -115,6 +115,30 @@ def test_openfang_agent_loader_uses_canonical_mcp_servers(tmp_path):
     ]
 
 
+def test_openfang_agent_loader_reads_model_from_canonical_table(tmp_path):
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    _write_agent_manifest(agents_dir)
+
+    assert introspection._load_openfang_agents(str(agents_dir))[0]["model"] == (
+        "test-model"
+    )
+
+
+def test_openfang_agent_loader_preserves_top_level_model_string(tmp_path):
+    agents_dir = tmp_path / "agents"
+    agent_dir = agents_dir / "legacy-agent"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "agent.toml").write_text(
+        'name = "legacy-agent"\nmodel = "legacy-model"\n',
+        encoding="utf-8",
+    )
+
+    assert introspection._load_openfang_agents(str(agents_dir))[0]["model"] == (
+        "legacy-model"
+    )
+
+
 def test_openfang_agent_loader_skips_invalid_utf8(tmp_path):
     agents_dir = tmp_path / "agents"
     agent_dir = agents_dir / "invalid-agent"
