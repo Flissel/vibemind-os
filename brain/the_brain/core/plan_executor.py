@@ -617,6 +617,7 @@ class PlanExecutor:
         *,
         replanner: Optional[Callable[[Plan, HopResult], Optional[Plan]]] = None,
         confirmed_events: Optional[Set[str]] = None,
+        openfang_handoff_bundle: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Walk the DAG. Returns a dict with `executed` (step_id → HopResult),
         `state`, `plan`, `ok`, `elapsed_s`, `replans`.
@@ -728,6 +729,16 @@ class PlanExecutor:
             "trace_id": getattr(plan, "trace_id", "") or "",
             "confirmed_events": set(confirmed_events or ()),
         }
+        if isinstance(openfang_handoff_bundle, dict):
+            for key in (
+                "channel_intent",
+                "brain_plan",
+                "space_execution_contracts",
+                "lifecycle",
+                "handoff",
+            ):
+                if key in openfang_handoff_bundle:
+                    plan_ctx[key] = openfang_handoff_bundle[key]
 
         executed: Dict[str, HopResult] = {}
         state: Dict[str, Any] = {}
@@ -1488,6 +1499,36 @@ class PlanExecutor:
                 elapsed_s=time.time() - t0,
                 contract_pass=False, reward=-1.0,
             )
+
+        # Cognitive OpenFang dispatch is admitted only by the public Shared
+        # handoff validator.  The bundle stays opaque here: Brain neither
+        # creates approval/cost references nor selects any Space/provider/tool.
+        if isinstance(target, str) and target.startswith("openfang:"):
+            try:
+                from vibemind_shared.contracts import (
+                    validate_brain_openfang_handoff_bundle,
+                )
+
+                validate_brain_openfang_handoff_bundle(
+                    plan_ctx["channel_intent"],
+                    plan_ctx["brain_plan"],
+                    plan_ctx["space_execution_contracts"],
+                    plan_ctx["lifecycle"],
+                    plan_ctx["handoff"],
+                )
+            except Exception as e:
+                logger.warning(
+                    "[plan-executor] OpenFang handoff admission rejected: %s",
+                    type(e).__name__,
+                )
+                return HopResult(
+                    step_id=hop.step_id, ok=False,
+                    error=f"OpenFang handoff admission rejected: {type(e).__name__}",
+                    capability=hop.capability, target=target,
+                    rendered_arg=rendered_arg, kg_hits=kg_hits,
+                    elapsed_s=time.time() - t0,
+                    contract_pass=False, reward=-1.0,
+                )
 
         # Build the right executor for the target prefix (Phase 4)
         try:

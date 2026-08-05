@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import sys
+from types import ModuleType
 
 import pytest
 
@@ -10,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "brain" / "the_brain"))
 
 from core.plan_executor import PlanExecutor
-from core.plan_schema import HopSpec
+from core.plan_schema import HopSpec, Plan
 
 
 class _Registry:
@@ -76,6 +77,399 @@ def _disable_kg_hits(monkeypatch) -> None:
     monkeypatch.setattr(
         "core.plan_executor.PlanExecutor._capture_kg_hits", lambda *args: []
     )
+
+
+def _handoff_bundle() -> dict[str, object]:
+    """Opaque, already-admitted bundle transported unchanged to Shared."""
+    return {
+        "channel_intent": {"correlation_id": "event_v1_01J8Q3Z4R5T6V7W8X9Y0ABCDEF"},
+        "brain_plan": {"plan_id": "plan_v1_01J8Q3Z4R5T6V7W8X9Y0ABCDEF"},
+        "space_execution_contracts": [{"space_id": "research"}],
+        "lifecycle": {"status": "execution_deferred", "revision": 3},
+        "handoff": {
+            "execution_mode": "cognitive",
+            "execution_boundary": "openfang",
+            "approval_ref": "approval:opaque-openfang-boundary",
+            "cost_ref": "cost:opaque-openfang-boundary",
+        },
+    }
+
+
+def _schema_valid_handoff_bundle() -> dict[str, object]:
+    channel_intent = {
+        "contract_version": "v1",
+        "correlation_id": "event_v1_01J8Q3Z4R5T6V7W8X9Y0ABCDEF",
+        "channel_kind": "desktop-chat",
+        "actor_context": {"actor_id": "user:local-42", "locale": "de-DE"},
+        "session_context": {
+            "session_id": "session-20260731-01",
+            "conversation_id": "desktop-chat-42",
+        },
+        "message": "Bitte fasse die Projektlage zusammen.",
+        "received_at": "2026-07-31T10:00:00Z",
+        "requested_space_id": "research",
+        "user_facing_expectations": {"reply": "required", "evidence": "summary"},
+    }
+    brain_plan = {
+        "contract_version": "v1",
+        "plan_id": "plan_v1_01J8Q3Z4R5T6V7W8X9Y0ABCDEF",
+        "intent": {
+            "summary": "Prepare a verified cross-space research brief.",
+            "context": ["The source material is already available offline."],
+            "requested_by": "product-owner",
+        },
+        "participating_spaces": [
+            {
+                "space_id": "research",
+                "roles": [{"role": "researcher", "required_agent_count": 1}],
+            },
+            {
+                "space_id": "coding",
+                "roles": [{"role": "developer", "required_agent_count": 1}],
+            },
+        ],
+        "tasks": [
+            {
+                "node_id": "research-sources",
+                "order": 1,
+                "summary": "Extract source findings.",
+                "space_ids": ["research"],
+                "depends_on": [],
+                "success_criteria": ["Findings are traceable."],
+                "evidence_requirements": [
+                    {
+                        "evidence_type": "artifact",
+                        "description": "A source finding artifact is available.",
+                    }
+                ],
+            },
+            {
+                "node_id": "write-brief",
+                "order": 2,
+                "summary": "Create the brief from the findings.",
+                "space_ids": ["coding"],
+                "depends_on": ["research-sources"],
+                "success_criteria": ["The brief answers the stated intent."],
+                "evidence_requirements": [
+                    {
+                        "evidence_type": "artifact",
+                        "description": "A reviewable brief artifact is available.",
+                    }
+                ],
+            },
+        ],
+    }
+    space_execution_contracts = [
+        {
+            "contract_version": "v1",
+            "contract_id": (
+                "space_execution_contract_v1_01J8Q3Z4R5T6V7W8X9Y0ABCDEF"
+            ),
+            "space_id": space_id,
+            "executor_id": "executor:brain-orchestrator",
+            "approval_policy_ref": "approval-policy:standard",
+            "cost_policy_ref": "cost-policy:bounded",
+            "healthcheck_ref": "healthcheck:bubbles-structural",
+            "golden_path_ref": "golden-path:bubbles-promote",
+        }
+        for space_id in ("research", "coding")
+    ]
+    lifecycle = {
+        "contract_version": "v1",
+        "correlation_id": channel_intent["correlation_id"],
+        "plan_id": brain_plan["plan_id"],
+        "participating_space_ids": ["research", "coding"],
+        "revision": 3,
+        "status": "execution_deferred",
+        "updated_at": "2026-08-01T10:02:00Z",
+        "event_history": [
+            {
+                "revision": 1,
+                "status": "planned",
+                "occurred_at": "2026-08-01T10:00:00Z",
+            },
+            {
+                "revision": 2,
+                "status": "admitted",
+                "reason_code": "admission-validated",
+                "occurred_at": "2026-08-01T10:01:00Z",
+            },
+            {
+                "revision": 3,
+                "status": "execution_deferred",
+                "reason_code": "execution-engine-deferred",
+                "occurred_at": "2026-08-01T10:02:00Z",
+            },
+        ],
+    }
+    handoff = {
+        "contract_version": "v1",
+        "execution_mode": "cognitive",
+        "execution_boundary": "openfang",
+        "correlation_id": channel_intent["correlation_id"],
+        "plan_id": brain_plan["plan_id"],
+        "lifecycle_revision": 3,
+        "brain_task_node_id": "research-sources",
+        "space_id": "research",
+        "roles": [{"role": "researcher", "required_agent_count": 1}],
+        "approval_ref": "approval:opaque-openfang-boundary",
+        "cost_ref": "cost:opaque-openfang-boundary",
+        "retry": {"classification": "transient", "max_attempts": 3},
+    }
+    return {
+        "channel_intent": channel_intent,
+        "brain_plan": brain_plan,
+        "space_execution_contracts": space_execution_contracts,
+        "lifecycle": lifecycle,
+        "handoff": handoff,
+    }
+
+
+def _install_handoff_validator(monkeypatch, validator) -> None:
+    shared = ModuleType("vibemind_shared")
+    contracts = ModuleType("vibemind_shared.contracts")
+    contracts.validate_brain_openfang_handoff_bundle = validator
+    shared.contracts = contracts
+    monkeypatch.setitem(sys.modules, "vibemind_shared", shared)
+    monkeypatch.setitem(sys.modules, "vibemind_shared.contracts", contracts)
+
+
+def _openfang_hop() -> HopSpec:
+    return _hop(capability="cognitive_unregistered", target="openfang:brain-research")
+
+
+def test_cognitive_openfang_without_complete_handoff_bundle_fails_before_executor(
+    monkeypatch,
+):
+    built_targets = []
+    _disable_kg_hits(monkeypatch)
+    monkeypatch.setattr("core.agent_yaml_registry.get_registry", lambda: _Registry())
+    monkeypatch.setattr(
+        "core.capability_targets.build_executor",
+        lambda target: built_targets.append(target) or _Executor({"ok": True, "result": {}}),
+    )
+
+    result = PlanExecutor()._exec_hop(_openfang_hop(), {})
+
+    assert result.ok is False
+    assert "OpenFang handoff admission" in (result.error or "")
+    assert built_targets == []
+
+
+@pytest.mark.parametrize(
+    "admission_error",
+    (
+        "correlation_id continuity drift",
+        "plan_id continuity drift",
+        "lifecycle_revision continuity drift",
+        "brain_task_node_id continuity drift",
+        "space_id continuity drift",
+        "roles continuity drift",
+        "execution_deferred required",
+        "execution_mode must be cognitive",
+        "execution_boundary must be openfang",
+        "approval_ref required",
+        "cost_ref required",
+    ),
+)
+def test_cognitive_openfang_shared_admission_rejection_prevents_dispatch(
+    monkeypatch, admission_error
+):
+    built_targets = []
+    _disable_kg_hits(monkeypatch)
+    monkeypatch.setattr("core.agent_yaml_registry.get_registry", lambda: _Registry())
+
+    def reject_bundle(*_args):
+        raise ValueError(admission_error)
+
+    _install_handoff_validator(monkeypatch, reject_bundle)
+    monkeypatch.setattr(
+        "core.capability_targets.build_executor",
+        lambda target: built_targets.append(target) or _Executor({"ok": True, "result": {}}),
+    )
+
+    result = PlanExecutor()._exec_hop(_openfang_hop(), {}, plan_ctx=_handoff_bundle())
+
+    assert result.ok is False
+    assert "OpenFang handoff admission rejected: ValueError" == result.error
+    assert built_targets == []
+
+
+def test_cognitive_openfang_missing_shared_package_fails_before_executor(
+    monkeypatch,
+):
+    built_targets = []
+    _disable_kg_hits(monkeypatch)
+    monkeypatch.setattr("core.agent_yaml_registry.get_registry", lambda: _Registry())
+    monkeypatch.setitem(sys.modules, "vibemind_shared", None)
+    monkeypatch.delitem(sys.modules, "vibemind_shared.contracts", raising=False)
+    monkeypatch.setattr(
+        "core.capability_targets.build_executor",
+        lambda target: built_targets.append(target) or _Executor({"ok": True, "result": {}}),
+    )
+
+    result = PlanExecutor()._exec_hop(
+        _openfang_hop(), {}, plan_ctx=_handoff_bundle()
+    )
+
+    assert result.ok is False
+    assert result.error == "OpenFang handoff admission rejected: ModuleNotFoundError"
+    assert built_targets == []
+
+
+def test_cognitive_openfang_passes_exact_bundle_to_public_shared_api_before_executor(
+    monkeypatch,
+):
+    built_targets = []
+    validator_calls = []
+    bundle = _handoff_bundle()
+    _disable_kg_hits(monkeypatch)
+    monkeypatch.setattr("core.agent_yaml_registry.get_registry", lambda: _Registry())
+
+    def validate_bundle(*args):
+        validator_calls.append(args)
+
+    _install_handoff_validator(monkeypatch, validate_bundle)
+    monkeypatch.setattr(
+        "core.capability_targets.build_executor",
+        lambda target: built_targets.append(target) or _Executor({"ok": True, "result": {}}),
+    )
+
+    result = PlanExecutor()._exec_hop(_openfang_hop(), {}, plan_ctx=bundle)
+
+    assert result.ok is True
+    assert validator_calls == [
+        (
+            bundle["channel_intent"],
+            bundle["brain_plan"],
+            bundle["space_execution_contracts"],
+            bundle["lifecycle"],
+            bundle["handoff"],
+        )
+    ]
+    assert built_targets == ["openfang:brain-research"]
+
+
+def test_public_execute_threads_opaque_handoff_bundle_to_cognitive_dispatch(
+    monkeypatch,
+):
+    built_targets = []
+    validator_calls = []
+    bundle = _schema_valid_handoff_bundle()
+    _disable_kg_hits(monkeypatch)
+    monkeypatch.setenv("MULTIHOP_EPISODIC_WRITE", "0")
+    monkeypatch.setenv("MULTIHOP_INGEST_ENABLED", "0")
+    monkeypatch.setattr("core.agent_yaml_registry.get_registry", lambda: _Registry())
+
+    shared_src = ROOT / "shared" / "src"
+    assert shared_src.is_dir(), "the pinned Shared package must be materialized"
+    monkeypatch.syspath_prepend(str(shared_src))
+    for module_name in tuple(sys.modules):
+        if module_name == "vibemind_shared" or module_name.startswith(
+            "vibemind_shared."
+        ):
+            monkeypatch.delitem(sys.modules, module_name, raising=False)
+    import vibemind_shared.contracts as shared_contracts
+
+    real_validator = shared_contracts.validate_brain_openfang_handoff_bundle
+
+    def validate_bundle(*args):
+        validator_calls.append(args)
+        return real_validator(*args)
+
+    monkeypatch.setattr(
+        shared_contracts,
+        "validate_brain_openfang_handoff_bundle",
+        validate_bundle,
+    )
+    monkeypatch.setattr(
+        "core.capability_targets.build_executor",
+        lambda target: built_targets.append(target) or _Executor({"ok": True, "result": {}}),
+    )
+
+    class _Recorder:
+        def record(self, _snapshot) -> None:
+            return None
+
+    plan = Plan(
+        plan_id="plan-public-handoff",
+        intent="research",
+        rationale="test public handoff transport",
+        hops=[_openfang_hop()],
+    )
+
+    result = PlanExecutor(recorder=_Recorder()).execute(
+        plan,
+        openfang_handoff_bundle=bundle,
+    )
+
+    assert result["ok"] is True
+    assert validator_calls == [
+        (
+            bundle["channel_intent"],
+            bundle["brain_plan"],
+            bundle["space_execution_contracts"],
+            bundle["lifecycle"],
+            bundle["handoff"],
+        )
+    ]
+    assert all(
+        argument is bundle[key]
+        for argument, key in zip(
+            validator_calls[0],
+            (
+                "channel_intent",
+                "brain_plan",
+                "space_execution_contracts",
+                "lifecycle",
+                "handoff",
+            ),
+            strict=True,
+        )
+    )
+    assert built_targets == ["openfang:brain-research"]
+
+    invalid_bundle = dict(bundle)
+    invalid_bundle["handoff"] = dict(bundle["handoff"])
+    invalid_bundle["handoff"].pop("approval_ref")
+    built_targets.clear()
+    validator_calls.clear()
+
+    rejected = PlanExecutor(recorder=_Recorder()).execute(
+        plan,
+        openfang_handoff_bundle=invalid_bundle,
+    )
+
+    assert rejected["ok"] is False
+    assert built_targets == []
+    assert rejected["executed"]["step-1"]["error"] == (
+        "OpenFang handoff admission rejected: ContractValidationError"
+    )
+
+
+def test_deterministic_mcp_bypasses_cognitive_handoff_admission(monkeypatch):
+    built_targets = []
+    _disable_kg_hits(monkeypatch)
+
+    def unexpected_admission(*_args):
+        raise AssertionError("deterministic MCP must not use cognitive admission")
+
+    _install_handoff_validator(monkeypatch, unexpected_admission)
+    monkeypatch.setattr("core.agent_yaml_registry.get_registry", lambda: _Registry())
+    monkeypatch.setattr(
+        "core.capability_targets.build_executor",
+        lambda target: built_targets.append(target) or _Executor({"ok": True, "result": {}}),
+    )
+    target = "mcp:brain-bubbles:spaces-ideas:bubble_create"
+
+    result = PlanExecutor()._exec_hop(
+        _hop(capability="custom_unregistered", target=target),
+        {},
+        plan_ctx={"approval_ref": "approval:plan-1", "cost_ref": "cost:plan-1"},
+    )
+
+    assert result.ok is True
+    assert built_targets == [target]
 
 
 def test_deterministic_bubble_create_gateway_failure_never_invokes_llm_or_direct_executor(monkeypatch):
@@ -437,6 +831,7 @@ def test_cognitive_idea_create_keeps_the_openfang_chat_agent(monkeypatch):
     """An event without execution.kind=mcp remains a cognitive agent route."""
     built_targets = []
     _disable_kg_hits(monkeypatch)
+    _install_handoff_validator(monkeypatch, lambda *_args: None)
     monkeypatch.setattr(
         "core.agent_yaml_registry.get_registry",
         lambda: _Registry({"idea.create": "brain-ideas"}),
@@ -446,7 +841,7 @@ def test_cognitive_idea_create_keeps_the_openfang_chat_agent(monkeypatch):
         lambda target: built_targets.append(target) or _Executor({"ok": True, "result": {}}),
     )
 
-    result = PlanExecutor()._exec_hop(_idea_hop(), {})
+    result = PlanExecutor()._exec_hop(_idea_hop(), {}, plan_ctx=_handoff_bundle())
 
     assert result.ok is True
     assert built_targets == ["openfang:brain-ideas"]
