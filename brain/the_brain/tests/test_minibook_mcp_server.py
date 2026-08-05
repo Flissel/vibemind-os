@@ -182,7 +182,10 @@ def test_mcp_executor_classifies_minibook_non_2xx_result_as_failure(mcp_server, 
         }
 
     monkeypatch.setattr(executor, "_request_json", request_json)
-    result = executor.call()
+    result = executor.call(
+        approval_ref="approval-test-0015",
+        cost_ref="cost-test-0015",
+    )
 
     assert result["ok"] is False
     assert "iserror" in result["error"].lower()

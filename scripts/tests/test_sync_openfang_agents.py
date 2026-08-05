@@ -1,0 +1,109 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+import tomllib
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "scripts" / "sync_openfang_agents.py"
+
+
+def _load_sync_module():
+    spec = importlib.util.spec_from_file_location("sync_openfang_agents", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _configure_registry(module, tmp_path, monkeypatch, contents: str) -> Path:
+    registry = tmp_path / "space_agent_registry.yml"
+    registry.write_text(contents, encoding="utf-8")
+    monkeypatch.setattr(module, "REGISTRY", registry)
+    monkeypatch.setattr(module, "AGENTS_DIR", tmp_path / "agents")
+    return registry
+
+
+def test_registry_mcp_authority_requires_allowed_server_and_provenance_contract(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch,
+        """version: 1
+spaces:
+  ideas:
+    agent: brain-ideas
+    enabled: true
+    mcp_servers: [vibemind-db]
+    events:
+      idea.create:
+        tool: db_ideas_create
+        execution:
+          kind: mcp
+          server: spaces-ideas
+""")
+
+    errors = module.validate_mcp_authority()
+
+    assert any("mcp_servers" in error for error in errors)
+    assert any("mcp_tools" in error for error in errors)
+    assert any("required_provenance" in error for error in errors)
+
+
+def test_sync_emits_top_level_agent_manifest_mcp_servers(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, """version: 1
+spaces:
+  ideas:
+    agent: brain-ideas
+    enabled: true
+    mcp_servers: [vibemind-db, spaces-ideas]
+    events: {}
+""")
+
+    assert module.sync() == 0
+    document = tomllib.loads(
+        (tmp_path / "agents" / "brain-ideas" / "agent.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert document["mcp_servers"] == ["vibemind-db", "spaces-ideas"]
+    assert "mcp_allowed" not in document
+
+
+def test_enabled_generated_agent_requires_non_empty_mcp_servers(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, """version: 1
+spaces:
+  ideas:
+    agent: brain-ideas
+    enabled: true
+    mcp_servers: []
+    events: {}
+""")
+
+    errors = module.validate_generated_agent_mcp_scopes()
+
+    assert errors == ["ideas requires non-empty mcp_servers for generated agent brain-ideas"]
+
+
+def test_explicit_no_mcp_space_may_generate_an_empty_manifest_scope(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, """version: 1
+spaces:
+  archive:
+    agent: brain-archive
+    enabled: true
+    no_mcp: true
+    mcp_servers: []
+    events: {}
+""")
+
+    assert module.validate_generated_agent_mcp_scopes() == []
+    assert module.sync() == 0
+    document = tomllib.loads(
+        (tmp_path / "agents" / "brain-archive" / "agent.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert document["mcp_servers"] == []

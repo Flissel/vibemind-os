@@ -27,6 +27,7 @@ spaces:
     enabled: true
     description: "Bubble CRUD + navigation on the VibeMind canvas."
     mcp_servers: [vibemind-db, vibemind, spaces-ideas]
+    mcp_tools: { spaces-ideas: [bubble_create] }
     system_prompt_hint: "You manage bubbles (idea clusters) on the VibeMind canvas. Use the preferred_tool hint in the intent envelope; only call other tools if the hint fails."
     default_context: [current_space, current_bubble, idea_count]
     events:
@@ -34,6 +35,7 @@ spaces:
       bubble.create:
         tool: bubble_create
         required_params: [title]
+        required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: spaces-ideas }
       bubble.enter:             { tool: vibemind_bubble_enter,  required_params: [bubble_name] }
       bubble.exit:              { tool: vibemind_bubble_exit,   required_params: [] }
@@ -56,6 +58,7 @@ spaces:
     enabled: true
     description: "Idea notes inside bubbles — create, update, link, format."
     mcp_servers: [vibemind-db, spaces-ideas]
+    mcp_tools: { spaces-ideas: [idea_connect] }
     default_context: [current_space, current_bubble, idea_titles]
     events:
       idea.list:                { tool: db_ideas_list,   required_params: [] }
@@ -66,6 +69,7 @@ spaces:
       idea.connect:
         tool: idea_connect
         required_params: [from_id, to_id]
+        required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: spaces-ideas }
       idea.auto_link:           { tool: db_canvas_edge_create, required_params: [] }
       idea.add_image:           { tool: db_ideas_update, required_params: [idea_id] }
@@ -171,6 +175,7 @@ spaces:
     enabled: true
     description: "Knowledge graph queries, email drafts, decks."
     mcp_servers: [vibemind-db, fetch, spaces-rowboat]
+    mcp_tools: { spaces-rowboat: [rowboat_status] }
     default_context: [current_space, recent_intents]
     events:
       rowboat.search:       { tool: search_knowledge,       required_params: [query] }
@@ -181,6 +186,7 @@ spaces:
       rowboat.status:
         tool: rowboat_status
         required_params: []
+        required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: spaces-rowboat }
       rowboat.docker.start: { tool: shell_exec, required_params: [] }
       rowboat.docker.stop:  { tool: shell_exec, required_params: [] }
@@ -193,6 +199,7 @@ spaces:
     enabled: true
     description: "Minibook collaboration hub."
     mcp_servers: [vibemind-db, fetch, spaces-minibook]
+    mcp_tools: { spaces-minibook: [minibook_status] }
     default_context: [current_space, session_id]
     events:
       minibook.discuss:       { tool: fetch, required_params: [topic] }
@@ -200,6 +207,7 @@ spaces:
       minibook.status:
         tool: minibook_status
         required_params: []
+        required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: spaces-minibook }
       minibook.list_projects: { tool: fetch, required_params: [] }
 

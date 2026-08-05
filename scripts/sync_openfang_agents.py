@@ -1,8 +1,9 @@
 """Sync OpenFang agent.toml files from space_agent_registry.yml.
 
 Reads `config/space_agent_registry.yml` and for each space writes
-`openfang/agents/<agent_name>/agent.toml` with the correct [mcp_allowed]
-scope. Existing files are updated in place; new files are created.
+`openfang/agents/<agent_name>/agent.toml` with the correct top-level
+`mcp_servers` scope from OpenFang's `AgentManifest`. Existing files are
+updated in place; new files are created.
 
 Usage:
   python scripts/sync_openfang_agents.py              # write + report
@@ -14,6 +15,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -29,6 +31,7 @@ description = "{description}"
 author = "vibemind"
 module = "builtin:chat"
 tags = ["vibemind", "brain-routed", "space:{space}"]
+mcp_servers = [{mcp_list}]
 
 [model]
 provider = "openai"
@@ -65,9 +68,6 @@ tools = ["memory_store", "memory_recall"]
 network = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*"]
-
-[mcp_allowed]
-servers = [{mcp_list}]
 """
 
 
@@ -104,7 +104,117 @@ def _skip_reason(space: str, spec: dict) -> str | None:
     return None
 
 
+def validate_generated_agent_mcp_scopes() -> list[str]:
+    """Require non-empty top-level AgentManifest MCP scopes for generated agents.
+
+    OpenFang interprets an empty ``mcp_servers`` list as every connected MCP
+    server. A no-MCP agent must therefore opt in explicitly with ``no_mcp:
+    true`` and an empty list.
+    """
+    with open(REGISTRY, "r", encoding="utf-8") as f:
+        data: dict[str, Any] = yaml.safe_load(f) or {}
+    spaces = data.get("spaces", {})
+    if not isinstance(spaces, dict):
+        return ["registry spaces must be a mapping"]
+
+    errors: list[str] = []
+    for space_name, spec in spaces.items():
+        if not isinstance(spec, dict) or _skip_reason(str(space_name), spec):
+            continue
+        servers = spec.get("mcp_servers")
+        agent = spec.get("agent")
+        if spec.get("no_mcp") is True:
+            if servers != []:
+                errors.append(
+                    f"{space_name} declares no_mcp but must use an empty mcp_servers list"
+                )
+            continue
+        if not isinstance(servers, list) or not all(
+            isinstance(server, str) and server.strip() for server in servers
+        ) or not servers:
+            errors.append(
+                f"{space_name} requires non-empty mcp_servers for generated agent {agent}"
+            )
+    return errors
+
+
+def validate_mcp_authority() -> list[str]:
+    """Validate every registry-declared MCP event before generating agents.
+
+    Top-level AgentManifest ``mcp_servers`` is generated exclusively from
+    the registry allowlist.
+    A deterministic event must therefore declare a canonical agent, an
+    explicit tool, an allowed server, and opaque approval/cost provenance.
+    """
+    with open(REGISTRY, "r", encoding="utf-8") as f:
+        data: dict[str, Any] = yaml.safe_load(f) or {}
+    spaces = data.get("spaces", {})
+    if not isinstance(spaces, dict):
+        return ["registry spaces must be a mapping"]
+
+    errors: list[str] = []
+    for space_name, space in spaces.items():
+        if not isinstance(space, dict):
+            errors.append(f"space {space_name!r} must be a mapping")
+            continue
+        events = space.get("events", {})
+        if not isinstance(events, dict):
+            continue
+        allowed_servers = space.get("mcp_servers", [])
+        if not isinstance(allowed_servers, list):
+            allowed_servers = []
+        allowed = {
+            value.strip() for value in allowed_servers
+            if isinstance(value, str) and value.strip()
+        }
+        allowed_tools_by_server = space.get("mcp_tools", {})
+        if not isinstance(allowed_tools_by_server, dict):
+            allowed_tools_by_server = {}
+        for event_name, event in events.items():
+            if not isinstance(event, dict):
+                continue
+            execution = event.get("execution")
+            if not isinstance(execution, dict) or execution.get("kind") != "mcp":
+                continue
+            required = {
+                "agent": space.get("agent"),
+                "server": execution.get("server"),
+                "tool": event.get("tool"),
+            }
+            for name, value in required.items():
+                if not isinstance(value, str) or not value.strip():
+                    errors.append(f"{space_name}.{event_name} missing {name}")
+            server = required["server"]
+            if isinstance(server, str) and server.strip() and server.strip() not in allowed:
+                errors.append(
+                    f"{space_name}.{event_name} server {server.strip()!r} is not in mcp_servers"
+                )
+            tool = required["tool"]
+            server_tools = allowed_tools_by_server.get(server.strip()) if isinstance(server, str) else None
+            allowed_tools = {
+                value.strip() for value in server_tools
+                if isinstance(value, str) and value.strip()
+            } if isinstance(server_tools, list) else set()
+            if not isinstance(tool, str) or not tool.strip() or tool.strip() not in allowed_tools:
+                errors.append(
+                    f"{space_name}.{event_name} tool {tool!r} is not in mcp_tools for {server!r}"
+                )
+            if event.get("required_provenance") != ["approval_ref", "cost_ref"]:
+                errors.append(
+                    f"{space_name}.{event_name} requires closed required_provenance "
+                    "[approval_ref, cost_ref]"
+                )
+    return errors
+
+
 def sync(dry_run: bool = False, check: bool = False) -> int:
+    validation_errors = (
+        validate_generated_agent_mcp_scopes() + validate_mcp_authority()
+    )
+    if validation_errors:
+        for error in validation_errors:
+            print(f"  INVALID {error}")
+        return 1
     with open(REGISTRY, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     spaces = data.get("spaces", {}) or {}

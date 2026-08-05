@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import requests
 
-from core.capability_targets import McpExecutor
+from core.capability_targets import McpAuthority, McpExecutor
 
 
 class _Response:
@@ -17,6 +17,40 @@ class _Response:
 
     def json(self):
         return self._body
+
+
+@pytest.fixture(autouse=True)
+def _legacy_transport_fixture(monkeypatch, request):
+    """Keep pre-existing transport tests focused beyond the new authority gate."""
+    if request.node.name.startswith((
+        "test_missing_invocation_provenance",
+        "test_unregistered_mcp_tuple",
+    )):
+        return
+
+    from core import capability_targets
+
+    original_authority = capability_targets.find_registered_mcp_authority
+    original_provenance = capability_targets._extract_mcp_provenance
+
+    def _authority(agent, server, tool):
+        resolved = original_authority(agent, server, tool)
+        if resolved is not None:
+            return resolved
+        if (agent, server, tool) == ("brain-ideas", "vibemind-db", "ideas.list"):
+            return McpAuthority(agent=agent, server=server, tool=tool)
+        return None
+
+    def _provenance(payload):
+        if not payload.get("approval_ref") and not payload.get("cost_ref"):
+            return dict(payload), {
+                "approval_ref": "approval:legacy-transport-test",
+                "cost_ref": "cost:legacy-transport-test",
+            }
+        return original_provenance(payload)
+
+    monkeypatch.setattr(capability_targets, "find_registered_mcp_authority", _authority)
+    monkeypatch.setattr(capability_targets, "_extract_mcp_provenance", _provenance)
 
 
 def test_bubble_create_target_calls_openfang_mcp_with_bound_agent_authority(monkeypatch):
@@ -41,7 +75,11 @@ def test_bubble_create_target_calls_openfang_mcp_with_bound_agent_authority(monk
 
     result = McpExecutor(
         "mcp:brain-bubbles:spaces-ideas:bubble_create"
-    ).call(title="focus")
+    ).call(
+        title="focus",
+        approval_ref="approval:invocation-1",
+        cost_ref="cost:invocation-1",
+    )
 
     assert result["ok"] is True
     assert captured["get"]["url"] == "http://openfang.test/api/agents"
@@ -53,6 +91,8 @@ def test_bubble_create_target_calls_openfang_mcp_with_bound_agent_authority(monk
         "Authorization": "Bearer test-token",
         "Content-Type": "application/json",
         "X-OpenFang-Agent-Id": "agent-uuid",
+        "X-OpenFang-Approval-Ref": "approval:invocation-1",
+        "X-OpenFang-Cost-Ref": "cost:invocation-1",
     }
     assert captured["post"]["json"]["jsonrpc"] == "2.0"
     assert captured["post"]["json"]["method"] == "tools/call"
@@ -60,6 +100,101 @@ def test_bubble_create_target_calls_openfang_mcp_with_bound_agent_authority(monk
         "name": "mcp_spaces_ideas_bubble_create",
         "arguments": {"title": "focus"},
     }
+
+
+def test_registered_mcp_authority_uses_distinct_invocation_provenance(monkeypatch):
+    monkeypatch.setenv("OPENFANG_URL", "http://openfang.test")
+    monkeypatch.setenv("OPENFANG_API_KEY", "test-token")
+    post_calls = []
+
+    def _get(*args, **kwargs):
+        return _Response({"agents": [{"name": "brain-bubbles", "id": "agent-uuid"}]})
+
+    def _post(url, *, json, headers, timeout):
+        post_calls.append({"json": json, "headers": headers})
+        return _Response({
+            "jsonrpc": "2.0",
+            "id": json["id"],
+            "result": {"content": [], "isError": False},
+        })
+
+    monkeypatch.setattr("core.capability_targets.requests.get", _get)
+    monkeypatch.setattr("core.capability_targets.requests.post", _post)
+    executor = McpExecutor("mcp:brain-bubbles:spaces-ideas:bubble_create")
+
+    assert executor.call(
+        title="first", approval_ref="approval:first", cost_ref="cost:first"
+    )["ok"] is True
+    assert executor.call(
+        title="second", approval_ref="approval:second", cost_ref="cost:second"
+    )["ok"] is True
+
+    assert [
+        call["headers"]["X-OpenFang-Approval-Ref"] for call in post_calls
+    ] == ["approval:first", "approval:second"]
+    assert [
+        call["headers"]["X-OpenFang-Cost-Ref"] for call in post_calls
+    ] == ["cost:first", "cost:second"]
+    assert [call["json"]["params"]["arguments"] for call in post_calls] == [
+        {"title": "first"}, {"title": "second"}
+    ]
+
+
+@pytest.mark.parametrize("missing", ["approval_ref", "cost_ref"])
+def test_missing_invocation_provenance_fails_before_any_network_request(
+    monkeypatch, missing
+):
+    network_calls = []
+    monkeypatch.setenv("OPENFANG_URL", "http://openfang.test")
+    monkeypatch.setenv("OPENFANG_API_KEY", "test-token")
+    monkeypatch.setattr(
+        "core.capability_targets.requests.get",
+        lambda *args, **kwargs: network_calls.append("get"),
+    )
+    monkeypatch.setattr(
+        "core.capability_targets.requests.post",
+        lambda *args, **kwargs: network_calls.append("post"),
+    )
+    payload = {
+        "title": "focus",
+        "approval_ref": "approval:invocation",
+        "cost_ref": "cost:invocation",
+    }
+    payload.pop(missing)
+
+    result = McpExecutor(
+        "mcp:brain-bubbles:spaces-ideas:bubble_create"
+    ).call(**payload)
+
+    assert result["ok"] is False
+    assert missing in result["error"]
+    assert network_calls == []
+
+
+def test_unregistered_mcp_tuple_fails_before_any_network_request(monkeypatch):
+    network_calls = []
+    monkeypatch.setenv("OPENFANG_URL", "http://openfang.test")
+    monkeypatch.setenv("OPENFANG_API_KEY", "test-token")
+    monkeypatch.setattr(
+        "core.capability_targets.requests.get",
+        lambda *args, **kwargs: network_calls.append("get"),
+    )
+    monkeypatch.setattr(
+        "core.capability_targets.requests.post",
+        lambda *args, **kwargs: network_calls.append("post"),
+    )
+
+    result = McpExecutor(
+        "mcp:brain-bubbles:spaces-ideas:unknown_tool"
+    ).call(
+        title="focus",
+        approval_ref="approval:invocation",
+        cost_ref="cost:invocation",
+    )
+
+    assert result["ok"] is False
+    assert "not registered" in result["error"]
+    assert network_calls == []
 
 
 def test_legacy_target_shape_requires_explicit_migration():
@@ -237,7 +372,11 @@ def test_missing_bubble_agent_fails_closed_without_mcp_call(monkeypatch):
 
     result = McpExecutor(
         "mcp:brain-bubbles:spaces-ideas:bubble_create"
-    ).call(title="focus")
+    ).call(
+        title="focus",
+        approval_ref="approval:agent-resolution",
+        cost_ref="cost:agent-resolution",
+    )
 
     assert result["ok"] is False
     assert "brain-bubbles" in result["error"]
