@@ -189,6 +189,7 @@ def validate_mcp_tool_scopes() -> list[str]:
             for server in mcp_servers
             if isinstance(server, str) and server.strip()
         } if isinstance(mcp_servers, list) else set()
+        capability_sources: dict[str, tuple[str, str]] = {}
         for server, tools in mcp_tools.items():
             if not isinstance(server, str) or not server.strip():
                 errors.append(f"{space_name} mcp_tools server must be a non-empty string")
@@ -207,6 +208,21 @@ def validate_mcp_tool_scopes() -> list[str]:
                 errors.append(
                     f"{space_name} mcp_tools for {normalized_server!r} must contain only non-empty strings"
                 )
+                continue
+            for tool in tools:
+                raw_source = (server, tool)
+                capability = format_mcp_tool_name(
+                    normalized_server, tool.strip()
+                )
+                previous_source = capability_sources.get(capability)
+                if previous_source is None:
+                    capability_sources[capability] = raw_source
+                elif previous_source != raw_source:
+                    errors.append(
+                        f"{space_name} mcp_tools normalization collision: "
+                        f"{previous_source!r} and {raw_source!r} both map to "
+                        f"{capability!r}"
+                    )
     return errors
 
 

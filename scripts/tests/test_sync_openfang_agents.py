@@ -79,7 +79,7 @@ spaces:
     agent: brain-ideas
     enabled: true
     mcp_servers: [spaces-ideas]
-    mcp_tools: { spaces-ideas: [zeta-tool, idea-connect, idea_connect] }
+    mcp_tools: { spaces-ideas: [zeta-tool, idea-connect, idea-connect] }
     events: {}
 """)
 
@@ -108,6 +108,52 @@ def test_mcp_tool_name_normalizes_hyphens_and_case():
         module.format_mcp_tool_name("Spaces-Ideas", "Idea-Connect")
         == "mcp_spaces_ideas_idea_connect"
     )
+
+
+def test_sync_fails_closed_for_tool_name_normalization_collision(
+    tmp_path, monkeypatch, capsys
+):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, """version: 1
+spaces:
+  ideas:
+    agent: brain-ideas
+    enabled: true
+    mcp_servers: [spaces-ideas]
+    mcp_tools: { spaces-ideas: [idea-connect, idea_connect] }
+    events: {}
+""")
+
+    assert module.sync() == 1
+    output = capsys.readouterr().out
+    assert "normalization collision" in output
+    assert "idea-connect" in output
+    assert "idea_connect" in output
+    assert "mcp_spaces_ideas_idea_connect" in output
+
+
+def test_sync_fails_closed_for_server_name_normalization_collision(
+    tmp_path, monkeypatch, capsys
+):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, """version: 1
+spaces:
+  ideas:
+    agent: brain-ideas
+    enabled: true
+    mcp_servers: [spaces-ideas, spaces_ideas]
+    mcp_tools:
+      spaces-ideas: [idea_connect]
+      spaces_ideas: [idea_connect]
+    events: {}
+""")
+
+    assert module.sync() == 1
+    output = capsys.readouterr().out
+    assert "normalization collision" in output
+    assert "spaces-ideas" in output
+    assert "spaces_ideas" in output
+    assert "mcp_spaces_ideas_idea_connect" in output
 
 
 def test_sync_fails_closed_for_mcp_tools_outside_the_server_scope(tmp_path, monkeypatch):
