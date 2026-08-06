@@ -13,7 +13,7 @@ import ssl
 import struct
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 from llm_client import get_model
 
 from openai import AsyncOpenAI

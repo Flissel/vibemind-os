@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-load_dotenv(Path(__file__).parent.parent / ".env")
+load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
 from tools import (
     parse_security_log, parse_system_log,

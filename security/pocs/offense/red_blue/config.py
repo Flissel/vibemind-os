@@ -12,14 +12,14 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Load .env from project root
-_env_path = Path(__file__).parent.parent / ".env"
+_env_path = Path(__file__).parent.parent.parent.parent / ".env"
 load_dotenv(_env_path)
 
 # ================================================================
 # LLM Configuration
 # ================================================================
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 from llm_client import get_model
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")

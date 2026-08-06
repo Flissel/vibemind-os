@@ -19,9 +19,9 @@ import json
 from dotenv import load_dotenv
 from pathlib import Path
 
-load_dotenv(Path(__file__).parent.parent / ".env")
+load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 from llm_client import get_model
 
 # ================================================================

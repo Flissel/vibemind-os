@@ -21,7 +21,7 @@ from autogen_core import (
 
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "poc_os_shield"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "defense", "os_shield"))
 
 from messages import (
     GameRoundStart, AttackPhaseComplete,
@@ -234,7 +234,7 @@ class GameControllerAgent(RoutedAgent):
     async def _run_pipeline_scan(self, round_num: int) -> dict:
         """Run integrated detection pipeline (OS Shield + Log Analyzer + Forensics)."""
         try:
-            pipeline_path = os.path.join(os.path.dirname(__file__), "..", "poc_os_shield")
+            pipeline_path = os.path.join(os.path.dirname(__file__), "..", "..", "defense", "os_shield")
             if pipeline_path not in sys.path:
                 sys.path.insert(0, os.path.abspath(pipeline_path))
 
@@ -313,7 +313,7 @@ def _import_blue_messages():
 
     # Fallback: direct import from file
     import importlib.util
-    blue_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "poc_os_shield"))
+    blue_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "defense", "os_shield"))
     spec = importlib.util.spec_from_file_location(
         "blue_messages",
         os.path.join(blue_path, "messages.py"),

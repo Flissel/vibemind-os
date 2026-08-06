@@ -29,7 +29,7 @@ logging.getLogger("paramiko").setLevel(logging.CRITICAL)
 import sys
 import os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "poc_red_blue"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "offense", "red_blue"))
 from infra import (
     VM_SSH_HOST,
     VM_SSH_PORT,

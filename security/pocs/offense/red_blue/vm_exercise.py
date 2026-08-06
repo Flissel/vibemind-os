@@ -43,15 +43,18 @@ VM_PORT = 2222
 VM_USER = "vibemind"
 VM_PASS = "logitech66"
 
-PROJECT_ROOT = Path(__file__).parent.parent
+# Shared llm_client.py / llm_config.yml / .env live at the security/ root.
+PROJECT_ROOT = Path(__file__).parents[3]
 RED_BLUE_DIR = Path(__file__).parent
 VM_EXERCISE_DIR = "/home/vibemind/exercise"
 VM_REPORTS_DIR = f"{VM_EXERCISE_DIR}/reports"
 
-# Directories to deploy into VM
+# Directories to deploy into VM, as (local source, flat VM name). os_shield now
+# lives under security/pocs/defense/; the VM keeps the flat poc_* names the runner
+# script expects.
 DEPLOY_DIRS = [
-    "poc_red_blue",
-    "poc_os_shield",
+    (str(Path(__file__).parent), "poc_red_blue"),
+    (str(Path(__file__).parents[2] / "defense" / "os_shield"), "poc_os_shield"),
 ]
 DEPLOY_FILES = [
     "llm_config.yml",
@@ -193,11 +196,10 @@ def phase3_deploy(ssh, force=False):
     sftp = ssh.open_sftp()
 
     # Upload directories
-    for dirname in DEPLOY_DIRS:
-        local = os.path.join(PROJECT_ROOT, dirname)
+    for local, remote_name in DEPLOY_DIRS:
         if os.path.isdir(local):
-            remote = f"{VM_EXERCISE_DIR}/{dirname}"
-            print(f"  Uploading {dirname}/...", end="", flush=True)
+            remote = f"{VM_EXERCISE_DIR}/{remote_name}"
+            print(f"  Uploading {remote_name}/...", end="", flush=True)
             try:
                 sftp.stat(remote)
             except FileNotFoundError:

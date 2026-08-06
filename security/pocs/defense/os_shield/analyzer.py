@@ -15,7 +15,7 @@ from autogen_core import RoutedAgent, message_handler, MessageContext
 
 from messages import ThreatAnalysisRequest, ThreatAnalysis
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 from llm_client import get_model
 
 

@@ -12,10 +12,10 @@ import winreg
 from dotenv import load_dotenv
 
 # Load .env from project root
-_env_path = Path(__file__).parent.parent / ".env"
+_env_path = Path(__file__).parent.parent.parent.parent / ".env"
 load_dotenv(_env_path)
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 from llm_client import get_model
 
 # ================================================================

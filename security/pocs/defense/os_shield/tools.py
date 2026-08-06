@@ -37,7 +37,7 @@ from config import (
     SUSPICIOUS_OUTBOUND_PORTS, SUSPICIOUS_PROCESS_NAMES,
 )
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 from llm_client import get_model
 
 

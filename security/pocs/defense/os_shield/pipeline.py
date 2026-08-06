@@ -19,7 +19,7 @@ from datetime import datetime
 
 # Add parent paths for cross-module imports
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for _subdir in ("poc_os_shield", "poc_log_analyzer", "poc_forensics", "poc_alerter"):
+for _subdir in ("os_shield", "log_analyzer", "forensics", "alerter"):
     _path = os.path.join(_project_root, _subdir)
     if _path not in sys.path:
         sys.path.insert(0, _path)
@@ -254,7 +254,7 @@ async def _run_log_analyzer(hours: int = 24) -> list[UnifiedFinding]:
 
     try:
         # Import log analyzer tools
-        log_tools_path = os.path.join(_project_root, "poc_log_analyzer")
+        log_tools_path = os.path.join(_project_root, "log_analyzer")
         if log_tools_path not in sys.path:
             sys.path.insert(0, log_tools_path)
 
@@ -306,7 +306,7 @@ async def _run_forensics() -> list[UnifiedFinding]:
     findings = []
 
     try:
-        forensics_path = os.path.join(_project_root, "poc_forensics")
+        forensics_path = os.path.join(_project_root, "forensics")
         if forensics_path not in sys.path:
             sys.path.insert(0, forensics_path)
 
@@ -504,7 +504,7 @@ async def run_integrated_scan(
     # Alerting
     if alert_enabled and any(by_severity.get(s, 0) > 0 for s in ["CRITICAL", "HIGH"]):
         try:
-            alerter_path = os.path.join(_project_root, "poc_alerter")
+            alerter_path = os.path.join(_project_root, "alerter")
             if alerter_path not in sys.path:
                 sys.path.insert(0, alerter_path)
 

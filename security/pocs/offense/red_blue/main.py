@@ -44,7 +44,7 @@ from judge.judge_agent import JudgeAgent
 # Import via importlib to avoid sys.path collision with our own messages.py
 import importlib.util
 
-blue_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "poc_os_shield"))
+blue_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "defense", "os_shield"))
 
 def _import_blue_modules():
     """Import all Blue Team modules with isolated sys.path."""
