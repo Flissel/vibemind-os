@@ -32,10 +32,14 @@ security/
       alerter/             # multi-channel alerts (Telegram/Slack/Email)
       pc_monitor/          # PC health / admin helper (MCP server)
       storage_manager/     # disk / storage management (MCP server)
+      os_shield/           # real-time OS-level threat detection (blue team)
+      log_analyzer/        # Windows security-log anomaly detection
+      security_scanner/    # broader vuln / misconfiguration scanning
     offense/               # adversarial / red-team PoCs
       site_verifier/       # web recon: SSL, headers, CMS/XSS checks, reporting
       injection_chain/     # multi-step prompt-injection analysis (AutoGen)
       captcha_eval/        # browser-agent robustness eval on OWN local site
+      red_blue/            # automated red/blue-team exercise framework (uses os_shield)
     infra/                 # shared lab plumbing
       grpc_host/           # distributed AutoGen agents over gRPC
       keycloak/            # OAuth2 device verification / RBAC

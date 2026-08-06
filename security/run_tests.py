@@ -1,5 +1,5 @@
 """
-Test all 10 security PoCs for functionality.
+Test all 12 security PoCs for functionality.
 Run: python run_tests.py
 
 PoCs live under pocs/{defense,offense,infra}/<name>/. This suite exercises the
@@ -233,6 +233,31 @@ def test_firewall():
                 print(f"  {line.strip()}")
     return True
 
+def test_os_shield():
+    """Test os_shield - OS-level threat detection tools load (consolidated from ops)."""
+    shield_dir = os.path.join(DEFENSE, 'os_shield')
+    if shield_dir not in sys.path:
+        sys.path.insert(0, shield_dir)  # tools.py imports sibling `config`
+    spec = importlib.util.spec_from_file_location(
+        "shield_tools", os.path.join(shield_dir, 'tools.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    for fn in ('list_processes', 'detect_suspicious_connections', 'check_registry_autoruns'):
+        assert hasattr(mod, fn), f"{fn} not found"
+    print("  Tools: list_processes, detect_suspicious_connections, check_registry_autoruns, ...")
+    return True
+
+def test_log_analyzer():
+    """Test log_analyzer - security event analysis (consolidated from ops)."""
+    spec = importlib.util.spec_from_file_location(
+        "log_tools", os.path.join(DEFENSE, 'log_analyzer', 'tools.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    for fn in ('detect_brute_force', 'detect_priv_escalation', 'build_timeline'):
+        assert hasattr(mod, fn), f"{fn} not found"
+    print("  Tools: detect_brute_force, detect_priv_escalation, detect_new_services, build_timeline")
+    return True
+
 def test_keycloak():
     """Test keycloak - OAuth2 device verification."""
     spec = importlib.util.spec_from_file_location(
@@ -266,6 +291,8 @@ if __name__ == '__main__':
 
     # Tier 3
     test("event_log", test_event_log)
+    test("log_analyzer", test_log_analyzer)
+    test("os_shield", test_os_shield)
     test("firewall", test_firewall)
     test("keycloak", test_keycloak)
 
