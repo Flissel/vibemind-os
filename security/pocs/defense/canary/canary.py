@@ -191,7 +191,7 @@ async def watch_canaries():
 
                     # Try to send alert
                     try:
-                        sys.path.insert(0, str(Path(__file__).parent.parent / "poc_alerter"))
+                        sys.path.insert(0, str(Path(__file__).parent.parent / "alerter"))
                         from alerter import send_alert
                         await send_alert(
                             "CRITICAL",
@@ -218,7 +218,7 @@ async def watch_canaries():
                     initial_state[canary["path"]]["atime"] = stat.st_atime
 
                     try:
-                        sys.path.insert(0, str(Path(__file__).parent.parent / "poc_alerter"))
+                        sys.path.insert(0, str(Path(__file__).parent.parent / "alerter"))
                         from alerter import send_alert
                         await send_alert(
                             "HIGH",
@@ -239,7 +239,7 @@ async def watch_canaries():
                     initial_state[canary["path"]]["mtime"] = stat.st_mtime
 
                     try:
-                        sys.path.insert(0, str(Path(__file__).parent.parent / "poc_alerter"))
+                        sys.path.insert(0, str(Path(__file__).parent.parent / "alerter"))
                         from alerter import send_alert
                         await send_alert(
                             "CRITICAL",

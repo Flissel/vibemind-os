@@ -1,99 +1,87 @@
-# :shield: VibeMind Security Lab
+# 🛡️ VibeMind Security Lab
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 
-**Security research lab with 30 proof-of-concept modules for AI-augmented defense and adversarial testing.**
+Proof-of-concept modules for AI-augmented defense and adversarial testing — host/network
+monitoring, forensics, botnet detection, and web-recon PoCs. Built for research and
+education.
 
-A comprehensive collection of security PoCs covering prompt injection analysis, network monitoring, vulnerability scanning, and distributed agent architectures. Built for research and education.
+> **Disclaimer:** These are proof-of-concept tools for authorized security research only.
+> Use responsibly and only on systems you own or have permission to test. See
+> [SECURITY.md](SECURITY.md).
 
-> **Disclaimer:** These modules are proof-of-concept tools for authorized security research only. Use responsibly and only on systems you own or have permission to test.
+## Layout
 
-## Module Categories
+```
+security/
+  llm_client.py            # shared LLM access used by the PoCs
+  llm_config.yml           # LLM routing config (gitignored)
+  run_tests.py             # self-check suite for the defense/infra PoCs
+  requirements.txt
+  pocs/
+    defense/               # host & network monitoring, hardening, forensics
+      vuln_scanner/        # installed-software / misconfig inventory (Windows registry)
+      network_monitor/     # WiFi/ARP/DNS/TLS/ports + honeypot (MCP server)
+      forensics/           # timeline reconstruction from Windows artifacts
+      canary/              # honeypot canary-file deployment + watcher
+      botnet_detector/     # DGA / C2-beacon / zombie behavioral analysis
+      firewall/            # Windows Firewall management (MCP server)
+      event_log/           # Windows Event Log analysis (MCP server)
+      endpoint_hardening/  # Defender / BitLocker / secrets audit (MCP server)
+      alerter/             # multi-channel alerts (Telegram/Slack/Email)
+      pc_monitor/          # PC health / admin helper (MCP server)
+      storage_manager/     # disk / storage management (MCP server)
+    offense/               # adversarial / red-team PoCs
+      site_verifier/       # web recon: SSL, headers, CMS/XSS checks, reporting
+      injection_chain/     # multi-step prompt-injection analysis (AutoGen)
+      captcha_eval/        # browser-agent robustness eval on OWN local site
+    infra/                 # shared lab plumbing
+      grpc_host/           # distributed AutoGen agents over gRPC
+      keycloak/            # OAuth2 device verification / RBAC
+```
 
-### AI Adversarial Testing
-- **AutoGen injection chain** -- multi-step prompt injection analysis
-- **Red/blue team framework** -- automated adversarial attack and defense testing
-
-### System Defense
-- **OS shield** -- real-time OS-level threat detection
-- **Network monitor** -- traffic analysis and anomaly detection
-- **Vulnerability scanner** -- automated CVE and misconfiguration checks
-- **Botnet detector** -- behavioral pattern analysis for botnet identification
-
-### Forensics & Logging
-- **Forensics toolkit** -- disk and memory artifact analysis
-- **Canary tokens** -- honeypot token generation and tracking
-- **Log analyzer** -- AI-powered log anomaly detection
-
-### Infrastructure
-- **Distributed AutoGen agents** -- gRPC-based multi-node agent execution
-- **Keycloak auth integration** -- SSO and RBAC for all modules
-- **Shared LLM client** -- all PoCs use `llm_client.py` for unified LLM access
+Generic (non-security) AutoGen/MCP tool-integration demos that used to live here have
+moved to `../examples/mcp-agents/`.
 
 ## Installation
 
 ```bash
-git clone https://github.com/Flissel/vibemind-security.git
-cd vibemind-security
 pip install -r requirements.txt
 ```
 
 ## Usage
 
-### Run a specific PoC module
+Each PoC is self-contained; run it from its own directory. Examples:
 
 ```bash
-# Network monitoring
-python -m pocs.network_monitor
+# Vulnerability / software inventory
+python pocs/defense/vuln_scanner/main.py
 
-# Vulnerability scan
-python -m pocs.vuln_scanner --target 192.168.1.0/24
+# Forensics timeline
+python pocs/defense/forensics/main.py
 
-# Red/blue team exercise
-python -m pocs.red_blue_team --scenario injection
+# Botnet / DGA detector
+python pocs/defense/botnet_detector/detector.py
 
-# Botnet detection
-python -m pocs.botnet_detector --interface eth0
-
-# Canary token generation
-python -m pocs.canary_tokens --type dns --count 10
+# Web recon (own/authorized targets only)
+python pocs/offense/site_verifier/run_audit.py
 ```
 
-### Distributed agents via gRPC
+The MCP-server PoCs (`network_monitor`, `firewall`, `event_log`, `endpoint_hardening`,
+`botnet_detector`, `site_verifier`) expose their tools over stdio and are wired into the
+OpenFang agent stack via `openfang/openfang.vibemind.toml.template`. If you move or rename
+these dirs, update those paths in lockstep.
+
+## Self-check
 
 ```bash
-# Start agent nodes
-python -m infra.grpc_agent --port 50051
-python -m infra.grpc_agent --port 50052
-
-# Orchestrate
-python -m infra.orchestrator --agents localhost:50051,localhost:50052
+python run_tests.py
 ```
 
-## Project Structure
-
-```
-vibemind-security/
-  llm_client.py              # Shared LLM access for all modules
-  pocs/
-    autogen_injection.py
-    red_blue_team.py
-    os_shield.py
-    forensics.py
-    network_monitor.py
-    vuln_scanner.py
-    botnet_detector.py
-    canary_tokens.py
-    log_analyzer.py
-    ...                      # 30 modules total
-  infra/
-    grpc_agent.py
-    orchestrator.py
-    keycloak_auth.py
-  requirements.txt
-```
+Runs importable, host-local checks for the defense + infra PoCs (no external targets).
+Some checks need Windows and/or admin rights; `keycloak` needs a local Keycloak container.
 
 ## License
 
-MIT -- Felix Baumann ([@Flissel](https://github.com/Flissel))
+MIT — Felix Baumann ([@Flissel](https://github.com/Flissel))

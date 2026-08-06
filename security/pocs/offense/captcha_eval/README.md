@@ -11,7 +11,7 @@ man das nicht muss.
 ## Start
 
 ```bash
-cd vibemind-os/security/poc_captcha_eval
+cd vibemind-os/security/pocs/offense/captcha_eval
 python app.py                 # Test-Keys (Captcha passt immer), Port 8901
 python app.py --port 8911
 python app.py --strict-empty  # lehnt Votes ohne Captcha-Token hart ab

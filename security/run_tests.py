@@ -1,6 +1,9 @@
 """
-Test all 12 security PoCs for functionality.
-Run: python _test_all_pocs.py
+Test all 10 security PoCs for functionality.
+Run: python run_tests.py
+
+PoCs live under pocs/{defense,offense,infra}/<name>/. This suite exercises the
+defense + infra tools that can self-check on a Windows host without external targets.
 """
 import sys
 import os
@@ -12,6 +15,8 @@ import importlib
 import importlib.util
 
 BASE = os.path.dirname(os.path.abspath(__file__))
+DEFENSE = os.path.join(BASE, 'pocs', 'defense')
+INFRA = os.path.join(BASE, 'pocs', 'infra')
 
 results = {}
 
@@ -36,7 +41,7 @@ def test(name, fn):
 def test_vuln_scanner():
     """Test vulnerability scanner - reads Windows registry, no LLM needed."""
     spec = importlib.util.spec_from_file_location(
-        "vuln_main", os.path.join(BASE, 'poc_vuln_scanner', 'main.py'))
+        "vuln_main", os.path.join(DEFENSE, 'vuln_scanner', 'main.py'))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     software = asyncio.run(mod.inventory_installed_software())
@@ -49,7 +54,7 @@ def test_vuln_scanner():
 def test_network_monitor():
     """Test network monitor MCP server - WiFi/ARP/ports."""
     # Test that MCP server file is valid
-    mcp_path = os.path.join(BASE, 'poc_network_monitor', 'mcp_server.py')
+    mcp_path = os.path.join(DEFENSE, 'network_monitor', 'mcp_server.py')
     assert os.path.exists(mcp_path), "mcp_server.py not found"
     print(f"  MCP server file exists: {mcp_path}")
 
@@ -67,7 +72,7 @@ def test_network_monitor():
     proc = subprocess.Popen(
         [sys.executable, mcp_path],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        cwd=os.path.join(BASE, 'poc_network_monitor'))
+        cwd=os.path.join(DEFENSE, 'network_monitor'))
     try:
         # Send JSON-RPC initialize
         init_msg = json.dumps({"jsonrpc": "2.0", "method": "initialize", "id": 1,
@@ -87,7 +92,7 @@ def test_network_monitor():
 
 def test_alerter():
     """Test alerter - multi-channel alert system (must run from its own dir)."""
-    alerter_dir = os.path.join(BASE, 'poc_alerter')
+    alerter_dir = os.path.join(DEFENSE, 'alerter')
     # Write a small test script to avoid sys.path conflicts
     test_script = os.path.join(alerter_dir, '_quick_test.py')
     with open(test_script, 'w') as f:
@@ -112,44 +117,13 @@ print("OK")
         raise RuntimeError(f"alerter test failed: {r.stderr[:300]}")
     return True
 
-def test_os_shield():
-    """Test os_shield - must be tested from its own directory to avoid config conflicts."""
-    shield_dir = os.path.join(BASE, 'poc_os_shield')
-    test_script = os.path.join(shield_dir, '_quick_test.py')
-    with open(test_script, 'w') as f:
-        f.write("""
-import sys, os, asyncio
-sys.path.insert(0, os.path.dirname(__file__))
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from config import AUTORUN_KEYS, SUSPICIOUS_PROCESS_NAMES
-from baselines import capture_baseline
-from tools import TOOL_DISPATCH
-print(f"Config OK: {len(AUTORUN_KEYS)} autorun keys, {len(SUSPICIOUS_PROCESS_NAMES)} suspicious procs")
-print(f"Tools: {list(TOOL_DISPATCH.keys())}")
-bl = asyncio.run(capture_baseline())
-print(f"Baseline captured: {len(bl)} categories")
-for k,v in bl.items():
-    cnt = len(v) if isinstance(v, (list,dict)) else v
-    print(f"  {k}: {cnt} entries")
-print("OK")
-""")
-    r = subprocess.run([sys.executable, test_script],
-                       capture_output=True, text=True, timeout=30, cwd=shield_dir)
-    os.remove(test_script)
-    if r.returncode == 0:
-        for line in r.stdout.splitlines():
-            print(f"  {line}")
-    else:
-        raise RuntimeError(f"os_shield failed: {r.stderr[:300]}")
-    return True
-
 
 # ========== TIER 2 ==========
 
 def test_forensics():
     """Test forensics - timeline reconstruction from Windows artifacts."""
     spec = importlib.util.spec_from_file_location(
-        "forensics_main", os.path.join(BASE, 'poc_forensics', 'main.py'))
+        "forensics_main", os.path.join(DEFENSE, 'forensics', 'main.py'))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
@@ -168,7 +142,7 @@ def test_forensics():
 def test_canary():
     """Test canary - honeypot deployment system."""
     spec = importlib.util.spec_from_file_location(
-        "canary", os.path.join(BASE, 'poc_canary', 'canary.py'))
+        "canary", os.path.join(DEFENSE, 'canary', 'canary.py'))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
@@ -187,7 +161,7 @@ def test_canary():
 
 def test_endpoint_hardening():
     """Test endpoint hardening MCP server."""
-    mcp_path = os.path.join(BASE, 'poc_endpoint_hardening', 'mcp_server.py')
+    mcp_path = os.path.join(DEFENSE, 'endpoint_hardening', 'mcp_server.py')
     assert os.path.exists(mcp_path), "mcp_server.py not found"
     print(f"  MCP server file exists")
 
@@ -203,7 +177,7 @@ def test_endpoint_hardening():
 
 def test_botnet_detector():
     """Test botnet detector - DGA, beacon, zombie detection."""
-    detector_path = os.path.join(BASE, 'poc_botnet_detector', 'detector.py')
+    detector_path = os.path.join(DEFENSE, 'botnet_detector', 'detector.py')
     spec = importlib.util.spec_from_file_location("detector", detector_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -228,7 +202,7 @@ def test_botnet_detector():
 
 def test_event_log():
     """Test event log MCP server."""
-    mcp_path = os.path.join(BASE, 'poc_event_log', 'mcp_server.py')
+    mcp_path = os.path.join(DEFENSE, 'event_log', 'mcp_server.py')
     assert os.path.exists(mcp_path), "mcp_server.py not found"
     print(f"  MCP server file exists")
 
@@ -244,23 +218,9 @@ def test_event_log():
         print(f"  Event log query returned code {r.returncode}")
     return True
 
-def test_log_analyzer():
-    """Test log analyzer - security event analysis."""
-    spec = importlib.util.spec_from_file_location(
-        "log_tools", os.path.join(BASE, 'poc_log_analyzer', 'tools.py'))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-
-    bf = asyncio.run(mod.detect_brute_force(hours=1))
-    print(f"  Brute force (1h): detected={bf.get('brute_force_detected')}, failed_logins={bf.get('total_failed_logins')}")
-
-    timeline = asyncio.run(mod.build_timeline(hours=1))
-    print(f"  Timeline (1h): {len(timeline.get('events', []))} events")
-    return True
-
 def test_firewall():
     """Test firewall MCP server."""
-    mcp_path = os.path.join(BASE, 'poc_firewall', 'mcp_server.py')
+    mcp_path = os.path.join(DEFENSE, 'firewall', 'mcp_server.py')
     assert os.path.exists(mcp_path), "mcp_server.py not found"
     print(f"  MCP server file exists")
 
@@ -276,7 +236,7 @@ def test_firewall():
 def test_keycloak():
     """Test keycloak - OAuth2 device verification."""
     spec = importlib.util.spec_from_file_location(
-        "verify", os.path.join(BASE, 'poc_keycloak', 'verify_device.py'))
+        "verify", os.path.join(INFRA, 'keycloak', 'verify_device.py'))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
@@ -294,22 +254,20 @@ if __name__ == '__main__':
     print(f"Python: {sys.version}")
 
     # Tier 1
-    test("poc_vuln_scanner", test_vuln_scanner)
-    test("poc_network_monitor", test_network_monitor)
-    test("poc_alerter", test_alerter)
-    test("poc_os_shield", test_os_shield)
+    test("vuln_scanner", test_vuln_scanner)
+    test("network_monitor", test_network_monitor)
+    test("alerter", test_alerter)
 
     # Tier 2
-    test("poc_forensics", test_forensics)
-    test("poc_canary", test_canary)
-    test("poc_endpoint_hardening", test_endpoint_hardening)
-    test("poc_botnet_detector", test_botnet_detector)
+    test("forensics", test_forensics)
+    test("canary", test_canary)
+    test("endpoint_hardening", test_endpoint_hardening)
+    test("botnet_detector", test_botnet_detector)
 
     # Tier 3
-    test("poc_event_log", test_event_log)
-    test("poc_log_analyzer", test_log_analyzer)
-    test("poc_firewall", test_firewall)
-    test("poc_keycloak", test_keycloak)
+    test("event_log", test_event_log)
+    test("firewall", test_firewall)
+    test("keycloak", test_keycloak)
 
     # Summary
     print(f"\n{'='*60}")

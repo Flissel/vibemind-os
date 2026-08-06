@@ -374,10 +374,10 @@ class HoneypotServer:
             f"Someone is probing your network!"
         )
 
-        # 1. Try Telegram/Slack via poc_alerter
+        # 1. Try Telegram/Slack via alerter
         try:
             import sys
-            sys.path.insert(0, str(Path(__file__).parent.parent / "poc_alerter"))
+            sys.path.insert(0, str(Path(__file__).parent.parent / "alerter"))
             from alerter import send_alert
             await send_alert("CRITICAL", title, details, source="Honeypot")
             print(f"  [NOTIFY] Alert sent via Telegram/Slack", flush=True)
@@ -600,7 +600,7 @@ class HoneypotServer:
         # 6. Send CRITICAL alert
         try:
             import sys
-            sys.path.insert(0, str(Path(__file__).parent.parent / "poc_alerter"))
+            sys.path.insert(0, str(Path(__file__).parent.parent / "alerter"))
             from alerter import send_alert
             await send_alert(
                 "CRITICAL",

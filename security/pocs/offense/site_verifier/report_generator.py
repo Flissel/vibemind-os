@@ -21,9 +21,9 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 import sys as _sys
-_sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+_sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 from llm_client import get_client, get_model
 
 from tools import (

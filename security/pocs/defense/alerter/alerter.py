@@ -6,7 +6,7 @@ Includes deduplication to prevent alert fatigue.
 
 Nutzung:
   # Als Library (Import in andere Module)
-  from poc_alerter.alerter import send_alert
+  from alerter import send_alert
   await send_alert("CRITICAL", "Mimikatz detected", "PID 1234, User admin")
 
   # Standalone Test
