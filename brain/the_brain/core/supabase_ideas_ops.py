@@ -1049,7 +1049,11 @@ async def bubble_promote_op(client: SupabaseIdeasClient,
         return {"ok": False, "error": "Bubble to promote not found."}
     project = await client.promote_bubble(row)
     if not project:
-        return f"Failed to promote bubble '{row.get('title')}'."
+        # promote_bubble rolls the project back when the bubble link fails, so
+        # this branch means nothing was persisted — report it as a failure
+        # instead of a success-shaped string (D1, Zyklus-1-Befund 2026-08-01).
+        return {"ok": False,
+                "error": f"Failed to promote bubble '{row.get('title')}'."}
     title = row.get("title") or project.get("name") or "?"
     project_id = project.get("id")
     _publish("bubble.promote",
