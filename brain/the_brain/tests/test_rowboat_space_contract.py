@@ -84,6 +84,9 @@ def test_rowboat_status_uses_only_the_bound_deterministic_mcp_tool_and_independe
     assert event == {
         "tool": "rowboat_status",
         "required_params": [],
+        # Provenance is mandatory for this event: it may not be answered
+        # without an approval and a cost reference (fail-closed).
+        "required_provenance": ["approval_ref", "cost_ref"],
         "execution": {"kind": "mcp", "server": "spaces-rowboat"},
     }
     assert "spaces-rowboat" in registry["spaces"]["rowboat"]["mcp_servers"]
