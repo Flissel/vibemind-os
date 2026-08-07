@@ -84,6 +84,50 @@ def test_promote_uses_real_supabase_project_write_and_returns_queryable_id():
     assert result == "Bubble 'Launch Plan' promoted to project (id=project-1)."
 
 
+class _FailingPromoteClient(_PromoteClient):
+    """promote_bubble rolls back and returns None — nothing was persisted."""
+
+    async def promote_bubble(self, bubble):
+        self.promoted.append(bubble)
+        return None
+
+
+def test_failed_promote_reports_failure_instead_of_success_shaped_string():
+    """D1 (Zyklus-1-Befund 2026-08-01): a rolled-back promote must not read as
+    success. The op returns a dict with ok=False so the executor can tell
+    failure from success without parsing prose."""
+    from core.supabase_ideas_ops import bubble_promote_op
+
+    client = _FailingPromoteClient()
+
+    result = asyncio.run(
+        bubble_promote_op(client, {"bubble_name": "Launch Plan"})
+    )
+
+    assert isinstance(result, dict), (
+        "failed promote must not return a bare string — the executor reads "
+        "ok/error, and a string is treated as a successful result"
+    )
+    assert result["ok"] is False
+    assert "Launch Plan" in result["error"]
+
+
+def test_missing_bubble_promote_reports_failure():
+    """The not-found branch uses the same contract as the failure branch."""
+    from core.supabase_ideas_ops import bubble_promote_op
+
+    class _NoBubbleClient(_PromoteClient):
+        async def find_bubble_by_title(self, title):
+            return None
+
+    result = asyncio.run(
+        bubble_promote_op(_NoBubbleClient(), {"bubble_name": "Ghost"})
+    )
+
+    assert isinstance(result, dict)
+    assert result["ok"] is False
+
+
 class _MissingPromoteClient:
     async def find_bubble_by_title(self, _title):
         return None
