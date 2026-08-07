@@ -27,7 +27,15 @@ spaces:
     enabled: true
     description: "Bubble CRUD + navigation on the VibeMind canvas."
     mcp_servers: [vibemind-db, vibemind, spaces-ideas]
-    mcp_tools: { spaces-ideas: [bubble_create] }
+    # M5 2026-08-07: ohne mcp_tools bekommt der Agent KEINE MCP-Tools —
+    # der Generator leitet die tools-Liste nur hieraus ab, nicht aus
+    # mcp_servers (fail-closed by design, sync_openfang_agents.py:86;
+    # im Daemon-Log belegt: tool_names waren nur memory_store/-recall).
+    # Bewusst minimal: genau die drei Operationen, die bubble_promote
+    # braucht (Idee lesen, Projekt anlegen, Idee als promoted markieren).
+    mcp_tools:
+      spaces-ideas: [bubble_create]
+      vibemind-db: [db_ideas_get, db_ideas_update, db_projects_create]
     system_prompt_hint: "You manage bubbles (idea clusters) on the VibeMind canvas. Use the preferred_tool hint in the intent envelope; only call other tools if the hint fails."
     default_context: [current_space, current_bubble, idea_count]
     events:
