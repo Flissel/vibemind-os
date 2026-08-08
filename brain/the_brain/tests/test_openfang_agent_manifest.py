@@ -391,6 +391,35 @@ def test_pinned_brain_bubbles_manifest_materializes_the_complete_tool_scope():
     ]
 
 
+def test_pinned_brain_coder_manifest_materializes_the_openai_chat_scope():
+    agent_dir = OPENFANG_ROOT / "agents" / "brain-coder"
+    manifest_path = agent_dir / "agent.toml"
+    template_path = agent_dir / "agent.toml.tmpl"
+    document = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert not template_path.exists()
+    assert document["name"] == "brain-coder"
+    assert document["module"] == "builtin:chat"
+    assert document["model"]["provider"] == "openai"
+    assert document["model"]["model"] == "gpt-4o-mini"
+    assert document.get("fallback_models", []) == []
+    assert document["mcp_servers"] == [
+        "vibemind-db",
+        "filesystem",
+        "git",
+        "github",
+        "context7",
+        "qdrant",
+        "fetch",
+        "brain",
+        "issue-detector",
+    ]
+    assert "memory-search" not in document["mcp_servers"]
+    assert not any(
+        tool.startswith("mcp_") for tool in document["capabilities"]["tools"]
+    )
+
+
 def test_pinned_openfang_template_declares_exactly_one_rowboat_stdio_server():
     template = Template(
         (OPENFANG_ROOT / "openfang.vibemind.toml.template").read_text(
