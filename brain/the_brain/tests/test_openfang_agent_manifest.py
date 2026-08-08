@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import tomllib
+from pathlib import Path
+from string import Template
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +15,10 @@ import pytest
 from core.capability_discovery import discover_agents
 from core.openfang_agent_manifest import extract_mcp_servers, load_mcp_servers
 from web.routers import introspection
+
+
+ROOT = Path(__file__).resolve().parents[3]
+OPENFANG_ROOT = ROOT / "openfang"
 
 
 @pytest.mark.parametrize(
@@ -365,3 +372,51 @@ def test_agent_tools_rejects_blank_server_before_list_tools(monkeypatch, tmp_pat
     assert response.status_code == 200
     assert json.loads(response.body)["mcp_servers"] == []
     assert calls == []
+
+
+def test_pinned_brain_bubbles_manifest_materializes_the_complete_tool_scope():
+    document = tomllib.loads(
+        (OPENFANG_ROOT / "agents" / "brain-bubbles" / "agent.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert document["capabilities"]["tools"] == [
+        "memory_store",
+        "memory_recall",
+        "mcp_spaces_ideas_bubble_create",
+        "mcp_vibemind_db_db_ideas_get",
+        "mcp_vibemind_db_db_ideas_update",
+        "mcp_vibemind_db_db_projects_create",
+    ]
+
+
+def test_pinned_openfang_template_declares_exactly_one_rowboat_stdio_server():
+    template = Template(
+        (OPENFANG_ROOT / "openfang.vibemind.toml.template").read_text(
+            encoding="utf-8"
+        )
+    )
+    document = tomllib.loads(
+        template.safe_substitute(VIBEMIND_ROOT="/vibemind-root")
+    )
+    rowboat_servers = [
+        server
+        for server in document["mcp_servers"]
+        if server.get("name") == "spaces-rowboat"
+    ]
+
+    assert rowboat_servers == [
+        {
+            "name": "spaces-rowboat",
+            "timeout_secs": 10,
+            "env": ["ROWBOAT_URL"],
+            "transport": {
+                "type": "stdio",
+                "command": "python",
+                "args": [
+                    "/vibemind-root/vibemind-os/spaces/rowboat/mcp_server.py"
+                ],
+            },
+        }
+    ]
