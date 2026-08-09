@@ -2505,7 +2505,12 @@ async def multihop_execute(request: Request):
     # steht in jeder Response + (wo ein Plan existiert) in plan.trace_id, sodass
     # GET /api/trace/{trace_id} die ganze Kette eingabe->...->ausgabe zeigt.
     import uuid as _uuid
-    trace_id = "tr_" + _uuid.uuid4().hex[:12]
+    requested_trace_id = body.get("trace_id")
+    trace_id = (
+        requested_trace_id.strip()
+        if isinstance(requested_trace_id, str) and requested_trace_id.strip()
+        else "tr_" + _uuid.uuid4().hex[:12]
+    )
     _routed_via = None   # wird je Zweig gesetzt (groq/som/som-team/no-plan/easy/meta)
 
     from core.plan_schema import Plan as _Plan

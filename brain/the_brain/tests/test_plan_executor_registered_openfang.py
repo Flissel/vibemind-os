@@ -11,7 +11,8 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "brain" / "the_brain"))
 
 from core.plan_executor import PlanExecutor
-from core.plan_schema import HopSpec, Plan
+from core.openfang_runtime_authority import runtime_invocation_id
+from core.plan_schema import HopResult, HopSpec, Plan, validate_plan
 
 
 class _Registry:
@@ -499,7 +500,7 @@ def test_deterministic_bubble_create_gateway_failure_never_invokes_llm_or_direct
     )
 
 
-def test_deterministic_mcp_forwards_per_plan_provenance_to_invocation(
+def test_deterministic_mcp_forwards_only_runtime_authority_context(
     monkeypatch,
 ):
     _disable_kg_hits(monkeypatch)
@@ -513,14 +514,136 @@ def test_deterministic_mcp_forwards_per_plan_provenance_to_invocation(
     result = PlanExecutor()._exec_hop(
         _hop(), {},
         plan_ctx={
-            "approval_ref": "approval:plan-1",
-            "cost_ref": "cost:plan-1",
+            "plan_id": "plan-runtime-authority",
+            "plan_revision": 1,
+            "trace_id": "trace-runtime-authority",
         },
     )
 
     assert result.ok is True
-    assert executor.extra_params["approval_ref"] == "approval:plan-1"
-    assert executor.extra_params["cost_ref"] == "cost:plan-1"
+    assert set(executor.extra_params) == {"_runtime_authority"}
+    context = executor.extra_params["_runtime_authority"]
+    assert context.correlation_id == "trace-runtime-authority"
+    assert context.plan_id == "plan-runtime-authority"
+    assert context.plan_revision == 1
+    assert context.step_id == "step-1"
+
+
+def test_runtime_invocation_identity_is_stable_per_revision_and_changes_after_replan():
+    same_hop = runtime_invocation_id("plan-runtime-authority", 1, "step-1")
+    repeated_hop = runtime_invocation_id("plan-runtime-authority", 1, "step-1")
+    replanned_hop = runtime_invocation_id("plan-runtime-authority", 2, "step-1")
+
+    assert same_hop == repeated_hop
+    assert replanned_hop != same_hop
+
+
+def test_pending_authority_stops_dependents_without_replan(monkeypatch):
+    first = HopSpec("first", "first", execution_target="direct:test:first")
+    dependent = HopSpec(
+        "dependent", "dependent", execution_target="direct:test:dependent", depends_on=["first"],
+    )
+    plan = Plan("plan-pending", "pending", "", [first, dependent])
+    calls = []
+
+    def _pending(self, hop, _state, _context):
+        calls.append(hop.step_id)
+        return HopResult(
+            step_id=hop.step_id, ok=False, pending=True,
+            authority_status="pending_approval", invocation_id="brain-mcp-pending",
+            error="runtime authority approval pending", contract_pass=None, reward=0.0,
+        )
+
+    monkeypatch.setattr(PlanExecutor, "_exec_hop", _pending)
+    result = PlanExecutor().execute(plan, replanner=lambda *_args: pytest.fail("pending must not replan"))
+
+    assert calls == ["first"]
+    assert result["pending"] is True
+    assert result["authority_status"] == "pending_approval"
+    assert result["invocation_id"] == "brain-mcp-pending"
+    assert result["executed"]["dependent"]["ok"] is False
+    assert result["executed"]["first"]["contract_pass"] is None
+    assert result["executed"]["first"]["reward"] == 0.0
+    assert result["executed"]["dependent"]["contract_pass"] is None
+    assert result["executed"]["dependent"]["reward"] == 0.0
+
+
+def test_terminal_pending_skips_plan_failure_learning_and_recording(monkeypatch):
+    from core import decision_recall, decision_self_prior
+
+    calls = {"record": 0, "self_prior": 0, "sequence_record": 0}
+
+    class _Recorder:
+        def record(self, _snapshot):
+            calls["sequence_record"] += 1
+
+    first = HopSpec(
+        "first", "first", capability="pending-capability", execution_target="direct:test:first",
+    )
+    plan = Plan("plan-pending-terminal", "pending", "", [first])
+
+    def _pending(_self, hop, _state, _context):
+        return HopResult(
+            step_id=hop.step_id, ok=False, pending=True, capability=hop.capability,
+            authority_status="pending_approval", invocation_id="brain-mcp-pending",
+            contract_pass=None, reward=0.0,
+        )
+
+    monkeypatch.setattr(PlanExecutor, "_exec_hop", _pending)
+    monkeypatch.setattr(
+        decision_recall, "record",
+        lambda *_args, **_kwargs: calls.__setitem__("record", calls["record"] + 1),
+    )
+    monkeypatch.setattr(
+        decision_self_prior, "update",
+        lambda *_args, **_kwargs: calls.__setitem__("self_prior", calls["self_prior"] + 1),
+    )
+
+    result = PlanExecutor(kg=object(), recorder=_Recorder()).execute(plan)
+
+    assert result["pending"] is True
+    assert calls == {"record": 0, "self_prior": 0, "sequence_record": 0}
+
+
+def test_nonretryable_executor_failure_stops_plan_retry_loop(monkeypatch):
+    _disable_kg_hits(monkeypatch)
+    executor = _Executor({"ok": False, "error": "outcome_unknown", "retryable": False})
+    monkeypatch.setattr("core.capability_targets.build_executor", lambda _target: executor)
+    hop = HopSpec("step-1", "nonretryable", execution_target="direct:test:run", retries=3)
+
+    result = PlanExecutor()._exec_hop(hop, {})
+
+    assert result.ok is False
+    assert executor.calls == 1
+    assert result.retried == 0
+
+
+def test_pending_executor_result_does_not_replay_within_hop(monkeypatch):
+    _disable_kg_hits(monkeypatch)
+    executor = _Executor({
+        "ok": False, "pending": True, "authority_status": "pending_approval",
+        "invocation_id": "brain-mcp-pending",
+    })
+    monkeypatch.setattr("core.capability_targets.build_executor", lambda _target: executor)
+    hop = HopSpec("step-1", "pending", execution_target="direct:test:run", retries=3)
+
+    result = PlanExecutor()._exec_hop(hop, {})
+
+    assert result.pending is True
+    assert result.contract_pass is None
+    assert result.reward == 0.0
+    assert executor.calls == 1
+
+
+@pytest.mark.parametrize("plan_revision", [0, False, 1.5])
+def test_plan_from_dict_preserves_invalid_revision_for_validation(plan_revision):
+    plan = Plan.from_dict({
+        "plan_id": "plan-invalid-revision", "intent": "revision", "rationale": "",
+        "plan_revision": plan_revision,
+        "hops": [{"step_id": "s1", "description": "noop", "execution_target": "direct:test:run"}],
+    })
+
+    assert "plan_revision must be a positive integer" in validate_plan(plan)
 
 
 def test_deterministic_bubble_create_failure_is_never_retried_by_plan(monkeypatch):
