@@ -449,3 +449,18 @@ def test_pinned_openfang_template_declares_exactly_one_rowboat_stdio_server():
             },
         }
     ]
+
+
+def test_pinned_openfang_exposes_runtime_admission_authority():
+    for relative in (
+        "crates/openfang-kernel/src/runtime_admission.rs",
+        "crates/openfang-runtime/src/runtime_execution.rs",
+        "crates/openfang-api/src/routes.rs",
+    ):
+        assert (OPENFANG_ROOT / relative).is_file(), relative
+
+    routes = (
+        OPENFANG_ROOT / "crates/openfang-api/src/routes.rs"
+    ).read_text(encoding="utf-8").lower()
+    assert "x-openfang-approval-ref" in routes
+    assert "x-openfang-cost-ref" in routes

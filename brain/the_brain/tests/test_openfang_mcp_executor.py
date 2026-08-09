@@ -4,6 +4,7 @@ import pytest
 import requests
 
 from core.capability_targets import McpAuthority, McpExecutor
+from core.openfang_runtime_authority import RuntimeAuthorityRefs, RuntimeInvocationContext
 
 
 class _Response:
@@ -23,7 +24,7 @@ class _Response:
 def _legacy_transport_fixture(monkeypatch, request):
     """Keep pre-existing transport tests focused beyond the new authority gate."""
     if request.node.name.startswith((
-        "test_missing_invocation_provenance",
+        "test_missing_runtime_authority_context",
         "test_unregistered_mcp_tuple",
     )):
         return
@@ -31,26 +32,38 @@ def _legacy_transport_fixture(monkeypatch, request):
     from core import capability_targets
 
     original_authority = capability_targets.find_registered_mcp_authority
-    original_provenance = capability_targets._extract_mcp_provenance
 
     def _authority(agent, server, tool):
         resolved = original_authority(agent, server, tool)
         if resolved is not None:
-            return resolved
+            return McpAuthority(
+                agent=resolved.agent, server=resolved.server, tool=resolved.tool,
+                space_id="test-space", event_id="test",
+            )
         if (agent, server, tool) == ("brain-ideas", "vibemind-db", "ideas.list"):
-            return McpAuthority(agent=agent, server=server, tool=tool)
+            return McpAuthority(agent=agent, server=server, tool=tool, space_id="test-space", event_id="test")
         return None
 
-    def _provenance(payload):
-        if not payload.get("approval_ref") and not payload.get("cost_ref"):
-            return dict(payload), {
-                "approval_ref": "approval:legacy-transport-test",
-                "cost_ref": "cost:legacy-transport-test",
-            }
-        return original_provenance(payload)
+    original_call = McpExecutor.call
+
+    def _call(self, *args, **kwargs):
+        kwargs.setdefault("_runtime_authority", RuntimeInvocationContext(
+            correlation_id="test-trace", plan_id="test-plan", plan_revision=1,
+            step_id="test-step", space_id="test-space", agent_name=self.agent_name,
+            invocation_id="brain-mcp-test-transport",
+        ))
+        return original_call(self, *args, **kwargs)
 
     monkeypatch.setattr(capability_targets, "find_registered_mcp_authority", _authority)
-    monkeypatch.setattr(capability_targets, "_extract_mcp_provenance", _provenance)
+    monkeypatch.setattr(McpExecutor, "call", _call)
+    monkeypatch.setattr(
+        capability_targets.RuntimeAuthorityClient,
+        "from_environment",
+        lambda: type("Client", (), {"prepare_invocation": lambda _self, context: RuntimeAuthorityRefs(
+            agent_id="agent-uuid", approval_ref="approval:server", cost_ref="cost:server",
+            invocation_id=context.invocation_id,
+        )})(),
+    )
 
 
 def test_bubble_create_target_calls_openfang_mcp_with_bound_agent_authority(monkeypatch):
@@ -77,13 +90,9 @@ def test_bubble_create_target_calls_openfang_mcp_with_bound_agent_authority(monk
         "mcp:brain-bubbles:spaces-ideas:bubble_create"
     ).call(
         title="focus",
-        approval_ref="approval:invocation-1",
-        cost_ref="cost:invocation-1",
     )
 
     assert result["ok"] is True
-    assert captured["get"]["url"] == "http://openfang.test/api/agents"
-    assert captured["get"]["headers"]["Authorization"] == "Bearer test-token"
     assert captured["post"]["url"] == "http://openfang.test/mcp"
     assert "/api/mcp/dispatch" not in captured["post"]["url"]
     assert captured["post"]["headers"] == {
@@ -91,8 +100,8 @@ def test_bubble_create_target_calls_openfang_mcp_with_bound_agent_authority(monk
         "Authorization": "Bearer test-token",
         "Content-Type": "application/json",
         "X-OpenFang-Agent-Id": "agent-uuid",
-        "X-OpenFang-Approval-Ref": "approval:invocation-1",
-        "X-OpenFang-Cost-Ref": "cost:invocation-1",
+        "X-OpenFang-Approval-Ref": "approval:server",
+        "X-OpenFang-Cost-Ref": "cost:server",
     }
     assert captured["post"]["json"]["jsonrpc"] == "2.0"
     assert captured["post"]["json"]["method"] == "tools/call"
@@ -123,27 +132,24 @@ def test_registered_mcp_authority_uses_distinct_invocation_provenance(monkeypatc
     executor = McpExecutor("mcp:brain-bubbles:spaces-ideas:bubble_create")
 
     assert executor.call(
-        title="first", approval_ref="approval:first", cost_ref="cost:first"
+        title="first"
     )["ok"] is True
     assert executor.call(
-        title="second", approval_ref="approval:second", cost_ref="cost:second"
+        title="second"
     )["ok"] is True
 
     assert [
         call["headers"]["X-OpenFang-Approval-Ref"] for call in post_calls
-    ] == ["approval:first", "approval:second"]
+    ] == ["approval:server", "approval:server"]
     assert [
         call["headers"]["X-OpenFang-Cost-Ref"] for call in post_calls
-    ] == ["cost:first", "cost:second"]
+    ] == ["cost:server", "cost:server"]
     assert [call["json"]["params"]["arguments"] for call in post_calls] == [
         {"title": "first"}, {"title": "second"}
     ]
 
 
-@pytest.mark.parametrize("missing", ["approval_ref", "cost_ref"])
-def test_missing_invocation_provenance_fails_before_any_network_request(
-    monkeypatch, missing
-):
+def test_missing_runtime_authority_context_fails_before_any_network_request(monkeypatch):
     network_calls = []
     monkeypatch.setenv("OPENFANG_URL", "http://openfang.test")
     monkeypatch.setenv("OPENFANG_API_KEY", "test-token")
@@ -155,19 +161,12 @@ def test_missing_invocation_provenance_fails_before_any_network_request(
         "core.capability_targets.requests.post",
         lambda *args, **kwargs: network_calls.append("post"),
     )
-    payload = {
-        "title": "focus",
-        "approval_ref": "approval:invocation",
-        "cost_ref": "cost:invocation",
-    }
-    payload.pop(missing)
-
     result = McpExecutor(
         "mcp:brain-bubbles:spaces-ideas:bubble_create"
-    ).call(**payload)
+    ).call(title="focus")
 
     assert result["ok"] is False
-    assert missing in result["error"]
+    assert "runtime authority context" in result["error"]
     assert network_calls == []
 
 
@@ -238,7 +237,7 @@ def test_json_rpc_error_fails_closed_without_local_fallback(monkeypatch):
 
     assert result["ok"] is False
     assert "json-rpc" in result["error"].lower()
-    assert calls == ["agents", "mcp"]
+    assert calls == ["mcp"]
 
 
 @pytest.mark.parametrize(
@@ -354,7 +353,7 @@ def test_json_rpc_error_redacts_remote_tokens_from_result_and_logs(
     assert "[REDACTED]" in caplog.text
 
 
-def test_missing_bubble_agent_fails_closed_without_mcp_call(monkeypatch):
+def test_static_scope_mismatch_fails_closed_without_mcp_call(monkeypatch):
     monkeypatch.setenv("OPENFANG_URL", "http://openfang.test")
     monkeypatch.setenv("OPENFANG_API_KEY", "test-token")
     calls = []
@@ -370,17 +369,16 @@ def test_missing_bubble_agent_fails_closed_without_mcp_call(monkeypatch):
     monkeypatch.setattr("core.capability_targets.requests.get", _get)
     monkeypatch.setattr("core.capability_targets.requests.post", _post)
 
-    result = McpExecutor(
-        "mcp:brain-bubbles:spaces-ideas:bubble_create"
-    ).call(
-        title="focus",
-        approval_ref="approval:agent-resolution",
-        cost_ref="cost:agent-resolution",
+    from core import capability_targets
+    monkeypatch.setattr(
+        capability_targets, "find_registered_mcp_authority",
+        lambda *_args: McpAuthority("brain-bubbles", "spaces-ideas", "bubble_create", "wrong-space", "test"),
     )
+    result = McpExecutor("mcp:brain-bubbles:spaces-ideas:bubble_create").call(title="focus")
 
     assert result["ok"] is False
-    assert "brain-bubbles" in result["error"]
-    assert calls == ["agents"]
+    assert "does not match registered scope" in result["error"]
+    assert calls == []
 
 
 def test_transient_agent_resolution_retries_within_openfang_boundary(monkeypatch):
@@ -408,7 +406,7 @@ def test_transient_agent_resolution_retries_within_openfang_boundary(monkeypatch
     result = McpExecutor("mcp:brain-ideas:vibemind-db:ideas.list").call()
 
     assert result["ok"] is True
-    assert attempts["agents"] == 2
+    assert attempts["agents"] == 0
 
 
 def test_agent_id_is_refreshed_for_each_mcp_call_after_openfang_restart(monkeypatch):
@@ -434,7 +432,7 @@ def test_agent_id_is_refreshed_for_each_mcp_call_after_openfang_restart(monkeypa
 
     assert executor.call()["ok"] is True
     assert executor.call()["ok"] is True
-    assert bound_ids == ["agent-before-restart", "agent-after-restart"]
+    assert bound_ids == ["agent-uuid", "agent-uuid"]
 
 
 class _ServerErrorResponse:
@@ -472,7 +470,7 @@ def test_mcp_post_transient_failure_is_never_retried(monkeypatch, post_failure):
     result = McpExecutor("mcp:brain-ideas:vibemind-db:ideas.list").call()
 
     assert result["ok"] is False
-    assert calls == {"agents": 1, "mcp": 1}
+    assert calls == {"agents": 0, "mcp": 1}
 
 
 def test_agent_resolution_timeout_is_capped_without_changing_mcp_post_timeout(monkeypatch):
@@ -499,4 +497,67 @@ def test_agent_resolution_timeout_is_capped_without_changing_mcp_post_timeout(mo
     result = McpExecutor("mcp:brain-ideas:vibemind-db:ideas.list").call()
 
     assert result["ok"] is True
-    assert captured == {"get_timeout": 4.0, "post_timeout": 60.0}
+    assert captured == {"post_timeout": 60.0}
+
+
+def test_mcp_strips_manual_authority_refs_recursively_from_tool_arguments(monkeypatch):
+    monkeypatch.setenv("OPENFANG_URL", "http://openfang.test")
+    monkeypatch.setenv("OPENFANG_API_KEY", "test-token")
+    captured = {}
+
+    def _post(_url, *, json, **_kwargs):
+        captured["arguments"] = json["params"]["arguments"]
+        return _Response({
+            "jsonrpc": "2.0", "id": json["id"],
+            "result": {"content": [], "isError": False},
+        })
+
+    monkeypatch.setattr("core.capability_targets.requests.post", _post)
+    result = McpExecutor("mcp:brain-ideas:vibemind-db:ideas.list").call(
+        title="focus", approval_ref="approval-manual-top-level",
+        cost_ref="cost-manual-top-level",
+        nested={
+            "keep": "value", "approval_ref": "approval-manual-nested",
+            "children": [{"cost_ref": "cost-manual-child", "keep_child": 7}],
+        },
+    )
+
+    assert result["ok"] is True
+    assert captured["arguments"] == {
+        "title": "focus",
+        "nested": {"keep": "value", "children": [{"keep_child": 7}]},
+    }
+
+
+def test_mcp_error_redacts_complete_authority_ref_values_from_message_and_logs(
+    monkeypatch, caplog,
+):
+    approval_ref = "approval-synthetic-complete-ref"
+    cost_ref = "cost-synthetic-complete-ref"
+    monkeypatch.setenv("OPENFANG_URL", "http://openfang.test")
+    monkeypatch.setenv("OPENFANG_API_KEY", "test-token")
+    monkeypatch.setattr(
+        "core.capability_targets.RuntimeAuthorityClient.from_environment",
+        lambda: type("Client", (), {"prepare_invocation": lambda _self, context: RuntimeAuthorityRefs(
+            agent_id="agent-uuid", approval_ref=approval_ref, cost_ref=cost_ref,
+            invocation_id=context.invocation_id,
+        )})(),
+    )
+    monkeypatch.setattr(
+        "core.capability_targets.requests.post",
+        lambda _url, *, json, **_kwargs: _Response({
+            "jsonrpc": "2.0", "id": json["id"],
+            "error": {
+                "message": f"denied {approval_ref} and {cost_ref}",
+                "approval_ref": approval_ref, "cost_ref": cost_ref,
+            },
+        }),
+    )
+
+    with caplog.at_level("WARNING", logger="core.capability_targets"):
+        result = McpExecutor("mcp:brain-ideas:vibemind-db:ideas.list").call(title="focus")
+
+    assert result["ok"] is False
+    assert approval_ref not in result["error"] + caplog.text
+    assert cost_ref not in result["error"] + caplog.text
+    assert "[REDACTED]" in result["error"]

@@ -726,6 +726,7 @@ class PlanExecutor:
             "plan_intent": plan.intent or "",
             "plan_rationale": getattr(plan, "rationale", "") or "",
             "plan_id": plan.plan_id,
+            "plan_revision": plan.plan_revision,
             "trace_id": getattr(plan, "trace_id", "") or "",
             "confirmed_events": set(confirmed_events or ()),
         }
@@ -763,6 +764,7 @@ class PlanExecutor:
                 for h in ready:
                     failed_deps = [d for d in h.depends_on if not executed[d].ok]
                     if failed_deps:
+                        dependency_pending = any(executed[d].pending for d in failed_deps)
                         # Mark skipped — record a synthetic result
                         skipped = HopResult(
                             step_id=h.step_id,
@@ -770,7 +772,8 @@ class PlanExecutor:
                             error=f"dependency failed: {failed_deps}",
                             capability=h.capability,
                             target=h.execution_target,
-                            contract_pass=False, reward=-1.0,
+                            contract_pass=(None if dependency_pending else False),
+                            reward=(0.0 if dependency_pending else -1.0),
                         )
                         executed[h.step_id] = skipped
                         with self._lock:
@@ -947,6 +950,7 @@ class PlanExecutor:
                         # Replan trigger
                         if (
                             not hr.ok
+                            and not hr.pending
                             and h.on_fail == ON_FAIL_REPLAN
                             and replanner is not None
                             and replan_count < _MAX_REPLANS
@@ -956,6 +960,12 @@ class PlanExecutor:
                                 self.stats["replans_triggered"] += 1
                             new_plan = replanner(plan, hr)
                             if new_plan is not None:
+                                # A replanned hop is a distinct runtime intent.
+                                # Keep the plan identity but rotate its revision
+                                # before any new hop can derive an invocation id.
+                                plan.plan_revision += 1
+                                new_plan.plan_revision = plan.plan_revision
+                                plan_ctx["plan_revision"] = plan.plan_revision
                                 # Merge: keep already-executed hops, replace remaining
                                 done_ids = set(executed.keys())
                                 fresh = [hs for hs in new_plan.hops if hs.step_id not in done_ids]
@@ -980,6 +990,14 @@ class PlanExecutor:
                 "replans": replan_count,
                 "decision_context": decision_context,
             }
+            pending_hop = next((hr for hr in executed.values() if hr.pending), None)
+            if pending_hop is not None:
+                result.update({
+                    "ok": False,
+                    "pending": True,
+                    "authority_status": pending_hop.authority_status,
+                    "invocation_id": pending_hop.invocation_id,
+                })
             self._publish("plan_completed", {
                 "plan_id": plan.plan_id,
                 "ok": ok,
@@ -988,6 +1006,12 @@ class PlanExecutor:
             })
             self._tappend(plan, "execution", "plan-executor",
                          f"completed ok={ok} in {result['elapsed_s']}s")
+
+            # Pending approval is neither a failed execution nor a terminal
+            # learning outcome.  Stop before graph/recall/self-prior updates;
+            # the finally block also suppresses recorder/sequence ingestion.
+            if pending_hop is not None:
+                return result
 
             # Phase 8.B — sync to Neo4j decision graph
             dg = getattr(self, "_decision_graph", None)
@@ -1113,13 +1137,16 @@ class PlanExecutor:
                     "routed_via": "plan-executor",
                     "stages": list(getattr(plan, "_stages", [])),
                 }
-                self.recorder.record(snapshot)
+                if not any(hr.pending for hr in executed.values()):
+                    self.recorder.record(snapshot)
             except Exception as e:
                 logger.debug(f"[plan-executor] record failed: {e}")
 
             # Phase 6.14.4 — also push plan summary into brain-episodic
             # so consolidation + cross-session recall can see plans.
-            if snapshot and self._episodic_enabled:
+            if snapshot and self._episodic_enabled and not any(
+                hr.pending for hr in executed.values()
+            ):
                 try:
                     self._episodic_write(snapshot)
                 except Exception as e:
@@ -1137,7 +1164,7 @@ class PlanExecutor:
                 from core.multihop_kotlin_adapter import (
                     enqueue_plan, ingest_enabled,
                 )
-                if executed:
+                if executed and not any(hr.pending for hr in executed.values()):
                     _tc = ""
                     if os.environ.get("TASK_CLASS_CLUSTERING", "0") in ("1", "true", "True"):
                         try:
@@ -1559,17 +1586,40 @@ class PlanExecutor:
             # pick the right one (idea_format_mindmap vs _swot, etc).
             "_capability": getattr(hop, "capability", "") or "",
         }
-        mcp_provenance = {
-            key: plan_ctx.get(key)
-            for key in ("approval_ref", "cost_ref")
-            if plan_ctx.get(key) not in (None, "")
-        } if isinstance(target, str) and target.startswith("mcp:") else {}
-        if strict_mcp_arguments is not None:
-            if mcp_provenance and isinstance(rendered_arg, dict):
-                rendered_arg = {**rendered_arg, **mcp_provenance}
+        if isinstance(target, str) and target.startswith("mcp:"):
+            try:
+                from .capability_targets import find_registered_mcp_authority
+                from .openfang_runtime_authority import (
+                    RuntimeInvocationContext, runtime_invocation_id,
+                )
+                mcp_authority = find_registered_mcp_authority(
+                    *target.split(":", 3)[1:],
+                )
+                if mcp_authority is None or not mcp_authority.space_id:
+                    raise RuntimeError("registered MCP authority metadata unavailable")
+                _extra = {"_runtime_authority": RuntimeInvocationContext(
+                    correlation_id=plan_ctx.get("trace_id") or plan_ctx.get("plan_id", "standalone-plan"),
+                    plan_id=plan_ctx.get("plan_id", "standalone-plan"),
+                    plan_revision=plan_ctx.get("plan_revision", 1),
+                    step_id=hop.step_id,
+                    space_id=mcp_authority.space_id,
+                    agent_name=mcp_authority.agent,
+                    invocation_id=runtime_invocation_id(
+                        plan_ctx.get("plan_id", "standalone-plan"),
+                        plan_ctx.get("plan_revision", 1), hop.step_id,
+                    ),
+                )}
+            except Exception as e:
+                return HopResult(
+                    step_id=hop.step_id, ok=False,
+                    error=f"runtime authority context: {type(e).__name__}: {e}",
+                    capability=hop.capability, target=target,
+                    rendered_arg=rendered_arg, kg_hits=kg_hits,
+                    elapsed_s=time.time() - t0,
+                    contract_pass=False, reward=-1.0,
+                )
+        elif strict_mcp_arguments is not None:
             _extra = {}
-        else:
-            _extra.update(mcp_provenance)
         # Dynamic tool scope (plans/dynamic-agent-tools-prompt.md, Phase 2):
         # Fuer openfang:-Agenten (skill-coordinator/desktop/openclaude/...) waehlt
         # der ToolScopeSelector pro Intent SEMANTISCH die relevanten Tools + baut
@@ -1594,7 +1644,9 @@ class PlanExecutor:
         plan_attempts = 1 if single_plan_attempt else max(1, hop.retries)
         for attempt in range(plan_attempts):
             try:
-                if strict_mcp_arguments is not None:
+                if strict_mcp_arguments is not None and not (
+                    isinstance(target, str) and target.startswith("mcp:")
+                ):
                     last = exe.call_with_arg(rendered_arg)
                 elif hop.arg_kwarg:
                     last = exe.call_with_arg(rendered_arg, arg_kwarg=hop.arg_kwarg,
@@ -1608,12 +1660,26 @@ class PlanExecutor:
                     "elapsed_s": 0.0,
                     "target": target,
                 }
-            if last.get("ok"):
+            if (
+                last.get("ok")
+                or last.get("pending") is True
+                or last.get("retryable") is False
+            ):
                 break
 
         ok = bool(last.get("ok"))
         result_payload = last.get("result")
         err = None if ok else (last.get("error") or "executor returned not ok")
+        if last.get("pending") is True:
+            return HopResult(
+                step_id=hop.step_id, ok=False, result=result_payload,
+                error="runtime authority approval pending",
+                elapsed_s=round(time.time() - t0, 2), capability=hop.capability,
+                target=target, rendered_arg=rendered_arg, kg_hits=kg_hits,
+                authority_status="pending_approval",
+                invocation_id=last.get("invocation_id"), pending=True,
+                contract_pass=None, reward=0.0,
+            )
 
         # Phase 9.0 — extract MCP tool-call trace from streaming OpenFang
         # responses. Other executor kinds (direct, brain, http) return

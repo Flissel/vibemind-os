@@ -41,6 +41,11 @@ import requests
 import yaml
 
 from .capability_executor import DirectExecutor
+from .openfang_runtime_authority import (
+    RuntimeAuthorityClient,
+    RuntimeAuthorityPending,
+    RuntimeInvocationContext,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -857,22 +862,40 @@ class McpExecutor(_BaseRemoteExecutor):
             raise PermissionError(
                 "MCP agent/server/tool tuple is not registered; execution denied"
             )
-        tool_payload, provenance = _extract_mcp_provenance(payload)
+        runtime_context = payload.pop("_runtime_authority", None)
+        # Tool arguments are never an authority channel.  Only the plan-built,
+        # typed context can authorize this dispatch; caller-provided legacy refs
+        # are deliberately ignored rather than allowed to override server refs.
+        payload.pop("approval_ref", None)
+        payload.pop("cost_ref", None)
+        if not isinstance(runtime_context, RuntimeInvocationContext):
+            raise PermissionError("MCP invocation requires runtime authority context")
+        if authority.space_id != runtime_context.space_id or authority.agent != runtime_context.agent_name:
+            raise PermissionError("MCP runtime authority context does not match registered scope")
+        prepared = RuntimeAuthorityClient.from_environment().prepare_invocation(runtime_context)
+        if isinstance(prepared, RuntimeAuthorityPending):
+            return {
+                "ok": False,
+                "pending": True,
+                "authority_status": "pending_approval",
+                "invocation_id": prepared.invocation_id,
+            }
+        tool_payload = _strip_runtime_authority_refs(payload)
         base, api_key = self._configuration()
         control_headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {api_key}",
         }
-        agent_id = self._resolve_agent_id(base, control_headers)
-        request_id = f"brain-mcp-{uuid.uuid4().hex}"
+        agent_id = prepared.agent_id
+        request_id = prepared.invocation_id
         execution_headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "X-OpenFang-Agent-Id": agent_id,
         }
-        execution_headers["X-OpenFang-Approval-Ref"] = provenance["approval_ref"]
-        execution_headers["X-OpenFang-Cost-Ref"] = provenance["cost_ref"]
+        execution_headers["X-OpenFang-Approval-Ref"] = prepared.approval_ref
+        execution_headers["X-OpenFang-Cost-Ref"] = prepared.cost_ref
         response = self._request_json(
             "POST",
             f"{base}/mcp",
@@ -900,14 +923,47 @@ class McpExecutor(_BaseRemoteExecutor):
                 "OpenFang MCP JSON-RPC response must contain exactly one result or error"
             )
         if has_error:
-            error = _redact_evidence(response["error"])
+            error = _redact_evidence(
+                response["error"],
+                sensitive_values=(prepared.approval_ref, prepared.cost_ref),
+            )
             message = error.get("message") if isinstance(error, dict) else str(error)
+            authority_status = ""
+            if isinstance(error, dict):
+                data = error.get("data")
+                if isinstance(data, dict):
+                    candidate = data.get("authority_status")
+                    if isinstance(candidate, str):
+                        authority_status = candidate.strip().lower()
+            authority_status = authority_status or str(message).strip().lower()
+            if authority_status == "pending_approval":
+                return {
+                    "ok": False,
+                    "pending": True,
+                    "authority_status": authority_status,
+                    "invocation_id": prepared.invocation_id,
+                }
+            if authority_status in {"outcome_unknown", "in_progress"}:
+                raise RuntimeError(authority_status)
             raise RuntimeError(f"OpenFang MCP JSON-RPC error: {message}")
         result = response["result"]
         if not isinstance(result, dict):
             raise RuntimeError("OpenFang MCP JSON-RPC response omitted result")
         if result.get("isError") is True:
             raise RuntimeError("OpenFang MCP tool returned isError=true")
+        return result
+
+    def call(self, *args, **kwargs) -> Dict[str, Any]:
+        result = super().call(*args, **kwargs)
+        payload = result.get("result")
+        if isinstance(payload, dict) and payload.get("pending") is True:
+            result.update({
+                "pending": True,
+                "authority_status": "pending_approval",
+                "invocation_id": payload.get("invocation_id"),
+            })
+        if not result.get("ok") and str(result.get("error") or "").lower().endswith(("outcome_unknown", "in_progress")):
+            result["retryable"] = False
         return result
 
 
@@ -919,8 +975,10 @@ _N8N_IDENTITY_EVENTS = {
 }
 _REDACTED_KEYS = {
     "authorization", "token", "apikey", "api_key", "password", "secret",
-    "credential", "credentials", "headers",
+    "credential", "credentials", "headers", "approval_ref", "cost_ref",
 }
+
+_RUNTIME_AUTHORITY_REF_KEYS = {"approval_ref", "cost_ref"}
 
 
 def _space_registry_path() -> Path:
@@ -935,6 +993,8 @@ class McpAuthority:
     agent: str
     server: str
     tool: str
+    space_id: str = ""
+    event_id: str = ""
 
     @property
     def target(self) -> str:
@@ -1000,7 +1060,11 @@ def _mcp_authority(
             f"deterministic MCP tool for '{event_id}' is not in "
             f"{space_id}.mcp_tools for {values['server'].strip()!r}"
         )
-    return McpAuthority(**{name: value.strip() for name, value in values.items()})
+    return McpAuthority(
+        **{name: value.strip() for name, value in values.items()},
+        space_id=space_id,
+        event_id=event_id,
+    )
 
 
 def find_registered_mcp_authority(
@@ -1117,21 +1181,40 @@ def resolve_canonical_execution_target(capability: str) -> tuple[str, Optional[s
     return event_id, target
 
 
-def _redact_evidence(value: Any) -> Any:
+def _redact_evidence(value: Any, *, sensitive_values: tuple[str, ...] = ()) -> Any:
     if isinstance(value, dict):
         return {
-            str(key): ("[REDACTED]" if str(key).lower() in _REDACTED_KEYS else _redact_evidence(item))
+            str(key): (
+                "[REDACTED]" if str(key).lower() in _REDACTED_KEYS
+                else _redact_evidence(item, sensitive_values=sensitive_values)
+            )
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [_redact_evidence(item) for item in value]
+        return [_redact_evidence(item, sensitive_values=sensitive_values) for item in value]
     if isinstance(value, str):
         redacted = re.sub(r"(?i)bearer\s+[a-z0-9._~+/=-]+", "Bearer [REDACTED]", value)
         for env_name in ("N8N_MCP_TOKEN", "OPENFANG_API_KEY"):
             runtime_token = os.environ.get(env_name, "")
             if runtime_token:
                 redacted = redacted.replace(runtime_token, "[REDACTED]")
+        for sensitive_value in sensitive_values:
+            if sensitive_value:
+                redacted = redacted.replace(sensitive_value, "[REDACTED]")
         return redacted
+    return value
+
+
+def _strip_runtime_authority_refs(value: Any) -> Any:
+    """Remove caller-controlled authority references from arbitrary tool args."""
+    if isinstance(value, dict):
+        return {
+            key: _strip_runtime_authority_refs(item)
+            for key, item in value.items()
+            if str(key).lower() not in _RUNTIME_AUTHORITY_REF_KEYS
+        }
+    if isinstance(value, list):
+        return [_strip_runtime_authority_refs(item) for item in value]
     return value
 
 
