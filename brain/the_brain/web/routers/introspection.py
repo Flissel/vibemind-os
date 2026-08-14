@@ -2283,6 +2283,16 @@ def _looks_like_multi_action(intent_lower: str) -> bool:
     """Heuristic: ≥2 distinct command-verbs → multi-action (use LLM).
     Note: 'und' between items (e.g. 'trenne A und B') is single-action,
     so we count verbs, not 'und' occurrences."""
+    # E3 (task-brain-0019): präzise Multi-Verb-Erkennung (Kommando-Position +
+    # Sequenz-Ellipse, core/multi_verb) ZUSÄTZLICH zu den alten Heuristiken —
+    # strikt konservativer: es wird nur MEHR an den Planner deferiert, nie
+    # weniger. Ab zwei unabhängigen Verben darf der 1-Hop-Shortcut nie greifen.
+    try:
+        from core.multi_verb import is_multi_verb
+        if is_multi_verb(intent_lower):
+            return True
+    except Exception as e:  # noqa: BLE001 — Gate darf den Shortcut nie 500'en
+        logger.debug(f"[shortcut] multi_verb check failed: {e}")
     verbs = set(_SHORTCUT_VERB_RE.findall(intent_lower))
     if len(verbs) >= 2:
         return True
