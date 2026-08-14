@@ -52,6 +52,29 @@ def handler_for(level: str) -> str:
     return _HANDLER.get(level, "som")
 
 
+# E3 (task-brain-0019): multi_verb ist dependenzfrei, aber `core/__init__.py`
+# zieht schwere Abhängigkeiten (torch). Standalone-Kontexte (Tests laden dieses
+# Modul per Datei-Spec) bekommen deshalb einen Datei-Fallback.
+_MV_EXPLAIN = None
+
+
+def _multi_verb_explain():
+    global _MV_EXPLAIN
+    if _MV_EXPLAIN is None:
+        try:
+            from core.multi_verb import explain as _e
+        except Exception:  # noqa: BLE001 — Paket-Import scheitert ohne torch etc.
+            import importlib.util as _ilu
+            from pathlib import Path as _P
+            _spec = _ilu.spec_from_file_location(
+                "multi_verb", _P(__file__).resolve().parent / "multi_verb.py")
+            _mod = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)
+            _e = _mod.explain
+        _MV_EXPLAIN = _e
+    return _MV_EXPLAIN
+
+
 # ── Meta-Nachrichten-Filter ───────────────────────────────────────────────────
 # Root-Cause des SoM-Run-Storms (2026-06-08): der Telegram-Brain-Gateway schickte
 # Konversations-Management-Nachrichten an multihop_execute, die KEINE planbaren
@@ -228,6 +251,30 @@ class DifficultyRouter:
             return {"level": "meta", "score": 0.0, "method": "meta-filter",
                     "reason": "System-/Meta-Nachricht (Summary/Transcript) — nicht geplant"}
 
+        base = self._classify_base(intent)
+
+        # E3 (task-brain-0019, User-Entscheidung 2026-08-13): Multi-Verb-Intents
+        # werden IMMER dekomponiert — ab zwei unabhängigen Verben (core/multi_verb)
+        # hebt die Erkennung easy/medium auf hard (SoM-Pfad). hard/insane bleiben
+        # unverändert (beide sind ohnehin mehrstufig); meta ist oben schon raus.
+        # Kill-Switch MULTI_VERB_ROUTING=0 (Muster wie DIFFICULTY_ROUTING).
+        if (base.get("level") in ("easy", "medium")
+                and os.environ.get("MULTI_VERB_ROUTING", "1") not in ("0", "false", "False")):
+            try:
+                mv = _multi_verb_explain()(intent)
+            except Exception as e:  # noqa: BLE001 — Erkennung darf nie crashen
+                logger.warning(f"[difficulty] multi_verb-Erkennung fehlgeschlagen ({e})")
+                mv = None
+            if mv and mv.get("is_multi_verb"):
+                return {"level": "hard", "score": base.get("score", 0.0),
+                        "method": "multi-verb",
+                        "reason": (f"E3 immer dekomponieren: {mv.get('reason')} — "
+                                   f"eskaliert von {base.get('level')}/{base.get('method')}"),
+                        "base": base, "multi_verb": mv}
+        return base
+
+    def _classify_base(self, intent: str) -> dict[str, Any]:
+        """Semantische (Qwen-Cosine) bzw. Heuristik-Klassifikation ohne E3-Eskalation."""
         embedder = self._get_embedder()
         if embedder is not None and self._ensure_anchor_matrix(embedder):
             try:
