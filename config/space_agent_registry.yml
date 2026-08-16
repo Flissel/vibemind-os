@@ -165,15 +165,42 @@ spaces:
     prefixes: [research.]
     enabled: true
     description: "Web research + summarization into ideas."
-    mcp_servers: [vibemind-db, fetch, qdrant]
+    # E9: Die Schreib-Events laufen über spaces-ideas statt über den breiten
+    # vibemind-db-Server. Nach dem Umbinden bindet kein Event mehr ein
+    # vibemind-db-Tool, darum entfällt der Server hier ganz.
+    # qdrant bleibt ohne mcp_tools-Eintrag — Server-Scope ohne abgeleitete
+    # Capability, wie im Bubbles-Block bei `vibemind`.
+    mcp_servers: [fetch, spaces-ideas, qdrant]
+    # M5 2026-08-07 / E10: ohne mcp_tools bekommt der Agent KEINE MCP-Tools —
+    # der Generator leitet die tools-Liste nur hieraus ab, nicht aus
+    # mcp_servers (fail-closed by design, sync_openfang_agents.py:86).
+    # Genau daran war dieser Space bisher nicht ausführbar: alle sechs Events
+    # banden auf Werkzeuge, die das Manifest nie führte.
+    # Bewusst minimal: genau die Werkzeuge, die die Events oben binden.
+    mcp_tools:
+      fetch: [fetch]
+      spaces-ideas: [idea_create, idea_update]
+    # E10: Recherche-Last (ganze Seiten aus fetch, Mehrquellen-Synthese in
+    # openclaw.compare) sprengt gpt-4o-mini/4096. gpt-4o ist in
+    # models_pricing.yml gepflegt, bleibt provider=openai und hebt das
+    # Ausgabelimit auf sein Maximum.
+    model: { model: gpt-4o, max_tokens: 16384 }
     default_context: [current_space, current_bubble]
     events:
-      research.web:         { tool: fetch,           required_params: [query] }
-      research.scrape:      { tool: fetch,           required_params: [url] }
-      research.summarize:   { tool: db_ideas_update, required_params: [idea_id] }
-      research.to_idea:     { tool: db_ideas_create, required_params: [title] }
-      openclaw.research:    { tool: fetch,           required_params: [query] }
-      openclaw.compare:     { tool: fetch,           required_params: [queries] }
+      research.web:         { tool: fetch, required_params: [query] }
+      research.scrape:      { tool: fetch, required_params: [url] }
+      research.summarize:
+        tool: idea_update
+        required_params: [idea_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
+      research.to_idea:
+        tool: idea_create
+        required_params: [title]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
+      openclaw.research:    { tool: fetch, required_params: [query] }
+      openclaw.compare:     { tool: fetch, required_params: [queries] }
 
   # ─── Rowboat (Knowledge Graph) ──────────────────────────────────────
   rowboat:
