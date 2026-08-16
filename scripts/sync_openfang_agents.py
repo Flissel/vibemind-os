@@ -26,6 +26,18 @@ REGISTRY = ROOT / "config" / "space_agent_registry.yml"
 AGENTS_DIR = ROOT / "openfang" / "agents"
 
 
+# Per-space `model:` overrides start from these values. A space that declares no
+# override renders exactly the historical block, so dimensioning one space never
+# moves another.
+MODEL_DEFAULTS: dict[str, Any] = {
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "max_tokens": 4096,
+    "temperature": 0.2,
+}
+MODEL_OVERRIDE_KEYS = frozenset(MODEL_DEFAULTS)
+
+
 AGENT_TOML_TEMPLATE = """name = "{name}"
 version = "0.1.0"
 description = "{description}"
@@ -35,10 +47,10 @@ tags = ["vibemind", "brain-routed", "space:{space}"]
 mcp_servers = [{mcp_list}]
 
 [model]
-provider = "openai"
-model = "gpt-4o-mini"
-max_tokens = 4096
-temperature = 0.2
+provider = "{provider}"
+model = "{model}"
+max_tokens = {max_tokens}
+temperature = {temperature}
 system_prompt = \"\"\"You are {name}, the VibeMind agent for the "{space}" space.
 
 You receive structured intent envelopes with schema "vibemind.intent.v1":
@@ -102,6 +114,21 @@ def _tool_list_literal(tools: list[str]) -> str:
     return ", ".join(json.dumps(tool) for tool in tools)
 
 
+def resolve_model_block(spec: dict) -> dict:
+    """Return the model dimensioning for one space, defaults filled in."""
+    override = spec.get("model", {})
+    resolved = dict(MODEL_DEFAULTS)
+    if isinstance(override, dict):
+        resolved.update(
+            {
+                key: value
+                for key, value in override.items()
+                if key in MODEL_OVERRIDE_KEYS
+            }
+        )
+    return resolved
+
+
 def _render_agent_toml(space: str, spec: dict) -> str:
     agent = spec["agent"]
     description = spec.get(
@@ -109,6 +136,7 @@ def _render_agent_toml(space: str, spec: dict) -> str:
     )
     prompt_hint = spec.get("system_prompt_hint", "")
     mcp_servers = spec.get("mcp_servers", [])
+    model_block = resolve_model_block(spec)
     return AGENT_TOML_TEMPLATE.format(
         name=agent,
         space=space,
@@ -116,6 +144,10 @@ def _render_agent_toml(space: str, spec: dict) -> str:
         prompt_hint=prompt_hint,
         mcp_list=_mcp_list_literal(mcp_servers),
         tool_list=_tool_list_literal(_capability_tool_names(spec)),
+        provider=model_block["provider"],
+        model=model_block["model"],
+        max_tokens=json.dumps(model_block["max_tokens"]),
+        temperature=json.dumps(model_block["temperature"]),
     )
 
 
@@ -226,6 +258,51 @@ def validate_mcp_tool_scopes() -> list[str]:
     return errors
 
 
+def validate_model_overrides() -> list[str]:
+    """Require every registry `model:` override to stay closed and well-typed.
+
+    An unknown key is rejected rather than ignored: silently dropping it would
+    generate a manifest that does not carry the dimensioning it was asked for.
+    """
+    with open(REGISTRY, "r", encoding="utf-8") as f:
+        data: dict[str, Any] = yaml.safe_load(f) or {}
+    spaces = data.get("spaces", {})
+    if not isinstance(spaces, dict):
+        return ["registry spaces must be a mapping"]
+
+    errors: list[str] = []
+    for space_name, spec in spaces.items():
+        if not isinstance(spec, dict) or "model" not in spec:
+            continue
+        override = spec.get("model")
+        if not isinstance(override, dict):
+            errors.append(f"{space_name} model must be a mapping")
+            continue
+        unknown = sorted(set(override) - MODEL_OVERRIDE_KEYS)
+        if unknown:
+            errors.append(
+                f"{space_name} model has unsupported keys {unknown}; "
+                f"allowed: {sorted(MODEL_OVERRIDE_KEYS)}"
+            )
+        for key in ("provider", "model"):
+            if key not in override:
+                continue
+            value = override[key]
+            if not isinstance(value, str) or not value.strip():
+                errors.append(f"{space_name} model {key} must be a non-empty string")
+        if "max_tokens" in override:
+            value = override["max_tokens"]
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                errors.append(f"{space_name} model max_tokens must be a positive integer")
+        if "temperature" in override:
+            value = override["temperature"]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                errors.append(f"{space_name} model temperature must be a number")
+            elif not 0 <= value <= 2:
+                errors.append(f"{space_name} model temperature must be between 0 and 2")
+    return errors
+
+
 def validate_mcp_authority() -> list[str]:
     """Validate every registry-declared MCP event before generating agents.
 
@@ -299,6 +376,7 @@ def sync(dry_run: bool = False, check: bool = False) -> int:
     validation_errors = (
         validate_generated_agent_mcp_scopes()
         + validate_mcp_tool_scopes()
+        + validate_model_overrides()
         + validate_mcp_authority()
     )
     if validation_errors:

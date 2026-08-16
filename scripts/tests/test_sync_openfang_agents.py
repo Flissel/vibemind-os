@@ -222,3 +222,99 @@ spaces:
         )
     )
     assert document["mcp_servers"] == []
+
+
+def test_model_block_keeps_template_defaults_without_an_override(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, """version: 1
+spaces:
+  ideas:
+    agent: brain-ideas
+    enabled: true
+    mcp_servers: [spaces-ideas]
+    events: {}
+""")
+
+    assert module.sync() == 0
+    document = tomllib.loads(
+        (tmp_path / "agents" / "brain-ideas" / "agent.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    model = document["model"]
+    assert model["provider"] == "openai"
+    assert model["model"] == "gpt-4o-mini"
+    assert model["max_tokens"] == 4096
+    assert model["temperature"] == 0.2
+
+
+def test_model_override_is_emitted_per_space(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, """version: 1
+spaces:
+  research:
+    agent: brain-researcher
+    enabled: true
+    mcp_servers: [fetch]
+    model: { model: gpt-4o, max_tokens: 16384 }
+    events: {}
+""")
+
+    assert module.sync() == 0
+    document = tomllib.loads(
+        (tmp_path / "agents" / "brain-researcher" / "agent.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    model = document["model"]
+    assert model["provider"] == "openai"
+    assert model["model"] == "gpt-4o"
+    assert model["max_tokens"] == 16384
+    assert model["temperature"] == 0.2
+
+
+def test_sync_fails_closed_for_unknown_model_override_key(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, """version: 1
+spaces:
+  research:
+    agent: brain-researcher
+    enabled: true
+    mcp_servers: [fetch]
+    model: { model: gpt-4o, top_p: 0.9 }
+    events: {}
+""")
+
+    assert module.sync() == 1
+
+
+def test_sync_fails_closed_for_non_positive_max_tokens(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, """version: 1
+spaces:
+  research:
+    agent: brain-researcher
+    enabled: true
+    mcp_servers: [fetch]
+    model: { max_tokens: 0 }
+    events: {}
+""")
+
+    assert module.sync() == 1
+
+
+def test_sync_fails_closed_for_empty_model_name(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, """version: 1
+spaces:
+  research:
+    agent: brain-researcher
+    enabled: true
+    mcp_servers: [fetch]
+    model: { model: "  " }
+    events: {}
+""")
+
+    assert module.sync() == 1
