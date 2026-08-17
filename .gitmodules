@@ -34,3 +34,6 @@
 [submodule "spaces/desktop/Automation_ui"]
 	path = spaces/desktop/Automation_ui
 	url = https://github.com/Flissel/Automation_ui.git
+[submodule "spaces/captain_cook"]
+	path = spaces/captain_cook
+	url = https://github.com/Flissel/Captain_cook.git
