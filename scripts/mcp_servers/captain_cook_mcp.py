@@ -17,7 +17,7 @@ Usage (stdio):
     python captain_cook_mcp.py
 
 Environment:
-    CAPTAIN_RUNTIME_URL    (default: http://127.0.0.1:8090)
+    CAPTAIN_RUNTIME_URL    (default: http://127.0.0.1:8091 - the RUNTIME port; 8090 is the Gateway)
     CAPTAIN_RUNTIME_TOKEN  (required — Bearer token, own config key on
                             purpose: never inherited from another credential,
                             same lesson as memory.embedding_api_key_env)
@@ -30,7 +30,7 @@ import sys
 import urllib.error
 import urllib.request
 
-BASE_URL = os.environ.get("CAPTAIN_RUNTIME_URL", "http://127.0.0.1:8090").rstrip("/")
+BASE_URL = os.environ.get("CAPTAIN_RUNTIME_URL", "http://127.0.0.1:8091").rstrip("/")
 TOKEN = os.environ.get("CAPTAIN_RUNTIME_TOKEN", "")
 
 DEFAULT_LIMITS = {"wall_seconds": 900, "max_iterations": 5}
@@ -226,3 +226,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
