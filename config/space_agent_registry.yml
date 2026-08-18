@@ -287,37 +287,34 @@ spaces:
 
   # ─── AgentFarm (multi-agent teams) ──────────────────────────────────
   agentfarm:
-    # REG-3 (2026-07-02): canonicalized brain-orchestrator -> vibemind against
-    # the LIVE OpenFang agent list (71 agents; brain-orchestrator NOT deployed,
-    # vibemind IS — openrouter/llama-3.3-70b). Registry is the single truth;
-    # LEGACY_SPACE_AGENT_MAP derives/validates against this (ABSORB-7).
-    agent: vibemind
-    # Reserved only: the versioned source artifact has no executable runtime.
-    reserved_chat_agent: brain-agentfarm
-    # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
-    aliases: [autogen]
-    prefixes: [agentfarm., autogen.]
-    keywords: ["agent.?farm|pipeline|forge|swarm.?team|agent.?team"]
-    # The historical spaces/autogen tree was removed in ec98a0c.  Keep routing
-    # disabled until the versioned source has a durable persistent runtime.
-    enabled: false
-    description: "AutoGen multi-agent team coordination."
+    # 2026-08-18 (user decision, docs/operations/2026-08-18-p1-agentfarm-
+    # captain-cook-befund.md): Captain Cook IS the agentfarm — the space is
+    # redefined by its real runtime. The old AutoGen team events described an
+    # implementation that never had a persistent runtime (source tree removed
+    # in ec98a0c); they described nothing that exists. This is a documented
+    # redefinition, not a silent relabel.
+    # Rule: delegated work goes through the Captain (audited, ledger);
+    # direct Codex sessions are the user's manual channel. No third path.
+    agent: null                    # tool-only: no chat agent; `vibemind`
+                                   # (openrouter) becomes obsolete, not replaced
+    aliases: [autogen, captain_cook]
+    prefixes: [agentfarm., captain.]
+    keywords: ["agent.?farm|captain|delivery|orchestrat"]
+    enabled: true
+    description: "Auditable agent-work orchestration: plan, gate, route, ledger (Captain Cook)."
+    mcp_servers: [captain-cook]
     runtime:
-      status: blocked
-      source_path: spaces/agentfarm
-      manifest_path: spaces/agentfarm/runtime-manifest-v1.json
-      blocker: missing_persistent_agentfarm_runtime
-    mcp_servers: []
+      status: active
+      source_path: spaces/captain_cook
+      transport: mcp               # via OpenFang /mcp -> scripts/mcp_servers/captain_cook_mcp.py
+      token_env: CAPTAIN_RUNTIME_TOKEN   # own key on purpose, never inherited
     default_context: [current_space]
+    # Coarse events outside, fine refs inside: the Brain never invents
+    # batch/subtask/workspace refs — deliver returns them, status passes
+    # them through.
     events:
-      agentfarm.create_team:    { operation: create_team, required_params: [team_name] }
-      agentfarm.run:            { operation: run, required_params: [team_id, task] }
-      agentfarm.status:         { operation: status, required_params: [] }
-      agentfarm.list_teams:     { operation: list_teams, required_params: [] }
-      agentfarm.stop:           { operation: stop, required_params: [run_id] }
-      agentfarm.results:        { operation: results, required_params: [run_id] }
-      agentfarm.list_templates: { operation: list_templates, required_params: [] }
-      agentfarm.collaborate:    { operation: collaborate, required_params: [task, goal] }
+      agentfarm.deliver: { tool: captain_deliver,      required_params: [project_id, prompt_ref] }
+      agentfarm.status:  { tool: captain_codex_status, required_params: [project_id, batch_id, subtask_id, workspace_ref] }
 
   # ─── Video (generation + vision) ────────────────────────────────────
   video:
@@ -370,3 +367,4 @@ spaces:
       mirofish.status:       { tool: 'mirofish:status',       required_params: [job_id] }
       mirofish.evaluate:     { tool: 'mirofish:evaluate',     required_params: [simulation_id] }
       mirofish.interview:    { tool: 'mirofish:interview',    required_params: [simulation_id, agent_id, prompt] }
+
