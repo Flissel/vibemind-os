@@ -73,10 +73,20 @@ def write_prompts(
         min_keys=MIN_DISTINCT_KEYS,
     )
 
+    # Zwei Schleifen, zwei Zustaendigkeiten. Diese hier prueft den INHALT
+    # (Anzahl, Verteilung der Tonarten) und formuliert die Beanstandung neu.
+    # Ob die Antwort ueberhaupt dem Schema entspricht, klaert run_agent fuer
+    # sich - mit retries=1, damit ein Modell, das dem JSON einen Satz
+    # voranstellt, nicht sofort das einzige Nutzerkommando abbricht. retries=0
+    # war hier die verkehrte Verteilung: drei Versuche fuer den Inhalt, aber
+    # keinen einzigen fuer die Form, obwohl der Spec ausdruecklich "Retry mit
+    # der Fehlermeldung" fuer Schemaverletzungen verlangt.
+    #
+    # Obergrenze damit 3 * 2 = 6 Modellaufrufe; darueber wacht das Budget.
     attempt_prompt = prompt
     last_problem = ""
     for _attempt in range(3):
-        result = run_agent(client, attempt_prompt, PromptSet, budget, retries=0)
+        result = run_agent(client, attempt_prompt, PromptSet, budget, retries=1)
         problem = _check(result, wanted)
         if problem is None:
             return result

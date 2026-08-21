@@ -26,19 +26,19 @@ DRAFT = {
 
 def test_returns_a_valid_profile():
     client = FakeClient([json.dumps(DRAFT)])
-    profile = build_profile(client, "liquid dnb", 60.0, Budget(max_tokens=100_000))
+    profile = build_profile(client, "liquid dnb", 60.0, Budget(max_tokens=100_000, max_seconds=60.0))
     assert profile.bpm.target == 174.0
 
 
 def test_length_comes_from_the_caller_not_the_model():
     client = FakeClient([json.dumps(DRAFT)])
-    profile = build_profile(client, "liquid dnb", 60.0, Budget(max_tokens=100_000))
+    profile = build_profile(client, "liquid dnb", 60.0, Budget(max_tokens=100_000, max_seconds=60.0))
     assert profile.length_minutes == 60.0
 
 
 def test_overshoot_is_applied_by_code():
     client = FakeClient([json.dumps(DRAFT)])
-    profile = build_profile(client, "liquid dnb", 60.0, Budget(max_tokens=100_000))
+    profile = build_profile(client, "liquid dnb", 60.0, Budget(max_tokens=100_000, max_seconds=60.0))
     assert profile.track_count.needed == 12
     assert profile.track_count.request == 18
 
@@ -50,12 +50,12 @@ def test_draft_below_the_track_floor_never_parses():
     draft["track_count"] = {"needed": 1, "request": 1}
     client = FakeClient([json.dumps(draft)] * 3)
     with pytest.raises(SchemaViolation):
-        build_profile(client, "liquid dnb", 5.0, Budget(max_tokens=100_000))
+        build_profile(client, "liquid dnb", 5.0, Budget(max_tokens=100_000, max_seconds=60.0))
 
 
 def test_the_genre_string_reaches_the_prompt():
     client = FakeClient([json.dumps(DRAFT)])
-    build_profile(client, "hard techno", 60.0, Budget(max_tokens=100_000))
+    build_profile(client, "hard techno", 60.0, Budget(max_tokens=100_000, max_seconds=60.0))
     assert "hard techno" in client.prompts[0]
 
 
@@ -64,7 +64,7 @@ def test_invalid_draft_is_retried_then_fails():
     broken["bpm"] = {"target": 300.0, "min": 170.0, "max": 178.0}
     client = FakeClient([json.dumps(broken)] * 3)
     with pytest.raises(SchemaViolation):
-        build_profile(client, "liquid dnb", 60.0, Budget(max_tokens=100_000))
+        build_profile(client, "liquid dnb", 60.0, Budget(max_tokens=100_000, max_seconds=60.0))
 
 
 def test_override_with_empty_genre_never_produces_a_profile():
@@ -73,10 +73,10 @@ def test_override_with_empty_genre_never_produces_a_profile():
     selbst einsetzt. Dieser Test haelt die Neuvalidierung fest."""
     client = FakeClient([json.dumps(DRAFT)])
     with pytest.raises(ValidationError):
-        build_profile(client, "", 60.0, Budget(max_tokens=100_000))
+        build_profile(client, "", 60.0, Budget(max_tokens=100_000, max_seconds=60.0))
 
 
 def test_override_with_non_positive_length_never_produces_a_profile():
     client = FakeClient([json.dumps(DRAFT)])
     with pytest.raises(ValidationError):
-        build_profile(client, "liquid dnb", -10.0, Budget(max_tokens=100_000))
+        build_profile(client, "liquid dnb", -10.0, Budget(max_tokens=100_000, max_seconds=60.0))

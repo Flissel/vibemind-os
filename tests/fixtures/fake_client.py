@@ -2,9 +2,14 @@
 
 
 class FakeClient:
-    """Gibt vorbereitete Antworten der Reihe nach zurueck."""
+    """Gibt vorbereitete Antworten der Reihe nach zurueck.
 
-    def __init__(self, responses: list[str]) -> None:
+    Ein Eintrag darf auch eine Exception sein - die wird dann geworfen statt
+    zurueckgegeben. So laesst sich ein Transportfehler (Timeout, API-Fehler)
+    an genau der Stelle nachstellen, an der er im Betrieb auftritt.
+    """
+
+    def __init__(self, responses: list[str | BaseException]) -> None:
         self._responses = list(responses)
         self.prompts: list[str] = []
 
@@ -12,7 +17,10 @@ class FakeClient:
         self.prompts.append(prompt)
         if not self._responses:
             raise AssertionError("FakeClient wurde oefter gerufen als vorbereitet")
-        return self._responses.pop(0)
+        answer = self._responses.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
 
     @property
     def calls(self) -> int:

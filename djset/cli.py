@@ -11,6 +11,11 @@ from djset.agents.prompt_writer import render_markdown, write_prompts
 from djset.run import Run
 
 PLAN_BUDGET_TOKENS = 120_000
+# Wanduhrgrenze der Plan-Phase. Sie besteht aus hoechstens acht
+# Modellaufrufen (Profiler plus Prompt-Writer mit seinen Wiederholungen);
+# zehn Minuten sind dafuer reichlich und begrenzen trotzdem einen Lauf, der
+# in Timeouts und Backoffs haengenbleibt.
+PLAN_BUDGET_SECONDS = 600.0
 
 
 def cmd_plan(
@@ -33,7 +38,9 @@ def cmd_plan(
         )
         return 1
 
-    budget = Budget(max_tokens=PLAN_BUDGET_TOKENS)
+    budget = Budget(
+        max_tokens=PLAN_BUDGET_TOKENS, max_seconds=PLAN_BUDGET_SECONDS
+    )
     run = Run.create(base, genre, today=today or date.today())
 
     try:
