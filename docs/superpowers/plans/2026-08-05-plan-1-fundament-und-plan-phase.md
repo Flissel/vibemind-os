@@ -1578,8 +1578,11 @@ Lege fest:
 - style_vocab: Stilbegriffe, die Suno versteht und die dieses Genre treffen
 - structure: geforderte Mindestlaenge von Intro und Outro in Takten
 
-Fuer die Felder genre, length_minutes und track_count.request setze
-Platzhalter ein - sie werden nach deiner Antwort ueberschrieben.
+Die Felder genre, length_minutes und track_count.request werden nach deiner
+Antwort ueberschrieben. Trage dort trotzdem schemagueltige Werte ein - also
+einen nichtleeren Genrenamen, eine positive Minutenzahl und ein request
+mindestens so gross wie needed. Ungueltige Platzhalter wie "" oder 0 lassen
+deine Antwort scheitern, obwohl der Wert ohnehin verworfen wird.
 
 Antworte ausschliesslich mit JSON nach dem vorgegebenen Schema."""
 
@@ -1600,11 +1603,15 @@ def build_profile(
     needed = draft.track_count.needed
     request = math.ceil(needed * OVERSHOOT_FACTOR)
 
-    return draft.model_copy(
-        update={
+    # Bewusst ueber model_validate statt model_copy(update=...): letzteres
+    # validiert in Pydantic v2 nicht, womit ausgerechnet die vom Code gesetzten
+    # Felder an den Vertragsconstraints vorbeikaemen.
+    return Profile.model_validate(
+        draft.model_dump()
+        | {
             "genre": genre,
             "length_minutes": length_minutes,
-            "track_count": TrackCount(needed=needed, request=request),
+            "track_count": TrackCount(needed=needed, request=request).model_dump(),
         }
     )
 ```

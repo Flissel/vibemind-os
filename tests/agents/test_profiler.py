@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from djset.agents.base import Budget, SchemaViolation
 from djset.agents.profiler import build_profile
@@ -64,3 +65,18 @@ def test_invalid_draft_is_retried_then_fails():
     client = FakeClient([json.dumps(broken)] * 3)
     with pytest.raises(SchemaViolation):
         build_profile(client, "liquid dnb", 60.0, Budget(max_tokens=100_000))
+
+
+def test_override_with_empty_genre_never_produces_a_profile():
+    """model_copy(update=...) validiert in Pydantic v2 nicht - ein Uebergang
+    zurueck dorthin wuerde ungueltige Werte durchlassen, die genau der Code
+    selbst einsetzt. Dieser Test haelt die Neuvalidierung fest."""
+    client = FakeClient([json.dumps(DRAFT)])
+    with pytest.raises(ValidationError):
+        build_profile(client, "", 60.0, Budget(max_tokens=100_000))
+
+
+def test_override_with_non_positive_length_never_produces_a_profile():
+    client = FakeClient([json.dumps(DRAFT)])
+    with pytest.raises(ValidationError):
+        build_profile(client, "liquid dnb", -10.0, Budget(max_tokens=100_000))
