@@ -25,6 +25,7 @@ from djset.contracts import (
     MAX_RATIO,
     MIN_RATIO,
     Complaint,
+    ComplaintKind,
     MixPlan,
     Profile,
     TrackAnalysis,
@@ -85,7 +86,7 @@ def critique(
     by_id = {a.id: a for a in analyses}
     complaints: list[Complaint] = []
 
-    def complain(kind: str, text: str) -> None:
+    def complain(kind: ComplaintKind, text: str) -> None:
         complaints.append(Complaint(kind=kind, text=text))
 
     # 1. Gesamtlaenge
