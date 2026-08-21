@@ -3,8 +3,10 @@ import json
 import pytest
 
 from djset.agents.base import Budget, StageRulesViolated
-from djset.agents.designer import MAX_RATIO, MIN_RATIO, design, snap_to_downbeat
+from djset.agents.designer import design, snap_to_downbeat
 from djset.contracts import (
+    MAX_RATIO,
+    MIN_RATIO,
     BeatGrid,
     Bpm,
     Key,

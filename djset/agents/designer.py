@@ -20,6 +20,8 @@ from djset.agents.base import (
     run_agent,
 )
 from djset.contracts import (
+    MAX_RATIO,
+    MIN_RATIO,
     BeatGrid,
     EqCurve,
     EqPoint,
@@ -33,11 +35,6 @@ from djset.contracts import (
 )
 
 MAX_ROUNDS = 3
-
-# Die Stretch-Grenze aus dem Spec, hier als Rechengroesse. Der Vertrag
-# MixEntry.timestretch_ratio erzwingt dieselben Werte.
-MIN_RATIO = 0.94
-MAX_RATIO = 1.06
 
 
 class TransitionChoice(BaseModel):

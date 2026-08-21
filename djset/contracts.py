@@ -20,6 +20,13 @@ CAMELOT_RE = r"^(1[0-2]|[1-9])([AB])$"
 # an genau einer Stelle definiert ist und im Typ erzwungen wird.
 MIN_TRACKS = 3
 
+# Die Stretch-Grenze aus dem Spec Abschnitt 7: plus/minus 6 Prozent. Steht an
+# genau dieser Stelle - der Typ MixEntry.timestretch_ratio erzwingt sie damit
+# aus derselben Quelle, aus der Designer und Critic rechnen. Wer sie woanders
+# neu hinschreibt, hat zwei Grenzen, die auseinanderdriften koennen.
+MIN_RATIO = 0.94
+MAX_RATIO = 1.06
+
 
 class BpmRange(BaseModel):
     target: float = Field(gt=0)
@@ -255,8 +262,9 @@ class MixEntry(BaseModel):
     track_id: str = Field(min_length=1)
     play_from_s: float = Field(ge=0)
     play_to_s: float = Field(gt=0)
-    # Stretch-Grenze aus dem Spec: +-6 %. Im Typ erzwungen.
-    timestretch_ratio: float = Field(ge=0.94, le=1.06)
+    # Stretch-Grenze aus dem Spec: +-6 %. Im Typ erzwungen, aus denselben
+    # Konstanten, die Designer und Critic benutzen.
+    timestretch_ratio: float = Field(ge=MIN_RATIO, le=MAX_RATIO)
     gain_db: float
 
     @model_validator(mode="after")

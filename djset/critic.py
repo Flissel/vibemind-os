@@ -12,8 +12,7 @@ sie nennen den Track und das konkrete Problem, nicht nur die Regel.
 
 from pydantic import BaseModel
 
-from djset.agents.designer import MAX_RATIO, MIN_RATIO
-from djset.contracts import MixPlan, Profile, TrackAnalysis
+from djset.contracts import MAX_RATIO, MIN_RATIO, MixPlan, Profile, TrackAnalysis
 
 # Erfolgskriterium 3 der Spec: Ziellaenge plus/minus 5 Prozent.
 LENGTH_TOLERANCE = 0.05
