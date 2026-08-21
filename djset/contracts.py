@@ -156,8 +156,33 @@ class Loudness(BaseModel):
 
 
 class Verdict(BaseModel):
+    """Das Urteil des Track-Analysten ueber einen Track.
+
+    `energy_level` ordnet den Track auf derselben 0..1-Skala ein, auf der das
+    Profil seinen energy_arc beschreibt. Bewusst vom Agenten vergeben und nicht
+    aus TrackMeasurements.energy gerechnet: die gemessene Kurve ist trackrelativ
+    und ueber Tracks hinweg nicht vergleichbar, waehrend der Bogen absolute
+    Zielenergien nennt. Dasselbe Modell, das den Bogen geschrieben hat, ordnet
+    die Tracks darauf ein - das ist die einzige Stelle, an der beide Skalen
+    zuverlaessig zusammenfinden.
+    """
+
     usable: bool
-    notes: str
+    notes: str = Field(min_length=1)
+    energy_level: float = Field(ge=0.0, le=1.0)
+
+
+class UnreadableTrack(BaseModel):
+    """Eine Datei, die sich nicht messen liess.
+
+    Spec Abschnitt 7: eine kaputte Einzeldatei darf den Lauf nicht sprengen.
+    Sie bekommt trotzdem ein Artefakt, damit nachvollziehbar bleibt, warum sie
+    nicht im Set ist.
+    """
+
+    id: str = Field(min_length=1)
+    path: str = Field(min_length=1)
+    error: str = Field(min_length=1)
 
 
 class TrackMeasurements(BaseModel):
@@ -169,6 +194,10 @@ class TrackMeasurements(BaseModel):
     bpm: Bpm
     beatgrid: BeatGrid
     key: Key
+    # ACHTUNG: trackrelativ. Die Kurve ist gegen eine feste dBFS-Referenz
+    # normiert und damit innerhalb eines Tracks aussagekraeftig - fuer die
+    # Mix-Regionen. Sie ist NICHT die Groesse, an der Stufe 5 Tracks
+    # miteinander vergleicht; dafuer gibt es Verdict.energy_level.
     energy: list[float] = Field(min_length=1)
     mix_regions: MixRegions
     loudness: Loudness
