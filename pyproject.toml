@@ -1,0 +1,36 @@
+[project]
+name = "djset"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+    "librosa>=0.10.2",
+    "numpy>=1.26",
+    "soundfile>=0.12",
+    "pyloudnorm>=0.1.1",
+    # >=0.2: djset/agents/client.py benutzt ClaudeAgentOptions,
+    # AssistantMessage, TextBlock und ein asynchrones query() - alles
+    # 0.2-Oberflaeche. Eine 0.1.x wuerde beim Import scheitern, und kein Test
+    # faengt das, weil der echte Client absichtlich nirgends getestet wird.
+    # <0.3, weil die naechste Hauptversion dieselbe Frage neu stellt.
+    "claude-agent-sdk>=0.2,<0.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+dj-set = "djset.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Warnungen sind hier Fehler. djset/dsp/analyze.py::_load_audio existiert
+# einzig deshalb, weil librosa.load unter Python 3.11 DeprecationWarnings aus
+# aifc/audioop/sunau ausloest; ohne diese Zeile haengt das an der Erinnerung
+# einzelner Leute, pytest mit -W error zu starten. Ein Rueckfall auf
+# librosa.load bricht jetzt die Suite, statt still durchzugehen.
+filterwarnings = ["error"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
