@@ -26,7 +26,14 @@ def _fade_in_track(path: Path, seconds: float = 20.0) -> Path:
     return path
 
 
-def test_energy_curve_is_normalised(tmp_path: Path):
+def test_energy_curve_stays_within_bounds(tmp_path: Path):
+    """0..1 gilt weiterhin - aber das Maximum ist nicht mehr zwangslaeufig 1.0.
+
+    Frueher hiess dieser Test "is_normalised": jede Kurve wurde auf ihren
+    eigenen Spitzenwert normiert und erreichte damit immer exakt 1.0. Die
+    Grenzen selbst sind geblieben, ihr Zustandekommen nicht (siehe
+    energy_curve und test_energy_curve_uses_a_fixed_reference_not_the_track_peak).
+    """
     audio = _fade_in_track(tmp_path / "fade.wav")
     grid = BeatGrid(first_downbeat_s=0.0, bar_length_s=2.0, confidence=1.0)
     curve = energy_curve(audio, grid)
@@ -89,3 +96,68 @@ def test_near_silent_track_survives_the_run_roundtrip(tmp_path: Path):
     restored = run.read_model("tracks/quiet.json", TrackMeasurements)
 
     assert restored == measurements
+
+
+def _steady_noise(path: Path, rms_db: float, seconds: float = 20.0) -> Path:
+    """Rauschen mit exakt eingestelltem RMS-Pegel in dBFS.
+
+    Damit laesst sich pruefen, dass die Energiekurve gegen eine feste
+    Referenz misst und nicht gegen den Spitzenwert des jeweiligen Tracks.
+    """
+    rng = np.random.default_rng(seed=3)
+    signal = rng.standard_normal(int(seconds * SR)).astype(np.float32)
+    current = float(np.sqrt(np.mean(signal.astype(np.float64) ** 2)))
+    signal = signal / current * (10.0 ** (rms_db / 20.0))
+    sf.write(path, signal.astype(np.float32), SR)
+    return path
+
+
+def test_energy_curve_uses_a_fixed_reference_not_the_track_peak(tmp_path: Path):
+    """Zwei verschieden laute Tracks muessen verschiedene Energien ergeben.
+
+    Regression fuer die Normierung je Track: die machte aus jedem Track eine
+    Kurve mit Maximum exakt 1.0, womit ein leiser Ambient-Opener und ein
+    Peaktime-Roller ununterscheidbar wurden. Stufe 5 legt die Tracks aber auf
+    profile.energy_arc mit absoluten Zielenergien, und die
+    Aehnlichkeitsregel des Spec vergleicht die Energie zweier Tracks
+    miteinander - beides braucht eine trackuebergreifende Skala.
+    """
+    grid = BeatGrid(first_downbeat_s=0.0, bar_length_s=2.0, confidence=1.0)
+    loud = energy_curve(_steady_noise(tmp_path / "loud.wav", -12.0), grid)
+    quiet = energy_curve(_steady_noise(tmp_path / "quiet.wav", -36.0), grid)
+
+    assert max(loud) > max(quiet) + 0.3
+
+    # -60 dBFS -> 0.0, 0 dBFS -> 1.0, dazwischen linear.
+    assert abs(max(loud) - 0.8) < 0.02
+    assert abs(max(quiet) - 0.4) < 0.02
+
+
+def test_energy_curve_clamps_below_the_reference_floor(tmp_path: Path):
+    """Unterhalb von -60 dBFS bleibt es bei 0.0 statt negativ zu werden."""
+    grid = BeatGrid(first_downbeat_s=0.0, bar_length_s=2.0, confidence=1.0)
+    curve = energy_curve(_steady_noise(tmp_path / "inaudible.wav", -70.0), grid)
+    assert curve
+    assert max(curve) == 0.0
+
+
+def test_mix_regions_of_a_uniform_track_span_the_whole_file():
+    """Ohne erkennbaren Auf- und Abbau ist der ganze Track mischbar.
+
+    Der Spec nennt diesen Fall ausdruecklich. Frueher stand dafuer ein
+    eigener Zweig im Code, der fuer eine Kurve mit Werten >= 0 nie erreicht
+    wurde - der Normalweg liefert dasselbe Ergebnis, jetzt getestet statt
+    behauptet.
+    """
+    grid = BeatGrid(first_downbeat_s=0.0, bar_length_s=2.0, confidence=1.0)
+    regions = find_mix_regions([0.5] * 6, grid, duration_s=48.0)
+    assert regions.intro_end_s == 0.0
+    assert regions.outro_start_s == 48.0
+
+
+def test_mix_regions_of_a_silent_track_do_not_crash():
+    """Die Nullkurve ist der Grenzfall der gleichfoermigen Kurve."""
+    grid = BeatGrid(first_downbeat_s=0.0, bar_length_s=2.0, confidence=1.0)
+    regions = find_mix_regions([0.0] * 6, grid, duration_s=48.0)
+    assert regions.intro_end_s == 0.0
+    assert regions.outro_start_s == 48.0

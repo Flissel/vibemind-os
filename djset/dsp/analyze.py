@@ -4,6 +4,7 @@ Wo eine Messung mehrdeutig ist (Tempo-Oktave, Dur/Moll), gibt es eine
 Konfidenz zurueck und ueberlaesst die Entscheidung dem aufrufenden Agenten.
 """
 
+import math
 from pathlib import Path
 
 import librosa
@@ -151,11 +152,28 @@ def detect_bpm_and_grid(
         regularity = 0.0
         tempo_value = raw_tempo_value
     else:
-        # Die initiale Tempo-Schaetzung ist auf ganzzahlige Vielfache von
-        # hop_length quantisiert (bei sr=44100, hop=512 ca. 11.6 ms), was
-        # bei exaktem Material zu einem Fehler von mehr als 1 BPM fuehren
-        # kann. Der Mittelwert der tatsaechlichen Beatabstaende mittelt
-        # diese Quantisierung ueber das ganze Stueck heraus und ist praeziser.
+        # Die initiale Tempo-Schaetzung von librosa ist auf ganzzahlige
+        # Vielfache von hop_length quantisiert (bei sr=44100, hop=512 ca.
+        # 11.6 ms), was bei exaktem Material zu einem Fehler von mehr als
+        # 1 BPM fuehrt. Der Mittelwert der Beatabstaende ist praeziser, weil
+        # er die gesamte Spanne des Stuecks nutzt.
+        #
+        # Was er NICHT tut: ueber die einzelnen Beats mitteln. np.mean(diff)
+        # ist algebraisch (letzter - erster) / (n - 1) - die Summe der
+        # Differenzen teleskopiert, alles zwischen dem ersten und dem letzten
+        # Beat kuerzt sich weg. Der Gewinn kommt allein aus der langen
+        # Messstrecke, nicht aus einer Mittelung ueber viele Messungen.
+        #
+        # np.median waere deshalb kein Ersatz: der Median einzelner
+        # Beatabstaende traegt die Hop-Quantisierung wieder herein (~3.2 BPM
+        # bei 128 BPM) und bricht den Clicktrack-Test.
+        #
+        # Offene Schwaeche der langen Messstrecke: fallen mitten im Stueck
+        # Beats aus (Breakdown ohne Drums), schrumpft n - 1, waehrend die
+        # Spanne gleich bleibt - das Tempo faellt dann zu niedrig aus. Die
+        # saubere Loesung waere eine robuste Ausgleichsgerade durch die
+        # Beat-Zeiten ueber ihren Index; die will an echtem Material geprueft
+        # werden und bleibt deshalb bewusst offen statt geraten.
         tempo_value = 60.0 / float(np.mean(intervals))
         spread = float(np.std(intervals) / np.mean(intervals))
         regularity = float(max(0.0, min(1.0, 1.0 - spread * 4.0)))
@@ -195,14 +213,26 @@ def detect_key(path: Path) -> Key:
     weights = np.mean(chroma, axis=1)
 
     scores: list[tuple[float, str]] = []
-    for tonic in range(12):
-        rotated = np.roll(weights, -tonic)
-        for profile, table, letter in (
-            (_MAJOR_PROFILE, _MAJOR_CAMELOT, "B"),
-            (_MINOR_PROFILE, _MINOR_CAMELOT, "A"),
-        ):
-            correlation = float(np.corrcoef(rotated, profile)[0, 1])
-            scores.append((correlation, f"{table[tonic]}{letter}"))
+    # errstate: bei einer stillen oder konstanten Datei ist das Chroma-Profil
+    # ueberall gleich, np.corrcoef teilt dann durch eine Standardabweichung
+    # von 0 und wirft je Durchlauf ein "invalid value encountered in divide" -
+    # rund 50 Warnungen fuer eine einzige Datei. Das Ergebnis ist NaN, faellt
+    # in der Sortierung nach hinten und ergibt eine Konfidenz von 0.0; genau
+    # die ist das Signal, an dem der Agent eine unbrauchbare Datei erkennt.
+    # Die Warnungen sagen daneben nichts Eigenes und wuerden unter
+    # filterwarnings=error (siehe pyproject.toml) eine ganze Analyse
+    # abbrechen. (librosa warnt bei solchem Material zusaetzlich einmal mit
+    # "Trying to estimate tuning from empty frequency set" - das kommt aus
+    # chroma_cqt und bleibt bewusst stehen.)
+    with np.errstate(invalid="ignore"):
+        for tonic in range(12):
+            rotated = np.roll(weights, -tonic)
+            for profile, table, letter in (
+                (_MAJOR_PROFILE, _MAJOR_CAMELOT, "B"),
+                (_MINOR_PROFILE, _MINOR_CAMELOT, "A"),
+            ):
+                correlation = float(np.corrcoef(rotated, profile)[0, 1])
+                scores.append((correlation, f"{table[tonic]}{letter}"))
 
     scores.sort(reverse=True)
     best_score, best_camelot = scores[0]
@@ -218,9 +248,44 @@ def detect_key(path: Path) -> Key:
 BARS_PER_ENERGY_STEP = 4
 _QUIET_FRACTION = 0.5  # Anteil der Spitzenenergie, ab dem ein Abschnitt als "im Groove" gilt
 
+# Feste Referenzspanne der Energiekurve: -60 dBFS wird zu 0.0, 0 dBFS
+# (Vollaussteuerung) zu 1.0, alles ausserhalb wird geklemmt. -60 dBFS liegt
+# weit unter allem, was in einem gemasterten Track noch als Musik durchgeht,
+# und weit ueber der digitalen Null.
+_ENERGY_FLOOR_DBFS = -60.0
+
+
+def _rms_to_energy(rms: float) -> float:
+    """Bildet einen RMS-Wert gegen die feste dBFS-Referenz auf 0..1 ab."""
+    if rms <= 0.0:
+        return 0.0
+    dbfs = 20.0 * math.log10(rms)
+    scaled = (dbfs - _ENERGY_FLOOR_DBFS) / -_ENERGY_FLOOR_DBFS
+    return float(min(1.0, max(0.0, scaled)))
+
 
 def energy_curve(path: Path, grid: BeatGrid) -> list[float]:
-    """RMS je vier Takte, auf 0..1 normiert."""
+    """RMS je vier Takte, gegen eine feste Referenz auf 0..1 abgebildet.
+
+    Bewusst NICHT auf den Spitzenwert des jeweiligen Tracks normiert. Bei
+    Normierung je Track hat jede Kurve ihr Maximum bei exakt 1.0, und ein
+    sparsamer Ambient-Opener ist von einem Peaktime-Roller nicht mehr zu
+    unterscheiden. Genau diesen Vergleich braucht aber die naechste Stufe:
+
+    - Stufe 5 legt die Tracks auf profile.energy_arc, dessen Stuetzpunkte
+      absolute Zielenergien 0..1 sind
+    - die Aehnlichkeitsregel des Spec ("Energiedifferenz unter 0,1")
+      vergleicht zwei verschiedene Tracks miteinander
+    - Stufe 7 prueft, ob das fertige Set "die Energiekurve haelt"
+
+    Alle drei sind auf je Track normierten Kurven unmoeglich. Die Referenz
+    ist deshalb absolut: RMS in dBFS, linear von _ENERGY_FLOOR_DBFS (0.0)
+    bis 0 dBFS (1.0), ausserhalb geklemmt. Zwei Tracks sind damit
+    vergleichbar, solange sie aehnlich gemastert sind - was fuer Material
+    aus einer Quelle (Suno) zutrifft. Ein Angleichen der Lautheit vor der
+    Messung waere die naechste Ausbaustufe; die dafuer noetige Zahl misst
+    dieses Modul mit lufs_integrated bereits.
+    """
     signal, sr = _load_audio(path)
     step_seconds = grid.bar_length_s * BARS_PER_ENERGY_STEP
     step_samples = max(1, int(step_seconds * sr))
@@ -230,14 +295,12 @@ def energy_curve(path: Path, grid: BeatGrid) -> list[float]:
         chunk = signal[start:start + step_samples]
         if chunk.size == 0:
             continue
-        values.append(float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2))))
+        rms = float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2)))
+        values.append(_rms_to_energy(rms))
 
     if not values:
         return [0.0]
-    peak = max(values)
-    if peak <= 0.0:
-        return [0.0 for _ in values]
-    return [value / peak for value in values]
+    return values
 
 
 def find_mix_regions(
@@ -245,19 +308,26 @@ def find_mix_regions(
 ) -> MixRegions:
     """Wo das Intro endet und das Outro beginnt.
 
-    Massstab ist die halbe Spitzenenergie: darunter laeuft der Track noch nicht
-    bzw. nicht mehr im vollen Groove und taugt zum Ueberblenden. Der Median
-    waere hier untauglich - bei einer normierten Kurve liegt er so tief, dass
-    auch die leisen Raender noch darueber liegen.
+    Massstab ist die halbe Spitzenenergie DIESES Tracks: darunter laeuft er
+    noch nicht bzw. nicht mehr im vollen Groove und taugt zum Ueberblenden.
+    Der Bezug auf den eigenen Spitzenwert ist hier richtig - anders als bei
+    der Kurve selbst (siehe energy_curve) geht es nicht um den Vergleich
+    zweier Tracks, sondern um Auf- und Abbau innerhalb eines einzigen. Ein
+    durchgehend leiser Track hat trotzdem ein Intro.
+
+    Erwartet wird eine nichtleere Kurve mit Werten >= 0, so wie energy_curve
+    sie liefert. Einen Zweig fuer "nichts ist laut genug" braucht es dabei
+    nicht: der Spitzenwert selbst erreicht immer seine eigene Haelfte, die
+    Liste der lauten Abschnitte ist also nie leer. Der gleichfoermige Fall
+    (konstante Kurve, auch die Nullkurve) faellt damit in den Normalweg -
+    alles gilt als laut, das Intro endet bei 0.0, das Outro beginnt am
+    Trackende, der ganze Track ist mischbar. Genau das ist die richtige
+    Antwort, wenn es keinen erkennbaren Auf- und Abbau gibt.
     """
     step_seconds = grid.bar_length_s * BARS_PER_ENERGY_STEP
     threshold = max(energy) * _QUIET_FRACTION
 
     loud = [index for index, value in enumerate(energy) if value >= threshold]
-    if not loud:
-        # Gleichfoermiger Track ohne erkennbaren Auf- und Abbau
-        return MixRegions(intro_end_s=0.0, outro_start_s=duration_s)
-
     intro_end = min(loud) * step_seconds
     outro_start = min((max(loud) + 1) * step_seconds, duration_s)
     if intro_end >= outro_start:
