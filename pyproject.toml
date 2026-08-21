@@ -1,0 +1,25 @@
+[project]
+name = "djset"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+    "librosa>=0.10.2",
+    "numpy>=1.26",
+    "soundfile>=0.12",
+    "pyloudnorm>=0.1.1",
+    "claude-agent-sdk>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+dj-set = "djset.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
