@@ -69,6 +69,51 @@ def make_analysis(
     )
 
 
+def make_off_grid(
+    track_id: str,
+    *,
+    bpm: float,
+    duration_s: float = 240.0,
+    first_downbeat_s: float = 0.0,
+    intro_end_s: float | None = None,
+    outro_start_s: float | None = None,
+    camelot: str = "8A",
+    energy: float = 0.5,
+) -> TrackAnalysis:
+    """Ein Track mit voll kontrollierbarem Raster und Mix-Regionen.
+
+    `make_analysis` bindet first_downbeat_s fest auf 0.0 und Intro/Outro immer
+    an genau 16 Takte. Beides ist bequem und beides ist unrealistisch: im
+    Betrieb liegt der erste Downbeat irgendwo, und find_mix_regions zaehlt
+    seine 4-Takt-Bloecke ab Sample 0 statt ab first_downbeat_s, also sitzt
+    outro_start_s auf einem beliebigen Bruchteil eines Takts.
+
+    Genau die Faelle, die make_analysis nicht herstellen kann, brauchen die
+    Tests hier: ein schiefes Raster, ein schiefes Outro, und Mix-Regionen ohne
+    nutzbares Material (intro_end_s == 0.0, outro_start_s == duration_s - die
+    gleichfoermig laute Spur).
+    """
+    bar_length = 4 * 60.0 / bpm
+    if intro_end_s is None:
+        intro_end_s = bar_length * 16
+    if outro_start_s is None:
+        outro_start_s = duration_s - bar_length * 16
+    return TrackAnalysis(
+        id=track_id,
+        path=f"/watch/{track_id}.wav",
+        duration_s=duration_s,
+        bpm=Bpm(value=bpm, confidence=0.95),
+        beatgrid=BeatGrid(
+            first_downbeat_s=first_downbeat_s, bar_length_s=bar_length, confidence=0.95
+        ),
+        key=Key(camelot=camelot, confidence=0.9),
+        energy=[0.80, 0.84, 0.86, 0.85, 0.82],
+        mix_regions=MixRegions(intro_end_s=intro_end_s, outro_start_s=outro_start_s),
+        loudness=Loudness(lufs_integrated=-9.5, true_peak=-1.2),
+        verdict=Verdict(usable=True, notes="Fixture-Track.", energy_level=energy),
+    )
+
+
 def many(count: int) -> list[TrackAnalysis]:
     """count zusammenpassende Tracks: harmonisch benachbart, gestaffelte Energie."""
     keys = wheel_walk(count)

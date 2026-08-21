@@ -258,6 +258,64 @@ class Setlist(BaseModel):
         return self
 
 
+ComplaintKind = Literal[
+    "length", "stretch", "downbeat", "phase", "overlap", "energy_arc", "unknown_track"
+]
+
+# Welche Beanstandungen Stufe 5 ueberhaupt beheben kann. Der Architect legt die
+# Reihenfolge fest - mehr nicht. Er kann das Set nicht laenger machen (dazu
+# fehlt Material), er kann kein Stretch-Verhaeltnis aendern (das haengt am
+# Tempo des Tracks) und er kann keinen Cue-Punkt verschieben (das ist Stufe 6).
+# Ihn deswegen erneut laufen zu lassen kostet eine volle Runde Architect plus
+# Designer und liefert zwangslaeufig dasselbe Ergebnis.
+#
+# Der Energiebogen und der zu kurze Overlap sind die zwei Faelle, bei denen
+# eine andere Reihenfolge tatsaechlich hilft: die Energie haengt an der
+# Position, und welcher Track neben welchem steht entscheidet, wie viel
+# Intro- und Outro-Material an der Naht zusammenkommt.
+REORDERABLE_KINDS: frozenset[str] = frozenset({"energy_arc", "overlap"})
+
+
+class Complaint(BaseModel):
+    """Eine Beanstandung des Critics.
+
+    `kind` ist da, damit die Schleife in cmd_build nicht in den Texten nach
+    Stichworten suchen muss, um zu entscheiden, ob eine erneute Runde
+    ueberhaupt etwas aendern kann.
+    """
+
+    kind: ComplaintKind
+    text: str = Field(min_length=1)
+
+    @property
+    def reorderable(self) -> bool:
+        """Ob Stufe 5 daran etwas aendern kann."""
+        return self.kind in REORDERABLE_KINDS
+
+
+class CritiqueRound(BaseModel):
+    """Eine Runde aus Setlist, Plan und dem Urteil darueber."""
+
+    round: int = Field(ge=1)
+    order: list[str] = Field(min_length=1)
+    complaints: list[Complaint]
+    chosen: bool
+
+
+class CritiqueLog(BaseModel):
+    """Das Protokoll aller Critic-Runden eines Laufs.
+
+    Erfolgskriterium 7 verlangt, dass jede Beanstandung in den Artefakten
+    nachvollziehbar ist. Auf der Standardausgabe eines unbeaufsichtigten Laufs
+    ist sie das nicht - und die Beanstandungen der VERWORFENEN Runden sind
+    gerade die, die zur Neuanordnung gefuehrt haben. Ohne dieses Protokoll
+    waeren sie samt ihrer Setlists spurlos weg.
+    """
+
+    rounds: list[CritiqueRound] = Field(min_length=1)
+    chosen_round: int = Field(ge=1)
+
+
 class MixEntry(BaseModel):
     track_id: str = Field(min_length=1)
     play_from_s: float = Field(ge=0)
@@ -286,6 +344,19 @@ class EqCurve(BaseModel):
 
 
 class Transition(BaseModel):
+    """Ein Uebergang zwischen zwei Tracks.
+
+    `bars` ist die EFFEKTIVE Taktzahl, nicht die gewuenschte: sie kann unter
+    profile.transition.bars_min liegen, wenn das Material an dieser Naht
+    weniger hergibt. Ein Track ohne erkennbares Outro liefert einen Takt, auch
+    wenn der Korridor bei sechzehn anfaengt - lieber ein kurzer Uebergang als
+    Sekunden, die niemand fuellt. Der Critic beanstandet, wenn dabei weniger
+    als ein Takt uebrigbleibt.
+
+    Die Taktlaenge dazu steht nicht im Uebergang: sie ist
+    60 / MixPlan.target_bpm mal vier.
+    """
+
     from_track: str = Field(min_length=1)
     to_track: str = Field(min_length=1)
     start_at_s: float = Field(ge=0)
@@ -297,6 +368,13 @@ class Transition(BaseModel):
 
 class MixPlan(BaseModel):
     target_length_s: float = Field(gt=0)
+    # Das Tempo, auf das alle timestretch_ratio gerechnet sind. Ohne diese Zahl
+    # kann der Renderer die Taktzahl eines Uebergangs nicht in Sekunden
+    # umrechnen, ohne tracks/*.json dazuzuladen - und dann waere der Mixplan
+    # nicht mehr allein testbar, was die Determinismus-Grenze der Spec gerade
+    # zusichert ("der Renderer mit handgeschriebenen Mixplaenen testen").
+    # Vom Code aus profile.bpm.target uebernommen, kein Modellurteil.
+    target_bpm: float = Field(gt=0)
     entries: list[MixEntry] = Field(min_length=MIN_TRACKS)
     transitions: list[Transition]
 

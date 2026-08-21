@@ -100,9 +100,42 @@ def _is_unstretchable(track: TrackAnalysis, ratio: float, target_bpm: float) -> 
     return ratio == 1.0 and track.bpm.value != target_bpm
 
 
+# Ein Hauch Toleranz vor dem Abschneiden ganzer Takte. Die Zeiten kommen aus
+# Fliesskommarechnung: acht Takte, einmal gesnappt und wieder abgezogen,
+# ergeben 7,999999999999 - und int() macht daraus sieben. 1e-9 Takte sind bei
+# 174 BPM anderthalb Nanosekunden.
+_BAR_EPSILON = 1e-9
+
+
 def _available_bars(span_s: float, bar_length_s: float) -> int:
     """Wie viele ganze Takte in eine Zeitspanne passen."""
-    return max(0, int(span_s / bar_length_s))
+    return max(0, int(span_s / bar_length_s + _BAR_EPSILON))
+
+
+def _snapped_outro(track: TrackAnalysis) -> float:
+    """Der Outro-Einsatz auf dem Taktraster des Tracks.
+
+    Der gemessene Wert taugt dafuer nicht: find_mix_regions zaehlt seine
+    4-Takt-Bloecke ab Sample 0, nicht ab first_downbeat_s, also liegt
+    outro_start_s auf einem beliebigen Bruchteil eines Takts. Wird daraus die
+    Position in der Ausgabe-Timeline gerechnet, faellt der Uebergang um genau
+    diesen Bruchteil neben den Takt - der eingehende Track startet auf seinem
+    eigenen Downbeat und damit gegen den Vorgaenger verschoben.
+
+    Deshalb wird hier einmal je Track gesnappt, und jede weitere Benutzung
+    leitet sich von diesem Wert ab: die Taktzahl, die das Outro noch hergibt,
+    das Ende des Abschnitts und die Position des Uebergangs. Sonst rechnen
+    Material und Timeline mit zwei verschiedenen Outros.
+
+    Rundet der Snap ueber das Trackende hinaus, geht es einen Takt zurueck:
+    ein Outro-Einsatz hinter dem Trackende ergaebe einen negativen Overlap und
+    damit ein Loch in der Ausgabe.
+    """
+    grid = track.beatgrid
+    outro = snap_to_downbeat(track.mix_regions.outro_start_s, grid)
+    if outro > track.duration_s:
+        outro = max(grid.first_downbeat_s, outro - grid.bar_length_s)
+    return outro
 
 
 def _eq_curve(technique: Technique, outgoing: bool) -> EqCurve:
@@ -161,6 +194,9 @@ def build_mixplan(
     target_bpm = profile.bpm.target
 
     ratios = {tid: _ratio(by_id[tid], target_bpm) for tid in order}
+    # Einmal je Track gesnappt, danach ist dieser Wert das Outro - fuer die
+    # Materialrechnung, fuer play_to_s und fuer die Position des Uebergangs.
+    outros = {tid: _snapped_outro(by_id[tid]) for tid in order}
 
     # Zwei Korrekturen an dem, was das Modell gewaehlt hat.
     #
@@ -187,7 +223,7 @@ def build_mixplan(
             technique = "cut"
 
         out_bars = _available_bars(
-            outgoing.duration_s - outgoing.mix_regions.outro_start_s,
+            outgoing.duration_s - outros[outgoing.id],
             outgoing.beatgrid.bar_length_s,
         )
         in_bars = _available_bars(
@@ -216,8 +252,11 @@ def build_mixplan(
             play_to = track.duration_s
         else:
             bars_out = effective[index].bars
-            raw = track.mix_regions.outro_start_s + bars_out * grid.bar_length_s
-            play_to = min(track.duration_s, snap_to_downbeat(raw, grid))
+            # outros[track_id] sitzt schon auf dem Raster, eine ganze Taktzahl
+            # dazu ebenfalls - hier ist nichts mehr zu snappen.
+            play_to = min(
+                track.duration_s, outros[track_id] + bars_out * grid.bar_length_s
+            )
 
         entries.append(
             MixEntry(
@@ -233,9 +272,12 @@ def build_mixplan(
     out_start = 0.0
     for index, choice in enumerate(effective):
         entry = entries[index]
-        track = by_id[order[index]]
         # Position in der Ausgabe, an der der Vorgaenger sein Outro erreicht.
-        into_outro = track.mix_regions.outro_start_s - entry.play_from_s
+        # Beide Groessen sitzen auf dem Raster des Vorgaengers, die Differenz
+        # ist also eine ganze Taktzahl - und der Uebergang faellt auf einen
+        # Downbeat des Vorgaengers, auf dem der eingehende Track mit seinem
+        # eigenen Downbeat aufsetzt.
+        into_outro = outros[order[index]] - entry.play_from_s
         start_at = out_start + into_outro / entry.timestretch_ratio
         transitions.append(
             Transition(
@@ -255,7 +297,12 @@ def build_mixplan(
         last_entry.play_to_s - last_entry.play_from_s
     ) / last_entry.timestretch_ratio
 
-    return MixPlan(target_length_s=total, entries=entries, transitions=transitions)
+    return MixPlan(
+        target_length_s=total,
+        target_bpm=target_bpm,
+        entries=entries,
+        transitions=transitions,
+    )
 
 
 def _table(setlist: Setlist, by_id: dict[str, TrackAnalysis], profile: Profile) -> str:

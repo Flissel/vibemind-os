@@ -8,17 +8,12 @@ from djset.contracts import (
     MAX_RATIO,
     MIN_RATIO,
     BeatGrid,
-    Bpm,
-    Key,
-    Loudness,
     MixPlan,
-    MixRegions,
     Profile,
     Setlist,
     TrackAnalysis,
-    Verdict,
 )
-from tests.fixtures.analyses import make_analysis, many
+from tests.fixtures.analyses import make_analysis, make_off_grid, many
 from tests.fixtures.fake_client import FakeClient
 
 
@@ -29,44 +24,6 @@ def _budget() -> Budget:
 def _choices(count: int, technique: str = "blend", bars: int = 16) -> str:
     return json.dumps(
         {"choices": [{"technique": technique, "bars": bars} for _ in range(count)]}
-    )
-
-
-def _custom_track(
-    track_id: str,
-    *,
-    bpm: float,
-    duration_s: float = 240.0,
-    first_downbeat_s: float = 0.0,
-    intro_end_s: float | None = None,
-    outro_start_s: float | None = None,
-    camelot: str = "8A",
-) -> TrackAnalysis:
-    """Ein Track mit voll kontrollierbarem Raster und Mix-Regionen.
-
-    `tests.fixtures.analyses.make_analysis` bindet first_downbeat_s fest auf
-    0.0 und Intro/Outro immer an genau 16 Takte - genau die zwei Faelle, die
-    hier absichtlich anders sein sollen: ein schiefes Raster (Finding 4) und
-    Mix-Regionen ohne nutzbares Material (Finding 2).
-    """
-    bar_length = 4 * 60.0 / bpm
-    if intro_end_s is None:
-        intro_end_s = bar_length * 16
-    if outro_start_s is None:
-        outro_start_s = duration_s - bar_length * 16
-    return TrackAnalysis(
-        id=track_id,
-        path=f"/watch/{track_id}.wav",
-        duration_s=duration_s,
-        bpm=Bpm(value=bpm, confidence=0.95),
-        beatgrid=BeatGrid(
-            first_downbeat_s=first_downbeat_s, bar_length_s=bar_length, confidence=0.95
-        ),
-        key=Key(camelot=camelot, confidence=0.9),
-        energy=[0.80, 0.84, 0.86, 0.85, 0.82],
-        mix_regions=MixRegions(intro_end_s=intro_end_s, outro_start_s=outro_start_s),
-        loudness=Loudness(lufs_integrated=-9.5, true_peak=-1.2),
-        verdict=Verdict(usable=True, notes="Fixture-Track.", energy_level=0.5),
     )
 
 
@@ -91,17 +48,29 @@ def test_the_plan_has_one_transition_between_each_pair(profile: Profile) -> None
     assert [e.track_id for e in plan.entries] == setlist.order
 
 
+def _off_grid_set() -> list[TrackAnalysis]:
+    """Vier Tracks, bei denen NICHTS auf dem Raster liegt.
+
+    Weder der erste Downbeat noch Intro noch Outro. Genau das liefert die
+    Messung im Betrieb: find_mix_regions zaehlt seine 4-Takt-Bloecke ab Sample
+    0, nicht ab first_downbeat_s, also ist outro_start_s ein beliebiger
+    Bruchteil eines Takts. make_analysis kann das nicht nachstellen - dort ist
+    first_downbeat_s immer 0.0 und das Outro sitzt exakt auf einer Taktgrenze.
+    """
+    return [
+        make_off_grid("o0", bpm=172.0, first_downbeat_s=0.30, intro_end_s=20.0, outro_start_s=200.0),
+        make_off_grid("o1", bpm=173.0, first_downbeat_s=0.70, intro_end_s=21.0, outro_start_s=201.0),
+        make_off_grid("o2", bpm=174.0, first_downbeat_s=0.45, intro_end_s=22.0, outro_start_s=202.0),
+        make_off_grid("o3", bpm=175.0, first_downbeat_s=0.15, intro_end_s=23.0, outro_start_s=203.0),
+    ]
+
+
 def test_every_cue_point_sits_on_a_downbeat(profile: Profile) -> None:
     """Jedes Raster hier ist bewusst schief: erster Downbeat ungleich 0.0 und
     Intro/Outro nicht auf Taktgrenzen. Mit many() (first_downbeat_s == 0.0 und
     Intro/Outro exakt auf 16 Takten) waere play_from_s immer 0.0 und der Test
     bestuende auch mit einer Identitaetsfunktion statt snap_to_downbeat."""
-    tracks = [
-        _custom_track("o0", bpm=172.0, first_downbeat_s=0.30, intro_end_s=20.0, outro_start_s=200.0),
-        _custom_track("o1", bpm=173.0, first_downbeat_s=0.70, intro_end_s=21.0, outro_start_s=201.0),
-        _custom_track("o2", bpm=174.0, first_downbeat_s=0.45, intro_end_s=22.0, outro_start_s=202.0),
-        _custom_track("o3", bpm=175.0, first_downbeat_s=0.15, intro_end_s=23.0, outro_start_s=203.0),
-    ]
+    tracks = _off_grid_set()
     setlist = Setlist(order=[t.id for t in tracks], note="")
     plan = design(FakeClient([_choices(3)]), setlist, tracks, profile, _budget())
     by_id = {t.id: t for t in tracks}
@@ -111,6 +80,67 @@ def test_every_cue_point_sits_on_a_downbeat(profile: Profile) -> None:
         offset = entry.play_from_s - grid.first_downbeat_s
         bars = offset / grid.bar_length_s
         assert abs(bars - round(bars)) < 1e-6
+
+
+def test_every_transition_sits_on_a_downbeat_of_the_outgoing_track(
+    profile: Profile,
+) -> None:
+    """Die andere Haelfte der Downbeat-Regel: nicht nur der Einstieg jedes
+    Tracks in sein eigenes Raster, sondern der Uebergang in das Raster seines
+    Vorgaengers.
+
+    Der eingehende Track startet bei start_at_s mit seinem eigenen Downbeat.
+    Liegt start_at_s nicht auch auf einem Downbeat des Vorgaengers, laufen die
+    beiden Raster gegeneinander - und das ist genau die Beat-Kontinuitaet, die
+    Erfolgskriterium 4 an jeder Naht verlangt.
+
+    Gemessen wird in Takten der AUSGABE: die Quelltaktlaenge geteilt durch das
+    Stretch-Verhaeltnis.
+    """
+    tracks = _off_grid_set()
+    setlist = Setlist(order=[t.id for t in tracks], note="")
+    plan = design(FakeClient([_choices(3)]), setlist, tracks, profile, _budget())
+    by_id = {t.id: t for t in tracks}
+    entries = {e.track_id: e for e in plan.entries}
+
+    out_start = 0.0
+    for transition in plan.transitions:
+        entry = entries[transition.from_track]
+        grid = by_id[transition.from_track].beatgrid
+        out_bar_s = grid.bar_length_s / entry.timestretch_ratio
+        elapsed_bars = (transition.start_at_s - out_start) / out_bar_s
+        drift_bars = elapsed_bars - round(elapsed_bars)
+        assert abs(drift_bars) < 1e-6, (
+            f"{transition.from_track} nach {transition.to_track}: "
+            f"{elapsed_bars:.6f} Takte bis zum Uebergang, "
+            f"Phasenfehler {abs(drift_bars) * out_bar_s * 1000:.0f} ms"
+        )
+        out_start = transition.start_at_s
+
+
+def test_the_geometric_overlap_equals_the_declared_bars(profile: Profile) -> None:
+    """`bars` ist keine Deklaration neben der Geometrie, sondern deren Mass.
+
+    Der Renderer blendet zwischen start_at_s und dem Ende des ausgehenden
+    Abschnitts. Was dort tatsaechlich uebereinanderliegt, muss die Taktzahl
+    sein, die der Uebergang angibt - sonst blendet er ueber eine andere Strecke
+    als der Plan behauptet.
+    """
+    tracks = _off_grid_set()
+    setlist = Setlist(order=[t.id for t in tracks], note="")
+    plan = design(FakeClient([_choices(3)]), setlist, tracks, profile, _budget())
+    by_id = {t.id: t for t in tracks}
+    entries = {e.track_id: e for e in plan.entries}
+
+    out_start = 0.0
+    for transition in plan.transitions:
+        entry = entries[transition.from_track]
+        grid = by_id[transition.from_track].beatgrid
+        out_bar_s = grid.bar_length_s / entry.timestretch_ratio
+        ends_at = out_start + (entry.play_to_s - entry.play_from_s) / entry.timestretch_ratio
+        overlap_bars = (ends_at - transition.start_at_s) / out_bar_s
+        assert abs(overlap_bars - transition.bars) < 1e-6
+        out_start = transition.start_at_s
 
 
 def test_every_stretch_stays_inside_the_limit(profile: Profile) -> None:
@@ -173,7 +203,7 @@ def test_a_track_with_no_intro_or_outro_material_gets_a_one_bar_transition(
     duration_s) - dann wird der Uebergang zum Stoss auf dem Downbeat (1 Takt),
     nicht zu 16 Sekunden erfundenen Materials."""
     a = make_analysis("a", bpm=173.0, camelot="8A")
-    b = _custom_track("b", bpm=174.0, intro_end_s=0.0, outro_start_s=240.0, camelot="8A")
+    b = make_off_grid("b", bpm=174.0, intro_end_s=0.0, outro_start_s=240.0, camelot="8A")
     c = make_analysis("c", bpm=175.0, camelot="8A")
     setlist = Setlist(order=["a", "b", "c"], note="")
 
@@ -187,7 +217,7 @@ def test_bars_larger_than_the_available_outro_are_reduced(profile: Profile) -> N
     """Finding 2: 32 Takte (im Profilkorridor erlaubt) gegen einen Track, der
     nur 8 Takte Outro hat, muss auf die verfuegbaren 8 Takte gekuerzt werden."""
     bar_length = 4 * 60.0 / 174.0
-    x = _custom_track(
+    x = make_off_grid(
         "x", bpm=174.0, outro_start_s=240.0 - 8 * bar_length, camelot="8A"
     )
     y = make_analysis("y", bpm=173.0, camelot="8A")

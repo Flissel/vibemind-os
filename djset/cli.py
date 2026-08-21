@@ -13,7 +13,7 @@ from djset.agents.profiler import build_profile
 from djset.agents.prompt_writer import render_markdown, write_prompts
 from djset.analysis import analyse_all
 from djset.contracts import MixPlan, Profile, Setlist
-from djset.critic import critique
+from djset.critic import Critique, critique
 from djset.run import Run, RunNotFound
 from djset.watch import NotEnoughMaterial, check_enough, scan
 
@@ -134,7 +134,7 @@ def cmd_build(
 
         best: MixPlan | None = None
         best_setlist: Setlist | None = None
-        fewest = -1
+        best_verdict: Critique | None = None
         complaints: tuple[str, ...] = ()
 
         for _round in range(CRITIC_ROUNDS + 1):
@@ -143,16 +143,26 @@ def cmd_build(
             )
             plan = design(client, setlist, analyses, profile, budget)
             verdict = critique(plan, analyses, profile)
-            if best is None or fewest < 0 or len(verdict.complaints) < fewest:
-                best, best_setlist, fewest = plan, setlist, len(verdict.complaints)
+            if best_verdict is None or len(verdict.complaints) < len(
+                best_verdict.complaints
+            ):
+                best, best_setlist, best_verdict = plan, setlist, verdict
             if verdict.ok:
                 break
-            complaints = tuple(verdict.complaints)
+            # Nur mit dem zurueck an Stufe 5, woran Stufe 5 etwas aendern kann.
+            # Bleibt nichts uebrig, ist die Schleife am Ende: eine Laengen- oder
+            # Downbeat-Beanstandung kostet sonst zwei volle Runden Architect und
+            # Designer und liefert danach denselben Plan. Der Architect legt die
+            # Reihenfolge fest - er kann kein Material herbeischaffen und keinen
+            # Cue-Punkt verschieben.
+            complaints = verdict.reorderable
+            if not complaints:
+                break
     except (NotEnoughTracks, AgentError) as error:
         print(f"Fehler: {error}", file=sys.stderr)
         return 1
 
-    if best is None or best_setlist is None:
+    if best is None or best_setlist is None or best_verdict is None:
         print("Fehler: es entstand kein Mixplan.", file=sys.stderr)
         return 1
 
@@ -162,10 +172,16 @@ def cmd_build(
     print(f"Lauf {run.run_id}")
     print(f"  {len(analyses)} Tracks analysiert, {len(unreadable)} unlesbar")
     print(f"  {len(shortlist.accepted)} im Set, {len(shortlist.rejected)} aussortiert")
-    if fewest:
-        print(f"  Critic hat {fewest} Beanstandungen offen gelassen:")
-        for complaint in critique(best, analyses, profile).complaints:
-            print(f"    - {complaint}")
+    if best_verdict.complaints:
+        # Die Beanstandungen der gewaehlten Runde, nicht neu gerechnet: dasselbe
+        # Ergebnis noch einmal auszurechnen ist nicht nur unnoetig, es waere auch
+        # eine zweite Wahrheit neben der, die im Protokoll steht.
+        print(
+            f"  Critic hat {len(best_verdict.complaints)} Beanstandungen offen "
+            f"gelassen:"
+        )
+        for text in best_verdict.texts:
+            print(f"    - {text}")
     print(f"  Mixplan: {run.path('mixplan.json')}")
     print("  Das Rendern kommt in einer spaeteren Ausbaustufe.")
     return 0

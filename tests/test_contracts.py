@@ -58,7 +58,12 @@ def test_mix_plan_requires_one_transition_less_than_entries():
     entries = [MixEntry(track_id=f"t{i}", play_from_s=0.0, play_to_s=60.0,
                         timestretch_ratio=1.0, gain_db=0.0) for i in range(3)]
     with pytest.raises(ValidationError, match="genau einen Uebergang"):
-        MixPlan(target_length_s=180.0, entries=entries, transitions=[])
+        MixPlan(
+            target_length_s=180.0,
+            target_bpm=174.0,
+            entries=entries,
+            transitions=[],
+        )
 
 
 # --- Harte Regeln, die bisher kein Test festgehalten hat -------------------
@@ -187,6 +192,7 @@ def _transition(from_track: str, to_track: str) -> Transition:
 def test_mix_plan_accepts_transitions_that_match_their_neighbours():
     plan = MixPlan(
         target_length_s=180.0,
+        target_bpm=174.0,
         entries=_entries(["a", "b", "c"]),
         transitions=[_transition("a", "b"), _transition("b", "c")],
     )
@@ -197,6 +203,7 @@ def test_mix_plan_rejects_transition_with_the_wrong_from_track():
     with pytest.raises(ValidationError, match="from_track"):
         MixPlan(
             target_length_s=180.0,
+            target_bpm=174.0,
             entries=_entries(["a", "b", "c"]),
             transitions=[_transition("a", "b"), _transition("a", "c")],
         )
@@ -206,6 +213,7 @@ def test_mix_plan_rejects_transition_with_the_wrong_to_track():
     with pytest.raises(ValidationError, match="to_track"):
         MixPlan(
             target_length_s=180.0,
+            target_bpm=174.0,
             entries=_entries(["a", "b", "c"]),
             transitions=[_transition("a", "c"), _transition("b", "c")],
         )
@@ -216,6 +224,7 @@ def test_mix_plan_rejects_transitions_in_the_wrong_order():
     with pytest.raises(ValidationError, match="from_track"):
         MixPlan(
             target_length_s=180.0,
+            target_bpm=174.0,
             entries=_entries(["a", "b", "c"]),
             transitions=[_transition("b", "c"), _transition("a", "b")],
         )
@@ -225,6 +234,7 @@ def test_mix_plan_rejects_duplicate_track_ids():
     with pytest.raises(ValidationError, match="nur einmal"):
         MixPlan(
             target_length_s=180.0,
+            target_bpm=174.0,
             entries=_entries(["a", "b", "a"]),
             transitions=[_transition("a", "b"), _transition("b", "a")],
         )
