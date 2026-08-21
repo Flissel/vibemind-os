@@ -34,6 +34,16 @@ def _read_existing(run: Run, track_id: str) -> TrackAnalysis | UnreadableTrack |
     Beide Formen liegen unter demselben Namen: erst die vollstaendige Analyse
     versuchen, sonst den Fehlvermerk. Was sich als keines von beidem lesen
     laesst, gilt als nicht vorhanden und wird neu analysiert.
+
+    Die drei gefangenen Fehlerarten sind genau die, die ein halb geschriebenes
+    Artefakt erzeugt - und halb geschriebene Artefakte sind der Normalfall, fuer
+    den diese Funktion existiert: ValidationError bei abgeschnittenem oder
+    schemafremdem JSON, UnicodeDecodeError wenn der Abbruch mitten in ein
+    Mehrbyte-Zeichen fiel (die Notizen des Analysten sind deutscher Fliesstext,
+    Umlaute darin sind die Regel), OSError wenn die Datei zwischen has() und
+    read_model verschwindet. Alle drei bedeuten dasselbe: unbrauchbar, neu
+    analysieren. Sie duerfen den Lauf nicht reissen, sonst macht ein einziges
+    kaputtes Artefakt die ganze Wiederaufnahme zunichte.
     """
     name = artifact_name(track_id)
     if not run.has(name):
@@ -41,7 +51,7 @@ def _read_existing(run: Run, track_id: str) -> TrackAnalysis | UnreadableTrack |
     for model_type in (TrackAnalysis, UnreadableTrack):
         try:
             return run.read_model(name, model_type)
-        except ValidationError:
+        except (ValidationError, UnicodeDecodeError, OSError):
             continue
     return None
 

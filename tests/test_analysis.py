@@ -109,5 +109,49 @@ def test_unreadable_artifacts_are_reused_too(tmp_path: Path, profile: Profile) -
     assert [u.id for u in unreadable] == ["kaputt"]
 
 
+def test_a_truncated_artifact_is_re_analysed_not_fatal(
+    tmp_path: Path, profile: Profile
+) -> None:
+    """Ein Artefakt, das mitten in einem Mehrbyte-Zeichen abgeschnitten wurde,
+    darf den ganzen Lauf nicht reissen - genau dieser Zustand ist der
+    Normalfall, den resume ueberleben muss (Absturz mitten im Schreiben).
+    """
+    run = _run(tmp_path)
+    files = _files(tmp_path, 1)
+    target = run.path(artifact_name("t0"))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # "Ba" mit ensure_ascii=False roh in UTF-8 kodiert, dann das letzte Byte
+    # gekappt: 0xC3 bleibt als Fuehrbyte ohne Fortsetzungsbyte stehen - genau
+    # der Fall, den ein Absturz mitten im Schreiben erzeugt.
+    raw = '{"verdict": {"notes": "B\u00e4'.encode("utf-8")
+    target.write_bytes(raw[:-1])
+
+    analyses, unreadable = analyse_all(
+        FakeClient([ANSWER]), files, profile, run, _budget()
+    )
+
+    assert [a.id for a in analyses] == ["t0"]
+    assert unreadable == []
+
+
+def test_a_garbage_artifact_is_re_analysed_not_fatal(
+    tmp_path: Path, profile: Profile
+) -> None:
+    """Weder gueltiges JSON noch eines der beiden Schemata - muss trotzdem
+    einfach neu analysiert werden statt den Lauf zu reissen."""
+    run = _run(tmp_path)
+    files = _files(tmp_path, 1)
+    target = run.path(artifact_name("t0"))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"nicht mal json")
+
+    analyses, unreadable = analyse_all(
+        FakeClient([ANSWER]), files, profile, run, _budget()
+    )
+
+    assert [a.id for a in analyses] == ["t0"]
+    assert unreadable == []
+
+
 def _budget() -> Budget:
     return Budget(max_tokens=200_000, max_seconds=120.0)
