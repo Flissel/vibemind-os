@@ -304,12 +304,17 @@ class Verdict(BaseModel):
     """Das Urteil des Track-Analysten ueber einen Track.
 
     `energy_level` ordnet den Track auf derselben 0..1-Skala ein, auf der das
-    Profil seinen energy_arc beschreibt. Bewusst vom Agenten vergeben und nicht
-    aus TrackMeasurements.energy gerechnet: die gemessene Kurve ist trackrelativ
-    und ueber Tracks hinweg nicht vergleichbar, waehrend der Bogen absolute
-    Zielenergien nennt. Dasselbe Modell, das den Bogen geschrieben hat, ordnet
-    die Tracks darauf ein - das ist die einzige Stelle, an der beide Skalen
-    zuverlaessig zusammenfinden.
+    Profil seinen energy_arc beschreibt.
+
+    Bewusst vom Agenten vergeben und nicht aus TrackMeasurements.energy
+    gerechnet, aber nicht weil die Kurve trackrelativ waere - sie ist gegen eine
+    feste dBFS-Referenz normiert und ueber aehnlich gemastertes Material sehr
+    wohl vergleichbar. Der Grund ist ein anderer: ihr praktischer Wertebereich
+    fuer fertig gemastertes Material liegt zwischen etwa 0,75 und 0,87, waehrend
+    ein vom Modell geschriebener Bogen ueber 0,30 bis 0,90 laeuft. Tracks direkt
+    auf diesen Bogen abzubilden waere deshalb stark gestaucht. Dasselbe Modell,
+    das den Bogen geschrieben hat, ordnet die Tracks darauf ein - das ist die
+    einzige Stelle, an der beide Skalen zuverlaessig zusammenfinden.
     """
 
     usable: bool
@@ -333,10 +338,11 @@ class UnreadableTrack(BaseModel):
 Und in `TrackMeasurements` über dem `energy`-Feld:
 
 ```python
-    # ACHTUNG: trackrelativ. Die Kurve ist gegen eine feste dBFS-Referenz
-    # normiert und damit innerhalb eines Tracks aussagekraeftig - fuer die
-    # Mix-Regionen. Sie ist NICHT die Groesse, an der Stufe 5 Tracks
-    # miteinander vergleicht; dafuer gibt es Verdict.energy_level.
+    # Gegen eine feste dBFS-Referenz normiert, also ueber aehnlich gemastertes
+    # Material vergleichbar - siehe den Docstring von dsp.analyze.energy_curve.
+    # Fuer die Einordnung auf profile.energy_arc ist sie trotzdem nicht die
+    # richtige Groesse, weil ihr praktischer Bereich viel enger ist als der des
+    # Bogens; dafuer gibt es Verdict.energy_level.
     energy: list[float] = Field(min_length=1)
 ```
 
@@ -555,20 +561,39 @@ Beurteile:
 Antworte ausschliesslich mit dem geforderten JSON."""
 
 
-def _snap_octave(measurements: TrackMeasurements, profile: Profile) -> TrackMeasurements:
-    """Haelt Halftime- und Doubletime-Lesungen an den Profilkorridor an."""
+def _measure_in_corridor(
+    path: Path, track_id: str, profile: Profile
+) -> TrackMeasurements:
+    """Misst und holt Halftime- oder Doubletime-Lesungen in den Korridor.
+
+    Wird neu gemessen statt die Zahl zu patchen, und zwar aus einem harten
+    Grund: bar_length_s, energy und mix_regions sind alle aus dem erkannten
+    Raster abgeleitet. Wer nur bpm.value ueberschreibt, erzeugt einen Datensatz,
+    der sich selbst widerspricht - 174 BPM neben einer Taktlaenge von 2,76
+    Sekunden - und Stufe 6 setzt ihre Cue-Punkte auf genau dieses Raster.
+
+    Bleibt die Neumessung trotz Hinweis ausserhalb des Korridors, wird nichts
+    zurechtgebogen: die Zahlen gehen so, wie sie gemessen wurden, an das Modell,
+    und das urteilt darueber. Ein in sich stimmiger Datensatz ausserhalb des
+    Korridors ist brauchbarer als ein frisierter innerhalb.
+    """
+    measurements = _measure(path, track_id, None)
     snapped, corrected = snap_to_range(
         measurements.bpm.value, profile.bpm.min, profile.bpm.max
     )
     if not corrected:
         return measurements
-    # model_validate statt model_copy(update=...): letzteres validiert nicht.
+
+    retried = _measure(path, track_id, snapped)
+    # Konfidenz senken: das Tempo stammt jetzt aus einem Hinweis, nicht mehr
+    # aus der Messung allein. model_validate statt model_copy(update=...),
+    # letzteres validiert in Pydantic v2 nicht.
     return TrackMeasurements.model_validate(
-        measurements.model_dump()
+        retried.model_dump()
         | {
             "bpm": {
-                "value": snapped,
-                "confidence": measurements.bpm.confidence * SNAP_CONFIDENCE_PENALTY,
+                "value": retried.bpm.value,
+                "confidence": retried.bpm.confidence * SNAP_CONFIDENCE_PENALTY,
             }
         }
     )
@@ -599,16 +624,33 @@ def _prompt(measurements: TrackMeasurements, profile: Profile) -> str:
     )
 
 
-def _measure(path: Path, track_id: str, hint_bpm: float | None) -> TrackMeasurements:
-    """Misst und macht librosa-Warnungen bei entartetem Material zu Fehlern.
+def _has_signal(path: Path) -> bool:
+    """Ob die Datei ueberhaupt Signal enthaelt.
 
-    Unter filterwarnings error waere eine Warnung ohnehin ein Absturz; hier wird
-    sie zu einem sauberen Messfehler, den der Aufrufer als UnreadableTrack
-    verbuchen kann, statt den ganzen Lauf zu reissen.
+    Digitale Stille ist der Fall, bei dem librosa warnt und danach eine
+    willkuerliche Tonart liefert. Der wird hier vorher abgefangen.
+
+    Bewusst nicht ueber warnings.catch_warnings: das veraendert eine globale
+    Liste und ist ausdruecklich nicht threadsicher, und ab Task 3 laeuft diese
+    Funktion aus einem Thread-Pool. Ein Blockdurchlauf ueber die Datei kostet
+    einen Bruchteil dessen, was die eigentliche Analyse ohnehin an Lesevorgaengen
+    braucht, und ist dafuer deterministisch.
     """
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        return measure_track(path, track_id, hint_bpm=hint_bpm)
+    peak = 0.0
+    with sf.SoundFile(path) as handle:
+        for block in handle.blocks(blocksize=1 << 16, dtype="float32"):
+            if block.size:
+                peak = max(peak, float(np.max(np.abs(block))))
+            if peak >= _SILENCE_FLOOR:
+                return True
+    return peak >= _SILENCE_FLOOR
+
+
+def _measure(path: Path, track_id: str, hint_bpm: float | None) -> TrackMeasurements:
+    """Misst einen Track und lehnt entartetes Material sauber ab."""
+    if not _has_signal(path):
+        raise ValueError("Die Datei enthaelt kein Signal")
+    return measure_track(path, track_id, hint_bpm=hint_bpm)
 
 
 def analyse_track(
@@ -751,7 +793,7 @@ def _files(tmp_path: Path, count: int) -> list[AudioFile]:
     return [
         AudioFile(
             id=f"t{i}",
-            path=click_track(tmp_path / f"t{i}.wav", bpm=174.0, seconds=12.0),
+            path=click_track(tmp_path / f"t{i}.wav", bpm=174.0, bars=14),
         )
         for i in range(count)
     ]
@@ -881,6 +923,16 @@ def _read_existing(run: Run, track_id: str) -> TrackAnalysis | UnreadableTrack |
     Beide Formen liegen unter demselben Namen: erst die vollstaendige Analyse
     versuchen, sonst den Fehlvermerk. Was sich als keines von beidem lesen
     laesst, gilt als nicht vorhanden und wird neu analysiert.
+
+    Die drei gefangenen Fehlerarten sind genau die, die ein halb geschriebenes
+    Artefakt erzeugt - und halb geschriebene Artefakte sind der Normalfall, fuer
+    den diese Funktion existiert: ValidationError bei abgeschnittenem oder
+    schemafremdem JSON, UnicodeDecodeError wenn der Abbruch mitten in ein
+    Mehrbyte-Zeichen fiel (die Notizen des Analysten sind deutscher Fliesstext,
+    Umlaute darin sind die Regel), OSError wenn die Datei zwischen has() und
+    read_model verschwindet. Alle drei bedeuten dasselbe: unbrauchbar, neu
+    analysieren. Sie duerfen den Lauf nicht reissen, sonst macht ein einziges
+    kaputtes Artefakt die ganze Wiederaufnahme zunichte.
     """
     name = artifact_name(track_id)
     if not run.has(name):
@@ -888,7 +940,7 @@ def _read_existing(run: Run, track_id: str) -> TrackAnalysis | UnreadableTrack |
     for model_type in (TrackAnalysis, UnreadableTrack):
         try:
             return run.read_model(name, model_type)
-        except ValidationError:
+        except (ValidationError, UnicodeDecodeError, OSError):
             continue
     return None
 
@@ -973,6 +1025,15 @@ def test_the_wheel_walk_stays_harmonically_adjacent() -> None:
         assert is_compatible(first, second, "strict")
 
 
+def test_the_wheel_walk_stays_adjacent_across_the_wrap() -> None:
+    """Der Uebergang vom letzten Eintrag zurueck zum ersten muss auch passen."""
+    keys = wheel_walk(30)
+
+    assert len(keys) == 30
+    for first, second in zip(keys, keys[1:]):
+        assert is_compatible(first, second, "strict"), f"{first} -> {second}"
+
+
 def test_many_gives_distinct_ids_and_varied_energy() -> None:
     tracks = many(6)
 
@@ -1006,13 +1067,25 @@ from djset.contracts import (
     Verdict,
 )
 
-# Ein Gang ueber das Camelot-Rad, der die strikte Nachbarschaft nie verletzt:
-# gleiche Zahl A/B wechseln oder eine Position weiter.
-_WALK = ["8A", "8B", "9B", "9A", "10A", "10B", "11B", "11A", "12A", "12B", "1B", "1A"]
+# Ein geschlossener Gang ueber das ganze Camelot-Rad: abwechselnd die Tonart
+# wechseln (gleiche Zahl, A nach B) und eine Position weiterruecken. Nach 24
+# Schritten ist man wieder am Anfang, und auch der Uebergang vom letzten zum
+# ersten Eintrag ist benachbart - deshalb 24 Eintraege und nicht 12. Eine
+# kuerzere Liste wuerde beim Umlauf von 1A auf 8A springen, und die beiden sind
+# auf dem Rad keine Nachbarn.
+_WALK = [
+    "8A", "8B", "9B", "9A", "10A", "10B", "11B", "11A",
+    "12A", "12B", "1B", "1A", "2A", "2B", "3B", "3A",
+    "4A", "4B", "5B", "5A", "6A", "6B", "7B", "7A",
+]
 
 
 def wheel_walk(count: int) -> list[str]:
-    """count Tonarten, bei denen je zwei aufeinanderfolgende harmonisch passen."""
+    """count Tonarten, bei denen je zwei aufeinanderfolgende harmonisch passen.
+
+    Gilt auch ueber den Umlauf hinaus: `_WALK` schliesst sich, also bleibt die
+    Nachbarschaft auch bei mehr als 24 Tracks erhalten.
+    """
     return [_WALK[index % len(_WALK)] for index in range(count)]
 
 
@@ -1201,7 +1274,12 @@ Shortlist, damit im Report nachvollziehbar bleibt, warum sie fehlen.
 
 from pydantic import BaseModel, Field
 
-from djset.agents.base import AgentClient, Budget, run_agent
+from djset.agents.base import (
+    AgentClient,
+    Budget,
+    StageRulesViolated,
+    run_agent,
+)
 from djset.contracts import (
     MIN_TRACKS,
     Profile,
@@ -1215,7 +1293,12 @@ MAX_ROUNDS = 3
 
 
 class NotEnoughTracks(RuntimeError):
-    """Nach dem Aussortieren bleiben weniger als MIN_TRACKS uebrig."""
+    """Nach dem Aussortieren bleiben weniger als MIN_TRACKS uebrig.
+
+    Bewusst getrennt von StageRulesViolated: zu wenig brauchbares Material ist
+    ein Befund ueber die Musik, keine Formfehler des Modells. Der Nutzer muss
+    darauf anders reagieren - mehr Tracks generieren statt einen Bug melden.
+    """
 
 
 class CuratorAnswer(BaseModel):
@@ -1235,7 +1318,7 @@ Die analysierten Tracks:
 
 {table}
 
-Sortiere aus, was nicht taugt: falsche BPM-Familie, kaputte Struktur (kein
+Sortiere aus, was nicht taugt: falsche BPM-Familie, defekte Struktur (kein
 brauchbares Intro oder Outro), zu kurz fuer einen Uebergang, am Genre vorbei,
 oder ein Urteil des Analysten, das dagegen spricht.
 
@@ -1276,6 +1359,12 @@ def _check(answer: CuratorAnswer, known: set[str], needed: int) -> str | None:
         return f"Diese IDs stehen doppelt: {', '.join(sorted(both))}."
     if len(set(answer.accepted)) != len(answer.accepted):
         return "In accepted steht eine ID mehrfach."
+    rejected_ids = [rejection.track_id for rejection in answer.rejected]
+    if len(set(rejected_ids)) != len(rejected_ids):
+        # Doppelt abgelehnt heisst zwei Begruendungen fuer denselben Track. Wer
+        # daraus eine Zuordnung baut - und genau das tut der Report -, verliert
+        # eine davon stillschweigend.
+        return "In rejected steht eine ID mehrfach."
     if len(answer.accepted) > needed:
         return f"Du hast {len(answer.accepted)} Tracks angenommen, erlaubt sind {needed}."
     return None
@@ -1312,9 +1401,9 @@ def curate(
     else:
         problem = _check(answer, known, needed)
         if problem is not None:
-            raise NotEnoughTracks(
+            raise StageRulesViolated(
                 f"Der Curator lieferte nach {MAX_ROUNDS} Versuchen keine "
-                f"brauchbare Auswahl: {problem}"
+                f"regelkonforme Auswahl: {problem}"
             )
 
     rejected = list(answer.rejected) + [
@@ -1436,13 +1525,18 @@ def test_the_architect_returns_the_order_it_chose(profile: Profile) -> None:
 def test_a_harmonic_break_is_re_asked_with_the_specific_pair(
     profile: Profile,
 ) -> None:
+    # 9B ist mit 8A nicht vertraeglich, mit 8B aber schon. Genau das macht den
+    # Test loesbar: die erste Reihenfolge bricht, die zweite haelt. Eine Tonart
+    # zu waehlen, die mit beiden anderen unvertraeglich ist, machte den Test
+    # unerfuellbar - dann scheiterte er auch bei korrektem Code.
     tracks = [
         make_analysis("a", camelot="8A", energy=0.3),
-        make_analysis("b", camelot="2B", energy=0.5),
+        make_analysis("b", camelot="9B", energy=0.5),
         make_analysis("c", camelot="8B", energy=0.7),
     ]
     ids = ["a", "b", "c"]
-    assert not is_compatible("8A", "2B", "strict")
+    assert not is_compatible("8A", "9B", "strict")
+    assert is_compatible("8B", "9B", "strict")
     client = FakeClient([_answer(ids), _answer(["a", "c", "b"])])
 
     setlist = arrange(client, _shortlist(ids), tracks, profile, _budget())
@@ -1519,7 +1613,12 @@ niemand. Das ist kein Testfall.
 
 from pydantic import BaseModel, Field
 
-from djset.agents.base import AgentClient, Budget, run_agent
+from djset.agents.base import (
+    AgentClient,
+    Budget,
+    StageRulesViolated,
+    run_agent,
+)
 from djset.camelot import is_compatible
 from djset.contracts import Profile, Setlist, Shortlist, TrackAnalysis
 
@@ -1647,6 +1746,17 @@ def arrange(
             break
         current = f"{prompt}\n\nDein letzter Versuch war unbrauchbar: {problem}"
         answer = run_agent(client, current, ArchitectAnswer, budget, retries=1)
+    else:
+        # Nach der letzten Runde nicht stillschweigend durchwinken: eine
+        # harmonisch gebrochene Reihenfolge flösse sonst bis in den Renderer,
+        # und dort faellt sie niemandem mehr auf - der Mixplan waere
+        # schemagueltig und trotzdem unbrauchbar.
+        problem = _check(answer.order, accepted, by_id, profile)
+        if problem is not None:
+            raise StageRulesViolated(
+                f"Der Architect lieferte nach {MAX_ROUNDS} Versuchen keine "
+                f"regelkonforme Reihenfolge: {problem}"
+            )
 
     return Setlist(order=answer.order, note=answer.note)
 ```
@@ -1677,7 +1787,7 @@ Stufe 6. Das Modell wählt pro Übergang nur Technik und Taktzahl; Cue-Punkte, S
 - Test: `tests/agents/test_designer.py`
 
 **Interfaces:**
-- Consumes: `djset.agents.base.run_agent`, `djset.contracts.Setlist`, `djset.contracts.TrackAnalysis`, `djset.contracts.MixPlan`, `djset.contracts.MixEntry`, `djset.contracts.Transition`, `djset.contracts.EqCurve`, `djset.contracts.EqPoint`, `djset.dsp.analyze.BEATS_PER_BAR`
+- Consumes: `djset.agents.base.run_agent`, `djset.agents.base.StageRulesViolated`, `djset.contracts.Setlist`, `djset.contracts.TrackAnalysis`, `djset.contracts.MixPlan`, `djset.contracts.MixEntry`, `djset.contracts.Transition`, `djset.contracts.EqCurve`, `djset.contracts.EqPoint`, `djset.contracts.BeatGrid`
 - Produces: `design(client, setlist, analyses, profile, budget) -> MixPlan`, `build_mixplan(setlist, analyses, choices, profile) -> MixPlan`, `TransitionChoice`, `snap_to_downbeat(time_s, grid) -> float`, `MIN_RATIO: float`, `MAX_RATIO: float`
 
 **Zeitrechnung — das Modell dieser Stufe:**
@@ -1819,8 +1929,14 @@ Ausgabedauer eines Abschnitts also Quelldauer geteilt durch das Verhaeltnis.
 
 from pydantic import BaseModel, Field
 
-from djset.agents.base import AgentClient, Budget, run_agent
+from djset.agents.base import (
+    AgentClient,
+    Budget,
+    StageRulesViolated,
+    run_agent,
+)
 from djset.contracts import (
+    BeatGrid,
     EqCurve,
     EqPoint,
     MixEntry,
@@ -1831,7 +1947,6 @@ from djset.contracts import (
     TrackAnalysis,
     Transition,
 )
-from djset.dsp.analyze import BEATS_PER_BAR
 
 MAX_ROUNDS = 3
 
@@ -1867,13 +1982,15 @@ Woran du dich orientierst:
 - Zwei ruhige Tracks nebeneinander wollen einen langen, weichen Blend.
 - Ein eq_swap taugt, wenn beide Tracks eine tragende Bassline haben.
 - Ein filter_sweep ueberbrueckt einen Wechsel der Klangfarbe.
-- Steht bei einem Uebergang "Stretch nicht moeglich", muss die Technik cut
-  sein: die Tempi liegen zu weit auseinander, um sie anzugleichen.
+- Steht bei einem Uebergang "Tempi nicht angleichbar", wird er vom Code
+  automatisch zu einem Schnitt gemacht - die Tempi liegen zu weit auseinander,
+  um sie anzugleichen. Deine Technikwahl wird dort verworfen; waehle trotzdem
+  eine aus der erlaubten Liste.
 
 Antworte ausschliesslich mit dem geforderten JSON."""
 
 
-def snap_to_downbeat(time_s: float, grid) -> float:
+def snap_to_downbeat(time_s: float, grid: BeatGrid) -> float:
     """Die naechstgelegene Taktgrenze zu einem Zeitpunkt."""
     if time_s <= grid.first_downbeat_s:
         return grid.first_downbeat_s
@@ -2084,6 +2201,17 @@ def design(
             break
         current = f"{prompt}\n\nDein letzter Versuch war unbrauchbar: {problem}"
         answer = run_agent(client, current, DesignerAnswer, budget, retries=1)
+    else:
+        # Nicht stillschweigend durchwinken: eine Technik, die das Profil gar
+        # nicht erlaubt, oder eine Taktzahl ausserhalb des Korridors kaeme sonst
+        # bis in den Renderer - der Mixplan waere schemagueltig und trotzdem
+        # nicht das, was das Profil verlangt.
+        problem = _check(answer, wanted, profile)
+        if problem is not None:
+            raise StageRulesViolated(
+                f"Der Transition-Designer lieferte nach {MAX_ROUNDS} Versuchen "
+                f"keine regelkonformen Uebergaenge: {problem}"
+            )
 
     return build_mixplan(setlist, analyses, answer.choices, profile)
 ```
@@ -2138,8 +2266,15 @@ def _plan(tracks, profile, bars: int = 16):
 def test_a_sound_plan_passes(profile: Profile) -> None:
     tracks = many(13)
     plan = _plan(tracks, profile)
+    # Das Profil bekommt die Laenge, die der Plan tatsaechlich hat. Dreizehn
+    # Fixture-Tracks summieren sich nicht zufaellig auf 60 Minuten, und ein
+    # Test, der die Fixtures auf eine Wunschzahl frisiert, prueft nicht mehr die
+    # Arithmetik des Critics, sondern nur noch die Frisur.
+    fitting = Profile.model_validate(
+        profile.model_dump() | {"length_minutes": plan.target_length_s / 60.0}
+    )
 
-    verdict = critique(plan, tracks, profile)
+    verdict = critique(plan, tracks, fitting)
 
     assert verdict.ok is True
     assert verdict.complaints == []
@@ -2373,7 +2508,7 @@ def _prepared(tmp_path: Path, profile: Profile, count: int) -> Run:
     watch = tmp_path / "watch"
     watch.mkdir(exist_ok=True)
     for index in range(count):
-        click_track(watch / f"t{index}.wav", bpm=174.0, seconds=12.0)
+        click_track(watch / f"t{index}.wav", bpm=174.0, bars=14)
     return run
 
 
@@ -2405,10 +2540,22 @@ def test_a_full_build_writes_every_artefact(
     tmp_path: Path, profile: Profile
 ) -> None:
     run = _prepared(tmp_path, profile, 4)
-    analyst = json.dumps(
-        {"usable": True, "notes": "Passt.", "energy_level": 0.5,
-         "remeasure_with_bpm": None}
-    )
+
+    # Gestaffelte Energie, und das ist kein Zufall: die vier Fixture-Tracks sind
+    # identische Clicktracks, haben also dieselbe Tonart und dasselbe Tempo.
+    # Bekaemen sie auch noch denselben Energiepegel, traefen alle drei
+    # Bedingungen der Aehnlichkeitsregel zusammen und der Architect wiese jede
+    # Reihenfolge zurueck. Ein Abstand von 0,2 je Nachbarpaar reicht.
+    def analyst(energy: float) -> str:
+        return json.dumps(
+            {
+                "usable": True,
+                "notes": "Passt.",
+                "energy_level": energy,
+                "remeasure_with_bpm": None,
+            }
+        )
+
     curator = json.dumps(
         {"accepted": ["t0", "t1", "t2", "t3"], "rejected": [], "note": "Alles gut."}
     )
@@ -2416,7 +2563,14 @@ def test_a_full_build_writes_every_artefact(
     designer = json.dumps(
         {"choices": [{"technique": "blend", "bars": 16} for _ in range(3)]}
     )
-    client = FakeClient([analyst] * 4 + [curator, architect, designer])
+    # Drei Runden Architect und Designer: die kurzen Fixture-Tracks verfehlen die
+    # Ziellaenge zwangslaeufig, also laeuft die Critic-Schleife voll durch und
+    # der Lauf nimmt am Ende den besten Plan.
+    client = FakeClient(
+        [analyst(0.3), analyst(0.5), analyst(0.7), analyst(0.9)]
+        + [curator]
+        + [architect, designer] * 3
+    )
 
     code = cmd_build(tmp_path, run.run_id, client, _budget())
 
