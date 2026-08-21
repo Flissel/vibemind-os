@@ -1,7 +1,9 @@
 import json
 
+import pytest
+
 from djset.agents.architect import arrange
-from djset.agents.base import Budget
+from djset.agents.base import Budget, StageRulesViolated
 from djset.camelot import is_compatible
 from djset.contracts import Profile, Shortlist
 from tests.fixtures.analyses import make_analysis, many
@@ -91,3 +93,43 @@ def test_critic_complaints_reach_the_prompt(profile: Profile) -> None:
     )
 
     assert "Energiekurve faellt in der Mitte ab" in client.prompts[0]
+
+
+def test_a_harmonic_break_after_every_round_raises(profile: Profile) -> None:
+    """Ruling R4: der Architect ist das Einzige zwischen einer harmonisch
+    gebrochenen Setlist und dem Renderer.
+
+    Ein schemagueltiger, aber harmonisch kaputter Mixplan faellt weiter unten
+    niemandem mehr auf - der Critic prueft Tonarten nicht, das ist die Aufgabe
+    dieser Stufe.
+    """
+    tracks = [
+        make_analysis("a", camelot="8A", energy=0.3),
+        make_analysis("b", camelot="9B", energy=0.5),
+        make_analysis("c", camelot="8B", energy=0.7),
+    ]
+    ids = ["a", "b", "c"]
+    assert not is_compatible("8A", "9B", "strict")
+    bad = _answer(ids)
+    client = FakeClient([bad, bad, bad])
+
+    with pytest.raises(StageRulesViolated) as caught:
+        arrange(client, _shortlist(ids), tracks, profile, _budget())
+
+    assert client.calls == 3
+    assert "8A" in str(caught.value) and "9B" in str(caught.value)
+
+
+def test_a_missing_track_after_every_round_raises(profile: Profile) -> None:
+    """Eine Reihenfolge, die einen Track der Shortlist unterschlaegt, kuerzt
+    das Set stillschweigend - und niemand haette dafuer eine Begruendung."""
+    tracks = many(5)
+    ids = [t.id for t in tracks]
+    bad = _answer(ids[:4])
+    client = FakeClient([bad, bad, bad])
+
+    with pytest.raises(StageRulesViolated) as caught:
+        arrange(client, _shortlist(ids), tracks, profile, _budget())
+
+    assert client.calls == 3
+    assert ids[4] in str(caught.value)

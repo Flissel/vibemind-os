@@ -31,14 +31,28 @@ def scan(watch_dir: Path) -> list[AudioFile]:
     zweiter Lauf ueber denselben Ordner dieselben Artefaktnamen erzeugt - das
     ist die Voraussetzung dafuer, dass build --resume vorhandene Analysen
     wiedererkennt.
+
+    Die Sortierung laeuft ueber casefold und erst danach ueber den rohen Namen,
+    nicht ueber den Pfad. `sorted()` auf Path vergleicht zeichenweise und ist
+    damit auf POSIX gross-/kleinschreibungsempfindlich, unter Windows nicht -
+    und genau diese Reihenfolge speist den Kollisionszaehler unten. Bei
+    "Morning Glass.wav" neben "morning glass.mp3" vergaeben die beiden
+    Plattformen morning-glass und morning-glass-2 an jeweils die andere Datei,
+    ein zwischen Maschinen getragener Run-Ordner haenge also jede
+    zwischengespeicherte Analyse an den falschen Track. Der rohe Name als
+    zweites Kriterium haelt die Ordnung stabil, wo casefold zwei Namen
+    gleichsetzt.
     """
     if not watch_dir.is_dir():
         return []
 
     found = sorted(
-        path
-        for path in watch_dir.iterdir()
-        if path.is_file() and path.suffix.lower() in AUDIO_SUFFIXES
+        (
+            path
+            for path in watch_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in AUDIO_SUFFIXES
+        ),
+        key=lambda path: (path.name.casefold(), path.name),
     )
 
     files: list[AudioFile] = []

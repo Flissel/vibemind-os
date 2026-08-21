@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from djset.agents.base import Budget
+from djset.agents.base import Budget, StageRulesViolated
 from djset.agents.curator import NotEnoughTracks, curate
 from djset.contracts import MIN_TRACKS, Profile, UnreadableTrack
 from tests.fixtures.analyses import many
@@ -189,3 +189,35 @@ def test_the_models_note_survives_the_shortened_append(profile: Profile) -> None
 
     assert shortlist.note.startswith("Individuelle Urteilsbegruendung.")
     assert "gekuerzt" in shortlist.note
+
+
+def test_an_invented_id_after_every_round_raises(profile: Profile) -> None:
+    """Ruling R4 gilt auch hier: nach der letzten Runde nicht durchwinken.
+
+    Eine erfundene track_id ist keine Geschmacksfrage - der Architect wuerde
+    sie in die Reihenfolge nehmen und der Designer bei by_id[...] mit einem
+    KeyError abstuerzen, mitten in einem unbeaufsichtigten Lauf.
+    """
+    tracks = many(13)
+    ids = [t.id for t in tracks]
+    bad = _answer(ids[:12] + ["gibtsnicht"], [(ids[12], "zu kurz")])
+    client = FakeClient([bad, bad, bad])
+
+    with pytest.raises(StageRulesViolated) as caught:
+        curate(client, tracks, [], profile, _budget())
+
+    assert client.calls == 3
+    assert "gibtsnicht" in str(caught.value)
+
+
+def test_too_many_accepted_after_every_round_raises(profile: Profile) -> None:
+    """Mehr Tracks anzunehmen als gebraucht sprengt die Ziellaenge."""
+    tracks = many(20)
+    ids = [t.id for t in tracks]
+    bad = _answer(ids, [])
+    client = FakeClient([bad, bad, bad])
+
+    with pytest.raises(StageRulesViolated):
+        curate(client, tracks, [], profile, _budget())
+
+    assert client.calls == 3

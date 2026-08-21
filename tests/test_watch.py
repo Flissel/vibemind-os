@@ -42,6 +42,32 @@ def test_scan_keeps_colliding_ids_apart(tmp_path: Path) -> None:
     assert sorted(f.id for f in scan(tmp_path)) == ["morning-glass", "morning-glass-2"]
 
 
+def test_scan_binds_colliding_ids_to_the_same_file_on_every_platform(
+    tmp_path: Path,
+) -> None:
+    """Nicht nur DASS die IDs auseinandergehalten werden, sondern WELCHE zu
+    welcher Datei gehoert.
+
+    sorted() auf Path vergleicht zeichenweise: unter POSIX steht "Morning
+    Glass.wav" damit vor "morning glass.mp3" (Grossbuchstaben zuerst), unter
+    Windows nicht. Diese Reihenfolge speist den Kollisionszaehler, also
+    vergaeben die beiden Plattformen morning-glass und morning-glass-2 an
+    jeweils die andere Datei - und ein zwischen Maschinen getragener
+    Run-Ordner haengt jede zwischengespeicherte Analyse an den falschen Track.
+    """
+    _touch(tmp_path, "Morning Glass.wav")
+    _touch(tmp_path, "morning glass.mp3")
+
+    binding = {f.path.name: f.id for f in scan(tmp_path)}
+
+    # casefold macht beide Namen gleich, danach entscheidet der rohe Name:
+    # ".mp3" vor ".wav". Das ist auf jeder Plattform dieselbe Antwort.
+    assert binding == {
+        "morning glass.mp3": "morning-glass",
+        "Morning Glass.wav": "morning-glass-2",
+    }
+
+
 def test_scan_of_a_missing_folder_is_empty_not_an_error(tmp_path: Path) -> None:
     assert scan(tmp_path / "gibtsnicht") == []
 
