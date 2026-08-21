@@ -232,6 +232,25 @@ class Shortlist(BaseModel):
     note: str
 
 
+class Setlist(BaseModel):
+    """Die Reihenfolge, in der die Tracks laufen.
+
+    Eigenes Artefakt, obwohl die Spec es nicht auflistet: der Critic schickt
+    Beanstandungen an diese Stufe zurueck, und Erfolgskriterium 7 verlangt, dass
+    jede Beanstandung in den Artefakten nachvollziehbar ist. Ohne die Setlist auf
+    der Platte waere nicht zu sehen, was der Critic eigentlich bemaengelt hat.
+    """
+
+    order: list[str] = Field(min_length=MIN_TRACKS)
+    note: str
+
+    @model_validator(mode="after")
+    def _no_track_twice(self) -> "Setlist":
+        if len(set(self.order)) != len(self.order):
+            raise ValueError("jede track_id darf nur einmal in der Setlist vorkommen")
+        return self
+
+
 class MixEntry(BaseModel):
     track_id: str = Field(min_length=1)
     play_from_s: float = Field(ge=0)
