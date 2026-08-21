@@ -52,6 +52,17 @@ def test_plan_rejects_a_non_positive_length(tmp_path: Path, capsys):
     assert Run.latest_unfinished(tmp_path) is None
 
 
+# Ruling 13: ein leeres "--genre" muss cmd_plan ebenso abfangen wie eine
+# nicht-positive "--length" - gleiche Fehlerklasse, gleiche Form der Pruefung.
+def test_plan_rejects_an_empty_genre(tmp_path: Path, capsys):
+    code = cmd_plan(
+        base=tmp_path, genre="", length_minutes=60.0, client=FakeClient([])
+    )
+    assert code != 0
+    assert "Fehler" in capsys.readouterr().err
+    assert Run.latest_unfinished(tmp_path) is None
+
+
 # Ruling 13: eine Schemaverletzung, die auch nach allen Wiederholungen nicht
 # behoben wird, muss als lesbare Meldung mit Exit-Code enden statt als
 # Traceback.

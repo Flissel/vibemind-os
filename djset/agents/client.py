@@ -1,12 +1,18 @@
 """Der echte Agent-Client. Wird nirgends im Test benutzt.
 
-Ruling 3: die installierte claude_agent_sdk (0.2.143) weicht von der
-urspruenglich skizzierten Form ab. `query` ist eine asynchrone
-Generatorfunktion, keine synchrone - deshalb treibt `complete` sie ueber
-`asyncio.run` an, um das synchrone `AgentClient`-Protokoll zu erfuellen.
-`options` ist ausserdem ein `ClaudeAgentOptions`-Dataclass, kein einfaches
-dict, und Nachrichtentext steckt nicht in einem `.text`-Attribut der Message
-selbst, sondern in einzelnen `TextBlock`-Elementen von `AssistantMessage.content`.
+Ruling 3: die installierte claude_agent_sdk (0.2.143) weicht in der API-
+Oberflaeche von der urspruenglich skizzierten Form ab. `query` ist eine
+asynchrone Generatorfunktion, keine synchrone - deshalb treibt `complete`
+sie ueber `asyncio.run` an, um das synchrone `AgentClient`-Protokoll zu
+erfuellen. `options` ist ausserdem ein `ClaudeAgentOptions`-Dataclass, kein
+einfaches dict, und Nachrichtentext steckt nicht in einem `.text`-Attribut
+der Message selbst, sondern in einzelnen `TextBlock`-Elementen von
+`AssistantMessage.content`. Diese drei Punkte sind SDK-Fakten und wurden
+entsprechend angepasst.
+
+Der Modellname ist dagegen keine SDK-Frage, sondern eine Projektentscheidung
+des Briefs - er bleibt exakt wie vorgegeben, auch wenn ein Beispiel in der
+SDK-Docstring einen aelteren Namen zeigt.
 """
 
 import asyncio
@@ -14,9 +20,7 @@ import json
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, TextBlock, query
 
-# Modellname gemaess den Beispielen in ClaudeAgentOptions.model der
-# installierten SDK-Version - nicht "claude-opus-5" wie urspruenglich skizziert.
-MODEL = "claude-opus-4-5"
+MODEL = "claude-opus-5"
 
 
 class ClaudeClient:
