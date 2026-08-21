@@ -141,11 +141,14 @@ def detect_bpm_and_grid(
         raise ValueError(f"keine Beats erkennbar in {path}")
     beat_times = _drop_unsupported_edge_beats(beat_times, signal, sr)
 
-    # Konfidenz: wie gleichmaessig die Beatabstaende sind. Ein sauberer
-    # Viervierteltakt liefert nahezu konstante Abstaende.
+    # Regelmaessigkeit: wie gleichmaessig die Beatabstaende sind. Ein sauberer
+    # Viervierteltakt liefert nahezu konstante Abstaende. Das ist eine Aussage
+    # ueber die Qualitaet des Rasters, NICHT ueber die Tempo-Oktave - eine
+    # saubere Halftime-Lesung schneidet hier bestens ab. Siehe die
+    # Docstrings von Bpm und BeatGrid in djset.contracts.
     intervals = np.diff(beat_times)
     if intervals.size == 0:
-        confidence = 0.0
+        regularity = 0.0
         tempo_value = raw_tempo_value
     else:
         # Die initiale Tempo-Schaetzung ist auf ganzzahlige Vielfache von
@@ -155,11 +158,21 @@ def detect_bpm_and_grid(
         # diese Quantisierung ueber das ganze Stueck heraus und ist praeziser.
         tempo_value = 60.0 / float(np.mean(intervals))
         spread = float(np.std(intervals) / np.mean(intervals))
-        confidence = float(max(0.0, min(1.0, 1.0 - spread * 4.0)))
+        regularity = float(max(0.0, min(1.0, 1.0 - spread * 4.0)))
 
     bar_length = BEATS_PER_BAR * 60.0 / tempo_value
-    grid = BeatGrid(first_downbeat_s=float(beat_times[0]), bar_length_s=bar_length)
-    return Bpm(value=tempo_value, confidence=confidence), grid
+    grid = BeatGrid(
+        first_downbeat_s=float(beat_times[0]),
+        bar_length_s=bar_length,
+        confidence=regularity,
+    )
+    # Bpm.confidence bekommt denselben Wert. Das DSP-Modul kann aus dem, was
+    # librosa liefert, keine ehrliche Aussage ueber die Tempo-Oktave ableiten
+    # (die Oktave waehlt der Beat-Tracker ueber seinen start_bpm-Prior, nicht
+    # ueber ein Mass, das wir hier auslesen koennten). Ein erfundener
+    # Zweitwert waere schlimmer als ein benannter gleicher - der Vertrag sagt
+    # deshalb ausdruecklich, was dieses Feld bedeutet und was nicht.
+    return Bpm(value=tempo_value, confidence=regularity), grid
 
 
 # Krumhansl-Schmuckler-Profile: wie stark jede Tonstufe in Dur bzw. Moll wiegt.
@@ -252,11 +265,21 @@ def find_mix_regions(
     return MixRegions(intro_end_s=intro_end, outro_start_s=outro_start)
 
 
+# Bodenwert fuer Pegelangaben in dB. Digitale Stille waere rechnerisch -inf;
+# -inf ist aber kein gueltiger JSON-Zahlenwert und faellt beim Roundtrip
+# durch das Loudness-Schema (siehe djset.contracts.Loudness).
+_LEVEL_FLOOR_DB = -120.0
+
+
 def measure_loudness(path: Path) -> Loudness:
     """Integrierte Lautheit nach EBU R128 und True Peak."""
     signal, sr = sf.read(str(path))
     meter = pyloudnorm.Meter(sr)
-    lufs = float(meter.integrated_loudness(signal))
+    # pyloudnorm liefert fuer digitale Stille -inf. -inf ueberlebt den
+    # JSON-Roundtrip nicht (dump schreibt null, validate lehnt null ab) und
+    # wuerde damit `build --resume` an einem einzigen stillen Track
+    # zerreissen. Bodenwert wie beim True Peak: -120 dB.
+    lufs = max(_LEVEL_FLOOR_DB, float(meter.integrated_loudness(signal)))
 
     mono = signal if signal.ndim == 1 else np.mean(signal, axis=1)
     # True Peak naeherungsweise ueber vierfaches Oversampling
@@ -264,7 +287,7 @@ def measure_loudness(path: Path) -> Loudness:
         mono.astype(np.float32), orig_sr=sr, target_sr=sr * 4
     )
     peak = float(np.max(np.abs(upsampled)))
-    true_peak = 20.0 * np.log10(peak) if peak > 0 else -120.0
+    true_peak = 20.0 * np.log10(peak) if peak > 0 else _LEVEL_FLOOR_DB
     return Loudness(lufs_integrated=lufs, true_peak=float(true_peak))
 
 

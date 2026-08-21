@@ -85,13 +85,39 @@ class Profile(BaseModel):
 
 
 class Bpm(BaseModel):
+    """Tempo in BPM.
+
+    ACHTUNG zur Konfidenz: `confidence` sagt NICHTS ueber die Tempo-Oktave.
+    Sie misst, wie gleichmaessig die erkannten Beatabstaende sind - also die
+    Qualitaet des Rasters, nicht die Sicherheit des Tempos. Eine saubere
+    Halftime-Lesung (87 statt 174) hat perfekt gleichmaessige Abstaende und
+    bekommt deshalb eine Konfidenz nahe 1.0; siehe den Regressionstest
+    tests/dsp/test_bpm.py::test_halftime_reading_still_scores_high_confidence.
+    Die Oktavenfrage (Spec Abschnitt 7: "BPM halb oder doppelt erkannt")
+    darf der Track-Analyst deshalb nicht an diesem Feld entscheiden, sondern
+    nur am BPM-Korridor des Profils (djset.dsp.analyze.snap_to_range).
+
+    Der Wert ist derselbe wie `BeatGrid.confidence` - bewusst, weil das
+    DSP-Modul nichts Ehrlicheres ueber die Tempo-Sicherheit weiss und ein
+    erfundener Zweitwert schlimmer waere als ein benannter gleicher.
+    """
+
     value: float = Field(gt=0)
     confidence: float = Field(ge=0.0, le=1.0)
 
 
 class BeatGrid(BaseModel):
+    """Taktraster.
+
+    `confidence` ist die Regelmaessigkeit der Beatabstaende: 1.0 bei exakt
+    konstantem Abstand, 0.0 bei voelliger Streuung. Damit kann die
+    Agentenschicht ein wackliges Raster erkennen (z. B. Live-Material oder
+    ein Track ohne durchgehenden Beat), bevor sie Cue-Punkte darauf setzt.
+    """
+
     first_downbeat_s: float = Field(ge=0)
     bar_length_s: float = Field(gt=0)
+    confidence: float = Field(ge=0.0, le=1.0)
 
 
 class Key(BaseModel):
@@ -111,8 +137,19 @@ class MixRegions(BaseModel):
 
 
 class Loudness(BaseModel):
-    lufs_integrated: float
-    true_peak: float
+    """Lautheit in dB-Groessen.
+
+    allow_inf_nan=False auf beiden Feldern: pyloudnorm liefert fuer digitale
+    Stille -inf, und -inf ueberlebt den eigenen JSON-Roundtrip nicht -
+    model_dump_json() schreibt `null`, model_validate_json() lehnt das ab.
+    Genau dieser Pfad ist `build --resume`. Ein stiller Track darf einen Lauf
+    nicht sprengen (Spec Abschnitt 7: kaputte Einzeldatei -> Lauf laeuft
+    weiter), deshalb liefert measure_loudness statt -inf den Bodenwert
+    -120.0 dB - genau wie true_peak es schon immer getan hat.
+    """
+
+    lufs_integrated: float = Field(allow_inf_nan=False)
+    true_peak: float = Field(allow_inf_nan=False)
 
 
 class Verdict(BaseModel):
@@ -147,7 +184,7 @@ class TrackAnalysis(TrackMeasurements):
 
 
 class Rejection(BaseModel):
-    track_id: str
+    track_id: str = Field(min_length=1)
     reason: str = Field(min_length=1)
 
 
@@ -205,4 +242,35 @@ class MixPlan(BaseModel):
             raise ValueError(
                 "zwischen je zwei Tracks muss es genau einen Uebergang geben"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _track_ids_unique(self) -> "MixPlan":
+        ids = [entry.track_id for entry in self.entries]
+        if len(set(ids)) != len(ids):
+            raise ValueError("jede track_id darf nur einmal in entries vorkommen")
+        return self
+
+    @model_validator(mode="after")
+    def _transitions_match_their_neighbours(self) -> "MixPlan":
+        """Jeder Uebergang muss genau das Paar verbinden, an dem er steht.
+
+        Der Renderer trifft laut Spec keine eigenen Entscheidungen mehr; er
+        muss sich darauf verlassen koennen, dass transitions[i] die Tracks
+        entries[i] und entries[i+1] meint. Ohne diese Pruefung waere ein
+        Mixplan mit vertauschten oder erfundenen Track-IDs schemagueltig.
+        """
+        for index, transition in enumerate(self.transitions):
+            expected_from = self.entries[index].track_id
+            expected_to = self.entries[index + 1].track_id
+            if transition.from_track != expected_from:
+                raise ValueError(
+                    f"transitions[{index}].from_track ist {transition.from_track!r}, "
+                    f"erwartet war {expected_from!r}"
+                )
+            if transition.to_track != expected_to:
+                raise ValueError(
+                    f"transitions[{index}].to_track ist {transition.to_track!r}, "
+                    f"erwartet war {expected_to!r}"
+                )
         return self

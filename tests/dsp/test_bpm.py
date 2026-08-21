@@ -12,6 +12,7 @@ from tests.fixtures.make_audio import (
     click_track,
     click_track_with_lead_in,
     click_track_with_quiet_first_beat,
+    click_track_with_weak_offbeats,
 )
 
 
@@ -213,3 +214,39 @@ def test_drop_unsupported_edge_beats_keeps_quiet_but_real_edges():
     cleaned = _drop_unsupported_edge_beats(beat_times, signal, sr)
 
     assert list(cleaned) == [0.1, 1.0, 1.9]
+
+
+def test_grid_confidence_is_high_for_a_clean_click_track(tmp_path: Path):
+    """BeatGrid.confidence ist die Regelmaessigkeit der Beatabstaende."""
+    audio = click_track(tmp_path / "click.wav", bpm=128.0, bars=16)
+    _bpm, grid = detect_bpm_and_grid(audio)
+    assert grid.confidence > 0.8
+
+
+def test_halftime_reading_still_scores_high_confidence(tmp_path: Path):
+    """Haelt fest, was Bpm.confidence NICHT bedeutet.
+
+    Material mit schwachen Offbeats wird von librosa in der halben
+    Tempo-Oktave gelesen (87 statt 174) - mit perfekt gleichmaessigen
+    Abstaenden und damit hoher Konfidenz. Das ist genau der Fall, den der
+    Spec in Abschnitt 7 als "BPM halb oder doppelt erkannt" nennt.
+
+    Der Test ist Absicht, kein Bug-Beweis: er pinnt die im Vertrag
+    dokumentierte Bedeutung des Feldes (Rasterqualitaet, nicht
+    Oktavensicherheit), damit Plan 2 die Oktavenfrage nicht an dieser Zahl
+    entscheidet, sondern am BPM-Korridor des Profils (snap_to_range).
+    """
+    audio = click_track_with_weak_offbeats(
+        tmp_path / "halftime.wav", bpm=174.0, bars=16, offbeat_db=-26.0
+    )
+    bpm, grid = detect_bpm_and_grid(audio)
+
+    assert abs(bpm.value - 87.0) < 2.0, "Fixture liest nicht halftime"
+    assert bpm.confidence > 0.8
+    assert grid.confidence == bpm.confidence
+
+    # Und so kommt der Wert wieder in die richtige Oktave: ueber den
+    # Korridor aus dem Profil, nicht ueber die Konfidenz.
+    corrected, was_corrected = snap_to_range(bpm.value, 170.0, 178.0)
+    assert was_corrected is True
+    assert abs(corrected - 174.0) < 4.0

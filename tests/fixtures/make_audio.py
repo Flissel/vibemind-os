@@ -108,3 +108,62 @@ def chord_tone(
     signal /= np.max(np.abs(signal))
     sf.write(path, signal * 0.8, sr)
     return path
+
+
+def click_track_with_weak_offbeats(
+    path: Path, bpm: float, bars: int, offbeat_db: float = -26.0, sr: int = SR
+) -> Path:
+    """Clicktrack, bei dem jeder zweite Beat stark abgeschwaecht ist.
+
+    So klingt Halftime-Material: der Puls liegt hoerbar auf der Haelfte des
+    tatsaechlichen Tempos. librosa liest hier dann auch bpm/2 - bei perfekt
+    gleichmaessigen Abstaenden und damit hoher Konfidenz. Genau das pinnt
+    tests/dsp/test_bpm.py::test_halftime_reading_still_scores_high_confidence.
+    """
+    beat_seconds = 60.0 / bpm
+    beats = bars * 4
+    total = int(np.ceil(beats * beat_seconds * sr)) + sr
+    signal = np.zeros(total, dtype=np.float32)
+
+    click_len = int(0.01 * sr)
+    envelope = np.exp(-np.linspace(0.0, 12.0, click_len)).astype(np.float32)
+    tone = np.sin(2 * np.pi * 1200.0 * np.arange(click_len) / sr).astype(np.float32)
+    click = envelope * tone
+
+    quiet_gain = 10.0 ** (offbeat_db / 20.0)
+    for beat in range(beats):
+        start = int(beat * beat_seconds * sr)
+        gain = 1.0 if beat % 2 == 0 else quiet_gain
+        signal[start:start + click_len] += click * gain
+
+    sf.write(path, signal, sr)
+    return path
+
+
+def near_silent_click_track(
+    path: Path, bpm: float, bars: int, peak_db: float = -60.0, sr: int = SR
+) -> Path:
+    """Clicktrack knapp ueber der Nulllinie - fuer pyloudnorm digitale Stille.
+
+    Unterhalb des absoluten Gates von -70 LUFS liefert pyloudnorm -inf. Genau
+    dieser Wert ueberlebt den JSON-Roundtrip nicht, siehe
+    tests/dsp/test_measurements.py::test_near_silent_track_survives_the_run_roundtrip.
+    Anders als eine komplett stille Datei hat dieses Material noch Onsets,
+    laeuft also durch die volle measure_track-Kette.
+    """
+    beat_seconds = 60.0 / bpm
+    beats = bars * 4
+    total = int(np.ceil(beats * beat_seconds * sr)) + sr
+    signal = np.zeros(total, dtype=np.float32)
+
+    click_len = int(0.01 * sr)
+    envelope = np.exp(-np.linspace(0.0, 12.0, click_len)).astype(np.float32)
+    tone = np.sin(2 * np.pi * 1200.0 * np.arange(click_len) / sr).astype(np.float32)
+    click = envelope * tone * (10.0 ** (peak_db / 20.0))
+
+    for beat in range(beats):
+        start = int(beat * beat_seconds * sr)
+        signal[start:start + click_len] += click * (1.0 if beat % 4 == 0 else 0.5)
+
+    sf.write(path, signal, sr)
+    return path
