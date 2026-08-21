@@ -11,7 +11,10 @@ from pydantic import BaseModel, Field, model_validator
 Technique = Literal["blend", "eq_swap", "filter_sweep", "cut", "double_drop"]
 Strictness = Literal["strict", "loose"]
 
-CAMELOT_RE = r"^(1[0-2]|[1-9])[AB]$"
+# Eine Camelot-Notation: Zahl 1..12 plus A (Moll) oder B (Dur). Beide
+# Bestandteile sind Gruppen, damit djset.camelot dasselbe Muster benutzen
+# kann statt ein zweites danebenzustellen - zwei Muster driften.
+CAMELOT_RE = r"^(1[0-2]|[1-9])([AB])$"
 
 # Untergrenze aus dem Spec: darunter waere es kein Set. Steht hier, damit sie
 # an genau einer Stelle definiert ist und im Typ erzwungen wird.

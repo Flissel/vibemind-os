@@ -6,9 +6,17 @@ Gleiche Zahl bei unterschiedlichem Buchstaben ist die Paralleltonart.
 
 import re
 
-from djset.contracts import Strictness
+from djset.contracts import CAMELOT_RE, Strictness
 
-_PATTERN = re.compile(r"^(1[0-2]|[1-9])([AB])$")
+# Dasselbe Muster wie im Vertrag, nicht ein zweites daneben: ein eigenes
+# Muster driftet unbemerkt. Es war bereits so weit, dass parse("8A\n") ein
+# Ergebnis lieferte, waehrend Key(camelot="8A\n") ablehnte.
+#
+# fullmatch statt match: Pythons re laesst `$` auch vor einem abschliessenden
+# Zeilenumbruch greifen, die Rust-Engine hinter pydantic nicht. fullmatch
+# verlangt, dass die ganze Zeichenkette aufgeht, und schliesst genau diese
+# Luecke. Der Regressionstest dazu steht in tests/test_camelot.py.
+_PATTERN = re.compile(CAMELOT_RE)
 _WHEEL_SIZE = 12
 
 
@@ -17,7 +25,7 @@ class InvalidCamelot(ValueError):
 
 
 def parse(camelot: str) -> tuple[int, str]:
-    match = _PATTERN.match(camelot)
+    match = _PATTERN.fullmatch(camelot)
     if match is None:
         raise InvalidCamelot(f"keine gueltige Camelot-Notation: {camelot!r}")
     return int(match.group(1)), match.group(2)
