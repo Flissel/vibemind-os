@@ -12,7 +12,7 @@ from djset.agents.designer import design
 from djset.agents.profiler import build_profile
 from djset.agents.prompt_writer import render_markdown, write_prompts
 from djset.analysis import analyse_all
-from djset.contracts import MixPlan, Profile, Setlist
+from djset.contracts import CritiqueLog, CritiqueRound, MixPlan, Profile, Setlist
 from djset.critic import Critique, critique
 from djset.run import Run, RunNotFound
 from djset.watch import NotEnoughMaterial, check_enough, scan
@@ -135,18 +135,29 @@ def cmd_build(
         best: MixPlan | None = None
         best_setlist: Setlist | None = None
         best_verdict: Critique | None = None
+        best_round = 0
+        rounds: list[CritiqueRound] = []
         complaints: tuple[str, ...] = ()
 
-        for _round in range(CRITIC_ROUNDS + 1):
+        for number in range(1, CRITIC_ROUNDS + 2):
             setlist = arrange(
                 client, shortlist, analyses, profile, budget, complaints=complaints
             )
             plan = design(client, setlist, analyses, profile, budget)
             verdict = critique(plan, analyses, profile)
+            rounds.append(
+                CritiqueRound(
+                    round=number,
+                    order=list(setlist.order),
+                    complaints=list(verdict.complaints),
+                    chosen=False,
+                )
+            )
             if best_verdict is None or len(verdict.complaints) < len(
                 best_verdict.complaints
             ):
                 best, best_setlist, best_verdict = plan, setlist, verdict
+                best_round = number
             if verdict.ok:
                 break
             # Nur mit dem zurueck an Stufe 5, woran Stufe 5 etwas aendern kann.
@@ -168,6 +179,22 @@ def cmd_build(
 
     run.write_model("setlist.json", best_setlist)
     run.write_model("mixplan.json", best)
+    # Erfolgskriterium 7: jede Beanstandung muss in den Artefakten
+    # nachvollziehbar sein. Auf der Standardausgabe eines unbeaufsichtigten
+    # Laufs ist sie das nicht - und die Beanstandungen der verworfenen Runden
+    # sind gerade die, die zur Neuanordnung gefuehrt haben.
+    run.write_model(
+        "critique.json",
+        CritiqueLog(
+            rounds=[
+                CritiqueRound.model_validate(
+                    entry.model_dump() | {"chosen": entry.round == best_round}
+                )
+                for entry in rounds
+            ],
+            chosen_round=best_round,
+        ),
+    )
 
     print(f"Lauf {run.run_id}")
     print(f"  {len(analyses)} Tracks analysiert, {len(unreadable)} unlesbar")
@@ -183,6 +210,7 @@ def cmd_build(
         for text in best_verdict.texts:
             print(f"    - {text}")
     print(f"  Mixplan: {run.path('mixplan.json')}")
+    print(f"  Beanstandungen aller Runden: {run.path('critique.json')}")
     print("  Das Rendern kommt in einer spaeteren Ausbaustufe.")
     return 0
 
@@ -198,6 +226,11 @@ def main(argv: list[str] | None = None) -> int:
 
     build = subparsers.add_parser("build", help="Set aus dem Material in watch bauen")
     build.add_argument("--run", default=None, help="Lauf-ID, sonst der letzte unfertige")
+    # Dieselbe Wurzel wie bei plan. Ohne sie sucht build seine Laeufe im
+    # aktuellen Verzeichnis, waehrend plan sie nach --base geschrieben hat -
+    # und der Nutzer bekommt "kein unfertiger Lauf gefunden", ohne zu erfahren,
+    # dass er nur woanders gesucht hat.
+    build.add_argument("--base", type=Path, default=Path("."), help="Projektwurzel")
 
     args = parser.parse_args(argv)
     if args.command == "plan":
@@ -213,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
         from djset.agents.client import ClaudeClient
 
         return cmd_build(
-            Path.cwd(),
+            args.base,
             args.run,
             ClaudeClient(),
             Budget(

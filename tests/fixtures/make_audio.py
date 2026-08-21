@@ -32,6 +32,49 @@ def click_track(path: Path, bpm: float, bars: int, sr: int = SR) -> Path:
     return path
 
 
+def click_track_with_quiet_edges(
+    path: Path,
+    bpm: float,
+    bars: int,
+    edge_bars: int = 4,
+    edge_db: float = -12.0,
+    sr: int = SR,
+) -> Path:
+    """Clicktrack mit leisem Intro und leisem Outro - ein mischbarer Track.
+
+    Der blosse click_track ist ueber seine ganze Laenge gleich laut. Genau das
+    ist der Fall, den find_mix_regions als "kein erkennbarer Auf- und Abbau"
+    beschreibt: intro_end_s wird 0.0, outro_start_s das Trackende, und der
+    Transition-Designer hat nichts, worueber er blenden koennte. Ein
+    end-to-end-Test darauf prueft deshalb nur den Entartungsfall.
+
+    Hier sind die ersten und letzten `edge_bars` Takte um `edge_db`
+    abgesenkt - hoerbar, aber unter der 6-dB-Schwelle von find_mix_regions.
+    Die Klicks bleiben stehen, das Beatgrid also unangetastet.
+    """
+    beat_seconds = 60.0 / bpm
+    beats = bars * 4
+    edge_beats = edge_bars * 4
+    total = int(np.ceil(beats * beat_seconds * sr)) + sr
+    signal = np.zeros(total, dtype=np.float32)
+
+    click_len = int(0.01 * sr)
+    envelope = np.exp(-np.linspace(0.0, 12.0, click_len)).astype(np.float32)
+    tone = np.sin(2 * np.pi * 1200.0 * np.arange(click_len) / sr).astype(np.float32)
+    click = envelope * tone
+
+    quiet = 10.0 ** (edge_db / 20.0)
+    for beat in range(beats):
+        start = int(beat * beat_seconds * sr)
+        gain = 1.0 if beat % 4 == 0 else 0.5
+        if beat < edge_beats or beat >= beats - edge_beats:
+            gain *= quiet
+        signal[start:start + click_len] += click * gain
+
+    sf.write(path, signal, sr)
+    return path
+
+
 def click_track_with_lead_in(
     path: Path, bpm: float, bars: int, lead_in_s: float, sr: int = SR
 ) -> Path:
