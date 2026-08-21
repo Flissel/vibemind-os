@@ -92,6 +92,12 @@ def _check(answer: CuratorAnswer, known: set[str], needed: int) -> str | None:
         return f"Diese IDs stehen doppelt: {', '.join(sorted(both))}."
     if len(set(answer.accepted)) != len(answer.accepted):
         return "In accepted steht eine ID mehrfach."
+    rejected_ids = [rejection.track_id for rejection in answer.rejected]
+    if len(set(rejected_ids)) != len(rejected_ids):
+        # Doppelt abgelehnt heisst zwei Begruendungen fuer denselben Track. Wer
+        # daraus eine Zuordnung baut - und genau das tut der Report -, verliert
+        # eine davon stillschweigend.
+        return "In rejected steht eine ID mehrfach."
     if len(answer.accepted) > needed:
         return f"Du hast {len(answer.accepted)} Tracks angenommen, erlaubt sind {needed}."
     return None

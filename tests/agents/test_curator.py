@@ -84,3 +84,108 @@ def test_an_invented_track_id_is_re_asked(profile: Profile) -> None:
     assert shortlist.accepted == ids
     assert client.calls == 2
     assert "erfunden" in client.prompts[1]
+
+
+def test_a_missing_track_is_re_asked(profile: Profile) -> None:
+    """Ein Track, den das Modell stillschweigend vergisst, muss auffallen."""
+    tracks = many(13)
+    ids = [t.id for t in tracks]
+    client = FakeClient([_answer(ids[:12], []), _answer(ids, [])])
+
+    shortlist = curate(client, tracks, [], profile, _budget())
+
+    assert shortlist.accepted == ids
+    assert client.calls == 2
+    assert ids[12] in client.prompts[1]
+
+
+def test_an_id_in_both_lists_is_re_asked(profile: Profile) -> None:
+    """Eine track_id darf nicht gleichzeitig angenommen und abgelehnt sein."""
+    tracks = many(13)
+    ids = [t.id for t in tracks]
+    client = FakeClient(
+        [
+            _answer(ids, [(ids[0], "Doppelurteil")]),
+            _answer(ids[:12], [(ids[12], "am Genre vorbei")]),
+        ]
+    )
+
+    shortlist = curate(client, tracks, [], profile, _budget())
+
+    assert shortlist.accepted == ids[:12]
+    assert client.calls == 2
+    assert ids[0] in client.prompts[1]
+
+
+def test_more_accepted_than_needed_is_re_asked(profile: Profile) -> None:
+    """Mehr Tracks anzunehmen als gebraucht, verletzt die Regel im Prompt."""
+    tracks = many(14)
+    ids = [t.id for t in tracks]
+    client = FakeClient(
+        [
+            _answer(ids, []),
+            _answer(ids[:13], [(ids[13], "am Genre vorbei")]),
+        ]
+    )
+
+    shortlist = curate(client, tracks, [], profile, _budget())
+
+    assert shortlist.accepted == ids[:13]
+    assert client.calls == 2
+    assert "Du hast 14 Tracks angenommen" in client.prompts[1]
+
+
+def test_a_duplicate_inside_accepted_is_re_asked(profile: Profile) -> None:
+    """Dieselbe track_id darf nicht zweimal in accepted stehen."""
+    tracks = many(13)
+    ids = [t.id for t in tracks]
+    client = FakeClient([_answer(ids + [ids[0]], []), _answer(ids, [])])
+
+    shortlist = curate(client, tracks, [], profile, _budget())
+
+    assert shortlist.accepted == ids
+    assert client.calls == 2
+    assert "In accepted steht eine ID mehrfach." in client.prompts[1]
+
+
+def test_a_duplicate_inside_rejected_is_re_asked(profile: Profile) -> None:
+    """Dieselbe track_id zweimal abzulehnen verschluckt eine Begruendung.
+
+    `rejected = {r.track_id: r.reason ...}` (siehe Report-Aufbau und den Test
+    fuer unlesbare Dateien oben) baut aus der Shortlist eine Zuordnung - bei
+    einer doppelten track_id geht eine der beiden Begruendungen dabei
+    stillschweigend verloren.
+    """
+    tracks = many(13)
+    ids = [t.id for t in tracks]
+    client = FakeClient(
+        [
+            _answer(ids[:12], [(ids[12], "zu kurz"), (ids[12], "am Genre vorbei")]),
+            _answer(ids[:12], [(ids[12], "zu kurz")]),
+        ]
+    )
+
+    shortlist = curate(client, tracks, [], profile, _budget())
+
+    assert shortlist.accepted == ids[:12]
+    assert client.calls == 2
+    assert "In rejected steht eine ID mehrfach." in client.prompts[1]
+
+
+def test_the_models_note_survives_the_shortened_append(profile: Profile) -> None:
+    """Die eigene Begruendung des Modells wird ergaenzt, nicht ersetzt."""
+    tracks = many(8)
+    ids = [t.id for t in tracks]
+    payload = json.dumps(
+        {
+            "accepted": ids,
+            "rejected": [],
+            "note": "Individuelle Urteilsbegruendung.",
+        }
+    )
+    client = FakeClient([payload])
+
+    shortlist = curate(client, tracks, [], profile, _budget())
+
+    assert shortlist.note.startswith("Individuelle Urteilsbegruendung.")
+    assert "gekuerzt" in shortlist.note
