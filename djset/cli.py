@@ -1,14 +1,21 @@
-"""Einsprungpunkt. In diesem Plan gibt es nur das Unterkommando `plan`."""
+"""Einsprungpunkt mit den Unterkommandos `plan` und `build`."""
 
 import argparse
 import sys
 from datetime import date
 from pathlib import Path
 
+from djset.agents.architect import arrange
 from djset.agents.base import AgentClient, AgentError, Budget
+from djset.agents.curator import NotEnoughTracks, curate
+from djset.agents.designer import design
 from djset.agents.profiler import build_profile
 from djset.agents.prompt_writer import render_markdown, write_prompts
-from djset.run import Run
+from djset.analysis import analyse_all
+from djset.contracts import CritiqueLog, CritiqueRound, MixPlan, Profile, Setlist
+from djset.critic import Critique, critique
+from djset.run import Run, RunNotFound
+from djset.watch import NotEnoughMaterial, check_enough, scan
 
 WATCH_DIRNAME = "watch"
 
@@ -18,6 +25,17 @@ PLAN_BUDGET_TOKENS = 120_000
 # zehn Minuten sind dafuer reichlich und begrenzen trotzdem einen Lauf, der
 # in Timeouts und Backoffs haengenbleibt.
 PLAN_BUDGET_SECONDS = 600.0
+
+# Budget fuer einen build-Lauf. Deutlich groesser als bei plan: hier laeuft ein
+# Modellaufruf pro Track plus vier Stufen. Gilt pro Aufruf, nicht pro Lauf -
+# ein resume startet frisch, sonst koennte ein Lauf, der einmal ans Limit
+# gestossen ist, nie mehr fertig werden.
+BUILD_BUDGET_TOKENS = 600_000
+BUILD_BUDGET_SECONDS = 3600.0
+
+# Spec Abschnitt 7: weist der Critic zweimal zurueck, wird der beste bisherige
+# Plan genommen. Weder Endlosschleife noch Abbruch.
+CRITIC_ROUNDS = 2
 
 
 def cmd_plan(
@@ -72,6 +90,131 @@ def cmd_plan(
     return 0
 
 
+def cmd_build(
+    base: Path,
+    run_id: str | None,
+    client: AgentClient,
+    budget: Budget,
+) -> int:
+    """Baut aus dem Material in watch einen geprueften Mixplan."""
+    try:
+        run = Run.load(base, run_id) if run_id else Run.latest_unfinished(base)
+    except RunNotFound as error:
+        print(f"Fehler: {error}", file=sys.stderr)
+        return 1
+    if run is None:
+        print(
+            "Fehler: kein unfertiger Lauf gefunden. Starte zuerst dj-set plan.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Ein Lauf, der beim Planen abgebrochen ist, hat kein Profil. Ohne das
+    # taugt er nicht als Ausgangspunkt.
+    if not run.has("profile.json"):
+        print(
+            f"Fehler: der Lauf {run.run_id} hat keine profile.json. "
+            f"Er wurde vor dem Ende der Planungsphase abgebrochen.",
+            file=sys.stderr,
+        )
+        return 1
+    profile = run.read_model("profile.json", Profile)
+
+    try:
+        files = scan(base / WATCH_DIRNAME)
+        check_enough(files, profile)
+    except NotEnoughMaterial as error:
+        print(f"Fehler: {error}", file=sys.stderr)
+        return 1
+
+    try:
+        analyses, unreadable = analyse_all(client, files, profile, run, budget)
+        shortlist = curate(client, analyses, unreadable, profile, budget)
+        run.write_model("shortlist.json", shortlist)
+
+        best: MixPlan | None = None
+        best_setlist: Setlist | None = None
+        best_verdict: Critique | None = None
+        best_round = 0
+        rounds: list[CritiqueRound] = []
+        complaints: tuple[str, ...] = ()
+
+        for number in range(1, CRITIC_ROUNDS + 2):
+            setlist = arrange(
+                client, shortlist, analyses, profile, budget, complaints=complaints
+            )
+            plan = design(client, setlist, analyses, profile, budget)
+            verdict = critique(plan, analyses, profile)
+            rounds.append(
+                CritiqueRound(
+                    round=number,
+                    order=list(setlist.order),
+                    complaints=list(verdict.complaints),
+                    chosen=False,
+                )
+            )
+            if best_verdict is None or len(verdict.complaints) < len(
+                best_verdict.complaints
+            ):
+                best, best_setlist, best_verdict = plan, setlist, verdict
+                best_round = number
+            if verdict.ok:
+                break
+            # Nur mit dem zurueck an Stufe 5, woran Stufe 5 etwas aendern kann.
+            # Bleibt nichts uebrig, ist die Schleife am Ende: eine Laengen- oder
+            # Downbeat-Beanstandung kostet sonst zwei volle Runden Architect und
+            # Designer und liefert danach denselben Plan. Der Architect legt die
+            # Reihenfolge fest - er kann kein Material herbeischaffen und keinen
+            # Cue-Punkt verschieben.
+            complaints = verdict.reorderable
+            if not complaints:
+                break
+    except (NotEnoughTracks, AgentError) as error:
+        print(f"Fehler: {error}", file=sys.stderr)
+        return 1
+
+    if best is None or best_setlist is None or best_verdict is None:
+        print("Fehler: es entstand kein Mixplan.", file=sys.stderr)
+        return 1
+
+    run.write_model("setlist.json", best_setlist)
+    run.write_model("mixplan.json", best)
+    # Erfolgskriterium 7: jede Beanstandung muss in den Artefakten
+    # nachvollziehbar sein. Auf der Standardausgabe eines unbeaufsichtigten
+    # Laufs ist sie das nicht - und die Beanstandungen der verworfenen Runden
+    # sind gerade die, die zur Neuanordnung gefuehrt haben.
+    run.write_model(
+        "critique.json",
+        CritiqueLog(
+            rounds=[
+                CritiqueRound.model_validate(
+                    entry.model_dump() | {"chosen": entry.round == best_round}
+                )
+                for entry in rounds
+            ],
+            chosen_round=best_round,
+        ),
+    )
+
+    print(f"Lauf {run.run_id}")
+    print(f"  {len(analyses)} Tracks analysiert, {len(unreadable)} unlesbar")
+    print(f"  {len(shortlist.accepted)} im Set, {len(shortlist.rejected)} aussortiert")
+    if best_verdict.complaints:
+        # Die Beanstandungen der gewaehlten Runde, nicht neu gerechnet: dasselbe
+        # Ergebnis noch einmal auszurechnen ist nicht nur unnoetig, es waere auch
+        # eine zweite Wahrheit neben der, die im Protokoll steht.
+        print(
+            f"  Critic hat {len(best_verdict.complaints)} Beanstandungen offen "
+            f"gelassen:"
+        )
+        for text in best_verdict.texts:
+            print(f"    - {text}")
+    print(f"  Mixplan: {run.path('mixplan.json')}")
+    print(f"  Beanstandungen aller Runden: {run.path('critique.json')}")
+    print("  Das Rendern kommt in einer spaeteren Ausbaustufe.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="dj-set")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -80,6 +223,14 @@ def main(argv: list[str] | None = None) -> int:
     plan.add_argument("--genre", required=True, help="frei waehlbar, z.B. 'liquid dnb'")
     plan.add_argument("--length", type=float, required=True, help="Ziellaenge in Minuten")
     plan.add_argument("--base", type=Path, default=Path("."), help="Projektwurzel")
+
+    build = subparsers.add_parser("build", help="Set aus dem Material in watch bauen")
+    build.add_argument("--run", default=None, help="Lauf-ID, sonst der letzte unfertige")
+    # Dieselbe Wurzel wie bei plan. Ohne sie sucht build seine Laeufe im
+    # aktuellen Verzeichnis, waehrend plan sie nach --base geschrieben hat -
+    # und der Nutzer bekommt "kein unfertiger Lauf gefunden", ohne zu erfahren,
+    # dass er nur woanders gesucht hat.
+    build.add_argument("--base", type=Path, default=Path("."), help="Projektwurzel")
 
     args = parser.parse_args(argv)
     if args.command == "plan":
@@ -90,6 +241,18 @@ def main(argv: list[str] | None = None) -> int:
             genre=args.genre,
             length_minutes=args.length,
             client=ClaudeClient(),
+        )
+    if args.command == "build":
+        from djset.agents.client import ClaudeClient
+
+        return cmd_build(
+            args.base,
+            args.run,
+            ClaudeClient(),
+            Budget(
+                max_tokens=BUILD_BUDGET_TOKENS,
+                max_seconds=BUILD_BUDGET_SECONDS,
+            ),
         )
     return 1
 

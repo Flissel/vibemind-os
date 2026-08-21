@@ -17,6 +17,7 @@ umgesetzt werden muss.
 """
 
 import re
+import threading
 import time
 from typing import Callable, Protocol, TypeVar
 
@@ -51,6 +52,10 @@ class BudgetExceeded(AgentError):
     """Das Budget des Laufs ist aufgebraucht - Tokens oder Wanduhrzeit."""
 
 
+class StageRulesViolated(AgentError):
+    """Eine Stufe hat auch nach der letzten Runde keine regelkonforme Antwort geliefert."""
+
+
 class AgentClient(Protocol):
     def complete(self, prompt: str, schema: dict[str, object]) -> str: ...
 
@@ -82,23 +87,29 @@ class Budget:
         self.spent = 0
         self._now = now
         self._started = now()
+        # charge() wird bei paralleler Track-Analyse aus mehreren Threads
+        # gerufen. Ohne Sperre gehen Buchungen verloren und die Notbremse
+        # greift zu spaet.
+        self._lock = threading.Lock()
 
     @property
     def elapsed_s(self) -> float:
         return self._now() - self._started
 
     def charge(self, text: str) -> None:
-        elapsed = self.elapsed_s
-        if elapsed > self.max_seconds:
-            raise BudgetExceeded(
-                f"Zeitbudget erschoepft: {elapsed:.1f} s von {self.max_seconds:.1f} s"
-            )
-        estimate = max(1, len(text) // _CHARS_PER_TOKEN)
-        if self.spent + estimate > self.max_tokens:
-            raise BudgetExceeded(
-                f"Budget erschoepft: {self.spent} von {self.max_tokens} Tokens verbraucht"
-            )
-        self.spent += estimate
+        tokens = max(1, len(text) // _CHARS_PER_TOKEN)
+        with self._lock:
+            if self.elapsed_s > self.max_seconds:
+                raise BudgetExceeded(
+                    f"Zeitbudget erschoepft: {self.elapsed_s:.0f} s von "
+                    f"{self.max_seconds:.0f} s verbraucht"
+                )
+            if self.spent + tokens > self.max_tokens:
+                raise BudgetExceeded(
+                    f"Tokenbudget erschoepft: {self.spent} von {self.max_tokens} "
+                    f"verbraucht, {tokens} weitere angefordert"
+                )
+            self.spent += tokens
 
 
 def _strip_fences(raw: str) -> str:

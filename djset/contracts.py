@@ -20,6 +20,13 @@ CAMELOT_RE = r"^(1[0-2]|[1-9])([AB])$"
 # an genau einer Stelle definiert ist und im Typ erzwungen wird.
 MIN_TRACKS = 3
 
+# Die Stretch-Grenze aus dem Spec Abschnitt 7: plus/minus 6 Prozent. Steht an
+# genau dieser Stelle - der Typ MixEntry.timestretch_ratio erzwingt sie damit
+# aus derselben Quelle, aus der Designer und Critic rechnen. Wer sie woanders
+# neu hinschreibt, hat zwei Grenzen, die auseinanderdriften koennen.
+MIN_RATIO = 0.94
+MAX_RATIO = 1.06
+
 
 class BpmRange(BaseModel):
     target: float = Field(gt=0)
@@ -156,8 +163,37 @@ class Loudness(BaseModel):
 
 
 class Verdict(BaseModel):
+    """Das Urteil des Track-Analysten ueber einen Track.
+
+    `energy_level` ordnet den Track auf derselben 0..1-Skala ein, auf der das
+    Profil seinen energy_arc beschreibt. Bewusst vom Agenten vergeben und nicht
+    aus TrackMeasurements.energy gerechnet, aber nicht weil die Kurve
+    trackrelativ waere - sie ist gegen eine feste dBFS-Referenz normiert und
+    ueber aehnlich gemastertes Material sehr wohl vergleichbar. Der Grund ist
+    ein anderer: ihr praktischer Wertebereich fuer fertig gemastertes Material
+    liegt zwischen etwa 0,75 und 0,87, waehrend ein vom Modell geschriebener
+    Bogen ueber 0,30 bis 0,90 laeuft. Tracks direkt auf diesen Bogen abzubilden
+    waere deshalb stark gestaucht. Dasselbe Modell, das den Bogen geschrieben
+    hat, ordnet die Tracks darauf ein - das ist die einzige Stelle, an der
+    beide Skalen zuverlaessig zusammenfinden.
+    """
+
     usable: bool
-    notes: str
+    notes: str = Field(min_length=1)
+    energy_level: float = Field(ge=0.0, le=1.0)
+
+
+class UnreadableTrack(BaseModel):
+    """Eine Datei, die sich nicht messen liess.
+
+    Spec Abschnitt 7: eine kaputte Einzeldatei darf den Lauf nicht sprengen.
+    Sie bekommt trotzdem ein Artefakt, damit nachvollziehbar bleibt, warum sie
+    nicht im Set ist.
+    """
+
+    id: str = Field(min_length=1)
+    path: str = Field(min_length=1)
+    error: str = Field(min_length=1)
 
 
 class TrackMeasurements(BaseModel):
@@ -169,6 +205,11 @@ class TrackMeasurements(BaseModel):
     bpm: Bpm
     beatgrid: BeatGrid
     key: Key
+    # Gegen eine feste dBFS-Referenz normiert, also ueber aehnlich gemastertes
+    # Material vergleichbar - siehe den Docstring von dsp.analyze.energy_curve.
+    # Fuer die Einordnung auf profile.energy_arc ist sie trotzdem nicht die
+    # richtige Groesse, weil ihr praktischer Bereich viel enger ist als der des
+    # Bogens; dafuer gibt es Verdict.energy_level.
     energy: list[float] = Field(min_length=1)
     mix_regions: MixRegions
     loudness: Loudness
@@ -198,12 +239,90 @@ class Shortlist(BaseModel):
     note: str
 
 
+class Setlist(BaseModel):
+    """Die Reihenfolge, in der die Tracks laufen.
+
+    Eigenes Artefakt, obwohl die Spec es nicht auflistet: der Critic schickt
+    Beanstandungen an diese Stufe zurueck, und Erfolgskriterium 7 verlangt, dass
+    jede Beanstandung in den Artefakten nachvollziehbar ist. Ohne die Setlist auf
+    der Platte waere nicht zu sehen, was der Critic eigentlich bemaengelt hat.
+    """
+
+    order: list[str] = Field(min_length=MIN_TRACKS)
+    note: str
+
+    @model_validator(mode="after")
+    def _no_track_twice(self) -> "Setlist":
+        if len(set(self.order)) != len(self.order):
+            raise ValueError("jede track_id darf nur einmal in der Setlist vorkommen")
+        return self
+
+
+ComplaintKind = Literal[
+    "length", "stretch", "downbeat", "phase", "overlap", "energy_arc", "unknown_track"
+]
+
+# Welche Beanstandungen Stufe 5 ueberhaupt beheben kann. Der Architect legt die
+# Reihenfolge fest - mehr nicht. Er kann das Set nicht laenger machen (dazu
+# fehlt Material), er kann kein Stretch-Verhaeltnis aendern (das haengt am
+# Tempo des Tracks) und er kann keinen Cue-Punkt verschieben (das ist Stufe 6).
+# Ihn deswegen erneut laufen zu lassen kostet eine volle Runde Architect plus
+# Designer und liefert zwangslaeufig dasselbe Ergebnis.
+#
+# Der Energiebogen und der zu kurze Overlap sind die zwei Faelle, bei denen
+# eine andere Reihenfolge tatsaechlich hilft: die Energie haengt an der
+# Position, und welcher Track neben welchem steht entscheidet, wie viel
+# Intro- und Outro-Material an der Naht zusammenkommt.
+REORDERABLE_KINDS: frozenset[str] = frozenset({"energy_arc", "overlap"})
+
+
+class Complaint(BaseModel):
+    """Eine Beanstandung des Critics.
+
+    `kind` ist da, damit die Schleife in cmd_build nicht in den Texten nach
+    Stichworten suchen muss, um zu entscheiden, ob eine erneute Runde
+    ueberhaupt etwas aendern kann.
+    """
+
+    kind: ComplaintKind
+    text: str = Field(min_length=1)
+
+    @property
+    def reorderable(self) -> bool:
+        """Ob Stufe 5 daran etwas aendern kann."""
+        return self.kind in REORDERABLE_KINDS
+
+
+class CritiqueRound(BaseModel):
+    """Eine Runde aus Setlist, Plan und dem Urteil darueber."""
+
+    round: int = Field(ge=1)
+    order: list[str] = Field(min_length=1)
+    complaints: list[Complaint]
+    chosen: bool
+
+
+class CritiqueLog(BaseModel):
+    """Das Protokoll aller Critic-Runden eines Laufs.
+
+    Erfolgskriterium 7 verlangt, dass jede Beanstandung in den Artefakten
+    nachvollziehbar ist. Auf der Standardausgabe eines unbeaufsichtigten Laufs
+    ist sie das nicht - und die Beanstandungen der VERWORFENEN Runden sind
+    gerade die, die zur Neuanordnung gefuehrt haben. Ohne dieses Protokoll
+    waeren sie samt ihrer Setlists spurlos weg.
+    """
+
+    rounds: list[CritiqueRound] = Field(min_length=1)
+    chosen_round: int = Field(ge=1)
+
+
 class MixEntry(BaseModel):
     track_id: str = Field(min_length=1)
     play_from_s: float = Field(ge=0)
     play_to_s: float = Field(gt=0)
-    # Stretch-Grenze aus dem Spec: +-6 %. Im Typ erzwungen.
-    timestretch_ratio: float = Field(ge=0.94, le=1.06)
+    # Stretch-Grenze aus dem Spec: +-6 %. Im Typ erzwungen, aus denselben
+    # Konstanten, die Designer und Critic benutzen.
+    timestretch_ratio: float = Field(ge=MIN_RATIO, le=MAX_RATIO)
     gain_db: float
 
     @model_validator(mode="after")
@@ -225,6 +344,19 @@ class EqCurve(BaseModel):
 
 
 class Transition(BaseModel):
+    """Ein Uebergang zwischen zwei Tracks.
+
+    `bars` ist die EFFEKTIVE Taktzahl, nicht die gewuenschte: sie kann unter
+    profile.transition.bars_min liegen, wenn das Material an dieser Naht
+    weniger hergibt. Ein Track ohne erkennbares Outro liefert einen Takt, auch
+    wenn der Korridor bei sechzehn anfaengt - lieber ein kurzer Uebergang als
+    Sekunden, die niemand fuellt. Der Critic beanstandet, wenn dabei weniger
+    als ein Takt uebrigbleibt.
+
+    Die Taktlaenge dazu steht nicht im Uebergang: sie ist
+    60 / MixPlan.target_bpm mal vier.
+    """
+
     from_track: str = Field(min_length=1)
     to_track: str = Field(min_length=1)
     start_at_s: float = Field(ge=0)
@@ -236,6 +368,13 @@ class Transition(BaseModel):
 
 class MixPlan(BaseModel):
     target_length_s: float = Field(gt=0)
+    # Das Tempo, auf das alle timestretch_ratio gerechnet sind. Ohne diese Zahl
+    # kann der Renderer die Taktzahl eines Uebergangs nicht in Sekunden
+    # umrechnen, ohne tracks/*.json dazuzuladen - und dann waere der Mixplan
+    # nicht mehr allein testbar, was die Determinismus-Grenze der Spec gerade
+    # zusichert ("der Renderer mit handgeschriebenen Mixplaenen testen").
+    # Vom Code aus profile.bpm.target uebernommen, kein Modellurteil.
+    target_bpm: float = Field(gt=0)
     entries: list[MixEntry] = Field(min_length=MIN_TRACKS)
     transitions: list[Transition]
 

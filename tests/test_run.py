@@ -56,3 +56,33 @@ def test_latest_unfinished_returns_none_when_all_are_done(tmp_path: Path):
 def test_load_raises_for_unknown_run(tmp_path: Path):
     with pytest.raises(RunNotFound):
         Run.load(tmp_path, "2026-08-05-gibt-es-nicht-01")
+
+
+def test_a_failed_write_leaves_the_old_artifact_intact(tmp_path: Path, monkeypatch):
+    """Ein Artefakt wird ganz oder gar nicht ersetzt.
+
+    Genau die halb geschriebenen Artefakte sind es, die
+    djset.analysis._read_existing beim Wiederaufnehmen abfangen muss - und ein
+    Lauf, der beim Schreiben abbricht, ist der Normalfall, fuer den es
+    build --resume ueberhaupt gibt.
+    """
+    run = Run.create(tmp_path, "techno", today=DAY)
+    run.write_text("profile.json", "alt")
+
+    def explode(source: str, target: str) -> None:
+        raise OSError("Abbruch mitten im Ersetzen")
+
+    monkeypatch.setattr("djset.run.os.replace", explode)
+    with pytest.raises(OSError):
+        run.write_text("profile.json", "neu")
+
+    assert run.path("profile.json").read_text(encoding="utf-8") == "alt"
+    # Und die halbe Datei bleibt auch nicht als Muell liegen.
+    assert [p.name for p in run.path("").iterdir()] == ["profile.json"]
+
+
+def test_a_write_leaves_no_temporary_behind(tmp_path: Path):
+    run = Run.create(tmp_path, "techno", today=DAY)
+    run.write_model("bpm.json", BpmRange(target=130.0, min=128.0, max=134.0))
+
+    assert [p.name for p in run.path("").iterdir()] == ["bpm.json"]
