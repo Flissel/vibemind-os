@@ -59,3 +59,36 @@ def click_track_with_lead_in(
 
     sf.write(path, signal, sr)
     return path
+
+
+def click_track_with_quiet_first_beat(
+    path: Path, bpm: float, bars: int, first_beat_db: float = -30.0, sr: int = SR
+) -> Path:
+    """Wie click_track, aber der erste Beat ist stark abgeschwaecht.
+
+    Simuliert eine leise, aber echte Intro (z. B. eine gefilterte Passage
+    vor einem Drop) statt eines stillen Vorlaufs: first_beat_db daempft nur
+    den allerersten Klick, alle folgenden Beats bleiben unveraendert laut.
+    Damit laesst sich pruefen, dass ein leiser, aber echter Randbeat nicht
+    faelschlich als Stille verworfen wird.
+    """
+    beat_seconds = 60.0 / bpm
+    beats = bars * 4
+    total = int(np.ceil(beats * beat_seconds * sr)) + sr
+    signal = np.zeros(total, dtype=np.float32)
+
+    click_len = int(0.01 * sr)
+    envelope = np.exp(-np.linspace(0.0, 12.0, click_len)).astype(np.float32)
+    tone = np.sin(2 * np.pi * 1200.0 * np.arange(click_len) / sr).astype(np.float32)
+    click = envelope * tone
+
+    for beat in range(beats):
+        start = int(beat * beat_seconds * sr)
+        if beat == 0:
+            gain = 10.0 ** (first_beat_db / 20.0)
+        else:
+            gain = 1.0 if beat % 4 == 0 else 0.5
+        signal[start:start + click_len] += click * gain
+
+    sf.write(path, signal, sr)
+    return path

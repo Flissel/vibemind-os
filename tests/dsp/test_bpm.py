@@ -1,7 +1,31 @@
 from pathlib import Path
 
-from djset.dsp.analyze import detect_bpm_and_grid, snap_to_range
-from tests.fixtures.make_audio import click_track, click_track_with_lead_in
+import numpy as np
+
+from djset.dsp.analyze import (
+    _drop_unsupported_edge_beats,
+    _is_silent,
+    detect_bpm_and_grid,
+    snap_to_range,
+)
+from tests.fixtures.make_audio import (
+    click_track,
+    click_track_with_lead_in,
+    click_track_with_quiet_first_beat,
+)
+
+
+def _synthetic_click(sr: int, gain: float) -> np.ndarray:
+    """Kurzer Klick als rohes Array, fuer Unit-Tests der privaten Rand-Erkennung.
+
+    Identischer Klang wie in tests/fixtures/make_audio.py, aber ohne Umweg
+    ueber eine Audiodatei - _is_silent und _drop_unsupported_edge_beats
+    arbeiten direkt auf dem Signal-Array.
+    """
+    click_len = int(0.01 * sr)
+    envelope = np.exp(-np.linspace(0.0, 12.0, click_len)).astype(np.float32)
+    tone = np.sin(2 * np.pi * 1200.0 * np.arange(click_len) / sr).astype(np.float32)
+    return (envelope * tone * gain).astype(np.float32)
 
 
 def test_snap_doubles_halftime_reading():
@@ -81,3 +105,111 @@ def test_detects_bpm_from_mp3(tmp_path: Path):
     audio = click_track(tmp_path / "click.mp3", bpm=128.0, bars=16)
     bpm, _grid = detect_bpm_and_grid(audio)
     assert abs(bpm.value - 128.0) < 1.0
+
+
+def test_first_downbeat_survives_quiet_but_real_first_beat(tmp_path: Path):
+    """Ein leiser, aber echter Randbeat darf nicht als Stille verworfen werden.
+
+    Regressionstest fuer Fix-Runde 2: die Randbeat-Pruefung darf nicht nach
+    relativer Lautstaerke (Anteil am Spitzenpegel des Tracks) entscheiden,
+    sondern nur nach absoluter Stille. Eine gefilterte, leise Intro vor
+    einem Drop (hier: -30 dBFS fuer den ersten Beat) ist normaler
+    Trackaufbau in den Zielgenres und muss als first_downbeat_s erhalten
+    bleiben, nicht auf den naechsten (lauten) Beat springen.
+    """
+    audio = click_track_with_quiet_first_beat(
+        tmp_path / "quiet_first.wav", bpm=128.0, bars=16, first_beat_db=-30.0
+    )
+    _bpm, grid = detect_bpm_and_grid(audio)
+    assert grid.first_downbeat_s < 0.1
+
+
+def test_is_silent_distinguishes_silence_from_quiet_signal():
+    """Direkter Unit-Test der Stille-Erkennung: absolute Schwelle, nicht relativ.
+
+    Testet _is_silent direkt statt nur ueber die volle Pipeline: BeatGrid
+    exponiert keinen Wert fuer den letzten Beat, das Randverhalten am
+    Trackende laesst sich also nicht ueber detect_bpm_and_grid beobachten
+    (Contracts werden in dieser Fix-Runde bewusst nicht angefasst, siehe
+    Report). Ein direkter Test der privaten Funktion ist hier der einzige
+    Weg, das Trackende-Verhalten zu pruefen.
+    """
+    sr = 44100
+    total = int(2.0 * sr)
+    signal = np.zeros(total, dtype=np.float32)
+    click_len = int(0.01 * sr)
+
+    loud = _synthetic_click(sr, gain=1.0)
+    quiet = _synthetic_click(sr, gain=10.0 ** (-30.0 / 20.0))
+
+    pos_loud = int(0.5 * sr)
+    pos_quiet_near_end = int(1.5 * sr)
+    signal[pos_loud:pos_loud + click_len] += loud
+    signal[pos_quiet_near_end:pos_quiet_near_end + click_len] += quiet
+
+    # Echte Stille an beiden Raendern des Arrays.
+    assert _is_silent(signal, sr, 0.05) is True
+    assert _is_silent(signal, sr, 1.95) is True
+    # Lauter Beat in der Mitte.
+    assert _is_silent(signal, sr, 0.505) is False
+    # Leiser, aber echter Beat nahe dem Ende - darf NICHT als Stille gelten.
+    assert _is_silent(signal, sr, pos_quiet_near_end / sr + 0.005) is False
+
+
+def test_drop_unsupported_edge_beats_strips_leading_and_trailing_silence():
+    """Symmetrischer Unit-Test: Phantom-Beats fallen an BEIDEN Raendern weg.
+
+    Der bisherige Lead-in-Test deckt nur den Anfang ab (ueber
+    first_downbeat_s beobachtbar); das Trackende ist ueber BeatGrid nicht
+    exponierbar. Regressionstest dafuer, dass die Randbeat-Korrektur -
+    dieselbe Ursache an beiden Enden (trim=False kann an jedem Rand einen
+    Beat ohne Signal-Entsprechung setzen) - tatsaechlich symmetrisch wirkt
+    und nicht nur zufaellig am Anfang, wo sie ueber die bestehenden Tests
+    laeuft.
+    """
+    sr = 44100
+    total = int(2.0 * sr)
+    signal = np.zeros(total, dtype=np.float32)
+    click_len = int(0.01 * sr)
+    loud = _synthetic_click(sr, gain=1.0)
+
+    pos_a = int(0.5 * sr)
+    pos_b = int(1.5 * sr)
+    signal[pos_a:pos_a + click_len] += loud
+    signal[pos_b:pos_b + click_len] += loud
+
+    # Phantom-Beats in Stille an beiden Raendern, dazwischen die zwei
+    # echten Beats.
+    beat_times = np.array([0.05, 0.5, 1.5, 1.95])
+    cleaned = _drop_unsupported_edge_beats(beat_times, signal, sr)
+
+    assert list(cleaned) == [0.5, 1.5]
+
+
+def test_drop_unsupported_edge_beats_keeps_quiet_but_real_edges():
+    """Symmetrisches Gegenstueck: leise, aber echte Randbeats bleiben stehen.
+
+    Wenn an beiden Raendern ein leiser, aber echter Beat liegt (kein
+    Phantom), darf _drop_unsupported_edge_beats nichts verwerfen - weder
+    vorne (bereits ueber die volle Pipeline getestet, siehe
+    test_first_downbeat_survives_quiet_but_real_first_beat) noch hinten
+    (nur hier direkt pruefbar, siehe Docstring oben).
+    """
+    sr = 44100
+    total = int(2.0 * sr)
+    signal = np.zeros(total, dtype=np.float32)
+    click_len = int(0.01 * sr)
+    quiet = _synthetic_click(sr, gain=10.0 ** (-30.0 / 20.0))
+    loud = _synthetic_click(sr, gain=1.0)
+
+    pos_first = int(0.1 * sr)
+    pos_mid = int(1.0 * sr)
+    pos_last = int(1.9 * sr)
+    signal[pos_first:pos_first + click_len] += quiet
+    signal[pos_mid:pos_mid + click_len] += loud
+    signal[pos_last:pos_last + click_len] += quiet
+
+    beat_times = np.array([0.1, 1.0, 1.9])
+    cleaned = _drop_unsupported_edge_beats(beat_times, signal, sr)
+
+    assert list(cleaned) == [0.1, 1.0, 1.9]

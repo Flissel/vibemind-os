@@ -40,48 +40,60 @@ def _load_audio(path: Path) -> tuple[np.ndarray, int]:
     return signal, int(sr)
 
 
-def _has_signal_energy(
-    signal: np.ndarray, sr: int, time_s: float, window_s: float = 0.05, min_ratio: float = 0.05
-) -> bool:
-    """Prueft, ob im Zeitfenster um time_s tatsaechlich Audioenergie liegt.
+# -50 dBFS: grosszuegiger Sicherheitsabstand zwischen digitaler Stille
+# (exaktes Nullsignal bzw. Rauschen im Dither-Bereich, ueblicherweise
+# < -80 dBFS) und einer leisen, aber echten Intro vor einem Drop
+# (ueblicherweise nicht leiser als etwa -30 dBFS). Bewusst absolut in
+# dBFS, nicht relativ zum Spitzenpegel des Tracks: eine leise Intro darf
+# nicht verworfen werden, nur weil der Rest des Tracks lauter ist.
+_SILENCE_THRESHOLD_DBFS = -50.0
+_SILENCE_THRESHOLD_LINEAR = 10.0 ** (_SILENCE_THRESHOLD_DBFS / 20.0)
+
+
+def _is_silent(signal: np.ndarray, sr: int, time_s: float, window_s: float = 0.05) -> bool:
+    """Prueft, ob im Zeitfenster um time_s digitale Stille herrscht.
 
     Wird benutzt, um Phantom-Beats an den Raendern zu erkennen (siehe
     detect_bpm_and_grid, trim=False). Die Onset-Staerke selbst kann das an
-    Rand-Frames nicht: der allererste Analyse-Frame von
+    Rand-Frames nicht leisten: der allererste Analyse-Frame von
     librosa.onset.onset_strength ist strukturell immer 0.0, weil fuer die
     Flussberechnung kein Vorgaengerframe existiert - unabhaengig davon, ob
     dort tatsaechlich ein Klang liegt. Deshalb schauen wir stattdessen auf
-    das rohe Signal.
+    das rohe Signal, und zwar in absoluten dBFS (siehe
+    _SILENCE_THRESHOLD_DBFS), nicht relativ zum Spitzenpegel des Tracks.
+
+    Das ist eine Messung (liegt dort ueberhaupt Signal?), keine Wertung
+    (ist der Beat "zu leise, um zu zaehlen"?) - Letzteres waere eine
+    Entscheidung ueber Trackinhalt und gehoert dem Agenten, nicht diesem
+    Modul.
     """
     center = int(round(time_s * sr))
     half = max(1, int(round(window_s * sr / 2)))
     lo = max(0, center - half)
     hi = min(signal.shape[-1], center + half)
     if hi <= lo:
-        return False
+        return True
     window_peak = float(np.max(np.abs(signal[lo:hi])))
-    overall_peak = float(np.max(np.abs(signal))) if signal.size else 0.0
-    if overall_peak <= 0.0:
-        return False
-    return window_peak >= min_ratio * overall_peak
+    return window_peak < _SILENCE_THRESHOLD_LINEAR
 
 
 def _drop_unsupported_edge_beats(
     beat_times: np.ndarray, signal: np.ndarray, sr: int
 ) -> np.ndarray:
-    """Entfernt Phantom-Beats an Anfang und Ende ohne Energie-Deckung.
+    """Entfernt Phantom-Beats an Anfang und Ende, die in Stille liegen.
 
     trim=False bewahrt echte Randbeats (siehe detect_bpm_and_grid), erlaubt
     dem Beat-Tracker aber auch, am Rand einen zusaetzlichen Beat genau eine
     Periode vor dem ersten bzw. nach dem letzten tatsaechlich gemessenen
     Onset zu platzieren - ohne jede Entsprechung im Signal, etwa in einem
     stillen Vorlauf vor dem eigentlichen Trackstart. Diese Funktion
-    verwirft nur Randbeats ohne Energie-Deckung, laesst aber echte
-    Randbeats (z. B. einen Click exakt bei t=0) unangetastet.
+    verwirft nur Randbeats, die in digitaler Stille liegen. Eine leise,
+    aber echte Intro (z. B. eine gefilterte Passage vor einem Drop) bleibt
+    erhalten - das Unterscheidungsmerkmal ist Stille, nicht Lautstaerke.
     """
-    while beat_times.size > 1 and not _has_signal_energy(signal, sr, float(beat_times[0])):
+    while beat_times.size > 1 and _is_silent(signal, sr, float(beat_times[0])):
         beat_times = beat_times[1:]
-    while beat_times.size > 1 and not _has_signal_energy(signal, sr, float(beat_times[-1])):
+    while beat_times.size > 1 and _is_silent(signal, sr, float(beat_times[-1])):
         beat_times = beat_times[:-1]
     return beat_times
 
