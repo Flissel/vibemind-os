@@ -92,3 +92,19 @@ def click_track_with_quiet_first_beat(
 
     sf.write(path, signal, sr)
     return path
+
+
+def chord_tone(
+    path: Path, semitones: list[int], seconds: float = 4.0, sr: int = SR
+) -> Path:
+    """Gehaltener Akkord aus Sinustoenen. Halbtoene relativ zu C4 (261.63 Hz)."""
+    t = np.arange(int(seconds * sr)) / sr
+    signal = np.zeros_like(t, dtype=np.float32)
+    for semitone in semitones:
+        freq = 261.63 * (2.0 ** (semitone / 12.0))
+        # Grundton plus zwei Obertoene, damit das Chroma-Profil realistisch faellt
+        for harmonic, gain in ((1, 1.0), (2, 0.4), (3, 0.2)):
+            signal += (gain * np.sin(2 * np.pi * freq * harmonic * t)).astype(np.float32)
+    signal /= np.max(np.abs(signal))
+    sf.write(path, signal * 0.8, sr)
+    return path

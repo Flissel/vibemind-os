@@ -10,7 +10,7 @@ import librosa
 import numpy as np
 import soundfile as sf
 
-from djset.contracts import BeatGrid, Bpm
+from djset.contracts import BeatGrid, Bpm, Key
 
 BEATS_PER_BAR = 4
 
@@ -159,3 +159,43 @@ def detect_bpm_and_grid(
     bar_length = BEATS_PER_BAR * 60.0 / tempo_value
     grid = BeatGrid(first_downbeat_s=float(beat_times[0]), bar_length_s=bar_length)
     return Bpm(value=tempo_value, confidence=confidence), grid
+
+
+# Krumhansl-Schmuckler-Profile: wie stark jede Tonstufe in Dur bzw. Moll wiegt.
+_MAJOR_PROFILE = np.array(
+    [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88]
+)
+_MINOR_PROFILE = np.array(
+    [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
+)
+
+# Camelot-Zahl je Grundton, Index 0 = C. Dur ist B, Moll ist A.
+_MAJOR_CAMELOT = [8, 3, 10, 5, 12, 7, 2, 9, 4, 11, 6, 1]
+_MINOR_CAMELOT = [5, 12, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10]
+
+
+def detect_key(path: Path) -> Key:
+    """Tonart in Camelot-Notation ueber Chroma-Korrelation."""
+    signal, sr = _load_audio(path)
+    chroma = librosa.feature.chroma_cqt(y=signal, sr=sr)
+    weights = np.mean(chroma, axis=1)
+
+    scores: list[tuple[float, str]] = []
+    for tonic in range(12):
+        rotated = np.roll(weights, -tonic)
+        for profile, table, letter in (
+            (_MAJOR_PROFILE, _MAJOR_CAMELOT, "B"),
+            (_MINOR_PROFILE, _MINOR_CAMELOT, "A"),
+        ):
+            correlation = float(np.corrcoef(rotated, profile)[0, 1])
+            scores.append((correlation, f"{table[tonic]}{letter}"))
+
+    scores.sort(reverse=True)
+    best_score, best_camelot = scores[0]
+    runner_up = scores[1][0]
+
+    # Konfidenz aus dem Abstand zum Zweitplatzierten: ein knapper Sieg
+    # bedeutet eine mehrdeutige Tonart.
+    margin = max(0.0, best_score - runner_up)
+    confidence = float(max(0.0, min(1.0, margin * 5.0)))
+    return Key(camelot=best_camelot, confidence=confidence)
