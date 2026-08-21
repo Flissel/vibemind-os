@@ -10,6 +10,8 @@ from djset.agents.profiler import build_profile
 from djset.agents.prompt_writer import render_markdown, write_prompts
 from djset.run import Run
 
+WATCH_DIRNAME = "watch"
+
 PLAN_BUDGET_TOKENS = 120_000
 # Wanduhrgrenze der Plan-Phase. Sie besteht aus hoechstens acht
 # Modellaufrufen (Profiler plus Prompt-Writer mit seinen Wiederholungen);
@@ -42,6 +44,10 @@ def cmd_plan(
         max_tokens=PLAN_BUDGET_TOKENS, max_seconds=PLAN_BUDGET_SECONDS
     )
     run = Run.create(base, genre, today=today or date.today())
+    # Der Ordner, in den der Nutzer gleich seine Suno-Downloads legen soll -
+    # die Schlussmeldung nennt ihn, also muss er auch existieren.
+    watch = base / WATCH_DIRNAME
+    watch.mkdir(parents=True, exist_ok=True)
 
     try:
         profile = build_profile(client, genre, length_minutes, budget)
@@ -61,7 +67,7 @@ def cmd_plan(
     print(f"Prompts: {run.path('prompts.md')}")
     print(
         f"\nGeneriere die {profile.track_count.request} Tracks bei Suno und "
-        f"lege die Downloads in {base / 'watch'} ab."
+        f"lege die Downloads in {watch} ab."
     )
     return 0
 

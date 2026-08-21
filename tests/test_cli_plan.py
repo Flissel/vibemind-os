@@ -75,3 +75,9 @@ def test_plan_agent_error_is_a_clean_failure(tmp_path: Path, capsys):
 
     assert code != 0
     assert "Fehler" in capsys.readouterr().err
+
+
+def test_plan_creates_the_watch_directory(tmp_path: Path):
+    """Die Schlussmeldung schickt den Nutzer nach watch/ - der muss da sein."""
+    cmd_plan(base=tmp_path, genre="liquid dnb", length_minutes=60.0, client=_client())
+    assert (tmp_path / "watch").is_dir()
