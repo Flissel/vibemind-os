@@ -15,3 +15,6 @@ venv/
 
 # Umgebung
 .env
+
+# SDD-Arbeitsverzeichnis
+.superpowers/

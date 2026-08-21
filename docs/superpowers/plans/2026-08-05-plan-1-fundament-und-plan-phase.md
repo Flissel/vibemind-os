@@ -63,7 +63,7 @@ Alle Modelle entstehen in einer Task, weil sie das gemeinsame Vokabular sind —
 
 **Interfaces:**
 - Consumes: nichts
-- Produces: `Profile`, `BpmRange`, `TransitionRules`, `EnergyPoint`, `TrackCount`, `StructureRules`, `Bpm`, `BeatGrid`, `Key`, `MixRegions`, `Loudness`, `Verdict`, `TrackMeasurements`, `TrackAnalysis`, `Rejection`, `Shortlist`, `MixEntry`, `EqPoint`, `EqCurve`, `Transition`, `MixPlan`, `Technique`
+- Produces: `Profile`, `BpmRange`, `TransitionRules`, `EnergyPoint`, `TrackCount`, `StructureRules`, `Bpm`, `BeatGrid`, `Key`, `MixRegions`, `Loudness`, `Verdict`, `TrackMeasurements`, `TrackAnalysis`, `Rejection`, `Shortlist`, `MixEntry`, `EqPoint`, `EqCurve`, `Transition`, `MixPlan`, `Technique`, `Strictness`, `CAMELOT_RE`, `MIN_TRACKS`
 
 - [ ] **Step 1: Projektdatei anlegen**
 
@@ -191,6 +191,10 @@ Strictness = Literal["strict", "loose"]
 
 CAMELOT_RE = r"^(1[0-2]|[1-9])[AB]$"
 
+# Untergrenze aus dem Spec: darunter waere es kein Set. Steht hier, damit sie
+# an genau einer Stelle definiert ist und im Typ erzwungen wird.
+MIN_TRACKS = 3
+
 
 class BpmRange(BaseModel):
     target: float = Field(gt=0)
@@ -224,8 +228,8 @@ class EnergyPoint(BaseModel):
 
 
 class TrackCount(BaseModel):
-    needed: int = Field(ge=3)
-    request: int = Field(ge=3)
+    needed: int = Field(ge=MIN_TRACKS)
+    request: int = Field(ge=MIN_TRACKS)
 
     @model_validator(mode="after")
     def _request_covers_needed(self) -> "TrackCount":
@@ -870,9 +874,13 @@ def _fade_in_track(path: Path, seconds: float = 20.0) -> Path:
     """Rauschen, das leise beginnt, laut wird und leise endet."""
     t = np.arange(int(seconds * SR)) / SR
     rng = np.random.default_rng(seed=7)
-    noise = rng.standard_normal(t.size).astype(np.float32) * 0.3
+    noise = rng.standard_normal(t.size).astype(np.float32)
     envelope = np.sin(np.pi * t / seconds).astype(np.float32)
-    sf.write(path, noise * envelope, SR)
+    signal = noise * envelope
+    # Auf sichere Aussteuerung normieren: Gauss-Rauschen hat unbeschraenkte
+    # Spitzen, ohne Normierung waere der True Peak zufaellig positiv.
+    signal = signal / (float(np.max(np.abs(signal))) * 1.2)
+    sf.write(path, signal.astype(np.float32), SR)
     return path
 
 
@@ -1455,7 +1463,7 @@ git commit -m "feat: Agent-Basis mit erzwungener Schemaausgabe und Budget"
 
 **Interfaces:**
 - Consumes: `run_agent`, `Budget`, `AgentClient` aus Task 7; `Profile`, `TrackCount` aus Task 1
-- Produces: `build_profile(client: AgentClient, genre: str, length_minutes: float, budget: Budget) -> Profile`, `OVERSHOOT_FACTOR`, `MIN_TRACKS`
+- Produces: `build_profile(client: AgentClient, genre: str, length_minutes: float, budget: Budget) -> Profile`, `OVERSHOOT_FACTOR`
 
 **Hintergrund:** Zwei Felder werden dem Modell nach der Antwort aus der Hand genommen: `length_minutes` steht auf der Kommandozeile und ist keine Meinungssache, und `track_count.request` folgt aus dem Overshoot-Faktor. Der Prompt fragt sie deshalb gar nicht erst ab — das Modell liefert einen Entwurf, der Code setzt die harten Werte.
 
@@ -1469,7 +1477,7 @@ import json
 import pytest
 
 from djset.agents.base import Budget, SchemaViolation
-from djset.agents.profiler import MIN_TRACKS, build_profile
+from djset.agents.profiler import build_profile
 from tests.fixtures.fake_client import FakeClient
 
 DRAFT = {
@@ -1508,12 +1516,14 @@ def test_overshoot_is_applied_by_code():
     assert profile.track_count.request == 18
 
 
-def test_track_count_is_lifted_to_the_minimum():
+def test_draft_below_the_track_floor_never_parses():
+    """Die Untergrenze von drei Tracks steckt im Vertrag: ein Entwurf darunter
+    kommt gar nicht erst durch die Validierung, statt still hochgesetzt zu werden."""
     draft = json.loads(json.dumps(DRAFT))
     draft["track_count"] = {"needed": 1, "request": 1}
-    client = FakeClient([json.dumps(draft)])
-    profile = build_profile(client, "liquid dnb", 5.0, Budget(max_tokens=100_000))
-    assert profile.track_count.needed == MIN_TRACKS
+    client = FakeClient([json.dumps(draft)] * 3)
+    with pytest.raises(SchemaViolation):
+        build_profile(client, "liquid dnb", 5.0, Budget(max_tokens=100_000))
 
 
 def test_the_genre_string_reaches_the_prompt():
@@ -1548,7 +1558,6 @@ from djset.agents.base import AgentClient, Budget, run_agent
 from djset.contracts import Profile, TrackCount
 
 OVERSHOOT_FACTOR = 1.5
-MIN_TRACKS = 3
 
 PROMPT = """Du bist ein erfahrener DJ und kennst die Konventionen elektronischer Genres.
 
@@ -1586,8 +1595,10 @@ def build_profile(
         budget,
     )
 
-    needed = max(MIN_TRACKS, draft.track_count.needed)
-    request = max(MIN_TRACKS, math.ceil(needed * OVERSHOOT_FACTOR))
+    # Die Untergrenze von drei Tracks erzwingt bereits der Vertrag, hier bleibt
+    # nur der Overshoot - und der ist Rechnung, keine Meinung des Modells.
+    needed = draft.track_count.needed
+    request = math.ceil(needed * OVERSHOOT_FACTOR)
 
     return draft.model_copy(
         update={
