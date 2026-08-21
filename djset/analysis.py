@@ -64,7 +64,16 @@ def analyse_all(
     budget: Budget,
     workers: int = DEFAULT_WORKERS,
 ) -> tuple[list[TrackAnalysis], list[UnreadableTrack]]:
-    """Analysiert alle Dateien und schreibt je ein Artefakt."""
+    """Analysiert alle Dateien und schreibt je ein Artefakt.
+
+    ACHTUNG zur Wiederaufnahme: ein vorhandenes Artefakt wird allein anhand
+    der track_id wiederverwendet, und die kommt aus dem Dateinamen. Der
+    Dateiinhalt wird nicht geprueft - `build --resume` setzt also voraus, dass
+    watch/ zwischen den Laeufen unveraendert bleibt. Wer einen Track bei Suno
+    neu generiert und unter demselben Titel wieder ablegt (Suno behaelt den
+    Titel bei), bekommt stillschweigend die alte Analyse. Dann `--resume`
+    weglassen oder das betroffene tracks/<id>.json loeschen.
+    """
 
     def one(file: AudioFile) -> TrackAnalysis | UnreadableTrack:
         existing = _read_existing(run, file.id)

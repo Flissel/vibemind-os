@@ -4,7 +4,9 @@ Weil ein Lauf unbeaufsichtigt stattfindet, sind die abgelegten Artefakte das
 einzige Fenster in seine Entscheidungen.
 """
 
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -81,9 +83,33 @@ class Run:
         return self.path(name).exists()
 
     def write_text(self, name: str, text: str) -> Path:
+        """Schreibt ein Artefakt unteilbar.
+
+        Erst in eine Nachbardatei, dann os.replace auf das Ziel - unter POSIX
+        und unter Windows (ab Python 3.3) ein atomarer Rename innerhalb
+        desselben Dateisystems. Ein Abbruch mitten im Schreiben hinterlaesst
+        damit entweder das alte Artefakt oder das neue, nie ein halbes.
+
+        Genau die halben Artefakte sind es, die djset.analysis._read_existing
+        beim Wiederaufnehmen abfangen muss. Die Nachsicht dort bleibt trotzdem
+        stehen: sie gilt auch fuer Dateien, die aus einem aelteren Lauf oder
+        von aussen kommen.
+
+        Der Temporaername kommt von mkstemp und ist damit eindeutig - die
+        Trackanalysen laufen aus vier Threads in denselben Ordner.
+        """
         target = self.path(name)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
+        handle, temporary = tempfile.mkstemp(
+            dir=target.parent, prefix=f"{target.name}.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                stream.write(text)
+            os.replace(temporary, target)
+        except BaseException:
+            Path(temporary).unlink(missing_ok=True)
+            raise
         return target
 
     def write_model(self, name: str, model: BaseModel) -> Path:

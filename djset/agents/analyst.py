@@ -116,7 +116,7 @@ def _measure(path: Path, track_id: str, hint_bpm: float | None) -> TrackMeasurem
 
 
 def _measure_in_corridor(
-    path: Path, track_id: str, profile: Profile
+    path: Path, track_id: str, profile: Profile, hint_bpm: float | None = None
 ) -> TrackMeasurements:
     """Misst und holt Halftime- oder Doubletime-Lesungen in den Korridor.
 
@@ -130,8 +130,15 @@ def _measure_in_corridor(
     zurechtgebogen: die Zahlen gehen so, wie sie gemessen wurden, an das Modell,
     und das urteilt darueber. Ein in sich stimmiger Datensatz ausserhalb des
     Korridors ist brauchbarer als ein frisierter innerhalb.
+
+    `hint_bpm` traegt den vom Modell angeforderten Tempo-Hinweis herein. Auch
+    dessen Ergebnis laeuft durch dieselbe Korridorpruefung: es ist die einzige
+    Stelle, an der eine Modellaeusserung eine Zahl steuert, die spaeter die
+    Cue-Punkte formt. Faellt es daneben und laesst sich die Oktave korrigieren,
+    passiert dasselbe wie bei der ersten Messung - neu messen und die Konfidenz
+    senken.
     """
-    measurements = _measure(path, track_id, None)
+    measurements = _measure(path, track_id, hint_bpm)
     snapped, corrected = snap_to_range(
         measurements.bpm.value, profile.bpm.min, profile.bpm.max
     )
@@ -199,9 +206,14 @@ def analyse_track(
         if answer.remeasure_with_bpm is None:
             break
         try:
-            # Der Hinweis kommt jetzt vom Modell, nicht mehr von snap_to_range -
-            # es gibt nichts mehr zu snappen, nur noch neu zu messen.
-            measurements = _measure(path, track_id, answer.remeasure_with_bpm)
+            # Der Hinweis kommt vom Modell, die Korridorpruefung bleibt
+            # trotzdem dieselbe. Ein Modell, das 87 als Halftime-Fehler erkennt
+            # und daraufhin 116 vorschlaegt, bekaeme sonst einen Datensatz
+            # ausserhalb des Profils zu voller Konfidenz - und Stufe 6 setzt
+            # ihre Cue-Punkte auf genau dieses Raster.
+            measurements = _measure_in_corridor(
+                path, track_id, profile, answer.remeasure_with_bpm
+            )
         except Exception as error:  # noqa: BLE001
             return UnreadableTrack(id=track_id, path=str(path), error=str(error))
         answer = run_agent(client, _prompt(measurements, profile), AnalystAnswer, budget)

@@ -161,3 +161,33 @@ def test_a_silent_file_is_unreadable_not_an_exception(
 
     assert isinstance(result, UnreadableTrack)
     assert client.calls == 0
+
+
+def test_a_model_requested_remeasure_is_checked_against_the_corridor(
+    tmp_path: Path, profile: Profile
+) -> None:
+    """Auch der Tempo-Hinweis des Modells laeuft durch snap_to_range.
+
+    Es ist die einzige Stelle der ganzen Kette, an der eine Modellaeusserung
+    eine Zahl steuert, die spaeter die Cue-Punkte formt: bar_length_s, energy
+    und mix_regions haengen alle am erkannten Raster, und Stufe 6 setzt darauf
+    ihre Cue-Punkte. Ein Modell, das hier danebengreift, bekam die Neumessung
+    bisher ungeprueft und zu voller Konfidenz zurueck.
+
+    Das Material laeuft sauber auf 174 BPM; das Modell fordert trotzdem eine
+    Neumessung mit 87. Ohne Korridorpruefung stuende danach ein
+    Halftime-Datensatz im Artefakt.
+    """
+    path = click_track(tmp_path / "t.wav", bpm=174.0, bars=BARS_AT_174)
+    asks_for_halftime = json.dumps(dict(ANSWER, remeasure_with_bpm=87.0))
+    client = FakeClient([asks_for_halftime, json.dumps(ANSWER)])
+
+    result = analyse_track(client, path, "t", profile, _budget())
+
+    assert isinstance(result, TrackAnalysis)
+    assert profile.bpm.min <= result.bpm.value <= profile.bpm.max
+    # Der Code hat die Oktave gedreht, also stammt das Tempo nicht mehr aus der
+    # Messung allein - genau wie beim ersten Durchgang faellt die Konfidenz.
+    assert result.bpm.confidence <= SNAP_CONFIDENCE_PENALTY
+    # Und das Modell sieht in der zweiten Runde den Korridorwert, nicht 87.
+    assert "174" in client.prompts[1]
