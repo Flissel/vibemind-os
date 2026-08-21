@@ -8,9 +8,10 @@ from pathlib import Path
 
 import librosa
 import numpy as np
+import pyloudnorm
 import soundfile as sf
 
-from djset.contracts import BeatGrid, Bpm, Key
+from djset.contracts import BeatGrid, Bpm, Key, Loudness, MixRegions, TrackMeasurements
 
 BEATS_PER_BAR = 4
 
@@ -199,3 +200,93 @@ def detect_key(path: Path) -> Key:
     margin = max(0.0, best_score - runner_up)
     confidence = float(max(0.0, min(1.0, margin * 5.0)))
     return Key(camelot=best_camelot, confidence=confidence)
+
+
+BARS_PER_ENERGY_STEP = 4
+_QUIET_FRACTION = 0.5  # Anteil der Spitzenenergie, ab dem ein Abschnitt als "im Groove" gilt
+
+
+def energy_curve(path: Path, grid: BeatGrid) -> list[float]:
+    """RMS je vier Takte, auf 0..1 normiert."""
+    signal, sr = _load_audio(path)
+    step_seconds = grid.bar_length_s * BARS_PER_ENERGY_STEP
+    step_samples = max(1, int(step_seconds * sr))
+
+    values: list[float] = []
+    for start in range(0, signal.size, step_samples):
+        chunk = signal[start:start + step_samples]
+        if chunk.size == 0:
+            continue
+        values.append(float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2))))
+
+    if not values:
+        return [0.0]
+    peak = max(values)
+    if peak <= 0.0:
+        return [0.0 for _ in values]
+    return [value / peak for value in values]
+
+
+def find_mix_regions(
+    energy: list[float], grid: BeatGrid, duration_s: float
+) -> MixRegions:
+    """Wo das Intro endet und das Outro beginnt.
+
+    Massstab ist die halbe Spitzenenergie: darunter laeuft der Track noch nicht
+    bzw. nicht mehr im vollen Groove und taugt zum Ueberblenden. Der Median
+    waere hier untauglich - bei einer normierten Kurve liegt er so tief, dass
+    auch die leisen Raender noch darueber liegen.
+    """
+    step_seconds = grid.bar_length_s * BARS_PER_ENERGY_STEP
+    threshold = max(energy) * _QUIET_FRACTION
+
+    loud = [index for index, value in enumerate(energy) if value >= threshold]
+    if not loud:
+        # Gleichfoermiger Track ohne erkennbaren Auf- und Abbau
+        return MixRegions(intro_end_s=0.0, outro_start_s=duration_s)
+
+    intro_end = min(loud) * step_seconds
+    outro_start = min((max(loud) + 1) * step_seconds, duration_s)
+    if intro_end >= outro_start:
+        intro_end = 0.0
+    return MixRegions(intro_end_s=intro_end, outro_start_s=outro_start)
+
+
+def measure_loudness(path: Path) -> Loudness:
+    """Integrierte Lautheit nach EBU R128 und True Peak."""
+    signal, sr = sf.read(str(path))
+    meter = pyloudnorm.Meter(sr)
+    lufs = float(meter.integrated_loudness(signal))
+
+    mono = signal if signal.ndim == 1 else np.mean(signal, axis=1)
+    # True Peak naeherungsweise ueber vierfaches Oversampling
+    upsampled = librosa.resample(
+        mono.astype(np.float32), orig_sr=sr, target_sr=sr * 4
+    )
+    peak = float(np.max(np.abs(upsampled)))
+    true_peak = 20.0 * np.log10(peak) if peak > 0 else -120.0
+    return Loudness(lufs_integrated=lufs, true_peak=float(true_peak))
+
+
+def measure_track(
+    path: Path, track_id: str, hint_bpm: float | None = None
+) -> TrackMeasurements:
+    """Alle Messungen eines Tracks in einem Aufruf."""
+    duration = float(librosa.get_duration(path=str(path)))
+    bpm, grid = detect_bpm_and_grid(path, hint_bpm=hint_bpm)
+    key = detect_key(path)
+    energy = energy_curve(path, grid)
+    regions = find_mix_regions(energy, grid, duration)
+    loudness = measure_loudness(path)
+
+    return TrackMeasurements(
+        id=track_id,
+        path=str(path),
+        duration_s=duration,
+        bpm=bpm,
+        beatgrid=grid,
+        key=key,
+        energy=energy,
+        mix_regions=regions,
+        loudness=loudness,
+    )
