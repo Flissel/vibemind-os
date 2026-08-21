@@ -167,3 +167,25 @@ def near_silent_click_track(
 
     sf.write(path, signal, sr)
     return path
+
+
+def graded_noise_track(
+    path: Path, sections: list[tuple[float, float]], sr: int = SR
+) -> Path:
+    """Rauschen in Abschnitten mit je exakt eingestelltem RMS-Pegel in dBFS.
+
+    `sections` ist eine Liste aus (Sekunden, RMS in dBFS). Damit laesst sich
+    der Normalfall eines Tracks nachbauen - leises Intro, lauter Koerper,
+    leises Outro - und pruefen, ob find_mix_regions die Grenzen dort findet,
+    wo sie liegen. Anders als eine handgeschriebene Kurve laeuft dieses
+    Material durch energy_curve und pinnt damit auch die Skala, auf der die
+    Schwelle rechnet.
+    """
+    rng = np.random.default_rng(seed=11)
+    parts = []
+    for seconds, rms_db in sections:
+        chunk = rng.standard_normal(int(seconds * sr)).astype(np.float32)
+        chunk = chunk / float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2)))
+        parts.append((chunk * (10.0 ** (rms_db / 20.0))).astype(np.float32))
+    sf.write(path, np.concatenate(parts), sr)
+    return path

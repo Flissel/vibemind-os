@@ -2,6 +2,7 @@ from datetime import date
 from pathlib import Path
 
 import numpy as np
+import pytest
 import soundfile as sf
 
 from djset.contracts import BeatGrid, TrackMeasurements
@@ -9,7 +10,9 @@ from djset.dsp.analyze import (
     energy_curve, find_mix_regions, measure_loudness, measure_track,
 )
 from djset.run import Run
-from tests.fixtures.make_audio import SR, click_track, near_silent_click_track
+from tests.fixtures.make_audio import (
+    SR, click_track, graded_noise_track, near_silent_click_track,
+)
 
 
 def _fade_in_track(path: Path, seconds: float = 20.0) -> Path:
@@ -51,6 +54,13 @@ def test_energy_curve_rises_then_falls(tmp_path: Path):
 
 
 def test_mix_regions_exclude_quiet_head_and_tail():
+    """Prueft die Arithmetik an einer handgeschriebenen Kurve.
+
+    Achtung beim Lesen: diese Form (Spitzenwert exakt 1.0) erzeugt
+    energy_curve seit der festen dB-Referenz nicht mehr. Der Test bewacht
+    also die Rechnung, nicht das Verhalten an echtem Material - dafuer ist
+    test_mix_regions_follow_a_graded_track da.
+    """
     grid = BeatGrid(first_downbeat_s=0.0, bar_length_s=2.0, confidence=1.0)
     curve = [0.05, 0.1, 0.9, 1.0, 0.9, 0.1, 0.05]
     regions = find_mix_regions(curve, grid, duration_s=56.0)
@@ -161,3 +171,43 @@ def test_mix_regions_of_a_silent_track_do_not_crash():
     regions = find_mix_regions([0.0] * 6, grid, duration_s=48.0)
     assert regions.intro_end_s == 0.0
     assert regions.outro_start_s == 48.0
+
+
+@pytest.mark.parametrize(
+    "quiet_db, body_db",
+    [(-20.0, -10.0), (-30.0, -8.0), (-45.0, -8.0)],
+)
+def test_mix_regions_follow_a_graded_track(
+    tmp_path: Path, quiet_db: float, body_db: float
+):
+    """Der Regionentest, der seine Kurve aus energy_curve bezieht.
+
+    Regression fuer die Schwelle in find_mix_regions: sie war als Faktor auf
+    eine peak-normierte, LINEARE Kurve geschrieben (dort exakt 6 dB unter
+    Peak). Auf der jetzt dB-linearen Kurve bedeutete derselbe Faktor 25 dB
+    und mehr unter Peak - ein Intro 10 bis 22 dB unter dem Koerper, bei
+    Suno-Material der Normalfall, verschwand vollstaendig und der ganze Track
+    galt als mischbar. Die handgeschriebene Kurve in
+    test_mix_regions_exclude_quiet_head_and_tail konnte das nicht fangen: sie
+    hat eine Form, die energy_curve gar nicht mehr erzeugt.
+
+    Deshalb kommt das Material hier durch die echte Kette - Datei ->
+    energy_curve -> find_mix_regions - und der Kontrast ist mit 10, 22 und
+    37 dB so gestuft, dass er den Bereich abdeckt, in dem der Fehler auftrat.
+    """
+    grid = BeatGrid(first_downbeat_s=0.0, bar_length_s=2.0, confidence=1.0)
+    # Schritt = 4 Takte a 2 s = 8 s. 16 s Intro, 24 s Koerper, 8 s Outro.
+    audio = graded_noise_track(
+        tmp_path / "graded.wav",
+        [(16.0, quiet_db), (24.0, body_db), (8.0, quiet_db)],
+    )
+
+    curve = energy_curve(audio, grid)
+    regions = find_mix_regions(curve, grid, duration_s=48.0)
+
+    # Der Kern: der Track ist NICHT von vorn bis hinten "im Groove".
+    assert regions.intro_end_s > 0.0
+    assert regions.outro_start_s < 48.0
+    # Und die Grenzen liegen auf den echten Uebergaengen.
+    assert regions.intro_end_s == 16.0
+    assert regions.outro_start_s == 40.0

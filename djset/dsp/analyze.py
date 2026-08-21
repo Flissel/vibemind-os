@@ -257,7 +257,14 @@ def detect_key(path: Path) -> Key:
 
 
 BARS_PER_ENERGY_STEP = 4
-_QUIET_FRACTION = 0.5  # Anteil der Spitzenenergie, ab dem ein Abschnitt als "im Groove" gilt
+
+# Wie weit unter der Spitzenenergie ein Abschnitt noch als "im Groove" gilt:
+# 6 dB, also halbe Leistung. Bewusst als dB-ABSTAND und nicht als Anteil -
+# die Energiekurve ist linear in dB (siehe energy_curve), auf ihr ist "halbe
+# Leistung" eine Subtraktion. Ein Faktor 0.5 auf dieser Skala waere etwas
+# voellig anderes: bei -10 dBFS Spitzenenergie entspraeche er 25 dB unter
+# Peak, und die Fensterbreite haengt zusaetzlich am Absolutpegel des Tracks.
+_QUIET_MARGIN_DB = 6.0
 
 # Feste Referenzspanne der Energiekurve: -60 dBFS wird zu 0.0, 0 dBFS
 # (Vollaussteuerung) zu 1.0, alles ausserhalb wird geklemmt. -60 dBFS liegt
@@ -319,24 +326,38 @@ def find_mix_regions(
 ) -> MixRegions:
     """Wo das Intro endet und das Outro beginnt.
 
-    Massstab ist die halbe Spitzenenergie DIESES Tracks: darunter laeuft er
-    noch nicht bzw. nicht mehr im vollen Groove und taugt zum Ueberblenden.
-    Der Bezug auf den eigenen Spitzenwert ist hier richtig - anders als bei
-    der Kurve selbst (siehe energy_curve) geht es nicht um den Vergleich
-    zweier Tracks, sondern um Auf- und Abbau innerhalb eines einzigen. Ein
-    durchgehend leiser Track hat trotzdem ein Intro.
+    Massstab sind 6 dB unter der Spitzenenergie DIESES Tracks: darunter
+    laeuft er noch nicht bzw. nicht mehr im vollen Groove und taugt zum
+    Ueberblenden. Der Bezug auf den eigenen Spitzenwert ist hier richtig -
+    anders als bei der Kurve selbst (siehe energy_curve) geht es nicht um den
+    Vergleich zweier Tracks, sondern um Auf- und Abbau innerhalb eines
+    einzigen.
 
-    Erwartet wird eine nichtleere Kurve mit Werten >= 0, so wie energy_curve
-    sie liefert. Einen Zweig fuer "nichts ist laut genug" braucht es dabei
-    nicht: der Spitzenwert selbst erreicht immer seine eigene Haelfte, die
-    Liste der lauten Abschnitte ist also nie leer. Der gleichfoermige Fall
-    (konstante Kurve, auch die Nullkurve) faellt damit in den Normalweg -
-    alles gilt als laut, das Intro endet bei 0.0, das Outro beginnt am
-    Trackende, der ganze Track ist mischbar. Genau das ist die richtige
-    Antwort, wenn es keinen erkennbaren Auf- und Abbau gibt.
+    Der Abstand wird SUBTRAHIERT, nicht multipliziert: die Kurve ist linear in
+    dB, ein Faktor waere darauf keine Pegeldifferenz mehr, sondern eine, die
+    mit dem Absolutpegel des Tracks waechst. Ein Intro 10 dB unter dem Koerper
+    - bei Suno-Material der Normalfall - verschwand so vollstaendig, der ganze
+    Track galt als "im Groove". Der Regressionstest dazu bezieht seine Kurve
+    aus energy_curve statt aus einer Literalliste, siehe
+    tests/dsp/test_measurements.py::test_mix_regions_follow_a_graded_track.
+
+    So gebaut ist die Schwelle wieder skaleninvariant: ein leiser, aber
+    hoerbarer Track behaelt sein Intro. Erst wenn die Spitzenenergie selbst
+    unter den Abstand faellt (unterhalb von etwa -54 dBFS), rutscht die
+    Schwelle unter null und der ganze Track gilt als mischbar - bei einem
+    Track dieser Lautstaerke die richtige Antwort.
+
+    Erwartet wird eine nichtleere Kurve, so wie energy_curve sie liefert.
+    Einen Zweig fuer "nichts ist laut genug" braucht es nicht: die Schwelle
+    liegt nie ueber dem Spitzenwert, der Abschnitt mit dem Spitzenwert zaehlt
+    also immer mit, und die Liste der lauten Abschnitte ist nie leer. Der
+    gleichfoermige Fall (konstante Kurve, auch die Nullkurve) faellt damit in
+    den Normalweg - alles gilt als laut, das Intro endet bei 0.0, das Outro
+    beginnt am Trackende. Genau das ist die richtige Antwort, wenn es keinen
+    erkennbaren Auf- und Abbau gibt.
     """
     step_seconds = grid.bar_length_s * BARS_PER_ENERGY_STEP
-    threshold = max(energy) * _QUIET_FRACTION
+    threshold = max(energy) - _QUIET_MARGIN_DB / -_ENERGY_FLOOR_DBFS
 
     loud = [index for index, value in enumerate(energy) if value >= threshold]
     intro_end = min(loud) * step_seconds
