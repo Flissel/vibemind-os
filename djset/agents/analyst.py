@@ -11,9 +11,10 @@ snap_to_range gegen den Profilkorridor, bevor das Modell die Zahlen sieht. Das
 Modell urteilt ueber Brauchbarkeit und Energiepegel, nicht ueber Faktor zwei.
 """
 
-import warnings
 from pathlib import Path
 
+import numpy as np
+import soundfile as sf
 from pydantic import BaseModel, Field
 
 from djset.agents.base import AgentClient, Budget, run_agent
@@ -32,6 +33,9 @@ SNAP_CONFIDENCE_PENALTY = 0.5
 
 # Hoechstens so viele Modellfragen pro Track.
 MAX_ROUNDS = 2
+
+# Unterhalb dieses Spitzenwerts enthaelt die Datei kein verwertbares Signal.
+_SILENCE_FLOOR = 1e-6
 
 
 class AnalystAnswer(BaseModel):
@@ -71,9 +75,10 @@ Beurteile:
 2. notes - eine knappe Begruendung in einem Satz. Bei usable false muss dort
    stehen, woran es liegt.
 3. energy_level - wo dieser Track auf der Energieskala des Bogens steht,
-   zwischen 0 und 1. Die gemessene Kurve ist trackrelativ und taugt dafuer
-   nicht; ordne den Track so ein, wie du ihn im Vergleich zu den Zielenergien
-   des Bogens hoerst.
+   zwischen 0 und 1. Die gemessene Energiekurve ist zwar vergleichbar normiert,
+   deckt bei fertig gemastertem Material aber nur einen schmalen Bereich um
+   0,75 bis 0,87 ab - zu eng fuer den Bogen von 0,30 bis 0,90. Ordne den Track
+   so ein, wie du ihn im Vergleich zu den Zielenergien des Bogens hoerst.
 4. remeasure_with_bpm - normalerweise null. Nur setzen, wenn die Zahlen auf ein
    falsch erkanntes Raster deuten und mit einem Tempo-Hinweis etwas Besseres
    herauskaeme. Nenne dann das vermutete Tempo.
@@ -81,20 +86,68 @@ Beurteile:
 Antworte ausschliesslich mit dem geforderten JSON."""
 
 
-def _snap_octave(measurements: TrackMeasurements, profile: Profile) -> TrackMeasurements:
-    """Haelt Halftime- und Doubletime-Lesungen an den Profilkorridor an."""
+def _has_signal(path: Path) -> bool:
+    """Ob die Datei ueberhaupt Signal enthaelt.
+
+    Digitale Stille ist der Fall, bei dem librosa warnt und danach eine
+    willkuerliche Tonart liefert. Der wird hier vorher abgefangen.
+
+    Bewusst nicht ueber warnings.catch_warnings: das veraendert eine globale
+    Liste und ist ausdruecklich nicht threadsicher, und ab Task 3 laeuft diese
+    Funktion aus einem Thread-Pool. Ein Blockdurchlauf ueber die Datei kostet
+    einen Bruchteil dessen, was die eigentliche Analyse ohnehin an Lesevorgaengen
+    braucht, und ist dafuer deterministisch.
+    """
+    peak = 0.0
+    with sf.SoundFile(path) as handle:
+        for block in handle.blocks(blocksize=1 << 16, dtype="float32"):
+            if block.size:
+                peak = max(peak, float(np.max(np.abs(block))))
+            if peak >= _SILENCE_FLOOR:
+                return True
+    return peak >= _SILENCE_FLOOR
+
+
+def _measure(path: Path, track_id: str, hint_bpm: float | None) -> TrackMeasurements:
+    """Misst einen Track und lehnt entartetes Material sauber ab."""
+    if not _has_signal(path):
+        raise ValueError("Die Datei enthaelt kein Signal")
+    return measure_track(path, track_id, hint_bpm=hint_bpm)
+
+
+def _measure_in_corridor(
+    path: Path, track_id: str, profile: Profile
+) -> TrackMeasurements:
+    """Misst und holt Halftime- oder Doubletime-Lesungen in den Korridor.
+
+    Wird neu gemessen statt die Zahl zu patchen, und zwar aus einem harten
+    Grund: bar_length_s, energy und mix_regions sind alle aus dem erkannten
+    Raster abgeleitet. Wer nur bpm.value ueberschreibt, erzeugt einen Datensatz,
+    der sich selbst widerspricht - 174 BPM neben einer Taktlaenge von 2,76
+    Sekunden - und Stufe 6 setzt ihre Cue-Punkte auf genau dieses Raster.
+
+    Bleibt die Neumessung trotz Hinweis ausserhalb des Korridors, wird nichts
+    zurechtgebogen: die Zahlen gehen so, wie sie gemessen wurden, an das Modell,
+    und das urteilt darueber. Ein in sich stimmiger Datensatz ausserhalb des
+    Korridors ist brauchbarer als ein frisierter innerhalb.
+    """
+    measurements = _measure(path, track_id, None)
     snapped, corrected = snap_to_range(
         measurements.bpm.value, profile.bpm.min, profile.bpm.max
     )
     if not corrected:
         return measurements
-    # model_validate statt model_copy(update=...): letzteres validiert nicht.
+
+    retried = _measure(path, track_id, snapped)
+    # Konfidenz senken: das Tempo stammt jetzt aus einem Hinweis, nicht mehr
+    # aus der Messung allein. model_validate statt model_copy(update=...),
+    # letzteres validiert in Pydantic v2 nicht.
     return TrackMeasurements.model_validate(
-        measurements.model_dump()
+        retried.model_dump()
         | {
             "bpm": {
-                "value": snapped,
-                "confidence": measurements.bpm.confidence * SNAP_CONFIDENCE_PENALTY,
+                "value": retried.bpm.value,
+                "confidence": retried.bpm.confidence * SNAP_CONFIDENCE_PENALTY,
             }
         }
     )
@@ -125,18 +178,6 @@ def _prompt(measurements: TrackMeasurements, profile: Profile) -> str:
     )
 
 
-def _measure(path: Path, track_id: str, hint_bpm: float | None) -> TrackMeasurements:
-    """Misst und macht librosa-Warnungen bei entartetem Material zu Fehlern.
-
-    Unter filterwarnings error waere eine Warnung ohnehin ein Absturz; hier wird
-    sie zu einem sauberen Messfehler, den der Aufrufer als UnreadableTrack
-    verbuchen kann, statt den ganzen Lauf zu reissen.
-    """
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        return measure_track(path, track_id, hint_bpm=hint_bpm)
-
-
 def analyse_track(
     client: AgentClient,
     path: Path,
@@ -147,22 +188,22 @@ def analyse_track(
 ) -> TrackAnalysis | UnreadableTrack:
     """Misst einen Track und holt das Urteil des Analysten dazu."""
     try:
-        measurements = _measure(path, track_id, None)
+        measurements = _measure_in_corridor(path, track_id, profile)
     except Exception as error:  # noqa: BLE001 - jede Messstoerung endet gleich
         return UnreadableTrack(id=track_id, path=str(path), error=str(error))
 
     rounds = max(1, max_rounds)
-    measurements = _snap_octave(measurements, profile)
     answer = run_agent(client, _prompt(measurements, profile), AnalystAnswer, budget)
 
     for _extra in range(rounds - 1):
         if answer.remeasure_with_bpm is None:
             break
         try:
+            # Der Hinweis kommt jetzt vom Modell, nicht mehr von snap_to_range -
+            # es gibt nichts mehr zu snappen, nur noch neu zu messen.
             measurements = _measure(path, track_id, answer.remeasure_with_bpm)
         except Exception as error:  # noqa: BLE001
             return UnreadableTrack(id=track_id, path=str(path), error=str(error))
-        measurements = _snap_octave(measurements, profile)
         answer = run_agent(client, _prompt(measurements, profile), AnalystAnswer, budget)
 
     return TrackAnalysis(

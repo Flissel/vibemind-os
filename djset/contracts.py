@@ -160,11 +160,15 @@ class Verdict(BaseModel):
 
     `energy_level` ordnet den Track auf derselben 0..1-Skala ein, auf der das
     Profil seinen energy_arc beschreibt. Bewusst vom Agenten vergeben und nicht
-    aus TrackMeasurements.energy gerechnet: die gemessene Kurve ist trackrelativ
-    und ueber Tracks hinweg nicht vergleichbar, waehrend der Bogen absolute
-    Zielenergien nennt. Dasselbe Modell, das den Bogen geschrieben hat, ordnet
-    die Tracks darauf ein - das ist die einzige Stelle, an der beide Skalen
-    zuverlaessig zusammenfinden.
+    aus TrackMeasurements.energy gerechnet, aber nicht weil die Kurve
+    trackrelativ waere - sie ist gegen eine feste dBFS-Referenz normiert und
+    ueber aehnlich gemastertes Material sehr wohl vergleichbar. Der Grund ist
+    ein anderer: ihr praktischer Wertebereich fuer fertig gemastertes Material
+    liegt zwischen etwa 0,75 und 0,87, waehrend ein vom Modell geschriebener
+    Bogen ueber 0,30 bis 0,90 laeuft. Tracks direkt auf diesen Bogen abzubilden
+    waere deshalb stark gestaucht. Dasselbe Modell, das den Bogen geschrieben
+    hat, ordnet die Tracks darauf ein - das ist die einzige Stelle, an der
+    beide Skalen zuverlaessig zusammenfinden.
     """
 
     usable: bool
@@ -194,10 +198,11 @@ class TrackMeasurements(BaseModel):
     bpm: Bpm
     beatgrid: BeatGrid
     key: Key
-    # ACHTUNG: trackrelativ. Die Kurve ist gegen eine feste dBFS-Referenz
-    # normiert und damit innerhalb eines Tracks aussagekraeftig - fuer die
-    # Mix-Regionen. Sie ist NICHT die Groesse, an der Stufe 5 Tracks
-    # miteinander vergleicht; dafuer gibt es Verdict.energy_level.
+    # Gegen eine feste dBFS-Referenz normiert, also ueber aehnlich gemastertes
+    # Material vergleichbar - siehe den Docstring von dsp.analyze.energy_curve.
+    # Fuer die Einordnung auf profile.energy_arc ist sie trotzdem nicht die
+    # richtige Groesse, weil ihr praktischer Bereich viel enger ist als der des
+    # Bogens; dafuer gibt es Verdict.energy_level.
     energy: list[float] = Field(min_length=1)
     mix_regions: MixRegions
     loudness: Loudness
