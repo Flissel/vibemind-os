@@ -1,7 +1,17 @@
 """Messungen am Audio. Dieses Modul faellt keine Urteile.
 
-Wo eine Messung mehrdeutig ist (Tempo-Oktave, Dur/Moll), gibt es eine
-Konfidenz zurueck und ueberlaesst die Entscheidung dem aufrufenden Agenten.
+Wo eine Messung mehrdeutig ist, gibt es eine Konfidenz dazu und ueberlaesst
+die Entscheidung dem aufrufenden Agenten. Die Konfidenzen bedeuten dabei
+Verschiedenes, und zwar genau das, was hier ehrlich messbar ist:
+
+- `Key.confidence` ist der Abstand zum zweitbesten Tonart-Kandidaten, sagt
+  also tatsaechlich etwas ueber die Mehrdeutigkeit Dur/Moll aus
+- `BeatGrid.confidence` ist die Regelmaessigkeit der Beatabstaende
+- `Bpm.confidence` ist derselbe Wert und sagt damit NICHTS ueber die
+  Tempo-Oktave: eine saubere Halftime-Lesung ist gleichmaessig und bekommt
+  eine hohe Konfidenz. Die Oktavenfrage entscheidet der Agent am
+  BPM-Korridor des Profils, siehe snap_to_range und die Docstrings von Bpm
+  und BeatGrid in djset.contracts.
 """
 
 import math
@@ -216,9 +226,10 @@ def detect_key(path: Path) -> Key:
     # errstate: bei einer stillen oder konstanten Datei ist das Chroma-Profil
     # ueberall gleich, np.corrcoef teilt dann durch eine Standardabweichung
     # von 0 und wirft je Durchlauf ein "invalid value encountered in divide" -
-    # rund 50 Warnungen fuer eine einzige Datei. Das Ergebnis ist NaN, faellt
-    # in der Sortierung nach hinten und ergibt eine Konfidenz von 0.0; genau
-    # die ist das Signal, an dem der Agent eine unbrauchbare Datei erkennt.
+    # rund 50 Warnungen fuer eine einzige Datei. Die Korrelationen sind dann
+    # NaN, und der Abstand zum Zweitbesten faellt weiter unten auf 0.0
+    # zusammen: genau die Konfidenz 0.0 ist das Signal, an dem der Agent eine
+    # unbrauchbare Datei erkennt.
     # Die Warnungen sagen daneben nichts Eigenes und wuerden unter
     # filterwarnings=error (siehe pyproject.toml) eine ganze Analyse
     # abbrechen. (librosa warnt bei solchem Material zusaetzlich einmal mit
