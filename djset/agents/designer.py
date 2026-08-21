@@ -66,8 +66,10 @@ Woran du dich orientierst:
 - Zwei ruhige Tracks nebeneinander wollen einen langen, weichen Blend.
 - Ein eq_swap taugt, wenn beide Tracks eine tragende Bassline haben.
 - Ein filter_sweep ueberbrueckt einen Wechsel der Klangfarbe.
-- Steht bei einem Uebergang "Stretch nicht moeglich", muss die Technik cut
-  sein: die Tempi liegen zu weit auseinander, um sie anzugleichen.
+- Steht bei einem Uebergang "Tempi nicht angleichbar", wird er vom Code
+  automatisch zu einem Schnitt gemacht - die Tempi liegen zu weit auseinander,
+  um sie anzugleichen. Deine Technikwahl wird dort verworfen; waehle trotzdem
+  eine aus der erlaubten Liste.
 
 Antworte ausschliesslich mit dem geforderten JSON."""
 
@@ -90,6 +92,20 @@ def _ratio(track: TrackAnalysis, target_bpm: float) -> float:
     if MIN_RATIO <= ratio <= MAX_RATIO:
         return ratio
     return 1.0
+
+
+def _is_unstretchable(track: TrackAnalysis, ratio: float, target_bpm: float) -> bool:
+    """Ob der Track nicht auf das Ziel-Tempo gezogen werden konnte.
+
+    Ratio 1.0 heisst entweder "liegt schon auf dem Ziel" oder "liess sich nicht
+    angleichen". Erst der Tempovergleich trennt die beiden Faelle.
+    """
+    return ratio == 1.0 and track.bpm.value != target_bpm
+
+
+def _available_bars(span_s: float, bar_length_s: float) -> int:
+    """Wie viele ganze Takte in eine Zeitspanne passen."""
+    return max(0, int(span_s / bar_length_s))
 
 
 def _eq_curve(technique: Technique, outgoing: bool) -> EqCurve:
@@ -149,15 +165,41 @@ def build_mixplan(
 
     ratios = {tid: _ratio(by_id[tid], target_bpm) for tid in order}
 
-    # Ein Track, der nicht angeglichen werden kann, bekommt einen harten
-    # Schnitt in sich hinein - Blenden wuerde nach Takt zwei auseinanderlaufen.
+    # Zwei Korrekturen an dem, was das Modell gewaehlt hat.
+    #
+    # Technik: laesst sich einer der beiden Tracks nicht auf das Ziel-Tempo
+    # ziehen, wird der Uebergang ein Schnitt - egal auf welcher Seite er steht.
+    # Zwei Tempi mehr als sechs Prozent auseinander laufen nach wenigen Takten
+    # hoerbar auseinander, und das gilt symmetrisch. Spec Abschnitt 7 nennt Cut
+    # statt Blend ausdruecklich als Ausweg und setzt sich damit bewusst ueber
+    # die Technikliste des Profils hinweg.
+    #
+    # Taktzahl: ein Uebergang kann nicht laenger sein als das Material, das
+    # beide Seiten hergeben. Ein Track ohne erkennbares Intro liefert null
+    # Takte - dann wird der Uebergang zum Stoss auf dem Downbeat, statt
+    # Sekunden zu deklarieren, die niemand fuellt.
     effective: list[TransitionChoice] = []
     for index, choice in enumerate(choices):
-        incoming = order[index + 1]
-        if ratios[incoming] == 1.0 and by_id[incoming].bpm.value != target_bpm:
-            effective.append(TransitionChoice(technique="cut", bars=choice.bars))
-        else:
-            effective.append(choice)
+        outgoing = by_id[order[index]]
+        incoming = by_id[order[index + 1]]
+
+        technique = choice.technique
+        if _is_unstretchable(
+            outgoing, ratios[outgoing.id], target_bpm
+        ) or _is_unstretchable(incoming, ratios[incoming.id], target_bpm):
+            technique = "cut"
+
+        out_bars = _available_bars(
+            outgoing.duration_s - outgoing.mix_regions.outro_start_s,
+            outgoing.beatgrid.bar_length_s,
+        )
+        in_bars = _available_bars(
+            incoming.mix_regions.intro_end_s - incoming.beatgrid.first_downbeat_s,
+            incoming.beatgrid.bar_length_s,
+        )
+        bars = max(1, min(choice.bars, out_bars, in_bars))
+
+        effective.append(TransitionChoice(technique=technique, bars=bars))
 
     entries: list[MixEntry] = []
     for index, track_id in enumerate(order):
@@ -224,8 +266,11 @@ def _table(setlist: Setlist, by_id: dict[str, TrackAnalysis], profile: Profile) 
     for index in range(len(setlist.order) - 1):
         a = by_id[setlist.order[index]]
         b = by_id[setlist.order[index + 1]]
-        stretchable = MIN_RATIO <= profile.bpm.target / b.bpm.value <= MAX_RATIO
-        note = "" if stretchable else "  [Stretch nicht moeglich]"
+        # Beide Seiten pruefen, nicht nur die eingehende: der Schnitt-Ausweg
+        # greift symmetrisch (siehe build_mixplan).
+        a_stretchable = MIN_RATIO <= profile.bpm.target / a.bpm.value <= MAX_RATIO
+        b_stretchable = MIN_RATIO <= profile.bpm.target / b.bpm.value <= MAX_RATIO
+        note = "" if (a_stretchable and b_stretchable) else "  [Tempi nicht angleichbar]"
         lines.append(
             f"{index + 1}. {a.id} ({a.bpm.value:.1f} BPM, {a.key.camelot}, "
             f"Energie {a.verdict.energy_level:.2f}) nach {b.id} "
