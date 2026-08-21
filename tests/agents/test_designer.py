@@ -3,7 +3,7 @@ import json
 import pytest
 
 from djset.agents.base import Budget, StageRulesViolated
-from djset.agents.designer import design, snap_to_downbeat
+from djset.agents.designer import MAX_GAIN_DB, design, snap_to_downbeat
 from djset.contracts import (
     MAX_RATIO,
     MIN_RATIO,
@@ -167,6 +167,71 @@ def test_an_unstretchable_track_gets_a_cut_and_no_stretch(profile: Profile) -> N
     by_id = {e.track_id: e for e in plan.entries}
     assert by_id["b"].timestretch_ratio == 1.0
     assert plan.transitions[0].technique == "cut"
+
+
+def test_the_gain_pulls_every_track_to_the_median_loudness(profile: Profile) -> None:
+    """Finding 8: gain_db war fest 0.0, obwohl lufs_integrated gemessen dasteht.
+
+    Der Renderer darf laut Spec nichts entscheiden, der Abgleich muss also hier
+    passieren. Referenz ist der Median des Sets.
+    """
+    tracks = many(5)
+    for track, lufs in zip(tracks, [-12.0, -9.0, -8.0, -7.0, -6.0]):
+        track.loudness.lufs_integrated = lufs
+    setlist = Setlist(order=[t.id for t in tracks], note="")
+
+    plan = design(FakeClient([_choices(4)]), setlist, tracks, profile, _budget())
+
+    gains = {e.track_id: e.gain_db for e in plan.entries}
+    # Median der fuenf Werte ist -8.0.
+    assert gains[tracks[2].id] == 0.0
+    assert gains[tracks[0].id] == pytest.approx(4.0)
+    assert gains[tracks[4].id] == pytest.approx(-2.0)
+
+
+def test_a_broken_loudness_measurement_cannot_blow_up_the_mix(
+    profile: Profile,
+) -> None:
+    """Der Bodenwert -120 dB fuer digitale Stille steht so im Vertrag. Ohne
+    Klammer verlangte er eine Anhebung um ueber 110 dB."""
+    tracks = many(5)
+    tracks[1].loudness.lufs_integrated = -120.0
+    setlist = Setlist(order=[t.id for t in tracks], note="")
+
+    plan = design(FakeClient([_choices(4)]), setlist, tracks, profile, _budget())
+
+    gains = {e.track_id: e.gain_db for e in plan.entries}
+    assert gains[tracks[1].id] == MAX_GAIN_DB
+    assert all(abs(gain) <= MAX_GAIN_DB for gain in gains.values())
+
+
+def test_a_cut_switches_at_the_transition_start(profile: Profile) -> None:
+    """Finding 4: ein Schnitt schneidet, er blendet nicht spaet.
+
+    Die alte Vorlage hielt den eingehenden Track bis Position 0,9 auf -60 dB.
+    Bei 16 Takten spielte er damit 14,4 Takte lang unhoerbar mit, und der
+    Wechsel fiel auf Takt 14,4 - unter keiner Rasterung ein Downbeat. Beide
+    Kurven stehen jetzt von Anfang bis Ende auf ihrem Endwert, die Umschaltung
+    liegt also bei start_at_s, und das ist ein Downbeat beider Tracks.
+    """
+    tracks = [
+        make_analysis("a", bpm=174.0, camelot="8A", energy=0.3),
+        make_analysis("b", bpm=140.0, camelot="8B", energy=0.6),
+        make_analysis("c", bpm=174.0, camelot="9B", energy=0.8),
+    ]
+    setlist = Setlist(order=["a", "b", "c"], note="")
+
+    plan = design(FakeClient([_choices(2)]), setlist, tracks, profile, _budget())
+
+    transition = plan.transitions[0]
+    assert transition.technique == "cut"
+    for band in ("low", "mid", "high"):
+        out_points = getattr(transition.eq_out, band)
+        in_points = getattr(transition.eq_in, band)
+        assert [p.gain_db for p in out_points] == [-60.0, -60.0]
+        assert [p.gain_db for p in in_points] == [0.0, 0.0]
+        assert [p.position for p in out_points] == [0.0, 1.0]
+        assert [p.position for p in in_points] == [0.0, 1.0]
 
 
 def test_the_timeline_runs_forward_without_gaps(profile: Profile) -> None:

@@ -36,6 +36,11 @@ from djset.contracts import (
 
 MAX_ROUNDS = 3
 
+# Wie weit der Pegelabgleich einen Track hoechstens verschiebt. 6 dB deckt den
+# Abstand ab, den normal gemastertes Material untereinander hat; alles
+# darueber ist keine Lautheitsdifferenz mehr, sondern eine Fehlmessung.
+MAX_GAIN_DB = 6.0
+
 
 class TransitionChoice(BaseModel):
     technique: Technique
@@ -100,6 +105,41 @@ def _is_unstretchable(track: TrackAnalysis, ratio: float, target_bpm: float) -> 
     return ratio == 1.0 and track.bpm.value != target_bpm
 
 
+def _gains(order: list[str], by_id: dict[str, TrackAnalysis]) -> dict[str, float]:
+    """Wie weit jeder Track angehoben oder abgesenkt wird.
+
+    Suno liefert Tracks mit deutlich verschiedener Lautheit, und die Spec
+    verbietet dem Render-Engineer eigene Entscheidungen - der Pegelabgleich
+    kann also nicht an ihn abgeschoben werden, er gehoert hierher. Gemessen
+    ist er laengst: lufs_integrated stand bisher im Artefakt und wurde von
+    niemandem benutzt.
+
+    Referenz ist der MEDIAN der Lautheiten des Sets, nicht ein fester Zielwert
+    wie -14 LUFS: das Set soll in sich gleich laut sein, und wo es insgesamt
+    liegt, entscheidet die Normalisierung des Renderers in Plan 3 gegen das
+    True-Peak-Kriterium. Der Median statt des Mittelwerts, weil ein einzelner
+    Ausreisser - ein still gemessener oder kaputt gemasterter Track - sonst
+    alle anderen mitzoege.
+
+    Geklammert auf MAX_GAIN_DB: eine Fehlmessung (der Bodenwert -120 dB fuer
+    digitale Stille steht so im Vertrag) wuerde sonst eine Anhebung um 110 dB
+    verlangen und den Mix zerreissen. Ein Track, der die Klammer braucht, ist
+    ohnehin ein Fall fuer den Curator.
+    """
+    levels = sorted(by_id[tid].loudness.lufs_integrated for tid in order)
+    middle = len(levels) // 2
+    reference = (
+        levels[middle]
+        if len(levels) % 2
+        else (levels[middle - 1] + levels[middle]) / 2.0
+    )
+    gains: dict[str, float] = {}
+    for tid in order:
+        raw = reference - by_id[tid].loudness.lufs_integrated
+        gains[tid] = max(-MAX_GAIN_DB, min(MAX_GAIN_DB, raw))
+    return gains
+
+
 # Ein Hauch Toleranz vor dem Abschneiden ganzer Takte. Die Zeiten kommen aus
 # Fliesskommarechnung: acht Takte, einmal gesnappt und wieder abgezogen,
 # ergeben 7,999999999999 - und int() macht daraus sieben. 1e-9 Takte sind bei
@@ -151,13 +191,21 @@ def _eq_curve(technique: Technique, outgoing: bool) -> EqCurve:
         ]
 
     if technique == "cut":
-        # Harter Schnitt: die Umschaltung passiert in der letzten Zehntel.
-        hard = [
-            EqPoint(position=0.0, gain_db=start),
-            EqPoint(position=0.9, gain_db=start),
+        # Ein Schnitt ist ein Schnitt: beide Kurven stehen von Anfang an auf
+        # ihrem Endwert, die Umschaltung passiert bei start_at_s. Das ist nach
+        # der Downbeat-Korrektur ein Downbeat beider Tracks.
+        #
+        # Vorher lag der Umschaltpunkt bei Position 0.9 des Uebergangs: bei 16
+        # Takten spielte der eingehende Track 14,4 Takte lang unhoerbar mit und
+        # der Wechsel fiel auf Takt 14,4 - unter keiner Rasterung ein Downbeat.
+        # Ausgerechnet beim Schnitt: den waehlt der Code genau dann, wenn die
+        # Tempi mehr als sechs Prozent auseinanderliegen, also im Fall, in dem
+        # Ausrichtung am schwersten ist.
+        flat = [
+            EqPoint(position=0.0, gain_db=end),
             EqPoint(position=1.0, gain_db=end),
         ]
-        return EqCurve(low=hard, mid=hard, high=hard)
+        return EqCurve(low=flat, mid=flat, high=flat)
 
     if technique == "eq_swap":
         # Die Baesse tauschen frueh und schnell, damit sie sich nie stapeln.
@@ -197,6 +245,7 @@ def build_mixplan(
     # Einmal je Track gesnappt, danach ist dieser Wert das Outro - fuer die
     # Materialrechnung, fuer play_to_s und fuer die Position des Uebergangs.
     outros = {tid: _snapped_outro(by_id[tid]) for tid in order}
+    gains = _gains(order, by_id)
 
     # Zwei Korrekturen an dem, was das Modell gewaehlt hat.
     #
@@ -264,7 +313,7 @@ def build_mixplan(
                 play_from_s=play_from,
                 play_to_s=play_to,
                 timestretch_ratio=ratios[track_id],
-                gain_db=0.0,
+                gain_db=gains[track_id],
             )
         )
 
