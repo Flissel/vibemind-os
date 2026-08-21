@@ -196,7 +196,7 @@ class Transition(BaseModel):
 
 class MixPlan(BaseModel):
     target_length_s: float = Field(gt=0)
-    entries: list[MixEntry] = Field(min_length=3)
+    entries: list[MixEntry] = Field(min_length=MIN_TRACKS)
     transitions: list[Transition]
 
     @model_validator(mode="after")
