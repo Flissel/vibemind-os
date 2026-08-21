@@ -23,8 +23,14 @@ def _load_audio(path: Path) -> tuple[np.ndarray, int]:
     deprecated markierten Stdlib-Module 'aifc', 'audioop' und 'sunau'
     importiert und DeprecationWarnings ausloest - unabhaengig vom
     tatsaechlichen Dateiformat. Das laesst sich nicht per Aufrufsignatur an
-    librosa.load abstellen, deshalb lesen wir direkt ueber soundfile (WAV
-    reicht fuer unsere Zwecke) und mischen bei Bedarf auf Mono ab.
+    librosa.load abstellen, deshalb lesen wir direkt ueber soundfile (WAV,
+    FLAC und MP3 werden vom installierten libsndfile gelesen, siehe
+    tests/dsp/test_bpm.py) und mischen bei Bedarf auf Mono ab.
+
+    Spaetere Erweiterungen dieses Moduls (Tasks 4/5) sollten diese Funktion
+    fuer jeden Audio-Ladevorgang wiederverwenden statt erneut
+    librosa.load(...) aufzurufen, sonst kommen die Deprecation-Warnings
+    zurueck.
     """
     with sf.SoundFile(str(path)) as sf_desc:
         sr = sf_desc.samplerate
@@ -32,6 +38,52 @@ def _load_audio(path: Path) -> tuple[np.ndarray, int]:
     if signal.ndim > 1:
         signal = librosa.to_mono(signal)
     return signal, int(sr)
+
+
+def _has_signal_energy(
+    signal: np.ndarray, sr: int, time_s: float, window_s: float = 0.05, min_ratio: float = 0.05
+) -> bool:
+    """Prueft, ob im Zeitfenster um time_s tatsaechlich Audioenergie liegt.
+
+    Wird benutzt, um Phantom-Beats an den Raendern zu erkennen (siehe
+    detect_bpm_and_grid, trim=False). Die Onset-Staerke selbst kann das an
+    Rand-Frames nicht: der allererste Analyse-Frame von
+    librosa.onset.onset_strength ist strukturell immer 0.0, weil fuer die
+    Flussberechnung kein Vorgaengerframe existiert - unabhaengig davon, ob
+    dort tatsaechlich ein Klang liegt. Deshalb schauen wir stattdessen auf
+    das rohe Signal.
+    """
+    center = int(round(time_s * sr))
+    half = max(1, int(round(window_s * sr / 2)))
+    lo = max(0, center - half)
+    hi = min(signal.shape[-1], center + half)
+    if hi <= lo:
+        return False
+    window_peak = float(np.max(np.abs(signal[lo:hi])))
+    overall_peak = float(np.max(np.abs(signal))) if signal.size else 0.0
+    if overall_peak <= 0.0:
+        return False
+    return window_peak >= min_ratio * overall_peak
+
+
+def _drop_unsupported_edge_beats(
+    beat_times: np.ndarray, signal: np.ndarray, sr: int
+) -> np.ndarray:
+    """Entfernt Phantom-Beats an Anfang und Ende ohne Energie-Deckung.
+
+    trim=False bewahrt echte Randbeats (siehe detect_bpm_and_grid), erlaubt
+    dem Beat-Tracker aber auch, am Rand einen zusaetzlichen Beat genau eine
+    Periode vor dem ersten bzw. nach dem letzten tatsaechlich gemessenen
+    Onset zu platzieren - ohne jede Entsprechung im Signal, etwa in einem
+    stillen Vorlauf vor dem eigentlichen Trackstart. Diese Funktion
+    verwirft nur Randbeats ohne Energie-Deckung, laesst aber echte
+    Randbeats (z. B. einen Click exakt bei t=0) unangetastet.
+    """
+    while beat_times.size > 1 and not _has_signal_energy(signal, sr, float(beat_times[0])):
+        beat_times = beat_times[1:]
+    while beat_times.size > 1 and not _has_signal_energy(signal, sr, float(beat_times[-1])):
+        beat_times = beat_times[:-1]
+    return beat_times
 
 
 def snap_to_range(bpm: float, low: float, high: float) -> tuple[float, bool]:
@@ -62,7 +114,10 @@ def detect_bpm_and_grid(
         kwargs["start_bpm"] = hint_bpm
     # trim=False: der Default verwirft den ersten erkannten Beat als "zu
     # schwach am Rand", was bei einem Clicktrack den echten Downbeat bei
-    # t~=0 unterschlaegt und first_downbeat_s verfaelscht.
+    # t~=0 unterschlaegt und first_downbeat_s verfaelscht. Das eroeffnet im
+    # Gegenzug die Moeglichkeit eines Phantom-Beats ohne Signal-Entsprechung
+    # (z. B. in einem stillen Vorlauf) - dem begegnet
+    # _drop_unsupported_edge_beats() weiter unten gezielt.
     raw_tempo, beat_frames = librosa.beat.beat_track(
         onset_envelope=onset, sr=sr, units="frames", trim=False, **kwargs
     )
@@ -71,6 +126,7 @@ def detect_bpm_and_grid(
     beat_times = librosa.frames_to_time(beat_frames, sr=sr)
     if beat_times.size == 0:
         raise ValueError(f"keine Beats erkennbar in {path}")
+    beat_times = _drop_unsupported_edge_beats(beat_times, signal, sr)
 
     # Konfidenz: wie gleichmaessig die Beatabstaende sind. Ein sauberer
     # Viervierteltakt liefert nahezu konstante Abstaende.
