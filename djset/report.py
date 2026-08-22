@@ -32,14 +32,30 @@ def correction_gain_db(report: QaReport) -> float | None:
 
 
 def _status_line(qa: QaReport, corrected: bool) -> str:
-    """Die eine Zeile, die beantwortet, ob der Lauf ohne Nachlesen brauchbar ist."""
-    if qa.ok:
-        return "Keine Befunde - sauber ausgeliefert."
+    """Die eine Zeile, die beantwortet, ob der Lauf ohne Nachlesen brauchbar ist.
+
+    `corrected` wird VOR `qa.ok` geprueft. Der normale Erfolgsfall einer
+    Korrektur ist genau der, bei dem der neu gemessene Report danach sauber
+    ist (`qa.ok` also wahr ist) - wuerde `qa.ok` zuerst geprueft, wuerde
+    dieser Fall als "Keine Befunde - sauber ausgeliefert." gemeldet und die
+    Korrektur damit aus der einen Zeile verschwinden, die genau dafuer da ist
+    (Fund aus Fix Round 1: der Reviewer produzierte exakt diesen Fall).
+    Spec Abschnitt 7 verlangt Auslieferung "mit Vermerk" - ein korrigierter,
+    jetzt sauberer Lauf ist ein eigenes, meldenswertes Ergebnis, kein
+    unkorrigierter sauberer Lauf.
+    """
     if corrected:
+        if qa.ok:
+            return (
+                "Einmal mit korrigiertem Pegel neu gerendert, danach ohne "
+                "Befund."
+            )
         return (
             "Befunde vorhanden, danach einmal mit korrigiertem Pegel neu "
             "gerendert und mit Vermerk ausgeliefert."
         )
+    if qa.ok:
+        return "Keine Befunde - sauber ausgeliefert."
     return "Befunde vorhanden, mit Vermerk ausgeliefert (siehe unten)."
 
 
@@ -61,6 +77,16 @@ def render_qa_report(
     Runden). Jede Sektion nennt explizit "keine"/"nichts", statt bei leerem
     Inhalt zu fehlen - ein Leser soll nie raten muessen, ob eine Sektion
     weggelassen wurde oder tatsaechlich nichts zu melden war.
+
+    Welcher `qa`-Report bei `corrected=True` uebergeben wird, entscheidet die
+    aufrufende Stufe (Task 8), nicht diese Funktion - sie validiert das nicht.
+    Er MUSS aber der neu gemessene Report des korrigierten Re-Renders sein,
+    nicht der urspruengliche, der die Korrektur erst ausgeloest hat: "Das
+    fertige Set" und die Statuszeile lesen `length_s`, `lufs_integrated` und
+    `true_peak` direkt aus `qa` und wuerden sonst Werte zeigen, die nicht mehr
+    zum tatsaechlich ausgelieferten File passen - der Bericht behauptet dann
+    faelschlich, was ausgeliefert wurde, sei noch der Pegel, der die
+    Korrektur ausgeloest hat.
     """
     lines = ["# QA-Bericht", "", f"**Status:** {_status_line(qa, corrected)}", ""]
 

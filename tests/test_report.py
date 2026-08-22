@@ -46,3 +46,21 @@ def test_the_report_names_every_rejection_and_finding() -> None:
     assert "am Genre vorbei" in text
     assert "Naht bei 3:20 wackelt" in text
     assert "d" in text
+
+
+def test_a_corrected_and_now_clean_report_says_so_in_the_headline() -> None:
+    """Fix Round 1: eine Korrektur ist ein eigenes Ergebnis, keine stille
+    Weglassung. `corrected=True` zusammen mit einem jetzt sauberen Report
+    (dem NORMALEN Ausgang einer erfolgreichen Korrektur) darf die Statuszeile
+    nicht als schlichtes "sauber ausgeliefert" melden - Spec Abschnitt 7
+    verlangt Auslieferung "mit Vermerk", und dieser Vermerk gehoert in die
+    eine Zeile, die ohne Weiterlesen beantwortet, was passiert ist.
+    """
+    shortlist = Shortlist(accepted=["a", "b", "c"], rejected=[], shortened=False, note="passt")
+    report = _report(-2.0, [])
+
+    text = render_qa_report(report, shortlist, [], None, corrected=True)
+
+    status_line = next(line for line in text.splitlines() if line.startswith("**Status:**"))
+    assert "korrigiert" in status_line
+    assert status_line != "**Status:** Keine Befunde - sauber ausgeliefert."
