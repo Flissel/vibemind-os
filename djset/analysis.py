@@ -68,11 +68,18 @@ def analyse_all(
 
     ACHTUNG zur Wiederaufnahme: ein vorhandenes Artefakt wird allein anhand
     der track_id wiederverwendet, und die kommt aus dem Dateinamen. Der
-    Dateiinhalt wird nicht geprueft - `build --resume` setzt also voraus, dass
-    watch/ zwischen den Laeufen unveraendert bleibt. Wer einen Track bei Suno
-    neu generiert und unter demselben Titel wieder ablegt (Suno behaelt den
-    Titel bei), bekommt stillschweigend die alte Analyse. Dann `--resume`
-    weglassen oder das betroffene tracks/<id>.json loeschen.
+    Dateiinhalt wird nicht geprueft - das Wiederaufnehmen setzt also voraus,
+    dass watch/ zwischen den Laeufen unveraendert bleibt. Wer einen Track bei
+    Suno neu generiert und unter demselben Titel wieder ablegt (Suno behaelt
+    den Titel bei), bekommt stillschweigend die alte Analyse. Dann das
+    betroffene tracks/<id>.json loeschen.
+
+    Zum Schalter: die Spec nennt `build --resume`, die CLI hat ihn nicht und
+    braucht ihn auch nicht. `dj-set build` nimmt ohne Argument den juengsten
+    Lauf ohne set.wav und arbeitet dessen vorhandene Artefakte weiter,
+    `--run <id>` waehlt einen bestimmten. Das Wiederaufnehmen ist damit das
+    Normalverhalten und kein eigener Schalter - wer frisch analysieren will,
+    loescht die Artefakte oder legt mit `dj-set plan` einen neuen Lauf an.
     """
 
     def one(file: AudioFile) -> TrackAnalysis | UnreadableTrack:

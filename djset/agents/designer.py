@@ -321,6 +321,7 @@ def build_mixplan(
     out_start = 0.0
     for index, choice in enumerate(effective):
         entry = entries[index]
+        following = entries[index + 1]
         # Position in der Ausgabe, an der der Vorgaenger sein Outro erreicht.
         # Beide Groessen sitzen auf dem Raster des Vorgaengers, die Differenz
         # ist also eine ganze Taktzahl - und der Uebergang faellt auf einen
@@ -328,11 +329,31 @@ def build_mixplan(
         # eigenen Downbeat aufsetzt.
         into_outro = outros[order[index]] - entry.play_from_s
         start_at = out_start + into_outro / entry.timestretch_ratio
+
+        # Die Dauer des Uebergangs, in Sekunden der AUSGABE - und ab hier die
+        # einzige Quelle dafuer (Transition.overlap_s). Beide Seiten koennen
+        # verschieden viel hergeben, denn die Taktlaenge in der Ausgabe ist je
+        # Track bar_length_s / timestretch_ratio, und die faellt auseinander,
+        # sobald ein Track ausserhalb der Stretch-Grenze ungestreckt bleibt.
+        # Deshalb der Schnitt: was der Vorgaenger hinter seinem Outro noch
+        # klingt, und was der Nachfolger vor seinem Intro-Ende an Kopf
+        # mitbringt. Der Ueberschuss der laengeren Seite spielt fuer sich.
+        out_tail_s = (entry.play_to_s - outros[order[index]]) / entry.timestretch_ratio
+        in_head_s = (
+            by_id[order[index + 1]].mix_regions.intro_end_s - following.play_from_s
+        ) / following.timestretch_ratio
+        # max(0.0, ...): ohne nutzbares Intro (intro_end_s == 0.0) kann der
+        # Kopf rechnerisch negativ werden, wenn der erste Downbeat dahinter
+        # liegt. Eine negative Dauer gibt es nicht - das ist eine Stossnaht,
+        # und die beanstandet der Critic.
+        overlap_s = max(0.0, min(out_tail_s, in_head_s))
+
         transitions.append(
             Transition(
                 from_track=order[index],
                 to_track=order[index + 1],
                 start_at_s=start_at,
+                overlap_s=overlap_s,
                 bars=choice.bars,
                 technique=choice.technique,
                 eq_out=_eq_curve(choice.technique, outgoing=True),

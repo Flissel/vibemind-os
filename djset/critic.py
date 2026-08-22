@@ -156,8 +156,11 @@ def critique(
     out_start = 0.0
     for index, transition in enumerate(plan.transitions):
         entry = plan.entries[index]
-        track = by_id.get(entry.track_id)
+        track = by_id.get(transition.from_track)
         if track is None:
+            # Der Ursprung muss trotzdem weiterlaufen, sonst misst jede
+            # folgende Naht gegen einen veralteten Nullpunkt.
+            out_start = transition.start_at_s
             continue
         out_bar_s = track.beatgrid.bar_length_s / entry.timestretch_ratio
         elapsed_bars = (transition.start_at_s - out_start) / out_bar_s
@@ -171,18 +174,19 @@ def critique(
                 f"{transition.from_track}.",
             )
 
-        ends_at = (
-            out_start
-            + (entry.play_to_s - entry.play_from_s) / entry.timestretch_ratio
-        )
-        overlap_bars = (ends_at - transition.start_at_s) / out_bar_s
+        # Gemessen an transition.overlap_s, nicht an der Geometrie des
+        # Eintrags nachgerechnet: overlap_s IST die Dauer des Uebergangs, und
+        # der Renderer legt seine Fenster ueber genau diese Zahl. Eine zweite
+        # Herleitung hier waere eine zweite Wahrheit - dieselbe, an der Stufe 6
+        # und Stufe 8 auseinanderliefen.
+        overlap_bars = transition.overlap_s / out_bar_s
         if overlap_bars < MIN_OVERLAP_BARS - DOWNBEAT_TOLERANCE_BARS:
             complain(
                 "overlap",
                 f"Der Uebergang von {transition.from_track} nach "
                 f"{transition.to_track} deklariert {transition.bars} Takte, "
                 f"tatsaechlich liegen nur {overlap_bars:.2f} Takte "
-                f"({(ends_at - transition.start_at_s):.4f} s) uebereinander - "
+                f"({transition.overlap_s:.4f} s) uebereinander - "
                 f"{transition.from_track} gibt kein Outro her.",
             )
         out_start = transition.start_at_s

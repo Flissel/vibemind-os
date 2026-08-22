@@ -152,7 +152,8 @@ class Loudness(BaseModel):
     allow_inf_nan=False auf beiden Feldern: pyloudnorm liefert fuer digitale
     Stille -inf, und -inf ueberlebt den eigenen JSON-Roundtrip nicht -
     model_dump_json() schreibt `null`, model_validate_json() lehnt das ab.
-    Genau dieser Pfad ist `build --resume`. Ein stiller Track darf einen Lauf
+    Genau dieser Pfad ist das Wiederaufnehmen eines Laufs (die CLI liest die
+    vorhandenen tracks/*.json). Ein stiller Track darf einen Lauf
     nicht sprengen (Spec Abschnitt 7: kaputte Einzeldatei -> Lauf laeuft
     weiter), deshalb liefert measure_loudness statt -inf den Bodenwert
     -120.0 dB - genau wie true_peak es schon immer getan hat.
@@ -346,20 +347,40 @@ class EqCurve(BaseModel):
 class Transition(BaseModel):
     """Ein Uebergang zwischen zwei Tracks.
 
+    `overlap_s` ist die MASSGEBLICHE Dauer des Uebergangs, in Sekunden der
+    AUSGABE. Ueber sie legt der Renderer seine EQ-Fenster, an ihr misst der
+    Critic die Ueberlappung. Keine Stufe leitet die Fensterbreite noch einmal
+    selbst her - genau das war der Fehler, den dieses Feld beendet: Stufe 6
+    rechnete in Takten des QUELLTRACKS (bar_length_s / timestretch_ratio),
+    Stufe 8 in Takten des ZIELTEMPOS (4 * 60 / target_bpm). Beide stimmen nur
+    ueberein, solange das Verhaeltnis wirklich target_bpm/source_bpm ist -
+    und genau das ist es nicht mehr, sobald ein Track ausserhalb der
+    Stretch-Grenze liegt und ungestreckt bleibt. Die Differenz legte der
+    Renderer als Fenster VOR die Naht: bei einem Schnitt (eq_out flach auf
+    -60 dB) wurde daraus digitale Stille, bevor der neue Track ueberhaupt
+    einsetzte - gemessen 0,72 s bei 4 Takten, linear wachsend mit der
+    Taktzahl.
+
     `bars` ist die EFFEKTIVE Taktzahl, nicht die gewuenschte: sie kann unter
     profile.transition.bars_min liegen, wenn das Material an dieser Naht
     weniger hergibt. Ein Track ohne erkennbares Outro liefert einen Takt, auch
     wenn der Korridor bei sechzehn anfaengt - lieber ein kurzer Uebergang als
-    Sekunden, die niemand fuellt. Der Critic beanstandet, wenn dabei weniger
-    als ein Takt uebrigbleibt.
+    Sekunden, die niemand fuellt. Sie ist BESCHREIBEND: sie steht in der
+    Tracklist und im Bericht, aber keine Stufe rechnet mehr eine Dauer daraus.
 
-    Die Taktlaenge dazu steht nicht im Uebergang: sie ist
-    60 / MixPlan.target_bpm mal vier.
+    `overlap_s` darf null sein. Das ist kein Schoenheitsfehler, sondern der
+    ehrliche Wert fuer eine Stossnaht: gleichfoermig laut gemastertes Material
+    liefert laut find_mix_regions weder Intro noch Outro, die Schnittmenge aus
+    beiden Seiten ist dann leer. Ein `gt=0` wuerde build_mixplan an dieser
+    Stelle mit einer ValidationError abbrechen lassen - Spec Abschnitt 7
+    ("Kein Fehler darf den Lauf haengen lassen") verlangt das Gegenteil, und
+    der Critic hat fuer genau diesen Fall seine overlap-Beanstandung.
     """
 
     from_track: str = Field(min_length=1)
     to_track: str = Field(min_length=1)
     start_at_s: float = Field(ge=0)
+    overlap_s: float = Field(ge=0)
     bars: int = Field(ge=1)
     technique: Technique
     eq_out: EqCurve
@@ -368,12 +389,17 @@ class Transition(BaseModel):
 
 class MixPlan(BaseModel):
     target_length_s: float = Field(gt=0)
-    # Das Tempo, auf das alle timestretch_ratio gerechnet sind. Ohne diese Zahl
-    # kann der Renderer die Taktzahl eines Uebergangs nicht in Sekunden
-    # umrechnen, ohne tracks/*.json dazuzuladen - und dann waere der Mixplan
-    # nicht mehr allein testbar, was die Determinismus-Grenze der Spec gerade
-    # zusichert ("der Renderer mit handgeschriebenen Mixplaenen testen").
-    # Vom Code aus profile.bpm.target uebernommen, kein Modellurteil.
+    # Das Tempo, auf das alle timestretch_ratio gerechnet sind. Vom Code aus
+    # profile.bpm.target uebernommen, kein Modellurteil.
+    #
+    # Der RENDERER braucht es nicht mehr: die Dauer eines Uebergangs steht seit
+    # Transition.overlap_s im Plan, statt aus Taktzahl und Zieltempo
+    # nachgerechnet zu werden (siehe dort - die zweite Herleitung war ein
+    # Fehler). Gebraucht wird es weiter von der QA, die ihr Nahtfenster in
+    # Takten des Zieltempos aufspannt und die Naht dagegen misst, und von der
+    # Tracklist. Es bleibt damit auch das, was einen handgeschriebenen Mixplan
+    # allein testbar macht, ohne tracks/*.json dazuzuladen - die
+    # Determinismus-Grenze der Spec.
     target_bpm: float = Field(gt=0)
     entries: list[MixEntry] = Field(min_length=MIN_TRACKS)
     transitions: list[Transition]
@@ -416,3 +442,53 @@ class MixPlan(BaseModel):
                     f"erwartet war {expected_to!r}"
                 )
         return self
+
+
+# `seam` ist eine GEMESSENE Abweichung an der Naht, `seam_unmeasurable` eine
+# Naht, an der sich ueberhaupt kein Beatraster messen liess. Zwei Faelle, zwei
+# Arten: das Nahtfenster liegt auf Intro- und Outro-Material, dem duennsten
+# Teil beider Tracks, waehrend die Toleranz an einem durchgehenden Impulszug
+# kalibriert wurde - eine unmessbare Naht ist im Betrieb also zu erwarten und
+# darf nicht wie ein Bruch aussehen, wenn jemand die Befunde nach kind filtert.
+QaKind = Literal["length", "true_peak", "seam", "seam_unmeasurable", "gap"]
+
+
+class QaFinding(BaseModel):
+    kind: QaKind
+    text: str = Field(min_length=1)
+
+
+class AudioFormat(BaseModel):
+    """Kanaele, Abtastrate und Subtyp der ausgelieferten Datei.
+
+    Gemessen, nicht angenommen: die Spec sagt 44,1 kHz / 24 Bit Stereo zu, der
+    Renderer liefert Mono im Float-Subtyp. Beides ist bewusst so (Mono ist eine
+    festgehaltene Auslassung, Float braucht die QA, um ueber 1.0 messen zu
+    koennen) - aber ein unbeaufsichtigter Lauf, dessen Artefakte die einzige
+    Rechenschaft sind, darf das nicht verschweigen.
+    """
+
+    channels: int = Field(ge=1)
+    sample_rate: int = Field(gt=0)
+    # Der Subtyp, wie libsndfile ihn nennt: FLOAT, PCM_24, PCM_16.
+    subtype: str = Field(min_length=1)
+
+
+class QaReport(BaseModel):
+    """Was die QA am fertigen File gemessen hat.
+
+    `ok` heisst: nichts gefunden. Ein Befund verhindert die Auslieferung nicht -
+    laut Spec wird nach hoechstens einem korrigierten Re-Render ausgeliefert und
+    der Befund vermerkt.
+    """
+
+    length_s: float = Field(gt=0)
+    target_length_s: float = Field(gt=0)
+    audio_format: AudioFormat
+    lufs_integrated: float = Field(allow_inf_nan=False)
+    true_peak: float = Field(allow_inf_nan=False)
+    findings: list[QaFinding]
+
+    @property
+    def ok(self) -> bool:
+        return not self.findings

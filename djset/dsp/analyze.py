@@ -126,10 +126,15 @@ def snap_to_range(bpm: float, low: float, high: float) -> tuple[float, bool]:
     return bpm, False
 
 
-def detect_bpm_and_grid(
+def _detect_beats(
     path: Path, hint_bpm: float | None = None
-) -> tuple[Bpm, BeatGrid]:
-    """Tempo und Taktraster. Der Hinweis lenkt librosa in die richtige Oktave."""
+) -> tuple[np.ndarray, float]:
+    """Gemeinsamer Kern von beat_times() und detect_bpm_and_grid().
+
+    Liefert die erkannten Beat-Zeitpunkte sowie librosas rohe Tempo-Schaetzung
+    (als Rueckfall, falls zu wenige Beats fuer eine eigene Berechnung
+    uebrigbleiben - siehe detect_bpm_and_grid).
+    """
     signal, sr = _load_audio(path)
     onset = librosa.onset.onset_strength(y=signal, sr=sr)
 
@@ -147,17 +152,31 @@ def detect_bpm_and_grid(
     )
     raw_tempo_value = float(np.atleast_1d(raw_tempo)[0])
 
-    beat_times = librosa.frames_to_time(beat_frames, sr=sr)
-    if beat_times.size == 0:
+    times = librosa.frames_to_time(beat_frames, sr=sr)
+    if times.size == 0:
         raise ValueError(f"keine Beats erkennbar in {path}")
-    beat_times = _drop_unsupported_edge_beats(beat_times, signal, sr)
+    times = _drop_unsupported_edge_beats(times, signal, sr)
+    return times, raw_tempo_value
+
+
+def beat_times(path: Path, hint_bpm: float | None = None) -> np.ndarray:
+    """Die erkannten Beat-Zeitpunkte einer Datei, in Sekunden."""
+    times, _raw_tempo_value = _detect_beats(path, hint_bpm)
+    return times
+
+
+def detect_bpm_and_grid(
+    path: Path, hint_bpm: float | None = None
+) -> tuple[Bpm, BeatGrid]:
+    """Tempo und Taktraster. Der Hinweis lenkt librosa in die richtige Oktave."""
+    beat_times_, raw_tempo_value = _detect_beats(path, hint_bpm)
 
     # Regelmaessigkeit: wie gleichmaessig die Beatabstaende sind. Ein sauberer
     # Viervierteltakt liefert nahezu konstante Abstaende. Das ist eine Aussage
     # ueber die Qualitaet des Rasters, NICHT ueber die Tempo-Oktave - eine
     # saubere Halftime-Lesung schneidet hier bestens ab. Siehe die
     # Docstrings von Bpm und BeatGrid in djset.contracts.
-    intervals = np.diff(beat_times)
+    intervals = np.diff(beat_times_)
     if intervals.size == 0:
         regularity = 0.0
         tempo_value = raw_tempo_value
@@ -190,7 +209,7 @@ def detect_bpm_and_grid(
 
     bar_length = BEATS_PER_BAR * 60.0 / tempo_value
     grid = BeatGrid(
-        first_downbeat_s=float(beat_times[0]),
+        first_downbeat_s=float(beat_times_[0]),
         bar_length_s=bar_length,
         confidence=regularity,
     )
@@ -379,8 +398,8 @@ def measure_loudness(path: Path) -> Loudness:
     meter = pyloudnorm.Meter(sr)
     # pyloudnorm liefert fuer digitale Stille -inf. -inf ueberlebt den
     # JSON-Roundtrip nicht (dump schreibt null, validate lehnt null ab) und
-    # wuerde damit `build --resume` an einem einzigen stillen Track
-    # zerreissen. Bodenwert wie beim True Peak: -120 dB.
+    # wuerde damit das Wiederaufnehmen eines Laufs an einem einzigen stillen
+    # Track zerreissen. Bodenwert wie beim True Peak: -120 dB.
     lufs = max(_LEVEL_FLOOR_DB, float(meter.integrated_loudness(signal)))
 
     mono = signal if signal.ndim == 1 else np.mean(signal, axis=1)

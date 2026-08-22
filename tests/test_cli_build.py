@@ -2,16 +2,25 @@ import json
 from datetime import date
 from pathlib import Path
 
+import pytest
+import soundfile as sf
+
 from djset import cli
 from djset.agents.base import Budget
 from djset.cli import cmd_build
 from djset.contracts import (
     REORDERABLE_KINDS,
+    AudioFormat,
     CritiqueLog,
     MixPlan,
     Profile,
+    QaFinding,
+    QaReport,
     Shortlist,
 )
+from djset.qa import TRUE_PEAK_CEILING_DB
+from djset.render.engine import ImpossibleMixPlan
+from djset.report import CORRECTION_HEADROOM_DB
 from djset.run import Run
 from tests.fixtures.fake_client import FakeClient
 from tests.fixtures.make_audio import click_track, click_track_with_quiet_edges
@@ -19,6 +28,11 @@ from tests.fixtures.make_audio import click_track, click_track_with_quiet_edges
 
 def _budget() -> Budget:
     return Budget(max_tokens=400_000, max_seconds=300.0)
+
+
+def _delivered_format() -> AudioFormat:
+    """Was der Renderer heute liefert: Mono, 44,1 kHz, Float-Subtyp."""
+    return AudioFormat(channels=1, sample_rate=44_100, subtype="FLOAT")
 
 
 def _analyst_answer(energy: float) -> str:
@@ -257,3 +271,207 @@ def test_build_takes_its_base_from_the_command_line(
 
     assert seen["base"] == tmp_path
     assert seen["run_id"] == "irgendein-lauf"
+
+
+def test_a_full_build_renders_the_set(tmp_path: Path, profile: Profile) -> None:
+    """Der ganze Weg: watch-Ordner rein, hoerbares Set raus."""
+    run = _prepared_with_mixable_tracks(tmp_path, profile, 4)
+    client = FakeClient(_full_run_responses())
+
+    code = cmd_build(tmp_path, run.run_id, client, _budget())
+
+    assert code == 0
+    assert run.has("set.wav")
+    assert run.has("tracklist.md")
+    assert run.has("qa-report.md")
+
+    with sf.SoundFile(run.path("set.wav")) as handle:
+        assert len(handle) > 0
+
+    bericht = run.path("qa-report.md").read_text(encoding="utf-8")
+    assert "True Peak" in bericht
+    # Findings 6 und 7: das Format der ausgelieferten Datei und die unter den
+    # Korridor geklammerten Uebergaenge stehen im Bericht, nicht nur im Kopf
+    # dessen, der den Code gelesen hat.
+    format_line = next(line for line in bericht.splitlines() if line.startswith("- Format:"))
+    assert "Mono" in format_line and "44100 Hz" in format_line
+    assert "32 Bit Float" in format_line
+    assert "## Verkuerzte Uebergaenge" in bericht
+
+
+def test_a_finished_run_is_no_longer_unfinished(
+    tmp_path: Path, profile: Profile
+) -> None:
+    """Run.latest_unfinished erkennt einen Lauf an set.wav als fertig."""
+    run = _prepared_with_mixable_tracks(tmp_path, profile, 4)
+    cmd_build(tmp_path, run.run_id, FakeClient(_full_run_responses()), _budget())
+
+    assert Run.latest_unfinished(tmp_path) is None
+
+
+def test_a_true_peak_finding_triggers_exactly_one_corrective_re_render(
+    tmp_path: Path, profile: Profile, monkeypatch
+) -> None:
+    """Wiring-Test fuer Stufe 9, ohne echtes Audio.
+
+    render() und check_set() sind hier durch Fakes ersetzt - der Test prueft
+    ausschliesslich die Verdrahtung in cmd_build, nicht den Renderer oder die
+    QA-Messung selbst (die sind in tests/render/ und tests/test_qa.py
+    getestet). Drei Dinge muessen stimmen, und keins davon sieht man an
+    render() oder check_set() fuer sich allein:
+
+    1. Ein True-Peak-Befund loest einen zweiten render()-Aufruf mit
+       negativem master_gain_db aus.
+    2. Der QA-Bericht traegt die Zahlen der ZWEITEN Messung (der, die
+       tatsaechlich ausgeliefert wurde), nicht die der ersten, die die
+       Korrektur nur ausgeloest hat.
+    3. Das bleibt bei GENAU EINEM Re-Render, auch wenn die zweite Messung
+       immer noch einen True-Peak-Befund zeigt (simuliert hier eine Korrektur,
+       die nicht vollstaendig hilft) - Spec Abschnitt 7 sagt "hoechstens
+       einmal", nicht "bis es passt". Ein Bug, der das zu einer Schleife
+       macht, wuerde hier einen dritten render()-Aufruf ausloesen.
+    """
+    run = _prepared_with_mixable_tracks(tmp_path, profile, 4)
+    client = FakeClient(_full_run_responses())
+
+    reports = [
+        QaReport(
+            length_s=110.0,
+            target_length_s=110.0,
+            audio_format=_delivered_format(),
+            lufs_integrated=-14.0,
+            true_peak=0.3,
+            findings=[QaFinding(kind="true_peak", text="True Peak liegt bei 0.3 dB.")],
+        ),
+        # Absichtlich immer noch nicht sauber - die Korrektur hilft hier
+        # nicht vollstaendig, damit sichtbar wird, ob cmd_build trotzdem
+        # aufhoert.
+        QaReport(
+            length_s=110.0,
+            target_length_s=110.0,
+            audio_format=_delivered_format(),
+            lufs_integrated=-14.0,
+            true_peak=-0.2,
+            findings=[QaFinding(kind="true_peak", text="True Peak liegt bei -0.2 dB.")],
+        ),
+    ]
+    qa_calls: list[Path] = []
+
+    def fake_check_set(path: Path, plan: MixPlan) -> QaReport:
+        qa_calls.append(path)
+        return reports[len(qa_calls) - 1]
+
+    render_calls: list[float] = []
+
+    def fake_render(
+        plan: MixPlan,
+        sources: dict[str, Path],
+        target: Path,
+        master_gain_db: float = 0.0,
+        sr: int | None = None,
+    ) -> None:
+        render_calls.append(master_gain_db)
+        # Die Datei muss entstehen: cmd_build rendert unter einem
+        # Zwischennamen und benennt erst nach dem Bericht um. Ein Fake, der
+        # nichts schreibt, waere kein Renderer.
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"")
+
+    monkeypatch.setattr(cli, "check_set", fake_check_set)
+    monkeypatch.setattr(cli, "render", fake_render)
+
+    code = cmd_build(tmp_path, run.run_id, client, _budget())
+
+    assert code == 0
+    # Genau ein korrigierender Re-Render: der erste Aufruf unveraendert, der
+    # zweite mit dem aus dem ersten Befund berechneten (negativen) Gain - und
+    # kein dritter, obwohl der zweite Bericht immer noch nicht sauber ist.
+    # Der Gain kommt aus den Konstanten statt als getippte Zahl: er zielt
+    # bewusst UNTER die Decke (CORRECTION_HEADROOM_DB), und dieser Test soll
+    # die Verdrahtung pinnen, nicht die Wahl des Sicherheitsabstands.
+    expected_gain = TRUE_PEAK_CEILING_DB - CORRECTION_HEADROOM_DB - 0.3
+    assert render_calls == [0.0, pytest.approx(expected_gain)]
+    assert len(qa_calls) == 2
+
+    bericht = run.path("qa-report.md").read_text(encoding="utf-8")
+    assert "korrigiert" in bericht
+    # Die AUSGELIEFERTEN Zahlen sind die der zweiten Messung, nicht die der
+    # ersten, die die Korrektur erst ausgeloest hat.
+    assert "-0.2 dB" in bericht
+    assert "0.3 dB" not in bericht
+
+
+def test_build_with_a_wrong_sample_rate_stops_before_any_agent(
+    tmp_path: Path, profile: Profile, capsys
+) -> None:
+    """Finding 4: die Ratenpruefung gehoert in den Vorab-Check.
+
+    Vorher passierte eine 48-kHz-Datei den Scan, die Analyse (librosa
+    resampelt anstandslos), die Kuratierung, die Anordnung, den Entwurf und die
+    Kritik - und riss den Lauf erst in Stufe 8 ab, mit rohem Traceback, ohne
+    qa-report.md und nachdem jedes Token bezahlt war. Spec Abschnitt 7 stellt
+    genau diese Klasse von Pruefung davor.
+    """
+    run = _prepared(tmp_path, profile, 4)
+    click_track((tmp_path / "watch" / "t3.wav"), bpm=174.0, bars=14, sr=48_000)
+    client = FakeClient([])
+
+    code = cmd_build(tmp_path, run.run_id, client, _budget())
+
+    assert code != 0
+    assert client.calls == 0
+    fehler = capsys.readouterr().err
+    assert "t3.wav" in fehler
+    assert "48000" in fehler
+
+
+def test_a_crash_in_stage_nine_leaves_the_run_unfinished(
+    tmp_path: Path, profile: Profile, monkeypatch
+) -> None:
+    """set.wav IST die Fertig-Marke (Run.latest_unfinished, siehe run.py).
+
+    Wurde es vor der QA geschrieben, sah ein in Stufe 9 abgestuerzter Lauf
+    fertig aus und hatte doch keinen qa-report.md - `dj-set build` haette ihn
+    danach nie wieder angefasst. Jetzt entsteht das Set unter einem
+    Zwischennamen und wird erst nach dem Bericht umbenannt.
+    """
+    run = _prepared_with_mixable_tracks(tmp_path, profile, 4)
+
+    def exploding_check_set(path: Path, plan: MixPlan) -> QaReport:
+        raise RuntimeError("Stufe 9 abgestuerzt")
+
+    monkeypatch.setattr(cli, "check_set", exploding_check_set)
+
+    with pytest.raises(RuntimeError, match="Stufe 9"):
+        cmd_build(tmp_path, run.run_id, FakeClient(_full_run_responses()), _budget())
+
+    assert not run.has("set.wav")
+    assert not run.has("qa-report.md")
+    # Und der Lauf ist damit weiter der juengste unfertige.
+    assert Run.latest_unfinished(tmp_path) is not None
+
+
+def test_an_impossible_mixplan_ends_with_a_named_message_not_a_traceback(
+    tmp_path: Path, profile: Profile, monkeypatch, capsys
+) -> None:
+    """ImpossibleMixPlan ist laut eigenem Docstring ein Befund UEBER den
+    Mixplan, kein Bug im Renderer - und Spec Abschnitt 7 beginnt mit "Kein
+    Fehler darf den Lauf haengen lassen". Behandelt wird er wie ein fehlendes
+    ffmpeg: benannte Meldung, Exit 1, Mixplan bleibt liegen.
+    """
+    run = _prepared_with_mixable_tracks(tmp_path, profile, 4)
+
+    def refusing_render(*args: object, **kwargs: object) -> None:
+        raise ImpossibleMixPlan("Eintrag 't1' ist kuerzer als seine Fenster")
+
+    monkeypatch.setattr(cli, "render", refusing_render)
+
+    code = cmd_build(tmp_path, run.run_id, FakeClient(_full_run_responses()), _budget())
+
+    assert code == 1
+    fehler = capsys.readouterr().err
+    assert "t1" in fehler
+    assert "mixplan.json" in fehler
+    # Der Mixplan bleibt zum Nachsehen liegen, das Set entsteht nicht.
+    assert run.has("mixplan.json")
+    assert not run.has("set.wav")

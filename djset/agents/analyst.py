@@ -58,7 +58,7 @@ Das Set: {genre}, Ziel-BPM {bpm_target}, erlaubt {bpm_min} bis {bpm_max},
 harmonische Strenge {strictness}. Der Energiebogen des Sets laeuft ueber diese
 Stuetzpunkte aus Position und Zielenergie: {arc}.
 
-Gemessen wurde:
+Gemessen wurde (Track {track_id}):
 - Dauer: {duration:.1f} Sekunden
 - BPM: {bpm_value:.1f}, Rastersicherheit {bpm_conf:.2f}
 - Taktraster: erster Downbeat bei {downbeat:.2f} s, Taktlaenge {bar:.3f} s
@@ -164,6 +164,7 @@ def _prompt(measurements: TrackMeasurements, profile: Profile) -> str:
     arc = ", ".join(f"({p.position:.2f}, {p.energy:.2f})" for p in profile.energy_arc)
     energy = ", ".join(f"{value:.2f}" for value in measurements.energy)
     return PROMPT.format(
+        track_id=measurements.id,
         genre=profile.genre,
         bpm_target=profile.bpm.target,
         bpm_min=profile.bpm.min,
