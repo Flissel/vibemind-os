@@ -67,7 +67,15 @@ def simple_plan(bars: int = 1, target_bpm: float = 174.0) -> MixPlan:
     )
 
 
-def sources_for(tmp_path: Path) -> dict[str, Path]:
-    """Passendes Quellmaterial zu simple_plan() - je Track eine andere Frequenz."""
-    return {f"t{i}": pulsed_tone(tmp_path / f"t{i}.wav", 10.0, hz=220.0 * (i + 1))
+def sources_for(tmp_path: Path, target_bpm: float = 174.0) -> dict[str, Path]:
+    """Passendes Quellmaterial zu simple_plan() - je Track eine andere Frequenz.
+
+    `target_bpm` muss zum gleichnamigen Parameter von simple_plan() passen: sonst
+    behauptet der Plan ein Tempo, das im Fixture-Material gar nicht steckt. Bis
+    Task 4 macht das keinen Unterschied (dort wird nur gerendert), aber Task 6
+    misst das Tempo an jeder Naht nach - ein stiller Bruch hier wuerde dort einen
+    Phantomfehler jagen lassen.
+    """
+    return {f"t{i}": pulsed_tone(tmp_path / f"t{i}.wav", 10.0, hz=220.0 * (i + 1),
+                                  bpm=target_bpm)
             for i in range(3)}
