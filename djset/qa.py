@@ -12,7 +12,7 @@ import numpy as np
 import soundfile as sf
 
 from djset.contracts import MixPlan, QaFinding, QaReport
-from djset.dsp.analyze import detect_bpm_and_grid, measure_loudness
+from djset.dsp.analyze import beat_times, detect_bpm_and_grid, measure_loudness
 from djset.render.engine import bar_length_s
 
 # Erfolgskriterium 3: Ziellaenge plus/minus 5 Prozent.
@@ -22,8 +22,37 @@ LENGTH_TOLERANCE = 0.05
 TRUE_PEAK_CEILING_DB = -1.0
 
 # Erfolgskriterium 4: an der Naht darf das Tempo nicht wegbrechen. Ein Fenster
-# um jede Naht wird nachanalysiert; weicht das gemessene Tempo weiter als das
-# ab, laufen die beiden Tracks dort nicht mehr zusammen.
+# um jede Naht wird nachanalysiert.
+#
+# SEAM_DRIFT_TOLERANCE ist die PRIMAERE Pruefung: der groesste Ausreisser
+# unter den Beatabstaenden im Fenster (siehe _seam_drift_beats). Sie erkennt
+# einen Phasenbruch MITTEN in der Naht - genau dort, wo zwei Tracks
+# zusammenlaufen sollen.
+#
+# SEAM_BPM_TOLERANCE bleibt als GROBE Zweitpruefung ueber das gemittelte
+# Tempo bestehen. detect_bpm_and_grid rechnet dieses Mittel teleskopierend
+# als (letzter Beat - erster Beat) / (n - 1) - ein Wert, der einen einzelnen
+# Ausreisser mitten im Fenster fast nicht bewegt (gemessen: ein halber Schlag
+# Versatz veraendert ihn um weniger als 3 BPM), aber einen kompletten
+# Tempowechsel ueber das ganze Fenster zuverlaessig zeigt, z. B. wenn ein
+# falsch zugeschnittener Track bei 140 statt 174 BPM liegt. Die beiden
+# Pruefungen fangen deshalb verschiedene Fehlerbilder: ein einzelner Bruch
+# vs. ein durchgehend falsches Tempo.
+#
+# 0.05 gemessen, nicht geschaetzt: auf den Fixture-Nahten aus
+# tests/fixtures/render.py liegt der groesste Ausreisser eines SAUBEREN
+# Renders bei 0.0236 Schlaegen (beide Naehte, reproduzierbar identisch - das
+# Fixture-Material ist deterministisch). Ein Versatz um 0.1 Schlag an einer
+# Naht misst 0.09-0.11, um 0.25 Schlag 0.12-0.21, um 0.5 Schlag 0.246 (siehe
+# task-6-report.md). 0.05 liegt reichlich ueber dem sauberen Rauschen (gut
+# das Doppelte) und reichlich unter dem kleinsten geprueften Bruch (fast die
+# Haelfte davon) - beide Verteilungen sind damit klar getrennt. Ein Versatz
+# um ein GANZES Vielfaches eines Schlags (1, 2, 3 Schlaege) bleibt fuer
+# beide Pruefungen unsichtbar: die Beatabstaende UND das gemittelte Tempo
+# sind bei periodischem Material unabhaengig von einer reinen Phasen-
+# verschiebung um ganze Schlaege - das ist eine Grenze der Methode, keine
+# Einstellungsfrage, und betrifft Taktausrichtung, nicht Beatkontinuitaet.
+SEAM_DRIFT_TOLERANCE = 0.05
 SEAM_BPM_TOLERANCE = 3.0
 SEAM_WINDOW_BARS = 8
 
@@ -46,6 +75,31 @@ def _gaps(signal: np.ndarray, sr: int) -> list[float]:
         stops.append(len(quiet))
     needed = int(GAP_SECONDS * sr)
     return [start / sr for start, stop in zip(starts, stops) if stop - start >= needed]
+
+
+def _seam_drift_beats(seam: Path, target_bpm: float) -> float | None:
+    """Der groesste Ausreisser unter den Beatabstaenden, in Schlaegen.
+
+    Bewusst nicht ueber das mittlere Tempo: detect_bpm_and_grid rechnet den
+    Wert teleskopierend als (letzter - erster) / (n-1) und benutzt damit nur
+    den ersten und letzten Beat des Fensters. Ein Phasenbruch mitten darin
+    bewegt diese Zahl fast nicht - gemessen an einem halben Schlag Versatz
+    verschiebt er sie um weniger als drei BPM.
+
+    Der Abstand zwischen zwei benachbarten Beats zeigt den Bruch dagegen
+    unmittelbar: ein Versatz um einen halben Schlag erzeugt dort genau einen
+    Abstand, der einen halben Schlag zu lang oder zu kurz ist.
+
+    Liefert None, wenn das Fenster zu wenige Beats hergibt, um Abstaende zu
+    bilden - das ist selbst ein Befund und wird vom Aufrufer als solcher
+    behandelt.
+    """
+    times = beat_times(seam)
+    intervals = np.diff(times)
+    if intervals.size == 0:
+        return None
+    expected = 60.0 / target_bpm
+    return float(np.max(np.abs(intervals - expected) / expected))
 
 
 def check_set(path: Path, plan: MixPlan) -> QaReport:
@@ -99,20 +153,41 @@ def check_set(path: Path, plan: MixPlan) -> QaReport:
                 continue
             seam = work / f"seam-{index}.wav"
             sf.write(seam, mono[begin:end], sr)
+
+            # Primaerpruefung: groesster Beatabstands-Ausreisser im Fenster.
+            try:
+                drift = _seam_drift_beats(seam, plan.target_bpm)
+            except Exception:  # noqa: BLE001 - eine unmessbare Naht ist selbst ein Befund
+                drift = None
+            # Grobe Zweitpruefung: das gemittelte Tempo, siehe SEAM_BPM_TOLERANCE.
             try:
                 bpm, _grid = detect_bpm_and_grid(seam)
             except Exception:  # noqa: BLE001 - eine unmessbare Naht ist selbst ein Befund
                 bpm = None
-            if bpm is None or abs(bpm.value - plan.target_bpm) > SEAM_BPM_TOLERANCE:
-                gemessen = "nicht messbar" if bpm is None else f"{bpm.value:.1f} BPM"
+
+            drift_broken = drift is None or drift > SEAM_DRIFT_TOLERANCE
+            tempo_broken = bpm is None or abs(bpm.value - plan.target_bpm) > SEAM_BPM_TOLERANCE
+
+            if drift_broken or tempo_broken:
+                if drift is None and bpm is None:
+                    gemessen = "das Beatraster ist an dieser Naht nicht messbar"
+                else:
+                    stats = []
+                    if drift is not None:
+                        stats.append(f"groesster Beatabstand-Ausreisser {drift:.2f} Schlaege")
+                    if bpm is not None:
+                        stats.append(f"gemitteltes Tempo {bpm.value:.1f} BPM")
+                    gemessen = ", ".join(stats)
                 findings.append(
                     QaFinding(
                         kind="seam",
                         text=f"An der Naht von {transition.from_track} nach "
                         f"{transition.to_track} bei "
                         f"{transition.start_at_s / 60:.0f}:"
-                        f"{transition.start_at_s % 60:04.1f} misst sich "
-                        f"{gemessen}, erwartet waren {plan.target_bpm:.1f}.",
+                        f"{transition.start_at_s % 60:04.1f} stimmt das Timing "
+                        f"nicht: {gemessen}, erwartet waren {plan.target_bpm:.1f} "
+                        f"BPM ohne Ausreisser ueber {SEAM_DRIFT_TOLERANCE:.2f} "
+                        f"Schlaege.",
                     )
                 )
 
