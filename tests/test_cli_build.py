@@ -2,6 +2,7 @@ import json
 from datetime import date
 from pathlib import Path
 
+import pytest
 import soundfile as sf
 
 from djset import cli
@@ -16,6 +17,8 @@ from djset.contracts import (
     QaReport,
     Shortlist,
 )
+from djset.qa import TRUE_PEAK_CEILING_DB
+from djset.report import CORRECTION_HEADROOM_DB
 from djset.run import Run
 from tests.fixtures.fake_client import FakeClient
 from tests.fixtures.make_audio import click_track, click_track_with_quiet_edges
@@ -362,7 +365,11 @@ def test_a_true_peak_finding_triggers_exactly_one_corrective_re_render(
     # Genau ein korrigierender Re-Render: der erste Aufruf unveraendert, der
     # zweite mit dem aus dem ersten Befund berechneten (negativen) Gain - und
     # kein dritter, obwohl der zweite Bericht immer noch nicht sauber ist.
-    assert render_calls == [0.0, -1.3]
+    # Der Gain kommt aus den Konstanten statt als getippte Zahl: er zielt
+    # bewusst UNTER die Decke (CORRECTION_HEADROOM_DB), und dieser Test soll
+    # die Verdrahtung pinnen, nicht die Wahl des Sicherheitsabstands.
+    expected_gain = TRUE_PEAK_CEILING_DB - CORRECTION_HEADROOM_DB - 0.3
+    assert render_calls == [0.0, pytest.approx(expected_gain)]
     assert len(qa_calls) == 2
 
     bericht = run.path("qa-report.md").read_text(encoding="utf-8")

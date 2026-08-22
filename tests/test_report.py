@@ -1,5 +1,6 @@
 from djset.contracts import QaFinding, QaReport, Rejection, Shortlist
-from djset.report import correction_gain_db, render_qa_report
+from djset.qa import TRUE_PEAK_CEILING_DB
+from djset.report import CORRECTION_HEADROOM_DB, correction_gain_db, render_qa_report
 
 
 def _report(true_peak: float, findings: list[QaFinding]) -> QaReport:
@@ -16,13 +17,24 @@ def test_a_clean_report_needs_no_correction() -> None:
     assert correction_gain_db(_report(-2.0, [])) is None
 
 
-def test_a_hot_render_gets_exactly_the_gain_it_needs() -> None:
+def test_a_hot_render_gets_the_gain_it_needs_plus_headroom() -> None:
+    """Gezielt wird UNTER die Decke, nicht auf sie.
+
+    Frueher war das Ziel exakt TRUE_PEAK_CEILING_DB. Der Weg vom gemessenen
+    Spitzenwert ueber 20*log10 zurueck in einen float32-Faktor trifft die
+    Decke nur bis auf etwa 1e-7 dB, mit zufaelligem Vorzeichen - und qa.py
+    vergleicht mit einem strikten `>`. Gemessen ueber die echte Folge aus
+    cmd_build: zweite Messung -0.999999709 dBTP, also 2,9e-07 dB darueber,
+    Befund gemeldet.
+    """
     report = _report(+1.5, [QaFinding(kind="true_peak", text="zu laut")])
 
     gain = correction_gain_db(report)
 
     assert gain is not None
-    assert abs(gain - (-1.0 - 1.5)) < 1e-6
+    assert abs(gain - (TRUE_PEAK_CEILING_DB - CORRECTION_HEADROOM_DB - 1.5)) < 1e-6
+    # Der korrigierte Spitzenwert landet unter der Decke, nicht auf ihr.
+    assert report.true_peak + gain < TRUE_PEAK_CEILING_DB
 
 
 def test_a_length_deviation_is_not_correctable_by_re_rendering() -> None:

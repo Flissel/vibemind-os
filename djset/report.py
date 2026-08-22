@@ -16,6 +16,26 @@ from djset.contracts import CritiqueLog, QaReport, Shortlist, UnreadableTrack
 from djset.qa import TRUE_PEAK_CEILING_DB
 
 
+# Sicherheitsabstand der einen erlaubten Korrektur zur Decke. Zwei Gruende,
+# und schon der erste allein genuegt:
+#
+# 1. Genau auf die Decke zu zielen heisst, sie zur Haelfte zu verfehlen. Der
+#    Weg vom gemessenen Spitzenwert ueber 20*log10 zurueck in einen Faktor und
+#    durch float32 wieder hinaus trifft -1.0 dB nur bis auf etwa 1e-7 dB, mit
+#    zufaelligem Vorzeichen - und qa.py vergleicht mit einem strikten `>`.
+#    Gemessen ueber die echte Folge aus cmd_build: die zweite Messung ergab
+#    -0.999999709 dB, also 2,9e-07 dB ueber der Decke, und der Lauf meldete
+#    einen Befund fuer ein File, das die Grenze um drei Zehnmillionstel dB
+#    reisst. Erfolgskriterium 5 galt damit als verletzt, obwohl es das nicht war.
+# 2. Einen Renderer exakt auf eine harte Grenze zu zielen ist auch ohne die
+#    Fliesskommafrage schlechte Praxis: die True-Peak-Messung ist selbst eine
+#    Schaetzung (oversampled), und zwischen Messung und Auslieferung liegt ein
+#    zweiter Render.
+#
+# 0,3 dB: weit ueber dem Fliesskommarauschen, hoerbar ist der Unterschied nicht.
+CORRECTION_HEADROOM_DB = 0.3
+
+
 def correction_gain_db(report: QaReport) -> float | None:
     """Die Verstaerkung fuer den einen Re-Render, oder None wenn keiner hilft.
 
@@ -25,10 +45,13 @@ def correction_gain_db(report: QaReport) -> float | None:
     also hilft hier kein Gain. Diese Funktion entscheidet nur, OB und WIEVIEL
     Gain hilft; ob ueberhaupt neu gerendert wird, entscheidet die aufrufende
     Stufe.
+
+    Gezielt wird UNTER die Decke, nicht auf sie - siehe
+    CORRECTION_HEADROOM_DB.
     """
     if not any(finding.kind == "true_peak" for finding in report.findings):
         return None
-    return TRUE_PEAK_CEILING_DB - report.true_peak
+    return TRUE_PEAK_CEILING_DB - CORRECTION_HEADROOM_DB - report.true_peak
 
 
 def _status_line(qa: QaReport, corrected: bool) -> str:

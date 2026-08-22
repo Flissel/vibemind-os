@@ -8,6 +8,7 @@ from djset.agents.designer import TransitionChoice, build_mixplan
 from djset.contracts import MixEntry, MixPlan, Profile, Setlist, Transition
 from djset.qa import TRUE_PEAK_CEILING_DB, check_set
 from djset.render.engine import bar_length_s, render
+from djset.report import correction_gain_db
 from tests.fixtures.analyses import make_off_grid
 from tests.fixtures.render import flat_curve, pulsed_tone, simple_plan, sources_for
 
@@ -287,3 +288,41 @@ def test_an_unstretchable_track_leaves_no_silence_before_the_seam(
     signal, sr = sf.read(target, dtype="float32")
     before = signal[int((seam.start_at_s - 0.72) * sr) : int(seam.start_at_s * sr)]
     assert float(np.max(np.abs(before))) > 0.001
+
+
+def test_the_one_permitted_correction_lands_below_the_ceiling(tmp_path: Path) -> None:
+    """Regression fuer Critical 2: der Rundlauf aus Messen, Korrigieren, Nachmessen.
+
+    Der vorhandene Verdrahtungstest in tests/test_cli_build.py ersetzt
+    check_set durch handgeschriebene Berichte und kann das deshalb nicht
+    sehen. Hier laeuft dieselbe Folge wie in cmd_build ueber echtes Audio:
+    absichtlich heiss gerendert (gain_db +6 auf jedem Eintrag, wie es ein
+    Pegelabgleich gegen den Median liefert), gemessen, einmal korrigiert, neu
+    gemessen.
+
+    Gemessen vor dem Fix: erste Messung 3.870651 dBTP, Korrektur -4.870651 dB,
+    zweite Messung -0.999999709 dBTP - 2,9e-07 dB UEBER der Decke, und qa.py
+    vergleicht strikt. Damit meldete rund die Haelfte aller korrigierten
+    Laeufe einen true_peak-Befund fuer ein File, das die Grenze um drei
+    Zehnmillionstel dB reisst.
+    """
+    plan = simple_plan()
+    hot = MixPlan.model_validate(
+        plan.model_dump()
+        | {"entries": [e.model_dump() | {"gain_db": 6.0} for e in plan.entries]}
+    )
+    sources = sources_for(tmp_path)
+    target = tmp_path / "set.wav"
+
+    render(hot, sources, target)
+    first = check_set(target, hot)
+    assert any(f.kind == "true_peak" for f in first.findings)
+
+    correction = correction_gain_db(first)
+    assert correction is not None
+
+    render(hot, sources, target, master_gain_db=correction)
+    second = check_set(target, hot)
+
+    assert second.true_peak <= TRUE_PEAK_CEILING_DB
+    assert not any(f.kind == "true_peak" for f in second.findings), second.true_peak

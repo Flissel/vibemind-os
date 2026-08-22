@@ -215,8 +215,10 @@ def cmd_build(
         # Stufe 9: nachmessen, und hoechstens einmal den Pegel korrigieren.
         qa = check_set(run.path(FINISHED_MARKER), best)
         correction = correction_gain_db(qa)
-        corrected = correction is not None
-        if corrected:
+        # Auf `correction is not None` verzweigt, nicht auf ein danebenstehendes
+        # bool: sonst kann der f-String unten ein None bekommen, sobald die
+        # beiden auseinanderlaufen.
+        if correction is not None:
             print(f"  QA: Pegel um {correction:.1f} dB korrigiert, rendere neu")
             render(best, sources, run.path(FINISHED_MARKER), master_gain_db=correction)
             qa = check_set(run.path(FINISHED_MARKER), best)
@@ -226,7 +228,9 @@ def cmd_build(
 
     run.write_text(
         "qa-report.md",
-        render_qa_report(qa, shortlist, unreadable, critique_log, corrected),
+        render_qa_report(
+            qa, shortlist, unreadable, critique_log, correction is not None
+        ),
     )
 
     print(f"Lauf {run.run_id}")
