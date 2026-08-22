@@ -259,10 +259,10 @@ spaces:
     prefixes: [video.]
     enabled: true
     description: "Video generation, vision, lipsync."
-    mcp_servers: [vibemind-db]
+    mcp_servers: [laura, vibemind-db]
     default_context: [current_space]
     events:
-      video.status:       { tool: db_query,                 required_params: [] }
+      video.status:       { tool: video_status,             required_params: [] }
       video.team_status:  { tool: db_query,                 required_params: [] }
       video.team_run:     { tool: db_update,                required_params: [task] }
       video.vision:       { tool: db_query,                 required_params: [url] }
