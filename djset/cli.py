@@ -16,11 +16,11 @@ from djset.contracts import CritiqueLog, CritiqueRound, MixPlan, Profile, Setlis
 from djset.critic import Critique, critique
 from djset.qa import check_set
 from djset.render.engine import render
-from djset.render.stretch import RenderToolMissing
+from djset.render.stretch import RenderToolMissing, UnsupportedSampleRate
 from djset.render.tracklist import render_tracklist
 from djset.report import correction_gain_db, render_qa_report
 from djset.run import FINISHED_MARKER, Run, RunNotFound
-from djset.watch import NotEnoughMaterial, check_enough, scan
+from djset.watch import NotEnoughMaterial, check_enough, check_sample_rate, scan
 
 WATCH_DIRNAME = "watch"
 
@@ -128,7 +128,8 @@ def cmd_build(
     try:
         files = scan(base / WATCH_DIRNAME)
         check_enough(files, profile)
-    except NotEnoughMaterial as error:
+        check_sample_rate(files)
+    except (NotEnoughMaterial, UnsupportedSampleRate) as error:
         print(f"Fehler: {error}", file=sys.stderr)
         return 1
 

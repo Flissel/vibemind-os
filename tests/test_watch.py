@@ -1,9 +1,18 @@
 from pathlib import Path
 
+import numpy as np
 import pytest
+import soundfile as sf
 
 from djset.contracts import Profile
-from djset.watch import AudioFile, NotEnoughMaterial, check_enough, scan
+from djset.render.stretch import UnsupportedSampleRate
+from djset.watch import (
+    AudioFile,
+    NotEnoughMaterial,
+    check_enough,
+    check_sample_rate,
+    scan,
+)
 
 
 def _touch(directory: Path, name: str) -> Path:
@@ -90,3 +99,54 @@ def test_exactly_enough_files_pass(tmp_path: Path, profile: Profile) -> None:
     files = [AudioFile(id=f"t{i}", path=tmp_path / f"t{i}.wav") for i in range(needed)]
 
     check_enough(files, profile)
+
+
+def _tone(path: Path, samplerate: int, seconds: float = 0.5) -> Path:
+    frames = int(seconds * samplerate)
+    signal = np.sin(
+        2 * np.pi * 220.0 * np.arange(frames) / samplerate
+    ).astype(np.float32)
+    sf.write(path, signal, samplerate)
+    return path
+
+
+def test_a_wrong_sample_rate_is_caught_before_any_agent(tmp_path: Path) -> None:
+    """Spec Abschnitt 7: der Vorab-Check laeuft, bevor Tokens fliessen.
+
+    Eine 48-kHz-Datei kam bisher durch Scan, Analyse (librosa resampelt
+    anstandslos), Kuratierung, Anordnung, Entwurf und Kritik und riss den Lauf
+    erst in Stufe 8 ab - mit Traceback, ohne qa-report.md und nachdem jedes
+    Token bezahlt war.
+    """
+    _tone(tmp_path / "gut.wav", 44_100)
+    _tone(tmp_path / "zu-hoch.wav", 48_000)
+
+    with pytest.raises(UnsupportedSampleRate) as caught:
+        check_sample_rate(scan(tmp_path))
+
+    message = str(caught.value)
+    # Der Dateiname muss drinstehen: sonst weiss niemand, welche Datei zu
+    # wandeln ist.
+    assert "zu-hoch.wav" in message
+    assert "48000" in message
+    assert "gut.wav" not in message
+
+
+def test_the_expected_sample_rate_passes(tmp_path: Path) -> None:
+    _tone(tmp_path / "eins.wav", 44_100)
+    _tone(tmp_path / "zwei.wav", 44_100)
+
+    check_sample_rate(scan(tmp_path))
+
+
+def test_an_unreadable_file_is_not_a_sample_rate_finding(tmp_path: Path) -> None:
+    """Eine kaputte Einzeldatei darf den Lauf nicht sprengen (Spec Abschnitt 7).
+
+    Sie hat gar keine lesbare Rate - sie hier abzuweisen wuerde aus einem
+    verkraftbaren Ausfall (der Analyst markiert sie unbrauchbar, der Lauf
+    laeuft weiter) einen harten Abbruch machen.
+    """
+    _touch(tmp_path, "kaputt.wav")
+    _tone(tmp_path / "heil.wav", 44_100)
+
+    check_sample_rate(scan(tmp_path))

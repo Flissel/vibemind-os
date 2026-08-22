@@ -19,7 +19,7 @@ import soundfile as sf
 from djset.contracts import MixEntry, MixPlan
 from djset.dsp.analyze import BEATS_PER_BAR
 from djset.render.eq import apply_eq
-from djset.render.stretch import SR, stretch
+from djset.render.stretch import SR, UnsupportedSampleRate, stretch
 
 
 class MissingSource(RuntimeError):
@@ -66,7 +66,12 @@ def _load_mono(path: Path, sr: int) -> np.ndarray:
     signal, file_sr = sf.read(path, dtype="float32", always_2d=True)
     mono = signal.mean(axis=1)
     if file_sr != sr:
-        raise MissingSource(
+        # Rueckhalt, nicht die eigentliche Pruefung: die steht im Vorab-Check
+        # (djset.watch.check_sample_rate) und laeuft, bevor der erste Agent
+        # Tokens verbraucht. Frueher flog hier ein MissingSource - eine Datei,
+        # die sehr wohl da war, wurde als fehlend gemeldet, und zwar erst nach
+        # der kompletten Agentenkette.
+        raise UnsupportedSampleRate(
             f"{path.name} liegt mit {file_sr} Hz vor, gebraucht werden {sr} Hz"
         )
     return mono.astype(np.float32)

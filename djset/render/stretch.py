@@ -25,6 +25,20 @@ from djset.contracts import MAX_RATIO, MIN_RATIO
 SR = 44_100
 
 
+class UnsupportedSampleRate(RuntimeError):
+    """Material, das nicht in SR vorliegt.
+
+    Steht hier, weil SR hier steht - die Abtastrate der ganzen Kette und der
+    Fehler dazu gehoeren an dieselbe Stelle. Ausgeloest wird er im Regelfall
+    lange vor dem Renderer: djset.watch.check_sample_rate prueft die Kopfdaten
+    aller Dateien im Vorab-Check, bevor der erste Agent Tokens verbraucht
+    (Spec Abschnitt 7). Im Renderer bleibt er als Rueckhalt fuer den Fall,
+    dass jemand einen Mixplan gegen anderes Material rendert - eine falsche
+    Rate klingt dort nicht falsch, sondern zu schnell oder zu langsam, und das
+    faellt in einem unbeaufsichtigten Lauf niemandem auf.
+    """
+
+
 class RenderToolMissing(RuntimeError):
     """Ein Werkzeug, das der Renderer braucht, liegt nicht auf dem Pfad.
 

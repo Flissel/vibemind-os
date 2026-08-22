@@ -378,3 +378,27 @@ def test_a_true_peak_finding_triggers_exactly_one_corrective_re_render(
     # ersten, die die Korrektur erst ausgeloest hat.
     assert "-0.2 dB" in bericht
     assert "0.3 dB" not in bericht
+
+
+def test_build_with_a_wrong_sample_rate_stops_before_any_agent(
+    tmp_path: Path, profile: Profile, capsys
+) -> None:
+    """Finding 4: die Ratenpruefung gehoert in den Vorab-Check.
+
+    Vorher passierte eine 48-kHz-Datei den Scan, die Analyse (librosa
+    resampelt anstandslos), die Kuratierung, die Anordnung, den Entwurf und die
+    Kritik - und riss den Lauf erst in Stufe 8 ab, mit rohem Traceback, ohne
+    qa-report.md und nachdem jedes Token bezahlt war. Spec Abschnitt 7 stellt
+    genau diese Klasse von Pruefung davor.
+    """
+    run = _prepared(tmp_path, profile, 4)
+    click_track((tmp_path / "watch" / "t3.wav"), bpm=174.0, bars=14, sr=48_000)
+    client = FakeClient([])
+
+    code = cmd_build(tmp_path, run.run_id, client, _budget())
+
+    assert code != 0
+    assert client.calls == 0
+    fehler = capsys.readouterr().err
+    assert "t3.wav" in fehler
+    assert "48000" in fehler
