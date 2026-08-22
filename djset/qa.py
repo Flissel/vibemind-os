@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from djset.contracts import MixPlan, QaFinding, QaReport
+from djset.contracts import AudioFormat, MixPlan, QaFinding, QaReport
 from djset.dsp.analyze import beat_times, detect_bpm_and_grid, measure_loudness
 from djset.render.engine import bar_length_s
 from djset.render.tracklist import timestamp
@@ -180,6 +180,15 @@ def check_set(path: Path, plan: MixPlan) -> QaReport:
     mono = signal.mean(axis=1)
     length_s = len(mono) / sr
     loudness = measure_loudness(path)
+    # Das Format der ausgelieferten Datei gehoert in den Bericht, und zwar
+    # gemessen: die Spec sagt 44,1 kHz / 24 Bit Stereo zu, geliefert wird Mono
+    # im Float-Subtyp. Beides ist bewusst so, aber die Artefakte sind die
+    # einzige Rechenschaft eines unbeaufsichtigten Laufs.
+    audio_format = AudioFormat(
+        channels=signal.shape[1],
+        sample_rate=sr,
+        subtype=sf.info(path).subtype,
+    )
     findings: list[QaFinding] = []
 
     low = plan.target_length_s * (1.0 - LENGTH_TOLERANCE)
@@ -297,6 +306,7 @@ def check_set(path: Path, plan: MixPlan) -> QaReport:
     return QaReport(
         length_s=length_s,
         target_length_s=plan.target_length_s,
+        audio_format=audio_format,
         lufs_integrated=loudness.lufs_integrated,
         true_peak=loudness.true_peak,
         findings=findings,

@@ -10,6 +10,7 @@ from djset.agents.base import Budget
 from djset.cli import cmd_build
 from djset.contracts import (
     REORDERABLE_KINDS,
+    AudioFormat,
     CritiqueLog,
     MixPlan,
     Profile,
@@ -26,6 +27,11 @@ from tests.fixtures.make_audio import click_track, click_track_with_quiet_edges
 
 def _budget() -> Budget:
     return Budget(max_tokens=400_000, max_seconds=300.0)
+
+
+def _delivered_format() -> AudioFormat:
+    """Was der Renderer heute liefert: Mono, 44,1 kHz, Float-Subtyp."""
+    return AudioFormat(channels=1, sample_rate=44_100, subtype="FLOAT")
 
 
 def _analyst_answer(energy: float) -> str:
@@ -283,6 +289,13 @@ def test_a_full_build_renders_the_set(tmp_path: Path, profile: Profile) -> None:
 
     bericht = run.path("qa-report.md").read_text(encoding="utf-8")
     assert "True Peak" in bericht
+    # Findings 6 und 7: das Format der ausgelieferten Datei und die unter den
+    # Korridor geklammerten Uebergaenge stehen im Bericht, nicht nur im Kopf
+    # dessen, der den Code gelesen hat.
+    format_line = next(line for line in bericht.splitlines() if line.startswith("- Format:"))
+    assert "Mono" in format_line and "44100 Hz" in format_line
+    assert "32 Bit Float" in format_line
+    assert "## Verkuerzte Uebergaenge" in bericht
 
 
 def test_a_finished_run_is_no_longer_unfinished(
@@ -324,6 +337,7 @@ def test_a_true_peak_finding_triggers_exactly_one_corrective_re_render(
         QaReport(
             length_s=110.0,
             target_length_s=110.0,
+            audio_format=_delivered_format(),
             lufs_integrated=-14.0,
             true_peak=0.3,
             findings=[QaFinding(kind="true_peak", text="True Peak liegt bei 0.3 dB.")],
@@ -334,6 +348,7 @@ def test_a_true_peak_finding_triggers_exactly_one_corrective_re_render(
         QaReport(
             length_s=110.0,
             target_length_s=110.0,
+            audio_format=_delivered_format(),
             lufs_integrated=-14.0,
             true_peak=-0.2,
             findings=[QaFinding(kind="true_peak", text="True Peak liegt bei -0.2 dB.")],

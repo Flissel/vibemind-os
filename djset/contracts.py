@@ -452,6 +452,22 @@ class QaFinding(BaseModel):
     text: str = Field(min_length=1)
 
 
+class AudioFormat(BaseModel):
+    """Kanaele, Abtastrate und Subtyp der ausgelieferten Datei.
+
+    Gemessen, nicht angenommen: die Spec sagt 44,1 kHz / 24 Bit Stereo zu, der
+    Renderer liefert Mono im Float-Subtyp. Beides ist bewusst so (Mono ist eine
+    festgehaltene Auslassung, Float braucht die QA, um ueber 1.0 messen zu
+    koennen) - aber ein unbeaufsichtigter Lauf, dessen Artefakte die einzige
+    Rechenschaft sind, darf das nicht verschweigen.
+    """
+
+    channels: int = Field(ge=1)
+    sample_rate: int = Field(gt=0)
+    # Der Subtyp, wie libsndfile ihn nennt: FLOAT, PCM_24, PCM_16.
+    subtype: str = Field(min_length=1)
+
+
 class QaReport(BaseModel):
     """Was die QA am fertigen File gemessen hat.
 
@@ -462,6 +478,7 @@ class QaReport(BaseModel):
 
     length_s: float = Field(gt=0)
     target_length_s: float = Field(gt=0)
+    audio_format: AudioFormat
     lufs_integrated: float = Field(allow_inf_nan=False)
     true_peak: float = Field(allow_inf_nan=False)
     findings: list[QaFinding]

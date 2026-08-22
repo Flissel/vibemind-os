@@ -12,8 +12,31 @@ nachvollziehbar ist - nicht nur im Erfolgsfall, auch dann, wenn nichts zu
 melden war.
 """
 
-from djset.contracts import CritiqueLog, QaReport, Shortlist, UnreadableTrack
+from djset.contracts import (
+    AudioFormat,
+    CritiqueLog,
+    MixPlan,
+    Profile,
+    QaReport,
+    Shortlist,
+    UnreadableTrack,
+)
 from djset.qa import TRUE_PEAK_CEILING_DB
+
+# Was die Spec in Abschnitt 5 zusichert: "Ausgegeben wird set.wav als
+# 44,1 kHz / 24 Bit Stereo." Steht hier, damit die Format-Zeile die Zusage
+# nennen kann, gegen die der Leser das Gemessene haelt.
+SPEC_FORMAT = "44,1 kHz / 24 Bit Stereo"
+
+# libsndfiles Subtyp-Namen in Bittiefen. Was nicht drinsteht, wird roh
+# genannt - lieber ein unbekannter Name im Bericht als eine erfundene Tiefe.
+_BIT_DEPTHS = {
+    "FLOAT": "32 Bit Float",
+    "DOUBLE": "64 Bit Float",
+    "PCM_16": "16 Bit",
+    "PCM_24": "24 Bit",
+    "PCM_32": "32 Bit",
+}
 
 
 # Sicherheitsabstand der einen erlaubten Korrektur zur Decke. Zwei Gruende,
@@ -54,6 +77,47 @@ def correction_gain_db(report: QaReport) -> float | None:
     return TRUE_PEAK_CEILING_DB - CORRECTION_HEADROOM_DB - report.true_peak
 
 
+def _format_line(audio: AudioFormat) -> str:
+    """Kanaele, Abtastrate und Bittiefe der ausgelieferten Datei.
+
+    Geliefert wird Mono im Float-Subtyp, zugesichert hat die Spec 44,1 kHz /
+    24 Bit Stereo. Beide Abweichungen sind bewusst - Mono ist eine
+    festgehaltene Auslassung, und der Float-Subtyp ist richtig, weil die QA
+    ueber 1.0 hinaus messen koennen muss, bevor sie ueber die eine erlaubte
+    Pegelkorrektur entscheidet. Aber der Bericht ist die einzige Rechenschaft
+    eines unbeaufsichtigten Laufs: was geliefert wurde, muss darin stehen, und
+    zwar neben dem, was zugesagt war.
+    """
+    channels = {1: "Mono", 2: "Stereo"}.get(
+        audio.channels, f"{audio.channels} Kanaele"
+    )
+    depth = _BIT_DEPTHS.get(audio.subtype, audio.subtype)
+    return (
+        f"- Format: {channels}, {audio.sample_rate} Hz, {depth} "
+        f"(Spec sagt zu: {SPEC_FORMAT})"
+    )
+
+
+def _shortened_transitions(plan: MixPlan, profile: Profile) -> list[str]:
+    """Uebergaenge, die unter den Korridor des Profils gerutscht sind.
+
+    build_mixplan kuerzt die Taktzahl auf das, was das Material an der Naht
+    hergibt. Liefert find_mix_regions entartete Regionen - was sie fuer
+    gleichfoermig laut gemastertes Material ausdruecklich dokumentiert -, sind
+    das null Takte auf beiden Seiten, und aus jedem geplanten 16-Takt-Blend
+    wird ein Stoss von einem Takt. Beanstanden kann der Critic das nicht: sein
+    Minimum IST ein Takt. Ohne diese Liste bleibt als einzige Spur eine
+    Tracklist, in der ueberall "blend, 1 Takte" steht.
+    """
+    minimum = profile.transition.bars_min
+    return [
+        f"`{t.from_track}` nach `{t.to_track}`: {t.bars} statt {minimum} Takte "
+        f"({t.overlap_s:.2f} s) - so viel gab das Material an dieser Naht her."
+        for t in plan.transitions
+        if t.bars < minimum
+    ]
+
+
 def _status_line(qa: QaReport, corrected: bool) -> str:
     """Die eine Zeile, die beantwortet, ob der Lauf ohne Nachlesen brauchbar ist.
 
@@ -87,6 +151,8 @@ def render_qa_report(
     shortlist: Shortlist,
     unreadable: list[UnreadableTrack],
     critique: CritiqueLog | None,
+    plan: MixPlan,
+    profile: Profile,
     corrected: bool = False,
 ) -> str:
     """Der Bericht als Markdown.
@@ -118,6 +184,7 @@ def render_qa_report(
         "",
         f"- Laenge: {qa.length_s / 60:.1f} Minuten (geplant "
         f"{qa.target_length_s / 60:.1f})",
+        _format_line(qa.audio_format),
         f"- Lautheit: {qa.lufs_integrated:.1f} LUFS",
         f"- True Peak: {qa.true_peak:.1f} dB",
     ]
@@ -132,6 +199,17 @@ def render_qa_report(
         lines.append("- Keine.")
     lines.append("")
 
+    lines += ["## Verkuerzte Uebergaenge", ""]
+    shortened = _shortened_transitions(plan, profile)
+    if shortened:
+        lines += [f"- {text}" for text in shortened]
+    else:
+        lines.append(
+            f"- Keine - jeder Uebergang haelt die {profile.transition.bars_min} "
+            f"Takte des Profils."
+        )
+    lines.append("")
+
     lines += ["## Aussortiertes Material", ""]
     if shortlist.rejected:
         lines += [f"- `{r.track_id}`: {r.reason}" for r in shortlist.rejected]
@@ -140,8 +218,13 @@ def render_qa_report(
     # shortlist.note traegt die Begruendung des Curators immer, nicht nur bei
     # einer Kuerzung (Shortlist.shortened haengt nur an, ob weniger Tracks als
     # angefragt uebrig blieben) - sie an `shortened` zu haengen wuerde die
-    # eigentliche Erklaerung im Normalfall verschweigen.
-    lines += ["", shortlist.note, ""]
+    # eigentliche Erklaerung im Normalfall verschweigen. Leer darf sie
+    # trotzdem sein (Shortlist.note hat kein min_length), und dann faellt die
+    # Zeile weg statt als Leerzeile stehenzubleiben.
+    if shortlist.note:
+        lines.append("")
+        lines.append(shortlist.note)
+    lines.append("")
 
     lines += ["## Nicht lesbare Dateien", ""]
     if unreadable:

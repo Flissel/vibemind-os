@@ -230,7 +230,13 @@ def cmd_build(
     run.write_text(
         "qa-report.md",
         render_qa_report(
-            qa, shortlist, unreadable, critique_log, correction is not None
+            qa,
+            shortlist,
+            unreadable,
+            critique_log,
+            best,
+            profile,
+            correction is not None,
         ),
     )
 
