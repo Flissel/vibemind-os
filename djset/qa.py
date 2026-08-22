@@ -14,6 +14,7 @@ import soundfile as sf
 from djset.contracts import MixPlan, QaFinding, QaReport
 from djset.dsp.analyze import beat_times, detect_bpm_and_grid, measure_loudness
 from djset.render.engine import bar_length_s
+from djset.render.tracklist import timestamp
 
 # Erfolgskriterium 3: Ziellaenge plus/minus 5 Prozent.
 LENGTH_TOLERANCE = 0.05
@@ -203,10 +204,15 @@ def check_set(path: Path, plan: MixPlan) -> QaReport:
         )
 
     for start in _gaps(mono, sr):
+        # timestamp() aus tracklist.py floort Minuten und Sekunden aus
+        # DEMSELBEN Ganzzahlwert. Die vorherige Fassung rundete `start / 60`
+        # und rechnete `start % 60` unabhaengig davon - jenseits der
+        # Minutenhaelfte zeigten die beiden Anteile dann auf verschiedene
+        # Minuten (111.4s wurde "2:51" statt "1:51").
         findings.append(
             QaFinding(
                 kind="gap",
-                text=f"Bei {start / 60:.0f}:{start % 60:04.1f} steht laenger als "
+                text=f"Bei {timestamp(start)} steht laenger als "
                 f"{GAP_SECONDS:.1f} Sekunden Stille.",
             )
         )

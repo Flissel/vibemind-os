@@ -3,10 +3,10 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from djset.contracts import MixPlan
+from djset.contracts import MixEntry, MixPlan, Transition
 from djset.qa import TRUE_PEAK_CEILING_DB, check_set
 from djset.render.engine import bar_length_s, render
-from tests.fixtures.render import simple_plan, sources_for
+from tests.fixtures.render import flat_curve, pulsed_tone, simple_plan, sources_for
 
 
 def test_a_clean_render_has_no_findings(tmp_path: Path) -> None:
@@ -166,3 +166,54 @@ def test_the_report_carries_the_measured_numbers(tmp_path: Path) -> None:
     assert report.target_length_s == plan.target_length_s
     assert report.lufs_integrated < 0.0
     assert report.true_peak < 0.0
+
+
+def test_a_gap_past_the_minute_half_gets_a_floored_timestamp(tmp_path: Path) -> None:
+    """Regression: die Gap-Meldung rundete die Minute statt sie zu floorn.
+
+    `start / 60` mit `:.0f` und `start % 60` mit `:04.1f` liefen unabhaengig
+    voneinander - bei einem Gap um 111.4s (= 1:51.4) rundete der erste Anteil
+    auf 2 hoch, waehrend der zweite bei 51.4 blieb, macht "2:51" statt "1:51".
+    djset/render/tracklist.py hat mit timestamp() bereits eine floorende
+    Funktion; qa.py nutzt sie jetzt statt der eigenen Rechnung.
+
+    simple_plan() ist mit rund 27 Sekunden zu kurz, um die Minutenhaelfte zu
+    ueberhaupt zu erreichen - hier steht deshalb ein eigener, laengerer
+    Mixplan, der nur fuer diesen Test gebraucht wird, keine echte Auslieferung
+    ergeben muss und daher nicht ueber render() erzeugt wird.
+    """
+    length = 130.0
+    target = tmp_path / "set.wav"
+    pulsed_tone(target, seconds=length)
+    signal, sr = sf.read(target, dtype="float32")
+    gap_start = 111.4
+    signal[int(gap_start * sr) : int((gap_start + 0.6) * sr)] = 0.0
+    sf.write(target, signal, sr)
+
+    plan = MixPlan(
+        target_length_s=length,
+        target_bpm=174.0,
+        entries=[
+            MixEntry(
+                track_id=f"t{i}", play_from_s=0.0, play_to_s=length,
+                timestretch_ratio=1.0, gain_db=0.0,
+            )
+            for i in range(3)
+        ],
+        transitions=[
+            Transition(
+                from_track=f"t{i}", to_track=f"t{i + 1}", start_at_s=start,
+                bars=1, technique="blend", eq_out=flat_curve(), eq_in=flat_curve(),
+            )
+            # Weit weg vom Gap bei 111.4s, damit das Nahtfenster (rund 11
+            # Sekunden bei 174 BPM/8 Takten) es nicht mit anfasst - dieser
+            # Test soll ausschliesslich die Gap-Meldung pruefen.
+            for i, start in enumerate((40.0, 80.0))
+        ],
+    )
+
+    report = check_set(target, plan)
+
+    gap = next(f for f in report.findings if f.kind == "gap")
+    assert "1:51" in gap.text
+    assert "2:51" not in gap.text

@@ -12,6 +12,8 @@ from djset.contracts import (
     CritiqueLog,
     MixPlan,
     Profile,
+    QaFinding,
+    QaReport,
     Shortlist,
 )
 from djset.run import Run
@@ -288,3 +290,84 @@ def test_a_finished_run_is_no_longer_unfinished(
     cmd_build(tmp_path, run.run_id, FakeClient(_full_run_responses()), _budget())
 
     assert Run.latest_unfinished(tmp_path) is None
+
+
+def test_a_true_peak_finding_triggers_exactly_one_corrective_re_render(
+    tmp_path: Path, profile: Profile, monkeypatch
+) -> None:
+    """Wiring-Test fuer Stufe 9, ohne echtes Audio.
+
+    render() und check_set() sind hier durch Fakes ersetzt - der Test prueft
+    ausschliesslich die Verdrahtung in cmd_build, nicht den Renderer oder die
+    QA-Messung selbst (die sind in tests/render/ und tests/test_qa.py
+    getestet). Drei Dinge muessen stimmen, und keins davon sieht man an
+    render() oder check_set() fuer sich allein:
+
+    1. Ein True-Peak-Befund loest einen zweiten render()-Aufruf mit
+       negativem master_gain_db aus.
+    2. Der QA-Bericht traegt die Zahlen der ZWEITEN Messung (der, die
+       tatsaechlich ausgeliefert wurde), nicht die der ersten, die die
+       Korrektur nur ausgeloest hat.
+    3. Das bleibt bei GENAU EINEM Re-Render, auch wenn die zweite Messung
+       immer noch einen True-Peak-Befund zeigt (simuliert hier eine Korrektur,
+       die nicht vollstaendig hilft) - Spec Abschnitt 7 sagt "hoechstens
+       einmal", nicht "bis es passt". Ein Bug, der das zu einer Schleife
+       macht, wuerde hier einen dritten render()-Aufruf ausloesen.
+    """
+    run = _prepared_with_mixable_tracks(tmp_path, profile, 4)
+    client = FakeClient(_full_run_responses())
+
+    reports = [
+        QaReport(
+            length_s=110.0,
+            target_length_s=110.0,
+            lufs_integrated=-14.0,
+            true_peak=0.3,
+            findings=[QaFinding(kind="true_peak", text="True Peak liegt bei 0.3 dB.")],
+        ),
+        # Absichtlich immer noch nicht sauber - die Korrektur hilft hier
+        # nicht vollstaendig, damit sichtbar wird, ob cmd_build trotzdem
+        # aufhoert.
+        QaReport(
+            length_s=110.0,
+            target_length_s=110.0,
+            lufs_integrated=-14.0,
+            true_peak=-0.2,
+            findings=[QaFinding(kind="true_peak", text="True Peak liegt bei -0.2 dB.")],
+        ),
+    ]
+    qa_calls: list[Path] = []
+
+    def fake_check_set(path: Path, plan: MixPlan) -> QaReport:
+        qa_calls.append(path)
+        return reports[len(qa_calls) - 1]
+
+    render_calls: list[float] = []
+
+    def fake_render(
+        plan: MixPlan,
+        sources: dict[str, Path],
+        target: Path,
+        master_gain_db: float = 0.0,
+        sr: int | None = None,
+    ) -> None:
+        render_calls.append(master_gain_db)
+
+    monkeypatch.setattr(cli, "check_set", fake_check_set)
+    monkeypatch.setattr(cli, "render", fake_render)
+
+    code = cmd_build(tmp_path, run.run_id, client, _budget())
+
+    assert code == 0
+    # Genau ein korrigierender Re-Render: der erste Aufruf unveraendert, der
+    # zweite mit dem aus dem ersten Befund berechneten (negativen) Gain - und
+    # kein dritter, obwohl der zweite Bericht immer noch nicht sauber ist.
+    assert render_calls == [0.0, -1.3]
+    assert len(qa_calls) == 2
+
+    bericht = run.path("qa-report.md").read_text(encoding="utf-8")
+    assert "korrigiert" in bericht
+    # Die AUSGELIEFERTEN Zahlen sind die der zweiten Messung, nicht die der
+    # ersten, die die Korrektur erst ausgeloest hat.
+    assert "-0.2 dB" in bericht
+    assert "0.3 dB" not in bericht
