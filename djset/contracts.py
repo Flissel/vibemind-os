@@ -416,3 +416,30 @@ class MixPlan(BaseModel):
                     f"erwartet war {expected_to!r}"
                 )
         return self
+
+
+QaKind = Literal["length", "true_peak", "seam", "gap"]
+
+
+class QaFinding(BaseModel):
+    kind: QaKind
+    text: str = Field(min_length=1)
+
+
+class QaReport(BaseModel):
+    """Was die QA am fertigen File gemessen hat.
+
+    `ok` heisst: nichts gefunden. Ein Befund verhindert die Auslieferung nicht -
+    laut Spec wird nach hoechstens einem korrigierten Re-Render ausgeliefert und
+    der Befund vermerkt.
+    """
+
+    length_s: float = Field(gt=0)
+    target_length_s: float = Field(gt=0)
+    lufs_integrated: float = Field(allow_inf_nan=False)
+    true_peak: float = Field(allow_inf_nan=False)
+    findings: list[QaFinding]
+
+    @property
+    def ok(self) -> bool:
+        return not self.findings
