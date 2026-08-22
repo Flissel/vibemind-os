@@ -1,3 +1,5 @@
+import re
+
 from djset.agents.designer import TransitionChoice, build_mixplan
 from djset.contracts import MixEntry, Profile, Setlist
 from djset.critic import critique
@@ -210,3 +212,27 @@ def test_a_track_without_an_analysis_is_caught(profile: Profile) -> None:
     verdict = critique(plan, tracks[:12], profile)
 
     assert "unknown_track" in _kinds(verdict)
+
+
+def test_a_missing_analysis_does_not_poison_the_following_seams(
+    profile: Profile,
+) -> None:
+    """Ein fehlendes Analyse-Artefakt darf genau eine Beanstandung erzeugen.
+
+    Frueher schob das `continue` den Ursprung der Ausgabe-Zeitleiste nicht
+    weiter, sodass jede folgende Naht gegen einen veralteten Nullpunkt gemessen
+    wurde - mit absurden negativen Ueberlappungen als Ergebnis.
+    """
+    tracks = many(6)
+    plan = _plan(tracks, profile)
+    # Die Analyse des DRITTEN Tracks entfernen, nicht des letzten: nur dann
+    # liegen ueberhaupt Naehte dahinter, die vergiftet werden koennten.
+    ohne = [t for t in tracks if t.id != tracks[2].id]
+
+    verdict = critique(plan, ohne, profile)
+
+    kinds = [c.kind for c in verdict.complaints]
+    assert kinds.count("unknown_track") == 1
+    overlaps = [c.text for c in verdict.complaints if c.kind == "overlap"]
+    zahlen = [float(re.search(r"nur (-?[\d.]+) Takte", text).group(1)) for text in overlaps]
+    assert all(value >= 0.0 for value in zahlen), zahlen

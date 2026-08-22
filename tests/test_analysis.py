@@ -155,3 +155,24 @@ def test_a_garbage_artifact_is_re_analysed_not_fatal(
 
 def _budget() -> Budget:
     return Budget(max_tokens=200_000, max_seconds=120.0)
+
+
+def test_responses_can_be_keyed_by_prompt(tmp_path: Path, profile: Profile) -> None:
+    """Bei vier Threads steht die Aufrufreihenfolge nicht fest - der Prompt schon."""
+    run = _run(tmp_path)
+    files = _files(tmp_path, 3)
+    client = FakeClient(
+        {
+            "t0": json.dumps({"usable": True, "notes": "A.", "energy_level": 0.2,
+                              "remeasure_with_bpm": None}),
+            "t1": json.dumps({"usable": True, "notes": "B.", "energy_level": 0.5,
+                              "remeasure_with_bpm": None}),
+            "t2": json.dumps({"usable": True, "notes": "C.", "energy_level": 0.8,
+                              "remeasure_with_bpm": None}),
+        }
+    )
+
+    analyses, _ = analyse_all(client, files, profile, run, _budget())
+
+    energies = {a.id: a.verdict.energy_level for a in analyses}
+    assert energies == {"t0": 0.2, "t1": 0.5, "t2": 0.8}
