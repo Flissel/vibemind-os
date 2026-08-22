@@ -35,9 +35,22 @@ HIGH_CROSSOVER_HZ = 4_000.0
 _ORDER = 4
 
 # Unterhalb dieser Laenge kann sosfiltfilt nicht arbeiten: die nullphasige
-# Filterung braucht mehr Samples als ihre Randlaenge (padlen = 15 bei
-# Ordnung 4). Gemessen, nicht geschaetzt.
-_MIN_FILTER_SAMPLES = 16
+# Filterung braucht mehr Samples als ihre Randlaenge padlen.
+#
+# Hergeleitet statt hingeschrieben. Die 16 waren gegen _ORDER = 4 gemessen und
+# richtig - aber eben nur dagegen: eine Aenderung der Ordnung haette sie
+# stillschweigend falsch gemacht, und zwar in die unsichere Richtung (eine
+# hoehere Ordnung braucht MEHR Samples, apply_eq waere dann mit einem
+# scipy-ValueError abgebrochen statt in den Breitband-Rueckfall zu gehen).
+#
+# scipys Voreinstellung ist padlen = 3 * (2 * sections + 1), und sosfiltfilt
+# verlangt streng mehr Samples als das - die Mindestlaenge ist also padlen + 1.
+# butter() liefert ceil(order / 2) Bi-Quad-Sektionen; das Aufrunden ist auch
+# die sichere Richtung, falls die Ordnung je ungerade wird. Bei _ORDER = 4
+# ergibt das dieselbe 16, die vorher als Konstante dastand - gegen scipy
+# geprueft in tests/render/test_eq.py.
+_SECTIONS = (_ORDER + 1) // 2
+_MIN_FILTER_SAMPLES = 3 * (2 * _SECTIONS + 1) + 1
 
 
 def _sos(cutoff_hz: float, sr: int, kind: str) -> np.ndarray:

@@ -7,9 +7,16 @@ class FakeClient:
     """Ein Modell-Ersatz ohne Netz.
 
     Zwei Betriebsarten. Mit einer Liste beantwortet er Aufrufe der Reihe nach.
-    Mit einer Zuordnung sucht er zu jedem Prompt den ersten Schluessel, der
-    darin vorkommt, und antwortet damit - das braucht es, sobald mehrere
-    Threads gleichzeitig fragen, weil die Reihenfolge dann nicht mehr feststeht.
+    Mit einer Zuordnung sucht er zu jedem Prompt den Schluessel, der darin
+    vorkommt, und antwortet damit - das braucht es, sobald mehrere Threads
+    gleichzeitig fragen, weil die Reihenfolge dann nicht mehr feststeht.
+
+    Im Zuordnungsbetrieb muss GENAU EIN Schluessel passen. Frueher gewann der
+    erste - und bei dreizehn Tracks kommt "t1" in jedem Prompt vor, der von
+    "t10" handelt: der Test bekam stillschweigend die falsche Antwort und
+    prueste danach etwas anderes, als er zu pruefen glaubte. Lieber ein
+    lautes AssertionError ueber einen mehrdeutigen Schluessel als ein gruener
+    Test, der die falsche Antwort verarbeitet hat.
 
     Ein Eintrag darf auch eine Exception sein - die wird dann geworfen statt
     zurueckgegeben. So laesst sich ein Transportfehler (Timeout, API-Fehler)
@@ -37,13 +44,20 @@ class FakeClient:
             self.prompts.append(prompt)
             self.calls += 1
             if self._by_key is not None:
-                for key, answer in self._by_key.items():
-                    if key in prompt:
-                        return answer
-                raise AssertionError(
-                    f"Kein Schluessel des FakeClient kommt im Prompt vor: "
-                    f"{sorted(self._by_key)}"
-                )
+                matching = [key for key in self._by_key if key in prompt]
+                if not matching:
+                    raise AssertionError(
+                        f"Kein Schluessel des FakeClient kommt im Prompt vor: "
+                        f"{sorted(self._by_key)}"
+                    )
+                if len(matching) > 1:
+                    raise AssertionError(
+                        f"Mehrdeutiger Prompt: die Schluessel {sorted(matching)} "
+                        f"kommen alle darin vor. Waehle Schluessel, die sich "
+                        f"nicht gegenseitig enthalten (z. B. 'Track t1:' statt "
+                        f"'t1')."
+                    )
+                return self._by_key[matching[0]]
             if not self._responses:
                 raise AssertionError("FakeClient wurde oefter gerufen als vorbereitet")
             answer = self._responses.pop(0)

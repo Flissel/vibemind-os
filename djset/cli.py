@@ -15,7 +15,7 @@ from djset.analysis import analyse_all
 from djset.contracts import CritiqueLog, CritiqueRound, MixPlan, Profile, Setlist
 from djset.critic import Critique, critique
 from djset.qa import check_set
-from djset.render.engine import render
+from djset.render.engine import ImpossibleMixPlan, render
 from djset.render.stretch import RenderToolMissing, UnsupportedSampleRate
 from djset.render.tracklist import render_tracklist
 from djset.report import correction_gain_db, render_qa_report
@@ -23,6 +23,11 @@ from djset.run import FINISHED_MARKER, Run, RunNotFound
 from djset.watch import NotEnoughMaterial, check_enough, check_sample_rate, scan
 
 WATCH_DIRNAME = "watch"
+
+# Unter diesem Namen entsteht das Set, bis der Bericht steht. Erst dann wird
+# es zu FINISHED_MARKER - der Marke, an der Run.latest_unfinished einen
+# fertigen Lauf erkennt.
+PARTIAL_MARKER = "set.partial.wav"
 
 PLAN_BUDGET_TOKENS = 120_000
 # Wanduhrgrenze der Plan-Phase. Sie besteht aus hoechstens acht
@@ -201,30 +206,45 @@ def cmd_build(
     run.write_model("critique.json", critique_log)
 
     # Spec Abschnitt 7: ein Fehler des Renderers ist ein Bug, kein Retry-Fall -
-    # RenderFailed und ImpossibleMixPlan bleiben deshalb unbehandelt und
-    # reissen den Lauf mit vollem Traceback ab, der Mixplan bleibt zum
-    # Reproduzieren liegen. Nur ein fehlendes ffmpeg ist eine Umgebungsfrage,
-    # kein Bug.
+    # RenderFailed bleibt deshalb unbehandelt und reisst den Lauf mit vollem
+    # Traceback ab, der Mixplan bleibt zum Reproduzieren liegen. Ein fehlendes
+    # ffmpeg ist dagegen eine Umgebungsfrage, und ein unausfuehrbarer Mixplan
+    # ist laut eigenem Docstring ein Befund UEBER den Mixplan, kein Bug im
+    # Renderer - beide bekommen eine benannte Meldung statt eines Tracebacks.
+    #
+    # Gerendert wird unter einem Zwischennamen. set.wav ist die Marke, an der
+    # Run.latest_unfinished einen fertigen Lauf erkennt (siehe run.py) - laege
+    # es schon da, waehrend die QA noch laeuft, saehe ein in Stufe 9
+    # abgestuerzter Lauf fertig aus und haette doch keinen Bericht. Umbenannt
+    # wird erst, wenn qa-report.md geschrieben ist.
+    partial = run.path(PARTIAL_MARKER)
     try:
         # Stufe 8: rendern.
         sources = {file.id: file.path for file in files}
-        render(best, sources, run.path(FINISHED_MARKER))
+        render(best, sources, partial)
         run.write_text(
             "tracklist.md", render_tracklist(best, {a.id: a for a in analyses})
         )
 
         # Stufe 9: nachmessen, und hoechstens einmal den Pegel korrigieren.
-        qa = check_set(run.path(FINISHED_MARKER), best)
+        qa = check_set(partial, best)
         correction = correction_gain_db(qa)
         # Auf `correction is not None` verzweigt, nicht auf ein danebenstehendes
         # bool: sonst kann der f-String unten ein None bekommen, sobald die
         # beiden auseinanderlaufen.
         if correction is not None:
             print(f"  QA: Pegel um {correction:.1f} dB korrigiert, rendere neu")
-            render(best, sources, run.path(FINISHED_MARKER), master_gain_db=correction)
-            qa = check_set(run.path(FINISHED_MARKER), best)
+            render(best, sources, partial, master_gain_db=correction)
+            qa = check_set(partial, best)
     except RenderToolMissing as error:
         print(f"Fehler: {error}", file=sys.stderr)
+        return 1
+    except ImpossibleMixPlan as error:
+        print(
+            f"Fehler: der Mixplan laesst sich nicht ausfuehren: {error}\n"
+            f"Er bleibt zum Nachsehen unter {run.path('mixplan.json')} liegen.",
+            file=sys.stderr,
+        )
         return 1
 
     run.write_text(
@@ -239,6 +259,8 @@ def cmd_build(
             correction is not None,
         ),
     )
+    # Jetzt ist der Lauf fertig - und erst jetzt traegt er die Marke dafuer.
+    partial.replace(run.path(FINISHED_MARKER))
 
     print(f"Lauf {run.run_id}")
     print(f"  {len(analyses)} Tracks analysiert, {len(unreadable)} unlesbar")

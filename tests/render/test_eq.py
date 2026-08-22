@@ -1,4 +1,6 @@
 import numpy as np
+import pytest
+from scipy import signal as sig
 
 from djset.contracts import EqCurve, EqPoint
 from djset.render.eq import apply_eq, envelope, split_bands
@@ -123,3 +125,28 @@ def test_the_fallback_agrees_with_the_normal_path_for_identical_curves() -> None
     fallback_path = (signal * gain).astype(np.float32)
 
     assert np.allclose(normal_path, fallback_path, atol=1e-5)
+
+
+def test_the_filter_minimum_matches_what_scipy_actually_demands() -> None:
+    """Die Mindestlaenge ist hergeleitet, nicht hingeschrieben - hier gemessen.
+
+    _MIN_FILTER_SAMPLES stand als 16 da, gegen _ORDER = 4 gemessen und
+    richtig - aber eben nur dagegen. Eine Aenderung der Ordnung haette sie
+    stillschweigend falsch gemacht, und zwar in die unsichere Richtung: eine
+    hoehere Ordnung braucht MEHR Samples, apply_eq waere dann mit einem
+    scipy-ValueError abgebrochen statt in den Breitband-Rueckfall zu gehen.
+
+    Geprueft wird gegen scipy selbst, nicht gegen eine zweite Formel: bei
+    einem Sample weniger muss sosfiltfilt werfen, bei genau der Mindestlaenge
+    muss es rechnen. Damit faellt eine geaenderte Ordnung hier auf.
+    """
+    from djset.render.eq import _MIN_FILTER_SAMPLES, LOW_CROSSOVER_HZ, _sos
+
+    sos = _sos(LOW_CROSSOVER_HZ, SR, "lowpass")
+
+    with pytest.raises(ValueError):
+        sig.sosfiltfilt(sos, np.ones(_MIN_FILTER_SAMPLES - 1))
+
+    assert len(sig.sosfiltfilt(sos, np.ones(_MIN_FILTER_SAMPLES))) == (
+        _MIN_FILTER_SAMPLES
+    )

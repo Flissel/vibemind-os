@@ -19,6 +19,7 @@ from djset.contracts import (
     Shortlist,
 )
 from djset.qa import TRUE_PEAK_CEILING_DB
+from djset.render.engine import ImpossibleMixPlan
 from djset.report import CORRECTION_HEADROOM_DB
 from djset.run import Run
 from tests.fixtures.fake_client import FakeClient
@@ -370,6 +371,11 @@ def test_a_true_peak_finding_triggers_exactly_one_corrective_re_render(
         sr: int | None = None,
     ) -> None:
         render_calls.append(master_gain_db)
+        # Die Datei muss entstehen: cmd_build rendert unter einem
+        # Zwischennamen und benennt erst nach dem Bericht um. Ein Fake, der
+        # nichts schreibt, waere kein Renderer.
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"")
 
     monkeypatch.setattr(cli, "check_set", fake_check_set)
     monkeypatch.setattr(cli, "render", fake_render)
@@ -417,3 +423,55 @@ def test_build_with_a_wrong_sample_rate_stops_before_any_agent(
     fehler = capsys.readouterr().err
     assert "t3.wav" in fehler
     assert "48000" in fehler
+
+
+def test_a_crash_in_stage_nine_leaves_the_run_unfinished(
+    tmp_path: Path, profile: Profile, monkeypatch
+) -> None:
+    """set.wav IST die Fertig-Marke (Run.latest_unfinished, siehe run.py).
+
+    Wurde es vor der QA geschrieben, sah ein in Stufe 9 abgestuerzter Lauf
+    fertig aus und hatte doch keinen qa-report.md - `dj-set build` haette ihn
+    danach nie wieder angefasst. Jetzt entsteht das Set unter einem
+    Zwischennamen und wird erst nach dem Bericht umbenannt.
+    """
+    run = _prepared_with_mixable_tracks(tmp_path, profile, 4)
+
+    def exploding_check_set(path: Path, plan: MixPlan) -> QaReport:
+        raise RuntimeError("Stufe 9 abgestuerzt")
+
+    monkeypatch.setattr(cli, "check_set", exploding_check_set)
+
+    with pytest.raises(RuntimeError, match="Stufe 9"):
+        cmd_build(tmp_path, run.run_id, FakeClient(_full_run_responses()), _budget())
+
+    assert not run.has("set.wav")
+    assert not run.has("qa-report.md")
+    # Und der Lauf ist damit weiter der juengste unfertige.
+    assert Run.latest_unfinished(tmp_path) is not None
+
+
+def test_an_impossible_mixplan_ends_with_a_named_message_not_a_traceback(
+    tmp_path: Path, profile: Profile, monkeypatch, capsys
+) -> None:
+    """ImpossibleMixPlan ist laut eigenem Docstring ein Befund UEBER den
+    Mixplan, kein Bug im Renderer - und Spec Abschnitt 7 beginnt mit "Kein
+    Fehler darf den Lauf haengen lassen". Behandelt wird er wie ein fehlendes
+    ffmpeg: benannte Meldung, Exit 1, Mixplan bleibt liegen.
+    """
+    run = _prepared_with_mixable_tracks(tmp_path, profile, 4)
+
+    def refusing_render(*args: object, **kwargs: object) -> None:
+        raise ImpossibleMixPlan("Eintrag 't1' ist kuerzer als seine Fenster")
+
+    monkeypatch.setattr(cli, "render", refusing_render)
+
+    code = cmd_build(tmp_path, run.run_id, FakeClient(_full_run_responses()), _budget())
+
+    assert code == 1
+    fehler = capsys.readouterr().err
+    assert "t1" in fehler
+    assert "mixplan.json" in fehler
+    # Der Mixplan bleibt zum Nachsehen liegen, das Set entsteht nicht.
+    assert run.has("mixplan.json")
+    assert not run.has("set.wav")

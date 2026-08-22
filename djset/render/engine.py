@@ -90,7 +90,12 @@ def _segment(source: Path, entry: MixEntry, sr: int, work: Path) -> np.ndarray:
         # voller ueberfluessiger Schreibdurchlauf ueber das gesamte Material.
         cut = work / f"{entry.track_id}-cut.wav"
         out = work / f"{entry.track_id}-stretched.wav"
-        sf.write(cut, piece, sr)
+        # subtype="FLOAT": sf.write faellt bei WAV sonst auf PCM_16 zurueck.
+        # Jeder gedehnte Eintrag waere damit durch 16 Bit gelaufen, waehrend
+        # die ungedehnten in Float bleiben - eine stille Qualitaetsstufe
+        # mitten im Set, allein davon abhaengig, ob ein Track angeglichen
+        # werden musste.
+        sf.write(cut, piece, sr, subtype="FLOAT")
         stretch(cut, out, entry.timestretch_ratio, sr=sr)
         piece = _load_mono(out, sr)
 
