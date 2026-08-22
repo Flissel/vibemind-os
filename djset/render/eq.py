@@ -12,11 +12,14 @@ von low und high uebrigbleibt. Damit liefert eine flache Kurve das
 Eingangssignal unveraendert zurueck, und genau das ist der Test, auf dem die
 ganze Stufe ruht.
 
-sosfiltfilt braucht mehr Samples als der Filterorder verlangt (bei Order 4 hier
-16 Samples, siehe padlen in scipy). Ein Uebergang ist per Vertrag mindestens
-einen Takt lang (contracts.TransitionRules.bars_min >= 1), bei 174 BPM also
-rund 1,4 Sekunden respektive ueber 60000 Samples - weit ueber dieser Grenze,
-daher kein Sonderfall fuer kurze Fenster noetig.
+sosfiltfilt braucht mehr Samples als seine Randlaenge (padlen): gemessen bei
+Ordnung 4 sind das 16 Samples, sowohl fuer den Tiefpass- als auch den
+Hochpass-Zweig (padlen = 15, siehe _MIN_FILTER_SAMPLES). Ein handgeschriebener
+MixPlan kann ein kuerzeres Fenster erzeugen - MixEntry.play_from_s/play_to_s
+erzwingen nur play_from_s < play_to_s, keine Mindestdauer, und Transition.bars
+schuetzt hier nicht, weil der Renderer das Fenster zusaetzlich mit
+block.size deckelt. apply_eq faengt das ab, statt mit scipys internem
+ValueError abzubrechen: siehe _MIN_FILTER_SAMPLES unten.
 """
 
 import numpy as np
@@ -30,6 +33,11 @@ LOW_CROSSOVER_HZ = 200.0
 HIGH_CROSSOVER_HZ = 4_000.0
 
 _ORDER = 4
+
+# Unterhalb dieser Laenge kann sosfiltfilt nicht arbeiten: die nullphasige
+# Filterung braucht mehr Samples als ihre Randlaenge (padlen = 15 bei
+# Ordnung 4). Gemessen, nicht geschaetzt.
+_MIN_FILTER_SAMPLES = 16
 
 
 def _sos(cutoff_hz: float, sr: int, kind: str) -> np.ndarray:
@@ -68,9 +76,26 @@ def envelope(points: list[EqPoint], samples: int) -> np.ndarray:
 
 
 def apply_eq(signal: np.ndarray, sr: int, curve: EqCurve) -> np.ndarray:
-    """Legt die drei Baender-Huellkurven ueber ein Signal."""
+    """Legt die drei Baender-Huellkurven ueber ein Signal.
+
+    Ist das Fenster zu kurz zum Filtern, wird stattdessen der Mittelwert der
+    drei Huellkurven als Breitbandverstaerkung angelegt. Bei 44,1 kHz sind das
+    unter 0,36 Millisekunden - eine bandselektive Bearbeitung waere dort ohnehin
+    bedeutungslos, und einen ganzen Lauf daran scheitern zu lassen waere die
+    falsche Abwaegung. Fuer drei gleiche Kurven liefert der Rueckfall exakt
+    dasselbe wie der normale Weg.
+    """
     if signal.size == 0:
         return signal.astype(np.float32)
+
+    if signal.size < _MIN_FILTER_SAMPLES:
+        broadband = (
+            envelope(curve.low, signal.size)
+            + envelope(curve.mid, signal.size)
+            + envelope(curve.high, signal.size)
+        ) / 3.0
+        return (signal * broadband).astype(np.float32)
+
     low, mid, high = split_bands(signal, sr)
     return (
         low * envelope(curve.low, signal.size)

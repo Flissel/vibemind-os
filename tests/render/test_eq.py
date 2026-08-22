@@ -84,3 +84,42 @@ def test_a_ramp_down_really_falls() -> None:
 
     assert abs(float(result[0]) - 0.5) < 0.02
     assert abs(float(result[-1])) < 0.01
+
+
+def test_a_window_below_the_filter_minimum_falls_back_to_broadband_gain() -> None:
+    """Unter 16 Samples kann sosfiltfilt nicht filtern (gemessen, siehe eq.py).
+
+    apply_eq darf dabei nicht mit einem scipy-ValueError abbrechen, sondern legt
+    den Mittelwert der drei Huellkurven als eine Breitbandverstaerkung an.
+    """
+    signal = np.ones(10, dtype=np.float32) * 0.5
+    curve = EqCurve(
+        low=[EqPoint(position=0.0, gain_db=0.0), EqPoint(position=1.0, gain_db=0.0)],
+        mid=[EqPoint(position=0.0, gain_db=-6.0), EqPoint(position=1.0, gain_db=-6.0)],
+        high=[EqPoint(position=0.0, gain_db=6.0), EqPoint(position=1.0, gain_db=6.0)],
+    )
+
+    result = apply_eq(signal, SR, curve)
+
+    expected_gain = (10 ** (0 / 20) + 10 ** (-6 / 20) + 10 ** (6 / 20)) / 3.0
+    assert len(result) == 10
+    assert np.allclose(result, signal * expected_gain, atol=1e-6)
+
+
+def test_the_fallback_agrees_with_the_normal_path_for_identical_curves() -> None:
+    """Fuer drei gleiche Kurven liefert der Breitband-Fallback denselben Wert
+    wie der gefilterte Normalweg - der Uebergang bei der Mindestlaenge ist
+    stetig, kein Sprung.
+    """
+    length = 17  # knapp oberhalb der sosfiltfilt-Mindestlaenge von 16 Samples
+    generator = np.random.default_rng(3)
+    signal = generator.standard_normal(length).astype(np.float32) * 0.1
+    points = [EqPoint(position=0.0, gain_db=-6.0), EqPoint(position=1.0, gain_db=3.0)]
+    curve = EqCurve(low=points, mid=points, high=points)
+
+    normal_path = apply_eq(signal, SR, curve)
+
+    gain = envelope(points, length)
+    fallback_path = (signal * gain).astype(np.float32)
+
+    assert np.allclose(normal_path, fallback_path, atol=1e-5)
