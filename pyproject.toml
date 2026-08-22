@@ -8,6 +8,7 @@ dependencies = [
     "numpy>=1.26",
     "soundfile>=0.12",
     "pyloudnorm>=0.1.1",
+    "scipy>=1.17",
     # >=0.2: djset/agents/client.py benutzt ClaudeAgentOptions,
     # AssistantMessage, TextBlock und ein asynchrones query() - alles
     # 0.2-Oberflaeche. Eine 0.1.x wuerde beim Import scheitern, und kein Test
