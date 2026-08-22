@@ -46,3 +46,6 @@
 [submodule "spaces/sales"]
 	path = spaces/sales
 	url = https://github.com/Flissel/aisalesorgcore.git
+[submodule "spaces/video/laura"]
+	path = spaces/video/laura
+	url = https://github.com/Vibemind-LAB/Lauras_star.git
