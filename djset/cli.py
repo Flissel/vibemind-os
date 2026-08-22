@@ -14,7 +14,12 @@ from djset.agents.prompt_writer import render_markdown, write_prompts
 from djset.analysis import analyse_all
 from djset.contracts import CritiqueLog, CritiqueRound, MixPlan, Profile, Setlist
 from djset.critic import Critique, critique
-from djset.run import Run, RunNotFound
+from djset.qa import check_set
+from djset.render.engine import render
+from djset.render.stretch import RenderToolMissing
+from djset.render.tracklist import render_tracklist
+from djset.report import correction_gain_db, render_qa_report
+from djset.run import FINISHED_MARKER, Run, RunNotFound
 from djset.watch import NotEnoughMaterial, check_enough, scan
 
 WATCH_DIRNAME = "watch"
@@ -183,17 +188,45 @@ def cmd_build(
     # nachvollziehbar sein. Auf der Standardausgabe eines unbeaufsichtigten
     # Laufs ist sie das nicht - und die Beanstandungen der verworfenen Runden
     # sind gerade die, die zur Neuanordnung gefuehrt haben.
-    run.write_model(
-        "critique.json",
-        CritiqueLog(
-            rounds=[
-                CritiqueRound.model_validate(
-                    entry.model_dump() | {"chosen": entry.round == best_round}
-                )
-                for entry in rounds
-            ],
-            chosen_round=best_round,
-        ),
+    critique_log = CritiqueLog(
+        rounds=[
+            CritiqueRound.model_validate(
+                entry.model_dump() | {"chosen": entry.round == best_round}
+            )
+            for entry in rounds
+        ],
+        chosen_round=best_round,
+    )
+    run.write_model("critique.json", critique_log)
+
+    # Spec Abschnitt 7: ein Fehler des Renderers ist ein Bug, kein Retry-Fall -
+    # RenderFailed und ImpossibleMixPlan bleiben deshalb unbehandelt und
+    # reissen den Lauf mit vollem Traceback ab, der Mixplan bleibt zum
+    # Reproduzieren liegen. Nur ein fehlendes ffmpeg ist eine Umgebungsfrage,
+    # kein Bug.
+    try:
+        # Stufe 8: rendern.
+        sources = {file.id: file.path for file in files}
+        render(best, sources, run.path(FINISHED_MARKER))
+        run.write_text(
+            "tracklist.md", render_tracklist(best, {a.id: a for a in analyses})
+        )
+
+        # Stufe 9: nachmessen, und hoechstens einmal den Pegel korrigieren.
+        qa = check_set(run.path(FINISHED_MARKER), best)
+        correction = correction_gain_db(qa)
+        corrected = correction is not None
+        if corrected:
+            print(f"  QA: Pegel um {correction:.1f} dB korrigiert, rendere neu")
+            render(best, sources, run.path(FINISHED_MARKER), master_gain_db=correction)
+            qa = check_set(run.path(FINISHED_MARKER), best)
+    except RenderToolMissing as error:
+        print(f"Fehler: {error}", file=sys.stderr)
+        return 1
+
+    run.write_text(
+        "qa-report.md",
+        render_qa_report(qa, shortlist, unreadable, critique_log, corrected),
     )
 
     print(f"Lauf {run.run_id}")
@@ -211,7 +244,9 @@ def cmd_build(
             print(f"    - {text}")
     print(f"  Mixplan: {run.path('mixplan.json')}")
     print(f"  Beanstandungen aller Runden: {run.path('critique.json')}")
-    print("  Das Rendern kommt in einer spaeteren Ausbaustufe.")
+    print(f"  Set: {run.path(FINISHED_MARKER)}")
+    print(f"  Tracklist: {run.path('tracklist.md')}")
+    print(f"  QA-Bericht: {run.path('qa-report.md')}")
     return 0
 
 

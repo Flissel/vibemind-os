@@ -2,6 +2,8 @@ import json
 from datetime import date
 from pathlib import Path
 
+import soundfile as sf
+
 from djset import cli
 from djset.agents.base import Budget
 from djset.cli import cmd_build
@@ -257,3 +259,32 @@ def test_build_takes_its_base_from_the_command_line(
 
     assert seen["base"] == tmp_path
     assert seen["run_id"] == "irgendein-lauf"
+
+
+def test_a_full_build_renders_the_set(tmp_path: Path, profile: Profile) -> None:
+    """Der ganze Weg: watch-Ordner rein, hoerbares Set raus."""
+    run = _prepared_with_mixable_tracks(tmp_path, profile, 4)
+    client = FakeClient(_full_run_responses())
+
+    code = cmd_build(tmp_path, run.run_id, client, _budget())
+
+    assert code == 0
+    assert run.has("set.wav")
+    assert run.has("tracklist.md")
+    assert run.has("qa-report.md")
+
+    with sf.SoundFile(run.path("set.wav")) as handle:
+        assert len(handle) > 0
+
+    bericht = run.path("qa-report.md").read_text(encoding="utf-8")
+    assert "True Peak" in bericht
+
+
+def test_a_finished_run_is_no_longer_unfinished(
+    tmp_path: Path, profile: Profile
+) -> None:
+    """Run.latest_unfinished erkennt einen Lauf an set.wav als fertig."""
+    run = _prepared_with_mixable_tracks(tmp_path, profile, 4)
+    cmd_build(tmp_path, run.run_id, FakeClient(_full_run_responses()), _budget())
+
+    assert Run.latest_unfinished(tmp_path) is None
