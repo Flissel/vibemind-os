@@ -1,11 +1,14 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 import soundfile as sf
 
-from djset.contracts import MixEntry, MixPlan, Transition
+from djset.agents.designer import TransitionChoice, build_mixplan
+from djset.contracts import MixEntry, MixPlan, Profile, Setlist, Transition
 from djset.qa import TRUE_PEAK_CEILING_DB, check_set
 from djset.render.engine import bar_length_s, render
+from tests.fixtures.analyses import make_off_grid
 from tests.fixtures.render import flat_curve, pulsed_tone, simple_plan, sources_for
 
 
@@ -203,7 +206,8 @@ def test_a_gap_past_the_minute_half_gets_a_floored_timestamp(tmp_path: Path) -> 
         transitions=[
             Transition(
                 from_track=f"t{i}", to_track=f"t{i + 1}", start_at_s=start,
-                bars=1, technique="blend", eq_out=flat_curve(), eq_in=flat_curve(),
+                overlap_s=bar_length_s(174.0), bars=1, technique="blend",
+                eq_out=flat_curve(), eq_in=flat_curve(),
             )
             # Weit weg vom Gap bei 111.4s, damit das Nahtfenster (rund 11
             # Sekunden bei 174 BPM/8 Takten) es nicht mit anfasst - dieser
@@ -217,3 +221,69 @@ def test_a_gap_past_the_minute_half_gets_a_floored_timestamp(tmp_path: Path) -> 
     gap = next(f for f in report.findings if f.kind == "gap")
     assert "1:51" in gap.text
     assert "2:51" not in gap.text
+
+
+def test_an_unstretchable_track_leaves_no_silence_before_the_seam(
+    tmp_path: Path, profile: Profile
+) -> None:
+    """Regression fuer Critical 1: das Uebergangsfenster wurde zweimal gerechnet.
+
+    Stufe 6 mass in Takten des QUELLTRACKS (bar_length_s / timestretch_ratio),
+    Stufe 8 in Takten des ZIELTEMPOS (4 * 60 / target_bpm). Beide stimmen nur
+    ueberein, solange das Verhaeltnis wirklich target_bpm/source_bpm ist - und
+    das ist es nicht mehr, sobald ein Track ausserhalb der Stretch-Grenze
+    liegt: _ratio zwingt ihn dann auf 1.0, und der Uebergang wird zum Schnitt,
+    dessen eq_out ueber das ganze Fenster flach auf -60 dB steht.
+
+    Hier laeuft eine 200-BPM-Quelle gegen ein 174-BPM-Ziel bei 4 Takten.
+    Material hinter der Naht: 4 * 4 * 60/200 = 4,8000 s. Das alte Fenster von
+    Stufe 8: 4 * 4 * 60/174 = 5,5172 s. Die Differenz von 0,7172 s legte der
+    Renderer VOR die Naht - digitale Stille, bevor der eingehende Track
+    ueberhaupt einsetzt (gemessen: 0,8237 s Stille ab 23,1763 s bei einer Naht
+    auf 24,0000 s, von der QA als `gap` gemeldet). Mit Transition.overlap_s
+    liest Stufe 8 die Dauer aus dem Plan und rechnet sie nicht mehr nach.
+    """
+    tracks = [
+        make_off_grid("t0", bpm=200.0, duration_s=30.0,
+                      intro_end_s=8 * 4 * 60.0 / 200.0, outro_start_s=24.0, energy=0.3),
+        make_off_grid("t1", bpm=174.0, duration_s=30.0,
+                      intro_end_s=8 * bar_length_s(174.0),
+                      outro_start_s=16 * bar_length_s(174.0), energy=0.5),
+        make_off_grid("t2", bpm=174.0, duration_s=30.0,
+                      intro_end_s=8 * bar_length_s(174.0),
+                      outro_start_s=16 * bar_length_s(174.0), energy=0.7),
+    ]
+    plan = build_mixplan(
+        Setlist(order=[t.id for t in tracks], note=""),
+        tracks,
+        [TransitionChoice(technique="blend", bars=4) for _ in range(2)],
+        profile,
+    )
+    sources = {
+        track.id: pulsed_tone(tmp_path / f"{track.id}.wav", seconds=track.duration_s,
+                              hz=220.0, bpm=track.bpm.value)
+        for track in tracks
+    }
+    target = tmp_path / "set.wav"
+    render(plan, sources, target, master_gain_db=-12.0)
+
+    seam = plan.transitions[0]
+    # Der Pfad, um den es geht: der Track laesst sich nicht angleichen, also
+    # bleibt er ungestreckt und der Uebergang wird zum Schnitt.
+    assert seam.technique == "cut"
+    assert plan.entries[0].timestretch_ratio == 1.0
+    # Das Fenster ist die Schnittmenge beider Seiten - 4,8 s Outro-Material,
+    # nicht die 5,5172 s, die 4 Takte im ZIELTEMPO dauern wuerden.
+    assert seam.overlap_s == pytest.approx(4 * 4 * 60.0 / 200.0, abs=1e-6)
+    assert seam.overlap_s < 4 * bar_length_s(plan.target_bpm)
+
+    report = check_set(target, plan)
+    assert not any(f.kind == "gap" for f in report.findings), [
+        f.text for f in report.findings
+    ]
+
+    # Direkt nachgemessen, unabhaengig von der Gap-Schwelle: die 0,72 s vor der
+    # Naht tragen Signal, statt stillgelegt zu sein.
+    signal, sr = sf.read(target, dtype="float32")
+    before = signal[int((seam.start_at_s - 0.72) * sr) : int(seam.start_at_s * sr)]
+    assert float(np.max(np.abs(before))) > 0.001

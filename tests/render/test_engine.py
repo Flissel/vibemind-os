@@ -87,11 +87,14 @@ def test_an_entry_too_short_for_both_its_transition_windows_is_refused(
         MixEntry(track_id="t2", play_from_s=0.0, play_to_s=10.0,
                  timestretch_ratio=1.0, gain_db=0.0),
     ]
+    window = bars * bar_length_s(target_bpm)
     transitions = [
-        Transition(from_track="t0", to_track="t1", start_at_s=8.0, bars=bars,
-                   technique="blend", eq_out=flat_curve(), eq_in=flat_curve()),
-        Transition(from_track="t1", to_track="t2", start_at_s=9.0, bars=bars,
-                   technique="blend", eq_out=flat_curve(), eq_in=flat_curve()),
+        Transition(from_track="t0", to_track="t1", start_at_s=8.0,
+                   overlap_s=window, bars=bars, technique="blend",
+                   eq_out=flat_curve(), eq_in=flat_curve()),
+        Transition(from_track="t1", to_track="t2", start_at_s=9.0,
+                   overlap_s=window, bars=bars, technique="blend",
+                   eq_out=flat_curve(), eq_in=flat_curve()),
     ]
     plan = MixPlan(target_length_s=19.0, target_bpm=target_bpm,
                     entries=entries, transitions=transitions)

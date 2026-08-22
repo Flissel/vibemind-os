@@ -106,7 +106,6 @@ def render(
             f"Zu diesen Eintraegen fehlt die Audiodatei: {', '.join(missing)}"
         )
 
-    bar = bar_length_s(plan.target_bpm)
     starts = [0.0] + [t.start_at_s for t in plan.transitions]
     total = int(round(plan.target_length_s * sr))
     mix = np.zeros(total, dtype=np.float32)
@@ -121,12 +120,18 @@ def render(
             incoming = plan.transitions[index - 1] if index > 0 else None
             outgoing = plan.transitions[index] if index < len(plan.transitions) else None
 
+            # Die Fensterbreite steht im Plan (Transition.overlap_s) und wird
+            # hier NICHT mehr aus bars und target_bpm nachgerechnet. Genau
+            # diese zweite Herleitung war der Fehler: sie mass in Takten des
+            # Zieltempos, waehrend Stufe 6 in Takten des Quelltracks rechnete,
+            # und die Differenz landete als Fenster VOR der Naht - beim Schnitt
+            # als digitale Stille, bevor der neue Track einsetzte.
             head_width = (
-                min(block.size, int(round(incoming.bars * bar * sr)))
+                min(block.size, int(round(incoming.overlap_s * sr)))
                 if incoming is not None else 0
             )
             tail_width = (
-                min(block.size, int(round(outgoing.bars * bar * sr)))
+                min(block.size, int(round(outgoing.overlap_s * sr)))
                 if outgoing is not None else 0
             )
 

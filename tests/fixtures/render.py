@@ -75,8 +75,13 @@ def simple_plan(bars: int = 1, target_bpm: float = 174.0) -> MixPlan:
     ]
     starts = [length - overlap, 2 * (length - overlap)]
     transitions = [
+        # overlap_s ist hier bitgleich zu dem, was der Renderer frueher selbst
+        # aus bars und target_bpm rechnete (bars * bar_length_s(target_bpm)) -
+        # bei Verhaeltnis 1.0 sind beide Herleitungen dieselbe Zahl. Nur
+        # deshalb bewegt sich kein bestehender Render-Test.
         Transition(from_track=f"t{i}", to_track=f"t{i + 1}", start_at_s=starts[i],
-                   bars=bars, technique="blend", eq_out=flat_curve(), eq_in=flat_curve())
+                   overlap_s=overlap, bars=bars, technique="blend",
+                   eq_out=flat_curve(), eq_in=flat_curve())
         for i in range(2)
     ]
     return MixPlan(

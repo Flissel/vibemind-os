@@ -346,20 +346,40 @@ class EqCurve(BaseModel):
 class Transition(BaseModel):
     """Ein Uebergang zwischen zwei Tracks.
 
+    `overlap_s` ist die MASSGEBLICHE Dauer des Uebergangs, in Sekunden der
+    AUSGABE. Ueber sie legt der Renderer seine EQ-Fenster, an ihr misst der
+    Critic die Ueberlappung. Keine Stufe leitet die Fensterbreite noch einmal
+    selbst her - genau das war der Fehler, den dieses Feld beendet: Stufe 6
+    rechnete in Takten des QUELLTRACKS (bar_length_s / timestretch_ratio),
+    Stufe 8 in Takten des ZIELTEMPOS (4 * 60 / target_bpm). Beide stimmen nur
+    ueberein, solange das Verhaeltnis wirklich target_bpm/source_bpm ist -
+    und genau das ist es nicht mehr, sobald ein Track ausserhalb der
+    Stretch-Grenze liegt und ungestreckt bleibt. Die Differenz legte der
+    Renderer als Fenster VOR die Naht: bei einem Schnitt (eq_out flach auf
+    -60 dB) wurde daraus digitale Stille, bevor der neue Track ueberhaupt
+    einsetzte - gemessen 0,72 s bei 4 Takten, linear wachsend mit der
+    Taktzahl.
+
     `bars` ist die EFFEKTIVE Taktzahl, nicht die gewuenschte: sie kann unter
     profile.transition.bars_min liegen, wenn das Material an dieser Naht
     weniger hergibt. Ein Track ohne erkennbares Outro liefert einen Takt, auch
     wenn der Korridor bei sechzehn anfaengt - lieber ein kurzer Uebergang als
-    Sekunden, die niemand fuellt. Der Critic beanstandet, wenn dabei weniger
-    als ein Takt uebrigbleibt.
+    Sekunden, die niemand fuellt. Sie ist BESCHREIBEND: sie steht in der
+    Tracklist und im Bericht, aber keine Stufe rechnet mehr eine Dauer daraus.
 
-    Die Taktlaenge dazu steht nicht im Uebergang: sie ist
-    60 / MixPlan.target_bpm mal vier.
+    `overlap_s` darf null sein. Das ist kein Schoenheitsfehler, sondern der
+    ehrliche Wert fuer eine Stossnaht: gleichfoermig laut gemastertes Material
+    liefert laut find_mix_regions weder Intro noch Outro, die Schnittmenge aus
+    beiden Seiten ist dann leer. Ein `gt=0` wuerde build_mixplan an dieser
+    Stelle mit einer ValidationError abbrechen lassen - Spec Abschnitt 7
+    ("Kein Fehler darf den Lauf haengen lassen") verlangt das Gegenteil, und
+    der Critic hat fuer genau diesen Fall seine overlap-Beanstandung.
     """
 
     from_track: str = Field(min_length=1)
     to_track: str = Field(min_length=1)
     start_at_s: float = Field(ge=0)
+    overlap_s: float = Field(ge=0)
     bars: int = Field(ge=1)
     technique: Technique
     eq_out: EqCurve

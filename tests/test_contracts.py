@@ -182,6 +182,7 @@ def _transition(from_track: str, to_track: str) -> Transition:
         from_track=from_track,
         to_track=to_track,
         start_at_s=50.0,
+        overlap_s=10.0,
         bars=16,
         technique="blend",
         eq_out=_eq_curve(),
