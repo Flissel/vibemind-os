@@ -639,6 +639,35 @@ git commit -m "docs(ops): video.status end-to-end live proof"
 
 ---
 
+## Vor Task 6 zu klären (Befunde des Abschluss-Reviews)
+
+1. **`scripts/sync_openfang_agents.py` schreibt ein Schema, das OpenFang nicht kennt.**
+   Das Skript emittiert `[mcp_allowed] servers = [...]` in die generierten
+   `agent.toml`-Dateien. Diesen Key gibt es im Manifest-Schema des Daemons nicht —
+   `openfang-types/src/agent.rs:461` deklariert stattdessen `mcp_servers`. Die vom
+   Skript erzeugten Dateien sind damit VibeMind-seitige Artefakte, die der Daemon
+   schlicht ignoriert. Das ist vorbestehend (nicht durch diesen Plan verursacht).
+   Der wirksame Scope muss direkt in `~/.openfang/agents/<agent>/agent.toml` unter
+   `mcp_servers` gesetzt werden, oder über `PUT /api/agents/{id}/mcp_servers`.
+
+2. **`capabilities.yaml` kennt keine Video-Capability — der Planner kann keinen
+   `video.status`-Hop erzeugen.** `brain/the_brain/data/capabilities.yaml` enthält
+   66 Einträge (43 `supabase:`, 10 `openfang:`, 13 `null`) und keinen einzigen für
+   Video. Der Multihop-Planner bekommt genau diese Liste als Futter — ohne einen
+   Video-Eintrag kann aktuell kein Plan das Event tatsächlich emittieren, egal wie
+   gut Laura/Sidecar verdrahtet sind. Zwei Auswege: entweder einen
+   Capability-Eintrag ergänzen, oder das Event über die Voice-/Prefix-Lane
+   (`BrainOpenFangBridge`) beweisen, die den Space per Prefix-Bindung erreicht,
+   ohne eine Brain-Capability zu brauchen.
+
+3. **Task 6 Step 3 schickt das falsche Payload-Feld.** Der Plan postet
+   `{"query": ...}`, aber `brain/the_brain/web/routers/introspection.py:2445`
+   liest nur `plan`, `intent` und `message`. So wie der Schritt aktuell
+   formuliert ist, käme eine leere Intent an. Das Payload muss vor dem nächsten
+   Versuch korrigiert werden (z. B. auf `message`).
+
+---
+
 ## Nach diesem Plan (Folge-Pläne, je eigenständig testbar)
 
 Erst nach bestandenem Gate aus Task 6:
