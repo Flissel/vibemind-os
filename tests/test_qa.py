@@ -123,6 +123,38 @@ def test_a_clean_render_at_a_different_tempo_has_no_seam_finding(tmp_path: Path)
     assert not any(f.kind == "seam" for f in report.findings)
 
 
+def test_a_masked_removal_break_is_still_caught(tmp_path: Path) -> None:
+    """Regression fuer Fix Round 3: ein an der Naht maskierter Bruch.
+
+    0,1 Schlag Audio wird GENAU auf dem Pulsschlag an der Naht entfernt.
+    Direkte Diagnose (siehe task-6-report.md, Fix Round 2/3) zeigt: das
+    Intervall, das die Naht direkt ueberspannt, ist danach BYTEIDENTISCH mit
+    dem eines sauberen Renders - der Schnitt springt in die abklingende
+    Huellkurve und sieht fuer librosas Beat-Tracker wie ein normaler Einsatz
+    an fast derselben Stelle aus. Der Versatz zeigt sich erst im NAECHSTEN
+    Intervall. Fix Round 2 (nur das ueberspannende Intervall) verpasste
+    diesen Fall bei allen sieben getesteten Tempi; die Nachbarschaft aus Fix
+    Round 3 (SEAM_NEIGHBOURHOOD_BEATS) sieht auch den Nachbarn und faengt ihn.
+    """
+    plan = simple_plan()
+    target = tmp_path / "set.wav"
+    render(plan, sources_for(tmp_path), target, master_gain_db=-12.0)
+
+    signal, sr = sf.read(target, dtype="float32")
+    beat_len_s = bar_length_s(plan.target_bpm) / 4.0
+    shift_samples = int(round(0.1 * beat_len_s * sr))
+    seam_sample = int(round(plan.transitions[0].start_at_s * sr))
+
+    shifted = np.concatenate([signal[:seam_sample], signal[seam_sample + shift_samples:]])
+    pad = np.zeros(len(signal) - len(shifted), dtype=signal.dtype)
+    shifted = np.concatenate([shifted, pad])
+    sf.write(target, shifted, sr)
+
+    report = check_set(target, plan)
+
+    assert any(f.kind == "seam" for f in report.findings)
+
+
 def test_the_report_carries_the_measured_numbers(tmp_path: Path) -> None:
     plan = simple_plan()
     target = tmp_path / "set.wav"
