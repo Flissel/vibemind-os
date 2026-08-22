@@ -45,22 +45,42 @@ def flat_curve(gain_db: float = 0.0) -> EqCurve:
     return EqCurve(low=points, mid=points, high=points)
 
 
+def _entry_length_s(target_bpm: float) -> float:
+    """Rund zehn Sekunden, auf einen ganzzahligen Schlag bei target_bpm gerundet.
+
+    Reine 10.0 Sekunden treffen einen ganzen Schlag nur bei Tempi, die 60
+    glatt teilen (120, 150, 174, ...). Bei allen anderen (z. B. 128 oder 140
+    BPM) liegt das Trackende mitten in einem Schlag, und der Impulszug aus
+    pulsed_tone() ist an SEINEM EIGENEN Nullpunkt verankert - t0s Ende und t1s
+    Anfang tragen dann in der Ueberblendung zwei gegeneinander phasenversetzte
+    Raster, unabhaengig von jeder Pruefung, die das misst. Bei 174 BPM (dem bis
+    hierhin einzigen getesteten Wert) faellt das nicht auf, weil 10.0 Sekunden
+    dort zufaellig exakt 29 Schlaege sind. Diese Funktion rundet stattdessen
+    IMMER auf den naechsten ganzen Schlag - bei 174 BPM bitgleich zu 10.0
+    (gepruefte Gleitkommagleichheit, kein Rundungsfehler), bei jedem anderen
+    Tempo tatsaechlich phasenrichtig.
+    """
+    beat_s = 60.0 / target_bpm
+    return round(10.0 / beat_s) * beat_s
+
+
 def simple_plan(bars: int = 1, target_bpm: float = 174.0) -> MixPlan:
     """Ein dreiteiliger Mixplan mit zwei gleich langen Uebergaengen."""
+    length = _entry_length_s(target_bpm)
     overlap = bars * bar_length_s(target_bpm)
     entries = [
-        MixEntry(track_id=f"t{i}", play_from_s=0.0, play_to_s=10.0,
+        MixEntry(track_id=f"t{i}", play_from_s=0.0, play_to_s=length,
                  timestretch_ratio=1.0, gain_db=0.0)
         for i in range(3)
     ]
-    starts = [10.0 - overlap, 2 * (10.0 - overlap)]
+    starts = [length - overlap, 2 * (length - overlap)]
     transitions = [
         Transition(from_track=f"t{i}", to_track=f"t{i + 1}", start_at_s=starts[i],
                    bars=bars, technique="blend", eq_out=flat_curve(), eq_in=flat_curve())
         for i in range(2)
     ]
     return MixPlan(
-        target_length_s=starts[-1] + 10.0,
+        target_length_s=starts[-1] + length,
         target_bpm=target_bpm,
         entries=entries,
         transitions=transitions,
@@ -74,8 +94,10 @@ def sources_for(tmp_path: Path, target_bpm: float = 174.0) -> dict[str, Path]:
     behauptet der Plan ein Tempo, das im Fixture-Material gar nicht steckt. Bis
     Task 4 macht das keinen Unterschied (dort wird nur gerendert), aber Task 6
     misst das Tempo an jeder Naht nach - ein stiller Bruch hier wuerde dort einen
-    Phantomfehler jagen lassen.
+    Phantomfehler jagen lassen. Die Laenge kommt aus _entry_length_s(), aus
+    demselben Grund wie in simple_plan().
     """
-    return {f"t{i}": pulsed_tone(tmp_path / f"t{i}.wav", 10.0, hz=220.0 * (i + 1),
+    length = _entry_length_s(target_bpm)
+    return {f"t{i}": pulsed_tone(tmp_path / f"t{i}.wav", length, hz=220.0 * (i + 1),
                                   bpm=target_bpm)
             for i in range(3)}

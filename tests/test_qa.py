@@ -96,6 +96,33 @@ def test_a_phase_break_at_the_seam_is_caught(tmp_path: Path) -> None:
     assert seam.to_track in report.findings[0].text
 
 
+def test_a_clean_render_at_a_different_tempo_has_no_seam_finding(tmp_path: Path) -> None:
+    """Pinnt die Verallgemeinerung ueber 174 BPM hinaus.
+
+    Regression fuer einen Fund des Reviewers: bei 128 BPM (und weiteren
+    Tempi, die 60 nicht glatt teilen) feuerte die Nahtpruefung auf einem
+    SAUBEREN Render, weil zwei verschiedene Fehler sich ueberlagerten - ein
+    zu grosszuegiges Statistikmass (behoben in Fix Round 1/2, siehe
+    _seam_drift_beats) UND ein Fixture-Fehler: simple_plan()/sources_for()
+    schnitten Eintraege bei fest 10.0 Sekunden zu, was nur bei Tempi, die 60
+    glatt teilen (120, 150, 174, ...), auf einen ganzen Schlag faellt. Bei
+    128 BPM lag das Trackende mitten in einem Schlag, und die beiden
+    ueberblendeten Pulsraster liefen an der Naht strukturell phasenversetzt -
+    unabhaengig von jeder Pruefung. tests/fixtures/render.py::_entry_length_s
+    behebt das, indem sie die Eintragslaenge auf den naechsten ganzen Schlag
+    rundet (bei 174 BPM bitgleich zu den bisherigen 10.0 Sekunden). Dieser
+    Test haelt beide Fixe fest: ohne sie faellt er bei 128 BPM durch, mit
+    ihnen bleibt er bei jedem getesteten Tempo gruen.
+    """
+    plan = simple_plan(target_bpm=128.0)
+    target = tmp_path / "set.wav"
+    render(plan, sources_for(tmp_path, target_bpm=128.0), target, master_gain_db=-12.0)
+
+    report = check_set(target, plan)
+
+    assert not any(f.kind == "seam" for f in report.findings)
+
+
 def test_the_report_carries_the_measured_numbers(tmp_path: Path) -> None:
     plan = simple_plan()
     target = tmp_path / "set.wav"

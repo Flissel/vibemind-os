@@ -24,34 +24,46 @@ TRUE_PEAK_CEILING_DB = -1.0
 # Erfolgskriterium 4: an der Naht darf das Tempo nicht wegbrechen. Ein Fenster
 # um jede Naht wird nachanalysiert.
 #
-# SEAM_DRIFT_TOLERANCE ist die PRIMAERE Pruefung: der groesste Ausreisser
-# unter den Beatabstaenden im Fenster (siehe _seam_drift_beats). Sie erkennt
-# einen Phasenbruch MITTEN in der Naht - genau dort, wo zwei Tracks
-# zusammenlaufen sollen.
+# SEAM_DRIFT_TOLERANCE ist die PRIMAERE Pruefung: wie weit das Intervall AN
+# DER NAHT selbst vom naechsten ganzen Schlag abweicht (siehe
+# _seam_drift_beats). Nicht der groesste Ausreisser im ganzen Fenster (Fix
+# Round 1) - das reagierte auf jeden verpassten Onset irgendwo im Fenster,
+# auch weit weg von der Naht. Und nicht der Abstand zu EINEM Schlag, sondern
+# zum naechsten GANZEN: ein verpasster Onset macht ein Intervall zu einem
+# fast exakten Vielfachen des Schlags (Abstand zum naechsten ganzen Schlag
+# nahe null, obwohl das Raster stimmt), waehrend ein halber Schlag Versatz
+# 1,5 Schlaege ergibt (Abstand 0,5). Ohne diese zweite Korrektur feuerte die
+# Pruefung auf sauberem Material bei 128, 140 und 160 BPM.
 #
 # SEAM_BPM_TOLERANCE bleibt als GROBE Zweitpruefung ueber das gemittelte
-# Tempo bestehen. detect_bpm_and_grid rechnet dieses Mittel teleskopierend
-# als (letzter Beat - erster Beat) / (n - 1) - ein Wert, der einen einzelnen
-# Ausreisser mitten im Fenster fast nicht bewegt (gemessen: ein halber Schlag
-# Versatz veraendert ihn um weniger als 3 BPM), aber einen kompletten
-# Tempowechsel ueber das ganze Fenster zuverlaessig zeigt, z. B. wenn ein
-# falsch zugeschnittener Track bei 140 statt 174 BPM liegt. Die beiden
-# Pruefungen fangen deshalb verschiedene Fehlerbilder: ein einzelner Bruch
-# vs. ein durchgehend falsches Tempo.
+# Tempo bestehen, fuer einen kompletten Tempowechsel ueber das ganze Fenster
+# (z. B. ein falsch zugeschnittener Track bei 140 statt 174 BPM) - ein
+# anderes Fehlerbild als ein einzelner Bruch an der Naht.
 #
-# 0.05 gemessen, nicht geschaetzt: auf den Fixture-Nahten aus
-# tests/fixtures/render.py liegt der groesste Ausreisser eines SAUBEREN
-# Renders bei 0.0236 Schlaegen (beide Naehte, reproduzierbar identisch - das
-# Fixture-Material ist deterministisch). Ein Versatz um 0.1 Schlag an einer
-# Naht misst 0.09-0.11, um 0.25 Schlag 0.12-0.21, um 0.5 Schlag 0.246 (siehe
-# task-6-report.md). 0.05 liegt reichlich ueber dem sauberen Rauschen (gut
-# das Doppelte) und reichlich unter dem kleinsten geprueften Bruch (fast die
-# Haelfte davon) - beide Verteilungen sind damit klar getrennt. Ein Versatz
-# um ein GANZES Vielfaches eines Schlags (1, 2, 3 Schlaege) bleibt fuer
-# beide Pruefungen unsichtbar: die Beatabstaende UND das gemittelte Tempo
-# sind bei periodischem Material unabhaengig von einer reinen Phasen-
-# verschiebung um ganze Schlaege - das ist eine Grenze der Methode, keine
-# Einstellungsfrage, und betrifft Taktausrichtung, nicht Beatkontinuitaet.
+# 0.05 zweimal gemessen, nicht geschaetzt - und beim zweiten Mal ueber sieben
+# Tempi (100/120/128/140/150/160/174 BPM), nicht nur bei 174. Ein sauberer
+# Ausreisser lag dabei nirgends ueber 0.0217 Schlaege; ein absichtlich
+# eingefuegter Bruch ab 0.1 Schlag (Stille eingesetzt) mass 0.084-0.111, ab
+# 0.25 Schlag (in beide Richtungen) 0.125-0.254, ab 0.5 Schlag 0.158-0.490 -
+# durchgehend ueber allen sieben Tempi (siehe task-6-report.md, Fix Round 2,
+# fuer die vollstaendigen Tabellen). 0.05 liegt klar zwischen dem sauberen
+# Maximum und dem kleinsten zuverlaessig erkannten Bruch.
+#
+# Zwei Grenzen bleiben bestehen, keine ist eine Frage der Schwelle:
+#
+# 1. Versatz um ein GANZES Vielfaches eines Schlags (1, 2, 3 Schlaege) bleibt
+#    unsichtbar - bei periodischem Material steht jedes Intervall dabei
+#    weiterhin auf dem Raster. Musikalisch der mildere Fehler: nur die
+#    Phrasierung verschiebt sich, die Schlaege bleiben zusammen.
+# 2. Ein per Audioentfernen erzeugter Bruch von NUR 0.1 Schlag, wenn er genau
+#    auf einen starken Pulsschlag faellt, wird von librosas Beat-Tracker
+#    selbst maskiert: der Schnitt springt direkt in die abklingende Huellkurve
+#    und wirkt dabei wie ein normaler Einsatz an fast derselben Stelle - der
+#    gemessene Drift ist dann WORTGLEICH mit dem sauberen Wert (gepruefte
+#    Beat-Zeiten identisch bis auf das naechste Intervall, das den Versatz
+#    dann zeigt). Kein Schwellenwert kann das auffangen, weil librosa selbst
+#    schon keinen Unterschied mehr sieht - eine Grenze des Beat-Trackers, vor
+#    der jede Statistik auf seinen Beat-Zeiten gleich blind ist.
 SEAM_DRIFT_TOLERANCE = 0.05
 SEAM_BPM_TOLERANCE = 3.0
 SEAM_WINDOW_BARS = 8
@@ -77,29 +89,49 @@ def _gaps(signal: np.ndarray, sr: int) -> list[float]:
     return [start / sr for start, stop in zip(starts, stops) if stop - start >= needed]
 
 
-def _seam_drift_beats(seam: Path, target_bpm: float) -> float | None:
-    """Der groesste Ausreisser unter den Beatabstaenden, in Schlaegen.
+def _seam_drift_beats(
+    seam: Path, seam_offset_s: float, target_bpm: float
+) -> float | None:
+    """Wie weit das Beatraster an der Naht aus dem Takt faellt, in Schlaegen.
 
-    Bewusst nicht ueber das mittlere Tempo: detect_bpm_and_grid rechnet den
-    Wert teleskopierend als (letzter - erster) / (n-1) und benutzt damit nur
-    den ersten und letzten Beat des Fensters. Ein Phasenbruch mitten darin
-    bewegt diese Zahl fast nicht - gemessen an einem halben Schlag Versatz
-    verschiebt er sie um weniger als drei BPM.
+    Zwei Entscheidungen stecken darin, und beide sind noetig.
 
-    Der Abstand zwischen zwei benachbarten Beats zeigt den Bruch dagegen
-    unmittelbar: ein Versatz um einen halben Schlag erzeugt dort genau einen
-    Abstand, der einen halben Schlag zu lang oder zu kurz ist.
+    Gemessen wird nur das Intervall, das die Naht ueberspannt - nicht das
+    groesste im ganzen Fenster. Ein Phasenbruch an der Naht ist die Frage; ein
+    verpasster Onset drei Sekunden weiter ist es nicht.
 
-    Liefert None, wenn das Fenster zu wenige Beats hergibt, um Abstaende zu
-    bilden - das ist selbst ein Befund und wird vom Aufrufer als solcher
-    behandelt.
+    Und gemessen wird der Abstand zum naechsten GANZEN Schlag, nicht zu einem.
+    Verpasst die Erkennung einen Onset, ist das Intervall ein fast exaktes
+    Vielfaches des Schlags und der Abstand nahe null - obwohl das Raster
+    stimmt. Ein Versatz um einen halben Schlag ergibt dagegen 1,5 Schlaege und
+    damit einen Abstand von 0,5. Ohne diese Reduktion feuert die Pruefung auf
+    sauberem Material, sobald librosa einen Beat auslaesst: gemessen bei 128,
+    140 und 160 BPM.
+
+    Versatz um ein exaktes Vielfaches eines Schlags bleibt unsichtbar. Das ist
+    keine Frage der Schwelle, sondern eine Eigenschaft periodischen Materials -
+    dort steht jedes Intervall weiterhin auf dem Raster. Musikalisch ist es
+    auch der mildere Fehler: die Schlaege liegen weiter zusammen, nur die
+    Phrasierung verschiebt sich.
+
+    Liefert None, wenn das Fenster zu wenige Beats hergibt, um ein Intervall
+    an der Naht zu bilden - das ist selbst ein Befund und wird vom Aufrufer
+    als solcher behandelt.
     """
     times = beat_times(seam)
     intervals = np.diff(times)
     if intervals.size == 0:
         return None
+    # Das Intervall, das die Nahtposition ueberspannt: der letzte Beat auf
+    # oder vor der Naht bestimmt seinen Index. Liegt die Naht ausserhalb aller
+    # erkannten Beats (vor dem ersten oder hinter dem letzten), faellt das
+    # auf das jeweils naechstgelegene Intervall zurueck statt zu scheitern.
+    index = int(np.searchsorted(times, seam_offset_s, side="right")) - 1
+    index = max(0, min(index, intervals.size - 1))
+    interval = float(intervals[index])
     expected = 60.0 / target_bpm
-    return float(np.max(np.abs(intervals - expected) / expected))
+    beats = interval / expected
+    return float(abs(beats - round(beats)))
 
 
 def check_set(path: Path, plan: MixPlan) -> QaReport:
@@ -153,10 +185,12 @@ def check_set(path: Path, plan: MixPlan) -> QaReport:
                 continue
             seam = work / f"seam-{index}.wav"
             sf.write(seam, mono[begin:end], sr)
+            seam_offset_s = transition.start_at_s - begin / sr
 
-            # Primaerpruefung: groesster Beatabstands-Ausreisser im Fenster.
+            # Primaerpruefung: wie weit das Intervall an der Naht selbst vom
+            # naechsten ganzen Schlag abweicht.
             try:
-                drift = _seam_drift_beats(seam, plan.target_bpm)
+                drift = _seam_drift_beats(seam, seam_offset_s, plan.target_bpm)
             except Exception:  # noqa: BLE001 - eine unmessbare Naht ist selbst ein Befund
                 drift = None
             # Grobe Zweitpruefung: das gemittelte Tempo, siehe SEAM_BPM_TOLERANCE.
@@ -174,7 +208,10 @@ def check_set(path: Path, plan: MixPlan) -> QaReport:
                 else:
                     stats = []
                     if drift is not None:
-                        stats.append(f"groesster Beatabstand-Ausreisser {drift:.2f} Schlaege")
+                        stats.append(
+                            f"das Intervall an der Naht weicht {drift:.2f} Schlaege "
+                            f"vom naechsten ganzen Schlag ab"
+                        )
                     if bpm is not None:
                         stats.append(f"gemitteltes Tempo {bpm.value:.1f} BPM")
                     gemessen = ", ".join(stats)
@@ -186,7 +223,7 @@ def check_set(path: Path, plan: MixPlan) -> QaReport:
                         f"{transition.start_at_s / 60:.0f}:"
                         f"{transition.start_at_s % 60:04.1f} stimmt das Timing "
                         f"nicht: {gemessen}, erwartet waren {plan.target_bpm:.1f} "
-                        f"BPM ohne Ausreisser ueber {SEAM_DRIFT_TOLERANCE:.2f} "
+                        f"BPM ohne Abweichung ueber {SEAM_DRIFT_TOLERANCE:.2f} "
                         f"Schlaege.",
                     )
                 )
