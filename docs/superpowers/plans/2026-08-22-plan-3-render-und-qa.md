@@ -333,7 +333,20 @@ SR = 44_100
 
 
 class RenderToolMissing(RuntimeError):
-    """Ein Werkzeug, das der Renderer braucht, liegt nicht auf dem Pfad."""
+    """Ein Werkzeug, das der Renderer braucht, liegt nicht auf dem Pfad.
+
+    Bewusst getrennt von RenderFailed: das hier ist eine Frage der Umgebung,
+    die der Nutzer beheben kann. Ein gescheiterter Lauf ist etwas anderes.
+    """
+
+
+class RenderFailed(RuntimeError):
+    """ffmpeg lief und scheiterte.
+
+    Der Renderer ist deterministisch - laut Spec Abschnitt 7 ist ein Fehler
+    hier ein Bug und kein Wiederholungsfall. Er darf nicht als Umgebungsproblem
+    durchgehen, sonst sucht der Nutzer an der falschen Stelle.
+    """
 
 
 def ffmpeg_path() -> str:
@@ -376,7 +389,7 @@ def stretch(source: Path, target: Path, ratio: float, sr: int = SR) -> None:
     ]
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RenderToolMissing(
+        raise RenderFailed(
             f"ffmpeg scheiterte beim Dehnen von {source.name}: "
             f"{result.stderr.strip() or 'keine Meldung'}"
         )
@@ -579,10 +592,39 @@ def envelope(points: list[EqPoint], samples: int) -> np.ndarray:
     return np.interp(grid, positions[order], gains[order]).astype(np.float32)
 
 
+# Unterhalb dieser Laenge kann sosfiltfilt nicht arbeiten: die nullphasige
+# Filterung braucht mehr Samples als ihre Randlaenge (padlen = 15 bei
+# Ordnung 4). Gemessen, nicht geschaetzt.
+_MIN_FILTER_SAMPLES = 16
+
+
 def apply_eq(signal: np.ndarray, sr: int, curve: EqCurve) -> np.ndarray:
-    """Legt die drei Baender-Huellkurven ueber ein Signal."""
+    """Legt die drei Baender-Huellkurven ueber ein Signal.
+
+    Ist das Fenster zu kurz zum Filtern, wird stattdessen der Mittelwert der
+    drei Huellkurven als Breitbandverstaerkung angelegt. Bei 44,1 kHz sind das
+    unter 0,36 Millisekunden - eine bandselektive Bearbeitung waere dort ohnehin
+    bedeutungslos, und einen ganzen Lauf daran scheitern zu lassen waere die
+    falsche Abwaegung. Fuer drei gleiche Kurven liefert der Rueckfall exakt
+    dasselbe wie der normale Weg.
+
+    Dass so ein Fenster ueberhaupt entstehen kann, haengt nicht an
+    Transition.bars: der Renderer deckelt die Fensterbreite mit der Laenge des
+    Abschnitts, und MixEntry erzwingt nur play_from_s < play_to_s, keine
+    Mindestdauer. Ein handgeschriebener Mixplan - laut Spec ein unterstuetzter
+    Testpfad - kommt also darunter.
+    """
     if signal.size == 0:
         return signal.astype(np.float32)
+
+    if signal.size < _MIN_FILTER_SAMPLES:
+        broadband = (
+            envelope(curve.low, signal.size)
+            + envelope(curve.mid, signal.size)
+            + envelope(curve.high, signal.size)
+        ) / 3.0
+        return (signal * broadband).astype(np.float32)
+
     low, mid, high = split_bands(signal, sr)
     return (
         low * envelope(curve.low, signal.size)
@@ -798,22 +840,24 @@ def _load_mono(path: Path, sr: int) -> np.ndarray:
     return mono.astype(np.float32)
 
 
-def _segment(source: Path, entry, sr: int, work: Path) -> np.ndarray:
+def _segment(source: Path, entry: MixEntry, sr: int, work: Path) -> np.ndarray:
     """Der gedehnte, verstaerkte Abschnitt eines Eintrags."""
-    cut = work / f"{entry.track_id}-cut.wav"
     signal = _load_mono(source, sr)
     start = int(round(entry.play_from_s * sr))
     stop = min(len(signal), int(round(entry.play_to_s * sr)))
-    sf.write(cut, signal[start:stop], sr)
+    piece = signal[start:stop]
 
-    if entry.timestretch_ratio == 1.0:
-        stretched = signal[start:stop]
-    else:
+    if entry.timestretch_ratio != 1.0:
+        # Die Schnittdatei entsteht nur, wenn wirklich gedehnt wird. Sie immer
+        # zu schreiben waere bei dreizehn Tracks eines Sechzig-Minuten-Sets ein
+        # voller ueberfluessiger Schreibdurchlauf ueber das gesamte Material.
+        cut = work / f"{entry.track_id}-cut.wav"
         out = work / f"{entry.track_id}-stretched.wav"
+        sf.write(cut, piece, sr)
         stretch(cut, out, entry.timestretch_ratio, sr=sr)
-        stretched = _load_mono(out, sr)
+        piece = _load_mono(out, sr)
 
-    return stretched * (10 ** (entry.gain_db / 20.0))
+    return piece * (10 ** (entry.gain_db / 20.0))
 
 
 def render(
@@ -845,11 +889,15 @@ def render(
             if index > 0:
                 incoming = plan.transitions[index - 1]
                 width = min(block.size, int(round(incoming.bars * bar * sr)))
-                block[:width] = apply_eq(block[:width], sr, incoming.eq_in)
+                if width > 0:
+                    block[:width] = apply_eq(block[:width], sr, incoming.eq_in)
             if index < len(plan.transitions):
                 outgoing = plan.transitions[index]
                 width = min(block.size, int(round(outgoing.bars * bar * sr)))
-                block[-width:] = apply_eq(block[-width:], sr, outgoing.eq_out)
+                if width > 0:
+                    # Ohne diese Bedingung waere block[-0:] das GANZE Array,
+                    # nicht das leere - eine klassische Python-Falle.
+                    block[-width:] = apply_eq(block[-width:], sr, outgoing.eq_out)
 
             offset = int(round(starts[index] * sr))
             end = min(total, offset + block.size)
@@ -1069,8 +1117,8 @@ import soundfile as sf
 
 from djset.contracts import MixPlan
 from djset.qa import TRUE_PEAK_CEILING_DB, check_set
-from tests.render.test_engine import _plan, _sources
 from djset.render.engine import render
+from tests.fixtures.render import simple_plan, sources_for
 
 SR = 44_100
 
@@ -1152,9 +1200,11 @@ Mixplan zu glauben. Ein Renderer-Fehler, der den Plan korrekt umsetzt aber
 falsch schreibt, faellt nur so auf.
 """
 
+import tempfile
+from pathlib import Path
+
 import numpy as np
 import soundfile as sf
-from pathlib import Path
 
 from djset.contracts import MixPlan, QaFinding, QaReport
 from djset.dsp.analyze import detect_bpm_and_grid, measure_loudness
@@ -1232,31 +1282,34 @@ def check_set(path: Path, plan: MixPlan) -> QaReport:
         )
 
     window_s = SEAM_WINDOW_BARS * bar_length_s(plan.target_bpm)
-    for transition in plan.transitions:
-        begin = max(0, int((transition.start_at_s - window_s / 2) * sr))
-        end = min(len(mono), int((transition.start_at_s + window_s / 2) * sr))
-        if end - begin < sr:
-            continue
-        seam = path.parent / f".qa-seam-{transition.from_track}.wav"
-        sf.write(seam, mono[begin:end], sr)
-        try:
-            bpm, _grid = detect_bpm_and_grid(seam)
-        except Exception:  # noqa: BLE001 - eine unmessbare Naht ist selbst ein Befund
-            bpm = None
-        finally:
-            seam.unlink(missing_ok=True)
-        if bpm is None or abs(bpm.value - plan.target_bpm) > SEAM_BPM_TOLERANCE:
-            gemessen = "nicht messbar" if bpm is None else f"{bpm.value:.1f} BPM"
-            findings.append(
-                QaFinding(
-                    kind="seam",
-                    text=f"An der Naht von {transition.from_track} nach "
-                    f"{transition.to_track} bei "
-                    f"{transition.start_at_s / 60:.0f}:"
-                    f"{transition.start_at_s % 60:04.1f} misst sich {gemessen}, "
-                    f"erwartet waren {plan.target_bpm:.1f}.",
+    # Die Ausschnitte gehen in ein Temp-Verzeichnis, nicht neben set.wav: der
+    # Run-Ordner ist laut Spec das Fenster in die Entscheidungen des Laufs, und
+    # ein Abbruch mittendrin soll dort keine Bruchstuecke hinterlassen.
+    with tempfile.TemporaryDirectory() as raw:
+        work = Path(raw)
+        for index, transition in enumerate(plan.transitions):
+            begin = max(0, int((transition.start_at_s - window_s / 2) * sr))
+            end = min(len(mono), int((transition.start_at_s + window_s / 2) * sr))
+            if end - begin < sr:
+                continue
+            seam = work / f"seam-{index}.wav"
+            sf.write(seam, mono[begin:end], sr)
+            try:
+                bpm, _grid = detect_bpm_and_grid(seam)
+            except Exception:  # noqa: BLE001 - eine unmessbare Naht ist selbst ein Befund
+                bpm = None
+            if bpm is None or abs(bpm.value - plan.target_bpm) > SEAM_BPM_TOLERANCE:
+                gemessen = "nicht messbar" if bpm is None else f"{bpm.value:.1f} BPM"
+                findings.append(
+                    QaFinding(
+                        kind="seam",
+                        text=f"An der Naht von {transition.from_track} nach "
+                        f"{transition.to_track} bei "
+                        f"{transition.start_at_s / 60:.0f}:"
+                        f"{transition.start_at_s % 60:04.1f} misst sich "
+                        f"{gemessen}, erwartet waren {plan.target_bpm:.1f}.",
+                    )
                 )
-            )
 
     return QaReport(
         length_s=length_s,
