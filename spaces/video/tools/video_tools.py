@@ -6,11 +6,13 @@ Each tool delegates to the underlying CLI scripts in the submodules.
 """
 
 import logging
+import os
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.request import urlopen
 
 logger = logging.getLogger(__name__)
 
@@ -132,23 +134,38 @@ def voice_tts(person: str = None, **kwargs) -> Dict[str, Any]:
 
 # ── Status / Info ────────────────────────────────────────────
 
-def video_status(**kwargs) -> Dict[str, Any]:
-    """Get overall video space status (installed tools, submodules)."""
-    vibevideo_ok = (VIBEVIDEO_DIR / "vibevideo.py").exists()
-    deepfake_ok = (DEEPFAKE_DIR / "deepfake.py").exists()
+LAURA_URL = os.environ.get("LAURA_API_URL", "http://127.0.0.1:8765")
+VOICEOVER_URL = os.environ.get("LAURA_VOICEOVER_URL", "http://127.0.0.1:8898")
 
-    tools = []
-    if vibevideo_ok:
-        tools.extend(["team", "vision", "demo"])
-    if deepfake_ok:
-        tools.extend(["lipsync", "voice"])
+
+def _probe(base_url: str, timeout: float = 2.0) -> Dict[str, Any]:
+    """GET <base_url>/healthz. Wirft nie — ein toter Dienst ist ein Befund."""
+    try:
+        with urlopen(f"{base_url}/healthz", timeout=timeout) as resp:
+            return {"ok": 200 <= resp.status < 300, "status": resp.status, "url": base_url}
+    except Exception as e:
+        logger.warning("healthz probe failed for %s: %s", base_url, e)
+        return {"ok": False, "error": str(e), "url": base_url}
+
+
+def video_status(**kwargs) -> Dict[str, Any]:
+    """Status des Video-Space: Laura, TTS-Sidecar, FaceSwap, Alt-Tools."""
+    faceswap_ok = (DEEPFAKE_DIR / "faceswap" / "batch.py").exists()
+    laura = _probe(LAURA_URL)
+    voiceover = _probe(VOICEOVER_URL)
+
+    parts = []
+    parts.append("Laura " + ("erreichbar" if laura["ok"] else "NICHT erreichbar"))
+    parts.append("Sidecar " + ("erreichbar" if voiceover["ok"] else "NICHT erreichbar"))
+    if faceswap_ok:
+        parts.append("FaceSwap installiert")
 
     return {
         "success": True,
-        "message": f"Video space: {len(tools)} tools available",
-        "vibevideo_installed": vibevideo_ok,
-        "deepfake_installed": deepfake_ok,
-        "available_tools": tools,
+        "message": "Video-Space: " + ", ".join(parts),
+        "laura": laura,
+        "voiceover": voiceover,
+        "faceswap_installed": faceswap_ok,
     }
 
 
