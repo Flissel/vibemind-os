@@ -8,6 +8,12 @@ Abweichung betrifft den Weg, nicht das Werkzeug.
 
 Dies ist die einzige Stelle im Renderer, die einen Unterprozess startet. Alles
 andere ist Arithmetik ueber Samples und bleibt in numpy - siehe eq.py.
+
+Bit-Identitaet zwischen zwei Laeufen mit demselben Input ist keine Annahme,
+sondern verifiziertes Verhalten von libavformats WAV-Muxer: dessen einziger
+Metadaten-Chunk ist ein statischer Encoder-Versionsstring (kein Zeitstempel),
+also ist die Ausgabe bei gleicher ffmpeg-Version deterministisch - das gilt
+fuer WAV/PCM-Output und ist bei einem ffmpeg-Upgrade neu zu pruefen.
 """
 
 import shutil
@@ -20,7 +26,20 @@ SR = 44_100
 
 
 class RenderToolMissing(RuntimeError):
-    """Ein Werkzeug, das der Renderer braucht, liegt nicht auf dem Pfad."""
+    """Ein Werkzeug, das der Renderer braucht, liegt nicht auf dem Pfad.
+
+    Bewusst getrennt von RenderFailed: das hier ist eine Frage der Umgebung,
+    die der Nutzer beheben kann. Ein gescheiterter Lauf ist etwas anderes.
+    """
+
+
+class RenderFailed(RuntimeError):
+    """ffmpeg lief und scheiterte.
+
+    Der Renderer ist deterministisch - laut Spec Abschnitt 7 ist ein Fehler
+    hier ein Bug und kein Wiederholungsfall. Er darf nicht als Umgebungsproblem
+    durchgehen, sonst sucht der Nutzer an der falschen Stelle.
+    """
 
 
 def ffmpeg_path() -> str:
@@ -63,7 +82,7 @@ def stretch(source: Path, target: Path, ratio: float, sr: int = SR) -> None:
     ]
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RenderToolMissing(
+        raise RenderFailed(
             f"ffmpeg scheiterte beim Dehnen von {source.name}: "
             f"{result.stderr.strip() or 'keine Meldung'}"
         )

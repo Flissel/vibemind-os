@@ -5,7 +5,7 @@ import pytest
 import soundfile as sf
 
 from djset.contracts import MAX_RATIO, MIN_RATIO
-from djset.render.stretch import stretch
+from djset.render.stretch import RenderFailed, RenderToolMissing, stretch
 
 
 def _tone(path: Path, seconds: float, sr: int = 44_100) -> Path:
@@ -71,3 +71,29 @@ def test_an_out_of_range_ratio_is_refused(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="0.94"):
         stretch(source, tmp_path / "out.wav", 1.5)
+
+
+def test_missing_ffmpeg_raises_render_tool_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Eine fehlende ffmpeg-Installation ist ein Umgebungsproblem, kein Renderer-Bug."""
+    monkeypatch.setattr("djset.render.stretch.shutil.which", lambda name: None)
+    source = _tone(tmp_path / "in.wav", 1.0)
+
+    with pytest.raises(RenderToolMissing, match="ffmpeg"):
+        stretch(source, tmp_path / "out.wav", 1.0)
+
+
+def test_a_failed_render_raises_render_failed_with_ffmpegs_stderr(
+    tmp_path: Path,
+) -> None:
+    """Ein gescheiterter Lauf ist laut Spec ein Bug, kein Umgebungsproblem -
+    und die Meldung muss ffmpegs eigene Fehlerausgabe tragen statt sie zu
+    verschlucken."""
+    source = tmp_path / "bad.wav"
+    source.write_text("das ist kein Audio, nur Text")
+
+    with pytest.raises(RenderFailed) as excinfo:
+        stretch(source, tmp_path / "out.wav", 1.0)
+
+    assert "Invalid data" in str(excinfo.value)
