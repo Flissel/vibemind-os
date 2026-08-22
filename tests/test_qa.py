@@ -172,6 +172,37 @@ def test_the_report_carries_the_measured_numbers(tmp_path: Path) -> None:
     assert report.true_peak < 0.0
 
 
+def _hand_written_plan(
+    length_s: float, starts: tuple[float, ...], target_bpm: float
+) -> MixPlan:
+    """Ein dreiteiliger Mixplan mit frei gesetzten Nahtpositionen.
+
+    simple_plan() ist mit rund 27 Sekunden zu kurz, um die Minutenhaelfte
+    ueberhaupt zu erreichen - die beiden Zeitstempel-Regressionen brauchen
+    deshalb einen laengeren Plan. Er muss keine echte Auslieferung ergeben und
+    entsteht daher nicht ueber render().
+    """
+    return MixPlan(
+        target_length_s=length_s,
+        target_bpm=target_bpm,
+        entries=[
+            MixEntry(
+                track_id=f"t{i}", play_from_s=0.0, play_to_s=length_s,
+                timestretch_ratio=1.0, gain_db=0.0,
+            )
+            for i in range(3)
+        ],
+        transitions=[
+            Transition(
+                from_track=f"t{i}", to_track=f"t{i + 1}", start_at_s=start,
+                overlap_s=bar_length_s(target_bpm), bars=1, technique="blend",
+                eq_out=flat_curve(), eq_in=flat_curve(),
+            )
+            for i, start in enumerate(starts)
+        ],
+    )
+
+
 def test_a_gap_past_the_minute_half_gets_a_floored_timestamp(tmp_path: Path) -> None:
     """Regression: die Gap-Meldung rundete die Minute statt sie zu floorn.
 
@@ -194,34 +225,44 @@ def test_a_gap_past_the_minute_half_gets_a_floored_timestamp(tmp_path: Path) -> 
     signal[int(gap_start * sr) : int((gap_start + 0.6) * sr)] = 0.0
     sf.write(target, signal, sr)
 
-    plan = MixPlan(
-        target_length_s=length,
-        target_bpm=174.0,
-        entries=[
-            MixEntry(
-                track_id=f"t{i}", play_from_s=0.0, play_to_s=length,
-                timestretch_ratio=1.0, gain_db=0.0,
-            )
-            for i in range(3)
-        ],
-        transitions=[
-            Transition(
-                from_track=f"t{i}", to_track=f"t{i + 1}", start_at_s=start,
-                overlap_s=bar_length_s(174.0), bars=1, technique="blend",
-                eq_out=flat_curve(), eq_in=flat_curve(),
-            )
-            # Weit weg vom Gap bei 111.4s, damit das Nahtfenster (rund 11
-            # Sekunden bei 174 BPM/8 Takten) es nicht mit anfasst - dieser
-            # Test soll ausschliesslich die Gap-Meldung pruefen.
-            for i, start in enumerate((40.0, 80.0))
-        ],
-    )
+    # Weit weg vom Gap bei 111.4s, damit das Nahtfenster (rund 11 Sekunden bei
+    # 174 BPM/8 Takten) es nicht mit anfasst - dieser Test soll ausschliesslich
+    # die Gap-Meldung pruefen.
+    plan = _hand_written_plan(length, (40.0, 80.0), target_bpm=174.0)
 
     report = check_set(target, plan)
 
     gap = next(f for f in report.findings if f.kind == "gap")
     assert "1:51" in gap.text
     assert "2:51" not in gap.text
+
+
+def test_a_seam_past_the_minute_half_gets_a_floored_timestamp(tmp_path: Path) -> None:
+    """Dasselbe an der zweiten Fundstelle: die Naht-Meldung rundete die Minute.
+
+    Der Fix fuer die Luecken liess die identische Rechnung im Naht-Befund
+    stehen (`start_at_s / 60` mit `:.0f` neben `start_at_s % 60` mit
+    `:04.1f`). Eine Naht bei 111.4 s (= 1:51.4) wurde damit als "2:51.4"
+    gemeldet - in einem einstuendigen Set weist das den Hoerer eine ganze
+    Minute neben die Stelle.
+
+    Der Bruch entsteht hier nicht durch Schnitte im Signal, sondern durch ein
+    Tempo im Plan, das im Material nicht steckt: der Impulszug laeuft mit 174
+    BPM, der Plan behauptet 150. Damit schlaegt die grobe Zweitpruefung
+    (SEAM_BPM_TOLERANCE) an jeder Naht an, und zwar deterministisch.
+    """
+    length = 130.0
+    target = tmp_path / "set.wav"
+    pulsed_tone(target, seconds=length, bpm=174.0)
+
+    plan = _hand_written_plan(length, (40.0, 111.4), target_bpm=150.0)
+
+    report = check_set(target, plan)
+
+    seams = [f for f in report.findings if f.kind == "seam"]
+    late = next(f for f in seams if "t1" in f.text and "t2" in f.text)
+    assert "1:51" in late.text
+    assert "2:51" not in late.text
 
 
 def test_an_unstretchable_track_leaves_no_silence_before_the_seam(
@@ -326,3 +367,34 @@ def test_the_one_permitted_correction_lands_below_the_ceiling(tmp_path: Path) ->
 
     assert second.true_peak <= TRUE_PEAK_CEILING_DB
     assert not any(f.kind == "true_peak" for f in second.findings), second.true_peak
+
+
+def test_an_unmeasurable_seam_gets_its_own_kind(tmp_path: Path, monkeypatch) -> None:
+    """Eine unmessbare Naht ist keine gemessene Abweichung.
+
+    Beide Faelle teilten sich bisher die Art `seam` - wer die Befunde danach
+    filtert, konnte eine Naht, an der ueberhaupt nichts messbar war, nicht von
+    einer erkannten Abweichung unterscheiden. Das ist kein Randfall: das
+    Nahtfenster liegt auf Intro- und Outro-Material, dem duennsten Teil beider
+    Tracks, waehrend SEAM_DRIFT_TOLERANCE an einem durchgehenden Impulszug
+    kalibriert wurde.
+
+    Beide Messungen werden hier zum Scheitern gebracht statt Material zu
+    suchen, an dem librosa zufaellig aufgibt - der Zweig soll deterministisch
+    geprueft sein, nicht wahrscheinlich.
+    """
+    def unmeasurable(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("kein Beatraster")
+
+    monkeypatch.setattr("djset.qa.beat_times", unmeasurable)
+    monkeypatch.setattr("djset.qa.detect_bpm_and_grid", unmeasurable)
+
+    plan = simple_plan()
+    target = tmp_path / "set.wav"
+    render(plan, sources_for(tmp_path), target, master_gain_db=-12.0)
+
+    report = check_set(target, plan)
+
+    kinds = [f.kind for f in report.findings]
+    assert kinds == ["seam_unmeasurable", "seam_unmeasurable"]
+    assert "kein Beatraster messen" in report.findings[0].text

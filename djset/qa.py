@@ -247,29 +247,50 @@ def check_set(path: Path, plan: MixPlan) -> QaReport:
             drift_broken = drift is None or drift > SEAM_DRIFT_TOLERANCE
             tempo_broken = bpm is None or abs(bpm.value - plan.target_bpm) > SEAM_BPM_TOLERANCE
 
-            if drift_broken or tempo_broken:
-                if drift is None and bpm is None:
-                    gemessen = "das Beatraster ist an dieser Naht nicht messbar"
-                else:
-                    stats = []
-                    if drift is not None:
-                        stats.append(
-                            f"ein Intervall um die Naht weicht {drift:.2f} Schlaege "
-                            f"vom naechsten ganzen Schlag ab"
-                        )
-                    if bpm is not None:
-                        stats.append(f"gemitteltes Tempo {bpm.value:.1f} BPM")
-                    gemessen = ", ".join(stats)
+            # timestamp() statt einer eigenen Rechnung, aus demselben Grund wie
+            # bei den Luecken oben: `start / 60` mit `:.0f` rundet die Minute,
+            # waehrend `start % 60` unabhaengig davon rechnet - jenseits der
+            # Minutenhaelfte zeigten die beiden Anteile auf verschiedene
+            # Minuten (111.4 s wurde "2:51.4" statt "1:51.4"). In einem
+            # einstuendigen Set weist das den Hoerer eine Minute neben die Naht.
+            wo = (
+                f"An der Naht von {transition.from_track} nach "
+                f"{transition.to_track} bei {timestamp(transition.start_at_s)}"
+            )
+
+            if drift is None and bpm is None:
+                # Eigene Beanstandungsart, nicht `seam`. Eine unmessbare Naht
+                # ist keine gemessene Abweichung, sondern eine offene Frage -
+                # und im Betrieb ist sie zu erwarten: das Nahtfenster liegt auf
+                # Intro- und Outro-Material, dem duennsten Teil beider Tracks,
+                # waehrend SEAM_DRIFT_TOLERANCE an einem durchgehenden
+                # Impulszug kalibriert wurde. Wer die Befunde nach kind
+                # filtert, muss die beiden Faelle auseinanderhalten koennen.
+                findings.append(
+                    QaFinding(
+                        kind="seam_unmeasurable",
+                        text=f"{wo} laesst sich kein Beatraster messen - ob der "
+                        f"Beat dort durchlaeuft, bleibt offen. Nahtfenster "
+                        f"liegen auf Intro- und Outro-Material; ein duenn "
+                        f"besetzter Uebergang ist kein Beweis fuer einen "
+                        f"Bruch, aber auch keiner fuer Kontinuitaet.",
+                    )
+                )
+            elif drift_broken or tempo_broken:
+                stats = []
+                if drift is not None:
+                    stats.append(
+                        f"ein Intervall um die Naht weicht {drift:.2f} Schlaege "
+                        f"vom naechsten ganzen Schlag ab"
+                    )
+                if bpm is not None:
+                    stats.append(f"gemitteltes Tempo {bpm.value:.1f} BPM")
                 findings.append(
                     QaFinding(
                         kind="seam",
-                        text=f"An der Naht von {transition.from_track} nach "
-                        f"{transition.to_track} bei "
-                        f"{transition.start_at_s / 60:.0f}:"
-                        f"{transition.start_at_s % 60:04.1f} stimmt das Timing "
-                        f"nicht: {gemessen}, erwartet waren {plan.target_bpm:.1f} "
-                        f"BPM ohne Abweichung ueber {SEAM_DRIFT_TOLERANCE:.2f} "
-                        f"Schlaege.",
+                        text=f"{wo} stimmt das Timing nicht: {', '.join(stats)}, "
+                        f"erwartet waren {plan.target_bpm:.1f} BPM ohne "
+                        f"Abweichung ueber {SEAM_DRIFT_TOLERANCE:.2f} Schlaege.",
                     )
                 )
 

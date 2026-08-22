@@ -438,7 +438,13 @@ class MixPlan(BaseModel):
         return self
 
 
-QaKind = Literal["length", "true_peak", "seam", "gap"]
+# `seam` ist eine GEMESSENE Abweichung an der Naht, `seam_unmeasurable` eine
+# Naht, an der sich ueberhaupt kein Beatraster messen liess. Zwei Faelle, zwei
+# Arten: das Nahtfenster liegt auf Intro- und Outro-Material, dem duennsten
+# Teil beider Tracks, waehrend die Toleranz an einem durchgehenden Impulszug
+# kalibriert wurde - eine unmessbare Naht ist im Betrieb also zu erwarten und
+# darf nicht wie ein Bruch aussehen, wenn jemand die Befunde nach kind filtert.
+QaKind = Literal["length", "true_peak", "seam", "seam_unmeasurable", "gap"]
 
 
 class QaFinding(BaseModel):
