@@ -32,8 +32,8 @@ def scan(watch_dir: Path) -> list[AudioFile]:
 
     Die ID kommt aus dem Dateinamen und nicht aus einem Zaehler, damit ein
     zweiter Lauf ueber denselben Ordner dieselben Artefaktnamen erzeugt - das
-    ist die Voraussetzung dafuer, dass build --resume vorhandene Analysen
-    wiedererkennt.
+    ist die Voraussetzung dafuer, dass ein wiederaufgenommener Lauf vorhandene
+    Analysen wiedererkennt.
 
     Die Sortierung laeuft ueber casefold und erst danach ueber den rohen Namen,
     nicht ueber den Pfad. `sorted()` auf Path vergleicht zeichenweise und ist

@@ -398,8 +398,8 @@ def measure_loudness(path: Path) -> Loudness:
     meter = pyloudnorm.Meter(sr)
     # pyloudnorm liefert fuer digitale Stille -inf. -inf ueberlebt den
     # JSON-Roundtrip nicht (dump schreibt null, validate lehnt null ab) und
-    # wuerde damit `build --resume` an einem einzigen stillen Track
-    # zerreissen. Bodenwert wie beim True Peak: -120 dB.
+    # wuerde damit das Wiederaufnehmen eines Laufs an einem einzigen stillen
+    # Track zerreissen. Bodenwert wie beim True Peak: -120 dB.
     lufs = max(_LEVEL_FLOOR_DB, float(meter.integrated_loudness(signal)))
 
     mono = signal if signal.ndim == 1 else np.mean(signal, axis=1)

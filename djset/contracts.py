@@ -152,7 +152,8 @@ class Loudness(BaseModel):
     allow_inf_nan=False auf beiden Feldern: pyloudnorm liefert fuer digitale
     Stille -inf, und -inf ueberlebt den eigenen JSON-Roundtrip nicht -
     model_dump_json() schreibt `null`, model_validate_json() lehnt das ab.
-    Genau dieser Pfad ist `build --resume`. Ein stiller Track darf einen Lauf
+    Genau dieser Pfad ist das Wiederaufnehmen eines Laufs (die CLI liest die
+    vorhandenen tracks/*.json). Ein stiller Track darf einen Lauf
     nicht sprengen (Spec Abschnitt 7: kaputte Einzeldatei -> Lauf laeuft
     weiter), deshalb liefert measure_loudness statt -inf den Bodenwert
     -120.0 dB - genau wie true_peak es schon immer getan hat.
@@ -388,12 +389,17 @@ class Transition(BaseModel):
 
 class MixPlan(BaseModel):
     target_length_s: float = Field(gt=0)
-    # Das Tempo, auf das alle timestretch_ratio gerechnet sind. Ohne diese Zahl
-    # kann der Renderer die Taktzahl eines Uebergangs nicht in Sekunden
-    # umrechnen, ohne tracks/*.json dazuzuladen - und dann waere der Mixplan
-    # nicht mehr allein testbar, was die Determinismus-Grenze der Spec gerade
-    # zusichert ("der Renderer mit handgeschriebenen Mixplaenen testen").
-    # Vom Code aus profile.bpm.target uebernommen, kein Modellurteil.
+    # Das Tempo, auf das alle timestretch_ratio gerechnet sind. Vom Code aus
+    # profile.bpm.target uebernommen, kein Modellurteil.
+    #
+    # Der RENDERER braucht es nicht mehr: die Dauer eines Uebergangs steht seit
+    # Transition.overlap_s im Plan, statt aus Taktzahl und Zieltempo
+    # nachgerechnet zu werden (siehe dort - die zweite Herleitung war ein
+    # Fehler). Gebraucht wird es weiter von der QA, die ihr Nahtfenster in
+    # Takten des Zieltempos aufspannt und die Naht dagegen misst, und von der
+    # Tracklist. Es bleibt damit auch das, was einen handgeschriebenen Mixplan
+    # allein testbar macht, ohne tracks/*.json dazuzuladen - die
+    # Determinismus-Grenze der Spec.
     target_bpm: float = Field(gt=0)
     entries: list[MixEntry] = Field(min_length=MIN_TRACKS)
     transitions: list[Transition]
