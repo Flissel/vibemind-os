@@ -36,3 +36,16 @@ def test_faceswap_is_reported(monkeypatch):
     """FaceSwap ist der Aufnahme-Pfad und muss sichtbar bleiben."""
     monkeypatch.setattr(video_tools, "urlopen", lambda url, timeout=2.0: _FakeResponse(200))
     assert "faceswap_installed" in video_tools.video_status()
+
+
+def test_legacy_keys_remain_for_existing_uis(monkeypatch):
+    """video-ui und agentfarm deklarieren diese als non-optional (types.ts:6-8 / :71-73).
+
+    Die Spec sagt video_status ist 'behalten und erweitern' — dropping these
+    would make both UIs silently render 'nothing installed'.
+    """
+    monkeypatch.setattr(video_tools, "urlopen", lambda url, timeout=2.0: _FakeResponse(200))
+    result = video_tools.video_status()
+    assert isinstance(result["vibevideo_installed"], bool)
+    assert isinstance(result["deepfake_installed"], bool)
+    assert isinstance(result["available_tools"], list)

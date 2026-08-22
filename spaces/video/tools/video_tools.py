@@ -149,10 +149,25 @@ def _probe(base_url: str, timeout: float = 2.0) -> Dict[str, Any]:
 
 
 def video_status(**kwargs) -> Dict[str, Any]:
-    """Status des Video-Space: Laura, TTS-Sidecar, FaceSwap, Alt-Tools."""
+    """Status des Video-Space: Laura, TTS-Sidecar, FaceSwap, Alt-Tools.
+
+    Behaelt+erweitert die urspruengliche Rueckgabe (R7): video-ui und
+    agentfarm deklarieren vibevideo_installed/deepfake_installed/
+    available_tools als non-optional (types.ts) und lesen sie ungeprueft
+    (VideoProduction.tsx) — die Keys duerfen nicht verschwinden.
+    """
     faceswap_ok = (DEEPFAKE_DIR / "faceswap" / "batch.py").exists()
     laura = _probe(LAURA_URL)
     voiceover = _probe(VOICEOVER_URL)
+
+    vibevideo_ok = (VIBEVIDEO_DIR / "vibevideo.py").exists()
+    deepfake_ok = (DEEPFAKE_DIR / "deepfake.py").exists()
+
+    tools = []
+    if vibevideo_ok:
+        tools.extend(["team", "vision", "demo"])
+    if deepfake_ok:
+        tools.extend(["lipsync", "voice"])
 
     parts = []
     parts.append("Laura " + ("erreichbar" if laura["ok"] else "NICHT erreichbar"))
@@ -166,6 +181,9 @@ def video_status(**kwargs) -> Dict[str, Any]:
         "laura": laura,
         "voiceover": voiceover,
         "faceswap_installed": faceswap_ok,
+        "vibevideo_installed": vibevideo_ok,
+        "deepfake_installed": deepfake_ok,
+        "available_tools": tools,
     }
 
 
