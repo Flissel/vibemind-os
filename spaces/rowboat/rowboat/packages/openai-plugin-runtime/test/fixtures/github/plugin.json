@@ -1,0 +1,13 @@
+{
+  "name": "github",
+  "version": "0.1.6",
+  "description": "GitHub workflows",
+  "license": "MIT",
+  "skills": "./skills/",
+  "apps": "./.app.json",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "GitHub",
+    "capabilities": ["Interactive", "Write"]
+  }
+}
