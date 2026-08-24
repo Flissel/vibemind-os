@@ -152,11 +152,13 @@ def _render_agent_toml(space: str, spec: dict) -> str:
 
 
 def _skip_reason(space: str, spec: dict) -> str | None:
-    agent = spec.get("agent", "")
-    if not agent:
-        return "no agent name"
     if not spec.get("enabled", True):
         return "disabled"
+    if spec.get("generate_agent", True) is False:
+        return "external runtime (generation disabled)"
+    agent = spec.get("agent", "")
+    if not isinstance(agent, str) or not agent.strip():
+        return "invalid agent name"
     # Don't overwrite pre-existing hand-curated agents
     for protected in ("brain-coder", "rowboat-chat", "brain-fallback"):
         if agent == protected:
@@ -426,9 +428,10 @@ def sync(dry_run: bool = False, check: bool = False) -> int:
     drift = 0
     for space, spec in spaces.items():
         reason = _skip_reason(space, spec)
-        agent = spec.get("agent", "")
+        agent = spec.get("agent")
+        agent_label = agent if isinstance(agent, str) else "-"
         if reason:
-            print(f"  skip  {space:<12} ({agent:<24}) — {reason}")
+            print(f"  skip  {space:<12} ({agent_label:<24}) — {reason}")
             skipped += 1
             continue
         target_dir = AGENTS_DIR / agent
