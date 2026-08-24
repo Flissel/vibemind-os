@@ -40,3 +40,11 @@
 [submodule "spaces/video/laura"]
 	path = spaces/video/laura
 	url = https://github.com/Vibemind-LAB/Lauras_star.git
+[submodule "spaces/learning/learnhouse"]
+	path = spaces/learning/learnhouse
+	url = https://github.com/Flissel/learnhouse.git
+	branch = dev
+[submodule "spaces/learning/penecho"]
+	path = spaces/learning/penecho
+	url = https://github.com/Flissel/penecho.git
+	branch = main
