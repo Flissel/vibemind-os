@@ -267,6 +267,19 @@ def resolve_agent_ids(listing: Any, roles: list[str]) -> dict[str, str]:
     return resolved
 
 
+def registration_evidence_level(
+    *, configured: bool, reachable: bool, verified_live: bool
+) -> str:
+    """Classify evidence without promoting structural state to live proof."""
+    if configured and reachable and verified_live:
+        return "verified_live"
+    if configured and reachable:
+        return "reachable"
+    if configured:
+        return "configured"
+    return "unavailable"
+
+
 def build_evidence(
     *,
     base_url: str,
@@ -293,6 +306,11 @@ def build_evidence(
         "raw": raw_digests,
         "overall": "pass" if overall_ok else "fail",
         "live_claim": overall_ok,
+        "evidence_level": registration_evidence_level(
+            configured=True,
+            reachable="health" in raw,
+            verified_live=overall_ok,
+        ),
     }
 
 

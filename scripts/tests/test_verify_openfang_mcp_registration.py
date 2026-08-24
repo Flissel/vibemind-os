@@ -311,3 +311,34 @@ def test_evidence_overall_pass(mod):
     assert evidence["overall"] == "pass"
     assert evidence["live_claim"] is True
     assert "sha256" in evidence["raw"]["servers"]
+
+
+@pytest.mark.parametrize(
+    ("configured", "reachable", "verified_live", "expected"),
+    [
+        (False, False, False, "unavailable"),
+        (True, False, False, "configured"),
+        (True, True, False, "reachable"),
+        (True, True, True, "verified_live"),
+    ],
+)
+def test_registration_evidence_levels_are_explicit(
+    mod, configured, reachable, verified_live, expected
+):
+    assert mod.registration_evidence_level(
+        configured=configured,
+        reachable=reachable,
+        verified_live=verified_live,
+    ) == expected
+
+
+def test_evidence_reports_reachable_without_claiming_live(mod):
+    evidence = mod.build_evidence(
+        base_url="http://127.0.0.1:4200",
+        checks=[{"check": "scope", "ok": False, "detail": "mismatch"}],
+        raw={"health": {"ok": True}},
+        generated_utc="2026-08-24T00:00:00Z",
+    )
+
+    assert evidence["evidence_level"] == "reachable"
+    assert evidence["live_claim"] is False
