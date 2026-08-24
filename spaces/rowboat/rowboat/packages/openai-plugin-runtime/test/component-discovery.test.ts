@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -8,10 +9,12 @@ import { describe, expect, it } from "vitest";
 import {
   AppFileSchema,
   assertPinnedSource,
+  discoverPluginComponents,
   getVerifiedPluginDigests,
   HttpMcpSchema,
   McpFileSchema,
   normalizePlugin,
+  parsePluginManifest,
   ProcessMcpSchema,
   type SourceProvenance,
   type VerifiedPinnedSource,
@@ -137,6 +140,17 @@ describe("normalizePlugin", () => {
     expect(plugin.components.filter(({ kind }) => kind === "hook")).toHaveLength(1);
   });
 
+  it("marks an empty hook envelope invalid and the plugin partial", async () => {
+    const temporaryRoot = await copyFixture();
+    await writeFile(join(temporaryRoot, "hooks.json"), JSON.stringify({ hooks: {} }), "utf8");
+    await commitFixture(temporaryRoot, "empty hook envelope");
+    const plugin = await normalizeFixture(temporaryRoot);
+    const hook = plugin.components.find(({ kind }) => kind === "hook");
+
+    expect(hook?.status).toBe("invalid");
+    expect(plugin.status).toBe("partially_available");
+  });
+
   it("uses .codex-plugin/plugin.json and does not require root/plugin.json", async () => {
     const plugin = await normalizeFixture(await copyFixture());
     expect(plugin.manifest.name).toBe("complete-plugin");
@@ -212,6 +226,43 @@ describe("normalizePlugin", () => {
     const plugin = await normalizeFixture(root);
     expect(plugin.components.filter(({ kind }) => kind === "app").map(({ name }) => name))
       .toEqual(["A", "z", "ä"]);
+  });
+
+  it("orders astral and BMP names and canonical keys by Unicode code point", async () => {
+    const root = await copyFixture();
+    const astral = "\u{10000}";
+    const bmp = "\uE000";
+    await writeFile(join(root, "agents", `${astral}.md`), "astral agent", "utf8");
+    await writeFile(join(root, "agents", `${bmp}.md`), "BMP agent", "utf8");
+    await writeFile(
+      join(root, ".app.json"),
+      JSON.stringify({
+        apps: {
+          [astral]: { id: "connector_aa" },
+          [bmp]: { id: "connector_bb" },
+          invalid: { [astral]: "astral", [bmp]: "BMP" },
+        },
+      }),
+      "utf8",
+    );
+    const manifest = parsePluginManifest(
+      JSON.parse(await readFile(join(root, ".codex-plugin", "plugin.json"), "utf8")) as unknown,
+    );
+    const plugin = await discoverPluginComponents(root, manifest);
+    const unicodeNames = (kind: "agent" | "app") => plugin.components
+      .filter((component) => component.kind === kind)
+      .map(({ name }) => kind === "agent" ? name.replace(/\.md$/, "") : name)
+      .filter((name) => name === bmp || name === astral);
+    expect(unicodeNames("agent")).toEqual([bmp, astral]);
+    expect(unicodeNames("app")).toEqual([bmp, astral]);
+
+    const expectedCanonical = JSON.stringify({ [bmp]: "BMP", [astral]: "astral" });
+    const expectedDigest = createHash("sha256")
+      .update("rowboat-plugin-component-v1\0")
+      .update(expectedCanonical)
+      .digest("hex");
+    expect(plugin.components.find(({ id }) => id.endsWith("#invalid"))?.metadata.digest)
+      .toBe(expectedDigest);
   });
 
   it("rejects a plugin directory whose basename differs from manifest name", async () => {

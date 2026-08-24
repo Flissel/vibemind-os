@@ -53,7 +53,22 @@ function slashPath(value: string): string {
 }
 
 function compareCodePoints(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
+  const leftIterator = left[Symbol.iterator]();
+  const rightIterator = right[Symbol.iterator]();
+  while (true) {
+    const leftCharacter = leftIterator.next();
+    const rightCharacter = rightIterator.next();
+    if (leftCharacter.done || rightCharacter.done) {
+      if (leftCharacter.done && rightCharacter.done) return 0;
+      return leftCharacter.done ? -1 : 1;
+    }
+    const leftPoint = leftCharacter.value.codePointAt(0);
+    const rightPoint = rightCharacter.value.codePointAt(0);
+    if (leftPoint === undefined || rightPoint === undefined) {
+      throw new PluginSourceSecurityError("digest_mismatch", "invalid component name");
+    }
+    if (leftPoint !== rightPoint) return leftPoint < rightPoint ? -1 : 1;
+  }
 }
 
 function candidatesFor(manifest: PluginManifest): readonly Candidate[] {
@@ -103,7 +118,7 @@ async function containedCanonicalPath(
 
 async function sortedChildren(root: DirectoryIdentity, directory: string): Promise<readonly string[]> {
   const children: string[] = [];
-  for (const name of (await readdir(directory)).sort()) {
+  for (const name of (await readdir(directory)).sort(compareCodePoints)) {
     const child = join(directory, name);
     const stats = await lstat(child);
     if (stats.isSymbolicLink()) throw new PluginSourceSecurityError("path_escape", "component link rejected");
@@ -213,7 +228,7 @@ function canonicalValue(value: unknown): PluginMetadataValue {
   if (Array.isArray(value)) return value.map(canonicalValue);
   if (typeof value === "object") {
     const result: Record<string, PluginMetadataValue> = {};
-    for (const key of Object.keys(value).sort()) {
+    for (const key of Object.keys(value).sort(compareCodePoints)) {
       const nested = (value as Record<string, unknown>)[key];
       if (nested !== undefined) result[key] = canonicalValue(nested);
     }

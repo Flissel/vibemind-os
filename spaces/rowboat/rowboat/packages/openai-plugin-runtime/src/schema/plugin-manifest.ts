@@ -10,11 +10,13 @@ function isPortableRelativePointer(pointer: string): boolean {
     return false;
   }
   const withoutPrefix = pointer.startsWith("./") ? pointer.slice(2) : pointer;
-  const normalized = withoutPrefix.endsWith("/")
+  const withoutTrailingSeparator = withoutPrefix.endsWith("/")
     ? withoutPrefix.slice(0, -1)
     : withoutPrefix;
-  if (normalized.length === 0 || normalized.includes("//")) return false;
-  return normalized.split("/").every((segment) => segment !== "." && segment !== "..");
+  if (withoutTrailingSeparator.length === 0) return false;
+  return withoutTrailingSeparator
+    .split("/")
+    .every((segment) => segment !== "" && segment !== "." && segment !== "..");
 }
 
 const RelativePointer = z.string().min(1).refine(isPortableRelativePointer);

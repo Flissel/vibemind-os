@@ -175,9 +175,23 @@ describe("parsePluginManifest", () => {
     expect(() => parsePluginManifest({ ...manifest, skills })).toThrow("manifest_invalid:");
   });
 
-  it("accepts one leading ./ prefix without other dot segments", async () => {
+  it.each(["skills", "skills/", "./skills", "./skills/"])(
+    "accepts the pinned pointer form %s",
+    async (skills) => {
+      const manifest = requireRecord(await readFixture());
+      expect(parsePluginManifest({ ...manifest, skills }).skills).toBe(skills);
+    },
+  );
+
+  it.each([
+    ".//skills",
+    "skills//",
+    "skills//x",
+    "./skills//",
+    "skills///",
+  ])("rejects a pointer with an empty path segment %s", async (skills) => {
     const manifest = requireRecord(await readFixture());
-    expect(parsePluginManifest({ ...manifest, skills: "./skills/" }).skills).toBe("./skills/");
+    expect(() => parsePluginManifest({ ...manifest, skills })).toThrow("manifest_invalid:");
   });
 
   it("rejects unknown interface fields with a deterministic issue path", async () => {

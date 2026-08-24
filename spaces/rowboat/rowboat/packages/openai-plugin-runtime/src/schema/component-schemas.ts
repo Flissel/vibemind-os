@@ -72,7 +72,9 @@ export const McpFileSchema = z
 
 export const HookFileSchema = z
   .object({
-    hooks: z.record(z.string(), z.unknown()),
+    hooks: z.record(z.string(), z.unknown()).refine(
+      (hooks) => Object.keys(hooks).length > 0,
+    ),
   })
   .strict();
 
