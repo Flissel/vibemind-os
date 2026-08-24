@@ -124,6 +124,17 @@ describe("resolveContainedPath", () => {
     );
   });
 
+  it("rejects a nonexistent lexical escape before candidate realpath", async () => {
+    const root = await createTemporaryRoot("missing-traversal");
+    const pluginRoot = join(root, "plugin");
+    await mkdir(pluginRoot);
+
+    await expectSecurityError(
+      resolveContainedPath(pluginRoot, "../missing.txt"),
+      "path_escape",
+    );
+  });
+
   it("rejects an absolute pointer before resolving the filesystem root", async () => {
     const root = join(await createTemporaryRoot("absolute"), "missing-root");
 
@@ -391,10 +402,12 @@ describe("ContentStore", () => {
     const store = new ContentStore(fixture);
     const expectedDigest = await digestTree(fixture.pluginRoot);
 
-    const publishedPath = await store.put(fixture.pluginRoot, expectedDigest);
+    const published = await store.put(fixture.pluginRoot, expectedDigest);
+    const publishedPath = published.path;
     const canonicalRepository = await realpath(fixture.repositoryRoot);
     const repositoryRelative = relative(canonicalRepository, publishedPath);
 
+    expect(published).toStrictEqual({ digest: expectedDigest, path: publishedPath });
     expect(isAbsolute(publishedPath)).toBe(true);
     expect(repositoryRelative === ".." || repositoryRelative.startsWith(`..${sep}`)).toBe(
       true,
@@ -415,16 +428,16 @@ describe("ContentStore", () => {
     const store = new ContentStore(fixture);
     const expectedDigest = await digestTree(fixture.pluginRoot);
 
-    const firstPath = await store.put(fixture.pluginRoot, expectedDigest);
-    const secondPath = await store.put(fixture.pluginRoot, expectedDigest);
-    expect(secondPath).toBe(firstPath);
+    const first = await store.put(fixture.pluginRoot, expectedDigest);
+    const second = await store.put(fixture.pluginRoot, expectedDigest);
+    expect(second).toStrictEqual(first);
 
-    await writeFile(join(firstPath, "plugin.txt"), "tampered store");
+    await writeFile(join(first.path, "plugin.txt"), "tampered store");
     await expectSecurityError(
       store.put(fixture.pluginRoot, expectedDigest),
       "digest_mismatch",
     );
-    await expect(readFile(join(firstPath, "plugin.txt"), "utf8")).resolves.toBe(
+    await expect(readFile(join(first.path, "plugin.txt"), "utf8")).resolves.toBe(
       "tampered store",
     );
   });
@@ -433,14 +446,14 @@ describe("ContentStore", () => {
     const fixture = await createStoreFixture("store-source-change");
     const store = new ContentStore(fixture);
     const oldDigest = await digestTree(fixture.pluginRoot);
-    const publishedPath = await store.put(fixture.pluginRoot, oldDigest);
+    const published = await store.put(fixture.pluginRoot, oldDigest);
     await writeFile(join(fixture.pluginRoot, "plugin.txt"), "changed source");
 
     await expectSecurityError(
       store.put(fixture.pluginRoot, oldDigest),
       "digest_mismatch",
     );
-    await expect(readFile(join(publishedPath, "plugin.txt"), "utf8")).resolves.toBe(
+    await expect(readFile(join(published.path, "plugin.txt"), "utf8")).resolves.toBe(
       "immutable source",
     );
   });
@@ -462,13 +475,127 @@ describe("ContentStore", () => {
     const store = new ContentStore(fixture);
     const expectedDigest = await digestTree(fixture.pluginRoot);
 
-    const publishedPaths = await Promise.all([
+    const publishedEntries = await Promise.all([
       store.put(fixture.pluginRoot, expectedDigest),
       store.put(fixture.pluginRoot, expectedDigest),
     ]);
 
-    expect(new Set(publishedPaths).size).toBe(1);
-    await expect(digestTree(publishedPaths[0] ?? "")).resolves.toBe(expectedDigest);
-    expect((await readdir(fixture.storeRoot)).sort()).toStrictEqual([expectedDigest]);
+    expect(publishedEntries[0]).toStrictEqual(publishedEntries[1]);
+    await expect(digestTree(publishedEntries[0]?.path ?? "")).resolves.toBe(
+      expectedDigest,
+    );
+    const storeEntries = await readdir(fixture.storeRoot);
+    expect(storeEntries).toContain(expectedDigest);
+    expect(
+      storeEntries.some(
+        (entry) => entry.startsWith(".tmp-") || entry.startsWith(".lock-"),
+      ),
+    ).toBe(false);
+  });
+
+  it("waits for a cooperating writer with an incomplete reserved destination", async () => {
+    const fixture = await createStoreFixture("store-incomplete-writer");
+    const expectedDigest = await digestTree(fixture.pluginRoot);
+    let announceReservation: (() => void) | undefined;
+    let releaseReservation: (() => void) | undefined;
+    const reservationObserved = new Promise<void>((resolveReservation) => {
+      announceReservation = resolveReservation;
+    });
+    const reservationRelease = new Promise<void>((resolveRelease) => {
+      releaseReservation = resolveRelease;
+    });
+    const firstConfig = {
+      ...fixture,
+      publicationObserver: {
+        async afterReserve(): Promise<void> {
+          announceReservation?.();
+          await reservationRelease;
+        },
+      },
+    };
+    const firstPublication = new ContentStore(firstConfig).put(
+      fixture.pluginRoot,
+      expectedDigest,
+    );
+
+    await Promise.race([
+      reservationObserved,
+      firstPublication.then(() => {
+        throw new Error("First publication completed before reservation pause.");
+      }),
+    ]);
+
+    let observedState: "absent" | "complete" | "invalid" | undefined;
+    let announceInspection: (() => void) | undefined;
+    const inspectionObserved = new Promise<void>((resolveInspection) => {
+      announceInspection = resolveInspection;
+    });
+    const secondConfig = {
+      ...fixture,
+      publicationObserver: {
+        async afterInitialInspect(
+          state: "absent" | "complete" | "invalid",
+        ): Promise<void> {
+          observedState = state;
+          announceInspection?.();
+        },
+      },
+    };
+    const secondPublication = new ContentStore(secondConfig).put(
+      fixture.pluginRoot,
+      expectedDigest,
+    );
+
+    try {
+      await Promise.race([
+        inspectionObserved,
+        secondPublication.then(() => {
+          throw new Error(
+            "Second publication completed before observing reservation.",
+          );
+        }),
+      ]);
+      expect(observedState).toBe("invalid");
+    } finally {
+      releaseReservation?.();
+    }
+
+    const [first, second] = await Promise.all([
+      firstPublication,
+      secondPublication,
+    ]);
+    expect(second).toStrictEqual(first);
+    await expect(digestTree(first.path)).resolves.toBe(expectedDigest);
+  });
+
+  it("never overwrites an empty destination created immediately before reservation", async () => {
+    const fixture = await createStoreFixture("store-no-replace-race");
+    const expectedDigest = await digestTree(fixture.pluginRoot);
+    let racedDestination: string | undefined;
+    const raceConfig = {
+      ...fixture,
+      publicationObserver: {
+        async beforeReserve(destination: string): Promise<void> {
+          racedDestination = destination;
+          await mkdir(destination);
+        },
+      },
+    };
+    const store = new ContentStore(raceConfig);
+
+    await expectSecurityError(
+      store.put(fixture.pluginRoot, expectedDigest),
+      "digest_mismatch",
+    );
+
+    expect(racedDestination).toBe(join(await realpath(fixture.storeRoot), expectedDigest));
+    await expect(readdir(racedDestination ?? "")).resolves.toStrictEqual([]);
+    const storeEntries = await readdir(fixture.storeRoot);
+    expect(storeEntries).toContain(expectedDigest);
+    expect(
+      storeEntries.some(
+        (entry) => entry.startsWith(".tmp-") || entry.startsWith(".lock-"),
+      ),
+    ).toBe(false);
   });
 });

@@ -36,6 +36,11 @@ export async function resolveContainedPath(
 
   const canonicalRoot = await realpath(root);
   const resolvedCandidate = resolve(canonicalRoot, pointer);
+
+  if (!isContainedPath(canonicalRoot, resolvedCandidate)) {
+    throw new PluginSourceSecurityError("path_escape", "pointer leaves source root");
+  }
+
   const canonicalCandidate = await realpath(resolvedCandidate);
 
   if (!isContainedPath(canonicalRoot, canonicalCandidate)) {

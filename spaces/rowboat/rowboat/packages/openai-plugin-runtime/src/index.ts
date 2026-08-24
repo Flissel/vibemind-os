@@ -30,5 +30,9 @@ export {
 } from "./import/source-reader.js";
 export {
   ContentStore,
+  type ContentStoreEntry,
   type ContentStoreConfig,
+  type ContentStorePublicationObserver,
+  type ContentStorePublicationState,
+  type StoredPluginContent,
 } from "./store/content-store.js";
