@@ -2,12 +2,35 @@
   "name": "github",
   "version": "0.1.6",
   "description": "GitHub workflows",
+  "author": {
+    "name": "GitHub",
+    "email": "plugins@github.com",
+    "url": "https://github.com"
+  },
+  "homepage": "https://github.com/features/actions",
+  "repository": "github/github-plugin",
   "license": "MIT",
+  "keywords": ["github", "automation"],
   "skills": "./skills/",
+  "agents": "./agents/",
+  "commands": "./commands/",
+  "hooks": "./hooks/",
   "apps": "./.app.json",
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "GitHub",
-    "capabilities": ["Interactive", "Write"]
+    "shortDescription": "GitHub actions",
+    "longDescription": "Run GitHub workflows from ChatGPT.",
+    "developerName": "GitHub",
+    "category": "Developer tools",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "defaultPrompt": ["Help me review this pull request."],
+    "brandColor": "#24292f",
+    "composerIcon": "./assets/composer.svg",
+    "logo": "./assets/logo.svg",
+    "screenshots": ["./assets/overview.png", "./assets/review.png"],
+    "websiteURL": "https://github.com",
+    "privacyPolicyURL": "https://docs.github.com/site-policy/privacy-policies/github-privacy-statement",
+    "termsOfServiceURL": "https://docs.github.com/site-policy/github-terms/github-terms-of-service"
   }
 }

@@ -36,6 +36,18 @@ export type PluginReasonCode =
   | "parity_failed"
   | "rollback_unavailable";
 
+export type PluginMetadataValue =
+  | string
+  | number
+  | boolean
+  | null
+  | PluginMetadata
+  | readonly PluginMetadataValue[];
+
+export type PluginMetadata = {
+  readonly [key: string]: PluginMetadataValue;
+};
+
 export interface SourceProvenance {
   readonly sourceUrl: string;
   readonly sourceCommit: string;
@@ -54,7 +66,7 @@ export interface NormalizedPluginComponent {
   readonly kind: PluginComponentKind;
   readonly status: PluginComponentStatus;
   readonly reason?: PluginReasonCode;
-  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly metadata: PluginMetadata;
 }
 
 export interface NormalizedPlugin {

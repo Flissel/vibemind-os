@@ -51,23 +51,67 @@ export const PluginManifestSchema = z
   })
   .strict();
 
-export type PluginManifest = z.infer<typeof PluginManifestSchema>;
+export type DeepReadonly<T> = T extends readonly (infer Item)[]
+  ? readonly DeepReadonly<Exclude<Item, undefined>>[]
+  : T extends object
+    ? { readonly [Key in keyof T]: DeepReadonly<Exclude<T[Key], undefined>> }
+    : T;
+
+export type PluginManifest = DeepReadonly<z.infer<typeof PluginManifestSchema>>;
+
+function isReadonlyArray(value: unknown): value is readonly unknown[] {
+  return Array.isArray(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !isReadonlyArray(value);
+}
+
+function normalizeAndFreeze(value: unknown): unknown {
+  if (isReadonlyArray(value)) {
+    return Object.freeze(value.map((item) => normalizeAndFreeze(item)));
+  }
+
+  if (isRecord(value)) {
+    const normalized: Record<string, unknown> = {};
+
+    for (const [key, nestedValue] of Object.entries(value)) {
+      if (nestedValue !== undefined) {
+        normalized[key] = normalizeAndFreeze(nestedValue);
+      }
+    }
+
+    return Object.freeze(normalized);
+  }
+
+  return value;
+}
 
 function formatIssuePath(path: ReadonlyArray<string | number>): string {
   return path.length === 0 ? "<root>" : path.join(".");
+}
+
+export class PluginManifestValidationError extends Error {
+  readonly code = "manifest_invalid" as const;
+  readonly issuePaths: readonly string[];
+
+  constructor(issuePaths: readonly string[]) {
+    const sortedIssuePaths = Object.freeze([...issuePaths].sort());
+
+    super(`manifest_invalid: ${sortedIssuePaths.join(", ")}`);
+    this.name = "PluginManifestValidationError";
+    this.issuePaths = sortedIssuePaths;
+  }
 }
 
 export function parsePluginManifest(input: unknown): PluginManifest {
   const result = PluginManifestSchema.safeParse(input);
 
   if (result.success) {
-    return result.data;
+    return normalizeAndFreeze(result.data) as PluginManifest;
   }
 
-  const issuePaths = result.error.issues
-    .map((issue) => formatIssuePath(issue.path))
-    .sort()
-    .join(", ");
+  const issuePaths = result.error.issues.map((issue) => formatIssuePath(issue.path));
 
-  throw new Error(`manifest_invalid: ${issuePaths}`);
+  throw new PluginManifestValidationError(issuePaths);
 }
