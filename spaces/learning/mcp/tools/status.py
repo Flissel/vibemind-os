@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from spaces.learning.bridge.dispatcher import (
     ApplicationOutcomeV1,
     InMemoryReceiptStore,
@@ -12,6 +14,8 @@ from spaces.learning.contracts.outcomes import (
     EvidenceRefV1,
     TruthReadbackV1,
 )
+from spaces.learning.services.db.repository import SqlReceiptStore
+from spaces.learning.services.db.session import build_session_factory, create_learning_engine
 
 
 class StructuralStatusGateway:
@@ -44,7 +48,12 @@ class StructuralStatusGateway:
 
 
 def build_default_dispatcher() -> LearningDispatcher:
+    database_url = os.environ.get("LEARNING_DATABASE_URL", "").strip()
+    receipts = InMemoryReceiptStore()
+    if database_url:
+        engine = create_learning_engine(database_url)
+        receipts = SqlReceiptStore(build_session_factory(engine))
     return LearningDispatcher(
         gateways={LearningToolName.STATUS: StructuralStatusGateway()},
-        receipts=InMemoryReceiptStore(),
+        receipts=receipts,
     )
