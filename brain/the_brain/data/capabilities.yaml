@@ -1297,12 +1297,11 @@
     - "Claude Code verwenden und den Fehler in app.py beheben"
     - "Anthropic verwenden und app.py reparieren"
   match_patterns:
-    - "\\buse\\s+claude\\b"
-    - "\\buse\\s+anthropic\\b"
-    - "\\bmit\\s+claude\\b"
-    - "\\bmit\\s+anthropic\\b"
-    - "\\bclaude\\s+code\\s+verwenden\\b"
-    - "\\banthropic\\s+verwenden\\b"
+    # Explicit provider selection alone is not a code-execution request. Keep
+    # this route ahead of coding_task, but require selection + mutation + a
+    # concrete code artifact so review/search/browser/document requests stay
+    # on their existing capabilities.
+    - "(?=.*\\b(?:use\\s+(?:claude|anthropic)|mit\\s+(?:claude|anthropic)|claude\\s+code\\s+verwenden|anthropic\\s+verwenden)\\b)(?=.*\\b(?:fix|debug|repair\\w*|reparier\\w*|beheb\\w*|write|create|implement|refactor|modify|edit|schreib\\w*|erstell\\w*|ändere\\w*|f[üu]hr\\w*)\\b)(?=.*(?:\\.(?:py|js|ts|tsx|jsx|rs|go|java|cpp|c|h|hpp|rb|php|sh|cmd)\\b|\\b(?:function|funktion|script|skript|endpoint|api|code|test|datei|file)\\b)).*"
   execution_target: "openfang:brain-coder-anthropic"
   validator:
     # truth: ground-truth (2026-06-25) — the coding agent claims it wrote a file;

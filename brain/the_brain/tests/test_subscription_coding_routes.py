@@ -110,6 +110,40 @@ def test_actual_router_prefers_each_explicit_anthropic_selector_without_cross_ro
     assert default_match.execution_target == "openfang:brain-coder-openai"
 
 
+def test_actual_router_requires_provider_selection_and_concrete_coding_mutation_for_anthropic():
+    router = CapabilityRouter(CAPABILITIES_PATH)
+
+    for phrase in (
+        "use Claude",
+        "use Anthropic to summarize this document",
+        "mit Claude die GitHub-Seite im Browser öffnen",
+        "use Anthropic to review this pull request",
+        "mit Claude nach einer Funktion im Code suchen",
+        "use Anthropic for a security scan",
+        "Claude is the name of this code subject",
+    ):
+        match = router.route(phrase)
+        assert match is None or match.capability != "coding_task_anthropic", phrase
+
+    for phrase in (
+        "use Claude to fix tests/test_foo.py",
+        "use Anthropic to fix tests/test_foo.py",
+        "mit Claude die Funktion in src/main.py schreiben",
+        "mit Anthropic die Funktion in src/main.py schreiben",
+        "Claude Code verwenden und app.py reparieren",
+        "Anthropic verwenden und app.py reparieren",
+    ):
+        match = router.route(phrase)
+        assert match is not None, phrase
+        assert match.capability == "coding_task_anthropic", phrase
+        assert match.execution_target == "openfang:brain-coder-anthropic", phrase
+
+    default_match = router.route("fix tests/test_foo.py")
+    assert default_match is not None
+    assert default_match.capability == "coding_task"
+    assert default_match.execution_target == "openfang:brain-coder-openai"
+
+
 def test_subscription_agent_templates_preserve_coding_restrictions_and_use_matching_wrappers():
     base_raw, base = _template("brain-coder")
     assert "{{MEMORY}}" in base_raw
@@ -133,13 +167,10 @@ def test_subscription_agent_templates_preserve_coding_restrictions_and_use_match
         assert manifest["name"] == name
         assert manifest["description"] == contract["description"]
         assert model["provider"] == "claude-code"
-        assert model["base_url"].replace("\\", "/").endswith(
-            f"scripts/{contract['wrapper']}"
-        )
-        assert (ROOT.parent / model["base_url"]).is_file()
+        assert model["base_url"] == contract["wrapper"]
         assert "{{MEMORY}}" in raw
         assert manifest["capabilities"] == base["capabilities"]
-        assert manifest["mcp_allowed"] == base["mcp_allowed"]
+        assert manifest["mcp_servers"] == base["mcp_allowed"]["servers"]
         assert manifest["resources"] == base["resources"]
         assert "fallback_models" not in manifest
         assert "api_key_env" not in model
