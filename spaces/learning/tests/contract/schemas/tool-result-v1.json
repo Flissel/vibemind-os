@@ -1,0 +1,632 @@
+{
+  "$defs": {
+    "AggregateRefV1": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregate_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Aggregate Id",
+          "type": "string"
+        },
+        "aggregate_type": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Aggregate Type",
+          "type": "string"
+        },
+        "revision": {
+          "minimum": 0,
+          "title": "Revision",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "aggregate_type",
+        "aggregate_id",
+        "revision"
+      ],
+      "title": "AggregateRefV1",
+      "type": "object"
+    },
+    "EvidenceRefV1": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Evidence Id",
+          "type": "string"
+        },
+        "evidence_type": {
+          "enum": [
+            "application_readback",
+            "job_readback",
+            "artifact_readback",
+            "structural_status"
+          ],
+          "title": "Evidence Type",
+          "type": "string"
+        },
+        "owner": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Owner",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "evidence_id",
+        "evidence_type"
+      ],
+      "title": "EvidenceRefV1",
+      "type": "object"
+    },
+    "FocusAnswerIntentV1": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregate_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Aggregate Id",
+          "type": "string"
+        },
+        "aggregate_revision": {
+          "minimum": 0,
+          "title": "Aggregate Revision",
+          "type": "integer"
+        },
+        "field_id": {
+          "default": "answer",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Field Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "focus_answer",
+          "default": "focus_answer",
+          "title": "Kind",
+          "type": "string"
+        },
+        "version": {
+          "const": "1",
+          "default": "1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "aggregate_id",
+        "aggregate_revision"
+      ],
+      "title": "FocusAnswerIntentV1",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "NavigateIntentV1": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregate_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Aggregate Id",
+          "type": "string"
+        },
+        "aggregate_revision": {
+          "minimum": 0,
+          "title": "Aggregate Revision",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "navigate",
+          "default": "navigate",
+          "title": "Kind",
+          "type": "string"
+        },
+        "route": {
+          "maxLength": 512,
+          "pattern": "^/learning(?:/.*)?$",
+          "title": "Route",
+          "type": "string"
+        },
+        "version": {
+          "const": "1",
+          "default": "1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "aggregate_id",
+        "aggregate_revision",
+        "route"
+      ],
+      "title": "NavigateIntentV1",
+      "type": "object"
+    },
+    "OpenCanvasIntentV1": {
+      "additionalProperties": false,
+      "properties": {
+        "activity_id": {
+          "format": "uuid",
+          "title": "Activity Id",
+          "type": "string"
+        },
+        "aggregate_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Aggregate Id",
+          "type": "string"
+        },
+        "aggregate_revision": {
+          "minimum": 0,
+          "title": "Aggregate Revision",
+          "type": "integer"
+        },
+        "canvas_revision": {
+          "minimum": 0,
+          "title": "Canvas Revision",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "open_canvas",
+          "default": "open_canvas",
+          "title": "Kind",
+          "type": "string"
+        },
+        "version": {
+          "const": "1",
+          "default": "1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "aggregate_id",
+        "aggregate_revision",
+        "activity_id",
+        "canvas_revision"
+      ],
+      "title": "OpenCanvasIntentV1",
+      "type": "object"
+    },
+    "OpenChapterIntentV1": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregate_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Aggregate Id",
+          "type": "string"
+        },
+        "aggregate_revision": {
+          "minimum": 0,
+          "title": "Aggregate Revision",
+          "type": "integer"
+        },
+        "chapter_id": {
+          "format": "uuid",
+          "title": "Chapter Id",
+          "type": "string"
+        },
+        "course_id": {
+          "format": "uuid",
+          "title": "Course Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "open_chapter",
+          "default": "open_chapter",
+          "title": "Kind",
+          "type": "string"
+        },
+        "version": {
+          "const": "1",
+          "default": "1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "aggregate_id",
+        "aggregate_revision",
+        "course_id",
+        "chapter_id"
+      ],
+      "title": "OpenChapterIntentV1",
+      "type": "object"
+    },
+    "OpenCourseIntentV1": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregate_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Aggregate Id",
+          "type": "string"
+        },
+        "aggregate_revision": {
+          "minimum": 0,
+          "title": "Aggregate Revision",
+          "type": "integer"
+        },
+        "course_id": {
+          "format": "uuid",
+          "title": "Course Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "open_course",
+          "default": "open_course",
+          "title": "Kind",
+          "type": "string"
+        },
+        "version": {
+          "const": "1",
+          "default": "1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "aggregate_id",
+        "aggregate_revision",
+        "course_id"
+      ],
+      "title": "OpenCourseIntentV1",
+      "type": "object"
+    },
+    "OpenTaskIntentV1": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregate_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Aggregate Id",
+          "type": "string"
+        },
+        "aggregate_revision": {
+          "minimum": 0,
+          "title": "Aggregate Revision",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "open_task",
+          "default": "open_task",
+          "title": "Kind",
+          "type": "string"
+        },
+        "session_id": {
+          "format": "uuid",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "task_id": {
+          "format": "uuid",
+          "title": "Task Id",
+          "type": "string"
+        },
+        "version": {
+          "const": "1",
+          "default": "1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "aggregate_id",
+        "aggregate_revision",
+        "session_id",
+        "task_id"
+      ],
+      "title": "OpenTaskIntentV1",
+      "type": "object"
+    },
+    "ShowErrorIntentV1": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregate_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Aggregate Id",
+          "type": "string"
+        },
+        "aggregate_revision": {
+          "minimum": 0,
+          "title": "Aggregate Revision",
+          "type": "integer"
+        },
+        "error_code": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Error Code",
+          "type": "string"
+        },
+        "kind": {
+          "const": "show_error",
+          "default": "show_error",
+          "title": "Kind",
+          "type": "string"
+        },
+        "version": {
+          "const": "1",
+          "default": "1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "aggregate_id",
+        "aggregate_revision",
+        "error_code"
+      ],
+      "title": "ShowErrorIntentV1",
+      "type": "object"
+    },
+    "ShowProgressIntentV1": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregate_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Aggregate Id",
+          "type": "string"
+        },
+        "aggregate_revision": {
+          "minimum": 0,
+          "title": "Aggregate Revision",
+          "type": "integer"
+        },
+        "course_id": {
+          "format": "uuid",
+          "title": "Course Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "show_progress",
+          "default": "show_progress",
+          "title": "Kind",
+          "type": "string"
+        },
+        "version": {
+          "const": "1",
+          "default": "1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "aggregate_id",
+        "aggregate_revision",
+        "course_id"
+      ],
+      "title": "ShowProgressIntentV1",
+      "type": "object"
+    },
+    "ShowResultIntentV1": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregate_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Aggregate Id",
+          "type": "string"
+        },
+        "aggregate_revision": {
+          "minimum": 0,
+          "title": "Aggregate Revision",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "show_result",
+          "default": "show_result",
+          "title": "Kind",
+          "type": "string"
+        },
+        "result_id": {
+          "format": "uuid",
+          "title": "Result Id",
+          "type": "string"
+        },
+        "version": {
+          "const": "1",
+          "default": "1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "aggregate_id",
+        "aggregate_revision",
+        "result_id"
+      ],
+      "title": "ShowResultIntentV1",
+      "type": "object"
+    },
+    "ToolErrorV1": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "default": false,
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "ToolErrorV1",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "aggregate": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AggregateRefV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "correlation_id": {
+      "format": "uuid",
+      "title": "Correlation Id",
+      "type": "string"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ToolErrorV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "evidence": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EvidenceRefV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "invocation_id": {
+      "format": "uuid",
+      "title": "Invocation Id",
+      "type": "string"
+    },
+    "result": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Result"
+    },
+    "state": {
+      "enum": [
+        "accepted",
+        "rejected",
+        "approval_required",
+        "unavailable",
+        "completed"
+      ],
+      "title": "State",
+      "type": "string"
+    },
+    "ui_intent": {
+      "anyOf": [
+        {
+          "discriminator": {
+            "mapping": {
+              "focus_answer": "#/$defs/FocusAnswerIntentV1",
+              "navigate": "#/$defs/NavigateIntentV1",
+              "open_canvas": "#/$defs/OpenCanvasIntentV1",
+              "open_chapter": "#/$defs/OpenChapterIntentV1",
+              "open_course": "#/$defs/OpenCourseIntentV1",
+              "open_task": "#/$defs/OpenTaskIntentV1",
+              "show_error": "#/$defs/ShowErrorIntentV1",
+              "show_progress": "#/$defs/ShowProgressIntentV1",
+              "show_result": "#/$defs/ShowResultIntentV1"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/NavigateIntentV1"
+            },
+            {
+              "$ref": "#/$defs/OpenCourseIntentV1"
+            },
+            {
+              "$ref": "#/$defs/OpenChapterIntentV1"
+            },
+            {
+              "$ref": "#/$defs/OpenTaskIntentV1"
+            },
+            {
+              "$ref": "#/$defs/FocusAnswerIntentV1"
+            },
+            {
+              "$ref": "#/$defs/OpenCanvasIntentV1"
+            },
+            {
+              "$ref": "#/$defs/ShowResultIntentV1"
+            },
+            {
+              "$ref": "#/$defs/ShowProgressIntentV1"
+            },
+            {
+              "$ref": "#/$defs/ShowErrorIntentV1"
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ui Intent"
+    },
+    "version": {
+      "const": "1",
+      "default": "1",
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "invocation_id",
+    "correlation_id",
+    "state"
+  ],
+  "title": "ToolResultV1",
+  "type": "object"
+}

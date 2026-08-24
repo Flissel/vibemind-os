@@ -1,0 +1,187 @@
+{
+  "$defs": {
+    "ActorV1": {
+      "additionalProperties": false,
+      "properties": {
+        "actor_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Actor Id",
+          "type": "string"
+        },
+        "actor_type": {
+          "enum": [
+            "local_user",
+            "brain",
+            "openfang",
+            "system"
+          ],
+          "title": "Actor Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "actor_id",
+        "actor_type"
+      ],
+      "title": "ActorV1",
+      "type": "object"
+    },
+    "ConfirmationV1": {
+      "additionalProperties": false,
+      "properties": {
+        "approval_ref": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Approval Ref",
+          "type": "string"
+        },
+        "confirmed": {
+          "const": true,
+          "title": "Confirmed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "confirmed",
+        "approval_ref"
+      ],
+      "title": "ConfirmationV1",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "LearningEventType": {
+      "enum": [
+        "learning.status",
+        "learning.course.list",
+        "learning.course.create",
+        "learning.course.open",
+        "learning.material.import",
+        "learning.course.generate",
+        "learning.generation.status",
+        "learning.course.review",
+        "learning.course.publish",
+        "learning.chapter.open",
+        "learning.session.start",
+        "learning.task.next",
+        "learning.task.answer",
+        "learning.hint.request",
+        "learning.tutor.ask",
+        "learning.progress.show",
+        "learning.canvas.open",
+        "learning.canvas.save",
+        "learning.canvas.hint",
+        "learning.canvas.submit",
+        "learning.canvas.review"
+      ],
+      "title": "LearningEventType",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "actor": {
+      "$ref": "#/$defs/ActorV1"
+    },
+    "confirmation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ConfirmationV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "correlation_id": {
+      "format": "uuid",
+      "title": "Correlation Id",
+      "type": "string"
+    },
+    "course_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Course Id"
+    },
+    "event_type": {
+      "$ref": "#/$defs/LearningEventType"
+    },
+    "expected_revision": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Expected Revision"
+    },
+    "idempotency_key": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Idempotency Key"
+    },
+    "invocation_id": {
+      "format": "uuid",
+      "title": "Invocation Id",
+      "type": "string"
+    },
+    "payload": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Payload",
+      "type": "object"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
+    },
+    "version": {
+      "const": "1",
+      "default": "1",
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_type",
+    "invocation_id",
+    "correlation_id",
+    "actor"
+  ],
+  "title": "EventEnvelopeV1",
+  "type": "object"
+}

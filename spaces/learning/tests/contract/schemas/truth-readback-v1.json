@@ -1,0 +1,128 @@
+{
+  "$defs": {
+    "AggregateRefV1": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregate_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Aggregate Id",
+          "type": "string"
+        },
+        "aggregate_type": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Aggregate Type",
+          "type": "string"
+        },
+        "revision": {
+          "minimum": 0,
+          "title": "Revision",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "aggregate_type",
+        "aggregate_id",
+        "revision"
+      ],
+      "title": "AggregateRefV1",
+      "type": "object"
+    },
+    "EvidenceRefV1": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Evidence Id",
+          "type": "string"
+        },
+        "evidence_type": {
+          "enum": [
+            "application_readback",
+            "job_readback",
+            "artifact_readback",
+            "structural_status"
+          ],
+          "title": "Evidence Type",
+          "type": "string"
+        },
+        "owner": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Owner",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "evidence_id",
+        "evidence_type"
+      ],
+      "title": "EvidenceRefV1",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "aggregate": {
+      "$ref": "#/$defs/AggregateRefV1"
+    },
+    "correlation_id": {
+      "format": "uuid",
+      "title": "Correlation Id",
+      "type": "string"
+    },
+    "evidence": {
+      "$ref": "#/$defs/EvidenceRefV1"
+    },
+    "invocation_id": {
+      "format": "uuid",
+      "title": "Invocation Id",
+      "type": "string"
+    },
+    "owner": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+      "title": "Owner",
+      "type": "string"
+    },
+    "read_at": {
+      "format": "date-time",
+      "title": "Read At",
+      "type": "string"
+    },
+    "terminal_state": {
+      "enum": [
+        "completed",
+        "failed",
+        "cancelled",
+        "rejected"
+      ],
+      "title": "Terminal State",
+      "type": "string"
+    },
+    "version": {
+      "const": "1",
+      "default": "1",
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "invocation_id",
+    "correlation_id",
+    "owner",
+    "terminal_state",
+    "aggregate",
+    "evidence"
+  ],
+  "title": "TruthReadbackV1",
+  "type": "object"
+}
