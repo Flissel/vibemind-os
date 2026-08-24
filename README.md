@@ -76,6 +76,29 @@ python python/electron_backend.py
 | **openclaw** | Personal AI assistant across 40+ messaging channels | Node.js (fork) |
 | **openfang** | Agent Operating System — 27 LLMs, 53 tools, WASM sandbox | Rust (fork) |
 
+## The 14 Domain Spaces
+
+Each space is a vertical AI workspace with its own backend agent, routed through OpenFang.
+
+| Space | Purpose | Backend |
+|-------|---------|---------|
+| **coding** | Code generation, review, refactoring, debugging | `coding-engine/` |
+| **security** | Red/blue team, vulnerability scanning, forensics | `security/` |
+| **search** | Semantic search, knowledge retrieval (Qdrant) | `la-fungus-search/` |
+| **email** | Email drafting, templates, campaigns, SMTP | `ops/` |
+| **pitch** | Pitch deck generation, investor research | `ops/` |
+| **voice** | TTS, STT, 3D UI navigation | `voice/` |
+| **social** | X/Twitter discovery, profile scoring, trends | `x-pathfinder/` |
+| **chat** | Multi-channel messaging (40+ platforms) | `openclaw/` |
+| **ops** | System monitoring, PC health, service management | `ops/` |
+| **research** | Web research, multi-source synthesis, citations | `shared/` |
+| **data** | Data analysis, visualization, ETL | `shared/` |
+| **creative** | Image generation, creative writing, multi-modal | `shared/` |
+| **planning** | Task management, project planning, scheduling | `shared/` |
+| **enterprise** | Langdock API, 35 MCP tools, enterprise workflows | `langdock-mcp/` |
+
+See [docs/architecture/space-definitions.md](docs/architecture/space-definitions.md) for full specs.
+
 ## The Stack
 
 ```
