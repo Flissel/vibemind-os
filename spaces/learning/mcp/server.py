@@ -1,0 +1,128 @@
+from __future__ import annotations
+
+import json
+import sys
+from collections.abc import Mapping
+from typing import Any
+
+from pydantic import ValidationError
+
+from spaces.learning.bridge.dispatcher import LearningDispatcher
+from spaces.learning.contracts.events import EVENT_TOOL_MAP, LearningToolName
+from spaces.learning.contracts.mcp_models import EventEnvelopeV1, ToolRequestV1
+from spaces.learning.mcp.tools.status import build_default_dispatcher
+
+
+SERVER_NAME = "spaces-learning"
+SERVER_VERSION = "1.0.0"
+PROTOCOL_VERSION = "2024-11-05"
+
+_EVENT_BY_TOOL = {tool: event for event, tool in EVENT_TOOL_MAP.items()}
+
+
+def _tool_schema(tool: LearningToolName) -> dict[str, Any]:
+    schema = EventEnvelopeV1.model_json_schema()
+    schema["properties"]["event_type"] = {"const": _EVENT_BY_TOOL[tool].value}
+    return schema
+
+
+TOOLS: list[dict[str, Any]] = [
+    {
+        "name": tool.value,
+        "description": f"Execute the semantic {_EVENT_BY_TOOL[tool].value} operation.",
+        "inputSchema": _tool_schema(tool),
+    }
+    for tool in LearningToolName
+]
+
+_DEFAULT_DISPATCHER = build_default_dispatcher()
+
+
+def _mcp_result(payload: Mapping[str, Any], *, is_error: bool) -> dict[str, Any]:
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            }
+        ],
+        "isError": is_error,
+    }
+
+
+def _error(request_id: Any, code: str) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "result": _mcp_result({"error": code}, is_error=True),
+    }
+
+
+def handle_message(
+    message: Any, *, dispatcher: LearningDispatcher | None = None
+) -> dict[str, Any] | None:
+    if not isinstance(message, Mapping):
+        return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "invalid request"}}
+    request_id = message.get("id")
+    method = message.get("method")
+    if method == "notifications/initialized":
+        return None
+    if method == "initialize":
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "protocolVersion": PROTOCOL_VERSION,
+                "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+                "capabilities": {"tools": {}},
+            },
+        }
+    if method == "tools/list":
+        return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": TOOLS}}
+    if method != "tools/call":
+        return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "method not found"}}
+
+    params = message.get("params")
+    if not isinstance(params, Mapping):
+        return _error(request_id, "invalid_arguments")
+    try:
+        tool = LearningToolName(params.get("name"))
+    except (TypeError, ValueError):
+        return _error(request_id, "unknown_tool")
+    arguments = params.get("arguments")
+    if not isinstance(arguments, Mapping):
+        return _error(request_id, "invalid_arguments")
+    try:
+        event = EventEnvelopeV1.model_validate(dict(arguments))
+        request = ToolRequestV1(tool=tool, event=event)
+    except ValidationError:
+        return _error(request_id, "invalid_arguments")
+
+    result = (dispatcher or _DEFAULT_DISPATCHER).dispatch(request)
+    payload = result.model_dump(mode="json", exclude_none=True)
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "result": _mcp_result(
+            payload,
+            is_error=result.state in {"rejected", "unavailable"},
+        ),
+    }
+
+
+def main() -> int:
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        try:
+            message = json.loads(line)
+            response = handle_message(message)
+        except json.JSONDecodeError:
+            response = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}}
+        if response is not None:
+            print(json.dumps(response, ensure_ascii=False), flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
