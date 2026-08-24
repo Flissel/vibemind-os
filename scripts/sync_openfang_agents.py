@@ -164,6 +164,39 @@ def _skip_reason(space: str, spec: dict) -> str | None:
     return None
 
 
+def validate_agent_generation_contract() -> list[str]:
+    """Validate whether each enabled space should generate an OpenFang agent."""
+    with open(REGISTRY, "r", encoding="utf-8") as f:
+        data: dict[str, Any] = yaml.safe_load(f) or {}
+    spaces = data.get("spaces", {})
+    if not isinstance(spaces, dict):
+        return ["registry spaces must be a mapping"]
+
+    errors: list[str] = []
+    for space_name, spec in spaces.items():
+        if not isinstance(spec, dict):
+            continue
+        generate_agent = spec.get("generate_agent", True)
+        if not isinstance(generate_agent, bool):
+            errors.append(f"{space_name} generate_agent must be a boolean")
+            continue
+        agent = spec.get("agent")
+        if generate_agent is False:
+            if agent is not None:
+                errors.append(
+                    f"{space_name} must omit agent or set it to null when "
+                    "generate_agent is false"
+                )
+            continue
+        if spec.get("enabled", True) and (
+            not isinstance(agent, str) or not agent.strip()
+        ):
+            errors.append(
+                f"{space_name} requires non-empty agent when generate_agent is true"
+            )
+    return errors
+
+
 def validate_generated_agent_mcp_scopes() -> list[str]:
     """Require non-empty top-level AgentManifest MCP scopes for generated agents.
 
@@ -374,7 +407,8 @@ def validate_mcp_authority() -> list[str]:
 
 def sync(dry_run: bool = False, check: bool = False) -> int:
     validation_errors = (
-        validate_generated_agent_mcp_scopes()
+        validate_agent_generation_contract()
+        + validate_generated_agent_mcp_scopes()
         + validate_mcp_tool_scopes()
         + validate_model_overrides()
         + validate_mcp_authority()
