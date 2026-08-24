@@ -1287,8 +1287,30 @@
 # agent_name → agent_id via /api/agents.
 # ──────────────────────────────────────────────────────────────────────────
 
+- capability: coding_task_anthropic
+  description: "EXECUTE CODE TASK with the Claude Pro/Max subscription through official Claude Code. Use only when the user explicitly selects Claude or Anthropic; writes real files to disk, runs them, and returns output."
+  anchor_phrases:
+    - "use Claude to fix the failing test in tests/test_foo.py"
+    - "mit Anthropic die Funktion in src/main.py schreiben"
+    - "Claude Code verwenden und den Fehler in app.py beheben"
+  match_patterns:
+    - "\\buse\\s+claude\\b"
+    - "\\bmit\\s+anthropic\\b"
+    - "\\bclaude\\s+code\\s+verwenden\\b"
+  execution_target: "openfang:brain-coder-anthropic"
+  validator:
+    # truth: ground-truth (2026-06-25) — the coding agent claims it wrote a file;
+    # confirm the file actually exists on disk (same host). {result_path} = first
+    # absolute path in the result ("written to `C:/.../x.py`"). No path in the
+    # result -> UNVERIFIED (honest), reusing world_observer.file_exists.
+    kind: truth:file_exists
+    on_fail: report
+    postcondition:
+      check: file_exists
+      path: "{result_path}"
+
 - capability: coding_task
-  description: "EXECUTE CODE TASK — actually write/edit/run real source code on disk via the openclaude coding agent. NOT for adding ideas/notes to the knowledge graph (that's idea_add). NOT for searching code (that's code_search). NOT for reviewing code (that's code_review). USE THIS when the user wants the system to actually CREATE OR MODIFY a code file: write a python/js/ts/rust function or script, fix a bug in a specific source file, refactor existing code, implement an API endpoint, run git commit/push, create a github repo, deploy to vercel. The dispatch target is openclaude-coder which runs the openclaude CLI subprocess against gpt-4o-mini, writes real files to disk, runs them, returns output."
+  description: "EXECUTE CODE TASK — actually write/edit/run real source code on disk through the ChatGPT subscription via OpenCode. NOT for adding ideas/notes to the knowledge graph (that's idea_add). NOT for searching code (that's code_search). NOT for reviewing code (that's code_review). USE THIS when the user wants the system to actually CREATE OR MODIFY a code file: write a python/js/ts/rust function or script, fix a bug in a specific source file, refactor existing code, implement an API endpoint, run git commit/push, create a github repo, deploy to vercel. This is the deterministic default coding route; it writes real files to disk, runs them, and returns output."
   anchor_phrases:
     - "write a python script that prints hello and save it as hello.py"
     - "create a function add_two in src/main.py and run the file"
@@ -1318,13 +1340,12 @@
     - "(commit|push)\\s+(this|my|den|meinen)?\\s*(changes?|änderung)"
     # Last-resort: stack + thing-noun pair
     - "(eine?|a|ein)\\s+(python|js|ts|rust|go)\\s+(funktion|function|script|skript|class|klasse)"
-  execution_target: "openfang:openclaude-coder"
+  execution_target: "openfang:brain-coder-openai"
   validator:
     # truth: ground-truth (2026-06-25) — the coding agent CLAIMS it wrote a file;
-    # confirm the file actually exists on disk (same host: brain + openclaude run
-    # locally). {result_path} = first absolute path in the result ("written to
-    # `C:/.../x.py`"). No path in the result -> UNVERIFIED (honest). Beyond supabase:
-    # first openfang/file-backed truth: signal, reusing world_observer.file_exists.
+    # confirm the file actually exists on disk (same host). {result_path} = first
+    # absolute path in the result ("written to `C:/.../x.py`"). No path in the
+    # result -> UNVERIFIED (honest), reusing world_observer.file_exists.
     kind: truth:file_exists
     on_fail: report
     postcondition:
