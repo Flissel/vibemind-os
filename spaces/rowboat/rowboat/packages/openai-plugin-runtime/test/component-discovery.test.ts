@@ -45,6 +45,18 @@ class FixtureGitProbe implements GitProbe {
   }
 }
 
+class MutableGitProbe implements GitProbe {
+  head = provenanceCommit;
+  status = "";
+  origin = "https://github.com/openai/plugins.git";
+
+  async run(_repositoryRoot: string, command: readonly string[]): Promise<string> {
+    if (command[0] === "rev-parse") return this.head;
+    if (command[0] === "status") return this.status;
+    return this.origin;
+  }
+}
+
 const provenanceCommit = "11c74d6ba24d3a6d48f54a194cd00ef3beea18f9";
 
 async function verifiedFor(pluginRoot: string): Promise<VerifiedPinnedSource> {
@@ -193,6 +205,39 @@ describe("normalizePlugin", () => {
       fixtureRoot,
       { ...provenance, sourceCommit: "0".repeat(40) },
       await verifiedFor(fixtureRoot),
+    )).rejects.toMatchObject({ code: "source_mismatch" });
+  });
+
+  it.each([
+    ["HEAD", (probe: MutableGitProbe) => { probe.head = "0".repeat(40); }],
+    ["dirty status", (probe: MutableGitProbe) => { probe.status = " M changed.txt"; }],
+    ["origin", (probe: MutableGitProbe) => { probe.origin = "https://example.com/other.git"; }],
+  ] as const)("revalidates changed %s before normalization", async (_label, mutate) => {
+    const probe = new MutableGitProbe();
+    const context = await assertPinnedSource({
+      repositoryRoot: dirname(fixtureRoot),
+      expectedCommit: provenanceCommit,
+      sourceUrl: "https://github.com/openai/plugins.git",
+      probe,
+    });
+    mutate(probe);
+    await expect(normalizePlugin(fixtureRoot, await provenanceFor(fixtureRoot), context))
+      .rejects.toMatchObject({ code: "source_mismatch" });
+  });
+
+  it("revalidates the source context after normalization", async () => {
+    const probe = new MutableGitProbe();
+    const context = await assertPinnedSource({
+      repositoryRoot: dirname(fixtureRoot),
+      expectedCommit: provenanceCommit,
+      sourceUrl: "https://github.com/openai/plugins.git",
+      probe,
+    });
+    await expect(normalizePlugin(
+      fixtureRoot,
+      await provenanceFor(fixtureRoot),
+      context,
+      { beforeFinalTreeDigest: () => { probe.status = " M changed.txt"; } },
     )).rejects.toMatchObject({ code: "source_mismatch" });
   });
 

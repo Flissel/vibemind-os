@@ -133,6 +133,12 @@ export async function normalizePlugin(
   await options.beforeFinalTreeDigest?.();
   assertDigest(provenance.treeDigest, await digestTree(pluginRoot), "source tree");
   await assertDirectoryIdentity(root);
+  await assertVerifiedPinnedSource(
+    verifiedSource,
+    pluginRoot,
+    provenance.sourceUrl,
+    provenance.sourceCommit,
+  );
 
   return Object.freeze({
     manifest,

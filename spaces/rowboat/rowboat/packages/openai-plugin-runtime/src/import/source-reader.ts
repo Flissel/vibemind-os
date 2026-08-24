@@ -1,4 +1,9 @@
 import { realpath } from "node:fs/promises";
+import {
+  assertDirectoryIdentity,
+  snapshotDirectoryIdentity,
+  type DirectoryIdentity,
+} from "./directory-identity.js";
 import { isContainedPath, PluginSourceSecurityError } from "./path-guard.js";
 
 export type GitProbeCommand =
@@ -18,6 +23,11 @@ export interface PinnedSourceRequest {
 }
 
 const verifiedContexts = new WeakSet<object>();
+interface VerifiedContextDetails {
+  readonly probe: GitProbe;
+  readonly repositoryIdentity: DirectoryIdentity;
+}
+const contextDetails = new WeakMap<VerifiedPinnedSource, VerifiedContextDetails>();
 const VERIFIED_CONTEXT_TOKEN = Symbol("VerifiedPinnedSource");
 
 export class VerifiedPinnedSource {
@@ -92,12 +102,15 @@ export async function assertPinnedSource({
   } catch {
     throw new PluginSourceSecurityError("source_mismatch", "repository root is unavailable");
   }
-  return new VerifiedPinnedSource(
+  const repositoryIdentity = await snapshotDirectoryIdentity(canonicalRepositoryRoot);
+  const context = new VerifiedPinnedSource(
     VERIFIED_CONTEXT_TOKEN,
     canonicalRepositoryRoot,
     expectedCommit,
     sourceUrl,
   );
+  contextDetails.set(context, { probe, repositoryIdentity });
+  return context;
 }
 
 export async function assertVerifiedPinnedSource(
@@ -106,13 +119,29 @@ export async function assertVerifiedPinnedSource(
   sourceUrl: string,
   sourceCommit: string,
 ): Promise<void> {
+  const details = contextDetails.get(context);
   if (
     !verifiedContexts.has(context) ||
+    details === undefined ||
     context.sourceUrl !== sourceUrl ||
     context.sourceCommit !== sourceCommit
   ) {
     throw new PluginSourceSecurityError("source_mismatch", "verified source context mismatch");
   }
+  await assertDirectoryIdentity(details.repositoryIdentity);
+  const observedHead = (
+    await runProbe(details.probe, context.repositoryRoot, HEAD_COMMAND)
+  ).trim();
+  if (observedHead !== context.sourceCommit || !COMMIT_PATTERN.test(observedHead)) {
+    throw new PluginSourceSecurityError("source_mismatch", "verified HEAD changed");
+  }
+  if ((await runProbe(details.probe, context.repositoryRoot, STATUS_COMMAND)).trim() !== "") {
+    throw new PluginSourceSecurityError("source_mismatch", "verified source became dirty");
+  }
+  if ((await runProbe(details.probe, context.repositoryRoot, ORIGIN_COMMAND)).trim() !== context.sourceUrl) {
+    throw new PluginSourceSecurityError("source_mismatch", "verified origin changed");
+  }
+  await assertDirectoryIdentity(details.repositoryIdentity);
   let canonicalPluginRoot: string;
   try {
     canonicalPluginRoot = await realpath(pluginRoot);
@@ -122,4 +151,5 @@ export async function assertVerifiedPinnedSource(
   if (!isContainedPath(context.repositoryRoot, canonicalPluginRoot)) {
     throw new PluginSourceSecurityError("source_mismatch", "plugin root is outside verified source");
   }
+  await assertDirectoryIdentity(details.repositoryIdentity);
 }
