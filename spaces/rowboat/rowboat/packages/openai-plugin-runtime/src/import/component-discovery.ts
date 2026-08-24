@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { lstat, readdir, realpath } from "node:fs/promises";
-import { basename, join, relative, sep } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 import type {
   NormalizedPluginComponent,
   PluginComponentKind,
@@ -35,6 +35,7 @@ interface Candidate {
 interface ComponentEntry {
   readonly kind: PluginComponentKind;
   readonly canonicalPath: string;
+  readonly scopeDigest?: string;
 }
 
 interface ReadComponentFile {
@@ -62,7 +63,7 @@ function candidatesFor(manifest: PluginManifest): readonly Candidate[] {
   add("command", manifest.commands, "commands");
   add("mcp", manifest.mcpServers, ".mcp.json");
   add("app", manifest.apps, ".app.json");
-  add("hook", manifest.hooks, "hooks/hooks.json");
+  add("hook", manifest.hooks, "hooks.json");
   for (const pointer of [
     manifest.interface.composerIcon,
     manifest.interface.logo,
@@ -120,18 +121,60 @@ async function collectEntries(
   await assertDirectoryIdentity(root);
   const stats = await lstat(path);
   if (stats.isFile()) {
-    output.push({ kind, canonicalPath: path });
-    return;
-  }
-  if (!stats.isDirectory()) throw new PluginSourceSecurityError("path_escape", "unsupported component entry");
-  const children = await sortedChildren(root, path);
-  if (kind === "skill") {
-    for (const child of children) {
-      if ((await lstat(child)).isDirectory()) output.push({ kind, canonicalPath: child });
+    if (
+      (kind !== "agent" && kind !== "command") ||
+      (path.endsWith(".md") && basename(path) !== "_conventions.md")
+    ) {
+      output.push({ kind, canonicalPath: path });
     }
     return;
   }
+  if (!stats.isDirectory()) throw new PluginSourceSecurityError("path_escape", "unsupported component entry");
+  if (kind === "skill") {
+    const skillsRootDigest = await digestTree(path);
+    await collectSkillBundles(root, path, skillsRootDigest, output);
+    return;
+  }
+  const children = await sortedChildren(root, path);
+  if (kind === "agent" || kind === "command") {
+    const scopeDigest = await digestTree(path);
+    await collectRunnableMarkdown(root, kind, path, scopeDigest, output);
+    return;
+  }
   for (const child of children) await collectEntries(root, kind, child, output);
+}
+
+async function collectSkillBundles(
+  root: DirectoryIdentity,
+  directory: string,
+  skillsRootDigest: string,
+  output: ComponentEntry[],
+): Promise<void> {
+  for (const child of await sortedChildren(root, directory)) {
+    const stats = await lstat(child);
+    if (stats.isDirectory()) {
+      await collectSkillBundles(root, child, skillsRootDigest, output);
+    } else if (basename(child) === "SKILL.md") {
+      output.push({ kind: "skill", canonicalPath: dirname(child), scopeDigest: skillsRootDigest });
+    }
+  }
+}
+
+async function collectRunnableMarkdown(
+  root: DirectoryIdentity,
+  kind: "agent" | "command",
+  directory: string,
+  scopeDigest: string,
+  output: ComponentEntry[],
+): Promise<void> {
+  for (const child of await sortedChildren(root, directory)) {
+    const stats = await lstat(child);
+    if (stats.isDirectory()) {
+      await collectRunnableMarkdown(root, kind, child, scopeDigest, output);
+    } else if (child.endsWith(".md") && basename(child) !== "_conventions.md") {
+      output.push({ kind, canonicalPath: child, scopeDigest });
+    }
+  }
 }
 
 async function readComponentFile(
@@ -174,6 +217,22 @@ function canonicalValue(value: unknown): PluginMetadataValue {
 
 function recordDigest(value: unknown): string {
   return createHash("sha256").update("rowboat-plugin-component-v1\0").update(JSON.stringify(canonicalValue(value))).digest("hex");
+}
+
+function scopedDigest(
+  kind: "skill" | "agent" | "command",
+  logicalPath: string,
+  contentDigest: string,
+  scopeDigest: string,
+): string {
+  return createHash("sha256")
+    .update(`rowboat-${kind}-bundle-v1\0`)
+    .update(logicalPath)
+    .update("\0")
+    .update(contentDigest)
+    .update("\0")
+    .update(scopeDigest)
+    .digest("hex");
 }
 
 function metadata(path: string, digest: string, extra: PluginMetadata = {}): PluginMetadata {
@@ -265,13 +324,47 @@ export async function discoverPluginComponentsFromIdentity(
     seenEntries.add(key);
     const relativePath = slashPath(relative(root.canonicalPath, entry.canonicalPath));
     if (entry.kind === "skill") {
-      components.push(component("skill", `skill:${relativePath}`, basename(entry.canonicalPath), "available", metadata(relativePath, await digestTree(entry.canonicalPath))));
+      if (entry.scopeDigest === undefined) {
+        throw new PluginSourceSecurityError("digest_mismatch", "skill scope digest missing");
+      }
+      const bundleDigest = await digestTree(entry.canonicalPath);
+      // Reference parsing is intentionally deferred. Binding both the local
+      // bundle tree and the entire stable skills root is a conservative
+      // superset: sibling resource changes invalidate every skill in that root
+      // instead of risking a stale digest for an unresolved relative reference.
+      components.push(component(
+        "skill",
+        `skill:${relativePath}`,
+        basename(entry.canonicalPath),
+        "available",
+        metadata(relativePath, scopedDigest("skill", relativePath, bundleDigest, entry.scopeDigest), {
+          resourceBinding: "skills_root_superset",
+        }),
+      ));
       continue;
     }
     const structured = entry.kind === "mcp" || entry.kind === "app" || entry.kind === "hook";
     const read = await readComponentFile(root, entry.canonicalPath, structured);
     if (structured && read.bytes !== undefined) components.push(...expandStructured(entry, relativePath, read.bytes, read.digest));
-    else components.push(component(entry.kind, `${entry.kind}:${relativePath}`, basename(entry.canonicalPath), "available", metadata(relativePath, read.digest)));
+    else {
+      const digest =
+        (entry.kind === "agent" || entry.kind === "command") && entry.scopeDigest !== undefined
+          ? scopedDigest(entry.kind, relativePath, read.digest, entry.scopeDigest)
+          : read.digest;
+      components.push(component(
+        entry.kind,
+        `${entry.kind}:${relativePath}`,
+        basename(entry.canonicalPath),
+        "available",
+        metadata(
+          relativePath,
+          digest,
+          entry.kind === "agent" || entry.kind === "command"
+            ? { resourceBinding: "opaque_directory_superset" }
+            : {},
+        ),
+      ));
+    }
   }
   if (new Set(components.map(({ id }) => id)).size !== components.length) {
     throw new PluginSourceSecurityError("digest_mismatch", "duplicate component id");

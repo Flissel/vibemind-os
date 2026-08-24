@@ -288,6 +288,7 @@ describe("digestTree", () => {
 });
 
 const PINNED_COMMIT = "0123456789abcdef0123456789abcdef01234567";
+const SOURCE_URL = "https://github.com/openai/plugins.git";
 
 class RecordingGitProbe implements GitProbe {
   readonly calls: Array<{
@@ -298,11 +299,14 @@ class RecordingGitProbe implements GitProbe {
   constructor(
     private readonly headOutput: string,
     private readonly statusOutput: string,
+    private readonly originOutput: string = SOURCE_URL,
   ) {}
 
   async run(repositoryRoot: string, command: GitProbeCommand): Promise<string> {
     this.calls.push({ repositoryRoot, command });
-    return command[0] === "rev-parse" ? this.headOutput : this.statusOutput;
+    if (command[0] === "rev-parse") return this.headOutput;
+    if (command[0] === "status") return this.statusOutput;
+    return this.originOutput;
   }
 }
 
@@ -315,7 +319,7 @@ describe("assertPinnedSource", () => {
     );
 
     await expectSecurityError(
-      assertPinnedSource({ repositoryRoot, expectedCommit: PINNED_COMMIT, probe }),
+      assertPinnedSource({ repositoryRoot, expectedCommit: PINNED_COMMIT, sourceUrl: SOURCE_URL, probe }),
       "source_mismatch",
     );
     expect(probe.calls).toStrictEqual([
@@ -328,7 +332,7 @@ describe("assertPinnedSource", () => {
     const probe = new RecordingGitProbe(`${PINNED_COMMIT}\n`, " M secret.txt\n");
 
     await expectSecurityError(
-      assertPinnedSource({ repositoryRoot, expectedCommit: PINNED_COMMIT, probe }),
+      assertPinnedSource({ repositoryRoot, expectedCommit: PINNED_COMMIT, sourceUrl: SOURCE_URL, probe }),
       "source_mismatch",
     );
     expect(probe.calls).toStrictEqual([
@@ -338,23 +342,29 @@ describe("assertPinnedSource", () => {
   });
 
   it("accepts a clean exact pin and rejects malformed pins and probe output", async () => {
-    const repositoryRoot = resolve("repository");
+    const repositoryRoot = await createTemporaryRoot("verified-pin");
     const cleanProbe = new RecordingGitProbe(` ${PINNED_COMMIT}\n`, "\n");
 
     await expect(
       assertPinnedSource({
         repositoryRoot,
         expectedCommit: PINNED_COMMIT,
+        sourceUrl: SOURCE_URL,
         probe: cleanProbe,
       }),
-    ).resolves.toBeUndefined();
-    expect(cleanProbe.calls).toHaveLength(2);
+    ).resolves.toMatchObject({ sourceCommit: PINNED_COMMIT, sourceUrl: SOURCE_URL });
+    expect(cleanProbe.calls).toStrictEqual([
+      { repositoryRoot, command: ["rev-parse", "HEAD"] },
+      { repositoryRoot, command: ["status", "--porcelain"] },
+      { repositoryRoot, command: ["remote", "get-url", "origin"] },
+    ]);
 
     const invalidExpectedProbe = new RecordingGitProbe(PINNED_COMMIT, "");
     await expectSecurityError(
       assertPinnedSource({
         repositoryRoot,
         expectedCommit: PINNED_COMMIT.toUpperCase(),
+        sourceUrl: SOURCE_URL,
         probe: invalidExpectedProbe,
       }),
       "source_mismatch",
@@ -369,7 +379,23 @@ describe("assertPinnedSource", () => {
       assertPinnedSource({
         repositoryRoot,
         expectedCommit: PINNED_COMMIT,
+        sourceUrl: SOURCE_URL,
         probe: malformedOutputProbe,
+      }),
+      "source_mismatch",
+    );
+
+    const wrongOriginProbe = new RecordingGitProbe(
+      PINNED_COMMIT,
+      "",
+      "https://example.com/other.git",
+    );
+    await expectSecurityError(
+      assertPinnedSource({
+        repositoryRoot,
+        expectedCommit: PINNED_COMMIT,
+        sourceUrl: SOURCE_URL,
+        probe: wrongOriginProbe,
       }),
       "source_mismatch",
     );

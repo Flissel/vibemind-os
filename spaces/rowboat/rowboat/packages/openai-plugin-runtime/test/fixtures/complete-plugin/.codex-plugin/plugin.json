@@ -5,7 +5,7 @@
   "skills": "./skills",
   "agents": "./agents",
   "commands": "./commands",
-  "hooks": "./hooks/hooks.json",
+  "hooks": "./hooks.json",
   "mcpServers": "./.mcp.json",
   "apps": "./.app.json",
   "interface": {

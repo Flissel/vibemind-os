@@ -27,6 +27,7 @@ export {
   type GitProbe,
   type GitProbeCommand,
   type PinnedSourceRequest,
+  type VerifiedPinnedSource,
 } from "./import/source-reader.js";
 export {
   ContentStore,

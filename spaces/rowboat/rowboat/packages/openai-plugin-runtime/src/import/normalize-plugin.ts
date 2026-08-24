@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { z } from "zod";
 import type { NormalizedPlugin, SourceProvenance } from "../domain/plugin.js";
 import {
@@ -15,6 +15,10 @@ import {
 import { digestTree } from "./digest-service.js";
 import { PluginSourceSecurityError } from "./path-guard.js";
 import { streamContainedRegularFile } from "./safe-file-stream.js";
+import {
+  assertVerifiedPinnedSource,
+  type VerifiedPinnedSource,
+} from "./source-reader.js";
 
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 const SHA40 = /^[a-f0-9]{40}$/;
@@ -92,15 +96,28 @@ function assertDigest(expected: string, actual: string, subject: string): void {
 export async function normalizePlugin(
   pluginRoot: string,
   provenanceInput: SourceProvenance,
+  verifiedSource: VerifiedPinnedSource,
   options: NormalizePluginOptions = {},
 ): Promise<NormalizedPlugin> {
   const provenance = validatedProvenance(provenanceInput);
+  await assertVerifiedPinnedSource(
+    verifiedSource,
+    pluginRoot,
+    provenance.sourceUrl,
+    provenance.sourceCommit,
+  );
   assertDigest(provenance.treeDigest, await digestTree(pluginRoot), "source tree");
 
   const root = await snapshotDirectoryIdentity(pluginRoot);
   const manifestRead = await readManifest(root);
   assertDigest(provenance.manifestDigest, manifestRead.digest, "manifest");
   const manifest = parsePluginManifest(manifestRead.input);
+  if (basename(root.canonicalPath) !== manifest.name) {
+    throw new PluginSourceSecurityError(
+      "source_mismatch",
+      "plugin directory does not match manifest name",
+    );
+  }
   if (
     provenance.pluginName !== manifest.name ||
     provenance.pluginVersion !== manifest.version
