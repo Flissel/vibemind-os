@@ -785,7 +785,7 @@ describe("ContentStore", () => {
     );
     expect(observerCalled).toBe(true);
     await expect(readdir(outsideRoot)).resolves.toStrictEqual([
-      ".rowboat-openai-plugin-runtime-test-temp",
+      ".rowboat-openai-plugin-runtime-owner.json",
       "sentinel.txt",
     ]);
     expect(

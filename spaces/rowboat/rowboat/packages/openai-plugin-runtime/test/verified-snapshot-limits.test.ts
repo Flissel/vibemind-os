@@ -1,9 +1,13 @@
-import { access, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { PluginSourceSecurityError } from "../src/import/path-guard.js";
-import { createSnapshotTempRoot, removeSnapshotTempRoot } from "../src/import/snapshot-temp.js";
+import {
+  createSnapshotTempRoot,
+  OWNED_TEMP_SENTINEL,
+  removeSnapshotTempRoot,
+} from "../src/import/snapshot-temp.js";
 import {
   VERIFIED_SNAPSHOT_LIMITS,
   OPENAI_PLUGINS_SOURCE_URL,
@@ -91,7 +95,7 @@ describe("verified snapshot preflight", () => {
     const startedAt = Date.now();
     await expect(runGitVerificationCommand(
       repository,
-      ["-c", "alias.slow=!ping 127.0.0.1 -n 6 >/dev/null", "slow"],
+      ["upload-pack", "."],
       { maxBuffer: 1024, timeoutMs: 10 },
     )).rejects.toMatchObject({ code: "source_mismatch" });
     expect(Date.now() - startedAt).toBeLessThan(1_000);
@@ -141,10 +145,11 @@ describe("verified snapshot preflight", () => {
 
   it("refuses product snapshot cleanup without its sentinel", async () => {
     const root = await createSnapshotTempRoot();
-    const sentinel = join(root, ".rowboat-openai-plugin-runtime-snapshot");
+    const sentinel = join(root, OWNED_TEMP_SENTINEL);
+    const original = await readFile(sentinel);
     await rm(sentinel);
     await expect(removeSnapshotTempRoot(root)).rejects.toMatchObject({ code: "path_escape" });
-    await writeFile(sentinel, "rowboat-openai-plugin-runtime-snapshot-v1\n", { flag: "wx" });
+    await writeFile(sentinel, original, { flag: "wx" });
     await removeSnapshotTempRoot(root);
   });
 });

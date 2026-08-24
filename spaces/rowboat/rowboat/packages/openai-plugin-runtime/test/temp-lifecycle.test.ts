@@ -1,4 +1,4 @@
-import { access, rm, writeFile } from "node:fs/promises";
+import { access, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -6,6 +6,7 @@ import {
   cleanupRegisteredTestRoots,
   createOwnedTestRoot,
 } from "./test-temp.js";
+import { OWNED_TEMP_SENTINEL } from "../src/import/snapshot-temp.js";
 
 afterEach(cleanupRegisteredTestRoots);
 
@@ -21,11 +22,13 @@ describe("owned test temp lifecycle", () => {
 
   it("refuses cleanup without the package-owned sentinel", async () => {
     const root = await createOwnedTestRoot("cleanup-failure");
-    const sentinel = join(root, ".rowboat-openai-plugin-runtime-test-temp");
+    const sentinel = join(root, OWNED_TEMP_SENTINEL);
+    const original = await readFile(sentinel);
     await rm(sentinel);
-
-    await expect(cleanupOwnedTestRoot(root)).rejects.toThrow("sentinel is missing");
-
-    await writeFile(sentinel, "rowboat-openai-plugin-runtime-test-temp-v1\n", { flag: "wx" });
+    try {
+      await expect(cleanupOwnedTestRoot(root)).rejects.toThrow("sentinel is invalid");
+    } finally {
+      await writeFile(sentinel, original, { flag: "wx" });
+    }
   });
 });

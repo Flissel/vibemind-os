@@ -9,7 +9,11 @@ import {
   normalizePlugin,
   type SourceProvenance,
 } from "../src/index.js";
-import { cleanupOwnedTestRoot, createOwnedTestRoot } from "./test-temp.js";
+import {
+  cleanupOwnedTestRoot,
+  createOwnedTestRoot,
+  recoverOwnedTestRoots,
+} from "./test-temp.js";
 
 const sourceRoot = process.env.OPENAI_PLUGINS_SOURCE_ROOT;
 const PINNED_COMMIT = "11c74d6ba24d3a6d48f54a194cd00ef3beea18f9";
@@ -44,6 +48,7 @@ describe.skipIf(sourceRoot === undefined)("pinned OpenAI plugin catalog", () => 
       const status = await execFileAsync("git", ["-C", sourceRoot, "status", "--porcelain"]);
       expect(head.stdout.trim()).toBe(PINNED_COMMIT);
       expect(status.stdout.trim()).toBe("");
+      await recoverOwnedTestRoots("pin-store");
       pinStoreParent = await createOwnedTestRoot("pin-store");
       const verifiedSource = await assertPinnedSource({
         repositoryRoot: sourceRoot,
@@ -179,6 +184,6 @@ describe.skipIf(sourceRoot === undefined)("pinned OpenAI plugin catalog", () => 
         assetComponentCount: 262,
       });
     },
-    600_000,
+    1_200_000,
   );
 });

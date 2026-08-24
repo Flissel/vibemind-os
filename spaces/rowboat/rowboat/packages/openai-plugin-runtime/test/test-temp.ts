@@ -1,69 +1,52 @@
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import {
+  createOwnedTempRoot,
+  recoverStaleOwnedTempRoots,
+  removeOwnedTempRoot,
+  type OwnedTempRecoveryResult,
+} from "../src/import/snapshot-temp.js";
 
-const TEST_TEMP_PREFIX = "rowboat-openai-plugin-runtime-test-";
-const TEST_TEMP_SENTINEL = ".rowboat-openai-plugin-runtime-test-temp";
-const TEST_TEMP_SENTINEL_CONTENT = "rowboat-openai-plugin-runtime-test-temp-v1\n";
-const registeredRoots = new Set<string>();
-
-function assertOwnedTestRoot(root: string): string {
-  const resolved = resolve(root);
-  if (
-    dirname(resolved) !== resolve(tmpdir()) ||
-    !basename(resolved).startsWith(TEST_TEMP_PREFIX)
-  ) {
-    throw new Error("test temp root is outside the owned boundary");
-  }
-  return resolved;
+interface RegisteredRoot {
+  readonly prefix: string;
+  readonly kind: string;
 }
 
-async function makeWritable(root: string): Promise<void> {
-  let stats;
-  try {
-    stats = await lstat(root);
-  } catch {
-    return;
-  }
-  if (stats.isDirectory()) {
-    for (const name of await readdir(root)) await makeWritable(join(root, name));
-  }
-  await chmod(root, 0o700);
+const registeredRoots = new Map<string, RegisteredRoot>();
+
+function namespace(label: string): RegisteredRoot {
+  if (!/^[a-z0-9-]+$/.test(label)) throw new Error("invalid test temp label");
+  return {
+    prefix: `rowboat-openai-plugin-runtime-test-${label}-`,
+    kind: "test-root",
+  };
 }
 
 export async function createOwnedTestRoot(label: string): Promise<string> {
-  if (!/^[a-z0-9-]+$/.test(label)) throw new Error("invalid test temp label");
-  const root = assertOwnedTestRoot(
-    await mkdtemp(join(tmpdir(), `${TEST_TEMP_PREFIX}${label}-`)),
-  );
-  await writeFile(join(root, TEST_TEMP_SENTINEL), TEST_TEMP_SENTINEL_CONTENT, {
-    flag: "wx",
-  });
-  registeredRoots.add(root);
+  const owned = namespace(label);
+  await recoverStaleOwnedTempRoots("rowboat-openai-plugin-runtime-test-", "test-root");
+  const root = await createOwnedTempRoot(owned.prefix, owned.kind);
+  registeredRoots.set(root, owned);
   return root;
 }
 
 export async function cleanupOwnedTestRoot(root: string): Promise<void> {
-  const ownedRoot = assertOwnedTestRoot(root);
-  let sentinel: string;
-  try {
-    sentinel = await readFile(join(ownedRoot, TEST_TEMP_SENTINEL), "utf8");
-  } catch {
-    throw new Error("test temp sentinel is missing");
-  }
-  if (sentinel !== TEST_TEMP_SENTINEL_CONTENT) {
-    throw new Error("test temp sentinel is invalid");
-  }
-  await makeWritable(ownedRoot);
-  await rm(ownedRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-  registeredRoots.delete(ownedRoot);
+  const owned = registeredRoots.get(root);
+  if (owned === undefined) throw new Error("test temp root is not registered");
+  await removeOwnedTempRoot(root, owned.prefix, owned.kind);
+  registeredRoots.delete(root);
 }
 
 export async function cleanupRegisteredTestRoots(): Promise<void> {
-  const roots = [...registeredRoots];
+  const roots = [...registeredRoots.keys()];
   const results = await Promise.allSettled(roots.map(cleanupOwnedTestRoot));
   const failure = results.find((result) => result.status === "rejected");
   if (failure?.status === "rejected") throw failure.reason;
+}
+
+export function recoverOwnedTestRoots(label: string): Promise<OwnedTempRecoveryResult> {
+  const owned = namespace(label);
+  return recoverStaleOwnedTempRoots(owned.prefix, owned.kind);
 }
 
 export async function createOwnedTestDirectory(label: string, child: string): Promise<string> {

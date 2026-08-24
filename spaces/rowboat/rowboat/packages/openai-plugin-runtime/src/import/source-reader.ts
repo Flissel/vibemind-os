@@ -11,7 +11,11 @@ import {
 } from "./directory-identity.js";
 import { digestTree, type GitFileMode } from "./digest-service.js";
 import { isContainedPath, PluginSourceSecurityError } from "./path-guard.js";
-import { createSnapshotTempRoot, removeSnapshotTempRoot } from "./snapshot-temp.js";
+import {
+  createSnapshotTempRoot,
+  recoverStaleSnapshotTempRoots,
+  removeSnapshotTempRoot,
+} from "./snapshot-temp.js";
 
 const execFileAsync = promisify(execFile);
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
@@ -285,6 +289,7 @@ export async function stageVerifiedPluginSnapshot(
     ),
     pluginRelativePath,
   );
+  await recoverStaleSnapshotTempRoots();
   const materializedRepository = await createSnapshotTempRoot();
   const materializedPlugin = join(materializedRepository, basename(canonicalPluginRoot));
   let manifestDigest: string | undefined;
