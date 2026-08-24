@@ -317,6 +317,146 @@ spaces:
       agentfarm.deliver: { tool: captain_deliver,      required_params: [project_id, prompt_ref] }
       agentfarm.status:  { tool: captain_codex_status, required_params: [project_id, batch_id, subtask_id, workspace_ref] }
 
+  # ─── Learning (courses, adaptive practice, canvas) ─────────────────
+  learning:
+    agent: brain-learning
+    aliases: [learn, course, quiz]
+    prefixes: [learning.]
+    enabled: true
+    description: "Source-grounded course authoring and adaptive local learning."
+    mcp_servers: [spaces-learning]
+    mcp_tools:
+      spaces-learning:
+        - learning_status
+        - learning_course_list
+        - learning_course_create
+        - learning_course_open
+        - learning_material_import
+        - learning_course_generate
+        - learning_generation_status
+        - learning_course_review
+        - learning_course_publish
+        - learning_chapter_open
+        - learning_session_start
+        - learning_task_next
+        - learning_task_answer
+        - learning_hint_request
+        - learning_tutor_ask
+        - learning_progress_show
+        - learning_canvas_open
+        - learning_canvas_save
+        - learning_canvas_hint
+        - learning_canvas_submit
+        - learning_canvas_review
+    system_prompt_hint: "Use only Learning MCP tools. Treat application readback as success evidence and fail closed when a dependency, approval, revision, or readback is missing."
+    default_context: [current_space, course_id, session_id]
+    events:
+      learning.status:
+        tool: learning_status
+        required_params: []
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+      learning.course.list:
+        tool: learning_course_list
+        required_params: []
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+      learning.course.create:
+        tool: learning_course_create
+        required_params: [title]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+      learning.course.open:
+        tool: learning_course_open
+        required_params: [course_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+      learning.material.import:
+        tool: learning_material_import
+        required_params: [course_id, artifact_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+      learning.course.generate:
+        tool: learning_course_generate
+        required_params: [course_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+      learning.generation.status:
+        tool: learning_generation_status
+        required_params: [job_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+      learning.course.review:
+        tool: learning_course_review
+        required_params: [course_id, generation_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+      learning.course.publish:
+        tool: learning_course_publish
+        required_params: [course_id, expected_revision, confirmation]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+      learning.chapter.open:
+        tool: learning_chapter_open
+        required_params: [course_id, chapter_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+      learning.session.start:
+        tool: learning_session_start
+        required_params: [course_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+      learning.task.next:
+        tool: learning_task_next
+        required_params: [session_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+      learning.task.answer:
+        tool: learning_task_answer
+        required_params: [session_id, task_id, answer]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+      learning.hint.request:
+        tool: learning_hint_request
+        required_params: [session_id, task_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+      learning.tutor.ask:
+        tool: learning_tutor_ask
+        required_params: [course_id, question]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+      learning.progress.show:
+        tool: learning_progress_show
+        required_params: [course_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+      learning.canvas.open:
+        tool: learning_canvas_open
+        required_params: [session_id, activity_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+      learning.canvas.save:
+        tool: learning_canvas_save
+        required_params: [session_id, activity_id, canvas_revision]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+      learning.canvas.hint:
+        tool: learning_canvas_hint
+        required_params: [session_id, activity_id, canvas_revision]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+      learning.canvas.submit:
+        tool: learning_canvas_submit
+        required_params: [session_id, activity_id, canvas_revision]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+      learning.canvas.review:
+        tool: learning_canvas_review
+        required_params: [submission_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+
   # ─── Video (generation + vision) ────────────────────────────────────
   video:
     agent: brain-video

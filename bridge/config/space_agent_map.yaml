@@ -16,6 +16,7 @@ mappings:
   bubbles: brain-bubbles
   minibook: brain-knowledge
   agentfarm: vibemind
+  learning: brain-learning
   n8n: brain-n8n
   schedule: brain-scheduler
   rowboat: rowboat-chat
