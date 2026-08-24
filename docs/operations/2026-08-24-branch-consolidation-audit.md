@@ -2,7 +2,7 @@
 
 ## Scope and safety
 
-This is a static Git/workspace audit. It did not deploy, start a model, contact Proxmox, mutate a database, force-push, delete a branch, or remove a live worktree. The VibeMind invariant remains: no model may run on Proxmox.
+This is a Git/workspace audit and local branch-cleanup record. It did not deploy, start a model, contact Proxmox, mutate a database, force-push, delete a remote branch, or remove a live worktree. The VibeMind invariant remains: no model may run on Proxmox.
 
 ## Remote baselines
 
@@ -13,13 +13,15 @@ This is a static Git/workspace audit. It did not deploy, start a model, contact 
 
 ## Inventory after fetch and worktree prune
 
-- Local branches across the four repositories: **302**
-- Already contained in the respective remote base: **261**
-- Contained and not assigned to a worktree: **140** deletion candidates (deletion not performed)
+- Local branches across the four repositories after cleanup: **162**
+- Already contained in the respective remote base after cleanup: **121**
+- Contained and not assigned to a worktree after cleanup: **0**
 - Contained but still assigned to a live worktree: **121** (preserved)
 - Not contained in the respective remote base: **41**
 - Removed stale worktree registrations: **128** (Outer 74, Child 49, OpenFang 5)
 - Remaining prune dry-runs are empty.
+
+Deletion execution result: **140/140** approved local branches were removed with safe `git branch -d`. Two stale upstream assignments were first corrected to the current `origin/master`, allowing the same non-force deletion. All listed remote refs remain untouched.
 
 ## Integrated and verified batch 1
 
@@ -41,7 +43,9 @@ Verification on the merged checkout:
 
 The branch is pushed, but this audit does not claim that a pull request or a merge into `master` exists.
 
-## Contained local branches eligible for deletion after explicit approval
+## Contained local branches deleted after explicit approval
+
+All branches listed below were revalidated as ancestors of the current remote base, confirmed unassigned to any worktree, and then deleted locally. No force deletion was used.
 
 ### outer (84)
 
@@ -255,5 +259,5 @@ The branch is pushed, but this audit does not claim that a pull request or a mer
 1. Review and merge `codex/integration/branch-consolidation-2026-08-24` into vibemind-os `master` through the normal protected integration path.
 2. Update and verify the Outer vibemind-os Gitlink in a separate clean branch.
 3. Port or close the old divergent Outer/Child/OpenFang/Voice lines one bounded batch at a time; do not merge the dirty legacy checkouts wholesale.
-4. After explicit deletion approval, remove only the 140 contained, unassigned local branches with safe `git branch -d`.
+4. Completed: removed the 140 approved contained, unassigned local branches with safe `git branch -d`.
 5. Treat live or dirty worktrees separately; never delete them as part of bulk cleanup.
