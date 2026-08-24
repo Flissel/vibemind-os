@@ -102,6 +102,7 @@ describe("component schemas", () => {
         type: "process",
         command: "node",
         args: ["server.mjs"],
+        cwd: "",
         env_vars: ["MCP_TOKEN"],
         tool_timeout_sec: 5,
       }).success,

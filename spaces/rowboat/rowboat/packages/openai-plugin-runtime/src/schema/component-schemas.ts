@@ -32,7 +32,7 @@ export const ProcessMcpSchema = z
     type: z.literal("process"),
     command: z.string().min(1),
     args: z.array(z.string()).optional(),
-    cwd: z.string().min(1).optional(),
+    cwd: z.string().optional(),
     env: z.record(z.string(), z.string()).optional(),
     env_vars: z.array(EnvironmentVariableNameSchema).optional(),
     tool_timeout_sec: z.number().positive().optional(),
