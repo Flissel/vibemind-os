@@ -31,7 +31,7 @@ const PluginInterfaceSchema = z
   })
   .strict();
 
-export const PluginManifestSchema = z
+const RawPluginManifestSchema = z
   .object({
     name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
     version: z.string().min(1),
@@ -57,7 +57,7 @@ export type DeepReadonly<T> = T extends readonly (infer Item)[]
     ? { readonly [Key in keyof T]: DeepReadonly<Exclude<T[Key], undefined>> }
     : T;
 
-export type PluginManifest = DeepReadonly<z.infer<typeof PluginManifestSchema>>;
+export type PluginManifest = DeepReadonly<z.infer<typeof RawPluginManifestSchema>>;
 
 function isReadonlyArray(value: unknown): value is readonly unknown[] {
   return Array.isArray(value);
@@ -87,6 +87,10 @@ function normalizeAndFreeze(value: unknown): unknown {
   return value;
 }
 
+export const PluginManifestSchema = RawPluginManifestSchema.transform(
+  (manifest): PluginManifest => normalizeAndFreeze(manifest) as PluginManifest,
+);
+
 function formatIssuePath(path: ReadonlyArray<string | number>): string {
   return path.length === 0 ? "<root>" : path.join(".");
 }
@@ -108,7 +112,7 @@ export function parsePluginManifest(input: unknown): PluginManifest {
   const result = PluginManifestSchema.safeParse(input);
 
   if (result.success) {
-    return normalizeAndFreeze(result.data) as PluginManifest;
+    return result.data;
   }
 
   const issuePaths = result.error.issues.map((issue) => formatIssuePath(issue.path));

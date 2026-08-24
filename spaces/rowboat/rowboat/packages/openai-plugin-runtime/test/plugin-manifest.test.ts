@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   parsePluginManifest,
+  PluginManifestSchema,
   PluginManifestValidationError,
 } from "../src/schema/plugin-manifest.js";
 
@@ -100,6 +101,29 @@ describe("parsePluginManifest", () => {
     const manifest = parsePluginManifest({ ...fixture, author: undefined });
 
     expect(Object.hasOwn(manifest, "author")).toBe(false);
+  });
+
+  it("normalizes and deeply freezes output from the public schema parser", async () => {
+    const fixture = requireRecord(await readFixture());
+    const manifest = PluginManifestSchema.parse({ ...fixture, author: undefined });
+    const capabilities = manifest.interface.capabilities;
+    const keywords = manifest.keywords;
+
+    if (capabilities === undefined || keywords === undefined) {
+      throw new Error("Fixture must define interface capabilities and keywords.");
+    }
+
+    expect(Object.hasOwn(manifest, "author")).toBe(false);
+    expect(Object.isFrozen(manifest)).toBe(true);
+    expect(Object.isFrozen(manifest.interface)).toBe(true);
+    expect(Object.isFrozen(capabilities)).toBe(true);
+    expect(Object.isFrozen(keywords)).toBe(true);
+    expect(() => Object.defineProperty(manifest, "name", { value: "other" })).toThrow(
+      TypeError,
+    );
+    expect(() => Object.defineProperty(capabilities, "0", { value: "Read" })).toThrow(
+      TypeError,
+    );
   });
 
   it.each(["Git Hub", "../github", "github/"])(
