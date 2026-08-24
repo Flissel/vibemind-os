@@ -37,3 +37,6 @@
 [submodule "spaces/captain_cook"]
 	path = spaces/captain_cook
 	url = https://github.com/Flissel/Captain_cook.git
+[submodule "spaces/video/laura"]
+	path = spaces/video/laura
+	url = https://github.com/Vibemind-LAB/Lauras_star.git
