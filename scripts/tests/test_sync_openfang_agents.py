@@ -243,6 +243,38 @@ spaces:
     ]
 
 
+def test_sync_skips_explicit_external_runtime_without_manifest(
+    tmp_path, monkeypatch, capsys
+):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, """version: 1
+spaces:
+  agentfarm:
+    agent: null
+    enabled: true
+    generate_agent: false
+    events: {}
+""")
+
+    assert module.sync(check=True) == 0
+    output = capsys.readouterr().out
+    assert "external runtime (generation disabled)" in output
+    assert not (tmp_path / "agents").exists()
+
+
+def test_real_agentfarm_registry_explicitly_disables_agent_generation():
+    module = _load_sync_module()
+    with open(module.REGISTRY, "r", encoding="utf-8") as f:
+        data = module.yaml.safe_load(f)
+    agentfarm = data["spaces"]["agentfarm"]
+
+    assert agentfarm["generate_agent"] is False
+    assert agentfarm["agent"] is None
+    assert module._skip_reason("agentfarm", agentfarm) == (
+        "external runtime (generation disabled)"
+    )
+
+
 def test_enabled_generated_agent_requires_non_empty_mcp_servers(tmp_path, monkeypatch):
     module = _load_sync_module()
     _configure_registry(module, tmp_path, monkeypatch, """version: 1

@@ -297,6 +297,7 @@ spaces:
     # direct Codex sessions are the user's manual channel. No third path.
     agent: null                    # tool-only: no chat agent; `vibemind`
                                    # (openrouter) becomes obsolete, not replaced
+    generate_agent: false         # Captain Cook is the runtime; no OpenFang agent.toml
     aliases: [autogen, captain_cook]
     prefixes: [agentfarm., captain.]
     keywords: ["agent.?farm|captain|delivery|orchestrat"]
@@ -367,4 +368,3 @@ spaces:
       mirofish.status:       { tool: 'mirofish:status',       required_params: [job_id] }
       mirofish.evaluate:     { tool: 'mirofish:evaluate',     required_params: [simulation_id] }
       mirofish.interview:    { tool: 'mirofish:interview',    required_params: [simulation_id, agent_id, prompt] }
-
