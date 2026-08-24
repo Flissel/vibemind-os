@@ -3,11 +3,14 @@ import type { Stats } from "node:fs";
 import {
   lstat,
   mkdir,
+  open,
   readFile,
   readdir,
   realpath,
-  rm,
+  rmdir,
+  unlink,
   writeFile,
+  type FileHandle,
 } from "node:fs/promises";
 import {
   basename,
@@ -17,7 +20,16 @@ import {
   relative,
   resolve,
 } from "node:path";
+import {
+  assertDirectoryIdentity,
+  snapshotDirectoryIdentity,
+  type DirectoryIdentity,
+} from "../import/directory-identity.js";
 import { digestTree } from "../import/digest-service.js";
+import {
+  streamContainedRegularFile,
+  type SourceFileReadOptions,
+} from "../import/safe-file-stream.js";
 import {
   isContainedPath,
   PluginSourceSecurityError,
@@ -27,6 +39,7 @@ export interface ContentStoreConfig {
   readonly storeRoot: string;
   readonly repositoryRoot: string;
   readonly publicationObserver?: ContentStorePublicationObserver;
+  readonly sourceFileReadOptions?: SourceFileReadOptions;
 }
 
 export interface ContentStoreEntry {
@@ -40,6 +53,10 @@ export interface ContentStorePublicationObserver {
   afterInitialInspect?(state: ContentStorePublicationState): Promise<void>;
   beforeReserve?(destination: string): Promise<void>;
   afterReserve?(destination: string): Promise<void>;
+  beforeTemporaryCleanup?(
+    storeRoot: string,
+    temporaryDirectory: string,
+  ): Promise<void>;
 }
 
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
@@ -47,6 +64,15 @@ const LOCK_ATTEMPTS = 1_000;
 const LOCK_RETRY_DELAY_MS = 10;
 
 export type ContentStorePublicationState = "absent" | "complete" | "invalid";
+
+type PublicationLockResult =
+  | { readonly state: "owned"; readonly identity: DirectoryIdentity }
+  | { readonly state: "published" };
+
+interface CleanupInventory {
+  readonly files: string[];
+  readonly directories: string[];
+}
 
 function pathsOverlap(first: string, second: string): boolean {
   return isContainedPath(first, second) || isContainedPath(second, first);
@@ -77,6 +103,14 @@ function isAlreadyExistsError(error: unknown): boolean {
     "code" in error &&
     error.code === "EEXIST"
   );
+}
+
+async function assertIdentities(
+  ...identities: readonly DirectoryIdentity[]
+): Promise<void> {
+  for (const identity of identities) {
+    await assertDirectoryIdentity(identity);
+  }
 }
 
 async function canonicalizeProspectivePath(candidate: string): Promise<string> {
@@ -151,32 +185,35 @@ async function completionMarkerState(
 }
 
 async function inspectPublication(
+  storeIdentity: DirectoryIdentity,
   destination: string,
   markerPath: string,
   expectedDigest: string,
 ): Promise<ContentStorePublicationState> {
+  await assertDirectoryIdentity(storeIdentity);
   const [destinationPresent, markerState] = await Promise.all([
     pathExists(destination),
     completionMarkerState(markerPath, expectedDigest),
   ]);
 
   if (!destinationPresent && markerState === "absent") {
+    await assertDirectoryIdentity(storeIdentity);
     return "absent";
   }
 
   if (!destinationPresent || markerState !== "valid") {
+    await assertDirectoryIdentity(storeIdentity);
     return "invalid";
   }
 
   try {
-    return (await digestTree(destination)) === expectedDigest
-      ? "complete"
-      : "invalid";
+    const state =
+      (await digestTree(destination)) === expectedDigest ? "complete" : "invalid";
+    await assertDirectoryIdentity(storeIdentity);
+    return state;
   } catch (error: unknown) {
-    if (
-      isNotFoundError(error) ||
-      error instanceof PluginSourceSecurityError
-    ) {
+    if (isNotFoundError(error) || error instanceof PluginSourceSecurityError) {
+      await assertDirectoryIdentity(storeIdentity);
       return "invalid";
     }
 
@@ -191,15 +228,21 @@ function waitForLockRetry(): Promise<void> {
 }
 
 async function acquirePublicationLock(
+  storeIdentity: DirectoryIdentity,
   lockPath: string,
   destination: string,
   markerPath: string,
   expectedDigest: string,
-): Promise<"owned" | "published"> {
+): Promise<PublicationLockResult> {
   for (let attempt = 0; attempt < LOCK_ATTEMPTS; attempt += 1) {
+    await assertDirectoryIdentity(storeIdentity);
     try {
       await mkdir(lockPath);
-      return "owned";
+      await assertDirectoryIdentity(storeIdentity);
+      return {
+        state: "owned",
+        identity: await snapshotDirectoryIdentity(lockPath),
+      };
     } catch (error: unknown) {
       if (!isAlreadyExistsError(error)) {
         throw error;
@@ -207,10 +250,14 @@ async function acquirePublicationLock(
     }
 
     if (
-      (await inspectPublication(destination, markerPath, expectedDigest)) ===
-      "complete"
+      (await inspectPublication(
+        storeIdentity,
+        destination,
+        markerPath,
+        expectedDigest,
+      )) === "complete"
     ) {
-      return "published";
+      return { state: "published" };
     }
 
     await waitForLockRetry();
@@ -240,50 +287,283 @@ function assertDirectChildWithPrefix(
   }
 }
 
-async function copyRegularTree(
-  sourceRoot: string,
-  sourceDirectory: string,
-  destinationDirectory: string,
+async function assertContainedDirectory(
+  root: DirectoryIdentity,
+  directory: string,
 ): Promise<void> {
+  await assertDirectoryIdentity(root);
+  let canonicalDirectory: string;
+
+  try {
+    canonicalDirectory = await realpath(directory);
+  } catch {
+    throw new PluginSourceSecurityError(
+      "path_escape",
+      "directory changed during traversal",
+    );
+  }
+
+  if (!isContainedPath(root.canonicalPath, canonicalDirectory)) {
+    throw new PluginSourceSecurityError("path_escape", "directory leaves owned root");
+  }
+
+  const stats = await lstat(directory);
+  if (stats.isSymbolicLink() || !stats.isDirectory()) {
+    throw new PluginSourceSecurityError("path_escape", "directory is not stable");
+  }
+}
+
+async function writeChunk(handle: FileHandle, chunk: Buffer): Promise<void> {
+  let offset = 0;
+  while (offset < chunk.length) {
+    const { bytesWritten } = await handle.write(
+      chunk,
+      offset,
+      chunk.length - offset,
+      null,
+    );
+    if (bytesWritten === 0) {
+      throw new PluginSourceSecurityError(
+        "digest_mismatch",
+        "destination write made no progress",
+      );
+    }
+
+    offset += bytesWritten;
+  }
+}
+
+async function copyRegularFile(
+  sourceRoot: DirectoryIdentity,
+  source: string,
+  destinationRoot: DirectoryIdentity,
+  storeIdentity: DirectoryIdentity,
+  destination: string,
+  options: SourceFileReadOptions,
+): Promise<void> {
+  let destinationHandle: FileHandle | undefined;
+  let expectedSize = 0n;
+  let writtenSize = 0n;
+
+  try {
+    await streamContainedRegularFile(sourceRoot, source, options, {
+      async onOpen(size): Promise<void> {
+        await assertIdentities(destinationRoot, storeIdentity);
+        destinationHandle = await open(destination, "wx");
+        expectedSize = size;
+      },
+      async onChunk(chunk): Promise<void> {
+        if (destinationHandle === undefined) {
+          throw new PluginSourceSecurityError(
+            "digest_mismatch",
+            "destination was not opened before copy",
+          );
+        }
+
+        await writeChunk(destinationHandle, chunk);
+        writtenSize += BigInt(chunk.length);
+      },
+    });
+
+    if (destinationHandle === undefined || writtenSize !== expectedSize) {
+      throw new PluginSourceSecurityError(
+        "digest_mismatch",
+        "copied file length differs",
+      );
+    }
+
+    const destinationStats = await destinationHandle.stat({ bigint: true });
+    if (!destinationStats.isFile() || destinationStats.size !== expectedSize) {
+      throw new PluginSourceSecurityError(
+        "digest_mismatch",
+        "destination file verification failed",
+      );
+    }
+
+    await assertIdentities(destinationRoot, storeIdentity);
+  } finally {
+    await destinationHandle?.close();
+  }
+}
+
+async function copyRegularTree(
+  sourceRoot: DirectoryIdentity,
+  sourceDirectory: string,
+  destinationRoot: DirectoryIdentity,
+  destinationDirectory: string,
+  storeIdentity: DirectoryIdentity,
+  options: SourceFileReadOptions,
+): Promise<void> {
+  await assertContainedDirectory(sourceRoot, sourceDirectory);
+  await assertIdentities(destinationRoot, storeIdentity);
   const names = (await readdir(sourceDirectory)).sort();
 
   for (const name of names) {
     const source = join(sourceDirectory, name);
-    if (!isContainedPath(sourceRoot, source)) {
-      throw new PluginSourceSecurityError("path_escape", "source entry escaped root");
+    const destination = join(destinationDirectory, name);
+    if (
+      !isContainedPath(sourceRoot.canonicalPath, source) ||
+      !isContainedPath(destinationRoot.canonicalPath, destination)
+    ) {
+      throw new PluginSourceSecurityError("path_escape", "copy entry escaped root");
     }
 
-    const destination = join(destinationDirectory, name);
     const stats = await lstat(source);
-
     if (stats.isSymbolicLink()) {
       throw new PluginSourceSecurityError("path_escape", "symbolic link rejected");
     }
 
     if (stats.isDirectory()) {
+      await assertIdentities(sourceRoot, destinationRoot, storeIdentity);
       await mkdir(destination);
-      await copyRegularTree(sourceRoot, source, destination);
+      await copyRegularTree(
+        sourceRoot,
+        source,
+        destinationRoot,
+        destination,
+        storeIdentity,
+        options,
+      );
       continue;
     }
 
     if (stats.isFile()) {
-      await writeFile(destination, await readFile(source), { flag: "wx" });
+      await copyRegularFile(
+        sourceRoot,
+        source,
+        destinationRoot,
+        storeIdentity,
+        destination,
+        options,
+      );
       continue;
     }
 
     throw new PluginSourceSecurityError("path_escape", "unsupported entry rejected");
   }
+
+  await assertContainedDirectory(sourceRoot, sourceDirectory);
+  await assertIdentities(destinationRoot, storeIdentity);
+}
+
+async function inventoryCleanupTree(
+  ownedRoot: DirectoryIdentity,
+  storeIdentity: DirectoryIdentity,
+  directory: string,
+  inventory: CleanupInventory,
+): Promise<void> {
+  await assertIdentities(storeIdentity, ownedRoot);
+  await assertContainedDirectory(ownedRoot, directory);
+  const names = await readdir(directory);
+
+  for (const name of names) {
+    const candidate = join(directory, name);
+    const stats = await lstat(candidate);
+    if (stats.isSymbolicLink()) {
+      throw new PluginSourceSecurityError(
+        "path_escape",
+        "cleanup refuses symbolic links",
+      );
+    }
+
+    if (stats.isDirectory()) {
+      await inventoryCleanupTree(
+        ownedRoot,
+        storeIdentity,
+        candidate,
+        inventory,
+      );
+      inventory.directories.push(candidate);
+      continue;
+    }
+
+    if (stats.isFile()) {
+      inventory.files.push(candidate);
+      continue;
+    }
+
+    throw new PluginSourceSecurityError(
+      "path_escape",
+      "cleanup refuses unsupported entries",
+    );
+  }
+
+  await assertIdentities(storeIdentity, ownedRoot);
+}
+
+async function removeOwnedTree(
+  ownedRoot: DirectoryIdentity,
+  storeIdentity: DirectoryIdentity,
+): Promise<void> {
+  await assertIdentities(storeIdentity, ownedRoot);
+  const inventory: CleanupInventory = { files: [], directories: [] };
+  await inventoryCleanupTree(
+    ownedRoot,
+    storeIdentity,
+    ownedRoot.canonicalPath,
+    inventory,
+  );
+  await assertIdentities(storeIdentity, ownedRoot);
+
+  for (const file of inventory.files) {
+    await assertIdentities(storeIdentity, ownedRoot);
+    const stats = await lstat(file);
+    if (stats.isSymbolicLink() || !stats.isFile()) {
+      throw new PluginSourceSecurityError(
+        "path_escape",
+        "cleanup file identity changed",
+      );
+    }
+
+    await unlink(file);
+  }
+
+  for (const directory of inventory.directories) {
+    await assertIdentities(storeIdentity, ownedRoot);
+    const stats = await lstat(directory);
+    if (stats.isSymbolicLink() || !stats.isDirectory()) {
+      throw new PluginSourceSecurityError(
+        "path_escape",
+        "cleanup directory identity changed",
+      );
+    }
+
+    await rmdir(directory);
+  }
+
+  await assertIdentities(storeIdentity, ownedRoot);
+  await rmdir(ownedRoot.canonicalPath);
+  await assertDirectoryIdentity(storeIdentity);
+}
+
+async function removeOwnedEmptyDirectory(
+  ownedDirectory: DirectoryIdentity,
+  storeIdentity: DirectoryIdentity,
+): Promise<void> {
+  await assertIdentities(storeIdentity, ownedDirectory);
+  if ((await readdir(ownedDirectory.canonicalPath)).length !== 0) {
+    throw new PluginSourceSecurityError(
+      "path_escape",
+      "owned lock directory is not empty",
+    );
+  }
+
+  await assertIdentities(storeIdentity, ownedDirectory);
+  await rmdir(ownedDirectory.canonicalPath);
+  await assertDirectoryIdentity(storeIdentity);
 }
 
 export class ContentStore {
   private readonly configuredStoreRoot: string;
   private readonly configuredRepositoryRoot: string;
   private readonly publicationObserver: ContentStorePublicationObserver | undefined;
+  private readonly sourceFileReadOptions: SourceFileReadOptions;
 
   constructor({
     storeRoot,
     repositoryRoot,
     publicationObserver,
+    sourceFileReadOptions,
   }: ContentStoreConfig) {
     if (!isAbsolute(storeRoot) || !isAbsolute(repositoryRoot)) {
       throw new PluginSourceSecurityError("path_escape", "roots must be absolute");
@@ -292,16 +572,16 @@ export class ContentStore {
     this.configuredStoreRoot = resolve(storeRoot);
     this.configuredRepositoryRoot = resolve(repositoryRoot);
     this.publicationObserver = publicationObserver;
+    this.sourceFileReadOptions = sourceFileReadOptions ?? {};
     assertSeparatedRoots(this.configuredStoreRoot, this.configuredRepositoryRoot);
   }
 
   /**
-   * Publication never renames over the digest destination. The writer reserves that
-   * directory with exclusive mkdir, fills it from a verified staging tree, then
-   * creates an external completion marker with exclusive write. A destination
-   * without its valid marker is incomplete and is never returned or removed here.
-   * The per-digest lock coordinates cooperating writers; destination reservation
-   * remains the no-replace boundary for uncoordinated filesystem races.
+   * Publication never replaces the digest destination. The store root, repository,
+   * plugin root, and owned temporary directories are tracked by canonical path and
+   * device/inode identity. Portable Node lacks handle-relative openat/renameat2, so
+   * repository and store parent directories are trusted operator boundaries that
+   * must not be writable/replaced by an untrusted same-user actor.
    */
   async put(
     pluginRoot: string,
@@ -311,35 +591,47 @@ export class ContentStore {
       throw new PluginSourceSecurityError("digest_mismatch", "invalid expected digest");
     }
 
-    const repositoryRoot = await realpath(this.configuredRepositoryRoot);
+    const repositoryIdentity = await snapshotDirectoryIdentity(
+      this.configuredRepositoryRoot,
+    );
+    const storeParentIdentity = await snapshotDirectoryIdentity(
+      dirname(this.configuredStoreRoot),
+    );
     const prospectiveStoreRoot = await canonicalizeProspectivePath(
       this.configuredStoreRoot,
     );
-    assertSeparatedRoots(prospectiveStoreRoot, repositoryRoot);
+    assertSeparatedRoots(prospectiveStoreRoot, repositoryIdentity.canonicalPath);
+    await assertIdentities(repositoryIdentity, storeParentIdentity);
 
     await mkdir(this.configuredStoreRoot, { recursive: true });
-    const storeRoot = await realpath(this.configuredStoreRoot);
-    assertSeparatedRoots(storeRoot, repositoryRoot);
+    await assertIdentities(repositoryIdentity, storeParentIdentity);
+    const storeIdentity = await snapshotDirectoryIdentity(this.configuredStoreRoot);
+    assertSeparatedRoots(storeIdentity.canonicalPath, repositoryIdentity.canonicalPath);
 
     if (!isAbsolute(pluginRoot)) {
       throw new PluginSourceSecurityError("path_escape", "plugin root must be absolute");
     }
 
-    const pluginStats = await lstat(pluginRoot);
-    if (pluginStats.isSymbolicLink() || !pluginStats.isDirectory()) {
-      throw new PluginSourceSecurityError("path_escape", "plugin root must be a directory");
-    }
-
-    const canonicalPluginRoot = await realpath(pluginRoot);
-    if (!isContainedPath(repositoryRoot, canonicalPluginRoot)) {
+    const pluginIdentity = await snapshotDirectoryIdentity(pluginRoot);
+    if (
+      !isContainedPath(
+        repositoryIdentity.canonicalPath,
+        pluginIdentity.canonicalPath,
+      )
+    ) {
       throw new PluginSourceSecurityError("path_escape", "plugin root leaves repository");
     }
 
-    const sourceDigest = await digestTree(canonicalPluginRoot);
+    const sourceDigest = await digestTree(
+      pluginIdentity.canonicalPath,
+      this.sourceFileReadOptions,
+    );
+    await assertIdentities(repositoryIdentity, storeIdentity, pluginIdentity);
     if (sourceDigest !== expectedDigest) {
       throw new PluginSourceSecurityError("digest_mismatch", "source digest differs");
     }
 
+    const storeRoot = storeIdentity.canonicalPath;
     const destination = join(storeRoot, expectedDigest);
     const markerPath = join(storeRoot, `.complete-${expectedDigest}`);
     const lockPath = join(storeRoot, `.lock-${expectedDigest}`);
@@ -348,11 +640,13 @@ export class ContentStore {
     assertDirectChildWithPrefix(storeRoot, lockPath, `.lock-${expectedDigest}`);
 
     const initialState = await inspectPublication(
+      storeIdentity,
       destination,
       markerPath,
       expectedDigest,
     );
     await this.publicationObserver?.afterInitialInspect?.(initialState);
+    await assertIdentities(repositoryIdentity, storeIdentity, pluginIdentity);
     if (initialState === "complete") {
       return result;
     }
@@ -367,31 +661,56 @@ export class ContentStore {
       `.tmp-${expectedDigest}-`,
     );
 
+    await assertIdentities(repositoryIdentity, storeIdentity, pluginIdentity);
     await mkdir(temporaryDirectory);
+    const temporaryIdentity = await snapshotDirectoryIdentity(temporaryDirectory);
     try {
       await copyRegularTree(
-        canonicalPluginRoot,
-        canonicalPluginRoot,
-        temporaryDirectory,
+        pluginIdentity,
+        pluginIdentity.canonicalPath,
+        temporaryIdentity,
+        temporaryIdentity.canonicalPath,
+        storeIdentity,
+        this.sourceFileReadOptions,
+      );
+      await assertIdentities(
+        repositoryIdentity,
+        storeIdentity,
+        pluginIdentity,
+        temporaryIdentity,
       );
 
-      const stagedDigest = await digestTree(temporaryDirectory);
+      const stagedDigest = await digestTree(temporaryIdentity.canonicalPath);
+      await assertIdentities(
+        repositoryIdentity,
+        storeIdentity,
+        pluginIdentity,
+        temporaryIdentity,
+      );
       if (stagedDigest !== expectedDigest) {
         throw new PluginSourceSecurityError("digest_mismatch", "staged digest differs");
       }
 
-      const lockState = await acquirePublicationLock(
+      const lockResult = await acquirePublicationLock(
+        storeIdentity,
         lockPath,
         destination,
         markerPath,
         expectedDigest,
       );
-      if (lockState === "published") {
+      if (lockResult.state === "published") {
         return result;
       }
 
       try {
+        await assertIdentities(
+          repositoryIdentity,
+          storeIdentity,
+          pluginIdentity,
+          temporaryIdentity,
+        );
         const lockedState = await inspectPublication(
+          storeIdentity,
           destination,
           markerPath,
           expectedDigest,
@@ -408,6 +727,12 @@ export class ContentStore {
         }
 
         await this.publicationObserver?.beforeReserve?.(destination);
+        await assertIdentities(
+          repositoryIdentity,
+          storeIdentity,
+          pluginIdentity,
+          temporaryIdentity,
+        );
 
         try {
           await mkdir(destination);
@@ -417,6 +742,7 @@ export class ContentStore {
           }
 
           const racedState = await inspectPublication(
+            storeIdentity,
             destination,
             markerPath,
             expectedDigest,
@@ -431,21 +757,40 @@ export class ContentStore {
           );
         }
 
+        const destinationIdentity = await snapshotDirectoryIdentity(destination);
         await this.publicationObserver?.afterReserve?.(destination);
-
-        await copyRegularTree(
-          temporaryDirectory,
-          temporaryDirectory,
-          destination,
+        await assertIdentities(
+          repositoryIdentity,
+          storeIdentity,
+          pluginIdentity,
+          temporaryIdentity,
+          destinationIdentity,
         );
 
-        if ((await digestTree(destination)) !== expectedDigest) {
+        await copyRegularTree(
+          temporaryIdentity,
+          temporaryIdentity.canonicalPath,
+          destinationIdentity,
+          destinationIdentity.canonicalPath,
+          storeIdentity,
+          {},
+        );
+        await assertIdentities(storeIdentity, destinationIdentity);
+
+        if ((await digestTree(destinationIdentity.canonicalPath)) !== expectedDigest) {
           throw new PluginSourceSecurityError(
             "digest_mismatch",
             "reserved destination digest differs",
           );
         }
 
+        await assertIdentities(
+          repositoryIdentity,
+          storeIdentity,
+          pluginIdentity,
+          temporaryIdentity,
+          destinationIdentity,
+        );
         try {
           await writeFile(markerPath, `${expectedDigest}\n`, {
             encoding: "utf8",
@@ -454,8 +799,12 @@ export class ContentStore {
         } catch (error: unknown) {
           if (
             !isAlreadyExistsError(error) ||
-            (await inspectPublication(destination, markerPath, expectedDigest)) !==
-              "complete"
+            (await inspectPublication(
+              storeIdentity,
+              destination,
+              markerPath,
+              expectedDigest,
+            )) !== "complete"
           ) {
             throw new PluginSourceSecurityError(
               "digest_mismatch",
@@ -465,8 +814,12 @@ export class ContentStore {
         }
 
         if (
-          (await inspectPublication(destination, markerPath, expectedDigest)) !==
-          "complete"
+          (await inspectPublication(
+            storeIdentity,
+            destination,
+            markerPath,
+            expectedDigest,
+          )) !== "complete"
         ) {
           throw new PluginSourceSecurityError(
             "digest_mismatch",
@@ -474,12 +827,23 @@ export class ContentStore {
           );
         }
 
+        await assertIdentities(
+          repositoryIdentity,
+          storeIdentity,
+          pluginIdentity,
+          temporaryIdentity,
+          destinationIdentity,
+        );
         return result;
       } finally {
-        await rm(lockPath, { recursive: true, force: true });
+        await removeOwnedEmptyDirectory(lockResult.identity, storeIdentity);
       }
     } finally {
-      await rm(temporaryDirectory, { recursive: true, force: true });
+      await this.publicationObserver?.beforeTemporaryCleanup?.(
+        storeRoot,
+        temporaryDirectory,
+      );
+      await removeOwnedTree(temporaryIdentity, storeIdentity);
     }
   }
 }

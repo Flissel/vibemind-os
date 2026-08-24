@@ -6,12 +6,13 @@ import {
   readFile,
   readdir,
   realpath,
+  rename,
   rm,
   symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   assertPinnedSource,
@@ -216,6 +217,44 @@ describe("digestTree", () => {
         { type: "file", path: "nested/file.txt", bytes },
       ]),
     );
+  });
+
+  it("streams one file at a time using bounded read chunks", async () => {
+    const root = await createTemporaryRoot("bounded-digest");
+    const pluginRoot = join(root, "plugin");
+    const firstBytes = Buffer.alloc(128 * 1024 + 7, 0x61);
+    const secondBytes = Buffer.alloc(96 * 1024 + 3, 0x62);
+    await mkdir(pluginRoot);
+    await writeFile(join(pluginRoot, "a.bin"), firstBytes);
+    await writeFile(join(pluginRoot, "b.bin"), secondBytes);
+
+    let activeFiles = 0;
+    let maximumActiveFiles = 0;
+    let observedBytes = 0;
+    let maximumChunk = 0;
+    const digestOptions = {
+      chunkSize: 31,
+      fileObserver: {
+        onFileOpen(): void {
+          activeFiles += 1;
+          maximumActiveFiles = Math.max(maximumActiveFiles, activeFiles);
+        },
+        onChunk(_candidate: string, bytesRead: number): void {
+          observedBytes += bytesRead;
+          maximumChunk = Math.max(maximumChunk, bytesRead);
+        },
+        onFileClose(): void {
+          activeFiles -= 1;
+        },
+      },
+    };
+
+    await digestTree(pluginRoot, digestOptions);
+
+    expect(maximumActiveFiles).toBe(1);
+    expect(activeFiles).toBe(0);
+    expect(maximumChunk).toBeLessThanOrEqual(31);
+    expect(observedBytes).toBe(firstBytes.length + secondBytes.length);
   });
 
   it("changes when a relative path or file bytes change", async () => {
@@ -470,6 +509,67 @@ describe("ContentStore", () => {
     await expect(readdir(fixture.storeRoot)).resolves.toStrictEqual([]);
   });
 
+  it("rejects an entry swapped to an outside link before copy without reading outside bytes", async () => {
+    const fixture = await createStoreFixture("store-file-swap");
+    const nestedRoot = join(fixture.pluginRoot, "nested");
+    const displacedRoot = join(fixture.pluginRoot, "displaced-nested");
+    const displacedPayload = join(fixture.pluginRoot, "displaced-payload.txt");
+    const outsideRoot = await createTemporaryRoot("store-file-swap-outside");
+    const sourcePayload = join(nestedRoot, "payload.txt");
+    const outsidePayload = join(outsideRoot, "payload.txt");
+    const trustedSource = "trusted source";
+    await mkdir(nestedRoot);
+    await writeFile(sourcePayload, trustedSource);
+    await writeFile(outsidePayload, "outside secret");
+    const expectedDigest = await digestTree(fixture.pluginRoot);
+    let payloadOpenCount = 0;
+    let observedPayloadBytes = 0;
+    const storeConfig = {
+      ...fixture,
+      sourceFileReadOptions: {
+        fileObserver: {
+          async beforeOpen(candidate: string): Promise<void> {
+            if (!candidate.endsWith(`${sep}nested${sep}payload.txt`)) {
+              return;
+            }
+
+            payloadOpenCount += 1;
+            if (payloadOpenCount === 2) {
+              if (process.platform === "win32") {
+                await rename(nestedRoot, displacedRoot);
+                await createDirectoryLink(outsideRoot, nestedRoot);
+              } else {
+                await rename(sourcePayload, displacedPayload);
+                await symlink(outsidePayload, sourcePayload, "file");
+              }
+            }
+          },
+          onChunk(candidate: string, bytesRead: number): void {
+            if (candidate.endsWith(`${sep}nested${sep}payload.txt`)) {
+              observedPayloadBytes += bytesRead;
+            }
+          },
+        },
+      },
+    };
+    const store = new ContentStore(storeConfig);
+
+    await expectSecurityError(
+      store.put(fixture.pluginRoot, expectedDigest),
+      "path_escape",
+    );
+    expect(payloadOpenCount).toBe(2);
+    expect(observedPayloadBytes).toBe(Buffer.byteLength(trustedSource));
+    await expect(readFile(outsidePayload, "utf8")).resolves.toBe(
+      "outside secret",
+    );
+    const storeEntries = await readdir(fixture.storeRoot);
+    expect(storeEntries.some((entry) => entry === expectedDigest)).toBe(false);
+    expect(
+      storeEntries.some((entry) => entry === `.complete-${expectedDigest}`),
+    ).toBe(false);
+  });
+
   it("converges concurrent publishes on the same immutable digest path", async () => {
     const fixture = await createStoreFixture("store-race");
     const store = new ContentStore(fixture);
@@ -597,5 +697,76 @@ describe("ContentStore", () => {
         (entry) => entry.startsWith(".tmp-") || entry.startsWith(".lock-"),
       ),
     ).toBe(false);
+  });
+
+  it("fails before writing when the store root is replaced before reservation", async () => {
+    const fixture = await createStoreFixture("store-root-write-swap");
+    const outsideRoot = await createTemporaryRoot("store-root-write-outside");
+    const displacedStore = join(fixture.root, "displaced-write-store");
+    await writeFile(join(outsideRoot, "sentinel.txt"), "outside sentinel");
+    const expectedDigest = await digestTree(fixture.pluginRoot);
+    let observerCalled = false;
+    const storeConfig = {
+      ...fixture,
+      publicationObserver: {
+        async beforeReserve(): Promise<void> {
+          observerCalled = true;
+          await rename(fixture.storeRoot, displacedStore);
+          await createDirectoryLink(outsideRoot, fixture.storeRoot);
+        },
+      },
+    };
+
+    await expectSecurityError(
+      new ContentStore(storeConfig).put(fixture.pluginRoot, expectedDigest),
+      "path_escape",
+    );
+    expect(observerCalled).toBe(true);
+    await expect(readdir(outsideRoot)).resolves.toStrictEqual(["sentinel.txt"]);
+    expect(
+      (await readdir(displacedStore)).some(
+        (entry) => entry.startsWith(".tmp-") || entry.startsWith(".lock-"),
+      ),
+    ).toBe(true);
+  });
+
+  it("skips cleanup when the store root is replaced and preserves an outside sentinel", async () => {
+    const fixture = await createStoreFixture("store-root-cleanup-swap");
+    const outsideRoot = await createTemporaryRoot("store-root-cleanup-outside");
+    const displacedStore = join(fixture.root, "displaced-cleanup-store");
+    const expectedDigest = await digestTree(fixture.pluginRoot);
+    let displacedTemporaryDirectory: string | undefined;
+    let outsideSentinel: string | undefined;
+    const storeConfig = {
+      ...fixture,
+      publicationObserver: {
+        async beforeTemporaryCleanup(
+          storeRoot: string,
+          temporaryDirectory: string,
+        ): Promise<void> {
+          const temporaryName = temporaryDirectory.slice(storeRoot.length + 1);
+          displacedTemporaryDirectory = join(displacedStore, temporaryName);
+          outsideSentinel = join(outsideRoot, temporaryName, "sentinel.txt");
+          await rename(fixture.storeRoot, displacedStore);
+          await mkdir(dirname(outsideSentinel), { recursive: true });
+          await writeFile(outsideSentinel, "outside sentinel");
+          await createDirectoryLink(outsideRoot, fixture.storeRoot);
+        },
+      },
+    };
+
+    await expectSecurityError(
+      new ContentStore(storeConfig).put(fixture.pluginRoot, expectedDigest),
+      "path_escape",
+    );
+    await expect(readFile(outsideSentinel ?? "", "utf8")).resolves.toBe(
+      "outside sentinel",
+    );
+    await expect(lstat(displacedTemporaryDirectory ?? "")).resolves.toMatchObject({
+      isDirectory: expect.any(Function),
+    });
+    expect((await lstat(displacedTemporaryDirectory ?? "")).isDirectory()).toBe(
+      true,
+    );
   });
 });
