@@ -4,16 +4,23 @@ const EnvironmentVariableNameSchema = z
   .string()
   .regex(/^[A-Z][A-Z0-9_]*$/);
 
+export const AppDeclarationSchema = z
+  .object({
+    id: z
+      .string()
+      .regex(/^(?:connector|asdk_app|templated_apps)_[a-f0-9]+$/),
+    category: z.string().min(1).optional(),
+    capabilities: z.array(z.enum(["read", "write"])).optional(),
+  })
+  .strict();
+
+export const AppFileEnvelopeSchema = z
+  .object({ apps: z.record(z.string(), z.unknown()) })
+  .strict();
+
 export const AppFileSchema = z
   .object({
-    apps: z.record(
-      z.string(),
-      z
-        .object({
-          id: z.string().regex(/^connector_[a-f0-9]+$/),
-        })
-        .strict(),
-    ),
+    apps: z.record(z.string(), AppDeclarationSchema),
   })
   .strict();
 
@@ -29,7 +36,6 @@ export const HttpMcpSchema = z
 
 export const ProcessMcpSchema = z
   .object({
-    type: z.literal("process"),
     command: z.string().min(1),
     args: z.array(z.string()).optional(),
     cwd: z.string().optional(),
@@ -37,14 +43,20 @@ export const ProcessMcpSchema = z
     env_vars: z.array(EnvironmentVariableNameSchema).optional(),
     tool_timeout_sec: z.number().positive().optional(),
   })
+  .strict()
+  .transform((process) => ({ type: "process" as const, ...process }));
+
+export const McpServerSchema = z.union([HttpMcpSchema, ProcessMcpSchema]);
+
+export const McpFileEnvelopeSchema = z
+  .object({ mcpServers: z.record(z.string(), z.unknown()) })
   .strict();
 
-export const McpServerSchema = z.discriminatedUnion("type", [
-  HttpMcpSchema,
-  ProcessMcpSchema,
-]);
-
-export const McpFileSchema = z.record(z.string(), McpServerSchema);
+export const McpFileSchema = z
+  .object({
+    mcpServers: z.record(z.string(), McpServerSchema),
+  })
+  .strict();
 
 export const HookFileSchema = z
   .object({

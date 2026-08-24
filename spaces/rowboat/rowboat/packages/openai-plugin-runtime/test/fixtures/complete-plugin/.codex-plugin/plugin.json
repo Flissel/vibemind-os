@@ -10,6 +10,9 @@
   "apps": "./.app.json",
   "interface": {
     "displayName": "Complete plugin",
-    "logo": "./assets/logo.svg"
+    "capabilities": ["Interactive", "Custom capability"],
+    "defaultPrompt": ["Use this plugin"],
+    "logo": "./assets/logo.svg",
+    "logoDark": "./assets/logo.svg"
   }
 }

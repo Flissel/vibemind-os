@@ -2,6 +2,11 @@
   "apps": {
     "review": {
       "id": "connector_ab12"
+    },
+    "templated": {
+      "id": "templated_apps_ab12",
+      "category": "Work Tracking & Coordination",
+      "capabilities": ["read", "write"]
     }
   }
 }

@@ -103,6 +103,23 @@ describe("parsePluginManifest", () => {
     expect(Object.hasOwn(manifest, "author")).toBe(false);
   });
 
+  it("accepts pinned scalar prompts, custom capabilities, and dark logos", async () => {
+    const fixture = requireRecord(await readFixture());
+    const interfaceMetadata = requireRecord(fixture["interface"]);
+    const manifest = parsePluginManifest({
+      ...fixture,
+      interface: {
+        ...interfaceMetadata,
+        capabilities: ["Analysis", "File generation"],
+        defaultPrompt: "Use this plugin",
+        logoDark: "./assets/logo-dark.svg",
+      },
+    });
+
+    expect(manifest.interface.defaultPrompt).toBe("Use this plugin");
+    expect(manifest.interface.logoDark).toBe("./assets/logo-dark.svg");
+  });
+
   it("normalizes and deeply freezes output from the public schema parser", async () => {
     const fixture = requireRecord(await readFixture());
     const manifest = PluginManifestSchema.parse({ ...fixture, author: undefined });

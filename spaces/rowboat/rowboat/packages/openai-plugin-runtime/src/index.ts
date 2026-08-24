@@ -47,4 +47,7 @@ export {
   discoverPluginComponents,
   type ComponentDiscoveryResult,
 } from "./import/component-discovery.js";
-export { normalizePlugin } from "./import/normalize-plugin.js";
+export {
+  normalizePlugin,
+  type NormalizePluginOptions,
+} from "./import/normalize-plugin.js";

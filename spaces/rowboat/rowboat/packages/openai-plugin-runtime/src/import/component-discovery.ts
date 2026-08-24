@@ -5,18 +5,22 @@ import type {
   NormalizedPluginComponent,
   PluginComponentKind,
   PluginMetadata,
+  PluginMetadataValue,
 } from "../domain/plugin.js";
-import type { PluginManifest } from "../schema/plugin-manifest.js";
 import {
-  AppFileSchema,
+  AppDeclarationSchema,
+  AppFileEnvelopeSchema,
   HookFileSchema,
-  McpFileSchema,
+  McpFileEnvelopeSchema,
+  McpServerSchema,
 } from "../schema/component-schemas.js";
+import type { PluginManifest } from "../schema/plugin-manifest.js";
 import {
   assertDirectoryIdentity,
   snapshotDirectoryIdentity,
   type DirectoryIdentity,
 } from "./directory-identity.js";
+import { digestTree } from "./digest-service.js";
 import { isContainedPath, PluginSourceSecurityError } from "./path-guard.js";
 import { streamContainedRegularFile } from "./safe-file-stream.js";
 
@@ -28,7 +32,7 @@ interface Candidate {
   readonly declared: boolean;
 }
 
-interface FileEntry {
+interface ComponentEntry {
   readonly kind: PluginComponentKind;
   readonly canonicalPath: string;
 }
@@ -49,35 +53,24 @@ function slashPath(value: string): string {
 
 function candidatesFor(manifest: PluginManifest): readonly Candidate[] {
   const candidates: Candidate[] = [];
-  const add = (
-    kind: PluginComponentKind,
-    declared: string | undefined,
-    conventional: string,
-  ): void => {
-    if (declared !== undefined) {
-      candidates.push({ kind, pointer: declared, declared: true });
-    }
+  const add = (kind: PluginComponentKind, declared: string | undefined, conventional: string): void => {
+    if (declared !== undefined) candidates.push({ kind, pointer: declared, declared: true });
     candidates.push({ kind, pointer: conventional, declared: false });
   };
-
   add("skill", manifest.skills, "skills");
   add("agent", manifest.agents, "agents");
   add("command", manifest.commands, "commands");
   add("mcp", manifest.mcpServers, ".mcp.json");
   add("app", manifest.apps, ".app.json");
   add("hook", manifest.hooks, "hooks/hooks.json");
-
-  const assetPointers = [
+  for (const pointer of [
     manifest.interface.composerIcon,
     manifest.interface.logo,
+    manifest.interface.logoDark,
     ...(manifest.interface.screenshots ?? []),
-  ];
-  for (const pointer of assetPointers) {
-    if (pointer !== undefined) {
-      candidates.push({ kind: "asset", pointer, declared: true });
-    }
+  ]) {
+    if (pointer !== undefined) candidates.push({ kind: "asset", pointer, declared: true });
   }
-
   return candidates;
 }
 
@@ -86,42 +79,16 @@ async function containedCanonicalPath(
   pointer: string,
   declared: boolean,
 ): Promise<string | undefined> {
-  if (pointer.length === 0) {
-    if (declared) {
-      throw new PluginSourceSecurityError("path_escape", "empty component pointer");
-    }
-    return undefined;
-  }
-
   const candidate = join(root.canonicalPath, pointer);
-  let candidateStats;
+  let stats;
   try {
-    candidateStats = await lstat(candidate);
+    stats = await lstat(candidate);
   } catch {
-    if (!declared) {
-      return undefined;
-    }
-    throw new PluginSourceSecurityError(
-      "path_escape",
-      "declared component path does not exist",
-    );
+    if (!declared) return undefined;
+    throw new PluginSourceSecurityError("path_escape", "declared component missing");
   }
-  if (candidateStats.isSymbolicLink()) {
-    throw new PluginSourceSecurityError("path_escape", "component link rejected");
-  }
-  let canonical: string;
-  try {
-    canonical = await realpath(candidate);
-  } catch {
-    if (!declared) {
-      return undefined;
-    }
-    throw new PluginSourceSecurityError(
-      "path_escape",
-      "declared component path does not exist",
-    );
-  }
-
+  if (stats.isSymbolicLink()) throw new PluginSourceSecurityError("path_escape", "component link rejected");
+  const canonical = await realpath(candidate);
   if (!isContainedPath(root.canonicalPath, canonical)) {
     throw new PluginSourceSecurityError("path_escape", "component leaves source root");
   }
@@ -129,39 +96,42 @@ async function containedCanonicalPath(
   return canonical;
 }
 
-async function collectFiles(
+async function sortedChildren(root: DirectoryIdentity, directory: string): Promise<readonly string[]> {
+  const children: string[] = [];
+  for (const name of (await readdir(directory)).sort()) {
+    const child = join(directory, name);
+    const stats = await lstat(child);
+    if (stats.isSymbolicLink()) throw new PluginSourceSecurityError("path_escape", "component link rejected");
+    const canonical = await realpath(child);
+    if (!isContainedPath(root.canonicalPath, canonical)) {
+      throw new PluginSourceSecurityError("path_escape", "component leaves source root");
+    }
+    children.push(canonical);
+  }
+  return children;
+}
+
+async function collectEntries(
   root: DirectoryIdentity,
   kind: PluginComponentKind,
   path: string,
-  output: FileEntry[],
+  output: ComponentEntry[],
 ): Promise<void> {
   await assertDirectoryIdentity(root);
   const stats = await lstat(path);
-  if (stats.isSymbolicLink()) {
-    throw new PluginSourceSecurityError("path_escape", "component link rejected");
-  }
   if (stats.isFile()) {
     output.push({ kind, canonicalPath: path });
     return;
   }
-  if (!stats.isDirectory()) {
-    throw new PluginSourceSecurityError("path_escape", "unsupported component entry");
-  }
-
-  const names = (await readdir(path)).sort();
-  for (const name of names) {
-    const child = join(path, name);
-    const childStats = await lstat(child);
-    if (childStats.isSymbolicLink()) {
-      throw new PluginSourceSecurityError("path_escape", "component link rejected");
+  if (!stats.isDirectory()) throw new PluginSourceSecurityError("path_escape", "unsupported component entry");
+  const children = await sortedChildren(root, path);
+  if (kind === "skill") {
+    for (const child of children) {
+      if ((await lstat(child)).isDirectory()) output.push({ kind, canonicalPath: child });
     }
-    const canonicalChild = await realpath(child);
-    if (!isContainedPath(root.canonicalPath, canonicalChild)) {
-      throw new PluginSourceSecurityError("path_escape", "component leaves source root");
-    }
-    await collectFiles(root, kind, canonicalChild, output);
+    return;
   }
-  await assertDirectoryIdentity(root);
+  for (const child of children) await collectEntries(root, kind, child, output);
 }
 
 async function readComponentFile(
@@ -172,7 +142,6 @@ async function readComponentFile(
   const chunks: Buffer[] = [];
   const hash = createHash("sha256");
   let observedSize = 0n;
-
   await streamContainedRegularFile(root, path, {}, {
     onOpen(size): void {
       observedSize = size;
@@ -182,125 +151,138 @@ async function readComponentFile(
     },
     onChunk(chunk): void {
       hash.update(chunk);
-      if (retainBytes) {
-        chunks.push(Buffer.from(chunk));
-      }
+      if (retainBytes) chunks.push(Buffer.from(chunk));
     },
   });
-
-  if (observedSize > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new PluginSourceSecurityError("path_escape", "component size is unsafe");
-  }
   const digest = hash.digest("hex");
-  if (!retainBytes) {
-    return { digest };
+  return retainBytes ? { bytes: Buffer.concat(chunks, Number(observedSize)), digest } : { digest };
+}
+
+function canonicalValue(value: unknown): PluginMetadataValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number") return value;
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (typeof value === "object") {
+    const result: Record<string, PluginMetadataValue> = {};
+    for (const key of Object.keys(value).sort()) {
+      const nested = (value as Record<string, unknown>)[key];
+      if (nested !== undefined) result[key] = canonicalValue(nested);
+    }
+    return result;
   }
-  return { bytes: Buffer.concat(chunks, Number(observedSize)), digest };
+  throw new PluginSourceSecurityError("digest_mismatch", "unsupported digest value");
 }
 
-function parseJson(bytes: Buffer): unknown {
-  return JSON.parse(bytes.toString("utf8")) as unknown;
+function recordDigest(value: unknown): string {
+  return createHash("sha256").update("rowboat-plugin-component-v1\0").update(JSON.stringify(canonicalValue(value))).digest("hex");
 }
 
-function isStructuredComponentValid(
+function metadata(path: string, digest: string, extra: PluginMetadata = {}): PluginMetadata {
+  return Object.freeze({ path, digest, ...extra });
+}
+
+function component(
   kind: PluginComponentKind,
-  bytes: Buffer,
-): boolean {
-  if (kind !== "mcp" && kind !== "app" && kind !== "hook") {
-    return true;
-  }
-
-  try {
-    const input = parseJson(bytes);
-    if (kind === "mcp") {
-      const unwrapped =
-        typeof input === "object" &&
-        input !== null &&
-        !Array.isArray(input) &&
-        "mcpServers" in input
-          ? (input as Record<string, unknown>).mcpServers
-          : input;
-      return McpFileSchema.safeParse(unwrapped).success;
-    }
-    if (kind === "app") {
-      return AppFileSchema.safeParse(input).success;
-    }
-    return HookFileSchema.safeParse(input).success;
-  } catch {
-    return false;
-  }
+  id: string,
+  name: string,
+  status: "available" | "invalid",
+  value: PluginMetadata,
+): NormalizedPluginComponent {
+  return Object.freeze({ id, name, kind, status, metadata: value });
 }
 
-function componentMetadata(relativePath: string, digest: string): PluginMetadata {
-  return Object.freeze({ path: relativePath, digest });
+function invalidStructured(entry: ComponentEntry, relativePath: string, digest: string): NormalizedPluginComponent {
+  return component(entry.kind, `${entry.kind}:${relativePath}`, basename(entry.canonicalPath), "invalid", metadata(relativePath, digest));
+}
+
+function expandStructured(
+  entry: ComponentEntry,
+  relativePath: string,
+  bytes: Buffer,
+  fileDigest: string,
+): readonly NormalizedPluginComponent[] {
+  let input: unknown;
+  try {
+    input = JSON.parse(bytes.toString("utf8")) as unknown;
+  } catch {
+    return [invalidStructured(entry, relativePath, fileDigest)];
+  }
+  if (entry.kind === "app") {
+    const envelope = AppFileEnvelopeSchema.safeParse(input);
+    if (!envelope.success) return [invalidStructured(entry, relativePath, fileDigest)];
+    return Object.entries(envelope.data.apps).sort(([a], [b]) => a.localeCompare(b)).map(([name, raw]) => {
+      const declaration = AppDeclarationSchema.safeParse(raw);
+      return component(
+        "app",
+        `app:${relativePath}#${name}`,
+        name,
+        declaration.success ? "available" : "invalid",
+        metadata(relativePath, recordDigest(declaration.success ? declaration.data : raw)),
+      );
+    });
+  }
+  if (entry.kind === "mcp") {
+    const envelope = McpFileEnvelopeSchema.safeParse(input);
+    if (!envelope.success) return [invalidStructured(entry, relativePath, fileDigest)];
+    return Object.entries(envelope.data.mcpServers).sort(([a], [b]) => a.localeCompare(b)).map(([name, raw]) => {
+      const declaration = McpServerSchema.safeParse(raw);
+      return component(
+        "mcp",
+        `mcp:${relativePath}#${name}`,
+        name,
+        declaration.success ? "available" : "invalid",
+        metadata(
+          relativePath,
+          recordDigest(declaration.success ? declaration.data : raw),
+          declaration.success ? { transport: declaration.data.type } : {},
+        ),
+      );
+    });
+  }
+  const valid = HookFileSchema.safeParse(input).success;
+  return [component("hook", `hook:${relativePath}`, basename(entry.canonicalPath), valid ? "available" : "invalid", metadata(relativePath, fileDigest))];
 }
 
 export async function discoverPluginComponentsFromIdentity(
   root: DirectoryIdentity,
   manifest: PluginManifest,
 ): Promise<ComponentDiscoveryResult> {
-  const entries: FileEntry[] = [];
+  const entries: ComponentEntry[] = [];
   const seenCandidates = new Set<string>();
-
   for (const candidate of candidatesFor(manifest)) {
-    const canonical = await containedCanonicalPath(
-      root,
-      candidate.pointer,
-      candidate.declared,
-    );
-    if (canonical === undefined) {
-      continue;
-    }
-    const candidateKey = `${candidate.kind}\0${canonical}`;
-    if (seenCandidates.has(candidateKey)) {
-      continue;
-    }
-    seenCandidates.add(candidateKey);
-    await collectFiles(root, candidate.kind, canonical, entries);
+    const canonical = await containedCanonicalPath(root, candidate.pointer, candidate.declared);
+    if (canonical === undefined) continue;
+    const key = `${candidate.kind}\0${canonical}`;
+    if (seenCandidates.has(key)) continue;
+    seenCandidates.add(key);
+    await collectEntries(root, candidate.kind, canonical, entries);
   }
 
-  const seenFiles = new Set<string>();
+  const seenEntries = new Set<string>();
   const components: NormalizedPluginComponent[] = [];
-  let hasInvalidComponent = false;
   for (const entry of entries) {
     const key = `${entry.kind}\0${entry.canonicalPath}`;
-    if (seenFiles.has(key)) {
+    if (seenEntries.has(key)) continue;
+    seenEntries.add(key);
+    const relativePath = slashPath(relative(root.canonicalPath, entry.canonicalPath));
+    if (entry.kind === "skill") {
+      components.push(component("skill", `skill:${relativePath}`, basename(entry.canonicalPath), "available", metadata(relativePath, await digestTree(entry.canonicalPath))));
       continue;
     }
-    seenFiles.add(key);
-
-    const relativePath = slashPath(relative(root.canonicalPath, entry.canonicalPath));
-    const structured =
-      entry.kind === "mcp" || entry.kind === "app" || entry.kind === "hook";
-    const { bytes, digest } = await readComponentFile(
-      root,
-      entry.canonicalPath,
-      structured,
-    );
-    const valid = bytes === undefined || isStructuredComponentValid(entry.kind, bytes);
-    hasInvalidComponent ||= !valid;
-    components.push(
-      Object.freeze({
-        id: `${entry.kind}:${relativePath}`,
-        name: basename(entry.canonicalPath),
-        kind: entry.kind,
-        status: valid ? "available" : "invalid",
-        metadata: componentMetadata(relativePath, digest),
-      }),
-    );
+    const structured = entry.kind === "mcp" || entry.kind === "app" || entry.kind === "hook";
+    const read = await readComponentFile(root, entry.canonicalPath, structured);
+    if (structured && read.bytes !== undefined) components.push(...expandStructured(entry, relativePath, read.bytes, read.digest));
+    else components.push(component(entry.kind, `${entry.kind}:${relativePath}`, basename(entry.canonicalPath), "available", metadata(relativePath, read.digest)));
   }
-
+  if (new Set(components.map(({ id }) => id)).size !== components.length) {
+    throw new PluginSourceSecurityError("digest_mismatch", "duplicate component id");
+  }
   await assertDirectoryIdentity(root);
   return Object.freeze({
     components: Object.freeze(components),
-    hasInvalidComponent,
+    hasInvalidComponent: components.some(({ status }) => status === "invalid"),
   });
 }
 
-export async function discoverPluginComponents(
-  pluginRoot: string,
-  manifest: PluginManifest,
-): Promise<ComponentDiscoveryResult> {
-  const root = await snapshotDirectoryIdentity(pluginRoot);
-  return discoverPluginComponentsFromIdentity(root, manifest);
+export async function discoverPluginComponents(pluginRoot: string, manifest: PluginManifest): Promise<ComponentDiscoveryResult> {
+  return discoverPluginComponentsFromIdentity(await snapshotDirectoryIdentity(pluginRoot), manifest);
 }

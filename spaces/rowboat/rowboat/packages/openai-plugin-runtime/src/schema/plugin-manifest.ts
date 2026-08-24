@@ -17,13 +17,12 @@ const PluginInterfaceSchema = z
     longDescription: z.string().optional(),
     developerName: z.string().optional(),
     category: z.string().optional(),
-    capabilities: z
-      .array(z.enum(["Interactive", "Read", "Write"]))
-      .optional(),
-    defaultPrompt: z.array(z.string()).optional(),
+    capabilities: z.array(z.string().min(1)).optional(),
+    defaultPrompt: z.union([z.string(), z.array(z.string())]).optional(),
     brandColor: z.string().optional(),
     composerIcon: RelativePointer.optional(),
     logo: RelativePointer.optional(),
+    logoDark: RelativePointer.optional(),
     screenshots: z.array(RelativePointer).optional(),
     websiteURL: z.string().url().optional(),
     privacyPolicyURL: z.string().url().optional(),

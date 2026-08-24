@@ -1,7 +1,14 @@
 {
-  "review": {
-    "type": "http",
-    "url": "https://example.com/mcp",
-    "bearer_token_env_var": "REVIEW_TOKEN"
+  "mcpServers": {
+    "review": {
+      "type": "http",
+      "url": "https://example.com/mcp",
+      "bearer_token_env_var": "REVIEW_TOKEN"
+    },
+    "local": {
+      "command": "node",
+      "args": ["server.mjs"],
+      "cwd": ""
+    }
   }
 }
