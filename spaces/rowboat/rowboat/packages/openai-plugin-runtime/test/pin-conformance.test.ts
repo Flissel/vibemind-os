@@ -1,30 +1,19 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import { readFile, readdir, realpath, stat } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, realpath, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
-  digestTree,
   assertPinnedSource,
+  getVerifiedPluginDigests,
   normalizePlugin,
-  type GitProbe,
-  type GitProbeCommand,
   type SourceProvenance,
 } from "../src/index.js";
 
 const sourceRoot = process.env.OPENAI_PLUGINS_SOURCE_ROOT;
 const PINNED_COMMIT = "11c74d6ba24d3a6d48f54a194cd00ef3beea18f9";
 const execFileAsync = promisify(execFile);
-
-class RealGitProbe implements GitProbe {
-  async run(repositoryRoot: string, command: GitProbeCommand): Promise<string> {
-    const result = await execFileAsync("git", ["-C", repositoryRoot, ...command], {
-      encoding: "utf8",
-    });
-    return result.stdout;
-  }
-}
 
 async function filesUnder(directory: string): Promise<readonly string[]> {
   try {
@@ -54,12 +43,12 @@ describe.skipIf(sourceRoot === undefined)("pinned OpenAI plugin catalog", () => 
         repositoryRoot: sourceRoot,
         expectedCommit: PINNED_COMMIT,
         sourceUrl: "https://github.com/openai/plugins.git",
-        probe: new RealGitProbe(),
+        storeRoot: join(await mkdtemp(join(tmpdir(), "rowboat-pin-store-")), "content"),
       });
       const pluginsRoot = join(sourceRoot, "plugins");
       const directories = (await readdir(pluginsRoot, { withFileTypes: true }))
         .filter((entry) => entry.isDirectory())
-        .sort((left, right) => left.name.localeCompare(right.name));
+        .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
 
       let manifestCount = 0;
       let appFileCount = 0;
@@ -68,6 +57,8 @@ describe.skipIf(sourceRoot === undefined)("pinned OpenAI plugin catalog", () => 
       let mcpComponentCount = 0;
       let skillInventoryCount = 0;
       let agentInventoryCount = 0;
+      let agentMetadataInventoryCount = 0;
+      let agentSurfaceInventoryCount = 0;
       let commandInventoryCount = 0;
       let hookInventoryCount = 0;
       let skillComponentCount = 0;
@@ -92,13 +83,14 @@ describe.skipIf(sourceRoot === undefined)("pinned OpenAI plugin catalog", () => 
             readonly screenshots?: readonly string[];
           };
         };
+        const digests = await getVerifiedPluginDigests(verifiedSource, pluginRoot);
         const provenance: SourceProvenance = {
           sourceUrl: "https://github.com/openai/plugins.git",
           sourceCommit: PINNED_COMMIT,
           pluginName: manifestInput.name,
           pluginVersion: manifestInput.version,
-          manifestDigest: createHash("sha256").update(manifestBytes).digest("hex"),
-          treeDigest: await digestTree(pluginRoot),
+          manifestDigest: digests.manifestDigest,
+          treeDigest: digests.treeDigest,
           importedAt: "2026-08-24T00:00:00.000Z",
           schemaVersion: "rowboat-openai-plugin-runtime-v1",
           policyVersion: "rowboat-plugin-policy-v1",
@@ -121,7 +113,9 @@ describe.skipIf(sourceRoot === undefined)("pinned OpenAI plugin catalog", () => 
         const skillFiles = await filesUnder(join(pluginRoot, "skills"));
         skillInventoryCount += skillFiles.filter((path) => path.endsWith("SKILL.md")).length;
         const agentFiles = await filesUnder(join(pluginRoot, "agents"));
+        if (agentFiles.length > 0) agentSurfaceInventoryCount += 1;
         agentInventoryCount += agentFiles.filter((path) => path.endsWith(".md") && !path.endsWith(".md.tmpl") && !path.endsWith("_conventions.md")).length;
+        agentMetadataInventoryCount += agentFiles.filter((path) => path.endsWith(".yaml")).length;
         const commandFiles = await filesUnder(join(pluginRoot, "commands"));
         commandInventoryCount += commandFiles.filter((path) => path.endsWith(".md") && !path.endsWith(".md.tmpl") && !path.endsWith("_conventions.md")).length;
         try {
@@ -149,6 +143,8 @@ describe.skipIf(sourceRoot === undefined)("pinned OpenAI plugin catalog", () => 
         mcpComponentCount,
         skillInventoryCount,
         agentInventoryCount,
+        agentMetadataInventoryCount,
+        agentSurfaceInventoryCount,
         commandInventoryCount,
         hookInventoryCount,
         assetInventoryCount: assetInventory.size,
@@ -165,16 +161,18 @@ describe.skipIf(sourceRoot === undefined)("pinned OpenAI plugin catalog", () => 
         mcpComponentCount: 8,
         skillInventoryCount: 603,
         agentInventoryCount: 9,
+        agentMetadataInventoryCount: 13,
+        agentSurfaceInventoryCount: 14,
         commandInventoryCount: 40,
         hookInventoryCount: 2,
         assetInventoryCount: 262,
         skillComponentCount: 603,
-        agentComponentCount: 9,
+        agentComponentCount: 22,
         commandComponentCount: 40,
         hookComponentCount: 2,
         assetComponentCount: 262,
       });
     },
-    120_000,
+    600_000,
   );
 });

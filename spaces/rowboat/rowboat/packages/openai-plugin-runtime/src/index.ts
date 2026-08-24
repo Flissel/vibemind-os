@@ -24,9 +24,9 @@ export {
 export { digestTree } from "./import/digest-service.js";
 export {
   assertPinnedSource,
-  type GitProbe,
-  type GitProbeCommand,
+  getVerifiedPluginDigests,
   type PinnedSourceRequest,
+  type VerifiedPluginDigests,
   type VerifiedPinnedSource,
 } from "./import/source-reader.js";
 export {

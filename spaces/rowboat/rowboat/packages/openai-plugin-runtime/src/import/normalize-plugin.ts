@@ -17,6 +17,7 @@ import { PluginSourceSecurityError } from "./path-guard.js";
 import { streamContainedRegularFile } from "./safe-file-stream.js";
 import {
   assertVerifiedPinnedSource,
+  stageVerifiedPluginSnapshot,
   type VerifiedPinnedSource,
 } from "./source-reader.js";
 
@@ -106,13 +107,17 @@ export async function normalizePlugin(
     provenance.sourceUrl,
     provenance.sourceCommit,
   );
-  assertDigest(provenance.treeDigest, await digestTree(pluginRoot), "source tree");
-
-  const root = await snapshotDirectoryIdentity(pluginRoot);
+  const originalRoot = await snapshotDirectoryIdentity(pluginRoot);
+  const snapshot = await stageVerifiedPluginSnapshot(
+    verifiedSource,
+    pluginRoot,
+  );
+  assertDigest(provenance.treeDigest, snapshot.digest, "verified commit snapshot");
+  const root = await snapshotDirectoryIdentity(snapshot.path);
   const manifestRead = await readManifest(root);
   assertDigest(provenance.manifestDigest, manifestRead.digest, "manifest");
   const manifest = parsePluginManifest(manifestRead.input);
-  if (basename(root.canonicalPath) !== manifest.name) {
+  if (basename(originalRoot.canonicalPath) !== manifest.name) {
     throw new PluginSourceSecurityError(
       "source_mismatch",
       "plugin directory does not match manifest name",
@@ -131,7 +136,7 @@ export async function normalizePlugin(
   const discovery = await discoverPluginComponentsFromIdentity(root, manifest);
   await assertDirectoryIdentity(root);
   await options.beforeFinalTreeDigest?.();
-  assertDigest(provenance.treeDigest, await digestTree(pluginRoot), "source tree");
+  assertDigest(provenance.treeDigest, await digestTree(snapshot.path), "source tree");
   await assertDirectoryIdentity(root);
   await assertVerifiedPinnedSource(
     verifiedSource,
@@ -139,6 +144,7 @@ export async function normalizePlugin(
     provenance.sourceUrl,
     provenance.sourceCommit,
   );
+  await assertDirectoryIdentity(originalRoot);
 
   return Object.freeze({
     manifest,

@@ -1,17 +1,18 @@
-import { createHash } from "node:crypto";
-import { cp, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { cp, mkdir, mkdtemp, readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
   AppFileSchema,
   assertPinnedSource,
-  digestTree,
+  getVerifiedPluginDigests,
   HttpMcpSchema,
+  McpFileSchema,
   normalizePlugin,
   ProcessMcpSchema,
-  type GitProbe,
   type SourceProvenance,
   type VerifiedPinnedSource,
 } from "../src/index.js";
@@ -22,79 +23,96 @@ const fixtureRoot = join(
   "complete-plugin",
 );
 
-async function provenanceFor(root: string): Promise<SourceProvenance> {
-  const manifest = await readFile(join(root, ".codex-plugin", "plugin.json"));
+const execFileAsync = promisify(execFile);
+const SOURCE_URL = "https://github.com/openai/plugins.git";
+
+async function git(repositoryRoot: string, ...args: readonly string[]): Promise<string> {
+  const result = await execFileAsync("git", ["-C", repositoryRoot, ...args], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  return result.stdout.trim();
+}
+
+async function provenanceFor(
+  root: string,
+  sourceCommit: string,
+  context?: VerifiedPinnedSource,
+): Promise<SourceProvenance> {
+  const digests = await getVerifiedPluginDigests(context ?? await verifiedFor(root), root);
   return {
-    sourceUrl: "https://github.com/openai/plugins.git",
-    sourceCommit: "11c74d6ba24d3a6d48f54a194cd00ef3beea18f9",
+    sourceUrl: SOURCE_URL,
+    sourceCommit,
     pluginName: "complete-plugin",
     pluginVersion: "1.0.0",
-    manifestDigest: createHash("sha256").update(manifest).digest("hex"),
-    treeDigest: await digestTree(root),
+    manifestDigest: digests.manifestDigest,
+    treeDigest: digests.treeDigest,
     importedAt: "2026-08-24T00:00:00.000Z",
     schemaVersion: "rowboat-openai-plugin-runtime-v1",
     policyVersion: "rowboat-plugin-policy-v1",
   };
 }
 
-class FixtureGitProbe implements GitProbe {
-  async run(_repositoryRoot: string, command: readonly string[]): Promise<string> {
-    if (command[0] === "rev-parse") return provenanceCommit;
-    if (command[0] === "status") return "";
-    return "https://github.com/openai/plugins.git";
-  }
-}
-
-class MutableGitProbe implements GitProbe {
-  head = provenanceCommit;
-  status = "";
-  origin = "https://github.com/openai/plugins.git";
-
-  async run(_repositoryRoot: string, command: readonly string[]): Promise<string> {
-    if (command[0] === "rev-parse") return this.head;
-    if (command[0] === "status") return this.status;
-    return this.origin;
-  }
-}
-
-const provenanceCommit = "11c74d6ba24d3a6d48f54a194cd00ef3beea18f9";
-
 async function verifiedFor(pluginRoot: string): Promise<VerifiedPinnedSource> {
+  const repositoryRoot = dirname(pluginRoot);
+  const expectedCommit = await git(repositoryRoot, "rev-parse", "HEAD");
   return assertPinnedSource({
-    repositoryRoot: dirname(pluginRoot),
-    expectedCommit: provenanceCommit,
-    sourceUrl: "https://github.com/openai/plugins.git",
-    probe: new FixtureGitProbe(),
+    repositoryRoot,
+    expectedCommit,
+    sourceUrl: SOURCE_URL,
+    storeRoot: join(dirname(repositoryRoot), "store"),
   });
 }
 
 async function normalizeFixture(
   root: string,
-  provenance: SourceProvenance | Promise<SourceProvenance> = provenanceFor(root),
+  provenance?: SourceProvenance | Promise<SourceProvenance>,
 ) {
-  return normalizePlugin(root, await provenance, await verifiedFor(root));
+  const sourceCommit = await git(dirname(root), "rev-parse", "HEAD");
+  const context = await verifiedFor(root);
+  return normalizePlugin(
+    root,
+    provenance === undefined ? await provenanceFor(root, sourceCommit, context) : await provenance,
+    context,
+  );
 }
 
 async function copyFixture(): Promise<string> {
   const parent = await mkdtemp(join(tmpdir(), "rowboat-plugin-"));
-  const root = join(parent, "complete-plugin");
+  const repository = join(parent, "repository");
+  await mkdir(repository);
+  await writeFile(join(repository, ".gitignore"), "ignored.txt\n", "utf8");
+  const root = join(repository, "complete-plugin");
   await cp(fixtureRoot, root, { recursive: true });
+  await git(repository, "init");
+  await git(repository, "config", "user.email", "tests@example.com");
+  await git(repository, "config", "user.name", "Tests");
+  await git(repository, "config", "core.autocrlf", "false");
+  await git(repository, "remote", "add", "origin", SOURCE_URL);
+  await git(repository, "add", "--all");
+  await git(repository, "commit", "-m", "fixture");
   return root;
+}
+
+async function commitFixture(root: string, message: string): Promise<void> {
+  const repository = dirname(root);
+  await git(repository, "add", "--all");
+  await git(repository, "commit", "-m", message);
 }
 
 describe("normalizePlugin", () => {
   it("discovers each supported surface once in deterministic order", async () => {
-    const provenance = await provenanceFor(fixtureRoot);
-    const first = await normalizePlugin(fixtureRoot, provenance, await verifiedFor(fixtureRoot));
-    const second = await normalizePlugin(fixtureRoot, provenance, await verifiedFor(fixtureRoot));
+    const root = await copyFixture();
+    const first = await normalizeFixture(root);
+    const second = await normalizeFixture(root);
 
     expect(first).toEqual(second);
     expect(first.status).toBe("available");
     expect(first.components.map(({ kind }) => kind)).toEqual([
-      "skill", "skill", "agent", "command", "mcp", "mcp",
+      "skill", "skill", "agent", "agent", "command", "mcp", "mcp",
       "app", "app", "hook", "asset",
     ]);
-    expect(new Set(first.components.map(({ id }) => id)).size).toBe(10);
+    expect(new Set(first.components.map(({ id }) => id)).size).toBe(11);
     expect(first.components.filter(({ kind }) => kind === "skill")).toHaveLength(2);
     expect(first.components.find(({ id }) => id.includes("review"))?.metadata.path)
       .toBe("skills/review");
@@ -110,9 +128,8 @@ describe("normalizePlugin", () => {
   it("marks a malformed optional component invalid and the plugin partial", async () => {
     const temporaryRoot = await copyFixture();
     await writeFile(join(temporaryRoot, "hooks.json"), "not json", "utf8");
-
-    const provenance = await provenanceFor(temporaryRoot);
-    const plugin = await normalizeFixture(temporaryRoot, provenance);
+    await commitFixture(temporaryRoot, "malformed hook");
+    const plugin = await normalizeFixture(temporaryRoot);
     const hook = plugin.components.find(({ kind }) => kind === "hook");
 
     expect(hook?.status).toBe("invalid");
@@ -121,7 +138,7 @@ describe("normalizePlugin", () => {
   });
 
   it("uses .codex-plugin/plugin.json and does not require root/plugin.json", async () => {
-    const plugin = await normalizeFixture(fixtureRoot);
+    const plugin = await normalizeFixture(await copyFixture());
     expect(plugin.manifest.name).toBe("complete-plugin");
   });
 
@@ -133,6 +150,7 @@ describe("normalizePlugin", () => {
       "changed checklist",
       "utf8",
     );
+    await commitFixture(temporaryRoot, "change skill resource");
     const after = await normalizeFixture(temporaryRoot);
     const digestFor = (plugin: typeof before): unknown =>
       plugin.components.find(({ id }) => id === "skill:skills/review")?.metadata.digest;
@@ -144,6 +162,7 @@ describe("normalizePlugin", () => {
     const before = await normalizeFixture(temporaryRoot);
     expect(before.components.some(({ id }) => id === "skill:skills/group/triage")).toBe(true);
     await writeFile(join(temporaryRoot, "skills", "shared-guidance.md"), "changed", "utf8");
+    await commitFixture(temporaryRoot, "change sibling resource");
     const after = await normalizeFixture(temporaryRoot);
     const skillDigests = (plugin: typeof before) => plugin.components
       .filter(({ kind }) => kind === "skill")
@@ -152,9 +171,13 @@ describe("normalizePlugin", () => {
   });
 
   it("does not expose templates, conventions, or standalone YAML as runnable", async () => {
-    const plugin = await normalizeFixture(fixtureRoot);
-    expect(plugin.components.filter(({ kind }) => kind === "agent")).toHaveLength(1);
+    const plugin = await normalizeFixture(await copyFixture());
+    expect(plugin.components.filter(({ kind }) => kind === "agent")).toHaveLength(2);
     expect(plugin.components.filter(({ kind }) => kind === "command")).toHaveLength(1);
+    expect(plugin.components.find(({ id }) => id.endsWith("openai.yaml"))?.metadata)
+      .toMatchObject({ surface: "composer_metadata", role: "non_runnable" });
+    expect(plugin.components.find(({ id }) => id.endsWith("reviewer.md"))?.metadata)
+      .toMatchObject({ surface: "agent_template", role: "runnable" });
     expect(plugin.components.some(({ id }) => id.includes("tmpl"))).toBe(false);
     expect(plugin.components.some(({ id }) => id.includes("_conventions"))).toBe(false);
   });
@@ -164,6 +187,7 @@ describe("normalizePlugin", () => {
     const before = await normalizeFixture(root);
     await writeFile(join(root, "agents", "openai.yaml"), "interface: changed", "utf8");
     await writeFile(join(root, "commands", "review.md.tmpl"), "changed template", "utf8");
+    await commitFixture(root, "change opaque resources");
     const after = await normalizeFixture(root);
     const digest = (plugin: typeof before, kind: "agent" | "command"): unknown =>
       plugin.components.find((component) => component.kind === kind)?.metadata.digest;
@@ -171,79 +195,106 @@ describe("normalizePlugin", () => {
     expect(digest(after, "command")).not.toBe(digest(before, "command"));
   });
 
+  it("orders Unicode component names by stable code points", async () => {
+    const root = await copyFixture();
+    await writeFile(
+      join(root, ".app.json"),
+      JSON.stringify({
+        apps: {
+          "ä": { id: "connector_aa" },
+          z: { id: "connector_bb" },
+          A: { id: "connector_cc" },
+        },
+      }),
+      "utf8",
+    );
+    await commitFixture(root, "unicode component names");
+    const plugin = await normalizeFixture(root);
+    expect(plugin.components.filter(({ kind }) => kind === "app").map(({ name }) => name))
+      .toEqual(["A", "z", "ä"]);
+  });
+
   it("rejects a plugin directory whose basename differs from manifest name", async () => {
-    const parent = await mkdtemp(join(tmpdir(), "rowboat-plugin-"));
-    const wrongRoot = join(parent, "wrong-name");
-    await cp(fixtureRoot, wrongRoot, { recursive: true });
+    const root = await copyFixture();
+    const wrongRoot = join(dirname(root), "wrong-name");
+    await rename(root, wrongRoot);
+    await commitFixture(wrongRoot, "rename plugin directory");
     await expect(normalizeFixture(wrongRoot)).rejects.toMatchObject({ code: "source_mismatch" });
   });
 
   it("rejects forged verified source contexts", async () => {
+    const root = await copyFixture();
+    const commit = await git(dirname(root), "rev-parse", "HEAD");
     const forged = {} as VerifiedPinnedSource;
     await expect(
-      normalizePlugin(fixtureRoot, await provenanceFor(fixtureRoot), forged),
+      normalizePlugin(root, await provenanceFor(root, commit), forged),
     ).rejects.toMatchObject({ code: "source_mismatch" });
   });
 
   it("rejects verified source root, URL, and commit mismatches", async () => {
-    const provenance = await provenanceFor(fixtureRoot);
-    const otherRepository = await mkdtemp(join(tmpdir(), "rowboat-other-repo-"));
-    const otherContext = await assertPinnedSource({
-      repositoryRoot: otherRepository,
-      expectedCommit: provenanceCommit,
-      sourceUrl: provenance.sourceUrl,
-      probe: new FixtureGitProbe(),
-    });
-    await expect(normalizePlugin(fixtureRoot, provenance, otherContext))
+    const root = await copyFixture();
+    const otherRoot = await copyFixture();
+    const commit = await git(dirname(root), "rev-parse", "HEAD");
+    const provenance = await provenanceFor(root, commit);
+    const otherContext = await verifiedFor(otherRoot);
+    await expect(normalizePlugin(root, provenance, otherContext))
       .rejects.toMatchObject({ code: "source_mismatch" });
     await expect(normalizePlugin(
-      fixtureRoot,
+      root,
       { ...provenance, sourceUrl: "https://example.com/plugins.git" },
-      await verifiedFor(fixtureRoot),
+      await verifiedFor(root),
     )).rejects.toMatchObject({ code: "source_mismatch" });
     await expect(normalizePlugin(
-      fixtureRoot,
+      root,
       { ...provenance, sourceCommit: "0".repeat(40) },
-      await verifiedFor(fixtureRoot),
+      await verifiedFor(root),
     )).rejects.toMatchObject({ code: "source_mismatch" });
   });
 
-  it.each([
-    ["HEAD", (probe: MutableGitProbe) => { probe.head = "0".repeat(40); }],
-    ["dirty status", (probe: MutableGitProbe) => { probe.status = " M changed.txt"; }],
-    ["origin", (probe: MutableGitProbe) => { probe.origin = "https://example.com/other.git"; }],
-  ] as const)("revalidates changed %s before normalization", async (_label, mutate) => {
-    const probe = new MutableGitProbe();
-    const context = await assertPinnedSource({
-      repositoryRoot: dirname(fixtureRoot),
-      expectedCommit: provenanceCommit,
-      sourceUrl: "https://github.com/openai/plugins.git",
-      probe,
-    });
-    mutate(probe);
-    await expect(normalizePlugin(fixtureRoot, await provenanceFor(fixtureRoot), context))
-      .rejects.toMatchObject({ code: "source_mismatch" });
-  });
+  it.each(["HEAD", "dirty status", "ignored extra", "origin"] as const)(
+    "revalidates changed %s before normalization",
+    async (change) => {
+      const root = await copyFixture();
+      const repository = dirname(root);
+      const commit = await git(repository, "rev-parse", "HEAD");
+      const provenance = await provenanceFor(root, commit);
+      const context = await verifiedFor(root);
+      if (change === "HEAD") {
+        await writeFile(join(root, "commands", "review.md"), "new commit", "utf8");
+        await commitFixture(root, "advance head");
+      } else if (change === "dirty status") {
+        await writeFile(join(root, "commands", "review.md"), "dirty", "utf8");
+      } else if (change === "ignored extra") {
+        await writeFile(join(repository, "ignored.txt"), "ignored extra", "utf8");
+      } else {
+        await git(repository, "remote", "set-url", "origin", "https://example.com/other.git");
+      }
+      await expect(normalizePlugin(root, provenance, context))
+        .rejects.toMatchObject({ code: "source_mismatch" });
+    },
+  );
 
   it("revalidates the source context after normalization", async () => {
-    const probe = new MutableGitProbe();
-    const context = await assertPinnedSource({
-      repositoryRoot: dirname(fixtureRoot),
-      expectedCommit: provenanceCommit,
-      sourceUrl: "https://github.com/openai/plugins.git",
-      probe,
-    });
+    const root = await copyFixture();
+    const commit = await git(dirname(root), "rev-parse", "HEAD");
+    const context = await verifiedFor(root);
     await expect(normalizePlugin(
-      fixtureRoot,
-      await provenanceFor(fixtureRoot),
+      root,
+      await provenanceFor(root, commit),
       context,
-      { beforeFinalTreeDigest: () => { probe.status = " M changed.txt"; } },
+      {
+        beforeFinalTreeDigest: async () => {
+          await writeFile(join(root, "commands", "review.md"), "dirty", "utf8");
+        },
+      },
     )).rejects.toMatchObject({ code: "source_mismatch" });
   });
 
   it("validates, copies, and deeply freezes provenance", async () => {
-    const provenance = await provenanceFor(fixtureRoot);
-    const plugin = await normalizePlugin(fixtureRoot, provenance, await verifiedFor(fixtureRoot));
+    const root = await copyFixture();
+    const commit = await git(dirname(root), "rev-parse", "HEAD");
+    const provenance = await provenanceFor(root, commit);
+    const plugin = await normalizePlugin(root, provenance, await verifiedFor(root));
     expect(Object.isFrozen(plugin.provenance)).toBe(true);
     expect(() => {
       (provenance as { pluginName: string }).pluginName = "changed";
@@ -251,16 +302,17 @@ describe("normalizePlugin", () => {
     expect(plugin.provenance.pluginName).toBe("complete-plugin");
 
     await expect(
-      normalizePlugin(fixtureRoot, { ...provenance, manifestDigest: "0".repeat(64) }, await verifiedFor(fixtureRoot)),
+      normalizePlugin(root, { ...provenance, manifestDigest: "0".repeat(64) }, await verifiedFor(root)),
     ).rejects.toMatchObject({ code: "digest_mismatch" });
     await expect(
-      normalizePlugin(fixtureRoot, { ...provenance, pluginVersion: "2.0.0" }, await verifiedFor(fixtureRoot)),
+      normalizePlugin(root, { ...provenance, pluginVersion: "2.0.0" }, await verifiedFor(root)),
     ).rejects.toMatchObject({ code: "source_mismatch" });
   });
 
   it("fails closed when the tree changes before final verification", async () => {
     const temporaryRoot = await copyFixture();
-    const provenance = await provenanceFor(temporaryRoot);
+    const commit = await git(dirname(temporaryRoot), "rev-parse", "HEAD");
+    const provenance = await provenanceFor(temporaryRoot, commit);
 
     await expect(
       normalizePlugin(temporaryRoot, provenance, await verifiedFor(temporaryRoot), {
@@ -268,7 +320,29 @@ describe("normalizePlugin", () => {
           await writeFile(join(temporaryRoot, "commands", "review.md"), "changed", "utf8");
         },
       }),
-    ).rejects.toMatchObject({ code: "digest_mismatch" });
+    ).rejects.toMatchObject({ code: "source_mismatch" });
+  });
+
+  it("normalizes only the commit snapshot across transient source rewrites", async () => {
+    const root = await copyFixture();
+    const context = await verifiedFor(root);
+    const commit = await git(dirname(root), "rev-parse", "HEAD");
+    const provenance = await provenanceFor(root, commit, context);
+    const firstPath = join(root, "commands", "review.md");
+    const secondPath = join(root, "agents", "reviewer.md");
+    const first = await readFile(firstPath);
+    const second = await readFile(secondPath);
+    const plugin = await normalizePlugin(root, provenance, context, {
+      beforeFinalTreeDigest: async () => {
+        await writeFile(firstPath, "transient first", "utf8");
+        await writeFile(secondPath, "transient second", "utf8");
+        await writeFile(firstPath, first);
+        await writeFile(secondPath, second);
+      },
+    });
+    expect(plugin.status).toBe("available");
+    expect(plugin.components.find(({ kind }) => kind === "command")?.metadata.path)
+      .toBe("commands/review.md");
   });
 });
 
@@ -291,6 +365,7 @@ describe("component schemas", () => {
         apps: { demo: { id: "connector_AB12", token: "secret" } },
       }).success,
     ).toBe(false);
+    expect(AppFileSchema.safeParse({ apps: {} }).success).toBe(false);
   });
 
   it("strictly validates HTTP and process MCP declarations", () => {
@@ -317,6 +392,7 @@ describe("component schemas", () => {
       });
     expect(process.success).toBe(true);
     if (process.success) expect(process.data.type).toBe("process");
+    expect(McpFileSchema.safeParse({ mcpServers: {} }).success).toBe(false);
     expect(
       ProcessMcpSchema.safeParse({
         type: "process",

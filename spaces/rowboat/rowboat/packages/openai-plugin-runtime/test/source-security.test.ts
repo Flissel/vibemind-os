@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   lstat,
@@ -13,11 +14,10 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   assertPinnedSource,
-  type GitProbe,
-  type GitProbeCommand,
 } from "../src/import/source-reader.js";
 import {
   PluginSourceSecurityError,
@@ -287,118 +287,74 @@ describe("digestTree", () => {
   });
 });
 
-const PINNED_COMMIT = "0123456789abcdef0123456789abcdef01234567";
 const SOURCE_URL = "https://github.com/openai/plugins.git";
+const execFileAsync = promisify(execFile);
 
-class RecordingGitProbe implements GitProbe {
-  readonly calls: Array<{
-    readonly repositoryRoot: string;
-    readonly command: GitProbeCommand;
-  }> = [];
+async function git(repositoryRoot: string, ...args: readonly string[]): Promise<string> {
+  const result = await execFileAsync("git", ["-C", repositoryRoot, ...args], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  return result.stdout.trim();
+}
 
-  constructor(
-    private readonly headOutput: string,
-    private readonly statusOutput: string,
-    private readonly originOutput: string = SOURCE_URL,
-  ) {}
-
-  async run(repositoryRoot: string, command: GitProbeCommand): Promise<string> {
-    this.calls.push({ repositoryRoot, command });
-    if (command[0] === "rev-parse") return this.headOutput;
-    if (command[0] === "status") return this.statusOutput;
-    return this.originOutput;
-  }
+async function createPinnedGitSource(label: string): Promise<{
+  readonly repositoryRoot: string;
+  readonly storeRoot: string;
+  readonly commit: string;
+}> {
+  const root = await createTemporaryRoot(label);
+  const repositoryRoot = join(root, "repository");
+  const storeRoot = join(root, "store");
+  await mkdir(repositoryRoot);
+  await git(repositoryRoot, "init");
+  await git(repositoryRoot, "config", "user.email", "tests@example.com");
+  await git(repositoryRoot, "config", "user.name", "Tests");
+  await git(repositoryRoot, "remote", "add", "origin", SOURCE_URL);
+  await writeFile(join(repositoryRoot, ".gitignore"), "ignored.txt\n", "utf8");
+  await writeFile(join(repositoryRoot, "tracked.txt"), "committed", "utf8");
+  await git(repositoryRoot, "add", "--all");
+  await git(repositoryRoot, "commit", "-m", "fixture");
+  return { repositoryRoot, storeRoot, commit: await git(repositoryRoot, "rev-parse", "HEAD") };
 }
 
 describe("assertPinnedSource", () => {
-  it("rejects a mismatched HEAD after only the exact read-only HEAD probe", async () => {
-    const repositoryRoot = resolve("repository");
-    const probe = new RecordingGitProbe(
-      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
-      "",
-    );
-
+  it("rejects a non-Git directory and malformed expected commit", async () => {
+    const repositoryRoot = await createTemporaryRoot("not-git");
     await expectSecurityError(
-      assertPinnedSource({ repositoryRoot, expectedCommit: PINNED_COMMIT, sourceUrl: SOURCE_URL, probe }),
+      assertPinnedSource({
+        repositoryRoot,
+        expectedCommit: "0".repeat(40),
+        sourceUrl: SOURCE_URL,
+        storeRoot: join(dirname(repositoryRoot), "store"),
+      }),
       "source_mismatch",
     );
-    expect(probe.calls).toStrictEqual([
-      { repositoryRoot, command: ["rev-parse", "HEAD"] },
-    ]);
   });
 
-  it("rejects a dirty status after exactly the two read-only probes", async () => {
-    const repositoryRoot = resolve("repository");
-    const probe = new RecordingGitProbe(`${PINNED_COMMIT}\n`, " M secret.txt\n");
-
-    await expectSecurityError(
-      assertPinnedSource({ repositoryRoot, expectedCommit: PINNED_COMMIT, sourceUrl: SOURCE_URL, probe }),
-      "source_mismatch",
-    );
-    expect(probe.calls).toStrictEqual([
-      { repositoryRoot, command: ["rev-parse", "HEAD"] },
-      { repositoryRoot, command: ["status", "--porcelain"] },
-    ]);
+  it("accepts only the clean exact repository state", async () => {
+    const fixture = await createPinnedGitSource("verified-pin");
+    await expect(assertPinnedSource({
+      repositoryRoot: fixture.repositoryRoot,
+      expectedCommit: fixture.commit,
+      sourceUrl: SOURCE_URL,
+      storeRoot: fixture.storeRoot,
+    })).resolves.toMatchObject({ sourceCommit: fixture.commit, sourceUrl: SOURCE_URL });
   });
 
-  it("accepts a clean exact pin and rejects malformed pins and probe output", async () => {
-    const repositoryRoot = await createTemporaryRoot("verified-pin");
-    const cleanProbe = new RecordingGitProbe(` ${PINNED_COMMIT}\n`, "\n");
-
-    await expect(
-      assertPinnedSource({
-        repositoryRoot,
-        expectedCommit: PINNED_COMMIT,
-        sourceUrl: SOURCE_URL,
-        probe: cleanProbe,
-      }),
-    ).resolves.toMatchObject({ sourceCommit: PINNED_COMMIT, sourceUrl: SOURCE_URL });
-    expect(cleanProbe.calls).toStrictEqual([
-      { repositoryRoot, command: ["rev-parse", "HEAD"] },
-      { repositoryRoot, command: ["status", "--porcelain"] },
-      { repositoryRoot, command: ["remote", "get-url", "origin"] },
-    ]);
-
-    const invalidExpectedProbe = new RecordingGitProbe(PINNED_COMMIT, "");
-    await expectSecurityError(
-      assertPinnedSource({
-        repositoryRoot,
-        expectedCommit: PINNED_COMMIT.toUpperCase(),
-        sourceUrl: SOURCE_URL,
-        probe: invalidExpectedProbe,
-      }),
-      "source_mismatch",
+  it.each(["tracked blob", "ignored extra"] as const)("rejects %s changes", async (change) => {
+    const fixture = await createPinnedGitSource(`changed-${change.replace(" ", "-")}`);
+    await writeFile(
+      join(fixture.repositoryRoot, change === "tracked blob" ? "tracked.txt" : "ignored.txt"),
+      "changed",
+      "utf8",
     );
-    expect(invalidExpectedProbe.calls).toStrictEqual([]);
-
-    const malformedOutputProbe = new RecordingGitProbe(
-      `${PINNED_COMMIT}\n${PINNED_COMMIT}`,
-      "",
-    );
-    await expectSecurityError(
-      assertPinnedSource({
-        repositoryRoot,
-        expectedCommit: PINNED_COMMIT,
-        sourceUrl: SOURCE_URL,
-        probe: malformedOutputProbe,
-      }),
-      "source_mismatch",
-    );
-
-    const wrongOriginProbe = new RecordingGitProbe(
-      PINNED_COMMIT,
-      "",
-      "https://example.com/other.git",
-    );
-    await expectSecurityError(
-      assertPinnedSource({
-        repositoryRoot,
-        expectedCommit: PINNED_COMMIT,
-        sourceUrl: SOURCE_URL,
-        probe: wrongOriginProbe,
-      }),
-      "source_mismatch",
-    );
+    await expectSecurityError(assertPinnedSource({
+      repositoryRoot: fixture.repositoryRoot,
+      expectedCommit: fixture.commit,
+      sourceUrl: SOURCE_URL,
+      storeRoot: fixture.storeRoot,
+    }), "source_mismatch");
   });
 });
 

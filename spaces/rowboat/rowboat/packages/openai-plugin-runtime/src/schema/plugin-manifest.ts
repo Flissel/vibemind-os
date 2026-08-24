@@ -1,6 +1,23 @@
 import { z } from "zod";
 
-const RelativePointer = z.string().min(1);
+function isPortableRelativePointer(pointer: string): boolean {
+  if (
+    pointer.includes("\0") ||
+    pointer.includes("\\") ||
+    pointer.startsWith("/") ||
+    /^[A-Za-z]:/.test(pointer)
+  ) {
+    return false;
+  }
+  const withoutPrefix = pointer.startsWith("./") ? pointer.slice(2) : pointer;
+  const normalized = withoutPrefix.endsWith("/")
+    ? withoutPrefix.slice(0, -1)
+    : withoutPrefix;
+  if (normalized.length === 0 || normalized.includes("//")) return false;
+  return normalized.split("/").every((segment) => segment !== "." && segment !== "..");
+}
+
+const RelativePointer = z.string().min(1).refine(isPortableRelativePointer);
 
 const AuthorSchema = z
   .object({

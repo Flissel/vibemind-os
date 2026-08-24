@@ -52,6 +52,10 @@ function slashPath(value: string): string {
   return value.split(sep).join("/");
 }
 
+function compareCodePoints(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function candidatesFor(manifest: PluginManifest): readonly Candidate[] {
   const candidates: Candidate[] = [];
   const add = (kind: PluginComponentKind, declared: string | undefined, conventional: string): void => {
@@ -171,7 +175,10 @@ async function collectRunnableMarkdown(
     const stats = await lstat(child);
     if (stats.isDirectory()) {
       await collectRunnableMarkdown(root, kind, child, scopeDigest, output);
-    } else if (child.endsWith(".md") && basename(child) !== "_conventions.md") {
+    } else if (
+      (child.endsWith(".md") && basename(child) !== "_conventions.md") ||
+      (kind === "agent" && child.endsWith(".yaml"))
+    ) {
       output.push({ kind, canonicalPath: child, scopeDigest });
     }
   }
@@ -268,7 +275,7 @@ function expandStructured(
   if (entry.kind === "app") {
     const envelope = AppFileEnvelopeSchema.safeParse(input);
     if (!envelope.success) return [invalidStructured(entry, relativePath, fileDigest)];
-    return Object.entries(envelope.data.apps).sort(([a], [b]) => a.localeCompare(b)).map(([name, raw]) => {
+    return Object.entries(envelope.data.apps).sort(([a], [b]) => compareCodePoints(a, b)).map(([name, raw]) => {
       const declaration = AppDeclarationSchema.safeParse(raw);
       return component(
         "app",
@@ -282,7 +289,7 @@ function expandStructured(
   if (entry.kind === "mcp") {
     const envelope = McpFileEnvelopeSchema.safeParse(input);
     if (!envelope.success) return [invalidStructured(entry, relativePath, fileDigest)];
-    return Object.entries(envelope.data.mcpServers).sort(([a], [b]) => a.localeCompare(b)).map(([name, raw]) => {
+    return Object.entries(envelope.data.mcpServers).sort(([a], [b]) => compareCodePoints(a, b)).map(([name, raw]) => {
       const declaration = McpServerSchema.safeParse(raw);
       return component(
         "mcp",
@@ -360,7 +367,19 @@ export async function discoverPluginComponentsFromIdentity(
           relativePath,
           digest,
           entry.kind === "agent" || entry.kind === "command"
-            ? { resourceBinding: "opaque_directory_superset" }
+            ? {
+                resourceBinding: "opaque_directory_superset",
+                surface:
+                  entry.kind === "agent" && entry.canonicalPath.endsWith(".yaml")
+                    ? "composer_metadata"
+                    : entry.kind === "agent"
+                      ? "agent_template"
+                      : "command_template",
+                role:
+                  entry.kind === "agent" && entry.canonicalPath.endsWith(".yaml")
+                    ? "non_runnable"
+                    : "runnable",
+              }
             : {},
         ),
       ));

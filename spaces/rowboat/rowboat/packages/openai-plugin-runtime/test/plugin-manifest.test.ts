@@ -162,6 +162,24 @@ describe("parsePluginManifest", () => {
     ).toThrow("manifest_invalid:");
   });
 
+  it.each([
+    "\\skills",
+    "C:\\skills",
+    "../skills",
+    "skills/../skills",
+    "skills/./x",
+    "skills\\nested",
+    "skills\0nested",
+  ])("rejects non-portable component pointer %s", async (skills) => {
+    const manifest = requireRecord(await readFixture());
+    expect(() => parsePluginManifest({ ...manifest, skills })).toThrow("manifest_invalid:");
+  });
+
+  it("accepts one leading ./ prefix without other dot segments", async () => {
+    const manifest = requireRecord(await readFixture());
+    expect(parsePluginManifest({ ...manifest, skills: "./skills/" }).skills).toBe("./skills/");
+  });
+
   it("rejects unknown interface fields with a deterministic issue path", async () => {
     const manifest = requireRecord(await readFixture());
     const interfaceMetadata = requireRecord(manifest["interface"]);

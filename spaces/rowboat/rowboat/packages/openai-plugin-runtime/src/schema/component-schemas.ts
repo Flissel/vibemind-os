@@ -15,12 +15,18 @@ export const AppDeclarationSchema = z
   .strict();
 
 export const AppFileEnvelopeSchema = z
-  .object({ apps: z.record(z.string(), z.unknown()) })
+  .object({
+    apps: z.record(z.string(), z.unknown()).refine(
+      (apps) => Object.keys(apps).length > 0,
+    ),
+  })
   .strict();
 
 export const AppFileSchema = z
   .object({
-    apps: z.record(z.string(), AppDeclarationSchema),
+    apps: z.record(z.string(), AppDeclarationSchema).refine(
+      (apps) => Object.keys(apps).length > 0,
+    ),
   })
   .strict();
 
@@ -49,12 +55,18 @@ export const ProcessMcpSchema = z
 export const McpServerSchema = z.union([HttpMcpSchema, ProcessMcpSchema]);
 
 export const McpFileEnvelopeSchema = z
-  .object({ mcpServers: z.record(z.string(), z.unknown()) })
+  .object({
+    mcpServers: z.record(z.string(), z.unknown()).refine(
+      (servers) => Object.keys(servers).length > 0,
+    ),
+  })
   .strict();
 
 export const McpFileSchema = z
   .object({
-    mcpServers: z.record(z.string(), McpServerSchema),
+    mcpServers: z.record(z.string(), McpServerSchema).refine(
+      (servers) => Object.keys(servers).length > 0,
+    ),
   })
   .strict();
 

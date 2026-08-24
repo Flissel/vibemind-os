@@ -1,115 +1,163 @@
-import { realpath } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { promisify } from "node:util";
+import { ContentStore } from "../store/content-store.js";
 import {
   assertDirectoryIdentity,
   snapshotDirectoryIdentity,
   type DirectoryIdentity,
 } from "./directory-identity.js";
+import { digestTree } from "./digest-service.js";
 import { isContainedPath, PluginSourceSecurityError } from "./path-guard.js";
 
-export type GitProbeCommand =
-  | readonly ["rev-parse", "HEAD"]
-  | readonly ["status", "--porcelain"]
-  | readonly ["remote", "get-url", "origin"];
-
-export interface GitProbe {
-  run(repositoryRoot: string, command: GitProbeCommand): Promise<string>;
-}
+const execFileAsync = promisify(execFile);
+const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
+const BLOB_PATTERN = /^[0-9a-f]{40,64}$/;
+const MAX_GIT_TEXT_BYTES = 16 * 1024 * 1024;
+const MAX_GIT_BLOB_BYTES = 64 * 1024 * 1024;
 
 export interface PinnedSourceRequest {
   readonly repositoryRoot: string;
   readonly expectedCommit: string;
   readonly sourceUrl: string;
-  readonly probe: GitProbe;
+  readonly storeRoot: string;
 }
 
-const verifiedContexts = new WeakSet<object>();
 interface VerifiedContextDetails {
-  readonly probe: GitProbe;
   readonly repositoryIdentity: DirectoryIdentity;
+  readonly storeRoot: string;
+  readonly snapshots: Map<string, VerifiedPluginSnapshot>;
 }
-const contextDetails = new WeakMap<VerifiedPinnedSource, VerifiedContextDetails>();
+
 const VERIFIED_CONTEXT_TOKEN = Symbol("VerifiedPinnedSource");
+const contextDetails = new WeakMap<VerifiedPinnedSource, VerifiedContextDetails>();
 
 export class VerifiedPinnedSource {
   readonly repositoryRoot: string;
   readonly sourceCommit: string;
   readonly sourceUrl: string;
 
-  constructor(
-    token: symbol,
-    repositoryRoot: string,
-    sourceCommit: string,
-    sourceUrl: string,
-  ) {
+  constructor(token: symbol, repositoryRoot: string, sourceCommit: string, sourceUrl: string) {
     if (token !== VERIFIED_CONTEXT_TOKEN) {
       throw new PluginSourceSecurityError("source_mismatch", "verified source context cannot be constructed");
     }
     this.repositoryRoot = repositoryRoot;
     this.sourceCommit = sourceCommit;
     this.sourceUrl = sourceUrl;
-    verifiedContexts.add(this);
     Object.freeze(this);
   }
-
 }
 
-const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
-const HEAD_COMMAND = ["rev-parse", "HEAD"] as const;
-const STATUS_COMMAND = ["status", "--porcelain"] as const;
-const ORIGIN_COMMAND = ["remote", "get-url", "origin"] as const;
+interface GitTreeBlob {
+  readonly oid: string;
+  readonly path: string;
+}
 
-async function runProbe(probe: GitProbe, repositoryRoot: string, command: GitProbeCommand): Promise<string> {
-  try {
-    return await probe.run(repositoryRoot, command);
-  } catch {
-    throw new PluginSourceSecurityError("source_mismatch", "Git probe failed");
-  }
+interface VerifiedPluginSnapshot {
+  readonly path: string;
+  readonly digest: string;
+  readonly manifestDigest: string;
+}
+
+export interface VerifiedPluginDigests {
+  readonly treeDigest: string;
+  readonly manifestDigest: string;
 }
 
 function validSourceUrl(sourceUrl: string): boolean {
   try {
-    const parsed = new URL(sourceUrl);
-    return parsed.protocol === "https:";
+    return new URL(sourceUrl).protocol === "https:";
   } catch {
     return false;
   }
+}
+
+async function gitBuffer(repositoryRoot: string, args: readonly string[], maxBuffer: number): Promise<Buffer> {
+  try {
+    const result = await execFileAsync("git", ["-C", repositoryRoot, ...args], {
+      encoding: "buffer",
+      maxBuffer,
+      windowsHide: true,
+    });
+    return result.stdout;
+  } catch {
+    throw new PluginSourceSecurityError("source_mismatch", "Git verification failed");
+  }
+}
+
+async function gitText(repositoryRoot: string, args: readonly string[]): Promise<string> {
+  return (await gitBuffer(repositoryRoot, args, MAX_GIT_TEXT_BYTES)).toString("utf8");
+}
+
+async function verifyGitState(
+  repositoryIdentity: DirectoryIdentity,
+  expectedCommit: string,
+  sourceUrl: string,
+): Promise<void> {
+  await assertDirectoryIdentity(repositoryIdentity);
+  const root = repositoryIdentity.canonicalPath;
+  const head = (await gitText(root, ["rev-parse", "HEAD"])).trim();
+  if (head !== expectedCommit || !COMMIT_PATTERN.test(head)) {
+    throw new PluginSourceSecurityError("source_mismatch", "HEAD does not match pin");
+  }
+  const status = await gitText(root, [
+    "status",
+    "--porcelain=v1",
+    "--untracked-files=all",
+    "--ignored",
+  ]);
+  if (status.trim() !== "") {
+    throw new PluginSourceSecurityError("source_mismatch", "source contains changed or extra files");
+  }
+  const origin = (await gitText(root, ["remote", "get-url", "origin"])).trim();
+  if (origin !== sourceUrl) {
+    throw new PluginSourceSecurityError("source_mismatch", "origin URL does not match pin");
+  }
+  await assertDirectoryIdentity(repositoryIdentity);
 }
 
 export async function assertPinnedSource({
   repositoryRoot,
   expectedCommit,
   sourceUrl,
-  probe,
+  storeRoot,
 }: PinnedSourceRequest): Promise<VerifiedPinnedSource> {
-  if (!COMMIT_PATTERN.test(expectedCommit) || !validSourceUrl(sourceUrl)) {
+  if (
+    !COMMIT_PATTERN.test(expectedCommit) ||
+    !validSourceUrl(sourceUrl) ||
+    !isAbsolute(repositoryRoot) ||
+    !isAbsolute(storeRoot)
+  ) {
     throw new PluginSourceSecurityError("source_mismatch", "invalid pinned source identity");
   }
-  const observedHead = (await runProbe(probe, repositoryRoot, HEAD_COMMAND)).trim();
-  if (!COMMIT_PATTERN.test(observedHead) || observedHead !== expectedCommit) {
-    throw new PluginSourceSecurityError("source_mismatch", "HEAD does not match pin");
-  }
-  const status = await runProbe(probe, repositoryRoot, STATUS_COMMAND);
-  if (status.trim() !== "") {
-    throw new PluginSourceSecurityError("source_mismatch", "source tree is dirty");
-  }
-  const origin = (await runProbe(probe, repositoryRoot, ORIGIN_COMMAND)).trim();
-  if (origin !== sourceUrl) {
-    throw new PluginSourceSecurityError("source_mismatch", "origin URL does not match pin");
-  }
-  let canonicalRepositoryRoot: string;
+  let repositoryIdentity: DirectoryIdentity;
   try {
-    canonicalRepositoryRoot = await realpath(repositoryRoot);
+    repositoryIdentity = await snapshotDirectoryIdentity(await realpath(repositoryRoot));
   } catch {
     throw new PluginSourceSecurityError("source_mismatch", "repository root is unavailable");
   }
-  const repositoryIdentity = await snapshotDirectoryIdentity(canonicalRepositoryRoot);
+  await verifyGitState(repositoryIdentity, expectedCommit, sourceUrl);
+  const canonicalStoreRoot = resolve(storeRoot);
+  if (
+    isContainedPath(repositoryIdentity.canonicalPath, canonicalStoreRoot) ||
+    isContainedPath(canonicalStoreRoot, repositoryIdentity.canonicalPath)
+  ) {
+    throw new PluginSourceSecurityError("path_escape", "snapshot store overlaps source");
+  }
   const context = new VerifiedPinnedSource(
     VERIFIED_CONTEXT_TOKEN,
-    canonicalRepositoryRoot,
+    repositoryIdentity.canonicalPath,
     expectedCommit,
     sourceUrl,
   );
-  contextDetails.set(context, { probe, repositoryIdentity });
+  contextDetails.set(context, {
+    repositoryIdentity,
+    storeRoot: canonicalStoreRoot,
+    snapshots: new Map(),
+  });
   return context;
 }
 
@@ -121,27 +169,13 @@ export async function assertVerifiedPinnedSource(
 ): Promise<void> {
   const details = contextDetails.get(context);
   if (
-    !verifiedContexts.has(context) ||
     details === undefined ||
     context.sourceUrl !== sourceUrl ||
     context.sourceCommit !== sourceCommit
   ) {
     throw new PluginSourceSecurityError("source_mismatch", "verified source context mismatch");
   }
-  await assertDirectoryIdentity(details.repositoryIdentity);
-  const observedHead = (
-    await runProbe(details.probe, context.repositoryRoot, HEAD_COMMAND)
-  ).trim();
-  if (observedHead !== context.sourceCommit || !COMMIT_PATTERN.test(observedHead)) {
-    throw new PluginSourceSecurityError("source_mismatch", "verified HEAD changed");
-  }
-  if ((await runProbe(details.probe, context.repositoryRoot, STATUS_COMMAND)).trim() !== "") {
-    throw new PluginSourceSecurityError("source_mismatch", "verified source became dirty");
-  }
-  if ((await runProbe(details.probe, context.repositoryRoot, ORIGIN_COMMAND)).trim() !== context.sourceUrl) {
-    throw new PluginSourceSecurityError("source_mismatch", "verified origin changed");
-  }
-  await assertDirectoryIdentity(details.repositoryIdentity);
+  await verifyGitState(details.repositoryIdentity, context.sourceCommit, context.sourceUrl);
   let canonicalPluginRoot: string;
   try {
     canonicalPluginRoot = await realpath(pluginRoot);
@@ -152,4 +186,108 @@ export async function assertVerifiedPinnedSource(
     throw new PluginSourceSecurityError("source_mismatch", "plugin root is outside verified source");
   }
   await assertDirectoryIdentity(details.repositoryIdentity);
+}
+
+function parseTree(output: Buffer, pluginRelativePath: string): readonly GitTreeBlob[] {
+  const entries: GitTreeBlob[] = [];
+  for (const raw of output.toString("utf8").split("\0")) {
+    if (raw === "") continue;
+    const match = /^(100644|100755) blob ([0-9a-f]{40,64})\t(.+)$/.exec(raw);
+    if (match === null) {
+      throw new PluginSourceSecurityError("source_mismatch", "unsupported Git tree entry");
+    }
+    const oid = match[2];
+    const path = match[3];
+    if (oid === undefined || path === undefined || !BLOB_PATTERN.test(oid)) {
+      throw new PluginSourceSecurityError("source_mismatch", "malformed Git tree entry");
+    }
+    const relativePath = relative(pluginRelativePath, path).split(sep).join("/");
+    if (
+      relativePath === ".." ||
+      relativePath.startsWith("../") ||
+      relativePath.includes("\\") ||
+      isAbsolute(relativePath)
+    ) {
+      throw new PluginSourceSecurityError("path_escape", "Git plugin path escaped");
+    }
+    entries.push({ oid, path: relativePath });
+  }
+  if (entries.length === 0) {
+    throw new PluginSourceSecurityError("source_mismatch", "plugin has no committed files");
+  }
+  return entries.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+}
+
+export async function stageVerifiedPluginSnapshot(
+  context: VerifiedPinnedSource,
+  pluginRoot: string,
+): Promise<VerifiedPluginSnapshot> {
+  const details = contextDetails.get(context);
+  if (details === undefined) {
+    throw new PluginSourceSecurityError("source_mismatch", "verified source context missing");
+  }
+  await assertVerifiedPinnedSource(context, pluginRoot, context.sourceUrl, context.sourceCommit);
+  const canonicalPluginRoot = await realpath(pluginRoot);
+  const cached = details.snapshots.get(canonicalPluginRoot);
+  if (cached !== undefined) return cached;
+  const pluginRelativePath = relative(context.repositoryRoot, canonicalPluginRoot).split(sep).join("/");
+  const tree = parseTree(
+    await gitBuffer(
+      context.repositoryRoot,
+      ["ls-tree", "-r", "-z", "--full-tree", context.sourceCommit, "--", pluginRelativePath],
+      MAX_GIT_TEXT_BYTES,
+    ),
+    pluginRelativePath,
+  );
+  const materializedRepository = await mkdtemp(join(tmpdir(), "rowboat-git-snapshot-"));
+  const materializedPlugin = join(materializedRepository, basename(canonicalPluginRoot));
+  await mkdir(materializedPlugin);
+  let manifestDigest: string | undefined;
+  try {
+    for (const entry of tree) {
+      const destination = join(materializedPlugin, ...entry.path.split("/"));
+      if (!isContainedPath(materializedPlugin, destination)) {
+        throw new PluginSourceSecurityError("path_escape", "snapshot entry escaped");
+      }
+      await mkdir(dirname(destination), { recursive: true });
+      const bytes = await gitBuffer(
+        context.repositoryRoot,
+        ["cat-file", "blob", entry.oid],
+        MAX_GIT_BLOB_BYTES,
+      );
+      if (entry.path === ".codex-plugin/plugin.json") {
+        manifestDigest = createHash("sha256").update(bytes).digest("hex");
+      }
+      await writeFile(destination, bytes, { flag: "wx" });
+    }
+    const digest = await digestTree(materializedPlugin);
+    if (manifestDigest === undefined) {
+      throw new PluginSourceSecurityError("source_mismatch", "committed plugin manifest missing");
+    }
+    const stored = await new ContentStore({
+      repositoryRoot: materializedRepository,
+      storeRoot: details.storeRoot,
+    }).put(materializedPlugin, digest);
+    await assertVerifiedPinnedSource(context, pluginRoot, context.sourceUrl, context.sourceCommit);
+    const snapshot = Object.freeze({
+      path: stored.path,
+      digest: stored.digest,
+      manifestDigest,
+    });
+    details.snapshots.set(canonicalPluginRoot, snapshot);
+    return snapshot;
+  } finally {
+    await rm(materializedRepository, { recursive: true, force: true });
+  }
+}
+
+export async function getVerifiedPluginDigests(
+  context: VerifiedPinnedSource,
+  pluginRoot: string,
+): Promise<VerifiedPluginDigests> {
+  const snapshot = await stageVerifiedPluginSnapshot(context, pluginRoot);
+  return Object.freeze({
+    treeDigest: snapshot.digest,
+    manifestDigest: snapshot.manifestDigest,
+  });
 }
