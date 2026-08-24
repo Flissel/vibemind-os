@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib
 import re
+import sys
 import tomllib
 from pathlib import Path
 
@@ -12,6 +14,11 @@ import yaml
 ROOT = Path(__file__).resolve().parents[3]
 CAPABILITIES_PATH = ROOT / "brain" / "the_brain" / "data" / "capabilities.yaml"
 AGENTS_ROOT = ROOT / "openfang" / "agents"
+_BRAIN_ROOT = ROOT / "brain" / "the_brain"
+if str(_BRAIN_ROOT) not in sys.path:
+    sys.path.insert(0, str(_BRAIN_ROOT))
+
+CapabilityRouter = importlib.import_module("core.capability_router").CapabilityRouter
 
 OPENAI_AGENT = "brain-coder-openai"
 ANTHROPIC_AGENT = "brain-coder-anthropic"
@@ -78,6 +85,29 @@ def test_anthropic_selectors_are_explicit_and_openai_is_the_deterministic_defaul
     assert _first_matching_capability(
         "fix the failing test in tests/test_foo.py"
     ) == "coding_task"
+
+
+def test_actual_router_prefers_each_explicit_anthropic_selector_without_cross_route_fallback():
+    router = CapabilityRouter(CAPABILITIES_PATH)
+
+    for phrase in (
+        "use Claude to fix the failing test in tests/test_foo.py",
+        "use Anthropic to fix tests/test_foo.py",
+        "bitte mit Anthropic die Funktion in src/main.py schreiben",
+        "mit Claude die Funktion in src/main.py schreiben",
+        "Claude Code verwenden und den Fehler in app.py beheben",
+        "Anthropic verwenden und app.py reparieren",
+    ):
+        match = router.route(phrase)
+        assert match is not None, phrase
+        assert match.capability == "coding_task_anthropic", phrase
+        assert match.execution_target == "openfang:brain-coder-anthropic", phrase
+        assert match.match_method == "regex", phrase
+
+    default_match = router.route("fix the failing test in tests/test_foo.py")
+    assert default_match is not None
+    assert default_match.capability == "coding_task"
+    assert default_match.execution_target == "openfang:brain-coder-openai"
 
 
 def test_subscription_agent_templates_preserve_coding_restrictions_and_use_matching_wrappers():

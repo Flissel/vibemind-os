@@ -1291,12 +1291,18 @@
   description: "EXECUTE CODE TASK with the Claude Pro/Max subscription through official Claude Code. Use only when the user explicitly selects Claude or Anthropic; writes real files to disk, runs them, and returns output."
   anchor_phrases:
     - "use Claude to fix the failing test in tests/test_foo.py"
+    - "use Anthropic to fix tests/test_foo.py"
     - "mit Anthropic die Funktion in src/main.py schreiben"
+    - "mit Claude die Funktion in src/main.py schreiben"
     - "Claude Code verwenden und den Fehler in app.py beheben"
+    - "Anthropic verwenden und app.py reparieren"
   match_patterns:
     - "\\buse\\s+claude\\b"
+    - "\\buse\\s+anthropic\\b"
+    - "\\bmit\\s+claude\\b"
     - "\\bmit\\s+anthropic\\b"
     - "\\bclaude\\s+code\\s+verwenden\\b"
+    - "\\banthropic\\s+verwenden\\b"
   execution_target: "openfang:brain-coder-anthropic"
   validator:
     # truth: ground-truth (2026-06-25) — the coding agent claims it wrote a file;
