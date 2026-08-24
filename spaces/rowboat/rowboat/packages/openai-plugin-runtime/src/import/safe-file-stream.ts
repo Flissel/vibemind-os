@@ -26,8 +26,41 @@ export interface SourceFileReadOptions {
 }
 
 export interface SourceFileStreamSink {
+  readonly expectedFileMode?: "100644" | "100755";
   onOpen(size: bigint): Promise<void> | void;
   onChunk(chunk: Buffer): Promise<void> | void;
+}
+
+function assertPersistedGitMode(
+  stats: BigIntStats,
+  mode: "100644" | "100755",
+  platform: NodeJS.Platform,
+): void {
+  if (platform === "win32") return;
+  const expectedMode = mode === "100755" ? 0o755 : 0o644;
+  if (!stats.isFile() || Number(stats.mode & 0o777n) !== expectedMode) {
+    throw new PluginSourceSecurityError(
+      "digest_mismatch",
+      "persisted Git file mode differs",
+    );
+  }
+}
+
+export async function verifyPersistedGitMode(
+  handle: Pick<FileHandle, "stat">,
+  mode: "100644" | "100755",
+  platform: NodeJS.Platform = process.platform,
+): Promise<void> {
+  if (platform === "win32") return;
+  try {
+    assertPersistedGitMode(await handle.stat({ bigint: true }), mode, platform);
+  } catch (error: unknown) {
+    if (error instanceof PluginSourceSecurityError) throw error;
+    throw new PluginSourceSecurityError(
+      "digest_mismatch",
+      "persisted Git file mode could not be verified",
+    );
+  }
 }
 
 function validatedChunkSize(options: SourceFileReadOptions): number {
@@ -127,6 +160,9 @@ export async function streamContainedRegularFile(
         "opened file identity differs from source entry",
       );
     }
+    if (sink.expectedFileMode !== undefined) {
+      assertPersistedGitMode(openedStats, sink.expectedFileMode, process.platform);
+    }
 
     const canonicalAfterOpen = await canonicalContainedFile(root, resolvedCandidate);
     let pathAfterOpen: BigIntStats;
@@ -177,6 +213,9 @@ export async function streamContainedRegularFile(
     }
 
     const finalStats = await handle.stat({ bigint: true });
+    if (sink.expectedFileMode !== undefined) {
+      assertPersistedGitMode(finalStats, sink.expectedFileMode, process.platform);
+    }
     if (
       totalBytes !== openedStats.size ||
       finalStats.size !== openedStats.size ||

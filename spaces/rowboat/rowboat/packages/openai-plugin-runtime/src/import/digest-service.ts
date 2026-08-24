@@ -68,7 +68,7 @@ function uint64(value: bigint): Buffer {
 function hashEntryMetadata(
   hash: Hash,
   entry: DigestEntry,
-  fileModeResolver: FileModeResolver | undefined,
+  fileMode: GitFileMode | undefined,
 ): void {
   const pathBytes = Buffer.from(entry.relativePath, "utf8");
   hash.update(
@@ -77,13 +77,10 @@ function hashEntryMetadata(
   hash.update(uint32(pathBytes.length));
   hash.update(pathBytes);
   if (entry.type === "file") {
-    const mode = fileModeResolver === undefined
-      ? entry.filesystemMode
-      : fileModeResolver(entry.relativePath);
-    if (mode !== "100644" && mode !== "100755") {
+    if (fileMode !== "100644" && fileMode !== "100755") {
       throw new PluginSourceSecurityError("digest_mismatch", "file mode is unavailable");
     }
-    hash.update(mode, "ascii");
+    hash.update(fileMode, "ascii");
   }
 }
 
@@ -179,13 +176,22 @@ export async function digestTree(
   const hash = createHash("sha256");
   hash.update(`${PLUGIN_TREE_DIGEST_VERSION}\0`, "utf8");
   for (const entry of entries) {
-    hashEntryMetadata(hash, entry, options.fileModeResolver);
+    const fileMode = entry.type === "file"
+      ? options.fileModeResolver === undefined
+        ? entry.filesystemMode
+        : options.fileModeResolver(entry.relativePath)
+      : undefined;
+    hashEntryMetadata(hash, entry, fileMode);
     if (entry.type === "file") {
+      if (fileMode === undefined) {
+        throw new PluginSourceSecurityError("digest_mismatch", "file mode is unavailable");
+      }
       await streamContainedRegularFile(
         rootIdentity,
         entry.candidatePath,
         options,
         {
+          expectedFileMode: fileMode,
           onOpen(size): void {
             hash.update(uint64(size));
           },

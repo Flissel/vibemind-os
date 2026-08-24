@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Stats } from "node:fs";
 import {
+  chmod,
   lstat,
   mkdir,
   open,
@@ -68,6 +69,22 @@ const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 const LOCK_ATTEMPTS = 1_000;
 const LOCK_RETRY_DELAY_MS = 10;
 
+interface DirectoryModeStats {
+  readonly mode: bigint;
+  isDirectory(): boolean;
+  isSymbolicLink(): boolean;
+}
+
+interface DirectoryModeOperations {
+  chmod(path: string, mode: number): Promise<void>;
+  stat(path: string): Promise<DirectoryModeStats>;
+}
+
+const DIRECTORY_MODE_OPERATIONS: DirectoryModeOperations = {
+  chmod,
+  stat: (path) => lstat(path, { bigint: true }),
+};
+
 export type ContentStorePublicationState = "absent" | "complete" | "invalid";
 
 type PublicationLockResult =
@@ -108,6 +125,34 @@ function isAlreadyExistsError(error: unknown): boolean {
     "code" in error &&
     error.code === "EEXIST"
   );
+}
+
+export async function enforceOwnedDirectoryMode(
+  path: string,
+  platform: NodeJS.Platform = process.platform,
+  operations: DirectoryModeOperations = DIRECTORY_MODE_OPERATIONS,
+): Promise<void> {
+  if (platform === "win32") return;
+  try {
+    await operations.chmod(path, 0o700);
+    const stats = await operations.stat(path);
+    if (
+      stats.isSymbolicLink() ||
+      !stats.isDirectory() ||
+      Number(stats.mode & 0o777n) !== 0o700
+    ) {
+      throw new PluginSourceSecurityError(
+        "digest_mismatch",
+        "owned directory mode differs",
+      );
+    }
+  } catch (error: unknown) {
+    if (error instanceof PluginSourceSecurityError) throw error;
+    throw new PluginSourceSecurityError(
+      "digest_mismatch",
+      "owned directory mode could not be enforced",
+    );
+  }
 }
 
 async function assertIdentities(
@@ -168,13 +213,16 @@ async function initializeStoreRoot(
     const childPath = join(currentIdentity.configuredPath, segment);
     await assertIdentities(repositoryIdentity, currentIdentity);
 
+    let created = false;
     try {
       await mkdir(childPath);
+      created = true;
     } catch (error: unknown) {
       if (!isAlreadyExistsError(error)) {
         throw error;
       }
     }
+    if (created) await enforceOwnedDirectoryMode(childPath);
 
     await assertIdentities(repositoryIdentity, currentIdentity);
     const childIdentity = await snapshotDirectoryIdentity(childPath);
@@ -300,6 +348,7 @@ async function acquirePublicationLock(
     await assertDirectoryIdentity(storeIdentity);
     try {
       await mkdir(lockPath);
+      await enforceOwnedDirectoryMode(lockPath);
       await assertDirectoryIdentity(storeIdentity);
       return {
         state: "owned",
@@ -513,6 +562,7 @@ async function copyRegularTree(
     if (stats.isDirectory()) {
       await assertIdentities(sourceRoot, destinationRoot, storeIdentity);
       await mkdir(destination);
+      await enforceOwnedDirectoryMode(destination);
       await copyRegularTree(
         sourceRoot,
         source,
@@ -759,6 +809,7 @@ export class ContentStore {
 
     await assertIdentities(repositoryIdentity, storeIdentity, pluginIdentity);
     await mkdir(temporaryDirectory);
+    await enforceOwnedDirectoryMode(temporaryDirectory);
     const temporaryIdentity = await snapshotDirectoryIdentity(temporaryDirectory);
     try {
       await copyRegularTree(
@@ -837,6 +888,7 @@ export class ContentStore {
 
         try {
           await mkdir(destination);
+          await enforceOwnedDirectoryMode(destination);
         } catch (error: unknown) {
           if (!isAlreadyExistsError(error)) {
             throw error;
