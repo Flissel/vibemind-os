@@ -36,3 +36,15 @@ export {
   type ContentStorePublicationState,
   type StoredPluginContent,
 } from "./store/content-store.js";
+export {
+  AppFileSchema,
+  HttpMcpSchema,
+  McpFileSchema,
+  McpServerSchema,
+  ProcessMcpSchema,
+} from "./schema/component-schemas.js";
+export {
+  discoverPluginComponents,
+  type ComponentDiscoveryResult,
+} from "./import/component-discovery.js";
+export { normalizePlugin } from "./import/normalize-plugin.js";

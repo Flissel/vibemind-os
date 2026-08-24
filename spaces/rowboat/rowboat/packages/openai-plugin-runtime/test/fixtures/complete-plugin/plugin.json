@@ -1,0 +1,15 @@
+{
+  "name": "complete-plugin",
+  "version": "1.0.0",
+  "description": "Complete discovery fixture",
+  "skills": "./skills",
+  "agents": "./agents",
+  "commands": "./commands",
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./.mcp.json",
+  "apps": "./.app.json",
+  "interface": {
+    "displayName": "Complete plugin",
+    "logo": "./assets/logo.svg"
+  }
+}
