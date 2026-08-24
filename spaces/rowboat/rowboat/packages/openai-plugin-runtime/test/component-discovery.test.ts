@@ -1,11 +1,10 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, rename, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { cp, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   AppFileSchema,
   assertPinnedSource,
@@ -19,6 +18,7 @@ import {
   type SourceProvenance,
   type VerifiedPinnedSource,
 } from "../src/index.js";
+import { cleanupRegisteredTestRoots, createOwnedTestRoot } from "./test-temp.js";
 
 const fixtureRoot = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -28,6 +28,8 @@ const fixtureRoot = join(
 
 const execFileAsync = promisify(execFile);
 const SOURCE_URL = "https://github.com/openai/plugins.git";
+
+afterEach(cleanupRegisteredTestRoots);
 
 async function git(repositoryRoot: string, ...args: readonly string[]): Promise<string> {
   const result = await execFileAsync("git", ["-C", repositoryRoot, ...args], {
@@ -81,7 +83,7 @@ async function normalizeFixture(
 }
 
 async function copyFixture(): Promise<string> {
-  const parent = await mkdtemp(join(tmpdir(), "rowboat-plugin-"));
+  const parent = await createOwnedTestRoot("component");
   const repository = join(parent, "repository");
   await mkdir(repository);
   await writeFile(join(repository, ".gitignore"), "ignored.txt\n", "utf8");
@@ -185,7 +187,13 @@ describe("normalizePlugin", () => {
   });
 
   it("does not expose templates, conventions, or standalone YAML as runnable", async () => {
-    const plugin = await normalizeFixture(await copyFixture());
+    const root = await copyFixture();
+    await mkdir(join(root, "agents", "resources"), { recursive: true });
+    await writeFile(join(root, "agents", "resources", "secrets.yaml"), "token: do-not-expose", "utf8");
+    await writeFile(join(root, "agents", "resources", "openai.yaml"), "token: nested-secret", "utf8");
+    await writeFile(join(root, "agents", "other.yaml"), "description: resource", "utf8");
+    await commitFixture(root, "opaque YAML resources");
+    const plugin = await normalizeFixture(root);
     expect(plugin.components.filter(({ kind }) => kind === "agent")).toHaveLength(2);
     expect(plugin.components.filter(({ kind }) => kind === "command")).toHaveLength(1);
     expect(plugin.components.find(({ id }) => id.endsWith("openai.yaml"))?.metadata)
@@ -194,6 +202,10 @@ describe("normalizePlugin", () => {
       .toMatchObject({ surface: "agent_template", role: "runnable" });
     expect(plugin.components.some(({ id }) => id.includes("tmpl"))).toBe(false);
     expect(plugin.components.some(({ id }) => id.includes("_conventions"))).toBe(false);
+    expect(plugin.components.some(({ id }) => id.endsWith("other.yaml"))).toBe(false);
+    expect(plugin.components.some(({ id }) => id.endsWith("secrets.yaml"))).toBe(false);
+    expect(JSON.stringify(plugin.components)).not.toContain("do-not-expose");
+    expect(JSON.stringify(plugin.components)).not.toContain("nested-secret");
   });
 
   it("binds adjacent YAML and template resources into logical agent and command digests", async () => {
@@ -208,6 +220,18 @@ describe("normalizePlugin", () => {
     expect(digest(after, "agent")).not.toBe(digest(before, "agent"));
     expect(digest(after, "command")).not.toBe(digest(before, "command"));
   });
+
+  it("binds Git executable mode into component bundle digests", async () => {
+    const root = await copyFixture();
+    const before = await normalizeFixture(root);
+    await git(dirname(root), "update-index", "--chmod=+x", "complete-plugin/commands/review.md");
+    await git(dirname(root), "commit", "-m", "command executable mode only");
+    const after = await normalizeFixture(root);
+    const commandDigest = (plugin: typeof before): unknown => plugin.components
+      .find(({ kind }) => kind === "command")?.metadata.digest;
+
+    expect(commandDigest(after)).not.toBe(commandDigest(before));
+  }, 30_000);
 
   it("orders Unicode component names by stable code points", async () => {
     const root = await copyFixture();
@@ -234,17 +258,14 @@ describe("normalizePlugin", () => {
     const bmp = "\uE000";
     await writeFile(join(root, "agents", `${astral}.md`), "astral agent", "utf8");
     await writeFile(join(root, "agents", `${bmp}.md`), "BMP agent", "utf8");
-    await writeFile(
-      join(root, ".app.json"),
-      JSON.stringify({
+    const appBytes = JSON.stringify({
         apps: {
           [astral]: { id: "connector_aa" },
           [bmp]: { id: "connector_bb" },
           invalid: { [astral]: "astral", [bmp]: "BMP" },
         },
-      }),
-      "utf8",
-    );
+      });
+    await writeFile(join(root, ".app.json"), appBytes, "utf8");
     const manifest = parsePluginManifest(
       JSON.parse(await readFile(join(root, ".codex-plugin", "plugin.json"), "utf8")) as unknown,
     );
@@ -257,8 +278,17 @@ describe("normalizePlugin", () => {
     expect(unicodeNames("app")).toEqual([bmp, astral]);
 
     const expectedCanonical = JSON.stringify({ [bmp]: "BMP", [astral]: "astral" });
+    const contentDigest = createHash("sha256").update(appBytes).digest("hex");
+    const containerDigest = createHash("sha256")
+      .update("rowboat-plugin-file-v2\0")
+      .update("100644")
+      .update("\0")
+      .update(contentDigest)
+      .digest("hex");
     const expectedDigest = createHash("sha256")
-      .update("rowboat-plugin-component-v1\0")
+      .update("rowboat-plugin-component-v2\0")
+      .update(containerDigest)
+      .update("\0")
       .update(expectedCanonical)
       .digest("hex");
     expect(plugin.components.find(({ id }) => id.endsWith("#invalid"))?.metadata.digest)

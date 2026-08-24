@@ -20,7 +20,11 @@ import {
   snapshotDirectoryIdentity,
   type DirectoryIdentity,
 } from "./directory-identity.js";
-import { digestTree } from "./digest-service.js";
+import {
+  digestTree,
+  type FileModeResolver,
+  type GitFileMode,
+} from "./digest-service.js";
 import { isContainedPath, PluginSourceSecurityError } from "./path-guard.js";
 import { streamContainedRegularFile } from "./safe-file-stream.js";
 
@@ -46,6 +50,10 @@ interface ReadComponentFile {
 export interface ComponentDiscoveryResult {
   readonly components: readonly NormalizedPluginComponent[];
   readonly hasInvalidComponent: boolean;
+}
+
+export interface ComponentDiscoveryOptions {
+  readonly fileModeResolver?: FileModeResolver;
 }
 
 function slashPath(value: string): string {
@@ -136,6 +144,7 @@ async function collectEntries(
   kind: PluginComponentKind,
   path: string,
   output: ComponentEntry[],
+  fileModeResolver: FileModeResolver | undefined,
 ): Promise<void> {
   await assertDirectoryIdentity(root);
   const stats = await lstat(path);
@@ -150,17 +159,31 @@ async function collectEntries(
   }
   if (!stats.isDirectory()) throw new PluginSourceSecurityError("path_escape", "unsupported component entry");
   if (kind === "skill") {
-    const skillsRootDigest = await digestTree(path);
+    const skillsRootDigest = await digestTree(path, {
+      fileModeResolver: scopedModeResolver(root.canonicalPath, path, fileModeResolver),
+    });
     await collectSkillBundles(root, path, skillsRootDigest, output);
     return;
   }
   const children = await sortedChildren(root, path);
   if (kind === "agent" || kind === "command") {
-    const scopeDigest = await digestTree(path);
+    const scopeDigest = await digestTree(path, {
+      fileModeResolver: scopedModeResolver(root.canonicalPath, path, fileModeResolver),
+    });
     await collectRunnableMarkdown(root, kind, path, scopeDigest, output);
     return;
   }
-  for (const child of children) await collectEntries(root, kind, child, output);
+  for (const child of children) await collectEntries(root, kind, child, output, fileModeResolver);
+}
+
+function scopedModeResolver(
+  pluginRoot: string,
+  scopeRoot: string,
+  fileModeResolver: FileModeResolver | undefined,
+): FileModeResolver | undefined {
+  if (fileModeResolver === undefined) return undefined;
+  const prefix = slashPath(relative(pluginRoot, scopeRoot));
+  return (path) => fileModeResolver(prefix === "" ? path : `${prefix}/${path}`);
 }
 
 async function collectSkillBundles(
@@ -185,14 +208,15 @@ async function collectRunnableMarkdown(
   directory: string,
   scopeDigest: string,
   output: ComponentEntry[],
+  surfaceRoot: string = directory,
 ): Promise<void> {
   for (const child of await sortedChildren(root, directory)) {
     const stats = await lstat(child);
     if (stats.isDirectory()) {
-      await collectRunnableMarkdown(root, kind, child, scopeDigest, output);
+      await collectRunnableMarkdown(root, kind, child, scopeDigest, output, surfaceRoot);
     } else if (
       (child.endsWith(".md") && basename(child) !== "_conventions.md") ||
-      (kind === "agent" && child.endsWith(".yaml"))
+      (kind === "agent" && dirname(child) === surfaceRoot && basename(child) === "openai.yaml")
     ) {
       output.push({ kind, canonicalPath: child, scopeDigest });
     }
@@ -237,8 +261,22 @@ function canonicalValue(value: unknown): PluginMetadataValue {
   throw new PluginSourceSecurityError("digest_mismatch", "unsupported digest value");
 }
 
-function recordDigest(value: unknown): string {
-  return createHash("sha256").update("rowboat-plugin-component-v1\0").update(JSON.stringify(canonicalValue(value))).digest("hex");
+function recordDigest(value: unknown, containerDigest: string): string {
+  return createHash("sha256")
+    .update("rowboat-plugin-component-v2\0")
+    .update(containerDigest)
+    .update("\0")
+    .update(JSON.stringify(canonicalValue(value)))
+    .digest("hex");
+}
+
+function modeBoundFileDigest(contentDigest: string, mode: GitFileMode): string {
+  return createHash("sha256")
+    .update("rowboat-plugin-file-v2\0")
+    .update(mode)
+    .update("\0")
+    .update(contentDigest)
+    .digest("hex");
 }
 
 function scopedDigest(
@@ -297,7 +335,7 @@ function expandStructured(
         `app:${relativePath}#${name}`,
         name,
         declaration.success ? "available" : "invalid",
-        metadata(relativePath, recordDigest(declaration.success ? declaration.data : raw)),
+        metadata(relativePath, recordDigest(declaration.success ? declaration.data : raw, fileDigest)),
       );
     });
   }
@@ -313,7 +351,7 @@ function expandStructured(
         declaration.success ? "available" : "invalid",
         metadata(
           relativePath,
-          recordDigest(declaration.success ? declaration.data : raw),
+          recordDigest(declaration.success ? declaration.data : raw, fileDigest),
           declaration.success ? { transport: declaration.data.type } : {},
         ),
       );
@@ -326,6 +364,7 @@ function expandStructured(
 export async function discoverPluginComponentsFromIdentity(
   root: DirectoryIdentity,
   manifest: PluginManifest,
+  options: ComponentDiscoveryOptions = {},
 ): Promise<ComponentDiscoveryResult> {
   const entries: ComponentEntry[] = [];
   const seenCandidates = new Set<string>();
@@ -335,7 +374,7 @@ export async function discoverPluginComponentsFromIdentity(
     const key = `${candidate.kind}\0${canonical}`;
     if (seenCandidates.has(key)) continue;
     seenCandidates.add(key);
-    await collectEntries(root, candidate.kind, canonical, entries);
+    await collectEntries(root, candidate.kind, canonical, entries, options.fileModeResolver);
   }
 
   const seenEntries = new Set<string>();
@@ -349,7 +388,13 @@ export async function discoverPluginComponentsFromIdentity(
       if (entry.scopeDigest === undefined) {
         throw new PluginSourceSecurityError("digest_mismatch", "skill scope digest missing");
       }
-      const bundleDigest = await digestTree(entry.canonicalPath);
+      const bundleDigest = await digestTree(entry.canonicalPath, {
+        fileModeResolver: scopedModeResolver(
+          root.canonicalPath,
+          entry.canonicalPath,
+          options.fileModeResolver,
+        ),
+      });
       // Reference parsing is intentionally deferred. Binding both the local
       // bundle tree and the entire stable skills root is a conservative
       // superset: sibling resource changes invalidate every skill in that root
@@ -366,7 +411,11 @@ export async function discoverPluginComponentsFromIdentity(
       continue;
     }
     const structured = entry.kind === "mcp" || entry.kind === "app" || entry.kind === "hook";
-    const read = await readComponentFile(root, entry.canonicalPath, structured);
+    const rawRead = await readComponentFile(root, entry.canonicalPath, structured);
+    const stats = await lstat(entry.canonicalPath);
+    const mode = options.fileModeResolver?.(relativePath) ??
+      (process.platform !== "win32" && (stats.mode & 0o111) !== 0 ? "100755" : "100644");
+    const read = { ...rawRead, digest: modeBoundFileDigest(rawRead.digest, mode) };
     if (structured && read.bytes !== undefined) components.push(...expandStructured(entry, relativePath, read.bytes, read.digest));
     else {
       const digest =
@@ -410,6 +459,14 @@ export async function discoverPluginComponentsFromIdentity(
   });
 }
 
-export async function discoverPluginComponents(pluginRoot: string, manifest: PluginManifest): Promise<ComponentDiscoveryResult> {
-  return discoverPluginComponentsFromIdentity(await snapshotDirectoryIdentity(pluginRoot), manifest);
+export async function discoverPluginComponents(
+  pluginRoot: string,
+  manifest: PluginManifest,
+  options: ComponentDiscoveryOptions = {},
+): Promise<ComponentDiscoveryResult> {
+  return discoverPluginComponentsFromIdentity(
+    await snapshotDirectoryIdentity(pluginRoot),
+    manifest,
+    options,
+  );
 }

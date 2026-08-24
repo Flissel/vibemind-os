@@ -1,7 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, mkdir, realpath, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { ContentStore } from "../store/content-store.js";
@@ -10,14 +9,22 @@ import {
   snapshotDirectoryIdentity,
   type DirectoryIdentity,
 } from "./directory-identity.js";
-import { digestTree } from "./digest-service.js";
+import { digestTree, type GitFileMode } from "./digest-service.js";
 import { isContainedPath, PluginSourceSecurityError } from "./path-guard.js";
+import { createSnapshotTempRoot, removeSnapshotTempRoot } from "./snapshot-temp.js";
 
 const execFileAsync = promisify(execFile);
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
 const BLOB_PATTERN = /^[0-9a-f]{40,64}$/;
 const MAX_GIT_TEXT_BYTES = 16 * 1024 * 1024;
-const MAX_GIT_BLOB_BYTES = 64 * 1024 * 1024;
+export const OPENAI_PLUGINS_SOURCE_URL = "https://github.com/openai/plugins.git" as const;
+export const VERIFIED_SNAPSHOT_LIMITS = Object.freeze({
+  maxBlobBytes: 64 * 1024 * 1024,
+  maxTotalBytes: 256 * 1024 * 1024,
+  maxFileCount: 20_000,
+  maxRelativeDepth: 64,
+  gitTimeoutMs: 30_000,
+});
 
 export interface PinnedSourceRequest {
   readonly repositoryRoot: string;
@@ -54,12 +61,15 @@ export class VerifiedPinnedSource {
 interface GitTreeBlob {
   readonly oid: string;
   readonly path: string;
+  readonly mode: GitFileMode;
+  readonly size: number;
 }
 
 interface VerifiedPluginSnapshot {
   readonly path: string;
   readonly digest: string;
   readonly manifestDigest: string;
+  readonly fileModes: Readonly<Record<string, GitFileMode>>;
 }
 
 export interface VerifiedPluginDigests {
@@ -69,23 +79,41 @@ export interface VerifiedPluginDigests {
 
 function validSourceUrl(sourceUrl: string): boolean {
   try {
-    return new URL(sourceUrl).protocol === "https:";
+    const parsed = new URL(sourceUrl);
+    return (
+      sourceUrl === OPENAI_PLUGINS_SOURCE_URL &&
+      parsed.protocol === "https:" &&
+      parsed.username === "" &&
+      parsed.password === "" &&
+      parsed.search === "" &&
+      parsed.hash === ""
+    );
   } catch {
     return false;
   }
 }
 
-async function gitBuffer(repositoryRoot: string, args: readonly string[], maxBuffer: number): Promise<Buffer> {
+export async function runGitVerificationCommand(
+  repositoryRoot: string,
+  args: readonly string[],
+  options: { readonly maxBuffer: number; readonly timeoutMs?: number },
+): Promise<Buffer> {
   try {
     const result = await execFileAsync("git", ["-C", repositoryRoot, ...args], {
       encoding: "buffer",
-      maxBuffer,
+      maxBuffer: options.maxBuffer,
+      timeout: options.timeoutMs ?? VERIFIED_SNAPSHOT_LIMITS.gitTimeoutMs,
+      killSignal: "SIGKILL",
       windowsHide: true,
     });
     return result.stdout;
   } catch {
     throw new PluginSourceSecurityError("source_mismatch", "Git verification failed");
   }
+}
+
+async function gitBuffer(repositoryRoot: string, args: readonly string[], maxBuffer: number): Promise<Buffer> {
+  return runGitVerificationCommand(repositoryRoot, args, { maxBuffer });
 }
 
 async function gitText(repositoryRoot: string, args: readonly string[]): Promise<string> {
@@ -188,18 +216,25 @@ export async function assertVerifiedPinnedSource(
   await assertDirectoryIdentity(details.repositoryIdentity);
 }
 
-function parseTree(output: Buffer, pluginRelativePath: string): readonly GitTreeBlob[] {
+export function parseGitTreeInventory(output: Buffer, pluginRelativePath: string): readonly GitTreeBlob[] {
   const entries: GitTreeBlob[] = [];
+  let totalBytes = 0;
   for (const raw of output.toString("utf8").split("\0")) {
     if (raw === "") continue;
-    const match = /^(100644|100755) blob ([0-9a-f]{40,64})\t(.+)$/.exec(raw);
+    const match = /^(100644|100755) blob ([0-9a-f]{40,64})\s+(\d+)\t(.+)$/.exec(raw);
     if (match === null) {
       throw new PluginSourceSecurityError("source_mismatch", "unsupported Git tree entry");
     }
+    const mode = match[1] as GitFileMode | undefined;
     const oid = match[2];
-    const path = match[3];
-    if (oid === undefined || path === undefined || !BLOB_PATTERN.test(oid)) {
+    const sizeText = match[3];
+    const path = match[4];
+    if (mode === undefined || oid === undefined || sizeText === undefined || path === undefined || !BLOB_PATTERN.test(oid)) {
       throw new PluginSourceSecurityError("source_mismatch", "malformed Git tree entry");
+    }
+    const size = Number(sizeText);
+    if (!Number.isSafeInteger(size) || size < 0 || size > VERIFIED_SNAPSHOT_LIMITS.maxBlobBytes) {
+      throw new PluginSourceSecurityError("source_mismatch", "snapshot blob exceeds budget");
     }
     const relativePath = relative(pluginRelativePath, path).split(sep).join("/");
     if (
@@ -210,7 +245,18 @@ function parseTree(output: Buffer, pluginRelativePath: string): readonly GitTree
     ) {
       throw new PluginSourceSecurityError("path_escape", "Git plugin path escaped");
     }
-    entries.push({ oid, path: relativePath });
+    const depth = relativePath.split("/").length;
+    if (depth > VERIFIED_SNAPSHOT_LIMITS.maxRelativeDepth) {
+      throw new PluginSourceSecurityError("source_mismatch", "snapshot depth exceeds budget");
+    }
+    totalBytes += size;
+    if (
+      entries.length + 1 > VERIFIED_SNAPSHOT_LIMITS.maxFileCount ||
+      totalBytes > VERIFIED_SNAPSHOT_LIMITS.maxTotalBytes
+    ) {
+      throw new PluginSourceSecurityError("source_mismatch", "snapshot inventory exceeds budget");
+    }
+    entries.push({ oid, path: relativePath, mode, size });
   }
   if (entries.length === 0) {
     throw new PluginSourceSecurityError("source_mismatch", "plugin has no committed files");
@@ -231,19 +277,19 @@ export async function stageVerifiedPluginSnapshot(
   const cached = details.snapshots.get(canonicalPluginRoot);
   if (cached !== undefined) return cached;
   const pluginRelativePath = relative(context.repositoryRoot, canonicalPluginRoot).split(sep).join("/");
-  const tree = parseTree(
+  const tree = parseGitTreeInventory(
     await gitBuffer(
       context.repositoryRoot,
-      ["ls-tree", "-r", "-z", "--full-tree", context.sourceCommit, "--", pluginRelativePath],
+      ["ls-tree", "-r", "-l", "-z", "--full-tree", context.sourceCommit, "--", pluginRelativePath],
       MAX_GIT_TEXT_BYTES,
     ),
     pluginRelativePath,
   );
-  const materializedRepository = await mkdtemp(join(tmpdir(), "rowboat-git-snapshot-"));
+  const materializedRepository = await createSnapshotTempRoot();
   const materializedPlugin = join(materializedRepository, basename(canonicalPluginRoot));
-  await mkdir(materializedPlugin);
   let manifestDigest: string | undefined;
   try {
+    await mkdir(materializedPlugin);
     for (const entry of tree) {
       const destination = join(materializedPlugin, ...entry.path.split("/"));
       if (!isContainedPath(materializedPlugin, destination)) {
@@ -253,32 +299,51 @@ export async function stageVerifiedPluginSnapshot(
       const bytes = await gitBuffer(
         context.repositoryRoot,
         ["cat-file", "blob", entry.oid],
-        MAX_GIT_BLOB_BYTES,
+        VERIFIED_SNAPSHOT_LIMITS.maxBlobBytes,
       );
+      if (bytes.length !== entry.size) {
+        throw new PluginSourceSecurityError("source_mismatch", "Git blob size differs from inventory");
+      }
       if (entry.path === ".codex-plugin/plugin.json") {
         manifestDigest = createHash("sha256").update(bytes).digest("hex");
       }
       await writeFile(destination, bytes, { flag: "wx" });
+      if (process.platform !== "win32") {
+        await chmod(destination, entry.mode === "100755" ? 0o755 : 0o644);
+      }
     }
-    const digest = await digestTree(materializedPlugin);
+    const frozenModes = Object.freeze(
+      Object.fromEntries(tree.map((entry) => [entry.path, entry.mode])),
+    ) as Readonly<Record<string, GitFileMode>>;
+    const modeResolver = (path: string): GitFileMode | undefined => frozenModes[path];
+    const digest = await digestTree(materializedPlugin, { fileModeResolver: modeResolver });
     if (manifestDigest === undefined) {
       throw new PluginSourceSecurityError("source_mismatch", "committed plugin manifest missing");
     }
     const stored = await new ContentStore({
       repositoryRoot: materializedRepository,
       storeRoot: details.storeRoot,
+      fileModeResolver: modeResolver,
     }).put(materializedPlugin, digest);
     await assertVerifiedPinnedSource(context, pluginRoot, context.sourceUrl, context.sourceCommit);
     const snapshot = Object.freeze({
       path: stored.path,
       digest: stored.digest,
       manifestDigest,
+      fileModes: frozenModes,
     });
     details.snapshots.set(canonicalPluginRoot, snapshot);
     return snapshot;
   } finally {
-    await rm(materializedRepository, { recursive: true, force: true });
+    await removeSnapshotTempRoot(materializedRepository);
   }
+}
+
+export async function getVerifiedPluginFileModes(
+  context: VerifiedPinnedSource,
+  pluginRoot: string,
+): Promise<Readonly<Record<string, GitFileMode>>> {
+  return (await stageVerifiedPluginSnapshot(context, pluginRoot)).fileModes;
 }
 
 export async function getVerifiedPluginDigests(

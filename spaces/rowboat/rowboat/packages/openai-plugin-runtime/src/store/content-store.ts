@@ -25,7 +25,7 @@ import {
   snapshotDirectoryIdentity,
   type DirectoryIdentity,
 } from "../import/directory-identity.js";
-import { digestTree } from "../import/digest-service.js";
+import { digestTree, type FileModeResolver } from "../import/digest-service.js";
 import {
   streamContainedRegularFile,
   type SourceFileReadOptions,
@@ -40,6 +40,7 @@ export interface ContentStoreConfig {
   readonly repositoryRoot: string;
   readonly publicationObserver?: ContentStorePublicationObserver;
   readonly sourceFileReadOptions?: SourceFileReadOptions;
+  readonly fileModeResolver?: FileModeResolver;
 }
 
 export interface ContentStoreEntry {
@@ -244,6 +245,7 @@ async function inspectPublication(
   destination: string,
   markerPath: string,
   expectedDigest: string,
+  fileModeResolver: FileModeResolver | undefined,
 ): Promise<ContentStorePublicationState> {
   await assertDirectoryIdentity(storeIdentity);
   const [destinationPresent, markerState] = await Promise.all([
@@ -263,7 +265,7 @@ async function inspectPublication(
 
   try {
     const state =
-      (await digestTree(destination)) === expectedDigest ? "complete" : "invalid";
+      (await digestTree(destination, { fileModeResolver })) === expectedDigest ? "complete" : "invalid";
     await assertDirectoryIdentity(storeIdentity);
     return state;
   } catch (error: unknown) {
@@ -288,6 +290,7 @@ async function acquirePublicationLock(
   destination: string,
   markerPath: string,
   expectedDigest: string,
+  fileModeResolver: FileModeResolver | undefined,
 ): Promise<PublicationLockResult> {
   for (let attempt = 0; attempt < LOCK_ATTEMPTS; attempt += 1) {
     await assertDirectoryIdentity(storeIdentity);
@@ -310,6 +313,7 @@ async function acquirePublicationLock(
         destination,
         markerPath,
         expectedDigest,
+        fileModeResolver,
       )) === "complete"
     ) {
       return { state: "published" };
@@ -395,6 +399,7 @@ async function copyRegularFile(
   storeIdentity: DirectoryIdentity,
   destination: string,
   options: SourceFileReadOptions,
+  mode: "100644" | "100755",
 ): Promise<void> {
   let destinationHandle: FileHandle | undefined;
   let expectedSize = 0n;
@@ -404,7 +409,11 @@ async function copyRegularFile(
     await streamContainedRegularFile(sourceRoot, source, options, {
       async onOpen(size): Promise<void> {
         await assertIdentities(destinationRoot, storeIdentity);
-        destinationHandle = await open(destination, "wx");
+        destinationHandle = await open(
+          destination,
+          "wx",
+          mode === "100755" ? 0o755 : 0o644,
+        );
         expectedSize = size;
       },
       async onChunk(chunk): Promise<void> {
@@ -448,6 +457,7 @@ async function copyRegularTree(
   destinationDirectory: string,
   storeIdentity: DirectoryIdentity,
   options: SourceFileReadOptions,
+  fileModeResolver: FileModeResolver | undefined,
 ): Promise<void> {
   await assertContainedDirectory(sourceRoot, sourceDirectory);
   await assertIdentities(destinationRoot, storeIdentity);
@@ -478,6 +488,7 @@ async function copyRegularTree(
         destination,
         storeIdentity,
         options,
+        fileModeResolver,
       );
       continue;
     }
@@ -490,6 +501,8 @@ async function copyRegularTree(
         storeIdentity,
         destination,
         options,
+        fileModeResolver?.(relative(sourceRoot.canonicalPath, source).replaceAll("\\", "/")) ??
+          (process.platform !== "win32" && (stats.mode & 0o111) !== 0 ? "100755" : "100644"),
       );
       continue;
     }
@@ -613,12 +626,14 @@ export class ContentStore {
   private readonly configuredRepositoryRoot: string;
   private readonly publicationObserver: ContentStorePublicationObserver | undefined;
   private readonly sourceFileReadOptions: SourceFileReadOptions;
+  private readonly fileModeResolver: FileModeResolver | undefined;
 
   constructor({
     storeRoot,
     repositoryRoot,
     publicationObserver,
     sourceFileReadOptions,
+    fileModeResolver,
   }: ContentStoreConfig) {
     if (!isAbsolute(storeRoot) || !isAbsolute(repositoryRoot)) {
       throw new PluginSourceSecurityError("path_escape", "roots must be absolute");
@@ -628,6 +643,7 @@ export class ContentStore {
     this.configuredRepositoryRoot = resolve(repositoryRoot);
     this.publicationObserver = publicationObserver;
     this.sourceFileReadOptions = sourceFileReadOptions ?? {};
+    this.fileModeResolver = fileModeResolver;
     assertSeparatedRoots(this.configuredStoreRoot, this.configuredRepositoryRoot);
   }
 
@@ -671,7 +687,7 @@ export class ContentStore {
 
     const sourceDigest = await digestTree(
       pluginIdentity.canonicalPath,
-      this.sourceFileReadOptions,
+      { ...this.sourceFileReadOptions, fileModeResolver: this.fileModeResolver },
     );
     await assertIdentities(repositoryIdentity, storeIdentity, pluginIdentity);
     if (sourceDigest !== expectedDigest) {
@@ -691,6 +707,7 @@ export class ContentStore {
       destination,
       markerPath,
       expectedDigest,
+      this.fileModeResolver,
     );
     await this.publicationObserver?.afterInitialInspect?.(initialState);
     await assertIdentities(repositoryIdentity, storeIdentity, pluginIdentity);
@@ -719,6 +736,7 @@ export class ContentStore {
         temporaryIdentity.canonicalPath,
         storeIdentity,
         this.sourceFileReadOptions,
+        this.fileModeResolver,
       );
       await assertIdentities(
         repositoryIdentity,
@@ -727,7 +745,9 @@ export class ContentStore {
         temporaryIdentity,
       );
 
-      const stagedDigest = await digestTree(temporaryIdentity.canonicalPath);
+      const stagedDigest = await digestTree(temporaryIdentity.canonicalPath, {
+        fileModeResolver: this.fileModeResolver,
+      });
       await assertIdentities(
         repositoryIdentity,
         storeIdentity,
@@ -744,6 +764,7 @@ export class ContentStore {
         destination,
         markerPath,
         expectedDigest,
+        this.fileModeResolver,
       );
       if (lockResult.state === "published") {
         return result;
@@ -761,6 +782,7 @@ export class ContentStore {
           destination,
           markerPath,
           expectedDigest,
+          this.fileModeResolver,
         );
         if (lockedState === "complete") {
           return result;
@@ -793,6 +815,7 @@ export class ContentStore {
             destination,
             markerPath,
             expectedDigest,
+            this.fileModeResolver,
           );
           if (racedState === "complete") {
             return result;
@@ -821,10 +844,13 @@ export class ContentStore {
           destinationIdentity.canonicalPath,
           storeIdentity,
           {},
+          this.fileModeResolver,
         );
         await assertIdentities(storeIdentity, destinationIdentity);
 
-        if ((await digestTree(destinationIdentity.canonicalPath)) !== expectedDigest) {
+        if ((await digestTree(destinationIdentity.canonicalPath, {
+          fileModeResolver: this.fileModeResolver,
+        })) !== expectedDigest) {
           throw new PluginSourceSecurityError(
             "digest_mismatch",
             "reserved destination digest differs",
@@ -851,6 +877,7 @@ export class ContentStore {
               destination,
               markerPath,
               expectedDigest,
+              this.fileModeResolver,
             )) !== "complete"
           ) {
             throw new PluginSourceSecurityError(
@@ -866,6 +893,7 @@ export class ContentStore {
             destination,
             markerPath,
             expectedDigest,
+            this.fileModeResolver,
           )) !== "complete"
         ) {
           throw new PluginSourceSecurityError(

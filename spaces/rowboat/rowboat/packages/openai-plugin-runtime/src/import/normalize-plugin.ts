@@ -12,11 +12,12 @@ import {
   snapshotDirectoryIdentity,
   type DirectoryIdentity,
 } from "./directory-identity.js";
-import { digestTree } from "./digest-service.js";
+import { digestTree, type GitFileMode } from "./digest-service.js";
 import { PluginSourceSecurityError } from "./path-guard.js";
 import { streamContainedRegularFile } from "./safe-file-stream.js";
 import {
   assertVerifiedPinnedSource,
+  OPENAI_PLUGINS_SOURCE_URL,
   stageVerifiedPluginSnapshot,
   type VerifiedPinnedSource,
 } from "./source-reader.js";
@@ -27,7 +28,7 @@ const SHA256 = /^[a-f0-9]{64}$/;
 
 const SourceProvenanceSchema = z
   .object({
-    sourceUrl: z.string().url(),
+    sourceUrl: z.literal(OPENAI_PLUGINS_SOURCE_URL),
     sourceCommit: z.string().regex(SHA40),
     pluginName: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
     pluginVersion: z.string().min(1),
@@ -133,10 +134,17 @@ export async function normalizePlugin(
     );
   }
 
-  const discovery = await discoverPluginComponentsFromIdentity(root, manifest);
+  const fileModeResolver = (path: string): GitFileMode | undefined => snapshot.fileModes[path];
+  const discovery = await discoverPluginComponentsFromIdentity(root, manifest, {
+    fileModeResolver,
+  });
   await assertDirectoryIdentity(root);
   await options.beforeFinalTreeDigest?.();
-  assertDigest(provenance.treeDigest, await digestTree(snapshot.path), "source tree");
+  assertDigest(
+    provenance.treeDigest,
+    await digestTree(snapshot.path, { fileModeResolver }),
+    "source tree",
+  );
   await assertDirectoryIdentity(root);
   await assertVerifiedPinnedSource(
     verifiedSource,

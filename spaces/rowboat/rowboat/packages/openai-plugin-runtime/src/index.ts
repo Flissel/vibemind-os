@@ -25,6 +25,7 @@ export { digestTree } from "./import/digest-service.js";
 export {
   assertPinnedSource,
   getVerifiedPluginDigests,
+  OPENAI_PLUGINS_SOURCE_URL,
   type PinnedSourceRequest,
   type VerifiedPluginDigests,
   type VerifiedPinnedSource,
@@ -46,6 +47,7 @@ export {
 } from "./schema/component-schemas.js";
 export {
   discoverPluginComponents,
+  type ComponentDiscoveryOptions,
   type ComponentDiscoveryResult,
 } from "./import/component-discovery.js";
 export {

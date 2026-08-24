@@ -3,13 +3,13 @@ import { createHash } from "node:crypto";
 import {
   lstat,
   mkdir,
-  mkdtemp,
   readFile,
   readdir,
   realpath,
   rename,
   rm,
   symlink,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,6 +18,8 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   assertPinnedSource,
+  getVerifiedPluginDigests,
+  getVerifiedPluginFileModes,
 } from "../src/import/source-reader.js";
 import {
   PluginSourceSecurityError,
@@ -25,22 +27,19 @@ import {
 } from "../src/import/path-guard.js";
 import { digestTree } from "../src/import/digest-service.js";
 import { ContentStore } from "../src/store/content-store.js";
+import { cleanupRegisteredTestRoots, createOwnedTestRoot } from "./test-temp.js";
 
 const temporaryRoots = new Set<string>();
 
 async function createTemporaryRoot(label: string): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), `rowboat-source-security-${label}-`));
+  const root = await createOwnedTestRoot(`source-security-${label}`);
   temporaryRoots.add(root);
   return root;
 }
 
 afterEach(async () => {
-  await Promise.all(
-    [...temporaryRoots].map(async (root) => {
-      temporaryRoots.delete(root);
-      await rm(root, { recursive: true, force: true });
-    }),
-  );
+  temporaryRoots.clear();
+  await cleanupRegisteredTestRoots();
 });
 
 async function expectSecurityError(
@@ -92,7 +91,7 @@ function uint64(value: number): Buffer {
 
 function referenceDigest(entries: readonly ReferenceEntry[]): string {
   const hash = createHash("sha256");
-  hash.update("rowboat-plugin-tree-v1\0", "utf8");
+  hash.update("rowboat-plugin-tree-v2\0", "utf8");
 
   for (const entry of [...entries].sort((left, right) =>
     left.path.localeCompare(right.path, "en"),
@@ -104,6 +103,7 @@ function referenceDigest(entries: readonly ReferenceEntry[]): string {
     hash.update(pathBytes);
 
     if (entry.type === "file") {
+      hash.update("100644", "ascii");
       hash.update(uint64(entry.bytes.length));
       hash.update(entry.bytes);
     }
@@ -341,6 +341,68 @@ describe("assertPinnedSource", () => {
       storeRoot: fixture.storeRoot,
     })).resolves.toMatchObject({ sourceCommit: fixture.commit, sourceUrl: SOURCE_URL });
   });
+
+  it.each([
+    "https://user:token-secret@github.com/openai/plugins.git",
+    "https://github.com/openai/plugins.git?token=token-secret",
+    "https://github.com/openai/plugins.git#token-secret",
+    "ssh://git@github.com/openai/plugins.git",
+    "file:///openai/plugins.git",
+    "https://example.com/openai/plugins.git",
+  ])("rejects a non-canonical origin without leaking it: %s", async (sourceUrl) => {
+    const fixture = await createPinnedGitSource("origin-contract");
+    await git(fixture.repositoryRoot, "remote", "set-url", "origin", sourceUrl);
+
+    const error = await expectSecurityError(assertPinnedSource({
+      repositoryRoot: fixture.repositoryRoot,
+      expectedCommit: fixture.commit,
+      sourceUrl,
+      storeRoot: fixture.storeRoot,
+    }), "source_mismatch");
+    expect(error.message).not.toContain("token-secret");
+    expect(error.message).not.toContain(sourceUrl);
+  });
+
+  it("binds Git executable mode into snapshot digest and mode map", async () => {
+    const fixture = await createPinnedGitSource("git-mode");
+    const pluginRoot = join(fixture.repositoryRoot, "plugin");
+    await mkdir(join(pluginRoot, ".codex-plugin"), { recursive: true });
+    await writeFile(join(pluginRoot, ".codex-plugin", "plugin.json"), "{}", "utf8");
+    await writeFile(join(pluginRoot, "run.sh"), "echo test\n", "utf8");
+    await git(fixture.repositoryRoot, "add", "--all");
+    await git(fixture.repositoryRoot, "commit", "-m", "plugin snapshot");
+    const firstCommit = await git(fixture.repositoryRoot, "rev-parse", "HEAD");
+    const firstContext = await assertPinnedSource({
+      repositoryRoot: fixture.repositoryRoot,
+      expectedCommit: firstCommit,
+      sourceUrl: SOURCE_URL,
+      storeRoot: fixture.storeRoot,
+    });
+    const first = await getVerifiedPluginDigests(firstContext, pluginRoot);
+
+    await git(fixture.repositoryRoot, "update-index", "--chmod=+x", "plugin/run.sh");
+    await git(fixture.repositoryRoot, "commit", "-m", "executable mode only");
+    const secondCommit = await git(fixture.repositoryRoot, "rev-parse", "HEAD");
+    const secondContext = await assertPinnedSource({
+      repositoryRoot: fixture.repositoryRoot,
+      expectedCommit: secondCommit,
+      sourceUrl: SOURCE_URL,
+      storeRoot: fixture.storeRoot,
+    });
+    const second = await getVerifiedPluginDigests(secondContext, pluginRoot);
+
+    expect(second.treeDigest).not.toBe(first.treeDigest);
+    await expect(readdir(fixture.storeRoot)).resolves.toEqual(expect.arrayContaining([
+      first.treeDigest,
+      second.treeDigest,
+    ]));
+    expect(await getVerifiedPluginFileModes(secondContext, pluginRoot))
+      .toMatchObject({ "run.sh": "100755" });
+    if (process.platform !== "win32") {
+      expect((await stat(join(fixture.storeRoot, second.treeDigest, "run.sh"))).mode & 0o111)
+        .not.toBe(0);
+    }
+  }, 30_000);
 
   it.each(["tracked blob", "ignored extra"] as const)("rejects %s changes", async (change) => {
     const fixture = await createPinnedGitSource(`changed-${change.replace(" ", "-")}`);
@@ -722,7 +784,10 @@ describe("ContentStore", () => {
       "path_escape",
     );
     expect(observerCalled).toBe(true);
-    await expect(readdir(outsideRoot)).resolves.toStrictEqual(["sentinel.txt"]);
+    await expect(readdir(outsideRoot)).resolves.toStrictEqual([
+      ".rowboat-openai-plugin-runtime-test-temp",
+      "sentinel.txt",
+    ]);
     expect(
       (await readdir(displacedStore)).some(
         (entry) => entry.startsWith(".tmp-") || entry.startsWith(".lock-"),

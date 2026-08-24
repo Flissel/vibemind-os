@@ -1,19 +1,24 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, readdir, realpath, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import {
   assertPinnedSource,
   getVerifiedPluginDigests,
   normalizePlugin,
   type SourceProvenance,
 } from "../src/index.js";
+import { cleanupOwnedTestRoot, createOwnedTestRoot } from "./test-temp.js";
 
 const sourceRoot = process.env.OPENAI_PLUGINS_SOURCE_ROOT;
 const PINNED_COMMIT = "11c74d6ba24d3a6d48f54a194cd00ef3beea18f9";
 const execFileAsync = promisify(execFile);
+let pinStoreParent: string | undefined;
+
+afterAll(async () => {
+  if (pinStoreParent !== undefined) await cleanupOwnedTestRoot(pinStoreParent);
+});
 
 async function filesUnder(directory: string): Promise<readonly string[]> {
   try {
@@ -39,11 +44,12 @@ describe.skipIf(sourceRoot === undefined)("pinned OpenAI plugin catalog", () => 
       const status = await execFileAsync("git", ["-C", sourceRoot, "status", "--porcelain"]);
       expect(head.stdout.trim()).toBe(PINNED_COMMIT);
       expect(status.stdout.trim()).toBe("");
+      pinStoreParent = await createOwnedTestRoot("pin-store");
       const verifiedSource = await assertPinnedSource({
         repositoryRoot: sourceRoot,
         expectedCommit: PINNED_COMMIT,
         sourceUrl: "https://github.com/openai/plugins.git",
-        storeRoot: join(await mkdtemp(join(tmpdir(), "rowboat-pin-store-")), "content"),
+        storeRoot: join(pinStoreParent, "content"),
       });
       const pluginsRoot = join(sourceRoot, "plugins");
       const directories = (await readdir(pluginsRoot, { withFileTypes: true }))
