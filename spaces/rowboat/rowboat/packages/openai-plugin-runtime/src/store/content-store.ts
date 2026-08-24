@@ -25,7 +25,11 @@ import {
   snapshotDirectoryIdentity,
   type DirectoryIdentity,
 } from "../import/directory-identity.js";
-import { digestTree, type FileModeResolver } from "../import/digest-service.js";
+import {
+  digestTree,
+  type FileModeResolver,
+  type GitFileMode,
+} from "../import/digest-service.js";
 import {
   streamContainedRegularFile,
   type SourceFileReadOptions,
@@ -392,6 +396,32 @@ async function writeChunk(handle: FileHandle, chunk: Buffer): Promise<void> {
   }
 }
 
+export async function enforceMaterializedGitMode(
+  handle: Pick<FileHandle, "chmod" | "stat">,
+  mode: GitFileMode,
+  platform: NodeJS.Platform = process.platform,
+): Promise<void> {
+  if (platform === "win32") return;
+
+  const expectedMode = mode === "100755" ? 0o755 : 0o644;
+  try {
+    await handle.chmod(expectedMode);
+    const stats = await handle.stat({ bigint: true });
+    if (!stats.isFile() || Number(stats.mode & 0o777n) !== expectedMode) {
+      throw new PluginSourceSecurityError(
+        "digest_mismatch",
+        "materialized Git file mode differs",
+      );
+    }
+  } catch (error: unknown) {
+    if (error instanceof PluginSourceSecurityError) throw error;
+    throw new PluginSourceSecurityError(
+      "digest_mismatch",
+      "materialized Git file mode could not be enforced",
+    );
+  }
+}
+
 async function copyRegularFile(
   sourceRoot: DirectoryIdentity,
   source: string,
@@ -435,6 +465,8 @@ async function copyRegularFile(
         "copied file length differs",
       );
     }
+
+    await enforceMaterializedGitMode(destinationHandle, mode);
 
     const destinationStats = await destinationHandle.stat({ bigint: true });
     if (!destinationStats.isFile() || destinationStats.size !== expectedSize) {
