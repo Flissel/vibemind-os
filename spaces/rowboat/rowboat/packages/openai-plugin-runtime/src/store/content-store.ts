@@ -113,15 +113,26 @@ async function assertIdentities(
   }
 }
 
-async function canonicalizeProspectivePath(candidate: string): Promise<string> {
+async function initializeStoreRoot(
+  candidate: string,
+  repositoryIdentity: DirectoryIdentity,
+): Promise<DirectoryIdentity> {
   const missingNames: string[] = [];
   let cursor = candidate;
+  let ancestorIdentity: DirectoryIdentity;
 
   while (true) {
     try {
-      await lstat(cursor);
-      const canonicalAncestor = await realpath(cursor);
-      return resolve(canonicalAncestor, ...missingNames.reverse());
+      const stats = await lstat(cursor);
+      if (stats.isSymbolicLink() || !stats.isDirectory()) {
+        throw new PluginSourceSecurityError(
+          "path_escape",
+          "store initialization ancestor must be a stable directory",
+        );
+      }
+
+      ancestorIdentity = await snapshotDirectoryIdentity(cursor);
+      break;
     } catch (error: unknown) {
       if (!isNotFoundError(error)) {
         throw error;
@@ -136,6 +147,50 @@ async function canonicalizeProspectivePath(candidate: string): Promise<string> {
       cursor = parent;
     }
   }
+
+  const missingSegments = missingNames.reverse();
+  const prospectiveStoreRoot = resolve(
+    ancestorIdentity.canonicalPath,
+    ...missingSegments,
+  );
+  assertSeparatedRoots(
+    prospectiveStoreRoot,
+    repositoryIdentity.canonicalPath,
+  );
+
+  let currentIdentity = ancestorIdentity;
+  for (const segment of missingSegments) {
+    const childPath = join(currentIdentity.configuredPath, segment);
+    await assertIdentities(repositoryIdentity, currentIdentity);
+
+    try {
+      await mkdir(childPath);
+    } catch (error: unknown) {
+      if (!isAlreadyExistsError(error)) {
+        throw error;
+      }
+    }
+
+    await assertIdentities(repositoryIdentity, currentIdentity);
+    const childIdentity = await snapshotDirectoryIdentity(childPath);
+    if (
+      childIdentity.canonicalPath !== resolve(currentIdentity.canonicalPath, segment) ||
+      childIdentity.parentCanonicalPath !== currentIdentity.canonicalPath ||
+      childIdentity.parentDevice !== currentIdentity.device ||
+      childIdentity.parentInode !== currentIdentity.inode
+    ) {
+      throw new PluginSourceSecurityError(
+        "path_escape",
+        "store initialization child escaped its validated parent",
+      );
+    }
+
+    await assertIdentities(repositoryIdentity, currentIdentity, childIdentity);
+    currentIdentity = childIdentity;
+  }
+
+  await assertIdentities(repositoryIdentity, currentIdentity);
+  return currentIdentity;
 }
 
 async function pathExists(candidate: string): Promise<boolean> {
@@ -594,18 +649,10 @@ export class ContentStore {
     const repositoryIdentity = await snapshotDirectoryIdentity(
       this.configuredRepositoryRoot,
     );
-    const storeParentIdentity = await snapshotDirectoryIdentity(
-      dirname(this.configuredStoreRoot),
-    );
-    const prospectiveStoreRoot = await canonicalizeProspectivePath(
+    const storeIdentity = await initializeStoreRoot(
       this.configuredStoreRoot,
+      repositoryIdentity,
     );
-    assertSeparatedRoots(prospectiveStoreRoot, repositoryIdentity.canonicalPath);
-    await assertIdentities(repositoryIdentity, storeParentIdentity);
-
-    await mkdir(this.configuredStoreRoot, { recursive: true });
-    await assertIdentities(repositoryIdentity, storeParentIdentity);
-    const storeIdentity = await snapshotDirectoryIdentity(this.configuredStoreRoot);
     assertSeparatedRoots(storeIdentity.canonicalPath, repositoryIdentity.canonicalPath);
 
     if (!isAbsolute(pluginRoot)) {

@@ -436,6 +436,24 @@ describe("ContentStore", () => {
     await expect(readdir(fixture.storeRoot)).resolves.toStrictEqual([]);
   });
 
+  it("initializes a nested store root through multiple missing segments", async () => {
+    const fixture = await createStoreFixture("store-nested-initialization");
+    const storeRoot = join(fixture.root, "stores", "plugins", "content");
+    const expectedDigest = await digestTree(fixture.pluginRoot);
+    const store = new ContentStore({
+      ...fixture,
+      storeRoot,
+    });
+
+    const published = await store.put(fixture.pluginRoot, expectedDigest);
+
+    expect(published).toStrictEqual({
+      digest: expectedDigest,
+      path: join(await realpath(storeRoot), expectedDigest),
+    });
+    await expect(digestTree(published.path)).resolves.toBe(expectedDigest);
+  });
+
   it("publishes only regular contained content to an outside digest path", async () => {
     const fixture = await createStoreFixture("store-publish");
     const store = new ContentStore(fixture);
