@@ -1,0 +1,131 @@
+{
+  "blockers": [],
+  "checks": [
+    {
+      "details": {},
+      "name": "export_records_hash",
+      "status": "passed"
+    },
+    {
+      "details": {
+        "manifest": 50,
+        "observed": 50
+      },
+      "name": "export_record_count",
+      "status": "passed"
+    },
+    {
+      "details": {},
+      "name": "export_entity_counts",
+      "status": "passed"
+    },
+    {
+      "details": {
+        "invalid_source_ids": []
+      },
+      "name": "source_content_hashes",
+      "status": "passed"
+    },
+    {
+      "details": {
+        "invalid_canonical_ids": []
+      },
+      "name": "envelope_content_hashes",
+      "status": "passed"
+    },
+    {
+      "details": {
+        "examples": [],
+        "missing_count": 0
+      },
+      "name": "canonical_foreign_keys",
+      "status": "passed"
+    },
+    {
+      "details": {
+        "invalid": []
+      },
+      "name": "score_ranges",
+      "status": "passed"
+    },
+    {
+      "details": {
+        "failures": []
+      },
+      "name": "artifact_existence",
+      "status": "passed"
+    },
+    {
+      "details": {
+        "codes": {}
+      },
+      "name": "quarantine_empty",
+      "status": "passed"
+    },
+    {
+      "details": {
+        "count": 0
+      },
+      "name": "destructive_operations",
+      "status": "passed"
+    }
+  ],
+  "destructive_operations": 0,
+  "export_record_count": 50,
+  "import_counts": {
+    "activity": 5,
+    "adaptive_item": 5,
+    "chapter": 2,
+    "concept": 2,
+    "course": 2,
+    "evaluation": 3,
+    "mastery_evidence": 3,
+    "organization": 2,
+    "program": 2,
+    "response": 3,
+    "session": 3
+  },
+  "import_envelope_count": 32,
+  "migration_batch_id": "legacy-real-13845e47",
+  "non_claims": [
+    "real_import_not_executed",
+    "qdrant_rebuild_not_executed",
+    "route_cutover_not_executed",
+    "legacy_data_not_modified"
+  ],
+  "quarantine_count": 0,
+  "ready": true,
+  "sample_hashes": {
+    "activity": "915ea81e7865e7dfc764b0e4b8eb1308fd3fc47c4ec6903e3a8f8a5c676a5fe2",
+    "adaptive_item": "91cad7e6a836eb4baeb0c120aeda9a9a43747dfab12f373d8f5aebae6a22a625",
+    "chapter": "f2298c2f417d22357c8d8fc21c2ef3886807ae7032075d980b1dc3b6490520ae",
+    "concept": "c235c1c0552efdc75366b5fdbd23005524ab58caeae25d5239ae37a22754cceb",
+    "course": "ee548b71a5a6b9006a90e16000884431ba1a6cf81177b0e819e0afe6a01ed20d",
+    "evaluation": "f9d954d53223ca1df1e7f806cc8fef03116472785175b7fc33b57d4db9e4a5b4",
+    "mastery_evidence": "5528474c8bb1318a78c4fc6dc8be61f94afeb67087d6f2a568e9fff89199d4f0",
+    "organization": "b2f5f4846e24e8a36d5c2a24d7620aecfed30691b37f18f7bd879888827c3524",
+    "program": "7b1c182a0a816f1474c0e0890372357a68ce5a211211d5d29760045f27aeecd8",
+    "response": "2bda7682a0abd586ebb7ae2c4a2d23d295fd7bd9d7d0c348908f939ad5942cdd",
+    "session": "a5e221d6d6664b19f748aa4b192553de570795ee0f27f9deeb7acb1fab7ab248"
+  },
+  "source_counts": {
+    "answers": 8,
+    "app_users": 6,
+    "evaluations": 3,
+    "modules": 2,
+    "professors": 3,
+    "questions": 5,
+    "quiz_answer_submissions": 3,
+    "quiz_attempts": 3,
+    "quiz_questions": 3,
+    "quizzes": 3,
+    "study_programs": 2,
+    "task_catalog_items": 5,
+    "topics": 2,
+    "universities": 2
+  },
+  "source_system": "learning_plattform_v1",
+  "version": "learning-migration-dry-run-v1",
+  "warning_count": 0,
+  "warnings": []
+}
