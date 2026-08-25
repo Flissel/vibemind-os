@@ -110,6 +110,57 @@ def test_actual_router_prefers_each_explicit_anthropic_selector_without_cross_ro
     assert default_match.execution_target == "openfang:brain-coder-openai"
 
 
+def test_actual_router_keeps_explicit_anthropic_operational_requests_off_openai():
+    router = CapabilityRouter(CAPABILITIES_PATH)
+
+    for phrase in (
+        "use Claude to run tests/test_foo.py",
+        "use Anthropic to review src/main.py",
+        "mit Claude nach src/main.py suchen",
+        "use Claude to delete obsolete.py",
+    ):
+        match = router.route(phrase)
+        assert match is not None, phrase
+        assert match.capability == "coding_task_anthropic", phrase
+        assert match.execution_target == "openfang:brain-coder-anthropic", phrase
+
+    unsupported = router.route("use Claude to summarize src/main.py")
+    assert unsupported is None or unsupported.execution_target != "openfang:brain-coder-openai"
+
+
+def test_actual_router_keeps_all_explicit_anthropic_coding_operations_off_openai():
+    router = CapabilityRouter(CAPABILITIES_PATH)
+
+    for phrase in (
+        "use Anthropic to fix the bug in auth",
+        "use Claude to refactor this function",
+        "use Anthropic to implement an API",
+        "use Claude to create a github repo",
+        "use Anthropic to deploy to vercel",
+        "use Claude to commit these changes",
+    ):
+        match = router.route(phrase)
+        assert match is not None, phrase
+        assert match.capability == "coding_task_anthropic", phrase
+        assert match.execution_target == "openfang:brain-coder-anthropic", phrase
+
+
+def test_explicit_anthropic_selector_preserves_non_coding_collision_routes():
+    router = CapabilityRouter(CAPABILITIES_PATH)
+    expected = {
+        "use Claude to open https://example.com": "browser_automation",
+        "use Anthropic for a security scan": "security_scan",
+        "use Anthropic to review this pull request": "code_review",
+        "use Claude to find the function": "code_search",
+    }
+
+    for phrase, capability in expected.items():
+        match = router.route(phrase)
+        assert match is not None, phrase
+        assert match.capability == capability, phrase
+        assert match.execution_target != "openfang:brain-coder-openai", phrase
+
+
 def test_actual_router_requires_provider_selection_and_concrete_coding_mutation_for_anthropic():
     router = CapabilityRouter(CAPABILITIES_PATH)
 

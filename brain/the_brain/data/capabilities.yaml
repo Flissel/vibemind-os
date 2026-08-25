@@ -1301,7 +1301,14 @@
     # this route ahead of coding_task, but require selection + mutation + a
     # concrete code artifact so review/search/browser/document requests stay
     # on their existing capabilities.
-    - "(?=.*\\b(?:use\\s+(?:claude|anthropic)|mit\\s+(?:claude|anthropic)|claude\\s+code\\s+verwenden|anthropic\\s+verwenden)\\b)(?=.*\\b(?:fix|debug|repair\\w*|reparier\\w*|beheb\\w*|write|create|implement|refactor|modify|edit|schreib\\w*|erstell\\w*|ändere\\w*|f[üu]hr\\w*)\\b)(?=.*(?:\\.(?:py|js|ts|tsx|jsx|rs|go|java|cpp|c|h|hpp|rb|php|sh|cmd)\\b|\\b(?:function|funktion|script|skript|endpoint|api|code|test|datei|file)\\b)).*"
+    - "(?=.*\\b(?:use\\s+(?:claude|anthropic)|mit\\s+(?:claude|anthropic)|claude\\s+code\\s+verwenden|anthropic\\s+verwenden)\\b)(?=.*\\b(?:fix|debug|repair\\w*|reparier\\w*|beheb\\w*|write|create|implement|refactor|modify|edit|schreib\\w*|erstell\\w*|ändere\\w*|f[üu]hr\\w*)\\b)(?=.*(?:\\.(?:py|js|ts|tsx|jsx|rs|go|java|cpp|c|h|hpp|rb|php|sh|cmd)\\b|\\b(?:function|funktion|script|skript|endpoint|api|code|test|datei|file|bug|error|issue|fehler|class|klasse|module|modul)\\b)).*"
+    # Read/run/review/search/delete requests are coding operations when they
+    # name a concrete code file, while generic review/search intents stay on
+    # their earlier capabilities.
+    - "(?=.*\\b(?:use\\s+(?:claude|anthropic)|mit\\s+(?:claude|anthropic)|claude\\s+code\\s+verwenden|anthropic\\s+verwenden)\\b)(?=.*\\b(?:run|execute|test\\w*|review|inspect|check|search|find|locate|delete|remove|ausf[üu]hr\\w*|prüf\\w*|such\\w*|lösch\\w*)\\b)(?=.*\\.(?:py|js|ts|tsx|jsx|rs|go|java|cpp|c|h|hpp|rb|php|sh|cmd)\\b).*"
+    # Concrete repository lifecycle operations are also provider-selected
+    # coding work even when no source-file extension is present.
+    - "(?=.*\\b(?:use\\s+(?:claude|anthropic)|mit\\s+(?:claude|anthropic)|claude\\s+code\\s+verwenden|anthropic\\s+verwenden)\\b)(?=.*(?:\\b(?:create|setup|init|erstell|leg)\\b.*\\bgithub\\s+repo\\b|\\bdeploy\\b.*\\bvercel\\b|\\b(?:commit|push)\\b.*\\b(?:changes?|änderung)\\b)).*"
   execution_target: "openfang:brain-coder-anthropic"
   validator:
     # truth: ground-truth (2026-06-25) — the coding agent claims it wrote a file;
@@ -1329,22 +1336,24 @@
     - "leg mir ein github repo an und pushe den code dorthin"
   match_patterns:
     # File-extension is a strong signal that the user wants ACTUAL code on disk
-    - "\\.(py|js|ts|tsx|jsx|rs|go|java|cpp|c|h|hpp|rb|php|sh|cmd)\\b"
+    # Explicit provider selectors are handled only by coding_task_anthropic;
+    # they must never fall through this deterministic OpenAI default.
+    - "^(?!.*\\b(?:use\\s+(?:claude|anthropic)|mit\\s+(?:claude|anthropic)|claude\\s+code\\s+verwenden|anthropic\\s+verwenden)\\b).*\\.(py|js|ts|tsx|jsx|rs|go|java|cpp|c|h|hpp|rb|php|sh|cmd)\\b"
     # German + English code-creation verbs with stack keyword nearby
-    - "(write|create|schreib|erstell)\\s+(a|an|me|mir|ein|eine)?\\s*(python|js|ts|rust|go|java)\\s+(function|class|script|module|funktion|klasse)"
-    - "(write|schreib)\\s+(me|mir)\\s+(a|an|ein|eine)?\\s*(python|js|ts)\\s+(function|funktion|script|skript)"
+    - "^(?!.*\\b(?:use\\s+(?:claude|anthropic)|mit\\s+(?:claude|anthropic)|claude\\s+code\\s+verwenden|anthropic\\s+verwenden)\\b).*(write|create|schreib|erstell)\\s+(a|an|me|mir|ein|eine)?\\s*(python|js|ts|rust|go|java)\\s+(function|class|script|module|funktion|klasse)"
+    - "^(?!.*\\b(?:use\\s+(?:claude|anthropic)|mit\\s+(?:claude|anthropic)|claude\\s+code\\s+verwenden|anthropic\\s+verwenden)\\b).*(write|schreib)\\s+(me|mir)\\s+(a|an|ein|eine)?\\s*(python|js|ts)\\s+(function|funktion|script|skript)"
     # Verb + stack-name (looser — catches "schreib mir ein python script das X")
-    - "(write|create|schreib|erstell)\\s+\\w+\\s+(python|js|ts|rust|go|java)\\s+\\w+"
+    - "^(?!.*\\b(?:use\\s+(?:claude|anthropic)|mit\\s+(?:claude|anthropic)|claude\\s+code\\s+verwenden|anthropic\\s+verwenden)\\b).*(write|create|schreib|erstell)\\s+\\w+\\s+(python|js|ts|rust|go|java)\\s+\\w+"
     # Bug-fix style
-    - "(fix|debug)\\s+(the|a)?\\s*(bug|error|issue|fehler)\\s+in"
-    - "refactor\\s+(this|the)?\\s*(function|class|file|module|funktion|datei)"
-    - "implement\\s+(a|the|new)?\\s*(feature|endpoint|api)"
+    - "^(?!.*\\b(?:use\\s+(?:claude|anthropic)|mit\\s+(?:claude|anthropic)|claude\\s+code\\s+verwenden|anthropic\\s+verwenden)\\b).*(fix|debug)\\s+(the|a)?\\s*(bug|error|issue|fehler)\\s+in"
+    - "^(?!.*\\b(?:use\\s+(?:claude|anthropic)|mit\\s+(?:claude|anthropic)|claude\\s+code\\s+verwenden|anthropic\\s+verwenden)\\b).*refactor\\s+(this|the)?\\s*(function|class|file|module|funktion|datei)"
+    - "^(?!.*\\b(?:use\\s+(?:claude|anthropic)|mit\\s+(?:claude|anthropic)|claude\\s+code\\s+verwenden|anthropic\\s+verwenden)\\b).*implement\\s+(a|the|new)?\\s*(feature|endpoint|api)"
     # Concrete git/deploy operations
-    - "(create|setup|init|erstell|leg)\\s+(a|my|ein|mein)?\\s*github\\s+repo"
-    - "deploy\\s+(to|on|auf)\\s+vercel"
-    - "(commit|push)\\s+(this|my|den|meinen)?\\s*(changes?|änderung)"
+    - "^(?!.*\\b(?:use\\s+(?:claude|anthropic)|mit\\s+(?:claude|anthropic)|claude\\s+code\\s+verwenden|anthropic\\s+verwenden)\\b).*(create|setup|init|erstell|leg)\\s+(a|my|ein|mein)?\\s*github\\s+repo"
+    - "^(?!.*\\b(?:use\\s+(?:claude|anthropic)|mit\\s+(?:claude|anthropic)|claude\\s+code\\s+verwenden|anthropic\\s+verwenden)\\b).*deploy\\s+(to|on|auf)\\s+vercel"
+    - "^(?!.*\\b(?:use\\s+(?:claude|anthropic)|mit\\s+(?:claude|anthropic)|claude\\s+code\\s+verwenden|anthropic\\s+verwenden)\\b).*(commit|push)\\s+(this|my|den|meinen)?\\s*(changes?|änderung)"
     # Last-resort: stack + thing-noun pair
-    - "(eine?|a|ein)\\s+(python|js|ts|rust|go)\\s+(funktion|function|script|skript|class|klasse)"
+    - "^(?!.*\\b(?:use\\s+(?:claude|anthropic)|mit\\s+(?:claude|anthropic)|claude\\s+code\\s+verwenden|anthropic\\s+verwenden)\\b).*(eine?|a|ein)\\s+(python|js|ts|rust|go)\\s+(funktion|function|script|skript|class|klasse)"
   execution_target: "openfang:brain-coder-openai"
   validator:
     # truth: ground-truth (2026-06-25) — the coding agent CLAIMS it wrote a file;
