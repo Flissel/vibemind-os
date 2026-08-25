@@ -147,7 +147,18 @@ function captureRegistryResolverIntrinsic(): ProviderRegistry["resolve"] | undef
   return descriptor.value as ProviderRegistry["resolve"];
 }
 
+function captureRegistryRegisterIntrinsic(): ProviderRegistry["register"] | undefined {
+  const descriptor = Object.getOwnPropertyDescriptor(ProviderRegistry.prototype, "register");
+  if (
+    descriptor === undefined
+    || !("value" in descriptor)
+    || typeof descriptor.value !== "function"
+  ) return undefined;
+  return descriptor.value as ProviderRegistry["register"];
+}
+
 const TRUSTED_REGISTRY_RESOLVE = captureRegistryResolverIntrinsic();
+const TRUSTED_REGISTRY_REGISTER = captureRegistryRegisterIntrinsic();
 const resolverAuthorizedRegistries = new WeakMap<ProviderRegistry, ReadonlySet<string>>();
 
 function resolverBindingSignature(binding: ProviderBinding): string {
@@ -211,6 +222,7 @@ export function assembleTrustedProviderRegistry(
   catalogInput: unknown,
   assembliesInput: readonly TrustedProviderAssembly[],
 ): ProviderRegistry {
+  if (TRUSTED_REGISTRY_REGISTER === undefined) fail();
   const catalog = validateCatalog(catalogInput);
   if (!Array.isArray(assembliesInput) || isProxy(assembliesInput)) fail();
   const prototype = Object.getPrototypeOf(assembliesInput);
@@ -250,7 +262,9 @@ export function assembleTrustedProviderRegistry(
     assemblies.push(assembly);
   }
   const registry = new ProviderRegistry();
-  for (const assembly of assemblies) registry.register(assembly.binding, assembly.provider);
+  for (const assembly of assemblies) {
+    Reflect.apply(TRUSTED_REGISTRY_REGISTER, registry, [assembly.binding, assembly.provider]);
+  }
   resolverAuthorizedRegistries.set(registry, bindingSignatures);
   return registry;
 }

@@ -204,6 +204,62 @@ describe("installed plugin resolution", () => {
     }
   });
 
+  it("uses the module-captured registry registration after prototype mutation", async () => {
+    const app = box.components.find(({ component }) => component.kind === "app");
+    if (app === undefined || typeof app.component.metadata.digest !== "string") throw new Error("box app fixture missing");
+    const binding: ProviderBinding = Object.freeze({
+      id: "box-register-forgery", providerKind: "rowboat-native", componentDigest: app.component.metadata.digest,
+    });
+    let trustedInvokes = 0;
+    let attackerInvokes = 0;
+    const trustedProvider: PluginProvider = Object.freeze({
+      id: "box-register-trusted",
+      describe: () => Object.freeze({ id: "box-register-trusted", kind: "rowboat-native", temporaryAdapter: false }),
+      invoke: async () => { trustedInvokes += 1; return Object.freeze({ status: "success", output: null }); },
+    });
+    const attackerProvider: PluginProvider = Object.freeze({
+      id: "box-register-attacker",
+      describe: () => Object.freeze({ id: "box-register-attacker", kind: "rowboat-native", temporaryAdapter: false }),
+      invoke: async () => { attackerInvokes += 1; return Object.freeze({ status: "success", output: null }); },
+    });
+    const registerDescriptor = Object.getOwnPropertyDescriptor(ProviderRegistry.prototype, "register");
+    const resolveDescriptor = Object.getOwnPropertyDescriptor(ProviderRegistry.prototype, "resolve");
+    if (registerDescriptor === undefined || !("value" in registerDescriptor) || typeof registerDescriptor.value !== "function") {
+      throw new Error("provider registry register descriptor missing");
+    }
+    if (resolveDescriptor === undefined || !("value" in resolveDescriptor) || typeof resolveDescriptor.value !== "function") {
+      throw new Error("provider registry resolve descriptor missing");
+    }
+    const originalRegister = registerDescriptor.value as ProviderRegistry["register"];
+    const originalResolve = resolveDescriptor.value as ProviderRegistry["resolve"];
+    let forgedCalls = 0;
+    try {
+      Object.defineProperty(ProviderRegistry.prototype, "register", {
+        ...registerDescriptor,
+        value(this: ProviderRegistry, candidate: ProviderBinding) {
+          forgedCalls += 1;
+          return Reflect.apply(originalRegister, this, [candidate, attackerProvider]);
+        },
+      });
+      const registry = assembleTrustedProviderRegistry(catalog, [{
+        pluginName: box.pluginName,
+        componentId: app.component.id,
+        binding,
+        provider: trustedProvider,
+      }]);
+      const resolution = Reflect.apply(originalResolve, registry, [binding]);
+      expect(resolution.status).toBe("available");
+      if (resolution.status === "available") await resolution.provider.invoke({
+        projectId: "project-1", pluginName: "box", componentName: "box", capability: "read", arguments: {},
+      }, { requestId: "request-1" });
+      expect(forgedCalls).toBe(0);
+      expect(trustedInvokes).toBe(1);
+      expect(attackerInvokes).toBe(0);
+    } finally {
+      Object.defineProperty(ProviderRegistry.prototype, "register", registerDescriptor);
+    }
+  });
+
   it("evaluates plugin license admission before resolving components", () => {
     const resolved = resolveInstallation(installationFor("convex"), catalog, new ProviderRegistry(), DEFAULT_POLICY);
     expect(resolved).toMatchObject({ status: "unavailable", reason: "license_rejected" });
@@ -367,6 +423,51 @@ describe("secret-free receipts", () => {
       "output.records.0.setCookie", "output.records.0.sshKey", "output.records.0.signingKey",
       "output.records.0.encryptionKey", "output.records.0.credentialToken", "output.records.0.authHeader",
     ]));
+  });
+
+  it("redacts nested certificate session and cookie compound segments before hashing", () => {
+    const output = { record: {
+      certificateFormat: "x509",
+      client_certificate: "raw-client-certificate",
+      cookiePolicy: "strict",
+      requestCookie: "raw-request-cookie",
+      "response-set-cookie": "raw-response-cookie",
+      sessionMode: "stateless",
+      "tls-certificate": "raw-tls-kebab",
+      tlsCertificate: "raw-tls-camel",
+      userSessionId: "raw-user-session",
+    } };
+    const receipt = buildReceipt({
+      type: "execution", receiptId: "receipt-compound-families", projectId: "project-1", pluginName: "box", status: "success", output,
+    }, [], { maxOutputBytes: 1 });
+    const redacted = "[REDACTED]";
+    const canonical = JSON.stringify({ record: {
+      certificateFormat: "x509",
+      client_certificate: redacted,
+      cookiePolicy: "strict",
+      requestCookie: redacted,
+      "response-set-cookie": redacted,
+      sessionMode: "stateless",
+      "tls-certificate": redacted,
+      tlsCertificate: redacted,
+      userSessionId: redacted,
+    } });
+    expect(receipt.output).toEqual({
+      truncated: true,
+      digest: createHash("sha256").update(Buffer.from(canonical, "utf8")).digest("hex"),
+    });
+    for (const value of Object.values(output.record)) {
+      if (value === "x509" || value === "strict" || value === "stateless") continue;
+      expect(JSON.stringify(receipt)).not.toContain(value);
+    }
+    expect(receipt.redactions).toEqual([
+      "output.record.client_certificate",
+      "output.record.requestCookie",
+      "output.record.response-set-cookie",
+      "output.record.tls-certificate",
+      "output.record.tlsCertificate",
+      "output.record.userSessionId",
+    ]);
   });
 
   it("produces the same truncated digest across object insertion order", () => {

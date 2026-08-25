@@ -19,13 +19,17 @@ const SECRET_COMPOUNDS = new Set([
   "sessioncookie", "setcookie", "sshkey", "signingkey", "encryptionkey",
 ]);
 const SECRET_KEY_PREFIXES = new Set(["api", "private", "ssh", "signing", "encryption", "certificate"]);
+const SAFE_METADATA_COMPOUNDS = new Set(["certificateformat", "sessionmode", "cookiepolicy"]);
+const NESTED_SECRET_SEGMENTS = new Set(["cert", "certificate", "session", "cookie"]);
 
 function isSensitiveKey(key: string | undefined): boolean {
   if (key === undefined) return false;
   const normalized = key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
   const collapsed = normalized.replace(/[_-]/g, "");
+  if (SAFE_METADATA_COMPOUNDS.has(collapsed)) return false;
   if (DIRECT_SECRET_KEYS.has(normalized) || SECRET_COMPOUNDS.has(collapsed)) return true;
   const segments = normalized.split(/[_-]/);
+  if (segments.some((part) => NESTED_SECRET_SEGMENTS.has(part))) return true;
   if (segments.some((part) => ALWAYS_SECRET_SEGMENTS.has(part) || OPERATIONAL_SECRET_SEGMENTS.has(part))) return true;
   if (
     segments.some((part) => part === "auth" || part === "authorization")
