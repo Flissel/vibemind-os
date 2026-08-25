@@ -5,6 +5,7 @@ import socket
 from collections.abc import Callable
 from urllib.parse import urlparse
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import inspect, text
@@ -39,6 +40,13 @@ def _database_probe(database_url: str) -> bool:
         engine.dispose()
 
 
+def _embedding_probe(base_url: str) -> bool:
+    if not base_url.startswith(("http://", "https://")):
+        return False
+    response = httpx.get(f"{base_url.rstrip('/')}/health", timeout=3)
+    return response.status_code == 200
+
+
 def _migration_probe(database_url: str) -> bool:
     engine = create_learning_engine(database_url)
     try:
@@ -53,11 +61,13 @@ def build_health_service() -> HealthService:
     database_url = os.environ.get("LEARNING_DATABASE_URL", "").strip()
     redis_url = os.environ.get("LEARNING_REDIS_URL", "").strip()
     qdrant_url = os.environ.get("LEARNING_QDRANT_URL", "").strip()
+    embedding_url = os.environ.get("LEARNING_EMBEDDING_URL", "").strip()
     return HealthService(
         dependency_probes={
             "postgres": lambda: _database_probe(database_url),
             "redis": _tcp_probe(redis_url, 6379),
             "qdrant": _tcp_probe(qdrant_url, 6333),
+            "embedding": lambda: _embedding_probe(embedding_url),
         },
         migration_probe=lambda: _migration_probe(database_url),
         structural_probe=lambda: [],

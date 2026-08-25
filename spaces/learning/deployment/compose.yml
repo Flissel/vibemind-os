@@ -155,6 +155,7 @@ services:
       LEARNING_DATABASE_URL: *postgres-url
       LEARNING_REDIS_URL: redis://redis:6379/1
       LEARNING_QDRANT_URL: http://qdrant:6333
+      LEARNING_EMBEDDING_URL: ${LEARNING_EMBEDDING_URL:?set LEARNING_EMBEDDING_URL}
       LEARNING_ARTIFACT_ROOT: /var/lib/vibemind-learning/artifacts
       LEARNING_SERVICE_ROLE: api
     ports:
@@ -185,6 +186,7 @@ services:
       LEARNING_DATABASE_URL: *postgres-url
       LEARNING_REDIS_URL: redis://redis:6379/1
       LEARNING_QDRANT_URL: http://qdrant:6333
+      LEARNING_EMBEDDING_URL: ${LEARNING_EMBEDDING_URL:?set LEARNING_EMBEDDING_URL}
       LEARNING_ARTIFACT_ROOT: /var/lib/vibemind-learning/artifacts
       LEARNING_WORKER_HEARTBEAT: /tmp/learning-worker-heartbeat
     volumes:

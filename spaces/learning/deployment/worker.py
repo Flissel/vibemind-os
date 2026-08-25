@@ -5,9 +5,16 @@ import os
 import time
 from pathlib import Path
 
-from sqlalchemy import text
+from sqlalchemy.orm import sessionmaker
 
+from spaces.learning.deployment.migrate import migrate
 from spaces.learning.services.db.session import create_learning_engine
+from spaces.learning.services.ingestion.outbox_worker import QdrantOutboxWorker
+from spaces.learning.services.ingestion.qdrant_index import QdrantIndex
+from spaces.learning.services.ingestion.retrieval import OpenFangEmbeddingGateway
+
+
+EMBEDDING_DIMENSION = 3072
 
 
 def _heartbeat_path() -> Path:
@@ -23,17 +30,28 @@ def _healthy(max_age_seconds: float = 30.0) -> bool:
 
 def run() -> None:
     database_url = os.environ.get("LEARNING_DATABASE_URL", "").strip()
+    qdrant_url = os.environ.get("LEARNING_QDRANT_URL", "").strip()
+    embedding_url = os.environ.get("LEARNING_EMBEDDING_URL", "").strip()
+    if not database_url or not qdrant_url or not embedding_url:
+        raise RuntimeError(
+            "Learning worker requires database, Qdrant, and embedding service URLs"
+        )
+    migrate(database_url)
     engine = create_learning_engine(database_url)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    index = QdrantIndex(qdrant_url, vector_size=EMBEDDING_DIMENSION)
+    projection = QdrantOutboxWorker(
+        factory,
+        index=index,
+        embedder=OpenFangEmbeddingGateway(embedding_url),
+    )
     try:
         while True:
-            try:
-                with engine.connect() as connection:
-                    connection.execute(text("SELECT 1"))
-                _heartbeat_path().touch()
-            except Exception:
-                pass
-            time.sleep(5)
+            processed = projection.run_once()
+            _heartbeat_path().touch()
+            time.sleep(0.1 if processed else 2.0)
     finally:
+        index.close()
         engine.dispose()
 
 

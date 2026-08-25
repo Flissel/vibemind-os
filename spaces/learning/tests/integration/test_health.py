@@ -25,6 +25,7 @@ def test_readiness_reports_qdrant_or_redis_degradation_without_terminal_state() 
             "postgres": lambda: True,
             "redis": lambda: False,
             "qdrant": lambda: False,
+            "embedding": lambda: False,
         },
         migration_probe=lambda: True,
         structural_probe=lambda: [],
@@ -36,6 +37,7 @@ def test_readiness_reports_qdrant_or_redis_degradation_without_terminal_state() 
     assert readiness["status"] == "degraded"
     assert readiness["components"] == {
         "migrations": "ready",
+        "embedding": "unavailable",
         "postgres": "ready",
         "qdrant": "unavailable",
         "redis": "unavailable",

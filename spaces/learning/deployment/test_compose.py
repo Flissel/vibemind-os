@@ -199,6 +199,30 @@ def test_learning_service_credentials_are_limited_to_the_internal_api_and_mcp() 
             assert "LEARNHOUSE_LEARNING_SERVICE_URL" not in environment
 
 
+def test_learning_runtime_uses_only_the_openfang_authorized_embedding_service() -> None:
+    services = _load(COMPOSE_PATH)["services"]
+    assert isinstance(services, dict)
+    for service_name in ("learning-api", "learning-worker"):
+        service = services[service_name]
+        assert isinstance(service, dict)
+        environment = service["environment"]
+        assert isinstance(environment, dict)
+        assert environment["LEARNING_EMBEDDING_URL"] == (
+            "${LEARNING_EMBEDDING_URL:?set LEARNING_EMBEDDING_URL}"
+        )
+    for service_name, service in services.items():
+        assert isinstance(service, dict)
+        service_environment = service.get("environment", {})
+        assert isinstance(service_environment, dict)
+        if service_name not in {"learning-api", "learning-worker"}:
+            assert "LEARNING_EMBEDDING_URL" not in service_environment
+    for env_path in (ENV_EXAMPLE_PATH, ROOT_ENV_EXAMPLE_PATH):
+        assert re.search(
+            r"(?m)^LEARNING_EMBEDDING_URL=<[^>]+>$",
+            env_path.read_text(encoding="utf-8"),
+        )
+
+
 def test_profile_is_explicitly_local_and_has_no_ha_claim() -> None:
     profile = _load(PROFILE_PATH)
 
