@@ -190,6 +190,7 @@ def test_core_migration_and_metadata_own_the_exact_prefixed_tables() -> None:
         "learning_adaptive_mastery_evidence",
         "learning_adaptive_review_schedules",
         "learning_adaptive_misconceptions",
+        "learning_adaptive_review_items",
     }
 
 

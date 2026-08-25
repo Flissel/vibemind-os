@@ -339,3 +339,24 @@ class Misconception(Base):
         DateTime(timezone=True), default=utc_now, nullable=False
     )
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class LearningReviewItem(Base):
+    __tablename__ = "learning_adaptive_review_items"
+    __table_args__ = (
+        UniqueConstraint("request_ref", "reason_code"),
+        CheckConstraint("status IN ('pending','resolved')"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    request_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+    evaluation_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("learning_adaptive_evaluations.id")
+    )
+    reason_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    details: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

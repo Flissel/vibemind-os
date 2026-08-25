@@ -31,6 +31,11 @@ ROLE_CONTRACTS = {
         "quality-review-prompt-v1",
         "quality-review-v1",
     ),
+    "rubric_evaluator": (
+        "evaluation",
+        "rubric-prompt-v1",
+        "rubric-evaluation-v1",
+    ),
 }
 ROLE_PROMPTS = {
     "architect": "Design a source-grounded curriculum structure for the stated audience and outcome.",
@@ -39,6 +44,7 @@ ROLE_PROMPTS = {
     "assessment_designer": "Design authentic activities that assess the mapped concepts without inventing facts.",
     "source_verifier": "Return a complete course draft whose claims and expected answers cite exact supplied source locators; list every unsupported claim.",
     "quality_reviewer": "Review coverage, coherence, difficulty, and task quality; never publish the course.",
+    "rubric_evaluator": "Evaluate the response against every rubric criterion using only the supplied source references.",
 }
 _SECRET_KEYS = ("api_key", "token", "secret", "password", "credential")
 _MAX_REQUEST_BYTES = 500_000

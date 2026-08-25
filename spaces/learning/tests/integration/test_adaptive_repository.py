@@ -19,6 +19,7 @@ from spaces.learning.services.adaptive_engine.models import (
     LearningAttempt,
     LearningEvaluation,
     LearningResponse,
+    LearningReviewItem,
     MasteryEvidence,
     Misconception,
     ReviewSchedule,
@@ -31,6 +32,15 @@ from spaces.learning.services.adaptive_engine.repository import (
 from spaces.learning.services.db.models import Base
 from spaces.learning.services.db.repository import PersistenceConflict
 from spaces.learning.deployment.migrate import migrate
+from spaces.learning.services.evaluation.review_queue import (
+    ReviewItem,
+    SqlEvaluationRecorder,
+    SqlReviewQueue,
+)
+from spaces.learning.services.evaluation.schemas import (
+    CriterionEvaluation,
+    RubricDecision,
+)
 
 
 @pytest.fixture()
@@ -272,6 +282,93 @@ def test_item_concept_mapping_cannot_cross_course_revision(adaptive_store) -> No
                     course_revision=4,
                 )
             )
+
+
+def test_rubric_versions_and_review_work_are_durable(adaptive_store) -> None:
+    course_id, _, _, item_id = _catalog(adaptive_store)
+    repository = AdaptiveRepository(adaptive_store)
+    learning_session = repository.start_session(
+        SessionInput(
+            course_id=course_id,
+            course_revision=3,
+            actor_id="local-owner",
+            mode="training",
+            blueprint={},
+        )
+    )
+    attempt = repository.append_attempt(
+        learning_session.id,
+        expected_session_revision=1,
+        value=AttemptInput(item_id=item_id, selection_reason={}),
+    )
+    response_id = str(uuid4())
+    evaluation_id = str(uuid4())
+    with adaptive_store() as session, session.begin():
+        session.add(
+            LearningResponse(
+                id=response_id,
+                attempt_id=attempt.id,
+                response_revision=1,
+                answer={"text": "partial"},
+                answer_hash="c" * 64,
+            )
+        )
+    decision = RubricDecision(
+        evaluation_id=evaluation_id,
+        response_id=response_id,
+        score=0.5,
+        confidence=0.649,
+        accepted=False,
+        rationale_codes=["low_confidence"],
+        criterion_results=[
+            CriterionEvaluation(
+                criterion_id="authority",
+                awarded_points=1,
+                feedback="Partial evidence.",
+                source_refs=["source://authority/3"],
+            )
+        ],
+        misconception_tags=["authority_partial"],
+        evaluator_versions={
+            "model": "openfang-v1",
+            "prompt": "rubric-v1",
+            "sources": "sources-r3",
+        },
+        source_refs=["source://authority/3"],
+        evidence_ref="openfang://completion/eval-1",
+    )
+
+    SqlEvaluationRecorder(adaptive_store).record(decision)
+    queue = SqlReviewQueue(adaptive_store)
+    queue.enqueue(
+        ReviewItem(
+            evaluation_id=evaluation_id,
+            reason_code="low_confidence",
+            details={"confidence": 0.649},
+        )
+    )
+    schema_failure_id = str(uuid4())
+    queue.enqueue(
+        ReviewItem(
+            evaluation_id=schema_failure_id,
+            reason_code="evaluator_schema_invalid",
+            details={"prompt": "rubric-v1"},
+        )
+    )
+
+    with adaptive_store() as session:
+        evaluation = session.get(LearningEvaluation, evaluation_id)
+        items = session.scalars(
+            select(LearningReviewItem).order_by(LearningReviewItem.reason_code)
+        ).all()
+    assert evaluation is not None
+    assert evaluation.evaluator_versions["model"] == "openfang-v1"
+    assert len(items) == 2
+    assert {item.request_ref for item in items} == {
+        evaluation_id,
+        schema_failure_id,
+    }
+    assert sum(item.evaluation_id is None for item in items) == 1
 
 
 def test_postgres_rejects_mutation_and_unaccepted_mastery_evidence(
