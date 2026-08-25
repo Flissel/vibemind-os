@@ -115,6 +115,63 @@ def test_record_without_a_name_derives_the_filename_from_the_device(
     assert written[0].name == "mikrofon-hyperx-quadcast-2.wav"
 
 
+def test_recording_twice_without_a_name_produces_two_files_not_one_overwritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """Findung 1: cmd_record leitete den Dateinamen bisher einmal ab und liess
+    ffmpeg mit -y unbesehen ueberschreiben. Zwei Aufnahmen ohne --name (oder
+    mit demselben --name, oder vom selben Geraet) durften bisher die erste
+    Aufnahme kommentarlos vernichten - das nicht wiederholbare Aux-Material.
+    Hier wird cli.record gemonkeypatcht, schreibt aber wirklich eine Datei,
+    damit der Kollisionspfad (target.exists()) echt ausgeloest wird."""
+    written: list[Path] = []
+
+    def fake_record(device: str, target: Path, seconds: float) -> None:
+        content = b"erste Aufnahme" if not written else b"zweite Aufnahme"
+        written.append(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+
+    monkeypatch.setattr(cli, "record", fake_record)
+
+    code1 = cmd_record(
+        base=tmp_path, device="Mikrofon", seconds=1.0, name=None, list_devices=False
+    )
+    code2 = cmd_record(
+        base=tmp_path, device="Mikrofon", seconds=1.0, name=None, list_devices=False
+    )
+
+    assert code1 == 0
+    assert code2 == 0
+    assert written[0].name == "mikrofon.wav"
+    assert written[1].name == "mikrofon-2.wav"
+    assert written[0].read_bytes() == b"erste Aufnahme"
+    assert written[1].read_bytes() == b"zweite Aufnahme"
+    out = capsys.readouterr().out
+    assert "mikrofon-2.wav" in out
+
+
+def test_record_list_devices_wins_even_when_device_is_also_given(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+) -> None:
+    """--list-devices kombiniert mit --device durfte bisher stillschweigend
+    durchfallen und in einen echten Aufnahmeversuch muenden. Wer explizit
+    auflisten will, meint das eindeutig - unabhaengig davon, ob --device
+    nebenbei mitgegeben wurde."""
+    monkeypatch.setattr(cli, "list_input_devices", lambda: ["Mikrofon"])
+
+    code = cmd_record(
+        base=tmp_path,
+        device="Mikrofon",
+        seconds=5.0,
+        name=None,
+        list_devices=True,
+    )
+
+    assert code == 0
+    assert "Mikrofon" in capsys.readouterr().out
+
+
 def test_record_reports_render_tool_missing_in_german_and_exits_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:

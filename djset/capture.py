@@ -9,10 +9,16 @@ djset/watch.py). Diese Pruefung bleibt unangetastet; hier wird nur dafuer
 gesorgt, dass sie nie anschlaegt. record() und convert() schreiben beide
 ueber "-ar 44100" exakt in dieser Rate.
 
-Stereo bleibt in beiden Faellen erhalten. Der Renderer mischt Quellmaterial
-heute auf Mono ab (djset.render.engine._load_mono) - eine dokumentierte,
-vorlaeufige Einschraenkung dort, keine Lizenz, das Stereobild schon bei der
-Aufnahme wegzuwerfen. Das waere unwiderruflich.
+Die Kanalzahl der Quelle bleibt in beiden Faellen erhalten - keine `-ac`
+Flagge zwingt sie auf Stereo. Eine Mono-Quelle (der Regelfall an einem
+Aux-/Leitungseingang) kommt sonst nicht einfach kanalverdoppelt heraus:
+ffmpeg mischt sie leistungserhaltend auf beide Kanaele, mit Faktor 1/sqrt(2)
+(~-3dB) je Kanal, und das Material waere leiser als es hineinging, ohne jede
+Meldung. Der Renderer mischt Quellmaterial heute ohnehin auf Mono ab
+(djset.render.engine._load_mono) - eine dokumentierte, vorlaeufige
+Einschraenkung dort. Fuer eine bereits-mono Quelle ist dieser Downmix die
+Identitaet; fuer eine Stereo-Quelle bleibt das Stereobild unangetastet, weil
+ffmpeg ohne `-ac` die native Kanalzahl uebernimmt.
 """
 
 import subprocess
@@ -20,7 +26,7 @@ from pathlib import Path
 
 from djset.render.stretch import SR, ffmpeg_path
 from djset.run import slugify
-from djset.watch import AUDIO_SUFFIXES
+from djset.watch import AUDIO_SUFFIXES, scan
 
 
 class CaptureFailed(RuntimeError):
@@ -76,7 +82,8 @@ def list_input_devices() -> list[str]:
 
 def record(device: str, target: Path, seconds: float, sr: int = SR) -> None:
     """Nimmt `seconds` Sekunden vom benannten Geraet auf und schreibt eine
-    Stereo-Float-WAV in `sr` Hz."""
+    Float-WAV in `sr` Hz, mit der nativen Kanalzahl des Geraets (kein
+    erzwungenes `-ac` - siehe Modul-Docstring)."""
     target.parent.mkdir(parents=True, exist_ok=True)
     command = [
         ffmpeg_path(),
@@ -87,7 +94,6 @@ def record(device: str, target: Path, seconds: float, sr: int = SR) -> None:
         "-i", f"audio={device}",
         "-t", str(seconds),
         "-ar", str(sr),
-        "-ac", "2",
         "-c:a", "pcm_f32le",
         str(target),
     ]
@@ -100,8 +106,9 @@ def record(device: str, target: Path, seconds: float, sr: int = SR) -> None:
 
 
 def convert(source: Path, target: Path, sr: int = SR) -> None:
-    """Wandelt eine vorhandene Audiodatei in eine Stereo-Float-WAV in `sr`
-    Hz um."""
+    """Wandelt eine vorhandene Audiodatei in eine Float-WAV in `sr` Hz um,
+    mit der Kanalzahl der Quelle (kein erzwungenes `-ac` - siehe
+    Modul-Docstring)."""
     target.parent.mkdir(parents=True, exist_ok=True)
     command = [
         ffmpeg_path(),
@@ -110,7 +117,6 @@ def convert(source: Path, target: Path, sr: int = SR) -> None:
         "-y",
         "-i", str(source),
         "-ar", str(sr),
-        "-ac", "2",
         "-c:a", "pcm_f32le",
         str(target),
     ]
@@ -133,6 +139,12 @@ def import_folder(source_dir: Path, watch_dir: Path, sr: int = SR) -> list[Path]
     diesen Dateinamen spaeter dieselben stabilen, kollisionsfreien IDs ab,
     die scan() auch fuer unveraendert abgelegtes Material liefert.
 
+    Der Zaehler startet dabei nicht bei jedem Aufruf leer, sondern wird aus
+    scan(watch_dir) gespeist: sonst ueberschreibt ein zweiter Import, dessen
+    Datei auf denselben Slug abbildet wie eine aus einem frueheren Import,
+    deren Audio kommentarlos - Material, das der Nutzer bereits hereingeholt
+    hat, waere unwiderruflich weg.
+
     Ein fehlender Quellordner ist hier - wie bei scan() - keine Fehlermeldung,
     sondern eine leere Liste.
     """
@@ -150,7 +162,7 @@ def import_folder(source_dir: Path, watch_dir: Path, sr: int = SR) -> list[Path]
     )
 
     written: list[Path] = []
-    used: set[str] = set()
+    used: set[str] = {file.id for file in scan(watch_dir)}
     for path in found:
         base = slugify(path.stem) or "track"
         name = base

@@ -138,7 +138,6 @@ def test_record_builds_the_expected_ffmpeg_command(
         "-i", "audio=Mikrofon (HyperX QuadCast 2)",
         "-t", "5.0",
         "-ar", "44100",
-        "-ac", "2",
         "-c:a", "pcm_f32le",
         str(target),
     ]
@@ -184,7 +183,7 @@ def test_record_a_failed_ffmpeg_raises_capture_failed_with_its_stderr(
 # --- convert: echte, kurze ffmpeg-Aufrufe -----------------------------------
 
 
-def test_convert_writes_44100hz_stereo(tmp_path: Path) -> None:
+def test_convert_writes_44100hz(tmp_path: Path) -> None:
     source = _tone(tmp_path / "quelle.wav", samplerate=48_000, channels=1)
     target = tmp_path / "ziel.wav"
 
@@ -192,7 +191,17 @@ def test_convert_writes_44100hz_stereo(tmp_path: Path) -> None:
 
     info = sf.info(target)
     assert info.samplerate == 44_100
-    assert info.channels == 2
+
+
+def test_convert_preserves_a_mono_sources_channel_count(tmp_path: Path) -> None:
+    """Kein erzwungenes -ac mehr (Findung 3) - eine Mono-Quelle bleibt mono
+    statt kanalverdoppelt zu werden."""
+    source = _tone(tmp_path / "quelle.wav", samplerate=48_000, channels=1)
+    target = tmp_path / "ziel.wav"
+
+    convert(source, target)
+
+    assert sf.info(target).channels == 1
 
 
 def test_convert_preserves_an_existing_stereo_image(tmp_path: Path) -> None:
@@ -210,6 +219,30 @@ def test_convert_preserves_an_existing_stereo_image(tmp_path: Path) -> None:
     # linker und rechter Kanal sind im Quellmaterial unterschiedlich laut -
     # ein echter Downmix an dieser Stelle wuerde beide Kanaele angleichen.
     assert not np.allclose(signal[:, 0], signal[:, 1])
+
+
+def test_convert_preserves_the_peak_of_a_mono_source(tmp_path: Path) -> None:
+    """Findung 3: das erzwungene `-ac 2` verdoppelt einen Mono-Kanal nicht
+    einfach, sondern mischt ihn leistungserhaltend auf beide Kanaele - mit
+    Faktor 1/sqrt(2) (~-3dB) pro Kanal. Eine Aufnahme vom Aux-Eingang, der
+    ueblicherweise mono ist, kam dadurch leiser heraus als sie hineinging,
+    ohne jede Meldung. Ohne erzwungene Kanalzahl bleibt der Pegel der Quelle
+    erhalten, weil ffmpeg dann die native Kanalzahl uebernimmt."""
+    source = tmp_path / "mono-quelle.wav"
+    frames = int(0.3 * 44_100)
+    mono = (0.5 * np.sin(2 * np.pi * 220.0 * np.arange(frames) / 44_100)).astype(
+        np.float32
+    )
+    sf.write(source, mono, 44_100)
+    source_peak = float(np.abs(mono).max())
+
+    target = tmp_path / "ziel.wav"
+    convert(source, target)
+
+    result, sr = sf.read(target, dtype="float32")
+    assert sr == 44_100
+    result_peak = float(np.abs(result).max())
+    assert result_peak == pytest.approx(source_peak, abs=0.01)
 
 
 def test_a_converted_file_really_passes_the_watch_preflight_check(
@@ -270,7 +303,9 @@ def test_import_folder_converts_every_audio_file(tmp_path: Path) -> None:
         assert path.parent == watch
         info = sf.info(path)
         assert info.samplerate == 44_100
-        assert info.channels == 2
+        # beide Quellen sind mono (_tone()s Vorgabe) - kein erzwungenes -ac
+        # mehr (Findung 3), die Kanalzahl der Quelle bleibt erhalten.
+        assert info.channels == 1
 
 
 def test_import_folder_derives_stable_slugified_names(tmp_path: Path) -> None:
@@ -311,6 +346,32 @@ def test_import_folder_output_passes_the_watch_preflight_check(tmp_path: Path) -
     files = scan(watch)
     assert len(files) == 2
     check_sample_rate(files)
+
+
+def test_importing_two_folders_with_colliding_slugs_produces_two_files(
+    tmp_path: Path,
+) -> None:
+    """Findung 2: `used` startete bei jedem Aufruf leer und sah nie nach, was
+    schon in watch_dir liegt. Ein zweiter Import mit einer Datei, die auf
+    denselben Slug abbildet wie eine aus dem ersten Import, ueberschrieb
+    bisher deren Audio kommentarlos. Der Zaehler muss ueber Aufrufe hinweg
+    weiterlaufen, indem er aus djset.watch.scan(watch_dir) gespeist wird."""
+    watch = tmp_path / "watch"
+
+    first_source = tmp_path / "quelle-1"
+    first_source.mkdir()
+    _tone(first_source / "Track.wav", samplerate=44_100)
+
+    second_source = tmp_path / "quelle-2"
+    second_source.mkdir()
+    _tone(second_source / "track.wav", samplerate=44_100)  # slugifies identically
+
+    first_written = import_folder(first_source, watch)
+    second_written = import_folder(second_source, watch)
+
+    assert first_written == [watch / "track.wav"]
+    assert second_written == [watch / "track-2.wav"]
+    assert sorted(p.name for p in watch.iterdir()) == ["track-2.wav", "track.wav"]
 
 
 def test_import_folder_of_a_missing_folder_is_empty_not_an_error(

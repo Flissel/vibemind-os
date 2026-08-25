@@ -293,11 +293,11 @@ def cmd_record(
 ) -> int:
     """Nimmt vom benannten Eingabegeraet auf und legt das Ergebnis in watch/ ab.
 
-    `--list-devices` ohne `--device` listet nur die Geraete und beendet sich -
-    das ist der Weg, den Namen fuer `--device` erst herauszufinden, bevor
-    tatsaechlich aufgenommen wird.
+    `--list-devices` listet die Geraete und beendet sich, unabhaengig davon,
+    ob --device nebenbei mitgegeben wurde - wer explizit auflisten will,
+    meint das eindeutig, statt in einen echten Aufnahmeversuch zu fallen.
     """
-    if list_devices and device is None:
+    if list_devices:
         try:
             devices = list_input_devices()
         except RenderToolMissing as error:
@@ -324,9 +324,20 @@ def cmd_record(
         return 1
 
     watch = base / WATCH_DIRNAME
-    filename = slugify(name) if name else slugify(device)
-    if not filename:
-        filename = "aufnahme"
+    base_filename = slugify(name) if name else slugify(device)
+    if not base_filename:
+        base_filename = "aufnahme"
+
+    # Wie import_folder()s Kollisionsschema (djset/capture.py), nur gegen die
+    # Platte statt gegen eine In-Memory-Menge geprueft: zwei Aufnahmen ohne
+    # --name, mit demselben --name oder vom selben Geraet duerfen die vorige
+    # Aufnahme nicht kommentarlos ueberschreiben (ffmpeg laeuft mit -y) - Aux-
+    # Material laesst sich anders als ein Suno-Prompt nicht neu generieren.
+    filename = base_filename
+    counter = 2
+    while (watch / f"{filename}.wav").exists():
+        filename = f"{base_filename}-{counter}"
+        counter += 1
     target = watch / f"{filename}.wav"
 
     try:
