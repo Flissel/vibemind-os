@@ -181,3 +181,18 @@ export {
   VerifiedProcessExecutionRoot,
   verifyProcessExecutionRoot,
 } from "./process/process-execution-root.js";
+export {
+  normalizeHookEvent,
+  type HookEventType,
+} from "./hooks/hook-event.js";
+export {
+  compileHookMatcher,
+  type CompiledHookMatcher,
+} from "./hooks/hook-matcher.js";
+export {
+  HookRunner,
+  type HookCommand,
+  type HookExecutionEvent,
+  type HookExecutionReceipt,
+  type HookRunnerOptions,
+} from "./hooks/hook-runner.js";
