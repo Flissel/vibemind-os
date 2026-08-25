@@ -351,3 +351,18 @@ def test_learnhouse_web_uses_the_reserved_learning_space_default_port() -> None:
         "${LEARNHOUSE_WEB_PORT:-13000}"
         in api["environment"]["LEARNHOUSE_ALLOWED_ORIGINS"]
     )
+
+
+def test_canvas_runtime_keeps_penecho_on_the_mcp_loopback_boundary() -> None:
+    services = _load(COMPOSE_PATH)["services"]
+    mcp, penecho = services["learning-mcp"], services["penecho"]
+
+    assert penecho["network_mode"] == "service:learning-mcp"
+    assert "ports" not in penecho
+    assert "127.0.0.1:${PENECHO_PORT:-3888}:3888" in mcp["ports"]
+    assert mcp["environment"]["LEARNING_PENECHO_URL"] == "http://127.0.0.1:3888"
+    assert mcp["environment"]["LEARNING_PENECHO_ORIGIN"].startswith("http://127.0.0.1:")
+    assert "${PENECHO_LEARNING_TOKEN:?" in mcp["environment"]["PENECHO_LEARNING_TOKEN"]
+    assert mcp["volumes"] == ["learning-artifacts:/var/lib/vibemind-learning/artifacts"]
+    assert penecho["environment"]["PENECHO_LEARNING_ORIGIN"] == mcp["environment"]["LEARNING_PENECHO_ORIGIN"]
+    assert penecho["environment"]["PENECHO_LEARNING_TOKEN"] == mcp["environment"]["PENECHO_LEARNING_TOKEN"]

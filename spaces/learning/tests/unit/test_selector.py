@@ -102,6 +102,19 @@ def test_quality_is_excluded_and_recent_item_is_penalized() -> None:
     assert "quality_not_approved" in rejected.reason_codes
 
 
+def test_immediate_repeat_never_beats_an_available_fresh_item() -> None:
+    result = select_next_item(
+        (
+            _candidate("recent-perfect", 0.26),
+            _candidate("fresh-harder", 0.9),
+        ),
+        _context(recent_item_ids=("recent-perfect",)),
+    )
+
+    assert result.selected is not None
+    assert result.selected.item_id == "fresh-harder"
+
+
 def test_overdue_review_and_misconception_break_equal_quality_ties() -> None:
     overdue = select_next_item(
         (

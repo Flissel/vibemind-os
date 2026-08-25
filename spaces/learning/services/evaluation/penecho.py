@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -19,6 +19,7 @@ from spaces.learning.services.course_factory.model_gateway import (
 )
 from spaces.learning.services.evaluation.canvas_artifacts import encode_canvas_document
 from spaces.learning.services.evaluation.review_queue import ReviewQueue
+from spaces.learning.services.evaluation.review_queue import InMemoryReviewQueue
 from spaces.learning.services.evaluation.rubric import (
     EvaluationRecorder,
     MasteryApplication,
@@ -165,3 +166,38 @@ class PenEchoEvaluator:
             misconception_tags=tuple(decision.misconception_tags),
             evaluator_versions=decision.evaluator_versions,
         )
+
+
+@dataclass
+class _DecisionCapture:
+    value: RubricDecision | None = None
+
+    def record(self, decision: RubricDecision) -> None:
+        self.value = decision
+
+
+class _DeferredMastery:
+    def apply(self, decision: RubricDecision) -> None:
+        del decision
+
+
+class SessionPenEchoEvaluator:
+    """Returns a validated decision while the adaptive session owns persistence."""
+
+    def __init__(self, gateway: ModelGateway) -> None:
+        self._gateway = gateway
+
+    async def evaluate(
+        self, request: CanvasEvaluationRequest, *, snapshot_png: bytes
+    ) -> tuple[CanvasRubricResultV1, RubricDecision]:
+        capture = _DecisionCapture()
+        evaluator = PenEchoEvaluator(
+            gateway=self._gateway,
+            recorder=capture,
+            review_queue=InMemoryReviewQueue(),
+            mastery=_DeferredMastery(),
+        )
+        result = await evaluator.evaluate(request, snapshot_png=snapshot_png)
+        if capture.value is None:
+            raise RuntimeError("canvas rubric decision capture failed")
+        return result, capture.value

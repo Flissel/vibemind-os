@@ -5,6 +5,9 @@ import asyncio
 import logging
 import os
 import time
+from threading import Thread
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from sqlalchemy.orm import sessionmaker
@@ -29,6 +32,7 @@ from spaces.learning.services.course_factory.quality_gate import QualityGate
 from spaces.learning.services.course_factory.repository import CourseFactoryRepository
 from spaces.learning.services.course_factory.runner import CourseFactoryRunner
 from spaces.learning.services.course_factory.team import CourseAgentTeam
+from spaces.learning.deployment.evaluation_api import run as run_evaluation_api
 
 
 EMBEDDING_DIMENSION = 3072
@@ -43,7 +47,21 @@ def _heartbeat_path() -> Path:
 
 def _healthy(max_age_seconds: float = 30.0) -> bool:
     path = _heartbeat_path()
-    return path.is_file() and time.time() - path.stat().st_mtime <= max_age_seconds
+    return (
+        path.is_file()
+        and time.time() - path.stat().st_mtime <= max_age_seconds
+        and _evaluation_api_healthy()
+    )
+
+
+def _evaluation_api_healthy() -> bool:
+    try:
+        with urllib.request.urlopen(
+            "http://127.0.0.1:8092/health/ready", timeout=2
+        ) as response:
+            return response.status == 200
+    except (OSError, urllib.error.URLError):
+        return False
 
 
 def run() -> None:
@@ -82,6 +100,12 @@ def run() -> None:
             learnhouse=build_learnhouse_http_gateway(),
         ),
     )
+    evaluation_api = Thread(
+        target=run_evaluation_api,
+        name="learning-evaluation-api",
+        daemon=True,
+    )
+    evaluation_api.start()
     try:
         while True:
             projected = projection.run_once()

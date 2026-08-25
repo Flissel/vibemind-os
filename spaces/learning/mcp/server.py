@@ -17,13 +17,19 @@ from spaces.learning.bridge.dispatcher import (
 )
 from spaces.learning.bridge.ui_bridge import UiBridge
 from spaces.learning.bridge.learnhouse_client import LearnHouseClient
+from spaces.learning.bridge.penecho_client import PenEchoClient
 from spaces.learning.contracts.events import EVENT_TOOL_MAP, LearningToolName
 from spaces.learning.contracts.mcp_models import EventEnvelopeV1, ToolRequestV1
 from spaces.learning.mcp.tools.courses import build_course_gateways
 from spaces.learning.mcp.tools.navigation import build_navigation_gateways
 from spaces.learning.mcp.tools.generation import build_generation_gateways
 from spaces.learning.mcp.tools.sessions import build_session_gateways
-from spaces.learning.mcp.tools.tutor import build_tutor_gateways
+from spaces.learning.mcp.tools.tutor import TutorGateway
+from spaces.learning.mcp.tools.canvas import (
+    CanvasEvaluationClient,
+    CanvasGateway,
+    build_canvas_gateways,
+)
 from spaces.learning.mcp.tools.status import (
     build_default_dispatcher as build_status_dispatcher,
 )
@@ -37,10 +43,7 @@ from spaces.learning.services.course_factory.publisher import CourseDraftPublish
 from spaces.learning.services.course_factory.repository import CourseFactoryRepository
 from spaces.learning.services.db.session import build_session_factory, create_learning_engine
 from spaces.learning.services.adaptive_engine.session_service import AdaptiveSessionService
-from spaces.learning.services.course_factory.model_gateway import (
-    build_openfang_model_gateway,
-)
-from spaces.learning.services.evaluation.session_rubric import SessionRubricEvaluator
+from spaces.learning.services.evaluation.canvas_artifacts import CanvasArtifactStore
 
 
 SERVER_NAME = "spaces-learning"
@@ -80,28 +83,43 @@ def build_default_dispatcher(
     if database_url and os.environ.get("LEARNING_SERVICE_ROLE") == "mcp":
         engine = create_learning_engine(database_url)
         session_factory = build_session_factory(engine)
-        model_gateway = None
-        if (
-            os.environ.get("LEARNING_OPENFANG_URL", "").strip()
-            and os.environ.get("LEARNING_OPENFANG_API_KEY", "")
-        ):
-            model_gateway = build_openfang_model_gateway()
+        evaluation_url = os.environ.get("LEARNING_EVALUATION_SERVICE_URL", "").strip()
+        evaluation_key = os.environ.get("LEARNING_EVALUATION_SERVICE_KEY", "")
+        evaluation_client = (
+            CanvasEvaluationClient(base_url=evaluation_url, service_key=evaluation_key)
+            if evaluation_url and evaluation_key
+            else None
+        )
         adaptive_sessions = AdaptiveSessionService(
             session_factory,
-            rubric_evaluator=(
-                SessionRubricEvaluator(model_gateway)
-                if model_gateway is not None
-                else None
+            rubric_evaluator=evaluation_client,
+            external_rubric_types=(
+                frozenset({"penecho_canvas"})
+                if evaluation_client is not None
+                else frozenset()
             ),
         )
         gateways.update(build_session_gateways(adaptive_sessions))
-        if model_gateway is not None:
-            gateways.update(
-                build_tutor_gateways(
-                    sessions=adaptive_sessions,
-                    gateway=model_gateway,
-                )
+        if evaluation_client is not None:
+            gateways[LearningToolName.TUTOR_ASK] = TutorGateway(
+                sessions=adaptive_sessions,
+                tutor=evaluation_client,
             )
+            penecho_url = os.environ.get("LEARNING_PENECHO_URL", "").strip()
+            penecho_origin = os.environ.get("LEARNING_PENECHO_ORIGIN", "").strip()
+            penecho_token = os.environ.get("PENECHO_LEARNING_TOKEN", "")
+            if artifact_root and penecho_url and penecho_origin and penecho_token:
+                penecho = PenEchoClient(
+                    base_url=penecho_url,
+                    learning_origin=penecho_origin,
+                    auth_token=penecho_token,
+                )
+                gateways.update(build_canvas_gateways(CanvasGateway(
+                    penecho=penecho,
+                    artifacts=CanvasArtifactStore(artifact_root=Path(artifact_root)),
+                    evaluations=evaluation_client,
+                    tutor=evaluation_client,
+                )))
         if artifact_root:
             store = CourseFactoryArtifactStore(
                 session_factory, artifact_root=Path(artifact_root)

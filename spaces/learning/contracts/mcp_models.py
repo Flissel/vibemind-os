@@ -80,6 +80,16 @@ class EventEnvelopeV1(ContractModel):
                 raise ValueError("course publication requires confirmation")
             if self.expected_revision is None:
                 raise ValueError("course publication requires expected_revision")
+        if self.event_type in {
+            LearningEventType.CANVAS_SAVE,
+            LearningEventType.CANVAS_SUBMIT,
+        } and self.expected_revision is None:
+            raise ValueError("canvas mutation requires expected_revision")
+        if (
+            self.event_type is LearningEventType.CANVAS_SUBMIT
+            and self.confirmation is None
+        ):
+            raise ValueError("canvas submission requires confirmation")
         _assert_public_value(self.payload)
         return self
 

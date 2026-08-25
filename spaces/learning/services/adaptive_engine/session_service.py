@@ -174,10 +174,14 @@ class AdaptiveSessionService:
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         rubric_evaluator: SessionRubricBoundary | None = None,
+        external_rubric_types: frozenset[str] = frozenset(),
     ) -> None:
         self._session_factory = session_factory
         self._clock = clock
         self._rubric_evaluator = rubric_evaluator
+        if not external_rubric_types <= {"penecho_canvas"}:
+            raise ValueError("adaptive external rubric type is not authorized")
+        self._external_rubric_types = external_rubric_types
 
     def start(self, command: SessionStartCommand) -> SessionTurn:
         now = self._aware_now()
@@ -261,7 +265,16 @@ class AdaptiveSessionService:
                 evaluation, audit = self._evaluate_deterministic(
                     db, row, attempt, item, command.answer, now
                 )
-            elif item.item_type in _RUBRIC_TYPES and self._rubric_evaluator is not None:
+            elif (
+                (
+                    item.item_type in _RUBRIC_TYPES
+                    or (
+                        item.item_type == "penecho_canvas"
+                        and "penecho_canvas" not in self._external_rubric_types
+                    )
+                )
+                and self._rubric_evaluator is not None
+            ):
                 evaluation, audit = self._evaluate_rubric(
                     db, row, attempt, item, command.answer, now
                 )
@@ -877,6 +890,8 @@ class AdaptiveSessionService:
         admitted_types = set(_DETERMINISTIC_TYPES)
         if self._rubric_evaluator is not None:
             admitted_types.update(_RUBRIC_TYPES)
+            admitted_types.add("penecho_canvas")
+        admitted_types.update(self._external_rubric_types)
         return tuple(
             db.scalars(
                 select(AdaptiveItem)

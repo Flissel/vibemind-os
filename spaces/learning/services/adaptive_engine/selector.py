@@ -108,6 +108,7 @@ def select_next_item(
         )
         explanations.append(explanation)
         rank = (
+            1 if context.recent_item_ids[:1] == (candidate.item_id,) else 0,
             0 if _TARGET_BAND[0] <= probability <= _TARGET_BAND[1] else 1,
             distance,
             -overdue_count,

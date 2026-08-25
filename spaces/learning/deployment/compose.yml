@@ -193,6 +193,7 @@ services:
       LEARNING_OPENFANG_URL: ${LEARNING_OPENFANG_URL:?set LEARNING_OPENFANG_URL}
       LEARNING_OPENFANG_API_KEY: ${LEARNING_OPENFANG_API_KEY:?set LEARNING_OPENFANG_API_KEY}
       LEARNING_OPENFANG_MODEL: ${LEARNING_OPENFANG_MODEL:-learning-course-factory}
+      LEARNING_EVALUATION_SERVICE_KEY: ${LEARNING_EVALUATION_SERVICE_KEY:?set LEARNING_EVALUATION_SERVICE_KEY}
       LEARNING_ARTIFACT_ROOT: /var/lib/vibemind-learning/artifacts
       LEARNHOUSE_LEARNING_SERVICE_URL: http://learnhouse-api:9000/api/v1/learning
       LEARNHOUSE_LEARNING_SERVICE_KEY: ${LEARNHOUSE_LEARNING_SERVICE_KEY:?set LEARNHOUSE_LEARNING_SERVICE_KEY}
@@ -227,16 +228,24 @@ services:
       LEARNING_QDRANT_URL: http://qdrant:6333
       LEARNING_ARTIFACT_ROOT: /var/lib/vibemind-learning/artifacts
       LEARNING_SERVICE_ROLE: mcp
+      LEARNING_EVALUATION_SERVICE_URL: http://learning-worker:8092
+      LEARNING_EVALUATION_SERVICE_KEY: ${LEARNING_EVALUATION_SERVICE_KEY:?set LEARNING_EVALUATION_SERVICE_KEY}
+      LEARNING_PENECHO_URL: http://127.0.0.1:3888
+      LEARNING_PENECHO_ORIGIN: http://127.0.0.1:${LEARNHOUSE_WEB_PORT:-13000}
+      PENECHO_LEARNING_TOKEN: ${PENECHO_LEARNING_TOKEN:?set PENECHO_LEARNING_TOKEN}
       LEARNHOUSE_LEARNING_SERVICE_URL: http://learnhouse-api:9000/api/v1/learning
       LEARNHOUSE_LEARNING_SERVICE_KEY: ${LEARNHOUSE_LEARNING_SERVICE_KEY:?set LEARNHOUSE_LEARNING_SERVICE_KEY}
     ports:
       - "127.0.0.1:${LEARNING_MCP_PORT:-8091}:8091"
+      - "127.0.0.1:${PENECHO_PORT:-3888}:3888"
     volumes:
-      - learning-artifacts:/var/lib/vibemind-learning/artifacts:ro
+      - learning-artifacts:/var/lib/vibemind-learning/artifacts
     depends_on:
       learning-api:
         condition: service_healthy
       learnhouse-api:
+        condition: service_healthy
+      learning-worker:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/health/ready', timeout=3)"]
@@ -250,6 +259,7 @@ services:
       context: ../penecho
       dockerfile: ../deployment/Dockerfile.penecho
     restart: *restart
+    network_mode: service:learning-mcp
     environment:
       HOST: 0.0.0.0
       PORT: "3888"
@@ -257,8 +267,8 @@ services:
       PENECHO_STATE_DIR: /var/lib/penecho
       PENECHO_DEBUG_ARTIFACTS: "false"
       PENECHO_REQUEST_TRACE: "false"
-    ports:
-      - "127.0.0.1:${PENECHO_PORT:-3888}:3888"
+      PENECHO_LEARNING_ORIGIN: http://127.0.0.1:${LEARNHOUSE_WEB_PORT:-13000}
+      PENECHO_LEARNING_TOKEN: ${PENECHO_LEARNING_TOKEN:?set PENECHO_LEARNING_TOKEN}
     volumes:
       - penecho-state:/var/lib/penecho
     healthcheck:

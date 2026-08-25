@@ -151,10 +151,15 @@ def test_worker_healthcheck_requires_recent_heartbeat(
 ) -> None:
     heartbeat = tmp_path / "heartbeat"
     monkeypatch.setenv("LEARNING_WORKER_HEARTBEAT", os.fspath(heartbeat))
+    monkeypatch.setattr(worker, "_evaluation_api_healthy", lambda: True)
     assert worker._healthy() is False
 
     heartbeat.touch()
     assert worker._healthy() is True
+
+    monkeypatch.setattr(worker, "_evaluation_api_healthy", lambda: False)
+    assert worker._healthy() is False
+    monkeypatch.setattr(worker, "_evaluation_api_healthy", lambda: True)
 
     old = time.time() - 60
     os.utime(heartbeat, (old, old))
