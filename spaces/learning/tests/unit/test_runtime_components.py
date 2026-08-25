@@ -30,7 +30,7 @@ def test_migrate_creates_all_learning_owned_tables(tmp_path: Path) -> None:
             revision = connection.exec_driver_sql(
                 "SELECT version_num FROM learning_alembic_version"
             ).scalar_one()
-        assert revision == "0001_learning_core"
+        assert revision == "0002_learning_receipt_claims"
     finally:
         engine.dispose()
 
@@ -51,7 +51,54 @@ def test_migrate_adopts_complete_pre_alembic_learning_schema(tmp_path: Path) -> 
             revision = connection.exec_driver_sql(
                 "SELECT version_num FROM learning_alembic_version"
             ).scalar_one()
-        assert revision == "0001_learning_core"
+        assert revision == "0002_learning_receipt_claims"
+    finally:
+        engine.dispose()
+
+
+def test_migrate_upgrades_phase_one_pre_alembic_receipts_as_terminal(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'phase-one-runtime.db'}"
+    engine = create_learning_engine(database_url)
+    try:
+        Base.metadata.create_all(engine)
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "ALTER TABLE learning_invocation_receipts DROP COLUMN terminal"
+            )
+            connection.exec_driver_sql(
+                """
+                INSERT INTO learning_invocation_receipts
+                    (idempotency_key, request_digest, result_json, created_at)
+                VALUES
+                    ('legacy-key', 'legacy-digest', '{}', CURRENT_TIMESTAMP)
+                """
+            )
+    finally:
+        engine.dispose()
+
+    migrate(database_url)
+
+    engine = create_learning_engine(database_url)
+    try:
+        columns = {
+            column["name"]
+            for column in __import__("sqlalchemy")
+            .inspect(engine)
+            .get_columns("learning_invocation_receipts")
+        }
+        assert "terminal" in columns
+        with engine.connect() as connection:
+            terminal = connection.exec_driver_sql(
+                "SELECT terminal FROM learning_invocation_receipts "
+                "WHERE idempotency_key = 'legacy-key'"
+            ).scalar_one()
+            revision = connection.exec_driver_sql(
+                "SELECT version_num FROM learning_alembic_version"
+            ).scalar_one()
+        assert terminal in {True, 1}
+        assert revision == "0002_learning_receipt_claims"
     finally:
         engine.dispose()
 
@@ -93,7 +140,9 @@ def test_runtime_smoke_uses_a_fresh_idempotency_scope_per_run() -> None:
     assert first_arguments["invocation_id"] in first_arguments["idempotency_key"]
 
 
-def test_runtime_smoke_decodes_docker_output_as_utf8(monkeypatch, tmp_path: Path) -> None:
+def test_runtime_smoke_decodes_docker_output_as_utf8(
+    monkeypatch, tmp_path: Path
+) -> None:
     captured: dict[str, object] = {}
 
     def fake_run(*args, **kwargs):

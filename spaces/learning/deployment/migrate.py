@@ -13,6 +13,7 @@ from spaces.learning.services.db.session import create_learning_engine
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "services" / "db" / "migrations"
 VERSION_TABLE = "learning_alembic_version"
+PHASE_ONE_REVISION = "0001_learning_core"
 
 
 def _config(database_url: str) -> Config:
@@ -25,7 +26,16 @@ def _config(database_url: str) -> Config:
 def _adopt_complete_legacy_schema(database_url: str, config: Config) -> bool:
     engine = create_learning_engine(database_url)
     try:
-        table_names = set(inspect(engine).get_table_names())
+        inspector = inspect(engine)
+        table_names = set(inspector.get_table_names())
+        receipt_columns = (
+            {
+                column["name"]
+                for column in inspector.get_columns("learning_invocation_receipts")
+            }
+            if "learning_invocation_receipts" in table_names
+            else set()
+        )
     finally:
         engine.dispose()
 
@@ -41,6 +51,10 @@ def _adopt_complete_legacy_schema(database_url: str, config: Config) -> bool:
         raise RuntimeError(
             f"partial pre-Alembic Learning schema; missing owned tables: {missing}"
         )
+
+    if "terminal" not in receipt_columns:
+        command.stamp(config, PHASE_ONE_REVISION)
+        return False
 
     command.stamp(config, "head")
     return True

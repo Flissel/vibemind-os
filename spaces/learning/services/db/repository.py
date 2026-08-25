@@ -9,7 +9,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from spaces.learning.bridge.dispatcher import Receipt, ReceiptStore
+from spaces.learning.bridge.dispatcher import Receipt, ReceiptClaim, ReceiptStore
 from spaces.learning.contracts.outcomes import ToolResultV1
 from spaces.learning.services.db.models import (
     LearningAggregateRevision,
@@ -40,6 +40,7 @@ class SqlReceiptStore(ReceiptStore):
             return Receipt(
                 request_digest=row.request_digest,
                 result=ToolResultV1.model_validate(row.result_json),
+                terminal=row.terminal,
             )
 
     def put(self, idempotency_key: str, receipt: Receipt) -> None:
@@ -50,6 +51,7 @@ class SqlReceiptStore(ReceiptStore):
                 if (
                     existing.request_digest == receipt.request_digest
                     and existing.result_json == result_json
+                    and existing.terminal == receipt.terminal
                 ):
                     return
                 raise PersistenceConflict("idempotency receipt is immutable")
@@ -58,8 +60,53 @@ class SqlReceiptStore(ReceiptStore):
                     idempotency_key=idempotency_key,
                     request_digest=receipt.request_digest,
                     result_json=result_json,
+                    terminal=receipt.terminal,
                 )
             )
+
+    def claim(self, idempotency_key: str, receipt: Receipt) -> ReceiptClaim:
+        with self._session_factory() as session:
+            try:
+                session.add(
+                    LearningInvocationReceipt(
+                        idempotency_key=idempotency_key,
+                        request_digest=receipt.request_digest,
+                        result_json=receipt.result.model_dump(mode="json"),
+                        terminal=False,
+                    )
+                )
+                session.commit()
+                return ReceiptClaim(receipt=receipt, owned=True)
+            except IntegrityError:
+                session.rollback()
+                existing = session.get(LearningInvocationReceipt, idempotency_key)
+                if existing is None:
+                    raise PersistenceConflict("idempotency claim could not be loaded")
+                return ReceiptClaim(
+                    receipt=Receipt(
+                        request_digest=existing.request_digest,
+                        result=ToolResultV1.model_validate(existing.result_json),
+                        terminal=existing.terminal,
+                    ),
+                    owned=False,
+                )
+
+    def finalize(self, idempotency_key: str, receipt: Receipt) -> Receipt:
+        with self._session_factory() as session, session.begin():
+            row = session.get(LearningInvocationReceipt, idempotency_key)
+            if row is None:
+                raise PersistenceConflict("idempotency claim is missing")
+            if row.request_digest != receipt.request_digest:
+                raise PersistenceConflict("idempotency receipt is immutable")
+            if row.terminal:
+                return Receipt(
+                    request_digest=row.request_digest,
+                    result=ToolResultV1.model_validate(row.result_json),
+                    terminal=True,
+                )
+            row.result_json = receipt.result.model_dump(mode="json")
+            row.terminal = True
+            return receipt
 
 
 class SqlLearningRepository:

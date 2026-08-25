@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from ipaddress import ip_address
+import os
 from typing import Any, Literal
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -12,8 +13,16 @@ import httpx
 from spaces.learning.bridge.dispatcher import ApplicationOutcomeV1
 from spaces.learning.contracts.events import LearningToolName
 from spaces.learning.contracts.mcp_models import ToolRequestV1
-from spaces.learning.contracts.outcomes import AggregateRefV1, EvidenceRefV1, TruthReadbackV1
-from spaces.learning.contracts.ui_intents import OpenChapterIntentV1, OpenCourseIntentV1, OpenTaskIntentV1
+from spaces.learning.contracts.outcomes import (
+    AggregateRefV1,
+    EvidenceRefV1,
+    TruthReadbackV1,
+)
+from spaces.learning.contracts.ui_intents import (
+    OpenChapterIntentV1,
+    OpenCourseIntentV1,
+    OpenTaskIntentV1,
+)
 
 
 class LearnHouseError(RuntimeError):
@@ -30,6 +39,12 @@ class LearnHouseMalformedResponse(LearnHouseError):
 
 class LearnHouseStaleRevision(LearnHouseError):
     pass
+
+
+class LearnHouseServiceStatus(LearnHouseError):
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+        super().__init__("LearnHouse service request failed")
 
 
 @dataclass(frozen=True)
@@ -55,14 +70,32 @@ def _validate_loopback_url(value: str) -> str:
     return value.rstrip("/")
 
 
+_INTERNAL_SERVICE_URL = "http://learnhouse-api:9000/api/v1/learning"
+_SERVICE_KEY_ENV = "LEARNHOUSE_LEARNING_SERVICE_KEY"
+_SERVICE_KEY_HEADER = "X-LearnHouse-Learning-Service-Key"
+
+
+def _validate_internal_service_url(value: str) -> str:
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme == "http"
+        and parsed.hostname == "learnhouse-api"
+        and parsed.port == 9000
+        and parsed.path.rstrip("/") == "/api/v1/learning"
+    ):
+        return value.rstrip("/")
+    return _validate_loopback_url(value)
+
+
 class LearnHouseClient:
-    """Typed, loopback-only gateway from Learning tools to LearnHouse."""
+    """Typed gateway to the controlled local LearnHouse Learning service."""
 
     def __init__(
         self,
         *,
-        base_url: str = "http://127.0.0.1:8080/api/v1",
-        timeout_seconds: float = 2.0,
+        base_url: str | None = None,
+        service_key: str | None = None,
+        timeout_seconds: float = 5.0,
         read_attempts: int = 2,
         http_client: httpx.Client | None = None,
     ) -> None:
@@ -70,15 +103,34 @@ class LearnHouseClient:
             raise ValueError("timeout_seconds must be positive")
         if read_attempts < 1 or read_attempts > 3:
             raise ValueError("read_attempts must be between 1 and 3")
-        self._base_url = _validate_loopback_url(base_url)
+        configured_url = base_url or os.environ.get(
+            "LEARNHOUSE_LEARNING_SERVICE_URL", _INTERNAL_SERVICE_URL
+        )
+        self._service_mode = base_url is None or configured_url.rstrip("/").endswith(
+            "/api/v1/learning"
+        )
+        self._base_url = (
+            _validate_internal_service_url(configured_url)
+            if self._service_mode
+            else _validate_loopback_url(configured_url)
+        )
+        configured_key = service_key or os.environ.get(_SERVICE_KEY_ENV, "")
+        self._service_key = configured_key if self._service_mode else ""
         self._timeout_seconds = timeout_seconds
         self._read_attempts = read_attempts
         self._http_client = http_client or httpx.Client()
 
     def execute(self, request: ToolRequestV1) -> ApplicationOutcomeV1:
-        operation = self._operation_for(request)
-        response = self._request(operation, correlation_id=str(request.event.correlation_id))
-        return self._map_response(request, response)
+        if self._service_mode and len(self._service_key) < 32:
+            return self._service_error(503)
+        try:
+            operation = self._operation_for(request)
+            response = self._request(
+                operation, correlation_id=str(request.event.correlation_id)
+            )
+            return self._map_response(request, response)
+        except LearnHouseServiceStatus as error:
+            return self._service_error(error.status_code)
 
     def readback(
         self, request: ToolRequestV1, outcome: ApplicationOutcomeV1
@@ -87,7 +139,9 @@ class LearnHouseClient:
             return None
         try:
             operation = self._readback_operation_for(request, outcome.aggregate)
-            response = self._request(operation, correlation_id=str(request.event.correlation_id))
+            response = self._request(
+                operation, correlation_id=str(request.event.correlation_id)
+            )
             observed = self._map_response(request, response)
         except LearnHouseError:
             return None
@@ -109,6 +163,8 @@ class LearnHouseClient:
     def _request(self, operation: _Operation, *, correlation_id: str) -> object:
         attempts = self._read_attempts if operation.method == "GET" else 1
         headers = {"Accept": "application/json", "X-Correlation-ID": correlation_id}
+        if self._service_mode:
+            headers[_SERVICE_KEY_HEADER] = self._service_key
         for attempt in range(attempts):
             try:
                 response = self._http_client.request(
@@ -127,19 +183,29 @@ class LearnHouseClient:
                 raise LearnHouseTransportError(
                     f"LearnHouse {'read' if operation.method == 'GET' else 'write'} request failed"
                 ) from error
-            if response.status_code >= 500 and operation.method == "GET" and attempt + 1 < attempts:
+            if (
+                response.status_code >= 500
+                and operation.method == "GET"
+                and attempt + 1 < attempts
+            ):
                 continue
             if not 200 <= response.status_code < 300:
+                if self._service_mode:
+                    raise LearnHouseServiceStatus(response.status_code)
                 raise LearnHouseTransportError(
                     f"LearnHouse {'read' if operation.method == 'GET' else 'write'} request failed"
                 )
             try:
                 return response.json()
             except ValueError as error:
-                raise LearnHouseMalformedResponse("LearnHouse returned malformed JSON") from error
+                raise LearnHouseMalformedResponse(
+                    "LearnHouse returned malformed JSON"
+                ) from error
         raise LearnHouseTransportError("LearnHouse read request failed")
 
     def _operation_for(self, request: ToolRequestV1) -> _Operation:
+        if self._service_mode:
+            return self._service_operation_for(request)
         event = request.event
         payload = event.payload
         tool = request.tool
@@ -150,16 +216,28 @@ class LearnHouseClient:
                 raise LearnHouseMalformedResponse("malformed course list request")
             return _Operation("GET", f"/courses/org_slug/{slug}/page/1/limit/{limit}")
         if tool is LearningToolName.COURSE_CREATE:
-            return _Operation("POST", "/courses/", self._course_create_payload(payload), form=True)
+            return _Operation(
+                "POST", "/courses/", self._course_create_payload(payload), form=True
+            )
         if tool is LearningToolName.COURSE_OPEN:
-            return _Operation("GET", f"/courses/{self._course_id(event.course_id)}/meta", params={"slim": "true"})
+            return _Operation(
+                "GET",
+                f"/courses/{self._course_id(event.course_id)}/meta",
+                params={"slim": "true"},
+            )
         if tool is LearningToolName.CHAPTER_OPEN:
-            return _Operation("GET", f"/chapters/{self._uuid_string(payload, 'chapter_id')}")
+            return _Operation(
+                "GET", f"/chapters/{self._uuid_string(payload, 'chapter_id')}"
+            )
         if tool is LearningToolName.MATERIAL_IMPORT:
-            return _Operation("POST", "/media/", self._source_import_payload(payload), form=True)
+            return _Operation(
+                "POST", "/media/", self._source_import_payload(payload), form=True
+            )
         if tool in {LearningToolName.COURSE_REVIEW, LearningToolName.COURSE_PUBLISH}:
             course_id = self._course_id(event.course_id)
-            update: dict[str, object] = {"revision": self._expected_revision(event.expected_revision)}
+            update: dict[str, object] = {
+                "revision": self._expected_revision(event.expected_revision)
+            }
             if tool is LearningToolName.COURSE_REVIEW:
                 update["review_status"] = self._string(payload, "review")
             else:
@@ -169,10 +247,15 @@ class LearnHouseClient:
             return _Operation(
                 "POST",
                 "/trail/start",
-                {"org_id": self._integer(payload, "org_id"), "course_uuid": self._course_id(event.course_id)},
+                {
+                    "org_id": self._integer(payload, "org_id"),
+                    "course_uuid": self._course_id(event.course_id),
+                },
             )
         if tool is LearningToolName.TASK_NEXT:
-            return _Operation("GET", f"/activities/{self._uuid_string(payload, 'task_id')}")
+            return _Operation(
+                "GET", f"/activities/{self._uuid_string(payload, 'task_id')}"
+            )
         if tool is LearningToolName.PROGRESS_SHOW:
             return _Operation("GET", "/trail/")
         raise LearnHouseMalformedResponse("unsupported LearnHouse tool")
@@ -180,6 +263,8 @@ class LearnHouseClient:
     def _readback_operation_for(
         self, request: ToolRequestV1, aggregate: AggregateRefV1
     ) -> _Operation:
+        if self._service_mode:
+            return self._service_readback_operation_for(request, aggregate)
         if request.tool is LearningToolName.COURSE_LIST:
             return self._operation_for(request)
         if request.tool in {
@@ -188,18 +273,29 @@ class LearnHouseClient:
             LearningToolName.COURSE_REVIEW,
             LearningToolName.COURSE_PUBLISH,
         }:
-            return _Operation("GET", f"/courses/{aggregate.aggregate_id}/meta", params={"slim": "true"})
+            return _Operation(
+                "GET",
+                f"/courses/{aggregate.aggregate_id}/meta",
+                params={"slim": "true"},
+            )
         if request.tool is LearningToolName.CHAPTER_OPEN:
             return _Operation("GET", f"/chapters/{aggregate.aggregate_id}")
         if request.tool is LearningToolName.MATERIAL_IMPORT:
             return _Operation("GET", f"/media/{aggregate.aggregate_id}")
-        if request.tool in {LearningToolName.SESSION_START, LearningToolName.PROGRESS_SHOW}:
+        if request.tool in {
+            LearningToolName.SESSION_START,
+            LearningToolName.PROGRESS_SHOW,
+        }:
             return _Operation("GET", "/trail/")
         if request.tool is LearningToolName.TASK_NEXT:
             return _Operation("GET", f"/activities/{aggregate.aggregate_id}")
         raise LearnHouseMalformedResponse("unsupported LearnHouse readback")
 
-    def _map_response(self, request: ToolRequestV1, value: object) -> ApplicationOutcomeV1:
+    def _map_response(
+        self, request: ToolRequestV1, value: object
+    ) -> ApplicationOutcomeV1:
+        if self._service_mode:
+            return self._map_service_response(request, value)
         if request.tool is LearningToolName.COURSE_LIST:
             return self._map_course_list(request, value)
         if request.tool in {
@@ -221,9 +317,13 @@ class LearnHouseClient:
             return self._map_progress(request, value)
         raise LearnHouseMalformedResponse("unsupported LearnHouse tool")
 
-    def _map_course_list(self, request: ToolRequestV1, value: object) -> ApplicationOutcomeV1:
+    def _map_course_list(
+        self, request: ToolRequestV1, value: object
+    ) -> ApplicationOutcomeV1:
         if not isinstance(value, list) or not value:
-            raise LearnHouseMalformedResponse("LearnHouse returned malformed course list")
+            raise LearnHouseMalformedResponse(
+                "LearnHouse returned malformed course list"
+            )
         courses = [self._course_value(item) for item in value]
         revision = max(course["revision"] for course in courses)
         return ApplicationOutcomeV1(
@@ -236,7 +336,9 @@ class LearnHouseClient:
             result={"courses": courses},
         )
 
-    def _map_course(self, request: ToolRequestV1, value: object) -> ApplicationOutcomeV1:
+    def _map_course(
+        self, request: ToolRequestV1, value: object
+    ) -> ApplicationOutcomeV1:
         course = self._course_value(value)
         if request.tool is LearningToolName.COURSE_CREATE:
             item = self._mapping(value)
@@ -245,7 +347,9 @@ class LearnHouseClient:
                 self._integer(request.event.payload, "org_id"),
             )
         else:
-            self._assert_identity(course["course_id"], self._course_id(request.event.course_id))
+            self._assert_identity(
+                course["course_id"], self._course_id(request.event.course_id)
+            )
         self._assert_not_stale(request, course["revision"])
         intent = None
         if request.tool is LearningToolName.COURSE_OPEN:
@@ -258,24 +362,37 @@ class LearnHouseClient:
         return ApplicationOutcomeV1(
             state="completed",
             aggregate=AggregateRefV1(
-                aggregate_type="course", aggregate_id=course["course_id"], revision=course["revision"]
+                aggregate_type="course",
+                aggregate_id=course["course_id"],
+                revision=course["revision"],
             ),
             result={"course": course},
             ui_intent=intent,
         )
 
-    def _map_chapter(self, request: ToolRequestV1, value: object) -> ApplicationOutcomeV1:
+    def _map_chapter(
+        self, request: ToolRequestV1, value: object
+    ) -> ApplicationOutcomeV1:
         item = self._mapping(value)
         chapter_id = self._uuid_from(item, "chapter_uuid")
         course_id = self._uuid_from(item, "course_uuid")
         revision = self._revision(item)
-        self._assert_identity(chapter_id, self._uuid_string(request.event.payload, "chapter_id"))
+        self._assert_identity(
+            chapter_id, self._uuid_string(request.event.payload, "chapter_id")
+        )
         self._assert_identity(course_id, self._course_id(request.event.course_id))
         self._assert_not_stale(request, revision)
-        chapter = {"chapter_id": chapter_id, "course_id": course_id, "title": self._string(item, "name"), "revision": revision}
+        chapter = {
+            "chapter_id": chapter_id,
+            "course_id": course_id,
+            "title": self._string(item, "name"),
+            "revision": revision,
+        }
         return ApplicationOutcomeV1(
             state="completed",
-            aggregate=AggregateRefV1(aggregate_type="chapter", aggregate_id=chapter_id, revision=revision),
+            aggregate=AggregateRefV1(
+                aggregate_type="chapter", aggregate_id=chapter_id, revision=revision
+            ),
             result={"chapter": chapter},
             ui_intent=OpenChapterIntentV1(
                 aggregate_id=chapter_id,
@@ -285,18 +402,30 @@ class LearnHouseClient:
             ),
         )
 
-    def _map_source(self, request: ToolRequestV1, value: object) -> ApplicationOutcomeV1:
+    def _map_source(
+        self, request: ToolRequestV1, value: object
+    ) -> ApplicationOutcomeV1:
         item = self._mapping(value)
         source_id = self._uuid_from(item, "media_uuid")
         revision = self._revision(item)
         self._assert_not_stale(request, revision)
         return ApplicationOutcomeV1(
             state="completed",
-            aggregate=AggregateRefV1(aggregate_type="source", aggregate_id=source_id, revision=revision),
-            result={"source": {"source_id": source_id, "title": self._string(item, "name"), "revision": revision}},
+            aggregate=AggregateRefV1(
+                aggregate_type="source", aggregate_id=source_id, revision=revision
+            ),
+            result={
+                "source": {
+                    "source_id": source_id,
+                    "title": self._string(item, "name"),
+                    "revision": revision,
+                }
+            },
         )
 
-    def _map_session(self, request: ToolRequestV1, value: object) -> ApplicationOutcomeV1:
+    def _map_session(
+        self, request: ToolRequestV1, value: object
+    ) -> ApplicationOutcomeV1:
         item = self._mapping(value)
         session_id = self._uuid_from(item, "trail_uuid")
         course_id = self._uuid_from(item, "course_uuid")
@@ -305,8 +434,16 @@ class LearnHouseClient:
         self._assert_not_stale(request, revision)
         return ApplicationOutcomeV1(
             state="completed",
-            aggregate=AggregateRefV1(aggregate_type="session", aggregate_id=session_id, revision=revision),
-            result={"session": {"session_id": session_id, "course_id": course_id, "revision": revision}},
+            aggregate=AggregateRefV1(
+                aggregate_type="session", aggregate_id=session_id, revision=revision
+            ),
+            result={
+                "session": {
+                    "session_id": session_id,
+                    "course_id": course_id,
+                    "revision": revision,
+                }
+            },
         )
 
     def _map_task(self, request: ToolRequestV1, value: object) -> ApplicationOutcomeV1:
@@ -314,13 +451,22 @@ class LearnHouseClient:
         task_id = self._uuid_from(item, "activity_uuid")
         session_id = self._uuid_from(item, "trail_uuid")
         revision = self._revision(item)
-        self._assert_identity(task_id, self._uuid_string(request.event.payload, "task_id"))
+        self._assert_identity(
+            task_id, self._uuid_string(request.event.payload, "task_id")
+        )
         self._assert_identity(session_id, self._session_id(request.event.session_id))
         self._assert_not_stale(request, revision)
-        task = {"task_id": task_id, "session_id": session_id, "title": self._string(item, "title"), "revision": revision}
+        task = {
+            "task_id": task_id,
+            "session_id": session_id,
+            "title": self._string(item, "title"),
+            "revision": revision,
+        }
         return ApplicationOutcomeV1(
             state="completed",
-            aggregate=AggregateRefV1(aggregate_type="task", aggregate_id=task_id, revision=revision),
+            aggregate=AggregateRefV1(
+                aggregate_type="task", aggregate_id=task_id, revision=revision
+            ),
             result={"task": task},
             ui_intent=OpenTaskIntentV1(
                 aggregate_id=task_id,
@@ -330,16 +476,25 @@ class LearnHouseClient:
             ),
         )
 
-    def _map_progress(self, request: ToolRequestV1, value: object) -> ApplicationOutcomeV1:
+    def _map_progress(
+        self, request: ToolRequestV1, value: object
+    ) -> ApplicationOutcomeV1:
         item = self._mapping(value)
         course_id = self._uuid_from(item, "course_uuid")
         revision = self._revision(item)
         self._assert_identity(course_id, self._course_id(request.event.course_id))
         self._assert_not_stale(request, revision)
-        progress = {"course_id": course_id, "completed": self._integer(item, "completed"), "total": self._integer(item, "total"), "revision": revision}
+        progress = {
+            "course_id": course_id,
+            "completed": self._integer(item, "completed"),
+            "total": self._integer(item, "total"),
+            "revision": revision,
+        }
         return ApplicationOutcomeV1(
             state="completed",
-            aggregate=AggregateRefV1(aggregate_type="progress", aggregate_id=course_id, revision=revision),
+            aggregate=AggregateRefV1(
+                aggregate_type="progress", aggregate_id=course_id, revision=revision
+            ),
             result={"progress": progress},
         )
 
@@ -371,14 +526,18 @@ class LearnHouseClient:
         try:
             return str(UUID(value))
         except ValueError as error:
-            raise LearnHouseMalformedResponse("LearnHouse returned malformed response") from error
+            raise LearnHouseMalformedResponse(
+                "LearnHouse returned malformed response"
+            ) from error
 
     @classmethod
     def _uuid_string(cls, values: Mapping[str, object], key: str) -> str:
         return cls._uuid_from(values, key)
 
     @staticmethod
-    def _integer(values: Mapping[str, object], key: str, *, default: int | None = None) -> int:
+    def _integer(
+        values: Mapping[str, object], key: str, *, default: int | None = None
+    ) -> int:
         value = values.get(key, default)
         if isinstance(value, bool) or not isinstance(value, int):
             raise LearnHouseMalformedResponse("LearnHouse returned malformed response")
@@ -411,15 +570,31 @@ class LearnHouseClient:
 
     def _assert_not_stale(self, request: ToolRequestV1, observed_revision: int) -> None:
         expected = request.event.expected_revision
-        if expected is not None and observed_revision < expected:
+        if expected is None:
+            return
+        expected_observed = (
+            expected + 1
+            if request.tool
+            in {
+                LearningToolName.MATERIAL_IMPORT,
+                LearningToolName.COURSE_REVIEW,
+                LearningToolName.COURSE_PUBLISH,
+            }
+            else expected
+        )
+        if observed_revision != expected_observed:
             raise LearnHouseStaleRevision("LearnHouse returned a stale revision")
 
     @staticmethod
     def _assert_identity(observed: str | int, expected: str | int) -> None:
         if observed != expected:
-            raise LearnHouseMalformedResponse("LearnHouse returned a mismatched identity")
+            raise LearnHouseMalformedResponse(
+                "LearnHouse returned a mismatched identity"
+            )
 
-    def _course_create_payload(self, payload: Mapping[str, object]) -> dict[str, object]:
+    def _course_create_payload(
+        self, payload: Mapping[str, object]
+    ) -> dict[str, object]:
         return {
             "org_id": self._integer(payload, "org_id"),
             "name": self._string(payload, "title"),
@@ -428,7 +603,9 @@ class LearnHouseClient:
             "public": "false",
         }
 
-    def _source_import_payload(self, payload: Mapping[str, object]) -> dict[str, object]:
+    def _source_import_payload(
+        self, payload: Mapping[str, object]
+    ) -> dict[str, object]:
         source_url = self._string(payload, "source_url")
         parsed = urlsplit(source_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -440,3 +617,228 @@ class LearnHouseClient:
             "url": source_url,
             "public": "false",
         }
+
+    def _service_operation_for(self, request: ToolRequestV1) -> _Operation:
+        event = request.event
+        payload = event.payload
+        tool = request.tool
+        if tool is LearningToolName.COURSE_LIST:
+            limit = self._integer(payload, "limit", default=20)
+            if limit < 1 or limit > 50:
+                raise LearnHouseMalformedResponse("malformed course list request")
+            return _Operation("GET", "/courses", params={"page": 1, "limit": limit})
+        if tool is LearningToolName.COURSE_CREATE:
+            return _Operation(
+                "POST",
+                "/courses",
+                {
+                    "title": self._string(payload, "title"),
+                    "description": self._string(payload, "description"),
+                    "about": self._string(payload, "about"),
+                },
+            )
+        if tool is LearningToolName.COURSE_OPEN:
+            return _Operation("GET", f"/courses/{self._course_id(event.course_id)}")
+        if tool is LearningToolName.CHAPTER_OPEN:
+            return _Operation(
+                "GET", f"/chapters/{self._uuid_string(payload, 'chapter_id')}"
+            )
+        if tool is LearningToolName.MATERIAL_IMPORT:
+            source_url = self._string(payload, "source_url")
+            parsed = urlsplit(source_url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise LearnHouseMalformedResponse("malformed source import request")
+            return _Operation(
+                "POST",
+                f"/courses/{self._course_id(event.course_id)}/sources",
+                {
+                    "title": self._string(payload, "title"),
+                    "source_url": source_url,
+                    "expected_revision": self._expected_revision(
+                        event.expected_revision
+                    ),
+                },
+            )
+        if tool is LearningToolName.COURSE_REVIEW:
+            return _Operation(
+                "POST",
+                f"/courses/{self._course_id(event.course_id)}/review",
+                {
+                    "review": self._string(payload, "review"),
+                    "expected_revision": self._expected_revision(
+                        event.expected_revision
+                    ),
+                },
+            )
+        if tool is LearningToolName.COURSE_PUBLISH:
+            return _Operation(
+                "POST",
+                f"/courses/{self._course_id(event.course_id)}/publish",
+                {"expected_revision": self._expected_revision(event.expected_revision)},
+            )
+        if tool is LearningToolName.PROGRESS_SHOW:
+            return _Operation(
+                "GET", f"/courses/{self._course_id(event.course_id)}/progress"
+            )
+        raise LearnHouseMalformedResponse("unsupported LearnHouse tool")
+
+    def _service_readback_operation_for(
+        self, request: ToolRequestV1, aggregate: AggregateRefV1
+    ) -> _Operation:
+        if request.tool is LearningToolName.COURSE_LIST:
+            return self._service_operation_for(request)
+        if request.tool in {
+            LearningToolName.COURSE_CREATE,
+            LearningToolName.COURSE_OPEN,
+            LearningToolName.COURSE_REVIEW,
+            LearningToolName.COURSE_PUBLISH,
+        }:
+            return _Operation("GET", f"/courses/{aggregate.aggregate_id}")
+        if request.tool is LearningToolName.CHAPTER_OPEN:
+            return _Operation("GET", f"/chapters/{aggregate.aggregate_id}")
+        if request.tool is LearningToolName.MATERIAL_IMPORT:
+            return _Operation("GET", f"/sources/{aggregate.aggregate_id}")
+        if request.tool is LearningToolName.PROGRESS_SHOW:
+            return _Operation("GET", f"/courses/{aggregate.aggregate_id}/progress")
+        raise LearnHouseMalformedResponse("unsupported LearnHouse readback")
+
+    def _map_service_response(
+        self, request: ToolRequestV1, value: object
+    ) -> ApplicationOutcomeV1:
+        item = self._mapping(value)
+        if request.tool is LearningToolName.COURSE_LIST:
+            aggregate = self._mapping(item.get("aggregate"))
+            courses_value = item.get("courses")
+            if not isinstance(courses_value, list):
+                raise LearnHouseMalformedResponse(
+                    "LearnHouse returned malformed course list"
+                )
+            courses = [self._service_course(course) for course in courses_value]
+            return ApplicationOutcomeV1(
+                state="completed",
+                aggregate=AggregateRefV1(
+                    aggregate_type="course_collection",
+                    aggregate_id=self._string(aggregate, "aggregate_id"),
+                    revision=self._revision(aggregate),
+                ),
+                result={"courses": courses},
+            )
+        if request.tool in {
+            LearningToolName.COURSE_CREATE,
+            LearningToolName.COURSE_OPEN,
+            LearningToolName.COURSE_REVIEW,
+            LearningToolName.COURSE_PUBLISH,
+        }:
+            course = self._service_course(self._mapping(item.get("course")))
+            if request.tool is not LearningToolName.COURSE_CREATE:
+                self._assert_identity(
+                    course["course_id"], self._course_id(request.event.course_id)
+                )
+            self._assert_not_stale(request, course["revision"])
+            return ApplicationOutcomeV1(
+                state="completed",
+                aggregate=AggregateRefV1(
+                    aggregate_type="course",
+                    aggregate_id=course["course_id"],
+                    revision=course["revision"],
+                ),
+                result={"course": course},
+            )
+        if request.tool is LearningToolName.MATERIAL_IMPORT:
+            source = self._mapping(item.get("source"))
+            source_id = self._uuid_from(source, "source_id")
+            revision = self._revision(source)
+            self._assert_not_stale(request, revision)
+            return ApplicationOutcomeV1(
+                state="completed",
+                aggregate=AggregateRefV1(
+                    aggregate_type="source", aggregate_id=source_id, revision=revision
+                ),
+                result={
+                    "source": {
+                        "source_id": source_id,
+                        "title": self._string(source, "title"),
+                        "revision": revision,
+                    }
+                },
+            )
+        if request.tool is LearningToolName.CHAPTER_OPEN:
+            chapter = self._mapping(item.get("chapter"))
+            chapter_id = self._uuid_from(chapter, "chapter_id")
+            course_id = self._uuid_from(chapter, "course_id")
+            revision = self._revision(chapter)
+            self._assert_identity(
+                chapter_id, self._uuid_string(request.event.payload, "chapter_id")
+            )
+            self._assert_identity(course_id, self._course_id(request.event.course_id))
+            self._assert_not_stale(request, revision)
+            return ApplicationOutcomeV1(
+                state="completed",
+                aggregate=AggregateRefV1(
+                    aggregate_type="chapter", aggregate_id=chapter_id, revision=revision
+                ),
+                result={
+                    "chapter": {
+                        "chapter_id": chapter_id,
+                        "course_id": course_id,
+                        "title": self._string(chapter, "title"),
+                        "revision": revision,
+                    }
+                },
+            )
+        if request.tool is LearningToolName.PROGRESS_SHOW:
+            progress = self._mapping(item.get("progress"))
+            course_id = self._uuid_from(progress, "course_id")
+            revision = self._revision(progress)
+            self._assert_identity(course_id, self._course_id(request.event.course_id))
+            self._assert_not_stale(request, revision)
+            return ApplicationOutcomeV1(
+                state="completed",
+                aggregate=AggregateRefV1(
+                    aggregate_type="progress", aggregate_id=course_id, revision=revision
+                ),
+                result={
+                    "progress": {
+                        "course_id": course_id,
+                        "completed": self._integer(progress, "completed"),
+                        "total": self._integer(progress, "total"),
+                        "revision": revision,
+                    }
+                },
+            )
+        raise LearnHouseMalformedResponse("unsupported LearnHouse tool")
+
+    def _service_course(self, value: Mapping[str, object]) -> dict[str, Any]:
+        return {
+            "course_id": self._uuid_from(value, "course_id"),
+            "title": self._string(value, "title"),
+            "description": self._string(value, "description"),
+            "revision": self._revision(value),
+        }
+
+    @staticmethod
+    def _service_error(status_code: int) -> ApplicationOutcomeV1:
+        if status_code == 409:
+            code = "revision_conflict"
+            message = "the requested revision is no longer current"
+            state = "rejected"
+        elif status_code == 404:
+            code = "learning_not_found"
+            message = "the requested learning aggregate was not found"
+            state = "unavailable"
+        elif status_code in {401, 403}:
+            code = "learning_backend_unauthorized"
+            message = "the learning service rejected its internal credentials"
+            state = "unavailable"
+        else:
+            code = "learning_backend_unavailable"
+            message = "the learning service is unavailable"
+            state = "unavailable"
+        from spaces.learning.contracts.outcomes import ToolErrorV1
+
+        return ApplicationOutcomeV1(
+            state=state,
+            error=ToolErrorV1(
+                code=code, message=message, retryable=state == "unavailable"
+            ),
+        )

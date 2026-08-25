@@ -54,6 +54,7 @@ services:
     entrypoint: ["/bin/bash", "-c"]
     command:
       - >-
+        /app/.venv/bin/python -m scripts.runtime_schema &&
         exec /app/.venv/bin/uvicorn app:app --host 0.0.0.0 --port 9000
         --timeout-keep-alive 600
     environment:
@@ -64,6 +65,7 @@ services:
       LEARNHOUSE_INITIAL_ADMIN_PASSWORD: ${LEARNHOUSE_INITIAL_ADMIN_PASSWORD:?set LEARNHOUSE_INITIAL_ADMIN_PASSWORD}
       LEARNHOUSE_LOCAL_LEARNING_MODE: ${LEARNHOUSE_LOCAL_LEARNING_MODE:-false}
       LEARNHOUSE_LOCAL_BOOTSTRAP_KEY: ${LEARNHOUSE_LOCAL_BOOTSTRAP_KEY:?set LEARNHOUSE_LOCAL_BOOTSTRAP_KEY}
+      LEARNHOUSE_LEARNING_SERVICE_KEY: ${LEARNHOUSE_LEARNING_SERVICE_KEY:?set LEARNHOUSE_LEARNING_SERVICE_KEY}
       LEARNHOUSE_SQL_CONNECTION_STRING: postgresql+asyncpg://${LEARNING_POSTGRES_USER:-learning}:${LEARNING_POSTGRES_PASSWORD:?set LEARNING_POSTGRES_PASSWORD}@postgres:5432/${LEARNING_POSTGRES_DB:-vibemind_learning}
       LEARNHOUSE_REDIS_CONNECTION_STRING: redis://redis:6379/0
       LEARNHOUSE_CONTENT_DELIVERY_TYPE: filesystem
@@ -213,10 +215,14 @@ services:
       LEARNING_QDRANT_URL: http://qdrant:6333
       LEARNING_ARTIFACT_ROOT: /var/lib/vibemind-learning/artifacts
       LEARNING_SERVICE_ROLE: mcp
+      LEARNHOUSE_LEARNING_SERVICE_URL: http://learnhouse-api:9000/api/v1/learning
+      LEARNHOUSE_LEARNING_SERVICE_KEY: ${LEARNHOUSE_LEARNING_SERVICE_KEY:?set LEARNHOUSE_LEARNING_SERVICE_KEY}
     ports:
       - "127.0.0.1:${LEARNING_MCP_PORT:-8091}:8091"
     depends_on:
       learning-api:
+        condition: service_healthy
+      learnhouse-api:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/health/ready', timeout=3)"]

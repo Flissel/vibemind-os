@@ -38,6 +38,7 @@ SECRET_VARIABLES = {
     "LEARNHOUSE_COLLAB_INTERNAL_KEY",
     "LEARNHOUSE_INITIAL_ADMIN_PASSWORD",
     "LEARNHOUSE_LOCAL_BOOTSTRAP_KEY",
+    "LEARNHOUSE_LEARNING_SERVICE_KEY",
 }
 
 
@@ -130,8 +131,7 @@ def test_local_bootstrap_mode_and_key_are_shared_server_only_references() -> Non
 
     mode_reference = "${LEARNHOUSE_LOCAL_LEARNING_MODE:-false}"
     key_reference = (
-        "${LEARNHOUSE_LOCAL_BOOTSTRAP_KEY:?set "
-        "LEARNHOUSE_LOCAL_BOOTSTRAP_KEY}"
+        "${LEARNHOUSE_LOCAL_BOOTSTRAP_KEY:?set LEARNHOUSE_LOCAL_BOOTSTRAP_KEY}"
     )
     assert api_environment["LEARNHOUSE_LOCAL_LEARNING_MODE"] == mode_reference
     assert web_environment["LEARNHOUSE_LOCAL_LEARNING_MODE"] == mode_reference
@@ -170,6 +170,35 @@ def test_learning_bootstrap_uses_internal_api_service_address() -> None:
     assert "NEXT_PUBLIC_LEARNHOUSE_INTERNAL_API_URL" not in environment
 
 
+def test_learning_service_credentials_are_limited_to_the_internal_api_and_mcp() -> None:
+    services = _load(COMPOSE_PATH)["services"]
+    assert isinstance(services, dict)
+    api = services["learnhouse-api"]
+    mcp = services["learning-mcp"]
+    assert isinstance(api, dict)
+    assert isinstance(mcp, dict)
+    api_environment = api["environment"]
+    mcp_environment = mcp["environment"]
+    assert isinstance(api_environment, dict)
+    assert isinstance(mcp_environment, dict)
+
+    key_reference = (
+        "${LEARNHOUSE_LEARNING_SERVICE_KEY:?set LEARNHOUSE_LEARNING_SERVICE_KEY}"
+    )
+    assert api_environment["LEARNHOUSE_LEARNING_SERVICE_KEY"] == key_reference
+    assert mcp_environment["LEARNHOUSE_LEARNING_SERVICE_KEY"] == key_reference
+    assert mcp_environment["LEARNHOUSE_LEARNING_SERVICE_URL"] == (
+        "http://learnhouse-api:9000/api/v1/learning"
+    )
+    for service_name, service in services.items():
+        assert isinstance(service, dict)
+        environment = service.get("environment", {})
+        assert isinstance(environment, dict)
+        if service_name not in {"learnhouse-api", "learning-mcp"}:
+            assert "LEARNHOUSE_LEARNING_SERVICE_KEY" not in environment
+            assert "LEARNHOUSE_LEARNING_SERVICE_URL" not in environment
+
+
 def test_profile_is_explicitly_local_and_has_no_ha_claim() -> None:
     profile = _load(PROFILE_PATH)
 
@@ -180,7 +209,7 @@ def test_profile_is_explicitly_local_and_has_no_ha_claim() -> None:
     assert profile["authoritative_status_tool"] == "learning_status"
 
 
-def test_learnhouse_api_bypasses_checkout_entrypoint_line_endings() -> None:
+def test_learnhouse_api_migrates_before_bypassing_checkout_entrypoint() -> None:
     services = _load(COMPOSE_PATH)["services"]
     assert isinstance(services, dict)
     api = services["learnhouse-api"]
@@ -188,14 +217,16 @@ def test_learnhouse_api_bypasses_checkout_entrypoint_line_endings() -> None:
 
     assert api["entrypoint"] == ["/bin/bash", "-c"]
     assert api["command"] == [
+        "/app/.venv/bin/python -m scripts.runtime_schema && "
         "exec /app/.venv/bin/uvicorn app:app --host 0.0.0.0 --port 9000 "
         "--timeout-keep-alive 600"
     ]
     environment = api["environment"]
     assert isinstance(environment, dict)
-    assert "${LEARNHOUSE_INITIAL_ADMIN_PASSWORD:?" in environment[
-        "LEARNHOUSE_INITIAL_ADMIN_PASSWORD"
-    ]
+    assert (
+        "${LEARNHOUSE_INITIAL_ADMIN_PASSWORD:?"
+        in environment["LEARNHOUSE_INITIAL_ADMIN_PASSWORD"]
+    )
 
 
 def test_learnhouse_collab_receives_upstream_environment_contract() -> None:
@@ -206,9 +237,10 @@ def test_learnhouse_collab_receives_upstream_environment_contract() -> None:
     environment = collab["environment"]
     assert isinstance(environment, dict)
 
-    assert "${LEARNHOUSE_AUTH_JWT_SECRET_KEY:?" in environment[
-        "LEARNHOUSE_AUTH_JWT_SECRET_KEY"
-    ]
+    assert (
+        "${LEARNHOUSE_AUTH_JWT_SECRET_KEY:?"
+        in environment["LEARNHOUSE_AUTH_JWT_SECRET_KEY"]
+    )
     assert environment["LEARNHOUSE_REDIS_URL"] == "redis://redis:6379/0"
     assert environment["LEARNHOUSE_API_URL"] == "http://learnhouse-api:9000"
     assert "DATABASE_URL" not in environment
@@ -235,6 +267,7 @@ def test_learnhouse_web_uses_the_reserved_learning_space_default_port() -> None:
     assert web["command"] == ["exec env bun server-wrapper.js"]
     api = services["learnhouse-api"]
     assert isinstance(api, dict)
-    assert "${LEARNHOUSE_WEB_PORT:-13000}" in api["environment"][
-        "LEARNHOUSE_ALLOWED_ORIGINS"
-    ]
+    assert (
+        "${LEARNHOUSE_WEB_PORT:-13000}"
+        in api["environment"]["LEARNHOUSE_ALLOWED_ORIGINS"]
+    )

@@ -141,6 +141,7 @@ def test_completed_transport_without_aggregate_or_readback_fails_closed() -> Non
     result = dispatcher.dispatch(_request(key="create-2"))
     assert result.state == "unavailable"
     assert result.error and result.error.code == "truth_readback_unverified"
+    assert result.error.retryable is False
 
 
 def test_gateway_revision_conflict_is_preserved_without_readback() -> None:

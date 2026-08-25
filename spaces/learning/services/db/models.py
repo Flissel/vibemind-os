@@ -20,6 +20,7 @@ class LearningInvocationReceipt(Base):
     idempotency_key: Mapped[str] = mapped_column(String(128), primary_key=True)
     request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     result_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    terminal: Mapped[bool] = mapped_column(default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
