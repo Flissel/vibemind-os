@@ -28,15 +28,12 @@ def test_supabase_executor_registers_idea_to_project():
 
 
 def test_idea_to_project_remains_owned_by_ideas_space():
-    path = Path(__file__).resolve().parents[1] / "core" / "space_routing_head.py"
-    module = ast.parse(path.read_text(encoding="utf-8"))
-    assignment = next(
-        node for node in module.body
-        if isinstance(node, ast.Assign)
-        and any(isinstance(target, ast.Name) and target.id == "EVENT_SPACE_MAP"
-                for target in node.targets)
-    )
-    event_space_map = ast.literal_eval(assignment.value)
+    # EVENT_SPACE_MAP is registry-owned since the space-contract refactor —
+    # assert against the same source the runtime resolves, not the inert
+    # legacy literal in space_routing_head.py.
+    from core.space_contract import load_space_contract
+
+    event_space_map = load_space_contract().event_space_map
     assert event_space_map["idea.to_project"] == "ideas"
 
 
