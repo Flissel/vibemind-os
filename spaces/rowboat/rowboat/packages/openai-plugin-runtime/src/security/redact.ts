@@ -4,20 +4,33 @@ export const REDACTED = "[REDACTED]" as const;
 
 const SAFE_KEY = /^[A-Za-z0-9_-]{1,128}$/;
 const FORBIDDEN_KEYS = new Set(["__proto__", "prototype", "constructor"]);
-const SECRET_SEGMENTS = new Set([
-  "auth", "authorization", "bearer", "cookie", "credential", "credentials", "env", "header", "headers",
-  "password", "secret", "stack", "token", "tokens", "url", "urls", "command", "commands",
+const ALWAYS_SECRET_SEGMENTS = new Set([
+  "bearer", "password", "secret", "token", "tokens", "passphrase", "jwt", "pem",
+]);
+const OPERATIONAL_SECRET_SEGMENTS = new Set([
+  "env", "header", "headers", "stack", "url", "urls", "command", "commands",
   "error", "errors", "message", "messages", "path", "paths",
 ]);
-const SECRET_COMPOUNDS = new Set(["apikey", "privatekey", "accesstoken", "refreshtoken", "clientsecret"]);
-const SECRET_KEY_PREFIXES = new Set(["api", "private"]);
+const DIRECT_SECRET_KEYS = new Set([
+  "auth", "authorization", "cookie", "credential", "credentials", "cert", "certificate", "session",
+]);
+const SECRET_COMPOUNDS = new Set([
+  "apikey", "privatekey", "accesstoken", "refreshtoken", "clientsecret", "sessionid", "sessiontoken",
+  "sessioncookie", "setcookie", "sshkey", "signingkey", "encryptionkey",
+]);
+const SECRET_KEY_PREFIXES = new Set(["api", "private", "ssh", "signing", "encryption", "certificate"]);
 
 function isSensitiveKey(key: string | undefined): boolean {
   if (key === undefined) return false;
   const normalized = key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
-  if (SECRET_COMPOUNDS.has(normalized.replace(/[_-]/g, ""))) return true;
+  const collapsed = normalized.replace(/[_-]/g, "");
+  if (DIRECT_SECRET_KEYS.has(normalized) || SECRET_COMPOUNDS.has(collapsed)) return true;
   const segments = normalized.split(/[_-]/);
-  if (segments.some((part) => SECRET_SEGMENTS.has(part))) return true;
+  if (segments.some((part) => ALWAYS_SECRET_SEGMENTS.has(part) || OPERATIONAL_SECRET_SEGMENTS.has(part))) return true;
+  if (
+    segments.some((part) => part === "auth" || part === "authorization")
+    || segments.some((part) => part === "credential" || part === "credentials")
+  ) return true;
   return segments.some((part, index) => part === "key" && index > 0 && SECRET_KEY_PREFIXES.has(segments[index - 1]!));
 }
 
@@ -56,46 +69,65 @@ export function captureRedactionLimits(input: unknown): CapturedRedactionLimits 
   if (input === null || typeof input !== "object" || Array.isArray(input) || isProxy(input)) fail();
   const prototype = Object.getPrototypeOf(input);
   if (prototype !== Object.prototype && prototype !== null) fail();
-  if (Object.getOwnPropertySymbols(input).length !== 0) fail();
-  const descriptors = Object.getOwnPropertyDescriptors(input);
   const allowed = new Set(["maxDepth", "maxKeys", "maxItems", "maxStringBytes", "maxTotalStringBytes"]);
-  for (const [key, descriptor] of Object.entries(descriptors)) {
+  const keys = Reflect.ownKeys(input);
+  if (keys.length > allowed.size || keys.some((key) => typeof key !== "string")) fail();
+  const captured: Record<string, number> = Object.create(null) as Record<string, number>;
+  for (const key of keys as string[]) {
+    const descriptor = Object.getOwnPropertyDescriptor(input, key);
+    if (descriptor === undefined) fail();
     if (!allowed.has(key) || !("value" in descriptor) || !descriptor.enumerable) fail();
     if (!Number.isSafeInteger(descriptor.value) || (descriptor.value as number) < 0 || (descriptor.value as number) > 16 * 1024 * 1024) fail();
+    captured[key] = descriptor.value as number;
   }
   return Object.freeze({
-    maxDepth: (descriptors.maxDepth?.value as number | undefined) ?? 8,
-    maxKeys: (descriptors.maxKeys?.value as number | undefined) ?? 256,
-    maxItems: (descriptors.maxItems?.value as number | undefined) ?? 256,
-    maxStringBytes: (descriptors.maxStringBytes?.value as number | undefined) ?? 16_384,
-    maxTotalStringBytes: (descriptors.maxTotalStringBytes?.value as number | undefined) ?? 65_536,
+    maxDepth: captured.maxDepth ?? 8,
+    maxKeys: captured.maxKeys ?? 256,
+    maxItems: captured.maxItems ?? 256,
+    maxStringBytes: captured.maxStringBytes ?? 16_384,
+    maxTotalStringBytes: captured.maxTotalStringBytes ?? 65_536,
   });
 }
 
-function dataEntries(value: object): readonly [string, unknown][] {
+function dataEntries(
+  value: object,
+  remainingKeys: number,
+  remainingItems: number,
+): readonly [string, unknown][] {
   if (isProxy(value)) fail();
   const prototype = Object.getPrototypeOf(value);
   const array = Array.isArray(value);
   if (prototype !== (array ? Array.prototype : Object.prototype) && prototype !== null) fail();
-  if (Object.getOwnPropertySymbols(value).length !== 0) fail();
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  const keys = Object.keys(descriptors);
-  for (const key of keys) {
-    if (array && key === "length") continue;
-    const descriptor = descriptors[key];
-    if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) fail();
-  }
   if (array) {
-    const lengthDescriptor = descriptors.length;
-    if (lengthDescriptor === undefined || !("value" in lengthDescriptor)) fail();
-    for (let index = 0; index < value.length; index += 1) {
-      if (!Object.hasOwn(descriptors, String(index))) fail();
+    const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+    if (
+      lengthDescriptor === undefined
+      || !("value" in lengthDescriptor)
+      || !Number.isSafeInteger(lengthDescriptor.value)
+      || (lengthDescriptor.value as number) < 0
+      || (lengthDescriptor.value as number) > remainingItems
+    ) fail();
+    const length = lengthDescriptor.value as number;
+    const ownKeys = Reflect.ownKeys(value);
+    if (ownKeys.length !== length + 1 || ownKeys.some((key) => typeof key !== "string")) fail();
+    const result: [string, unknown][] = [];
+    for (let index = 0; index < length; index += 1) {
+      const key = String(index);
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) fail();
+      result.push([key, descriptor.value]);
     }
-    const unexpected = keys.filter((key) => key !== "length" && !/^(0|[1-9][0-9]*)$/.test(key));
-    if (unexpected.length !== 0) fail();
-    return Array.from({ length: value.length }, (_, index) => [String(index), descriptors[String(index)]!.value]);
+    return result;
   }
-  return keys.map((key) => [key, descriptors[key]!.value]);
+  const ownKeys = Reflect.ownKeys(value);
+  if (ownKeys.length > remainingKeys || ownKeys.some((key) => typeof key !== "string")) fail();
+  const result: [string, unknown][] = [];
+  for (const key of ownKeys as string[]) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) fail();
+    result.push([key, descriptor.value]);
+  }
+  return result;
 }
 
 function pathSegments(path: string): readonly string[] {
@@ -107,12 +139,20 @@ function pathSegments(path: string): readonly string[] {
 
 export function canonicalSensitivePaths(input: readonly string[]): readonly string[] {
   if (!Array.isArray(input) || isProxy(input)) fail();
-  if (input.length > 256 || Object.getOwnPropertySymbols(input).length !== 0) fail();
-  const descriptors = Object.getOwnPropertyDescriptors(input);
-  if (Object.keys(descriptors).some((key) => key !== "length" && !/^(0|[1-9][0-9]*)$/.test(key))) fail();
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(input, "length");
+  if (
+    lengthDescriptor === undefined
+    || !("value" in lengthDescriptor)
+    || !Number.isSafeInteger(lengthDescriptor.value)
+    || (lengthDescriptor.value as number) < 0
+    || (lengthDescriptor.value as number) > 256
+  ) fail();
+  const length = lengthDescriptor.value as number;
+  const ownKeys = Reflect.ownKeys(input);
+  if (ownKeys.length !== length + 1 || ownKeys.some((key) => typeof key !== "string")) fail();
   const result = new Set<string>();
-  for (let index = 0; index < input.length; index += 1) {
-    const descriptor = descriptors[String(index)];
+  for (let index = 0; index < length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(input, String(index));
     if (descriptor === undefined || !("value" in descriptor)) fail();
     result.add(pathSegments(descriptor.value as string).join("."));
   }
@@ -157,7 +197,11 @@ export function redactBounded(
     }
     if (typeof value !== "object" || depth >= maximumDepth || seen.has(value)) fail();
     seen.add(value);
-    const entries = dataEntries(value);
+    const entries = dataEntries(
+      value,
+      maximumKeys - budget.keys,
+      maximumItems - budget.items,
+    );
     if (Array.isArray(value)) {
       budget.items += entries.length;
       if (budget.items > maximumItems) fail();

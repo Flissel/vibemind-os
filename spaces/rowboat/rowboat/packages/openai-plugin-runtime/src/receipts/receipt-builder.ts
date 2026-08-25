@@ -31,10 +31,12 @@ function captureRecord(input: unknown): Readonly<Record<string, unknown>> {
   if (input === null || typeof input !== "object" || Array.isArray(input) || isProxy(input)) invalid();
   const prototype = Object.getPrototypeOf(input);
   if (prototype !== Object.prototype && prototype !== null) invalid();
-  if (Object.getOwnPropertySymbols(input).length !== 0) invalid();
-  const descriptors = Object.getOwnPropertyDescriptors(input);
+  const keys = Reflect.ownKeys(input);
+  if (keys.length > 32 || keys.some((key) => typeof key !== "string")) invalid();
   const result: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
-  for (const [key, descriptor] of Object.entries(descriptors)) {
+  for (const key of keys as string[]) {
+    const descriptor = Object.getOwnPropertyDescriptor(input, key);
+    if (descriptor === undefined) invalid();
     if (!("value" in descriptor) || !descriptor.enumerable) invalid();
     result[key] = descriptor.value;
   }
@@ -55,11 +57,13 @@ function captureReceiptLimits(input: unknown): Readonly<ReceiptLimits> {
   if (input === null || typeof input !== "object" || Array.isArray(input) || isProxy(input)) invalid();
   const prototype = Object.getPrototypeOf(input);
   if (prototype !== Object.prototype && prototype !== null) invalid();
-  if (Object.getOwnPropertySymbols(input).length !== 0) invalid();
-  const descriptors = Object.getOwnPropertyDescriptors(input);
   const allowed = new Set(["maxDepth", "maxKeys", "maxItems", "maxStringBytes", "maxTotalStringBytes", "maxOutputBytes"]);
+  const keys = Reflect.ownKeys(input);
+  if (keys.length > allowed.size || keys.some((key) => typeof key !== "string")) invalid();
   const captured: Record<string, number> = Object.create(null) as Record<string, number>;
-  for (const [key, descriptor] of Object.entries(descriptors)) {
+  for (const key of keys as string[]) {
+    const descriptor = Object.getOwnPropertyDescriptor(input, key);
+    if (descriptor === undefined) invalid();
     if (!allowed.has(key) || !("value" in descriptor) || !descriptor.enumerable) invalid();
     if (!Number.isSafeInteger(descriptor.value) || (descriptor.value as number) < 0 || (descriptor.value as number) > 16 * 1024 * 1024) invalid();
     captured[key] = descriptor.value as number;

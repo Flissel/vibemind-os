@@ -15,6 +15,7 @@ import type {
 } from "../domain/plugin.js";
 import { DEFAULT_POLICY, type PluginPolicy } from "../policy/default-policy.js";
 import type { ProviderBinding } from "../providers/provider.js";
+import type { PluginProvider } from "../providers/provider.js";
 import { ProviderRegistry } from "../providers/provider-registry.js";
 
 export const PINNED_PLUGIN_CATALOG_DIGEST =
@@ -147,6 +148,112 @@ function captureRegistryResolverIntrinsic(): ProviderRegistry["resolve"] | undef
 }
 
 const TRUSTED_REGISTRY_RESOLVE = captureRegistryResolverIntrinsic();
+const resolverAuthorizedRegistries = new WeakMap<ProviderRegistry, ReadonlySet<string>>();
+
+function resolverBindingSignature(binding: ProviderBinding): string {
+  return JSON.stringify({
+    id: binding.id,
+    providerKind: binding.providerKind,
+    componentDigest: binding.componentDigest,
+    pairedComponentDigests: binding.pairedComponentDigests ?? null,
+    temporaryAdapter: binding.temporaryAdapter ?? false,
+  });
+}
+
+export interface TrustedProviderAssembly {
+  readonly pluginName: string;
+  readonly componentId: string;
+  readonly binding: ProviderBinding;
+  readonly provider: PluginProvider;
+}
+
+function captureAssembly(input: unknown): TrustedProviderAssembly {
+  if (input === null || typeof input !== "object" || Array.isArray(input) || isProxy(input)) fail();
+  const prototype = Object.getPrototypeOf(input);
+  if (prototype !== Object.prototype && prototype !== null) fail();
+  if (Object.getOwnPropertySymbols(input).length !== 0) fail();
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  const expected = ["binding", "componentId", "pluginName", "provider"];
+  if (Object.keys(descriptors).sort().join("\0") !== expected.join("\0")) fail();
+  for (const key of expected) {
+    const descriptor = descriptors[key];
+    if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) fail();
+  }
+  const pluginName = descriptors.pluginName!.value as unknown;
+  const componentId = descriptors.componentId!.value as unknown;
+  const binding = capturePlain(descriptors.binding!.value) as ProviderBinding;
+  const provider = descriptors.provider!.value as unknown;
+  if (
+    typeof pluginName !== "string"
+    || !ID.test(pluginName)
+    || typeof componentId !== "string"
+    || !COMPONENT_ID.test(componentId)
+  ) fail();
+  if (provider === null || typeof provider !== "object" || Array.isArray(provider) || isProxy(provider)) fail();
+  const providerPrototype = Object.getPrototypeOf(provider);
+  if (providerPrototype !== Object.prototype && providerPrototype !== null) fail();
+  if (Object.getOwnPropertySymbols(provider).length !== 0) fail();
+  const providerDescriptors = Object.getOwnPropertyDescriptors(provider);
+  if (Object.keys(providerDescriptors).sort().join("\0") !== ["describe", "id", "invoke"].join("\0")) fail();
+  for (const key of ["describe", "id", "invoke"] as const) {
+    const descriptor = providerDescriptors[key];
+    if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) fail();
+  }
+  if (
+    typeof providerDescriptors.id!.value !== "string"
+    || typeof providerDescriptors.describe!.value !== "function"
+    || typeof providerDescriptors.invoke!.value !== "function"
+  ) fail();
+  return Object.freeze({ pluginName, componentId, binding, provider: provider as PluginProvider });
+}
+
+export function assembleTrustedProviderRegistry(
+  catalogInput: unknown,
+  assembliesInput: readonly TrustedProviderAssembly[],
+): ProviderRegistry {
+  const catalog = validateCatalog(catalogInput);
+  if (!Array.isArray(assembliesInput) || isProxy(assembliesInput)) fail();
+  const prototype = Object.getPrototypeOf(assembliesInput);
+  if (prototype !== Array.prototype && prototype !== null) fail();
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(assembliesInput, "length");
+  if (
+    lengthDescriptor === undefined
+    || !("value" in lengthDescriptor)
+    || !Number.isSafeInteger(lengthDescriptor.value)
+    || (lengthDescriptor.value as number) < 0
+    || (lengthDescriptor.value as number) > 256
+  ) fail();
+  const length = lengthDescriptor.value as number;
+  const ownKeys = Reflect.ownKeys(assembliesInput);
+  if (ownKeys.length !== length + 1 || ownKeys.some((key) => typeof key !== "string")) fail();
+  const assemblyDescriptors = Object.getOwnPropertyDescriptors(assembliesInput);
+  const assemblies: TrustedProviderAssembly[] = [];
+  const componentIds = new Set<string>();
+  const bindingIds = new Set<string>();
+  const bindingSignatures = new Set<string>();
+  for (let index = 0; index < length; index += 1) {
+    const descriptor = assemblyDescriptors[String(index)];
+    if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) fail();
+    const assembly = captureAssembly(descriptor.value);
+    if (componentIds.has(assembly.componentId) || bindingIds.has(assembly.binding.id)) fail();
+    const entry = catalog.entries.find((candidate) => candidate.name === assembly.pluginName);
+    const selected = entry?.components.find(({ component }) => component.id === assembly.componentId);
+    if (
+      entry?.admission.status !== "admitted"
+      || selected?.admission.status !== "admitted"
+      || (selected.component.kind !== "app" && selected.component.kind !== "mcp")
+      || selected.component.metadata.digest !== assembly.binding.componentDigest
+    ) fail();
+    componentIds.add(assembly.componentId);
+    bindingIds.add(assembly.binding.id);
+    bindingSignatures.add(resolverBindingSignature(assembly.binding));
+    assemblies.push(assembly);
+  }
+  const registry = new ProviderRegistry();
+  for (const assembly of assemblies) registry.register(assembly.binding, assembly.provider);
+  resolverAuthorizedRegistries.set(registry, bindingSignatures);
+  return registry;
+}
 
 function validateInstallation(input: unknown): PluginInstallation {
   const installation = capturePlain(input) as PluginInstallation;
@@ -221,7 +328,10 @@ function resolveComponent(
 }
 
 function resolveProviderIntrinsic(registry: ProviderRegistry, binding: ProviderBinding): "available" | "unavailable" {
-  if (TRUSTED_REGISTRY_RESOLVE === undefined) return "unavailable";
+  if (
+    TRUSTED_REGISTRY_RESOLVE === undefined
+    || resolverAuthorizedRegistries.get(registry)?.has(resolverBindingSignature(binding)) !== true
+  ) return "unavailable";
   try {
     const resolution = Reflect.apply(TRUSTED_REGISTRY_RESOLVE, registry, [binding]) as { readonly status?: unknown };
     return resolution.status === "available" ? "available" : "unavailable";

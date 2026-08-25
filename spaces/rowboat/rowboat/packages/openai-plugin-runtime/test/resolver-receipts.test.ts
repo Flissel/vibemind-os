@@ -12,6 +12,7 @@ import {
   type PluginProvider,
   type ProviderBinding,
 } from "../src/index.js";
+import { assembleTrustedProviderRegistry } from "../src/resolution/plugin-resolver.js";
 
 const catalog = JSON.parse(readFileSync(resolve(
   process.cwd(),
@@ -65,7 +66,7 @@ describe("installed plugin resolution", () => {
     expect(resolved.components).toEqual([]);
   });
 
-  it("resolves a provider only through its exact catalog component digest", () => {
+  it("requires internal catalog-bound registry assembly for provider availability", () => {
     const app = box.components.find(({ component }) => component.kind === "app");
     if (app === undefined || typeof app.component.metadata.digest !== "string") throw new Error("box app fixture missing");
     const binding: ProviderBinding = Object.freeze({
@@ -76,18 +77,54 @@ describe("installed plugin resolution", () => {
       describe: () => Object.freeze({ id: "box-provider", kind: "rowboat-native", temporaryAdapter: false }),
       invoke: async () => Object.freeze({ status: "success", output: null }),
     });
-    const registry = new ProviderRegistry();
-    registry.register(binding, provider);
-    const exact = resolveInstallation({
+    const ordinaryRegistry = new ProviderRegistry();
+    ordinaryRegistry.register(binding, provider);
+    const selectedInstallation = {
       ...installation,
       providerBindings: [{ componentId: app.component.id, binding }],
-    }, catalog, registry, DEFAULT_POLICY);
+    };
+    const ordinary = resolveInstallation(selectedInstallation, catalog, ordinaryRegistry, DEFAULT_POLICY);
+    expect(ordinary.status).toBe("partially_available");
+    expect(ordinary.apps[0]).toMatchObject({ status: "unavailable", reason: "provider_unavailable" });
+    const trustedRegistry = assembleTrustedProviderRegistry(catalog, [{
+      pluginName: box.pluginName,
+      componentId: app.component.id,
+      binding,
+      provider,
+    }]);
+    const exact = resolveInstallation(selectedInstallation, catalog, trustedRegistry, DEFAULT_POLICY);
     expect(exact.apps[0]).toMatchObject({ status: "available" });
+    const lateBinding: ProviderBinding = Object.freeze({
+      ...binding,
+      id: "box-late-untrusted",
+    });
+    trustedRegistry.register(lateBinding, provider);
+    const late = resolveInstallation({
+      ...installation,
+      providerBindings: [{ componentId: app.component.id, binding: lateBinding }],
+    }, catalog, trustedRegistry, DEFAULT_POLICY);
+    expect(late.apps[0]).toMatchObject({ status: "unavailable", reason: "provider_unavailable" });
     const mismatched = resolveInstallation({
       ...installation,
       providerBindings: [{ componentId: app.component.id, binding: { ...binding, componentDigest: "0".repeat(64) } }],
-    }, catalog, registry, DEFAULT_POLICY);
+    }, catalog, trustedRegistry, DEFAULT_POLICY);
     expect(mismatched.apps[0]).toMatchObject({ status: "unavailable", reason: "provider_unavailable" });
+    const forgedBrand = new ProviderRegistry();
+    Object.defineProperty(forgedBrand, "resolverAuthorized", { value: true });
+    expect(resolveInstallation(selectedInstallation, catalog, forgedBrand, DEFAULT_POLICY)).toMatchObject({
+      status: "unavailable", reason: "source_mismatch", components: [],
+    });
+    expect(resolveInstallation(selectedInstallation, catalog, new Proxy(trustedRegistry, {}), DEFAULT_POLICY)).toMatchObject({
+      status: "unavailable", reason: "source_mismatch", components: [],
+    });
+    let assemblyGetterCalls = 0;
+    const maliciousAssembly = [{ pluginName: box.pluginName, componentId: app.component.id, binding, provider }];
+    Object.defineProperty(maliciousAssembly, "extra", {
+      enumerable: true,
+      get() { assemblyGetterCalls += 1; return "forged"; },
+    });
+    expect(() => assembleTrustedProviderRegistry(catalog, maliciousAssembly)).toThrow("resolution_invalid");
+    expect(assemblyGetterCalls).toBe(0);
   });
 
   it("rejects own registry method shadows without invoking accessors or forging availability", () => {
@@ -292,6 +329,46 @@ describe("secret-free receipts", () => {
     expect(retained.output).toEqual({ authenticationMode: "oauth", monkey: "banana", tokenized: "public" });
   });
 
+  it("redacts certificate, session, cookie, JWT, and cryptographic key families conservatively", () => {
+    const output = {
+      records: [{
+        cert: "raw-cert",
+        certificate: "raw-certificate",
+        pem: "raw-pem",
+        passphrase: "raw-passphrase",
+        jwt: "raw-jwt",
+        session: "raw-session",
+        sessionId: "raw-session-id",
+        sessionToken: "raw-session-token",
+        cookie: "raw-cookie",
+        setCookie: "raw-set-cookie",
+        sshKey: "raw-ssh-key",
+        signingKey: "raw-signing-key",
+        encryptionKey: "raw-encryption-key",
+        credentialToken: "raw-credential-token",
+        authHeader: "raw-auth-header",
+        certificateFormat: "PEM",
+        sessionMode: "stateless",
+      }],
+    };
+    const receipt = buildReceipt({
+      type: "execution", receiptId: "receipt-key-families", projectId: "project-1", pluginName: "box", status: "success", output,
+    });
+    const serialized = JSON.stringify(receipt);
+    for (const [key, value] of Object.entries(output.records[0]!)) {
+      if (key === "certificateFormat" || key === "sessionMode") continue;
+      expect(serialized).not.toContain(value);
+    }
+    expect(receipt.output).toMatchObject({ records: [{ certificateFormat: "PEM", sessionMode: "stateless" }] });
+    expect(receipt.redactions).toEqual(expect.arrayContaining([
+      "output.records.0.cert", "output.records.0.certificate", "output.records.0.pem",
+      "output.records.0.passphrase", "output.records.0.jwt", "output.records.0.session",
+      "output.records.0.sessionId", "output.records.0.sessionToken", "output.records.0.cookie",
+      "output.records.0.setCookie", "output.records.0.sshKey", "output.records.0.signingKey",
+      "output.records.0.encryptionKey", "output.records.0.credentialToken", "output.records.0.authHeader",
+    ]));
+  });
+
   it("produces the same truncated digest across object insertion order", () => {
     const base = { type: "execution", receiptId: "receipt-3", projectId: "project-1", pluginName: "box", status: "success" };
     const first = buildReceipt({ ...base, output: { b: 2, a: 1 } }, [], { maxOutputBytes: 1 });
@@ -339,5 +416,28 @@ describe("secret-free receipts", () => {
     Object.defineProperty(paths, "extra", { enumerable: true, value: "output.secret" });
     expect(() => buildReceipt(base, paths)).toThrow("receipt_invalid");
     expect(calls).toBe(0);
+  });
+
+  it("rejects huge containers before full descriptor or entry materialization", () => {
+    const hugeArray = Array.from({ length: 100_000 }, (_, index) => index);
+    const hugeObject = Object.fromEntries(Array.from({ length: 100_000 }, (_, index) => [`key${index}`, index]));
+    const hugePaths = Array.from({ length: 100_000 }, () => "output.token");
+    const hugeLimits = Object.fromEntries(Array.from({ length: 100_000 }, (_, index) => [`limit${index}`, 1]));
+    const base = { type: "execution", receiptId: "receipt-budget-preflight", projectId: "project-1", pluginName: "box", status: "success" };
+    const original = Object.getOwnPropertyDescriptors;
+    Object.getOwnPropertyDescriptors = ((target: object) => {
+      if (target === hugeArray || target === hugeObject || target === hugePaths || target === hugeLimits) {
+        throw new Error("full_descriptor_materialization");
+      }
+      return original(target);
+    }) as typeof Object.getOwnPropertyDescriptors;
+    try {
+      expect(() => buildReceipt({ ...base, output: hugeArray }, [], { maxItems: 1 })).toThrow("receipt_invalid");
+      expect(() => buildReceipt({ ...base, output: hugeObject }, [], { maxKeys: 1 })).toThrow("receipt_invalid");
+      expect(() => buildReceipt(base, hugePaths)).toThrow("receipt_invalid");
+      expect(() => buildReceipt(base, [], hugeLimits)).toThrow("receipt_invalid");
+    } finally {
+      Object.getOwnPropertyDescriptors = original;
+    }
   });
 });
