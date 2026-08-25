@@ -1289,6 +1289,7 @@
 
 - capability: coding_task_anthropic
   description: "EXECUTE CODE TASK with the Claude Pro/Max subscription through official Claude Code. Use only when the user explicitly selects Claude or Anthropic; writes real files to disk, runs them, and returns output."
+  coding_provider: anthropic
   anchor_phrases:
     - "use Claude to fix the failing test in tests/test_foo.py"
     - "use Anthropic to fix tests/test_foo.py"
@@ -1300,14 +1301,14 @@
     # A provider selector alone is not a coding request. Require a bounded
     # coding operation plus a code artifact, repository object, or deployment
     # target so ordinary Claude chat stays out of this execution route.
-    - "(?=.*(?:\\b(?:use|ask|have)\\s+(?:claude|anthropic)\\b|\\bmit\\s+(?:claude|anthropic)\\b|\\b(?:claude(?:\\s+code)?|anthropic)\\s+verwenden\\b|\\b(?:claude|anthropic)\\s*[,;:]))(?=.*\\b(?:fix|debug|repair\\w*|reparier\\w*|beheb\\w*|write|create|implement|refactor|modify|edit|rename|move|delete|remove|merge|checkout|check\\s+out|rebase|clone|pull|deploy|schreib\\w*|erstell\\w*|ändere\\w*|lösch\\w*|f[üu]hr\\w*)\\b)(?=.*(?:\\.(?:py|js|ts|tsx|jsx|rs|go|java|cpp|c|h|hpp|rb|php|sh|cmd)\\b|\\b(?:function|funktion|script|skript|endpoint|api|source\\s+code|codebase|datei|files?|bug|error|issue|fehler|class|klasse|module|modul|git\\s+branch|branch|repository|repo|app|site|website|build)\\b|\\b(?:(?:software|code|source)\\s+(?:project|application|service|test)|(?:project|application|service|test)\\s+(?:code|source|repository|repo|module|endpoint|build|deployment|suite)|(?:unit|integration|failing)\\s+tests?)\\b)).*"
+    - "(?=.*\\b(?:claude|anthropic)\\b)(?=.*\\b(?:fix|debug|repair\\w*|reparier\\w*|beheb\\w*|write|create|implement|refactor|modify|edit|rename|move|delete|remove|merge|checkout|check\\s+out|rebase|clone|pull|deploy|schreib\\w*|erstell\\w*|ändere\\w*|lösch\\w*|f[üu]hr\\w*)\\b)(?=.*(?:\\.(?:py|js|ts|tsx|jsx|rs|go|java|cpp|c|h|hpp|rb|php|sh|cmd)\\b|\\b(?:function|funktion|script|skript|endpoint|api|source\\s+code|codebase|datei|files?|class|klasse|module|modul|git\\s+branch|branch|repository|repo|build)\\b|\\b(?:(?:bug|error|issue|fehler)\\s+(?:in|inside|within)\\s+(?:auth|code|source|codebase|function|funktion|class|klasse|module|modul|api|endpoint|repository|repo|build|tests?|files?)|(?:software|code|source)\\s+(?:project|application|service|test)|(?:project|application|service|test)\\s+(?:code|source|repository|repo|module|endpoint|build|deployment|suite)|(?:unit|integration|failing)\\s+tests?)\\b)).*"
     # Read/run/review/search requests may omit an extension but must still name
     # a bounded source-code or repository object. This preserves generic
     # review/search collisions handled by earlier capabilities.
-    - "(?=.*(?:\\b(?:use|ask|have)\\s+(?:claude|anthropic)\\b|\\bmit\\s+(?:claude|anthropic)\\b|\\b(?:claude(?:\\s+code)?|anthropic)\\s+verwenden\\b|\\b(?:claude|anthropic)\\s*[,;:]))(?=.*\\b(?:run|execute|review|inspect|check|search|find|locate|ausf[üu]hr\\w*|prüf\\w*|such\\w*)\\b)(?=.*(?:\\.(?:py|js|ts|tsx|jsx|rs|go|java|cpp|c|h|hpp|rb|php|sh|cmd)\\b|\\b(?:tests?|source\\s+code|codebase|repository|repo|files?)\\b)).*"
+    - "(?=.*\\b(?:claude|anthropic)\\b)(?=.*\\b(?:run|execute|review|inspect|check|search|find|locate|ausf[üu]hr\\w*|prüf\\w*|such\\w*)\\b)(?=.*(?:\\.(?:py|js|ts|tsx|jsx|rs|go|java|cpp|c|h|hpp|rb|php|sh|cmd)\\b|\\b(?:tests?|source\\s+code|codebase|repository|repo|files?)\\b)).*"
     # Concrete repository lifecycle and known deployment targets are also
     # provider-selected coding work without requiring a source extension.
-    - "(?=.*(?:\\b(?:use|ask|have)\\s+(?:claude|anthropic)\\b|\\bmit\\s+(?:claude|anthropic)\\b|\\b(?:claude(?:\\s+code)?|anthropic)\\s+verwenden\\b|\\b(?:claude|anthropic)\\s*[,;:]))(?=.*(?:\\b(?:create|setup|init|erstell|leg)\\b.*\\bgithub\\s+repo\\b|\\bdeploy\\b.*\\b(?:vercel|cloudflare|digitalocean|fly\\.io|aws|azure|gcp|render|railway|netlify|heroku|kubernetes|k8s|docker|production|staging|server)\\b|\\b(?:commit|push)\\b.*\\b(?:changes?|änderung)\\b)).*"
+    - "(?=.*\\b(?:claude|anthropic)\\b)(?=.*(?:\\b(?:create|setup|init|erstell|leg)\\b.*\\bgithub\\s+repo\\b|\\bdeploy\\b.*\\b(?:vercel|cloudflare|digitalocean|fly\\.io|aws|azure|gcp|render|railway|netlify|heroku|kubernetes|k8s|docker|production|staging|server)\\b|\\b(?:commit|push)\\b.*\\b(?:changes?|änderung)\\b)).*"
   execution_target: "openfang:brain-coder-anthropic"
   validator:
     # truth: ground-truth (2026-06-25) — the coding agent claims it wrote a file;
@@ -1322,6 +1323,7 @@
 
 - capability: coding_task
   description: "EXECUTE CODE TASK — actually write/edit/run real source code on disk through the ChatGPT subscription via OpenCode. NOT for adding ideas/notes to the knowledge graph (that's idea_add). NOT for searching code (that's code_search). NOT for reviewing code (that's code_review). USE THIS when the user wants the system to actually CREATE OR MODIFY a code file: write a python/js/ts/rust function or script, fix a bug in a specific source file, refactor existing code, implement an API endpoint, run git commit/push, create a github repo, deploy to vercel. This is the deterministic default coding route; it writes real files to disk, runs them, and returns output."
+  coding_provider: openai
   anchor_phrases:
     - "write a python script that prints hello and save it as hello.py"
     - "create a function add_two in src/main.py and run the file"
@@ -1335,24 +1337,24 @@
     - "leg mir ein github repo an und pushe den code dorthin"
   match_patterns:
     # File-extension is a strong signal that the user wants ACTUAL code on disk
-    # Explicit provider selectors are handled only by coding_task_anthropic;
-    # they must never fall through this deterministic OpenAI default.
-    - "^(?!.*(?:\\b(?:use|ask|have)\\s+(?:claude|anthropic)\\b|\\bmit\\s+(?:claude|anthropic)\\b|\\b(?:claude(?:\\s+code)?|anthropic)\\s+verwenden\\b|\\b(?:claude|anthropic)\\s*[,;:])).*\\.(py|js|ts|tsx|jsx|rs|go|java|cpp|c|h|hpp|rb|php|sh|cmd)\\b"
+    # CapabilityRouter's provider-intent gate allows this default only for
+    # OpenAI/default intent, never for explicit Anthropic intent or conflicts.
+    - "\\.(py|js|ts|tsx|jsx|rs|go|java|cpp|c|h|hpp|rb|php|sh|cmd)\\b"
     # German + English code-creation verbs with stack keyword nearby
-    - "^(?!.*(?:\\b(?:use|ask|have)\\s+(?:claude|anthropic)\\b|\\bmit\\s+(?:claude|anthropic)\\b|\\b(?:claude(?:\\s+code)?|anthropic)\\s+verwenden\\b|\\b(?:claude|anthropic)\\s*[,;:])).*(write|create|schreib|erstell)\\s+(a|an|me|mir|ein|eine)?\\s*(python|js|ts|rust|go|java)\\s+(function|class|script|module|funktion|klasse)"
-    - "^(?!.*(?:\\b(?:use|ask|have)\\s+(?:claude|anthropic)\\b|\\bmit\\s+(?:claude|anthropic)\\b|\\b(?:claude(?:\\s+code)?|anthropic)\\s+verwenden\\b|\\b(?:claude|anthropic)\\s*[,;:])).*(write|schreib)\\s+(me|mir)\\s+(a|an|ein|eine)?\\s*(python|js|ts)\\s+(function|funktion|script|skript)"
+    - "(write|create|schreib|erstell)\\s+(a|an|me|mir|ein|eine)?\\s*(python|js|ts|rust|go|java)\\s+(function|class|script|module|funktion|klasse)"
+    - "(write|schreib)\\s+(me|mir)\\s+(a|an|ein|eine)?\\s*(python|js|ts)\\s+(function|funktion|script|skript)"
     # Verb + stack-name (looser — catches "schreib mir ein python script das X")
-    - "^(?!.*(?:\\b(?:use|ask|have)\\s+(?:claude|anthropic)\\b|\\bmit\\s+(?:claude|anthropic)\\b|\\b(?:claude(?:\\s+code)?|anthropic)\\s+verwenden\\b|\\b(?:claude|anthropic)\\s*[,;:])).*(write|create|schreib|erstell)\\s+\\w+\\s+(python|js|ts|rust|go|java)\\s+\\w+"
+    - "(write|create|schreib|erstell)\\s+\\w+\\s+(python|js|ts|rust|go|java)\\s+\\w+"
     # Bug-fix style
-    - "^(?!.*(?:\\b(?:use|ask|have)\\s+(?:claude|anthropic)\\b|\\bmit\\s+(?:claude|anthropic)\\b|\\b(?:claude(?:\\s+code)?|anthropic)\\s+verwenden\\b|\\b(?:claude|anthropic)\\s*[,;:])).*(fix|debug)\\s+(the|a)?\\s*(bug|error|issue|fehler)\\s+in"
-    - "^(?!.*(?:\\b(?:use|ask|have)\\s+(?:claude|anthropic)\\b|\\bmit\\s+(?:claude|anthropic)\\b|\\b(?:claude(?:\\s+code)?|anthropic)\\s+verwenden\\b|\\b(?:claude|anthropic)\\s*[,;:])).*refactor\\s+(this|the)?\\s*(function|class|file|module|funktion|datei)"
-    - "^(?!.*(?:\\b(?:use|ask|have)\\s+(?:claude|anthropic)\\b|\\bmit\\s+(?:claude|anthropic)\\b|\\b(?:claude(?:\\s+code)?|anthropic)\\s+verwenden\\b|\\b(?:claude|anthropic)\\s*[,;:])).*implement\\s+(a|the|new)?\\s*(feature|endpoint|api)"
+    - "(fix|debug)\\s+(the|a)?\\s*(bug|error|issue|fehler)\\s+in"
+    - "refactor\\s+(this|the)?\\s*(function|class|file|module|funktion|datei)"
+    - "implement\\s+(a|the|new)?\\s*(feature|endpoint|api)"
     # Concrete git/deploy operations
-    - "^(?!.*(?:\\b(?:use|ask|have)\\s+(?:claude|anthropic)\\b|\\bmit\\s+(?:claude|anthropic)\\b|\\b(?:claude(?:\\s+code)?|anthropic)\\s+verwenden\\b|\\b(?:claude|anthropic)\\s*[,;:])).*(create|setup|init|erstell|leg)\\s+(a|my|ein|mein)?\\s*github\\s+repo"
-    - "^(?!.*(?:\\b(?:use|ask|have)\\s+(?:claude|anthropic)\\b|\\bmit\\s+(?:claude|anthropic)\\b|\\b(?:claude(?:\\s+code)?|anthropic)\\s+verwenden\\b|\\b(?:claude|anthropic)\\s*[,;:])).*deploy\\s+(to|on|auf)\\s+vercel"
-    - "^(?!.*(?:\\b(?:use|ask|have)\\s+(?:claude|anthropic)\\b|\\bmit\\s+(?:claude|anthropic)\\b|\\b(?:claude(?:\\s+code)?|anthropic)\\s+verwenden\\b|\\b(?:claude|anthropic)\\s*[,;:])).*(commit|push)\\s+(this|my|den|meinen)?\\s*(changes?|änderung)"
+    - "(create|setup|init|erstell|leg)\\s+(a|my|ein|mein)?\\s*github\\s+repo"
+    - "deploy\\s+(to|on|auf)\\s+vercel"
+    - "(commit|push)\\s+(this|my|den|meinen)?\\s*(changes?|änderung)"
     # Last-resort: stack + thing-noun pair
-    - "^(?!.*(?:\\b(?:use|ask|have)\\s+(?:claude|anthropic)\\b|\\bmit\\s+(?:claude|anthropic)\\b|\\b(?:claude(?:\\s+code)?|anthropic)\\s+verwenden\\b|\\b(?:claude|anthropic)\\s*[,;:])).*(eine?|a|ein)\\s+(python|js|ts|rust|go)\\s+(funktion|function|script|skript|class|klasse)"
+    - "(eine?|a|ein)\\s+(python|js|ts|rust|go)\\s+(funktion|function|script|skript|class|klasse)"
   execution_target: "openfang:brain-coder-openai"
   validator:
     # truth: ground-truth (2026-06-25) — the coding agent CLAIMS it wrote a file;

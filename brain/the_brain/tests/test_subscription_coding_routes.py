@@ -159,6 +159,44 @@ def test_actual_router_accepts_bounded_anthropic_selector_variants():
         assert match.execution_target == "openfang:brain-coder-anthropic", phrase
 
 
+def test_actual_router_resolves_modified_provider_selectors_before_coding_match():
+    router = CapabilityRouter(CAPABILITIES_PATH)
+    expected = {
+        "use the Claude model to fix app.py": "coding_task_anthropic",
+        "ask the Anthropic agent to fix app.py": "coding_task_anthropic",
+        "use the OpenAI model to fix app.py": "coding_task",
+        "ask the OpenAI agent to fix app.py": "coding_task",
+    }
+
+    for phrase, capability in expected.items():
+        match = router.route(phrase)
+        assert match is not None, phrase
+        assert match.capability == capability, phrase
+
+
+def test_actual_router_resolves_provider_negation_and_conflicts_fail_closed():
+    router = CapabilityRouter(CAPABILITIES_PATH)
+    expected = {
+        "do not use Claude; fix app.py with the default provider": "coding_task",
+        "use OpenAI, not Claude, to fix app.py": "coding_task",
+        "do not use OpenAI; use Claude to fix app.py": "coding_task_anthropic",
+        "use Claude, not OpenAI, to fix app.py": "coding_task_anthropic",
+    }
+
+    for phrase, capability in expected.items():
+        match = router.route(phrase)
+        assert match is not None, phrase
+        assert match.capability == capability, phrase
+
+    for phrase in (
+        "do not use Claude; fix app.py",
+        "do not use OpenAI; fix app.py",
+        "use Claude to fix app.py\nuse OpenAI for this task",
+        "use Claude and OpenAI to fix app.py",
+    ):
+        assert router.route(phrase) is None, phrase
+
+
 def test_actual_router_accepts_extensionless_anthropic_coding_operations():
     router = CapabilityRouter(CAPABILITIES_PATH)
 
@@ -203,6 +241,21 @@ def test_explicit_anthropic_business_writing_requests_do_not_route_coding():
         "ask Anthropic to create a job application",
         "Claude, edit the service agreement",
         "have Claude write a test email",
+    ):
+        match = router.route(phrase)
+        assert match is None or match.capability not in {
+            "coding_task",
+            "coding_task_anthropic",
+        }, phrase
+
+
+def test_explicit_anthropic_domain_defects_do_not_route_coding_without_code_context():
+    router = CapabilityRouter(CAPABILITIES_PATH)
+
+    for phrase in (
+        "use Claude to fix the employment contract issue",
+        "ask Anthropic to write an app store description",
+        "Claude, fix the car bug",
     ):
         match = router.route(phrase)
         assert match is None or match.capability not in {
