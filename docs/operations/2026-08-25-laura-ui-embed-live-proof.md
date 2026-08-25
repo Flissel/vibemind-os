@@ -146,7 +146,9 @@ OpenFang, Supabase, Brain-Bridge, n8n, MiroFish oder Rowboat. Der Prozess beende
 firstWindow- oder Teardown-Timeout.
 
 Die Beweisquellen sind getrennt: Der Unit-Test injiziert Callbacks in die Policy und belegt,
-dass FAST keinen davon ausführt, während Normalmodus sie geordnet ausführt. Ein separater
+dass ausschließlich `VIBEMIND_E2E_ISOLATED_STARTUP=true` keine externen Callbacks ausführt;
+`FAST_STARTUP=true` allein durchläuft dagegen den normalen geordneten und awaited
+Callbackpfad. Ein separater
 Audit-Counter markiert nur den tatsächlichen Eintritt in die Normalmodus-Dockerphase und
 emittiert nach Laura-Initialisierung den secret-freien Marker
 `NORMAL_STARTUP Docker bootstrap entered: stale-container cleanup and media Docker`. Der
