@@ -177,6 +177,40 @@ def test_actual_router_accepts_extensionless_anthropic_coding_operations():
         assert match.execution_target == "openfang:brain-coder-anthropic", phrase
 
 
+def test_actual_router_accepts_anthropic_file_git_and_deployment_operations():
+    router = CapabilityRouter(CAPABILITIES_PATH)
+
+    for phrase in (
+        "use Claude to rename src/main.py",
+        "ask Anthropic to move the source file",
+        "Claude, checkout the feature branch",
+        "have Anthropic rebase the git branch",
+        "use Claude to clone the repository",
+        "ask Anthropic to pull the repository",
+        "have Claude deploy to DigitalOcean",
+    ):
+        match = router.route(phrase)
+        assert match is not None, phrase
+        assert match.capability == "coding_task_anthropic", phrase
+        assert match.execution_target == "openfang:brain-coder-anthropic", phrase
+
+
+def test_explicit_anthropic_business_writing_requests_do_not_route_coding():
+    router = CapabilityRouter(CAPABILITIES_PATH)
+
+    for phrase in (
+        "use Claude to write a project update",
+        "ask Anthropic to create a job application",
+        "Claude, edit the service agreement",
+        "have Claude write a test email",
+    ):
+        match = router.route(phrase)
+        assert match is None or match.capability not in {
+            "coding_task",
+            "coding_task_anthropic",
+        }, phrase
+
+
 def test_explicit_anthropic_non_coding_requests_never_route_to_a_coding_agent():
     router = CapabilityRouter(CAPABILITIES_PATH)
 
