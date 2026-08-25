@@ -54,3 +54,20 @@ export {
   normalizePlugin,
   type NormalizePluginOptions,
 } from "./import/normalize-plugin.js";
+export {
+  DEFAULT_POLICY,
+  DEFAULT_POLICY_VERSION,
+  type ImmutableStringSet,
+  type PluginPolicy,
+} from "./policy/default-policy.js";
+export {
+  evaluateLicense,
+  type AdmissionDecision,
+  type AdmissionStatus,
+} from "./policy/license-policy.js";
+export {
+  evaluateCapability,
+  evaluateComponentAdmission,
+  type CapabilityKind,
+  type CapabilityReference,
+} from "./policy/capability-policy.js";
