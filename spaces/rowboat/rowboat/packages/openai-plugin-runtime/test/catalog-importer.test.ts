@@ -13,6 +13,7 @@ import {
   cleanupRegisteredTestRoots,
   createOwnedTestRoot,
 } from "./test-temp.js";
+import { resolveCatalogSyncPaths } from "../scripts/sync-catalog.js";
 
 const execFileAsync = promisify(execFile);
 const FIXED_TIME = "2026-08-24T00:00:00.000Z";
@@ -102,6 +103,31 @@ function options(source: Awaited<ReturnType<typeof createSource>>) {
 }
 
 describe("importCatalog", () => {
+  it("resolves a relative CLI output from the validated invocation root", async () => {
+    const source = await createSource("catalog-cli-paths", [
+      { directoryName: "alpha", license: "MIT" },
+    ]);
+    const invocationRoot = await createOwnedTestRoot("catalog-invocation-root");
+    const relativeOutput = join(
+      "spaces",
+      "rowboat",
+      "rowboat",
+      "config",
+      "openai-plugin-catalog.lock.json",
+    );
+
+    const paths = await resolveCatalogSyncPaths([
+      "--source", source.pluginsRoot,
+      "--commit", "11c74d6ba24d3a6d48f54a194cd00ef3beea18f9",
+      "--output", relativeOutput,
+    ], source.storeRoot, invocationRoot);
+
+    expect(paths.output).toBe(join(invocationRoot, relativeOutput));
+    expect(paths.repositoryRoot).toBe(source.repositoryRoot);
+    expect(paths.source).toBe(source.pluginsRoot);
+    expect(paths.storeRoot).toBe(source.storeRoot);
+  });
+
   it("accepts only the exact pinned commit at the CLI boundary", () => {
     expect(parseCatalogSyncArgs([
       "--source", "C:\\source\\plugins",
