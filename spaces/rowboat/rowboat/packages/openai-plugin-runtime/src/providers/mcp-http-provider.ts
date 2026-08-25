@@ -18,6 +18,7 @@ import {
   type SecretValue,
 } from "./credential-resolver.js";
 import { assertBinding } from "./provider-registry.js";
+import { validateMcpInvocation } from "./mcp-request.js";
 import type {
   PluginProvider,
   ProviderBinding,
@@ -260,6 +261,7 @@ export class HttpMcpProvider implements PluginProvider {
     if (providerDenial !== undefined) throw new Error(providerDenial);
     const capabilityDenial = admissionReason(this.#parentLicense, request.capability, this.#policy);
     if (capabilityDenial !== undefined) throw new Error(capabilityDenial);
+    const operationName = validateMcpInvocation(this.#server.name, request);
 
     const credential = await this.#resolveCredential(request.projectId);
     let client: HttpMcpClient;
@@ -287,7 +289,7 @@ export class HttpMcpProvider implements PluginProvider {
         await client.connect(sse);
       }
       const output = await client.callTool({
-        name: request.componentName,
+        name: operationName,
         arguments: request.arguments,
       });
       result = Object.freeze({ status: "success", output });

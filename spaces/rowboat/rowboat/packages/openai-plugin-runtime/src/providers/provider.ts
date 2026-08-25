@@ -11,6 +11,7 @@ export interface ProviderRequest {
   readonly projectId: string;
   readonly pluginName: string;
   readonly componentName: string;
+  readonly operationName?: string;
   readonly capability: "read" | "write";
   readonly arguments: Readonly<Record<string, unknown>>;
 }

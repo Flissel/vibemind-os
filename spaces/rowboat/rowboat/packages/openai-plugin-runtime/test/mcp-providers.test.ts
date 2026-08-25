@@ -38,6 +38,7 @@ const request: ProviderRequest = Object.freeze({
   projectId: "project-1",
   pluginName: "example-plugin",
   componentName: "search",
+  operationName: "query",
   capability: "read",
   arguments: Object.freeze({ query: "safe query" }),
 });
@@ -85,7 +86,7 @@ class RecordingHttpClient implements HttpMcpClient {
     readonly arguments: Readonly<Record<string, unknown>>;
   }): Promise<unknown> {
     this.callToolCalls += 1;
-    expect(input).toEqual({ name: "search", arguments: { query: "safe query" } });
+    expect(input).toEqual({ name: "query", arguments: { query: "safe query" } });
     return this.result;
   }
 
@@ -150,6 +151,62 @@ describe("HTTP MCP provider", () => {
     expect(client.connectTransports).toEqual(["streamable-http"]);
     expect(client.callToolCalls).toBe(1);
     expect(client.closeCalls).toBe(1);
+  });
+
+  it("separates a bound multi-tool server from its selected operation", async () => {
+    const client = new RecordingHttpClient();
+    const provider = new HttpMcpProvider({
+      id: "mcp.http.search",
+      binding: binding("binding.http.search", "mcp-http", HTTP_DIGEST),
+      server: Object.freeze({
+        name: "search-server",
+        kind: "mcp-http",
+        componentDigest: HTTP_DIGEST,
+        url: "https://example.com/mcp",
+      }),
+      parentLicense: "MIT",
+      policy: DEFAULT_POLICY,
+      credentialResolver: new RecordingCredentialResolver(),
+      clientFactory: { create: () => client },
+      transportFactory: { create: (input) => Object.freeze({ kind: input.kind }) },
+    });
+
+    await expect(provider.invoke({
+      ...request,
+      componentName: "search-server",
+      operationName: "query",
+    }, { requestId: "request-1" })).resolves.toMatchObject({ status: "success" });
+    expect(client.callToolCalls).toBe(1);
+  });
+
+  it.each([
+    { label: "missing operation", request: { ...request, operationName: undefined } },
+    { label: "invalid operation", request: { ...request, operationName: "../admin" } },
+    { label: "component escape", request: { ...request, componentName: "admin_delete", operationName: "admin_delete" } },
+  ])("rejects $label before HTTP credentials or transport", async ({ request: unsafeRequest }) => {
+    const client = new RecordingHttpClient();
+    const resolver = new RecordingCredentialResolver({ API_TOKEN: "super-secret-value" });
+    const provider = new HttpMcpProvider({
+      id: "mcp.http.search",
+      binding: binding("binding.http.search", "mcp-http", HTTP_DIGEST),
+      server: Object.freeze({
+        name: "search",
+        kind: "mcp-http",
+        componentDigest: HTTP_DIGEST,
+        url: "https://example.com/mcp",
+        bearerTokenReference: "API_TOKEN",
+      }),
+      parentLicense: "MIT",
+      policy: DEFAULT_POLICY,
+      credentialResolver: resolver,
+      clientFactory: { create: () => client },
+      transportFactory: { create: (input) => Object.freeze({ kind: input.kind }) },
+    });
+
+    await expect(provider.invoke(unsafeRequest as ProviderRequest, { requestId: "request-1" }))
+      .rejects.toThrow(/provider_invalid/);
+    expect(resolver.calls).toHaveLength(0);
+    expect(client.connectTransports).toHaveLength(0);
   });
 
   it("uses SSE only after a typed compatibility failure", async () => {
@@ -353,7 +410,10 @@ function processProvider(options: {
   readonly environmentReferences?: readonly string[];
   readonly timeoutMilliseconds?: number;
   readonly maxOutputBytes?: number;
-  readonly clientCall?: () => Promise<unknown>;
+  readonly clientCall?: (input: {
+    readonly name: string;
+    readonly arguments: Readonly<Record<string, unknown>>;
+  }) => Promise<unknown>;
   readonly clientFactory?: ProcessMcpClientFactory;
 }): ProcessMcpProvider {
   return new ProcessMcpProvider({
@@ -479,6 +539,98 @@ describe("process MCP provider", () => {
     expect(killed).toBe(1);
   });
 
+  it("fails closed when individually valid protocol frames exceed the cumulative stdout budget", async () => {
+    const pluginRoot = await createTempDirectory();
+    const spawner = new RecordingSpawner();
+    const queued: Buffer[] = [];
+    const waiters: Array<() => void> = [];
+    let finished = false;
+    let killed = 0;
+    let complete: ((value: { exitCode: number | null; signal: string | null }) => void) | undefined;
+    const enqueue = (value: unknown): void => {
+      queued.push(Buffer.from(`${JSON.stringify(value)}\n`));
+      waiters.shift()?.();
+    };
+    spawner.next = {
+      stdout: (async function* () {
+        while (!finished || queued.length > 0) {
+          const next = queued.shift();
+          if (next !== undefined) yield next;
+          else await new Promise<void>((resolve) => waiters.push(resolve));
+        }
+      })(),
+      stderr: (async function* () {})(),
+      completion: new Promise((resolve) => { complete = resolve; }),
+      async writeStdin(chunk: string): Promise<void> {
+        for (const line of chunk.trim().split("\n")) {
+          const message = JSON.parse(line) as unknown;
+          if (typeof message !== "object" || message === null) throw new Error("bad request");
+          const method = Reflect.get(message, "method");
+          const id = Reflect.get(message, "id");
+          if (method === "initialize") {
+            const params = Reflect.get(message, "params");
+            const protocolVersion = typeof params === "object" && params !== null
+              ? Reflect.get(params, "protocolVersion")
+              : undefined;
+            enqueue({
+              jsonrpc: "2.0",
+              id,
+              result: {
+                protocolVersion,
+                capabilities: { logging: {}, tools: {} },
+                serverInfo: { name: "budget-mcp", version: "1.0.0" },
+              },
+            });
+            for (let index = 0; index < 12; index += 1) {
+              enqueue({
+                jsonrpc: "2.0",
+                method: "notifications/message",
+                params: { level: "info", data: `bounded-frame-${index}` },
+              });
+            }
+          } else if (method === "tools/call") {
+            enqueue({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: "unexpected" }] } });
+          }
+        }
+      },
+      async closeStdin(): Promise<void> {},
+      kill: () => {
+        killed += 1;
+        finished = true;
+        waiters.shift()?.();
+        complete?.({ exitCode: null, signal: "SIGTERM" });
+      },
+    };
+    const provider = new ProcessMcpProvider({
+      id: "mcp.process.search",
+      binding: binding("binding.process.search", "mcp-process", PROCESS_DIGEST),
+      server: Object.freeze({
+        name: "search",
+        kind: "mcp-process",
+        componentDigest: PROCESS_DIGEST,
+        command: "node",
+        args: Object.freeze(["server.js"]),
+        environmentReferences: Object.freeze([]),
+        timeoutMilliseconds: 500,
+      }),
+      pluginRoot,
+      parentLicense: "MIT",
+      policy: PROCESS_POLICY,
+      credentialResolver: new RecordingCredentialResolver(),
+      spawner,
+      maxProtocolFrameBytes: 256,
+      maxProtocolBytes: 512,
+    });
+
+    const outcome = await Promise.race([
+      provider.invoke(request, { requestId: "request-1" }),
+      new Promise<"test_timeout">((resolve) => setTimeout(() => resolve("test_timeout"), 100)),
+    ]);
+    expect(outcome).not.toBe("test_timeout");
+    expect(outcome).toEqual({ status: "failed", reason: "process_failed" });
+    expect(killed).toBe(1);
+  });
+
   it("invokes the MCP tool through the client without waiting for the server process to exit", async () => {
     const pluginRoot = await createTempDirectory();
     const spawner = new RecordingSpawner();
@@ -514,7 +666,7 @@ describe("process MCP provider", () => {
           connect: async () => { connectCalls += 1; },
           callTool: async (input: unknown) => {
             callToolCalls += 1;
-            expect(input).toEqual({ name: "search", arguments: { query: "safe query" } });
+            expect(input).toEqual({ name: "query", arguments: { query: "safe query" } });
             return { content: [{ type: "text", text: "ok" }] };
           },
           close: async () => { closeCalls += 1; },
@@ -547,6 +699,47 @@ describe("process MCP provider", () => {
       .rejects.toThrow("process_not_admitted");
     expect(resolver.calls).toHaveLength(0);
     expect(spawner.calls).toHaveLength(0);
+  });
+
+  it.each([
+    { label: "missing operation", request: { ...request, operationName: undefined } },
+    { label: "invalid operation", request: { ...request, operationName: "../admin" } },
+    { label: "component escape", request: { ...request, componentName: "admin_delete", operationName: "admin_delete" } },
+  ])("rejects $label before process credentials, cwd, or spawn", async ({ request: unsafeRequest }) => {
+    const pluginRoot = await createTempDirectory();
+    const spawner = new RecordingSpawner();
+    const resolver = new RecordingCredentialResolver({ API_TOKEN: "super-secret-value" });
+    const provider = processProvider({
+      pluginRoot,
+      spawner,
+      resolver,
+      workingDirectory: "missing-directory",
+      environmentReferences: ["API_TOKEN"],
+    });
+
+    await expect(provider.invoke(unsafeRequest as ProviderRequest, { requestId: "request-1" }))
+      .rejects.toThrow(/provider_invalid/);
+    expect(resolver.calls).toHaveLength(0);
+    expect(spawner.calls).toHaveLength(0);
+  });
+
+  it("allows a legitimate operation only on the same bound process server", async () => {
+    const pluginRoot = await createTempDirectory();
+    const spawner = new RecordingSpawner();
+    let invokedName: string | undefined;
+    const provider = processProvider({
+      pluginRoot,
+      spawner,
+      clientCall: async (input) => {
+        invokedName = input.name;
+        return { content: [] };
+      },
+    });
+
+    await expect(provider.invoke({ ...request, operationName: "admin_delete" }, { requestId: "request-1" }))
+      .resolves.toMatchObject({ status: "success" });
+    expect(invokedName).toBe("admin_delete");
+    expect(spawner.calls).toHaveLength(1);
   });
 
   it("does not spawn when an exact credential reference is missing", async () => {

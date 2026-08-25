@@ -23,6 +23,7 @@ import {
   type CredentialResolver,
 } from "./credential-resolver.js";
 import { assertBinding } from "./provider-registry.js";
+import { validateMcpInvocation } from "./mcp-request.js";
 import type {
   PluginProvider,
   ProviderBinding,
@@ -35,7 +36,9 @@ import type {
 const PROVIDER_ID = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
 const DEFAULT_PROCESS_TIMEOUT_MS = 30_000;
 const DEFAULT_MCP_PROTOCOL_FRAME_BYTES = 1024 * 1024;
+const DEFAULT_MCP_PROTOCOL_BYTES = 8 * 1024 * 1024;
 const MAX_MCP_PROTOCOL_FRAME_BYTES = 1024 * 1024;
+const MAX_MCP_PROTOCOL_BYTES = 8 * 1024 * 1024;
 const MAX_PROCESS_OUTPUT_BYTES = 1024 * 1024;
 const PROCESS_PROVIDER_CLEANUP_MS = 25;
 
@@ -65,7 +68,7 @@ async function settleWithin<T>(promise: Promise<T>, milliseconds: number): Promi
 }
 
 export interface ProcessMcpClient {
-  connect(process: SpawnedProcess, maxFrameBytes: number): Promise<void>;
+  connect(process: SpawnedProcess, maxFrameBytes: number, maxProtocolBytes?: number): Promise<void>;
   callTool(input: {
     readonly name: string;
     readonly arguments: Readonly<Record<string, unknown>>;
@@ -101,12 +104,15 @@ class SpawnedProcessTransport implements Transport {
   onmessage?: (message: JSONRPCMessage) => void;
   readonly #process: SpawnedProcess;
   readonly #maxFrameBytes: number;
+  readonly #maxProtocolBytes: number;
+  #protocolBytes = 0;
   #started = false;
   #closed = false;
 
-  constructor(process: SpawnedProcess, maxFrameBytes: number) {
+  constructor(process: SpawnedProcess, maxFrameBytes: number, maxProtocolBytes: number) {
     this.#process = process;
     this.#maxFrameBytes = maxFrameBytes;
+    this.#maxProtocolBytes = maxProtocolBytes;
   }
 
   async start(): Promise<void> {
@@ -121,6 +127,10 @@ class SpawnedProcessTransport implements Transport {
     try {
       for await (const chunk of this.#process.stdout) {
         const bytes = typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk);
+        this.#protocolBytes += bytes.byteLength;
+        if (this.#protocolBytes > this.#maxProtocolBytes) {
+          throw new Error("mcp_protocol_budget_exceeded");
+        }
         buffer = Buffer.concat([buffer, bytes]);
         if (buffer.byteLength > this.#maxFrameBytes && buffer.indexOf("\n") === -1) {
           throw new Error("mcp_protocol_frame_too_large");
@@ -166,9 +176,13 @@ class SpawnedProcessTransport implements Transport {
 class SdkProcessMcpClient implements ProcessMcpClient {
   #client: Client | undefined;
 
-  async connect(process: SpawnedProcess, maxFrameBytes: number): Promise<void> {
+  async connect(
+    process: SpawnedProcess,
+    maxFrameBytes: number,
+    maxProtocolBytes = DEFAULT_MCP_PROTOCOL_BYTES,
+  ): Promise<void> {
     const client = new Client({ name: "rowboat-openai-plugin-runtime", version: "1.0.0" });
-    await client.connect(new SpawnedProcessTransport(process, maxFrameBytes));
+    await client.connect(new SpawnedProcessTransport(process, maxFrameBytes, maxProtocolBytes));
     this.#client = client;
   }
 
@@ -214,6 +228,7 @@ export interface ProcessMcpProviderOptions {
   readonly safeBaselineEnvironment?: Readonly<Record<string, string>>;
   readonly maxOutputBytes?: number;
   readonly maxProtocolFrameBytes?: number;
+  readonly maxProtocolBytes?: number;
   readonly clientFactory?: ProcessMcpClientFactory;
 }
 
@@ -229,6 +244,7 @@ export class ProcessMcpProvider implements PluginProvider {
   readonly #safeBaselineEnvironment: Readonly<Record<string, string>>;
   readonly #maxOutputBytes: number | undefined;
   readonly #maxProtocolFrameBytes: number;
+  readonly #maxProtocolBytes: number;
   readonly #clientFactory: ProcessMcpClientFactory;
 
   constructor(options: ProcessMcpProviderOptions) {
@@ -250,12 +266,21 @@ export class ProcessMcpProvider implements PluginProvider {
       throw new Error("provider_invalid:process_timeout");
     }
     const maxProtocolFrameBytes = options.maxProtocolFrameBytes ?? DEFAULT_MCP_PROTOCOL_FRAME_BYTES;
+    const maxProtocolBytes = options.maxProtocolBytes ?? DEFAULT_MCP_PROTOCOL_BYTES;
     if (
       !Number.isSafeInteger(maxProtocolFrameBytes)
       || maxProtocolFrameBytes < 1
       || maxProtocolFrameBytes > MAX_MCP_PROTOCOL_FRAME_BYTES
     ) {
       throw new Error("provider_invalid:protocol_frame_limit");
+    }
+    if (
+      !Number.isSafeInteger(maxProtocolBytes)
+      || maxProtocolBytes < 1
+      || maxProtocolBytes > MAX_MCP_PROTOCOL_BYTES
+      || maxProtocolFrameBytes > maxProtocolBytes
+    ) {
+      throw new Error("provider_invalid:protocol_budget");
     }
     if (
       options.maxOutputBytes !== undefined
@@ -285,6 +310,7 @@ export class ProcessMcpProvider implements PluginProvider {
     );
     this.#maxOutputBytes = options.maxOutputBytes;
     this.#maxProtocolFrameBytes = maxProtocolFrameBytes;
+    this.#maxProtocolBytes = maxProtocolBytes;
     this.#clientFactory = options.clientFactory ?? new SdkProcessMcpClientFactory();
     Object.freeze(this);
   }
@@ -298,9 +324,7 @@ export class ProcessMcpProvider implements PluginProvider {
     if (providerDenial !== undefined) throw new Error(providerDenial);
     const capabilityDenial = denialReason(this.#parentLicense, request.capability, this.#policy);
     if (capabilityDenial !== undefined) throw new Error(capabilityDenial);
-    if (request.componentName !== this.#server.name) {
-      throw new Error("provider_invalid:component_mismatch");
-    }
+    const operationName = validateMcpInvocation(this.#server.name, request);
 
     const resolvedEnvironment: Record<string, string> = Object.create(null) as Record<string, string>;
     const secrets: string[] = [];
@@ -356,8 +380,8 @@ export class ProcessMcpProvider implements PluginProvider {
       timer = setTimeout(() => resolveTimeout("timeout"), this.#server.timeoutMilliseconds);
     });
     const operation = (async (): Promise<unknown> => {
-      await client.connect(spawned, this.#maxProtocolFrameBytes);
-      return client.callTool({ name: request.componentName, arguments: request.arguments });
+      await client.connect(spawned, this.#maxProtocolFrameBytes, this.#maxProtocolBytes);
+      return client.callTool({ name: operationName, arguments: request.arguments });
     })();
 
     let output: unknown;
