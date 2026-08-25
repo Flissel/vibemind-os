@@ -130,6 +130,11 @@ const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const COMPONENT_ID = /^[A-Za-z0-9][A-Za-z0-9._:/#-]{0,255}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
+const REGISTRY_PROBE_BINDING: ProviderBinding = Object.freeze({
+  id: "rowboat-registry-integrity-probe",
+  providerKind: "rowboat-native",
+  componentDigest: "0".repeat(64),
+});
 
 function validateInstallation(input: unknown): PluginInstallation {
   const installation = capturePlain(input) as PluginInstallation;
@@ -190,7 +195,7 @@ function resolveComponent(
     if (
       binding === undefined
       || binding.componentDigest !== component.metadata.digest
-      || registry.resolve(binding).status !== "available"
+      || resolveProviderIntrinsic(registry, binding) !== "available"
     ) reason = "provider_unavailable";
   }
   return Object.freeze({
@@ -201,6 +206,32 @@ function resolveComponent(
     ...(reason === undefined ? {} : { reason }),
     metadata: component.metadata,
   });
+}
+
+function resolveProviderIntrinsic(registry: ProviderRegistry, binding: ProviderBinding): "available" | "unavailable" {
+  try {
+    const resolution = Reflect.apply(ProviderRegistry.prototype.resolve, registry, [binding]) as { readonly status?: unknown };
+    return resolution.status === "available" ? "available" : "unavailable";
+  } catch {
+    return "unavailable";
+  }
+}
+
+function isTrustedProviderRegistry(registry: ProviderRegistry): boolean {
+  if (
+    isProxy(registry)
+    || Object.getPrototypeOf(registry) !== ProviderRegistry.prototype
+    || Reflect.ownKeys(registry).length !== 0
+  ) return false;
+  try {
+    const probe = Reflect.apply(ProviderRegistry.prototype.resolve, registry, [REGISTRY_PROBE_BINDING]) as {
+      readonly status?: unknown;
+      readonly reason?: unknown;
+    };
+    return probe.status === "unavailable" && probe.reason === "provider_unavailable";
+  } catch {
+    return false;
+  }
 }
 
 function byKindName(left: ResolvedComponent, right: ResolvedComponent): number {
@@ -218,7 +249,10 @@ export function resolveInstallation(
   try {
     installation = validateInstallation(installationInput);
     catalog = validateCatalog(catalogInput);
-    if (policy !== DEFAULT_POLICY || Object.getPrototypeOf(registry) !== ProviderRegistry.prototype) fail();
+    if (
+      policy !== DEFAULT_POLICY
+      || !isTrustedProviderRegistry(registry)
+    ) fail();
   } catch {
     return empty("source_mismatch");
   }

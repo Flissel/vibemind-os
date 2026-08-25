@@ -216,12 +216,3 @@ export {
   buildReceipt,
   type ReceiptLimits,
 } from "./receipts/receipt-builder.js";
-export {
-  REDACTED,
-  canonicalSensitivePaths,
-  captureRedactionLimits,
-  redactBounded,
-  type RedactionLimits,
-  type RedactionResult,
-  type CapturedRedactionLimits,
-} from "./security/redact.js";

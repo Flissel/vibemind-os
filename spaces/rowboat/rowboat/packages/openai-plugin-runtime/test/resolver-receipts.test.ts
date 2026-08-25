@@ -90,6 +90,47 @@ describe("installed plugin resolution", () => {
     expect(mismatched.apps[0]).toMatchObject({ status: "unavailable", reason: "provider_unavailable" });
   });
 
+  it("rejects own registry method shadows without invoking accessors or forging availability", () => {
+    const app = box.components.find(({ component }) => component.kind === "app");
+    if (app === undefined || typeof app.component.metadata.digest !== "string") throw new Error("box app fixture missing");
+    const binding: ProviderBinding = Object.freeze({
+      id: "box-shadow", providerKind: "rowboat-native", componentDigest: app.component.metadata.digest,
+    });
+    const provider: PluginProvider = Object.freeze({
+      id: "box-shadow-provider",
+      describe: () => Object.freeze({ id: "box-shadow-provider", kind: "rowboat-native", temporaryAdapter: false }),
+      invoke: async () => Object.freeze({ status: "success", output: null }),
+    });
+    const boundInstallation = { ...installation, providerBindings: [{ componentId: app.component.id, binding }] };
+    let getterCalls = 0;
+    const accessorRegistry = new ProviderRegistry();
+    accessorRegistry.register(binding, provider);
+    Object.defineProperty(accessorRegistry, "resolve", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return () => Object.freeze({ status: "available", provider });
+      },
+    });
+    const dataRegistry = new ProviderRegistry();
+    dataRegistry.register(binding, provider);
+    Object.defineProperty(dataRegistry, "resolve", {
+      enumerable: true,
+      value: () => Object.freeze({ status: "available", provider }),
+    });
+    expect(resolveInstallation(boundInstallation, catalog, accessorRegistry, DEFAULT_POLICY)).toMatchObject({
+      status: "unavailable", reason: "source_mismatch", components: [],
+    });
+    expect(resolveInstallation(boundInstallation, catalog, dataRegistry, DEFAULT_POLICY)).toMatchObject({
+      status: "unavailable", reason: "source_mismatch", components: [],
+    });
+    const forgedRegistry = Object.create(ProviderRegistry.prototype) as ProviderRegistry;
+    expect(resolveInstallation(boundInstallation, catalog, forgedRegistry, DEFAULT_POLICY)).toMatchObject({
+      status: "unavailable", reason: "source_mismatch", components: [],
+    });
+    expect(getterCalls).toBe(0);
+  });
+
   it("evaluates plugin license admission before resolving components", () => {
     const resolved = resolveInstallation(installationFor("convex"), catalog, new ProviderRegistry(), DEFAULT_POLICY);
     expect(resolved).toMatchObject({ status: "unavailable", reason: "license_rejected" });
@@ -159,6 +200,60 @@ describe("secret-free receipts", () => {
     });
     expect(JSON.stringify(receipt)).not.toContain("super-secret-value");
     expect(receipt.redactions).toContain("output.nested.token");
+  });
+
+  it("redacts common mixed-case auth and key variants in nested arrays before canonical hashing", () => {
+    const secrets = {
+      API_KEY: "raw-api-upper",
+      accessToken: "raw-access",
+      "api-key": "raw-api-kebab",
+      apiKey: "raw-api-camel",
+      auth: "raw-auth",
+      authorization: "raw-authorization",
+      benign: { authenticationMode: "oauth", monkey: "banana", tokenized: "public" },
+      clientSecret: "raw-client",
+      privateKey: "raw-private-camel",
+      private_key: "raw-private-snake",
+      refreshToken: "raw-refresh",
+    };
+    const base = { type: "execution", receiptId: "receipt-variants", projectId: "project-1", pluginName: "box", status: "success" };
+    const receipt = buildReceipt({ ...base, output: { records: [secrets] } }, [], { maxOutputBytes: 1 });
+    const redacted = "[REDACTED]";
+    const expectedCanonical = JSON.stringify({ records: [{
+      API_KEY: redacted,
+      accessToken: redacted,
+      "api-key": redacted,
+      apiKey: redacted,
+      auth: redacted,
+      authorization: redacted,
+      benign: { authenticationMode: "oauth", monkey: "banana", tokenized: "public" },
+      clientSecret: redacted,
+      privateKey: redacted,
+      private_key: redacted,
+      refreshToken: redacted,
+    }] });
+    expect(receipt.output).toEqual({
+      truncated: true,
+      digest: createHash("sha256").update(Buffer.from(expectedCanonical, "utf8")).digest("hex"),
+    });
+    const serialized = JSON.stringify(receipt);
+    for (const value of Object.values(secrets).filter((candidate): candidate is string => typeof candidate === "string")) {
+      expect(serialized).not.toContain(value);
+    }
+    expect(receipt.redactions).toEqual([
+      "output.records.0.API_KEY",
+      "output.records.0.accessToken",
+      "output.records.0.api-key",
+      "output.records.0.apiKey",
+      "output.records.0.auth",
+      "output.records.0.authorization",
+      "output.records.0.clientSecret",
+      "output.records.0.privateKey",
+      "output.records.0.private_key",
+      "output.records.0.refreshToken",
+    ]);
+    const retained = buildReceipt({ ...base, receiptId: "receipt-benign", output: secrets.benign });
+    expect(retained.output).toEqual({ authenticationMode: "oauth", monkey: "banana", tokenized: "public" });
   });
 
   it("produces the same truncated digest across object insertion order", () => {

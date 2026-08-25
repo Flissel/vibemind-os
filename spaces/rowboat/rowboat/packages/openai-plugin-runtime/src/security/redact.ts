@@ -5,10 +5,21 @@ export const REDACTED = "[REDACTED]" as const;
 const SAFE_KEY = /^[A-Za-z0-9_-]{1,128}$/;
 const FORBIDDEN_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 const SECRET_SEGMENTS = new Set([
-  "authorization", "bearer", "cookie", "credential", "credentials", "env", "header", "headers",
+  "auth", "authorization", "bearer", "cookie", "credential", "credentials", "env", "header", "headers",
   "password", "secret", "stack", "token", "tokens", "url", "urls", "command", "commands",
   "error", "errors", "message", "messages", "path", "paths",
 ]);
+const SECRET_COMPOUNDS = new Set(["apikey", "privatekey", "accesstoken", "refreshtoken", "clientsecret"]);
+const SECRET_KEY_PREFIXES = new Set(["api", "private"]);
+
+function isSensitiveKey(key: string | undefined): boolean {
+  if (key === undefined) return false;
+  const normalized = key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+  if (SECRET_COMPOUNDS.has(normalized.replace(/[_-]/g, ""))) return true;
+  const segments = normalized.split(/[_-]/);
+  if (segments.some((part) => SECRET_SEGMENTS.has(part))) return true;
+  return segments.some((part, index) => part === "key" && index > 0 && SECRET_KEY_PREFIXES.has(segments[index - 1]!));
+}
 
 export interface RedactionLimits {
   readonly maxDepth?: number;
@@ -127,9 +138,7 @@ export function redactBounded(
   const visit = (value: unknown, segments: readonly string[], depth: number): unknown => {
     const path = segments.join(".");
     const key = segments.at(-1);
-    const normalizedKey = key?.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
-    const secretKey = normalizedKey?.split(/[_-]/).some((part) => SECRET_SEGMENTS.has(part)) === true;
-    if (requested.has(path) || secretKey) {
+    if (requested.has(path) || isSensitiveKey(key)) {
       redactions.add(path);
       for (const requestedPath of requested) {
         if (requestedPath.startsWith(`${path}.`)) redactions.add(requestedPath);
