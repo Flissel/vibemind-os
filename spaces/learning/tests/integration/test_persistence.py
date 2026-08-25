@@ -171,6 +171,10 @@ def test_core_migration_and_metadata_own_the_exact_prefixed_tables() -> None:
         "learning_sources",
         "learning_source_revisions",
         "learning_source_chunks",
+        "learning_course_factory_jobs",
+        "learning_course_factory_attempts",
+        "learning_course_factory_transitions",
+        "learning_course_factory_stage_artifacts",
     }
 
 

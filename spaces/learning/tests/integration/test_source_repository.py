@@ -396,7 +396,7 @@ def test_postgres_migration_and_source_content_are_append_only(
             "SELECT version_num FROM learning_alembic_version"
         ).scalar_one()
 
-    assert version == "0003_sources_outbox"
+    assert version == "0004_course_factory"
     assert ("artifact_id",) in unique_sets
     assert ("source_id", "content_hash", "ingestion_spec_version") in unique_sets
 
@@ -458,7 +458,7 @@ def test_postgres_migration_and_source_content_are_append_only(
     with postgres_session_factory() as session:
         assert session.get(LearningArtifact, generic_artifact_id) is None
 
-    with pytest.raises(RuntimeError, match="non-empty source history"):
+    with pytest.raises(RuntimeError, match=r"non-empty (?:Course Factory|source) history"):
         command.downgrade(
             _config(postgres_session_factory.database_url),
             "0002_learning_receipt_claims",
