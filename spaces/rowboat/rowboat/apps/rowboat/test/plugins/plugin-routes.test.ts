@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+import { readFileSync } from "node:fs";
 import { PINNED_PLUGIN_CATALOG_DIGEST } from "@rowboat/openai-plugin-runtime";
 import {
   createCatalogCollectionRoute, createCatalogItemRoute, createProjectPluginsRoute, createProjectPluginRoute,
@@ -81,10 +82,12 @@ describe("versioned plugin catalog routes", () => {
       import("@/app/api/v1/plugins/route"), import("@/app/api/v1/plugins/[pluginName]/route"),
       import("@/app/api/v1/projects/[projectId]/plugins/route"), import("@/app/api/v1/projects/[projectId]/plugins/[pluginName]/route"),
     ]);
-    expect(Object.keys(catalogCollection)).toEqual(["GET"]);
-    expect(Object.keys(catalogSelected)).toEqual(["GET"]);
-    expect(Object.keys(projectCollection).sort()).toEqual(["GET", "POST"]);
-    expect(Object.keys(projectSelected).sort()).toEqual(["GET", "PATCH"]);
+    expect(Object.keys(catalogCollection).sort()).toEqual(["GET", "dynamic"]);
+    expect(Object.keys(catalogSelected).sort()).toEqual(["GET", "dynamic"]);
+    expect(Object.keys(projectCollection).sort()).toEqual(["GET", "POST", "dynamic"]);
+    expect(Object.keys(projectSelected).sort()).toEqual(["GET", "PATCH", "dynamic"]);
+    expect([catalogCollection.dynamic, catalogSelected.dynamic, projectCollection.dynamic, projectSelected.dynamic])
+      .toEqual(["force-dynamic", "force-dynamic", "force-dynamic", "force-dynamic"]);
   });
 
   it("imports production routes and rejects invalid input without loading external composition modules", async () => {
@@ -123,24 +126,40 @@ describe("versioned plugin catalog routes", () => {
       expect(await json(response)).toEqual({ error: "request_invalid" });
     }
     expect(resolutions).toBe(0);
-    // The single clone read is the fail-closed Next runtime-proxy provenance handshake.
-    expect(proxyCalls).toBe(1);
+    expect(proxyCalls).toBe(0);
   });
 
-  it("accepts the Next 15 AppRoute runtime proxy while rejecting arbitrary proxies before resolution", async () => {
+  it("uses the force-dynamic AppRoute path with an exact request and rejects clone-handshake and header-forging proxies", async () => {
+    const installedAppRoute = readFileSync("node_modules/next/dist/server/route-modules/app-route/module.js", "utf8");
+    expect(installedAppRoute).toMatch(/let request = req;[\s\S]{0,500}case 'force-dynamic':[\s\S]{0,500}break;[\s\S]{0,1500}request = proxyNextRequest\(req/);
     let resolutions = 0;
-    const route = createCatalogCollectionRoute(async () => { resolutions += 1; return { execute: async () => [catalogItem] }; });
-    const frameworkResponse = await route(proxyNextRequestEquivalent(request(`/api/v1/plugins?catalogDigest=${catalogDigest}`)));
-    expect(frameworkResponse.status).toBe(200);
-    expect(resolutions).toBe(1);
-
-    const arbitrary = new Proxy(request(`/api/v1/plugins?catalogDigest=${catalogDigest}`), {
-      get: (target, property) => Reflect.get(target, property, target),
+    let controllerCalls = 0;
+    const route = createCatalogCollectionRoute(async () => {
+      resolutions += 1;
+      return { execute: async () => { controllerCalls += 1; return [catalogItem]; } };
     });
-    const rejected = await route(arbitrary);
-    expect(rejected.status).toBe(400);
-    expect(await json(rejected)).toEqual({ error: "request_invalid" });
+    const exactResponse = await route(request(`/api/v1/plugins?catalogDigest=${catalogDigest}`));
+    expect(exactResponse.status).toBe(200);
     expect(resolutions).toBe(1);
+    expect(controllerCalls).toBe(1);
+
+    let forgedAccessorCalls = 0;
+    const forgedHeaders = new Headers();
+    Object.defineProperty(forgedHeaders, "get", {
+      get: () => { forgedAccessorCalls += 1; return Headers.prototype.get; },
+    });
+    const cloneHandshake = proxyNextRequestEquivalent(request(`/api/v1/plugins?catalogDigest=${catalogDigest}`));
+    const headerForging = new Proxy(request(`/api/v1/plugins?catalogDigest=${catalogDigest}`), {
+      get: (target, property) => property === "headers" ? forgedHeaders : Reflect.get(target, property, target),
+    });
+    for (const candidate of [cloneHandshake, headerForging]) {
+      const rejected = await route(candidate);
+      expect(rejected.status).toBe(400);
+      expect(await json(rejected)).toEqual({ error: "request_invalid" });
+    }
+    expect(resolutions).toBe(1);
+    expect(controllerCalls).toBe(1);
+    expect(forgedAccessorCalls).toBe(0);
   });
 
   it("rejects own value and accessor Headers.get overrides without invoking them or resolving dependencies", async () => {

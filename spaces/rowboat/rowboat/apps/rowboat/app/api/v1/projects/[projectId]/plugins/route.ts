@@ -2,3 +2,4 @@ import { projectPluginsRoutes } from "@/src/interface-adapters/http/plugins/plug
 
 export const GET = projectPluginsRoutes.GET;
 export const POST = projectPluginsRoutes.POST;
+export const dynamic = "force-dynamic";

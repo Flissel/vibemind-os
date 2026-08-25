@@ -2,3 +2,4 @@ import { projectPluginRoutes } from "@/src/interface-adapters/http/plugins/plugi
 
 export const GET = projectPluginRoutes.GET;
 export const PATCH = projectPluginRoutes.PATCH;
+export const dynamic = "force-dynamic";
