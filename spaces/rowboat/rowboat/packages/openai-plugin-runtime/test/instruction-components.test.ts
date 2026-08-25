@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -23,6 +23,24 @@ async function createPluginRoot(label: string): Promise<string> {
   const pluginRoot = join(owner, "plugin");
   await mkdir(pluginRoot, { recursive: true });
   return pluginRoot;
+}
+
+async function createDirectoryLink(target: string, link: string): Promise<void> {
+  await symlink(target, link, process.platform === "win32" ? "junction" : "dir");
+}
+
+function validPng(): Buffer {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const ihdr = Buffer.alloc(25);
+  ihdr.writeUInt32BE(13, 0);
+  ihdr.write("IHDR", 4, "ascii");
+  ihdr.writeUInt32BE(1, 8);
+  ihdr.writeUInt32BE(1, 12);
+  ihdr[16] = 8;
+  ihdr[17] = 6;
+  const iend = Buffer.alloc(12);
+  iend.write("IEND", 4, "ascii");
+  return Buffer.concat([signature, ihdr, iend]);
 }
 
 describe("instruction component normalizers", () => {
@@ -136,6 +154,60 @@ describe("instruction component normalizers", () => {
     });
   });
 
+  it("rejects a skill root, SKILL file, or resource that crosses a link namespace", async () => {
+    const pluginRoot = await createPluginRoot("skill-links");
+    const skillsRoot = join(pluginRoot, "skills");
+    const hiddenSkill = join(pluginRoot, "hidden-skill");
+    await mkdir(skillsRoot);
+    await mkdir(hiddenSkill);
+    await writeFile(
+      join(hiddenSkill, "SKILL.md"),
+      "---\nname: hidden\ndescription: Hidden.\n---\n# Hidden\n",
+      "utf8",
+    );
+    const linkedRoot = join(skillsRoot, "linked");
+    await createDirectoryLink(hiddenSkill, linkedRoot);
+    await expect(normalizeSkill(linkedRoot, pluginRoot)).rejects.toMatchObject({ code: "path_escape" });
+
+    const fileLinkedSkill = join(skillsRoot, "file-linked");
+    await mkdir(fileLinkedSkill);
+    await writeFile(
+      join(fileLinkedSkill, "actual.md"),
+      "---\nname: file-linked\ndescription: Linked.\n---\n# Linked\n",
+      "utf8",
+    );
+    await symlink(join(fileLinkedSkill, "actual.md"), join(fileLinkedSkill, "SKILL.md"), "file");
+    await expect(normalizeSkill(fileLinkedSkill, pluginRoot)).rejects.toMatchObject({ code: "path_escape" });
+
+    const resourceSkill = join(skillsRoot, "resource-linked");
+    await mkdir(join(resourceSkill, "references"), { recursive: true });
+    await writeFile(
+      join(resourceSkill, "SKILL.md"),
+      "---\nname: resource-linked\ndescription: Linked resource.\n---\nRead references/rules.md.\n",
+      "utf8",
+    );
+    await writeFile(join(resourceSkill, "references", "actual.md"), "rules", "utf8");
+    await symlink(
+      join(resourceSkill, "references", "actual.md"),
+      join(resourceSkill, "references", "rules.md"),
+      "file",
+    );
+    await expect(normalizeSkill(resourceSkill, pluginRoot)).rejects.toMatchObject({ code: "path_escape" });
+  });
+
+  it.each(["../escape", "/absolute"])("rejects unsafe normalized skill name %s", async (name) => {
+    const pluginRoot = await createPluginRoot("skill-unsafe-name");
+    const skillRoot = join(pluginRoot, "skills", "review");
+    await mkdir(skillRoot, { recursive: true });
+    await writeFile(
+      join(skillRoot, "SKILL.md"),
+      `---\nname: ${JSON.stringify(name)}\ndescription: Unsafe name.\n---\n# Skill\n`,
+      "utf8",
+    );
+
+    await expect(normalizeSkill(skillRoot, pluginRoot)).rejects.toMatchObject({ code: "path_escape" });
+  });
+
   it("normalizes composer metadata and markdown agents as immutable non-authoritative templates", async () => {
     const agents = await normalizeAgents(join(fixtureRoot, "agents"), fixtureRoot);
 
@@ -190,6 +262,36 @@ describe("instruction component normalizers", () => {
       `commands/${astral}.tmpl`,
     ]);
   });
+
+  it("rejects command directory junctions and linked command files, including in-root targets", async () => {
+    const pluginRoot = await createPluginRoot("command-links");
+    const hiddenCommands = join(pluginRoot, "hidden-commands");
+    await mkdir(hiddenCommands);
+    await writeFile(join(hiddenCommands, "review.md"), "# Hidden command", "utf8");
+    const linkedCommands = join(pluginRoot, "commands-linked");
+    await createDirectoryLink(hiddenCommands, linkedCommands);
+    await expect(normalizeCommands(linkedCommands, pluginRoot)).rejects.toMatchObject({ code: "path_escape" });
+
+    const commandsRoot = join(pluginRoot, "commands");
+    await mkdir(commandsRoot);
+    await symlink(join(hiddenCommands, "review.md"), join(commandsRoot, "review.md"), "file");
+    await expect(normalizeCommands(commandsRoot, pluginRoot)).rejects.toMatchObject({ code: "path_escape" });
+  });
+
+  it("rejects agent root junctions and linked agent files, including in-root targets", async () => {
+    const pluginRoot = await createPluginRoot("agent-links");
+    const hiddenAgents = join(pluginRoot, "hidden-agents");
+    await mkdir(hiddenAgents);
+    await writeFile(join(hiddenAgents, "reviewer.md"), "# Hidden agent", "utf8");
+    const linkedAgents = join(pluginRoot, "agents-linked");
+    await createDirectoryLink(hiddenAgents, linkedAgents);
+    await expect(normalizeAgents(linkedAgents, pluginRoot)).rejects.toMatchObject({ code: "path_escape" });
+
+    const agentsRoot = join(pluginRoot, "agents");
+    await mkdir(agentsRoot);
+    await symlink(join(hiddenAgents, "reviewer.md"), join(agentsRoot, "reviewer.md"), "file");
+    await expect(normalizeAgents(agentsRoot, pluginRoot)).rejects.toMatchObject({ code: "path_escape" });
+  });
 });
 
 describe("asset normalizer", () => {
@@ -205,7 +307,7 @@ describe("asset normalizer", () => {
     await mkdir(assetsRoot);
     await writeFile(
       join(assetsRoot, "logo.png"),
-      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      validPng(),
     );
     await writeFile(join(assetsRoot, "notice.txt"), "plain text", "utf8");
 
@@ -285,6 +387,48 @@ describe("asset normalizer", () => {
       .rejects.toThrow("asset_unsafe");
   });
 
+  it.each([
+    ["truncated.png", "image/png", Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])],
+    ["truncated.jpg", "image/jpeg", Buffer.from([0xff, 0xd8, 0xff])],
+    ["truncated.gif", "image/gif", Buffer.from("GIF89a", "ascii")],
+    ["truncated.webp", "image/webp", Buffer.from("RIFF\x04\x00\x00\x00WEBP", "binary")],
+  ])("rejects structurally truncated raster %s", async (name, mime, bytes) => {
+    const pluginRoot = await createPluginRoot(`asset-truncated-${name.replace(".", "-")}`);
+    const asset = join(pluginRoot, name);
+    await writeFile(asset, bytes);
+
+    await expect(normalizeAsset(asset, pluginRoot, { mime })).rejects.toThrow("asset_unsafe");
+  });
+
+  it.each([
+    "[run](javascript:alert(1))",
+    "![payload](data:image/svg+xml,%3Csvg%3E%3C/svg%3E)",
+    "<vbscript:msgbox(1)>",
+    "[local](file:///etc/passwd)",
+    "[obfuscated](java&#x73;cript:alert(1))",
+    "[encoded](javascript%3Aalert(1))",
+  ])("rejects active Markdown destination %s", async (markdown) => {
+    const pluginRoot = await createPluginRoot("asset-markdown-active");
+    const asset = join(pluginRoot, "notice.md");
+    await writeFile(asset, markdown, "utf8");
+
+    await expect(normalizeAsset(asset, pluginRoot, { mime: "text/markdown" }))
+      .rejects.toThrow("asset_unsafe");
+  });
+
+  it("admits passive Markdown destinations", async () => {
+    const pluginRoot = await createPluginRoot("asset-markdown-passive");
+    const asset = join(pluginRoot, "notice.md");
+    await writeFile(
+      asset,
+      "[docs](https://example.com/docs) [mail](mailto:team@example.com) [local](./guide.txt)\n",
+      "utf8",
+    );
+
+    await expect(normalizeAsset(asset, pluginRoot, { mime: "text/markdown" }))
+      .resolves.toMatchObject({ mime: "text/markdown", placeholder: false });
+  });
+
   it("returns a Rowboat-owned placeholder for a missing optional asset", async () => {
     const pluginRoot = await createPluginRoot("asset-placeholder");
 
@@ -309,6 +453,21 @@ describe("asset normalizer", () => {
     await mkdir(pluginRoot);
 
     await expect(normalizeAsset(join(owner, "outside.png"), pluginRoot, {
+      mime: "image/png",
+      optional: true,
+    })).rejects.toMatchObject({ code: "path_escape" });
+  });
+
+  it("rejects an optional missing asset beneath a linked ancestor", async () => {
+    const owner = await createOwnedTestRoot("asset-placeholder-link");
+    const pluginRoot = join(owner, "plugin");
+    const outside = join(owner, "outside");
+    await mkdir(pluginRoot);
+    await mkdir(outside);
+    const linkedAssets = join(pluginRoot, "assets");
+    await createDirectoryLink(outside, linkedAssets);
+
+    await expect(normalizeAsset(join(linkedAssets, "missing.png"), pluginRoot, {
       mime: "image/png",
       optional: true,
     })).rejects.toMatchObject({ code: "path_escape" });

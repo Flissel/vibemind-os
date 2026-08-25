@@ -1,8 +1,13 @@
 import { lstat, readdir } from "node:fs/promises";
 import { basename, extname, join, relative, sep } from "node:path";
 import { parse } from "yaml";
-import { PluginSourceSecurityError, resolveContainedPath } from "../import/path-guard.js";
+import { PluginSourceSecurityError } from "../import/path-guard.js";
 import { readBoundedContainedFile } from "./asset-normalizer.js";
+import {
+  assertSafeDescriptorPath,
+  resolveComponentRoot,
+  resolveExistingComponentPath,
+} from "./component-path-security.js";
 
 const MAX_AGENT_BYTES = 1024 * 1024;
 
@@ -64,12 +69,21 @@ function immutableMetadata(value: unknown): ImmutableMetadata {
   throw new Error("agent_invalid: unsupported metadata value");
 }
 
-async function collectFiles(directory: string, pluginRoot: string, output: string[]): Promise<void> {
+async function collectFiles(
+  directory: string,
+  pluginRoot: string,
+  componentRoot: string,
+  output: string[],
+): Promise<void> {
   for (const name of (await readdir(directory)).sort(compareCodePoints)) {
-    const candidate = await resolveContainedPath(pluginRoot, relative(pluginRoot, join(directory, name)));
+    const candidate = (await resolveExistingComponentPath(
+      pluginRoot,
+      componentRoot,
+      join(directory, name),
+    )).canonicalPath;
     const stats = await lstat(candidate);
     if (stats.isSymbolicLink()) throw new PluginSourceSecurityError("path_escape", "agent link rejected");
-    if (stats.isDirectory()) await collectFiles(candidate, pluginRoot, output);
+    if (stats.isDirectory()) await collectFiles(candidate, pluginRoot, componentRoot, output);
     else if (stats.isFile()) output.push(candidate);
     else throw new PluginSourceSecurityError("path_escape", "unsupported agent entry");
   }
@@ -79,9 +93,9 @@ export async function normalizeAgents(
   agentsRoot: string,
   pluginRoot: string,
 ): Promise<readonly NormalizedAgent[]> {
-  const canonicalRoot = await resolveContainedPath(pluginRoot, relative(pluginRoot, agentsRoot));
+  const canonicalRoot = (await resolveComponentRoot(pluginRoot, agentsRoot)).canonicalComponentRoot;
   const files: string[] = [];
-  await collectFiles(canonicalRoot, pluginRoot, files);
+  await collectFiles(canonicalRoot, pluginRoot, canonicalRoot, files);
   const agents: NormalizedAgent[] = [];
   for (const candidate of files.sort(compareCodePoints)) {
     const filename = basename(candidate);
@@ -89,12 +103,12 @@ export async function normalizeAgents(
     const isComposerMetadata = candidate === join(canonicalRoot, "openai.yaml");
     const isTemplate = extname(filename).toLowerCase() === ".md";
     if (!isComposerMetadata && !isTemplate) continue;
-    const file = await readBoundedContainedFile(candidate, pluginRoot, MAX_AGENT_BYTES);
-    const name = filename.replace(/\.(?:yaml|md)$/i, "");
+    const file = await readBoundedContainedFile(candidate, pluginRoot, MAX_AGENT_BYTES, canonicalRoot);
+    const name = assertSafeDescriptorPath(filename.replace(/\.(?:yaml|md)$/i, ""));
     if (isComposerMetadata) {
       agents.push(Object.freeze({
         name,
-        path: slashPath(relative(pluginRoot, candidate)),
+        path: assertSafeDescriptorPath(slashPath(relative(pluginRoot, candidate))),
         digest: file.digest,
         surface: "composer_metadata",
         metadata: immutableMetadata(parse(file.bytes.toString("utf8"))),
@@ -103,7 +117,7 @@ export async function normalizeAgents(
     } else {
       agents.push(Object.freeze({
         name,
-        path: slashPath(relative(pluginRoot, candidate)),
+        path: assertSafeDescriptorPath(slashPath(relative(pluginRoot, candidate))),
         digest: file.digest,
         surface: "agent_template",
         instructions: new TextDecoder("utf-8", { fatal: true }).decode(file.bytes),

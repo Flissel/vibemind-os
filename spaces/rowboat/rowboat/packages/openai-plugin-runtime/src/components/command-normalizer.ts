@@ -1,7 +1,12 @@
 import { lstat, readdir } from "node:fs/promises";
 import { basename, join, relative, sep } from "node:path";
-import { PluginSourceSecurityError, resolveContainedPath } from "../import/path-guard.js";
+import { PluginSourceSecurityError } from "../import/path-guard.js";
 import { readBoundedContainedFile } from "./asset-normalizer.js";
+import {
+  assertSafeDescriptorPath,
+  resolveComponentRoot,
+  resolveExistingComponentPath,
+} from "./component-path-security.js";
 
 const MAX_COMMAND_BYTES = 1024 * 1024;
 
@@ -36,12 +41,21 @@ function slashPath(value: string): string {
   return value.split(sep).join("/");
 }
 
-async function collectFiles(directory: string, pluginRoot: string, output: string[]): Promise<void> {
+async function collectFiles(
+  directory: string,
+  pluginRoot: string,
+  componentRoot: string,
+  output: string[],
+): Promise<void> {
   for (const name of (await readdir(directory)).sort(compareCodePoints)) {
-    const candidate = await resolveContainedPath(pluginRoot, relative(pluginRoot, join(directory, name)));
+    const candidate = (await resolveExistingComponentPath(
+      pluginRoot,
+      componentRoot,
+      join(directory, name),
+    )).canonicalPath;
     const stats = await lstat(candidate);
     if (stats.isSymbolicLink()) throw new PluginSourceSecurityError("path_escape", "command link rejected");
-    if (stats.isDirectory()) await collectFiles(candidate, pluginRoot, output);
+    if (stats.isDirectory()) await collectFiles(candidate, pluginRoot, componentRoot, output);
     else if (stats.isFile()) output.push(candidate);
     else throw new PluginSourceSecurityError("path_escape", "unsupported command entry");
   }
@@ -56,20 +70,22 @@ export async function normalizeCommands(
   commandsRoot: string,
   pluginRoot: string,
 ): Promise<readonly NormalizedCommand[]> {
-  const canonicalRoot = await resolveContainedPath(pluginRoot, relative(pluginRoot, commandsRoot));
+  const canonicalRoot = (await resolveComponentRoot(pluginRoot, commandsRoot)).canonicalComponentRoot;
   const files: string[] = [];
-  await collectFiles(canonicalRoot, pluginRoot, files);
+  await collectFiles(canonicalRoot, pluginRoot, canonicalRoot, files);
   files.sort((left, right) => compareCodePoints(slashPath(relative(canonicalRoot, left)), slashPath(relative(canonicalRoot, right))));
   const resources: NormalizedCommandResource[] = [];
   for (const candidate of files.filter((file) => !isAction(file))) {
-    const content = await readBoundedContainedFile(candidate, pluginRoot, MAX_COMMAND_BYTES);
+    const content = await readBoundedContainedFile(candidate, pluginRoot, MAX_COMMAND_BYTES, canonicalRoot);
     resources.push(Object.freeze({ path: content.path, digest: content.digest }));
   }
   const frozenResources = Object.freeze(resources);
   const commands: NormalizedCommand[] = [];
   for (const candidate of files.filter(isAction)) {
-    const content = await readBoundedContainedFile(candidate, pluginRoot, MAX_COMMAND_BYTES);
-    const relativeName = slashPath(relative(canonicalRoot, candidate)).replace(/\.md$/, "");
+    const content = await readBoundedContainedFile(candidate, pluginRoot, MAX_COMMAND_BYTES, canonicalRoot);
+    const relativeName = assertSafeDescriptorPath(
+      slashPath(relative(canonicalRoot, candidate)).replace(/\.md$/, ""),
+    );
     commands.push(Object.freeze({
       name: relativeName,
       path: content.path,

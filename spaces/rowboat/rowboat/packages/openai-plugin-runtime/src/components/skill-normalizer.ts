@@ -1,7 +1,12 @@
 import { relative, sep } from "node:path";
 import { parse } from "yaml";
-import { PluginSourceSecurityError, resolveContainedPath } from "../import/path-guard.js";
+import { PluginSourceSecurityError } from "../import/path-guard.js";
 import { readBoundedContainedFile } from "./asset-normalizer.js";
+import {
+  assertSafeDescriptorPath,
+  resolveComponentRoot,
+  resolveExistingComponentPath,
+} from "./component-path-security.js";
 
 const MAX_SKILL_BYTES = 1024 * 1024;
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
@@ -75,8 +80,14 @@ export async function normalizeSkill(
   skillRoot: string,
   pluginRoot: string,
 ): Promise<NormalizedSkill> {
-  const canonicalSkillRoot = await resolveContainedPath(pluginRoot, relative(pluginRoot, skillRoot));
-  const skillFile = await readBoundedContainedFile(`${canonicalSkillRoot}${sep}SKILL.md`, pluginRoot, MAX_SKILL_BYTES);
+  const roots = await resolveComponentRoot(pluginRoot, skillRoot);
+  const canonicalSkillRoot = roots.canonicalComponentRoot;
+  const skillFile = await readBoundedContainedFile(
+    `${canonicalSkillRoot}${sep}SKILL.md`,
+    pluginRoot,
+    MAX_SKILL_BYTES,
+    canonicalSkillRoot,
+  );
   const instructions = new TextDecoder("utf-8", { fatal: true }).decode(skillFile.bytes);
   const frontmatter = FRONTMATTER.exec(instructions);
   if (frontmatter?.[1] === undefined) throw new Error("skill_invalid: YAML frontmatter missing");
@@ -86,15 +97,24 @@ export async function normalizeSkill(
   }
   const record = parsed as Record<string, unknown>;
   if (typeof record.name !== "string" || record.name === "") throw new Error("skill_invalid: name missing");
+  assertSafeDescriptorPath(record.name);
   if (typeof record.description !== "string") throw new Error("skill_invalid: description missing");
   const resourcesByCanonicalPath = new Map<string, NormalizedSkillResource>();
   for (const pointer of localReferences(instructions)) {
-    const canonical = await resolveContainedPath(canonicalSkillRoot, pointer);
-    await resolveContainedPath(pluginRoot, relative(pluginRoot, canonical));
+    const canonical = (await resolveExistingComponentPath(
+      pluginRoot,
+      canonicalSkillRoot,
+      `${canonicalSkillRoot}${sep}${pointer}`,
+    )).canonicalPath;
     if (resourcesByCanonicalPath.has(canonical)) continue;
-    const file = await readBoundedContainedFile(canonical, pluginRoot, MAX_SKILL_BYTES);
+    const file = await readBoundedContainedFile(
+      canonical,
+      pluginRoot,
+      MAX_SKILL_BYTES,
+      canonicalSkillRoot,
+    );
     resourcesByCanonicalPath.set(canonical, Object.freeze({
-      path: slashPath(relative(canonicalSkillRoot, canonical)),
+      path: assertSafeDescriptorPath(slashPath(relative(canonicalSkillRoot, canonical))),
       digest: file.digest,
     }));
   }
