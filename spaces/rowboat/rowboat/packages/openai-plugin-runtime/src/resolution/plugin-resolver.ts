@@ -136,6 +136,18 @@ const REGISTRY_PROBE_BINDING: ProviderBinding = Object.freeze({
   componentDigest: "0".repeat(64),
 });
 
+function captureRegistryResolverIntrinsic(): ProviderRegistry["resolve"] | undefined {
+  const descriptor = Object.getOwnPropertyDescriptor(ProviderRegistry.prototype, "resolve");
+  if (
+    descriptor === undefined
+    || !("value" in descriptor)
+    || typeof descriptor.value !== "function"
+  ) return undefined;
+  return descriptor.value as ProviderRegistry["resolve"];
+}
+
+const TRUSTED_REGISTRY_RESOLVE = captureRegistryResolverIntrinsic();
+
 function validateInstallation(input: unknown): PluginInstallation {
   const installation = capturePlain(input) as PluginInstallation;
   if (Object.keys(installation).some((key) => !INSTALLATION_KEYS.has(key))) fail();
@@ -209,8 +221,9 @@ function resolveComponent(
 }
 
 function resolveProviderIntrinsic(registry: ProviderRegistry, binding: ProviderBinding): "available" | "unavailable" {
+  if (TRUSTED_REGISTRY_RESOLVE === undefined) return "unavailable";
   try {
-    const resolution = Reflect.apply(ProviderRegistry.prototype.resolve, registry, [binding]) as { readonly status?: unknown };
+    const resolution = Reflect.apply(TRUSTED_REGISTRY_RESOLVE, registry, [binding]) as { readonly status?: unknown };
     return resolution.status === "available" ? "available" : "unavailable";
   } catch {
     return "unavailable";
@@ -219,12 +232,13 @@ function resolveProviderIntrinsic(registry: ProviderRegistry, binding: ProviderB
 
 function isTrustedProviderRegistry(registry: ProviderRegistry): boolean {
   if (
-    isProxy(registry)
+    TRUSTED_REGISTRY_RESOLVE === undefined
+    || isProxy(registry)
     || Object.getPrototypeOf(registry) !== ProviderRegistry.prototype
     || Reflect.ownKeys(registry).length !== 0
   ) return false;
   try {
-    const probe = Reflect.apply(ProviderRegistry.prototype.resolve, registry, [REGISTRY_PROBE_BINDING]) as {
+    const probe = Reflect.apply(TRUSTED_REGISTRY_RESOLVE, registry, [REGISTRY_PROBE_BINDING]) as {
       readonly status?: unknown;
       readonly reason?: unknown;
     };

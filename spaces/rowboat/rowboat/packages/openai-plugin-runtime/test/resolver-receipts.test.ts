@@ -131,6 +131,42 @@ describe("installed plugin resolution", () => {
     expect(getterCalls).toBe(0);
   });
 
+  it("uses the module-captured registry resolver after prototype mutation", () => {
+    const app = box.components.find(({ component }) => component.kind === "app");
+    if (app === undefined || typeof app.component.metadata.digest !== "string") throw new Error("box app fixture missing");
+    const binding: ProviderBinding = Object.freeze({
+      id: "box-prototype-forgery", providerKind: "rowboat-native", componentDigest: app.component.metadata.digest,
+    });
+    const provider: PluginProvider = Object.freeze({
+      id: "box-prototype-forgery-provider",
+      describe: () => Object.freeze({ id: "box-prototype-forgery-provider", kind: "rowboat-native", temporaryAdapter: false }),
+      invoke: async () => Object.freeze({ status: "success", output: null }),
+    });
+    const original = Object.getOwnPropertyDescriptor(ProviderRegistry.prototype, "resolve");
+    if (original === undefined) throw new Error("provider registry resolver descriptor missing");
+    let forgedCalls = 0;
+    try {
+      Object.defineProperty(ProviderRegistry.prototype, "resolve", {
+        ...original,
+        value(candidate: ProviderBinding) {
+          forgedCalls += 1;
+          return candidate.id === "rowboat-registry-integrity-probe"
+            ? Object.freeze({ status: "unavailable", reason: "provider_unavailable" })
+            : Object.freeze({ status: "available", provider });
+        },
+      });
+      const resolved = resolveInstallation({
+        ...installation,
+        providerBindings: [{ componentId: app.component.id, binding }],
+      }, catalog, new ProviderRegistry(), DEFAULT_POLICY);
+      expect(resolved.status).toBe("partially_available");
+      expect(resolved.apps[0]).toMatchObject({ status: "unavailable", reason: "provider_unavailable" });
+      expect(forgedCalls).toBe(0);
+    } finally {
+      Object.defineProperty(ProviderRegistry.prototype, "resolve", original);
+    }
+  });
+
   it("evaluates plugin license admission before resolving components", () => {
     const resolved = resolveInstallation(installationFor("convex"), catalog, new ProviderRegistry(), DEFAULT_POLICY);
     expect(resolved).toMatchObject({ status: "unavailable", reason: "license_rejected" });
