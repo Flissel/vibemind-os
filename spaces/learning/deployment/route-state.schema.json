@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibemind.local/schemas/learning-route-state-v1.json",
+  "title": "Learning Route State V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "revision", "active_target", "targets", "receipts"],
+  "properties": {
+    "version": {"const": "learning-route-state-v1"},
+    "revision": {"type": "integer", "minimum": 1},
+    "active_target": {"enum": ["legacy", "learning_space"]},
+    "targets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["legacy", "learning_space"],
+      "properties": {
+        "legacy": {"$ref": "#/$defs/target"},
+        "learning_space": {"$ref": "#/$defs/target"}
+      }
+    },
+    "receipts": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/receipt"}
+    }
+  },
+  "$defs": {
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "address", "health_ref", "read_only"],
+      "properties": {
+        "kind": {"enum": ["local_path", "compose_profile"]},
+        "address": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "health_ref": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "read_only": {"type": "boolean"}
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version", "operation", "previous_target", "previous_revision",
+        "current_target", "current_revision", "migration_batch_id",
+        "evidence_sha256", "confirmation_ref", "created_at"
+      ],
+      "properties": {
+        "version": {"const": "learning-route-receipt-v1"},
+        "operation": {"enum": ["cutover", "rollback"]},
+        "previous_target": {"enum": ["legacy", "learning_space"]},
+        "previous_revision": {"type": "integer", "minimum": 1},
+        "current_target": {"enum": ["legacy", "learning_space"]},
+        "current_revision": {"type": "integer", "minimum": 2},
+        "migration_batch_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "confirmation_ref": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+        "created_at": {"type": "string", "format": "date-time"}
+      }
+    }
+  }
+}
