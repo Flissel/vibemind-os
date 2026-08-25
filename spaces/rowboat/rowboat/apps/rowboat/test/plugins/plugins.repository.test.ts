@@ -33,10 +33,20 @@ function matches(document: Document, filter: Document): boolean {
 class MemoryCollection {
   readonly documents: Document[] = [];
   readonly indexes: Document[] = [];
+  readonly operationSessions: Array<ClientSession | undefined> = [];
   writes = 0;
-  beforeInsert?: (document: Document) => void;
+  beforeInsert?: (document: Document, session: ClientSession | undefined) => void;
 
-  constructor(private readonly collectionName: string) {}
+  constructor(private readonly collectionName: string, private readonly database: MemoryDatabase) {}
+
+  private documentsFor(session: ClientSession | undefined): Document[] {
+    this.operationSessions.push(session);
+    this.database.recordOperation(session);
+    if (session === undefined) return this.documents;
+    const state = this.database.sessionState(session);
+    if (state.aborted) throw new MongoServerError({ ok: 0, code: 251, errmsg: "transaction-aborted token-secret" });
+    return [...(state.snapshots.get(this) ?? []), ...(state.pending.get(this) ?? [])];
+  }
 
   private project(document: Document, options?: { projection?: Document }): Document {
     const projected = clone(document);
@@ -44,16 +54,16 @@ class MemoryCollection {
     return projected;
   }
 
-  async findOne(filter: Document, options?: { projection?: Document }): Promise<Document | null> {
-    const found = this.documents.find((document) => matches(document, filter));
+  async findOne(filter: Document, options?: { projection?: Document; session?: ClientSession }): Promise<Document | null> {
+    const found = this.documentsFor(options?.session).find((document) => matches(document, filter));
     return found === undefined ? null : this.project(found, options);
   }
 
-  find(filter: Document, options?: { projection?: Document }): { sort: (sort: Document) => { toArray: () => Promise<Document[]> } } {
+  find(filter: Document, options?: { projection?: Document; session?: ClientSession }): { sort: (sort: Document) => { toArray: () => Promise<Document[]> } } {
     return {
       sort: (sort) => ({
         toArray: async () => {
-          const entries = this.documents.filter((document) => matches(document, filter));
+          const entries = this.documentsFor(options?.session).filter((document) => matches(document, filter));
           const [[field, direction]] = Object.entries(sort);
           return entries
             .sort((left, right) => String(left[field]).localeCompare(String(right[field])) * Number(direction))
@@ -63,7 +73,7 @@ class MemoryCollection {
     };
   }
 
-  async insertOne(document: Document): Promise<{ acknowledged: true }> {
+  async insertOne(document: Document, options?: { session: ClientSession }): Promise<{ acknowledged: true }> {
     const uniqueKeys: Readonly<Record<string, readonly (readonly string[])[]>> = {
       plugin_catalog_snapshots: [["catalogDigest"]],
       plugin_catalog_entries: [["catalogDigest", "name"]],
@@ -76,15 +86,31 @@ class MemoryCollection {
     await Promise.resolve();
     const beforeInsert = this.beforeInsert;
     this.beforeInsert = undefined;
-    beforeInsert?.(document);
+    beforeInsert?.(document, options?.session);
+    const visible = this.documentsFor(options?.session);
     for (const key of uniqueKeys[this.collectionName] ?? []) {
-      if (this.documents.some((existing) => key.every((field) => existing[field] === document[field]))) {
+      if (visible.some((existing) => key.every((field) => existing[field] === document[field]))
+        || this.documents.some((existing) => key.every((field) => existing[field] === document[field]))) {
+        if (options?.session !== undefined) this.database.sessionState(options.session).aborted = true;
         throw new MongoServerError({ ok: 0, code: 11000, errmsg: "E11000 token-secret" });
       }
     }
-    this.documents.push({ _id: `mongo-id-${this.documents.length + 1}`, ...clone(document) });
-    this.writes += 1;
+    const stored = { _id: `mongo-id-${this.documents.length + visible.length + 1}`, ...clone(document) };
+    if (options?.session === undefined) {
+      this.documents.push(stored);
+      this.writes += 1;
+    } else {
+      const state = this.database.sessionState(options.session);
+      const pending = state.pending.get(this) ?? [];
+      pending.push(stored);
+      state.pending.set(this, pending);
+    }
     return { acknowledged: true };
+  }
+
+  insertExternal(document: Document): void {
+    this.documents.push({ _id: `external-id-${this.documents.length + 1}`, ...clone(document) });
+    this.writes += 1;
   }
 
   async findOneAndUpdate(
@@ -112,34 +138,65 @@ class MemoryCollection {
 
 class MemoryDatabase {
   readonly collections = new Map<string, MemoryCollection>();
+  readonly sessionStates = new Map<ClientSession, MemorySessionState>();
+  activeSession: ClientSession | undefined;
+  transactionSessionMismatches = 0;
 
   collection(name: string): MemoryCollection {
     let collection = this.collections.get(name);
     if (!collection) {
-      collection = new MemoryCollection(name);
+      collection = new MemoryCollection(name, this);
       this.collections.set(name, collection);
     }
     return collection;
   }
+
+  startSession(): MemorySessionState {
+    const token = Object.freeze({ memorySession: this.sessionStates.size + 1 }) as unknown as ClientSession;
+    const state: MemorySessionState = { token, aborted: false, snapshots: new Map(), pending: new Map() };
+    for (const collection of this.collections.values()) state.snapshots.set(collection, clone(collection.documents));
+    this.sessionStates.set(token, state);
+    return state;
+  }
+
+  sessionState(token: ClientSession): MemorySessionState {
+    const state = this.sessionStates.get(token);
+    if (state === undefined) throw new Error("unknown_memory_session");
+    return state;
+  }
+
+  recordOperation(session: ClientSession | undefined): void {
+    if (this.activeSession !== undefined && session !== this.activeSession) this.transactionSessionMismatches += 1;
+  }
+
+  commit(state: MemorySessionState): void {
+    if (state.aborted) throw new Error("transaction_aborted");
+    for (const [collection, documents] of state.pending) {
+      collection.documents.push(...clone(documents));
+      collection.writes += documents.length;
+    }
+  }
+}
+
+interface MemorySessionState {
+  readonly token: ClientSession;
+  aborted: boolean;
+  readonly snapshots: Map<MemoryCollection, Document[]>;
+  readonly pending: Map<MemoryCollection, Document[]>;
 }
 
 class MemoryTransactionRunner implements PluginTransactionRunner {
   constructor(private readonly database: MemoryDatabase) {}
 
-  async run<T>(work: (session: ClientSession | undefined) => Promise<T>): Promise<T> {
-    const snapshots = new Map<string, { documents: Document[]; writes: number }>();
-    for (const [name, collection] of this.database.collections) {
-      snapshots.set(name, { documents: clone(collection.documents), writes: collection.writes });
-    }
+  async run<T>(work: (session: ClientSession) => Promise<T>): Promise<T> {
+    const state = this.database.startSession();
+    this.database.activeSession = state.token;
     try {
-      return await work(undefined);
-    } catch (error) {
-      for (const [name, collection] of this.database.collections) {
-        const snapshot = snapshots.get(name) ?? { documents: [], writes: 0 };
-        collection.documents.splice(0, collection.documents.length, ...snapshot.documents);
-        collection.writes = snapshot.writes;
-      }
-      throw error;
+      const value = await work(state.token);
+      this.database.commit(state);
+      return value;
+    } finally {
+      this.database.activeSession = undefined;
     }
   }
 }
@@ -183,7 +240,7 @@ const entry: PluginCatalogEntry = {
       name: "GitHub MCP",
       kind: "mcp",
       status: "available",
-      metadata: { digest: digest("d") },
+      metadata: { digest: digest("d"), transport: "process" },
     },
     admission: { status: "admitted", policyVersion: snapshot.policyVersion },
   }, {
@@ -193,6 +250,15 @@ const entry: PluginCatalogEntry = {
       kind: "command",
       status: "available",
       metadata: { digest: digest("e") },
+    },
+    admission: { status: "admitted", policyVersion: snapshot.policyVersion },
+  }, {
+    component: {
+      id: "github:app",
+      name: "GitHub App",
+      kind: "app",
+      status: "available",
+      metadata: { digest: digest("f") },
     },
     admission: { status: "admitted", policyVersion: snapshot.policyVersion },
   }],
@@ -292,6 +358,9 @@ describe("plugin repository contract", () => {
     expect(entries.map((item) => item.name)).toEqual(["github", "slack"]);
     expect(Object.isFrozen(entries)).toBe(true);
     expect(Object.isFrozen(entries[0])).toBe(true);
+    expect(Object.isFrozen(entries[0]?.components)).toBe(true);
+    expect(Object.isFrozen(entries[0]?.components[0]?.component)).toBe(true);
+    expect(Object.isFrozen(entries[0]?.components[0]?.component.metadata)).toBe(true);
   });
 
   it("rejects malformed nested catalog admission records", async () => {
@@ -303,6 +372,19 @@ describe("plugin repository contract", () => {
     };
     await expect(repository.putCatalogEntries([malformed as unknown as PluginCatalogEntry]))
       .rejects.toThrow("catalog_entry_invalid");
+  });
+
+  it.each([
+    ["missing digest", entry.components.map((item, index) => index === 0 ? { ...item, component: { ...item.component, metadata: {} } } : item)],
+    ["invalid digest", entry.components.map((item, index) => index === 0 ? { ...item, component: { ...item.component, metadata: { digest: "invalid" } } } : item)],
+    ["duplicate component id", [entry.components[0]!, { ...entry.components[1]!, component: { ...entry.components[1]!.component, id: entry.components[0]!.component.id } }]],
+    ["duplicate component digest", [entry.components[0]!, { ...entry.components[1]!, component: { ...entry.components[1]!.component, metadata: { digest: entry.components[0]!.component.metadata.digest } } }]],
+  ])("rejects %s in catalog components before any entry write", async (_case, components) => {
+    const { database, repository } = repositoryFixture();
+    await repository.putCatalogSnapshot(snapshot);
+    await expect(repository.putCatalogEntries([{ ...entry, components } as PluginCatalogEntry]))
+      .rejects.toThrow("catalog_entry_invalid");
+    expect(database.collection(PLUGIN_COLLECTIONS.catalogEntries).writes).toBe(0);
   });
 
   it("validates a catalog-entry batch before writing any member", async () => {
@@ -334,19 +416,27 @@ describe("plugin repository contract", () => {
     const collection = database.collection(PLUGIN_COLLECTIONS.catalogEntries);
     collection.beforeInsert = (document) => {
       if (document.name === "github") {
-        collection.beforeInsert = () => {
-          collection.documents.push({
-            _id: "racing-mongo-id",
-            catalogDigest: snapshot.catalogDigest,
-            name: "slack",
-            payload: "{}",
-          });
-        };
+        collection.beforeInsert = (racingDocument) => collection.insertExternal(racingDocument);
       }
     };
     await expect(repository.putCatalogEntries([entry, slack])).rejects.toThrow("catalog_entry_conflict");
-    expect(collection.documents).toEqual([]);
-    expect(collection.writes).toBe(0);
+    expect(collection.documents).toHaveLength(1);
+    expect(collection.documents[0]).toMatchObject({ catalogDigest: snapshot.catalogDigest, name: "slack" });
+    expect(collection.writes).toBe(1);
+  });
+
+  it("propagates one exact session to every transactional catalog read and write", async () => {
+    const { database, repository } = repositoryFixture();
+    await repository.putCatalogSnapshot(snapshot);
+    await repository.putCatalogEntries([entry]);
+    const sessions = [
+      ...database.collection(PLUGIN_COLLECTIONS.catalogSnapshots).operationSessions,
+      ...database.collection(PLUGIN_COLLECTIONS.catalogEntries).operationSessions,
+    ].filter((session): session is ClientSession => session !== undefined);
+    expect(sessions.length).toBeGreaterThan(0);
+    expect(new Set(sessions).size).toBe(1);
+    expect(sessions.every((session) => session === sessions[0])).toBe(true);
+    expect(database.transactionSessionMismatches).toBe(0);
   });
 
   it("rejects entry provenance that differs from its catalog snapshot with zero writes", async () => {
@@ -421,6 +511,63 @@ describe("plugin repository contract", () => {
     };
     await expect(repository.putInstallation(malformed as unknown as PluginInstallation))
       .rejects.toThrow("installation_invalid");
+  });
+
+  it.each([
+    ["unknown component", { componentId: "github:missing", binding: { id: "binding-1", providerKind: "rowboat-native", componentDigest: digest("d") } }],
+    ["wrong component digest", { componentId: "github:mcp", binding: { id: "binding-1", providerKind: "mcp-process", componentDigest: digest("0") } }],
+    ["incompatible provider kind", { componentId: "github:mcp", binding: { id: "binding-1", providerKind: "mcp-http", componentDigest: digest("d") } }],
+    ["incompatible component kind", { componentId: "github:command", binding: { id: "binding-1", providerKind: "rowboat-native", componentDigest: digest("e") } }],
+    ["invalid paired component", { componentId: "github:app", binding: { id: "binding-1", providerKind: "mcp-process", componentDigest: digest("f"), pairedComponentDigests: [digest("f"), digest("0")] } }],
+  ])("rejects a provider binding with %s before any installation write", async (_case, selected) => {
+    const { database, repository } = repositoryFixture();
+    await seedCatalog(repository);
+    await expect(repository.putInstallation({ ...installation, providerBindings: [selected] } as PluginInstallation))
+      .rejects.toThrow("installation_source_mismatch");
+    expect(database.collection(PLUGIN_COLLECTIONS.installations).writes).toBe(0);
+  });
+
+  it("does not accept an idempotent re-put of a previously persisted invalid provider binding", async () => {
+    const { database, repository } = repositoryFixture();
+    await seedCatalog(repository);
+    const invalidInstallation: PluginInstallation = {
+      ...installation,
+      providerBindings: [{
+        componentId: "github:mcp",
+        binding: { id: "binding-1", providerKind: "mcp-process", componentDigest: digest("0") },
+      }],
+    };
+    database.collection(PLUGIN_COLLECTIONS.installations).documents.push({
+      _id: "legacy-invalid",
+      ...installation,
+      providerBindingsJson: JSON.stringify(invalidInstallation.providerBindings),
+    });
+    await expect(repository.putInstallation(invalidInstallation)).rejects.toThrow("installation_source_mismatch");
+    expect(database.collection(PLUGIN_COLLECTIONS.installations).writes).toBe(0);
+  });
+
+  it("stores and deep-freezes an exact app-to-MCP provider binding", async () => {
+    const { repository } = repositoryFixture();
+    await seedCatalog(repository);
+    const bound: PluginInstallation = {
+      ...installation,
+      providerBindings: [{
+        componentId: "github:app",
+        binding: {
+          id: "binding-1",
+          providerKind: "mcp-process",
+          componentDigest: digest("f"),
+          pairedComponentDigests: [digest("f"), digest("d")],
+        },
+      }],
+    };
+    await repository.putInstallation(bound);
+    const stored = (await repository.listInstallations(installation.projectId))[0]!;
+    expect(stored).toEqual(bound);
+    expect(Object.isFrozen(stored.providerBindings)).toBe(true);
+    expect(Object.isFrozen(stored.providerBindings?.[0])).toBe(true);
+    expect(Object.isFrozen(stored.providerBindings?.[0]?.binding)).toBe(true);
+    expect(Object.isFrozen(stored.providerBindings?.[0]?.binding.pairedComponentDigests)).toBe(true);
   });
 
   it("uses one atomic optimistic update for installation enablement", async () => {
@@ -499,6 +646,46 @@ describe("plugin repository contract", () => {
       .rejects.toThrow("admission_conflict");
     expect(collection.writes).toBe(baselineWrites);
     expect(await repository.listAdmissions(installation.id)).toEqual([{ ...existing, status: "rejected", reason: "provider_unavailable" }]);
+  });
+
+  it("rolls back only its admission writes and preserves an external race winner", async () => {
+    const { database, repository } = repositoryFixture();
+    await seedInstallation(repository);
+    const collection = database.collection(PLUGIN_COLLECTIONS.componentAdmissions);
+    collection.beforeInsert = (document) => {
+      if (document.componentDigest === digest("d")) {
+        collection.beforeInsert = (racingDocument) => collection.insertExternal(racingDocument);
+      }
+    };
+    await expect(repository.putAdmissions([
+      { installationId: installation.id, componentDigest: digest("d"), componentKind: "mcp", componentName: "GitHub MCP", status: "admitted", policyVersion: snapshot.policyVersion },
+      { installationId: installation.id, componentDigest: digest("e"), componentKind: "command", componentName: "GitHub command", status: "admitted", policyVersion: snapshot.policyVersion },
+    ])).rejects.toThrow("admission_conflict");
+    expect(collection.documents).toHaveLength(1);
+    expect(collection.documents[0]).toMatchObject({ installationId: installation.id, componentDigest: digest("e") });
+    expect(collection.writes).toBe(1);
+  });
+
+  it("propagates one exact session to every transactional admission read and write", async () => {
+    const { database, repository } = repositoryFixture();
+    await seedInstallation(repository);
+    await repository.putAdmissions([{
+      installationId: installation.id,
+      componentDigest: digest("d"),
+      componentKind: "mcp",
+      componentName: "GitHub MCP",
+      status: "admitted",
+      policyVersion: snapshot.policyVersion,
+    }]);
+    const sessions = [...database.collections.values()]
+      .flatMap((collection) => collection.operationSessions)
+      .filter((session): session is ClientSession => session !== undefined);
+    const admissionSession = sessions.at(-1);
+    expect(admissionSession).toBeDefined();
+    const currentTransactionSessions = sessions.filter((session) => session === admissionSession);
+    expect(currentTransactionSessions.length).toBeGreaterThanOrEqual(4);
+    expect(currentTransactionSessions.every((session) => session === admissionSession)).toBe(true);
+    expect(database.transactionSessionMismatches).toBe(0);
   });
 
   it.each(["value", "secret", "token", "password", "privateKey"])(
@@ -677,6 +864,21 @@ describe("plugin Mongo index contract", () => {
 });
 
 describe("Mongo plugin transaction runner", () => {
+  it("models duplicate-key aborts without rolling back an external winner", async () => {
+    const database = new MemoryDatabase();
+    const collection = database.collection(PLUGIN_COLLECTIONS.catalogEntries);
+    const runner = new MemoryTransactionRunner(database);
+    let followupError: unknown;
+    await expect(runner.run(async (session) => {
+      collection.insertExternal({ catalogDigest: digest("a"), name: "github", payload: "external" });
+      await collection.insertOne({ catalogDigest: digest("a"), name: "github", payload: "own" }, { session })
+        .catch((error: unknown) => { followupError = error; });
+      await collection.findOne({ catalogDigest: digest("a"), name: "github" }, { session });
+    })).rejects.toMatchObject({ code: 251 });
+    expect(followupError).toMatchObject({ code: 11000 });
+    expect(collection.documents).toEqual([{ _id: "external-id-1", catalogDigest: digest("a"), name: "github", payload: "external" }]);
+  });
+
   it("supports a successful void transaction and always ends its session", async () => {
     let ended = 0;
     const session = {
@@ -689,7 +891,7 @@ describe("Mongo plugin transaction runner", () => {
     expect(ended).toBe(1);
   });
 
-  it("sanitizes a raw Mongo transaction error and still ends its session", async () => {
+  it("sanitizes a raw Mongo duplicate for outside-transaction classification and still ends its session", async () => {
     let ended = 0;
     const session = {
       withTransaction: async () => { throw new MongoServerError({ ok: 0, code: 11000, errmsg: "E11000 token-secret" }); },
@@ -698,7 +900,7 @@ describe("Mongo plugin transaction runner", () => {
     const client = { startSession: () => session } as unknown as MongoClient;
     const runner = new MongoPluginTransactionRunner({ pluginsMongoClient: client });
     const error = await runner.run(async () => undefined).catch((caught: unknown) => caught);
-    expect(error).toEqual(new Error("repository_transaction_failed"));
+    expect(error).toEqual(new Error("repository_duplicate_key"));
     expect(String(error)).not.toContain("token-secret");
     expect(ended).toBe(1);
   });
