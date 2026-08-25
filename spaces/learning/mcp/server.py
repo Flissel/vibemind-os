@@ -22,6 +22,8 @@ from spaces.learning.contracts.mcp_models import EventEnvelopeV1, ToolRequestV1
 from spaces.learning.mcp.tools.courses import build_course_gateways
 from spaces.learning.mcp.tools.navigation import build_navigation_gateways
 from spaces.learning.mcp.tools.generation import build_generation_gateways
+from spaces.learning.mcp.tools.sessions import build_session_gateways
+from spaces.learning.mcp.tools.tutor import build_tutor_gateways
 from spaces.learning.mcp.tools.status import (
     build_default_dispatcher as build_status_dispatcher,
 )
@@ -34,6 +36,11 @@ from spaces.learning.services.course_factory.learnhouse_gateway import (
 from spaces.learning.services.course_factory.publisher import CourseDraftPublisher
 from spaces.learning.services.course_factory.repository import CourseFactoryRepository
 from spaces.learning.services.db.session import build_session_factory, create_learning_engine
+from spaces.learning.services.adaptive_engine.session_service import AdaptiveSessionService
+from spaces.learning.services.course_factory.model_gateway import (
+    build_openfang_model_gateway,
+)
+from spaces.learning.services.evaluation.session_rubric import SessionRubricEvaluator
 
 
 SERVER_NAME = "spaces-learning"
@@ -70,31 +77,50 @@ def build_default_dispatcher(
     gateways.update(build_navigation_gateways(admitted_learnhouse))
     database_url = os.environ.get("LEARNING_DATABASE_URL", "").strip()
     artifact_root = os.environ.get("LEARNING_ARTIFACT_ROOT", "").strip()
-    if (
-        database_url
-        and artifact_root
-        and os.environ.get("LEARNING_SERVICE_ROLE") == "mcp"
-    ):
+    if database_url and os.environ.get("LEARNING_SERVICE_ROLE") == "mcp":
         engine = create_learning_engine(database_url)
         session_factory = build_session_factory(engine)
-        store = CourseFactoryArtifactStore(
-            session_factory, artifact_root=Path(artifact_root)
+        model_gateway = None
+        if (
+            os.environ.get("LEARNING_OPENFANG_URL", "").strip()
+            and os.environ.get("LEARNING_OPENFANG_API_KEY", "")
+        ):
+            model_gateway = build_openfang_model_gateway()
+        adaptive_sessions = AdaptiveSessionService(
+            session_factory,
+            rubric_evaluator=(
+                SessionRubricEvaluator(model_gateway)
+                if model_gateway is not None
+                else None
+            ),
         )
-        repository = CourseFactoryRepository(session_factory)
-        publisher = CourseDraftPublisher(
-            repository=repository,
-            artifact_store=store,
-            learnhouse=build_learnhouse_http_gateway(),
-        )
-        gateways.update(
-            build_generation_gateways(
-                session_factory=session_factory,
-                repository=repository,
-                publisher=publisher,
-                artifact_store=store,
-                learnhouse_fallback=admitted_learnhouse,
+        gateways.update(build_session_gateways(adaptive_sessions))
+        if model_gateway is not None:
+            gateways.update(
+                build_tutor_gateways(
+                    sessions=adaptive_sessions,
+                    gateway=model_gateway,
+                )
             )
-        )
+        if artifact_root:
+            store = CourseFactoryArtifactStore(
+                session_factory, artifact_root=Path(artifact_root)
+            )
+            repository = CourseFactoryRepository(session_factory)
+            publisher = CourseDraftPublisher(
+                repository=repository,
+                artifact_store=store,
+                learnhouse=build_learnhouse_http_gateway(),
+            )
+            gateways.update(
+                build_generation_gateways(
+                    session_factory=session_factory,
+                    repository=repository,
+                    publisher=publisher,
+                    artifact_store=store,
+                    learnhouse_fallback=admitted_learnhouse,
+                )
+            )
     return build_status_dispatcher(
         gateways=gateways,
         receipts=receipts,

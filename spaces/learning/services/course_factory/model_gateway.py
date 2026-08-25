@@ -36,6 +36,11 @@ ROLE_CONTRACTS = {
         "rubric-prompt-v1",
         "rubric-evaluation-v1",
     ),
+    "learning_tutor": (
+        "tutoring",
+        "learning-tutor-prompt-v1",
+        "learning-tutor-v1",
+    ),
 }
 ROLE_PROMPTS = {
     "architect": "Design a source-grounded curriculum structure for the stated audience and outcome.",
@@ -45,6 +50,7 @@ ROLE_PROMPTS = {
     "source_verifier": "Return a complete course draft whose claims and expected answers cite exact supplied source locators; list every unsupported claim.",
     "quality_reviewer": "Review coverage, coherence, difficulty, and task quality; never publish the course.",
     "rubric_evaluator": "Evaluate the response against every rubric criterion using only the supplied source references.",
+    "learning_tutor": "Coach the learner using only the supplied course sources. Ask guiding questions and never reveal a hidden expected answer.",
 }
 _SECRET_KEYS = ("api_key", "token", "secret", "password", "credential")
 _MAX_REQUEST_BYTES = 500_000

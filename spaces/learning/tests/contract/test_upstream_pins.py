@@ -16,7 +16,7 @@ EXPECTED = {
         "path": "spaces/learning/learnhouse",
         "url": "https://github.com/Flissel/learnhouse.git",
         "upstream": "https://github.com/learnhouse/learnhouse.git",
-        "commit": "5a1728787a56483b1af7c1de85e2804a41e43953",
+            "commit": "9b2159d35a574d6a1ca131f2d8f32d509c85f998",
         "license": "AGPL-3.0-only",
     },
     "penecho": {
