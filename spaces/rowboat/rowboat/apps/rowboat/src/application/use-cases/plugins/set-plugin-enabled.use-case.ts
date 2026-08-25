@@ -1,6 +1,6 @@
 import type { IPluginApiAuthorizationPolicy, PluginApiIdentity } from "../../policies/plugin-api-authorization.policy";
 import type { IPluginsRepository, PluginInstallation } from "../../repositories/plugins.repository.interface";
-import { actor, assertAdmitted, assertDigest, assertId, assertIdempotencyKey, assertPinnedSnapshot, fingerprint, installReceipt, serviceError } from "./plugin-service.shared";
+import { assertAdmitted, assertDigest, assertId, assertIdempotencyKey, assertPinnedSnapshot, fingerprint, installReceipt, serviceError } from "./plugin-service.shared";
 
 export class SetPluginEnabledUseCase {
   constructor(private readonly dependencies: { readonly pluginsRepository: IPluginsRepository; readonly pluginApiAuthorizationPolicy: IPluginApiAuthorizationPolicy }) {}
@@ -16,7 +16,7 @@ export class SetPluginEnabledUseCase {
     if (installation === null) serviceError("installation_not_found");
     if (installation.sourceCommit !== entry.sourceCommit || installation.manifestDigest !== entry.manifestDigest || installation.treeDigest !== entry.treeDigest || installation.policyVersion !== entry.policyVersion) serviceError("catalog_digest_mismatch");
     const result = await this.dependencies.pluginsRepository.setInstallationEnabledIdempotently({
-      scope: fingerprint({ projectId: request.projectId, operation: "set_enabled", actor: actor(request.identity), idempotencyKey: request.idempotencyKey }),
+      scope: fingerprint({ projectId: request.projectId, operation: "set_enabled", idempotencyKey: request.idempotencyKey }),
       fingerprint: fingerprint({ projectId: request.projectId, pluginName: request.pluginName, catalogDigest: request.catalogDigest, enabled: request.enabled, expectedRevision: request.expectedRevision }),
       projectId: request.projectId, pluginName: request.pluginName, catalogDigest: request.catalogDigest,
       installationId: installation.id, enabled: request.enabled, expectedRevision: request.expectedRevision,

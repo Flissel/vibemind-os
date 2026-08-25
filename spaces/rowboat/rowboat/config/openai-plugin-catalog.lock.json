@@ -1,5 +1,5 @@
 {
-  "catalogDigest": "30d3d9a5330b967ae804afce76f5eec1233e33acfd2b03f3fa4bc8ce10b5dc73",
+  "catalogDigest": "9c58f88a3c2bda14a5edeeac7eff3ad685df8ad0efabdf1386f4c912904f4357",
   "entries": [
     {
       "admission": {
@@ -40,7 +40,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "4098e6781b100b401aa62a99142dd0eed30a99407d966b83221d2a3c0a2a0d94",
       "name": "actively",
       "pluginName": "actively",
@@ -91,7 +92,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "08eb38c594af0ff30a546c8e434e2a0e9cf3c21cb421ecba0a31a1fa5b8f75b0",
       "name": "aiera",
       "pluginName": "aiera",
@@ -252,7 +254,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "f0570eacb11c3907036265f906c1601007373de994952a69ffa016e5ef93aeff",
       "name": "airtable",
       "pluginName": "airtable",
@@ -303,7 +306,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "a6e69d12e611a994aca54ae7eac1deeeaa3a471d0409ba15c86f00304caad516",
       "name": "alation",
       "pluginName": "alation",
@@ -354,7 +358,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "21269f66afdc300eceb19f1bd62f384d40db7d959b83e5ecab8e3ddb6621ece4",
       "name": "alpaca",
       "pluginName": "alpaca",
@@ -405,7 +410,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "2b4293973695c1ac02ae04b3e7f9aa78fc991207c8d751e6348279ba3c329c13",
       "name": "amplitude",
       "pluginName": "amplitude",
@@ -456,7 +462,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "f314e08ac40d15200f6ded40dba3b576b307ea470d79fe578f72328499035eb2",
       "name": "apollo",
       "pluginName": "apollo",
@@ -509,7 +516,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "f01709bf4a26b1980a3ed63c6a11a7f014608d886fe0b121ca7bc8598722cae5",
       "name": "asana",
       "pluginName": "asana",
@@ -706,7 +714,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "4434ae18e7c8227eea19aca2fde521c0554738b4746f62de4e6152389b373d1c",
       "name": "atlassian-rovo",
       "pluginName": "atlassian-rovo",
@@ -757,7 +766,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "adc9ba232624beb766308b31862f350e407cb5497f2e15d3979e39d1f7de675d",
       "name": "attio",
       "pluginName": "attio",
@@ -864,7 +874,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "3adc6717fb207fddf21f36eea5cce016de70104e62cb9c498a05a54161557d40",
       "name": "base44",
       "pluginName": "base44",
@@ -915,7 +926,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "4ec2a0a0037103d0bbca4bda17f9d414ac7ac82053d417863bd4b54e5301d812",
       "name": "binance",
       "pluginName": "binance",
@@ -966,7 +978,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "e0a9fe6410962648ff9db713c8fb1b72abdc3032b4695bfe924c2f906dbbd364",
       "name": "biorender",
       "pluginName": "biorender",
@@ -1146,7 +1159,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "8a93f2590d1054c503b7538ad8b237eddac9723c012adc7848e50cfa0bd29b5b",
       "name": "boltz-api-cli",
       "pluginName": "boltz-api-cli",
@@ -1214,7 +1228,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "c5fc1af01e9df2a0464bfb3bed265f64fdf684774b6e6be30a92727bca42bfce",
       "name": "box",
       "pluginName": "box",
@@ -1281,7 +1296,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "5317fc4aead9a6d2c85006989b8cd94d2bc8a313d310487944cf00f359077ef7",
       "name": "brand24",
       "pluginName": "brand24",
@@ -1348,7 +1364,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "62a717b45239c3314288d06f7f1e927f791bbdc96dd036b8262524b28ee5646e",
       "name": "brex",
       "pluginName": "brex",
@@ -1432,7 +1449,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "d00415ba229fee7a45968c714d62ab3ed1762b2d672e97a5d48595060dc6e8a4",
       "name": "brighthire",
       "pluginName": "brighthire",
@@ -1685,7 +1703,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "86d4a225cb929ab68f00f6258a75daffb02122dd34875dabd349c3474dc35908",
       "name": "build-ios-apps",
       "pluginName": "build-ios-apps",
@@ -2016,7 +2035,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "d8d9c85281df68af2a2012ab6365b2789a573bd399692dacc4b2d5bfd06c0450",
       "name": "build-macos-apps",
       "pluginName": "build-macos-apps",
@@ -2197,7 +2217,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "7bc0085538adf72c31b5c2b42410fe699e6fe15e382fdc309cfd973c4c5db9a0",
       "name": "build-web-apps",
       "pluginName": "build-web-apps",
@@ -2594,7 +2615,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "fa1f5586afcfdfa8fa58d249fe852efd8103057d30f6c5d4009ce90e83b225a9",
       "name": "build-web-data-visualization",
       "pluginName": "build-web-data-visualization",
@@ -2645,7 +2667,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "499bfd1c5c54d03f73436e9e65b9d02b1bed5fc51ec7d954d647296e58e64ec1",
       "name": "calendly",
       "pluginName": "calendly",
@@ -2747,7 +2770,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "95ec4b2286a6580374a2481639dd51a344da300d88fa8c74ef218c57c47933bb",
       "name": "canva",
       "pluginName": "canva",
@@ -2814,7 +2838,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "ea7f25859493a0200636e35b0d3a79cedf391d45c09b4d1597da781d738f6ae4",
       "name": "carta-crm",
       "pluginName": "carta-crm",
@@ -2885,7 +2910,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "110cb39712292d114e332d1f25467eb9ed302caf919a8800f0b10ff8793387c2",
       "name": "catalyst-by-zoho",
       "pluginName": "catalyst-by-zoho",
@@ -2936,7 +2962,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "1436aaa6c194997d77ac4c5cbfafae0beca74f6738486c4096aca8c9cb1d4d8e",
       "name": "cb-insights",
       "pluginName": "cb-insights",
@@ -3003,7 +3030,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "826a697108aefd0200f82e6a9b6e19ff0630367bb142d956d4db79ac453171e8",
       "name": "channel99",
       "pluginName": "channel99",
@@ -3071,7 +3099,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "5d1e3b881bac0a9469ddccc8c3390043e491b982665f84d5d2b3f2f99238841b",
       "name": "chronograph-gp",
       "pluginName": "chronograph-gp",
@@ -3173,7 +3202,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "ba11b3fd9a2142968f01172cc646c68326fc0f57429d30fe26b4b955dfb4fc5f",
       "name": "chronograph-lp",
       "pluginName": "chronograph-lp",
@@ -3224,7 +3254,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "17ef31bebd59cb13d24f17d8131d1f4cbde68fb4a090a23ddb3409f4b9ecf904",
       "name": "circleback",
       "pluginName": "circleback",
@@ -3366,7 +3397,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "59b9e88011f6d20ebe1f90873c0774185e0d145755fdca6838fe0c2700e2f0af",
       "name": "circleci",
       "pluginName": "circleci",
@@ -3417,7 +3449,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "0b281bf6056cd8f6c3bae73aa8ee1a3539a6372526e42ba789fdfd5cc3cf4110",
       "name": "clay",
       "pluginName": "clay",
@@ -3468,7 +3501,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "170a4beb7fd56604c9f552919d512a3080a37852e00602ef56d1134cb3e3ff6f",
       "name": "clickup",
       "pluginName": "clickup",
@@ -3535,7 +3569,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "707f350ed69a0ead2e8e2cff99d2e0d25841e5d7a97ee8a5d4b8c30f3cc14ae7",
       "name": "close",
       "pluginName": "close",
@@ -3807,7 +3842,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "790ac166fa1f509f440e66d35c010e1cfb34d773726eb3a30a6a7553dacaf59a",
       "name": "cloudflare",
       "pluginName": "cloudflare",
@@ -3858,7 +3894,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "d292c663319c2fdb703c30f6112f489d2a07ed3ac366a9004bea5f8fd4d694a0",
       "name": "cloudinary",
       "pluginName": "cloudinary",
@@ -3946,7 +3983,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "e6786459333514cbc10814ebae72fff96cf19ed91d58eac4dba082d36c262f7a",
       "name": "coderabbit",
       "pluginName": "coderabbit",
@@ -4268,7 +4306,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "Proprietary",
       "manifestDigest": "5a6725b219c0ffa434d9bedc92293544fc3ef5781809b3bdb3be1a591ea39906",
       "name": "codex-security",
       "pluginName": "codex-security",
@@ -4334,7 +4373,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "b224bf01f259c0e23aa69a82774f469b555d7ac58373a82cf3de0499d7f9e830",
       "name": "cogedim",
       "pluginName": "cogedim",
@@ -4385,7 +4425,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "cb57b7d6dea3b776263a83d6e0c515e4a7a403d1944236badc2fa107cab86fcf",
       "name": "common-room",
       "pluginName": "common-room",
@@ -4436,7 +4477,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "db95e15bdc7f64abf91dfedf620b1eb65512b15be6c4930ab7cd433f44bcde1b",
       "name": "conductor",
       "pluginName": "conductor",
@@ -4507,7 +4549,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "UNLICENSED",
       "manifestDigest": "4f9649d91d20b457002261225e30c2b1fe1e0291f3d07468192b703062746b15",
       "name": "convex",
       "pluginName": "convex",
@@ -4557,7 +4600,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "aedc598e10169badb404fb9f4fe7cf681bea15d7201c04e3bdd5d1cc7cf36bd9",
       "name": "coupler-io",
       "pluginName": "coupler-io",
@@ -4608,7 +4652,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "7c08ccf607dd089720b52ef7c291f529cc97d5a8a89f05107bc8bc81c03e0a0f",
       "name": "coveo",
       "pluginName": "coveo",
@@ -4675,7 +4720,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "fd027209ecf7982fdbc4366da2e241960a941a6623dfc950e157bff0470445ad",
       "name": "cube",
       "pluginName": "cube",
@@ -5083,7 +5129,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "Apache-2.0",
       "manifestDigest": "94b183743bfe7380b7ae6891c025284c8c1ac771c0077942c6829fcd30cabafa",
       "name": "daloopa",
       "pluginName": "daloopa",
@@ -5134,7 +5181,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "Apache-2.0",
       "manifestDigest": "aca4be7069ba9a088c35380c8c742315456c30f6511cfb61b44ce055793f1451",
       "name": "datadog",
       "pluginName": "datadog",
@@ -5321,7 +5369,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "35295240f97d359d99eff71ac7809aa79f00cdf23912f0a694d54e84c600602c",
       "name": "datasite",
       "pluginName": "datasite",
@@ -5498,7 +5547,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "Apache-2.0",
       "manifestDigest": "c531bd2917f2413dfe74ff176cc593db1042cde48a677f3ef7716a247b109c57",
       "name": "deepnote",
       "pluginName": "deepnote",
@@ -5565,7 +5615,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "8a18d04d6b91d07e05e615311af66da4e23e1c41fd2b9653e514e4f6fde9c3a3",
       "name": "demandbase",
       "pluginName": "demandbase",
@@ -5654,7 +5705,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "<missing>",
       "manifestDigest": "04940502db032e3717546fc826b6f3363d78f6b9e6e67d59b2e781ccc0f13c1a",
       "name": "digitalocean",
       "pluginName": "digitalocean",
@@ -5721,7 +5773,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "6c492a88f2e8f1d175d69ce5eb007104c3a51d7960f44e38e8061d00d3e38ba0",
       "name": "dnb-finance-analytics",
       "pluginName": "dnb-finance-analytics",
@@ -5788,7 +5841,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "2732000728a9690d1e5db3c54bda94afb8641e025056186fc2aad91a8e7004cc",
       "name": "docket",
       "pluginName": "docket",
@@ -5855,7 +5909,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "970614d45e1ab15ada0759c9c181ded46e464b31d75618823ab8ee4787c4b335",
       "name": "docusign",
       "pluginName": "docusign",
@@ -5906,7 +5961,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "2eb31b6a746a27583f3a24bd87e521d84964adf06e53554dad56c64fe569f637",
       "name": "domotz-preview",
       "pluginName": "domotz-preview",
@@ -5973,7 +6029,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "46d4e25ffeca5ebbe88481459f9fa67d705f20227a6c26734a87bf818da78610",
       "name": "dovetail",
       "pluginName": "dovetail",
@@ -6024,7 +6081,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "999868cb2abb9c8a18a2ff192ddea2c29304e6d25bbd204c4fc4699118c92be5",
       "name": "dow-jones-factiva",
       "pluginName": "dow-jones-factiva",
@@ -6075,7 +6133,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "50e56fbde2ea6d305b2a7963cba9b926db7e72119b941a0dbddd64814d61b7f6",
       "name": "egnyte",
       "pluginName": "egnyte",
@@ -6385,7 +6444,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "a6e33e1afc271f069d7b24c92384a068dc7e778faf4f3e7ce8d9bf23cca59824",
       "name": "expo",
       "pluginName": "expo",
@@ -6436,7 +6496,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "87982e3634eecea9041b862451dec5cc4b64325722943c711f7cbb2c600fcd17",
       "name": "factset",
       "pluginName": "factset",
@@ -6487,7 +6548,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "be43131c150f5c3b3eb068142322aaf34f94f37beb251f3429df873d8889bb8c",
       "name": "fal",
       "pluginName": "fal",
@@ -6972,7 +7034,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "LicenseRef-Figma-Developer-Terms",
       "manifestDigest": "8265b2cf2ef141c2260bbe7ecbcd1e9622db8b6b294e6a63cf24ad6ac45c14e7",
       "name": "figma",
       "pluginName": "figma",
@@ -7038,7 +7101,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "48e20fb7b7a12c7a716d33100461219e58abd8d51048377e4d0a109be1bcf182",
       "name": "finn",
       "pluginName": "finn",
@@ -7089,7 +7153,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "765f18473886071d0476ddc053ea06143c7b215666fb4f40909974d8205ea2ed",
       "name": "fireflies",
       "pluginName": "fireflies",
@@ -7140,7 +7205,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "f83c77d2d5fd2a54c76f157324d9f029d657e92d3feaaf8c01799d10d578c663",
       "name": "fiscal-ai",
       "pluginName": "fiscal-ai",
@@ -7191,7 +7257,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "4200201d92e074ba984df7896fe50cc35e15d44a3bf9eeb01abac70c618f5ada",
       "name": "fyxer",
       "pluginName": "fyxer",
@@ -7406,7 +7473,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "edd750d7ab6df61834916cfc2498fd71c0c19fd9523e1e300fd4d958630e6cd5",
       "name": "game-studio",
       "pluginName": "game-studio",
@@ -7565,7 +7633,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "d409e7f8720f50708bd0b6ddaf25e3d2d77d7d0069472051246579728ea579db",
       "name": "github",
       "pluginName": "github",
@@ -7616,7 +7685,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "5ce1db45f52ed6a8d8a83971a39276f1bd557186255732116f9ae87f7739056d",
       "name": "glean",
       "pluginName": "glean",
@@ -7722,7 +7792,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "d1d092efa55ed6050737d9313b802935a6a856a554a874f73cbbdcb068448cd7",
       "name": "gmail",
       "pluginName": "gmail",
@@ -7882,7 +7953,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "213944ddcb7c774612e57508080e1956d7caacc48733d05b38ed640285b28a41",
       "name": "google-calendar",
       "pluginName": "google-calendar",
@@ -8025,7 +8097,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "800bd4d3d8afdb43b89a4211cfb24e83d3d820d750ec21a0d80124658023cfb6",
       "name": "google-drive",
       "pluginName": "google-drive",
@@ -8076,7 +8149,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "9dbcf5f82dc1809712e93065e25a03791937405048633f3a1d233d10566b21ac",
       "name": "govtribe",
       "pluginName": "govtribe",
@@ -8127,7 +8201,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "b99d143f2706151f3bb50fead11b9fd7d2649a8e7ff0253e8727b7cb2fb88a61",
       "name": "granola",
       "pluginName": "granola",
@@ -8194,7 +8269,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "cbb830dc74d38a664488d870bb7300e0cb70877b8a6a8def1ee6a4df85a3320a",
       "name": "happenstance",
       "pluginName": "happenstance",
@@ -8245,7 +8321,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "097672f1cacce9d2e0d324eef907193de76754f50185cf03632978feb92da28d",
       "name": "hebbia",
       "pluginName": "hebbia",
@@ -8312,7 +8389,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "d1a844399b05d581cf89d13298cb07fdd82c730ae25545d2bebd3d6ea45269bc",
       "name": "help-scout",
       "pluginName": "help-scout",
@@ -8384,7 +8462,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "Proprietary",
       "manifestDigest": "53ea87a235ccb6423e231443b0416b34a47856a17c60be7bdcb57f5be50b3171",
       "name": "hex",
       "pluginName": "hex",
@@ -8526,7 +8605,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "ae3ecf235852fde2a8387187679ab7aabc67e58b3c130dfdcc5941ba8d5bc6de",
       "name": "heygen",
       "pluginName": "heygen",
@@ -8593,7 +8673,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "549446642d4e2cf66d72d037f5c696ea3f7fb78ded6da849536103dc58ea8e8d",
       "name": "hg-insights",
       "pluginName": "hg-insights",
@@ -8644,7 +8725,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "4a23522ad6ddec1fa0c11eddc07728d723e0e9fae154a78d8e79ef2e2e295194",
       "name": "highlevel",
       "pluginName": "highlevel",
@@ -8711,7 +8793,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "5f1152b3b0bc142b797261a15b1431b749ca8b37673acfff3741e1bb21798784",
       "name": "hostinger",
       "pluginName": "hostinger",
@@ -8836,7 +8919,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "4469eba7835db8fd977d46fd49cd0153d035c0a298fd8da8871acfd790836f64",
       "name": "hubspot",
       "pluginName": "hubspot",
@@ -9087,7 +9171,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "09650a57f9ef202187010c3652188313c6b707a7e5ebe1d0201c123484756689",
       "name": "hugging-face",
       "pluginName": "hugging-face",
@@ -9230,7 +9315,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "Apache-2.0",
       "manifestDigest": "1bf2d37cf9860b92db0d3117bd600f18f8d8fd203e78a724b42bb8ed46e234d0",
       "name": "hyperframes",
       "pluginName": "hyperframes",
@@ -9297,7 +9383,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "0b376d757cc6a46a17be8344497ec3d6f83da710c37465cbd195d37d3214b865",
       "name": "intercom",
       "pluginName": "intercom",
@@ -9348,7 +9435,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "22f50ad4311124c6fc23b4197169443345ffc94a211b19507e3b9234ef4787f9",
       "name": "jam",
       "pluginName": "jam",
@@ -9415,7 +9503,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "9e7ec4430dd842f35fe6fa8e1922f5065f94a000658e1e938019ac7f71510171",
       "name": "keybid-puls",
       "pluginName": "keybid-puls",
@@ -10352,7 +10441,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "Proprietary",
       "manifestDigest": "61c9346f2ca1358dcba7e4007ad5497250a99fdd5d090c9f1a7c0e79473298de",
       "name": "life-science-research",
       "pluginName": "life-science-research",
@@ -10452,7 +10542,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "dc83447f9558c9d090063b300030b69fcdda8ca93e8ce0c7bde1a84475c9d9a0",
       "name": "linear",
       "pluginName": "linear",
@@ -10503,7 +10594,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "f225fca84157a60c7a411713fc5d438a33b1e0248dc158496aa208fe081881af",
       "name": "lovable",
       "pluginName": "lovable",
@@ -10554,7 +10646,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "51d1d3f243c254d574c1ed683c5a3e8ec494f037d06eafef0b7739560bab3cb4",
       "name": "lseg",
       "pluginName": "lseg",
@@ -10609,7 +10702,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "UNLICENSED",
       "manifestDigest": "ab46ac06adc1cf5d168fc4bc2e01f57cb222ad56b0f14b52a253cd3bee596b63",
       "name": "magicpath",
       "pluginName": "magicpath",
@@ -10659,7 +10753,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "c3a87e59b036fb1ef276603b6b711d0f462257e4976c5c7669299c54915bac31",
       "name": "marcopolo",
       "pluginName": "marcopolo",
@@ -10710,7 +10805,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "f281135025695ee36929f2c7e4f599a2ea37fe31f13880fdf6c2dc782a785ec0",
       "name": "mem",
       "pluginName": "mem",
@@ -10761,7 +10857,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "ef2822c5bdb5b8222d6822c66cd6e5927d57e2e87cb7b14260a6bbdeac2cc1b3",
       "name": "meticulate",
       "pluginName": "meticulate",
@@ -10880,7 +10977,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "a3fd117ad1553d84b11964d9179442ff91e8e63763109227f3a14200017ebca4",
       "name": "midpage",
       "pluginName": "midpage",
@@ -11018,7 +11116,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "5fc213d9578ed020cc7799605f35a837a452434164fff9ba2e84bd230b7a8937",
       "name": "mixpanel",
       "pluginName": "mixpanel",
@@ -11194,7 +11293,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "8a2c16d4c15f89edf3963b32dc76ef03cc8ead74f57cfa9a98d299ac91e140df",
       "name": "mixpanel-headless",
       "pluginName": "mixpanel-headless",
@@ -11245,7 +11345,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "3cf272ead927488c9f093a88867a6b908189b8c1dc24a71cc07ddb5142aa150b",
       "name": "monday-com",
       "pluginName": "monday-com",
@@ -11449,7 +11550,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "74cd1f4221915deac8fbd0846d12f8c00103e2e04541d1a2a9512f1f29377f6a",
       "name": "moody-s",
       "pluginName": "moody-s",
@@ -11556,7 +11658,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "f290df6e389052e1a1fe7fe476f1e40ed84359d023b4c3b23461f614d2b730af",
       "name": "morningstar",
       "pluginName": "morningstar",
@@ -11607,7 +11710,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "b27dbdca31c1dce3fe2414cefd7279e413444aafc787dbbe9ecdaf84812ec269",
       "name": "motherduck",
       "pluginName": "motherduck",
@@ -11674,7 +11778,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "7fd166205d317458ffcf58afd0f0c032e51228e4bb22294cd1601fed0f8b1b7d",
       "name": "mt-newswires",
       "pluginName": "mt-newswires",
@@ -11741,7 +11846,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "b750a3cdbedf0e1e03e9338fea020e0fb0a358aee1ef0c531130e6aa69f534a4",
       "name": "myregistry-com",
       "pluginName": "myregistry-com",
@@ -11864,7 +11970,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "Apache-2.0",
       "manifestDigest": "bdcfe842e0f49d6a860f1a4f8b550e87fd35618955c05b107bafc2e3352a318d",
       "name": "neon-postgres",
       "pluginName": "neon-postgres",
@@ -12133,7 +12240,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "d75794bd1dca156404139d141c5f0ef5b784f7fc2aa2c9caaf176fc7001c5540",
       "name": "netlify",
       "pluginName": "netlify",
@@ -12184,7 +12292,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "772be70fdffacb9feddb7c584dad43eaf3451979566fdbeaece3fd4d0d26c9c2",
       "name": "network-solutions",
       "pluginName": "network-solutions",
@@ -12544,7 +12653,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "d8a4bc590c865a6e374b41294c8fc942b6bc78dddf3ceedec37a639c99214406",
       "name": "ngs-analysis",
       "pluginName": "ngs-analysis",
@@ -12740,7 +12850,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "b040a4235e936277c05444bcc51c9cd7af967bd2e9d02addd23dbc37bd62fd22",
       "name": "notion",
       "pluginName": "notion",
@@ -12975,7 +13086,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "Apache-2.0 AND CC-BY-4.0",
       "manifestDigest": "11502d8e15f11a0d47b59d5e5bd1c8811925928a61938f261fd1470fde09d596",
       "name": "nvidia",
       "pluginName": "nvidia",
@@ -13041,7 +13153,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "031b5328d6ba0d7bece5976c0f196533f8aa684a9784467cdccb34d38205ac95",
       "name": "omni-analytics",
       "pluginName": "omni-analytics",
@@ -13079,7 +13192,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "Proprietary",
       "manifestDigest": "98798d5222547fb6a8630e6ed17ba4587811072c42032a5d044f38b5eaeaf5cb",
       "name": "openai-ads-conversions",
       "pluginName": "openai-ads-conversions",
@@ -13240,7 +13354,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "Proprietary",
       "manifestDigest": "547f6c8e73514cb921d6570ccc7d1114d397a88506bdc8ad1338709d6d435b8a",
       "name": "openai-developers",
       "pluginName": "openai-developers",
@@ -13306,7 +13421,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "feb85c79aec860a8f5edd60f249c52e9af088f0c84dcf01103705a8021a09e03",
       "name": "otter-ai",
       "pluginName": "otter-ai",
@@ -13467,7 +13583,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "5eafa29a3da7a113b23841552853976e512411eb48b400351aa2baec2ddf2415",
       "name": "outlook-calendar",
       "pluginName": "outlook-calendar",
@@ -13628,7 +13745,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "a9275ac8aaa9320179765ef1b0fcad4aec1edc061ef651fc4978c4e4a4a335c7",
       "name": "outlook-email",
       "pluginName": "outlook-email",
@@ -13679,7 +13797,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "5f54abae9731343810887029f148558d3c11773017b0968d0fe814c4e3e86c9e",
       "name": "outreach",
       "pluginName": "outreach",
@@ -13746,7 +13865,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "1dc6b5b4bf7b5fbda7e1ed303dd0ed6bfba2f6f0eb156aba12c574aab8b5d90d",
       "name": "particl-market-research",
       "pluginName": "particl-market-research",
@@ -13797,7 +13917,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "deaf55cf1729f252566a9f25add1d80e5db6aed2f68943912755a36d072ffa38",
       "name": "picsart",
       "pluginName": "picsart",
@@ -13848,7 +13969,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "42870d500e58b3b0a2a15aabe11ab337bd275ae92ad2d9a072d16a6d67ff5fa2",
       "name": "pipedrive",
       "pluginName": "pipedrive",
@@ -13899,7 +14021,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "8498bca6444b9a08a895a5fafbd4f750a2f4504494e45d4b39f607c33e7edd9a",
       "name": "pitchbook",
       "pluginName": "pitchbook",
@@ -14025,7 +14148,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "72b434478d5008496d17d43b9b847121f47145f71177540ab47893b1559c5aed",
       "name": "plugin-eval",
       "pluginName": "plugin-eval",
@@ -14092,7 +14216,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "c3760289bec979a2bd422723995ebcb39c09d531ce01eaab697fdb025f494eda",
       "name": "policynote",
       "pluginName": "policynote",
@@ -14214,7 +14339,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "b7abc2dc682485ad97fde746755562a43d6bb84fa593cdc7857b93df0e3b928c",
       "name": "posthog",
       "pluginName": "posthog",
@@ -14265,7 +14391,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "718332fdf7ce73f5ddb411a5fc2367ac9d0ab5b2a7713a4f0c0c0ce9e3807d81",
       "name": "pylon",
       "pluginName": "pylon",
@@ -14332,7 +14459,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "f363077cad8237d59287c46727ed3df63bed209cb9f33b2380a7953ef7b77b83",
       "name": "quartr",
       "pluginName": "quartr",
@@ -14383,7 +14511,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "f906385b74f00de6c926fdbd8f215016cbfb7a9ca727ee8b5f7de2e8a3ce5ce6",
       "name": "quickbooks",
       "pluginName": "quickbooks",
@@ -14434,7 +14563,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "f7fc1e0d970a38dd4c08e9a169e8eaf9dcf424392596b265caef51d14d71e935",
       "name": "quicknode",
       "pluginName": "quicknode",
@@ -14501,7 +14631,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "491010d56ed9560dc052dd7f774003040a9dcefb2662232a939e3febb0b08933",
       "name": "ranked-ai",
       "pluginName": "ranked-ai",
@@ -14552,7 +14683,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "797c936ece70d148a42fffc17db59b090fa6d9eab666abc3bb07f247c7630a76",
       "name": "razorpay",
       "pluginName": "razorpay",
@@ -14619,7 +14751,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "1ec087cd6fe26787101b89444ff270dda9450fa365df49e253d6fd58cbbf4801",
       "name": "read-ai",
       "pluginName": "read-ai",
@@ -14670,7 +14803,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "1fccb8a94d9d6c5323473defd9997d324c8f3f0ec348693ee136488cc938add7",
       "name": "readwise",
       "pluginName": "readwise",
@@ -14758,7 +14892,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "15d22f6ba93e85b7624f2d5b4b83ad621518e018d2f54b5a740323a6a601e05b",
       "name": "remotion",
       "pluginName": "remotion",
@@ -15192,7 +15327,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "4f4a193bb490056a1594c80c3ba1c4abab9499c6bbfc3c8c71ee091a4260f3c8",
       "name": "render",
       "pluginName": "render",
@@ -15298,7 +15434,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "4e64a372b0d3c5b61e12b4067e63faa286d003947d7e0be40c395a82d4802013",
       "name": "replayio",
       "pluginName": "replayio",
@@ -15349,7 +15486,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "0d6b8db46bc0ba680cc13d56d8aef96283a2e3915c0c48b8c900a22e653c890b",
       "name": "replit",
       "pluginName": "replit",
@@ -15400,7 +15538,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "75af278a7055ad2ed42894a5e52306e035562cb29873a553c25d8b59ad72dcac",
       "name": "responsive",
       "pluginName": "responsive",
@@ -15451,7 +15590,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "c25162ed812569fa8f70e28aa82df12b155d07a2ec9d2da7b25ffbfd934b823a",
       "name": "rox",
       "pluginName": "rox",
@@ -15502,7 +15642,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "3eaec50b646f0311637f4599d33a1633617a2cf1090ceaf44e2039d1bd89e39d",
       "name": "s-p",
       "pluginName": "s-p",
@@ -15553,7 +15694,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "af412749987dfddc4bfbdc6371407a1e664a743ee4564ea6a1e95450308e281e",
       "name": "scite",
       "pluginName": "scite",
@@ -15604,7 +15746,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "0393a97a5a103418ea1ec04a36e60f9c4d2ac8ea47ff722c82d8de139d3caaa3",
       "name": "semrush",
       "pluginName": "semrush",
@@ -15655,7 +15798,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "9d57d37a2fbbf72bbaaeba4ba78dfe2ee70ced2a0dd5b9e3ffdea06d8570752a",
       "name": "sendgrid",
       "pluginName": "sendgrid",
@@ -15726,7 +15870,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "94cd7467c6b3ddbb5051ec94e95e4d66e1748f4fc7c52d321fabfc35df259b9e",
       "name": "sentry",
       "pluginName": "sentry",
@@ -15777,7 +15922,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "55aca8bf794a9d774353ebcfa8a9faecb5fd5e8af2353505207e5e45a1454c3a",
       "name": "setu-bharat-connect-billpay",
       "pluginName": "setu-bharat-connect-billpay",
@@ -15956,7 +16102,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "702f0d536af854fe6de59172aa12827fb87d0bd60000b31f783fe157edfe453e",
       "name": "sharepoint",
       "pluginName": "sharepoint",
@@ -16369,7 +16516,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "22215d68faa5dbbc80314be22b960efe400f3e2a9bea728c653073da9c5a096a",
       "name": "shopify",
       "pluginName": "shopify",
@@ -16436,7 +16584,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "370ef0a239c4d8054a58b2bfb4a9bf2aed9fd348b5feb2d84fb2275fd3aa6266",
       "name": "shutterstock",
       "pluginName": "shutterstock",
@@ -16487,7 +16636,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "4afe4f79e0e0697ec8914120fa9e2c704e5054f782f3761fd0705071599a4e81",
       "name": "signnow",
       "pluginName": "signnow",
@@ -16538,7 +16688,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "939f5761b837b1f46c0bc3d51d74aff64dc1f0795b527caa05d73528a4c9bed8",
       "name": "similarweb",
       "pluginName": "similarweb",
@@ -16605,7 +16756,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "53341f4ab26332b9dc9c7fd22d75e599c3f5201d721025f52a7a250638f7018e",
       "name": "skywatch",
       "pluginName": "skywatch",
@@ -16766,7 +16918,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "2a49ff4a25176b35186be7fd23748b54763393bce3589c2bfeb50d55711c1993",
       "name": "slack",
       "pluginName": "slack",
@@ -16833,7 +16986,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "3355a259b474b0d87ac6d22bf6f01cefef14804dd1564ad72b637bf15b96fe24",
       "name": "statsig",
       "pluginName": "statsig",
@@ -16884,7 +17038,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "9946288fbdfac8526bd46420be1c21782bf73b44bc537ff066c69f43427122ea",
       "name": "streak",
       "pluginName": "streak",
@@ -16969,7 +17124,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "c8801ce2aca839be9e7cf267262add18288bee5d8063e026282015653308da2c",
       "name": "stripe",
       "pluginName": "stripe",
@@ -17058,7 +17214,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "e9011d12e76aa7979cf068dcc1f00b6a3ad132135dbb3039f247406662f32ee2",
       "name": "supabase",
       "pluginName": "supabase",
@@ -17236,7 +17393,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "5875242c40b98db4107b6204a333422320ac1b20465fcde3287bd93d7c380a18",
       "name": "superhuman",
       "pluginName": "superhuman",
@@ -17524,7 +17682,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "700bf13c92bbadecfe094ce7b8e9f2ba921e21da3ef616cf58bdd9e1e309c739",
       "name": "superpowers",
       "pluginName": "superpowers",
@@ -17575,7 +17734,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "f2cb7c22306173bcf0447b176a27d03864a8f6ca03c16aaa0d381a29830beea8",
       "name": "taxdown",
       "pluginName": "taxdown",
@@ -17754,7 +17914,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "113923551a8e25d5170d59c88855aebf8abbe8d5a09096754afb0ed71b2e258d",
       "name": "teams",
       "pluginName": "teams",
@@ -17805,7 +17966,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "2ec91df0b94256ef1fd0167ab429f2628c759ca872c475f91ca0f460373bcc7e",
       "name": "teamwork-com",
       "pluginName": "teamwork-com",
@@ -17859,7 +18021,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "176bc3507411fd846a851f605d9e9460587cd4cce959956d04a289760868657e",
       "name": "temporal",
       "pluginName": "temporal",
@@ -17963,7 +18126,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "0b5ddf8db9cd0ce0364b8fdc3743593491b7fd57cab1ad957409f46d66c2265f",
       "name": "test-android-apps",
       "pluginName": "test-android-apps",
@@ -18014,7 +18178,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "0d95906c14ecb250962ca2ab98af1035de7ce971bc2bed27e77226e2f90cdb8a",
       "name": "third-bridge",
       "pluginName": "third-bridge",
@@ -18065,7 +18230,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "f825a6bdb8bb264c70c1077a8182894569381e65ba85ae1ffe0a1bb2000a4bcd",
       "name": "thoughtspot",
       "pluginName": "thoughtspot",
@@ -18116,7 +18282,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "4f943695d3d006e6012e6628720d9d36f753beaf05aff6ae1484b2aa8264cf1c",
       "name": "tinman-ai",
       "pluginName": "tinman-ai",
@@ -19142,7 +19309,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "07334a49a6357cdc0548a9c7faefa9bc650455c7f8190ea08ba6b98be6a9461e",
       "name": "twilio-developer-kit",
       "pluginName": "twilio-developer-kit",
@@ -19193,7 +19361,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "75c897e1a6079055727e57a5f74a56ac9e438c911ee3e6987254778c8a9b3309",
       "name": "united-rentals",
       "pluginName": "united-rentals",
@@ -19244,7 +19413,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "e1222517bbe253876834a34ec6b5a40888140e940afd77e161d314bd863ee83e",
       "name": "vantage",
       "pluginName": "vantage",
@@ -20303,7 +20473,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "Apache-2.0",
       "manifestDigest": "346c158d9ada397cfb6690231c48adc051a1d52727fd1b6c34db2c4f13735168",
       "name": "vercel",
       "pluginName": "vercel",
@@ -20354,7 +20525,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "5f33759e46fe0e627e1f18731d972bffa3e278b0ff86c1e6d82d3edee3fbd6aa",
       "name": "waldo",
       "pluginName": "waldo",
@@ -20405,7 +20577,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "3edff32d65d25434f7ee4c3a685b8ccc619d7b70a7e246530bcdd199ce277a52",
       "name": "weatherpromise",
       "pluginName": "weatherpromise",
@@ -20472,7 +20645,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "b2b8fd97a3347d02a95b3bf6c44bd85416fdd774fb434e6ac4a1b3c995107e3b",
       "name": "windsor-ai",
       "pluginName": "windsor-ai",
@@ -20597,7 +20771,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "89da233e5f379097285da8a6035c026df739e010d78dcaccd73d80eefce7ea7c",
       "name": "wix",
       "pluginName": "wix",
@@ -20648,7 +20823,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "2ed4d04cebe4468dd1765de5e7ea64119fdca5f1be58f61ba74db0ec1dcafa0a",
       "name": "yepcode",
       "pluginName": "yepcode",
@@ -20699,7 +20875,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "b3df8d3e92693ac74481e644937e3afaf0f19531ff413f324baa5a3d4518cff1",
       "name": "zoho",
       "pluginName": "zoho",
@@ -22351,7 +22528,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "9d987b2930bd8b7e358fdb30ef92cd4b2fd06b11907396072615945b4d31e6d5",
       "name": "zoom",
       "pluginName": "zoom",
@@ -22402,7 +22580,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "991ead95b2d25ca527b9356cc4c37600a2428a00259ed1c37f1a8d52c2d60fc3",
       "name": "zoominfo",
       "pluginName": "zoominfo",
@@ -22456,7 +22635,8 @@
           }
         }
       ],
-      "importedAt": "2026-08-25T09:33:27.421Z",
+      "importedAt": "2026-08-25T19:06:27.813Z",
+      "licenseDeclaration": "MIT",
       "manifestDigest": "377c4de62e671bdbef30c699f1cce2f1134471bfa3c9e2e12d982358ebff8e36",
       "name": "zotero",
       "pluginName": "zotero",
@@ -22469,7 +22649,7 @@
       "treeDigest": "23e787d96d9e8f67022cb30f230fb7a95de65cfc4c21d87605c12ba5419f4ae4"
     }
   ],
-  "importedAt": "2026-08-25T09:33:27.421Z",
+  "importedAt": "2026-08-25T19:06:27.813Z",
   "inventory": {
     "pluginsWithAgents": 14,
     "pluginsWithApps": 154,

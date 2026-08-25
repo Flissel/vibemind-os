@@ -291,6 +291,11 @@ describe("importCatalog", () => {
       status: "review_required",
       reason: "license_review_required",
     });
+    expect(lock.entries.map(({ name, licenseDeclaration }) => ({ name, licenseDeclaration }))).toEqual([
+      { name: "alpha", licenseDeclaration: "MIT" },
+      { name: "beta", licenseDeclaration: "UNLICENSED" },
+      { name: "gamma", licenseDeclaration: "<missing>" },
+    ]);
   });
 
   it("counts prototype-like license names as own data keys", async () => {

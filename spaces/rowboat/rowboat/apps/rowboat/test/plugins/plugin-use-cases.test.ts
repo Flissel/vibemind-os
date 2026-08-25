@@ -20,6 +20,9 @@ import { SetPluginEnabledUseCase } from "@/src/application/use-cases/plugins/set
 import { Auth0PluginApiAuthorizationPolicy } from "@/src/infrastructure/policies/auth0.plugin-api-authorization.policy";
 import { PluginInstallationController } from "@/src/interface-adapters/controllers/plugins/plugin-installation.controller";
 import { PINNED_OPENAI_PLUGINS_COMMIT, PINNED_PLUGIN_CATALOG_DIGEST } from "@rowboat/openai-plugin-runtime";
+import { NextRequest } from "next/server";
+import { SignJWT, createLocalJWKSet, exportJWK, generateKeyPair } from "jose";
+import { verifyAuth0UserToken } from "@/src/infrastructure/policies/auth0.plugin-api-authorization.policy";
 
 const digest = (value: string): string => value.repeat(64);
 const identity: PluginApiIdentity = Object.freeze({ kind: "user", userId: "user-1" });
@@ -34,11 +37,12 @@ const entry: PluginCatalogEntry = Object.freeze({
   pluginName: "github", pluginVersion: "1.0.0", manifestDigest: digest("b"), treeDigest: digest("c"),
   importedAt: snapshot.importedAt, schemaVersion: snapshot.schemaVersion, policyVersion: snapshot.policyVersion,
   admission: { status: "admitted" as const, policyVersion: snapshot.policyVersion },
+  licenseDeclaration: "MIT",
   components: [{
     component: { id: "skill:github", name: "GitHub", kind: "skill" as const, status: "available" as const, metadata: { digest: digest("d"), credentialSlots: ["GITHUB_PAT_TOKEN"] } },
     admission: { status: "admitted" as const, policyVersion: snapshot.policyVersion },
   }],
-});
+} as PluginCatalogEntry & { readonly licenseDeclaration: string });
 
 class FakeAuthorization implements IPluginApiAuthorizationPolicy {
   reject = false;
@@ -50,7 +54,7 @@ class FakeAuthorization implements IPluginApiAuthorizationPolicy {
 
 class FakeRepository implements IPluginsRepository {
   installationWrites = 0;
-  private result: PluginIdempotentInstallResult | null = null;
+  private readonly results = new Map<string, PluginIdempotentInstallResult>();
   async putCatalogSnapshot(): Promise<void> {}
   async getCatalogSnapshot(value: string): Promise<PluginCatalogSnapshot | null> { return value === snapshot.catalogDigest ? snapshot : null; }
   async listCatalogEntries(value: string): Promise<readonly PluginCatalogEntry[]> { return value === snapshot.catalogDigest ? [entry] : []; }
@@ -66,20 +70,24 @@ class FakeRepository implements IPluginsRepository {
   async putMigrationRecord(_record: PluginMigrationRecord): Promise<void> {}
   async putReceipt(_receipt: PluginReceipt): Promise<void> {}
   async getIdempotentReceipt(_scope: string, fingerprintValue: string): Promise<PluginReceipt | null> {
-    if (this.result === null) return null;
-    if (this.result.fingerprint !== fingerprintValue) throw new Error("idempotency_conflict");
-    return this.result.receipt;
+    const result = this.results.get(_scope);
+    if (result === undefined) return null;
+    if (result.fingerprint !== fingerprintValue) throw new Error("idempotency_conflict");
+    return result.receipt;
   }
   async installIdempotently(request: PluginIdempotentInstall): Promise<PluginIdempotentInstallResult> {
-    if (this.result !== null) {
-      if (this.result.fingerprint !== request.fingerprint) throw new Error("idempotency_conflict");
-      return this.result;
+    const existing = this.results.get(request.scope);
+    if (existing !== undefined) {
+      if (existing.fingerprint !== request.fingerprint) throw new Error("idempotency_conflict");
+      return existing;
     }
     await Promise.resolve();
-    if (this.result !== null) return this.result;
+    const raced = this.results.get(request.scope);
+    if (raced !== undefined) return raced;
     this.installationWrites += 1;
-    this.result = Object.freeze({ receipt: request.receipt, fingerprint: request.fingerprint, replayed: false });
-    return this.result;
+    const result = Object.freeze({ receipt: request.receipt, fingerprint: request.fingerprint, replayed: false });
+    this.results.set(request.scope, result);
+    return result;
   }
   async setInstallationEnabledIdempotently(_request: PluginIdempotentEnable): Promise<PluginIdempotentEnableResult> { throw new Error("unused"); }
 }
@@ -107,10 +115,29 @@ describe("authorized plugin services", () => {
     expect(repository.installationWrites).toBe(1);
   });
 
+  it("shares one project-operation idempotency result across two authorized actors", async () => {
+    const repository = new FakeRepository();
+    const useCase = new InstallPluginUseCase({ pluginsRepository: repository, pluginApiAuthorizationPolicy: new FakeAuthorization() });
+    const first = await useCase.execute(installRequest);
+    const second = await useCase.execute({ ...installRequest, identity: { kind: "user", userId: "user-2" } });
+    expect(second).toEqual(first);
+    expect(repository.installationWrites).toBe(1);
+  });
+
+  it("keeps the same idempotency key independent across projects", async () => {
+    const repository = new FakeRepository();
+    const useCase = new InstallPluginUseCase({ pluginsRepository: repository, pluginApiAuthorizationPolicy: new FakeAuthorization() });
+    await useCase.execute(installRequest);
+    await useCase.execute({ ...installRequest, projectId: "project-2" });
+    expect(repository.installationWrites).toBe(2);
+  });
+
   it("rejects an idempotency key reused with a different payload", async () => {
-    const useCase = new InstallPluginUseCase({ pluginsRepository: new FakeRepository(), pluginApiAuthorizationPolicy: new FakeAuthorization() });
+    const repository = new FakeRepository();
+    const useCase = new InstallPluginUseCase({ pluginsRepository: repository, pluginApiAuthorizationPolicy: new FakeAuthorization() });
     await useCase.execute(installRequest);
     await expect(useCase.execute({ ...installRequest, expectedRevision: 1 })).rejects.toThrow("idempotency_conflict");
+    expect(repository.installationWrites).toBe(1);
   });
 
   it("fails digest and optimistic revision validation before an installation write", async () => {
@@ -149,6 +176,13 @@ describe("authorized plugin services", () => {
     const preview = await useCase.execute({ identity, projectId: "project-1", pluginName: "github", catalogDigest: snapshot.catalogDigest });
     expect(preview.credentialSlots).toEqual([{ name: "GITHUB_PAT_TOKEN", configured: true }]);
     expect(JSON.stringify(preview)).not.toContain("secret-reference");
+    expect(preview).toMatchObject({
+      catalogDigest: PINNED_PLUGIN_CATALOG_DIGEST,
+      sourceCommit: PINNED_OPENAI_PLUGINS_COMMIT,
+      policyVersion: snapshot.policyVersion,
+      license: { declaration: "MIT", decision: "admitted" },
+    });
+    expect(Object.isFrozen(preview)).toBe(true);
   });
 
   it("idempotently enables the exact authorized installation with optimistic revision", async () => {
@@ -211,6 +245,13 @@ describe("plugin API authentication", () => {
     expect(identityResult).toEqual({ kind: "project_api_key", projectId: "project-1" });
   });
 
+  it("accepts genuine NextRequest bearer and no-bearer requests", async () => {
+    await expect(policy({ project: "project-1" }).authenticate(new NextRequest("https://example.invalid", { headers: { authorization: "Bearer exact-key" } })))
+      .resolves.toEqual({ kind: "project_api_key", projectId: "project-1" });
+    await expect(policy({ user: "user-1" }).authenticate(new NextRequest("https://example.invalid", { headers: { cookie: "session=opaque" } })))
+      .resolves.toEqual({ kind: "user", userId: "user-1" });
+  });
+
   it.each(["opaque-arbitrary", "expired.jwt.value", "wrong-issuer.jwt.value", "wrong-audience.jwt.value"])(
     "rejects unverified bearer %s without producing an identity",
     async (token) => {
@@ -234,5 +275,44 @@ describe("plugin API authentication", () => {
     const request = new Proxy(new Request("https://example.invalid"), { get: (target, key, receiver) => { calls += 1; return Reflect.get(target, key, receiver); } });
     await expect(policy().authenticate(request)).rejects.toThrow("request_invalid");
     expect(calls).toBe(0);
+  });
+
+  it("rejects a malicious Request subclass overriding headers without invoking it", async () => {
+    let calls = 0;
+    class MaliciousRequest extends Request { override get headers(): Headers { calls += 1; throw new Error("side effect"); } }
+    await expect(policy().authenticate(new MaliciousRequest("https://example.invalid"))).rejects.toThrow("request_invalid");
+    expect(calls).toBe(0);
+  });
+
+  it("rejects own side-effect headers on a genuine Request without invoking them", async () => {
+    let calls = 0;
+    const request = new Request("https://example.invalid");
+    Object.defineProperty(request, "headers", { get: () => { calls += 1; throw new Error("side effect"); } });
+    await expect(policy().authenticate(request)).rejects.toThrow("request_invalid");
+    expect(calls).toBe(0);
+  });
+});
+
+describe("Auth0 JOSE verifier", () => {
+  it("requires a valid numeric, unexpired exp together with issuer, audience, signature and subject", async () => {
+    const { privateKey, publicKey } = await generateKeyPair("RS256");
+    const { privateKey: otherPrivateKey } = await generateKeyPair("RS256");
+    const jwk = await exportJWK(publicKey);
+    const key = createLocalJWKSet({ keys: [{ ...jwk, kid: "test-key", alg: "RS256", use: "sig" }] });
+    const issuer = "https://issuer.example/";
+    const audience = "plugin-api";
+    const sign = (payload: Record<string, unknown>) => new SignJWT(payload).setProtectedHeader({ alg: "RS256", kid: "test-key" }).setIssuer(issuer).setAudience(audience).sign(privateKey);
+    const lookup = async (subject: string) => subject === "auth0|user" ? "user-1" : null;
+    await expect(verifyAuth0UserToken(await sign({ sub: "auth0|user", exp: Math.floor(Date.now() / 1000) + 60 }), { issuer, audience, key, lookupUserId: lookup })).resolves.toBe("user-1");
+    await expect(verifyAuth0UserToken(await sign({ sub: "auth0|user" }), { issuer, audience, key, lookupUserId: lookup })).resolves.toBeNull();
+    await expect(verifyAuth0UserToken(await sign({ sub: "auth0|user", exp: Math.floor(Date.now() / 1000) - 60 }), { issuer, audience, key, lookupUserId: lookup })).resolves.toBeNull();
+    await expect(verifyAuth0UserToken(await sign({ sub: "auth0|user", exp: "tomorrow" }), { issuer, audience, key, lookupUserId: lookup })).resolves.toBeNull();
+    const expires = Math.floor(Date.now() / 1000) + 60;
+    const wrongIssuer = await new SignJWT({ sub: "auth0|user", exp: expires }).setProtectedHeader({ alg: "RS256", kid: "test-key" }).setIssuer("https://wrong.example/").setAudience(audience).sign(privateKey);
+    const wrongAudience = await new SignJWT({ sub: "auth0|user", exp: expires }).setProtectedHeader({ alg: "RS256", kid: "test-key" }).setIssuer(issuer).setAudience("wrong-api").sign(privateKey);
+    const wrongSignature = await new SignJWT({ sub: "auth0|user", exp: expires }).setProtectedHeader({ alg: "RS256", kid: "test-key" }).setIssuer(issuer).setAudience(audience).sign(otherPrivateKey);
+    for (const invalid of [wrongIssuer, wrongAudience, wrongSignature]) {
+      await expect(verifyAuth0UserToken(invalid, { issuer, audience, key, lookupUserId: lookup })).resolves.toBeNull();
+    }
   });
 });

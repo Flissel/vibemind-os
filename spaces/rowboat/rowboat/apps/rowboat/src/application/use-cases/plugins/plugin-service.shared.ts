@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { PluginApiIdentity } from "../../policies/plugin-api-authorization.policy";
 import type { PluginCatalogEntry, PluginComponentAdmission, PluginCredentialSlot, PluginInstallation, PluginReceipt } from "../../repositories/plugins.repository.interface";
 import type { PluginCatalogSnapshot } from "../../repositories/plugins.repository.interface";
 import { PINNED_OPENAI_PLUGINS_COMMIT, PINNED_PLUGIN_CATALOG_DIGEST } from "@rowboat/openai-plugin-runtime";
@@ -15,10 +14,6 @@ export function assertPinnedSnapshot(snapshot: PluginCatalogSnapshot | null, req
   if (snapshot === null || requestedDigest !== PINNED_PLUGIN_CATALOG_DIGEST || snapshot.catalogDigest !== PINNED_PLUGIN_CATALOG_DIGEST || snapshot.sourceCommit !== PINNED_OPENAI_PLUGINS_COMMIT) serviceError("catalog_digest_mismatch");
 }
 export function assertIdempotencyKey(value: string): void { if (!IDEMPOTENCY.test(value)) serviceError("idempotency_key_invalid"); }
-
-export function actor(identity: PluginApiIdentity): string {
-  return identity.kind === "user" ? `user:${identity.userId}` : `project_api_key:${identity.projectId}`;
-}
 
 function canonicalValue(value: unknown): unknown {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;

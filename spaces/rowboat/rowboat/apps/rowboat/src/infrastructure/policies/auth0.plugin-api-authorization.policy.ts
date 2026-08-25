@@ -1,5 +1,6 @@
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from "jose";
 import { types as utilTypes } from "node:util";
+import { NextRequest } from "next/server";
 import { USE_AUTH } from "@/app/lib/feature_flags";
 import type { IApiKeysRepository } from "@/src/application/repositories/api-keys.repository.interface";
 import type { IProjectMembersRepository } from "@/src/application/repositories/project-members.repository.interface";
@@ -13,6 +14,26 @@ const MAX_TOKEN = 16_384;
 export interface PluginUserSessionProvider { getUserId(): Promise<string | null>; }
 export interface PluginProjectApiKeyVerifier { verify(token: string): Promise<string | null>; }
 export interface PluginUserTokenVerifier { verify(token: string): Promise<string | null>; }
+
+export async function verifyAuth0UserToken(token: string, options: {
+  readonly issuer: string;
+  readonly audience: string;
+  readonly key: JWTVerifyGetKey;
+  readonly lookupUserId: (subject: string) => Promise<string | null>;
+}): Promise<string | null> {
+  try {
+    const verified = await jwtVerify(token, options.key, {
+      issuer: options.issuer,
+      audience: options.audience,
+      requiredClaims: ["exp", "sub"],
+    });
+    if (
+      typeof verified.payload.sub !== "string" || !SUBJECT.test(verified.payload.sub)
+      || typeof verified.payload.exp !== "number" || !Number.isFinite(verified.payload.exp)
+    ) return null;
+    return await options.lookupUserId(verified.payload.sub);
+  } catch { return null; }
+}
 
 export class Auth0PluginUserSessionProvider implements PluginUserSessionProvider {
   constructor(private readonly dependencies: { readonly usersRepository: IUsersRepository }) {}
@@ -39,20 +60,32 @@ export class JoseAuth0UserTokenVerifier implements PluginUserTokenVerifier {
     if (typeof this.issuer !== "string" || typeof this.audience !== "string") return null;
     try {
       const issuer = this.issuer.endsWith("/") ? this.issuer : `${this.issuer}/`;
-      const verified = await jwtVerify(token, createRemoteJWKSet(new URL(".well-known/jwks.json", issuer)), {
-        issuer, audience: this.audience,
+      return await verifyAuth0UserToken(token, {
+        issuer,
+        audience: this.audience,
+        key: createRemoteJWKSet(new URL(".well-known/jwks.json", issuer)),
+        lookupUserId: async (subject) => (await this.dependencies.usersRepository.fetchByAuth0Id(subject))?.id ?? null,
       });
-      if (typeof verified.payload.sub !== "string" || !SUBJECT.test(verified.payload.sub)) return null;
-      return (await this.dependencies.usersRepository.fetchByAuth0Id(verified.payload.sub))?.id ?? null;
     } catch { return null; }
   }
 }
 
+const REQUEST_HEADERS_GETTER = Object.getOwnPropertyDescriptor(Request.prototype, "headers")?.get;
+const HEADERS_GET = Headers.prototype.get;
+
 function authorizationHeader(request: Request): string | null {
-  if (utilTypes.isProxy(request) || Object.getPrototypeOf(request) !== Request.prototype) throw new Error("request_invalid");
-  const headers = request.headers;
-  if (utilTypes.isProxy(headers) || Object.getPrototypeOf(headers) !== Headers.prototype) throw new Error("request_invalid");
-  const value = headers.get("authorization");
+  if (utilTypes.isProxy(request) || REQUEST_HEADERS_GETTER === undefined) throw new Error("request_invalid");
+  const prototype = Object.getPrototypeOf(request);
+  if (prototype !== Request.prototype && prototype !== NextRequest.prototype) throw new Error("request_invalid");
+  if (Object.getOwnPropertyDescriptor(request, "headers") !== undefined) throw new Error("request_invalid");
+  let headers: Headers;
+  try { headers = REQUEST_HEADERS_GETTER.call(request) as Headers; } catch { throw new Error("request_invalid"); }
+  if (
+    utilTypes.isProxy(headers) || Object.getPrototypeOf(headers) !== Headers.prototype
+    || Object.getOwnPropertyDescriptor(headers, "get") !== undefined
+  ) throw new Error("request_invalid");
+  let value: string | null;
+  try { value = HEADERS_GET.call(headers, "authorization"); } catch { throw new Error("request_invalid"); }
   if (value === null) return null;
   if (value.length > MAX_TOKEN + 7 || value.includes(",") || value.includes("\0")) throw new Error("authorization_invalid");
   return value;

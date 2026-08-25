@@ -25,6 +25,7 @@ export interface CatalogComponentAdmission {
 
 export interface PluginCatalogEntry extends SourceProvenance {
   readonly name: string;
+  readonly licenseDeclaration?: string;
   readonly admission: AdmissionDecision;
   readonly components: readonly CatalogComponentAdmission[];
   readonly storedContentDigest?: string;

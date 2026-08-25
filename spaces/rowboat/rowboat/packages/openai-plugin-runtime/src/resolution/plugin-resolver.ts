@@ -19,7 +19,7 @@ import type { PluginProvider } from "../providers/provider.js";
 import { ProviderRegistry } from "../providers/provider-registry.js";
 
 export const PINNED_PLUGIN_CATALOG_DIGEST =
-  "30d3d9a5330b967ae804afce76f5eec1233e33acfd2b03f3fa4bc8ce10b5dc73" as const;
+  "9c58f88a3c2bda14a5edeeac7eff3ad685df8ad0efabdf1386f4c912904f4357" as const;
 
 export interface ResolvedComponent {
   readonly id: string;

@@ -245,6 +245,7 @@ export async function importCatalog(
     const admission = evaluateLicense(manifest.license, policy);
     const entry: PluginCatalogEntry = {
       name: manifest.name,
+      licenseDeclaration: manifest.license ?? "<missing>",
       ...provenance,
       admission,
       components: componentAdmissions(manifest, normalized.components, policy),

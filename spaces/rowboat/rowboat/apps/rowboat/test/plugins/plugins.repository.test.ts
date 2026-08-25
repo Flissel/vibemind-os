@@ -241,6 +241,7 @@ const entry: PluginCatalogEntry = {
   schemaVersion: snapshot.schemaVersion,
   policyVersion: snapshot.policyVersion,
   name: "github",
+  licenseDeclaration: "MIT",
   admission: { status: "admitted", policyVersion: snapshot.policyVersion },
   components: [{
     component: {
@@ -779,11 +780,17 @@ describe("plugin repository contract", () => {
       receipt: { type: "install", receiptId: "receipt-enable-1", projectId: installation.projectId, pluginName: installation.pluginName, status: "success", redactions: [] },
     };
     const first = await repository.setInstallationEnabledIdempotently(request);
+    const toggled = await repository.setInstallationEnabledIdempotently({
+      ...request, scope: digest("2"), fingerprint: digest("1"), enabled: true,
+      expectedRevision: installation.revision + 1,
+      receipt: { ...request.receipt, receiptId: "receipt-enable-2" },
+    });
     const second = await repository.setInstallationEnabledIdempotently(request);
     expect(first.installation).toMatchObject({ enabled: false, revision: installation.revision + 1 });
+    expect(toggled.installation).toMatchObject({ enabled: true, revision: installation.revision + 2 });
     expect(second.installation).toEqual(first.installation);
     expect(second.replayed).toBe(true);
-    expect(database.collection(PLUGIN_COLLECTIONS.receipts).writes).toBe(1);
+    expect(database.collection(PLUGIN_COLLECTIONS.receipts).writes).toBe(2);
     await expect(repository.setInstallationEnabledIdempotently({ ...request, fingerprint: digest("3") })).rejects.toThrow("idempotency_conflict");
   });
 
@@ -791,6 +798,20 @@ describe("plugin repository contract", () => {
     const { repository } = repositoryFixture();
     await expect(repository.setInstallationEnabled("missing", false, 0))
       .rejects.toThrow("installation_not_found");
+  });
+
+  it("fails closed when an idempotency receipt has no immutable enable result snapshot", async () => {
+    const { database, repository } = repositoryFixture();
+    await seedInstallation(repository);
+    const request: PluginIdempotentEnable = {
+      scope: digest("0"), fingerprint: digest("1"), projectId: installation.projectId,
+      pluginName: installation.pluginName, catalogDigest: snapshot.catalogDigest,
+      installationId: installation.id, enabled: false, expectedRevision: installation.revision,
+      receipt: { type: "install", receiptId: "receipt-enable-malformed", projectId: installation.projectId, pluginName: installation.pluginName, status: "success", redactions: [] },
+    };
+    await repository.setInstallationEnabledIdempotently(request);
+    delete database.collection(PLUGIN_COLLECTIONS.receipts).documents[0]!.resultPayload;
+    await expect(repository.setInstallationEnabledIdempotently(request)).rejects.toThrow("idempotency_result_invalid");
   });
 
   it("stores deterministic admissions bound to installation and component digest", async () => {

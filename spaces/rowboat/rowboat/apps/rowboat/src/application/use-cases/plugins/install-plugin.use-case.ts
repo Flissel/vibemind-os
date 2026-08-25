@@ -1,6 +1,6 @@
 import type { IPluginApiAuthorizationPolicy, PluginApiIdentity } from "../../policies/plugin-api-authorization.policy";
 import type { IPluginsRepository, PluginReceipt } from "../../repositories/plugins.repository.interface";
-import { actor, admissionsFrom, assertAdmitted, assertDigest, assertId, assertIdempotencyKey, assertPinnedSnapshot, fingerprint, installReceipt, installationFrom, serviceError, slotsFrom } from "./plugin-service.shared";
+import { admissionsFrom, assertAdmitted, assertDigest, assertId, assertIdempotencyKey, assertPinnedSnapshot, fingerprint, installReceipt, installationFrom, serviceError, slotsFrom } from "./plugin-service.shared";
 
 export interface InstallPluginRequest {
   readonly identity: PluginApiIdentity;
@@ -24,7 +24,7 @@ export class InstallPluginUseCase {
     assertIdempotencyKey(request.idempotencyKey);
     if (!Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0) serviceError("installation_revision_invalid");
     await this.dependencies.pluginApiAuthorizationPolicy.authorizeProject(request.identity, request.projectId);
-    const idempotencyScope = fingerprint({ projectId: request.projectId, operation: "install", actor: actor(request.identity), idempotencyKey: request.idempotencyKey });
+    const idempotencyScope = fingerprint({ projectId: request.projectId, operation: "install", idempotencyKey: request.idempotencyKey });
     const payloadFingerprint = fingerprint({
       projectId: request.projectId, pluginName: request.pluginName, catalogDigest: request.catalogDigest,
       expectedRevision: request.expectedRevision,

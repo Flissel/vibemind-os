@@ -268,7 +268,7 @@ function catalogComponentAdmission(input: Captured, reason: string): Readonly<{ 
 
 function catalogEntry(input: unknown): PluginCatalogEntry {
   const record = object(input, "catalog_entry_invalid");
-  keys(record, ["catalogDigest", "sourceUrl", "sourceCommit", "pluginName", "pluginVersion", "manifestDigest", "treeDigest", "importedAt", "schemaVersion", "policyVersion", "name", "admission", "components", "storedContentDigest"], "catalog_entry_invalid");
+  keys(record, ["catalogDigest", "sourceUrl", "sourceCommit", "pluginName", "pluginVersion", "manifestDigest", "treeDigest", "importedAt", "schemaVersion", "policyVersion", "name", "licenseDeclaration", "admission", "components", "storedContentDigest"], "catalog_entry_invalid");
   string(record, "catalogDigest", DIGEST, "catalog_entry_invalid");
   if (record.sourceUrl !== OPENAI_PLUGINS_SOURCE_URL) invalid("catalog_entry_invalid");
   string(record, "sourceCommit", COMMIT, "catalog_entry_invalid");
@@ -280,6 +280,7 @@ function catalogEntry(input: unknown): PluginCatalogEntry {
   string(record, "importedAt", /^\d{4}-\d{2}-\d{2}T/, "catalog_entry_invalid");
   string(record, "schemaVersion", NAME, "catalog_entry_invalid");
   string(record, "policyVersion", NAME, "catalog_entry_invalid");
+  string(record, "licenseDeclaration", /^(?:<missing>|[A-Za-z0-9][A-Za-z0-9.+() -]{0,255})$/, "catalog_entry_invalid");
   optionalString(record, "storedContentDigest", DIGEST, "catalog_entry_invalid");
   if (!Array.isArray(record.components) || record.components.length > 512) invalid("catalog_entry_invalid");
   catalogAdmissionDecision(record.admission, "catalog_entry_invalid");
@@ -742,15 +743,26 @@ export class MongodbPluginsRepository implements IPluginsRepository {
     if (storedReceipt.projectId !== projectId || storedReceipt.pluginName !== pluginName) invalid("idempotent_enable_invalid");
     const receiptCollection = this.database.collection(PLUGIN_COLLECTIONS.receipts);
     const installationCollection = this.database.collection(PLUGIN_COLLECTIONS.installations);
+    const readResult = (document: StoredDocument): PluginInstallation => {
+      if (document.resultPayload === undefined) invalid("idempotency_result_invalid");
+      try {
+        const result = installation(parsePayload(document.resultPayload, "idempotency_result_invalid"));
+        if (
+          result.id !== installationId || result.projectId !== projectId || result.pluginName !== pluginName
+          || result.enabled !== enabled || result.revision !== expectedRevision + 1
+        ) invalid("idempotency_result_invalid");
+        return result;
+      } catch {
+        invalid("idempotency_result_invalid");
+      }
+    };
     const replay = async (): Promise<PluginIdempotentEnableResult | null> => {
       const existingReceipt = await receiptCollection.findOne({ idempotencyScope: scope }, { projection: { _id: 0 } });
       if (existingReceipt === null) return null;
       if (existingReceipt.requestFingerprint !== fingerprintValue) invalid("idempotency_conflict");
-      const existingInstallation = await installationCollection.findOne({ id: installationId, projectId, pluginName }, { projection: { _id: 0 } });
-      if (existingInstallation === null) invalid("installation_not_found");
       return Object.freeze({
         receipt: receipt(parsePayload(existingReceipt.payload, "receipt_invalid")), fingerprint: fingerprintValue,
-        replayed: true, installation: this.readInstallation(existingInstallation),
+        replayed: true, installation: readResult(existingReceipt),
       });
     };
     const existing = await replay();
@@ -774,10 +786,13 @@ export class MongodbPluginsRepository implements IPluginsRepository {
         );
         if (updated === null) invalid("installation_conflict");
         updatedInstallation = this.readInstallation(updated);
-        await receiptCollection.insertOne({
+        const receiptDocument = {
           receiptId: storedReceipt.receiptId, idempotencyScope: scope, requestFingerprint: fingerprintValue,
           payload: canonical(storedReceipt as unknown as Captured),
-        }, { session });
+          resultPayload: canonical(updatedInstallation as unknown as Captured),
+        };
+        assertStoredDocumentBudget(receiptDocument as unknown as Captured);
+        await receiptCollection.insertOne(receiptDocument, { session });
       });
     } catch (error) {
       if (!isDuplicateKey(error)) throw error;
