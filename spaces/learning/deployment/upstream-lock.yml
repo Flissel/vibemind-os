@@ -10,5 +10,5 @@ sources:
     path: spaces/learning/penecho
     url: https://github.com/Flissel/penecho.git
     upstream: https://github.com/penecho/penecho.git
-    commit: d5801103406f3ddad2f261439bce1d9ab48f9def
+    commit: 612a88eba9b26283d324f0c682eb14337052be3f
     license: AGPL-3.0-only
