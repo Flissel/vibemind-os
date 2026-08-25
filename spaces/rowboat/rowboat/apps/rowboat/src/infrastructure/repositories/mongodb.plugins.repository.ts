@@ -1,4 +1,5 @@
 import { MongoServerError, type ClientSession, type Db, type MongoClient } from "mongodb";
+import { Buffer } from "node:buffer";
 import { types as utilTypes } from "node:util";
 import type {
   IPluginsRepository,
@@ -22,6 +23,7 @@ const OPENAI_PLUGINS_SOURCE_URL = "https://github.com/openai/plugins.git";
 const MAX_DEPTH = 16;
 const MAX_ITEMS = 4096;
 const MAX_STRING = 16_384;
+const MAX_RECORD_BYTES = 256 * 1024;
 const FORBIDDEN_CREDENTIAL_FRAGMENTS = [
   "value", "secret", "token", "password", "passphrase", "private", "apikey", "auth", "cert", "session", "credential",
 ] as const;
@@ -38,15 +40,38 @@ function invalid(reason: string): never {
   throw error;
 }
 
-function capture(input: unknown, reason: string, secretKeys: boolean, depth = 0, budget = { items: 0 }): Captured {
+interface CaptureBudget {
+  items: number;
+  bytes: number;
+}
+
+function addBytes(budget: CaptureBudget, bytes: number): void {
+  budget.bytes += bytes;
+  if (budget.bytes > MAX_RECORD_BYTES) invalid("plugin_record_too_large");
+}
+
+function encodedJsonBytes(value: string): number {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+function capture(input: unknown, reason: string, secretKeys: boolean, depth = 0, budget: CaptureBudget = { items: 0, bytes: 0 }): Captured {
   if (depth > MAX_DEPTH || ++budget.items > MAX_ITEMS) invalid(reason);
-  if (input === null || typeof input === "boolean") return input;
+  if (input === null) {
+    addBytes(budget, 4);
+    return input;
+  }
+  if (typeof input === "boolean") {
+    addBytes(budget, input ? 4 : 5);
+    return input;
+  }
   if (typeof input === "number") {
     if (!Number.isFinite(input)) invalid(reason);
+    addBytes(budget, Buffer.byteLength(JSON.stringify(input), "utf8"));
     return input;
   }
   if (typeof input === "string") {
     if (input.length > MAX_STRING || input.includes("\0")) invalid(reason);
+    addBytes(budget, encodedJsonBytes(input));
     return input;
   }
   if (typeof input !== "object") invalid(reason);
@@ -63,7 +88,9 @@ function capture(input: unknown, reason: string, secretKeys: boolean, depth = 0,
   if (Array.isArray(input)) {
     if (prototype !== Array.prototype || Object.getOwnPropertySymbols(input).length > 0) invalid(reason);
     const values: Captured[] = [];
+    addBytes(budget, 2);
     for (let index = 0; index < input.length; index += 1) {
+      if (index > 0) addBytes(budget, 1);
       const descriptor = descriptors[String(index)];
       if (!descriptor || !("value" in descriptor)) invalid(reason);
       values.push(capture(descriptor.value, reason, secretKeys, depth + 1, budget));
@@ -73,10 +100,13 @@ function capture(input: unknown, reason: string, secretKeys: boolean, depth = 0,
   if (prototype !== Object.prototype && prototype !== null) invalid(reason);
   if (Reflect.ownKeys(descriptors).some((key) => typeof key !== "string")) invalid(reason);
   const output = Object.create(null) as Record<string, Captured>;
-  for (const key of Object.keys(descriptors).sort()) {
+  const descriptorKeys = Object.keys(descriptors).sort();
+  addBytes(budget, 2);
+  for (const [index, key] of descriptorKeys.entries()) {
     const descriptor = descriptors[key]!;
     if (!("value" in descriptor) || !descriptor.enumerable) invalid(reason);
-    if (key === "__proto__" || key === "prototype" || key === "constructor" || key.startsWith("$")) invalid(reason);
+    if (key.length > MAX_STRING || key.includes("\0") || key === "__proto__" || key === "prototype" || key === "constructor" || key.startsWith("$")) invalid(reason);
+    addBytes(budget, (index > 0 ? 1 : 0) + encodedJsonBytes(key) + 1);
     const normalizedKey = key.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
     if (secretKeys && FORBIDDEN_CREDENTIAL_FRAGMENTS.some((fragment) => normalizedKey.includes(fragment))) invalid("secret_value_rejected");
     output[key] = capture(descriptor.value, reason, secretKeys, depth + 1, budget);
@@ -125,12 +155,17 @@ function canonical(value: Captured): string {
 }
 
 function parsePayload(payload: unknown, reason: string): unknown {
-  if (typeof payload !== "string" || payload.length > MAX_STRING * 16) invalid(reason);
+  if (typeof payload !== "string") invalid(reason);
+  if (Buffer.byteLength(payload, "utf8") > MAX_RECORD_BYTES) invalid("plugin_record_too_large");
   try {
     return JSON.parse(payload) as unknown;
   } catch {
     invalid(reason);
   }
+}
+
+function assertStoredDocumentBudget(document: Captured): void {
+  if (Buffer.byteLength(JSON.stringify(document), "utf8") > MAX_RECORD_BYTES) invalid("plugin_record_too_large");
 }
 
 function freezeRead<T>(document: unknown, reason: string): T {
@@ -273,6 +308,19 @@ function admission(input: unknown): PluginComponentAdmission {
   return record as unknown as PluginComponentAdmission;
 }
 
+function credentialLikeText(value: string): boolean {
+  return /[\u0000-\u001f\u007f]/u.test(value)
+    || /%[0-9a-f]{2}/iu.test(value)
+    || value.includes("://")
+    || /[?@#]/u.test(value)
+    || /\bbearer\s+/iu.test(value)
+    || /\b[a-z][a-z0-9_.-]*\s*=/iu.test(value)
+    || /-----BEGIN/iu.test(value)
+    || /(?:[A-Za-z0-9_-]{4,}\.){2}[A-Za-z0-9_-]{4,}/u.test(value)
+    || /[A-Za-z0-9+/_=-]{32,}/u.test(value)
+    || /\b(?:secret|token|password|passphrase|private|api\s*key|credential)\b/iu.test(value);
+}
+
 function credentialSlot(input: unknown): PluginCredentialSlot {
   const record = object(input, "secret_value_rejected", true);
   keys(record, ["id", "projectId", "installationId", "name", "reference", "metadata"], "secret_value_rejected");
@@ -285,13 +333,18 @@ function credentialSlot(input: unknown): PluginCredentialSlot {
   keys(reference, ["kind", "reference"], "credential_slot_invalid");
   string(reference, "kind", /^(bearer|oauth|environment)$/, "credential_slot_invalid");
   const rawReference = reference.reference;
-  if (typeof rawReference === "string" && (rawReference.includes("://") || /[?@#]/.test(rawReference))) invalid("secret_value_rejected");
+  if (typeof rawReference === "string" && credentialLikeText(rawReference)) invalid("secret_value_rejected");
   string(reference, "reference", REFERENCE, "credential_slot_invalid");
   if (record.metadata !== undefined) {
     if (typeof record.metadata !== "object" || record.metadata === null || Array.isArray(record.metadata)) invalid("credential_slot_invalid");
-    for (const value of Object.values(record.metadata)) {
-      if (value !== null && typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") invalid("credential_slot_invalid");
+    const metadata = record.metadata as Readonly<Record<string, Captured>>;
+    keys(metadata, ["label", "required", "order"], "credential_slot_invalid");
+    if (metadata.label !== undefined) {
+      if (typeof metadata.label !== "string" || !/^[A-Za-z0-9][A-Za-z0-9 ._()/-]{0,127}$/u.test(metadata.label)) invalid("secret_value_rejected");
+      if (credentialLikeText(metadata.label)) invalid("secret_value_rejected");
     }
+    if (metadata.required !== undefined && typeof metadata.required !== "boolean") invalid("credential_slot_invalid");
+    if (metadata.order !== undefined && (typeof metadata.order !== "number" || !Number.isSafeInteger(metadata.order) || metadata.order < 0 || metadata.order > 10_000)) invalid("credential_slot_invalid");
   }
   return record as unknown as PluginCredentialSlot;
 }
@@ -335,6 +388,7 @@ async function immutableInsert(
   conflict: string,
   session?: ClientSession,
 ): Promise<void> {
+  assertStoredDocumentBudget(document);
   const readOptions = session === undefined ? { projection: { _id: 0 } as const } : { projection: { _id: 0 } as const, session };
   const existing = await collection.findOne(filter, readOptions);
   if (existing !== null) {
@@ -434,12 +488,16 @@ export class MongodbPluginsRepository implements IPluginsRepository {
       if (seen.has(key)) invalid("catalog_entry_conflict");
       seen.add(key);
     }
+    const writes = documents.map((document) => {
+      const stored = Object.freeze({ catalogDigest: document.catalogDigest, name: document.name, payload: canonical(document as unknown as Captured) }) as unknown as Captured;
+      assertStoredDocumentBudget(stored);
+      return Object.freeze({ document, stored });
+    });
     await this.validateCatalogEntryBatch(documents, undefined);
     try {
       await this.transactions.run(async (session) => {
         await this.validateCatalogEntryBatch(documents, session);
-        for (const document of documents) {
-          const stored = Object.freeze({ catalogDigest: document.catalogDigest, name: document.name, payload: canonical(document as unknown as Captured) }) as unknown as Captured;
+        for (const { document, stored } of writes) {
           await immutableInsert(this.database.collection(PLUGIN_COLLECTIONS.catalogEntries), { catalogDigest: document.catalogDigest, name: document.name }, stored, "catalog_entry_conflict", session);
         }
       });
@@ -451,6 +509,8 @@ export class MongodbPluginsRepository implements IPluginsRepository {
 
   async putInstallation(input: PluginInstallation): Promise<void> {
     const document = installation(input);
+    const storedDocument = this.installationDocument(document);
+    assertStoredDocumentBudget(storedDocument as unknown as Captured);
     const selectedEntry = await this.requireCatalogEntryForInstallation(document, undefined);
     this.validateProviderBindings(document, selectedEntry);
     const collection = this.database.collection(PLUGIN_COLLECTIONS.installations);
@@ -463,7 +523,7 @@ export class MongodbPluginsRepository implements IPluginsRepository {
       return;
     }
     try {
-      await collection.insertOne(this.installationDocument(document));
+      await collection.insertOne(storedDocument);
     } catch (error) {
       if (!(error instanceof MongoServerError) || error.code !== 11000) invalid("repository_write_failed");
       const racedById = await collection.findOne({ id: document.id }, { projection: { _id: 0 } });
@@ -502,6 +562,7 @@ export class MongodbPluginsRepository implements IPluginsRepository {
       if (seen.has(key)) invalid("admission_conflict");
       seen.add(key);
     }
+    for (const document of documents) assertStoredDocumentBudget(document as unknown as Captured);
     await this.validateAdmissionBatch(documents, undefined);
     try {
       await this.transactions.run(async (session) => {

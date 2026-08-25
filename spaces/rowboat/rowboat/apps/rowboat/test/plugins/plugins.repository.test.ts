@@ -19,6 +19,7 @@ import {
   PLUGIN_COLLECTIONS,
   ensurePluginIndexes,
 } from "@/src/infrastructure/repositories/mongodb.plugins.indexes";
+import { ensureAllIndexes } from "@/src/infrastructure/mongodb/ensure-indexes";
 
 type Document = Record<string, unknown>;
 
@@ -35,6 +36,8 @@ class MemoryCollection {
   readonly indexes: Document[] = [];
   readonly operationSessions: Array<ClientSession | undefined> = [];
   writes = 0;
+  createIndexCalls = 0;
+  createIndexesError: Error | undefined;
   beforeInsert?: (document: Document, session: ClientSession | undefined) => void;
 
   constructor(private readonly collectionName: string, private readonly database: MemoryDatabase) {}
@@ -131,6 +134,8 @@ class MemoryCollection {
   }
 
   async createIndexes(indexes: readonly Document[]): Promise<string[]> {
+    this.createIndexCalls += 1;
+    if (this.createIndexesError !== undefined) throw this.createIndexesError;
     this.indexes.push(...clone(indexes));
     return indexes.map((index) => String(index.name));
   }
@@ -202,6 +207,7 @@ class MemoryTransactionRunner implements PluginTransactionRunner {
 }
 
 const digest = (character: string): string => character.repeat(64);
+const PLUGIN_RECORD_MAX_BYTES = 256 * 1024;
 
 const snapshot: PluginCatalogSnapshot = {
   sourceUrl: "https://github.com/openai/plugins.git",
@@ -276,6 +282,32 @@ const installation: PluginInstallation = {
   enabled: true,
   revision: 1,
 };
+
+function catalogEntryAtStoredBytes(targetBytes: number): PluginCatalogEntry {
+  const padding = Array.from({ length: 16 }, () => "");
+  const padded: PluginCatalogEntry = {
+    ...clone(entry),
+    name: "budget-entry",
+    pluginName: "budget-entry",
+    components: entry.components.map((item, index) => index === 0
+      ? { ...clone(item), component: { ...clone(item.component), metadata: { ...clone(item.component.metadata), padding } } }
+      : clone(item)),
+  };
+  const storedBytes = (): number => Buffer.byteLength(JSON.stringify({
+    catalogDigest: padded.catalogDigest,
+    name: padded.name,
+    payload: JSON.stringify(padded),
+  }), "utf8");
+  let remaining = targetBytes - storedBytes();
+  if (remaining < 0) throw new Error("test_budget_target_too_small");
+  for (let index = 0; index < padding.length && remaining > 0; index += 1) {
+    const selected = Math.min(16_384, remaining);
+    padding[index] = "a".repeat(selected);
+    remaining -= selected;
+  }
+  if (remaining !== 0 || storedBytes() !== targetBytes) throw new Error("test_budget_target_unreachable");
+  return padded;
+}
 
 function repositoryFixture(): { database: MemoryDatabase; repository: MongodbPluginsRepository } {
   const database = new MemoryDatabase();
@@ -437,6 +469,55 @@ describe("plugin repository contract", () => {
     expect(new Set(sessions).size).toBe(1);
     expect(sessions.every((session) => session === sessions[0])).toBe(true);
     expect(database.transactionSessionMismatches).toBe(0);
+  });
+
+  it("roundtrips a catalog entry just below the canonical UTF-8 document budget", async () => {
+    const { repository } = repositoryFixture();
+    await repository.putCatalogSnapshot(snapshot);
+    const boundary = catalogEntryAtStoredBytes(PLUGIN_RECORD_MAX_BYTES - 1);
+    await repository.putCatalogEntries([boundary]);
+    expect(await repository.listCatalogEntries(snapshot.catalogDigest)).toEqual([boundary]);
+  });
+
+  it("rejects a record above the canonical document budget before any write", async () => {
+    const { database, repository } = repositoryFixture();
+    await repository.putCatalogSnapshot(snapshot);
+    const oversized = catalogEntryAtStoredBytes(PLUGIN_RECORD_MAX_BYTES + 1);
+    await expect(repository.putCatalogEntries([oversized])).rejects.toThrow("plugin_record_too_large");
+    expect(database.collection(PLUGIN_COLLECTIONS.catalogEntries).writes).toBe(0);
+  });
+
+  it("counts multibyte Unicode as UTF-8 bytes and validates a whole batch before writing", async () => {
+    const { database, repository } = repositoryFixture();
+    await repository.putCatalogSnapshot(snapshot);
+    const boundary = catalogEntryAtStoredBytes(PLUGIN_RECORD_MAX_BYTES - 1);
+    const multibyte = {
+      ...boundary,
+      components: boundary.components.map((item, index) => index === 0
+        ? {
+            ...item,
+            component: {
+              ...item.component,
+              metadata: {
+                ...item.component.metadata,
+                padding: (item.component.metadata.padding as readonly string[]).map((value) => value.replaceAll("a", "é")),
+              },
+            },
+          }
+        : item),
+    } as PluginCatalogEntry;
+    await expect(repository.putCatalogEntries([entry, multibyte])).rejects.toThrow("plugin_record_too_large");
+    expect(database.collection(PLUGIN_COLLECTIONS.catalogEntries).writes).toBe(0);
+  });
+
+  it("applies the same UTF-8 budget before parsing stored payloads", async () => {
+    const { database, repository } = repositoryFixture();
+    database.collection(PLUGIN_COLLECTIONS.catalogEntries).documents.push({
+      catalogDigest: snapshot.catalogDigest,
+      name: "oversized-read",
+      payload: `"${"é".repeat(PLUGIN_RECORD_MAX_BYTES / 2 + 1)}"`,
+    });
+    await expect(repository.listCatalogEntries(snapshot.catalogDigest)).rejects.toThrow("plugin_record_too_large");
   });
 
   it("rejects entry provenance that differs from its catalog snapshot with zero writes", async () => {
@@ -773,6 +854,56 @@ describe("plugin repository contract", () => {
     expect(String(error)).not.toContain("token-secret");
   });
 
+  it.each([
+    "https://user:token-secret@example.invalid/path",
+    "https%3A%2F%2Fuser%3Atoken-secret%40example.invalid",
+    "Bearer abcdefghijklmnopqrstuvwxyz",
+    "key=token-secret",
+    "-----BEGIN PRIVATE KEY-----",
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.c2lnbmF0dXJl",
+    "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKl",
+    "display\u0001control",
+  ])("rejects credential-like metadata string without persisting it", async (label) => {
+    const { database, repository } = repositoryFixture();
+    const error = await repository.putCredentialSlot({
+      id: "slot-unsafe",
+      projectId: installation.projectId,
+      installationId: installation.id,
+      name: "GITHUB_PAT_TOKEN",
+      reference: { kind: "environment", reference: "github/pat" },
+      metadata: { label },
+    }).catch((caught: unknown) => caught);
+    expect(error).toEqual(new Error("secret_value_rejected"));
+    expect(String(error)).not.toContain(label);
+    expect(database.collection(PLUGIN_COLLECTIONS.credentialSlots).writes).toBe(0);
+  });
+
+  it("rejects unknown credential metadata keys, accessors, and proxies without executing them", async () => {
+    const { database, repository } = repositoryFixture();
+    let getterCalls = 0;
+    const metadata = { label: "GitHub access" };
+    Object.defineProperty(metadata, "description", {
+      enumerable: true,
+      get: () => { getterCalls += 1; return "token-secret"; },
+    });
+    await expect(repository.putCredentialSlot({
+      id: "slot-accessor", projectId: installation.projectId, installationId: installation.id,
+      name: "GITHUB_PAT_TOKEN", reference: { kind: "environment", reference: "github/pat" }, metadata,
+    })).rejects.toThrow("secret_value_rejected");
+    let trapCalls = 0;
+    const proxiedMetadata = new Proxy({ label: "GitHub access" }, {
+      getPrototypeOf: (target) => { trapCalls += 1; return Reflect.getPrototypeOf(target); },
+      ownKeys: (target) => { trapCalls += 1; return Reflect.ownKeys(target); },
+    });
+    await expect(repository.putCredentialSlot({
+      id: "slot-proxy", projectId: installation.projectId, installationId: installation.id,
+      name: "GITHUB_PAT_TOKEN", reference: { kind: "environment", reference: "github/pat" }, metadata: proxiedMetadata,
+    })).rejects.toThrow("secret_value_rejected");
+    expect(getterCalls).toBe(0);
+    expect(trapCalls).toBe(0);
+    expect(database.collection(PLUGIN_COLLECTIONS.credentialSlots).writes).toBe(0);
+  });
+
   it("stores only allowlisted credential references and immutable bounded records", async () => {
     const { database, repository } = repositoryFixture();
     await seedInstallation(repository);
@@ -782,7 +913,7 @@ describe("plugin repository contract", () => {
       installationId: installation.id,
       name: "GITHUB_PAT_TOKEN",
       reference: { kind: "environment", reference: "github/pat" },
-      metadata: { label: "GitHub token" },
+      metadata: { label: "GitHub access", required: true, order: 1 },
     };
     const migration: PluginMigrationRecord = {
       id: "migration-1",
@@ -860,6 +991,34 @@ describe("plugin Mongo index contract", () => {
     await ensurePluginIndexes(database as unknown as Db);
     await ensurePluginIndexes(database as unknown as Db);
     expect([...database.collections.values()].every((collection) => collection.indexes.length > 0)).toBe(true);
+  });
+
+  it("provisions all plugin indexes exactly once through the application bootstrap", async () => {
+    const database = new MemoryDatabase();
+    await ensureAllIndexes(database as unknown as Db);
+    const pluginCollections = new Set<string>(Object.values(PLUGIN_COLLECTIONS));
+    const uniquePluginIndexes = PLUGIN_COLLECTION_INDEXES.reduce(
+      (count, { indexes }) => count + indexes.filter((index) => index.unique).length,
+      0,
+    );
+    expect(uniquePluginIndexes).toBe(8);
+    for (const { collection, indexes } of PLUGIN_COLLECTION_INDEXES) {
+      const invoked = database.collection(collection);
+      expect(invoked.createIndexCalls).toBe(1);
+      expect(invoked.indexes).toEqual(indexes);
+    }
+    const existingCollections = [...database.collections.entries()]
+      .filter(([name]) => !pluginCollections.has(name))
+      .map(([, collection]) => collection);
+    expect(existingCollections.length).toBeGreaterThan(0);
+    expect(existingCollections.every((collection) => collection.createIndexCalls === 1)).toBe(true);
+  });
+
+  it("propagates a plugin-index bootstrap failure", async () => {
+    const database = new MemoryDatabase();
+    const failure = new Error("plugin_index_failure");
+    database.collection(PLUGIN_COLLECTIONS.catalogSnapshots).createIndexesError = failure;
+    await expect(ensureAllIndexes(database as unknown as Db)).rejects.toBe(failure);
   });
 });
 

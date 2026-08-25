@@ -25,7 +25,11 @@ export interface PluginComponentAdmission {
   readonly policyVersion: string;
 }
 
-export type PluginCredentialMetadataValue = string | number | boolean | null;
+export interface PluginCredentialMetadata {
+  readonly label?: string;
+  readonly required?: boolean;
+  readonly order?: number;
+}
 
 export interface PluginCredentialSlot {
   readonly id: string;
@@ -33,7 +37,7 @@ export interface PluginCredentialSlot {
   readonly installationId: string;
   readonly name: string;
   readonly reference: CredentialReference;
-  readonly metadata?: Readonly<Record<string, PluginCredentialMetadataValue>>;
+  readonly metadata?: Readonly<PluginCredentialMetadata>;
 }
 
 export interface PluginMigrationRecord {

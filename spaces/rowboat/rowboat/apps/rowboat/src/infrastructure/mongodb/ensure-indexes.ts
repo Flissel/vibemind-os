@@ -12,6 +12,7 @@ import { COMPOSIO_TRIGGER_DEPLOYMENTS_COLLECTION, COMPOSIO_TRIGGER_DEPLOYMENTS_I
 import { USERS_COLLECTION, USERS_INDEXES } from "../repositories/mongodb.users.indexes";
 import { SHARED_WORKFLOWS_COLLECTION, SHARED_WORKFLOWS_INDEXES } from "../repositories/mongodb.shared-workflows.indexes";
 import { COMMUNITY_ASSISTANTS_COLLECTION, COMMUNITY_ASSISTANTS_INDEXES, COMMUNITY_ASSISTANT_LIKES_COLLECTION, COMMUNITY_ASSISTANT_LIKES_INDEXES } from "../repositories/mongodb.community-assistants.indexes";
+import { ensurePluginIndexes } from "../repositories/mongodb.plugins.indexes";
 
 export async function ensureAllIndexes(database: Db): Promise<void> {
     await database.collection(API_KEYS_COLLECTION).createIndexes(API_KEYS_INDEXES);
@@ -28,4 +29,5 @@ export async function ensureAllIndexes(database: Db): Promise<void> {
     await database.collection(SHARED_WORKFLOWS_COLLECTION).createIndexes(SHARED_WORKFLOWS_INDEXES);
     await database.collection(COMMUNITY_ASSISTANTS_COLLECTION).createIndexes(COMMUNITY_ASSISTANTS_INDEXES);
     await database.collection(COMMUNITY_ASSISTANT_LIKES_COLLECTION).createIndexes(COMMUNITY_ASSISTANT_LIKES_INDEXES);
+    await ensurePluginIndexes(database);
 }
