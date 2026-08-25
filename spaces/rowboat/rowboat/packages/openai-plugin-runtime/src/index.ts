@@ -89,3 +89,22 @@ export {
   type CatalogLockWriteOptions,
   type CatalogSyncArgs,
 } from "./import/catalog-importer.js";
+export {
+  normalizeSkill,
+  type NormalizedSkill,
+  type NormalizedSkillResource,
+} from "./components/skill-normalizer.js";
+export {
+  normalizeAgents,
+  type NormalizedAgent,
+} from "./components/agent-normalizer.js";
+export {
+  normalizeCommands,
+  type NormalizedCommand,
+  type NormalizedCommandResource,
+} from "./components/command-normalizer.js";
+export {
+  normalizeAsset,
+  type AssetNormalizationOptions,
+  type NormalizedAsset,
+} from "./components/asset-normalizer.js";
