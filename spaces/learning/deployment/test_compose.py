@@ -223,6 +223,23 @@ def test_learning_runtime_uses_only_the_openfang_authorized_embedding_service() 
         )
 
 
+def test_learning_retrieval_credentials_are_scoped_to_both_api_peers() -> None:
+    services = _load(COMPOSE_PATH)["services"]
+    expected_key = "${LEARNING_RETRIEVAL_SERVICE_KEY:?set LEARNING_RETRIEVAL_SERVICE_KEY}"
+
+    assert services["learnhouse-api"]["environment"]["LEARNING_RETRIEVAL_SERVICE_URL"] == (
+        "http://learning-api:8090"
+    )
+    for service_name in ("learnhouse-api", "learning-api"):
+        assert (
+            services[service_name]["environment"]["LEARNING_RETRIEVAL_SERVICE_KEY"]
+            == expected_key
+        )
+    for service_name, service in services.items():
+        if service_name not in {"learnhouse-api", "learning-api"}:
+            assert "LEARNING_RETRIEVAL_SERVICE_KEY" not in service.get("environment", {})
+
+
 def test_profile_is_explicitly_local_and_has_no_ha_claim() -> None:
     profile = _load(PROFILE_PATH)
 
