@@ -10,6 +10,7 @@ DEPLOYMENT_DIR = Path(__file__).resolve().parent
 COMPOSE_PATH = DEPLOYMENT_DIR / "compose.yml"
 PROFILE_PATH = DEPLOYMENT_DIR / "profile.yml"
 ENV_EXAMPLE_PATH = DEPLOYMENT_DIR / ".env.example"
+ROOT_ENV_EXAMPLE_PATH = DEPLOYMENT_DIR.parents[2] / ".env.example"
 
 REQUIRED_SERVICES = {
     "postgres",
@@ -36,6 +37,7 @@ SECRET_VARIABLES = {
     "LEARNHOUSE_AUTH_JWT_SECRET_KEY",
     "LEARNHOUSE_COLLAB_INTERNAL_KEY",
     "LEARNHOUSE_INITIAL_ADMIN_PASSWORD",
+    "LEARNHOUSE_LOCAL_BOOTSTRAP_KEY",
 }
 
 
@@ -112,6 +114,43 @@ def test_credentials_are_references_not_embedded_values() -> None:
     for variable in SECRET_VARIABLES:
         assert f"${{{variable}:?" in compose_text
         assert re.search(rf"(?m)^{variable}=<[^>]+>$", env_text)
+
+
+def test_local_bootstrap_mode_and_key_are_shared_server_only_references() -> None:
+    services = _load(COMPOSE_PATH)["services"]
+    assert isinstance(services, dict)
+    api = services["learnhouse-api"]
+    web = services["learnhouse-web"]
+    assert isinstance(api, dict)
+    assert isinstance(web, dict)
+    api_environment = api["environment"]
+    web_environment = web["environment"]
+    assert isinstance(api_environment, dict)
+    assert isinstance(web_environment, dict)
+
+    mode_reference = "${LEARNHOUSE_LOCAL_LEARNING_MODE:-false}"
+    key_reference = (
+        "${LEARNHOUSE_LOCAL_BOOTSTRAP_KEY:?set "
+        "LEARNHOUSE_LOCAL_BOOTSTRAP_KEY}"
+    )
+    assert api_environment["LEARNHOUSE_LOCAL_LEARNING_MODE"] == mode_reference
+    assert web_environment["LEARNHOUSE_LOCAL_LEARNING_MODE"] == mode_reference
+    assert api_environment["LEARNHOUSE_LOCAL_BOOTSTRAP_KEY"] == key_reference
+    assert web_environment["LEARNHOUSE_LOCAL_BOOTSTRAP_KEY"] == key_reference
+    assert "NEXT_PUBLIC_LEARNHOUSE_LOCAL_BOOTSTRAP_KEY" not in web_environment
+
+    compose_text = COMPOSE_PATH.read_text(encoding="utf-8")
+    assert "LEARNHOUSE_ALLOW_REMOTE_LEARNING_BOOTSTRAP" not in compose_text
+    for env_path in (ENV_EXAMPLE_PATH, ROOT_ENV_EXAMPLE_PATH):
+        env_text = env_path.read_text(encoding="utf-8")
+        assert re.search(
+            r"(?m)^LEARNHOUSE_LOCAL_LEARNING_MODE=true$",
+            env_text,
+        )
+        assert re.search(
+            r"(?m)^LEARNHOUSE_LOCAL_BOOTSTRAP_KEY=<[^>]+>$",
+            env_text,
+        )
 
 
 def test_profile_is_explicitly_local_and_has_no_ha_claim() -> None:
