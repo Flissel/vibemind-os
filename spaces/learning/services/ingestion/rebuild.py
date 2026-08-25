@@ -54,14 +54,30 @@ class RebuildManifest:
     run_id: str
     outbox_ids: tuple[str, ...]
     expected_points: tuple[ExpectedPoint, ...]
+    migration_batch_id: str | None = None
 
 
 class QdrantRebuildService:
     def __init__(self, session_factory: SessionFactory) -> None:
         self._session_factory = session_factory
 
-    def prepare(self, index: RebuildIndex, *, run_id: str) -> RebuildManifest:
+    def prepare(
+        self,
+        index: RebuildIndex,
+        *,
+        run_id: str,
+        migration_batch_id: str | None = None,
+    ) -> RebuildManifest:
         run_id = str(UUID(run_id))
+        if migration_batch_id is not None and (
+            not migration_batch_id
+            or len(migration_batch_id) > 128
+            or any(
+                not (character.isalnum() or character in "._:-")
+                for character in migration_batch_id
+            )
+        ):
+            raise ValueError("Qdrant rebuild migration batch ID is invalid")
         index.ensure_schema()
         index.tombstone_all(rebuild_run_id=run_id)
         with self._session_factory() as session, session.begin():
@@ -105,6 +121,8 @@ class QdrantRebuildService:
                     "ingestion_spec_version": revision.ingestion_spec_version,
                     "rebuild_run_id": run_id,
                 }
+                if migration_batch_id is not None:
+                    payload["migration_batch_id"] = migration_batch_id
                 payload["input_digest"] = _digest(payload)
                 existing = session.scalar(
                     select(LearningOutboxRecord).where(
@@ -145,6 +163,7 @@ class QdrantRebuildService:
                 run_id=run_id,
                 outbox_ids=tuple(outbox_ids),
                 expected_points=tuple(expected_points),
+                migration_batch_id=migration_batch_id,
             )
 
     def statuses(self, manifest: RebuildManifest) -> tuple[str, ...]:
