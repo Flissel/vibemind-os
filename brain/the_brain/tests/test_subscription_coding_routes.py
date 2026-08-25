@@ -145,6 +145,55 @@ def test_actual_router_keeps_all_explicit_anthropic_coding_operations_off_openai
         assert match.execution_target == "openfang:brain-coder-anthropic", phrase
 
 
+def test_actual_router_accepts_bounded_anthropic_selector_variants():
+    router = CapabilityRouter(CAPABILITIES_PATH)
+
+    for phrase in (
+        "ask Claude to fix the bug in app.py",
+        "Claude, fix the bug in app.py",
+        "have Anthropic refactor app.py",
+    ):
+        match = router.route(phrase)
+        assert match is not None, phrase
+        assert match.capability == "coding_task_anthropic", phrase
+        assert match.execution_target == "openfang:brain-coder-anthropic", phrase
+
+
+def test_actual_router_accepts_extensionless_anthropic_coding_operations():
+    router = CapabilityRouter(CAPABILITIES_PATH)
+
+    for phrase in (
+        "use Claude to run tests",
+        "ask Claude to review source code",
+        "Claude, search source code",
+        "have Anthropic delete the obsolete file",
+        "use Claude to create a git branch",
+        "ask Anthropic to merge the git branch",
+        "have Claude deploy to Cloudflare",
+    ):
+        match = router.route(phrase)
+        assert match is not None, phrase
+        assert match.capability == "coding_task_anthropic", phrase
+        assert match.execution_target == "openfang:brain-coder-anthropic", phrase
+
+
+def test_explicit_anthropic_non_coding_requests_never_route_to_a_coding_agent():
+    router = CapabilityRouter(CAPABILITIES_PATH)
+
+    for phrase in (
+        "ask Claude to summarize this document",
+        "Claude, explain quantum mechanics",
+        "have Anthropic draft an email",
+        "use Claude to translate this paragraph",
+        "ask Claude to summarize app.py",
+    ):
+        match = router.route(phrase)
+        assert match is None or match.capability not in {
+            "coding_task",
+            "coding_task_anthropic",
+        }, phrase
+
+
 def test_explicit_anthropic_selector_preserves_non_coding_collision_routes():
     router = CapabilityRouter(CAPABILITIES_PATH)
     expected = {
