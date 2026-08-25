@@ -1,0 +1,159 @@
+from __future__ import annotations
+
+from uuid import UUID, uuid4
+
+import httpx
+import pytest
+
+from spaces.learning.bridge.dispatcher import ApplicationOutcomeV1
+from spaces.learning.bridge.learnhouse_client import (
+    LearnHouseClient,
+    LearnHouseMalformedResponse,
+    LearnHouseStaleRevision,
+    LearnHouseTransportError,
+)
+from spaces.learning.contracts.events import LearningEventType, LearningToolName
+from spaces.learning.contracts.mcp_models import ActorV1, ConfirmationV1, EventEnvelopeV1, ToolRequestV1
+
+
+COURSE_ID = UUID("00000000-0000-0000-0000-000000000101")
+CHAPTER_ID = UUID("00000000-0000-0000-0000-000000000102")
+SOURCE_ID = UUID("00000000-0000-0000-0000-000000000103")
+SESSION_ID = UUID("00000000-0000-0000-0000-000000000104")
+TASK_ID = UUID("00000000-0000-0000-0000-000000000105")
+
+
+def _request(event_type: LearningEventType, **overrides: object) -> ToolRequestV1:
+    values: dict[str, object] = {
+        "event_type": event_type,
+        "invocation_id": uuid4(),
+        "correlation_id": uuid4(),
+        "actor": ActorV1(actor_id="local-owner", actor_type="local_user"),
+        "idempotency_key": "learning-adapter-test",
+        "payload": {},
+    }
+    values.update(overrides)
+    event = EventEnvelopeV1.model_validate(values)
+    return ToolRequestV1(tool=LearningToolName(event_type.value.replace("learning.", "learning_").replace(".", "_")), event=event)
+
+
+def _client(handler: httpx.MockTransport) -> LearnHouseClient:
+    return LearnHouseClient(
+        base_url="http://127.0.0.1:8080/api/v1",
+        http_client=httpx.Client(transport=handler),
+        read_attempts=2,
+    )
+
+
+def _course(*, revision: int = 4) -> dict[str, object]:
+    return {
+        "course_uuid": str(COURSE_ID),
+        "name": "Typed learning",
+        "description": "A course returned by LearnHouse.",
+        "revision": revision,
+        "internal_owner_id": "must-not-leak",
+    }
+
+
+def test_course_list_retries_read_and_maps_only_semantic_contract_fields() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.method == "GET"
+        assert request.url.path == "/api/v1/courses/org_slug/local-learning/page/1/limit/20"
+        assert request.headers["X-Correlation-ID"]
+        if calls == 1:
+            return httpx.Response(503, json={"detail": "try again"})
+        return httpx.Response(200, json=[_course()])
+
+    request = _request(LearningEventType.COURSE_LIST, payload={"org_slug": "local-learning", "limit": 20})
+
+    outcome = _client(httpx.MockTransport(handler)).execute(request)
+
+    assert calls == 2
+    assert outcome.state == "completed"
+    assert outcome.aggregate and outcome.aggregate.revision == 4
+    assert outcome.result == {
+        "courses": [
+            {
+                "course_id": str(COURSE_ID),
+                "title": "Typed learning",
+                "description": "A course returned by LearnHouse.",
+                "revision": 4,
+            }
+        ]
+    }
+
+
+@pytest.mark.parametrize(
+    ("event_type", "overrides", "expected_method", "expected_path", "response", "expected_key"),
+    [
+        (LearningEventType.COURSE_CREATE, {"payload": {"org_id": 1, "title": "New", "description": "Course", "about": "About"}}, "POST", "/api/v1/courses/", _course(), "course"),
+        (LearningEventType.COURSE_OPEN, {"course_id": COURSE_ID}, "GET", f"/api/v1/courses/{COURSE_ID}/meta", {**_course(), "chapters": [{"chapter_uuid": str(CHAPTER_ID)}]}, "course"),
+        (LearningEventType.CHAPTER_OPEN, {"course_id": COURSE_ID, "payload": {"chapter_id": str(CHAPTER_ID)}}, "GET", f"/api/v1/chapters/{CHAPTER_ID}", {"chapter_uuid": str(CHAPTER_ID), "course_uuid": str(COURSE_ID), "name": "One", "revision": 4}, "chapter"),
+        (LearningEventType.MATERIAL_IMPORT, {"payload": {"org_id": 1, "title": "Source", "source_url": "https://example.invalid/source"}}, "POST", "/api/v1/media/", {"media_uuid": str(SOURCE_ID), "name": "Source", "revision": 4}, "source"),
+        (LearningEventType.COURSE_REVIEW, {"course_id": COURSE_ID, "expected_revision": 3, "payload": {"review": "approved"}}, "PUT", f"/api/v1/courses/{COURSE_ID}", {**_course(), "revision": 4, "review_status": "reviewed"}, "course"),
+        (LearningEventType.COURSE_PUBLISH, {"course_id": COURSE_ID, "expected_revision": 3, "confirmation": ConfirmationV1(confirmed=True, approval_ref="publish-approved")}, "PUT", f"/api/v1/courses/{COURSE_ID}", {**_course(), "revision": 4, "published": True}, "course"),
+        (LearningEventType.SESSION_START, {"course_id": COURSE_ID, "payload": {"org_id": 1}}, "POST", "/api/v1/trail/start", {"trail_uuid": str(SESSION_ID), "course_uuid": str(COURSE_ID), "revision": 4}, "session"),
+        (LearningEventType.TASK_NEXT, {"session_id": SESSION_ID, "payload": {"task_id": str(TASK_ID)}}, "GET", f"/api/v1/activities/{TASK_ID}", {"activity_uuid": str(TASK_ID), "trail_uuid": str(SESSION_ID), "revision": 4, "title": "Exercise"}, "task"),
+        (LearningEventType.PROGRESS_SHOW, {"course_id": COURSE_ID}, "GET", "/api/v1/trail/", {"course_uuid": str(COURSE_ID), "revision": 4, "completed": 2, "total": 5}, "progress"),
+    ],
+)
+def test_client_maps_supported_semantic_operations(
+    event_type: LearningEventType,
+    overrides: dict[str, object],
+    expected_method: str,
+    expected_path: str,
+    response: dict[str, object],
+    expected_key: str,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == expected_method
+        assert request.url.path == expected_path
+        assert request.headers["X-Correlation-ID"]
+        return httpx.Response(200, json=response)
+
+    outcome = _client(httpx.MockTransport(handler)).execute(_request(event_type, **overrides))
+
+    assert isinstance(outcome, ApplicationOutcomeV1)
+    assert outcome.state == "completed"
+    assert outcome.result and expected_key in outcome.result
+
+
+def test_write_http_failure_is_not_retried_and_hides_upstream_detail() -> None:
+    calls = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(500, json={"detail": "Bearer secret-value"})
+
+    request = _request(
+        LearningEventType.COURSE_CREATE,
+        payload={"org_id": 1, "title": "New", "description": "Course", "about": "About"},
+    )
+
+    with pytest.raises(LearnHouseTransportError, match="write request failed") as error:
+        _client(httpx.MockTransport(handler)).execute(request)
+
+    assert calls == 1
+    assert "secret-value" not in str(error.value)
+
+
+def test_client_fails_closed_for_stale_or_malformed_upstream_responses() -> None:
+    request = _request(LearningEventType.COURSE_OPEN, course_id=COURSE_ID, expected_revision=4)
+
+    stale = _client(httpx.MockTransport(lambda _: httpx.Response(200, json=_course(revision=3))))
+    with pytest.raises(LearnHouseStaleRevision, match="revision"):
+        stale.execute(request)
+
+    malformed = _client(httpx.MockTransport(lambda _: httpx.Response(200, json={"name": "missing identity"})))
+    with pytest.raises(LearnHouseMalformedResponse, match="malformed"):
+        malformed.execute(request)
+
+
+def test_client_rejects_non_loopback_base_url() -> None:
+    with pytest.raises(ValueError, match="loopback"):
+        LearnHouseClient(base_url="https://learnhouse.example.invalid/api/v1")
