@@ -139,3 +139,40 @@ export {
   type TemporaryAdapterBinding,
   type TemporaryAdapterDigests,
 } from "./providers/temporary-adapters.js";
+export {
+  SecretValue,
+  createSecretValue,
+  type CredentialReference,
+  type CredentialResolver,
+} from "./providers/credential-resolver.js";
+export {
+  HttpMcpProvider,
+  McpCompatibilityError,
+  type HttpMcpClient,
+  type HttpMcpClientFactory,
+  type HttpMcpProviderOptions,
+  type HttpMcpTransport,
+  type HttpMcpTransportFactory,
+  type HttpMcpTransportInput,
+} from "./providers/mcp-http-provider.js";
+export {
+  ProcessMcpProvider,
+  type ProcessMcpClient,
+  type ProcessMcpClientFactory,
+  type ProcessMcpProviderOptions,
+  type ProcessSpawner,
+  type SafeSpawnOptions,
+  type SpawnedProcess,
+} from "./providers/mcp-process-provider.js";
+export {
+  DEFAULT_PROCESS_OUTPUT_LIMIT_BYTES,
+  NodeProcessSpawner,
+  captureSafeEnvironment,
+  collectBoundedOutput,
+  executeSafeProcess,
+  resolveSafeWorkingDirectory,
+  terminateSpawnedProcess,
+  type CollectedOutput,
+  type SafeProcessResult,
+  type SpawnCompletion,
+} from "./process/safe-process.js";

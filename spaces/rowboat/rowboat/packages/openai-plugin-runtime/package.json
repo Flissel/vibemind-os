@@ -10,6 +10,7 @@
     "catalog:sync": "tsx scripts/sync-catalog.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.26.0",
     "sharp": "0.35.3",
     "yaml": "^2.8.1",
     "zod": "^3.25.76"
