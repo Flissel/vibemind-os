@@ -520,6 +520,79 @@ describe("plugin repository contract", () => {
     await expect(repository.listCatalogEntries(snapshot.catalogDigest)).rejects.toThrow("plugin_record_too_large");
   });
 
+  it("rejects an over-budget dense array before bulk descriptors, own keys, or accessors", async () => {
+    const { database, repository } = repositoryFixture();
+    let accessorCalls = 0;
+    const dense = Array.from({ length: 5_000 }, (_, index) => index);
+    Object.defineProperty(dense, "0", { enumerable: true, get: () => { accessorCalls += 1; return 0; } });
+    const originalBulkDescriptors = Object.getOwnPropertyDescriptors;
+    const originalOwnKeys = Reflect.ownKeys;
+    let denseBulkDescriptorCalls = 0;
+    let denseOwnKeysCalls = 0;
+    Object.getOwnPropertyDescriptors = ((value: object) => {
+      if (value === dense) denseBulkDescriptorCalls += 1;
+      return originalBulkDescriptors(value);
+    }) as typeof Object.getOwnPropertyDescriptors;
+    Reflect.ownKeys = ((value: object) => {
+      if (value === dense) denseOwnKeysCalls += 1;
+      return originalOwnKeys(value);
+    }) as typeof Reflect.ownKeys;
+    try {
+      await expect(repository.putReceipt({
+        type: "execution", receiptId: "receipt-dense-array", projectId: installation.projectId,
+        pluginName: installation.pluginName, status: "failed", output: dense, redactions: [],
+      })).rejects.toThrow("receipt_invalid");
+    } finally {
+      Object.getOwnPropertyDescriptors = originalBulkDescriptors;
+      Reflect.ownKeys = originalOwnKeys;
+    }
+    expect(denseBulkDescriptorCalls).toBe(0);
+    expect(denseOwnKeysCalls).toBe(0);
+    expect(accessorCalls).toBe(0);
+    expect(database.collection(PLUGIN_COLLECTIONS.receipts).writes).toBe(0);
+  });
+
+  it("rejects an over-budget plain record after one key count and before descriptor fetch", async () => {
+    const { database, repository } = repositoryFixture();
+    const dense = Object.create(null) as Record<string, unknown>;
+    for (let index = 0; index < 5_000; index += 1) dense[`key${index}`] = index;
+    let accessorCalls = 0;
+    Object.defineProperty(dense, "key0", { enumerable: true, get: () => { accessorCalls += 1; return 0; } });
+    const originalBulkDescriptors = Object.getOwnPropertyDescriptors;
+    const originalDescriptor = Object.getOwnPropertyDescriptor;
+    const originalOwnKeys = Reflect.ownKeys;
+    let denseBulkDescriptorCalls = 0;
+    let denseDescriptorCalls = 0;
+    let denseOwnKeysCalls = 0;
+    Object.getOwnPropertyDescriptors = ((value: object) => {
+      if (value === dense) denseBulkDescriptorCalls += 1;
+      return originalBulkDescriptors(value);
+    }) as typeof Object.getOwnPropertyDescriptors;
+    Object.getOwnPropertyDescriptor = ((value: object, key: PropertyKey) => {
+      if (value === dense) denseDescriptorCalls += 1;
+      return originalDescriptor(value, key);
+    }) as typeof Object.getOwnPropertyDescriptor;
+    Reflect.ownKeys = ((value: object) => {
+      if (value === dense) denseOwnKeysCalls += 1;
+      return originalOwnKeys(value);
+    }) as typeof Reflect.ownKeys;
+    try {
+      await expect(repository.putReceipt({
+        type: "execution", receiptId: "receipt-dense-record", projectId: installation.projectId,
+        pluginName: installation.pluginName, status: "failed", output: dense, redactions: [],
+      })).rejects.toThrow("receipt_invalid");
+    } finally {
+      Object.getOwnPropertyDescriptors = originalBulkDescriptors;
+      Object.getOwnPropertyDescriptor = originalDescriptor;
+      Reflect.ownKeys = originalOwnKeys;
+    }
+    expect(denseBulkDescriptorCalls).toBe(0);
+    expect(denseOwnKeysCalls).toBe(1);
+    expect(denseDescriptorCalls).toBe(0);
+    expect(accessorCalls).toBe(0);
+    expect(database.collection(PLUGIN_COLLECTIONS.receipts).writes).toBe(0);
+  });
+
   it("rejects entry provenance that differs from its catalog snapshot with zero writes", async () => {
     const { database, repository } = repositoryFixture();
     await repository.putCatalogSnapshot(snapshot);
@@ -876,6 +949,34 @@ describe("plugin repository contract", () => {
     expect(error).toEqual(new Error("secret_value_rejected"));
     expect(String(error)).not.toContain(label);
     expect(database.collection(PLUGIN_COLLECTIONS.credentialSlots).writes).toBe(0);
+  });
+
+  it.each([
+    "Basic dXNlcjpwYXNz",
+    "  bAsIc\t dXNlcjpwYXNz",
+    "Digest username=alice",
+    "Bearer abc123",
+    "Negotiate abc123",
+    "NTLM abc123",
+    "ApiKey abc123",
+    "API-Key: abc123",
+    "Token abc123",
+  ])("rejects explicit authentication scheme in metadata and reference", async (credentialText) => {
+    for (const location of ["metadata", "reference"] as const) {
+      const { database, repository } = repositoryFixture();
+      const slot: PluginCredentialSlot = {
+        id: `slot-${location}`,
+        projectId: installation.projectId,
+        installationId: installation.id,
+        name: "GITHUB_PAT_TOKEN",
+        reference: { kind: "environment", reference: location === "reference" ? credentialText : "github/pat" },
+        metadata: { label: location === "metadata" ? credentialText : "GitHub access" },
+      };
+      const error = await repository.putCredentialSlot(slot).catch((caught: unknown) => caught);
+      expect(error).toEqual(new Error("secret_value_rejected"));
+      expect(String(error)).not.toContain(credentialText);
+      expect(database.collection(PLUGIN_COLLECTIONS.credentialSlots).writes).toBe(0);
+    }
   });
 
   it("rejects unknown credential metadata keys, accessors, and proxies without executing them", async () => {

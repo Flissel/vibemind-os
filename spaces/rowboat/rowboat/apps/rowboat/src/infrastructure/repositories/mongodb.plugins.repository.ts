@@ -77,34 +77,71 @@ function capture(input: unknown, reason: string, secretKeys: boolean, depth = 0,
   if (typeof input !== "object") invalid(reason);
   if (utilTypes.isProxy(input)) invalid(reason);
 
-  let prototype: object | null;
-  let descriptors: Record<PropertyKey, PropertyDescriptor>;
-  try {
-    prototype = Object.getPrototypeOf(input);
-    descriptors = Object.getOwnPropertyDescriptors(input);
-  } catch {
-    invalid(reason);
-  }
   if (Array.isArray(input)) {
-    if (prototype !== Array.prototype || Object.getOwnPropertySymbols(input).length > 0) invalid(reason);
+    let lengthDescriptor: PropertyDescriptor | undefined;
+    try {
+      lengthDescriptor = Object.getOwnPropertyDescriptor(input, "length");
+    } catch {
+      invalid(reason);
+    }
+    if (
+      lengthDescriptor === undefined
+      || !("value" in lengthDescriptor)
+      || typeof lengthDescriptor.value !== "number"
+      || !Number.isSafeInteger(lengthDescriptor.value)
+      || lengthDescriptor.value < 0
+    ) invalid(reason);
+    const length = lengthDescriptor.value;
+    if (length > MAX_ITEMS - budget.items) invalid(reason);
+    let prototype: object | null;
+    let ownKeys: readonly PropertyKey[];
+    try {
+      prototype = Object.getPrototypeOf(input);
+      ownKeys = Reflect.ownKeys(input);
+    } catch {
+      invalid(reason);
+    }
+    if (prototype !== Array.prototype || ownKeys.length !== length + 1 || ownKeys.some((key) => typeof key !== "string")) invalid(reason);
+    const keySet = new Set(ownKeys as readonly string[]);
+    if (!keySet.has("length")) invalid(reason);
     const values: Captured[] = [];
     addBytes(budget, 2);
-    for (let index = 0; index < input.length; index += 1) {
+    for (let index = 0; index < length; index += 1) {
       if (index > 0) addBytes(budget, 1);
-      const descriptor = descriptors[String(index)];
-      if (!descriptor || !("value" in descriptor)) invalid(reason);
+      const key = String(index);
+      if (!keySet.has(key)) invalid(reason);
+      let descriptor: PropertyDescriptor | undefined;
+      try {
+        descriptor = Object.getOwnPropertyDescriptor(input, key);
+      } catch {
+        invalid(reason);
+      }
+      if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) invalid(reason);
       values.push(capture(descriptor.value, reason, secretKeys, depth + 1, budget));
     }
     return Object.freeze(values);
   }
+  let prototype: object | null;
+  let ownKeys: readonly PropertyKey[];
+  try {
+    prototype = Object.getPrototypeOf(input);
+    ownKeys = Reflect.ownKeys(input);
+  } catch {
+    invalid(reason);
+  }
   if (prototype !== Object.prototype && prototype !== null) invalid(reason);
-  if (Reflect.ownKeys(descriptors).some((key) => typeof key !== "string")) invalid(reason);
+  if (ownKeys.length > MAX_ITEMS - budget.items || ownKeys.some((key) => typeof key !== "string")) invalid(reason);
   const output = Object.create(null) as Record<string, Captured>;
-  const descriptorKeys = Object.keys(descriptors).sort();
+  const descriptorKeys = [...ownKeys as readonly string[]].sort();
   addBytes(budget, 2);
   for (const [index, key] of descriptorKeys.entries()) {
-    const descriptor = descriptors[key]!;
-    if (!("value" in descriptor) || !descriptor.enumerable) invalid(reason);
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(input, key);
+    } catch {
+      invalid(reason);
+    }
+    if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) invalid(reason);
     if (key.length > MAX_STRING || key.includes("\0") || key === "__proto__" || key === "prototype" || key === "constructor" || key.startsWith("$")) invalid(reason);
     addBytes(budget, (index > 0 ? 1 : 0) + encodedJsonBytes(key) + 1);
     const normalizedKey = key.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
@@ -309,7 +346,8 @@ function admission(input: unknown): PluginComponentAdmission {
 }
 
 function credentialLikeText(value: string): boolean {
-  return /[\u0000-\u001f\u007f]/u.test(value)
+  return /^\s*(?:basic|digest|bearer|negotiate|ntlm|api(?:[-_ ]?key)|token)(?=\s|:|=)/iu.test(value)
+    || /[\u0000-\u001f\u007f]/u.test(value)
     || /%[0-9a-f]{2}/iu.test(value)
     || value.includes("://")
     || /[?@#]/u.test(value)
