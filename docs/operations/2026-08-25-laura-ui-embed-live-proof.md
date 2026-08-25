@@ -1,6 +1,6 @@
 # Laura-Oberfläche im VibeMind Video Space — Live-Beleg mit Nicht-Claims
 
-**Zeitpunkt:** `2026-08-25T12:28:09.987+02:00`
+**Zeitpunkt:** `2026-08-25T12:36:23.790+02:00`
 
 Der reale Electron-Pfad wurde automatisiert geprüft. Das Gate belegt die eingebettete
 Laura-Oberfläche, die authentifizierte Local-API-Verbindung, den Space-Wechsel und die
@@ -13,9 +13,9 @@ verändert und keine Ersatzdaten erzeugt.
 
 | Komponente | Commit |
 |---|---|
-| `vibemind-os` vor diesem Follow-up-Commit | `555c45aa295b47aa592c61450b3e685d44f74bd5` |
+| `vibemind-os` vor diesem Follow-up-Commit | `65c1edbc95ca537d93043301cb79be7bc645bd78` |
 | `spaces/video/laura` | `e5e005cbc025363cd617ae1b5cf6ac9684e8ad03` |
-| `voice` | `9478cb9375dd63b5c5730eac7a16810a2d940e2d` |
+| `voice` | `7c6096d766ad17119550eca3446b70044e11a62b` |
 
 `npm --prefix voice/electron-app run video:build` baute den realen Laura-Renderer frisch
 mit Vite (`152 modules transformed`, Exitcode 0).
@@ -27,27 +27,21 @@ nicht protokolliertem Token und isoliertem temporärem Workspace. Der Prozess an
 Schema-Version 36; `GET /projects` lieferte authentifiziert HTTP 200 und ohne Token HTTP 401.
 Die authentifizierte Projektliste war leer.
 
-Der API-Start und die HTTP-Proben wurden in einer PowerShell-Session mit folgenden
-redigierten Befehlen ausgeführt; `<TEMP_WORKSPACE>` war ein pro Lauf neu angelegtes und beim
-Cleanup entferntes Verzeichnis:
+Der eingecheckte Runner erzeugt den ephemeren Token mit `randomBytes(32)`, legt ausschließlich
+einen isolierten System-Temp-Workspace an, startet den deklarierten API-Befehl, wartet begrenzt
+auf Readiness und verwaltet API und Electron über die jeweils selbst gestartete Root-PID. Der
+vollständig ausführbare Repository-Befehl lautet:
 
 ```powershell
-$env:LAURA_TOKEN = [Convert]::ToBase64String(<32 zufällige Bytes>)
-$env:LAURA_WORKSPACE = '<TEMP_WORKSPACE>'
-$api = Start-Process -FilePath uv -ArgumentList @(
-  'run', '--directory', 'services/local-api', 'laura-api'
-) -WorkingDirectory 'spaces/video/laura' -WindowStyle Hidden -PassThru
-Invoke-WebRequest http://127.0.0.1:8765/healthz
-Invoke-WebRequest http://127.0.0.1:8765/projects `
-  -Headers @{ 'X-Laura-Token' = $env:LAURA_TOKEN }
-Invoke-WebRequest http://127.0.0.1:8765/projects
+npm --prefix voice/electron-app run video:build
+npm --prefix voice/electron-app run laura:live-proof
 ```
 
-Ergebnisfelder des erfolgreichen Laufs: `HealthStatus=200`,
-`AuthorizedProjectsStatus=200`, `AuthorizedProjectCount=0`,
-`AuthorizedResponseIsArray=true`, `UnauthorizedProjectsStatus=401` und
-`WorkspaceKind=isolated-temporary`. Der Tokenwert und der konkrete temporäre Pfad wurden
-nicht ausgegeben.
+Der Runner ruft intern exakt `uv run --directory services/local-api laura-api` auf. Die
+API-Ergebnisfelder des erfolgreichen Laufs waren `apiHealthStatus=200`,
+`apiAuthorizedProjectsStatus=200`, `apiAuthorizedProjectCount=0` und
+`apiUnauthorizedProjectsStatus=401`. Tokenwert und konkrete Workspace-Pfade gehören nicht
+zur Ausgabe-Allowlist.
 
 Im echten VibeMind-Electron-Fenster wurde der Video Space über `window.vibemind.showVideo()`
 geöffnet. Beobachtet wurden:
@@ -65,15 +59,16 @@ Der Dateidialog-IPC wurde mit einer instrumentierten `canceled: true`-Antwort du
 `window.laura.pickMediaFiles()` gab die erwartete leere Liste zurück. Das belegt Bridge und
 Abbruchsemantik, aber nicht das sichtbare Öffnen des nativen Windows-Dialogs.
 
-Der begrenzte Electron/Playwright-Probelauf wurde aus `voice/electron-app` mit
-`node <temporärer-laura-ui-probe>.js` gestartet. Der Probe-Runner setzte `LAURA_URL` auf
-Loopback, übergab denselben ephemeren Token nur über die Prozessumgebung und gab ausschließlich
-folgende secret-freien Ergebnisfelder aus:
+Der begrenzte Electron/Playwright-Probelauf ist als
+`voice/electron-app/scripts/laura-ui-live-proof.js` eingecheckt. Er setzt `LAURA_URL` auf
+Loopback, übergibt denselben ephemeren Token nur über die Prozessumgebung und gab im frischen
+Lauf ausschließlich folgende secret-freien positiven Ergebnisfelder aus:
 
 ```text
 header=Laura; navRailEntries=7; chatInput=true; projectSelector=true;
-projectSelectorDisabled=true; jobCenter=Job-Zentrale; legacyBridge=false;
-rendererApiStatus=200; dialogCanceled=true; pickedFileCount=0;
+projectSelectorDisabled=true; projectOptionCount=1; jobCenter=Job-Zentrale;
+legacyBridge=false; rendererApiStatus=200; dialogCanceled=true;
+dialogCallCount=1; pickedFileCount=0;
 browserViewReused=true; rendererTimeOriginPreserved=true; navStateAfterReturn=Media
 ```
 
@@ -102,17 +97,19 @@ Local API weiterhin auf derselben Loopback-URL erreichbar war. Beobachtet wurden
 Damit schlug die UI trotz erreichbarer API ohne Token fail-closed um; ein stiller Token- oder
 Backend-Fallback wurde nicht beobachtet.
 
-Die reproduzierbare, im Repository liegende Negativprobe lautet:
+Die Negativprobe ist Teil desselben Repository-Befehls; die Local API bleibt dabei auf der
+gleichen Loopback-URL erreichbar, während der zweite Electron-Start explizit
+`LAURA_TOKEN=''` erhält. Die Ergebnisfelder des frischen Laufs waren:
 
-```powershell
-npm --prefix voice/electron-app run test:e2e -- --grep "video space embeds"
+```text
+header=Laura; serviceInfoUnavailable=true; serviceOffline=true;
+projectControlsAbsent=true; mediaAssetsAbsent=true; legacyBridge=false
 ```
 
-Die Fixture setzt `LAURA_TOKEN=''` und `LAURA_URL='http://127.0.0.1:0'`. Die Assertion-Felder
-waren `attached=true`, `title='Laura'`, `titleVisible=true`,
-`hasLauraGetServiceInfo=true`, `serviceInfoUnavailable=true` und
-`hasLegacyVideoApi=false`. Der Lauf endete nach dem Lifecycle-Fix regulär mit Exitcode 0 und
-`1 passed (12.0s)`.
+Der Gesamt-Runner endete regulär mit Exitcode 0 und `port8765Free=true`. Die zusätzliche
+eingecheckte Dead-Port-Gegenprobe
+`npm --prefix voice/electron-app run test:e2e -- --grep "video space embeds"` blieb ebenfalls
+grün (`1 passed (12.0s)`).
 
 ## Nicht-Claims
 
@@ -127,7 +124,9 @@ Timeline, Proxy-Playback/Seek, einen nativen Dateidialog oder HTTP 200/206 über
 ## Verifikation und Blocker
 
 - PASS: `npm --prefix voice/electron-app run video:build` (Vite-Build, 152 Module).
-- PASS: `npm --prefix voice/electron-app run test:unit` (47/47 Tests).
+- PASS: `npm --prefix voice/electron-app run laura:live-proof` (Exitcode 0; API,
+  positive UI/State/Dialog-Probe, negativer Umschlag und Cleanup in einem begrenzten Lauf).
+- PASS: `npm --prefix voice/electron-app run test:unit` (50/50 Tests).
 - PASS: `pnpm --dir spaces/video/laura/apps/desktop typecheck` (Exitcode 0).
 - PASS: `npm --prefix voice/electron-app run test:e2e -- --grep "video space embeds"`
   (Exitcode 0, `1 passed (12.0s)`). Beim früheren Lauf hatten die Assertions bereits
