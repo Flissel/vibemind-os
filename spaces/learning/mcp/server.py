@@ -23,6 +23,7 @@ from spaces.learning.contracts.mcp_models import EventEnvelopeV1, ToolRequestV1
 from spaces.learning.mcp.tools.courses import build_course_gateways
 from spaces.learning.mcp.tools.navigation import build_navigation_gateways
 from spaces.learning.mcp.tools.generation import build_generation_gateways
+from spaces.learning.mcp.tools.materials import build_material_gateway
 from spaces.learning.mcp.tools.sessions import build_session_gateways
 from spaces.learning.mcp.tools.tutor import TutorGateway
 from spaces.learning.mcp.tools.canvas import (
@@ -44,6 +45,8 @@ from spaces.learning.services.course_factory.repository import CourseFactoryRepo
 from spaces.learning.services.db.session import build_session_factory, create_learning_engine
 from spaces.learning.services.adaptive_engine.session_service import AdaptiveSessionService
 from spaces.learning.services.evaluation.canvas_artifacts import CanvasArtifactStore
+from spaces.learning.services.ingestion.pipeline import IngestionPipeline
+from spaces.learning.services.ingestion.repository import SourceRepository
 
 
 SERVER_NAME = "spaces-learning"
@@ -83,6 +86,19 @@ def build_default_dispatcher(
     if database_url and os.environ.get("LEARNING_SERVICE_ROLE") == "mcp":
         engine = create_learning_engine(database_url)
         session_factory = build_session_factory(engine)
+        selected_artifact_root = Path(artifact_root) if artifact_root else None
+        if selected_artifact_root is not None:
+            source_repository = SourceRepository(
+                session_factory, artifact_root=selected_artifact_root
+            )
+            gateways.update(build_material_gateway(
+                learnhouse=admitted_learnhouse,
+                pipeline=IngestionPipeline(
+                    source_repository, artifact_root=selected_artifact_root
+                ),
+                session_factory=session_factory,
+                artifact_root=selected_artifact_root,
+            ))
         evaluation_url = os.environ.get("LEARNING_EVALUATION_SERVICE_URL", "").strip()
         evaluation_key = os.environ.get("LEARNING_EVALUATION_SERVICE_KEY", "")
         evaluation_client = (

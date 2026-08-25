@@ -94,7 +94,7 @@ def generation_gateway(tmp_path: Path):
         },
         receipts=InMemoryReceiptStore(),
     )
-    return dispatcher, repository, course_id, source_id
+    return dispatcher, repository, factory, course_id, source_id
 
 
 def _request(
@@ -122,7 +122,7 @@ def _request(
 
 
 def test_generation_queue_and_status_have_durable_readback(generation_gateway) -> None:
-    dispatcher, repository, course_id, source_id = generation_gateway
+    dispatcher, repository, _, course_id, source_id = generation_gateway
     request = _request(
         LearningToolName.COURSE_GENERATE,
         LearningEventType.COURSE_GENERATE,
@@ -161,7 +161,7 @@ def test_generation_queue_and_status_have_durable_readback(generation_gateway) -
 
 
 def test_regeneration_is_bounded_to_three_attempts(generation_gateway) -> None:
-    dispatcher, repository, course_id, source_id = generation_gateway
+    dispatcher, repository, _, course_id, source_id = generation_gateway
     created = dispatcher.dispatch(
         _request(
             LearningToolName.COURSE_GENERATE,
@@ -216,3 +216,32 @@ def test_regeneration_is_bounded_to_three_attempts(generation_gateway) -> None:
     assert blocked.state == "rejected"
     assert blocked.error is not None
     assert blocked.error.code == "generation_attempt_limit"
+
+
+def test_indexed_source_revision_remains_eligible_for_generation(
+    generation_gateway,
+) -> None:
+    dispatcher, _, factory, course_id, source_id = generation_gateway
+    with factory() as session, session.begin():
+        revision = session.get(LearningSourceRevision, (source_id, 1))
+        assert revision is not None
+        revision.status = "indexed"
+
+    result = dispatcher.dispatch(
+        _request(
+            LearningToolName.COURSE_GENERATE,
+            LearningEventType.COURSE_GENERATE,
+            course_id=course_id,
+            expected_revision=1,
+            idempotency_key="generate-indexed-source",
+            payload={
+                "audience": "Students",
+                "target_outcome": "Use indexed source evidence",
+                "source_ids": [source_id],
+            },
+        )
+    )
+
+    assert result.state == "completed"
+    assert result.result is not None
+    assert result.result["state"] == "queued"

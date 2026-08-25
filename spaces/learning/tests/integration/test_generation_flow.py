@@ -260,6 +260,23 @@ async def test_grounded_generation_reaches_review_ready_and_survives_readback(
 
 
 @pytest.mark.asyncio
+async def test_grounded_generation_accepts_indexed_source_revision(
+    generation_context,
+) -> None:
+    factory, root, repository, job, draft = generation_context
+    with factory() as session, session.begin():
+        revision = session.get(LearningSourceRevision, (draft.source_provenance[0].source_id, 2))
+        assert revision is not None
+        revision.status = "indexed"
+    gateway = _GenerationGateway(draft)
+
+    result = await _runner(factory, root, repository, gateway).run_job(job.id)
+
+    assert result.job.state is FactoryState.REVIEW_READY
+    assert result.report.approved is True
+
+
+@pytest.mark.asyncio
 async def test_unsupported_claim_stays_visible_without_ai_quality_call(
     generation_context,
 ) -> None:

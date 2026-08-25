@@ -53,7 +53,7 @@ class SourceCatalogLoader:
                     or source.course_id != course_id
                     or source.current_revision != expected.revision
                     or revision is None
-                    or revision.status != "stored"
+                    or revision.status not in {"stored", "indexed"}
                     or revision.content_hash != expected.content_hash
                 ):
                     raise ValueError("course factory source provenance is stale")

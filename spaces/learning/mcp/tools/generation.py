@@ -237,7 +237,7 @@ class CourseFactoryGateway:
                     ),
                 )
                 .where(LearningSource.course_id == course_id)
-                .where(LearningSourceRevision.status == "stored")
+                .where(LearningSourceRevision.status.in_(("stored", "indexed")))
             )
             if requested_ids:
                 query = query.where(LearningSource.id.in_(requested_ids))
