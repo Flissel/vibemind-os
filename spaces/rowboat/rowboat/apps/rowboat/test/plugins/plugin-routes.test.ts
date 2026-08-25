@@ -1,10 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { PINNED_PLUGIN_CATALOG_DIGEST } from "@rowboat/openai-plugin-runtime";
-import { createCatalogCollectionRoute } from "@/app/api/v1/plugins/route";
-import { createCatalogItemRoute } from "@/app/api/v1/plugins/[pluginName]/route";
-import { createProjectPluginsRoute } from "@/app/api/v1/projects/[projectId]/plugins/route";
-import { createProjectPluginRoute } from "@/app/api/v1/projects/[projectId]/plugins/[pluginName]/route";
+import {
+  createCatalogCollectionRoute, createCatalogItemRoute, createProjectPluginsRoute, createProjectPluginRoute,
+} from "@/src/interface-adapters/http/plugins/plugin-routes";
 import { ListProjectPluginsUseCase } from "@/src/application/use-cases/plugins/list-project-plugins.use-case";
 import type { IPluginApiAuthorizationPolicy, PluginApiIdentity } from "@/src/application/policies/plugin-api-authorization.policy";
 import type { IPluginsRepository, PluginInstallation } from "@/src/application/repositories/plugins.repository.interface";
@@ -45,9 +44,71 @@ function request(path: string, init?: ConstructorParameters<typeof NextRequest>[
   return new NextRequest(`https://rowboat.invalid${path}`, init);
 }
 
+function requestWithUnnormalizedRawUrl(path: string): NextRequest {
+  const candidate = request(`/api/v1/plugins?catalogDigest=${catalogDigest}`);
+  const state = Object.getOwnPropertySymbols(candidate)
+    .map((symbol) => Object.getOwnPropertyDescriptor(candidate, symbol))
+    .find((descriptor) => descriptor !== undefined && "value" in descriptor && descriptor.value !== null
+      && typeof descriptor.value === "object" && Object.prototype.hasOwnProperty.call(descriptor.value, "url"));
+  if (state === undefined || !("value" in state) || !Reflect.set(state.value as object, "url", `https://rowboat.invalid${path}`)) {
+    throw new Error("next_request_internal_url_unavailable");
+  }
+  return candidate;
+}
+
 async function json(response: Response): Promise<unknown> { return response.json(); }
 
 describe("versioned plugin catalog routes", () => {
+  it("keeps Next route modules limited to supported handler exports", async () => {
+    const [catalogCollection, catalogSelected, projectCollection, projectSelected] = await Promise.all([
+      import("@/app/api/v1/plugins/route"), import("@/app/api/v1/plugins/[pluginName]/route"),
+      import("@/app/api/v1/projects/[projectId]/plugins/route"), import("@/app/api/v1/projects/[projectId]/plugins/[pluginName]/route"),
+    ]);
+    expect(Object.keys(catalogCollection)).toEqual(["GET"]);
+    expect(Object.keys(catalogSelected)).toEqual(["GET"]);
+    expect(Object.keys(projectCollection).sort()).toEqual(["GET", "POST"]);
+    expect(Object.keys(projectSelected).sort()).toEqual(["GET", "PATCH"]);
+  });
+
+  it("imports production routes and rejects invalid input without loading external composition modules", async () => {
+    vi.resetModules();
+    for (const moduleName of ["@/app/lib/mongodb", "@/app/lib/redis", "@/app/lib/auth0", "@/di/container"]) {
+      vi.doMock(moduleName, () => { throw new Error(`eager_import:${moduleName}`); });
+    }
+    try {
+      const production = await import("@/app/api/v1/plugins/route");
+      const response = await production.GET(new Request(`https://rowboat.invalid/api/v1/plugins?catalogDigest=${catalogDigest}`));
+      expect(response.status).toBe(400);
+      expect(await json(response)).toEqual({ error: "request_invalid" });
+    } finally {
+      for (const moduleName of ["@/app/lib/mongodb", "@/app/lib/redis", "@/app/lib/auth0", "@/di/container"]) vi.doUnmock(moduleName);
+      vi.resetModules();
+    }
+  });
+
+  it("accepts only genuine exact NextRequests before resolving a controller", async () => {
+    let resolutions = 0;
+    const route = createCatalogCollectionRoute(async () => { resolutions += 1; return { execute: async () => [catalogItem] }; });
+    class Subclass extends NextRequest {}
+    const fake = Object.create(NextRequest.prototype) as NextRequest;
+    let proxyCalls = 0;
+    const proxied = new Proxy(request(`/api/v1/plugins?catalogDigest=${catalogDigest}`), {
+      get: (target, key, receiver) => { proxyCalls += 1; return Reflect.get(target, key, receiver); },
+    });
+    for (const candidate of [
+      new Request(`https://rowboat.invalid/api/v1/plugins?catalogDigest=${catalogDigest}`),
+      new Subclass(`https://rowboat.invalid/api/v1/plugins?catalogDigest=${catalogDigest}`),
+      fake,
+      proxied,
+    ]) {
+      const response = await route(candidate);
+      expect(response.status).toBe(400);
+      expect(await json(response)).toEqual({ error: "request_invalid" });
+    }
+    expect(resolutions).toBe(0);
+    expect(proxyCalls).toBe(0);
+  });
+
   it("authenticates through the controller and reports partial availability exactly", async () => {
     const execute = vi.fn(async (candidate: Request, input: unknown) => {
       expect(candidate).toBeInstanceOf(NextRequest);
@@ -61,6 +122,25 @@ describe("versioned plugin catalog routes", () => {
     });
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+  });
+
+  it("never serializes rejected admission as available even when provider availability is available", async () => {
+    const rejected = {
+      ...catalogItem,
+      license: { declaration: "MIT", decision: "rejected" as const, reason: "license_rejected" as const },
+      admission: "rejected" as const,
+      reason: "license_rejected" as const,
+      components: [{
+        ...catalogItem.components[0],
+        admission: { status: "rejected" as const, reason: "license_rejected" as const, policyVersion: "policy-v1" },
+        availability: { status: "available" as const },
+      }],
+    };
+    const response = await createCatalogCollectionRoute({ execute: async () => [rejected] })(request(`/api/v1/plugins?catalogDigest=${catalogDigest}`));
+    expect(response.status).toBe(200);
+    expect(await json(response)).toMatchObject({
+      items: [{ status: "rejected", reason: "license_rejected", components: [{ status: "rejected", reason: "license_rejected" }] }],
+    });
   });
 
   it("validates and serializes all 180 entries from the pinned full catalog contract", async () => {
@@ -115,6 +195,35 @@ describe("versioned plugin catalog routes", () => {
       expect(await json(response)).toEqual({ error: "request_invalid" });
     }
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("rejects encoded, double-encoded, case-shifted and noncanonical raw URLs before resolution", async () => {
+    let resolutions = 0;
+    const route = createCatalogCollectionRoute(async () => { resolutions += 1; return { execute: async () => [catalogItem] }; });
+    for (const raw of [
+      `/api/v1/%70lugins?catalogDigest=${catalogDigest}`,
+      `/api/v1/%252e/plugins?catalogDigest=${catalogDigest}`,
+      `/api/v1/plugins%00?catalogDigest=${catalogDigest}`,
+      `/api/v1%2fplugins?catalogDigest=${catalogDigest}`,
+      `/api/v1/plugins?%63atalogDigest=${catalogDigest}`,
+      `/api/v1/plugins?catalogDigest=%2561${catalogDigest.slice(2)}`,
+      `/api/V1/plugins?catalogDigest=${catalogDigest}`,
+      `/api//v1/plugins?catalogDigest=${catalogDigest}`,
+    ]) {
+      const response = await route(request(raw));
+      expect(response.status).toBe(400);
+      expect(await json(response)).toEqual({ error: "request_invalid" });
+    }
+    for (const raw of [
+      `/api/v1/%2e/plugins?catalogDigest=${catalogDigest}`,
+      `/api/v1/x/../plugins?catalogDigest=${catalogDigest}`,
+      `/api\\v1\\plugins?catalogDigest=${catalogDigest}`,
+    ]) {
+      const response = await route(requestWithUnnormalizedRawUrl(raw));
+      expect(response.status).toBe(400);
+      expect(await json(response)).toEqual({ error: "request_invalid" });
+    }
+    expect(resolutions).toBe(0);
   });
 
   it("turns invalid controller output and malicious exceptions into one safe internal error", async () => {
@@ -193,7 +302,13 @@ describe("versioned project plugin routes", () => {
   it("requires exactly one valid idempotency key before installation controller invocation", async () => {
     const install = vi.fn();
     const route = createProjectPluginsRoute({ install });
-    for (const headers of [undefined, { "Idempotency-Key": "one, two" }, { "Idempotency-Key": "contains space" }]) {
+    for (const headers of [
+      undefined,
+      { "Idempotency-Key": "one,two" },
+      { "Idempotency-Key": "one:two" },
+      { "Idempotency-Key": "one=two" },
+      { "Idempotency-Key": "contains space" },
+    ]) {
       const response = await route.POST(request("/api/v1/projects/project-1/plugins", {
         method: "POST", headers: { "content-type": "application/json", ...headers },
         body: JSON.stringify({ pluginName: "airtable", catalogDigest, expectedRevision: 0 }),
@@ -233,6 +348,62 @@ describe("versioned project plugin routes", () => {
       expect(await json(response)).toEqual({ error: "request_invalid" });
     }
     expect(install).not.toHaveBeenCalled();
+  });
+
+  it("rejects duplicate JSON keys at every depth including escaped-equivalent keys", async () => {
+    const install = vi.fn();
+    const route = createProjectPluginsRoute({ install });
+    const bodies = [
+      `{"pluginName":"airtable","pluginName":"other","catalogDigest":"${catalogDigest}","expectedRevision":0}`,
+      `{"pluginName":"airtable","catalogDigest":"${catalogDigest}","expectedRevision":0,"nested":{"x":1,"x":2}}`,
+      `{"pluginName":"airtable","\\u0070luginName":"other","catalogDigest":"${catalogDigest}","expectedRevision":0}`,
+    ];
+    for (const body of bodies) {
+      const response = await route.POST(request("/api/v1/projects/project-1/plugins", {
+        method: "POST", headers: { "content-type": "application/json", "Idempotency-Key": "install-1" }, body,
+      }), { params: Promise.resolve({ projectId: "project-1" }) });
+      expect(response.status).toBe(400);
+      expect(await json(response)).toEqual({ error: "request_invalid" });
+    }
+    expect(install).not.toHaveBeenCalled();
+  });
+
+  it("bounds a hanging request body by deadline and cancels it without resolving dependencies", async () => {
+    let cancels = 0;
+    let resolutions = 0;
+    const stream = new ReadableStream<Uint8Array>({ pull: () => new Promise<void>(() => undefined), cancel: () => { cancels += 1; } });
+    const hanging = new NextRequest("https://rowboat.invalid/api/v1/projects/project-1/plugins", {
+      method: "POST", headers: { "content-type": "application/json", "Idempotency-Key": "install-1" }, body: stream,
+      duplex: "half",
+    } as unknown as ConstructorParameters<typeof NextRequest>[1]);
+    const route = createProjectPluginsRoute(async () => { resolutions += 1; return { install: vi.fn() }; }, { bodyReadTimeoutMs: 20 });
+    const response = await route.POST(hanging, { params: Promise.resolve({ projectId: "project-1" }) });
+    expect(response.status).toBe(408);
+    expect(await json(response)).toEqual({ error: "request_timeout" });
+    expect(resolutions).toBe(0);
+    expect(cancels).toBe(1);
+  });
+
+  it("stops a hanging body on request abort with no controller call or unhandled rejection", async () => {
+    const aborter = new AbortController();
+    let cancels = 0;
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const stream = new ReadableStream<Uint8Array>({ pull: () => new Promise<void>(() => undefined), cancel: () => { cancels += 1; } });
+      const pending = createProjectPluginsRoute({ install: vi.fn() }, { bodyReadTimeoutMs: 1_000 }).POST(new NextRequest(
+        "https://rowboat.invalid/api/v1/projects/project-1/plugins",
+        { method: "POST", headers: { "content-type": "application/json", "Idempotency-Key": "install-1" }, body: stream, signal: aborter.signal, duplex: "half" } as unknown as ConstructorParameters<typeof NextRequest>[1],
+      ), { params: Promise.resolve({ projectId: "project-1" }) });
+      setTimeout(() => aborter.abort(), 5);
+      const response = await pending;
+      expect(response.status).toBe(400);
+      expect(await json(response)).toEqual({ error: "request_aborted" });
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(cancels).toBe(1);
+      expect(unhandled).toEqual([]);
+    } finally { process.off("unhandledRejection", onUnhandled); }
   });
 
   it("previews a project plugin with async params and does not accept body/path identity fields", async () => {

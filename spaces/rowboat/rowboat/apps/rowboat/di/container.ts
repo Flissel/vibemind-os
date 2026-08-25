@@ -1,15 +1,4 @@
 import { asClass, asValue, createContainer, InjectionMode } from "awilix";
-import { db, mongoClient } from "@/app/lib/mongodb";
-import { MongoPluginTransactionRunner, MongodbPluginsRepository } from "@/src/infrastructure/repositories/mongodb.plugins.repository";
-import { Auth0PluginApiAuthorizationPolicy, Auth0PluginUserSessionProvider, ExistingProjectApiKeyVerifier, JoseAuth0UserTokenVerifier } from "@/src/infrastructure/policies/auth0.plugin-api-authorization.policy";
-import { ListPluginCatalogUseCase } from "@/src/application/use-cases/plugins/list-plugin-catalog.use-case";
-import { PreviewPluginInstallationUseCase } from "@/src/application/use-cases/plugins/preview-plugin-installation.use-case";
-import { InstallPluginUseCase } from "@/src/application/use-cases/plugins/install-plugin.use-case";
-import { SetPluginEnabledUseCase } from "@/src/application/use-cases/plugins/set-plugin-enabled.use-case";
-import { ListProjectPluginsUseCase } from "@/src/application/use-cases/plugins/list-project-plugins.use-case";
-import { PluginCatalogController } from "@/src/interface-adapters/controllers/plugins/plugin-catalog.controller";
-import { PluginInstallationController } from "@/src/interface-adapters/controllers/plugins/plugin-installation.controller";
-import { USE_AUTH } from "@/app/lib/feature_flags";
 
 // Services
 import { RedisPubSubService } from "@/src/infrastructure/services/redis.pub-sub.service";
@@ -175,22 +164,6 @@ export const container = createContainer({
 });
 
 container.register({
-    pluginsDatabase: asValue(db),
-    pluginsMongoClient: asValue(mongoClient),
-    pluginTransactionRunner: asClass(MongoPluginTransactionRunner).singleton(),
-    pluginsRepository: asClass(MongodbPluginsRepository).singleton(),
-    pluginUserSessionProvider: asClass(Auth0PluginUserSessionProvider).singleton(),
-    pluginAuthEnabled: asValue(USE_AUTH),
-    pluginProjectApiKeyVerifier: asClass(ExistingProjectApiKeyVerifier).singleton(),
-    pluginUserTokenVerifier: asClass(JoseAuth0UserTokenVerifier).singleton(),
-    pluginApiAuthorizationPolicy: asClass(Auth0PluginApiAuthorizationPolicy).singleton(),
-    listPluginCatalogUseCase: asClass(ListPluginCatalogUseCase).singleton(),
-    previewPluginInstallationUseCase: asClass(PreviewPluginInstallationUseCase).singleton(),
-    installPluginUseCase: asClass(InstallPluginUseCase).singleton(),
-    setPluginEnabledUseCase: asClass(SetPluginEnabledUseCase).singleton(),
-    listProjectPluginsUseCase: asClass(ListProjectPluginsUseCase).singleton(),
-    pluginCatalogController: asClass(PluginCatalogController).singleton(),
-    pluginInstallationController: asClass(PluginInstallationController).singleton(),
     // workers
     // ---
     jobsWorker: asClass(JobsWorker).singleton(),

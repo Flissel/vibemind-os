@@ -5,13 +5,14 @@ import { z } from "zod";
 const DIGEST = /^[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const IDEMPOTENCY = /^[\x21-\x7e]{1,128}$/;
+const IDEMPOTENCY = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
 const SAFE_TEXT = /^[\x20-\x7e]{1,256}$/;
 const MAX_BODY_BYTES = 65_536;
 const MAX_DEPTH = 8;
 const MAX_KEYS = 64;
 const MAX_ARRAY = 64;
 const MAX_STRING = 16_384;
+const MAX_URL = 4_096;
 const FORBIDDEN_KEYS = new Set(["__proto__", "prototype", "constructor", "toJSON"]);
 
 const Reason = z.enum([
@@ -97,7 +98,7 @@ const ERROR_STATUS = Object.freeze({
   catalog_digest_mismatch: 409, provider_unavailable: 503, license_rejected: 422, component_not_admitted: 422,
   request_invalid: 400, catalog_digest_invalid: 400, project_id_invalid: 400, plugin_name_invalid: 400,
   idempotency_key_required: 400, idempotency_key_invalid: 400, installation_revision_invalid: 400,
-  installation_update_invalid: 400,
+  installation_update_invalid: 400, request_aborted: 400, request_timeout: 408,
 } as const);
 
 function safeErrorReason(error: unknown): keyof typeof ERROR_STATUS | null {
@@ -112,41 +113,75 @@ export function pluginErrorResponse(error: unknown): Response {
   return reason === null ? pluginJson({ error: "internal_error" }, 500) : pluginJson({ error: reason }, ERROR_STATUS[reason]);
 }
 
-function assertRequest(request: Request): void {
+const NEXT_REQUEST_URL_GETTER = Object.getOwnPropertyDescriptor(NextRequest.prototype, "url")?.get;
+const REQUEST_METHOD_GETTER = Object.getOwnPropertyDescriptor(Request.prototype, "method")?.get;
+const REQUEST_HEADERS_GETTER = Object.getOwnPropertyDescriptor(Request.prototype, "headers")?.get;
+const REQUEST_BODY_GETTER = Object.getOwnPropertyDescriptor(Request.prototype, "body")?.get;
+const REQUEST_SIGNAL_GETTER = Object.getOwnPropertyDescriptor(Request.prototype, "signal")?.get;
+
+function assertRequest(request: Request): asserts request is NextRequest {
   if (utilTypes.isProxy(request)) throw new Error("request_invalid");
-  const prototype = Object.getPrototypeOf(request);
-  if (prototype !== Request.prototype && prototype !== NextRequest.prototype) throw new Error("request_invalid");
-  for (const key of ["method", "url", "headers", "body"]) if (Object.getOwnPropertyDescriptor(request, key) !== undefined) throw new Error("request_invalid");
+  if (Object.getPrototypeOf(request) !== NextRequest.prototype) throw new Error("request_invalid");
+  if (NEXT_REQUEST_URL_GETTER === undefined || REQUEST_METHOD_GETTER === undefined || REQUEST_HEADERS_GETTER === undefined || REQUEST_BODY_GETTER === undefined || REQUEST_SIGNAL_GETTER === undefined) throw new Error("request_invalid");
+  for (const key of ["method", "url", "headers", "body", "signal"]) if (Object.getOwnPropertyDescriptor(request, key) !== undefined) throw new Error("request_invalid");
+  try {
+    NEXT_REQUEST_URL_GETTER.call(request);
+    REQUEST_METHOD_GETTER.call(request);
+    REQUEST_HEADERS_GETTER.call(request);
+    REQUEST_BODY_GETTER.call(request);
+    REQUEST_SIGNAL_GETTER.call(request);
+  } catch { throw new Error("request_invalid"); }
 }
 
 export function assertRoute(request: Request, method: "GET" | "POST" | "PATCH", expectedSegments: readonly string[]): void {
-  const url = requestUrl(request);
-  if (request.method !== method || !url.pathname.startsWith("/") || url.pathname.endsWith("/")) throw new Error("request_invalid");
-  let segments: string[];
-  try { segments = url.pathname.slice(1).split("/").map((segment) => decodeURIComponent(segment)); }
-  catch { throw new Error("request_invalid"); }
-  if (segments.length !== expectedSegments.length || segments.some((segment, index) => segment !== expectedSegments[index])) throw new Error("request_invalid");
+  const { raw, url } = requestUrl(request);
+  let actualMethod: string;
+  try { actualMethod = REQUEST_METHOD_GETTER!.call(request) as string; } catch { throw new Error("request_invalid"); }
+  const expectedPath = `/${expectedSegments.join("/")}`;
+  if (
+    actualMethod !== method || url.pathname !== expectedPath || raw !== `${url.origin}${url.pathname}${url.search}`
+    || url.username !== "" || url.password !== "" || url.hash !== "" || url.pathname.endsWith("/")
+  ) throw new Error("request_invalid");
 }
 
-function requestUrl(request: Request): URL {
+function requestUrl(request: Request): Readonly<{ raw: string; url: URL }> {
   assertRequest(request);
-  try { return new URL(request.url); } catch { throw new Error("request_invalid"); }
+  const candidates: string[] = [];
+  for (const symbol of Object.getOwnPropertySymbols(request)) {
+    const stateDescriptor = Object.getOwnPropertyDescriptor(request, symbol);
+    if (stateDescriptor === undefined || !("value" in stateDescriptor) || stateDescriptor.value === null
+      || typeof stateDescriptor.value !== "object" || utilTypes.isProxy(stateDescriptor.value)) continue;
+    const urlDescriptor = Object.getOwnPropertyDescriptor(stateDescriptor.value, "url");
+    if (urlDescriptor !== undefined && "value" in urlDescriptor && typeof urlDescriptor.value === "string") candidates.push(urlDescriptor.value);
+  }
+  if (candidates.length !== 1) throw new Error("request_invalid");
+  const raw = candidates[0]!;
+  if (raw.length === 0 || raw.length > MAX_URL || /[%\\\0\r\n#]/.test(raw)) throw new Error("request_invalid");
+  let url: URL;
+  try { url = new URL(raw); } catch { throw new Error("request_invalid"); }
+  return Object.freeze({ raw, url });
 }
 
 function requestHeader(request: Request, name: string): string | null {
   assertRequest(request);
   let value: string | null;
-  try { value = request.headers.get(name); } catch { throw new Error("request_invalid"); }
+  try { value = (REQUEST_HEADERS_GETTER!.call(request) as Headers).get(name); } catch { throw new Error("request_invalid"); }
   if (value !== null && (value.includes("\0") || value.includes("\r") || value.includes("\n"))) throw new Error("request_invalid");
   return value;
 }
 
 export function query(request: Request, allowed: readonly string[]): Readonly<Record<string, string>> {
-  const parameters = requestUrl(request).searchParams;
+  const { raw, url } = requestUrl(request);
+  const marker = raw.indexOf("?");
+  if (marker < 0 || raw.indexOf("?", marker + 1) >= 0 || url.search.length <= 1) throw new Error("request_invalid");
   const output: Record<string, string> = Object.create(null) as Record<string, string>;
-  for (const key of new Set(parameters.keys())) {
-    if (!allowed.includes(key) || parameters.getAll(key).length !== 1) throw new Error("request_invalid");
-    output[key] = parameters.get(key)!;
+  for (const pair of raw.slice(marker + 1).split("&")) {
+    const equals = pair.indexOf("=");
+    if (equals <= 0 || pair.indexOf("=", equals + 1) >= 0) throw new Error("request_invalid");
+    const key = pair.slice(0, equals);
+    const value = pair.slice(equals + 1);
+    if (!allowed.includes(key) || output[key] !== undefined || value.length === 0) throw new Error("request_invalid");
+    output[key] = value;
   }
   if (Object.keys(output).length !== allowed.length || allowed.some((key) => output[key] === undefined)) throw new Error("request_invalid");
   if (output.catalogDigest !== undefined && !DIGEST.test(output.catalogDigest)) throw new Error("request_invalid");
@@ -183,7 +218,9 @@ function inspectJson(value: unknown, depth = 0): void {
   if (typeof value === "string") { if (value.length > MAX_STRING) throw new Error("request_invalid"); return; }
   if (typeof value === "number") { if (!Number.isFinite(value)) throw new Error("request_invalid"); return; }
   if (Array.isArray(value)) { if (value.length > MAX_ARRAY) throw new Error("request_invalid"); for (const item of value) inspectJson(item, depth + 1); return; }
-  if (typeof value !== "object" || utilTypes.isProxy(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new Error("request_invalid");
+  if (typeof value !== "object" || utilTypes.isProxy(value)) throw new Error("request_invalid");
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) throw new Error("request_invalid");
   const keys = Reflect.ownKeys(value);
   if (keys.length > MAX_KEYS) throw new Error("request_invalid");
   for (const key of keys) {
@@ -194,33 +231,173 @@ function inspectJson(value: unknown, depth = 0): void {
   }
 }
 
-export async function jsonBody(request: Request): Promise<unknown> {
+class BoundedJsonParser {
+  private index = 0;
+  private totalKeys = 0;
+
+  constructor(private readonly text: string) {}
+
+  parse(): unknown {
+    this.whitespace();
+    const value = this.value(0);
+    this.whitespace();
+    if (this.index !== this.text.length) throw new Error("request_invalid");
+    return value;
+  }
+
+  private value(depth: number): unknown {
+    if (depth > MAX_DEPTH) throw new Error("request_invalid");
+    this.whitespace();
+    const character = this.text[this.index];
+    if (character === '"') return this.string();
+    if (character === "{") return this.object(depth);
+    if (character === "[") return this.array(depth);
+    if (character === "t") return this.literal("true", true);
+    if (character === "f") return this.literal("false", false);
+    if (character === "n") return this.literal("null", null);
+    return this.number();
+  }
+
+  private object(depth: number): Readonly<Record<string, unknown>> {
+    this.index += 1;
+    const output: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    const names = new Set<string>();
+    this.whitespace();
+    if (this.text[this.index] === "}") { this.index += 1; return Object.freeze(output); }
+    while (true) {
+      if (this.text[this.index] !== '"') throw new Error("request_invalid");
+      const key = this.string();
+      this.totalKeys += 1;
+      if (this.totalKeys > MAX_KEYS || names.has(key) || FORBIDDEN_KEYS.has(key)) throw new Error("request_invalid");
+      names.add(key);
+      this.whitespace();
+      if (this.text[this.index] !== ":") throw new Error("request_invalid");
+      this.index += 1;
+      const selected = this.value(depth + 1);
+      Object.defineProperty(output, key, { value: selected, enumerable: true, writable: false, configurable: false });
+      this.whitespace();
+      const separator = this.text[this.index];
+      this.index += 1;
+      if (separator === "}") return Object.freeze(output);
+      if (separator !== ",") throw new Error("request_invalid");
+      this.whitespace();
+    }
+  }
+
+  private array(depth: number): readonly unknown[] {
+    this.index += 1;
+    const output: unknown[] = [];
+    this.whitespace();
+    if (this.text[this.index] === "]") { this.index += 1; return Object.freeze(output); }
+    while (true) {
+      if (output.length >= MAX_ARRAY) throw new Error("request_invalid");
+      output.push(this.value(depth + 1));
+      this.whitespace();
+      const separator = this.text[this.index];
+      this.index += 1;
+      if (separator === "]") return Object.freeze(output);
+      if (separator !== ",") throw new Error("request_invalid");
+      this.whitespace();
+    }
+  }
+
+  private string(): string {
+    this.index += 1;
+    let output = "";
+    while (this.index < this.text.length) {
+      const character = this.text[this.index]!;
+      this.index += 1;
+      if (character === '"') return output;
+      if (character === "\\") {
+        const escaped = this.text[this.index];
+        this.index += 1;
+        const simple: Readonly<Record<string, string>> = Object.freeze({ '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" });
+        if (escaped === "u") {
+          const hex = this.text.slice(this.index, this.index + 4);
+          if (!/^[a-fA-F0-9]{4}$/.test(hex)) throw new Error("request_invalid");
+          output += String.fromCharCode(Number.parseInt(hex, 16));
+          this.index += 4;
+        } else if (escaped !== undefined && simple[escaped] !== undefined) output += simple[escaped];
+        else throw new Error("request_invalid");
+      } else {
+        if (character.charCodeAt(0) < 0x20) throw new Error("request_invalid");
+        output += character;
+      }
+      if (output.length > MAX_STRING) throw new Error("request_invalid");
+    }
+    throw new Error("request_invalid");
+  }
+
+  private number(): number {
+    const match = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/.exec(this.text.slice(this.index));
+    if (match === null) throw new Error("request_invalid");
+    this.index += match[0].length;
+    const value = Number(match[0]);
+    if (!Number.isFinite(value)) throw new Error("request_invalid");
+    return value;
+  }
+
+  private literal<T extends boolean | null>(literal: string, value: T): T {
+    if (!this.text.startsWith(literal, this.index)) throw new Error("request_invalid");
+    this.index += literal.length;
+    return value;
+  }
+
+  private whitespace(): void {
+    while (this.index < this.text.length && /[\x20\x09\x0a\x0d]/.test(this.text[this.index]!)) this.index += 1;
+  }
+}
+
+export async function jsonBody(request: Request, timeoutMs = 5_000): Promise<unknown> {
   const contentType = requestHeader(request, "content-type");
   if (contentType === null || !/^application\/json(?:; charset=utf-8)?$/i.test(contentType)) throw new Error("request_invalid");
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) throw new Error("request_invalid");
   assertRequest(request);
-  const stream = request.body;
+  const stream = REQUEST_BODY_GETTER!.call(request) as ReadableStream<Uint8Array> | null;
   if (stream === null) throw new Error("request_invalid");
+  const signal = REQUEST_SIGNAL_GETTER!.call(request) as AbortSignal;
+  if (signal.aborted) throw new Error("request_aborted");
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let rejectBoundary: ((reason: Error) => void) | undefined;
+  const boundary = new Promise<never>((_resolve, reject) => { rejectBoundary = reject; });
+  const onAbort = () => { rejectBoundary?.(new Error("request_aborted")); };
+  signal.addEventListener("abort", onAbort, { once: true });
+  timer = setTimeout(() => { rejectBoundary?.(new Error("request_timeout")); }, timeoutMs);
+  const cleanupBoundary = () => {
+    if (timer !== undefined) clearTimeout(timer);
+    timer = undefined;
+    rejectBoundary = undefined;
+    signal.removeEventListener("abort", onAbort);
+  };
+  const release = () => { try { reader.releaseLock(); } catch { /* pending reads release after cancellation */ } };
+  const cancel = () => {
+    try { void reader.cancel().then(release, release); } catch { release(); }
+  };
   try {
     while (true) {
-      const item = await reader.read();
+      const item = await Promise.race([reader.read(), boundary]);
       if (item.done) break;
       size += item.value.byteLength;
       if (size > MAX_BODY_BYTES) throw new Error("request_invalid");
       chunks.push(item.value);
     }
   } catch (error) {
-    await reader.cancel().catch(() => undefined);
-    if (safeErrorReason(error) === "request_invalid") throw new Error("request_invalid");
+    cleanupBoundary();
+    cancel();
+    const reason = safeErrorReason(error);
+    if (reason === "request_invalid" || reason === "request_aborted" || reason === "request_timeout") throw new Error(reason);
     throw new Error("request_invalid");
   }
+  cleanupBoundary();
+  release();
   const bytes = new Uint8Array(size);
   let offset = 0;
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
   let parsed: unknown;
-  try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown; } catch { throw new Error("request_invalid"); }
+  try { parsed = new BoundedJsonParser(new TextDecoder("utf-8", { fatal: true }).decode(bytes)).parse(); } catch { throw new Error("request_invalid"); }
   inspectJson(parsed);
   return parsed;
 }
@@ -235,9 +412,25 @@ export function strictObject(value: unknown, allowed: readonly string[]): Readon
   return Object.freeze(output);
 }
 
-function status(components: readonly z.infer<typeof Component>[]): "available" | "partially_available" {
-  return components.every((component) => component.availability.status === "available" || component.availability.status === "installed")
-    ? "available" : "partially_available";
+function serializedComponents(components: readonly z.infer<typeof Component>[]) {
+  return components.map((component) => {
+    if (component.admission.status !== "admitted") {
+      return { ...component, status: component.admission.status, reason: component.admission.reason };
+    }
+    return {
+      ...component,
+      status: component.availability.status,
+      ...(component.availability.reason === undefined ? {} : { reason: component.availability.reason }),
+    };
+  });
+}
+
+function serializedPlugin<T extends { readonly admission: "admitted" | "review_required" | "rejected"; readonly reason?: z.infer<typeof Reason>; readonly components: readonly z.infer<typeof Component>[] }>(item: T) {
+  const components = serializedComponents(item.components);
+  const derived = item.admission === "admitted"
+    ? (components.every((component) => component.status === "available" || component.status === "installed") ? "available" : "partially_available")
+    : item.admission;
+  return { ...item, components, status: derived };
 }
 
 function inspectOutput(value: unknown, depth = 0): void {
@@ -275,7 +468,7 @@ function parsed<T>(schema: z.ZodType<T>, value: unknown): T {
 }
 
 export function catalogResponse(value: unknown, selectedName?: string): Response {
-  const items = parsed(z.array(CatalogItem).max(512), value).map((item) => ({ ...item, status: status(item.components) }));
+  const items = parsed(z.array(CatalogItem).max(512), value).map(serializedPlugin);
   if (selectedName !== undefined) {
     const selected = items.find((item) => item.name === selectedName && item.pluginName === selectedName);
     if (selected === undefined) throw new Error("plugin_not_found");
@@ -285,13 +478,13 @@ export function catalogResponse(value: unknown, selectedName?: string): Response
 }
 
 export function projectListResponse(value: unknown): Response {
-  const items = parsed(z.array(ProjectItem).max(512), value).map((item) => ({ ...item, status: status(item.components) }));
+  const items = parsed(z.array(ProjectItem).max(512), value).map(serializedPlugin);
   return pluginJson({ items });
 }
 
 export function previewResponse(value: unknown): Response {
   const item = parsed(Preview, value);
-  return pluginJson({ ...item, status: status(item.components) });
+  return pluginJson(serializedPlugin(item));
 }
 
 export function installResponse(value: unknown): Response { return pluginJson(parsed(InstallReceipt, value), 201); }
