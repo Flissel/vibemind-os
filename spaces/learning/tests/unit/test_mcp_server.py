@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 from uuid import uuid4
 
+import pytest
+
 from spaces.learning.contracts.events import LearningToolName
 from spaces.learning.mcp import server
+from spaces.learning.bridge.ui_bridge import UiBridge
 
 
 def _call(name: str, arguments: dict) -> dict:
@@ -47,6 +50,21 @@ def test_initialize_and_tool_catalog_are_complete() -> None:
         tool.value for tool in LearningToolName
     }
     assert all(tool["inputSchema"]["additionalProperties"] is False for tool in listed["result"]["tools"])
+
+
+def test_runtime_ui_delivery_is_optional_and_rejects_normalized_tokens(monkeypatch) -> None:
+    monkeypatch.delenv("LEARNING_UI_BRIDGE_TOKEN", raising=False)
+    assert server._runtime_ui_delivery() is None
+
+    monkeypatch.setenv("LEARNING_UI_BRIDGE_TOKEN", " token-with-at-least-32-characters ")
+    with pytest.raises(ValueError, match="token"):
+        server._runtime_ui_delivery()
+
+    monkeypatch.setenv(
+        "LEARNING_UI_BRIDGE_TOKEN",
+        "runtime-token-with-at-least-32-characters",
+    )
+    assert isinstance(server._runtime_ui_delivery(), UiBridge)
 
 
 def test_status_is_structural_and_never_claims_live() -> None:

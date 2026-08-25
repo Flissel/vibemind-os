@@ -16,6 +16,8 @@ from spaces.learning.contracts.outcomes import (
     ToolErrorV1,
     TruthReadbackV1,
 )
+from spaces.learning.contracts.ui_intents import NavigateIntentV1
+from spaces.learning.bridge.ui_bridge import UiDeliveryResult
 
 
 def _request(
@@ -82,6 +84,18 @@ def _completed_gateway() -> FakeGateway:
             ),
         ),
     )
+
+
+@dataclass
+class RecordingUiDelivery:
+    fail: bool = False
+    calls: int = 0
+
+    def try_deliver(self, intent: object, *, correlation_id: object) -> UiDeliveryResult:
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("renderer transport failed")
+        return UiDeliveryResult(delivered=True)
 
 
 def test_duplicate_idempotency_key_returns_original_result_without_second_call() -> None:
@@ -162,3 +176,78 @@ def test_gateway_revision_conflict_is_preserved_without_readback() -> None:
     assert result.state == "rejected"
     assert result.error and result.error.code == "revision_conflict"
     assert gateway.readback_calls == 0
+
+
+def test_verified_intent_is_delivered_once_after_application_readback() -> None:
+    gateway = _completed_gateway()
+    gateway.outcome = gateway.outcome.model_copy(
+        update={
+            "ui_intent": NavigateIntentV1(
+                aggregate_id="course-1",
+                aggregate_revision=1,
+                route="/learning",
+            )
+        }
+    )
+    delivery = RecordingUiDelivery()
+    dispatcher = LearningDispatcher(
+        gateways={LearningToolName.COURSE_CREATE: gateway},
+        receipts=InMemoryReceiptStore(),
+        ui_delivery=delivery,
+    )
+
+    first = dispatcher.dispatch(_request(key="delivery-1"))
+    replay = dispatcher.dispatch(_request(key="delivery-1"))
+
+    assert first.state == "completed"
+    assert replay.state == "completed"
+    assert gateway.readback_calls == 1
+    assert delivery.calls == 1
+
+
+def test_renderer_delivery_failure_does_not_relabel_verified_backend_success() -> None:
+    gateway = _completed_gateway()
+    gateway.outcome = gateway.outcome.model_copy(
+        update={
+            "ui_intent": NavigateIntentV1(
+                aggregate_id="course-1",
+                aggregate_revision=1,
+                route="/learning",
+            )
+        }
+    )
+    dispatcher = LearningDispatcher(
+        gateways={LearningToolName.COURSE_CREATE: gateway},
+        receipts=InMemoryReceiptStore(),
+        ui_delivery=RecordingUiDelivery(fail=True),
+    )
+
+    result = dispatcher.dispatch(_request(key="delivery-2"))
+
+    assert result.state == "completed"
+    assert result.evidence is not None
+
+
+def test_unverified_backend_result_never_emits_ui_intent() -> None:
+    gateway = _completed_gateway()
+    gateway.readback_value = None
+    gateway.outcome = gateway.outcome.model_copy(
+        update={
+            "ui_intent": NavigateIntentV1(
+                aggregate_id="course-1",
+                aggregate_revision=1,
+                route="/learning",
+            )
+        }
+    )
+    delivery = RecordingUiDelivery()
+    dispatcher = LearningDispatcher(
+        gateways={LearningToolName.COURSE_CREATE: gateway},
+        receipts=InMemoryReceiptStore(),
+        ui_delivery=delivery,
+    )
+
+    result = dispatcher.dispatch(_request(key="delivery-3"))
+
+    assert result.state == "unavailable"
+    assert delivery.calls == 0

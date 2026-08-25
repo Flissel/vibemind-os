@@ -9,6 +9,7 @@ from spaces.learning.bridge.dispatcher import (
     LearningDispatcher,
     ApplicationGateway,
     ReceiptStore,
+    UiIntentDelivery,
 )
 from spaces.learning.contracts.events import LearningToolName
 from spaces.learning.contracts.mcp_models import ToolRequestV1
@@ -57,6 +58,7 @@ def build_default_dispatcher(
     *,
     gateways: Mapping[LearningToolName, ApplicationGateway] | None = None,
     receipts: ReceiptStore | None = None,
+    ui_delivery: UiIntentDelivery | None = None,
 ) -> LearningDispatcher:
     database_url = os.environ.get("LEARNING_DATABASE_URL", "").strip()
     selected_receipts = receipts or InMemoryReceiptStore()
@@ -71,4 +73,5 @@ def build_default_dispatcher(
     return LearningDispatcher(
         gateways=admitted_gateways,
         receipts=selected_receipts,
+        ui_delivery=ui_delivery,
     )

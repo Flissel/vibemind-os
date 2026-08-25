@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass
 from threading import Lock
 from typing import Mapping, Protocol
+from uuid import UUID
 
 from pydantic import Field, JsonValue
 
@@ -18,6 +20,10 @@ from spaces.learning.contracts.outcomes import (
     TruthReadbackV1,
 )
 from spaces.learning.contracts.ui_intents import UiIntent
+from spaces.learning.bridge.ui_bridge import UiDeliveryResult
+
+
+logger = logging.getLogger(__name__)
 
 
 class ApplicationOutcomeV1(ContractModel):
@@ -36,6 +42,12 @@ class ApplicationGateway(Protocol):
     def readback(
         self, request: ToolRequestV1, outcome: ApplicationOutcomeV1
     ) -> TruthReadbackV1 | None: ...
+
+
+class UiIntentDelivery(Protocol):
+    def try_deliver(
+        self, intent: UiIntent, *, correlation_id: UUID
+    ) -> UiDeliveryResult: ...
 
 
 @dataclass(frozen=True)
@@ -134,9 +146,11 @@ class LearningDispatcher:
         *,
         gateways: Mapping[LearningToolName, ApplicationGateway],
         receipts: ReceiptStore,
+        ui_delivery: UiIntentDelivery | None = None,
     ) -> None:
         self._gateways = dict(gateways)
         self._receipts = receipts
+        self._ui_delivery = ui_delivery
 
     def dispatch(self, request: ToolRequestV1) -> ToolResultV1:
         key = request.event.idempotency_key
@@ -231,7 +245,34 @@ class LearningDispatcher:
             evidence=verified.evidence,
             ui_intent=outcome.ui_intent,
         )
+        self._deliver_ui_intent(result)
         return self._finalize(key, digest, result)
+
+    def _deliver_ui_intent(self, result: ToolResultV1) -> None:
+        if self._ui_delivery is None or result.ui_intent is None:
+            return
+        try:
+            delivery = self._ui_delivery.try_deliver(
+                result.ui_intent,
+                correlation_id=result.correlation_id,
+            )
+        except Exception:
+            logger.warning(
+                "learning_ui_intent_delivery_failed",
+                extra={
+                    "correlation_id": str(result.correlation_id),
+                    "error_code": "unexpected_delivery_error",
+                },
+            )
+            return
+        if not delivery.delivered:
+            logger.warning(
+                "learning_ui_intent_delivery_failed",
+                extra={
+                    "correlation_id": str(result.correlation_id),
+                    "error_code": delivery.error_code or "delivery_failed",
+                },
+            )
 
     def _unverified(self, request: ToolRequestV1, message: str) -> ToolResultV1:
         return _error_result(

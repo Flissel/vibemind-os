@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections.abc import Mapping
 from typing import Any
@@ -11,7 +12,9 @@ from spaces.learning.bridge.dispatcher import (
     ApplicationGateway,
     LearningDispatcher,
     ReceiptStore,
+    UiIntentDelivery,
 )
+from spaces.learning.bridge.ui_bridge import UiBridge
 from spaces.learning.bridge.learnhouse_client import LearnHouseClient
 from spaces.learning.contracts.events import EVENT_TOOL_MAP, LearningToolName
 from spaces.learning.contracts.mcp_models import EventEnvelopeV1, ToolRequestV1
@@ -49,14 +52,31 @@ def build_default_dispatcher(
     *,
     learnhouse: ApplicationGateway | None = None,
     receipts: ReceiptStore | None = None,
+    ui_delivery: UiIntentDelivery | None = None,
 ) -> LearningDispatcher:
     admitted_learnhouse = learnhouse or LearnHouseClient()
     gateways = dict(build_course_gateways(admitted_learnhouse))
     gateways.update(build_navigation_gateways(admitted_learnhouse))
-    return build_status_dispatcher(gateways=gateways, receipts=receipts)
+    return build_status_dispatcher(
+        gateways=gateways,
+        receipts=receipts,
+        ui_delivery=ui_delivery,
+    )
 
 
-_DEFAULT_DISPATCHER = build_default_dispatcher()
+def _runtime_ui_delivery() -> UiIntentDelivery | None:
+    token = os.environ.get("LEARNING_UI_BRIDGE_TOKEN", "")
+    if not token:
+        return None
+    return UiBridge(
+        base_url=os.environ.get(
+            "LEARNING_UI_BRIDGE_URL", "http://127.0.0.1:5151"
+        ),
+        auth_token=token,
+    )
+
+
+_DEFAULT_DISPATCHER = build_default_dispatcher(ui_delivery=_runtime_ui_delivery())
 
 
 def _mcp_result(payload: Mapping[str, Any], *, is_error: bool) -> dict[str, Any]:
