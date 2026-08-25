@@ -153,6 +153,23 @@ def test_local_bootstrap_mode_and_key_are_shared_server_only_references() -> Non
         )
 
 
+def test_learning_bootstrap_uses_internal_api_service_address() -> None:
+    services = _load(COMPOSE_PATH)["services"]
+    assert isinstance(services, dict)
+    web = services["learnhouse-web"]
+    assert isinstance(web, dict)
+    environment = web["environment"]
+    assert isinstance(environment, dict)
+
+    assert environment["LEARNHOUSE_INTERNAL_API_URL"] == (
+        "http://learnhouse-api:9000/api/v1/"
+    )
+    assert environment["NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL"] == (
+        "http://127.0.0.1:${LEARNHOUSE_API_PORT:-1338}"
+    )
+    assert "NEXT_PUBLIC_LEARNHOUSE_INTERNAL_API_URL" not in environment
+
+
 def test_profile_is_explicitly_local_and_has_no_ha_claim() -> None:
     profile = _load(PROFILE_PATH)
 
