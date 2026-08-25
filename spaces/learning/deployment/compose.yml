@@ -1,0 +1,252 @@
+name: vibemind-learning
+
+x-restart: &restart unless-stopped
+x-postgres-url: &postgres-url postgresql+psycopg://${LEARNING_POSTGRES_USER:-learning}:${LEARNING_POSTGRES_PASSWORD:?set LEARNING_POSTGRES_PASSWORD}@postgres:5432/${LEARNING_POSTGRES_DB:-vibemind_learning}
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: *restart
+    environment:
+      POSTGRES_USER: ${LEARNING_POSTGRES_USER:-learning}
+      POSTGRES_PASSWORD: ${LEARNING_POSTGRES_PASSWORD:?set LEARNING_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${LEARNING_POSTGRES_DB:-vibemind_learning}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 10s
+
+  redis:
+    image: redis:7.4.2-alpine
+    restart: *restart
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.2
+    restart: *restart
+    ports:
+      - "127.0.0.1:${QDRANT_HTTP_PORT:-16333}:6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333'"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 10s
+
+  learnhouse-api:
+    build:
+      context: ../learnhouse/apps/api
+      dockerfile: Dockerfile
+    restart: *restart
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - >-
+        exec /app/.venv/bin/uvicorn app:app --host 0.0.0.0 --port 9000
+        --timeout-keep-alive 600
+    environment:
+      LEARNHOUSE_ENV: production
+      LEARNHOUSE_DEVELOPMENT_MODE: "false"
+      LEARNHOUSE_SELF_HOSTED: "true"
+      LEARNHOUSE_AUTH_JWT_SECRET_KEY: ${LEARNHOUSE_AUTH_JWT_SECRET_KEY:?set LEARNHOUSE_AUTH_JWT_SECRET_KEY}
+      LEARNHOUSE_INITIAL_ADMIN_PASSWORD: ${LEARNHOUSE_INITIAL_ADMIN_PASSWORD:?set LEARNHOUSE_INITIAL_ADMIN_PASSWORD}
+      LEARNHOUSE_SQL_CONNECTION_STRING: postgresql+asyncpg://${LEARNING_POSTGRES_USER:-learning}:${LEARNING_POSTGRES_PASSWORD:?set LEARNING_POSTGRES_PASSWORD}@postgres:5432/${LEARNING_POSTGRES_DB:-vibemind_learning}
+      LEARNHOUSE_REDIS_CONNECTION_STRING: redis://redis:6379/0
+      LEARNHOUSE_CONTENT_DELIVERY_TYPE: filesystem
+      LEARNHOUSE_ALLOWED_ORIGINS: http://127.0.0.1:${LEARNHOUSE_WEB_PORT:-13000}
+      LEARNHOUSE_FRONTEND_DOMAIN: 127.0.0.1
+      LEARNHOUSE_DOMAIN: 127.0.0.1
+      LEARNHOUSE_PORT: "9000"
+      COLLAB_INTERNAL_KEY: ${LEARNHOUSE_COLLAB_INTERNAL_KEY:?set LEARNHOUSE_COLLAB_INTERNAL_KEY}
+    ports:
+      - "127.0.0.1:${LEARNHOUSE_API_PORT:-1338}:9000"
+    volumes:
+      - learnhouse-content:/app/content
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  learnhouse-collab:
+    build:
+      context: ../learnhouse/apps/collab
+      dockerfile: Dockerfile
+    restart: *restart
+    environment:
+      COLLAB_PORT: "4000"
+      COLLAB_INTERNAL_KEY: ${LEARNHOUSE_COLLAB_INTERNAL_KEY:?set LEARNHOUSE_COLLAB_INTERNAL_KEY}
+      LEARNHOUSE_AUTH_JWT_SECRET_KEY: ${LEARNHOUSE_AUTH_JWT_SECRET_KEY:?set LEARNHOUSE_AUTH_JWT_SECRET_KEY}
+      LEARNHOUSE_REDIS_URL: redis://redis:6379/0
+      LEARNHOUSE_API_URL: http://learnhouse-api:9000
+    ports:
+      - "127.0.0.1:${LEARNHOUSE_COLLAB_PORT:-4000}:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('net').connect(4000,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 20s
+
+  learnhouse-web:
+    build:
+      context: ../learnhouse/apps/web
+      dockerfile: Dockerfile
+    restart: *restart
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["exec env bun server-wrapper.js"]
+    environment:
+      HOSTNAME: 0.0.0.0
+      PORT: "3000"
+      NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL: http://127.0.0.1:${LEARNHOUSE_API_PORT:-1338}
+      NEXT_PUBLIC_LEARNHOUSE_COLLAB_URL: ws://127.0.0.1:${LEARNHOUSE_COLLAB_PORT:-4000}
+      NEXT_PUBLIC_LEARNHOUSE_OSS: "true"
+    ports:
+      - "127.0.0.1:${LEARNHOUSE_WEB_PORT:-13000}:3000"
+    depends_on:
+      learnhouse-api:
+        condition: service_healthy
+      learnhouse-collab:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:3000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  learning-api:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile.learning
+    restart: *restart
+    command: ["sh", "-c", "python -m spaces.learning.deployment.migrate && uvicorn spaces.learning.deployment.runtime_api:app --host 0.0.0.0 --port 8090"]
+    environment:
+      LEARNING_DATABASE_URL: *postgres-url
+      LEARNING_REDIS_URL: redis://redis:6379/1
+      LEARNING_QDRANT_URL: http://qdrant:6333
+      LEARNING_ARTIFACT_ROOT: /var/lib/vibemind-learning/artifacts
+      LEARNING_SERVICE_ROLE: api
+    ports:
+      - "127.0.0.1:${LEARNING_API_PORT:-8090}:8090"
+    volumes:
+      - learning-artifacts:/var/lib/vibemind-learning/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health/ready', timeout=3)"]
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 20s
+
+  learning-worker:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile.learning
+    restart: *restart
+    command: ["python", "-m", "spaces.learning.deployment.worker"]
+    environment:
+      LEARNING_DATABASE_URL: *postgres-url
+      LEARNING_REDIS_URL: redis://redis:6379/1
+      LEARNING_QDRANT_URL: http://qdrant:6333
+      LEARNING_ARTIFACT_ROOT: /var/lib/vibemind-learning/artifacts
+      LEARNING_WORKER_HEARTBEAT: /tmp/learning-worker-heartbeat
+    volumes:
+      - learning-artifacts:/var/lib/vibemind-learning/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "spaces.learning.deployment.worker", "--healthcheck"]
+      interval: 10s
+      timeout: 4s
+      retries: 6
+      start_period: 15s
+
+  learning-mcp:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile.learning
+    restart: *restart
+    command: ["uvicorn", "spaces.learning.deployment.runtime_api:app", "--host", "0.0.0.0", "--port", "8091"]
+    environment:
+      LEARNING_DATABASE_URL: *postgres-url
+      LEARNING_REDIS_URL: redis://redis:6379/1
+      LEARNING_QDRANT_URL: http://qdrant:6333
+      LEARNING_ARTIFACT_ROOT: /var/lib/vibemind-learning/artifacts
+      LEARNING_SERVICE_ROLE: mcp
+    ports:
+      - "127.0.0.1:${LEARNING_MCP_PORT:-8091}:8091"
+    depends_on:
+      learning-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/health/ready', timeout=3)"]
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 15s
+
+  penecho:
+    build:
+      context: ../penecho
+      dockerfile: ../deployment/Dockerfile.penecho
+    restart: *restart
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3888"
+      AI_PROVIDER: api
+      PENECHO_STATE_DIR: /var/lib/penecho
+      PENECHO_DEBUG_ARTIFACTS: "false"
+      PENECHO_REQUEST_TRACE: "false"
+    ports:
+      - "127.0.0.1:${PENECHO_PORT:-3888}:3888"
+    volumes:
+      - penecho-state:/var/lib/penecho
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3888/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  postgres-data:
+  redis-data:
+  qdrant-data:
+  learnhouse-content:
+  learning-artifacts:
+  penecho-state:

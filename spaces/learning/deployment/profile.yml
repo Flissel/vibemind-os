@@ -1,0 +1,13 @@
+profile: local-single-host
+compose_file: compose.yml
+availability: restart-and-persistence
+multi_host_ha: false
+authoritative_status_tool: learning_status
+exposure: loopback-only
+state:
+  database: postgres-data
+  cache: redis-data
+  vectors: qdrant-data
+  artifacts: learning-artifacts
+  course_media: learnhouse-content
+  canvas: penecho-state

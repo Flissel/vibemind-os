@@ -1,0 +1,26 @@
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/workspace
+
+WORKDIR /workspace
+
+RUN groupadd --system --gid 1001 learning \
+    && useradd --system --uid 1001 --gid learning --create-home learning
+
+COPY deployment/requirements-runtime.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+RUN mkdir -p /workspace/spaces && touch /workspace/spaces/__init__.py
+COPY . /workspace/spaces/learning
+
+RUN mkdir -p /var/lib/vibemind-learning/artifacts \
+    && chown -R learning:learning /workspace /var/lib/vibemind-learning
+
+USER learning
+
+HEALTHCHECK --interval=10s --timeout=4s --retries=6 --start-period=15s \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health/live', timeout=3)"
+
+CMD ["python", "-m", "spaces.learning.deployment.runtime_api"]

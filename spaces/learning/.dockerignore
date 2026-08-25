@@ -1,0 +1,9 @@
+learnhouse/
+penecho/
+tests/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+deployment/compose.yml
+deployment/.env*
+deployment/Dockerfile.penecho

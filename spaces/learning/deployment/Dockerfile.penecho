@@ -1,0 +1,25 @@
+FROM node:24-bookworm-slim
+
+ENV NODE_ENV=production \
+    HOST=0.0.0.0 \
+    PORT=3888 \
+    PENECHO_STATE_DIR=/var/lib/penecho \
+    PENECHO_DEBUG_ARTIFACTS=false \
+    PENECHO_REQUEST_TRACE=false
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts
+
+COPY . ./
+RUN mkdir -p /var/lib/penecho \
+    && chown -R node:node /app /var/lib/penecho
+
+USER node
+EXPOSE 3888
+
+HEALTHCHECK --interval=10s --timeout=4s --retries=6 --start-period=15s \
+  CMD node -e "fetch('http://127.0.0.1:3888/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+
+CMD ["node", "server.js"]
