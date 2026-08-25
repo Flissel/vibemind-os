@@ -1,6 +1,6 @@
 # Laura-Oberfläche im VibeMind Video Space — Live-Beleg mit Nicht-Claims
 
-**Zeitpunkt:** `2026-08-25T12:41:36.784+02:00`
+**Zeitpunkt:** `2026-08-25T13:05:12.675+02:00`
 
 Der reale Electron-Pfad wurde automatisiert geprüft. Das Gate belegt die eingebettete
 Laura-Oberfläche, die authentifizierte Local-API-Verbindung, ein Detach/Reattach derselben
@@ -14,9 +14,10 @@ verändert und keine Ersatzdaten erzeugt.
 
 | Komponente | Commit |
 |---|---|
-| `vibemind-os` vor diesem Follow-up-Commit | `d49f7d48d811c248e8562007e8786fbfb71208e7` |
+| `vibemind-os` vor diesem Follow-up-Commit | `64a898fd0b23b1e90eeb40fd4a93706a626c8be0` |
 | `spaces/video/laura` | `e5e005cbc025363cd617ae1b5cf6ac9684e8ad03` |
-| `voice` | `7c6096d766ad17119550eca3446b70044e11a62b` |
+| `voice` | `6c54a8a923682f012a62454a84d12b6f473d1db6` |
+| `voice` beim vollständigen API/UI-Live-Runner | `7c6096d766ad17119550eca3446b70044e11a62b` |
 
 `npm --prefix voice/electron-app run video:build` baute den realen Laura-Renderer frisch
 mit Vite (`152 modules transformed`, Exitcode 0).
@@ -114,6 +115,32 @@ eingecheckte Dead-Port-Gegenprobe
 `npm --prefix voice/electron-app run test:e2e -- --grep "video space embeds"` blieb ebenfalls
 grün (`1 passed (12.0s)`).
 
+## FAST_STARTUP-Gate
+
+Der aktuelle Voice-Commit definiert `FAST_STARTUP=true` als explizite Startup-Policy. Sie
+erhält Hauptfenster, Laura-Host, Laura-Protokoll und VideoManager, überspringt aber die drei
+gekapselten externen Bootphasen. Damit liefen in diesem Modus weder stale-container/media
+Docker noch Brain-Spawn, OpenFang, Supabase Realtime, Brain-Bridge, n8n/MiroFish Docker,
+Rowboat-Bridge oder das Python-Backend an. Außerhalb des exakt gesetzten Werts `true` führt
+dieselbe Policy die bisherigen Callbacks weiterhin in Reihenfolge aus und wartet auf sie.
+
+Fixture und Live-Runner setzen zusätzlich `N8N_ENABLED=false`, `MIROFISH_ENABLED=false` und
+`SKIP_BRAIN_SPAWN=true` explizit, damit geerbte `.env`-Werte nicht als stiller Fallback dienen.
+Der instrumentierte E2E erfasste Main-stdout/stderr begrenzt im Speicher. Der kontrollierte
+Lauf ohne Retry
+
+```powershell
+npm --prefix voice/electron-app run test:e2e -- --grep "video space embeds" --retries=0
+```
+
+endete mit Exitcode 0 und `1 passed (50.5s)`. Die Logs enthielten die Marker
+`FAST_STARTUP active — external startup side effects disabled`,
+`Laura host and VideoManager initialized`, `Loading Laura renderer`, `Laura renderer loaded`
+und `Video shown`. Sie enthielten keinen der geprüften Startmarker für Python, Brain,
+OpenFang, Supabase, Brain-Bridge, n8n, MiroFish oder Rowboat. Der Prozess beendete sich ohne
+firstWindow- oder Teardown-Timeout. Mit 50,5 Sekunden war der Lauf trotzdem langsam; daraus
+wird keine allgemeine Beseitigung aller Startup-Flakes abgeleitet.
+
 ## Nicht-Claims
 
 - Sora ist durch dieses Gate nicht in Laura integriert.
@@ -128,14 +155,17 @@ zurück ist ebenfalls nicht belegt.
 ## Verifikation und Blocker
 
 - PASS: `npm --prefix voice/electron-app run video:build` (Vite-Build, 152 Module).
-- PASS: `npm --prefix voice/electron-app run laura:live-proof` (Exitcode 0; API,
+- PASS am Voice-Commit `7c6096d`: `npm --prefix voice/electron-app run laura:live-proof`
+  (Exitcode 0; API,
   positive UI/Detach/Reattach/Dialog-Probe, negativer Umschlag und Cleanup in einem
   begrenzten Lauf). Der Runner verwendet für diese State-Probe direkt `hideVideo()` und
   `showVideo()`; daraus wird kein echter Space-Wechsel abgeleitet.
-- PASS: `npm --prefix voice/electron-app run test:unit` (50/50 Tests).
+- PASS am aktuellen Voice-Commit: `npm --prefix voice/electron-app run test:unit`
+  (53/53 Tests).
 - PASS: `pnpm --dir spaces/video/laura/apps/desktop typecheck` (Exitcode 0).
-- PASS: `npm --prefix voice/electron-app run test:e2e -- --grep "video space embeds"`
-  (Exitcode 0, `1 passed (12.0s)`). Beim früheren Lauf hatten die Assertions bereits
+- PASS am aktuellen Voice-Commit:
+  `npm --prefix voice/electron-app run test:e2e -- --grep "video space embeds" --retries=0`
+  (Exitcode 0, `1 passed (50.5s)`). Beim früheren Teardown-Befund hatten die Assertions bereits
   bestanden; der gemeldete Testfehler war ausschließlich der Teardown-Timeout. Die
   Lifecycle-Instrumentierung lokalisierte ihn auf `VideoManager.destroy()`:
   `BrowserView.webContents.close()` blockierte während `will-quit`. Der eng begrenzte Fix
