@@ -178,6 +178,18 @@ def test_core_migration_and_metadata_own_the_exact_prefixed_tables() -> None:
         "learning_course_factory_draft_deliveries",
         "learning_course_factory_review_decisions",
         "learning_course_factory_publications",
+        "learning_adaptive_concepts",
+        "learning_adaptive_concept_dependencies",
+        "learning_adaptive_items",
+        "learning_adaptive_item_concepts",
+        "learning_adaptive_sessions",
+        "learning_adaptive_attempts",
+        "learning_adaptive_responses",
+        "learning_adaptive_evaluations",
+        "learning_adaptive_mastery",
+        "learning_adaptive_mastery_evidence",
+        "learning_adaptive_review_schedules",
+        "learning_adaptive_misconceptions",
     }
 
 

@@ -5,6 +5,7 @@ from sqlalchemy import engine_from_config, pool
 
 from spaces.learning.services.db.models import Base
 from spaces.learning.services.ingestion import models as ingestion_models  # noqa: F401
+from spaces.learning.services.adaptive_engine import models as adaptive_models  # noqa: F401
 
 
 config = context.config

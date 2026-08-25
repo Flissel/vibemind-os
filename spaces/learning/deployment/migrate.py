@@ -11,6 +11,7 @@ from spaces.learning.services.db.models import Base
 from spaces.learning.services.db.session import create_learning_engine
 from spaces.learning.services.course_factory import models as course_factory_models  # noqa: F401
 from spaces.learning.services.ingestion import models as ingestion_models  # noqa: F401
+from spaces.learning.services.adaptive_engine import models as adaptive_models  # noqa: F401
 
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "services" / "db" / "migrations"

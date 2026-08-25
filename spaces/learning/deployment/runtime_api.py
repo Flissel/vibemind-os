@@ -19,6 +19,7 @@ from sqlalchemy import inspect, text
 from spaces.learning.deployment.health import HealthService
 from spaces.learning.mcp.server import handle_message
 from spaces.learning.services.course_factory import models as course_factory_models  # noqa: F401
+from spaces.learning.services.adaptive_engine import models as adaptive_models  # noqa: F401
 from spaces.learning.services.db.models import Base
 from spaces.learning.services.db.session import create_learning_engine
 from spaces.learning.services.ingestion import models as ingestion_models  # noqa: F401
