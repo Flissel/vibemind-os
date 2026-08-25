@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
@@ -102,12 +102,18 @@ function options(source: Awaited<ReturnType<typeof createSource>>) {
   } as const;
 }
 
+async function createGitInvocationRoot(label: string): Promise<string> {
+  const root = await createOwnedTestRoot(label);
+  await execFileAsync("git", ["init", "--quiet", root]);
+  return root;
+}
+
 describe("importCatalog", () => {
   it("resolves a relative CLI output from the validated invocation root", async () => {
     const source = await createSource("catalog-cli-paths", [
       { directoryName: "alpha", license: "MIT" },
     ]);
-    const invocationRoot = await createOwnedTestRoot("catalog-invocation-root");
+    const invocationRoot = await createGitInvocationRoot("catalog-invocation-root");
     const relativeOutput = join(
       "spaces",
       "rowboat",
@@ -126,6 +132,60 @@ describe("importCatalog", () => {
     expect(paths.repositoryRoot).toBe(source.repositoryRoot);
     expect(paths.source).toBe(source.pluginsRoot);
     expect(paths.storeRoot).toBe(source.storeRoot);
+  });
+
+  it("rejects absolute output outside the invocation worktree", async () => {
+    const source = await createSource("catalog-absolute-outside", [
+      { directoryName: "alpha", license: "MIT" },
+    ]);
+    const invocationRoot = await createGitInvocationRoot("catalog-absolute-root");
+    const outsideRoot = await createOwnedTestRoot("catalog-absolute-target");
+
+    await expect(resolveCatalogSyncPaths([
+      "--source", source.pluginsRoot,
+      "--commit", "11c74d6ba24d3a6d48f54a194cd00ef3beea18f9",
+      "--output", join(outsideRoot, "catalog.json"),
+    ], source.storeRoot, invocationRoot)).rejects.toThrow("path_escape:catalog_output");
+  });
+
+  it("rejects a non-Git root and a Git worktree subdirectory", async () => {
+    const source = await createSource("catalog-fake-root", [
+      { directoryName: "alpha", license: "MIT" },
+    ]);
+    const nonGitRoot = await createOwnedTestRoot("catalog-non-git-root");
+    const invocationRoot = await createGitInvocationRoot("catalog-git-root");
+    const subdirectory = join(invocationRoot, "subdirectory");
+    await mkdir(subdirectory);
+    const args = [
+      "--source", source.pluginsRoot,
+      "--commit", "11c74d6ba24d3a6d48f54a194cd00ef3beea18f9",
+      "--output", "catalog.json",
+    ] as const;
+
+    await expect(resolveCatalogSyncPaths(args, source.storeRoot, nonGitRoot))
+      .rejects.toThrow("source_mismatch:invocation_root");
+    await expect(resolveCatalogSyncPaths(args, source.storeRoot, subdirectory))
+      .rejects.toThrow("source_mismatch:invocation_root");
+  });
+
+  it("rejects an output whose existing ancestor escapes through a reparse point", async () => {
+    const source = await createSource("catalog-reparse-source", [
+      { directoryName: "alpha", license: "MIT" },
+    ]);
+    const invocationRoot = await createGitInvocationRoot("catalog-reparse-root");
+    const outsideRoot = await createOwnedTestRoot("catalog-reparse-target");
+    const link = join(invocationRoot, "escaped");
+    try {
+      await symlink(outsideRoot, link, process.platform === "win32" ? "junction" : "dir");
+    } catch {
+      return;
+    }
+
+    await expect(resolveCatalogSyncPaths([
+      "--source", source.pluginsRoot,
+      "--commit", "11c74d6ba24d3a6d48f54a194cd00ef3beea18f9",
+      "--output", join("escaped", "catalog.json"),
+    ], source.storeRoot, invocationRoot)).rejects.toThrow("path_escape:catalog_output");
   });
 
   it("accepts only the exact pinned commit at the CLI boundary", () => {

@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
-import { readFile, readdir, realpath, stat } from "node:fs/promises";
+import { access, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, describe, expect, it } from "vitest";
 import {
@@ -16,12 +17,15 @@ import {
 } from "./test-temp.js";
 
 const sourceRoot = process.env.OPENAI_PLUGINS_SOURCE_ROOT;
+const catalogStoreRoot = process.env.ROWBOAT_PLUGIN_STORE;
 const PINNED_COMMIT = "11c74d6ba24d3a6d48f54a194cd00ef3beea18f9";
 const execFileAsync = promisify(execFile);
 let pinStoreParent: string | undefined;
+let cliInvocationRoot: string | undefined;
 
 afterAll(async () => {
   if (pinStoreParent !== undefined) await cleanupOwnedTestRoot(pinStoreParent);
+  if (cliInvocationRoot !== undefined) await cleanupOwnedTestRoot(cliInvocationRoot);
 });
 
 async function filesUnder(directory: string): Promise<readonly string[]> {
@@ -183,6 +187,55 @@ describe.skipIf(sourceRoot === undefined)("pinned OpenAI plugin catalog", () => 
         hookComponentCount: 2,
         assetComponentCount: 262,
       });
+    },
+    1_200_000,
+  );
+
+  it.skipIf(catalogStoreRoot === undefined)(
+    "runs the documented npm catalog sync from the invocation Git root",
+    async () => {
+      if (sourceRoot === undefined || catalogStoreRoot === undefined) {
+        throw new Error("pinned source and store are required");
+      }
+      cliInvocationRoot = await createOwnedTestRoot("pin-cli-invocation");
+      await execFileAsync("git", ["init", "--quiet", cliInvocationRoot]);
+      const relativeOutput = join(
+        "spaces",
+        "rowboat",
+        "rowboat",
+        "config",
+        "openai-plugin-catalog.lock.json",
+      );
+      const packageRoot = fileURLToPath(new URL("../", import.meta.url));
+      const childEnvironment: NodeJS.ProcessEnv = {
+        ...process.env,
+        ROWBOAT_PLUGIN_STORE: catalogStoreRoot,
+      };
+      delete childEnvironment.INIT_CWD;
+
+      const npmExecutable = process.env.npm_execpath;
+      if (npmExecutable === undefined) throw new Error("npm_execpath is required");
+      const result = await execFileAsync(process.execPath, [
+        npmExecutable,
+        "--prefix", packageRoot,
+        "run", "catalog:sync",
+        "--",
+        "--source", join(sourceRoot, "plugins"),
+        "--commit", PINNED_COMMIT,
+        "--output", relativeOutput,
+      ], {
+        cwd: cliInvocationRoot,
+        env: childEnvironment,
+        timeout: 1_200_000,
+        maxBuffer: 1024 * 1024,
+      });
+
+      expect(result.stdout).toMatch(/[a-f0-9]{64} 180/);
+      const written = JSON.parse(
+        await readFile(join(cliInvocationRoot, relativeOutput), "utf8"),
+      ) as { readonly entries: readonly unknown[] };
+      expect(written.entries).toHaveLength(180);
+      await expect(access(join(packageRoot, "spaces"))).rejects.toThrow();
     },
     1_200_000,
   );
