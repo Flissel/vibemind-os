@@ -28,8 +28,10 @@ import {
 } from "../import/directory-identity.js";
 import {
   digestTree,
+  inspectDigestTree,
   type FileModeResolver,
   type GitFileMode,
+  type TreeInventory,
 } from "../import/digest-service.js";
 import {
   streamContainedRegularFile,
@@ -53,7 +55,27 @@ export interface ContentStoreEntry {
   readonly path: string;
 }
 
-export type StoredPluginContent = ContentStoreEntry;
+declare const STORED_PLUGIN_CONTENT: unique symbol;
+export interface StoredPluginContent extends ContentStoreEntry {
+  readonly [STORED_PLUGIN_CONTENT]: never;
+}
+
+export const STORED_PLUGIN_INVENTORY_LIMITS = Object.freeze({
+  maxFiles: 4_096,
+  maxDirectories: 4_096,
+  maxDepth: 32,
+  maxBytes: 64 * 1024 * 1024,
+});
+
+export interface StoredPluginContentDetails {
+  readonly digest: string;
+  readonly path: string;
+  readonly identity: DirectoryIdentity;
+  readonly trustedStoreIdentity: DirectoryIdentity;
+  readonly inventory: TreeInventory;
+}
+
+const storedPluginContentDetails = new WeakMap<StoredPluginContent, StoredPluginContentDetails>();
 
 export interface ContentStorePublicationObserver {
   afterInitialInspect?(state: ContentStorePublicationState): Promise<void>;
@@ -381,8 +403,46 @@ async function acquirePublicationLock(
   );
 }
 
-function storedContent(digest: string, path: string): StoredPluginContent {
-  return Object.freeze({ digest, path });
+async function storedContent(
+  digest: string,
+  path: string,
+  trustedStoreIdentity: DirectoryIdentity,
+  fileModeResolver: FileModeResolver | undefined,
+): Promise<StoredPluginContent> {
+  await assertDirectoryIdentity(trustedStoreIdentity);
+  const identity = await snapshotDirectoryIdentity(path);
+  if (
+    !isContainedPath(trustedStoreIdentity.canonicalPath, identity.canonicalPath)
+    || dirname(identity.canonicalPath) !== trustedStoreIdentity.canonicalPath
+  ) {
+    throw new PluginSourceSecurityError("path_escape", "stored content leaves trusted store");
+  }
+  const inspection = await inspectDigestTree(identity.canonicalPath, {
+    fileModeResolver,
+    limits: STORED_PLUGIN_INVENTORY_LIMITS,
+  });
+  await assertIdentities(trustedStoreIdentity, identity);
+  if (inspection.digest !== digest) {
+    throw new PluginSourceSecurityError("digest_mismatch", "stored content digest differs");
+  }
+  const token = Object.freeze({ digest, path: identity.canonicalPath }) as StoredPluginContent;
+  storedPluginContentDetails.set(token, Object.freeze({
+    digest,
+    path: identity.canonicalPath,
+    identity,
+    trustedStoreIdentity,
+    inventory: inspection.inventory,
+  }));
+  return token;
+}
+
+export function revealStoredPluginContent(content: unknown): StoredPluginContentDetails {
+  if (typeof content !== "object" || content === null) {
+    throw new Error("provider_invalid:execution_root");
+  }
+  const details = storedPluginContentDetails.get(content as StoredPluginContent);
+  if (details === undefined) throw new Error("provider_invalid:execution_root");
+  return details;
 }
 
 function assertDirectChildWithPrefix(
@@ -780,7 +840,6 @@ export class ContentStore {
     const destination = join(storeRoot, expectedDigest);
     const markerPath = join(storeRoot, `.complete-${expectedDigest}`);
     const lockPath = join(storeRoot, `.lock-${expectedDigest}`);
-    const result = storedContent(expectedDigest, destination);
     assertDirectChildWithPrefix(storeRoot, markerPath, `.complete-${expectedDigest}`);
     assertDirectChildWithPrefix(storeRoot, lockPath, `.lock-${expectedDigest}`);
 
@@ -794,7 +853,7 @@ export class ContentStore {
     await this.publicationObserver?.afterInitialInspect?.(initialState);
     await assertIdentities(repositoryIdentity, storeIdentity, pluginIdentity);
     if (initialState === "complete") {
-      return result;
+      return await storedContent(expectedDigest, destination, storeIdentity, this.fileModeResolver);
     }
 
     const temporaryDirectory = join(
@@ -850,7 +909,7 @@ export class ContentStore {
         this.fileModeResolver,
       );
       if (lockResult.state === "published") {
-        return result;
+        return await storedContent(expectedDigest, destination, storeIdentity, this.fileModeResolver);
       }
 
       try {
@@ -868,7 +927,7 @@ export class ContentStore {
           this.fileModeResolver,
         );
         if (lockedState === "complete") {
-          return result;
+          return await storedContent(expectedDigest, destination, storeIdentity, this.fileModeResolver);
         }
 
         if (lockedState === "invalid") {
@@ -902,7 +961,7 @@ export class ContentStore {
             this.fileModeResolver,
           );
           if (racedState === "complete") {
-            return result;
+            return await storedContent(expectedDigest, destination, storeIdentity, this.fileModeResolver);
           }
 
           throw new PluginSourceSecurityError(
@@ -993,7 +1052,7 @@ export class ContentStore {
           temporaryIdentity,
           destinationIdentity,
         );
-        return result;
+        return await storedContent(expectedDigest, destination, storeIdentity, this.fileModeResolver);
       } finally {
         await removeOwnedEmptyDirectory(lockResult.identity, storeIdentity);
       }

@@ -19,9 +19,7 @@ import {
 } from "./credential-resolver.js";
 import { assertBinding } from "./provider-registry.js";
 import {
-  captureMcpOperationBindings,
   validateMcpInvocation,
-  type McpOperationBinding,
 } from "./mcp-request.js";
 import { captureProviderInvocation } from "./provider-invocation.js";
 import type {
@@ -126,17 +124,20 @@ class SdkHttpMcpClient implements HttpMcpClient {
     if (transport.native === undefined) throw new Error("mcp_transport_invalid");
     if (this.#client !== undefined) await this.#client.close();
     const client = new Client({ name: "rowboat-openai-plugin-runtime", version: "1.0.0" });
+    // Bind the connecting client before awaiting SDK initialization so the
+    // provider deadline can close its transport while connect is still pending.
+    this.#client = client;
     try {
       // SDK 1.26.0's concrete transports expose `sessionId: string | undefined`
       // while its Transport interface declares an exact optional property.
       await client.connect(transport.native as Transport);
-      this.#client = client;
     } catch (error: unknown) {
       try {
         await client.close();
       } catch {
         // Preserve the classified connection outcome while still cleaning up.
       }
+      if (this.#client === client) this.#client = undefined;
       if (
         transport.kind === "streamable-http"
         && error instanceof StreamableHTTPError
@@ -195,20 +196,20 @@ class SdkHttpMcpTransportFactory implements HttpMcpTransportFactory {
       });
     }
 
-    const eventSourceInit = input.credential === undefined
-      ? undefined
-      : {
-          fetch: async (url: string | URL, init: RequestInit): Promise<Response> => {
-            const headers = new Headers(init.headers);
+    const eventSourceInit = {
+      fetch: async (url: string | URL, init: RequestInit): Promise<Response> => {
+        const headers = new Headers(init.headers);
+        if (input.credential !== undefined) {
             headers.set("Authorization", `Bearer ${revealSecretValue(input.credential as SecretValue)}`);
-            return fetch(url, { ...init, headers, signal: input.signal });
-          },
-        };
+        }
+        return fetch(url, { ...init, headers, signal: input.signal });
+      },
+    };
     return Object.freeze({
       kind: input.kind,
       native: new SSEClientTransport(input.url, {
         requestInit,
-        ...(eventSourceInit === undefined ? {} : { eventSourceInit }),
+        eventSourceInit,
       }),
     });
   }
@@ -220,7 +221,6 @@ export interface HttpMcpProviderOptions {
   readonly server: NormalizedHttpMcp;
   readonly parentLicense: string | undefined;
   readonly policy: PluginPolicy;
-  readonly operations: readonly McpOperationBinding[];
   readonly credentialResolver: CredentialResolver;
   readonly clientFactory?: HttpMcpClientFactory;
   readonly transportFactory?: HttpMcpTransportFactory;
@@ -262,7 +262,6 @@ export class HttpMcpProvider implements PluginProvider {
   readonly #url: URL;
   readonly #parentLicense: string | undefined;
   readonly #policy: PluginPolicy;
-  readonly #operations: readonly McpOperationBinding[];
   readonly #credentialResolver: CredentialResolver;
   readonly #clientFactory: HttpMcpClientFactory;
   readonly #transportFactory: HttpMcpTransportFactory;
@@ -302,11 +301,6 @@ export class HttpMcpProvider implements PluginProvider {
     }
     this.#parentLicense = options.parentLicense;
     this.#policy = capturePluginPolicy(options.policy);
-    this.#operations = captureMcpOperationBindings(
-      options.operations,
-      options.server.componentDigest,
-      this.#policy.version,
-    );
     this.#credentialResolver = options.credentialResolver;
     this.#clientFactory = options.clientFactory ?? new SdkHttpMcpClientFactory();
     this.#transportFactory = options.transportFactory ?? new SdkHttpMcpTransportFactory();
@@ -343,8 +337,8 @@ export class HttpMcpProvider implements PluginProvider {
     request = captured.request;
     const providerDenial = admissionReason(this.#parentLicense, "mcp_http", this.#policy);
     if (providerDenial !== undefined) throw new Error(providerDenial);
-    const operation = validateMcpInvocation(this.#server.name, request, this.#operations);
-    const capabilityDenial = admissionReason(this.#parentLicense, operation.capability, this.#policy);
+    const operationName = validateMcpInvocation(this.#server.name, request);
+    const capabilityDenial = admissionReason(this.#parentLicense, "write", this.#policy);
     if (capabilityDenial !== undefined) throw new Error(capabilityDenial);
 
     const controller = new AbortController();
@@ -382,7 +376,7 @@ export class HttpMcpProvider implements PluginProvider {
       }
       const output = await awaitWithSignal(
         client.callTool({
-          name: operation.operationName,
+          name: operationName,
           arguments: request.arguments,
         }, Object.freeze({ signal: controller.signal })),
         controller.signal,

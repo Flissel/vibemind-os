@@ -1,13 +1,16 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import {
   assertDirectoryIdentity,
   type DirectoryIdentity,
 } from "../import/directory-identity.js";
-import { digestTree } from "../import/digest-service.js";
+import {
+  inspectDigestTree,
+  type TreeInventory,
+} from "../import/digest-service.js";
 
 const ENVIRONMENT_NAME = /^[A-Z][A-Z0-9_]*$/;
 export const DEFAULT_PROCESS_OUTPUT_LIMIT_BYTES = 64 * 1024;
@@ -18,9 +21,12 @@ export interface SafeSpawnOptions {
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
   readonly executionRootIdentity: DirectoryIdentity;
+  readonly trustedStoreIdentity: DirectoryIdentity;
   readonly workingDirectoryIdentity: DirectoryIdentity;
   readonly componentDigest: string;
   readonly executionRootDigest: string;
+  readonly executionRootInventory: TreeInventory;
+  readonly signal: AbortSignal;
 }
 
 export interface SpawnCompletion {
@@ -96,24 +102,56 @@ function isContained(root: string, candidate: string): boolean {
 
 export async function assertSafeSpawnIdentity(options: SafeSpawnOptions): Promise<void> {
   const root = options.executionRootIdentity;
+  const store = options.trustedStoreIdentity;
   const workingDirectory = options.workingDirectoryIdentity;
   if (
     root === undefined
+    || store === undefined
     || workingDirectory === undefined
     || options.componentDigest === undefined
     || options.executionRootDigest === undefined
     || !/^[a-f0-9]{64}$/u.test(options.componentDigest)
     || !/^[a-f0-9]{64}$/u.test(options.executionRootDigest)
+    || !(options.signal instanceof AbortSignal)
+    || options.signal.aborted
     || options.cwd !== workingDirectory.canonicalPath
+    || dirname(root.canonicalPath) !== store.canonicalPath
     || !isContained(root.canonicalPath, workingDirectory.canonicalPath)
   ) {
     throw new Error("path_escape");
   }
-  await assertDirectoryIdentity(root);
-  await assertDirectoryIdentity(workingDirectory);
-  if ((await digestTree(root.canonicalPath)) !== options.executionRootDigest) {
+  const expectedInventory = options.executionRootInventory;
+  if (
+    expectedInventory === undefined
+    || !Number.isSafeInteger(expectedInventory.fileCount) || expectedInventory.fileCount < 0
+    || !Number.isSafeInteger(expectedInventory.directoryCount) || expectedInventory.directoryCount < 0
+    || !Number.isSafeInteger(expectedInventory.maxDepth) || expectedInventory.maxDepth < 0
+    || !Number.isSafeInteger(expectedInventory.totalBytes) || expectedInventory.totalBytes < 0
+  ) {
     throw new Error("path_escape");
   }
+  await assertDirectoryIdentity(store);
+  await assertDirectoryIdentity(root);
+  await assertDirectoryIdentity(workingDirectory);
+  const inspection = await inspectDigestTree(root.canonicalPath, {
+    signal: options.signal,
+    limits: {
+      maxFiles: expectedInventory.fileCount,
+      maxDirectories: expectedInventory.directoryCount,
+      maxDepth: expectedInventory.maxDepth,
+      maxBytes: expectedInventory.totalBytes,
+    },
+  });
+  if (
+    inspection.digest !== options.executionRootDigest
+    || inspection.inventory.fileCount !== expectedInventory.fileCount
+    || inspection.inventory.directoryCount !== expectedInventory.directoryCount
+    || inspection.inventory.maxDepth !== expectedInventory.maxDepth
+    || inspection.inventory.totalBytes !== expectedInventory.totalBytes
+  ) {
+    throw new Error("path_escape");
+  }
+  await assertDirectoryIdentity(store);
   await assertDirectoryIdentity(root);
   await assertDirectoryIdentity(workingDirectory);
 }

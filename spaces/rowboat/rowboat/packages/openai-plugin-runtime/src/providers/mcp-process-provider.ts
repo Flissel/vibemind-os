@@ -34,9 +34,7 @@ import {
 } from "./credential-resolver.js";
 import { assertBinding } from "./provider-registry.js";
 import {
-  captureMcpOperationBindings,
   validateMcpInvocation,
-  type McpOperationBinding,
 } from "./mcp-request.js";
 import { captureProviderInvocation } from "./provider-invocation.js";
 import type {
@@ -56,6 +54,36 @@ const MAX_MCP_PROTOCOL_FRAME_BYTES = 1024 * 1024;
 const MAX_MCP_PROTOCOL_BYTES = 8 * 1024 * 1024;
 const MAX_PROCESS_OUTPUT_BYTES = 1024 * 1024;
 const PROCESS_PROVIDER_CLEANUP_MS = 25;
+
+class ProcessInvocationTimeoutError extends Error {
+  constructor() {
+    super("process_timed_out");
+    this.name = "ProcessInvocationTimeoutError";
+  }
+}
+
+function assertProcessActive(signal: AbortSignal): void {
+  if (signal.aborted) throw new ProcessInvocationTimeoutError();
+}
+
+function awaitProcessSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new ProcessInvocationTimeoutError());
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(new ProcessInvocationTimeoutError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        if (signal.aborted) reject(new ProcessInvocationTimeoutError());
+        else resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
 
 type BoundedSettlement<T> =
   | Readonly<{ readonly status: "resolved"; readonly value: T }>
@@ -238,7 +266,6 @@ export interface ProcessMcpProviderOptions {
   readonly executionRoot: VerifiedProcessExecutionRoot;
   readonly parentLicense: string | undefined;
   readonly policy: PluginPolicy;
-  readonly operations: readonly McpOperationBinding[];
   readonly credentialResolver: CredentialResolver;
   readonly spawner?: ProcessSpawner;
   readonly safeBaselineEnvironment?: Readonly<Record<string, string>>;
@@ -254,11 +281,12 @@ export class ProcessMcpProvider implements PluginProvider {
   readonly #server: NormalizedProcessMcp;
   readonly #pluginRoot: string;
   readonly #executionRootIdentity: DirectoryIdentity;
+  readonly #trustedStoreIdentity: DirectoryIdentity;
   readonly #executionRoot: VerifiedProcessExecutionRoot;
   readonly #executionRootDigest: string;
+  readonly #executionRootInventory: ReturnType<typeof revealVerifiedProcessExecutionRoot>["inventory"];
   readonly #parentLicense: string | undefined;
   readonly #policy: PluginPolicy;
-  readonly #operations: readonly McpOperationBinding[];
   readonly #credentialResolver: CredentialResolver;
   readonly #spawner: ProcessSpawner;
   readonly #safeBaselineEnvironment: Readonly<Record<string, string>>;
@@ -326,14 +354,11 @@ export class ProcessMcpProvider implements PluginProvider {
     this.#pluginRoot = executionRoot.path;
     this.#executionRoot = options.executionRoot;
     this.#executionRootIdentity = executionRoot.identity;
+    this.#trustedStoreIdentity = executionRoot.trustedStoreIdentity;
     this.#executionRootDigest = executionRoot.executionRootDigest;
+    this.#executionRootInventory = executionRoot.inventory;
     this.#parentLicense = options.parentLicense;
     this.#policy = capturePluginPolicy(options.policy);
-    this.#operations = captureMcpOperationBindings(
-      options.operations,
-      options.server.componentDigest,
-      this.#policy.version,
-    );
     this.#credentialResolver = options.credentialResolver;
     this.#spawner = options.spawner ?? new NodeProcessSpawner();
     this.#safeBaselineEnvironment = captureSafeEnvironment(
@@ -352,21 +377,47 @@ export class ProcessMcpProvider implements PluginProvider {
   }
 
   async invoke(request: ProviderRequest, context: ProviderContext): Promise<ProviderResult> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.#server.timeoutMilliseconds);
+    const operation = Promise.resolve().then(
+      () => this.#invokeWithSignal(request, context, controller.signal),
+    );
+    try {
+      return await awaitProcessSignal(operation, controller.signal);
+    } catch (error: unknown) {
+      if (error instanceof ProcessInvocationTimeoutError || controller.signal.aborted) {
+        await settleWithin(operation, PROCESS_PROVIDER_CLEANUP_MS);
+        void operation.catch(() => undefined);
+        return Object.freeze({ status: "failed", reason: "process_timed_out" });
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async #invokeWithSignal(
+    request: ProviderRequest,
+    context: ProviderContext,
+    signal: AbortSignal,
+  ): Promise<ProviderResult> {
     const captured = captureProviderInvocation(request, context);
     request = captured.request;
     const providerDenial = denialReason(this.#parentLicense, "mcp_process", this.#policy);
     if (providerDenial !== undefined) throw new Error(providerDenial);
-    const operationBinding = validateMcpInvocation(this.#server.name, request, this.#operations);
-    const capabilityDenial = denialReason(this.#parentLicense, operationBinding.capability, this.#policy);
+    const operationName = validateMcpInvocation(this.#server.name, request);
+    const capabilityDenial = denialReason(this.#parentLicense, "write", this.#policy);
     if (capabilityDenial !== undefined) throw new Error(capabilityDenial);
 
     await assertVerifiedProcessExecutionRoot(this.#executionRoot);
+    assertProcessActive(signal);
     const cwd = await resolveSafeWorkingDirectory(
       this.#pluginRoot,
       this.#server.workingDirectory ?? ".",
     );
     const workingDirectoryIdentity = await snapshotDirectoryIdentity(cwd);
     await assertVerifiedProcessExecutionRoot(this.#executionRoot);
+    assertProcessActive(signal);
 
     const resolvedEnvironment: Record<string, string> = Object.create(null) as Record<string, string>;
     const secrets: string[] = [];
@@ -374,11 +425,19 @@ export class ProcessMcpProvider implements PluginProvider {
       const reference = Object.freeze({ kind: "environment" as const, reference: referenceName });
       assertCredentialRequest(reference, request.projectId);
       try {
-        const secret = await this.#credentialResolver.resolve(reference, request.projectId);
+        const secret = await awaitProcessSignal(
+          this.#credentialResolver.resolve(
+            reference,
+            request.projectId,
+            Object.freeze({ signal }),
+          ),
+          signal,
+        );
         const value = revealSecretValue(secret);
         resolvedEnvironment[referenceName] = value;
         secrets.push(value);
       } catch {
+        if (signal.aborted) throw new ProcessInvocationTimeoutError();
         throw new Error("credential_missing");
       }
     }
@@ -386,6 +445,7 @@ export class ProcessMcpProvider implements PluginProvider {
     const environment = captureSafeEnvironment(this.#safeBaselineEnvironment, resolvedEnvironment);
     await assertVerifiedProcessExecutionRoot(this.#executionRoot);
     await assertDirectoryIdentity(workingDirectoryIdentity);
+    assertProcessActive(signal);
 
     let spawned: SpawnedProcess;
     try {
@@ -394,16 +454,23 @@ export class ProcessMcpProvider implements PluginProvider {
         cwd,
         env: environment,
         executionRootIdentity: this.#executionRootIdentity,
+        trustedStoreIdentity: this.#trustedStoreIdentity,
         workingDirectoryIdentity,
         componentDigest: this.#server.componentDigest,
         executionRootDigest: this.#executionRootDigest,
+        executionRootInventory: this.#executionRootInventory,
+        signal,
       });
       await assertVerifiedProcessExecutionRoot(this.#executionRoot);
       await assertDirectoryIdentity(workingDirectoryIdentity);
-      spawned = await this.#spawner.spawn(
-        this.#server.command,
-        this.#server.args,
-        spawnOptions,
+      assertProcessActive(signal);
+      spawned = await awaitProcessSignal(
+        Promise.resolve(this.#spawner.spawn(
+          this.#server.command,
+          this.#server.args,
+          spawnOptions,
+        )),
+        signal,
       );
     } catch {
       return Object.freeze({ status: "failed", reason: "process_failed" });
@@ -421,13 +488,13 @@ export class ProcessMcpProvider implements PluginProvider {
       this.#maxOutputBytes ?? 64 * 1024,
       Object.freeze(secrets),
     );
-    let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<"timeout">((resolveTimeout) => {
-      timer = setTimeout(() => resolveTimeout("timeout"), this.#server.timeoutMilliseconds);
+      if (signal.aborted) resolveTimeout("timeout");
+      else signal.addEventListener("abort", () => resolveTimeout("timeout"), { once: true });
     });
     const operation = (async (): Promise<unknown> => {
       await client.connect(spawned, this.#maxProtocolFrameBytes, this.#maxProtocolBytes);
-      return client.callTool({ name: operationBinding.operationName, arguments: request.arguments });
+      return client.callTool({ name: operationName, arguments: request.arguments });
     })();
 
     let output: unknown;
@@ -447,7 +514,6 @@ export class ProcessMcpProvider implements PluginProvider {
         status = outcome.kind;
       }
     } finally {
-      if (timer !== undefined) clearTimeout(timer);
       if (status !== "success") await terminateSpawnedProcess(spawned);
       const close = await settleWithin(
         Promise.resolve().then(() => client.close()),

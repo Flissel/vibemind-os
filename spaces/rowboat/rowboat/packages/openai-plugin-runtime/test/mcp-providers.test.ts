@@ -1,9 +1,10 @@
 import { mkdir, readFile, rename, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
   DEFAULT_POLICY,
+  ContentStore,
   HttpMcpProvider,
   McpCompatibilityError,
   ProcessMcpProvider,
@@ -34,30 +35,35 @@ import {
 import {
   snapshotDirectoryIdentity,
 } from "../src/import/directory-identity.js";
+import { inspectDigestTree } from "../src/import/digest-service.js";
 
 const HTTP_DIGEST = "a".repeat(64);
 const PROCESS_DIGEST = "b".repeat(64);
-const READ_HTTP_OPERATIONS = Object.freeze([Object.freeze({
-  operationName: "query",
-  capability: "read" as const,
-  componentDigest: HTTP_DIGEST,
-  policyVersion: DEFAULT_POLICY.version,
-})]);
-const READ_PROCESS_OPERATIONS = Object.freeze([Object.freeze({
-  operationName: "query",
-  capability: "read" as const,
-  componentDigest: PROCESS_DIGEST,
-  policyVersion: DEFAULT_POLICY.version,
-})]);
+const WRITE_HTTP_POLICY: PluginPolicy = Object.freeze({
+  ...DEFAULT_POLICY,
+  allowWriteCapabilities: true,
+});
 async function createTempDirectory(): Promise<string> {
   return createOwnedTestRoot("mcp-providers");
 }
 
-async function createVerifiedProcessRoot(pluginRoot: string) {
-  return verifyProcessExecutionRoot(
-    Object.freeze({ path: pluginRoot, digest: await digestTree(pluginRoot) }),
+async function createVerifiedProcessRootDetails(pluginRoot: string) {
+  const digest = await digestTree(pluginRoot);
+  const storeContainer = await createOwnedTestRoot("mcp-provider-store");
+  const storeRoot = join(storeContainer, "store");
+  const content = await new ContentStore({
+    repositoryRoot: pluginRoot,
+    storeRoot,
+  }).put(pluginRoot, digest);
+  const executionRoot = await verifyProcessExecutionRoot(
+    content,
     PROCESS_DIGEST,
   );
+  return Object.freeze({ executionRoot, path: content.path });
+}
+
+async function createVerifiedProcessRoot(pluginRoot: string) {
+  return (await createVerifiedProcessRootDetails(pluginRoot)).executionRoot;
 }
 
 afterEach(cleanupRegisteredTestRoots);
@@ -67,7 +73,7 @@ const request: ProviderRequest = Object.freeze({
   pluginName: "example-plugin",
   componentName: "search",
   operationName: "query",
-  capability: "read",
+  capability: "write",
   arguments: Object.freeze({ query: "safe query" }),
 });
 
@@ -195,11 +201,10 @@ function httpProvider(
       url: "https://example.com/mcp",
     }),
     parentLicense: "MIT",
-    policy: DEFAULT_POLICY,
+    policy: WRITE_HTTP_POLICY,
     credentialResolver: resolver,
     clientFactory: { create: () => client },
     transportFactory,
-    operations: READ_HTTP_OPERATIONS,
   };
   return new HttpMcpProvider(options);
 }
@@ -222,8 +227,7 @@ function deadlineHttpProvider(options: {
       bearerTokenReference: "API_TOKEN",
     }),
     parentLicense: "MIT",
-    policy: DEFAULT_POLICY,
-    operations: READ_HTTP_OPERATIONS,
+    policy: WRITE_HTTP_POLICY,
     credentialResolver: options.resolver,
     clientFactory: {
       create(input?: { readonly signal: AbortSignal }) {
@@ -282,8 +286,7 @@ describe("HTTP MCP provider", () => {
         url: "https://example.com/mcp",
       }),
       parentLicense: "MIT",
-      policy: DEFAULT_POLICY,
-      operations: READ_HTTP_OPERATIONS,
+      policy: WRITE_HTTP_POLICY,
       credentialResolver: new RecordingCredentialResolver(),
       clientFactory: { create: () => client },
       transportFactory: { create: (input) => Object.freeze({ kind: input.kind }) },
@@ -312,7 +315,6 @@ describe("HTTP MCP provider", () => {
       }),
       parentLicense: "MIT",
       policy: DEFAULT_POLICY,
-      operations: READ_HTTP_OPERATIONS,
       credentialResolver: resolver,
       clientFactory: { create: () => client },
       transportFactory: { create: (input: { readonly kind: "streamable-http" | "sse" }) => Object.freeze({ kind: input.kind }) },
@@ -323,9 +325,72 @@ describe("HTTP MCP provider", () => {
       ...request,
       operationName: "admin_delete",
       capability: "read",
-    }, { requestId: "request-1" })).rejects.toThrow("provider_invalid:operation_not_admitted");
+    }, { requestId: "request-1" })).rejects.toThrow("provider_invalid:capability_mismatch");
     expect(resolver.calls).toHaveLength(0);
     expect(client.connectTransports).toHaveLength(0);
+  });
+
+  it("does not authorize admin_delete through a forged caller read claim", async () => {
+    const client = new RecordingHttpClient();
+    const resolver = new RecordingCredentialResolver({ API_TOKEN: "super-secret-value" });
+    const provider = new HttpMcpProvider({
+      id: "mcp.http.search",
+      binding: binding("binding.http.search", "mcp-http", HTTP_DIGEST),
+      server: Object.freeze({
+        name: "search",
+        kind: "mcp-http",
+        componentDigest: HTTP_DIGEST,
+        url: "https://example.com/mcp",
+        bearerTokenReference: "API_TOKEN",
+      }),
+      parentLicense: "MIT",
+      policy: DEFAULT_POLICY,
+      credentialResolver: resolver,
+      clientFactory: { create: () => client },
+      transportFactory: { create: (input) => Object.freeze({ kind: input.kind }) },
+    });
+
+    await expect(provider.invoke({
+      ...request,
+      operationName: "admin_delete",
+      capability: "read",
+    }, { requestId: "request-1" })).rejects.toThrow("provider_invalid:capability_mismatch");
+    expect(resolver.calls).toHaveLength(0);
+    expect(client.connectTransports).toHaveLength(0);
+  });
+
+  it("allows admin_delete only through explicit write policy and a write request", async () => {
+    let invokedName: string | undefined;
+    const client: HttpMcpClient = {
+      connect: async () => undefined,
+      callTool: async (input) => {
+        invokedName = input.name;
+        return { content: [] };
+      },
+      close: async () => undefined,
+    };
+    const provider = new HttpMcpProvider({
+      id: "mcp.http.search",
+      binding: binding("binding.http.search", "mcp-http", HTTP_DIGEST),
+      server: Object.freeze({
+        name: "search",
+        kind: "mcp-http",
+        componentDigest: HTTP_DIGEST,
+        url: "https://example.com/mcp",
+      }),
+      parentLicense: "MIT",
+      policy: WRITE_HTTP_POLICY,
+      credentialResolver: new RecordingCredentialResolver(),
+      clientFactory: { create: () => client },
+      transportFactory: { create: (input) => Object.freeze({ kind: input.kind }) },
+    });
+
+    await expect(provider.invoke({
+      ...request,
+      operationName: "admin_delete",
+      capability: "write",
+    }, { requestId: "request-1" })).resolves.toMatchObject({ status: "success" });
+    expect(invokedName).toBe("admin_delete");
   });
 
   it("rejects a caller capability that differs from the admitted HTTP operation", async () => {
@@ -345,43 +410,12 @@ describe("HTTP MCP provider", () => {
       credentialResolver: new RecordingCredentialResolver(),
       clientFactory: { create: () => client },
       transportFactory: { create: (input: { readonly kind: "streamable-http" | "sse" }) => Object.freeze({ kind: input.kind }) },
-      operations: READ_HTTP_OPERATIONS,
     };
     const provider = new HttpMcpProvider(options);
 
-    await expect(provider.invoke({ ...request, capability: "write" }, { requestId: "request-1" }))
+    await expect(provider.invoke({ ...request, capability: "read" }, { requestId: "request-1" }))
       .rejects.toThrow("provider_invalid:capability_mismatch");
     expect(client.connectTransports).toHaveLength(0);
-  });
-
-  it("rejects accessor-backed operation provenance without invoking the accessor", () => {
-    let accessorCalls = 0;
-    const accessorBinding = {
-      get operationName(): string {
-        accessorCalls += 1;
-        return "query";
-      },
-      capability: "read" as const,
-      componentDigest: HTTP_DIGEST,
-      policyVersion: DEFAULT_POLICY.version,
-    };
-    const options = {
-      id: "mcp.http.search",
-      binding: binding("binding.http.search", "mcp-http", HTTP_DIGEST),
-      server: Object.freeze({
-        name: "search",
-        kind: "mcp-http" as const,
-        componentDigest: HTTP_DIGEST,
-        url: "https://example.com/mcp",
-      }),
-      parentLicense: "MIT",
-      policy: DEFAULT_POLICY,
-      operations: [accessorBinding],
-      credentialResolver: new RecordingCredentialResolver(),
-    };
-
-    expect(() => new HttpMcpProvider(options)).toThrow("provider_invalid:operation_bindings");
-    expect(accessorCalls).toBe(0);
   });
 
   it.each([
@@ -403,7 +437,6 @@ describe("HTTP MCP provider", () => {
       }),
       parentLicense: "MIT",
       policy: DEFAULT_POLICY,
-      operations: READ_HTTP_OPERATIONS,
       credentialResolver: resolver,
       clientFactory: { create: () => client },
       transportFactory: { create: (input) => Object.freeze({ kind: input.kind }) },
@@ -456,8 +489,7 @@ describe("HTTP MCP provider", () => {
         bearerTokenReference: "API_TOKEN",
       }),
       parentLicense: "MIT",
-      policy: DEFAULT_POLICY,
-      operations: READ_HTTP_OPERATIONS,
+      policy: WRITE_HTTP_POLICY,
       credentialResolver: resolver,
       clientFactory: { create: () => client },
       transportFactory: {
@@ -493,8 +525,7 @@ describe("HTTP MCP provider", () => {
         oauthResource: "https://example.com/oauth",
       }),
       parentLicense: "MIT",
-      policy: DEFAULT_POLICY,
-      operations: READ_HTTP_OPERATIONS,
+      policy: WRITE_HTTP_POLICY,
       credentialResolver: resolver,
       clientFactory: { create: () => client },
       transportFactory: { create: (input) => Object.freeze({ kind: input.kind }) },
@@ -522,7 +553,6 @@ describe("HTTP MCP provider", () => {
       },
       parentLicense: "MIT",
       policy: DEFAULT_POLICY,
-      operations: READ_HTTP_OPERATIONS,
       credentialResolver: resolver,
       clientFactory: { create: () => client },
       transportFactory: { create: (input) => Object.freeze({ kind: input.kind }) },
@@ -548,7 +578,6 @@ describe("HTTP MCP provider", () => {
       }),
       parentLicense: "MIT",
       policy: mutablePolicy,
-      operations: READ_HTTP_OPERATIONS,
       credentialResolver: new RecordingCredentialResolver(),
       clientFactory: { create: () => client },
       transportFactory: { create: (input) => Object.freeze({ kind: input.kind }) },
@@ -571,8 +600,7 @@ describe("HTTP MCP provider", () => {
         url: "https://example.com/mcp",
       }),
       parentLicense: "MIT",
-      policy: DEFAULT_POLICY,
-      operations: READ_HTTP_OPERATIONS,
+      policy: WRITE_HTTP_POLICY,
       credentialResolver: new RecordingCredentialResolver(),
       clientFactory: { create: () => { throw new Error("factory super-secret-value"); } },
       transportFactory: { create: (input) => Object.freeze({ kind: input.kind }) },
@@ -608,8 +636,7 @@ describe("HTTP MCP provider", () => {
         bearerTokenReference: "API_TOKEN",
       }),
       parentLicense: "MIT",
-      policy: DEFAULT_POLICY,
-      operations: READ_HTTP_OPERATIONS,
+      policy: WRITE_HTTP_POLICY,
       credentialResolver: resolver,
       clientFactory: { create: () => client },
       transportFactory: { create: (input: { readonly kind: "streamable-http" | "sse" }) => Object.freeze({ kind: input.kind }) },
@@ -707,6 +734,47 @@ describe("HTTP MCP provider", () => {
     expect(closeCalls).toBe(1);
   });
 
+  it("aborts and closes a hanging unauthenticated production SSE connection", async () => {
+    const originalFetch = globalThis.fetch;
+    let sseSignal: AbortSignal | undefined;
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === "POST") return new Response("", { status: 404 });
+      sseSignal = init?.signal instanceof AbortSignal ? init.signal : undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        sseSignal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("aborted", "AbortError")),
+          { once: true },
+        );
+      });
+    }) as typeof fetch;
+    try {
+      const provider = new HttpMcpProvider({
+        id: "mcp.http.search",
+        binding: binding("binding.http.search", "mcp-http", HTTP_DIGEST),
+        server: Object.freeze({
+          name: "search",
+          kind: "mcp-http",
+          componentDigest: HTTP_DIGEST,
+          url: "https://example.com/mcp",
+        }),
+        parentLicense: "MIT",
+        policy: WRITE_HTTP_POLICY,
+        credentialResolver: new RecordingCredentialResolver(),
+        timeoutMilliseconds: 25,
+      });
+
+      const outcome = await Promise.race([
+        provider.invoke(request, { requestId: "request-1" }),
+        new Promise<"test_timeout">((resolve) => setTimeout(() => resolve("test_timeout"), 200)),
+      ]);
+      expect(outcome).toEqual({ status: "failed", reason: "mcp_http_timed_out" });
+      expect(sseSignal?.aborted).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("bounds hanging HTTP close cleanup after a completed call", async () => {
     let closeCalls = 0;
     let cleanupSignal: AbortSignal | undefined;
@@ -791,6 +859,7 @@ class RecordingSpawner implements ProcessSpawner {
 const PROCESS_POLICY: PluginPolicy = Object.freeze({
   ...DEFAULT_POLICY,
   allowProcessMcp: true,
+  allowWriteCapabilities: true,
 });
 
 async function processProvider(options: {
@@ -807,12 +876,6 @@ async function processProvider(options: {
     readonly arguments: Readonly<Record<string, unknown>>;
   }) => Promise<unknown>;
   readonly clientFactory?: ProcessMcpClientFactory;
-  readonly operations?: readonly Readonly<{
-    readonly operationName: string;
-    readonly capability: "read" | "write";
-    readonly componentDigest: string;
-    readonly policyVersion: string;
-  }>[];
   readonly executionRoot?: VerifiedProcessExecutionRoot;
 }): Promise<ProcessMcpProvider> {
   const executionRoot = options.executionRoot ?? await createVerifiedProcessRoot(options.pluginRoot);
@@ -843,7 +906,6 @@ async function processProvider(options: {
         close: async () => undefined,
       }),
     },
-    operations: options.operations ?? READ_PROCESS_OPERATIONS,
   };
   return new ProcessMcpProvider(providerOptions);
 }
@@ -866,6 +928,14 @@ describe("process MCP provider", () => {
     expect(accessorCalls).toBe(0);
   });
 
+  it("rejects a structurally forged stored-content token", async () => {
+    const pluginRoot = await createTempDirectory();
+    const forged = Object.freeze({ path: pluginRoot, digest: await digestTree(pluginRoot) });
+
+    await expect(verifyProcessExecutionRoot(forged, PROCESS_DIGEST))
+      .rejects.toThrow("provider_invalid:execution_root");
+  });
+
   it.each(invalidInvocationCases())(
     "rejects invalid $label at the shared boundary before HTTP or process side effects",
     async ({ request: invalidRequest, context: invalidContext, accessorCalls }) => {
@@ -884,7 +954,6 @@ describe("process MCP provider", () => {
         }),
         parentLicense: "MIT",
         policy: DEFAULT_POLICY,
-        operations: READ_HTTP_OPERATIONS,
         credentialResolver: httpResolver,
         clientFactory: {
           create: () => {
@@ -969,19 +1038,20 @@ describe("process MCP provider", () => {
     async (swapTarget) => {
       const base = await createTempDirectory();
       const pluginRoot = join(base, "plugin");
-      const workingDirectory = join(pluginRoot, "server");
-      await mkdir(workingDirectory, { recursive: true });
+      await mkdir(join(pluginRoot, "server"), { recursive: true });
+      const verified = await createVerifiedProcessRootDetails(pluginRoot);
+      const workingDirectory = join(verified.path, "server");
       const spawner = new RecordingSpawner();
       const resolver: CredentialResolver = {
         async resolve() {
           if (swapTarget === "root") {
-            await rename(pluginRoot, join(base, "plugin-old"));
+            await rename(verified.path, `${verified.path}-old`);
             await mkdir(workingDirectory, { recursive: true });
           } else if (swapTarget === "cwd") {
-            await rename(workingDirectory, join(base, "server-old"));
+            await rename(workingDirectory, `${workingDirectory}-old`);
             await mkdir(workingDirectory);
           } else {
-            await writeFile(join(pluginRoot, "server.js"), "changed after verification", "utf8");
+            await writeFile(join(verified.path, "server.js"), "changed after verification", "utf8");
           }
           return createSecretValue("super-secret-value");
         },
@@ -992,24 +1062,45 @@ describe("process MCP provider", () => {
         resolver,
         workingDirectory: "server",
         environmentReferences: ["API_TOKEN"],
+        executionRoot: verified.executionRoot,
       });
 
-      await expect(provider.invoke(request, { requestId: "request-1" }))
-        .rejects.toThrow(swapTarget === "content" ? "provider_invalid:execution_root_changed" : "path_escape");
+      if (swapTarget === "content") {
+        await expect(provider.invoke(request, { requestId: "request-1" }))
+          .resolves.toEqual({ status: "failed", reason: "process_failed" });
+      } else {
+        await expect(provider.invoke(request, { requestId: "request-1" }))
+          .rejects.toThrow("path_escape");
+      }
       expect(spawner.calls).toHaveLength(0);
     },
   );
 
-  it("revalidates cwd identity inside the spawn boundary before an actual spawn", async () => {
+  it.each(["trusted-parent", "root", "cwd", "content"] as const)(
+    "revalidates %s inside the spawn boundary before an actual spawn",
+    async (swapTarget) => {
     const base = await createTempDirectory();
     const pluginRoot = join(base, "plugin");
-    const workingDirectory = join(pluginRoot, "server");
-    await mkdir(workingDirectory, { recursive: true });
+    await mkdir(join(pluginRoot, "server"), { recursive: true });
+    await writeFile(join(pluginRoot, "server.js"), "original", "utf8");
+    const verified = await createVerifiedProcessRootDetails(pluginRoot);
+    const workingDirectory = join(verified.path, "server");
+    const trustedStore = dirname(verified.path);
     let actualSpawnCalls = 0;
     const boundarySpawner = {
       async spawn(_command: string, _args: readonly string[], options: unknown): Promise<SpawnedProcess> {
-        await rename(workingDirectory, join(base, "server-old"));
-        await mkdir(workingDirectory);
+        if (swapTarget === "trusted-parent") {
+          await rename(trustedStore, `${trustedStore}-old`);
+          await mkdir(trustedStore);
+        } else if (swapTarget === "root") {
+          await rename(verified.path, `${verified.path}-old`);
+          await mkdir(verified.path);
+        } else if (swapTarget === "cwd") {
+          await rename(workingDirectory, `${workingDirectory}-old`);
+          await mkdir(workingDirectory);
+        } else {
+          await writeFile(join(verified.path, "server.js"), "changed", "utf8");
+        }
         await assertSafeSpawnIdentity(options as SafeSpawnOptions);
         actualSpawnCalls += 1;
         return {
@@ -1020,13 +1111,58 @@ describe("process MCP provider", () => {
         };
       },
     } as unknown as ProcessSpawner;
-    const provider = await processProvider({ pluginRoot, spawner: boundarySpawner, workingDirectory: "server" });
+    const provider = await processProvider({
+      pluginRoot,
+      executionRoot: verified.executionRoot,
+      spawner: boundarySpawner,
+      workingDirectory: "server",
+    });
 
     await expect(provider.invoke(request, { requestId: "request-1" }))
       .resolves.toEqual({ status: "failed", reason: "process_failed" });
     await new Promise((resolve) => setTimeout(resolve, 25));
     expect(actualSpawnCalls).toBe(0);
-  });
+    },
+  );
+
+  it.each(["oversized", "deep", "many-file"] as const)(
+    "rejects %s execution-root inventory drift at the trusted spawn boundary",
+    async (drift) => {
+      const base = await createTempDirectory();
+      const pluginRoot = join(base, "plugin");
+      await mkdir(join(pluginRoot, "server"), { recursive: true });
+      await writeFile(join(pluginRoot, "server.js"), "original", "utf8");
+      const verified = await createVerifiedProcessRootDetails(pluginRoot);
+      if (drift === "oversized") {
+        await writeFile(join(verified.path, "server.js"), "x".repeat(128), "utf8");
+      } else if (drift === "deep") {
+        await mkdir(join(verified.path, "server", "deeper"), { recursive: true });
+      } else {
+        await writeFile(join(verified.path, "added.js"), "added", "utf8");
+      }
+      let actualSpawnCalls = 0;
+      const boundarySpawner: ProcessSpawner = {
+        async spawn(_command, _args, options) {
+          await assertSafeSpawnIdentity(options);
+          actualSpawnCalls += 1;
+          throw new Error("unexpected actual spawn");
+        },
+      };
+      const provider = await processProvider({
+        pluginRoot,
+        executionRoot: verified.executionRoot,
+        spawner: boundarySpawner,
+      });
+
+      const outcome = await Promise.race([
+        provider.invoke(request, { requestId: "request-1" }),
+        new Promise<"test_timeout">((resolve) => setTimeout(() => resolve("test_timeout"), 500)),
+      ]);
+      expect(outcome).not.toBe("test_timeout");
+      expect(outcome).toEqual({ status: "failed", reason: "process_failed" });
+      expect(actualSpawnCalls).toBe(0);
+    },
+  );
 
   it("uses the pinned SDK protocol over an injected stdio process", async () => {
     const pluginRoot = await createTempDirectory();
@@ -1107,7 +1243,6 @@ describe("process MCP provider", () => {
       executionRoot: await createVerifiedProcessRoot(pluginRoot),
       parentLicense: "MIT",
       policy: PROCESS_POLICY,
-      operations: READ_PROCESS_OPERATIONS,
       credentialResolver: new RecordingCredentialResolver(),
       spawner,
     });
@@ -1198,7 +1333,6 @@ describe("process MCP provider", () => {
       executionRoot: await createVerifiedProcessRoot(pluginRoot),
       parentLicense: "MIT",
       policy: PROCESS_POLICY,
-      operations: READ_PROCESS_OPERATIONS,
       credentialResolver: new RecordingCredentialResolver(),
       spawner,
       maxProtocolFrameBytes: 256,
@@ -1242,7 +1376,6 @@ describe("process MCP provider", () => {
       executionRoot: await createVerifiedProcessRoot(pluginRoot),
       parentLicense: "MIT",
       policy: PROCESS_POLICY,
-      operations: READ_PROCESS_OPERATIONS,
       credentialResolver: new RecordingCredentialResolver(),
       spawner,
       clientFactory: {
@@ -1307,7 +1440,7 @@ describe("process MCP provider", () => {
     expect(spawner.calls).toHaveLength(0);
   });
 
-  it("denies an unbound admin operation even when the caller labels it read", async () => {
+  it("denies admin_delete even when a caller forges a read capability claim", async () => {
     const pluginRoot = await createTempDirectory();
     const spawner = new RecordingSpawner();
     const provider = await processProvider({
@@ -1319,11 +1452,11 @@ describe("process MCP provider", () => {
       ...request,
       operationName: "admin_delete",
       capability: "read",
-    }, { requestId: "request-1" })).rejects.toThrow("provider_invalid:operation_not_admitted");
+    }, { requestId: "request-1" })).rejects.toThrow("provider_invalid:capability_mismatch");
     expect(spawner.calls).toHaveLength(0);
   });
 
-  it("allows a write process operation only with an exact binding and write policy", async () => {
+  it("allows a process operation only through explicit write policy and a write request", async () => {
     const pluginRoot = await createTempDirectory();
     const spawner = new RecordingSpawner();
     let invokedName: string | undefined;
@@ -1332,12 +1465,6 @@ describe("process MCP provider", () => {
       pluginRoot,
       spawner,
       policy: writePolicy,
-      operations: Object.freeze([Object.freeze({
-        operationName: "admin_delete",
-        capability: "write" as const,
-        componentDigest: PROCESS_DIGEST,
-        policyVersion: writePolicy.version,
-      })]),
       clientCall: async (input) => {
         invokedName = input.name;
         return { content: [] };
@@ -1365,6 +1492,33 @@ describe("process MCP provider", () => {
 
     await expect(provider.invoke(request, { requestId: "request-1" }))
       .rejects.toThrow("credential_missing");
+    expect(spawner.calls).toHaveLength(0);
+  });
+
+  it("bounds a hanging process credential resolver with the single invocation deadline", async () => {
+    const pluginRoot = await createTempDirectory();
+    const spawner = new RecordingSpawner();
+    let resolverSignal: AbortSignal | undefined;
+    const resolver: CredentialResolver = {
+      resolve: (_reference, _projectId, options) => {
+        resolverSignal = options?.signal;
+        return new Promise(() => undefined);
+      },
+    };
+    const provider = await processProvider({
+      pluginRoot,
+      spawner,
+      resolver,
+      environmentReferences: ["API_TOKEN"],
+      timeoutMilliseconds: 15,
+    });
+
+    const outcome = await Promise.race([
+      provider.invoke(request, { requestId: "request-1" }),
+      new Promise<"test_timeout">((resolve) => setTimeout(() => resolve("test_timeout"), 200)),
+    ]);
+    expect(outcome).toEqual({ status: "failed", reason: "process_timed_out" });
+    expect(resolverSignal?.aborted).toBe(true);
     expect(spawner.calls).toHaveLength(0);
   });
 
@@ -1437,7 +1591,7 @@ describe("process MCP provider", () => {
     const provider = await processProvider({
       pluginRoot,
       spawner,
-      timeoutMilliseconds: 5,
+      timeoutMilliseconds: 100,
       resolver: new RecordingCredentialResolver({ API_TOKEN: "super-secret-value" }),
       environmentReferences: ["API_TOKEN"],
       clientCall: () => new Promise(() => undefined),
@@ -1466,7 +1620,7 @@ describe("process MCP provider", () => {
     const provider = await processProvider({
       pluginRoot,
       spawner,
-      timeoutMilliseconds: 5,
+      timeoutMilliseconds: 100,
       clientFactory: {
         create: () => ({
           connect: async () => undefined,
@@ -1478,7 +1632,7 @@ describe("process MCP provider", () => {
 
     const outcome = await Promise.race([
       provider.invoke(request, { requestId: "request-1" }),
-      new Promise<"test_timeout">((resolve) => setTimeout(() => resolve("test_timeout"), 250)),
+      new Promise<"test_timeout">((resolve) => setTimeout(() => resolve("test_timeout"), 500)),
     ]);
     expect(outcome).not.toBe("test_timeout");
     expect(outcome).toEqual({ status: "failed", reason: "process_timed_out" });
@@ -1530,8 +1684,12 @@ describe("process MCP provider", () => {
   });
 
   it("bounds both stdout and stderr in the shared safe process boundary", async () => {
-    const executionRoot = await createTempDirectory();
+    const trustedStore = await createTempDirectory();
+    const executionRoot = join(trustedStore, "content");
+    await mkdir(executionRoot);
+    const trustedStoreIdentity = await snapshotDirectoryIdentity(trustedStore);
     const identity = await snapshotDirectoryIdentity(executionRoot);
+    const inspection = await inspectDigestTree(executionRoot);
     const spawner = new RecordingSpawner();
     spawner.next = {
       stdout: (async function* () { yield Buffer.from("stdout-over-limit"); })(),
@@ -1549,9 +1707,12 @@ describe("process MCP provider", () => {
         cwd: executionRoot,
         env: {},
         executionRootIdentity: identity,
+        trustedStoreIdentity,
         workingDirectoryIdentity: identity,
         componentDigest: PROCESS_DIGEST,
-        executionRootDigest: await digestTree(executionRoot),
+        executionRootDigest: inspection.digest,
+        executionRootInventory: inspection.inventory,
+        signal: new AbortController().signal,
       },
       timeoutMilliseconds: 100,
       maxOutputBytes: 6,
