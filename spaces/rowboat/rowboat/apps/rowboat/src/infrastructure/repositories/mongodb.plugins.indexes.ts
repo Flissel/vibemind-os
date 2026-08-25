@@ -25,7 +25,10 @@ export const PLUGIN_COLLECTION_INDEXES = Object.freeze([
   { collection: PLUGIN_COLLECTIONS.componentAdmissions, indexes: [{ key: { installationId: 1, componentDigest: 1 }, name: "installationId_componentDigest_unique", unique: true }] },
   { collection: PLUGIN_COLLECTIONS.credentialSlots, indexes: [{ key: { id: 1 }, name: "id_unique", unique: true }] },
   { collection: PLUGIN_COLLECTIONS.migrationRecords, indexes: [{ key: { id: 1 }, name: "id_unique", unique: true }] },
-  { collection: PLUGIN_COLLECTIONS.receipts, indexes: [{ key: { receiptId: 1 }, name: "receiptId_unique", unique: true }] },
+  { collection: PLUGIN_COLLECTIONS.receipts, indexes: [
+    { key: { receiptId: 1 }, name: "receiptId_unique", unique: true },
+    { key: { idempotencyScope: 1 }, name: "idempotencyScope_unique", unique: true, partialFilterExpression: { idempotencyScope: { $type: "string" } } },
+  ] },
 ] satisfies readonly PluginCollectionIndexSet[]);
 
 export async function ensurePluginIndexes(database: Db): Promise<void> {

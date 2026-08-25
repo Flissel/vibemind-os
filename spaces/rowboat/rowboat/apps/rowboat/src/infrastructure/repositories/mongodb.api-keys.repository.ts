@@ -21,6 +21,15 @@ export class MongoDBApiKeysRepository implements IApiKeysRepository {
         return !!result;
     }
 
+    async findProjectIdAndConsumeKey(apiKey: string): Promise<string | null> {
+        const result = await this.collection.findOneAndUpdate(
+            { key: apiKey },
+            { $set: { lastUsedAt: new Date().toISOString() } },
+            { returnDocument: "after", projection: { projectId: 1 } },
+        );
+        return result?.projectId ?? null;
+    }
+
     async create(data: z.infer<typeof CreateSchema>): Promise<z.infer<typeof ApiKey>> {
         const now = new Date().toISOString();
         const _id = new ObjectId();

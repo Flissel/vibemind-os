@@ -44,4 +44,5 @@ export interface IApiKeysRepository {
      * @returns True if the key is valid and was consumed, false otherwise.
      */
     checkAndConsumeKey(projectId: string, apiKey: string): Promise<boolean>;
+    findProjectIdAndConsumeKey(apiKey: string): Promise<string | null>;
 }

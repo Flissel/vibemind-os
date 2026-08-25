@@ -8,6 +8,10 @@ import type {
   PluginComponentAdmission,
   PluginCredentialSlot,
   PluginInstallation,
+  PluginIdempotentInstall,
+  PluginIdempotentInstallResult,
+  PluginIdempotentEnable,
+  PluginIdempotentEnableResult,
   PluginMigrationRecord,
   PluginReceipt,
 } from "@/src/application/repositories/plugins.repository.interface";
@@ -518,6 +522,13 @@ export class MongodbPluginsRepository implements IPluginsRepository {
     return Object.freeze(documents.map((document) => catalogEntry(parsePayload(document.payload, "catalog_entry_invalid"))));
   }
 
+  async getInstallation(projectId: string, pluginName: string): Promise<PluginInstallation | null> {
+    if (!ID.test(projectId) || !NAME.test(pluginName)) invalid("installation_lookup_invalid");
+    const document = await this.database.collection(PLUGIN_COLLECTIONS.installations)
+      .findOne({ projectId, pluginName }, { projection: { _id: 0 } });
+    return document === null ? null : this.readInstallation(document);
+  }
+
   async putCatalogEntries(inputs: readonly PluginCatalogEntry[]): Promise<void> {
     if (!Array.isArray(inputs) || inputs.length > MAX_ITEMS) invalid("catalog_entry_invalid");
     const documents = inputs.map(catalogEntry);
@@ -622,6 +633,13 @@ export class MongodbPluginsRepository implements IPluginsRepository {
     return Object.freeze(documents.map((document) => freezeRead<PluginComponentAdmission>(document, "admission_invalid")));
   }
 
+  async listCredentialSlots(installationId: string): Promise<readonly PluginCredentialSlot[]> {
+    if (!ID.test(installationId)) invalid("installation_id_invalid");
+    const documents = await this.database.collection(PLUGIN_COLLECTIONS.credentialSlots)
+      .find({ installationId }, { projection: { _id: 0 } }).sort({ name: 1 }).toArray();
+    return Object.freeze(documents.map((document) => credentialSlot(parsePayload(document.payload, "credential_slot_invalid"))));
+  }
+
   async putCredentialSlot(input: PluginCredentialSlot): Promise<void> {
     const document = credentialSlot(input);
     const parent = await this.database.collection(PLUGIN_COLLECTIONS.installations).findOne({ id: document.installationId }, { projection: { _id: 0 } });
@@ -640,6 +658,137 @@ export class MongodbPluginsRepository implements IPluginsRepository {
     const document = receipt(input);
     const stored = Object.freeze({ receiptId: document.receiptId, payload: canonical(document as unknown as Captured) }) as unknown as Captured;
     await immutableInsert(this.database.collection(PLUGIN_COLLECTIONS.receipts), { receiptId: document.receiptId }, stored, "receipt_conflict");
+  }
+
+  async getIdempotentReceipt(scope: string, fingerprintValue: string): Promise<PluginReceipt | null> {
+    if (!DIGEST.test(scope) || !DIGEST.test(fingerprintValue)) invalid("idempotency_invalid");
+    const existing = await this.database.collection(PLUGIN_COLLECTIONS.receipts)
+      .findOne({ idempotencyScope: scope }, { projection: { _id: 0 } });
+    if (existing === null) return null;
+    if (existing.requestFingerprint !== fingerprintValue) invalid("idempotency_conflict");
+    return receipt(parsePayload(existing.payload, "receipt_invalid"));
+  }
+
+  async installIdempotently(input: PluginIdempotentInstall): Promise<PluginIdempotentInstallResult> {
+    const request = object(input, "idempotent_install_invalid");
+    keys(request, ["scope", "fingerprint", "installation", "admissions", "credentialSlots", "receipt"], "idempotent_install_invalid");
+    const scope = string(request, "scope", DIGEST, "idempotent_install_invalid");
+    const fingerprintValue = string(request, "fingerprint", DIGEST, "idempotent_install_invalid");
+    const install = installation(request.installation);
+    const admissionList = request.admissions;
+    const slotList = request.credentialSlots;
+    if (!Array.isArray(admissionList) || !Array.isArray(slotList)) invalid("idempotent_install_invalid");
+    const admissions = admissionList.map(admission);
+    const slots = slotList.map(credentialSlot);
+    const storedReceipt = receipt(request.receipt);
+    if (storedReceipt.projectId !== install.projectId || storedReceipt.pluginName !== install.pluginName) invalid("idempotent_install_invalid");
+    if (admissions.some((item) => item.installationId !== install.id)) invalid("idempotent_install_invalid");
+    if (slots.some((item) => item.installationId !== install.id || item.projectId !== install.projectId)) invalid("idempotent_install_invalid");
+    const receiptCollection = this.database.collection(PLUGIN_COLLECTIONS.receipts);
+    const replay = async (): Promise<PluginIdempotentInstallResult | null> => {
+      const existing = await receiptCollection.findOne({ idempotencyScope: scope }, { projection: { _id: 0 } });
+      if (existing === null) return null;
+      if (existing.requestFingerprint !== fingerprintValue) invalid("idempotency_conflict");
+      return Object.freeze({ receipt: receipt(parsePayload(existing.payload, "receipt_invalid")), fingerprint: fingerprintValue, replayed: true });
+    };
+    const existing = await replay();
+    if (existing !== null) return existing;
+    try {
+      await this.transactions.run(async (session) => {
+        const raced = await receiptCollection.findOne({ idempotencyScope: scope }, { projection: { _id: 0 }, session });
+        if (raced !== null) {
+          if (raced.requestFingerprint !== fingerprintValue) invalid("idempotency_conflict");
+          return;
+        }
+        const selectedEntry = await this.requireCatalogEntryForInstallation(install, session);
+        this.validateProviderBindings(install, selectedEntry);
+        await this.database.collection(PLUGIN_COLLECTIONS.installations).insertOne(this.installationDocument(install), { session });
+        await this.validateAdmissionBatch(admissions, session);
+        for (const item of admissions) {
+          await this.database.collection(PLUGIN_COLLECTIONS.componentAdmissions).insertOne(item as unknown as StoredDocument, { session });
+        }
+        for (const slot of slots) {
+          const stored = Object.freeze({ id: slot.id, installationId: slot.installationId, name: slot.name, payload: canonical(slot as unknown as Captured) });
+          await this.database.collection(PLUGIN_COLLECTIONS.credentialSlots).insertOne(stored as unknown as StoredDocument, { session });
+        }
+        await receiptCollection.insertOne({
+          receiptId: storedReceipt.receiptId, idempotencyScope: scope, requestFingerprint: fingerprintValue,
+          payload: canonical(storedReceipt as unknown as Captured),
+        }, { session });
+      });
+    } catch (error) {
+      if (!isDuplicateKey(error)) throw error;
+      const winner = await replay();
+      if (winner !== null) return winner;
+      invalid("installation_conflict");
+    }
+    const winner = await replay();
+    if (winner !== null) return winner;
+    invalid("repository_write_failed");
+  }
+
+  async setInstallationEnabledIdempotently(input: PluginIdempotentEnable): Promise<PluginIdempotentEnableResult> {
+    const request = object(input, "idempotent_enable_invalid");
+    keys(request, ["scope", "fingerprint", "projectId", "pluginName", "catalogDigest", "installationId", "enabled", "expectedRevision", "receipt"], "idempotent_enable_invalid");
+    const scope = string(request, "scope", DIGEST, "idempotent_enable_invalid");
+    const fingerprintValue = string(request, "fingerprint", DIGEST, "idempotent_enable_invalid");
+    const projectId = string(request, "projectId", ID, "idempotent_enable_invalid");
+    const pluginName = string(request, "pluginName", NAME, "idempotent_enable_invalid");
+    string(request, "catalogDigest", DIGEST, "idempotent_enable_invalid");
+    const installationId = string(request, "installationId", ID, "idempotent_enable_invalid");
+    const enabled = boolean(request, "enabled", "idempotent_enable_invalid");
+    const expectedRevision = integer(request, "expectedRevision", "idempotent_enable_invalid");
+    const storedReceipt = receipt(request.receipt);
+    if (storedReceipt.projectId !== projectId || storedReceipt.pluginName !== pluginName) invalid("idempotent_enable_invalid");
+    const receiptCollection = this.database.collection(PLUGIN_COLLECTIONS.receipts);
+    const installationCollection = this.database.collection(PLUGIN_COLLECTIONS.installations);
+    const replay = async (): Promise<PluginIdempotentEnableResult | null> => {
+      const existingReceipt = await receiptCollection.findOne({ idempotencyScope: scope }, { projection: { _id: 0 } });
+      if (existingReceipt === null) return null;
+      if (existingReceipt.requestFingerprint !== fingerprintValue) invalid("idempotency_conflict");
+      const existingInstallation = await installationCollection.findOne({ id: installationId, projectId, pluginName }, { projection: { _id: 0 } });
+      if (existingInstallation === null) invalid("installation_not_found");
+      return Object.freeze({
+        receipt: receipt(parsePayload(existingReceipt.payload, "receipt_invalid")), fingerprint: fingerprintValue,
+        replayed: true, installation: this.readInstallation(existingInstallation),
+      });
+    };
+    const existing = await replay();
+    if (existing !== null) return existing;
+    let updatedInstallation: PluginInstallation | null = null;
+    try {
+      await this.transactions.run(async (session) => {
+        const raced = await receiptCollection.findOne({ idempotencyScope: scope }, { projection: { _id: 0 }, session });
+        if (raced !== null) {
+          if (raced.requestFingerprint !== fingerprintValue) invalid("idempotency_conflict");
+          return;
+        }
+        const current = await installationCollection.findOne({ id: installationId, projectId, pluginName }, { projection: { _id: 0 }, session });
+        if (current === null) invalid("installation_not_found");
+        const currentInstallation = this.readInstallation(current);
+        await this.requireCatalogEntryForInstallation(currentInstallation, session);
+        const updated = await installationCollection.findOneAndUpdate(
+          { id: installationId, projectId, pluginName, revision: expectedRevision },
+          { $set: { enabled }, $inc: { revision: 1 } },
+          { returnDocument: "after", projection: { _id: 0 }, session },
+        );
+        if (updated === null) invalid("installation_conflict");
+        updatedInstallation = this.readInstallation(updated);
+        await receiptCollection.insertOne({
+          receiptId: storedReceipt.receiptId, idempotencyScope: scope, requestFingerprint: fingerprintValue,
+          payload: canonical(storedReceipt as unknown as Captured),
+        }, { session });
+      });
+    } catch (error) {
+      if (!isDuplicateKey(error)) throw error;
+      const winner = await replay();
+      if (winner !== null) return winner;
+      invalid("installation_conflict");
+    }
+    if (updatedInstallation !== null) return Object.freeze({ receipt: storedReceipt, fingerprint: fingerprintValue, replayed: false, installation: updatedInstallation });
+    const winner = await replay();
+    if (winner !== null) return winner;
+    invalid("repository_write_failed");
   }
 
   private installationDocument(document: PluginInstallation): StoredDocument {

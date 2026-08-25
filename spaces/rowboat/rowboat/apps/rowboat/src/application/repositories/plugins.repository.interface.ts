@@ -51,17 +51,53 @@ export interface PluginMigrationRecord {
 
 export type PluginReceipt = RuntimePluginReceipt;
 
+export interface PluginIdempotentInstall {
+  readonly scope: string;
+  readonly fingerprint: string;
+  readonly installation: PluginInstallation;
+  readonly admissions: readonly PluginComponentAdmission[];
+  readonly credentialSlots: readonly PluginCredentialSlot[];
+  readonly receipt: PluginReceipt;
+}
+
+export interface PluginIdempotentInstallResult {
+  readonly receipt: PluginReceipt;
+  readonly fingerprint: string;
+  readonly replayed: boolean;
+}
+
+export interface PluginIdempotentEnable {
+  readonly scope: string;
+  readonly fingerprint: string;
+  readonly projectId: string;
+  readonly pluginName: string;
+  readonly catalogDigest: string;
+  readonly installationId: string;
+  readonly enabled: boolean;
+  readonly expectedRevision: number;
+  readonly receipt: PluginReceipt;
+}
+
+export interface PluginIdempotentEnableResult extends PluginIdempotentInstallResult {
+  readonly installation: PluginInstallation;
+}
+
 export interface IPluginsRepository {
   putCatalogSnapshot(snapshot: PluginCatalogSnapshot): Promise<void>;
   getCatalogSnapshot(digest: string): Promise<PluginCatalogSnapshot | null>;
   listCatalogEntries(catalogDigest: string): Promise<readonly PluginCatalogEntry[]>;
+  getInstallation(projectId: string, pluginName: string): Promise<PluginInstallation | null>;
   putCatalogEntries(entries: readonly PluginCatalogEntry[]): Promise<void>;
   putInstallation(installation: PluginInstallation): Promise<void>;
   listInstallations(projectId: string): Promise<readonly PluginInstallation[]>;
   setInstallationEnabled(id: string, enabled: boolean, expectedRevision: number): Promise<PluginInstallation>;
   putAdmissions(admissions: readonly PluginComponentAdmission[]): Promise<void>;
   listAdmissions(installationId: string): Promise<readonly PluginComponentAdmission[]>;
+  listCredentialSlots(installationId: string): Promise<readonly PluginCredentialSlot[]>;
   putCredentialSlot(slot: PluginCredentialSlot): Promise<void>;
   putMigrationRecord(record: PluginMigrationRecord): Promise<void>;
   putReceipt(receipt: PluginReceipt): Promise<void>;
+  getIdempotentReceipt(scope: string, fingerprint: string): Promise<PluginReceipt | null>;
+  installIdempotently(request: PluginIdempotentInstall): Promise<PluginIdempotentInstallResult>;
+  setInstallationEnabledIdempotently(request: PluginIdempotentEnable): Promise<PluginIdempotentEnableResult>;
 }

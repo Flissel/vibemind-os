@@ -6,6 +6,8 @@ import {
   type PluginComponentAdmission,
   type PluginCredentialSlot,
   type PluginInstallation,
+  type PluginIdempotentInstall,
+  type PluginIdempotentEnable,
   type PluginMigrationRecord,
   type PluginReceipt,
 } from "@/src/application/repositories/plugins.repository.interface";
@@ -84,7 +86,7 @@ class MemoryCollection {
       plugin_component_admissions: [["installationId", "componentDigest"]],
       plugin_credential_slots: [["id"]],
       plugin_migration_records: [["id"]],
-      plugin_receipts: [["receiptId"]],
+      plugin_receipts: [["receiptId"], ["idempotencyScope"]],
     };
     await Promise.resolve();
     const beforeInsert = this.beforeInsert;
@@ -601,6 +603,38 @@ describe("plugin repository contract", () => {
     expect(database.collection(PLUGIN_COLLECTIONS.catalogEntries).writes).toBe(0);
   });
 
+  it("persists one atomic installation receipt per exact idempotency scope and rejects payload reuse", async () => {
+    const { database, repository } = repositoryFixture();
+    await repository.putCatalogSnapshot(snapshot);
+    await repository.putCatalogEntries([entry]);
+    const request: PluginIdempotentInstall = {
+      scope: digest("7"),
+      fingerprint: digest("8"),
+      installation: { ...installation, revision: 0 },
+      admissions: entry.components.map(({ component, admission }) => ({
+        installationId: installation.id,
+        componentDigest: String(component.metadata.digest),
+        componentKind: component.kind,
+        componentName: component.name,
+        status: admission.status,
+        policyVersion: admission.policyVersion,
+      })),
+      credentialSlots: [],
+      receipt: { type: "install", receiptId: "receipt-idempotent-1", projectId: installation.projectId, pluginName: installation.pluginName, status: "success", redactions: [] },
+    };
+    const first = await repository.installIdempotently(request);
+    const second = await repository.installIdempotently(request);
+    expect(second.receipt).toEqual(first.receipt);
+    expect(second.replayed).toBe(true);
+    expect(database.collection(PLUGIN_COLLECTIONS.installations).writes).toBe(1);
+    expect(database.collection(PLUGIN_COLLECTIONS.receipts).writes).toBe(1);
+    await expect(repository.installIdempotently({ ...request, fingerprint: digest("9") })).rejects.toThrow("idempotency_conflict");
+    await expect(repository.installIdempotently({
+      ...request, scope: digest("6"), receipt: { ...request.receipt, receiptId: "receipt-other-actor" },
+    })).rejects.toThrow("installation_conflict");
+    expect(database.collection(PLUGIN_COLLECTIONS.receipts).writes).toBe(1);
+  });
+
   it("preserves installation revision on idempotent upsert", async () => {
     const { repository } = repositoryFixture();
     await seedCatalog(repository);
@@ -733,6 +767,24 @@ describe("plugin repository contract", () => {
     const updated = await repository.setInstallationEnabled(installation.id, false, 1);
     expect(updated).toMatchObject({ enabled: false, revision: 2 });
     expect(database.collection(PLUGIN_COLLECTIONS.installations).writes).toBe(2);
+  });
+
+  it("persists enablement and its idempotency receipt as one replayable optimistic mutation", async () => {
+    const { database, repository } = repositoryFixture();
+    await seedInstallation(repository);
+    const request: PluginIdempotentEnable = {
+      scope: digest("5"), fingerprint: digest("4"), projectId: installation.projectId,
+      pluginName: installation.pluginName, catalogDigest: snapshot.catalogDigest,
+      installationId: installation.id, enabled: false, expectedRevision: installation.revision,
+      receipt: { type: "install", receiptId: "receipt-enable-1", projectId: installation.projectId, pluginName: installation.pluginName, status: "success", redactions: [] },
+    };
+    const first = await repository.setInstallationEnabledIdempotently(request);
+    const second = await repository.setInstallationEnabledIdempotently(request);
+    expect(first.installation).toMatchObject({ enabled: false, revision: installation.revision + 1 });
+    expect(second.installation).toEqual(first.installation);
+    expect(second.replayed).toBe(true);
+    expect(database.collection(PLUGIN_COLLECTIONS.receipts).writes).toBe(1);
+    await expect(repository.setInstallationEnabledIdempotently({ ...request, fingerprint: digest("3") })).rejects.toThrow("idempotency_conflict");
   });
 
   it("returns a stable not-found error for missing installation enablement", async () => {
@@ -1123,7 +1175,7 @@ describe("plugin Mongo index contract", () => {
       { collection: "plugin_component_admissions", keys: [{ installationId: 1, componentDigest: 1 }], unique: [true] },
       { collection: "plugin_credential_slots", keys: [{ id: 1 }], unique: [true] },
       { collection: "plugin_migration_records", keys: [{ id: 1 }], unique: [true] },
-      { collection: "plugin_receipts", keys: [{ receiptId: 1 }], unique: [true] },
+      { collection: "plugin_receipts", keys: [{ receiptId: 1 }, { idempotencyScope: 1 }], unique: [true, true] },
     ]);
 
     const database = new MemoryDatabase();
@@ -1140,7 +1192,7 @@ describe("plugin Mongo index contract", () => {
       (count, { indexes }) => count + indexes.filter((index) => index.unique).length,
       0,
     );
-    expect(uniquePluginIndexes).toBe(8);
+    expect(uniquePluginIndexes).toBe(9);
     for (const { collection, indexes } of PLUGIN_COLLECTION_INDEXES) {
       const invoked = database.collection(collection);
       expect(invoked.createIndexCalls).toBe(1);
