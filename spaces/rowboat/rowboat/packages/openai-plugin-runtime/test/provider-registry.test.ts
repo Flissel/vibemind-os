@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_PROCESS_TIMEOUT_MS,
   ProviderRegistry,
+  assertBinding,
   createTemporaryAdapterBindings,
   normalizeApp,
   normalizeMcpServer,
@@ -207,6 +208,26 @@ describe("ProviderRegistry", () => {
     expect(descriptorIdReads).toBe(1);
     expect(descriptorKindReads).toBe(1);
     expect(temporaryAdapterReads).toBe(1);
+  });
+
+  it.each([
+    { digests: [] },
+    { digests: [DIGEST_A] },
+    { digests: [DIGEST_A, DIGEST_B, "c".repeat(64)] },
+  ])("rejects a runtime paired-digest array with invalid length %#", ({ digests }) => {
+    const malformed = {
+      ...binding("binding.tuple"),
+      pairedComponentDigests: digests,
+    } as unknown as ProviderBinding;
+    const registry = new ProviderRegistry();
+
+    expect(() => assertBinding(malformed)).toThrow(/provider_invalid/);
+    expect(() => registry.register(malformed, createProvider("native.search").provider))
+      .toThrow(/provider_invalid/);
+    expect(registry.resolve(malformed)).toEqual({
+      status: "unavailable",
+      reason: "provider_unavailable",
+    });
   });
 });
 

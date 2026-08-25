@@ -22,6 +22,10 @@ function captureBinding(binding: ProviderBinding): ProviderBinding {
     const componentDigest = binding.componentDigest;
     const pairedSource = binding.pairedComponentDigests;
     const temporarySource = binding.temporaryAdapter;
+    const pairedLength = pairedSource?.length;
+    if (pairedLength !== undefined && pairedLength !== 2) {
+      throw new Error("invalid paired digest length");
+    }
     const pairedComponentDigests = pairedSource === undefined
       ? undefined
       : Object.freeze([pairedSource[0], pairedSource[1]] as const);
