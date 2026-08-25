@@ -37,12 +37,12 @@ export function evaluateLicense(
   license: string | undefined,
   policy: PluginPolicy,
 ): AdmissionDecision {
-  if (license !== undefined && policy.admittedLicenses.has(license)) {
-    return admitted(policy);
-  }
-
   if (license !== undefined && policy.rejectedLicenses.has(license)) {
     return restricted("rejected", "license_rejected", policy);
+  }
+
+  if (license !== undefined && policy.admittedLicenses.has(license)) {
+    return admitted(policy);
   }
 
   return restricted("review_required", "license_review_required", policy);

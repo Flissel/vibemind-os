@@ -18,6 +18,13 @@ export interface CapabilityReference {
   readonly reference?: string;
 }
 
+function rejectUnsupportedCapability(
+  _unsupportedKind: never,
+  policy: PluginPolicy,
+): AdmissionDecision {
+  return createRestrictedDecision("rejected", "component_unsupported", policy);
+}
+
 export function evaluateCapability(
   capability: CapabilityReference,
   policy: PluginPolicy,
@@ -46,6 +53,8 @@ export function evaluateCapability(
             policy,
           );
   }
+
+  return rejectUnsupportedCapability(capability.kind, policy);
 }
 
 const STATUS_SEVERITY = {

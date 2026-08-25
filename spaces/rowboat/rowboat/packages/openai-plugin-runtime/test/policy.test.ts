@@ -5,6 +5,7 @@ import {
   evaluateCapability,
   evaluateComponentAdmission,
   evaluateLicense,
+  type CapabilityReference,
 } from "../src/index.js";
 
 describe("plugin admission policy", () => {
@@ -40,6 +41,19 @@ describe("plugin admission policy", () => {
     });
   });
 
+  it("lets a rejected license dominate a contradictory allowlist", () => {
+    const contradictoryPolicy = Object.freeze({
+      ...DEFAULT_POLICY,
+      rejectedLicenses: DEFAULT_POLICY.admittedLicenses,
+    });
+
+    expect(evaluateLicense("MIT", contradictoryPolicy)).toEqual({
+      status: "rejected",
+      reason: "license_rejected",
+      policyVersion: "rowboat-plugin-policy-v1",
+    });
+  });
+
   it("admits HTTP MCP and read capabilities without inventing a rejection reason", () => {
     expect(evaluateCapability({ kind: "mcp_http" }, DEFAULT_POLICY)).toEqual({
       status: "admitted",
@@ -68,6 +82,18 @@ describe("plugin admission policy", () => {
     expect(evaluateCapability({ kind: "write" }, DEFAULT_POLICY)).toEqual({
       status: "review_required",
       reason: "write_review_required",
+      policyVersion: "rowboat-plugin-policy-v1",
+    });
+  });
+
+  it("rejects unsupported runtime capability kinds", () => {
+    const untrustedCapability = {
+      kind: "future_kind",
+    } as unknown as CapabilityReference;
+
+    expect(evaluateCapability(untrustedCapability, DEFAULT_POLICY)).toEqual({
+      status: "rejected",
+      reason: "component_unsupported",
       policyVersion: "rowboat-plugin-policy-v1",
     });
   });
