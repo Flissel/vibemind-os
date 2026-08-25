@@ -255,6 +255,20 @@ describe("asset normalizer", () => {
       .rejects.toThrow("asset_unsafe");
   });
 
+  it.each([
+    ["comment-svg.txt", "<!-- benign comment -->\n   <SVG xmlns=\"http://www.w3.org/2000/svg\"></SVG>"],
+    ["prefix-script.txt", "Operational notes only.\n<  SCRIPT type=\"text/javascript\">alert(1)</SCRIPT>"],
+    ["prefix-xml-svg.txt", "Generated illustration follows.\n<?xml version=\"1.0\"?>\n<svg></svg>"],
+    ["prefix-iframe.txt", "Documentation prefix.\n<iframe src=\"https://example.com\"></iframe>"],
+  ])("rejects embedded active markup in bounded text asset %s", async (name, content) => {
+    const pluginRoot = await createPluginRoot(`asset-embedded-${name.replace(".txt", "")}`);
+    const asset = join(pluginRoot, name);
+    await writeFile(asset, content, "utf8");
+
+    await expect(normalizeAsset(asset, pluginRoot, { mime: "text/plain" }))
+      .rejects.toThrow("asset_unsafe");
+  });
+
   it("rejects a supplied MIME that disagrees with the file extension and magic", async () => {
     const pluginRoot = await createPluginRoot("asset-mime-mismatch");
     const asset = join(pluginRoot, "logo.png");

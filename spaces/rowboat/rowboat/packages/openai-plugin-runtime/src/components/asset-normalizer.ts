@@ -22,6 +22,7 @@ const RASTER_MIMES = new Set([
 ]);
 const TEXT_MIMES = new Set(["text/markdown", "text/plain"]);
 const ACTIVE_EXTENSIONS = new Set([".htm", ".html", ".svg", ".xhtml", ".xml"]);
+const ACTIVE_TEXT_MARKUP = /(?:<!doctype\s+html\b|<\?xml\b|<\s*\/?\s*(?:a|applet|audio|base|body|button|canvas|details|dialog|embed|form|frame|frameset|head|html|iframe|img|input|link|marquee|math|meta|object|picture|script|select|source|style|svg|template|textarea|track|video)\b[^>]*>|<\s*\/?\s*[a-z][^>]*\son[a-z]+\s*=|<\s*\/?\s*[a-z][^>]*(?:href|src)\s*=\s*["']?\s*javascript:)/iu;
 
 export interface AssetNormalizationOptions {
   readonly mime?: string;
@@ -107,14 +108,7 @@ function validatePlainText(bytes: Buffer): void {
     throw unsafe("plain text is not valid UTF-8");
   }
   if (text.includes("\0")) throw unsafe("plain text contains NUL");
-  const sniffed = text.replace(/^\uFEFF/, "").trimStart().toLowerCase();
-  if (
-    sniffed.startsWith("<!doctype html") ||
-    sniffed.startsWith("<html") ||
-    sniffed.startsWith("<svg") ||
-    sniffed.startsWith("<?xml") ||
-    /^(?:<script|<iframe|<object|<embed|<body|<head)(?:\s|>)/.test(sniffed)
-  ) {
+  if (ACTIVE_TEXT_MARKUP.test(text.replace(/^\uFEFF/, ""))) {
     throw unsafe("active text content rejected");
   }
 }
