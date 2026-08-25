@@ -270,12 +270,13 @@ function delay(milliseconds: number): Promise<"timeout"> {
 }
 
 export async function terminateSpawnedProcess(spawned: SpawnedProcess): Promise<void> {
+  const completion = Promise.resolve(spawned.completion);
+  const settled = completion.then(() => true, () => true);
   try {
     spawned.kill("SIGTERM");
   } catch {
     return;
   }
-  const settled = spawned.completion.then(() => true, () => true);
   if (await Promise.race([settled, delay(PROCESS_CLEANUP_GRACE_MS)]) === "timeout") {
     try {
       spawned.kill("SIGKILL");

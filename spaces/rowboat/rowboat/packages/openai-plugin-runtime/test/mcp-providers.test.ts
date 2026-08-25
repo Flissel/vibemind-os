@@ -14,6 +14,7 @@ import {
   createSecretValue,
   digestTree,
   executeSafeProcess,
+  terminateSpawnedProcess,
   verifyProcessExecutionRoot,
   type CredentialReference,
   type CredentialResolver,
@@ -1817,6 +1818,38 @@ describe("process MCP provider", () => {
       expect(reads).toBe(verificationReads + 1);
     } finally {
       abortedSpy.mockRestore();
+    }
+  });
+
+  it("observes a rejecting child completion before the first kill can throw", async () => {
+    let rejectCompletion: ((reason: Error) => void) | undefined;
+    const completion = new Promise<{ exitCode: number | null; signal: string | null }>((_resolve, reject) => {
+      rejectCompletion = reject;
+    });
+    const child: SpawnedProcess = {
+      stdout: (async function* () {})(),
+      stderr: (async function* () {})(),
+      completion,
+      kill: () => { throw new Error("kill failed"); },
+    };
+    const unhandled: unknown[] = [];
+    const captureUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    process.on("unhandledRejection", captureUnhandled);
+    try {
+      const termination = Promise.race([
+        terminateSpawnedProcess(child),
+        new Promise<"test_timeout">((resolve) => {
+          const timer = setTimeout(() => resolve("test_timeout"), 100);
+          timer.unref?.();
+        }),
+      ]);
+      await expect(termination).resolves.toBeUndefined();
+      rejectCompletion?.(new Error("completion failed"));
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", captureUnhandled);
+      void completion.catch(() => undefined);
     }
   });
 
