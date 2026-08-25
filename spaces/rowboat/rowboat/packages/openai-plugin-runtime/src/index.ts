@@ -108,3 +108,33 @@ export {
   type AssetNormalizationOptions,
   type NormalizedAsset,
 } from "./components/asset-normalizer.js";
+export {
+  ProviderRegistry,
+  assertBinding,
+} from "./providers/provider-registry.js";
+export type {
+  PluginProvider,
+  ProviderBinding,
+  ProviderContext,
+  ProviderDescriptor,
+  ProviderKind,
+  ProviderRequest,
+  ProviderResolution,
+  ProviderResult,
+} from "./providers/provider.js";
+export {
+  normalizeMcpServer,
+  pairAppAndMcp,
+  type NormalizedHttpMcp,
+  type NormalizedMcpServer,
+  type NormalizedProcessMcp,
+} from "./components/mcp-normalizer.js";
+export {
+  normalizeApp,
+  type NormalizedApp,
+} from "./components/app-normalizer.js";
+export {
+  createTemporaryAdapterBindings,
+  type TemporaryAdapterBinding,
+  type TemporaryAdapterDigests,
+} from "./providers/temporary-adapters.js";
