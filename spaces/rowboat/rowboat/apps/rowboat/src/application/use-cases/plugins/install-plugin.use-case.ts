@@ -29,17 +29,17 @@ export class InstallPluginUseCase {
       projectId: request.projectId, pluginName: request.pluginName, catalogDigest: request.catalogDigest,
       expectedRevision: request.expectedRevision,
     });
-    const replay = await this.dependencies.pluginsRepository.getIdempotentReceipt({
-      scope: idempotencyScope, fingerprint: payloadFingerprint, projectId: request.projectId,
-      pluginName: request.pluginName, operation: "install",
-    });
-    if (replay !== null) return replay;
     const catalog = await this.dependencies.pluginsRepository.getCatalog(request.catalogDigest);
     assertPinnedSnapshot(catalog, request.catalogDigest);
     const selected = catalog.entries.find((candidate) => candidate.name === request.pluginName && candidate.pluginName === request.pluginName);
     const entry = selected === undefined ? undefined : { ...selected, catalogDigest: request.catalogDigest };
     if (entry === undefined || entry.catalogDigest !== request.catalogDigest) serviceError("plugin_not_found");
     assertAdmitted(entry);
+    const replay = await this.dependencies.pluginsRepository.getIdempotentReceipt({
+      scope: idempotencyScope, fingerprint: payloadFingerprint, projectId: request.projectId,
+      pluginName: request.pluginName, catalogDigest: request.catalogDigest, operation: "install",
+    });
+    if (replay !== null) return replay;
     const existing = await this.dependencies.pluginsRepository.getInstallation(request.projectId, request.pluginName);
     if (existing === null && request.expectedRevision !== 0) serviceError("installation_conflict");
     if (existing !== null && (
@@ -52,6 +52,7 @@ export class InstallPluginUseCase {
     const result = await this.dependencies.pluginsRepository.installIdempotently({
       scope: idempotencyScope,
       fingerprint: payloadFingerprint,
+      catalogDigest: request.catalogDigest,
       installation,
       admissions: admissionsFrom(entry, installation.id),
       credentialSlots: slotsFrom(entry, installation.id, request.projectId),

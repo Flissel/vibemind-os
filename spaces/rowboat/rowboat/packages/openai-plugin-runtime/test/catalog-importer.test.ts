@@ -70,6 +70,81 @@ describe("structural component binding digest", () => {
 });
 
 describe("exact plugin catalog lock validation", () => {
+  const loadPinnedLock = async (): Promise<PluginCatalogLock> => JSON.parse(
+    await readFile(join(process.cwd(), "..", "..", "config", "openai-plugin-catalog.lock.json"), "utf8"),
+  ) as PluginCatalogLock;
+
+  const rebindAndRehash = (candidate: PluginCatalogLock): PluginCatalogLock => {
+    for (let entryIndex = 0; entryIndex < candidate.entries.length; entryIndex += 1) {
+      const entry = candidate.entries[entryIndex]!;
+      for (let componentIndex = 0; componentIndex < entry.components.length; componentIndex += 1) {
+        const selected = entry.components[componentIndex]!;
+        (selected.component.metadata as Record<string, unknown>).bindingDigest = componentBindingDigest(entry, selected.component, {
+          componentAdmission: selected.admission,
+          licenseDeclaration: entry.licenseDeclaration ?? "<missing>",
+          licenseAdmission: entry.admission,
+        });
+      }
+    }
+    const { catalogDigest: ignored, ...payload } = candidate;
+    void ignored;
+    (candidate as { catalogDigest: string }).catalogDigest = pluginCatalogDigest(payload);
+    return candidate;
+  };
+
+  it("rejects fully recomputed mutations instead of trusting self-consistent alternate catalogs", async () => {
+    const original = await loadPinnedLock();
+    const mutators: Array<(candidate: PluginCatalogLock) => void> = [
+      (candidate) => { (candidate.entries[0]!.components[0]!.component as { name: string }).name += " forged"; },
+      (candidate) => { (candidate.entries[0]!.components[0]!.component as { status: string }).status = "unavailable"; },
+      (candidate) => { (candidate.entries[0]!.components[0]!.component.metadata as Record<string, unknown>).transport = "forged"; },
+      (candidate) => { (candidate.entries[0]!.components[0]!.component.metadata as Record<string, unknown>).credentialSlots = ["FORGED"]; },
+      (candidate) => { (candidate.entries[0]!.components[0] as { admission: unknown }).admission = { status: "rejected", reason: "component_unsupported", policyVersion: candidate.policyVersion }; },
+      (candidate) => {
+        (candidate.entries[0] as { admission: unknown }).admission = { status: "review_required", reason: "license_review_required", policyVersion: candidate.policyVersion };
+        delete (candidate.entries[0] as { storedContentDigest?: string }).storedContentDigest;
+      },
+      (candidate) => {
+        (candidate as { policyVersion: string }).policyVersion = "rowboat-plugin-policy-v2";
+        for (let entryIndex = 0; entryIndex < candidate.entries.length; entryIndex += 1) {
+          const entry = candidate.entries[entryIndex]!;
+          (entry as { policyVersion: string }).policyVersion = candidate.policyVersion;
+          (entry.admission as { policyVersion: string }).policyVersion = candidate.policyVersion;
+          for (let componentIndex = 0; componentIndex < entry.components.length; componentIndex += 1) {
+            (entry.components[componentIndex]!.admission as { policyVersion: string }).policyVersion = candidate.policyVersion;
+          }
+        }
+      },
+    ];
+    for (let index = 0; index < mutators.length; index += 1) {
+      const candidate = structuredClone(original);
+      mutators[index]!(candidate);
+      rebindAndRehash(candidate);
+      expect(() => validatePluginCatalogLock(candidate)).toThrow("catalog_lock_invalid");
+    }
+  });
+
+  it("does not depend on mutable Array prototype methods after module initialization", async () => {
+    const lock = await loadPinnedLock();
+    for (const method of ["includes", "some", "map", "sort", "every", "filter", "reduce"] as const) {
+      const original = Array.prototype[method];
+      let result: PluginCatalogLock | undefined;
+      let failure: unknown;
+      try {
+        Object.defineProperty(Array.prototype, method, {
+          configurable: true,
+          writable: true,
+          value: () => { throw new Error(`live_array_primordial:${method}`); },
+        });
+        try { result = validatePluginCatalogLock(lock); } catch (error: unknown) { failure = error; }
+      } finally {
+        Object.defineProperty(Array.prototype, method, { configurable: true, writable: true, value: original });
+      }
+      expect(failure).toBeUndefined();
+      expect(result?.catalogDigest).toBe(lock.catalogDigest);
+    }
+  });
+
   it("accepts the committed full lock and rejects entry, inventory, and cardinality drift", async () => {
     const lock = JSON.parse(await readFile(join(process.cwd(), "..", "..", "config", "openai-plugin-catalog.lock.json"), "utf8")) as unknown;
     const validated = validatePluginCatalogLock(lock);

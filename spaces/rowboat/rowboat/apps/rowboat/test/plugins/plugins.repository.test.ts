@@ -309,6 +309,21 @@ const installation: PluginInstallation = {
   revision: 1,
 };
 
+const pinnedLock = catalogLockFixture as unknown as PluginCatalogLock;
+const pinnedKernelEntry = pinnedLock.entries.find((candidate) => candidate.name === "github")!;
+const pinnedEntry = { ...pinnedKernelEntry, catalogDigest: pinnedLock.catalogDigest } as PluginCatalogEntry;
+const pinnedInstallation: PluginInstallation = {
+  id: "installation-pinned-1", projectId: "project-1", pluginName: pinnedEntry.pluginName,
+  pluginVersion: pinnedEntry.pluginVersion, sourceCommit: pinnedEntry.sourceCommit,
+  manifestDigest: pinnedEntry.manifestDigest, treeDigest: pinnedEntry.treeDigest,
+  policyVersion: pinnedEntry.policyVersion, enabled: true, revision: 1,
+};
+
+async function seedPinnedInstallation(repository: MongodbPluginsRepository): Promise<void> {
+  await repository.putCatalog(pinnedLock);
+  await repository.putInstallation(pinnedInstallation);
+}
+
 function catalogEntryAtStoredBytes(targetBytes: number): PluginCatalogEntry {
   const padding = Array.from({ length: 16 }, () => "");
   const padded: PluginCatalogEntry = bindCatalogEntry({
@@ -687,22 +702,23 @@ describe("plugin repository contract", () => {
 
   it("persists one atomic installation receipt per exact idempotency scope and rejects payload reuse", async () => {
     const { database, repository } = repositoryFixture();
-    await repository.putCatalogSnapshot(snapshot);
-    await repository.putCatalogEntries([entry]);
+    await repository.putCatalog(pinnedLock);
     const request: PluginIdempotentInstall = {
       scope: digest("7"),
       fingerprint: digest("8"),
-      installation: { ...installation, revision: 0 },
-      admissions: entry.components.map(({ component, admission }) => ({
-        installationId: installation.id,
+      catalogDigest: pinnedLock.catalogDigest,
+      installation: { ...pinnedInstallation, revision: 0 },
+      admissions: pinnedEntry.components.map(({ component, admission }) => ({
+        installationId: pinnedInstallation.id,
         componentDigest: component.metadata.bindingDigest,
         componentKind: component.kind,
         componentName: component.name,
         status: admission.status,
+        ...("reason" in admission ? { reason: admission.reason } : {}),
         policyVersion: admission.policyVersion,
       })),
       credentialSlots: [],
-      receipt: { type: "install", receiptId: "receipt-idempotent-1", projectId: installation.projectId, pluginName: installation.pluginName, status: "success", redactions: [] },
+      receipt: { type: "install", receiptId: "receipt-idempotent-1", projectId: pinnedInstallation.projectId, pluginName: pinnedInstallation.pluginName, status: "success", redactions: [] },
     };
     const first = await repository.installIdempotently(request);
     const second = await repository.installIdempotently(request);
@@ -719,16 +735,18 @@ describe("plugin repository contract", () => {
 
   it("stores only a typed plugin_mutation_v1 replay envelope and rejects cross-context or generic records", async () => {
     const { database, repository } = repositoryFixture();
-    await seedCatalog(repository);
+    await repository.putCatalog(pinnedLock);
     const request: PluginIdempotentInstall = {
-      scope: digest("7"), fingerprint: digest("8"), installation: { ...installation, revision: 0 },
-      admissions: entry.components.map(({ component, admission }) => ({
-        installationId: installation.id, componentDigest: component.metadata.bindingDigest,
+      scope: digest("7"), fingerprint: digest("8"), catalogDigest: pinnedLock.catalogDigest,
+      installation: { ...pinnedInstallation, revision: 0 },
+      admissions: pinnedEntry.components.map(({ component, admission }) => ({
+        installationId: pinnedInstallation.id, componentDigest: component.metadata.bindingDigest,
         componentKind: component.kind, componentName: component.name, status: admission.status,
+        ...("reason" in admission ? { reason: admission.reason } : {}),
         policyVersion: admission.policyVersion,
       })),
       credentialSlots: [],
-      receipt: { type: "install", receiptId: "receipt-envelope-1", projectId: installation.projectId, pluginName: installation.pluginName, status: "success", redactions: [] },
+      receipt: { type: "install", receiptId: "receipt-envelope-1", projectId: pinnedInstallation.projectId, pluginName: pinnedInstallation.pluginName, status: "success", redactions: [] },
     };
     await repository.installIdempotently(request);
     const stored = database.collection(PLUGIN_COLLECTIONS.receipts).documents[0]!;
@@ -737,19 +755,30 @@ describe("plugin repository contract", () => {
     ]);
     const envelope = JSON.parse(String(stored.envelopePayload)) as Record<string, unknown>;
     expect(envelope).toMatchObject({
-      type: "plugin_mutation_v1", operation: "install", projectId: installation.projectId,
-      pluginName: installation.pluginName, installationId: installation.id,
+      type: "plugin_mutation_v1", operation: "install", projectId: pinnedInstallation.projectId,
+      pluginName: pinnedInstallation.pluginName, installationId: pinnedInstallation.id,
+      catalogDigest: pinnedLock.catalogDigest,
       scopeHash: request.scope, requestFingerprint: request.fingerprint, status: "success",
+      source: {
+        id: pinnedInstallation.id, projectId: pinnedInstallation.projectId, pluginName: pinnedInstallation.pluginName,
+        pluginVersion: pinnedInstallation.pluginVersion, sourceCommit: pinnedInstallation.sourceCommit,
+        manifestDigest: pinnedInstallation.manifestDigest, treeDigest: pinnedInstallation.treeDigest,
+        policyVersion: pinnedInstallation.policyVersion, providerBindings: [],
+      },
     });
 
     for (const mutation of [
       { projectId: "project-2" }, { pluginName: "slack" }, { operation: "set_enabled" },
+      { catalogDigest: digest("0") },
+      { source: { ...(envelope.source as Record<string, unknown>), pluginVersion: "9.9.9" } },
+      { source: { ...(envelope.source as Record<string, unknown>), sourceCommit: "0".repeat(40) } },
+      { source: { ...(envelope.source as Record<string, unknown>), policyVersion: "forged-policy" } },
       { type: "execution" }, { version: "legacy" }, { status: "failed" }, { output: "token-secret" },
     ]) {
       stored.envelopePayload = JSON.stringify({ ...envelope, ...mutation });
       const error = await repository.getIdempotentReceipt({
-        scope: request.scope, fingerprint: request.fingerprint, projectId: installation.projectId,
-        pluginName: installation.pluginName, operation: "install",
+        scope: request.scope, fingerprint: request.fingerprint, projectId: pinnedInstallation.projectId,
+        pluginName: pinnedInstallation.pluginName, catalogDigest: pinnedLock.catalogDigest, operation: "install",
       }).catch((caught: unknown) => caught);
       expect(error).toEqual(new Error("idempotency_record_invalid"));
       expect(String(error)).not.toContain("token-secret");
@@ -757,8 +786,8 @@ describe("plugin repository contract", () => {
     delete stored.envelopePayload;
     stored.payload = JSON.stringify(request.receipt);
     await expect(repository.getIdempotentReceipt({
-      scope: request.scope, fingerprint: request.fingerprint, projectId: installation.projectId,
-      pluginName: installation.pluginName, operation: "install",
+      scope: request.scope, fingerprint: request.fingerprint, projectId: pinnedInstallation.projectId,
+      pluginName: pinnedInstallation.pluginName, catalogDigest: pinnedLock.catalogDigest, operation: "install",
     })).rejects.toThrow("idempotency_record_invalid");
   });
 
@@ -898,22 +927,22 @@ describe("plugin repository contract", () => {
 
   it("persists enablement and its idempotency receipt as one replayable optimistic mutation", async () => {
     const { database, repository } = repositoryFixture();
-    await seedInstallation(repository);
+    await seedPinnedInstallation(repository);
     const request: PluginIdempotentEnable = {
-      scope: digest("5"), fingerprint: digest("4"), projectId: installation.projectId,
-      pluginName: installation.pluginName, catalogDigest: snapshot.catalogDigest,
-      installationId: installation.id, enabled: false, expectedRevision: installation.revision,
-      receipt: { type: "install", receiptId: "receipt-enable-1", projectId: installation.projectId, pluginName: installation.pluginName, status: "success", redactions: [] },
+      scope: digest("5"), fingerprint: digest("4"), projectId: pinnedInstallation.projectId,
+      pluginName: pinnedInstallation.pluginName, catalogDigest: pinnedLock.catalogDigest,
+      installationId: pinnedInstallation.id, enabled: false, expectedRevision: pinnedInstallation.revision,
+      receipt: { type: "install", receiptId: "receipt-enable-1", projectId: pinnedInstallation.projectId, pluginName: pinnedInstallation.pluginName, status: "success", redactions: [] },
     };
     const first = await repository.setInstallationEnabledIdempotently(request);
     const toggled = await repository.setInstallationEnabledIdempotently({
       ...request, scope: digest("2"), fingerprint: digest("1"), enabled: true,
-      expectedRevision: installation.revision + 1,
+      expectedRevision: pinnedInstallation.revision + 1,
       receipt: { ...request.receipt, receiptId: "receipt-enable-2" },
     });
     const second = await repository.setInstallationEnabledIdempotently(request);
-    expect(first.installation).toMatchObject({ enabled: false, revision: installation.revision + 1 });
-    expect(toggled.installation).toMatchObject({ enabled: true, revision: installation.revision + 2 });
+    expect(first.installation).toMatchObject({ enabled: false, revision: pinnedInstallation.revision + 1 });
+    expect(toggled.installation).toMatchObject({ enabled: true, revision: pinnedInstallation.revision + 2 });
     expect(second.installation).toEqual(first.installation);
     expect(second.replayed).toBe(true);
     expect(database.collection(PLUGIN_COLLECTIONS.receipts).writes).toBe(2);
@@ -928,12 +957,12 @@ describe("plugin repository contract", () => {
 
   it("fails closed when an idempotency receipt has no immutable enable result snapshot", async () => {
     const { database, repository } = repositoryFixture();
-    await seedInstallation(repository);
+    await seedPinnedInstallation(repository);
     const request: PluginIdempotentEnable = {
-      scope: digest("0"), fingerprint: digest("1"), projectId: installation.projectId,
-      pluginName: installation.pluginName, catalogDigest: snapshot.catalogDigest,
-      installationId: installation.id, enabled: false, expectedRevision: installation.revision,
-      receipt: { type: "install", receiptId: "receipt-enable-malformed", projectId: installation.projectId, pluginName: installation.pluginName, status: "success", redactions: [] },
+      scope: digest("0"), fingerprint: digest("1"), projectId: pinnedInstallation.projectId,
+      pluginName: pinnedInstallation.pluginName, catalogDigest: pinnedLock.catalogDigest,
+      installationId: pinnedInstallation.id, enabled: false, expectedRevision: pinnedInstallation.revision,
+      receipt: { type: "install", receiptId: "receipt-enable-malformed", projectId: pinnedInstallation.projectId, pluginName: pinnedInstallation.pluginName, status: "success", redactions: [] },
     };
     await repository.setInstallationEnabledIdempotently(request);
     delete database.collection(PLUGIN_COLLECTIONS.receipts).documents[0]!.envelopePayload;

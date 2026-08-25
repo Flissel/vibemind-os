@@ -54,6 +54,7 @@ export type PluginReceipt = RuntimePluginReceipt;
 export interface PluginIdempotentInstall {
   readonly scope: string;
   readonly fingerprint: string;
+  readonly catalogDigest: string;
   readonly installation: PluginInstallation;
   readonly admissions: readonly PluginComponentAdmission[];
   readonly credentialSlots: readonly PluginCredentialSlot[];
@@ -89,6 +90,7 @@ export interface PluginIdempotencyLookup {
   readonly fingerprint: string;
   readonly projectId: string;
   readonly pluginName: string;
+  readonly catalogDigest: string;
   readonly operation: PluginMutationOperation;
 }
 

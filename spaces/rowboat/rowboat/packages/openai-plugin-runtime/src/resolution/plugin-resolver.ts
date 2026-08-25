@@ -3,6 +3,7 @@ import {
   type CatalogComponentAdmission,
   type PluginCatalogEntry,
   type PluginCatalogLock,
+  PINNED_PLUGIN_CATALOG_DIGEST,
 } from "../domain/catalog.js";
 import type { PluginInstallation } from "../domain/installation.js";
 import type {
@@ -16,8 +17,7 @@ import type { PluginProvider } from "../providers/provider.js";
 import { ProviderRegistry } from "../providers/provider-registry.js";
 import { validatePluginCatalogLock } from "../import/catalog-validator.js";
 
-export const PINNED_PLUGIN_CATALOG_DIGEST =
-  "2e436d02b025a14960d5ef813c603bd7aec35a6d173c42d8c58274163da89a92" as const;
+export { PINNED_PLUGIN_CATALOG_DIGEST } from "../domain/catalog.js";
 
 export interface ResolvedComponent {
   readonly id: string;

@@ -445,12 +445,28 @@ interface MutationEnvelopeContext {
   readonly fingerprint: string;
   readonly projectId: string;
   readonly pluginName: string;
+  readonly catalogDigest: string;
   readonly operation: "install" | "set_enabled";
 }
 
 interface ParsedMutationEnvelope {
   readonly receipt: PluginReceipt;
   readonly installation: PluginInstallation;
+  readonly catalogDigest: string;
+}
+
+function mutationSource(installationValue: PluginInstallation): Readonly<Record<string, unknown>> {
+  return Object.freeze({
+    id: installationValue.id,
+    projectId: installationValue.projectId,
+    pluginName: installationValue.pluginName,
+    pluginVersion: installationValue.pluginVersion,
+    sourceCommit: installationValue.sourceCommit,
+    manifestDigest: installationValue.manifestDigest,
+    treeDigest: installationValue.treeDigest,
+    policyVersion: installationValue.policyVersion,
+    providerBindings: installationValue.providerBindings ?? Object.freeze([]),
+  });
 }
 
 function mutationEnvelopePayload(
@@ -463,11 +479,13 @@ function mutationEnvelopePayload(
     receiptId: receiptValue.receiptId,
     projectId: context.projectId,
     pluginName: context.pluginName,
+    catalogDigest: context.catalogDigest,
     installationId: installationValue.id,
     operation: context.operation,
     scopeHash: context.scope,
     requestFingerprint: context.fingerprint,
     status: "success",
+    source: mutationSource(installationValue),
     result: Object.freeze({ kind: context.operation, installation: installationValue }),
   });
   const captured = capture(envelope, "idempotency_record_invalid", true);
@@ -481,10 +499,11 @@ function parseMutationEnvelope(documentInput: unknown, expected: MutationEnvelop
   const receiptId = string(document, "receiptId", ID, "idempotency_record_invalid");
   if (document.idempotencyScope !== expected.scope || document.requestFingerprint !== expected.fingerprint) invalid("idempotency_record_invalid");
   const envelope = object(parsePayload(document.envelopePayload, "idempotency_record_invalid"), "idempotency_record_invalid", true);
-  keys(envelope, ["type", "receiptId", "projectId", "pluginName", "installationId", "operation", "scopeHash", "requestFingerprint", "status", "result"], "idempotency_record_invalid");
+  keys(envelope, ["type", "receiptId", "projectId", "pluginName", "catalogDigest", "installationId", "operation", "scopeHash", "requestFingerprint", "status", "source", "result"], "idempotency_record_invalid");
   if (
     envelope.type !== "plugin_mutation_v1" || envelope.receiptId !== receiptId
     || envelope.projectId !== expected.projectId || envelope.pluginName !== expected.pluginName
+    || envelope.catalogDigest !== expected.catalogDigest
     || envelope.operation !== expected.operation || envelope.scopeHash !== expected.scope
     || envelope.requestFingerprint !== expected.fingerprint || envelope.status !== "success"
   ) invalid("idempotency_record_invalid");
@@ -494,12 +513,22 @@ function parseMutationEnvelope(documentInput: unknown, expected: MutationEnvelop
   if (result.kind !== expected.operation) invalid("idempotency_record_invalid");
   const installed = installation(result.installation);
   if (installed.id !== envelope.installationId || installed.projectId !== expected.projectId || installed.pluginName !== expected.pluginName) invalid("idempotency_record_invalid");
+  const source = object(envelope.source, "idempotency_record_invalid", true);
+  keys(source, ["id", "projectId", "pluginName", "pluginVersion", "sourceCommit", "manifestDigest", "treeDigest", "policyVersion", "providerBindings"], "idempotency_record_invalid");
+  if (
+    source.id !== installed.id || source.projectId !== installed.projectId || source.pluginName !== installed.pluginName
+    || source.pluginVersion !== installed.pluginVersion || source.sourceCommit !== installed.sourceCommit
+    || source.manifestDigest !== installed.manifestDigest || source.treeDigest !== installed.treeDigest
+    || source.policyVersion !== installed.policyVersion
+    || canonical(source.providerBindings as Captured) !== canonical((installed.providerBindings ?? []) as unknown as Captured)
+  ) invalid("idempotency_record_invalid");
   return Object.freeze({
     receipt: Object.freeze({
       type: "install", receiptId, projectId: expected.projectId, pluginName: expected.pluginName,
       status: "success", redactions: Object.freeze([]),
     }),
     installation: installed,
+    catalogDigest: expected.catalogDigest,
   });
 }
 
@@ -805,28 +834,28 @@ export class MongodbPluginsRepository implements IPluginsRepository {
 
   async getIdempotentReceipt(input: PluginIdempotencyLookup): Promise<PluginReceipt | null> {
     const request = object(input, "idempotency_invalid");
-    keys(request, ["scope", "fingerprint", "projectId", "pluginName", "operation"], "idempotency_invalid");
+    keys(request, ["scope", "fingerprint", "projectId", "pluginName", "catalogDigest", "operation"], "idempotency_invalid");
     const scope = string(request, "scope", DIGEST, "idempotency_invalid");
     const fingerprintValue = string(request, "fingerprint", DIGEST, "idempotency_invalid");
     const projectId = string(request, "projectId", ID, "idempotency_invalid");
     const pluginName = string(request, "pluginName", NAME, "idempotency_invalid");
+    const catalogDigest = string(request, "catalogDigest", DIGEST, "idempotency_invalid");
     const operation = string(request, "operation", /^(install|set_enabled)$/, "idempotency_invalid") as "install" | "set_enabled";
     const existing = await this.database.collection(PLUGIN_COLLECTIONS.receipts)
       .findOne({ idempotencyScope: scope }, { projection: { _id: 0 } });
     if (existing === null) return null;
     if (existing.requestFingerprint !== fingerprintValue) invalid("idempotency_conflict");
-    const parsed = parseMutationEnvelope(existing, { scope, fingerprint: fingerprintValue, projectId, pluginName, operation });
-    const current = await this.database.collection(PLUGIN_COLLECTIONS.installations)
-      .findOne({ id: parsed.installation.id, projectId, pluginName }, { projection: { _id: 0 } });
-    if (current === null) invalid("idempotency_record_invalid");
+    const parsed = parseMutationEnvelope(existing, { scope, fingerprint: fingerprintValue, projectId, pluginName, catalogDigest, operation });
+    await this.validateReplayProvenance(parsed);
     return parsed.receipt;
   }
 
   async installIdempotently(input: PluginIdempotentInstall): Promise<PluginIdempotentInstallResult> {
     const request = object(input, "idempotent_install_invalid");
-    keys(request, ["scope", "fingerprint", "installation", "admissions", "credentialSlots", "receipt"], "idempotent_install_invalid");
+    keys(request, ["scope", "fingerprint", "catalogDigest", "installation", "admissions", "credentialSlots", "receipt"], "idempotent_install_invalid");
     const scope = string(request, "scope", DIGEST, "idempotent_install_invalid");
     const fingerprintValue = string(request, "fingerprint", DIGEST, "idempotent_install_invalid");
+    const catalogDigest = string(request, "catalogDigest", DIGEST, "idempotent_install_invalid");
     const install = installation(request.installation);
     const admissionList = request.admissions;
     const slotList = request.credentialSlots;
@@ -843,11 +872,9 @@ export class MongodbPluginsRepository implements IPluginsRepository {
       if (existing === null) return null;
       if (existing.requestFingerprint !== fingerprintValue) invalid("idempotency_conflict");
       const parsed = parseMutationEnvelope(existing, {
-        scope, fingerprint: fingerprintValue, projectId: install.projectId, pluginName: install.pluginName, operation: "install",
+        scope, fingerprint: fingerprintValue, projectId: install.projectId, pluginName: install.pluginName, catalogDigest, operation: "install",
       });
-      const current = await this.database.collection(PLUGIN_COLLECTIONS.installations)
-        .findOne({ id: parsed.installation.id, projectId: install.projectId, pluginName: install.pluginName }, { projection: { _id: 0 } });
-      if (current === null) invalid("idempotency_record_invalid");
+      await this.validateReplayProvenance(parsed);
       return Object.freeze({ receipt: parsed.receipt, fingerprint: fingerprintValue, replayed: true });
     };
     const existing = await replay();
@@ -873,7 +900,7 @@ export class MongodbPluginsRepository implements IPluginsRepository {
         await receiptCollection.insertOne({
           receiptId: storedReceipt.receiptId, idempotencyScope: scope, requestFingerprint: fingerprintValue,
           envelopePayload: mutationEnvelopePayload({
-            scope, fingerprint: fingerprintValue, projectId: install.projectId, pluginName: install.pluginName, operation: "install",
+            scope, fingerprint: fingerprintValue, projectId: install.projectId, pluginName: install.pluginName, catalogDigest, operation: "install",
           }, storedReceipt, install),
         }, { session });
       });
@@ -895,7 +922,7 @@ export class MongodbPluginsRepository implements IPluginsRepository {
     const fingerprintValue = string(request, "fingerprint", DIGEST, "idempotent_enable_invalid");
     const projectId = string(request, "projectId", ID, "idempotent_enable_invalid");
     const pluginName = string(request, "pluginName", NAME, "idempotent_enable_invalid");
-    string(request, "catalogDigest", DIGEST, "idempotent_enable_invalid");
+    const catalogDigest = string(request, "catalogDigest", DIGEST, "idempotent_enable_invalid");
     const installationId = string(request, "installationId", ID, "idempotent_enable_invalid");
     const enabled = boolean(request, "enabled", "idempotent_enable_invalid");
     const expectedRevision = integer(request, "expectedRevision", "idempotent_enable_invalid");
@@ -905,7 +932,7 @@ export class MongodbPluginsRepository implements IPluginsRepository {
     const installationCollection = this.database.collection(PLUGIN_COLLECTIONS.installations);
     const readResult = (document: StoredDocument): ParsedMutationEnvelope => {
       const parsed = parseMutationEnvelope(document, {
-        scope, fingerprint: fingerprintValue, projectId, pluginName, operation: "set_enabled",
+        scope, fingerprint: fingerprintValue, projectId, pluginName, catalogDigest, operation: "set_enabled",
       });
       if (
         parsed.installation.id !== installationId || parsed.installation.enabled !== enabled
@@ -918,6 +945,7 @@ export class MongodbPluginsRepository implements IPluginsRepository {
       if (existingReceipt === null) return null;
       if (existingReceipt.requestFingerprint !== fingerprintValue) invalid("idempotency_conflict");
       const parsed = readResult(existingReceipt);
+      await this.validateReplayProvenance(parsed);
       return Object.freeze({ receipt: parsed.receipt, fingerprint: fingerprintValue, replayed: true, installation: parsed.installation });
     };
     const existing = await replay();
@@ -944,7 +972,7 @@ export class MongodbPluginsRepository implements IPluginsRepository {
         const receiptDocument = {
           receiptId: storedReceipt.receiptId, idempotencyScope: scope, requestFingerprint: fingerprintValue,
           envelopePayload: mutationEnvelopePayload({
-            scope, fingerprint: fingerprintValue, projectId, pluginName, operation: "set_enabled",
+            scope, fingerprint: fingerprintValue, projectId, pluginName, catalogDigest, operation: "set_enabled",
           }, storedReceipt, updatedInstallation),
         };
         assertStoredDocumentBudget(receiptDocument as unknown as Captured);
@@ -960,6 +988,33 @@ export class MongodbPluginsRepository implements IPluginsRepository {
     const winner = await replay();
     if (winner !== null) return winner;
     invalid("repository_write_failed");
+  }
+
+  private async validateReplayProvenance(parsed: ParsedMutationEnvelope): Promise<void> {
+    try {
+      const catalog = await this.getCatalog(parsed.catalogDigest);
+      if (catalog === null) invalid("idempotency_record_invalid");
+      let entry: (typeof catalog.entries)[number] | undefined;
+      for (let index = 0; index < catalog.entries.length; index += 1) {
+        const candidate = catalog.entries[index];
+        if (candidate !== undefined && candidate.pluginName === parsed.installation.pluginName) { entry = candidate; break; }
+      }
+      if (
+        entry === undefined
+        || entry.pluginVersion !== parsed.installation.pluginVersion
+        || entry.sourceCommit !== parsed.installation.sourceCommit
+        || entry.manifestDigest !== parsed.installation.manifestDigest
+        || entry.treeDigest !== parsed.installation.treeDigest
+        || entry.policyVersion !== parsed.installation.policyVersion
+      ) invalid("idempotency_record_invalid");
+      const currentDocument = await this.database.collection(PLUGIN_COLLECTIONS.installations)
+        .findOne({ id: parsed.installation.id, projectId: parsed.installation.projectId, pluginName: parsed.installation.pluginName }, { projection: { _id: 0 } });
+      if (currentDocument === null) invalid("idempotency_record_invalid");
+      const current = this.readInstallation(currentDocument);
+      if (canonical(mutationSource(current) as Captured) !== canonical(mutationSource(parsed.installation) as Captured)) invalid("idempotency_record_invalid");
+    } catch {
+      invalid("idempotency_record_invalid");
+    }
   }
 
   private installationDocument(document: PluginInstallation): StoredDocument {

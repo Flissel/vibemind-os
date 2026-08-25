@@ -60,6 +60,24 @@ const CatalogSyncArgsSchema = z
   .strict();
 
 export type CatalogSyncArgs = z.infer<typeof CatalogSyncArgsSchema>;
+const arrayIsArray = Array.isArray;
+const ownKeysOf = Reflect.ownKeys;
+const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const stringify = JSON.stringify;
+const charCodeAt = Function.call.bind(String.prototype.charCodeAt) as (value: string, index: number) => number;
+const indexOfText = Function.call.bind(String.prototype.indexOf) as (value: string, search: string) => number;
+
+function sortedByName<T extends { readonly name: string }>(values: readonly T[]): T[] {
+  const output: T[] = [];
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index] as T;
+    let position = output.length;
+    while (position > 0 && compareCodePoints((output[position - 1] as T).name, value.name) > 0) position -= 1;
+    for (let move = output.length; move > position; move -= 1) output[move] = output[move - 1] as T;
+    output[position] = value;
+  }
+  return output;
+}
 
 export function parseCatalogSyncArgs(args: readonly string[]): CatalogSyncArgs {
   if (args.length !== 6) throw new Error("source_mismatch:catalog_arguments");
@@ -67,7 +85,7 @@ export function parseCatalogSyncArgs(args: readonly string[]): CatalogSyncArgs {
   for (let index = 0; index < args.length; index += 2) {
     const flag = args[index];
     const value = args[index + 1];
-    if (flag === undefined || value === undefined || !flag.startsWith("--")) {
+    if (flag === undefined || value === undefined || flag.length < 3 || charCodeAt(flag, 0) !== 45 || charCodeAt(flag, 1) !== 45) {
       throw new Error("source_mismatch:catalog_arguments");
     }
     const key = flag.slice(2);
@@ -84,14 +102,36 @@ function compareCodePoints(left: string, right: string): number {
 }
 
 export function canonicalCatalogValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (arrayIsArray(value)) {
+    const output: unknown[] = [];
+    for (let index = 0; index < value.length; index += 1) output[index] = canonicalValue(value[index]);
+    return output;
+  }
   if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value)
-        .filter(([, child]) => child !== undefined)
-        .sort(([left], [right]) => compareCodePoints(left, right))
-        .map(([key, child]) => [key, canonicalValue(child)]),
-    );
+    const keys: string[] = [];
+    const ownKeys = ownKeysOf(value);
+    for (let index = 0; index < ownKeys.length; index += 1) {
+      const key = ownKeys[index];
+      if (typeof key !== "string") throw new Error("digest_mismatch:canonical_value");
+      const descriptor = getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined || !("value" in descriptor)) throw new Error("digest_mismatch:canonical_value");
+      if (descriptor.value !== undefined) keys[keys.length] = key;
+    }
+    for (let index = 1; index < keys.length; index += 1) {
+      const selected = keys[index] as string;
+      let position = index;
+      while (position > 0 && compareCodePoints(keys[position - 1] as string, selected) > 0) {
+        keys[position] = keys[position - 1] as string; position -= 1;
+      }
+      keys[position] = selected;
+    }
+    const output = Object.create(null) as Record<string, unknown>;
+    for (let index = 0; index < keys.length; index += 1) {
+      const key = keys[index] as string;
+      const descriptor = getOwnPropertyDescriptor(value, key) as PropertyDescriptor & { readonly value: unknown };
+      output[key] = canonicalValue(descriptor.value);
+    }
+    return output;
   }
   return value;
 }
@@ -99,7 +139,7 @@ export function canonicalCatalogValue(value: unknown): unknown {
 const canonicalValue = canonicalCatalogValue;
 
 function canonicalJson(value: unknown, indentation?: number): string {
-  return JSON.stringify(canonicalValue(value), null, indentation);
+  return stringify(canonicalValue(value), null, indentation);
 }
 
 export function pluginCatalogDigest(payload: Omit<PluginCatalogLock, "catalogDigest">): string {
@@ -152,7 +192,17 @@ export function componentBindingDigest(
       kind: component.kind,
       status: component.status,
       ...(component.reason === undefined ? {} : { reason: component.reason }),
-      metadata: Object.fromEntries(Object.entries(component.metadata).filter(([key]) => key !== "bindingDigest")),
+      metadata: (() => {
+        const output = Object.create(null) as Record<string, unknown>;
+        const keys = ownKeysOf(component.metadata);
+        for (let index = 0; index < keys.length; index += 1) {
+          const key = keys[index];
+          if (typeof key !== "string" || key === "bindingDigest") continue;
+          const descriptor = getOwnPropertyDescriptor(component.metadata, key);
+          if (descriptor !== undefined && "value" in descriptor) output[key] = descriptor.value;
+        }
+        return output;
+      })(),
     },
     admission: material,
   })).digest("hex");
@@ -166,7 +216,11 @@ function capabilityFor(
   if (component.kind === "mcp") {
     return component.metadata.transport === "http" ? "mcp_http" : "mcp_process";
   }
-  return manifest.interface.capabilities?.includes("Write") === true ? "write" : "read";
+  const capabilities = manifest.interface.capabilities;
+  if (capabilities !== undefined) {
+    for (let index = 0; index < capabilities.length; index += 1) if (capabilities[index] === "Write") return "write";
+  }
+  return "read";
 }
 
 function componentAdmissions(
@@ -176,9 +230,11 @@ function componentAdmissions(
   provenance: SourceProvenance,
   licenseAdmission: AdmissionDecision,
 ): readonly CatalogComponentAdmission[] {
-  const ids = new Set<string>();
-  const bindingDigests = new Set<string>();
-  return components.map((component) => {
+  const ids: string[] = [];
+  const bindingDigests: string[] = [];
+  const output: CatalogComponentAdmission[] = [];
+  for (let index = 0; index < components.length; index += 1) {
+    const component = components[index] as NormalizedPluginComponent;
     const componentAdmission = evaluateComponentAdmission(
       manifest.license,
       { kind: capabilityFor(component, manifest) },
@@ -189,18 +245,19 @@ function componentAdmissions(
       licenseDeclaration: manifest.license ?? "<missing>",
       licenseAdmission,
     });
-    if (ids.has(component.id) || bindingDigests.has(bindingDigest)) throw new Error("digest_mismatch:component_binding");
-    ids.add(component.id);
-    bindingDigests.add(bindingDigest);
+    for (let seen = 0; seen < ids.length; seen += 1) if (ids[seen] === component.id || bindingDigests[seen] === bindingDigest) throw new Error("digest_mismatch:component_binding");
+    ids[ids.length] = component.id;
+    bindingDigests[bindingDigests.length] = bindingDigest;
     const boundComponent: CatalogBoundPluginComponent = {
       ...component,
       metadata: { ...component.metadata, digest: String(component.metadata.digest), bindingDigest },
     };
-    return {
+    output[output.length] = {
       component: boundComponent,
       admission: componentAdmission,
     };
-  });
+  }
+  return output;
 }
 
 function emptyInventory(): CatalogInventory {
@@ -218,14 +275,19 @@ function addInventory(
   inventory: CatalogInventory,
   components: readonly NormalizedPluginComponent[],
 ): CatalogInventory {
-  const kinds = new Set(components.map(({ kind }) => kind));
+  let skill = false, app = false, agent = false, command = false, mcp = false, hook = false;
+  for (let index = 0; index < components.length; index += 1) {
+    const kind = (components[index] as NormalizedPluginComponent).kind;
+    skill ||= kind === "skill"; app ||= kind === "app"; agent ||= kind === "agent";
+    command ||= kind === "command"; mcp ||= kind === "mcp"; hook ||= kind === "hook";
+  }
   return {
-    pluginsWithSkills: inventory.pluginsWithSkills + Number(kinds.has("skill")),
-    pluginsWithApps: inventory.pluginsWithApps + Number(kinds.has("app")),
-    pluginsWithAgents: inventory.pluginsWithAgents + Number(kinds.has("agent")),
-    pluginsWithCommands: inventory.pluginsWithCommands + Number(kinds.has("command")),
-    pluginsWithMcp: inventory.pluginsWithMcp + Number(kinds.has("mcp")),
-    pluginsWithCommandHooks: inventory.pluginsWithCommandHooks + Number(kinds.has("hook")),
+    pluginsWithSkills: inventory.pluginsWithSkills + Number(skill),
+    pluginsWithApps: inventory.pluginsWithApps + Number(app),
+    pluginsWithAgents: inventory.pluginsWithAgents + Number(agent),
+    pluginsWithCommands: inventory.pluginsWithCommands + Number(command),
+    pluginsWithMcp: inventory.pluginsWithMcp + Number(mcp),
+    pluginsWithCommandHooks: inventory.pluginsWithCommandHooks + Number(hook),
   };
 }
 
@@ -266,9 +328,12 @@ export async function importCatalog(
     storeRoot: options.storeRoot,
   });
   const directoryEntries = await readdir(canonicalPluginsRoot, { withFileTypes: true });
-  const directories = directoryEntries
-    .filter((entry) => entry.isDirectory())
-    .sort((left, right) => compareCodePoints(left.name, right.name));
+  const directoryValues: typeof directoryEntries = [];
+  for (let index = 0; index < directoryEntries.length; index += 1) {
+    const entry = directoryEntries[index];
+    if (entry !== undefined && entry.isDirectory()) directoryValues[directoryValues.length] = entry;
+  }
+  const directories = sortedByName(directoryValues);
   const count = requiredCount(options);
   if (count !== undefined && directories.length !== count) {
     throw new Error("source_mismatch:plugin_count");
@@ -285,7 +350,7 @@ export async function importCatalog(
     } catch (error: unknown) {
       if (
         error instanceof PluginSourceSecurityError &&
-        error.message.includes("committed plugin manifest missing")
+        indexOfText(error.message, "committed plugin manifest missing") >= 0
       ) {
         throw new Error("manifest_invalid:missing_manifest");
       }
@@ -332,7 +397,8 @@ export async function importCatalog(
     licenseCounts.set(declaredLicense, (licenseCounts.get(declaredLicense) ?? 0) + 1);
   }
 
-  const licenseDeclarations = Object.fromEntries(licenseCounts);
+  const licenseDeclarations = Object.create(null) as Record<string, number>;
+  for (const [declaration, countValue] of licenseCounts) licenseDeclarations[declaration] = countValue;
 
   const payload: Omit<PluginCatalogLock, "catalogDigest"> = {
     sourceUrl,
