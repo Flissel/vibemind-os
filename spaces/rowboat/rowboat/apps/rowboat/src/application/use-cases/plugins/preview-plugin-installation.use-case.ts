@@ -1,6 +1,6 @@
 import type { IPluginApiAuthorizationPolicy, PluginApiIdentity } from "../../policies/plugin-api-authorization.policy";
 import type { IPluginsRepository } from "../../repositories/plugins.repository.interface";
-import { assertDigest, assertId, assertPinnedSnapshot, freezeOutput, requiredCredentialNames, serviceError } from "./plugin-service.shared";
+import { assertDigest, assertId, assertPinnedSnapshot, componentDtosFrom, freezeOutput, requiredCredentialNames, serviceError } from "./plugin-service.shared";
 
 export interface PreviewPluginInstallationRequest {
   readonly identity: PluginApiIdentity;
@@ -33,10 +33,7 @@ export class PreviewPluginInstallationUseCase {
       },
       admission: entry.admission.status,
       ...(entry.admission.status === "admitted" ? {} : { reason: entry.admission.reason }),
-      components: entry.components.map(({ component, admission }) => ({
-        id: component.id, name: component.name, kind: component.kind, status: component.status,
-        admission: admission.status, ...(component.reason === undefined ? {} : { reason: component.reason }),
-      })),
+      components: componentDtosFrom(entry),
       credentialSlots: requiredCredentialNames(entry).map((name) => ({ name, configured: configured.has(name) })),
     });
   }

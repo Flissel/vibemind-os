@@ -1,11 +1,29 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { PluginCatalogEntry, PluginComponentAdmission, PluginCredentialSlot, PluginInstallation, PluginReceipt } from "../../repositories/plugins.repository.interface";
 import type { PluginCatalogSnapshot } from "../../repositories/plugins.repository.interface";
-import { PINNED_OPENAI_PLUGINS_COMMIT, PINNED_PLUGIN_CATALOG_DIGEST } from "@rowboat/openai-plugin-runtime";
+import {
+  PINNED_OPENAI_PLUGINS_COMMIT,
+  PINNED_PLUGIN_CATALOG_DIGEST,
+  type PluginComponentKind,
+  type PluginComponentStatus,
+  type PluginReasonCode,
+} from "@rowboat/openai-plugin-runtime";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const IDEMPOTENCY = /^[\x21-\x7e]{1,128}$/;
+const COMPONENT_NAME = /^[A-Za-z0-9][A-Za-z0-9._ ()+@-]{0,127}$/;
+const COMPONENT_KINDS = new Set<PluginComponentKind>(["skill", "agent", "command", "mcp", "app", "hook", "asset"]);
+const COMPONENT_STATUSES = new Set<PluginComponentStatus>(["available", "review_required", "installed", "partially_available", "unavailable", "migration_required", "error", "invalid", "unsupported"]);
+const REASONS = new Set<PluginReasonCode>(["source_mismatch", "manifest_invalid", "path_escape", "digest_mismatch", "license_review_required", "license_rejected", "provider_unavailable", "credential_missing", "http_mcp_not_admitted", "process_not_admitted", "hook_not_admitted", "write_review_required", "component_unsupported", "migration_conflict", "parity_failed", "rollback_unavailable"]);
+
+export interface PluginComponentDto {
+  readonly componentDigest: string;
+  readonly name: string;
+  readonly kind: PluginComponentKind;
+  readonly admission: Readonly<{ readonly status: "admitted" | "review_required" | "rejected"; readonly reason?: PluginReasonCode; readonly policyVersion: string }>;
+  readonly availability: Readonly<{ readonly status: PluginComponentStatus; readonly reason?: PluginReasonCode }>;
+}
 
 export function serviceError(reason: string): never { throw new Error(reason); }
 export function assertId(value: string, reason: string): void { if (!ID.test(value)) serviceError(reason); }
@@ -39,6 +57,30 @@ export function requiredCredentialNames(entry: PluginCatalogEntry): readonly str
     for (const name of candidate) if (typeof name === "string" && ID.test(name)) names.add(name);
   }
   return Object.freeze([...names].sort());
+}
+
+export function componentDtosFrom(entry: PluginCatalogEntry): readonly PluginComponentDto[] {
+  if (!Array.isArray(entry.components) || entry.components.length > 512) serviceError("catalog_entry_invalid");
+  const ids = new Set<string>();
+  return entry.components.map((selected) => {
+    if (selected === null || typeof selected !== "object" || selected.component === undefined || selected.admission === undefined) serviceError("catalog_entry_invalid");
+    const { component, admission } = selected;
+    const digest = component.metadata.digest;
+    if (typeof component.id !== "string" || component.id.length === 0 || component.id.length > 512 || typeof digest !== "string" || !DIGEST.test(digest)) serviceError("catalog_entry_invalid");
+    if (ids.has(component.id)) serviceError("catalog_entry_invalid");
+    ids.add(component.id);
+    if (!COMPONENT_NAME.test(component.name) || !COMPONENT_KINDS.has(component.kind) || !COMPONENT_STATUSES.has(component.status)) serviceError("catalog_entry_invalid");
+    if (admission.policyVersion !== entry.policyVersion || (admission.status !== "admitted" && admission.status !== "review_required" && admission.status !== "rejected")) serviceError("catalog_entry_invalid");
+    if ((admission.status === "admitted" && admission.reason !== undefined) || (admission.status !== "admitted" && (admission.reason === undefined || !REASONS.has(admission.reason)))) serviceError("catalog_entry_invalid");
+    if (component.reason !== undefined && !REASONS.has(component.reason)) serviceError("catalog_entry_invalid");
+    return {
+      componentDigest: digest,
+      name: component.name,
+      kind: component.kind,
+      admission: { status: admission.status, ...(admission.status === "admitted" ? {} : { reason: admission.reason }), policyVersion: admission.policyVersion },
+      availability: { status: component.status, ...(component.reason === undefined ? {} : { reason: component.reason }) },
+    };
+  });
 }
 
 export function assertAdmitted(entry: PluginCatalogEntry): void {

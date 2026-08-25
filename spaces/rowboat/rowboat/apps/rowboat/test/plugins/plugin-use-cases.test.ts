@@ -15,11 +15,13 @@ import type {
 } from "@/src/application/repositories/plugins.repository.interface";
 import type { IPluginApiAuthorizationPolicy, PluginApiIdentity } from "@/src/application/policies/plugin-api-authorization.policy";
 import { InstallPluginUseCase } from "@/src/application/use-cases/plugins/install-plugin.use-case";
+import { ListPluginCatalogUseCase } from "@/src/application/use-cases/plugins/list-plugin-catalog.use-case";
 import { PreviewPluginInstallationUseCase } from "@/src/application/use-cases/plugins/preview-plugin-installation.use-case";
 import { SetPluginEnabledUseCase } from "@/src/application/use-cases/plugins/set-plugin-enabled.use-case";
 import { Auth0PluginApiAuthorizationPolicy } from "@/src/infrastructure/policies/auth0.plugin-api-authorization.policy";
 import { PluginInstallationController } from "@/src/interface-adapters/controllers/plugins/plugin-installation.controller";
-import { PINNED_OPENAI_PLUGINS_COMMIT, PINNED_PLUGIN_CATALOG_DIGEST } from "@rowboat/openai-plugin-runtime";
+import { PINNED_OPENAI_PLUGINS_COMMIT, PINNED_PLUGIN_CATALOG_DIGEST, type PluginCatalogLock } from "@rowboat/openai-plugin-runtime";
+import catalogLockFixture from "../../../../config/openai-plugin-catalog.lock.json";
 import { NextRequest } from "next/server";
 import { SignJWT, createLocalJWKSet, exportJWK, generateKeyPair } from "jose";
 import { verifyAuth0UserToken } from "@/src/infrastructure/policies/auth0.plugin-api-authorization.policy";
@@ -97,7 +99,65 @@ const installRequest = Object.freeze({
   idempotencyKey: "install-key-1", expectedRevision: 0,
 });
 
+function recursiveStrings(value: unknown): readonly string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(recursiveStrings);
+  if (value !== null && typeof value === "object") return Object.values(value).flatMap(recursiveStrings);
+  return [];
+}
+
 describe("authorized plugin services", () => {
+  it("uses opaque component digests and keeps admission separate from availability for real catalog entries", async () => {
+    const lock = catalogLockFixture as unknown as PluginCatalogLock;
+    const { entries, ...catalogSnapshot } = lock;
+    const repository = new FakeRepository();
+    repository.getCatalogSnapshot = async (value) => value === lock.catalogDigest ? catalogSnapshot : null;
+    repository.listCatalogEntries = async (value) => value === lock.catalogDigest
+      ? entries.map((selected) => ({ ...selected, catalogDigest: lock.catalogDigest }))
+      : [];
+    const dependencies = { pluginsRepository: repository, pluginApiAuthorizationPolicy: new FakeAuthorization() };
+
+    const catalog = await new ListPluginCatalogUseCase(dependencies).execute({ identity, catalogDigest: lock.catalogDigest });
+    const airtable = catalog.find((selected) => selected.name === "airtable");
+    const realAirtable = entries.find((selected) => selected.name === "airtable");
+    const realAgent = realAirtable?.components.find(({ component }) => component.id === "agent:agents/openai.yaml");
+    expect(realAgent).toBeDefined();
+    expect(airtable?.components.find((component) => component.componentDigest === realAgent?.component.metadata.digest)).toEqual({
+      componentDigest: realAgent?.component.metadata.digest,
+      name: "openai.yaml",
+      kind: "agent",
+      admission: { status: "review_required", reason: "write_review_required", policyVersion: lock.policyVersion },
+      availability: { status: "available" },
+    });
+
+    const attio = catalog.find((selected) => selected.name === "attio");
+    const realAttio = entries.find((selected) => selected.name === "attio");
+    const realAsset = realAttio?.components.find(({ component }) => component.id === "asset:assets/logo.png");
+    expect(realAsset).toBeDefined();
+    const assetDto = attio?.components.find((component) => component.componentDigest === realAsset?.component.metadata.digest);
+    expect(recursiveStrings(catalog.flatMap((selected) => selected.components)).some((value) => value.includes("/") || value.includes("\\"))).toBe(false);
+    expect(recursiveStrings(assetDto).some((value) => value.includes("/") || value.includes("\\"))).toBe(false);
+    expect(JSON.stringify(assetDto)).not.toContain("asset:assets/logo.png");
+    expect(Object.isFrozen(airtable?.components[0]?.admission)).toBe(true);
+    expect(Object.isFrozen(airtable?.components[0]?.availability)).toBe(true);
+
+    const preview = await new PreviewPluginInstallationUseCase(dependencies).execute({
+      identity, projectId: "project-1", pluginName: "airtable", catalogDigest: lock.catalogDigest,
+    });
+    expect(preview.components).toEqual(airtable?.components);
+    expect(recursiveStrings(preview.components).some((value) => value.includes("/") || value.includes("\\"))).toBe(false);
+  });
+
+  it("fails closed when catalog component admission bindings are missing or duplicated", async () => {
+    const repository = new FakeRepository();
+    const first = entry.components[0];
+    const useCase = new ListPluginCatalogUseCase({ pluginsRepository: repository, pluginApiAuthorizationPolicy: new FakeAuthorization() });
+    repository.listCatalogEntries = async () => [{ ...entry, components: [{ component: first.component }] } as unknown as PluginCatalogEntry];
+    await expect(useCase.execute({ identity, catalogDigest: snapshot.catalogDigest })).rejects.toThrow("catalog_entry_invalid");
+    repository.listCatalogEntries = async () => [{ ...entry, components: [first, first] }];
+    await expect(useCase.execute({ identity, catalogDigest: snapshot.catalogDigest })).rejects.toThrow("catalog_entry_invalid");
+  });
+
   it("does not write when project authorization fails", async () => {
     const repository = new FakeRepository();
     const authorization = new FakeAuthorization();

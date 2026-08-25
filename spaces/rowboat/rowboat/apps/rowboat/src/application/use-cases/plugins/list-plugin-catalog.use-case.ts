@@ -1,6 +1,6 @@
 import type { IPluginApiAuthorizationPolicy, PluginApiIdentity } from "../../policies/plugin-api-authorization.policy";
 import type { IPluginsRepository } from "../../repositories/plugins.repository.interface";
-import { assertDigest, assertPinnedSnapshot, freezeOutput, serviceError } from "./plugin-service.shared";
+import { assertDigest, assertPinnedSnapshot, componentDtosFrom, freezeOutput, serviceError } from "./plugin-service.shared";
 
 export class ListPluginCatalogUseCase {
   constructor(private readonly dependencies: { readonly pluginsRepository: IPluginsRepository; readonly pluginApiAuthorizationPolicy: IPluginApiAuthorizationPolicy }) {}
@@ -10,10 +10,8 @@ export class ListPluginCatalogUseCase {
     assertPinnedSnapshot(await this.dependencies.pluginsRepository.getCatalogSnapshot(request.catalogDigest), request.catalogDigest);
     return freezeOutput((await this.dependencies.pluginsRepository.listCatalogEntries(request.catalogDigest)).map((entry) => ({
       name: entry.name, pluginName: entry.pluginName, pluginVersion: entry.pluginVersion, catalogDigest: entry.catalogDigest,
-      admission: entry.admission.status, ...(entry.admission.status === "admitted" ? {} : { reason: entry.admission.reason }), components: entry.components.map(({ component, admission }) => ({
-        id: component.id, name: component.name, kind: component.kind, status: component.status,
-        admission: admission.status, ...(component.reason === undefined ? {} : { reason: component.reason }),
-      })),
+      admission: entry.admission.status, ...(entry.admission.status === "admitted" ? {} : { reason: entry.admission.reason }),
+      components: componentDtosFrom(entry),
     })));
   }
 }
