@@ -83,7 +83,9 @@ export {
 export {
   importCatalog,
   parseCatalogSyncArgs,
+  assertCatalogOutputContained,
   writeCatalogLock,
   type CatalogImportOptions,
+  type CatalogLockWriteOptions,
   type CatalogSyncArgs,
 } from "./import/catalog-importer.js";

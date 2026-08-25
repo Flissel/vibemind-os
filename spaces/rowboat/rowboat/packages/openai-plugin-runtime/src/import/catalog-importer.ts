@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import type {
@@ -22,7 +22,14 @@ import { evaluateComponentAdmission } from "../policy/capability-policy.js";
 import { evaluateLicense } from "../policy/license-policy.js";
 import { parsePluginManifest, type PluginManifest } from "../schema/plugin-manifest.js";
 import { normalizePlugin } from "./normalize-plugin.js";
-import { PluginSourceSecurityError } from "./path-guard.js";
+import {
+  isContainedPath,
+  PluginSourceSecurityError,
+} from "./path-guard.js";
+import {
+  assertDirectoryIdentity,
+  snapshotDirectoryIdentity,
+} from "./directory-identity.js";
 import {
   assertPinnedSource,
   OPENAI_PLUGINS_SOURCE_URL,
@@ -37,6 +44,10 @@ export interface CatalogImportOptions {
   readonly clock: () => Date;
   readonly policy?: PluginPolicy;
   readonly expectedPluginCount?: number;
+}
+
+export interface CatalogLockWriteOptions {
+  readonly containmentRoot?: string;
 }
 
 const CatalogSyncArgsSchema = z
@@ -189,7 +200,7 @@ export async function importCatalog(
   }
 
   let inventory = emptyInventory();
-  const licenseDeclarations: Record<string, number> = {};
+  const licenseCounts = new Map<string, number>();
   const entries: PluginCatalogEntry[] = [];
   for (const directory of directories) {
     const pluginRoot = join(canonicalPluginsRoot, directory.name);
@@ -242,8 +253,10 @@ export async function importCatalog(
     entries.push(entry);
     inventory = addInventory(inventory, normalized.components);
     const declaredLicense = manifest.license ?? "<missing>";
-    licenseDeclarations[declaredLicense] = (licenseDeclarations[declaredLicense] ?? 0) + 1;
+    licenseCounts.set(declaredLicense, (licenseCounts.get(declaredLicense) ?? 0) + 1);
   }
+
+  const licenseDeclarations = Object.fromEntries(licenseCounts);
 
   const payload: Omit<PluginCatalogLock, "catalogDigest"> = {
     sourceUrl,
@@ -258,8 +271,87 @@ export async function importCatalog(
   return canonicalValue({ ...payload, catalogDigest: catalogDigest(payload) }) as PluginCatalogLock;
 }
 
-export async function writeCatalogLock(output: string, lock: PluginCatalogLock): Promise<void> {
+function isNotFoundError(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+async function nearestExistingCanonicalPath(target: string): Promise<string> {
+  let candidate = target;
+  while (true) {
+    try {
+      return await realpath(candidate);
+    } catch (error: unknown) {
+      if (!isNotFoundError(error)) throw error;
+      const parent = dirname(candidate);
+      if (parent === candidate) throw error;
+      candidate = parent;
+    }
+  }
+}
+
+export async function assertCatalogOutputContained(
+  containmentRoot: string,
+  output: string,
+): Promise<void> {
+  try {
+    const canonicalRoot = await realpath(containmentRoot);
+    const destination = resolve(output);
+    if (!isContainedPath(canonicalRoot, destination)) {
+      throw new Error("outside root");
+    }
+    const canonicalAncestor = await nearestExistingCanonicalPath(destination);
+    if (!isContainedPath(canonicalRoot, canonicalAncestor)) {
+      throw new Error("canonical ancestor outside root");
+    }
+  } catch {
+    throw new Error("path_escape:catalog_output");
+  }
+}
+
+async function assertRegularOutputIfPresent(output: string): Promise<void> {
+  try {
+    const stats = await lstat(output);
+    if (!stats.isFile() || stats.isSymbolicLink()) {
+      throw new Error("path_escape:catalog_output");
+    }
+  } catch (error: unknown) {
+    if (!isNotFoundError(error)) throw error;
+  }
+}
+
+export async function writeCatalogLock(
+  output: string,
+  lock: PluginCatalogLock,
+  options: CatalogLockWriteOptions = {},
+): Promise<void> {
   const destination = resolve(output);
-  await mkdir(dirname(destination), { recursive: true });
-  await writeFile(destination, `${canonicalJson(lock, 2)}\n`, { encoding: "utf8" });
+  if (options.containmentRoot !== undefined) {
+    await assertCatalogOutputContained(options.containmentRoot, destination);
+  }
+  const parent = dirname(destination);
+  await mkdir(parent, { recursive: true });
+  const parentIdentity = await snapshotDirectoryIdentity(parent);
+  if (options.containmentRoot !== undefined) {
+    await assertCatalogOutputContained(options.containmentRoot, parentIdentity.canonicalPath);
+  }
+  await assertRegularOutputIfPresent(destination);
+  const temporary = resolve(
+    parent,
+    `.${basename(destination)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  try {
+    await writeFile(temporary, `${canonicalJson(lock, 2)}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+    });
+    await assertRegularOutputIfPresent(destination);
+    await assertDirectoryIdentity(parentIdentity);
+    if (options.containmentRoot !== undefined) {
+      await assertCatalogOutputContained(options.containmentRoot, parentIdentity.canonicalPath);
+    }
+    await rename(temporary, destination);
+    await assertDirectoryIdentity(parentIdentity);
+  } finally {
+    await rm(temporary, { force: true });
+  }
 }

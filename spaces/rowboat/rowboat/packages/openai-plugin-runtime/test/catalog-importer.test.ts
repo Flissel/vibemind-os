@@ -293,6 +293,24 @@ describe("importCatalog", () => {
     });
   });
 
+  it("counts prototype-like license names as own data keys", async () => {
+    const source = await createSource("catalog-license-keys", [
+      { directoryName: "alpha", license: "__proto__" },
+      { directoryName: "beta", license: "constructor" },
+    ]);
+
+    const lock = await importCatalog(source.pluginsRoot, options(source));
+
+    expect(lock.licenseDeclarations).toEqual({
+      ["__proto__"]: 1,
+      constructor: 1,
+    });
+    expect(Object.values(lock.licenseDeclarations).reduce(
+      (sum, count) => sum + count,
+      0,
+    )).toBe(lock.entries.length);
+  });
+
   it("counts conventional agent, command, and hook surfaces", async () => {
     const source = await createSource("catalog-conventional", [
       {
@@ -348,5 +366,23 @@ describe("importCatalog", () => {
     expect(written.endsWith("\n")).toBe(true);
     expect(JSON.parse(written)).toEqual(lock);
     expect(written).toBe(`${JSON.stringify(lock, null, 2)}\n`);
+  });
+
+  it("rejects a final-file symlink without changing its outside target", async () => {
+    const source = await createSource("catalog-write-link", [
+      { directoryName: "alpha", license: "MIT" },
+    ]);
+    const lock = await importCatalog(source.pluginsRoot, options(source));
+    const outputRoot = await createOwnedTestRoot("catalog-link-output");
+    const outsideRoot = await createOwnedTestRoot("catalog-link-outside");
+    const outsideTarget = join(outsideRoot, "outside.json");
+    const output = join(outputRoot, "catalog.lock.json");
+    await writeFile(outsideTarget, "outside-sentinel\n");
+    await symlink(outsideTarget, output, "file");
+
+    await expect(writeCatalogLock(output, lock)).rejects.toThrow(
+      "path_escape:catalog_output",
+    );
+    expect(await readFile(outsideTarget, "utf8")).toBe("outside-sentinel\n");
   });
 });
