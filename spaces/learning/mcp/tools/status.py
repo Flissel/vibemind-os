@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 
 from spaces.learning.bridge.dispatcher import (
     ApplicationOutcomeV1,
     InMemoryReceiptStore,
     LearningDispatcher,
+    ApplicationGateway,
+    ReceiptStore,
 )
 from spaces.learning.contracts.events import LearningToolName
 from spaces.learning.contracts.mcp_models import ToolRequestV1
@@ -15,7 +18,10 @@ from spaces.learning.contracts.outcomes import (
     TruthReadbackV1,
 )
 from spaces.learning.services.db.repository import SqlReceiptStore
-from spaces.learning.services.db.session import build_session_factory, create_learning_engine
+from spaces.learning.services.db.session import (
+    build_session_factory,
+    create_learning_engine,
+)
 
 
 class StructuralStatusGateway:
@@ -47,13 +53,22 @@ class StructuralStatusGateway:
         )
 
 
-def build_default_dispatcher() -> LearningDispatcher:
+def build_default_dispatcher(
+    *,
+    gateways: Mapping[LearningToolName, ApplicationGateway] | None = None,
+    receipts: ReceiptStore | None = None,
+) -> LearningDispatcher:
     database_url = os.environ.get("LEARNING_DATABASE_URL", "").strip()
-    receipts = InMemoryReceiptStore()
-    if database_url:
+    selected_receipts = receipts or InMemoryReceiptStore()
+    if receipts is None and database_url:
         engine = create_learning_engine(database_url)
-        receipts = SqlReceiptStore(build_session_factory(engine))
+        selected_receipts = SqlReceiptStore(build_session_factory(engine))
+    admitted_gateways: dict[LearningToolName, ApplicationGateway] = {
+        LearningToolName.STATUS: StructuralStatusGateway()
+    }
+    if gateways is not None:
+        admitted_gateways.update(gateways)
     return LearningDispatcher(
-        gateways={LearningToolName.STATUS: StructuralStatusGateway()},
-        receipts=receipts,
+        gateways=admitted_gateways,
+        receipts=selected_receipts,
     )

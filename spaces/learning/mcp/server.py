@@ -7,10 +7,19 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from spaces.learning.bridge.dispatcher import LearningDispatcher
+from spaces.learning.bridge.dispatcher import (
+    ApplicationGateway,
+    LearningDispatcher,
+    ReceiptStore,
+)
+from spaces.learning.bridge.learnhouse_client import LearnHouseClient
 from spaces.learning.contracts.events import EVENT_TOOL_MAP, LearningToolName
 from spaces.learning.contracts.mcp_models import EventEnvelopeV1, ToolRequestV1
-from spaces.learning.mcp.tools.status import build_default_dispatcher
+from spaces.learning.mcp.tools.courses import build_course_gateways
+from spaces.learning.mcp.tools.navigation import build_navigation_gateways
+from spaces.learning.mcp.tools.status import (
+    build_default_dispatcher as build_status_dispatcher,
+)
 
 
 SERVER_NAME = "spaces-learning"
@@ -34,6 +43,18 @@ TOOLS: list[dict[str, Any]] = [
     }
     for tool in LearningToolName
 ]
+
+
+def build_default_dispatcher(
+    *,
+    learnhouse: ApplicationGateway | None = None,
+    receipts: ReceiptStore | None = None,
+) -> LearningDispatcher:
+    admitted_learnhouse = learnhouse or LearnHouseClient()
+    gateways = dict(build_course_gateways(admitted_learnhouse))
+    gateways.update(build_navigation_gateways(admitted_learnhouse))
+    return build_status_dispatcher(gateways=gateways, receipts=receipts)
+
 
 _DEFAULT_DISPATCHER = build_default_dispatcher()
 
@@ -62,7 +83,11 @@ def handle_message(
     message: Any, *, dispatcher: LearningDispatcher | None = None
 ) -> dict[str, Any] | None:
     if not isinstance(message, Mapping):
-        return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "invalid request"}}
+        return {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": -32600, "message": "invalid request"},
+        }
     request_id = message.get("id")
     method = message.get("method")
     if method == "notifications/initialized":
@@ -80,7 +105,11 @@ def handle_message(
     if method == "tools/list":
         return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": TOOLS}}
     if method != "tools/call":
-        return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "method not found"}}
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {"code": -32601, "message": "method not found"},
+        }
 
     params = message.get("params")
     if not isinstance(params, Mapping):
@@ -118,7 +147,11 @@ def main() -> int:
             message = json.loads(line)
             response = handle_message(message)
         except json.JSONDecodeError:
-            response = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}}
+            response = {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32700, "message": "parse error"},
+            }
         if response is not None:
             print(json.dumps(response, ensure_ascii=False), flush=True)
     return 0
