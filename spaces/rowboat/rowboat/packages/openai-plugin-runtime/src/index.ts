@@ -196,3 +196,32 @@ export {
   type HookExecutionReceipt,
   type HookRunnerOptions,
 } from "./hooks/hook-runner.js";
+export type {
+  InstallationProviderBinding,
+  PluginInstallation,
+} from "./domain/installation.js";
+export type {
+  PluginReceipt,
+  PluginReceiptStatus,
+  PluginReceiptType,
+  TruncatedReceiptOutput,
+} from "./domain/receipt.js";
+export {
+  PINNED_PLUGIN_CATALOG_DIGEST,
+  resolveInstallation,
+  type ResolvedComponent,
+  type ResolvedInstallation,
+} from "./resolution/plugin-resolver.js";
+export {
+  buildReceipt,
+  type ReceiptLimits,
+} from "./receipts/receipt-builder.js";
+export {
+  REDACTED,
+  canonicalSensitivePaths,
+  captureRedactionLimits,
+  redactBounded,
+  type RedactionLimits,
+  type RedactionResult,
+  type CapturedRedactionLimits,
+} from "./security/redact.js";

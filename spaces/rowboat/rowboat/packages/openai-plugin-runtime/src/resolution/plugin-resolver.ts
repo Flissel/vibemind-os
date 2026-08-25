@@ -1,0 +1,258 @@
+import { createHash } from "node:crypto";
+import { isProxy } from "node:util/types";
+import {
+  PINNED_OPENAI_PLUGINS_COMMIT,
+  PLUGIN_SCHEMA_VERSION,
+  type CatalogComponentAdmission,
+  type PluginCatalogEntry,
+  type PluginCatalogLock,
+} from "../domain/catalog.js";
+import type { PluginInstallation } from "../domain/installation.js";
+import type {
+  NormalizedPluginComponent,
+  PluginComponentKind,
+  PluginReasonCode,
+} from "../domain/plugin.js";
+import { DEFAULT_POLICY, type PluginPolicy } from "../policy/default-policy.js";
+import type { ProviderBinding } from "../providers/provider.js";
+import { ProviderRegistry } from "../providers/provider-registry.js";
+
+export const PINNED_PLUGIN_CATALOG_DIGEST =
+  "30d3d9a5330b967ae804afce76f5eec1233e33acfd2b03f3fa4bc8ce10b5dc73" as const;
+
+export interface ResolvedComponent {
+  readonly id: string;
+  readonly name: string;
+  readonly kind: PluginComponentKind;
+  readonly status: "available" | "unavailable";
+  readonly reason?: PluginReasonCode;
+  readonly metadata: Readonly<Record<string, unknown>>;
+}
+
+export interface ResolvedInstallation {
+  readonly status: "available" | "partially_available" | "unavailable";
+  readonly reason?: PluginReasonCode;
+  readonly components: readonly ResolvedComponent[];
+  readonly skills: readonly ResolvedComponent[];
+  readonly agents: readonly ResolvedComponent[];
+  readonly commands: readonly ResolvedComponent[];
+  readonly mcp: readonly ResolvedComponent[];
+  readonly apps: readonly ResolvedComponent[];
+  readonly hooks: readonly ResolvedComponent[];
+  readonly assets: readonly ResolvedComponent[];
+}
+
+interface CaptureBudget {
+  nodes: number;
+  strings: number;
+}
+
+function fail(): never {
+  throw new Error("resolution_invalid");
+}
+
+function capturePlain(value: unknown, depth = 0, budget: CaptureBudget = { nodes: 0, strings: 0 }): unknown {
+  budget.nodes += 1;
+  if (budget.nodes > 50_000 || depth > 16) fail();
+  if (typeof value === "string") {
+    budget.strings += Buffer.byteLength(value, "utf8");
+    if (budget.strings > 8 * 1024 * 1024 || Buffer.byteLength(value, "utf8") > 64 * 1024) fail();
+    return value;
+  }
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) fail();
+    return value;
+  }
+  if (typeof value !== "object" || isProxy(value)) fail();
+  const array = Array.isArray(value);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== (array ? Array.prototype : Object.prototype) && prototype !== null) fail();
+  if (Object.getOwnPropertySymbols(value).length !== 0) fail();
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (array) {
+    if (value.length > 20_000) fail();
+    const result: unknown[] = [];
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) fail();
+      result.push(capturePlain(descriptor.value, depth + 1, budget));
+    }
+    const extras = Object.keys(descriptors).filter((key) => key !== "length" && !/^(0|[1-9][0-9]*)$/.test(key));
+    if (extras.length !== 0) fail();
+    return Object.freeze(result);
+  }
+  const result: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (const key of Object.keys(descriptors).sort()) {
+    if (key === "__proto__" || key === "prototype" || key === "constructor" || key.length > 128) fail();
+    const descriptor = descriptors[key];
+    if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) fail();
+    result[key] = capturePlain(descriptor.value, depth + 1, budget);
+  }
+  return Object.freeze(result);
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function validateCatalog(input: unknown): PluginCatalogLock {
+  const catalog = capturePlain(input) as PluginCatalogLock;
+  if (
+    catalog.sourceCommit !== PINNED_OPENAI_PLUGINS_COMMIT
+    || catalog.schemaVersion !== PLUGIN_SCHEMA_VERSION
+    || catalog.policyVersion !== DEFAULT_POLICY.version
+    || catalog.catalogDigest !== PINNED_PLUGIN_CATALOG_DIGEST
+    || !Array.isArray(catalog.entries)
+    || catalog.entries.length !== 180
+  ) fail();
+  const { catalogDigest: ignored, ...payload } = catalog;
+  void ignored;
+  const computed = createHash("sha256").update(canonicalJson(payload)).digest("hex");
+  if (computed !== PINNED_PLUGIN_CATALOG_DIGEST) fail();
+  const names = new Set<string>();
+  for (const entry of catalog.entries) {
+    if (names.has(entry.name) || entry.name !== entry.pluginName) fail();
+    names.add(entry.name);
+  }
+  return catalog;
+}
+
+const INSTALLATION_KEYS = new Set([
+  "id", "projectId", "pluginName", "pluginVersion", "sourceCommit", "manifestDigest",
+  "treeDigest", "policyVersion", "enabled", "revision", "providerBindings",
+]);
+const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const COMPONENT_ID = /^[A-Za-z0-9][A-Za-z0-9._:/#-]{0,255}$/;
+const DIGEST = /^[a-f0-9]{64}$/;
+const COMMIT = /^[a-f0-9]{40}$/;
+
+function validateInstallation(input: unknown): PluginInstallation {
+  const installation = capturePlain(input) as PluginInstallation;
+  if (Object.keys(installation).some((key) => !INSTALLATION_KEYS.has(key))) fail();
+  if (
+    !ID.test(installation.id) || !ID.test(installation.projectId) || !ID.test(installation.pluginName)
+    || typeof installation.pluginVersion !== "string" || installation.pluginVersion.length > 128
+    || !COMMIT.test(installation.sourceCommit) || !DIGEST.test(installation.manifestDigest)
+    || !DIGEST.test(installation.treeDigest) || installation.policyVersion !== DEFAULT_POLICY.version
+    || typeof installation.enabled !== "boolean" || !Number.isSafeInteger(installation.revision)
+    || installation.revision < 0
+  ) fail();
+  if (installation.providerBindings !== undefined) {
+    if (!Array.isArray(installation.providerBindings) || installation.providerBindings.length > 256) fail();
+    const ids = new Set<string>();
+    for (const selected of installation.providerBindings) {
+      if (!COMPONENT_ID.test(selected.componentId) || ids.has(selected.componentId)) fail();
+      if (Object.keys(selected).some((key) => key !== "componentId" && key !== "binding")) fail();
+      if (Object.keys(selected.binding).some((key) => !["id", "providerKind", "componentDigest", "pairedComponentDigests", "temporaryAdapter"].includes(key))) fail();
+      ids.add(selected.componentId);
+    }
+  }
+  return installation;
+}
+
+function empty(reason: PluginReasonCode): ResolvedInstallation {
+  const components = Object.freeze([]) as readonly ResolvedComponent[];
+  return Object.freeze({
+    status: "unavailable", reason, components,
+    skills: components, agents: components, commands: components, mcp: components,
+    apps: components, hooks: components, assets: components,
+  });
+}
+
+function admissionReason(admission: CatalogComponentAdmission["admission"]): PluginReasonCode | undefined {
+  return admission.status === "admitted" ? undefined : admission.reason;
+}
+
+function providerBinding(
+  installation: PluginInstallation,
+  componentId: string,
+): ProviderBinding | undefined {
+  return installation.providerBindings?.find((selected) => selected.componentId === componentId)?.binding;
+}
+
+function resolveComponent(
+  item: CatalogComponentAdmission,
+  installation: PluginInstallation,
+  registry: ProviderRegistry,
+): ResolvedComponent {
+  const component: NormalizedPluginComponent = item.component;
+  let reason = admissionReason(item.admission);
+  if (reason === undefined && component.status !== "available") {
+    reason = component.reason ?? "component_unsupported";
+  }
+  if (reason === undefined && (component.kind === "app" || component.kind === "mcp")) {
+    const binding = providerBinding(installation, component.id);
+    if (
+      binding === undefined
+      || binding.componentDigest !== component.metadata.digest
+      || registry.resolve(binding).status !== "available"
+    ) reason = "provider_unavailable";
+  }
+  return Object.freeze({
+    id: component.id,
+    name: component.name,
+    kind: component.kind,
+    status: reason === undefined ? "available" : "unavailable",
+    ...(reason === undefined ? {} : { reason }),
+    metadata: component.metadata,
+  });
+}
+
+function byKindName(left: ResolvedComponent, right: ResolvedComponent): number {
+  return left.kind < right.kind ? -1 : left.kind > right.kind ? 1 : left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
+}
+
+export function resolveInstallation(
+  installationInput: unknown,
+  catalogInput: unknown,
+  registry: ProviderRegistry,
+  policy: PluginPolicy,
+): ResolvedInstallation {
+  let installation: PluginInstallation;
+  let catalog: PluginCatalogLock;
+  try {
+    installation = validateInstallation(installationInput);
+    catalog = validateCatalog(catalogInput);
+    if (policy !== DEFAULT_POLICY || Object.getPrototypeOf(registry) !== ProviderRegistry.prototype) fail();
+  } catch {
+    return empty("source_mismatch");
+  }
+  if (!installation.enabled) return empty("component_unsupported");
+  const matches = catalog.entries.filter((candidate) => candidate.name === installation.pluginName);
+  if (matches.length !== 1) return empty("source_mismatch");
+  const entry: PluginCatalogEntry = matches[0]!;
+  if (
+    installation.sourceCommit !== entry.sourceCommit
+    || installation.pluginVersion !== entry.pluginVersion
+    || installation.manifestDigest !== entry.manifestDigest
+    || installation.treeDigest !== entry.treeDigest
+    || installation.policyVersion !== entry.policyVersion
+  ) return empty("digest_mismatch");
+  if (entry.admission.status !== "admitted") return empty(entry.admission.reason);
+
+  const ids = new Set<string>();
+  const names = new Set<string>();
+  for (const item of entry.components) {
+    const key = `${item.component.kind}\u0000${item.component.name}`;
+    if (ids.has(item.component.id) || names.has(key)) return empty("digest_mismatch");
+    ids.add(item.component.id);
+    names.add(key);
+  }
+  if (installation.providerBindings?.some(({ componentId }) => !ids.has(componentId)) === true) return empty("digest_mismatch");
+  const components = Object.freeze(entry.components.map((item) => resolveComponent(item, installation, registry)).sort(byKindName));
+  const forKind = (kind: PluginComponentKind): readonly ResolvedComponent[] =>
+    Object.freeze(components.filter((component) => component.kind === kind));
+  const available = components.filter((component) => component.status === "available").length;
+  const status = available === components.length ? "available" : available === 0 ? "unavailable" : "partially_available";
+  return Object.freeze({
+    status,
+    components,
+    skills: forKind("skill"), agents: forKind("agent"), commands: forKind("command"),
+    mcp: forKind("mcp"), apps: forKind("app"), hooks: forKind("hook"), assets: forKind("asset"),
+  });
+}
