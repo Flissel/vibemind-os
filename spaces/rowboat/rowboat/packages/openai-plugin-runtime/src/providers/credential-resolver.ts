@@ -53,5 +53,9 @@ export function assertCredentialRequest(
 }
 
 export interface CredentialResolver {
-  resolve(reference: CredentialReference, projectId: string): Promise<SecretValue>;
+  resolve(
+    reference: CredentialReference,
+    projectId: string,
+    options?: Readonly<{ readonly signal: AbortSignal }>,
+  ): Promise<SecretValue>;
 }

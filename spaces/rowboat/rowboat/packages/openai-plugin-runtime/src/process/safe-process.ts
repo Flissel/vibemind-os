@@ -3,6 +3,12 @@ import { createHash } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
+import {
+  assertDirectoryIdentity,
+  type DirectoryIdentity,
+} from "../import/directory-identity.js";
+import { digestTree } from "../import/digest-service.js";
+
 const ENVIRONMENT_NAME = /^[A-Z][A-Z0-9_]*$/;
 export const DEFAULT_PROCESS_OUTPUT_LIMIT_BYTES = 64 * 1024;
 const PROCESS_CLEANUP_GRACE_MS = 1_000;
@@ -11,6 +17,10 @@ export interface SafeSpawnOptions {
   readonly shell: false;
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
+  readonly executionRootIdentity: DirectoryIdentity;
+  readonly workingDirectoryIdentity: DirectoryIdentity;
+  readonly componentDigest: string;
+  readonly executionRootDigest: string;
 }
 
 export interface SpawnCompletion {
@@ -28,11 +38,19 @@ export interface SpawnedProcess {
 }
 
 export interface ProcessSpawner {
-  spawn(command: string, args: readonly string[], options: SafeSpawnOptions): SpawnedProcess;
+  spawn(
+    command: string,
+    args: readonly string[],
+    options: SafeSpawnOptions,
+  ): SpawnedProcess | Promise<SpawnedProcess>;
 }
 
 export class NodeProcessSpawner implements ProcessSpawner {
-  spawn(command: string, args: readonly string[], options: SafeSpawnOptions): SpawnedProcess {
+  async spawn(command: string, args: readonly string[], options: SafeSpawnOptions): Promise<SpawnedProcess> {
+    await assertSafeSpawnIdentity(options);
+    // Portable Node has no handle-relative process spawn. The trusted parent
+    // directory and scheduler gap between this check and spawn are the residual
+    // OS boundary; callers must deny untrusted rename authority there.
     const child = spawn(command, [...args], {
       cwd: options.cwd,
       env: { ...options.env },
@@ -74,6 +92,30 @@ export class NodeProcessSpawner implements ProcessSpawner {
 function isContained(root: string, candidate: string): boolean {
   const pointer = relative(root, candidate);
   return pointer !== ".." && !pointer.startsWith(`..${sep}`) && !isAbsolute(pointer);
+}
+
+export async function assertSafeSpawnIdentity(options: SafeSpawnOptions): Promise<void> {
+  const root = options.executionRootIdentity;
+  const workingDirectory = options.workingDirectoryIdentity;
+  if (
+    root === undefined
+    || workingDirectory === undefined
+    || options.componentDigest === undefined
+    || options.executionRootDigest === undefined
+    || !/^[a-f0-9]{64}$/u.test(options.componentDigest)
+    || !/^[a-f0-9]{64}$/u.test(options.executionRootDigest)
+    || options.cwd !== workingDirectory.canonicalPath
+    || !isContained(root.canonicalPath, workingDirectory.canonicalPath)
+  ) {
+    throw new Error("path_escape");
+  }
+  await assertDirectoryIdentity(root);
+  await assertDirectoryIdentity(workingDirectory);
+  if ((await digestTree(root.canonicalPath)) !== options.executionRootDigest) {
+    throw new Error("path_escape");
+  }
+  await assertDirectoryIdentity(root);
+  await assertDirectoryIdentity(workingDirectory);
 }
 
 export async function resolveSafeWorkingDirectory(
@@ -214,7 +256,7 @@ export async function executeSafeProcess(options: {
   }
   let spawned: SpawnedProcess;
   try {
-    spawned = options.spawner.spawn(
+    spawned = await options.spawner.spawn(
       options.command,
       Object.freeze([...options.args]),
       options.spawnOptions,

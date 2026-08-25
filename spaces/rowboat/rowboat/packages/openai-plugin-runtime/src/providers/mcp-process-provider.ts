@@ -9,6 +9,16 @@ import { evaluateComponentAdmission } from "../policy/capability-policy.js";
 import type { PluginPolicy } from "../policy/default-policy.js";
 import { capturePluginPolicy } from "../policy/policy-snapshot.js";
 import {
+  assertDirectoryIdentity,
+  snapshotDirectoryIdentity,
+  type DirectoryIdentity,
+} from "../import/directory-identity.js";
+import {
+  assertVerifiedProcessExecutionRoot,
+  revealVerifiedProcessExecutionRoot,
+  type VerifiedProcessExecutionRoot,
+} from "../process/process-execution-root.js";
+import {
   NodeProcessSpawner,
   captureSafeEnvironment,
   collectBoundedOutput,
@@ -23,7 +33,12 @@ import {
   type CredentialResolver,
 } from "./credential-resolver.js";
 import { assertBinding } from "./provider-registry.js";
-import { validateMcpInvocation } from "./mcp-request.js";
+import {
+  captureMcpOperationBindings,
+  validateMcpInvocation,
+  type McpOperationBinding,
+} from "./mcp-request.js";
+import { captureProviderInvocation } from "./provider-invocation.js";
 import type {
   PluginProvider,
   ProviderBinding,
@@ -220,9 +235,10 @@ export interface ProcessMcpProviderOptions {
   readonly id: string;
   readonly binding: ProviderBinding;
   readonly server: NormalizedProcessMcp;
-  readonly pluginRoot: string;
+  readonly executionRoot: VerifiedProcessExecutionRoot;
   readonly parentLicense: string | undefined;
   readonly policy: PluginPolicy;
+  readonly operations: readonly McpOperationBinding[];
   readonly credentialResolver: CredentialResolver;
   readonly spawner?: ProcessSpawner;
   readonly safeBaselineEnvironment?: Readonly<Record<string, string>>;
@@ -237,8 +253,12 @@ export class ProcessMcpProvider implements PluginProvider {
   readonly #descriptor: ProviderDescriptor;
   readonly #server: NormalizedProcessMcp;
   readonly #pluginRoot: string;
+  readonly #executionRootIdentity: DirectoryIdentity;
+  readonly #executionRoot: VerifiedProcessExecutionRoot;
+  readonly #executionRootDigest: string;
   readonly #parentLicense: string | undefined;
   readonly #policy: PluginPolicy;
+  readonly #operations: readonly McpOperationBinding[];
   readonly #credentialResolver: CredentialResolver;
   readonly #spawner: ProcessSpawner;
   readonly #safeBaselineEnvironment: Readonly<Record<string, string>>;
@@ -299,9 +319,21 @@ export class ProcessMcpProvider implements PluginProvider {
       environmentReferences: Object.freeze([...options.server.environmentReferences]),
       timeoutMilliseconds: timeout,
     });
-    this.#pluginRoot = options.pluginRoot;
+    const executionRoot = revealVerifiedProcessExecutionRoot(options.executionRoot);
+    if (executionRoot.componentDigest !== options.server.componentDigest) {
+      throw new Error("provider_invalid:execution_root");
+    }
+    this.#pluginRoot = executionRoot.path;
+    this.#executionRoot = options.executionRoot;
+    this.#executionRootIdentity = executionRoot.identity;
+    this.#executionRootDigest = executionRoot.executionRootDigest;
     this.#parentLicense = options.parentLicense;
     this.#policy = capturePluginPolicy(options.policy);
+    this.#operations = captureMcpOperationBindings(
+      options.operations,
+      options.server.componentDigest,
+      this.#policy.version,
+    );
     this.#credentialResolver = options.credentialResolver;
     this.#spawner = options.spawner ?? new NodeProcessSpawner();
     this.#safeBaselineEnvironment = captureSafeEnvironment(
@@ -319,12 +351,22 @@ export class ProcessMcpProvider implements PluginProvider {
     return this.#descriptor;
   }
 
-  async invoke(request: ProviderRequest, _context: ProviderContext): Promise<ProviderResult> {
+  async invoke(request: ProviderRequest, context: ProviderContext): Promise<ProviderResult> {
+    const captured = captureProviderInvocation(request, context);
+    request = captured.request;
     const providerDenial = denialReason(this.#parentLicense, "mcp_process", this.#policy);
     if (providerDenial !== undefined) throw new Error(providerDenial);
-    const capabilityDenial = denialReason(this.#parentLicense, request.capability, this.#policy);
+    const operationBinding = validateMcpInvocation(this.#server.name, request, this.#operations);
+    const capabilityDenial = denialReason(this.#parentLicense, operationBinding.capability, this.#policy);
     if (capabilityDenial !== undefined) throw new Error(capabilityDenial);
-    const operationName = validateMcpInvocation(this.#server.name, request);
+
+    await assertVerifiedProcessExecutionRoot(this.#executionRoot);
+    const cwd = await resolveSafeWorkingDirectory(
+      this.#pluginRoot,
+      this.#server.workingDirectory ?? ".",
+    );
+    const workingDirectoryIdentity = await snapshotDirectoryIdentity(cwd);
+    await assertVerifiedProcessExecutionRoot(this.#executionRoot);
 
     const resolvedEnvironment: Record<string, string> = Object.create(null) as Record<string, string>;
     const secrets: string[] = [];
@@ -341,23 +383,27 @@ export class ProcessMcpProvider implements PluginProvider {
       }
     }
 
-    const cwd = await resolveSafeWorkingDirectory(
-      this.#pluginRoot,
-      this.#server.workingDirectory ?? ".",
-    );
     const environment = captureSafeEnvironment(this.#safeBaselineEnvironment, resolvedEnvironment);
-    const revalidatedCwd = await resolveSafeWorkingDirectory(
-      this.#pluginRoot,
-      this.#server.workingDirectory ?? ".",
-    );
-    if (cwd !== revalidatedCwd) throw new Error("path_escape");
+    await assertVerifiedProcessExecutionRoot(this.#executionRoot);
+    await assertDirectoryIdentity(workingDirectoryIdentity);
 
     let spawned: SpawnedProcess;
     try {
-      spawned = this.#spawner.spawn(
+      const spawnOptions = Object.freeze({
+        shell: false as const,
+        cwd,
+        env: environment,
+        executionRootIdentity: this.#executionRootIdentity,
+        workingDirectoryIdentity,
+        componentDigest: this.#server.componentDigest,
+        executionRootDigest: this.#executionRootDigest,
+      });
+      await assertVerifiedProcessExecutionRoot(this.#executionRoot);
+      await assertDirectoryIdentity(workingDirectoryIdentity);
+      spawned = await this.#spawner.spawn(
         this.#server.command,
         this.#server.args,
-        Object.freeze({ shell: false, cwd: revalidatedCwd, env: environment }),
+        spawnOptions,
       );
     } catch {
       return Object.freeze({ status: "failed", reason: "process_failed" });
@@ -381,7 +427,7 @@ export class ProcessMcpProvider implements PluginProvider {
     });
     const operation = (async (): Promise<unknown> => {
       await client.connect(spawned, this.#maxProtocolFrameBytes, this.#maxProtocolBytes);
-      return client.callTool({ name: operationName, arguments: request.arguments });
+      return client.callTool({ name: operationBinding.operationName, arguments: request.arguments });
     })();
 
     let output: unknown;

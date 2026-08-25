@@ -164,9 +164,11 @@ export {
   type SafeSpawnOptions,
   type SpawnedProcess,
 } from "./providers/mcp-process-provider.js";
+export type { McpOperationBinding } from "./providers/mcp-request.js";
 export {
   DEFAULT_PROCESS_OUTPUT_LIMIT_BYTES,
   NodeProcessSpawner,
+  assertSafeSpawnIdentity,
   captureSafeEnvironment,
   collectBoundedOutput,
   executeSafeProcess,
@@ -176,3 +178,7 @@ export {
   type SafeProcessResult,
   type SpawnCompletion,
 } from "./process/safe-process.js";
+export {
+  VerifiedProcessExecutionRoot,
+  verifyProcessExecutionRoot,
+} from "./process/process-execution-root.js";

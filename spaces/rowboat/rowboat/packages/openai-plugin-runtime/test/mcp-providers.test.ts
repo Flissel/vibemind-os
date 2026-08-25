@@ -1,4 +1,4 @@
-import { mkdir, readFile, symlink } from "node:fs/promises";
+import { mkdir, readFile, rename, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -8,8 +8,11 @@ import {
   McpCompatibilityError,
   ProcessMcpProvider,
   ProviderRegistry,
+  assertSafeSpawnIdentity,
   createSecretValue,
+  digestTree,
   executeSafeProcess,
+  verifyProcessExecutionRoot,
   type CredentialReference,
   type CredentialResolver,
   type HttpMcpClient,
@@ -18,18 +21,43 @@ import {
   type ProcessMcpClientFactory,
   type ProcessSpawner,
   type ProviderBinding,
+  type ProviderContext,
   type ProviderRequest,
+  type SafeSpawnOptions,
   type SpawnedProcess,
+  type VerifiedProcessExecutionRoot,
 } from "../src/index.js";
 import {
   cleanupRegisteredTestRoots,
   createOwnedTestRoot,
 } from "./test-temp.js";
+import {
+  snapshotDirectoryIdentity,
+} from "../src/import/directory-identity.js";
 
 const HTTP_DIGEST = "a".repeat(64);
 const PROCESS_DIGEST = "b".repeat(64);
+const READ_HTTP_OPERATIONS = Object.freeze([Object.freeze({
+  operationName: "query",
+  capability: "read" as const,
+  componentDigest: HTTP_DIGEST,
+  policyVersion: DEFAULT_POLICY.version,
+})]);
+const READ_PROCESS_OPERATIONS = Object.freeze([Object.freeze({
+  operationName: "query",
+  capability: "read" as const,
+  componentDigest: PROCESS_DIGEST,
+  policyVersion: DEFAULT_POLICY.version,
+})]);
 async function createTempDirectory(): Promise<string> {
   return createOwnedTestRoot("mcp-providers");
+}
+
+async function createVerifiedProcessRoot(pluginRoot: string) {
+  return verifyProcessExecutionRoot(
+    Object.freeze({ path: pluginRoot, digest: await digestTree(pluginRoot) }),
+    PROCESS_DIGEST,
+  );
 }
 
 afterEach(cleanupRegisteredTestRoots);
@@ -49,6 +77,54 @@ function binding(
   componentDigest: string,
 ): ProviderBinding {
   return Object.freeze({ id, providerKind, componentDigest });
+}
+
+function invalidInvocationCases(): ReadonlyArray<Readonly<{
+  label: string;
+  request: unknown;
+  context: unknown;
+  accessorCalls?: () => number;
+}>> {
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+  let deep: Record<string, unknown> = {};
+  for (let index = 0; index < 20; index += 1) deep = { child: deep };
+  let accessorCalls = 0;
+  const accessorRequest = { ...request } as Record<string, unknown>;
+  Object.defineProperty(accessorRequest, "projectId", {
+    enumerable: true,
+    get() {
+      accessorCalls += 1;
+      return "project-1";
+    },
+  });
+  class RequestSubclass {
+    projectId = request.projectId;
+    pluginName = request.pluginName;
+    componentName = request.componentName;
+    operationName = request.operationName;
+    capability = request.capability;
+    arguments = request.arguments;
+  }
+  return [
+    { label: "request accessor", request: accessorRequest, context: { requestId: "request-1" }, accessorCalls: () => accessorCalls },
+    { label: "non-plain request", request: new RequestSubclass(), context: { requestId: "request-1" } },
+    { label: "non-plain context", request, context: new (class { requestId = "request-1"; })() },
+    { label: "empty project id", request: { ...request, projectId: "" }, context: { requestId: "request-1" } },
+    { label: "invalid plugin id", request: { ...request, pluginName: "../plugin" }, context: { requestId: "request-1" } },
+    { label: "empty component id", request: { ...request, componentName: "" }, context: { requestId: "request-1" } },
+    { label: "invalid request id", request, context: { requestId: "request id" } },
+    { label: "invalid capability", request: { ...request, capability: "admin" }, context: { requestId: "request-1" } },
+    { label: "null arguments", request: { ...request, arguments: null }, context: { requestId: "request-1" } },
+    { label: "array arguments", request: { ...request, arguments: [] }, context: { requestId: "request-1" } },
+    { label: "prototype-risk key", request: { ...request, arguments: JSON.parse('{"constructor":{"polluted":true}}') }, context: { requestId: "request-1" } },
+    { label: "cyclic arguments", request: { ...request, arguments: cyclic }, context: { requestId: "request-1" } },
+    { label: "undefined argument", request: { ...request, arguments: { value: undefined } }, context: { requestId: "request-1" } },
+    { label: "non-finite number", request: { ...request, arguments: { value: Number.NaN } }, context: { requestId: "request-1" } },
+    { label: "oversize arguments", request: { ...request, arguments: { value: "x".repeat(70_000) } }, context: { requestId: "request-1" } },
+    { label: "over-depth arguments", request: { ...request, arguments: deep }, context: { requestId: "request-1" } },
+    { label: "over-node arguments", request: { ...request, arguments: { values: Array.from({ length: 1_100 }, () => null) } }, context: { requestId: "request-1" } },
+  ];
 }
 
 class RecordingCredentialResolver implements CredentialResolver {
@@ -109,7 +185,7 @@ function httpProvider(
       return Object.freeze({ kind: input.kind });
     },
   };
-  return new HttpMcpProvider({
+  const options = {
     id: "mcp.http.search",
     binding: binding("binding.http.search", "mcp-http", HTTP_DIGEST),
     server: Object.freeze({
@@ -123,7 +199,48 @@ function httpProvider(
     credentialResolver: resolver,
     clientFactory: { create: () => client },
     transportFactory,
-  });
+    operations: READ_HTTP_OPERATIONS,
+  };
+  return new HttpMcpProvider(options);
+}
+
+function deadlineHttpProvider(options: {
+  readonly client: HttpMcpClient;
+  readonly resolver: CredentialResolver;
+  readonly timeoutMilliseconds?: number;
+  readonly factorySignal?: (signal: AbortSignal | undefined) => void;
+  readonly transportSignal?: (signal: AbortSignal | undefined) => void;
+}): HttpMcpProvider {
+  const providerOptions = {
+    id: "mcp.http.search",
+    binding: binding("binding.http.search", "mcp-http", HTTP_DIGEST),
+    server: Object.freeze({
+      name: "search",
+      kind: "mcp-http" as const,
+      componentDigest: HTTP_DIGEST,
+      url: "https://example.com/mcp",
+      bearerTokenReference: "API_TOKEN",
+    }),
+    parentLicense: "MIT",
+    policy: DEFAULT_POLICY,
+    operations: READ_HTTP_OPERATIONS,
+    credentialResolver: options.resolver,
+    clientFactory: {
+      create(input?: { readonly signal: AbortSignal }) {
+        options.factorySignal?.(input?.signal);
+        return options.client;
+      },
+    },
+    transportFactory: {
+      create(input: { readonly kind: "streamable-http" | "sse" }) {
+        const signal = Reflect.get(input, "signal");
+        options.transportSignal?.(signal instanceof AbortSignal ? signal : undefined);
+        return Object.freeze({ kind: input.kind });
+      },
+    },
+    timeoutMilliseconds: options.timeoutMilliseconds ?? 10,
+  };
+  return new HttpMcpProvider(providerOptions);
 }
 
 describe("HTTP MCP provider", () => {
@@ -166,6 +283,7 @@ describe("HTTP MCP provider", () => {
       }),
       parentLicense: "MIT",
       policy: DEFAULT_POLICY,
+      operations: READ_HTTP_OPERATIONS,
       credentialResolver: new RecordingCredentialResolver(),
       clientFactory: { create: () => client },
       transportFactory: { create: (input) => Object.freeze({ kind: input.kind }) },
@@ -177,6 +295,93 @@ describe("HTTP MCP provider", () => {
       operationName: "query",
     }, { requestId: "request-1" })).resolves.toMatchObject({ status: "success" });
     expect(client.callToolCalls).toBe(1);
+  });
+
+  it("does not authorize an unbound operation from a caller-supplied read label", async () => {
+    const client = new RecordingHttpClient();
+    const resolver = new RecordingCredentialResolver({ API_TOKEN: "super-secret-value" });
+    const options = {
+      id: "mcp.http.search",
+      binding: binding("binding.http.search", "mcp-http", HTTP_DIGEST),
+      server: Object.freeze({
+        name: "search",
+        kind: "mcp-http" as const,
+        componentDigest: HTTP_DIGEST,
+        url: "https://example.com/mcp",
+        bearerTokenReference: "API_TOKEN",
+      }),
+      parentLicense: "MIT",
+      policy: DEFAULT_POLICY,
+      operations: READ_HTTP_OPERATIONS,
+      credentialResolver: resolver,
+      clientFactory: { create: () => client },
+      transportFactory: { create: (input: { readonly kind: "streamable-http" | "sse" }) => Object.freeze({ kind: input.kind }) },
+    };
+    const provider = new HttpMcpProvider(options);
+
+    await expect(provider.invoke({
+      ...request,
+      operationName: "admin_delete",
+      capability: "read",
+    }, { requestId: "request-1" })).rejects.toThrow("provider_invalid:operation_not_admitted");
+    expect(resolver.calls).toHaveLength(0);
+    expect(client.connectTransports).toHaveLength(0);
+  });
+
+  it("rejects a caller capability that differs from the admitted HTTP operation", async () => {
+    const client = new RecordingHttpClient();
+    const policy = Object.freeze({ ...DEFAULT_POLICY, allowWriteCapabilities: true });
+    const options = {
+      id: "mcp.http.search",
+      binding: binding("binding.http.search", "mcp-http", HTTP_DIGEST),
+      server: Object.freeze({
+        name: "search",
+        kind: "mcp-http" as const,
+        componentDigest: HTTP_DIGEST,
+        url: "https://example.com/mcp",
+      }),
+      parentLicense: "MIT",
+      policy,
+      credentialResolver: new RecordingCredentialResolver(),
+      clientFactory: { create: () => client },
+      transportFactory: { create: (input: { readonly kind: "streamable-http" | "sse" }) => Object.freeze({ kind: input.kind }) },
+      operations: READ_HTTP_OPERATIONS,
+    };
+    const provider = new HttpMcpProvider(options);
+
+    await expect(provider.invoke({ ...request, capability: "write" }, { requestId: "request-1" }))
+      .rejects.toThrow("provider_invalid:capability_mismatch");
+    expect(client.connectTransports).toHaveLength(0);
+  });
+
+  it("rejects accessor-backed operation provenance without invoking the accessor", () => {
+    let accessorCalls = 0;
+    const accessorBinding = {
+      get operationName(): string {
+        accessorCalls += 1;
+        return "query";
+      },
+      capability: "read" as const,
+      componentDigest: HTTP_DIGEST,
+      policyVersion: DEFAULT_POLICY.version,
+    };
+    const options = {
+      id: "mcp.http.search",
+      binding: binding("binding.http.search", "mcp-http", HTTP_DIGEST),
+      server: Object.freeze({
+        name: "search",
+        kind: "mcp-http" as const,
+        componentDigest: HTTP_DIGEST,
+        url: "https://example.com/mcp",
+      }),
+      parentLicense: "MIT",
+      policy: DEFAULT_POLICY,
+      operations: [accessorBinding],
+      credentialResolver: new RecordingCredentialResolver(),
+    };
+
+    expect(() => new HttpMcpProvider(options)).toThrow("provider_invalid:operation_bindings");
+    expect(accessorCalls).toBe(0);
   });
 
   it.each([
@@ -198,6 +403,7 @@ describe("HTTP MCP provider", () => {
       }),
       parentLicense: "MIT",
       policy: DEFAULT_POLICY,
+      operations: READ_HTTP_OPERATIONS,
       credentialResolver: resolver,
       clientFactory: { create: () => client },
       transportFactory: { create: (input) => Object.freeze({ kind: input.kind }) },
@@ -251,6 +457,7 @@ describe("HTTP MCP provider", () => {
       }),
       parentLicense: "MIT",
       policy: DEFAULT_POLICY,
+      operations: READ_HTTP_OPERATIONS,
       credentialResolver: resolver,
       clientFactory: { create: () => client },
       transportFactory: {
@@ -287,6 +494,7 @@ describe("HTTP MCP provider", () => {
       }),
       parentLicense: "MIT",
       policy: DEFAULT_POLICY,
+      operations: READ_HTTP_OPERATIONS,
       credentialResolver: resolver,
       clientFactory: { create: () => client },
       transportFactory: { create: (input) => Object.freeze({ kind: input.kind }) },
@@ -314,6 +522,7 @@ describe("HTTP MCP provider", () => {
       },
       parentLicense: "MIT",
       policy: DEFAULT_POLICY,
+      operations: READ_HTTP_OPERATIONS,
       credentialResolver: resolver,
       clientFactory: { create: () => client },
       transportFactory: { create: (input) => Object.freeze({ kind: input.kind }) },
@@ -339,6 +548,7 @@ describe("HTTP MCP provider", () => {
       }),
       parentLicense: "MIT",
       policy: mutablePolicy,
+      operations: READ_HTTP_OPERATIONS,
       credentialResolver: new RecordingCredentialResolver(),
       clientFactory: { create: () => client },
       transportFactory: { create: (input) => Object.freeze({ kind: input.kind }) },
@@ -362,6 +572,7 @@ describe("HTTP MCP provider", () => {
       }),
       parentLicense: "MIT",
       policy: DEFAULT_POLICY,
+      operations: READ_HTTP_OPERATIONS,
       credentialResolver: new RecordingCredentialResolver(),
       clientFactory: { create: () => { throw new Error("factory super-secret-value"); } },
       transportFactory: { create: (input) => Object.freeze({ kind: input.kind }) },
@@ -371,13 +582,197 @@ describe("HTTP MCP provider", () => {
     expect(result).toEqual({ status: "failed", reason: "mcp_http_failed" });
     expect(JSON.stringify(result)).not.toContain("super-secret-value");
   });
+
+  it("captures and deeply freezes HTTP arguments before awaiting credentials", async () => {
+    let releaseCredential: ((value: ReturnType<typeof createSecretValue>) => void) | undefined;
+    const resolver: CredentialResolver = {
+      resolve: () => new Promise((resolve) => { releaseCredential = resolve; }),
+    };
+    let receivedArguments: Readonly<Record<string, unknown>> | undefined;
+    const client: HttpMcpClient = {
+      connect: async () => undefined,
+      callTool: async (input) => {
+        receivedArguments = input.arguments;
+        return { content: [] };
+      },
+      close: async () => undefined,
+    };
+    const options = {
+      id: "mcp.http.search",
+      binding: binding("binding.http.search", "mcp-http", HTTP_DIGEST),
+      server: Object.freeze({
+        name: "search",
+        kind: "mcp-http" as const,
+        componentDigest: HTTP_DIGEST,
+        url: "https://example.com/mcp",
+        bearerTokenReference: "API_TOKEN",
+      }),
+      parentLicense: "MIT",
+      policy: DEFAULT_POLICY,
+      operations: READ_HTTP_OPERATIONS,
+      credentialResolver: resolver,
+      clientFactory: { create: () => client },
+      transportFactory: { create: (input: { readonly kind: "streamable-http" | "sse" }) => Object.freeze({ kind: input.kind }) },
+    };
+    const provider = new HttpMcpProvider(options);
+    const mutableArguments = { nested: { value: "before" } };
+
+    const invocation = provider.invoke({ ...request, arguments: mutableArguments }, { requestId: "request-1" });
+    mutableArguments.nested.value = "after";
+    releaseCredential?.(createSecretValue("super-secret-value"));
+    await invocation;
+
+    expect(receivedArguments).toEqual({ nested: { value: "before" } });
+    expect(Object.isFrozen(receivedArguments)).toBe(true);
+    expect(Object.isFrozen(receivedArguments?.nested)).toBe(true);
+  });
+
+  it("bounds a hanging HTTP credential resolution with the invocation deadline", async () => {
+    let resolverSignal: AbortSignal | undefined;
+    let factoryCalls = 0;
+    const resolver: CredentialResolver = {
+      resolve(_reference, _projectId, options?: { readonly signal: AbortSignal }) {
+        resolverSignal = options?.signal;
+        return new Promise(() => undefined);
+      },
+    };
+    const client = new RecordingHttpClient();
+    const provider = deadlineHttpProvider({
+      client,
+      resolver,
+      factorySignal: () => { factoryCalls += 1; },
+    });
+
+    const outcome = await Promise.race([
+      provider.invoke(request, { requestId: "request-1" }),
+      new Promise<"test_timeout">((resolve) => setTimeout(() => resolve("test_timeout"), 100)),
+    ]);
+    expect(outcome).toEqual({ status: "failed", reason: "mcp_http_timed_out" });
+    expect(resolverSignal?.aborted).toBe(true);
+    expect(factoryCalls).toBe(0);
+  });
+
+  it.each(["connect", "call"] as const)("bounds a hanging HTTP %s stage and closes the client", async (stage) => {
+    let stageSignal: AbortSignal | undefined;
+    let closeCalls = 0;
+    const client: HttpMcpClient = {
+      connect: async (_transport, options?: { readonly signal: AbortSignal }) => {
+        stageSignal = options?.signal;
+        if (stage === "connect") await new Promise(() => undefined);
+      },
+      callTool: async (_input, options?: { readonly signal: AbortSignal }) => {
+        stageSignal = options?.signal;
+        if (stage === "call") await new Promise(() => undefined);
+        return { content: [] };
+      },
+      close: async () => { closeCalls += 1; },
+    };
+    const provider = deadlineHttpProvider({
+      client,
+      resolver: new RecordingCredentialResolver({ API_TOKEN: "super-secret-value" }),
+    });
+
+    const outcome = await Promise.race([
+      provider.invoke(request, { requestId: "request-1" }),
+      new Promise<"test_timeout">((resolve) => setTimeout(() => resolve("test_timeout"), 100)),
+    ]);
+    expect(outcome).toEqual({ status: "failed", reason: "mcp_http_timed_out" });
+    expect(stageSignal?.aborted).toBe(true);
+    expect(closeCalls).toBe(1);
+  });
+
+  it("keeps a hanging compatibility fallback inside the same HTTP deadline", async () => {
+    const transports: string[] = [];
+    let closeCalls = 0;
+    const client: HttpMcpClient = {
+      connect: async (transport) => {
+        transports.push(transport.kind);
+        if (transport.kind === "streamable-http") throw new McpCompatibilityError("unsupported_transport");
+        await new Promise(() => undefined);
+      },
+      callTool: async () => ({ content: [] }),
+      close: async () => { closeCalls += 1; },
+    };
+    const provider = deadlineHttpProvider({
+      client,
+      resolver: new RecordingCredentialResolver({ API_TOKEN: "super-secret-value" }),
+    });
+
+    const outcome = await Promise.race([
+      provider.invoke(request, { requestId: "request-1" }),
+      new Promise<"test_timeout">((resolve) => setTimeout(() => resolve("test_timeout"), 100)),
+    ]);
+    expect(outcome).toEqual({ status: "failed", reason: "mcp_http_timed_out" });
+    expect(transports).toEqual(["streamable-http", "sse"]);
+    expect(closeCalls).toBe(1);
+  });
+
+  it("bounds hanging HTTP close cleanup after a completed call", async () => {
+    let closeCalls = 0;
+    let cleanupSignal: AbortSignal | undefined;
+    const client: HttpMcpClient = {
+      connect: async () => undefined,
+      callTool: async () => ({ content: [] }),
+      close: async (options?: { readonly signal: AbortSignal }) => {
+        closeCalls += 1;
+        cleanupSignal = options?.signal;
+        await new Promise(() => undefined);
+      },
+    };
+    const provider = deadlineHttpProvider({
+      client,
+      resolver: new RecordingCredentialResolver({ API_TOKEN: "super-secret-value" }),
+      timeoutMilliseconds: 50,
+    });
+
+    const outcome = await Promise.race([
+      provider.invoke(request, { requestId: "request-1" }),
+      new Promise<"test_timeout">((resolve) => setTimeout(() => resolve("test_timeout"), 100)),
+    ]);
+    expect(outcome).toEqual({ status: "failed", reason: "mcp_http_failed" });
+    expect(closeCalls).toBe(1);
+    expect(cleanupSignal?.aborted).toBe(true);
+  });
+
+  it("propagates one HTTP invocation signal through resolver, factories, connect, and call", async () => {
+    const signals: AbortSignal[] = [];
+    const resolver: CredentialResolver = {
+      async resolve(_reference, _projectId, options?: { readonly signal: AbortSignal }) {
+        if (options !== undefined) signals.push(options.signal);
+        return createSecretValue("super-secret-value");
+      },
+    };
+    const client: HttpMcpClient = {
+      connect: async (_transport, options?: { readonly signal: AbortSignal }) => {
+        if (options !== undefined) signals.push(options.signal);
+      },
+      callTool: async (_input, options?: { readonly signal: AbortSignal }) => {
+        if (options !== undefined) signals.push(options.signal);
+        return { content: [] };
+      },
+      close: async () => undefined,
+    };
+    const provider = deadlineHttpProvider({
+      client,
+      resolver,
+      factorySignal: (signal) => { if (signal !== undefined) signals.push(signal); },
+      transportSignal: (signal) => { if (signal !== undefined) signals.push(signal); },
+      timeoutMilliseconds: 50,
+    });
+
+    await expect(provider.invoke(request, { requestId: "request-1" }))
+      .resolves.toMatchObject({ status: "success" });
+    expect(signals).toHaveLength(5);
+    expect(new Set(signals).size).toBe(1);
+    expect(signals[0]?.aborted).toBe(false);
+  });
 });
 
 class RecordingSpawner implements ProcessSpawner {
   readonly calls: Array<{
     command: string;
     args: readonly string[];
-    options: { readonly shell: false; readonly cwd: string; readonly env: Readonly<Record<string, string>> };
+    options: SafeSpawnOptions;
   }> = [];
   next: SpawnedProcess = {
     stdout: (async function* () { yield Buffer.from("ok"); })(),
@@ -386,11 +781,8 @@ class RecordingSpawner implements ProcessSpawner {
     kill: () => undefined,
   };
 
-  spawn(command: string, args: readonly string[], options: {
-    readonly shell: false;
-    readonly cwd: string;
-    readonly env: Readonly<Record<string, string>>;
-  }): SpawnedProcess {
+  async spawn(command: string, args: readonly string[], options: SafeSpawnOptions): Promise<SpawnedProcess> {
+    await assertSafeSpawnIdentity(options);
     this.calls.push({ command, args, options });
     return this.next;
   }
@@ -401,9 +793,9 @@ const PROCESS_POLICY: PluginPolicy = Object.freeze({
   allowProcessMcp: true,
 });
 
-function processProvider(options: {
+async function processProvider(options: {
   readonly pluginRoot: string;
-  readonly spawner: RecordingSpawner;
+  readonly spawner: ProcessSpawner;
   readonly resolver?: CredentialResolver;
   readonly policy?: PluginPolicy;
   readonly workingDirectory?: string;
@@ -415,8 +807,16 @@ function processProvider(options: {
     readonly arguments: Readonly<Record<string, unknown>>;
   }) => Promise<unknown>;
   readonly clientFactory?: ProcessMcpClientFactory;
-}): ProcessMcpProvider {
-  return new ProcessMcpProvider({
+  readonly operations?: readonly Readonly<{
+    readonly operationName: string;
+    readonly capability: "read" | "write";
+    readonly componentDigest: string;
+    readonly policyVersion: string;
+  }>[];
+  readonly executionRoot?: VerifiedProcessExecutionRoot;
+}): Promise<ProcessMcpProvider> {
+  const executionRoot = options.executionRoot ?? await createVerifiedProcessRoot(options.pluginRoot);
+  const providerOptions = {
     id: "mcp.process.search",
     binding: binding("binding.process.search", "mcp-process", PROCESS_DIGEST),
     server: Object.freeze({
@@ -429,7 +829,7 @@ function processProvider(options: {
       environmentReferences: Object.freeze([...(options.environmentReferences ?? [])]),
       ...(options.timeoutMilliseconds === undefined ? {} : { timeoutMilliseconds: options.timeoutMilliseconds }),
     }),
-    pluginRoot: options.pluginRoot,
+    executionRoot,
     parentLicense: "MIT",
     policy: options.policy ?? PROCESS_POLICY,
     credentialResolver: options.resolver ?? new RecordingCredentialResolver(),
@@ -443,10 +843,191 @@ function processProvider(options: {
         close: async () => undefined,
       }),
     },
-  });
+    operations: options.operations ?? READ_PROCESS_OPERATIONS,
+  };
+  return new ProcessMcpProvider(providerOptions);
 }
 
 describe("process MCP provider", () => {
+  it("rejects accessor-backed execution-root provenance without invoking accessors", async () => {
+    const pluginRoot = await createTempDirectory();
+    const digest = await digestTree(pluginRoot);
+    let accessorCalls = 0;
+    const content = {
+      get path(): string {
+        accessorCalls += 1;
+        return pluginRoot;
+      },
+      digest,
+    };
+
+    await expect(verifyProcessExecutionRoot(content, PROCESS_DIGEST))
+      .rejects.toThrow("provider_invalid:execution_root");
+    expect(accessorCalls).toBe(0);
+  });
+
+  it.each(invalidInvocationCases())(
+    "rejects invalid $label at the shared boundary before HTTP or process side effects",
+    async ({ request: invalidRequest, context: invalidContext, accessorCalls }) => {
+      const httpResolver = new RecordingCredentialResolver({ API_TOKEN: "super-secret-value" });
+      let httpFactoryCalls = 0;
+      let httpTransportCalls = 0;
+      const httpOptions = {
+        id: "mcp.http.search",
+        binding: binding("binding.http.search", "mcp-http", HTTP_DIGEST),
+        server: Object.freeze({
+          name: "search",
+          kind: "mcp-http" as const,
+          componentDigest: HTTP_DIGEST,
+          url: "https://example.com/mcp",
+          bearerTokenReference: "API_TOKEN",
+        }),
+        parentLicense: "MIT",
+        policy: DEFAULT_POLICY,
+        operations: READ_HTTP_OPERATIONS,
+        credentialResolver: httpResolver,
+        clientFactory: {
+          create: () => {
+            httpFactoryCalls += 1;
+            return new RecordingHttpClient();
+          },
+        },
+        transportFactory: {
+          create: (input: { readonly kind: "streamable-http" | "sse" }) => {
+            httpTransportCalls += 1;
+            return Object.freeze({ kind: input.kind });
+          },
+        },
+      };
+      const http = new HttpMcpProvider(httpOptions);
+      await expect(http.invoke(
+        invalidRequest as ProviderRequest,
+        invalidContext as ProviderContext,
+      )).rejects.toThrow("provider_invalid:request");
+      expect(httpResolver.calls).toHaveLength(0);
+      expect(httpFactoryCalls).toBe(0);
+      expect(httpTransportCalls).toBe(0);
+
+      const pluginRoot = await createTempDirectory();
+      const processResolver = new RecordingCredentialResolver({ API_TOKEN: "super-secret-value" });
+      const spawner = new RecordingSpawner();
+      const process = await processProvider({
+        pluginRoot,
+        spawner,
+        resolver: processResolver,
+        workingDirectory: "missing-directory",
+        environmentReferences: ["API_TOKEN"],
+      });
+      await expect(process.invoke(
+        invalidRequest as ProviderRequest,
+        invalidContext as ProviderContext,
+      )).rejects.toThrow("provider_invalid:request");
+      expect(processResolver.calls).toHaveLength(0);
+      expect(spawner.calls).toHaveLength(0);
+      expect(accessorCalls?.() ?? 0).toBe(0);
+    },
+  );
+
+  it("captures process arguments before awaiting credentials", async () => {
+    const pluginRoot = await createTempDirectory();
+    const spawner = new RecordingSpawner();
+    let releaseCredential: ((value: ReturnType<typeof createSecretValue>) => void) | undefined;
+    let markResolverEntered: (() => void) | undefined;
+    const resolverEntered = new Promise<void>((resolve) => { markResolverEntered = resolve; });
+    const resolver: CredentialResolver = {
+      resolve: () => {
+        markResolverEntered?.();
+        return new Promise((resolve) => { releaseCredential = resolve; });
+      },
+    };
+    let receivedArguments: Readonly<Record<string, unknown>> | undefined;
+    const provider = await processProvider({
+      pluginRoot,
+      spawner,
+      resolver,
+      environmentReferences: ["API_TOKEN"],
+      clientCall: async (input) => {
+        receivedArguments = input.arguments;
+        return { content: [] };
+      },
+    });
+    const mutableArguments = { nested: { value: "before" } };
+
+    const invocation = provider.invoke({ ...request, arguments: mutableArguments }, { requestId: "request-1" });
+    await resolverEntered;
+    mutableArguments.nested.value = "after";
+    releaseCredential?.(createSecretValue("super-secret-value"));
+    await invocation;
+
+    expect(receivedArguments).toEqual({ nested: { value: "before" } });
+    expect(Object.isFrozen(receivedArguments)).toBe(true);
+    expect(Object.isFrozen(receivedArguments?.nested)).toBe(true);
+  });
+
+  it.each(["root", "cwd", "content"] as const)(
+    "revalidates the bound process %s identity after credential resolution",
+    async (swapTarget) => {
+      const base = await createTempDirectory();
+      const pluginRoot = join(base, "plugin");
+      const workingDirectory = join(pluginRoot, "server");
+      await mkdir(workingDirectory, { recursive: true });
+      const spawner = new RecordingSpawner();
+      const resolver: CredentialResolver = {
+        async resolve() {
+          if (swapTarget === "root") {
+            await rename(pluginRoot, join(base, "plugin-old"));
+            await mkdir(workingDirectory, { recursive: true });
+          } else if (swapTarget === "cwd") {
+            await rename(workingDirectory, join(base, "server-old"));
+            await mkdir(workingDirectory);
+          } else {
+            await writeFile(join(pluginRoot, "server.js"), "changed after verification", "utf8");
+          }
+          return createSecretValue("super-secret-value");
+        },
+      };
+      const provider = await processProvider({
+        pluginRoot,
+        spawner,
+        resolver,
+        workingDirectory: "server",
+        environmentReferences: ["API_TOKEN"],
+      });
+
+      await expect(provider.invoke(request, { requestId: "request-1" }))
+        .rejects.toThrow(swapTarget === "content" ? "provider_invalid:execution_root_changed" : "path_escape");
+      expect(spawner.calls).toHaveLength(0);
+    },
+  );
+
+  it("revalidates cwd identity inside the spawn boundary before an actual spawn", async () => {
+    const base = await createTempDirectory();
+    const pluginRoot = join(base, "plugin");
+    const workingDirectory = join(pluginRoot, "server");
+    await mkdir(workingDirectory, { recursive: true });
+    let actualSpawnCalls = 0;
+    const boundarySpawner = {
+      async spawn(_command: string, _args: readonly string[], options: unknown): Promise<SpawnedProcess> {
+        await rename(workingDirectory, join(base, "server-old"));
+        await mkdir(workingDirectory);
+        await assertSafeSpawnIdentity(options as SafeSpawnOptions);
+        actualSpawnCalls += 1;
+        return {
+          stdout: (async function* () {})(),
+          stderr: (async function* () {})(),
+          completion: Promise.resolve({ exitCode: 0, signal: null }),
+          kill: () => undefined,
+        };
+      },
+    } as unknown as ProcessSpawner;
+    const provider = await processProvider({ pluginRoot, spawner: boundarySpawner, workingDirectory: "server" });
+
+    await expect(provider.invoke(request, { requestId: "request-1" }))
+      .resolves.toEqual({ status: "failed", reason: "process_failed" });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(actualSpawnCalls).toBe(0);
+  });
+
   it("uses the pinned SDK protocol over an injected stdio process", async () => {
     const pluginRoot = await createTempDirectory();
     const spawner = new RecordingSpawner();
@@ -523,9 +1104,10 @@ describe("process MCP provider", () => {
         environmentReferences: Object.freeze([]),
         timeoutMilliseconds: 500,
       }),
-      pluginRoot,
+      executionRoot: await createVerifiedProcessRoot(pluginRoot),
       parentLicense: "MIT",
       policy: PROCESS_POLICY,
+      operations: READ_PROCESS_OPERATIONS,
       credentialResolver: new RecordingCredentialResolver(),
       spawner,
     });
@@ -613,9 +1195,10 @@ describe("process MCP provider", () => {
         environmentReferences: Object.freeze([]),
         timeoutMilliseconds: 500,
       }),
-      pluginRoot,
+      executionRoot: await createVerifiedProcessRoot(pluginRoot),
       parentLicense: "MIT",
       policy: PROCESS_POLICY,
+      operations: READ_PROCESS_OPERATIONS,
       credentialResolver: new RecordingCredentialResolver(),
       spawner,
       maxProtocolFrameBytes: 256,
@@ -656,9 +1239,10 @@ describe("process MCP provider", () => {
         environmentReferences: Object.freeze([]),
         timeoutMilliseconds: 20,
       }),
-      pluginRoot,
+      executionRoot: await createVerifiedProcessRoot(pluginRoot),
       parentLicense: "MIT",
       policy: PROCESS_POLICY,
+      operations: READ_PROCESS_OPERATIONS,
       credentialResolver: new RecordingCredentialResolver(),
       spawner,
       clientFactory: {
@@ -686,7 +1270,7 @@ describe("process MCP provider", () => {
     const pluginRoot = await createTempDirectory();
     const spawner = new RecordingSpawner();
     const resolver = new RecordingCredentialResolver({ API_TOKEN: "secret" });
-    const provider = processProvider({
+    const provider = await processProvider({
       pluginRoot,
       spawner,
       resolver,
@@ -709,7 +1293,7 @@ describe("process MCP provider", () => {
     const pluginRoot = await createTempDirectory();
     const spawner = new RecordingSpawner();
     const resolver = new RecordingCredentialResolver({ API_TOKEN: "super-secret-value" });
-    const provider = processProvider({
+    const provider = await processProvider({
       pluginRoot,
       spawner,
       resolver,
@@ -723,21 +1307,48 @@ describe("process MCP provider", () => {
     expect(spawner.calls).toHaveLength(0);
   });
 
-  it("allows a legitimate operation only on the same bound process server", async () => {
+  it("denies an unbound admin operation even when the caller labels it read", async () => {
+    const pluginRoot = await createTempDirectory();
+    const spawner = new RecordingSpawner();
+    const provider = await processProvider({
+      pluginRoot,
+      spawner,
+    });
+
+    await expect(provider.invoke({
+      ...request,
+      operationName: "admin_delete",
+      capability: "read",
+    }, { requestId: "request-1" })).rejects.toThrow("provider_invalid:operation_not_admitted");
+    expect(spawner.calls).toHaveLength(0);
+  });
+
+  it("allows a write process operation only with an exact binding and write policy", async () => {
     const pluginRoot = await createTempDirectory();
     const spawner = new RecordingSpawner();
     let invokedName: string | undefined;
-    const provider = processProvider({
+    const writePolicy = Object.freeze({ ...PROCESS_POLICY, allowWriteCapabilities: true });
+    const provider = await processProvider({
       pluginRoot,
       spawner,
+      policy: writePolicy,
+      operations: Object.freeze([Object.freeze({
+        operationName: "admin_delete",
+        capability: "write" as const,
+        componentDigest: PROCESS_DIGEST,
+        policyVersion: writePolicy.version,
+      })]),
       clientCall: async (input) => {
         invokedName = input.name;
         return { content: [] };
       },
     });
 
-    await expect(provider.invoke({ ...request, operationName: "admin_delete" }, { requestId: "request-1" }))
-      .resolves.toMatchObject({ status: "success" });
+    await expect(provider.invoke({
+      ...request,
+      operationName: "admin_delete",
+      capability: "write",
+    }, { requestId: "request-1" })).resolves.toMatchObject({ status: "success" });
     expect(invokedName).toBe("admin_delete");
     expect(spawner.calls).toHaveLength(1);
   });
@@ -745,7 +1356,7 @@ describe("process MCP provider", () => {
   it("does not spawn when an exact credential reference is missing", async () => {
     const pluginRoot = await createTempDirectory();
     const spawner = new RecordingSpawner();
-    const provider = processProvider({
+    const provider = await processProvider({
       pluginRoot,
       spawner,
       resolver: new RecordingCredentialResolver(),
@@ -763,9 +1374,15 @@ describe("process MCP provider", () => {
     const outside = join(base, "outside");
     await mkdir(pluginRoot);
     await mkdir(outside);
+    const executionRoot = await createVerifiedProcessRoot(pluginRoot);
     await symlink(outside, join(pluginRoot, "linked"), "junction");
     const spawner = new RecordingSpawner();
-    const provider = processProvider({ pluginRoot, spawner, workingDirectory: "linked" });
+    const provider = await processProvider({
+      pluginRoot,
+      executionRoot,
+      spawner,
+      workingDirectory: "linked",
+    });
 
     await expect(provider.invoke(request, { requestId: "request-1" }))
       .rejects.toThrow("path_escape");
@@ -777,7 +1394,7 @@ describe("process MCP provider", () => {
     await mkdir(join(pluginRoot, "server"));
     const spawner = new RecordingSpawner();
     const resolver = new RecordingCredentialResolver({ API_TOKEN: "super-secret-value" });
-    const provider = processProvider({
+    const provider = await processProvider({
       pluginRoot,
       spawner,
       resolver,
@@ -817,7 +1434,7 @@ describe("process MCP provider", () => {
         complete?.({ exitCode: null, signal: "SIGTERM" });
       },
     };
-    const provider = processProvider({
+    const provider = await processProvider({
       pluginRoot,
       spawner,
       timeoutMilliseconds: 5,
@@ -846,7 +1463,7 @@ describe("process MCP provider", () => {
         complete?.({ exitCode: null, signal: "SIGTERM" });
       },
     };
-    const provider = processProvider({
+    const provider = await processProvider({
       pluginRoot,
       spawner,
       timeoutMilliseconds: 5,
@@ -861,7 +1478,7 @@ describe("process MCP provider", () => {
 
     const outcome = await Promise.race([
       provider.invoke(request, { requestId: "request-1" }),
-      new Promise<"test_timeout">((resolve) => setTimeout(() => resolve("test_timeout"), 100)),
+      new Promise<"test_timeout">((resolve) => setTimeout(() => resolve("test_timeout"), 250)),
     ]);
     expect(outcome).not.toBe("test_timeout");
     expect(outcome).toEqual({ status: "failed", reason: "process_timed_out" });
@@ -877,7 +1494,7 @@ describe("process MCP provider", () => {
       completion: Promise.resolve({ exitCode: 0, signal: null }),
       kill: () => undefined,
     };
-    const provider = processProvider({
+    const provider = await processProvider({
       pluginRoot,
       spawner,
       resolver: new RecordingCredentialResolver({ API_TOKEN: "super-secret-value" }),
@@ -904,7 +1521,7 @@ describe("process MCP provider", () => {
       completion: Promise.resolve({ exitCode: 1, signal: null }),
       kill: () => { killed += 1; },
     };
-    const provider = processProvider({ pluginRoot, spawner });
+    const provider = await processProvider({ pluginRoot, spawner });
 
     const result = await provider.invoke(request, { requestId: "request-1" });
     expect(result).toEqual({ status: "failed", reason: "process_failed" });
@@ -913,6 +1530,8 @@ describe("process MCP provider", () => {
   });
 
   it("bounds both stdout and stderr in the shared safe process boundary", async () => {
+    const executionRoot = await createTempDirectory();
+    const identity = await snapshotDirectoryIdentity(executionRoot);
     const spawner = new RecordingSpawner();
     spawner.next = {
       stdout: (async function* () { yield Buffer.from("stdout-over-limit"); })(),
@@ -925,7 +1544,15 @@ describe("process MCP provider", () => {
       spawner,
       command: "node",
       args: [],
-      spawnOptions: { shell: false, cwd: ".", env: {} },
+      spawnOptions: {
+        shell: false,
+        cwd: executionRoot,
+        env: {},
+        executionRootIdentity: identity,
+        workingDirectoryIdentity: identity,
+        componentDigest: PROCESS_DIGEST,
+        executionRootDigest: await digestTree(executionRoot),
+      },
       timeoutMilliseconds: 100,
       maxOutputBytes: 6,
     });
@@ -943,7 +1570,7 @@ describe("process MCP provider", () => {
     spawner.spawn = () => {
       throw new Error("spawn super-secret-value");
     };
-    const provider = processProvider({ pluginRoot, spawner });
+    const provider = await processProvider({ pluginRoot, spawner });
 
     const result = await provider.invoke(request, { requestId: "request-1" });
     expect(result).toEqual({ status: "failed", reason: "process_failed" });
@@ -960,7 +1587,7 @@ describe("process MCP provider", () => {
       completion: Promise.resolve({ exitCode: 1, signal: null }),
       kill: () => { killed += 1; },
     };
-    const provider = processProvider({
+    const provider = await processProvider({
       pluginRoot,
       spawner,
       clientFactory: { create: () => { throw new Error("factory super-secret-value"); } },
