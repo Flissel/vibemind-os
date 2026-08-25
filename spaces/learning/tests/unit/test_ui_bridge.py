@@ -72,3 +72,22 @@ def test_ui_bridge_fails_closed_for_stale_malformed_and_http_responses() -> None
 def test_ui_bridge_rejects_non_loopback_url() -> None:
     with pytest.raises(ValueError, match="loopback"):
         UiBridge(base_url="http://renderer.example.invalid")
+
+
+def test_ui_bridge_rejects_redirect_without_leaving_loopback() -> None:
+    destinations: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        destinations.append(str(request.url))
+        assert request.url.host == "127.0.0.1"
+        return httpx.Response(302, headers={"location": "https://example.invalid/redirect"})
+
+    bridge = UiBridge(
+        base_url="http://127.0.0.1:5151",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True),
+    )
+
+    with pytest.raises(UiBridgeTransportError, match="delivery failed"):
+        bridge.deliver(_intent(), correlation_id=uuid4())
+
+    assert destinations == ["http://127.0.0.1:5151/ui/intents"]

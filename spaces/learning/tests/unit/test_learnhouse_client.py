@@ -21,6 +21,10 @@ CHAPTER_ID = UUID("00000000-0000-0000-0000-000000000102")
 SOURCE_ID = UUID("00000000-0000-0000-0000-000000000103")
 SESSION_ID = UUID("00000000-0000-0000-0000-000000000104")
 TASK_ID = UUID("00000000-0000-0000-0000-000000000105")
+OTHER_COURSE_ID = UUID("00000000-0000-0000-0000-000000000201")
+OTHER_CHAPTER_ID = UUID("00000000-0000-0000-0000-000000000202")
+OTHER_SESSION_ID = UUID("00000000-0000-0000-0000-000000000204")
+OTHER_TASK_ID = UUID("00000000-0000-0000-0000-000000000205")
 
 
 def _request(event_type: LearningEventType, **overrides: object) -> ToolRequestV1:
@@ -48,6 +52,7 @@ def _client(handler: httpx.MockTransport) -> LearnHouseClient:
 def _course(*, revision: int = 4) -> dict[str, object]:
     return {
         "course_uuid": str(COURSE_ID),
+        "org_id": 1,
         "name": "Typed learning",
         "description": "A course returned by LearnHouse.",
         "revision": revision,
@@ -152,6 +157,88 @@ def test_client_fails_closed_for_stale_or_malformed_upstream_responses() -> None
     malformed = _client(httpx.MockTransport(lambda _: httpx.Response(200, json={"name": "missing identity"})))
     with pytest.raises(LearnHouseMalformedResponse, match="malformed"):
         malformed.execute(request)
+
+
+@pytest.mark.parametrize(
+    ("event_type", "overrides", "response"),
+    [
+        (LearningEventType.COURSE_OPEN, {"course_id": COURSE_ID}, {**_course(), "course_uuid": str(OTHER_COURSE_ID)}),
+        (LearningEventType.COURSE_REVIEW, {"course_id": COURSE_ID, "expected_revision": 3, "payload": {"review": "approved"}}, {**_course(), "course_uuid": str(OTHER_COURSE_ID)}),
+        (LearningEventType.COURSE_PUBLISH, {"course_id": COURSE_ID, "expected_revision": 3, "confirmation": ConfirmationV1(confirmed=True, approval_ref="publish-approved")}, {**_course(), "course_uuid": str(OTHER_COURSE_ID)}),
+        (LearningEventType.CHAPTER_OPEN, {"course_id": COURSE_ID, "payload": {"chapter_id": str(CHAPTER_ID)}}, {"chapter_uuid": str(OTHER_CHAPTER_ID), "course_uuid": str(COURSE_ID), "name": "One", "revision": 4}),
+        (LearningEventType.CHAPTER_OPEN, {"course_id": COURSE_ID, "payload": {"chapter_id": str(CHAPTER_ID)}}, {"chapter_uuid": str(CHAPTER_ID), "course_uuid": str(OTHER_COURSE_ID), "name": "One", "revision": 4}),
+        (LearningEventType.SESSION_START, {"course_id": COURSE_ID, "payload": {"org_id": 1}}, {"trail_uuid": str(SESSION_ID), "course_uuid": str(OTHER_COURSE_ID), "revision": 4}),
+        (LearningEventType.TASK_NEXT, {"session_id": SESSION_ID, "payload": {"task_id": str(TASK_ID)}}, {"activity_uuid": str(OTHER_TASK_ID), "trail_uuid": str(SESSION_ID), "revision": 4, "title": "Exercise"}),
+        (LearningEventType.TASK_NEXT, {"session_id": SESSION_ID, "payload": {"task_id": str(TASK_ID)}}, {"activity_uuid": str(TASK_ID), "trail_uuid": str(OTHER_SESSION_ID), "revision": 4, "title": "Exercise"}),
+        (LearningEventType.PROGRESS_SHOW, {"course_id": COURSE_ID}, {"course_uuid": str(OTHER_COURSE_ID), "revision": 4, "completed": 2, "total": 5}),
+    ],
+)
+def test_client_rejects_response_identity_not_bound_to_request(
+    event_type: LearningEventType, overrides: dict[str, object], response: dict[str, object]
+) -> None:
+    client = _client(httpx.MockTransport(lambda _: httpx.Response(200, json=response)))
+
+    with pytest.raises(LearnHouseMalformedResponse, match="identity"):
+        client.execute(_request(event_type, **overrides))
+
+
+@pytest.mark.parametrize(
+    ("event_type", "overrides", "response"),
+    [
+        (LearningEventType.SESSION_START, {"course_id": COURSE_ID, "expected_revision": 4, "payload": {"org_id": 1}}, {"trail_uuid": str(SESSION_ID), "course_uuid": str(COURSE_ID), "revision": 3}),
+        (LearningEventType.TASK_NEXT, {"session_id": SESSION_ID, "expected_revision": 4, "payload": {"task_id": str(TASK_ID)}}, {"activity_uuid": str(TASK_ID), "trail_uuid": str(SESSION_ID), "revision": 3, "title": "Exercise"}),
+        (LearningEventType.PROGRESS_SHOW, {"course_id": COURSE_ID, "expected_revision": 4}, {"course_uuid": str(COURSE_ID), "revision": 3, "completed": 2, "total": 5}),
+    ],
+)
+def test_client_rejects_stale_session_task_and_progress_responses(
+    event_type: LearningEventType, overrides: dict[str, object], response: dict[str, object]
+) -> None:
+    client = _client(httpx.MockTransport(lambda _: httpx.Response(200, json=response)))
+
+    with pytest.raises(LearnHouseStaleRevision, match="revision"):
+        client.execute(_request(event_type, **overrides))
+
+
+@pytest.mark.parametrize(
+    ("event_type", "overrides", "first_response", "second_response"),
+    [
+        (LearningEventType.COURSE_OPEN, {"course_id": COURSE_ID}, _course(), {**_course(), "course_uuid": str(OTHER_COURSE_ID)}),
+        (LearningEventType.CHAPTER_OPEN, {"course_id": COURSE_ID, "payload": {"chapter_id": str(CHAPTER_ID)}}, {"chapter_uuid": str(CHAPTER_ID), "course_uuid": str(COURSE_ID), "name": "One", "revision": 4}, {"chapter_uuid": str(CHAPTER_ID), "course_uuid": str(OTHER_COURSE_ID), "name": "One", "revision": 4}),
+        (LearningEventType.SESSION_START, {"course_id": COURSE_ID, "payload": {"org_id": 1}}, {"trail_uuid": str(SESSION_ID), "course_uuid": str(COURSE_ID), "revision": 4}, {"trail_uuid": str(SESSION_ID), "course_uuid": str(OTHER_COURSE_ID), "revision": 4}),
+        (LearningEventType.TASK_NEXT, {"session_id": SESSION_ID, "payload": {"task_id": str(TASK_ID)}}, {"activity_uuid": str(TASK_ID), "trail_uuid": str(SESSION_ID), "revision": 4, "title": "Exercise"}, {"activity_uuid": str(TASK_ID), "trail_uuid": str(OTHER_SESSION_ID), "revision": 4, "title": "Exercise"}),
+        (LearningEventType.PROGRESS_SHOW, {"course_id": COURSE_ID}, {"course_uuid": str(COURSE_ID), "revision": 4, "completed": 2, "total": 5}, {"course_uuid": str(OTHER_COURSE_ID), "revision": 4, "completed": 2, "total": 5}),
+    ],
+)
+def test_readback_rejects_identity_substitution(
+    event_type: LearningEventType,
+    overrides: dict[str, object],
+    first_response: dict[str, object],
+    second_response: dict[str, object],
+) -> None:
+    responses = iter((first_response, second_response))
+    client = _client(httpx.MockTransport(lambda _: httpx.Response(200, json=next(responses))))
+    request = _request(event_type, **overrides)
+
+    outcome = client.execute(request)
+
+    assert client.readback(request, outcome) is None
+
+
+def test_learnhouse_client_rejects_redirect_without_leaving_loopback() -> None:
+    destinations: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        destinations.append(str(request.url))
+        assert request.url.host == "127.0.0.1"
+        return httpx.Response(307, headers={"location": "https://example.invalid/redirect"})
+
+    injected = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    client = LearnHouseClient(base_url="http://127.0.0.1:8080/api/v1", http_client=injected)
+
+    with pytest.raises(LearnHouseTransportError, match="read request failed"):
+        client.execute(_request(LearningEventType.COURSE_OPEN, course_id=COURSE_ID))
+
+    assert destinations == [f"http://127.0.0.1:8080/api/v1/courses/{COURSE_ID}/meta?slim=true"]
 
 
 def test_client_rejects_non_loopback_base_url() -> None:

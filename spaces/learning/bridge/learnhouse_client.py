@@ -12,7 +12,7 @@ import httpx
 from spaces.learning.bridge.dispatcher import ApplicationOutcomeV1
 from spaces.learning.contracts.events import LearningToolName
 from spaces.learning.contracts.mcp_models import ToolRequestV1
-from spaces.learning.contracts.outcomes import AggregateRefV1, EvidenceRefV1, ToolErrorV1, TruthReadbackV1
+from spaces.learning.contracts.outcomes import AggregateRefV1, EvidenceRefV1, TruthReadbackV1
 from spaces.learning.contracts.ui_intents import OpenChapterIntentV1, OpenCourseIntentV1, OpenTaskIntentV1
 
 
@@ -119,6 +119,7 @@ class LearnHouseClient:
                     data=operation.payload if operation.form else None,
                     json=None if operation.form else operation.payload,
                     timeout=self._timeout_seconds,
+                    follow_redirects=False,
                 )
             except httpx.HTTPError as error:
                 if operation.method == "GET" and attempt + 1 < attempts:
@@ -128,7 +129,7 @@ class LearnHouseClient:
                 ) from error
             if response.status_code >= 500 and operation.method == "GET" and attempt + 1 < attempts:
                 continue
-            if response.is_error:
+            if not 200 <= response.status_code < 300:
                 raise LearnHouseTransportError(
                     f"LearnHouse {'read' if operation.method == 'GET' else 'write'} request failed"
                 )
@@ -237,6 +238,14 @@ class LearnHouseClient:
 
     def _map_course(self, request: ToolRequestV1, value: object) -> ApplicationOutcomeV1:
         course = self._course_value(value)
+        if request.tool is LearningToolName.COURSE_CREATE:
+            item = self._mapping(value)
+            self._assert_identity(
+                self._integer(item, "org_id"),
+                self._integer(request.event.payload, "org_id"),
+            )
+        else:
+            self._assert_identity(course["course_id"], self._course_id(request.event.course_id))
         self._assert_not_stale(request, course["revision"])
         intent = None
         if request.tool is LearningToolName.COURSE_OPEN:
@@ -260,6 +269,8 @@ class LearnHouseClient:
         chapter_id = self._uuid_from(item, "chapter_uuid")
         course_id = self._uuid_from(item, "course_uuid")
         revision = self._revision(item)
+        self._assert_identity(chapter_id, self._uuid_string(request.event.payload, "chapter_id"))
+        self._assert_identity(course_id, self._course_id(request.event.course_id))
         self._assert_not_stale(request, revision)
         chapter = {"chapter_id": chapter_id, "course_id": course_id, "title": self._string(item, "name"), "revision": revision}
         return ApplicationOutcomeV1(
@@ -290,6 +301,8 @@ class LearnHouseClient:
         session_id = self._uuid_from(item, "trail_uuid")
         course_id = self._uuid_from(item, "course_uuid")
         revision = self._revision(item)
+        self._assert_identity(course_id, self._course_id(request.event.course_id))
+        self._assert_not_stale(request, revision)
         return ApplicationOutcomeV1(
             state="completed",
             aggregate=AggregateRefV1(aggregate_type="session", aggregate_id=session_id, revision=revision),
@@ -301,6 +314,9 @@ class LearnHouseClient:
         task_id = self._uuid_from(item, "activity_uuid")
         session_id = self._uuid_from(item, "trail_uuid")
         revision = self._revision(item)
+        self._assert_identity(task_id, self._uuid_string(request.event.payload, "task_id"))
+        self._assert_identity(session_id, self._session_id(request.event.session_id))
+        self._assert_not_stale(request, revision)
         task = {"task_id": task_id, "session_id": session_id, "title": self._string(item, "title"), "revision": revision}
         return ApplicationOutcomeV1(
             state="completed",
@@ -318,6 +334,8 @@ class LearnHouseClient:
         item = self._mapping(value)
         course_id = self._uuid_from(item, "course_uuid")
         revision = self._revision(item)
+        self._assert_identity(course_id, self._course_id(request.event.course_id))
+        self._assert_not_stale(request, revision)
         progress = {"course_id": course_id, "completed": self._integer(item, "completed"), "total": self._integer(item, "total"), "revision": revision}
         return ApplicationOutcomeV1(
             state="completed",
@@ -380,6 +398,12 @@ class LearnHouseClient:
         return str(value)
 
     @staticmethod
+    def _session_id(value: UUID | None) -> str:
+        if value is None:
+            raise LearnHouseMalformedResponse("malformed session request")
+        return str(value)
+
+    @staticmethod
     def _expected_revision(value: int | None) -> int:
         if value is None:
             raise LearnHouseMalformedResponse("malformed revisioned write request")
@@ -389,6 +413,11 @@ class LearnHouseClient:
         expected = request.event.expected_revision
         if expected is not None and observed_revision < expected:
             raise LearnHouseStaleRevision("LearnHouse returned a stale revision")
+
+    @staticmethod
+    def _assert_identity(observed: str | int, expected: str | int) -> None:
+        if observed != expected:
+            raise LearnHouseMalformedResponse("LearnHouse returned a mismatched identity")
 
     def _course_create_payload(self, payload: Mapping[str, object]) -> dict[str, object]:
         return {

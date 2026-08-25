@@ -70,10 +70,11 @@ class UiBridge:
                 headers={"Accept": "application/json", "X-Correlation-ID": str(correlation_id)},
                 json=intent.model_dump(mode="json"),
                 timeout=self._timeout_seconds,
+                follow_redirects=False,
             )
         except httpx.HTTPError as error:
             raise UiBridgeTransportError("UI intent delivery failed") from error
-        if response.is_error:
+        if not 200 <= response.status_code < 300:
             raise UiBridgeTransportError("UI intent delivery failed")
         try:
             value = response.json()
