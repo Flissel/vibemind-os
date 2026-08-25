@@ -16,6 +16,7 @@ import type {
   PluginReceipt,
 } from "@/src/application/repositories/plugins.repository.interface";
 import { PLUGIN_COLLECTIONS } from "./mongodb.plugins.indexes";
+import { componentBindingDigest } from "@rowboat/openai-plugin-runtime";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
@@ -248,7 +249,7 @@ function catalogAdmissionDecision(input: Captured, reason: string): void {
   }
 }
 
-function catalogComponentAdmission(input: Captured, reason: string): Readonly<{ id: string; digest: string }> {
+function catalogComponentAdmission(input: Captured, reason: string): Readonly<{ id: string; bindingDigest: string }> {
   if (typeof input !== "object" || input === null || Array.isArray(input)) invalid(reason);
   const selected = input as Readonly<Record<string, Captured>>;
   keys(selected, ["component", "admission"], reason);
@@ -261,9 +262,10 @@ function catalogComponentAdmission(input: Captured, reason: string): Readonly<{ 
   string(component, "status", /^(available|review_required|installed|partially_available|unavailable|migration_required|error|invalid|unsupported)$/, reason);
   optionalString(component, "reason", NAME, reason);
   if (typeof component.metadata !== "object" || component.metadata === null || Array.isArray(component.metadata)) invalid(reason);
-  const digest = string(component.metadata as Readonly<Record<string, Captured>>, "digest", DIGEST, reason);
+  string(component.metadata as Readonly<Record<string, Captured>>, "digest", DIGEST, reason);
+  const bindingDigest = string(component.metadata as Readonly<Record<string, Captured>>, "bindingDigest", DIGEST, reason);
   catalogAdmissionDecision(selected.admission, reason);
-  return Object.freeze({ id, digest });
+  return Object.freeze({ id, bindingDigest });
 }
 
 function catalogEntry(input: unknown): PluginCatalogEntry {
@@ -286,11 +288,18 @@ function catalogEntry(input: unknown): PluginCatalogEntry {
   catalogAdmissionDecision(record.admission, "catalog_entry_invalid");
   const componentIds = new Set<string>();
   const componentDigests = new Set<string>();
+  const typed = record as unknown as PluginCatalogEntry;
   for (const component of record.components) {
     const selected = catalogComponentAdmission(component, "catalog_entry_invalid");
-    if (componentIds.has(selected.id) || componentDigests.has(selected.digest)) invalid("catalog_entry_invalid");
+    const bound = typed.components.find(({ component: candidate }) => candidate.id === selected.id)?.component;
+    if (
+      bound === undefined
+      || componentBindingDigest(typed, bound) !== selected.bindingDigest
+      || componentIds.has(selected.id)
+      || componentDigests.has(selected.bindingDigest)
+    ) invalid("catalog_entry_invalid");
     componentIds.add(selected.id);
-    componentDigests.add(selected.digest);
+    componentDigests.add(selected.bindingDigest);
   }
   return record as unknown as PluginCatalogEntry;
 }
@@ -886,12 +895,12 @@ export class MongodbPluginsRepository implements IPluginsRepository {
     for (const selectedBinding of document.providerBindings ?? []) {
       const selected = entry.components.find(({ component }) => component.id === selectedBinding.componentId)?.component;
       const binding = selectedBinding.binding;
-      if (selected === undefined || selected.metadata.digest !== binding.componentDigest) invalid("installation_source_mismatch");
+      if (selected === undefined || selected.metadata.bindingDigest !== binding.componentDigest) invalid("installation_source_mismatch");
       const mcpTransport = binding.providerKind === "mcp-http"
         ? "http"
         : binding.providerKind === "mcp-process" ? "process" : undefined;
       if (binding.pairedComponentDigests !== undefined) {
-        const paired = entry.components.find(({ component }) => component.metadata.digest === binding.pairedComponentDigests?.[1])?.component;
+        const paired = entry.components.find(({ component }) => component.metadata.bindingDigest === binding.pairedComponentDigests?.[1])?.component;
         if (
           mcpTransport === undefined
           || selected.kind !== "app"
@@ -962,7 +971,7 @@ export class MongodbPluginsRepository implements IPluginsRepository {
       const parent = await installations.findOne({ id: document.installationId }, options);
       if (parent === null) invalid("admission_parent_not_found");
       const entry = await this.requireCatalogEntryForInstallation(this.readInstallation(parent), session);
-      const selected = entry.components.find(({ component }) => component.metadata.digest === document.componentDigest);
+      const selected = entry.components.find(({ component }) => component.metadata.bindingDigest === document.componentDigest);
       if (
         selected === undefined
         || selected.component.kind !== document.componentKind

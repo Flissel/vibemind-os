@@ -65,7 +65,7 @@ export function componentDtosFrom(entry: PluginCatalogEntry): readonly PluginCom
   return entry.components.map((selected) => {
     if (selected === null || typeof selected !== "object" || selected.component === undefined || selected.admission === undefined) serviceError("catalog_entry_invalid");
     const { component, admission } = selected;
-    const digest = component.metadata.digest;
+    const digest = component.metadata.bindingDigest;
     if (typeof component.id !== "string" || component.id.length === 0 || component.id.length > 512 || typeof digest !== "string" || !DIGEST.test(digest)) serviceError("catalog_entry_invalid");
     if (ids.has(component.id)) serviceError("catalog_entry_invalid");
     ids.add(component.id);
@@ -106,7 +106,7 @@ export function installationFrom(entry: PluginCatalogEntry, projectId: string): 
 
 export function admissionsFrom(entry: PluginCatalogEntry, installationId: string): readonly PluginComponentAdmission[] {
   return Object.freeze(entry.components.map(({ component, admission }) => Object.freeze({
-    installationId, componentDigest: String(component.metadata.digest), componentKind: component.kind,
+    installationId, componentDigest: component.metadata.bindingDigest, componentKind: component.kind,
     componentName: component.name, status: admission.status, ...(admission.status === "admitted" ? {} : { reason: admission.reason }),
     policyVersion: admission.policyVersion,
   })));

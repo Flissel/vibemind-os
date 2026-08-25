@@ -68,9 +68,9 @@ describe("installed plugin resolution", () => {
 
   it("requires internal catalog-bound registry assembly for provider availability", () => {
     const app = box.components.find(({ component }) => component.kind === "app");
-    if (app === undefined || typeof app.component.metadata.digest !== "string") throw new Error("box app fixture missing");
+    if (app === undefined || typeof app.component.metadata.bindingDigest !== "string") throw new Error("box app fixture missing");
     const binding: ProviderBinding = Object.freeze({
-      id: "box-app", providerKind: "rowboat-native", componentDigest: app.component.metadata.digest,
+      id: "box-app", providerKind: "rowboat-native", componentDigest: app.component.metadata.bindingDigest,
     });
     const provider: PluginProvider = Object.freeze({
       id: "box-provider",
@@ -127,11 +127,37 @@ describe("installed plugin resolution", () => {
     expect(assemblyGetterCalls).toBe(0);
   });
 
+  it("rejects paired app provider assemblies not bound to the exact MCP digest and transport", () => {
+    const linear = catalog.entries.find((entry) => entry.name === "linear");
+    const app = linear?.components.find(({ component }) => component.kind === "app");
+    const mcp = linear?.components.find(({ component }) => component.kind === "mcp");
+    if (linear === undefined || app === undefined || mcp === undefined) throw new Error("linear pair fixture missing");
+    const provider = (kind: "mcp-http" | "mcp-process"): PluginProvider => Object.freeze({
+      id: `linear-${kind}`,
+      describe: () => Object.freeze({ id: `linear-${kind}`, kind, temporaryAdapter: false }),
+      invoke: async () => Object.freeze({ status: "success", output: null }),
+    });
+    const assembly = (binding: ProviderBinding, selectedProvider: PluginProvider) => ({
+      pluginName: linear.pluginName, componentId: app.component.id, binding, provider: selectedProvider,
+    });
+    const base = {
+      id: "linear-pair",
+      componentDigest: app.component.metadata.bindingDigest,
+      pairedComponentDigests: [app.component.metadata.bindingDigest, mcp.component.metadata.bindingDigest] as const,
+    };
+    expect(() => assembleTrustedProviderRegistry(catalog, [assembly({
+      ...base, providerKind: "mcp-http", pairedComponentDigests: [base.componentDigest, "0".repeat(64)],
+    }, provider("mcp-http"))])).toThrow("resolution_invalid");
+    expect(() => assembleTrustedProviderRegistry(catalog, [assembly({
+      ...base, providerKind: "mcp-process",
+    }, provider("mcp-process"))])).toThrow("resolution_invalid");
+  });
+
   it("rejects own registry method shadows without invoking accessors or forging availability", () => {
     const app = box.components.find(({ component }) => component.kind === "app");
-    if (app === undefined || typeof app.component.metadata.digest !== "string") throw new Error("box app fixture missing");
+    if (app === undefined || typeof app.component.metadata.bindingDigest !== "string") throw new Error("box app fixture missing");
     const binding: ProviderBinding = Object.freeze({
-      id: "box-shadow", providerKind: "rowboat-native", componentDigest: app.component.metadata.digest,
+      id: "box-shadow", providerKind: "rowboat-native", componentDigest: app.component.metadata.bindingDigest,
     });
     const provider: PluginProvider = Object.freeze({
       id: "box-shadow-provider",
@@ -170,9 +196,9 @@ describe("installed plugin resolution", () => {
 
   it("uses the module-captured registry resolver after prototype mutation", () => {
     const app = box.components.find(({ component }) => component.kind === "app");
-    if (app === undefined || typeof app.component.metadata.digest !== "string") throw new Error("box app fixture missing");
+    if (app === undefined || typeof app.component.metadata.bindingDigest !== "string") throw new Error("box app fixture missing");
     const binding: ProviderBinding = Object.freeze({
-      id: "box-prototype-forgery", providerKind: "rowboat-native", componentDigest: app.component.metadata.digest,
+      id: "box-prototype-forgery", providerKind: "rowboat-native", componentDigest: app.component.metadata.bindingDigest,
     });
     const provider: PluginProvider = Object.freeze({
       id: "box-prototype-forgery-provider",
@@ -206,9 +232,9 @@ describe("installed plugin resolution", () => {
 
   it("uses the module-captured registry registration after prototype mutation", async () => {
     const app = box.components.find(({ component }) => component.kind === "app");
-    if (app === undefined || typeof app.component.metadata.digest !== "string") throw new Error("box app fixture missing");
+    if (app === undefined || typeof app.component.metadata.bindingDigest !== "string") throw new Error("box app fixture missing");
     const binding: ProviderBinding = Object.freeze({
-      id: "box-register-forgery", providerKind: "rowboat-native", componentDigest: app.component.metadata.digest,
+      id: "box-register-forgery", providerKind: "rowboat-native", componentDigest: app.component.metadata.bindingDigest,
     });
     let trustedInvokes = 0;
     let attackerInvokes = 0;

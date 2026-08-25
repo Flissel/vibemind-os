@@ -20,7 +20,7 @@ import { PreviewPluginInstallationUseCase } from "@/src/application/use-cases/pl
 import { SetPluginEnabledUseCase } from "@/src/application/use-cases/plugins/set-plugin-enabled.use-case";
 import { Auth0PluginApiAuthorizationPolicy } from "@/src/infrastructure/policies/auth0.plugin-api-authorization.policy";
 import { PluginInstallationController } from "@/src/interface-adapters/controllers/plugins/plugin-installation.controller";
-import { PINNED_OPENAI_PLUGINS_COMMIT, PINNED_PLUGIN_CATALOG_DIGEST, type PluginCatalogLock } from "@rowboat/openai-plugin-runtime";
+import { PINNED_OPENAI_PLUGINS_COMMIT, PINNED_PLUGIN_CATALOG_DIGEST, componentBindingDigest, type PluginCatalogLock } from "@rowboat/openai-plugin-runtime";
 import catalogLockFixture from "../../../../config/openai-plugin-catalog.lock.json";
 import { NextRequest } from "next/server";
 import { SignJWT, createLocalJWKSet, exportJWK, generateKeyPair } from "jose";
@@ -34,7 +34,7 @@ const snapshot: PluginCatalogSnapshot = Object.freeze({
     pluginsWithSkills: 1, pluginsWithApps: 0, pluginsWithAgents: 0, pluginsWithCommands: 0, pluginsWithMcp: 0, pluginsWithCommandHooks: 0,
   }, licenseDeclarations: { MIT: 1 }, catalogDigest: PINNED_PLUGIN_CATALOG_DIGEST,
 });
-const entry: PluginCatalogEntry = Object.freeze({
+const unboundEntry = {
   catalogDigest: snapshot.catalogDigest, name: "github", sourceUrl: snapshot.sourceUrl, sourceCommit: snapshot.sourceCommit,
   pluginName: "github", pluginVersion: "1.0.0", manifestDigest: digest("b"), treeDigest: digest("c"),
   importedAt: snapshot.importedAt, schemaVersion: snapshot.schemaVersion, policyVersion: snapshot.policyVersion,
@@ -44,7 +44,17 @@ const entry: PluginCatalogEntry = Object.freeze({
     component: { id: "skill:github", name: "GitHub", kind: "skill" as const, status: "available" as const, metadata: { digest: digest("d"), credentialSlots: ["GITHUB_PAT_TOKEN"] } },
     admission: { status: "admitted" as const, policyVersion: snapshot.policyVersion },
   }],
-} as PluginCatalogEntry & { readonly licenseDeclaration: string });
+} as unknown as PluginCatalogEntry & { readonly licenseDeclaration: string };
+const entry: PluginCatalogEntry = Object.freeze({
+  ...unboundEntry,
+  components: unboundEntry.components.map((selected) => ({
+    ...selected,
+    component: {
+      ...selected.component,
+      metadata: { ...selected.component.metadata, bindingDigest: componentBindingDigest(unboundEntry, selected.component) },
+    },
+  })),
+});
 
 class FakeAuthorization implements IPluginApiAuthorizationPolicy {
   reject = false;
@@ -122,8 +132,8 @@ describe("authorized plugin services", () => {
     const realAirtable = entries.find((selected) => selected.name === "airtable");
     const realAgent = realAirtable?.components.find(({ component }) => component.id === "agent:agents/openai.yaml");
     expect(realAgent).toBeDefined();
-    expect(airtable?.components.find((component) => component.componentDigest === realAgent?.component.metadata.digest)).toEqual({
-      componentDigest: realAgent?.component.metadata.digest,
+    expect(airtable?.components.find((component) => component.componentDigest === realAgent?.component.metadata.bindingDigest)).toEqual({
+      componentDigest: realAgent?.component.metadata.bindingDigest,
       name: "openai.yaml",
       kind: "agent",
       admission: { status: "review_required", reason: "write_review_required", policyVersion: lock.policyVersion },
@@ -134,7 +144,7 @@ describe("authorized plugin services", () => {
     const realAttio = entries.find((selected) => selected.name === "attio");
     const realAsset = realAttio?.components.find(({ component }) => component.id === "asset:assets/logo.png");
     expect(realAsset).toBeDefined();
-    const assetDto = attio?.components.find((component) => component.componentDigest === realAsset?.component.metadata.digest);
+    const assetDto = attio?.components.find((component) => component.componentDigest === realAsset?.component.metadata.bindingDigest);
     expect(recursiveStrings(catalog.flatMap((selected) => selected.components)).some((value) => value.includes("/") || value.includes("\\"))).toBe(false);
     expect(recursiveStrings(assetDto).some((value) => value.includes("/") || value.includes("\\"))).toBe(false);
     expect(JSON.stringify(assetDto)).not.toContain("asset:assets/logo.png");

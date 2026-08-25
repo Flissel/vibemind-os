@@ -1,5 +1,6 @@
 import type {
   NormalizedPluginComponent,
+  PluginMetadata,
   SourceProvenance,
 } from "./plugin.js";
 import type { AdmissionDecision } from "../policy/license-policy.js";
@@ -18,8 +19,17 @@ export interface CatalogInventory {
   readonly pluginsWithCommandHooks: number;
 }
 
+export interface CatalogComponentMetadata extends PluginMetadata {
+  readonly digest: string;
+  readonly bindingDigest: string;
+}
+
+export interface CatalogBoundPluginComponent extends Omit<NormalizedPluginComponent, "metadata"> {
+  readonly metadata: CatalogComponentMetadata;
+}
+
 export interface CatalogComponentAdmission {
-  readonly component: NormalizedPluginComponent;
+  readonly component: CatalogBoundPluginComponent;
   readonly admission: AdmissionDecision;
 }
 

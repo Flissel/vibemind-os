@@ -22,6 +22,8 @@ import {
   ensurePluginIndexes,
 } from "@/src/infrastructure/repositories/mongodb.plugins.indexes";
 import { ensureAllIndexes } from "@/src/infrastructure/mongodb/ensure-indexes";
+import { componentBindingDigest, type PluginCatalogLock } from "@rowboat/openai-plugin-runtime";
+import catalogLockFixture from "../../../../config/openai-plugin-catalog.lock.json";
 
 type Document = Record<string, unknown>;
 
@@ -229,7 +231,20 @@ const snapshot: PluginCatalogSnapshot = {
   catalogDigest: digest("a"),
 };
 
-const entry: PluginCatalogEntry = {
+function bindCatalogEntry(input: PluginCatalogEntry): PluginCatalogEntry {
+  return {
+    ...input,
+    components: input.components.map((selected) => ({
+      ...selected,
+      component: {
+        ...selected.component,
+        metadata: { ...selected.component.metadata, bindingDigest: componentBindingDigest(input, selected.component) },
+      },
+    })),
+  };
+}
+
+const entry = bindCatalogEntry({
   catalogDigest: snapshot.catalogDigest,
   sourceUrl: snapshot.sourceUrl,
   sourceCommit: snapshot.sourceCommit,
@@ -271,7 +286,11 @@ const entry: PluginCatalogEntry = {
     },
     admission: { status: "admitted", policyVersion: snapshot.policyVersion },
   }],
-};
+} as unknown as PluginCatalogEntry);
+
+const MCP_BINDING_DIGEST = entry.components[0]!.component.metadata.bindingDigest;
+const COMMAND_BINDING_DIGEST = entry.components[1]!.component.metadata.bindingDigest;
+const APP_BINDING_DIGEST = entry.components[2]!.component.metadata.bindingDigest;
 
 const installation: PluginInstallation = {
   id: "installation-1",
@@ -288,14 +307,14 @@ const installation: PluginInstallation = {
 
 function catalogEntryAtStoredBytes(targetBytes: number): PluginCatalogEntry {
   const padding = Array.from({ length: 16 }, () => "");
-  const padded: PluginCatalogEntry = {
+  const padded: PluginCatalogEntry = bindCatalogEntry({
     ...clone(entry),
     name: "budget-entry",
     pluginName: "budget-entry",
     components: entry.components.map((item, index) => index === 0
       ? { ...clone(item), component: { ...clone(item.component), metadata: { ...clone(item.component.metadata), padding } } }
       : clone(item)),
-  };
+  });
   const storedBytes = (): number => Buffer.byteLength(JSON.stringify({
     catalogDigest: padded.catalogDigest,
     name: padded.name,
@@ -334,6 +353,41 @@ async function seedInstallation(repository: MongodbPluginsRepository): Promise<v
 }
 
 describe("plugin repository contract", () => {
+  it("persists real components with distinct structural bindings when their raw content digest is identical", async () => {
+    const lock = catalogLockFixture as unknown as PluginCatalogLock;
+    const { entries, ...catalogSnapshot } = lock;
+    const brand24 = entries.find((selected) => selected.name === "brand24");
+    if (brand24 === undefined) throw new Error("brand24 fixture missing");
+    const collision = brand24.components.filter(({ component }) => component.metadata.digest === "7205418daf4cd98ccec8878ec1a27195f73aa3bd22e4c7480a15c793828991fc");
+    expect(collision).toHaveLength(2);
+    expect(new Set(collision.map(({ component }) => component.metadata.bindingDigest)).size).toBe(2);
+    const { repository } = repositoryFixture();
+    await repository.putCatalogSnapshot(catalogSnapshot);
+    await expect(repository.putCatalogEntries(entries.map((selected) => ({ ...selected, catalogDigest: lock.catalogDigest })))).resolves.toBeUndefined();
+    await expect(repository.listCatalogEntries(lock.catalogDigest)).resolves.toHaveLength(180);
+  });
+
+  it("uses structural binding digests for provider and admission persistence", async () => {
+    const { repository } = repositoryFixture();
+    const boundEntry = entry;
+    await repository.putCatalogSnapshot(snapshot);
+    await repository.putCatalogEntries([boundEntry]);
+    const mcp = boundEntry.components[0]!;
+    const componentDigest = String(mcp.component.metadata.bindingDigest);
+    await repository.putInstallation({
+      ...installation,
+      providerBindings: [{ componentId: mcp.component.id, binding: { id: "binding-structural", providerKind: "mcp-process", componentDigest } }],
+    });
+    await expect(repository.putAdmissions([{
+      installationId: installation.id,
+      componentDigest,
+      componentKind: mcp.component.kind,
+      componentName: mcp.component.name,
+      status: "admitted",
+      policyVersion: snapshot.policyVersion,
+    }])).resolves.toBeUndefined();
+  });
+
   it("stores an immutable catalog snapshot once by digest", async () => {
     const { database, repository } = repositoryFixture();
     const mutable = { ...clone(snapshot) };
@@ -388,7 +442,7 @@ describe("plugin repository contract", () => {
   it("binds entries to a catalog and lists them deterministically", async () => {
     const { repository } = repositoryFixture();
     await repository.putCatalogSnapshot(snapshot);
-    await repository.putCatalogEntries([{ ...entry, name: "slack", pluginName: "slack" }, entry]);
+    await repository.putCatalogEntries([bindCatalogEntry({ ...entry, name: "slack", pluginName: "slack" }), entry]);
     const entries = await repository.listCatalogEntries(snapshot.catalogDigest);
     expect(entries.map((item) => item.name)).toEqual(["github", "slack"]);
     expect(Object.isFrozen(entries)).toBe(true);
@@ -425,7 +479,7 @@ describe("plugin repository contract", () => {
   it("validates a catalog-entry batch before writing any member", async () => {
     const { database, repository } = repositoryFixture();
     await repository.putCatalogSnapshot(snapshot);
-    const missingCatalogEntry = { ...entry, catalogDigest: digest("8"), name: "slack", pluginName: "slack" };
+    const missingCatalogEntry = bindCatalogEntry({ ...entry, catalogDigest: digest("8"), name: "slack", pluginName: "slack" });
     await expect(repository.putCatalogEntries([entry, missingCatalogEntry]))
       .rejects.toThrow("catalog_snapshot_not_found");
     expect(database.collection(PLUGIN_COLLECTIONS.catalogEntries).writes).toBe(0);
@@ -434,11 +488,11 @@ describe("plugin repository contract", () => {
   it("rolls back an entry batch when a later existing member conflicts", async () => {
     const { database, repository } = repositoryFixture();
     await repository.putCatalogSnapshot(snapshot);
-    const slack = { ...entry, name: "slack", pluginName: "slack" };
+    const slack = bindCatalogEntry({ ...entry, name: "slack", pluginName: "slack" });
     await repository.putCatalogEntries([slack]);
     const collection = database.collection(PLUGIN_COLLECTIONS.catalogEntries);
     const baselineWrites = collection.writes;
-    await expect(repository.putCatalogEntries([entry, { ...slack, pluginVersion: "2.0.0" }]))
+    await expect(repository.putCatalogEntries([entry, bindCatalogEntry({ ...slack, pluginVersion: "2.0.0" })]))
       .rejects.toThrow("catalog_entry_conflict");
     expect(collection.writes).toBe(baselineWrites);
     expect(await repository.listCatalogEntries(snapshot.catalogDigest)).toEqual([slack]);
@@ -447,7 +501,7 @@ describe("plugin repository contract", () => {
   it("rolls back earlier transactional writes when a unique race appears during the batch", async () => {
     const { database, repository } = repositoryFixture();
     await repository.putCatalogSnapshot(snapshot);
-    const slack = { ...entry, name: "slack", pluginName: "slack" };
+    const slack = bindCatalogEntry({ ...entry, name: "slack", pluginName: "slack" });
     const collection = database.collection(PLUGIN_COLLECTIONS.catalogEntries);
     collection.beforeInsert = (document) => {
       if (document.name === "github") {
@@ -614,7 +668,7 @@ describe("plugin repository contract", () => {
       installation: { ...installation, revision: 0 },
       admissions: entry.components.map(({ component, admission }) => ({
         installationId: installation.id,
-        componentDigest: String(component.metadata.digest),
+        componentDigest: component.metadata.bindingDigest,
         componentKind: component.kind,
         componentName: component.name,
         status: admission.status,
@@ -694,7 +748,7 @@ describe("plugin repository contract", () => {
         binding: {
           id: "binding-1",
           providerKind: "invented-provider",
-          componentDigest: digest("d"),
+          componentDigest: MCP_BINDING_DIGEST,
         },
       }],
     };
@@ -703,11 +757,11 @@ describe("plugin repository contract", () => {
   });
 
   it.each([
-    ["unknown component", { componentId: "github:missing", binding: { id: "binding-1", providerKind: "rowboat-native", componentDigest: digest("d") } }],
+    ["unknown component", { componentId: "github:missing", binding: { id: "binding-1", providerKind: "rowboat-native", componentDigest: MCP_BINDING_DIGEST } }],
     ["wrong component digest", { componentId: "github:mcp", binding: { id: "binding-1", providerKind: "mcp-process", componentDigest: digest("0") } }],
-    ["incompatible provider kind", { componentId: "github:mcp", binding: { id: "binding-1", providerKind: "mcp-http", componentDigest: digest("d") } }],
-    ["incompatible component kind", { componentId: "github:command", binding: { id: "binding-1", providerKind: "rowboat-native", componentDigest: digest("e") } }],
-    ["invalid paired component", { componentId: "github:app", binding: { id: "binding-1", providerKind: "mcp-process", componentDigest: digest("f"), pairedComponentDigests: [digest("f"), digest("0")] } }],
+    ["incompatible provider kind", { componentId: "github:mcp", binding: { id: "binding-1", providerKind: "mcp-http", componentDigest: MCP_BINDING_DIGEST } }],
+    ["incompatible component kind", { componentId: "github:command", binding: { id: "binding-1", providerKind: "rowboat-native", componentDigest: COMMAND_BINDING_DIGEST } }],
+    ["invalid paired component", { componentId: "github:app", binding: { id: "binding-1", providerKind: "mcp-process", componentDigest: APP_BINDING_DIGEST, pairedComponentDigests: [APP_BINDING_DIGEST, digest("0")] } }],
   ])("rejects a provider binding with %s before any installation write", async (_case, selected) => {
     const { database, repository } = repositoryFixture();
     await seedCatalog(repository);
@@ -745,8 +799,8 @@ describe("plugin repository contract", () => {
         binding: {
           id: "binding-1",
           providerKind: "mcp-process",
-          componentDigest: digest("f"),
-          pairedComponentDigests: [digest("f"), digest("d")],
+          componentDigest: APP_BINDING_DIGEST,
+          pairedComponentDigests: [APP_BINDING_DIGEST, MCP_BINDING_DIGEST],
         },
       }],
     };
@@ -818,19 +872,19 @@ describe("plugin repository contract", () => {
     const { repository } = repositoryFixture();
     await seedInstallation(repository);
     const admissions: readonly PluginComponentAdmission[] = [
-      { installationId: installation.id, componentDigest: digest("e"), componentKind: "command", componentName: "GitHub command", status: "admitted", policyVersion: snapshot.policyVersion },
-      { installationId: installation.id, componentDigest: digest("d"), componentKind: "mcp", componentName: "GitHub MCP", status: "admitted", policyVersion: snapshot.policyVersion },
+      { installationId: installation.id, componentDigest: COMMAND_BINDING_DIGEST, componentKind: "command", componentName: "GitHub command", status: "admitted", policyVersion: snapshot.policyVersion },
+      { installationId: installation.id, componentDigest: MCP_BINDING_DIGEST, componentKind: "mcp", componentName: "GitHub MCP", status: "admitted", policyVersion: snapshot.policyVersion },
     ];
     await repository.putAdmissions(admissions);
     expect((await repository.listAdmissions(installation.id)).map((item) => item.componentDigest))
-      .toEqual([digest("d"), digest("e")]);
+      .toEqual([MCP_BINDING_DIGEST, COMMAND_BINDING_DIGEST].sort());
   });
 
   it("rejects a duplicate admission batch before writing any member", async () => {
     const { database, repository } = repositoryFixture();
     const selected: PluginComponentAdmission = {
       installationId: installation.id,
-      componentDigest: digest("d"),
+      componentDigest: MCP_BINDING_DIGEST,
       componentKind: "mcp",
       componentName: "GitHub MCP",
       status: "admitted",
@@ -844,7 +898,7 @@ describe("plugin repository contract", () => {
     const { database, repository } = repositoryFixture();
     await expect(repository.putAdmissions([{
       installationId: installation.id,
-      componentDigest: digest("d"),
+      componentDigest: MCP_BINDING_DIGEST,
       componentKind: "mcp",
       componentName: "GitHub MCP",
       status: "admitted",
@@ -857,7 +911,7 @@ describe("plugin repository contract", () => {
     const { database, repository } = repositoryFixture();
     await seedInstallation(repository);
     const existing: PluginComponentAdmission = {
-      installationId: installation.id, componentDigest: digest("d"), componentKind: "mcp", componentName: "GitHub MCP",
+      installationId: installation.id, componentDigest: MCP_BINDING_DIGEST, componentKind: "mcp", componentName: "GitHub MCP",
       status: "admitted", policyVersion: snapshot.policyVersion,
     };
     await repository.putAdmissions([existing]);
@@ -867,7 +921,7 @@ describe("plugin repository contract", () => {
     corrupted.reason = "provider_unavailable";
     const baselineWrites = collection.writes;
     await expect(repository.putAdmissions([{
-      installationId: installation.id, componentDigest: digest("e"), componentKind: "command", componentName: "GitHub command",
+      installationId: installation.id, componentDigest: COMMAND_BINDING_DIGEST, componentKind: "command", componentName: "GitHub command",
       status: "admitted", policyVersion: snapshot.policyVersion,
     }, existing]))
       .rejects.toThrow("admission_conflict");
@@ -879,17 +933,18 @@ describe("plugin repository contract", () => {
     const { database, repository } = repositoryFixture();
     await seedInstallation(repository);
     const collection = database.collection(PLUGIN_COLLECTIONS.componentAdmissions);
+    const orderedDigests = [MCP_BINDING_DIGEST, COMMAND_BINDING_DIGEST].sort();
     collection.beforeInsert = (document) => {
-      if (document.componentDigest === digest("d")) {
+      if (document.componentDigest === orderedDigests[0]) {
         collection.beforeInsert = (racingDocument) => collection.insertExternal(racingDocument);
       }
     };
     await expect(repository.putAdmissions([
-      { installationId: installation.id, componentDigest: digest("d"), componentKind: "mcp", componentName: "GitHub MCP", status: "admitted", policyVersion: snapshot.policyVersion },
-      { installationId: installation.id, componentDigest: digest("e"), componentKind: "command", componentName: "GitHub command", status: "admitted", policyVersion: snapshot.policyVersion },
+      { installationId: installation.id, componentDigest: MCP_BINDING_DIGEST, componentKind: "mcp", componentName: "GitHub MCP", status: "admitted", policyVersion: snapshot.policyVersion },
+      { installationId: installation.id, componentDigest: COMMAND_BINDING_DIGEST, componentKind: "command", componentName: "GitHub command", status: "admitted", policyVersion: snapshot.policyVersion },
     ])).rejects.toThrow("admission_conflict");
     expect(collection.documents).toHaveLength(1);
-    expect(collection.documents[0]).toMatchObject({ installationId: installation.id, componentDigest: digest("e") });
+    expect(collection.documents[0]).toMatchObject({ installationId: installation.id, componentDigest: orderedDigests[1] });
     expect(collection.writes).toBe(1);
   });
 
@@ -898,7 +953,7 @@ describe("plugin repository contract", () => {
     await seedInstallation(repository);
     await repository.putAdmissions([{
       installationId: installation.id,
-      componentDigest: digest("d"),
+      componentDigest: MCP_BINDING_DIGEST,
       componentKind: "mcp",
       componentName: "GitHub MCP",
       status: "admitted",

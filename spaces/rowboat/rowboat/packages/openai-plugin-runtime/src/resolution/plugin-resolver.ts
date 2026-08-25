@@ -19,7 +19,7 @@ import type { PluginProvider } from "../providers/provider.js";
 import { ProviderRegistry } from "../providers/provider-registry.js";
 
 export const PINNED_PLUGIN_CATALOG_DIGEST =
-  "9c58f88a3c2bda14a5edeeac7eff3ad685df8ad0efabdf1386f4c912904f4357" as const;
+  "04701d9ad51f4a1f88cad59f9311e07cb02fb88848fa75c8edecd8d404e7b3c6" as const;
 
 export interface ResolvedComponent {
   readonly id: string;
@@ -119,6 +119,18 @@ function validateCatalog(input: unknown): PluginCatalogLock {
   for (const entry of catalog.entries) {
     if (names.has(entry.name) || entry.name !== entry.pluginName) fail();
     names.add(entry.name);
+    const componentIds = new Set<string>();
+    const bindingDigests = new Set<string>();
+    for (const { component } of entry.components) {
+      if (
+        componentIds.has(component.id)
+        || typeof component.metadata.digest !== "string" || !DIGEST.test(component.metadata.digest)
+        || typeof component.metadata.bindingDigest !== "string" || !DIGEST.test(component.metadata.bindingDigest)
+        || bindingDigests.has(component.metadata.bindingDigest)
+      ) fail();
+      componentIds.add(component.id);
+      bindingDigests.add(component.metadata.bindingDigest);
+    }
   }
   return catalog;
 }
@@ -250,11 +262,27 @@ export function assembleTrustedProviderRegistry(
     if (componentIds.has(assembly.componentId) || bindingIds.has(assembly.binding.id)) fail();
     const entry = catalog.entries.find((candidate) => candidate.name === assembly.pluginName);
     const selected = entry?.components.find(({ component }) => component.id === assembly.componentId);
+    const transport = assembly.binding.providerKind === "mcp-http"
+      ? "http"
+      : assembly.binding.providerKind === "mcp-process" ? "process" : undefined;
+    const pairedDigests = assembly.binding.pairedComponentDigests;
+    const paired = pairedDigests === undefined
+      ? undefined
+      : entry?.components.find(({ component }) => component.metadata.bindingDigest === pairedDigests[1]);
+    const bindingCompatible = pairedDigests === undefined
+      ? transport === undefined || (selected?.component.kind === "mcp" && selected.component.metadata.transport === transport)
+      : transport !== undefined
+        && selected?.component.kind === "app"
+        && pairedDigests[0] === assembly.binding.componentDigest
+        && paired?.component.kind === "mcp"
+        && paired.admission.status === "admitted"
+        && paired.component.metadata.transport === transport;
     if (
       entry?.admission.status !== "admitted"
       || selected?.admission.status !== "admitted"
       || (selected.component.kind !== "app" && selected.component.kind !== "mcp")
-      || selected.component.metadata.digest !== assembly.binding.componentDigest
+      || selected.component.metadata.bindingDigest !== assembly.binding.componentDigest
+      || !bindingCompatible
     ) fail();
     componentIds.add(assembly.componentId);
     bindingIds.add(assembly.binding.id);
@@ -327,7 +355,7 @@ function resolveComponent(
     const binding = providerBinding(installation, component.id);
     if (
       binding === undefined
-      || binding.componentDigest !== component.metadata.digest
+      || binding.componentDigest !== component.metadata.bindingDigest
       || resolveProviderIntrinsic(registry, binding) !== "available"
     ) reason = "provider_unavailable";
   }

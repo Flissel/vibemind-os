@@ -3,6 +3,7 @@ import { lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from
 import { basename, dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import type {
+  CatalogBoundPluginComponent,
   CatalogComponentAdmission,
   CatalogInventory,
   PluginCatalogEntry,
@@ -102,6 +103,37 @@ function catalogDigest(payload: Omit<PluginCatalogLock, "catalogDigest">): strin
   return createHash("sha256").update(canonicalJson(payload)).digest("hex");
 }
 
+export type ComponentBindingProvenance = Readonly<Pick<SourceProvenance,
+  "pluginName" | "pluginVersion" | "sourceCommit" | "manifestDigest" | "treeDigest"
+>>;
+
+export function componentBindingDigest(
+  provenance: ComponentBindingProvenance,
+  component: NormalizedPluginComponent,
+): string {
+  const contentDigest = component.metadata.digest;
+  if (
+    typeof contentDigest !== "string" || !/^[a-f0-9]{64}$/.test(contentDigest)
+    || !/^[a-f0-9]{40}$/.test(provenance.sourceCommit)
+    || !/^[a-f0-9]{64}$/.test(provenance.manifestDigest)
+    || !/^[a-f0-9]{64}$/.test(provenance.treeDigest)
+    || provenance.pluginName.length === 0 || provenance.pluginName.length > 128
+    || provenance.pluginVersion.length === 0 || provenance.pluginVersion.length > 128
+    || component.id.length === 0 || component.id.length > 512
+  ) throw new Error("digest_mismatch:component_binding");
+  return createHash("sha256").update(canonicalJson({
+    version: "rowboat-component-binding-v1",
+    pluginName: provenance.pluginName,
+    pluginVersion: provenance.pluginVersion,
+    sourceCommit: provenance.sourceCommit,
+    manifestDigest: provenance.manifestDigest,
+    treeDigest: provenance.treeDigest,
+    componentKind: component.kind,
+    componentId: component.id,
+    contentDigest,
+  })).digest("hex");
+}
+
 function capabilityFor(
   component: NormalizedPluginComponent,
   manifest: PluginManifest,
@@ -117,15 +149,28 @@ function componentAdmissions(
   manifest: PluginManifest,
   components: readonly NormalizedPluginComponent[],
   policy: PluginPolicy,
+  provenance: SourceProvenance,
 ): readonly CatalogComponentAdmission[] {
-  return components.map((component) => ({
-    component,
-    admission: evaluateComponentAdmission(
-      manifest.license,
-      { kind: capabilityFor(component, manifest) },
-      policy,
-    ),
-  }));
+  const ids = new Set<string>();
+  const bindingDigests = new Set<string>();
+  return components.map((component) => {
+    const bindingDigest = componentBindingDigest(provenance, component);
+    if (ids.has(component.id) || bindingDigests.has(bindingDigest)) throw new Error("digest_mismatch:component_binding");
+    ids.add(component.id);
+    bindingDigests.add(bindingDigest);
+    const boundComponent: CatalogBoundPluginComponent = {
+      ...component,
+      metadata: { ...component.metadata, digest: String(component.metadata.digest), bindingDigest },
+    };
+    return {
+      component: boundComponent,
+      admission: evaluateComponentAdmission(
+        manifest.license,
+        { kind: capabilityFor(component, manifest) },
+        policy,
+      ),
+    };
+  });
 }
 
 function emptyInventory(): CatalogInventory {
@@ -248,7 +293,7 @@ export async function importCatalog(
       licenseDeclaration: manifest.license ?? "<missing>",
       ...provenance,
       admission,
-      components: componentAdmissions(manifest, normalized.components, policy),
+      components: componentAdmissions(manifest, normalized.components, policy, provenance),
       ...(admission.status === "admitted" ? { storedContentDigest: snapshot.digest } : {}),
     };
     entries.push(entry);

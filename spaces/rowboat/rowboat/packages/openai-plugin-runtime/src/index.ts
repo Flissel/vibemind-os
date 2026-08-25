@@ -75,19 +75,23 @@ export {
   PINNED_OPENAI_PLUGIN_COUNT,
   PINNED_OPENAI_PLUGINS_COMMIT,
   PLUGIN_SCHEMA_VERSION,
+  type CatalogBoundPluginComponent,
   type CatalogComponentAdmission,
+  type CatalogComponentMetadata,
   type CatalogInventory,
   type PluginCatalogEntry,
   type PluginCatalogLock,
 } from "./domain/catalog.js";
 export {
   importCatalog,
+  componentBindingDigest,
   parseCatalogSyncArgs,
   assertCatalogOutputContained,
   writeCatalogLock,
   type CatalogImportOptions,
   type CatalogLockWriteOptions,
   type CatalogSyncArgs,
+  type ComponentBindingProvenance,
 } from "./import/catalog-importer.js";
 export {
   normalizeSkill,

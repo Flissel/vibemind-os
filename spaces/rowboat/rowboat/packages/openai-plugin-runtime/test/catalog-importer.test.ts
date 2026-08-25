@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   OPENAI_PLUGINS_SOURCE_URL,
+  componentBindingDigest,
   importCatalog,
   parseCatalogSyncArgs,
   writeCatalogLock,
@@ -17,6 +18,43 @@ import { resolveCatalogSyncPaths } from "../scripts/sync-catalog.js";
 
 const execFileAsync = promisify(execFile);
 const FIXED_TIME = "2026-08-24T00:00:00.000Z";
+
+describe("structural component binding digest", () => {
+  const provenance = {
+    pluginName: "brand24",
+    pluginVersion: "1.0.0",
+    sourceCommit: "1".repeat(40),
+    manifestDigest: "2".repeat(64),
+    treeDigest: "3".repeat(64),
+  };
+  const component = {
+    id: "asset:assets/logo.png",
+    name: "logo.png",
+    kind: "asset" as const,
+    status: "available" as const,
+    metadata: { digest: "4".repeat(64), path: "assets/logo.png" },
+  };
+
+  it("is deterministic across insertion order and changes for every structural identity input", () => {
+    const first = componentBindingDigest(provenance, component);
+    const reordered = componentBindingDigest(
+      { treeDigest: provenance.treeDigest, manifestDigest: provenance.manifestDigest, sourceCommit: provenance.sourceCommit, pluginVersion: provenance.pluginVersion, pluginName: provenance.pluginName },
+      { metadata: { path: "assets/logo.png", digest: "4".repeat(64) }, status: "available", kind: "asset", name: "logo.png", id: "asset:assets/logo.png" },
+    );
+    expect(first).toMatch(/^[a-f0-9]{64}$/);
+    expect(reordered).toBe(first);
+    for (const changed of [
+      componentBindingDigest({ ...provenance, pluginName: "dovetail" }, component),
+      componentBindingDigest({ ...provenance, pluginVersion: "2.0.0" }, component),
+      componentBindingDigest({ ...provenance, sourceCommit: "5".repeat(40) }, component),
+      componentBindingDigest({ ...provenance, manifestDigest: "6".repeat(64) }, component),
+      componentBindingDigest({ ...provenance, treeDigest: "7".repeat(64) }, component),
+      componentBindingDigest(provenance, { ...component, id: "asset:assets/logo-dark.png" }),
+      componentBindingDigest(provenance, { ...component, kind: "app" }),
+      componentBindingDigest(provenance, { ...component, metadata: { ...component.metadata, digest: "8".repeat(64) } }),
+    ]) expect(changed).not.toBe(first);
+  });
+});
 
 interface FixturePlugin {
   readonly directoryName: string;
