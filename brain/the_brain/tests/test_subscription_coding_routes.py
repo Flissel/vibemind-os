@@ -217,6 +217,81 @@ def test_actual_router_handles_provider_modifiers_without_cross_provider_fallbac
     assert actual == expected
 
 
+def test_actual_router_accepts_postfix_and_multiline_anthropic_selectors():
+    router = CapabilityRouter(CAPABILITIES_PATH)
+
+    for phrase in (
+        "fix app.py with Claude",
+        "fix app.py using Claude",
+        "fix app.py via Claude",
+        "fix app.py through Claude",
+        "refactor app.py through Anthropic",
+        "use Claude.\nFix app.py.",
+    ):
+        match = router.route(phrase)
+        assert match is not None, phrase
+        assert match.capability == "coding_task_anthropic", phrase
+
+
+def test_actual_router_blocks_unaccepted_provider_mentions_fail_closed():
+    router = CapabilityRouter(CAPABILITIES_PATH)
+
+    for phrase in (
+        "without OpenAI, fix app.py",
+        "use neither Claude nor OpenAI to fix app.py",
+        "avoid Claude; fix app.py",
+        "fix app.py with any provider except Anthropic",
+        "do not use Claude nor OpenAI to fix app.py",
+        "Claude is unavailable; fix app.py",
+    ):
+        match = router.route(phrase)
+        assert match is None or match.capability not in {
+            "coding_task",
+            "coding_task_anthropic",
+        }, phrase
+
+
+def test_semantic_routing_applies_the_same_provider_filter(tmp_path: Path):
+    registry_path = tmp_path / "semantic_provider_routes.yaml"
+    registry_path.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "capability": "semantic_anthropic",
+                    "description": "Anthropic semantic target",
+                    "coding_provider": "anthropic",
+                    "match_patterns": ["(?!)"],
+                },
+                {
+                    "capability": "semantic_openai",
+                    "description": "OpenAI semantic target",
+                    "coding_provider": "openai",
+                    "match_patterns": ["(?!)"],
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _Embedder:
+        def embed(self, text: str) -> list[float]:
+            if text == "Anthropic semantic target":
+                return [0.8, 0.6]
+            return [1.0, 0.0]
+
+    router = CapabilityRouter(registry_path)
+    router.set_embedder(_Embedder())
+    router._embedding_thread.join(timeout=2)
+    assert not router._embedding_thread.is_alive()
+
+    match = router.route("fix app.py through Claude")
+    assert match is not None
+    assert match.capability == "semantic_anthropic"
+    assert match.match_method == "semantic"
+
+    assert router.route("fix app.py without Claude") is None
+
+
 def test_actual_router_accepts_extensionless_anthropic_coding_operations():
     router = CapabilityRouter(CAPABILITIES_PATH)
 
@@ -276,6 +351,10 @@ def test_explicit_anthropic_domain_defects_do_not_route_coding_without_code_cont
         "use Claude to fix the employment contract issue",
         "ask Anthropic to write an app store description",
         "Claude, fix the car bug",
+        "use Claude to write a movie script",
+        "ask Anthropic to create a yoga class",
+        "Claude, edit the employee job function",
+        "have Claude create a training module",
     ):
         match = router.route(phrase)
         assert match is None or match.capability not in {

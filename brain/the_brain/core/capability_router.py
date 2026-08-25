@@ -53,11 +53,19 @@ _PROVIDER_SELECTION = re.compile(
     r"\b(?:use|ask|have)\s+(?:the\s+)?(?:(?:only|both|either)\s+)?"
     r"(?:claude|anthropic|openai)"
     r"(?:\s+(?:model|agent))?\b|"
+    r"\b(?:with|using|via|through)\s+(?:the\s+)?(?:claude|anthropic|openai)"
+    r"(?:\s+(?:model|agent))?\b|"
+    r"\b(?:without|avoid(?:ing)?|except(?:\s+for)?|neither|nor|not)\s+"
+    r"(?:using\s+)?(?:claude|anthropic|openai)\b|"
     r"\bmit\s+(?:claude|anthropic|openai)\b|"
     r"\b(?:claude(?:\s+code)?|anthropic|openai)\s+verwenden\b|"
     r"\b(?:claude|anthropic|openai)\s*[,;:]|"
     r"\b(?:and|or|und|oder)\s+(?:claude|anthropic|openai)\b|"
     r"\bdefault\s+provider\b",
+    re.IGNORECASE,
+)
+_PROVIDER_MENTION = re.compile(
+    r"\b(?:claude(?:\s+code)?|anthropic|openai)\b",
     re.IGNORECASE,
 )
 _NEGATION_SUFFIX = re.compile(
@@ -80,15 +88,30 @@ def _coding_provider_intent(intent: str) -> _CodingProviderIntent:
             else _CodingProviderIntent.ANTHROPIC
         )
         prefix = intent[max(0, match.start() - 32) : match.start()]
-        coordinated = re.match(r"(?:and|or|und|oder)\b", token) is not None
-        is_rejected = previous_was_rejected if coordinated else bool(
-            _NEGATION_SUFFIX.search(prefix)
+        coordinated = re.match(r"(?:and|or|und|oder|nor)\b", token) is not None
+        explicitly_rejected = re.match(
+            r"(?:without|avoid(?:ing)?|except(?:\s+for)?|neither|nor|not)\b",
+            token,
+        ) is not None
+        is_rejected = explicitly_rejected or (
+            previous_was_rejected
+            if coordinated
+            else bool(_NEGATION_SUFFIX.search(prefix))
         )
         if is_rejected:
             rejected.add(provider)
         else:
             selected.add(provider)
         previous_was_rejected = is_rejected
+
+    mentioned = {
+        _CodingProviderIntent.OPENAI
+        if "openai" in match.group(0).casefold()
+        else _CodingProviderIntent.ANTHROPIC
+        for match in _PROVIDER_MENTION.finditer(intent)
+    }
+    if not mentioned.issubset(selected | rejected):
+        return _CodingProviderIntent.BLOCKED
 
     if not selected:
         return _CodingProviderIntent.BLOCKED if rejected else _CodingProviderIntent.OPENAI
@@ -421,14 +444,15 @@ class CapabilityRouter:
             self._stats["no_match"] += 1
             return None
 
-        coding_provider = _coding_provider_intent(intent)
+        normalized_intent = re.sub(r"\s+", " ", intent).strip()
+        coding_provider = _coding_provider_intent(normalized_intent)
 
         # Phase 1 — regex (fast, deterministic)
         for cap in self._capabilities:
             if not self._provider_allows(cap, coding_provider):
                 continue
             for pat in cap.patterns:
-                if pat.search(intent):
+                if pat.search(normalized_intent):
                     self._stats["matches"] += 1
                     self._stats["regex_matches"] += 1
                     return CapabilityMatch(
@@ -446,7 +470,7 @@ class CapabilityRouter:
                     )
 
         # Phase 2 — semantic fallback (only when an embedder is wired)
-        sem_match = self._semantic_route(intent, coding_provider)
+        sem_match = self._semantic_route(normalized_intent, coding_provider)
         if sem_match is not None:
             return sem_match
 
