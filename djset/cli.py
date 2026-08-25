@@ -12,6 +12,7 @@ from djset.agents.designer import design
 from djset.agents.profiler import build_profile
 from djset.agents.prompt_writer import render_markdown, write_prompts
 from djset.analysis import analyse_all
+from djset.capture import CaptureFailed, import_folder, list_input_devices, record
 from djset.contracts import CritiqueLog, CritiqueRound, MixPlan, Profile, Setlist
 from djset.critic import Critique, critique
 from djset.qa import check_set
@@ -19,7 +20,7 @@ from djset.render.engine import ImpossibleMixPlan, render
 from djset.render.stretch import RenderToolMissing, UnsupportedSampleRate
 from djset.render.tracklist import render_tracklist
 from djset.report import correction_gain_db, render_qa_report
-from djset.run import FINISHED_MARKER, Run, RunNotFound
+from djset.run import FINISHED_MARKER, Run, RunNotFound, slugify
 from djset.watch import NotEnoughMaterial, check_enough, check_sample_rate, scan
 
 WATCH_DIRNAME = "watch"
@@ -283,6 +284,91 @@ def cmd_build(
     return 0
 
 
+def cmd_record(
+    base: Path,
+    device: str | None,
+    seconds: float | None,
+    name: str | None,
+    list_devices: bool,
+) -> int:
+    """Nimmt vom benannten Eingabegeraet auf und legt das Ergebnis in watch/ ab.
+
+    `--list-devices` listet die Geraete und beendet sich, unabhaengig davon,
+    ob --device nebenbei mitgegeben wurde - wer explizit auflisten will,
+    meint das eindeutig, statt in einen echten Aufnahmeversuch zu fallen.
+    """
+    if list_devices:
+        try:
+            devices = list_input_devices()
+        except RenderToolMissing as error:
+            print(f"Fehler: {error}", file=sys.stderr)
+            return 1
+        if not devices:
+            print("Keine Audio-Eingabegeraete gefunden.")
+        else:
+            print("Verfuegbare Audio-Eingabegeraete:")
+            for device_name in devices:
+                print(f"  - {device_name}")
+        return 0
+
+    if device is None:
+        print(
+            "Fehler: --device ist erforderlich (oder --list-devices ohne --device).",
+            file=sys.stderr,
+        )
+        return 1
+    if seconds is None or seconds <= 0:
+        print(
+            f"Fehler: --seconds muss positiv sein, war {seconds}.", file=sys.stderr
+        )
+        return 1
+
+    watch = base / WATCH_DIRNAME
+    base_filename = slugify(name) if name else slugify(device)
+    if not base_filename:
+        base_filename = "aufnahme"
+
+    # Wie import_folder()s Kollisionsschema (djset/capture.py), nur gegen die
+    # Platte statt gegen eine In-Memory-Menge geprueft: zwei Aufnahmen ohne
+    # --name, mit demselben --name oder vom selben Geraet duerfen die vorige
+    # Aufnahme nicht kommentarlos ueberschreiben (ffmpeg laeuft mit -y) - Aux-
+    # Material laesst sich anders als ein Suno-Prompt nicht neu generieren.
+    filename = base_filename
+    counter = 2
+    while (watch / f"{filename}.wav").exists():
+        filename = f"{base_filename}-{counter}"
+        counter += 1
+    target = watch / f"{filename}.wav"
+
+    try:
+        record(device, target, seconds)
+    except (RenderToolMissing, CaptureFailed) as error:
+        print(f"Fehler: {error}", file=sys.stderr)
+        return 1
+
+    print(f"Aufnahme geschrieben: {target}")
+    return 0
+
+
+def cmd_import(base: Path, source: Path) -> int:
+    """Wandelt jede Audiodatei aus `source` in watch/ um."""
+    watch = base / WATCH_DIRNAME
+    try:
+        written = import_folder(source, watch)
+    except (RenderToolMissing, CaptureFailed) as error:
+        print(f"Fehler: {error}", file=sys.stderr)
+        return 1
+
+    if not written:
+        print(f"Keine Audiodateien in {source} gefunden.")
+        return 0
+
+    print(f"{len(written)} Datei(en) nach {watch} uebertragen:")
+    for path in written:
+        print(f"  - {path}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="dj-set")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -299,6 +385,37 @@ def main(argv: list[str] | None = None) -> int:
     # und der Nutzer bekommt "kein unfertiger Lauf gefunden", ohne zu erfahren,
     # dass er nur woanders gesucht hat.
     build.add_argument("--base", type=Path, default=Path("."), help="Projektwurzel")
+
+    record_parser = subparsers.add_parser(
+        "record", help="Vom Leitungs-/Aux-Eingang in watch/ aufnehmen"
+    )
+    record_parser.add_argument(
+        "--device", default=None, help="Name des Eingabegeraets"
+    )
+    record_parser.add_argument(
+        "--seconds", type=float, default=None, help="Aufnahmelaenge in Sekunden"
+    )
+    record_parser.add_argument(
+        "--name", default=None, help="Dateiname in watch/ (ohne Endung)"
+    )
+    record_parser.add_argument(
+        "--base", type=Path, default=Path("."), help="Projektwurzel"
+    )
+    record_parser.add_argument(
+        "--list-devices",
+        action="store_true",
+        help="Eingabegeraete auflisten und beenden",
+    )
+
+    import_parser = subparsers.add_parser(
+        "import", help="Vorhandenes Audiomaterial in watch/ uebernehmen"
+    )
+    import_parser.add_argument(
+        "source", type=Path, help="Ordner mit vorhandenem Audiomaterial"
+    )
+    import_parser.add_argument(
+        "--base", type=Path, default=Path("."), help="Projektwurzel"
+    )
 
     args = parser.parse_args(argv)
     if args.command == "plan":
@@ -322,6 +439,16 @@ def main(argv: list[str] | None = None) -> int:
                 max_seconds=BUILD_BUDGET_SECONDS,
             ),
         )
+    if args.command == "record":
+        return cmd_record(
+            base=args.base,
+            device=args.device,
+            seconds=args.seconds,
+            name=args.name,
+            list_devices=args.list_devices,
+        )
+    if args.command == "import":
+        return cmd_import(base=args.base, source=args.source)
     return 1
 
 
