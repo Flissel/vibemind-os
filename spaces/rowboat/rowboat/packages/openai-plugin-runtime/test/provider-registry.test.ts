@@ -229,6 +229,25 @@ describe("ProviderRegistry", () => {
       reason: "provider_unavailable",
     });
   });
+
+  it.each([
+    { label: "numeric object", value: { 0: DIGEST_A, 1: DIGEST_B } },
+    { label: "array-like object", value: { 0: DIGEST_A, 1: DIGEST_B, length: 2 } },
+  ])("rejects a non-array paired-digest $label", ({ value }) => {
+    const malformed = {
+      ...binding("binding.array-like"),
+      pairedComponentDigests: value,
+    } as unknown as ProviderBinding;
+    const registry = new ProviderRegistry();
+
+    expect(() => assertBinding(malformed)).toThrow(/provider_invalid/);
+    expect(() => registry.register(malformed, createProvider("native.search").provider))
+      .toThrow(/provider_invalid/);
+    expect(registry.resolve(malformed)).toEqual({
+      status: "unavailable",
+      reason: "provider_unavailable",
+    });
+  });
 });
 
 describe("component provider normalizers", () => {
