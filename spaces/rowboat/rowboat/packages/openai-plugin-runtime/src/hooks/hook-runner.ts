@@ -30,6 +30,7 @@ const MAX_TIMEOUT_MS = 300_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const CLEANUP_SETTLE_MS = 25;
 const PROCESS_CLEANUP_GRACE_MS = 1_000;
+const INTRINSIC_PROMISE_THEN = Promise.prototype.then;
 
 export interface HookCommand {
   readonly event: "PostToolUse" | "Stop";
@@ -258,7 +259,14 @@ function createCapturedTerminator(
     && Object.getPrototypeOf(completionDescriptor.value) === Promise.prototype
     ? completionDescriptor.value as Promise<unknown>
     : undefined;
-  const settled = completion?.then(() => true, () => true);
+  let settled: Promise<boolean> | undefined;
+  if (completion !== undefined) {
+    try {
+      settled = Reflect.apply(INTRINSIC_PROMISE_THEN, completion, [() => true, () => true]) as Promise<boolean>;
+    } catch {
+      settled = undefined;
+    }
+  }
   let termination: Promise<void> | undefined;
   return (): Promise<void> => {
     termination ??= (async (): Promise<void> => {
@@ -266,6 +274,11 @@ function createCapturedTerminator(
       try {
         kill("SIGTERM");
       } catch {
+        try {
+          kill("SIGKILL");
+        } catch {
+          return;
+        }
         return;
       }
       if (settled !== undefined) {
@@ -284,6 +297,15 @@ function createCapturedTerminator(
   };
 }
 
+function observeCompletionPromise(completion: Promise<SpawnCompletion>): Promise<SpawnCompletion> {
+  const observed = Reflect.apply(INTRINSIC_PROMISE_THEN, completion, [
+    (value: SpawnCompletion) => value,
+    (error: unknown) => { throw error; },
+  ]) as Promise<SpawnCompletion>;
+  void Reflect.apply(INTRINSIC_PROMISE_THEN, observed, [undefined, () => undefined]);
+  return observed;
+}
+
 function inspectSpawnedProcess(source: unknown): Readonly<{
   readonly descriptors: PropertyDescriptorMap;
   readonly terminate: () => Promise<void>;
@@ -292,14 +314,17 @@ function inspectSpawnedProcess(source: unknown): Readonly<{
     typeof source !== "object"
     || source === null
     || nodeTypes.isProxy(source)
-    || Object.getPrototypeOf(source) !== Object.prototype
   ) {
     throw new SpawnedProcessInvalidError(async () => undefined);
   }
   const descriptors = Object.getOwnPropertyDescriptors(source);
+  const terminate = createCapturedTerminator(source, descriptors);
+  if (Object.getPrototypeOf(source) !== Object.prototype) {
+    throw new SpawnedProcessInvalidError(terminate);
+  }
   return Object.freeze({
     descriptors,
-    terminate: createCapturedTerminator(source, descriptors),
+    terminate,
   });
 }
 
@@ -328,10 +353,16 @@ function captureSpawnedProcess(source: unknown): CapturedSpawnedProcess {
   ) {
     throw new SpawnedProcessInvalidError(terminate);
   }
+  let observedCompletion: Promise<SpawnCompletion>;
+  try {
+    observedCompletion = observeCompletionPromise(completion.value as Promise<SpawnCompletion>);
+  } catch {
+    throw new SpawnedProcessInvalidError(terminate);
+  }
   return Object.freeze({
     stdout: stdout.value as AsyncIterable<Uint8Array | string>,
     stderr: stderr.value as AsyncIterable<Uint8Array | string>,
-    completion: completion.value as Promise<SpawnCompletion>,
+    completion: observedCompletion,
     terminate,
   });
 }

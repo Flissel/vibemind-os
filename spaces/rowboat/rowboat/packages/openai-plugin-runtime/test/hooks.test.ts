@@ -318,6 +318,93 @@ describe("policy-controlled hook execution", () => {
     expect(JSON.stringify(receipt)).not.toContain("stream-secret");
   });
 
+  it("does not invoke an own throwing then accessor while terminating an immediate child", async () => {
+    let thenReads = 0;
+    let kills = 0;
+    const completion = new Promise<{ readonly exitCode: number | null; readonly signal: string | null }>(() => undefined);
+    Object.defineProperty(completion, "then", {
+      configurable: true,
+      get: () => { thenReads += 1; throw new Error("then-secret"); },
+    });
+    const child = processResult({ completion, onKill: () => { kills += 1; } });
+    const { runner } = await fixture(new RecordingSpawner(child));
+    const started = Date.now();
+    const receipt = await runner.run(successEvent);
+    expect(receipt.status).toBe("timed_out");
+    expect(thenReads).toBe(0);
+    expect(kills).toBeGreaterThan(0);
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(JSON.stringify(receipt)).not.toContain("then-secret");
+  });
+
+  it("does not invoke an own throwing then accessor while terminating a late child", async () => {
+    let resolveSpawn!: (process: SpawnedProcess) => void;
+    const spawn = new Promise<SpawnedProcess>((resolve) => { resolveSpawn = resolve; });
+    let thenReads = 0;
+    let kills = 0;
+    const completion = new Promise<{ readonly exitCode: number | null; readonly signal: string | null }>(() => undefined);
+    Object.defineProperty(completion, "then", {
+      configurable: true,
+      get: () => { thenReads += 1; throw new Error("late-then-secret"); },
+    });
+    const child = processResult({ completion, onKill: () => { kills += 1; } });
+    const { runner } = await fixture(new RecordingSpawner(spawn), { timeoutMilliseconds: 800 });
+    expect((await runner.run(successEvent)).status).toBe("timed_out");
+    resolveSpawn(child);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(thenReads).toBe(0);
+    expect(kills).toBeGreaterThan(0);
+  });
+
+  it("best-effort terminates a rejected class child through its own data kill capability", async () => {
+    let kills = 0;
+    class NonPlainChild {
+      readonly stdout = emptyStream();
+      readonly stderr = emptyStream();
+      readonly completion = new Promise<never>(() => undefined);
+      readonly kill = (): void => { kills += 1; };
+    }
+    const { runner } = await fixture(new RecordingSpawner(new NonPlainChild() as unknown as SpawnedProcess));
+    const receipt = await runner.run(successEvent);
+    expect(receipt.status).toBe("failed");
+    expect(kills).toBeGreaterThan(0);
+  });
+
+  it("best-effort terminates when an exact-prototype completion lacks Promise internal slots", async () => {
+    let kills = 0;
+    const fakeCompletion = Object.create(Promise.prototype) as Promise<never>;
+    const child = Object.freeze({
+      stdout: emptyStream(),
+      stderr: emptyStream(),
+      completion: fakeCompletion,
+      kill: (): void => { kills += 1; },
+    });
+    const { runner } = await fixture(new RecordingSpawner(child));
+    const receipt = await runner.run(successEvent);
+    expect(receipt.status).toBe("failed");
+    expect(kills).toBeGreaterThan(0);
+  });
+
+  it("falls back to SIGKILL exactly once when SIGTERM throws", async () => {
+    const signals: string[] = [];
+    const child = Object.create(Object.prototype) as Record<string, unknown>;
+    Object.defineProperties(child, {
+      stdout: { enumerable: true, get: () => { throw new Error("invalid-stream"); } },
+      stderr: { enumerable: true, value: emptyStream() },
+      completion: { enumerable: true, value: new Promise(() => undefined) },
+      kill: { enumerable: true, value: (signal: string) => {
+        signals.push(signal);
+        if (signal === "SIGTERM") throw new Error("term-secret");
+      } },
+    });
+    const { runner } = await fixture(new RecordingSpawner(child as unknown as SpawnedProcess));
+    const started = Date.now();
+    const receipt = await runner.run(successEvent);
+    expect(receipt.status).toBe("failed");
+    expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
   it("times out promptly and terminates a process that resolves after the deadline", async () => {
     let resolveSpawn!: (process: SpawnedProcess) => void;
     const lateSpawn = new Promise<SpawnedProcess>((resolve) => { resolveSpawn = resolve; });
@@ -342,7 +429,7 @@ describe("policy-controlled hook execution", () => {
     const { runner } = await fixture(new RecordingSpawner(spawned), { timeoutMilliseconds: 800 });
     const receipt = await runner.run(Object.freeze({ ...successEvent, parentOutcome: "failed" }));
     expect(receipt).toEqual({ event: "post_tool_use", matcher: "Write|Edit", status: "timed_out", parentOutcome: "failed" });
-    expect(killCalls).toBe(1);
+    expect(killCalls).toBe(2);
   });
 
   it("bounds output and exposes only a digest in a secret-free receipt", async () => {
