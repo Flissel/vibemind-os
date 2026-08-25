@@ -1,6 +1,6 @@
 # Laura-Oberfläche im VibeMind Video Space — Live-Beleg mit Nicht-Claims
 
-**Zeitpunkt:** `2026-08-25T13:05:12.675+02:00`
+**Zeitpunkt:** `2026-08-25T13:10:25.393+02:00`
 
 Der reale Electron-Pfad wurde automatisiert geprüft. Das Gate belegt die eingebettete
 Laura-Oberfläche, die authentifizierte Local-API-Verbindung, ein Detach/Reattach derselben
@@ -14,9 +14,9 @@ verändert und keine Ersatzdaten erzeugt.
 
 | Komponente | Commit |
 |---|---|
-| `vibemind-os` vor diesem Follow-up-Commit | `64a898fd0b23b1e90eeb40fd4a93706a626c8be0` |
+| `vibemind-os` vor diesem Follow-up-Commit | `caa4ab57df63c09cdbabf84046133b5fed5594b0` |
 | `spaces/video/laura` | `e5e005cbc025363cd617ae1b5cf6ac9684e8ad03` |
-| `voice` | `6c54a8a923682f012a62454a84d12b6f473d1db6` |
+| `voice` | `3224436830c0765299fb33f884508f5d18567ee9` |
 | `voice` beim vollständigen API/UI-Live-Runner | `7c6096d766ad17119550eca3446b70044e11a62b` |
 
 `npm --prefix voice/electron-app run video:build` baute den realen Laura-Renderer frisch
@@ -133,13 +133,21 @@ Lauf ohne Retry
 npm --prefix voice/electron-app run test:e2e -- --grep "video space embeds" --retries=0
 ```
 
-endete mit Exitcode 0 und `1 passed (50.5s)`. Die Logs enthielten die Marker
+endete mit Exitcode 0 und `1 passed (28.6s)`. Die Logs enthielten die Marker
 `FAST_STARTUP active — external startup side effects disabled`,
 `Laura host and VideoManager initialized`, `Loading Laura renderer`, `Laura renderer loaded`
 und `Video shown`. Sie enthielten keinen der geprüften Startmarker für Python, Brain,
 OpenFang, Supabase, Brain-Bridge, n8n, MiroFish oder Rowboat. Der Prozess beendete sich ohne
-firstWindow- oder Teardown-Timeout. Mit 50,5 Sekunden war der Lauf trotzdem langsam; daraus
-wird keine allgemeine Beseitigung aller Startup-Flakes abgeleitet.
+firstWindow- oder Teardown-Timeout.
+
+Die Beweisquellen sind getrennt: Der Unit-Test injiziert Callbacks in die Policy und belegt,
+dass FAST keinen davon ausführt, während Normalmodus sie geordnet ausführt. Ein separater
+Audit-Counter markiert nur den tatsächlichen Eintritt in die Normalmodus-Dockerphase und
+emittiert nach Laura-Initialisierung den secret-freien Marker
+`NORMAL_STARTUP Docker bootstrap entered: stale-container cleanup and media Docker`. Der
+echte FAST-E2E belegt dessen Abwesenheit im sicher erfassten späten Logfenster. Vor sämtlichen
+Forbidden-Vergleichen entfernt die gemeinsame Prüfung ANSI/VT-Sequenzen; der Regressionstest
+erkennt ausdrücklich auch `[OpenFang]\x1b[0m Starting daemon` als verbotenen Startmarker.
 
 ## Nicht-Claims
 
@@ -161,11 +169,11 @@ zurück ist ebenfalls nicht belegt.
   begrenzten Lauf). Der Runner verwendet für diese State-Probe direkt `hideVideo()` und
   `showVideo()`; daraus wird kein echter Space-Wechsel abgeleitet.
 - PASS am aktuellen Voice-Commit: `npm --prefix voice/electron-app run test:unit`
-  (53/53 Tests).
+  (55/55 Tests).
 - PASS: `pnpm --dir spaces/video/laura/apps/desktop typecheck` (Exitcode 0).
 - PASS am aktuellen Voice-Commit:
   `npm --prefix voice/electron-app run test:e2e -- --grep "video space embeds" --retries=0`
-  (Exitcode 0, `1 passed (50.5s)`). Beim früheren Teardown-Befund hatten die Assertions bereits
+  (Exitcode 0, `1 passed (28.6s)`). Beim früheren Teardown-Befund hatten die Assertions bereits
   bestanden; der gemeldete Testfehler war ausschließlich der Teardown-Timeout. Die
   Lifecycle-Instrumentierung lokalisierte ihn auf `VideoManager.destroy()`:
   `BrowserView.webContents.close()` blockierte während `will-quit`. Der eng begrenzte Fix
