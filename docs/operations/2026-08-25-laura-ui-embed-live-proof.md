@@ -1,6 +1,8 @@
 # Laura-Oberfläche im VibeMind Video Space — Live-Beleg mit Nicht-Claims
 
-**Zeitpunkt:** `2026-08-25T13:22:50.447+02:00`
+**Evidenzstand:** `2026-08-25T13:47:42+02:00` — Abschluss dieses finalen
+Dokumentabgleichs nach Voice `ded630b`, dem erfolgreichen E2E und dem erfolgreichen
+API/UI-Live-Proof.
 
 Der reale Electron-Pfad wurde automatisiert geprüft. Das Gate belegt die eingebettete
 Laura-Oberfläche, die authentifizierte Local-API-Verbindung, ein Detach/Reattach derselben
@@ -39,7 +41,8 @@ npm --prefix voice/electron-app run video:build
 npm --prefix voice/electron-app run laura:live-proof
 ```
 
-Der Runner ruft intern exakt `uv run --directory services/local-api laura-api` auf. Die
+Der Runner setzt seinen Prozess-cwd auf `spaces/video/laura` und ruft dort intern exakt
+`uv run --directory services/local-api laura-api` auf. Die
 API-Ergebnisfelder des erfolgreichen Laufs waren `apiHealthStatus=200`,
 `apiAuthorizedProjectsStatus=200`, `apiAuthorizedProjectCount=0` und
 `apiUnauthorizedProjectsStatus=401`. Tokenwert und konkrete Workspace-Pfade gehören nicht
@@ -135,7 +138,15 @@ Der instrumentierte E2E erfasste Main-stdout/stderr begrenzt im Speicher. Der ko
 Lauf ohne Retry
 
 ```powershell
-npx playwright test e2e/space-navigation.spec.ts --grep "video space embeds the Laura renderer" --retries=0 --workers=1
+Push-Location voice/electron-app
+try {
+    npx playwright test e2e/space-navigation.spec.ts --grep "video space embeds the Laura renderer" --retries=0 --workers=1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Laura embed E2E failed with exit code $LASTEXITCODE"
+    }
+} finally {
+    Pop-Location
+}
 ```
 
 endete mit Exitcode 0 und `1 passed (2.5s)` (Testdauer `2.0s`). Die Logs enthielten die Marker
@@ -180,8 +191,8 @@ zurück ist ebenfalls nicht belegt.
 - PASS am aktuellen Voice-Commit: `npm --prefix voice/electron-app run test:unit`
   (58/58 Tests).
 - PASS: `pnpm --dir spaces/video/laura/apps/desktop typecheck` (Exitcode 0).
-- PASS am aktuellen Voice-Commit:
-  `npx playwright test e2e/space-navigation.spec.ts --grep "video space embeds the Laura renderer" --retries=0 --workers=1`
+- PASS am aktuellen Voice-Commit mit dem obigen, vom Parent-Root ausführbaren
+  `Push-Location voice/electron-app`-Block
   (Exitcode 0, `1 passed (2.5s)`, Testdauer `2.0s`). Beim unmittelbar vorherigen
   Diagnosebefund waren alle Testschritte nach `3.924s` beendet; ausschließlich `app.close()`
   überschritt die gesetzte 10-Sekunden-Diagnosegrenze und anschließend den Worker-Teardown.
@@ -191,10 +202,12 @@ zurück ist ebenfalls nicht belegt.
   bestehende `will-quit`-Cleanup bleiben unverändert. Unit-Verträge belegen Callback-Reihenfolge,
   Einmaligkeit und den Nicht-Aufruf bei `FAST_STARTUP=true` allein; die E2E-Fixture belegt den
   secret-freien Pre-Quit-Marker nach regulär abgeschlossenem `app.close()`.
-- PASS: `uv run --directory services/local-api pytest tests/test_runtime_dependencies.py`
+- PASS vom Parent-Root:
+  `uv run --directory spaces/video/laura/services/local-api pytest tests/test_runtime_dependencies.py`
   (`1 passed`). RED davor: Der Basissatz deklarierten Dependencies scheiterte beim Import
   mit `ModuleNotFoundError: No module named 'numpy'`. Nach Deklaration und Lockfile-Update
-  startete `uv run --directory services/local-api laura-api` frisch und bestand die oben
+  startete `uv run --directory spaces/video/laura/services/local-api laura-api` frisch und
+  bestand die oben
   dokumentierten HTTP-200/200/401-Proben.
 
 ## Prozess-Eigentum und Aufräumen
