@@ -1,10 +1,11 @@
 # Laura-Oberfläche im VibeMind Video Space — Live-Beleg mit Nicht-Claims
 
-**Zeitpunkt:** `2026-08-25T12:36:23.790+02:00`
+**Zeitpunkt:** `2026-08-25T12:41:36.784+02:00`
 
 Der reale Electron-Pfad wurde automatisiert geprüft. Das Gate belegt die eingebettete
-Laura-Oberfläche, die authentifizierte Local-API-Verbindung, den Space-Wechsel und die
-fail-closed Gegenprobe. Es ist kein vollständiger Medien-Workflow-Beleg: Der vorgesehene
+Laura-Oberfläche, die authentifizierte Local-API-Verbindung, ein Detach/Reattach derselben
+BrowserView und die fail-closed Gegenprobe. Es ist kein vollständiger Medien-Workflow-Beleg:
+Der vorgesehene
 Workspace war auf diesem Host nicht vorhanden und die externe Laura-`.env` enthielt keinen
 nichtleeren `LAURA_TOKEN`. Deshalb wurden keine bestehenden Projektdaten gefunden oder
 verändert und keine Ersatzdaten erzeugt.
@@ -13,7 +14,7 @@ verändert und keine Ersatzdaten erzeugt.
 
 | Komponente | Commit |
 |---|---|
-| `vibemind-os` vor diesem Follow-up-Commit | `65c1edbc95ca537d93043301cb79be7bc645bd78` |
+| `vibemind-os` vor diesem Follow-up-Commit | `d49f7d48d811c248e8562007e8786fbfb71208e7` |
 | `spaces/video/laura` | `e5e005cbc025363cd617ae1b5cf6ac9684e8ad03` |
 | `voice` | `7c6096d766ad17119550eca3446b70044e11a62b` |
 
@@ -52,8 +53,9 @@ geöffnet. Beobachtet wurden:
 - der geöffnete JobCenter mit der Überschrift `Job-Zentrale`;
 - keine alte `window.vibemindVideo`-Bridge und keine Meldung `Service offline`;
 - authentifizierter API-Zugriff aus dem Laura-Renderer mit HTTP 200;
-- nach Wechsel aus dem Video Space und zurück derselbe BrowserView/WebContents, dieselbe
-  Renderer-Zeitbasis und weiterhin der zuvor gewählte NavRail-Stand `Media`.
+- nach `window.vibemind.hideVideo()` und anschließendem `showVideo()` derselbe
+  BrowserView/WebContents, dieselbe Renderer-Zeitbasis und weiterhin der zuvor gewählte
+  NavRail-Stand `Media`.
 
 Der Dateidialog-IPC wurde mit einer instrumentierten `canceled: true`-Antwort durchlaufen;
 `window.laura.pickMediaFiles()` gab die erwartete leere Liste zurück. Das belegt Bridge und
@@ -72,10 +74,11 @@ dialogCallCount=1; pickedFileCount=0;
 browserViewReused=true; rendererTimeOriginPreserved=true; navStateAfterReturn=Media
 ```
 
-Die BrowserView-/State-Gegenprobe bestand aus `window.vibemind.showVideo()`, Wechsel in
-einen anderen Space und erneutem `window.vibemind.showVideo()`; verglichen wurden die
-WebContents-ID, `performance.timeOrigin` und der aktive NavRail-Eintrag. Für den Dialog
-wurde ausschließlich die Electron-`dialog.showOpenDialog`-Antwort
+Die BrowserView-/State-Gegenprobe bestand ausschließlich aus
+`window.vibemind.showVideo()`, `window.vibemind.hideVideo()` und erneutem `showVideo()`;
+verglichen wurden die WebContents-ID, `performance.timeOrigin` und der aktive
+NavRail-Eintrag. Sie belegt Detach/Reattach, keinen Wechsel in einen anderen VibeMind Space.
+Für den Dialog wurde ausschließlich die Electron-`dialog.showOpenDialog`-Antwort
 `{ canceled: true, filePaths: [] }` instrumentiert.
 
 Nicht belegt wurden Projektwahl, Timeline, Proxy-Playback/Seek und ein
@@ -119,13 +122,16 @@ grün (`1 passed (12.0s)`).
 
 Zusätzlich ist dieses Dokument kein Beleg für eine erfolgreiche Projektwahl, eine gerenderte
 Timeline, Proxy-Playback/Seek, einen nativen Dateidialog oder HTTP 200/206 über
-`laura-media://`.
+`laura-media://`. Ein echter Wechsel vom Video Space in einen anderen VibeMind Space und
+zurück ist ebenfalls nicht belegt.
 
 ## Verifikation und Blocker
 
 - PASS: `npm --prefix voice/electron-app run video:build` (Vite-Build, 152 Module).
 - PASS: `npm --prefix voice/electron-app run laura:live-proof` (Exitcode 0; API,
-  positive UI/State/Dialog-Probe, negativer Umschlag und Cleanup in einem begrenzten Lauf).
+  positive UI/Detach/Reattach/Dialog-Probe, negativer Umschlag und Cleanup in einem
+  begrenzten Lauf). Der Runner verwendet für diese State-Probe direkt `hideVideo()` und
+  `showVideo()`; daraus wird kein echter Space-Wechsel abgeleitet.
 - PASS: `npm --prefix voice/electron-app run test:unit` (50/50 Tests).
 - PASS: `pnpm --dir spaces/video/laura/apps/desktop typecheck` (Exitcode 0).
 - PASS: `npm --prefix voice/electron-app run test:e2e -- --grep "video space embeds"`
