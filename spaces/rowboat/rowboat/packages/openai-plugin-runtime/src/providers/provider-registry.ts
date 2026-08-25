@@ -1,6 +1,7 @@
 import type {
   PluginProvider,
   ProviderBinding,
+  ProviderDescriptor,
   ProviderResolution,
 } from "./provider.js";
 
@@ -50,6 +51,20 @@ interface RegisteredProvider {
   readonly provider: PluginProvider;
 }
 
+function snapshotProvider(provider: PluginProvider, described: ProviderDescriptor): PluginProvider {
+  const descriptor = Object.freeze({
+    id: described.id,
+    kind: described.kind,
+    temporaryAdapter: described.temporaryAdapter,
+  });
+  const invoke = provider.invoke.bind(provider);
+  return Object.freeze({
+    id: provider.id,
+    describe: (): typeof descriptor => descriptor,
+    invoke,
+  });
+}
+
 export class ProviderRegistry {
   readonly #bindings = new Map<string, RegisteredProvider>();
 
@@ -71,9 +86,10 @@ export class ProviderRegistry {
     ) {
       throw new Error("provider_invalid:descriptor_mismatch");
     }
+    const facade = snapshotProvider(provider, descriptor);
     this.#bindings.set(binding.id, Object.freeze({
       signature: bindingSignature(binding),
-      provider,
+      provider: facade,
     }));
   }
 

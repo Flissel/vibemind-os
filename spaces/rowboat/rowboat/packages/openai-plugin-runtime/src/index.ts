@@ -123,6 +123,7 @@ export type {
   ProviderResult,
 } from "./providers/provider.js";
 export {
+  MAX_PROCESS_TIMEOUT_MS,
   normalizeMcpServer,
   pairAppAndMcp,
   type NormalizedHttpMcp,

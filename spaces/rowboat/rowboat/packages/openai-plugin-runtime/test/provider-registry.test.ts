@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_PROCESS_TIMEOUT_MS,
   ProviderRegistry,
   createTemporaryAdapterBindings,
   normalizeApp,
@@ -8,7 +9,6 @@ import {
   type PluginProvider,
   type ProviderBinding,
   type ProviderDescriptor,
-  type ProviderRequest,
   type ProviderResult,
 } from "../src/index.js";
 
@@ -53,10 +53,11 @@ describe("ProviderRegistry", () => {
     const registry = new ProviderRegistry();
     registry.register(binding("binding.search"), admitted.provider);
 
-    expect(registry.resolve(binding("binding.search"))).toMatchObject({
-      status: "available",
-      provider: admitted.provider,
-    });
+    const resolved = registry.resolve(binding("binding.search"));
+    expect(resolved).toMatchObject({ status: "available" });
+    if (resolved.status !== "available") throw new Error("expected available provider");
+    expect(resolved.provider).not.toBe(admitted.provider);
+    expect(resolved.provider.id).toBe("native.search");
     expect(registry.resolve({ ...binding("binding.search"), componentDigest: DIGEST_B }))
       .toEqual({ status: "unavailable", reason: "provider_unavailable" });
   });
@@ -75,19 +76,79 @@ describe("ProviderRegistry", () => {
       .toThrow("provider_invalid:provider_kind");
   });
 
-  it("freezes provider requests and results at the contract boundary", async () => {
-    const argumentsValue = Object.freeze({ query: "safe" });
-    const request: ProviderRequest = Object.freeze({
+  it("snapshots an immutable provider facade when the caller mutates the provider boundary", async () => {
+    const descriptor: { id: string; kind: ProviderDescriptor["kind"]; temporaryAdapter: boolean } = {
+      id: "native.mutable",
+      kind: "rowboat-native",
+      temporaryAdapter: false,
+    };
+    let originalCalls = 0;
+    let replacementCalls = 0;
+    const provider = {
+      id: "native.mutable",
+      describe: (): ProviderDescriptor => descriptor,
+      invoke: async (): Promise<ProviderResult> => {
+        originalCalls += 1;
+        return { status: "success", output: { source: "original" } };
+      },
+    };
+    const registry = new ProviderRegistry();
+    registry.register(binding("binding.mutable"), provider);
+
+    provider.id = "mutated.id";
+    descriptor.id = "mutated.descriptor";
+    descriptor.kind = "mcp-process";
+    descriptor.temporaryAdapter = true;
+    provider.invoke = async (): Promise<ProviderResult> => {
+      replacementCalls += 1;
+      return { status: "failed", reason: "replacement" };
+    };
+
+    const resolution = registry.resolve(binding("binding.mutable"));
+    if (resolution.status !== "available") throw new Error("expected available provider");
+    expect(Object.isFrozen(resolution.provider)).toBe(true);
+    expect(resolution.provider.id).toBe("native.mutable");
+    expect(resolution.provider.describe()).toEqual({
+      id: "native.mutable",
+      kind: "rowboat-native",
+      temporaryAdapter: false,
+    });
+    expect(Object.isFrozen(resolution.provider.describe())).toBe(true);
+    expect(await resolution.provider.invoke({
       projectId: "project-1",
       pluginName: "search",
       componentName: "search",
       capability: "read",
-      arguments: argumentsValue,
-    });
-    const provider = createProvider("native.search").provider;
+      arguments: {},
+    }, { requestId: "request-1" })).toEqual({ status: "success", output: { source: "original" } });
+    expect(originalCalls).toBe(1);
+    expect(replacementCalls).toBe(0);
+  });
 
-    expect(Object.isFrozen(request)).toBe(true);
-    expect(Object.isFrozen(await provider.invoke(request, Object.freeze({ requestId: "request-1" })))).toBe(true);
+  it("captures the admitted descriptor exactly once during registration", () => {
+    let describeCalls = 0;
+    const provider: PluginProvider = {
+      id: "native.once",
+      describe: () => {
+        describeCalls += 1;
+        return describeCalls === 1
+          ? { id: "native.once", kind: "rowboat-native", temporaryAdapter: false }
+          : { id: "native.once", kind: "openai-connector-bridge", temporaryAdapter: true };
+      },
+      invoke: async () => ({ status: "success", output: null }),
+    };
+    const registry = new ProviderRegistry();
+
+    registry.register(binding("binding.once"), provider);
+    const resolution = registry.resolve(binding("binding.once"));
+
+    if (resolution.status !== "available") throw new Error("expected available provider");
+    expect(describeCalls).toBe(1);
+    expect(resolution.provider.describe()).toEqual({
+      id: "native.once",
+      kind: "rowboat-native",
+      temporaryAdapter: false,
+    });
   });
 });
 
@@ -117,8 +178,13 @@ describe("component provider normalizers", () => {
       command: "node",
       args: ["server.js"],
       environmentReferences: ["API_TOKEN"],
-      timeoutSeconds: 15,
+      timeoutMilliseconds: 15_000,
     });
+    expect(MAX_PROCESS_TIMEOUT_MS).toBe(300_000);
+    expect(normalizeMcpServer("bounded", {
+      command: "node",
+      tool_timeout_sec: 300,
+    }, DIGEST_A)).toMatchObject({ timeoutMilliseconds: MAX_PROCESS_TIMEOUT_MS });
   });
 
   it("normalizes an app only to its exact connector ID", () => {
@@ -138,9 +204,57 @@ describe("component provider normalizers", () => {
     () => normalizeMcpServer("remote", { type: "http", url: "file:///secret" }, DIGEST_A),
     () => normalizeMcpServer("local", { command: " " }, DIGEST_A),
     () => normalizeMcpServer("local", { command: "node", env: { TOKEN: "secret" } }, DIGEST_A),
+    () => normalizeMcpServer("local", { command: "node", tool_timeout_sec: 0 }, DIGEST_A),
+    () => normalizeMcpServer("local", { command: "node", tool_timeout_sec: -1 }, DIGEST_A),
     () => normalizeMcpServer("local", { command: "node", tool_timeout_sec: Number.POSITIVE_INFINITY }, DIGEST_A),
+    () => normalizeMcpServer("local", { command: "node", tool_timeout_sec: 1.5 }, DIGEST_A),
+    () => normalizeMcpServer("local", { command: "node", tool_timeout_sec: Number.MAX_VALUE }, DIGEST_A),
+    () => normalizeMcpServer("local", { command: "node", tool_timeout_sec: Number.MAX_SAFE_INTEGER }, DIGEST_A),
+    () => normalizeMcpServer("local", { command: "node", tool_timeout_sec: 301 }, DIGEST_A),
   ])("fails closed for invalid app or MCP input", (operation) => {
     expect(operation).toThrow(/component_invalid/);
+  });
+
+  it.each([
+    "/absolute",
+    "C:\\absolute",
+    "C:drive-relative",
+    "C:..\\outside",
+    "\\\\server\\share",
+    "\\rooted",
+    "safe/../outside",
+    "safe\\..\\outside",
+  ])("rejects cross-platform process cwd escape %s", (cwd) => {
+    expect(() => normalizeMcpServer("local", { command: "node", cwd }, DIGEST_A))
+      .toThrow("component_invalid:process_cwd");
+  });
+
+  it("normalizes safe process cwd separators and dot segments", () => {
+    expect(normalizeMcpServer("local", {
+      command: "node",
+      cwd: "safe\\nested/./child",
+    }, DIGEST_A)).toMatchObject({ workingDirectory: "safe/nested/child" });
+  });
+
+  it("rejects HTTP query values without leaking literal secrets", () => {
+    const unsafeUrls = [
+      "https://example.com/mcp?api_key=super-secret-value",
+      "https://user:super-secret-value@example.com/mcp",
+      "https://example.com/mcp#super-secret-value",
+    ];
+    for (const url of unsafeUrls) {
+      const operation = (): void => {
+        normalizeMcpServer("remote", { type: "http", url }, DIGEST_A);
+      };
+      expect(operation).toThrow("component_invalid:mcp_url");
+      try {
+        operation();
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        expect(message).not.toContain("api_key");
+        expect(message).not.toContain("super-secret-value");
+      }
+    }
   });
 
   it("pairs an app and MCP only through explicit policy carrying both digests", () => {
@@ -196,6 +310,10 @@ describe("temporary adapter bindings", () => {
 
   it("represents the unavailable OpenAI connector bridge without exposing a fallback", () => {
     const registry = new ProviderRegistry();
+    expect(() => registry.register(
+      binding("openai-connector-bridge", "openai-connector-bridge"),
+      createProvider("openai-connector-bridge", "openai-connector-bridge").provider,
+    )).toThrow("provider_unavailable:openai-connector-bridge");
     expect(registry.resolve(binding("openai-connector-bridge", "openai-connector-bridge")))
       .toEqual({ status: "unavailable", reason: "provider_unavailable" });
   });
