@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { types as nodeTypes } from "node:util";
 
 import { assertDirectoryIdentity, snapshotDirectoryIdentity } from "../import/directory-identity.js";
 import { evaluateComponentAdmission } from "../policy/capability-policy.js";
@@ -15,9 +16,9 @@ import {
   captureSafeEnvironment,
   collectBoundedOutput,
   resolveSafeWorkingDirectory,
-  terminateSpawnedProcess,
   type ProcessSpawner,
   type SafeSpawnOptions,
+  type SpawnCompletion,
   type SpawnedProcess,
 } from "../process/safe-process.js";
 import { normalizeHookEvent, type HookEventType } from "./hook-event.js";
@@ -28,6 +29,7 @@ const COMMAND = /^\.\/[A-Za-z0-9][A-Za-z0-9._/-]*$/u;
 const MAX_TIMEOUT_MS = 300_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const CLEANUP_SETTLE_MS = 25;
+const PROCESS_CLEANUP_GRACE_MS = 1_000;
 
 export interface HookCommand {
   readonly event: "PostToolUse" | "Stop";
@@ -157,18 +159,37 @@ function captureHook(source: HookCommand): CapturedHook {
   });
 }
 
-function captureEvent(source: unknown): Readonly<{
+type CapturedHookEvent = Readonly<{
   sourceEvent: "PostToolUse" | "Stop";
   event: HookEventType;
   actionName: string | null;
   parentOutcome: "success" | "failed";
-}> {
-  assertPlainRecord(source);
-  assertExactKeys(source, ["sourceEvent", "parentOutcome"], ["actionName"]);
-  const sourceEvent = ownData(source, "sourceEvent");
+}>;
+
+function captureEvent(source: unknown): CapturedHookEvent {
+  if (
+    typeof source !== "object"
+    || source === null
+    || nodeTypes.isProxy(source)
+    || Object.getPrototypeOf(source) !== Object.prototype
+  ) {
+    throw new Error("component_unsupported");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(source);
+  const keys = Reflect.ownKeys(descriptors);
+  const allowed = new Set(["sourceEvent", "parentOutcome", "actionName"]);
+  if (
+    !Object.hasOwn(descriptors, "sourceEvent")
+    || !Object.hasOwn(descriptors, "parentOutcome")
+    || keys.some((key) => typeof key !== "string" || !allowed.has(key))
+    || Object.values(descriptors).some((descriptor) => !("value" in descriptor) || !descriptor.enumerable)
+  ) {
+    throw new Error("component_unsupported");
+  }
+  const sourceEvent = descriptors.sourceEvent?.value;
   const event = normalizeHookEvent(sourceEvent);
-  const parentOutcome = ownData(source, "parentOutcome");
-  const actionName = Object.hasOwn(source, "actionName") ? ownData(source, "actionName") : undefined;
+  const parentOutcome = descriptors.parentOutcome?.value;
+  const actionName = descriptors.actionName?.value;
   if (
     (parentOutcome !== "success" && parentOutcome !== "failed")
     || (event === "post_tool_use" && (typeof actionName !== "string" || actionName.length === 0))
@@ -198,6 +219,129 @@ function delay(milliseconds: number): Promise<"timed_out"> {
 async function settleCleanup(operation: Promise<unknown>): Promise<void> {
   await Promise.race([operation.then(() => undefined, () => undefined), delay(CLEANUP_SETTLE_MS)]);
   void operation.catch(() => undefined);
+}
+
+interface CapturedSpawnedProcess {
+  readonly stdout: AsyncIterable<Uint8Array | string>;
+  readonly stderr: AsyncIterable<Uint8Array | string>;
+  readonly completion: Promise<SpawnCompletion>;
+  readonly terminate: () => Promise<void>;
+}
+
+class SpawnedProcessInvalidError extends Error {
+  readonly terminate: () => Promise<void>;
+
+  constructor(terminate: () => Promise<void>) {
+    super("process_failed");
+    this.name = "SpawnedProcessInvalidError";
+    this.terminate = terminate;
+  }
+}
+
+function createCapturedTerminator(
+  source: object,
+  descriptors: PropertyDescriptorMap,
+): () => Promise<void> {
+  const killDescriptor = descriptors.kill;
+  const kill = killDescriptor !== undefined
+    && "value" in killDescriptor
+    && typeof killDescriptor.value === "function"
+    ? (signal: "SIGTERM" | "SIGKILL"): void => {
+        Reflect.apply(killDescriptor.value as (...args: unknown[]) => unknown, source, [signal]);
+      }
+    : undefined;
+  const completionDescriptor = descriptors.completion;
+  const completion = completionDescriptor !== undefined
+    && "value" in completionDescriptor
+    && completionDescriptor.value instanceof Promise
+    && !nodeTypes.isProxy(completionDescriptor.value)
+    && Object.getPrototypeOf(completionDescriptor.value) === Promise.prototype
+    ? completionDescriptor.value as Promise<unknown>
+    : undefined;
+  const settled = completion?.then(() => true, () => true);
+  let termination: Promise<void> | undefined;
+  return (): Promise<void> => {
+    termination ??= (async (): Promise<void> => {
+      if (kill === undefined) return;
+      try {
+        kill("SIGTERM");
+      } catch {
+        return;
+      }
+      if (settled !== undefined) {
+        if (await Promise.race([settled, delay(PROCESS_CLEANUP_GRACE_MS)]) !== "timed_out") return;
+      } else {
+        await delay(PROCESS_CLEANUP_GRACE_MS);
+      }
+      try {
+        kill("SIGKILL");
+      } catch {
+        return;
+      }
+      if (settled !== undefined) await Promise.race([settled, delay(PROCESS_CLEANUP_GRACE_MS)]);
+    })();
+    return termination;
+  };
+}
+
+function inspectSpawnedProcess(source: unknown): Readonly<{
+  readonly descriptors: PropertyDescriptorMap;
+  readonly terminate: () => Promise<void>;
+}> {
+  if (
+    typeof source !== "object"
+    || source === null
+    || nodeTypes.isProxy(source)
+    || Object.getPrototypeOf(source) !== Object.prototype
+  ) {
+    throw new SpawnedProcessInvalidError(async () => undefined);
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(source);
+  return Object.freeze({
+    descriptors,
+    terminate: createCapturedTerminator(source, descriptors),
+  });
+}
+
+function captureSpawnedProcess(source: unknown): CapturedSpawnedProcess {
+  const inspected = inspectSpawnedProcess(source);
+  const { descriptors, terminate } = inspected;
+  const keys = Reflect.ownKeys(descriptors);
+  const allowed = new Set(["stdout", "stderr", "completion", "kill", "writeStdin", "closeStdin"]);
+  const stdout = descriptors.stdout;
+  const stderr = descriptors.stderr;
+  const completion = descriptors.completion;
+  const kill = descriptors.kill;
+  const optionalMethodsValid = [descriptors.writeStdin, descriptors.closeStdin].every(
+    (descriptor) => descriptor === undefined || ("value" in descriptor && typeof descriptor.value === "function"),
+  );
+  if (
+    keys.some((key) => typeof key !== "string" || !allowed.has(key))
+    || stdout === undefined || !("value" in stdout) || typeof stdout.value !== "object" || stdout.value === null
+    || stderr === undefined || !("value" in stderr) || typeof stderr.value !== "object" || stderr.value === null
+    || completion === undefined || !("value" in completion)
+    || !(completion.value instanceof Promise)
+    || nodeTypes.isProxy(completion.value)
+    || Object.getPrototypeOf(completion.value) !== Promise.prototype
+    || kill === undefined || !("value" in kill) || typeof kill.value !== "function"
+    || !optionalMethodsValid
+  ) {
+    throw new SpawnedProcessInvalidError(terminate);
+  }
+  return Object.freeze({
+    stdout: stdout.value as AsyncIterable<Uint8Array | string>,
+    stderr: stderr.value as AsyncIterable<Uint8Array | string>,
+    completion: completion.value as Promise<SpawnCompletion>,
+    terminate,
+  });
+}
+
+async function terminateUnknownSpawnedProcess(source: unknown): Promise<void> {
+  try {
+    await inspectSpawnedProcess(source).terminate();
+  } catch (error: unknown) {
+    if (error instanceof SpawnedProcessInvalidError) await error.terminate();
+  }
 }
 
 export class HookRunner {
@@ -244,21 +388,20 @@ export class HookRunner {
   }
 
   async run(sourceEvent: HookExecutionEvent): Promise<HookExecutionReceipt> {
+    const event = captureEvent(sourceEvent);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.#timeoutMilliseconds);
-    const operation = Promise.resolve().then(() => this.#run(sourceEvent, controller.signal));
+    const operation = Promise.resolve().then(() => this.#run(event, controller.signal));
     try {
       return await Promise.race([
         operation,
         new Promise<HookExecutionReceipt>((resolve) => {
           controller.signal.addEventListener("abort", () => {
-            let parentOutcome: "success" | "failed" = "failed";
-            try { parentOutcome = captureEvent(sourceEvent).parentOutcome; } catch { /* stable fallback */ }
             resolve(receipt({
               event: this.#hook.event,
               matcher: this.#hook.matcher?.source ?? null,
               status: "timed_out",
-              parentOutcome,
+              parentOutcome: event.parentOutcome,
             }));
           }, { once: true });
         }),
@@ -269,8 +412,7 @@ export class HookRunner {
     }
   }
 
-  async #run(sourceEvent: HookExecutionEvent, signal: AbortSignal): Promise<HookExecutionReceipt> {
-    const event = captureEvent(sourceEvent);
+  async #run(event: CapturedHookEvent, signal: AbortSignal): Promise<HookExecutionReceipt> {
     if (event.event !== this.#hook.event || event.sourceEvent !== this.#hook.sourceEvent) {
       throw new Error("component_unsupported");
     }
@@ -284,6 +426,7 @@ export class HookRunner {
     }
     if (signal.aborted) return receipt({ event: event.event, matcher: this.#hook.matcher?.source ?? null, status: "timed_out", parentOutcome: event.parentOutcome });
 
+    let ownedCleanup: (() => Promise<void>) | undefined;
     try {
       await assertVerifiedProcessExecutionRoot(this.#executionRoot);
       const cwd = await resolveSafeWorkingDirectory(this.#executionRootDetails.path, ".");
@@ -311,7 +454,10 @@ export class HookRunner {
       const spawnPromise = Promise.resolve(this.#spawner.spawn(this.#hook.command, this.#hook.args, spawnOptions));
       let owned = false;
       const lateCleanup = spawnPromise.then(async (spawned) => {
-        if (!owned && signal.aborted) await terminateSpawnedProcess(spawned);
+        if (!owned && signal.aborted) {
+          owned = true;
+          await terminateUnknownSpawnedProcess(spawned);
+        }
       }, () => undefined);
       void lateCleanup.catch(() => undefined);
       const spawned = await Promise.race([
@@ -319,12 +465,24 @@ export class HookRunner {
         new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(new Error("operation_aborted")), { once: true })),
       ]);
       if (signal.aborted) {
-        await terminateSpawnedProcess(spawned);
+        if (!owned) {
+          owned = true;
+          await terminateUnknownSpawnedProcess(spawned);
+        }
         throw new Error("operation_aborted");
       }
       owned = true;
-      return await this.#collect(spawned, event, signal);
+      let captured: CapturedSpawnedProcess;
+      try {
+        captured = captureSpawnedProcess(spawned);
+        ownedCleanup = captured.terminate;
+      } catch (error: unknown) {
+        if (error instanceof SpawnedProcessInvalidError) ownedCleanup = error.terminate;
+        throw error;
+      }
+      return await this.#collect(captured, event, signal);
     } catch {
+      if (ownedCleanup !== undefined) await settleCleanup(ownedCleanup());
       return receipt({
         event: event.event,
         matcher: this.#hook.matcher?.source ?? null,
@@ -335,8 +493,8 @@ export class HookRunner {
   }
 
   async #collect(
-    spawned: SpawnedProcess,
-    event: ReturnType<typeof captureEvent>,
+    spawned: CapturedSpawnedProcess,
+    event: CapturedHookEvent,
     signal: AbortSignal,
   ): Promise<HookExecutionReceipt> {
     const stdoutLimit = Math.ceil(this.#maxOutputBytes / 2);
@@ -354,13 +512,13 @@ export class HookRunner {
       }),
     ]);
     if (outcome.kind === "timed_out") {
-      const cleanup = terminateSpawnedProcess(spawned);
+      const cleanup = spawned.terminate();
       await settleCleanup(cleanup);
       void execution.catch(() => undefined);
       return receipt({ event: event.event, matcher: this.#hook.matcher?.source ?? null, status: "timed_out", parentOutcome: event.parentOutcome });
     }
     if (outcome.kind === "failed") {
-      await settleCleanup(terminateSpawnedProcess(spawned));
+      await settleCleanup(spawned.terminate());
       return receipt({ event: event.event, matcher: this.#hook.matcher?.source ?? null, status: "failed", parentOutcome: event.parentOutcome });
     }
     const [completion, stdout, stderr] = outcome.value;

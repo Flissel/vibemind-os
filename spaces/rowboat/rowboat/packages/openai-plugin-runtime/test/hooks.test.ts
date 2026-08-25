@@ -240,6 +240,84 @@ describe("policy-controlled hook execution", () => {
     expect(spawner.calls).toBe(0);
   });
 
+  it("rejects a proxied event without invoking its traps or spawning", async () => {
+    let traps = 0;
+    const event = new Proxy({ ...successEvent }, {
+      getPrototypeOf(target) { traps += 1; return Reflect.getPrototypeOf(target); },
+      ownKeys(target) { traps += 1; return Reflect.ownKeys(target); },
+      getOwnPropertyDescriptor(target, property) { traps += 1; return Reflect.getOwnPropertyDescriptor(target, property); },
+    });
+    const spawner = new RecordingSpawner();
+    const { runner } = await fixture(spawner);
+    await expect(runner.run(event)).rejects.toThrow("component_unsupported");
+    expect(traps).toBe(0);
+    expect(spawner.calls).toBe(0);
+  });
+
+  it("captures parent outcome once before async work and preserves it after caller mutation", async () => {
+    const completion = new Promise<{ readonly exitCode: number | null; readonly signal: string | null }>(() => undefined);
+    const spawner = new RecordingSpawner(processResult({ completion }));
+    const { runner } = await fixture(spawner, { timeoutMilliseconds: 800 });
+    const event = { ...successEvent, parentOutcome: "failed" as "success" | "failed" };
+    const pending = runner.run(event);
+    while (spawner.calls === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+    event.parentOutcome = "success";
+    const receipt = await pending;
+    expect(receipt).toMatchObject({ status: "timed_out", parentOutcome: "failed" });
+  });
+
+  it("kills an owned child when its stdout handle is accessor-backed", async () => {
+    let kills = 0;
+    const child = Object.create(Object.prototype) as Record<string, unknown>;
+    Object.defineProperties(child, {
+      stdout: { enumerable: true, get: () => { throw new Error("stdout-secret"); } },
+      stderr: { enumerable: true, value: emptyStream() },
+      completion: { enumerable: true, value: new Promise(() => undefined) },
+      kill: { enumerable: true, value: () => { kills += 1; } },
+    });
+    const { runner } = await fixture(new RecordingSpawner(child as unknown as SpawnedProcess));
+    const started = Date.now();
+    const receipt = await runner.run(successEvent);
+    expect(receipt.status).toBe("failed");
+    expect(kills).toBeGreaterThan(0);
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(JSON.stringify(receipt)).not.toContain("stdout-secret");
+  });
+
+  it("kills an owned child without invoking a throwing completion getter", async () => {
+    let completionReads = 0;
+    let kills = 0;
+    const child = Object.create(Object.prototype) as Record<string, unknown>;
+    Object.defineProperties(child, {
+      stdout: { enumerable: true, value: emptyStream() },
+      stderr: { enumerable: true, value: emptyStream() },
+      completion: { enumerable: true, get: () => { completionReads += 1; throw new Error("completion-secret"); } },
+      kill: { enumerable: true, value: () => { kills += 1; } },
+    });
+    const { runner } = await fixture(new RecordingSpawner(child as unknown as SpawnedProcess));
+    const receipt = await runner.run(successEvent);
+    expect(receipt.status).toBe("failed");
+    expect(completionReads).toBe(0);
+    expect(kills).toBeGreaterThan(0);
+  });
+
+  it("kills an owned child when a captured stream errors", async () => {
+    let kills = 0;
+    const child = processResult({
+      completion: new Promise(() => undefined),
+      onKill: () => { kills += 1; },
+    });
+    const failing = Object.freeze({
+      ...child,
+      stdout: (async function* stdout() { throw new Error("stream-secret"); })(),
+    });
+    const { runner } = await fixture(new RecordingSpawner(failing));
+    const receipt = await runner.run(successEvent);
+    expect(receipt.status).toBe("failed");
+    expect(kills).toBeGreaterThan(0);
+    expect(JSON.stringify(receipt)).not.toContain("stream-secret");
+  });
+
   it("times out promptly and terminates a process that resolves after the deadline", async () => {
     let resolveSpawn!: (process: SpawnedProcess) => void;
     const lateSpawn = new Promise<SpawnedProcess>((resolve) => { resolveSpawn = resolve; });
