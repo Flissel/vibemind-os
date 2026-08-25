@@ -6,6 +6,7 @@ import { ListPluginCatalogUseCase } from "@/src/application/use-cases/plugins/li
 import { PreviewPluginInstallationUseCase } from "@/src/application/use-cases/plugins/preview-plugin-installation.use-case";
 import { InstallPluginUseCase } from "@/src/application/use-cases/plugins/install-plugin.use-case";
 import { SetPluginEnabledUseCase } from "@/src/application/use-cases/plugins/set-plugin-enabled.use-case";
+import { ListProjectPluginsUseCase } from "@/src/application/use-cases/plugins/list-project-plugins.use-case";
 import { PluginCatalogController } from "@/src/interface-adapters/controllers/plugins/plugin-catalog.controller";
 import { PluginInstallationController } from "@/src/interface-adapters/controllers/plugins/plugin-installation.controller";
 import { USE_AUTH } from "@/app/lib/feature_flags";
@@ -187,6 +188,7 @@ container.register({
     previewPluginInstallationUseCase: asClass(PreviewPluginInstallationUseCase).singleton(),
     installPluginUseCase: asClass(InstallPluginUseCase).singleton(),
     setPluginEnabledUseCase: asClass(SetPluginEnabledUseCase).singleton(),
+    listProjectPluginsUseCase: asClass(ListProjectPluginsUseCase).singleton(),
     pluginCatalogController: asClass(PluginCatalogController).singleton(),
     pluginInstallationController: asClass(PluginInstallationController).singleton(),
     // workers

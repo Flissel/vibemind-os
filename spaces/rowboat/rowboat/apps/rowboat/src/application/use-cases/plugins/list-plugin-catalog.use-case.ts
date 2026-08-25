@@ -13,6 +13,12 @@ export class ListPluginCatalogUseCase {
       const entry = { ...catalogEntry, catalogDigest: request.catalogDigest };
       return {
         name: entry.name, pluginName: entry.pluginName, pluginVersion: entry.pluginVersion, catalogDigest: request.catalogDigest,
+        sourceCommit: entry.sourceCommit, policyVersion: entry.policyVersion,
+        license: {
+          declaration: entry.licenseDeclaration ?? serviceError("catalog_entry_invalid"),
+          decision: entry.admission.status,
+          ...(entry.admission.status === "admitted" ? {} : { reason: entry.admission.reason }),
+        },
         admission: entry.admission.status, ...(entry.admission.status === "admitted" ? {} : { reason: entry.admission.reason }),
         components: componentDtosFrom(entry),
       };

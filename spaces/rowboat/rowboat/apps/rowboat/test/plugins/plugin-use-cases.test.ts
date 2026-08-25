@@ -313,6 +313,7 @@ describe("authorized plugin services", () => {
       previewPluginInstallationUseCase: new PreviewPluginInstallationUseCase({ pluginsRepository: new FakeRepository(), pluginApiAuthorizationPolicy: new FakeAuthorization() }),
       installPluginUseCase: {} as InstallPluginUseCase,
       setPluginEnabledUseCase: {} as never,
+      listProjectPluginsUseCase: {} as never,
     });
     await expect(controller.preview(new Request("https://example.invalid"), proxied)).rejects.toThrow("request_invalid");
     expect(calls).toBe(0);
