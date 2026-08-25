@@ -2,6 +2,7 @@ import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
+import sharp from "sharp";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   normalizeAgents,
@@ -412,6 +413,85 @@ describe("asset normalizer", () => {
     expect(Object.isFrozen(image)).toBe(true);
   });
 
+  it.each([
+    ["png", "image/png"],
+    ["jpeg", "image/jpeg"],
+    ["gif", "image/gif"],
+    ["webp", "image/webp"],
+    ["avif", "image/avif"],
+  ] as const)("fully decodes an actual static %s fixture", async (format, mime) => {
+    const pluginRoot = await createPluginRoot(`asset-decoded-${format}`);
+    const asset = join(pluginRoot, `pixel.${format === "jpeg" ? "jpg" : format}`);
+    const encoder = sharp({
+      create: {
+        width: 2,
+        height: 2,
+        channels: 4,
+        background: { r: 11, g: 22, b: 33, alpha: 1 },
+      },
+    });
+    const bytes = await encoder[format]().toBuffer();
+    await writeFile(asset, bytes);
+
+    await expect(normalizeAsset(asset, pluginRoot, { mime })).resolves.toMatchObject({
+      mime,
+      placeholder: false,
+    });
+  });
+
+  it("rejects animated raster assets", async () => {
+    const pluginRoot = await createPluginRoot("asset-animated");
+    const asset = join(pluginRoot, "animated.gif");
+    const twoFrames = Buffer.from([
+      255, 0, 0, 255,
+      0, 255, 0, 255,
+    ]);
+    const bytes = await sharp(twoFrames, {
+      raw: { width: 1, height: 2, channels: 4, pageHeight: 1 },
+    }).gif({ loop: 0, delay: [100, 100] }).toBuffer();
+    await writeFile(asset, bytes);
+
+    await expect(normalizeAsset(asset, pluginRoot, { mime: "image/gif" }))
+      .rejects.toThrow("asset_unsafe");
+  });
+
+  it("rejects declared raster dimensions above the decoder pixel bound", async () => {
+    const pluginRoot = await createPluginRoot("asset-pixel-bound");
+    const asset = join(pluginRoot, "oversized.png");
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(4 * 1024 * 1024 + 1, 0);
+    ihdr.writeUInt32BE(1, 4);
+    ihdr[8] = 8;
+    ihdr[9] = 6;
+    const bytes = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      pngChunk("IHDR", ihdr),
+      pngChunk("IDAT", deflateSync(Buffer.alloc(5))),
+      pngChunk("IEND", Buffer.alloc(0)),
+    ]);
+    await writeFile(asset, bytes);
+
+    await expect(normalizeAsset(asset, pluginRoot, { mime: "image/png" }))
+      .rejects.toThrow("asset_unsafe");
+  });
+
+  it("rejects decoder-detected raster content that disagrees with its extension", async () => {
+    const pluginRoot = await createPluginRoot("asset-decoder-mismatch");
+    const asset = join(pluginRoot, "jpeg-disguised.png");
+    const bytes = await sharp({
+      create: {
+        width: 1,
+        height: 1,
+        channels: 3,
+        background: { r: 1, g: 2, b: 3 },
+      },
+    }).jpeg().toBuffer();
+    await writeFile(asset, bytes);
+
+    await expect(normalizeAsset(asset, pluginRoot, { mime: "image/png" }))
+      .rejects.toThrow("asset_unsafe");
+  });
+
   it("rejects assets over the configured bound", async () => {
     const pluginRoot = await createPluginRoot("asset-size");
     const asset = join(pluginRoot, "large.txt");
@@ -494,7 +574,9 @@ describe("asset normalizer", () => {
     const fakeIdat = join(pluginRoot, "fake-idat.png");
     const badCrc = join(pluginRoot, "bad-crc.png");
     const corrupted = Buffer.from(validPng());
-    corrupted[corrupted.length - 1] = (corrupted[corrupted.length - 1] ?? 0) ^ 0xff;
+    const idatCrcOffset = corrupted.indexOf(Buffer.from("IDAT", "ascii")) + 4 +
+      corrupted.readUInt32BE(corrupted.indexOf(Buffer.from("IDAT", "ascii")) - 4);
+    corrupted[idatCrcOffset] = (corrupted[idatCrcOffset] ?? 0) ^ 0xff;
     const base = pngWithoutIdat();
     await writeFile(noIdat, pngWithoutIdat());
     await writeFile(fakeIdat, Buffer.concat([
@@ -513,16 +595,14 @@ describe("asset normalizer", () => {
   });
 
   it.each([
-    ["valid.bmp", "image/bmp", validBmp()],
-    ["valid.ico", "image/x-icon", validIco()],
-    ["valid.avif", "image/avif", validAvif()],
-  ])("admits structurally valid passive raster %s", async (name, mime, bytes) => {
-    const pluginRoot = await createPluginRoot(`asset-valid-${name.replace(".", "-")}`);
+    ["structured.bmp", "image/bmp", validBmp()],
+    ["structured.ico", "image/x-icon", validIco()],
+  ])("rejects unsupported raster format %s even when shallow structure is valid", async (name, mime, bytes) => {
+    const pluginRoot = await createPluginRoot(`asset-unsupported-${name.replace(".", "-")}`);
     const asset = join(pluginRoot, name);
     await writeFile(asset, bytes);
 
-    await expect(normalizeAsset(asset, pluginRoot, { mime }))
-      .resolves.toMatchObject({ mime, placeholder: false });
+    await expect(normalizeAsset(asset, pluginRoot, { mime })).rejects.toThrow("asset_unsafe");
   });
 
   it.each([
@@ -560,6 +640,50 @@ describe("asset normalizer", () => {
       .rejects.toThrow("asset_unsafe");
     await expect(normalizeAsset(avif, pluginRoot, { mime: "image/avif" }))
       .rejects.toThrow("asset_unsafe");
+  });
+
+  it.each((() => {
+    const adam7Ihdr = Buffer.alloc(13);
+    adam7Ihdr.writeUInt32BE(2, 0);
+    adam7Ihdr.writeUInt32BE(2, 4);
+    adam7Ihdr[8] = 8;
+    adam7Ihdr[9] = 6;
+    adam7Ihdr[12] = 1;
+    const adam7 = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      pngChunk("IHDR", adam7Ihdr),
+      pngChunk("IDAT", deflateSync(Buffer.alloc(18))),
+      pngChunk("IEND", Buffer.alloc(0)),
+    ]);
+    const pseudoIcoPayload = Buffer.alloc(40);
+    pseudoIcoPayload.writeUInt32LE(40, 0);
+    const pseudoIco = Buffer.alloc(22 + pseudoIcoPayload.length);
+    pseudoIco.writeUInt16LE(1, 2);
+    pseudoIco.writeUInt16LE(1, 4);
+    pseudoIco[6] = 1;
+    pseudoIco[7] = 1;
+    pseudoIco.writeUInt32LE(pseudoIcoPayload.length, 14);
+    pseudoIco.writeUInt32LE(22, 18);
+    pseudoIcoPayload.copy(pseudoIco, 22);
+    const unknownWebp = Buffer.alloc(20);
+    unknownWebp.write("RIFF", 0, "ascii");
+    unknownWebp.writeUInt32LE(12, 4);
+    unknownWebp.write("WEBP", 8, "ascii");
+    unknownWebp.write("JUNK", 12, "ascii");
+    return [
+      ["fake-adam7.png", "image/png", adam7],
+      ["pseudo-dib.ico", "image/x-icon", pseudoIco],
+      ["fake.avif", "image/avif", validAvif()],
+      ["unknown-chunk.webp", "image/webp", unknownWebp],
+      ["invalid.jpg", "image/jpeg", Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x02, 0xff, 0xd9])],
+      ["invalid.gif", "image/gif", Buffer.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x3b])],
+    ];
+  })())("rejects shallow-valid but undecodable raster %s", async (name, mime, bytes) => {
+    const pluginRoot = await createPluginRoot(`asset-undecodable-${name.replace(".", "-")}`);
+    const asset = join(pluginRoot, name);
+    await writeFile(asset, bytes);
+
+    await expect(normalizeAsset(asset, pluginRoot, { mime })).rejects.toThrow("asset_unsafe");
   });
 
   it.each([
