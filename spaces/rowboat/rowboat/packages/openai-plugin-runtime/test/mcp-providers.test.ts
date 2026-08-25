@@ -1,12 +1,13 @@
 import { mkdir, readFile, rename, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   DEFAULT_POLICY,
   ContentStore,
   HttpMcpProvider,
   McpCompatibilityError,
+  NodeProcessSpawner,
   ProcessMcpProvider,
   ProviderRegistry,
   assertSafeSpawnIdentity,
@@ -1371,7 +1372,7 @@ describe("process MCP provider", () => {
         command: "node",
         args: Object.freeze(["server.js"]),
         environmentReferences: Object.freeze([]),
-        timeoutMilliseconds: 20,
+        timeoutMilliseconds: 2_000,
       }),
       executionRoot: await createVerifiedProcessRoot(pluginRoot),
       parentLicense: "MIT",
@@ -1603,6 +1604,45 @@ describe("process MCP provider", () => {
     expect(JSON.stringify(result)).not.toContain("super-secret-value");
   });
 
+  it("terminates a child returned by a spawn promise after the invocation deadline", async () => {
+    const pluginRoot = await createTempDirectory();
+    let markSpawnEntered: (() => void) | undefined;
+    const spawnEntered = new Promise<void>((resolve) => { markSpawnEntered = resolve; });
+    let releaseSpawn: ((process: SpawnedProcess) => void) | undefined;
+    const delayedSpawn = new Promise<SpawnedProcess>((resolve) => { releaseSpawn = resolve; });
+    let killed = 0;
+    let complete: ((value: { exitCode: number | null; signal: string | null }) => void) | undefined;
+    const child: SpawnedProcess = {
+      stdout: (async function* () {})(),
+      stderr: (async function* () {})(),
+      completion: new Promise((resolve) => { complete = resolve; }),
+      kill: () => {
+        killed += 1;
+        complete?.({ exitCode: null, signal: "SIGTERM" });
+      },
+    };
+    const spawner: ProcessSpawner = {
+      async spawn(_command, _args, options) {
+        await assertSafeSpawnIdentity(options);
+        markSpawnEntered?.();
+        return delayedSpawn;
+      },
+    };
+    const provider = await processProvider({
+      pluginRoot,
+      spawner,
+      timeoutMilliseconds: 250,
+    });
+
+    const invocation = provider.invoke(request, { requestId: "request-1" });
+    await spawnEntered;
+    await expect(invocation).resolves.toEqual({ status: "failed", reason: "process_timed_out" });
+    expect(killed).toBe(0);
+    releaseSpawn?.(child);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(killed).toBe(1);
+  });
+
   it("does not let hanging client and stderr cleanup defeat the process timeout", async () => {
     const pluginRoot = await createTempDirectory();
     const spawner = new RecordingSpawner();
@@ -1723,6 +1763,61 @@ describe("process MCP provider", () => {
       stderr: { text: "stderr", truncated: true },
     });
     expect(JSON.stringify(result)).toMatch(/[a-f0-9]{64}/);
+  });
+
+  it("does not call the OS spawn primitive when abort arrives after final async verification", async () => {
+    const trustedStore = await createTempDirectory();
+    const executionRoot = join(trustedStore, "content");
+    await mkdir(executionRoot);
+    const trustedStoreIdentity = await snapshotDirectoryIdentity(trustedStore);
+    const identity = await snapshotDirectoryIdentity(executionRoot);
+    const inspection = await inspectDigestTree(executionRoot);
+    const controller = new AbortController();
+    const spawnOptions: SafeSpawnOptions = {
+      shell: false,
+      cwd: executionRoot,
+      env: {},
+      executionRootIdentity: identity,
+      trustedStoreIdentity,
+      workingDirectoryIdentity: identity,
+      componentDigest: PROCESS_DIGEST,
+      executionRootDigest: inspection.digest,
+      executionRootInventory: inspection.inventory,
+      signal: controller.signal,
+    };
+    const abortedDescriptor = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted");
+    if (abortedDescriptor?.get === undefined) throw new Error("AbortSignal getter unavailable");
+    const originalAborted = abortedDescriptor.get;
+    let reads = 0;
+    const abortedSpy = vi.spyOn(AbortSignal.prototype, "aborted", "get")
+      .mockImplementation(function(this: AbortSignal): boolean {
+        reads += 1;
+        return Reflect.apply(originalAborted, this, []) as boolean;
+      });
+    try {
+      await assertSafeSpawnIdentity(spawnOptions);
+      const verificationReads = reads;
+      reads = 0;
+      abortedSpy.mockImplementation(function(this: AbortSignal): boolean {
+        reads += 1;
+        if (reads === verificationReads + 1) controller.abort();
+        return Reflect.apply(originalAborted, this, []) as boolean;
+      });
+      let operatingSystemSpawnCalls = 0;
+      type SpawnPrimitive = NonNullable<ConstructorParameters<typeof NodeProcessSpawner>[0]>;
+      const fakeOperatingSystemSpawn = (() => {
+        operatingSystemSpawnCalls += 1;
+        throw new Error("unexpected OS spawn");
+      }) as unknown as SpawnPrimitive;
+      const spawner = new NodeProcessSpawner(fakeOperatingSystemSpawn);
+
+      await expect(spawner.spawn("node", [], spawnOptions))
+        .rejects.toThrow("process_spawn_aborted");
+      expect(operatingSystemSpawnCalls).toBe(0);
+      expect(reads).toBe(verificationReads + 1);
+    } finally {
+      abortedSpy.mockRestore();
+    }
   });
 
   it("sanitizes a synchronous spawner failure", async () => {

@@ -464,14 +464,31 @@ export class ProcessMcpProvider implements PluginProvider {
       await assertVerifiedProcessExecutionRoot(this.#executionRoot);
       await assertDirectoryIdentity(workingDirectoryIdentity);
       assertProcessActive(signal);
-      spawned = await awaitProcessSignal(
-        Promise.resolve(this.#spawner.spawn(
-          this.#server.command,
-          this.#server.args,
-          spawnOptions,
-        )),
+      const spawnPromise = Promise.resolve(this.#spawner.spawn(
+        this.#server.command,
+        this.#server.args,
+        spawnOptions,
+      ));
+      let spawnOwned = false;
+      const lateSpawnCleanup = spawnPromise.then(
+        async (lateProcess) => {
+          if (!spawnOwned && signal.aborted) {
+            await terminateSpawnedProcess(lateProcess);
+          }
+        },
+        () => undefined,
+      );
+      void lateSpawnCleanup.catch(() => undefined);
+      const candidate = await awaitProcessSignal(
+        spawnPromise,
         signal,
       );
+      if (signal.aborted) {
+        await terminateSpawnedProcess(candidate);
+        throw new ProcessInvocationTimeoutError();
+      }
+      spawned = candidate;
+      spawnOwned = true;
     } catch {
       return Object.freeze({ status: "failed", reason: "process_failed" });
     }

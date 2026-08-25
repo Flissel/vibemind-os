@@ -52,12 +52,19 @@ export interface ProcessSpawner {
 }
 
 export class NodeProcessSpawner implements ProcessSpawner {
+  readonly #spawnProcess: typeof spawn;
+
+  constructor(spawnProcess: typeof spawn = spawn) {
+    this.#spawnProcess = spawnProcess;
+  }
+
   async spawn(command: string, args: readonly string[], options: SafeSpawnOptions): Promise<SpawnedProcess> {
     await assertSafeSpawnIdentity(options);
+    if (options.signal.aborted) throw new Error("process_spawn_aborted");
     // Portable Node has no handle-relative process spawn. The trusted parent
     // directory and scheduler gap between this check and spawn are the residual
     // OS boundary; callers must deny untrusted rename authority there.
-    const child = spawn(command, [...args], {
+    const child = this.#spawnProcess(command, [...args], {
       cwd: options.cwd,
       env: { ...options.env },
       shell: false,
