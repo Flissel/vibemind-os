@@ -12,6 +12,9 @@ from spaces.learning.services.course_factory.model_gateway import (
     ModelGatewayError,
     ROLE_CONTRACTS,
 )
+from spaces.learning.services.course_factory.artifact_store import (
+    CourseFactoryArtifactStore,
+)
 from spaces.learning.services.course_factory.repository import (
     CourseFactoryRepository,
     FactoryJobRecord,
@@ -73,10 +76,14 @@ _STAGE_GROUPS = (
 
 class CourseAgentTeam:
     def __init__(
-        self, repository: CourseFactoryRepository, gateway: ModelGateway
+        self,
+        repository: CourseFactoryRepository,
+        gateway: ModelGateway,
+        artifact_store: CourseFactoryArtifactStore,
     ) -> None:
         self._repository = repository
         self._gateway = gateway
+        self._artifact_store = artifact_store
 
     async def run(self, request: CourseTeamInput) -> FactoryJobRecord:
         job = self._repository.get(request.job_id)
@@ -143,14 +150,23 @@ class CourseAgentTeam:
                     **dict(context["role_outputs"]),
                     **role_outputs,
                 }
+                output_artifact = self._artifact_store.write_stage_output(
+                    job,
+                    stage=stage,
+                    payload=role_outputs,
+                )
+                evidence_refs.append(
+                    f"learning-artifact://{output_artifact.artifact_id}"
+                )
                 self._repository.record_stage_artifact(
                     job.id,
                     expected_revision=job.revision,
                     artifact=StageArtifactInput(
                         stage=stage,
                         input_hash=input_hash,
-                        output_hash=_hash_json(role_outputs),
+                        output_hash=output_artifact.content_hash,
                         evidence_refs=tuple(evidence_refs),
+                        output_artifact=output_artifact,
                     ),
                 )
                 if next_state is not None:

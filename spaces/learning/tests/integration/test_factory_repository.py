@@ -18,6 +18,7 @@ from spaces.learning.services.course_factory.models import (
 )
 from spaces.learning.services.course_factory.repository import (
     CourseFactoryRepository,
+    GenerationRequest,
     SourceProvenance,
     StageArtifactInput,
 )
@@ -353,6 +354,11 @@ def test_postgresql_guards_prior_attempts_and_stage_evidence(
         course_id=str(uuid4()),
         request_hash=_hash("postgres-request"),
         provenance=_provenance(),
+        generation_request=GenerationRequest(
+            correlation_id=str(uuid4()),
+            audience="Professionals",
+            target_outcome="Operate grounded workflows",
+        ),
     )
     job = repository.advance(
         job.id,
@@ -400,6 +406,21 @@ def test_postgresql_guards_prior_attempts_and_stage_evidence(
                 update(CourseFactoryAttempt)
                 .where(CourseFactoryAttempt.id == first_attempt.id)
                 .values(request_hash=_hash("forbidden-overwrite"))
+            )
+            session.commit()
+        session.rollback()
+        with pytest.raises(DBAPIError):
+            session.execute(
+                update(CourseFactoryAttempt)
+                .where(CourseFactoryAttempt.id == first_attempt.id)
+                .values(
+                    request_json={
+                        "schema_version": "generation-request-v1",
+                        "correlation_id": str(uuid4()),
+                        "audience": "Mutated",
+                        "target_outcome": "Forbidden",
+                    }
+                )
             )
             session.commit()
         session.rollback()

@@ -12,6 +12,9 @@ from spaces.learning.services.course_factory.model_gateway import (
     GatewayResult,
     GatewayUnavailable,
 )
+from spaces.learning.services.course_factory.artifact_store import (
+    CourseFactoryArtifactStore,
+)
 from spaces.learning.services.course_factory.models import CourseFactoryStageArtifact
 from spaces.learning.services.course_factory.repository import (
     CourseFactoryRepository,
@@ -145,7 +148,13 @@ async def test_autogen_team_runs_fixed_roles_and_persists_each_stage(session_fac
     job = _structuring_job(repository)
     gateway = _Gateway()
     correlation_id = str(uuid4())
-    team = CourseAgentTeam(repository, gateway)
+    artifact_root = Path(session_factory.kw["bind"].url.database).parent / "artifacts-ok"
+    artifact_root.mkdir()
+    team = CourseAgentTeam(
+        repository,
+        gateway,
+        CourseFactoryArtifactStore(session_factory, artifact_root=artifact_root),
+    )
 
     result = await team.run(
         CourseTeamInput(
@@ -184,6 +193,11 @@ async def test_autogen_team_runs_fixed_roles_and_persists_each_stage(session_fac
         "quality_gate",
     }
     assert all(artifact.input_hash and artifact.output_hash for artifact in artifacts)
+    assert all(
+        artifact.output_artifact_id
+        for artifact in artifacts
+        if artifact.stage != FactoryState.INGESTING.value
+    )
     assert result.state is not FactoryState.PUBLISHED
 
 
@@ -194,7 +208,13 @@ async def test_team_stops_after_gateway_failure_and_persists_terminal_state(
     repository = CourseFactoryRepository(session_factory)
     job = _structuring_job(repository)
     gateway = _Gateway(fail_role="lesson_author")
-    team = CourseAgentTeam(repository, gateway)
+    artifact_root = Path(session_factory.kw["bind"].url.database).parent / "artifacts-fail"
+    artifact_root.mkdir()
+    team = CourseAgentTeam(
+        repository,
+        gateway,
+        CourseFactoryArtifactStore(session_factory, artifact_root=artifact_root),
+    )
 
     with pytest.raises(GatewayUnavailable):
         await team.run(
@@ -242,7 +262,13 @@ async def test_rejected_job_has_zero_agent_or_gateway_calls(session_factory) -> 
         reason_code="review_rejected",
     )
     gateway = _Gateway()
-    team = CourseAgentTeam(repository, gateway)
+    artifact_root = Path(session_factory.kw["bind"].url.database).parent / "artifacts-reject"
+    artifact_root.mkdir()
+    team = CourseAgentTeam(
+        repository,
+        gateway,
+        CourseFactoryArtifactStore(session_factory, artifact_root=artifact_root),
+    )
 
     with pytest.raises(ValueError, match="structuring"):
         await team.run(

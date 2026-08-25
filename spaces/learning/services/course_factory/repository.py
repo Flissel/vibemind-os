@@ -3,12 +3,13 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable
+from typing import Callable, Literal
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from spaces.learning.services.course_factory.models import (
     CourseFactoryAttempt,
@@ -25,6 +26,7 @@ from spaces.learning.services.course_factory.state_machine import (
     require_transition,
 )
 from spaces.learning.services.db.models import utc_now
+from spaces.learning.services.db.models import LearningArtifact
 from spaces.learning.services.db.repository import PersistenceConflict
 
 
@@ -41,12 +43,36 @@ class SourceProvenance:
     content_hash: str
 
 
+class GenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["generation-request-v1"] = "generation-request-v1"
+    correlation_id: str = Field(min_length=36, max_length=36)
+    audience: str = Field(min_length=1, max_length=1_000)
+    target_outcome: str = Field(min_length=1, max_length=2_000)
+
+    @field_validator("correlation_id")
+    @classmethod
+    def validate_correlation_id(cls, value: str) -> str:
+        return str(UUID(value))
+
+
+@dataclass(frozen=True)
+class OutputArtifactInput:
+    artifact_id: str
+    relative_path: str
+    content_hash: str
+    media_type: str
+    size_bytes: int
+
+
 @dataclass(frozen=True)
 class StageArtifactInput:
     stage: FactoryState
     input_hash: str
     output_hash: str
     evidence_refs: tuple[str, ...]
+    output_artifact: OutputArtifactInput | None = None
 
 
 @dataclass(frozen=True)
@@ -59,6 +85,15 @@ class FactoryJobRecord:
     terminal_at: datetime | None
 
 
+@dataclass(frozen=True)
+class FactoryAttemptRecord:
+    job_id: str
+    attempt_number: int
+    request_hash: str
+    generation_request: GenerationRequest | None
+    provenance: tuple[SourceProvenance, ...]
+
+
 class CourseFactoryRepository:
     def __init__(self, session_factory: SessionFactory) -> None:
         self._session_factory = session_factory
@@ -69,6 +104,7 @@ class CourseFactoryRepository:
         course_id: str,
         request_hash: str,
         provenance: tuple[SourceProvenance, ...],
+        generation_request: GenerationRequest | None = None,
     ) -> FactoryJobRecord:
         course_id = str(UUID(course_id))
         _validate_hash(request_hash)
@@ -97,6 +133,11 @@ class CourseFactoryRepository:
                         attempt_number=1,
                         retry_of_attempt_id=None,
                         request_hash=request_hash,
+                        request_json=(
+                            generation_request.model_dump(mode="json")
+                            if generation_request is not None
+                            else None
+                        ),
                         provenance_json=provenance_json,
                         terminal_state=None,
                         terminal_at=None,
@@ -114,6 +155,14 @@ class CourseFactoryRepository:
             if job is None:
                 raise LookupError("course factory job not found")
             return _record(job)
+
+    def get_current_attempt(self, job_id: str) -> FactoryAttemptRecord:
+        job_id = str(UUID(job_id))
+        with self._session_factory() as session:
+            job = session.get(CourseFactoryJob, job_id)
+            if job is None:
+                raise LookupError("course factory job not found")
+            return _attempt_record(_current_attempt(session, job))
 
     def advance(
         self,
@@ -178,6 +227,7 @@ class CourseFactoryRepository:
         expected_revision: int,
         request_hash: str,
         provenance: tuple[SourceProvenance, ...],
+        generation_request: GenerationRequest | None = None,
     ) -> FactoryJobRecord:
         job_id = str(UUID(job_id))
         _validate_hash(request_hash)
@@ -202,6 +252,11 @@ class CourseFactoryRepository:
                         attempt_number=attempt_number,
                         retry_of_attempt_id=previous.id,
                         request_hash=request_hash,
+                        request_json=(
+                            generation_request.model_dump(mode="json")
+                            if generation_request is not None
+                            else None
+                        ),
                         provenance_json=provenance_json,
                         terminal_state=None,
                         terminal_at=None,
@@ -289,9 +344,29 @@ class CourseFactoryRepository:
             stage=artifact.stage.value,
             input_hash=artifact.input_hash,
             output_hash=artifact.output_hash,
+            output_artifact_id=(
+                artifact.output_artifact.artifact_id
+                if artifact.output_artifact is not None
+                else None
+            ),
             evidence_refs=list(artifact.evidence_refs),
             created_at=utc_now(),
         )
+        if artifact.output_artifact is not None:
+            output = artifact.output_artifact
+            session.add(
+                LearningArtifact(
+                    id=output.artifact_id,
+                    relative_path=output.relative_path,
+                    content_hash=output.content_hash,
+                    media_type=output.media_type,
+                    size_bytes=output.size_bytes,
+                    aggregate_type="course_factory_stage",
+                    aggregate_id=f"{job.id}:{attempt.id}:{artifact.stage.value}",
+                    revision=attempt.attempt_number,
+                    created_at=utc_now(),
+                )
+            )
         session.add(row)
         session.flush()
         return row
@@ -364,6 +439,24 @@ def _validate_stage_artifact(artifact: StageArtifactInput) -> None:
         or any(not ref or len(ref) > 512 for ref in artifact.evidence_refs)
     ):
         raise ValueError("factory artifact evidence references are invalid")
+    if artifact.output_artifact is not None:
+        output = artifact.output_artifact
+        UUID(output.artifact_id)
+        _validate_hash(output.content_hash)
+        if output.content_hash != artifact.output_hash:
+            raise ValueError("factory output artifact hash mismatch")
+        if (
+            not output.relative_path
+            or "\\" in output.relative_path
+            or output.relative_path.startswith("/")
+            or ".." in output.relative_path.split("/")
+            or output.media_type != "application/json"
+            or output.size_bytes < 2
+        ):
+            raise ValueError("factory output artifact metadata is invalid")
+        expected_ref = f"learning-artifact://{output.artifact_id}"
+        if expected_ref not in artifact.evidence_refs:
+            raise ValueError("factory output artifact evidence reference is missing")
 
 
 def _validate_terminal_reason(
@@ -388,4 +481,27 @@ def _record(job: CourseFactoryJob) -> FactoryJobRecord:
         attempt_number=job.current_attempt,
         revision=job.revision,
         terminal_at=job.terminal_at,
+    )
+
+
+def _attempt_record(attempt: CourseFactoryAttempt) -> FactoryAttemptRecord:
+    request = (
+        GenerationRequest.model_validate(attempt.request_json)
+        if attempt.request_json is not None
+        else None
+    )
+    provenance = tuple(
+        SourceProvenance(
+            source_id=item["source_id"],
+            revision=item["revision"],
+            content_hash=item["content_hash"],
+        )
+        for item in attempt.provenance_json
+    )
+    return FactoryAttemptRecord(
+        job_id=attempt.job_id,
+        attempt_number=attempt.attempt_number,
+        request_hash=attempt.request_hash,
+        generation_request=request,
+        provenance=provenance,
     )

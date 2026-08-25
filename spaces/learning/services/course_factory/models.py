@@ -71,6 +71,7 @@ class CourseFactoryAttempt(Base):
         String(36), ForeignKey("learning_course_factory_attempts.id")
     )
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_json: Mapped[dict | None] = mapped_column(JSON)
     provenance_json: Mapped[list[dict]] = mapped_column("provenance", JSON, nullable=False)
     terminal_state: Mapped[str | None] = mapped_column(String(24))
     terminal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -124,6 +125,9 @@ class CourseFactoryStageArtifact(Base):
     stage: Mapped[str] = mapped_column(String(24), nullable=False)
     input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     output_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    output_artifact_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("learning_artifacts.id"), unique=True
+    )
     evidence_refs: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
