@@ -132,3 +132,79 @@ class CourseFactoryStageArtifact(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
+
+
+class CourseFactoryDraftDelivery(Base):
+    __tablename__ = "learning_course_factory_draft_deliveries"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["job_id", "attempt_id"],
+            ["learning_course_factory_attempts.job_id", "learning_course_factory_attempts.id"],
+        ),
+        UniqueConstraint("job_id", "attempt_number"),
+        UniqueConstraint("job_id", "id"),
+        CheckConstraint("attempt_number >= 1"),
+        CheckConstraint("learnhouse_revision >= 1"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    job_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    attempt_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    draft_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    learnhouse_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    evidence_ref: Mapped[str] = mapped_column(String(512), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
+class CourseFactoryReviewDecision(Base):
+    __tablename__ = "learning_course_factory_review_decisions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["job_id", "attempt_id"],
+            ["learning_course_factory_attempts.job_id", "learning_course_factory_attempts.id"],
+        ),
+        UniqueConstraint("job_id", "attempt_number"),
+        CheckConstraint("attempt_number >= 1"),
+        CheckConstraint("decision IN ('approved','rejected')"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    job_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    attempt_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    confirmation_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+    draft_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
+class CourseFactoryPublication(Base):
+    __tablename__ = "learning_course_factory_publications"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["job_id", "attempt_id"],
+            ["learning_course_factory_attempts.job_id", "learning_course_factory_attempts.id"],
+        ),
+        UniqueConstraint("job_id"),
+        UniqueConstraint("job_id", "attempt_number"),
+        CheckConstraint("attempt_number >= 1"),
+        CheckConstraint("learnhouse_revision >= 1"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    job_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    attempt_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    course_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    draft_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    learnhouse_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    confirmation_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+    readback_evidence_ref: Mapped[str] = mapped_column(String(512), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )

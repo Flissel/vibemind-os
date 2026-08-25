@@ -23,8 +23,8 @@ ROLE_CONTRACTS = {
     ),
     "source_verifier": (
         "verifying",
-        "source-verification-prompt-v1",
-        "source-verification-v1",
+        "source-verification-prompt-v2",
+        "source-verification-v2",
     ),
     "quality_reviewer": (
         "quality_gate",
@@ -37,7 +37,7 @@ ROLE_PROMPTS = {
     "concept_mapper": "Map concepts, prerequisites, dependencies, and chapter coverage from the proposed structure.",
     "lesson_author": "Draft rigorous lessons from the supplied structure and source references.",
     "assessment_designer": "Design authentic activities that assess the mapped concepts without inventing facts.",
-    "source_verifier": "Identify supported and unsupported claims and return exact source citation references.",
+    "source_verifier": "Return a complete course draft whose claims and expected answers cite exact supplied source locators; list every unsupported claim.",
     "quality_reviewer": "Review coverage, coherence, difficulty, and task quality; never publish the course.",
 }
 _SECRET_KEYS = ("api_key", "token", "secret", "password", "credential")

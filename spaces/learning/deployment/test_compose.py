@@ -170,31 +170,39 @@ def test_learning_bootstrap_uses_internal_api_service_address() -> None:
     assert "NEXT_PUBLIC_LEARNHOUSE_INTERNAL_API_URL" not in environment
 
 
-def test_learning_service_credentials_are_limited_to_the_internal_api_and_mcp() -> None:
+def test_learning_service_credentials_are_limited_to_authorized_services() -> None:
     services = _load(COMPOSE_PATH)["services"]
     assert isinstance(services, dict)
     api = services["learnhouse-api"]
     mcp = services["learning-mcp"]
+    worker = services["learning-worker"]
     assert isinstance(api, dict)
     assert isinstance(mcp, dict)
+    assert isinstance(worker, dict)
     api_environment = api["environment"]
     mcp_environment = mcp["environment"]
+    worker_environment = worker["environment"]
     assert isinstance(api_environment, dict)
     assert isinstance(mcp_environment, dict)
+    assert isinstance(worker_environment, dict)
 
     key_reference = (
         "${LEARNHOUSE_LEARNING_SERVICE_KEY:?set LEARNHOUSE_LEARNING_SERVICE_KEY}"
     )
     assert api_environment["LEARNHOUSE_LEARNING_SERVICE_KEY"] == key_reference
     assert mcp_environment["LEARNHOUSE_LEARNING_SERVICE_KEY"] == key_reference
+    assert worker_environment["LEARNHOUSE_LEARNING_SERVICE_KEY"] == key_reference
     assert mcp_environment["LEARNHOUSE_LEARNING_SERVICE_URL"] == (
+        "http://learnhouse-api:9000/api/v1/learning"
+    )
+    assert worker_environment["LEARNHOUSE_LEARNING_SERVICE_URL"] == (
         "http://learnhouse-api:9000/api/v1/learning"
     )
     for service_name, service in services.items():
         assert isinstance(service, dict)
         environment = service.get("environment", {})
         assert isinstance(environment, dict)
-        if service_name not in {"learnhouse-api", "learning-mcp"}:
+        if service_name not in {"learnhouse-api", "learning-mcp", "learning-worker"}:
             assert "LEARNHOUSE_LEARNING_SERVICE_KEY" not in environment
             assert "LEARNHOUSE_LEARNING_SERVICE_URL" not in environment
 

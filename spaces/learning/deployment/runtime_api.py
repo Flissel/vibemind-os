@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import asyncio
 import os
 import socket
 from collections.abc import Callable
@@ -195,7 +196,8 @@ def retrieve_course_content(
 
 @app.post("/mcp")
 async def mcp(request: Request) -> JSONResponse:
-    response = handle_message(await request.json())
+    message = await request.json()
+    response = await asyncio.to_thread(handle_message, message)
     if response is None:
         return JSONResponse({}, status_code=202)
     return JSONResponse(response)

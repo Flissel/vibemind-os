@@ -35,6 +35,7 @@ from spaces.learning.services.course_factory.team import (
     CourseTeamInput,
 )
 from spaces.learning.services.db.models import Base
+from spaces.learning.tests.unit.test_source_verification import _draft, _ids
 
 
 def _hash(value: str) -> str:
@@ -110,10 +111,9 @@ def _role_output(role: str):
             activities=[{"concept": "authority", "type": "case", "prompt": "Decide"}],
         ),
         "source_verifier": SourceVerificationOutput(
-            schema_version="source-verification-v1",
-            supported_claims=["claim-1"],
-            unsupported_claims=[],
-            citation_refs=["source://one/1#page=2"],
+            schema_version="source-verification-v2",
+            draft=_draft(_ids()),
+            unsupported_claim_ids=[],
         ),
         "quality_reviewer": QualityReviewOutput(
             schema_version="quality-review-v1",
@@ -175,7 +175,6 @@ async def test_autogen_team_runs_fixed_roles_and_persists_each_stage(session_fac
         "lesson_author",
         "assessment_designer",
         "source_verifier",
-        "quality_reviewer",
     ]
     assert {call.correlation_id for call in gateway.calls} == {correlation_id}
     with session_factory() as session:
@@ -190,7 +189,6 @@ async def test_autogen_team_runs_fixed_roles_and_persists_each_stage(session_fac
         "authoring",
         "assessing",
         "verifying",
-        "quality_gate",
     }
     assert all(artifact.input_hash and artifact.output_hash for artifact in artifacts)
     assert all(
@@ -199,6 +197,72 @@ async def test_autogen_team_runs_fixed_roles_and_persists_each_stage(session_fac
         if artifact.stage != FactoryState.INGESTING.value
     )
     assert result.state is not FactoryState.PUBLISHED
+
+    review_request = CourseTeamInput(
+        job_id=result.id,
+        expected_revision=result.revision,
+        correlation_id=correlation_id,
+        course_id=result.course_id,
+        audience="Professionals",
+        target_outcome="Apply grounded AI safely",
+        source_refs=("source://one/1",),
+    )
+    review = await team.run_quality_review(
+        review_request,
+        draft=_draft(_ids()),
+        deterministic_issue_codes=(),
+    )
+    assert review.decision == "pass"
+    assert gateway.calls[-1].role == "quality_reviewer"
+    with session_factory() as session:
+        quality_artifact = session.scalar(
+            select(CourseFactoryStageArtifact).where(
+                CourseFactoryStageArtifact.job_id == job.id,
+                CourseFactoryStageArtifact.stage == FactoryState.QUALITY_GATE.value,
+            )
+        )
+    assert quality_artifact is not None
+    assert quality_artifact.output_artifact_id is not None
+
+
+@pytest.mark.asyncio
+async def test_quality_reviewer_is_not_called_after_deterministic_failure(
+    session_factory,
+) -> None:
+    repository = CourseFactoryRepository(session_factory)
+    job = _structuring_job(repository)
+    gateway = _Gateway()
+    artifact_root = Path(session_factory.kw["bind"].url.database).parent / "artifacts-gate"
+    artifact_root.mkdir()
+    team = CourseAgentTeam(
+        repository,
+        gateway,
+        CourseFactoryArtifactStore(session_factory, artifact_root=artifact_root),
+    )
+    request = CourseTeamInput(
+        job_id=job.id,
+        expected_revision=job.revision,
+        correlation_id=str(uuid4()),
+        course_id=job.course_id,
+        audience="Professionals",
+        target_outcome="Apply grounded AI safely",
+        source_refs=("source://one/1",),
+    )
+    gated = await team.run(request)
+
+    with pytest.raises(ValueError, match="deterministic approval"):
+        await team.run_quality_review(
+            CourseTeamInput(
+                **{
+                    **request.__dict__,
+                    "expected_revision": gated.revision,
+                }
+            ),
+            draft=_draft(_ids()),
+            deterministic_issue_codes=("unsupported_claim",),
+        )
+
+    assert [call.role for call in gateway.calls].count("quality_reviewer") == 0
 
 
 @pytest.mark.asyncio
@@ -270,7 +334,7 @@ async def test_rejected_job_has_zero_agent_or_gateway_calls(session_factory) -> 
         CourseFactoryArtifactStore(session_factory, artifact_root=artifact_root),
     )
 
-    with pytest.raises(ValueError, match="structuring"):
+    with pytest.raises(ValueError, match="generation stage"):
         await team.run(
             CourseTeamInput(
                 job_id=job.id,

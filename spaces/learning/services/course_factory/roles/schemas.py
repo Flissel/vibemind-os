@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from spaces.learning.services.course_factory.schemas import CourseDraft
+
 
 class _StrictOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -52,10 +54,9 @@ class AssessmentOutput(_StrictOutput):
 
 
 class SourceVerificationOutput(_StrictOutput):
-    schema_version: Literal["source-verification-v1"]
-    supported_claims: list[str] = Field(max_length=5_000)
-    unsupported_claims: list[str] = Field(max_length=5_000)
-    citation_refs: list[str] = Field(max_length=10_000)
+    schema_version: Literal["source-verification-v2"]
+    draft: CourseDraft
+    unsupported_claim_ids: list[str] = Field(max_length=5_000)
 
 
 class QualityReviewOutput(_StrictOutput):

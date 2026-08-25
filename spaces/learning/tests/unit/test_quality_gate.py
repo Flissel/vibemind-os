@@ -226,3 +226,25 @@ def test_duplicate_entity_ids_fail_closed(session_factory) -> None:
 
     assert result.job.state is FactoryState.QUALITY_GATE
     assert "duplicate_concept_id" in result.report.issue_codes
+
+
+def test_deterministic_preflight_surfaces_declared_unsupported_claims(
+    session_factory,
+) -> None:
+    ids = _ids()
+    repository = CourseFactoryRepository(session_factory)
+    job = _quality_job(repository, str(uuid4()))
+    draft = _draft(ids)
+    draft.job_id = job.id
+
+    report = QualityGate(repository).inspect(
+        job.id,
+        expected_revision=job.revision,
+        draft=draft,
+        sources=_catalog(ids),
+        declared_unsupported_claim_ids=("claim-authority",),
+    )
+
+    assert report.approved is False
+    assert report.issue_codes == ["unsupported_claim"]
+    assert repository.get(job.id).state is FactoryState.QUALITY_GATE

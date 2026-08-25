@@ -58,6 +58,35 @@ class QualityGate:
         sources: tuple[SourceSnapshot, ...],
         ai_review: QualityReviewOutput,
     ) -> QualityGateResult:
+        report = self.inspect(
+            job_id,
+            expected_revision=expected_revision,
+            draft=draft,
+            sources=sources,
+        )
+        issues = list(report.issues)
+        if ai_review.decision != "pass" or ai_review.score < _AI_PASS_THRESHOLD:
+            issues.append(QualityIssue("ai_review_not_approved", draft.job_id))
+
+        report = QualityReport(tuple(_deduplicate_issues(issues)))
+        job = self._repository.get(job_id)
+        if report.approved:
+            job = self._repository.advance(
+                job_id,
+                expected_revision=expected_revision,
+                target=FactoryState.REVIEW_READY,
+            )
+        return QualityGateResult(job=job, report=report)
+
+    def inspect(
+        self,
+        job_id: str,
+        *,
+        expected_revision: int,
+        draft: CourseDraft,
+        sources: tuple[SourceSnapshot, ...],
+        declared_unsupported_claim_ids: tuple[str, ...] = (),
+    ) -> QualityReport:
         job = self._repository.get(job_id)
         if job.revision != expected_revision:
             raise ValueError("quality gate revision mismatch")
@@ -70,18 +99,10 @@ class QualityGate:
         ]
         if draft.job_id != job.id or draft.attempt_number != job.attempt_number:
             issues.append(QualityIssue("draft_job_mismatch", draft.job_id))
+        for claim_id in declared_unsupported_claim_ids:
+            issues.append(QualityIssue("unsupported_claim", claim_id))
         issues.extend(_deterministic_quality_issues(draft))
-        if ai_review.decision != "pass" or ai_review.score < _AI_PASS_THRESHOLD:
-            issues.append(QualityIssue("ai_review_not_approved", draft.job_id))
-
-        report = QualityReport(tuple(_deduplicate_issues(issues)))
-        if report.approved:
-            job = self._repository.advance(
-                job_id,
-                expected_revision=expected_revision,
-                target=FactoryState.REVIEW_READY,
-            )
-        return QualityGateResult(job=job, report=report)
+        return QualityReport(tuple(_deduplicate_issues(issues)))
 
 
 def _deterministic_quality_issues(draft: CourseDraft) -> list[QualityIssue]:

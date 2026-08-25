@@ -13,7 +13,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from spaces.learning.services.course_factory.models import (
     CourseFactoryAttempt,
+    CourseFactoryDraftDelivery,
     CourseFactoryJob,
+    CourseFactoryPublication,
+    CourseFactoryReviewDecision,
     CourseFactoryStageArtifact,
     CourseFactoryTransition,
 )
@@ -33,6 +36,7 @@ from spaces.learning.services.db.repository import PersistenceConflict
 SessionFactory = Callable[[], Session]
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _REASON = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
+_EVIDENCE_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
 _ARTIFACT_STAGES = frozenset(FACTORY_PIPELINE[1:-2])
 
 
@@ -50,6 +54,7 @@ class GenerationRequest(BaseModel):
     correlation_id: str = Field(min_length=36, max_length=36)
     audience: str = Field(min_length=1, max_length=1_000)
     target_outcome: str = Field(min_length=1, max_length=2_000)
+    learnhouse_revision: int = Field(default=1, ge=0)
 
     @field_validator("correlation_id")
     @classmethod
@@ -92,6 +97,30 @@ class FactoryAttemptRecord:
     request_hash: str
     generation_request: GenerationRequest | None
     provenance: tuple[SourceProvenance, ...]
+
+
+@dataclass(frozen=True)
+class DraftDeliveryInput:
+    draft_hash: str
+    learnhouse_revision: int
+    evidence_ref: str
+
+
+@dataclass(frozen=True)
+class DraftDeliveryRecord:
+    job_id: str
+    attempt_number: int
+    draft_hash: str
+    learnhouse_revision: int
+    evidence_ref: str
+
+
+@dataclass(frozen=True)
+class PublicationInput:
+    draft_hash: str
+    learnhouse_revision: int
+    confirmation_ref: str
+    readback_evidence_ref: str
 
 
 class CourseFactoryRepository:
@@ -163,6 +192,41 @@ class CourseFactoryRepository:
             if job is None:
                 raise LookupError("course factory job not found")
             return _attempt_record(_current_attempt(session, job))
+
+    def claim_next_queued(self) -> FactoryJobRecord | None:
+        try:
+            with self._session_factory() as session, session.begin():
+                job = session.scalar(
+                    select(CourseFactoryJob)
+                    .where(CourseFactoryJob.state == FactoryState.QUEUED.value)
+                    .order_by(CourseFactoryJob.created_at, CourseFactoryJob.id)
+                    .limit(1)
+                    .with_for_update(skip_locked=True)
+                )
+                if job is None:
+                    return None
+                attempt = _current_attempt(session, job)
+                now = utc_now()
+                next_revision = job.revision + 1
+                session.add(
+                    CourseFactoryTransition(
+                        id=str(uuid4()),
+                        job_id=job.id,
+                        attempt_id=attempt.id,
+                        job_revision=next_revision,
+                        from_state=FactoryState.QUEUED.value,
+                        to_state=FactoryState.INGESTING.value,
+                        reason_code=None,
+                        created_at=now,
+                    )
+                )
+                job.state = FactoryState.INGESTING.value
+                job.revision = next_revision
+                job.updated_at = now
+                session.flush()
+                return _record(job)
+        except IntegrityError as error:
+            raise PersistenceConflict("course factory queue claim conflict") from error
 
     def advance(
         self,
@@ -315,6 +379,158 @@ class CourseFactoryRepository:
                 ).id
         except IntegrityError as error:
             raise PersistenceConflict("course factory artifact conflict") from error
+
+    def record_draft_delivery(
+        self,
+        job_id: str,
+        *,
+        expected_revision: int,
+        delivery: DraftDeliveryInput,
+    ) -> DraftDeliveryRecord:
+        job_id = str(UUID(job_id))
+        _validate_delivery(delivery)
+        try:
+            with self._session_factory() as session, session.begin():
+                job = session.get(CourseFactoryJob, job_id, with_for_update=True)
+                if job is None:
+                    raise LookupError("course factory job not found")
+                if job.revision != expected_revision:
+                    raise PersistenceConflict("course factory revision conflict")
+                if FactoryState(job.state) not in {
+                    FactoryState.QUALITY_GATE,
+                    FactoryState.REVIEW_READY,
+                }:
+                    raise InvalidFactoryTransition(
+                        "factory draft delivery requires a reviewable state"
+                    )
+                attempt = _current_attempt(session, job)
+                existing = session.scalar(
+                    select(CourseFactoryDraftDelivery).where(
+                        CourseFactoryDraftDelivery.job_id == job.id,
+                        CourseFactoryDraftDelivery.attempt_number
+                        == attempt.attempt_number,
+                    )
+                )
+                if existing is not None:
+                    record = _delivery_record(existing)
+                    if record != DraftDeliveryRecord(
+                        job_id=job.id,
+                        attempt_number=attempt.attempt_number,
+                        draft_hash=delivery.draft_hash,
+                        learnhouse_revision=delivery.learnhouse_revision,
+                        evidence_ref=delivery.evidence_ref,
+                    ):
+                        raise PersistenceConflict("factory draft delivery is immutable")
+                    return record
+                row = CourseFactoryDraftDelivery(
+                    id=str(uuid4()),
+                    job_id=job.id,
+                    attempt_id=attempt.id,
+                    attempt_number=attempt.attempt_number,
+                    draft_hash=delivery.draft_hash,
+                    learnhouse_revision=delivery.learnhouse_revision,
+                    evidence_ref=delivery.evidence_ref,
+                    created_at=utc_now(),
+                )
+                session.add(row)
+                session.flush()
+                return _delivery_record(row)
+        except IntegrityError as error:
+            raise PersistenceConflict("factory draft delivery conflict") from error
+
+    def get_draft_delivery(self, job_id: str) -> DraftDeliveryRecord:
+        job_id = str(UUID(job_id))
+        with self._session_factory() as session:
+            job = session.get(CourseFactoryJob, job_id)
+            if job is None:
+                raise LookupError("course factory job not found")
+            row = session.scalar(
+                select(CourseFactoryDraftDelivery).where(
+                    CourseFactoryDraftDelivery.job_id == job.id,
+                    CourseFactoryDraftDelivery.attempt_number == job.current_attempt,
+                )
+            )
+            if row is None:
+                raise LookupError("factory draft delivery not found")
+            return _delivery_record(row)
+
+    def mark_published(
+        self,
+        job_id: str,
+        *,
+        expected_revision: int,
+        publication: PublicationInput,
+    ) -> FactoryJobRecord:
+        job_id = str(UUID(job_id))
+        _validate_publication(publication)
+        try:
+            with self._session_factory() as session, session.begin():
+                job = session.get(CourseFactoryJob, job_id, with_for_update=True)
+                if job is None:
+                    raise LookupError("course factory job not found")
+                if job.revision != expected_revision:
+                    raise PersistenceConflict("course factory revision conflict")
+                require_transition(FactoryState(job.state), FactoryState.PUBLISHED)
+                attempt = _current_attempt(session, job)
+                delivery = session.scalar(
+                    select(CourseFactoryDraftDelivery).where(
+                        CourseFactoryDraftDelivery.job_id == job.id,
+                        CourseFactoryDraftDelivery.attempt_number
+                        == attempt.attempt_number,
+                    )
+                )
+                if delivery is None or delivery.draft_hash != publication.draft_hash:
+                    raise PersistenceConflict("factory publication draft mismatch")
+                now = utc_now()
+                session.add(
+                    CourseFactoryReviewDecision(
+                        id=str(uuid4()),
+                        job_id=job.id,
+                        attempt_id=attempt.id,
+                        attempt_number=attempt.attempt_number,
+                        decision="approved",
+                        confirmation_ref=publication.confirmation_ref,
+                        draft_hash=publication.draft_hash,
+                        created_at=now,
+                    )
+                )
+                session.add(
+                    CourseFactoryPublication(
+                        id=str(uuid4()),
+                        job_id=job.id,
+                        attempt_id=attempt.id,
+                        attempt_number=attempt.attempt_number,
+                        course_id=job.course_id,
+                        draft_hash=publication.draft_hash,
+                        learnhouse_revision=publication.learnhouse_revision,
+                        confirmation_ref=publication.confirmation_ref,
+                        readback_evidence_ref=publication.readback_evidence_ref,
+                        created_at=now,
+                    )
+                )
+                next_revision = expected_revision + 1
+                session.add(
+                    CourseFactoryTransition(
+                        id=str(uuid4()),
+                        job_id=job.id,
+                        attempt_id=attempt.id,
+                        job_revision=next_revision,
+                        from_state=FactoryState.REVIEW_READY.value,
+                        to_state=FactoryState.PUBLISHED.value,
+                        reason_code=None,
+                        created_at=now,
+                    )
+                )
+                job.state = FactoryState.PUBLISHED.value
+                job.revision = next_revision
+                job.terminal_at = now
+                job.updated_at = now
+                attempt.terminal_state = FactoryState.PUBLISHED.value
+                attempt.terminal_at = now
+                session.flush()
+                return _record(job)
+        except IntegrityError as error:
+            raise PersistenceConflict("factory publication conflict") from error
 
     @staticmethod
     def _add_stage_artifact(
@@ -505,3 +721,34 @@ def _attempt_record(attempt: CourseFactoryAttempt) -> FactoryAttemptRecord:
         generation_request=request,
         provenance=provenance,
     )
+
+
+def _delivery_record(row: CourseFactoryDraftDelivery) -> DraftDeliveryRecord:
+    return DraftDeliveryRecord(
+        job_id=row.job_id,
+        attempt_number=row.attempt_number,
+        draft_hash=row.draft_hash,
+        learnhouse_revision=row.learnhouse_revision,
+        evidence_ref=row.evidence_ref,
+    )
+
+
+def _validate_delivery(delivery: DraftDeliveryInput) -> None:
+    _validate_hash(delivery.draft_hash)
+    if (
+        delivery.learnhouse_revision < 1
+        or not delivery.evidence_ref
+        or len(delivery.evidence_ref) > 512
+    ):
+        raise ValueError("factory draft delivery is invalid")
+
+
+def _validate_publication(publication: PublicationInput) -> None:
+    _validate_hash(publication.draft_hash)
+    if (
+        publication.learnhouse_revision < 1
+        or not _EVIDENCE_TOKEN.fullmatch(publication.confirmation_ref)
+        or not publication.readback_evidence_ref
+        or len(publication.readback_evidence_ref) > 512
+    ):
+        raise ValueError("factory publication evidence is invalid")

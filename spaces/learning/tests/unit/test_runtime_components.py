@@ -47,7 +47,7 @@ def test_migrate_creates_all_learning_owned_tables(tmp_path: Path) -> None:
             revision = connection.exec_driver_sql(
                 "SELECT version_num FROM learning_alembic_version"
             ).scalar_one()
-        assert revision == "0005_factory_artifacts"
+        assert revision == "0006_factory_publication"
     finally:
         engine.dispose()
 
@@ -69,7 +69,7 @@ def test_migrate_adopts_complete_pre_alembic_learning_schema(tmp_path: Path) -> 
             revision = connection.exec_driver_sql(
                 "SELECT version_num FROM learning_alembic_version"
             ).scalar_one()
-        assert revision == "0005_factory_artifacts"
+        assert revision == "0006_factory_publication"
     finally:
         engine.dispose()
 
@@ -129,7 +129,7 @@ def test_migrate_upgrades_phase_one_pre_alembic_receipts_as_terminal(
                 "SELECT version_num FROM learning_alembic_version"
             ).scalar_one()
         assert terminal in {True, 1}
-        assert revision == "0005_factory_artifacts"
+        assert revision == "0006_factory_publication"
     finally:
         engine.dispose()
 

@@ -4,6 +4,7 @@ import json
 import os
 import sys
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
@@ -20,9 +21,19 @@ from spaces.learning.contracts.events import EVENT_TOOL_MAP, LearningToolName
 from spaces.learning.contracts.mcp_models import EventEnvelopeV1, ToolRequestV1
 from spaces.learning.mcp.tools.courses import build_course_gateways
 from spaces.learning.mcp.tools.navigation import build_navigation_gateways
+from spaces.learning.mcp.tools.generation import build_generation_gateways
 from spaces.learning.mcp.tools.status import (
     build_default_dispatcher as build_status_dispatcher,
 )
+from spaces.learning.services.course_factory.artifact_store import (
+    CourseFactoryArtifactStore,
+)
+from spaces.learning.services.course_factory.learnhouse_gateway import (
+    build_learnhouse_http_gateway,
+)
+from spaces.learning.services.course_factory.publisher import CourseDraftPublisher
+from spaces.learning.services.course_factory.repository import CourseFactoryRepository
+from spaces.learning.services.db.session import build_session_factory, create_learning_engine
 
 
 SERVER_NAME = "spaces-learning"
@@ -57,6 +68,33 @@ def build_default_dispatcher(
     admitted_learnhouse = learnhouse or LearnHouseClient()
     gateways = dict(build_course_gateways(admitted_learnhouse))
     gateways.update(build_navigation_gateways(admitted_learnhouse))
+    database_url = os.environ.get("LEARNING_DATABASE_URL", "").strip()
+    artifact_root = os.environ.get("LEARNING_ARTIFACT_ROOT", "").strip()
+    if (
+        database_url
+        and artifact_root
+        and os.environ.get("LEARNING_SERVICE_ROLE") == "mcp"
+    ):
+        engine = create_learning_engine(database_url)
+        session_factory = build_session_factory(engine)
+        store = CourseFactoryArtifactStore(
+            session_factory, artifact_root=Path(artifact_root)
+        )
+        repository = CourseFactoryRepository(session_factory)
+        publisher = CourseDraftPublisher(
+            repository=repository,
+            artifact_store=store,
+            learnhouse=build_learnhouse_http_gateway(),
+        )
+        gateways.update(
+            build_generation_gateways(
+                session_factory=session_factory,
+                repository=repository,
+                publisher=publisher,
+                artifact_store=store,
+                learnhouse_fallback=admitted_learnhouse,
+            )
+        )
     return build_status_dispatcher(
         gateways=gateways,
         receipts=receipts,

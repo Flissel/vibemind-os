@@ -161,6 +161,29 @@ def test_job_persists_provenance_and_every_stage_without_overwrite(
         )
 
 
+def test_worker_claims_one_queued_job_and_advances_revision(session_factory) -> None:
+    repository = CourseFactoryRepository(session_factory)
+    first = repository.create_job(
+        course_id=str(uuid4()),
+        request_hash=_hash("claim-first"),
+        provenance=_provenance(),
+    )
+    repository.create_job(
+        course_id=str(uuid4()),
+        request_hash=_hash("claim-second"),
+        provenance=_provenance(),
+    )
+
+    claimed = repository.claim_next_queued()
+
+    assert claimed is not None
+    assert claimed.id == first.id
+    assert claimed.state is FactoryState.INGESTING
+    assert claimed.revision == 2
+    assert repository.claim_next_queued() is not None
+    assert repository.claim_next_queued() is None
+
+
 def test_retry_creates_new_attempt_and_preserves_terminal_lineage(
     session_factory,
 ) -> None:
