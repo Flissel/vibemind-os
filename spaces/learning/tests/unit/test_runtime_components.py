@@ -9,10 +9,27 @@ import pytest
 
 from spaces.learning.deployment import worker
 from spaces.learning.deployment.migrate import migrate
+from spaces.learning.deployment.runtime_api import _migration_probe
 from spaces.learning.deployment.runtime_smoke import _status_request
 from spaces.learning.deployment.runtime_smoke import _run as run_compose
 from spaces.learning.services.db.models import Base, LearningInvocationReceipt
 from spaces.learning.services.db.session import create_learning_engine
+
+
+PHASE_ONE_TABLES = (
+    "learning_invocation_receipts",
+    "learning_aggregate_revisions",
+    "learning_outbox",
+    "learning_artifacts",
+    "learning_terminal_evidence",
+)
+
+
+def test_runtime_metadata_registers_ingestion_owned_tables(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'empty-runtime.db'}"
+
+    assert "learning_source_revisions" in Base.metadata.tables
+    assert _migration_probe(database_url) is False
 
 
 def test_migrate_creates_all_learning_owned_tables(tmp_path: Path) -> None:
@@ -30,7 +47,7 @@ def test_migrate_creates_all_learning_owned_tables(tmp_path: Path) -> None:
             revision = connection.exec_driver_sql(
                 "SELECT version_num FROM learning_alembic_version"
             ).scalar_one()
-        assert revision == "0002_learning_receipt_claims"
+        assert revision == "0003_sources_outbox"
     finally:
         engine.dispose()
 
@@ -39,7 +56,8 @@ def test_migrate_adopts_complete_pre_alembic_learning_schema(tmp_path: Path) -> 
     database_url = f"sqlite:///{tmp_path / 'legacy-runtime.db'}"
     engine = create_learning_engine(database_url)
     try:
-        Base.metadata.create_all(engine)
+        for table_name in PHASE_ONE_TABLES:
+            Base.metadata.tables[table_name].create(engine)
     finally:
         engine.dispose()
 
@@ -51,9 +69,21 @@ def test_migrate_adopts_complete_pre_alembic_learning_schema(tmp_path: Path) -> 
             revision = connection.exec_driver_sql(
                 "SELECT version_num FROM learning_alembic_version"
             ).scalar_one()
-        assert revision == "0002_learning_receipt_claims"
+        assert revision == "0003_sources_outbox"
     finally:
         engine.dispose()
+
+
+def test_migrate_rejects_unversioned_extension_tables(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'unversioned-extension.db'}"
+    engine = create_learning_engine(database_url)
+    try:
+        Base.metadata.create_all(engine)
+    finally:
+        engine.dispose()
+
+    with pytest.raises(RuntimeError, match="unversioned extension"):
+        migrate(database_url)
 
 
 def test_migrate_upgrades_phase_one_pre_alembic_receipts_as_terminal(
@@ -62,7 +92,8 @@ def test_migrate_upgrades_phase_one_pre_alembic_receipts_as_terminal(
     database_url = f"sqlite:///{tmp_path / 'phase-one-runtime.db'}"
     engine = create_learning_engine(database_url)
     try:
-        Base.metadata.create_all(engine)
+        for table_name in PHASE_ONE_TABLES:
+            Base.metadata.tables[table_name].create(engine)
         with engine.begin() as connection:
             connection.exec_driver_sql(
                 "ALTER TABLE learning_invocation_receipts DROP COLUMN terminal"
@@ -98,7 +129,7 @@ def test_migrate_upgrades_phase_one_pre_alembic_receipts_as_terminal(
                 "SELECT version_num FROM learning_alembic_version"
             ).scalar_one()
         assert terminal in {True, 1}
-        assert revision == "0002_learning_receipt_claims"
+        assert revision == "0003_sources_outbox"
     finally:
         engine.dispose()
 

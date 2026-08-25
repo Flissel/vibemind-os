@@ -168,6 +168,9 @@ def test_core_migration_and_metadata_own_the_exact_prefixed_tables() -> None:
         "learning_outbox",
         "learning_artifacts",
         "learning_terminal_evidence",
+        "learning_sources",
+        "learning_source_revisions",
+        "learning_source_chunks",
     }
 
 

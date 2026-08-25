@@ -13,6 +13,7 @@ from spaces.learning.deployment.health import HealthService
 from spaces.learning.mcp.server import handle_message
 from spaces.learning.services.db.models import Base
 from spaces.learning.services.db.session import create_learning_engine
+from spaces.learning.services.ingestion import models as ingestion_models  # noqa: F401
 
 
 def _tcp_probe(url: str, default_port: int) -> Callable[[], bool]:

@@ -9,11 +9,20 @@ from sqlalchemy import inspect
 
 from spaces.learning.services.db.models import Base
 from spaces.learning.services.db.session import create_learning_engine
+from spaces.learning.services.ingestion import models as ingestion_models  # noqa: F401
 
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "services" / "db" / "migrations"
 VERSION_TABLE = "learning_alembic_version"
 PHASE_ONE_REVISION = "0001_learning_core"
+RECEIPT_CLAIMS_REVISION = "0002_learning_receipt_claims"
+LEGACY_CORE_TABLES = {
+    "learning_invocation_receipts",
+    "learning_aggregate_revisions",
+    "learning_outbox",
+    "learning_artifacts",
+    "learning_terminal_evidence",
+}
 
 
 def _config(database_url: str) -> Config:
@@ -46,18 +55,26 @@ def _adopt_complete_legacy_schema(database_url: str, config: Config) -> bool:
     existing_owned_tables = owned_tables & table_names
     if not existing_owned_tables:
         return False
-    if existing_owned_tables != owned_tables:
-        missing = ", ".join(sorted(owned_tables - existing_owned_tables))
+    missing_legacy_tables = LEGACY_CORE_TABLES - existing_owned_tables
+    if missing_legacy_tables:
+        missing = ", ".join(sorted(missing_legacy_tables))
         raise RuntimeError(
             f"partial pre-Alembic Learning schema; missing owned tables: {missing}"
+        )
+
+    extension_tables = owned_tables - LEGACY_CORE_TABLES
+    existing_extension_tables = extension_tables & existing_owned_tables
+    if existing_extension_tables:
+        raise RuntimeError(
+            "unversioned extension tables cannot prove migration-owned constraints"
         )
 
     if "terminal" not in receipt_columns:
         command.stamp(config, PHASE_ONE_REVISION)
         return False
 
-    command.stamp(config, "head")
-    return True
+    command.stamp(config, RECEIPT_CLAIMS_REVISION)
+    return False
 
 
 def migrate(database_url: str) -> None:
