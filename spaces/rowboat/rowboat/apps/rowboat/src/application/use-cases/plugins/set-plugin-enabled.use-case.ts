@@ -8,8 +8,10 @@ export class SetPluginEnabledUseCase {
     assertId(request.projectId, "project_id_invalid"); assertId(request.pluginName, "plugin_name_invalid"); assertDigest(request.catalogDigest); assertIdempotencyKey(request.idempotencyKey);
     if (typeof request.enabled !== "boolean" || !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0) serviceError("installation_update_invalid");
     await this.dependencies.pluginApiAuthorizationPolicy.authorizeProject(request.identity, request.projectId);
-    assertPinnedSnapshot(await this.dependencies.pluginsRepository.getCatalogSnapshot(request.catalogDigest), request.catalogDigest);
-    const entry = (await this.dependencies.pluginsRepository.listCatalogEntries(request.catalogDigest)).find((candidate) => candidate.name === request.pluginName);
+    const catalog = await this.dependencies.pluginsRepository.getCatalog(request.catalogDigest);
+    assertPinnedSnapshot(catalog, request.catalogDigest);
+    const selected = catalog.entries.find((candidate) => candidate.name === request.pluginName);
+    const entry = selected === undefined ? undefined : { ...selected, catalogDigest: request.catalogDigest };
     if (entry === undefined) serviceError("plugin_not_found");
     assertAdmitted(entry);
     const installation = await this.dependencies.pluginsRepository.getInstallation(request.projectId, request.pluginName);

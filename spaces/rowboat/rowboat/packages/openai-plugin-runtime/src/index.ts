@@ -85,6 +85,7 @@ export {
 export {
   importCatalog,
   componentBindingDigest,
+  pluginCatalogDigest,
   parseCatalogSyncArgs,
   assertCatalogOutputContained,
   writeCatalogLock,
@@ -92,7 +93,9 @@ export {
   type CatalogLockWriteOptions,
   type CatalogSyncArgs,
   type ComponentBindingProvenance,
+  type ComponentBindingAdmissionMaterial,
 } from "./import/catalog-importer.js";
+export { validatePluginCatalogLock } from "./import/catalog-validator.js";
 export {
   normalizeSkill,
   type NormalizedSkill,

@@ -29,12 +29,15 @@ export class InstallPluginUseCase {
       projectId: request.projectId, pluginName: request.pluginName, catalogDigest: request.catalogDigest,
       expectedRevision: request.expectedRevision,
     });
-    const replay = await this.dependencies.pluginsRepository.getIdempotentReceipt(idempotencyScope, payloadFingerprint);
+    const replay = await this.dependencies.pluginsRepository.getIdempotentReceipt({
+      scope: idempotencyScope, fingerprint: payloadFingerprint, projectId: request.projectId,
+      pluginName: request.pluginName, operation: "install",
+    });
     if (replay !== null) return replay;
-    const snapshot = await this.dependencies.pluginsRepository.getCatalogSnapshot(request.catalogDigest);
-    assertPinnedSnapshot(snapshot, request.catalogDigest);
-    const entries = await this.dependencies.pluginsRepository.listCatalogEntries(request.catalogDigest);
-    const entry = entries.find((candidate) => candidate.name === request.pluginName && candidate.pluginName === request.pluginName);
+    const catalog = await this.dependencies.pluginsRepository.getCatalog(request.catalogDigest);
+    assertPinnedSnapshot(catalog, request.catalogDigest);
+    const selected = catalog.entries.find((candidate) => candidate.name === request.pluginName && candidate.pluginName === request.pluginName);
+    const entry = selected === undefined ? undefined : { ...selected, catalogDigest: request.catalogDigest };
     if (entry === undefined || entry.catalogDigest !== request.catalogDigest) serviceError("plugin_not_found");
     assertAdmitted(entry);
     const existing = await this.dependencies.pluginsRepository.getInstallation(request.projectId, request.pluginName);

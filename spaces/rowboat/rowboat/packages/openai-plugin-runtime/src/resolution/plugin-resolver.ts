@@ -1,8 +1,5 @@
-import { createHash } from "node:crypto";
 import { isProxy } from "node:util/types";
 import {
-  PINNED_OPENAI_PLUGINS_COMMIT,
-  PLUGIN_SCHEMA_VERSION,
   type CatalogComponentAdmission,
   type PluginCatalogEntry,
   type PluginCatalogLock,
@@ -17,9 +14,10 @@ import { DEFAULT_POLICY, type PluginPolicy } from "../policy/default-policy.js";
 import type { ProviderBinding } from "../providers/provider.js";
 import type { PluginProvider } from "../providers/provider.js";
 import { ProviderRegistry } from "../providers/provider-registry.js";
+import { validatePluginCatalogLock } from "../import/catalog-validator.js";
 
 export const PINNED_PLUGIN_CATALOG_DIGEST =
-  "04701d9ad51f4a1f88cad59f9311e07cb02fb88848fa75c8edecd8d404e7b3c6" as const;
+  "2e436d02b025a14960d5ef813c603bd7aec35a6d173c42d8c58274163da89a92" as const;
 
 export interface ResolvedComponent {
   readonly id: string;
@@ -93,46 +91,14 @@ function capturePlain(value: unknown, depth = 0, budget: CaptureBudget = { nodes
   return Object.freeze(result);
 }
 
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
 function validateCatalog(input: unknown): PluginCatalogLock {
-  const catalog = capturePlain(input) as PluginCatalogLock;
-  if (
-    catalog.sourceCommit !== PINNED_OPENAI_PLUGINS_COMMIT
-    || catalog.schemaVersion !== PLUGIN_SCHEMA_VERSION
-    || catalog.policyVersion !== DEFAULT_POLICY.version
-    || catalog.catalogDigest !== PINNED_PLUGIN_CATALOG_DIGEST
-    || !Array.isArray(catalog.entries)
-    || catalog.entries.length !== 180
-  ) fail();
-  const { catalogDigest: ignored, ...payload } = catalog;
-  void ignored;
-  const computed = createHash("sha256").update(canonicalJson(payload)).digest("hex");
-  if (computed !== PINNED_PLUGIN_CATALOG_DIGEST) fail();
-  const names = new Set<string>();
-  for (const entry of catalog.entries) {
-    if (names.has(entry.name) || entry.name !== entry.pluginName) fail();
-    names.add(entry.name);
-    const componentIds = new Set<string>();
-    const bindingDigests = new Set<string>();
-    for (const { component } of entry.components) {
-      if (
-        componentIds.has(component.id)
-        || typeof component.metadata.digest !== "string" || !DIGEST.test(component.metadata.digest)
-        || typeof component.metadata.bindingDigest !== "string" || !DIGEST.test(component.metadata.bindingDigest)
-        || bindingDigests.has(component.metadata.bindingDigest)
-      ) fail();
-      componentIds.add(component.id);
-      bindingDigests.add(component.metadata.bindingDigest);
-    }
+  try {
+    const catalog = validatePluginCatalogLock(input);
+    if (catalog.catalogDigest !== PINNED_PLUGIN_CATALOG_DIGEST || catalog.policyVersion !== DEFAULT_POLICY.version) fail();
+    return catalog;
+  } catch {
+    fail();
   }
-  return catalog;
 }
 
 const INSTALLATION_KEYS = new Set([

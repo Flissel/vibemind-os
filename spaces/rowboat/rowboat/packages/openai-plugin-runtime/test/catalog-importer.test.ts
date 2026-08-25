@@ -8,7 +8,10 @@ import {
   componentBindingDigest,
   importCatalog,
   parseCatalogSyncArgs,
+  pluginCatalogDigest,
+  validatePluginCatalogLock,
   writeCatalogLock,
+  type PluginCatalogLock,
 } from "../src/index.js";
 import {
   cleanupRegisteredTestRoots,
@@ -21,11 +24,15 @@ const FIXED_TIME = "2026-08-24T00:00:00.000Z";
 
 describe("structural component binding digest", () => {
   const provenance = {
+    sourceUrl: OPENAI_PLUGINS_SOURCE_URL,
     pluginName: "brand24",
     pluginVersion: "1.0.0",
     sourceCommit: "1".repeat(40),
     manifestDigest: "2".repeat(64),
     treeDigest: "3".repeat(64),
+    importedAt: FIXED_TIME,
+    schemaVersion: "rowboat-plugin-schema-v1",
+    policyVersion: "rowboat-plugin-policy-v1",
   };
   const component = {
     id: "asset:assets/logo.png",
@@ -34,25 +41,112 @@ describe("structural component binding digest", () => {
     status: "available" as const,
     metadata: { digest: "4".repeat(64), path: "assets/logo.png" },
   };
+  const admission = { status: "admitted" as const, policyVersion: "rowboat-plugin-policy-v1" };
+  const material = { componentAdmission: admission, licenseDeclaration: "MIT", licenseAdmission: admission };
 
   it("is deterministic across insertion order and changes for every structural identity input", () => {
-    const first = componentBindingDigest(provenance, component);
+    const first = componentBindingDigest(provenance, component, material);
     const reordered = componentBindingDigest(
-      { treeDigest: provenance.treeDigest, manifestDigest: provenance.manifestDigest, sourceCommit: provenance.sourceCommit, pluginVersion: provenance.pluginVersion, pluginName: provenance.pluginName },
-      { metadata: { path: "assets/logo.png", digest: "4".repeat(64) }, status: "available", kind: "asset", name: "logo.png", id: "asset:assets/logo.png" },
+      { policyVersion: provenance.policyVersion, schemaVersion: provenance.schemaVersion, importedAt: provenance.importedAt, treeDigest: provenance.treeDigest, manifestDigest: provenance.manifestDigest, sourceCommit: provenance.sourceCommit, sourceUrl: provenance.sourceUrl, pluginVersion: provenance.pluginVersion, pluginName: provenance.pluginName },
+      { metadata: { path: "assets/logo.png", digest: "4".repeat(64) }, status: "available", kind: "asset", name: "logo.png", id: "asset:assets/logo.png" }, material,
     );
     expect(first).toMatch(/^[a-f0-9]{64}$/);
     expect(reordered).toBe(first);
     for (const changed of [
-      componentBindingDigest({ ...provenance, pluginName: "dovetail" }, component),
-      componentBindingDigest({ ...provenance, pluginVersion: "2.0.0" }, component),
-      componentBindingDigest({ ...provenance, sourceCommit: "5".repeat(40) }, component),
-      componentBindingDigest({ ...provenance, manifestDigest: "6".repeat(64) }, component),
-      componentBindingDigest({ ...provenance, treeDigest: "7".repeat(64) }, component),
-      componentBindingDigest(provenance, { ...component, id: "asset:assets/logo-dark.png" }),
-      componentBindingDigest(provenance, { ...component, kind: "app" }),
-      componentBindingDigest(provenance, { ...component, metadata: { ...component.metadata, digest: "8".repeat(64) } }),
+      componentBindingDigest({ ...provenance, pluginName: "dovetail" }, component, material),
+      componentBindingDigest({ ...provenance, pluginVersion: "2.0.0" }, component, material),
+      componentBindingDigest({ ...provenance, sourceCommit: "5".repeat(40) }, component, material),
+      componentBindingDigest({ ...provenance, manifestDigest: "6".repeat(64) }, component, material),
+      componentBindingDigest({ ...provenance, treeDigest: "7".repeat(64) }, component, material),
+      componentBindingDigest(provenance, { ...component, id: "asset:assets/logo-dark.png" }, material),
+      componentBindingDigest(provenance, { ...component, name: "logo-dark.png" }, material),
+      componentBindingDigest(provenance, { ...component, kind: "app" }, material),
+      componentBindingDigest(provenance, { ...component, status: "unavailable", reason: "provider_unavailable" }, material),
+      componentBindingDigest(provenance, { ...component, metadata: { ...component.metadata, digest: "8".repeat(64) } }, material),
+      componentBindingDigest(provenance, { ...component, metadata: { ...component.metadata, transport: "process" } }, material),
+      componentBindingDigest(provenance, component, { ...material, componentAdmission: { status: "rejected", reason: "license_rejected", policyVersion: admission.policyVersion } }),
     ]) expect(changed).not.toBe(first);
+  });
+});
+
+describe("exact plugin catalog lock validation", () => {
+  it("accepts the committed full lock and rejects entry, inventory, and cardinality drift", async () => {
+    const lock = JSON.parse(await readFile(join(process.cwd(), "..", "..", "config", "openai-plugin-catalog.lock.json"), "utf8")) as unknown;
+    const validated = validatePluginCatalogLock(lock);
+    expect(validated.entries).toHaveLength(180);
+    const mutatedName = structuredClone(validated);
+    (mutatedName.entries[0] as { name: string }).name = "swapped";
+    expect(() => validatePluginCatalogLock(mutatedName)).toThrow("catalog_lock_invalid");
+    const missing = { ...structuredClone(validated), entries: structuredClone(validated.entries).slice(0, 179) };
+    expect(() => validatePluginCatalogLock(missing)).toThrow("catalog_lock_invalid");
+    const inventory = structuredClone(validated);
+    (inventory.inventory as { pluginsWithApps: number }).pluginsWithApps += 1;
+    expect(() => validatePluginCatalogLock(inventory)).toThrow("catalog_lock_invalid");
+  });
+
+  it("rejects every execution, admission, license, inventory, and cardinality mutation even after rehash", async () => {
+    const original = JSON.parse(await readFile(join(process.cwd(), "..", "..", "config", "openai-plugin-catalog.lock.json"), "utf8")) as PluginCatalogLock;
+    const rehash = (candidate: PluginCatalogLock): PluginCatalogLock => {
+      const { catalogDigest: ignored, ...payload } = candidate;
+      void ignored;
+      return { ...candidate, catalogDigest: pluginCatalogDigest(payload) };
+    };
+    const firstComponent = (candidate: PluginCatalogLock) => candidate.entries.find((entry) => entry.components.length > 0)!.components[0]!;
+    const mutations: PluginCatalogLock[] = [];
+    for (const mutate of [
+      (candidate: PluginCatalogLock) => { (firstComponent(candidate).component as { name: string }).name += " changed"; },
+      (candidate: PluginCatalogLock) => { (firstComponent(candidate).component as { status: string }).status = "unavailable"; },
+      (candidate: PluginCatalogLock) => { (firstComponent(candidate).component.metadata as Record<string, unknown>).transport = "forged"; },
+      (candidate: PluginCatalogLock) => { (firstComponent(candidate).component.metadata as Record<string, unknown>).credentialSlots = ["FORGED"]; },
+      (candidate: PluginCatalogLock) => { (firstComponent(candidate) as { admission: unknown }).admission = { status: "rejected", reason: "license_rejected", policyVersion: candidate.policyVersion }; },
+      (candidate: PluginCatalogLock) => { (candidate.entries[0] as { licenseDeclaration: string }).licenseDeclaration = "FORGED"; },
+      (candidate: PluginCatalogLock) => { (candidate.inventory as { pluginsWithApps: number }).pluginsWithApps += 1; },
+    ]) {
+      const candidate = structuredClone(original);
+      mutate(candidate);
+      mutations.push(rehash(candidate));
+    }
+    const missing = structuredClone(original);
+    (missing.entries as unknown as unknown[]).pop();
+    mutations.push(rehash(missing));
+    const extra = structuredClone(original);
+    (extra.entries as unknown as unknown[]).push(structuredClone(extra.entries[0]));
+    mutations.push(rehash(extra));
+    const swapped = structuredClone(original);
+    const mutableEntries = swapped.entries as unknown as PluginCatalogLock["entries"][number][];
+    [mutableEntries[0], mutableEntries[1]] = [mutableEntries[1]!, mutableEntries[0]!];
+    mutations.push(rehash(swapped));
+    for (const candidate of mutations) expect(() => validatePluginCatalogLock(candidate)).toThrow("catalog_lock_invalid");
+  });
+
+  it("rejects proxies and accessors without invoking their traps or getters", async () => {
+    const lock = JSON.parse(await readFile(join(process.cwd(), "..", "..", "config", "openai-plugin-catalog.lock.json"), "utf8")) as PluginCatalogLock;
+    let getterCalls = 0;
+    const withGetter = structuredClone(lock) as PluginCatalogLock & { catalogSecret?: string };
+    Object.defineProperty(withGetter, "catalogSecret", { enumerable: true, get: () => { getterCalls += 1; return "token-secret"; } });
+    expect(() => validatePluginCatalogLock(withGetter)).toThrow("catalog_lock_invalid");
+    let trapCalls = 0;
+    const proxied = new Proxy(lock, { ownKeys: (target) => { trapCalls += 1; return Reflect.ownKeys(target); } });
+    expect(() => validatePluginCatalogLock(proxied)).toThrow("catalog_lock_invalid");
+    expect(getterCalls).toBe(0);
+    expect(trapCalls).toBe(0);
+  });
+
+  it("rejects an invented admission reason even when binding and catalog digests are recomputed", async () => {
+    const candidate = JSON.parse(await readFile(join(process.cwd(), "..", "..", "config", "openai-plugin-catalog.lock.json"), "utf8")) as PluginCatalogLock;
+    const entry = candidate.entries.find((selected) => selected.components.length > 0)!;
+    const selected = entry.components[0]!;
+    const forgedAdmission = { status: "rejected" as const, reason: "invented_reason", policyVersion: candidate.policyVersion };
+    (selected as { admission: unknown }).admission = forgedAdmission;
+    (selected.component.metadata as Record<string, unknown>).bindingDigest = componentBindingDigest(entry, selected.component, {
+      componentAdmission: forgedAdmission as never,
+      licenseDeclaration: entry.licenseDeclaration ?? "<missing>",
+      licenseAdmission: entry.admission,
+    });
+    const { catalogDigest: ignored, ...payload } = candidate;
+    void ignored;
+    (candidate as { catalogDigest: string }).catalogDigest = pluginCatalogDigest(payload);
+    expect(() => validatePluginCatalogLock(candidate)).toThrow("catalog_lock_invalid");
   });
 });
 
@@ -297,6 +391,7 @@ describe("importCatalog", () => {
     expect(lock.policyVersion).toBe("rowboat-plugin-policy-v1");
     expect(lock.schemaVersion).toBe("rowboat-plugin-schema-v1");
     expect(lock.catalogDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.parse(JSON.stringify(lock))).toEqual(lock);
   });
 
   it("counts plugin surfaces and license declarations", async () => {

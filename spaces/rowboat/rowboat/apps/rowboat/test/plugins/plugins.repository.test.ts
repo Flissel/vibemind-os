@@ -238,7 +238,11 @@ function bindCatalogEntry(input: PluginCatalogEntry): PluginCatalogEntry {
       ...selected,
       component: {
         ...selected.component,
-        metadata: { ...selected.component.metadata, bindingDigest: componentBindingDigest(input, selected.component) },
+        metadata: { ...selected.component.metadata, bindingDigest: componentBindingDigest(input, selected.component, {
+          componentAdmission: selected.admission,
+          licenseDeclaration: input.licenseDeclaration ?? "<missing>",
+          licenseAdmission: input.admission,
+        }) },
       },
     })),
   };
@@ -328,7 +332,7 @@ function catalogEntryAtStoredBytes(targetBytes: number): PluginCatalogEntry {
     remaining -= selected;
   }
   if (remaining !== 0 || storedBytes() !== targetBytes) throw new Error("test_budget_target_unreachable");
-  return padded;
+  return bindCatalogEntry(padded);
 }
 
 function repositoryFixture(): { database: MemoryDatabase; repository: MongodbPluginsRepository } {
@@ -353,6 +357,29 @@ async function seedInstallation(repository: MongodbPluginsRepository): Promise<v
 }
 
 describe("plugin repository contract", () => {
+  it("atomically stores and reconstructs only the exact validated 180-entry catalog", async () => {
+    const lock = catalogLockFixture as unknown as PluginCatalogLock;
+    const { database, repository } = repositoryFixture();
+    await repository.putCatalog(lock);
+    const restored = await repository.getCatalog(lock.catalogDigest);
+    expect(restored).toEqual(lock);
+    expect(restored?.entries).toHaveLength(180);
+    expect(database.collection(PLUGIN_COLLECTIONS.catalogSnapshots).documents[0]?.complete).toBe(true);
+  });
+
+  it("fails closed for incomplete and tampered full-catalog persistence", async () => {
+    const lock = catalogLockFixture as unknown as PluginCatalogLock;
+    const { database, repository } = repositoryFixture();
+    const { entries, ...catalogSnapshot } = lock;
+    await repository.putCatalogSnapshot(catalogSnapshot);
+    await repository.putCatalogEntries(entries.slice(0, 179).map((selected) => ({ ...selected, catalogDigest: lock.catalogDigest })));
+    await expect(repository.getCatalog(lock.catalogDigest)).rejects.toThrow("catalog_incomplete");
+    const mutated = structuredClone(lock);
+    (mutated.entries[0]!.components[0]!.component as { status: string }).status = "unavailable";
+    await expect(repository.putCatalog(mutated)).rejects.toThrow("catalog_lock_invalid");
+    expect(database.collection(PLUGIN_COLLECTIONS.catalogSnapshots).documents).toHaveLength(1);
+  });
+
   it("persists real components with distinct structural bindings when their raw content digest is identical", async () => {
     const lock = catalogLockFixture as unknown as PluginCatalogLock;
     const { entries, ...catalogSnapshot } = lock;
@@ -653,7 +680,7 @@ describe("plugin repository contract", () => {
   it("rejects entry provenance that differs from its catalog snapshot with zero writes", async () => {
     const { database, repository } = repositoryFixture();
     await repository.putCatalogSnapshot(snapshot);
-    await expect(repository.putCatalogEntries([{ ...entry, importedAt: "2026-08-25T00:00:00.000Z" }]))
+    await expect(repository.putCatalogEntries([bindCatalogEntry({ ...entry, importedAt: "2026-08-25T00:00:00.000Z" })]))
       .rejects.toThrow("catalog_entry_mismatch");
     expect(database.collection(PLUGIN_COLLECTIONS.catalogEntries).writes).toBe(0);
   });
@@ -688,6 +715,51 @@ describe("plugin repository contract", () => {
       ...request, scope: digest("6"), receipt: { ...request.receipt, receiptId: "receipt-other-actor" },
     })).rejects.toThrow("installation_conflict");
     expect(database.collection(PLUGIN_COLLECTIONS.receipts).writes).toBe(1);
+  });
+
+  it("stores only a typed plugin_mutation_v1 replay envelope and rejects cross-context or generic records", async () => {
+    const { database, repository } = repositoryFixture();
+    await seedCatalog(repository);
+    const request: PluginIdempotentInstall = {
+      scope: digest("7"), fingerprint: digest("8"), installation: { ...installation, revision: 0 },
+      admissions: entry.components.map(({ component, admission }) => ({
+        installationId: installation.id, componentDigest: component.metadata.bindingDigest,
+        componentKind: component.kind, componentName: component.name, status: admission.status,
+        policyVersion: admission.policyVersion,
+      })),
+      credentialSlots: [],
+      receipt: { type: "install", receiptId: "receipt-envelope-1", projectId: installation.projectId, pluginName: installation.pluginName, status: "success", redactions: [] },
+    };
+    await repository.installIdempotently(request);
+    const stored = database.collection(PLUGIN_COLLECTIONS.receipts).documents[0]!;
+    expect(Object.keys(stored).filter((key) => key !== "_id").sort()).toEqual([
+      "envelopePayload", "idempotencyScope", "receiptId", "requestFingerprint",
+    ]);
+    const envelope = JSON.parse(String(stored.envelopePayload)) as Record<string, unknown>;
+    expect(envelope).toMatchObject({
+      type: "plugin_mutation_v1", operation: "install", projectId: installation.projectId,
+      pluginName: installation.pluginName, installationId: installation.id,
+      scopeHash: request.scope, requestFingerprint: request.fingerprint, status: "success",
+    });
+
+    for (const mutation of [
+      { projectId: "project-2" }, { pluginName: "slack" }, { operation: "set_enabled" },
+      { type: "execution" }, { version: "legacy" }, { status: "failed" }, { output: "token-secret" },
+    ]) {
+      stored.envelopePayload = JSON.stringify({ ...envelope, ...mutation });
+      const error = await repository.getIdempotentReceipt({
+        scope: request.scope, fingerprint: request.fingerprint, projectId: installation.projectId,
+        pluginName: installation.pluginName, operation: "install",
+      }).catch((caught: unknown) => caught);
+      expect(error).toEqual(new Error("idempotency_record_invalid"));
+      expect(String(error)).not.toContain("token-secret");
+    }
+    delete stored.envelopePayload;
+    stored.payload = JSON.stringify(request.receipt);
+    await expect(repository.getIdempotentReceipt({
+      scope: request.scope, fingerprint: request.fingerprint, projectId: installation.projectId,
+      pluginName: installation.pluginName, operation: "install",
+    })).rejects.toThrow("idempotency_record_invalid");
   });
 
   it("preserves installation revision on idempotent upsert", async () => {
@@ -864,8 +936,8 @@ describe("plugin repository contract", () => {
       receipt: { type: "install", receiptId: "receipt-enable-malformed", projectId: installation.projectId, pluginName: installation.pluginName, status: "success", redactions: [] },
     };
     await repository.setInstallationEnabledIdempotently(request);
-    delete database.collection(PLUGIN_COLLECTIONS.receipts).documents[0]!.resultPayload;
-    await expect(repository.setInstallationEnabledIdempotently(request)).rejects.toThrow("idempotency_result_invalid");
+    delete database.collection(PLUGIN_COLLECTIONS.receipts).documents[0]!.envelopePayload;
+    await expect(repository.setInstallationEnabledIdempotently(request)).rejects.toThrow("idempotency_record_invalid");
   });
 
   it("stores deterministic admissions bound to installation and component digest", async () => {

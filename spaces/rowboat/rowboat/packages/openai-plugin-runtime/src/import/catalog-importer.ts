@@ -20,7 +20,7 @@ import type {
 } from "../domain/plugin.js";
 import { DEFAULT_POLICY, type PluginPolicy } from "../policy/default-policy.js";
 import { evaluateComponentAdmission } from "../policy/capability-policy.js";
-import { evaluateLicense } from "../policy/license-policy.js";
+import { evaluateLicense, type AdmissionDecision } from "../policy/license-policy.js";
 import { parsePluginManifest, type PluginManifest } from "../schema/plugin-manifest.js";
 import { normalizePlugin } from "./normalize-plugin.js";
 import {
@@ -83,11 +83,12 @@ function compareCodePoints(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function canonicalValue(value: unknown): unknown {
+export function canonicalCatalogValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalValue);
   if (value !== null && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value)
+        .filter(([, child]) => child !== undefined)
         .sort(([left], [right]) => compareCodePoints(left, right))
         .map(([key, child]) => [key, canonicalValue(child)]),
     );
@@ -95,42 +96,65 @@ function canonicalValue(value: unknown): unknown {
   return value;
 }
 
+const canonicalValue = canonicalCatalogValue;
+
 function canonicalJson(value: unknown, indentation?: number): string {
   return JSON.stringify(canonicalValue(value), null, indentation);
 }
 
-function catalogDigest(payload: Omit<PluginCatalogLock, "catalogDigest">): string {
+export function pluginCatalogDigest(payload: Omit<PluginCatalogLock, "catalogDigest">): string {
   return createHash("sha256").update(canonicalJson(payload)).digest("hex");
 }
 
-export type ComponentBindingProvenance = Readonly<Pick<SourceProvenance,
-  "pluginName" | "pluginVersion" | "sourceCommit" | "manifestDigest" | "treeDigest"
->>;
+export type ComponentBindingProvenance = SourceProvenance;
+
+export interface ComponentBindingAdmissionMaterial {
+  readonly componentAdmission: AdmissionDecision;
+  readonly licenseDeclaration: string;
+  readonly licenseAdmission: AdmissionDecision;
+}
 
 export function componentBindingDigest(
   provenance: ComponentBindingProvenance,
   component: NormalizedPluginComponent,
+  material: ComponentBindingAdmissionMaterial,
 ): string {
   const contentDigest = component.metadata.digest;
   if (
     typeof contentDigest !== "string" || !/^[a-f0-9]{64}$/.test(contentDigest)
+    || provenance.sourceUrl.length === 0 || provenance.sourceUrl.length > 512
     || !/^[a-f0-9]{40}$/.test(provenance.sourceCommit)
     || !/^[a-f0-9]{64}$/.test(provenance.manifestDigest)
     || !/^[a-f0-9]{64}$/.test(provenance.treeDigest)
     || provenance.pluginName.length === 0 || provenance.pluginName.length > 128
     || provenance.pluginVersion.length === 0 || provenance.pluginVersion.length > 128
     || component.id.length === 0 || component.id.length > 512
+    || component.name.length === 0 || component.name.length > 512
+    || material.licenseDeclaration.length === 0 || material.licenseDeclaration.length > 256
   ) throw new Error("digest_mismatch:component_binding");
   return createHash("sha256").update(canonicalJson({
-    version: "rowboat-component-binding-v1",
-    pluginName: provenance.pluginName,
-    pluginVersion: provenance.pluginVersion,
-    sourceCommit: provenance.sourceCommit,
-    manifestDigest: provenance.manifestDigest,
-    treeDigest: provenance.treeDigest,
-    componentKind: component.kind,
-    componentId: component.id,
-    contentDigest,
+    domain: "rowboat-openai-plugin-component-binding",
+    version: "rowboat-component-binding-v2",
+    provenance: {
+      sourceUrl: provenance.sourceUrl,
+      sourceCommit: provenance.sourceCommit,
+      pluginName: provenance.pluginName,
+      pluginVersion: provenance.pluginVersion,
+      manifestDigest: provenance.manifestDigest,
+      treeDigest: provenance.treeDigest,
+      importedAt: provenance.importedAt,
+      schemaVersion: provenance.schemaVersion,
+      policyVersion: provenance.policyVersion,
+    },
+    component: {
+      id: component.id,
+      name: component.name,
+      kind: component.kind,
+      status: component.status,
+      ...(component.reason === undefined ? {} : { reason: component.reason }),
+      metadata: Object.fromEntries(Object.entries(component.metadata).filter(([key]) => key !== "bindingDigest")),
+    },
+    admission: material,
   })).digest("hex");
 }
 
@@ -150,11 +174,21 @@ function componentAdmissions(
   components: readonly NormalizedPluginComponent[],
   policy: PluginPolicy,
   provenance: SourceProvenance,
+  licenseAdmission: AdmissionDecision,
 ): readonly CatalogComponentAdmission[] {
   const ids = new Set<string>();
   const bindingDigests = new Set<string>();
   return components.map((component) => {
-    const bindingDigest = componentBindingDigest(provenance, component);
+    const componentAdmission = evaluateComponentAdmission(
+      manifest.license,
+      { kind: capabilityFor(component, manifest) },
+      policy,
+    );
+    const bindingDigest = componentBindingDigest(provenance, component, {
+      componentAdmission,
+      licenseDeclaration: manifest.license ?? "<missing>",
+      licenseAdmission,
+    });
     if (ids.has(component.id) || bindingDigests.has(bindingDigest)) throw new Error("digest_mismatch:component_binding");
     ids.add(component.id);
     bindingDigests.add(bindingDigest);
@@ -164,11 +198,7 @@ function componentAdmissions(
     };
     return {
       component: boundComponent,
-      admission: evaluateComponentAdmission(
-        manifest.license,
-        { kind: capabilityFor(component, manifest) },
-        policy,
-      ),
+      admission: componentAdmission,
     };
   });
 }
@@ -293,7 +323,7 @@ export async function importCatalog(
       licenseDeclaration: manifest.license ?? "<missing>",
       ...provenance,
       admission,
-      components: componentAdmissions(manifest, normalized.components, policy, provenance),
+      components: componentAdmissions(manifest, normalized.components, policy, provenance, admission),
       ...(admission.status === "admitted" ? { storedContentDigest: snapshot.digest } : {}),
     };
     entries.push(entry);
@@ -314,7 +344,7 @@ export async function importCatalog(
     licenseDeclarations,
     entries,
   };
-  return canonicalValue({ ...payload, catalogDigest: catalogDigest(payload) }) as PluginCatalogLock;
+  return canonicalValue({ ...payload, catalogDigest: pluginCatalogDigest(payload) }) as PluginCatalogLock;
 }
 
 function isNotFoundError(error: unknown): boolean {

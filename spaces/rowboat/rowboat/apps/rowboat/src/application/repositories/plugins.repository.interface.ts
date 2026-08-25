@@ -82,7 +82,19 @@ export interface PluginIdempotentEnableResult extends PluginIdempotentInstallRes
   readonly installation: PluginInstallation;
 }
 
+export type PluginMutationOperation = "install" | "set_enabled";
+
+export interface PluginIdempotencyLookup {
+  readonly scope: string;
+  readonly fingerprint: string;
+  readonly projectId: string;
+  readonly pluginName: string;
+  readonly operation: PluginMutationOperation;
+}
+
 export interface IPluginsRepository {
+  putCatalog(lock: PluginCatalogLock): Promise<void>;
+  getCatalog(digest: string): Promise<PluginCatalogLock | null>;
   putCatalogSnapshot(snapshot: PluginCatalogSnapshot): Promise<void>;
   getCatalogSnapshot(digest: string): Promise<PluginCatalogSnapshot | null>;
   listCatalogEntries(catalogDigest: string): Promise<readonly PluginCatalogEntry[]>;
@@ -97,7 +109,7 @@ export interface IPluginsRepository {
   putCredentialSlot(slot: PluginCredentialSlot): Promise<void>;
   putMigrationRecord(record: PluginMigrationRecord): Promise<void>;
   putReceipt(receipt: PluginReceipt): Promise<void>;
-  getIdempotentReceipt(scope: string, fingerprint: string): Promise<PluginReceipt | null>;
+  getIdempotentReceipt(request: PluginIdempotencyLookup): Promise<PluginReceipt | null>;
   installIdempotently(request: PluginIdempotentInstall): Promise<PluginIdempotentInstallResult>;
   setInstallationEnabledIdempotently(request: PluginIdempotentEnable): Promise<PluginIdempotentEnableResult>;
 }

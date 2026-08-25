@@ -51,7 +51,11 @@ const entry: PluginCatalogEntry = Object.freeze({
     ...selected,
     component: {
       ...selected.component,
-      metadata: { ...selected.component.metadata, bindingDigest: componentBindingDigest(unboundEntry, selected.component) },
+      metadata: { ...selected.component.metadata, bindingDigest: componentBindingDigest(unboundEntry, selected.component, {
+        componentAdmission: selected.admission,
+        licenseDeclaration: unboundEntry.licenseDeclaration ?? "<missing>",
+        licenseAdmission: unboundEntry.admission,
+      }) },
     },
   })),
 });
@@ -67,6 +71,12 @@ class FakeAuthorization implements IPluginApiAuthorizationPolicy {
 class FakeRepository implements IPluginsRepository {
   installationWrites = 0;
   private readonly results = new Map<string, PluginIdempotentInstallResult>();
+  async putCatalog(): Promise<void> {}
+  async getCatalog(value: string): Promise<PluginCatalogLock | null> {
+    if (value !== snapshot.catalogDigest) return null;
+    const { catalogDigest: ignored, ...catalogEntry } = entry;
+    return { ...snapshot, entries: [catalogEntry] } as PluginCatalogLock;
+  }
   async putCatalogSnapshot(): Promise<void> {}
   async getCatalogSnapshot(value: string): Promise<PluginCatalogSnapshot | null> { return value === snapshot.catalogDigest ? snapshot : null; }
   async listCatalogEntries(value: string): Promise<readonly PluginCatalogEntry[]> { return value === snapshot.catalogDigest ? [entry] : []; }
@@ -81,10 +91,10 @@ class FakeRepository implements IPluginsRepository {
   async putCredentialSlot(): Promise<void> {}
   async putMigrationRecord(_record: PluginMigrationRecord): Promise<void> {}
   async putReceipt(_receipt: PluginReceipt): Promise<void> {}
-  async getIdempotentReceipt(_scope: string, fingerprintValue: string): Promise<PluginReceipt | null> {
-    const result = this.results.get(_scope);
+  async getIdempotentReceipt(request: { readonly scope: string; readonly fingerprint: string }): Promise<PluginReceipt | null> {
+    const result = this.results.get(request.scope);
     if (result === undefined) return null;
-    if (result.fingerprint !== fingerprintValue) throw new Error("idempotency_conflict");
+    if (result.fingerprint !== request.fingerprint) throw new Error("idempotency_conflict");
     return result.receipt;
   }
   async installIdempotently(request: PluginIdempotentInstall): Promise<PluginIdempotentInstallResult> {
@@ -117,14 +127,24 @@ function recursiveStrings(value: unknown): readonly string[] {
 }
 
 describe("authorized plugin services", () => {
+  it("reads one repository-validated complete catalog and never trusts split snapshot entries", async () => {
+    const lock = catalogLockFixture as unknown as PluginCatalogLock;
+    const repository = new FakeRepository();
+    repository.getCatalog = async (value) => value === lock.catalogDigest ? lock : null;
+    repository.getCatalogSnapshot = async () => { throw new Error("split_snapshot_read_forbidden"); };
+    repository.listCatalogEntries = async () => { throw new Error("split_entry_read_forbidden"); };
+    const result = await new ListPluginCatalogUseCase({
+      pluginsRepository: repository,
+      pluginApiAuthorizationPolicy: new FakeAuthorization(),
+    }).execute({ identity, catalogDigest: lock.catalogDigest });
+    expect(result).toHaveLength(180);
+  });
+
   it("uses opaque component digests and keeps admission separate from availability for real catalog entries", async () => {
     const lock = catalogLockFixture as unknown as PluginCatalogLock;
     const { entries, ...catalogSnapshot } = lock;
     const repository = new FakeRepository();
-    repository.getCatalogSnapshot = async (value) => value === lock.catalogDigest ? catalogSnapshot : null;
-    repository.listCatalogEntries = async (value) => value === lock.catalogDigest
-      ? entries.map((selected) => ({ ...selected, catalogDigest: lock.catalogDigest }))
-      : [];
+    repository.getCatalog = async (value) => value === lock.catalogDigest ? lock : null;
     const dependencies = { pluginsRepository: repository, pluginApiAuthorizationPolicy: new FakeAuthorization() };
 
     const catalog = await new ListPluginCatalogUseCase(dependencies).execute({ identity, catalogDigest: lock.catalogDigest });
@@ -162,9 +182,9 @@ describe("authorized plugin services", () => {
     const repository = new FakeRepository();
     const first = entry.components[0];
     const useCase = new ListPluginCatalogUseCase({ pluginsRepository: repository, pluginApiAuthorizationPolicy: new FakeAuthorization() });
-    repository.listCatalogEntries = async () => [{ ...entry, components: [{ component: first.component }] } as unknown as PluginCatalogEntry];
+    repository.getCatalog = async () => ({ ...snapshot, entries: [{ ...entry, components: [{ component: first.component }] }] } as unknown as PluginCatalogLock);
     await expect(useCase.execute({ identity, catalogDigest: snapshot.catalogDigest })).rejects.toThrow("catalog_entry_invalid");
-    repository.listCatalogEntries = async () => [{ ...entry, components: [first, first] }];
+    repository.getCatalog = async () => ({ ...snapshot, entries: [{ ...entry, components: [first, first] }] } as unknown as PluginCatalogLock);
     await expect(useCase.execute({ identity, catalogDigest: snapshot.catalogDigest })).rejects.toThrow("catalog_entry_invalid");
   });
 
@@ -225,7 +245,7 @@ describe("authorized plugin services", () => {
 
   it("rejects a non-admitted license before an installation write", async () => {
     const repository = new FakeRepository();
-    repository.listCatalogEntries = async () => [{ ...entry, admission: { status: "rejected", reason: "license_rejected", policyVersion: snapshot.policyVersion } }];
+    repository.getCatalog = async () => ({ ...snapshot, entries: [{ ...entry, admission: { status: "rejected", reason: "license_rejected", policyVersion: snapshot.policyVersion } }] } as unknown as PluginCatalogLock);
     const useCase = new InstallPluginUseCase({ pluginsRepository: repository, pluginApiAuthorizationPolicy: new FakeAuthorization() });
     await expect(useCase.execute(installRequest)).rejects.toThrow("license_rejected");
     expect(repository.installationWrites).toBe(0);

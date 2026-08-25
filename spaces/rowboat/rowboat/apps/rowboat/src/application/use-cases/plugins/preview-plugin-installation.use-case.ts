@@ -15,9 +15,10 @@ export class PreviewPluginInstallationUseCase {
   async execute(request: PreviewPluginInstallationRequest) {
     assertId(request.projectId, "project_id_invalid"); assertId(request.pluginName, "plugin_name_invalid"); assertDigest(request.catalogDigest);
     await this.dependencies.pluginApiAuthorizationPolicy.authorizeProject(request.identity, request.projectId);
-    const snapshot = await this.dependencies.pluginsRepository.getCatalogSnapshot(request.catalogDigest);
-    assertPinnedSnapshot(snapshot, request.catalogDigest);
-    const entry = (await this.dependencies.pluginsRepository.listCatalogEntries(request.catalogDigest)).find((candidate) => candidate.name === request.pluginName);
+    const catalog = await this.dependencies.pluginsRepository.getCatalog(request.catalogDigest);
+    assertPinnedSnapshot(catalog, request.catalogDigest);
+    const selected = catalog.entries.find((candidate) => candidate.name === request.pluginName);
+    const entry = selected === undefined ? undefined : { ...selected, catalogDigest: request.catalogDigest };
     if (entry === undefined) serviceError("plugin_not_found");
     const installation = await this.dependencies.pluginsRepository.getInstallation(request.projectId, request.pluginName);
     const configured = new Set(installation === null ? [] : (await this.dependencies.pluginsRepository.listCredentialSlots(installation.id)).map((slot) => slot.name));

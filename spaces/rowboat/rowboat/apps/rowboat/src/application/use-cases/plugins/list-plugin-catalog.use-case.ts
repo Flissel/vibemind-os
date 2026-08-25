@@ -7,11 +7,15 @@ export class ListPluginCatalogUseCase {
   async execute(request: { readonly identity: PluginApiIdentity; readonly catalogDigest: string }) {
     if (request.identity.kind !== "user") serviceError("user_authentication_required");
     assertDigest(request.catalogDigest);
-    assertPinnedSnapshot(await this.dependencies.pluginsRepository.getCatalogSnapshot(request.catalogDigest), request.catalogDigest);
-    return freezeOutput((await this.dependencies.pluginsRepository.listCatalogEntries(request.catalogDigest)).map((entry) => ({
-      name: entry.name, pluginName: entry.pluginName, pluginVersion: entry.pluginVersion, catalogDigest: entry.catalogDigest,
-      admission: entry.admission.status, ...(entry.admission.status === "admitted" ? {} : { reason: entry.admission.reason }),
-      components: componentDtosFrom(entry),
-    })));
+    const catalog = await this.dependencies.pluginsRepository.getCatalog(request.catalogDigest);
+    assertPinnedSnapshot(catalog, request.catalogDigest);
+    return freezeOutput(catalog.entries.map((catalogEntry) => {
+      const entry = { ...catalogEntry, catalogDigest: request.catalogDigest };
+      return {
+        name: entry.name, pluginName: entry.pluginName, pluginVersion: entry.pluginVersion, catalogDigest: request.catalogDigest,
+        admission: entry.admission.status, ...(entry.admission.status === "admitted" ? {} : { reason: entry.admission.reason }),
+        components: componentDtosFrom(entry),
+      };
+    }));
   }
 }
