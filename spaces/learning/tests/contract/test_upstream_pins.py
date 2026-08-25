@@ -23,7 +23,7 @@ EXPECTED = {
         "path": "spaces/learning/penecho",
         "url": "https://github.com/Flissel/penecho.git",
         "upstream": "https://github.com/penecho/penecho.git",
-        "commit": "612a88eba9b26283d324f0c682eb14337052be3f",
+        "commit": "5eebf3c25b468a3f89391c36021be684d6860ce5",
         "license": "AGPL-3.0-only",
     },
 }
