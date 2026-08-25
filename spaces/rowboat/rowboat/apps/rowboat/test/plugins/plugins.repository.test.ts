@@ -979,6 +979,44 @@ describe("plugin repository contract", () => {
     }
   });
 
+  it.each([
+    "X-API-Key abc123",
+    "X-API-Key:abc123",
+    "X_API_KEY=abc123",
+    "X-ApiKey abc123",
+    "   x-api-key abc123",
+    "\tX_ApI_KeY=abc123",
+  ])("rejects API key header metadata and references", async (credentialText) => {
+    for (const location of ["metadata", "reference"] as const) {
+      const { database, repository } = repositoryFixture();
+      const error = await repository.putCredentialSlot({
+        id: `slot-api-key-${location}`,
+        projectId: installation.projectId,
+        installationId: installation.id,
+        name: "GITHUB_PAT_TOKEN",
+        reference: { kind: "environment", reference: location === "reference" ? credentialText : "github/pat" },
+        metadata: { label: location === "metadata" ? credentialText : "GitHub access" },
+      }).catch((caught: unknown) => caught);
+      expect(error).toEqual(new Error("secret_value_rejected"));
+      expect(String(error)).not.toContain(credentialText);
+      expect(database.collection(PLUGIN_COLLECTIONS.credentialSlots).writes).toBe(0);
+    }
+  });
+
+  it.each(["X API compatibility", "keynote"])("preserves benign display label %s", async (label) => {
+    const { database, repository } = repositoryFixture();
+    await seedInstallation(repository);
+    await repository.putCredentialSlot({
+      id: `slot-${label.replaceAll(" ", "-").toLowerCase()}`,
+      projectId: installation.projectId,
+      installationId: installation.id,
+      name: "GITHUB_PAT_TOKEN",
+      reference: { kind: "environment", reference: "github/pat" },
+      metadata: { label },
+    });
+    expect(JSON.stringify(database.collection(PLUGIN_COLLECTIONS.credentialSlots).documents)).toContain(label);
+  });
+
   it("rejects unknown credential metadata keys, accessors, and proxies without executing them", async () => {
     const { database, repository } = repositoryFixture();
     let getterCalls = 0;

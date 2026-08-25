@@ -346,7 +346,8 @@ function admission(input: unknown): PluginComponentAdmission {
 }
 
 function credentialLikeText(value: string): boolean {
-  return /^\s*(?:basic|digest|bearer|negotiate|ntlm|api(?:[-_ ]?key)|token)(?=\s|:|=)/iu.test(value)
+  return /(?:^|[^A-Za-z0-9])(?:x[-_])?api(?:[-_ ]?key)(?=\s|:|=)/iu.test(value)
+    || /^\s*(?:basic|digest|bearer|negotiate|ntlm|api(?:[-_ ]?key)|token)(?=\s|:|=)/iu.test(value)
     || /[\u0000-\u001f\u007f]/u.test(value)
     || /%[0-9a-f]{2}/iu.test(value)
     || value.includes("://")
