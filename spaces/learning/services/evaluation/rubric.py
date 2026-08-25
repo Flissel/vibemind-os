@@ -33,6 +33,8 @@ class MasteryApplication(Protocol):
 
 
 class RubricEvaluator:
+    CONFIDENCE_THRESHOLD = _CONFIDENCE_THRESHOLD
+
     def __init__(
         self,
         *,

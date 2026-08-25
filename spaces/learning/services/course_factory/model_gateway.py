@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
 import os
 from collections.abc import Awaitable, Callable
@@ -55,6 +57,8 @@ ROLE_PROMPTS = {
 _SECRET_KEYS = ("api_key", "token", "secret", "password", "credential")
 _MAX_REQUEST_BYTES = 500_000
 _MAX_RESPONSE_BYTES = 1_000_000
+_MAX_IMAGE_BYTES = 5_000_000
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 class ModelGatewayError(RuntimeError):
@@ -78,6 +82,22 @@ class GatewayInputError(ModelGatewayError, ValueError):
 
 
 @dataclass(frozen=True)
+class ModelImageInput:
+    media_type: str
+    content: bytes
+    sha256: str
+
+    def __post_init__(self) -> None:
+        if (
+            self.media_type != "image/png"
+            or not self.content.startswith(_PNG_SIGNATURE)
+            or len(self.content) > _MAX_IMAGE_BYTES
+            or hashlib.sha256(self.content).hexdigest() != self.sha256
+        ):
+            raise GatewayInputError("model image input failed integrity validation")
+
+
+@dataclass(frozen=True)
 class ModelInvocation:
     role: str
     stage: str
@@ -85,6 +105,7 @@ class ModelInvocation:
     prompt_version: str
     output_schema_version: str
     input_payload: dict[str, object]
+    image_inputs: tuple[ModelImageInput, ...] = ()
 
     def __post_init__(self) -> None:
         try:
@@ -105,6 +126,8 @@ class ModelInvocation:
             raise GatewayInputError("model input must be JSON serializable") from error
         if len(encoded) > _MAX_REQUEST_BYTES:
             raise GatewayInputError("model input exceeds the bounded request size")
+        if self.image_inputs and (self.role != "rubric_evaluator" or len(self.image_inputs) != 1):
+            raise GatewayInputError("model image input is not authorized for this role")
 
 
 OutputT = TypeVar("OutputT", bound=BaseModel)
@@ -153,6 +176,22 @@ class OpenFangModelGateway:
     async def generate(
         self, invocation: ModelInvocation, output_model: type[OutputT]
     ) -> GatewayResult[OutputT]:
+        user_content: str | list[dict[str, object]] = _canonical_json(
+            invocation.input_payload
+        )
+        if invocation.image_inputs:
+            image = invocation.image_inputs[0]
+            encoded_image = base64.b64encode(image.content).decode("ascii")
+            user_content = [
+                {"type": "text", "text": user_content},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{image.media_type};base64,{encoded_image}",
+                        "detail": "high",
+                    },
+                },
+            ]
         body = {
             "model": self._model,
             "temperature": 0.2,
@@ -169,7 +208,7 @@ class OpenFangModelGateway:
                 },
                 {
                     "role": "user",
-                    "content": _canonical_json(invocation.input_payload),
+                    "content": user_content,
                 },
             ],
         }

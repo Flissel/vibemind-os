@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -11,6 +12,7 @@ from spaces.learning.services.course_factory.model_gateway import (
     GatewaySchemaError,
     GatewayUnavailable,
     ModelInvocation,
+    ModelImageInput,
     OpenFangModelGateway,
 )
 from spaces.learning.services.course_factory.roles.schemas import ArchitectOutput
@@ -188,6 +190,62 @@ def test_gateway_rejects_unapproved_roles_and_credential_fields() -> None:
     with pytest.raises(ValueError, match="credentials"):
         ModelInvocation(
             **{**values, "input_payload": {"provider_api_key": "forbidden"}}
+        )
+
+
+@pytest.mark.asyncio
+async def test_gateway_sends_authorized_verified_canvas_image() -> None:
+    png = b"\x89PNG\r\n\x1a\nverified-canvas"
+    invocation = ModelInvocation(
+        role="rubric_evaluator",
+        stage="evaluation",
+        correlation_id=str(uuid4()),
+        prompt_version="rubric-prompt-v1",
+        output_schema_version="rubric-evaluation-v1",
+        input_payload={"response": {"kind": "penecho_canvas"}},
+        image_inputs=(ModelImageInput(
+            media_type="image/png", content=png,
+            sha256=hashlib.sha256(png).hexdigest(),
+        ),),
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        content = json.loads(request.content)["messages"][1]["content"]
+        assert content[0]["type"] == "text"
+        assert content[1]["type"] == "image_url"
+        assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+        return httpx.Response(200, json={
+            "id": "canvas-completion",
+            "choices": [{"message": {"content": json.dumps({
+                "schema_version": "rubric-evaluation-v1",
+                "criteria": [{
+                    "criterion_id": "authority", "awarded_points": 1,
+                    "feedback": "Grounded.", "source_refs": ["source://authority/1"],
+                }],
+                "confidence": 0.9, "misconception_tags": [],
+            })}}],
+        })
+
+    from spaces.learning.services.evaluation.schemas import RubricModelOutput
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://openfang.test")
+    gateway = OpenFangModelGateway("http://openfang.test", "k" * 32, client=client)
+    result = await gateway.generate(invocation, RubricModelOutput)
+    assert result.evidence_ref.endswith("canvas-completion")
+    await client.aclose()
+
+
+def test_gateway_rejects_images_for_non_evaluator_roles() -> None:
+    png = b"\x89PNG\r\n\x1a\nverified-canvas"
+    with pytest.raises(ValueError, match="not authorized"):
+        ModelInvocation(
+            role="architect", stage="structuring", correlation_id=str(uuid4()),
+            prompt_version="architect-prompt-v1", output_schema_version="architect-v1",
+            input_payload={"course_id": str(uuid4())},
+            image_inputs=(ModelImageInput(
+                media_type="image/png", content=png,
+                sha256=hashlib.sha256(png).hexdigest(),
+            ),),
         )
 
 

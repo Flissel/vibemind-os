@@ -9,6 +9,7 @@ from pathlib import Path
 from spaces.learning.bridge.penecho_client import PenEchoExportV1
 from spaces.learning.contracts.penecho import (
     CanvasArtifactV1,
+    CanvasDocumentV1,
     CanvasSubmissionV1,
 )
 
@@ -30,9 +31,9 @@ def _wire(value: object) -> object:
     return value
 
 
-def _encoded_document(export: PenEchoExportV1) -> bytes:
+def encode_canvas_document(document: CanvasDocumentV1) -> bytes:
     return json.dumps(
-        _wire(export.document.model_dump(mode="json")),
+        _wire(document.model_dump(mode="json")),
         separators=(",", ":"),
         ensure_ascii=True,
     ).encode("utf-8")
@@ -73,7 +74,7 @@ class CanvasArtifactStore:
         _reject_reparse_point(self._artifact_root)
 
     def import_export(self, export: PenEchoExportV1) -> CanvasSubmissionV1:
-        structured = _encoded_document(export)
+        structured = encode_canvas_document(export.document)
         try:
             snapshot = base64.b64decode(export.snapshot_png_base64, validate=True)
         except (binascii.Error, ValueError) as error:
