@@ -1,4 +1,5 @@
 alembic>=1.14,<2
+autogen-agentchat==0.7.5
 fastapi>=0.115,<1
 httpx>=0.27,<1
 markdown-it-py==3.0.0

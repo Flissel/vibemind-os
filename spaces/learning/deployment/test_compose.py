@@ -240,6 +240,37 @@ def test_learning_retrieval_credentials_are_scoped_to_both_api_peers() -> None:
             assert "LEARNING_RETRIEVAL_SERVICE_KEY" not in service.get("environment", {})
 
 
+def test_course_factory_model_authority_is_scoped_to_learning_worker() -> None:
+    services = _load(COMPOSE_PATH)["services"]
+    worker_environment = services["learning-worker"]["environment"]
+
+    assert worker_environment["LEARNING_OPENFANG_URL"] == (
+        "${LEARNING_OPENFANG_URL:?set LEARNING_OPENFANG_URL}"
+    )
+    assert worker_environment["LEARNING_OPENFANG_API_KEY"] == (
+        "${LEARNING_OPENFANG_API_KEY:?set LEARNING_OPENFANG_API_KEY}"
+    )
+    assert worker_environment["LEARNING_OPENFANG_MODEL"] == (
+        "${LEARNING_OPENFANG_MODEL:-learning-course-factory}"
+    )
+    for service_name, service in services.items():
+        environment = service.get("environment", {})
+        if service_name != "learning-worker":
+            assert "LEARNING_OPENFANG_API_KEY" not in environment
+            assert "LEARNING_OPENFANG_URL" not in environment
+        for provider_key in (
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "OPENROUTER_API_KEY",
+            "GOOGLE_API_KEY",
+        ):
+            assert provider_key not in environment
+    for env_path in (ENV_EXAMPLE_PATH, ROOT_ENV_EXAMPLE_PATH):
+        env_text = env_path.read_text(encoding="utf-8")
+        assert re.search(r"(?m)^LEARNING_OPENFANG_URL=<[^>]+>$", env_text)
+        assert re.search(r"(?m)^LEARNING_OPENFANG_API_KEY=<[^>]+>$", env_text)
+
+
 def test_profile_is_explicitly_local_and_has_no_ha_claim() -> None:
     profile = _load(PROFILE_PATH)
 
