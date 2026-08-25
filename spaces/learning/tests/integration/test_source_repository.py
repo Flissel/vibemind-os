@@ -13,7 +13,13 @@ from sqlalchemy import BigInteger, create_engine, delete, func, inspect, select,
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import sessionmaker
 
-from spaces.learning.services.db.models import Base, LearningArtifact, LearningOutboxRecord
+from spaces.learning.services.db.models import (
+    Base,
+    LearningArtifact,
+    LearningInvocationReceipt,
+    LearningOutboxRecord,
+    LearningTerminalEvidence,
+)
 from spaces.learning.services.db.repository import PersistenceConflict
 from spaces.learning.deployment.migrate import _config, migrate
 from spaces.learning.services.ingestion.models import (
@@ -25,6 +31,7 @@ from spaces.learning.services.ingestion.repository import (
     ArtifactInput,
     SourceChunkInput,
     SourceRepository,
+    source_request_digest,
     stable_chunk_id,
 )
 
@@ -532,3 +539,110 @@ def test_postgres_concurrent_retry_of_a_later_revision_replays_exactly(
 
     assert results[0] == results[1]
     assert results[0].revision == 2
+
+
+def test_postgres_failed_revision_keeps_artifact_without_qdrant_outbox(
+    postgres_session_factory,
+) -> None:
+    repository = _repository(postgres_session_factory)
+    source_id = str(uuid4())
+
+    record = repository.persist_failed_revision(
+        source_id=source_id,
+        course_id=str(uuid4()),
+        title="Failed PostgreSQL source",
+        expected_revision=0,
+        idempotency_key=f"failed-postgres-{source_id}",
+        artifact=_artifact(postgres_session_factory, 1),
+    )
+
+    with postgres_session_factory() as session:
+        revision = session.get(LearningSourceRevision, (source_id, 1))
+        outbox_count = session.scalar(
+            select(func.count())
+            .select_from(LearningOutboxRecord)
+            .where(LearningOutboxRecord.aggregate_id == source_id)
+        )
+
+    assert record.revision == 1
+    assert revision is not None
+    assert revision.status == "failed"
+    assert outbox_count == 0
+
+
+def test_postgres_concurrent_failed_replay_returns_one_terminal_evidence(
+    postgres_session_factory,
+) -> None:
+    source_id = str(uuid4())
+    values = {
+        "source_id": source_id,
+        "course_id": str(uuid4()),
+        "title": "Concurrent failed source",
+        "expected_revision": 0,
+        "idempotency_key": f"failed-concurrent-{source_id}",
+        "artifact": _artifact(postgres_session_factory, 1),
+    }
+    start = Barrier(2)
+
+    def persist_once():
+        start.wait()
+        return _repository(postgres_session_factory).persist_failed_revision(**values)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: persist_once(), range(2)))
+
+    assert results[0] == results[1]
+    with postgres_session_factory() as session:
+        evidence_count = session.scalar(
+            select(func.count())
+            .select_from(LearningTerminalEvidence)
+            .where(LearningTerminalEvidence.aggregate_id == source_id)
+        )
+    assert evidence_count == 1
+
+
+def test_postgres_concurrent_duplicate_binding_returns_one_receipt(
+    postgres_session_factory,
+) -> None:
+    repository = _repository(postgres_session_factory)
+    source_id = str(uuid4())
+    course_id = str(uuid4())
+    artifact = _artifact(postgres_session_factory, 1)
+    record = repository.persist_revision(
+        source_id=source_id,
+        course_id=course_id,
+        title="Duplicate binding",
+        expected_revision=0,
+        idempotency_key=f"duplicate-original-{source_id}",
+        artifact=artifact,
+        chunks=_chunks(1),
+    )
+    duplicate_key = f"duplicate-receipt-{source_id}"
+    request_digest = source_request_digest(
+        source_id=source_id,
+        course_id=course_id,
+        title="Duplicate binding",
+        expected_revision=0,
+        artifact=artifact,
+        ingestion_spec_version="ingestion-v1",
+    )
+    start = Barrier(2)
+
+    def bind_once() -> None:
+        start.wait()
+        _repository(postgres_session_factory).bind_duplicate_request(
+            idempotency_key=duplicate_key,
+            request_digest=request_digest,
+            record=record,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(lambda _: bind_once(), range(2)))
+
+    with postgres_session_factory() as session:
+        receipt_count = session.scalar(
+            select(func.count())
+            .select_from(LearningInvocationReceipt)
+            .where(LearningInvocationReceipt.idempotency_key == duplicate_key)
+        )
+    assert receipt_count == 1
