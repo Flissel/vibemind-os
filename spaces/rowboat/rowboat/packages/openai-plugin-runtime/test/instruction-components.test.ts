@@ -1,6 +1,7 @@
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { deflateSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   normalizeAgents,
@@ -29,18 +30,105 @@ async function createDirectoryLink(target: string, link: string): Promise<void> 
   await symlink(target, link, process.platform === "win32" ? "junction" : "dir");
 }
 
+function crc32(bytes: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ ((crc & 1) === 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const chunk = Buffer.alloc(12 + data.length);
+  chunk.writeUInt32BE(data.length, 0);
+  chunk.write(type, 4, "ascii");
+  data.copy(chunk, 8);
+  chunk.writeUInt32BE(crc32(chunk.subarray(4, 8 + data.length)), 8 + data.length);
+  return chunk;
+}
+
+function pngWithoutIdat(): Buffer {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(1, 0);
+  ihdr.writeUInt32BE(1, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
 function validPng(): Buffer {
-  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  const ihdr = Buffer.alloc(25);
-  ihdr.writeUInt32BE(13, 0);
-  ihdr.write("IHDR", 4, "ascii");
-  ihdr.writeUInt32BE(1, 8);
-  ihdr.writeUInt32BE(1, 12);
-  ihdr[16] = 8;
-  ihdr[17] = 6;
-  const iend = Buffer.alloc(12);
-  iend.write("IEND", 4, "ascii");
-  return Buffer.concat([signature, ihdr, iend]);
+  const noIdat = pngWithoutIdat();
+  return Buffer.concat([
+    noIdat.subarray(0, noIdat.length - 12),
+    pngChunk("IDAT", deflateSync(Buffer.from([0, 0, 0, 0, 0]))),
+    noIdat.subarray(noIdat.length - 12),
+  ]);
+}
+
+function validBmp(): Buffer {
+  const bytes = Buffer.alloc(58);
+  bytes.write("BM", 0, "ascii");
+  bytes.writeUInt32LE(bytes.length, 2);
+  bytes.writeUInt32LE(54, 10);
+  bytes.writeUInt32LE(40, 14);
+  bytes.writeInt32LE(1, 18);
+  bytes.writeInt32LE(1, 22);
+  bytes.writeUInt16LE(1, 26);
+  bytes.writeUInt16LE(24, 28);
+  bytes.writeUInt32LE(4, 34);
+  bytes[54] = 0xff;
+  return bytes;
+}
+
+function validIco(): Buffer {
+  const image = validPng();
+  const bytes = Buffer.alloc(22 + image.length);
+  bytes.writeUInt16LE(0, 0);
+  bytes.writeUInt16LE(1, 2);
+  bytes.writeUInt16LE(1, 4);
+  bytes[6] = 1;
+  bytes[7] = 1;
+  bytes.writeUInt16LE(1, 10);
+  bytes.writeUInt16LE(32, 12);
+  bytes.writeUInt32LE(image.length, 14);
+  bytes.writeUInt32LE(22, 18);
+  image.copy(bytes, 22);
+  return bytes;
+}
+
+function bmffBox(type: string, payload: Buffer): Buffer {
+  const bytes = Buffer.alloc(8 + payload.length);
+  bytes.writeUInt32BE(bytes.length, 0);
+  bytes.write(type, 4, "ascii");
+  payload.copy(bytes, 8);
+  return bytes;
+}
+
+function validAvif(): Buffer {
+  const ftyp = Buffer.alloc(16);
+  ftyp.write("avif", 0, "ascii");
+  ftyp.write("avif", 8, "ascii");
+  ftyp.write("mif1", 12, "ascii");
+  const meta = Buffer.concat([
+    Buffer.alloc(4),
+    bmffBox("hdlr", Buffer.alloc(24)),
+    bmffBox("pitm", Buffer.alloc(6)),
+    bmffBox("iloc", Buffer.alloc(8)),
+    bmffBox("iinf", Buffer.alloc(6)),
+    bmffBox("iprp", Buffer.concat([bmffBox("ipco", Buffer.alloc(0)), bmffBox("ipma", Buffer.alloc(4))])),
+  ]);
+  return Buffer.concat([
+    bmffBox("ftyp", ftyp),
+    bmffBox("meta", meta),
+    bmffBox("mdat", Buffer.from([0x00])),
+  ]);
 }
 
 describe("instruction component normalizers", () => {
@@ -400,6 +488,80 @@ describe("asset normalizer", () => {
     await expect(normalizeAsset(asset, pluginRoot, { mime })).rejects.toThrow("asset_unsafe");
   });
 
+  it("rejects PNG without IDAT, fake IDAT payload, or a bad chunk CRC", async () => {
+    const pluginRoot = await createPluginRoot("asset-png-integrity");
+    const noIdat = join(pluginRoot, "no-idat.png");
+    const fakeIdat = join(pluginRoot, "fake-idat.png");
+    const badCrc = join(pluginRoot, "bad-crc.png");
+    const corrupted = Buffer.from(validPng());
+    corrupted[corrupted.length - 1] = (corrupted[corrupted.length - 1] ?? 0) ^ 0xff;
+    const base = pngWithoutIdat();
+    await writeFile(noIdat, pngWithoutIdat());
+    await writeFile(fakeIdat, Buffer.concat([
+      base.subarray(0, base.length - 12),
+      pngChunk("IDAT", Buffer.from("not-zlib", "ascii")),
+      base.subarray(base.length - 12),
+    ]));
+    await writeFile(badCrc, corrupted);
+
+    await expect(normalizeAsset(noIdat, pluginRoot, { mime: "image/png" }))
+      .rejects.toThrow("asset_unsafe");
+    await expect(normalizeAsset(fakeIdat, pluginRoot, { mime: "image/png" }))
+      .rejects.toThrow("asset_unsafe");
+    await expect(normalizeAsset(badCrc, pluginRoot, { mime: "image/png" }))
+      .rejects.toThrow("asset_unsafe");
+  });
+
+  it.each([
+    ["valid.bmp", "image/bmp", validBmp()],
+    ["valid.ico", "image/x-icon", validIco()],
+    ["valid.avif", "image/avif", validAvif()],
+  ])("admits structurally valid passive raster %s", async (name, mime, bytes) => {
+    const pluginRoot = await createPluginRoot(`asset-valid-${name.replace(".", "-")}`);
+    const asset = join(pluginRoot, name);
+    await writeFile(asset, bytes);
+
+    await expect(normalizeAsset(asset, pluginRoot, { mime }))
+      .resolves.toMatchObject({ mime, placeholder: false });
+  });
+
+  it.each([
+    ["truncated.bmp", "image/bmp", Buffer.from("BM", "ascii")],
+    ["truncated.ico", "image/x-icon", Buffer.from([0x00, 0x00, 0x01, 0x00])],
+    ["truncated.avif", "image/avif", Buffer.from([0x00, 0x00, 0x00, 0x0c, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66])],
+  ])("rejects incomplete passive raster container %s", async (name, mime, bytes) => {
+    const pluginRoot = await createPluginRoot(`asset-incomplete-${name.replace(".", "-")}`);
+    const asset = join(pluginRoot, name);
+    await writeFile(asset, bytes);
+
+    await expect(normalizeAsset(asset, pluginRoot, { mime })).rejects.toThrow("asset_unsafe");
+  });
+
+  it("rejects BMP with undersized pixel payload and AVIF without required metadata boxes", async () => {
+    const pluginRoot = await createPluginRoot("asset-container-payloads");
+    const undersizedBmp = validBmp();
+    undersizedBmp.writeInt32LE(100, 18);
+    const bmp = join(pluginRoot, "undersized.bmp");
+    await writeFile(bmp, undersizedBmp);
+
+    const ftyp = Buffer.alloc(16);
+    ftyp.write("avif", 0, "ascii");
+    ftyp.write("avif", 8, "ascii");
+    ftyp.write("mif1", 12, "ascii");
+    const incompleteMeta = Buffer.concat([Buffer.alloc(4), bmffBox("hdlr", Buffer.alloc(24))]);
+    const avif = join(pluginRoot, "incomplete-meta.avif");
+    await writeFile(avif, Buffer.concat([
+      bmffBox("ftyp", ftyp),
+      bmffBox("meta", incompleteMeta),
+      bmffBox("mdat", Buffer.from([0x00])),
+    ]));
+
+    await expect(normalizeAsset(bmp, pluginRoot, { mime: "image/bmp" }))
+      .rejects.toThrow("asset_unsafe");
+    await expect(normalizeAsset(avif, pluginRoot, { mime: "image/avif" }))
+      .rejects.toThrow("asset_unsafe");
+  });
+
   it.each([
     "[run](javascript:alert(1))",
     "![payload](data:image/svg+xml,%3Csvg%3E%3C/svg%3E)",
@@ -409,6 +571,24 @@ describe("asset normalizer", () => {
     "[encoded](javascript%3Aalert(1))",
   ])("rejects active Markdown destination %s", async (markdown) => {
     const pluginRoot = await createPluginRoot("asset-markdown-active");
+    const asset = join(pluginRoot, "notice.md");
+    await writeFile(asset, markdown, "utf8");
+
+    await expect(normalizeAsset(asset, pluginRoot, { mime: "text/markdown" }))
+      .rejects.toThrow("asset_unsafe");
+  });
+
+  it.each([
+    "[run](javascript\\:alert(1))",
+    "![payload](data\\:image/svg+xml,payload)",
+    "[run][target]\n\n[target]: vbscript\\:msgbox(1)",
+    "<file\\:///etc/passwd>",
+    "[entity](java&#x73;cript&colon;alert(1))",
+    "[percent](java%2573cript%253Aalert(1))",
+    "[control](<java\u0009script\u000a:alert(1)>)",
+    "[unknown](custom-protocol:payload)",
+  ])("rejects CommonMark-obfuscated or unknown destination %s", async (markdown) => {
+    const pluginRoot = await createPluginRoot("asset-markdown-obfuscated");
     const asset = join(pluginRoot, "notice.md");
     await writeFile(asset, markdown, "utf8");
 
