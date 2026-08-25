@@ -396,7 +396,7 @@ def test_postgres_migration_and_source_content_are_append_only(
             "SELECT version_num FROM learning_alembic_version"
         ).scalar_one()
 
-    assert version == "0008_adaptive_review_queue"
+    assert version == "0009_review_remediation"
     assert ("artifact_id",) in unique_sets
     assert ("source_id", "content_hash", "ingestion_spec_version") in unique_sets
 

@@ -41,6 +41,10 @@ from spaces.learning.services.evaluation.schemas import (
     CriterionEvaluation,
     RubricDecision,
 )
+from spaces.learning.services.adaptive_engine.mastery import MasteryService
+from spaces.learning.services.adaptive_engine.review_schedule import (
+    ReviewScheduleService,
+)
 
 
 @pytest.fixture()
@@ -198,6 +202,7 @@ def test_adaptive_evidence_graph_persists_immutable_links(adaptive_store) -> Non
                 interval_index=1,
                 due_at=datetime(2026, 8, 26, 12, tzinfo=timezone.utc),
                 maintenance=False,
+                alternate_representation_required=False,
                 last_evaluation_id=evaluation_id,
                 revision=1,
             )
@@ -369,6 +374,88 @@ def test_rubric_versions_and_review_work_are_durable(adaptive_store) -> None:
         schema_failure_id,
     }
     assert sum(item.evaluation_id is None for item in items) == 1
+
+
+def test_accepted_evaluation_updates_mastery_and_review_once(adaptive_store) -> None:
+    course_id, concept_id, _, item_id = _catalog(adaptive_store)
+    repository = AdaptiveRepository(adaptive_store)
+    learning_session = repository.start_session(
+        SessionInput(
+            course_id=course_id,
+            course_revision=3,
+            actor_id="local-owner",
+            mode="training",
+            blueprint={},
+        )
+    )
+    attempt = repository.append_attempt(
+        learning_session.id,
+        expected_session_revision=1,
+        value=AttemptInput(item_id=item_id, selection_reason={}),
+    )
+    response_id = str(uuid4())
+    evaluation_id = str(uuid4())
+    with adaptive_store() as session, session.begin():
+        session.add(
+            LearningResponse(
+                id=response_id,
+                attempt_id=attempt.id,
+                response_revision=1,
+                answer={"text": "incorrect boundary"},
+                answer_hash="d" * 64,
+            )
+        )
+    with adaptive_store() as session, session.begin():
+        session.add(
+            LearningEvaluation(
+                id=evaluation_id,
+                response_id=response_id,
+                evaluator_type="deterministic",
+                score=0.25,
+                confidence=0.9,
+                accepted=True,
+                rationale_codes=["partial_match"],
+                evaluator_versions={"scorer": "deterministic-v1"},
+                source_refs=["source://authority/3"],
+            )
+        )
+
+    mastery = MasteryService(adaptive_store)
+    first = mastery.apply_evaluation(
+        actor_id="local-owner", evaluation_id=evaluation_id
+    )
+    duplicate = mastery.apply_evaluation(
+        actor_id="local-owner", evaluation_id=evaluation_id
+    )
+    now = datetime(2026, 8, 25, 12, tzinfo=timezone.utc)
+    scheduled = ReviewScheduleService(adaptive_store).apply_evaluation(
+        actor_id="local-owner",
+        evaluation_id=evaluation_id,
+        successful=False,
+        now=now,
+    )
+
+    assert first.applied is True
+    assert duplicate.duplicate is True
+    assert scheduled.plans[concept_id].alternate_representation_required is True
+    with adaptive_store() as session:
+        mastery_row = session.get(
+            ConceptMastery,
+            {"actor_id": "local-owner", "concept_id": concept_id},
+        )
+        evidence = session.scalars(select(MasteryEvidence)).all()
+        review = session.get(
+            ReviewSchedule,
+            {"actor_id": "local-owner", "concept_id": concept_id},
+        )
+    assert mastery_row is not None
+    assert mastery_row.alpha == pytest.approx(2.225)
+    assert mastery_row.beta == pytest.approx(2.675)
+    assert len(evidence) == 1
+    assert review is not None
+    assert review.interval_index == 0
+    assert review.due_at.date().isoformat() == "2026-08-26"
+    assert review.alternate_representation_required is True
 
 
 def test_postgres_rejects_mutation_and_unaccepted_mastery_evidence(

@@ -306,6 +306,9 @@ class ReviewSchedule(Base):
     interval_index: Mapped[int] = mapped_column(Integer, nullable=False)
     due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     maintenance: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    alternate_representation_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False
+    )
     last_evaluation_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("learning_adaptive_evaluations.id"), nullable=False
     )
