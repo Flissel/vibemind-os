@@ -11,6 +11,10 @@ import httpx
 from spaces.learning.contracts.ui_intents import UiIntent
 
 
+_MINIMUM_TOKEN_LENGTH = 32
+_MAXIMUM_TOKEN_LENGTH = 512
+
+
 class UiBridgeError(RuntimeError):
     """Base error for the loopback-only UI intent transport."""
 
@@ -31,6 +35,14 @@ class UiBridgeRevisionConflict(UiBridgeError):
 class UiDeliveryReceipt:
     accepted: bool
     aggregate_revision: int
+    event_id: str
+
+
+@dataclass(frozen=True)
+class UiDeliveryResult:
+    delivered: bool
+    receipt: UiDeliveryReceipt | None = None
+    error_code: str | None = None
 
 
 def _validate_loopback_url(value: str) -> str:
@@ -54,12 +66,20 @@ class UiBridge:
         self,
         *,
         base_url: str = "http://127.0.0.1:5151",
+        auth_token: str | None,
         timeout_seconds: float = 2.0,
         http_client: httpx.Client | None = None,
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
         self._base_url = _validate_loopback_url(base_url)
+        if (
+            auth_token is None
+            or not _MINIMUM_TOKEN_LENGTH <= len(auth_token) <= _MAXIMUM_TOKEN_LENGTH
+            or auth_token.strip() != auth_token
+        ):
+            raise ValueError("UI bridge token must be a nontrivial runtime token")
+        self._auth_token = auth_token
         self._timeout_seconds = timeout_seconds
         self._http_client = http_client or httpx.Client()
 
@@ -67,7 +87,11 @@ class UiBridge:
         try:
             response = self._http_client.post(
                 f"{self._base_url}/ui/intents",
-                headers={"Accept": "application/json", "X-Correlation-ID": str(correlation_id)},
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {self._auth_token}",
+                    "X-Correlation-ID": str(correlation_id),
+                },
                 json=intent.model_dump(mode="json"),
                 timeout=self._timeout_seconds,
                 follow_redirects=False,
@@ -82,14 +106,37 @@ class UiBridge:
             raise UiBridgeMalformedResponse("UI bridge returned malformed JSON") from error
         return self._receipt(value, intent)
 
+    def try_deliver(self, intent: UiIntent, *, correlation_id: UUID) -> UiDeliveryResult:
+        try:
+            receipt = self.deliver(intent, correlation_id=correlation_id)
+        except UiBridgeRevisionConflict:
+            return UiDeliveryResult(delivered=False, error_code="revision_conflict")
+        except UiBridgeMalformedResponse:
+            return UiDeliveryResult(delivered=False, error_code="malformed_response")
+        except UiBridgeTransportError:
+            return UiDeliveryResult(delivered=False, error_code="transport_error")
+        return UiDeliveryResult(delivered=True, receipt=receipt)
+
     @staticmethod
     def _receipt(value: object, intent: UiIntent) -> UiDeliveryReceipt:
         if not isinstance(value, Mapping):
             raise UiBridgeMalformedResponse("UI bridge returned malformed response")
         accepted = value.get("accepted")
         revision = value.get("aggregate_revision")
+        event_id = value.get("event_id")
         if accepted is not True or isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+            raise UiBridgeMalformedResponse("UI bridge returned malformed response")
+        if (
+            not isinstance(event_id, str)
+            or not 1 <= len(event_id) <= 128
+            or not event_id[0].isalnum()
+            or any(not (character.isalnum() or character in "._:-") for character in event_id)
+        ):
             raise UiBridgeMalformedResponse("UI bridge returned malformed response")
         if revision != intent.aggregate_revision:
             raise UiBridgeRevisionConflict("UI bridge acknowledged a stale revision")
-        return UiDeliveryReceipt(accepted=True, aggregate_revision=revision)
+        return UiDeliveryReceipt(
+            accepted=True,
+            aggregate_revision=revision,
+            event_id=event_id,
+        )

@@ -11,6 +11,7 @@ from spaces.learning.contracts.ui_intents import OpenCourseIntentV1
 
 
 COURSE_ID = UUID("00000000-0000-0000-0000-000000000101")
+BRIDGE_TOKEN = "local-renderer-token-with-at-least-32-characters"
 
 
 def _intent(*, revision: int = 4) -> OpenCourseIntentV1:
@@ -29,10 +30,12 @@ def test_ui_bridge_delivers_revisioned_intent_with_correlation_header() -> None:
         assert request.url.path == "/ui/intents"
         assert request.headers["X-Correlation-ID"] == str(correlation_id)
         assert json.loads(request.content) == _intent().model_dump(mode="json")
-        return httpx.Response(202, json={"accepted": True, "aggregate_revision": 4})
+        assert request.headers["Authorization"] == f"Bearer {BRIDGE_TOKEN}"
+        return httpx.Response(202, json={"accepted": True, "aggregate_revision": 4, "event_id": "evt-4"})
 
     bridge = UiBridge(
         base_url="http://127.0.0.1:5151",
+        auth_token=BRIDGE_TOKEN,
         http_client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
 
@@ -40,6 +43,7 @@ def test_ui_bridge_delivers_revisioned_intent_with_correlation_header() -> None:
 
     assert receipt.accepted is True
     assert receipt.aggregate_revision == 4
+    assert receipt.event_id == "evt-4"
 
 
 def test_ui_bridge_fails_closed_for_stale_malformed_and_http_responses() -> None:
@@ -48,13 +52,15 @@ def test_ui_bridge_fails_closed_for_stale_malformed_and_http_responses() -> None
 
     stale = UiBridge(
         base_url="http://127.0.0.1:5151",
-        http_client=httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(202, json={"accepted": True, "aggregate_revision": 3}))),
+        auth_token=BRIDGE_TOKEN,
+        http_client=httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(202, json={"accepted": True, "aggregate_revision": 3, "event_id": "evt-3"}))),
     )
     with pytest.raises(UiBridgeRevisionConflict, match="revision"):
         stale.deliver(intent, correlation_id=correlation_id)
 
     malformed = UiBridge(
         base_url="http://127.0.0.1:5151",
+        auth_token=BRIDGE_TOKEN,
         http_client=httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(202, json={"accepted": True}))),
     )
     with pytest.raises(UiBridgeMalformedResponse, match="malformed"):
@@ -62,6 +68,7 @@ def test_ui_bridge_fails_closed_for_stale_malformed_and_http_responses() -> None
 
     failed = UiBridge(
         base_url="http://127.0.0.1:5151",
+        auth_token=BRIDGE_TOKEN,
         http_client=httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(500, json={"detail": "token-value"}))),
     )
     with pytest.raises(UiBridgeTransportError, match="delivery failed") as error:
@@ -71,7 +78,7 @@ def test_ui_bridge_fails_closed_for_stale_malformed_and_http_responses() -> None
 
 def test_ui_bridge_rejects_non_loopback_url() -> None:
     with pytest.raises(ValueError, match="loopback"):
-        UiBridge(base_url="http://renderer.example.invalid")
+        UiBridge(base_url="http://renderer.example.invalid", auth_token=BRIDGE_TOKEN)
 
 
 def test_ui_bridge_rejects_redirect_without_leaving_loopback() -> None:
@@ -84,6 +91,7 @@ def test_ui_bridge_rejects_redirect_without_leaving_loopback() -> None:
 
     bridge = UiBridge(
         base_url="http://127.0.0.1:5151",
+        auth_token=BRIDGE_TOKEN,
         http_client=httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True),
     )
 
