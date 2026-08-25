@@ -150,6 +150,64 @@ describe("ProviderRegistry", () => {
       temporaryAdapter: false,
     });
   });
+
+  it("captures accessor-backed provider metadata exactly once", () => {
+    let providerIdReads = 0;
+    let descriptorIdReads = 0;
+    let descriptorKindReads = 0;
+    let temporaryAdapterReads = 0;
+    const descriptor = Object.defineProperties({}, {
+      id: {
+        enumerable: true,
+        get: () => {
+          descriptorIdReads += 1;
+          return descriptorIdReads <= 2 ? "native.accessor" : "mutated.id";
+        },
+      },
+      kind: {
+        enumerable: true,
+        get: () => {
+          descriptorKindReads += 1;
+          return descriptorKindReads === 1 ? "rowboat-native" : "openai-connector-bridge";
+        },
+      },
+      temporaryAdapter: {
+        enumerable: true,
+        get: () => {
+          temporaryAdapterReads += 1;
+          return temporaryAdapterReads === 1 ? false : true;
+        },
+      },
+    }) as ProviderDescriptor;
+    const provider = Object.defineProperties({
+      describe: (): ProviderDescriptor => descriptor,
+      invoke: async (): Promise<ProviderResult> => ({ status: "success", output: null }),
+    }, {
+      id: {
+        enumerable: true,
+        get: () => {
+          providerIdReads += 1;
+          return providerIdReads <= 2 ? "native.accessor" : "mutated.id";
+        },
+      },
+    }) as unknown as PluginProvider;
+    const registry = new ProviderRegistry();
+
+    registry.register(binding("binding.accessor"), provider);
+    const resolution = registry.resolve(binding("binding.accessor"));
+
+    if (resolution.status !== "available") throw new Error("expected available provider");
+    expect(resolution.provider.id).toBe("native.accessor");
+    expect(resolution.provider.describe()).toEqual({
+      id: "native.accessor",
+      kind: "rowboat-native",
+      temporaryAdapter: false,
+    });
+    expect(providerIdReads).toBe(1);
+    expect(descriptorIdReads).toBe(1);
+    expect(descriptorKindReads).toBe(1);
+    expect(temporaryAdapterReads).toBe(1);
+  });
 });
 
 describe("component provider normalizers", () => {

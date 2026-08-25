@@ -15,7 +15,29 @@ const PROVIDER_KINDS = new Set([
   "openai-connector-bridge",
 ]);
 
-export function assertBinding(binding: ProviderBinding): void {
+function captureBinding(binding: ProviderBinding): ProviderBinding {
+  try {
+    const id = binding.id;
+    const providerKind = binding.providerKind;
+    const componentDigest = binding.componentDigest;
+    const pairedSource = binding.pairedComponentDigests;
+    const temporarySource = binding.temporaryAdapter;
+    const pairedComponentDigests = pairedSource === undefined
+      ? undefined
+      : Object.freeze([pairedSource[0], pairedSource[1]] as const);
+    return Object.freeze({
+      id,
+      providerKind,
+      componentDigest,
+      ...(pairedComponentDigests === undefined ? {} : { pairedComponentDigests }),
+      ...(temporarySource === undefined ? {} : { temporaryAdapter: temporarySource }),
+    });
+  } catch {
+    throw new Error("provider_invalid:binding");
+  }
+}
+
+function validateBinding(binding: ProviderBinding): void {
   if (!BINDING_ID.test(binding.id)) {
     throw new Error("provider_invalid:binding_id");
   }
@@ -36,6 +58,10 @@ export function assertBinding(binding: ProviderBinding): void {
   }
 }
 
+export function assertBinding(binding: ProviderBinding): void {
+  validateBinding(captureBinding(binding));
+}
+
 function bindingSignature(binding: ProviderBinding): string {
   return JSON.stringify({
     id: binding.id,
@@ -51,17 +77,42 @@ interface RegisteredProvider {
   readonly provider: PluginProvider;
 }
 
-function snapshotProvider(provider: PluginProvider, described: ProviderDescriptor): PluginProvider {
-  const descriptor = Object.freeze({
-    id: described.id,
-    kind: described.kind,
-    temporaryAdapter: described.temporaryAdapter,
-  });
-  const invoke = provider.invoke.bind(provider);
+interface ProviderSnapshot {
+  readonly id: string;
+  readonly descriptor: Readonly<ProviderDescriptor>;
+  readonly invoke: PluginProvider["invoke"];
+}
+
+function captureProvider(provider: PluginProvider): ProviderSnapshot {
+  try {
+    const id = provider.id;
+    const describe = provider.describe;
+    const invokeMethod = provider.invoke;
+    if (typeof describe !== "function" || typeof invokeMethod !== "function") {
+      throw new Error("invalid provider methods");
+    }
+    const described = describe.call(provider);
+    const descriptor = Object.freeze({
+      id: described.id,
+      kind: described.kind,
+      temporaryAdapter: described.temporaryAdapter,
+    });
+    return Object.freeze({
+      id,
+      descriptor,
+      invoke: invokeMethod.bind(provider),
+    });
+  } catch {
+    throw new Error("provider_invalid:descriptor_mismatch");
+  }
+}
+
+function snapshotProvider(snapshot: ProviderSnapshot): PluginProvider {
+  const descriptor = snapshot.descriptor;
   return Object.freeze({
-    id: provider.id,
+    id: snapshot.id,
     describe: (): typeof descriptor => descriptor,
-    invoke,
+    invoke: snapshot.invoke,
   });
 }
 
@@ -69,38 +120,42 @@ export class ProviderRegistry {
   readonly #bindings = new Map<string, RegisteredProvider>();
 
   register(binding: ProviderBinding, provider: PluginProvider): void {
-    assertBinding(binding);
-    if (this.#bindings.has(binding.id)) {
-      throw new Error(`provider_duplicate:${binding.id}`);
+    const bindingSnapshot = captureBinding(binding);
+    validateBinding(bindingSnapshot);
+    if (this.#bindings.has(bindingSnapshot.id)) {
+      throw new Error(`provider_duplicate:${bindingSnapshot.id}`);
     }
-    if (binding.providerKind === "openai-connector-bridge") {
+    if (bindingSnapshot.providerKind === "openai-connector-bridge") {
       throw new Error("provider_unavailable:openai-connector-bridge");
     }
-    const descriptor = provider.describe();
+    const providerSnapshot = captureProvider(provider);
+    const descriptor = providerSnapshot.descriptor;
     if (
-      !BINDING_ID.test(provider.id)
+      !BINDING_ID.test(providerSnapshot.id)
       || !BINDING_ID.test(descriptor.id)
-      || descriptor.id !== provider.id
-      || descriptor.kind !== binding.providerKind
-      || descriptor.temporaryAdapter !== (binding.temporaryAdapter === true)
+      || descriptor.id !== providerSnapshot.id
+      || descriptor.kind !== bindingSnapshot.providerKind
+      || descriptor.temporaryAdapter !== (bindingSnapshot.temporaryAdapter === true)
     ) {
       throw new Error("provider_invalid:descriptor_mismatch");
     }
-    const facade = snapshotProvider(provider, descriptor);
-    this.#bindings.set(binding.id, Object.freeze({
-      signature: bindingSignature(binding),
+    const facade = snapshotProvider(providerSnapshot);
+    this.#bindings.set(bindingSnapshot.id, Object.freeze({
+      signature: bindingSignature(bindingSnapshot),
       provider: facade,
     }));
   }
 
   resolve(binding: ProviderBinding): ProviderResolution {
+    let bindingSnapshot: ProviderBinding;
     try {
-      assertBinding(binding);
+      bindingSnapshot = captureBinding(binding);
+      validateBinding(bindingSnapshot);
     } catch {
       return Object.freeze({ status: "unavailable", reason: "provider_unavailable" });
     }
-    const registered = this.#bindings.get(binding.id);
-    if (registered === undefined || registered.signature !== bindingSignature(binding)) {
+    const registered = this.#bindings.get(bindingSnapshot.id);
+    if (registered === undefined || registered.signature !== bindingSignature(bindingSnapshot)) {
       return Object.freeze({ status: "unavailable", reason: "provider_unavailable" });
     }
     return Object.freeze({ status: "available", provider: registered.provider });
