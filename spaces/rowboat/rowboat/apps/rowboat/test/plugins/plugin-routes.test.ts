@@ -56,6 +56,23 @@ function requestWithUnnormalizedRawUrl(path: string): NextRequest {
   return candidate;
 }
 
+function proxyNextRequestEquivalent(target: NextRequest): NextRequest {
+  const cloneSymbol = Symbol("clone");
+  const handler: ProxyHandler<NextRequest> = {
+    get(candidate, property) {
+      if (property === "clone") {
+        const existing = Reflect.getOwnPropertyDescriptor(candidate, cloneSymbol);
+        if (existing !== undefined && "value" in existing) return existing.value;
+        const clone = () => new Proxy(candidate.clone(), handler);
+        Reflect.defineProperty(candidate, cloneSymbol, { value: clone, writable: true, configurable: true });
+        return clone;
+      }
+      return Reflect.get(candidate, property, candidate);
+    },
+  };
+  return new Proxy(target, handler);
+}
+
 async function json(response: Response): Promise<unknown> { return response.json(); }
 
 describe("versioned plugin catalog routes", () => {
@@ -106,7 +123,57 @@ describe("versioned plugin catalog routes", () => {
       expect(await json(response)).toEqual({ error: "request_invalid" });
     }
     expect(resolutions).toBe(0);
-    expect(proxyCalls).toBe(0);
+    // The single clone read is the fail-closed Next runtime-proxy provenance handshake.
+    expect(proxyCalls).toBe(1);
+  });
+
+  it("accepts the Next 15 AppRoute runtime proxy while rejecting arbitrary proxies before resolution", async () => {
+    let resolutions = 0;
+    const route = createCatalogCollectionRoute(async () => { resolutions += 1; return { execute: async () => [catalogItem] }; });
+    const frameworkResponse = await route(proxyNextRequestEquivalent(request(`/api/v1/plugins?catalogDigest=${catalogDigest}`)));
+    expect(frameworkResponse.status).toBe(200);
+    expect(resolutions).toBe(1);
+
+    const arbitrary = new Proxy(request(`/api/v1/plugins?catalogDigest=${catalogDigest}`), {
+      get: (target, property) => Reflect.get(target, property, target),
+    });
+    const rejected = await route(arbitrary);
+    expect(rejected.status).toBe(400);
+    expect(await json(rejected)).toEqual({ error: "request_invalid" });
+    expect(resolutions).toBe(1);
+  });
+
+  it("rejects own value and accessor Headers.get overrides without invoking them or resolving dependencies", async () => {
+    let resolutions = 0;
+    let valueCalls = 0;
+    let accessorCalls = 0;
+    const route = createProjectPluginsRoute(async () => {
+      resolutions += 1;
+      return { install: async () => { throw new Error("controller_must_not_run"); } };
+    });
+    const init = {
+      method: "POST",
+      headers: { "content-type": "application/json", "Idempotency-Key": "install-1" },
+      body: JSON.stringify({ pluginName: "airtable", catalogDigest, expectedRevision: 0 }),
+    };
+    const valueRequest = request(`/api/v1/projects/project-1/plugins`, init);
+    Object.defineProperty(valueRequest.headers, "get", {
+      configurable: true,
+      value: () => { valueCalls += 1; return catalogDigest; },
+    });
+    const accessorRequest = request(`/api/v1/projects/project-1/plugins`, init);
+    Object.defineProperty(accessorRequest.headers, "get", {
+      configurable: true,
+      get: () => { accessorCalls += 1; return Headers.prototype.get; },
+    });
+    for (const candidate of [valueRequest, accessorRequest]) {
+      const response = await route.POST(candidate, { params: Promise.resolve({ projectId: "project-1" }) });
+      expect(response.status).toBe(400);
+      expect(await json(response)).toEqual({ error: "request_invalid" });
+    }
+    expect(valueCalls).toBe(0);
+    expect(accessorCalls).toBe(0);
+    expect(resolutions).toBe(0);
   });
 
   it("authenticates through the controller and reports partial availability exactly", async () => {

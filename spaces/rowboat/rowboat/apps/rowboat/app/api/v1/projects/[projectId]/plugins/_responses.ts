@@ -118,25 +118,80 @@ const REQUEST_METHOD_GETTER = Object.getOwnPropertyDescriptor(Request.prototype,
 const REQUEST_HEADERS_GETTER = Object.getOwnPropertyDescriptor(Request.prototype, "headers")?.get;
 const REQUEST_BODY_GETTER = Object.getOwnPropertyDescriptor(Request.prototype, "body")?.get;
 const REQUEST_SIGNAL_GETTER = Object.getOwnPropertyDescriptor(Request.prototype, "signal")?.get;
+const HEADERS_GET = Headers.prototype.get;
+const HEADERS_ENTRIES = Headers.prototype.entries;
+const VERIFIED_NEXT_RUNTIME_PROXIES = new WeakSet<object>();
+
+function frameworkProxy(request: Request): boolean {
+  if (!utilTypes.isProxy(request)) return false;
+  if (VERIFIED_NEXT_RUNTIME_PROXIES.has(request)) return true;
+  let before: readonly symbol[];
+  let clone: unknown;
+  try {
+    before = Object.getOwnPropertySymbols(request);
+    clone = Reflect.get(request, "clone", request);
+  } catch { throw new Error("request_invalid"); }
+  if (typeof clone !== "function") throw new Error("request_invalid");
+  let after: readonly symbol[];
+  try { after = Object.getOwnPropertySymbols(request); } catch { throw new Error("request_invalid"); }
+  const added = after.filter((symbol) => !before.includes(symbol));
+  if (added.length !== 1 || added[0]!.description !== "clone") throw new Error("request_invalid");
+  const descriptor = Object.getOwnPropertyDescriptor(request, added[0]!);
+  if (descriptor === undefined || !("value" in descriptor) || descriptor.value !== clone) throw new Error("request_invalid");
+  let repeated: unknown;
+  try { repeated = Reflect.get(request, "clone", request); } catch { throw new Error("request_invalid"); }
+  if (repeated !== clone || Object.getOwnPropertySymbols(request).length !== after.length) throw new Error("request_invalid");
+  VERIFIED_NEXT_RUNTIME_PROXIES.add(request);
+  return true;
+}
+
+function requestValue(request: Request, property: "url" | "method" | "headers" | "body" | "signal", getter: (() => unknown)): unknown {
+  if (utilTypes.isProxy(request)) {
+    if (!frameworkProxy(request)) throw new Error("request_invalid");
+    try { return Reflect.get(request, property, request); } catch { throw new Error("request_invalid"); }
+  }
+  try { return getter(); } catch { throw new Error("request_invalid"); }
+}
+
+function validatedHeaders(request: Request): Headers {
+  const candidate = requestValue(request, "headers", () => REQUEST_HEADERS_GETTER!.call(request));
+  if (candidate === null || typeof candidate !== "object" || utilTypes.isProxy(candidate)
+    || Object.getPrototypeOf(candidate) !== Headers.prototype || Object.getOwnPropertyDescriptor(candidate, "get") !== undefined) {
+    throw new Error("request_invalid");
+  }
+  return candidate as Headers;
+}
 
 function assertRequest(request: Request): asserts request is NextRequest {
-  if (utilTypes.isProxy(request)) throw new Error("request_invalid");
-  if (Object.getPrototypeOf(request) !== NextRequest.prototype) throw new Error("request_invalid");
+  const runtimeProxy = frameworkProxy(request);
+  try { if (Object.getPrototypeOf(request) !== NextRequest.prototype) throw new Error("request_invalid"); }
+  catch { throw new Error("request_invalid"); }
   if (NEXT_REQUEST_URL_GETTER === undefined || REQUEST_METHOD_GETTER === undefined || REQUEST_HEADERS_GETTER === undefined || REQUEST_BODY_GETTER === undefined || REQUEST_SIGNAL_GETTER === undefined) throw new Error("request_invalid");
-  for (const key of ["method", "url", "headers", "body", "signal"]) if (Object.getOwnPropertyDescriptor(request, key) !== undefined) throw new Error("request_invalid");
   try {
-    NEXT_REQUEST_URL_GETTER.call(request);
-    REQUEST_METHOD_GETTER.call(request);
-    REQUEST_HEADERS_GETTER.call(request);
-    REQUEST_BODY_GETTER.call(request);
-    REQUEST_SIGNAL_GETTER.call(request);
+    for (const key of ["method", "url", "headers", "body", "signal"]) if (Object.getOwnPropertyDescriptor(request, key) !== undefined) throw new Error("request_invalid");
   } catch { throw new Error("request_invalid"); }
+  if (!runtimeProxy) {
+    try {
+      NEXT_REQUEST_URL_GETTER.call(request);
+      REQUEST_METHOD_GETTER.call(request);
+      REQUEST_HEADERS_GETTER.call(request);
+      REQUEST_BODY_GETTER.call(request);
+      REQUEST_SIGNAL_GETTER.call(request);
+    } catch { throw new Error("request_invalid"); }
+  } else {
+    if (typeof requestValue(request, "url", () => undefined) !== "string"
+      || typeof requestValue(request, "method", () => undefined) !== "string") throw new Error("request_invalid");
+    requestValue(request, "body", () => undefined);
+    requestValue(request, "signal", () => undefined);
+  }
+  validatedHeaders(request);
 }
 
 export function assertRoute(request: Request, method: "GET" | "POST" | "PATCH", expectedSegments: readonly string[]): void {
   const { raw, url } = requestUrl(request);
-  let actualMethod: string;
-  try { actualMethod = REQUEST_METHOD_GETTER!.call(request) as string; } catch { throw new Error("request_invalid"); }
+  const selectedMethod = requestValue(request, "method", () => REQUEST_METHOD_GETTER!.call(request));
+  if (typeof selectedMethod !== "string") throw new Error("request_invalid");
+  const actualMethod = selectedMethod;
   const expectedPath = `/${expectedSegments.join("/")}`;
   if (
     actualMethod !== method || url.pathname !== expectedPath || raw !== `${url.origin}${url.pathname}${url.search}`
@@ -165,7 +220,7 @@ function requestUrl(request: Request): Readonly<{ raw: string; url: URL }> {
 function requestHeader(request: Request, name: string): string | null {
   assertRequest(request);
   let value: string | null;
-  try { value = (REQUEST_HEADERS_GETTER!.call(request) as Headers).get(name); } catch { throw new Error("request_invalid"); }
+  try { value = HEADERS_GET.call(validatedHeaders(request), name); } catch { throw new Error("request_invalid"); }
   if (value !== null && (value.includes("\0") || value.includes("\r") || value.includes("\n"))) throw new Error("request_invalid");
   return value;
 }
@@ -353,9 +408,9 @@ export async function jsonBody(request: Request, timeoutMs = 5_000): Promise<unk
   if (contentType === null || !/^application\/json(?:; charset=utf-8)?$/i.test(contentType)) throw new Error("request_invalid");
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) throw new Error("request_invalid");
   assertRequest(request);
-  const stream = REQUEST_BODY_GETTER!.call(request) as ReadableStream<Uint8Array> | null;
+  const stream = requestValue(request, "body", () => REQUEST_BODY_GETTER!.call(request)) as ReadableStream<Uint8Array> | null;
   if (stream === null) throw new Error("request_invalid");
-  const signal = REQUEST_SIGNAL_GETTER!.call(request) as AbortSignal;
+  const signal = requestValue(request, "signal", () => REQUEST_SIGNAL_GETTER!.call(request)) as AbortSignal;
   if (signal.aborted) throw new Error("request_aborted");
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
@@ -400,6 +455,15 @@ export async function jsonBody(request: Request, timeoutMs = 5_000): Promise<unk
   try { parsed = new BoundedJsonParser(new TextDecoder("utf-8", { fatal: true }).decode(bytes)).parse(); } catch { throw new Error("request_invalid"); }
   inspectJson(parsed);
   return parsed;
+}
+
+export function controllerRequest(request: Request): NextRequest {
+  const { raw } = requestUrl(request);
+  const selectedMethod = requestValue(request, "method", () => REQUEST_METHOD_GETTER!.call(request));
+  const selectedSignal = requestValue(request, "signal", () => REQUEST_SIGNAL_GETTER!.call(request));
+  if (typeof selectedMethod !== "string" || !(selectedSignal instanceof AbortSignal)) throw new Error("request_invalid");
+  const copiedHeaders = Array.from(HEADERS_ENTRIES.call(validatedHeaders(request)));
+  return new NextRequest(raw, { method: selectedMethod, headers: copiedHeaders, signal: selectedSignal });
 }
 
 export function strictObject(value: unknown, allowed: readonly string[]): Readonly<Record<string, unknown>> {
