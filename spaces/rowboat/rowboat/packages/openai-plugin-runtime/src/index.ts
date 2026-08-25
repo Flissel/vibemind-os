@@ -71,3 +71,19 @@ export {
   type CapabilityKind,
   type CapabilityReference,
 } from "./policy/capability-policy.js";
+export {
+  PINNED_OPENAI_PLUGIN_COUNT,
+  PINNED_OPENAI_PLUGINS_COMMIT,
+  PLUGIN_SCHEMA_VERSION,
+  type CatalogComponentAdmission,
+  type CatalogInventory,
+  type PluginCatalogEntry,
+  type PluginCatalogLock,
+} from "./domain/catalog.js";
+export {
+  importCatalog,
+  parseCatalogSyncArgs,
+  writeCatalogLock,
+  type CatalogImportOptions,
+  type CatalogSyncArgs,
+} from "./import/catalog-importer.js";
