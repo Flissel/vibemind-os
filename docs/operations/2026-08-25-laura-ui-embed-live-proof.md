@@ -14,10 +14,10 @@ verändert und keine Ersatzdaten erzeugt.
 
 | Komponente | Commit |
 |---|---|
-| `vibemind-os` vor diesem Follow-up-Commit | `db7cb2a9a77f5fb03b5e2cf3a6932100d7dbe1d0` |
+| `vibemind-os` vor diesem Follow-up-Commit | `2290b32df16d559c844fe2ce81eec2c141931508` |
 | `spaces/video/laura` | `e5e005cbc025363cd617ae1b5cf6ac9684e8ad03` |
-| `voice` | `b8ffc7ec7ec925e61a1bd36ff5dd163b5e4aaa11` |
-| `voice` beim vollständigen API/UI-Live-Runner | `7c6096d766ad17119550eca3446b70044e11a62b` |
+| `voice` | `ded630b4edbd10a38e64c926eb1f336b3a6a32d6` |
+| `voice` beim vollständigen API/UI-Live-Runner | `ded630b4edbd10a38e64c926eb1f336b3a6a32d6` |
 
 `npm --prefix voice/electron-app run video:build` baute den realen Laura-Renderer frisch
 mit Vite (`152 modules transformed`, Exitcode 0).
@@ -135,13 +135,15 @@ Der instrumentierte E2E erfasste Main-stdout/stderr begrenzt im Speicher. Der ko
 Lauf ohne Retry
 
 ```powershell
-npm --prefix voice/electron-app run test:e2e -- --grep "video space embeds" --retries=0
+npx playwright test e2e/space-navigation.spec.ts --grep "video space embeds the Laura renderer" --retries=0 --workers=1
 ```
 
-endete mit Exitcode 0 und `1 passed (7.7s)`. Die Logs enthielten die Marker
+endete mit Exitcode 0 und `1 passed (2.5s)` (Testdauer `2.0s`). Die Logs enthielten die Marker
 `VIBEMIND_E2E_ISOLATED_STARTUP active — external startup side effects disabled`,
 `Laura host and VideoManager initialized`, `Loading Laura renderer`, `Laura renderer loaded`
-und `Video shown`. Sie enthielten keinen der geprüften Startmarker für Python, Brain,
+und `Video shown`. Nach erfolgreichem `app.close()` verlangte die Fixture zusätzlich den Marker
+`VIBEMIND_E2E_ISOLATED_STARTUP active — pre-quit video BrowserView destroyed`. Sie enthielten
+keinen der geprüften Startmarker für Python, Brain,
 OpenFang, Supabase, Brain-Bridge, n8n, MiroFish oder Rowboat. Der Prozess beendete sich ohne
 firstWindow- oder Teardown-Timeout.
 
@@ -170,22 +172,25 @@ zurück ist ebenfalls nicht belegt.
 ## Verifikation und Blocker
 
 - PASS: `npm --prefix voice/electron-app run video:build` (Vite-Build, 152 Module).
-- PASS am Voice-Commit `7c6096d`: `npm --prefix voice/electron-app run laura:live-proof`
+- PASS am Voice-Commit `ded630b`: `npm --prefix voice/electron-app run laura:live-proof`
   (Exitcode 0; API,
   positive UI/Detach/Reattach/Dialog-Probe, negativer Umschlag und Cleanup in einem
   begrenzten Lauf). Der Runner verwendet für diese State-Probe direkt `hideVideo()` und
   `showVideo()`; daraus wird kein echter Space-Wechsel abgeleitet.
 - PASS am aktuellen Voice-Commit: `npm --prefix voice/electron-app run test:unit`
-  (55/55 Tests).
+  (58/58 Tests).
 - PASS: `pnpm --dir spaces/video/laura/apps/desktop typecheck` (Exitcode 0).
 - PASS am aktuellen Voice-Commit:
-  `npm --prefix voice/electron-app run test:e2e -- --grep "video space embeds" --retries=0`
-  (Exitcode 0, `1 passed (7.7s)`). Beim früheren Teardown-Befund hatten die Assertions bereits
-  bestanden; der gemeldete Testfehler war ausschließlich der Teardown-Timeout. Die
-  Lifecycle-Instrumentierung lokalisierte ihn auf `VideoManager.destroy()`:
-  `BrowserView.webContents.close()` blockierte während `will-quit`. Der eng begrenzte Fix
-  verwendet `webContents.destroy()`; ein Regressionstest fordert `destroy()` und verbietet
-  `close()`.
+  `npx playwright test e2e/space-navigation.spec.ts --grep "video space embeds the Laura renderer" --retries=0 --workers=1`
+  (Exitcode 0, `1 passed (2.5s)`, Testdauer `2.0s`). Beim unmittelbar vorherigen
+  Diagnosebefund waren alle Testschritte nach `3.924s` beendet; ausschließlich `app.close()`
+  überschritt die gesetzte 10-Sekunden-Diagnosegrenze und anschließend den Worker-Teardown.
+  Im Electron-Lifecycle lag `videoManager.destroy()` bis dahin erst in `will-quit`, also nach
+  dem Fensterschließen. Der eng begrenzte Fix führt im dedizierten isolierten Modus einen
+  idempotenten `videoManager.destroy()` bereits in `before-quit` aus; Normalmodus und der
+  bestehende `will-quit`-Cleanup bleiben unverändert. Unit-Verträge belegen Callback-Reihenfolge,
+  Einmaligkeit und den Nicht-Aufruf bei `FAST_STARTUP=true` allein; die E2E-Fixture belegt den
+  secret-freien Pre-Quit-Marker nach regulär abgeschlossenem `app.close()`.
 - PASS: `uv run --directory services/local-api pytest tests/test_runtime_dependencies.py`
   (`1 passed`). RED davor: Der Basissatz deklarierten Dependencies scheiterte beim Import
   mit `ModuleNotFoundError: No module named 'numpy'`. Nach Deklaration und Lockfile-Update
