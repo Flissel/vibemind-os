@@ -197,6 +197,26 @@ def test_actual_router_resolves_provider_negation_and_conflicts_fail_closed():
         assert router.route(phrase) is None, phrase
 
 
+def test_actual_router_handles_provider_modifiers_without_cross_provider_fallback():
+    router = CapabilityRouter(CAPABILITIES_PATH)
+    expected = {
+        "use only Claude to fix app.py": "coding_task_anthropic",
+        "use only Anthropic to refactor app.py": "coding_task_anthropic",
+        "do not ever use Claude; fix app.py": None,
+        "do not use Claude or OpenAI; fix app.py": None,
+        "do not use Claude\nor OpenAI; fix app.py": None,
+        "use both Claude and OpenAI to fix app.py": None,
+        "use either Claude or OpenAI to fix app.py": None,
+    }
+
+    actual = {}
+    for phrase in expected:
+        match = router.route(phrase)
+        actual[phrase] = match.capability if match is not None else None
+
+    assert actual == expected
+
+
 def test_actual_router_accepts_extensionless_anthropic_coding_operations():
     router = CapabilityRouter(CAPABILITIES_PATH)
 

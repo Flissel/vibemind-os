@@ -50,7 +50,8 @@ class _CodingProviderIntent(str, Enum):
 
 
 _PROVIDER_SELECTION = re.compile(
-    r"\b(?:use|ask|have)\s+(?:the\s+)?(?:claude|anthropic|openai)"
+    r"\b(?:use|ask|have)\s+(?:the\s+)?(?:(?:only|both|either)\s+)?"
+    r"(?:claude|anthropic|openai)"
     r"(?:\s+(?:model|agent))?\b|"
     r"\bmit\s+(?:claude|anthropic|openai)\b|"
     r"\b(?:claude(?:\s+code)?|anthropic|openai)\s+verwenden\b|"
@@ -60,7 +61,8 @@ _PROVIDER_SELECTION = re.compile(
     re.IGNORECASE,
 )
 _NEGATION_SUFFIX = re.compile(
-    r"(?:\bdo\s+not|\bdon't|\bnever|\bnot|\bnicht|\bkein(?:e|en|er|em|es)?)\s*$",
+    r"(?:\bdo\s+not(?:\s+ever)?|\bdon't(?:\s+ever)?|\bnever|\bnot|\bnicht|"
+    r"\bkein(?:e|en|er|em|es)?)\s*$",
     re.IGNORECASE,
 )
 
@@ -69,6 +71,7 @@ def _coding_provider_intent(intent: str) -> _CodingProviderIntent:
     """Resolve coding-provider selection once, including negation/conflicts."""
     selected: set[_CodingProviderIntent] = set()
     rejected: set[_CodingProviderIntent] = set()
+    previous_was_rejected = False
     for match in _PROVIDER_SELECTION.finditer(intent):
         token = match.group(0).casefold()
         provider = (
@@ -77,10 +80,15 @@ def _coding_provider_intent(intent: str) -> _CodingProviderIntent:
             else _CodingProviderIntent.ANTHROPIC
         )
         prefix = intent[max(0, match.start() - 32) : match.start()]
-        if _NEGATION_SUFFIX.search(prefix):
+        coordinated = re.match(r"(?:and|or|und|oder)\b", token) is not None
+        is_rejected = previous_was_rejected if coordinated else bool(
+            _NEGATION_SUFFIX.search(prefix)
+        )
+        if is_rejected:
             rejected.add(provider)
         else:
             selected.add(provider)
+        previous_was_rejected = is_rejected
 
     if not selected:
         return _CodingProviderIntent.BLOCKED if rejected else _CodingProviderIntent.OPENAI
