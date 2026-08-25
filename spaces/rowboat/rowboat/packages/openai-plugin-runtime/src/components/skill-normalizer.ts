@@ -6,6 +6,8 @@ import { readBoundedContainedFile } from "./asset-normalizer.js";
 const MAX_SKILL_BYTES = 1024 * 1024;
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 const MARKDOWN_DESTINATION = /!?\[[^\]]*\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g;
+const INLINE_CODE_RESOURCE = /`((?:(?:\.\.?\/)+|(?:references|scripts|assets)\/)[^`\s]+)`/g;
+const PROSE_RESOURCE = /(?:^|[\s"'(\[])((?:(?:\.\.?\/)*(?:references|scripts|assets)\/)[A-Za-z0-9_./-]*[A-Za-z0-9_-]\.[A-Za-z0-9][A-Za-z0-9_-]*)(?=$|[.\s`"'),;:!?\]])/gmu;
 
 export interface NormalizedSkillResource {
   readonly path: string;
@@ -44,9 +46,8 @@ function stringArray(value: unknown): readonly string[] {
 
 function localReferences(markdown: string): readonly string[] {
   const references = new Set<string>();
-  for (const match of markdown.matchAll(MARKDOWN_DESTINATION)) {
-    const raw = match[1];
-    if (raw === undefined || raw.startsWith("#") || /^[a-z][a-z0-9+.-]*:/i.test(raw)) continue;
+  const add = (raw: string): void => {
+    if (raw.startsWith("#") || /^[a-z][a-z0-9+.-]*:/i.test(raw)) return;
     let decoded: string;
     try {
       decoded = decodeURIComponent(raw.split(/[?#]/, 1)[0] ?? "");
@@ -54,6 +55,18 @@ function localReferences(markdown: string): readonly string[] {
       throw new PluginSourceSecurityError("path_escape", "invalid resource pointer");
     }
     if (decoded !== "") references.add(decoded);
+  };
+  for (const match of markdown.matchAll(MARKDOWN_DESTINATION)) {
+    const raw = match[1];
+    if (raw !== undefined) add(raw);
+  }
+  for (const match of markdown.matchAll(INLINE_CODE_RESOURCE)) {
+    const raw = match[1];
+    if (raw !== undefined) add(raw);
+  }
+  for (const match of markdown.matchAll(PROSE_RESOURCE)) {
+    const raw = match[1];
+    if (raw !== undefined) add(raw);
   }
   return Object.freeze([...references].sort(compareCodePoints));
 }
@@ -74,16 +87,19 @@ export async function normalizeSkill(
   const record = parsed as Record<string, unknown>;
   if (typeof record.name !== "string" || record.name === "") throw new Error("skill_invalid: name missing");
   if (typeof record.description !== "string") throw new Error("skill_invalid: description missing");
-  const resources: NormalizedSkillResource[] = [];
+  const resourcesByCanonicalPath = new Map<string, NormalizedSkillResource>();
   for (const pointer of localReferences(instructions)) {
     const canonical = await resolveContainedPath(canonicalSkillRoot, pointer);
     await resolveContainedPath(pluginRoot, relative(pluginRoot, canonical));
+    if (resourcesByCanonicalPath.has(canonical)) continue;
     const file = await readBoundedContainedFile(canonical, pluginRoot, MAX_SKILL_BYTES);
-    resources.push(Object.freeze({
+    resourcesByCanonicalPath.set(canonical, Object.freeze({
       path: slashPath(relative(canonicalSkillRoot, canonical)),
       digest: file.digest,
     }));
   }
+  const resources = [...resourcesByCanonicalPath.values()]
+    .sort((left, right) => compareCodePoints(left.path, right.path));
   return Object.freeze({
     name: record.name,
     description: record.description,

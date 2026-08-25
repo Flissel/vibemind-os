@@ -21,6 +21,7 @@ const RASTER_MIMES = new Set([
   "image/x-icon",
 ]);
 const TEXT_MIMES = new Set(["text/markdown", "text/plain"]);
+const ACTIVE_EXTENSIONS = new Set([".htm", ".html", ".svg", ".xhtml", ".xml"]);
 
 export interface AssetNormalizationOptions {
   readonly mime?: string;
@@ -106,6 +107,16 @@ function validatePlainText(bytes: Buffer): void {
     throw unsafe("plain text is not valid UTF-8");
   }
   if (text.includes("\0")) throw unsafe("plain text contains NUL");
+  const sniffed = text.replace(/^\uFEFF/, "").trimStart().toLowerCase();
+  if (
+    sniffed.startsWith("<!doctype html") ||
+    sniffed.startsWith("<html") ||
+    sniffed.startsWith("<svg") ||
+    sniffed.startsWith("<?xml") ||
+    /^(?:<script|<iframe|<object|<embed|<body|<head)(?:\s|>)/.test(sniffed)
+  ) {
+    throw unsafe("active text content rejected");
+  }
 }
 
 export async function readBoundedContainedFile(
@@ -141,7 +152,14 @@ export async function normalizeAsset(
   pluginRoot: string,
   options: AssetNormalizationOptions = {},
 ): Promise<NormalizedAsset> {
-  const mime = options.mime ?? inferMime(candidate);
+  const extension = extname(candidate).toLowerCase();
+  if (ACTIVE_EXTENSIONS.has(extension)) throw unsafe("active extension rejected");
+  const detectedMime = inferMime(candidate);
+  if (detectedMime === undefined) throw unsafe("asset type is unknown");
+  if (options.mime !== undefined && options.mime !== detectedMime) {
+    throw unsafe("declared MIME differs from detected type");
+  }
+  const mime = detectedMime;
   if (mime === undefined || (!RASTER_MIMES.has(mime) && !TEXT_MIMES.has(mime))) {
     throw unsafe("MIME is not passive");
   }

@@ -82,6 +82,60 @@ describe("instruction component normalizers", () => {
     });
   });
 
+  it("binds pinned-style inline-code and prose resource references once in code-point order", async () => {
+    const pluginRoot = await createPluginRoot("skill-prose-resources");
+    const skillRoot = join(pluginRoot, "skills", "database-review");
+    await mkdir(join(skillRoot, "references"), { recursive: true });
+    await writeFile(
+      join(skillRoot, "SKILL.md"),
+      [
+        "---",
+        "name: database-review",
+        "description: Review database queries.",
+        "---",
+        "",
+        "Read `references/cache-optimization.md` before starting.",
+        "Then inspect references/query-missing-indexes.md.",
+        "Read references/cache-optimization.md again.",
+        "The equivalent references/./cache-optimization.md is not a second resource.",
+        "Do not treat https://example.com/references/remote.md as local.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await writeFile(join(skillRoot, "references", "cache-optimization.md"), "cache", "utf8");
+    await writeFile(join(skillRoot, "references", "query-missing-indexes.md"), "queries", "utf8");
+
+    const skill = await normalizeSkill(skillRoot, pluginRoot);
+
+    expect(skill.resources.map(({ path }) => path)).toEqual([
+      "references/cache-optimization.md",
+      "references/query-missing-indexes.md",
+    ]);
+    expect(new Set(skill.resources.map(({ digest }) => digest)).size).toBe(2);
+  });
+
+  it("fails closed for missing and escaping prose resource references", async () => {
+    const owner = await createOwnedTestRoot("skill-prose-invalid");
+    const pluginRoot = join(owner, "plugin");
+    const skillRoot = join(pluginRoot, "skills", "review");
+    await mkdir(join(skillRoot, "references"), { recursive: true });
+    await writeFile(join(owner, "outside.md"), "outside", "utf8");
+    const skillFile = join(skillRoot, "SKILL.md");
+    const frontmatter = "---\nname: review\ndescription: Review.\n---\n";
+    await writeFile(skillFile, `${frontmatter}Read references/missing.md.\n`, "utf8");
+    await expect(normalizeSkill(skillRoot, pluginRoot)).rejects.toThrow();
+
+    await writeFile(
+      skillFile,
+      `${frontmatter}Read references/../../../../outside.md.\n`,
+      "utf8",
+    );
+    await expect(normalizeSkill(skillRoot, pluginRoot)).rejects.toMatchObject({
+      code: "path_escape",
+    });
+  });
+
   it("normalizes composer metadata and markdown agents as immutable non-authoritative templates", async () => {
     const agents = await normalizeAgents(join(fixtureRoot, "agents"), fixtureRoot);
 
@@ -186,6 +240,35 @@ describe("asset normalizer", () => {
       mime: "text/plain",
       maxBytes: Number.MAX_SAFE_INTEGER,
     })).rejects.toThrow("asset_unsafe");
+  });
+
+  it.each([
+    ["svg.txt", "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>"],
+    ["html.txt", "<!doctype html><html><body>active</body></html>"],
+    ["script.txt", "<script>alert('active')</script>"],
+  ])("rejects active UTF-8 content in %s even when declared text/plain", async (name, content) => {
+    const pluginRoot = await createPluginRoot(`asset-active-${name.replace(".txt", "")}`);
+    const asset = join(pluginRoot, name);
+    await writeFile(asset, content, "utf8");
+
+    await expect(normalizeAsset(asset, pluginRoot, { mime: "text/plain" }))
+      .rejects.toThrow("asset_unsafe");
+  });
+
+  it("rejects a supplied MIME that disagrees with the file extension and magic", async () => {
+    const pluginRoot = await createPluginRoot("asset-mime-mismatch");
+    const asset = join(pluginRoot, "logo.png");
+    const markdown = join(pluginRoot, "notice.md");
+    await writeFile(
+      asset,
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    );
+    await writeFile(markdown, "# Notice\n", "utf8");
+
+    await expect(normalizeAsset(asset, pluginRoot, { mime: "image/jpeg" }))
+      .rejects.toThrow("asset_unsafe");
+    await expect(normalizeAsset(markdown, pluginRoot, { mime: "text/plain" }))
+      .rejects.toThrow("asset_unsafe");
   });
 
   it("returns a Rowboat-owned placeholder for a missing optional asset", async () => {
