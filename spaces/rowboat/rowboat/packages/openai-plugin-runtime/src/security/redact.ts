@@ -24,7 +24,10 @@ const NESTED_SECRET_SEGMENTS = new Set(["cert", "certificate", "session", "cooki
 
 function isSensitiveKey(key: string | undefined): boolean {
   if (key === undefined) return false;
-  const normalized = key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+  const normalized = key
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase();
   const collapsed = normalized.replace(/[_-]/g, "");
   if (SAFE_METADATA_COMPOUNDS.has(collapsed)) return false;
   if (DIRECT_SECRET_KEYS.has(normalized) || SECRET_COMPOUNDS.has(collapsed)) return true;

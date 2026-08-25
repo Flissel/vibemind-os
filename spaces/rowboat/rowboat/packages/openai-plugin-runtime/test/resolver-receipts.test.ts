@@ -470,6 +470,47 @@ describe("secret-free receipts", () => {
     ]);
   });
 
+  it("redacts acronym-prefixed credential fields before canonical hashing", () => {
+    const output = { record: {
+      APIKey: "raw-api-key",
+      HTTPAuthorization: "raw-http-authorization",
+      HTTPSessionId: "raw-http-session",
+      HTTPVersion: "2",
+      JWTToken: "raw-jwt-token",
+      SSLCert: "raw-ssl-cert",
+      TLSCertificate: "raw-tls-certificate",
+    } };
+    const receipt = buildReceipt({
+      type: "execution", receiptId: "receipt-acronym-fields", projectId: "project-1", pluginName: "box", status: "success", output,
+    }, [], { maxOutputBytes: 1 });
+    const redacted = "[REDACTED]";
+    const canonical = JSON.stringify({ record: {
+      APIKey: redacted,
+      HTTPAuthorization: redacted,
+      HTTPSessionId: redacted,
+      HTTPVersion: "2",
+      JWTToken: redacted,
+      SSLCert: redacted,
+      TLSCertificate: redacted,
+    } });
+    expect(receipt.output).toEqual({
+      truncated: true,
+      digest: createHash("sha256").update(Buffer.from(canonical, "utf8")).digest("hex"),
+    });
+    for (const [key, value] of Object.entries(output.record)) {
+      if (key === "HTTPVersion") continue;
+      expect(JSON.stringify(receipt)).not.toContain(value);
+    }
+    expect(receipt.redactions).toEqual([
+      "output.record.APIKey",
+      "output.record.HTTPAuthorization",
+      "output.record.HTTPSessionId",
+      "output.record.JWTToken",
+      "output.record.SSLCert",
+      "output.record.TLSCertificate",
+    ]);
+  });
+
   it("produces the same truncated digest across object insertion order", () => {
     const base = { type: "execution", receiptId: "receipt-3", projectId: "project-1", pluginName: "box", status: "success" };
     const first = buildReceipt({ ...base, output: { b: 2, a: 1 } }, [], { maxOutputBytes: 1 });
