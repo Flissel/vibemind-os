@@ -18,6 +18,8 @@ export type PluginInstallation = RuntimePluginInstallation;
 export interface PluginComponentAdmission {
   readonly installationId: string;
   readonly componentDigest: string;
+  readonly componentKind: "skill" | "agent" | "command" | "mcp" | "app" | "hook" | "asset";
+  readonly componentName: string;
   readonly status: "admitted" | "review_required" | "rejected";
   readonly reason?: PluginReasonCode;
   readonly policyVersion: string;

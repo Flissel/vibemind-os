@@ -1,4 +1,5 @@
-import type { Db } from "mongodb";
+import { MongoServerError, type ClientSession, type Db, type MongoClient } from "mongodb";
+import { types as utilTypes } from "node:util";
 import type {
   IPluginsRepository,
   PluginCatalogEntry,
@@ -21,14 +22,20 @@ const OPENAI_PLUGINS_SOURCE_URL = "https://github.com/openai/plugins.git";
 const MAX_DEPTH = 16;
 const MAX_ITEMS = 4096;
 const MAX_STRING = 16_384;
-const FORBIDDEN_CREDENTIAL_KEYS = /(?:^|[_-])(value|secret|token|password|passphrase|private(?:key)?)(?:$|[_-])/i;
+const FORBIDDEN_CREDENTIAL_FRAGMENTS = [
+  "value", "secret", "token", "password", "passphrase", "private", "apikey", "auth", "cert", "session", "credential",
+] as const;
 
 type JsonPrimitive = string | number | boolean | null;
 type Captured = JsonPrimitive | readonly Captured[] | Readonly<{ [key: string]: Captured }>;
 type StoredDocument = Record<string, unknown>;
 
+const repositoryErrors = new WeakSet<Error>();
+
 function invalid(reason: string): never {
-  throw new Error(reason);
+  const error = new Error(reason);
+  repositoryErrors.add(error);
+  throw error;
 }
 
 function capture(input: unknown, reason: string, secretKeys: boolean, depth = 0, budget = { items: 0 }): Captured {
@@ -43,6 +50,7 @@ function capture(input: unknown, reason: string, secretKeys: boolean, depth = 0,
     return input;
   }
   if (typeof input !== "object") invalid(reason);
+  if (utilTypes.isProxy(input)) invalid(reason);
 
   let prototype: object | null;
   let descriptors: Record<PropertyKey, PropertyDescriptor>;
@@ -69,7 +77,8 @@ function capture(input: unknown, reason: string, secretKeys: boolean, depth = 0,
     const descriptor = descriptors[key]!;
     if (!("value" in descriptor) || !descriptor.enumerable) invalid(reason);
     if (key === "__proto__" || key === "prototype" || key === "constructor" || key.startsWith("$")) invalid(reason);
-    if (secretKeys && FORBIDDEN_CREDENTIAL_KEYS.test(key)) invalid("secret_value_rejected");
+    const normalizedKey = key.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
+    if (secretKeys && FORBIDDEN_CREDENTIAL_FRAGMENTS.some((fragment) => normalizedKey.includes(fragment))) invalid("secret_value_rejected");
     output[key] = capture(descriptor.value, reason, secretKeys, depth + 1, budget);
   }
   return Object.freeze(output);
@@ -243,9 +252,11 @@ function installation(input: unknown): PluginInstallation {
 
 function admission(input: unknown): PluginComponentAdmission {
   const record = object(input, "admission_invalid");
-  keys(record, ["installationId", "componentDigest", "status", "reason", "policyVersion"], "admission_invalid");
+  keys(record, ["installationId", "componentDigest", "componentKind", "componentName", "status", "reason", "policyVersion"], "admission_invalid");
   string(record, "installationId", ID, "admission_invalid");
   string(record, "componentDigest", DIGEST, "admission_invalid");
+  string(record, "componentKind", /^(skill|agent|command|mcp|app|hook|asset)$/, "admission_invalid");
+  string(record, "componentName", /^.{1,256}$/, "admission_invalid");
   const status = string(record, "status", /^(admitted|review_required|rejected)$/, "admission_invalid");
   string(record, "policyVersion", NAME, "admission_invalid");
   if (status === "admitted" && record.reason !== undefined) invalid("admission_invalid");
@@ -264,8 +275,15 @@ function credentialSlot(input: unknown): PluginCredentialSlot {
   const reference = record.reference as Readonly<Record<string, Captured>>;
   keys(reference, ["kind", "reference"], "credential_slot_invalid");
   string(reference, "kind", /^(bearer|oauth|environment)$/, "credential_slot_invalid");
+  const rawReference = reference.reference;
+  if (typeof rawReference === "string" && (rawReference.includes("://") || /[?@#]/.test(rawReference))) invalid("secret_value_rejected");
   string(reference, "reference", REFERENCE, "credential_slot_invalid");
-  if (record.metadata !== undefined && (typeof record.metadata !== "object" || record.metadata === null || Array.isArray(record.metadata))) invalid("credential_slot_invalid");
+  if (record.metadata !== undefined) {
+    if (typeof record.metadata !== "object" || record.metadata === null || Array.isArray(record.metadata)) invalid("credential_slot_invalid");
+    for (const value of Object.values(record.metadata)) {
+      if (value !== null && typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") invalid("credential_slot_invalid");
+    }
+  }
   return record as unknown as PluginCredentialSlot;
 }
 
@@ -295,26 +313,78 @@ function receipt(input: unknown): PluginReceipt {
 
 async function immutableInsert(
   collection: {
-    findOne(filter: StoredDocument, options: { projection: { _id: 0 } }): Promise<StoredDocument | null>;
-    insertOne(document: StoredDocument): Promise<unknown>;
+    findOne(filter: StoredDocument, options: { projection: { _id: 0 }; session?: ClientSession }): Promise<StoredDocument | null>;
+    insertOne(document: StoredDocument, options?: { session: ClientSession }): Promise<unknown>;
   },
   filter: StoredDocument,
   document: Captured,
   conflict: string,
+  session?: ClientSession,
 ): Promise<void> {
-  const existing = await collection.findOne(filter, { projection: { _id: 0 } });
+  const readOptions = session === undefined ? { projection: { _id: 0 } as const } : { projection: { _id: 0 } as const, session };
+  const existing = await collection.findOne(filter, readOptions);
   if (existing !== null) {
     if (canonical(capture(existing, conflict, false)) !== canonical(document)) invalid(conflict);
     return;
   }
-  await collection.insertOne(document as StoredDocument);
+  try {
+    await collection.insertOne(document as StoredDocument, session === undefined ? undefined : { session });
+  } catch (error) {
+    if (!(error instanceof MongoServerError) || error.code !== 11000) invalid("repository_write_failed");
+    const raced = await collection.findOne(filter, readOptions);
+    if (raced !== null && canonical(capture(raced, conflict, false)) === canonical(document)) return;
+    invalid(conflict);
+  }
+}
+
+export interface PluginTransactionRunner {
+  run<T>(work: (session: ClientSession | undefined) => Promise<T>): Promise<T>;
+}
+
+export class MongoPluginTransactionRunner implements PluginTransactionRunner {
+  constructor({ pluginsMongoClient }: { readonly pluginsMongoClient: MongoClient }) {
+    this.client = pluginsMongoClient;
+  }
+
+  private readonly client: MongoClient;
+
+  async run<T>(work: (session: ClientSession | undefined) => Promise<T>): Promise<T> {
+    let session: ClientSession;
+    try {
+      session = this.client.startSession();
+    } catch {
+      invalid("repository_transaction_failed");
+    }
+    let operationFailed = false;
+    try {
+      let completed: Readonly<{ value: T }> | undefined;
+      await session.withTransaction(async () => {
+        completed = { value: await work(session) };
+      });
+      if (completed === undefined) invalid("repository_transaction_failed");
+      return completed.value;
+    } catch (error) {
+      operationFailed = true;
+      if (error instanceof Error && repositoryErrors.has(error)) throw error;
+      invalid("repository_transaction_failed");
+    } finally {
+      try {
+        await session.endSession();
+      } catch {
+        if (!operationFailed) invalid("repository_transaction_failed");
+      }
+    }
+    invalid("repository_transaction_failed");
+  }
 }
 
 export class MongodbPluginsRepository implements IPluginsRepository {
   private readonly database: Db;
+  private readonly transactions: PluginTransactionRunner;
 
-  constructor({ pluginsDatabase }: { readonly pluginsDatabase: Db }) {
+  constructor({ pluginsDatabase, pluginTransactionRunner }: { readonly pluginsDatabase: Db; readonly pluginTransactionRunner: PluginTransactionRunner }) {
     this.database = pluginsDatabase;
+    this.transactions = pluginTransactionRunner;
   }
 
   async putCatalogSnapshot(input: PluginCatalogSnapshot): Promise<void> {
@@ -344,12 +414,15 @@ export class MongodbPluginsRepository implements IPluginsRepository {
       const key = `${document.catalogDigest}:${document.name}`;
       if (seen.has(key)) invalid("catalog_entry_conflict");
       seen.add(key);
-      if (await this.getCatalogSnapshot(document.catalogDigest) === null) invalid("catalog_snapshot_not_found");
     }
-    for (const document of documents) {
-      const stored = Object.freeze({ catalogDigest: document.catalogDigest, name: document.name, payload: canonical(document as unknown as Captured) }) as unknown as Captured;
-      await immutableInsert(this.database.collection(PLUGIN_COLLECTIONS.catalogEntries), { catalogDigest: document.catalogDigest, name: document.name }, stored, "catalog_entry_conflict");
-    }
+    await this.validateCatalogEntryBatch(documents, undefined);
+    await this.transactions.run(async (session) => {
+      await this.validateCatalogEntryBatch(documents, session);
+      for (const document of documents) {
+        const stored = Object.freeze({ catalogDigest: document.catalogDigest, name: document.name, payload: canonical(document as unknown as Captured) }) as unknown as Captured;
+        await immutableInsert(this.database.collection(PLUGIN_COLLECTIONS.catalogEntries), { catalogDigest: document.catalogDigest, name: document.name }, stored, "catalog_entry_conflict", session);
+      }
+    });
   }
 
   async putInstallation(input: PluginInstallation): Promise<void> {
@@ -360,10 +433,20 @@ export class MongodbPluginsRepository implements IPluginsRepository {
     const existing = existingById ?? existingByProject;
     if (existing !== null) {
       const captured = this.readInstallation(existing);
-      if (captured.id !== document.id || captured.projectId !== document.projectId || captured.pluginName !== document.pluginName) invalid("installation_conflict");
+      if (canonical(captured as unknown as Captured) !== canonical(document as unknown as Captured)) invalid("installation_conflict");
       return;
     }
-    await collection.insertOne(this.installationDocument(document));
+    await this.requireCatalogEntryForInstallation(document, undefined);
+    try {
+      await collection.insertOne(this.installationDocument(document));
+    } catch (error) {
+      if (!(error instanceof MongoServerError) || error.code !== 11000) invalid("repository_write_failed");
+      const racedById = await collection.findOne({ id: document.id }, { projection: { _id: 0 } });
+      const racedByProject = await collection.findOne({ projectId: document.projectId, pluginName: document.pluginName }, { projection: { _id: 0 } });
+      const raced = racedById ?? racedByProject;
+      if (raced !== null && canonical(this.readInstallation(raced) as unknown as Captured) === canonical(document as unknown as Captured)) return;
+      invalid("installation_conflict");
+    }
   }
 
   async listInstallations(projectId: string): Promise<readonly PluginInstallation[]> {
@@ -394,9 +477,13 @@ export class MongodbPluginsRepository implements IPluginsRepository {
       if (seen.has(key)) invalid("admission_conflict");
       seen.add(key);
     }
-    for (const document of documents) {
-      await immutableInsert(this.database.collection(PLUGIN_COLLECTIONS.componentAdmissions), { installationId: document.installationId, componentDigest: document.componentDigest }, document as unknown as Captured, "admission_conflict");
-    }
+    await this.validateAdmissionBatch(documents, undefined);
+    await this.transactions.run(async (session) => {
+      await this.validateAdmissionBatch(documents, session);
+      for (const document of documents) {
+        await immutableInsert(this.database.collection(PLUGIN_COLLECTIONS.componentAdmissions), { installationId: document.installationId, componentDigest: document.componentDigest }, document as unknown as Captured, "admission_conflict", session);
+      }
+    });
   }
 
   async listAdmissions(installationId: string): Promise<readonly PluginComponentAdmission[]> {
@@ -407,6 +494,9 @@ export class MongodbPluginsRepository implements IPluginsRepository {
 
   async putCredentialSlot(input: PluginCredentialSlot): Promise<void> {
     const document = credentialSlot(input);
+    const parent = await this.database.collection(PLUGIN_COLLECTIONS.installations).findOne({ id: document.installationId }, { projection: { _id: 0 } });
+    if (parent === null) invalid("credential_slot_parent_not_found");
+    if (this.readInstallation(parent).projectId !== document.projectId) invalid("credential_slot_parent_mismatch");
     const stored = Object.freeze({ id: document.id, payload: canonical(document as unknown as Captured) }) as unknown as Captured;
     await immutableInsert(this.database.collection(PLUGIN_COLLECTIONS.credentialSlots), { id: document.id }, stored, "credential_slot_conflict");
   }
@@ -458,5 +548,76 @@ export class MongodbPluginsRepository implements IPluginsRepository {
       input.providerBindings = parsePayload(stored.providerBindingsJson, "installation_invalid");
     }
     return installation(input);
+  }
+
+  private async getCatalogSnapshotWithSession(digest: string, session: ClientSession | undefined): Promise<PluginCatalogSnapshot | null> {
+    const options = session === undefined ? { projection: { _id: 0 } } : { projection: { _id: 0 }, session };
+    const stored = await this.database.collection(PLUGIN_COLLECTIONS.catalogSnapshots).findOne({ catalogDigest: digest }, options);
+    return stored === null ? null : catalogSnapshot(parsePayload(stored.payload, "catalog_snapshot_invalid"));
+  }
+
+  private async validateCatalogEntryBatch(documents: readonly PluginCatalogEntry[], session: ClientSession | undefined): Promise<void> {
+    const collection = this.database.collection(PLUGIN_COLLECTIONS.catalogEntries);
+    for (const document of documents) {
+      const snapshot = await this.getCatalogSnapshotWithSession(document.catalogDigest, session);
+      if (snapshot === null) invalid("catalog_snapshot_not_found");
+      if (
+        document.sourceUrl !== snapshot.sourceUrl
+        || document.sourceCommit !== snapshot.sourceCommit
+        || document.importedAt !== snapshot.importedAt
+        || document.schemaVersion !== snapshot.schemaVersion
+        || document.policyVersion !== snapshot.policyVersion
+      ) invalid("catalog_entry_mismatch");
+      const options = session === undefined ? { projection: { _id: 0 } } : { projection: { _id: 0 }, session };
+      const existing = await collection.findOne({ catalogDigest: document.catalogDigest, name: document.name }, options);
+      if (existing !== null) {
+        const decoded = catalogEntry(parsePayload(existing.payload, "catalog_entry_invalid"));
+        if (canonical(decoded as unknown as Captured) !== canonical(document as unknown as Captured)) invalid("catalog_entry_conflict");
+      }
+    }
+  }
+
+  private async catalogEntriesByName(name: string, session: ClientSession | undefined): Promise<readonly PluginCatalogEntry[]> {
+    const options = session === undefined ? { projection: { _id: 0 } } : { projection: { _id: 0 }, session };
+    const documents = await this.database.collection(PLUGIN_COLLECTIONS.catalogEntries).find({ name }, options).sort({ catalogDigest: 1 }).toArray();
+    return documents.map((document) => catalogEntry(parsePayload(document.payload, "catalog_entry_invalid")));
+  }
+
+  private async requireCatalogEntryForInstallation(document: PluginInstallation, session: ClientSession | undefined): Promise<PluginCatalogEntry> {
+    const entries = await this.catalogEntriesByName(document.pluginName, session);
+    const matches = entries.filter((entry) =>
+      entry.pluginName === document.pluginName
+      && entry.pluginVersion === document.pluginVersion
+      && entry.sourceCommit === document.sourceCommit
+      && entry.manifestDigest === document.manifestDigest
+      && entry.treeDigest === document.treeDigest
+      && entry.policyVersion === document.policyVersion
+    );
+    if (matches.length !== 1) invalid("installation_catalog_mismatch");
+    return matches[0]!;
+  }
+
+  private async validateAdmissionBatch(documents: readonly PluginComponentAdmission[], session: ClientSession | undefined): Promise<void> {
+    const installations = this.database.collection(PLUGIN_COLLECTIONS.installations);
+    const admissions = this.database.collection(PLUGIN_COLLECTIONS.componentAdmissions);
+    for (const document of documents) {
+      const options = session === undefined ? { projection: { _id: 0 } } : { projection: { _id: 0 }, session };
+      const parent = await installations.findOne({ id: document.installationId }, options);
+      if (parent === null) invalid("admission_parent_not_found");
+      const entry = await this.requireCatalogEntryForInstallation(this.readInstallation(parent), session);
+      const selected = entry.components.find(({ component }) => component.metadata.digest === document.componentDigest);
+      if (
+        selected === undefined
+        || selected.component.kind !== document.componentKind
+        || selected.component.name !== document.componentName
+        || selected.admission.status !== document.status
+        || selected.admission.policyVersion !== document.policyVersion
+        || (selected.admission.status === "admitted" ? document.reason !== undefined : selected.admission.reason !== document.reason)
+      ) invalid("admission_binding_mismatch");
+      const existing = await admissions.findOne({ installationId: document.installationId, componentDigest: document.componentDigest }, options);
+      if (existing !== null && canonical(freezeRead<PluginComponentAdmission>(existing, "admission_invalid") as unknown as Captured) !== canonical(document as unknown as Captured)) {
+        invalid("admission_conflict");
+      }
+    }
   }
 }
