@@ -33,6 +33,21 @@ class ToolErrorV1(ContractModel):
     retryable: bool = False
 
 
+class UiDeliveryStatusV1(ContractModel):
+    attempted: bool
+    delivered: bool
+    error_code: SafeToken | None = None
+    event_id: SafeToken | None = None
+
+    @model_validator(mode="after")
+    def validate_delivery_evidence(self) -> "UiDeliveryStatusV1":
+        if self.delivered and (not self.attempted or self.error_code is not None):
+            raise ValueError("delivered UI projection requires a clean attempt")
+        if not self.delivered and self.event_id is not None:
+            raise ValueError("failed UI projection cannot expose an event receipt")
+        return self
+
+
 class ToolResultV1(ContractModel):
     version: Literal["1"] = "1"
     invocation_id: UUID
@@ -49,6 +64,7 @@ class ToolResultV1(ContractModel):
     error: ToolErrorV1 | None = None
     evidence: EvidenceRefV1 | None = None
     ui_intent: UiIntent | None = None
+    ui_delivery: UiDeliveryStatusV1 | None = None
 
     @model_validator(mode="after")
     def validate_state_evidence(self) -> ToolResultV1:

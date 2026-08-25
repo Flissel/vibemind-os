@@ -23,6 +23,8 @@ def test_runtime_survives_stateful_restart() -> None:
             "spaces.learning.deployment.runtime_smoke",
             "--compose-file",
             str(COMPOSE_PATH),
+            "--existing-project",
+            os.environ.get("LEARNING_RUNTIME_PROJECT", "vibemind-learning"),
         ],
         cwd=Path(__file__).resolve().parents[4],
         check=False,

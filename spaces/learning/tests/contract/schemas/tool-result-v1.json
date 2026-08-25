@@ -488,6 +488,55 @@
       ],
       "title": "ToolErrorV1",
       "type": "object"
+    },
+    "UiDeliveryStatusV1": {
+      "additionalProperties": false,
+      "properties": {
+        "attempted": {
+          "title": "Attempted",
+          "type": "boolean"
+        },
+        "delivered": {
+          "title": "Delivered",
+          "type": "boolean"
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Code"
+        },
+        "event_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Event Id"
+        }
+      },
+      "required": [
+        "attempted",
+        "delivered"
+      ],
+      "title": "UiDeliveryStatusV1",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -560,6 +609,17 @@
       ],
       "title": "State",
       "type": "string"
+    },
+    "ui_delivery": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UiDeliveryStatusV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "ui_intent": {
       "anyOf": [

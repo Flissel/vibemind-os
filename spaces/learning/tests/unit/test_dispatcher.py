@@ -203,6 +203,8 @@ def test_verified_intent_is_delivered_once_after_application_readback() -> None:
     assert replay.state == "completed"
     assert gateway.readback_calls == 1
     assert delivery.calls == 1
+    assert first.ui_delivery is not None
+    assert first.ui_delivery.delivered is True
 
 
 def test_renderer_delivery_failure_does_not_relabel_verified_backend_success() -> None:
@@ -226,6 +228,9 @@ def test_renderer_delivery_failure_does_not_relabel_verified_backend_success() -
 
     assert result.state == "completed"
     assert result.evidence is not None
+    assert result.ui_delivery is not None
+    assert result.ui_delivery.delivered is False
+    assert result.ui_delivery.error_code == "unexpected_delivery_error"
 
 
 def test_unverified_backend_result_never_emits_ui_intent() -> None:

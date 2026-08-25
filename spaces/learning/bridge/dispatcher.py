@@ -18,6 +18,7 @@ from spaces.learning.contracts.outcomes import (
     ToolErrorV1,
     ToolResultV1,
     TruthReadbackV1,
+    UiDeliveryStatusV1,
 )
 from spaces.learning.contracts.ui_intents import UiIntent
 from spaces.learning.bridge.ui_bridge import UiDeliveryResult
@@ -245,12 +246,20 @@ class LearningDispatcher:
             evidence=verified.evidence,
             ui_intent=outcome.ui_intent,
         )
-        self._deliver_ui_intent(result)
+        result = self._deliver_ui_intent(result)
         return self._finalize(key, digest, result)
 
-    def _deliver_ui_intent(self, result: ToolResultV1) -> None:
-        if self._ui_delivery is None or result.ui_intent is None:
-            return
+    def _deliver_ui_intent(self, result: ToolResultV1) -> ToolResultV1:
+        if result.ui_intent is None:
+            return result
+        if self._ui_delivery is None:
+            return result.model_copy(update={
+                "ui_delivery": UiDeliveryStatusV1(
+                    attempted=False,
+                    delivered=False,
+                    error_code="not_configured",
+                )
+            })
         try:
             delivery = self._ui_delivery.try_deliver(
                 result.ui_intent,
@@ -264,7 +273,13 @@ class LearningDispatcher:
                     "error_code": "unexpected_delivery_error",
                 },
             )
-            return
+            return result.model_copy(update={
+                "ui_delivery": UiDeliveryStatusV1(
+                    attempted=True,
+                    delivered=False,
+                    error_code="unexpected_delivery_error",
+                )
+            })
         if not delivery.delivered:
             logger.warning(
                 "learning_ui_intent_delivery_failed",
@@ -273,6 +288,24 @@ class LearningDispatcher:
                     "error_code": delivery.error_code or "delivery_failed",
                 },
             )
+            return result.model_copy(update={
+                "ui_delivery": UiDeliveryStatusV1(
+                    attempted=True,
+                    delivered=False,
+                    error_code=delivery.error_code or "delivery_failed",
+                )
+            })
+        return result.model_copy(update={
+            "ui_delivery": UiDeliveryStatusV1(
+                attempted=True,
+                delivered=True,
+                event_id=(
+                    delivery.receipt.event_id
+                    if delivery.receipt is not None
+                    else None
+                ),
+            )
+        })
 
     def _unverified(self, request: ToolRequestV1, message: str) -> ToolResultV1:
         return _error_result(

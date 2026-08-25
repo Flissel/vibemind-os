@@ -10,7 +10,7 @@ import pytest
 from spaces.learning.deployment import worker
 from spaces.learning.deployment.migrate import migrate
 from spaces.learning.deployment.runtime_api import _migration_probe
-from spaces.learning.deployment.runtime_smoke import _status_request
+from spaces.learning.deployment.runtime_smoke import RESTART_ORDER, _status_request
 from spaces.learning.deployment.runtime_smoke import _run as run_compose
 from spaces.learning.services.db.models import Base, LearningInvocationReceipt
 from spaces.learning.services.db.session import create_learning_engine
@@ -47,7 +47,7 @@ def test_migrate_creates_all_learning_owned_tables(tmp_path: Path) -> None:
             revision = connection.exec_driver_sql(
                 "SELECT version_num FROM learning_alembic_version"
             ).scalar_one()
-        assert revision == "0009_review_remediation"
+            assert revision == "0010_learning_migration"
     finally:
         engine.dispose()
 
@@ -69,7 +69,7 @@ def test_migrate_adopts_complete_pre_alembic_learning_schema(tmp_path: Path) -> 
             revision = connection.exec_driver_sql(
                 "SELECT version_num FROM learning_alembic_version"
             ).scalar_one()
-        assert revision == "0009_review_remediation"
+            assert revision == "0010_learning_migration"
     finally:
         engine.dispose()
 
@@ -129,7 +129,7 @@ def test_migrate_upgrades_phase_one_pre_alembic_receipts_as_terminal(
                 "SELECT version_num FROM learning_alembic_version"
             ).scalar_one()
         assert terminal in {True, 1}
-        assert revision == "0009_review_remediation"
+        assert revision == "0010_learning_migration"
     finally:
         engine.dispose()
 
@@ -190,3 +190,18 @@ def test_runtime_smoke_decodes_docker_output_as_utf8(
     assert run_compose(tmp_path / "compose.yml", "config") == ""
     assert captured["encoding"] == "utf-8"
     assert captured["errors"] == "replace"
+
+
+def test_runtime_smoke_covers_every_learning_service() -> None:
+    assert RESTART_ORDER == (
+        "postgres",
+        "redis",
+        "qdrant",
+        "learnhouse-api",
+        "learnhouse-collab",
+        "learnhouse-web",
+        "learning-api",
+        "learning-worker",
+        "learning-mcp",
+        "penecho",
+    )
