@@ -1,4 +1,6 @@
-import { asClass, createContainer, InjectionMode } from "awilix";
+import { asClass, asValue, createContainer, InjectionMode } from "awilix";
+import { db } from "@/app/lib/mongodb";
+import { MongodbPluginsRepository } from "@/src/infrastructure/repositories/mongodb.plugins.repository";
 
 // Services
 import { RedisPubSubService } from "@/src/infrastructure/services/redis.pub-sub.service";
@@ -164,6 +166,8 @@ export const container = createContainer({
 });
 
 container.register({
+    pluginsDatabase: asValue(db),
+    pluginsRepository: asClass(MongodbPluginsRepository).singleton(),
     // workers
     // ---
     jobsWorker: asClass(JobsWorker).singleton(),
