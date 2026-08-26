@@ -20,7 +20,7 @@ function safeReason(error: unknown): string {
 }
 
 function sameScope(left: PluginSessionScope, right: PluginSessionScope): boolean {
-  return left.origin === right.origin && left.accountId === right.accountId;
+  return left.origin === right.origin && left.kind === right.kind && left.id === right.id;
 }
 
 function exactInstalledTruth(catalog: PluginCatalogItem, installation: PluginProjectItem, digest: string): boolean {

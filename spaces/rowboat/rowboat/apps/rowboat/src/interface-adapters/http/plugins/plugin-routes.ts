@@ -1,7 +1,7 @@
 import {
   assertRoute, catalogResponse, idempotencyKey, installationResponse, installResponse, jsonBody, params,
   pluginErrorResponse, previewResponse, projectListResponse, query, strictObject,
-  type CatalogController, type InstallationController, type RouteContext,
+  assertRouteWithoutQuery, pluginSessionResponse, type CatalogController, type InstallationController, type PluginSessionControllerLike, type RouteContext,
 } from "@/app/api/v1/projects/[projectId]/plugins/_responses";
 
 type ControllerSource<T> = T | (() => Promise<T>);
@@ -21,6 +21,20 @@ async function catalogController(): Promise<CatalogController> {
 async function installationController(): Promise<InstallationController> {
   const { resolvePluginInstallationController } = await import("@/di/plugins-container");
   return resolvePluginInstallationController();
+}
+
+async function sessionController(): Promise<PluginSessionControllerLike> {
+  const { resolvePluginSessionController } = await import("@/di/plugins-container");
+  return resolvePluginSessionController();
+}
+
+export function createPluginSessionRoute(source: ControllerSource<PluginSessionControllerLike>) {
+  return async function pluginSessionGET(request: Request): Promise<Response> {
+    try {
+      assertRouteWithoutQuery(request, "GET", ["api", "v1", "plugin-session"]);
+      return pluginSessionResponse(await (await controller(source)).execute(request));
+    } catch (error) { return pluginErrorResponse(error); }
+  };
 }
 
 export function createCatalogCollectionRoute(source: ControllerSource<CatalogController>) {
@@ -104,6 +118,7 @@ export function createProjectPluginRoute(source: ControllerSource<InstallationCo
 }
 
 export const catalogCollectionGET = createCatalogCollectionRoute(catalogController);
+export const pluginSessionGET = createPluginSessionRoute(sessionController);
 export const catalogItemGET = createCatalogItemRoute(catalogController);
 export const projectPluginsRoutes = createProjectPluginsRoute(installationController);
 export const projectPluginRoutes = createProjectPluginRoute(installationController);

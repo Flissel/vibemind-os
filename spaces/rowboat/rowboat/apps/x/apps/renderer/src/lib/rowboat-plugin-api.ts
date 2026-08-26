@@ -21,7 +21,8 @@ export const DESKTOP_PLUGIN_CATALOG_PIN = Object.freeze({
 export interface PluginApiSession {
   readonly baseUrl: string;
   readonly accessToken: string;
-  readonly accountId: string;
+  readonly actorKind: 'user' | 'project_api_key';
+  readonly actorId: string;
 }
 
 const DIGEST = /^[a-f0-9]{64}$/;
@@ -38,11 +39,12 @@ const FORBIDDEN_KEYS = new Set(['__proto__', 'prototype', 'constructor', 'toJSON
 
 const Reason = z.enum(PLUGIN_REASON_CODES);
 const RawStatus = z.enum([...PLUGIN_STATUSES, 'invalid', 'unsupported', 'rejected']);
+const AvailabilityStatus = z.enum([...PLUGIN_STATUSES, 'invalid', 'unsupported']);
 const Admission = z.union([
   z.object({ status: z.literal('admitted'), policyVersion: z.string().regex(ID) }).strict(),
   z.object({ status: z.enum(['review_required', 'rejected']), reason: Reason, policyVersion: z.string().regex(ID) }).strict(),
 ]);
-const Availability = z.object({ status: RawStatus, reason: Reason.optional() }).strict();
+const Availability = z.object({ status: AvailabilityStatus, reason: Reason.optional() }).strict();
 const Component = z.object({
   componentDigest: z.string().regex(DIGEST),
   name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._ ()+@-]{0,127}$/),
@@ -86,7 +88,7 @@ export type PluginInstallReceipt = z.infer<typeof Receipt>;
 export type PluginProjectItem = Omit<z.infer<typeof ProjectItem>, 'status'> & { readonly status: PluginStatus };
 interface PreviewContext {
   readonly projectId: string; readonly pluginName: string; readonly catalogDigest: string; readonly expectedRevision: number;
-  readonly origin: string; readonly accountId: string; readonly idempotencyKey: string;
+  readonly origin: string; readonly actorKind: 'user' | 'project_api_key'; readonly actorId: string; readonly idempotencyKey: string;
 }
 
 interface ApiOptions {
@@ -131,13 +133,13 @@ export function canonicalPluginOrigin(baseUrl: string): string {
   return url.origin;
 }
 
-function validateSession(input: PluginApiSession): Readonly<{ origin: string; accessToken: string; accountId: string }> {
-  const record = exactRecord(input, ['baseUrl', 'accessToken', 'accountId'], 'plugin_api_config_invalid');
-  if (typeof record.accountId !== 'string' || !ID.test(record.accountId)) fail('plugin_api_config_invalid');
+function validateSession(input: PluginApiSession): Readonly<{ origin: string; accessToken: string; actorKind: 'user' | 'project_api_key'; actorId: string }> {
+  const record = exactRecord(input, ['baseUrl', 'accessToken', 'actorKind', 'actorId'], 'plugin_api_config_invalid');
+  if ((record.actorKind !== 'user' && record.actorKind !== 'project_api_key') || typeof record.actorId !== 'string' || !ID.test(record.actorId)) fail('plugin_api_config_invalid');
   if (typeof record.baseUrl !== 'string' || record.baseUrl.length < 1 || record.baseUrl.length > 2_048 || /[\\\0\r\n\t ]/.test(record.baseUrl)
     || typeof record.accessToken !== 'string' || record.accessToken.length < 1 || record.accessToken.length > 16_384
     || /[,\s\0]/.test(record.accessToken)) fail('plugin_api_config_invalid');
-  return Object.freeze({ origin: canonicalPluginOrigin(record.baseUrl), accessToken: record.accessToken, accountId: record.accountId });
+  return Object.freeze({ origin: canonicalPluginOrigin(record.baseUrl), accessToken: record.accessToken, actorKind: record.actorKind, actorId: record.actorId });
 }
 
 function validateId(value: unknown): string {
@@ -250,6 +252,11 @@ class BoundedJsonParser {
   private whitespace(): void { while (/^[\x20\x09\x0a\x0d]$/.test(this.text[this.index] ?? '')) this.index += 1; }
 }
 
+export function parsePluginApiJson(text: string): unknown {
+  if (typeof text !== 'string' || text.length > MAX_RESPONSE_BYTES) fail('plugin_api_response_invalid');
+  return new BoundedJsonParser(text).parse();
+}
+
 function canonicalStatus(item: Readonly<{ status: z.infer<typeof RawStatus>; admission: 'admitted' | 'review_required' | 'rejected'; components: readonly z.infer<typeof Component>[] }>): PluginStatus {
   if (item.status === 'review_required' || item.admission === 'review_required') return 'review_required';
   if (item.status === 'rejected' || item.admission === 'rejected') return 'unavailable';
@@ -274,10 +281,43 @@ function normalizeItem(item: RawCatalogItem): PluginCatalogItem {
 }
 
 function validateComponentTruth(component: z.infer<typeof Component>): void {
+  const availabilityReasons: Readonly<Record<z.infer<typeof AvailabilityStatus>, readonly PluginReasonCode[]>> = Object.freeze({
+    available: [], installed: [],
+    review_required: ['license_review_required', 'write_review_required'],
+    partially_available: ['provider_unavailable', 'credential_missing', 'component_unsupported'],
+    unavailable: ['provider_unavailable', 'credential_missing', 'component_unsupported'],
+    unsupported: ['component_unsupported'],
+    migration_required: ['migration_conflict'],
+    error: ['source_mismatch', 'manifest_invalid', 'path_escape', 'digest_mismatch', 'provider_unavailable', 'credential_missing', 'parity_failed', 'rollback_unavailable'],
+    invalid: ['source_mismatch', 'manifest_invalid', 'path_escape', 'digest_mismatch', 'parity_failed'],
+  });
+  const allowed = availabilityReasons[component.availability.status];
+  if ((allowed.length === 0 && component.availability.reason !== undefined)
+    || (allowed.length > 0 && (component.availability.reason === undefined || !allowed.includes(component.availability.reason)))) {
+    fail('plugin_api_response_invalid');
+  }
+  if (component.admission.status === 'review_required'
+    && !(['license_review_required', 'write_review_required'] as readonly PluginReasonCode[]).includes(component.admission.reason)) fail('plugin_api_response_invalid');
+  if (component.admission.status === 'rejected'
+    && !(['license_rejected', 'http_mcp_not_admitted', 'process_not_admitted', 'hook_not_admitted', 'component_unsupported'] as readonly PluginReasonCode[]).includes(component.admission.reason)) fail('plugin_api_response_invalid');
   const expectedStatus = component.admission.status === 'admitted' ? component.availability.status : component.admission.status;
   const expectedReason = component.admission.status === 'admitted' ? component.availability.reason : component.admission.reason;
   if (component.status !== expectedStatus || component.reason !== expectedReason) fail('plugin_api_response_invalid');
   if (component.admission.status === 'admitted' && component.admission.policyVersion.length === 0) fail('plugin_api_response_invalid');
+}
+
+function validateTopTruth(item: z.infer<typeof CatalogItem> | z.infer<typeof PreviewEnvelope> | z.infer<typeof ProjectItem>): void {
+  if (item.admission === 'admitted') {
+    const componentReason = item.components.find((component) => component.reason !== undefined)?.reason;
+    if (item.reason !== undefined && item.reason !== componentReason) fail('plugin_api_response_invalid');
+    if (item.components.every((component) => component.status === 'available' || component.status === 'installed') && item.reason !== undefined) fail('plugin_api_response_invalid');
+    return;
+  }
+  if (item.license.decision === 'admitted' || item.license.decision !== item.admission || item.reason === undefined || item.license.reason !== item.reason) fail('plugin_api_response_invalid');
+  if (item.admission === 'review_required'
+    && !(['license_review_required', 'write_review_required'] as readonly PluginReasonCode[]).includes(item.reason)) fail('plugin_api_response_invalid');
+  if (item.admission === 'rejected'
+    && !(['license_rejected', 'http_mcp_not_admitted', 'process_not_admitted', 'hook_not_admitted', 'component_unsupported'] as readonly PluginReasonCode[]).includes(item.reason)) fail('plugin_api_response_invalid');
 }
 
 function validateCatalogBinding(parsed: z.infer<typeof CatalogEnvelope>, requestedDigest: string): void {
@@ -294,6 +334,7 @@ function validateCatalogBinding(parsed: z.infer<typeof CatalogEnvelope>, request
     }
     pluginNames.add(item.pluginName);
     if (item.license.decision !== item.admission) fail('plugin_api_response_invalid');
+    validateTopTruth(item);
     const componentDigests = new Set<string>();
     for (const component of item.components) {
       validateComponentTruth(component);
@@ -309,6 +350,7 @@ function validateCatalogBinding(parsed: z.infer<typeof CatalogEnvelope>, request
 
 function validatePluginTruth(item: z.infer<typeof PreviewEnvelope> | z.infer<typeof ProjectItem>, requestedDigest: string): void {
   if (item.catalogDigest !== requestedDigest || item.license.decision !== item.admission) fail('plugin_api_response_invalid');
+  validateTopTruth(item);
   const componentDigests = new Set<string>();
   for (const component of item.components) {
     validateComponentTruth(component);
@@ -388,7 +430,7 @@ export class RowboatPluginApi {
     if (!IDEMPOTENCY.test(idempotencyKey)) fail('plugin_api_config_invalid');
     this.previewContexts.set(preview, Object.freeze({
       projectId, pluginName, catalogDigest, expectedRevision, idempotencyKey,
-      origin: selectedSession.origin, accountId: selectedSession.accountId,
+      origin: selectedSession.origin, actorKind: selectedSession.actorKind, actorId: selectedSession.actorId,
     }));
     return preview;
   }
@@ -397,7 +439,7 @@ export class RowboatPluginApi {
     const context = preview !== null && typeof preview === 'object' ? this.previewContexts.get(preview) : undefined;
     if (context === undefined) fail('plugin_api_request_invalid');
     const selectedSession = validateSession(session);
-    if (selectedSession.origin !== context.origin || selectedSession.accountId !== context.accountId) fail('plugin_api_scope_changed');
+    if (selectedSession.origin !== context.origin || selectedSession.actorKind !== context.actorKind || selectedSession.actorId !== context.actorId) fail('plugin_api_scope_changed');
     const path = `/api/v1/projects/${context.projectId}/plugins`;
     const options = Object.freeze({
       method: 'POST' as const, signal, idempotencyKey: context.idempotencyKey,
@@ -441,7 +483,7 @@ export class RowboatPluginApi {
       }
       const text = await this.readBounded(response, controller.signal);
       if (!response.ok) fail('plugin_api_unavailable');
-      return new BoundedJsonParser(text).parse();
+      return parsePluginApiJson(text);
     } catch (error) {
       if (timedOut) fail('plugin_api_timeout');
       if (options.signal?.aborted) fail('plugin_api_aborted');

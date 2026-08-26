@@ -3,7 +3,7 @@ import { NextRequest } from "next/server";
 import { readFileSync } from "node:fs";
 import { PINNED_PLUGIN_CATALOG_DIGEST } from "@rowboat/openai-plugin-runtime";
 import {
-  createCatalogCollectionRoute, createCatalogItemRoute, createProjectPluginsRoute, createProjectPluginRoute,
+  createCatalogCollectionRoute, createCatalogItemRoute, createPluginSessionRoute, createProjectPluginsRoute, createProjectPluginRoute,
 } from "@/src/interface-adapters/http/plugins/plugin-routes";
 import { ListProjectPluginsUseCase } from "@/src/application/use-cases/plugins/list-project-plugins.use-case";
 import type { IPluginApiAuthorizationPolicy, PluginApiIdentity } from "@/src/application/policies/plugin-api-authorization.policy";
@@ -17,6 +17,7 @@ import { ListPluginCatalogUseCase } from "@/src/application/use-cases/plugins/li
 import type { PreviewPluginInstallationUseCase } from "@/src/application/use-cases/plugins/preview-plugin-installation.use-case";
 import type { InstallPluginUseCase } from "@/src/application/use-cases/plugins/install-plugin.use-case";
 import type { SetPluginEnabledUseCase } from "@/src/application/use-cases/plugins/set-plugin-enabled.use-case";
+import { PluginSessionController } from "@/src/interface-adapters/controllers/plugins/plugin-session.controller";
 
 const digest = (character: string): string => character.repeat(64);
 const catalogDigest = PINNED_PLUGIN_CATALOG_DIGEST;
@@ -78,16 +79,89 @@ async function json(response: Response): Promise<unknown> { return response.json
 
 describe("versioned plugin catalog routes", () => {
   it("keeps Next route modules limited to supported handler exports", async () => {
-    const [catalogCollection, catalogSelected, projectCollection, projectSelected] = await Promise.all([
+    const [catalogCollection, catalogSelected, projectCollection, projectSelected, pluginSession] = await Promise.all([
       import("@/app/api/v1/plugins/route"), import("@/app/api/v1/plugins/[pluginName]/route"),
       import("@/app/api/v1/projects/[projectId]/plugins/route"), import("@/app/api/v1/projects/[projectId]/plugins/[pluginName]/route"),
+      import("@/app/api/v1/plugin-session/route"),
     ]);
     expect(Object.keys(catalogCollection).sort()).toEqual(["GET", "dynamic"]);
     expect(Object.keys(catalogSelected).sort()).toEqual(["GET", "dynamic"]);
     expect(Object.keys(projectCollection).sort()).toEqual(["GET", "POST", "dynamic"]);
     expect(Object.keys(projectSelected).sort()).toEqual(["GET", "PATCH", "dynamic"]);
+    expect(Object.keys(pluginSession).sort()).toEqual(["GET", "dynamic"]);
     expect([catalogCollection.dynamic, catalogSelected.dynamic, projectCollection.dynamic, projectSelected.dynamic])
       .toEqual(["force-dynamic", "force-dynamic", "force-dynamic", "force-dynamic"]);
+    expect(pluginSession.dynamic).toBe("force-dynamic");
+  });
+
+  it("returns only a server-verified stable plugin actor identity before any plugin reads", async () => {
+    for (const identity of [{ kind: "user" as const, userId: "user-1" }, { kind: "project_api_key" as const, projectId: "project-1" }]) {
+      let authentications = 0;
+      const authorization: IPluginApiAuthorizationPolicy = {
+        authenticate: async () => { authentications += 1; return identity; },
+        authorizeProject: async () => { throw new Error("unexpected_project_read"); },
+      };
+      const response = await createPluginSessionRoute(new PluginSessionController(authorization))(
+        request("/api/v1/plugin-session", { headers: { authorization: "Bearer opaque" } }),
+      );
+      expect(response.status).toBe(200);
+      expect(await json(response)).toEqual({ kind: identity.kind, id: identity.kind === "user" ? identity.userId : identity.projectId });
+      expect(authentications).toBe(1);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+    }
+  });
+
+  it("rejects forged or expired plugin session tokens with no identity or raw auth error", async () => {
+    for (const token of ["forged-token", "expired-token"]) {
+      let verifierCalls = 0;
+      const authorization = new Auth0PluginApiAuthorizationPolicy({
+        pluginUserSessionProvider: { getUserId: async () => null },
+        pluginProjectApiKeyVerifier: { verify: async () => null },
+        pluginUserTokenVerifier: { verify: async (candidate) => { verifierCalls += 1; expect(candidate).toBe(token); return null; } },
+        projectMembersRepository: { exists: async () => { throw new Error("unexpected_read"); } } as never,
+        pluginAuthEnabled: true,
+      });
+      const response = await createPluginSessionRoute(new PluginSessionController(authorization))(
+        request("/api/v1/plugin-session", { headers: { authorization: `Bearer ${token}` } }),
+      );
+      expect(response.status).toBe(401);
+      expect(await json(response)).toEqual({ error: "unauthenticated" });
+      expect(verifierCalls).toBe(1);
+    }
+  });
+
+  it("returns project scope only from a verified existing project API key", async () => {
+    const authorization = new Auth0PluginApiAuthorizationPolicy({
+      pluginUserSessionProvider: { getUserId: async () => null },
+      pluginProjectApiKeyVerifier: { verify: async (token) => token === "valid-project-key" ? "project-1" : null },
+      pluginUserTokenVerifier: { verify: async () => null },
+      projectMembersRepository: { exists: async () => { throw new Error("unexpected_membership_read"); } } as never,
+      pluginAuthEnabled: true,
+    });
+    const response = await createPluginSessionRoute(new PluginSessionController(authorization))(
+      request("/api/v1/plugin-session", { headers: { authorization: "Bearer valid-project-key" } }),
+    );
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual({ kind: "project_api_key", id: "project-1" });
+  });
+
+  it("rejects plugin session query, proxy, wrong method and invalid output before unsafe resolution", async () => {
+    let resolutions = 0;
+    const route = createPluginSessionRoute(async () => { resolutions += 1; return { execute: async () => ({ kind: "user", id: "user-1" }) }; });
+    for (const candidate of [
+      request("/api/v1/plugin-session?extra=x"),
+      request("/api/v1/plugin-session", { method: "POST" }),
+      new Request("https://rowboat.invalid/api/v1/plugin-session"),
+      new Proxy(request("/api/v1/plugin-session"), {}),
+    ]) {
+      const response = await route(candidate);
+      expect(response.status).toBe(400);
+      expect(await json(response)).toEqual({ error: "request_invalid" });
+    }
+    expect(resolutions).toBe(0);
+    const invalid = await createPluginSessionRoute({ execute: async () => ({ kind: "user", id: "user-1", token: "secret" }) })(request("/api/v1/plugin-session"));
+    expect(invalid.status).toBe(500);
+    expect(await json(invalid)).toEqual({ error: "internal_error" });
   });
 
   it("imports production routes and rejects invalid input without loading external composition modules", async () => {
@@ -100,6 +174,10 @@ describe("versioned plugin catalog routes", () => {
       const response = await production.GET(new Request(`https://rowboat.invalid/api/v1/plugins?catalogDigest=${catalogDigest}`));
       expect(response.status).toBe(400);
       expect(await json(response)).toEqual({ error: "request_invalid" });
+      const identityProduction = await import("@/app/api/v1/plugin-session/route");
+      const identityResponse = await identityProduction.GET(new Request("https://rowboat.invalid/api/v1/plugin-session"));
+      expect(identityResponse.status).toBe(400);
+      expect(await json(identityResponse)).toEqual({ error: "request_invalid" });
     } finally {
       for (const moduleName of ["@/app/lib/mongodb", "@/app/lib/redis", "@/app/lib/auth0", "@/di/container"]) vi.doUnmock(moduleName);
       vi.resetModules();
@@ -227,6 +305,46 @@ describe("versioned plugin catalog routes", () => {
     expect(await json(response)).toMatchObject({
       items: [{ status: "rejected", reason: "license_rejected", components: [{ status: "rejected", reason: "license_rejected" }] }],
     });
+  });
+
+  it.each([
+    ["available", undefined], ["installed", undefined], ["review_required", "write_review_required"],
+    ["partially_available", "provider_unavailable"], ["unavailable", "provider_unavailable"],
+    ["unsupported", "component_unsupported"], ["migration_required", "migration_conflict"],
+    ["error", "provider_unavailable"], ["invalid", "manifest_invalid"],
+  ] as const)("serializes the authoritative component status/reason family %s", async (status, reason) => {
+    const selected = { ...catalogItem, components: [{ ...catalogItem.components[0], availability: { status, ...(reason === undefined ? {} : { reason }) } }] };
+    const response = await createCatalogCollectionRoute({ execute: async () => [selected] })(request(`/api/v1/plugins?catalogDigest=${catalogDigest}`));
+    expect(response.status).toBe(200);
+  });
+
+  it.each([
+    ["available", "provider_unavailable"], ["installed", "license_rejected"], ["review_required", "migration_conflict"],
+    ["unavailable", "license_rejected"], ["unsupported", "provider_unavailable"], ["migration_required", "provider_unavailable"],
+    ["error", "migration_conflict"], ["invalid", "write_review_required"],
+  ] as const)("rejects contradictory component status/reason %s + %s", async (status, reason) => {
+    const selected = { ...catalogItem, components: [{ ...catalogItem.components[0], availability: { status, reason } }] };
+    const response = await createCatalogCollectionRoute({ execute: async () => [selected] })(request(`/api/v1/plugins?catalogDigest=${catalogDigest}`));
+    expect(response.status).toBe(500);
+    expect(await json(response)).toEqual({ error: "internal_error" });
+  });
+
+  it.each([
+    "source_mismatch", "manifest_invalid", "path_escape", "digest_mismatch", "provider_unavailable", "credential_missing", "parity_failed", "rollback_unavailable",
+  ] as const)("serializes the authoritative error reason family %s", async (reason) => {
+    const selected = { ...catalogItem, components: [{ ...catalogItem.components[0], availability: { status: "error" as const, reason } }] };
+    const response = await createCatalogCollectionRoute({ execute: async () => [selected] })(request(`/api/v1/plugins?catalogDigest=${catalogDigest}`));
+    expect(response.status).toBe(200);
+  });
+
+  it.each([
+    ["review_required", "license_review_required"], ["review_required", "write_review_required"],
+    ["rejected", "license_rejected"], ["rejected", "http_mcp_not_admitted"], ["rejected", "process_not_admitted"],
+    ["rejected", "hook_not_admitted"], ["rejected", "component_unsupported"],
+  ] as const)("serializes the authoritative admission reason family %s + %s", async (admission, reason) => {
+    const selected = { ...catalogItem, admission, reason, license: { declaration: "MIT", decision: admission, reason }, components: [] };
+    const response = await createCatalogCollectionRoute({ execute: async () => [selected] })(request(`/api/v1/plugins?catalogDigest=${catalogDigest}`));
+    expect(response.status).toBe(200);
   });
 
   it("validates and serializes all 180 entries from the pinned full catalog contract", async () => {

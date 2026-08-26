@@ -4,6 +4,7 @@ import type { PluginToolRuntime } from "@/src/application/services/plugin-tool-r
 import type { PluginToolAuthorizationContext } from "@/src/application/services/plugin-tool-runtime";
 import type { PluginApiIdentity } from "@/src/application/policies/plugin-api-authorization.policy";
 import type { PluginPreviewEnvelope } from "@/src/interface-adapters/actions/plugin-preview-envelope";
+import type { PluginSessionController } from "@/src/interface-adapters/controllers/plugins/plugin-session.controller";
 
 type PluginReplayLookupInput = PluginPreviewEnvelope;
 
@@ -16,6 +17,26 @@ interface PluginControllers {
 }
 
 let controllers: Promise<PluginControllers> | undefined;
+let sessionController: Promise<PluginSessionController> | undefined;
+
+async function createPluginSessionController(): Promise<PluginSessionController> {
+  const [policyModule, usersModule, apiKeysModule, membersModule, controllerModule] = await Promise.all([
+    import("@/src/infrastructure/policies/auth0.plugin-api-authorization.policy"),
+    import("@/src/infrastructure/repositories/mongodb.users.repository"),
+    import("@/src/infrastructure/repositories/mongodb.api-keys.repository"),
+    import("@/src/infrastructure/repositories/mongodb.project-members.repository"),
+    import("@/src/interface-adapters/controllers/plugins/plugin-session.controller"),
+  ]);
+  const usersRepository = new usersModule.MongoDBUsersRepository();
+  const authorization = new policyModule.Auth0PluginApiAuthorizationPolicy({
+    pluginUserSessionProvider: new policyModule.Auth0PluginUserSessionProvider({ usersRepository }),
+    pluginProjectApiKeyVerifier: new policyModule.ExistingProjectApiKeyVerifier({ apiKeysRepository: new apiKeysModule.MongoDBApiKeysRepository() }),
+    pluginUserTokenVerifier: new policyModule.JoseAuth0UserTokenVerifier({ usersRepository }),
+    projectMembersRepository: new membersModule.MongoDBProjectMembersRepository(),
+    pluginAuthEnabled: process.env.USE_AUTH === "true",
+  });
+  return new controllerModule.PluginSessionController(authorization);
+}
 
 async function createPluginControllers(): Promise<PluginControllers> {
   const [database, pluginRepositoryModule, policyModule, usersModule, apiKeysModule, membersModule, catalogUseCaseModule,
@@ -106,6 +127,11 @@ function composition(): Promise<PluginControllers> {
 
 export async function resolvePluginCatalogController(): Promise<PluginCatalogController> {
   return (await composition()).catalog;
+}
+
+export function resolvePluginSessionController(): Promise<PluginSessionController> {
+  sessionController ??= createPluginSessionController();
+  return sessionController;
 }
 
 export async function resolvePluginInstallationController(): Promise<PluginInstallationController> {

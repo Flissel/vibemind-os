@@ -12,7 +12,7 @@ const base: PluginSettingsItem = {
   pluginName: 'github', pluginVersion: '1.0.0', status: 'available', components: [],
 };
 
-afterEach(() => { cleanup(); vi.restoreAllMocks(); window.localStorage.clear(); window.sessionStorage.clear(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); window.localStorage.clear(); window.sessionStorage.clear(); });
 
 describe('PluginSettings', () => {
   it('integrates an accessible Plugins tab into Settings', async () => {
@@ -89,7 +89,7 @@ describe('PluginSettings', () => {
 });
 
 describe('usePlugins', () => {
-  const scope = { origin: 'https://rowboat.example', accountId: 'account-1' };
+  const scope = { origin: 'https://rowboat.example', kind: 'user' as const, id: 'account-1' };
   const access = (overrides: Partial<PluginApiAccess> = {}): PluginApiAccess => ({
     listCatalog: async () => ({ kind: 'ok', scope, value: { items: [] } }),
     listProjectPlugins: async () => ({ kind: 'ok', scope, value: { items: [] } }),
@@ -173,16 +173,37 @@ describe('usePlugins', () => {
 });
 
 describe('rowboatPluginApiAccess', () => {
-  it('does not export a token callback and fails closed without a stable nonsecret account identity', async () => {
-    const secret = 'trusted-ephemeral-secret';
+  it('resolves stable nonsecret server identity per operation across token rotation', async () => {
+    let token = 'token-a';
+    let actor = 'user-1';
     Object.defineProperty(window, 'ipc', { configurable: true, value: {
-      invoke: vi.fn(async () => ({ signedIn: true, accessToken: secret, config: {
+      invoke: vi.fn(async () => ({ signedIn: true, accessToken: token, config: {
         appUrl: 'https://rowboat.example/', websocketApiUrl: 'wss://rowboat.example/', supabaseUrl: 'https://supabase.example/',
       } })),
       on: vi.fn(() => () => undefined),
     } });
+    const authorizations: Array<string | null> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      authorizations.push(new Headers(init?.headers).get('authorization'));
+      return String(input).endsWith('/api/v1/plugin-session')
+        ? new Response(JSON.stringify({ kind: 'user', id: actor }), { headers: { 'content-type': 'application/json' } })
+        : new Response(JSON.stringify({ items: [] }), { headers: { 'content-type': 'application/json' } });
+    }));
     expect(rowboatPluginApiAccess).not.toHaveProperty('run');
-    await expect(rowboatPluginApiAccess.listCatalog(digest)).rejects.toThrow('plugin_session_identity_unavailable');
+    const first = await rowboatPluginApiAccess.listProjectPlugins('project-1', digest);
+    token = 'token-b';
+    const rotated = await rowboatPluginApiAccess.listProjectPlugins('project-1', digest);
+    actor = 'user-2';
+    const switched = await rowboatPluginApiAccess.listProjectPlugins('project-1', digest);
+    expect(first.kind === 'ok' ? first.scope : null).toEqual({ kind: 'user', id: 'user-1', origin: 'https://rowboat.example' });
+    expect(rotated.kind === 'ok' ? rotated.scope : null).toEqual(first.kind === 'ok' ? first.scope : null);
+    expect(switched.kind === 'ok' ? switched.scope.id : null).toBe('user-2');
+    expect(authorizations).toEqual([
+      'Bearer token-a', 'Bearer token-a',
+      'Bearer token-b', 'Bearer token-b',
+      'Bearer token-b', 'Bearer token-b',
+    ]);
+    expect(JSON.stringify([first, rotated, switched])).not.toMatch(/token-[ab]/);
     expect(window.localStorage.length).toBe(0);
     expect(window.sessionStorage.length).toBe(0);
   });

@@ -70,6 +70,9 @@ const Installation = z.object({
 export interface CatalogController {
   execute(request: Request, input: unknown): Promise<unknown>;
 }
+export interface PluginSessionControllerLike {
+  execute(request: Request): Promise<unknown>;
+}
 export interface InstallationController {
   list?(request: Request, input: unknown): Promise<unknown>;
   preview?(request: Request, input: unknown): Promise<unknown>;
@@ -90,6 +93,11 @@ function headers(): Readonly<Record<string, string>> {
 
 export function pluginJson(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: headers() });
+}
+
+const PluginSession = z.object({ kind: z.enum(["user", "project_api_key"]), id: z.string().regex(ID) }).strict();
+export function pluginSessionResponse(value: unknown): Response {
+  return pluginJson(parsed(PluginSession, value));
 }
 
 const ERROR_STATUS = Object.freeze({
@@ -153,6 +161,12 @@ export function assertRoute(request: Request, method: "GET" | "POST" | "PATCH", 
     actualMethod !== method || url.pathname !== expectedPath || raw !== `${url.origin}${url.pathname}${url.search}`
     || url.username !== "" || url.password !== "" || url.hash !== "" || url.pathname.endsWith("/")
   ) throw new Error("request_invalid");
+}
+
+export function assertRouteWithoutQuery(request: Request, method: "GET", expectedSegments: readonly string[]): void {
+  assertRoute(request, method, expectedSegments);
+  const { raw, url } = requestUrl(request);
+  if (url.search !== "" || raw !== `${url.origin}${url.pathname}`) throw new Error("request_invalid");
 }
 
 function requestUrl(request: Request): Readonly<{ raw: string; url: URL }> {
@@ -425,6 +439,19 @@ export function strictObject(value: unknown, allowed: readonly string[]): Readon
 
 function serializedComponents(components: readonly z.infer<typeof Component>[]) {
   return components.map((component) => {
+    const availabilityReasons: Readonly<Record<z.infer<typeof Availability>["status"], readonly z.infer<typeof Reason>[]>> = Object.freeze({
+      available: [], installed: [], review_required: ["license_review_required", "write_review_required"],
+      partially_available: ["provider_unavailable", "credential_missing", "component_unsupported"],
+      unavailable: ["provider_unavailable", "credential_missing", "component_unsupported"], unsupported: ["component_unsupported"],
+      migration_required: ["migration_conflict"],
+      error: ["source_mismatch", "manifest_invalid", "path_escape", "digest_mismatch", "provider_unavailable", "credential_missing", "parity_failed", "rollback_unavailable"],
+      invalid: ["source_mismatch", "manifest_invalid", "path_escape", "digest_mismatch", "parity_failed"],
+    });
+    const allowed = availabilityReasons[component.availability.status];
+    if ((allowed.length === 0 && component.availability.reason !== undefined)
+      || (allowed.length > 0 && (component.availability.reason === undefined || !allowed.includes(component.availability.reason)))) throw new Error("response_invalid");
+    if (component.admission.status === "review_required" && !(["license_review_required", "write_review_required"] as readonly string[]).includes(component.admission.reason)) throw new Error("response_invalid");
+    if (component.admission.status === "rejected" && !(["license_rejected", "http_mcp_not_admitted", "process_not_admitted", "hook_not_admitted", "component_unsupported"] as readonly string[]).includes(component.admission.reason)) throw new Error("response_invalid");
     if (component.admission.status !== "admitted") {
       return { ...component, status: component.admission.status, reason: component.admission.reason };
     }
@@ -436,11 +463,21 @@ function serializedComponents(components: readonly z.infer<typeof Component>[]) 
   });
 }
 
-function serializedPlugin<T extends { readonly admission: "admitted" | "review_required" | "rejected"; readonly reason?: z.infer<typeof Reason>; readonly components: readonly z.infer<typeof Component>[] }>(item: T) {
+function serializedPlugin<T extends { readonly admission: "admitted" | "review_required" | "rejected"; readonly reason?: z.infer<typeof Reason>; readonly license: z.infer<typeof License>; readonly components: readonly z.infer<typeof Component>[] }>(item: T) {
   const components = serializedComponents(item.components);
   const derived = item.admission === "admitted"
     ? (components.every((component) => component.status === "available" || component.status === "installed") ? "available" : "partially_available")
     : item.admission;
+  if (item.admission === "admitted") {
+    if (item.license.decision !== "admitted") throw new Error("response_invalid");
+    const componentReason = components.find((component) => component.reason !== undefined)?.reason;
+    if (item.reason !== undefined && item.reason !== componentReason) throw new Error("response_invalid");
+    if (components.every((component) => component.status === "available" || component.status === "installed") && item.reason !== undefined) throw new Error("response_invalid");
+  } else {
+    if (item.license.decision === "admitted" || item.license.decision !== item.admission || item.reason === undefined || item.license.reason !== item.reason) throw new Error("response_invalid");
+    if (item.admission === "review_required" && !(["license_review_required", "write_review_required"] as readonly string[]).includes(item.reason)) throw new Error("response_invalid");
+    if (item.admission === "rejected" && !(["license_rejected", "http_mcp_not_admitted", "process_not_admitted", "hook_not_admitted", "component_unsupported"] as readonly string[]).includes(item.reason)) throw new Error("response_invalid");
+  }
   return { ...item, components, status: derived };
 }
 

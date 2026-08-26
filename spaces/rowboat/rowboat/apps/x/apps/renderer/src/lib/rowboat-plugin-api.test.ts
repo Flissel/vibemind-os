@@ -44,7 +44,7 @@ function json(value: unknown, init: ResponseInit = {}): Response {
 const session: PluginApiSession = Object.freeze({
   baseUrl: 'https://rowboat.example/',
   accessToken: 'token-value',
-  accountId: 'account-1',
+  actorKind: 'user', actorId: 'account-1',
 });
 
 describe('RowboatPluginApi', () => {
@@ -77,7 +77,7 @@ describe('RowboatPluginApi', () => {
   ])('rejects unsafe configured base URL %s before fetch', async (baseUrl) => {
     const fetcher = vi.fn();
     const client = new RowboatPluginApi(fetcher);
-    await expect(client.listCatalog({ baseUrl, accessToken: 'safe-token', accountId: 'account-1' }, digest)).rejects.toThrow('plugin_api_config_invalid');
+    await expect(client.listCatalog({ baseUrl, accessToken: 'safe-token', actorKind: 'user', actorId: 'account-1' }, digest)).rejects.toThrow('plugin_api_config_invalid');
     expect(fetcher).not.toHaveBeenCalled();
   });
 
@@ -86,7 +86,7 @@ describe('RowboatPluginApi', () => {
       expect(init?.redirect).toBe('error');
       return json(catalog());
     });
-    await new RowboatPluginApi(fetcher).listCatalog({ baseUrl: 'http://127.0.0.1:3000/', accessToken: 'token', accountId: 'account-1' }, digest);
+    await new RowboatPluginApi(fetcher).listCatalog({ baseUrl: 'http://127.0.0.1:3000/', accessToken: 'token', actorKind: 'user', actorId: 'account-1' }, digest);
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
@@ -109,6 +109,60 @@ describe('RowboatPluginApi', () => {
     const response = new Proxy(target, { getPrototypeOf: () => { throw new Error('token-value'); } });
     const client = new RowboatPluginApi(vi.fn(async () => response));
     await expect(client.listCatalog(session, digest)).rejects.toThrow('plugin_api_response_invalid');
+  });
+
+  it.each([
+    ['available', undefined], ['installed', undefined], ['review_required', 'write_review_required'],
+    ['partially_available', 'provider_unavailable'], ['unavailable', 'provider_unavailable'],
+    ['unsupported', 'component_unsupported'], ['migration_required', 'migration_conflict'],
+    ['error', 'provider_unavailable'], ['invalid', 'manifest_invalid'],
+  ] as const)('accepts the server component status/reason family %s', async (status, reason) => {
+    const original = catalog().items[0]!;
+    const component = original.components[0]!;
+    const topStatus = status === 'available' || status === 'installed' ? 'available' : 'partially_available';
+    const body = { items: [{ ...original, status: topStatus, components: [{ ...component,
+      availability: { status, ...(reason === undefined ? {} : { reason }) }, status, ...(reason === undefined ? {} : { reason }),
+    }] }] };
+    await expect(new RowboatPluginApi(vi.fn(async () => json(body))).listCatalog(session, digest)).resolves.toBeDefined();
+  });
+
+  it.each([
+    ['available', 'provider_unavailable'], ['installed', 'license_rejected'], ['review_required', 'migration_conflict'],
+    ['unavailable', 'license_rejected'], ['unsupported', 'provider_unavailable'], ['migration_required', 'provider_unavailable'],
+    ['error', 'migration_conflict'], ['invalid', 'write_review_required'],
+  ] as const)('rejects contradictory server component status/reason %s + %s', async (status, reason) => {
+    const original = catalog().items[0]!;
+    const component = original.components[0]!;
+    const body = { items: [{ ...original, status: status === 'available' || status === 'installed' ? 'available' : 'partially_available',
+      components: [{ ...component, availability: { status, reason }, status, reason }] }] };
+    await expect(new RowboatPluginApi(vi.fn(async () => json(body))).listCatalog(session, digest)).rejects.toThrow('plugin_api_response_invalid');
+  });
+
+  it('rejects a top-level installable status carrying an unavailable reason', async () => {
+    const body = { items: [{ ...catalog().items[0], reason: 'provider_unavailable' }] };
+    await expect(new RowboatPluginApi(vi.fn(async () => json(body))).listCatalog(session, digest)).rejects.toThrow('plugin_api_response_invalid');
+  });
+
+  it.each([
+    'source_mismatch', 'manifest_invalid', 'path_escape', 'digest_mismatch', 'provider_unavailable', 'credential_missing', 'parity_failed', 'rollback_unavailable',
+  ] as const)('accepts the authoritative error reason family %s', async (reason) => {
+    const original = catalog().items[0]!;
+    const component = original.components[0]!;
+    const body = { items: [{ ...original, status: 'partially_available', components: [{ ...component,
+      availability: { status: 'error', reason }, status: 'error', reason,
+    }] }] };
+    await expect(new RowboatPluginApi(vi.fn(async () => json(body))).listCatalog(session, digest)).resolves.toBeDefined();
+  });
+
+  it.each([
+    ['review_required', 'license_review_required'], ['review_required', 'write_review_required'],
+    ['rejected', 'license_rejected'], ['rejected', 'http_mcp_not_admitted'], ['rejected', 'process_not_admitted'],
+    ['rejected', 'hook_not_admitted'], ['rejected', 'component_unsupported'],
+  ] as const)('accepts the authoritative admission reason family %s + %s', async (admission, reason) => {
+    const original = catalog().items[0]!;
+    const body = { items: [{ ...original, admission, reason, status: admission,
+      license: { declaration: 'MIT', decision: admission, reason }, components: [] }] };
+    await expect(new RowboatPluginApi(vi.fn(async () => json(body))).listCatalog(session, digest)).resolves.toBeDefined();
   });
 
   it.each([
@@ -287,7 +341,7 @@ describe('RowboatPluginApi', () => {
     });
     const client = new RowboatPluginApi(fetcher);
     const preview = await client.previewInstallation(session, { projectId: 'project-1', pluginName: 'github', catalogDigest: digest });
-    await expect(client.installPreview({ ...session, accountId: 'account-2' }, preview)).rejects.toThrow('plugin_api_scope_changed');
+    await expect(client.installPreview({ ...session, actorId: 'account-2' }, preview)).rejects.toThrow('plugin_api_scope_changed');
     await expect(client.installPreview({ ...session, baseUrl: 'https://other.example/' }, preview)).rejects.toThrow('plugin_api_scope_changed');
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
@@ -330,7 +384,7 @@ describe('RowboatPluginApi', () => {
     [{ items: [catalog().items[0], { ...catalog().items[0], name: 'gitlab', pluginName: 'gitlab', sourceCommit: 'd'.repeat(40) }] }, 'source commit drift'],
     [{ items: [catalog().items[0], { ...catalog().items[0], name: 'gitlab', pluginName: 'gitlab', policyVersion: 'policy-v2' }] }, 'policy drift'],
     [{ items: [{ ...catalog().items[0], admission: 'rejected', reason: 'license_rejected', status: 'available' }] }, 'rejected available contradiction'],
-  ])('rejects catalog binding contradiction: %s', async (body) => {
+  ])('rejects catalog binding contradiction: %s', async (body, _label) => {
     const client = new RowboatPluginApi(vi.fn(async () => json(body)));
     await expect(client.listCatalog(session, digest)).rejects.toThrow('plugin_api_response_invalid');
   });
