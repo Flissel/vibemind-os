@@ -1,6 +1,7 @@
 import type { MigrationDeadline } from "./plugin-migration-keyset-snapshot";
 import { canonical } from "../use-cases/plugins/plugin-migration.shared";
 import { types as utilTypes } from "node:util";
+import { finalizeMigrationSession, type MigrationCommitOutcome } from "./plugin-migration-session-finalizer";
 
 interface AbortableMigrationSession { inTransaction(): boolean; abortTransaction(): Promise<unknown> }
 const SAFE_TRANSACTION_ERRORS = new Set([
@@ -52,6 +53,11 @@ export function exactMigrationRecoveryEvidence(expected: unknown, actual: unknow
   catch { return false; }
 }
 
+export function migrationRollbackRecoveryRow(recordId: string, rollbackSnapshot: Readonly<Record<string, unknown>>,
+  rollbackSnapshotDigest: string): Readonly<Record<string, unknown>> {
+  return Object.freeze({ _id: recordId, ...rollbackSnapshot, rollbackSnapshotDigest });
+}
+
 export async function runGuardedMigrationOperation<T>(deadline: MigrationDeadline,
   operation: (remainingMs: number, signal: AbortSignal) => Promise<T>): Promise<T> {
   return deadline.run(operation, "migration_preview_timeout");
@@ -80,30 +86,33 @@ async function settle<T>(operation: () => Promise<T>, timeoutMs: number): Promis
 export async function runGuardedMigrationTransaction<T>(input: Readonly<{
   deadline: MigrationDeadline; transaction: GuardedMigrationTransaction; work: () => Promise<T>; recover: () => Promise<T | null>;
 }>): Promise<T> {
-  let started = false; let commitStarted = false; let committed = false; let hasResult = false; let result: T | undefined; let primary: unknown;
+  let started = false; let result: T | undefined; let hasResult = false;
   try {
     input.transaction.start(input.deadline.remaining("migration_preview_timeout")); started = true;
     try { result = await input.deadline.run(async () => input.work(), "migration_preview_timeout"); hasResult = true; }
-    catch (error) { primary = error; }
-    if (primary === undefined) {
-      commitStarted = true;
-      try { await input.deadline.run(async () => input.transaction.commit(), "migration_preview_timeout"); committed = true; }
-      catch {
+    catch (error) {
+      await finalizeMigrationSession({ deadline: input.deadline, session: input.transaction, abortIfActive: true,
+        cleanupBudgetMs: input.deadline.signal.aborted ? 25 : 1_000 });
+      throw error;
+    }
+    const commit = Promise.resolve().then(() => input.transaction.commit()); commit.catch(() => undefined);
+    const commitOutcome: Promise<MigrationCommitOutcome> = commit.then(() => "committed" as const, () => "failed" as const);
+    try {
+      await input.deadline.run(async () => commit, "migration_preview_timeout");
+      await finalizeMigrationSession({ deadline: input.deadline, session: input.transaction, abortIfActive: false, commitOutcome, cleanupBudgetMs: 1_000 });
+    } catch {
+      const finalized = await finalizeMigrationSession({ deadline: input.deadline, session: input.transaction, abortIfActive: false,
+        commitOutcome, cleanupBudgetMs: input.deadline.signal.aborted ? 25 : 1_000 });
+      if (finalized.completed) {
         const recovered = await settle(input.recover, 1_000);
-        if (recovered.completed && recovered.value !== null && recovered.value !== undefined) { result = recovered.value; hasResult = true; committed = true; }
-        else primary = new Error("migration_commit_uncertain");
-      }
+        if (recovered.completed && recovered.value !== null && recovered.value !== undefined) { result = recovered.value; hasResult = true; }
+        else throw new Error("migration_commit_uncertain");
+      } else throw new Error("migration_commit_uncertain");
     }
-    if (primary !== undefined && !commitStarted && started && input.transaction.inTransaction()) {
-      await input.deadline.settlePending(input.deadline.signal.aborted ? 25 : 1_000);
-      await settle(() => input.transaction.abort(), input.deadline.signal.aborted ? 10 : 1_000);
-    }
-  } catch (error) { primary = migrationTransactionFailure(error); }
-  finally {
-    const ended = await settle(() => input.transaction.end(), input.deadline.signal.aborted ? 10 : 1_000);
-    if (!ended.completed && primary === undefined && !committed) primary = new Error("migration_repository_failed");
+  } catch (error) {
+    if (!started) await finalizeMigrationSession({ deadline: input.deadline, session: input.transaction, abortIfActive: false, cleanupBudgetMs: 25 });
+    throw migrationTransactionFailure(error);
   }
-  if (primary !== undefined) throw primary;
   if (!hasResult) throw new Error("migration_repository_failed");
   return result as T;
 }

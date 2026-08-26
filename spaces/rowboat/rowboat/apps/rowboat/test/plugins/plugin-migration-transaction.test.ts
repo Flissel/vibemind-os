@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { abortMigrationTransaction, exactMigrationRecoveryEvidence, migrationMongoDeadlineOptions, migrationTransactionFailure, runGuardedMigrationOperation, runGuardedMigrationTransaction } from "@/src/application/services/plugin-migration-transaction";
+import { abortMigrationTransaction, exactMigrationRecoveryEvidence, migrationMongoDeadlineOptions, migrationRollbackRecoveryRow, migrationTransactionFailure, runGuardedMigrationOperation, runGuardedMigrationTransaction } from "@/src/application/services/plugin-migration-transaction";
 import { createMigrationDeadline } from "@/src/application/services/plugin-migration-keyset-snapshot";
+import { runMigrationReadTransaction } from "@/src/application/services/plugin-migration-session-finalizer";
 
 describe("plugin migration transaction failure boundary", () => {
   it("aborts staged writes and safely maps a concurrent Mongo write conflict", async () => {
@@ -20,7 +21,9 @@ describe("plugin migration transaction failure boundary", () => {
     const deadline = createMigrationDeadline(() => Date.now(), 100, caller.signal);
     const transaction = { start: () => { active = true; }, inTransaction: () => active, commit: async () => { counters.commits += 1; },
       abort: async () => { counters.aborts += 1; staged.length = 0; active = false; }, end: async () => { counters.ends += 1; } };
-    const pending = runGuardedMigrationTransaction({ deadline, transaction, work: async () => { staged.push("rollback"); caller.abort(); await new Promise(() => undefined); }, recover: async () => null });
+    const pending = runGuardedMigrationTransaction({ deadline, transaction, work: async () => { staged.push("rollback"); caller.abort();
+      await new Promise<never>((_resolve, reject) => { if (deadline.signal.aborted) reject(new Error("cancelled"));
+        else deadline.signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true }); }); }, recover: async () => null });
     await expect(pending).rejects.toThrow("request_aborted"); expect(staged).toEqual([]); expect(counters).toEqual({ aborts: 1, commits: 0, ends: 1 });
   });
 
@@ -66,9 +69,45 @@ describe("plugin migration transaction failure boundary", () => {
       commit: async () => { counters.commits += 1; await new Promise(resolve => setTimeout(resolve, 35)); committed = true; active = false; },
       abort: async () => { counters.aborts += 1; active = false; }, end: async () => { counters.ends += 1; } };
     const pending = runGuardedMigrationTransaction({ deadline, transaction, work: async () => "receipt",
-      recover: async () => { if (outcome === "recovered") await new Promise(resolve => setTimeout(resolve, 25)); return committed ? "replayed" : null; } });
+      recover: async () => { if (outcome === "missing") return null; await new Promise(resolve => setTimeout(resolve, 25)); return committed ? "replayed" : null; } });
     if (outcome === "recovered") await expect(pending).resolves.toBe("replayed"); else await expect(pending).rejects.toThrow("migration_commit_uncertain");
     expect(counters).toEqual({ aborts: 0, commits: 1, ends: 1 });
+  });
+
+  it.each(["late-success", "late-reject"] as const)("never ends before a %s commit settles", async mode => {
+    const events: string[] = []; let active = false;
+    const deadline = createMigrationDeadline(() => Date.now(), 10);
+    const transaction = { start: () => { active = true; }, inTransaction: () => active,
+      commit: async () => new Promise<void>((resolve, reject) => setTimeout(() => {
+        events.push(`commit:${mode}`); if (mode === "late-success") { active = false; resolve(); } else reject(new Error("late"));
+      }, 45)), abort: async () => { events.push("abort"); active = false; }, end: async () => { events.push("end"); } };
+    await expect(runGuardedMigrationTransaction({ deadline, transaction, work: async () => "receipt", recover: async () => null }))
+      .rejects.toThrow("migration_commit_uncertain");
+    expect(events).toEqual([]);
+    await new Promise(resolve => setTimeout(resolve, 60));
+    expect(events).toEqual(mode === "late-success" ? ["commit:late-success", "end"] : ["commit:late-reject", "abort", "end"]);
+  });
+
+  it("never aborts or ends an uncooperative operation before it settles", async () => {
+    const events: string[] = []; let active = false; const deadline = createMigrationDeadline(() => Date.now(), 10);
+    const transaction = { start: () => { active = true; }, inTransaction: () => active, commit: async () => undefined,
+      abort: async () => { events.push("abort"); active = false; }, end: async () => { events.push("end"); } };
+    await expect(runGuardedMigrationTransaction({ deadline, transaction, work: async () => runGuardedMigrationOperation(deadline,
+      async () => new Promise<void>(resolve => setTimeout(() => { events.push("operation:settled"); resolve(); }, 45))), recover: async () => null }))
+      .rejects.toThrow("migration_preview_timeout");
+    expect(events).toEqual([]);
+    await new Promise(resolve => setTimeout(resolve, 60)); expect(events).toEqual(["operation:settled", "abort", "end"]);
+  });
+
+  it("gives a per-project read session one finalizer after its delayed read settles", async () => {
+    const events: string[] = []; let active = false; const deadline = createMigrationDeadline(() => Date.now(), 10);
+    const session = { start: (maxCommitTimeMS: number) => { expect(maxCommitTimeMS).toBeGreaterThan(0); active = true; }, inTransaction: () => active,
+      commit: async () => { events.push("commit"); active = false; }, abort: async () => { events.push("abort"); active = false; }, end: async () => { events.push("end"); } };
+    await expect(runMigrationReadTransaction({ deadline, session, work: async () => runGuardedMigrationOperation(deadline,
+      async (remainingMs, signal) => { expect(remainingMs).toBeGreaterThan(0); expect(signal).toBe(deadline.signal);
+        return new Promise<void>(resolve => setTimeout(() => { events.push("read:settled"); resolve(); }, 45)); }) })).rejects.toThrow("migration_preview_timeout");
+    expect(events).toEqual([]); await new Promise(resolve => setTimeout(resolve, 60));
+    expect(events).toEqual(["read:settled", "abort", "end"]);
   });
 
   it.each(["sourceProjectRevision", "sourceStateDigest", "catalogDigest", "extra"] as const)("rejects replay evidence with pointer %s drift", field => {
@@ -109,6 +148,25 @@ describe("plugin migration transaction failure boundary", () => {
     expect(exactMigrationRecoveryEvidence(expected, missing)).toBe(false);
     expect(exactMigrationRecoveryEvidence(expected, extra)).toBe(false);
     expect(exactMigrationRecoveryEvidence(expected, mutated)).toBe(false);
+  });
+
+  it("builds and requires the exact rollback recovery row", () => {
+    const expected = migrationRollbackRecoveryRow("22222222-2222-4222-8222-222222222222", { projectId: "11111111-1111-4111-8111-111111111111",
+      sourceProjectRevision: 1, liveWorkflow: { lastUpdatedAt: "2026-08-26T10:00:00.000Z" } }, "e".repeat(64));
+    expect(expected).toEqual({ _id: "22222222-2222-4222-8222-222222222222", projectId: "11111111-1111-4111-8111-111111111111",
+      sourceProjectRevision: 1, liveWorkflow: { lastUpdatedAt: "2026-08-26T10:00:00.000Z" }, rollbackSnapshotDigest: "e".repeat(64) });
+    for (const kind of ["missing", "extra", "digest", "content"] as const) {
+      const actual = structuredClone(expected) as Record<string, unknown>;
+      if (kind === "missing") delete actual.rollbackSnapshotDigest;
+      if (kind === "extra") actual.extra = true;
+      if (kind === "digest") actual.rollbackSnapshotDigest = "f".repeat(64);
+      if (kind === "content") actual.sourceProjectRevision = 2;
+      expect(exactMigrationRecoveryEvidence({ rollback: expected }, { rollback: actual })).toBe(false);
+    }
+    let calls = 0; const accessor = structuredClone(expected);
+    Object.defineProperty(accessor, "rollbackSnapshotDigest", { enumerable: true, get: () => { calls += 1; return "e".repeat(64); } });
+    expect(exactMigrationRecoveryEvidence({ rollback: expected }, { rollback: accessor })).toBe(false); expect(calls).toBe(0);
+    expect(exactMigrationRecoveryEvidence({ rollback: expected }, { rollback: new Proxy(structuredClone(expected), {}) })).toBe(false);
   });
 });
 

@@ -81,9 +81,21 @@ describe("plugin migration manifest snapshots", () => {
     const events: string[] = []; let active = false;
     const transaction = { start: (maxCommitTimeMS: number) => { active = true; events.push(`start:${maxCommitTimeMS}`); }, inTransaction: () => active,
       commit: async () => { active = false; events.push("commit"); }, abort: async () => { active = false; events.push("abort"); }, end: async () => { events.push("end"); } };
-    await expect(materializeMigrationProjectManifestInTransaction({ transaction, readPage: async () => new Promise(() => undefined), readProject: fullReader,
+    await expect(materializeMigrationProjectManifestInTransaction({ transaction, readPage: async (_after, _limit, _remaining, signal) => new Promise((_resolve, reject) =>
+      signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true })), readProject: fullReader,
       now: () => Date.now(), maximumDurationMs: 20 })).rejects.toThrow("migration_manifest_limit");
     expect(events).toEqual(["start:20", "abort", "end"]); expect(active).toBe(false);
+  });
+
+  it("does not abort or end a snapshot session before an uncooperative read settles", async () => {
+    const events: string[] = []; let active = false;
+    const transaction = { start: () => { active = true; }, inTransaction: () => active, commit: async () => undefined,
+      abort: async () => { events.push("abort"); active = false; }, end: async () => { events.push("end"); } };
+    await expect(materializeMigrationProjectManifestInTransaction({ transaction, readPage: async () => new Promise<readonly MigrationProjectSizeCandidate[]>(resolve =>
+      setTimeout(() => { events.push("read:settled"); resolve([]); }, 45)), readProject: fullReader, now: () => Date.now(), maximumDurationMs: 10 }))
+      .rejects.toThrow("migration_manifest_limit");
+    expect(events).toEqual([]);
+    await new Promise(resolve => setTimeout(resolve, 60)); expect(events).toEqual(["read:settled", "abort", "end"]);
   });
 
   it.each([
@@ -102,9 +114,10 @@ describe("plugin migration manifest snapshots", () => {
     const transaction = { start: () => undefined, inTransaction: () => true, commit: async () => undefined,
       abort: async () => { counters.aborts += 1; return new Promise<void>(() => undefined); },
       end: async () => { counters.ends += 1; return new Promise<void>(() => undefined); } };
-    await expect(materializeMigrationProjectManifestInTransaction({ transaction, readPage: async () => new Promise(() => undefined), readProject: fullReader,
+    await expect(materializeMigrationProjectManifestInTransaction({ transaction, readPage: async (_after, _limit, _remaining, signal) => new Promise((_resolve, reject) =>
+      signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true })), readProject: fullReader,
       now: () => Date.now(), maximumDurationMs: 20 })).rejects.toThrow("migration_manifest_limit");
-    expect(Date.now() - startedAt).toBeLessThan(80); expect(counters).toEqual({ aborts: 1, ends: 1 });
+    expect(Date.now() - startedAt).toBeLessThan(80); expect(counters).toEqual({ aborts: 1, ends: 0 });
   });
 
   it.each(["hang", "late-reject", "late-success"] as const)("bounds a %s commit, aborts when still active, and ends exactly once", async mode => {
@@ -115,8 +128,10 @@ describe("plugin migration manifest snapshots", () => {
       abort: async () => { counters.aborts += 1; active = false; }, end: async () => { counters.ends += 1; } };
     await expect(materializeMigrationProjectManifestInTransaction({ transaction, readPage: async () => [], readProject: fullReader,
       now: () => Date.now(), maximumDurationMs: 20 })).rejects.toThrow("migration_preview_timeout");
-    expect(Date.now() - startedAt).toBeLessThan(80); expect(counters).toEqual({ commits: 1, aborts: 1, ends: 1 });
-    if (mode !== "hang") { await new Promise(resolve => setTimeout(resolve, 60)); expect(lateSettled).toBe(true); }
+    expect(Date.now() - startedAt).toBeLessThan(80);
+    if (mode === "hang") expect(counters).toEqual({ commits: 1, aborts: 0, ends: 0 });
+    else { await new Promise(resolve => setTimeout(resolve, 60)); expect(lateSettled).toBe(true);
+      expect(counters).toEqual(mode === "late-success" ? { commits: 1, aborts: 0, ends: 1 } : { commits: 1, aborts: 1, ends: 1 }); }
   });
 
   it("preserves a safe commit failure when abort and end also throw", async () => {
@@ -144,6 +159,17 @@ describe("plugin migration manifest snapshots", () => {
       blocked: () => { throw new Error("unexpected"); }, visit: async () => { visits += 1; }, preparedBytes: value => Buffer.byteLength(JSON.stringify(value), "utf8"), now: () => 0 });
     expect(statSync(new URL("../../../../config/openai-plugin-catalog.lock.json", import.meta.url)).size).toBe(908_908); expect(getCatalogCalls).toBe(1); expect(references.size).toBe(1);
     expect(visits).toBe(1_000); expect(report.projectCount).toBe(1_000); expect(report.retainedBytes).toBeLessThan(32 * 1024 * 1024);
+  });
+
+  it("keeps the overall manifest deadline alive after closing its child snapshot session", async () => {
+    let active = false; let sharedLoads = 0;
+    const report = await executeMigrationManifest({ materialize: async (_remaining, _signal, deadline) =>
+      materializeMigrationProjectManifestInTransaction({ transaction: { start: () => { active = true; }, inTransaction: () => active,
+        commit: async () => { active = false; }, abort: async () => { active = false; }, end: async () => undefined },
+      readPage: async () => [], readProject: fullReader, now: () => Date.now(), deadline }),
+    loadShared: async () => { sharedLoads += 1; return { value: "catalog", retainedBytes: 7 }; }, prepare: async () => { throw new Error("unexpected"); },
+    blocked: () => { throw new Error("unexpected"); }, visit: async () => undefined, preparedBytes: () => 0, now: () => Date.now() });
+    expect(sharedLoads).toBe(1); expect(report.projectCount).toBe(0);
   });
 
   it.each(["catalog", "prepare"] as const)("bounds a hung %s step with the overall preview deadline", async step => {

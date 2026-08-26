@@ -10,7 +10,8 @@ import { LEGACY_PLUGIN_RECIPES, sourceDriftBlocker } from "@/src/application/ser
 import { assertMigrationProjectStateUnchanged, captureMigrationProjectManifestEntry, captureMigrationProjectState, migrationProjectPointerCasFilter, parseMigrationPointerRecord, type MigrationProjectState } from "@/src/application/services/plugin-migration-project-state";
 import { createMigrationDeadline, executeMigrationManifest, materializeMigrationProjectManifestInTransaction, type MigrationDeadline, type MigrationProjectManifestEntry, type MigrationProjectReadyManifestEntry } from "@/src/application/services/plugin-migration-keyset-snapshot";
 import { createMongoMigrationSnapshotReaders, type MongoMigrationSnapshotCollection } from "@/src/application/services/plugin-migration-mongo-snapshot";
-import { exactMigrationRecoveryEvidence, migrationMongoDeadlineOptions, migrationTransactionFailure, runGuardedMigrationOperation, runGuardedMigrationTransaction } from "@/src/application/services/plugin-migration-transaction";
+import { exactMigrationRecoveryEvidence, migrationMongoDeadlineOptions, migrationRollbackRecoveryRow, migrationTransactionFailure, runGuardedMigrationOperation, runGuardedMigrationTransaction } from "@/src/application/services/plugin-migration-transaction";
+import { runMigrationReadTransaction } from "@/src/application/services/plugin-migration-session-finalizer";
 import { Auth0PluginApiAuthorizationPolicy, Auth0PluginUserSessionProvider, ExistingProjectApiKeyVerifier, JoseAuth0UserTokenVerifier } from "@/src/infrastructure/policies/auth0.plugin-api-authorization.policy";
 import { MongoDBUsersRepository } from "@/src/infrastructure/repositories/mongodb.users.repository";
 import { MongoDBApiKeysRepository } from "@/src/infrastructure/repositories/mongodb.api-keys.repository";
@@ -136,28 +137,18 @@ async function updateExact<TSchema extends Document>(collection: Collection<TSch
 }
 function exact(left: unknown, right: unknown): boolean { return canonical(left) === canonical(right); }
 
-async function finishReadSession(operation: () => Promise<void>, timeoutMs: number): Promise<boolean> {
-  const pending = Promise.resolve().then(operation); pending.catch(() => undefined);
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  const expired = new Promise<false>(resolve => { timeout = setTimeout(() => resolve(false), timeoutMs); });
-  try { return await Promise.race([pending.then(() => true, () => false), expired]); }
-  finally { if (timeout !== undefined) clearTimeout(timeout); }
-}
-
 async function readTransaction<T>(deadline: MigrationDeadline, session: ClientSession, work: () => Promise<T>): Promise<T> {
-  let started = false; let result: T | undefined; let primary: unknown; let cleanupFailed = false;
   try {
-    session.startTransaction({ readConcern: { level: "snapshot" }, maxCommitTimeMS: deadline.remaining("migration_preview_timeout") }); started = true;
-    try { result = await work(); } catch (error) { primary = error; }
-    if (primary === undefined) {
-      try { await deadline.run(async () => session.commitTransaction(), "migration_preview_timeout"); } catch (error) { primary = error; }
-    }
-    if (primary !== undefined && started && session.inTransaction()) cleanupFailed = !(await finishReadSession(() => session.abortTransaction(), deadline.signal.aborted ? 10 : 1_000));
-  } catch (error) { primary = new Error("migration_repository_failed"); }
-  finally { cleanupFailed = !(await finishReadSession(() => session.endSession(), deadline.signal.aborted ? 10 : 1_000)) || cleanupFailed; }
-  if (primary !== undefined) throw primary;
-  if (cleanupFailed || result === undefined) throw new Error("migration_repository_failed");
-  return result;
+    return await runMigrationReadTransaction({ deadline, session: {
+      start: maxCommitTimeMS => session.startTransaction({ readConcern: { level: "snapshot" }, maxCommitTimeMS }),
+      inTransaction: () => session.inTransaction(), commit: async () => session.commitTransaction(), abort: async () => session.abortTransaction(),
+      end: async () => session.endSession(),
+    }, work });
+  } catch (error) {
+    if (error instanceof Error && Object.getPrototypeOf(error) === Error.prototype && ["project_not_found", "migration_snapshot_changed", "migration_project_invalid",
+      "migration_pointer_invalid", "request_aborted", "migration_preview_timeout"].includes(error.message)) throw error;
+    throw new Error("migration_repository_failed");
+  }
 }
 
 async function createComposition() {
@@ -242,17 +233,20 @@ async function createComposition() {
       const expectedRecord = ZPluginMigrationRecord.parse({ ...expectedRawRecord, status: "applied" });
       const recoverApplied = async () => {
         const recovery = createMigrationDeadline(() => Date.now(), 5_000);
-        const prior = await findExact(idempotencyCollection, { _id: claims.idempotencyKey } as unknown as Filter<Document>, recovery);
-        const project = await findExact(db.collection<RawProject>("projects"), { _id: prepared.state.projectId }, recovery, undefined, PROJECT_PROJECTION);
+        const recoverySession = mongoClient.startSession();
+        return readTransaction(recovery, recoverySession, async () => {
+        const prior = await findExact(idempotencyCollection, { _id: claims.idempotencyKey } as unknown as Filter<Document>, recovery, recoverySession);
+        const project = await findExact(db.collection<RawProject>("projects"), { _id: prepared.state.projectId }, recovery, recoverySession, PROJECT_PROJECTION);
         const selectedPointer = project === null ? null : captureMigrationProjectState(project).pointer;
-        const record = await findExact(db.collection(PLUGIN_COLLECTIONS.migrationRecords), { id: prepared.preview.id }, recovery, undefined, { _id: 0 });
-        const nonce = await findExact(db.collection<Document>("plugin_migration_nonces"), { _id: claims.nonce } as unknown as Filter<Document>, recovery);
+        const record = await findExact(db.collection(PLUGIN_COLLECTIONS.migrationRecords), { id: prepared.preview.id }, recovery, recoverySession, { _id: 0 });
+        const nonce = await findExact(db.collection<Document>("plugin_migration_nonces"), { _id: claims.nonce } as unknown as Filter<Document>, recovery, recoverySession);
+        const rollback = await findExact(db.collection<Document>("plugin_migration_rollbacks"), { _id: prepared.preview.id } as unknown as Filter<Document>, recovery, recoverySession);
         const installations = [] as unknown[];
         for (const installation of prepared.preview.installations) installations.push(await findExact(
-          db.collection(PLUGIN_COLLECTIONS.installations), { id: installation.id }, recovery, undefined, { _id: 0 }));
+          db.collection(PLUGIN_COLLECTIONS.installations), { id: installation.id }, recovery, recoverySession, { _id: 0 }));
         const admissions = [] as unknown[];
         for (const admission of prepared.admissions) admissions.push(await findExact(db.collection(PLUGIN_COLLECTIONS.componentAdmissions),
-          { installationId: admission.installationId, componentDigest: admission.componentDigest }, recovery, undefined, { _id: 0 }));
+          { installationId: admission.installationId, componentDigest: admission.componentDigest }, recovery, recoverySession, { _id: 0 }));
         const expectedPointer = { migrationRecordId: prepared.preview.id, sourceProjectRevision: prepared.state.sourceProjectRevision,
           sourceStateDigest: prepared.state.stateDigest, catalogDigest: prepared.preview.targetCatalogDigest };
         const recoveredGeneratedAt = prior === null || typeof prior.generatedAt !== "string" ? null : prior.generatedAt;
@@ -260,12 +254,14 @@ async function createComposition() {
           projectId: prepared.state.projectId, migrationRecordId: prepared.preview.id, receiptIds: [prepared.preview.id], generatedAt: recoveredGeneratedAt };
         const expectedEvidence = expectedIdempotency === null ? null : { pointer: expectedPointer, record: expectedRecord,
           nonce: { _id: claims.nonce, projectId: claims.projectId, idempotencyKey: claims.idempotencyKey }, idempotency: expectedIdempotency,
+          rollback: migrationRollbackRecoveryRow(prepared.preview.id, prepared.state.rollbackSnapshot, prepared.preview.rollbackSnapshotDigest),
           installations: prepared.preview.installations.map(serializePluginInstallationDocument), admissions: prepared.admissions.map(serializePluginAdmissionDocument) };
-        const actualEvidence = { pointer: selectedPointer, record, nonce, idempotency: prior, installations, admissions };
+        const actualEvidence = { pointer: selectedPointer, record, nonce, idempotency: prior, rollback, installations, admissions };
         if (expectedEvidence !== null && exactMigrationRecoveryEvidence(expectedEvidence, actualEvidence)) {
           return { receiptIds: Object.freeze([prepared.preview.id]), replayed: true, mutationCount: 0, generatedAt: recoveredGeneratedAt as string };
         }
         return null;
+        });
       };
       try {
         return await runGuardedMigrationTransaction({ deadline, transaction: {
@@ -281,8 +277,8 @@ async function createComposition() {
         const currentState = captureMigrationProjectState(currentDocument);
         assertMigrationProjectStateUnchanged(prepared.state, currentState);
         if (currentState.pointer !== null) throw new Error("migration_pointer_conflict");
-        await insertExact(db.collection("plugin_migration_rollbacks"), { _id: prepared.preview.id, ...prepared.state.rollbackSnapshot,
-          rollbackSnapshotDigest: prepared.preview.rollbackSnapshotDigest }, session, "migration_rollback_conflict", deadline);
+        await insertExact(db.collection("plugin_migration_rollbacks"), migrationRollbackRecoveryRow(prepared.preview.id, prepared.state.rollbackSnapshot,
+          prepared.preview.rollbackSnapshotDigest), session, "migration_rollback_conflict", deadline);
         for (const installation of prepared.preview.installations) {
           const installations = db.collection(PLUGIN_COLLECTIONS.installations);
           if (await findExact(installations, { $or: [{ id: installation.id }, { projectId: installation.projectId, pluginName: installation.pluginName }] }, deadline, session) !== null) throw new Error("migration_installation_conflict");

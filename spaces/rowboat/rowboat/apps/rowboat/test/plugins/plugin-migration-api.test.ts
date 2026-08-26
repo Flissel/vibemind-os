@@ -170,7 +170,9 @@ describe("plugin migration routes", () => {
       const deadline = createMigrationDeadline(() => Date.now(), 100, signal);
       return runGuardedMigrationTransaction({ deadline, transaction: { start: () => { counters.starts += 1; active = true; transactionStarted!(); }, inTransaction: () => active,
         commit: async () => undefined, abort: async () => { counters.aborts += 1; active = false; }, end: async () => { counters.ends += 1; } },
-      work: async () => { await new Promise(() => undefined); counters.pointers += 1; return {}; }, recover: async () => null });
+      work: async () => { await new Promise<never>((_resolve, reject) => { if (deadline.signal.aborted) reject(new Error("cancelled"));
+        else deadline.signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true }); });
+        counters.pointers += 1; return {}; }, recover: async () => null });
     } });
     const pending = route(new NextRequest(`https://rowboat.invalid/api/v1/projects/${projectId}/plugins/migration/apply`, { method: "POST", signal: caller.signal,
       headers: { "content-type": "application/json" }, body: JSON.stringify({ confirmationToken: "signed-token" }) }), context);

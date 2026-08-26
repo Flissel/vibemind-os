@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { types as utilTypes } from "node:util";
+import { finalizeMigrationSession, type MigrationCommitOutcome } from "./plugin-migration-session-finalizer";
 
 const SHA = /^[a-f0-9]{64}$/;
 const PROJECT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -27,10 +28,12 @@ interface ManifestDependencies {
 export interface MigrationDeadline {
   readonly signal: AbortSignal;
   readonly deadlineAt: number;
+  readonly cancel: () => void;
   readonly remaining: (errorCode?: "migration_manifest_limit" | "migration_preview_timeout", deadlineAt?: number) => number;
   readonly run: <T>(operation: (remainingMs: number, signal: AbortSignal) => Promise<T>,
     errorCode?: "migration_manifest_limit" | "migration_preview_timeout", deadlineAt?: number) => Promise<T>;
   readonly settlePending: (maximumWaitMs: number) => Promise<boolean>;
+  readonly awaitPendingSettlement: () => Promise<void>;
 }
 
 export function createMigrationDeadline(now: () => number, durationMs: number, callerSignal?: AbortSignal): MigrationDeadline {
@@ -79,7 +82,10 @@ export function createMigrationDeadline(now: () => number, durationMs: number, c
     try { return await Promise.race([Promise.allSettled(selected).then(() => true as const), expired]); }
     finally { if (timeout !== undefined) clearTimeout(timeout); }
   };
-  return Object.freeze({ signal: controller.signal, deadlineAt, remaining, run, settlePending });
+  const awaitPendingSettlement = async (): Promise<void> => {
+    while (pendingOperations.size !== 0) await Promise.allSettled([...pendingOperations]);
+  };
+  return Object.freeze({ signal: controller.signal, deadlineAt, cancel: abort, remaining, run, settlePending, awaitPendingSettlement });
 }
 
 function plain(input: unknown): input is object {
@@ -183,33 +189,25 @@ export async function materializeMigrationProjectManifest(dependencies: Manifest
 
 export async function materializeMigrationProjectManifestInTransaction(dependencies: ManifestDependencies & Readonly<{ transaction: SnapshotTransaction }>) {
   const limits = validatedLimits(dependencies);
-  const deadline = dependencies.deadline ?? createMigrationDeadline(dependencies.now, limits.maximumDurationMs);
+  const deadline = dependencies.deadline === undefined ? createMigrationDeadline(dependencies.now, limits.maximumDurationMs)
+    : createMigrationDeadline(dependencies.now, Math.min(limits.maximumDurationMs, dependencies.deadline.remaining("migration_manifest_limit")), dependencies.deadline.signal);
   let started = false; let result: Awaited<ReturnType<typeof materializeMigrationProjectManifest>> | undefined;
-  let primaryError: Error | undefined; let cleanupError: Error | undefined;
+  let primaryError: Error | undefined; let commitOutcome: Promise<MigrationCommitOutcome> | undefined;
   try {
     dependencies.transaction.start(Math.min(limits.maximumDurationMs, deadline.remaining("migration_manifest_limit"))); started = true;
     result = await materializeMigrationProjectManifest({ ...dependencies, deadline });
-    await deadline.run(async () => dependencies.transaction.commit(), "migration_preview_timeout");
+    const commit = Promise.resolve().then(() => dependencies.transaction.commit()); commit.catch(() => undefined);
+    commitOutcome = commit.then(() => "committed" as const, () => "failed" as const);
+    await deadline.run(async () => commit, "migration_preview_timeout");
   } catch (error) {
     primaryError = safeLifecycleError(error);
-    if (started && dependencies.transaction.inTransaction()) {
-      await boundedCleanup(() => dependencies.transaction.abort(), deadline.signal.aborted ? 10 : 1_000);
-    }
-  } finally {
-    if (!(await boundedCleanup(() => dependencies.transaction.end(), deadline.signal.aborted ? 10 : 1_000))) cleanupError = new Error("migration_repository_failed");
   }
+  const finalized = await finalizeMigrationSession({ deadline, session: dependencies.transaction,
+    abortIfActive: started && commitOutcome === undefined, commitOutcome, cleanupBudgetMs: deadline.signal.aborted ? 25 : 1_000 });
   if (primaryError !== undefined) throw primaryError;
-  if (cleanupError !== undefined) throw cleanupError;
+  if (finalized.completed && finalized.cleanupFailed) throw new Error("migration_repository_failed");
   if (result === undefined) throw new Error("migration_repository_failed");
   return result;
-}
-
-async function boundedCleanup(operation: () => Promise<void>, timeoutMs: number): Promise<boolean> {
-  const pending = Promise.resolve().then(operation); pending.catch(() => undefined);
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  const expired = new Promise<false>(resolve => { timeout = setTimeout(() => resolve(false), timeoutMs); });
-  try { return await Promise.race([pending.then(() => true, () => false), expired]); }
-  finally { if (timeout !== undefined) clearTimeout(timeout); }
 }
 
 function safeLifecycleError(error: unknown): Error {
