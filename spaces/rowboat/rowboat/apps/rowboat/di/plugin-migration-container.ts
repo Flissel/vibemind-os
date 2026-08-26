@@ -1,59 +1,107 @@
 import { randomUUID } from "node:crypto";
 import { types as utilTypes } from "node:util";
-import { PINNED_PLUGIN_CATALOG_DIGEST, ZPluginMigrationRecord, type PluginCatalogLock } from "@rowboat/openai-plugin-runtime";
+import { PINNED_PLUGIN_CATALOG_DIGEST, ZPluginMigrationRecord, type PluginCatalogLock, type PluginMigrationRecord } from "@rowboat/openai-plugin-runtime";
 import { db, mongoClient } from "@/app/lib/mongodb";
-import { PreviewPluginMigrationUseCase } from "@/src/application/use-cases/plugins/preview-plugin-migration.use-case";
-import { ApplyPluginMigrationUseCase } from "@/src/application/use-cases/plugins/apply-plugin-migration.use-case";
-import { actorTuple, migrationDigest, signMigrationConfirmation, verifyMigrationConfirmation, type MigrationConfirmationClaims } from "@/src/application/use-cases/plugins/plugin-migration.shared";
-import { LegacyPluginMigration, type LegacyPluginMigrationSource, type PluginMigrationPreview } from "@/src/application/services/legacy-plugin-migration";
-import { LEGACY_PLUGIN_RECIPES, buildLegacyExecutableInventory } from "@/src/application/services/legacy-plugin-recipes";
+import { PreviewPluginMigrationUseCase, type PreparedMigrationPreview } from "@/src/application/use-cases/plugins/preview-plugin-migration.use-case";
+import { ApplyPluginMigrationUseCase, type PreparedMigrationInvocation } from "@/src/application/use-cases/plugins/apply-plugin-migration.use-case";
+import { actorTuple, canonical, migrationDigest, signMigrationConfirmation, verifyMigrationConfirmation, type MigrationConfirmationClaims } from "@/src/application/use-cases/plugins/plugin-migration.shared";
+import { LegacyPluginMigration, type PluginMigrationPreview } from "@/src/application/services/legacy-plugin-migration";
+import { LEGACY_PLUGIN_RECIPES, sourceDriftBlocker } from "@/src/application/services/legacy-plugin-recipes";
+import { captureMigrationProjectState, type MigrationProjectState } from "@/src/application/services/plugin-migration-project-state";
+import { scanMigrationKeysetSnapshot } from "@/src/application/services/plugin-migration-keyset-snapshot";
 import { Auth0PluginApiAuthorizationPolicy, Auth0PluginUserSessionProvider, ExistingProjectApiKeyVerifier, JoseAuth0UserTokenVerifier } from "@/src/infrastructure/policies/auth0.plugin-api-authorization.policy";
 import { MongoDBUsersRepository } from "@/src/infrastructure/repositories/mongodb.users.repository";
 import { MongoDBApiKeysRepository } from "@/src/infrastructure/repositories/mongodb.api-keys.repository";
 import { MongoDBProjectMembersRepository } from "@/src/infrastructure/repositories/mongodb.project-members.repository";
-import { MongodbPluginsRepository, MongoPluginTransactionRunner } from "@/src/infrastructure/repositories/mongodb.plugins.repository";
+import { MongodbPluginsRepository, MongoPluginTransactionRunner, deserializePluginInstallationDocument, serializePluginAdmissionDocument, serializePluginInstallationDocument } from "@/src/infrastructure/repositories/mongodb.plugins.repository";
 import { PLUGIN_COLLECTIONS } from "@/src/infrastructure/repositories/mongodb.plugins.indexes";
 import { PreviewPluginMigrationController } from "@/src/interface-adapters/controllers/plugins/preview-plugin-migration.controller";
 import { ApplyPluginMigrationController } from "@/src/interface-adapters/controllers/plugins/apply-plugin-migration.controller";
 import type { PluginApiIdentity } from "@/src/application/policies/plugin-api-authorization.policy";
-import type { ClientSession } from "mongodb";
+import type { PluginComponentAdmission } from "@/src/application/repositories/plugins.repository.interface";
+import type { ClientSession, Collection, Document } from "mongodb";
 
-interface RawProject { readonly _id: string; readonly draftWorkflow?: unknown; readonly liveWorkflow?: unknown; readonly pluginMigrationPointer?: unknown }
-type ReadyPreview = PluginMigrationPreview;
+type RawProject = { _id: string; [key: string]: unknown };
+interface PreparedContext {
+  readonly kind: "plugin_migration_context_v2"; readonly state: MigrationProjectState; readonly preview: PluginMigrationPreview;
+  readonly catalog: PluginCatalogLock; readonly admissions: readonly PluginComponentAdmission[];
+}
 const migration = new LegacyPluginMigration();
+const PROJECT_PROJECTION = Object.freeze({ _id: 1, lastUpdatedAt: 1, version: 1, draftWorkflow: 1, liveWorkflow: 1, pluginMigrationPointer: 1 });
 
-function requiredSecret(): string {
-  const value = process.env.PLUGIN_MIGRATION_CONFIRMATION_SECRET;
-  if (value === undefined) throw new Error("migration_confirmation_secret_invalid");
+function deepFreeze<T>(value: T): T {
+  if (Array.isArray(value)) { for (const item of value) deepFreeze(item); return Object.freeze(value) as T; }
+  if (value !== null && typeof value === "object") { for (const item of Object.values(value as object)) deepFreeze(item); return Object.freeze(value); }
   return value;
 }
+function requiredSecret(): string { const value = process.env.PLUGIN_MIGRATION_CONFIRMATION_SECRET; if (value === undefined) throw new Error("migration_confirmation_secret_invalid"); return value; }
 function adminIds(): ReadonlySet<string> {
   const raw = process.env.PLUGIN_MIGRATION_ADMIN_USER_IDS;
   if (raw === undefined || raw.length === 0 || /[\u0000-\u001f\u007f-\u009f]/u.test(raw)) return new Set();
   return new Set(raw.split(",").filter(value => /^[A-Za-z0-9._|:-]{1,256}$/.test(value)));
 }
-function workflowTimestamp(workflow: unknown): string {
-  if (workflow === null || typeof workflow !== "object" || Array.isArray(workflow)) throw new Error("migration_project_invalid");
-  const descriptor = Object.getOwnPropertyDescriptor(workflow, "lastUpdatedAt");
-  if (descriptor === undefined || !("value" in descriptor) || typeof descriptor.value !== "string" || new Date(descriptor.value).toISOString() !== descriptor.value) throw new Error("migration_project_invalid");
-  return descriptor.value;
+function previewDigest(preview: Readonly<{ id: string; projectId: string; recipeId: string; recipeDigest: string; sourceProjectRevision: number; sourceDigest: string;
+  sourceInventoryDigest: string; targetCatalogDigest: string; targetInstallationIds: readonly string[]; rollbackSnapshotDigest: string }>): string {
+  return migrationDigest("rowboat:plugin-migration-preview:v2", { id: preview.id, projectId: preview.projectId, recipeId: preview.recipeId,
+    recipeDigest: preview.recipeDigest, sourceProjectRevision: preview.sourceProjectRevision, sourceDigest: preview.sourceDigest,
+    sourceInventoryDigest: preview.sourceInventoryDigest, targetCatalogDigest: preview.targetCatalogDigest,
+    targetInstallationIds: preview.targetInstallationIds, rollbackSnapshotDigest: preview.rollbackSnapshotDigest });
 }
-function sourceFrom(document: RawProject): LegacyPluginMigrationSource {
-  if (utilTypes.isProxy(document) || (Object.getPrototypeOf(document) !== Object.prototype && Object.getPrototypeOf(document) !== null)) throw new Error("migration_project_invalid");
-  const idDescriptor = Object.getOwnPropertyDescriptor(document, "_id"); const workflowDescriptor = Object.getOwnPropertyDescriptor(document, "draftWorkflow");
-  if (idDescriptor === undefined || !("value" in idDescriptor) || !idDescriptor.enumerable || typeof idDescriptor.value !== "string"
-    || workflowDescriptor === undefined || !("value" in workflowDescriptor) || !workflowDescriptor.enumerable) throw new Error("migration_project_invalid");
-  const projectId = idDescriptor.value; const workflow = workflowDescriptor.value;
-  const updatedAt = workflowTimestamp(workflow);
-  const inventory = buildLegacyExecutableInventory(workflow);
-  const match = Object.values(LEGACY_PLUGIN_RECIPES).find(recipe => recipe.inventory.digest === inventory.digest);
-  return Object.freeze({ projectId, sourceProjectRevision: Date.parse(updatedAt), sourceUpdatedAt: updatedAt,
-    legacyCardId: match?.cardId ?? "custom-project", sourceConfiguration: workflow });
+function admissionsFrom(preview: PluginMigrationPreview, catalog: PluginCatalogLock): readonly PluginComponentAdmission[] {
+  const admissions: PluginComponentAdmission[] = [];
+  for (const installation of preview.installations) {
+    const entry = catalog.entries.find(candidate => candidate.pluginName === installation.pluginName);
+    if (entry === undefined) throw new Error("migration_preview_stale");
+    for (const binding of installation.providerBindings ?? []) {
+      const selected = entry.components.find(item => item.component.id === binding.componentId && item.component.metadata.bindingDigest === binding.binding.componentDigest);
+      if (selected === undefined || selected.admission.status !== "admitted") throw new Error("migration_preview_stale");
+      admissions.push(serializePluginAdmissionDocument({ installationId: installation.id, componentDigest: binding.binding.componentDigest,
+        componentKind: selected.component.kind, componentName: selected.component.name, status: "admitted", policyVersion: catalog.policyVersion }));
+    }
+  }
+  admissions.sort((left, right) => `${left.installationId}\0${left.componentDigest}`.localeCompare(`${right.installationId}\0${right.componentDigest}`));
+  return Object.freeze(admissions);
 }
-function previewDigest(preview: ReadyPreview): string {
-  const { installations: _installations, mutationsApplied: _mutationsApplied, ...record } = preview;
-  return migrationDigest("rowboat:plugin-migration-preview:v1", record);
+function blockDiverged(preview: PluginMigrationPreview): PluginMigrationPreview {
+  const blocker = sourceDriftBlocker();
+  return deepFreeze({ ...preview, status: "blocked" as const, blockers: [blocker], targetInstallationIds: [], installations: [] });
 }
+async function prepareDocument(document: RawProject, catalog: PluginCatalogLock, loadRecord: (id: string) => Promise<PluginMigrationRecord | null>): Promise<PreparedContext> {
+  const state = captureMigrationProjectState(document);
+  const match = Object.values(LEGACY_PLUGIN_RECIPES).find(recipe => recipe.inventory.digest === state.liveInventoryDigest);
+  let existing: PluginMigrationRecord | undefined;
+  if (state.pointer !== null) {
+    const record = await loadRecord(state.pointer.migrationRecordId);
+    if (record === null || record.id !== state.pointer.migrationRecordId || record.projectId !== state.projectId || record.status !== "applied"
+      || record.targetCatalogDigest !== state.pointer.catalogDigest || record.sourceProjectRevision !== state.pointer.sourceProjectRevision
+      || state.pointer.sourceProjectRevision !== state.sourceProjectRevision || state.pointer.sourceStateDigest !== state.stateDigest) throw new Error("migration_pointer_invalid");
+    existing = record;
+  }
+  const source = Object.freeze({ projectId: state.projectId, sourceProjectRevision: state.sourceProjectRevision,
+    sourceUpdatedAt: state.topLevelUpdatedAt, sourceStateDigest: state.stateDigest, legacyCardId: match?.cardId ?? "custom-project", sourceConfiguration: state.liveWorkflow });
+  let preview = migration.preview(source, catalog, existing);
+  if (state.draftInventoryDigest !== state.liveInventoryDigest) {
+    if (existing !== undefined) throw new Error("migration_pointer_invalid");
+    preview = blockDiverged(preview);
+  }
+  const context = { kind: "plugin_migration_context_v2" as const, state, preview, catalog, admissions: admissionsFrom(preview, catalog) };
+  return deepFreeze(context);
+}
+function context(input: unknown): PreparedContext {
+  if (input === null || typeof input !== "object" || utilTypes.isProxy(input) || Object.getPrototypeOf(input) !== Object.prototype || !Object.isFrozen(input)) throw new Error("migration_context_invalid");
+  const keys = Reflect.ownKeys(input); if (keys.length !== 5 || keys.some(key => typeof key !== "string" || !["kind","state","preview","catalog","admissions"].includes(key))) throw new Error("migration_context_invalid");
+  const selected = input as PreparedContext; if (selected.kind !== "plugin_migration_context_v2" || !Object.isFrozen(selected.state) || !Object.isFrozen(selected.preview) || !Object.isFrozen(selected.catalog) || !Object.isFrozen(selected.admissions)) throw new Error("migration_context_invalid");
+  return selected;
+}
+function asPublic(prepared: PreparedContext): PreparedMigrationPreview { return Object.freeze({ preview: prepared.preview, catalog: prepared.catalog }); }
+function mongoCode(error: unknown): number | null {
+  if (error === null || typeof error !== "object" || utilTypes.isProxy(error)) return null;
+  const descriptor = Object.getOwnPropertyDescriptor(error, "code"); return descriptor !== undefined && "value" in descriptor && descriptor.value === 11000 ? 11000 : null;
+}
+async function insertExact(collection: Collection, document: Document, session: ClientSession, conflict: string): Promise<void> {
+  try { await collection.insertOne(document, { session }); } catch (error) { if (mongoCode(error) === 11000) throw new Error(conflict); throw new Error("migration_repository_failed"); }
+}
+function exact(left: unknown, right: unknown): boolean { return canonical(left) === canonical(right); }
 
 async function createComposition() {
   const usersRepository = new MongoDBUsersRepository(); const apiKeysRepository = new MongoDBApiKeysRepository(); const projectMembersRepository = new MongoDBProjectMembersRepository();
@@ -61,99 +109,142 @@ async function createComposition() {
     pluginProjectApiKeyVerifier: new ExistingProjectApiKeyVerifier({ apiKeysRepository }), pluginUserTokenVerifier: new JoseAuth0UserTokenVerifier({ usersRepository }),
     projectMembersRepository, pluginAuthEnabled: process.env.USE_AUTH === "true" });
   const pluginsRepository = new MongodbPluginsRepository({ pluginsDatabase: db, pluginTransactionRunner: new MongoPluginTransactionRunner({ pluginsMongoClient: mongoClient }) });
-  let catalogCache: PluginCatalogLock | undefined;
-  const getCatalog = async () => {
-    const selected = catalogCache ?? await pluginsRepository.getCatalog(PINNED_PLUGIN_CATALOG_DIGEST);
-    if (selected === null) throw new Error("catalog_digest_mismatch"); catalogCache = selected; return selected;
-  };
-  const fetchSource = async (projectId: string) => {
-    const document = await db.collection<RawProject>("projects").findOne({ _id: projectId }, { projection: { _id: 1, draftWorkflow: 1, liveWorkflow: 1, pluginMigrationPointer: 1 } });
-    if (document === null) throw new Error("project_not_found"); return sourceFrom(document);
-  };
-  const pending = new Map<string, Readonly<{ source: LegacyPluginMigrationSource; preview: ReadyPreview; catalog: PluginCatalogLock }>>();
-  const buildPreview = async (projectId: string) => {
-    const source = await fetchSource(projectId); const catalog = await getCatalog();
-    const preview = migration.preview(source, catalog); pending.set(projectId, Object.freeze({ source, preview, catalog })); return preview;
+  const getCatalog = async () => { const selected = await pluginsRepository.getCatalog(PINNED_PLUGIN_CATALOG_DIGEST); if (selected === null) throw new Error("catalog_digest_mismatch"); return selected; };
+  const prepareOne = async (projectId: string): Promise<PreparedContext> => {
+    const catalog = await getCatalog(); const session = mongoClient.startSession();
+    try {
+      session.startTransaction({ readConcern: { level: "snapshot" } });
+      const document = await db.collection<RawProject>("projects").findOne({ _id: projectId }, { projection: PROJECT_PROJECTION, session });
+      if (document === null) throw new Error("project_not_found");
+      const prepared = await prepareDocument(document, catalog, async id => {
+        const raw = await db.collection(PLUGIN_COLLECTIONS.migrationRecords).findOne({ id }, { projection: { _id: 0 }, session });
+        return raw === null ? null : ZPluginMigrationRecord.parse(raw);
+      });
+      await session.commitTransaction(); return prepared;
+    } catch (error) { if (session.inTransaction()) await session.abortTransaction(); throw error; } finally { await session.endSession(); }
   };
   const authorizeProject = (actor: PluginApiIdentity, projectId: string) => authorization.authorizeProject(actor, projectId);
-  const authorizeAll = async (actor: PluginApiIdentity) => {
-    const selected = actorTuple(actor); if (selected.actorKind !== "user" || !adminIds().has(selected.actorId)) throw new Error("forbidden");
+  const authorizeAll = async (actor: PluginApiIdentity) => { const selected = actorTuple(actor); if (selected.actorKind !== "user" || !adminIds().has(selected.actorId)) throw new Error("forbidden"); };
+  const scanAllProjects = async (visit: (prepared: PreparedMigrationPreview) => Promise<void>) => {
+    const catalog = await getCatalog(); const session = mongoClient.startSession();
+    try {
+      session.startTransaction({ readConcern: { level: "snapshot" } });
+      const snapshot = await scanMigrationKeysetSnapshot({
+        readPage: async (cursor, limit) => {
+          const filter = cursor === undefined ? {} : { _id: { $gt: cursor } };
+          const documents = await db.collection<RawProject>("projects").find(filter, { projection: PROJECT_PROJECTION, session }).sort({ _id: 1 }).limit(limit).toArray();
+          const prepared: PreparedContext[] = [];
+          for (const document of documents) prepared.push(await prepareDocument(document, catalog, async id => {
+            const raw = await db.collection(PLUGIN_COLLECTIONS.migrationRecords).findOne({ id }, { projection: { _id: 0 }, session });
+            return raw === null ? null : ZPluginMigrationRecord.parse(raw);
+          }));
+          return prepared;
+        },
+        identity: prepared => ({ projectId: prepared.state.projectId, stateDigest: prepared.state.stateDigest }),
+        visit: async prepared => { await visit(asPublic(prepared)); },
+        maximumProjects: 100_000, pageSize: 128,
+      });
+      await session.commitTransaction(); return Object.freeze({ catalog, snapshotToken: snapshot.snapshotToken });
+    } catch (error) { if (session.inTransaction()) await session.abortTransaction(); throw error; } finally { await session.endSession(); }
   };
-  let snapshotRows: readonly RawProject[] | undefined;
-  const preview = new PreviewPluginMigrationUseCase({ authorizeProject, authorizeAll, getPinnedCatalog: getCatalog,
-    listProjectsPage: async (_actor, cursor) => {
-      if (snapshotRows === undefined) snapshotRows = Object.freeze(await db.collection<RawProject>("projects").find({}, { projection: { _id: 1, draftWorkflow: 1 } }).sort({ _id: 1 }).limit(100_001).toArray());
-      if (snapshotRows.length > 100_000) throw new Error("migration_project_limit");
-      const offset = cursor === undefined ? 0 : Number(cursor); if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("migration_snapshot_invalid");
-      const sources = snapshotRows.map(sourceFrom); const rows = sources.slice(offset, offset + 128); const projects = rows.map(source => ({ projectId: source.projectId, sourceProjectRevision: source.sourceProjectRevision }));
-      const snapshotToken = migrationDigest("rowboat:plugin-migration-mongo-snapshot:v1", sources.map(source => ({ id: source.projectId, revision: source.sourceProjectRevision })));
-      return Object.freeze({ projects, nextCursor: offset + rows.length < snapshotRows.length ? String(offset + rows.length) : null, snapshotToken });
-    }, getProjectSource: fetchSource, previewProject: (source, catalog) => migration.preview(source, catalog),
+  const preview = new PreviewPluginMigrationUseCase({ authorizeProject, authorizeAll, prepareProject: async projectId => asPublic(await prepareOne(projectId)), scanAllProjects,
     issueConfirmation: ({ actor, preview: selected, reportDigest }) => {
-      const tuple = actorTuple(actor); const idempotencyKey = `migration-${selected.id}`; const issuedAt = new Date(); const expiresAt = new Date(issuedAt.getTime() + 2 * 60_000);
+      const tuple = actorTuple(actor); const idempotencyKey = `migration-${selected.id}`; const issuedAt = new Date(); const expiresAt = new Date(issuedAt.getTime() + 120_000);
       const claims: MigrationConfirmationClaims = Object.freeze({ version: 1, operation: "apply_plugin_migration", ...tuple, projectId: selected.projectId,
         sourceProjectRevision: selected.sourceProjectRevision, sourceDigest: selected.sourceDigest, sourceInventoryDigest: selected.sourceInventoryDigest,
         recipeDigest: selected.recipeDigest, rollbackSnapshotDigest: selected.rollbackSnapshotDigest, targetCatalogDigest: selected.targetCatalogDigest,
-        targetInstallationIds: selected.targetInstallationIds, previewDigest: previewDigest(selected as ReadyPreview), reportDigest,
+        targetInstallationIds: selected.targetInstallationIds, previewDigest: previewDigest(selected), reportDigest,
         issuedAt: issuedAt.toISOString(), expiresAt: expiresAt.toISOString(), nonce: randomUUID(), idempotencyKey });
       return Object.freeze({ token: signMigrationConfirmation(claims, requiredSecret()), idempotencyKey });
     }, now: () => new Date() });
-
-  const apply = new ApplyPluginMigrationUseCase({ authorizeProject,
-    verifyConfirmation: token => verifyMigrationConfirmation(token, requiredSecret(), new Date()), previewProject: buildPreview, digestPreview: value => previewDigest(value as ReadyPreview),
-    runAtomically: async operation => {
-      const session = mongoClient.startSession();
-      try { let output!: Awaited<ReturnType<typeof operation>>; let completed = false; await session.withTransaction(async () => { output = await operation(session); completed = true; }); if (!completed) throw new Error("migration_apply_failed"); return output; }
-      catch (error) { if (error !== null && typeof error === "object" && "code" in error && error.code === 11000) throw new Error("migration_confirmation_replayed"); throw error instanceof Error && /^[a-z0-9_]+$/.test(error.message) ? error : new Error("migration_apply_failed"); }
-      finally { await session.endSession(); }
-    },
-    writeRollbackSnapshot: async (transaction, selected) => {
-      const context = pending.get(selected.projectId); if (context === undefined) throw new Error("migration_preview_stale");
-      await db.collection<{ _id: string; [key: string]: unknown }>("plugin_migration_rollbacks").insertOne({ _id: selected.id, projectId: selected.projectId, sourceProjectRevision: context.source.sourceProjectRevision,
-        sourceDigest: context.preview.sourceDigest, rollbackSnapshotDigest: context.preview.rollbackSnapshotDigest, draftWorkflow: context.source.sourceConfiguration }, { session: transaction as ClientSession });
-    },
-    writeInstallationsAndAdmissions: async (transaction, selected) => {
-      const context = pending.get(selected.projectId); if (context === undefined) throw new Error("migration_preview_stale"); const session = transaction as ClientSession;
-      for (const installation of context.preview.installations) {
-        await db.collection(PLUGIN_COLLECTIONS.installations).insertOne({ ...installation }, { session });
-        const entry = context.catalog.entries.find(item => item.pluginName === installation.pluginName); if (entry === undefined) throw new Error("migration_preview_stale");
-        for (const binding of installation.providerBindings as readonly Readonly<{ componentId: string; binding: Readonly<{ componentDigest: string }> }>[]) {
-          const component = entry.components.find(item => item.component.id === binding.componentId && item.component.metadata.bindingDigest === binding.binding.componentDigest);
-          if (component === undefined || component.admission.status !== "admitted") throw new Error("migration_preview_stale");
-          await db.collection(PLUGIN_COLLECTIONS.componentAdmissions).insertOne({ installationId: installation.id, componentDigest: binding.binding.componentDigest,
-            componentKind: component.component.kind, componentName: component.component.name, status: "admitted", policyVersion: context.catalog.policyVersion }, { session });
+  const apply = new ApplyPluginMigrationUseCase({ authorizeProject, verifyConfirmation: token => verifyMigrationConfirmation(token, requiredSecret(), new Date()),
+    prepareProject: async projectId => { const prepared = await prepareOne(projectId); return Object.freeze({ preview: prepared.preview, context: prepared }); },
+    digestPreview: previewDigest,
+    applyAtomically: async (rawContext, claims) => {
+      const prepared = context(rawContext); const session = mongoClient.startSession(); let result: { receiptIds: readonly string[]; replayed: boolean; mutationCount: number; generatedAt: string } | undefined;
+      const payloadDigest = migrationDigest("rowboat:plugin-migration-apply-payload:v2", { claims, previewDigest: previewDigest(prepared.preview), stateDigest: prepared.state.stateDigest });
+      try {
+        session.startTransaction();
+        const idempotencyCollection = db.collection("plugin_migration_idempotency");
+        const prior = await idempotencyCollection.findOne({ _id: claims.idempotencyKey } as unknown as Document, { session });
+        if (prior !== null) {
+          if (prior.payloadDigest !== payloadDigest || prior.projectId !== prepared.state.projectId || prior.migrationRecordId !== prepared.preview.id
+            || !Array.isArray(prior.receiptIds) || prior.receiptIds.length !== 1 || prior.receiptIds[0] !== prepared.preview.id || typeof prior.generatedAt !== "string") throw new Error("migration_idempotency_conflict");
+          if (prepared.state.pointer?.migrationRecordId !== prepared.preview.id || prepared.preview.status !== "applied") throw new Error("migration_idempotency_conflict");
+          result = { receiptIds: Object.freeze([prepared.preview.id]), replayed: true, mutationCount: 0, generatedAt: prior.generatedAt };
+          await session.commitTransaction(); return result;
         }
-      }
-    },
-    writeMigrationRecord: async (transaction, selected, claims, idempotencyKey) => {
-      const context = pending.get(selected.projectId); if (context === undefined) throw new Error("migration_preview_stale"); const session = transaction as ClientSession;
-      const { installations: _installations, mutationsApplied: _mutationsApplied, ...raw } = context.preview;
-      const record = ZPluginMigrationRecord.parse({ ...raw, status: "applied" });
-      await db.collection(PLUGIN_COLLECTIONS.migrationRecords).insertOne({ ...record }, { session });
-      const nonce = "nonce" in claims ? claims.nonce : migrationDigest("rowboat:migration-test-nonce:v1", claims);
-      await db.collection<{ _id: string; [key: string]: unknown }>("plugin_migration_confirmations").insertOne({ _id: nonce, projectId: selected.projectId, migrationRecordId: record.id,
-        idempotencyKey, actorKind: claims.actorKind, actorId: claims.actorId, previewDigest: claims.previewDigest }, { session });
-      return Object.freeze({ receiptIds: Object.freeze([record.id]) });
-    },
-    compareAndSetProjectPointer: async (transaction, selected) => {
-      const context = pending.get(selected.projectId); if (context === undefined) throw new Error("migration_preview_stale");
-      const result = await db.collection<{ _id: string; [key: string]: unknown }>("projects").updateOne({ _id: selected.projectId, "draftWorkflow.lastUpdatedAt": context.source.sourceUpdatedAt, pluginMigrationPointer: { $exists: false } },
-        { $set: { pluginMigrationPointer: { migrationRecordId: selected.id, sourceProjectRevision: context.source.sourceProjectRevision, catalogDigest: context.preview.targetCatalogDigest } } }, { session: transaction as ClientSession });
-      if (result.modifiedCount !== 1) throw new Error("migration_preview_stale");
+        if (prepared.state.pointer !== null) throw new Error("migration_idempotency_conflict");
+        if (await db.collection<{ _id: string }>("plugin_migration_nonces").findOne({ _id: claims.nonce }, { session }) !== null) throw new Error("migration_confirmation_replayed");
+        const currentDocument = await db.collection<RawProject>("projects").findOne({ _id: prepared.state.projectId }, { projection: PROJECT_PROJECTION, session });
+        if (currentDocument === null) throw new Error("migration_pointer_conflict");
+        const currentState = captureMigrationProjectState(currentDocument);
+        if (currentState.stateDigest !== prepared.state.stateDigest || currentState.topLevelUpdatedAt !== prepared.state.topLevelUpdatedAt
+          || currentState.draftUpdatedAt !== prepared.state.draftUpdatedAt || currentState.liveUpdatedAt !== prepared.state.liveUpdatedAt
+          || currentState.draftInventoryDigest !== prepared.state.draftInventoryDigest || currentState.liveInventoryDigest !== prepared.state.liveInventoryDigest
+          || currentState.pointer !== null) throw new Error("migration_pointer_conflict");
+        await insertExact(db.collection("plugin_migration_rollbacks"), { _id: prepared.preview.id, ...prepared.state.rollbackSnapshot,
+          rollbackSnapshotDigest: prepared.preview.rollbackSnapshotDigest }, session, "migration_rollback_conflict");
+        for (const installation of prepared.preview.installations) {
+          const installations = db.collection(PLUGIN_COLLECTIONS.installations);
+          if (await installations.findOne({ $or: [{ id: installation.id }, { projectId: installation.projectId, pluginName: installation.pluginName }] }, { session }) !== null) throw new Error("migration_installation_conflict");
+          const stored = serializePluginInstallationDocument(installation); await insertExact(installations, { ...stored }, session, "migration_installation_conflict");
+          const readBack = await installations.findOne({ id: installation.id }, { projection: { _id: 0 }, session });
+          if (readBack === null || !exact(deserializePluginInstallationDocument(readBack), installation)) throw new Error("migration_installation_conflict");
+        }
+        for (const admission of prepared.admissions) {
+          const admissions = db.collection(PLUGIN_COLLECTIONS.componentAdmissions);
+          if (await admissions.findOne({ installationId: admission.installationId, componentDigest: admission.componentDigest }, { session }) !== null) throw new Error("migration_admission_conflict");
+          await insertExact(admissions, { ...serializePluginAdmissionDocument(admission) }, session, "migration_admission_conflict");
+          const readBack = await admissions.findOne({ installationId: admission.installationId, componentDigest: admission.componentDigest }, { projection: { _id: 0 }, session });
+          if (readBack === null || !exact(serializePluginAdmissionDocument(readBack), admission)) throw new Error("migration_admission_conflict");
+        }
+        const { installations: _installations, mutationsApplied: _mutationsApplied, ...rawRecord } = prepared.preview;
+        const record = ZPluginMigrationRecord.parse({ ...rawRecord, status: "applied" });
+        if (await db.collection(PLUGIN_COLLECTIONS.migrationRecords).findOne({ id: record.id }, { session }) !== null) throw new Error("migration_record_conflict");
+        await insertExact(db.collection(PLUGIN_COLLECTIONS.migrationRecords), { ...record }, session, "migration_record_conflict");
+        await insertExact(db.collection("plugin_migration_nonces"), { _id: claims.nonce, projectId: claims.projectId, idempotencyKey: claims.idempotencyKey }, session, "migration_confirmation_replayed");
+        const generatedAt = new Date().toISOString();
+        await insertExact(idempotencyCollection, { _id: claims.idempotencyKey, payloadDigest, projectId: claims.projectId,
+          migrationRecordId: record.id, receiptIds: [record.id], generatedAt }, session, "migration_idempotency_conflict");
+        const versionFilter = prepared.state.version === null ? { version: { $exists: false } } : { version: prepared.state.version };
+        const updated = await db.collection<RawProject>("projects").updateOne({ _id: prepared.state.projectId, lastUpdatedAt: prepared.state.topLevelUpdatedAt,
+          draftWorkflow: prepared.state.draftWorkflow, liveWorkflow: prepared.state.liveWorkflow,
+          "draftWorkflow.lastUpdatedAt": prepared.state.draftUpdatedAt, "liveWorkflow.lastUpdatedAt": prepared.state.liveUpdatedAt,
+          pluginMigrationPointer: null, ...versionFilter }, { $set: { pluginMigrationPointer: { migrationRecordId: record.id,
+            sourceProjectRevision: prepared.state.sourceProjectRevision, sourceStateDigest: prepared.state.stateDigest, catalogDigest: record.targetCatalogDigest } } }, { session });
+        if (updated.modifiedCount !== 1) throw new Error("migration_pointer_conflict");
+        result = { receiptIds: Object.freeze([record.id]), replayed: false, mutationCount: 4, generatedAt };
+        await session.commitTransaction(); return result;
+      } catch (error) {
+        if (session.inTransaction()) await session.abortTransaction();
+        const retryableExactConflict = error instanceof Error && ["migration_rollback_conflict", "migration_installation_conflict", "migration_admission_conflict",
+          "migration_record_conflict", "migration_confirmation_replayed", "migration_idempotency_conflict"].includes(error.message);
+        if (retryableExactConflict) {
+          const prior = await db.collection("plugin_migration_idempotency").findOne({ _id: claims.idempotencyKey } as unknown as Document);
+          const project = await db.collection<RawProject>("projects").findOne({ _id: prepared.state.projectId }, { projection: PROJECT_PROJECTION });
+          const selectedPointer = project === null ? null : captureMigrationProjectState(project).pointer;
+          if (prior !== null && prior.payloadDigest === payloadDigest && prior.projectId === prepared.state.projectId
+            && prior.migrationRecordId === prepared.preview.id && Array.isArray(prior.receiptIds) && prior.receiptIds.length === 1
+            && prior.receiptIds[0] === prepared.preview.id && typeof prior.generatedAt === "string" && selectedPointer?.migrationRecordId === prepared.preview.id) {
+            return { receiptIds: Object.freeze([prepared.preview.id]), replayed: true, mutationCount: 0, generatedAt: prior.generatedAt };
+          }
+        }
+        if (error instanceof Error && /^[a-z0-9_]+$/.test(error.message)) throw error;
+        throw new Error("migration_repository_failed");
+      } finally { await session.endSession(); }
     } });
-  return Object.freeze({ authorization, preview, apply,
-    previewController: new PreviewPluginMigrationController({ authorization, useCase: preview }), applyController: new ApplyPluginMigrationController({ authorization, useCase: apply }) });
+  return Object.freeze({ preview, apply, previewController: new PreviewPluginMigrationController({ authorization, useCase: preview }),
+    applyController: new ApplyPluginMigrationController({ authorization, useCase: apply }) });
 }
 
-let composed: ReturnType<typeof createComposition> | undefined;
-const composition = () => composed ??= createComposition();
-export async function resolveMigrationPreviewController() { return (await composition()).previewController; }
-export async function resolveMigrationApplyController() { return (await composition()).applyController; }
+export async function resolveMigrationPreviewController() { return (await createComposition()).previewController; }
+export async function resolveMigrationApplyController() { return (await createComposition()).applyController; }
 export async function previewAllMigrations() {
   const actorId = process.env.PLUGIN_MIGRATION_ACTOR_USER_ID; if (actorId === undefined) throw new Error("migration_all_scope_authority_required");
-  return (await composition()).preview.execute({ actor: { kind: "user", userId: actorId }, scope: "all" });
+  return (await createComposition()).preview.execute({ actor: { kind: "user", userId: actorId }, scope: "all" });
 }
-export async function applyProjectMigration(input: Readonly<{ projectId: string; confirmationToken: string; idempotencyKey: string }>) {
+export async function applyProjectMigration(input: Readonly<{ projectId: string; confirmationToken: string }>) {
   const actorId = process.env.PLUGIN_MIGRATION_ACTOR_USER_ID; if (actorId === undefined) throw new Error("migration_apply_authority_required");
-  return (await composition()).apply.execute({ actor: { kind: "user", userId: actorId }, ...input });
+  return (await createComposition()).apply.execute({ actor: { kind: "user", userId: actorId }, ...input });
 }

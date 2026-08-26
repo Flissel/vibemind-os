@@ -367,6 +367,27 @@ function admission(input: unknown): PluginComponentAdmission {
   return record as unknown as PluginComponentAdmission;
 }
 
+export function serializePluginInstallationDocument(input: unknown): Readonly<Record<string, unknown>> {
+  const document = installation(input);
+  const stored: StoredDocument = { id: document.id, projectId: document.projectId, pluginName: document.pluginName,
+    pluginVersion: document.pluginVersion, sourceCommit: document.sourceCommit, manifestDigest: document.manifestDigest,
+    treeDigest: document.treeDigest, policyVersion: document.policyVersion, enabled: document.enabled, revision: document.revision };
+  if (document.providerBindings !== undefined) stored.providerBindingsJson = canonical(document.providerBindings as unknown as Captured);
+  assertStoredDocumentBudget(stored as unknown as Captured);
+  return Object.freeze(stored);
+}
+
+export function deserializePluginInstallationDocument(input: unknown): PluginInstallation {
+  const stored = object(input, "installation_invalid");
+  const selected: StoredDocument = { id: stored.id, projectId: stored.projectId, pluginName: stored.pluginName,
+    pluginVersion: stored.pluginVersion, sourceCommit: stored.sourceCommit, manifestDigest: stored.manifestDigest,
+    treeDigest: stored.treeDigest, policyVersion: stored.policyVersion, enabled: stored.enabled, revision: stored.revision };
+  if (stored.providerBindingsJson !== undefined) selected.providerBindings = parsePayload(stored.providerBindingsJson, "installation_invalid");
+  return installation(selected);
+}
+
+export function serializePluginAdmissionDocument(input: unknown): PluginComponentAdmission { return admission(input); }
+
 function credentialLikeText(value: string): boolean {
   return /(?:^|[^A-Za-z0-9])(?:x[-_])?api(?:[-_ ]?key)(?=\s|:|=)/iu.test(value)
     || /^\s*(?:basic|digest|bearer|negotiate|ntlm|api(?:[-_ ]?key)|token)(?=\s|:|=)/iu.test(value)
@@ -839,6 +860,12 @@ export class MongodbPluginsRepository implements IPluginsRepository {
     await immutableInsert(this.database.collection(PLUGIN_COLLECTIONS.migrationRecords), { id: document.id }, document as unknown as Captured, "migration_record_conflict");
   }
 
+  async getMigrationRecord(id: string): Promise<PluginMigrationRecord | null> {
+    if (!ID.test(id)) invalid("migration_record_invalid");
+    const document = await this.database.collection(PLUGIN_COLLECTIONS.migrationRecords).findOne({ id }, { projection: { _id: 0 } });
+    return document === null ? null : migrationRecord(document);
+  }
+
   async putReceipt(input: PluginReceipt): Promise<void> {
     const document = receipt(input);
     const stored = Object.freeze({ receiptId: document.receiptId, payload: canonical(document as unknown as Captured) }) as unknown as Captured;
@@ -1104,41 +1131,11 @@ export class MongodbPluginsRepository implements IPluginsRepository {
   }
 
   private installationDocument(document: PluginInstallation): StoredDocument {
-    const stored: StoredDocument = {
-      id: document.id,
-      projectId: document.projectId,
-      pluginName: document.pluginName,
-      pluginVersion: document.pluginVersion,
-      sourceCommit: document.sourceCommit,
-      manifestDigest: document.manifestDigest,
-      treeDigest: document.treeDigest,
-      policyVersion: document.policyVersion,
-      enabled: document.enabled,
-      revision: document.revision,
-    };
-    if (document.providerBindings !== undefined) {
-      stored.providerBindingsJson = canonical(document.providerBindings as unknown as Captured);
-    }
-    return stored;
+    return { ...serializePluginInstallationDocument(document) };
   }
 
   private readInstallation(stored: StoredDocument): PluginInstallation {
-    const input: StoredDocument = {
-      id: stored.id,
-      projectId: stored.projectId,
-      pluginName: stored.pluginName,
-      pluginVersion: stored.pluginVersion,
-      sourceCommit: stored.sourceCommit,
-      manifestDigest: stored.manifestDigest,
-      treeDigest: stored.treeDigest,
-      policyVersion: stored.policyVersion,
-      enabled: stored.enabled,
-      revision: stored.revision,
-    };
-    if (stored.providerBindingsJson !== undefined) {
-      input.providerBindings = parsePayload(stored.providerBindingsJson, "installation_invalid");
-    }
-    return installation(input);
+    return deserializePluginInstallationDocument(stored);
   }
 
   private async classifyCatalogEntryRace(documents: readonly PluginCatalogEntry[]): Promise<void> {

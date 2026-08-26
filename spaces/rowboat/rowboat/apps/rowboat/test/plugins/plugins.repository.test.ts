@@ -939,8 +939,8 @@ describe("plugin repository contract", () => {
     expect(database.collection(PLUGIN_COLLECTIONS.installations).writes).toBe(0);
   });
 
-  it("stores and deep-freezes an exact app-to-MCP provider binding", async () => {
-    const { repository } = repositoryFixture();
+  it("stores the canonical Mongo shape and resolves an exact app-to-MCP provider binding", async () => {
+    const { database, repository } = repositoryFixture();
     await seedCatalog(repository);
     const bound: PluginInstallation = {
       ...installation,
@@ -955,7 +955,9 @@ describe("plugin repository contract", () => {
       }],
     };
     await repository.putInstallation(bound);
-    const stored = (await repository.listInstallations(installation.projectId))[0]!;
+    const raw = database.collection(PLUGIN_COLLECTIONS.installations).documents[0]!;
+    expect(raw).toHaveProperty("providerBindingsJson"); expect(raw).not.toHaveProperty("providerBindings");
+    const stored = (await repository.getInstallation(bound.projectId, bound.pluginName))!;
     expect(stored).toEqual(bound);
     expect(Object.isFrozen(stored.providerBindings)).toBe(true);
     expect(Object.isFrozen(stored.providerBindings?.[0])).toBe(true);

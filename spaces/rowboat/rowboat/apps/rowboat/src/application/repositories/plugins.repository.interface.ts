@@ -122,6 +122,7 @@ export interface IPluginsRepository {
   listCredentialSlots(installationId: string): Promise<readonly PluginCredentialSlot[]>;
   putCredentialSlot(slot: PluginCredentialSlot): Promise<void>;
   putMigrationRecord(record: PluginMigrationRecord): Promise<void>;
+  getMigrationRecord(id: string): Promise<PluginMigrationRecord | null>;
   putReceipt(receipt: PluginReceipt): Promise<void>;
   /**
    * Establishes the single dispatch authorization point. Implementations must

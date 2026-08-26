@@ -139,6 +139,7 @@ class FakeRepository implements IPluginsRepository {
   async putAdmissions(): Promise<void> {}
   async putCredentialSlot(): Promise<void> {}
   async putMigrationRecord(): Promise<void> {}
+  async getMigrationRecord(): Promise<null> { return null; }
   async getIdempotentReceipt(): Promise<null> { return null; }
   async installIdempotently(): Promise<never> { throw new Error("unused"); }
   async setInstallationEnabledIdempotently(): Promise<never> { throw new Error("unused"); }

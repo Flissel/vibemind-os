@@ -1,7 +1,7 @@
-import { mkdir, open, rename, rm } from "node:fs/promises";
+import { link, lstat, mkdir, open, realpath, rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PluginCatalogLock } from "@rowboat/openai-plugin-runtime";
 import { LegacyPluginMigration } from "@/src/application/services/legacy-plugin-migration";
@@ -9,14 +9,19 @@ import { LEGACY_CARD_IDS } from "@/src/application/services/legacy-plugin-recipe
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN = /^[A-Za-z0-9._~-]{1,8192}$/;
+const RESERVED = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+function safeOutputSyntax(value: string): boolean {
+  const parts = value.split(/[\\/]/); return !isAbsolute(value) && parts.length === 2 && parts[0] === ".artifacts" && parts[1] !== "" && parts[1] !== "." && parts[1] !== ".."
+    && !RESERVED.test(parts[1]) && !parts[1].endsWith(".") && !parts[1].endsWith(" ") && !/[:\u0000-\u001f\u007f-\u009f]/u.test(parts[1]);
+}
 export type MigrationCliArguments =
-  | Readonly<{ mode: "dry-run"; scope: "fixtures" | "all"; output?: string; overwrite: boolean }>
-  | Readonly<{ mode: "apply"; projectId: string; confirmationToken: string; idempotencyKey: string; output?: string; overwrite: boolean }>;
+  | Readonly<{ mode: "dry-run"; scope: "fixtures" | "all"; output?: string }>
+  | Readonly<{ mode: "apply"; projectId: string; confirmationToken: string; output?: string }>;
 
 export function parseMigrationCliArguments(argv: readonly string[]): MigrationCliArguments {
   const flags = new Map<string, string | true>();
-  const booleans = new Set(["--dry-run", "--apply", "--overwrite"]);
-  const valued = new Set(["--scope", "--output", "--project-id", "--confirmation-token", "--idempotency-key"]);
+  const booleans = new Set(["--dry-run", "--apply"]);
+  const valued = new Set(["--scope", "--output", "--project-id", "--confirmation-token"]);
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index]!;
     if (flags.has(flag) || (!booleans.has(flag) && !valued.has(flag))) throw new Error("migration_cli_invalid");
@@ -29,31 +34,44 @@ export function parseMigrationCliArguments(argv: readonly string[]): MigrationCl
   }
   const dryRun = flags.has("--dry-run"); const apply = flags.has("--apply");
   if (dryRun === apply) throw new Error("migration_cli_invalid");
-  const output = flags.get("--output"); const overwrite = flags.has("--overwrite");
-  if (output !== undefined && (typeof output !== "string" || isAbsolute(output) || output.split(/[\\/]/).includes(".."))) throw new Error("migration_cli_invalid");
+  const output = flags.get("--output");
+  if (output !== undefined && (typeof output !== "string" || !safeOutputSyntax(output))) throw new Error("migration_cli_invalid");
   if (dryRun) {
     const scope = flags.get("--scope");
-    if ((scope !== "fixtures" && scope !== "all") || flags.has("--project-id") || flags.has("--confirmation-token") || flags.has("--idempotency-key")) throw new Error("migration_cli_invalid");
-    return Object.freeze({ mode: "dry-run" as const, scope, ...(output === undefined ? {} : { output }), overwrite });
+    if ((scope !== "fixtures" && scope !== "all") || flags.has("--project-id") || flags.has("--confirmation-token")) throw new Error("migration_cli_invalid");
+    return Object.freeze({ mode: "dry-run" as const, scope, ...(output === undefined ? {} : { output }) });
   }
   if (flags.has("--scope")) throw new Error("migration_cli_invalid");
-  const projectId = flags.get("--project-id"); const confirmationToken = flags.get("--confirmation-token"); const idempotencyKey = flags.get("--idempotency-key");
-  if (typeof projectId !== "string" || !UUID.test(projectId) || typeof confirmationToken !== "string" || !TOKEN.test(confirmationToken)
-    || typeof idempotencyKey !== "string" || !TOKEN.test(idempotencyKey)) throw new Error("migration_cli_invalid");
-  return Object.freeze({ mode: "apply" as const, projectId, confirmationToken, idempotencyKey, ...(output === undefined ? {} : { output }), overwrite });
+  const projectId = flags.get("--project-id"); const confirmationToken = flags.get("--confirmation-token");
+  if (typeof projectId !== "string" || !UUID.test(projectId) || typeof confirmationToken !== "string" || !TOKEN.test(confirmationToken)) throw new Error("migration_cli_invalid");
+  return Object.freeze({ mode: "apply" as const, projectId, confirmationToken, ...(output === undefined ? {} : { output }) });
 }
 
-async function atomicWrite(relativePath: string, value: unknown, overwrite: boolean): Promise<void> {
-  const target = resolve(process.cwd(), relativePath); const root = resolve(process.cwd());
-  if (target !== root && !target.startsWith(`${root}\\`) && !target.startsWith(`${root}/`)) throw new Error("migration_output_invalid");
-  await mkdir(dirname(target), { recursive: true });
-  const temporary = `${target}.${process.pid}.tmp`;
+export async function publishMigrationOutput(relativePath: string, value: unknown, beforeLink?: () => Promise<void>): Promise<void> {
+  const parts = relativePath.split(/[\\/]/);
+  if (!safeOutputSyntax(relativePath)) throw new Error("migration_output_invalid");
+  const requestedRoot = resolve(process.cwd()); const root = await realpath(requestedRoot);
+  const rootStat = await lstat(root); if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error("migration_output_invalid");
+  const artifactDirectory = join(root, ".artifacts"); await mkdir(artifactDirectory, { recursive: false }).catch((error: unknown) => {
+    if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
+  });
+  const artifactStat = await lstat(artifactDirectory); const actualArtifactDirectory = await realpath(artifactDirectory);
+  if (!artifactStat.isDirectory() || artifactStat.isSymbolicLink() || relative(root, actualArtifactDirectory) !== ".artifacts") throw new Error("migration_output_invalid");
+  const target = join(actualArtifactDirectory, basename(parts[1])); const temporary = join(actualArtifactDirectory, `.${parts[1]}.${process.pid}.${Date.now()}.tmp`);
   try {
     const handle = await open(temporary, "wx", 0o600);
     try { await handle.writeFile(`${JSON.stringify(value)}\n`, "utf8"); await handle.sync(); } finally { await handle.close(); }
-    if (!overwrite) { const probe = await open(target, "wx", 0o600); await probe.close(); await rm(target); }
-    await rename(temporary, target);
-  } catch (error) { await rm(temporary, { force: true }); throw error; }
+    if (beforeLink !== undefined) await beforeLink();
+    const currentArtifactStat = await lstat(artifactDirectory); const currentArtifactRealPath = await realpath(artifactDirectory);
+    if (!currentArtifactStat.isDirectory() || currentArtifactStat.isSymbolicLink() || currentArtifactRealPath !== actualArtifactDirectory) throw new Error("migration_output_invalid");
+    try { await link(temporary, target); } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "EEXIST") throw new Error("migration_output_exists");
+      throw error;
+    }
+    try { const directoryHandle = await open(actualArtifactDirectory, "r"); try { await directoryHandle.sync(); } finally { await directoryHandle.close(); } }
+    catch (error) { if (process.platform !== "win32") throw error; }
+  } catch (error) { if (error instanceof Error && /^[a-z0-9_]+$/.test(error.message)) throw error; throw new Error("migration_output_failed"); }
+  finally { await rm(temporary, { force: true }); }
 }
 
 function fixtureUuid(cardId: string): string {
@@ -88,7 +106,7 @@ export async function runMigrationCli(argv: readonly string[]): Promise<unknown>
     const module = await import("../di/plugin-migration-container");
     output = selected.mode === "dry-run" ? await module.previewAllMigrations() : await module.applyProjectMigration(selected);
   }
-  if (selected.output !== undefined) await atomicWrite(selected.output, output, selected.overwrite);
+  if (selected.output !== undefined) await publishMigrationOutput(selected.output, output);
   return output;
 }
 

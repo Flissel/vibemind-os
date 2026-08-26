@@ -21,7 +21,7 @@ import {
   type ResolvedLegacyCapability,
 } from "./legacy-plugin-recipes";
 
-const SOURCE_KEYS = Object.freeze(["legacyCardId", "projectId", "sourceConfiguration", "sourceProjectRevision", "sourceUpdatedAt"]);
+const SOURCE_KEYS = Object.freeze(["legacyCardId", "projectId", "sourceConfiguration", "sourceProjectRevision", "sourceStateDigest", "sourceUpdatedAt"]);
 const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const MAX_SOURCE_NODES = 20_000;
 const MAX_SOURCE_DEPTH = 32;
@@ -44,6 +44,7 @@ export interface LegacyPluginMigrationSource {
   readonly sourceUpdatedAt: string | null;
   readonly legacyCardId: string;
   readonly sourceConfiguration: unknown;
+  readonly sourceStateDigest?: string;
 }
 
 export interface PluginMigrationPreview extends PluginMigrationRecord {
@@ -149,21 +150,26 @@ function capturedJson(input: unknown): unknown {
   return captureJson(input, 0, { nodes: 0, bytes: 0, seen: new Set<object>() });
 }
 
+export function captureMigrationJson(input: unknown): unknown { return capturedJson(input); }
+
 function captureSource(input: unknown): LegacyPluginMigrationSource {
   const captured = capturedJson(input);
   if (captured === null || typeof captured !== "object" || Array.isArray(captured)) fail("source_invalid");
   const record = captured as Readonly<Record<string, unknown>>;
-  if (Object.keys(record).sort().join("\0") !== SOURCE_KEYS.join("\0")) fail("source_invalid");
+  const keys = Object.keys(record).sort();
+  if (keys.join("\0") !== SOURCE_KEYS.filter(key => key !== "sourceStateDigest").join("\0") && keys.join("\0") !== SOURCE_KEYS.join("\0")) fail("source_invalid");
   if (typeof record.projectId !== "string" || !UUID.test(record.projectId)) fail("source_invalid");
   if (!Number.isSafeInteger(record.sourceProjectRevision) || (record.sourceProjectRevision as number) < 0) fail("source_invalid");
   if (typeof record.legacyCardId !== "string" || record.legacyCardId.length === 0 || record.legacyCardId.length > 128) fail("source_invalid");
   if (record.sourceUpdatedAt !== null && (typeof record.sourceUpdatedAt !== "string" || Number.isNaN(Date.parse(record.sourceUpdatedAt)) || new Date(record.sourceUpdatedAt).toISOString() !== record.sourceUpdatedAt)) fail("source_invalid");
+  if (record.sourceStateDigest !== undefined && (typeof record.sourceStateDigest !== "string" || !/^[a-f0-9]{64}$/.test(record.sourceStateDigest))) fail("source_invalid");
   return Object.freeze({
     projectId: record.projectId,
     sourceProjectRevision: record.sourceProjectRevision as number,
     sourceUpdatedAt: record.sourceUpdatedAt as string | null,
     legacyCardId: record.legacyCardId,
     sourceConfiguration: record.sourceConfiguration,
+    ...(record.sourceStateDigest === undefined ? {} : { sourceStateDigest: record.sourceStateDigest }),
   });
 }
 
@@ -322,6 +328,7 @@ export class LegacyPluginMigration {
       legacyCardId: source.legacyCardId,
       recipeDigest,
       sourceInventoryDigest: sourceInventory.digest,
+      sourceStateDigest: source.sourceStateDigest ?? null,
       sourceConfiguration: source.sourceConfiguration,
     });
     const targetInstallationIds = Object.freeze(installations.map(installation => installation.id));
@@ -350,6 +357,7 @@ export class LegacyPluginMigration {
         recipeDigest,
         sourceInventoryDigest: sourceInventory.digest,
         sourceDigest,
+        sourceStateDigest: source.sourceStateDigest ?? null,
       }),
       status: blockers.length === 0 ? "previewed" as const : "blocked" as const,
       blockers: Object.freeze(blockers),

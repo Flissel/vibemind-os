@@ -1,4 +1,4 @@
-import { assertRoute, assertRouteWithoutQuery, idempotencyKey, jsonBody, params, pluginErrorResponse, pluginJson, strictObject, type RouteContext } from "@/app/api/v1/projects/[projectId]/plugins/_responses";
+import { assertRouteWithoutQuery, jsonBody, params, pluginErrorResponse, pluginJson, strictObject, type RouteContext } from "@/app/api/v1/projects/[projectId]/plugins/_responses";
 
 interface MigrationController { execute(request: Request, input: Readonly<Record<string, unknown>>): Promise<unknown> }
 type Source = MigrationController | (() => Promise<MigrationController>);
@@ -18,11 +18,10 @@ export function createMigrationPreviewRoute(source: Source) {
 export function createMigrationApplyRoute(source: Source, options: { readonly bodyReadTimeoutMs?: number } = {}) {
   return async function migrationApplyPOST(request: Request, context: Context): Promise<Response> {
     try {
-      const key = idempotencyKey(request);
       const routeParams = await params(context, ["projectId"]);
       assertRouteWithoutQuery(request, "POST", ["api", "v1", "projects", routeParams.projectId, "plugins", "migration", "apply"]);
       const body = strictObject(await jsonBody(request, options.bodyReadTimeoutMs), ["confirmationToken"]);
-      return pluginJson(await (await selected(source)).execute(request, Object.freeze({ projectId: routeParams.projectId, confirmationToken: body.confirmationToken, idempotencyKey: key })));
+      return pluginJson(await (await selected(source)).execute(request, Object.freeze({ projectId: routeParams.projectId, confirmationToken: body.confirmationToken })));
     } catch (error) { return pluginErrorResponse(error); }
   };
 }
