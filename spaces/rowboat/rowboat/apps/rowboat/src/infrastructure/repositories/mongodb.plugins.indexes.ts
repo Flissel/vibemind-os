@@ -7,6 +7,7 @@ export const PLUGIN_COLLECTIONS = Object.freeze({
   componentAdmissions: "plugin_component_admissions",
   credentialSlots: "plugin_credential_slots",
   migrationRecords: "plugin_migration_records",
+  executionClaims: "plugin_execution_claims",
   receipts: "plugin_receipts",
 } as const);
 
@@ -25,6 +26,7 @@ export const PLUGIN_COLLECTION_INDEXES = Object.freeze([
   { collection: PLUGIN_COLLECTIONS.componentAdmissions, indexes: [{ key: { installationId: 1, componentDigest: 1 }, name: "installationId_componentDigest_unique", unique: true }] },
   { collection: PLUGIN_COLLECTIONS.credentialSlots, indexes: [{ key: { id: 1 }, name: "id_unique", unique: true }] },
   { collection: PLUGIN_COLLECTIONS.migrationRecords, indexes: [{ key: { id: 1 }, name: "id_unique", unique: true }] },
+  { collection: PLUGIN_COLLECTIONS.executionClaims, indexes: [{ key: { requestId: 1 }, name: "requestId_unique", unique: true }] },
   { collection: PLUGIN_COLLECTIONS.receipts, indexes: [
     { key: { receiptId: 1 }, name: "receiptId_unique", unique: true },
     { key: { idempotencyScope: 1 }, name: "idempotencyScope_unique", unique: true, partialFilterExpression: { idempotencyScope: { $type: "string" } } },

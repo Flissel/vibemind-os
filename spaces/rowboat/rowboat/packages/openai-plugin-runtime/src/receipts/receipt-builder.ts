@@ -19,7 +19,7 @@ const REASONS = new Set<PluginReasonCode>([
   "source_mismatch", "manifest_invalid", "path_escape", "digest_mismatch",
   "license_review_required", "license_rejected", "provider_unavailable", "credential_missing",
   "http_mcp_not_admitted", "process_not_admitted", "hook_not_admitted", "write_review_required",
-  "component_unsupported", "migration_conflict", "parity_failed", "rollback_unavailable",
+  "component_unsupported", "migration_conflict", "parity_failed", "rollback_unavailable", "execution_state_changed",
 ]);
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 

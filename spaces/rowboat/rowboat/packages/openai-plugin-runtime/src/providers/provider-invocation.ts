@@ -127,13 +127,14 @@ export function captureProviderInvocation(
       request,
       new Set(["projectId", "pluginName", "componentName", "operationName", "capability", "arguments"]),
     );
-    const contextProperties = dataProperties(context, new Set(["requestId"]));
+    const contextProperties = dataProperties(context, new Set(["requestId", "signal"]));
     const projectId = dataValue(requestProperties, "projectId");
     const pluginName = dataValue(requestProperties, "pluginName");
     const componentName = dataValue(requestProperties, "componentName");
     const operationName = dataValue(requestProperties, "operationName", false);
     const capability = dataValue(requestProperties, "capability");
     const requestId = dataValue(contextProperties, "requestId");
+    const signal = dataValue(contextProperties, "signal", false);
     if (
       typeof projectId !== "string" || !PROVIDER_IDENTIFIER.test(projectId)
       || typeof pluginName !== "string" || !PROVIDER_IDENTIFIER.test(pluginName)
@@ -141,6 +142,7 @@ export function captureProviderInvocation(
       || (operationName !== undefined && (typeof operationName !== "string" || !PROVIDER_IDENTIFIER.test(operationName)))
       || (capability !== "read" && capability !== "write")
       || typeof requestId !== "string" || !PROVIDER_IDENTIFIER.test(requestId)
+      || (signal !== undefined && !(signal instanceof AbortSignal))
     ) {
       invalidRequest();
     }
@@ -171,7 +173,7 @@ export function captureProviderInvocation(
     });
     return Object.freeze({
       request: capturedRequest,
-      context: Object.freeze({ requestId }),
+      context: Object.freeze({ requestId, ...(signal === undefined ? {} : { signal }) }),
     });
   } catch (error: unknown) {
     if (error instanceof Error && error.message === "provider_invalid:request") throw error;

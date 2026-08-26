@@ -1,5 +1,6 @@
 import type {
   CredentialReference,
+  ProviderKind,
   PluginCatalogEntry as RuntimePluginCatalogEntry,
   PluginCatalogLock,
   PluginInstallation as RuntimePluginInstallation,
@@ -83,6 +84,23 @@ export interface PluginIdempotentEnableResult extends PluginIdempotentInstallRes
   readonly installation: PluginInstallation;
 }
 
+export interface PluginExecutionDispatchClaim {
+  readonly requestId: string;
+  readonly catalogDigest: string;
+  readonly projectId: string;
+  readonly pluginName: string;
+  readonly installationId: string;
+  readonly installationRevision: number;
+  readonly componentId: string;
+  readonly componentDigest: string;
+  readonly componentKind: PluginComponentAdmission["componentKind"];
+  readonly componentName: string;
+  readonly providerBindingId: string;
+  readonly providerKind: ProviderKind;
+  readonly admissionPolicyVersion: string;
+  readonly credentialSlots: readonly PluginCredentialSlot[];
+}
+
 export type PluginMutationOperation = "install" | "set_enabled";
 
 export interface PluginIdempotencyLookup {
@@ -111,6 +129,14 @@ export interface IPluginsRepository {
   putCredentialSlot(slot: PluginCredentialSlot): Promise<void>;
   putMigrationRecord(record: PluginMigrationRecord): Promise<void>;
   putReceipt(receipt: PluginReceipt): Promise<void>;
+  /**
+   * Establishes the single dispatch authorization point. Implementations must
+   * conditionally write the installation in the same transaction that checks
+   * admission, provider binding, and credential state, then persist only
+   * redacted immutable provenance. Later state changes are post-dispatch
+   * revocations and cannot turn this claim into a success result.
+   */
+  claimExecutionDispatch(claim: PluginExecutionDispatchClaim): Promise<void>;
   getIdempotentReceipt(request: PluginIdempotencyLookup): Promise<PluginReceipt | null>;
   installIdempotently(request: PluginIdempotentInstall): Promise<PluginIdempotentInstallResult>;
   setInstallationEnabledIdempotently(request: PluginIdempotentEnable): Promise<PluginIdempotentEnableResult>;

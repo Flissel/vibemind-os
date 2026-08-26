@@ -1,5 +1,6 @@
 import { MongoServerError, type ClientSession, type Db, type MongoClient } from "mongodb";
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { types as utilTypes } from "node:util";
 import type {
   IPluginsRepository,
@@ -7,6 +8,7 @@ import type {
   PluginCatalogSnapshot,
   PluginComponentAdmission,
   PluginCredentialSlot,
+  PluginExecutionDispatchClaim,
   PluginInstallation,
   PluginIdempotentInstall,
   PluginIdempotentInstallResult,
@@ -25,6 +27,7 @@ const COMMIT = /^[a-f0-9]{40}$/;
 const REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const COMPONENT_ID = /^[A-Za-z0-9][A-Za-z0-9._:/#-]{0,255}$/;
+const COMPONENT_NAME = /^[^\0]{1,256}$/u;
 const OPENAI_PLUGINS_SOURCE_URL = "https://github.com/openai/plugins.git";
 const MAX_DEPTH = 16;
 const MAX_ITEMS = 4096;
@@ -814,11 +817,26 @@ export class MongodbPluginsRepository implements IPluginsRepository {
 
   async putCredentialSlot(input: PluginCredentialSlot): Promise<void> {
     const document = credentialSlot(input);
-    const parent = await this.database.collection(PLUGIN_COLLECTIONS.installations).findOne({ id: document.installationId }, { projection: { _id: 0 } });
-    if (parent === null) invalid("credential_slot_parent_not_found");
-    if (this.readInstallation(parent).projectId !== document.projectId) invalid("credential_slot_parent_mismatch");
     const stored = Object.freeze({ id: document.id, payload: canonical(document as unknown as Captured) }) as unknown as Captured;
-    await immutableInsert(this.database.collection(PLUGIN_COLLECTIONS.credentialSlots), { id: document.id }, stored, "credential_slot_conflict");
+    await this.transactions.run(async (session) => {
+      const installations = this.database.collection(PLUGIN_COLLECTIONS.installations);
+      const parent = await installations.findOne({ id: document.installationId }, { projection: { _id: 0 }, session });
+      if (parent === null) invalid("credential_slot_parent_not_found");
+      if (this.readInstallation(parent).projectId !== document.projectId) invalid("credential_slot_parent_mismatch");
+      await immutableInsert(
+        this.database.collection(PLUGIN_COLLECTIONS.credentialSlots),
+        { id: document.id },
+        stored,
+        "credential_slot_conflict",
+        session,
+      );
+      const coordinated = await installations.findOneAndUpdate(
+        { id: document.installationId, projectId: document.projectId },
+        { $inc: { credentialStateRevision: 1 } },
+        { returnDocument: "after", projection: { _id: 0 }, session },
+      );
+      if (coordinated === null) invalid("credential_slot_parent_mismatch");
+    });
   }
 
   async putMigrationRecord(input: PluginMigrationRecord): Promise<void> {
@@ -830,6 +848,79 @@ export class MongodbPluginsRepository implements IPluginsRepository {
     const document = receipt(input);
     const stored = Object.freeze({ receiptId: document.receiptId, payload: canonical(document as unknown as Captured) }) as unknown as Captured;
     await immutableInsert(this.database.collection(PLUGIN_COLLECTIONS.receipts), { receiptId: document.receiptId }, stored, "receipt_conflict");
+  }
+
+  async claimExecutionDispatch(input: PluginExecutionDispatchClaim): Promise<void> {
+    const request = object(input, "execution_claim_invalid");
+    keys(request, [
+      "requestId", "catalogDigest", "projectId", "pluginName", "installationId", "installationRevision",
+      "componentId", "componentDigest", "componentKind", "componentName", "providerBindingId", "providerKind",
+      "admissionPolicyVersion", "credentialSlots",
+    ], "execution_claim_invalid");
+    const requestId = string(request, "requestId", ID, "execution_claim_invalid");
+    const catalogDigest = string(request, "catalogDigest", DIGEST, "execution_claim_invalid");
+    const projectId = string(request, "projectId", ID, "execution_claim_invalid");
+    const pluginName = string(request, "pluginName", NAME, "execution_claim_invalid");
+    const installationId = string(request, "installationId", ID, "execution_claim_invalid");
+    const installationRevision = integer(request, "installationRevision", "execution_claim_invalid");
+    const componentId = string(request, "componentId", COMPONENT_ID, "execution_claim_invalid");
+    const componentDigest = string(request, "componentDigest", DIGEST, "execution_claim_invalid");
+    const componentKind = string(request, "componentKind", /^(skill|agent|command|mcp|app|hook|asset)$/, "execution_claim_invalid");
+    const componentName = string(request, "componentName", COMPONENT_NAME, "execution_claim_invalid");
+    const providerBindingId = string(request, "providerBindingId", ID, "execution_claim_invalid");
+    const providerKind = string(request, "providerKind", /^(mcp-http|mcp-process|rowboat-native|legacy-composio-adapter|openai-connector-bridge)$/, "execution_claim_invalid");
+    const admissionPolicyVersion = string(request, "admissionPolicyVersion", ID, "execution_claim_invalid");
+    if (!Array.isArray(request.credentialSlots) || request.credentialSlots.length > MAX_ITEMS) invalid("execution_claim_invalid");
+    const credentialSlots = request.credentialSlots.map(credentialSlot).sort((left, right) => left.name.localeCompare(right.name));
+    if (credentialSlots.some((slot) => slot.projectId !== projectId || slot.installationId !== installationId)) invalid("execution_claim_invalid");
+    const credentialReferencesDigest = createHash("sha256")
+      .update(canonical(credentialSlots as unknown as Captured))
+      .digest("hex");
+    const claimDocument = Object.freeze({
+      requestId, catalogDigest, projectId, pluginName, installationId, installationRevision,
+      componentId, componentDigest, componentKind, componentName, providerBindingId, providerKind,
+      admissionPolicyVersion, credentialReferencesDigest,
+    });
+    assertStoredDocumentBudget(claimDocument as unknown as Captured);
+    try {
+      await this.transactions.run(async (session) => {
+        const options = { projection: { _id: 0 }, session };
+        const storedInstallation = await this.database.collection(PLUGIN_COLLECTIONS.installations).findOneAndUpdate(
+          { id: installationId, projectId, pluginName, revision: installationRevision, enabled: true },
+          { $set: { lastDispatchClaimId: requestId } },
+          { returnDocument: "after", projection: { _id: 0 }, session },
+        );
+        if (storedInstallation === null) invalid("execution_claim_conflict");
+        const currentInstallation = this.readInstallation(storedInstallation);
+        const currentEntry = await this.requireCatalogEntryForInstallation(currentInstallation, session);
+        if (currentEntry.catalogDigest !== catalogDigest) invalid("execution_claim_conflict");
+        const selectedBindings = currentInstallation.providerBindings?.filter((selected) => selected.componentId === componentId) ?? [];
+        if (
+          selectedBindings.length !== 1
+          || selectedBindings[0]?.binding.id !== providerBindingId
+          || selectedBindings[0]?.binding.providerKind !== providerKind
+          || selectedBindings[0]?.binding.componentDigest !== componentDigest
+        ) invalid("execution_claim_conflict");
+        const storedAdmission = await this.database.collection(PLUGIN_COLLECTIONS.componentAdmissions).findOne({
+          installationId, componentDigest,
+        }, options);
+        if (storedAdmission === null) invalid("execution_claim_conflict");
+        const currentAdmission = freezeRead<PluginComponentAdmission>(storedAdmission, "execution_claim_conflict");
+        if (
+          currentAdmission.status !== "admitted" || currentAdmission.componentKind !== componentKind
+          || currentAdmission.componentName !== componentName || currentAdmission.policyVersion !== admissionPolicyVersion
+          || currentAdmission.reason !== undefined
+        ) invalid("execution_claim_conflict");
+        const currentCredentialDocuments = await this.database.collection(PLUGIN_COLLECTIONS.credentialSlots)
+          .find({ installationId }, options).sort({ name: 1 }).toArray();
+        const currentCredentialSlots = currentCredentialDocuments.map((document) => credentialSlot(parsePayload(document.payload, "execution_claim_conflict")));
+        if (canonical(currentCredentialSlots as unknown as Captured) !== canonical(credentialSlots as unknown as Captured)) invalid("execution_claim_conflict");
+        await this.database.collection(PLUGIN_COLLECTIONS.executionClaims).insertOne(claimDocument, { session });
+      });
+    } catch (error) {
+      if (isDuplicateKey(error)) invalid("execution_claim_conflict");
+      throw error;
+    }
   }
 
   async getIdempotentReceipt(input: PluginIdempotencyLookup): Promise<PluginReceipt | null> {

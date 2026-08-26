@@ -836,6 +836,44 @@ describe("HTTP MCP provider", () => {
     expect(new Set(signals).size).toBe(1);
     expect(signals[0]?.aborted).toBe(false);
   });
+
+  it("composes a caller abort into an in-flight HTTP call and settles cleanup", async () => {
+    const caller = new AbortController();
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    let callSettled = false;
+    let closeCalls = 0;
+    const client: HttpMcpClient = {
+      connect: async () => undefined,
+      callTool: async (_input, options?: { readonly signal: AbortSignal }) => {
+        markStarted?.();
+        const signal = options?.signal;
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted === true) resolve();
+          else signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        callSettled = true;
+        throw new DOMException("aborted", "AbortError");
+      },
+      close: async () => { closeCalls += 1; },
+    };
+    const provider = deadlineHttpProvider({
+      client,
+      resolver: new RecordingCredentialResolver({ API_TOKEN: "super-secret-value" }),
+      timeoutMilliseconds: 1_000,
+    });
+    const context = Object.freeze({ requestId: "request-1", signal: caller.signal }) as ProviderContext;
+    const invocation = provider.invoke(request, context);
+    const stage = await Promise.race([
+      started.then(() => "started" as const),
+      invocation.then(() => "ended" as const, () => "ended" as const),
+    ]);
+    expect(stage).toBe("started");
+    caller.abort();
+    await expect(invocation).resolves.toEqual({ status: "failed", reason: "mcp_http_timed_out" });
+    expect(callSettled).toBe(true);
+    expect(closeCalls).toBe(1);
+  });
 });
 
 class RecordingSpawner implements ProcessSpawner {
@@ -1603,6 +1641,58 @@ describe("process MCP provider", () => {
     expect(result).toEqual({ status: "failed", reason: "process_timed_out" });
     expect(killed).toBe(1);
     expect(JSON.stringify(result)).not.toContain("super-secret-value");
+  });
+
+  it("composes a caller abort into an in-flight process call and terminates the child", async () => {
+    const pluginRoot = await createTempDirectory();
+    const caller = new AbortController();
+    const spawner = new RecordingSpawner();
+    let killed = 0;
+    let complete: ((value: { exitCode: number | null; signal: string | null }) => void) | undefined;
+    spawner.next = {
+      stdout: (async function* () {})(),
+      stderr: (async function* () {})(),
+      completion: new Promise((resolve) => { complete = resolve; }),
+      kill: () => {
+        killed += 1;
+        complete?.({ exitCode: null, signal: "SIGTERM" });
+      },
+    };
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    let callSettled = false;
+    const provider = await processProvider({
+      pluginRoot,
+      spawner,
+      timeoutMilliseconds: 1_000,
+      clientFactory: {
+        create: () => ({
+          connect: async () => undefined,
+          callTool: async (_input, options?: { readonly signal: AbortSignal }) => {
+            markStarted?.();
+            const signal = options?.signal;
+            await new Promise<void>((resolve) => {
+              if (signal?.aborted === true) resolve();
+              else signal?.addEventListener("abort", () => resolve(), { once: true });
+            });
+            callSettled = true;
+            throw new DOMException("aborted", "AbortError");
+          },
+          close: async () => undefined,
+        }),
+      },
+    });
+    const context = Object.freeze({ requestId: "request-1", signal: caller.signal }) as ProviderContext;
+    const invocation = provider.invoke(request, context);
+    const stage = await Promise.race([
+      started.then(() => "started" as const),
+      invocation.then(() => "ended" as const, () => "ended" as const),
+    ]);
+    expect(stage).toBe("started");
+    caller.abort();
+    await expect(invocation).resolves.toEqual({ status: "failed", reason: "process_timed_out" });
+    expect(callSettled).toBe(true);
+    expect(killed).toBe(1);
   });
 
   it("terminates a child returned by a spawn promise after the invocation deadline", async () => {

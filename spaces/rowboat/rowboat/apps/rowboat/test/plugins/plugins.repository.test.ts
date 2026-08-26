@@ -5,6 +5,7 @@ import {
   type PluginCatalogSnapshot,
   type PluginComponentAdmission,
   type PluginCredentialSlot,
+  type PluginExecutionDispatchClaim,
   type PluginInstallation,
   type PluginIdempotentInstall,
   type PluginIdempotentEnable,
@@ -88,6 +89,7 @@ class MemoryCollection {
       plugin_component_admissions: [["installationId", "componentDigest"]],
       plugin_credential_slots: [["id"]],
       plugin_migration_records: [["id"]],
+      plugin_execution_claims: [["requestId"]],
       plugin_receipts: [["receiptId"], ["idempotencyScope"]],
     };
     await Promise.resolve();
@@ -122,15 +124,15 @@ class MemoryCollection {
 
   async findOneAndUpdate(
     filter: Document,
-    update: { $set: Document; $inc: Document },
-    options?: { projection?: Document },
+    update: { $set: Document; $inc?: Document },
+    options?: { projection?: Document; session?: ClientSession },
   ): Promise<Document | null> {
     const index = this.documents.findIndex((document) => matches(document, filter));
     if (index < 0) return null;
     const original = this.documents[index]!;
     const updated: Document = { ...original, ...clone(update.$set) };
-    for (const [key, increment] of Object.entries(update.$inc)) {
-      updated[key] = Number(updated[key]) + Number(increment);
+    for (const [key, increment] of Object.entries(update.$inc ?? {})) {
+      updated[key] = Number(updated[key] ?? 0) + Number(increment);
     }
     this.documents[index] = updated;
     this.writes += 1;
@@ -372,6 +374,53 @@ async function seedInstallation(repository: MongodbPluginsRepository): Promise<v
 }
 
 describe("plugin repository contract", () => {
+  it("atomically claims exact enabled execution state and stores only redacted dispatch provenance", async () => {
+    const { database, repository } = repositoryFixture();
+    await seedCatalog(repository);
+    const selected = entry.components[0]!;
+    const componentDigest = selected.component.metadata.bindingDigest;
+    const installed = {
+      ...installation,
+      providerBindings: [Object.freeze({
+        componentId: selected.component.id,
+        binding: Object.freeze({ id: "provider-1", providerKind: "mcp-process" as const, componentDigest }),
+      })],
+    };
+    await repository.putInstallation(installed);
+    await repository.putAdmissions([{
+      installationId: installed.id,
+      componentDigest,
+      componentKind: selected.component.kind,
+      componentName: selected.component.name,
+      status: "admitted",
+      policyVersion: snapshot.policyVersion,
+    }]);
+    const slot: PluginCredentialSlot = Object.freeze({
+      id: "slot-claim-1", projectId: installed.projectId, installationId: installed.id, name: "API_TOKEN",
+      reference: Object.freeze({ kind: "environment", reference: "ROTATION_REF" }),
+    });
+    await repository.putCredentialSlot(slot);
+    const claimedSlots = await repository.listCredentialSlots(installed.id);
+    const claim: PluginExecutionDispatchClaim = Object.freeze({
+      requestId: "request-claim-1", catalogDigest: snapshot.catalogDigest,
+      projectId: installed.projectId, pluginName: installed.pluginName, installationId: installed.id,
+      installationRevision: installed.revision, componentId: selected.component.id, componentDigest,
+      componentKind: selected.component.kind, componentName: selected.component.name,
+      providerBindingId: "provider-1", providerKind: "mcp-process" as const,
+      admissionPolicyVersion: snapshot.policyVersion, credentialSlots: claimedSlots,
+    });
+    const claimRepository = repository as unknown as { claimExecutionDispatch(input: PluginExecutionDispatchClaim): Promise<void> };
+    expect(typeof claimRepository.claimExecutionDispatch).toBe("function");
+    await expect(claimRepository.claimExecutionDispatch(claim)).resolves.toBeUndefined();
+    const stored = database.collection("plugin_execution_claims").documents;
+    expect(stored).toHaveLength(1);
+    expect(JSON.stringify(stored)).not.toContain("ROTATION_REF");
+    await repository.setInstallationEnabled(installed.id, false, installed.revision);
+    await expect(claimRepository.claimExecutionDispatch({ ...claim, requestId: "request-claim-2" }))
+      .rejects.toThrow("execution_claim_conflict");
+    expect(stored).toHaveLength(1);
+  });
+
   it("atomically stores and reconstructs only the exact validated 180-entry catalog", async () => {
     const lock = catalogLockFixture as unknown as PluginCatalogLock;
     const { database, repository } = repositoryFixture();
@@ -1306,6 +1355,21 @@ describe("plugin repository contract", () => {
     expect(serialized).not.toContain("secret-value");
   });
 
+  it("coordinates credential mutation with the installation dispatch state transaction", async () => {
+    const { database, repository } = repositoryFixture();
+    await seedInstallation(repository);
+    await repository.putCredentialSlot({
+      id: "slot-coordinated", projectId: installation.projectId, installationId: installation.id,
+      name: "GITHUB_PAT_TOKEN", reference: { kind: "environment", reference: "github/pat" },
+    });
+    const storedInstallation = database.collection(PLUGIN_COLLECTIONS.installations).documents[0];
+    expect(storedInstallation?.credentialStateRevision).toBe(1);
+    const installationSession = database.collection(PLUGIN_COLLECTIONS.installations).operationSessions.at(-1);
+    const credentialSession = database.collection(PLUGIN_COLLECTIONS.credentialSlots).operationSessions.at(-1);
+    expect(installationSession).toBeDefined();
+    expect(credentialSession).toBe(installationSession);
+  });
+
   it("rejects a credential slot whose project differs from its installation", async () => {
     const { database, repository } = repositoryFixture();
     await seedInstallation(repository);
@@ -1331,7 +1395,7 @@ describe("plugin repository contract", () => {
 });
 
 describe("plugin Mongo index contract", () => {
-  it("declares the exact seven collections and unique indexes", async () => {
+  it("declares the exact eight collections and unique indexes", async () => {
     expect(PLUGIN_COLLECTIONS).toEqual({
       catalogSnapshots: "plugin_catalog_snapshots",
       catalogEntries: "plugin_catalog_entries",
@@ -1339,6 +1403,7 @@ describe("plugin Mongo index contract", () => {
       componentAdmissions: "plugin_component_admissions",
       credentialSlots: "plugin_credential_slots",
       migrationRecords: "plugin_migration_records",
+      executionClaims: "plugin_execution_claims",
       receipts: "plugin_receipts",
     });
     expect(PLUGIN_COLLECTION_INDEXES.map(({ collection, indexes }) => ({
@@ -1352,6 +1417,7 @@ describe("plugin Mongo index contract", () => {
       { collection: "plugin_component_admissions", keys: [{ installationId: 1, componentDigest: 1 }], unique: [true] },
       { collection: "plugin_credential_slots", keys: [{ id: 1 }], unique: [true] },
       { collection: "plugin_migration_records", keys: [{ id: 1 }], unique: [true] },
+      { collection: "plugin_execution_claims", keys: [{ requestId: 1 }], unique: [true] },
       { collection: "plugin_receipts", keys: [{ receiptId: 1 }, { idempotencyScope: 1 }], unique: [true, true] },
     ]);
 
@@ -1369,7 +1435,7 @@ describe("plugin Mongo index contract", () => {
       (count, { indexes }) => count + indexes.filter((index) => index.unique).length,
       0,
     );
-    expect(uniquePluginIndexes).toBe(9);
+    expect(uniquePluginIndexes).toBe(10);
     for (const { collection, indexes } of PLUGIN_COLLECTION_INDEXES) {
       const invoked = database.collection(collection);
       expect(invoked.createIndexCalls).toBe(1);

@@ -111,12 +111,12 @@ async function settleWithin<T>(promise: Promise<T>, milliseconds: number): Promi
 }
 
 export interface ProcessMcpClient {
-  connect(process: SpawnedProcess, maxFrameBytes: number, maxProtocolBytes?: number): Promise<void>;
+  connect(process: SpawnedProcess, maxFrameBytes: number, maxProtocolBytes?: number, options?: Readonly<{ readonly signal: AbortSignal }>): Promise<void>;
   callTool(input: {
     readonly name: string;
     readonly arguments: Readonly<Record<string, unknown>>;
-  }): Promise<unknown>;
-  close(): Promise<void>;
+  }, options?: Readonly<{ readonly signal: AbortSignal }>): Promise<unknown>;
+  close(options?: Readonly<{ readonly signal: AbortSignal }>): Promise<void>;
 }
 
 export interface ProcessMcpClientFactory {
@@ -377,7 +377,13 @@ export class ProcessMcpProvider implements PluginProvider {
   }
 
   async invoke(request: ProviderRequest, context: ProviderContext): Promise<ProviderResult> {
+    const captured = captureProviderInvocation(request, context);
+    request = captured.request;
+    context = captured.context;
     const controller = new AbortController();
+    const callerAbort = (): void => controller.abort();
+    if (context.signal?.aborted === true) controller.abort();
+    else context.signal?.addEventListener("abort", callerAbort, { once: true });
     const timer = setTimeout(() => controller.abort(), this.#server.timeoutMilliseconds);
     const operation = Promise.resolve().then(
       () => this.#invokeWithSignal(request, context, controller.signal),
@@ -393,6 +399,7 @@ export class ProcessMcpProvider implements PluginProvider {
       throw error;
     } finally {
       clearTimeout(timer);
+      context.signal?.removeEventListener("abort", callerAbort);
     }
   }
 
@@ -401,8 +408,6 @@ export class ProcessMcpProvider implements PluginProvider {
     context: ProviderContext,
     signal: AbortSignal,
   ): Promise<ProviderResult> {
-    const captured = captureProviderInvocation(request, context);
-    request = captured.request;
     const providerDenial = denialReason(this.#parentLicense, "mcp_process", this.#policy);
     if (providerDenial !== undefined) throw new Error(providerDenial);
     const operationName = validateMcpInvocation(this.#server.name, request);
@@ -510,8 +515,8 @@ export class ProcessMcpProvider implements PluginProvider {
       else signal.addEventListener("abort", () => resolveTimeout("timeout"), { once: true });
     });
     const operation = (async (): Promise<unknown> => {
-      await client.connect(spawned, this.#maxProtocolFrameBytes, this.#maxProtocolBytes);
-      return client.callTool({ name: operationName, arguments: request.arguments });
+      await client.connect(spawned, this.#maxProtocolFrameBytes, this.#maxProtocolBytes, Object.freeze({ signal }));
+      return client.callTool({ name: operationName, arguments: request.arguments }, Object.freeze({ signal }));
     })();
 
     let output: unknown;
@@ -533,7 +538,7 @@ export class ProcessMcpProvider implements PluginProvider {
     } finally {
       if (status !== "success") await terminateSpawnedProcess(spawned);
       const close = await settleWithin(
-        Promise.resolve().then(() => client.close()),
+        Promise.resolve().then(() => client.close(Object.freeze({ signal }))),
         PROCESS_PROVIDER_CLEANUP_MS,
       );
       if (close.status !== "resolved" && status === "success") {

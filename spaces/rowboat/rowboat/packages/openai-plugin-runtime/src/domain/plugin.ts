@@ -29,6 +29,7 @@ export type PluginReasonCode =
   | "license_rejected"
   | "provider_unavailable"
   | "credential_missing"
+  | "execution_state_changed"
   | "http_mcp_not_admitted"
   | "process_not_admitted"
   | "hook_not_admitted"

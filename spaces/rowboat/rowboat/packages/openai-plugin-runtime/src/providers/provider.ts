@@ -18,6 +18,7 @@ export interface ProviderRequest {
 
 export interface ProviderContext {
   readonly requestId: string;
+  readonly signal?: AbortSignal;
 }
 
 export type ProviderResult =

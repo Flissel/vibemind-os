@@ -335,6 +335,7 @@ export class HttpMcpProvider implements PluginProvider {
   async invoke(request: ProviderRequest, context: ProviderContext): Promise<ProviderResult> {
     const captured = captureProviderInvocation(request, context);
     request = captured.request;
+    context = captured.context;
     const providerDenial = admissionReason(this.#parentLicense, "mcp_http", this.#policy);
     if (providerDenial !== undefined) throw new Error(providerDenial);
     const operationName = validateMcpInvocation(this.#server.name, request);
@@ -342,6 +343,9 @@ export class HttpMcpProvider implements PluginProvider {
     if (capabilityDenial !== undefined) throw new Error(capabilityDenial);
 
     const controller = new AbortController();
+    const callerAbort = (): void => controller.abort();
+    if (context.signal?.aborted === true) controller.abort();
+    else context.signal?.addEventListener("abort", callerAbort, { once: true });
     const timer = setTimeout(() => controller.abort(), this.#timeoutMilliseconds);
     let client: HttpMcpClient | undefined;
     let result: ProviderResult = Object.freeze({ status: "failed", reason: "mcp_http_failed" });
@@ -391,6 +395,7 @@ export class HttpMcpProvider implements PluginProvider {
       });
     } finally {
       clearTimeout(timer);
+      context.signal?.removeEventListener("abort", callerAbort);
       if (client !== undefined) {
         const clientToClose = client;
         if (!(await boundedCleanup(

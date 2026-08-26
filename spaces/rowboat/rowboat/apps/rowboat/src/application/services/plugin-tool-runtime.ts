@@ -585,6 +585,7 @@ export class PluginToolRuntime {
     }
     const requestId = this.#dependencies.createRequestId?.() ?? randomUUID();
     let operation: Promise<ProviderResult> | undefined;
+    let dispatched = false;
     try {
       const resolutionOperation = this.#dependencies.resolveProvider(Object.freeze({
         catalog, entry, component: component.component, installation, binding: installedBinding,
@@ -593,6 +594,27 @@ export class PluginToolRuntime {
       const resolution = await awaitDeadline(resolutionOperation, controller.signal, context.signal);
       const provider = exactProvider(resolution, installedBinding);
       if (controller.signal.aborted) throw new PluginToolRuntimeError(isAborted(context.signal) ? "request_aborted" : "provider_timed_out");
+      try {
+        await awaitDeadline(this.#dependencies.pluginsRepository.claimExecutionDispatch(Object.freeze({
+          requestId,
+          catalogDigest: catalog.catalogDigest,
+          projectId: context.projectId,
+          pluginName: binding.pluginName,
+          installationId: installation.id,
+          installationRevision: installation.revision,
+          componentId: component.component.id,
+          componentDigest: binding.componentDigest,
+          componentKind: component.component.kind,
+          componentName: component.component.name,
+          providerBindingId: installedBinding.id,
+          providerKind: installedBinding.providerKind,
+          admissionPolicyVersion: currentAdmissions[0]!.policyVersion,
+          credentialSlots,
+        })), controller.signal, context.signal);
+      } catch (error: unknown) {
+        if (error instanceof PluginToolRuntimeError) throw error;
+        throw new PluginToolRuntimeError("execution_state_changed");
+      }
       operation = Promise.resolve().then(() => provider.invoke(Object.freeze({
         projectId: context.projectId,
         pluginName: binding.pluginName,
@@ -600,7 +622,8 @@ export class PluginToolRuntime {
         operationName: context.operationName,
         capability: trustedCapability,
         arguments: args,
-      }), Object.freeze({ requestId })));
+      }), Object.freeze({ requestId, signal: controller.signal })));
+      dispatched = true;
       const result = captureProviderResult(await awaitDeadline(operation, controller.signal, context.signal));
       if (result.status !== "success") throw new PluginToolRuntimeError("provider_failed");
       const finalInstallationValue = await awaitDeadline(this.#dependencies.pluginsRepository.getInstallation(context.projectId, binding.pluginName), controller.signal, context.signal);
@@ -619,11 +642,21 @@ export class PluginToolRuntime {
     } catch (error: unknown) {
       if (operation !== undefined) void operation.catch(() => undefined);
       const classified = classifyFailure(error);
-      if (["provider_failed", "provider_result_invalid", "provider_timed_out", "request_aborted", "provider_unavailable", "credential_invalid", "credential_missing"].includes(classified.code)) {
+      if (operation !== undefined && (classified.code === "provider_timed_out" || classified.code === "request_aborted")) {
+        await this.#settleProvider(operation);
+      }
+      if (
+        ["provider_failed", "provider_result_invalid", "provider_timed_out", "request_aborted", "provider_unavailable", "credential_invalid", "credential_missing"].includes(classified.code)
+        || (dispatched && classified.code === "execution_state_changed")
+      ) {
         const receiptOperation = this.#putReceipt(
           requestId, context.projectId, binding, installation, component.component, installedBinding,
           classified.code === "provider_timed_out" || classified.code === "request_aborted" ? "timed_out" : "failed",
-          classified.code === "credential_missing" ? "credential_missing" : "provider_unavailable",
+          classified.code === "credential_missing"
+            ? "credential_missing"
+            : classified.code === "execution_state_changed"
+              ? "execution_state_changed"
+              : "provider_unavailable",
         );
         await this.#settleReceipt(receiptOperation);
       }
@@ -648,6 +681,19 @@ export class PluginToolRuntime {
     }
   }
 
+  async #settleProvider(operation: Promise<ProviderResult>): Promise<void> {
+    void operation.catch(() => undefined);
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, this.#receiptTimeoutMilliseconds);
+    });
+    try {
+      await Promise.race([operation.then(() => undefined, () => undefined), timeout]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
   async #putReceipt(
     requestId: string,
     projectId: string,
@@ -656,7 +702,7 @@ export class PluginToolRuntime {
     component: CatalogBoundPluginComponent,
     providerBinding: ProviderBinding,
     status: "success" | "failed" | "timed_out",
-    reason: "credential_missing" | "provider_unavailable" = "provider_unavailable",
+    reason: "credential_missing" | "provider_unavailable" | "execution_state_changed" = "provider_unavailable",
   ): Promise<void> {
     const receipt = buildReceipt(Object.freeze({
       type: "execution",

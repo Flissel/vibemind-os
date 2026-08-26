@@ -4,12 +4,14 @@ import {
   PINNED_PLUGIN_CATALOG_DIGEST,
   type PluginCatalogLock,
   type PluginProvider,
+  type ProviderContext,
   type ProviderBinding,
 } from "@rowboat/openai-plugin-runtime";
 import type {
   IPluginsRepository,
   PluginComponentAdmission,
   PluginCredentialSlot,
+  PluginExecutionDispatchClaim,
   PluginInstallation,
   PluginReceipt,
 } from "@/src/application/repositories/plugins.repository.interface";
@@ -91,6 +93,8 @@ class FakeRepository implements IPluginsRepository {
   installationReads = 0;
   admissionReads = 0;
   disableAfterFirstAdmissionRead = false;
+  dispatchClaims: Readonly<Record<string, unknown>>[] = [];
+  claimCalls = 0;
   async getCatalog(digest: string): Promise<PluginCatalogLock | null> { return digest === catalog.catalogDigest ? catalog : null; }
   async getInstallation(projectId: string, pluginName: string): Promise<PluginInstallation | null> {
     this.installationReads += 1;
@@ -108,6 +112,21 @@ class FakeRepository implements IPluginsRepository {
     if (this.receiptHangs) return new Promise<never>(() => undefined);
     if (this.receiptFailure) throw new Error("database internals secret-value");
     this.receipts.push(receipt);
+  }
+  async claimExecutionDispatch(input: PluginExecutionDispatchClaim): Promise<void> {
+    this.claimCalls += 1;
+    const current = this.currentInstallation;
+    const currentAdmission = this.currentAdmissions.filter((item) => item.componentDigest === input.componentDigest);
+    if (
+      current === null || !current.enabled || current.id !== input.installationId || current.projectId !== input.projectId
+      || current.pluginName !== input.pluginName || current.revision !== input.installationRevision
+      || input.catalogDigest !== catalog.catalogDigest
+      || currentAdmission.length !== 1 || currentAdmission[0]?.status !== "admitted"
+      || currentAdmission[0]?.componentKind !== input.componentKind || currentAdmission[0]?.componentName !== input.componentName
+      || currentAdmission[0]?.policyVersion !== input.admissionPolicyVersion
+      || JSON.stringify(this.currentSlots) !== JSON.stringify(input.credentialSlots)
+    ) throw new Error("execution_claim_conflict");
+    this.dispatchClaims.push(Object.freeze({ requestId: input.requestId, componentDigest: input.componentDigest, providerBindingId: input.providerBindingId }));
   }
   async putCatalog(): Promise<void> {}
   async putCatalogSnapshot(): Promise<void> {}
@@ -135,12 +154,22 @@ function setup(options: {
   readonly descriptorProxyTrap?: () => void;
   readonly directProvider?: boolean;
   readonly providerOutput?: unknown;
+  readonly resolverMutation?: "disable" | "admission" | "credential";
+  readonly providerMutation?: "disable" | "admission" | "credential";
+  readonly providerWaitsForAbort?: boolean;
+  readonly timeoutMilliseconds?: number;
   readonly authorizationContext?: PluginToolAuthorizationContext | false;
   readonly authorize?: (authorization: PluginToolAuthorizationContext, projectId: string) => Promise<void>;
 } = {}) {
   const repository = new FakeRepository();
   const counters = { authorize: 0, resolve: 0, provider: 0, cancel: 0, legacy: 0 };
   let observedReference = "";
+  let providerSettled = false;
+  const mutateExecutionState = (mutation: "disable" | "admission" | "credential"): void => {
+    if (mutation === "disable") repository.currentInstallation = Object.freeze({ ...installation, enabled: false, revision: 8 });
+    if (mutation === "admission") repository.currentAdmissions = [Object.freeze({ ...admission, status: "rejected", reason: "component_unsupported" })];
+    if (mutation === "credential") repository.currentSlots = [Object.freeze({ ...credentialSlot, reference: Object.freeze({ kind: "environment", reference: "ROTATED_SECRET_REFERENCE" }) })];
+  };
   const provider: PluginProvider = Object.freeze({
     id: providerBinding.id,
     describe: () => options.descriptorProxyTrap === undefined
@@ -149,8 +178,19 @@ function setup(options: {
         get: (target, key, receiver) => { options.descriptorProxyTrap?.(); return Reflect.get(target, key, receiver); },
         ownKeys: () => { options.descriptorProxyTrap?.(); return []; },
       }),
-    invoke: async (): Promise<Awaited<ReturnType<PluginProvider["invoke"]>>> => {
+    invoke: async (_request: Parameters<PluginProvider["invoke"]>[0], providerContext: ProviderContext): Promise<Awaited<ReturnType<PluginProvider["invoke"]>>> => {
       counters.provider += 1;
+      if (options.providerWaitsForAbort === true) {
+        const signal = (providerContext as ProviderContext & { readonly signal?: AbortSignal }).signal;
+        if (signal === undefined) return new Promise(() => undefined);
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) resolve();
+          else signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        providerSettled = true;
+        return Object.freeze({ status: "failed" as const, reason: "aborted" });
+      }
+      if (options.providerMutation !== undefined) mutateExecutionState(options.providerMutation);
       if (options.providerResult === "failed") return Object.freeze({ status: "failed" as const, reason: "remote secret-value failure" });
       if (options.providerResult === "hang") return new Promise(() => undefined);
       return Object.freeze({ status: "success" as const, output: options.providerOutput ?? Object.freeze({ ok: true }) });
@@ -169,6 +209,7 @@ function setup(options: {
     resolveProvider: async (input: PluginProviderResolutionInput) => {
       counters.resolve += 1;
       observedReference = input.credentialSlots[0]?.reference.reference ?? "";
+      if (options.resolverMutation !== undefined) mutateExecutionState(options.resolverMutation);
       if (options.resolverHangs === true) return new Promise<never>(() => undefined);
       if (options.credentialFailure === true) throw new Error("credential_missing");
       if (options.resolverProxyTrap !== undefined) {
@@ -181,12 +222,16 @@ function setup(options: {
       if (options.providerAvailable === false) return Object.freeze({ status: "unavailable" as const, reason: "provider_unavailable" as const });
       return Object.freeze({ status: "available" as const, provider });
     },
-    timeoutMilliseconds: 20,
+    timeoutMilliseconds: options.timeoutMilliseconds ?? 20,
     receiptTimeoutMilliseconds: 15,
     createRequestId: () => "request-1",
     onCancel: () => { counters.cancel += 1; },
   });
-  return { runtime: new PluginToolRuntime(dependencies), repository, counters, get observedReference() { return observedReference; } };
+  return {
+    runtime: new PluginToolRuntime(dependencies), repository, counters,
+    get observedReference() { return observedReference; },
+    get providerSettled() { return providerSettled; },
+  };
 }
 
 describe("PluginToolRuntime", () => {
@@ -330,6 +375,43 @@ describe("PluginToolRuntime", () => {
     expect(state.repository.installationReads).toBeGreaterThanOrEqual(2);
     expect(state.counters.provider).toBe(0);
     expect(state.repository.receipts.some((receipt) => receipt.status === "success")).toBe(false);
+  });
+
+  it.each(["disable", "admission", "credential"] as const)(
+    "atomically rejects resolver-induced %s revocation before provider dispatch",
+    async (resolverMutation) => {
+      const state = setup({ resolverMutation });
+      await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("execution_state_changed");
+      expect(state.repository.claimCalls).toBe(1);
+      expect(state.counters.provider).toBe(0);
+      expect(state.repository.receipts).toHaveLength(0);
+    },
+  );
+
+  it.each(["disable", "admission", "credential"] as const)(
+    "records exactly one redacted failure after provider side effect and concurrent %s",
+    async (providerMutation) => {
+      const state = setup({ providerMutation, providerOutput: Object.freeze({ secret: "raw-provider-secret" }) });
+      await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("execution_state_changed");
+      expect(state.counters.provider).toBe(1);
+      expect(state.repository.receipts).toHaveLength(1);
+      expect(state.repository.receipts[0]).toMatchObject({ status: "failed", reason: "execution_state_changed" });
+      expect(JSON.stringify(state.repository.receipts)).not.toContain("raw-provider-secret");
+      expect(JSON.stringify(state.repository.receipts)).not.toContain("ROTATED_SECRET_REFERENCE");
+    },
+  );
+
+  it("propagates caller abort after dispatch and settles underlying provider work", async () => {
+    const abort = new AbortController();
+    const state = setup({ providerWaitsForAbort: true, timeoutMilliseconds: 200 });
+    const invocation = state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup", signal: abort.signal });
+    const rejection = expect(invocation).rejects.toThrow("request_aborted");
+    await vi.waitFor(() => expect(state.counters.provider).toBe(1));
+    abort.abort();
+    await rejection;
+    expect(state.providerSettled).toBe(true);
+    expect(state.counters.cancel).toBe(1);
+    expect(state.repository.receipts).toHaveLength(1);
   });
 
   it("never falls back and redacts provider failures", async () => {
