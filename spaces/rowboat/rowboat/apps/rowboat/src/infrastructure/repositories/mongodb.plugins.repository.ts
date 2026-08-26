@@ -19,7 +19,7 @@ import type {
   PluginReceipt,
 } from "@/src/application/repositories/plugins.repository.interface";
 import { PLUGIN_COLLECTIONS } from "./mongodb.plugins.indexes";
-import { componentBindingDigest, validatePluginCatalogLock, type PluginCatalogLock } from "@rowboat/openai-plugin-runtime";
+import { ZPluginMigrationRecord, componentBindingDigest, validatePluginCatalogLock, type PluginCatalogLock } from "@rowboat/openai-plugin-runtime";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
@@ -412,14 +412,9 @@ function credentialSlot(input: unknown): PluginCredentialSlot {
 
 function migrationRecord(input: unknown): PluginMigrationRecord {
   const record = object(input, "migration_record_invalid");
-  keys(record, ["id", "projectId", "sourceDigest", "targetDigest", "status", "createdAt"], "migration_record_invalid");
-  string(record, "id", ID, "migration_record_invalid");
-  string(record, "projectId", ID, "migration_record_invalid");
-  string(record, "sourceDigest", DIGEST, "migration_record_invalid");
-  string(record, "targetDigest", DIGEST, "migration_record_invalid");
-  string(record, "status", /^(previewed|applied|verified|rolled_back|blocked)$/, "migration_record_invalid");
-  string(record, "createdAt", /^\d{4}-\d{2}-\d{2}T/, "migration_record_invalid");
-  return record as unknown as PluginMigrationRecord;
+  const parsed = ZPluginMigrationRecord.safeParse(record);
+  if (!parsed.success) invalid("migration_record_invalid");
+  return parsed.data;
 }
 
 function receipt(input: unknown): PluginReceipt {

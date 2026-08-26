@@ -4,6 +4,7 @@ import type {
   PluginCatalogEntry as RuntimePluginCatalogEntry,
   PluginCatalogLock,
   PluginInstallation as RuntimePluginInstallation,
+  PluginMigrationRecord as RuntimePluginMigrationRecord,
   PluginReasonCode,
   PluginReceipt as RuntimePluginReceipt,
 } from "@rowboat/openai-plugin-runtime";
@@ -41,14 +42,7 @@ export interface PluginCredentialSlot {
   readonly metadata?: Readonly<PluginCredentialMetadata>;
 }
 
-export interface PluginMigrationRecord {
-  readonly id: string;
-  readonly projectId: string;
-  readonly sourceDigest: string;
-  readonly targetDigest: string;
-  readonly status: "previewed" | "applied" | "verified" | "rolled_back" | "blocked";
-  readonly createdAt: string;
-}
+export type PluginMigrationRecord = RuntimePluginMigrationRecord;
 
 export type PluginReceipt = RuntimePluginReceipt;
 

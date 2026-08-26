@@ -1333,11 +1333,26 @@ describe("plugin repository contract", () => {
       metadata: { label: "GitHub access", required: true, order: 1 },
     };
     const migration: PluginMigrationRecord = {
-      id: "migration-1",
+      id: "44444444-4444-4444-8444-444444444444",
       projectId: installation.projectId,
+      recipeId: "legacy-card:customer-support:v1",
+      recipeDigest: digest("1"),
+      sourceProjectRevision: 7,
       sourceDigest: digest("f"),
-      targetDigest: digest("0"),
-      status: "previewed",
+      sourceInventoryDigest: digest("2"),
+      targetCatalogDigest: snapshot.catalogDigest,
+      targetSourceCommit: snapshot.sourceCommit,
+      targetPolicyVersion: snapshot.policyVersion,
+      targetInstallationIds: [],
+      rollbackSnapshotDigest: digest("3"),
+      status: "blocked",
+      blockers: [{
+        capabilityId: "mock-delivery-status",
+        legacyActionId: "action:0:mock-delivery-status",
+        code: "legacy_action_unmapped",
+        pluginName: null,
+        componentId: null,
+      }],
       createdAt: snapshot.importedAt,
     };
     const receipt: PluginReceipt = {
@@ -1353,6 +1368,41 @@ describe("plugin repository contract", () => {
     await repository.putReceipt(receipt);
     const serialized = JSON.stringify([...database.collections.values()].flatMap((collection) => collection.documents));
     expect(serialized).not.toContain("secret-value");
+  });
+
+  it("persists only the shared strict migration record and rejects the obsolete record shape", async () => {
+    const { database, repository } = repositoryFixture();
+    const blocked: PluginMigrationRecord = {
+      id: "55555555-5555-4555-8555-555555555555",
+      projectId: installation.projectId,
+      recipeId: "legacy-card:customer-support:v1",
+      recipeDigest: digest("1"),
+      sourceProjectRevision: 7,
+      sourceDigest: digest("2"),
+      sourceInventoryDigest: digest("3"),
+      targetCatalogDigest: snapshot.catalogDigest,
+      targetSourceCommit: snapshot.sourceCommit,
+      targetPolicyVersion: snapshot.policyVersion,
+      targetInstallationIds: [],
+      rollbackSnapshotDigest: digest("4"),
+      status: "blocked",
+      blockers: [{
+        capabilityId: "mock-delivery-status",
+        legacyActionId: "action:0:mock-delivery-status",
+        code: "legacy_action_unmapped",
+        pluginName: null,
+        componentId: null,
+      }],
+      createdAt: snapshot.importedAt,
+    };
+    await repository.putMigrationRecord(blocked);
+    const { _id: _mongoId, ...stored } = database.collection(PLUGIN_COLLECTIONS.migrationRecords).documents[0]!;
+    expect(stored).toEqual(blocked);
+    await expect(repository.putMigrationRecord({
+      id: "legacy-migration", projectId: installation.projectId,
+      sourceDigest: digest("5"), targetDigest: digest("6"), status: "previewed", createdAt: snapshot.importedAt,
+    } as unknown as PluginMigrationRecord)).rejects.toThrow("migration_record_invalid");
+    await expect(repository.putMigrationRecord({ ...blocked, blockers: [] })).rejects.toThrow("migration_record_invalid");
   });
 
   it("coordinates credential mutation with the installation dispatch state transaction", async () => {

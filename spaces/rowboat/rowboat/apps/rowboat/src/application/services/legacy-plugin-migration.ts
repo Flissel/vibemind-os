@@ -9,17 +9,19 @@ import {
   type PluginCatalogLock,
   type PluginMigrationBlocker,
   type PluginMigrationRecord,
-  type ProviderKind,
+  type PluginInstallation,
 } from "@rowboat/openai-plugin-runtime";
 import {
-  LEGACY_CARD_IDS,
   LEGACY_PLUGIN_RECIPES,
+  buildLegacyExecutableInventory,
   resolveLegacyRecipe,
-  type LegacyCardId,
+  sourceDriftBlocker,
+  unmappedActionBlocker,
+  type LegacyExecutableInventory,
   type ResolvedLegacyCapability,
 } from "./legacy-plugin-recipes";
 
-const SOURCE_KEYS = Object.freeze(["legacyCardId", "projectId", "sourceConfiguration", "sourceProjectRevision"]);
+const SOURCE_KEYS = Object.freeze(["legacyCardId", "projectId", "sourceConfiguration", "sourceProjectRevision", "sourceUpdatedAt"]);
 const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const MAX_SOURCE_NODES = 20_000;
 const MAX_SOURCE_DEPTH = 32;
@@ -27,7 +29,7 @@ const MAX_SOURCE_BYTES = 1024 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export class LegacyPluginMigrationError extends Error {
-  readonly code: "source_invalid" | "catalog_drift" | "migration_record_invalid" | "clock_invalid";
+  readonly code: "source_invalid" | "catalog_drift" | "migration_record_invalid";
 
   constructor(code: LegacyPluginMigrationError["code"]) {
     super(code);
@@ -39,38 +41,17 @@ export class LegacyPluginMigrationError extends Error {
 export interface LegacyPluginMigrationSource {
   readonly projectId: string;
   readonly sourceProjectRevision: number;
-  readonly legacyCardId: LegacyCardId;
+  readonly sourceUpdatedAt: string | null;
+  readonly legacyCardId: string;
   readonly sourceConfiguration: unknown;
-}
-
-export interface MigrationComponentBindingSnapshot {
-  readonly componentId: string;
-  readonly componentDigest: string;
-  readonly providerBindingId: string;
-  readonly providerKind: ProviderKind;
-  readonly capabilityIds: readonly string[];
-}
-
-export interface MigrationInstallationSnapshot {
-  readonly id: string;
-  readonly projectId: string;
-  readonly pluginName: string;
-  readonly pluginVersion: string;
-  readonly sourceCommit: string;
-  readonly manifestDigest: string;
-  readonly treeDigest: string;
-  readonly policyVersion: string;
-  readonly catalogDigest: string;
-  readonly componentBindings: readonly MigrationComponentBindingSnapshot[];
 }
 
 export interface PluginMigrationPreview extends PluginMigrationRecord {
   readonly mutationsApplied: false;
-  readonly installations: readonly MigrationInstallationSnapshot[];
+  readonly installations: readonly PluginInstallation[];
 }
 
 export interface LegacyPluginMigrationOptions {
-  readonly now: () => string;
   readonly sideEffectGuards?: Readonly<{
     readonly repository: () => void;
     readonly provider: () => void;
@@ -105,31 +86,40 @@ function captureJson(input: unknown, depth: number, budget: CaptureBudget): unkn
   if (typeof input !== "object" || isProxy(input)) fail("source_invalid");
   if (budget.seen.has(input)) fail("source_invalid");
   budget.seen.add(input);
-  if (Object.getOwnPropertySymbols(input).length !== 0) fail("source_invalid");
   if (Array.isArray(input)) {
     if (Object.getPrototypeOf(input) !== Array.prototype) fail("source_invalid");
-    const descriptors = Object.getOwnPropertyDescriptors(input);
-    const expectedKeys = Array.from({ length: input.length }, (_, index) => String(index));
-    const actualKeys = Object.keys(descriptors).filter(key => key !== "length");
-    if (actualKeys.length !== expectedKeys.length || actualKeys.some((key, index) => key !== expectedKeys[index])) fail("source_invalid");
-    const output = expectedKeys.map(key => {
-      const descriptor = descriptors[key];
+    const lengthDescriptor = Object.getOwnPropertyDescriptor(input, "length");
+    if (lengthDescriptor === undefined || !("value" in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) fail("source_invalid");
+    const length = lengthDescriptor.value as number;
+    if (length > MAX_SOURCE_NODES - budget.nodes) fail("source_invalid");
+    const output: unknown[] = [];
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(input, String(index));
       if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) fail("source_invalid");
-      return captureJson(descriptor.value, depth + 1, budget);
-    });
+      output.push(captureJson(descriptor.value, depth + 1, budget));
+    }
+    const arrayKeys = Reflect.ownKeys(input);
+    if (arrayKeys.length !== length + 1 || arrayKeys.some(key => typeof key !== "string" || (key !== "length" && !/^(?:0|[1-9]\d*)$/.test(key)))) fail("source_invalid");
     budget.seen.delete(input);
     return output;
   }
   const prototype = Object.getPrototypeOf(input);
   if (prototype !== Object.prototype && prototype !== null) fail("source_invalid");
-  const descriptors = Object.getOwnPropertyDescriptors(input);
-  const keys = Object.keys(descriptors).sort();
+  const keys: string[] = [];
+  for (const key in input) {
+    if (!Object.prototype.hasOwnProperty.call(input, key)) fail("source_invalid");
+    keys.push(key);
+    if (keys.length > MAX_SOURCE_NODES - budget.nodes) fail("source_invalid");
+  }
+  const allKeys = Reflect.ownKeys(input);
+  if (allKeys.length !== keys.length || allKeys.some(key => typeof key !== "string")) fail("source_invalid");
+  keys.sort();
   const output: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const key of keys) {
     if (DANGEROUS_KEYS.has(key)) fail("source_invalid");
     budget.bytes += Buffer.byteLength(key, "utf8");
     if (budget.bytes > MAX_SOURCE_BYTES) fail("source_invalid");
-    const descriptor = descriptors[key];
+    const descriptor = Object.getOwnPropertyDescriptor(input, key);
     if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) fail("source_invalid");
     output[key] = captureJson(descriptor.value, depth + 1, budget);
   }
@@ -148,11 +138,13 @@ function captureSource(input: unknown): LegacyPluginMigrationSource {
   if (Object.keys(record).sort().join("\0") !== SOURCE_KEYS.join("\0")) fail("source_invalid");
   if (typeof record.projectId !== "string" || !UUID.test(record.projectId)) fail("source_invalid");
   if (!Number.isSafeInteger(record.sourceProjectRevision) || (record.sourceProjectRevision as number) < 0) fail("source_invalid");
-  if (typeof record.legacyCardId !== "string" || !LEGACY_CARD_IDS.includes(record.legacyCardId as LegacyCardId)) fail("source_invalid");
+  if (typeof record.legacyCardId !== "string" || record.legacyCardId.length === 0 || record.legacyCardId.length > 128) fail("source_invalid");
+  if (record.sourceUpdatedAt !== null && (typeof record.sourceUpdatedAt !== "string" || Number.isNaN(Date.parse(record.sourceUpdatedAt)) || new Date(record.sourceUpdatedAt).toISOString() !== record.sourceUpdatedAt)) fail("source_invalid");
   return Object.freeze({
     projectId: record.projectId,
     sourceProjectRevision: record.sourceProjectRevision as number,
-    legacyCardId: record.legacyCardId as LegacyCardId,
+    sourceUpdatedAt: record.sourceUpdatedAt as string | null,
+    legacyCardId: record.legacyCardId,
     sourceConfiguration: record.sourceConfiguration,
   });
 }
@@ -190,15 +182,17 @@ function deepFreeze<T>(value: T): T {
 }
 
 function compareBlockers(left: PluginMigrationBlocker, right: PluginMigrationBlocker): number {
-  return `${left.capabilityId}\0${left.code}\0${left.pluginName}\0${left.componentId}`
-    .localeCompare(`${right.capabilityId}\0${right.code}\0${right.pluginName}\0${right.componentId}`);
+  return `${left.capabilityId}\0${left.legacyActionId}\0${left.code}\0${left.pluginName}\0${left.componentId}`
+    .localeCompare(`${right.capabilityId}\0${right.legacyActionId}\0${right.code}\0${right.pluginName}\0${right.componentId}`);
 }
 
 function installationsFrom(
   source: LegacyPluginMigrationSource,
   catalog: PluginCatalogLock,
+  recipeId: string,
+  recipeDigest: string,
   resolved: readonly ResolvedLegacyCapability[],
-): readonly MigrationInstallationSnapshot[] {
+): readonly PluginInstallation[] {
   const byPlugin = new Map<string, { entry: PluginCatalogEntry; capabilities: ResolvedLegacyCapability[] }>();
   for (const item of resolved) {
     const group = byPlugin.get(item.entry.pluginName) ?? { entry: item.entry, capabilities: [] };
@@ -213,20 +207,18 @@ function installationsFrom(
       group.push(item);
       byComponent.set(digestValue, group);
     }
-    const componentBindings = [...byComponent.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([componentDigest, items]) => {
+    const providerBindings = [...byComponent.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([, items]) => {
       const first = items[0]!;
       return Object.freeze({
         componentId: first.component.id,
-        componentDigest,
-        providerBindingId: first.providerBindingId,
-        providerKind: first.providerKind,
-        capabilityIds: Object.freeze(items.map(item => item.capability.capabilityId).sort()),
+        binding: first.providerBinding,
       });
     });
     return Object.freeze({
       id: deterministicUuid("rowboat:legacy-migration:installation-id:v1", {
         projectId: source.projectId,
-        recipeId: LEGACY_PLUGIN_RECIPES[source.legacyCardId].recipeId,
+        recipeId,
+        recipeDigest,
         pluginName: entry.pluginName,
         catalogDigest: catalog.catalogDigest,
       }),
@@ -237,8 +229,9 @@ function installationsFrom(
       manifestDigest: entry.manifestDigest,
       treeDigest: entry.treeDigest,
       policyVersion: entry.policyVersion,
-      catalogDigest: catalog.catalogDigest,
-      componentBindings: Object.freeze(componentBindings),
+      enabled: true,
+      revision: 0,
+      providerBindings: Object.freeze(providerBindings),
     });
   });
 }
@@ -254,7 +247,7 @@ function captureExisting(input: unknown): PluginMigrationRecord {
 export class LegacyPluginMigration {
   readonly #options: LegacyPluginMigrationOptions;
 
-  constructor(options: LegacyPluginMigrationOptions) {
+  constructor(options: LegacyPluginMigrationOptions = {}) {
     this.#options = options;
   }
 
@@ -267,37 +260,68 @@ export class LegacyPluginMigration {
       fail("catalog_drift");
     }
     if (catalog.catalogDigest !== PINNED_PLUGIN_CATALOG_DIGEST || catalog.sourceCommit !== PINNED_OPENAI_PLUGINS_COMMIT) fail("catalog_drift");
-    const createdAt = this.#options.now();
-    if (typeof createdAt !== "string" || Number.isNaN(Date.parse(createdAt)) || new Date(createdAt).toISOString() !== createdAt) fail("clock_invalid");
-    const recipe = LEGACY_PLUGIN_RECIPES[source.legacyCardId];
+    const createdAt = source.sourceUpdatedAt ?? catalog.importedAt;
+    let sourceInventory: LegacyExecutableInventory;
+    try {
+      sourceInventory = buildLegacyExecutableInventory(source.sourceConfiguration);
+    } catch {
+      fail("source_invalid");
+    }
+    const recipe = Object.prototype.hasOwnProperty.call(LEGACY_PLUGIN_RECIPES, source.legacyCardId)
+      ? LEGACY_PLUGIN_RECIPES[source.legacyCardId as keyof typeof LEGACY_PLUGIN_RECIPES]
+      : undefined;
+    const recipeId = recipe?.recipeId ?? `legacy-custom:${digest("rowboat:legacy-migration:custom-card-id:v1", source.legacyCardId).slice(0, 24)}:v1`;
+    const recipeDigest = recipe?.recipeDigest ?? digest("rowboat:legacy-migration:custom-recipe:v1", {
+      legacyCardId: source.legacyCardId,
+      inventory: sourceInventory,
+      mappings: sourceInventory.actions.map(action => ({ action, target: null })),
+    });
     const resolved: ResolvedLegacyCapability[] = [];
     const blockers: PluginMigrationBlocker[] = [];
-    for (const capability of recipe.capabilities) {
-      const resolution = resolveLegacyRecipe(capability, catalog.entries);
-      if ("code" in resolution) blockers.push(resolution);
-      else resolved.push(resolution);
+    if (recipe === undefined) {
+      if (sourceInventory.actions.length === 0) {
+        blockers.push(Object.freeze({ capabilityId: "legacy-card", legacyActionId: `card:${recipeDigest.slice(0, 24)}`, code: "legacy_card_unmapped", pluginName: null, componentId: null }));
+      } else {
+        blockers.push(...sourceInventory.actions.map(action => unmappedActionBlocker(action)));
+      }
+    } else if (sourceInventory.digest !== recipe.inventory.digest) {
+      blockers.push(sourceDriftBlocker());
+      const expectedIdentities = new Set(recipe.inventory.actions.map(action => action.identity));
+      for (const action of sourceInventory.actions) if (!expectedIdentities.has(action.identity)) blockers.push(unmappedActionBlocker(action));
+    } else {
+      for (const capability of recipe.capabilities) {
+        const resolution = resolveLegacyRecipe(capability, catalog.entries);
+        if ("code" in resolution) blockers.push(resolution);
+        else resolved.push(resolution);
+      }
     }
     blockers.sort(compareBlockers);
-    const installations = installationsFrom(source, catalog, resolved);
+    const installations = blockers.length === 0 ? installationsFrom(source, catalog, recipeId, recipeDigest, resolved) : Object.freeze([]);
     const sourceDigest = digest("rowboat:legacy-migration:source:v1", {
       projectId: source.projectId,
       sourceProjectRevision: source.sourceProjectRevision,
+      sourceUpdatedAt: source.sourceUpdatedAt,
       legacyCardId: source.legacyCardId,
+      recipeDigest,
+      sourceInventoryDigest: sourceInventory.digest,
       sourceConfiguration: source.sourceConfiguration,
     });
     const targetInstallationIds = Object.freeze(installations.map(installation => installation.id));
     const base = {
       id: deterministicUuid("rowboat:legacy-migration:record-id:v1", {
         projectId: source.projectId,
-        recipeId: recipe.recipeId,
+        recipeId,
+        recipeDigest,
         sourceProjectRevision: source.sourceProjectRevision,
         sourceDigest,
         targetCatalogDigest: catalog.catalogDigest,
       }),
       projectId: source.projectId,
-      recipeId: recipe.recipeId,
+      recipeId,
+      recipeDigest,
       sourceProjectRevision: source.sourceProjectRevision,
       sourceDigest,
+      sourceInventoryDigest: sourceInventory.digest,
       targetCatalogDigest: catalog.catalogDigest,
       targetSourceCommit: catalog.sourceCommit,
       targetPolicyVersion: catalog.policyVersion,
@@ -305,6 +329,8 @@ export class LegacyPluginMigration {
       rollbackSnapshotDigest: digest("rowboat:legacy-migration:rollback-snapshot:v1", {
         projectId: source.projectId,
         sourceProjectRevision: source.sourceProjectRevision,
+        recipeDigest,
+        sourceInventoryDigest: sourceInventory.digest,
         sourceDigest,
       }),
       status: blockers.length === 0 ? "previewed" as const : "blocked" as const,
@@ -314,7 +340,7 @@ export class LegacyPluginMigration {
     let record = ZPluginMigrationRecord.parse(base);
     if (existingRecord !== undefined) {
       const existing = captureExisting(existingRecord);
-      const expectedProvenance = { ...base, status: existing.status, createdAt: existing.createdAt };
+      const expectedProvenance = { ...base, status: existing.status };
       if (blockers.length !== 0 || existing.status !== "applied" || canonical(existing) !== canonical(expectedProvenance)) fail("migration_record_invalid");
       record = existing;
     }
