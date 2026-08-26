@@ -62,6 +62,13 @@ export const WorkflowPrompt = z.object({
     ]),
     prompt: z.string(),
 });
+export const PluginToolBinding = z.object({
+    installationId: z.string().uuid(),
+    pluginName: z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/),
+    componentDigest: z.string().regex(/^[a-f0-9]{64}$/),
+    providerBindingId: z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/),
+    capability: z.enum(["read", "write"]),
+}).strict().transform((value) => Object.freeze(value));
 export const WorkflowTool = z.object({
     name: z.string(),
     description: z.string(),
@@ -79,6 +86,7 @@ export const WorkflowTool = z.object({
     isLibrary: z.boolean().default(false).optional(), // whether this is a library tool
     isWebhook: z.boolean().optional(), // whether this is a webhook tool
     isGeminiImage: z.boolean().optional(), // whether this tool generates images via Gemini
+    pluginBinding: PluginToolBinding.optional(),
     composioData: z.object({
         slug: z.string(), // the slug for the Composio tool e.g. "GITHUB_CREATE_AN_ISSUE"
         noAuth: z.boolean(), // whether the tool requires no authentication

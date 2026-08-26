@@ -1,9 +1,11 @@
 import type { PluginCatalogController } from "@/src/interface-adapters/controllers/plugins/plugin-catalog.controller";
 import type { PluginInstallationController } from "@/src/interface-adapters/controllers/plugins/plugin-installation.controller";
+import type { PluginToolRuntime } from "@/src/application/services/plugin-tool-runtime";
 
 interface PluginControllers {
   readonly catalog: PluginCatalogController;
   readonly installation: PluginInstallationController;
+  readonly toolRuntime: PluginToolRuntime;
 }
 
 let controllers: Promise<PluginControllers> | undefined;
@@ -11,7 +13,7 @@ let controllers: Promise<PluginControllers> | undefined;
 async function createPluginControllers(): Promise<PluginControllers> {
   const [database, pluginRepositoryModule, policyModule, usersModule, apiKeysModule, membersModule, catalogUseCaseModule,
     previewUseCaseModule, installUseCaseModule, enableUseCaseModule, listProjectUseCaseModule, catalogControllerModule,
-    installationControllerModule] = await Promise.all([
+    installationControllerModule, toolRuntimeModule, projectsModule] = await Promise.all([
     import("@/app/lib/mongodb"),
     import("@/src/infrastructure/repositories/mongodb.plugins.repository"),
     import("@/src/infrastructure/policies/auth0.plugin-api-authorization.policy"),
@@ -25,6 +27,8 @@ async function createPluginControllers(): Promise<PluginControllers> {
     import("@/src/application/use-cases/plugins/list-project-plugins.use-case"),
     import("@/src/interface-adapters/controllers/plugins/plugin-catalog.controller"),
     import("@/src/interface-adapters/controllers/plugins/plugin-installation.controller"),
+    import("@/src/application/services/plugin-tool-runtime"),
+    import("@/src/infrastructure/repositories/mongodb.projects.repository"),
   ]);
 
   const transactionRunner = new pluginRepositoryModule.MongoPluginTransactionRunner({ pluginsMongoClient: database.mongoClient });
@@ -47,6 +51,19 @@ async function createPluginControllers(): Promise<PluginControllers> {
   const installPluginUseCase = new installUseCaseModule.InstallPluginUseCase({ pluginsRepository, pluginApiAuthorizationPolicy: authorization });
   const setPluginEnabledUseCase = new enableUseCaseModule.SetPluginEnabledUseCase({ pluginsRepository, pluginApiAuthorizationPolicy: authorization });
   const listProjectPluginsUseCase = new listProjectUseCaseModule.ListProjectPluginsUseCase({ pluginsRepository, pluginApiAuthorizationPolicy: authorization });
+  const projectsRepository = new projectsModule.MongodbProjectsRepository({ projectMembersRepository });
+  const toolRuntime = new toolRuntimeModule.PluginToolRuntime({
+    pluginsRepository,
+    authorizeProject: async (projectId: string) => {
+      if (await projectsRepository.fetch(projectId) === null) throw new Error("forbidden");
+    },
+    // Until a trusted per-operation classifier is registered, every plugin
+    // tool is treated as mutating. DEFAULT_POLICY therefore keeps it fail-closed.
+    classifyOperation: () => "write" as const,
+    // Provider implementations must come through the hardened runtime registry.
+    // No legacy Composio adapter is reachable from this composition boundary.
+    resolveProvider: async () => Object.freeze({ status: "unavailable" as const, reason: "provider_unavailable" as const }),
+  });
 
   return Object.freeze({
     catalog: new catalogControllerModule.PluginCatalogController({ pluginApiAuthorizationPolicy: authorization, listPluginCatalogUseCase }),
@@ -54,6 +71,7 @@ async function createPluginControllers(): Promise<PluginControllers> {
       pluginApiAuthorizationPolicy: authorization, previewPluginInstallationUseCase, installPluginUseCase,
       setPluginEnabledUseCase, listProjectPluginsUseCase,
     }),
+    toolRuntime,
   });
 }
 
@@ -68,4 +86,8 @@ export async function resolvePluginCatalogController(): Promise<PluginCatalogCon
 
 export async function resolvePluginInstallationController(): Promise<PluginInstallationController> {
   return (await composition()).installation;
+}
+
+export async function resolvePluginToolRuntime(): Promise<PluginToolRuntime> {
+  return (await composition()).toolRuntime;
 }

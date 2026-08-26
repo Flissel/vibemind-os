@@ -23,6 +23,8 @@ import { IDataSourcesRepository } from "@/src/application/repositories/data-sour
 import { IDataSourceDocsRepository } from "@/src/application/repositories/data-source-docs.repository.interface";
 import { container } from "@/di/container";
 import { IProjectsRepository } from "@/src/application/repositories/projects.repository.interface";
+import { resolvePluginToolRuntime } from "@/di/plugins-container";
+import type { PluginToolRuntime } from "@/src/application/services/plugin-tool-runtime";
 
 // Provider configuration
 const PROVIDER_API_KEY = process.env.PROVIDER_API_KEY || process.env.OPENAI_API_KEY || '';
@@ -714,6 +716,40 @@ export function createGenerateImageTool(
     });
 }
 
+type PluginToolRuntimeResolver = () => Promise<Pick<PluginToolRuntime, "invoke">>;
+
+export function createPluginTool(
+    config: z.infer<typeof WorkflowTool>,
+    projectId: string,
+    runtimeResolver: PluginToolRuntimeResolver = resolvePluginToolRuntime,
+): Tool {
+    const { name, description, parameters, pluginBinding } = config;
+    if (!pluginBinding) {
+        throw new Error("plugin_binding_required");
+    }
+    const binding = Object.freeze({ ...pluginBinding });
+
+    return tool({
+        name,
+        description,
+        strict: false,
+        parameters: {
+            type: "object",
+            properties: parameters.properties,
+            required: parameters.required || [],
+            additionalProperties: true,
+        },
+        async execute(input: unknown) {
+            const runtime = await runtimeResolver();
+            const result = await runtime.invoke(binding, input, {
+                projectId,
+                operationName: name,
+            });
+            return JSON.stringify(result);
+        },
+    });
+}
+
 export function createTools(
     logger: PrefixLogger,
     usageTracker: UsageTracker,
@@ -727,9 +763,12 @@ export function createTools(
     toolLogger.log(`=== CREATING ${Object.keys(toolConfig).length} TOOLS ===`);
 
     for (const [toolName, config] of Object.entries(toolConfig)) {
-        toolLogger.log(`creating tool: ${toolName} (type: ${config.mockTool ? 'mock' : config.isMcp ? 'mcp' : config.isComposio ? 'composio' : config.isGeminiImage ? 'gemini-image' : 'webhook'})`);
+        toolLogger.log(`creating tool: ${toolName} (type: ${config.pluginBinding ? 'plugin' : config.mockTool ? 'mock' : config.isMcp ? 'mcp' : config.isComposio ? 'composio' : config.isGeminiImage ? 'gemini-image' : 'webhook'})`);
         
-        if (config.mockTool) {
+        if (config.pluginBinding) {
+            tools[toolName] = createPluginTool(config, projectId);
+            toolLogger.log(`✓ created plugin tool: ${toolName}`);
+        } else if (config.mockTool) {
             tools[toolName] = createMockTool(logger, usageTracker, config);
             toolLogger.log(`✓ created mock tool: ${toolName}`);
         } else if (config.isMcp) {
