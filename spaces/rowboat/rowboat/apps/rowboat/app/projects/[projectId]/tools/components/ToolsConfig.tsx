@@ -10,6 +10,7 @@ import type { Key } from 'react';
 import { Workflow, WorkflowTool } from '@/app/lib/types/workflow_types';
 import { ZToolkit } from "@/src/application/lib/composio/types";
 import { z } from 'zod';
+import { LEGACY_TOOLS_LABEL } from './legacy-tools-label';
 
 interface ToolsConfigProps {
   projectId: string;
@@ -58,6 +59,7 @@ export function ToolsConfig({
 
   return (
     <div className="h-full flex flex-col">
+      <p className="px-6 pt-4 text-sm font-medium text-amber-700 dark:text-amber-300">{LEGACY_TOOLS_LABEL}</p>
       <Tabs 
         selectedKey={activeTab}
         onSelectionChange={handleTabChange}
@@ -108,4 +110,4 @@ export function ToolsConfig({
       )}
     </div>
   );
-} 
+}
