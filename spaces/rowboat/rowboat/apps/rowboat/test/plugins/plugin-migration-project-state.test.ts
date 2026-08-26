@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertMigrationProjectStateUnchanged, captureMigrationProjectManifestEntry, captureMigrationProjectState, migrationProjectManifestEntryFromState, migrationProjectPointerCasFilter, parseMigrationPointerRecord } from "@/src/application/services/plugin-migration-project-state";
+import { assertMigrationProjectStateUnchanged, captureMigrationProjectManifestCandidate, captureMigrationProjectManifestEntry, captureMigrationProjectState, migrationProjectManifestEntryFromState, migrationProjectPointerCasFilter, parseMigrationPointerRecord } from "@/src/application/services/plugin-migration-project-state";
 import customerSupport from "@/app/lib/prebuilt-cards/customer-support.json";
 
 const projectId = "11111111-1111-4111-8111-111111111111";
@@ -36,13 +36,20 @@ describe("authoritative plugin migration project state", () => {
     expect(migrationProjectManifestEntryFromState(absent).scalarIdentityDigest).not.toBe(migrationProjectManifestEntryFromState(presentNull).scalarIdentityDigest);
   });
 
-  it("captures a descriptor-safe minimal manifest identity independent of BSON key order", () => {
-    const left = { _id: projectId, createdAt: null, lastUpdatedAt: top, version: 9 };
-    const right = { version: 9, lastUpdatedAt: top, createdAt: null, _id: projectId };
+  it("captures a descriptor-safe digest-only full-state manifest independent of BSON key order", () => {
+    const left = project(); const right = Object.fromEntries(Object.entries(project()).reverse());
     expect(captureMigrationProjectManifestEntry(left)).toEqual(captureMigrationProjectManifestEntry(right));
     expect(migrationProjectManifestEntryFromState(captureMigrationProjectState(project()))).toEqual(captureMigrationProjectManifestEntry(left));
     let calls = 0; Object.defineProperty(left, "version", { enumerable: true, get: () => { calls += 1; return 9; } });
     expect(() => captureMigrationProjectManifestEntry(left)).toThrow("source_invalid"); expect(calls).toBe(0);
+  });
+
+  it("binds full real-size workflow content so a same-millisecond edit changes only the manifest state digest", () => {
+    const realWorkflow = { ...customerSupport, lastUpdatedAt: "2026-08-26T09:59:59.000Z" };
+    const original = captureMigrationProjectManifestCandidate({ ...project(), draftWorkflow: realWorkflow, liveWorkflow: realWorkflow });
+    const edited = captureMigrationProjectManifestCandidate({ ...project(), draftWorkflow: realWorkflow, liveWorkflow: { ...realWorkflow, startAgent: "same-ms-edit" } });
+    expect(original.capturedBytes).toBeGreaterThan(1_000); expect(edited.scalarIdentityDigest).toBe(original.scalarIdentityDigest);
+    expect(edited.stateDigest).not.toBe(original.stateDigest);
   });
 
   it.each([

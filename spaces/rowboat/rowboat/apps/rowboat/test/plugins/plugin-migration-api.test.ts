@@ -25,7 +25,7 @@ const claimsFor = (preview = readyPreview(), overrides: Partial<MigrationConfirm
   targetInstallationIds: preview.targetInstallationIds, previewDigest: digest(`preview-${preview.sourceDigest}`), reportDigest: digest("report"),
   issuedAt: "2026-08-26T10:00:00.000Z", expiresAt: "2026-08-26T10:02:00.000Z", nonce: `nonce-${preview.sourceProjectRevision}`, idempotencyKey: `migration-${preview.id}`, ...overrides,
 });
-const publicPrepared = (suffix = "a"): PreparedMigrationPreview => Object.freeze({ preview: readyPreview(suffix), catalog });
+const publicPrepared = (suffix = "a"): PreparedMigrationPreview => Object.freeze({ preview: readyPreview(suffix) });
 
 describe("plugin migration preview", () => {
   it("authorizes before a snapshot scan, sorts, and never reports writes", async () => {
@@ -35,12 +35,13 @@ describe("plugin migration preview", () => {
       issueConfirmation: ({ preview }) => { issued += 1; return { token: `token-${preview.sourceDigest}`, idempotencyKey: `migration-${preview.id}` }; }, now: () => new Date("2026-08-26T10:00:00.000Z") });
     const report = await useCase.execute({ actor, scope: "all" });
     expect(events).toEqual(["authorize", "scan"]); expect(report.mutationCount).toBe(0); expect(report.mutationsApplied).toBe(false); expect(report.projects).toHaveLength(2);
-    expect(issued).toBe(0); expect(report.projects.every(project => !("confirmationToken" in project))).toBe(true);
+    expect(issued).toBe(0); expect(report.projects.every(project => !("confirmationToken" in project) && !("catalog" in project))).toBe(true);
+    expect(report).toMatchObject({ catalogDigest: catalog.catalogDigest, sourceCommit: catalog.sourceCommit, policyVersion: catalog.policyVersion });
   });
 
   it("issues a short-lived confirmation only for one project-scoped ready preview", async () => {
     let issued = 0; const useCase = new PreviewPluginMigrationUseCase({ authorizeProject: async () => undefined, authorizeAll: async () => { throw new Error("unexpected"); },
-      prepareProject: async () => publicPrepared(), scanAllProjects: async () => { throw new Error("unexpected"); },
+      prepareProject: async () => ({ prepared: publicPrepared(), catalog }), scanAllProjects: async () => { throw new Error("unexpected"); },
       issueConfirmation: () => { issued += 1; return { token: "project-token", idempotencyKey: "signed-idempotency" }; }, now: () => new Date("2026-08-26T10:00:00.000Z") });
     const report = await useCase.execute({ actor, scope: "project", projectId: readyPreview().projectId });
     expect(issued).toBe(1); expect(report.projects[0]).toMatchObject({ confirmationToken: "project-token", confirmationIdempotencyKey: "signed-idempotency" });
@@ -48,11 +49,11 @@ describe("plugin migration preview", () => {
 
   it("rejects all authority before reads and issues no new token for applied history", async () => {
     let scans = 0; let issued = 0;
-    const denied = new PreviewPluginMigrationUseCase({ authorizeProject: async () => undefined, authorizeAll: async () => { throw new Error("forbidden"); }, prepareProject: async () => publicPrepared(),
+    const denied = new PreviewPluginMigrationUseCase({ authorizeProject: async () => undefined, authorizeAll: async () => { throw new Error("forbidden"); }, prepareProject: async () => ({ prepared: publicPrepared(), catalog }),
       scanAllProjects: async () => { scans += 1; return { catalog, snapshotToken: digest("snapshot") }; }, issueConfirmation: () => { issued += 1; return { token: "never", idempotencyKey: "never" }; }, now: () => new Date() });
     await expect(denied.execute({ actor: { kind: "project_api_key", projectId: "p" }, scope: "all" })).rejects.toThrow("forbidden"); expect(scans).toBe(0);
     const applied = Object.freeze({ ...readyPreview(), status: "applied" as const });
-    const history = new PreviewPluginMigrationUseCase({ authorizeProject: async () => undefined, authorizeAll: async () => undefined, prepareProject: async () => ({ preview: applied, catalog }),
+    const history = new PreviewPluginMigrationUseCase({ authorizeProject: async () => undefined, authorizeAll: async () => undefined, prepareProject: async () => ({ prepared: { preview: applied }, catalog }),
       scanAllProjects: async () => { throw new Error("unexpected"); }, issueConfirmation: () => { issued += 1; return { token: "never", idempotencyKey: "never" }; }, now: () => new Date() });
     const report = await history.execute({ actor, scope: "project", projectId: applied.projectId }); expect(report.projects[0]).not.toHaveProperty("confirmationToken"); expect(issued).toBe(0);
   });
@@ -60,7 +61,7 @@ describe("plugin migration preview", () => {
   it("keeps an invalid all-scope project as a typed blocker without aborting valid peers", async () => {
     const blocked = Object.freeze({ ...readyPreview("b"), status: "blocked" as const, targetInstallationIds: Object.freeze([]), blockers: Object.freeze([{ code: "migration_project_invalid" }]) });
     const useCase = new PreviewPluginMigrationUseCase({ authorizeProject: async () => undefined, authorizeAll: async () => undefined, prepareProject: async () => { throw new Error("unexpected"); },
-      scanAllProjects: async (_actor, visit) => { await visit({ preview: blocked, catalog }); await visit(publicPrepared()); return { catalog, snapshotToken: digest("manifest") }; },
+      scanAllProjects: async (_actor, visit) => { await visit({ preview: blocked }); await visit(publicPrepared()); return { catalog, snapshotToken: digest("manifest") }; },
       issueConfirmation: () => { throw new Error("unexpected_token"); }, now: () => new Date("2026-08-26T10:00:00.000Z") });
     const report = await useCase.execute({ actor, scope: "all" }); expect(report.projectCount).toBe(2); expect(report.blockerReasons).toEqual({ migration_project_invalid: 1 }); expect(report.projects.every(project => !("confirmationToken" in project))).toBe(true);
   });
