@@ -13,8 +13,8 @@ interface PreparedMigrationProject { readonly prepared: PreparedMigrationPreview
 interface Dependencies {
   readonly authorizeProject: (actor: PluginApiIdentity, projectId: string) => Promise<void>;
   readonly authorizeAll: (actor: PluginApiIdentity) => Promise<void>;
-  readonly prepareProject: (projectId: string) => Promise<PreparedMigrationProject>;
-  readonly scanAllProjects: (actor: PluginApiIdentity, visit: (prepared: PreparedMigrationPreview) => Promise<void>) => Promise<Readonly<{ catalog: CatalogRef; snapshotToken: string }>>;
+  readonly prepareProject: (projectId: string, callerSignal?: AbortSignal) => Promise<PreparedMigrationProject>;
+  readonly scanAllProjects: (actor: PluginApiIdentity, visit: (prepared: PreparedMigrationPreview) => Promise<void>, callerSignal?: AbortSignal) => Promise<Readonly<{ catalog: CatalogRef; snapshotToken: string }>>;
   readonly issueConfirmation: (input: Readonly<{ actor: PluginApiIdentity; preview: MigrationPreviewLike; reportDigest: string }>) => Readonly<{ token: string; idempotencyKey: string }>;
   readonly now: () => Date;
 }
@@ -29,18 +29,18 @@ export function migrationPreviewProjectProjection(preview: MigrationPreviewLike)
 
 export class PreviewPluginMigrationUseCase {
   constructor(private readonly dependencies: Dependencies) {}
-  async execute(input: Readonly<{ actor: PluginApiIdentity; scope: MigrationPreviewScope; projectId?: string }>) {
+  async execute(input: Readonly<{ actor: PluginApiIdentity; scope: MigrationPreviewScope; projectId?: string; callerSignal?: AbortSignal }>) {
     actorTuple(input.actor);
     const prepared: PreparedMigrationPreview[] = [];
     let catalog: CatalogRef; let snapshotToken: string;
     if (input.scope === "project") {
       assertProjectId(input.projectId); await this.dependencies.authorizeProject(input.actor, input.projectId);
-      const selected = await this.dependencies.prepareProject(input.projectId); prepared.push(selected.prepared); catalog = selected.catalog;
+      const selected = await this.dependencies.prepareProject(input.projectId, input.callerSignal); prepared.push(selected.prepared); catalog = selected.catalog;
       snapshotToken = migrationDigest("rowboat:plugin-migration-project-snapshot:v2", { projectId: selected.prepared.preview.projectId, sourceDigest: selected.prepared.preview.sourceDigest });
     } else {
       if (input.scope !== "all" || input.projectId !== undefined) throw new Error("migration_request_invalid");
       await this.dependencies.authorizeAll(input.actor);
-      const scan = await this.dependencies.scanAllProjects(input.actor, async item => { prepared.push(item); }); catalog = scan.catalog; snapshotToken = scan.snapshotToken;
+      const scan = await this.dependencies.scanAllProjects(input.actor, async item => { prepared.push(item); }, input.callerSignal); catalog = scan.catalog; snapshotToken = scan.snapshotToken;
     }
     if (!SHA256.test(catalog.catalogDigest) || !/^[a-f0-9]{40}$/.test(catalog.sourceCommit)) throw new Error("catalog_digest_mismatch");
     prepared.sort((left, right) => left.preview.projectId.localeCompare(right.preview.projectId));

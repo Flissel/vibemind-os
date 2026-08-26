@@ -107,6 +107,27 @@ describe("plugin migration manifest snapshots", () => {
     expect(Date.now() - startedAt).toBeLessThan(80); expect(counters).toEqual({ aborts: 1, ends: 1 });
   });
 
+  it.each(["hang", "late-reject", "late-success"] as const)("bounds a %s commit, aborts when still active, and ends exactly once", async mode => {
+    const counters = { commits: 0, aborts: 0, ends: 0 }; let active = false; let lateSettled = false; const startedAt = Date.now();
+    const transaction = { start: () => { active = true; }, inTransaction: () => active,
+      commit: async () => { counters.commits += 1; if (mode === "hang") return new Promise<void>(() => undefined);
+        return new Promise<void>((resolve, reject) => setTimeout(() => { lateSettled = true; if (mode === "late-reject") reject(new Error("late_commit_secret")); else resolve(); }, 50)); },
+      abort: async () => { counters.aborts += 1; active = false; }, end: async () => { counters.ends += 1; } };
+    await expect(materializeMigrationProjectManifestInTransaction({ transaction, readPage: async () => [], readProject: fullReader,
+      now: () => Date.now(), maximumDurationMs: 20 })).rejects.toThrow("migration_preview_timeout");
+    expect(Date.now() - startedAt).toBeLessThan(80); expect(counters).toEqual({ commits: 1, aborts: 1, ends: 1 });
+    if (mode !== "hang") { await new Promise(resolve => setTimeout(resolve, 60)); expect(lateSettled).toBe(true); }
+  });
+
+  it("preserves a safe commit failure when abort and end also throw", async () => {
+    const counters = { aborts: 0, ends: 0 }; let active = false;
+    const transaction = { start: () => { active = true; }, inTransaction: () => active, commit: async () => { throw new Error("raw_commit_secret"); },
+      abort: async () => { counters.aborts += 1; throw new Error("raw_abort_secret"); }, end: async () => { counters.ends += 1; throw new Error("raw_end_secret"); } };
+    await expect(materializeMigrationProjectManifestInTransaction({ transaction, readPage: async () => [], readProject: fullReader, now: () => Date.now() }))
+      .rejects.toThrow("migration_repository_failed");
+    expect(counters).toEqual({ aborts: 1, ends: 1 });
+  });
+
   it("rejects accessor-backed metadata without invoking accessors", async () => {
     let calls = 0; const malicious: Record<string, unknown> = { scalarIdentityDigest, projectBsonBytes: 512 };
     Object.defineProperty(malicious, "projectId", { enumerable: true, get: () => { calls += 1; return projectId(0); } });
@@ -147,13 +168,13 @@ describe("plugin migration manifest snapshots", () => {
     expect(remaining.every((value, index) => index === 0 || remaining[index - 1]! > value)).toBe(true);
   });
 
-  it("maps caller abort and a late catalog rejection to one prompt timeout without unhandled rejection", async () => {
+  it("maps caller abort and a late catalog rejection to one prompt request abort without unhandled rejection", async () => {
     const caller = new AbortController(); let lateRejected = false; const started = Date.now(); setTimeout(() => caller.abort(), 10);
     const pending = executeMigrationManifest({ materialize: async () => ({ entries: [], snapshotToken: stateDigest }), callerSignal: caller.signal,
       loadShared: async () => new Promise((_resolve, reject) => setTimeout(() => { lateRejected = true; reject(new Error("late_secret")); }, 50)),
       prepare: async () => { throw new Error("unexpected"); }, blocked: () => { throw new Error("unexpected"); }, visit: async () => undefined,
       preparedBytes: () => 0, now: () => Date.now(), maximumDurationMs: 100 });
-    await expect(pending).rejects.toThrow("migration_preview_timeout"); expect(Date.now() - started).toBeLessThan(80);
+    await expect(pending).rejects.toThrow("request_aborted"); expect(Date.now() - started).toBeLessThan(80);
     await new Promise(resolve => setTimeout(resolve, 60)); expect(lateRejected).toBe(true);
   });
 

@@ -13,20 +13,20 @@ interface ApplyResult { readonly receiptIds: readonly string[]; readonly replaye
 interface Dependencies {
   readonly authorizeProject: (actor: PluginApiIdentity, projectId: string) => Promise<void>;
   readonly verifyConfirmation: (token: string) => MigrationConfirmationClaims;
-  readonly prepareProject: (projectId: string) => Promise<PreparedMigrationInvocation>;
+  readonly prepareProject: (projectId: string, callerSignal?: AbortSignal) => Promise<PreparedMigrationInvocation>;
   readonly digestPreview: (preview: MigrationPreparedPreview) => string;
-  readonly applyAtomically: (context: unknown, claims: MigrationConfirmationClaims) => Promise<ApplyResult>;
+  readonly applyAtomically: (context: unknown, claims: MigrationConfirmationClaims, callerSignal?: AbortSignal) => Promise<ApplyResult>;
 }
 export class ApplyPluginMigrationUseCase {
   constructor(private readonly dependencies: Dependencies) {}
-  async execute(input: Readonly<{ actor: PluginApiIdentity; projectId: string; confirmationToken?: string }>) {
+  async execute(input: Readonly<{ actor: PluginApiIdentity; projectId: string; confirmationToken?: string; callerSignal?: AbortSignal }>) {
     if (input.confirmationToken === undefined) throw new Error("migration_confirmation_required");
     if (typeof input.projectId !== "string" || input.projectId.length < 1 || input.projectId.length > 128) throw new Error("migration_request_invalid");
     const selectedActor = actorTuple(input.actor);
     await this.dependencies.authorizeProject(input.actor, input.projectId);
     const claims = this.dependencies.verifyConfirmation(input.confirmationToken);
     if (claims.actorKind !== selectedActor.actorKind || claims.actorId !== selectedActor.actorId || claims.projectId !== input.projectId) throw new Error("migration_confirmation_invalid");
-    const prepared = await this.dependencies.prepareProject(input.projectId);
+    const prepared = await this.dependencies.prepareProject(input.projectId, input.callerSignal);
     const preview = prepared.preview;
     if ((preview.status !== "previewed" && preview.status !== "applied") || preview.blockers.length !== 0 || preview.targetInstallationIds.length === 0) throw new Error("migration_preview_blocked");
     if (this.dependencies.digestPreview(preview) !== claims.previewDigest
@@ -35,7 +35,7 @@ export class ApplyPluginMigrationUseCase {
       || claims.rollbackSnapshotDigest !== preview.rollbackSnapshotDigest || claims.targetCatalogDigest !== preview.targetCatalogDigest
       || claims.targetInstallationIds.length !== preview.targetInstallationIds.length
       || claims.targetInstallationIds.some((id, index) => id !== preview.targetInstallationIds[index])) throw new Error("migration_preview_stale");
-    const result = await this.dependencies.applyAtomically(prepared.context, claims);
+    const result = await this.dependencies.applyAtomically(prepared.context, claims, input.callerSignal);
     const project = Object.freeze({ projectId: preview.projectId, sourceProjectRevision: preview.sourceProjectRevision, sourceDigest: preview.sourceDigest,
       sourceInventoryDigest: preview.sourceInventoryDigest, recipeId: preview.recipeId, recipeDigest: preview.recipeDigest,
       rollbackSnapshotDigest: preview.rollbackSnapshotDigest, targetCatalogDigest: preview.targetCatalogDigest,

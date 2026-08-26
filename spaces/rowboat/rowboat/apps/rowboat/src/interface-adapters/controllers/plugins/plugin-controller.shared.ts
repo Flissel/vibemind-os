@@ -14,3 +14,10 @@ export function captureRecord(input: unknown, allowed: readonly string[]): Reado
   }
   return Object.freeze(output);
 }
+
+export function captureCallerSignal(input: unknown): AbortSignal {
+  if (input === null || typeof input !== "object" || utilTypes.isProxy(input) || Object.getPrototypeOf(input) !== AbortSignal.prototype) {
+    throw new Error("request_invalid");
+  }
+  return input as AbortSignal;
+}

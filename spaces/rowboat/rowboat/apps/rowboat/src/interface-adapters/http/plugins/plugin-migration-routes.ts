@@ -1,4 +1,4 @@
-import { assertRouteWithoutQuery, jsonBody, params, pluginErrorResponse, pluginJson, strictObject, type RouteContext } from "@/app/api/v1/projects/[projectId]/plugins/_responses";
+import { assertRouteWithoutQuery, jsonBody, params, pluginErrorResponse, pluginJson, requestSignal, strictObject, type RouteContext } from "@/app/api/v1/projects/[projectId]/plugins/_responses";
 
 interface MigrationController { execute(request: Request, input: Readonly<Record<string, unknown>>): Promise<unknown> }
 type Source = MigrationController | (() => Promise<MigrationController>);
@@ -10,7 +10,8 @@ export function createMigrationPreviewRoute(source: Source) {
     try {
       const routeParams = await params(context, ["projectId"]);
       assertRouteWithoutQuery(request, "GET", ["api", "v1", "projects", routeParams.projectId, "plugins", "migration", "preview"]);
-      return pluginJson(await (await selected(source)).execute(request, Object.freeze({ projectId: routeParams.projectId })));
+      const callerSignal = requestSignal(request);
+      return pluginJson(await (await selected(source)).execute(request, Object.freeze({ projectId: routeParams.projectId, callerSignal })));
     } catch (error) { return pluginErrorResponse(error); }
   };
 }
@@ -20,8 +21,9 @@ export function createMigrationApplyRoute(source: Source, options: { readonly bo
     try {
       const routeParams = await params(context, ["projectId"]);
       assertRouteWithoutQuery(request, "POST", ["api", "v1", "projects", routeParams.projectId, "plugins", "migration", "apply"]);
+      const callerSignal = requestSignal(request);
       const body = strictObject(await jsonBody(request, options.bodyReadTimeoutMs), ["confirmationToken"]);
-      return pluginJson(await (await selected(source)).execute(request, Object.freeze({ projectId: routeParams.projectId, confirmationToken: body.confirmationToken })));
+      return pluginJson(await (await selected(source)).execute(request, Object.freeze({ projectId: routeParams.projectId, confirmationToken: body.confirmationToken, callerSignal })));
     } catch (error) { return pluginErrorResponse(error); }
   };
 }

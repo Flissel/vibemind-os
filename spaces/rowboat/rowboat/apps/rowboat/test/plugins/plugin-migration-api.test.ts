@@ -6,6 +6,8 @@ import { ApplyPluginMigrationUseCase, type PreparedMigrationInvocation } from "@
 import { createMigrationPreviewRoute, createMigrationApplyRoute } from "@/src/interface-adapters/http/plugins/plugin-migration-routes";
 import { pluginErrorResponse } from "@/app/api/v1/projects/[projectId]/plugins/_responses";
 import { signMigrationConfirmation, verifyMigrationConfirmation, type MigrationConfirmationClaims } from "@/src/application/use-cases/plugins/plugin-migration.shared";
+import { createMigrationDeadline } from "@/src/application/services/plugin-migration-keyset-snapshot";
+import { runGuardedMigrationTransaction } from "@/src/application/services/plugin-migration-transaction";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const actor = Object.freeze({ kind: "user" as const, userId: "admin-1" });
@@ -65,6 +67,16 @@ describe("plugin migration preview", () => {
       issueConfirmation: () => { throw new Error("unexpected_token"); }, now: () => new Date("2026-08-26T10:00:00.000Z") });
     const report = await useCase.execute({ actor, scope: "all" }); expect(report.projectCount).toBe(2); expect(report.blockerReasons).toEqual({ migration_project_invalid: 1 }); expect(report.projects.every(project => !("confirmationToken" in project))).toBe(true);
   });
+
+  it.each(["project", "all"] as const)("passes the exact caller signal through %s preview preparation", async scope => {
+    const caller = new AbortController(); let captured: AbortSignal | undefined;
+    const useCase = new PreviewPluginMigrationUseCase({ authorizeProject: async () => undefined, authorizeAll: async () => undefined,
+      prepareProject: async (_projectId, signal) => { if (signal === undefined) throw new Error("missing_signal"); captured = signal; return { prepared: publicPrepared(), catalog }; },
+      scanAllProjects: async (_actor, _visit, signal) => { if (signal === undefined) throw new Error("missing_signal"); captured = signal; return { catalog, snapshotToken: digest("snapshot") }; },
+      issueConfirmation: () => ({ token: "token", idempotencyKey: "key" }), now: () => new Date("2026-08-26T10:00:00.000Z") });
+    await useCase.execute({ actor, scope, ...(scope === "project" ? { projectId: readyPreview().projectId } : {}), callerSignal: caller.signal });
+    expect(captured).toBe(caller.signal);
+  });
 });
 
 describe("plugin migration apply", () => {
@@ -101,6 +113,15 @@ describe("plugin migration apply", () => {
       confirmation: { idempotencyKey: claims.idempotencyKey, replayed }, projects: [{ projectId: selected.projectId, status: "applied", previewDigest: claims.previewDigest }] });
     expect(JSON.stringify(report)).not.toMatch(/confirmationToken|secret|credential|mongodb|path/i);
   });
+
+  it("passes one exact caller signal through prepare and atomic apply", async () => {
+    const caller = new AbortController(); const signals: AbortSignal[] = []; const selected = readyPreview();
+    const useCase = new ApplyPluginMigrationUseCase({ authorizeProject: async () => undefined, verifyConfirmation: () => claimsFor(selected),
+      prepareProject: async (_projectId, signal) => { if (signal === undefined) throw new Error("missing_signal"); signals.push(signal); return prepared(); }, digestPreview: preview => digest(`preview-${preview.sourceDigest}`),
+      applyAtomically: async (_context, _claims, signal) => { if (signal === undefined) throw new Error("missing_signal"); signals.push(signal); return { receiptIds: [selected.id], replayed: false, mutationCount: 4, generatedAt: "2026-08-26T10:01:00.000Z" }; } });
+    await useCase.execute({ actor, projectId: selected.projectId, confirmationToken: "token", callerSignal: caller.signal });
+    expect(signals).toEqual([caller.signal, caller.signal]);
+  });
 });
 
 describe("migration confirmation envelope", () => {
@@ -113,7 +134,50 @@ describe("migration confirmation envelope", () => {
 describe("plugin migration routes", () => {
   const projectId = readyPreview().projectId; const context = { params: Promise.resolve({ projectId }) };
   it("rejects non-exact request boundaries before controller resolution", async () => { let resolves = 0; const route = createMigrationPreviewRoute(async () => { resolves += 1; return { execute: async () => ({}) }; }); expect((await route(new Request(`https://rowboat.invalid/api/v1/projects/${projectId}/plugins/migration/preview`), context)).status).toBe(400); expect((await route(new NextRequest(`https://rowboat.invalid/api/v1/projects/${projectId}/plugins/migration/preview?scope=x`), context)).status).toBe(400); expect(resolves).toBe(0); });
-  it("derives apply idempotency only from the signed token", async () => { const route = createMigrationApplyRoute(async () => ({ execute: async (_request, input) => input })); const response = await route(new NextRequest(`https://rowboat.invalid/api/v1/projects/${projectId}/plugins/migration/apply`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ confirmationToken: "signed-token" }) }), context); expect(await response.json()).toEqual({ projectId, confirmationToken: "signed-token" }); });
+  it("rejects an own accessor signal without invoking it or resolving a controller", async () => {
+    let accessors = 0; let resolves = 0; const request = new NextRequest(`https://rowboat.invalid/api/v1/projects/${projectId}/plugins/migration/preview`);
+    Object.defineProperty(request, "signal", { configurable: true, get: () => { accessors += 1; return new AbortController().signal; } });
+    const response = await createMigrationPreviewRoute(async () => { resolves += 1; return { execute: async () => ({}) }; })(request, context);
+    expect(response.status).toBe(400); expect(accessors).toBe(0); expect(resolves).toBe(0);
+  });
+  it.each(["preview", "apply"] as const)("passes only the intrinsic caller signal through the exported %s route", async mode => {
+    const caller = new AbortController(); let captured: unknown;
+    const controller = { execute: async (_request: Request, input: Readonly<Record<string, unknown>>) => { captured = input.callerSignal; return {}; } };
+    const route = mode === "preview" ? createMigrationPreviewRoute(controller) : createMigrationApplyRoute(controller);
+    const url = `https://rowboat.invalid/api/v1/projects/${projectId}/plugins/migration/${mode}`;
+    const request = new NextRequest(url, mode === "preview" ? { signal: caller.signal } : {
+      method: "POST", signal: caller.signal, headers: { "content-type": "application/json" }, body: JSON.stringify({ confirmationToken: "signed-token" }),
+    });
+    expect((await route(request, context)).status).toBe(200); expect(captured).toBe(request.signal); expect((captured as AbortSignal).aborted).toBe(false);
+    caller.abort(); expect((captured as AbortSignal).aborted).toBe(true);
+  });
+  it("maps a caller abort after controller start to the exact safe 400 response", async () => {
+    const caller = new AbortController(); let markStarted: (() => void) | undefined; const started = new Promise<void>(resolve => { markStarted = resolve; });
+    const route = createMigrationPreviewRoute({ execute: async (_request, input) => {
+      markStarted!(); const signal = input.callerSignal as AbortSignal;
+      return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("request_aborted")), { once: true }));
+    } });
+    const pending = route(new NextRequest(`https://rowboat.invalid/api/v1/projects/${projectId}/plugins/migration/preview`, { signal: caller.signal }), context);
+    await started; caller.abort(); const response = await pending;
+    expect(response.status).toBe(400); expect(await response.json()).toEqual({ error: "request_aborted" });
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+  it("rolls back an apply transaction aborted through the exported route after auth and read", async () => {
+    const caller = new AbortController(); const counters = { auth: 0, reads: 0, starts: 0, aborts: 0, ends: 0, pointers: 0 };
+    let active = false; let transactionStarted: (() => void) | undefined; const started = new Promise<void>(resolve => { transactionStarted = resolve; });
+    const route = createMigrationApplyRoute({ execute: async (_request, input) => {
+      counters.auth += 1; counters.reads += 1; const signal = input.callerSignal as AbortSignal;
+      const deadline = createMigrationDeadline(() => Date.now(), 100, signal);
+      return runGuardedMigrationTransaction({ deadline, transaction: { start: () => { counters.starts += 1; active = true; transactionStarted!(); }, inTransaction: () => active,
+        commit: async () => undefined, abort: async () => { counters.aborts += 1; active = false; }, end: async () => { counters.ends += 1; } },
+      work: async () => { await new Promise(() => undefined); counters.pointers += 1; return {}; }, recover: async () => null });
+    } });
+    const pending = route(new NextRequest(`https://rowboat.invalid/api/v1/projects/${projectId}/plugins/migration/apply`, { method: "POST", signal: caller.signal,
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ confirmationToken: "signed-token" }) }), context);
+    await started; caller.abort(); const response = await pending;
+    expect(response.status).toBe(400); expect(counters).toEqual({ auth: 1, reads: 1, starts: 1, aborts: 1, ends: 1, pointers: 0 });
+  });
+  it("derives apply idempotency only from the signed token", async () => { const route = createMigrationApplyRoute(async () => ({ execute: async (_request, input) => input })); const response = await route(new NextRequest(`https://rowboat.invalid/api/v1/projects/${projectId}/plugins/migration/apply`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ confirmationToken: "signed-token" }) }), context); const body = await response.json(); expect(body).toMatchObject({ projectId, confirmationToken: "signed-token" }); expect(body.callerSignal).toEqual({}); });
   it("rejects duplicate JSON keys before controller execution", async () => { let calls = 0; const route = createMigrationApplyRoute(async () => ({ execute: async () => { calls += 1; return {}; } })); const response = await route(new NextRequest(`https://rowboat.invalid/api/v1/projects/${projectId}/plugins/migration/apply`, { method: "POST", headers: { "content-type": "application/json" }, body: '{"confirmationToken":"a","confirmationToken":"b"}' }), context); expect(response.status).toBe(400); expect(calls).toBe(0); });
 
   it.each([
@@ -121,7 +185,7 @@ describe("plugin migration routes", () => {
     ["migration_pointer_invalid", 409], ["migration_pointer_conflict", 409], ["migration_installation_conflict", 409],
     ["migration_admission_conflict", 409], ["migration_record_conflict", 409], ["migration_rollback_conflict", 409],
     ["migration_idempotency_conflict", 409], ["migration_confirmation_replayed", 409], ["migration_preview_stale", 409],
-    ["migration_preview_timeout", 408], ["migration_repository_failed", 500], ["migration_system_failed", 500],
+    ["migration_preview_timeout", 408], ["migration_commit_uncertain", 409], ["migration_repository_failed", 500], ["migration_system_failed", 500],
   ] as const)("maps safe migration error %s to exact HTTP %s without raw details", async (code, status) => {
     const response = pluginErrorResponse(new Error(code)); expect(response.status).toBe(status); expect(await response.json()).toEqual({ error: code });
   });

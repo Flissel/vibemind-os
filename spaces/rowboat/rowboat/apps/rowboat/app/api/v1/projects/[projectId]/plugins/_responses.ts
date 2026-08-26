@@ -114,6 +114,7 @@ const ERROR_STATUS = Object.freeze({
   migration_admission_conflict: 409, migration_record_conflict: 409, migration_rollback_conflict: 409,
   migration_idempotency_conflict: 409, migration_snapshot_changed: 409, project_not_found: 404,
   migration_project_invalid: 400, migration_project_limit: 413, migration_manifest_limit: 413, migration_preview_timeout: 408,
+  migration_commit_uncertain: 409,
   migration_confirmation_secret_invalid: 503, migration_repository_failed: 500, migration_system_failed: 500,
 } as const);
 
@@ -175,6 +176,16 @@ export function assertRouteWithoutQuery(request: Request, method: "GET" | "POST"
   assertRoute(request, method, expectedSegments);
   const { raw, url } = requestUrl(request);
   if (url.search !== "" || raw !== `${url.origin}${url.pathname}`) throw new Error("request_invalid");
+}
+
+export function requestSignal(request: Request): AbortSignal {
+  assertRequest(request);
+  let candidate: unknown;
+  try { candidate = REQUEST_SIGNAL_GETTER!.call(request); } catch { throw new Error("request_invalid"); }
+  if (candidate === null || typeof candidate !== "object" || utilTypes.isProxy(candidate) || Object.getPrototypeOf(candidate) !== AbortSignal.prototype) {
+    throw new Error("request_invalid");
+  }
+  return candidate as AbortSignal;
 }
 
 function requestUrl(request: Request): Readonly<{ raw: string; url: URL }> {

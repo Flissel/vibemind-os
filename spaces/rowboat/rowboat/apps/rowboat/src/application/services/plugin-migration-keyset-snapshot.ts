@@ -38,15 +38,17 @@ export function createMigrationDeadline(now: () => number, durationMs: number, c
   if (!Number.isFinite(startedAt)) throw new Error("migration_snapshot_invalid");
   const deadlineAt = startedAt + durationMs;
   if (!Number.isFinite(deadlineAt)) throw new Error("migration_snapshot_invalid");
-  const controller = new AbortController();
+  const controller = new AbortController(); let callerAborted = false;
   const abort = () => controller.abort();
-  if (callerSignal?.aborted === true) abort();
-  else callerSignal?.addEventListener("abort", abort, { once: true });
+  const abortFromCaller = () => { callerAborted = true; abort(); };
+  if (callerSignal?.aborted === true) abortFromCaller();
+  else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
+  const selectedError = (errorCode: "migration_manifest_limit" | "migration_preview_timeout") => callerAborted ? "request_aborted" : errorCode;
   const remaining = (errorCode: "migration_manifest_limit" | "migration_preview_timeout" = "migration_manifest_limit", selectedDeadline = deadlineAt) => {
     const current = now();
     if (!Number.isFinite(current)) throw new Error("migration_snapshot_invalid");
     const selected = Math.ceil(Math.min(deadlineAt, selectedDeadline) - current);
-    if (selected <= 0 || controller.signal.aborted) { abort(); throw new Error(errorCode); }
+    if (selected <= 0 || controller.signal.aborted) { abort(); throw new Error(selectedError(errorCode)); }
     return selected;
   };
   const run = async <T>(operation: (remainingMs: number, signal: AbortSignal) => Promise<T>,
@@ -54,7 +56,7 @@ export function createMigrationDeadline(now: () => number, durationMs: number, c
     const remainingMs = remaining(errorCode, selectedDeadline); let timeout: ReturnType<typeof setTimeout> | undefined;
     let rejectAbort: ((error: Error) => void) | undefined;
     const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
-    const onAbort = () => rejectAbort?.(new Error(errorCode));
+    const onAbort = () => rejectAbort?.(new Error(selectedError(errorCode)));
     controller.signal.addEventListener("abort", onAbort, { once: true });
     const pending = Promise.resolve().then(() => operation(remainingMs, controller.signal));
     pending.catch(() => undefined);
@@ -62,7 +64,7 @@ export function createMigrationDeadline(now: () => number, durationMs: number, c
       abort(); reject(new Error(errorCode));
     }, remainingMs); });
     try { const selected = await Promise.race([pending, expired, aborted]); remaining(errorCode, selectedDeadline); return selected; }
-    catch (error) { if (controller.signal.aborted) throw new Error(errorCode); throw error; }
+    catch (error) { if (controller.signal.aborted) throw new Error(selectedError(errorCode)); throw error; }
     finally {
       if (timeout !== undefined) clearTimeout(timeout);
       controller.signal.removeEventListener("abort", onAbort);
@@ -178,7 +180,7 @@ export async function materializeMigrationProjectManifestInTransaction(dependenc
   try {
     dependencies.transaction.start(Math.min(limits.maximumDurationMs, deadline.remaining("migration_manifest_limit"))); started = true;
     result = await materializeMigrationProjectManifest({ ...dependencies, deadline });
-    await dependencies.transaction.commit();
+    await deadline.run(async () => dependencies.transaction.commit(), "migration_preview_timeout");
   } catch (error) {
     primaryError = safeLifecycleError(error);
     if (started && dependencies.transaction.inTransaction()) {
@@ -203,7 +205,7 @@ async function boundedCleanup(operation: () => Promise<void>, timeoutMs: number)
 
 function safeLifecycleError(error: unknown): Error {
   if (error instanceof Error && Object.getPrototypeOf(error) === Error.prototype
-    && ["migration_manifest_limit", "migration_preview_timeout", "migration_snapshot_invalid", "migration_project_limit", "migration_repository_failed"].includes(error.message)) return error;
+    && ["request_aborted", "migration_manifest_limit", "migration_preview_timeout", "migration_snapshot_invalid", "migration_project_limit", "migration_repository_failed"].includes(error.message)) return error;
   return new Error("migration_repository_failed");
 }
 
