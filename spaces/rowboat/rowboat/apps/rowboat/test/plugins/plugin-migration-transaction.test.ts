@@ -1,9 +1,23 @@
-import { describe, expect, it } from "vitest";
-import { abortMigrationTransaction, exactMigrationRecoveryEvidence, migrationMongoDeadlineOptions, migrationRollbackRecoveryRow, migrationTransactionFailure, runGuardedMigrationOperation, runGuardedMigrationTransaction } from "@/src/application/services/plugin-migration-transaction";
-import { createMigrationDeadline } from "@/src/application/services/plugin-migration-keyset-snapshot";
+import { describe, expect, it, vi } from "vitest";
+import { abortMigrationTransaction, exactMigrationRecoveryEvidence, migrationMongoDeadlineOptions, migrationReportGeneratedAt, migrationRollbackRecoveryRow, migrationTransactionFailure, runGuardedMigrationOperation, runGuardedMigrationTransaction } from "@/src/application/services/plugin-migration-transaction";
+import { createMigrationChildDeadline, createMigrationDeadline } from "@/src/application/services/plugin-migration-keyset-snapshot";
 import { runMigrationReadTransaction } from "@/src/application/services/plugin-migration-session-finalizer";
 
 describe("plugin migration transaction failure boundary", () => {
+  it("links child deadlines one way without leaking parent cancellation", () => {
+    const caller = new AbortController(); const parent = createMigrationDeadline(() => 1_000, 1_000, caller.signal);
+    const added = vi.spyOn(parent.signal, "addEventListener"); const removed = vi.spyOn(parent.signal, "removeEventListener");
+    const child = createMigrationChildDeadline(parent, () => 1_000, 500); child.cancel();
+    expect(child.signal.aborted).toBe(true); expect(parent.signal.aborted).toBe(false); expect(added).toHaveBeenCalledTimes(1); expect(removed).toHaveBeenCalledTimes(1);
+    const second = createMigrationChildDeadline(parent, () => 1_000, 500); caller.abort();
+    expect(parent.signal.aborted).toBe(true); expect(second.signal.aborted).toBe(true);
+  });
+
+  it.each(["2026-08-26T10:00:00.000Z", "2026-08-26t10:00:00.000z", "2026-08-26T10:00:00Z", "\u0000secret", "99999-01-01T00:00:00.000Z"])(
+    "derives only a strict canonical signed generatedAt from %s", issuedAt => {
+      if (issuedAt === "2026-08-26T10:00:00.000Z") expect(migrationReportGeneratedAt(issuedAt)).toBe(issuedAt);
+      else expect(() => migrationReportGeneratedAt(issuedAt)).toThrow("migration_confirmation_invalid");
+    });
   it("aborts staged writes and safely maps a concurrent Mongo write conflict", async () => {
     const staged = ["rollback", "installation", "record"]; let active = true; let aborts = 0;
     const session = { inTransaction: () => active, abortTransaction: async () => { aborts += 1; staged.length = 0; active = false; } };
@@ -75,38 +89,41 @@ describe("plugin migration transaction failure boundary", () => {
   });
 
   it.each(["late-success", "late-reject"] as const)("never ends before a %s commit settles", async mode => {
-    const events: string[] = []; let active = false;
-    const deadline = createMigrationDeadline(() => Date.now(), 10);
+    const events: string[] = []; let active = false; const caller = new AbortController();
+    const deadline = createMigrationDeadline(() => Date.now(), 1_000, caller.signal); const commit = deferred<void>(); const started = deferred<void>(); const ended = deferred<void>();
     const transaction = { start: () => { active = true; }, inTransaction: () => active,
-      commit: async () => new Promise<void>((resolve, reject) => setTimeout(() => {
-        events.push(`commit:${mode}`); if (mode === "late-success") { active = false; resolve(); } else reject(new Error("late"));
-      }, 45)), abort: async () => { events.push("abort"); active = false; }, end: async () => { events.push("end"); } };
-    await expect(runGuardedMigrationTransaction({ deadline, transaction, work: async () => "receipt", recover: async () => null }))
-      .rejects.toThrow("migration_commit_uncertain");
+      commit: async () => { started.resolve(); await commit.promise; }, abort: async () => { events.push("abort"); active = false; },
+      end: async () => { events.push("end"); ended.resolve(); } };
+    const pending = runGuardedMigrationTransaction({ deadline, transaction, work: async () => "receipt", recover: async () => null });
+    await started.promise; caller.abort(); await expect(pending).rejects.toThrow("migration_commit_uncertain");
     expect(events).toEqual([]);
-    await new Promise(resolve => setTimeout(resolve, 60));
+    events.push(`commit:${mode}`); if (mode === "late-success") { active = false; commit.resolve(); } else commit.reject(new Error("late"));
+    await ended.promise;
     expect(events).toEqual(mode === "late-success" ? ["commit:late-success", "end"] : ["commit:late-reject", "abort", "end"]);
   });
 
   it("never aborts or ends an uncooperative operation before it settles", async () => {
-    const events: string[] = []; let active = false; const deadline = createMigrationDeadline(() => Date.now(), 10);
+    const events: string[] = []; let active = false; const caller = new AbortController(); const operation = deferred<void>(); const started = deferred<void>(); const ended = deferred<void>();
+    const deadline = createMigrationDeadline(() => Date.now(), 1_000, caller.signal);
     const transaction = { start: () => { active = true; }, inTransaction: () => active, commit: async () => undefined,
-      abort: async () => { events.push("abort"); active = false; }, end: async () => { events.push("end"); } };
-    await expect(runGuardedMigrationTransaction({ deadline, transaction, work: async () => runGuardedMigrationOperation(deadline,
-      async () => new Promise<void>(resolve => setTimeout(() => { events.push("operation:settled"); resolve(); }, 45))), recover: async () => null }))
-      .rejects.toThrow("migration_preview_timeout");
+      abort: async () => { events.push("abort"); active = false; }, end: async () => { events.push("end"); ended.resolve(); } };
+    const pending = runGuardedMigrationTransaction({ deadline, transaction, work: async () => runGuardedMigrationOperation(deadline,
+      async () => { started.resolve(); return operation.promise; }), recover: async () => null });
+    await started.promise; caller.abort(); await expect(pending).rejects.toThrow("request_aborted");
     expect(events).toEqual([]);
-    await new Promise(resolve => setTimeout(resolve, 60)); expect(events).toEqual(["operation:settled", "abort", "end"]);
+    events.push("operation:settled"); operation.resolve(); await ended.promise; expect(events).toEqual(["operation:settled", "abort", "end"]);
   });
 
   it("gives a per-project read session one finalizer after its delayed read settles", async () => {
-    const events: string[] = []; let active = false; const deadline = createMigrationDeadline(() => Date.now(), 10);
+    const events: string[] = []; let active = false; const caller = new AbortController(); const read = deferred<void>(); const started = deferred<void>(); const ended = deferred<void>();
+    const deadline = createMigrationDeadline(() => Date.now(), 1_000, caller.signal);
     const session = { start: (maxCommitTimeMS: number) => { expect(maxCommitTimeMS).toBeGreaterThan(0); active = true; }, inTransaction: () => active,
-      commit: async () => { events.push("commit"); active = false; }, abort: async () => { events.push("abort"); active = false; }, end: async () => { events.push("end"); } };
-    await expect(runMigrationReadTransaction({ deadline, session, work: async () => runGuardedMigrationOperation(deadline,
+      commit: async () => { events.push("commit"); active = false; }, abort: async () => { events.push("abort"); active = false; }, end: async () => { events.push("end"); ended.resolve(); } };
+    const pending = runMigrationReadTransaction({ deadline, session, work: async () => runGuardedMigrationOperation(deadline,
       async (remainingMs, signal) => { expect(remainingMs).toBeGreaterThan(0); expect(signal).toBe(deadline.signal);
-        return new Promise<void>(resolve => setTimeout(() => { events.push("read:settled"); resolve(); }, 45)); }) })).rejects.toThrow("migration_preview_timeout");
-    expect(events).toEqual([]); await new Promise(resolve => setTimeout(resolve, 60));
+        started.resolve(); return read.promise; }) });
+    await started.promise; caller.abort(); await expect(pending).rejects.toThrow("request_aborted"); expect(events).toEqual([]);
+    events.push("read:settled"); read.resolve(); await ended.promise;
     expect(events).toEqual(["read:settled", "abort", "end"]);
   });
 
@@ -124,6 +141,12 @@ describe("plugin migration transaction failure boundary", () => {
     Object.defineProperty(accessor.pointer, "catalogDigest", { enumerable: true, get: () => { calls += 1; return "a".repeat(64); } });
     expect(exactMigrationRecoveryEvidence(expected, accessor)).toBe(false); expect(calls).toBe(0);
     expect(exactMigrationRecoveryEvidence(expected, new Proxy(structuredClone(expected), {}))).toBe(false);
+  });
+
+  it("rejects a different persisted generatedAt instead of echoing it", () => {
+    const expected = recoveryEvidence(); const actual = structuredClone(expected);
+    actual.idempotency.generatedAt = "2026-08-26T10:00:00.001Z";
+    expect(exactMigrationRecoveryEvidence(expected, actual)).toBe(false);
   });
 
   it.each(["record", "nonce", "idempotency", "installation", "admission"] as const)("rejects missing, extra, or mutated %s recovery truth", section => {
@@ -177,4 +200,10 @@ function recoveryEvidence() {
     idempotency: { _id: "migration-id", payloadDigest: "c".repeat(64), projectId: "11111111-1111-4111-8111-111111111111",
       migrationRecordId: pointer.migrationRecordId, receiptIds: [pointer.migrationRecordId], generatedAt: "2026-08-26T10:00:00.000Z" },
     installations: [{ id: "33333333-3333-4333-8333-333333333333", providerBindingsJson: "[]" }], admissions: [{ installationId: "33333333-3333-4333-8333-333333333333", componentDigest: "d".repeat(64) }] };
+}
+
+function deferred<T>() {
+  let resolve!: (value?: T) => void; let reject!: (error?: unknown) => void;
+  const promise = new Promise<T>((selectedResolve, selectedReject) => { resolve = value => selectedResolve(value as T); reject = selectedReject; });
+  promise.catch(() => undefined); return { promise, resolve, reject };
 }

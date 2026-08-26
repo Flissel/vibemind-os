@@ -1,10 +1,11 @@
 import { statSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { executeMigrationManifest, materializeMigrationProjectManifest, materializeMigrationProjectManifestInTransaction,
+import { createMigrationChildDeadline, createMigrationDeadline, executeMigrationManifest, materializeMigrationProjectManifest, materializeMigrationProjectManifestInTransaction,
   type MigrationProjectManifestEntry, type MigrationProjectSizeCandidate } from "@/src/application/services/plugin-migration-keyset-snapshot";
 import { captureMigrationProjectManifestCandidate, captureMigrationProjectSizeCandidate } from "@/src/application/services/plugin-migration-project-state";
 import catalogLock from "../../../../config/openai-plugin-catalog.lock.json";
 import customerSupport from "@/app/lib/prebuilt-cards/customer-support.json";
+import { runMigrationReadTransaction } from "@/src/application/services/plugin-migration-session-finalizer";
 
 const scalarIdentityDigest = "a".repeat(64); const stateDigest = "b".repeat(64);
 const projectId = (index: number) => `11111111-1111-4111-8111-${String(index).padStart(12, "0")}`;
@@ -88,14 +89,14 @@ describe("plugin migration manifest snapshots", () => {
   });
 
   it("does not abort or end a snapshot session before an uncooperative read settles", async () => {
-    const events: string[] = []; let active = false;
+    const events: string[] = []; let active = false; const caller = new AbortController(); const root = createMigrationDeadline(() => Date.now(), 1_000, caller.signal);
+    const read = deferred<readonly MigrationProjectSizeCandidate[]>(); const started = deferred<void>(); const ended = deferred<void>();
     const transaction = { start: () => { active = true; }, inTransaction: () => active, commit: async () => undefined,
-      abort: async () => { events.push("abort"); active = false; }, end: async () => { events.push("end"); } };
-    await expect(materializeMigrationProjectManifestInTransaction({ transaction, readPage: async () => new Promise<readonly MigrationProjectSizeCandidate[]>(resolve =>
-      setTimeout(() => { events.push("read:settled"); resolve([]); }, 45)), readProject: fullReader, now: () => Date.now(), maximumDurationMs: 10 }))
-      .rejects.toThrow("migration_manifest_limit");
-    expect(events).toEqual([]);
-    await new Promise(resolve => setTimeout(resolve, 60)); expect(events).toEqual(["read:settled", "abort", "end"]);
+      abort: async () => { events.push("abort"); active = false; }, end: async () => { events.push("end"); ended.resolve(); } };
+    const pending = materializeMigrationProjectManifestInTransaction({ transaction, readPage: async () => { started.resolve(); return read.promise; },
+      readProject: fullReader, now: () => Date.now(), maximumDurationMs: 1_000, deadline: root });
+    await started.promise; caller.abort(); await expect(pending).rejects.toThrow("request_aborted"); expect(events).toEqual([]);
+    events.push("read:settled"); read.resolve([]); await ended.promise; expect(events).toEqual(["read:settled", "abort", "end"]);
   });
 
   it.each([
@@ -121,17 +122,17 @@ describe("plugin migration manifest snapshots", () => {
   });
 
   it.each(["hang", "late-reject", "late-success"] as const)("bounds a %s commit, aborts when still active, and ends exactly once", async mode => {
-    const counters = { commits: 0, aborts: 0, ends: 0 }; let active = false; let lateSettled = false; const startedAt = Date.now();
+    const counters = { commits: 0, aborts: 0, ends: 0 }; let active = false; const caller = new AbortController();
+    const root = createMigrationDeadline(() => Date.now(), 1_000, caller.signal); const commit = deferred<void>(); const started = deferred<void>(); const ended = deferred<void>();
     const transaction = { start: () => { active = true; }, inTransaction: () => active,
-      commit: async () => { counters.commits += 1; if (mode === "hang") return new Promise<void>(() => undefined);
-        return new Promise<void>((resolve, reject) => setTimeout(() => { lateSettled = true; if (mode === "late-reject") reject(new Error("late_commit_secret")); else resolve(); }, 50)); },
-      abort: async () => { counters.aborts += 1; active = false; }, end: async () => { counters.ends += 1; } };
-    await expect(materializeMigrationProjectManifestInTransaction({ transaction, readPage: async () => [], readProject: fullReader,
-      now: () => Date.now(), maximumDurationMs: 20 })).rejects.toThrow("migration_preview_timeout");
-    expect(Date.now() - startedAt).toBeLessThan(80);
+      commit: async () => { counters.commits += 1; started.resolve(); return commit.promise; },
+      abort: async () => { counters.aborts += 1; active = false; }, end: async () => { counters.ends += 1; ended.resolve(); } };
+    const pending = materializeMigrationProjectManifestInTransaction({ transaction, readPage: async () => [], readProject: fullReader,
+      now: () => Date.now(), maximumDurationMs: 1_000, deadline: root });
+    await started.promise; caller.abort(); await expect(pending).rejects.toThrow("request_aborted");
     if (mode === "hang") expect(counters).toEqual({ commits: 1, aborts: 0, ends: 0 });
-    else { await new Promise(resolve => setTimeout(resolve, 60)); expect(lateSettled).toBe(true);
-      expect(counters).toEqual(mode === "late-success" ? { commits: 1, aborts: 0, ends: 1 } : { commits: 1, aborts: 1, ends: 1 }); }
+    else { if (mode === "late-success") { active = false; commit.resolve(); } else commit.reject(new Error("late_commit_secret"));
+      await ended.promise; expect(counters).toEqual(mode === "late-success" ? { commits: 1, aborts: 0, ends: 1 } : { commits: 1, aborts: 1, ends: 1 }); }
   });
 
   it("preserves a safe commit failure when abort and end also throw", async () => {
@@ -170,6 +171,19 @@ describe("plugin migration manifest snapshots", () => {
     loadShared: async () => { sharedLoads += 1; return { value: "catalog", retainedBytes: 7 }; }, prepare: async () => { throw new Error("unexpected"); },
     blocked: () => { throw new Error("unexpected"); }, visit: async () => undefined, preparedBytes: () => 0, now: () => Date.now() });
     expect(sharedLoads).toBe(1); expect(report.projectCount).toBe(0);
+  });
+
+  it("uses owned child deadlines for every prepared project without cancelling the root", async () => {
+    const entries: readonly MigrationProjectManifestEntry[] = Array.from({ length: 5 }, (_value, index) => ({ projectId: projectId(index), scalarIdentityDigest, stateDigest }));
+    let prepares = 0; let visits = 0;
+    const report = await executeMigrationManifest({ materialize: async () => ({ entries, snapshotToken: stateDigest }),
+      loadShared: async () => ({ value: "catalog", retainedBytes: 7 }), prepare: async (entry, _shared, _remaining, _signal, root) => {
+        const child = createMigrationChildDeadline(root, () => Date.now(), 5_000); let active = false;
+        await runMigrationReadTransaction({ deadline: child, session: { start: () => { active = true; }, inTransaction: () => active,
+          commit: async () => { active = false; }, abort: async () => { active = false; }, end: async () => undefined }, work: async () => { prepares += 1; } });
+        expect(root.signal.aborted).toBe(false); return { value: entry, scalarIdentityDigest: entry.scalarIdentityDigest, stateDigest: entry.stateDigest };
+      }, blocked: () => { throw new Error("unexpected"); }, visit: async () => { visits += 1; }, preparedBytes: () => 1, now: () => Date.now() });
+    expect(prepares).toBe(5); expect(visits).toBe(5); expect(report.projectCount).toBe(5);
   });
 
   it.each(["catalog", "prepare"] as const)("bounds a hung %s step with the overall preview deadline", async step => {
@@ -216,3 +230,9 @@ describe("plugin migration manifest snapshots", () => {
     expect(visited).toEqual([`${projectId(0)}:project_too_large`, `${projectId(1)}:snapshot_changed`, `${projectId(2)}:migration_project_invalid`, `${projectId(3)}:snapshot_changed`]);
   });
 });
+
+function deferred<T>() {
+  let resolve!: (value?: T) => void; let reject!: (error?: unknown) => void;
+  const promise = new Promise<T>((selectedResolve, selectedReject) => { resolve = value => selectedResolve(value as T); reject = selectedReject; });
+  promise.catch(() => undefined); return { promise, resolve, reject };
+}

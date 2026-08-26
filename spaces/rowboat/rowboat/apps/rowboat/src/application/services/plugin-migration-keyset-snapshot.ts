@@ -42,11 +42,15 @@ export function createMigrationDeadline(now: () => number, durationMs: number, c
   if (!Number.isFinite(startedAt)) throw new Error("migration_snapshot_invalid");
   const deadlineAt = startedAt + durationMs;
   if (!Number.isFinite(deadlineAt)) throw new Error("migration_snapshot_invalid");
-  const controller = new AbortController(); let callerAborted = false; const pendingOperations = new Set<Promise<unknown>>();
-  const abort = () => controller.abort();
+  const controller = new AbortController(); let callerAborted = false; let callerListenerAttached = false;
+  const pendingOperations = new Set<Promise<unknown>>();
+  const detachCaller = () => { if (callerListenerAttached && callerSignal !== undefined) {
+    callerSignal.removeEventListener("abort", abortFromCaller); callerListenerAttached = false;
+  } };
+  const abort = () => { detachCaller(); controller.abort(); };
   const abortFromCaller = () => { callerAborted = true; abort(); };
   if (callerSignal?.aborted === true) abortFromCaller();
-  else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
+  else if (callerSignal !== undefined) { callerListenerAttached = true; callerSignal.addEventListener("abort", abortFromCaller, { once: true }); }
   const selectedError = (errorCode: "migration_manifest_limit" | "migration_preview_timeout") => callerAborted ? "request_aborted" : errorCode;
   const remaining = (errorCode: "migration_manifest_limit" | "migration_preview_timeout" = "migration_manifest_limit", selectedDeadline = deadlineAt) => {
     const current = now();
@@ -86,6 +90,12 @@ export function createMigrationDeadline(now: () => number, durationMs: number, c
     while (pendingOperations.size !== 0) await Promise.allSettled([...pendingOperations]);
   };
   return Object.freeze({ signal: controller.signal, deadlineAt, cancel: abort, remaining, run, settlePending, awaitPendingSettlement });
+}
+
+export function createMigrationChildDeadline(parent: MigrationDeadline, now: () => number, maximumDurationMs: number,
+  errorCode: "migration_manifest_limit" | "migration_preview_timeout" = "migration_preview_timeout"): MigrationDeadline {
+  if (!Number.isSafeInteger(maximumDurationMs) || maximumDurationMs < 1 || maximumDurationMs > 30_000) throw new Error("migration_snapshot_invalid");
+  return createMigrationDeadline(now, Math.min(maximumDurationMs, parent.remaining(errorCode)), parent.signal);
 }
 
 function plain(input: unknown): input is object {
@@ -190,7 +200,7 @@ export async function materializeMigrationProjectManifest(dependencies: Manifest
 export async function materializeMigrationProjectManifestInTransaction(dependencies: ManifestDependencies & Readonly<{ transaction: SnapshotTransaction }>) {
   const limits = validatedLimits(dependencies);
   const deadline = dependencies.deadline === undefined ? createMigrationDeadline(dependencies.now, limits.maximumDurationMs)
-    : createMigrationDeadline(dependencies.now, Math.min(limits.maximumDurationMs, dependencies.deadline.remaining("migration_manifest_limit")), dependencies.deadline.signal);
+    : createMigrationChildDeadline(dependencies.deadline, dependencies.now, limits.maximumDurationMs, "migration_manifest_limit");
   let started = false; let result: Awaited<ReturnType<typeof materializeMigrationProjectManifest>> | undefined;
   let primaryError: Error | undefined; let commitOutcome: Promise<MigrationCommitOutcome> | undefined;
   try {

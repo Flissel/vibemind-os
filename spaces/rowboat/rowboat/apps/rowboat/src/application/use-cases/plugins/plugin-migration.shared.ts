@@ -52,6 +52,13 @@ export interface MigrationConfirmationClaims {
   readonly issuedAt: string; readonly expiresAt: string; readonly nonce: string; readonly idempotencyKey: string;
 }
 
+export function migrationConfirmationTimestamp(value: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value)) throw new Error("migration_confirmation_invalid");
+  const milliseconds = Date.parse(value);
+  if (!Number.isSafeInteger(milliseconds) || milliseconds < 0 || new Date(milliseconds).toISOString() !== value) throw new Error("migration_confirmation_invalid");
+  return value;
+}
+
 function encode(value: string): string { return Buffer.from(value, "utf8").toString("base64url"); }
 export function signMigrationConfirmation(claims: MigrationConfirmationClaims, secret: string): string {
   assertSecret(secret);
@@ -81,7 +88,7 @@ export function verifyMigrationConfirmation(token: string, secret: string, now: 
     || !Array.isArray(claims.targetInstallationIds) || claims.targetInstallationIds.length === 0 || claims.targetInstallationIds.some(id => typeof id !== "string" || !UUID.test(id))
     || typeof claims.issuedAt !== "string" || typeof claims.expiresAt !== "string" || typeof claims.nonce !== "string" || !SAFE_TOKEN.test(claims.nonce)
     || typeof claims.idempotencyKey !== "string" || !SAFE_TOKEN.test(claims.idempotencyKey)) throw new Error("migration_confirmation_invalid");
-  const issued = Date.parse(claims.issuedAt); const expires = Date.parse(claims.expiresAt);
+  const issued = Date.parse(migrationConfirmationTimestamp(claims.issuedAt)); const expires = Date.parse(migrationConfirmationTimestamp(claims.expiresAt));
   if (!Number.isFinite(issued) || !Number.isFinite(expires) || expires <= issued || expires - issued > 5 * 60_000 || now.getTime() < issued || now.getTime() >= expires) throw new Error("migration_confirmation_expired");
   return Object.freeze(claims as MigrationConfirmationClaims);
 }

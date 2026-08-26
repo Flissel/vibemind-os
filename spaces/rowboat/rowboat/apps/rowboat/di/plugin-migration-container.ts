@@ -8,9 +8,9 @@ import { actorTuple, canonical, migrationDigest, signMigrationConfirmation, veri
 import { LegacyPluginMigration, type PluginMigrationPreview } from "@/src/application/services/legacy-plugin-migration";
 import { LEGACY_PLUGIN_RECIPES, sourceDriftBlocker } from "@/src/application/services/legacy-plugin-recipes";
 import { assertMigrationProjectStateUnchanged, captureMigrationProjectManifestEntry, captureMigrationProjectState, migrationProjectPointerCasFilter, parseMigrationPointerRecord, type MigrationProjectState } from "@/src/application/services/plugin-migration-project-state";
-import { createMigrationDeadline, executeMigrationManifest, materializeMigrationProjectManifestInTransaction, type MigrationDeadline, type MigrationProjectManifestEntry, type MigrationProjectReadyManifestEntry } from "@/src/application/services/plugin-migration-keyset-snapshot";
+import { createMigrationChildDeadline, createMigrationDeadline, executeMigrationManifest, materializeMigrationProjectManifestInTransaction, type MigrationDeadline, type MigrationProjectManifestEntry, type MigrationProjectReadyManifestEntry } from "@/src/application/services/plugin-migration-keyset-snapshot";
 import { createMongoMigrationSnapshotReaders, type MongoMigrationSnapshotCollection } from "@/src/application/services/plugin-migration-mongo-snapshot";
-import { exactMigrationRecoveryEvidence, migrationMongoDeadlineOptions, migrationRollbackRecoveryRow, migrationTransactionFailure, runGuardedMigrationOperation, runGuardedMigrationTransaction } from "@/src/application/services/plugin-migration-transaction";
+import { exactMigrationRecoveryEvidence, migrationMongoDeadlineOptions, migrationReportGeneratedAt, migrationRollbackRecoveryRow, migrationTransactionFailure, runGuardedMigrationOperation, runGuardedMigrationTransaction } from "@/src/application/services/plugin-migration-transaction";
 import { runMigrationReadTransaction } from "@/src/application/services/plugin-migration-session-finalizer";
 import { Auth0PluginApiAuthorizationPolicy, Auth0PluginUserSessionProvider, ExistingProjectApiKeyVerifier, JoseAuth0UserTokenVerifier } from "@/src/infrastructure/policies/auth0.plugin-api-authorization.policy";
 import { MongoDBUsersRepository } from "@/src/infrastructure/repositories/mongodb.users.repository";
@@ -162,9 +162,10 @@ async function createComposition() {
       remainingMs: () => deadline.remaining("migration_preview_timeout") }), "migration_preview_timeout");
     if (selected === null) throw new Error("catalog_digest_mismatch"); return deepFreeze(selected); };
   const prepareOne = async (projectId: string, catalog: PluginCatalogLock, deadline: MigrationDeadline, expected?: MigrationProjectReadyManifestEntry): Promise<PreparedContext> => {
+    const ownedDeadline = createMigrationChildDeadline(deadline, () => Date.now(), 30_000);
     const session = mongoClient.startSession();
-    return readTransaction(deadline, session, async () => {
-      const document = await deadline.run((remainingMs, signal) => {
+    return readTransaction(ownedDeadline, session, async () => {
+      const document = await ownedDeadline.run((remainingMs, signal) => {
         const options: FindOptions<RawProject> & Readonly<{ signal: AbortSignal }> = { projection: PROJECT_PROJECTION, session, maxTimeMS: remainingMs, signal };
         return db.collection<RawProject>("projects").findOne({ _id: projectId }, options);
       }, "migration_preview_timeout");
@@ -173,7 +174,7 @@ async function createComposition() {
       if (expected !== undefined && (manifestEntry.projectId !== expected.projectId || manifestEntry.scalarIdentityDigest !== expected.scalarIdentityDigest
         || manifestEntry.stateDigest !== expected.stateDigest)) throw new Error("migration_snapshot_changed");
       const prepared = await prepareDocument(document, manifestEntry, catalog, async id => {
-        const raw = await deadline.run((remainingMs, signal) => {
+        const raw = await ownedDeadline.run((remainingMs, signal) => {
           const options: FindOptions<Document> & Readonly<{ signal: AbortSignal }> = { projection: { _id: 0 }, session, maxTimeMS: remainingMs, signal };
           return db.collection(PLUGIN_COLLECTIONS.migrationRecords).findOne({ id }, options);
         }, "migration_preview_timeout");
@@ -232,7 +233,8 @@ async function createComposition() {
       const { installations: _expectedInstallations, mutationsApplied: _expectedMutationsApplied, ...expectedRawRecord } = prepared.preview;
       const expectedRecord = ZPluginMigrationRecord.parse({ ...expectedRawRecord, status: "applied" });
       const recoverApplied = async () => {
-        const recovery = createMigrationDeadline(() => Date.now(), 5_000);
+        const recoveryRoot = createMigrationDeadline(() => Date.now(), 5_000);
+        const recovery = createMigrationChildDeadline(recoveryRoot, () => Date.now(), 5_000);
         const recoverySession = mongoClient.startSession();
         return readTransaction(recovery, recoverySession, async () => {
         const prior = await findExact(idempotencyCollection, { _id: claims.idempotencyKey } as unknown as Filter<Document>, recovery, recoverySession);
@@ -249,16 +251,16 @@ async function createComposition() {
           { installationId: admission.installationId, componentDigest: admission.componentDigest }, recovery, recoverySession, { _id: 0 }));
         const expectedPointer = { migrationRecordId: prepared.preview.id, sourceProjectRevision: prepared.state.sourceProjectRevision,
           sourceStateDigest: prepared.state.stateDigest, catalogDigest: prepared.preview.targetCatalogDigest };
-        const recoveredGeneratedAt = prior === null || typeof prior.generatedAt !== "string" ? null : prior.generatedAt;
-        const expectedIdempotency = recoveredGeneratedAt === null ? null : { _id: claims.idempotencyKey, payloadDigest,
-          projectId: prepared.state.projectId, migrationRecordId: prepared.preview.id, receiptIds: [prepared.preview.id], generatedAt: recoveredGeneratedAt };
-        const expectedEvidence = expectedIdempotency === null ? null : { pointer: expectedPointer, record: expectedRecord,
+        const generatedAt = migrationReportGeneratedAt(claims.issuedAt);
+        const expectedIdempotency = { _id: claims.idempotencyKey, payloadDigest,
+          projectId: prepared.state.projectId, migrationRecordId: prepared.preview.id, receiptIds: [prepared.preview.id], generatedAt };
+        const expectedEvidence = { pointer: expectedPointer, record: expectedRecord,
           nonce: { _id: claims.nonce, projectId: claims.projectId, idempotencyKey: claims.idempotencyKey }, idempotency: expectedIdempotency,
           rollback: migrationRollbackRecoveryRow(prepared.preview.id, prepared.state.rollbackSnapshot, prepared.preview.rollbackSnapshotDigest),
           installations: prepared.preview.installations.map(serializePluginInstallationDocument), admissions: prepared.admissions.map(serializePluginAdmissionDocument) };
         const actualEvidence = { pointer: selectedPointer, record, nonce, idempotency: prior, rollback, installations, admissions };
-        if (expectedEvidence !== null && exactMigrationRecoveryEvidence(expectedEvidence, actualEvidence)) {
-          return { receiptIds: Object.freeze([prepared.preview.id]), replayed: true, mutationCount: 0, generatedAt: recoveredGeneratedAt as string };
+        if (exactMigrationRecoveryEvidence(expectedEvidence, actualEvidence)) {
+          return { receiptIds: Object.freeze([prepared.preview.id]), replayed: true, mutationCount: 0, generatedAt };
         }
         return null;
         });
@@ -297,7 +299,7 @@ async function createComposition() {
         if (await findExact(db.collection(PLUGIN_COLLECTIONS.migrationRecords), { id: record.id }, deadline, session) !== null) throw new Error("migration_record_conflict");
         await insertExact(db.collection(PLUGIN_COLLECTIONS.migrationRecords), { ...record }, session, "migration_record_conflict", deadline);
         await insertExact(db.collection("plugin_migration_nonces"), { _id: claims.nonce, projectId: claims.projectId, idempotencyKey: claims.idempotencyKey }, session, "migration_confirmation_replayed", deadline);
-        const generatedAt = new Date().toISOString();
+        const generatedAt = migrationReportGeneratedAt(claims.issuedAt);
         await insertExact(idempotencyCollection, { _id: claims.idempotencyKey, payloadDigest, projectId: claims.projectId,
           migrationRecordId: record.id, receiptIds: [record.id], generatedAt }, session, "migration_idempotency_conflict", deadline);
         const updated = await updateExact(db.collection<RawProject>("projects"), migrationProjectPointerCasFilter(prepared.state), { $set: { pluginMigrationPointer: { migrationRecordId: record.id,

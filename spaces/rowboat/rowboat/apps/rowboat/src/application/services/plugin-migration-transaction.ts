@@ -1,5 +1,5 @@
 import type { MigrationDeadline } from "./plugin-migration-keyset-snapshot";
-import { canonical } from "../use-cases/plugins/plugin-migration.shared";
+import { canonical, migrationConfirmationTimestamp } from "../use-cases/plugins/plugin-migration.shared";
 import { types as utilTypes } from "node:util";
 import { finalizeMigrationSession, type MigrationCommitOutcome } from "./plugin-migration-session-finalizer";
 
@@ -56,6 +56,10 @@ export function exactMigrationRecoveryEvidence(expected: unknown, actual: unknow
 export function migrationRollbackRecoveryRow(recordId: string, rollbackSnapshot: Readonly<Record<string, unknown>>,
   rollbackSnapshotDigest: string): Readonly<Record<string, unknown>> {
   return Object.freeze({ _id: recordId, ...rollbackSnapshot, rollbackSnapshotDigest });
+}
+
+export function migrationReportGeneratedAt(issuedAt: string): string {
+  return migrationConfirmationTimestamp(issuedAt);
 }
 
 export async function runGuardedMigrationOperation<T>(deadline: MigrationDeadline,
