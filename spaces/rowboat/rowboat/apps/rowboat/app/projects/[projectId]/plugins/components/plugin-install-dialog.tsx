@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import React, { useState, useTransition, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
+import { Modal, ModalBody, ModalContent, ModalFooter, ModalHeader } from "@heroui/react";
 import { installPluginAction } from "@/app/actions/plugin.actions";
 import type { PluginUiPreview } from "@/src/interface-adapters/actions/plugin-action-runtime";
 
@@ -16,12 +17,32 @@ export function toPluginInstallDialogView(preview: PluginUiPreview) {
   });
 }
 
+export function PluginInstallDialogFrame({ onClose, children }: {
+  readonly onClose: () => void;
+  readonly children: ReactNode;
+}) {
+  return (
+    <Modal
+      isOpen
+      onClose={onClose}
+      isDismissable
+      isKeyboardDismissDisabled={false}
+      shouldBlockScroll
+      placement="center"
+      scrollBehavior="inside"
+      aria-labelledby="plugin-install-title"
+      aria-describedby="plugin-install-description"
+    >
+      {children}
+    </Modal>
+  );
+}
+
 function safeError(error: unknown): string {
   return error instanceof Error && Object.getPrototypeOf(error) === Error.prototype ? error.message : "internal_error";
 }
 
-export function PluginInstallDialog({ projectId, preview, onClose }: {
-  readonly projectId: string;
+export function PluginInstallDialog({ preview, onClose }: {
   readonly preview: PluginUiPreview;
   readonly onClose: () => void;
 }) {
@@ -34,11 +55,7 @@ export function PluginInstallDialog({ projectId, preview, onClose }: {
     setError(null);
     try {
       await installPluginAction({
-        projectId,
-        pluginName: preview.pluginName,
-        catalogDigest: preview.catalogDigest,
-        expectedRevision: preview.expectedRevision,
-        idempotencyKey: preview.idempotencyKey,
+        previewToken: preview.previewToken,
       });
       router.refresh();
       onClose();
@@ -46,10 +63,12 @@ export function PluginInstallDialog({ projectId, preview, onClose }: {
   });
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="presentation">
-      <section role="dialog" aria-modal="true" aria-labelledby="plugin-install-title" className="max-h-[85vh] w-full max-w-2xl overflow-auto rounded-xl bg-white p-6 shadow-xl dark:bg-zinc-900">
-        <h2 id="plugin-install-title" className="text-lg font-semibold">Install {view.pluginName}</h2>
-        <h3 className="mt-5 font-medium">Component decisions</h3>
+    <PluginInstallDialogFrame onClose={onClose}>
+      <ModalContent>
+        <ModalHeader id="plugin-install-title">Install {view.pluginName}</ModalHeader>
+        <ModalBody>
+          <p id="plugin-install-description" className="text-sm text-zinc-500">Review the server-authorized component decisions and credential requirements before installing.</p>
+          <h3 className="mt-2 font-medium">Component decisions</h3>
         <ul className="mt-2 space-y-2">
           {view.components.map((component) => (
             <li key={`${component.kind}:${component.name}`} className="rounded-md bg-zinc-50 p-3 text-sm dark:bg-zinc-800">
@@ -65,13 +84,14 @@ export function PluginInstallDialog({ projectId, preview, onClose }: {
           </ul>
         )}
         {error !== null && <p role="alert" className="mt-4 break-all text-sm text-red-700 dark:text-red-300">{error}</p>}
-        <div className="mt-6 flex justify-end gap-3">
+        </ModalBody>
+        <ModalFooter>
           <button type="button" onClick={onClose} disabled={pending} className="rounded-md border px-3 py-2 text-sm">Cancel</button>
           <button type="button" onClick={install} disabled={pending || !view.canInstall} className="rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-zinc-400">
             {pending ? "Installing…" : "Install"}
           </button>
-        </div>
-      </section>
-    </div>
+        </ModalFooter>
+      </ModalContent>
+    </PluginInstallDialogFrame>
   );
 }

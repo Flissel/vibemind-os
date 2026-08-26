@@ -23,7 +23,7 @@ export function PluginCatalog({ projectId, items }: { readonly projectId: string
     setError(null);
     try {
       const result = await previewPluginInstallationAction({
-        projectId, pluginName: item.pluginName, catalogDigest: item.catalogDigest, expectedRevision: item.revision ?? 0,
+        projectId, pluginName: item.pluginName, catalogDigest: item.catalogDigest,
       });
       setPreview(result);
     } catch (caught) { setError(safeError(caught)); }
@@ -38,7 +38,7 @@ export function PluginCatalog({ projectId, items }: { readonly projectId: string
           {items.map((item) => <PluginCard key={item.pluginName} item={item} onInstall={select} />)}
         </div>
       )}
-      {preview !== null && <PluginInstallDialog projectId={projectId} preview={preview} onClose={() => setPreview(null)} />}
+      {preview !== null && <PluginInstallDialog preview={preview} onClose={() => setPreview(null)} />}
     </div>
   );
 }

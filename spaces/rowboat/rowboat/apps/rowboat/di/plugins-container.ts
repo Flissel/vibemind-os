@@ -2,10 +2,17 @@ import type { PluginCatalogController } from "@/src/interface-adapters/controlle
 import type { PluginInstallationController } from "@/src/interface-adapters/controllers/plugins/plugin-installation.controller";
 import type { PluginToolRuntime } from "@/src/application/services/plugin-tool-runtime";
 import type { PluginToolAuthorizationContext } from "@/src/application/services/plugin-tool-runtime";
+import type { PluginApiIdentity } from "@/src/application/policies/plugin-api-authorization.policy";
+
+type PluginReplayLookupInput = Readonly<{
+  projectId: string; pluginName: string; catalogDigest: string; expectedRevision: number; idempotencyKey: string;
+}>;
 
 interface PluginControllers {
+  readonly authenticate: (request: Request) => Promise<PluginApiIdentity>;
   readonly catalog: PluginCatalogController;
   readonly installation: PluginInstallationController;
+  readonly findInstallReplay: (request: Request, input: PluginReplayLookupInput) => Promise<unknown | null>;
   readonly createToolRuntime: (authorizationContext: PluginToolAuthorizationContext | undefined) => PluginToolRuntime;
 }
 
@@ -14,7 +21,7 @@ let controllers: Promise<PluginControllers> | undefined;
 async function createPluginControllers(): Promise<PluginControllers> {
   const [database, pluginRepositoryModule, policyModule, usersModule, apiKeysModule, membersModule, catalogUseCaseModule,
     previewUseCaseModule, installUseCaseModule, enableUseCaseModule, listProjectUseCaseModule, catalogControllerModule,
-    installationControllerModule, toolRuntimeModule, projectAuthorizationModule] = await Promise.all([
+    installationControllerModule, toolRuntimeModule, projectAuthorizationModule, pluginSharedModule] = await Promise.all([
     import("@/app/lib/mongodb"),
     import("@/src/infrastructure/repositories/mongodb.plugins.repository"),
     import("@/src/infrastructure/policies/auth0.plugin-api-authorization.policy"),
@@ -30,6 +37,7 @@ async function createPluginControllers(): Promise<PluginControllers> {
     import("@/src/interface-adapters/controllers/plugins/plugin-installation.controller"),
     import("@/src/application/services/plugin-tool-runtime"),
     import("@/src/application/policies/project-action-authorization.policy"),
+    import("@/src/application/use-cases/plugins/plugin-service.shared"),
   ]);
 
   const transactionRunner = new pluginRepositoryModule.MongoPluginTransactionRunner({ pluginsMongoClient: database.mongoClient });
@@ -55,11 +63,23 @@ async function createPluginControllers(): Promise<PluginControllers> {
   const projectActionAuthorizationPolicy = new projectAuthorizationModule.ProjectActionAuthorizationPolicy({ projectMembersRepository, apiKeysRepository });
 
   return Object.freeze({
+    authenticate: (request: Request) => authorization.authenticate(request),
     catalog: new catalogControllerModule.PluginCatalogController({ pluginApiAuthorizationPolicy: authorization, listPluginCatalogUseCase }),
     installation: new installationControllerModule.PluginInstallationController({
       pluginApiAuthorizationPolicy: authorization, previewPluginInstallationUseCase, installPluginUseCase,
       setPluginEnabledUseCase, listProjectPluginsUseCase,
     }),
+    findInstallReplay: async (request: Request, input: PluginReplayLookupInput) => {
+      const identity = await authorization.authenticate(request);
+      await authorization.authorizeProject(identity, input.projectId);
+      return pluginsRepository.getIdempotentReceipt({
+        scope: pluginSharedModule.fingerprint({ projectId: input.projectId, operation: "install", idempotencyKey: input.idempotencyKey }),
+        fingerprint: pluginSharedModule.fingerprint({
+          projectId: input.projectId, pluginName: input.pluginName, catalogDigest: input.catalogDigest, expectedRevision: input.expectedRevision,
+        }),
+        projectId: input.projectId, pluginName: input.pluginName, catalogDigest: input.catalogDigest, operation: "install",
+      });
+    },
     createToolRuntime: (authorizationContext: PluginToolAuthorizationContext | undefined) => new toolRuntimeModule.PluginToolRuntime({
       pluginsRepository,
       authorizationContext,
@@ -85,6 +105,14 @@ export async function resolvePluginCatalogController(): Promise<PluginCatalogCon
 
 export async function resolvePluginInstallationController(): Promise<PluginInstallationController> {
   return (await composition()).installation;
+}
+
+export async function resolvePluginActionIdentity(request: Request): Promise<PluginApiIdentity> {
+  return (await composition()).authenticate(request);
+}
+
+export async function resolvePluginInstallReplay(request: Request, input: PluginReplayLookupInput): Promise<unknown | null> {
+  return (await composition()).findInstallReplay(request, input);
 }
 
 export async function resolvePluginToolRuntime(authorizationContext?: PluginToolAuthorizationContext): Promise<PluginToolRuntime> {

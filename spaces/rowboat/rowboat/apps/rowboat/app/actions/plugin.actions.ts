@@ -2,7 +2,8 @@
 
 import { randomUUID } from "node:crypto";
 import { types as utilTypes } from "node:util";
-import { createPluginActionRuntime } from "@/src/interface-adapters/actions/plugin-action-runtime";
+import { createPluginActionRuntime, type PluginActionRuntimeDependencies } from "@/src/interface-adapters/actions/plugin-action-runtime";
+import { PINNED_PLUGIN_CATALOG_DIGEST } from "@rowboat/openai-plugin-runtime";
 
 const SAFE_ERRORS = new Set([
   "request_invalid", "response_invalid", "unauthenticated", "user_authentication_required", "forbidden",
@@ -11,20 +12,31 @@ const SAFE_ERRORS = new Set([
   "source_mismatch", "manifest_invalid", "path_escape", "digest_mismatch", "license_review_required",
   "credential_missing", "http_mcp_not_admitted", "process_not_admitted", "hook_not_admitted",
   "write_review_required", "component_unsupported", "migration_conflict", "parity_failed", "rollback_unavailable",
+  "preview_configuration_invalid", "preview_invalid", "preview_expired", "stale_preview",
 ]);
 
 function runtime() {
-  return createPluginActionRuntime({
+  const dependencies: PluginActionRuntimeDependencies = {
     resolveControllers: async () => {
       const { resolvePluginCatalogController, resolvePluginInstallationController } = await import("@/di/plugins-container");
       const [catalog, installation] = await Promise.all([
         resolvePluginCatalogController(), resolvePluginInstallationController(),
       ]);
-      return Object.freeze({ catalog, installation });
+      return Object.freeze({
+        catalog,
+        installation,
+        authenticate: async (request: Request) => (await import("@/di/plugins-container")).resolvePluginActionIdentity(request),
+        findInstallReplay: async (request: Request, input: Readonly<{
+          projectId: string; pluginName: string; catalogDigest: string; expectedRevision: number; idempotencyKey: string;
+        }>) => (await import("@/di/plugins-container")).resolvePluginInstallReplay(request, input),
+      });
     },
     createRequest: () => new Request("https://rowboat.invalid/internal/plugin-action"),
     createIdempotencyKey: () => `ui-${randomUUID()}`,
-  });
+    previewSecret: process.env.PLUGIN_UI_PREVIEW_SECRET,
+    pinnedCatalogDigest: PINNED_PLUGIN_CATALOG_DIGEST,
+  };
+  return createPluginActionRuntime(dependencies);
 }
 
 async function redacted<T>(operation: () => Promise<T>): Promise<T> {

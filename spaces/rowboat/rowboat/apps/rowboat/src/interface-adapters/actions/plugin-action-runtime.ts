@@ -1,5 +1,8 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
+import type { PluginApiIdentity } from "@/src/application/policies/plugin-api-authorization.policy";
 import { captureRecord } from "@/src/interface-adapters/controllers/plugins/plugin-controller.shared";
+import { signPluginPreviewEnvelope, verifyPluginPreviewEnvelope } from "./plugin-preview-envelope";
 import {
   catalogResponse,
   installResponse,
@@ -12,11 +15,8 @@ const DIGEST = /^[a-f0-9]{64}$/;
 const IDEMPOTENCY = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
 
 const ListInput = z.object({ projectId: z.string().regex(ID), catalogDigest: z.string().regex(DIGEST) }).strict();
-const PreviewInput = z.object({
-  projectId: z.string().regex(ID), pluginName: z.string().regex(ID), catalogDigest: z.string().regex(DIGEST),
-  expectedRevision: z.number().int().nonnegative(),
-}).strict();
-const InstallInput = PreviewInput.extend({ idempotencyKey: z.string().regex(IDEMPOTENCY) }).strict();
+const PreviewInput = z.object({ projectId: z.string().regex(ID), pluginName: z.string().regex(ID), catalogDigest: z.string().regex(DIGEST) }).strict();
+const InstallInput = z.object({ previewToken: z.string().min(1).max(4096) }).strict();
 
 export type PluginUiStatus = "available" | "review_required" | "installed" | "partially_available" | "unavailable" | "migration_required" | "error";
 export type PluginUiReason =
@@ -43,8 +43,7 @@ export interface PluginUiCatalogItem {
 }
 
 export interface PluginUiPreview extends PluginUiCatalogItem {
-  readonly expectedRevision: number;
-  readonly idempotencyKey: string;
+  readonly previewToken: string;
   readonly credentialSlots: readonly Readonly<{ name: string; configured: boolean }>[];
 }
 
@@ -54,12 +53,22 @@ interface InstallationController {
   preview(request: Request, input: unknown): Promise<unknown>;
   install(request: Request, input: unknown): Promise<unknown>;
 }
-interface Controllers { readonly catalog: CatalogController; readonly installation: InstallationController; }
+interface Controllers {
+  readonly authenticate: (request: Request) => Promise<PluginApiIdentity>;
+  readonly catalog: CatalogController;
+  readonly installation: InstallationController;
+  readonly findInstallReplay?: (request: Request, input: Readonly<{
+    projectId: string; pluginName: string; catalogDigest: string; expectedRevision: number; idempotencyKey: string;
+  }>) => Promise<unknown | null>;
+}
 
 export interface PluginActionRuntimeDependencies {
   readonly resolveControllers: () => Promise<Controllers>;
   readonly createRequest: () => Request;
   readonly createIdempotencyKey: () => string;
+  readonly previewSecret: string | undefined;
+  readonly pinnedCatalogDigest: string;
+  readonly now?: () => number;
 }
 
 function parseInput<T>(input: unknown, allowed: readonly string[], schema: z.ZodType<T>): T {
@@ -84,11 +93,55 @@ function freeze<T>(value: T): T {
 
 type SerializedPlugin = Readonly<{
   pluginName: string; pluginVersion: string; catalogDigest: string; sourceCommit?: string; status: string;
-  reason?: PluginUiReason; components: readonly PluginUiComponent[]; revision?: number;
+  reason?: PluginUiReason; components: readonly PluginUiComponent[]; revision?: number; admission?: unknown; license?: unknown;
 }>;
 
 async function json<T>(response: Response): Promise<T> {
   return await response.json() as T;
+}
+
+function canonical(value: unknown): string {
+  if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (typeof value !== "object") throw new Error("response_invalid");
+  const entries = Object.entries(value).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+  return `{${entries.map(([name, item]) => `${JSON.stringify(name)}:${canonical(item)}`).join(",")}}`;
+}
+
+function digest(value: unknown): string {
+  return createHash("sha256").update(canonical(value), "utf8").digest("hex");
+}
+
+function actor(identity: PluginApiIdentity): Readonly<{ actorType: "user" | "project_api_key"; actorId: string }> {
+  return identity.kind === "user"
+    ? Object.freeze({ actorType: "user", actorId: identity.userId })
+    : Object.freeze({ actorType: "project_api_key", actorId: identity.projectId });
+}
+
+function sameActor(identity: PluginApiIdentity, envelope: Readonly<{ actorType: string; actorId: string }>): boolean {
+  const current = actor(identity);
+  return current.actorType === envelope.actorType && current.actorId === envelope.actorId;
+}
+
+async function projectState(controllers: Controllers, request: Request, projectId: string, pluginName: string, catalogDigest: string) {
+  const raw = await controllers.installation.list(request, { projectId, catalogDigest });
+  const installed = await json<{ items: SerializedPlugin[] }>(projectListResponse(raw));
+  const matches = installed.items.filter((item) => item.pluginName === pluginName);
+  if (matches.length > 1) throw new Error("response_invalid");
+  return Object.freeze({ present: matches.length === 1, revision: matches[0]?.revision ?? 0, item: matches[0] });
+}
+
+function previewDigests(item: SerializedPlugin & { credentialSlots: Array<{ name: string; configured: boolean }> }) {
+  return Object.freeze({
+    componentDecisionsDigest: digest({
+      status: canonicalStatus(item), components: item.components,
+      ...(item.reason === undefined ? {} : { reason: item.reason }),
+      ...(item.admission === undefined ? {} : { admission: item.admission }),
+      ...(item.license === undefined ? {} : { license: item.license }),
+    }),
+    credentialSlotsDigest: digest(item.credentialSlots),
+  });
 }
 
 function canonicalStatus(item: SerializedPlugin): PluginUiStatus {
@@ -135,8 +188,13 @@ export function createPluginActionRuntime(dependencies: PluginActionRuntimeDepen
     },
 
     async preview(input: unknown): Promise<PluginUiPreview> {
-      const parsed = parseInput(input, ["projectId", "pluginName", "catalogDigest", "expectedRevision"], PreviewInput);
+      const parsed = parseInput(input, ["projectId", "pluginName", "catalogDigest"], PreviewInput);
+      if (parsed.catalogDigest !== dependencies.pinnedCatalogDigest) throw new Error("request_invalid");
+      const now = dependencies.now?.() ?? Date.now();
+      if (typeof dependencies.previewSecret !== "string" || dependencies.previewSecret.length < 32) throw new Error("preview_configuration_invalid");
       const controllers = await dependencies.resolveControllers();
+      const identity = await controllers.authenticate(dependencies.createRequest());
+      const installation = await projectState(controllers, dependencies.createRequest(), parsed.projectId, parsed.pluginName, parsed.catalogDigest);
       const raw = await controllers.installation.preview(dependencies.createRequest(), {
         projectId: parsed.projectId, pluginName: parsed.pluginName, catalogDigest: parsed.catalogDigest,
       });
@@ -144,24 +202,56 @@ export function createPluginActionRuntime(dependencies: PluginActionRuntimeDepen
       if (item.pluginName !== parsed.pluginName || item.catalogDigest !== parsed.catalogDigest || item.sourceCommit === undefined) throw new Error("response_invalid");
       const idempotencyKey = dependencies.createIdempotencyKey();
       if (!IDEMPOTENCY.test(idempotencyKey)) throw new Error("response_invalid");
+      const digests = previewDigests(item);
+      const previewToken = signPluginPreviewEnvelope({
+        version: "rowboat_plugin_preview_v1", ...actor(identity), projectId: parsed.projectId, pluginName: parsed.pluginName,
+        catalogDigest: parsed.catalogDigest, sourceCommit: item.sourceCommit, installationPresent: installation.present,
+        expectedRevision: installation.revision, ...digests,
+        idempotencyKey, operation: "install", issuedAt: now, expiresAt: now + 5 * 60 * 1000,
+      }, dependencies.previewSecret);
       return freeze({
-        ...catalogItem(item), expectedRevision: parsed.expectedRevision, idempotencyKey,
+        ...catalogItem(item, installation.item), previewToken,
         credentialSlots: item.credentialSlots.map(({ name, configured }) => ({ name, configured })),
       });
     },
 
     async install(input: unknown): Promise<Readonly<Record<string, unknown>>> {
-      const parsed = parseInput(input, ["projectId", "pluginName", "catalogDigest", "expectedRevision", "idempotencyKey"], InstallInput);
+      const parsed = parseInput(input, ["previewToken"], InstallInput);
+      const envelope = verifyPluginPreviewEnvelope(parsed.previewToken, dependencies.previewSecret, dependencies.now?.() ?? Date.now());
+      if (envelope.catalogDigest !== dependencies.pinnedCatalogDigest) throw new Error("preview_invalid");
       const controllers = await dependencies.resolveControllers();
+      const identity = await controllers.authenticate(dependencies.createRequest());
+      if (!sameActor(identity, envelope)) throw new Error("preview_invalid");
+      const installation = await projectState(controllers, dependencies.createRequest(), envelope.projectId, envelope.pluginName, envelope.catalogDigest);
       const previewRaw = await controllers.installation.preview(dependencies.createRequest(), {
-        projectId: parsed.projectId, pluginName: parsed.pluginName, catalogDigest: parsed.catalogDigest,
+        projectId: envelope.projectId, pluginName: envelope.pluginName, catalogDigest: envelope.catalogDigest,
       });
       const current = await json<SerializedPlugin & { credentialSlots: Array<{ name: string; configured: boolean }> }>(previewResponse(previewRaw));
-      if (current.pluginName !== parsed.pluginName || current.catalogDigest !== parsed.catalogDigest || current.sourceCommit === undefined) throw new Error("response_invalid");
+      const currentDigests = previewDigests(current);
+      if (
+        current.pluginName !== envelope.pluginName || current.catalogDigest !== envelope.catalogDigest
+        || current.sourceCommit !== envelope.sourceCommit || installation.revision !== envelope.expectedRevision
+        || currentDigests.componentDecisionsDigest !== envelope.componentDecisionsDigest
+        || currentDigests.credentialSlotsDigest !== envelope.credentialSlotsDigest
+      ) throw new Error("stale_preview");
+      if (installation.present !== envelope.installationPresent) {
+        if (!envelope.installationPresent && installation.present && controllers.findInstallReplay !== undefined) {
+          const replay = await controllers.findInstallReplay(dependencies.createRequest(), {
+            projectId: envelope.projectId, pluginName: envelope.pluginName, catalogDigest: envelope.catalogDigest,
+            expectedRevision: envelope.expectedRevision, idempotencyKey: envelope.idempotencyKey,
+          });
+          if (replay !== null) return freeze(await json<Record<string, unknown>>(installResponse(replay)));
+        }
+        throw new Error("stale_preview");
+      }
+      if (envelope.installationPresent) throw new Error("component_not_admitted");
       if (canonicalStatus(current) !== "available") {
         throw new Error(current.reason ?? current.components.find((component) => component.reason !== undefined)?.reason ?? "component_not_admitted");
       }
-      const result = await controllers.installation.install(dependencies.createRequest(), parsed);
+      const result = await controllers.installation.install(dependencies.createRequest(), {
+        projectId: envelope.projectId, pluginName: envelope.pluginName, catalogDigest: envelope.catalogDigest,
+        expectedRevision: envelope.expectedRevision, idempotencyKey: envelope.idempotencyKey,
+      });
       return freeze(await json<Record<string, unknown>>(installResponse(result)));
     },
   });

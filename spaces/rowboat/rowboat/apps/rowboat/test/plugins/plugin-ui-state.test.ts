@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { toPluginCardView, type PluginCatalogCardItem } from "@/app/projects/[projectId]/plugins/components/plugin-card";
 import { createPluginActionRuntime } from "@/src/interface-adapters/actions/plugin-action-runtime";
 import { pluginCatalogPath } from "@/app/projects/[projectId]/plugins/components/plugin-catalog";
-import { toPluginInstallDialogView } from "@/app/projects/[projectId]/plugins/components/plugin-install-dialog";
+import { Modal } from "@heroui/react";
+import { PluginInstallDialogFrame, toPluginInstallDialogView } from "@/app/projects/[projectId]/plugins/components/plugin-install-dialog";
 import { LEGACY_TOOLS_LABEL } from "@/app/projects/[projectId]/tools/components/legacy-tools-label";
 
 const digest = "a".repeat(64);
@@ -55,7 +56,7 @@ describe("plugin catalog view state", () => {
 
   it("shows only component decisions and credential slot requirements in the dialog", () => {
     const view = toPluginInstallDialogView(Object.freeze({
-      ...card("available"), expectedRevision: 0, idempotencyKey: "server-key-1",
+      ...card("available"), previewToken: "signed-preview-token",
       components: Object.freeze([Object.freeze({ name: "github-mcp", kind: "mcp" as const, status: "available", reason: "write_review_required" as const })]),
       credentialSlots: Object.freeze([Object.freeze({ name: "GITHUB_TOKEN", configured: false })]),
     }));
@@ -64,6 +65,24 @@ describe("plugin catalog view state", () => {
     expect(view.canInstall).toBe(true);
     expect(JSON.stringify(view)).not.toContain("secret");
     expect(Object.isFrozen(view)).toBe(true);
+  });
+
+  it("uses the established focus-managed dialog primitive with labelled semantics", () => {
+    const onClose = () => undefined;
+    const frame = PluginInstallDialogFrame({ onClose, children: "content" });
+    expect(frame.type).toBe(Modal);
+    expect(frame.props).toMatchObject({
+      isOpen: true,
+      onClose,
+      isDismissable: true,
+      isKeyboardDismissDisabled: false,
+      "aria-labelledby": "plugin-install-title",
+      "aria-describedby": "plugin-install-description",
+    });
+    expect(PluginInstallDialogFrame({ onClose, children: "content" }).props).toMatchObject({
+      isDismissable: true,
+      isKeyboardDismissDisabled: false,
+    });
   });
 });
 
@@ -82,6 +101,7 @@ describe("plugin server action boundary", () => {
       components: Object.freeze([]), credentialSlots: Object.freeze([Object.freeze({ name: "GITHUB_TOKEN", configured: false })]),
     });
     const controllers = Object.freeze({
+      authenticate: async () => Object.freeze({ kind: "user" as const, userId: "user-1" }),
       catalog: Object.freeze({ execute: async () => { events.push("catalog-auth-read"); return [catalogItem]; } }),
       installation: Object.freeze({
         list: async (_request: Request, input: Readonly<Record<string, unknown>>) => {
@@ -104,6 +124,8 @@ describe("plugin server action boundary", () => {
       resolveControllers: async () => controllers,
       createRequest: () => new Request("https://rowboat.invalid/internal/plugin-action"),
       createIdempotencyKey: () => "server-key-1",
+      previewSecret: undefined,
+      pinnedCatalogDigest: digest,
     });
     return { runtime, events, get installs() { return installs; } };
   }
@@ -134,30 +156,16 @@ describe("plugin server action boundary", () => {
     };
     const runtime = createPluginActionRuntime({
       resolveControllers: async () => ({
+        authenticate: async () => Object.freeze({ kind: "user" as const, userId: "user-1" }),
         catalog: { execute: async () => [catalogItem] },
         installation: { list: async () => [], preview: async () => { throw new Error("unused"); }, install: async () => { throw new Error("unused"); } },
       }),
       createRequest: () => new Request("https://rowboat.invalid/internal/plugin-action"),
       createIdempotencyKey: () => "server-key-1",
+      previewSecret: undefined,
+      pinnedCatalogDigest: digest,
     });
     expect((await runtime.list({ projectId: "project-1", catalogDigest: digest })).items[0]?.status).toBe(expected);
-  });
-
-  it("previews before install and replays the same server-issued idempotency key", async () => {
-    const state = setup();
-    const preview = await state.runtime.preview({ projectId: "project-1", pluginName: "github", catalogDigest: digest, expectedRevision: 0 });
-    expect(preview).toMatchObject({ idempotencyKey: "server-key-1", expectedRevision: 0, credentialSlots: [{ name: "GITHUB_TOKEN", configured: false }] });
-    expect(JSON.stringify(preview)).not.toContain("value");
-
-    const input = { projectId: "project-1", pluginName: "github", catalogDigest: digest, expectedRevision: 0, idempotencyKey: preview.idempotencyKey };
-    const first = await state.runtime.install(input);
-    const replay = await state.runtime.install(input);
-    expect(first).toEqual(replay);
-    expect(state.events).toEqual([
-      "preview-auth-read", "preview-auth-read", "install-auth-mutation",
-      "preview-auth-read", "install-auth-mutation",
-    ]);
-    expect(state.installs).toBe(2);
   });
 
   it("rejects stale, cross-project, forged, proxy and accessor arguments before controllers", async () => {
@@ -181,6 +189,7 @@ describe("plugin server action boundary", () => {
     const state = setup();
     const poisoned = createPluginActionRuntime({
       resolveControllers: async () => Object.freeze({
+        authenticate: async () => Object.freeze({ kind: "user" as const, userId: "user-1" }),
         catalog: Object.freeze({ execute: async () => [] }),
         installation: Object.freeze({
           list: async () => [],
@@ -194,8 +203,11 @@ describe("plugin server action boundary", () => {
       }),
       createRequest: () => new Request("https://rowboat.invalid/internal/plugin-action"),
       createIdempotencyKey: () => "server-key-1",
+      previewSecret: "s".repeat(64),
+      pinnedCatalogDigest: digest,
+      now: () => 1_700_000_000_000,
     });
-    await expect(poisoned.install({ projectId: "project-1", pluginName: "github", catalogDigest: digest, expectedRevision: 0, idempotencyKey: "server-key-1" })).rejects.toThrow("response_invalid");
+    await expect(poisoned.preview({ projectId: "project-1", pluginName: "github", catalogDigest: digest })).rejects.toThrow("response_invalid");
     expect(state.installs).toBe(0);
   });
 
@@ -203,6 +215,7 @@ describe("plugin server action boundary", () => {
     let mutations = 0;
     const runtime = createPluginActionRuntime({
       resolveControllers: async () => ({
+        authenticate: async () => Object.freeze({ kind: "user" as const, userId: "user-1" }),
         catalog: { execute: async () => [] },
         installation: {
           list: async () => [],
@@ -217,8 +230,173 @@ describe("plugin server action boundary", () => {
       }),
       createRequest: () => new Request("https://rowboat.invalid/internal/plugin-action"),
       createIdempotencyKey: () => "server-key-1",
+      previewSecret: "s".repeat(64),
+      pinnedCatalogDigest: digest,
+      now: () => 1_700_000_000_000,
     });
-    await expect(runtime.install({ projectId: "project-1", pluginName: "github", catalogDigest: digest, expectedRevision: 0, idempotencyKey: "server-key-1" })).rejects.toThrow("license_review_required");
+    const preview = await runtime.preview({ projectId: "project-1", pluginName: "github", catalogDigest: digest });
+    await expect(runtime.install({ previewToken: preview.previewToken })).rejects.toThrow("license_review_required");
     expect(mutations).toBe(0);
+  });
+});
+
+describe("signed plugin preview authority", () => {
+  type TestActor = Readonly<{ kind: "user"; userId: string }> | Readonly<{ kind: "project_api_key"; projectId: string }>;
+
+  function secureSetup() {
+    let now = 1_700_000_000_000;
+    let actor: TestActor = Object.freeze({ kind: "user", userId: "user-1" });
+    let mutations = 0;
+    let previews = 0;
+    let lists = 0;
+    let currentInstallations: readonly unknown[] = [];
+    let currentPreview: Readonly<Record<string, unknown>> = Object.freeze({
+      pluginName: "github", catalogDigest: digest, sourceCommit, policyVersion: "openai-plugin-policy-v1",
+      license: Object.freeze({ declaration: "MIT", decision: "admitted" }), admission: "admitted",
+      components: Object.freeze([]), credentialSlots: Object.freeze([Object.freeze({ name: "GITHUB_TOKEN", configured: false })]),
+    });
+    const receipt = Object.freeze({ type: "install", receiptId: "receipt-1", projectId: "project-1", pluginName: "github", status: "success", redactions: Object.freeze([]) });
+    let replayReceipt: typeof receipt | null = null;
+    const runtime = createPluginActionRuntime({
+      resolveControllers: async () => Object.freeze({
+        authenticate: async () => actor,
+        findInstallReplay: async () => replayReceipt,
+        catalog: Object.freeze({ execute: async () => [] }),
+        installation: Object.freeze({
+          list: async () => { lists += 1; return currentInstallations; },
+          preview: async () => { previews += 1; return currentPreview; },
+          install: async (_request: Request, input: Readonly<Record<string, unknown>>) => {
+            mutations += 1;
+            expect(input).toEqual({ projectId: "project-1", pluginName: "github", catalogDigest: digest, expectedRevision: 0, idempotencyKey: "server-key-1" });
+            currentInstallations = [Object.freeze({
+              pluginName: "github", pluginVersion: "1.0.0", catalogDigest: digest, policyVersion: "openai-plugin-policy-v1",
+              license: Object.freeze({ declaration: "MIT", decision: "admitted" }), admission: "admitted", components: Object.freeze([]),
+              enabled: true, revision: 0,
+            })];
+            replayReceipt = receipt;
+            return receipt;
+          },
+        }),
+      }),
+      createRequest: () => new Request("https://rowboat.invalid/internal/plugin-action"),
+      createIdempotencyKey: () => "server-key-1",
+      previewSecret: "s".repeat(64),
+      pinnedCatalogDigest: digest,
+      now: () => now,
+    });
+    return {
+      runtime,
+      set now(value: number) { now = value; },
+      set actor(value: TestActor) { actor = Object.freeze(value); },
+      set preview(value: Readonly<Record<string, unknown>>) { currentPreview = value; },
+      set installations(value: readonly unknown[]) { currentInstallations = value; },
+      get mutations() { return mutations; }, get previews() { return previews; }, get lists() { return lists; },
+    };
+  }
+
+  it("accepts only a signed server preview envelope at install", async () => {
+    const state = secureSetup();
+    const preview = await state.runtime.preview({ projectId: "project-1", pluginName: "github", catalogDigest: digest });
+    expect(preview).toMatchObject({ pluginName: "github", credentialSlots: [{ name: "GITHUB_TOKEN", configured: false }] });
+    expect(Object.keys(preview).sort()).not.toContain("expectedRevision");
+    expect(Object.keys(preview).sort()).not.toContain("idempotencyKey");
+    expect(typeof (preview as unknown as { previewToken: unknown }).previewToken).toBe("string");
+    const result = await state.runtime.install({ previewToken: (preview as unknown as { previewToken: string }).previewToken });
+    expect(result).toEqual({ ...result, receiptId: "receipt-1" });
+    expect(state.mutations).toBe(1);
+    await expect(state.runtime.install({
+      previewToken: (preview as unknown as { previewToken: string }).previewToken,
+      expectedRevision: 99, idempotencyKey: "forged-key", projectId: "project-2",
+    })).rejects.toThrow("request_invalid");
+    expect(state.mutations).toBe(1);
+  });
+
+  it("rejects tamper, cross-actor use and expiry before mutation", async () => {
+    const state = secureSetup();
+    const preview = await state.runtime.preview({ projectId: "project-1", pluginName: "github", catalogDigest: digest }) as unknown as { previewToken: string };
+    const last = preview.previewToken.endsWith("A") ? "B" : "A";
+    await expect(state.runtime.install({ previewToken: `${preview.previewToken.slice(0, -1)}${last}` })).rejects.toThrow("preview_invalid");
+    state.actor = { kind: "user", userId: "user-2" };
+    await expect(state.runtime.install({ previewToken: preview.previewToken })).rejects.toThrow("preview_invalid");
+    state.actor = { kind: "project_api_key", projectId: "project-1" };
+    await expect(state.runtime.install({ previewToken: preview.previewToken })).rejects.toThrow("preview_invalid");
+    state.actor = { kind: "user", userId: "user-1" };
+    state.now = 1_700_000_300_000;
+    await expect(state.runtime.install({ previewToken: preview.previewToken })).rejects.toThrow("preview_expired");
+    expect(state.mutations).toBe(0);
+  });
+
+  it.each([
+    ["projectId", "project-2"],
+    ["pluginName", "other"],
+    ["catalogDigest", "f".repeat(64)],
+    ["expectedRevision", 99],
+    ["idempotencyKey", "forged-key"],
+  ] as const)("rejects a signed-payload %s substitution", async (field, value) => {
+    const state = secureSetup();
+    const preview = await state.runtime.preview({ projectId: "project-1", pluginName: "github", catalogDigest: digest }) as unknown as { previewToken: string };
+    const [payload, signature] = preview.previewToken.split(".") as [string, string];
+    const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<string, unknown>;
+    decoded[field] = value;
+    const substituted = `${Buffer.from(JSON.stringify(decoded), "utf8").toString("base64url")}.${signature}`;
+    await expect(state.runtime.install({ previewToken: substituted })).rejects.toThrow("preview_invalid");
+    expect(state.mutations).toBe(0);
+  });
+
+  it("returns stale_preview when current decisions change and preserves deterministic replay", async () => {
+    const state = secureSetup();
+    const preview = await state.runtime.preview({ projectId: "project-1", pluginName: "github", catalogDigest: digest }) as unknown as { previewToken: string };
+    const first = await state.runtime.install({ previewToken: preview.previewToken });
+    const replay = await state.runtime.install({ previewToken: preview.previewToken });
+    expect(replay).toEqual(first);
+    expect(state.mutations).toBe(1);
+
+    const changed = secureSetup();
+    const stale = await changed.runtime.preview({ projectId: "project-1", pluginName: "github", catalogDigest: digest }) as unknown as { previewToken: string };
+    changed.preview = Object.freeze({
+      pluginName: "github", catalogDigest: digest, sourceCommit, policyVersion: "openai-plugin-policy-v1",
+      license: Object.freeze({ declaration: "MIT", decision: "admitted" }), admission: "admitted",
+      components: Object.freeze([Object.freeze({
+        componentDigest: digest, name: "github-mcp", kind: "mcp",
+        admission: Object.freeze({ status: "admitted", policyVersion: "openai-plugin-policy-v1" }),
+        availability: Object.freeze({ status: "unavailable", reason: "provider_unavailable" }),
+      })]), credentialSlots: Object.freeze([]),
+    });
+    await expect(changed.runtime.install({ previewToken: stale.previewToken })).rejects.toThrow("stale_preview");
+    expect(changed.mutations).toBe(0);
+
+    const concurrentlyInstalled = secureSetup();
+    const absentToken = await concurrentlyInstalled.runtime.preview({ projectId: "project-1", pluginName: "github", catalogDigest: digest }) as unknown as { previewToken: string };
+    concurrentlyInstalled.installations = [Object.freeze({
+      pluginName: "github", pluginVersion: "1.0.0", catalogDigest: digest, policyVersion: "openai-plugin-policy-v1",
+      license: Object.freeze({ declaration: "MIT", decision: "admitted" }), admission: "admitted", components: Object.freeze([]),
+      enabled: true, revision: 0,
+    })];
+    await expect(concurrentlyInstalled.runtime.install({ previewToken: absentToken.previewToken })).rejects.toThrow("stale_preview");
+    expect(concurrentlyInstalled.mutations).toBe(0);
+
+    const revised = secureSetup();
+    const revisionToken = await revised.runtime.preview({ projectId: "project-1", pluginName: "github", catalogDigest: digest }) as unknown as { previewToken: string };
+    revised.installations = [Object.freeze({
+      pluginName: "github", pluginVersion: "1.0.0", catalogDigest: digest, policyVersion: "openai-plugin-policy-v1",
+      license: Object.freeze({ declaration: "MIT", decision: "admitted" }), admission: "admitted", components: Object.freeze([]),
+      enabled: true, revision: 1,
+    })];
+    await expect(revised.runtime.install({ previewToken: revisionToken.previewToken })).rejects.toThrow("stale_preview");
+    expect(revised.mutations).toBe(0);
+  });
+
+  it("fails closed without a configured signing secret before preview reads", async () => {
+    let resolves = 0;
+    const runtime = createPluginActionRuntime({
+      resolveControllers: async () => { resolves += 1; throw new Error("must_not_resolve"); },
+      createRequest: () => new Request("https://rowboat.invalid/internal/plugin-action"),
+      createIdempotencyKey: () => "server-key-1",
+      previewSecret: undefined,
+      pinnedCatalogDigest: digest,
+      now: () => 1_700_000_000_000,
+    });
+    await expect(runtime.preview({ projectId: "project-1", pluginName: "github", catalogDigest: digest })).rejects.toThrow("preview_configuration_invalid");
+    expect(resolves).toBe(0);
   });
 });
