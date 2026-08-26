@@ -30,8 +30,6 @@ export function PluginInstallDialogFrame({ onClose, children }: {
       shouldBlockScroll
       placement="center"
       scrollBehavior="inside"
-      aria-labelledby="plugin-install-title"
-      aria-describedby="plugin-install-description"
     >
       {children}
     </Modal>
@@ -65,9 +63,9 @@ export function PluginInstallDialog({ preview, onClose }: {
   return (
     <PluginInstallDialogFrame onClose={onClose}>
       <ModalContent>
-        <ModalHeader id="plugin-install-title">Install {view.pluginName}</ModalHeader>
+        <ModalHeader>Install {view.pluginName}</ModalHeader>
         <ModalBody>
-          <p id="plugin-install-description" className="text-sm text-zinc-500">Review the server-authorized component decisions and credential requirements before installing.</p>
+          <p className="text-sm text-zinc-500">Review the server-authorized component decisions and credential requirements before installing.</p>
           <h3 className="mt-2 font-medium">Component decisions</h3>
         <ul className="mt-2 space-y-2">
           {view.components.map((component) => (

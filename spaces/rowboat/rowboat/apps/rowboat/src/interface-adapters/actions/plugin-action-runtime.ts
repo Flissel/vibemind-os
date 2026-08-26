@@ -2,7 +2,10 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { PluginApiIdentity } from "@/src/application/policies/plugin-api-authorization.policy";
 import { captureRecord } from "@/src/interface-adapters/controllers/plugins/plugin-controller.shared";
-import { signPluginPreviewEnvelope, verifyPluginPreviewEnvelope } from "./plugin-preview-envelope";
+import {
+  signPluginPreviewEnvelope, validatePluginPreviewSecret, verifyPluginPreviewEnvelope,
+  type PluginPreviewEnvelope,
+} from "./plugin-preview-envelope";
 import {
   catalogResponse,
   installResponse,
@@ -57,9 +60,7 @@ interface Controllers {
   readonly authenticate: (request: Request) => Promise<PluginApiIdentity>;
   readonly catalog: CatalogController;
   readonly installation: InstallationController;
-  readonly findInstallReplay?: (request: Request, input: Readonly<{
-    projectId: string; pluginName: string; catalogDigest: string; expectedRevision: number; idempotencyKey: string;
-  }>) => Promise<unknown | null>;
+  readonly findInstallReplay: (request: Request, envelope: PluginPreviewEnvelope) => Promise<unknown | null>;
 }
 
 export interface PluginActionRuntimeDependencies {
@@ -191,7 +192,7 @@ export function createPluginActionRuntime(dependencies: PluginActionRuntimeDepen
       const parsed = parseInput(input, ["projectId", "pluginName", "catalogDigest"], PreviewInput);
       if (parsed.catalogDigest !== dependencies.pinnedCatalogDigest) throw new Error("request_invalid");
       const now = dependencies.now?.() ?? Date.now();
-      if (typeof dependencies.previewSecret !== "string" || dependencies.previewSecret.length < 32) throw new Error("preview_configuration_invalid");
+      validatePluginPreviewSecret(dependencies.previewSecret);
       const controllers = await dependencies.resolveControllers();
       const identity = await controllers.authenticate(dependencies.createRequest());
       const installation = await projectState(controllers, dependencies.createRequest(), parsed.projectId, parsed.pluginName, parsed.catalogDigest);
@@ -222,6 +223,8 @@ export function createPluginActionRuntime(dependencies: PluginActionRuntimeDepen
       const controllers = await dependencies.resolveControllers();
       const identity = await controllers.authenticate(dependencies.createRequest());
       if (!sameActor(identity, envelope)) throw new Error("preview_invalid");
+      const replay = await controllers.findInstallReplay(dependencies.createRequest(), envelope);
+      if (replay !== null) return freeze(await json<Record<string, unknown>>(installResponse(replay)));
       const installation = await projectState(controllers, dependencies.createRequest(), envelope.projectId, envelope.pluginName, envelope.catalogDigest);
       const previewRaw = await controllers.installation.preview(dependencies.createRequest(), {
         projectId: envelope.projectId, pluginName: envelope.pluginName, catalogDigest: envelope.catalogDigest,
@@ -235,13 +238,6 @@ export function createPluginActionRuntime(dependencies: PluginActionRuntimeDepen
         || currentDigests.credentialSlotsDigest !== envelope.credentialSlotsDigest
       ) throw new Error("stale_preview");
       if (installation.present !== envelope.installationPresent) {
-        if (!envelope.installationPresent && installation.present && controllers.findInstallReplay !== undefined) {
-          const replay = await controllers.findInstallReplay(dependencies.createRequest(), {
-            projectId: envelope.projectId, pluginName: envelope.pluginName, catalogDigest: envelope.catalogDigest,
-            expectedRevision: envelope.expectedRevision, idempotencyKey: envelope.idempotencyKey,
-          });
-          if (replay !== null) return freeze(await json<Record<string, unknown>>(installResponse(replay)));
-        }
         throw new Error("stale_preview");
       }
       if (envelope.installationPresent) throw new Error("component_not_admitted");

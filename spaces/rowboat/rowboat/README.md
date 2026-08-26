@@ -56,6 +56,16 @@ Download latest for Mac/Windows/Linux: [Download](https://www.rowboatlabs.com/do
 
 **All release files:**   https://github.com/rowboatlabs/rowboat/releases/latest
 
+### Plugin preview signing secret
+
+The Web plugin install flow requires `PLUGIN_UI_PREVIEW_SECRET`. Set it in the operator environment before starting Docker Compose; no default secret is shipped. Generate a random value, for example:
+
+```sh
+openssl rand -base64 48
+```
+
+The value must be 32 to 4096 UTF-8 bytes and must not contain NUL or newline characters. If it is absent or invalid, plugin preview and install actions fail closed with `preview_configuration_invalid`. Rotation invalidates outstanding plugin previews, so users must open a fresh preview after the Rowboat service restarts with the new value. Keep the value out of source control and rotate it using the deployment's normal secret-management procedure.
+
 ### Google setup
 To connect Google services (Gmail, Calendar, and Drive), follow [Google setup](https://github.com/rowboatlabs/rowboat/blob/main/google-setup.md).
 

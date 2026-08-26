@@ -29,10 +29,12 @@ const Payload = z.object({
 
 export type PluginPreviewEnvelope = Readonly<z.infer<typeof Payload>>;
 
-function key(secret: string | undefined): Buffer {
+export function validatePluginPreviewSecret(secret: string | undefined): Buffer {
   if (typeof secret !== "string") throw new Error("preview_configuration_invalid");
   const bytes = Buffer.from(secret, "utf8");
-  if (bytes.byteLength < 32 || bytes.byteLength > 4096) throw new Error("preview_configuration_invalid");
+  if (bytes.byteLength < 32 || bytes.byteLength > 4096 || /[\0\r\n]/u.test(secret)) {
+    throw new Error("preview_configuration_invalid");
+  }
   return bytes;
 }
 
@@ -46,13 +48,13 @@ export function signPluginPreviewEnvelope(input: unknown, secret: string | undef
     throw new Error("preview_invalid");
   }
   const payload = Buffer.from(JSON.stringify(parsed.data), "utf8").toString("base64url");
-  const token = `${payload}.${signature(key(secret), payload).toString("base64url")}`;
+  const token = `${payload}.${signature(validatePluginPreviewSecret(secret), payload).toString("base64url")}`;
   if (Buffer.byteLength(token, "ascii") > MAX_TOKEN_BYTES) throw new Error("preview_invalid");
   return token;
 }
 
 export function verifyPluginPreviewEnvelope(token: unknown, secret: string | undefined, now: number): PluginPreviewEnvelope {
-  const secretBytes = key(secret);
+  const secretBytes = validatePluginPreviewSecret(secret);
   if (typeof token !== "string" || Buffer.byteLength(token, "ascii") > MAX_TOKEN_BYTES || !TOKEN.test(token)) throw new Error("preview_invalid");
   if (!Number.isSafeInteger(now) || now < 0) throw new Error("preview_configuration_invalid");
   const [payload, encodedSignature] = token.split(".") as [string, string];

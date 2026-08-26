@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { types as utilTypes } from "node:util";
 import { createPluginActionRuntime, type PluginActionRuntimeDependencies } from "@/src/interface-adapters/actions/plugin-action-runtime";
+import type { PluginPreviewEnvelope } from "@/src/interface-adapters/actions/plugin-preview-envelope";
 import { PINNED_PLUGIN_CATALOG_DIGEST } from "@rowboat/openai-plugin-runtime";
 
 const SAFE_ERRORS = new Set([
@@ -26,9 +27,9 @@ function runtime() {
         catalog,
         installation,
         authenticate: async (request: Request) => (await import("@/di/plugins-container")).resolvePluginActionIdentity(request),
-        findInstallReplay: async (request: Request, input: Readonly<{
-          projectId: string; pluginName: string; catalogDigest: string; expectedRevision: number; idempotencyKey: string;
-        }>) => (await import("@/di/plugins-container")).resolvePluginInstallReplay(request, input),
+        findInstallReplay: async (request: Request, input: PluginPreviewEnvelope) => (
+          await import("@/di/plugins-container")
+        ).resolvePluginInstallReplay(request, input),
       });
     },
     createRequest: () => new Request("https://rowboat.invalid/internal/plugin-action"),

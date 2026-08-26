@@ -61,6 +61,7 @@ services:
       - USE_COMPOSIO_TOOLS=${USE_COMPOSIO_TOOLS}
       - COMPOSIO_API_KEY=${COMPOSIO_API_KEY}
       - COMPOSIO_TRIGGERS_WEBHOOK_SECRET=${COMPOSIO_TRIGGERS_WEBHOOK_SECRET}
+      - PLUGIN_UI_PREVIEW_SECRET=${PLUGIN_UI_PREVIEW_SECRET:-}
     restart: unless-stopped
     volumes:
       - uploads:/app/uploads

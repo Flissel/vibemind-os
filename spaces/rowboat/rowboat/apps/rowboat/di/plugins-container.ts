@@ -3,10 +3,9 @@ import type { PluginInstallationController } from "@/src/interface-adapters/cont
 import type { PluginToolRuntime } from "@/src/application/services/plugin-tool-runtime";
 import type { PluginToolAuthorizationContext } from "@/src/application/services/plugin-tool-runtime";
 import type { PluginApiIdentity } from "@/src/application/policies/plugin-api-authorization.policy";
+import type { PluginPreviewEnvelope } from "@/src/interface-adapters/actions/plugin-preview-envelope";
 
-type PluginReplayLookupInput = Readonly<{
-  projectId: string; pluginName: string; catalogDigest: string; expectedRevision: number; idempotencyKey: string;
-}>;
+type PluginReplayLookupInput = PluginPreviewEnvelope;
 
 interface PluginControllers {
   readonly authenticate: (request: Request) => Promise<PluginApiIdentity>;
@@ -71,7 +70,13 @@ async function createPluginControllers(): Promise<PluginControllers> {
     }),
     findInstallReplay: async (request: Request, input: PluginReplayLookupInput) => {
       const identity = await authorization.authenticate(request);
+      const actorType = identity.kind === "user" ? "user" : "project_api_key";
+      const actorId = identity.kind === "user" ? identity.userId : identity.projectId;
+      if (input.actorType !== actorType || input.actorId !== actorId || input.operation !== "install") {
+        throw new Error("preview_invalid");
+      }
       await authorization.authorizeProject(identity, input.projectId);
+      if (input.installationPresent) return null;
       return pluginsRepository.getIdempotentReceipt({
         scope: pluginSharedModule.fingerprint({ projectId: input.projectId, operation: "install", idempotencyKey: input.idempotencyKey }),
         fingerprint: pluginSharedModule.fingerprint({

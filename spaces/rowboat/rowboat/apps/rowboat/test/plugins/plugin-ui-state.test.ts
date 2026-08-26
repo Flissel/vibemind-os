@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { toPluginCardView, type PluginCatalogCardItem } from "@/app/projects/[projectId]/plugins/components/plugin-card";
 import { createPluginActionRuntime } from "@/src/interface-adapters/actions/plugin-action-runtime";
 import { pluginCatalogPath } from "@/app/projects/[projectId]/plugins/components/plugin-catalog";
@@ -76,9 +78,18 @@ describe("plugin catalog view state", () => {
       onClose,
       isDismissable: true,
       isKeyboardDismissDisabled: false,
-      "aria-labelledby": "plugin-install-title",
-      "aria-describedby": "plugin-install-description",
     });
+    expect(frame.props).not.toHaveProperty("aria-labelledby");
+    expect(frame.props).not.toHaveProperty("aria-describedby");
+    const modalSource = readFileSync(resolve(process.cwd(), "node_modules/@heroui/modal/dist/use-modal.js"), "utf8");
+    const headerSource = readFileSync(resolve(process.cwd(), "node_modules/@heroui/modal/dist/modal-header.js"), "utf8");
+    const bodySource = readFileSync(resolve(process.cwd(), "node_modules/@heroui/modal/dist/modal-body.js"), "utf8");
+    const dialogSource = readFileSync(resolve(process.cwd(), "app/projects/[projectId]/plugins/components/plugin-install-dialog.tsx"), "utf8");
+    expect(modalSource).toContain('"aria-labelledby": headerMounted ? headerId : void 0');
+    expect(modalSource).toContain('"aria-describedby": bodyMounted ? bodyId : void 0');
+    expect(headerSource).toContain("id: headerId");
+    expect(bodySource).toContain("id: bodyId");
+    expect(dialogSource).not.toMatch(/aria-(?:labelledby|describedby)|plugin-install-(?:title|description)/);
     expect(PluginInstallDialogFrame({ onClose, children: "content" }).props).toMatchObject({
       isDismissable: true,
       isKeyboardDismissDisabled: false,
@@ -102,6 +113,7 @@ describe("plugin server action boundary", () => {
     });
     const controllers = Object.freeze({
       authenticate: async () => Object.freeze({ kind: "user" as const, userId: "user-1" }),
+      findInstallReplay: async () => null,
       catalog: Object.freeze({ execute: async () => { events.push("catalog-auth-read"); return [catalogItem]; } }),
       installation: Object.freeze({
         list: async (_request: Request, input: Readonly<Record<string, unknown>>) => {
@@ -157,6 +169,7 @@ describe("plugin server action boundary", () => {
     const runtime = createPluginActionRuntime({
       resolveControllers: async () => ({
         authenticate: async () => Object.freeze({ kind: "user" as const, userId: "user-1" }),
+        findInstallReplay: async () => null,
         catalog: { execute: async () => [catalogItem] },
         installation: { list: async () => [], preview: async () => { throw new Error("unused"); }, install: async () => { throw new Error("unused"); } },
       }),
@@ -190,6 +203,7 @@ describe("plugin server action boundary", () => {
     const poisoned = createPluginActionRuntime({
       resolveControllers: async () => Object.freeze({
         authenticate: async () => Object.freeze({ kind: "user" as const, userId: "user-1" }),
+        findInstallReplay: async () => null,
         catalog: Object.freeze({ execute: async () => [] }),
         installation: Object.freeze({
           list: async () => [],
@@ -216,6 +230,7 @@ describe("plugin server action boundary", () => {
     const runtime = createPluginActionRuntime({
       resolveControllers: async () => ({
         authenticate: async () => Object.freeze({ kind: "user" as const, userId: "user-1" }),
+        findInstallReplay: async () => null,
         catalog: { execute: async () => [] },
         installation: {
           list: async () => [],
@@ -250,6 +265,8 @@ describe("signed plugin preview authority", () => {
     let previews = 0;
     let lists = 0;
     let currentInstallations: readonly unknown[] = [];
+    let replayLookups = 0;
+    let lastReplayInput: Readonly<Record<string, unknown>> | null = null;
     let currentPreview: Readonly<Record<string, unknown>> = Object.freeze({
       pluginName: "github", catalogDigest: digest, sourceCommit, policyVersion: "openai-plugin-policy-v1",
       license: Object.freeze({ declaration: "MIT", decision: "admitted" }), admission: "admitted",
@@ -260,7 +277,9 @@ describe("signed plugin preview authority", () => {
     const runtime = createPluginActionRuntime({
       resolveControllers: async () => Object.freeze({
         authenticate: async () => actor,
-        findInstallReplay: async () => replayReceipt,
+        findInstallReplay: async (_request: Request, input: Readonly<Record<string, unknown>>) => {
+          replayLookups += 1; lastReplayInput = input; return replayReceipt;
+        },
         catalog: Object.freeze({ execute: async () => [] }),
         installation: Object.freeze({
           list: async () => { lists += 1; return currentInstallations; },
@@ -291,6 +310,8 @@ describe("signed plugin preview authority", () => {
       set preview(value: Readonly<Record<string, unknown>>) { currentPreview = value; },
       set installations(value: readonly unknown[]) { currentInstallations = value; },
       get mutations() { return mutations; }, get previews() { return previews; }, get lists() { return lists; },
+      get replayLookups() { return replayLookups; },
+      get lastReplayInput() { return lastReplayInput; },
     };
   }
 
@@ -386,6 +407,34 @@ describe("signed plugin preview authority", () => {
     expect(revised.mutations).toBe(0);
   });
 
+  it("returns the exact receipt before credential, catalog or installation state drift checks", async () => {
+    const state = secureSetup();
+    const preview = await state.runtime.preview({ projectId: "project-1", pluginName: "github", catalogDigest: digest }) as unknown as { previewToken: string };
+    const first = await state.runtime.install({ previewToken: preview.previewToken });
+    const readsAfterInstall = { previews: state.previews, lists: state.lists };
+    state.preview = Object.freeze({
+      pluginName: "github", catalogDigest: digest, sourceCommit: "c".repeat(40), policyVersion: "changed-policy",
+      license: Object.freeze({ declaration: "MIT", decision: "admitted" }), admission: "admitted",
+      components: Object.freeze([]), credentialSlots: Object.freeze([Object.freeze({ name: "GITHUB_TOKEN", configured: true })]),
+    });
+    state.installations = [Object.freeze({
+      pluginName: "github", pluginVersion: "2.0.0", catalogDigest: "f".repeat(64), policyVersion: "changed-policy",
+      license: Object.freeze({ declaration: "MIT", decision: "admitted" }), admission: "admitted", components: Object.freeze([]),
+      enabled: true, revision: 7,
+    })];
+    expect(await state.runtime.install({ previewToken: preview.previewToken })).toEqual(first);
+    expect(state.mutations).toBe(1);
+    expect(state.replayLookups).toBe(2);
+    expect(state.lastReplayInput).toMatchObject({
+      version: "rowboat_plugin_preview_v1", actorType: "user", actorId: "user-1",
+      projectId: "project-1", pluginName: "github", catalogDigest: digest, sourceCommit,
+      installationPresent: false, expectedRevision: 0, componentDecisionsDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      credentialSlotsDigest: expect.stringMatching(/^[a-f0-9]{64}$/), idempotencyKey: "server-key-1",
+      operation: "install", issuedAt: 1_700_000_000_000, expiresAt: 1_700_000_300_000,
+    });
+    expect({ previews: state.previews, lists: state.lists }).toEqual(readsAfterInstall);
+  });
+
   it("fails closed without a configured signing secret before preview reads", async () => {
     let resolves = 0;
     const runtime = createPluginActionRuntime({
@@ -398,5 +447,38 @@ describe("signed plugin preview authority", () => {
     });
     await expect(runtime.preview({ projectId: "project-1", pluginName: "github", catalogDigest: digest })).rejects.toThrow("preview_configuration_invalid");
     expect(resolves).toBe(0);
+  });
+
+  it.each([
+    ["4097 ASCII bytes", "s".repeat(4097)],
+    ["4098 multibyte UTF-8 bytes", "é".repeat(2049)],
+    ["a NUL byte", `${"s".repeat(32)}\0suffix`],
+  ])("rejects %s before resolving preview or install controllers", async (_case, previewSecret) => {
+    let resolves = 0;
+    const runtime = createPluginActionRuntime({
+      resolveControllers: async () => { resolves += 1; throw new Error("must_not_resolve"); },
+      createRequest: () => new Request("https://rowboat.invalid/internal/plugin-action"),
+      createIdempotencyKey: () => "server-key-1",
+      previewSecret,
+      pinnedCatalogDigest: digest,
+      now: () => 1_700_000_000_000,
+    });
+    await expect(runtime.preview({ projectId: "project-1", pluginName: "github", catalogDigest: digest })).rejects.toThrow("preview_configuration_invalid");
+    await expect(runtime.install({ previewToken: "not-a-token" })).rejects.toThrow("preview_configuration_invalid");
+    expect(resolves).toBe(0);
+  });
+});
+
+describe("plugin preview secret operator configuration", () => {
+  it("passes the secret through compose without a committed value and documents lifecycle effects", () => {
+    const compose = readFileSync(resolve(process.cwd(), "../../docker-compose.yml"), "utf8");
+    const readme = readFileSync(resolve(process.cwd(), "../../README.md"), "utf8");
+    expect(compose).toContain("PLUGIN_UI_PREVIEW_SECRET=${PLUGIN_UI_PREVIEW_SECRET:-}");
+    expect(compose).not.toMatch(/PLUGIN_UI_PREVIEW_SECRET=(?!\$\{PLUGIN_UI_PREVIEW_SECRET:-\})[^\r\n]+/);
+    expect(readme).toContain("PLUGIN_UI_PREVIEW_SECRET");
+    expect(readme).toContain("openssl rand -base64 48");
+    expect(readme).toContain("32 to 4096 UTF-8 bytes");
+    expect(readme).toContain("preview_configuration_invalid");
+    expect(readme).toContain("Rotation invalidates outstanding plugin previews");
   });
 });
