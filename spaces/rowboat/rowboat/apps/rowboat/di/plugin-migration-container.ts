@@ -10,7 +10,7 @@ import { LEGACY_PLUGIN_RECIPES, sourceDriftBlocker } from "@/src/application/ser
 import { assertMigrationProjectStateUnchanged, captureMigrationProjectManifestEntry, captureMigrationProjectState, migrationProjectPointerCasFilter, parseMigrationPointerRecord, type MigrationProjectState } from "@/src/application/services/plugin-migration-project-state";
 import { createMigrationDeadline, executeMigrationManifest, materializeMigrationProjectManifestInTransaction, type MigrationDeadline, type MigrationProjectManifestEntry, type MigrationProjectReadyManifestEntry } from "@/src/application/services/plugin-migration-keyset-snapshot";
 import { createMongoMigrationSnapshotReaders, type MongoMigrationSnapshotCollection } from "@/src/application/services/plugin-migration-mongo-snapshot";
-import { migrationTransactionFailure, runGuardedMigrationTransaction } from "@/src/application/services/plugin-migration-transaction";
+import { exactMigrationRecoveryEvidence, migrationMongoDeadlineOptions, migrationTransactionFailure, runGuardedMigrationOperation, runGuardedMigrationTransaction } from "@/src/application/services/plugin-migration-transaction";
 import { Auth0PluginApiAuthorizationPolicy, Auth0PluginUserSessionProvider, ExistingProjectApiKeyVerifier, JoseAuth0UserTokenVerifier } from "@/src/infrastructure/policies/auth0.plugin-api-authorization.policy";
 import { MongoDBUsersRepository } from "@/src/infrastructure/repositories/mongodb.users.repository";
 import { MongoDBApiKeysRepository } from "@/src/infrastructure/repositories/mongodb.api-keys.repository";
@@ -21,7 +21,7 @@ import { PreviewPluginMigrationController } from "@/src/interface-adapters/contr
 import { ApplyPluginMigrationController } from "@/src/interface-adapters/controllers/plugins/apply-plugin-migration.controller";
 import type { PluginApiIdentity } from "@/src/application/policies/plugin-api-authorization.policy";
 import type { PluginComponentAdmission } from "@/src/application/repositories/plugins.repository.interface";
-import type { AggregateOptions, ClientSession, Collection, Document, Filter, FindOptions } from "mongodb";
+import type { AggregateOptions, ClientSession, Collection, Document, Filter, FindOptions, InsertOneOptions, UpdateFilter, UpdateOptions, WithId } from "mongodb";
 
 type RawProject = { _id: string; [key: string]: unknown };
 interface PreparedContext {
@@ -112,8 +112,27 @@ function mongoCode(error: unknown): number | null {
   if (error === null || typeof error !== "object" || utilTypes.isProxy(error)) return null;
   const descriptor = Object.getOwnPropertyDescriptor(error, "code"); return descriptor !== undefined && "value" in descriptor && descriptor.value === 11000 ? 11000 : null;
 }
-async function insertExact(collection: Collection, document: Document, session: ClientSession, conflict: string): Promise<void> {
-  try { await collection.insertOne(document, { session }); } catch (error) { if (mongoCode(error) === 11000) throw new Error(conflict); throw new Error("migration_repository_failed"); }
+async function insertExact(collection: Collection, document: Document, session: ClientSession, conflict: string, deadline: MigrationDeadline): Promise<void> {
+  try { await runGuardedMigrationOperation(deadline, async (remainingMs, signal) => {
+    const options: InsertOneOptions & Readonly<{ signal: AbortSignal }> = migrationMongoDeadlineOptions({ session }, remainingMs, signal);
+    await collection.insertOne(document, options);
+  }); } catch (error) { if (mongoCode(error) === 11000) throw new Error(conflict); throw migrationTransactionFailure(error); }
+}
+async function findExact<TSchema extends Document>(collection: Collection<TSchema>, filter: Filter<TSchema>, deadline: MigrationDeadline,
+  session?: ClientSession, projection?: Document): Promise<WithId<TSchema> | null> {
+  return runGuardedMigrationOperation(deadline, async (remainingMs, signal) => {
+    const options: FindOptions<TSchema> & Readonly<{ signal: AbortSignal }> = migrationMongoDeadlineOptions({
+      ...(session === undefined ? {} : { session }), ...(projection === undefined ? {} : { projection }),
+    }, remainingMs, signal);
+    return collection.findOne(filter, options);
+  });
+}
+async function updateExact<TSchema extends Document>(collection: Collection<TSchema>, filter: Filter<TSchema>, update: UpdateFilter<TSchema>,
+  session: ClientSession, deadline: MigrationDeadline) {
+  return runGuardedMigrationOperation(deadline, async (remainingMs, signal) => {
+    const options: UpdateOptions & Readonly<{ signal: AbortSignal }> = migrationMongoDeadlineOptions({ session }, remainingMs, signal);
+    return collection.updateOne(filter, update, options);
+  });
 }
 function exact(left: unknown, right: unknown): boolean { return canonical(left) === canonical(right); }
 
@@ -218,22 +237,33 @@ async function createComposition() {
       const prepared = context(rawContext); const session = mongoClient.startSession(); let result: { receiptIds: readonly string[]; replayed: boolean; mutationCount: number; generatedAt: string } | undefined;
       const payloadDigest = migrationDigest("rowboat:plugin-migration-apply-payload:v2", { claims, previewDigest: previewDigest(prepared.preview), stateDigest: prepared.state.stateDigest });
       const deadline = createMigrationDeadline(() => Date.now(), 30_000, callerSignal);
-      const idempotencyCollection = db.collection("plugin_migration_idempotency");
+      const idempotencyCollection = db.collection<Document>("plugin_migration_idempotency");
+      const { installations: _expectedInstallations, mutationsApplied: _expectedMutationsApplied, ...expectedRawRecord } = prepared.preview;
+      const expectedRecord = ZPluginMigrationRecord.parse({ ...expectedRawRecord, status: "applied" });
       const recoverApplied = async () => {
         const recovery = createMigrationDeadline(() => Date.now(), 5_000);
-        const prior = await recovery.run((remainingMs, signal) => {
-          const options: FindOptions<Document> & Readonly<{ signal: AbortSignal }> = { maxTimeMS: remainingMs, signal };
-          return idempotencyCollection.findOne({ _id: claims.idempotencyKey } as unknown as Document, options);
-        }, "migration_preview_timeout");
-        const project = await recovery.run((remainingMs, signal) => {
-          const options: FindOptions<RawProject> & Readonly<{ signal: AbortSignal }> = { projection: PROJECT_PROJECTION, maxTimeMS: remainingMs, signal };
-          return db.collection<RawProject>("projects").findOne({ _id: prepared.state.projectId }, options);
-        }, "migration_preview_timeout");
+        const prior = await findExact(idempotencyCollection, { _id: claims.idempotencyKey } as unknown as Filter<Document>, recovery);
+        const project = await findExact(db.collection<RawProject>("projects"), { _id: prepared.state.projectId }, recovery, undefined, PROJECT_PROJECTION);
         const selectedPointer = project === null ? null : captureMigrationProjectState(project).pointer;
-        if (prior !== null && prior.payloadDigest === payloadDigest && prior.projectId === prepared.state.projectId
-          && prior.migrationRecordId === prepared.preview.id && Array.isArray(prior.receiptIds) && prior.receiptIds.length === 1
-          && prior.receiptIds[0] === prepared.preview.id && typeof prior.generatedAt === "string" && selectedPointer?.migrationRecordId === prepared.preview.id) {
-          return { receiptIds: Object.freeze([prepared.preview.id]), replayed: true, mutationCount: 0, generatedAt: prior.generatedAt };
+        const record = await findExact(db.collection(PLUGIN_COLLECTIONS.migrationRecords), { id: prepared.preview.id }, recovery, undefined, { _id: 0 });
+        const nonce = await findExact(db.collection<Document>("plugin_migration_nonces"), { _id: claims.nonce } as unknown as Filter<Document>, recovery);
+        const installations = [] as unknown[];
+        for (const installation of prepared.preview.installations) installations.push(await findExact(
+          db.collection(PLUGIN_COLLECTIONS.installations), { id: installation.id }, recovery, undefined, { _id: 0 }));
+        const admissions = [] as unknown[];
+        for (const admission of prepared.admissions) admissions.push(await findExact(db.collection(PLUGIN_COLLECTIONS.componentAdmissions),
+          { installationId: admission.installationId, componentDigest: admission.componentDigest }, recovery, undefined, { _id: 0 }));
+        const expectedPointer = { migrationRecordId: prepared.preview.id, sourceProjectRevision: prepared.state.sourceProjectRevision,
+          sourceStateDigest: prepared.state.stateDigest, catalogDigest: prepared.preview.targetCatalogDigest };
+        const recoveredGeneratedAt = prior === null || typeof prior.generatedAt !== "string" ? null : prior.generatedAt;
+        const expectedIdempotency = recoveredGeneratedAt === null ? null : { _id: claims.idempotencyKey, payloadDigest,
+          projectId: prepared.state.projectId, migrationRecordId: prepared.preview.id, receiptIds: [prepared.preview.id], generatedAt: recoveredGeneratedAt };
+        const expectedEvidence = expectedIdempotency === null ? null : { pointer: expectedPointer, record: expectedRecord,
+          nonce: { _id: claims.nonce, projectId: claims.projectId, idempotencyKey: claims.idempotencyKey }, idempotency: expectedIdempotency,
+          installations: prepared.preview.installations.map(serializePluginInstallationDocument), admissions: prepared.admissions.map(serializePluginAdmissionDocument) };
+        const actualEvidence = { pointer: selectedPointer, record, nonce, idempotency: prior, installations, admissions };
+        if (expectedEvidence !== null && exactMigrationRecoveryEvidence(expectedEvidence, actualEvidence)) {
+          return { receiptIds: Object.freeze([prepared.preview.id]), replayed: true, mutationCount: 0, generatedAt: recoveredGeneratedAt as string };
         }
         return null;
       };
@@ -242,47 +272,40 @@ async function createComposition() {
           start: maxCommitTimeMS => session.startTransaction({ maxCommitTimeMS }), inTransaction: () => session.inTransaction(),
           commit: async () => session.commitTransaction(), abort: async () => session.abortTransaction(), end: async () => session.endSession(),
         }, work: async () => {
-        const prior = await idempotencyCollection.findOne({ _id: claims.idempotencyKey } as unknown as Document, { session });
-        if (prior !== null) {
-          if (prior.payloadDigest !== payloadDigest || prior.projectId !== prepared.state.projectId || prior.migrationRecordId !== prepared.preview.id
-            || !Array.isArray(prior.receiptIds) || prior.receiptIds.length !== 1 || prior.receiptIds[0] !== prepared.preview.id || typeof prior.generatedAt !== "string") throw new Error("migration_idempotency_conflict");
-          if (prepared.state.pointer?.migrationRecordId !== prepared.preview.id || prepared.preview.status !== "applied") throw new Error("migration_idempotency_conflict");
-          result = { receiptIds: Object.freeze([prepared.preview.id]), replayed: true, mutationCount: 0, generatedAt: prior.generatedAt };
-          return result;
-        }
+        const prior = await findExact(idempotencyCollection, { _id: claims.idempotencyKey } as unknown as Filter<Document>, deadline, session);
+        if (prior !== null) throw new Error("migration_idempotency_conflict");
         if (prepared.state.pointer !== null) throw new Error("migration_idempotency_conflict");
-        if (await db.collection<{ _id: string }>("plugin_migration_nonces").findOne({ _id: claims.nonce }, { session }) !== null) throw new Error("migration_confirmation_replayed");
-        const currentDocument = await db.collection<RawProject>("projects").findOne({ _id: prepared.state.projectId }, { projection: PROJECT_PROJECTION, session });
+        if (await findExact(db.collection<{ _id: string }>("plugin_migration_nonces"), { _id: claims.nonce }, deadline, session) !== null) throw new Error("migration_confirmation_replayed");
+        const currentDocument = await findExact(db.collection<RawProject>("projects"), { _id: prepared.state.projectId }, deadline, session, PROJECT_PROJECTION);
         if (currentDocument === null) throw new Error("migration_pointer_conflict");
         const currentState = captureMigrationProjectState(currentDocument);
         assertMigrationProjectStateUnchanged(prepared.state, currentState);
         if (currentState.pointer !== null) throw new Error("migration_pointer_conflict");
         await insertExact(db.collection("plugin_migration_rollbacks"), { _id: prepared.preview.id, ...prepared.state.rollbackSnapshot,
-          rollbackSnapshotDigest: prepared.preview.rollbackSnapshotDigest }, session, "migration_rollback_conflict");
+          rollbackSnapshotDigest: prepared.preview.rollbackSnapshotDigest }, session, "migration_rollback_conflict", deadline);
         for (const installation of prepared.preview.installations) {
           const installations = db.collection(PLUGIN_COLLECTIONS.installations);
-          if (await installations.findOne({ $or: [{ id: installation.id }, { projectId: installation.projectId, pluginName: installation.pluginName }] }, { session }) !== null) throw new Error("migration_installation_conflict");
-          const stored = serializePluginInstallationDocument(installation); await insertExact(installations, { ...stored }, session, "migration_installation_conflict");
-          const readBack = await installations.findOne({ id: installation.id }, { projection: { _id: 0 }, session });
+          if (await findExact(installations, { $or: [{ id: installation.id }, { projectId: installation.projectId, pluginName: installation.pluginName }] }, deadline, session) !== null) throw new Error("migration_installation_conflict");
+          const stored = serializePluginInstallationDocument(installation); await insertExact(installations, { ...stored }, session, "migration_installation_conflict", deadline);
+          const readBack = await findExact(installations, { id: installation.id }, deadline, session, { _id: 0 });
           if (readBack === null || !exact(deserializePluginInstallationDocument(readBack), installation)) throw new Error("migration_installation_conflict");
         }
         for (const admission of prepared.admissions) {
           const admissions = db.collection(PLUGIN_COLLECTIONS.componentAdmissions);
-          if (await admissions.findOne({ installationId: admission.installationId, componentDigest: admission.componentDigest }, { session }) !== null) throw new Error("migration_admission_conflict");
-          await insertExact(admissions, { ...serializePluginAdmissionDocument(admission) }, session, "migration_admission_conflict");
-          const readBack = await admissions.findOne({ installationId: admission.installationId, componentDigest: admission.componentDigest }, { projection: { _id: 0 }, session });
+          if (await findExact(admissions, { installationId: admission.installationId, componentDigest: admission.componentDigest }, deadline, session) !== null) throw new Error("migration_admission_conflict");
+          await insertExact(admissions, { ...serializePluginAdmissionDocument(admission) }, session, "migration_admission_conflict", deadline);
+          const readBack = await findExact(admissions, { installationId: admission.installationId, componentDigest: admission.componentDigest }, deadline, session, { _id: 0 });
           if (readBack === null || !exact(serializePluginAdmissionDocument(readBack), admission)) throw new Error("migration_admission_conflict");
         }
-        const { installations: _installations, mutationsApplied: _mutationsApplied, ...rawRecord } = prepared.preview;
-        const record = ZPluginMigrationRecord.parse({ ...rawRecord, status: "applied" });
-        if (await db.collection(PLUGIN_COLLECTIONS.migrationRecords).findOne({ id: record.id }, { session }) !== null) throw new Error("migration_record_conflict");
-        await insertExact(db.collection(PLUGIN_COLLECTIONS.migrationRecords), { ...record }, session, "migration_record_conflict");
-        await insertExact(db.collection("plugin_migration_nonces"), { _id: claims.nonce, projectId: claims.projectId, idempotencyKey: claims.idempotencyKey }, session, "migration_confirmation_replayed");
+        const record = expectedRecord;
+        if (await findExact(db.collection(PLUGIN_COLLECTIONS.migrationRecords), { id: record.id }, deadline, session) !== null) throw new Error("migration_record_conflict");
+        await insertExact(db.collection(PLUGIN_COLLECTIONS.migrationRecords), { ...record }, session, "migration_record_conflict", deadline);
+        await insertExact(db.collection("plugin_migration_nonces"), { _id: claims.nonce, projectId: claims.projectId, idempotencyKey: claims.idempotencyKey }, session, "migration_confirmation_replayed", deadline);
         const generatedAt = new Date().toISOString();
         await insertExact(idempotencyCollection, { _id: claims.idempotencyKey, payloadDigest, projectId: claims.projectId,
-          migrationRecordId: record.id, receiptIds: [record.id], generatedAt }, session, "migration_idempotency_conflict");
-        const updated = await db.collection<RawProject>("projects").updateOne(migrationProjectPointerCasFilter(prepared.state), { $set: { pluginMigrationPointer: { migrationRecordId: record.id,
-            sourceProjectRevision: prepared.state.sourceProjectRevision, sourceStateDigest: prepared.state.stateDigest, catalogDigest: record.targetCatalogDigest } } }, { session });
+          migrationRecordId: record.id, receiptIds: [record.id], generatedAt }, session, "migration_idempotency_conflict", deadline);
+        const updated = await updateExact(db.collection<RawProject>("projects"), migrationProjectPointerCasFilter(prepared.state), { $set: { pluginMigrationPointer: { migrationRecordId: record.id,
+            sourceProjectRevision: prepared.state.sourceProjectRevision, sourceStateDigest: prepared.state.stateDigest, catalogDigest: record.targetCatalogDigest } } }, session, deadline);
         if (updated.modifiedCount !== 1) throw new Error("migration_pointer_conflict");
         result = { receiptIds: Object.freeze([record.id]), replayed: false, mutationCount: 4, generatedAt };
         return result;

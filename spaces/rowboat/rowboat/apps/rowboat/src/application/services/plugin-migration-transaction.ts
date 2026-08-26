@@ -1,4 +1,6 @@
 import type { MigrationDeadline } from "./plugin-migration-keyset-snapshot";
+import { canonical } from "../use-cases/plugins/plugin-migration.shared";
+import { types as utilTypes } from "node:util";
 
 interface AbortableMigrationSession { inTransaction(): boolean; abortTransaction(): Promise<unknown> }
 const SAFE_TRANSACTION_ERRORS = new Set([
@@ -14,6 +16,52 @@ export async function abortMigrationTransaction(session: AbortableMigrationSessi
 export function migrationTransactionFailure(error: unknown): Error {
   if (error instanceof Error && Object.getPrototypeOf(error) === Error.prototype && SAFE_TRANSACTION_ERRORS.has(error.message)) return new Error(error.message);
   return new Error("migration_repository_failed");
+}
+
+function captureEvidence(input: unknown, depth = 0, budget: { items: number } = { items: 0 }): unknown {
+  if (depth > 16 || ++budget.items > 10_000) throw new Error("migration_recovery_invalid");
+  if (input === null || typeof input === "string" || typeof input === "boolean") return input;
+  if (typeof input === "number") { if (!Number.isFinite(input)) throw new Error("migration_recovery_invalid"); return input; }
+  if (typeof input !== "object" || utilTypes.isProxy(input)) throw new Error("migration_recovery_invalid");
+  const prototype = Object.getPrototypeOf(input);
+  if (Array.isArray(input)) {
+    if (prototype !== Array.prototype) throw new Error("migration_recovery_invalid");
+    const output: unknown[] = [];
+    for (let index = 0; index < input.length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(input, String(index));
+      if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) throw new Error("migration_recovery_invalid");
+      output.push(captureEvidence(descriptor.value, depth + 1, budget));
+    }
+    if (Reflect.ownKeys(input).length !== output.length + 1) throw new Error("migration_recovery_invalid");
+    return Object.freeze(output);
+  }
+  if (prototype !== Object.prototype && prototype !== null) throw new Error("migration_recovery_invalid");
+  const output: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  const keys = Reflect.ownKeys(input);
+  if (keys.some(key => typeof key !== "string")) throw new Error("migration_recovery_invalid");
+  for (const key of keys as string[]) {
+    const descriptor = Object.getOwnPropertyDescriptor(input, key);
+    if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) throw new Error("migration_recovery_invalid");
+    output[key] = captureEvidence(descriptor.value, depth + 1, budget);
+  }
+  return Object.freeze(output);
+}
+
+export function exactMigrationRecoveryEvidence(expected: unknown, actual: unknown): boolean {
+  try { return canonical(captureEvidence(expected)) === canonical(captureEvidence(actual)); }
+  catch { return false; }
+}
+
+export async function runGuardedMigrationOperation<T>(deadline: MigrationDeadline,
+  operation: (remainingMs: number, signal: AbortSignal) => Promise<T>): Promise<T> {
+  return deadline.run(operation, "migration_preview_timeout");
+}
+
+export function migrationMongoDeadlineOptions<T extends object>(base: T, remainingMs: number, signal: AbortSignal): T & Readonly<{
+  maxTimeMS: number; signal: AbortSignal;
+}> {
+  if (!Number.isSafeInteger(remainingMs) || remainingMs < 1 || signal.aborted) throw new Error("migration_preview_timeout");
+  return Object.freeze({ ...base, maxTimeMS: remainingMs, signal });
 }
 
 interface GuardedMigrationTransaction {
@@ -47,6 +95,7 @@ export async function runGuardedMigrationTransaction<T>(input: Readonly<{
       }
     }
     if (primary !== undefined && !commitStarted && started && input.transaction.inTransaction()) {
+      await input.deadline.settlePending(input.deadline.signal.aborted ? 25 : 1_000);
       await settle(() => input.transaction.abort(), input.deadline.signal.aborted ? 10 : 1_000);
     }
   } catch (error) { primary = migrationTransactionFailure(error); }

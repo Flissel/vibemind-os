@@ -30,6 +30,7 @@ export interface MigrationDeadline {
   readonly remaining: (errorCode?: "migration_manifest_limit" | "migration_preview_timeout", deadlineAt?: number) => number;
   readonly run: <T>(operation: (remainingMs: number, signal: AbortSignal) => Promise<T>,
     errorCode?: "migration_manifest_limit" | "migration_preview_timeout", deadlineAt?: number) => Promise<T>;
+  readonly settlePending: (maximumWaitMs: number) => Promise<boolean>;
 }
 
 export function createMigrationDeadline(now: () => number, durationMs: number, callerSignal?: AbortSignal): MigrationDeadline {
@@ -38,7 +39,7 @@ export function createMigrationDeadline(now: () => number, durationMs: number, c
   if (!Number.isFinite(startedAt)) throw new Error("migration_snapshot_invalid");
   const deadlineAt = startedAt + durationMs;
   if (!Number.isFinite(deadlineAt)) throw new Error("migration_snapshot_invalid");
-  const controller = new AbortController(); let callerAborted = false;
+  const controller = new AbortController(); let callerAborted = false; const pendingOperations = new Set<Promise<unknown>>();
   const abort = () => controller.abort();
   const abortFromCaller = () => { callerAborted = true; abort(); };
   if (callerSignal?.aborted === true) abortFromCaller();
@@ -59,7 +60,7 @@ export function createMigrationDeadline(now: () => number, durationMs: number, c
     const onAbort = () => rejectAbort?.(new Error(selectedError(errorCode)));
     controller.signal.addEventListener("abort", onAbort, { once: true });
     const pending = Promise.resolve().then(() => operation(remainingMs, controller.signal));
-    pending.catch(() => undefined);
+    pendingOperations.add(pending); pending.then(() => pendingOperations.delete(pending), () => pendingOperations.delete(pending));
     const expired = new Promise<never>((_resolve, reject) => { timeout = setTimeout(() => {
       abort(); reject(new Error(errorCode));
     }, remainingMs); });
@@ -70,7 +71,15 @@ export function createMigrationDeadline(now: () => number, durationMs: number, c
       controller.signal.removeEventListener("abort", onAbort);
     }
   };
-  return Object.freeze({ signal: controller.signal, deadlineAt, remaining, run });
+  const settlePending = async (maximumWaitMs: number): Promise<boolean> => {
+    if (!Number.isSafeInteger(maximumWaitMs) || maximumWaitMs < 1 || maximumWaitMs > 1_000) throw new Error("migration_snapshot_invalid");
+    const selected = [...pendingOperations]; if (selected.length === 0) return true;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<false>(resolve => { timeout = setTimeout(() => resolve(false), maximumWaitMs); });
+    try { return await Promise.race([Promise.allSettled(selected).then(() => true as const), expired]); }
+    finally { if (timeout !== undefined) clearTimeout(timeout); }
+  };
+  return Object.freeze({ signal: controller.signal, deadlineAt, remaining, run, settlePending });
 }
 
 function plain(input: unknown): input is object {
