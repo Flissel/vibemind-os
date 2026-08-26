@@ -123,6 +123,26 @@ export interface ProcessMcpClientFactory {
   create(): ProcessMcpClient;
 }
 
+export interface ProcessMcpSdkClient {
+  connect(
+    transport: Transport,
+    options?: Readonly<{ readonly signal?: AbortSignal }>,
+  ): Promise<void>;
+  callTool(
+    input: {
+      readonly name: string;
+      readonly arguments: Readonly<Record<string, unknown>>;
+    },
+    resultSchema: undefined,
+    options?: Readonly<{ readonly signal?: AbortSignal }>,
+  ): Promise<unknown>;
+  close(): Promise<void>;
+}
+
+export interface ProcessMcpSdkClientFactory {
+  create(): ProcessMcpSdkClient;
+}
+
 function captureProcessClient(client: ProcessMcpClient): ProcessMcpClient {
   try {
     const connect = client.connect;
@@ -217,24 +237,37 @@ class SpawnedProcessTransport implements Transport {
 }
 
 class SdkProcessMcpClient implements ProcessMcpClient {
-  #client: Client | undefined;
+  readonly #sdkClientFactory: ProcessMcpSdkClientFactory;
+  #client: ProcessMcpSdkClient | undefined;
+
+  constructor(sdkClientFactory: ProcessMcpSdkClientFactory) {
+    this.#sdkClientFactory = sdkClientFactory;
+  }
 
   async connect(
     process: SpawnedProcess,
     maxFrameBytes: number,
     maxProtocolBytes = DEFAULT_MCP_PROTOCOL_BYTES,
+    options?: Readonly<{ readonly signal: AbortSignal }>,
   ): Promise<void> {
-    const client = new Client({ name: "rowboat-openai-plugin-runtime", version: "1.0.0" });
-    await client.connect(new SpawnedProcessTransport(process, maxFrameBytes, maxProtocolBytes));
+    const client = this.#sdkClientFactory.create();
+    await client.connect(
+      new SpawnedProcessTransport(process, maxFrameBytes, maxProtocolBytes),
+      options,
+    );
     this.#client = client;
   }
 
   async callTool(input: {
     readonly name: string;
     readonly arguments: Readonly<Record<string, unknown>>;
-  }): Promise<unknown> {
+  }, options?: Readonly<{ readonly signal: AbortSignal }>): Promise<unknown> {
     if (this.#client === undefined) throw new Error("mcp_client_not_connected");
-    return this.#client.callTool({ name: input.name, arguments: input.arguments });
+    return this.#client.callTool(
+      { name: input.name, arguments: input.arguments },
+      undefined,
+      options,
+    );
   }
 
   async close(): Promise<void> {
@@ -244,9 +277,21 @@ class SdkProcessMcpClient implements ProcessMcpClient {
   }
 }
 
+class DefaultProcessMcpSdkClientFactory implements ProcessMcpSdkClientFactory {
+  create(): ProcessMcpSdkClient {
+    return new Client({ name: "rowboat-openai-plugin-runtime", version: "1.0.0" });
+  }
+}
+
 class SdkProcessMcpClientFactory implements ProcessMcpClientFactory {
+  readonly #sdkClientFactory: ProcessMcpSdkClientFactory;
+
+  constructor(sdkClientFactory: ProcessMcpSdkClientFactory) {
+    this.#sdkClientFactory = sdkClientFactory;
+  }
+
   create(): ProcessMcpClient {
-    return new SdkProcessMcpClient();
+    return new SdkProcessMcpClient(this.#sdkClientFactory);
   }
 }
 
@@ -273,6 +318,7 @@ export interface ProcessMcpProviderOptions {
   readonly maxProtocolFrameBytes?: number;
   readonly maxProtocolBytes?: number;
   readonly clientFactory?: ProcessMcpClientFactory;
+  readonly sdkClientFactory?: ProcessMcpSdkClientFactory;
 }
 
 export class ProcessMcpProvider implements PluginProvider {
@@ -368,7 +414,9 @@ export class ProcessMcpProvider implements PluginProvider {
     this.#maxOutputBytes = options.maxOutputBytes;
     this.#maxProtocolFrameBytes = maxProtocolFrameBytes;
     this.#maxProtocolBytes = maxProtocolBytes;
-    this.#clientFactory = options.clientFactory ?? new SdkProcessMcpClientFactory();
+    this.#clientFactory = options.clientFactory ?? new SdkProcessMcpClientFactory(
+      options.sdkClientFactory ?? new DefaultProcessMcpSdkClientFactory(),
+    );
     Object.freeze(this);
   }
 

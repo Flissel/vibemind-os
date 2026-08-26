@@ -1296,6 +1296,102 @@ describe("process MCP provider", () => {
     expect(killed).toBe(1);
   });
 
+  it("passes the composed abort signal through the production SDK process adapter", async () => {
+    const pluginRoot = await createTempDirectory();
+    const caller = new AbortController();
+    const spawner = new RecordingSpawner();
+    let killed = 0;
+    let complete: ((value: { exitCode: number | null; signal: string | null }) => void) | undefined;
+    spawner.next = {
+      stdout: (async function* () {})(),
+      stderr: (async function* () {})(),
+      completion: new Promise((resolve) => { complete = resolve; }),
+      async writeStdin(): Promise<void> {},
+      async closeStdin(): Promise<void> {},
+      kill: () => {
+        killed += 1;
+        complete?.({ exitCode: null, signal: "SIGTERM" });
+      },
+    };
+    let connectSignal: AbortSignal | undefined;
+    let callSignal: AbortSignal | undefined;
+    let callSettled = false;
+    const closeArguments: unknown[][] = [];
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const sdkClientFactory = {
+      create: () => ({
+        connect: async (_transport: unknown, options?: Readonly<{ readonly signal?: AbortSignal }>) => {
+          connectSignal = options?.signal;
+        },
+        callTool: async (
+          input: Readonly<{ readonly name: string; readonly arguments: Readonly<Record<string, unknown>> }>,
+          resultSchema?: unknown,
+          options?: Readonly<{ readonly signal?: AbortSignal }>,
+        ): Promise<unknown> => {
+          expect(input).toEqual({ name: "query", arguments: { query: "safe query" } });
+          expect(resultSchema).toBeUndefined();
+          callSignal = options?.signal;
+          markStarted?.();
+          await new Promise<void>((resolve) => {
+            if (callSignal?.aborted === true) resolve();
+            else callSignal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+          callSettled = true;
+          throw new DOMException("aborted", "AbortError");
+        },
+        close: async (...args: unknown[]) => { closeArguments.push(args); },
+      }),
+    };
+    const providerOptions = {
+      id: "mcp.process.search",
+      binding: binding("binding.process.search", "mcp-process", PROCESS_DIGEST),
+      server: Object.freeze({
+        name: "search",
+        kind: "mcp-process" as const,
+        componentDigest: PROCESS_DIGEST,
+        command: "node",
+        args: Object.freeze(["server.js"]),
+        environmentReferences: Object.freeze([]),
+        timeoutMilliseconds: 1_000,
+      }),
+      executionRoot: await createVerifiedProcessRoot(pluginRoot),
+      parentLicense: "MIT",
+      policy: PROCESS_POLICY,
+      credentialResolver: new RecordingCredentialResolver(),
+      spawner,
+      sdkClientFactory,
+    };
+    const provider = new ProcessMcpProvider(providerOptions);
+
+    const unhandled: unknown[] = [];
+    const captureUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    process.on("unhandledRejection", captureUnhandled);
+    try {
+      const invocation = provider.invoke(
+        request,
+        Object.freeze({ requestId: "request-1", signal: caller.signal }),
+      );
+      const stage = await Promise.race([
+        started.then(() => "started" as const),
+        invocation.then(() => "ended" as const, () => "ended" as const),
+      ]);
+      expect(stage).toBe("started");
+      caller.abort();
+
+      await expect(invocation).resolves.toEqual({ status: "failed", reason: "process_timed_out" });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(connectSignal).toBe(callSignal);
+      expect(callSignal?.aborted).toBe(true);
+      expect(callSettled).toBe(true);
+      expect(closeArguments).toEqual([[]]);
+      expect(killed).toBe(1);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", captureUnhandled);
+    }
+  });
+
   it("fails closed when individually valid protocol frames exceed the cumulative stdout budget", async () => {
     const pluginRoot = await createTempDirectory();
     const spawner = new RecordingSpawner();

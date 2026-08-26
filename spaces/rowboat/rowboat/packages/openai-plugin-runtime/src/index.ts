@@ -167,6 +167,8 @@ export {
   type ProcessMcpClient,
   type ProcessMcpClientFactory,
   type ProcessMcpProviderOptions,
+  type ProcessMcpSdkClient,
+  type ProcessMcpSdkClientFactory,
   type ProcessSpawner,
   type SafeSpawnOptions,
   type SpawnedProcess,
