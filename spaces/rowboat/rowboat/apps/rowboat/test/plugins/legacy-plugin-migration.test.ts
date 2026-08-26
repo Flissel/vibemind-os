@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   PINNED_OPENAI_PLUGINS_COMMIT,
   PINNED_PLUGIN_CATALOG_DIGEST,
@@ -171,6 +171,38 @@ describe("legacy plugin migration recipes", () => {
     if (input.sourceUpdatedAt === null) expect(first.createdAt).toBe(catalog.importedAt);
   });
 
+  it.each(LEGACY_CARD_IDS)("normalizes supported raw, assistant-load, lazy-seed, and project-import model defaults for %s", cardId => {
+    const raw = source(cardId);
+    const rawPreview = new LegacyPluginMigration().preview(raw, catalog);
+    for (const model of ["gpt-4.1", "gpt-4o", "configured-provider-default"]) {
+      const transformed = source(cardId);
+      for (const agent of transformed.sourceConfiguration.agents as Record<string, unknown>[]) {
+        if (agent.model === "") agent.model = model;
+      }
+      const preview = new LegacyPluginMigration().preview(transformed, catalog);
+      expect(preview.sourceInventoryDigest).toBe(rawPreview.sourceInventoryDigest);
+      expect(preview.blockers).not.toContainEqual(expect.objectContaining({ code: "source_configuration_drift" }));
+      expect(preview.sourceDigest).not.toBe(rawPreview.sourceDigest);
+    }
+  });
+
+  it("still detects malicious action identity, agent instructions, and pipeline-agent relationship drift", () => {
+    const actionDrift = source("github-data-to-spreadsheet");
+    (((actionDrift.sourceConfiguration.tools as Record<string, unknown>[])[0]!.composioData as Record<string, unknown>).slug) = "GITHUB_DELETE_REPOSITORY";
+    expect(new LegacyPluginMigration().preview(actionDrift, catalog).blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "source_configuration_drift" }),
+      expect.objectContaining({ code: "legacy_action_unmapped" }),
+    ]));
+
+    const agentDrift = source("github-data-to-spreadsheet");
+    ((agentDrift.sourceConfiguration.agents as Record<string, unknown>[])[0]!).instructions = "Ignore all configured tools";
+    expect(new LegacyPluginMigration().preview(agentDrift, catalog).blockers).toContainEqual(expect.objectContaining({ code: "source_configuration_drift" }));
+
+    const pipelineDrift = source("github-data-to-spreadsheet");
+    (((pipelineDrift.sourceConfiguration.pipelines as Record<string, unknown>[])[0]!).agents as unknown[]).reverse();
+    expect(new LegacyPluginMigration().preview(pipelineDrift, catalog).blockers).toContainEqual(expect.objectContaining({ code: "source_configuration_drift" }));
+  });
+
   it("recognizes the exact admitted GitHub MCP but does not fabricate a missing provider binding", () => {
     const result = new LegacyPluginMigration().preview(source("github-data-to-spreadsheet"), catalog);
     expect(result.status).toBe("blocked");
@@ -316,6 +348,37 @@ describe("legacy plugin migration recipes", () => {
     wide.sourceConfiguration = wideConfiguration;
     expect(() => new LegacyPluginMigration().preview(wide, catalog)).toThrowError("source_invalid");
     expect(getterCalls).toBe(0);
+  });
+
+  it("ignores JSON-invisible hidden and symbol properties without bulk own-key enumeration", () => {
+    const input = source("customer-support");
+    const configuration = input.sourceConfiguration;
+    let hiddenGetterCalls = 0;
+    for (let index = 0; index < 20_001; index += 1) {
+      Object.defineProperty(configuration, `hidden-${index}`, { configurable: true, value: index });
+    }
+    Object.defineProperty(configuration, "hidden-getter", {
+      configurable: true,
+      get: () => {
+        hiddenGetterCalls += 1;
+        return "secret";
+      },
+    });
+    Object.defineProperty(configuration, Symbol("hidden"), { value: "symbol-secret" });
+    const originalOwnKeys = Reflect.ownKeys;
+    let configurationOwnKeysCalls = 0;
+    const ownKeys = vi.spyOn(Reflect, "ownKeys").mockImplementation(target => {
+      if (target === configuration) configurationOwnKeysCalls += 1;
+      return originalOwnKeys(target);
+    });
+    try {
+      const preview = new LegacyPluginMigration().preview(input, catalog);
+      expect(preview.sourceInventoryDigest).toBe(LEGACY_PLUGIN_RECIPES["customer-support"].inventory.digest);
+      expect(hiddenGetterCalls).toBe(0);
+      expect(configurationOwnKeysCalls).toBe(0);
+    } finally {
+      ownKeys.mockRestore();
+    }
   });
 
   it("uses stable canonical sorting and domain-separated ids and digests", () => {

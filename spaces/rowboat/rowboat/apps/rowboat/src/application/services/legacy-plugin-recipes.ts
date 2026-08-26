@@ -62,9 +62,17 @@ function text(value: unknown): string {
   if (typeof value !== "string" || value.length === 0 || value.length > 256) throw new Error("legacy_inventory_invalid");
   return value;
 }
+function migrationRelevantDescriptor(kind: "action" | "agent" | "prompt" | "pipeline", selected: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
+  if (kind !== "agent") return selected;
+  const normalized: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (const key of Object.keys(selected)) {
+    if (key !== "model") normalized[key] = selected[key];
+  }
+  return normalized;
+}
 function inventoryItem(kind: "action" | "agent" | "prompt" | "pipeline", value: unknown, ordinal: number): LegacyInventoryItem {
   const selected = record(value);
-  const descriptorDigest = digest(`rowboat:legacy-migration:${kind}-descriptor:v1`, selected);
+  const descriptorDigest = digest(`rowboat:legacy-migration:${kind}-descriptor:v1`, migrationRelevantDescriptor(kind, selected));
   let identity: string;
   if (kind === "action") {
     const name = text(selected.name);

@@ -86,33 +86,46 @@ function captureJson(input: unknown, depth: number, budget: CaptureBudget): unkn
   if (typeof input !== "object" || isProxy(input)) fail("source_invalid");
   if (budget.seen.has(input)) fail("source_invalid");
   budget.seen.add(input);
+  // Migration input follows the JSON/Mongo visibility boundary: only own,
+  // enumerable string data properties participate. Hidden and symbol metadata
+  // is neither enumerated, copied, hashed, nor invoked.
   if (Array.isArray(input)) {
     if (Object.getPrototypeOf(input) !== Array.prototype) fail("source_invalid");
     const lengthDescriptor = Object.getOwnPropertyDescriptor(input, "length");
     if (lengthDescriptor === undefined || !("value" in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) fail("source_invalid");
     const length = lengthDescriptor.value as number;
     if (length > MAX_SOURCE_NODES - budget.nodes) fail("source_invalid");
+    let enumerableKeys = 0;
+    for (const key in input) {
+      if (!Object.prototype.hasOwnProperty.call(input, key)) continue;
+      enumerableKeys += 1;
+      if (enumerableKeys > length || !/^(?:0|[1-9]\d*)$/.test(key) || Number(key) >= length) fail("source_invalid");
+    }
+    if (enumerableKeys !== length) fail("source_invalid");
     const output: unknown[] = [];
     for (let index = 0; index < length; index += 1) {
       const descriptor = Object.getOwnPropertyDescriptor(input, String(index));
       if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) fail("source_invalid");
       output.push(captureJson(descriptor.value, depth + 1, budget));
     }
-    const arrayKeys = Reflect.ownKeys(input);
-    if (arrayKeys.length !== length + 1 || arrayKeys.some(key => typeof key !== "string" || (key !== "length" && !/^(?:0|[1-9]\d*)$/.test(key)))) fail("source_invalid");
     budget.seen.delete(input);
     return output;
   }
   const prototype = Object.getPrototypeOf(input);
   if (prototype !== Object.prototype && prototype !== null) fail("source_invalid");
-  const keys: string[] = [];
+  let keyCount = 0;
   for (const key in input) {
-    if (!Object.prototype.hasOwnProperty.call(input, key)) fail("source_invalid");
-    keys.push(key);
-    if (keys.length > MAX_SOURCE_NODES - budget.nodes) fail("source_invalid");
+    if (!Object.prototype.hasOwnProperty.call(input, key)) continue;
+    keyCount += 1;
+    if (keyCount > MAX_SOURCE_NODES - budget.nodes) fail("source_invalid");
   }
-  const allKeys = Reflect.ownKeys(input);
-  if (allKeys.length !== keys.length || allKeys.some(key => typeof key !== "string")) fail("source_invalid");
+  const keys = new Array<string>(keyCount);
+  let keyIndex = 0;
+  for (const key in input) {
+    if (!Object.prototype.hasOwnProperty.call(input, key)) continue;
+    keys[keyIndex] = key;
+    keyIndex += 1;
+  }
   keys.sort();
   const output: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const key of keys) {
