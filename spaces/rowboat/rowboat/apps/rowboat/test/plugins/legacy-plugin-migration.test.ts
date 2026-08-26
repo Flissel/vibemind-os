@@ -210,6 +210,9 @@ describe("legacy plugin migration recipes", () => {
     ["object", (agent: Record<PropertyKey, unknown>) => { agent.model = { name: "gpt-4.1" }; }],
     ["array", (agent: Record<PropertyKey, unknown>) => { agent.model = ["gpt-4.1"]; }],
     ["control character", (agent: Record<PropertyKey, unknown>) => { agent.model = "gpt-4.1\n"; }],
+    ["C1 U+0080 control", (agent: Record<PropertyKey, unknown>) => { agent.model = "gpt-\u0080"; }],
+    ["C1 U+0085 control", (agent: Record<PropertyKey, unknown>) => { agent.model = "gpt-\u0085"; }],
+    ["C1 U+009F control", (agent: Record<PropertyKey, unknown>) => { agent.model = "gpt-\u009f"; }],
     ["malformed surrogate", (agent: Record<PropertyKey, unknown>) => { agent.model = "\uD800"; }],
     ["oversize UTF-8", (agent: Record<PropertyKey, unknown>) => { agent.model = "m".repeat(257); }],
   ] as const)("rejects %s agent models before catalog resolution", (_caseName, mutate) => {
@@ -245,6 +248,54 @@ describe("legacy plugin migration recipes", () => {
     } finally {
       resolver.mockRestore();
     }
+  });
+
+  it("validates an invalid source before a drifted or malicious catalog", () => {
+    const invalid = source("customer-support");
+    ((invalid.sourceConfiguration.agents as Record<string, unknown>[])[0]!).model = 7;
+    const drifted = structuredClone(catalog);
+    (drifted as { sourceCommit: string }).sourceCommit = "f".repeat(40);
+    expect(() => new LegacyPluginMigration().preview(invalid, drifted)).toThrowError("source_invalid");
+
+    let catalogTrapCalls = 0;
+    const proxiedCatalog = new Proxy(catalog, {
+      get: (target, property, receiver) => {
+        catalogTrapCalls += 1;
+        return Reflect.get(target, property, receiver);
+      },
+      getOwnPropertyDescriptor: (target, property) => {
+        catalogTrapCalls += 1;
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+      ownKeys: target => {
+        catalogTrapCalls += 1;
+        return Reflect.ownKeys(target);
+      },
+    });
+    expect(() => new LegacyPluginMigration().preview(invalid, proxiedCatalog)).toThrowError("source_invalid");
+    expect(catalogTrapCalls).toBe(0);
+
+    let catalogGetterCalls = 0;
+    const getterCatalog = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(getterCatalog, "catalogDigest", {
+      enumerable: true,
+      get: () => {
+        catalogGetterCalls += 1;
+        return catalog.catalogDigest;
+      },
+    });
+    expect(() => new LegacyPluginMigration().preview(invalid, getterCatalog)).toThrowError("source_invalid");
+    expect(catalogGetterCalls).toBe(0);
+  });
+
+  it("allows printable paired Unicode in configured agent model names", () => {
+    const raw = source("customer-support");
+    const configured = source("customer-support");
+    ((configured.sourceConfiguration.agents as Record<string, unknown>[])[0]!).model = "模型-😀";
+    const rawPreview = new LegacyPluginMigration().preview(raw, catalog);
+    const configuredPreview = new LegacyPluginMigration().preview(configured, catalog);
+    expect(configuredPreview.sourceInventoryDigest).toBe(rawPreview.sourceInventoryDigest);
+    expect(configuredPreview.sourceDigest).not.toBe(rawPreview.sourceDigest);
   });
 
   it("still detects malicious action identity, agent instructions, and pipeline-agent relationship drift", () => {

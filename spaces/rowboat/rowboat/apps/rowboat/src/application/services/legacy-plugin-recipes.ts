@@ -64,7 +64,7 @@ function text(value: unknown): string {
 }
 const NORMALIZED_AGENT_MODEL = "rowboat:runtime-configured-model:v1";
 function validModel(value: unknown): value is string {
-  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 256 || /[\u0000-\u001f\u007f]/u.test(value)) return false;
+  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 256 || /[\u0000-\u001f\u007f-\u009f]/u.test(value)) return false;
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
     if (code >= 0xd800 && code <= 0xdbff) {

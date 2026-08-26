@@ -271,6 +271,12 @@ export class LegacyPluginMigration {
 
   preview(input: unknown, catalogInput: unknown, existingRecord?: unknown): PluginMigrationPreview {
     const source = captureSource(input);
+    let sourceInventory: LegacyExecutableInventory;
+    try {
+      sourceInventory = buildLegacyExecutableInventory(source.sourceConfiguration);
+    } catch {
+      fail("source_invalid");
+    }
     let catalog: PluginCatalogLock;
     try {
       catalog = validatePluginCatalogLock(catalogInput);
@@ -279,12 +285,6 @@ export class LegacyPluginMigration {
     }
     if (catalog.catalogDigest !== PINNED_PLUGIN_CATALOG_DIGEST || catalog.sourceCommit !== PINNED_OPENAI_PLUGINS_COMMIT) fail("catalog_drift");
     const createdAt = source.sourceUpdatedAt ?? catalog.importedAt;
-    let sourceInventory: LegacyExecutableInventory;
-    try {
-      sourceInventory = buildLegacyExecutableInventory(source.sourceConfiguration);
-    } catch {
-      fail("source_invalid");
-    }
     const recipe = Object.prototype.hasOwnProperty.call(LEGACY_PLUGIN_RECIPES, source.legacyCardId)
       ? LEGACY_PLUGIN_RECIPES[source.legacyCardId as keyof typeof LEGACY_PLUGIN_RECIPES]
       : undefined;
