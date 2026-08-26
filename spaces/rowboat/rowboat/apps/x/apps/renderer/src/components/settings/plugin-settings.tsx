@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
-import { usePlugins, type PluginsState } from '@/hooks/usePlugins';
-import type { PluginCatalogItem, PluginPreview, PluginReasonCode, PluginStatus } from '@/lib/rowboat-plugin-api';
+import { usePlugins, type PluginsState, type ScopedPluginPreview } from '@/hooks/usePlugins';
+import type { PluginCatalogItem, PluginReasonCode, PluginStatus } from '@/lib/rowboat-plugin-api';
 
 export interface PluginSettingsItem {
   readonly pluginName: string;
@@ -10,6 +10,11 @@ export interface PluginSettingsItem {
   readonly reason?: PluginReasonCode;
   readonly components: readonly unknown[];
   readonly credentialSlots?: readonly Readonly<{ name: string; configured: boolean }>[];
+}
+
+export function PluginInstallFeedback({ status, reason }: Readonly<{ status: 'success' | 'failed' | 'denied' | 'timed_out'; reason?: PluginReasonCode }>) {
+  if (status === 'success') return <p role="status" aria-live="polite">Plugin installed.</p>;
+  return <p role="alert">{status}{reason === undefined ? '' : ` · ${reason}`}</p>;
 }
 
 interface PluginSettingsProps {
@@ -68,12 +73,15 @@ interface PluginInstallReviewProps {
   readonly onConfirm: () => void | Promise<void>;
   readonly onCancel: () => void;
   readonly pending: boolean;
+  readonly projectId: string;
+  readonly scopeValid: boolean;
 }
 
-export function PluginInstallReview({ preview, onConfirm, onCancel, pending }: PluginInstallReviewProps) {
+export function PluginInstallReview({ preview, onConfirm, onCancel, pending, projectId, scopeValid }: PluginInstallReviewProps) {
   return (
     <section aria-label={`Review ${preview.pluginName} installation`} className="space-y-3 rounded-lg border p-3">
       <h4 className="font-medium">Review {preview.pluginName}</h4>
+      <p className="text-xs">Project: {projectId}</p>
       <ul aria-label="Component decisions" className="space-y-1 text-xs">
         {preview.components.map((component) => <li key={`${component.kind}:${component.name}`}>
           {component.name} · {component.kind} · {component.status}{component.reason === undefined ? '' : ` · ${component.reason}`}
@@ -84,7 +92,7 @@ export function PluginInstallReview({ preview, onConfirm, onCancel, pending }: P
       </ul>
       <div className="flex gap-2">
         <button type="button" onClick={onCancel} disabled={pending} className="rounded-md border px-3 py-2 text-xs">Cancel</button>
-        <button type="button" aria-label={`Confirm install ${preview.pluginName}`} onClick={() => void onConfirm()} disabled={pending || preview.status !== 'available'} className="rounded-md bg-primary px-3 py-2 text-xs text-primary-foreground disabled:opacity-50">
+        <button type="button" aria-label={`Confirm install ${preview.pluginName}`} onClick={() => void onConfirm()} disabled={pending || !scopeValid || preview.status !== 'available'} className="rounded-md bg-primary px-3 py-2 text-xs text-primary-foreground disabled:opacity-50">
           {pending ? 'Installing…' : 'Confirm install'}
         </button>
       </div>
@@ -95,8 +103,18 @@ export function PluginInstallReview({ preview, onConfirm, onCancel, pending }: P
 export function ConnectedPluginSettings() {
   const [projectId, setProjectId] = useState('');
   const { state, preview, confirm } = usePlugins({ projectId });
-  const [selectedPreview, setSelectedPreview] = useState<PluginPreview | null>(null);
-  const [mutationState, setMutationState] = useState<Readonly<{ kind: 'idle' | 'pending' | 'error' | 'success'; reason?: string }>>({ kind: 'idle' });
+  const [selectedPreview, setSelectedPreview] = useState<ScopedPluginPreview | null>(null);
+  const [mutationState, setMutationState] = useState<
+    | Readonly<{ kind: 'idle' | 'pending' | 'success' }>
+    | Readonly<{ kind: 'error'; reason: string }>
+    | Readonly<{ kind: 'receipt'; status: 'failed' | 'denied' | 'timed_out'; reason?: PluginReasonCode }>
+  >({ kind: 'idle' });
+  const scopeValid = selectedPreview !== null && state.kind === 'ready' && state.projectId === projectId
+    && selectedPreview.projectId === projectId && selectedPreview.scope.origin === state.scope.origin
+    && selectedPreview.scope.accountFingerprint === state.scope.accountFingerprint;
+  useEffect(() => {
+    if (selectedPreview !== null && !scopeValid) setSelectedPreview(null);
+  }, [scopeValid, selectedPreview]);
   const installPlugin = async (item: PluginSettingsItem) => {
     setMutationState({ kind: 'pending' });
     try {
@@ -110,12 +128,14 @@ export function ConnectedPluginSettings() {
     }
   };
   const confirmInstall = async () => {
-    if (selectedPreview === null) return;
+    if (selectedPreview === null || !scopeValid) { setMutationState({ kind: 'error', reason: 'plugin_api_scope_changed' }); return; }
     setMutationState({ kind: 'pending' });
     try {
-      await confirm(selectedPreview);
-      setSelectedPreview(null);
-      setMutationState({ kind: 'success' });
+      const receipt = await confirm(selectedPreview);
+      if (receipt.status === 'success') {
+        setSelectedPreview(null);
+        setMutationState({ kind: 'success' });
+      } else setMutationState({ kind: 'receipt', status: receipt.status, ...(receipt.reason === undefined ? {} : { reason: receipt.reason }) });
     } catch (error) {
       const reason = error instanceof Error && Object.getPrototypeOf(error) === Error.prototype && /^plugin_api_[a-z_]+$/.test(error.message)
         ? error.message : 'plugin_api_unavailable';
@@ -130,16 +150,18 @@ export function ConnectedPluginSettings() {
           id="plugin-project-id"
           value={projectId}
           onChange={(event) => setProjectId(event.target.value)}
+          disabled={selectedPreview !== null || mutationState.kind === 'pending'}
           autoComplete="off"
           className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
         />
         <p className="mt-1 text-xs text-muted-foreground">Required for project-authorized installation. It is kept only in this dialog.</p>
       </div>
       <PluginSettings state={state} onInstall={projectId === '' || mutationState.kind === 'pending' ? undefined : installPlugin} />
-      {selectedPreview !== null && <PluginInstallReview preview={selectedPreview} onConfirm={confirmInstall} onCancel={() => setSelectedPreview(null)} pending={mutationState.kind === 'pending'} />}
+      {selectedPreview !== null && <PluginInstallReview preview={selectedPreview.preview} projectId={selectedPreview.projectId} scopeValid={scopeValid} onConfirm={confirmInstall} onCancel={() => setSelectedPreview(null)} pending={mutationState.kind === 'pending'} />}
       {mutationState.kind === 'pending' && <p role="status" aria-live="polite">Installing plugin…</p>}
-      {mutationState.kind === 'success' && <p role="status" aria-live="polite">Plugin installed.</p>}
+      {mutationState.kind === 'success' && <PluginInstallFeedback status="success" />}
       {mutationState.kind === 'error' && <p role="alert">{mutationState.reason}</p>}
+      {mutationState.kind === 'receipt' && <PluginInstallFeedback status={mutationState.status} reason={mutationState.reason} />}
     </div>
   );
 }

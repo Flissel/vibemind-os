@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  DESKTOP_PLUGIN_CATALOG_PIN,
   RowboatPluginApi,
   type PluginApiSession,
   type PluginCatalogResponse,
@@ -43,6 +44,7 @@ function json(value: unknown, init: ResponseInit = {}): Response {
 const session: PluginApiSession = Object.freeze({
   baseUrl: 'https://rowboat.example/',
   accessToken: 'token-value',
+  accountFingerprint: 'f'.repeat(64),
 });
 
 describe('RowboatPluginApi', () => {
@@ -75,7 +77,7 @@ describe('RowboatPluginApi', () => {
   ])('rejects unsafe configured base URL %s before fetch', async (baseUrl) => {
     const fetcher = vi.fn();
     const client = new RowboatPluginApi(fetcher);
-    await expect(client.listCatalog({ baseUrl, accessToken: 'safe-token' }, digest)).rejects.toThrow('plugin_api_config_invalid');
+    await expect(client.listCatalog({ baseUrl, accessToken: 'safe-token', accountFingerprint: 'f'.repeat(64) }, digest)).rejects.toThrow('plugin_api_config_invalid');
     expect(fetcher).not.toHaveBeenCalled();
   });
 
@@ -84,7 +86,7 @@ describe('RowboatPluginApi', () => {
       expect(init?.redirect).toBe('error');
       return json(catalog());
     });
-    await new RowboatPluginApi(fetcher).listCatalog({ baseUrl: 'http://127.0.0.1:3000/', accessToken: 'token' }, digest);
+    await new RowboatPluginApi(fetcher).listCatalog({ baseUrl: 'http://127.0.0.1:3000/', accessToken: 'token', accountFingerprint: 'f'.repeat(64) }, digest);
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
@@ -109,11 +111,51 @@ describe('RowboatPluginApi', () => {
     await expect(client.listCatalog(session, digest)).rejects.toThrow('plugin_api_response_invalid');
   });
 
+  it.each([
+    { sourceCommit: 'd'.repeat(40), policyVersion: DESKTOP_PLUGIN_CATALOG_PIN.policyVersion },
+    { sourceCommit: DESKTOP_PLUGIN_CATALOG_PIN.sourceCommit, policyVersion: 'forged-policy' },
+  ])('rejects a consistently forged Desktop catalog source/policy pin', async ({ sourceCommit, policyVersion }) => {
+    const original = catalog().items[0]!;
+    const body = { items: [{ ...original, catalogDigest: DESKTOP_PLUGIN_CATALOG_PIN.catalogDigest, sourceCommit, policyVersion,
+      components: original.components.map((component) => ({ ...component, admission: { ...component.admission, policyVersion } })) }] };
+    const client = new RowboatPluginApi(vi.fn(async () => json(body)));
+    await expect(client.listCatalog(session, DESKTOP_PLUGIN_CATALOG_PIN.catalogDigest)).rejects.toThrow('plugin_api_response_invalid');
+  });
+
+  it('accepts the exact Desktop catalog digest/source/policy pin', async () => {
+    const original = catalog().items[0]!;
+    const policyVersion = DESKTOP_PLUGIN_CATALOG_PIN.policyVersion;
+    const body = { items: [{ ...original, catalogDigest: DESKTOP_PLUGIN_CATALOG_PIN.catalogDigest,
+      sourceCommit: DESKTOP_PLUGIN_CATALOG_PIN.sourceCommit, policyVersion,
+      components: original.components.map((component) => ({ ...component, admission: { ...component.admission, policyVersion } })) }] };
+    const client = new RowboatPluginApi(vi.fn(async () => json(body)));
+    await expect(client.listCatalog(session, DESKTOP_PLUGIN_CATALOG_PIN.catalogDigest)).resolves.toMatchObject({ items: [{ pluginName: 'github' }] });
+  });
+
   it('cancels a hanging response body at the whole-request deadline', async () => {
     let cancellations = 0;
     const body = new ReadableStream<Uint8Array>({ pull: () => new Promise<void>(() => undefined), cancel: () => { cancellations += 1; } });
     const client = new RowboatPluginApi(vi.fn(async () => new Response(body, { headers: { 'content-type': 'application/json' } })), { timeoutMs: 10 });
     await expect(client.listCatalog(session, digest)).rejects.toThrow('plugin_api_timeout');
+    expect(cancellations).toBe(1);
+  });
+
+  it('cancels an oversized open response body exactly once', async () => {
+    let cancellations = 0;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array(262_145)); },
+      cancel() { cancellations += 1; },
+    });
+    const client = new RowboatPluginApi(vi.fn(async () => new Response(body, { headers: { 'content-type': 'application/json' } })));
+    await expect(client.listCatalog(session, digest)).rejects.toThrow('plugin_api_response_invalid');
+    expect(cancellations).toBe(1);
+  });
+
+  it('cancels an open non-JSON response before rejecting', async () => {
+    let cancellations = 0;
+    const body = new ReadableStream<Uint8Array>({ cancel() { cancellations += 1; } });
+    const client = new RowboatPluginApi(vi.fn(async () => new Response(body, { headers: { 'content-type': 'text/html' } })));
+    await expect(client.listCatalog(session, digest)).rejects.toThrow('plugin_api_response_invalid');
     expect(cancellations).toBe(1);
   });
 
@@ -184,6 +226,96 @@ describe('RowboatPluginApi', () => {
     const result = await client.previewAndInstall(session, { projectId: 'project-1', pluginName: 'github', catalogDigest: digest });
     expect(result.receipt.receiptId).toBe('receipt-replay');
     expect(keys).toEqual(['stable-replay-key', 'stable-replay-key']);
+  });
+
+  it('retains one preview-scoped idempotency key across repeated failures', async () => {
+    const keys: Array<string | null> = [];
+    let call = 0;
+    const fetcher = vi.fn(async (_request: RequestInfo | URL, init?: RequestInit) => {
+      call += 1;
+      if (call === 1) return json({ items: [] });
+      if (call === 2) return json({
+        pluginName: 'github', catalogDigest: digest, sourceCommit: 'c'.repeat(40), policyVersion: 'policy-v1',
+        license: { declaration: 'MIT', decision: 'admitted' }, admission: 'admitted', components: catalog().items[0].components,
+        status: 'available', credentialSlots: [],
+      });
+      keys.push(new Headers(init?.headers).get('idempotency-key'));
+      throw new TypeError('still uncertain');
+    });
+    let generated = 0;
+    const client = new RowboatPluginApi(fetcher, { createIdempotencyKey: () => `preview-key-${++generated}` });
+    const preview = await client.previewInstallation(session, { projectId: 'project-1', pluginName: 'github', catalogDigest: digest });
+    await expect(client.installPreview(session, preview)).rejects.toThrow('plugin_api_unavailable');
+    await expect(client.installPreview(session, preview)).rejects.toThrow('plugin_api_unavailable');
+    expect(keys).toEqual(['preview-key-1', 'preview-key-1', 'preview-key-1', 'preview-key-1']);
+    expect(generated).toBe(1);
+  });
+
+  it('uses a new idempotency key for a different preview', async () => {
+    let call = 0;
+    const keys: Array<string | null> = [];
+    const fetcher = vi.fn(async (_request: RequestInfo | URL, init?: RequestInit) => {
+      call += 1;
+      if (call === 1 || call === 3) return json({ items: [] });
+      if (call === 2 || call === 4) return json({
+        pluginName: 'github', catalogDigest: digest, sourceCommit: 'c'.repeat(40), policyVersion: 'policy-v1',
+        license: { declaration: 'MIT', decision: 'admitted' }, admission: 'admitted', components: catalog().items[0].components,
+        status: 'available', credentialSlots: [],
+      });
+      keys.push(new Headers(init?.headers).get('idempotency-key'));
+      return json({ type: 'install', receiptId: `receipt-${call}`, projectId: 'project-1', pluginName: 'github', status: 'success', redactions: [] });
+    });
+    let generated = 0;
+    const client = new RowboatPluginApi(fetcher, { createIdempotencyKey: () => `preview-key-${++generated}` });
+    const first = await client.previewInstallation(session, { projectId: 'project-1', pluginName: 'github', catalogDigest: digest });
+    const second = await client.previewInstallation(session, { projectId: 'project-1', pluginName: 'github', catalogDigest: digest });
+    await client.installPreview(session, first);
+    await client.installPreview(session, second);
+    expect(keys).toEqual(['preview-key-1', 'preview-key-2']);
+  });
+
+  it('binds a preview to the account fingerprint and base origin before install fetch', async () => {
+    let call = 0;
+    const fetcher = vi.fn(async () => {
+      call += 1;
+      if (call === 1) return json({ items: [] });
+      return json({
+        pluginName: 'github', catalogDigest: digest, sourceCommit: 'c'.repeat(40), policyVersion: 'policy-v1',
+        license: { declaration: 'MIT', decision: 'admitted' }, admission: 'admitted', components: catalog().items[0].components,
+        status: 'available', credentialSlots: [],
+      });
+    });
+    const client = new RowboatPluginApi(fetcher);
+    const preview = await client.previewInstallation(session, { projectId: 'project-1', pluginName: 'github', catalogDigest: digest });
+    await expect(client.installPreview({ ...session, accountFingerprint: 'e'.repeat(64) }, preview)).rejects.toThrow('plugin_api_scope_changed');
+    await expect(client.installPreview({ ...session, baseUrl: 'https://other.example/' }, preview)).rejects.toThrow('plugin_api_scope_changed');
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns failed receipt status and reason verbatim without converting it to success', async () => {
+    let call = 0;
+    const fetcher = vi.fn(async () => {
+      call += 1;
+      if (call === 1) return json({ items: [] });
+      if (call === 2) return json({
+        pluginName: 'github', catalogDigest: digest, sourceCommit: 'c'.repeat(40), policyVersion: 'policy-v1',
+        license: { declaration: 'MIT', decision: 'admitted' }, admission: 'admitted', components: catalog().items[0].components,
+        status: 'available', credentialSlots: [],
+      });
+      return json({ type: 'install', receiptId: 'receipt-failed', projectId: 'project-1', pluginName: 'github', status: 'failed', reason: 'provider_unavailable', redactions: [] });
+    });
+    const result = await new RowboatPluginApi(fetcher).previewAndInstall(session, { projectId: 'project-1', pluginName: 'github', catalogDigest: digest });
+    expect(result.receipt).toMatchObject({ status: 'failed', reason: 'provider_unavailable' });
+  });
+
+  it.each([
+    [{ items: [{ ...catalog().items[0], catalogDigest: 'd'.repeat(64) }] }, 'catalog digest drift'],
+    [{ items: [catalog().items[0], { ...catalog().items[0], name: 'gitlab', pluginName: 'gitlab', sourceCommit: 'd'.repeat(40) }] }, 'source commit drift'],
+    [{ items: [catalog().items[0], { ...catalog().items[0], name: 'gitlab', pluginName: 'gitlab', policyVersion: 'policy-v2' }] }, 'policy drift'],
+    [{ items: [{ ...catalog().items[0], admission: 'rejected', reason: 'license_rejected', status: 'available' }] }, 'rejected available contradiction'],
+  ])('rejects catalog binding contradiction: %s', async (body) => {
+    const client = new RowboatPluginApi(vi.fn(async () => json(body)));
+    await expect(client.listCatalog(session, digest)).rejects.toThrow('plugin_api_response_invalid');
   });
 
   it('rejects cross-project or mutated preview truth before install', async () => {

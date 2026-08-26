@@ -12,9 +12,16 @@ export const PLUGIN_REASON_CODES = [
 export type PluginStatus = typeof PLUGIN_STATUSES[number];
 export type PluginReasonCode = typeof PLUGIN_REASON_CODES[number];
 
+export const DESKTOP_PLUGIN_CATALOG_PIN = Object.freeze({
+  catalogDigest: '2e436d02b025a14960d5ef813c603bd7aec35a6d173c42d8c58274163da89a92',
+  sourceCommit: '11c74d6ba24d3a6d48f54a194cd00ef3beea18f9',
+  policyVersion: 'rowboat-plugin-policy-v1',
+});
+
 export interface PluginApiSession {
   readonly baseUrl: string;
   readonly accessToken: string;
+  readonly accountFingerprint: string;
 }
 
 const DIGEST = /^[a-f0-9]{64}$/;
@@ -76,7 +83,11 @@ export type PluginCatalogItem = Omit<RawCatalogItem, 'status'> & { readonly stat
 export interface PluginCatalogResponse { readonly items: readonly PluginCatalogItem[] }
 export type PluginPreview = Omit<z.infer<typeof PreviewEnvelope>, 'status'> & { readonly status: PluginStatus };
 export type PluginInstallReceipt = z.infer<typeof Receipt>;
-interface PreviewContext { readonly projectId: string; readonly pluginName: string; readonly catalogDigest: string; readonly expectedRevision: number }
+export type PluginProjectItem = Omit<z.infer<typeof ProjectItem>, 'status'> & { readonly status: PluginStatus };
+interface PreviewContext {
+  readonly projectId: string; readonly pluginName: string; readonly catalogDigest: string; readonly expectedRevision: number;
+  readonly origin: string; readonly accountFingerprint: string; readonly idempotencyKey: string;
+}
 
 interface ApiOptions {
   readonly timeoutMs?: number;
@@ -89,7 +100,7 @@ interface InstallInput {
   readonly catalogDigest: string;
 }
 
-function fail(reason: 'plugin_api_config_invalid' | 'plugin_api_request_invalid' | 'plugin_api_response_invalid' | 'plugin_api_unavailable' | 'plugin_api_aborted' | 'plugin_api_timeout'): never {
+function fail(reason: 'plugin_api_config_invalid' | 'plugin_api_request_invalid' | 'plugin_api_response_invalid' | 'plugin_api_unavailable' | 'plugin_api_aborted' | 'plugin_api_timeout' | 'plugin_api_scope_changed'): never {
   throw new Error(reason);
 }
 
@@ -108,19 +119,25 @@ function exactRecord(input: unknown, keys: readonly string[], failure: 'plugin_a
   return Object.freeze(result);
 }
 
-function validateSession(input: PluginApiSession): Readonly<{ origin: string; accessToken: string }> {
-  const record = exactRecord(input, ['baseUrl', 'accessToken'], 'plugin_api_config_invalid');
-  if (typeof record.baseUrl !== 'string' || record.baseUrl.length < 1 || record.baseUrl.length > 2_048 || /[\\\0\r\n\t ]/.test(record.baseUrl)
-    || typeof record.accessToken !== 'string' || record.accessToken.length < 1 || record.accessToken.length > 16_384
-    || /[,\s\0]/.test(record.accessToken)) fail('plugin_api_config_invalid');
+export function canonicalPluginOrigin(baseUrl: string): string {
+  if (baseUrl.length < 1 || baseUrl.length > 2_048 || /[\\\0\r\n\t ]/.test(baseUrl)) fail('plugin_api_config_invalid');
   let url: URL;
-  try { url = new URL(record.baseUrl); } catch { fail('plugin_api_config_invalid'); }
+  try { url = new URL(baseUrl); } catch { fail('plugin_api_config_invalid'); }
   const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
   if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback))
     || url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== '' || url.pathname !== '/') {
     fail('plugin_api_config_invalid');
   }
-  return Object.freeze({ origin: url.origin, accessToken: record.accessToken });
+  return url.origin;
+}
+
+function validateSession(input: PluginApiSession): Readonly<{ origin: string; accessToken: string; accountFingerprint: string }> {
+  const record = exactRecord(input, ['baseUrl', 'accessToken', 'accountFingerprint'], 'plugin_api_config_invalid');
+  if (typeof record.accountFingerprint !== 'string' || !DIGEST.test(record.accountFingerprint)) fail('plugin_api_config_invalid');
+  if (typeof record.baseUrl !== 'string' || record.baseUrl.length < 1 || record.baseUrl.length > 2_048 || /[\\\0\r\n\t ]/.test(record.baseUrl)
+    || typeof record.accessToken !== 'string' || record.accessToken.length < 1 || record.accessToken.length > 16_384
+    || /[,\s\0]/.test(record.accessToken)) fail('plugin_api_config_invalid');
+  return Object.freeze({ origin: canonicalPluginOrigin(record.baseUrl), accessToken: record.accessToken, accountFingerprint: record.accountFingerprint });
 }
 
 function validateId(value: unknown): string {
@@ -256,6 +273,54 @@ function normalizeItem(item: RawCatalogItem): PluginCatalogItem {
   return freeze({ ...item, status: canonicalStatus(item), ...(reason === undefined ? {} : { reason }) });
 }
 
+function validateComponentTruth(component: z.infer<typeof Component>): void {
+  const expectedStatus = component.admission.status === 'admitted' ? component.availability.status : component.admission.status;
+  const expectedReason = component.admission.status === 'admitted' ? component.availability.reason : component.admission.reason;
+  if (component.status !== expectedStatus || component.reason !== expectedReason) fail('plugin_api_response_invalid');
+  if (component.admission.status === 'admitted' && component.admission.policyVersion.length === 0) fail('plugin_api_response_invalid');
+}
+
+function validateCatalogBinding(parsed: z.infer<typeof CatalogEnvelope>, requestedDigest: string): void {
+  if (parsed.items.length === 0) fail('plugin_api_response_invalid');
+  const sourceCommit = parsed.items[0]!.sourceCommit;
+  const policyVersion = parsed.items[0]!.policyVersion;
+  const pluginNames = new Set<string>();
+  for (const item of parsed.items) {
+    if (item.catalogDigest !== requestedDigest || item.sourceCommit !== sourceCommit || item.policyVersion !== policyVersion
+      || item.name !== item.pluginName || pluginNames.has(item.pluginName)) fail('plugin_api_response_invalid');
+    if (requestedDigest === DESKTOP_PLUGIN_CATALOG_PIN.catalogDigest
+      && (item.sourceCommit !== DESKTOP_PLUGIN_CATALOG_PIN.sourceCommit || item.policyVersion !== DESKTOP_PLUGIN_CATALOG_PIN.policyVersion)) {
+      fail('plugin_api_response_invalid');
+    }
+    pluginNames.add(item.pluginName);
+    if (item.license.decision !== item.admission) fail('plugin_api_response_invalid');
+    const componentDigests = new Set<string>();
+    for (const component of item.components) {
+      validateComponentTruth(component);
+      if (component.admission.policyVersion !== policyVersion || componentDigests.has(component.componentDigest)) fail('plugin_api_response_invalid');
+      componentDigests.add(component.componentDigest);
+    }
+    const expectedTop = item.admission === 'admitted'
+      ? (item.components.every((component) => component.status === 'available' || component.status === 'installed') ? 'available' : 'partially_available')
+      : item.admission;
+    if (item.status !== expectedTop) fail('plugin_api_response_invalid');
+  }
+}
+
+function validatePluginTruth(item: z.infer<typeof PreviewEnvelope> | z.infer<typeof ProjectItem>, requestedDigest: string): void {
+  if (item.catalogDigest !== requestedDigest || item.license.decision !== item.admission) fail('plugin_api_response_invalid');
+  const componentDigests = new Set<string>();
+  for (const component of item.components) {
+    validateComponentTruth(component);
+    if (component.admission.policyVersion !== item.policyVersion || componentDigests.has(component.componentDigest)) fail('plugin_api_response_invalid');
+    componentDigests.add(component.componentDigest);
+  }
+  const expectedTop = item.admission === 'admitted'
+    ? (item.components.every((component) => component.status === 'available' || component.status === 'installed') ? 'available' : 'partially_available')
+    : item.admission;
+  if (item.status !== expectedTop) fail('plugin_api_response_invalid');
+}
+
 function parseResponse<T>(schema: z.ZodType<T>, input: unknown): T {
   const result = schema.safeParse(input);
   if (!result.success) fail('plugin_api_response_invalid');
@@ -279,14 +344,22 @@ export class RowboatPluginApi {
   snapshot(): Readonly<{ requestCount: number }> { return Object.freeze({ requestCount: this.requestCount }); }
 
   async listCatalog(session: PluginApiSession, catalogDigest: string, signal?: AbortSignal): Promise<PluginCatalogResponse> {
-    const parsed = parseResponse(CatalogEnvelope, await this.request(session, `/api/v1/plugins?catalogDigest=${validateDigest(catalogDigest)}`, { method: 'GET', signal }));
+    const requestedDigest = validateDigest(catalogDigest);
+    const parsed = parseResponse(CatalogEnvelope, await this.request(session, `/api/v1/plugins?catalogDigest=${requestedDigest}`, { method: 'GET', signal }));
+    validateCatalogBinding(parsed, requestedDigest);
     return freeze({ items: parsed.items.map(normalizeItem) });
   }
 
-  async listProjectPlugins(session: PluginApiSession, projectIdInput: string, catalogDigestInput: string, signal?: AbortSignal): Promise<Readonly<{ items: readonly (z.infer<typeof ProjectItem> & { readonly status: PluginStatus })[] }>> {
+  async listProjectPlugins(session: PluginApiSession, projectIdInput: string, catalogDigestInput: string, signal?: AbortSignal): Promise<Readonly<{ items: readonly PluginProjectItem[] }>> {
     const projectId = validateId(projectIdInput);
     const catalogDigest = validateDigest(catalogDigestInput);
     const parsed = parseResponse(ProjectEnvelope, await this.request(session, `/api/v1/projects/${projectId}/plugins?catalogDigest=${catalogDigest}`, { method: 'GET', signal }));
+    const pluginNames = new Set<string>();
+    for (const item of parsed.items) {
+      validatePluginTruth(item, catalogDigest);
+      if (pluginNames.has(item.pluginName)) fail('plugin_api_response_invalid');
+      pluginNames.add(item.pluginName);
+    }
     return freeze({ items: parsed.items.map((item) => ({ ...item, status: canonicalStatus(item) })) });
   }
 
@@ -307,20 +380,27 @@ export class RowboatPluginApi {
     const expectedRevision = matches[0]?.revision ?? 0;
     const previewRaw = parseResponse(PreviewEnvelope, await this.request(session, `/api/v1/projects/${projectId}/plugins/${pluginName}?catalogDigest=${catalogDigest}`, { method: 'GET', signal }));
     if (previewRaw.pluginName !== pluginName || previewRaw.catalogDigest !== catalogDigest) fail('plugin_api_response_invalid');
+    validatePluginTruth(previewRaw, catalogDigest);
     const preview = freeze({ ...previewRaw, status: canonicalStatus(previewRaw) });
     if (preview.status !== 'available') fail('plugin_api_request_invalid');
-    this.previewContexts.set(preview, Object.freeze({ projectId, pluginName, catalogDigest, expectedRevision }));
+    const selectedSession = validateSession(session);
+    const idempotencyKey = this.createIdempotencyKey();
+    if (!IDEMPOTENCY.test(idempotencyKey)) fail('plugin_api_config_invalid');
+    this.previewContexts.set(preview, Object.freeze({
+      projectId, pluginName, catalogDigest, expectedRevision, idempotencyKey,
+      origin: selectedSession.origin, accountFingerprint: selectedSession.accountFingerprint,
+    }));
     return preview;
   }
 
   async installPreview(session: PluginApiSession, preview: PluginPreview, signal?: AbortSignal): Promise<PluginInstallReceipt> {
     const context = preview !== null && typeof preview === 'object' ? this.previewContexts.get(preview) : undefined;
     if (context === undefined) fail('plugin_api_request_invalid');
-    const idempotencyKey = this.createIdempotencyKey();
-    if (!IDEMPOTENCY.test(idempotencyKey)) fail('plugin_api_config_invalid');
+    const selectedSession = validateSession(session);
+    if (selectedSession.origin !== context.origin || selectedSession.accountFingerprint !== context.accountFingerprint) fail('plugin_api_scope_changed');
     const path = `/api/v1/projects/${context.projectId}/plugins`;
     const options = Object.freeze({
-      method: 'POST' as const, signal, idempotencyKey,
+      method: 'POST' as const, signal, idempotencyKey: context.idempotencyKey,
       body: JSON.stringify({ pluginName: context.pluginName, catalogDigest: context.catalogDigest, expectedRevision: context.expectedRevision }),
     });
     let raw: unknown;
@@ -331,7 +411,6 @@ export class RowboatPluginApi {
     }
     const receipt = parseResponse(Receipt, raw);
     if (receipt.projectId !== context.projectId || receipt.pluginName !== context.pluginName) fail('plugin_api_response_invalid');
-    this.previewContexts.delete(preview);
     return freeze(receipt);
   }
 
@@ -356,7 +435,10 @@ export class RowboatPluginApi {
       try { if (Object.getPrototypeOf(response) !== Response.prototype) fail('plugin_api_response_invalid'); }
       catch { fail('plugin_api_response_invalid'); }
       const contentType = response.headers.get('content-type');
-      if (contentType === null || !/^application\/json(?:; charset=utf-8)?$/i.test(contentType)) fail('plugin_api_response_invalid');
+      if (contentType === null || !/^application\/json(?:; charset=utf-8)?$/i.test(contentType)) {
+        if (response.body !== null) await response.body.cancel().catch(() => undefined);
+        fail('plugin_api_response_invalid');
+      }
       const text = await this.readBounded(response, controller.signal);
       if (!response.ok) fail('plugin_api_unavailable');
       return new BoundedJsonParser(text).parse();
@@ -381,18 +463,21 @@ export class RowboatPluginApi {
       rejectAbort = () => reject(new DOMException('aborted', 'AbortError'));
       signal.addEventListener('abort', rejectAbort, { once: true });
     });
+    let open = true;
     try {
       while (true) {
         if (signal.aborted) throw new DOMException('aborted', 'AbortError');
         const item = await Promise.race([reader.read(), aborted]);
-        if (item.done) break;
+        if (item.done) { open = false; break; }
         size += item.value.byteLength;
         if (size > MAX_RESPONSE_BYTES) fail('plugin_api_response_invalid');
         chunks.push(item.value);
       }
+    } catch (error) {
+      if (open) await reader.cancel().catch(() => undefined);
+      throw error;
     } finally {
       if (rejectAbort !== undefined) signal.removeEventListener('abort', rejectAbort);
-      if (signal.aborted) void reader.cancel().catch(() => undefined);
       reader.releaseLock();
     }
     const bytes = new Uint8Array(size);
