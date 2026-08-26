@@ -111,7 +111,7 @@ export function ConnectedPluginSettings() {
   >({ kind: 'idle' });
   const scopeValid = selectedPreview !== null && state.kind === 'ready' && state.projectId === projectId
     && selectedPreview.projectId === projectId && selectedPreview.scope.origin === state.scope.origin
-    && selectedPreview.scope.accountFingerprint === state.scope.accountFingerprint;
+    && selectedPreview.scope.accountId === state.scope.accountId;
   useEffect(() => {
     if (selectedPreview !== null && !scopeValid) setSelectedPreview(null);
   }, [scopeValid, selectedPreview]);

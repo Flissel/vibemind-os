@@ -44,7 +44,7 @@ function json(value: unknown, init: ResponseInit = {}): Response {
 const session: PluginApiSession = Object.freeze({
   baseUrl: 'https://rowboat.example/',
   accessToken: 'token-value',
-  accountFingerprint: 'f'.repeat(64),
+  accountId: 'account-1',
 });
 
 describe('RowboatPluginApi', () => {
@@ -77,7 +77,7 @@ describe('RowboatPluginApi', () => {
   ])('rejects unsafe configured base URL %s before fetch', async (baseUrl) => {
     const fetcher = vi.fn();
     const client = new RowboatPluginApi(fetcher);
-    await expect(client.listCatalog({ baseUrl, accessToken: 'safe-token', accountFingerprint: 'f'.repeat(64) }, digest)).rejects.toThrow('plugin_api_config_invalid');
+    await expect(client.listCatalog({ baseUrl, accessToken: 'safe-token', accountId: 'account-1' }, digest)).rejects.toThrow('plugin_api_config_invalid');
     expect(fetcher).not.toHaveBeenCalled();
   });
 
@@ -86,7 +86,7 @@ describe('RowboatPluginApi', () => {
       expect(init?.redirect).toBe('error');
       return json(catalog());
     });
-    await new RowboatPluginApi(fetcher).listCatalog({ baseUrl: 'http://127.0.0.1:3000/', accessToken: 'token', accountFingerprint: 'f'.repeat(64) }, digest);
+    await new RowboatPluginApi(fetcher).listCatalog({ baseUrl: 'http://127.0.0.1:3000/', accessToken: 'token', accountId: 'account-1' }, digest);
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
@@ -274,7 +274,7 @@ describe('RowboatPluginApi', () => {
     expect(keys).toEqual(['preview-key-1', 'preview-key-2']);
   });
 
-  it('binds a preview to the account fingerprint and base origin before install fetch', async () => {
+  it('binds a preview to the stable account identity and base origin before install fetch', async () => {
     let call = 0;
     const fetcher = vi.fn(async () => {
       call += 1;
@@ -287,9 +287,26 @@ describe('RowboatPluginApi', () => {
     });
     const client = new RowboatPluginApi(fetcher);
     const preview = await client.previewInstallation(session, { projectId: 'project-1', pluginName: 'github', catalogDigest: digest });
-    await expect(client.installPreview({ ...session, accountFingerprint: 'e'.repeat(64) }, preview)).rejects.toThrow('plugin_api_scope_changed');
+    await expect(client.installPreview({ ...session, accountId: 'account-2' }, preview)).rejects.toThrow('plugin_api_scope_changed');
     await expect(client.installPreview({ ...session, baseUrl: 'https://other.example/' }, preview)).rejects.toThrow('plugin_api_scope_changed');
     expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves account scope across bearer rotation without deriving identity from the bearer', async () => {
+    let call = 0;
+    const fetcher = vi.fn(async () => {
+      call += 1;
+      if (call === 1) return json({ items: [] });
+      if (call === 2) return json({
+        pluginName: 'github', catalogDigest: digest, sourceCommit: 'c'.repeat(40), policyVersion: 'policy-v1',
+        license: { declaration: 'MIT', decision: 'admitted' }, admission: 'admitted', components: catalog().items[0].components,
+        status: 'available', credentialSlots: [],
+      });
+      return json({ type: 'install', receiptId: 'receipt-rotated', projectId: 'project-1', pluginName: 'github', status: 'success', redactions: [] });
+    });
+    const client = new RowboatPluginApi(fetcher);
+    const preview = await client.previewInstallation(session, { projectId: 'project-1', pluginName: 'github', catalogDigest: digest });
+    await expect(client.installPreview({ ...session, accessToken: 'rotated-token' }, preview)).resolves.toMatchObject({ status: 'success' });
   });
 
   it('returns failed receipt status and reason verbatim without converting it to success', async () => {

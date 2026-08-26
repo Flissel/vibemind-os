@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PluginInstallFeedback, PluginInstallReview, PluginSettings, type PluginSettingsItem } from './plugin-settings';
 import { usePlugins } from '@/hooks/usePlugins';
 import { SettingsDialog } from '@/components/settings-dialog';
-import { rowboatPluginSessionGateway, type PluginSessionGateway } from '@/lib/rowboat-plugin-session';
+import { rowboatPluginApiAccess, type PluginApiAccess } from '@/lib/rowboat-plugin-session';
 
 const digest = 'a'.repeat(64);
 const base: PluginSettingsItem = {
@@ -89,95 +89,100 @@ describe('PluginSettings', () => {
 });
 
 describe('usePlugins', () => {
-  const scope = { origin: 'https://rowboat.example', accountFingerprint: 'f'.repeat(64) };
-  const gateway = (token = 'ephemeral-token'): PluginSessionGateway => ({
-    run: async (operation) => ({ kind: 'ok', scope, value: await operation({ baseUrl: 'https://rowboat.example/', accessToken: token, accountFingerprint: scope.accountFingerprint }) }),
+  const scope = { origin: 'https://rowboat.example', accountId: 'account-1' };
+  const access = (overrides: Partial<PluginApiAccess> = {}): PluginApiAccess => ({
+    listCatalog: async () => ({ kind: 'ok', scope, value: { items: [] } }),
+    listProjectPlugins: async () => ({ kind: 'ok', scope, value: { items: [] } }),
+    previewInstallation: async () => { throw new Error('unexpected_preview'); },
+    installPreview: async () => { throw new Error('unexpected_install'); },
+    ...overrides,
   });
 
   it('aborts an unmounted request and does not retain account tokens in state', async () => {
     let signal: AbortSignal | undefined;
-    const api = {
-      listCatalog: vi.fn(async (_session: unknown, _catalogDigest: string, currentSignal?: AbortSignal) => {
+    const listCatalog = vi.fn(async (_catalogDigest: string, currentSignal?: AbortSignal) => {
         signal = currentSignal;
         return new Promise<never>(() => undefined);
-      }),
-    };
-    const sessionGateway = gateway();
-    const { result, unmount } = renderHook(() => usePlugins({ api, sessionGateway, catalogDigest: digest }));
-    await waitFor(() => expect(api.listCatalog).toHaveBeenCalledOnce());
+      });
+    const selectedAccess = access({ listCatalog });
+    const { result, unmount } = renderHook(() => usePlugins({ access: selectedAccess, catalogDigest: digest }));
+    await waitFor(() => expect(listCatalog).toHaveBeenCalledOnce());
     unmount();
     expect(signal?.aborted).toBe(true);
-    expect(JSON.stringify(result.current)).not.toContain('ephemeral-token');
+    expect(JSON.stringify(result.current)).not.toContain('accessToken');
   });
 
   it('prevents stale account results from overwriting the latest response', async () => {
     const pending: Array<(value: { items: [] }) => void> = [];
-    const api = { listCatalog: vi.fn(() => new Promise<{ items: [] }>((resolve) => pending.push(resolve))) };
-    const first = gateway('token-one');
-    const second = gateway('token-two');
-    const { result, rerender } = renderHook(({ sessionGateway }) => usePlugins({ api, sessionGateway, catalogDigest: digest }), { initialProps: { sessionGateway: first } });
-    await waitFor(() => expect(api.listCatalog).toHaveBeenCalledTimes(1));
-    rerender({ sessionGateway: second });
-    await waitFor(() => expect(api.listCatalog).toHaveBeenCalledTimes(2));
+    const listCatalog = vi.fn(() => new Promise<{ kind: 'ok'; scope: typeof scope; value: { items: [] } }>((resolve) => pending.push((value) => resolve({ kind: 'ok', scope, value }))));
+    const first = access({ listCatalog });
+    const second = access({ listCatalog });
+    const { result, rerender } = renderHook(({ selectedAccess }) => usePlugins({ access: selectedAccess, catalogDigest: digest }), { initialProps: { selectedAccess: first } });
+    await waitFor(() => expect(listCatalog).toHaveBeenCalledTimes(1));
+    rerender({ selectedAccess: second });
+    await waitFor(() => expect(listCatalog).toHaveBeenCalledTimes(2));
     await act(async () => pending[1]?.({ items: [] }));
     expect(result.current.state.kind).toBe('ready');
     await act(async () => pending[0]?.({ items: [] }));
     expect(result.current.state.kind).toBe('ready');
-    expect(JSON.stringify(result.current)).not.toMatch(/token-one|token-two/);
+    expect(JSON.stringify(result.current)).not.toContain('accessToken');
   });
 
   it('uses authorized project state to mark a catalog item installed', async () => {
     const component = { componentDigest: 'b'.repeat(64), name: 'github-mcp', kind: 'mcp', admission: { status: 'admitted', policyVersion: 'p1' }, availability: { status: 'available' }, status: 'available' };
     const catalogItem = { ...base, name: 'github', catalogDigest: digest, sourceCommit: 'c'.repeat(40), policyVersion: 'p1', license: { declaration: 'MIT', decision: 'admitted' }, admission: 'admitted', components: [component] };
-    const api = {
-      listCatalog: vi.fn(async () => ({ items: [catalogItem] })),
-      listProjectPlugins: vi.fn(async () => ({ items: [{ ...catalogItem, enabled: true, revision: 3 }] })),
-    };
-    const sessionGateway = gateway('token');
-    const { result } = renderHook(() => usePlugins({ api: api as never, sessionGateway, catalogDigest: digest, projectId: 'project-1' }));
+    const listProjectPlugins = vi.fn(async () => ({ kind: 'ok' as const, scope, value: { items: [{ ...catalogItem, enabled: true, revision: 3 }] } }));
+    const selectedAccess = access({ listCatalog: async () => ({ kind: 'ok', scope, value: { items: [catalogItem] } }) as never, listProjectPlugins: listProjectPlugins as never });
+    const { result } = renderHook(() => usePlugins({ access: selectedAccess, catalogDigest: digest, projectId: 'project-1' }));
     await waitFor(() => expect(result.current.state.kind).toBe('ready'));
     expect(result.current.state.kind === 'ready' ? result.current.state.items[0]?.status : null).toBe('installed');
-    expect(api.listProjectPlugins).toHaveBeenCalledOnce();
+    expect(listProjectPlugins).toHaveBeenCalledOnce();
     expect(JSON.stringify(result.current)).not.toContain('token');
   });
 
   it.each([
-    { enabled: false, admission: 'admitted', status: 'available' },
-    { enabled: true, admission: 'rejected', status: 'unavailable' },
-    { enabled: true, admission: 'admitted', status: 'migration_required' },
-  ] as const)('does not show incomplete project truth as installed: $status/$admission', async (overlay) => {
+    ['digest', { catalogDigest: 'd'.repeat(64) }], ['version', { pluginVersion: '2.0.0' }], ['policy', { policyVersion: 'p2' }],
+    ['revision', { revision: -1 }], ['status', { status: 'migration_required' }], ['admission', { admission: 'rejected' }],
+    ['disabled', { enabled: false }], ['unknown', { pluginName: 'unknown' }],
+  ] as const)('fails closed for inconsistent project installation %s', async (_label, overlay) => {
     const catalogItem = { ...base, name: 'github', catalogDigest: digest, sourceCommit: 'c'.repeat(40), policyVersion: 'p1', license: { declaration: 'MIT', decision: 'admitted' }, admission: 'admitted', components: [] };
-    const api = { listCatalog: vi.fn(async () => ({ items: [catalogItem] })), listProjectPlugins: vi.fn(async () => ({ items: [{ ...catalogItem, ...overlay, revision: 1 }] })) };
-    const sessionGateway = gateway();
-    const { result } = renderHook(() => usePlugins({ api: api as never, sessionGateway, catalogDigest: digest, projectId: 'project-1' }));
-    await waitFor(() => expect(result.current.state.kind).toBe('ready'));
-    expect(result.current.state.kind === 'ready' ? result.current.state.items[0]?.status : null).toBe('available');
+    const selectedAccess = access({ listCatalog: async () => ({ kind: 'ok', scope, value: { items: [catalogItem] } }) as never,
+      listProjectPlugins: async () => ({ kind: 'ok', scope, value: { items: [{ ...catalogItem, enabled: true, revision: 1, ...overlay }] } }) as never });
+    const { result } = renderHook(() => usePlugins({ access: selectedAccess, catalogDigest: digest, projectId: 'project-1' }));
+    await waitFor(() => expect(result.current.state.kind).toBe('error'));
+    expect(result.current.state.kind === 'error' ? result.current.state.reason : null).toBe('plugin_api_response_invalid');
+  });
+
+  it('fails closed for duplicate project installations', async () => {
+    const item = { ...base, name: 'github', catalogDigest: digest, sourceCommit: 'c'.repeat(40), policyVersion: 'p1', license: { declaration: 'MIT', decision: 'admitted' }, admission: 'admitted', components: [], enabled: true, revision: 1 };
+    const selectedAccess = access({ listCatalog: async () => ({ kind: 'ok', scope, value: { items: [item] } }) as never,
+      listProjectPlugins: async () => ({ kind: 'ok', scope, value: { items: [item, { ...item, revision: 2 }] } }) as never });
+    const { result } = renderHook(() => usePlugins({ access: selectedAccess, catalogDigest: digest, projectId: 'project-1' }));
+    await waitFor(() => expect(result.current.state.kind).toBe('error'));
   });
 
   it('rejects a preview scope mismatch before install fetch', async () => {
-    const api = { listCatalog: vi.fn(async () => ({ items: [] })), installPreview: vi.fn() };
-    const sessionGateway = gateway();
-    const { result } = renderHook(() => usePlugins({ api, sessionGateway, catalogDigest: digest, projectId: 'project-1' }));
+    const installPreview = vi.fn();
+    const selectedAccess = access({ installPreview });
+    const { result } = renderHook(() => usePlugins({ access: selectedAccess, catalogDigest: digest, projectId: 'project-1' }));
     await waitFor(() => expect(result.current.state.kind).toBe('ready'));
     await expect(result.current.confirm({ preview: {} as never, projectId: 'project-2', scope })).rejects.toThrow('plugin_api_scope_changed');
-    expect(api.installPreview).not.toHaveBeenCalled();
+    expect(installPreview).not.toHaveBeenCalled();
   });
 
 });
 
-describe('rowboatPluginSessionGateway', () => {
-  it('keeps the trusted token inside one imperative operation and out of results and storage', async () => {
+describe('rowboatPluginApiAccess', () => {
+  it('does not export a token callback and fails closed without a stable nonsecret account identity', async () => {
     const secret = 'trusted-ephemeral-secret';
-    Object.defineProperty(globalThis.crypto, 'subtle', { configurable: true, value: { digest: vi.fn(async () => new Uint8Array(32).buffer) } });
     Object.defineProperty(window, 'ipc', { configurable: true, value: {
       invoke: vi.fn(async () => ({ signedIn: true, accessToken: secret, config: {
         appUrl: 'https://rowboat.example/', websocketApiUrl: 'wss://rowboat.example/', supabaseUrl: 'https://supabase.example/',
       } })),
       on: vi.fn(() => () => undefined),
     } });
-    const result = await rowboatPluginSessionGateway.run(async (session) => session.accessToken === secret ? 'authorized' : 'denied');
-    expect(result.kind === 'ok' ? result.value : null).toBe('authorized');
-    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(rowboatPluginApiAccess).not.toHaveProperty('run');
+    await expect(rowboatPluginApiAccess.listCatalog(digest)).rejects.toThrow('plugin_session_identity_unavailable');
     expect(window.localStorage.length).toBe(0);
     expect(window.sessionStorage.length).toBe(0);
   });
@@ -187,7 +192,7 @@ describe('rowboatPluginSessionGateway', () => {
       invoke: vi.fn(async () => { throw new Error('raw-provider-secret'); }),
       on: vi.fn(() => () => undefined),
     } });
-    await expect(rowboatPluginSessionGateway.run(async () => 'unused')).rejects.toThrow('plugin_session_unavailable');
-    await expect(rowboatPluginSessionGateway.run(async () => 'unused')).rejects.not.toThrow('raw-provider-secret');
+    await expect(rowboatPluginApiAccess.listCatalog(digest)).rejects.toThrow('plugin_session_unavailable');
+    await expect(rowboatPluginApiAccess.listCatalog(digest)).rejects.not.toThrow('raw-provider-secret');
   });
 });

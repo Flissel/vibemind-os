@@ -21,7 +21,7 @@ export const DESKTOP_PLUGIN_CATALOG_PIN = Object.freeze({
 export interface PluginApiSession {
   readonly baseUrl: string;
   readonly accessToken: string;
-  readonly accountFingerprint: string;
+  readonly accountId: string;
 }
 
 const DIGEST = /^[a-f0-9]{64}$/;
@@ -86,7 +86,7 @@ export type PluginInstallReceipt = z.infer<typeof Receipt>;
 export type PluginProjectItem = Omit<z.infer<typeof ProjectItem>, 'status'> & { readonly status: PluginStatus };
 interface PreviewContext {
   readonly projectId: string; readonly pluginName: string; readonly catalogDigest: string; readonly expectedRevision: number;
-  readonly origin: string; readonly accountFingerprint: string; readonly idempotencyKey: string;
+  readonly origin: string; readonly accountId: string; readonly idempotencyKey: string;
 }
 
 interface ApiOptions {
@@ -131,13 +131,13 @@ export function canonicalPluginOrigin(baseUrl: string): string {
   return url.origin;
 }
 
-function validateSession(input: PluginApiSession): Readonly<{ origin: string; accessToken: string; accountFingerprint: string }> {
-  const record = exactRecord(input, ['baseUrl', 'accessToken', 'accountFingerprint'], 'plugin_api_config_invalid');
-  if (typeof record.accountFingerprint !== 'string' || !DIGEST.test(record.accountFingerprint)) fail('plugin_api_config_invalid');
+function validateSession(input: PluginApiSession): Readonly<{ origin: string; accessToken: string; accountId: string }> {
+  const record = exactRecord(input, ['baseUrl', 'accessToken', 'accountId'], 'plugin_api_config_invalid');
+  if (typeof record.accountId !== 'string' || !ID.test(record.accountId)) fail('plugin_api_config_invalid');
   if (typeof record.baseUrl !== 'string' || record.baseUrl.length < 1 || record.baseUrl.length > 2_048 || /[\\\0\r\n\t ]/.test(record.baseUrl)
     || typeof record.accessToken !== 'string' || record.accessToken.length < 1 || record.accessToken.length > 16_384
     || /[,\s\0]/.test(record.accessToken)) fail('plugin_api_config_invalid');
-  return Object.freeze({ origin: canonicalPluginOrigin(record.baseUrl), accessToken: record.accessToken, accountFingerprint: record.accountFingerprint });
+  return Object.freeze({ origin: canonicalPluginOrigin(record.baseUrl), accessToken: record.accessToken, accountId: record.accountId });
 }
 
 function validateId(value: unknown): string {
@@ -388,7 +388,7 @@ export class RowboatPluginApi {
     if (!IDEMPOTENCY.test(idempotencyKey)) fail('plugin_api_config_invalid');
     this.previewContexts.set(preview, Object.freeze({
       projectId, pluginName, catalogDigest, expectedRevision, idempotencyKey,
-      origin: selectedSession.origin, accountFingerprint: selectedSession.accountFingerprint,
+      origin: selectedSession.origin, accountId: selectedSession.accountId,
     }));
     return preview;
   }
@@ -397,7 +397,7 @@ export class RowboatPluginApi {
     const context = preview !== null && typeof preview === 'object' ? this.previewContexts.get(preview) : undefined;
     if (context === undefined) fail('plugin_api_request_invalid');
     const selectedSession = validateSession(session);
-    if (selectedSession.origin !== context.origin || selectedSession.accountFingerprint !== context.accountFingerprint) fail('plugin_api_scope_changed');
+    if (selectedSession.origin !== context.origin || selectedSession.accountId !== context.accountId) fail('plugin_api_scope_changed');
     const path = `/api/v1/projects/${context.projectId}/plugins`;
     const options = Object.freeze({
       method: 'POST' as const, signal, idempotencyKey: context.idempotencyKey,
