@@ -15,6 +15,7 @@ import {
 } from "@rowboat/openai-plugin-runtime";
 import type {
   IPluginsRepository,
+  PluginComponentAdmission,
   PluginCredentialSlot,
   PluginInstallation,
 } from "@/src/application/repositories/plugins.repository.interface";
@@ -31,6 +32,7 @@ const MAX_ARGUMENT_NODES = 1024;
 const MAX_ARGUMENT_DEPTH = 16;
 const MAX_ARGUMENT_BYTES = 64 * 1024;
 const DEFAULT_TIMEOUT_MILLISECONDS = 30_000;
+const DEFAULT_RECEIPT_TIMEOUT_MILLISECONDS = 100;
 const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
 export interface PluginToolBindingValue {
@@ -47,6 +49,11 @@ export interface PluginToolInvocationContext {
   readonly signal?: AbortSignal;
 }
 
+export type PluginToolAuthorizationContext = Readonly<
+  | { readonly caller: "user"; readonly userId: string }
+  | { readonly caller: "api"; readonly apiKey: string }
+>;
+
 export interface PluginProviderResolutionInput {
   readonly catalog: ReturnType<typeof validatePluginCatalogLock>;
   readonly entry: PluginCatalogEntry;
@@ -59,7 +66,8 @@ export interface PluginProviderResolutionInput {
 
 export interface PluginToolRuntimeDependencies {
   readonly pluginsRepository: IPluginsRepository;
-  readonly authorizeProject: (projectId: string) => Promise<void>;
+  readonly authorizationContext?: PluginToolAuthorizationContext;
+  readonly authorizeProject: (authorization: PluginToolAuthorizationContext, projectId: string) => Promise<void>;
   readonly classifyOperation: (input: Readonly<{
     readonly pluginName: string;
     readonly component: CatalogBoundPluginComponent;
@@ -67,6 +75,7 @@ export interface PluginToolRuntimeDependencies {
   }>) => "read" | "write";
   readonly resolveProvider: (input: PluginProviderResolutionInput) => Promise<ProviderResolution>;
   readonly timeoutMilliseconds?: number;
+  readonly receiptTimeoutMilliseconds?: number;
   readonly createRequestId?: () => string;
   readonly onCancel?: () => void;
 }
@@ -74,6 +83,10 @@ export interface PluginToolRuntimeDependencies {
 export type PluginToolRuntimeErrorCode =
   | "binding_invalid"
   | "request_invalid"
+  | "authorization_context_missing"
+  | "authorization_denied"
+  | "execution_state_invalid"
+  | "execution_state_changed"
   | "catalog_unavailable"
   | "catalog_invalid"
   | "installation_unavailable"
@@ -86,6 +99,7 @@ export type PluginToolRuntimeErrorCode =
   | "credential_missing"
   | "provider_unavailable"
   | "provider_failed"
+  | "provider_result_invalid"
   | "provider_timed_out"
   | "request_aborted"
   | "receipt_unavailable";
@@ -162,40 +176,41 @@ function captureContext(input: unknown): PluginToolInvocationContext {
   return Object.freeze({ projectId, operationName, ...(signal === undefined ? {} : { signal }) });
 }
 
-function captureJson(input: unknown, depth: number, budget: CaptureBudget): unknown {
+function captureJson(input: unknown, depth: number, budget: CaptureBudget, code: PluginToolRuntimeErrorCode): unknown {
   budget.nodes += 1;
-  if (budget.nodes > MAX_ARGUMENT_NODES || depth > MAX_ARGUMENT_DEPTH) throw new PluginToolRuntimeError("request_invalid");
+  if (budget.nodes > MAX_ARGUMENT_NODES || depth > MAX_ARGUMENT_DEPTH) throw new PluginToolRuntimeError(code);
   if (typeof input === "string") {
     budget.bytes += Buffer.byteLength(input, "utf8") + 2;
-    if (budget.bytes > MAX_ARGUMENT_BYTES) throw new PluginToolRuntimeError("request_invalid");
+    if (budget.bytes > MAX_ARGUMENT_BYTES) throw new PluginToolRuntimeError(code);
     return input;
   }
   if (input === null || typeof input === "boolean") return input;
   if (typeof input === "number" && Number.isFinite(input)) return input;
-  if (typeof input !== "object" || isProxy(input) || budget.seen.has(input)) throw new PluginToolRuntimeError("request_invalid");
+  if (typeof input !== "object" || isProxy(input) || budget.seen.has(input)) throw new PluginToolRuntimeError(code);
   budget.seen.add(input);
   try {
     if (Array.isArray(input)) {
-      if (Object.getPrototypeOf(input) !== Array.prototype || input.length > MAX_ARGUMENT_NODES) throw new PluginToolRuntimeError("request_invalid");
+      if (Object.getPrototypeOf(input) !== Array.prototype || input.length > MAX_ARGUMENT_NODES) throw new PluginToolRuntimeError(code);
       const descriptors = Object.getOwnPropertyDescriptors(input);
       const values: unknown[] = [];
       for (let index = 0; index < input.length; index += 1) {
         const descriptor = descriptors[String(index)];
-        if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) throw new PluginToolRuntimeError("request_invalid");
-        values.push(captureJson(descriptor.value, depth + 1, budget));
+        if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) throw new PluginToolRuntimeError(code);
+        values.push(captureJson(descriptor.value, depth + 1, budget, code));
       }
-      if (Reflect.ownKeys(input).length !== input.length + 1) throw new PluginToolRuntimeError("request_invalid");
+      if (Reflect.ownKeys(input).length !== input.length + 1) throw new PluginToolRuntimeError(code);
       return Object.freeze(values);
     }
     const prototype = Object.getPrototypeOf(input);
-    if (prototype !== Object.prototype && prototype !== null) throw new PluginToolRuntimeError("request_invalid");
+    if (prototype !== Object.prototype && prototype !== null) throw new PluginToolRuntimeError(code);
     const descriptors = Object.getOwnPropertyDescriptors(input);
-    if (Object.getOwnPropertySymbols(input).length !== 0) throw new PluginToolRuntimeError("request_invalid");
+    if (Object.getOwnPropertySymbols(input).length !== 0) throw new PluginToolRuntimeError(code);
     const captured: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     for (const [key, descriptor] of Object.entries(descriptors)) {
-      if (DANGEROUS_KEYS.has(key) || !("value" in descriptor) || !descriptor.enumerable) throw new PluginToolRuntimeError("request_invalid");
+      if (DANGEROUS_KEYS.has(key) || !("value" in descriptor) || !descriptor.enumerable) throw new PluginToolRuntimeError(code);
       budget.bytes += Buffer.byteLength(key, "utf8") + 3;
-      captured[key] = captureJson(descriptor.value, depth + 1, budget);
+      if (budget.bytes > MAX_ARGUMENT_BYTES) throw new PluginToolRuntimeError(code);
+      captured[key] = captureJson(descriptor.value, depth + 1, budget, code);
     }
     return Object.freeze(captured);
   } finally {
@@ -204,9 +219,156 @@ function captureJson(input: unknown, depth: number, budget: CaptureBudget): unkn
 }
 
 function captureArguments(input: unknown): Readonly<Record<string, unknown>> {
-  const captured = captureJson(input, 0, { nodes: 0, bytes: 0, seen: new Set() });
+  const captured = captureJson(input, 0, { nodes: 0, bytes: 0, seen: new Set() }, "request_invalid");
   if (captured === null || typeof captured !== "object" || Array.isArray(captured)) throw new PluginToolRuntimeError("request_invalid");
   return captured as Readonly<Record<string, unknown>>;
+}
+
+function captureAuthorization(input: unknown): PluginToolAuthorizationContext {
+  if (input === undefined) throw new PluginToolRuntimeError("authorization_context_missing");
+  if (input === null || typeof input !== "object" || Array.isArray(input) || isProxy(input)) throw new PluginToolRuntimeError("authorization_context_missing");
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  if (Object.getPrototypeOf(input) !== Object.prototype || Object.getOwnPropertySymbols(input).length !== 0) throw new PluginToolRuntimeError("authorization_context_missing");
+  const callerDescriptor = descriptors.caller;
+  if (callerDescriptor === undefined || !("value" in callerDescriptor) || !callerDescriptor.enumerable) throw new PluginToolRuntimeError("authorization_context_missing");
+  const caller = callerDescriptor.value as unknown;
+  const expected = caller === "user" ? ["caller", "userId"] : caller === "api" ? ["apiKey", "caller"] : [];
+  if (Object.keys(descriptors).sort().join("\0") !== expected.join("\0")) throw new PluginToolRuntimeError("authorization_context_missing");
+  const valueDescriptor = caller === "user" ? descriptors.userId : descriptors.apiKey;
+  if (valueDescriptor === undefined || !("value" in valueDescriptor) || !valueDescriptor.enumerable) throw new PluginToolRuntimeError("authorization_context_missing");
+  const value = valueDescriptor.value as unknown;
+  if (typeof value !== "string" || value.length < 1 || value.length > 4096 || value.includes("\0")) throw new PluginToolRuntimeError("authorization_context_missing");
+  return caller === "user"
+    ? Object.freeze({ caller, userId: value })
+    : Object.freeze({ caller: "api" as const, apiKey: value });
+}
+
+function exactKeys(record: Readonly<Record<string, unknown>>, required: readonly string[], optional: readonly string[] = []): void {
+  const keys = Object.keys(record);
+  if (required.some((key) => !keys.includes(key)) || keys.some((key) => !required.includes(key) && !optional.includes(key))) {
+    throw new PluginToolRuntimeError("execution_state_invalid");
+  }
+}
+
+function captureInstallation(input: unknown): PluginInstallation {
+  const captured = captureJson(input, 0, { nodes: 0, bytes: 0, seen: new Set() }, "execution_state_invalid") as Readonly<Record<string, unknown>>;
+  if (captured === null || typeof captured !== "object" || Array.isArray(captured)) throw new PluginToolRuntimeError("execution_state_invalid");
+  exactKeys(captured, ["id", "projectId", "pluginName", "pluginVersion", "sourceCommit", "manifestDigest", "treeDigest", "policyVersion", "enabled", "revision"], ["providerBindings"]);
+  for (const key of ["id", "projectId", "pluginName", "pluginVersion", "sourceCommit", "manifestDigest", "treeDigest", "policyVersion"] as const) {
+    if (typeof captured[key] !== "string") throw new PluginToolRuntimeError("execution_state_invalid");
+  }
+  if (
+    !IDENTIFIER.test(captured.id as string) || !IDENTIFIER.test(captured.projectId as string) || !IDENTIFIER.test(captured.pluginName as string)
+    || !DIGEST.test(captured.manifestDigest as string) || !DIGEST.test(captured.treeDigest as string)
+    || !/^[a-f0-9]{40}$/.test(captured.sourceCommit as string)
+    || typeof captured.enabled !== "boolean" || !Number.isSafeInteger(captured.revision) || (captured.revision as number) < 0
+  ) throw new PluginToolRuntimeError("execution_state_invalid");
+  const bindings = captured.providerBindings;
+  if (bindings !== undefined) {
+    if (!Array.isArray(bindings) || bindings.length > 256) throw new PluginToolRuntimeError("execution_state_invalid");
+    for (const selected of bindings as readonly unknown[]) {
+      if (selected === null || typeof selected !== "object" || Array.isArray(selected)) throw new PluginToolRuntimeError("execution_state_invalid");
+      const selectedRecord = selected as Readonly<Record<string, unknown>>;
+      exactKeys(selectedRecord, ["binding", "componentId"]);
+      if (typeof selectedRecord.componentId !== "string") throw new PluginToolRuntimeError("execution_state_invalid");
+      const provider = selectedRecord.binding;
+      if (provider === null || typeof provider !== "object" || Array.isArray(provider)) throw new PluginToolRuntimeError("execution_state_invalid");
+      const providerRecord = provider as Readonly<Record<string, unknown>>;
+      exactKeys(providerRecord, ["componentDigest", "id", "providerKind"], ["pairedComponentDigests", "temporaryAdapter"]);
+      if (
+        typeof providerRecord.id !== "string" || !IDENTIFIER.test(providerRecord.id)
+        || typeof providerRecord.componentDigest !== "string" || !DIGEST.test(providerRecord.componentDigest)
+        || typeof providerRecord.providerKind !== "string"
+        || !["mcp-http", "mcp-process", "rowboat-native", "legacy-composio-adapter", "openai-connector-bridge"].includes(providerRecord.providerKind)
+        || (providerRecord.temporaryAdapter !== undefined && providerRecord.temporaryAdapter !== true)
+      ) throw new PluginToolRuntimeError("execution_state_invalid");
+      if (providerRecord.pairedComponentDigests !== undefined && (
+        !Array.isArray(providerRecord.pairedComponentDigests) || providerRecord.pairedComponentDigests.length !== 2
+        || !providerRecord.pairedComponentDigests.every((digest) => typeof digest === "string" && DIGEST.test(digest))
+        || providerRecord.pairedComponentDigests[0] !== providerRecord.componentDigest
+      )) throw new PluginToolRuntimeError("execution_state_invalid");
+    }
+  }
+  return captured as unknown as PluginInstallation;
+}
+
+function captureAdmissions(input: unknown): readonly PluginComponentAdmission[] {
+  const captured = captureJson(input, 0, { nodes: 0, bytes: 0, seen: new Set() }, "execution_state_invalid");
+  if (!Array.isArray(captured) || captured.length > 256) throw new PluginToolRuntimeError("execution_state_invalid");
+  for (const admission of captured) {
+    if (admission === null || typeof admission !== "object" || Array.isArray(admission)) throw new PluginToolRuntimeError("execution_state_invalid");
+    const record = admission as Readonly<Record<string, unknown>>;
+    exactKeys(record, ["componentDigest", "componentKind", "componentName", "installationId", "policyVersion", "status"], ["reason"]);
+    if (
+      typeof record.installationId !== "string" || !IDENTIFIER.test(record.installationId)
+      || typeof record.componentDigest !== "string" || !DIGEST.test(record.componentDigest)
+      || typeof record.componentKind !== "string" || !["skill", "agent", "command", "mcp", "app", "hook", "asset"].includes(record.componentKind)
+      || typeof record.componentName !== "string" || typeof record.policyVersion !== "string"
+      || typeof record.status !== "string" || !["admitted", "review_required", "rejected"].includes(record.status)
+      || (record.status === "admitted" ? record.reason !== undefined : typeof record.reason !== "string")
+    ) throw new PluginToolRuntimeError("execution_state_invalid");
+  }
+  return captured as unknown as readonly PluginComponentAdmission[];
+}
+
+function captureCredentialSlots(input: unknown): readonly PluginCredentialSlot[] {
+  const captured = captureJson(input, 0, { nodes: 0, bytes: 0, seen: new Set() }, "execution_state_invalid");
+  if (!Array.isArray(captured) || captured.length > 256) throw new PluginToolRuntimeError("execution_state_invalid");
+  for (const slot of captured) {
+    if (slot === null || typeof slot !== "object" || Array.isArray(slot)) throw new PluginToolRuntimeError("execution_state_invalid");
+    const record = slot as Readonly<Record<string, unknown>>;
+    exactKeys(record, ["id", "installationId", "name", "projectId", "reference"], ["metadata"]);
+    if (
+      typeof record.id !== "string" || !IDENTIFIER.test(record.id)
+      || typeof record.installationId !== "string" || !IDENTIFIER.test(record.installationId)
+      || typeof record.projectId !== "string" || !IDENTIFIER.test(record.projectId)
+      || typeof record.name !== "string" || !/^[A-Z][A-Z0-9_]{0,127}$/.test(record.name)
+      || record.reference === null || typeof record.reference !== "object" || Array.isArray(record.reference)
+    ) throw new PluginToolRuntimeError("execution_state_invalid");
+    const reference = record.reference as Readonly<Record<string, unknown>>;
+    exactKeys(reference, ["kind", "reference"]);
+    if (
+      typeof reference.kind !== "string" || !["bearer", "oauth", "environment"].includes(reference.kind)
+      || typeof reference.reference !== "string" || reference.reference.length < 1 || reference.reference.length > 4096 || reference.reference.includes("\0")
+    ) throw new PluginToolRuntimeError("execution_state_invalid");
+    if (record.metadata !== undefined) {
+      if (record.metadata === null || typeof record.metadata !== "object" || Array.isArray(record.metadata)) throw new PluginToolRuntimeError("execution_state_invalid");
+      const metadata = record.metadata as Readonly<Record<string, unknown>>;
+      exactKeys(metadata, [], ["label", "order", "required"]);
+      if (
+        (metadata.label !== undefined && (typeof metadata.label !== "string" || metadata.label.length > 256 || metadata.label.includes("\0")))
+        || (metadata.required !== undefined && typeof metadata.required !== "boolean")
+        || (metadata.order !== undefined && (!Number.isSafeInteger(metadata.order) || (metadata.order as number) < 0))
+      ) throw new PluginToolRuntimeError("execution_state_invalid");
+    }
+  }
+  return captured as unknown as readonly PluginCredentialSlot[];
+}
+
+function captureProviderResult(input: unknown): ProviderResult {
+  if (input === null || typeof input !== "object" || Array.isArray(input) || isProxy(input)) throw new PluginToolRuntimeError("provider_result_invalid");
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  if (Object.getPrototypeOf(input) !== Object.prototype || Object.getOwnPropertySymbols(input).length !== 0) throw new PluginToolRuntimeError("provider_result_invalid");
+  const statusDescriptor = descriptors.status;
+  if (statusDescriptor === undefined || !("value" in statusDescriptor) || !statusDescriptor.enumerable) throw new PluginToolRuntimeError("provider_result_invalid");
+  if (statusDescriptor.value === "success" && Object.keys(descriptors).sort().join("\0") === ["output", "status"].join("\0")) {
+    const outputDescriptor = descriptors.output;
+    if (outputDescriptor === undefined || !("value" in outputDescriptor) || !outputDescriptor.enumerable) throw new PluginToolRuntimeError("provider_result_invalid");
+    const output = captureJson(outputDescriptor.value, 0, { nodes: 0, bytes: 0, seen: new Set() }, "provider_result_invalid");
+    return Object.freeze({ status: "success", output });
+  }
+  if (statusDescriptor.value === "failed" && Object.keys(descriptors).sort().join("\0") === ["reason", "status"].join("\0")) {
+    const reason = descriptors.reason;
+    if (reason === undefined || !("value" in reason) || !reason.enumerable || typeof reason.value !== "string" || Buffer.byteLength(reason.value, "utf8") > 4096) {
+      throw new PluginToolRuntimeError("provider_result_invalid");
+    }
+    return Object.freeze({ status: "failed", reason: "provider_failed" });
+  }
+  throw new PluginToolRuntimeError("provider_result_invalid");
+}
+
+function signature(value: unknown): string {
+  return JSON.stringify(value);
 }
 
 function exactCatalog(input: unknown): ReturnType<typeof validatePluginCatalogLock> {
@@ -325,12 +487,18 @@ function classifyFailure(error: unknown): PluginToolRuntimeError {
 export class PluginToolRuntime {
   readonly #dependencies: PluginToolRuntimeDependencies;
   readonly #timeoutMilliseconds: number;
+  readonly #receiptTimeoutMilliseconds: number;
 
   constructor(dependencies: PluginToolRuntimeDependencies) {
     const timeout = dependencies.timeoutMilliseconds ?? DEFAULT_TIMEOUT_MILLISECONDS;
-    if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 300_000) throw new PluginToolRuntimeError("request_invalid");
+    const receiptTimeout = dependencies.receiptTimeoutMilliseconds ?? DEFAULT_RECEIPT_TIMEOUT_MILLISECONDS;
+    if (
+      !Number.isSafeInteger(timeout) || timeout < 1 || timeout > 300_000
+      || !Number.isSafeInteger(receiptTimeout) || receiptTimeout < 1 || receiptTimeout > 5_000
+    ) throw new PluginToolRuntimeError("request_invalid");
     this.#dependencies = dependencies;
     this.#timeoutMilliseconds = timeout;
+    this.#receiptTimeoutMilliseconds = receiptTimeout;
     Object.freeze(this);
   }
 
@@ -338,6 +506,7 @@ export class PluginToolRuntime {
     const binding = captureBinding(bindingInput);
     const args = captureArguments(argumentsInput);
     const context = captureContext(contextInput);
+    const authorization = captureAuthorization(this.#dependencies.authorizationContext);
     if (context.signal?.aborted === true) throw new PluginToolRuntimeError("request_aborted");
     const controller = new AbortController();
     let cancelled = false;
@@ -351,13 +520,20 @@ export class PluginToolRuntime {
     context.signal?.addEventListener("abort", externalAbort, { once: true });
     const timer = setTimeout(cancel, this.#timeoutMilliseconds);
     try {
-    await awaitDeadline(this.#dependencies.authorizeProject(context.projectId), controller.signal, context.signal);
+    try {
+      await awaitDeadline(this.#dependencies.authorizeProject(authorization, context.projectId), controller.signal, context.signal);
+    } catch (error: unknown) {
+      if (error instanceof PluginToolRuntimeError) throw error;
+      throw new PluginToolRuntimeError("authorization_denied");
+    }
 
     const catalogValue = await awaitDeadline(this.#dependencies.pluginsRepository.getCatalog(PINNED_PLUGIN_CATALOG_DIGEST), controller.signal, context.signal);
     if (catalogValue === null) throw new PluginToolRuntimeError("catalog_unavailable");
     const catalog = exactCatalog(catalogValue);
-    const installation = await awaitDeadline(this.#dependencies.pluginsRepository.getInstallation(context.projectId, binding.pluginName), controller.signal, context.signal);
-    if (installation === null || !installation.enabled) throw new PluginToolRuntimeError("installation_unavailable");
+    const installationValue = await awaitDeadline(this.#dependencies.pluginsRepository.getInstallation(context.projectId, binding.pluginName), controller.signal, context.signal);
+    if (installationValue === null) throw new PluginToolRuntimeError("installation_unavailable");
+    const installation = captureInstallation(installationValue);
+    if (!installation.enabled) throw new PluginToolRuntimeError("installation_unavailable");
     if (
       installation.id !== binding.installationId || installation.projectId !== context.projectId
       || installation.pluginName !== binding.pluginName || !Number.isSafeInteger(installation.revision) || installation.revision < 0
@@ -386,7 +562,7 @@ export class PluginToolRuntime {
     const capabilityDecision = evaluateCapability({ kind: trustedCapability }, DEFAULT_POLICY);
     if (capabilityDecision.status !== "admitted") throw new PluginToolRuntimeError(capabilityDecision.reason === "write_review_required" ? "write_review_required" : "admission_denied");
 
-    const admissions = await awaitDeadline(this.#dependencies.pluginsRepository.listAdmissions(installation.id), controller.signal, context.signal);
+    const admissions = captureAdmissions(await awaitDeadline(this.#dependencies.pluginsRepository.listAdmissions(installation.id), controller.signal, context.signal));
     const currentAdmissions = admissions.filter((candidate) => candidate.componentDigest === binding.componentDigest);
     if (
       currentAdmissions.length !== 1 || currentAdmissions[0]!.installationId !== installation.id
@@ -395,7 +571,15 @@ export class PluginToolRuntime {
       || currentAdmissions[0]!.componentName !== component.component.name
     ) throw new PluginToolRuntimeError("admission_denied");
 
-    const credentialSlots = await awaitDeadline(this.#dependencies.pluginsRepository.listCredentialSlots(installation.id), controller.signal, context.signal);
+    captureCredentialSlots(await awaitDeadline(this.#dependencies.pluginsRepository.listCredentialSlots(installation.id), controller.signal, context.signal));
+    const preProviderInstallationValue = await awaitDeadline(this.#dependencies.pluginsRepository.getInstallation(context.projectId, binding.pluginName), controller.signal, context.signal);
+    if (preProviderInstallationValue === null) throw new PluginToolRuntimeError("execution_state_changed");
+    const preProviderInstallation = captureInstallation(preProviderInstallationValue);
+    const preProviderAdmissions = captureAdmissions(await awaitDeadline(this.#dependencies.pluginsRepository.listAdmissions(installation.id), controller.signal, context.signal));
+    if (signature(preProviderInstallation) !== signature(installation) || signature(preProviderAdmissions) !== signature(admissions)) {
+      throw new PluginToolRuntimeError("execution_state_changed");
+    }
+    const credentialSlots = captureCredentialSlots(await awaitDeadline(this.#dependencies.pluginsRepository.listCredentialSlots(installation.id), controller.signal, context.signal));
     if (credentialSlots.some((slot) => slot.projectId !== context.projectId || slot.installationId !== installation.id)) {
       throw new PluginToolRuntimeError("credential_invalid");
     }
@@ -417,27 +601,50 @@ export class PluginToolRuntime {
         capability: trustedCapability,
         arguments: args,
       }), Object.freeze({ requestId })));
-      const result = await awaitDeadline(operation, controller.signal, context.signal);
+      const result = captureProviderResult(await awaitDeadline(operation, controller.signal, context.signal));
       if (result.status !== "success") throw new PluginToolRuntimeError("provider_failed");
-      await awaitDeadline(this.#putReceipt(requestId, context.projectId, binding, installation, component.component, installedBinding, "success"), controller.signal, context.signal);
+      const finalInstallationValue = await awaitDeadline(this.#dependencies.pluginsRepository.getInstallation(context.projectId, binding.pluginName), controller.signal, context.signal);
+      if (finalInstallationValue === null) throw new PluginToolRuntimeError("execution_state_changed");
+      const finalInstallation = captureInstallation(finalInstallationValue);
+      const finalAdmissions = captureAdmissions(await awaitDeadline(this.#dependencies.pluginsRepository.listAdmissions(installation.id), controller.signal, context.signal));
+      const finalCredentialSlots = captureCredentialSlots(await awaitDeadline(this.#dependencies.pluginsRepository.listCredentialSlots(installation.id), controller.signal, context.signal));
+      if (
+        signature(finalInstallation) !== signature(installation)
+        || signature(finalAdmissions) !== signature(admissions)
+        || signature(finalCredentialSlots) !== signature(credentialSlots)
+      ) throw new PluginToolRuntimeError("execution_state_changed");
+      const receiptStored = await this.#settleReceipt(this.#putReceipt(requestId, context.projectId, binding, installation, component.component, installedBinding, "success"));
+      if (!receiptStored) throw new PluginToolRuntimeError("receipt_unavailable");
       return result;
     } catch (error: unknown) {
       if (operation !== undefined) void operation.catch(() => undefined);
       const classified = classifyFailure(error);
-      if (["provider_failed", "provider_timed_out", "request_aborted", "provider_unavailable", "credential_invalid", "credential_missing"].includes(classified.code)) {
+      if (["provider_failed", "provider_result_invalid", "provider_timed_out", "request_aborted", "provider_unavailable", "credential_invalid", "credential_missing"].includes(classified.code)) {
         const receiptOperation = this.#putReceipt(
           requestId, context.projectId, binding, installation, component.component, installedBinding,
           classified.code === "provider_timed_out" || classified.code === "request_aborted" ? "timed_out" : "failed",
           classified.code === "credential_missing" ? "credential_missing" : "provider_unavailable",
         );
-        if (controller.signal.aborted) await receiptOperation;
-        else await awaitDeadline(receiptOperation, controller.signal, context.signal);
+        await this.#settleReceipt(receiptOperation);
       }
       throw classified;
     }
     } finally {
       clearTimeout(timer);
       context.signal?.removeEventListener("abort", externalAbort);
+    }
+  }
+
+  async #settleReceipt(operation: Promise<void>): Promise<boolean> {
+    void operation.catch(() => undefined);
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), this.#receiptTimeoutMilliseconds);
+    });
+    try {
+      return await Promise.race([operation.then(() => true, () => false), timeout]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 

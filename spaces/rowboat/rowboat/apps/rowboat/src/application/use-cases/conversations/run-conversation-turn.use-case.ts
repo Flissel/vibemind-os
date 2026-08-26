@@ -8,6 +8,7 @@ import { z } from "zod";
 import { Message } from "@/app/lib/types/types";
 import { IUsageQuotaPolicy } from '../../policies/usage-quota.policy.interface';
 import { IProjectActionAuthorizationPolicy } from '../../policies/project-action-authorization.policy';
+import type { PluginToolAuthorizationContext } from "@/src/application/services/plugin-tool-runtime";
 
 const inputSchema = z.object({
     caller: z.enum(["user", "api", "job_worker"]),
@@ -132,7 +133,12 @@ export class RunConversationTurnUseCase implements IRunConversationTurnUseCase {
         // call agents runtime and handle generated messages
         try {
             const outputMessages: z.infer<typeof Message>[] = [];
-            for await (const event of streamResponse(projectId, conversation.workflow, inputMessages, usageTracker)) {
+            const pluginAuthorizationContext: PluginToolAuthorizationContext | undefined = data.caller === "user" && data.userId !== undefined
+                ? Object.freeze({ caller: "user", userId: data.userId })
+                : data.caller === "api" && data.apiKey !== undefined
+                    ? Object.freeze({ caller: "api", apiKey: data.apiKey })
+                    : undefined;
+            for await (const event of streamResponse(projectId, conversation.workflow, inputMessages, usageTracker, pluginAuthorizationContext)) {
                 // handle msg events
                 if ("role" in event) {
                     // collect generated message

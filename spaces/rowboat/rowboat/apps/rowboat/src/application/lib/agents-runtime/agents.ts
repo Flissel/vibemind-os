@@ -14,6 +14,7 @@ import { CHILD_TRANSFER_RELATED_INSTRUCTIONS, CONVERSATION_TYPE_INSTRUCTIONS, PI
 import { PrefixLogger } from "@/app/lib/utils";
 import { Message, AssistantMessage, AssistantMessageWithToolCalls, ToolMessage } from "@/app/lib/types/types";
 import { UsageTracker } from "@/app/lib/billing";
+import type { PluginToolAuthorizationContext } from "@/src/application/services/plugin-tool-runtime";
 
 // Native handoff support
 import { createAgentHandoff, getSchemaForAgent, createContextFilterForAgent } from "./agent-handoffs";
@@ -1255,6 +1256,7 @@ export async function* streamResponse(
     workflow: z.infer<typeof Workflow>,
     messages: z.infer<typeof Message>[],
     usageTracker: UsageTracker,
+    pluginAuthorizationContext?: PluginToolAuthorizationContext,
 ): AsyncIterable<z.infer<typeof ZOutMessage>> {
     // Divider log for tracking agent loop start
     console.log('-------------------- AGENT LOOP START --------------------');
@@ -1287,7 +1289,7 @@ export async function* streamResponse(
     logger.log(`initialized stack: ${JSON.stringify(stack)}`);
 
     // create tools
-    const tools = createTools(logger, usageTracker, projectId, workflow, toolConfig);
+    const tools = createTools(logger, usageTracker, projectId, workflow, toolConfig, pluginAuthorizationContext);
 
     // create agents with feature flag support
     const createAgentsFunction = USE_NATIVE_HANDOFFS ? createAgentsWithNativeHandoffs : createAgentsLegacy;
