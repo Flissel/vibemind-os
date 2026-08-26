@@ -14,7 +14,9 @@
     "jobs-worker": "tsx app/scripts/jobs-worker.ts",
     "mongodb-drop-indexes": "tsx app/scripts/mongodb-drop-indexes.ts",
     "mongodb-ensure-indexes": "tsx app/scripts/mongodb-ensure-indexes.ts",
-    "test:plugins": "vitest run test/plugins"
+    "test:plugins": "vitest run test/plugins",
+    "plugins:migrate": "tsx scripts/migrate-openai-plugins.ts",
+    "plugins:verify": "vitest run test/plugins && npm run plugins:migrate -- --dry-run --scope fixtures"
   },
   "dependencies": {
     "@ai-sdk/openai": "^1.3.21",

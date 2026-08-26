@@ -107,6 +107,10 @@ const ERROR_STATUS = Object.freeze({
   request_invalid: 400, catalog_digest_invalid: 400, project_id_invalid: 400, plugin_name_invalid: 400,
   idempotency_key_required: 400, idempotency_key_invalid: 400, installation_revision_invalid: 400,
   installation_update_invalid: 400, request_aborted: 400, request_timeout: 408,
+  migration_request_invalid: 400, migration_confirmation_required: 400, migration_confirmation_invalid: 403,
+  migration_confirmation_expired: 403, migration_confirmation_replayed: 409, migration_preview_stale: 409,
+  migration_preview_blocked: 409, migration_snapshot_invalid: 409, migration_snapshot_stale: 409,
+  migration_project_invalid: 400, migration_project_limit: 413, migration_confirmation_secret_invalid: 503,
 } as const);
 
 function safeErrorReason(error: unknown): keyof typeof ERROR_STATUS | null {
@@ -163,7 +167,7 @@ export function assertRoute(request: Request, method: "GET" | "POST" | "PATCH", 
   ) throw new Error("request_invalid");
 }
 
-export function assertRouteWithoutQuery(request: Request, method: "GET", expectedSegments: readonly string[]): void {
+export function assertRouteWithoutQuery(request: Request, method: "GET" | "POST" | "PATCH", expectedSegments: readonly string[]): void {
   assertRoute(request, method, expectedSegments);
   const { raw, url } = requestUrl(request);
   if (url.search !== "" || raw !== `${url.origin}${url.pathname}`) throw new Error("request_invalid");
