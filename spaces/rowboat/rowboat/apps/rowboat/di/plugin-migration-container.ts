@@ -7,8 +7,9 @@ import { ApplyPluginMigrationUseCase, type PreparedMigrationInvocation } from "@
 import { actorTuple, canonical, migrationDigest, signMigrationConfirmation, verifyMigrationConfirmation, type MigrationConfirmationClaims } from "@/src/application/use-cases/plugins/plugin-migration.shared";
 import { LegacyPluginMigration, type PluginMigrationPreview } from "@/src/application/services/legacy-plugin-migration";
 import { LEGACY_PLUGIN_RECIPES, sourceDriftBlocker } from "@/src/application/services/legacy-plugin-recipes";
-import { captureMigrationProjectState, type MigrationProjectState } from "@/src/application/services/plugin-migration-project-state";
-import { scanMigrationKeysetSnapshot } from "@/src/application/services/plugin-migration-keyset-snapshot";
+import { assertMigrationProjectStateUnchanged, captureMigrationProjectManifestEntry, captureMigrationProjectState, migrationProjectManifestEntryFromState, migrationProjectPointerCasFilter, parseMigrationPointerRecord, type MigrationProjectState } from "@/src/application/services/plugin-migration-project-state";
+import { executeMigrationManifest, materializeMigrationProjectManifest, type MigrationProjectManifestEntry } from "@/src/application/services/plugin-migration-keyset-snapshot";
+import { abortMigrationTransaction, migrationTransactionFailure } from "@/src/application/services/plugin-migration-transaction";
 import { Auth0PluginApiAuthorizationPolicy, Auth0PluginUserSessionProvider, ExistingProjectApiKeyVerifier, JoseAuth0UserTokenVerifier } from "@/src/infrastructure/policies/auth0.plugin-api-authorization.policy";
 import { MongoDBUsersRepository } from "@/src/infrastructure/repositories/mongodb.users.repository";
 import { MongoDBApiKeysRepository } from "@/src/infrastructure/repositories/mongodb.api-keys.repository";
@@ -27,7 +28,8 @@ interface PreparedContext {
   readonly catalog: PluginCatalogLock; readonly admissions: readonly PluginComponentAdmission[];
 }
 const migration = new LegacyPluginMigration();
-const PROJECT_PROJECTION = Object.freeze({ _id: 1, lastUpdatedAt: 1, version: 1, draftWorkflow: 1, liveWorkflow: 1, pluginMigrationPointer: 1 });
+const PROJECT_PROJECTION = Object.freeze({ _id: 1, createdAt: 1, lastUpdatedAt: 1, version: 1, draftWorkflow: 1, liveWorkflow: 1, pluginMigrationPointer: 1 });
+const MANIFEST_PROJECTION = Object.freeze({ _id: 1, createdAt: 1, lastUpdatedAt: 1, version: 1, pluginMigrationPointer: 1 });
 
 function deepFreeze<T>(value: T): T {
   if (Array.isArray(value)) { for (const item of value) deepFreeze(item); return Object.freeze(value) as T; }
@@ -78,7 +80,7 @@ async function prepareDocument(document: RawProject, catalog: PluginCatalogLock,
     existing = record;
   }
   const source = Object.freeze({ projectId: state.projectId, sourceProjectRevision: state.sourceProjectRevision,
-    sourceUpdatedAt: state.topLevelUpdatedAt, sourceStateDigest: state.stateDigest, legacyCardId: match?.cardId ?? "custom-project", sourceConfiguration: state.liveWorkflow });
+    sourceUpdatedAt: state.sourceTimestamp, sourceStateDigest: state.stateDigest, legacyCardId: match?.cardId ?? "custom-project", sourceConfiguration: state.liveWorkflow });
   let preview = migration.preview(source, catalog, existing);
   if (state.draftInventoryDigest !== state.liveInventoryDigest) {
     if (existing !== undefined) throw new Error("migration_pointer_invalid");
@@ -94,6 +96,16 @@ function context(input: unknown): PreparedContext {
   return selected;
 }
 function asPublic(prepared: PreparedContext): PreparedMigrationPreview { return Object.freeze({ preview: prepared.preview, catalog: prepared.catalog }); }
+function blockedPublic(entry: MigrationProjectManifestEntry, catalog: PluginCatalogLock, code: "snapshot_changed" | "migration_project_invalid" | "migration_pointer_invalid"): PreparedMigrationPreview {
+  const sourceDigest = migrationDigest("rowboat:plugin-migration-invalid-project:v1", { projectId: entry.projectId, scalarIdentityDigest: entry.scalarIdentityDigest, code });
+  const preview = Object.freeze({ id: sourceDigest, projectId: entry.projectId, sourceProjectRevision: 0, sourceDigest,
+    sourceInventoryDigest: migrationDigest("rowboat:plugin-migration-invalid-inventory:v1", { projectId: entry.projectId, code }),
+    recipeId: "unresolved:v1", recipeDigest: migrationDigest("rowboat:plugin-migration-unresolved-recipe:v1", { code }),
+    rollbackSnapshotDigest: migrationDigest("rowboat:plugin-migration-unavailable-rollback:v1", { projectId: entry.projectId, code }),
+    targetCatalogDigest: catalog.catalogDigest, targetInstallationIds: Object.freeze([]), status: "blocked" as const,
+    blockers: Object.freeze([Object.freeze({ code })]) });
+  return Object.freeze({ preview, catalog });
+}
 function mongoCode(error: unknown): number | null {
   if (error === null || typeof error !== "object" || utilTypes.isProxy(error)) return null;
   const descriptor = Object.getOwnPropertyDescriptor(error, "code"); return descriptor !== undefined && "value" in descriptor && descriptor.value === 11000 ? 11000 : null;
@@ -118,34 +130,33 @@ async function createComposition() {
       if (document === null) throw new Error("project_not_found");
       const prepared = await prepareDocument(document, catalog, async id => {
         const raw = await db.collection(PLUGIN_COLLECTIONS.migrationRecords).findOne({ id }, { projection: { _id: 0 }, session });
-        return raw === null ? null : ZPluginMigrationRecord.parse(raw);
+        return raw === null ? null : parseMigrationPointerRecord(raw);
       });
       await session.commitTransaction(); return prepared;
     } catch (error) { if (session.inTransaction()) await session.abortTransaction(); throw error; } finally { await session.endSession(); }
   };
   const authorizeProject = (actor: PluginApiIdentity, projectId: string) => authorization.authorizeProject(actor, projectId);
   const authorizeAll = async (actor: PluginApiIdentity) => { const selected = actorTuple(actor); if (selected.actorKind !== "user" || !adminIds().has(selected.actorId)) throw new Error("forbidden"); };
-  const scanAllProjects = async (visit: (prepared: PreparedMigrationPreview) => Promise<void>) => {
-    const catalog = await getCatalog(); const session = mongoClient.startSession();
-    try {
-      session.startTransaction({ readConcern: { level: "snapshot" } });
-      const snapshot = await scanMigrationKeysetSnapshot({
-        readPage: async (cursor, limit) => {
-          const filter = cursor === undefined ? {} : { _id: { $gt: cursor } };
-          const documents = await db.collection<RawProject>("projects").find(filter, { projection: PROJECT_PROJECTION, session }).sort({ _id: 1 }).limit(limit).toArray();
-          const prepared: PreparedContext[] = [];
-          for (const document of documents) prepared.push(await prepareDocument(document, catalog, async id => {
-            const raw = await db.collection(PLUGIN_COLLECTIONS.migrationRecords).findOne({ id }, { projection: { _id: 0 }, session });
-            return raw === null ? null : ZPluginMigrationRecord.parse(raw);
-          }));
-          return prepared;
-        },
-        identity: prepared => ({ projectId: prepared.state.projectId, stateDigest: prepared.state.stateDigest }),
-        visit: async prepared => { await visit(asPublic(prepared)); },
-        maximumProjects: 100_000, pageSize: 128,
-      });
-      await session.commitTransaction(); return Object.freeze({ catalog, snapshotToken: snapshot.snapshotToken });
-    } catch (error) { if (session.inTransaction()) await session.abortTransaction(); throw error; } finally { await session.endSession(); }
+  const scanAllProjects = async (actor: PluginApiIdentity, visit: (prepared: PreparedMigrationPreview) => Promise<void>) => {
+    const catalog = await getCatalog();
+    const scan = await executeMigrationManifest({
+      materialize: async () => {
+        const session = mongoClient.startSession();
+        try {
+          session.startTransaction({ readConcern: { level: "snapshot" } });
+          const manifest = await materializeMigrationProjectManifest({ readPage: async (cursor, limit) => {
+            const filter = cursor === undefined ? {} : { _id: { $gt: cursor } };
+            const documents = await db.collection<RawProject>("projects").find(filter, { projection: MANIFEST_PROJECTION, session }).sort({ _id: 1 }).limit(limit).toArray();
+            return documents.map(captureMigrationProjectManifestEntry);
+          }, now: () => Date.now(), pageSize: 128, maximumProjects: 10_000, maximumBytes: 2_000_000, maximumDurationMs: 5_000 });
+          await session.commitTransaction(); return manifest;
+        } catch (error) { if (session.inTransaction()) await session.abortTransaction(); throw error; } finally { await session.endSession(); }
+      },
+      prepare: async entry => { await authorizeAll(actor); const prepared = await prepareOne(entry.projectId); return Object.freeze({ value: asPublic(prepared), scalarIdentityDigest: migrationProjectManifestEntryFromState(prepared.state).scalarIdentityDigest }); },
+      blocked: (entry, code) => blockedPublic(entry, catalog, code), visit,
+      preparedBytes: value => Buffer.byteLength(JSON.stringify(value), "utf8"), now: () => Date.now(), maximumPreparedBytes: 32 * 1024 * 1024, maximumDurationMs: 30_000,
+    });
+    return Object.freeze({ catalog, snapshotToken: scan.snapshotToken });
   };
   const preview = new PreviewPluginMigrationUseCase({ authorizeProject, authorizeAll, prepareProject: async projectId => asPublic(await prepareOne(projectId)), scanAllProjects,
     issueConfirmation: ({ actor, preview: selected, reportDigest }) => {
@@ -179,10 +190,8 @@ async function createComposition() {
         const currentDocument = await db.collection<RawProject>("projects").findOne({ _id: prepared.state.projectId }, { projection: PROJECT_PROJECTION, session });
         if (currentDocument === null) throw new Error("migration_pointer_conflict");
         const currentState = captureMigrationProjectState(currentDocument);
-        if (currentState.stateDigest !== prepared.state.stateDigest || currentState.topLevelUpdatedAt !== prepared.state.topLevelUpdatedAt
-          || currentState.draftUpdatedAt !== prepared.state.draftUpdatedAt || currentState.liveUpdatedAt !== prepared.state.liveUpdatedAt
-          || currentState.draftInventoryDigest !== prepared.state.draftInventoryDigest || currentState.liveInventoryDigest !== prepared.state.liveInventoryDigest
-          || currentState.pointer !== null) throw new Error("migration_pointer_conflict");
+        assertMigrationProjectStateUnchanged(prepared.state, currentState);
+        if (currentState.pointer !== null) throw new Error("migration_pointer_conflict");
         await insertExact(db.collection("plugin_migration_rollbacks"), { _id: prepared.preview.id, ...prepared.state.rollbackSnapshot,
           rollbackSnapshotDigest: prepared.preview.rollbackSnapshotDigest }, session, "migration_rollback_conflict");
         for (const installation of prepared.preview.installations) {
@@ -207,17 +216,13 @@ async function createComposition() {
         const generatedAt = new Date().toISOString();
         await insertExact(idempotencyCollection, { _id: claims.idempotencyKey, payloadDigest, projectId: claims.projectId,
           migrationRecordId: record.id, receiptIds: [record.id], generatedAt }, session, "migration_idempotency_conflict");
-        const versionFilter = prepared.state.version === null ? { version: { $exists: false } } : { version: prepared.state.version };
-        const updated = await db.collection<RawProject>("projects").updateOne({ _id: prepared.state.projectId, lastUpdatedAt: prepared.state.topLevelUpdatedAt,
-          draftWorkflow: prepared.state.draftWorkflow, liveWorkflow: prepared.state.liveWorkflow,
-          "draftWorkflow.lastUpdatedAt": prepared.state.draftUpdatedAt, "liveWorkflow.lastUpdatedAt": prepared.state.liveUpdatedAt,
-          pluginMigrationPointer: null, ...versionFilter }, { $set: { pluginMigrationPointer: { migrationRecordId: record.id,
+        const updated = await db.collection<RawProject>("projects").updateOne(migrationProjectPointerCasFilter(prepared.state), { $set: { pluginMigrationPointer: { migrationRecordId: record.id,
             sourceProjectRevision: prepared.state.sourceProjectRevision, sourceStateDigest: prepared.state.stateDigest, catalogDigest: record.targetCatalogDigest } } }, { session });
         if (updated.modifiedCount !== 1) throw new Error("migration_pointer_conflict");
         result = { receiptIds: Object.freeze([record.id]), replayed: false, mutationCount: 4, generatedAt };
         await session.commitTransaction(); return result;
       } catch (error) {
-        if (session.inTransaction()) await session.abortTransaction();
+        await abortMigrationTransaction(session);
         const retryableExactConflict = error instanceof Error && ["migration_rollback_conflict", "migration_installation_conflict", "migration_admission_conflict",
           "migration_record_conflict", "migration_confirmation_replayed", "migration_idempotency_conflict"].includes(error.message);
         if (retryableExactConflict) {
@@ -230,8 +235,7 @@ async function createComposition() {
             return { receiptIds: Object.freeze([prepared.preview.id]), replayed: true, mutationCount: 0, generatedAt: prior.generatedAt };
           }
         }
-        if (error instanceof Error && /^[a-z0-9_]+$/.test(error.message)) throw error;
-        throw new Error("migration_repository_failed");
+        throw migrationTransactionFailure(error);
       } finally { await session.endSession(); }
     } });
   return Object.freeze({ preview, apply, previewController: new PreviewPluginMigrationController({ authorization, useCase: preview }),

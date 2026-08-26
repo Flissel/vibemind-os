@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 import { PreviewPluginMigrationUseCase, type PreparedMigrationPreview } from "@/src/application/use-cases/plugins/preview-plugin-migration.use-case";
 import { ApplyPluginMigrationUseCase, type PreparedMigrationInvocation } from "@/src/application/use-cases/plugins/apply-plugin-migration.use-case";
 import { createMigrationPreviewRoute, createMigrationApplyRoute } from "@/src/interface-adapters/http/plugins/plugin-migration-routes";
+import { pluginErrorResponse } from "@/app/api/v1/projects/[projectId]/plugins/_responses";
 import { signMigrationConfirmation, verifyMigrationConfirmation, type MigrationConfirmationClaims } from "@/src/application/use-cases/plugins/plugin-migration.shared";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -28,12 +29,21 @@ const publicPrepared = (suffix = "a"): PreparedMigrationPreview => Object.freeze
 
 describe("plugin migration preview", () => {
   it("authorizes before a snapshot scan, sorts, and never reports writes", async () => {
-    const events: string[] = [];
+    const events: string[] = []; let issued = 0;
     const useCase = new PreviewPluginMigrationUseCase({ authorizeProject: async () => { throw new Error("unexpected"); }, authorizeAll: async () => { events.push("authorize"); },
-      prepareProject: async () => { throw new Error("unexpected"); }, scanAllProjects: async visit => { events.push("scan"); await visit(publicPrepared("b")); await visit(publicPrepared("a")); return { catalog, snapshotToken: digest("snapshot") }; },
-      issueConfirmation: ({ preview }) => ({ token: `token-${preview.sourceDigest}`, idempotencyKey: `migration-${preview.id}` }), now: () => new Date("2026-08-26T10:00:00.000Z") });
+      prepareProject: async () => { throw new Error("unexpected"); }, scanAllProjects: async (_actor, visit) => { events.push("scan"); await visit(publicPrepared("b")); await visit(publicPrepared("a")); return { catalog, snapshotToken: digest("snapshot") }; },
+      issueConfirmation: ({ preview }) => { issued += 1; return { token: `token-${preview.sourceDigest}`, idempotencyKey: `migration-${preview.id}` }; }, now: () => new Date("2026-08-26T10:00:00.000Z") });
     const report = await useCase.execute({ actor, scope: "all" });
     expect(events).toEqual(["authorize", "scan"]); expect(report.mutationCount).toBe(0); expect(report.mutationsApplied).toBe(false); expect(report.projects).toHaveLength(2);
+    expect(issued).toBe(0); expect(report.projects.every(project => !("confirmationToken" in project))).toBe(true);
+  });
+
+  it("issues a short-lived confirmation only for one project-scoped ready preview", async () => {
+    let issued = 0; const useCase = new PreviewPluginMigrationUseCase({ authorizeProject: async () => undefined, authorizeAll: async () => { throw new Error("unexpected"); },
+      prepareProject: async () => publicPrepared(), scanAllProjects: async () => { throw new Error("unexpected"); },
+      issueConfirmation: () => { issued += 1; return { token: "project-token", idempotencyKey: "signed-idempotency" }; }, now: () => new Date("2026-08-26T10:00:00.000Z") });
+    const report = await useCase.execute({ actor, scope: "project", projectId: readyPreview().projectId });
+    expect(issued).toBe(1); expect(report.projects[0]).toMatchObject({ confirmationToken: "project-token", confirmationIdempotencyKey: "signed-idempotency" });
   });
 
   it("rejects all authority before reads and issues no new token for applied history", async () => {
@@ -45,6 +55,14 @@ describe("plugin migration preview", () => {
     const history = new PreviewPluginMigrationUseCase({ authorizeProject: async () => undefined, authorizeAll: async () => undefined, prepareProject: async () => ({ preview: applied, catalog }),
       scanAllProjects: async () => { throw new Error("unexpected"); }, issueConfirmation: () => { issued += 1; return { token: "never", idempotencyKey: "never" }; }, now: () => new Date() });
     const report = await history.execute({ actor, scope: "project", projectId: applied.projectId }); expect(report.projects[0]).not.toHaveProperty("confirmationToken"); expect(issued).toBe(0);
+  });
+
+  it("keeps an invalid all-scope project as a typed blocker without aborting valid peers", async () => {
+    const blocked = Object.freeze({ ...readyPreview("b"), status: "blocked" as const, targetInstallationIds: Object.freeze([]), blockers: Object.freeze([{ code: "migration_project_invalid" }]) });
+    const useCase = new PreviewPluginMigrationUseCase({ authorizeProject: async () => undefined, authorizeAll: async () => undefined, prepareProject: async () => { throw new Error("unexpected"); },
+      scanAllProjects: async (_actor, visit) => { await visit({ preview: blocked, catalog }); await visit(publicPrepared()); return { catalog, snapshotToken: digest("manifest") }; },
+      issueConfirmation: () => { throw new Error("unexpected_token"); }, now: () => new Date("2026-08-26T10:00:00.000Z") });
+    const report = await useCase.execute({ actor, scope: "all" }); expect(report.projectCount).toBe(2); expect(report.blockerReasons).toEqual({ migration_project_invalid: 1 }); expect(report.projects.every(project => !("confirmationToken" in project))).toBe(true);
   });
 });
 
@@ -96,4 +114,18 @@ describe("plugin migration routes", () => {
   it("rejects non-exact request boundaries before controller resolution", async () => { let resolves = 0; const route = createMigrationPreviewRoute(async () => { resolves += 1; return { execute: async () => ({}) }; }); expect((await route(new Request(`https://rowboat.invalid/api/v1/projects/${projectId}/plugins/migration/preview`), context)).status).toBe(400); expect((await route(new NextRequest(`https://rowboat.invalid/api/v1/projects/${projectId}/plugins/migration/preview?scope=x`), context)).status).toBe(400); expect(resolves).toBe(0); });
   it("derives apply idempotency only from the signed token", async () => { const route = createMigrationApplyRoute(async () => ({ execute: async (_request, input) => input })); const response = await route(new NextRequest(`https://rowboat.invalid/api/v1/projects/${projectId}/plugins/migration/apply`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ confirmationToken: "signed-token" }) }), context); expect(await response.json()).toEqual({ projectId, confirmationToken: "signed-token" }); });
   it("rejects duplicate JSON keys before controller execution", async () => { let calls = 0; const route = createMigrationApplyRoute(async () => ({ execute: async () => { calls += 1; return {}; } })); const response = await route(new NextRequest(`https://rowboat.invalid/api/v1/projects/${projectId}/plugins/migration/apply`, { method: "POST", headers: { "content-type": "application/json" }, body: '{"confirmationToken":"a","confirmationToken":"b"}' }), context); expect(response.status).toBe(400); expect(calls).toBe(0); });
+
+  it.each([
+    ["project_not_found", 404], ["unauthenticated", 401], ["user_authentication_required", 401], ["forbidden", 403],
+    ["migration_pointer_invalid", 409], ["migration_pointer_conflict", 409], ["migration_installation_conflict", 409],
+    ["migration_admission_conflict", 409], ["migration_record_conflict", 409], ["migration_rollback_conflict", 409],
+    ["migration_idempotency_conflict", 409], ["migration_confirmation_replayed", 409], ["migration_preview_stale", 409],
+    ["migration_repository_failed", 500], ["migration_system_failed", 500],
+  ] as const)("maps safe migration error %s to exact HTTP %s without raw details", async (code, status) => {
+    const response = pluginErrorResponse(new Error(code)); expect(response.status).toBe(status); expect(await response.json()).toEqual({ error: code });
+  });
+
+  it("maps unallowlisted migration details to one safe internal error", async () => {
+    const response = pluginErrorResponse(new Error("migration_raw_driver_E11000 secret")); expect(response.status).toBe(500); expect(await response.json()).toEqual({ error: "internal_error" });
+  });
 });

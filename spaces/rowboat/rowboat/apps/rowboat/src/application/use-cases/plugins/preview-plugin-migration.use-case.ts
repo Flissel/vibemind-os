@@ -13,7 +13,7 @@ interface Dependencies {
   readonly authorizeProject: (actor: PluginApiIdentity, projectId: string) => Promise<void>;
   readonly authorizeAll: (actor: PluginApiIdentity) => Promise<void>;
   readonly prepareProject: (projectId: string) => Promise<PreparedMigrationPreview>;
-  readonly scanAllProjects: (visit: (prepared: PreparedMigrationPreview) => Promise<void>) => Promise<Readonly<{ catalog: CatalogRef; snapshotToken: string }>>;
+  readonly scanAllProjects: (actor: PluginApiIdentity, visit: (prepared: PreparedMigrationPreview) => Promise<void>) => Promise<Readonly<{ catalog: CatalogRef; snapshotToken: string }>>;
   readonly issueConfirmation: (input: Readonly<{ actor: PluginApiIdentity; preview: PreviewLike; reportDigest: string }>) => Readonly<{ token: string; idempotencyKey: string }>;
   readonly now: () => Date;
 }
@@ -33,7 +33,7 @@ export class PreviewPluginMigrationUseCase {
     } else {
       if (input.scope !== "all" || input.projectId !== undefined) throw new Error("migration_request_invalid");
       await this.dependencies.authorizeAll(input.actor);
-      const scan = await this.dependencies.scanAllProjects(async item => { prepared.push(item); }); catalog = scan.catalog; snapshotToken = scan.snapshotToken;
+      const scan = await this.dependencies.scanAllProjects(input.actor, async item => { prepared.push(item); }); catalog = scan.catalog; snapshotToken = scan.snapshotToken;
     }
     if (!SHA256.test(catalog.catalogDigest) || !/^[a-f0-9]{40}$/.test(catalog.sourceCommit)) throw new Error("catalog_digest_mismatch");
     prepared.sort((left, right) => left.preview.projectId.localeCompare(right.preview.projectId));
@@ -50,7 +50,7 @@ export class PreviewPluginMigrationUseCase {
       mutationCount: 0, receiptIds: Object.freeze([]), mutationsApplied: false as const, projects: projectsCore });
     const reportDigest = migrationDigest("rowboat:plugin-migration-preview-report:v2", { ...core, actor: actorIdentity });
     const projects = prepared.map(({ preview }, index) => {
-      if (preview.status !== "previewed" || preview.blockers.length !== 0) return projectsCore[index]!;
+      if (input.scope !== "project" || preview.status !== "previewed" || preview.blockers.length !== 0) return projectsCore[index]!;
       const issued = this.dependencies.issueConfirmation({ actor: input.actor, preview, reportDigest });
       return Object.freeze({ ...projectsCore[index], confirmationToken: issued.token, confirmationIdempotencyKey: issued.idempotencyKey });
     });

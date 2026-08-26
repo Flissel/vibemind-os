@@ -110,7 +110,11 @@ const ERROR_STATUS = Object.freeze({
   migration_request_invalid: 400, migration_confirmation_required: 400, migration_confirmation_invalid: 403,
   migration_confirmation_expired: 403, migration_confirmation_replayed: 409, migration_preview_stale: 409,
   migration_preview_blocked: 409, migration_snapshot_invalid: 409, migration_snapshot_stale: 409,
-  migration_project_invalid: 400, migration_project_limit: 413, migration_confirmation_secret_invalid: 503,
+  migration_pointer_invalid: 409, migration_pointer_conflict: 409, migration_installation_conflict: 409,
+  migration_admission_conflict: 409, migration_record_conflict: 409, migration_rollback_conflict: 409,
+  migration_idempotency_conflict: 409, migration_snapshot_changed: 409, project_not_found: 404,
+  migration_project_invalid: 400, migration_project_limit: 413, migration_manifest_limit: 413,
+  migration_confirmation_secret_invalid: 503, migration_repository_failed: 500, migration_system_failed: 500,
 } as const);
 
 function safeErrorReason(error: unknown): keyof typeof ERROR_STATUS | null {
