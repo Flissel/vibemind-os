@@ -1,7 +1,7 @@
 import { migrationDigest } from "../use-cases/plugins/plugin-migration.shared";
 import { buildLegacyExecutableInventory } from "./legacy-plugin-recipes";
 import { captureMigrationJson } from "./legacy-plugin-migration";
-import type { MigrationProjectManifestCandidate, MigrationProjectManifestEntry } from "./plugin-migration-keyset-snapshot";
+import type { MigrationProjectManifestCandidate, MigrationProjectReadyManifestEntry, MigrationProjectSizeCandidate } from "./plugin-migration-keyset-snapshot";
 import { ZPluginMigrationRecord, type PluginMigrationRecord } from "@rowboat/openai-plugin-runtime";
 
 const PROJECT_KEYS = Object.freeze(["_id", "createdAt", "draftWorkflow", "lastUpdatedAt", "liveWorkflow", "pluginMigrationPointer", "version"]);
@@ -87,12 +87,16 @@ export function migrationProjectPointerCasFilter(state: MigrationProjectState): 
   return Object.freeze({ _id: state.projectId, ...timestamp, ...version, pluginMigrationPointer: priorPointer });
 }
 
-function manifestEntry(record: Readonly<Record<string, unknown>>): MigrationProjectManifestEntry {
+function scalarIdentity(record: Readonly<Record<string, unknown>>): string {
   const pointerFieldPresent = Object.prototype.hasOwnProperty.call(record, "pluginMigrationPointer");
-  return Object.freeze({ projectId: record._id as string, scalarIdentityDigest: migrationDigest("rowboat:plugin-migration-manifest-identity:v1", {
+  return migrationDigest("rowboat:plugin-migration-manifest-identity:v1", {
     projectId: record._id, createdAt: record.createdAt ?? null, lastUpdatedAt: record.lastUpdatedAt ?? null,
     version: record.version ?? null, pointerFieldPresent, pointer: record.pluginMigrationPointer ?? null,
-  }), stateDigest: migrationDigest("rowboat:plugin-migration-manifest-full-state:v1", record) });
+  });
+}
+function manifestEntry(record: Readonly<Record<string, unknown>>): MigrationProjectReadyManifestEntry {
+  return Object.freeze({ projectId: record._id as string, scalarIdentityDigest: scalarIdentity(record),
+    stateDigest: migrationDigest("rowboat:plugin-migration-manifest-full-state:v1", record) });
 }
 export function captureMigrationProjectManifestCandidate(input: unknown): MigrationProjectManifestCandidate {
   const captured = captureMigrationJson(input);
@@ -103,17 +107,27 @@ export function captureMigrationProjectManifestCandidate(input: unknown): Migrat
   if (!Number.isSafeInteger(capturedBytes) || capturedBytes < 1) throw new Error("migration_project_invalid");
   return Object.freeze({ ...selected, capturedBytes });
 }
-export function captureMigrationProjectManifestEntry(input: unknown): MigrationProjectManifestEntry {
+export function captureMigrationProjectManifestEntry(input: unknown): MigrationProjectReadyManifestEntry {
   const { projectId, scalarIdentityDigest, stateDigest } = captureMigrationProjectManifestCandidate(input);
   return Object.freeze({ projectId, scalarIdentityDigest, stateDigest });
 }
-export function migrationProjectManifestEntryFromState(state: MigrationProjectState): MigrationProjectManifestEntry {
+export function migrationProjectManifestEntryFromState(state: MigrationProjectState): MigrationProjectReadyManifestEntry {
   const record: Record<string, unknown> = { _id: state.projectId, draftWorkflow: state.draftWorkflow, liveWorkflow: state.liveWorkflow };
   if (state.topLevelCreatedAt !== null) record.createdAt = state.topLevelCreatedAt;
   if (state.topLevelUpdatedAt !== null) record.lastUpdatedAt = state.topLevelUpdatedAt;
   if (state.version !== null) record.version = state.version;
   if (state.pointerFieldPresent) record.pluginMigrationPointer = state.pointer;
   return manifestEntry(record);
+}
+
+const SIZE_KEYS = Object.freeze(["_id", "createdAt", "lastUpdatedAt", "pluginMigrationPointer", "projectBsonBytes", "version"]);
+export function captureMigrationProjectSizeCandidate(input: unknown): MigrationProjectSizeCandidate {
+  const captured = captureMigrationJson(input);
+  if (captured === null || typeof captured !== "object" || Array.isArray(captured)) throw new Error("migration_project_invalid");
+  const record = captured as Readonly<Record<string, unknown>>;
+  if (Object.keys(record).some(key => !SIZE_KEYS.includes(key)) || typeof record._id !== "string" || !UUID.test(record._id)
+    || !Number.isSafeInteger(record.projectBsonBytes) || (record.projectBsonBytes as number) < 1) throw new Error("migration_project_invalid");
+  return Object.freeze({ projectId: record._id, scalarIdentityDigest: scalarIdentity(record), projectBsonBytes: record.projectBsonBytes as number });
 }
 
 export function assertMigrationProjectStateUnchanged(expected: MigrationProjectState, current: MigrationProjectState): void {

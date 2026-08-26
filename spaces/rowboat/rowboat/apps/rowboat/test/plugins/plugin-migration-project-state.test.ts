@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertMigrationProjectStateUnchanged, captureMigrationProjectManifestCandidate, captureMigrationProjectManifestEntry, captureMigrationProjectState, migrationProjectManifestEntryFromState, migrationProjectPointerCasFilter, parseMigrationPointerRecord } from "@/src/application/services/plugin-migration-project-state";
+import { assertMigrationProjectStateUnchanged, captureMigrationProjectManifestCandidate, captureMigrationProjectManifestEntry, captureMigrationProjectSizeCandidate, captureMigrationProjectState, migrationProjectManifestEntryFromState, migrationProjectPointerCasFilter, parseMigrationPointerRecord } from "@/src/application/services/plugin-migration-project-state";
 import customerSupport from "@/app/lib/prebuilt-cards/customer-support.json";
 
 const projectId = "11111111-1111-4111-8111-111111111111";
@@ -50,6 +50,12 @@ describe("authoritative plugin migration project state", () => {
     const edited = captureMigrationProjectManifestCandidate({ ...project(), draftWorkflow: realWorkflow, liveWorkflow: { ...realWorkflow, startAgent: "same-ms-edit" } });
     expect(original.capturedBytes).toBeGreaterThan(1_000); expect(edited.scalarIdentityDigest).toBe(original.scalarIdentityDigest);
     expect(edited.stateDigest).not.toBe(original.stateDigest);
+  });
+
+  it("derives the same scalar identity from server-side size metadata without workflows", () => {
+    const full = captureMigrationProjectManifestCandidate(project());
+    const metadata = captureMigrationProjectSizeCandidate({ _id: projectId, lastUpdatedAt: top, version: 9, projectBsonBytes: 4096 });
+    expect(metadata).toEqual({ projectId, scalarIdentityDigest: full.scalarIdentityDigest, projectBsonBytes: 4096 });
   });
 
   it.each([
