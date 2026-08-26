@@ -209,6 +209,13 @@ export type {
   InstallationProviderBinding,
   PluginInstallation,
 } from "./domain/installation.js";
+export {
+  ZPluginMigrationBlocker,
+  ZPluginMigrationRecord,
+  ZSha256,
+  type PluginMigrationBlocker,
+  type PluginMigrationRecord,
+} from "./domain/migration.js";
 export type {
   PluginReceipt,
   PluginReceiptStatus,
