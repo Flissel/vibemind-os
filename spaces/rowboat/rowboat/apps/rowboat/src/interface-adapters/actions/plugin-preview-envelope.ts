@@ -31,8 +31,20 @@ export type PluginPreviewEnvelope = Readonly<z.infer<typeof Payload>>;
 
 export function validatePluginPreviewSecret(secret: string | undefined): Buffer {
   if (typeof secret !== "string") throw new Error("preview_configuration_invalid");
+  if (/[\u0000-\u001f\u007f]/u.test(secret)) throw new Error("preview_configuration_invalid");
+  for (let index = 0; index < secret.length; index += 1) {
+    const codeUnit = secret.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      if (index + 1 >= secret.length) throw new Error("preview_configuration_invalid");
+      const next = secret.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) throw new Error("preview_configuration_invalid");
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      throw new Error("preview_configuration_invalid");
+    }
+  }
   const bytes = Buffer.from(secret, "utf8");
-  if (bytes.byteLength < 32 || bytes.byteLength > 4096 || /[\0\r\n]/u.test(secret)) {
+  if (bytes.byteLength < 32 || bytes.byteLength > 4096) {
     throw new Error("preview_configuration_invalid");
   }
   return bytes;

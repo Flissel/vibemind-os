@@ -258,7 +258,7 @@ describe("plugin server action boundary", () => {
 describe("signed plugin preview authority", () => {
   type TestActor = Readonly<{ kind: "user"; userId: string }> | Readonly<{ kind: "project_api_key"; projectId: string }>;
 
-  function secureSetup() {
+  function secureSetup(previewSecret = "s".repeat(64)) {
     let now = 1_700_000_000_000;
     let actor: TestActor = Object.freeze({ kind: "user", userId: "user-1" });
     let mutations = 0;
@@ -299,7 +299,7 @@ describe("signed plugin preview authority", () => {
       }),
       createRequest: () => new Request("https://rowboat.invalid/internal/plugin-action"),
       createIdempotencyKey: () => "server-key-1",
-      previewSecret: "s".repeat(64),
+      previewSecret,
       pinnedCatalogDigest: digest,
       now: () => now,
     });
@@ -313,6 +313,36 @@ describe("signed plugin preview authority", () => {
       get replayLookups() { return replayLookups; },
       get lastReplayInput() { return lastReplayInput; },
     };
+  }
+
+  function secretBoundarySetup(previewSecret: string) {
+    let resolves = 0;
+    let authentications = 0;
+    let reads = 0;
+    const runtime = createPluginActionRuntime({
+      resolveControllers: async () => {
+        resolves += 1;
+        return Object.freeze({
+          authenticate: async () => { authentications += 1; return Object.freeze({ kind: "user" as const, userId: "user-1" }); },
+          findInstallReplay: async () => { reads += 1; return null; },
+          catalog: Object.freeze({ execute: async () => { reads += 1; return []; } }),
+          installation: Object.freeze({
+            list: async () => { reads += 1; return []; },
+            preview: async () => { reads += 1; return []; },
+            install: async () => { reads += 1; return {}; },
+          }),
+        });
+      },
+      createRequest: () => new Request("https://rowboat.invalid/internal/plugin-action"),
+      createIdempotencyKey: () => "server-key-1",
+      previewSecret,
+      pinnedCatalogDigest: digest,
+      now: () => 1_700_000_000_000,
+    });
+    return Object.freeze({
+      runtime,
+      counters: () => Object.freeze({ resolves, authentications, reads }),
+    });
   }
 
   it("accepts only a signed server preview envelope at install", async () => {
@@ -452,20 +482,41 @@ describe("signed plugin preview authority", () => {
   it.each([
     ["4097 ASCII bytes", "s".repeat(4097)],
     ["4098 multibyte UTF-8 bytes", "é".repeat(2049)],
-    ["a NUL byte", `${"s".repeat(32)}\0suffix`],
   ])("rejects %s before resolving preview or install controllers", async (_case, previewSecret) => {
-    let resolves = 0;
-    const runtime = createPluginActionRuntime({
-      resolveControllers: async () => { resolves += 1; throw new Error("must_not_resolve"); },
-      createRequest: () => new Request("https://rowboat.invalid/internal/plugin-action"),
-      createIdempotencyKey: () => "server-key-1",
-      previewSecret,
-      pinnedCatalogDigest: digest,
-      now: () => 1_700_000_000_000,
-    });
-    await expect(runtime.preview({ projectId: "project-1", pluginName: "github", catalogDigest: digest })).rejects.toThrow("preview_configuration_invalid");
-    await expect(runtime.install({ previewToken: "not-a-token" })).rejects.toThrow("preview_configuration_invalid");
-    expect(resolves).toBe(0);
+    const state = secretBoundarySetup(previewSecret);
+    await expect(state.runtime.preview({ projectId: "project-1", pluginName: "github", catalogDigest: digest })).rejects.toThrow("preview_configuration_invalid");
+    await expect(state.runtime.install({ previewToken: "not-a-token" })).rejects.toThrow("preview_configuration_invalid");
+    expect(state.counters()).toEqual({ resolves: 0, authentications: 0, reads: 0 });
+  });
+
+  it("rejects every ASCII control character before resolving either action", async () => {
+    for (const codePoint of [...Array.from({ length: 0x20 }, (_unused, index) => index), 0x7f]) {
+      const state = secretBoundarySetup(`${"s".repeat(32)}${String.fromCharCode(codePoint)}`);
+      await expect(state.runtime.preview({ projectId: "project-1", pluginName: "github", catalogDigest: digest })).rejects.toThrow("preview_configuration_invalid");
+      await expect(state.runtime.install({ previewToken: "not-a-token" })).rejects.toThrow("preview_configuration_invalid");
+      expect(state.counters(), `U+${codePoint.toString(16).padStart(4, "0")}`).toEqual({ resolves: 0, authentications: 0, reads: 0 });
+    }
+  });
+
+  it.each([
+    ["lone high surrogate", `${"s".repeat(32)}${String.fromCharCode(0xd800)}`],
+    ["lone low surrogate", `${"s".repeat(32)}${String.fromCharCode(0xdc00)}`],
+    ["high surrogate followed by text and low surrogate", `${"s".repeat(32)}${String.fromCharCode(0xd800)}x${String.fromCharCode(0xdc00)}`],
+    ["reversed surrogate pair", `${"s".repeat(32)}${String.fromCharCode(0xdc00)}${String.fromCharCode(0xd800)}`],
+  ])("rejects a %s before resolving either action", async (_case, previewSecret) => {
+    const state = secretBoundarySetup(previewSecret);
+    await expect(state.runtime.preview({ projectId: "project-1", pluginName: "github", catalogDigest: digest })).rejects.toThrow("preview_configuration_invalid");
+    await expect(state.runtime.install({ previewToken: "not-a-token" })).rejects.toThrow("preview_configuration_invalid");
+    expect(state.counters()).toEqual({ resolves: 0, authentications: 0, reads: 0 });
+  });
+
+  it("allows a valid paired non-BMP secret and counts its actual UTF-8 bytes", async () => {
+    const previewSecret = `${"s".repeat(28)}😀`;
+    expect(Buffer.byteLength(previewSecret, "utf8")).toBe(32);
+    const state = secureSetup(previewSecret);
+    const preview = await state.runtime.preview({ projectId: "project-1", pluginName: "github", catalogDigest: digest });
+    await expect(state.runtime.install({ previewToken: preview.previewToken })).resolves.toMatchObject({ status: "success" });
+    expect(state.mutations).toBe(1);
   });
 });
 
@@ -478,6 +529,10 @@ describe("plugin preview secret operator configuration", () => {
     expect(readme).toContain("PLUGIN_UI_PREVIEW_SECRET");
     expect(readme).toContain("openssl rand -base64 48");
     expect(readme).toContain("32 to 4096 UTF-8 bytes");
+    expect(readme).toContain("any ASCII control character (U+0000–U+001F or U+007F)");
+    expect(readme).toContain("any unpaired UTF-16 surrogate");
+    expect(readme).toContain("Valid paired non-BMP characters are allowed");
+    expect(readme).toContain("limits are counted after UTF-8 encoding");
     expect(readme).toContain("preview_configuration_invalid");
     expect(readme).toContain("Rotation invalidates outstanding plugin previews");
   });

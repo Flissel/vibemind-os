@@ -64,7 +64,7 @@ The Web plugin install flow requires `PLUGIN_UI_PREVIEW_SECRET`. Set it in the o
 openssl rand -base64 48
 ```
 
-The value must be 32 to 4096 UTF-8 bytes and must not contain NUL or newline characters. If it is absent or invalid, plugin preview and install actions fail closed with `preview_configuration_invalid`. Rotation invalidates outstanding plugin previews, so users must open a fresh preview after the Rowboat service restarts with the new value. Keep the value out of source control and rotate it using the deployment's normal secret-management procedure.
+The value must be 32 to 4096 UTF-8 bytes and must not contain any ASCII control character (U+0000–U+001F or U+007F) or any unpaired UTF-16 surrogate. Valid paired non-BMP characters are allowed, and the limits are counted after UTF-8 encoding. If the value is absent or invalid, plugin preview and install actions fail closed with `preview_configuration_invalid`. Rotation invalidates outstanding plugin previews, so users must open a fresh preview after the Rowboat service restarts with the new value. Keep the value out of source control and rotate it using the deployment's normal secret-management procedure.
 
 ### Google setup
 To connect Google services (Gmail, Calendar, and Drive), follow [Google setup](https://github.com/rowboatlabs/rowboat/blob/main/google-setup.md).
