@@ -21,6 +21,54 @@ interface ManifestDependencies {
   readonly readProject: (projectId: string, remainingMs: number, signal: AbortSignal) => Promise<unknown>;
   readonly now: () => number; readonly pageSize?: number; readonly maximumProjects?: number; readonly maximumBytes?: number;
   readonly maximumSourceBytes?: number; readonly maximumProjectBsonBytes?: number; readonly maximumDurationMs?: number;
+  readonly deadline?: MigrationDeadline;
+}
+
+export interface MigrationDeadline {
+  readonly signal: AbortSignal;
+  readonly deadlineAt: number;
+  readonly remaining: (errorCode?: "migration_manifest_limit" | "migration_preview_timeout", deadlineAt?: number) => number;
+  readonly run: <T>(operation: (remainingMs: number, signal: AbortSignal) => Promise<T>,
+    errorCode?: "migration_manifest_limit" | "migration_preview_timeout", deadlineAt?: number) => Promise<T>;
+}
+
+export function createMigrationDeadline(now: () => number, durationMs: number, callerSignal?: AbortSignal): MigrationDeadline {
+  if (!Number.isSafeInteger(durationMs) || durationMs < 1 || durationMs > 30_000) throw new Error("migration_snapshot_invalid");
+  const startedAt = now();
+  if (!Number.isFinite(startedAt)) throw new Error("migration_snapshot_invalid");
+  const deadlineAt = startedAt + durationMs;
+  if (!Number.isFinite(deadlineAt)) throw new Error("migration_snapshot_invalid");
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (callerSignal?.aborted === true) abort();
+  else callerSignal?.addEventListener("abort", abort, { once: true });
+  const remaining = (errorCode: "migration_manifest_limit" | "migration_preview_timeout" = "migration_manifest_limit", selectedDeadline = deadlineAt) => {
+    const current = now();
+    if (!Number.isFinite(current)) throw new Error("migration_snapshot_invalid");
+    const selected = Math.ceil(Math.min(deadlineAt, selectedDeadline) - current);
+    if (selected <= 0 || controller.signal.aborted) { abort(); throw new Error(errorCode); }
+    return selected;
+  };
+  const run = async <T>(operation: (remainingMs: number, signal: AbortSignal) => Promise<T>,
+    errorCode: "migration_manifest_limit" | "migration_preview_timeout" = "migration_manifest_limit", selectedDeadline = deadlineAt): Promise<T> => {
+    const remainingMs = remaining(errorCode, selectedDeadline); let timeout: ReturnType<typeof setTimeout> | undefined;
+    let rejectAbort: ((error: Error) => void) | undefined;
+    const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
+    const onAbort = () => rejectAbort?.(new Error(errorCode));
+    controller.signal.addEventListener("abort", onAbort, { once: true });
+    const pending = Promise.resolve().then(() => operation(remainingMs, controller.signal));
+    pending.catch(() => undefined);
+    const expired = new Promise<never>((_resolve, reject) => { timeout = setTimeout(() => {
+      abort(); reject(new Error(errorCode));
+    }, remainingMs); });
+    try { const selected = await Promise.race([pending, expired, aborted]); remaining(errorCode, selectedDeadline); return selected; }
+    catch (error) { if (controller.signal.aborted) throw new Error(errorCode); throw error; }
+    finally {
+      if (timeout !== undefined) clearTimeout(timeout);
+      controller.signal.removeEventListener("abort", onAbort);
+    }
+  };
+  return Object.freeze({ signal: controller.signal, deadlineAt, remaining, run });
 }
 
 function plain(input: unknown): input is object {
@@ -77,18 +125,11 @@ function validatedLimits(dependencies: ManifestDependencies) {
 }
 
 export async function materializeMigrationProjectManifest(dependencies: ManifestDependencies) {
-  const limits = validatedLimits(dependencies); const startedAt = dependencies.now();
-  if (!Number.isFinite(startedAt)) throw new Error("migration_snapshot_invalid");
-  const deadline = startedAt + limits.maximumDurationMs; const controller = new AbortController();
-  const remaining = () => { const current = dependencies.now(); if (!Number.isFinite(current)) throw new Error("migration_snapshot_invalid");
-    const selected = Math.ceil(deadline - current); if (selected <= 0) { controller.abort(); throw new Error("migration_manifest_limit"); } return selected; };
+  const limits = validatedLimits(dependencies); const deadline = dependencies.deadline ?? createMigrationDeadline(dependencies.now, limits.maximumDurationMs);
+  const snapshotStartedAt = dependencies.now(); if (!Number.isFinite(snapshotStartedAt)) throw new Error("migration_snapshot_invalid");
+  const snapshotDeadline = Math.min(deadline.deadlineAt, snapshotStartedAt + limits.maximumDurationMs);
   const bounded = async <T>(operation: (remainingMs: number, signal: AbortSignal) => Promise<T>): Promise<T> => {
-    const remainingMs = remaining(); let timeout: ReturnType<typeof setTimeout> | undefined;
-    const pending = Promise.resolve().then(() => operation(remainingMs, controller.signal)); pending.catch(() => undefined);
-    const expired = new Promise<never>((_resolve, reject) => { timeout = setTimeout(() => { reject(new Error("migration_manifest_limit")); controller.abort(); }, remainingMs); });
-    try { const selected = await Promise.race([pending, expired]); remaining(); return selected; }
-    catch (error) { if (controller.signal.aborted) throw new Error("migration_manifest_limit"); throw error; }
-    finally { if (timeout !== undefined) clearTimeout(timeout); }
+    return deadline.run(operation, "migration_manifest_limit", snapshotDeadline);
   };
   const entries: MigrationProjectManifestEntry[] = []; const hash = createHash("sha256"); let cursor: string | undefined; let pageReads = 0;
   let manifestBytes = 2; let eligibleReportedBytes = 0; let capturedBytes = 0; let maximumResidentBytes = 0;
@@ -130,10 +171,40 @@ export async function materializeMigrationProjectManifest(dependencies: Manifest
 }
 
 export async function materializeMigrationProjectManifestInTransaction(dependencies: ManifestDependencies & Readonly<{ transaction: SnapshotTransaction }>) {
-  const maximumDurationMs = dependencies.maximumDurationMs ?? 5_000; dependencies.transaction.start(maximumDurationMs);
-  try { const manifest = await materializeMigrationProjectManifest(dependencies); await dependencies.transaction.commit(); return manifest; }
-  catch (error) { if (dependencies.transaction.inTransaction()) await dependencies.transaction.abort(); throw error; }
-  finally { await dependencies.transaction.end(); }
+  const limits = validatedLimits(dependencies);
+  const deadline = dependencies.deadline ?? createMigrationDeadline(dependencies.now, limits.maximumDurationMs);
+  let started = false; let result: Awaited<ReturnType<typeof materializeMigrationProjectManifest>> | undefined;
+  let primaryError: Error | undefined; let cleanupError: Error | undefined;
+  try {
+    dependencies.transaction.start(Math.min(limits.maximumDurationMs, deadline.remaining("migration_manifest_limit"))); started = true;
+    result = await materializeMigrationProjectManifest({ ...dependencies, deadline });
+    await dependencies.transaction.commit();
+  } catch (error) {
+    primaryError = safeLifecycleError(error);
+    if (started && dependencies.transaction.inTransaction()) {
+      await boundedCleanup(() => dependencies.transaction.abort(), deadline.signal.aborted ? 10 : 1_000);
+    }
+  } finally {
+    if (!(await boundedCleanup(() => dependencies.transaction.end(), deadline.signal.aborted ? 10 : 1_000))) cleanupError = new Error("migration_repository_failed");
+  }
+  if (primaryError !== undefined) throw primaryError;
+  if (cleanupError !== undefined) throw cleanupError;
+  if (result === undefined) throw new Error("migration_repository_failed");
+  return result;
+}
+
+async function boundedCleanup(operation: () => Promise<void>, timeoutMs: number): Promise<boolean> {
+  const pending = Promise.resolve().then(operation); pending.catch(() => undefined);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<false>(resolve => { timeout = setTimeout(() => resolve(false), timeoutMs); });
+  try { return await Promise.race([pending.then(() => true, () => false), expired]); }
+  finally { if (timeout !== undefined) clearTimeout(timeout); }
+}
+
+function safeLifecycleError(error: unknown): Error {
+  if (error instanceof Error && Object.getPrototypeOf(error) === Error.prototype
+    && ["migration_manifest_limit", "migration_preview_timeout", "migration_snapshot_invalid", "migration_project_limit", "migration_repository_failed"].includes(error.message)) return error;
+  return new Error("migration_repository_failed");
 }
 
 function blockerCode(error: unknown): PreparationBlocker | null {
@@ -145,28 +216,34 @@ function blockerCode(error: unknown): PreparationBlocker | null {
 }
 
 export async function executeMigrationManifest<T, S>(dependencies: Readonly<{
-  materialize: () => Promise<MaterializedManifest>; loadShared: () => Promise<Readonly<{ value: S; retainedBytes: number }>>;
-  prepare: (entry: MigrationProjectReadyManifestEntry, shared: S) => Promise<Readonly<{ value: T; scalarIdentityDigest: string; stateDigest: string }>>;
+  materialize: (remainingMs: number, signal: AbortSignal, deadline: MigrationDeadline) => Promise<MaterializedManifest>;
+  loadShared: (remainingMs: number, signal: AbortSignal, deadline: MigrationDeadline) => Promise<Readonly<{ value: S; retainedBytes: number }>>;
+  prepare: (entry: MigrationProjectReadyManifestEntry, shared: S, remainingMs: number, signal: AbortSignal, deadline: MigrationDeadline) => Promise<Readonly<{ value: T; scalarIdentityDigest: string; stateDigest: string }>>;
   blocked: (entry: MigrationProjectManifestEntry, code: PreparationBlocker, shared: S) => T;
-  visit: (value: T) => Promise<void>; preparedBytes: (value: T) => number; now: () => number; maximumPreparedBytes?: number; maximumDurationMs?: number;
+  visit: (value: T, remainingMs: number, signal: AbortSignal) => Promise<void>; preparedBytes: (value: T) => number; now: () => number;
+  maximumPreparedBytes?: number; maximumDurationMs?: number; callerSignal?: AbortSignal;
 }>) {
   const maximumPreparedBytes = dependencies.maximumPreparedBytes ?? 32 * 1024 * 1024; const maximumDurationMs = dependencies.maximumDurationMs ?? 30_000;
-  const startedAt = dependencies.now(); const manifest = await dependencies.materialize();
+  if (!Number.isSafeInteger(maximumPreparedBytes) || maximumPreparedBytes < 1 || maximumPreparedBytes > 32 * 1024 * 1024
+    || !Number.isSafeInteger(maximumDurationMs) || maximumDurationMs < 1 || maximumDurationMs > 30_000) throw new Error("migration_snapshot_invalid");
+  const deadline = createMigrationDeadline(dependencies.now, maximumDurationMs, dependencies.callerSignal);
+  const manifest = await deadline.run((remainingMs, signal) => dependencies.materialize(remainingMs, signal, deadline), "migration_preview_timeout");
   if (!Array.isArray(manifest.entries) || !SHA.test(manifest.snapshotToken)) throw new Error("migration_snapshot_invalid");
-  const loaded = await dependencies.loadShared(); if (!Number.isSafeInteger(loaded.retainedBytes) || loaded.retainedBytes < 0) throw new Error("migration_snapshot_invalid");
+  const loaded = await deadline.run((remainingMs, signal) => dependencies.loadShared(remainingMs, signal, deadline), "migration_preview_timeout");
+  if (!Number.isSafeInteger(loaded.retainedBytes) || loaded.retainedBytes < 0) throw new Error("migration_snapshot_invalid");
   const shared = loaded.value; let preparedBytes = 0; if (loaded.retainedBytes > maximumPreparedBytes) throw new Error("migration_manifest_limit");
   for (const rawEntry of manifest.entries) {
     const selected = entry(rawEntry); let value: T;
     if ("blockerCode" in selected) value = dependencies.blocked(selected, selected.blockerCode, shared);
     else {
-      try { const prepared = await dependencies.prepare(selected, shared); value = prepared.scalarIdentityDigest === selected.scalarIdentityDigest && prepared.stateDigest === selected.stateDigest
+      try { const prepared = await deadline.run((remainingMs, signal) => dependencies.prepare(selected, shared, remainingMs, signal, deadline), "migration_preview_timeout"); value = prepared.scalarIdentityDigest === selected.scalarIdentityDigest && prepared.stateDigest === selected.stateDigest
         ? prepared.value : dependencies.blocked(selected, "snapshot_changed", shared); }
       catch (error) { const code = blockerCode(error); if (code === null) throw error; value = dependencies.blocked(selected, code, shared); }
     }
     const bytes = dependencies.preparedBytes(value); if (!Number.isSafeInteger(bytes) || bytes < 0) throw new Error("migration_snapshot_invalid");
     preparedBytes += bytes;
-    if (loaded.retainedBytes + preparedBytes > maximumPreparedBytes || dependencies.now() - startedAt > maximumDurationMs) throw new Error("migration_manifest_limit");
-    await dependencies.visit(value);
+    if (loaded.retainedBytes + preparedBytes > maximumPreparedBytes) throw new Error("migration_manifest_limit");
+    await deadline.run((remainingMs, signal) => dependencies.visit(value, remainingMs, signal), "migration_preview_timeout");
   }
   return Object.freeze({ snapshotToken: manifest.snapshotToken, projectCount: manifest.entries.length, sharedRetainedBytes: loaded.retainedBytes,
     preparedBytes, retainedBytes: loaded.retainedBytes + preparedBytes, shared });

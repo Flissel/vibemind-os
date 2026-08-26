@@ -679,14 +679,15 @@ export class MongodbPluginsRepository implements IPluginsRepository {
     }
   }
 
-  async getCatalog(digest: string): Promise<PluginCatalogLock | null> {
+  async getCatalog(digest: string, options?: Readonly<{ maxTimeMS: number; signal: AbortSignal; remainingMs?: () => number }>): Promise<PluginCatalogLock | null> {
     if (!DIGEST.test(digest)) invalid("catalog_digest_invalid");
+    const snapshotOptions = options === undefined ? undefined : { maxTimeMS: options.remainingMs?.() ?? options.maxTimeMS, signal: options.signal };
     const snapshotDocument = await this.database.collection(PLUGIN_COLLECTIONS.catalogSnapshots)
-      .findOne({ catalogDigest: digest }, { projection: { _id: 0 } });
+      .findOne({ catalogDigest: digest }, { projection: { _id: 0 }, ...snapshotOptions });
     if (snapshotDocument === null) return null;
     if (snapshotDocument.complete !== true) invalid("catalog_incomplete");
     const snapshot = catalogSnapshot(parsePayload(snapshotDocument.payload, "catalog_snapshot_invalid"));
-    const entries = await this.listCatalogEntries(digest);
+    const entries = await this.listCatalogEntries(digest, options);
     const lock = {
       ...snapshot,
       entries: entries.map(({ catalogDigest: ignored, ...entry }) => entry),
@@ -707,9 +708,10 @@ export class MongodbPluginsRepository implements IPluginsRepository {
     return document === null ? null : catalogSnapshot(parsePayload(document.payload, "catalog_snapshot_invalid"));
   }
 
-  async listCatalogEntries(catalogDigest: string): Promise<readonly PluginCatalogEntry[]> {
+  async listCatalogEntries(catalogDigest: string, options?: Readonly<{ maxTimeMS: number; signal: AbortSignal; remainingMs?: () => number }>): Promise<readonly PluginCatalogEntry[]> {
     if (!DIGEST.test(catalogDigest)) invalid("catalog_digest_invalid");
-    const documents = await this.database.collection(PLUGIN_COLLECTIONS.catalogEntries).find({ catalogDigest }, { projection: { _id: 0 } }).sort({ name: 1 }).toArray();
+    const boundedOptions = options === undefined ? undefined : { maxTimeMS: options.remainingMs?.() ?? options.maxTimeMS, signal: options.signal };
+    const documents = await this.database.collection(PLUGIN_COLLECTIONS.catalogEntries).find({ catalogDigest }, { projection: { _id: 0 }, ...boundedOptions }).sort({ name: 1 }).toArray();
     return Object.freeze(documents.map((document) => catalogEntry(parsePayload(document.payload, "catalog_entry_invalid"))));
   }
 

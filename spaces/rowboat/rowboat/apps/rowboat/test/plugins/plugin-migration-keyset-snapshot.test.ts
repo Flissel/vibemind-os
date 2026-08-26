@@ -86,6 +86,27 @@ describe("plugin migration manifest snapshots", () => {
     expect(events).toEqual(["start:20", "abort", "end"]); expect(active).toBe(false);
   });
 
+  it.each([
+    ["start", true, false], ["end", false, true], ["start+end", true, true],
+  ] as const)("ends exactly once and reports a safe error when %s throws", async (_name, startThrows, endThrows) => {
+    const counters = { starts: 0, commits: 0, aborts: 0, ends: 0 }; let active = false;
+    const transaction = { start: () => { counters.starts += 1; if (startThrows) throw new Error("raw_start_secret"); active = true; }, inTransaction: () => active,
+      commit: async () => { counters.commits += 1; active = false; }, abort: async () => { counters.aborts += 1; active = false; },
+      end: async () => { counters.ends += 1; if (endThrows) throw new Error("raw_end_secret"); } };
+    await expect(materializeMigrationProjectManifestInTransaction({ transaction, readPage: async () => [], readProject: fullReader, now: () => 0 })).rejects.toThrow("migration_repository_failed");
+    expect(counters).toEqual({ starts: 1, commits: startThrows ? 0 : 1, aborts: 0, ends: 1 });
+  });
+
+  it("bounds hung abort and end cleanup after a snapshot timeout", async () => {
+    const counters = { aborts: 0, ends: 0 }; const startedAt = Date.now();
+    const transaction = { start: () => undefined, inTransaction: () => true, commit: async () => undefined,
+      abort: async () => { counters.aborts += 1; return new Promise<void>(() => undefined); },
+      end: async () => { counters.ends += 1; return new Promise<void>(() => undefined); } };
+    await expect(materializeMigrationProjectManifestInTransaction({ transaction, readPage: async () => new Promise(() => undefined), readProject: fullReader,
+      now: () => Date.now(), maximumDurationMs: 20 })).rejects.toThrow("migration_manifest_limit");
+    expect(Date.now() - startedAt).toBeLessThan(80); expect(counters).toEqual({ aborts: 1, ends: 1 });
+  });
+
   it("rejects accessor-backed metadata without invoking accessors", async () => {
     let calls = 0; const malicious: Record<string, unknown> = { scalarIdentityDigest, projectBsonBytes: 512 };
     Object.defineProperty(malicious, "projectId", { enumerable: true, get: () => { calls += 1; return projectId(0); } });
@@ -102,6 +123,38 @@ describe("plugin migration manifest snapshots", () => {
       blocked: () => { throw new Error("unexpected"); }, visit: async () => { visits += 1; }, preparedBytes: value => Buffer.byteLength(JSON.stringify(value), "utf8"), now: () => 0 });
     expect(statSync(new URL("../../../../config/openai-plugin-catalog.lock.json", import.meta.url)).size).toBe(908_908); expect(getCatalogCalls).toBe(1); expect(references.size).toBe(1);
     expect(visits).toBe(1_000); expect(report.projectCount).toBe(1_000); expect(report.retainedBytes).toBeLessThan(32 * 1024 * 1024);
+  });
+
+  it.each(["catalog", "prepare"] as const)("bounds a hung %s step with the overall preview deadline", async step => {
+    const started = Date.now(); let observedSignal: AbortSignal | undefined;
+    const entries: readonly MigrationProjectManifestEntry[] = [{ projectId: projectId(0), scalarIdentityDigest, stateDigest }];
+    await expect(executeMigrationManifest({ materialize: async () => ({ entries, snapshotToken: stateDigest }),
+      loadShared: async (_remainingMs, signal) => { observedSignal = signal; return step === "catalog" ? new Promise(() => undefined) : { value: null, retainedBytes: 0 }; },
+      prepare: async (_entry, _shared, _remainingMs, signal) => { observedSignal = signal; return new Promise(() => undefined); },
+      blocked: () => { throw new Error("unexpected"); }, visit: async () => undefined, preparedBytes: () => 0, now: () => Date.now(), maximumDurationMs: 20,
+    })).rejects.toThrow("migration_preview_timeout");
+    expect(Date.now() - started).toBeLessThan(80); expect(observedSignal?.aborted).toBe(true);
+  });
+
+  it("uses one decreasing deadline and signal for materialize, catalog, and every prepare", async () => {
+    const remaining: number[] = []; const signals = new Set<AbortSignal>(); let tick = 0;
+    const entries: readonly MigrationProjectManifestEntry[] = [0, 1].map(index => ({ projectId: projectId(index), scalarIdentityDigest, stateDigest }));
+    const report = await executeMigrationManifest({ materialize: async (remainingMs, signal) => { remaining.push(remainingMs); signals.add(signal); return { entries, snapshotToken: stateDigest }; },
+      loadShared: async (remainingMs, signal) => { remaining.push(remainingMs); signals.add(signal); return { value: null, retainedBytes: 0 }; },
+      prepare: async (selected, _shared, remainingMs, signal) => { remaining.push(remainingMs); signals.add(signal); return { value: selected.projectId, scalarIdentityDigest, stateDigest }; },
+      blocked: () => { throw new Error("unexpected"); }, visit: async () => undefined, preparedBytes: value => value.length, now: () => tick++, maximumDurationMs: 100 });
+    expect(report.projectCount).toBe(2); expect(signals.size).toBe(1); expect(remaining).toHaveLength(4);
+    expect(remaining.every((value, index) => index === 0 || remaining[index - 1]! > value)).toBe(true);
+  });
+
+  it("maps caller abort and a late catalog rejection to one prompt timeout without unhandled rejection", async () => {
+    const caller = new AbortController(); let lateRejected = false; const started = Date.now(); setTimeout(() => caller.abort(), 10);
+    const pending = executeMigrationManifest({ materialize: async () => ({ entries: [], snapshotToken: stateDigest }), callerSignal: caller.signal,
+      loadShared: async () => new Promise((_resolve, reject) => setTimeout(() => { lateRejected = true; reject(new Error("late_secret")); }, 50)),
+      prepare: async () => { throw new Error("unexpected"); }, blocked: () => { throw new Error("unexpected"); }, visit: async () => undefined,
+      preparedBytes: () => 0, now: () => Date.now(), maximumDurationMs: 100 });
+    await expect(pending).rejects.toThrow("migration_preview_timeout"); expect(Date.now() - started).toBeLessThan(80);
+    await new Promise(resolve => setTimeout(resolve, 60)); expect(lateRejected).toBe(true);
   });
 
   it("turns oversized, deleted, invalid, and changed members into explicit blockers", async () => {

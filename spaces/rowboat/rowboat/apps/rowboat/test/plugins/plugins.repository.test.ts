@@ -40,6 +40,7 @@ class MemoryCollection {
   readonly documents: Document[] = [];
   readonly indexes: Document[] = [];
   readonly operationSessions: Array<ClientSession | undefined> = [];
+  readonly boundedReads: Array<Readonly<{ maxTimeMS: number | undefined; signal: AbortSignal | undefined }>> = [];
   writes = 0;
   createIndexCalls = 0;
   createIndexesError: Error | undefined;
@@ -62,12 +63,14 @@ class MemoryCollection {
     return projected;
   }
 
-  async findOne(filter: Document, options?: { projection?: Document; session?: ClientSession }): Promise<Document | null> {
+  async findOne(filter: Document, options?: { projection?: Document; session?: ClientSession; maxTimeMS?: number; signal?: AbortSignal }): Promise<Document | null> {
+    this.boundedReads.push({ maxTimeMS: options?.maxTimeMS, signal: options?.signal });
     const found = this.documentsFor(options?.session).find((document) => matches(document, filter));
     return found === undefined ? null : this.project(found, options);
   }
 
-  find(filter: Document, options?: { projection?: Document; session?: ClientSession }): { sort: (sort: Document) => { toArray: () => Promise<Document[]> } } {
+  find(filter: Document, options?: { projection?: Document; session?: ClientSession; maxTimeMS?: number; signal?: AbortSignal }): { sort: (sort: Document) => { toArray: () => Promise<Document[]> } } {
+    this.boundedReads.push({ maxTimeMS: options?.maxTimeMS, signal: options?.signal });
     return {
       sort: (sort) => ({
         toArray: async () => {
@@ -429,6 +432,17 @@ describe("plugin repository contract", () => {
     expect(restored).toEqual(lock);
     expect(restored?.entries).toHaveLength(180);
     expect(database.collection(PLUGIN_COLLECTIONS.catalogSnapshots).documents[0]?.complete).toBe(true);
+  });
+
+  it("passes the same bounded deadline signal to both catalog reads", async () => {
+    const lock = catalogLockFixture as unknown as PluginCatalogLock;
+    const { database, repository } = repositoryFixture();
+    await repository.putCatalog(lock);
+    const controller = new AbortController();
+    let remaining = 322;
+    await expect(repository.getCatalog(lock.catalogDigest, { maxTimeMS: 321, signal: controller.signal, remainingMs: () => --remaining })).resolves.toEqual(lock);
+    expect(database.collection(PLUGIN_COLLECTIONS.catalogSnapshots).boundedReads.at(-1)).toEqual({ maxTimeMS: 321, signal: controller.signal });
+    expect(database.collection(PLUGIN_COLLECTIONS.catalogEntries).boundedReads.at(-1)).toEqual({ maxTimeMS: 320, signal: controller.signal });
   });
 
   it("fails closed for incomplete and tampered full-catalog persistence", async () => {

@@ -121,7 +121,7 @@ describe("plugin migration routes", () => {
     ["migration_pointer_invalid", 409], ["migration_pointer_conflict", 409], ["migration_installation_conflict", 409],
     ["migration_admission_conflict", 409], ["migration_record_conflict", 409], ["migration_rollback_conflict", 409],
     ["migration_idempotency_conflict", 409], ["migration_confirmation_replayed", 409], ["migration_preview_stale", 409],
-    ["migration_repository_failed", 500], ["migration_system_failed", 500],
+    ["migration_preview_timeout", 408], ["migration_repository_failed", 500], ["migration_system_failed", 500],
   ] as const)("maps safe migration error %s to exact HTTP %s without raw details", async (code, status) => {
     const response = pluginErrorResponse(new Error(code)); expect(response.status).toBe(status); expect(await response.json()).toEqual({ error: code });
   });

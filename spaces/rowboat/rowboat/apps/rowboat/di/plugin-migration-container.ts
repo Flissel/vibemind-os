@@ -8,7 +8,7 @@ import { actorTuple, canonical, migrationDigest, signMigrationConfirmation, veri
 import { LegacyPluginMigration, type PluginMigrationPreview } from "@/src/application/services/legacy-plugin-migration";
 import { LEGACY_PLUGIN_RECIPES, sourceDriftBlocker } from "@/src/application/services/legacy-plugin-recipes";
 import { assertMigrationProjectStateUnchanged, captureMigrationProjectManifestEntry, captureMigrationProjectState, migrationProjectPointerCasFilter, parseMigrationPointerRecord, type MigrationProjectState } from "@/src/application/services/plugin-migration-project-state";
-import { executeMigrationManifest, materializeMigrationProjectManifestInTransaction, type MigrationProjectManifestEntry, type MigrationProjectReadyManifestEntry } from "@/src/application/services/plugin-migration-keyset-snapshot";
+import { createMigrationDeadline, executeMigrationManifest, materializeMigrationProjectManifestInTransaction, type MigrationDeadline, type MigrationProjectManifestEntry, type MigrationProjectReadyManifestEntry } from "@/src/application/services/plugin-migration-keyset-snapshot";
 import { createMongoMigrationSnapshotReaders, type MongoMigrationSnapshotCollection } from "@/src/application/services/plugin-migration-mongo-snapshot";
 import { abortMigrationTransaction, migrationTransactionFailure } from "@/src/application/services/plugin-migration-transaction";
 import { Auth0PluginApiAuthorizationPolicy, Auth0PluginUserSessionProvider, ExistingProjectApiKeyVerifier, JoseAuth0UserTokenVerifier } from "@/src/infrastructure/policies/auth0.plugin-api-authorization.policy";
@@ -117,34 +117,66 @@ async function insertExact(collection: Collection, document: Document, session: 
 }
 function exact(left: unknown, right: unknown): boolean { return canonical(left) === canonical(right); }
 
+async function finishReadSession(operation: () => Promise<void>, timeoutMs: number): Promise<boolean> {
+  const pending = Promise.resolve().then(operation); pending.catch(() => undefined);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<false>(resolve => { timeout = setTimeout(() => resolve(false), timeoutMs); });
+  try { return await Promise.race([pending.then(() => true, () => false), expired]); }
+  finally { if (timeout !== undefined) clearTimeout(timeout); }
+}
+
+async function readTransaction<T>(deadline: MigrationDeadline, session: ClientSession, work: () => Promise<T>): Promise<T> {
+  let started = false; let result: T | undefined; let primary: unknown; let cleanupFailed = false;
+  try {
+    session.startTransaction({ readConcern: { level: "snapshot" }, maxCommitTimeMS: deadline.remaining("migration_preview_timeout") }); started = true;
+    try { result = await work(); } catch (error) { primary = error; }
+    if (primary === undefined) {
+      try { await deadline.run(async () => session.commitTransaction(), "migration_preview_timeout"); } catch (error) { primary = error; }
+    }
+    if (primary !== undefined && started && session.inTransaction()) cleanupFailed = !(await finishReadSession(() => session.abortTransaction(), deadline.signal.aborted ? 10 : 1_000));
+  } catch (error) { primary = new Error("migration_repository_failed"); }
+  finally { cleanupFailed = !(await finishReadSession(() => session.endSession(), deadline.signal.aborted ? 10 : 1_000)) || cleanupFailed; }
+  if (primary !== undefined) throw primary;
+  if (cleanupFailed || result === undefined) throw new Error("migration_repository_failed");
+  return result;
+}
+
 async function createComposition() {
   const usersRepository = new MongoDBUsersRepository(); const apiKeysRepository = new MongoDBApiKeysRepository(); const projectMembersRepository = new MongoDBProjectMembersRepository();
   const authorization = new Auth0PluginApiAuthorizationPolicy({ pluginUserSessionProvider: new Auth0PluginUserSessionProvider({ usersRepository }),
     pluginProjectApiKeyVerifier: new ExistingProjectApiKeyVerifier({ apiKeysRepository }), pluginUserTokenVerifier: new JoseAuth0UserTokenVerifier({ usersRepository }),
     projectMembersRepository, pluginAuthEnabled: process.env.USE_AUTH === "true" });
   const pluginsRepository = new MongodbPluginsRepository({ pluginsDatabase: db, pluginTransactionRunner: new MongoPluginTransactionRunner({ pluginsMongoClient: mongoClient }) });
-  const loadCatalog = async () => { const selected = await pluginsRepository.getCatalog(PINNED_PLUGIN_CATALOG_DIGEST); if (selected === null) throw new Error("catalog_digest_mismatch"); return deepFreeze(selected); };
-  const prepareOne = async (projectId: string, catalog: PluginCatalogLock, expected?: MigrationProjectReadyManifestEntry): Promise<PreparedContext> => {
+  const loadCatalog = async (deadline: MigrationDeadline) => { const selected = await deadline.run((remainingMs, signal) =>
+    pluginsRepository.getCatalog(PINNED_PLUGIN_CATALOG_DIGEST, { maxTimeMS: remainingMs, signal,
+      remainingMs: () => deadline.remaining("migration_preview_timeout") }), "migration_preview_timeout");
+    if (selected === null) throw new Error("catalog_digest_mismatch"); return deepFreeze(selected); };
+  const prepareOne = async (projectId: string, catalog: PluginCatalogLock, deadline: MigrationDeadline, expected?: MigrationProjectReadyManifestEntry): Promise<PreparedContext> => {
     const session = mongoClient.startSession();
-    try {
-      session.startTransaction({ readConcern: { level: "snapshot" } });
-      const document = await db.collection<RawProject>("projects").findOne({ _id: projectId }, { projection: PROJECT_PROJECTION, session });
+    return readTransaction(deadline, session, async () => {
+      const document = await deadline.run((remainingMs, signal) => {
+        const options: FindOptions<RawProject> & Readonly<{ signal: AbortSignal }> = { projection: PROJECT_PROJECTION, session, maxTimeMS: remainingMs, signal };
+        return db.collection<RawProject>("projects").findOne({ _id: projectId }, options);
+      }, "migration_preview_timeout");
       if (document === null) throw new Error("project_not_found");
       const manifestEntry = captureMigrationProjectManifestEntry(document);
       if (expected !== undefined && (manifestEntry.projectId !== expected.projectId || manifestEntry.scalarIdentityDigest !== expected.scalarIdentityDigest
         || manifestEntry.stateDigest !== expected.stateDigest)) throw new Error("migration_snapshot_changed");
       const prepared = await prepareDocument(document, manifestEntry, catalog, async id => {
-        const raw = await db.collection(PLUGIN_COLLECTIONS.migrationRecords).findOne({ id }, { projection: { _id: 0 }, session });
+        const raw = await deadline.run((remainingMs, signal) => {
+          const options: FindOptions<Document> & Readonly<{ signal: AbortSignal }> = { projection: { _id: 0 }, session, maxTimeMS: remainingMs, signal };
+          return db.collection(PLUGIN_COLLECTIONS.migrationRecords).findOne({ id }, options);
+        }, "migration_preview_timeout");
         return raw === null ? null : parseMigrationPointerRecord(raw);
       });
-      await session.commitTransaction(); return prepared;
-    } catch (error) { if (session.inTransaction()) await session.abortTransaction(); throw error; } finally { await session.endSession(); }
+      return prepared;
+    });
   };
   const authorizeProject = (actor: PluginApiIdentity, projectId: string) => authorization.authorizeProject(actor, projectId);
   const authorizeAll = async (actor: PluginApiIdentity) => { const selected = actorTuple(actor); if (selected.actorKind !== "user" || !adminIds().has(selected.actorId)) throw new Error("forbidden"); };
   const scanAllProjects = async (actor: PluginApiIdentity, visit: (prepared: PreparedMigrationPreview) => Promise<void>) => {
     const scan = await executeMigrationManifest({
-      materialize: async () => {
+      materialize: async (_remainingMs, _signal, deadline) => {
         const session = mongoClient.startSession();
         const projects = db.collection<RawProject>("projects");
         const aggregate: MongoMigrationSnapshotCollection["aggregate"] = (pipeline, options) => projects.aggregate(pipeline as Document[], options as AggregateOptions);
@@ -154,11 +186,11 @@ async function createComposition() {
         return materializeMigrationProjectManifestInTransaction({ ...readers, transaction: {
           start: maxCommitTimeMS => session.startTransaction({ readConcern: { level: "snapshot" }, maxCommitTimeMS }), inTransaction: () => session.inTransaction(),
           commit: async () => session.commitTransaction(), abort: async () => session.abortTransaction(), end: async () => session.endSession(),
-        }, now: () => Date.now(), pageSize: 32, maximumProjects: 1_000, maximumBytes: 256_000,
+        }, deadline, now: () => Date.now(), pageSize: 32, maximumProjects: 1_000, maximumBytes: 256_000,
         maximumSourceBytes: 64 * 1024 * 1024, maximumProjectBsonBytes: 1024 * 1024, maximumDurationMs: 5_000 });
       },
-      loadShared: async () => { const catalog = await loadCatalog(); return Object.freeze({ value: catalog, retainedBytes: Buffer.byteLength(JSON.stringify(catalog), "utf8") }); },
-      prepare: async (entry, catalog) => { await authorizeAll(actor); const prepared = await prepareOne(entry.projectId, catalog, entry);
+      loadShared: async (_remainingMs, _signal, deadline) => { const catalog = await loadCatalog(deadline); return Object.freeze({ value: catalog, retainedBytes: Buffer.byteLength(JSON.stringify(catalog), "utf8") }); },
+      prepare: async (entry, catalog, _remainingMs, _signal, deadline) => { await authorizeAll(actor); const prepared = await prepareOne(entry.projectId, catalog, deadline, entry);
         return Object.freeze({ value: asPublic(prepared), scalarIdentityDigest: prepared.manifestEntry.scalarIdentityDigest, stateDigest: prepared.manifestEntry.stateDigest }); },
       blocked: (entry, code, catalog) => blockedPublic(entry, catalog, code), visit,
       preparedBytes: value => Buffer.byteLength(JSON.stringify(migrationPreviewProjectProjection(value.preview)), "utf8"),
@@ -166,8 +198,9 @@ async function createComposition() {
     });
     return Object.freeze({ catalog: scan.shared, snapshotToken: scan.snapshotToken });
   };
-  const preview = new PreviewPluginMigrationUseCase({ authorizeProject, authorizeAll, prepareProject: async projectId => { const catalog = await loadCatalog();
-    return Object.freeze({ prepared: asPublic(await prepareOne(projectId, catalog)), catalog }); }, scanAllProjects,
+  const preview = new PreviewPluginMigrationUseCase({ authorizeProject, authorizeAll, prepareProject: async projectId => {
+    const deadline = createMigrationDeadline(() => Date.now(), 30_000); const catalog = await loadCatalog(deadline);
+    return Object.freeze({ prepared: asPublic(await prepareOne(projectId, catalog, deadline)), catalog }); }, scanAllProjects,
     issueConfirmation: ({ actor, preview: selected, reportDigest }) => {
       const tuple = actorTuple(actor); const idempotencyKey = `migration-${selected.id}`; const issuedAt = new Date(); const expiresAt = new Date(issuedAt.getTime() + 120_000);
       const claims: MigrationConfirmationClaims = Object.freeze({ version: 1, operation: "apply_plugin_migration", ...tuple, projectId: selected.projectId,
@@ -178,7 +211,8 @@ async function createComposition() {
       return Object.freeze({ token: signMigrationConfirmation(claims, requiredSecret()), idempotencyKey });
     }, now: () => new Date() });
   const apply = new ApplyPluginMigrationUseCase({ authorizeProject, verifyConfirmation: token => verifyMigrationConfirmation(token, requiredSecret(), new Date()),
-    prepareProject: async projectId => { const catalog = await loadCatalog(); const prepared = await prepareOne(projectId, catalog); return Object.freeze({ preview: prepared.preview, context: prepared }); },
+    prepareProject: async projectId => { const deadline = createMigrationDeadline(() => Date.now(), 30_000); const catalog = await loadCatalog(deadline);
+      const prepared = await prepareOne(projectId, catalog, deadline); return Object.freeze({ preview: prepared.preview, context: prepared }); },
     digestPreview: previewDigest,
     applyAtomically: async (rawContext, claims) => {
       const prepared = context(rawContext); const session = mongoClient.startSession(); let result: { receiptIds: readonly string[]; replayed: boolean; mutationCount: number; generatedAt: string } | undefined;

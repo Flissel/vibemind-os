@@ -108,7 +108,7 @@ export interface PluginIdempotencyLookup {
 
 export interface IPluginsRepository {
   putCatalog(lock: PluginCatalogLock): Promise<void>;
-  getCatalog(digest: string): Promise<PluginCatalogLock | null>;
+  getCatalog(digest: string, options?: Readonly<{ maxTimeMS: number; signal: AbortSignal; remainingMs?: () => number }>): Promise<PluginCatalogLock | null>;
   putCatalogSnapshot(snapshot: PluginCatalogSnapshot): Promise<void>;
   getCatalogSnapshot(digest: string): Promise<PluginCatalogSnapshot | null>;
   listCatalogEntries(catalogDigest: string): Promise<readonly PluginCatalogEntry[]>;
