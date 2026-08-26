@@ -12,6 +12,7 @@ import {
   computeLegacyRecipeDigest,
   resolveLegacyRecipe,
 } from "@/src/application/services/legacy-plugin-recipes";
+import * as legacyRecipeModule from "@/src/application/services/legacy-plugin-recipes";
 import {
   LegacyPluginMigration,
   LegacyPluginMigrationError,
@@ -183,6 +184,66 @@ describe("legacy plugin migration recipes", () => {
       expect(preview.sourceInventoryDigest).toBe(rawPreview.sourceInventoryDigest);
       expect(preview.blockers).not.toContainEqual(expect.objectContaining({ code: "source_configuration_drift" }));
       expect(preview.sourceDigest).not.toBe(rawPreview.sourceDigest);
+    }
+  });
+
+  it.each([
+    ["missing", (agent: Record<PropertyKey, unknown>) => { delete agent.model; }],
+    ["inherited", (agent: Record<PropertyKey, unknown>) => {
+      delete agent.model;
+      Object.setPrototypeOf(agent, { model: "gpt-4.1" });
+    }],
+    ["non-enumerable", (agent: Record<PropertyKey, unknown>) => {
+      Object.defineProperty(agent, "model", { configurable: true, enumerable: false, value: "gpt-4.1", writable: true });
+    }],
+    ["non-configurable", (agent: Record<PropertyKey, unknown>) => {
+      Object.defineProperty(agent, "model", { configurable: false, enumerable: true, value: "gpt-4.1", writable: true });
+    }],
+    ["non-writable", (agent: Record<PropertyKey, unknown>) => {
+      Object.defineProperty(agent, "model", { configurable: true, enumerable: true, value: "gpt-4.1", writable: false });
+    }],
+    ["symbol substitute", (agent: Record<PropertyKey, unknown>) => {
+      delete agent.model;
+      agent[Symbol("model")] = "gpt-4.1";
+    }],
+    ["number", (agent: Record<PropertyKey, unknown>) => { agent.model = 7; }],
+    ["object", (agent: Record<PropertyKey, unknown>) => { agent.model = { name: "gpt-4.1" }; }],
+    ["array", (agent: Record<PropertyKey, unknown>) => { agent.model = ["gpt-4.1"]; }],
+    ["control character", (agent: Record<PropertyKey, unknown>) => { agent.model = "gpt-4.1\n"; }],
+    ["malformed surrogate", (agent: Record<PropertyKey, unknown>) => { agent.model = "\uD800"; }],
+    ["oversize UTF-8", (agent: Record<PropertyKey, unknown>) => { agent.model = "m".repeat(257); }],
+  ] as const)("rejects %s agent models before catalog resolution", (_caseName, mutate) => {
+    const input = source("customer-support");
+    const agent = (input.sourceConfiguration.agents as Record<PropertyKey, unknown>[])[0]!;
+    mutate(agent);
+    const resolver = vi.spyOn(legacyRecipeModule, "resolveLegacyRecipe");
+    try {
+      expect(() => new LegacyPluginMigration().preview(input, catalog)).toThrowError("source_invalid");
+      expect(resolver).not.toHaveBeenCalled();
+    } finally {
+      resolver.mockRestore();
+    }
+  });
+
+  it("rejects an agent model accessor without invoking its getter or resolving the catalog", () => {
+    const input = source("customer-support");
+    const agent = (input.sourceConfiguration.agents as Record<PropertyKey, unknown>[])[0]!;
+    let getterCalls = 0;
+    Object.defineProperty(agent, "model", {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        getterCalls += 1;
+        return "gpt-4.1";
+      },
+    });
+    const resolver = vi.spyOn(legacyRecipeModule, "resolveLegacyRecipe");
+    try {
+      expect(() => new LegacyPluginMigration().preview(input, catalog)).toThrowError("source_invalid");
+      expect(getterCalls).toBe(0);
+      expect(resolver).not.toHaveBeenCalled();
+    } finally {
+      resolver.mockRestore();
     }
   });
 

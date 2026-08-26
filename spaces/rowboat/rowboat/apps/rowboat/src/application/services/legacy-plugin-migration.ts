@@ -134,7 +134,12 @@ function captureJson(input: unknown, depth: number, budget: CaptureBudget): unkn
     if (budget.bytes > MAX_SOURCE_BYTES) fail("source_invalid");
     const descriptor = Object.getOwnPropertyDescriptor(input, key);
     if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) fail("source_invalid");
-    output[key] = captureJson(descriptor.value, depth + 1, budget);
+    Object.defineProperty(output, key, {
+      configurable: descriptor.configurable,
+      enumerable: true,
+      value: captureJson(descriptor.value, depth + 1, budget),
+      writable: descriptor.writable,
+    });
   }
   budget.seen.delete(input);
   return output;

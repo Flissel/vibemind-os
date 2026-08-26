@@ -62,11 +62,27 @@ function text(value: unknown): string {
   if (typeof value !== "string" || value.length === 0 || value.length > 256) throw new Error("legacy_inventory_invalid");
   return value;
 }
+const NORMALIZED_AGENT_MODEL = "rowboat:runtime-configured-model:v1";
+function validModel(value: unknown): value is string {
+  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 256 || /[\u0000-\u001f\u007f]/u.test(value)) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      if (index + 1 >= value.length) return false;
+      const next = value.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) return false;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) return false;
+  }
+  return true;
+}
 function migrationRelevantDescriptor(kind: "action" | "agent" | "prompt" | "pipeline", selected: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
   if (kind !== "agent") return selected;
+  const model = Object.getOwnPropertyDescriptor(selected, "model");
+  if (model === undefined || !("value" in model) || !model.enumerable || !model.configurable || !model.writable || !validModel(model.value)) throw new Error("legacy_inventory_invalid");
   const normalized: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const key of Object.keys(selected)) {
-    if (key !== "model") normalized[key] = selected[key];
+    normalized[key] = key === "model" ? NORMALIZED_AGENT_MODEL : selected[key];
   }
   return normalized;
 }
