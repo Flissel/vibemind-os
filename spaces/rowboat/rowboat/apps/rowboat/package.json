@@ -16,7 +16,8 @@
     "mongodb-ensure-indexes": "tsx app/scripts/mongodb-ensure-indexes.ts",
     "test:plugins": "vitest run test/plugins",
     "plugins:migrate": "tsx scripts/migrate-openai-plugins.ts",
-    "plugins:verify": "vitest run test/plugins && npm run plugins:migrate -- --dry-run --scope fixtures"
+    "plugins:verify": "vitest run test/plugins && npm run plugins:migrate -- --dry-run --scope fixtures",
+    "plugins:evidence": "vitest run test/plugins --reporter=json --outputFile=.artifacts/plugin-app-tests.json && npm --prefix ../../packages/openai-plugin-runtime run test -- --reporter=json --outputFile=.artifacts/plugin-runtime-tests.json && python -m pytest ../../../tests/test_openai_plugin_runtime_contract.py -q --junitxml=.artifacts/plugin-space-contract.xml"
   },
   "dependencies": {
     "@ai-sdk/openai": "^1.3.21",

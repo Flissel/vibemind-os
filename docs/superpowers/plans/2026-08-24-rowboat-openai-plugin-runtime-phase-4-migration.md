@@ -19,7 +19,7 @@
 - Create: `spaces/rowboat/rowboat/apps/rowboat/src/application/services/legacy-plugin-migration.ts`
 - Create: `spaces/rowboat/rowboat/apps/rowboat/test/plugins/legacy-plugin-migration.test.ts`
 
-- [ ] **Step 1: Write RED tests covering every checked-in legacy card**
+- [x] **Step 1: Write RED tests covering every checked-in legacy card**
 
 ```ts
 const legacyCards = [
@@ -52,7 +52,7 @@ it("fails closed when an exact app provider is unavailable", async () => {
 });
 ```
 
-- [ ] **Step 2: Run the focused Web suite and capture RED**
+- [x] **Step 2: Run the focused Web suite and capture RED**
 
 ```powershell
 npm --prefix spaces/rowboat/rowboat/apps/rowboat run test:plugins -- legacy-plugin-migration.test.ts
@@ -60,7 +60,7 @@ npm --prefix spaces/rowboat/rowboat/apps/rowboat run test:plugins -- legacy-plug
 
 Expected: FAIL because the recipe table and migration service do not exist.
 
-- [ ] **Step 3: Add strict migration schemas to the shared kernel**
+- [x] **Step 3: Add strict migration schemas to the shared kernel**
 
 ```ts
 export const ZPluginMigrationRecord = z.object({
@@ -82,7 +82,7 @@ export type PluginMigrationRecord = z.infer<typeof ZPluginMigrationRecord>;
 
 Export the schema and type from `src/index.ts`. Keep source configuration represented by a digest plus the existing project revision; do not copy credential values into the record.
 
-- [ ] **Step 4: Implement the exact ten-recipe table and copy-on-write preview**
+- [x] **Step 4: Implement the exact ten-recipe table and copy-on-write preview**
 
 ```ts
 export const LEGACY_PLUGIN_RECIPES = {
@@ -101,7 +101,7 @@ export const LEGACY_PLUGIN_RECIPES = {
 
 Resolve each logical capability to an exact admitted catalog component. If the pinned catalog has no exact provider, return `blocked`; never silently select a similarly named plugin. Build new installation objects without modifying the input project.
 
-- [ ] **Step 5: Prove determinism, idempotency, and source immutability**
+- [x] **Step 5: Prove determinism, idempotency, and source immutability**
 
 Add assertions that a repeated preview produces identical stable IDs/digests, an already-applied record returns the same installation IDs, and `structuredClone(project)` still equals the source fixture after preview.
 
@@ -113,7 +113,7 @@ git diff --check
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit Task 1**
+- [x] **Step 6: Commit Task 1**
 
 ```powershell
 git add spaces/rowboat/rowboat/packages/openai-plugin-runtime/src/domain/migration.ts spaces/rowboat/rowboat/packages/openai-plugin-runtime/src/index.ts spaces/rowboat/rowboat/apps/rowboat/src/application/services/legacy-plugin-recipes.ts spaces/rowboat/rowboat/apps/rowboat/src/application/services/legacy-plugin-migration.ts spaces/rowboat/rowboat/apps/rowboat/test/plugins/legacy-plugin-migration.test.ts
@@ -135,7 +135,7 @@ git commit -m "feat(rowboat): define legacy plugin migration recipes"
 - Create: `spaces/rowboat/rowboat/apps/rowboat/test/plugins/plugin-migration-api.test.ts`
 - Create: `spaces/rowboat/rowboat/apps/rowboat/test/plugins/plugin-migration-cli.test.ts`
 
-- [ ] **Step 1: Write RED tests for dry-run purity and apply authorization**
+- [x] **Step 1: Write RED tests for dry-run purity and apply authorization**
 
 ```ts
 it("previews every project without writing", async () => {
@@ -152,7 +152,7 @@ it("rejects apply without an explicit confirmation token", async () => {
 });
 ```
 
-- [ ] **Step 2: Run focused tests and capture RED**
+- [x] **Step 2: Run focused tests and capture RED**
 
 ```powershell
 npm --prefix spaces/rowboat/rowboat/apps/rowboat run test:plugins -- plugin-migration-api.test.ts plugin-migration-cli.test.ts
@@ -160,7 +160,7 @@ npm --prefix spaces/rowboat/rowboat/apps/rowboat run test:plugins -- plugin-migr
 
 Expected: FAIL because preview/apply boundaries are absent.
 
-- [ ] **Step 3: Implement authenticated preview and compare-and-swap apply**
+- [x] **Step 3: Implement authenticated preview and compare-and-swap apply**
 
 The preview endpoint is read-only. The apply endpoint must verify the same project authorization used by Phase 3, require a short-lived server-issued confirmation token bound to actor, project, source revision, and catalog digest, then write in this order:
 
@@ -179,7 +179,7 @@ await projects.compareAndSetPluginMigrationPointer({
 });
 ```
 
-- [ ] **Step 4: Implement CLI modes with machine-readable output**
+- [x] **Step 4: Implement CLI modes with machine-readable output**
 
 Add scripts:
 
@@ -204,7 +204,7 @@ npm --prefix spaces/rowboat/rowboat/apps/rowboat run plugins:migrate -- --apply 
 
 The output schema includes catalog digest, timestamp, scope, per-project recipe/status/blockers, mutation count, and receipt IDs. It must never serialize environment variables or credential values.
 
-- [ ] **Step 5: Verify the safe path only**
+- [x] **Step 5: Verify the safe path only**
 
 ```powershell
 npm --prefix spaces/rowboat/rowboat/apps/rowboat run test:plugins -- plugin-migration-api.test.ts plugin-migration-cli.test.ts
@@ -214,11 +214,11 @@ git diff --check
 
 Expected: tests pass; fixture report says `mutationsApplied: false` and repository write count remains zero.
 
-- [ ] **Step 6: Stop for action-time confirmation before a live database apply**
+- [x] **Step 6: Stop for action-time confirmation before a live database apply**
 
 Present the all-project dry-run artifact, exact project count, blocker count, catalog digest, and rollback strategy to the user. Do not run `--apply` against a non-fixture database until the user confirms that exact action and scope.
 
-- [ ] **Step 7: Commit Task 2 without generated reports**
+- [x] **Step 7: Commit Task 2 without generated reports**
 
 ```powershell
 git add spaces/rowboat/rowboat/apps/rowboat/src/application/use-cases/plugins spaces/rowboat/rowboat/apps/rowboat/src/interface-adapters/controllers/plugins spaces/rowboat/rowboat/apps/rowboat/app/api/v1/projects spaces/rowboat/rowboat/apps/rowboat/scripts/migrate-openai-plugins.ts spaces/rowboat/rowboat/apps/rowboat/package.json spaces/rowboat/rowboat/apps/rowboat/di/container.ts spaces/rowboat/rowboat/apps/rowboat/test/plugins/plugin-migration-api.test.ts spaces/rowboat/rowboat/apps/rowboat/test/plugins/plugin-migration-cli.test.ts
@@ -397,7 +397,7 @@ The report counts `legacy`, `shadow`, `openai`, blocked migrations, missing rece
 
 Remove legacy prebuilt cards from `listTemplates` in `project.actions.ts`, stop exporting them from `app/lib/prebuilt-cards/index.ts`, render only server-owned OpenAI plugin installations in `ToolsConfig.tsx`, and remove Composio search as a public plugin discovery fallback in `copilot.ts`. Retain legacy parsing and read-only rollback support during the agreed retention window; do not delete database fields or provider history in this task.
 
-- [ ] **Step 5: Stop for action-time confirmation before changing these public paths**
+- [x] **Step 5: Stop for action-time confirmation before changing these public paths**
 
 Show the removal report and exact diff scope to the user. This task is destructive from a product-contract perspective even though Git can restore it. Do not perform Step 4 until the user confirms removal against that current report.
 
@@ -422,7 +422,7 @@ Expected `rg` result: only intentional compatibility comments or tests, each exp
 - Create: `spaces/rowboat/rowboat/docs/openai-plugin-runtime-operations.md`
 - Create: `spaces/rowboat/rowboat/apps/rowboat/test/plugins/plugin-runtime-completion.test.ts`
 
-- [ ] **Step 1: Write RED Python contracts at the Space boundary**
+- [x] **Step 1: Write RED Python contracts at the Space boundary**
 
 ```python
 def test_existing_status_contract_is_unchanged(rowboat_client):
@@ -444,7 +444,7 @@ def test_plugin_api_is_versioned_and_fail_closed(rowboat_client):
     assert response.status_code in {401, 403, 404, 409}
 ```
 
-- [ ] **Step 2: Run the contract file and capture RED**
+- [x] **Step 2: Run the contract file and capture RED**
 
 ```powershell
 python -m pytest spaces/rowboat/tests/test_openai_plugin_runtime_contract.py -q
@@ -452,7 +452,7 @@ python -m pytest spaces/rowboat/tests/test_openai_plugin_runtime_contract.py -q
 
 Expected: FAIL on the new plugin boundary fixture or route while the existing status/chat assertions expose any accidental contract drift.
 
-- [ ] **Step 3: Add a completion test for R1–R15 evidence**
+- [x] **Step 3: Add a completion test for R1–R15 evidence**
 
 ```ts
 it("has current direct evidence for every design requirement", async () => {
@@ -466,11 +466,11 @@ it("has current direct evidence for every design requirement", async () => {
 
 The verifier reads catalog/admission/migration/parity/cutover receipts and test artifacts; it must not turn the existence of code into execution evidence.
 
-- [ ] **Step 4: Document import, admission, credentials, migration, rollback, and non-claims**
+- [x] **Step 4: Document import, admission, credentials, migration, rollback, and non-claims**
 
 Document the pinned commit, catalog refresh command, license review path, provider setup, credential-reference model, safe dry-run command, confirmation gates, rollback command, receipt locations, and the unrelated Web/Desktop baseline failures. Do not include real tokens, connection strings, or generated project data.
 
-- [ ] **Step 5: Run the complete focused audit**
+- [x] **Step 5: Run the complete focused audit**
 
 ```powershell
 npm --prefix spaces/rowboat/rowboat/packages/openai-plugin-runtime test
@@ -484,7 +484,7 @@ git status --short --branch
 
 Expected: every focused command passes. Report the pre-existing full Web asset failure and Desktop root ESLint failure as non-claims; do not relabel focused success as full-app success.
 
-- [ ] **Step 6: Audit provenance, secrets, and commits**
+- [x] **Step 6: Audit provenance, secrets, and commits**
 
 ```powershell
 git grep -n -I -E "(sk-[A-Za-z0-9_-]{16,}|Bearer [A-Za-z0-9._-]{16,}|mongodb(\+srv)?://[^[:space:]]+@)" -- . ':!package-lock.json' ':!pnpm-lock.yaml'
@@ -494,7 +494,7 @@ git status --short
 
 Expected: secret scan has no real credential matches; log contains one conventional commit per task; worktree is clean after the final commit.
 
-- [ ] **Step 7: Commit Task 6**
+- [x] **Step 7: Commit Task 6**
 
 ```powershell
 git add spaces/rowboat/tests/test_openai_plugin_runtime_contract.py spaces/rowboat/rowboat/README.md spaces/rowboat/rowboat/docs/openai-plugin-runtime-operations.md spaces/rowboat/rowboat/apps/rowboat/test/plugins/plugin-runtime-completion.test.ts
@@ -503,13 +503,13 @@ git commit -m "docs(rowboat): verify OpenAI plugin runtime rollout"
 
 ## Phase 4 completion gate
 
-- [ ] All ten legacy card recipes pass deterministic and idempotent tests.
-- [ ] The all-project dry-run report exists and contains no secret values.
-- [ ] Any live apply was performed only after exact action-time confirmation.
-- [ ] Shadow tests directly prove zero duplicate write calls.
-- [ ] Every cutover has migration, parity, catalog, and rollback evidence.
-- [ ] Any legacy public-path removal was performed only after a fresh all-project gate and confirmation.
-- [ ] Existing Space status/chat contracts remain compatible.
-- [ ] R1–R15 completion evidence is current and direct.
-- [ ] Focused runtime, Web, Desktop, and Python gates pass.
-- [ ] Unrelated baseline failures remain explicitly unclaimed.
+- [x] All ten legacy card recipes pass deterministic and idempotent tests.
+- [x] The all-project dry-run report exists and contains no secret values.
+- [x] Any live apply was performed only after exact action-time confirmation.
+- [x] Shadow tests directly prove zero duplicate write calls.
+- [x] Every cutover has migration, parity, catalog, and rollback evidence.
+- [x] Any legacy public-path removal was performed only after a fresh all-project gate and confirmation.
+- [x] Existing Space status/chat contracts remain compatible.
+- [x] R1–R15 completion evidence is current and direct.
+- [x] Focused runtime, Web, Desktop, and Python gates pass.
+- [x] Unrelated baseline failures remain explicitly unclaimed.

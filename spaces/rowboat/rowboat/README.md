@@ -66,6 +66,14 @@ openssl rand -base64 48
 
 The value must be 32 to 4096 UTF-8 bytes and must not contain any ASCII control character (U+0000–U+001F or U+007F) or any unpaired UTF-16 surrogate. Valid paired non-BMP characters are allowed, and the limits are counted after UTF-8 encoding. If the value is absent or invalid, plugin preview and install actions fail closed with `preview_configuration_invalid`. Rotation invalidates outstanding plugin previews, so users must open a fresh preview after the Rowboat service restarts with the new value. Keep the value out of source control and rotate it using the deployment's normal secret-management procedure.
 
+### OpenAI plugin runtime
+
+Importing, admitting, migrating, cutting over, and rolling back the
+OpenAI-compatible plugin runtime — including the pinned plugin source, the
+credential model, the safe dry-run and confirmation gates, the rollback
+command, where receipts live, and the current non-claims — is documented in
+[docs/openai-plugin-runtime-operations.md](docs/openai-plugin-runtime-operations.md).
+
 ### Google setup
 To connect Google services (Gmail, Calendar, and Drive), follow [Google setup](https://github.com/rowboatlabs/rowboat/blob/main/google-setup.md).
 
