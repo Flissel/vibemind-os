@@ -9,6 +9,12 @@ Behalten-Zeile in §1, korrigierter OpenFang-Config-Pfad in §2, präzisierte
 `select_project`-Semantik, Ein-Event-Beweis in §4, Sora-Substanz-Audit als §7 und ein
 Verifikations-Abschnitt. Alle Änderungen sind mit dem User abgestimmt._
 
+_Präzisiert 2026-08-24: Laura ist die führende Oberfläche und Produktgrenze. Der alte
+VibeMind-Video-Space wird nicht als zweite UI weitergeführt, sondern als Funktionsspender
+für Sora, Aufnahme und FaceSwap ausgewertet. Bereits in Laura vorhandene Funktionen werden
+nicht dupliziert. Die Übernahme erfolgt erst über Adapter und wird erst nach bewiesenem
+Funktionsgleichstand stillgelegt._
+
 ## Kontext
 
 Laura (Repo `vibemind-lab/lauras_star`) ist der frame-genaue, local-first KI-Videoeditor:
@@ -34,8 +40,8 @@ mit Summary und Metadaten. Die Laura-UI erscheint als Space-Tab in der VibeMind-
 | `team_run_step`, `team_pipeline_status` | **ersetzen** durch Laura-Production (deprecaten, Events umziehen) |
 | `demo_analyze`, `demo_build` | **ersetzen** durch `video.reel` (Narrated-Reel kann das besser) |
 | `voice_clone`, `voice_tts` | **umbiegen** auf den tts-sidecar (EINE Chatterbox-Instanz, ein GPU-Lock; altes In-Process-Chatterbox stilllegen) |
-| `lipsync_run`, `lipsync_analyze` (MuseTalk) | **behalten** (eigenständig; späterer Merge mit Lauras `ai.lipsync` ist ein eigener Arc) |
-| **FaceSwap** (`vibevideo_deepfake/faceswap/`) | **behalten — der Aufnahme-Pfad; Laura hat keinen FaceSwap** (im ganzen Repo kein Treffer). `live_server.py` (eyeTerm `:8099` → Swap-Stream `:8098`, vom Automation_ui-Backend on-demand gespawnt) + `batch.py`. ⚠️ Beim Stilllegen des In-Process-Chatterbox **`voice/.venv312` NICHT abräumen**: dort liegen insightface + onnxruntime-gpu, der live_server läuft darin, und OpenFang nutzt dasselbe venv als `[python] interpreter` (`~/.openfang/config.toml:79`). |
+| `lipsync_run`, `lipsync_analyze` (MuseTalk) | **Backend übernehmen, UI nicht duplizieren.** Laura besitzt bereits `LipsyncPanel`, API, Job-/Idempotenzlogik, Consent-/Lizenz-Gates und einen austauschbaren VibeVideo-Sidecar. MuseTalk wird dort als Runtime hinter Lauras bestehendem Vertrag geführt. |
+| **Live-Aufnahme + FaceSwap** (`video-ui` und `vibevideo_deepfake/faceswap/`) | **nach Laura übernehmen.** Bestehende Optionen bleiben erhalten: eyeTerm-Rohstream, Live-Vorschau ohne Swap, InsightFace-`inswapper` (~11 fps), `region-math` (~18 fps), Zielperson, Regionsprofil, Swap-Schalter und Start/Stop. Die Aufzeichnung bleibt unveränderlich der Rohstream; FaceSwap erzeugt nach Stop einen abgeleiteten Batch-Job. ⚠️ Beim Stilllegen des In-Process-Chatterbox **`voice/.venv312` NICHT abräumen**: dort liegen insightface + onnxruntime-gpu, der Live-Server läuft darin, und OpenFang nutzt dasselbe venv als `[python] interpreter` (`~/.openfang/config.toml:79`). |
 | `vision_generate` (Sora) | **behalten, aber an der Naht auftrennen** — Substanz-Audit ist erbracht (siehe §7): Generator-Hälfte bleibt, Build-Hälfte weicht Laura. |
 | `scan_video_outputs`, `import_videos`, `video_status` | **behalten und erweitern** (Filing + Health inkl. Laura/Sidecar) |
 | `publish_videos_to_rowboat` | **behalten und auf das neue Template umbauen** (siehe 3.) |
@@ -146,12 +152,30 @@ Zeilen texten) ist ein eigener Folge-Arc.
 Prozesse in den VibeMind-Launcher aufgenommen (Preset „video"), `video_status` prüft beide
 Healthz. Secrets bleiben in `.env`-Dateien, nie in der Registry.
 
-### 6. UI: Embed zuerst, dann angleichen
+### 6. UI und Produktgrenze: Laura profitiert vom Alt-Space
 
-Phase 1: Lauras bestehende UI als **Webview-Tab** in der VibeMind-Shell (`video`-Space-Tab
-lädt die lokale Laura-App; Token-Handling wie bei der Desktop-App). Phase 2 (separater
-Arc): native Space-View im VibeMind-Stil (Beat-Editor, Job-Liste, Export-Player über den
-vorhandenen Media-Server) — dabei die vibevideo-Reste (Sora-Panel, Lipsync) einhängen.
+Laura bleibt die einzige Video-Produktoberfläche. Der VibeMind-`video`-Space lädt den echten
+Laura-Renderer als eingebettete Vollansicht; er baut weder einen zweiten Beat-Editor noch
+eine zweite Job-/Export-Ansicht. Dafür erhält Laura einen expliziten Embed-Modus, der seine
+bestehende typisierte Preload-Bridge und Local-API-Verbindung behält. VibeMind besitzt nur
+Lifecycle, Navigation und die Space-Grenze.
+
+Die alte `voice/electron-app/video-ui` bleibt während der Migration als Referenz und
+Gegenprobe erreichbar, ist aber kein Ziel-Frontend. Ihre Funktionen werden einzeln an
+Lauras Verträge angeschlossen:
+
+| Fähigkeit im Alt-Space | Ziel in Laura | Integrationsnaht | Ablöse-Gate |
+|---|---|---|---|
+| Sora: „Full Pipeline“ / „Nur Sora-Szenen“ | neuer Generator im vorhandenen Laura-Generate-Flow | `sora_generate_clips` liefert Clips in den Media-Root; Laura importiert und baut Timeline/Voice/Captions | zwei kurze echte Clips erzeugt, importiert und in Laura gerendert; Kostenparameter explizit |
+| Lipsync-Wizard | vorhandenes `LipsyncPanel` | bestehende Laura-Lipsync-API und VibeVideo/MuseTalk-Sidecar | Consent/Lizenz, Idempotenz, Jobstatus und Qualitätsfehler über Laura-UI bewiesen |
+| Live Capture | neues Laura-Capture-Panel | schmaler Capture-Adapter zu eyeTerm und Record-Start/Stop | Rohaufnahme kann in Laura gestartet, gestoppt, importiert und abgespielt werden |
+| FaceSwap-Livevorschau | Capture-Panel-Modus | Adapter zu `live_server.py`, inklusive `inswapper` und `region-math` | beide Modi liefern sichtbare Frames; Ausfall wird klar gemeldet und blockiert Rohaufnahme nicht |
+| FaceSwap-Aufnahme | abgeleiteter Laura-Job/Asset | Rohaufnahme bleibt Quelle; Stop stößt optional `batch.py` an | Original bleibt unverändert, Swap-Ausgabe ist eigenes Asset mit Provenienz, Consent und Kennzeichnung |
+| Status/Output-Scan/Publish | Laura-Jobs, Exporte und Rowboat-Publish | vorhandene Space-Tools bleiben Orchestrierungsadapter | kein Erfolg ohne echten Laura-Job/Export; Rowboat-Metadaten vollständig |
+
+Reihenfolge: zuerst Laura embed-fähig machen, dann Sora, Capture/FaceSwap und zuletzt die
+Alt-UI entfernen. Jede Fähigkeit wird in Laura sichtbar und testbar, bevor ihr alter
+Bedienpfad entfällt. Das verhindert einen Big-Bang und zugleich dauerhafte Doppelpflege.
 
 ### 7. Sora: Substanz-Audit erbracht — Generator behalten, Build-Hälfte an Laura
 
@@ -208,8 +232,8 @@ Vor `git submodule add` also `gh auth switch --user Vibemind-LAB` (Token hat `re
 ## Nicht-Ziele
 
 OpenFang-Treiber-Code (eigener Arc; der frühere `claude-codexsub`-Claim ist seit 2026-08-22
-erledigt, PR `Flissel/openfang#21`), Lipsync-Merge mit Lauras `ai.lipsync`, native Space-View
-(Phase 2), Auto-Beat-Planungs-Agent, Deploy/Gitlink-Bump aus dieser Arbeit.
+erledigt, PR `Flissel/openfang#21`), Nachbau der Laura-Oberfläche in VibeMind,
+Auto-Beat-Planungs-Agent, Deploy/Gitlink-Bump aus dieser Arbeit.
 
 ## Fehlerfälle
 
@@ -232,6 +256,16 @@ beweist beide Lanes, bevor neun weitere Events verdrahtet werden.
 importiert weiterhin `insightface` + `onnxruntime`, der Swap-Stream auf `:8098` liefert
 Frames, und OpenFang startet mit seinem `[python] interpreter`. Der Rückbau gilt erst als
 sauber, wenn diese drei grün sind — sonst ist der Aufnahme-Pfad still gestorben.
+
+**Capture-Invariante:** Start/Stop schreibt immer zunächst die unveränderte eyeTerm-
+Rohaufnahme. Ein ausgewählter FaceSwap-Modus erzeugt ein separates abgeleitetes Asset und
+überschreibt niemals die Quelle. Automatisierte Tests prüfen Jobverkettung und Provenienz;
+die sichtbare Live-Vorschau beider Modi wird als manuelles GPU-Gate protokolliert.
+
+**UI-Ablöse-Gate:** VibeMind öffnet den echten Laura-Renderer im `video`-Space; Projekt,
+Timeline, Jobs und Exporte funktionieren über Lauras bestehende Bridge. Für Sora, Lipsync,
+Rohaufnahme und beide FaceSwap-Modi existiert je ein bestandener Laura-UI-Pfad. Erst dann
+darf `voice/electron-app/video-ui` aus Navigation und Build entfernt werden.
 
 **Sora:** `sora_generate_clips` erzeugt aus zwei Prompts echte Clips im Media-Root (der
 erste belegte Durchlauf überhaupt, s. §7), die anschließend per `import_media` in Laura
