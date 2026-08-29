@@ -25,6 +25,7 @@ import { SetPluginRuntimeModeController } from "@/src/interface-adapters/control
 import { MongodbProjectsRepository } from "@/src/infrastructure/repositories/mongodb.projects.repository";
 import { parsePluginRuntimeState } from "@/src/entities/models/project";
 import { LegacyPluginRemovalGate } from "@/src/application/services/legacy-plugin-removal-gate";
+import { materializeWorkflowBindings } from "@/src/application/services/plugin-binding-materialization";
 import type { PluginApiIdentity } from "@/src/application/policies/plugin-api-authorization.policy";
 import type { PluginComponentAdmission } from "@/src/application/repositories/plugins.repository.interface";
 import type { AggregateOptions, ClientSession, Collection, Document, Filter, FindOptions, InsertOneOptions, UpdateFilter, UpdateOptions, WithId } from "mongodb";
@@ -332,7 +333,26 @@ async function createComposition() {
     },
     loadMigrationRecord: id => pluginsRepository.getMigrationRecord(id),
     loadReceipt: id => pluginsRepository.getReceipt(id),
-    saveRuntimeState: (projectId, expectedRevision, state) => projectsRepository.setPluginRuntimeState(projectId, expectedRevision, state),
+    saveRuntimeState: (projectId, expectedRevision, state, workflows) => projectsRepository.setPluginRuntimeState(projectId, expectedRevision, state, workflows),
+    materializeWorkflows: async ({ projectId, migrationRecordId }) => {
+      const record = await pluginsRepository.getMigrationRecord(migrationRecordId);
+      if (record === null || record.projectId !== projectId) throw new Error("cutover_evidence_required");
+      const project = await projectsRepository.fetch(projectId);
+      if (project === null) throw new Error("project_not_found");
+      const installations = await pluginsRepository.listInstallations(projectId);
+      const draft = materializeWorkflowBindings({ workflow: project.draftWorkflow, recipeId: record.recipeId, installations });
+      const live = materializeWorkflowBindings({ workflow: project.liveWorkflow, recipeId: record.recipeId, installations });
+      return Object.freeze({ draftWorkflow: draft.workflow, liveWorkflow: live.workflow });
+    },
+    restoreWorkflows: async ({ projectId, migrationRecordId, rollbackSnapshotDigest }) => {
+      // The retained snapshot the apply wrote is the only authority for what
+      // the legacy workflow was; a missing or foreign snapshot fails closed
+      // rather than reconstructing one.
+      const row = await db.collection<Document>("plugin_migration_rollbacks").findOne({ _id: migrationRecordId } as unknown as Filter<Document>, { projection: { _id: 0 } });
+      if (row === null || row.projectId !== projectId || row.rollbackSnapshotDigest !== rollbackSnapshotDigest
+        || row.draftWorkflow === undefined || row.liveWorkflow === undefined) throw new Error("rollback_snapshot_unavailable");
+      return Object.freeze({ draftWorkflow: row.draftWorkflow, liveWorkflow: row.liveWorkflow });
+    },
     putReceipt: receipt => pluginsRepository.putReceipt(receipt),
     now: () => new Date(),
   });

@@ -1,6 +1,7 @@
 import { PINNED_PLUGIN_CATALOG_DIGEST, type PluginMigrationRecord, type PluginReceipt } from "@rowboat/openai-plugin-runtime";
 import type { PluginApiIdentity } from "../../policies/plugin-api-authorization.policy";
 import { PluginRuntimeState, type PluginRuntimeStateValue } from "@/src/entities/models/project";
+import type { ProjectWorkflowPair } from "../../repositories/projects.repository.interface";
 import { fingerprint, serviceError } from "./plugin-service.shared";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -42,6 +43,8 @@ export interface SetPluginRuntimeModeResult {
   readonly revision: number;
   readonly rolledBack: boolean;
   readonly receiptId: string;
+  /** Tools bound to a plugin on cutover, or restored to legacy on rollback. */
+  readonly workflowsWritten: boolean;
 }
 
 export interface SetPluginRuntimeModeDependencies {
@@ -49,7 +52,19 @@ export interface SetPluginRuntimeModeDependencies {
   readonly loadRuntimeState: (projectId: string) => Promise<PluginRuntimeStateValue | null>;
   readonly loadMigrationRecord: (id: string) => Promise<PluginMigrationRecord | null>;
   readonly loadReceipt: (id: string) => Promise<PluginReceipt | null>;
-  readonly saveRuntimeState: (projectId: string, expectedRevision: number, state: PluginRuntimeStateValue) => Promise<PluginRuntimeStateValue>;
+  readonly saveRuntimeState: (projectId: string, expectedRevision: number, state: PluginRuntimeStateValue, workflows?: ProjectWorkflowPair) => Promise<PluginRuntimeStateValue>;
+  /**
+   * Produces the workflows that make the openai runtime actually authoritative:
+   * the legacy tools an applied migration mapped, carrying their plugin
+   * binding. Without it a cutover would change the mode while the agent kept
+   * building legacy tools.
+   */
+  readonly materializeWorkflows?: (input: Readonly<{ projectId: string; migrationRecordId: string }>) => Promise<ProjectWorkflowPair>;
+  /**
+   * Produces the workflows a rollback restores, from the retained snapshot the
+   * migration wrote. Fails closed when that snapshot is unavailable.
+   */
+  readonly restoreWorkflows?: (input: Readonly<{ projectId: string; migrationRecordId: string; rollbackSnapshotDigest: string }>) => Promise<ProjectWorkflowPair>;
   readonly putReceipt: (receipt: PluginReceipt) => Promise<void>;
   readonly now: () => Date;
 }
@@ -115,8 +130,10 @@ export class SetPluginRuntimeModeUseCase {
         rollbackSnapshotDigest: record.rollbackSnapshotDigest, cutoverAt: timestamp,
       };
     } else if (request.mode === "legacy") {
-      // Rollback restores authority to the legacy workflow fields, which were
-      // never rewritten by the migration, so no workflow document is touched.
+      // Rollback returns authority to the legacy tools. Where a cutover
+      // materialized plugin bindings into the workflow, the retained snapshot
+      // is restored in the same conditional write; where it did not, the
+      // untouched legacy fields already are the legacy tools.
       if (typeof current.rollbackSnapshotDigest !== "string") serviceError("rollback_snapshot_required");
       next = {
         mode: "legacy", revision: current.revision + 1,
@@ -132,7 +149,21 @@ export class SetPluginRuntimeModeUseCase {
     }
 
     const state = PluginRuntimeState.parse(next);
-    const saved = await this.dependencies.saveRuntimeState(request.projectId, request.expectedRevision, state);
+    // Materializing before the swap keeps a failure inert: nothing is written,
+    // and the project stays in its current mode with its current tools.
+    let workflows: ProjectWorkflowPair | undefined;
+    if (state.mode === "openai" && this.dependencies.materializeWorkflows !== undefined) {
+      workflows = await this.dependencies.materializeWorkflows({ projectId: request.projectId, migrationRecordId: state.migrationRecordId! });
+    }
+    if (state.mode === "legacy" && current.mode === "openai" && this.dependencies.restoreWorkflows !== undefined) {
+      if (current.migrationRecordId === undefined || current.rollbackSnapshotDigest === undefined) serviceError("rollback_snapshot_required");
+      workflows = await this.dependencies.restoreWorkflows({
+        projectId: request.projectId,
+        migrationRecordId: current.migrationRecordId,
+        rollbackSnapshotDigest: current.rollbackSnapshotDigest,
+      });
+    }
+    const saved = await this.dependencies.saveRuntimeState(request.projectId, request.expectedRevision, state, workflows);
     const receiptId = `runtime-mode:${fingerprint({ projectId: request.projectId, from: current.mode, to: saved.mode, revision: saved.revision })}`;
     const receipt: PluginReceipt = Object.freeze({
       type: "migration", receiptId, projectId: request.projectId, pluginName: RUNTIME_SCOPE,
@@ -145,6 +176,6 @@ export class SetPluginRuntimeModeUseCase {
       }),
     });
     await this.dependencies.putReceipt(receipt);
-    return Object.freeze({ projectId: request.projectId, mode: saved.mode, revision: saved.revision, rolledBack: saved.mode === "legacy", receiptId });
+    return Object.freeze({ projectId: request.projectId, mode: saved.mode, revision: saved.revision, rolledBack: saved.mode === "legacy", receiptId, workflowsWritten: workflows !== undefined });
   }
 }

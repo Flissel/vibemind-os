@@ -41,10 +41,16 @@ const parityReceipt = (overrides: Partial<PluginReceipt> = {}): PluginReceipt =>
 interface Harness {
   readonly service: SetPluginRuntimeModeUseCase;
   readonly saved: PluginRuntimeStateValue[];
+  readonly savedWorkflows: (unknown | undefined)[];
   readonly receipts: PluginReceipt[];
   readonly calls: string[];
   readonly expectedRevisions: number[];
 }
+
+const workflowPair = Object.freeze({
+  draftWorkflow: { tools: [{ name: "post", pluginBinding: { installationId, pluginName: "slack", componentDigest: "a".repeat(64), providerBindingId: "slack.app", capability: "write" } }] },
+  liveWorkflow: { tools: [{ name: "post" }] },
+});
 
 function harness(options: Readonly<{
   state?: PluginRuntimeStateValue | null;
@@ -52,8 +58,11 @@ function harness(options: Readonly<{
   receipt?: PluginReceipt | null;
   authorize?: () => Promise<void>;
   saveError?: Error;
+  materialize?: () => Promise<typeof workflowPair>;
+  restore?: () => Promise<typeof workflowPair>;
 }> = {}): Harness {
   const saved: PluginRuntimeStateValue[] = [];
+  const savedWorkflows: (unknown | undefined)[] = [];
   const receipts: PluginReceipt[] = [];
   const calls: string[] = [];
   const expectedRevisions: number[] = [];
@@ -62,17 +71,23 @@ function harness(options: Readonly<{
     async loadRuntimeState(_project: string) { calls.push("loadRuntimeState"); return options.state === undefined ? { mode: "legacy" as const, revision: 0 } : options.state; },
     async loadMigrationRecord(_id: string) { calls.push("loadMigrationRecord"); return options.record === undefined ? migrationRecord() : options.record; },
     async loadReceipt(_id: string) { calls.push("loadReceipt"); return options.receipt === undefined ? parityReceipt() : options.receipt; },
-    async saveRuntimeState(_project: string, expectedRevision: number, state: PluginRuntimeStateValue) {
+    async saveRuntimeState(_project: string, expectedRevision: number, state: PluginRuntimeStateValue, workflows?: unknown) {
       calls.push("saveRuntimeState");
       expectedRevisions.push(expectedRevision);
       if (options.saveError !== undefined) throw options.saveError;
       saved.push(state);
+      savedWorkflows.push(workflows);
       return state;
     },
+    ...(options.materialize === undefined ? {} : { materializeWorkflows: async () => { calls.push("materializeWorkflows"); return options.materialize!(); } }),
+    ...(options.restore === undefined ? {} : { restoreWorkflows: async (input: Readonly<{ migrationRecordId: string; rollbackSnapshotDigest: string }>) => {
+      calls.push(`restoreWorkflows:${input.migrationRecordId}:${input.rollbackSnapshotDigest.slice(0, 4)}`);
+      return options.restore!();
+    } }),
     async putReceipt(receipt: PluginReceipt) { calls.push("putReceipt"); receipts.push(receipt); },
     now: () => now,
   };
-  return { service: new SetPluginRuntimeModeUseCase(dependencies), saved, receipts, calls, expectedRevisions };
+  return { service: new SetPluginRuntimeModeUseCase(dependencies), saved, savedWorkflows, receipts, calls, expectedRevisions };
 }
 
 const cutoverEvidence = Object.freeze({ catalogDigest: PINNED_PLUGIN_CATALOG_DIGEST, migrationRecordId, parityReceiptId });
@@ -163,6 +178,48 @@ describe("reversible plugin runtime cutover", () => {
     expect(result.rolledBack).toBe(true);
     expect(calls).not.toContain("updateDraftWorkflow");
     expect(calls).not.toContain("updateLiveWorkflow");
+  });
+
+  it("materializes the plugin bindings in the same write as the cutover", async () => {
+    const { service, saved, savedWorkflows, calls } = harness({ state: stateFor("shadow"), materialize: async () => workflowPair });
+    const result = await service.execute({ identity, projectId, mode: "openai", expectedRevision: 3, ...cutoverEvidence });
+    expect(calls.indexOf("materializeWorkflows")).toBeLessThan(calls.indexOf("saveRuntimeState"));
+    expect(savedWorkflows[0]).toEqual(workflowPair);
+    expect(saved[0]).toMatchObject({ mode: "openai" });
+    expect(result.workflowsWritten).toBe(true);
+  });
+
+  it("leaves the project untouched when materialization fails", async () => {
+    const { service, saved, receipts, calls } = harness({
+      state: stateFor("shadow"),
+      materialize: async () => { throw new Error("materialization_binding_missing"); },
+    });
+    await expect(service.execute({ identity, projectId, mode: "openai", expectedRevision: 3, ...cutoverEvidence }))
+      .rejects.toThrow("materialization_binding_missing");
+    expect(saved).toEqual([]);
+    expect(receipts).toEqual([]);
+    expect(calls).not.toContain("saveRuntimeState");
+  });
+
+  it("restores the retained snapshot in the same write as the rollback", async () => {
+    const { service, savedWorkflows, calls, saved } = harness({ state: stateFor("openai"), restore: async () => workflowPair });
+    const result = await service.execute({ identity, projectId, mode: "legacy", expectedRevision: 3 });
+    expect(calls).toContain(`restoreWorkflows:${migrationRecordId}:aaaa`);
+    expect(savedWorkflows[0]).toEqual(workflowPair);
+    expect(saved[0]).toMatchObject({ mode: "legacy" });
+    expect(result.workflowsWritten).toBe(true);
+  });
+
+  it("writes no workflow when no materialization is configured", async () => {
+    const cutover = harness({ state: stateFor("shadow") });
+    const result = await cutover.service.execute({ identity, projectId, mode: "openai", expectedRevision: 3, ...cutoverEvidence });
+    expect(cutover.savedWorkflows[0]).toBeUndefined();
+    expect(result.workflowsWritten).toBe(false);
+
+    const rollback = harness({ state: stateFor("openai") });
+    const rolled = await rollback.service.execute({ identity, projectId, mode: "legacy", expectedRevision: 3 });
+    expect(rollback.savedWorkflows[0]).toBeUndefined();
+    expect(rolled.workflowsWritten).toBe(false);
   });
 
   it("passes the caller expected revision to the compare-and-swap and surfaces a conflict", async () => {

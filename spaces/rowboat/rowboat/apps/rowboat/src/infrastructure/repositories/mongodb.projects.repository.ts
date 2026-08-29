@@ -1,5 +1,5 @@
 import { db } from "@/app/lib/mongodb";
-import { CreateSchema, IProjectsRepository, AddComposioConnectedAccountSchema, AddCustomMcpServerSchema } from "@/src/application/repositories/projects.repository.interface";
+import { CreateSchema, IProjectsRepository, AddComposioConnectedAccountSchema, AddCustomMcpServerSchema, type ProjectWorkflowPair } from "@/src/application/repositories/projects.repository.interface";
 import { NotFoundError } from "@/src/entities/errors/common";
 import { PluginRuntimeState, Project, type PluginRuntimeStateValue } from "@/src/entities/models/project";
 import { z } from "zod";
@@ -233,7 +233,7 @@ export class MongodbProjectsRepository implements IProjectsRepository {
         return { ...rest, id: _id };
     }
 
-    async setPluginRuntimeState(projectId: string, expectedRevision: number, state: PluginRuntimeStateValue): Promise<PluginRuntimeStateValue> {
+    async setPluginRuntimeState(projectId: string, expectedRevision: number, state: PluginRuntimeStateValue, workflows?: ProjectWorkflowPair): Promise<PluginRuntimeStateValue> {
         const next = PluginRuntimeState.parse(state);
         if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
             throw new Error('plugin_runtime_request_invalid');
@@ -248,9 +248,12 @@ export class MongodbProjectsRepository implements IProjectsRepository {
             {
                 $set: {
                     pluginRuntime: next,
+                    // Written in the same conditional update as the mode, so a
+                    // losing swap changes neither.
+                    ...(workflows === undefined ? {} : { draftWorkflow: workflows.draftWorkflow, liveWorkflow: workflows.liveWorkflow }),
                     lastUpdatedAt: new Date().toISOString(),
                 }
-            },
+            } as Parameters<typeof this.collection.findOneAndUpdate>[1],
             { returnDocument: 'after' }
         );
         if (!result) {

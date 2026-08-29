@@ -147,6 +147,22 @@ curl -X POST "$ROWBOAT_URL/api/v1/projects/<projectId>/plugins/runtime-mode" \
   -d '{"mode":"shadow","expectedRevision":0,"catalogDigest":null,"migrationRecordId":null,"parityReceiptId":null}'
 ```
 
+Cutover materializes the plugin bindings: the legacy tools the applied
+migration mapped are rewritten with their `pluginBinding`, in the *same*
+conditional update as the mode, so the mode and the tools can never disagree.
+The binding comes from the installation, which is where the kernel keeps the
+admitted provider binding. A tool that drifted from the one the recipe resolved
+against is refused (`materialization_source_drift`), and a missing installation
+or component binding is refused (`materialization_binding_missing`); in both
+cases nothing is written and the project stays where it was. A materialized
+tool is bound write-capable, because a provider binding carries no read/write
+classification and an unknown effect is never treated as read-only.
+
+Rollback restores the retained snapshot the apply wrote to
+`plugin_migration_rollbacks`, again in the same conditional update. A missing or
+foreign snapshot fails closed with `rollback_snapshot_unavailable` rather than
+reconstructing a workflow.
+
 Cutover to `openai` additionally requires, in one request:
 
 - `catalogDigest` equal to the pinned catalog digest
@@ -167,9 +183,9 @@ curl -X POST "$ROWBOAT_URL/api/v1/projects/<projectId>/plugins/runtime-mode" \
   -d '{"mode":"legacy","expectedRevision":<n>,"catalogDigest":null,"migrationRecordId":null,"parityReceiptId":null}'
 ```
 
-Rollback restores authority to the legacy workflow fields, which the migration
-never rewrote, so no workflow document is touched. It records its own receipt
-and stamps `rolledBackAt`.
+Rollback returns authority to the legacy tools, restoring the retained snapshot
+where a cutover materialized bindings, and records its own receipt stamped with
+`rolledBackAt`.
 
 ## Receipts
 

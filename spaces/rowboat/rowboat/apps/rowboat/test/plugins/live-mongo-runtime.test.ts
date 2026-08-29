@@ -25,6 +25,9 @@ import { resolve } from "node:path";
 import { MongoClient } from "mongodb";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PINNED_OPENAI_PLUGINS_COMMIT, PINNED_PLUGIN_CATALOG_DIGEST, type PluginMigrationRecord, type PluginReceipt } from "@rowboat/openai-plugin-runtime";
+import { LEGACY_PLUGIN_RECIPES } from "@/src/application/services/legacy-plugin-recipes";
+import { materializeWorkflowBindings } from "@/src/application/services/plugin-binding-materialization";
+import githubIssueToSlack from "@/app/lib/prebuilt-cards/github-issue-to-slack.json";
 
 const projectId = randomUUID();
 const migrationRecordId = randomUUID();
@@ -32,11 +35,12 @@ const installationId = randomUUID();
 const parityReceiptId = `parity:${"c".repeat(64)}`;
 const digest = (seed: string) => seed.repeat(64).slice(0, 64);
 
-const workflow = Object.freeze({
-  agents: [], prompts: [], pipelines: [], startAgent: "hello",
-  tools: [{ name: "create_issue", description: "legacy github tool", parameters: { type: "object", properties: {} }, isComposio: true }],
-  lastUpdatedAt: "2026-08-01T10:00:00.000Z",
-});
+// The real prebuilt card, so the recipe's tool ordinals and identity digests
+// are the ones a migrated project actually carries.
+const recipe = LEGACY_PLUGIN_RECIPES["github-issue-to-slack"];
+const target = recipe.capabilities[0]!.target!;
+const boundOrdinal = recipe.capabilities[0]!.legacyAction.ordinal;
+const workflow = Object.freeze({ ...structuredClone(githubIssueToSlack), lastUpdatedAt: "2026-08-01T10:00:00.000Z" }) as Record<string, unknown>;
 
 let client: MongoClient;
 let step = 0;
@@ -101,7 +105,7 @@ describe.skipIf(LIVE_URL === "")("live plugin runtime cutover against a real Mon
 
     // 4. Cutover evidence written through the real repository.
     const record: PluginMigrationRecord = Object.freeze({
-      id: migrationRecordId, projectId, recipeId: "legacy-card:github-issue-to-slack:v1", recipeDigest: digest("d"),
+      id: migrationRecordId, projectId, recipeId: recipe.recipeId, recipeDigest: digest("d"),
       sourceProjectRevision: Date.parse("2026-08-01T10:00:00.000Z"), sourceDigest: digest("e"), sourceInventoryDigest: digest("f"),
       targetCatalogDigest: PINNED_PLUGIN_CATALOG_DIGEST, targetSourceCommit: PINNED_OPENAI_PLUGINS_COMMIT, targetPolicyVersion: "rowboat-plugin-policy-v1",
       targetInstallationIds: Object.freeze([installationId]), rollbackSnapshotDigest: digest("a"), status: "applied",
@@ -112,7 +116,25 @@ describe.skipIf(LIVE_URL === "")("live plugin runtime cutover against a real Mon
     }) as PluginReceipt;
     await plugins.putMigrationRecord(record);
     await plugins.putReceipt(parity);
-    log(`evidence stored: migration record ${record.status}, parity receipt ${parity.status}`);
+    // The installation is pinned to the catalog entry the repository validates
+    // against, so its provenance and its component digest come from the seeded
+    // catalog rather than from invented values.
+    const entry = seeded!.entries.find(candidate => candidate.name === target.pluginName)!;
+    const component = entry.components.find(candidate => candidate.component.id === target.componentId)!;
+    const componentDigest = component.component.metadata.bindingDigest as string;
+    await plugins.putInstallation({
+      id: installationId, projectId, pluginName: entry.pluginName, pluginVersion: entry.pluginVersion,
+      sourceCommit: entry.sourceCommit, manifestDigest: entry.manifestDigest, treeDigest: entry.treeDigest,
+      policyVersion: entry.policyVersion, enabled: true, revision: 1,
+      providerBindings: [{ componentId: target.componentId, binding: { id: "slack.app", providerKind: target.providerKind, componentDigest } }],
+    });
+    // The retained rollback snapshot the apply writes; the only authority for
+    // what the legacy workflow was.
+    await database.collection("plugin_migration_rollbacks").insertOne({
+      _id: migrationRecordId, projectId, draftWorkflow: workflow, liveWorkflow: workflow,
+      rollbackSnapshotDigest: record.rollbackSnapshotDigest,
+    } as never);
+    log(`evidence stored: migration ${record.status}, parity ${parity.status}, installation ${target.pluginName} with 1 provider binding`);
 
     // 5. The real use case on the real repositories.
     const { SetPluginRuntimeModeUseCase } = await import("@/src/application/use-cases/plugins/set-plugin-runtime-mode.use-case");
@@ -125,8 +147,22 @@ describe.skipIf(LIVE_URL === "")("live plugin runtime cutover against a real Mon
       },
       loadMigrationRecord: id => plugins.getMigrationRecord(id),
       loadReceipt: id => plugins.getReceipt(id),
-      saveRuntimeState: (id, expectedRevision, state) => projects.setPluginRuntimeState(id, expectedRevision, state),
+      saveRuntimeState: (id, expectedRevision, state, workflows) => projects.setPluginRuntimeState(id, expectedRevision, state, workflows),
       putReceipt: async receipt => { receipts.push(receipt); await plugins.putReceipt(receipt); },
+      // The same implementations the container wires in production.
+      materializeWorkflows: async ({ projectId: id, migrationRecordId: recordId }) => {
+        const stored = await plugins.getMigrationRecord(recordId);
+        const project = await projects.fetch(id);
+        const installations = await plugins.listInstallations(id);
+        const draft = materializeWorkflowBindings({ workflow: project!.draftWorkflow, recipeId: stored!.recipeId, installations });
+        const live = materializeWorkflowBindings({ workflow: project!.liveWorkflow, recipeId: stored!.recipeId, installations });
+        return { draftWorkflow: draft.workflow, liveWorkflow: live.workflow };
+      },
+      restoreWorkflows: async ({ projectId: id, migrationRecordId: recordId, rollbackSnapshotDigest }) => {
+        const row = await database.collection("plugin_migration_rollbacks").findOne({ _id: recordId } as never, { projection: { _id: 0 } });
+        if (row === null || row.projectId !== id || row.rollbackSnapshotDigest !== rollbackSnapshotDigest) throw new Error("rollback_snapshot_unavailable");
+        return { draftWorkflow: row.draftWorkflow, liveWorkflow: row.liveWorkflow };
+      },
       now: () => new Date(),
     });
     const identity = Object.freeze({ kind: "user" as const, userId: "user-1" });
@@ -153,13 +189,21 @@ describe.skipIf(LIVE_URL === "")("live plugin runtime cutover against a real Mon
     const persisted = await database.collection("projects").findOne({ _id: projectId } as never);
     log(`persisted state: ${JSON.stringify((persisted as { pluginRuntime?: unknown }).pluginRuntime)}`);
 
+    const boundTool = ((persisted as { liveWorkflow: { tools: Record<string, unknown>[] } }).liveWorkflow.tools)[boundOrdinal]!;
+    log(`materialized: tool "${String(boundTool.name)}" -> ${JSON.stringify(boundTool.pluginBinding)}`);
+    expect(boundTool.pluginBinding).toEqual({ installationId, pluginName: target.pluginName, componentDigest, providerBindingId: "slack.app", capability: "write" });
+    expect(cutover.workflowsWritten).toBe(true);
+    const untouched = ((persisted as { liveWorkflow: { tools: Record<string, unknown>[] } }).liveWorkflow.tools).filter((tool, index) => index !== boundOrdinal && "pluginBinding" in tool);
+    expect(untouched).toEqual([]);
+
     // 6. Rollback, and proof that it never touched the legacy workflow.
     const rollback = await service.execute({ identity, projectId, mode: "legacy", expectedRevision: 2 });
     const afterRollback = await database.collection("projects").findOne({ _id: projectId } as never);
-    log(`openai -> legacy  OK   (rolledBack=${rollback.rolledBack}, revision ${rollback.revision})`);
+    log(`openai -> legacy  OK   (rolledBack=${rollback.rolledBack}, workflows restored=${rollback.workflowsWritten}, revision ${rollback.revision})`);
     expect((afterRollback as { draftWorkflow?: unknown }).draftWorkflow).toEqual(workflow);
     expect((afterRollback as { liveWorkflow?: unknown }).liveWorkflow).toEqual(workflow);
-    log("legacy workflow fields byte-identical after cutover and rollback");
+    expect(((afterRollback as { liveWorkflow: { tools: Record<string, unknown>[] } }).liveWorkflow.tools).some(tool => "pluginBinding" in tool)).toBe(false);
+    log("legacy workflow restored byte-identical from the retained snapshot, no binding left");
 
     const storedReceipts = await database.collection("plugin_receipts").find({}).toArray();
     log(`receipts in plugin_receipts: ${storedReceipts.length} (${receipts.map(receipt => receipt.type).join(", ")} + parity)`);
