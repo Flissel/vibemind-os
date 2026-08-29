@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { toPluginCardView, type PluginCatalogCardItem } from "@/app/projects/[projectId]/plugins/components/plugin-card";
+import { pluginToolSummary } from "@/app/projects/[projectId]/entities/plugin-tool-summary";
 import { createPluginActionRuntime } from "@/src/interface-adapters/actions/plugin-action-runtime";
 import { pluginCatalogPath } from "@/app/projects/[projectId]/plugins/components/plugin-catalog";
 import { Modal } from "@heroui/react";
@@ -563,5 +564,43 @@ describe("plugin card tool offers", () => {
       expect(view.addableComponents.every(entry => !entry.canAdd)).toBe(true);
     }
     expect(toPluginCardView(item()).addableComponents[0]!.canAdd).toBe(true);
+  });
+});
+
+describe("plugin tool panel summary", () => {
+  const binding = Object.freeze({
+    installationId: "33333333-3333-4333-8333-333333333333", pluginName: "actively",
+    componentDigest: "e5461d911ee3b869576d8c781ab5401cf38f8c4756a1b6b757f3d0e1ab880392",
+    providerBindingId: "app.actively", capability: "write" as const, origin: "native" as const,
+  });
+
+  it("describes a plugin tool by its real provenance", () => {
+    expect(pluginToolSummary({ name: "plugin_actively_actively", pluginBinding: binding })).toEqual({
+      pluginName: "actively", providerBindingId: "app.actively", componentDigestShort: "e5461d911ee3",
+      capability: "write", origin: "native",
+      originLabel: "Added from the plugin catalog", capabilityLabel: "Write-capable",
+    });
+  });
+
+  it("reads a migrated or unmarked binding as migrated", () => {
+    const { origin: dropped, ...unmarked } = binding;
+    void dropped;
+    expect(pluginToolSummary({ pluginBinding: unmarked })).toMatchObject({ origin: "migration", originLabel: "Migrated from a legacy tool" });
+    expect(pluginToolSummary({ pluginBinding: { ...binding, origin: "handmade" } })).toMatchObject({ origin: "migration" });
+    expect(pluginToolSummary({ pluginBinding: { ...binding, capability: "read" } })).toMatchObject({ capability: "read", capabilityLabel: "Read-only" });
+  });
+
+  it("says nothing about a tool without a structurally valid binding", () => {
+    expect(pluginToolSummary({ name: "webhook_tool" })).toBeNull();
+    expect(pluginToolSummary(null)).toBeNull();
+    expect(pluginToolSummary({ pluginBinding: [] })).toBeNull();
+    for (const broken of [
+      { ...binding, pluginName: "not valid" },
+      { ...binding, componentDigest: "short" },
+      { ...binding, providerBindingId: "" },
+      { ...binding, capability: "maybe" },
+    ]) {
+      expect(pluginToolSummary({ pluginBinding: broken })).toBeNull();
+    }
   });
 });

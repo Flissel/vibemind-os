@@ -2,7 +2,8 @@
 import { WorkflowTool } from "../../../lib/types/workflow_types";
 import { Checkbox, Select, SelectItem, Switch } from "@heroui/react";
 import { z } from "zod";
-import { ImportIcon, XIcon, PlusIcon, FolderIcon, Globe, Zap, ExternalLink } from "lucide-react";
+import { ImportIcon, XIcon, PlusIcon, FolderIcon, Globe, Zap, ExternalLink, Puzzle } from "lucide-react";
+import { pluginToolSummary } from "./plugin-tool-summary";
 import { useState, useEffect } from "react";
 import { useParams } from "next/navigation";
 import { Textarea } from "@/components/ui/textarea";
@@ -321,6 +322,7 @@ export function ToolConfig({
         });
     };
 
+    const pluginSummary = pluginToolSummary(tool);
     return (
         <Panel
             title={
@@ -529,6 +531,8 @@ export function ToolConfig({
                                 <ImportIcon className="w-5 h-5 text-blue-600 dark:text-blue-400" />
                             ) : tool.isComposio ? (
                                 <Zap className="w-5 h-5 text-purple-600 dark:text-purple-400" />
+                            ) : pluginSummary !== null ? (
+                                <Puzzle className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
                             ) : (
                                 <Globe className="w-5 h-5 text-green-600 dark:text-green-400" />
                             )}
@@ -555,7 +559,15 @@ export function ToolConfig({
                                     <p>This tool is invoked using the webhook configured in <Link href={`/projects/${projectId}/config`} className="text-green-600 dark:text-green-400 hover:text-green-700 dark:hover:text-green-300 font-medium underline decoration-green-300 hover:decoration-green-500 transition-colors">project settings</Link></p>
                                 </div>
                             </div>}
-                            { !tool.isMcp && !tool.isComposio && !tool.isWebhook && <div className="text-sm text-gray-700 dark:text-gray-300">
+                            { pluginSummary !== null && <div className="text-sm text-gray-700 dark:text-gray-300">
+                                <p>This tool runs through the <span className="font-medium text-indigo-700 dark:text-indigo-300">{pluginSummary.pluginName}</span> plugin.</p>
+                                <ul className="mt-1 space-y-0.5 text-xs text-gray-600 dark:text-gray-400">
+                                    <li>{pluginSummary.originLabel} · {pluginSummary.capabilityLabel}</li>
+                                    <li>Provider binding <span className="font-mono">{pluginSummary.providerBindingId}</span>, component <span className="font-mono">{pluginSummary.componentDigestShort}…</span></li>
+                                    <li>The binding is server owned and revalidated against the installation and the pinned catalog on every call.</li>
+                                </ul>
+                            </div>}
+                            { pluginSummary === null && !tool.isMcp && !tool.isComposio && !tool.isWebhook && <div className="text-sm text-gray-700 dark:text-gray-300">
                                 <p>This is a placeholder tool that should be mocked.</p>
                             </div>}
                         </div>
