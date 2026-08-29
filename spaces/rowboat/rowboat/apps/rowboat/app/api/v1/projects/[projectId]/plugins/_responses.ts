@@ -115,6 +115,8 @@ const ERROR_STATUS = Object.freeze({
   migration_idempotency_conflict: 409, migration_snapshot_changed: 409, project_not_found: 404,
   migration_project_invalid: 400, migration_project_limit: 413, migration_manifest_limit: 413, migration_preview_timeout: 408,
   migration_commit_uncertain: 409,
+  plugin_runtime_request_invalid: 400, runtime_mode_transition_rejected: 409, cutover_evidence_required: 409,
+  plugin_runtime_state_conflict: 409, rollback_snapshot_required: 409, legacy_removal_gate_blocked: 409,
   migration_confirmation_secret_invalid: 503, migration_repository_failed: 500, migration_system_failed: 500,
 } as const);
 

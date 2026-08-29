@@ -20,6 +20,10 @@ import { MongodbPluginsRepository, MongoPluginTransactionRunner, deserializePlug
 import { PLUGIN_COLLECTIONS } from "@/src/infrastructure/repositories/mongodb.plugins.indexes";
 import { PreviewPluginMigrationController } from "@/src/interface-adapters/controllers/plugins/preview-plugin-migration.controller";
 import { ApplyPluginMigrationController } from "@/src/interface-adapters/controllers/plugins/apply-plugin-migration.controller";
+import { SetPluginRuntimeModeUseCase } from "@/src/application/use-cases/plugins/set-plugin-runtime-mode.use-case";
+import { SetPluginRuntimeModeController } from "@/src/interface-adapters/controllers/plugins/set-plugin-runtime-mode.controller";
+import { MongodbProjectsRepository } from "@/src/infrastructure/repositories/mongodb.projects.repository";
+import { parsePluginRuntimeState } from "@/src/entities/models/project";
 import type { PluginApiIdentity } from "@/src/application/policies/plugin-api-authorization.policy";
 import type { PluginComponentAdmission } from "@/src/application/repositories/plugins.repository.interface";
 import type { AggregateOptions, ClientSession, Collection, Document, Filter, FindOptions, InsertOneOptions, UpdateFilter, UpdateOptions, WithId } from "mongodb";
@@ -317,12 +321,27 @@ async function createComposition() {
         throw migrationTransactionFailure(error);
       }
     } });
-  return Object.freeze({ preview, apply, previewController: new PreviewPluginMigrationController({ authorization, useCase: preview }),
-    applyController: new ApplyPluginMigrationController({ authorization, useCase: apply }) });
+  const projectsRepository = new MongodbProjectsRepository({ projectMembersRepository });
+  const runtimeMode = new SetPluginRuntimeModeUseCase({
+    authorizeProject,
+    loadRuntimeState: async projectId => {
+      const project = await projectsRepository.fetch(projectId);
+      return project === null ? null : parsePluginRuntimeState(project.pluginRuntime);
+    },
+    loadMigrationRecord: id => pluginsRepository.getMigrationRecord(id),
+    loadReceipt: id => pluginsRepository.getReceipt(id),
+    saveRuntimeState: (projectId, expectedRevision, state) => projectsRepository.setPluginRuntimeState(projectId, expectedRevision, state),
+    putReceipt: receipt => pluginsRepository.putReceipt(receipt),
+    now: () => new Date(),
+  });
+  return Object.freeze({ preview, apply, runtimeMode, previewController: new PreviewPluginMigrationController({ authorization, useCase: preview }),
+    applyController: new ApplyPluginMigrationController({ authorization, useCase: apply }),
+    runtimeModeController: new SetPluginRuntimeModeController({ authorization, useCase: runtimeMode }) });
 }
 
 export async function resolveMigrationPreviewController() { return (await createComposition()).previewController; }
 export async function resolveMigrationApplyController() { return (await createComposition()).applyController; }
+export async function resolveSetPluginRuntimeModeController() { return (await createComposition()).runtimeModeController; }
 export async function previewAllMigrations() {
   const actorId = process.env.PLUGIN_MIGRATION_ACTOR_USER_ID; if (actorId === undefined) throw new Error("migration_all_scope_authority_required");
   return (await createComposition()).preview.execute({ actor: { kind: "user", userId: actorId }, scope: "all" });

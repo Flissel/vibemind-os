@@ -113,6 +113,9 @@ class FakeRepository implements IPluginsRepository {
     if (this.receiptFailure) throw new Error("database internals secret-value");
     this.receipts.push(receipt);
   }
+  async getReceipt(receiptId: string): Promise<PluginReceipt | null> {
+    return this.receipts.find(candidate => candidate.receiptId === receiptId) ?? null;
+  }
   async claimExecutionDispatch(input: PluginExecutionDispatchClaim): Promise<void> {
     this.claimCalls += 1;
     const current = this.currentInstallation;

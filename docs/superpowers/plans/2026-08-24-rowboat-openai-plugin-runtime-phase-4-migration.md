@@ -301,7 +301,7 @@ git commit -m "feat(rowboat): add write-safe plugin shadow parity"
 - Create: `spaces/rowboat/rowboat/apps/rowboat/app/api/v1/projects/[projectId]/plugins/runtime-mode/route.ts`
 - Create: `spaces/rowboat/rowboat/apps/rowboat/test/plugins/plugin-cutover-rollback.test.ts`
 
-- [ ] **Step 1: Write the transition table as RED tests**
+- [x] **Step 1: Write the transition table as RED tests**
 
 ```ts
 it.each([
@@ -321,7 +321,7 @@ it("rejects cutover when parity or rollback evidence is missing", async () => {
 });
 ```
 
-- [ ] **Step 2: Run the test and capture RED**
+- [x] **Step 2: Run the test and capture RED**
 
 ```powershell
 npm --prefix spaces/rowboat/rowboat/apps/rowboat run test:plugins -- plugin-cutover-rollback.test.ts
@@ -329,7 +329,7 @@ npm --prefix spaces/rowboat/rowboat/apps/rowboat run test:plugins -- plugin-cuto
 
 Expected: FAIL because runtime-mode state and transitions do not exist.
 
-- [ ] **Step 3: Add backward-compatible project state**
+- [x] **Step 3: Add backward-compatible project state**
 
 ```ts
 export const ZPluginRuntimeState = z.object({
@@ -343,11 +343,11 @@ export const ZPluginRuntimeState = z.object({
 
 Existing project documents with no field parse as `legacy`. Do not rewrite them during reads.
 
-- [ ] **Step 4: Implement evidence-gated compare-and-swap transitions**
+- [x] **Step 4: Implement evidence-gated compare-and-swap transitions**
 
 Require project authorization, expected runtime revision, matching pinned catalog digest, successful migration receipt, zero unresolved blockers, an accepted parity receipt, and a rollback snapshot before `shadow -> openai`. `openai -> legacy` restores authority to the existing untouched workflow fields and records a rollback receipt.
 
-- [ ] **Step 5: Prove rollback behavior and commit**
+- [x] **Step 5: Prove rollback behavior and commit**
 
 ```powershell
 npm --prefix spaces/rowboat/rowboat/apps/rowboat run test:plugins -- plugin-cutover-rollback.test.ts

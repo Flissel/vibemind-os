@@ -92,6 +92,7 @@ class FakeRepository implements IPluginsRepository {
   async putMigrationRecord(_record: PluginMigrationRecord): Promise<void> {}
   async getMigrationRecord(): Promise<null> { return null; }
   async putReceipt(_receipt: PluginReceipt): Promise<void> {}
+  async getReceipt(_receiptId: string): Promise<PluginReceipt | null> { return null; }
   async claimExecutionDispatch(): Promise<void> {}
   async getIdempotentReceipt(request: { readonly scope: string; readonly fingerprint: string }): Promise<PluginReceipt | null> {
     const result = this.results.get(request.scope);

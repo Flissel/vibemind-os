@@ -28,7 +28,25 @@ export function createMigrationApplyRoute(source: Source, options: { readonly bo
   };
 }
 
+export function createRuntimeModeRoute(source: Source, options: { readonly bodyReadTimeoutMs?: number } = {}) {
+  return async function runtimeModePOST(request: Request, context: Context): Promise<Response> {
+    try {
+      const routeParams = await params(context, ["projectId"]);
+      assertRouteWithoutQuery(request, "POST", ["api", "v1", "projects", routeParams.projectId, "plugins", "runtime-mode"]);
+      const callerSignal = requestSignal(request);
+      const body = strictObject(await jsonBody(request, options.bodyReadTimeoutMs), ["mode", "expectedRevision", "catalogDigest", "migrationRecordId", "parityReceiptId"]);
+      return pluginJson(await (await selected(source)).execute(request, Object.freeze({
+        projectId: routeParams.projectId, mode: body.mode, expectedRevision: body.expectedRevision,
+        catalogDigest: body.catalogDigest, migrationRecordId: body.migrationRecordId, parityReceiptId: body.parityReceiptId,
+        callerSignal,
+      })));
+    } catch (error) { return pluginErrorResponse(error); }
+  };
+}
+
 async function previewController(): Promise<MigrationController> { return (await import("@/di/plugin-migration-container")).resolveMigrationPreviewController(); }
 async function applyController(): Promise<MigrationController> { return (await import("@/di/plugin-migration-container")).resolveMigrationApplyController(); }
+async function runtimeModeController(): Promise<MigrationController> { return (await import("@/di/plugin-migration-container")).resolveSetPluginRuntimeModeController(); }
 export const migrationPreviewGET = createMigrationPreviewRoute(previewController);
 export const migrationApplyPOST = createMigrationApplyRoute(applyController);
+export const runtimeModePOST = createRuntimeModeRoute(runtimeModeController);

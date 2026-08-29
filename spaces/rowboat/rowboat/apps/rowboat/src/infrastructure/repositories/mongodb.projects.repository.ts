@@ -1,7 +1,7 @@
 import { db } from "@/app/lib/mongodb";
 import { CreateSchema, IProjectsRepository, AddComposioConnectedAccountSchema, AddCustomMcpServerSchema } from "@/src/application/repositories/projects.repository.interface";
 import { NotFoundError } from "@/src/entities/errors/common";
-import { Project } from "@/src/entities/models/project";
+import { PluginRuntimeState, Project, type PluginRuntimeStateValue } from "@/src/entities/models/project";
 import { z } from "zod";
 import { IProjectMembersRepository } from "@/src/application/repositories/project-members.repository.interface";
 import { PaginatedList } from "@/src/entities/common/paginated-list";
@@ -231,6 +231,38 @@ export class MongodbProjectsRepository implements IProjectsRepository {
         }
         const { _id, ...rest } = result;
         return { ...rest, id: _id };
+    }
+
+    async setPluginRuntimeState(projectId: string, expectedRevision: number, state: PluginRuntimeStateValue): Promise<PluginRuntimeStateValue> {
+        const next = PluginRuntimeState.parse(state);
+        if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+            throw new Error('plugin_runtime_request_invalid');
+        }
+        // A project stored before the plugin runtime existed carries no field at
+        // all, so revision 0 is the only expectation that may match its absence.
+        const revisionFilter = expectedRevision === 0
+            ? { $or: [{ pluginRuntime: { $exists: false } }, { 'pluginRuntime.revision': expectedRevision }] }
+            : { 'pluginRuntime.revision': expectedRevision };
+        const result = await this.collection.findOneAndUpdate(
+            { _id: projectId, ...revisionFilter } as Parameters<typeof this.collection.findOneAndUpdate>[0],
+            {
+                $set: {
+                    pluginRuntime: next,
+                    lastUpdatedAt: new Date().toISOString(),
+                }
+            },
+            { returnDocument: 'after' }
+        );
+        if (!result) {
+            // Either the project is gone or another writer advanced the
+            // revision. The caller must re-read the state before retrying.
+            const exists = await this.collection.countDocuments({ _id: projectId }, { limit: 1 });
+            if (exists === 0) {
+                throw new NotFoundError('Project not found');
+            }
+            throw new Error('plugin_runtime_state_conflict');
+        }
+        return PluginRuntimeState.parse(result.pluginRuntime);
     }
 
     async delete(projectId: string): Promise<boolean> {

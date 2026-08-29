@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ComposioConnectedAccount, CustomMcpServer, Project } from "@/src/entities/models/project";
+import { ComposioConnectedAccount, CustomMcpServer, Project, type PluginRuntimeStateValue } from "@/src/entities/models/project";
 import { Workflow } from "@/app/lib/types/workflow_types";
 import { PaginatedList } from "@/src/entities/common/paginated-list";
 
@@ -137,6 +137,20 @@ export interface IProjectsRepository {
      * @returns The updated Project object.
      */
     updateLiveWorkflow(projectId: string, workflow: z.infer<typeof Workflow>): Promise<z.infer<typeof Project>>;
+
+    /**
+     * Compare-and-swap of the plugin runtime state.
+     *
+     * The write applies only while the stored revision still equals
+     * expectedRevision; a project document without the field matches only
+     * expectedRevision 0. Implementations must not create the field on reads
+     * and must reject a losing swap with `plugin_runtime_state_conflict`.
+     * @param projectId - The project ID.
+     * @param expectedRevision - The runtime revision the caller observed.
+     * @param state - The next runtime state, already validated.
+     * @returns The stored runtime state.
+     */
+    setPluginRuntimeState(projectId: string, expectedRevision: number, state: PluginRuntimeStateValue): Promise<PluginRuntimeStateValue>;
 
     /**
      * Deletes a project by its ID.

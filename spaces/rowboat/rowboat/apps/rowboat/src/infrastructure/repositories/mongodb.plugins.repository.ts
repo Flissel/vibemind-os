@@ -874,6 +874,14 @@ export class MongodbPluginsRepository implements IPluginsRepository {
     await immutableInsert(this.database.collection(PLUGIN_COLLECTIONS.receipts), { receiptId: document.receiptId }, stored, "receipt_conflict");
   }
 
+  async getReceipt(receiptId: string): Promise<PluginReceipt | null> {
+    if (typeof receiptId !== "string" || !ID.test(receiptId)) invalid("receipt_invalid");
+    const document = await this.database.collection(PLUGIN_COLLECTIONS.receipts).findOne({ receiptId }, { projection: { _id: 0 } });
+    // Idempotency-scoped records carry a mutation envelope instead of a
+    // standalone payload; they are replay state, not readable evidence.
+    return document === null || document.payload === undefined ? null : receipt(document.payload);
+  }
+
   async claimExecutionDispatch(input: PluginExecutionDispatchClaim): Promise<void> {
     const request = object(input, "execution_claim_invalid");
     keys(request, [

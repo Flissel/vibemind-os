@@ -125,6 +125,12 @@ export interface IPluginsRepository {
   getMigrationRecord(id: string): Promise<PluginMigrationRecord | null>;
   putReceipt(receipt: PluginReceipt): Promise<void>;
   /**
+   * Reads one immutable receipt by id. Idempotency-scoped mutation envelopes
+   * are not directly readable evidence and resolve to null, so an evidence gate
+   * that cannot read a receipt fails closed instead of assuming success.
+   */
+  getReceipt(receiptId: string): Promise<PluginReceipt | null>;
+  /**
    * Establishes the single dispatch authorization point. Implementations must
    * conditionally write the installation in the same transaction that checks
    * admission, provider binding, and credential state, then persist only
