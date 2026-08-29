@@ -142,8 +142,37 @@ function canonicalJson(value: unknown, indentation?: number): string {
   return stringify(canonicalValue(value), null, indentation);
 }
 
+/**
+ * Content address of a catalog.
+ *
+ * Import timestamps are provenance metadata, not content: including them would
+ * make every import of the same pinned commit produce a different digest, and
+ * the pinned digest would be unreachable by construction. They are therefore
+ * stripped from the hashed payload at the top level and per entry, while
+ * remaining in the stored lock.
+ */
+function withoutImportedAt(value: unknown): unknown {
+  if (value === null || typeof value !== "object" || arrayIsArray(value)) return value;
+  const output = Object.create(null) as Record<string, unknown>;
+  const keys = ownKeysOf(value);
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index];
+    if (typeof key !== "string" || key === "importedAt") continue;
+    const descriptor = getOwnPropertyDescriptor(value, key);
+    if (descriptor !== undefined && "value" in descriptor) output[key] = descriptor.value;
+  }
+  return output;
+}
+
 export function pluginCatalogDigest(payload: Omit<PluginCatalogLock, "catalogDigest">): string {
-  return createHash("sha256").update(canonicalJson(payload)).digest("hex");
+  const content = withoutImportedAt(payload) as Record<string, unknown>;
+  const entries = content.entries;
+  if (arrayIsArray(entries)) {
+    const contentEntries: unknown[] = [];
+    for (let index = 0; index < entries.length; index += 1) contentEntries[index] = withoutImportedAt(entries[index]);
+    content.entries = contentEntries;
+  }
+  return createHash("sha256").update(canonicalJson(content)).digest("hex");
 }
 
 export type ComponentBindingProvenance = SourceProvenance;
@@ -182,7 +211,8 @@ export function componentBindingDigest(
       pluginVersion: provenance.pluginVersion,
       manifestDigest: provenance.manifestDigest,
       treeDigest: provenance.treeDigest,
-      importedAt: provenance.importedAt,
+      // importedAt is deliberately absent: a binding is an identity that an
+      // installation pins, so it must survive a re-import of the same commit.
       schemaVersion: provenance.schemaVersion,
       policyVersion: provenance.policyVersion,
     },

@@ -92,6 +92,46 @@ describe("exact plugin catalog lock validation", () => {
     return candidate;
   };
 
+  it("addresses the catalog by content, not by import time", () => {
+    // The pinned digest is only reachable if importing the same commit twice
+    // produces the same digest. Import timestamps are provenance metadata and
+    // must not participate in the content address.
+    const payload = {
+      sourceUrl: "https://github.com/openai/plugins.git", sourceCommit: "1".repeat(40),
+      importedAt: "2026-08-29T09:00:00.000Z", schemaVersion: "rowboat-plugin-schema-v1",
+      policyVersion: "rowboat-plugin-policy-v1", inventory: { plugins: 1 },
+      licenseDeclarations: { MIT: 1 },
+      entries: [{ name: "github", importedAt: "2026-08-29T09:00:00.000Z", licenseDeclaration: "MIT" }],
+    } as unknown as Parameters<typeof pluginCatalogDigest>[0];
+    const later = {
+      ...(payload as unknown as Record<string, unknown>),
+      importedAt: "2026-08-30T18:45:12.913Z",
+      entries: [{ name: "github", importedAt: "2026-08-30T18:45:12.913Z", licenseDeclaration: "MIT" }],
+    } as unknown as Parameters<typeof pluginCatalogDigest>[0];
+    const different = {
+      ...(payload as unknown as Record<string, unknown>),
+      entries: [{ name: "gitlab", importedAt: "2026-08-29T09:00:00.000Z", licenseDeclaration: "MIT" }],
+    } as unknown as Parameters<typeof pluginCatalogDigest>[0];
+
+    expect(pluginCatalogDigest(later)).toBe(pluginCatalogDigest(payload));
+    expect(pluginCatalogDigest(different)).not.toBe(pluginCatalogDigest(payload));
+
+    // The component binding digest is the identity an installation pins, so it
+    // must survive a re-import of the same commit for the same reason.
+    const provenance = {
+      sourceUrl: "https://github.com/openai/plugins.git", sourceCommit: "1".repeat(40),
+      pluginName: "github", pluginVersion: "1.0.0", manifestDigest: "a".repeat(64), treeDigest: "b".repeat(64),
+      importedAt: "2026-08-29T09:00:00.000Z", schemaVersion: "rowboat-plugin-schema-v1", policyVersion: "rowboat-plugin-policy-v1",
+    };
+    const component = { id: "app:.app.json#github", name: "github", kind: "app", status: "available", metadata: { digest: "c".repeat(64) } };
+    const material = { componentAdmission: { status: "admitted", policyVersion: "rowboat-plugin-policy-v1" }, licenseDeclaration: "MIT", licenseAdmission: { status: "admitted", policyVersion: "rowboat-plugin-policy-v1" } };
+    const first = componentBindingDigest(provenance as never, component as never, material as never);
+    const reimported = componentBindingDigest({ ...provenance, importedAt: "2026-09-02T11:22:33.444Z" } as never, component as never, material as never);
+    const otherContent = componentBindingDigest(provenance as never, { ...component, metadata: { digest: "d".repeat(64) } } as never, material as never);
+    expect(reimported).toBe(first);
+    expect(otherContent).not.toBe(first);
+  });
+
   it("rejects fully recomputed mutations instead of trusting self-consistent alternate catalogs", async () => {
     const original = await loadPinnedLock();
     const mutators: Array<(candidate: PluginCatalogLock) => void> = [
@@ -553,7 +593,7 @@ describe("importCatalog", () => {
     })).rejects.toThrow("source_mismatch:plugin_count");
   });
 
-  it("binds required provenance to the catalog digest", async () => {
+  it("binds required provenance to the catalog digest and stays reproducible across imports", async () => {
     const source = await createSource("catalog-digest", [
       { directoryName: "alpha", license: "MIT" },
     ]);
@@ -563,7 +603,20 @@ describe("importCatalog", () => {
       clock: (): Date => new Date("2026-08-25T00:00:00.000Z"),
     });
 
-    expect(later.catalogDigest).not.toBe(first.catalogDigest);
+    // Import time is provenance metadata, not content. Binding it would make
+    // the pinned catalog digest unreachable: no re-import of the pinned commit
+    // could ever reproduce it, and every product path asserting the pin would
+    // fail closed forever.
+    expect(later.catalogDigest).toBe(first.catalogDigest);
+    expect(later.importedAt).not.toBe(first.importedAt);
+    // The provenance that identifies *what* was imported stays bound: a source
+    // URL or commit that differs from the pin is refused by assertPinnedSource
+    // before a digest is ever computed, and differing content changes the
+    // digest (see "addresses the catalog by content, not by import time").
+    await expect(importCatalog(source.pluginsRoot, {
+      ...options(source),
+      sourceUrl: "https://github.com/openai/plugins-mirror.git",
+    })).rejects.toThrow("source_mismatch");
   });
 
   it("writes canonical JSON with a final newline", async () => {
