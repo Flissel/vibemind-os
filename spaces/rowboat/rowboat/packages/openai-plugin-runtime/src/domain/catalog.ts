@@ -4,13 +4,14 @@ import type {
   SourceProvenance,
 } from "./plugin.js";
 import type { AdmissionDecision } from "../policy/license-policy.js";
+import type { ProviderBinding } from "../providers/provider.js";
 
 export const PLUGIN_SCHEMA_VERSION = "rowboat-plugin-schema-v1" as const;
 export const PINNED_OPENAI_PLUGINS_COMMIT =
   "11c74d6ba24d3a6d48f54a194cd00ef3beea18f9" as const;
 export const PINNED_OPENAI_PLUGIN_COUNT = 180 as const;
 export const PINNED_PLUGIN_CATALOG_DIGEST =
-  "209d785ef95cc3b785fe973da869bd780a09917fecb06dbabb36a1a156f35fe8" as const;
+  "e4a4462137b67a5ba69dd6f8a34001ab34fd26126a8731a770c4265536dc7379" as const;
 
 export interface CatalogInventory {
   readonly pluginsWithSkills: number;
@@ -24,6 +25,8 @@ export interface CatalogInventory {
 export interface CatalogComponentMetadata extends PluginMetadata {
   readonly digest: string;
   readonly bindingDigest: string;
+  /** Present only for components a provider can execute: apps and MCP servers. */
+  readonly providerBinding?: ProviderBinding;
 }
 
 export interface CatalogBoundPluginComponent extends Omit<NormalizedPluginComponent, "metadata"> {

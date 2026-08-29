@@ -31,13 +31,18 @@ export interface ProviderDescriptor {
   readonly temporaryAdapter: boolean;
 }
 
-export interface ProviderBinding {
+/**
+ * Declared as a type alias, not an interface: catalog component metadata is an
+ * index-signature type, and only a type alias satisfies it structurally. The
+ * binding is published in the catalog, so it has to fit there.
+ */
+export type ProviderBinding = {
   readonly id: string;
   readonly providerKind: ProviderKind;
   readonly componentDigest: string;
   readonly pairedComponentDigests?: readonly [string, string];
   readonly temporaryAdapter?: true;
-}
+};
 
 export interface PluginProvider {
   readonly id: string;

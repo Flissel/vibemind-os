@@ -1,5 +1,5 @@
 {
-  "catalogDigest": "209d785ef95cc3b785fe973da869bd780a09917fecb06dbabb36a1a156f35fe8",
+  "catalogDigest": "e4a4462137b67a5ba69dd6f8a34001ab34fd26126a8731a770c4265536dc7379",
   "entries": [
     {
       "admission": {
@@ -18,7 +18,12 @@
             "metadata": {
               "bindingDigest": "e5461d911ee3b869576d8c781ab5401cf38f8c4756a1b6b757f3d0e1ab880392",
               "digest": "6e2438dde86e535ea2d7d71678e525c569bd98aeca504e1dfe3e80aa4b610e41",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "e5461d911ee3b869576d8c781ab5401cf38f8c4756a1b6b757f3d0e1ab880392",
+                "id": "app.actively",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "actively",
             "status": "available"
@@ -42,7 +47,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "4098e6781b100b401aa62a99142dd0eed30a99407d966b83221d2a3c0a2a0d94",
       "name": "actively",
@@ -72,7 +77,12 @@
             "metadata": {
               "bindingDigest": "3b0ac7735044b29f3a31cce749fcdb21c5e2e06f2eb6c97ea51c62d3d82742fe",
               "digest": "a41bf5666f9d9e4211c638c7583e834747e9d93fce2b244ca457c4dde61dd1cd",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "3b0ac7735044b29f3a31cce749fcdb21c5e2e06f2eb6c97ea51c62d3d82742fe",
+                "id": "app.aiera",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "aiera",
             "status": "available"
@@ -96,7 +106,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "08eb38c594af0ff30a546c8e434e2a0e9cf3c21cb421ecba0a31a1fa5b8f75b0",
       "name": "aiera",
@@ -205,7 +215,12 @@
             "metadata": {
               "bindingDigest": "1d091f82dc15f2ab3dc5265ecc8d1b6a689a013acdf61b1099995170f9cb4685",
               "digest": "aeeab21255aa2e747415619f66755f23e6d7a1c62cfcb0904bc0cb04abf8a274",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "1d091f82dc15f2ab3dc5265ecc8d1b6a689a013acdf61b1099995170f9cb4685",
+                "id": "app.airtable",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "airtable",
             "status": "available"
@@ -266,7 +281,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "f0570eacb11c3907036265f906c1601007373de994952a69ffa016e5ef93aeff",
       "name": "airtable",
@@ -296,7 +311,12 @@
             "metadata": {
               "bindingDigest": "7560beda156c50a4f0ff10c6db0fd7fb43563aeb4fc8cd294c54e9f11a4568d2",
               "digest": "36543de8f388db809356d84fa1733212ba8dc9f04ca9cd1cb18c67c84c0510ef",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "7560beda156c50a4f0ff10c6db0fd7fb43563aeb4fc8cd294c54e9f11a4568d2",
+                "id": "app.alation",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "alation",
             "status": "available"
@@ -320,7 +340,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "a6e69d12e611a994aca54ae7eac1deeeaa3a471d0409ba15c86f00304caad516",
       "name": "alation",
@@ -350,7 +370,12 @@
             "metadata": {
               "bindingDigest": "7fb5d9d19a7781b64e0805ee274999cbcc111c59011f09af15bbd8720556027f",
               "digest": "fb945ec3d7b0f581a4e3bbf2c2266d674908d768343e5d3b7226b924b32dc500",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "7fb5d9d19a7781b64e0805ee274999cbcc111c59011f09af15bbd8720556027f",
+                "id": "app.alpaca",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "alpaca",
             "status": "available"
@@ -374,7 +399,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "21269f66afdc300eceb19f1bd62f384d40db7d959b83e5ecab8e3ddb6621ece4",
       "name": "alpaca",
@@ -404,7 +429,12 @@
             "metadata": {
               "bindingDigest": "85732bfe0550e6adea1fb18e57651b8581c74de35f111c8bea6518ba29de9af9",
               "digest": "1e64b7238111ee56c5798223d11748e00493baba06ff572b4d7110b81122a168",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "85732bfe0550e6adea1fb18e57651b8581c74de35f111c8bea6518ba29de9af9",
+                "id": "app.amplitude",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "amplitude",
             "status": "available"
@@ -428,7 +458,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "2b4293973695c1ac02ae04b3e7f9aa78fc991207c8d751e6348279ba3c329c13",
       "name": "amplitude",
@@ -458,7 +488,12 @@
             "metadata": {
               "bindingDigest": "b2119c0c2cbfdda7771b0d13b078ba521f42ae8acb90c4bcfce58b2f89d751c8",
               "digest": "e6c80210f5be8203cbed9a3bb255131ee3e68cce5fdf4adba2dde10cd262ea7e",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "b2119c0c2cbfdda7771b0d13b078ba521f42ae8acb90c4bcfce58b2f89d751c8",
+                "id": "app.apollo",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "apollo",
             "status": "available"
@@ -482,7 +517,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "f314e08ac40d15200f6ded40dba3b576b307ea470d79fe578f72328499035eb2",
       "name": "apollo",
@@ -513,7 +548,12 @@
             "metadata": {
               "bindingDigest": "03f7ed5b5ffa98b75664f1422b3c11c09b8d1c1fe91a8380c595025418945fa8",
               "digest": "817b2b36c414b227d71c193422399c0decd109ab7307f1692dd87e9953060ea1",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "03f7ed5b5ffa98b75664f1422b3c11c09b8d1c1fe91a8380c595025418945fa8",
+                "id": "app.asana",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "asana",
             "status": "available"
@@ -538,7 +578,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "f01709bf4a26b1980a3ed63c6a11a7f014608d886fe0b121ca7bc8598722cae5",
       "name": "asana",
@@ -685,7 +725,12 @@
             "metadata": {
               "bindingDigest": "295fa4861d5b9505375c557026678a3590f0738fc04b3bfa037c05afe9170c61",
               "digest": "5418ad32bcc91e05820ca1dbf080fb4f1a589df1fd612cd6db5f96b6efce0722",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "295fa4861d5b9505375c557026678a3590f0738fc04b3bfa037c05afe9170c61",
+                "id": "app.atlassian-rovo",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "atlassian-rovo",
             "status": "available"
@@ -746,7 +791,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "4434ae18e7c8227eea19aca2fde521c0554738b4746f62de4e6152389b373d1c",
       "name": "atlassian-rovo",
@@ -776,7 +821,12 @@
             "metadata": {
               "bindingDigest": "359a00bad302bb2a1c4fdd872ef0a7f1fef5c8bfbcb111a2e48a75c4ea4f5e67",
               "digest": "7e697b081e778498a3eb520482558d51e899e3b21ef5cb1c2a82011c6c3d0174",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "359a00bad302bb2a1c4fdd872ef0a7f1fef5c8bfbcb111a2e48a75c4ea4f5e67",
+                "id": "app.attio",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "attio",
             "status": "available"
@@ -800,7 +850,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "adc9ba232624beb766308b31862f350e407cb5497f2e15d3979e39d1f7de675d",
       "name": "attio",
@@ -888,7 +938,12 @@
             "metadata": {
               "bindingDigest": "d837e9d6a97cf8434e595aa4c8aa2bc41922516b650245fe704b42d1389c0f12",
               "digest": "80fa4b22967977df149a45b6466935ec11ac05f06741faaebcaa006979e88de3",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "d837e9d6a97cf8434e595aa4c8aa2bc41922516b650245fe704b42d1389c0f12",
+                "id": "app.base44",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "base44",
             "status": "available"
@@ -913,7 +968,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "3adc6717fb207fddf21f36eea5cce016de70104e62cb9c498a05a54161557d40",
       "name": "base44",
@@ -943,7 +998,12 @@
             "metadata": {
               "bindingDigest": "15a44bc52d1e4564c5199a848862db8a368e862530f65d886ad0e3260bdf25be",
               "digest": "9af96b888d10d355793841e40ce9caa1d595d60c046197e6c4fec541fd68ee97",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "15a44bc52d1e4564c5199a848862db8a368e862530f65d886ad0e3260bdf25be",
+                "id": "app.binance",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "binance",
             "status": "available"
@@ -967,7 +1027,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "4ec2a0a0037103d0bbca4bda17f9d414ac7ac82053d417863bd4b54e5301d812",
       "name": "binance",
@@ -997,7 +1057,12 @@
             "metadata": {
               "bindingDigest": "a4c1bba66cf03bfde341fff5493df243bfc1432a5d0244249461f78b455f207f",
               "digest": "06c96123d6c40cda1b625c6478d82d5746823df301645dff5441c7fe1cf35c00",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "a4c1bba66cf03bfde341fff5493df243bfc1432a5d0244249461f78b455f207f",
+                "id": "app.biorender",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "biorender",
             "status": "available"
@@ -1021,7 +1086,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "e0a9fe6410962648ff9db713c8fb1b72abdc3032b4695bfe924c2f906dbbd364",
       "name": "biorender",
@@ -1211,7 +1276,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "8a93f2590d1054c503b7538ad8b237eddac9723c012adc7848e50cfa0bd29b5b",
       "name": "boltz-api-cli",
@@ -1259,7 +1324,12 @@
             "metadata": {
               "bindingDigest": "8eb55721ed4527732c28d336e5068cd2f1bb0e5c31a3f74a6e21211ed8c6533c",
               "digest": "36437dc2a6b02adf798194d67e14b9070cd0c6f2e343818b940d709bfeb513fe",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "8eb55721ed4527732c28d336e5068cd2f1bb0e5c31a3f74a6e21211ed8c6533c",
+                "id": "app.box",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "box",
             "status": "available"
@@ -1283,7 +1353,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "c5fc1af01e9df2a0464bfb3bed265f64fdf684774b6e6be30a92727bca42bfce",
       "name": "box",
@@ -1313,7 +1383,12 @@
             "metadata": {
               "bindingDigest": "d06426a1830b4f47e75d6328be175bd764c5b23bcec2b6d500b37b6d5a9c3328",
               "digest": "bb2ef383c689363eaceba9add1334dc4e6e0b37169c23db7dc574c4ad196037d",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "d06426a1830b4f47e75d6328be175bd764c5b23bcec2b6d500b37b6d5a9c3328",
+                "id": "app.brand24",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "brand24",
             "status": "available"
@@ -1354,7 +1429,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "5317fc4aead9a6d2c85006989b8cd94d2bc8a313d310487944cf00f359077ef7",
       "name": "brand24",
@@ -1384,7 +1459,12 @@
             "metadata": {
               "bindingDigest": "f932b0022078c75f75236c91580922af7f09a88ab6846af4acab525ca40fb919",
               "digest": "4dca7f62b69457b4ec3fbcde759ed84fc0b7d8144ba654828163bacf184529b6",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "f932b0022078c75f75236c91580922af7f09a88ab6846af4acab525ca40fb919",
+                "id": "app.brex",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "brex",
             "status": "available"
@@ -1425,7 +1505,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "62a717b45239c3314288d06f7f1e927f791bbdc96dd036b8262524b28ee5646e",
       "name": "brex",
@@ -1473,7 +1553,12 @@
             "metadata": {
               "bindingDigest": "42c28a2ded18dabfbbfeb8d47d2eb5c0a6f544817d40e113925263b4f20ad435",
               "digest": "b256c3b998830f8a1bd4ccc98bc7ef9aa688fad3663d886df67813637a7a1563",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "42c28a2ded18dabfbbfeb8d47d2eb5c0a6f544817d40e113925263b4f20ad435",
+                "id": "app.brighthire",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "brighthire",
             "status": "available"
@@ -1514,7 +1599,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "d00415ba229fee7a45968c714d62ab3ed1762b2d672e97a5d48595060dc6e8a4",
       "name": "brighthire",
@@ -1738,6 +1823,11 @@
               "bindingDigest": "e85f19abbe1b997e5525b667d1946a57eccc29013c349052943433420bc528a5",
               "digest": "b30b21b5905e5cad5ad188aad2c3b69d5768853b07d475d861d5fb742e8b016b",
               "path": ".mcp.json",
+              "providerBinding": {
+                "componentDigest": "e85f19abbe1b997e5525b667d1946a57eccc29013c349052943433420bc528a5",
+                "id": "mcp.xcodebuildmcp",
+                "providerKind": "mcp-process"
+              },
               "transport": "process"
             },
             "name": "xcodebuildmcp",
@@ -1781,7 +1871,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "86d4a225cb929ab68f00f6258a75daffb02122dd34875dabd349c3474dc35908",
       "name": "build-ios-apps",
@@ -2130,7 +2220,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "d8d9c85281df68af2a2012ab6365b2789a573bd399692dacc4b2d5bfd06c0450",
       "name": "build-macos-apps",
@@ -2321,7 +2411,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "7bc0085538adf72c31b5c2b42410fe699e6fe15e382fdc309cfd973c4c5db9a0",
       "name": "build-web-apps",
@@ -2740,7 +2830,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "fa1f5586afcfdfa8fa58d249fe852efd8103057d30f6c5d4009ce90e83b225a9",
       "name": "build-web-data-visualization",
@@ -2770,7 +2860,12 @@
             "metadata": {
               "bindingDigest": "5f16d17f619e840c1e4e024968a530d8af144204ce730efa1b352a443c683b43",
               "digest": "ffd155fce22126c92acca6303e4d7d2bf179ae2ee7463758d49f0de8bdfe8844",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "5f16d17f619e840c1e4e024968a530d8af144204ce730efa1b352a443c683b43",
+                "id": "app.calendly",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "calendly",
             "status": "available"
@@ -2794,7 +2889,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "499bfd1c5c54d03f73436e9e65b9d02b1bed5fc51ec7d954d647296e58e64ec1",
       "name": "calendly",
@@ -2878,7 +2973,12 @@
             "metadata": {
               "bindingDigest": "b0bed21fcbddc23af2bd6ed90f303e76ecc607a5949bb92d069bf67639cdf726",
               "digest": "5aa5aeceae73181a7ef19cb25fc8be7476c00b6a7b178cc12048893b3dc46c24",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "b0bed21fcbddc23af2bd6ed90f303e76ecc607a5949bb92d069bf67639cdf726",
+                "id": "app.canva",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "canva",
             "status": "available"
@@ -2902,7 +3002,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "95ec4b2286a6580374a2481639dd51a344da300d88fa8c74ef218c57c47933bb",
       "name": "canva",
@@ -2932,7 +3032,12 @@
             "metadata": {
               "bindingDigest": "31c90a76734c1ebabcfd15dbb31cd85703f415170184e1292fd987b98778e177",
               "digest": "d6a6c1e49c0468fbf4819af882d419cf4827ebf0a56e78dbde53db7e1d151678",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "31c90a76734c1ebabcfd15dbb31cd85703f415170184e1292fd987b98778e177",
+                "id": "app.carta-crm",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "carta-crm",
             "status": "available"
@@ -2973,7 +3078,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "ea7f25859493a0200636e35b0d3a79cedf391d45c09b4d1597da781d738f6ae4",
       "name": "carta-crm",
@@ -3023,7 +3128,12 @@
             "metadata": {
               "bindingDigest": "79d3ce17ac42f6cfde3d6791dc6b05fd062ccddd6ce8edd22175f65408fbe5e5",
               "digest": "dd73fe18e2c1e6330bd5bb4d340f30f49f2dfe5a6fb3d96d483a01d649dc88eb",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "79d3ce17ac42f6cfde3d6791dc6b05fd062ccddd6ce8edd22175f65408fbe5e5",
+                "id": "app.catalyst-by-zoho",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "catalyst-by-zoho",
             "status": "available"
@@ -3048,7 +3158,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "110cb39712292d114e332d1f25467eb9ed302caf919a8800f0b10ff8793387c2",
       "name": "catalyst-by-zoho",
@@ -3078,7 +3188,12 @@
             "metadata": {
               "bindingDigest": "01b56f44de47070873430746c13477247d4abd9a2d8e85b1c7f2c1371f7e51b8",
               "digest": "cc2016747842f7f7177b48f5e9724a8f5d904a04db0efbc857a522add7f66c45",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "01b56f44de47070873430746c13477247d4abd9a2d8e85b1c7f2c1371f7e51b8",
+                "id": "app.cb-insights",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "cb-insights",
             "status": "available"
@@ -3102,7 +3217,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "1436aaa6c194997d77ac4c5cbfafae0beca74f6738486c4096aca8c9cb1d4d8e",
       "name": "cb-insights",
@@ -3132,7 +3247,12 @@
             "metadata": {
               "bindingDigest": "91fb5092efc751e52d37a706a71ac0a7249318ab49b44efcdccd2530d2169c6b",
               "digest": "09a1775fa43352f89c6a2f0427cbdf73ab51400c7254bf0ad22ec9c58fcfa0ac",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "91fb5092efc751e52d37a706a71ac0a7249318ab49b44efcdccd2530d2169c6b",
+                "id": "app.channel99",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "channel99",
             "status": "available"
@@ -3173,7 +3293,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "826a697108aefd0200f82e6a9b6e19ff0630367bb142d956d4db79ac453171e8",
       "name": "channel99",
@@ -3221,7 +3341,12 @@
             "metadata": {
               "bindingDigest": "212797c186a27f49f035b908b21905f260faa04964feda163c11d08c1a91b6b7",
               "digest": "9374034001a3e2aacf514f4ccb3d8e9fba25f0f653c841af01056b41cc11e2fd",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "212797c186a27f49f035b908b21905f260faa04964feda163c11d08c1a91b6b7",
+                "id": "app.chronograph-gp",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "chronograph-gp",
             "status": "available"
@@ -3245,7 +3370,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "5d1e3b881bac0a9469ddccc8c3390043e491b982665f84d5d2b3f2f99238841b",
       "name": "chronograph-gp",
@@ -3329,7 +3454,12 @@
             "metadata": {
               "bindingDigest": "21381c394823afc63732b8ef4aba89bc14b8220b5f18560607c1e55959ab1b34",
               "digest": "1fbc0b2c098846526edf9e243b4a9e8c96e3725c55ca610c1b4708f72d44328d",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "21381c394823afc63732b8ef4aba89bc14b8220b5f18560607c1e55959ab1b34",
+                "id": "app.chronograph-lp",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "chronograph-lp",
             "status": "available"
@@ -3353,7 +3483,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "ba11b3fd9a2142968f01172cc646c68326fc0f57429d30fe26b4b955dfb4fc5f",
       "name": "chronograph-lp",
@@ -3383,7 +3513,12 @@
             "metadata": {
               "bindingDigest": "bdd6c02d42701e93bbb72407c3b2ee2a4501caf06e7dd386b4904c71c9c4c1c8",
               "digest": "cb37e8b7bddd3f665c4a89165494a77c7fb5d6515764dd78184e53ead64add60",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "bdd6c02d42701e93bbb72407c3b2ee2a4501caf06e7dd386b4904c71c9c4c1c8",
+                "id": "app.circleback",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "circleback",
             "status": "available"
@@ -3407,7 +3542,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "17ef31bebd59cb13d24f17d8131d1f4cbde68fb4a090a23ddb3409f4b9ecf904",
       "name": "circleback",
@@ -3557,7 +3692,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "59b9e88011f6d20ebe1f90873c0774185e0d145755fdca6838fe0c2700e2f0af",
       "name": "circleci",
@@ -3587,7 +3722,12 @@
             "metadata": {
               "bindingDigest": "4838a104a11417aea484b734af876243af8100a97d32d92cd05322fd20b4adf9",
               "digest": "3a61b15b9513eee27732c430d9ffa41d8be028ab3dcf8bae649f406b4861ab1a",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "4838a104a11417aea484b734af876243af8100a97d32d92cd05322fd20b4adf9",
+                "id": "app.clay",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "clay",
             "status": "available"
@@ -3611,7 +3751,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "0b281bf6056cd8f6c3bae73aa8ee1a3539a6372526e42ba789fdfd5cc3cf4110",
       "name": "clay",
@@ -3641,7 +3781,12 @@
             "metadata": {
               "bindingDigest": "2586c5063d94763ce695a7fc359a73f7f335b21521d232a37c614970bb5b5e49",
               "digest": "dc5832b1c90a99c48bd0ca121c461d66c8029713d213c92d7c8f184d9ff8ef9c",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "2586c5063d94763ce695a7fc359a73f7f335b21521d232a37c614970bb5b5e49",
+                "id": "app.clickup",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "clickup",
             "status": "available"
@@ -3665,7 +3810,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "170a4beb7fd56604c9f552919d512a3080a37852e00602ef56d1134cb3e3ff6f",
       "name": "clickup",
@@ -3695,7 +3840,12 @@
             "metadata": {
               "bindingDigest": "f369dcd6d3625a7605cfa82da0683ad5fe42143e181618ea46808aec6ae32cdb",
               "digest": "1acb390a5df039a2ff94bb0d244639fa1a959aa1b40a2a9f69082f2eb9758098",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "f369dcd6d3625a7605cfa82da0683ad5fe42143e181618ea46808aec6ae32cdb",
+                "id": "app.close",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "close",
             "status": "available"
@@ -3736,7 +3886,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "707f350ed69a0ead2e8e2cff99d2e0d25841e5d7a97ee8a5d4b8c30f3cc14ae7",
       "name": "close",
@@ -3980,6 +4130,11 @@
               "bindingDigest": "7fe29ffda3b593c3702bae2a2aa9fbaf82dfdf200086d0aed676ce57193b4aed",
               "digest": "0abb3ebd07232f7a9fba4636c6b85ff3b30edae7e2053b7389678eab198b8ad6",
               "path": ".mcp.json",
+              "providerBinding": {
+                "componentDigest": "7fe29ffda3b593c3702bae2a2aa9fbaf82dfdf200086d0aed676ce57193b4aed",
+                "id": "mcp.cloudflare-api",
+                "providerKind": "mcp-http"
+              },
               "transport": "http"
             },
             "name": "cloudflare-api",
@@ -4023,7 +4178,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "790ac166fa1f509f440e66d35c010e1cfb34d773726eb3a30a6a7553dacaf59a",
       "name": "cloudflare",
@@ -4053,7 +4208,12 @@
             "metadata": {
               "bindingDigest": "4c2b9bd09bcef135a0431455232f424fcb2a3b7e3ba608837cc0ab6e7c4a252d",
               "digest": "ff230f80e70214413c28702969eb9845e165fe53361ab693fca65415a0edd7a5",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "4c2b9bd09bcef135a0431455232f424fcb2a3b7e3ba608837cc0ab6e7c4a252d",
+                "id": "app.cloudinary",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "cloudinary",
             "status": "available"
@@ -4077,7 +4237,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "d292c663319c2fdb703c30f6112f489d2a07ed3ac366a9004bea5f8fd4d694a0",
       "name": "cloudinary",
@@ -4170,7 +4330,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "e6786459333514cbc10814ebae72fff96cf19ed91d58eac4dba082d36c262f7a",
       "name": "coderabbit",
@@ -4431,6 +4591,11 @@
               "bindingDigest": "6cc88a3b4081b53c1bcb2b6afec297115b3f3e3e9df8925e0b40315f654bd971",
               "digest": "f418d55826f13c3810c44ea631cb3d6ed66a719136f847c99143141ce7f459b5",
               "path": ".mcp.json",
+              "providerBinding": {
+                "componentDigest": "6cc88a3b4081b53c1bcb2b6afec297115b3f3e3e9df8925e0b40315f654bd971",
+                "id": "mcp.codex-security",
+                "providerKind": "mcp-process"
+              },
               "transport": "process"
             },
             "name": "codex-security",
@@ -4449,7 +4614,12 @@
             "metadata": {
               "bindingDigest": "12755c70f477442132a4926b3bb6d5ac37ba0034e7eaa7fd8bba80db9d3865f4",
               "digest": "a304a3490285c7916caedb34336e343ff32aba1d6af110b5aae52da5d512d52e",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "12755c70f477442132a4926b3bb6d5ac37ba0034e7eaa7fd8bba80db9d3865f4",
+                "id": "app.atlassian",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "atlassian",
             "status": "available"
@@ -4467,7 +4637,12 @@
             "metadata": {
               "bindingDigest": "7c6c28bfbba68b0ecafd9a65d07f6ceba6cca5e9740ad69eedd932c40344502e",
               "digest": "8d8967f2917a48d33d8c482e0a2a0b3039ea2ef5966ad95607394bf88579c790",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "7c6c28bfbba68b0ecafd9a65d07f6ceba6cca5e9740ad69eedd932c40344502e",
+                "id": "app.github",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "github",
             "status": "available"
@@ -4485,7 +4660,12 @@
             "metadata": {
               "bindingDigest": "2562040168994dafb90fed5c806e221028acfea5a0ef635fd94858f5724988dc",
               "digest": "ceab562fd0090934681afe7f2a24baa96eca96d0cd28885aa08451590cd2e305",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "2562040168994dafb90fed5c806e221028acfea5a0ef635fd94858f5724988dc",
+                "id": "app.linear",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "linear",
             "status": "available"
@@ -4510,7 +4690,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "Proprietary",
       "manifestDigest": "5a6725b219c0ffa434d9bedc92293544fc3ef5781809b3bdb3be1a591ea39906",
       "name": "codex-security",
@@ -4539,7 +4719,12 @@
             "metadata": {
               "bindingDigest": "67405fb1edc69d18607a5b0fc4ac98bc84cea79cae5d46fd87cbaa90f9032dc9",
               "digest": "2fdb416facd382f991d5eb5c56226c7c7e54d26bd80ba37def456f06f6487b4c",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "67405fb1edc69d18607a5b0fc4ac98bc84cea79cae5d46fd87cbaa90f9032dc9",
+                "id": "app.cogedim",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "cogedim",
             "status": "available"
@@ -4580,7 +4765,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "b224bf01f259c0e23aa69a82774f469b555d7ac58373a82cf3de0499d7f9e830",
       "name": "cogedim",
@@ -4610,7 +4795,12 @@
             "metadata": {
               "bindingDigest": "47acab1104dcb286bf16875ff7a2254dc3554b8192c71701540551a33b2dd971",
               "digest": "5fbcdddbf36664dce5fe70ed68a7edc373912aaf32d6fcc4423db0f432efb3fc",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "47acab1104dcb286bf16875ff7a2254dc3554b8192c71701540551a33b2dd971",
+                "id": "app.common-room",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "common-room",
             "status": "available"
@@ -4634,7 +4824,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "cb57b7d6dea3b776263a83d6e0c515e4a7a403d1944236badc2fa107cab86fcf",
       "name": "common-room",
@@ -4664,7 +4854,12 @@
             "metadata": {
               "bindingDigest": "d281ae04118d5e4acf05f63f333c6ba55d428d3cd05d3ee0b4b51ed42c2d044a",
               "digest": "74fd2f780e175b3ce99dcb21300324865d98cf399969387fe81c48106970ac69",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "d281ae04118d5e4acf05f63f333c6ba55d428d3cd05d3ee0b4b51ed42c2d044a",
+                "id": "app.conductor",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "conductor",
             "status": "available"
@@ -4688,7 +4883,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "db95e15bdc7f64abf91dfedf620b1eb65512b15be6c4930ab7cd433f44bcde1b",
       "name": "conductor",
@@ -4720,7 +4915,12 @@
             "metadata": {
               "bindingDigest": "15b3018ec56c77a575944d47a0a7afec7782bc5589c30e4c4d0803f6280112eb",
               "digest": "698028b3ef46335a20f2e8c5cc3e493d113b9e6b8d07c0f9d93d391931c42d9d",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "15b3018ec56c77a575944d47a0a7afec7782bc5589c30e4c4d0803f6280112eb",
+                "id": "app.convex",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "convex",
             "status": "available"
@@ -4763,7 +4963,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "UNLICENSED",
       "manifestDigest": "4f9649d91d20b457002261225e30c2b1fe1e0291f3d07468192b703062746b15",
       "name": "convex",
@@ -4792,7 +4992,12 @@
             "metadata": {
               "bindingDigest": "1a1963dadb3b1ee0bd448300232f890f9f217340999a6c887e090bb71b07ede8",
               "digest": "d89f574e85c23d408dbb0c7887062522e92abdb2dc06d588637b849db42db05f",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "1a1963dadb3b1ee0bd448300232f890f9f217340999a6c887e090bb71b07ede8",
+                "id": "app.coupler-io",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "coupler-io",
             "status": "available"
@@ -4816,7 +5021,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "aedc598e10169badb404fb9f4fe7cf681bea15d7201c04e3bdd5d1cc7cf36bd9",
       "name": "coupler-io",
@@ -4846,7 +5051,12 @@
             "metadata": {
               "bindingDigest": "4571127640906bc1a6096f9aa6114736e57947f9303d951c69cfd66a2f38ef52",
               "digest": "f6f012f99578768dc4e57623a7f95263441a8a32c9150dfed410592a9c7bfffe",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "4571127640906bc1a6096f9aa6114736e57947f9303d951c69cfd66a2f38ef52",
+                "id": "app.coveo",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "coveo",
             "status": "available"
@@ -4870,7 +5080,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "7c08ccf607dd089720b52ef7c291f529cc97d5a8a89f05107bc8bc81c03e0a0f",
       "name": "coveo",
@@ -4900,7 +5110,12 @@
             "metadata": {
               "bindingDigest": "266d3c8cc28fb74b89b4dacb035501a5e9d51d552c9cb9eda65861acf158b09c",
               "digest": "307b7aa784261096df273689862dfc6b5c2a2595ebbd799789ded4350533a6c9",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "266d3c8cc28fb74b89b4dacb035501a5e9d51d552c9cb9eda65861acf158b09c",
+                "id": "app.cube",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "cube",
             "status": "available"
@@ -4941,7 +5156,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "fd027209ecf7982fdbc4366da2e241960a941a6623dfc950e157bff0470445ad",
       "name": "cube",
@@ -5349,7 +5564,12 @@
             "metadata": {
               "bindingDigest": "afab921ce0f84a1ee0a76f4f667ff92588ab5a14fd14378e3e9af84b9209cc5b",
               "digest": "449de92e2b2e2c8cc4e6d4689046a30e53b8073be3b0a16d9ef44b16bead28f7",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "afab921ce0f84a1ee0a76f4f667ff92588ab5a14fd14378e3e9af84b9209cc5b",
+                "id": "app.daloopa",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "daloopa",
             "status": "available"
@@ -5373,7 +5593,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "Apache-2.0",
       "manifestDigest": "94b183743bfe7380b7ae6891c025284c8c1ac771c0077942c6829fcd30cabafa",
       "name": "daloopa",
@@ -5403,7 +5623,12 @@
             "metadata": {
               "bindingDigest": "4c6d9bd1b6b471861914861bc059fab80b98abc9c8bbccab754e34c1cafffa98",
               "digest": "7a4b73b776ae23ab8fdcab12545b791098b6031998e4d4faf11fe9564e07ab74",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "4c6d9bd1b6b471861914861bc059fab80b98abc9c8bbccab754e34c1cafffa98",
+                "id": "app.datadog",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "datadog",
             "status": "available"
@@ -5427,7 +5652,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "Apache-2.0",
       "manifestDigest": "aca4be7069ba9a088c35380c8c742315456c30f6511cfb61b44ce055793f1451",
       "name": "datadog",
@@ -5601,7 +5826,12 @@
             "metadata": {
               "bindingDigest": "7f8a119273e39b9487d2a42b4809ae9ed980c7d3e9c18982df1c7133347f6db3",
               "digest": "607e9e41b655ef6bb4d78beedcc895d0d2e675f119666a315025819ae2191a5f",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "7f8a119273e39b9487d2a42b4809ae9ed980c7d3e9c18982df1c7133347f6db3",
+                "id": "app.datasite",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "datasite",
             "status": "available"
@@ -5625,7 +5855,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "35295240f97d359d99eff71ac7809aa79f00cdf23912f0a694d54e84c600602c",
       "name": "datasite",
@@ -5751,7 +5981,12 @@
             "metadata": {
               "bindingDigest": "e134666a5e23d4a8b605167dca5f4642aca93bae658a7966cbe3b3ce56e15226",
               "digest": "f039545acda0212a89d3b94e318cbe14fb0db2bd3a90d61dcb56ac9795cc5f66",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "e134666a5e23d4a8b605167dca5f4642aca93bae658a7966cbe3b3ce56e15226",
+                "id": "app.deepnote",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "deepnote",
             "status": "available"
@@ -5812,7 +6047,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "Apache-2.0",
       "manifestDigest": "c531bd2917f2413dfe74ff176cc593db1042cde48a677f3ef7716a247b109c57",
       "name": "deepnote",
@@ -5842,7 +6077,12 @@
             "metadata": {
               "bindingDigest": "0e1d1940ad4f9b603529a1085409127b87ad7193f351e9668001ed83cd97ef6b",
               "digest": "c7bc15f270b5f0ad309c0682b279404ed6cdd22bf85a1432efb7248e37f658fb",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "0e1d1940ad4f9b603529a1085409127b87ad7193f351e9668001ed83cd97ef6b",
+                "id": "app.demandbase",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "demandbase",
             "status": "available"
@@ -5883,7 +6123,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "8a18d04d6b91d07e05e615311af66da4e23e1c41fd2b9653e514e4f6fde9c3a3",
       "name": "demandbase",
@@ -5934,7 +6174,12 @@
             "metadata": {
               "bindingDigest": "e3975eca2b275fa8a2da3bd9e1b85673722bc4fd88b764399c358798e7d92058",
               "digest": "5284ff26edddb62a847bf114fa57e94b17c2767d73952dd3595222535c4f2de5",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "e3975eca2b275fa8a2da3bd9e1b85673722bc4fd88b764399c358798e7d92058",
+                "id": "app.digitalocean",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "digitalocean",
             "status": "available"
@@ -5977,7 +6222,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "<missing>",
       "manifestDigest": "04940502db032e3717546fc826b6f3363d78f6b9e6e67d59b2e781ccc0f13c1a",
       "name": "digitalocean",
@@ -6024,7 +6269,12 @@
             "metadata": {
               "bindingDigest": "e24804f35dce82f414a1fc226fb42b108a29356087a35ff611b9f1dadae893e7",
               "digest": "44c0eb097be4126eb259c8c26a4142f1ecaa11e885fb95e12d4c44c519052712",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "e24804f35dce82f414a1fc226fb42b108a29356087a35ff611b9f1dadae893e7",
+                "id": "app.dnb-finance-analytics",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "dnb-finance-analytics",
             "status": "available"
@@ -6048,7 +6298,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "6c492a88f2e8f1d175d69ce5eb007104c3a51d7960f44e38e8061d00d3e38ba0",
       "name": "dnb-finance-analytics",
@@ -6078,7 +6328,12 @@
             "metadata": {
               "bindingDigest": "5d642f67c29b095c12a2604be0ff7dc53f83a12c9a04601e12c08f8cd0a6fb7f",
               "digest": "c09b506cb6f5df245966cd90f460eddc6ce70fee4cc3056080bab95753a0488b",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "5d642f67c29b095c12a2604be0ff7dc53f83a12c9a04601e12c08f8cd0a6fb7f",
+                "id": "app.docket",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "docket",
             "status": "available"
@@ -6119,7 +6374,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "2732000728a9690d1e5db3c54bda94afb8641e025056186fc2aad91a8e7004cc",
       "name": "docket",
@@ -6149,7 +6404,12 @@
             "metadata": {
               "bindingDigest": "45033dccd0c3ac6317a4475edb1289343f2a331611c6c24f00ea8a3b124dd4c2",
               "digest": "4f5ddff6b3a40e1e966ff24f2c41226033b2b06f1bb788429e3b8256a99d8a27",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "45033dccd0c3ac6317a4475edb1289343f2a331611c6c24f00ea8a3b124dd4c2",
+                "id": "app.docusign",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "docusign",
             "status": "available"
@@ -6190,7 +6450,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "970614d45e1ab15ada0759c9c181ded46e464b31d75618823ab8ee4787c4b335",
       "name": "docusign",
@@ -6220,7 +6480,12 @@
             "metadata": {
               "bindingDigest": "dae0c77a944a104fee224a4d18c902ec4bafbe9e84517f2b78c925578c999e79",
               "digest": "b5fdcc3227f426c4bbd003b60bb8e4c8ad48d538ab174dd1f9cfb64227cc5381",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "dae0c77a944a104fee224a4d18c902ec4bafbe9e84517f2b78c925578c999e79",
+                "id": "app.domotz-preview",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "domotz-preview",
             "status": "available"
@@ -6244,7 +6509,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "2eb31b6a746a27583f3a24bd87e521d84964adf06e53554dad56c64fe569f637",
       "name": "domotz-preview",
@@ -6274,7 +6539,12 @@
             "metadata": {
               "bindingDigest": "ec998536cc76c848f7f6254a86bf6340be7f0110d40614e57aadbf7ddfa25826",
               "digest": "ed5b34c8df6b839edf60085e4d64aa153c1a7489141a0168fa301a5f9a60fe7d",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "ec998536cc76c848f7f6254a86bf6340be7f0110d40614e57aadbf7ddfa25826",
+                "id": "app.dovetail",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "dovetail",
             "status": "available"
@@ -6315,7 +6585,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "46d4e25ffeca5ebbe88481459f9fa67d705f20227a6c26734a87bf818da78610",
       "name": "dovetail",
@@ -6345,7 +6615,12 @@
             "metadata": {
               "bindingDigest": "ad5cb9ce813aa1337e85beaa6fdd9396506ce66d5792e930c31abda5cd9508c6",
               "digest": "2d116346c5ab831366c72a0a24f560269273800a3eb82e1c2e4c0efebc538fe4",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "ad5cb9ce813aa1337e85beaa6fdd9396506ce66d5792e930c31abda5cd9508c6",
+                "id": "app.dow-jones-factiva",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "dow-jones-factiva",
             "status": "available"
@@ -6369,7 +6644,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "999868cb2abb9c8a18a2ff192ddea2c29304e6d25bbd204c4fc4699118c92be5",
       "name": "dow-jones-factiva",
@@ -6399,7 +6674,12 @@
             "metadata": {
               "bindingDigest": "a6fc9dbe96cfa333292b5ec9888f4a1b9e73abbb39cc175445f8bc13dcaa489f",
               "digest": "06ac40cb0ab87a7c559e18185787be3be735fe31e84c1d61329a4f20085fa243",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "a6fc9dbe96cfa333292b5ec9888f4a1b9e73abbb39cc175445f8bc13dcaa489f",
+                "id": "app.egnyte",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "egnyte",
             "status": "available"
@@ -6423,7 +6703,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "50e56fbde2ea6d305b2a7963cba9b926db7e72119b941a0dbddd64814d61b7f6",
       "name": "egnyte",
@@ -6750,7 +7030,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "a6e33e1afc271f069d7b24c92384a068dc7e778faf4f3e7ce8d9bf23cca59824",
       "name": "expo",
@@ -6780,7 +7060,12 @@
             "metadata": {
               "bindingDigest": "fe54b6cb0cb4673c7c7431cb6830a1b24ab35406da2fff3a4a355ef7f7acc70a",
               "digest": "92b9d1a5172563b1d0742ceabda868fa8573741639249ea27b9fbe9b723896bf",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "fe54b6cb0cb4673c7c7431cb6830a1b24ab35406da2fff3a4a355ef7f7acc70a",
+                "id": "app.factset",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "factset",
             "status": "available"
@@ -6804,7 +7089,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "87982e3634eecea9041b862451dec5cc4b64325722943c711f7cbb2c600fcd17",
       "name": "factset",
@@ -6834,7 +7119,12 @@
             "metadata": {
               "bindingDigest": "577cc3b67be16a35aed89e9a167cb7bb4a9873638ede53b2e71081f8c5c1a04e",
               "digest": "7fa5a3306c5d778cce702d3b150c6e5c504bb7e3405ef659a0fe7c8beaa7772d",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "577cc3b67be16a35aed89e9a167cb7bb4a9873638ede53b2e71081f8c5c1a04e",
+                "id": "app.fal",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "fal",
             "status": "available"
@@ -6858,7 +7148,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "be43131c150f5c3b3eb068142322aaf34f94f37beb251f3429df873d8889bb8c",
       "name": "fal",
@@ -7308,6 +7598,11 @@
               "bindingDigest": "fe19784c4eada585c30df92654f2ab410d5afae992ee9189534338cc3806ac45",
               "digest": "2bf3ebed3807352be5c64f607e35f4cccf6be1185efd61f2736624c3cba331ba",
               "path": ".mcp.json",
+              "providerBinding": {
+                "componentDigest": "fe19784c4eada585c30df92654f2ab410d5afae992ee9189534338cc3806ac45",
+                "id": "mcp.figma",
+                "providerKind": "mcp-http"
+              },
               "transport": "http"
             },
             "name": "figma",
@@ -7326,7 +7621,12 @@
             "metadata": {
               "bindingDigest": "b64a4a180dde059fd5d0861bb577f05a31c572bcc06a73ca1a95794784867ed3",
               "digest": "7b3f034a6e5c5c0414a8790570f91bddfc24a348ae177aa050010a634e96257f",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "b64a4a180dde059fd5d0861bb577f05a31c572bcc06a73ca1a95794784867ed3",
+                "id": "app.figma",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "figma",
             "status": "available"
@@ -7369,7 +7669,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "LicenseRef-Figma-Developer-Terms",
       "manifestDigest": "8265b2cf2ef141c2260bbe7ecbcd1e9622db8b6b294e6a63cf24ad6ac45c14e7",
       "name": "figma",
@@ -7398,7 +7698,12 @@
             "metadata": {
               "bindingDigest": "ad4cec540bfe78f0d1da506e14885a2d46ff65d27644d8aad0a74c58acc5cda2",
               "digest": "dda128ec5994c07125e94fdb07ca2ac77d3a87e880d89c5692907c0ddfe4dff0",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "ad4cec540bfe78f0d1da506e14885a2d46ff65d27644d8aad0a74c58acc5cda2",
+                "id": "app.finn",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "finn",
             "status": "available"
@@ -7439,7 +7744,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "48e20fb7b7a12c7a716d33100461219e58abd8d51048377e4d0a109be1bcf182",
       "name": "finn",
@@ -7469,7 +7774,12 @@
             "metadata": {
               "bindingDigest": "dcd334f51d526bdec157e8bae1882f405d2bbb000cc96c6a54e153d507cb8830",
               "digest": "56062e18b4e6aa32b1e90bf071d55bbb8aaf628751f84bd38d5ba5f047f3f0fc",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "dcd334f51d526bdec157e8bae1882f405d2bbb000cc96c6a54e153d507cb8830",
+                "id": "app.fireflies",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "fireflies",
             "status": "available"
@@ -7493,7 +7803,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "765f18473886071d0476ddc053ea06143c7b215666fb4f40909974d8205ea2ed",
       "name": "fireflies",
@@ -7523,7 +7833,12 @@
             "metadata": {
               "bindingDigest": "c3550c9d3274a5cbd9210ad668bba10095edac99d72587d9bbbd16d3b911e8f4",
               "digest": "df64370ba5aae10e20184d267424cfdd28579dad84ba2639a17d0d87914cf1e8",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "c3550c9d3274a5cbd9210ad668bba10095edac99d72587d9bbbd16d3b911e8f4",
+                "id": "app.fiscal-ai",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "fiscal-ai",
             "status": "available"
@@ -7547,7 +7862,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "f83c77d2d5fd2a54c76f157324d9f029d657e92d3feaaf8c01799d10d578c663",
       "name": "fiscal-ai",
@@ -7577,7 +7892,12 @@
             "metadata": {
               "bindingDigest": "52509e977164a3c0329dd8a164e92a6d757a3326fa5fd5d38e618d6d52542765",
               "digest": "824eccadeaf230fa7095d7845456620b7914a3bd4273028a73d992d020b07652",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "52509e977164a3c0329dd8a164e92a6d757a3326fa5fd5d38e618d6d52542765",
+                "id": "app.fyxer",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "fyxer",
             "status": "available"
@@ -7601,7 +7921,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "4200201d92e074ba984df7896fe50cc35e15d44a3bf9eeb01abac70c618f5ada",
       "name": "fyxer",
@@ -7828,7 +8148,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "edd750d7ab6df61834916cfc2498fd71c0c19fd9523e1e300fd4d958630e6cd5",
       "name": "game-studio",
@@ -7935,6 +8255,11 @@
               "bindingDigest": "c0abdd7b406bad56ada87e66e80740f9135eb92ec014b6e5f34eff5dcff7f670",
               "digest": "852c30ff4dfec810508b63de1ae6cdcaba98778c5d0153b6c7e0a508b979381d",
               "path": ".mcp.json",
+              "providerBinding": {
+                "componentDigest": "c0abdd7b406bad56ada87e66e80740f9135eb92ec014b6e5f34eff5dcff7f670",
+                "id": "mcp.github",
+                "providerKind": "mcp-http"
+              },
               "transport": "http"
             },
             "name": "github",
@@ -7953,7 +8278,12 @@
             "metadata": {
               "bindingDigest": "20d2f5fe4a422ed95e95e1093d9948a69714ff70cd851c2d99439bf4e9517a55",
               "digest": "5975ddbb5cfdb9b015da136fc94ce80fe5772b206a8f34e69db490a14562d4e4",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "20d2f5fe4a422ed95e95e1093d9948a69714ff70cd851c2d99439bf4e9517a55",
+                "id": "app.github",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "github",
             "status": "available"
@@ -7996,7 +8326,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "d409e7f8720f50708bd0b6ddaf25e3d2d77d7d0069472051246579728ea579db",
       "name": "github",
@@ -8026,7 +8356,12 @@
             "metadata": {
               "bindingDigest": "232e199072b7aa996070ff6e1b0810912a92d29aeb9fb6629488703bcfe67329",
               "digest": "aa791d94a5f249d38585eee57072ee1cea675aaeaf181c51503ac49f5c6221ee",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "232e199072b7aa996070ff6e1b0810912a92d29aeb9fb6629488703bcfe67329",
+                "id": "app.glean",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "glean",
             "status": "available"
@@ -8050,7 +8385,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "5ce1db45f52ed6a8d8a83971a39276f1bd557186255732116f9ae87f7739056d",
       "name": "glean",
@@ -8119,7 +8454,12 @@
             "metadata": {
               "bindingDigest": "3df1ba9c158d6b448903ac9f956f0b0e77b52c311cfd0fd819a2e2527b5a162d",
               "digest": "70ad67bf297b1821ceec23ddb773d758ecd1aa52d8e28100b92526ab4c9f025c",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "3df1ba9c158d6b448903ac9f956f0b0e77b52c311cfd0fd819a2e2527b5a162d",
+                "id": "app.gmail",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "gmail",
             "status": "available"
@@ -8162,7 +8502,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "d1d092efa55ed6050737d9313b802935a6a856a554a874f73cbbdcb068448cd7",
       "name": "gmail",
@@ -8288,7 +8628,12 @@
             "metadata": {
               "bindingDigest": "51a54a217f73b3502775f12a2f309d5abd9652463eee07528887283cabae37e5",
               "digest": "35cd8beebc7b3bed8d281ad75435b3fd62981eb985af40b38ea8ecf2590713fd",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "51a54a217f73b3502775f12a2f309d5abd9652463eee07528887283cabae37e5",
+                "id": "app.google-calendar",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "google-calendar",
             "status": "available"
@@ -8331,7 +8676,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "213944ddcb7c774612e57508080e1956d7caacc48733d05b38ed640285b28a41",
       "name": "google-calendar",
@@ -8457,7 +8802,12 @@
             "metadata": {
               "bindingDigest": "7a4ea03bba320468523a7660aa4c1f9449f4c44382c96dbc2cdcc16bc5036d66",
               "digest": "18685ea8ccf1e2666f7597159a5b58cb5726b4cf2a150d786fa167a59f3808f7",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "7a4ea03bba320468523a7660aa4c1f9449f4c44382c96dbc2cdcc16bc5036d66",
+                "id": "app.google-drive",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "google-drive",
             "status": "available"
@@ -8482,7 +8832,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "800bd4d3d8afdb43b89a4211cfb24e83d3d820d750ec21a0d80124658023cfb6",
       "name": "google-drive",
@@ -8512,7 +8862,12 @@
             "metadata": {
               "bindingDigest": "00039ee4dd9cc9fc7ea9af9ca4bd1a21851d7a0ddcd66c6aed7cb15095bf41ae",
               "digest": "4fcefc54c4f61c45c516ad1ded64693295efeff2cb1ad40fb7ea305d9bf0f7e1",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "00039ee4dd9cc9fc7ea9af9ca4bd1a21851d7a0ddcd66c6aed7cb15095bf41ae",
+                "id": "app.govtribe",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "govtribe",
             "status": "available"
@@ -8536,7 +8891,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "9dbcf5f82dc1809712e93065e25a03791937405048633f3a1d233d10566b21ac",
       "name": "govtribe",
@@ -8566,7 +8921,12 @@
             "metadata": {
               "bindingDigest": "01f185f9aa28f3470290e3ee32ca915ea324ddda7639110d86722077cf36f7d2",
               "digest": "52e219d37fcc5eb1ab053bf2712f213e77a8ed9cfdc16049c2423b31d5bbac4c",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "01f185f9aa28f3470290e3ee32ca915ea324ddda7639110d86722077cf36f7d2",
+                "id": "app.granola",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "granola",
             "status": "available"
@@ -8590,7 +8950,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "b99d143f2706151f3bb50fead11b9fd7d2649a8e7ff0253e8727b7cb2fb88a61",
       "name": "granola",
@@ -8620,7 +8980,12 @@
             "metadata": {
               "bindingDigest": "6530416e46d74bcbeb4ba2f184de16c0b4787736b0d4dcad2305e1aeef106f1d",
               "digest": "68e3e35b3bd2641881b1d965c2737ccfa9e43d1bf876ae2f09f3bd98f23cb81b",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "6530416e46d74bcbeb4ba2f184de16c0b4787736b0d4dcad2305e1aeef106f1d",
+                "id": "app.happenstance",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "happenstance",
             "status": "available"
@@ -8661,7 +9026,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "cbb830dc74d38a664488d870bb7300e0cb70877b8a6a8def1ee6a4df85a3320a",
       "name": "happenstance",
@@ -8691,7 +9056,12 @@
             "metadata": {
               "bindingDigest": "7216474f00e64e2d2c178e4ffa0d906ae440f1560e388850ca5af248dc76d4e4",
               "digest": "25ddf9f0e2382a376743a933782efb55dcfc8df72b4940be39f3bbe3a0fe7563",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "7216474f00e64e2d2c178e4ffa0d906ae440f1560e388850ca5af248dc76d4e4",
+                "id": "app.hebbia",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "hebbia",
             "status": "available"
@@ -8715,7 +9085,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "097672f1cacce9d2e0d324eef907193de76754f50185cf03632978feb92da28d",
       "name": "hebbia",
@@ -8745,7 +9115,12 @@
             "metadata": {
               "bindingDigest": "7cd2cfc9bded861b6aec7dd0430d8093203d9e254b57769a0ea67fa073de7063",
               "digest": "9776a2fa055dad88eb17f96b772a4bcacf9917f4fbb609485cbe0c1b6037265f",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "7cd2cfc9bded861b6aec7dd0430d8093203d9e254b57769a0ea67fa073de7063",
+                "id": "app.help-scout",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "help-scout",
             "status": "available"
@@ -8786,7 +9161,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "d1a844399b05d581cf89d13298cb07fdd82c730ae25545d2bebd3d6ea45269bc",
       "name": "help-scout",
@@ -8837,7 +9212,12 @@
             "metadata": {
               "bindingDigest": "d7c825162b5fcd438629cbf820098c62bc9ec7de5d5077778dc97c633f4e7fe6",
               "digest": "6b3e6c39285beff697e002ca9dfc143fbf5e26f34a672a4dba488e619f8c768f",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "d7c825162b5fcd438629cbf820098c62bc9ec7de5d5077778dc97c633f4e7fe6",
+                "id": "app.hex",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "hex",
             "status": "available"
@@ -8862,7 +9242,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "Proprietary",
       "manifestDigest": "53ea87a235ccb6423e231443b0416b34a47856a17c60be7bdcb57f5be50b3171",
       "name": "hex",
@@ -8951,7 +9331,12 @@
             "metadata": {
               "bindingDigest": "e80eb824a018e57bad19ca4fb9ad0e6ab8863e09a12d2eb4906c52ef56b7a6fb",
               "digest": "12e6493a0b47bfd1890e8856364f03ae33e078b06e398357db98adb9879bd5f3",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "e80eb824a018e57bad19ca4fb9ad0e6ab8863e09a12d2eb4906c52ef56b7a6fb",
+                "id": "app.heygen",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "heygen",
             "status": "available"
@@ -9012,7 +9397,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "ae3ecf235852fde2a8387187679ab7aabc67e58b3c130dfdcc5941ba8d5bc6de",
       "name": "heygen",
@@ -9042,7 +9427,12 @@
             "metadata": {
               "bindingDigest": "0b20657612009921abe9342f938804171de582d8e1ceee8c294f4e94b6c3ac1e",
               "digest": "f2aeefc8077ff8eb2b48bcc3f2a00373e586e9751e316144e51e93fdb738f053",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "0b20657612009921abe9342f938804171de582d8e1ceee8c294f4e94b6c3ac1e",
+                "id": "app.hg-insights",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "hg-insights",
             "status": "available"
@@ -9083,7 +9473,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "549446642d4e2cf66d72d037f5c696ea3f7fb78ded6da849536103dc58ea8e8d",
       "name": "hg-insights",
@@ -9113,7 +9503,12 @@
             "metadata": {
               "bindingDigest": "098bbd19100c9a3b8db81d4c91cc3593ef33117a77f2ef96de6e164f4f966950",
               "digest": "e712eafdd08e40f286e7f398edc0e93b7f3d6db226b9bd002a81120d0aa75bee",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "098bbd19100c9a3b8db81d4c91cc3593ef33117a77f2ef96de6e164f4f966950",
+                "id": "app.highlevel",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "highlevel",
             "status": "available"
@@ -9137,7 +9532,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "4a23522ad6ddec1fa0c11eddc07728d723e0e9fae154a78d8e79ef2e2e295194",
       "name": "highlevel",
@@ -9167,7 +9562,12 @@
             "metadata": {
               "bindingDigest": "d1f865fbe8a3b5cfadd966c5792043ac9457404784d6605c6ccc9389a05548ed",
               "digest": "e1e46ea497ec886bad0985f4d120878ce681b5cace16468fc14a49d4f0c8a967",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "d1f865fbe8a3b5cfadd966c5792043ac9457404784d6605c6ccc9389a05548ed",
+                "id": "app.hostinger",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "hostinger",
             "status": "available"
@@ -9208,7 +9608,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "5f1152b3b0bc142b797261a15b1431b749ca8b37673acfff3741e1bb21798784",
       "name": "hostinger",
@@ -9315,7 +9715,12 @@
             "metadata": {
               "bindingDigest": "f9610ee99fd385d142c2ef35613a5267d51d95b7de3b07ef4b7c2f96d48a58fe",
               "digest": "e0f5cdacb63f2d61dfdb7ecf4bfd25636b298d5a5891392cf4ea769aaffab4de",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "f9610ee99fd385d142c2ef35613a5267d51d95b7de3b07ef4b7c2f96d48a58fe",
+                "id": "app.hubspot",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "hubspot",
             "status": "available"
@@ -9340,7 +9745,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "4469eba7835db8fd977d46fd49cd0153d035c0a298fd8da8871acfd790836f64",
       "name": "hubspot",
@@ -9580,7 +9985,12 @@
             "metadata": {
               "bindingDigest": "9aed7003af0c90e9ea6d887957a89e5b0d350744f3ce8fa376a02fd5633dbeed",
               "digest": "41adea98efea293ed4a629f2a7ff3fa860e867883efbce2ca049201846641142",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "9aed7003af0c90e9ea6d887957a89e5b0d350744f3ce8fa376a02fd5633dbeed",
+                "id": "app.hugging-face",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "hugging-face",
             "status": "available"
@@ -9605,7 +10015,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "09650a57f9ef202187010c3652188313c6b707a7e5ebe1d0201c123484756689",
       "name": "hugging-face",
@@ -9756,7 +10166,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "Apache-2.0",
       "manifestDigest": "1bf2d37cf9860b92db0d3117bd600f18f8d8fd203e78a724b42bb8ed46e234d0",
       "name": "hyperframes",
@@ -9786,7 +10196,12 @@
             "metadata": {
               "bindingDigest": "25e3956378c48620c578f368267fc1ceec660060b23ff6b5510f82d76f2f3346",
               "digest": "feec9fae3945df20d62640e6af0086c65ac38356b4c036f61589c75ced63a0f3",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "25e3956378c48620c578f368267fc1ceec660060b23ff6b5510f82d76f2f3346",
+                "id": "app.intercom",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "intercom",
             "status": "available"
@@ -9827,7 +10242,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "0b376d757cc6a46a17be8344497ec3d6f83da710c37465cbd195d37d3214b865",
       "name": "intercom",
@@ -9857,7 +10272,12 @@
             "metadata": {
               "bindingDigest": "310ea1d8563f08f3ba3da17cc8b175ad2467641755b25bc14853b4c0e37cb3bd",
               "digest": "dce620a269d47429adae47a1cf5da5a7cd6816d3fbd9a2b52522713c7b8c6840",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "310ea1d8563f08f3ba3da17cc8b175ad2467641755b25bc14853b4c0e37cb3bd",
+                "id": "app.jam",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "jam",
             "status": "available"
@@ -9881,7 +10301,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "22f50ad4311124c6fc23b4197169443345ffc94a211b19507e3b9234ef4787f9",
       "name": "jam",
@@ -9911,7 +10331,12 @@
             "metadata": {
               "bindingDigest": "136480ef933dae06b04b7f1f8ab9350f3a79d6c5cc3106917e4e86e9415e04f3",
               "digest": "dbe21cb4ee2fa2bff063e8a020d98573c27ee3733b03d1e89b1ccbdbd6bebe17",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "136480ef933dae06b04b7f1f8ab9350f3a79d6c5cc3106917e4e86e9415e04f3",
+                "id": "app.keybid-puls",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "keybid-puls",
             "status": "available"
@@ -9952,7 +10377,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "9e7ec4430dd842f35fe6fa8e1922f5065f94a000658e1e938019ac7f71510171",
       "name": "keybid-puls",
@@ -10941,7 +11366,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "Proprietary",
       "manifestDigest": "61c9346f2ca1358dcba7e4007ad5497250a99fdd5d090c9f1a7c0e79473298de",
       "name": "life-science-research",
@@ -10989,6 +11414,11 @@
               "bindingDigest": "28370647b7b5378b6d73bcf39ae94cc952cd1bfc71086b1264c96d4bbfd6fc13",
               "digest": "b403356f2bc2e99bf1201c83af56ad7973d06f4d1960a7ee70d44c9d1b116f69",
               "path": ".mcp.json",
+              "providerBinding": {
+                "componentDigest": "28370647b7b5378b6d73bcf39ae94cc952cd1bfc71086b1264c96d4bbfd6fc13",
+                "id": "mcp.linear",
+                "providerKind": "mcp-http"
+              },
               "transport": "http"
             },
             "name": "linear",
@@ -11006,7 +11436,12 @@
             "metadata": {
               "bindingDigest": "ca2be73fb941337b1e84fa9b6d6ed5706e7f508aab23aaf74f9e19f21a618c87",
               "digest": "eab4360fe857818c54ce9533c8d36d64e8218417457baad6efe724c2c4297161",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "ca2be73fb941337b1e84fa9b6d6ed5706e7f508aab23aaf74f9e19f21a618c87",
+                "id": "app.linear",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "linear",
             "status": "available"
@@ -11047,7 +11482,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "dc83447f9558c9d090063b300030b69fcdda8ca93e8ce0c7bde1a84475c9d9a0",
       "name": "linear",
@@ -11077,7 +11512,12 @@
             "metadata": {
               "bindingDigest": "6507b08c42f674283d8e8d4e03ffcab81edc68707651d3d1f0833110b90d2f6c",
               "digest": "8d1bfeec47d9a2e841a08362a75fed54d90a98cf1d572a3ba787f594faf3e328",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "6507b08c42f674283d8e8d4e03ffcab81edc68707651d3d1f0833110b90d2f6c",
+                "id": "app.lovable",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "lovable",
             "status": "available"
@@ -11101,7 +11541,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "f225fca84157a60c7a411713fc5d438a33b1e0248dc158496aa208fe081881af",
       "name": "lovable",
@@ -11131,7 +11571,12 @@
             "metadata": {
               "bindingDigest": "da25e64ab3c55a1d4c5e9cbafde0540530553ec6b41fb472d3df3a178769f79e",
               "digest": "9f096b40e234dd6696d5185a7daa57461d73fbf933ee80bb702809ddda75d698",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "da25e64ab3c55a1d4c5e9cbafde0540530553ec6b41fb472d3df3a178769f79e",
+                "id": "app.lseg",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "lseg",
             "status": "available"
@@ -11155,7 +11600,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "51d1d3f243c254d574c1ed683c5a3e8ec494f037d06eafef0b7739560bab3cb4",
       "name": "lseg",
@@ -11213,7 +11658,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "UNLICENSED",
       "manifestDigest": "ab46ac06adc1cf5d168fc4bc2e01f57cb222ad56b0f14b52a253cd3bee596b63",
       "name": "magicpath",
@@ -11242,7 +11687,12 @@
             "metadata": {
               "bindingDigest": "60127782e56aa292481437632310fe9cc4f8917427ff0da4283085d612a5c09c",
               "digest": "8b6a1b467dba310034dbf866c138b8e158277a7602696f8f22849c0647004f3b",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "60127782e56aa292481437632310fe9cc4f8917427ff0da4283085d612a5c09c",
+                "id": "app.marcopolo",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "marcopolo",
             "status": "available"
@@ -11266,7 +11716,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "c3a87e59b036fb1ef276603b6b711d0f462257e4976c5c7669299c54915bac31",
       "name": "marcopolo",
@@ -11296,7 +11746,12 @@
             "metadata": {
               "bindingDigest": "448a1b37b2f9b8e851ed494713ffdb6b7b10a15606a9ca2a5b457b64615f8356",
               "digest": "ef6cd6c7f83c226e9925a556982d693eb5c442e326b3c9f238ffd089eb7772b7",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "448a1b37b2f9b8e851ed494713ffdb6b7b10a15606a9ca2a5b457b64615f8356",
+                "id": "app.mem",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "mem",
             "status": "available"
@@ -11320,7 +11775,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "f281135025695ee36929f2c7e4f599a2ea37fe31f13880fdf6c2dc782a785ec0",
       "name": "mem",
@@ -11350,7 +11805,12 @@
             "metadata": {
               "bindingDigest": "edd65de7b0ef5c010d65a11ff97795ce6c38cab0c7884a2fe383115b16a00e0f",
               "digest": "feb9360566992c61385f6ab072351801b851fa7c8984664cd4bad4301f0df437",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "edd65de7b0ef5c010d65a11ff97795ce6c38cab0c7884a2fe383115b16a00e0f",
+                "id": "app.meticulate",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "meticulate",
             "status": "available"
@@ -11374,7 +11834,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "ef2822c5bdb5b8222d6822c66cd6e5927d57e2e87cb7b14260a6bbdeac2cc1b3",
       "name": "meticulate",
@@ -11476,7 +11936,12 @@
             "metadata": {
               "bindingDigest": "bba584d820551d3c8e6fe7da3b19cdff7a90ea5a2fb1e467e4acc93e04351c2a",
               "digest": "65c4c243e3878c3e32fd3a2324f3930647d5d26d676bbf7e908017a213a23bb3",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "bba584d820551d3c8e6fe7da3b19cdff7a90ea5a2fb1e467e4acc93e04351c2a",
+                "id": "app.midpage",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "midpage",
             "status": "available"
@@ -11500,7 +11965,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "a3fd117ad1553d84b11964d9179442ff91e8e63763109227f3a14200017ebca4",
       "name": "midpage",
@@ -11531,7 +11996,12 @@
             "metadata": {
               "bindingDigest": "bd3f484bb8db65636e556da25b771aeda395df9615bf3eafd6d1586b71e66d4b",
               "digest": "3c44d160c174b65c1b5221dc6fd0dc8f04a01def72b3d8e96878d70ee84866fc",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "bd3f484bb8db65636e556da25b771aeda395df9615bf3eafd6d1586b71e66d4b",
+                "id": "app.mixpanel",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "mixpanel",
             "status": "available"
@@ -11646,7 +12116,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "5fc213d9578ed020cc7799605f35a837a452434164fff9ba2e84bd230b7a8937",
       "name": "mixpanel",
@@ -11832,7 +12302,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "8a2c16d4c15f89edf3963b32dc76ef03cc8ead74f57cfa9a98d299ac91e140df",
       "name": "mixpanel-headless",
@@ -11862,7 +12332,12 @@
             "metadata": {
               "bindingDigest": "cc4261e4507b034ad2e073d9ed37774a8f5b777918573ab2b6f7abea1c58e068",
               "digest": "c9dba1c70e656b14756984e07ae983be9c08098205de9832e458cbdbb138eae9",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "cc4261e4507b034ad2e073d9ed37774a8f5b777918573ab2b6f7abea1c58e068",
+                "id": "app.monday-com",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "monday-com",
             "status": "available"
@@ -11886,7 +12361,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "3cf272ead927488c9f093a88867a6b908189b8c1dc24a71cc07ddb5142aa150b",
       "name": "monday-com",
@@ -12078,7 +12553,12 @@
             "metadata": {
               "bindingDigest": "0d7dace1f92a1a31576fbde0dddb6751ef3993c231377fefcbb834198b116eb0",
               "digest": "7677cdd79fe4b07cbdb70b4abb5067e371beb3b19e399fff3f916673348134b4",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "0d7dace1f92a1a31576fbde0dddb6751ef3993c231377fefcbb834198b116eb0",
+                "id": "app.moody-s",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "moody-s",
             "status": "available"
@@ -12102,7 +12582,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "74cd1f4221915deac8fbd0846d12f8c00103e2e04541d1a2a9512f1f29377f6a",
       "name": "moody-s",
@@ -12190,7 +12670,12 @@
             "metadata": {
               "bindingDigest": "701fc7334a7f1ef9ec5bca4da0a6c6f7ffa346b5936e198f04338a22ca736168",
               "digest": "4be6e693d4730a470a73bb4305af1ac7c1b293fa27968dfec2331e28191798cc",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "701fc7334a7f1ef9ec5bca4da0a6c6f7ffa346b5936e198f04338a22ca736168",
+                "id": "app.morningstar",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "morningstar",
             "status": "available"
@@ -12215,7 +12700,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "f290df6e389052e1a1fe7fe476f1e40ed84359d023b4c3b23461f614d2b730af",
       "name": "morningstar",
@@ -12245,7 +12730,12 @@
             "metadata": {
               "bindingDigest": "1b4a5d1cca2ba953a385c36557a0647703dc4ef9e04f5fb578090723164ba785",
               "digest": "8dffdbf30438140f41e495d1408ea2f2be2a42302354731445cfb4b3b19bb3b0",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "1b4a5d1cca2ba953a385c36557a0647703dc4ef9e04f5fb578090723164ba785",
+                "id": "app.motherduck",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "motherduck",
             "status": "available"
@@ -12269,7 +12759,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "b27dbdca31c1dce3fe2414cefd7279e413444aafc787dbbe9ecdaf84812ec269",
       "name": "motherduck",
@@ -12299,7 +12789,12 @@
             "metadata": {
               "bindingDigest": "c318294be5d9a18a7c9c37efafc8ffd53cbac0cbb985e6d351e5d8403c7ae3bc",
               "digest": "3f0bbb495a46a74f51b479671340bb33854767523a52091b33f8ddd144dc757e",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "c318294be5d9a18a7c9c37efafc8ffd53cbac0cbb985e6d351e5d8403c7ae3bc",
+                "id": "app.mt-newswires",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "mt-newswires",
             "status": "available"
@@ -12340,7 +12835,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "7fd166205d317458ffcf58afd0f0c032e51228e4bb22294cd1601fed0f8b1b7d",
       "name": "mt-newswires",
@@ -12370,7 +12865,12 @@
             "metadata": {
               "bindingDigest": "03abc5502a05c5932b81fa2981c6026a13afbb1421a074d204b32f66379ed1a3",
               "digest": "d5b9faeca122ce51e3e83080cf49fbe4116f4fa733fa745f99dbc20217af72c5",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "03abc5502a05c5932b81fa2981c6026a13afbb1421a074d204b32f66379ed1a3",
+                "id": "app.myregistry-com",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "myregistry-com",
             "status": "available"
@@ -12411,7 +12911,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "b750a3cdbedf0e1e03e9338fea020e0fb0a358aee1ef0c531130e6aa69f534a4",
       "name": "myregistry-com",
@@ -12480,7 +12980,12 @@
             "metadata": {
               "bindingDigest": "09540971109f80fc73bfe0ca578d358723840769834a163ec7fe09f4e9141fec",
               "digest": "4cd23a63a2d0de5ad011fb43ac93d74bbfaa3ce037779a84f24d47fc84e17c82",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "09540971109f80fc73bfe0ca578d358723840769834a163ec7fe09f4e9141fec",
+                "id": "app.neon-postgres",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "neon-postgres",
             "status": "available"
@@ -12541,7 +13046,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "Apache-2.0",
       "manifestDigest": "bdcfe842e0f49d6a860f1a4f8b550e87fd35618955c05b107bafc2e3352a318d",
       "name": "neon-postgres",
@@ -12800,7 +13305,12 @@
             "metadata": {
               "bindingDigest": "d6c205fa026e2e842ec2d2e40a89506ba27fd0486fd11b44d3c4ae51e0abee6a",
               "digest": "8ffcd50e90e5289bc9b2cb5ed75c1e758f20ec7461191a1d8c69d722f97d1891",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "d6c205fa026e2e842ec2d2e40a89506ba27fd0486fd11b44d3c4ae51e0abee6a",
+                "id": "app.netlify",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "netlify",
             "status": "available"
@@ -12825,7 +13335,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "d75794bd1dca156404139d141c5f0ef5b784f7fc2aa2c9caaf176fc7001c5540",
       "name": "netlify",
@@ -12855,7 +13365,12 @@
             "metadata": {
               "bindingDigest": "e3a3864c1cff3a29d26012d45e16e416d9944c1dc5214d3661ee85726225e249",
               "digest": "8f5e77226316367fc8f25a609fc781961190f777af0a8965dd60c0e094d87442",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "e3a3864c1cff3a29d26012d45e16e416d9944c1dc5214d3661ee85726225e249",
+                "id": "app.network-solutions",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "network-solutions",
             "status": "available"
@@ -12879,7 +13394,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "772be70fdffacb9feddb7c584dad43eaf3451979566fdbeaece3fd4d0d26c9c2",
       "name": "network-solutions",
@@ -13259,7 +13774,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "d8a4bc590c865a6e374b41294c8fc942b6bc78dddf3ceedec37a639c99214406",
       "name": "ngs-analysis",
@@ -13387,6 +13902,11 @@
               "bindingDigest": "6ca0701da745bd0cc41a813bda9058cb9720c1c6eab264b7c5f43ae186b06e21",
               "digest": "998be08b31b30c44519de00f389d453957f48d81f31589bf7553ae01ae548a62",
               "path": ".mcp.json",
+              "providerBinding": {
+                "componentDigest": "6ca0701da745bd0cc41a813bda9058cb9720c1c6eab264b7c5f43ae186b06e21",
+                "id": "mcp.notion",
+                "providerKind": "mcp-http"
+              },
               "transport": "http"
             },
             "name": "notion",
@@ -13405,7 +13925,12 @@
             "metadata": {
               "bindingDigest": "522c9174de71fe4cfbb2efbfd61320a8e85dc1b0cd44eda632ef9f79c3be5076",
               "digest": "97de1dc6fb811131effe99bedab5d2587e7e55676934781f923e41adb2dde21a",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "522c9174de71fe4cfbb2efbfd61320a8e85dc1b0cd44eda632ef9f79c3be5076",
+                "id": "app.notion",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "notion",
             "status": "available"
@@ -13466,7 +13991,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "b040a4235e936277c05444bcc51c9cd7af967bd2e9d02addd23dbc37bd62fd22",
       "name": "notion",
@@ -13714,7 +14239,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "Apache-2.0 AND CC-BY-4.0",
       "manifestDigest": "11502d8e15f11a0d47b59d5e5bd1c8811925928a61938f261fd1470fde09d596",
       "name": "nvidia",
@@ -13743,7 +14268,12 @@
             "metadata": {
               "bindingDigest": "24b29126ea894b205710bc5d1f4ad9ce1efcf73346b0829b0f70c78b642bd71c",
               "digest": "c832c75a6e252a19cb6da6f32dc194e951ddc6c10b4987f4c97d27ab53907a72",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "24b29126ea894b205710bc5d1f4ad9ce1efcf73346b0829b0f70c78b642bd71c",
+                "id": "app.omni-analytics",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "omni-analytics",
             "status": "available"
@@ -13784,7 +14314,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "031b5328d6ba0d7bece5976c0f196533f8aa684a9784467cdccb34d38205ac95",
       "name": "omni-analytics",
@@ -13824,7 +14354,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "Proprietary",
       "manifestDigest": "98798d5222547fb6a8630e6ed17ba4587811072c42032a5d044f38b5eaeaf5cb",
       "name": "openai-ads-conversions",
@@ -13951,6 +14481,11 @@
               "bindingDigest": "1cf5a011e54a3d0c4fc4ffa6f315467309f7fad699f54f3c2359e79e57b16937",
               "digest": "6f269476d15fc95a6661578b024fba9fc6e1f8f14b5b011e3c37f819538921e2",
               "path": ".mcp.json",
+              "providerBinding": {
+                "componentDigest": "1cf5a011e54a3d0c4fc4ffa6f315467309f7fad699f54f3c2359e79e57b16937",
+                "id": "mcp.openai-api-key-local-confirmation",
+                "providerKind": "mcp-process"
+              },
               "transport": "process"
             },
             "name": "openai-api-key-local-confirmation",
@@ -13969,7 +14504,12 @@
             "metadata": {
               "bindingDigest": "ed9dcc75bcae9be3ebdc0205db245c96d1f188fc91708f7201ab99825073acdc",
               "digest": "50f985a18e7062f0a44aad2f6c11c767f1b63e761023c418a7e0cc56a933c1fe",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "ed9dcc75bcae9be3ebdc0205db245c96d1f188fc91708f7201ab99825073acdc",
+                "id": "app.openai-platform",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "openai-platform",
             "status": "available"
@@ -13994,7 +14534,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "Proprietary",
       "manifestDigest": "547f6c8e73514cb921d6570ccc7d1114d397a88506bdc8ad1338709d6d435b8a",
       "name": "openai-developers",
@@ -14023,7 +14563,12 @@
             "metadata": {
               "bindingDigest": "5bb8d614f0354634c4e3d8f09f1d2a6c0f4b85c9e695395c14f7c57438f22bbe",
               "digest": "4deeb001808481d258e55666cd520836a464d1665c4183aa587f9b8f320cd36f",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "5bb8d614f0354634c4e3d8f09f1d2a6c0f4b85c9e695395c14f7c57438f22bbe",
+                "id": "app.otter-ai",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "otter-ai",
             "status": "available"
@@ -14064,7 +14609,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "feb85c79aec860a8f5edd60f249c52e9af088f0c84dcf01103705a8021a09e03",
       "name": "otter-ai",
@@ -14209,7 +14754,12 @@
             "metadata": {
               "bindingDigest": "601dd96ad3cac007907523c012ec26ff8b168099f2b7c5113971299e4bf147aa",
               "digest": "1571a949dcb73669d665754454281ff7283942c86b9293e27fa253a67ae3a532",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "601dd96ad3cac007907523c012ec26ff8b168099f2b7c5113971299e4bf147aa",
+                "id": "app.outlook-calendar",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "outlook-calendar",
             "status": "available"
@@ -14234,7 +14784,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "5eafa29a3da7a113b23841552853976e512411eb48b400351aa2baec2ddf2415",
       "name": "outlook-calendar",
@@ -14379,7 +14929,12 @@
             "metadata": {
               "bindingDigest": "00429884c9ceb10eb8f3d9202bef58ab1423cde21983f806af36567916b9151c",
               "digest": "692f6539db07e7e0b27409ab070bb15d5a4111e2b70417956e7b6b0abfbc16b6",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "00429884c9ceb10eb8f3d9202bef58ab1423cde21983f806af36567916b9151c",
+                "id": "app.outlook-email",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "outlook-email",
             "status": "available"
@@ -14404,7 +14959,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "a9275ac8aaa9320179765ef1b0fcad4aec1edc061ef651fc4978c4e4a4a335c7",
       "name": "outlook-email",
@@ -14434,7 +14989,12 @@
             "metadata": {
               "bindingDigest": "c916ea69cc155a1509d04cb399f34d737dfdd6e05c26c715cf8dfa2a61d2b472",
               "digest": "b3f03b60336b9503cbbcc4f5e41bc775f4c408426212929b66e0b21954685122",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "c916ea69cc155a1509d04cb399f34d737dfdd6e05c26c715cf8dfa2a61d2b472",
+                "id": "app.outreach",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "outreach",
             "status": "available"
@@ -14458,7 +15018,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "5f54abae9731343810887029f148558d3c11773017b0968d0fe814c4e3e86c9e",
       "name": "outreach",
@@ -14488,7 +15048,12 @@
             "metadata": {
               "bindingDigest": "103b0e523e3dd7daa5a26ab8c5776f8adbe1fb4fce3cc4a2eee03fbe5bd10501",
               "digest": "30e77137d73efda314e8a280d26f796e4faa15feef020d52da15084c2824ca81",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "103b0e523e3dd7daa5a26ab8c5776f8adbe1fb4fce3cc4a2eee03fbe5bd10501",
+                "id": "app.particl-market-research",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "particl-market-research",
             "status": "available"
@@ -14529,7 +15094,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "1dc6b5b4bf7b5fbda7e1ed303dd0ed6bfba2f6f0eb156aba12c574aab8b5d90d",
       "name": "particl-market-research",
@@ -14559,7 +15124,12 @@
             "metadata": {
               "bindingDigest": "3d9332888473e782876fca1a778fcfe9ed9e8d8e08984590fbfb7e08922085af",
               "digest": "aaa847be43d47ea304fd9c7b8803600ece92276f1d5b5301281917ea250acfc8",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "3d9332888473e782876fca1a778fcfe9ed9e8d8e08984590fbfb7e08922085af",
+                "id": "app.picsart",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "picsart",
             "status": "available"
@@ -14583,7 +15153,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "deaf55cf1729f252566a9f25add1d80e5db6aed2f68943912755a36d072ffa38",
       "name": "picsart",
@@ -14613,7 +15183,12 @@
             "metadata": {
               "bindingDigest": "dc632a6521c1f0eac323e9a2506d11ed0fa0ea025fb3b74d0a10aa39d04e98d5",
               "digest": "6360c31001ad16f4f9b45d3d0946be8f5dcf16057570159e7105948e22e0ba80",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "dc632a6521c1f0eac323e9a2506d11ed0fa0ea025fb3b74d0a10aa39d04e98d5",
+                "id": "app.pipedrive",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "pipedrive",
             "status": "available"
@@ -14637,7 +15212,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "42870d500e58b3b0a2a15aabe11ab337bd275ae92ad2d9a072d16a6d67ff5fa2",
       "name": "pipedrive",
@@ -14667,7 +15242,12 @@
             "metadata": {
               "bindingDigest": "6975382ef17048246573ddc38b6f3367276277f8d70dc3a6a949b25f427b5323",
               "digest": "4c99823686bc2b04e6df7e6932878fe000ae60463fa75fabed245f24a2c6fd9d",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "6975382ef17048246573ddc38b6f3367276277f8d70dc3a6a949b25f427b5323",
+                "id": "app.pitchbook",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "pitchbook",
             "status": "available"
@@ -14691,7 +15271,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "8498bca6444b9a08a895a5fafbd4f750a2f4504494e45d4b39f607c33e7edd9a",
       "name": "pitchbook",
@@ -14824,7 +15404,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "72b434478d5008496d17d43b9b847121f47145f71177540ab47893b1559c5aed",
       "name": "plugin-eval",
@@ -14854,7 +15434,12 @@
             "metadata": {
               "bindingDigest": "737679bdae1578f42fb7f05de8d9a611418fa2fdce7cd8875ed71f4f9c5482b4",
               "digest": "c0aa32b24bac7d40d443afa3c13f42103222cd4adc4da211657cde381ab707b5",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "737679bdae1578f42fb7f05de8d9a611418fa2fdce7cd8875ed71f4f9c5482b4",
+                "id": "app.policynote",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "policynote",
             "status": "available"
@@ -14895,7 +15480,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "c3760289bec979a2bd422723995ebcb39c09d531ce01eaab697fdb025f494eda",
       "name": "policynote",
@@ -14945,7 +15530,12 @@
             "metadata": {
               "bindingDigest": "5ae09cce3fbac4f20af32e3598957918776acfc05ed23f15aab066a7f0abfb0a",
               "digest": "2773935d56761ea2f55cf20de3b9baea0a6d0d8cfc08a2e5ef756f5cac604f20",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "5ae09cce3fbac4f20af32e3598957918776acfc05ed23f15aab066a7f0abfb0a",
+                "id": "app.posthog",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "posthog",
             "status": "available"
@@ -15024,7 +15614,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "b7abc2dc682485ad97fde746755562a43d6bb84fa593cdc7857b93df0e3b928c",
       "name": "posthog",
@@ -15054,7 +15644,12 @@
             "metadata": {
               "bindingDigest": "cd4af10bec26f0038bb8ff91e2a3dd4d82e71c9296d4fbbaf078565ac10e450c",
               "digest": "873e5d9948129c85424f99b744b09e3e0baa51fe35b4240637d050dac012014d",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "cd4af10bec26f0038bb8ff91e2a3dd4d82e71c9296d4fbbaf078565ac10e450c",
+                "id": "app.pylon",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "pylon",
             "status": "available"
@@ -15078,7 +15673,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "718332fdf7ce73f5ddb411a5fc2367ac9d0ab5b2a7713a4f0c0c0ce9e3807d81",
       "name": "pylon",
@@ -15108,7 +15703,12 @@
             "metadata": {
               "bindingDigest": "8aa626da68214ab4d0650e8f6f553bbfa4b1ff92a82be3059b71005812a2cad5",
               "digest": "40a2567c08cb1ef864d01a67d8ec6c0b1dae304f706cffc6ca1062bfab09c02d",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "8aa626da68214ab4d0650e8f6f553bbfa4b1ff92a82be3059b71005812a2cad5",
+                "id": "app.quartr",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "quartr",
             "status": "available"
@@ -15149,7 +15749,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "f363077cad8237d59287c46727ed3df63bed209cb9f33b2380a7953ef7b77b83",
       "name": "quartr",
@@ -15179,7 +15779,12 @@
             "metadata": {
               "bindingDigest": "1c8a82507243ebcfd198657d2d7f308375ef8874e6287510cbaf9e5d0e70a13e",
               "digest": "cd96d9d45499f3621dc1cef0ea080c26bc16c8bbace4f522f503e4887f94623c",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "1c8a82507243ebcfd198657d2d7f308375ef8874e6287510cbaf9e5d0e70a13e",
+                "id": "app.quickbooks",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "quickbooks",
             "status": "available"
@@ -15203,7 +15808,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "f906385b74f00de6c926fdbd8f215016cbfb7a9ca727ee8b5f7de2e8a3ce5ce6",
       "name": "quickbooks",
@@ -15233,7 +15838,12 @@
             "metadata": {
               "bindingDigest": "fa81bcd50b22af0740ea7c4344fbc5b2ded7e33afc93f1a379f078cf6a884c91",
               "digest": "812c2073683d88197e5a03645a6a2e1d3c8fe4c1a6e5dac546fe75f62630f5f4",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "fa81bcd50b22af0740ea7c4344fbc5b2ded7e33afc93f1a379f078cf6a884c91",
+                "id": "app.quicknode",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "quicknode",
             "status": "available"
@@ -15257,7 +15867,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "f7fc1e0d970a38dd4c08e9a169e8eaf9dcf424392596b265caef51d14d71e935",
       "name": "quicknode",
@@ -15287,7 +15897,12 @@
             "metadata": {
               "bindingDigest": "bcdc02bb9f5719ce8cc39ccc903e15dd5926c03bcd703768bde618ed3219e3f3",
               "digest": "a855eed4be7156719722a804d65cd146326b6943bca1efd8f8491f7d382f31b0",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "bcdc02bb9f5719ce8cc39ccc903e15dd5926c03bcd703768bde618ed3219e3f3",
+                "id": "app.ranked-ai",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "ranked-ai",
             "status": "available"
@@ -15328,7 +15943,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "491010d56ed9560dc052dd7f774003040a9dcefb2662232a939e3febb0b08933",
       "name": "ranked-ai",
@@ -15358,7 +15973,12 @@
             "metadata": {
               "bindingDigest": "53f15691c41790228b0e0c1d175c7a0c6542f1665fb94b3c2a2b281028a7ac1c",
               "digest": "0603e27216f91af00a84762a08d0b141b76041bd5d824a9039e8145be5940a67",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "53f15691c41790228b0e0c1d175c7a0c6542f1665fb94b3c2a2b281028a7ac1c",
+                "id": "app.razorpay",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "razorpay",
             "status": "available"
@@ -15382,7 +16002,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "797c936ece70d148a42fffc17db59b090fa6d9eab666abc3bb07f247c7630a76",
       "name": "razorpay",
@@ -15412,7 +16032,12 @@
             "metadata": {
               "bindingDigest": "d06b9882ff3d1c2960be8d1245930cae155e4511ee18104bcb4dd592c2a3aa81",
               "digest": "8bd7d56264c9d731b2b644efa4b6bb7ece567a44988ac0e8c59292fc50b5cc95",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "d06b9882ff3d1c2960be8d1245930cae155e4511ee18104bcb4dd592c2a3aa81",
+                "id": "app.read-ai",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "read-ai",
             "status": "available"
@@ -15453,7 +16078,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "1ec087cd6fe26787101b89444ff270dda9450fa365df49e253d6fd58cbbf4801",
       "name": "read-ai",
@@ -15483,7 +16108,12 @@
             "metadata": {
               "bindingDigest": "a46dec5fb390960e6616c60eee2c22c00f9d19f3c2702449164c325fe35c0f83",
               "digest": "4ca4d62d052981dc67d8e6b4d6c3db5337d034661c14cc74d33137bfbd97c001",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "a46dec5fb390960e6616c60eee2c22c00f9d19f3c2702449164c325fe35c0f83",
+                "id": "app.readwise",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "readwise",
             "status": "available"
@@ -15507,7 +16137,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "1fccb8a94d9d6c5323473defd9997d324c8f3f0ec348693ee136488cc938add7",
       "name": "readwise",
@@ -15600,7 +16230,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "15d22f6ba93e85b7624f2d5b4b83ad621518e018d2f54b5a740323a6a601e05b",
       "name": "remotion",
@@ -16058,7 +16688,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "4f4a193bb490056a1594c80c3ba1c4abab9499c6bbfc3c8c71ee091a4260f3c8",
       "name": "render",
@@ -16127,7 +16757,12 @@
             "metadata": {
               "bindingDigest": "5aca78d377a101c8710b74999c8aac1d69548929707b1f9f486707d0bfd7dad3",
               "digest": "eb9d0dea018f2870ae67eed37b5e7c958e53b5768037e01545ac7d9db1951397",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "5aca78d377a101c8710b74999c8aac1d69548929707b1f9f486707d0bfd7dad3",
+                "id": "app.replayio",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "replayio",
             "status": "available"
@@ -16170,7 +16805,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "4e64a372b0d3c5b61e12b4067e63faa286d003947d7e0be40c395a82d4802013",
       "name": "replayio",
@@ -16200,7 +16835,12 @@
             "metadata": {
               "bindingDigest": "2fcbf5a5185eb9c8c9b70f4154588b26d361963c53e5430791a983a0b233d292",
               "digest": "db39c5819508bbfd804ba8153f8b59136edcb9485fa6b1500025ed943178ff35",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "2fcbf5a5185eb9c8c9b70f4154588b26d361963c53e5430791a983a0b233d292",
+                "id": "app.replit",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "replit",
             "status": "available"
@@ -16224,7 +16864,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "0d6b8db46bc0ba680cc13d56d8aef96283a2e3915c0c48b8c900a22e653c890b",
       "name": "replit",
@@ -16254,7 +16894,12 @@
             "metadata": {
               "bindingDigest": "a1dd02d8dfb371a7f115888012aecf50618df428fd7f237eefb28e791f804bd5",
               "digest": "cc0f91c6f8278ffef20210505a342179edce7d38af8b70abafc2439f969e7f9e",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "a1dd02d8dfb371a7f115888012aecf50618df428fd7f237eefb28e791f804bd5",
+                "id": "app.responsive",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "responsive",
             "status": "available"
@@ -16278,7 +16923,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "75af278a7055ad2ed42894a5e52306e035562cb29873a553c25d8b59ad72dcac",
       "name": "responsive",
@@ -16308,7 +16953,12 @@
             "metadata": {
               "bindingDigest": "c06193471a1eeef7bb197be0fd09b0f30360b12647e2954b1fee5ff824715a39",
               "digest": "655dc408cea6c20fa2e1d4bd08a15b17d84f2e564ee847bad4af43fb74b84af4",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "c06193471a1eeef7bb197be0fd09b0f30360b12647e2954b1fee5ff824715a39",
+                "id": "app.rox",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "rox",
             "status": "available"
@@ -16332,7 +16982,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "c25162ed812569fa8f70e28aa82df12b155d07a2ec9d2da7b25ffbfd934b823a",
       "name": "rox",
@@ -16362,7 +17012,12 @@
             "metadata": {
               "bindingDigest": "feff90d06faece2361c5af780b1d4de81fdf0b0239c2b995f4172f4a65a8d80e",
               "digest": "97a614c23d3c1fcf89a1a19aedc6b0bf489d13a234237c55b249f81da32f6ec7",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "feff90d06faece2361c5af780b1d4de81fdf0b0239c2b995f4172f4a65a8d80e",
+                "id": "app.s-p",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "s-p",
             "status": "available"
@@ -16386,7 +17041,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "3eaec50b646f0311637f4599d33a1633617a2cf1090ceaf44e2039d1bd89e39d",
       "name": "s-p",
@@ -16416,7 +17071,12 @@
             "metadata": {
               "bindingDigest": "22e293127d8dcc514a8e9e01a6a85da2e0c983711588179c711e8c3a46456f08",
               "digest": "2a45bfaa3b6f97672e78bc8bd788acdfbbe7071e443ea3deedebac37348e93cb",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "22e293127d8dcc514a8e9e01a6a85da2e0c983711588179c711e8c3a46456f08",
+                "id": "app.scite",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "scite",
             "status": "available"
@@ -16440,7 +17100,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "af412749987dfddc4bfbdc6371407a1e664a743ee4564ea6a1e95450308e281e",
       "name": "scite",
@@ -16470,7 +17130,12 @@
             "metadata": {
               "bindingDigest": "7db904b713b0abd91e7eb427d81ed8a5c9b499b6533c1a0ce85199bdafefbaf5",
               "digest": "8f88b2a207a8b1b5b40af27ff0099f2dc7f05fed7a4c8b1d63ac4d2738c1358c",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "7db904b713b0abd91e7eb427d81ed8a5c9b499b6533c1a0ce85199bdafefbaf5",
+                "id": "app.semrush",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "semrush",
             "status": "available"
@@ -16494,7 +17159,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "0393a97a5a103418ea1ec04a36e60f9c4d2ac8ea47ff722c82d8de139d3caaa3",
       "name": "semrush",
@@ -16524,7 +17189,12 @@
             "metadata": {
               "bindingDigest": "4ca956498ab072c434ad4b75be800fc72e530f6e5eec380564f1868f709ced87",
               "digest": "1edb61e3b79b7bffecdf07d425ed1c926ee834f33b114f4219e8e6ea12ab63d5",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "4ca956498ab072c434ad4b75be800fc72e530f6e5eec380564f1868f709ced87",
+                "id": "app.sendgrid",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "sendgrid",
             "status": "available"
@@ -16548,7 +17218,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "9d57d37a2fbbf72bbaaeba4ba78dfe2ee70ced2a0dd5b9e3ffdea06d8570752a",
       "name": "sendgrid",
@@ -16623,7 +17293,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "94cd7467c6b3ddbb5051ec94e95e4d66e1748f4fc7c52d321fabfc35df259b9e",
       "name": "sentry",
@@ -16653,7 +17323,12 @@
             "metadata": {
               "bindingDigest": "9ab73dcfa72860fcce61d89a65b7798384c29bc0156cc83efc882c03910caaa3",
               "digest": "3483e0582fd40e973e6547aa5f632a85cf85939b06166f241fbdcb762481a8f7",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "9ab73dcfa72860fcce61d89a65b7798384c29bc0156cc83efc882c03910caaa3",
+                "id": "app.setu-bharat-connect-billpay",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "setu-bharat-connect-billpay",
             "status": "available"
@@ -16677,7 +17352,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "55aca8bf794a9d774353ebcfa8a9faecb5fd5e8af2353505207e5e45a1454c3a",
       "name": "setu-bharat-connect-billpay",
@@ -16841,7 +17516,12 @@
             "metadata": {
               "bindingDigest": "72c3df99426e2f74e16d9022c1b14273539198afe878014e36e6f0758c0764c7",
               "digest": "fe2af7f931a0e1ca49442878f489e73c6fb53c3368f38af4366f68ff0f86e1fc",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "72c3df99426e2f74e16d9022c1b14273539198afe878014e36e6f0758c0764c7",
+                "id": "app.sharepoint",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "sharepoint",
             "status": "available"
@@ -16866,7 +17546,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "702f0d536af854fe6de59172aa12827fb87d0bd60000b31f783fe157edfe453e",
       "name": "sharepoint",
@@ -17277,7 +17957,12 @@
             "metadata": {
               "bindingDigest": "1d635d34459428a0374424744647f9fb42e55d38d57fccdf62a6c019219b633d",
               "digest": "ffcca952f746fef43eef264c35b914ceddf7f50ce64305e16d053c83017fde16",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "1d635d34459428a0374424744647f9fb42e55d38d57fccdf62a6c019219b633d",
+                "id": "app.shopify",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "shopify",
             "status": "available"
@@ -17302,7 +17987,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "22215d68faa5dbbc80314be22b960efe400f3e2a9bea728c653073da9c5a096a",
       "name": "shopify",
@@ -17332,7 +18017,12 @@
             "metadata": {
               "bindingDigest": "16b6e916293a8b50e89fd156ab9272c594066e946cfa52cfbde12d4242cca1a6",
               "digest": "a598e1e0bcb4c590b90c8d43ae22fc1fbfc94ade8964d6874fa90d3c12a2ff7e",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "16b6e916293a8b50e89fd156ab9272c594066e946cfa52cfbde12d4242cca1a6",
+                "id": "app.shutterstock",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "shutterstock",
             "status": "available"
@@ -17373,7 +18063,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "370ef0a239c4d8054a58b2bfb4a9bf2aed9fd348b5feb2d84fb2275fd3aa6266",
       "name": "shutterstock",
@@ -17403,7 +18093,12 @@
             "metadata": {
               "bindingDigest": "bb34392778a97c838d16683aae43484f99339ae77b29ae9b8271a4e6d729f7d1",
               "digest": "d5c38096736e6808e63b0c50f4818db17eac44304e021602fb0f9c7a4b8f42c0",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "bb34392778a97c838d16683aae43484f99339ae77b29ae9b8271a4e6d729f7d1",
+                "id": "app.signnow",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "signnow",
             "status": "available"
@@ -17427,7 +18122,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "4afe4f79e0e0697ec8914120fa9e2c704e5054f782f3761fd0705071599a4e81",
       "name": "signnow",
@@ -17457,7 +18152,12 @@
             "metadata": {
               "bindingDigest": "ed73289b0d072ed8f34c323a019bbde5008ad09536d3c74807a81262f87f462d",
               "digest": "84bec07cc5173a5b5e910030a6306d31c85dea30c90e0e8b2d5e78e0cb5344b2",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "ed73289b0d072ed8f34c323a019bbde5008ad09536d3c74807a81262f87f462d",
+                "id": "app.similarweb",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "similarweb",
             "status": "available"
@@ -17481,7 +18181,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "939f5761b837b1f46c0bc3d51d74aff64dc1f0795b527caa05d73528a4c9bed8",
       "name": "similarweb",
@@ -17511,7 +18211,12 @@
             "metadata": {
               "bindingDigest": "ca0544f7a21e9c70c73763712abf1b47812a726213fc63544f8a5ee1ad6f70ef",
               "digest": "0b7ff50389cff7ef94c2ebf42d4d4db9c3ad1c0b5b08b23cd5211f4fc09a660f",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "ca0544f7a21e9c70c73763712abf1b47812a726213fc63544f8a5ee1ad6f70ef",
+                "id": "app.skywatch",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "skywatch",
             "status": "available"
@@ -17552,7 +18257,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "53341f4ab26332b9dc9c7fd22d75e599c3f5201d721025f52a7a250638f7018e",
       "name": "skywatch",
@@ -17697,7 +18402,12 @@
             "metadata": {
               "bindingDigest": "812552ede2d81189fb8ea454cad38dc0c4d8d5db8294330b0733a837decf304d",
               "digest": "f12c21ec53115eea6b170a2503649890827b5bc14ba4f1b5215283454a8df1c5",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "812552ede2d81189fb8ea454cad38dc0c4d8d5db8294330b0733a837decf304d",
+                "id": "app.slack",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "slack",
             "status": "available"
@@ -17722,7 +18432,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "2a49ff4a25176b35186be7fd23748b54763393bce3589c2bfeb50d55711c1993",
       "name": "slack",
@@ -17752,7 +18462,12 @@
             "metadata": {
               "bindingDigest": "ec728dd3840774265581b5822ecd6cc1b70c6d99917fe358183c36a40141fb3b",
               "digest": "a8e8d4e536e4e1851c7495e95c9113ddd57318cd6a2e424ea5c40e37cded008e",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "ec728dd3840774265581b5822ecd6cc1b70c6d99917fe358183c36a40141fb3b",
+                "id": "app.statsig",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "statsig",
             "status": "available"
@@ -17793,7 +18508,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "3355a259b474b0d87ac6d22bf6f01cefef14804dd1564ad72b637bf15b96fe24",
       "name": "statsig",
@@ -17823,7 +18538,12 @@
             "metadata": {
               "bindingDigest": "ed60592b724ce5784be4df83fdd853f902cd9ad1544f3d16bcc3f60ec263206f",
               "digest": "e9d4142f2aa2fbbdcc5cad4026249f59bba2f30a8d201e5d3713ec06834bace4",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "ed60592b724ce5784be4df83fdd853f902cd9ad1544f3d16bcc3f60ec263206f",
+                "id": "app.streak",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "streak",
             "status": "available"
@@ -17847,7 +18567,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "9946288fbdfac8526bd46420be1c21782bf73b44bc537ff066c69f43427122ea",
       "name": "streak",
@@ -17913,7 +18633,12 @@
             "metadata": {
               "bindingDigest": "bba3cb1d8a4d996422899df6982e32be5057af24d4185cbf2636c66661f08f9c",
               "digest": "04dfb00035a9f293ca38382e33ca6afb2f039cf91d9a9e1a166c1eb830d14999",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "bba3cb1d8a4d996422899df6982e32be5057af24d4185cbf2636c66661f08f9c",
+                "id": "app.stripe",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "stripe",
             "status": "available"
@@ -17937,7 +18662,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "c8801ce2aca839be9e7cf267262add18288bee5d8063e026282015653308da2c",
       "name": "stripe",
@@ -18006,7 +18731,12 @@
             "metadata": {
               "bindingDigest": "857f391559c5fd29101292d25327a19b1d870e2fd6284de8481eb5a80345b8ab",
               "digest": "bf0c5bc3eae214f8a81728194e448552fcdb31d6ed3d2f526fd27d410c16bd4d",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "857f391559c5fd29101292d25327a19b1d870e2fd6284de8481eb5a80345b8ab",
+                "id": "app.supabase",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "supabase",
             "status": "available"
@@ -18031,7 +18761,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "e9011d12e76aa7979cf068dcc1f00b6a3ad132135dbb3039f247406662f32ee2",
       "name": "supabase",
@@ -18176,7 +18906,12 @@
             "metadata": {
               "bindingDigest": "d80fac76395da4adeed6db6f831dd25010d2de621c565e21297ef508f85394ee",
               "digest": "2a10cf24ee234e28d848f20834039b3860a22ea17160168c2776e81c485a472f",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "d80fac76395da4adeed6db6f831dd25010d2de621c565e21297ef508f85394ee",
+                "id": "app.superhuman",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "superhuman",
             "status": "available"
@@ -18219,7 +18954,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "5875242c40b98db4107b6204a333422320ac1b20465fcde3287bd93d7c380a18",
       "name": "superhuman",
@@ -18523,7 +19258,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "700bf13c92bbadecfe094ce7b8e9f2ba921e21da3ef616cf58bdd9e1e309c739",
       "name": "superpowers",
@@ -18553,7 +19288,12 @@
             "metadata": {
               "bindingDigest": "0cf22fe0fc5ffdaee3b3cced88c8bf5ca9ff0da61aea1edbdcae1480499c5579",
               "digest": "2346d084ea95840486807894a16f41921e5f554f9840e2d6ecb65eb852840773",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "0cf22fe0fc5ffdaee3b3cced88c8bf5ca9ff0da61aea1edbdcae1480499c5579",
+                "id": "app.taxdown",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "taxdown",
             "status": "available"
@@ -18577,7 +19317,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "f2cb7c22306173bcf0447b176a27d03864a8f6ca03c16aaa0d381a29830beea8",
       "name": "taxdown",
@@ -18741,7 +19481,12 @@
             "metadata": {
               "bindingDigest": "43e3df266aca6e45fd1543d17938809b046662b6c5b38f86308b488eabcc20a6",
               "digest": "44aee0d7b9a4f87e74728d5b915975ad832cd1ef677dd477f15db3e3590cc057",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "43e3df266aca6e45fd1543d17938809b046662b6c5b38f86308b488eabcc20a6",
+                "id": "app.teams",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "teams",
             "status": "available"
@@ -18766,7 +19511,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "113923551a8e25d5170d59c88855aebf8abbe8d5a09096754afb0ed71b2e258d",
       "name": "teams",
@@ -18796,7 +19541,12 @@
             "metadata": {
               "bindingDigest": "dd4a6a09631e6ffa73903f5f03c36b8f7faa720bf78e2b9587d5bf0966e68169",
               "digest": "317ffd425d6f368ed404b7a349a2b20f73c6a679d3cbfe4a50e4005c6699f2b1",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "dd4a6a09631e6ffa73903f5f03c36b8f7faa720bf78e2b9587d5bf0966e68169",
+                "id": "app.teamwork-com",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "teamwork-com",
             "status": "available"
@@ -18820,7 +19570,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "2ec91df0b94256ef1fd0167ab429f2628c759ca872c475f91ca0f460373bcc7e",
       "name": "teamwork-com",
@@ -18877,7 +19627,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "176bc3507411fd846a851f605d9e9460587cd4cce959956d04a289760868657e",
       "name": "temporal",
@@ -18987,7 +19737,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "0b5ddf8db9cd0ce0364b8fdc3743593491b7fd57cab1ad957409f46d66c2265f",
       "name": "test-android-apps",
@@ -19017,7 +19767,12 @@
             "metadata": {
               "bindingDigest": "c1d18acada5fde2f762a3cae290297b1884ea9a8e023e803cc345a6ef8dba80c",
               "digest": "c11aee6feec6a9abdcbce6be4317bbfa2082cd96250a76d81547b2b260e37fea",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "c1d18acada5fde2f762a3cae290297b1884ea9a8e023e803cc345a6ef8dba80c",
+                "id": "app.third-bridge",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "third-bridge",
             "status": "available"
@@ -19041,7 +19796,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "0d95906c14ecb250962ca2ab98af1035de7ce971bc2bed27e77226e2f90cdb8a",
       "name": "third-bridge",
@@ -19071,7 +19826,12 @@
             "metadata": {
               "bindingDigest": "19773273cfc35dbcfb697e152e767799e086e53ddd65d52cbac53f6a6e26a2d6",
               "digest": "b1de230dce6047c81f8b23412a5ad2b916ece7df9f2f8ccede89e032ae79d02d",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "19773273cfc35dbcfb697e152e767799e086e53ddd65d52cbac53f6a6e26a2d6",
+                "id": "app.thoughtspot",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "thoughtspot",
             "status": "available"
@@ -19095,7 +19855,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "f825a6bdb8bb264c70c1077a8182894569381e65ba85ae1ffe0a1bb2000a4bcd",
       "name": "thoughtspot",
@@ -19125,7 +19885,12 @@
             "metadata": {
               "bindingDigest": "fa3b51427fc1d52e1c1de69088afc9612c47d070776fcbcdac06e7369c08c514",
               "digest": "7503b1e1600805b1e205ac6f930708cb43aa35a6b25e81c03473746506c0bff4",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "fa3b51427fc1d52e1c1de69088afc9612c47d070776fcbcdac06e7369c08c514",
+                "id": "app.tinman-ai",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "tinman-ai",
             "status": "available"
@@ -19149,7 +19914,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "4f943695d3d006e6012e6628720d9d36f753beaf05aff6ae1484b2aa8264cf1c",
       "name": "tinman-ai",
@@ -20232,7 +20997,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "07334a49a6357cdc0548a9c7faefa9bc650455c7f8190ea08ba6b98be6a9461e",
       "name": "twilio-developer-kit",
@@ -20262,7 +21027,12 @@
             "metadata": {
               "bindingDigest": "301eeb293ad8711149f9f2639b8c0c56edd8d5e6fa2de8d2985f5d08d3c1849c",
               "digest": "c41d6d349a78ad83f6afac4fef136fb5b5c8e69094d53a8d1ef3530541e7e64d",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "301eeb293ad8711149f9f2639b8c0c56edd8d5e6fa2de8d2985f5d08d3c1849c",
+                "id": "app.united-rentals",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "united-rentals",
             "status": "available"
@@ -20286,7 +21056,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "75c897e1a6079055727e57a5f74a56ac9e438c911ee3e6987254778c8a9b3309",
       "name": "united-rentals",
@@ -20316,7 +21086,12 @@
             "metadata": {
               "bindingDigest": "704b62b9d788f34e455ecf61c64a2b0b5d4bf4ddbcf7cdbd99a0923fbf26e692",
               "digest": "ed12d1c9af2e972a3d03515945b1e1900fbd87c742c299344744996736edaa57",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "704b62b9d788f34e455ecf61c64a2b0b5d4bf4ddbcf7cdbd99a0923fbf26e692",
+                "id": "app.vantage",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "vantage",
             "status": "available"
@@ -20340,7 +21115,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "e1222517bbe253876834a34ec6b5a40888140e940afd77e161d314bd863ee83e",
       "name": "vantage",
@@ -21432,7 +22207,12 @@
             "metadata": {
               "bindingDigest": "cb59d4fc70f7e8f74b62c1b5c1cf3bc64f2b50851dd5c983d0f1dc62c4ec1525",
               "digest": "6158a9d613b0135816eb8740272a03018c19729d2e0f737f657227559af170ed",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "cb59d4fc70f7e8f74b62c1b5c1cf3bc64f2b50851dd5c983d0f1dc62c4ec1525",
+                "id": "app.vercel",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "vercel",
             "status": "available"
@@ -21457,7 +22237,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "Apache-2.0",
       "manifestDigest": "346c158d9ada397cfb6690231c48adc051a1d52727fd1b6c34db2c4f13735168",
       "name": "vercel",
@@ -21487,7 +22267,12 @@
             "metadata": {
               "bindingDigest": "14984f7eaca836900b6fb5f3f675d9307b15fd4e59f1d3f99630051099ea6421",
               "digest": "b7a639874a87543a439e688027c6d5a4ce7edc1f1f936306a120c19f04a163e5",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "14984f7eaca836900b6fb5f3f675d9307b15fd4e59f1d3f99630051099ea6421",
+                "id": "app.waldo",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "waldo",
             "status": "available"
@@ -21511,7 +22296,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "5f33759e46fe0e627e1f18731d972bffa3e278b0ff86c1e6d82d3edee3fbd6aa",
       "name": "waldo",
@@ -21541,7 +22326,12 @@
             "metadata": {
               "bindingDigest": "4a831a7fe96731915208fc30375525894bfa4e13db678c0528abdf3e69775e27",
               "digest": "d90cd2b2f2707b9f05ee996f9d77b6f37bf474d59b14c0e629d44a36f65028e7",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "4a831a7fe96731915208fc30375525894bfa4e13db678c0528abdf3e69775e27",
+                "id": "app.weatherpromise",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "weatherpromise",
             "status": "available"
@@ -21565,7 +22355,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "3edff32d65d25434f7ee4c3a685b8ccc619d7b70a7e246530bcdd199ce277a52",
       "name": "weatherpromise",
@@ -21595,7 +22385,12 @@
             "metadata": {
               "bindingDigest": "57e8406dccfa16bdf61732000bbf38f2acf05fd4951fed76b82a7cbaf73e76b2",
               "digest": "9225d60ce0ee3e167cb1abe974377ce9dd25a07107eaec6f2503293ba026aa6b",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "57e8406dccfa16bdf61732000bbf38f2acf05fd4951fed76b82a7cbaf73e76b2",
+                "id": "app.windsor-ai",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "windsor-ai",
             "status": "available"
@@ -21636,7 +22431,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "b2b8fd97a3347d02a95b3bf6c44bd85416fdd774fb434e6ac4a1b3c995107e3b",
       "name": "windsor-ai",
@@ -21743,7 +22538,12 @@
             "metadata": {
               "bindingDigest": "43b68f0a87a69caace43b73de19d443cae88921fe2ec576547b7c6b0dc9eb1f2",
               "digest": "20408104a0dd6407e377f2ad99e8c64d00d4d838f720a882a72a533b093559ef",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "43b68f0a87a69caace43b73de19d443cae88921fe2ec576547b7c6b0dc9eb1f2",
+                "id": "app.wix",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "wix",
             "status": "available"
@@ -21768,7 +22568,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "89da233e5f379097285da8a6035c026df739e010d78dcaccd73d80eefce7ea7c",
       "name": "wix",
@@ -21798,7 +22598,12 @@
             "metadata": {
               "bindingDigest": "7c146c6ab46f1162a2850750819846494719194432927c6bd4adb4a86c25a471",
               "digest": "c5340f867f8a7bcc6442a9473c599a15f55971727c89d727a2fb7e1082e4c28c",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "7c146c6ab46f1162a2850750819846494719194432927c6bd4adb4a86c25a471",
+                "id": "app.yepcode",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "yepcode",
             "status": "available"
@@ -21822,7 +22627,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "2ed4d04cebe4468dd1765de5e7ea64119fdca5f1be58f61ba74db0ec1dcafa0a",
       "name": "yepcode",
@@ -21852,7 +22657,12 @@
             "metadata": {
               "bindingDigest": "18a9a565e9c09305c89814f69fb822988f4e39321510a9128f04533941d94564",
               "digest": "6341590bcab246571051cab2713967ad41082aa8618235b8fdceb008e79e35b8",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "18a9a565e9c09305c89814f69fb822988f4e39321510a9128f04533941d94564",
+                "id": "app.zoho",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "zoho",
             "status": "available"
@@ -21876,7 +22686,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "b3df8d3e92693ac74481e644937e3afaf0f19531ff413f324baa5a3d4518cff1",
       "name": "zoho",
@@ -23502,7 +24312,12 @@
             "metadata": {
               "bindingDigest": "e1c27709c4e2d564c250da1f559187833c1232446556ada578171bbc14bb564c",
               "digest": "2ee8d6934e2e1c66bc327a91837d9dde297aa660ae3541e4be747807db79e604",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "e1c27709c4e2d564c250da1f559187833c1232446556ada578171bbc14bb564c",
+                "id": "app.zoom",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "zoom",
             "status": "available"
@@ -23617,7 +24432,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "9d987b2930bd8b7e358fdb30ef92cd4b2fd06b11907396072615945b4d31e6d5",
       "name": "zoom",
@@ -23647,7 +24462,12 @@
             "metadata": {
               "bindingDigest": "901e220c772c0271101a4110193a6beee6ea0045c7c45705edd2a79e714b33f7",
               "digest": "13220693a05cabc110c55c834e28527111657ce044e02911b924d8aee2881271",
-              "path": ".app.json"
+              "path": ".app.json",
+              "providerBinding": {
+                "componentDigest": "901e220c772c0271101a4110193a6beee6ea0045c7c45705edd2a79e714b33f7",
+                "id": "app.zoominfo",
+                "providerKind": "openai-connector-bridge"
+              }
             },
             "name": "zoominfo",
             "status": "available"
@@ -23671,7 +24491,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "991ead95b2d25ca527b9356cc4c37600a2428a00259ed1c37f1a8d52c2d60fc3",
       "name": "zoominfo",
@@ -23728,7 +24548,7 @@
           }
         }
       ],
-      "importedAt": "2026-08-29T10:26:32.971Z",
+      "importedAt": "2026-08-29T11:52:41.101Z",
       "licenseDeclaration": "MIT",
       "manifestDigest": "377c4de62e671bdbef30c699f1cce2f1134471bfa3c9e2e12d982358ebff8e36",
       "name": "zotero",
@@ -23742,7 +24562,7 @@
       "treeDigest": "23e787d96d9e8f67022cb30f230fb7a95de65cfc4c21d87605c12ba5419f4ae4"
     }
   ],
-  "importedAt": "2026-08-29T10:26:32.971Z",
+  "importedAt": "2026-08-29T11:52:41.101Z",
   "inventory": {
     "pluginsWithAgents": 14,
     "pluginsWithApps": 154,

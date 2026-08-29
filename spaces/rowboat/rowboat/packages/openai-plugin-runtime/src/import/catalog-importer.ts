@@ -18,6 +18,7 @@ import type {
   NormalizedPluginComponent,
   SourceProvenance,
 } from "../domain/plugin.js";
+import type { ProviderBinding, ProviderKind } from "../providers/provider.js";
 import { DEFAULT_POLICY, type PluginPolicy } from "../policy/default-policy.js";
 import { evaluateComponentAdmission } from "../policy/capability-policy.js";
 import { evaluateLicense, type AdmissionDecision } from "../policy/license-policy.js";
@@ -227,7 +228,9 @@ export function componentBindingDigest(
         const keys = ownKeysOf(component.metadata);
         for (let index = 0; index < keys.length; index += 1) {
           const key = keys[index];
-          if (typeof key !== "string" || key === "bindingDigest") continue;
+          // bindingDigest is the value being computed, and providerBinding
+          // carries it, so both stay out of the hashed metadata.
+          if (typeof key !== "string" || key === "bindingDigest" || key === "providerBinding") continue;
           const descriptor = getOwnPropertyDescriptor(component.metadata, key);
           if (descriptor !== undefined && "value" in descriptor) output[key] = descriptor.value;
         }
@@ -278,9 +281,15 @@ function componentAdmissions(
     for (let seen = 0; seen < ids.length; seen += 1) if (ids[seen] === component.id || bindingDigests[seen] === bindingDigest) throw new Error("digest_mismatch:component_binding");
     ids[ids.length] = component.id;
     bindingDigests[bindingDigests.length] = bindingDigest;
+    const declaredBinding = componentProviderBinding(component, bindingDigest);
     const boundComponent: CatalogBoundPluginComponent = {
       ...component,
-      metadata: { ...component.metadata, digest: String(component.metadata.digest), bindingDigest },
+      metadata: {
+        ...component.metadata,
+        digest: String(component.metadata.digest),
+        bindingDigest,
+        ...(declaredBinding === undefined ? {} : { providerBinding: declaredBinding }),
+      },
     };
     output[output.length] = {
       component: boundComponent,
@@ -288,6 +297,37 @@ function componentAdmissions(
     };
   }
   return output;
+}
+
+const PROVIDER_BINDING_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+/**
+ * Declares how an executable component is reached.
+ *
+ * Only apps and MCP servers are executed through a provider; a skill, agent,
+ * command, asset, or hook is not, and declaring a binding for one would claim an
+ * execution path that does not exist. The binding is content addressed: it
+ * carries the component binding digest the resolver compares an installation
+ * against, so an installed binding can never drift from the pinned component.
+ */
+function componentProviderBinding(
+  component: NormalizedPluginComponent,
+  bindingDigest: string,
+): ProviderBinding | undefined {
+  let providerKind: ProviderKind;
+  if (component.kind === "app") providerKind = "openai-connector-bridge";
+  else if (component.kind === "mcp") {
+    const transport = component.metadata.transport;
+    if (transport === "http") providerKind = "mcp-http";
+    else if (transport === "process") providerKind = "mcp-process";
+    // An MCP server whose transport this runtime does not know is left without
+    // a binding, so it resolves as provider_unavailable instead of being
+    // executed through a guessed transport.
+    else return undefined;
+  } else return undefined;
+  const candidate = `${component.kind}.${component.name}`;
+  const id = PROVIDER_BINDING_ID.test(candidate) ? candidate : `${component.kind}.${bindingDigest.slice(0, 32)}`;
+  return Object.freeze({ id, providerKind, componentDigest: bindingDigest });
 }
 
 function emptyInventory(): CatalogInventory {

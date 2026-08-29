@@ -315,16 +315,28 @@ describe("legacy plugin migration recipes", () => {
     expect(new LegacyPluginMigration().preview(pipelineDrift, catalog).blockers).toContainEqual(expect.objectContaining({ code: "source_configuration_drift" }));
   });
 
-  it("recognizes the exact admitted GitHub MCP but does not fabricate a missing provider binding", () => {
+  it("resolves the exact admitted GitHub MCP from its declared binding and still blocks on admission review", () => {
     const result = new LegacyPluginMigration().preview(source("github-data-to-spreadsheet"), catalog);
+    // The catalog now publishes a provider binding for every app and MCP
+    // component, so the admitted GitHub MCP resolves. The card stays blocked on
+    // the components a human still has to admit.
     expect(result.status).toBe("blocked");
-    expect(result.installations).toEqual([]);
-    expect(result.blockers).toEqual(expect.arrayContaining([
-      expect.objectContaining({ capabilityId: "github-page-views", componentId: "mcp:.mcp.json#github", code: "provider_unavailable" }),
-      expect.objectContaining({ capabilityId: "github-repository-clones", componentId: "mcp:.mcp.json#github", code: "provider_unavailable" }),
-      expect.objectContaining({ capabilityId: "google-sheets-append", code: "admission_review_required" }),
-      expect.objectContaining({ capabilityId: "slack-send-message", code: "admission_review_required" }),
-    ]));
+    expect(result.blockers.map(blocker => blocker.code).sort()).toEqual(["admission_review_required", "admission_review_required"]);
+    expect(result.blockers.every(blocker => blocker.capabilityId !== "github-page-views" && blocker.capabilityId !== "github-repository-clones")).toBe(true);
+  });
+
+  it("never fabricates a binding for a component that declares none", () => {
+    // Checked at the resolver, because a catalog edited to remove the binding
+    // no longer matches the pinned digest and is refused before this point.
+    const base = catalog.entries.find(entry => entry.name === "github")!;
+    const exact = base.components.find(item => item.component.id === "mcp:.mcp.json#github")!;
+    const capability = LEGACY_PLUGIN_RECIPES["github-data-to-spreadsheet"].capabilities[0]!;
+    expect(resolveLegacyRecipe(capability, [base])).toMatchObject({ capability: expect.objectContaining({ capabilityId: "github-page-views" }) });
+
+    const { providerBinding: declared, ...metadata } = exact.component.metadata as Record<string, unknown>;
+    void declared;
+    const stripped = { ...base, components: [{ ...exact, component: { ...exact.component, metadata } }] } as typeof base;
+    expect(resolveLegacyRecipe(capability, [stripped])).toEqual(expect.objectContaining({ code: "provider_unavailable" }));
   });
 
   it.each([

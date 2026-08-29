@@ -582,6 +582,52 @@ describe("importCatalog", () => {
     });
   });
 
+  it("declares an executable provider binding for every app and mcp component", async () => {
+    const source = await createSource("provider-binding", [
+      { directoryName: "alpha", license: "MIT", surfaces: ["apps", "mcp", "skills"] },
+    ]);
+    const lock = await importCatalog(source.pluginsRoot, options(source));
+    const entry = lock.entries[0]!;
+    const bindings = new Map<string, unknown>();
+    for (const { component } of entry.components) {
+      const binding = (component.metadata as { providerBinding?: unknown }).providerBinding;
+      if (component.kind !== "app" && component.kind !== "mcp") {
+        // A skill or asset is not executed through a provider, so declaring one
+        // would claim an execution path that does not exist.
+        expect(binding).toBeUndefined();
+        continue;
+      }
+      // The resolver admits a component only when the installed binding matches
+      // the component binding digest exactly.
+      expect(binding).toMatchObject({
+        componentDigest: component.metadata.bindingDigest,
+        providerKind: component.kind === "app" ? "openai-connector-bridge" : "mcp-http",
+      });
+      const id = (binding as { id: string }).id;
+      expect(id).toMatch(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
+      expect(bindings.has(id)).toBe(false);
+      bindings.set(id, binding);
+    }
+    expect(bindings.size).toBe(2);
+  });
+
+  it("keeps the declared binding out of the digest it carries", async () => {
+    const source = await createSource("provider-binding-digest", [
+      { directoryName: "alpha", license: "MIT", surfaces: ["mcp"] },
+    ]);
+    const lock = await importCatalog(source.pluginsRoot, options(source));
+    const entry = lock.entries[0]!;
+    const bound = entry.components.find(item => item.component.kind === "mcp")!;
+    // Recomputing the binding digest over the component that already carries
+    // the binding must reproduce it: a self-referential digest would be
+    // unverifiable and would break on every re-import.
+    expect(componentBindingDigest(entry, bound.component, {
+      componentAdmission: bound.admission,
+      licenseDeclaration: entry.licenseDeclaration ?? "<missing>",
+      licenseAdmission: entry.admission,
+    })).toBe(bound.component.metadata.bindingDigest);
+  });
+
   it("fails closed when an expected catalog count differs", async () => {
     const source = await createSource("catalog-count", [
       { directoryName: "alpha", license: "MIT" },
