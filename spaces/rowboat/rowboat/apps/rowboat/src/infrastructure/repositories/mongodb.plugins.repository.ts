@@ -43,6 +43,17 @@ type StoredDocument = Record<string, unknown>;
 
 const repositoryErrors = new WeakSet<Error>();
 
+/**
+ * The MongoDB driver assigns the generated `_id` onto the document object it is
+ * handed. Every document these writes produce is validated and frozen, so the
+ * driver would throw `TypeError: Cannot add property _id` and the write would
+ * surface as `repository_write_failed`. Each insert therefore passes an
+ * extensible shallow copy; the frozen original stays the authority.
+ */
+function insertable<T>(document: T): T {
+  return { ...(document as object) } as T;
+}
+
 function invalid(reason: string): never {
   const error = new Error(reason);
   repositoryErrors.add(error);
@@ -574,11 +585,11 @@ async function immutableInsert(
     return;
   }
   if (session !== undefined) {
-    await collection.insertOne(document as StoredDocument, { session });
+    await collection.insertOne(insertable(document as StoredDocument), { session });
     return;
   }
   try {
-    await collection.insertOne(document as StoredDocument);
+    await collection.insertOne(insertable(document as StoredDocument));
   } catch (error) {
     if (!(error instanceof MongoServerError) || error.code !== 11000) invalid("repository_write_failed");
     const raced = await collection.findOne(filter, { projection: { _id: 0 } });
@@ -766,7 +777,7 @@ export class MongodbPluginsRepository implements IPluginsRepository {
       return;
     }
     try {
-      await collection.insertOne(storedDocument);
+      await collection.insertOne(insertable(storedDocument));
     } catch (error) {
       if (!(error instanceof MongoServerError) || error.code !== 11000) invalid("repository_write_failed");
       const racedById = await collection.findOne({ id: document.id }, { projection: { _id: 0 } });
@@ -879,7 +890,9 @@ export class MongodbPluginsRepository implements IPluginsRepository {
     const document = await this.database.collection(PLUGIN_COLLECTIONS.receipts).findOne({ receiptId }, { projection: { _id: 0 } });
     // Idempotency-scoped records carry a mutation envelope instead of a
     // standalone payload; they are replay state, not readable evidence.
-    return document === null || document.payload === undefined ? null : receipt(document.payload);
+    // A stored receipt keeps its canonical JSON string, exactly as putReceipt
+    // wrote it, so it is parsed before it is validated.
+    return document === null || document.payload === undefined ? null : receipt(parsePayload(document.payload, "receipt_invalid"));
   }
 
   async claimExecutionDispatch(input: PluginExecutionDispatchClaim): Promise<void> {
@@ -947,7 +960,7 @@ export class MongodbPluginsRepository implements IPluginsRepository {
           .find({ installationId }, options).sort({ name: 1 }).toArray();
         const currentCredentialSlots = currentCredentialDocuments.map((document) => credentialSlot(parsePayload(document.payload, "execution_claim_conflict")));
         if (canonical(currentCredentialSlots as unknown as Captured) !== canonical(credentialSlots as unknown as Captured)) invalid("execution_claim_conflict");
-        await this.database.collection(PLUGIN_COLLECTIONS.executionClaims).insertOne(claimDocument, { session });
+        await this.database.collection(PLUGIN_COLLECTIONS.executionClaims).insertOne(insertable(claimDocument), { session });
       });
     } catch (error) {
       if (isDuplicateKey(error)) invalid("execution_claim_conflict");
@@ -1011,14 +1024,14 @@ export class MongodbPluginsRepository implements IPluginsRepository {
         }
         const selectedEntry = await this.requireCatalogEntryForInstallation(install, session);
         this.validateProviderBindings(install, selectedEntry);
-        await this.database.collection(PLUGIN_COLLECTIONS.installations).insertOne(this.installationDocument(install), { session });
+        await this.database.collection(PLUGIN_COLLECTIONS.installations).insertOne(insertable(this.installationDocument(install)), { session });
         await this.validateAdmissionBatch(admissions, session);
         for (const item of admissions) {
-          await this.database.collection(PLUGIN_COLLECTIONS.componentAdmissions).insertOne(item as unknown as StoredDocument, { session });
+          await this.database.collection(PLUGIN_COLLECTIONS.componentAdmissions).insertOne(insertable(item as unknown as StoredDocument), { session });
         }
         for (const slot of slots) {
           const stored = Object.freeze({ id: slot.id, installationId: slot.installationId, name: slot.name, payload: canonical(slot as unknown as Captured) });
-          await this.database.collection(PLUGIN_COLLECTIONS.credentialSlots).insertOne(stored as unknown as StoredDocument, { session });
+          await this.database.collection(PLUGIN_COLLECTIONS.credentialSlots).insertOne(insertable(stored as unknown as StoredDocument), { session });
         }
         await receiptCollection.insertOne({
           receiptId: storedReceipt.receiptId, idempotencyScope: scope, requestFingerprint: fingerprintValue,
@@ -1099,7 +1112,7 @@ export class MongodbPluginsRepository implements IPluginsRepository {
           }, storedReceipt, updatedInstallation),
         };
         assertStoredDocumentBudget(receiptDocument as unknown as Captured);
-        await receiptCollection.insertOne(receiptDocument, { session });
+        await receiptCollection.insertOne(insertable(receiptDocument), { session });
       });
     } catch (error) {
       if (!isDuplicateKey(error)) throw error;

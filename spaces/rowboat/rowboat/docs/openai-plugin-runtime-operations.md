@@ -161,6 +161,24 @@ npm --prefix apps/rowboat run test:plugins
 npm --prefix packages/openai-plugin-runtime run typecheck
 ```
 
+### Live MongoDB gate
+
+```sh
+docker run -d --name rowboat-plugin-demo -p 27018:27017 mongo:7
+ROWBOAT_LIVE_MONGO_URL=mongodb://127.0.0.1:27018/rowboat \
+  npx vitest run test/plugins/live-mongo-runtime.test.ts
+```
+
+Runs the index bootstrap, both repositories, the runtime mode use case, the
+removal gate, and shadow parity against a real MongoDB. Without the variable it
+reports itself skipped. Run it before any deployment: a fake collection cannot
+show what the real driver does to the document it is handed, and two defects
+that every fake-backed test passed were only visible here — the driver assigns
+`_id` onto the caller's frozen document, and a stored receipt comes back as its
+canonical JSON string rather than an object.
+
+### Recorded evidence
+
 `plugins:evidence` runs the app suite, the runtime package suite, and the Space
 contract file, writing `.artifacts/plugin-app-tests.json`,
 `packages/openai-plugin-runtime/.artifacts/plugin-runtime-tests.json`, and

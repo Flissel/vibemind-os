@@ -107,7 +107,11 @@ class MemoryCollection {
         throw new MongoServerError({ ok: 0, code: 11000, errmsg: "E11000 token-secret" });
       }
     }
-    const stored = { _id: `mongo-id-${this.documents.length + visible.length + 1}`, ...clone(document) };
+    // The real driver assigns the generated _id onto the caller's document
+    // object before serializing it. Reproducing that here is what catches a
+    // frozen document being handed to insertOne.
+    if (!("_id" in document)) document._id = `mongo-id-${this.documents.length + visible.length + 1}`;
+    const stored = clone(document);
     if (options?.session === undefined) {
       this.documents.push(stored);
       this.writes += 1;
@@ -1536,6 +1540,25 @@ describe("Mongo plugin transaction runner", () => {
     })).rejects.toMatchObject({ code: 251 });
     expect(followupError).toMatchObject({ code: 11000 });
     expect(collection.documents).toEqual([{ _id: "external-id-1", catalogDigest: digest("a"), name: "github", payload: "external" }]);
+  });
+
+  it("round-trips a stored receipt through getReceipt and never reads replay state as evidence", async () => {
+    const { repository, database } = repositoryFixture();
+    const stored = Object.freeze({
+      type: "execution" as const, receiptId: `parity:${"c".repeat(64)}`, projectId: "11111111-1111-4111-8111-111111111111",
+      pluginName: "github", status: "success" as const, redactions: Object.freeze(["output.arguments"]),
+      output: Object.freeze({ version: 1, matched: true }),
+    });
+    await repository.putReceipt(stored);
+    expect(await repository.getReceipt(stored.receiptId)).toEqual(stored);
+    expect(await repository.getReceipt("parity:missing")).toBeNull();
+
+    // An idempotency-scoped mutation envelope is replay state, not a directly
+    // readable receipt, so it resolves to null instead of a partial receipt.
+    database.collection("plugin_receipts").insertExternal({
+      receiptId: "install-envelope", idempotencyScope: "a".repeat(64), requestFingerprint: "b".repeat(64), envelopePayload: "{}",
+    });
+    expect(await repository.getReceipt("install-envelope")).toBeNull();
   });
 
   it("supports a successful void transaction and always ends its session", async () => {
