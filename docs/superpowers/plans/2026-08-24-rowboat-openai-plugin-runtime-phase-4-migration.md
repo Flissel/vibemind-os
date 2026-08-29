@@ -233,7 +233,7 @@ git commit -m "feat(rowboat): add guarded plugin migration workflow"
 - Create: `spaces/rowboat/rowboat/apps/rowboat/test/plugins/plugin-shadow-parity.test.ts`
 - Modify: `spaces/rowboat/rowboat/apps/rowboat/src/application/lib/agents-runtime/agents.ts`
 
-- [ ] **Step 1: Write RED behavioral tests with call counters**
+- [x] **Step 1: Write RED behavioral tests with call counters**
 
 ```ts
 it("compares write-capable descriptors without executing the shadow provider", async () => {
@@ -252,7 +252,7 @@ it("normalizes agent, prompt, tool, and provider descriptors", async () => {
 });
 ```
 
-- [ ] **Step 2: Run the parity test and capture RED**
+- [x] **Step 2: Run the parity test and capture RED**
 
 ```powershell
 npm --prefix spaces/rowboat/rowboat/apps/rowboat run test:plugins -- plugin-shadow-parity.test.ts
@@ -260,7 +260,7 @@ npm --prefix spaces/rowboat/rowboat/apps/rowboat run test:plugins -- plugin-shad
 
 Expected: FAIL because the comparison service is absent.
 
-- [ ] **Step 3: Implement canonical comparison and execution guards**
+- [x] **Step 3: Implement canonical comparison and execution guards**
 
 ```ts
 export type ShadowExecution = "not_requested" | "read_only" | "descriptor_only";
@@ -276,11 +276,11 @@ export async function evaluateShadow(request: ShadowRequest): Promise<ParityRepo
 
 Normalize order-insensitive fields before hashing. Redact arguments and results before persistence. Store direct comparison evidence in `plugin_receipts`; do not claim output parity for descriptor-only write tools.
 
-- [ ] **Step 4: Wire shadow mode behind persisted project state**
+- [x] **Step 4: Wire shadow mode behind persisted project state**
 
 In `agents.ts`, use the Phase 3 runtime bridge. When the project mode is `shadow`, legacy remains active and the plugin representation is comparison-only unless every selected plugin provider is classified read-only. Unknown effect classification is treated as write-capable.
 
-- [ ] **Step 5: Verify zero shadow writes and commit**
+- [x] **Step 5: Verify zero shadow writes and commit**
 
 ```powershell
 npm --prefix spaces/rowboat/rowboat/apps/rowboat run test:plugins -- plugin-shadow-parity.test.ts
