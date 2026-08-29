@@ -463,3 +463,40 @@ def test_subscription_agent_templates_preserve_coding_restrictions_and_use_match
         assert "openrouter" not in raw.lower()
         assert "api.openai.com" not in raw.lower()
         assert "api.anthropic.com" not in raw.lower()
+
+
+def test_actual_router_blocks_unsupported_third_party_providers_fail_closed():
+    """Runbook §7.5: selecting an unsupported provider must never reach a
+    coding lane — neither the Anthropic route nor the OpenAI default."""
+    router = CapabilityRouter(CAPABILITIES_PATH)
+
+    for phrase in (
+        "Use Gemini to inspect tests/subscription_fixture_accept.py and report the MARKER value.",
+        "use Gemini to fix app.py",
+        "fix app.py with Grok",
+        "fix the bug in utils.py using Copilot",
+        "mit Mistral die Funktion in src/main.py schreiben",
+        "refactor the parse_url function in utils.py via DeepSeek",
+        "use ollama to fix app.py",
+        "fix app.py through OpenRouter",
+        "use the Gemini model to fix app.py",
+        "Qwen verwenden und den Fehler in app.py beheben",
+    ):
+        match = router.route(phrase)
+        assert match is None or match.capability not in {
+            "coding_task",
+            "coding_task_anthropic",
+        }, phrase
+
+
+def test_third_party_tool_filenames_do_not_block_the_default_coding_route():
+    """Mentioning a provider-named FILE is not a provider selection — the
+    deterministic OpenAI default must keep working for such intents."""
+    router = CapabilityRouter(CAPABILITIES_PATH)
+
+    for phrase in (
+        "fix the failing test in tests/test_ollama_tool.py",
+        "refactor the parse_url function in gemini_client.py to handle edge cases",
+    ):
+        match = router.route(phrase)
+        assert match is not None and match.capability == "coding_task", phrase

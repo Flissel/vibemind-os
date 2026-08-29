@@ -74,9 +74,39 @@ _NEGATION_SUFFIX = re.compile(
     re.IGNORECASE,
 )
 
+# Runbook §7.5 (2026-08-29): selecting an UNSUPPORTED provider must fail
+# closed for the coding lanes — never silently fall back to the OpenAI
+# default. These are distinct third-party provider names; bare "gpt" and
+# "codex" stay out on purpose (they name the ChatGPT lane itself and appear
+# in too many neutral contexts). Word-boundary matching keeps file/module
+# names like `ollama_tool.py` or `gemini_client.py` out (underscore is \w,
+# so no boundary forms inside them). Any selection-context hit — selecting,
+# coordinating, or negating such a provider — blocks; the phrase is about a
+# provider this system does not offer, so no route is the honest answer.
+_FOREIGN_PROVIDER_TOKENS = (
+    r"(?:gemini|google|grok|xai|copilot|mistral|deepseek|llama|ollama|"
+    r"qwen|groq|openrouter|perplexity|kimi)"
+)
+_FOREIGN_PROVIDER_SELECTION = re.compile(
+    r"\b(?:use|ask|have)\s+(?:the\s+)?(?:(?:only|both|either)\s+)?"
+    + _FOREIGN_PROVIDER_TOKENS
+    + r"(?:\s+(?:model|agent))?\b|"
+    r"\b(?:with|using|via|through)\s+(?:the\s+)?"
+    + _FOREIGN_PROVIDER_TOKENS
+    + r"(?:\s+(?:model|agent))?\b|"
+    r"\b(?:without|avoid(?:ing)?|except(?:\s+for)?|neither|nor|not)\s+"
+    r"(?:using\s+)?" + _FOREIGN_PROVIDER_TOKENS + r"\b|"
+    r"\bmit\s+" + _FOREIGN_PROVIDER_TOKENS + r"\b|"
+    r"\b" + _FOREIGN_PROVIDER_TOKENS + r"\s+verwenden\b|"
+    r"\b(?:and|or|und|oder)\s+" + _FOREIGN_PROVIDER_TOKENS + r"\b",
+    re.IGNORECASE,
+)
+
 
 def _coding_provider_intent(intent: str) -> _CodingProviderIntent:
     """Resolve coding-provider selection once, including negation/conflicts."""
+    if _FOREIGN_PROVIDER_SELECTION.search(intent):
+        return _CodingProviderIntent.BLOCKED
     selected: set[_CodingProviderIntent] = set()
     rejected: set[_CodingProviderIntent] = set()
     previous_was_rejected = False
