@@ -274,7 +274,10 @@ describe("PluginToolRuntime", () => {
     const callable = created as unknown as { invoke: (runContext: unknown, input: string) => Promise<string> };
     expect(await callable.invoke({}, JSON.stringify({ query: "safe" }))).toContain("routed");
     expect(calls).toBe(1);
-  });
+    // This case pulls in the agents runtime module graph on first import, which
+    // takes seconds on a cold or loaded machine; the default 5s budget made it
+    // fail under parallel load without anything being wrong.
+  }, 60_000);
 
   it("routes the exact current admitted binding and writes only a redacted provenance receipt", async () => {
     const state = setup();

@@ -29,6 +29,50 @@ back. Changing the pin is a deliberate code change: update the constants in
 `packages/openai-plugin-runtime/src/domain/catalog.ts`, re-run the sync, and
 re-run the full evidence gate below.
 
+### Loading the catalog into MongoDB
+
+The web app reads its catalog from the database, never from the lock file, so a
+deployment that skips this step fails every plugin path with
+`catalog_digest_mismatch`.
+
+```sh
+npm --prefix apps/rowboat run mongodb-ensure-indexes
+npm --prefix apps/rowboat run plugins:catalog-load
+npm --prefix apps/rowboat run plugins:catalog-load -- --verify-only
+```
+
+The loader validates the lock, refuses one whose digest is not the pin, and
+reads before writing, so running it twice is a no-op that reports
+`alreadyStored: true`. Its report carries provenance only: digest, source
+commit, policy version, entry count.
+
+`putCatalog` itself is not idempotent and must not be called blindly: its
+immutable-insert conflict check re-captures the stored document, and a real
+catalog entry payload (up to ~44 KB) exceeds the 16 KB string capture limit, so
+a blind second write raises `catalog_entry_conflict`. Because the write is one
+transaction, a failed load rolls back completely and can simply be re-run.
+
+### MongoDB must be a replica set
+
+The catalog, every installation, the admission batch, and the migration apply
+are each written in one transaction. A standalone `mongod` refuses transactions,
+and the loader fails with `repository_transaction_failed` - verified against a
+standalone container. Both shipped topologies (`docker-compose.yml` and
+`infra/swarm/vibemind-stack.yml`) currently run a standalone `mongo` image, so
+converting them to a single-node replica set is a prerequisite:
+
+```sh
+# container: mongod --replSet rs0 --bind_ip_all
+mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"<host>:27017"}]})'
+```
+
+### The kernel is consumed as a build artifact
+
+`apps/rowboat` resolves `@rowboat/openai-plugin-runtime` to the package's
+compiled `dist/`. Any change to the kernel needs
+`npm --prefix packages/openai-plugin-runtime run build` before the app sees it,
+and a deployment image must run that build.
+
 ## Admission and licensing
 
 Components are admitted per policy version. A component without an admitted

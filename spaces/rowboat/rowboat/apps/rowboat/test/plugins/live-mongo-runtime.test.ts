@@ -6,8 +6,12 @@
  * collection cannot show what the real driver does to a document it is handed,
  * and what the real storage shape looks like on the way back:
  *
- *   docker run -d --name rowboat-plugin-demo -p 27018:27017 mongo:7
- *   ROWBOAT_LIVE_MONGO_URL=mongodb://127.0.0.1:27018/rowboat npx vitest run test/plugins/live-mongo-runtime.test.ts
+ *   docker run -d --name rowboat-rs -p 127.0.0.1:27017:27017 mongo:7 --replSet rs0 --bind_ip_all
+ *   docker exec rowboat-rs mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})'
+ *   ROWBOAT_LIVE_MONGO_URL=mongodb://127.0.0.1:27017/rowboat npx vitest run test/plugins/live-mongo-runtime.test.ts
+ *
+ * A replica set is required: the catalog and every installation are written in
+ * a transaction, which a standalone mongod refuses.
  *
  * It uses the real repositories, the real index bootstrap, and the real use
  * cases; nothing about the cutover logic is faked here.
@@ -17,6 +21,7 @@ const LIVE_URL = (process.env.ROWBOAT_LIVE_MONGO_URL ?? "").trim();
 if (LIVE_URL !== "") process.env.MONGODB_CONNECTION_STRING = LIVE_URL;
 
 import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 import { MongoClient } from "mongodb";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PINNED_OPENAI_PLUGINS_COMMIT, PINNED_PLUGIN_CATALOG_DIGEST, type PluginMigrationRecord, type PluginReceipt } from "@rowboat/openai-plugin-runtime";
@@ -73,6 +78,26 @@ describe.skipIf(LIVE_URL === "")("live plugin runtime cutover against a real Mon
     const { MongodbProjectsRepository } = await import("@/src/infrastructure/repositories/mongodb.projects.repository");
     const plugins = new MongodbPluginsRepository({ pluginsDatabase: database, pluginTransactionRunner: new MongoPluginTransactionRunner({ pluginsMongoClient: client }) });
     const projects = new MongodbProjectsRepository({ projectMembersRepository: {} as never });
+
+    // 3b. Catalog seed, exactly as `npm run plugins:catalog-load` does it. The
+    // app reads its catalog from the database, so without this step every
+    // plugin path fails with catalog_digest_mismatch.
+    const { readCatalogLock } = await import("@/scripts/load-plugin-catalog");
+    const lock = await readCatalogLock("config/openai-plugin-catalog.lock.json", resolve(process.cwd(), "..", ".."));
+    await plugins.putCatalog(lock);
+    const seeded = await plugins.getCatalog(PINNED_PLUGIN_CATALOG_DIGEST);
+    log(`catalog seeded: ${seeded === null ? "MISSING" : `${seeded.entries.length} entries at ${seeded.catalogDigest.slice(0, 12)}...`}`);
+    expect(seeded?.entries).toHaveLength(180);
+    // Loading again is a no-op through the documented guarded path. putCatalog
+    // is not idempotent on its own: the immutable-insert conflict check
+    // re-captures the stored document, and a real catalog entry payload (up to
+    // ~44 KB) exceeds the 16 KB string capture limit, so a blind second write
+    // raises catalog_entry_conflict. The loader therefore reads before writing,
+    // exactly as scripts/load-plugin-catalog.ts does.
+    const already = await plugins.getCatalog(PINNED_PLUGIN_CATALOG_DIGEST);
+    if (already === null) await plugins.putCatalog(lock);
+    expect((await plugins.getCatalog(PINNED_PLUGIN_CATALOG_DIGEST))?.entries).toHaveLength(180);
+    await expect(plugins.putCatalog(lock)).rejects.toThrow("catalog_entry_conflict");
 
     // 4. Cutover evidence written through the real repository.
     const record: PluginMigrationRecord = Object.freeze({
