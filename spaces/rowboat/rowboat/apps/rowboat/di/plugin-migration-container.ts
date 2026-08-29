@@ -24,10 +24,12 @@ import { SetPluginRuntimeModeUseCase } from "@/src/application/use-cases/plugins
 import { SetPluginRuntimeModeController } from "@/src/interface-adapters/controllers/plugins/set-plugin-runtime-mode.controller";
 import { MongodbProjectsRepository } from "@/src/infrastructure/repositories/mongodb.projects.repository";
 import { parsePluginRuntimeState } from "@/src/entities/models/project";
+import { LegacyPluginRemovalGate } from "@/src/application/services/legacy-plugin-removal-gate";
 import type { PluginApiIdentity } from "@/src/application/policies/plugin-api-authorization.policy";
 import type { PluginComponentAdmission } from "@/src/application/repositories/plugins.repository.interface";
 import type { AggregateOptions, ClientSession, Collection, Document, Filter, FindOptions, InsertOneOptions, UpdateFilter, UpdateOptions, WithId } from "mongodb";
 
+const LEGACY_REMOVAL_SCAN_LIMIT = 1_000;
 type RawProject = { _id: string; [key: string]: unknown };
 interface PreparedContext {
   readonly kind: "plugin_migration_context_v3"; readonly state: MigrationProjectState; readonly manifestEntry: MigrationProjectReadyManifestEntry; readonly preview: PluginMigrationPreview;
@@ -334,7 +336,21 @@ async function createComposition() {
     putReceipt: receipt => pluginsRepository.putReceipt(receipt),
     now: () => new Date(),
   });
-  return Object.freeze({ preview, apply, runtimeMode, previewController: new PreviewPluginMigrationController({ authorization, useCase: preview }),
+  const removalGate = new LegacyPluginRemovalGate({
+    // Bounded read-only scan. More projects than the bound means the report
+    // would be partial, and a partial report must never read as ready.
+    listProjectRuntimeStates: async () => {
+      const documents = await db.collection<RawProject>("projects")
+        .find({}, { projection: { _id: 1, pluginRuntime: 1 }, limit: LEGACY_REMOVAL_SCAN_LIMIT + 1 })
+        .toArray();
+      if (documents.length > LEGACY_REMOVAL_SCAN_LIMIT) throw new Error("legacy_removal_gate_scan_limit");
+      return documents.map(document => Object.freeze({ projectId: document._id, state: parsePluginRuntimeState(document.pluginRuntime) }));
+    },
+    loadMigrationRecord: id => pluginsRepository.getMigrationRecord(id),
+    loadReceipt: id => pluginsRepository.getReceipt(id),
+    now: () => new Date(),
+  });
+  return Object.freeze({ preview, apply, runtimeMode, removalGate, previewController: new PreviewPluginMigrationController({ authorization, useCase: preview }),
     applyController: new ApplyPluginMigrationController({ authorization, useCase: apply }),
     runtimeModeController: new SetPluginRuntimeModeController({ authorization, useCase: runtimeMode }) });
 }
@@ -342,6 +358,11 @@ async function createComposition() {
 export async function resolveMigrationPreviewController() { return (await createComposition()).previewController; }
 export async function resolveMigrationApplyController() { return (await createComposition()).applyController; }
 export async function resolveSetPluginRuntimeModeController() { return (await createComposition()).runtimeModeController; }
+export async function legacyRemovalReport() {
+  const actorId = process.env.PLUGIN_MIGRATION_ACTOR_USER_ID; if (actorId === undefined) throw new Error("migration_all_scope_authority_required");
+  if (!adminIds().has(actorId)) throw new Error("forbidden");
+  return (await createComposition()).removalGate.report();
+}
 export async function previewAllMigrations() {
   const actorId = process.env.PLUGIN_MIGRATION_ACTOR_USER_ID; if (actorId === undefined) throw new Error("migration_all_scope_authority_required");
   return (await createComposition()).preview.execute({ actor: { kind: "user", userId: actorId }, scope: "all" });

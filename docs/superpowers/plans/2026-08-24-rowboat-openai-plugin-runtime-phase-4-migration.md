@@ -367,7 +367,7 @@ git commit -m "feat(rowboat): add reversible plugin runtime cutover"
 - Modify: `spaces/rowboat/rowboat/apps/rowboat/app/projects/[projectId]/tools/components/ToolsConfig.tsx`
 - Modify: `spaces/rowboat/rowboat/apps/rowboat/src/application/lib/copilot/copilot.ts`
 
-- [ ] **Step 1: Write RED all-project gate tests**
+- [x] **Step 1: Write RED all-project gate tests**
 
 ```ts
 it("blocks removal while any stored project is not verified on OpenAI runtime", async () => {
@@ -381,7 +381,7 @@ it("blocks removal when rollback retention has not elapsed", async () => {
 });
 ```
 
-- [ ] **Step 2: Run the gate test and capture RED**
+- [x] **Step 2: Run the gate test and capture RED**
 
 ```powershell
 npm --prefix spaces/rowboat/rowboat/apps/rowboat run test:plugins -- legacy-plugin-removal-gate.test.ts
@@ -389,7 +389,7 @@ npm --prefix spaces/rowboat/rowboat/apps/rowboat run test:plugins -- legacy-plug
 
 Expected: FAIL because the removal gate does not exist.
 
-- [ ] **Step 3: Implement a read-only all-project removal report**
+- [x] **Step 3: Implement a read-only all-project removal report**
 
 The report counts `legacy`, `shadow`, `openai`, blocked migrations, missing receipts, and active rollback windows. It returns `ready: true` only when every stored project is verified on the OpenAI runtime and the configured rollback retention period has elapsed.
 
