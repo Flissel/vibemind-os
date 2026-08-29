@@ -152,16 +152,51 @@ def _render_agent_toml(space: str, spec: dict) -> str:
 
 
 def _skip_reason(space: str, spec: dict) -> str | None:
-    agent = spec.get("agent", "")
-    if not agent:
-        return "no agent name"
     if not spec.get("enabled", True):
         return "disabled"
+    if spec.get("generate_agent", True) is False:
+        return "external runtime (generation disabled)"
+    agent = spec.get("agent", "")
+    if not isinstance(agent, str) or not agent.strip():
+        return "invalid agent name"
     # Don't overwrite pre-existing hand-curated agents
     for protected in ("brain-coder", "rowboat-chat", "brain-fallback"):
         if agent == protected:
             return f"protected (pre-existing): {agent}"
     return None
+
+
+def validate_agent_generation_contract() -> list[str]:
+    """Validate whether each enabled space should generate an OpenFang agent."""
+    with open(REGISTRY, "r", encoding="utf-8") as f:
+        data: dict[str, Any] = yaml.safe_load(f) or {}
+    spaces = data.get("spaces", {})
+    if not isinstance(spaces, dict):
+        return ["registry spaces must be a mapping"]
+
+    errors: list[str] = []
+    for space_name, spec in spaces.items():
+        if not isinstance(spec, dict):
+            continue
+        generate_agent = spec.get("generate_agent", True)
+        if not isinstance(generate_agent, bool):
+            errors.append(f"{space_name} generate_agent must be a boolean")
+            continue
+        agent = spec.get("agent")
+        if generate_agent is False:
+            if agent is not None:
+                errors.append(
+                    f"{space_name} must omit agent or set it to null when "
+                    "generate_agent is false"
+                )
+            continue
+        if spec.get("enabled", True) and (
+            not isinstance(agent, str) or not agent.strip()
+        ):
+            errors.append(
+                f"{space_name} requires non-empty agent when generate_agent is true"
+            )
+    return errors
 
 
 def validate_generated_agent_mcp_scopes() -> list[str]:
@@ -374,7 +409,8 @@ def validate_mcp_authority() -> list[str]:
 
 def sync(dry_run: bool = False, check: bool = False) -> int:
     validation_errors = (
-        validate_generated_agent_mcp_scopes()
+        validate_agent_generation_contract()
+        + validate_generated_agent_mcp_scopes()
         + validate_mcp_tool_scopes()
         + validate_model_overrides()
         + validate_mcp_authority()
@@ -392,9 +428,10 @@ def sync(dry_run: bool = False, check: bool = False) -> int:
     drift = 0
     for space, spec in spaces.items():
         reason = _skip_reason(space, spec)
-        agent = spec.get("agent", "")
+        agent = spec.get("agent")
+        agent_label = agent if isinstance(agent, str) else "-"
         if reason:
-            print(f"  skip  {space:<12} ({agent:<24}) — {reason}")
+            print(f"  skip  {space:<12} ({agent_label:<24}) — {reason}")
             skipped += 1
             continue
         target_dir = AGENTS_DIR / agent

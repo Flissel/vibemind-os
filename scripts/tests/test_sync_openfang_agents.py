@@ -186,6 +186,95 @@ spaces:
     assert module.sync() == 1
 
 
+def test_external_runtime_may_explicitly_disable_agent_generation(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, """version: 1
+spaces:
+  agentfarm:
+    agent: null
+    enabled: true
+    generate_agent: false
+""")
+
+    assert module.validate_agent_generation_contract() == []
+
+
+def test_enabled_space_without_agent_requires_explicit_generation_opt_out(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, """version: 1
+spaces:
+  agentfarm:
+    agent: null
+    enabled: true
+""")
+
+    assert module.validate_agent_generation_contract() == [
+        "agentfarm requires non-empty agent when generate_agent is true"
+    ]
+
+
+def test_generation_opt_out_rejects_named_agent(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, """version: 1
+spaces:
+  agentfarm:
+    agent: brain-agentfarm
+    enabled: true
+    generate_agent: false
+""")
+
+    assert module.validate_agent_generation_contract() == [
+        "agentfarm must omit agent or set it to null when generate_agent is false"
+    ]
+
+
+def test_generate_agent_must_be_boolean(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, """version: 1
+spaces:
+  agentfarm:
+    agent: null
+    enabled: true
+    generate_agent: "false"
+""")
+
+    assert module.validate_agent_generation_contract() == [
+        "agentfarm generate_agent must be a boolean"
+    ]
+
+
+def test_sync_skips_explicit_external_runtime_without_manifest(
+    tmp_path, monkeypatch, capsys
+):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, """version: 1
+spaces:
+  agentfarm:
+    agent: null
+    enabled: true
+    generate_agent: false
+    events: {}
+""")
+
+    assert module.sync(check=True) == 0
+    output = capsys.readouterr().out
+    assert "external runtime (generation disabled)" in output
+    assert not (tmp_path / "agents").exists()
+
+
+def test_real_agentfarm_registry_explicitly_disables_agent_generation():
+    module = _load_sync_module()
+    with open(module.REGISTRY, "r", encoding="utf-8") as f:
+        data = module.yaml.safe_load(f)
+    agentfarm = data["spaces"]["agentfarm"]
+
+    assert agentfarm["generate_agent"] is False
+    assert agentfarm["agent"] is None
+    assert module._skip_reason("agentfarm", agentfarm) == (
+        "external runtime (generation disabled)"
+    )
+
+
 def test_enabled_generated_agent_requires_non_empty_mcp_servers(tmp_path, monkeypatch):
     module = _load_sync_module()
     _configure_registry(module, tmp_path, monkeypatch, """version: 1
