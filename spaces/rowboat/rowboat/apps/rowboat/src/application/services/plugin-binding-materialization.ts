@@ -106,6 +106,9 @@ export function materializeWorkflowBindings(input: MaterializationInput): Materi
         // effect is write-capable everywhere else in this runtime, so a
         // materialized tool is bound write-capable too.
         capability: "write" as const,
+        // Marked as migrated, so the runtime mode gate keeps protecting the
+        // legacy tool this binding replaces.
+        origin: "migration" as const,
       },
     };
     bound.push(Object.freeze({ ordinal, toolName: tool.name, pluginName: installation.pluginName, componentId: target.componentId }));

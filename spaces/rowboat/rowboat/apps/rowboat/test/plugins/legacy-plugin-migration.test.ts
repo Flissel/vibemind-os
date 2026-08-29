@@ -335,7 +335,7 @@ describe("legacy plugin migration recipes", () => {
 
     const { providerBinding: declared, ...metadata } = exact.component.metadata as Record<string, unknown>;
     void declared;
-    const stripped = { ...base, components: [{ ...exact, component: { ...exact.component, metadata } }] } as typeof base;
+    const stripped = { ...base, components: [{ ...exact, component: { ...exact.component, metadata } }] } as unknown as typeof base;
     expect(resolveLegacyRecipe(capability, [stripped])).toEqual(expect.objectContaining({ code: "provider_unavailable" }));
   });
 

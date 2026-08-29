@@ -28,6 +28,8 @@ export type PluginUiReason =
   | "write_review_required" | "component_unsupported" | "migration_conflict" | "parity_failed" | "rollback_unavailable";
 
 export interface PluginUiComponent {
+  /** The pinned component identity the API already returns. */
+  readonly componentDigest?: string;
   readonly name: string;
   readonly kind: "skill" | "agent" | "command" | "mcp" | "app" | "hook" | "asset";
   readonly status: string;
@@ -168,6 +170,7 @@ function catalogItem(item: SerializedPlugin, installed?: SerializedPlugin): Plug
     status,
     ...(reason === undefined ? {} : { reason }),
     components: item.components.map((component) => ({
+      ...(component.componentDigest === undefined ? {} : { componentDigest: component.componentDigest }),
       name: component.name, kind: component.kind, status: component.status,
       ...(component.reason === undefined ? {} : { reason: component.reason }),
     })),

@@ -537,3 +537,31 @@ describe("plugin preview secret operator configuration", () => {
     expect(readme).toContain("Rotation invalidates outstanding plugin previews");
   });
 });
+
+describe("plugin card tool offers", () => {
+  const component = (overrides: Record<string, unknown> = {}) => ({ name: "github", kind: "mcp", status: "available", componentDigest: "a".repeat(64), ...overrides });
+  const item = (overrides: Record<string, unknown> = {}) => ({
+    pluginName: "github", pluginVersion: "1.0.0", catalogDigest: "d".repeat(64), sourceCommit: "1".repeat(40),
+    status: "installed", components: [component()], ...overrides,
+  }) as Parameters<typeof toPluginCardView>[0];
+
+  it("offers only executable, available components that carry a pinned digest", () => {
+    const view = toPluginCardView(item({ components: [
+      component(),
+      component({ name: "slack", kind: "app" }),
+      component({ name: "review", kind: "skill" }),
+      component({ name: "broken", status: "unavailable" }),
+      component({ name: "unpinned", componentDigest: undefined }),
+    ] }));
+    expect(view.addableComponents.map(entry => entry.name)).toEqual(["github", "slack"]);
+    expect(view.addableComponents.every(entry => entry.canAdd)).toBe(true);
+  });
+
+  it("does not offer to add a tool before the plugin is installed", () => {
+    for (const status of ["available", "review_required", "partially_available", "unavailable", "error"] as const) {
+      const view = toPluginCardView(item({ status }));
+      expect(view.addableComponents.every(entry => !entry.canAdd)).toBe(true);
+    }
+    expect(toPluginCardView(item()).addableComponents[0]!.canAdd).toBe(true);
+  });
+});

@@ -32,6 +32,9 @@ describe("plugin binding materialization", () => {
       // A provider binding carries no read/write classification, so the tool is
       // bound write-capable: an unknown effect is never treated as read-only.
       capability: "write",
+      // Marked as migrated, so the runtime mode gate keeps protecting the
+      // legacy tool this one replaces.
+      origin: "migration",
     });
     for (let index = 0; index < tools.length; index += 1) {
       if (index !== ordinal) expect(tools[index]).not.toHaveProperty("pluginBinding");

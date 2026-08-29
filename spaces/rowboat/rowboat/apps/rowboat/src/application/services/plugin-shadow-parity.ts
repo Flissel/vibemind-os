@@ -17,6 +17,7 @@ const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const REQUEST_KEYS = Object.freeze(["input", "operationName", "pluginName", "projectId"]);
 const BINDING_KEYS = Object.freeze(["capability", "componentDigest", "installationId", "pluginName", "providerBindingId"]);
+const BINDING_KEYS_WITH_ORIGIN = Object.freeze([...BINDING_KEYS, "origin"].sort());
 const RUNTIME_MODES = Object.freeze(["legacy", "shadow", "openai"] as const);
 
 export type ShadowExecution = "not_requested" | "read_only" | "descriptor_only";
@@ -247,9 +248,20 @@ export interface ShadowToolPlan<T> {
   readonly shadow: Readonly<{ execution: ShadowExecution; bindings: readonly PluginToolBindingValue[] }>;
 }
 
+/**
+ * A binding is native only when it says so. Anything else - absent, misspelled,
+ * or structurally different - reads as migrated, which keeps it under the
+ * runtime mode gate.
+ */
+function bindingOrigin(value: unknown): "migration" | "native" {
+  if (value === null || typeof value !== "object") return "migration";
+  return dataValue(value, "origin") === "native" ? "native" : "migration";
+}
+
 function captureToolBinding(value: unknown): PluginToolBindingValue | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
-  if (Object.keys(value).sort().join("\0") !== BINDING_KEYS.join("\0")) return null;
+  const keys = Object.keys(value).sort().join("\0");
+  if (keys !== BINDING_KEYS.join("\0") && keys !== BINDING_KEYS_WITH_ORIGIN.join("\0")) return null;
   const installationId = dataValue(value, "installationId");
   const pluginName = dataValue(value, "pluginName");
   const componentDigest = dataValue(value, "componentDigest");
@@ -289,6 +301,12 @@ export function planShadowToolConfig<T extends Readonly<Record<string, PluginBou
   for (const [name, config] of Object.entries(toolConfig)) {
     const binding = config === null || typeof config !== "object" ? undefined : dataValue(config, "pluginBinding");
     if (binding === undefined) {
+      planned[name] = config;
+      continue;
+    }
+    // A natively added plugin tool has no legacy tool it could displace, so the
+    // gate that protects legacy authority does not apply to it.
+    if (bindingOrigin(binding) === "native") {
       planned[name] = config;
       continue;
     }

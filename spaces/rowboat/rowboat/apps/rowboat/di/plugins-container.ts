@@ -1,3 +1,4 @@
+import { PINNED_PLUGIN_CATALOG_DIGEST } from "@rowboat/openai-plugin-runtime";
 import type { PluginCatalogController } from "@/src/interface-adapters/controllers/plugins/plugin-catalog.controller";
 import type { PluginInstallationController } from "@/src/interface-adapters/controllers/plugins/plugin-installation.controller";
 import type { PluginToolRuntime } from "@/src/application/services/plugin-tool-runtime";
@@ -14,6 +15,7 @@ interface PluginControllers {
   readonly installation: PluginInstallationController;
   readonly findInstallReplay: (request: Request, input: PluginReplayLookupInput) => Promise<unknown | null>;
   readonly createToolRuntime: (authorizationContext: PluginToolAuthorizationContext | undefined) => PluginToolRuntime;
+  readonly addPluginTool: (input: Readonly<{ identity: PluginApiIdentity; projectId: string; pluginName: string; componentDigest: string }>) => Promise<unknown>;
 }
 
 let controllers: Promise<PluginControllers> | undefined;
@@ -106,6 +108,34 @@ async function createPluginControllers(): Promise<PluginControllers> {
         projectId: input.projectId, pluginName: input.pluginName, catalogDigest: input.catalogDigest, operation: "install",
       });
     },
+    addPluginTool: async (input: Readonly<{ identity: PluginApiIdentity; projectId: string; pluginName: string; componentDigest: string }>) => {
+      const [useCaseModule, projectsModule, membersModule] = await Promise.all([
+        import("@/src/application/use-cases/plugins/add-plugin-tool.use-case"),
+        import("@/src/infrastructure/repositories/mongodb.projects.repository"),
+        import("@/src/infrastructure/repositories/mongodb.project-members.repository"),
+      ]);
+      const projectsRepository = new projectsModule.MongodbProjectsRepository({ projectMembersRepository: new membersModule.MongoDBProjectMembersRepository() });
+      const useCase = new useCaseModule.AddPluginToolUseCase({
+        // The same project authorization the versioned plugin API uses.
+        authorizeProject: (actor, projectId) => authorization.authorizeProject(actor, projectId),
+        loadInstallation: (projectId, pluginName) => pluginsRepository.getInstallation(projectId, pluginName),
+        loadCatalogEntry: async pluginName => {
+          const catalog = await pluginsRepository.getCatalog(PINNED_PLUGIN_CATALOG_DIGEST);
+          if (catalog === null || catalog.catalogDigest !== PINNED_PLUGIN_CATALOG_DIGEST) throw new Error("catalog_digest_mismatch");
+          const selected = catalog.entries.find(candidate => candidate.name === pluginName);
+          return selected === undefined ? null : { ...selected, catalogDigest: PINNED_PLUGIN_CATALOG_DIGEST };
+        },
+        loadDraftWorkflow: async projectId => {
+          const project = await projectsRepository.fetch(projectId);
+          if (project === null) throw new Error("project_not_found");
+          return project.draftWorkflow;
+        },
+        saveDraftWorkflow: async (projectId, workflow) => {
+          await projectsRepository.updateDraftWorkflow(projectId, workflow as Parameters<typeof projectsRepository.updateDraftWorkflow>[1]);
+        },
+      });
+      return useCase.execute(input);
+    },
     createToolRuntime: (authorizationContext: PluginToolAuthorizationContext | undefined) => new toolRuntimeModule.PluginToolRuntime({
       pluginsRepository,
       authorizationContext,
@@ -144,6 +174,10 @@ export async function resolvePluginActionIdentity(request: Request): Promise<Plu
 
 export async function resolvePluginInstallReplay(request: Request, input: PluginReplayLookupInput): Promise<unknown | null> {
   return (await composition()).findInstallReplay(request, input);
+}
+
+export async function resolveAddPluginTool(input: Readonly<{ identity: PluginApiIdentity; projectId: string; pluginName: string; componentDigest: string }>): Promise<unknown> {
+  return (await composition()).addPluginTool(input);
 }
 
 export async function resolvePluginToolRuntime(authorizationContext?: PluginToolAuthorizationContext): Promise<PluginToolRuntime> {

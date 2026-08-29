@@ -241,6 +241,29 @@ describe("shadow runtime mode tool planning", () => {
     expect(() => planShadowToolConfig("openai_beta" as never, toolConfig(readBinding))).toThrow("plugin_runtime_mode_invalid");
   });
 
+  it("keeps a natively added plugin tool executable in every mode", () => {
+    // A tool added straight from the plugin catalog has no legacy counterpart
+    // it could displace, so the runtime mode gate - which exists to protect
+    // legacy authority during a migration - does not apply to it.
+    const nativeBinding = Object.freeze({ ...readBinding, origin: "native" as const });
+    for (const mode of ["legacy", "shadow", "openai"] as const) {
+      const planned = planShadowToolConfig(mode, toolConfig(nativeBinding));
+      expect(planned.toolConfig.search.pluginBinding).toEqual(nativeBinding);
+    }
+    expect(planShadowToolConfig("shadow", toolConfig(nativeBinding)).shadow.execution).toBe("not_requested");
+  });
+
+  it("gates a migrated tool, and treats an unmarked binding as migrated", () => {
+    const migrated = Object.freeze({ ...readBinding, origin: "migration" as const });
+    expect(planShadowToolConfig("legacy", toolConfig(migrated)).toolConfig.search.pluginBinding).toBeUndefined();
+    expect(planShadowToolConfig("shadow", toolConfig(migrated)).toolConfig.search.pluginBinding).toBeUndefined();
+    expect(planShadowToolConfig("openai", toolConfig(migrated)).toolConfig.search.pluginBinding).toEqual(migrated);
+    // No origin means the safer reading: gated, not freely executable.
+    expect(planShadowToolConfig("legacy", toolConfig(readBinding)).toolConfig.search.pluginBinding).toBeUndefined();
+    // An unparseable origin is not a licence to run either.
+    expect(planShadowToolConfig("legacy", toolConfig({ ...readBinding, origin: "manual" })).toolConfig.search.pluginBinding).toBeUndefined();
+  });
+
   it("never mutates the caller tool configuration", () => {
     const original = toolConfig(writeBinding);
     const snapshot = structuredClone(original);

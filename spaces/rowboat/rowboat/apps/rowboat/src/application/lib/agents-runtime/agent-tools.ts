@@ -729,7 +729,11 @@ export function createPluginTool(
     if (!pluginBinding) {
         throw new Error("plugin_binding_required");
     }
-    const binding = Object.freeze({ ...pluginBinding });
+    // origin is workflow bookkeeping, not part of the execution binding the
+    // runtime validates.
+    const { origin: declaredOrigin, ...executionBinding } = pluginBinding as typeof pluginBinding & { origin?: string };
+    void declaredOrigin;
+    const binding = Object.freeze({ ...executionBinding });
 
     return tool({
         name,

@@ -14,6 +14,7 @@ const SAFE_ERRORS = new Set([
   "credential_missing", "http_mcp_not_admitted", "process_not_admitted", "hook_not_admitted",
   "write_review_required", "component_unsupported", "migration_conflict", "parity_failed", "rollback_unavailable",
   "preview_configuration_invalid", "preview_invalid", "preview_expired", "stale_preview",
+  "component_not_admitted", "installation_not_found", "project_not_found", "tool_name_conflict",
 ]);
 
 function runtime() {
@@ -61,4 +62,29 @@ export async function previewPluginInstallationAction(input: unknown) {
 
 export async function installPluginAction(input: unknown) {
   return redacted(() => runtime().install(input));
+}
+
+const ADD_TOOL_KEYS = Object.freeze(["projectId", "pluginName", "componentDigest"]);
+
+/**
+ * Adds an installed, admitted plugin component to the project draft workflow as
+ * a tool. The binding is native: the tool has no legacy counterpart, so the
+ * migration runtime mode gate does not apply to it.
+ */
+export async function addPluginToolAction(input: unknown) {
+  return redacted(async () => {
+    if (input === null || typeof input !== "object" || utilTypes.isProxy(input)) throw new Error("request_invalid");
+    const keys = Reflect.ownKeys(input);
+    if (keys.length !== ADD_TOOL_KEYS.length || keys.some(key => typeof key !== "string" || !ADD_TOOL_KEYS.includes(key))) throw new Error("request_invalid");
+    const selected = input as Record<string, unknown>;
+    if (ADD_TOOL_KEYS.some(key => typeof selected[key] !== "string")) throw new Error("request_invalid");
+    const { resolveAddPluginTool, resolvePluginActionIdentity } = await import("@/di/plugins-container");
+    const identity = await resolvePluginActionIdentity(new Request("https://rowboat.invalid/internal/plugin-action"));
+    return resolveAddPluginTool({
+      identity,
+      projectId: selected.projectId as string,
+      pluginName: selected.pluginName as string,
+      componentDigest: selected.componentDigest as string,
+    });
+  });
 }

@@ -189,11 +189,11 @@ describe.skipIf(LIVE_URL === "")("live plugin runtime cutover against a real Mon
     const persisted = await database.collection("projects").findOne({ _id: projectId } as never);
     log(`persisted state: ${JSON.stringify((persisted as { pluginRuntime?: unknown }).pluginRuntime)}`);
 
-    const boundTool = ((persisted as { liveWorkflow: { tools: Record<string, unknown>[] } }).liveWorkflow.tools)[boundOrdinal]!;
+    const boundTool = ((persisted as unknown as { liveWorkflow: { tools: Record<string, unknown>[] } }).liveWorkflow.tools)[boundOrdinal]!;
     log(`materialized: tool "${String(boundTool.name)}" -> ${JSON.stringify(boundTool.pluginBinding)}`);
-    expect(boundTool.pluginBinding).toEqual({ installationId, pluginName: target.pluginName, componentDigest, providerBindingId: "slack.app", capability: "write" });
+    expect(boundTool.pluginBinding).toEqual({ installationId, pluginName: target.pluginName, componentDigest, providerBindingId: "slack.app", capability: "write", origin: "migration" });
     expect(cutover.workflowsWritten).toBe(true);
-    const untouched = ((persisted as { liveWorkflow: { tools: Record<string, unknown>[] } }).liveWorkflow.tools).filter((tool, index) => index !== boundOrdinal && "pluginBinding" in tool);
+    const untouched = ((persisted as unknown as { liveWorkflow: { tools: Record<string, unknown>[] } }).liveWorkflow.tools).filter((tool, index) => index !== boundOrdinal && "pluginBinding" in tool);
     expect(untouched).toEqual([]);
 
     // 6. Rollback, and proof that it never touched the legacy workflow.
@@ -202,8 +202,57 @@ describe.skipIf(LIVE_URL === "")("live plugin runtime cutover against a real Mon
     log(`openai -> legacy  OK   (rolledBack=${rollback.rolledBack}, workflows restored=${rollback.workflowsWritten}, revision ${rollback.revision})`);
     expect((afterRollback as { draftWorkflow?: unknown }).draftWorkflow).toEqual(workflow);
     expect((afterRollback as { liveWorkflow?: unknown }).liveWorkflow).toEqual(workflow);
-    expect(((afterRollback as { liveWorkflow: { tools: Record<string, unknown>[] } }).liveWorkflow.tools).some(tool => "pluginBinding" in tool)).toBe(false);
+    expect(((afterRollback as unknown as { liveWorkflow: { tools: Record<string, unknown>[] } }).liveWorkflow.tools).some(tool => "pluginBinding" in tool)).toBe(false);
     log("legacy workflow restored byte-identical from the retained snapshot, no binding left");
+
+    // 6b. The UI path: install an admitted plugin and add its component as a
+    // tool. Nothing about this depends on a migration.
+    const { AddPluginToolUseCase } = await import("@/src/application/use-cases/plugins/add-plugin-tool.use-case");
+    const githubEntry = seeded!.entries.find(candidate => candidate.name === "github")!;
+    const githubComponent = githubEntry.components.find(candidate => candidate.component.kind === "mcp" && candidate.admission.status === "admitted")!;
+    const githubInstallationId = randomUUID();
+    await plugins.putInstallation({
+      id: githubInstallationId, projectId, pluginName: githubEntry.pluginName, pluginVersion: githubEntry.pluginVersion,
+      sourceCommit: githubEntry.sourceCommit, manifestDigest: githubEntry.manifestDigest, treeDigest: githubEntry.treeDigest,
+      policyVersion: githubEntry.policyVersion, enabled: true, revision: 1,
+      providerBindings: [{
+        componentId: githubComponent.component.id,
+        binding: githubComponent.component.metadata.providerBinding as { id: string; providerKind: "mcp-http"; componentDigest: string },
+      }],
+    });
+    const addTool = new AddPluginToolUseCase({
+      authorizeProject: async () => undefined,
+      loadInstallation: (id, pluginName) => plugins.getInstallation(id, pluginName),
+      loadCatalogEntry: async pluginName => {
+        const catalog = await plugins.getCatalog(PINNED_PLUGIN_CATALOG_DIGEST);
+        const selected = catalog!.entries.find(candidate => candidate.name === pluginName);
+        return selected === undefined ? null : { ...selected, catalogDigest: PINNED_PLUGIN_CATALOG_DIGEST };
+      },
+      loadDraftWorkflow: async id => (await projects.fetch(id))!.draftWorkflow,
+      saveDraftWorkflow: async (id, value) => { await projects.updateDraftWorkflow(id, value as never); },
+    });
+    const addition = await addTool.execute({
+      identity, projectId, pluginName: githubEntry.pluginName,
+      componentDigest: githubComponent.component.metadata.bindingDigest as string,
+    });
+    const repeated = await addTool.execute({
+      identity, projectId, pluginName: githubEntry.pluginName,
+      componentDigest: githubComponent.component.metadata.bindingDigest as string,
+    });
+    const withTool = await database.collection("projects").findOne({ _id: projectId } as never);
+    const addedTool = ((withTool as unknown as { draftWorkflow: { tools: Record<string, unknown>[] } }).draftWorkflow.tools)
+      .find(candidate => candidate.name === addition.toolName)!;
+    log(`ui add-tool: ${addition.toolName} added=${addition.added}, repeat added=${repeated.added}, binding=${JSON.stringify(addedTool.pluginBinding)}`);
+    expect(addition.added).toBe(true);
+    expect(repeated.added).toBe(false);
+    expect(addedTool.pluginBinding).toMatchObject({ installationId: githubInstallationId, origin: "native", capability: "write" });
+
+    // The project is back on the legacy runtime after the rollback, and the
+    // natively added tool stays executable there.
+    const { planShadowToolConfig } = await import("@/src/application/services/plugin-shadow-parity");
+    const planned = planShadowToolConfig("legacy", { [addition.toolName]: addedTool });
+    log(`ui add-tool survives legacy mode: ${planned.toolConfig[addition.toolName]!.pluginBinding !== undefined}`);
+    expect(planned.toolConfig[addition.toolName]!.pluginBinding).toEqual(addedTool.pluginBinding);
 
     const storedReceipts = await database.collection("plugin_receipts").find({}).toArray();
     log(`receipts in plugin_receipts: ${storedReceipts.length} (${receipts.map(receipt => receipt.type).join(", ")} + parity)`);

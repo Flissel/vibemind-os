@@ -125,6 +125,25 @@ The apply is atomic: installations, admissions, the migration record, the
 replay nonce, the idempotency record, and the project pointer are written in
 one transaction, or nothing is.
 
+## Using a plugin from the Rowboat UI
+
+The plugins page lists the pinned catalog. Installing an admitted plugin writes
+an installation with the provider bindings the catalog declares. Each executable
+component of an installed plugin then offers **Add to workflow**, which appends
+a tool to the project draft workflow bound to that component.
+
+A tool added this way carries a **native** binding: it has no legacy tool it
+could displace, so the runtime mode gate below does not apply to it and it is
+executable in every mode. A binding written by a cutover carries **migration**
+instead and stays gated. A binding with no readable origin is treated as
+migrated, which is the gated reading.
+
+Only a component the catalog admits can be added. A component whose admission is
+`review_required` - which is where the Slack, Gmail, and Google connectors
+currently sit - is refused with `component_not_admitted` until that review is
+decided. Adding the same component twice is a no-op; a different tool already
+holding the generated name is a conflict rather than something to overwrite.
+
 ## Runtime modes and cutover
 
 Each project carries a plugin runtime state with a `mode` and a `revision`.

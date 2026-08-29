@@ -68,6 +68,11 @@ export const PluginToolBinding = z.object({
     componentDigest: z.string().regex(/^[a-f0-9]{64}$/),
     providerBindingId: z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/),
     capability: z.enum(["read", "write"]),
+    // Where the binding came from. A migrated tool replaces a legacy tool and
+    // stays under the runtime mode gate; a tool added straight from the plugin
+    // catalog has no legacy counterpart and is not gated. An absent or
+    // unreadable origin is treated as migrated, which is the gated reading.
+    origin: z.enum(["migration", "native"]).optional(),
 }).strict().transform((value) => Object.freeze(value));
 export const WorkflowTool = z.object({
     name: z.string(),
