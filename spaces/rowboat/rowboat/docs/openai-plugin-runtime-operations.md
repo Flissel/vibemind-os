@@ -144,6 +144,31 @@ currently sit - is refused with `component_not_admitted` until that review is
 decided. Adding the same component twice is a no-op; a different tool already
 holding the generated name is a conflict rather than something to overwrite.
 
+### Running the UI locally
+
+```sh
+docker run -d --name rowboat-rs -p 127.0.0.1:27017:27017 mongo:7 --replSet rs0 --bind_ip_all
+docker exec rowboat-rs mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})'
+npm --prefix packages/openai-plugin-runtime run build
+npm --prefix apps/rowboat run mongodb-ensure-indexes   # creates the indexes, then does not exit
+npm --prefix apps/rowboat run plugins:catalog-load
+npx --prefix apps/rowboat next dev                      # not `npm run dev`, see below
+```
+
+`npm run dev` runs Next with Turbopack, which does not resolve the workspace
+package `@rowboat/openai-plugin-runtime`: every plugin page fails with
+`Module not found` and returns 500. `next dev` without Turbopack resolves it.
+`next build` does not use Turbopack and is unaffected.
+
+With `USE_AUTH` unset the plugin actions run as `guest_user`, which needs a
+`project_members` row for the project, otherwise every action is `forbidden`.
+
+A plugin is installable from the UI only while its *plugin-level* status is
+`available`, which means every one of its components is admitted and available.
+A single `review_required` component makes the whole plugin
+`partially_available` and blocks installing the admitted ones - `github` is in
+that bucket today. 117 of the 180 pinned plugins are installable as they stand.
+
 ## Runtime modes and cutover
 
 Each project carries a plugin runtime state with a `mode` and a `revision`.
