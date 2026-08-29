@@ -18,7 +18,7 @@
 	url = https://github.com/Flissel/la_fungus_search.git
 [submodule "coding-engine"]
 	path = coding-engine
-	url = https://github.com/Flissel/DaveFelix-Coding-Engine.git
+	url = https://github.com/Flissel/coding-engine.git
 [submodule "spaces/video/vibevideo"]
 	path = spaces/video/vibevideo
 	url = https://github.com/Flissel/vibevideo.git
