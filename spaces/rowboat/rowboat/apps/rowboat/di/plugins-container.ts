@@ -2,7 +2,7 @@ import { PINNED_PLUGIN_CATALOG_DIGEST, type CredentialResolver, type PluginPolic
 import { classifyPluginOperation } from "@/src/application/services/plugin-operation-classifier";
 import type { PluginCatalogController } from "@/src/interface-adapters/controllers/plugins/plugin-catalog.controller";
 import type { PluginInstallationController } from "@/src/interface-adapters/controllers/plugins/plugin-installation.controller";
-import type { PluginToolRuntime } from "@/src/application/services/plugin-tool-runtime";
+import type { PluginToolRuntime, PluginProviderResolutionInput } from "@/src/application/services/plugin-tool-runtime";
 import type { PluginToolAuthorizationContext } from "@/src/application/services/plugin-tool-runtime";
 import type { PluginApiIdentity } from "@/src/application/policies/plugin-api-authorization.policy";
 import type { PluginPreviewEnvelope } from "@/src/interface-adapters/actions/plugin-preview-envelope";
@@ -180,6 +180,33 @@ export async function resolveOpenFangProvider(
     });
   }
   return options.resolvePluginProviderImpl({ component, entry, binding }, { credentialResolver, policy });
+}
+
+/**
+ * Exactly what createToolRuntime below wires
+ * PluginToolRuntimeDependencies.resolveProvider to -- exported and callable
+ * on its own so this exact composition boundary can be tested end to end
+ * (against the real, dynamically-imported resolvePluginProvider) without
+ * needing the rest of the container (MongoDB, auth policies, ...).
+ *
+ * `input` is forwarded to resolveOpenFangProvider untouched: no
+ * destructuring, no rebuilt object literal. That is deliberate -- the
+ * previous shape destructured { component, entry, binding, policy } here and
+ * passed a freshly built object on, and that destructure-and-rebuild was
+ * exactly where Task 7's regression happened (policy silently dropped, with
+ * every test and the live gate still green). Passing the same reference
+ * through leaves nothing here for a future edit to drop.
+ */
+export async function resolveOpenFangComposedProvider(
+  input: PluginProviderResolutionInput,
+  options: Readonly<{ readonly credentialTimeoutMs: number }>,
+): Promise<ProviderResolution> {
+  const { resolvePluginProvider } = await import("@/src/infrastructure/plugins/provider-resolution");
+  return resolveOpenFangProvider(input, {
+    resolvePluginProviderImpl: resolvePluginProvider,
+    credentialTimeoutMs: options.credentialTimeoutMs,
+    fetchImpl: fetch,
+  });
 }
 
 export interface ResolveOpenFangReleaseWriteOptions {
@@ -372,13 +399,10 @@ async function createPluginControllers(): Promise<PluginControllers> {
       // not "resolve anyway": it stays UnreleasedCredentialResolver, which
       // releases nothing and fails closed with credential_missing, exactly as
       // before this wiring existed.
-      resolveProvider: async ({ component, entry, binding, policy }) => {
-        const { resolvePluginProvider } = await import("@/src/infrastructure/plugins/provider-resolution");
-        return resolveOpenFangProvider(
-          { component, entry, binding, policy },
-          { resolvePluginProviderImpl: resolvePluginProvider, credentialTimeoutMs: openFangCredentialTimeoutMs, fetchImpl: fetch },
-        );
-      },
+      // No destructuring or rebuilding here -- input is forwarded to
+      // resolveOpenFangComposedProvider exactly as PluginToolRuntime handed
+      // it in. See that function's own doc comment above for why.
+      resolveProvider: (input) => resolveOpenFangComposedProvider(input, { credentialTimeoutMs: openFangCredentialTimeoutMs }),
       // OpenFang is the release authority for writes: a write stays under
       // review unless it is reachable and a human has approved this exact
       // call there. No OpenFang URL configured means no release is possible.

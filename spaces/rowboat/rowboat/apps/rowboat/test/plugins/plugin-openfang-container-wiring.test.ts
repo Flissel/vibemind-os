@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_POLICY, type PluginPolicy, type ProviderResolution } from "@rowboat/openai-plugin-runtime";
-import { resolveOpenFangProvider, resolveOpenFangReleaseWrite } from "@/di/plugins-container";
+import { resolveOpenFangComposedProvider, resolveOpenFangProvider, resolveOpenFangReleaseWrite } from "@/di/plugins-container";
 import { UnreleasedCredentialResolver } from "@/src/infrastructure/plugins/provider-resolution";
 import { OpenFangCredentialResolver } from "@/src/infrastructure/plugins/openfang-credential-resolver";
 import type { PluginProviderResolutionDependencies, PluginProviderResolutionRequest } from "@/src/infrastructure/plugins/provider-resolution";
+import type { PluginProviderResolutionInput } from "@/src/application/services/plugin-tool-runtime";
 import type { IPluginWriteReleasePolicy, PluginWriteReleaseDecision, PluginWriteReleaseRequest } from "@/src/application/policies/plugin-write-release.policy";
 
 /**
@@ -175,6 +176,71 @@ describe("resolveOpenFangReleaseWrite (container wiring)", () => {
       expect(decision).toEqual({ status: "approved", approvalId: "3f0f8a1e-0000-4000-8000-000000000099" });
       expect(RecordingPolicy.constructedCount).toBe(1);
       expect(RecordingPolicy.lastOptions).toMatchObject({ baseUrl: "https://openfang.example.com", timeoutMs: 1_000, pollIntervalMs: 1_000 });
+    });
+  });
+});
+
+describe("resolveOpenFangComposedProvider (the exact composition wired into PluginToolRuntimeDependencies.resolveProvider)", () => {
+  // A real MCP declaration, not a spy: this proves the policy handed to the
+  // *composed* function (the one createToolRuntime actually wires up, with
+  // no destructuring/rebuilding left in front of it) reaches the real,
+  // dynamically-imported resolvePluginProvider and the real HttpMcpProvider
+  // it constructs -- the exact five lines where Task 7's regression
+  // happened, closed off rather than merely spied on.
+  const componentDigest = "a".repeat(64);
+  // 127.0.0.1:1 refuses the connection immediately (nothing listens there),
+  // so this stays fast and needs no network access -- it only has to prove
+  // which policy the constructed provider was built with, not complete a
+  // real call. Mirrors provider-resolution.test.ts's own technique.
+  const localComponent = Object.freeze({
+    id: "mcp:.mcp.json#github", name: "github", kind: "mcp",
+    metadata: Object.freeze({
+      digest: "b".repeat(64), bindingDigest: componentDigest, transport: "http",
+      mcpServer: Object.freeze({ type: "http", url: "https://127.0.0.1:1/mcp" }),
+    }),
+  });
+  const localBinding = Object.freeze({ id: "mcp.github", providerKind: "mcp-http" as const, componentDigest });
+  const localEntry = Object.freeze({ licenseDeclaration: "MIT" });
+  const invocationRequest = Object.freeze({
+    projectId: "project-1", pluginName: "github", componentName: "github",
+    operationName: "search", capability: "write" as const, arguments: {},
+  });
+
+  // Only component/entry/binding/policy are ever read by this composition
+  // boundary (see resolveOpenFangProvider's own doc comment) -- catalog,
+  // installation, credentialSlots, and signal are typed-but-unused filler
+  // PluginProviderResolutionInput otherwise requires. `unknown` first, per
+  // this repo's own rule against `any`.
+  const composedInput = (policy: PluginPolicy): PluginProviderResolutionInput => ({
+    component: localComponent, entry: localEntry, binding: localBinding, policy,
+  } as unknown as PluginProviderResolutionInput);
+
+  it("forwards the unelevated default policy through to the real provider, which then refuses the write outright", async () => {
+    await withOpenFangEnv(undefined, undefined, async () => {
+      const resolution = await resolveOpenFangComposedProvider(composedInput(DEFAULT_POLICY), { credentialTimeoutMs: 5_000 });
+      expect(resolution.status).toBe("available");
+      if (resolution.status !== "available") return;
+      // DEFAULT_POLICY refuses every write outright, before any network attempt.
+      await expect(resolution.provider.invoke(invocationRequest, { requestId: "req-1" }))
+        .rejects.toThrow("write_review_required");
+    });
+  });
+
+  it("forwards an elevated policy through to the real provider, which then admits the write and reaches the network", async () => {
+    await withOpenFangEnv(undefined, undefined, async () => {
+      const resolution = await resolveOpenFangComposedProvider(composedInput(elevatedPolicy), { credentialTimeoutMs: 5_000 });
+      expect(resolution.status).toBe("available");
+      if (resolution.status !== "available") return;
+      const result = await resolution.provider.invoke(invocationRequest, { requestId: "req-2" });
+      expect(result).toMatchObject({ status: "failed" });
+      if (result.status !== "failed") return;
+      // The elevated policy clears the same admission check and lets the
+      // call reach the network attempt instead, which then fails for an
+      // unrelated, local reason -- never for write_review_required again.
+      // This is the observable proof that policy reached all the way
+      // through: a dropped policy here would make this assertion fail,
+      // reporting write_review_required instead.
+      expect(result.reason).not.toBe("write_review_required");
     });
   });
 });

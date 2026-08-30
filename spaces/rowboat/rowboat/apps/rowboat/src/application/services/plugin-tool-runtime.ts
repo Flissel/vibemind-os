@@ -709,12 +709,37 @@ export class PluginToolRuntime {
     const capabilityDecision = evaluateCapability({ kind: trustedCapability }, policy);
     if (capabilityDecision.status !== "admitted") throw new PluginToolRuntimeError(capabilityDecision.reason === "write_review_required" ? "write_review_required" : "admission_denied");
 
+    // Moving the admission re-check earlier (above) widened this staleness
+    // window: it now spans the whole release gate, including a human's
+    // decision time. A *sibling* component's admission changing while that
+    // decision is pending -- nothing to do with this call -- now also trips
+    // this check and aborts an already-approved write with
+    // execution_state_changed. That is the correct, fail-closed direction to
+    // err in (this comparison intentionally stays broad, not narrowed to
+    // just this component -- an unrelated-looking change can still be a
+    // real revocation this runtime has no business second-guessing), but if
+    // a release was consumed to get here, discarding it with zero local
+    // trace reproduces the exact "human decided, Rowboat recorded nothing"
+    // gap the release-gate receipts above exist to close. So: record it,
+    // the same way, before the throw -- never by re-snapshotting or
+    // narrowing what counts as a change.
+    const recordConsumedApprovalOnStaleness = async (): Promise<void> => {
+      if (approvalId === undefined) return;
+      await this.#settleReceipt(this.#putReceipt(
+        requestId, context.projectId, binding, installation, component.component, installedBinding,
+        "failed", "execution_state_changed", approvalId,
+      ));
+    };
     captureCredentialSlots(await awaitDeadline(this.#dependencies.pluginsRepository.listCredentialSlots(installation.id), controller.signal, context.signal));
     const preProviderInstallationValue = await awaitDeadline(this.#dependencies.pluginsRepository.getInstallation(context.projectId, binding.pluginName), controller.signal, context.signal);
-    if (preProviderInstallationValue === null) throw new PluginToolRuntimeError("execution_state_changed");
+    if (preProviderInstallationValue === null) {
+      await recordConsumedApprovalOnStaleness();
+      throw new PluginToolRuntimeError("execution_state_changed");
+    }
     const preProviderInstallation = captureInstallation(preProviderInstallationValue);
     const preProviderAdmissions = captureAdmissions(await awaitDeadline(this.#dependencies.pluginsRepository.listAdmissions(installation.id), controller.signal, context.signal));
     if (signature(preProviderInstallation) !== signature(installation) || signature(preProviderAdmissions) !== signature(admissions)) {
+      await recordConsumedApprovalOnStaleness();
       throw new PluginToolRuntimeError("execution_state_changed");
     }
     const credentialSlots = captureCredentialSlots(await awaitDeadline(this.#dependencies.pluginsRepository.listCredentialSlots(installation.id), controller.signal, context.signal));

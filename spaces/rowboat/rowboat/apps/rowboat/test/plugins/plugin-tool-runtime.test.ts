@@ -86,6 +86,17 @@ const binding = Object.freeze({
 // (see "rejects caller read downgrade..." below) — a write-path test therefore
 // needs a binding whose declared capability is itself "write".
 const writeBinding = Object.freeze({ ...binding, capability: "write" as const });
+// A different component's admission -- used to prove the pre-provider
+// staleness check (which compares the *whole* admissions list) can trip on
+// a sibling changing, not just the invoked component itself.
+const siblingAdmission: PluginComponentAdmission = Object.freeze({
+  installationId: installation.id,
+  componentDigest: "b".repeat(64),
+  componentKind: "app",
+  componentName: "sibling-component",
+  status: "admitted",
+  policyVersion: catalog.policyVersion,
+});
 
 class FakeRepository implements IPluginsRepository {
   currentInstallation: PluginInstallation | null = installation;
@@ -671,6 +682,49 @@ describe("PluginToolRuntime", () => {
     expect(seen).toHaveLength(2);
     const secondRequest = seen[1] as Readonly<Record<string, unknown>>;
     expect(secondRequest.argumentsDigest).toBe(firstRequest.argumentsDigest);
+  });
+
+  it("writes a receipt naming the approval id when a sibling admission changes while a human is deciding, before the execution_state_changed throw", async () => {
+    // Widening the admission re-check's window (so a release is never
+    // sought for a component whose own admission is already stale) also
+    // widened the pre-provider staleness comparison it feeds: that
+    // comparison now spans the whole release wait too, so a *sibling*
+    // component's admission changing during it -- nothing to do with this
+    // call -- aborts an already-approved write with execution_state_changed.
+    // The abort itself is correct and deliberately not narrowed; what this
+    // pins is that the consumed approval still leaves a local trace.
+    const state = setup({
+      operationCapability: "write",
+      releaseWrite: async () => {
+        state.repository.currentAdmissions = [admission, siblingAdmission];
+        return { status: "approved" as const, approvalId: "3f0f8a1e-0000-4000-8000-000000000014" };
+      },
+    });
+    await expect(state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup" }))
+      .rejects.toThrow("execution_state_changed");
+    expect(state.repository.receipts).toHaveLength(1);
+    expect(state.repository.receipts[0]).toMatchObject({ status: "failed", reason: "execution_state_changed" });
+    expect(JSON.stringify(state.repository.receipts[0])).toContain("3f0f8a1e-0000-4000-8000-000000000014");
+  });
+
+  it("writes no receipt for the same sibling-admission staleness abort on a read -- there is no consumed approval to record", async () => {
+    const state = setup({ operationCapability: "read" });
+    state.repository.currentAdmissions = [admission];
+    const originalListAdmissions = state.repository.listAdmissions.bind(state.repository);
+    let calls = 0;
+    state.repository.listAdmissions = async () => {
+      calls += 1;
+      // The *first* read (the moved-up admission re-check) must still see
+      // the original, single-admission snapshot -- mutate only after
+      // capturing that return value, so the *second* read (the pre-provider
+      // staleness check) is the one that sees the sibling appear.
+      const result = await originalListAdmissions();
+      if (calls === 1) state.repository.currentAdmissions = [admission, siblingAdmission];
+      return result;
+    };
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" }))
+      .rejects.toThrow("execution_state_changed");
+    expect(state.repository.receipts).toHaveLength(0);
   });
 
   it("names the approval id on the failure receipt too, not only on success", async () => {

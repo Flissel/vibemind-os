@@ -394,7 +394,7 @@ All receipts live in the `plugin_receipts` collection, keyed by `receiptId`:
 | --- | --- |
 | `type: "import"` / `"install"` | Catalog import and installation provenance |
 | `type: "execution"`, `parity:<digest>` | Shadow parity comparison evidence |
-| `type: "execution"`, `receiptId: <requestId>` | One `PluginToolRuntime.invoke()` call - success, failure, or a refusal at the release gate. `output.approvalId` is present whenever an OpenFang release was involved, on every one of those three outcomes, not only success - it is the one field tying a receipt back to an approval OpenFang holds. |
+| `type: "execution"`, `receiptId: <requestId>` | One `PluginToolRuntime.invoke()` call - success, failure, or a refusal at the release gate. `output.approvalId` is present whenever OpenFang produced an approval id for this call, on any of those three outcomes, not only success - a release is attempted for an `unavailable`, timed-out, or aborted refusal too, and none of those ever produces an id to carry (see below for what the refusal receipt can and cannot distinguish). |
 | `type: "migration"`, `runtime-mode:<digest>` | A runtime mode transition, including rollback |
 
 Receipts are immutable and redacted: arguments and results are declared under
@@ -407,6 +407,23 @@ runtime's own refusal at the release gate documented above. A receipt for the
 latter (`type: "execution"`, `status: "denied"` or `"timed_out"`, `reason:
 "write_review_required"`) is what lets an operator tell the two apart - the
 catalog-level meaning never produces one.
+
+The refusal receipt's `reason` is always the single constant
+`"write_review_required"` - the kernel's reason vocabulary has no room for a
+finer one, the same fixed-allowlist constraint that also collapses
+provider failures elsewhere in this section (below) - so `status` and the presence of `output.approvalId`
+together are what actually separate the five outcomes a release attempt can
+produce, into three buckets an operator can tell apart on the receipt itself:
+
+| Receipt shows | Actual outcome | What an operator can conclude |
+| --- | --- | --- |
+| `status: "denied"`, `approvalId` present | denied or expired | A human (or OpenFang's own expiry) decided against this exact call; the id names which OpenFang record to check. |
+| `status: "denied"`, no `approvalId` | unavailable, or approved with an `approvalId` that failed the UUID guard | OpenFang never produced a trustworthy decision for this call - unreachable, no record created, or a malformed response. There is no id to check because none was ever validated. |
+| `status: "timed_out"`, no `approvalId` | the release call itself hit this runtime's own deadline, or the caller aborted while it was pending | No decision came back in time either way; same as the provider-failure collapse documented below, a receipt alone cannot tell a deadline from a caller cancellation apart. |
+
+That collapse is deliberate, the same call made for provider failures below:
+recording is bounded by what the kernel's fixed `PluginReasonCode` allowlist
+accepts, not by widening it per call site.
 
 ## Removing the legacy public surfaces
 
