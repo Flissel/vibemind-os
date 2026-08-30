@@ -347,3 +347,17 @@ These are true limits of the current state, not oversights to work around:
   only the three transitions listed above, so a project in shadow returns to
   legacy by going through a cutover and rollback. Widening the table is a
   separate decision.
+- **The OpenFang write-release approval window is capped at four minutes.**
+  `OPENFANG_APPROVAL_TIMEOUT_MS` (default 120 000 ms) configures how long
+  OpenFang is given to collect a human decision, but it is clamped to at most
+  240 000 ms (four minutes) regardless of what is configured. The reason is
+  structural, not a missing knob: a call that may wait on a human release
+  still runs under the same single deadline as the rest of the tool
+  invocation, and `PluginToolRuntime`'s constructor caps that deadline at
+  300 000 ms (five minutes) - the runtime's deadline is derived as the
+  approval window plus a fixed margin for the rest of the call (the release
+  call's own overhead, then admission/credential/provider work), so a window
+  above four minutes would leave no room for that margin. A longer human
+  approval window needs per-phase budgets, so the release wait stops counting
+  against the provider's own time budget; that does not exist yet, so four
+  minutes is the real limit today, not an oversight to work around.

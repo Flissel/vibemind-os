@@ -9,32 +9,55 @@ import type { PluginSessionController } from "@/src/interface-adapters/controlle
 
 type PluginReplayLookupInput = PluginPreviewEnvelope;
 
-const DEFAULT_OPENFANG_APPROVAL_WINDOW_MS = 120_000;
-const MIN_OPENFANG_APPROVAL_WINDOW_MS = 1_000;
-const MAX_OPENFANG_APPROVAL_WINDOW_MS = 3_600_000;
-// Buffer the runtime's own deadline past the approval window rather than
-// matching it exactly, so the release call's own bookkeeping (the initial
-// POST, at least one poll) has room to complete after a human decides at the
-// very end of the window.
-const RUNTIME_DEADLINE_BUFFER_MS = 60_000;
+// The runtime's own hard ceiling -- PluginToolRuntime's constructor caps
+// timeoutMilliseconds there -- and the margin left, after a release decision
+// returns, for the rest of the call (the release call's own request/poll
+// overhead, then admission/credential/provider work).
 const RUNTIME_DEADLINE_CEILING_MS = 300_000;
+const RUNTIME_DEADLINE_MARGIN_MS = 60_000;
+// The largest approval window the runtime can actually cover. Past this,
+// window + RUNTIME_DEADLINE_MARGIN_MS would exceed RUNTIME_DEADLINE_CEILING_MS,
+// so the runtime's own deadline would have to be capped at or below the
+// window it is supposed to cover -- reproducing the exact defect this guard
+// exists to prevent (an operator approving after the runtime has already
+// timed the call out). Derived, not a bare literal, so the two stay tied if
+// either changes.
+const MAX_OPENFANG_APPROVAL_WINDOW_MS = RUNTIME_DEADLINE_CEILING_MS - RUNTIME_DEADLINE_MARGIN_MS;
+const MIN_OPENFANG_APPROVAL_WINDOW_MS = 1_000;
+const DEFAULT_OPENFANG_APPROVAL_WINDOW_MS = 120_000;
+// Whole, non-negative digits only: a naive Number.parseInt("1500.75", 10)
+// truncates to 1500 and would silently accept a fractional value.
+const STRICT_INTEGER = /^[0-9]+$/;
 
 /**
- * Parses OPENFANG_APPROVAL_TIMEOUT_MS once, guarded: an unset, non-numeric,
- * or out-of-range value falls back to the default rather than propagating
- * NaN into arithmetic downstream (an unguarded NaN here would make
- * setTimeout(..., NaN) fire immediately, silently refusing every write with
- * no diagnostic).
+ * Resolves OPENFANG_APPROVAL_TIMEOUT_MS once, at composition, guarded: input
+ * that is not a valid whole-millisecond duration -- missing, fractional,
+ * zero, negative, empty, or not a number at all -- falls back to the default
+ * rather than propagating NaN into arithmetic downstream (an unguarded NaN
+ * here would make setTimeout(..., NaN) fire immediately, silently refusing
+ * every write with no diagnostic). A valid duration above what the runtime
+ * can actually cover is clamped down to the max instead of dropped to the
+ * default: an operator who asked for a longer window should get as much of
+ * it as the runtime allows, not have their configuration silently
+ * overridden by an unrelated value.
  */
-function parseApprovalWindowMs(raw: string | undefined): number {
-  if (raw === undefined) return DEFAULT_OPENFANG_APPROVAL_WINDOW_MS;
+export function resolveOpenFangApprovalWindowMs(raw: string | undefined): number {
+  if (raw === undefined || !STRICT_INTEGER.test(raw)) return DEFAULT_OPENFANG_APPROVAL_WINDOW_MS;
   const parsed = Number.parseInt(raw, 10);
-  if (
-    !Number.isSafeInteger(parsed)
-    || parsed < MIN_OPENFANG_APPROVAL_WINDOW_MS
-    || parsed > MAX_OPENFANG_APPROVAL_WINDOW_MS
-  ) return DEFAULT_OPENFANG_APPROVAL_WINDOW_MS;
-  return parsed;
+  if (!Number.isSafeInteger(parsed) || parsed < MIN_OPENFANG_APPROVAL_WINDOW_MS) return DEFAULT_OPENFANG_APPROVAL_WINDOW_MS;
+  return Math.min(parsed, MAX_OPENFANG_APPROVAL_WINDOW_MS);
+}
+
+/**
+ * The runtime's own deadline for a call that may wait on a human release:
+ * the approval window plus RUNTIME_DEADLINE_MARGIN_MS for the release
+ * call's own overhead after a decision returns, capped at
+ * RUNTIME_DEADLINE_CEILING_MS. Because resolveOpenFangApprovalWindowMs never
+ * returns a window above MAX_OPENFANG_APPROVAL_WINDOW_MS, this is always
+ * strictly greater than the window it is derived from.
+ */
+export function deriveRuntimeDeadlineMs(approvalWindowMs: number): number {
+  return Math.min(RUNTIME_DEADLINE_CEILING_MS, approvalWindowMs + RUNTIME_DEADLINE_MARGIN_MS);
 }
 
 interface PluginControllers {
@@ -116,7 +139,7 @@ async function createPluginControllers(): Promise<PluginControllers> {
   // operator can never approve a write after the runtime has already timed
   // the call out (which would write a timed_out receipt while leaving an
   // approved-but-orphaned approval in OpenFang for a retry to duplicate).
-  const openFangApprovalWindowMs = parseApprovalWindowMs(process.env.OPENFANG_APPROVAL_TIMEOUT_MS);
+  const openFangApprovalWindowMs = resolveOpenFangApprovalWindowMs(process.env.OPENFANG_APPROVAL_TIMEOUT_MS);
 
   return Object.freeze({
     authenticate: (request: Request) => authorization.authenticate(request),
@@ -178,12 +201,11 @@ async function createPluginControllers(): Promise<PluginControllers> {
       // tool is treated as mutating. DEFAULT_POLICY therefore keeps it fail-closed.
       classifyOperation: () => "write" as const,
       // Bounded by the same openFangApprovalWindowMs the adapter below is
-      // given, plus headroom for the adapter's own request/poll overhead,
-      // capped at the constructor's own ceiling. This is the fix for the
-      // invariant this whole dependency exists to uphold: the call that
-      // waits for a human release must not be timed out by the runtime
-      // before that human could plausibly have decided.
-      timeoutMilliseconds: Math.min(RUNTIME_DEADLINE_CEILING_MS, openFangApprovalWindowMs + RUNTIME_DEADLINE_BUFFER_MS),
+      // given, via deriveRuntimeDeadlineMs -- which always exceeds it. This
+      // is the fix for the invariant this whole dependency exists to uphold:
+      // the call that waits for a human release must not be timed out by
+      // the runtime before that human could plausibly have decided.
+      timeoutMilliseconds: deriveRuntimeDeadlineMs(openFangApprovalWindowMs),
       // Provider implementations come through the hardened runtime registry.
       // No legacy Composio adapter is reachable from this composition boundary,
       // and credentials are not released yet, so an HTTP MCP call reaches its
