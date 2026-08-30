@@ -37,6 +37,14 @@ const DEFAULT_TIMEOUT_MILLISECONDS = 30_000;
 const DEFAULT_RECEIPT_TIMEOUT_MILLISECONDS = 100;
 const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const ARGUMENTS_DIGEST_DOMAIN = "rowboat:plugin-tool-runtime:arguments:v1";
+/**
+ * The exact, closed set of kernel-reported failure reasons this runtime
+ * trusts enough to surface as themselves. A provider is untrusted input: any
+ * reason string that is not a byte-exact match for a key here -- whatever
+ * its length or shape -- normalises to "provider_failed" instead. This is a
+ * fixed constant, never derived from what the provider sent.
+ */
+const KNOWN_PROVIDER_FAILURE_REASONS: ReadonlySet<string> = new Set(["credential_missing"]);
 
 export interface PluginToolBindingValue {
   readonly installationId: string;
@@ -354,6 +362,15 @@ function captureCredentialSlots(input: unknown): readonly PluginCredentialSlot[]
   return captured as unknown as readonly PluginCredentialSlot[];
 }
 
+// A reason that exactly matches a known kernel reason surfaces as itself;
+// anything else -- unrecognised, over-long, or otherwise not an exact match
+// -- is normalised to "provider_failed". Never derived from the input: the
+// only two possible outputs are members of KNOWN_PROVIDER_FAILURE_REASONS
+// (currently just "credential_missing") or the fixed fallback.
+function mapProviderFailureReason(reason: string): "credential_missing" | "provider_failed" {
+  return KNOWN_PROVIDER_FAILURE_REASONS.has(reason) ? "credential_missing" : "provider_failed";
+}
+
 function captureProviderResult(input: unknown): ProviderResult {
   if (input === null || typeof input !== "object" || Array.isArray(input) || isProxy(input)) throw new PluginToolRuntimeError("provider_result_invalid");
   const descriptors = Object.getOwnPropertyDescriptors(input);
@@ -368,10 +385,10 @@ function captureProviderResult(input: unknown): ProviderResult {
   }
   if (statusDescriptor.value === "failed" && Object.keys(descriptors).sort().join("\0") === ["reason", "status"].join("\0")) {
     const reason = descriptors.reason;
-    if (reason === undefined || !("value" in reason) || !reason.enumerable || typeof reason.value !== "string" || Buffer.byteLength(reason.value, "utf8") > 4096) {
+    if (reason === undefined || !("value" in reason) || !reason.enumerable || typeof reason.value !== "string") {
       throw new PluginToolRuntimeError("provider_result_invalid");
     }
-    return Object.freeze({ status: "failed", reason: "provider_failed" });
+    return Object.freeze({ status: "failed", reason: mapProviderFailureReason(reason.value) });
   }
   throw new PluginToolRuntimeError("provider_result_invalid");
 }
@@ -691,7 +708,11 @@ export class PluginToolRuntime {
       }), Object.freeze({ requestId, signal: controller.signal })));
       dispatched = true;
       const result = captureProviderResult(await awaitDeadline(operation, controller.signal, context.signal));
-      if (result.status !== "success") throw new PluginToolRuntimeError("provider_failed");
+      // result.reason is already one of captureProviderResult's own two
+      // allowlisted outputs (see mapProviderFailureReason); this only picks
+      // the matching error code, it does not re-derive anything from the
+      // provider.
+      if (result.status !== "success") throw new PluginToolRuntimeError(result.reason === "credential_missing" ? "credential_missing" : "provider_failed");
       const finalInstallationValue = await awaitDeadline(this.#dependencies.pluginsRepository.getInstallation(context.projectId, binding.pluginName), controller.signal, context.signal);
       if (finalInstallationValue === null) throw new PluginToolRuntimeError("execution_state_changed");
       const finalInstallation = captureInstallation(finalInstallationValue);

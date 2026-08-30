@@ -613,6 +613,66 @@ describe("HTTP MCP provider", () => {
     expect(JSON.stringify(result)).not.toContain("super-secret-value");
   });
 
+  it("reports a missing credential as itself, not the generic HTTP failure", async () => {
+    const client = new RecordingHttpClient();
+    // No value configured for API_TOKEN, so the resolver rejects exactly as a
+    // real credential-store miss would.
+    const resolver = new RecordingCredentialResolver();
+    const provider = new HttpMcpProvider({
+      id: "mcp.http.search",
+      binding: binding("binding.http.search", "mcp-http", HTTP_DIGEST),
+      server: Object.freeze({
+        name: "search",
+        kind: "mcp-http",
+        componentDigest: HTTP_DIGEST,
+        url: "https://example.com/mcp",
+        bearerTokenReference: "API_TOKEN",
+      }),
+      parentLicense: "MIT",
+      policy: WRITE_HTTP_POLICY,
+      credentialResolver: resolver,
+      clientFactory: { create: () => client },
+      transportFactory: { create: (input) => Object.freeze({ kind: input.kind }) },
+    });
+
+    const result = await provider.invoke(request, { requestId: "request-1" });
+    expect(result).toEqual({ status: "failed", reason: "credential_missing" });
+    expect(resolver.calls).toHaveLength(1);
+    // Never reached the transport: the credential gate is what stopped it.
+    expect(client.connectTransports).toHaveLength(0);
+  });
+
+  it("still reports the generic HTTP failure for a non-credential transport error", async () => {
+    // Same shape of provider as the credential test above (a bearer reference
+    // configured, so the credential gate runs first) but this time the
+    // resolver succeeds and the transport itself is what fails -- proving the
+    // new credential_missing branch does not swallow unrelated failures.
+    const client = new RecordingHttpClient();
+    client.streamableError = new Error("connect refused, token=super-secret-value");
+    const resolver = new RecordingCredentialResolver({ API_TOKEN: "super-secret-value" });
+    const provider = new HttpMcpProvider({
+      id: "mcp.http.search",
+      binding: binding("binding.http.search", "mcp-http", HTTP_DIGEST),
+      server: Object.freeze({
+        name: "search",
+        kind: "mcp-http",
+        componentDigest: HTTP_DIGEST,
+        url: "https://example.com/mcp",
+        bearerTokenReference: "API_TOKEN",
+      }),
+      parentLicense: "MIT",
+      policy: WRITE_HTTP_POLICY,
+      credentialResolver: resolver,
+      clientFactory: { create: () => client },
+      transportFactory: { create: (input) => Object.freeze({ kind: input.kind }) },
+    });
+
+    const result = await provider.invoke(request, { requestId: "request-1" });
+    expect(result).toEqual({ status: "failed", reason: "mcp_http_failed" });
+    expect(resolver.calls).toHaveLength(1);
+    expect(JSON.stringify(result)).not.toContain("super-secret-value");
+  });
+
   it("captures and deeply freezes HTTP arguments before awaiting credentials", async () => {
     let releaseCredential: ((value: ReturnType<typeof createSecretValue>) => void) | undefined;
     const resolver: CredentialResolver = {

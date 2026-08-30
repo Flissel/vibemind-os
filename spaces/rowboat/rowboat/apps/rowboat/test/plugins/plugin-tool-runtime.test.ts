@@ -156,6 +156,7 @@ class FakeRepository implements IPluginsRepository {
 function setup(options: {
   readonly operationCapability?: "read" | "write";
   readonly providerResult?: "success" | "failed" | "hang";
+  readonly providerFailureReason?: string;
   readonly providerAvailable?: boolean;
   readonly resolverHangs?: boolean;
   readonly credentialFailure?: boolean;
@@ -203,7 +204,7 @@ function setup(options: {
         return Object.freeze({ status: "failed" as const, reason: "aborted" });
       }
       if (options.providerMutation !== undefined) mutateExecutionState(options.providerMutation);
-      if (options.providerResult === "failed") return Object.freeze({ status: "failed" as const, reason: "remote secret-value failure" });
+      if (options.providerResult === "failed") return Object.freeze({ status: "failed" as const, reason: options.providerFailureReason ?? "remote secret-value failure" });
       if (options.providerResult === "hang") return new Promise(() => undefined);
       return Object.freeze({ status: "success" as const, output: options.providerOutput ?? Object.freeze({ ok: true }) });
     },
@@ -437,6 +438,30 @@ describe("PluginToolRuntime", () => {
     await expect(state.runtime.invoke(binding, { token: "secret-value" }, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("provider_failed");
     expect(state.counters).toMatchObject({ provider: 1, legacy: 0 });
     expect(JSON.stringify(state.repository.receipts)).not.toContain("secret-value");
+  });
+
+  it("lets the kernel's credential_missing reason through and records it on the receipt", async () => {
+    const state = setup({ providerResult: "failed", providerFailureReason: "credential_missing" });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("credential_missing");
+    expect(state.counters).toMatchObject({ provider: 1, legacy: 0 });
+    expect(state.repository.receipts[0]).toMatchObject({ status: "failed", reason: "credential_missing" });
+  });
+
+  it("still normalises a recognised non-credential kernel reason to provider_failed", async () => {
+    const state = setup({ providerResult: "failed", providerFailureReason: "mcp_http_failed" });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("provider_failed");
+    expect(state.repository.receipts[0]).toMatchObject({ status: "failed", reason: "provider_unavailable" });
+  });
+
+  it.each([
+    ["a prototype-pollution-shaped reason", "__proto__"],
+    ["a 5000-character reason", "x".repeat(5000)],
+    ["an empty reason", ""],
+  ])("never propagates %s from the provider verbatim -- allowlist rejects, not derives", async (_label, reason) => {
+    const state = setup({ providerResult: "failed", providerFailureReason: reason });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("provider_failed");
+    expect(state.repository.receipts[0]).toMatchObject({ status: "failed", reason: "provider_unavailable" });
+    if (reason.length > 0) expect(JSON.stringify(state.repository.receipts)).not.toContain(reason);
   });
 
   it("fails with a typed error when the redacted receipt cannot be persisted", async () => {

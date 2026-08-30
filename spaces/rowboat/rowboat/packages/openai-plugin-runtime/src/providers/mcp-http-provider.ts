@@ -43,6 +43,17 @@ class HttpInvocationTimeoutError extends Error {
   }
 }
 
+// Distinguishes "the credential could not be resolved" from every other way
+// an MCP HTTP call can fail, so `invoke`'s catch can report it as its own
+// reason instead of folding it into the generic `mcp_http_failed`. Thrown
+// only from `#resolveCredential`, before any network I/O happens.
+class CredentialResolutionError extends Error {
+  constructor() {
+    super("credential_missing");
+    this.name = "CredentialResolutionError";
+  }
+}
+
 function awaitWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(new HttpInvocationTimeoutError());
   return new Promise<T>((resolve, reject) => {
@@ -328,7 +339,7 @@ export class HttpMcpProvider implements PluginProvider {
       );
     } catch {
       if (signal.aborted) throw new HttpInvocationTimeoutError();
-      throw new Error("credential_missing");
+      throw new CredentialResolutionError();
     }
   }
 
@@ -391,7 +402,9 @@ export class HttpMcpProvider implements PluginProvider {
         status: "failed",
         reason: error instanceof HttpInvocationTimeoutError || controller.signal.aborted
           ? "mcp_http_timed_out"
-          : "mcp_http_failed",
+          : error instanceof CredentialResolutionError
+            ? "credential_missing"
+            : "mcp_http_failed",
       });
     } finally {
       clearTimeout(timer);
