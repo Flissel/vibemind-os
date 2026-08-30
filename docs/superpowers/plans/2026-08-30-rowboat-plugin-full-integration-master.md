@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Plugin source pin: `openai/plugins@11c74d6ba24d3a6d48f54a194cd00ef3beea18f9`, 180 plugins.
-- Catalog digest pin: `2bf8aee223fc4d36e118d95a6e90f9436b501fe09d5f54bccd560a06ff3dc9f1`; policy `rowboat-plugin-policy-v1`; schema `rowboat-plugin-schema-v1`.
+- Catalog digest pin: whatever `PINNED_PLUGIN_CATALOG_DIGEST` in `packages/openai-plugin-runtime/src/domain/catalog.ts` currently holds — W1 Task 1 moves it, so read the constant rather than copying a literal from this plan. Policy `rowboat-plugin-policy-v1`; schema `rowboat-plugin-schema-v1`.
 - Changing any pin means re-running `catalog:sync`, updating the constant in `packages/openai-plugin-runtime/src/domain/catalog.ts`, the Desktop copy in `apps/x/apps/renderer/src/lib/rowboat-plugin-api.ts`, the committed lock, the byte-size assertion in `test/plugins/plugin-migration-keyset-snapshot.test.ts`, and the operations doc.
 - New TypeScript uses `unknown` plus narrowing, never `any`.
 - Plugin source content never supplies a secret value; a credential is always a reference resolved at call time.
