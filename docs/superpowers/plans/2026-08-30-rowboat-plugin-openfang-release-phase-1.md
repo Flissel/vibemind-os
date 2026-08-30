@@ -586,7 +586,7 @@ git add spaces/rowboat/rowboat/apps/rowboat
 git commit -m "feat(rowboat): let an OpenFang-released write through the runtime gate"
 ```
 
-Expected from `tsc`: only the six pre-existing missing-asset errors (`public/logo.png`, `public/logo-only.png`, `public/mascot.png`).
+Expected from `tsc`: zero errors. (Corrected 2026-08-30: the app typechecks clean. Six errors about `@/public/logo.png`, `logo-only.png` and `mascot.png` mean the gitignored, Next-generated `next-env.d.ts` is absent from the checkout — its reference to `next/image-types/global` is what declares image modules. The images themselves are tracked.)
 
 ---
 
@@ -796,4 +796,4 @@ git commit -m "docs(rowboat): record the released plugin call"
 - [ ] A read never asks for a release.
 - [ ] The credential transport was decided by the user before any resolver was written.
 - [ ] The live gate shows a released write reaching `credential_missing`, and the end-to-end result is recorded truthfully either way.
-- [ ] Unrelated baseline failures stay unclaimed: the six missing-asset typecheck errors and the Desktop root ESLint run.
+- [ ] Unrelated baseline failures stay unclaimed: the Desktop root ESLint run, and any typecheck error that turns out to come from a missing `next-env.d.ts` rather than from this work.
