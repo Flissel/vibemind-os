@@ -155,6 +155,20 @@ async function createPluginControllers(): Promise<PluginControllers> {
           { credentialResolver: new UnreleasedCredentialResolver() },
         );
       },
+      // OpenFang is the release authority for writes: a write stays under
+      // review unless it is reachable and a human has approved this exact
+      // call there. No OpenFang URL configured means no release is possible.
+      releaseWrite: async (request, signal) => {
+        const url = process.env.OPENFANG_URL;
+        if (url === undefined || url.length === 0) return { status: "unavailable" as const };
+        const { OpenFangWriteReleasePolicy } = await import("@/src/infrastructure/policies/openfang.plugin-write-release.policy");
+        return new OpenFangWriteReleasePolicy({
+          baseUrl: url,
+          fetch,
+          timeoutMs: Number.parseInt(process.env.OPENFANG_APPROVAL_TIMEOUT_MS ?? "120000", 10),
+          pollIntervalMs: 1_000,
+        }).release(request, signal);
+      },
     }),
   });
 }

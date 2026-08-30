@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isProxy } from "node:util/types";
 import {
   buildReceipt,
@@ -34,6 +34,7 @@ const MAX_ARGUMENT_BYTES = 64 * 1024;
 const DEFAULT_TIMEOUT_MILLISECONDS = 30_000;
 const DEFAULT_RECEIPT_TIMEOUT_MILLISECONDS = 100;
 const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const ARGUMENTS_DIGEST_DOMAIN = "rowboat:plugin-tool-runtime:arguments:v1";
 
 export interface PluginToolBindingValue {
   readonly installationId: string;
@@ -74,6 +75,14 @@ export interface PluginToolRuntimeDependencies {
     readonly operationName: string;
   }>) => "read" | "write";
   readonly resolveProvider: (input: PluginProviderResolutionInput) => Promise<ProviderResolution>;
+  /**
+   * Releases one write. A write stays under review unless a decision for this
+   * exact call approves it; the decision is never cached.
+   */
+  readonly releaseWrite?: (
+    request: Readonly<{ projectId: string; pluginName: string; toolName: string; componentDigest: string; argumentsDigest: string }>,
+    signal: AbortSignal,
+  ) => Promise<Readonly<{ status: "approved" | "denied" | "expired" | "unavailable"; approvalId?: string }>>;
   readonly timeoutMilliseconds?: number;
   readonly receiptTimeoutMilliseconds?: number;
   readonly createRequestId?: () => string;
@@ -371,6 +380,21 @@ function signature(value: unknown): string {
   return JSON.stringify(value);
 }
 
+// Local copy of the domain-separated digest idiom used elsewhere in this
+// codebase (legacy-plugin-migration.ts, legacy-plugin-recipes.ts,
+// plugin-migration.shared.ts). Kept local rather than imported from
+// use-cases/ because a service must not depend on a use-case module.
+function canonical(value: unknown): string {
+  if (value === null || typeof value === "boolean" || typeof value === "string" || typeof value === "number") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  const record = value as Readonly<Record<string, unknown>>;
+  return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${canonical(record[key])}`).join(",")}}`;
+}
+
+function domainDigest(domain: string, value: unknown): string {
+  return createHash("sha256").update(domain).update("\0").update(canonical(value)).digest("hex");
+}
+
 function exactCatalog(input: unknown): ReturnType<typeof validatePluginCatalogLock> {
   try {
     const value = validatePluginCatalogLock(input);
@@ -505,6 +529,7 @@ export class PluginToolRuntime {
   async invoke(bindingInput: unknown, argumentsInput: unknown, contextInput: unknown): Promise<ProviderResult> {
     const binding = captureBinding(bindingInput);
     const args = captureArguments(argumentsInput);
+    const argumentsDigest = domainDigest(ARGUMENTS_DIGEST_DOMAIN, args);
     const context = captureContext(contextInput);
     const authorization = captureAuthorization(this.#dependencies.authorizationContext);
     if (context.signal?.aborted === true) throw new PluginToolRuntimeError("request_aborted");
@@ -559,7 +584,39 @@ export class PluginToolRuntime {
     }));
     if (trustedCapability !== "read" && trustedCapability !== "write") throw new PluginToolRuntimeError("admission_denied");
     if (binding.capability !== trustedCapability) throw new PluginToolRuntimeError("capability_mismatch");
-    const capabilityDecision = evaluateCapability({ kind: trustedCapability }, DEFAULT_POLICY);
+
+    let policy = DEFAULT_POLICY;
+    let approvalId: string | undefined;
+    if (trustedCapability === "write" && this.#dependencies.releaseWrite !== undefined) {
+      let decision: Readonly<{ status: "approved" | "denied" | "expired" | "unavailable"; approvalId?: string }>;
+      try {
+        decision = await awaitDeadline(
+          this.#dependencies.releaseWrite(Object.freeze({
+            projectId: context.projectId,
+            pluginName: binding.pluginName,
+            toolName: context.operationName,
+            componentDigest: binding.componentDigest,
+            argumentsDigest,
+          }), controller.signal),
+          controller.signal,
+          context.signal,
+        );
+      } catch (error: unknown) {
+        // Fail closed: a broken or aborted release call is never treated as
+        // approval. An abort/timeout from the shared deadline still surfaces
+        // through the same convention every other await in this method uses;
+        // any other failure (a malformed request, a network error, ...) is
+        // indistinguishable from "no decision" and keeps the write under review.
+        if (error instanceof PluginToolRuntimeError) throw error;
+        decision = Object.freeze({ status: "unavailable" as const });
+      }
+      if (decision.status === "approved" && typeof decision.approvalId === "string") {
+        // Released for this call only: the policy copy never leaves this scope.
+        policy = Object.freeze({ ...DEFAULT_POLICY, allowWriteCapabilities: true });
+        approvalId = decision.approvalId;
+      }
+    }
+    const capabilityDecision = evaluateCapability({ kind: trustedCapability }, policy);
     if (capabilityDecision.status !== "admitted") throw new PluginToolRuntimeError(capabilityDecision.reason === "write_review_required" ? "write_review_required" : "admission_denied");
 
     const admissions = captureAdmissions(await awaitDeadline(this.#dependencies.pluginsRepository.listAdmissions(installation.id), controller.signal, context.signal));
@@ -636,7 +693,7 @@ export class PluginToolRuntime {
         || signature(finalAdmissions) !== signature(admissions)
         || signature(finalCredentialSlots) !== signature(credentialSlots)
       ) throw new PluginToolRuntimeError("execution_state_changed");
-      const receiptStored = await this.#settleReceipt(this.#putReceipt(requestId, context.projectId, binding, installation, component.component, installedBinding, "success"));
+      const receiptStored = await this.#settleReceipt(this.#putReceipt(requestId, context.projectId, binding, installation, component.component, installedBinding, "success", undefined, approvalId));
       if (!receiptStored) throw new PluginToolRuntimeError("receipt_unavailable");
       return result;
     } catch (error: unknown) {
@@ -703,6 +760,7 @@ export class PluginToolRuntime {
     providerBinding: ProviderBinding,
     status: "success" | "failed" | "timed_out",
     reason: "credential_missing" | "provider_unavailable" | "execution_state_changed" = "provider_unavailable",
+    approvalId?: string,
   ): Promise<void> {
     const receipt = buildReceipt(Object.freeze({
       type: "execution",
@@ -720,6 +778,7 @@ export class PluginToolRuntime {
         componentDigest: binding.componentDigest,
         providerBindingId: binding.providerBindingId,
         capability: binding.capability,
+        ...(approvalId === undefined ? {} : { approvalId }),
       }),
     }), Object.freeze([]), Object.freeze({ maxOutputBytes: 4096 }));
     try {

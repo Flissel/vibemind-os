@@ -81,6 +81,10 @@ const binding = Object.freeze({
   providerBindingId: providerBinding.id,
   capability: "read" as const,
 });
+// The trusted classification must agree with the caller's declared capability
+// (see "rejects caller read downgrade..." below) — a write-path test therefore
+// needs a binding whose declared capability is itself "write".
+const writeBinding = Object.freeze({ ...binding, capability: "write" as const });
 
 class FakeRepository implements IPluginsRepository {
   currentInstallation: PluginInstallation | null = installation;
@@ -164,6 +168,7 @@ function setup(options: {
   readonly timeoutMilliseconds?: number;
   readonly authorizationContext?: PluginToolAuthorizationContext | false;
   readonly authorize?: (authorization: PluginToolAuthorizationContext, projectId: string) => Promise<void>;
+  readonly releaseWrite?: PluginToolRuntimeDependencies["releaseWrite"];
 } = {}) {
   const repository = new FakeRepository();
   const counters = { authorize: 0, resolve: 0, provider: 0, cancel: 0, legacy: 0 };
@@ -226,6 +231,7 @@ function setup(options: {
       if (options.providerAvailable === false) return Object.freeze({ status: "unavailable" as const, reason: "provider_unavailable" as const });
       return Object.freeze({ status: "available" as const, provider });
     },
+    releaseWrite: options.releaseWrite,
     timeoutMilliseconds: options.timeoutMilliseconds ?? 20,
     receiptTimeoutMilliseconds: 15,
     createRequestId: () => "request-1",
@@ -571,5 +577,49 @@ describe("PluginToolRuntime", () => {
     state.repository.getCatalog = async () => null;
     await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("catalog_unavailable");
     expect(state.repository.credentialReads).toBe(0);
+  });
+
+  it("runs a write that OpenFang released and records the approval", async () => {
+    const seen: unknown[] = [];
+    const state = setup({
+      operationCapability: "write",
+      releaseWrite: async (request: unknown) => { seen.push(request); return { status: "approved", approvalId: "3f0f8a1e-0000-4000-8000-000000000005" }; },
+    });
+    const result = await state.runtime.invoke(writeBinding, { query: "safe" }, { projectId: "project-1", operationName: "lookup" });
+    expect(result).toEqual({ status: "success", output: { ok: true } });
+    expect(seen).toHaveLength(1);
+    expect(state.repository.receipts[0]).toMatchObject({ status: "success" });
+    expect(JSON.stringify(state.repository.receipts[0])).toContain("3f0f8a1e-0000-4000-8000-000000000005");
+  });
+
+  it("keeps refusing a write that was denied, expired, or never released", async () => {
+    for (const decision of [
+      { status: "denied" as const, approvalId: "3f0f8a1e-0000-4000-8000-000000000006" },
+      { status: "expired" as const, approvalId: "3f0f8a1e-0000-4000-8000-000000000007" },
+      { status: "unavailable" as const },
+    ]) {
+      const state = setup({ operationCapability: "write", releaseWrite: async () => decision });
+      await expect(state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup" }))
+        .rejects.toThrow("write_review_required");
+    }
+  });
+
+  it("never asks for a release for a read", async () => {
+    let asked = 0;
+    const state = setup({ operationCapability: "read", releaseWrite: async () => { asked += 1; return { status: "approved", approvalId: "3f0f8a1e-0000-4000-8000-000000000008" }; } });
+    await state.runtime.invoke({ ...binding, capability: "read" }, {}, { projectId: "project-1", operationName: "lookup" });
+    expect(asked).toBe(0);
+  });
+
+  it("keeps a write under review when the release call itself throws", async () => {
+    // releaseWrite must fail closed: a broken adapter (a malformed request the
+    // port's captureWriteReleaseRequest rejects, a network failure, ...) is
+    // never distinguishable from "no decision" and never approves a write.
+    const state = setup({
+      operationCapability: "write",
+      releaseWrite: async () => { throw new Error("openfang_unavailable"); },
+    });
+    await expect(state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup" }))
+      .rejects.toThrow("write_review_required");
   });
 });
