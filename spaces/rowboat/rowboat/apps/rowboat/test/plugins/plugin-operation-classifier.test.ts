@@ -21,4 +21,9 @@ describe("plugin operation classification", () => {
       expect(classifyPluginOperation({ pluginName: "github", component: broken, operationName: "list_issues" })).toBe("write");
     }
   });
+
+  it("requires all entries to be strings, rejecting mixed-type arrays even if the operation is present", () => {
+    const mixedType = { ...component, metadata: { ...component.metadata, readOnlyOperations: ["list_issues", 42] } };
+    expect(classifyPluginOperation({ pluginName: "github", component: mixedType, operationName: "list_issues" })).toBe("write");
+  });
 });
