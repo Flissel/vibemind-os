@@ -1,4 +1,5 @@
 import { PINNED_PLUGIN_CATALOG_DIGEST } from "@rowboat/openai-plugin-runtime";
+import { classifyPluginOperation } from "@/src/application/services/plugin-operation-classifier";
 import type { PluginCatalogController } from "@/src/interface-adapters/controllers/plugins/plugin-catalog.controller";
 import type { PluginInstallationController } from "@/src/interface-adapters/controllers/plugins/plugin-installation.controller";
 import type { PluginToolRuntime } from "@/src/application/services/plugin-tool-runtime";
@@ -197,9 +198,9 @@ async function createPluginControllers(): Promise<PluginControllers> {
       pluginsRepository,
       authorizationContext,
       authorizeProject: async (actor, projectId) => projectActionAuthorizationPolicy.authorize({ ...actor, projectId }),
-      // Until a trusted per-operation classifier is registered, every plugin
-      // tool is treated as mutating. DEFAULT_POLICY therefore keeps it fail-closed.
-      classifyOperation: () => "write" as const,
+      // Operations declared as read-only in their component metadata are classified
+      // as reads; everything else defaults to writes to keep the policy fail-closed.
+      classifyOperation: input => classifyPluginOperation(input),
       // Bounded by the same openFangApprovalWindowMs the adapter below is
       // given, via deriveRuntimeDeadlineMs -- which always exceeds it. This
       // is the fix for the invariant this whole dependency exists to uphold:
