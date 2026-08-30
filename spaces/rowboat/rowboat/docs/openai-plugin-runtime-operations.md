@@ -235,21 +235,49 @@ where a cutover materialized bindings, and records its own receipt stamped with
 
 The provider is wired: an HTTP MCP component resolves to a real provider built
 from the pinned catalog record, through a registry that only admits the exact
-binding. Two gates stand in front of the call, and both are decisions to be
-released rather than missing implementations:
+binding. `PluginToolRuntime` now has a release gate (`releaseWrite`): given a
+project-wide `OPENFANG_URL`, a write is put to OpenFang for approval instead of
+being refused outright, and an approval elevates that one call's local policy
+so the runtime's own `evaluateCapability` check admits it. Without a release
+(no `OPENFANG_URL`, or OpenFang unreachable, denied, or expired) the call still
+fails closed with `write_review_required` - unchanged from before.
 
-1. **Write review.** No trusted per-operation classifier is registered, so every
-   plugin operation is classified `write`, and the default policy sends a write
-   to review: the call fails with `write_review_required`.
-2. **Credential.** The MCP declaration carries a credential *reference* - for
-   the pinned GitHub server, the `GITHUB_PAT_TOKEN` bearer token env var - and
-   the resolver in this composition releases nothing, so the call would fail
-   with `credential_missing` behind the first gate.
+**A release does not yet reach the provider.** `PluginToolRuntimeDependencies.resolveProvider`
+receives no signal that a write was released: `resolvePluginProvider()` (in
+`src/infrastructure/plugins/provider-resolution.ts`) always constructs the
+provider with the kernel's own unmodified `DEFAULT_POLICY`
+(`allowWriteCapabilities: false`), because neither the test double nor the
+production wiring in `di/plugins-container.ts` passes a `policy` override
+through. `HttpMcpProvider.invoke()` then re-runs the identical
+`evaluateCapability({ kind: "write" }, policy)` check the outer gate just
+cleared, against that unmodified policy, and throws its own
+`write_review_required` - which `PluginToolRuntime`'s `classifyFailure` (it
+only special-cases the literal message `"credential_missing"`) reports to the
+caller as `provider_unavailable`. **Concretely: today, no plugin write can run
+even with a real OpenFang approval and a real credential**, because the
+approval never reaches the component that would need it. This was found by
+actually running the released-write case against the live gate below (see
+"Released-write proof, and the credential boundary"), not predicted; no
+mocked-provider unit test exercises the real kernel provider construction
+path, so nothing caught it earlier. Threading the elevated policy from the
+release decision through to `resolveProvider()` is unimplemented work, not a
+decision pending on the user the way the credential transport below is.
 
-Both are the OpenFang handoff points: the approval that releases a write, and
-the credential that authenticates it. Verified live: before the wiring an
-invocation failed with `provider_unavailable`; it now fails with
-`write_review_required`.
+Once that is fixed, one gate remains:
+
+- **Credential.** The MCP declaration carries a credential *reference* - for
+  the pinned GitHub server, the `GITHUB_PAT_TOKEN` bearer token env var - and
+  the resolver in this composition (`UnreleasedCredentialResolver`) releases
+  nothing, so a call that reached the provider would fail with
+  `credential_missing`. Which credential transport releases a real value here
+  - deploy-time injection into the process environment, or a new OpenFang
+  credential-issuance endpoint - is an explicit decision for the user to make
+  (Task 5 of the phase plan); no code exists for either option yet.
+
+Verified live: before the release gate was wired, an invocation failed with
+`provider_unavailable`; after it (Task 4-6), an unreleased write fails with
+`write_review_required`; and a released write, proven for the first time here,
+fails with `provider_unavailable` again, for the different reason above.
 
 Two component kinds still cannot execute here at all, and are reported
 unavailable rather than approximated: a **process MCP** server needs a verified
@@ -308,6 +336,38 @@ that every fake-backed test passed were only visible here — the driver assigns
 `_id` onto the caller's frozen document, and a stored receipt comes back as its
 canonical JSON string rather than an object.
 
+### Released-write proof, and the credential boundary
+
+The gate's last step now also proves the release path against the real
+kernel provider (`HttpMcpProvider`, resolved through the real catalog, the
+real installation, and the real admission record for the pinned GitHub MCP
+server — nothing about this step is a mock). It builds a second
+`PluginToolRuntime` sharing every dependency of the one used earlier in the
+gate, except `releaseWrite`, which is stubbed to approve unconditionally, and
+invokes the same `list_issues` operation. **This currently fails, and the
+failure is recorded rather than hidden**: instead of reaching the credential
+boundary (`credential_missing`, the intended and asserted outcome), the call
+fails with `provider_unavailable`. The real reason, traced against the actual
+thrown error, is `write_review_required` — raised a second time, from inside
+`HttpMcpProvider.invoke()` itself, because the OpenFang approval that
+elevated `PluginToolRuntime`'s own gate is never threaded through to the
+provider construction in `resolveProvider()`. See "What still blocks an
+actual call" above for the full mechanism. This is a genuine, previously
+unverified gap in the Task 4-6 release wiring, found by this test, not by
+inspection — no unit test exercises the real provider construction path, so
+nothing had caught it before this gate ran with a released write.
+
+**The end-to-end call against a real GitHub credential (plan Task 7 Step 3)
+has not been attempted**, and this is why: it was already out of scope
+pending the credential-transport decision (deploy-time injection into the
+process environment vs. a new OpenFang credential-issuance endpoint — see
+Task 5 in the phase plan; OpenFang has no such endpoint today, so there is no
+released credential to call with regardless). Running it now would in any
+case get no further than the gap above: a released write does not yet reach
+the credential step at all, so there is nothing downstream to call with a
+real `GITHUB_PAT_TOKEN` yet. No approval id, no receipt id, and no result
+exist for that call. Recording otherwise would misstate what was observed.
+
 ### Recorded evidence
 
 `plugins:evidence` runs the app suite, the runtime package suite, and the Space
@@ -343,6 +403,21 @@ These are true limits of the current state, not oversights to work around:
 - **No project has been migrated, cut over, or rolled back on a live
   deployment.** Every gate above is proven by tests against fakes and fixtures.
   The removal gate has never been run against real deployment data.
+- **An OpenFang-approved write does not yet reach a real provider.** The
+  release decision elevates only `PluginToolRuntime`'s own gate; it is never
+  passed to `resolveProvider()`, so the real provider (`HttpMcpProvider`)
+  re-applies the kernel's unmodified default policy and blocks the same write
+  again, surfacing as `provider_unavailable`. See "Released-write proof, and
+  the credential boundary" above for the traced mechanism. Every unit test
+  that shows a released write completing (`plugin-tool-runtime.test.ts`) does
+  so against a stub provider that carries no capability check of its own, so
+  none of them exercise this path; the live gate above is the only place that
+  currently does.
+- **The end-to-end call against a real GitHub credential has not been
+  attempted.** It depends on both the fix above and a credential-transport
+  decision the user has not made (deploy-time injection vs. a new OpenFang
+  issuance endpoint - OpenFang has no such endpoint today). No approval id,
+  receipt id, or result exists for a real call anywhere in this repository.
 - **`shadow -> legacy` is not an admitted transition.** The plan's table admits
   only the three transitions listed above, so a project in shadow returns to
   legacy by going through a cutover and rollback. Widening the table is a

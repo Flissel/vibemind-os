@@ -25,6 +25,7 @@ import { resolve } from "node:path";
 import { MongoClient } from "mongodb";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PINNED_OPENAI_PLUGINS_COMMIT, PINNED_PLUGIN_CATALOG_DIGEST, type PluginMigrationRecord, type PluginReceipt } from "@rowboat/openai-plugin-runtime";
+import type { PluginToolRuntimeDependencies } from "@/src/application/services/plugin-tool-runtime";
 import { LEGACY_PLUGIN_RECIPES } from "@/src/application/services/legacy-plugin-recipes";
 import { materializeWorkflowBindings } from "@/src/application/services/plugin-binding-materialization";
 import githubIssueToSlack from "@/app/lib/prebuilt-cards/github-issue-to-slack.json";
@@ -265,7 +266,7 @@ describe.skipIf(LIVE_URL === "")("live plugin runtime cutover against a real Mon
     }]);
     const { PluginToolRuntime } = await import("@/src/application/services/plugin-tool-runtime");
     const { resolvePluginProvider, UnreleasedCredentialResolver } = await import("@/src/infrastructure/plugins/provider-resolution");
-    const toolRuntime = new PluginToolRuntime({
+    const runtimeDependencies: PluginToolRuntimeDependencies = {
       pluginsRepository: plugins,
       authorizationContext: { caller: "user", userId: "guest_user" },
       authorizeProject: async () => undefined,
@@ -274,7 +275,8 @@ describe.skipIf(LIVE_URL === "")("live plugin runtime cutover against a real Mon
         { component, entry: catalogEntry, binding },
         { credentialResolver: new UnreleasedCredentialResolver() },
       ),
-    });
+    };
+    const toolRuntime = new PluginToolRuntime(runtimeDependencies);
     const executionBinding = {
       installationId: githubInstallationId,
       pluginName: githubEntry.pluginName,
@@ -296,6 +298,35 @@ describe.skipIf(LIVE_URL === "")("live plugin runtime cutover against a real Mon
     // decisions to be released, not missing implementations.
     expect(invocationError).not.toBe("provider_unavailable");
     expect(["write_review_required", "credential_missing"]).toContain(invocationError);
+
+    // 6d. Intent: with a release configured and approving this exact call,
+    // the write should clear the review gate and reach the next one -- the
+    // credential, which is the OpenFang handoff point this composition has
+    // not wired. Observed against the real kernel provider (not exercised by
+    // any mocked-provider unit test): it does not. PluginToolRuntime elevates
+    // only its own local policy copy for its own evaluateCapability call;
+    // resolveProvider() still constructs HttpMcpProvider with the kernel's
+    // unmodified DEFAULT_POLICY (provider-resolution.ts has no channel to
+    // pass the release decision through), so the provider's own independent
+    // write-capability check -- the same evaluateCapability("write") the
+    // outer gate just cleared -- fires again and throws its own
+    // "write_review_required", which classifyFailure's catch-all (it only
+    // special-cases the literal message "credential_missing") reports as
+    // "provider_unavailable". This assertion pins the intended destination;
+    // it fails today until the release decision is threaded through to
+    // provider construction, a gap this live gate is what first surfaced.
+    const releasedRuntime = new PluginToolRuntime({
+      ...runtimeDependencies,
+      releaseWrite: async () => ({ status: "approved" as const, approvalId: "3f0f8a1e-0000-4000-8000-00000000000a" }),
+    });
+    let releasedError = "none";
+    try {
+      await releasedRuntime.invoke(executionBinding, { query: "issues" }, { projectId, operationName: "list_issues" });
+    } catch (error) {
+      releasedError = error instanceof Error ? error.message : "unknown";
+    }
+    log(`released write reaches the credential: ${releasedError}`);
+    expect(releasedError).toBe("credential_missing");
 
     const storedReceipts = await database.collection("plugin_receipts").find({}).toArray();
     log(`receipts in plugin_receipts: ${storedReceipts.length} (${receipts.map(receipt => receipt.type).join(", ")} + parity)`);

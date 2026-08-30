@@ -51,6 +51,8 @@ export const REQUIREMENT_EVIDENCE: Readonly<Record<RequirementId, readonly strin
     "secret-free receipts redacts nested secret-bearing keys before hashing exact canonical output bytes",
     "legacy plugin migration recipes never serializes credentials, raw tool configuration, or secret-shaped values",
     "write-safe plugin shadow parity persists redacted receipt evidence that carries no argument or result values",
+    "OpenFang write release never sends argument values, only their digest",
+    "PluginToolRuntime runs a write that OpenFang released and records the approval",
   ]),
   R5: Object.freeze([
     "instruction component normalizers loads complete skill instructions and binds every directly referenced local resource",
@@ -66,6 +68,10 @@ export const REQUIREMENT_EVIDENCE: Readonly<Record<RequirementId, readonly strin
   R8: Object.freeze([
     "process MCP provider rejects accessor-backed execution-root provenance without invoking accessors",
     "process MCP provider bounds and redacts output while retaining full-output digests",
+    "plugin operation classification classifies an operation the component declares read-only as read",
+    "plugin operation classification classifies everything else as write",
+    "plugin operation classification ignores an unreadable declaration rather than trusting it",
+    "plugin operation classification requires all entries to be strings, rejecting mixed-type arrays even if the operation is present",
   ]),
   R9: Object.freeze([
     "component provider normalizers normalizes an app only to its exact connector ID",
