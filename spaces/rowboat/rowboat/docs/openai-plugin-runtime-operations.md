@@ -10,7 +10,7 @@ report paths never mutate a project.
 | --- | --- |
 | Plugin source | `openai/plugins@11c74d6ba24d3a6d48f54a194cd00ef3beea18f9` |
 | Plugin count | 180 |
-| Catalog digest | `e4a4462137b67a5ba69dd6f8a34001ab34fd26126a8731a770c4265536dc7379` |
+| Catalog digest | `2bf8aee223fc4d36e118d95a6e90f9436b501fe09d5f54bccd560a06ff3dc9f1` |
 | Policy version | `rowboat-plugin-policy-v1` |
 | Schema version | `rowboat-plugin-schema-v1` |
 
@@ -230,6 +230,33 @@ curl -X POST "$ROWBOAT_URL/api/v1/projects/<projectId>/plugins/runtime-mode" \
 Rollback returns authority to the legacy tools, restoring the retained snapshot
 where a cutover materialized bindings, and records its own receipt stamped with
 `rolledBackAt`.
+
+## What still blocks an actual call
+
+The provider is wired: an HTTP MCP component resolves to a real provider built
+from the pinned catalog record, through a registry that only admits the exact
+binding. Two gates stand in front of the call, and both are decisions to be
+released rather than missing implementations:
+
+1. **Write review.** No trusted per-operation classifier is registered, so every
+   plugin operation is classified `write`, and the default policy sends a write
+   to review: the call fails with `write_review_required`.
+2. **Credential.** The MCP declaration carries a credential *reference* - for
+   the pinned GitHub server, the `GITHUB_PAT_TOKEN` bearer token env var - and
+   the resolver in this composition releases nothing, so the call would fail
+   with `credential_missing` behind the first gate.
+
+Both are the OpenFang handoff points: the approval that releases a write, and
+the credential that authenticates it. Verified live: before the wiring an
+invocation failed with `provider_unavailable`; it now fails with
+`write_review_required`.
+
+Two component kinds still cannot execute here at all, and are reported
+unavailable rather than approximated: a **process MCP** server needs a verified
+execution root from the content store, which the web runtime does not mount, and
+an **app** component needs the OpenAI connector bridge, which the provider
+registry refuses by design. Of the 180 pinned plugins that leaves the HTTP MCP
+servers as the executable set.
 
 ## Receipts
 

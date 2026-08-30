@@ -143,9 +143,18 @@ async function createPluginControllers(): Promise<PluginControllers> {
       // Until a trusted per-operation classifier is registered, every plugin
       // tool is treated as mutating. DEFAULT_POLICY therefore keeps it fail-closed.
       classifyOperation: () => "write" as const,
-      // Provider implementations must come through the hardened runtime registry.
-      // No legacy Composio adapter is reachable from this composition boundary.
-      resolveProvider: async () => Object.freeze({ status: "unavailable" as const, reason: "provider_unavailable" as const }),
+      // Provider implementations come through the hardened runtime registry.
+      // No legacy Composio adapter is reachable from this composition boundary,
+      // and credentials are not released yet, so an HTTP MCP call reaches its
+      // provider and then fails with a missing credential rather than running
+      // unauthenticated.
+      resolveProvider: async ({ component, entry, binding }) => {
+        const { resolvePluginProvider, UnreleasedCredentialResolver } = await import("@/src/infrastructure/plugins/provider-resolution");
+        return resolvePluginProvider(
+          { component, entry, binding },
+          { credentialResolver: new UnreleasedCredentialResolver() },
+        );
+      },
     }),
   });
 }

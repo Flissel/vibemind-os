@@ -254,6 +254,49 @@ describe.skipIf(LIVE_URL === "")("live plugin runtime cutover against a real Mon
     log(`ui add-tool survives legacy mode: ${planned.toolConfig[addition.toolName]!.pluginBinding !== undefined}`);
     expect(planned.toolConfig[addition.toolName]!.pluginBinding).toEqual(addedTool.pluginBinding);
 
+    // 6c. The execution path: a call now reaches its provider. It fails on the
+    // credential, which is the OpenFang handoff point, not on a missing
+    // provider, which is what the composition returned before it was wired.
+    await plugins.putAdmissions([{
+      installationId: githubInstallationId,
+      componentDigest: githubComponent.component.metadata.bindingDigest as string,
+      componentKind: "mcp", componentName: githubComponent.component.name,
+      status: "admitted", policyVersion: githubEntry.policyVersion,
+    }]);
+    const { PluginToolRuntime } = await import("@/src/application/services/plugin-tool-runtime");
+    const { resolvePluginProvider, UnreleasedCredentialResolver } = await import("@/src/infrastructure/plugins/provider-resolution");
+    const toolRuntime = new PluginToolRuntime({
+      pluginsRepository: plugins,
+      authorizationContext: { caller: "user", userId: "guest_user" },
+      authorizeProject: async () => undefined,
+      classifyOperation: () => "write",
+      resolveProvider: async ({ component, entry: catalogEntry, binding }) => resolvePluginProvider(
+        { component, entry: catalogEntry, binding },
+        { credentialResolver: new UnreleasedCredentialResolver() },
+      ),
+    });
+    const executionBinding = {
+      installationId: githubInstallationId,
+      pluginName: githubEntry.pluginName,
+      componentDigest: githubComponent.component.metadata.bindingDigest as string,
+      providerBindingId: (githubComponent.component.metadata.providerBinding as { id: string }).id,
+      capability: "write" as const,
+    };
+    let invocationError = "none";
+    try {
+      await toolRuntime.invoke(executionBinding, { query: "issues" }, { projectId, operationName: "list_issues" });
+    } catch (error) {
+      invocationError = error instanceof Error ? error.message : "unknown";
+    }
+    log(`invocation reaches the provider: error=${invocationError}`);
+    // The provider is no longer the blocker. What stops the call now is the
+    // policy chain in front of it: every operation is classified write until a
+    // trusted classifier exists, and the default policy sends a write to
+    // review. Behind that gate the credential would be the next one. Both are
+    // decisions to be released, not missing implementations.
+    expect(invocationError).not.toBe("provider_unavailable");
+    expect(["write_review_required", "credential_missing"]).toContain(invocationError);
+
     const storedReceipts = await database.collection("plugin_receipts").find({}).toArray();
     log(`receipts in plugin_receipts: ${storedReceipts.length} (${receipts.map(receipt => receipt.type).join(", ")} + parity)`);
 

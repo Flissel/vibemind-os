@@ -352,13 +352,30 @@ function expandStructured(
         metadata(
           relativePath,
           recordDigest(declaration.success ? declaration.data : raw, fileDigest),
-          declaration.success ? { transport: declaration.data.type } : {},
+          // The validated server declaration travels with the catalog so a
+          // provider can be constructed from the pinned record alone, without
+          // reading the content store at call time. It carries credential
+          // *references*, never credential values.
+          declaration.success ? { transport: declaration.data.type, mcpServer: definedFields(declaration.data) } : {},
         ),
       );
     });
   }
   const valid = HookFileSchema.safeParse(input).success;
   return [component("hook", `hook:${relativePath}`, basename(entry.canonicalPath), valid ? "available" : "invalid", metadata(relativePath, fileDigest))];
+}
+
+/**
+ * Metadata carries only defined values: an optional field that is absent stays
+ * absent rather than becoming an undefined entry the metadata contract rejects.
+ */
+function definedFields(value: Readonly<Record<string, unknown>>): Readonly<Record<string, string | number | boolean>> {
+  const output: Record<string, string | number | boolean> = {};
+  for (const key of Object.keys(value).sort()) {
+    const entry = value[key];
+    if (typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean") output[key] = entry;
+  }
+  return Object.freeze(output);
 }
 
 export async function discoverPluginComponentsFromIdentity(
