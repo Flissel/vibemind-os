@@ -19,6 +19,7 @@ import type {
   PluginCredentialSlot,
   PluginInstallation,
 } from "@/src/application/repositories/plugins.repository.interface";
+import type { IPluginWriteReleasePolicy, PluginWriteReleaseDecision } from "@/src/application/policies/plugin-write-release.policy";
 
 const BINDING_KEYS = Object.freeze([
   "capability", "componentDigest", "installationId", "pluginName", "providerBindingId",
@@ -79,10 +80,7 @@ export interface PluginToolRuntimeDependencies {
    * Releases one write. A write stays under review unless a decision for this
    * exact call approves it; the decision is never cached.
    */
-  readonly releaseWrite?: (
-    request: Readonly<{ projectId: string; pluginName: string; toolName: string; componentDigest: string; argumentsDigest: string }>,
-    signal: AbortSignal,
-  ) => Promise<Readonly<{ status: "approved" | "denied" | "expired" | "unavailable"; approvalId?: string }>>;
+  readonly releaseWrite?: IPluginWriteReleasePolicy["release"];
   readonly timeoutMilliseconds?: number;
   readonly receiptTimeoutMilliseconds?: number;
   readonly createRequestId?: () => string;
@@ -588,7 +586,7 @@ export class PluginToolRuntime {
     let policy = DEFAULT_POLICY;
     let approvalId: string | undefined;
     if (trustedCapability === "write" && this.#dependencies.releaseWrite !== undefined) {
-      let decision: Readonly<{ status: "approved" | "denied" | "expired" | "unavailable"; approvalId?: string }>;
+      let decision: PluginWriteReleaseDecision;
       try {
         decision = await awaitDeadline(
           this.#dependencies.releaseWrite(Object.freeze({
@@ -602,18 +600,27 @@ export class PluginToolRuntime {
           context.signal,
         );
       } catch (error: unknown) {
-        // Fail closed: a broken or aborted release call is never treated as
-        // approval. An abort/timeout from the shared deadline still surfaces
-        // through the same convention every other await in this method uses;
-        // any other failure (a malformed request, a network error, ...) is
-        // indistinguishable from "no decision" and keeps the write under review.
-        if (error instanceof PluginToolRuntimeError) throw error;
+        // Fail closed: a broken release call is never treated as approval.
+        // Only the shared deadline's own two outcomes propagate as
+        // themselves, through the same convention every other await in this
+        // method already uses; any other failure -- a malformed request, a
+        // network error, or even a PluginToolRuntimeError raised by some
+        // other seam entirely -- is indistinguishable from "no decision" and
+        // keeps the write under review rather than escaping as that error.
+        if (error instanceof PluginToolRuntimeError && (error.code === "request_aborted" || error.code === "provider_timed_out")) throw error;
         decision = Object.freeze({ status: "unavailable" as const });
       }
-      if (decision.status === "approved" && typeof decision.approvalId === "string") {
-        // Released for this call only: the policy copy never leaves this scope.
-        policy = Object.freeze({ ...DEFAULT_POLICY, allowWriteCapabilities: true });
-        approvalId = decision.approvalId;
+      if (decision.status === "approved") {
+        // Read .approvalId exactly once into a local, typed unknown rather
+        // than trusting the declared string: a hostile releaseWrite could
+        // otherwise answer a validating first read and a different value on
+        // a second (a getter/Proxy), and an empty string must not qualify.
+        const decidedApprovalId: unknown = decision.approvalId;
+        if (typeof decidedApprovalId === "string" && UUID.test(decidedApprovalId)) {
+          // Released for this call only: the policy copy never leaves this scope.
+          policy = Object.freeze({ ...DEFAULT_POLICY, allowWriteCapabilities: true });
+          approvalId = decidedApprovalId;
+        }
       }
     }
     const capabilityDecision = evaluateCapability({ kind: trustedCapability }, policy);

@@ -585,11 +585,32 @@ describe("PluginToolRuntime", () => {
       operationCapability: "write",
       releaseWrite: async (request: unknown) => { seen.push(request); return { status: "approved", approvalId: "3f0f8a1e-0000-4000-8000-000000000005" }; },
     });
-    const result = await state.runtime.invoke(writeBinding, { query: "safe" }, { projectId: "project-1", operationName: "lookup" });
+    const result = await state.runtime.invoke(writeBinding, { query: "safe", extra: 1 }, { projectId: "project-1", operationName: "lookup" });
     expect(result).toEqual({ status: "success", output: { ok: true } });
     expect(seen).toHaveLength(1);
+    const firstRequest = seen[0] as Readonly<Record<string, unknown>>;
+    // The digest, never the argument values, is what crosses to releaseWrite.
+    expect(firstRequest.argumentsDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(firstRequest)).not.toContain("safe");
     expect(state.repository.receipts[0]).toMatchObject({ status: "success" });
     expect(JSON.stringify(state.repository.receipts[0])).toContain("3f0f8a1e-0000-4000-8000-000000000005");
+
+    // Same logical arguments, different key order, must digest identically:
+    // this is what a digest regression (dropping the sort, hashing raw
+    // input, ...) would break, and it would break it silently -- a mismatch
+    // makes captureWriteReleaseRequest throw downstream in production, which
+    // this runtime's own fail-closed catch turns into "unavailable" with no
+    // diagnostic.
+    await state.runtime.invoke(writeBinding, { extra: 1, query: "safe" }, { projectId: "project-1", operationName: "lookup" });
+    expect(seen).toHaveLength(2);
+    const secondRequest = seen[1] as Readonly<Record<string, unknown>>;
+    expect(secondRequest.argumentsDigest).toBe(firstRequest.argumentsDigest);
+  });
+
+  it("still refuses a write when no releaseWrite is configured", async () => {
+    const state = setup({ operationCapability: "write" });
+    await expect(state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup" }))
+      .rejects.toThrow("write_review_required");
   });
 
   it("keeps refusing a write that was denied, expired, or never released", async () => {
@@ -621,5 +642,35 @@ describe("PluginToolRuntime", () => {
     });
     await expect(state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup" }))
       .rejects.toThrow("write_review_required");
+  });
+
+  it("times out a release call that never settles, rather than refusing as under review", async () => {
+    // Pins the catch at the release gate: deleting its narrow rethrow would
+    // turn this into "write_review_required" instead of the deadline outcome.
+    const state = setup({
+      operationCapability: "write",
+      releaseWrite: () => new Promise<never>(() => undefined),
+    });
+    await expect(state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup" }))
+      .rejects.toThrow("provider_timed_out");
+    expect(state.counters).toMatchObject({ cancel: 1, legacy: 0 });
+  });
+
+  it("propagates caller abort while a release is pending", async () => {
+    // Same pin as above for the caller-abort outcome: without the narrow
+    // rethrow, an abort mid-release would surface as write_review_required.
+    const abort = new AbortController();
+    let releaseCalls = 0;
+    const state = setup({
+      operationCapability: "write",
+      timeoutMilliseconds: 200,
+      releaseWrite: async () => { releaseCalls += 1; return new Promise<never>(() => undefined); },
+    });
+    const invocation = state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup", signal: abort.signal });
+    const rejection = expect(invocation).rejects.toThrow("request_aborted");
+    await vi.waitFor(() => expect(releaseCalls).toBe(1));
+    abort.abort();
+    await rejection;
+    expect(state.counters.cancel).toBe(1);
   });
 });

@@ -9,6 +9,34 @@ import type { PluginSessionController } from "@/src/interface-adapters/controlle
 
 type PluginReplayLookupInput = PluginPreviewEnvelope;
 
+const DEFAULT_OPENFANG_APPROVAL_WINDOW_MS = 120_000;
+const MIN_OPENFANG_APPROVAL_WINDOW_MS = 1_000;
+const MAX_OPENFANG_APPROVAL_WINDOW_MS = 3_600_000;
+// Buffer the runtime's own deadline past the approval window rather than
+// matching it exactly, so the release call's own bookkeeping (the initial
+// POST, at least one poll) has room to complete after a human decides at the
+// very end of the window.
+const RUNTIME_DEADLINE_BUFFER_MS = 60_000;
+const RUNTIME_DEADLINE_CEILING_MS = 300_000;
+
+/**
+ * Parses OPENFANG_APPROVAL_TIMEOUT_MS once, guarded: an unset, non-numeric,
+ * or out-of-range value falls back to the default rather than propagating
+ * NaN into arithmetic downstream (an unguarded NaN here would make
+ * setTimeout(..., NaN) fire immediately, silently refusing every write with
+ * no diagnostic).
+ */
+function parseApprovalWindowMs(raw: string | undefined): number {
+  if (raw === undefined) return DEFAULT_OPENFANG_APPROVAL_WINDOW_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (
+    !Number.isSafeInteger(parsed)
+    || parsed < MIN_OPENFANG_APPROVAL_WINDOW_MS
+    || parsed > MAX_OPENFANG_APPROVAL_WINDOW_MS
+  ) return DEFAULT_OPENFANG_APPROVAL_WINDOW_MS;
+  return parsed;
+}
+
 interface PluginControllers {
   readonly authenticate: (request: Request) => Promise<PluginApiIdentity>;
   readonly catalog: PluginCatalogController;
@@ -83,6 +111,12 @@ async function createPluginControllers(): Promise<PluginControllers> {
   const setPluginEnabledUseCase = new enableUseCaseModule.SetPluginEnabledUseCase({ pluginsRepository, pluginApiAuthorizationPolicy: authorization });
   const listProjectPluginsUseCase = new listProjectUseCaseModule.ListProjectPluginsUseCase({ pluginsRepository, pluginApiAuthorizationPolicy: authorization });
   const projectActionAuthorizationPolicy = new projectAuthorizationModule.ProjectActionAuthorizationPolicy({ projectMembersRepository, apiKeysRepository });
+  // Read once, at composition, and reused by both the runtime's own deadline
+  // and the OpenFang adapter below: the two are tied by construction so an
+  // operator can never approve a write after the runtime has already timed
+  // the call out (which would write a timed_out receipt while leaving an
+  // approved-but-orphaned approval in OpenFang for a retry to duplicate).
+  const openFangApprovalWindowMs = parseApprovalWindowMs(process.env.OPENFANG_APPROVAL_TIMEOUT_MS);
 
   return Object.freeze({
     authenticate: (request: Request) => authorization.authenticate(request),
@@ -143,6 +177,13 @@ async function createPluginControllers(): Promise<PluginControllers> {
       // Until a trusted per-operation classifier is registered, every plugin
       // tool is treated as mutating. DEFAULT_POLICY therefore keeps it fail-closed.
       classifyOperation: () => "write" as const,
+      // Bounded by the same openFangApprovalWindowMs the adapter below is
+      // given, plus headroom for the adapter's own request/poll overhead,
+      // capped at the constructor's own ceiling. This is the fix for the
+      // invariant this whole dependency exists to uphold: the call that
+      // waits for a human release must not be timed out by the runtime
+      // before that human could plausibly have decided.
+      timeoutMilliseconds: Math.min(RUNTIME_DEADLINE_CEILING_MS, openFangApprovalWindowMs + RUNTIME_DEADLINE_BUFFER_MS),
       // Provider implementations come through the hardened runtime registry.
       // No legacy Composio adapter is reachable from this composition boundary,
       // and credentials are not released yet, so an HTTP MCP call reaches its
@@ -165,7 +206,9 @@ async function createPluginControllers(): Promise<PluginControllers> {
         return new OpenFangWriteReleasePolicy({
           baseUrl: url,
           fetch,
-          timeoutMs: Number.parseInt(process.env.OPENFANG_APPROVAL_TIMEOUT_MS ?? "120000", 10),
+          // Same window the runtime's own timeoutMilliseconds above was
+          // derived from -- never re-parsed per call.
+          timeoutMs: openFangApprovalWindowMs,
           pollIntervalMs: 1_000,
         }).release(request, signal);
       },
