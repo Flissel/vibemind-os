@@ -385,7 +385,7 @@ function captureProviderResult(input: unknown): ProviderResult {
   }
   if (statusDescriptor.value === "failed" && Object.keys(descriptors).sort().join("\0") === ["reason", "status"].join("\0")) {
     const reason = descriptors.reason;
-    if (reason === undefined || !("value" in reason) || !reason.enumerable || typeof reason.value !== "string") {
+    if (reason === undefined || !("value" in reason) || !reason.enumerable || typeof reason.value !== "string" || Buffer.byteLength(reason.value, "utf8") > 4096) {
       throw new PluginToolRuntimeError("provider_result_invalid");
     }
     return Object.freeze({ status: "failed", reason: mapProviderFailureReason(reason.value) });

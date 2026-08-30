@@ -455,13 +455,31 @@ describe("PluginToolRuntime", () => {
 
   it.each([
     ["a prototype-pollution-shaped reason", "__proto__"],
-    ["a 5000-character reason", "x".repeat(5000)],
     ["an empty reason", ""],
   ])("never propagates %s from the provider verbatim -- allowlist rejects, not derives", async (_label, reason) => {
     const state = setup({ providerResult: "failed", providerFailureReason: reason });
     await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("provider_failed");
     expect(state.repository.receipts[0]).toMatchObject({ status: "failed", reason: "provider_unavailable" });
     if (reason.length > 0) expect(JSON.stringify(state.repository.receipts)).not.toContain(reason);
+  });
+
+  // A conforming kernel never sends a reason longer than 4096 bytes -- see
+  // captureProviderResult's shape guard. Tripping it means the provider is
+  // out of contract, and provider_result_invalid says exactly that;
+  // provider_failed would let a misbehaving provider blend in with an
+  // ordinary failure. Pinned at the exact boundary rather than assumed.
+  it("still admits a reason at exactly the 4096-byte boundary as an ordinary, unrecognised failure", async () => {
+    const state = setup({ providerResult: "failed", providerFailureReason: "x".repeat(4096) });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" }))
+      .rejects.toThrow("provider_failed");
+    expect(state.repository.receipts[0]).toMatchObject({ status: "failed", reason: "provider_unavailable" });
+  });
+
+  it("treats a reason one byte past the 4096-byte boundary as a malformed result, not an ordinary failure", async () => {
+    const state = setup({ providerResult: "failed", providerFailureReason: "x".repeat(4097) });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" }))
+      .rejects.toThrow("provider_result_invalid");
+    expect(state.repository.receipts[0]).toMatchObject({ status: "failed", reason: "provider_unavailable" });
   });
 
   it("fails with a typed error when the redacted receipt cannot be persisted", async () => {
