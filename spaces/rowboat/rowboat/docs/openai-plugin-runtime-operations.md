@@ -10,7 +10,7 @@ report paths never mutate a project.
 | --- | --- |
 | Plugin source | `openai/plugins@11c74d6ba24d3a6d48f54a194cd00ef3beea18f9` |
 | Plugin count | 180 |
-| Catalog digest | `2bf8aee223fc4d36e118d95a6e90f9436b501fe09d5f54bccd560a06ff3dc9f1` |
+| Catalog digest | `1fe312f97436c3af549dbf849fc0eb41afae042ee37d4c70fc96fd4db7b20184` |
 | Policy version | `rowboat-plugin-policy-v1` |
 | Schema version | `rowboat-plugin-schema-v1` |
 

@@ -628,6 +628,32 @@ describe("importCatalog", () => {
     })).toBe(bound.component.metadata.bindingDigest);
   });
 
+  it("names the credential an MCP server needs", async () => {
+    const source = await createSource("mcp-credentials", [
+      { directoryName: "alpha", license: "MIT", surfaces: ["mcp"] },
+    ]);
+    const lock = await importCatalog(source.pluginsRoot, options(source));
+    const mcp = lock.entries[0]!.components.find(item => item.component.kind === "mcp")!;
+    // The fixture declares an http server without a token, so it needs none.
+    expect(mcp.component.metadata.credentialSlots).toEqual([]);
+  });
+
+  it("names a declared bearer token reference as a credential slot", async () => {
+    const source = await createSource("mcp-bearer", [
+      { directoryName: "alpha", license: "MIT", surfaces: ["mcp"] },
+    ]);
+    await writeFile(
+      join(source.pluginsRoot, "alpha", ".mcp.json"),
+      JSON.stringify({ mcpServers: { sample: { type: "http", url: "https://example.com/mcp", bearer_token_env_var: "SAMPLE_TOKEN" } } }),
+    );
+    await execFileAsync("git", ["-C", source.repositoryRoot, "add", "."]);
+    await execFileAsync("git", ["-C", source.repositoryRoot, "commit", "--quiet", "-m", "bearer token"]);
+    const { stdout } = await execFileAsync("git", ["-C", source.repositoryRoot, "rev-parse", "HEAD"]);
+    const lock = await importCatalog(source.pluginsRoot, { ...options(source), sourceCommit: stdout.trim() });
+    const mcp = lock.entries[0]!.components.find(item => item.component.kind === "mcp")!;
+    expect(mcp.component.metadata.credentialSlots).toEqual(["SAMPLE_TOKEN"]);
+  });
+
   it("fails closed when an expected catalog count differs", async () => {
     const source = await createSource("catalog-count", [
       { directoryName: "alpha", license: "MIT" },

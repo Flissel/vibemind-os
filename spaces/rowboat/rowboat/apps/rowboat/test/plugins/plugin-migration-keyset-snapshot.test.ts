@@ -158,7 +158,7 @@ describe("plugin migration manifest snapshots", () => {
       loadShared: async () => { getCatalogCalls += 1; return { value: catalogLock, retainedBytes: Buffer.byteLength(JSON.stringify(catalogLock), "utf8") }; },
       prepare: async (entry, catalog) => { if (!("stateDigest" in entry)) throw new Error("unexpected"); references.add(catalog); return { value: { projectId: entry.projectId, status: "blocked" }, scalarIdentityDigest: entry.scalarIdentityDigest, stateDigest: entry.stateDigest }; },
       blocked: () => { throw new Error("unexpected"); }, visit: async () => { visits += 1; }, preparedBytes: value => Buffer.byteLength(JSON.stringify(value), "utf8"), now: () => 0 });
-    expect(statSync(new URL("../../../../config/openai-plugin-catalog.lock.json", import.meta.url)).size).toBe(951_646); expect(getCatalogCalls).toBe(1); expect(references.size).toBe(1);
+    expect(statSync(new URL("../../../../config/openai-plugin-catalog.lock.json", import.meta.url)).size).toBe(952_067); expect(getCatalogCalls).toBe(1); expect(references.size).toBe(1);
     expect(visits).toBe(1_000); expect(report.projectCount).toBe(1_000); expect(report.retainedBytes).toBeLessThan(32 * 1024 * 1024);
   });
 

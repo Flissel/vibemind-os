@@ -356,13 +356,37 @@ function expandStructured(
           // provider can be constructed from the pinned record alone, without
           // reading the content store at call time. It carries credential
           // *references*, never credential values.
-          declaration.success ? { transport: declaration.data.type, mcpServer: definedFields(declaration.data) } : {},
+          declaration.success
+            ? {
+              transport: declaration.data.type,
+              mcpServer: definedFields(declaration.data),
+              credentialSlots: credentialSlotNames(declaration.data),
+            }
+            : {},
         ),
       );
     });
   }
   const valid = HookFileSchema.safeParse(input).success;
   return [component("hook", `hook:${relativePath}`, basename(entry.canonicalPath), valid ? "available" : "invalid", metadata(relativePath, fileDigest))];
+}
+
+/**
+ * The credential references an MCP server declares. These are *names* the
+ * operator binds a value to; the declaration never carries a value.
+ */
+function credentialSlotNames(declaration: Readonly<Record<string, unknown>>): readonly string[] {
+  const names: string[] = [];
+  const bearer = declaration.bearer_token_env_var;
+  if (typeof bearer === "string" && bearer.length > 0) names.push(bearer);
+  const environment = declaration.env;
+  if (environment !== null && typeof environment === "object" && !Array.isArray(environment)) {
+    for (const key of Object.keys(environment).sort()) {
+      const value = (environment as Record<string, unknown>)[key];
+      if (typeof value === "string" && value.length > 0) names.push(value);
+    }
+  }
+  return Object.freeze([...new Set(names)].sort());
 }
 
 /**
