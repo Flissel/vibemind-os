@@ -92,28 +92,34 @@ the plugin content. Receipts store digests and redaction paths, never values.
 
 A slot name is a *reference*, never a value. When a released write reaches the
 provider's credential step (`CredentialResolver.resolve()`), this composition
-decides once, at startup in `di/plugins-container.ts`, which resolver answers
-it:
+decides which resolver answers it fresh on every call, inside
+`resolveProvider`'s own closure in `di/plugins-container.ts` - reading
+`OPENFANG_URL` and `OPENFANG_API_KEY` from the current environment each time,
+not once at startup, so a config change takes effect on the very next call
+without a process restart:
 
 | Variable | Purpose |
 | --- | --- |
-| `OPENFANG_URL` | Base URL of the OpenFang daemon that can issue credential values |
+| `OPENFANG_URL` | Base URL of the OpenFang daemon that can issue credential values. Must be `https:`, or `http:` to a loopback host (`127.0.0.1`, `localhost`, `::1`) - anything else is refused. |
 | `OPENFANG_API_KEY` | Bearer token this composition presents to OpenFang's HTTP API |
+| `OPENFANG_CREDENTIAL_TIMEOUT_MS` | Optional. Bounds one credential-issue round trip. Default 5000ms, floor 100ms, ceiling 30000ms; a value below the floor (or missing, fractional, negative, non-numeric, or beyond a safe integer) falls back to the default rather than clamping up to the floor - see `resolveOpenFangCredentialTimeoutMs` in `di/plugins-container.ts`. |
 
-With both non-empty, `resolveProvider` wires an `OpenFangCredentialResolver`
+With `OPENFANG_URL` and `OPENFANG_API_KEY` both non-blank once trimmed, and
+`OPENFANG_URL` passing the secure-or-loopback check above,
+`resolveOpenFangCredentialSource` (`di/plugins-container.ts`) admits the pair
+and `resolveProvider` wires an `OpenFangCredentialResolver`
 (`src/infrastructure/plugins/openfang-credential-resolver.ts`), which calls
 `POST <OPENFANG_URL>/api/credentials/issue` with `{"reference": "<NAME>"}` and
 that bearer token, fresh, on every call, and returns the `value` OpenFang
-answers with. With either variable absent - or on any failure: a non-200 of
-any kind, a malformed body, a transport error, a timeout, or a reference/
-project id the kernel's own `assertCredentialRequest` rejects - the
-composition falls back to (or the resolver itself throws)
-`UnreleasedCredentialResolver`'s `credential_missing`. Absence of
-configuration never means "resolve anyway" - that stays the default that
-releases nothing, exactly as before this resolver existed. The request is
-bounded by its own deadline, `OPENFANG_CREDENTIAL_TIMEOUT_MS` (default
-5000ms, clamped to at most 30000ms) - a single HTTP round trip, not a wait
-for a human decision, so it needs nowhere near the approval window's ceiling.
+answers with. With either variable absent or blank, an insecure
+`OPENFANG_URL`, or on any failure - a non-200 of any kind, a malformed body, a
+transport error, a timeout that covers the whole exchange (the fetch *and*
+the body read, not just the connection), or a reference/project id the
+kernel's own `assertCredentialRequest` rejects - the composition falls back
+to (or the resolver itself throws) `UnreleasedCredentialResolver`'s
+`credential_missing`. Absence or misconfiguration never means "resolve
+anyway" - that stays the default that releases nothing, exactly as before
+this resolver existed.
 
 An operator makes a reference resolvable by adding it to OpenFang's own
 `OPENFANG_ISSUABLE_CREDENTIALS` allowlist; that variable lives entirely in
@@ -141,7 +147,16 @@ OpenFang's deployment, not Rowboat's.
   endpoint cannot be used to enumerate which secrets the daemon holds - and
   this resolver does not attempt to tell any of its failure modes apart
   either; none of them ever put the reference, the token, or a response body
-  into a thrown message or a log line.
+  into a thrown message, a `cause`, or a log line.
+- **`OPENFANG_URL` must be `https:`, or `http:` to a host that cannot leave
+  this machine.** Before this task that URL only carried approval requests;
+  it now also carries the bearer token and, on success, a plaintext
+  credential value. A URL that is neither is refused at composition time -
+  falling back to `UnreleasedCredentialResolver`, never throwing - the same
+  way `validateSecureUrl` already holds MCP server URLs to `https:` in the
+  kernel (`mcp-http-provider.ts`), with one deliberate widening: a loopback
+  exception, because the documented local setup runs OpenFang on
+  `http://127.0.0.1:4200`.
 
 **Still unproven:** the end-to-end call against a real third-party
 credential - actually invoking a plugin's provider with a value OpenFang

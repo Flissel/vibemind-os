@@ -54,7 +54,7 @@ export class OpenFangCredentialResolver implements CredentialResolver {
     }
 
     try {
-      const response = await this.#fetchBounded(
+      const body: unknown = await this.#fetchBounded(
         `${this.#options.baseUrl}/api/credentials/issue`,
         {
           method: "POST",
@@ -63,11 +63,10 @@ export class OpenFangCredentialResolver implements CredentialResolver {
             Authorization: `Bearer ${this.#options.apiKey}`,
           },
           body: JSON.stringify({ reference: reference.reference }),
+          redirect: "error",
         },
         options?.signal,
       );
-      if (!response.ok) throw new Error("credential_missing");
-      const body: unknown = await response.json();
       const value = body !== null && typeof body === "object"
         ? (body as { value?: unknown }).value
         : undefined;
@@ -79,20 +78,28 @@ export class OpenFangCredentialResolver implements CredentialResolver {
   }
 
   /**
-   * Bounds one fetch by this resolver's own timeout, in addition to the
-   * caller's signal -- the same pattern OpenFangWriteReleasePolicy uses: an
-   * AbortController per request, the timer and listener cleared in a
-   * finally, so a connected-but-silent OpenFang cannot leave a released
-   * call pending forever.
+   * Bounds the *whole* exchange -- the fetch and the body read -- by this
+   * resolver's own timeout, in addition to the caller's signal, the same
+   * pattern OpenFangWriteReleasePolicy uses: an AbortController per request,
+   * the timer and listener cleared in a finally, so a connected-but-silent
+   * OpenFang cannot leave a released call pending forever.
+   *
+   * The body is read *inside* this method, before the finally clears the
+   * timer: `fetch()` itself resolves as soon as headers arrive, so a server
+   * that answers 200 with a Content-Length and then never sends the body
+   * would otherwise hang `response.json()` at the call site with no deadline
+   * and no abort path at all -- the bug this shape exists to close.
    */
-  async #fetchBounded(url: string, init: RequestInit, signal: AbortSignal | undefined): Promise<Response> {
+  async #fetchBounded(url: string, init: RequestInit, signal: AbortSignal | undefined): Promise<unknown> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.#options.timeoutMs);
     const onAbort = () => controller.abort();
     if (signal?.aborted === true) controller.abort();
     else signal?.addEventListener("abort", onAbort);
     try {
-      return await this.#options.fetch(url, { ...init, signal: controller.signal });
+      const response = await this.#options.fetch(url, { ...init, signal: controller.signal });
+      if (!response.ok) throw new Error("credential_missing");
+      return await response.json();
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);

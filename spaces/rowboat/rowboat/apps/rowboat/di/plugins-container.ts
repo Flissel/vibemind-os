@@ -1,4 +1,4 @@
-import { PINNED_PLUGIN_CATALOG_DIGEST } from "@rowboat/openai-plugin-runtime";
+import { PINNED_PLUGIN_CATALOG_DIGEST, type CredentialResolver } from "@rowboat/openai-plugin-runtime";
 import { classifyPluginOperation } from "@/src/application/services/plugin-operation-classifier";
 import type { PluginCatalogController } from "@/src/interface-adapters/controllers/plugins/plugin-catalog.controller";
 import type { PluginInstallationController } from "@/src/interface-adapters/controllers/plugins/plugin-installation.controller";
@@ -82,6 +82,54 @@ export function resolveOpenFangCredentialTimeoutMs(raw: string | undefined): num
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isSafeInteger(parsed) || parsed < MIN_OPENFANG_CREDENTIAL_TIMEOUT_MS) return DEFAULT_OPENFANG_CREDENTIAL_TIMEOUT_MS;
   return Math.min(parsed, MAX_OPENFANG_CREDENTIAL_TIMEOUT_MS);
+}
+
+/**
+ * True only for a URL this composition will send an OpenFang bearer token
+ * and, on success, a plaintext credential value to: `https:`, or `http:`
+ * whose host cannot leave this machine at all. This mirrors the security
+ * floor the kernel's own `validateSecureUrl` (mcp-http-provider.ts) holds
+ * MCP server URLs to, with one deliberate widening -- the loopback
+ * exception -- because the documented local setup runs OpenFang on
+ * `http://127.0.0.1:4200`; refusing that would make this resolver
+ * unconfigurable in the one setup this repository actually documents. A URL
+ * that fails to parse at all is refused, not defaulted.
+ */
+function isSecureOpenFangCredentialUrl(raw: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (url.protocol === "https:") return true;
+  if (url.protocol !== "http:") return false;
+  return url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "::1" || url.hostname === "[::1]";
+}
+
+/**
+ * The single, testable predicate behind "does this environment authorize an
+ * OpenFang-backed credential resolver, and with what values" -- extracted so
+ * a change here (e.g. `&&` silently becoming `||`) is a unit-test failure,
+ * not a defect the suite stays green through. Returns `undefined` -- meaning
+ * "fall back to UnreleasedCredentialResolver, resolve nothing" -- unless
+ * every one of these holds: both variables are present and non-blank once
+ * trimmed (a `.env` typo like `OPENFANG_API_KEY=" "` must not construct a
+ * live resolver that then sends `Authorization: Bearer ` to OpenFang and
+ * fails only on the wire), and the URL is secure per
+ * `isSecureOpenFangCredentialUrl`. This is a pure function of its two
+ * arguments -- it never reads `process.env` itself -- so every branch is
+ * reachable from a plain unit test without mocking the environment.
+ */
+export function resolveOpenFangCredentialSource(
+  rawUrl: string | undefined,
+  rawApiKey: string | undefined,
+): Readonly<{ readonly baseUrl: string; readonly apiKey: string }> | undefined {
+  const baseUrl = rawUrl?.trim() ?? "";
+  const apiKey = rawApiKey?.trim() ?? "";
+  if (baseUrl.length === 0 || apiKey.length === 0) return undefined;
+  if (!isSecureOpenFangCredentialUrl(baseUrl)) return undefined;
+  return Object.freeze({ baseUrl, apiKey });
 }
 
 interface PluginControllers {
@@ -236,42 +284,35 @@ async function createPluginControllers(): Promise<PluginControllers> {
       // Provider implementations come through the hardened runtime registry.
       // No legacy Composio adapter is reachable from this composition boundary.
       // Credential resolution is chosen fresh per call, from the current
-      // environment, not memoized at startup: with OPENFANG_URL and
-      // OPENFANG_API_KEY both configured, a released write asks OpenFang for
-      // the value per call and holds no standing copy of its own, so a
-      // revocation in OpenFang takes effect on the very next call. Absence of
-      // either variable is not "resolve anyway" -- it stays
-      // UnreleasedCredentialResolver, which releases nothing and fails closed
-      // with credential_missing, exactly as before this wiring existed.
+      // environment, not memoized at startup, via resolveOpenFangCredentialSource
+      // above: with OPENFANG_URL and OPENFANG_API_KEY both configured (and
+      // OPENFANG_URL passing its own https-or-loopback check), a released
+      // write asks OpenFang for the value per call and holds no standing copy
+      // of its own, so a revocation in OpenFang takes effect on the very next
+      // call. Any other combination -- absent, blank, or an insecure URL -- is
+      // not "resolve anyway": it stays UnreleasedCredentialResolver, which
+      // releases nothing and fails closed with credential_missing, exactly as
+      // before this wiring existed.
       resolveProvider: async ({ component, entry, binding, policy }) => {
         const { resolvePluginProvider, UnreleasedCredentialResolver } = await import("@/src/infrastructure/plugins/provider-resolution");
-        const openFangUrl = process.env.OPENFANG_URL;
-        const openFangApiKey = process.env.OPENFANG_API_KEY;
-        if (openFangUrl !== undefined && openFangUrl.length > 0 && openFangApiKey !== undefined && openFangApiKey.length > 0) {
+        const openFangCredentialSource = resolveOpenFangCredentialSource(process.env.OPENFANG_URL, process.env.OPENFANG_API_KEY);
+        let credentialResolver: CredentialResolver = new UnreleasedCredentialResolver();
+        if (openFangCredentialSource !== undefined) {
           const { OpenFangCredentialResolver } = await import("@/src/infrastructure/plugins/openfang-credential-resolver");
-          return resolvePluginProvider(
-            { component, entry, binding },
-            {
-              credentialResolver: new OpenFangCredentialResolver({
-                baseUrl: openFangUrl,
-                apiKey: openFangApiKey,
-                fetch,
-                timeoutMs: openFangCredentialTimeoutMs,
-              }),
-              policy,
-            },
-          );
+          credentialResolver = new OpenFangCredentialResolver({
+            baseUrl: openFangCredentialSource.baseUrl,
+            apiKey: openFangCredentialSource.apiKey,
+            fetch,
+            timeoutMs: openFangCredentialTimeoutMs,
+          });
         }
-        return resolvePluginProvider(
-          { component, entry, binding },
-          { credentialResolver: new UnreleasedCredentialResolver(), policy },
-        );
+        return resolvePluginProvider({ component, entry, binding }, { credentialResolver, policy });
       },
       // OpenFang is the release authority for writes: a write stays under
       // review unless it is reachable and a human has approved this exact
       // call there. No OpenFang URL configured means no release is possible.
       releaseWrite: async (request, signal) => {
-        const url = process.env.OPENFANG_URL;
+        const url = process.env.OPENFANG_URL?.trim();
         if (url === undefined || url.length === 0) return { status: "unavailable" as const };
         const { OpenFangWriteReleasePolicy } = await import("@/src/infrastructure/policies/openfang.plugin-write-release.policy");
         return new OpenFangWriteReleasePolicy({

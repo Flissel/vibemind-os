@@ -22,6 +22,23 @@ function resolverWith(fetchImpl: typeof fetch, timeoutMs = 1_000): OpenFangCrede
   });
 }
 
+/**
+ * `.rejects.toThrow(string)` is a *substring* match: it would still pass if
+ * the thrown message became `credential_missing: <response body>`, or if the
+ * error carried a `cause` holding the response, the reference, or the token.
+ * Capture the actual error so tests can pin the exact message and assert no
+ * `cause` exists at all -- vitest's `.rejects.toThrow` alone cannot catch
+ * that regression.
+ */
+async function captureRejection(promise: Promise<unknown>): Promise<Error> {
+  try {
+    await promise;
+  } catch (err) {
+    return err as Error;
+  }
+  throw new Error("expected the promise to reject, but it resolved");
+}
+
 describe("OpenFangCredentialResolver", () => {
   it("resolves a 200 response to a SecretValue whose revealed value matches, without leaking it through JSON.stringify", async () => {
     const resolver = resolverWith((async () => jsonResponse(200, { reference: "GITHUB_PAT_TOKEN", value: "ghp_super_secret" })) as unknown as typeof fetch);
@@ -78,6 +95,25 @@ describe("OpenFangCredentialResolver", () => {
     }
   });
 
+  it("throws exactly credential_missing, with no cause, on a 500 -- not a message or cause carrying the response body", async () => {
+    const resolver = resolverWith((async () => jsonResponse(500, { error: "internal", detail: "should-never-surface" })) as unknown as typeof fetch);
+    const err = await captureRejection(resolver.resolve(reference, projectId, { signal: new AbortController().signal }));
+    expect(err.message).toBe("credential_missing");
+    expect(err.cause).toBeUndefined();
+  });
+
+  it("throws exactly credential_missing, with no cause, on a non-JSON body -- not a message or cause carrying the parse error", async () => {
+    const fetchImpl = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => { throw new SyntaxError("Unexpected token in JSON, possibly containing a secret-looking fragment"); },
+    }) as unknown as Response) as unknown as typeof fetch;
+    const resolver = resolverWith(fetchImpl);
+    const err = await captureRejection(resolver.resolve(reference, projectId, { signal: new AbortController().signal }));
+    expect(err.message).toBe("credential_missing");
+    expect(err.cause).toBeUndefined();
+  });
+
   it("throws rather than hanging when the caller's signal is already aborted", async () => {
     const start = Date.now();
     // Mirrors real fetch: a request handed an already-aborted signal rejects
@@ -102,6 +138,46 @@ describe("OpenFangCredentialResolver", () => {
       })) as unknown as typeof fetch;
     const resolver = resolverWith(fetchImpl, 50);
     await expect(resolver.resolve(reference, projectId, { signal: new AbortController().signal })).rejects.toThrow("credential_missing");
+    expect(Date.now() - start).toBeLessThan(500);
+  });
+
+  it("bounds the body read too, not just the fetch: headers arriving does not free the deadline", async () => {
+    // fetch() itself settles immediately (as real fetch does once headers
+    // arrive), but response.json() only settles when the bounded
+    // AbortController's own signal fires -- exactly like a real Response's
+    // body-read stream, which observes the same signal that was passed to
+    // fetch() for as long as the body is still being read. A server that
+    // answers 200 with a Content-Length and then sends zero body bytes must
+    // still be interrupted by this resolver's own deadline: if the timer
+    // were cleared as soon as fetch() returned (rather than after the body
+    // is read), the signal would fire but nothing would still be listening,
+    // and this would hang forever.
+    const start = Date.now();
+    const fetchImpl = (async (_url: string, init?: { signal?: AbortSignal }) => ({
+      ok: true,
+      status: 200,
+      json: () => new Promise<never>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      }),
+    }) as unknown as Response) as unknown as typeof fetch;
+    const resolver = resolverWith(fetchImpl, 50);
+    await expect(resolver.resolve(reference, projectId, { signal: new AbortController().signal })).rejects.toThrow("credential_missing");
+    expect(Date.now() - start).toBeLessThan(500);
+  });
+
+  it("throws credential_missing when the caller's signal aborts mid-flight, not only when it starts out already aborted", async () => {
+    const start = Date.now();
+    const fetchImpl = ((_url: string, init?: { signal?: AbortSignal }) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      })) as unknown as typeof fetch;
+    const resolver = resolverWith(fetchImpl, 5_000);
+    const controller = new AbortController();
+    const pending = resolver.resolve(reference, projectId, { signal: controller.signal });
+    // The signal starts out NOT aborted -- resolve() is already in flight --
+    // and only aborts partway through, unlike the already-aborted case above.
+    setTimeout(() => controller.abort(), 10);
+    await expect(pending).rejects.toThrow("credential_missing");
     expect(Date.now() - start).toBeLessThan(500);
   });
 

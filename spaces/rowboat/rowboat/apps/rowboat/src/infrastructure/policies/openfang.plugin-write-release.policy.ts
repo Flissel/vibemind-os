@@ -70,25 +70,32 @@ export class OpenFangWriteReleasePolicy implements IPluginWriteReleasePolicy {
 
   async #json(url: string, init: RequestInit, remainingMs: number, signal: AbortSignal): Promise<unknown> {
     if (remainingMs <= 0) throw new Error("openfang_deadline_exceeded");
-    const response = await this.#fetchBounded(url, init, remainingMs, signal);
-    if (!response.ok) throw new Error("openfang_unavailable");
-    return response.json();
+    return this.#fetchBounded(url, init, remainingMs, signal);
   }
 
   /**
-   * Bounds one fetch by the time remaining until our own deadline, in
-   * addition to the caller's signal. Neither the initial POST nor a GET poll
-   * may hang past that deadline: an OpenFang that accepts the connection and
-   * never answers must not stall release() forever.
+   * Bounds the *whole* exchange -- the fetch and the body read -- by the
+   * time remaining until our own deadline, in addition to the caller's
+   * signal. Neither the initial POST nor a GET poll may hang past that
+   * deadline: an OpenFang that accepts the connection and never answers must
+   * not stall release() forever.
+   *
+   * The body is read *inside* this method, before the finally clears the
+   * timer: `fetch()` itself resolves as soon as headers arrive, so a server
+   * that answers 200 with a Content-Length and then never sends the body
+   * would otherwise hang `response.json()` at the call site with no deadline
+   * and no abort path at all -- the bug this shape exists to close.
    */
-  async #fetchBounded(url: string, init: RequestInit, remainingMs: number, signal: AbortSignal): Promise<Response> {
+  async #fetchBounded(url: string, init: RequestInit, remainingMs: number, signal: AbortSignal): Promise<unknown> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), remainingMs);
     const onAbort = () => controller.abort();
     if (signal.aborted) controller.abort();
     else signal.addEventListener("abort", onAbort);
     try {
-      return await this.#options.fetch(url, { ...init, signal: controller.signal });
+      const response = await this.#options.fetch(url, { ...init, signal: controller.signal, redirect: "error" });
+      if (!response.ok) throw new Error("openfang_unavailable");
+      return await response.json();
     } finally {
       clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);
