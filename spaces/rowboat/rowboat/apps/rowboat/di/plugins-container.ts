@@ -29,6 +29,12 @@ const DEFAULT_OPENFANG_APPROVAL_WINDOW_MS = 120_000;
 // Whole, non-negative digits only: a naive Number.parseInt("1500.75", 10)
 // truncates to 1500 and would silently accept a fractional value.
 const STRICT_INTEGER = /^[0-9]+$/;
+// A credential-issue call is one HTTP round trip to OpenFang, not a wait for
+// a human decision, so it needs nowhere near the approval window's ceiling --
+// a much smaller bound of its own is the honest fit.
+const MIN_OPENFANG_CREDENTIAL_TIMEOUT_MS = 100;
+const MAX_OPENFANG_CREDENTIAL_TIMEOUT_MS = 30_000;
+const DEFAULT_OPENFANG_CREDENTIAL_TIMEOUT_MS = 5_000;
 
 /**
  * Resolves OPENFANG_APPROVAL_TIMEOUT_MS once, at composition, guarded: input
@@ -59,6 +65,23 @@ export function resolveOpenFangApprovalWindowMs(raw: string | undefined): number
  */
 export function deriveRuntimeDeadlineMs(approvalWindowMs: number): number {
   return Math.min(RUNTIME_DEADLINE_CEILING_MS, approvalWindowMs + RUNTIME_DEADLINE_MARGIN_MS);
+}
+
+/**
+ * Resolves OPENFANG_CREDENTIAL_TIMEOUT_MS once, at composition, using the
+ * same guarded-integer idiom as resolveOpenFangApprovalWindowMs above:
+ * input that is not a valid whole-millisecond duration falls back to the
+ * default rather than propagating NaN into arithmetic downstream, and a
+ * value above the bound this call can actually justify is clamped down
+ * rather than dropped to an unrelated default. The bound itself is its own,
+ * much smaller ceiling: this times a single fetch to OpenFang's
+ * credential-issue endpoint, never a wait for a human to decide.
+ */
+export function resolveOpenFangCredentialTimeoutMs(raw: string | undefined): number {
+  if (raw === undefined || !STRICT_INTEGER.test(raw)) return DEFAULT_OPENFANG_CREDENTIAL_TIMEOUT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isSafeInteger(parsed) || parsed < MIN_OPENFANG_CREDENTIAL_TIMEOUT_MS) return DEFAULT_OPENFANG_CREDENTIAL_TIMEOUT_MS;
+  return Math.min(parsed, MAX_OPENFANG_CREDENTIAL_TIMEOUT_MS);
 }
 
 interface PluginControllers {
@@ -141,6 +164,9 @@ async function createPluginControllers(): Promise<PluginControllers> {
   // the call out (which would write a timed_out receipt while leaving an
   // approved-but-orphaned approval in OpenFang for a retry to duplicate).
   const openFangApprovalWindowMs = resolveOpenFangApprovalWindowMs(process.env.OPENFANG_APPROVAL_TIMEOUT_MS);
+  // Same idiom as above, parsed once here and reused per call below rather
+  // than re-parsed on every credential resolution.
+  const openFangCredentialTimeoutMs = resolveOpenFangCredentialTimeoutMs(process.env.OPENFANG_CREDENTIAL_TIMEOUT_MS);
 
   return Object.freeze({
     authenticate: (request: Request) => authorization.authenticate(request),
@@ -208,12 +234,34 @@ async function createPluginControllers(): Promise<PluginControllers> {
       // the runtime before that human could plausibly have decided.
       timeoutMilliseconds: deriveRuntimeDeadlineMs(openFangApprovalWindowMs),
       // Provider implementations come through the hardened runtime registry.
-      // No legacy Composio adapter is reachable from this composition boundary,
-      // and credentials are not released yet, so an HTTP MCP call reaches its
-      // provider and then fails with a missing credential rather than running
-      // unauthenticated.
+      // No legacy Composio adapter is reachable from this composition boundary.
+      // Credential resolution is chosen fresh per call, from the current
+      // environment, not memoized at startup: with OPENFANG_URL and
+      // OPENFANG_API_KEY both configured, a released write asks OpenFang for
+      // the value per call and holds no standing copy of its own, so a
+      // revocation in OpenFang takes effect on the very next call. Absence of
+      // either variable is not "resolve anyway" -- it stays
+      // UnreleasedCredentialResolver, which releases nothing and fails closed
+      // with credential_missing, exactly as before this wiring existed.
       resolveProvider: async ({ component, entry, binding, policy }) => {
         const { resolvePluginProvider, UnreleasedCredentialResolver } = await import("@/src/infrastructure/plugins/provider-resolution");
+        const openFangUrl = process.env.OPENFANG_URL;
+        const openFangApiKey = process.env.OPENFANG_API_KEY;
+        if (openFangUrl !== undefined && openFangUrl.length > 0 && openFangApiKey !== undefined && openFangApiKey.length > 0) {
+          const { OpenFangCredentialResolver } = await import("@/src/infrastructure/plugins/openfang-credential-resolver");
+          return resolvePluginProvider(
+            { component, entry, binding },
+            {
+              credentialResolver: new OpenFangCredentialResolver({
+                baseUrl: openFangUrl,
+                apiKey: openFangApiKey,
+                fetch,
+                timeoutMs: openFangCredentialTimeoutMs,
+              }),
+              policy,
+            },
+          );
+        }
         return resolvePluginProvider(
           { component, entry, binding },
           { credentialResolver: new UnreleasedCredentialResolver(), policy },

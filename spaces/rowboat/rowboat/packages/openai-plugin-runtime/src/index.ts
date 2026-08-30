@@ -149,6 +149,8 @@ export {
 export {
   SecretValue,
   createSecretValue,
+  revealSecretValue,
+  assertCredentialRequest,
   type CredentialReference,
   type CredentialResolver,
 } from "./providers/credential-resolver.js";

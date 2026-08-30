@@ -88,6 +88,67 @@ Plugin source content never supplies a secret value. A component declares
 credential *slot names*; the operator binds each slot to a value held outside
 the plugin content. Receipts store digests and redaction paths, never values.
 
+### Resolving a credential value from OpenFang
+
+A slot name is a *reference*, never a value. When a released write reaches the
+provider's credential step (`CredentialResolver.resolve()`), this composition
+decides once, at startup in `di/plugins-container.ts`, which resolver answers
+it:
+
+| Variable | Purpose |
+| --- | --- |
+| `OPENFANG_URL` | Base URL of the OpenFang daemon that can issue credential values |
+| `OPENFANG_API_KEY` | Bearer token this composition presents to OpenFang's HTTP API |
+
+With both non-empty, `resolveProvider` wires an `OpenFangCredentialResolver`
+(`src/infrastructure/plugins/openfang-credential-resolver.ts`), which calls
+`POST <OPENFANG_URL>/api/credentials/issue` with `{"reference": "<NAME>"}` and
+that bearer token, fresh, on every call, and returns the `value` OpenFang
+answers with. With either variable absent - or on any failure: a non-200 of
+any kind, a malformed body, a transport error, a timeout, or a reference/
+project id the kernel's own `assertCredentialRequest` rejects - the
+composition falls back to (or the resolver itself throws)
+`UnreleasedCredentialResolver`'s `credential_missing`. Absence of
+configuration never means "resolve anyway" - that stays the default that
+releases nothing, exactly as before this resolver existed. The request is
+bounded by its own deadline, `OPENFANG_CREDENTIAL_TIMEOUT_MS` (default
+5000ms, clamped to at most 30000ms) - a single HTTP round trip, not a wait
+for a human decision, so it needs nowhere near the approval window's ceiling.
+
+An operator makes a reference resolvable by adding it to OpenFang's own
+`OPENFANG_ISSUABLE_CREDENTIALS` allowlist; that variable lives entirely in
+OpenFang's deployment, not Rowboat's.
+
+**The security shape, stated plainly:**
+
+- **The value OpenFang returns is the stored credential itself, not a minted
+  short-lived token.** OpenFang does not mint or scope anything here; the
+  response is exactly the secret an operator put on its allowlist.
+- **Rowboat holds no standing copy.** Nothing is cached across calls - a
+  credential is asked for fresh on every released write - so revoking or
+  rotating a reference in OpenFang takes effect on the very next call. There
+  is no window where a revoked Rowboat-side copy keeps working.
+- **Any holder of the OpenFang API token can obtain any allowlisted
+  reference.** OpenFang's `/api/credentials/issue` endpoint has no
+  per-caller identity beyond the bearer token; it does not distinguish which
+  Rowboat project, plugin, or component is asking. The allowlist bounds
+  *which* references can ever be issued, not *who* within Rowboat's own trust
+  boundary can ask for one.
+- **A 404 and a 400 are both `credential_missing` to Rowboat, same as a 401,
+  a 500, or a dropped connection.** OpenFang answers `404
+  {"error":"credential_unavailable"}` identically whether a reference is not
+  allowlisted or is allowlisted but unresolvable - deliberately, so the
+  endpoint cannot be used to enumerate which secrets the daemon holds - and
+  this resolver does not attempt to tell any of its failure modes apart
+  either; none of them ever put the reference, the token, or a response body
+  into a thrown message or a log line.
+
+**Still unproven:** the end-to-end call against a real third-party
+credential - actually invoking a plugin's provider with a value OpenFang
+issued and observing a genuine response from the third-party API - has not
+been made. Everything above is exercised against an injected `fetch` in
+tests, never a running OpenFang daemon or a real credential.
+
 The Web install flow additionally requires `PLUGIN_UI_PREVIEW_SECRET` (see the
 repository README). Migration and cutover require:
 
@@ -266,8 +327,16 @@ Once that was fixed, one gate remained:
   mechanism and the exact observed outcome (`credential_missing`, live-
   verified). Which credential transport releases a real value here -
   deploy-time injection into the process environment, or a new OpenFang
-  credential-issuance endpoint - remains an explicit decision for the user to
-  make (Task 5 of the phase plan); no code exists for either option yet.
+  credential-issuance endpoint - was an explicit decision for the user to
+  make (Task 5 of the phase plan). The user chose the OpenFang endpoint over
+  deploy-time injection specifically so Rowboat holds no standing copy and a
+  revocation in OpenFang takes effect on the next call (Task 5b): with
+  `OPENFANG_URL` and `OPENFANG_API_KEY` both configured, `resolveProvider`
+  wires an `OpenFangCredentialResolver` instead of
+  `UnreleasedCredentialResolver` - see "Resolving a credential value from
+  OpenFang" above for the transport and its security shape. The end-to-end
+  call against a real third-party credential still has not been made; only
+  the resolver's own behaviour against an injected `fetch` is proven.
 
 Verified live: before the release gate was wired, an invocation failed with
 `provider_unavailable`; after it (Task 4-6), an unreleased write fails with
@@ -493,12 +562,17 @@ These are true limits of the current state, not oversights to work around:
   Task 4-6 policy-threading gap) and, since Task 9, its credential failure is
   observable as the literal `credential_missing` rather than a generic
   `provider_failed` — see "Released-write proof, and the credential boundary"
-  above for the traced mechanism. What has not changed is that
-  `UnreleasedCredentialResolver` still releases nothing: this depends on a
-  credential-transport decision the user has not made (deploy-time injection
-  vs. a new OpenFang issuance endpoint - OpenFang has no such endpoint
-  today). No approval id, receipt id, or result exists for a real call
-  anywhere in this repository.
+  above for the traced mechanism. The credential-transport decision itself is
+  now made and implemented (Task 5b): with `OPENFANG_URL` and
+  `OPENFANG_API_KEY` both configured, `OpenFangCredentialResolver` asks
+  OpenFang's `/api/credentials/issue` for a value per call instead of
+  releasing nothing - see "Resolving a credential value from OpenFang"
+  above. With either variable absent, `UnreleasedCredentialResolver` still
+  releases nothing, unchanged. What has not changed either way is that this
+  has never been exercised against a real OpenFang daemon or a real
+  third-party credential: every test drives an injected `fetch`. No approval
+  id, receipt id, or result exists for a real call anywhere in this
+  repository.
 - **`shadow -> legacy` is not an admitted transition.** The plan's table admits
   only the three transitions listed above, so a project in shadow returns to
   legacy by going through a cutover and rollback. Widening the table is a
