@@ -3,6 +3,7 @@ import catalogFixture from "../../../../config/openai-plugin-catalog.lock.json";
 import {
   PINNED_PLUGIN_CATALOG_DIGEST,
   type PluginCatalogLock,
+  type PluginPolicy,
   type PluginProvider,
   type ProviderContext,
   type ProviderBinding,
@@ -169,10 +170,12 @@ function setup(options: {
   readonly authorizationContext?: PluginToolAuthorizationContext | false;
   readonly authorize?: (authorization: PluginToolAuthorizationContext, projectId: string) => Promise<void>;
   readonly releaseWrite?: PluginToolRuntimeDependencies["releaseWrite"];
+  readonly classifyOperation?: PluginToolRuntimeDependencies["classifyOperation"];
 } = {}) {
   const repository = new FakeRepository();
   const counters = { authorize: 0, resolve: 0, provider: 0, cancel: 0, legacy: 0 };
   let observedReference = "";
+  let observedPolicy: PluginPolicy | undefined;
   let providerSettled = false;
   const mutateExecutionState = (mutation: "disable" | "admission" | "credential"): void => {
     if (mutation === "disable") repository.currentInstallation = Object.freeze({ ...installation, enabled: false, revision: 8 });
@@ -214,10 +217,11 @@ function setup(options: {
       counters.authorize += 1;
       await options.authorize?.(authorization, projectId);
     },
-    classifyOperation: () => options.operationCapability ?? "read",
+    classifyOperation: options.classifyOperation ?? (() => options.operationCapability ?? "read"),
     resolveProvider: async (input: PluginProviderResolutionInput) => {
       counters.resolve += 1;
       observedReference = input.credentialSlots[0]?.reference.reference ?? "";
+      observedPolicy = input.policy;
       if (options.resolverMutation !== undefined) mutateExecutionState(options.resolverMutation);
       if (options.resolverHangs === true) return new Promise<never>(() => undefined);
       if (options.credentialFailure === true) throw new Error("credential_missing");
@@ -240,6 +244,7 @@ function setup(options: {
   return {
     runtime: new PluginToolRuntime(dependencies), repository, counters,
     get observedReference() { return observedReference; },
+    get observedPolicy() { return observedPolicy; },
     get providerSettled() { return providerSettled; },
   };
 }
@@ -605,6 +610,55 @@ describe("PluginToolRuntime", () => {
     expect(seen).toHaveLength(2);
     const secondRequest = seen[1] as Readonly<Record<string, unknown>>;
     expect(secondRequest.argumentsDigest).toBe(firstRequest.argumentsDigest);
+  });
+
+  it("resolves the provider with an elevated policy only for a released write", async () => {
+    const state = setup({
+      operationCapability: "write",
+      releaseWrite: async () => ({ status: "approved" as const, approvalId: "3f0f8a1e-0000-4000-8000-00000000000d" }),
+    });
+    await state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup" });
+    expect(state.observedPolicy?.allowWriteCapabilities).toBe(true);
+  });
+
+  it("resolves the provider with the unelevated default policy for a read", async () => {
+    const state = setup({ operationCapability: "read" });
+    await state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" });
+    expect(state.observedPolicy?.allowWriteCapabilities).toBe(false);
+  });
+
+  it("never leaks an elevated policy to a later call on the same runtime instance", async () => {
+    let releaseCalls = 0;
+    const state = setup({
+      // A single runtime instance handles both a write and, later, a read; the
+      // fixed binding's declared capability must agree with what this
+      // classifies, so the write and read operation names are distinguished
+      // here instead of by a separate setup() per capability.
+      classifyOperation: ({ operationName }) => (operationName === "read-op" ? "read" : "write"),
+      releaseWrite: async () => {
+        releaseCalls += 1;
+        return releaseCalls === 1
+          ? { status: "approved" as const, approvalId: "3f0f8a1e-0000-4000-8000-00000000000e" }
+          : { status: "unavailable" as const };
+      },
+    });
+
+    // First call: released write -- resolution sees the elevated policy.
+    await state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "mutate" });
+    expect(state.observedPolicy?.allowWriteCapabilities).toBe(true);
+    expect(state.counters.resolve).toBe(1);
+
+    // Second call: same runtime instance, this time unavailable -- fails at
+    // the release gate and never reaches resolution at all.
+    await expect(state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "mutate" }))
+      .rejects.toThrow("write_review_required");
+    expect(state.counters.resolve).toBe(1);
+
+    // Third call: a read -- resolution sees the unelevated default policy,
+    // proving the earlier elevation never leaked past its own call.
+    await state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "read-op" });
+    expect(state.observedPolicy?.allowWriteCapabilities).toBe(false);
+    expect(state.counters.resolve).toBe(2);
   });
 
   it("still refuses a write when no releaseWrite is configured", async () => {

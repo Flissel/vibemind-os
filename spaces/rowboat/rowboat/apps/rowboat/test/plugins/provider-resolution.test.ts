@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ProviderBinding } from "@rowboat/openai-plugin-runtime";
+import { DEFAULT_POLICY, type PluginPolicy, type ProviderBinding } from "@rowboat/openai-plugin-runtime";
 import { resolvePluginProvider, UnreleasedCredentialResolver } from "@/src/infrastructure/plugins/provider-resolution";
 
 const componentDigest = "a".repeat(64);
@@ -56,5 +56,42 @@ describe("plugin provider resolution", () => {
   it("hands out no credential until one is released", async () => {
     await expect(new UnreleasedCredentialResolver().resolve({ name: "GITHUB_TOKEN" } as never, "project-1"))
       .rejects.toThrow("credential_missing");
+  });
+
+  it("carries a policy passed in dependencies into the constructed provider, not the kernel default", async () => {
+    // 127.0.0.1:1 refuses the connection immediately (nothing listens there),
+    // so this stays fast and needs no network access -- it only has to prove
+    // which policy the provider was built with, not complete a real call.
+    const localComponent = component({
+      metadata: {
+        digest: "b".repeat(64), bindingDigest: componentDigest, transport: "http",
+        mcpServer: { type: "http", url: "https://127.0.0.1:1/mcp" },
+      },
+    });
+    const invocationRequest = Object.freeze({
+      projectId: "project-1", pluginName: "github", componentName: "github",
+      operationName: "search", capability: "write" as const, arguments: {},
+    });
+
+    const defaultResolution = resolvePluginProvider({ component: localComponent, entry, binding: httpBinding }, { credentialResolver });
+    expect(defaultResolution.status).toBe("available");
+    if (defaultResolution.status !== "available") return;
+    // DEFAULT_POLICY refuses every write outright, before any network attempt.
+    await expect(defaultResolution.provider.invoke(invocationRequest, { requestId: "req-1" }))
+      .rejects.toThrow("write_review_required");
+
+    const elevatedPolicy: PluginPolicy = Object.freeze({ ...DEFAULT_POLICY, allowWriteCapabilities: true });
+    const elevatedResolution = resolvePluginProvider(
+      { component: localComponent, entry, binding: httpBinding },
+      { credentialResolver, policy: elevatedPolicy, timeoutMilliseconds: 2_000 },
+    );
+    expect(elevatedResolution.status).toBe("available");
+    if (elevatedResolution.status !== "available") return;
+    const elevatedResult = await elevatedResolution.provider.invoke(invocationRequest, { requestId: "req-2" });
+    // The elevated policy clears the same admission check and lets the call
+    // reach the network attempt instead, which then fails for an unrelated,
+    // local reason -- never for write_review_required again.
+    expect(elevatedResult).toMatchObject({ status: "failed" });
+    expect((elevatedResult as { status: "failed"; reason: string }).reason).not.toBe("write_review_required");
   });
 });

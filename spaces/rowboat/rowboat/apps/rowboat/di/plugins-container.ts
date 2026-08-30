@@ -212,11 +212,11 @@ async function createPluginControllers(): Promise<PluginControllers> {
       // and credentials are not released yet, so an HTTP MCP call reaches its
       // provider and then fails with a missing credential rather than running
       // unauthenticated.
-      resolveProvider: async ({ component, entry, binding }) => {
+      resolveProvider: async ({ component, entry, binding, policy }) => {
         const { resolvePluginProvider, UnreleasedCredentialResolver } = await import("@/src/infrastructure/plugins/provider-resolution");
         return resolvePluginProvider(
           { component, entry, binding },
-          { credentialResolver: new UnreleasedCredentialResolver() },
+          { credentialResolver: new UnreleasedCredentialResolver(), policy },
         );
       },
       // OpenFang is the release authority for writes: a write stays under

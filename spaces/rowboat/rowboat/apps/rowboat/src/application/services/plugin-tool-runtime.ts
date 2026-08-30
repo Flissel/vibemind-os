@@ -8,6 +8,7 @@ import {
   validatePluginCatalogLock,
   type CatalogBoundPluginComponent,
   type PluginCatalogEntry,
+  type PluginPolicy,
   type PluginProvider,
   type ProviderBinding,
   type ProviderResolution,
@@ -64,6 +65,7 @@ export interface PluginProviderResolutionInput {
   readonly binding: ProviderBinding;
   readonly credentialSlots: readonly PluginCredentialSlot[];
   readonly signal: AbortSignal;
+  readonly policy: PluginPolicy;
 }
 
 export interface PluginToolRuntimeDependencies {
@@ -653,7 +655,7 @@ export class PluginToolRuntime {
     try {
       const resolutionOperation = this.#dependencies.resolveProvider(Object.freeze({
         catalog, entry, component: component.component, installation, binding: installedBinding,
-        credentialSlots: Object.freeze([...credentialSlots]), signal: controller.signal,
+        credentialSlots: Object.freeze([...credentialSlots]), signal: controller.signal, policy,
       }));
       const resolution = await awaitDeadline(resolutionOperation, controller.signal, context.signal);
       const provider = exactProvider(resolution, installedBinding);

@@ -271,9 +271,15 @@ describe.skipIf(LIVE_URL === "")("live plugin runtime cutover against a real Mon
       authorizationContext: { caller: "user", userId: "guest_user" },
       authorizeProject: async () => undefined,
       classifyOperation: () => "write",
-      resolveProvider: async ({ component, entry: catalogEntry, binding }) => resolvePluginProvider(
+      // Forwards the runtime's own per-call policy (elevated only for a
+      // write OpenFang just released, see plugin-tool-runtime.ts) through to
+      // the real kernel provider, exactly as di/plugins-container.ts's own
+      // resolveProvider wiring does. Dropping `policy` here would silently
+      // fall back to resolvePluginProvider's DEFAULT_POLICY and reintroduce
+      // the gap this gate exists to catch.
+      resolveProvider: async ({ component, entry: catalogEntry, binding, policy }) => resolvePluginProvider(
         { component, entry: catalogEntry, binding },
-        { credentialResolver: new UnreleasedCredentialResolver() },
+        { credentialResolver: new UnreleasedCredentialResolver(), policy },
       ),
     };
     const toolRuntime = new PluginToolRuntime(runtimeDependencies);

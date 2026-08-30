@@ -242,42 +242,41 @@ so the runtime's own `evaluateCapability` check admits it. Without a release
 (no `OPENFANG_URL`, or OpenFang unreachable, denied, or expired) the call still
 fails closed with `write_review_required` - unchanged from before.
 
-**A release does not yet reach the provider.** `PluginToolRuntimeDependencies.resolveProvider`
-receives no signal that a write was released: `resolvePluginProvider()` (in
-`src/infrastructure/plugins/provider-resolution.ts`) always constructs the
-provider with the kernel's own unmodified `DEFAULT_POLICY`
-(`allowWriteCapabilities: false`), because neither the test double nor the
-production wiring in `di/plugins-container.ts` passes a `policy` override
-through. `HttpMcpProvider.invoke()` then re-runs the identical
-`evaluateCapability({ kind: "write" }, policy)` check the outer gate just
-cleared, against that unmodified policy, and throws its own
-`write_review_required` - which `PluginToolRuntime`'s `classifyFailure` (it
-only special-cases the literal message `"credential_missing"`) reports to the
-caller as `provider_unavailable`. **Concretely: today, no plugin write can run
-even with a real OpenFang approval and a real credential**, because the
-approval never reaches the component that would need it. This was found by
-actually running the released-write case against the live gate below (see
-"Released-write proof, and the credential boundary"), not predicted; no
-mocked-provider unit test exercises the real kernel provider construction
-path, so nothing caught it earlier. Threading the elevated policy from the
-release decision through to `resolveProvider()` is unimplemented work, not a
-decision pending on the user the way the credential transport below is.
+**A release now reaches the provider.** The elevated policy `invoke()` builds
+for a released write is threaded through `resolveProvider()` as a new
+`policy` field on `PluginProviderResolutionInput`, into
+`resolvePluginProvider()`'s `dependencies.policy`, which it already forwarded
+to the `HttpMcpProvider` constructor - that plumbing existed but nothing
+supplied it. `di/plugins-container.ts`'s production `resolveProvider` wiring
+now passes it through; an unreleased call still resolves the provider with
+the kernel's unmodified `DEFAULT_POLICY` (`allowWriteCapabilities: false`),
+so `HttpMcpProvider.invoke()`'s own `evaluateCapability({ kind: "write" },
+policy)` re-check now agrees with the outer gate's decision either way,
+instead of silently re-refusing what the outer gate just admitted.
 
-Once that is fixed, one gate remains:
+Once that was fixed, one gate remained:
 
 - **Credential.** The MCP declaration carries a credential *reference* - for
   the pinned GitHub server, the `GITHUB_PAT_TOKEN` bearer token env var - and
   the resolver in this composition (`UnreleasedCredentialResolver`) releases
-  nothing, so a call that reached the provider would fail with
-  `credential_missing`. Which credential transport releases a real value here
-  - deploy-time injection into the process environment, or a new OpenFang
-  credential-issuance endpoint - is an explicit decision for the user to make
-  (Task 5 of the phase plan); no code exists for either option yet.
+  nothing. A released write now genuinely reaches this step and the resolver
+  throws `credential_missing` as designed - but that specific signal does not
+  reach the caller. See "Released-write proof, and the credential boundary"
+  below for the traced mechanism and the exact observed outcome
+  (`provider_failed`, not `credential_missing`). Which credential transport
+  releases a real value here - deploy-time injection into the process
+  environment, or a new OpenFang credential-issuance endpoint - remains an
+  explicit decision for the user to make (Task 5 of the phase plan); no code
+  exists for either option yet, and it would not by itself change the
+  observed reason string below.
 
 Verified live: before the release gate was wired, an invocation failed with
 `provider_unavailable`; after it (Task 4-6), an unreleased write fails with
-`write_review_required`; and a released write, proven for the first time here,
-fails with `provider_unavailable` again, for the different reason above.
+`write_review_required`; after threading the released policy through to the
+provider (this task), a released write reaches the credential step and fails
+with `provider_failed` - genuine progress (the provider no longer re-refuses
+an approved write), but not the literal `credential_missing` a naive reading
+of "the credential is the next gate" would predict. Both are traced below.
 
 Two component kinds still cannot execute here at all, and are reported
 unavailable rather than approximated: a **process MCP** server needs a verified
@@ -344,18 +343,64 @@ real installation, and the real admission record for the pinned GitHub MCP
 server — nothing about this step is a mock). It builds a second
 `PluginToolRuntime` sharing every dependency of the one used earlier in the
 gate, except `releaseWrite`, which is stubbed to approve unconditionally, and
-invokes the same `list_issues` operation. **This currently fails, and the
-failure is recorded rather than hidden**: instead of reaching the credential
-boundary (`credential_missing`, the intended and asserted outcome), the call
-fails with `provider_unavailable`. The real reason, traced against the actual
-thrown error, is `write_review_required` — raised a second time, from inside
-`HttpMcpProvider.invoke()` itself, because the OpenFang approval that
-elevated `PluginToolRuntime`'s own gate is never threaded through to the
-provider construction in `resolveProvider()`. See "What still blocks an
-actual call" above for the full mechanism. This is a genuine, previously
-unverified gap in the Task 4-6 release wiring, found by this test, not by
-inspection — no unit test exercises the real provider construction path, so
-nothing had caught it before this gate ran with a released write.
+invokes the same `list_issues` operation.
+
+**The policy now reaches the provider, and the write is no longer re-refused.**
+Before this task, the call failed with `provider_unavailable`, traced to
+`write_review_required` raised a second time from inside
+`HttpMcpProvider.invoke()` — the OpenFang approval that elevated
+`PluginToolRuntime`'s own gate was never threaded through to the provider
+construction in `resolveProvider()`. That gap is closed: `resolveProvider()`
+now receives the same `policy` the runtime's own `evaluateCapability` gate
+just admitted the call under, `resolvePluginProvider()` forwards it into the
+`HttpMcpProvider` constructor (it already accepted `dependencies.policy`; the
+gap was purely that no caller supplied one), and the provider's own
+`admissionReason(..., "write", policy)` check now agrees.
+
+**It still does not reach `credential_missing`, and this task recorded that
+rather than weakening the assertion.** The call now genuinely reaches
+`HttpMcpProvider`'s credential step: `UnreleasedCredentialResolver.resolve()`
+throws `Error("credential_missing")` exactly as designed. But that throw
+happens inside `#resolveCredential()`
+(`packages/openai-plugin-runtime/src/providers/mcp-http-provider.ts:315-333`),
+which re-throws it with the same message, and *that* re-throw is caught by
+`invoke()`'s own surrounding `try`/`catch`
+(`mcp-http-provider.ts:352-395`) — every exception raised while resolving the
+credential or reaching the server, not just this one, is collapsed into a
+resolved `ProviderResult` with a generic `reason: "mcp_http_failed"` (or
+`"mcp_http_timed_out"` on abort/timeout). The specific message never escapes
+as a rejection, so nothing on the caller side ever gets to inspect it.
+Downstream, `PluginToolRuntime.invoke()`'s own `captureProviderResult()`
+(`apps/rowboat/src/application/services/plugin-tool-runtime.ts:357-375`)
+redacts *every* failed `ProviderResult`'s `reason` to the fixed string
+`"provider_failed"` regardless of what the provider reported — a deliberate
+redaction (the same pattern receipts use), but one that also discards this
+distinction. `PluginToolRuntime`'s `classifyFailure()` *does* have a
+`credential_missing` special case, but it only inspects a *rejected* promise
+reaching the top of `invoke()`'s dispatch block — which this call path never
+produces, because the kernel provider swallows the rejection two layers
+below it. The observed, live-verified outcome for a released write today is
+therefore `provider_failed`, not `credential_missing`.
+
+Reaching the literal `credential_missing` string would need the kernel to
+stop collapsing a credential failure into the same generic reason as every
+other MCP HTTP failure (distinguishing it in `HttpMcpProvider.invoke()`'s
+catch at `mcp-http-provider.ts:389-395`), and the app's
+`captureProviderResult()` would need to stop blanket-redacting every failed
+reason to `"provider_failed"` and preserve that one instead. Both changes
+reach into `packages/openai-plugin-runtime`, which this task does not modify
+— this is recorded as a finding for follow-up, not fixed here.
+
+This is still genuine, verified progress, not a wash: this is the first time
+a released write has been proven to reach the real kernel provider's actual
+network/credential attempt at all, rather than being re-refused by a stale
+policy copy before ever getting there. The Task 4-6 policy-threading gap
+(see above) is fully closed and covered by unit tests
+(`plugin-tool-runtime.test.ts`, `provider-resolution.test.ts`) that exercise
+the real `HttpMcpProvider` admission check, not a stub; the remaining gap is
+a distinct, pre-existing kernel-level reason-collapsing behavior, unrelated
+to policy threading, that no test before this gate had reason to exercise
+either.
 
 **The end-to-end call against a real GitHub credential (plan Task 7 Step 3)
 has not been attempted**, and this is why: it was already out of scope
@@ -403,21 +448,52 @@ These are true limits of the current state, not oversights to work around:
 - **No project has been migrated, cut over, or rolled back on a live
   deployment.** Every gate above is proven by tests against fakes and fixtures.
   The removal gate has never been run against real deployment data.
-- **An OpenFang-approved write does not yet reach a real provider.** The
-  release decision elevates only `PluginToolRuntime`'s own gate; it is never
-  passed to `resolveProvider()`, so the real provider (`HttpMcpProvider`)
-  re-applies the kernel's unmodified default policy and blocks the same write
-  again, surfacing as `provider_unavailable`. See "Released-write proof, and
-  the credential boundary" above for the traced mechanism. Every unit test
-  that shows a released write completing (`plugin-tool-runtime.test.ts`) does
-  so against a stub provider that carries no capability check of its own, so
-  none of them exercise this path; the live gate above is the only place that
-  currently does.
+- **An HTTP MCP provider admits every call as `write`, regardless of how the
+  runtime classified it.** `HttpMcpProvider.invoke()` evaluates a hard-coded
+  `"write"` admission on every call
+  (`packages/openai-plugin-runtime/src/providers/mcp-http-provider.ts:342`),
+  not the operation's own classified capability. So an operation the runtime
+  classified `read` would still need a write-capable (elevated, i.e.
+  OpenFang-released) policy to execute over MCP HTTP — a read cannot yet run
+  under the default read-admitting policy the way `evaluateCapability({kind:
+  "read"}, ...)` unconditionally admits it at the runtime's own outer gate.
+  Compounding this, `validateMcpInvocation`
+  (`packages/openai-plugin-runtime/src/providers/mcp-request.ts:13-21`) hard-requires
+  `request.capability === "write"` one line earlier still, so a read-classified
+  call fails there first today, before even reaching the admission check above.
+  No catalog entry declares a read-only operation today
+  (`classifyPluginOperation` defaults every operation to `write` unless a
+  component's metadata explicitly lists it under `readOnlyOperations`), so
+  nothing exercises this path yet — but the moment one does, it will need a
+  release for what the runtime itself considers a read. Lifting this needs
+  both call sites in the kernel to key off `request.capability` instead of
+  the literal `"write"`, which this task does not modify.
+- **An OpenFang-approved write now reaches the real provider, but its
+  credential failure is not observable as `credential_missing`.** The
+  Task 4-6 gap (the release decision never reached `resolveProvider()`) is
+  fixed by this task: `resolveProvider()` now receives, and
+  `resolvePluginProvider()` now forwards, the same elevated policy the
+  runtime's own gate admitted the call under, verified by
+  `plugin-tool-runtime.test.ts` and `provider-resolution.test.ts` against the
+  real `HttpMcpProvider` admission check (not a stub). What remains is a
+  distinct, pre-existing gap: a credential failure inside
+  `HttpMcpProvider.invoke()` is collapsed into the same generic
+  `"mcp_http_failed"` reason as any other MCP HTTP failure
+  (`mcp-http-provider.ts:389-395`), and `PluginToolRuntime`'s own
+  `captureProviderResult()` further redacts every failed reason to the fixed
+  string `"provider_failed"`
+  (`apps/rowboat/src/application/services/plugin-tool-runtime.ts:357-375`).
+  Live-verified: a released write today reaches `provider_failed`, not
+  `credential_missing`. See "Released-write proof, and the credential
+  boundary" above for the full traced mechanism and what closing it would
+  need (a kernel change to `HttpMcpProvider.invoke()`'s error handling, which
+  this task does not make).
 - **The end-to-end call against a real GitHub credential has not been
-  attempted.** It depends on both the fix above and a credential-transport
-  decision the user has not made (deploy-time injection vs. a new OpenFang
-  issuance endpoint - OpenFang has no such endpoint today). No approval id,
-  receipt id, or result exists for a real call anywhere in this repository.
+  attempted.** It depends on the credential boundary above, which is reached
+  but not yet observable end-to-end, and on a credential-transport decision
+  the user has not made (deploy-time injection vs. a new OpenFang issuance
+  endpoint - OpenFang has no such endpoint today). No approval id, receipt
+  id, or result exists for a real call anywhere in this repository.
 - **`shadow -> legacy` is not an admitted transition.** The plan's table admits
   only the three transitions listed above, so a project in shadow returns to
   legacy by going through a cutover and rollback. Widening the table is a
