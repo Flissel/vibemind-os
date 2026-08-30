@@ -37,7 +37,7 @@ export function captureWriteReleaseRequest(input: unknown): PluginWriteReleaseRe
  * The composition default. A write is never released by absence of a decision.
  */
 export class DeniedWriteReleasePolicy implements IPluginWriteReleasePolicy {
-  async release(): Promise<PluginWriteReleaseDecision> {
+  async release(_request: PluginWriteReleaseRequest, _signal: AbortSignal): Promise<PluginWriteReleaseDecision> {
     return Object.freeze({ status: "unavailable" as const });
   }
 }

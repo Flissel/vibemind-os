@@ -74,4 +74,21 @@ describe("OpenFang write release", () => {
     ]);
     expect((await undecided.release(request, new AbortController().signal)).status).toBe("expired");
   });
+
+  it("aborts a request that never settles once the deadline passes", async () => {
+    const start = Date.now();
+    const fetchImpl = (_input: string, init?: { signal?: AbortSignal }) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      });
+    const policy = new OpenFangWriteReleasePolicy({
+      baseUrl: "http://openfang.invalid:4200",
+      fetch: fetchImpl as unknown as typeof fetch,
+      timeoutMs: 50,
+      pollIntervalMs: 1,
+    });
+    const decision = await policy.release(request, new AbortController().signal);
+    expect(decision.status).not.toBe("approved");
+    expect(Date.now() - start).toBeLessThan(500);
+  });
 });

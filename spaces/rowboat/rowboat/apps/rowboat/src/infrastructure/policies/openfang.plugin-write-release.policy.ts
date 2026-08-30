@@ -40,8 +40,7 @@ export class OpenFangWriteReleasePolicy implements IPluginWriteReleasePolicy {
           description: `Rowboat plugin write: ${request.pluginName}`,
           action_summary: `component ${request.componentDigest} arguments ${request.argumentsDigest}`,
         }),
-        signal,
-      });
+      }, deadline - now(), signal);
       const id = (created as { id?: unknown }).id;
       if (typeof id !== "string" || !UUID.test(id)) return Object.freeze({ status: "unavailable" as const });
       approvalId = id;
@@ -51,7 +50,7 @@ export class OpenFangWriteReleasePolicy implements IPluginWriteReleasePolicy {
 
     while (now() < deadline) {
       try {
-        const listed = await this.#json(`${this.#options.baseUrl}/api/approvals`, { method: "GET", signal });
+        const listed = await this.#json(`${this.#options.baseUrl}/api/approvals`, { method: "GET" }, deadline - now(), signal);
         const approvals = (listed as { approvals?: unknown }).approvals;
         const record = Array.isArray(approvals)
           ? approvals.find(candidate => candidate !== null && typeof candidate === "object" && (candidate as { id?: unknown }).id === approvalId)
@@ -69,9 +68,30 @@ export class OpenFangWriteReleasePolicy implements IPluginWriteReleasePolicy {
     return Object.freeze({ status: "expired" as const, approvalId });
   }
 
-  async #json(url: string, init: RequestInit): Promise<unknown> {
-    const response = await this.#options.fetch(url, init);
+  async #json(url: string, init: RequestInit, remainingMs: number, signal: AbortSignal): Promise<unknown> {
+    if (remainingMs <= 0) throw new Error("openfang_deadline_exceeded");
+    const response = await this.#fetchBounded(url, init, remainingMs, signal);
     if (!response.ok) throw new Error("openfang_unavailable");
     return response.json();
+  }
+
+  /**
+   * Bounds one fetch by the time remaining until our own deadline, in
+   * addition to the caller's signal. Neither the initial POST nor a GET poll
+   * may hang past that deadline: an OpenFang that accepts the connection and
+   * never answers must not stall release() forever.
+   */
+  async #fetchBounded(url: string, init: RequestInit, remainingMs: number, signal: AbortSignal): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), remainingMs);
+    const onAbort = () => controller.abort();
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener("abort", onAbort);
+    try {
+      return await this.#options.fetch(url, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+    }
   }
 }
