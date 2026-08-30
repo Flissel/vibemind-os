@@ -1,4 +1,4 @@
-import { PINNED_PLUGIN_CATALOG_DIGEST, type CredentialResolver } from "@rowboat/openai-plugin-runtime";
+import { PINNED_PLUGIN_CATALOG_DIGEST, type CredentialResolver, type PluginPolicy, type ProviderResolution } from "@rowboat/openai-plugin-runtime";
 import { classifyPluginOperation } from "@/src/application/services/plugin-operation-classifier";
 import type { PluginCatalogController } from "@/src/interface-adapters/controllers/plugins/plugin-catalog.controller";
 import type { PluginInstallationController } from "@/src/interface-adapters/controllers/plugins/plugin-installation.controller";
@@ -7,6 +7,9 @@ import type { PluginToolAuthorizationContext } from "@/src/application/services/
 import type { PluginApiIdentity } from "@/src/application/policies/plugin-api-authorization.policy";
 import type { PluginPreviewEnvelope } from "@/src/interface-adapters/actions/plugin-preview-envelope";
 import type { PluginSessionController } from "@/src/interface-adapters/controllers/plugins/plugin-session.controller";
+import type { PluginProviderResolutionDependencies, PluginProviderResolutionRequest } from "@/src/infrastructure/plugins/provider-resolution";
+import type { OpenFangWriteReleaseOptions } from "@/src/infrastructure/policies/openfang.plugin-write-release.policy";
+import type { IPluginWriteReleasePolicy, PluginWriteReleaseDecision, PluginWriteReleaseRequest } from "@/src/application/policies/plugin-write-release.policy";
 
 type PluginReplayLookupInput = PluginPreviewEnvelope;
 
@@ -130,6 +133,82 @@ export function resolveOpenFangCredentialSource(
   if (baseUrl.length === 0 || apiKey.length === 0) return undefined;
   if (!isSecureOpenFangCredentialUrl(baseUrl)) return undefined;
   return Object.freeze({ baseUrl, apiKey });
+}
+
+export interface ResolveOpenFangProviderOptions {
+  /**
+   * Injected rather than dynamically imported inside this function: the
+   * live gate mirrors this wiring by hand instead of exercising it, so
+   * dropping `policy` -- from the destructuring below, or from this very
+   * call -- regressed the exact defect Task 7 found live with every test
+   * and the live gate both green. Injecting it here is what lets a plain
+   * unit test spy on the call and catch that regression directly, without
+   * needing to mock a dynamic import.
+   */
+  readonly resolvePluginProviderImpl: (
+    request: PluginProviderResolutionRequest,
+    dependencies: PluginProviderResolutionDependencies,
+  ) => ProviderResolution;
+  readonly credentialTimeoutMs: number;
+  readonly fetchImpl: typeof fetch;
+}
+
+/**
+ * The composition's own OpenFang-aware provider resolution: chooses
+ * `OpenFangCredentialResolver` over `UnreleasedCredentialResolver` per call
+ * (see `resolveOpenFangCredentialSource` above), then forwards `policy`
+ * -- the elevated one the release gate may have produced -- into
+ * `resolvePluginProviderImpl` untouched. Extracted and exported precisely so
+ * that forwarding is a unit-tested property of this composition, not only an
+ * assumption the live gate happens to also exercise.
+ */
+export async function resolveOpenFangProvider(
+  request: PluginProviderResolutionRequest & Readonly<{ readonly policy: PluginPolicy }>,
+  options: ResolveOpenFangProviderOptions,
+): Promise<ProviderResolution> {
+  const { component, entry, binding, policy } = request;
+  const { UnreleasedCredentialResolver } = await import("@/src/infrastructure/plugins/provider-resolution");
+  const openFangCredentialSource = resolveOpenFangCredentialSource(process.env.OPENFANG_URL, process.env.OPENFANG_API_KEY);
+  let credentialResolver: CredentialResolver = new UnreleasedCredentialResolver();
+  if (openFangCredentialSource !== undefined) {
+    const { OpenFangCredentialResolver } = await import("@/src/infrastructure/plugins/openfang-credential-resolver");
+    credentialResolver = new OpenFangCredentialResolver({
+      baseUrl: openFangCredentialSource.baseUrl,
+      apiKey: openFangCredentialSource.apiKey,
+      fetch: options.fetchImpl,
+      timeoutMs: options.credentialTimeoutMs,
+    });
+  }
+  return options.resolvePluginProviderImpl({ component, entry, binding }, { credentialResolver, policy });
+}
+
+export interface ResolveOpenFangReleaseWriteOptions {
+  readonly approvalWindowMs: number;
+  readonly fetchImpl: typeof fetch;
+  /** Same injection rationale as ResolveOpenFangProviderOptions above. */
+  readonly OpenFangWriteReleasePolicyImpl: new (options: OpenFangWriteReleaseOptions) => IPluginWriteReleasePolicy;
+}
+
+/**
+ * The composition's own OpenFang release gate: no `OPENFANG_URL` (blank or
+ * absent, trimmed the same way `resolveOpenFangCredentialSource` trims its
+ * own inputs) means no release is possible, fail closed to `unavailable`
+ * without constructing anything. Otherwise delegates to the injected policy
+ * implementation for the actual HTTP exchange.
+ */
+export async function resolveOpenFangReleaseWrite(
+  request: PluginWriteReleaseRequest,
+  signal: AbortSignal,
+  options: ResolveOpenFangReleaseWriteOptions,
+): Promise<PluginWriteReleaseDecision> {
+  const url = process.env.OPENFANG_URL?.trim();
+  if (url === undefined || url.length === 0) return Object.freeze({ status: "unavailable" as const });
+  return new options.OpenFangWriteReleasePolicyImpl({
+    baseUrl: url,
+    fetch: options.fetchImpl,
+    timeoutMs: options.approvalWindowMs,
+    pollIntervalMs: 1_000,
+  }).release(request, signal);
 }
 
 interface PluginControllers {
@@ -294,35 +373,24 @@ async function createPluginControllers(): Promise<PluginControllers> {
       // releases nothing and fails closed with credential_missing, exactly as
       // before this wiring existed.
       resolveProvider: async ({ component, entry, binding, policy }) => {
-        const { resolvePluginProvider, UnreleasedCredentialResolver } = await import("@/src/infrastructure/plugins/provider-resolution");
-        const openFangCredentialSource = resolveOpenFangCredentialSource(process.env.OPENFANG_URL, process.env.OPENFANG_API_KEY);
-        let credentialResolver: CredentialResolver = new UnreleasedCredentialResolver();
-        if (openFangCredentialSource !== undefined) {
-          const { OpenFangCredentialResolver } = await import("@/src/infrastructure/plugins/openfang-credential-resolver");
-          credentialResolver = new OpenFangCredentialResolver({
-            baseUrl: openFangCredentialSource.baseUrl,
-            apiKey: openFangCredentialSource.apiKey,
-            fetch,
-            timeoutMs: openFangCredentialTimeoutMs,
-          });
-        }
-        return resolvePluginProvider({ component, entry, binding }, { credentialResolver, policy });
+        const { resolvePluginProvider } = await import("@/src/infrastructure/plugins/provider-resolution");
+        return resolveOpenFangProvider(
+          { component, entry, binding, policy },
+          { resolvePluginProviderImpl: resolvePluginProvider, credentialTimeoutMs: openFangCredentialTimeoutMs, fetchImpl: fetch },
+        );
       },
       // OpenFang is the release authority for writes: a write stays under
       // review unless it is reachable and a human has approved this exact
       // call there. No OpenFang URL configured means no release is possible.
       releaseWrite: async (request, signal) => {
-        const url = process.env.OPENFANG_URL?.trim();
-        if (url === undefined || url.length === 0) return { status: "unavailable" as const };
         const { OpenFangWriteReleasePolicy } = await import("@/src/infrastructure/policies/openfang.plugin-write-release.policy");
-        return new OpenFangWriteReleasePolicy({
-          baseUrl: url,
-          fetch,
+        return resolveOpenFangReleaseWrite(request, signal, {
           // Same window the runtime's own timeoutMilliseconds above was
           // derived from -- never re-parsed per call.
-          timeoutMs: openFangApprovalWindowMs,
-          pollIntervalMs: 1_000,
-        }).release(request, signal);
+          approvalWindowMs: openFangApprovalWindowMs,
+          fetchImpl: fetch,
+          OpenFangWriteReleasePolicyImpl: OpenFangWriteReleasePolicy,
+        });
       },
     }),
   });

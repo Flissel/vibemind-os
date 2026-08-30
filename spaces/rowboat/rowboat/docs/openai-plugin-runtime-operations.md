@@ -95,13 +95,23 @@ provider's credential step (`CredentialResolver.resolve()`), this composition
 decides which resolver answers it fresh on every call, inside
 `resolveProvider`'s own closure in `di/plugins-container.ts` - reading
 `OPENFANG_URL` and `OPENFANG_API_KEY` from the current environment each time,
-not once at startup, so a config change takes effect on the very next call
-without a process restart:
+not once at startup, so a config change to either one takes effect on the
+very next call without a process restart:
 
 | Variable | Purpose |
 | --- | --- |
 | `OPENFANG_URL` | Base URL of the OpenFang daemon that can issue credential values. Must be `https:`, or `http:` to a loopback host (`127.0.0.1`, `localhost`, `::1`) - anything else is refused. |
 | `OPENFANG_API_KEY` | Bearer token this composition presents to OpenFang's HTTP API |
+
+`OPENFANG_CREDENTIAL_TIMEOUT_MS` is different: unlike the two above, it is
+parsed exactly once, at composition startup, into `openFangCredentialTimeoutMs`
+(alongside `OPENFANG_APPROVAL_TIMEOUT_MS`, parsed the same way - see "The
+OpenFang write-release approval window" below), and that parsed value is
+reused for every call for the life of the process. Changing it needs a
+restart to take effect, unlike `OPENFANG_URL` and `OPENFANG_API_KEY` above.
+
+| Variable | Purpose |
+| --- | --- |
 | `OPENFANG_CREDENTIAL_TIMEOUT_MS` | Optional. Bounds one credential-issue round trip. Default 5000ms, floor 100ms, ceiling 30000ms; a value below the floor (or missing, fractional, negative, non-numeric, or beyond a safe integer) falls back to the default rather than clamping up to the floor - see `resolveOpenFangCredentialTimeoutMs` in `di/plugins-container.ts`. |
 
 With `OPENFANG_URL` and `OPENFANG_API_KEY` both non-blank once trimmed, and
@@ -243,7 +253,12 @@ A plugin is installable from the UI only while its *plugin-level* status is
 `available`, which means every one of its components is admitted and available.
 A single `review_required` component makes the whole plugin
 `partially_available` and blocks installing the admitted ones - `github` is in
-that bucket today. 117 of the 180 pinned plugins are installable as they stand.
+that bucket today. Re-derived directly from the pinned lock
+(`config/openai-plugin-catalog.lock.json`) against `serializedPlugin`'s own
+criterion (`app/api/v1/projects/[projectId]/plugins/_responses.ts`): a plugin
+counts as installable only if its own admission is `admitted` *and* every one
+of its components is both admitted and `available` or `installed` - **118**
+of the 180 pinned plugins meet that today, not 117.
 
 ## Runtime modes and cutover
 
@@ -379,10 +394,19 @@ All receipts live in the `plugin_receipts` collection, keyed by `receiptId`:
 | --- | --- |
 | `type: "import"` / `"install"` | Catalog import and installation provenance |
 | `type: "execution"`, `parity:<digest>` | Shadow parity comparison evidence |
+| `type: "execution"`, `receiptId: <requestId>` | One `PluginToolRuntime.invoke()` call - success, failure, or a refusal at the release gate. `output.approvalId` is present whenever an OpenFang release was involved, on every one of those three outcomes, not only success - it is the one field tying a receipt back to an approval OpenFang holds. |
 | `type: "migration"`, `runtime-mode:<digest>` | A runtime mode transition, including rollback |
 
 Receipts are immutable and redacted: arguments and results are declared under
 `redactions` and stored only as digests.
+
+`write_review_required` names two different things, not one: it is also a
+license/admission decision the pinned catalog itself declares for 634
+components (upstream's own string, unrelated to release), as well as the
+runtime's own refusal at the release gate documented above. A receipt for the
+latter (`type: "execution"`, `status: "denied"` or `"timed_out"`, `reason:
+"write_review_required"`) is what lets an operator tell the two apart - the
+catalog-level meaning never produces one.
 
 ## Removing the legacy public surfaces
 
@@ -448,7 +472,7 @@ that used to collapse it.** The call genuinely reaches `HttpMcpProvider`'s
 credential step: `UnreleasedCredentialResolver.resolve()` throws
 `Error("credential_missing")` exactly as designed. That throw happens inside
 `#resolveCredential()`
-(`packages/openai-plugin-runtime/src/providers/mcp-http-provider.ts:325-342`),
+(`packages/openai-plugin-runtime/src/providers/mcp-http-provider.ts:326-344`),
 which used to re-throw it with the same bare message, caught indistinguishably
 from every other error by `invoke()`'s surrounding `try`/`catch`
 (`mcp-http-provider.ts:400-408`) and folded into the generic
@@ -484,14 +508,25 @@ this distinction downstream of the kernel fix. Task 9 replaced that blanket
 normalisation with a fixed allowlist,
 `KNOWN_PROVIDER_FAILURE_REASONS` (currently just `"credential_missing"`): a
 reason that exactly matches a member maps to its app error code; anything
-else — unrecognised, over-long, empty, or `"__proto__"`-shaped — still
-normalises to `"provider_failed"`, exactly as before. The allowlist is a
+else — unrecognised, empty, or `"__proto__"`-shaped — still normalises to
+`"provider_failed"`, exactly as before. An over-long reason never reaches
+this allowlist at all: `captureProviderResult`'s own byte-length guard on
+`reason` (4096 bytes) runs first and raises `"provider_result_invalid"`
+instead, pinned by the test at the 4097-byte boundary. The allowlist is a
 constant in the app's own file, never derived from what the provider sent, so
 the security property the old blanket redaction protected (the app never
 propagates an arbitrary provider string to the caller or the receipt) is
-unchanged. The failure receipt now records the true reason too: where it used
-to always store `"provider_unavailable"` for this call path, it now stores
-`"credential_missing"` when that is what happened.
+unchanged. The failure receipt distinguishes some reasons now, not all of
+them: `credential_missing` and `execution_state_changed` each keep their own
+name on the receipt; `provider_failed`, `provider_result_invalid`,
+`provider_unavailable`, and `credential_invalid` - four distinct app/kernel
+failure codes - still all collapse to the single receipt reason
+`"provider_unavailable"`, exactly as every failure did before this task. The
+receipt's `status` field collapses further still, independent of `reason`:
+`provider_timed_out` and `request_aborted` both write `status: "timed_out"` -
+a receipt alone cannot tell a runtime deadline from a caller's own
+cancellation apart, only that one of the two happened before the provider
+settled.
 
 The observed, live-verified outcome for a released write today is therefore
 the literal `credential_missing` — see step 17 of the live gate's log. This
@@ -562,16 +597,32 @@ These are true limits of the current state, not oversights to work around:
   under the default read-admitting policy the way `evaluateCapability({kind:
   "read"}, ...)` unconditionally admits it at the runtime's own outer gate.
   Compounding this, `validateMcpInvocation`
-  (`packages/openai-plugin-runtime/src/providers/mcp-request.ts:13-21`) hard-requires
-  `request.capability === "write"` one line earlier still, so a read-classified
-  call fails there first today, before even reaching the admission check above.
+  (`packages/openai-plugin-runtime/src/providers/mcp-request.ts:19-21`) also
+  hard-requires `request.capability === "write"` - but neither kernel check is
+  what a read-classified call actually meets first. It fails earlier still, in
+  the *app*, with `capability_mismatch`: every binding this codebase ever
+  writes is `capability: "write"` unconditionally
+  (`application/services/plugin-binding-materialization.ts:108` and
+  `application/use-cases/plugins/add-plugin-tool.use-case.ts:113`, both citing
+  "a provider binding carries no read/write classification"), while
+  `PluginToolRuntime.invoke()` requires the binding's own declared capability
+  to agree with what the classifier says
+  (`if (binding.capability !== trustedCapability) throw ...
+  "capability_mismatch"`, in `plugin-tool-runtime.ts`). A read-classified
+  operation is refused there, in the app, before the call ever reaches
+  `resolveProvider` or the kernel at all - and `capability_mismatch` is not a
+  write refusal, so it is never eligible for an OpenFang release in the first
+  place, not "needing" one.
   No catalog entry declares a read-only operation today
   (`classifyPluginOperation` defaults every operation to `write` unless a
   component's metadata explicitly lists it under `readOnlyOperations`), so
-  nothing exercises this path yet — but the moment one does, it will need a
-  release for what the runtime itself considers a read. Lifting this needs
-  both call sites in the kernel to key off `request.capability` instead of
-  the literal `"write"`, which this task does not modify.
+  nothing exercises this path yet. Lifting it needs three changes, not two:
+  the two kernel call sites named above keyed off `request.capability` instead
+  of the literal `"write"`, *and* something in the app that actually
+  constructs a binding with `capability: "read"` for a component the
+  classifier would agree is read-only - today both binding-construction sites
+  hard-code `"write"` regardless, so a fixed kernel alone would still never
+  see a read reach it. None of this is modified here.
 - **The end-to-end call against a real GitHub credential has not been
   attempted.** An OpenFang-approved write now reaches the real provider (the
   Task 4-6 policy-threading gap) and, since Task 9, its credential failure is

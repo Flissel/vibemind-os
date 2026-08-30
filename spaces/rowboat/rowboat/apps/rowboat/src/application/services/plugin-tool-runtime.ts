@@ -45,9 +45,12 @@ const ARGUMENTS_DIGEST_DOMAIN = "rowboat:plugin-tool-runtime:arguments:v1";
  * not a real `PluginToolRuntimeErrorCode` (a typo, or a code that does not
  * exist) is a typecheck error, not a silent relabel: the map's value type is
  * pinned to that union. A provider is untrusted input: any reason string
- * that is not a byte-exact match for a key here -- whatever its length or
- * shape -- normalises to "provider_failed" instead. This is a fixed
- * constant, never derived from what the provider sent.
+ * that is not a byte-exact match for a key here -- whatever its shape --
+ * normalises to "provider_failed" instead. This is a fixed constant, never
+ * derived from what the provider sent. An over-long reason never reaches
+ * this lookup at all: captureProviderResult's own 4096-byte guard on
+ * `reason` runs first and throws "provider_result_invalid" before
+ * mapProviderFailureReason is ever called.
  */
 const KNOWN_PROVIDER_FAILURE_REASONS: ReadonlyMap<string, PluginToolRuntimeErrorCode> = new Map([
   ["credential_missing", "credential_missing"],
@@ -373,8 +376,11 @@ function captureCredentialSlots(input: unknown): readonly PluginCredentialSlot[]
 // surfaces as *that entry's own mapped code* -- not a fixed relabel shared by
 // every member -- so a future second entry cannot be silently reported as
 // "credential_missing". Anything that is not an exact match -- unrecognised,
-// over-long, or otherwise -- normalises to "provider_failed". Never derived
-// from the input beyond the lookup itself.
+// empty, or otherwise -- normalises to "provider_failed". Never derived from
+// the input beyond the lookup itself. An over-long reason is not among these:
+// it is refused earlier, by captureProviderResult's own byte-length guard on
+// `reason`, which raises "provider_result_invalid" before this function is
+// ever reached -- see the test at the 4097-byte boundary.
 function mapProviderFailureReason(reason: string): PluginToolRuntimeErrorCode {
   return KNOWN_PROVIDER_FAILURE_REASONS.get(reason) ?? "provider_failed";
 }
@@ -604,12 +610,33 @@ export class PluginToolRuntime {
       || installedBinding.componentDigest !== binding.componentDigest
     ) throw new PluginToolRuntimeError("provider_unavailable");
 
+    // Admission is re-checked here, before anything that can raise a human
+    // OpenFang approval below: if it was revoked (or its policy version
+    // moved on) since install, that must stop the call *before* a human is
+    // ever asked to decide, not after. Raising an approval, having it
+    // approved, and only then discovering the component was never callable
+    // wastes a human decision that Rowboat cannot even record (see the
+    // release-gate receipt-writing below) and leaves an approval sitting in
+    // OpenFang with nothing here to reconcile it against.
+    const admissions = captureAdmissions(await awaitDeadline(this.#dependencies.pluginsRepository.listAdmissions(installation.id), controller.signal, context.signal));
+    const currentAdmissions = admissions.filter((candidate) => candidate.componentDigest === binding.componentDigest);
+    if (
+      currentAdmissions.length !== 1 || currentAdmissions[0]!.installationId !== installation.id
+      || currentAdmissions[0]!.status !== "admitted" || currentAdmissions[0]!.policyVersion !== catalog.policyVersion
+      || currentAdmissions[0]!.componentKind !== component.component.kind
+      || currentAdmissions[0]!.componentName !== component.component.name
+    ) throw new PluginToolRuntimeError("admission_denied");
+
     const trustedCapability = this.#dependencies.classifyOperation(Object.freeze({
       pluginName: entry.name, component: component.component, operationName: context.operationName,
     }));
     if (trustedCapability !== "read" && trustedCapability !== "write") throw new PluginToolRuntimeError("admission_denied");
     if (binding.capability !== trustedCapability) throw new PluginToolRuntimeError("capability_mismatch");
 
+    // Generated here, before the release gate, so a refusal there (or the
+    // release call itself aborting or timing out) has a requestId to write
+    // a receipt against -- the whole point of the receipt-writing below.
+    const requestId = this.#dependencies.createRequestId?.() ?? randomUUID();
     let policy = DEFAULT_POLICY;
     let approvalId: string | undefined;
     if (trustedCapability === "write" && this.#dependencies.releaseWrite !== undefined) {
@@ -634,7 +661,16 @@ export class PluginToolRuntime {
         // network error, or even a PluginToolRuntimeError raised by some
         // other seam entirely -- is indistinguishable from "no decision" and
         // keeps the write under review rather than escaping as that error.
-        if (error instanceof PluginToolRuntimeError && (error.code === "request_aborted" || error.code === "provider_timed_out")) throw error;
+        if (error instanceof PluginToolRuntimeError && (error.code === "request_aborted" || error.code === "provider_timed_out")) {
+          // The release call itself never produced a decision, so there is
+          // no approvalId to carry -- but the attempt, and that it stopped
+          // here rather than being refused, must still leave a trace.
+          await this.#settleReceipt(this.#putReceipt(
+            requestId, context.projectId, binding, installation, component.component, installedBinding,
+            "timed_out", "write_review_required", undefined,
+          ));
+          throw error;
+        }
         decision = Object.freeze({ status: "unavailable" as const });
       }
       if (decision.status === "approved") {
@@ -649,18 +685,29 @@ export class PluginToolRuntime {
           approvalId = decidedApprovalId;
         }
       }
+      if (policy === DEFAULT_POLICY) {
+        // Not approved, for any reason a decision can fail to elevate the
+        // policy: denied, expired, unavailable, or an "approved" decision
+        // whose approvalId the UUID guard above refused. Every one of these
+        // otherwise vanishes with no local trace before the
+        // write_review_required throw a few lines below -- an operator
+        // cannot tell which of them happened, nor that a release was ever
+        // attempted, and a human's own denial (or a since-expired approval)
+        // in OpenFang can never be reconciled against anything Rowboat
+        // recorded. Same defensive read as the approved branch above: a
+        // "denied"/"expired" decision's approvalId is validated the same
+        // way before it is trusted into a receipt, even though the static
+        // type already claims it is a string.
+        const decidedApprovalId: unknown = decision.status === "denied" || decision.status === "expired" ? decision.approvalId : undefined;
+        const releaseApprovalId = typeof decidedApprovalId === "string" && UUID.test(decidedApprovalId) ? decidedApprovalId : undefined;
+        await this.#settleReceipt(this.#putReceipt(
+          requestId, context.projectId, binding, installation, component.component, installedBinding,
+          "denied", "write_review_required", releaseApprovalId,
+        ));
+      }
     }
     const capabilityDecision = evaluateCapability({ kind: trustedCapability }, policy);
     if (capabilityDecision.status !== "admitted") throw new PluginToolRuntimeError(capabilityDecision.reason === "write_review_required" ? "write_review_required" : "admission_denied");
-
-    const admissions = captureAdmissions(await awaitDeadline(this.#dependencies.pluginsRepository.listAdmissions(installation.id), controller.signal, context.signal));
-    const currentAdmissions = admissions.filter((candidate) => candidate.componentDigest === binding.componentDigest);
-    if (
-      currentAdmissions.length !== 1 || currentAdmissions[0]!.installationId !== installation.id
-      || currentAdmissions[0]!.status !== "admitted" || currentAdmissions[0]!.policyVersion !== catalog.policyVersion
-      || currentAdmissions[0]!.componentKind !== component.component.kind
-      || currentAdmissions[0]!.componentName !== component.component.name
-    ) throw new PluginToolRuntimeError("admission_denied");
 
     captureCredentialSlots(await awaitDeadline(this.#dependencies.pluginsRepository.listCredentialSlots(installation.id), controller.signal, context.signal));
     const preProviderInstallationValue = await awaitDeadline(this.#dependencies.pluginsRepository.getInstallation(context.projectId, binding.pluginName), controller.signal, context.signal);
@@ -674,7 +721,6 @@ export class PluginToolRuntime {
     if (credentialSlots.some((slot) => slot.projectId !== context.projectId || slot.installationId !== installation.id)) {
       throw new PluginToolRuntimeError("credential_invalid");
     }
-    const requestId = this.#dependencies.createRequestId?.() ?? randomUUID();
     let operation: Promise<ProviderResult> | undefined;
     let dispatched = false;
     try {
@@ -802,8 +848,8 @@ export class PluginToolRuntime {
     installation: PluginInstallation,
     component: CatalogBoundPluginComponent,
     providerBinding: ProviderBinding,
-    status: "success" | "failed" | "timed_out",
-    reason: "credential_missing" | "provider_unavailable" | "execution_state_changed" = "provider_unavailable",
+    status: "success" | "failed" | "timed_out" | "denied",
+    reason: "credential_missing" | "provider_unavailable" | "execution_state_changed" | "write_review_required" = "provider_unavailable",
     approvalId?: string,
   ): Promise<void> {
     const receipt = buildReceipt(Object.freeze({

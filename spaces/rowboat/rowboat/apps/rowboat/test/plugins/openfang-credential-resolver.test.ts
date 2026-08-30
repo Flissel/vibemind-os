@@ -67,15 +67,19 @@ describe("OpenFangCredentialResolver", () => {
     expect(body).not.toContain(projectId);
   });
 
-  it("throws credential_missing on a 404", async () => {
+  it("throws exactly credential_missing, with no cause, on a 404", async () => {
     const resolver = resolverWith((async () => jsonResponse(404, { error: "credential_unavailable" })) as unknown as typeof fetch);
-    await expect(resolver.resolve(reference, projectId, { signal: new AbortController().signal })).rejects.toThrow("credential_missing");
+    const err = await captureRejection(resolver.resolve(reference, projectId, { signal: new AbortController().signal }));
+    expect(err.message).toBe("credential_missing");
+    expect(err.cause).toBeUndefined();
   });
 
-  it("throws credential_missing on 401 or 403 -- an unauthorised Rowboat must not look different from an unavailable credential", async () => {
+  it("throws exactly credential_missing, with no cause, on 401 or 403 -- an unauthorised Rowboat must not look different from an unavailable credential", async () => {
     for (const status of [401, 403]) {
       const resolver = resolverWith((async () => jsonResponse(status, { error: "unauthorized" })) as unknown as typeof fetch);
-      await expect(resolver.resolve(reference, projectId, { signal: new AbortController().signal })).rejects.toThrow("credential_missing");
+      const err = await captureRejection(resolver.resolve(reference, projectId, { signal: new AbortController().signal }));
+      expect(err.message).toBe("credential_missing");
+      expect(err.cause).toBeUndefined();
     }
   });
 
@@ -109,6 +113,21 @@ describe("OpenFangCredentialResolver", () => {
       json: async () => { throw new SyntaxError("Unexpected token in JSON, possibly containing a secret-looking fragment"); },
     }) as unknown as Response) as unknown as typeof fetch;
     const resolver = resolverWith(fetchImpl);
+    const err = await captureRejection(resolver.resolve(reference, projectId, { signal: new AbortController().signal }));
+    expect(err.message).toBe("credential_missing");
+    expect(err.cause).toBeUndefined();
+  });
+
+  it("throws exactly credential_missing, with no cause, on a network rejection -- not a message or cause carrying the transport error", async () => {
+    const fetchImpl = (async () => { throw new Error("ECONNREFUSED 127.0.0.1:4200"); }) as unknown as typeof fetch;
+    const resolver = resolverWith(fetchImpl);
+    const err = await captureRejection(resolver.resolve(reference, projectId, { signal: new AbortController().signal }));
+    expect(err.message).toBe("credential_missing");
+    expect(err.cause).toBeUndefined();
+  });
+
+  it("throws exactly credential_missing, with no cause, on an empty value -- not a message or cause carrying the (empty) value", async () => {
+    const resolver = resolverWith((async () => jsonResponse(200, { reference: "GITHUB_PAT_TOKEN", value: "" })) as unknown as typeof fetch);
     const err = await captureRejection(resolver.resolve(reference, projectId, { signal: new AbortController().signal }));
     expect(err.message).toBe("credential_missing");
     expect(err.cause).toBeUndefined();
@@ -181,16 +200,20 @@ describe("OpenFangCredentialResolver", () => {
     expect(Date.now() - start).toBeLessThan(500);
   });
 
-  it("never reaches fetch for a reference or project id assertCredentialRequest rejects", async () => {
+  it("never reaches fetch for a reference or project id assertCredentialRequest rejects, and throws exactly credential_missing with no cause", async () => {
     let fetchCalls = 0;
     const fetchImpl = (async () => { fetchCalls++; return jsonResponse(200, { reference: "x", value: "y" }); }) as unknown as typeof fetch;
     const resolver = resolverWith(fetchImpl);
 
     const badReference: CredentialReference = Object.freeze({ kind: "bearer", reference: "" });
-    await expect(resolver.resolve(badReference, projectId, { signal: new AbortController().signal })).rejects.toThrow("credential_missing");
+    const referenceErr = await captureRejection(resolver.resolve(badReference, projectId, { signal: new AbortController().signal }));
+    expect(referenceErr.message).toBe("credential_missing");
+    expect(referenceErr.cause).toBeUndefined();
 
     const badProjectId = "project with spaces";
-    await expect(resolver.resolve(reference, badProjectId, { signal: new AbortController().signal })).rejects.toThrow("credential_missing");
+    const projectIdErr = await captureRejection(resolver.resolve(reference, badProjectId, { signal: new AbortController().signal }));
+    expect(projectIdErr.message).toBe("credential_missing");
+    expect(projectIdErr.cause).toBeUndefined();
 
     expect(fetchCalls).toBe(0);
   });

@@ -387,6 +387,24 @@ describe("PluginToolRuntime", () => {
     expect(unavailable.counters).toMatchObject({ provider: 0, legacy: 0 });
   });
 
+  it("never asks OpenFang for a release when admission was already revoked -- the re-check runs before the release gate", async () => {
+    // This is the ordering fix itself: before it, a stale admission was only
+    // discovered *after* the release gate ran, so a human could approve a
+    // write in OpenFang that was refused one line later anyway, with no way
+    // for Rowboat to reconcile the spent approval (see also the receipt
+    // tests below, for the case where the release gate itself refuses).
+    let releaseCalls = 0;
+    const state = setup({
+      operationCapability: "write",
+      releaseWrite: async () => { releaseCalls += 1; return { status: "approved" as const, approvalId: "3f0f8a1e-0000-4000-8000-000000000011" }; },
+    });
+    state.repository.currentAdmissions = [Object.freeze({ ...admission, status: "rejected" as const, reason: "component_unsupported" as const })];
+    await expect(state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup" }))
+      .rejects.toThrow("admission_denied");
+    expect(releaseCalls).toBe(0);
+    expect(state.counters.resolve).toBe(0);
+  });
+
   it("revalidates installation revision and enabled state before provider dispatch", async () => {
     const state = setup();
     state.repository.disableAfterFirstAdmissionRead = true;
@@ -727,7 +745,7 @@ describe("PluginToolRuntime", () => {
       .rejects.toThrow("write_review_required");
   });
 
-  it("keeps refusing a write that was denied, expired, or never released", async () => {
+  it("keeps refusing a write that was denied, expired, or never released, and writes a receipt naming why for each", async () => {
     for (const decision of [
       { status: "denied" as const, approvalId: "3f0f8a1e-0000-4000-8000-000000000006" },
       { status: "expired" as const, approvalId: "3f0f8a1e-0000-4000-8000-000000000007" },
@@ -736,6 +754,34 @@ describe("PluginToolRuntime", () => {
       const state = setup({ operationCapability: "write", releaseWrite: async () => decision });
       await expect(state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup" }))
         .rejects.toThrow("write_review_required");
+      // Before this fix, a refusal here left zero local evidence: an operator
+      // staring at write_review_required could not tell which of denied,
+      // expired, or unavailable happened, nor that a release was ever
+      // attempted, and a human's own OpenFang decision could never be
+      // reconciled against anything Rowboat recorded.
+      expect(state.repository.receipts).toHaveLength(1);
+      expect(state.repository.receipts[0]).toMatchObject({ status: "denied", reason: "write_review_required" });
+      if ("approvalId" in decision) {
+        expect(JSON.stringify(state.repository.receipts[0])).toContain(decision.approvalId);
+      } else {
+        expect(JSON.stringify(state.repository.receipts[0])).not.toContain("approvalId");
+      }
+    }
+  });
+
+  it("refuses an approved decision whose approvalId is not a UUID -- an empty string must not release -- and still writes a receipt, without the unvalidated id", async () => {
+    for (const approvalId of ["", "not-a-uuid"]) {
+      const state = setup({ operationCapability: "write", releaseWrite: async () => ({ status: "approved" as const, approvalId }) });
+      await expect(state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup" }))
+        .rejects.toThrow("write_review_required");
+      // Never even reaches resolution: an invalid approvalId must not elevate
+      // the policy, so resolveProvider is never called with a write-capable one.
+      expect(state.counters.resolve).toBe(0);
+      expect(state.repository.receipts).toHaveLength(1);
+      expect(state.repository.receipts[0]).toMatchObject({ status: "denied", reason: "write_review_required" });
+      // The invalid id itself is never trusted into the receipt either --
+      // same defensive read as the one that keeps it out of the policy.
+      expect(JSON.stringify(state.repository.receipts[0])).not.toContain("approvalId");
     }
   });
 
@@ -768,6 +814,10 @@ describe("PluginToolRuntime", () => {
     await expect(state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup" }))
       .rejects.toThrow("provider_timed_out");
     expect(state.counters).toMatchObject({ cancel: 1, legacy: 0 });
+    // The release call never produced a decision, so no approvalId exists to
+    // carry -- but the attempt, and why it stopped here, still leaves a trace.
+    expect(state.repository.receipts).toHaveLength(1);
+    expect(state.repository.receipts[0]).toMatchObject({ status: "timed_out", reason: "write_review_required" });
   });
 
   it("propagates caller abort while a release is pending", async () => {
@@ -786,5 +836,7 @@ describe("PluginToolRuntime", () => {
     abort.abort();
     await rejection;
     expect(state.counters.cancel).toBe(1);
+    expect(state.repository.receipts).toHaveLength(1);
+    expect(state.repository.receipts[0]).toMatchObject({ status: "timed_out", reason: "write_review_required" });
   });
 });

@@ -39,9 +39,15 @@ export interface PluginProviderResolutionDependencies {
 const UNAVAILABLE: ProviderResolution = Object.freeze({ status: "unavailable" as const, reason: "provider_unavailable" as const });
 
 /**
- * Stands in until credentials are released from OpenFang. It resolves nothing,
- * so a call reaches the provider and then fails with a missing credential
- * instead of silently running unauthenticated.
+ * The deliberate fail-closed default: it resolves nothing, so a call reaches
+ * the provider and then fails with a missing credential instead of silently
+ * running unauthenticated. OpenFang-backed credential release exists now
+ * (`OpenFangCredentialResolver`, `src/infrastructure/plugins/openfang-credential-resolver.ts`)
+ * -- `di/plugins-container.ts`'s `resolveProvider` wires it in only when
+ * `OPENFANG_URL` and `OPENFANG_API_KEY` are both configured and the URL
+ * passes its own security check. Absence or misconfiguration of either is
+ * never "resolve anyway": this class stays the default, on purpose, for
+ * every other case.
  */
 export class UnreleasedCredentialResolver implements CredentialResolver {
   async resolve(reference: CredentialReference, _projectId: string): Promise<SecretValue> {
