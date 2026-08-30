@@ -655,6 +655,23 @@ describe("PluginToolRuntime", () => {
     expect(secondRequest.argumentsDigest).toBe(firstRequest.argumentsDigest);
   });
 
+  it("names the approval id on the failure receipt too, not only on success", async () => {
+    // A write a human approved in OpenFang and that then died further
+    // downstream (at the credential, here) still consumed that approval;
+    // losing the id on the failure path would leave no trace a release ever
+    // happened for this call.
+    const state = setup({
+      operationCapability: "write",
+      releaseWrite: async () => ({ status: "approved" as const, approvalId: "3f0f8a1e-0000-4000-8000-00000000000f" }),
+      providerResult: "failed",
+      providerFailureReason: "credential_missing",
+    });
+    await expect(state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup" }))
+      .rejects.toThrow("credential_missing");
+    expect(state.repository.receipts[0]).toMatchObject({ status: "failed", reason: "credential_missing" });
+    expect(JSON.stringify(state.repository.receipts[0])).toContain("3f0f8a1e-0000-4000-8000-00000000000f");
+  });
+
   it("resolves the provider with an elevated policy only for a released write", async () => {
     const state = setup({
       operationCapability: "write",

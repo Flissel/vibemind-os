@@ -297,30 +297,27 @@ describe.skipIf(LIVE_URL === "")("live plugin runtime cutover against a real Mon
       invocationError = error instanceof Error ? error.message : "unknown";
     }
     log(`invocation reaches the provider: error=${invocationError}`);
-    // The provider is no longer the blocker. What stops the call now is the
-    // policy chain in front of it: every operation is classified write until a
-    // trusted classifier exists, and the default policy sends a write to
-    // review. Behind that gate the credential would be the next one. Both are
-    // decisions to be released, not missing implementations.
-    expect(invocationError).not.toBe("provider_unavailable");
-    expect(["write_review_required", "credential_missing"]).toContain(invocationError);
+    // The provider is no longer the blocker. What stops this unreleased call
+    // is the review gate in front of it: every operation is classified write
+    // until a trusted classifier exists, and the default policy sends a
+    // write to review. This must be exact, not a tolerant either/or: if the
+    // policy were elevated unconditionally (the Task 4-8 gap re-opened), an
+    // unreleased call would sail past review and fail at the credential
+    // instead, reporting "credential_missing" here too -- a set that
+    // accepted both outcomes would report green on a fail-open runtime. The
+    // released/unreleased pair below is only evidence that release is what
+    // gates the credential if this half is exact.
+    expect(invocationError).toBe("write_review_required");
 
-    // 6d. Intent: with a release configured and approving this exact call,
-    // the write should clear the review gate and reach the next one -- the
-    // credential, which is the OpenFang handoff point this composition has
-    // not wired. Observed against the real kernel provider (not exercised by
-    // any mocked-provider unit test): it does not. PluginToolRuntime elevates
-    // only its own local policy copy for its own evaluateCapability call;
-    // resolveProvider() still constructs HttpMcpProvider with the kernel's
-    // unmodified DEFAULT_POLICY (provider-resolution.ts has no channel to
-    // pass the release decision through), so the provider's own independent
-    // write-capability check -- the same evaluateCapability("write") the
-    // outer gate just cleared -- fires again and throws its own
-    // "write_review_required", which classifyFailure's catch-all (it only
-    // special-cases the literal message "credential_missing") reports as
-    // "provider_unavailable". This assertion pins the intended destination;
-    // it fails today until the release decision is threaded through to
-    // provider construction, a gap this live gate is what first surfaced.
+    // 6d. A release configured and approving this exact call carries the
+    // elevated per-call policy into the real HttpMcpProvider (threaded
+    // through resolveProvider() at `runtimeDependencies.resolveProvider`
+    // above, `policy` supplied at :280) -- proven end to end here, not by any
+    // mocked-provider unit test. The provider's own independent write-
+    // capability check now agrees with the outer gate instead of re-refusing
+    // what it just admitted, so the call clears review and reaches the next
+    // gate: the credential, which UnreleasedCredentialResolver never
+    // releases in this composition.
     const releasedRuntime = new PluginToolRuntime({
       ...runtimeDependencies,
       releaseWrite: async () => ({ status: "approved" as const, approvalId: "3f0f8a1e-0000-4000-8000-00000000000a" }),

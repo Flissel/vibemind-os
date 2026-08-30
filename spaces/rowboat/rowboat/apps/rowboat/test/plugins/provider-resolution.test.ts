@@ -88,10 +88,11 @@ describe("plugin provider resolution", () => {
     expect(elevatedResolution.status).toBe("available");
     if (elevatedResolution.status !== "available") return;
     const elevatedResult = await elevatedResolution.provider.invoke(invocationRequest, { requestId: "req-2" });
+    expect(elevatedResult).toMatchObject({ status: "failed" });
+    if (elevatedResult.status !== "failed") return;
     // The elevated policy clears the same admission check and lets the call
     // reach the network attempt instead, which then fails for an unrelated,
     // local reason -- never for write_review_required again.
-    expect(elevatedResult).toMatchObject({ status: "failed" });
-    expect((elevatedResult as { status: "failed"; reason: string }).reason).not.toBe("write_review_required");
+    expect(elevatedResult.reason).not.toBe("write_review_required");
   });
 });

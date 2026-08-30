@@ -272,7 +272,7 @@ Once that was fixed, one gate remained:
 Verified live: before the release gate was wired, an invocation failed with
 `provider_unavailable`; after it (Task 4-6), an unreleased write fails with
 `write_review_required`; after threading the released policy through to the
-provider (Task 7), a released write reaches the credential step but was
+provider (Task 8), a released write reaches the credential step but was
 reported as `provider_failed` - genuine progress (the provider no longer
 re-refuses an approved write), but not the literal `credential_missing` a
 naive reading of "the credential is the next gate" would predict, because two
@@ -380,6 +380,16 @@ transport failures, a broken client factory, a timeout — still reports
 exactly what it reported before; the vocabulary was not widened past this one
 reason.
 
+One overread to guard against: `#resolveCredential`'s catch is bare, so it
+treats every rejection from `credentialResolver.resolve()` alike.
+`credential_missing` means "the credential could not be resolved", not
+narrowly "was never configured" — a credential store that is unreachable (a
+network partition, an outage on the secret-store side) reports the same
+`credential_missing` as a slot that was simply never wired up. The
+distinction this task makes observable is between a credential problem and
+every *other* kind of MCP HTTP failure, not between the different reasons a
+credential resolution can itself fail.
+
 That alone would not have been enough: `PluginToolRuntime.invoke()`'s own
 `captureProviderResult()`
 (`apps/rowboat/src/application/services/plugin-tool-runtime.ts`) used to
@@ -461,7 +471,7 @@ These are true limits of the current state, not oversights to work around:
 - **An HTTP MCP provider admits every call as `write`, regardless of how the
   runtime classified it.** `HttpMcpProvider.invoke()` evaluates a hard-coded
   `"write"` admission on every call
-  (`packages/openai-plugin-runtime/src/providers/mcp-http-provider.ts:342`),
+  (`packages/openai-plugin-runtime/src/providers/mcp-http-provider.ts:353`),
   not the operation's own classified capability. So an operation the runtime
   classified `read` would still need a write-capable (elevated, i.e.
   OpenFang-released) policy to execute over MCP HTTP — a read cannot yet run

@@ -39,12 +39,19 @@ const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const ARGUMENTS_DIGEST_DOMAIN = "rowboat:plugin-tool-runtime:arguments:v1";
 /**
  * The exact, closed set of kernel-reported failure reasons this runtime
- * trusts enough to surface as themselves. A provider is untrusted input: any
- * reason string that is not a byte-exact match for a key here -- whatever
- * its length or shape -- normalises to "provider_failed" instead. This is a
- * fixed constant, never derived from what the provider sent.
+ * trusts enough to surface as themselves, each mapped explicitly to its own
+ * app error code -- a member never silently relabels itself as some other
+ * fixed code the way a bare Set would. Adding a reason here whose value is
+ * not a real `PluginToolRuntimeErrorCode` (a typo, or a code that does not
+ * exist) is a typecheck error, not a silent relabel: the map's value type is
+ * pinned to that union. A provider is untrusted input: any reason string
+ * that is not a byte-exact match for a key here -- whatever its length or
+ * shape -- normalises to "provider_failed" instead. This is a fixed
+ * constant, never derived from what the provider sent.
  */
-const KNOWN_PROVIDER_FAILURE_REASONS: ReadonlySet<string> = new Set(["credential_missing"]);
+const KNOWN_PROVIDER_FAILURE_REASONS: ReadonlyMap<string, PluginToolRuntimeErrorCode> = new Map([
+  ["credential_missing", "credential_missing"],
+]);
 
 export interface PluginToolBindingValue {
   readonly installationId: string;
@@ -362,13 +369,14 @@ function captureCredentialSlots(input: unknown): readonly PluginCredentialSlot[]
   return captured as unknown as readonly PluginCredentialSlot[];
 }
 
-// A reason that exactly matches a known kernel reason surfaces as itself;
-// anything else -- unrecognised, over-long, or otherwise not an exact match
-// -- is normalised to "provider_failed". Never derived from the input: the
-// only two possible outputs are members of KNOWN_PROVIDER_FAILURE_REASONS
-// (currently just "credential_missing") or the fixed fallback.
-function mapProviderFailureReason(reason: string): "credential_missing" | "provider_failed" {
-  return KNOWN_PROVIDER_FAILURE_REASONS.has(reason) ? "credential_missing" : "provider_failed";
+// A reason that exactly matches a key in KNOWN_PROVIDER_FAILURE_REASONS
+// surfaces as *that entry's own mapped code* -- not a fixed relabel shared by
+// every member -- so a future second entry cannot be silently reported as
+// "credential_missing". Anything that is not an exact match -- unrecognised,
+// over-long, or otherwise -- normalises to "provider_failed". Never derived
+// from the input beyond the lookup itself.
+function mapProviderFailureReason(reason: string): PluginToolRuntimeErrorCode {
+  return KNOWN_PROVIDER_FAILURE_REASONS.get(reason) ?? "provider_failed";
 }
 
 function captureProviderResult(input: unknown): ProviderResult {
@@ -708,10 +716,10 @@ export class PluginToolRuntime {
       }), Object.freeze({ requestId, signal: controller.signal })));
       dispatched = true;
       const result = captureProviderResult(await awaitDeadline(operation, controller.signal, context.signal));
-      // result.reason is already one of captureProviderResult's own two
-      // allowlisted outputs (see mapProviderFailureReason); this only picks
-      // the matching error code, it does not re-derive anything from the
-      // provider.
+      // result.reason is already an allowlisted output of
+      // captureProviderResult (see mapProviderFailureReason); this only
+      // picks the matching error code, it does not re-derive anything from
+      // the provider.
       if (result.status !== "success") throw new PluginToolRuntimeError(result.reason === "credential_missing" ? "credential_missing" : "provider_failed");
       const finalInstallationValue = await awaitDeadline(this.#dependencies.pluginsRepository.getInstallation(context.projectId, binding.pluginName), controller.signal, context.signal);
       if (finalInstallationValue === null) throw new PluginToolRuntimeError("execution_state_changed");
@@ -744,6 +752,12 @@ export class PluginToolRuntime {
             : classified.code === "execution_state_changed"
               ? "execution_state_changed"
               : "provider_unavailable",
+          // A write a human approved in OpenFang and that then died further
+          // downstream (at the credential, say) still consumed that
+          // approval; the failure receipt must carry the same approvalId the
+          // success path already does, or there is no trace a release ever
+          // happened for this call.
+          approvalId,
         );
         await this.#settleReceipt(receiptOperation);
       }
