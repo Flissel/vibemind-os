@@ -654,6 +654,38 @@ describe("importCatalog", () => {
     expect(mcp.component.metadata.credentialSlots).toEqual(["SAMPLE_TOKEN"]);
   });
 
+  it("names a declared process env_vars reference as a credential slot", async () => {
+    const source = await createSource("mcp-process-env-vars", [
+      { directoryName: "alpha", license: "MIT", surfaces: ["mcp"] },
+    ]);
+    await writeFile(
+      join(source.pluginsRoot, "alpha", ".mcp.json"),
+      JSON.stringify({ mcpServers: { sample: { command: "node", args: ["server.mjs"], env_vars: ["MCP_TOKEN"] } } }),
+    );
+    await execFileAsync("git", ["-C", source.repositoryRoot, "add", "."]);
+    await execFileAsync("git", ["-C", source.repositoryRoot, "commit", "--quiet", "-m", "process env_vars"]);
+    const { stdout } = await execFileAsync("git", ["-C", source.repositoryRoot, "rev-parse", "HEAD"]);
+    const lock = await importCatalog(source.pluginsRoot, { ...options(source), sourceCommit: stdout.trim() });
+    const mcp = lock.entries[0]!.components.find(item => item.component.kind === "mcp")!;
+    expect(mcp.component.metadata.credentialSlots).toEqual(["MCP_TOKEN"]);
+  });
+
+  it("names no credential slot for a process server declaring neither env_vars nor a bearer token", async () => {
+    const source = await createSource("mcp-process-no-credentials", [
+      { directoryName: "alpha", license: "MIT", surfaces: ["mcp"] },
+    ]);
+    await writeFile(
+      join(source.pluginsRoot, "alpha", ".mcp.json"),
+      JSON.stringify({ mcpServers: { sample: { command: "node", args: ["server.mjs"] } } }),
+    );
+    await execFileAsync("git", ["-C", source.repositoryRoot, "add", "."]);
+    await execFileAsync("git", ["-C", source.repositoryRoot, "commit", "--quiet", "-m", "process no credentials"]);
+    const { stdout } = await execFileAsync("git", ["-C", source.repositoryRoot, "rev-parse", "HEAD"]);
+    const lock = await importCatalog(source.pluginsRoot, { ...options(source), sourceCommit: stdout.trim() });
+    const mcp = lock.entries[0]!.components.find(item => item.component.kind === "mcp")!;
+    expect(mcp.component.metadata.credentialSlots).toEqual([]);
+  });
+
   it("fails closed when an expected catalog count differs", async () => {
     const source = await createSource("catalog-count", [
       { directoryName: "alpha", license: "MIT" },

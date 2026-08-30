@@ -379,11 +379,16 @@ function credentialSlotNames(declaration: Readonly<Record<string, unknown>>): re
   const names: string[] = [];
   const bearer = declaration.bearer_token_env_var;
   if (typeof bearer === "string" && bearer.length > 0) names.push(bearer);
-  const environment = declaration.env;
-  if (environment !== null && typeof environment === "object" && !Array.isArray(environment)) {
-    for (const key of Object.keys(environment).sort()) {
-      const value = (environment as Record<string, unknown>)[key];
-      if (typeof value === "string" && value.length > 0) names.push(value);
+  // `env_vars` names the credential reference for a process server; `env`
+  // carries literal values for that same declaration and is never a source
+  // of slot names. A declaration that sets `env` is rejected before it ever
+  // reaches a provider (see mcp-normalizer.ts's
+  // component_invalid:process_environment_values check), so this only ever
+  // reads names, never plugin-supplied values.
+  const environmentVariables = declaration.env_vars;
+  if (Array.isArray(environmentVariables)) {
+    for (const name of environmentVariables) {
+      if (typeof name === "string" && name.length > 0) names.push(name);
     }
   }
   return Object.freeze([...new Set(names)].sort());

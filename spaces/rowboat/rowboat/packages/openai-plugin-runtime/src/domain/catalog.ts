@@ -11,7 +11,7 @@ export const PINNED_OPENAI_PLUGINS_COMMIT =
   "11c74d6ba24d3a6d48f54a194cd00ef3beea18f9" as const;
 export const PINNED_OPENAI_PLUGIN_COUNT = 180 as const;
 export const PINNED_PLUGIN_CATALOG_DIGEST =
-  "1fe312f97436c3af549dbf849fc0eb41afae042ee37d4c70fc96fd4db7b20184" as const;
+  "11035eb884d88be51337853010fc67502f8f6ced64287382a3bb56d24a8c524e" as const;
 
 export interface CatalogInventory {
   readonly pluginsWithSkills: number;
