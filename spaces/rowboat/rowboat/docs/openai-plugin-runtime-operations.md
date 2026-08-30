@@ -323,10 +323,15 @@ is never counted as evidence.
 
 These are true limits of the current state, not oversights to work around:
 
-- **The app-wide TypeScript build is red before this feature** — tracked source
-  references `logo.png`, `logo-only.png`, and `mascot.png`, which are not in the
-  repository. The focused gates above are green; that is not a claim that
-  `next build` succeeds.
+- **The app-wide TypeScript check depends on a generated file.** `npx tsc
+  --noEmit` in `apps/rowboat` is clean once `next-env.d.ts` exists; that file is
+  gitignored and written by Next on its first run, and its reference to
+  `next/image-types/global` is what declares image modules. In a tree where Next
+  has never run it reports six errors about `@/public/logo.png`,
+  `logo-only.png` and `mascot.png` — the images are present and tracked, the
+  declaration is not. An earlier version of this document called those six a
+  permanent baseline; that was wrong. None of this is a claim that `next build`
+  succeeds.
 - **The Desktop root ESLint run is red before this feature** because every input
   file is ignored.
 - **`spaces/rowboat/__init__.py` cannot be imported** on `master` either: it
