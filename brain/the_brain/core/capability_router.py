@@ -29,6 +29,7 @@ import math
 import os
 import re
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -40,6 +41,114 @@ logger = logging.getLogger(__name__)
 _DEFAULT_SEMANTIC_THRESHOLD = float(
     os.environ.get("CAPABILITY_SEMANTIC_THRESHOLD", "0.65")
 )
+
+
+class _CodingProviderIntent(str, Enum):
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    BLOCKED = "blocked"
+
+
+_PROVIDER_SELECTION = re.compile(
+    r"\b(?:use|ask|have)\s+(?:the\s+)?(?:(?:only|both|either)\s+)?"
+    r"(?:claude|anthropic|openai)"
+    r"(?:\s+(?:model|agent))?\b|"
+    r"\b(?:with|using|via|through)\s+(?:the\s+)?(?:claude|anthropic|openai)"
+    r"(?:\s+(?:model|agent))?\b|"
+    r"\b(?:without|avoid(?:ing)?|except(?:\s+for)?|neither|nor|not)\s+"
+    r"(?:using\s+)?(?:claude|anthropic|openai)\b|"
+    r"\bmit\s+(?:claude|anthropic|openai)\b|"
+    r"\b(?:claude(?:\s+code)?|anthropic|openai)\s+verwenden\b|"
+    r"\b(?:claude|anthropic|openai)\s*[,;:]|"
+    r"\b(?:and|or|und|oder)\s+(?:claude|anthropic|openai)\b|"
+    r"\bdefault\s+provider\b",
+    re.IGNORECASE,
+)
+_PROVIDER_MENTION = re.compile(
+    r"\b(?:claude(?:\s+code)?|anthropic|openai)\b",
+    re.IGNORECASE,
+)
+_NEGATION_SUFFIX = re.compile(
+    r"(?:\bdo\s+not(?:\s+ever)?|\bdon't(?:\s+ever)?|\bnever|\bnot|\bnicht|"
+    r"\bkein(?:e|en|er|em|es)?)\s*$",
+    re.IGNORECASE,
+)
+
+# Runbook §7.5 (2026-08-29): selecting an UNSUPPORTED provider must fail
+# closed for the coding lanes — never silently fall back to the OpenAI
+# default. These are distinct third-party provider names; bare "gpt" and
+# "codex" stay out on purpose (they name the ChatGPT lane itself and appear
+# in too many neutral contexts). Word-boundary matching keeps file/module
+# names like `ollama_tool.py` or `gemini_client.py` out (underscore is \w,
+# so no boundary forms inside them). Any selection-context hit — selecting,
+# coordinating, or negating such a provider — blocks; the phrase is about a
+# provider this system does not offer, so no route is the honest answer.
+_FOREIGN_PROVIDER_TOKENS = (
+    r"(?:gemini|google|grok|xai|copilot|mistral|deepseek|llama|ollama|"
+    r"qwen|groq|openrouter|perplexity|kimi)"
+)
+_FOREIGN_PROVIDER_SELECTION = re.compile(
+    r"\b(?:use|ask|have)\s+(?:the\s+)?(?:(?:only|both|either)\s+)?"
+    + _FOREIGN_PROVIDER_TOKENS
+    + r"(?:\s+(?:model|agent))?\b|"
+    r"\b(?:with|using|via|through)\s+(?:the\s+)?"
+    + _FOREIGN_PROVIDER_TOKENS
+    + r"(?:\s+(?:model|agent))?\b|"
+    r"\b(?:without|avoid(?:ing)?|except(?:\s+for)?|neither|nor|not)\s+"
+    r"(?:using\s+)?" + _FOREIGN_PROVIDER_TOKENS + r"\b|"
+    r"\bmit\s+" + _FOREIGN_PROVIDER_TOKENS + r"\b|"
+    r"\b" + _FOREIGN_PROVIDER_TOKENS + r"\s+verwenden\b|"
+    r"\b(?:and|or|und|oder)\s+" + _FOREIGN_PROVIDER_TOKENS + r"\b",
+    re.IGNORECASE,
+)
+
+
+def _coding_provider_intent(intent: str) -> _CodingProviderIntent:
+    """Resolve coding-provider selection once, including negation/conflicts."""
+    if _FOREIGN_PROVIDER_SELECTION.search(intent):
+        return _CodingProviderIntent.BLOCKED
+    selected: set[_CodingProviderIntent] = set()
+    rejected: set[_CodingProviderIntent] = set()
+    previous_was_rejected = False
+    for match in _PROVIDER_SELECTION.finditer(intent):
+        token = match.group(0).casefold()
+        provider = (
+            _CodingProviderIntent.OPENAI
+            if "openai" in token or "default provider" in token
+            else _CodingProviderIntent.ANTHROPIC
+        )
+        prefix = intent[max(0, match.start() - 32) : match.start()]
+        coordinated = re.match(r"(?:and|or|und|oder|nor)\b", token) is not None
+        explicitly_rejected = re.match(
+            r"(?:without|avoid(?:ing)?|except(?:\s+for)?|neither|nor|not)\b",
+            token,
+        ) is not None
+        is_rejected = explicitly_rejected or (
+            previous_was_rejected
+            if coordinated
+            else bool(_NEGATION_SUFFIX.search(prefix))
+        )
+        if is_rejected:
+            rejected.add(provider)
+        else:
+            selected.add(provider)
+        previous_was_rejected = is_rejected
+
+    mentioned = {
+        _CodingProviderIntent.OPENAI
+        if "openai" in match.group(0).casefold()
+        else _CodingProviderIntent.ANTHROPIC
+        for match in _PROVIDER_MENTION.finditer(intent)
+    }
+    if not mentioned.issubset(selected | rejected):
+        return _CodingProviderIntent.BLOCKED
+
+    if not selected:
+        return _CodingProviderIntent.BLOCKED if rejected else _CodingProviderIntent.OPENAI
+    if len(selected) != 1:
+        return _CodingProviderIntent.BLOCKED
+    provider = next(iter(selected))
+    return _CodingProviderIntent.BLOCKED if provider in rejected else provider
 
 
 def _cosine(a: List[float], b: List[float]) -> float:
@@ -108,6 +217,7 @@ class _CompiledCapability:
     arg_kwarg: Optional[str] = None
     feedback_loop: Optional[Dict[str, Any]] = None
     validator: Optional[Dict[str, Any]] = None  # Phase 3
+    coding_provider: Optional[str] = None
     # Phase 2 — populated lazily by _build_embeddings() once an embedder
     # is wired via set_embedder(). Single description embedding plus a
     # list of anchor-phrase embeddings (Phase 2.5) — match takes max
@@ -307,6 +417,9 @@ class CapabilityRouter:
             try:
                 cap_id = entry["capability"]
                 pats_raw = entry.get("match_patterns") or []
+                coding_provider = entry.get("coding_provider")
+                if coding_provider not in {None, "openai", "anthropic"}:
+                    raise ValueError(f"invalid coding_provider for {cap_id!r}")
                 # Compile each regex; skip individual bad ones rather than
                 # losing the whole capability.
                 patterns: List[re.Pattern] = []
@@ -334,6 +447,7 @@ class CapabilityRouter:
                     arg_kwarg=entry.get("arg_kwarg"),
                     feedback_loop=entry.get("feedback_loop"),
                     validator=entry.get("validator"),
+                    coding_provider=coding_provider,
                     anchor_phrases=list(entry.get("anchor_phrases") or []),
                 ))
             except Exception as e:
@@ -366,10 +480,15 @@ class CapabilityRouter:
             self._stats["no_match"] += 1
             return None
 
+        normalized_intent = re.sub(r"\s+", " ", intent).strip()
+        coding_provider = _coding_provider_intent(normalized_intent)
+
         # Phase 1 — regex (fast, deterministic)
         for cap in self._capabilities:
+            if not self._provider_allows(cap, coding_provider):
+                continue
             for pat in cap.patterns:
-                if pat.search(intent):
+                if pat.search(normalized_intent):
                     self._stats["matches"] += 1
                     self._stats["regex_matches"] += 1
                     return CapabilityMatch(
@@ -387,14 +506,29 @@ class CapabilityRouter:
                     )
 
         # Phase 2 — semantic fallback (only when an embedder is wired)
-        sem_match = self._semantic_route(intent)
+        sem_match = self._semantic_route(normalized_intent, coding_provider)
         if sem_match is not None:
             return sem_match
 
         self._stats["no_match"] += 1
         return None
 
-    def _semantic_route(self, intent: str) -> Optional[CapabilityMatch]:
+    @staticmethod
+    def _provider_allows(
+        capability: _CompiledCapability,
+        provider_intent: _CodingProviderIntent,
+    ) -> bool:
+        if capability.coding_provider is None:
+            return True
+        if provider_intent is _CodingProviderIntent.BLOCKED:
+            return False
+        return capability.coding_provider == provider_intent.value
+
+    def _semantic_route(
+        self,
+        intent: str,
+        coding_provider: _CodingProviderIntent,
+    ) -> Optional[CapabilityMatch]:
         """Embed intent + cosine vs cached capability descriptions.
         First match >= threshold wins. Tracks below-threshold hits
         separately so coverage gaps can be diagnosed."""
@@ -418,6 +552,8 @@ class CapabilityRouter:
         best_sim = 0.0
         best_source = "desc"
         for cap in self._capabilities:
+            if not self._provider_allows(cap, coding_provider):
+                continue
             # Track the highest cosine across description + all anchors.
             # Anchors typically score higher because they're shorter and
             # syntactically closer to user intents.

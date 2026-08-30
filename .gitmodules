@@ -10,9 +10,6 @@
 [submodule "openfang"]
 	path = openfang
 	url = https://github.com/Flissel/openfang.git
-[submodule "openclaude"]
-	path = openclaude
-	url = https://github.com/Flissel/openclaude.git
 [submodule "la-fungus-search"]
 	path = la-fungus-search
 	url = https://github.com/Flissel/la_fungus_search.git
