@@ -4,6 +4,23 @@ How to import, admit, migrate, cut over, and roll back the OpenAI-compatible
 plugin runtime. Every command below is safe to read first: the dry-run and
 report paths never mutate a project.
 
+**Every plugin call today requires a human approval, capped at four
+minutes.** No catalog entry declares any operation read-only yet
+(`classifyPluginOperation` defaults every operation to `write` unless a
+component's metadata lists it under `readOnlyOperations`, and none does);
+both places that construct a provider binding hard-code `capability:
+"write"` regardless of the component
+(`application/services/plugin-binding-materialization.ts:108` and
+`application/use-cases/plugins/add-plugin-tool.use-case.ts:113`); and
+`HttpMcpProvider.invoke()` itself hard-codes a `"write"` admission check on
+every call, not the operation's own classified capability
+(`packages/openai-plugin-runtime/src/providers/mcp-http-provider.ts:353`).
+So every executable call goes through the OpenFang release gate and waits on
+a human decision, and that wait is clamped to four minutes regardless of
+`OPENFANG_APPROVAL_TIMEOUT_MS` - see "What still blocks an actual call"
+below, and the read/write and approval-window entries under "Non-claims"
+for the full mechanism.
+
 ## What is pinned
 
 | Item | Value |
@@ -167,12 +184,39 @@ OpenFang's deployment, not Rowboat's.
   kernel (`mcp-http-provider.ts`), with one deliberate widening: a loopback
   exception, because the documented local setup runs OpenFang on
   `http://127.0.0.1:4200`.
+- **The shared daemon on `127.0.0.1:4200` does not serve this endpoint
+  today.** It still runs an older binary, and it runs with no `api_key`
+  configured in its `config.toml`. `issue_credential`
+  (`crates/openfang-api/src/routes.rs`) refuses outright whenever
+  `api_key.trim().is_empty() && !auth.enabled` - a deliberate fail-open
+  guard, the same one that also leaves that daemon's own `POST
+  /api/approvals` unauthenticated. A daemon that can actually issue a
+  credential needs a build with the issuance route and a non-blank
+  `api_key`; the proof below used a separate, purpose-built daemon on its
+  own port for exactly that reason, and never touched the shared one on
+  `:4200`.
 
-**Still unproven:** the end-to-end call against a real third-party
-credential - actually invoking a plugin's provider with a value OpenFang
-issued and observing a genuine response from the third-party API - has not
-been made. Everything above is exercised against an injected `fetch` in
-tests, never a running OpenFang daemon or a real credential.
+**Proven, once, against a real running daemon:** a released write now asks
+OpenFang for a credential and gets one issued per call (`POST
+/api/credentials/issue -> 200`), and the real `HttpMcpProvider` carries it
+over HTTPS to a real third-party MCP endpoint
+(`https://api.githubcopilot.com/mcp/`) - see `E2E-PROOF.md` at the
+repository root for the full run: one call, the production composition
+(`resolveOpenFangComposedProvider`, `resolveOpenFangReleaseWrite`, and the
+container's other exported seams, called the way `createToolRuntime` calls
+them), no hand-added header anywhere. **Still unproven:** that a *real*
+third-party credential succeeds. The proof's token was deliberately fake, so
+GitHub's rejection is the intended outcome - the call ends in
+`provider_failed`, a code distinct from `credential_missing` and reachable
+only after the credential itself resolved to a value, so the proof also
+confirms the two stay observably distinct even under a real network
+exchange, not only in the unit tests that exercise the mapping directly.
+Also still unproven: the Next.js container path itself (the proof composed
+the runtime's dependency object directly from the container's exported
+composition seams rather than by calling `createPluginControllers()`, which
+needs Auth0/session machinery it has no business standing up), and anything
+about revocation, rotation, or concurrent calls - the proof is one call,
+once.
 
 The Web install flow additionally requires `PLUGIN_UI_PREVIEW_SECRET` (see the
 repository README). Migration and cutover require:
@@ -557,17 +601,41 @@ are both closed now, each covered by its own unit tests
 `mcp-providers.test.ts` in the kernel package) that exercise the real
 `HttpMcpProvider` admission and credential-resolution paths, not a stub.
 
-**The end-to-end call against a real GitHub credential (plan Task 7 Step 3)
-has still not been attempted**, and this is why: `UnreleasedCredentialResolver`
-still releases nothing, by design, pending the credential-transport decision
-(deploy-time injection into the process environment vs. a new OpenFang
-credential-issuance endpoint — see Task 5 in the phase plan; OpenFang has no
-such endpoint today, so there is no released credential to call with
-regardless). A released write now reaches the credential step and fails there
-identifiably, which is as far as this composition can take it without that
-decision. No approval id, no receipt id, and no result exist for a real
-`GITHUB_PAT_TOKEN` call. Recording otherwise would misstate what was
-observed.
+**The end-to-end call against a real GitHub credential has now been made
+once, and here is exactly what it proved and did not.** Task 5b implemented
+the credential-transport decision this section used to say was still open:
+with `OPENFANG_URL` and `OPENFANG_API_KEY` both configured,
+`OpenFangCredentialResolver` asks a real OpenFang daemon's `POST
+/api/credentials/issue` for a value per call, instead of
+`UnreleasedCredentialResolver` releasing nothing. `E2E-PROOF.md` (repository
+root) then ran that path end to end, against a purpose-built OpenFang
+daemon, with the production composition and no hand-added header anywhere:
+one write raised a real approval, a human approved it, the release reached
+the provider, `POST /api/credentials/issue` returned 200 and the daemon
+logged `Credential issued reference=GITHUB_PAT_TOKEN`, and the real
+`HttpMcpProvider` carried that value over HTTPS to
+`https://api.githubcopilot.com/mcp/`. The call still ended in
+`provider_failed`, not success: the credential the daemon issued was a
+deliberately fake test value generated only for that run, so GitHub's
+rejection is the intended outcome - and it is GitHub's rejection
+specifically, not a network fault: two different 401 bodies for "no token"
+versus "this token," confirmed a second time against the same MCP SDK
+transport the provider uses. What that proves: the chain from approval
+through issuance to a real third-party HTTP call now works end to end, and
+`provider_failed` (credential resolved, the remote call itself failed)
+stays observably distinct from `credential_missing` (credential never
+resolved) even under a real network exchange, not only in the unit tests
+that exercise the mapping directly. What it does not prove: that a *real*,
+valid third-party credential succeeds - the token was fake by design, so
+only the rejection path is exercised - nor does it exercise the Next.js
+container path itself (the proof assembled `PluginToolRuntimeDependencies`
+by hand from the container's own exported composition seams rather than by
+calling `createPluginControllers()`, which needs Auth0/session
+infrastructure the proof has no business standing up), or anything about
+revocation latency, rotation, or concurrent calls - one call, once. No
+approval id, receipt id, or result exists for a *successful* real credential
+call anywhere in this repository. Recording otherwise would misstate what
+was observed.
 
 ### Recorded evidence
 
@@ -640,22 +708,29 @@ These are true limits of the current state, not oversights to work around:
   classifier would agree is read-only - today both binding-construction sites
   hard-code `"write"` regardless, so a fixed kernel alone would still never
   see a read reach it. None of this is modified here.
-- **The end-to-end call against a real GitHub credential has not been
-  attempted.** An OpenFang-approved write now reaches the real provider (the
-  Task 4-6 policy-threading gap) and, since Task 9, its credential failure is
-  observable as the literal `credential_missing` rather than a generic
-  `provider_failed` — see "Released-write proof, and the credential boundary"
-  above for the traced mechanism. The credential-transport decision itself is
-  now made and implemented (Task 5b): with `OPENFANG_URL` and
-  `OPENFANG_API_KEY` both configured, `OpenFangCredentialResolver` asks
-  OpenFang's `/api/credentials/issue` for a value per call instead of
-  releasing nothing - see "Resolving a credential value from OpenFang"
-  above. With either variable absent, `UnreleasedCredentialResolver` still
-  releases nothing, unchanged. What has not changed either way is that this
-  has never been exercised against a real OpenFang daemon or a real
-  third-party credential: every test drives an injected `fetch`. No approval
-  id, receipt id, or result exists for a real call anywhere in this
-  repository.
+- **No real, valid third-party credential has ever succeeded, and the
+  Next.js container path itself was not exercised.** `E2E-PROOF.md`
+  (repository root) ran the full chain once, end to end, against a
+  purpose-built OpenFang daemon rather than an injected `fetch`: an
+  OpenFang-approved write reached the real provider (the Task 4-6
+  policy-threading gap), asked OpenFang for a credential and got one issued
+  per call (Task 5b, `POST /api/credentials/issue -> 200`), and the real
+  `HttpMcpProvider` carried it over HTTPS to
+  `https://api.githubcopilot.com/mcp/`. Because the daemon's allowlisted
+  credential was a deliberately fake test value, GitHub refused it and the
+  call ended in `provider_failed`, distinct from `credential_missing` -
+  see "Released-write proof, and the credential boundary" above for both
+  codes' mechanism, and `E2E-PROOF.md` for the run itself. Still not proven:
+  that a genuine, valid third-party credential succeeds; that the Next.js
+  container path behaves this way (the proof assembled
+  `PluginToolRuntimeDependencies` by hand from the container's exported
+  composition seams rather than by calling `createPluginControllers()`,
+  which needs Auth0/session infrastructure the proof has no business
+  standing up); and anything about revocation latency, rotation, or
+  concurrent calls - one call, once. The shared OpenFang daemon on `:4200`
+  was not exercised either; it still runs the old binary without an
+  `api_key` configured, a mode in which `issue_credential` refuses by
+  design (see "The security shape, stated plainly" above).
 - **`shadow -> legacy` is not an admitted transition.** The plan's table admits
   only the three transitions listed above, so a project in shadow returns to
   legacy by going through a cutover and rollback. Widening the table is a

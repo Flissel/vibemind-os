@@ -41,7 +41,10 @@ const unboundEntry = {
   admission: { status: "admitted" as const, policyVersion: snapshot.policyVersion },
   licenseDeclaration: "MIT",
   components: [{
-    component: { id: "skill:github", name: "GitHub", kind: "skill" as const, status: "available" as const, metadata: { digest: digest("d"), credentialSlots: ["GITHUB_PAT_TOKEN"] } },
+    // Kind "mcp" over "http" transport, admitted: `requiredCredentialNames`
+    // only surfaces a credential slot from a component shaped exactly this
+    // way (see plugin-service-shared.test.ts for the filtering itself).
+    component: { id: "mcp:github", name: "GitHub", kind: "mcp" as const, status: "available" as const, metadata: { digest: digest("d"), transport: "http", credentialSlots: ["GITHUB_PAT_TOKEN"] } },
     admission: { status: "admitted" as const, policyVersion: snapshot.policyVersion },
   }],
 } as unknown as PluginCatalogEntry & { readonly licenseDeclaration: string };

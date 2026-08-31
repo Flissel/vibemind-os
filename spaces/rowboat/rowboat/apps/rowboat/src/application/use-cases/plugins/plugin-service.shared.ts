@@ -50,11 +50,28 @@ export function fingerprint(value: unknown): string {
 }
 
 export function requiredCredentialNames(entry: PluginCatalogEntry): readonly string[] {
+  // Only a component the catalog actually admits, of kind `mcp`, over HTTP
+  // transport can ever be invoked (a rejected or process-MCP component never
+  // reaches the provider), so only those contribute to what the install
+  // dialog asks the operator for. `credentialSlots` only ever carries the
+  // importer's env-var-style names (`bearer_token_env_var` / `env_vars` -
+  // see `credentialSlotNames` in `component-discovery.ts`, which is fed by
+  // the pinned catalog digest and out of scope to change here), so an
+  // oauth-shaped requirement - `mcpServer.oauth_resource`, the reference
+  // `HttpMcpProvider.#resolveCredential` builds `{kind: "oauth", reference}`
+  // from - has to be read separately or it never surfaces at all.
   const names = new Set<string>();
-  for (const { component } of entry.components) {
-    const candidate = component.metadata.credentialSlots;
-    if (!Array.isArray(candidate)) continue;
-    for (const name of candidate) if (typeof name === "string" && ID.test(name)) names.add(name);
+  for (const { component, admission } of entry.components) {
+    if (admission.status !== "admitted" || component.kind !== "mcp" || component.metadata.transport !== "http") continue;
+    const slots = component.metadata.credentialSlots;
+    if (Array.isArray(slots)) {
+      for (const name of slots) if (typeof name === "string" && ID.test(name)) names.add(name);
+    }
+    const mcpServer: unknown = component.metadata.mcpServer;
+    if (mcpServer !== null && typeof mcpServer === "object" && !Array.isArray(mcpServer)) {
+      const oauthResource = (mcpServer as Readonly<Record<string, unknown>>).oauth_resource;
+      if (typeof oauthResource === "string" && oauthResource.length > 0) names.add(oauthResource);
+    }
   }
   return Object.freeze([...names].sort());
 }
