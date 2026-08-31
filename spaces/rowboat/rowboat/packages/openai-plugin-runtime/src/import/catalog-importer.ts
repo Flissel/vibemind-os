@@ -1,0 +1,569 @@
+import { createHash, randomUUID } from "node:crypto";
+import { lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
+import { z } from "zod";
+import type {
+  CatalogBoundPluginComponent,
+  CatalogComponentAdmission,
+  CatalogInventory,
+  PluginCatalogEntry,
+  PluginCatalogLock,
+} from "../domain/catalog.js";
+import {
+  PINNED_OPENAI_PLUGIN_COUNT,
+  PINNED_OPENAI_PLUGINS_COMMIT,
+  PLUGIN_SCHEMA_VERSION,
+} from "../domain/catalog.js";
+import type {
+  NormalizedPluginComponent,
+  SourceProvenance,
+} from "../domain/plugin.js";
+import type { ProviderBinding, ProviderKind } from "../providers/provider.js";
+import { DEFAULT_POLICY, type PluginPolicy } from "../policy/default-policy.js";
+import { evaluateComponentAdmission } from "../policy/capability-policy.js";
+import { evaluateLicense, type AdmissionDecision } from "../policy/license-policy.js";
+import { parsePluginManifest, type PluginManifest } from "../schema/plugin-manifest.js";
+import { normalizePlugin } from "./normalize-plugin.js";
+import {
+  isContainedPath,
+  PluginSourceSecurityError,
+} from "./path-guard.js";
+import {
+  assertDirectoryIdentity,
+  snapshotDirectoryIdentity,
+} from "./directory-identity.js";
+import {
+  assertPinnedSource,
+  OPENAI_PLUGINS_SOURCE_URL,
+  stageVerifiedPluginSnapshot,
+} from "./source-reader.js";
+
+export interface CatalogImportOptions {
+  readonly repositoryRoot: string;
+  readonly sourceCommit: string;
+  readonly sourceUrl?: string;
+  readonly storeRoot: string;
+  readonly clock: () => Date;
+  readonly policy?: PluginPolicy;
+  readonly expectedPluginCount?: number;
+}
+
+export interface CatalogLockWriteOptions {
+  readonly containmentRoot?: string;
+}
+
+const CatalogSyncArgsSchema = z
+  .object({
+    source: z.string().min(1),
+    commit: z.literal(PINNED_OPENAI_PLUGINS_COMMIT),
+    output: z.string().min(1),
+  })
+  .strict();
+
+export type CatalogSyncArgs = z.infer<typeof CatalogSyncArgsSchema>;
+const arrayIsArray = Array.isArray;
+const ownKeysOf = Reflect.ownKeys;
+const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const stringify = JSON.stringify;
+const charCodeAt = Function.call.bind(String.prototype.charCodeAt) as (value: string, index: number) => number;
+const indexOfText = Function.call.bind(String.prototype.indexOf) as (value: string, search: string) => number;
+
+function sortedByName<T extends { readonly name: string }>(values: readonly T[]): T[] {
+  const output: T[] = [];
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index] as T;
+    let position = output.length;
+    while (position > 0 && compareCodePoints((output[position - 1] as T).name, value.name) > 0) position -= 1;
+    for (let move = output.length; move > position; move -= 1) output[move] = output[move - 1] as T;
+    output[position] = value;
+  }
+  return output;
+}
+
+export function parseCatalogSyncArgs(args: readonly string[]): CatalogSyncArgs {
+  if (args.length !== 6) throw new Error("source_mismatch:catalog_arguments");
+  const input: Record<string, string> = {};
+  for (let index = 0; index < args.length; index += 2) {
+    const flag = args[index];
+    const value = args[index + 1];
+    if (flag === undefined || value === undefined || flag.length < 3 || charCodeAt(flag, 0) !== 45 || charCodeAt(flag, 1) !== 45) {
+      throw new Error("source_mismatch:catalog_arguments");
+    }
+    const key = flag.slice(2);
+    if (key in input) throw new Error("source_mismatch:catalog_arguments");
+    input[key] = value;
+  }
+  const result = CatalogSyncArgsSchema.safeParse(input);
+  if (!result.success) throw new Error("source_mismatch:catalog_arguments");
+  return Object.freeze(result.data);
+}
+
+function compareCodePoints(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+export function canonicalCatalogValue(value: unknown): unknown {
+  if (arrayIsArray(value)) {
+    const output: unknown[] = [];
+    for (let index = 0; index < value.length; index += 1) output[index] = canonicalValue(value[index]);
+    return output;
+  }
+  if (value !== null && typeof value === "object") {
+    const keys: string[] = [];
+    const ownKeys = ownKeysOf(value);
+    for (let index = 0; index < ownKeys.length; index += 1) {
+      const key = ownKeys[index];
+      if (typeof key !== "string") throw new Error("digest_mismatch:canonical_value");
+      const descriptor = getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined || !("value" in descriptor)) throw new Error("digest_mismatch:canonical_value");
+      if (descriptor.value !== undefined) keys[keys.length] = key;
+    }
+    for (let index = 1; index < keys.length; index += 1) {
+      const selected = keys[index] as string;
+      let position = index;
+      while (position > 0 && compareCodePoints(keys[position - 1] as string, selected) > 0) {
+        keys[position] = keys[position - 1] as string; position -= 1;
+      }
+      keys[position] = selected;
+    }
+    const output = Object.create(null) as Record<string, unknown>;
+    for (let index = 0; index < keys.length; index += 1) {
+      const key = keys[index] as string;
+      const descriptor = getOwnPropertyDescriptor(value, key) as PropertyDescriptor & { readonly value: unknown };
+      output[key] = canonicalValue(descriptor.value);
+    }
+    return output;
+  }
+  return value;
+}
+
+const canonicalValue = canonicalCatalogValue;
+
+function canonicalJson(value: unknown, indentation?: number): string {
+  return stringify(canonicalValue(value), null, indentation);
+}
+
+/**
+ * Content address of a catalog.
+ *
+ * Import timestamps are provenance metadata, not content: including them would
+ * make every import of the same pinned commit produce a different digest, and
+ * the pinned digest would be unreachable by construction. They are therefore
+ * stripped from the hashed payload at the top level and per entry, while
+ * remaining in the stored lock.
+ */
+function withoutImportedAt(value: unknown): unknown {
+  if (value === null || typeof value !== "object" || arrayIsArray(value)) return value;
+  const output = Object.create(null) as Record<string, unknown>;
+  const keys = ownKeysOf(value);
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index];
+    if (typeof key !== "string" || key === "importedAt") continue;
+    const descriptor = getOwnPropertyDescriptor(value, key);
+    if (descriptor !== undefined && "value" in descriptor) output[key] = descriptor.value;
+  }
+  return output;
+}
+
+export function pluginCatalogDigest(payload: Omit<PluginCatalogLock, "catalogDigest">): string {
+  const content = withoutImportedAt(payload) as Record<string, unknown>;
+  const entries = content.entries;
+  if (arrayIsArray(entries)) {
+    const contentEntries: unknown[] = [];
+    for (let index = 0; index < entries.length; index += 1) contentEntries[index] = withoutImportedAt(entries[index]);
+    content.entries = contentEntries;
+  }
+  return createHash("sha256").update(canonicalJson(content)).digest("hex");
+}
+
+export type ComponentBindingProvenance = SourceProvenance;
+
+export interface ComponentBindingAdmissionMaterial {
+  readonly componentAdmission: AdmissionDecision;
+  readonly licenseDeclaration: string;
+  readonly licenseAdmission: AdmissionDecision;
+}
+
+export function componentBindingDigest(
+  provenance: ComponentBindingProvenance,
+  component: NormalizedPluginComponent,
+  material: ComponentBindingAdmissionMaterial,
+): string {
+  const contentDigest = component.metadata.digest;
+  if (
+    typeof contentDigest !== "string" || !/^[a-f0-9]{64}$/.test(contentDigest)
+    || provenance.sourceUrl.length === 0 || provenance.sourceUrl.length > 512
+    || !/^[a-f0-9]{40}$/.test(provenance.sourceCommit)
+    || !/^[a-f0-9]{64}$/.test(provenance.manifestDigest)
+    || !/^[a-f0-9]{64}$/.test(provenance.treeDigest)
+    || provenance.pluginName.length === 0 || provenance.pluginName.length > 128
+    || provenance.pluginVersion.length === 0 || provenance.pluginVersion.length > 128
+    || component.id.length === 0 || component.id.length > 512
+    || component.name.length === 0 || component.name.length > 512
+    || material.licenseDeclaration.length === 0 || material.licenseDeclaration.length > 256
+  ) throw new Error("digest_mismatch:component_binding");
+  return createHash("sha256").update(canonicalJson({
+    domain: "rowboat-openai-plugin-component-binding",
+    version: "rowboat-component-binding-v2",
+    provenance: {
+      sourceUrl: provenance.sourceUrl,
+      sourceCommit: provenance.sourceCommit,
+      pluginName: provenance.pluginName,
+      pluginVersion: provenance.pluginVersion,
+      manifestDigest: provenance.manifestDigest,
+      treeDigest: provenance.treeDigest,
+      // importedAt is deliberately absent: a binding is an identity that an
+      // installation pins, so it must survive a re-import of the same commit.
+      schemaVersion: provenance.schemaVersion,
+      policyVersion: provenance.policyVersion,
+    },
+    component: {
+      id: component.id,
+      name: component.name,
+      kind: component.kind,
+      status: component.status,
+      ...(component.reason === undefined ? {} : { reason: component.reason }),
+      metadata: (() => {
+        const output = Object.create(null) as Record<string, unknown>;
+        const keys = ownKeysOf(component.metadata);
+        for (let index = 0; index < keys.length; index += 1) {
+          const key = keys[index];
+          // bindingDigest is the value being computed, and providerBinding
+          // carries it, so both stay out of the hashed metadata.
+          if (typeof key !== "string" || key === "bindingDigest" || key === "providerBinding") continue;
+          const descriptor = getOwnPropertyDescriptor(component.metadata, key);
+          if (descriptor !== undefined && "value" in descriptor) output[key] = descriptor.value;
+        }
+        return output;
+      })(),
+    },
+    admission: material,
+  })).digest("hex");
+}
+
+function capabilityFor(
+  component: NormalizedPluginComponent,
+  manifest: PluginManifest,
+): "mcp_http" | "mcp_process" | "hook_command" | "read" | "write" {
+  if (component.kind === "hook") return "hook_command";
+  if (component.kind === "mcp") {
+    return component.metadata.transport === "http" ? "mcp_http" : "mcp_process";
+  }
+  const capabilities = manifest.interface.capabilities;
+  if (capabilities !== undefined) {
+    for (let index = 0; index < capabilities.length; index += 1) if (capabilities[index] === "Write") return "write";
+  }
+  return "read";
+}
+
+function componentAdmissions(
+  manifest: PluginManifest,
+  components: readonly NormalizedPluginComponent[],
+  policy: PluginPolicy,
+  provenance: SourceProvenance,
+  licenseAdmission: AdmissionDecision,
+): readonly CatalogComponentAdmission[] {
+  const ids: string[] = [];
+  const bindingDigests: string[] = [];
+  const output: CatalogComponentAdmission[] = [];
+  for (let index = 0; index < components.length; index += 1) {
+    const component = components[index] as NormalizedPluginComponent;
+    const componentAdmission = evaluateComponentAdmission(
+      manifest.license,
+      { kind: capabilityFor(component, manifest) },
+      policy,
+    );
+    const bindingDigest = componentBindingDigest(provenance, component, {
+      componentAdmission,
+      licenseDeclaration: manifest.license ?? "<missing>",
+      licenseAdmission,
+    });
+    for (let seen = 0; seen < ids.length; seen += 1) if (ids[seen] === component.id || bindingDigests[seen] === bindingDigest) throw new Error("digest_mismatch:component_binding");
+    ids[ids.length] = component.id;
+    bindingDigests[bindingDigests.length] = bindingDigest;
+    const declaredBinding = componentProviderBinding(component, bindingDigest);
+    const boundComponent: CatalogBoundPluginComponent = {
+      ...component,
+      metadata: {
+        ...component.metadata,
+        digest: String(component.metadata.digest),
+        bindingDigest,
+        ...(declaredBinding === undefined ? {} : { providerBinding: declaredBinding }),
+      },
+    };
+    output[output.length] = {
+      component: boundComponent,
+      admission: componentAdmission,
+    };
+  }
+  return output;
+}
+
+const PROVIDER_BINDING_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+/**
+ * Declares how an executable component is reached.
+ *
+ * Only apps and MCP servers are executed through a provider; a skill, agent,
+ * command, asset, or hook is not, and declaring a binding for one would claim an
+ * execution path that does not exist. The binding is content addressed: it
+ * carries the component binding digest the resolver compares an installation
+ * against, so an installed binding can never drift from the pinned component.
+ */
+function componentProviderBinding(
+  component: NormalizedPluginComponent,
+  bindingDigest: string,
+): ProviderBinding | undefined {
+  let providerKind: ProviderKind;
+  if (component.kind === "app") providerKind = "openai-connector-bridge";
+  else if (component.kind === "mcp") {
+    const transport = component.metadata.transport;
+    if (transport === "http") providerKind = "mcp-http";
+    else if (transport === "process") providerKind = "mcp-process";
+    // An MCP server whose transport this runtime does not know is left without
+    // a binding, so it resolves as provider_unavailable instead of being
+    // executed through a guessed transport.
+    else return undefined;
+  } else return undefined;
+  const candidate = `${component.kind}.${component.name}`;
+  const id = PROVIDER_BINDING_ID.test(candidate) ? candidate : `${component.kind}.${bindingDigest.slice(0, 32)}`;
+  return Object.freeze({ id, providerKind, componentDigest: bindingDigest });
+}
+
+function emptyInventory(): CatalogInventory {
+  return {
+    pluginsWithSkills: 0,
+    pluginsWithApps: 0,
+    pluginsWithAgents: 0,
+    pluginsWithCommands: 0,
+    pluginsWithMcp: 0,
+    pluginsWithCommandHooks: 0,
+  };
+}
+
+function addInventory(
+  inventory: CatalogInventory,
+  components: readonly NormalizedPluginComponent[],
+): CatalogInventory {
+  let skill = false, app = false, agent = false, command = false, mcp = false, hook = false;
+  for (let index = 0; index < components.length; index += 1) {
+    const kind = (components[index] as NormalizedPluginComponent).kind;
+    skill ||= kind === "skill"; app ||= kind === "app"; agent ||= kind === "agent";
+    command ||= kind === "command"; mcp ||= kind === "mcp"; hook ||= kind === "hook";
+  }
+  return {
+    pluginsWithSkills: inventory.pluginsWithSkills + Number(skill),
+    pluginsWithApps: inventory.pluginsWithApps + Number(app),
+    pluginsWithAgents: inventory.pluginsWithAgents + Number(agent),
+    pluginsWithCommands: inventory.pluginsWithCommands + Number(command),
+    pluginsWithMcp: inventory.pluginsWithMcp + Number(mcp),
+    pluginsWithCommandHooks: inventory.pluginsWithCommandHooks + Number(hook),
+  };
+}
+
+function requiredCount(options: CatalogImportOptions): number | undefined {
+  if (options.expectedPluginCount !== undefined) return options.expectedPluginCount;
+  return options.sourceCommit === PINNED_OPENAI_PLUGINS_COMMIT
+    ? PINNED_OPENAI_PLUGIN_COUNT
+    : undefined;
+}
+
+function assertValidImportOptions(options: CatalogImportOptions): void {
+  if (
+    !Number.isFinite(options.clock().getTime()) ||
+    (options.expectedPluginCount !== undefined &&
+      (!Number.isSafeInteger(options.expectedPluginCount) || options.expectedPluginCount < 0))
+  ) {
+    throw new PluginSourceSecurityError("source_mismatch", "catalog import options are invalid");
+  }
+}
+
+export async function importCatalog(
+  pluginsRoot: string,
+  options: CatalogImportOptions,
+): Promise<PluginCatalogLock> {
+  assertValidImportOptions(options);
+  const sourceUrl = options.sourceUrl ?? OPENAI_PLUGINS_SOURCE_URL;
+  const policy = options.policy ?? DEFAULT_POLICY;
+  const importedAt = options.clock().toISOString();
+  const canonicalPluginsRoot = await realpath(pluginsRoot);
+  const expectedPluginsRoot = await realpath(join(options.repositoryRoot, "plugins"));
+  if (canonicalPluginsRoot !== expectedPluginsRoot) {
+    throw new PluginSourceSecurityError("source_mismatch", "plugins root is not canonical");
+  }
+  const verifiedSource = await assertPinnedSource({
+    repositoryRoot: options.repositoryRoot,
+    expectedCommit: options.sourceCommit,
+    sourceUrl,
+    storeRoot: options.storeRoot,
+  });
+  const directoryEntries = await readdir(canonicalPluginsRoot, { withFileTypes: true });
+  const directoryValues: typeof directoryEntries = [];
+  for (let index = 0; index < directoryEntries.length; index += 1) {
+    const entry = directoryEntries[index];
+    if (entry !== undefined && entry.isDirectory()) directoryValues[directoryValues.length] = entry;
+  }
+  const directories = sortedByName(directoryValues);
+  const count = requiredCount(options);
+  if (count !== undefined && directories.length !== count) {
+    throw new Error("source_mismatch:plugin_count");
+  }
+
+  let inventory = emptyInventory();
+  const licenseCounts = new Map<string, number>();
+  const entries: PluginCatalogEntry[] = [];
+  for (const directory of directories) {
+    const pluginRoot = join(canonicalPluginsRoot, directory.name);
+    let snapshot: Awaited<ReturnType<typeof stageVerifiedPluginSnapshot>>;
+    try {
+      snapshot = await stageVerifiedPluginSnapshot(verifiedSource, pluginRoot);
+    } catch (error: unknown) {
+      if (
+        error instanceof PluginSourceSecurityError &&
+        indexOfText(error.message, "committed plugin manifest missing") >= 0
+      ) {
+        throw new Error("manifest_invalid:missing_manifest");
+      }
+      throw error;
+    }
+    let manifest: PluginManifest;
+    try {
+      manifest = parsePluginManifest(
+        JSON.parse(await readFile(join(snapshot.path, ".codex-plugin", "plugin.json"), "utf8")) as unknown,
+      );
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new Error("manifest_invalid:missing_manifest");
+      }
+      throw error;
+    }
+    if (basename(pluginRoot) !== manifest.name) {
+      throw new Error("manifest_invalid:name_mismatch");
+    }
+    const provenance: SourceProvenance = {
+      sourceUrl,
+      sourceCommit: options.sourceCommit,
+      pluginName: manifest.name,
+      pluginVersion: manifest.version,
+      manifestDigest: snapshot.manifestDigest,
+      treeDigest: snapshot.digest,
+      importedAt,
+      schemaVersion: PLUGIN_SCHEMA_VERSION,
+      policyVersion: policy.version,
+    };
+    const normalized = await normalizePlugin(pluginRoot, provenance, verifiedSource);
+    const admission = evaluateLicense(manifest.license, policy);
+    const entry: PluginCatalogEntry = {
+      name: manifest.name,
+      licenseDeclaration: manifest.license ?? "<missing>",
+      ...provenance,
+      admission,
+      components: componentAdmissions(manifest, normalized.components, policy, provenance, admission),
+      ...(admission.status === "admitted" ? { storedContentDigest: snapshot.digest } : {}),
+    };
+    entries.push(entry);
+    inventory = addInventory(inventory, normalized.components);
+    const declaredLicense = manifest.license ?? "<missing>";
+    licenseCounts.set(declaredLicense, (licenseCounts.get(declaredLicense) ?? 0) + 1);
+  }
+
+  const licenseDeclarations = Object.create(null) as Record<string, number>;
+  for (const [declaration, countValue] of licenseCounts) licenseDeclarations[declaration] = countValue;
+
+  const payload: Omit<PluginCatalogLock, "catalogDigest"> = {
+    sourceUrl,
+    sourceCommit: options.sourceCommit,
+    importedAt,
+    schemaVersion: PLUGIN_SCHEMA_VERSION,
+    policyVersion: policy.version,
+    inventory,
+    licenseDeclarations,
+    entries,
+  };
+  return canonicalValue({ ...payload, catalogDigest: pluginCatalogDigest(payload) }) as PluginCatalogLock;
+}
+
+function isNotFoundError(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+async function nearestExistingCanonicalPath(target: string): Promise<string> {
+  let candidate = target;
+  while (true) {
+    try {
+      return await realpath(candidate);
+    } catch (error: unknown) {
+      if (!isNotFoundError(error)) throw error;
+      const parent = dirname(candidate);
+      if (parent === candidate) throw error;
+      candidate = parent;
+    }
+  }
+}
+
+export async function assertCatalogOutputContained(
+  containmentRoot: string,
+  output: string,
+): Promise<void> {
+  try {
+    const canonicalRoot = await realpath(containmentRoot);
+    const destination = resolve(output);
+    if (!isContainedPath(canonicalRoot, destination)) {
+      throw new Error("outside root");
+    }
+    const canonicalAncestor = await nearestExistingCanonicalPath(destination);
+    if (!isContainedPath(canonicalRoot, canonicalAncestor)) {
+      throw new Error("canonical ancestor outside root");
+    }
+  } catch {
+    throw new Error("path_escape:catalog_output");
+  }
+}
+
+async function assertRegularOutputIfPresent(output: string): Promise<void> {
+  try {
+    const stats = await lstat(output);
+    if (!stats.isFile() || stats.isSymbolicLink()) {
+      throw new Error("path_escape:catalog_output");
+    }
+  } catch (error: unknown) {
+    if (!isNotFoundError(error)) throw error;
+  }
+}
+
+export async function writeCatalogLock(
+  output: string,
+  lock: PluginCatalogLock,
+  options: CatalogLockWriteOptions = {},
+): Promise<void> {
+  const destination = resolve(output);
+  if (options.containmentRoot !== undefined) {
+    await assertCatalogOutputContained(options.containmentRoot, destination);
+  }
+  const parent = dirname(destination);
+  await mkdir(parent, { recursive: true });
+  const parentIdentity = await snapshotDirectoryIdentity(parent);
+  if (options.containmentRoot !== undefined) {
+    await assertCatalogOutputContained(options.containmentRoot, parentIdentity.canonicalPath);
+  }
+  await assertRegularOutputIfPresent(destination);
+  const temporary = resolve(
+    parent,
+    `.${basename(destination)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  try {
+    await writeFile(temporary, `${canonicalJson(lock, 2)}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+    });
+    await assertRegularOutputIfPresent(destination);
+    await assertDirectoryIdentity(parentIdentity);
+    if (options.containmentRoot !== undefined) {
+      await assertCatalogOutputContained(options.containmentRoot, parentIdentity.canonicalPath);
+    }
+    await rename(temporary, destination);
+    await assertDirectoryIdentity(parentIdentity);
+  } finally {
+    await rm(temporary, { force: true });
+  }
+}

@@ -8,7 +8,7 @@ a security scan against the configured target.
 import asyncio
 import os
 
-from openai import AsyncOpenAI
+from vibemind_shared import get_client
 
 from autogen_core import AgentId
 from autogen_core._serialization import try_get_known_serializers_for_type
@@ -23,6 +23,9 @@ from orchestrator import OrchestratorAgent
 from scanner import ScannerAgent
 from analyzer import AnalyzerAgent
 from reporter import ReporterAgent
+
+
+SECURITY_ANALYZER_ROLE = "security_analyzer"
 
 
 async def connect_to_host(host_address, max_retries=30, delay=2):
@@ -49,14 +52,9 @@ async def main():
     print("=" * 60)
     print(flush=True)
 
-    # Initialize OpenAI client
-    api_key = os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        print("  ERROR: OPENAI_API_KEY not set!")
-        return
-
-    llm_client = AsyncOpenAI(api_key=api_key)
-    print(f"  OpenAI client initialized (key: {api_key[:8]}...)")
+    # Acquire the configured shared client before contacting the gRPC host.
+    llm_client = get_client(SECURITY_ANALYZER_ROLE)
+    print("  Security-analysis client initialized")
 
     # Read scan configuration
     scan_host = os.environ.get("SCAN_TARGET", "host")
@@ -103,9 +101,9 @@ async def main():
             runtime.add_message_serializer(serializer)
 
     print("  All 4 agents registered:")
-    print("    - OrchestratorAgent (GPT-4o + Function Calling)")
+    print("    - OrchestratorAgent (configured function-calling model)")
     print("    - ScannerAgent (Network I/O)")
-    print("    - AnalyzerAgent (GPT-4o Chain-of-Thought)")
+    print("    - AnalyzerAgent (configured security analysis)")
     print("    - ReporterAgent (Formatting)")
     print(flush=True)
 

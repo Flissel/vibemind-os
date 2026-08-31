@@ -1,0 +1,242 @@
+import { execFile } from "node:child_process";
+import { access, readFile, readdir, realpath, stat } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { afterAll, describe, expect, it } from "vitest";
+import {
+  assertPinnedSource,
+  getVerifiedPluginDigests,
+  normalizePlugin,
+  type SourceProvenance,
+} from "../src/index.js";
+import {
+  cleanupOwnedTestRoot,
+  createOwnedTestRoot,
+  recoverOwnedTestRoots,
+} from "./test-temp.js";
+
+const sourceRoot = process.env.OPENAI_PLUGINS_SOURCE_ROOT;
+const catalogStoreRoot = process.env.ROWBOAT_PLUGIN_STORE;
+const PINNED_COMMIT = "11c74d6ba24d3a6d48f54a194cd00ef3beea18f9";
+const execFileAsync = promisify(execFile);
+let pinStoreParent: string | undefined;
+let cliInvocationRoot: string | undefined;
+
+afterAll(async () => {
+  if (pinStoreParent !== undefined) await cleanupOwnedTestRoot(pinStoreParent);
+  if (cliInvocationRoot !== undefined) await cleanupOwnedTestRoot(cliInvocationRoot);
+});
+
+async function filesUnder(directory: string): Promise<readonly string[]> {
+  try {
+    const entries = await readdir(directory, { withFileTypes: true });
+    const files: string[] = [];
+    for (const entry of entries) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) files.push(...(await filesUnder(path)));
+      else if (entry.isFile()) files.push(path);
+    }
+    return files;
+  } catch {
+    return [];
+  }
+}
+
+describe.skipIf(sourceRoot === undefined)("pinned OpenAI plugin catalog", () => {
+  it(
+    "normalizes every direct catalog plugin at the exact pinned shapes",
+    async () => {
+      if (sourceRoot === undefined) throw new Error("source root is required");
+      const head = await execFileAsync("git", ["-C", sourceRoot, "rev-parse", "HEAD"]);
+      const status = await execFileAsync("git", ["-C", sourceRoot, "status", "--porcelain"]);
+      expect(head.stdout.trim()).toBe(PINNED_COMMIT);
+      expect(status.stdout.trim()).toBe("");
+      await recoverOwnedTestRoots("pin-store");
+      pinStoreParent = await createOwnedTestRoot("pin-store");
+      const verifiedSource = await assertPinnedSource({
+        repositoryRoot: sourceRoot,
+        expectedCommit: PINNED_COMMIT,
+        sourceUrl: "https://github.com/openai/plugins.git",
+        storeRoot: join(pinStoreParent, "content"),
+      });
+      const pluginsRoot = join(sourceRoot, "plugins");
+      const directories = (await readdir(pluginsRoot, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory())
+        .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+
+      let manifestCount = 0;
+      let appFileCount = 0;
+      let mcpFileCount = 0;
+      let appComponentCount = 0;
+      let mcpComponentCount = 0;
+      let skillInventoryCount = 0;
+      let agentInventoryCount = 0;
+      let agentMetadataInventoryCount = 0;
+      let agentSurfaceInventoryCount = 0;
+      let commandInventoryCount = 0;
+      let hookInventoryCount = 0;
+      let skillComponentCount = 0;
+      let agentComponentCount = 0;
+      let commandComponentCount = 0;
+      let hookComponentCount = 0;
+      let assetComponentCount = 0;
+      const assetInventory = new Set<string>();
+      for (const directory of directories) {
+        const pluginRoot = join(pluginsRoot, directory.name);
+        const manifestPath = join(pluginRoot, ".codex-plugin", "plugin.json");
+        const manifestBytes = await readFile(manifestPath);
+        const manifestInput = JSON.parse(manifestBytes.toString("utf8")) as {
+          readonly name: string;
+          readonly version: string;
+          readonly apps?: string;
+          readonly mcpServers?: string;
+          readonly interface: {
+            readonly composerIcon?: string;
+            readonly logo?: string;
+            readonly logoDark?: string;
+            readonly screenshots?: readonly string[];
+          };
+        };
+        const digests = await getVerifiedPluginDigests(verifiedSource, pluginRoot);
+        const provenance: SourceProvenance = {
+          sourceUrl: "https://github.com/openai/plugins.git",
+          sourceCommit: PINNED_COMMIT,
+          pluginName: manifestInput.name,
+          pluginVersion: manifestInput.version,
+          manifestDigest: digests.manifestDigest,
+          treeDigest: digests.treeDigest,
+          importedAt: "2026-08-24T00:00:00.000Z",
+          schemaVersion: "rowboat-openai-plugin-runtime-v1",
+          policyVersion: "rowboat-plugin-policy-v1",
+        };
+        const plugin = await normalizePlugin(pluginRoot, provenance, verifiedSource);
+        expect(plugin.status, directory.name).toBe("available");
+        expect(plugin.components.every(({ status: componentStatus }) => componentStatus === "available"), directory.name).toBe(true);
+        expect(new Set(plugin.components.map(({ id }) => id)).size, directory.name).toBe(plugin.components.length);
+        manifestCount += 1;
+        if (manifestInput.apps !== undefined) appFileCount += 1;
+        if (manifestInput.mcpServers !== undefined) mcpFileCount += 1;
+        appComponentCount += plugin.components.filter(({ kind }) => kind === "app").length;
+        mcpComponentCount += plugin.components.filter(({ kind }) => kind === "mcp").length;
+        skillComponentCount += plugin.components.filter(({ kind }) => kind === "skill").length;
+        agentComponentCount += plugin.components.filter(({ kind }) => kind === "agent").length;
+        commandComponentCount += plugin.components.filter(({ kind }) => kind === "command").length;
+        hookComponentCount += plugin.components.filter(({ kind }) => kind === "hook").length;
+        assetComponentCount += plugin.components.filter(({ kind }) => kind === "asset").length;
+
+        const skillFiles = await filesUnder(join(pluginRoot, "skills"));
+        skillInventoryCount += skillFiles.filter((path) => path.endsWith("SKILL.md")).length;
+        const agentFiles = await filesUnder(join(pluginRoot, "agents"));
+        if (agentFiles.length > 0) agentSurfaceInventoryCount += 1;
+        agentInventoryCount += agentFiles.filter((path) => path.endsWith(".md") && !path.endsWith(".md.tmpl") && !path.endsWith("_conventions.md")).length;
+        agentMetadataInventoryCount += agentFiles.filter((path) => path.endsWith(".yaml")).length;
+        const commandFiles = await filesUnder(join(pluginRoot, "commands"));
+        commandInventoryCount += commandFiles.filter((path) => path.endsWith(".md") && !path.endsWith(".md.tmpl") && !path.endsWith("_conventions.md")).length;
+        try {
+          if ((await stat(join(pluginRoot, "hooks.json"))).isFile()) hookInventoryCount += 1;
+        } catch {
+          // This plugin has no conventional hook surface.
+        }
+        for (const pointer of [
+          manifestInput.interface.composerIcon,
+          manifestInput.interface.logo,
+          manifestInput.interface.logoDark,
+          ...(manifestInput.interface.screenshots ?? []),
+        ]) {
+          if (pointer !== undefined) assetInventory.add(await realpath(join(pluginRoot, pointer)));
+        }
+      }
+
+      // Task 4 proves discovery status only. Policy admission states such as
+      // review_required/unavailable/unsupported are asserted in Tasks 5 and 6.
+      expect({
+        manifestCount,
+        appFileCount,
+        mcpFileCount,
+        appComponentCount,
+        mcpComponentCount,
+        skillInventoryCount,
+        agentInventoryCount,
+        agentMetadataInventoryCount,
+        agentSurfaceInventoryCount,
+        commandInventoryCount,
+        hookInventoryCount,
+        assetInventoryCount: assetInventory.size,
+        skillComponentCount,
+        agentComponentCount,
+        commandComponentCount,
+        hookComponentCount,
+        assetComponentCount,
+      }).toEqual({
+        manifestCount: 180,
+        appFileCount: 154,
+        mcpFileCount: 8,
+        appComponentCount: 156,
+        mcpComponentCount: 8,
+        skillInventoryCount: 603,
+        agentInventoryCount: 9,
+        agentMetadataInventoryCount: 13,
+        agentSurfaceInventoryCount: 14,
+        commandInventoryCount: 40,
+        hookInventoryCount: 2,
+        assetInventoryCount: 262,
+        skillComponentCount: 603,
+        agentComponentCount: 22,
+        commandComponentCount: 40,
+        hookComponentCount: 2,
+        assetComponentCount: 262,
+      });
+    },
+    1_200_000,
+  );
+
+  it.skipIf(catalogStoreRoot === undefined)(
+    "runs the documented npm catalog sync from the invocation Git root",
+    async () => {
+      if (sourceRoot === undefined || catalogStoreRoot === undefined) {
+        throw new Error("pinned source and store are required");
+      }
+      cliInvocationRoot = await createOwnedTestRoot("pin-cli-invocation");
+      await execFileAsync("git", ["init", "--quiet", cliInvocationRoot]);
+      const relativeOutput = join(
+        "spaces",
+        "rowboat",
+        "rowboat",
+        "config",
+        "openai-plugin-catalog.lock.json",
+      );
+      const packageRoot = fileURLToPath(new URL("../", import.meta.url));
+      const childEnvironment: NodeJS.ProcessEnv = {
+        ...process.env,
+        ROWBOAT_PLUGIN_STORE: catalogStoreRoot,
+      };
+      delete childEnvironment.INIT_CWD;
+
+      const npmExecutable = process.env.npm_execpath;
+      if (npmExecutable === undefined) throw new Error("npm_execpath is required");
+      const result = await execFileAsync(process.execPath, [
+        npmExecutable,
+        "--prefix", packageRoot,
+        "run", "catalog:sync",
+        "--",
+        "--source", join(sourceRoot, "plugins"),
+        "--commit", PINNED_COMMIT,
+        "--output", relativeOutput,
+      ], {
+        cwd: cliInvocationRoot,
+        env: childEnvironment,
+        timeout: 1_200_000,
+        maxBuffer: 1024 * 1024,
+      });
+
+      expect(result.stdout).toMatch(/[a-f0-9]{64} 180/);
+      const written = JSON.parse(
+        await readFile(join(cliInvocationRoot, relativeOutput), "utf8"),
+      ) as { readonly entries: readonly unknown[] };
+      expect(written.entries).toHaveLength(180);
+      await expect(access(join(packageRoot, "spaces"))).rejects.toThrow();
+    },
+    1_200_000,
+  );
+});

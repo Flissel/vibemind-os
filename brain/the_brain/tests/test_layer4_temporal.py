@@ -20,6 +20,9 @@ Test coverage:
 - Token processing interface
 """
 
+import builtins
+import types
+
 import pytest
 import numpy as np
 import sys
@@ -139,6 +142,39 @@ class TestLayer4Initialization:
         assert router.total_executions == 0
         assert router.total_blocks == 0
         assert router.total_waits == 0
+
+    def test_default_initialization_does_not_import_or_construct_ollama_router(self, monkeypatch):
+        """The default Layer4 path stays local/deterministic without Ollama I/O."""
+        imports = []
+        constructions = []
+        fake_module = types.ModuleType("core.ollama_llm_router")
+
+        class ForbiddenOllamaConfig:
+            def __init__(self, **_kwargs):
+                pass
+
+        class ForbiddenOllamaRouter:
+            def __init__(self, _config):
+                constructions.append(True)
+                self.is_available = True
+
+        fake_module.OllamaConfig = ForbiddenOllamaConfig
+        fake_module.OllamaLLMRouter = ForbiddenOllamaRouter
+        monkeypatch.setitem(sys.modules, "core.ollama_llm_router", fake_module)
+        original_import = builtins.__import__
+
+        def tracking_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "core.ollama_llm_router":
+                imports.append(name)
+            return original_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", tracking_import)
+
+        router = Layer4TemporalRouter(enable_deep_reasoning=False)
+
+        assert imports == []
+        assert constructions == []
+        assert router.token_adapter.local_classifier is not None
 
     def test_custom_initialization(self):
         """Router respects custom configuration values."""

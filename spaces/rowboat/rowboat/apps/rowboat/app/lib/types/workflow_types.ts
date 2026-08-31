@@ -62,6 +62,18 @@ export const WorkflowPrompt = z.object({
     ]),
     prompt: z.string(),
 });
+export const PluginToolBinding = z.object({
+    installationId: z.string().uuid(),
+    pluginName: z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/),
+    componentDigest: z.string().regex(/^[a-f0-9]{64}$/),
+    providerBindingId: z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/),
+    capability: z.enum(["read", "write"]),
+    // Where the binding came from. A migrated tool replaces a legacy tool and
+    // stays under the runtime mode gate; a tool added straight from the plugin
+    // catalog has no legacy counterpart and is not gated. An absent or
+    // unreadable origin is treated as migrated, which is the gated reading.
+    origin: z.enum(["migration", "native"]).optional(),
+}).strict().transform((value) => Object.freeze(value));
 export const WorkflowTool = z.object({
     name: z.string(),
     description: z.string(),
@@ -79,6 +91,7 @@ export const WorkflowTool = z.object({
     isLibrary: z.boolean().default(false).optional(), // whether this is a library tool
     isWebhook: z.boolean().optional(), // whether this is a webhook tool
     isGeminiImage: z.boolean().optional(), // whether this tool generates images via Gemini
+    pluginBinding: PluginToolBinding.optional(),
     composioData: z.object({
         slug: z.string(), // the slug for the Composio tool e.g. "GITHUB_CREATE_AN_ISSUE"
         noAuth: z.boolean(), // whether the tool requires no authentication

@@ -1,102 +1,73 @@
-"""
-Integration test: provider failover through the real MultiLLMRouter.aroute path.
+"""Hermetic contract tests for OpenFang-owned retry behavior."""
 
-Mocks only the leaf network call (_acall_openrouter); everything else — aroute,
-_acall_llm, chain building, the shared breaker — is the real code. Proves the
-failover wiring actually triggers end-to-end, and that the no-chain default is
-a no-regress single attempt.
-"""
+from __future__ import annotations
 
 import asyncio
-import os
+import importlib
+import sys
+import types
+from pathlib import Path
+from typing import Any
 
 import pytest
 
-import core.multi_llm_router as mod
-from core.multi_llm_router import MultiLLMRouter
+
+BRAIN_ROOT = Path(__file__).resolve().parents[1]
+if str(BRAIN_ROOT) not in sys.path:
+    sys.path.insert(0, str(BRAIN_ROOT))
 
 
-class _HTTPish(Exception):
-    def __init__(self, status_code):
-        super().__init__(f"HTTP {status_code}")
-
-        class _R:
-            pass
-
-        self.response = _R()
-        self.response.status_code = status_code
+MODELS = {
+    "brain_fast_reasoning": "openfang:brain-fallback",
+    "brain_planning": "openfang:brain-planner",
+    "brain_context_tracking": "openfang:brain-knowledge",
+    "brain_communication": "openfang:brain-writer",
+    "brain_long_term_memory": "openfang:brain-knowledge",
+}
 
 
-@pytest.fixture(autouse=True)
-def _reset_breaker():
-    # The breaker is module-level shared state; reset between tests.
-    mod._failover_breaker = None
-    yield
-    mod._failover_breaker = None
+@pytest.fixture
+def router_module(monkeypatch: pytest.MonkeyPatch) -> Any:
+    shared = types.ModuleType("vibemind_shared")
+
+    class SharedOpenFangUnavailable(RuntimeError):
+        pass
+
+    shared.OpenFangUnavailable = SharedOpenFangUnavailable
+    shared.get_client = lambda role: None
+    shared.get_client_sync = lambda role: None
+    shared.get_model = lambda role: MODELS[role]
+    monkeypatch.setitem(sys.modules, "vibemind_shared", shared)
+    sys.modules.pop("core.multi_llm_router", None)
+    return importlib.import_module("core.multi_llm_router")
 
 
-def _router():
-    return MultiLLMRouter(openrouter_api_key="test-key")
+def test_env_model_chain_cannot_bypass_openfang_retry_boundary(
+    router_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    unavailable = router_module.OpenFangUnavailable("gateway exhausted bounded retry")
 
+    class AsyncCompletions:
+        async def create(self, **kwargs: Any) -> Any:
+            calls.append(kwargs)
+            raise unavailable
 
-def test_no_chain_single_attempt(monkeypatch):
-    monkeypatch.delenv("BRAIN_LLM_FALLBACK_CHAIN", raising=False)
-    monkeypatch.setenv("BRAIN_LLM_MAX_RETRIES", "0")  # exact old behaviour
-    r = _router()
-    seen = []
+    monkeypatch.setenv("BRAIN_LLM_FALLBACK_CHAIN", "direct-provider-model")
+    monkeypatch.setenv("BRAIN_LLM_MAX_RETRIES", "9")
+    monkeypatch.setattr(
+        router_module,
+        "get_client",
+        lambda role: types.SimpleNamespace(
+            chat=types.SimpleNamespace(completions=AsyncCompletions())
+        ),
+    )
+    router = router_module.MultiLLMRouter(enable_infinite_chat=False)
 
-    async def fake(model, prompt, max_tokens, temperature):
-        seen.append(model)
-        return "hello"
+    with pytest.raises(router_module.OpenFangUnavailable, match="bounded retry"):
+        asyncio.run(router.aroute("path_planning", "must not route elsewhere"))
 
-    monkeypatch.setattr(r, "_acall_openrouter", fake)
-    out = asyncio.run(r.aroute("path_planning", "hi"))
-    assert out == "hello"
-    assert len(seen) == 1  # no chain, no retry → one call
-
-
-def test_chain_fails_over_to_second_provider(monkeypatch):
-    # Primary will 429; chain provides a working fallback.
-    monkeypatch.setenv("BRAIN_LLM_FALLBACK_CHAIN", "groq::working-model")
-    monkeypatch.setenv("BRAIN_LLM_MAX_RETRIES", "0")
-    r = _router()
-    seen = []
-
-    async def fake(model, prompt, max_tokens, temperature):
-        seen.append(model)
-        if "working" not in model:
-            raise _HTTPish(429)
-        return "recovered"
-
-    monkeypatch.setattr(r, "_acall_openrouter", fake)
-    out = asyncio.run(r.aroute("path_planning", "hi"))
-    assert out == "recovered"
-    assert len(seen) == 2  # primary (429) → fallback (ok)
-    assert "working" in seen[1]
-
-
-def test_retries_transient_on_same_model(monkeypatch):
-    monkeypatch.delenv("BRAIN_LLM_FALLBACK_CHAIN", raising=False)
-    monkeypatch.setenv("BRAIN_LLM_MAX_RETRIES", "2")
-    r = _router()
-    attempts = {"n": 0}
-
-    async def fake(model, prompt, max_tokens, temperature):
-        attempts["n"] += 1
-        if attempts["n"] < 3:
-            raise _HTTPish(503)
-        return "ok-after-retries"
-
-    # No real sleeping: stub asyncio.sleep used by the failover backoff.
-    # ProviderFailover captures provider_failover.asyncio.sleep as its default,
-    # so patch it there (not in multi_llm_router).
-    import core.provider_failover as pf
-
-    async def no_sleep(_):
-        return None
-
-    monkeypatch.setattr(pf.asyncio, "sleep", no_sleep, raising=False)
-    monkeypatch.setattr(r, "_acall_openrouter", fake)
-    out = asyncio.run(r.aroute("path_planning", "hi"))
-    assert out == "ok-after-retries"
-    assert attempts["n"] == 3
+    assert [call["model"] for call in calls] == ["openfang:brain-planner"]
+    assert "gateway exhausted bounded retry" in caplog.text

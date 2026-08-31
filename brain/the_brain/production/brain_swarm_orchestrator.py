@@ -16,6 +16,7 @@ Key Components:
 """
 
 import asyncio
+import inspect
 import logging
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
@@ -24,6 +25,13 @@ import json
 from production.production_planner import ProductionPlanner
 from production.cognitive_feature_agents import CognitiveFeatureAgentFactory
 from production.unified_brain_client import UnifiedBrainClient
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    InternalServerError,
+    RateLimitError,
+)
+from vibemind_shared import OpenFangUnavailable, get_provider_info
 
 # AutoGen imports (will be installed)
 try:
@@ -40,6 +48,18 @@ except ImportError:
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _supports_client_option(client_class: Any, option: str) -> bool:
+    """Return whether an AutoGen client constructor accepts an option."""
+    try:
+        parameters = inspect.signature(client_class).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == option or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
 
 
 @dataclass
@@ -200,18 +220,27 @@ class BrainSwarmOrchestrator:
 
         logger.info(f"Using {info['provider']}/{info['model']} for swarm agents (role={_PLANNING_ROLE})")
 
-        return OpenAIChatCompletionClient(
-            model=get_model(_PLANNING_ROLE),
-            api_key=api_key,
-            base_url=info["base_url"],
+        client_kwargs = {
+            "model": get_model(_PLANNING_ROLE),
+            "api_key": api_key,
+            "base_url": info["base_url"],
             # Disable parallel tool calls to prevent multiple handoffs
-            model_kwargs={
-                "parallel_tool_calls": False,
-                "extra_headers": {
-                    "HTTP-Referer": "https://github.com/Flissel/the_brain",
-                    "X-Title": "Tahlamus Brain Swarm"
-                }
-            }
+            "parallel_tool_calls": False,
+            "default_headers": {
+                "HTTP-Referer": "https://github.com/Flissel/the_brain",
+                "X-Title": "Tahlamus Brain Swarm"
+            },
+        }
+        transport_options = {
+            "max_retries": info.get("max_retries"),
+            "timeout": info.get("timeout_seconds"),
+        }
+        for option, value in transport_options.items():
+            if value is not None and _supports_client_option(OpenAIChatCompletionClient, option):
+                client_kwargs[option] = value
+
+        return OpenAIChatCompletionClient(
+            **client_kwargs
         )
 
     def _create_brain_context_message(self) -> str:
@@ -383,18 +412,46 @@ Please coordinate execution of this task."""
 
         # run_stream returns an async generator, need to collect results
         swarm_messages = []
+        is_openfang_provider = get_provider_info("planning").get("provider") == "openfang"
         try:
             # Add 30-second timeout to prevent hanging
             async with asyncio.timeout(30.0):
                 async for message in self.swarm.run_stream(task=task_message):
                     swarm_messages.append(message)
                     logger.info(f"Swarm message: {message}")
-        except asyncio.TimeoutError:
-            logger.warning("Swarm execution timed out after 30 seconds")
-            swarm_messages.append("TIMEOUT: Swarm execution exceeded 30 seconds")
-        except Exception as e:
-            logger.error(f"Swarm execution failed: {e}")
-            swarm_messages.append(f"ERROR: {str(e)}")
+        except OpenFangUnavailable as error:
+            logger.error(
+                "OpenFang unavailable during swarm execution; error_type=%s",
+                type(error).__name__,
+            )
+            raise OpenFangUnavailable(
+                "OpenFang unavailable during swarm execution"
+            ) from None
+        except Exception as error:
+            if not is_openfang_provider:
+                logger.exception("Swarm execution failed")
+                raise
+            if isinstance(
+                error,
+                (
+                    APIConnectionError,
+                    APITimeoutError,
+                    RateLimitError,
+                    InternalServerError,
+                ),
+            ):
+                logger.error(
+                    "OpenFang transport failed during swarm execution; error_type=%s",
+                    type(error).__name__,
+                )
+                raise OpenFangUnavailable(
+                    "OpenFang unavailable during swarm execution"
+                ) from None
+            logger.error(
+                "Swarm execution failed at OpenFang boundary; error_type=%s",
+                type(error).__name__,
+            )
+            raise RuntimeError("Swarm execution failed") from None
 
         # Format swarm result
         swarm_result = "\n".join([str(msg) for msg in swarm_messages])

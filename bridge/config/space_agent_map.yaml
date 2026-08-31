@@ -1,22 +1,28 @@
 # Brain Space → OpenFang Agent Name Mapping
 # Maps to existing running agents in OpenFang (by name).
 # Falls back to spawning from template if not found.
+#
+# SoT: config/space_agent_registry.yml — this file MUST mirror the `agent:`
+# field of each space there (ABSORB-7: "Registry is the single truth;
+# LEGACY_SPACE_AGENT_MAP derives/validates against this").
+# Aligned 2026-08-07 after 7 entries had drifted away from the registry;
+# test_bridge_map_matches_registry pins it from now on.
 
 mappings:
   coding: brain-coder
   research: brain-researcher
-  desktop: brain-devops
-  ideas: brain-planner
-  bubbles: brain-writer
-  minibook: brain-writer
-  agentfarm: brain-orchestrator
-  n8n: brain-orchestrator
-  schedule: vibemind
-  roarboot: rowboat-chat
-  video: vibemind
-  flowzen: vibemind
-  mirofish: vibemind
+  desktop: brain-desktop
+  ideas: brain-ideas
+  bubbles: brain-bubbles
+  minibook: brain-knowledge
+  agentfarm: vibemind
+  n8n: brain-n8n
+  schedule: brain-scheduler
+  rowboat: rowboat-chat
+  video: brain-video
+  flowzen: brain-wellness
+  mirofish: brain-forecaster
 
 # Below this confidence threshold, always use this agent
 min_confidence: 0.3
-fallback_agent: vibemind
+fallback_agent: brain-fallback

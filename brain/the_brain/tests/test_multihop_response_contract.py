@@ -50,10 +50,34 @@ class _StubPlanExecutor:
         }
 
 
+class _PendingPlanExecutor:
+    recorder = _StubRecorder()
+
+    def execute(self, plan):
+        return {
+            "ok": False,
+            "pending": True,
+            "authority_status": "pending_approval",
+            "invocation_id": "brain-mcp-pending",
+            "plan": plan.to_dict(),
+            "executed": {"s1": {"ok": False, "pending": True}},
+            "state": {}, "elapsed_s": 0.01, "replans": 0,
+        }
+
+
 def _make_client() -> TestClient:
     app = FastAPI()
     app.include_router(router)
     app.state.plan_executor = _StubPlanExecutor()
+    app.state.multihop_planner = None
+    app.state.final_synthesizer = None
+    return TestClient(app)
+
+
+def _make_pending_client() -> TestClient:
+    app = FastAPI()
+    app.include_router(router)
+    app.state.plan_executor = _PendingPlanExecutor()
     app.state.multihop_planner = None
     app.state.final_synthesizer = None
     return TestClient(app)
@@ -94,3 +118,24 @@ class TestMultihopResponseContract:
         client = _make_client()
         resp = client.post("/api/multihop/execute", json={"plan": PLAN_DICT})
         assert resp.json().get("trace_id", "").startswith("tr_")
+
+    def test_nonempty_client_trace_id_is_preserved(self):
+        client = _make_client()
+        resp = client.post(
+            "/api/multihop/execute",
+            json={"plan": PLAN_DICT, "trace_id": "trace-client-supplied"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["trace_id"] == "trace-client-supplied"
+
+    def test_pending_authority_response_preserves_plan_and_stable_invocation_id(self):
+        resp = _make_pending_client().post("/api/multihop/execute", json={"plan": PLAN_DICT})
+        body = resp.json()
+        assert body["ok"] is False
+        assert body["pending"] is True
+        assert body["authority_status"] == "pending_approval"
+        assert body["invocation_id"] == "brain-mcp-pending"
+        assert body["plan"]["plan_id"] == PLAN_DICT["plan_id"]
+        assert body["plan"]["plan_revision"] == 1
+        assert body["plan"]["trace_id"] == body["trace_id"]
+        assert body["executed"] == {"s1": {"ok": False, "pending": True}}

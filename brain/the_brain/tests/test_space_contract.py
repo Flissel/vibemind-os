@@ -22,11 +22,12 @@ def test_aliases_normalize_to_registry_ids():
 
     assert CANONICAL_ALIASES == {
         "autogen": "agentfarm",
-        "rowboat": "roarboot",
+        "roarboot": "rowboat",
         "shuttles": "bubbles",
     }
     assert normalize_space_id(" AutoGen ", contract) == "agentfarm"
-    assert normalize_space_id("rowboat", contract) == "roarboot"
+    assert normalize_space_id("roarboot", contract) == "rowboat"
+    assert normalize_space_id("rowboat", contract) == "rowboat"
     assert normalize_space_id("shuttles", contract) == "bubbles"
     assert normalize_space_id("coding", contract) == "coding"
     assert normalize_space_id("unknown", contract) is None
@@ -36,7 +37,7 @@ def test_registry_contract_owns_event_to_space_mapping():
     contract = load_space_contract(REGISTRY)
 
     assert contract.event_space_map["agentfarm.run"] == "agentfarm"
-    assert contract.event_space_map["roarboot.query"] == "roarboot"
+    assert contract.event_space_map["rowboat.query"] == "rowboat"
     assert contract.event_space_map["bubble.promote"] == "bubbles"
     assert set(contract.space_ids) == set(contract.spaces)
 
@@ -48,7 +49,8 @@ def test_registry_contract_owns_event_to_space_mapping():
 
 def test_navigator_returns_canonical_ids_for_legacy_names():
     assert resolve_alias("autogen") == "agentfarm"
-    assert resolve_alias("rowboat") == "roarboot"
+    assert resolve_alias("roarboot") == "rowboat"
+    assert resolve_alias("rowboat") == "rowboat"
     assert resolve_alias("shuttles") == "bubbles"
 
 

@@ -14,6 +14,8 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from vibemind_shared import OpenFangUnavailable, get_client, get_model
+
 from .supabase_ideas_client import SupabaseIdeasClient
 
 logger = logging.getLogger(__name__)
@@ -582,30 +584,24 @@ def _get_eval_router():
     return _EVAL_ROUTER  # type: ignore[name-defined]
 
 
-def _llm_call(prompt: str, *, max_tokens: int = 700) -> Dict[str, Any]:
-    """Groq-primary with OpenAI-direct fallback — same resilience the
-    planner has. Groq's free-tier TPM trips on burst use (429); when it
-    does, gpt-4o-mini via openai_subagent hits api.openai.com directly
-    (NOT OpenRouter, so it survives the 402-credit-exhausted state)."""
-    d = _get_eval_router()
-    if d is None:
-        return {"ok": False, "error": "LLM router unavailable"}
-    r = d.dispatch("groq_subagent", prompt=prompt,
-                   model="groq::llama-3.3-70b-versatile",
-                   max_tokens=max_tokens)
-    if r.get("ok"):
-        return r
-    err = str(r.get("error") or "")
-    # Fall back on rate-limit / quota / transient errors only.
-    if any(s in err for s in ("429", "Too Many Requests", "rate",
-                              "ConnectError", "timeout", "5xx", "503")):
-        logger.info(f"[llm] groq failed ({err[:60]}); OpenAI-direct fallback")
-        fb = d.dispatch("openai_subagent", prompt=prompt,
-                        model="gpt-4o-mini", max_tokens=max_tokens)
-        if fb.get("ok"):
-            return fb
-        return fb  # surface the fallback error
-    return r
+async def _llm_call(prompt: str, *, max_tokens: int = 700) -> Dict[str, Any]:
+    """Complete through the configured OpenFang fast-reasoning role only."""
+    role = "brain_fast_reasoning"
+    model = str(get_model(role))
+    if not model.startswith("openfang:"):
+        raise RuntimeError(f"role {role!r} is not configured for OpenFang")
+    try:
+        client = get_client(role)
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+        )
+    except OpenFangUnavailable:
+        raise
+    choices = getattr(response, "choices", None)
+    content = getattr(getattr(choices[0], "message", None), "content", "") if choices else ""
+    return {"ok": True, "text": str(content or "").strip()}
 
 
 async def evaluate_op(
@@ -680,7 +676,7 @@ async def evaluate_op(
     prompt = _EVAL_PROMPT.format(
         title=bubble_title, n=len(nodes), nodes=node_block[:12000],
     )
-    resp = _llm_call(prompt, max_tokens=700)
+    resp = await _llm_call(prompt, max_tokens=700)
     if not resp.get("ok"):
         return f"Eval LLM call failed: {resp.get('error')}"
     text = (resp.get("text") or "").strip()
@@ -1046,14 +1042,18 @@ async def bubble_score_op(client: SupabaseIdeasClient,
 
 
 async def bubble_promote_op(client: SupabaseIdeasClient,
-                            params: Dict[str, Any]) -> str:
+                            params: Dict[str, Any]) -> str | Dict[str, Any]:
     row = await _resolve_bubble(client, params, "bubble_name", "bubble",
                                 "bubble_id", "name", "title")
     if row is None:
-        return "Bubble to promote not found."
+        return {"ok": False, "error": "Bubble to promote not found."}
     project = await client.promote_bubble(row)
     if not project:
-        return f"Failed to promote bubble '{row.get('title')}'."
+        # promote_bubble rolls the project back when the bubble link fails, so
+        # this branch means nothing was persisted — report it as a failure
+        # instead of a success-shaped string (D1, Zyklus-1-Befund 2026-08-01).
+        return {"ok": False,
+                "error": f"Failed to promote bubble '{row.get('title')}'."}
     title = row.get("title") or project.get("name") or "?"
     project_id = project.get("id")
     _publish("bubble.promote",
@@ -1329,7 +1329,7 @@ async def idea_llm_op(client: SupabaseIdeasClient,
     else:  # idea_expand
         prompt = (f"Suggest 3 concrete sub-ideas for this. One per line.\n\n"
                   f"{node.get('title')}: {body}")
-    resp = _llm_call(prompt, max_tokens=300)
+    resp = await _llm_call(prompt, max_tokens=300)
     if not resp.get("ok"):
         return f"LLM call failed: {resp.get('error')}"
     txt = (resp.get("text") or "").strip()

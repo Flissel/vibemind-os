@@ -5,7 +5,7 @@ transport kinds:
 
   direct:<module>:<function>           # python in-process call (Phase 1.5)
   http:<METHOD>:<url>                  # generic HTTP webhook
-  mcp:<server>:<tool>                  # local MCP server tool (via brain-core stdio bridge)
+  mcp:<agent>:<server>:<tool>          # OpenFang MCP tool with bound agent authority
   n8n:<workflow_id>                    # n8n workflow trigger
   coding-engine:<endpoint>             # Daves coding-engine HTTP endpoint
   openfang:<agent_name>                # explicit single-agent dispatch via OpenFang
@@ -33,6 +33,7 @@ import os
 import re
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -40,6 +41,11 @@ import requests
 import yaml
 
 from .capability_executor import DirectExecutor
+from .openfang_runtime_authority import (
+    RuntimeAuthorityClient,
+    RuntimeAuthorityPending,
+    RuntimeInvocationContext,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -724,38 +730,241 @@ class BrainSelfExecutor(_BaseRemoteExecutor):
 
 
 class McpExecutor(_BaseRemoteExecutor):
-    """MCP tool call — Phase 4 stub.
+    """Execute a namespaced MCP tool through OpenFang's HTTP MCP endpoint.
 
-    Spec: `mcp:<server>:<tool>` — calls a tool on a stdio MCP server via
-    the brain-core stdio proxy. Implemented as HTTP POST to a future
-    `/api/mcp/dispatch` route on Brain itself, since stdio JSON-RPC
-    requires per-tool wiring that is best done as a follow-up.
+    Spec: ``mcp:<agent>:<server>:<tool>``.  The agent is a canonical
+    OpenFang registry name, resolved to its current UUID through the
+    authenticated control-plane API.  That UUID is bound by OpenFang's
+    ``X-OpenFang-Agent-Id`` transport header; it is never trusted from the
+    JSON-RPC body.  OpenFang applies the agent's tool allowlist, approvals,
+    execution policy, and audit attribution.
 
-    For now, this executor returns ok=False with a clear message so a
-    capability that uses `mcp:` knows to stay broadcast-only until the
-    bridge is finished. The capability still loads cleanly — only calls
-    fail until the bridge lands.
+    This executor deliberately has no local/Brain dispatch fallback.  A
+    missing gateway configuration, unknown agent, JSON-RPC error, or
+    transport failure returns the standard failed envelope from
+    ``_BaseRemoteExecutor``.
     """
+
+    _RETRY_ATTEMPTS = 3
+    _RETRY_DELAYS_S = (0.25, 0.5)
 
     def __init__(self, target: str) -> None:
         super().__init__(target)
         rest = target.split(":", 1)[1] if target.startswith("mcp:") else target
-        if ":" not in rest:
-            raise ValueError(f"mcp target needs <server>:<tool>: {target!r}")
-        self.server, self.tool = rest.split(":", 1)
-        self.base = os.environ.get("BRAIN_SELF_URL", "http://127.0.0.1:5000").rstrip("/")
+        parts = [part.strip() for part in rest.split(":", 2)]
+        if len(parts) != 3 or any(not part for part in parts):
+            raise ValueError(
+                "mcp target requires canonical mcp:<agent>:<server>:<tool>; "
+                f"migrate legacy target {target!r}"
+            )
+        self.agent_name, self.server, self.tool = parts
+
+    @staticmethod
+    def _tool_namespace_component(value: str) -> str:
+        """Match OpenFang's ``normalize_name`` used for MCP tool names."""
+        return value.lower().replace("-", "_")
+
+    @property
+    def namespaced_tool(self) -> str:
+        return "mcp_{}_{}".format(
+            self._tool_namespace_component(self.server),
+            self._tool_namespace_component(self.tool),
+        )
+
+    def _configuration(self) -> tuple[str, str]:
+        base = os.environ.get("OPENFANG_URL", "").strip().rstrip("/")
+        if not base:
+            raise RuntimeError("OPENFANG_URL is required for OpenFang MCP execution")
+        api_key = os.environ.get("OPENFANG_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError("OPENFANG_API_KEY is required for OpenFang MCP execution")
+        return base, api_key
+
+    @staticmethod
+    def _is_transient_openfang_error(exc: requests.exceptions.RequestException) -> bool:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+        return status is None or status in {408, 425, 429} or status >= 500
+
+    def _request_json(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Dict[str, str],
+        payload: Optional[Dict[str, Any]] = None,
+        retry_transient: bool = False,
+        timeout_cap_s: Optional[float] = None,
+    ) -> Any:
+        """Issue one OpenFang request, retrying only safe idempotent GETs."""
+        configured_timeout = float(os.environ.get("CAPABILITY_HTTP_TIMEOUT_S", "60"))
+        timeout = min(configured_timeout, timeout_cap_s) if timeout_cap_s else configured_timeout
+        last_error: Optional[requests.exceptions.RequestException] = None
+        attempts = self._RETRY_ATTEMPTS if retry_transient else 1
+        for attempt in range(attempts):
+            try:
+                if method == "GET":
+                    response = requests.get(url, headers=headers, timeout=timeout)
+                else:
+                    response = requests.post(
+                        url, json=payload, headers=headers, timeout=timeout,
+                    )
+                response.raise_for_status()
+                try:
+                    return response.json()
+                except ValueError as exc:
+                    raise RuntimeError(
+                        f"OpenFang returned invalid JSON from {url}"
+                    ) from exc
+            except requests.exceptions.RequestException as exc:
+                if not self._is_transient_openfang_error(exc):
+                    raise RuntimeError(f"OpenFang request failed at {url}: {exc}") from exc
+                last_error = exc
+                if attempt < attempts - 1:
+                    time.sleep(self._RETRY_DELAYS_S[attempt])
+        raise OpenFangUnavailable(
+            f"OpenFang unavailable at {url} after {attempts} attempt(s)"
+        ) from last_error
+
+    def _resolve_agent_id(self, base: str, headers: Dict[str, str]) -> str:
+        # Resolve for every execution. OpenFang restart/re-registration changes
+        # agent UUIDs, so caching would leave a permanent stale authority token.
+        body = self._request_json(
+            "GET",
+            f"{base}/api/agents",
+            headers=headers,
+            retry_transient=True,
+            # The agent list is a cheap health/control-plane read. Bound each
+            # retry tightly; do not let a generic 60s capability timeout turn
+            # a three-attempt resolve into a multi-minute stall.
+            timeout_cap_s=4.0,
+        )
+        agents = body.get("agents") if isinstance(body, dict) else body
+        if not isinstance(agents, list):
+            raise RuntimeError("OpenFang /api/agents returned an invalid agent list")
+        for agent in agents:
+            if not isinstance(agent, dict):
+                continue
+            if str(agent.get("name") or "").lower() != self.agent_name.lower():
+                continue
+            agent_id = agent.get("id") or agent.get("agent_id")
+            if isinstance(agent_id, str) and agent_id.strip():
+                return agent_id.strip()
+        raise RuntimeError(
+            f"OpenFang agent {self.agent_name!r} is not registered; MCP execution denied"
+        )
 
     def _call(self, payload: Dict[str, Any]) -> Any:
-        url = f"{self.base}/api/mcp/dispatch"
-        body = {"server": self.server, "tool": self.tool, "args": payload}
-        timeout = float(os.environ.get("CAPABILITY_HTTP_TIMEOUT_S", "60"))
-        resp = requests.post(url, json=body, timeout=timeout)
-        if resp.status_code == 404:
-            raise RuntimeError(
-                "mcp dispatch endpoint not enabled — set MCP_DISPATCH_ENABLED=1"
+        authority = find_registered_mcp_authority(
+            self.agent_name, self.server, self.tool
+        )
+        if authority is None:
+            raise PermissionError(
+                "MCP agent/server/tool tuple is not registered; execution denied"
             )
-        resp.raise_for_status()
-        return resp.json()
+        runtime_context = payload.pop("_runtime_authority", None)
+        # Tool arguments are never an authority channel.  Only the plan-built,
+        # typed context can authorize this dispatch; caller-provided legacy refs
+        # are deliberately ignored rather than allowed to override server refs.
+        payload.pop("approval_ref", None)
+        payload.pop("cost_ref", None)
+        if not isinstance(runtime_context, RuntimeInvocationContext):
+            raise PermissionError("MCP invocation requires runtime authority context")
+        if authority.space_id != runtime_context.space_id or authority.agent != runtime_context.agent_name:
+            raise PermissionError("MCP runtime authority context does not match registered scope")
+        prepared = RuntimeAuthorityClient.from_environment().prepare_invocation(runtime_context)
+        if isinstance(prepared, RuntimeAuthorityPending):
+            return {
+                "ok": False,
+                "pending": True,
+                "authority_status": "pending_approval",
+                "invocation_id": prepared.invocation_id,
+            }
+        tool_payload = _strip_runtime_authority_refs(payload)
+        base, api_key = self._configuration()
+        control_headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+        agent_id = prepared.agent_id
+        request_id = prepared.invocation_id
+        execution_headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "X-OpenFang-Agent-Id": agent_id,
+        }
+        execution_headers["X-OpenFang-Approval-Ref"] = prepared.approval_ref
+        execution_headers["X-OpenFang-Cost-Ref"] = prepared.cost_ref
+        response = self._request_json(
+            "POST",
+            f"{base}/mcp",
+            headers=execution_headers,
+            payload={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "tools/call",
+                "params": {"name": self.namespaced_tool, "arguments": tool_payload},
+            },
+            # Do not retry tools/call: the outcome may be unknown after a
+            # transport failure and the tool itself may have mutated state.
+            retry_transient=False,
+        )
+        if not isinstance(response, dict):
+            raise RuntimeError("OpenFang MCP returned a non-object JSON-RPC response")
+        if response.get("jsonrpc") != "2.0":
+            raise RuntimeError("OpenFang MCP returned an invalid JSON-RPC version")
+        if response.get("id") != request_id:
+            raise RuntimeError("OpenFang MCP returned a mismatched JSON-RPC request id")
+        has_result = "result" in response
+        has_error = "error" in response
+        if has_result == has_error:
+            raise RuntimeError(
+                "OpenFang MCP JSON-RPC response must contain exactly one result or error"
+            )
+        if has_error:
+            error = _redact_evidence(
+                response["error"],
+                sensitive_values=(prepared.approval_ref, prepared.cost_ref),
+            )
+            message = error.get("message") if isinstance(error, dict) else str(error)
+            authority_status = ""
+            if isinstance(error, dict):
+                data = error.get("data")
+                if isinstance(data, dict):
+                    candidate = data.get("authority_status")
+                    if isinstance(candidate, str):
+                        authority_status = candidate.strip().lower()
+            authority_status = authority_status or str(message).strip().lower()
+            if authority_status == "pending_approval":
+                return {
+                    "ok": False,
+                    "pending": True,
+                    "authority_status": authority_status,
+                    "invocation_id": prepared.invocation_id,
+                }
+            if authority_status in {"outcome_unknown", "in_progress"}:
+                raise RuntimeError(authority_status)
+            raise RuntimeError(f"OpenFang MCP JSON-RPC error: {message}")
+        result = response["result"]
+        if not isinstance(result, dict):
+            raise RuntimeError("OpenFang MCP JSON-RPC response omitted result")
+        if result.get("isError") is True:
+            raise RuntimeError("OpenFang MCP tool returned isError=true")
+        return result
+
+    def call(self, *args, **kwargs) -> Dict[str, Any]:
+        result = super().call(*args, **kwargs)
+        payload = result.get("result")
+        if isinstance(payload, dict) and payload.get("pending") is True:
+            result.update({
+                "pending": True,
+                "authority_status": "pending_approval",
+                "invocation_id": payload.get("invocation_id"),
+            })
+        if not result.get("ok") and str(result.get("error") or "").lower().endswith(("outcome_unknown", "in_progress")):
+            result["retryable"] = False
+        return result
 
 
 _N8N_MUTATING_EVENTS = {
@@ -766,8 +975,10 @@ _N8N_IDENTITY_EVENTS = {
 }
 _REDACTED_KEYS = {
     "authorization", "token", "apikey", "api_key", "password", "secret",
-    "credential", "credentials", "headers",
+    "credential", "credentials", "headers", "approval_ref", "cost_ref",
 }
+
+_RUNTIME_AUTHORITY_REF_KEYS = {"approval_ref", "cost_ref"}
 
 
 def _space_registry_path() -> Path:
@@ -775,6 +986,123 @@ def _space_registry_path() -> Path:
     if configured:
         return Path(configured)
     return Path(__file__).resolve().parents[3] / "config" / "space_agent_registry.yml"
+
+
+@dataclass(frozen=True)
+class McpAuthority:
+    agent: str
+    server: str
+    tool: str
+    space_id: str = ""
+    event_id: str = ""
+
+    @property
+    def target(self) -> str:
+        return f"mcp:{self.agent}:{self.server}:{self.tool}"
+
+
+def _load_space_registry() -> Dict[str, Any]:
+    path = _space_registry_path()
+    if not path.is_file():
+        raise RuntimeError(f"canonical space registry unavailable: {path}")
+    with path.open("r", encoding="utf-8") as handle:
+        document = yaml.safe_load(handle) or {}
+    spaces = document.get("spaces") or {}
+    if not isinstance(spaces, dict):
+        raise RuntimeError("canonical space registry has no spaces")
+    return spaces
+
+
+def _mcp_authority(
+    event_id: str, space_id: str, space: Dict[str, Any], spec: Dict[str, Any]
+) -> McpAuthority:
+    execution = spec.get("execution")
+    if not isinstance(execution, dict) or execution.get("kind") != "mcp":
+        raise RuntimeError(f"{event_id!r} is not a deterministic MCP event")
+    values = {
+        "agent": space.get("agent"),
+        "server": execution.get("server"),
+        "tool": spec.get("tool"),
+    }
+    missing = [
+        name for name, value in values.items()
+        if not isinstance(value, str) or not value.strip()
+    ]
+    if missing:
+        raise RuntimeError(
+            f"deterministic MCP metadata for '{event_id}' is missing "
+            f"{', '.join(missing)}"
+        )
+    if spec.get("required_provenance") != ["approval_ref", "cost_ref"]:
+        raise RuntimeError(
+            f"deterministic MCP event '{event_id}' requires closed "
+            "required_provenance [approval_ref, cost_ref]"
+        )
+    allowed_servers = space.get("mcp_servers")
+    if not isinstance(allowed_servers, list) or values["server"].strip() not in {
+        item.strip() for item in allowed_servers
+        if isinstance(item, str) and item.strip()
+    }:
+        raise RuntimeError(
+            f"deterministic MCP server for '{event_id}' is not in "
+            f"{space_id}.mcp_servers"
+        )
+    allowed_tools_by_server = space.get("mcp_tools")
+    server_tools = (
+        allowed_tools_by_server.get(values["server"].strip())
+        if isinstance(allowed_tools_by_server, dict) else None
+    )
+    if not isinstance(server_tools, list) or values["tool"].strip() not in {
+        item.strip() for item in server_tools
+        if isinstance(item, str) and item.strip()
+    }:
+        raise RuntimeError(
+            f"deterministic MCP tool for '{event_id}' is not in "
+            f"{space_id}.mcp_tools for {values['server'].strip()!r}"
+        )
+    return McpAuthority(
+        **{name: value.strip() for name, value in values.items()},
+        space_id=space_id,
+        event_id=event_id,
+    )
+
+
+def find_registered_mcp_authority(
+    agent: str, server: str, tool: str,
+) -> Optional[McpAuthority]:
+    """Return static allowlist identity for a registered MCP tuple, if any."""
+    for space_id, space in _load_space_registry().items():
+        if not isinstance(space, dict):
+            continue
+        events = space.get("events") or {}
+        if not isinstance(events, dict):
+            continue
+        for event_id, spec in events.items():
+            if not isinstance(spec, dict):
+                continue
+            execution = spec.get("execution")
+            if not isinstance(execution, dict) or execution.get("kind") != "mcp":
+                continue
+            authority = _mcp_authority(str(event_id), str(space_id), space, spec)
+            if (authority.agent, authority.server, authority.tool) == (agent, server, tool):
+                return authority
+    return None
+
+
+def _extract_mcp_provenance(
+    payload: Dict[str, Any],
+) -> tuple[Dict[str, Any], Dict[str, str]]:
+    """Extract invocation-specific provenance without exposing it to the tool."""
+    tool_payload = dict(payload)
+    provenance: Dict[str, str] = {}
+    for key in ("approval_ref", "cost_ref"):
+        value = tool_payload.pop(key, None)
+        if not isinstance(value, str) or not value.strip():
+            raise PermissionError(
+                f"MCP invocation requires non-empty {key}; execution denied"
+            )
+        provenance[key] = value.strip()
+    return tool_payload, provenance
 
 
 def _n8n_event_specs() -> Dict[str, Dict[str, Any]]:
@@ -790,26 +1118,103 @@ def _n8n_event_specs() -> Dict[str, Dict[str, Any]]:
 
 
 def resolve_registry_execution_target(capability: str) -> Optional[str]:
-    """Resolve canonical n8n event ids without duplicating tool names in Brain."""
-    if not isinstance(capability, str) or not capability.startswith("n8n."):
+    """Resolve explicit deterministic registry events to OpenFang MCP targets.
+
+    Only events which declare ``execution.kind: mcp`` participate.  This keeps
+    other Space routing unchanged while requiring the canonical agent, server,
+    and tool to be complete before a deterministic event can execute.
+    """
+    if not isinstance(capability, str) or not capability:
         return None
-    return f"n8n-mcp:{capability}" if capability in _n8n_event_specs() else None
+
+    if capability.startswith("n8n."):
+        return f"n8n-mcp:{capability}" if capability in _n8n_event_specs() else None
+
+    spaces = _load_space_registry()
+    for space_id, space in spaces.items():
+        if not isinstance(space, dict):
+            continue
+        events = space.get("events") or {}
+        spec = events.get(capability) if isinstance(events, dict) else None
+        if not isinstance(spec, dict):
+            continue
+        execution = spec.get("execution")
+        if not isinstance(execution, dict) or execution.get("kind") != "mcp":
+            return None
+        return _mcp_authority(capability, str(space_id), space, spec).target
+    return None
 
 
-def _redact_evidence(value: Any) -> Any:
+_CANONICAL_SPACE_EVENT_IDS = {
+    "bubble_create": "bubble.create",
+    "bubble_update": "bubble.update",
+    "bubble_evaluate": "bubble.evaluate",
+    "bubble_delete": "bubble.delete",
+    "idea_create": "idea.create",
+    "idea_add": "idea.create",
+    "idea_update": "idea.update",
+    "idea_expand": "idea.expand",
+    "idea_connect": "idea.connect",
+    "idea_to_project": "idea.to_project",
+    "code_generate": "code.generate",
+    "code_modify": "code.modify",
+    "code_status": "code.status",
+    "code_show": "code.show",
+    "code_preview_start": "code.preview.start",
+    "code_preview_stop": "code.preview.stop",
+    "code_list": "code.list",
+    "code_cancel": "code.cancel",
+}
+
+
+def canonical_space_event_id(capability: str) -> str:
+    """Map capability aliases to their canonical registry event ID."""
+    return _CANONICAL_SPACE_EVENT_IDS.get(capability, capability)
+
+
+def resolve_canonical_execution_target(capability: str) -> tuple[str, Optional[str]]:
+    """Resolve a capability alias through the canonical Space registry once."""
+    event_id = canonical_space_event_id(capability)
+    target = resolve_registry_execution_target(event_id)
+    if event_id == "idea.connect" and target is None:
+        raise RuntimeError("idea.connect requires canonical MCP execution metadata")
+    return event_id, target
+
+
+def _redact_evidence(value: Any, *, sensitive_values: tuple[str, ...] = ()) -> Any:
     if isinstance(value, dict):
         return {
-            str(key): ("[REDACTED]" if str(key).lower() in _REDACTED_KEYS else _redact_evidence(item))
+            str(key): (
+                "[REDACTED]" if str(key).lower() in _REDACTED_KEYS
+                else _redact_evidence(item, sensitive_values=sensitive_values)
+            )
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [_redact_evidence(item) for item in value]
+        return [_redact_evidence(item, sensitive_values=sensitive_values) for item in value]
     if isinstance(value, str):
         redacted = re.sub(r"(?i)bearer\s+[a-z0-9._~+/=-]+", "Bearer [REDACTED]", value)
-        runtime_token = os.environ.get("N8N_MCP_TOKEN", "")
-        if runtime_token:
-            redacted = redacted.replace(runtime_token, "[REDACTED]")
+        for env_name in ("N8N_MCP_TOKEN", "OPENFANG_API_KEY"):
+            runtime_token = os.environ.get(env_name, "")
+            if runtime_token:
+                redacted = redacted.replace(runtime_token, "[REDACTED]")
+        for sensitive_value in sensitive_values:
+            if sensitive_value:
+                redacted = redacted.replace(sensitive_value, "[REDACTED]")
         return redacted
+    return value
+
+
+def _strip_runtime_authority_refs(value: Any) -> Any:
+    """Remove caller-controlled authority references from arbitrary tool args."""
+    if isinstance(value, dict):
+        return {
+            key: _strip_runtime_authority_refs(item)
+            for key, item in value.items()
+            if str(key).lower() not in _RUNTIME_AUTHORITY_REF_KEYS
+        }
+    if isinstance(value, list):
+        return [_strip_runtime_authority_refs(item) for item in value]
     return value
 
 
@@ -1242,7 +1647,7 @@ def supported_kinds() -> Dict[str, str]:
         "coding-engine": "coding-engine:<METHOD>:<route>",
         "openfang": "openfang:<agent_name>",
         "brain": "brain:<METHOD>:<route>",
-        "mcp": "mcp:<server>:<tool>",
+        "mcp": "mcp:<agent>:<server>:<tool>",
         "n8n-mcp": "n8n-mcp:<canonical_event>",
         "mirofish": "mirofish:<simulate|predict|graph.build|graph.search|status|evaluate|interview>",
         "supabase": "supabase:<op>  (idea.connect|idea.disconnect|idea.auto_link)",

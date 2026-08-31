@@ -1,11 +1,13 @@
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import pytest
 import yaml
 from fastapi.testclient import TestClient
 
 from core.capability_router import CapabilityRouter
 from core.capability_targets import build_executor
+from spaces.research import execution_target
 from web.brain_server import create_app
 
 
@@ -35,6 +37,23 @@ def test_research_events_have_brain_execution_targets():
         detail = router.get_capability(capability)
         assert detail is not None
         assert detail["execution_target"] == target
+
+
+@pytest.mark.parametrize("operation", ("web", "scrape", "summarize", "to_idea"))
+def test_research_operations_use_the_canonical_openfang_researcher(operation, monkeypatch):
+    monkeypatch.setenv("RESEARCH_AGENT", "hostile-agent")
+
+    executor = build_executor(f"research:{operation}")
+
+    assert executor._agent.target == "openfang:brain-researcher"
+
+
+def test_research_executor_has_no_environment_or_openclaw_routing_branch():
+    source = Path(execution_target.__file__).read_text(encoding="utf-8")
+
+    assert "RESEARCH_AGENT" not in source
+    assert "openclaw-visible" not in source
+    assert "OpenClaw" not in source
 
 
 def test_research_target_returns_sources_and_tool_evidence():

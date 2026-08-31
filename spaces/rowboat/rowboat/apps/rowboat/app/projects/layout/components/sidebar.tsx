@@ -19,7 +19,8 @@ import {
   MessageSquareIcon,
   LogsIcon,
   Clock,
-  ZapIcon
+  ZapIcon,
+  BlocksIcon
 } from "lucide-react";
 import { fetchProject } from "@/app/actions/project.actions";
 import { createProjectWithOptions } from "../../lib/project-creation-utils";
@@ -119,6 +120,11 @@ export default function Sidebar({ projectId, useAuth, collapsed = false, onToggl
       icon: LogsIcon,
     },
     {
+      href: 'plugins',
+      label: 'Plugins',
+      icon: BlocksIcon,
+    },
+    {
       href: 'config',
       label: 'Settings',
       icon: SettingsIcon,
@@ -172,7 +178,7 @@ export default function Sidebar({ projectId, useAuth, collapsed = false, onToggl
               // Project-specific navigation
               navItems.map((item) => {
                 const Icon = item.icon;
-                const fullPath = `/projects/${projectId}/${item.href}`;
+                const fullPath = `/projects/${encodeURIComponent(projectId)}/${item.href}`;
                 const isActive = pathname.startsWith(fullPath);
 
                 return <>

@@ -26,16 +26,59 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
+import tomllib
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
+from core.openfang_agent_manifest import extract_mcp_servers, load_mcp_servers
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+_OPENFANG_AGENTS_DIR = "C:/Users/User/Desktop/Vibemind_V1/vibemind-os/openfang/agents"
+
+
+def _load_openfang_agents(agents_dir: str | None = None) -> list[dict[str, object]]:
+    """Load static OpenFang agent inventory records from agent manifests."""
+    agent_dir = agents_dir or _OPENFANG_AGENTS_DIR
+    if not os.path.isdir(agent_dir):
+        return []
+
+    agents: list[dict[str, object]] = []
+    for sub in sorted(os.listdir(agent_dir)):
+        toml_path = os.path.join(agent_dir, sub, "agent.toml")
+        if not os.path.isfile(toml_path):
+            continue
+        try:
+            with open(toml_path, "rb") as handle:
+                manifest = tomllib.load(handle)
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+            continue
+
+        tags = manifest.get("tags", [])
+        tags = tags if isinstance(tags, list) else []
+        string_tags = [tag for tag in tags if isinstance(tag, str)]
+        name = manifest.get("name")
+        description = manifest.get("description")
+        model = manifest.get("model")
+        if isinstance(model, dict):
+            model = model.get("model")
+        spaces_in_tags = [tag for tag in string_tags if tag.startswith("space:")]
+        agents.append({
+            "name": name if isinstance(name, str) else sub,
+            "description": description if isinstance(description, str) else "",
+            "tags": string_tags,
+            "spaces": [space.replace("space:", "") for space in spaces_in_tags],
+            "mcp_servers": extract_mcp_servers(manifest),
+            "model": model if isinstance(model, str) else "",
+        })
+    return agents
 
 
 def _trace_lite(pe, trace_id: str, intent: str, routed_via: str, final_text: str = "") -> None:
@@ -2240,6 +2283,16 @@ def _looks_like_multi_action(intent_lower: str) -> bool:
     """Heuristic: ≥2 distinct command-verbs → multi-action (use LLM).
     Note: 'und' between items (e.g. 'trenne A und B') is single-action,
     so we count verbs, not 'und' occurrences."""
+    # E3 (task-brain-0019): präzise Multi-Verb-Erkennung (Kommando-Position +
+    # Sequenz-Ellipse, core/multi_verb) ZUSÄTZLICH zu den alten Heuristiken —
+    # strikt konservativer: es wird nur MEHR an den Planner deferiert, nie
+    # weniger. Ab zwei unabhängigen Verben darf der 1-Hop-Shortcut nie greifen.
+    try:
+        from core.multi_verb import is_multi_verb
+        if is_multi_verb(intent_lower):
+            return True
+    except Exception as e:  # noqa: BLE001 — Gate darf den Shortcut nie 500'en
+        logger.debug(f"[shortcut] multi_verb check failed: {e}")
     verbs = set(_SHORTCUT_VERB_RE.findall(intent_lower))
     if len(verbs) >= 2:
         return True
@@ -2462,7 +2515,12 @@ async def multihop_execute(request: Request):
     # steht in jeder Response + (wo ein Plan existiert) in plan.trace_id, sodass
     # GET /api/trace/{trace_id} die ganze Kette eingabe->...->ausgabe zeigt.
     import uuid as _uuid
-    trace_id = "tr_" + _uuid.uuid4().hex[:12]
+    requested_trace_id = body.get("trace_id")
+    trace_id = (
+        requested_trace_id.strip()
+        if isinstance(requested_trace_id, str) and requested_trace_id.strip()
+        else "tr_" + _uuid.uuid4().hex[:12]
+    )
     _routed_via = None   # wird je Zweig gesetzt (groq/som/som-team/no-plan/easy/meta)
 
     from core.plan_schema import Plan as _Plan
@@ -3599,7 +3657,6 @@ async def events_mapping(request: Request) -> JSONResponse:
                         tool, tool_description, tool_args, coverage}
     Plus: per-namespace stats, full agent list, full tool inventory.
     """
-    import os, re, json
     kg = getattr(request.app.state, "qdrant_kg", None)
     if kg is None:
         return JSONResponse({"events": [], "agents": [], "tools": [],
@@ -3637,42 +3694,10 @@ async def events_mapping(request: Request) -> JSONResponse:
                                 status_code=500)
 
         # 2. Read OpenFang agent manifests from filesystem
-        agents = []
         try:
-            agent_dir = "C:/Users/User/Desktop/Vibemind_V1/vibemind-os/openfang/agents"
-            if os.path.isdir(agent_dir):
-                for sub in sorted(os.listdir(agent_dir)):
-                    sub_path = os.path.join(agent_dir, sub)
-                    toml_path = os.path.join(sub_path, "agent.toml")
-                    if not os.path.isfile(toml_path):
-                        continue
-                    txt = open(toml_path, encoding="utf-8").read()
-                    name_m = re.search(r'^name\s*=\s*"([^"]+)"', txt, re.M)
-                    desc_m = re.search(r'^description\s*=\s*"([^"]+)"', txt, re.M)
-                    tags_m = re.search(r'^tags\s*=\s*\[([^\]]+)\]', txt, re.M)
-                    mcp_m = re.search(
-                        r'\[mcp_allowed\]\s*\nservers\s*=\s*\[([^\]]+)\]', txt
-                    )
-                    model_m = re.search(r'^model\s*=\s*"([^"]+)"', txt, re.M)
-                    tags = []
-                    if tags_m:
-                        tags = [t.strip().strip('"') for t in tags_m.group(1).split(",")]
-                    mcp_servers = []
-                    if mcp_m:
-                        mcp_servers = [t.strip().strip('"')
-                                       for t in mcp_m.group(1).split(",")]
-                    spaces_in_tags = [t for t in tags if t.startswith("space:")]
-                    agents.append({
-                        "name": name_m.group(1) if name_m else sub,
-                        "description": desc_m.group(1) if desc_m else "",
-                        "tags": tags,
-                        "spaces": [s.replace("space:", "") for s in spaces_in_tags],
-                        "mcp_servers": mcp_servers,
-                        "model": model_m.group(1) if model_m else "",
-                    })
-        except Exception as e:
+            agents = _load_openfang_agents()
+        except Exception:
             agents = []
-            err_agents = str(e)
 
         # 3. Compute namespace -> default agent (legacy heuristic) for fallback.
         # Events use singular namespaces (bubble.create) but agents use plural
@@ -3720,7 +3745,7 @@ async def events_mapping(request: Request) -> JSONResponse:
                     assigned_agent = claims[0]
                     agent_source = "namespace_default"
 
-            # 5b. Resolve tool via live discovery using agent's mcp_allowed
+            # 5b. Resolve tool via live discovery using agent's mcp_servers.
             tool_info = None
             if assigned_agent and assigned_agent in agent_lookup:
                 mcp_srv = agent_lookup[assigned_agent].get("mcp_servers", [])
@@ -3841,24 +3866,31 @@ async def agents_yaml_list(request: Request) -> JSONResponse:
 @router.get("/api/agents/{agent_name}/tools")
 async def agent_tools(request: Request, agent_name: str) -> JSONResponse:
     """Detailed tool list for one agent: all tools from all servers in
-    that agent's mcp_allowed list. Used by UI to show 'alternative tools
+    that agent's mcp_servers list. Used by UI to show 'alternative tools
     available' when default tool-resolution doesn't pick the right one.
     """
-    import os, re
     try:
-        from core.mcp_discovery import get_discovery
-        # Read agent.toml to get mcp_allowed
-        agent_dir = "C:/Users/User/Desktop/Vibemind_V1/vibemind-os/openfang/agents/" + agent_name
-        toml_path = os.path.join(agent_dir, "agent.toml")
+        # Read agent.toml to get mcp_servers.
+        if (
+            not agent_name
+            or agent_name in {".", ".."}
+            or "/" in agent_name
+            or "\\" in agent_name
+            or os.path.isabs(agent_name)
+        ):
+            return JSONResponse({"ok": False, "error": "agent not found"},
+                                status_code=404)
+        agents_root = Path(_OPENFANG_AGENTS_DIR).resolve()
+        agent_dir = (agents_root / agent_name).resolve()
+        if agent_dir.parent != agents_root:
+            return JSONResponse({"ok": False, "error": "agent not found"},
+                                status_code=404)
+        toml_path = agent_dir / "agent.toml"
         if not os.path.isfile(toml_path):
             return JSONResponse({"ok": False, "error": "agent not found"},
                                 status_code=404)
-        txt = open(toml_path, encoding="utf-8").read()
-        mcp_m = re.search(r'\[mcp_allowed\]\s*\nservers\s*=\s*\[([^\]]+)\]', txt)
-        mcp_servers = []
-        if mcp_m:
-            mcp_servers = [t.strip().strip('"')
-                           for t in mcp_m.group(1).split(",")]
+        mcp_servers = load_mcp_servers(toml_path)
+        from core.mcp_discovery import get_discovery
         discovery = get_discovery()
         tools_by_server = {}
         for srv in mcp_servers:
@@ -3937,36 +3969,7 @@ async def events_mapping_xlsx(request: Request):
                 })
 
         # 2. Agents from OpenFang manifests
-        import os, re
-        agents = []
-        agent_dir = "C:/Users/User/Desktop/Vibemind_V1/vibemind-os/openfang/agents"
-        if os.path.isdir(agent_dir):
-            for sub in sorted(os.listdir(agent_dir)):
-                toml_path = os.path.join(agent_dir, sub, "agent.toml")
-                if not os.path.isfile(toml_path):
-                    continue
-                txt = open(toml_path, encoding="utf-8").read()
-                name_m = re.search(r'^name\s*=\s*"([^"]+)"', txt, re.M)
-                desc_m = re.search(r'^description\s*=\s*"([^"]+)"', txt, re.M)
-                tags_m = re.search(r'^tags\s*=\s*\[([^\]]+)\]', txt, re.M)
-                mcp_m = re.search(
-                    r'\[mcp_allowed\]\s*\nservers\s*=\s*\[([^\]]+)\]', txt
-                )
-                model_m = re.search(r'^model\s*=\s*"([^"]+)"', txt, re.M)
-                tags = []
-                if tags_m:
-                    tags = [t.strip().strip('"') for t in tags_m.group(1).split(",")]
-                mcp_servers = []
-                if mcp_m:
-                    mcp_servers = [t.strip().strip('"')
-                                   for t in mcp_m.group(1).split(",")]
-                agents.append({
-                    "name": name_m.group(1) if name_m else sub,
-                    "description": desc_m.group(1) if desc_m else "",
-                    "tags": tags,
-                    "mcp_servers": mcp_servers,
-                    "model": model_m.group(1) if model_m else "",
-                })
+        agents = _load_openfang_agents()
 
         agent_lookup = {a["name"]: a for a in agents}
 

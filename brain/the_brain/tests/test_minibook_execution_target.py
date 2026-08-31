@@ -40,7 +40,8 @@ def test_all_canonical_minibook_events_have_real_brain_targets():
         "minibook.status",
         "minibook.list_projects",
     }
-    for event in canonical_events:
+    legacy_direct_events = canonical_events - {"minibook.status"}
+    for event in legacy_direct_events:
         capability = router.get_capability(event)
         assert capability is not None
         assert capability["execution_target"].startswith("direct:spaces.minibook.")
@@ -48,6 +49,20 @@ def test_all_canonical_minibook_events_have_real_brain_targets():
             "kind": "rule:minibook_verified_result",
             "on_fail": "block",
         }
+
+    status = router.get_capability("minibook.status")
+    assert status is not None
+    assert status["execution_target"] == "mcp:brain-knowledge:spaces-minibook:minibook_status"
+    assert status["validator"] == {
+        "kind": "truth:http_ok",
+        "on_fail": "block",
+        "postcondition": {
+            "check": "http_ok",
+            "url_env": "MINIBOOK_STATUS_URL",
+            "method": "HEAD",
+            "expect_status_lt": 300,
+        },
+    }
 
 
 def test_status_is_read_only_and_redacts_sensitive_response_fields(monkeypatch):

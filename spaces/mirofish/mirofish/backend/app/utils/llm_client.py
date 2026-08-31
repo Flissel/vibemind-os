@@ -1,16 +1,16 @@
 """
 LLM Client Wrapper
-Unified OpenAI format API calls
-Supports Ollama num_ctx parameter to prevent prompt truncation
+Uses the configured OpenFang gateway for OpenAI-compatible API calls.
 """
 
 import json
-import os
 import re
 from typing import Optional, Dict, Any, List
-from openai import OpenAI
 
-from ..config import Config
+from vibemind_shared import get_client_sync, get_model
+
+
+_MIROFISH_ROLE = "space_mirofish"
 
 
 class LLMClient:
@@ -23,26 +23,11 @@ class LLMClient:
         model: Optional[str] = None,
         timeout: float = 300.0
     ):
-        self.api_key = api_key or Config.LLM_API_KEY
-        self.base_url = base_url or Config.LLM_BASE_URL
-        self.model = model or Config.LLM_MODEL_NAME
-
-        if not self.api_key:
-            raise ValueError("LLM_API_KEY not configured")
-
-        self.client = OpenAI(
-            api_key=self.api_key,
-            base_url=self.base_url,
-            timeout=timeout,
-        )
-
-        # Ollama context window size — prevents prompt truncation.
-        # Read from env OLLAMA_NUM_CTX, default 8192 (Ollama default is only 2048).
-        self._num_ctx = int(os.environ.get('OLLAMA_NUM_CTX', '8192'))
-
-    def _is_ollama(self) -> bool:
-        """Check if we're talking to an Ollama server."""
-        return '11434' in (self.base_url or '')
+        # Retain the public constructor for callers, but gateway configuration is
+        # resolved centrally and cannot be overridden per request.
+        del api_key, base_url, model, timeout
+        self.model = get_model(_MIROFISH_ROLE)
+        self.client = get_client_sync(_MIROFISH_ROLE)
 
     def chat(
         self,
@@ -72,12 +57,6 @@ class LLMClient:
 
         if response_format:
             kwargs["response_format"] = response_format
-
-        # For Ollama: pass num_ctx via extra_body to prevent prompt truncation
-        if self._is_ollama() and self._num_ctx:
-            kwargs["extra_body"] = {
-                "options": {"num_ctx": self._num_ctx}
-            }
 
         response = self.client.chat.completions.create(**kwargs)
         content = response.choices[0].message.content

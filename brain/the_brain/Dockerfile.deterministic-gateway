@@ -1,0 +1,19 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+ENV SPACE_AGENT_REGISTRY_PATH=/app/config/space_agent_registry.yml
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir "requests>=2.26" "PyYAML>=5.4"
+
+COPY config/space_agent_registry.yml /app/config/space_agent_registry.yml
+COPY brain/the_brain/core/__init__.py /app/core/__init__.py
+COPY brain/the_brain/core/capability_executor.py /app/core/capability_executor.py
+COPY brain/the_brain/core/capability_targets.py /app/core/capability_targets.py
+COPY brain/the_brain/core/openfang_runtime_authority.py /app/core/openfang_runtime_authority.py
+COPY brain/the_brain/deterministic_gateway.py /app/deterministic_gateway.py
+
+CMD ["python", "-m", "deterministic_gateway"]

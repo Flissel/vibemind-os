@@ -25,6 +25,8 @@ import glob
 import logging
 from typing import Callable, Dict, List, Optional
 
+from core.openfang_agent_manifest import extract_mcp_servers
+
 logger = logging.getLogger("brain.capability_discovery")
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -76,9 +78,9 @@ def discover_capabilities(yaml_path: Optional[str] = None) -> List[Dict]:
 def discover_agents(agents_dir: Optional[str] = None) -> List[Dict]:
     """OpenFang agent roster from <dir>/<name>/agent.toml -> normalized records.
 
-    Each record: {name, description, model, tools, mcp_servers}. Handles BOTH mcp
-    formats ([capabilities].mcp_servers and [mcp_allowed].servers). A single bad
-    agent.toml is skipped, not fatal.
+    Each record: {name, description, model, tools, mcp_servers}. MCP server scope
+    follows the canonical OpenFang manifest precedence. A single bad agent.toml is
+    skipped, not fatal.
     """
     d = agents_dir or _DEFAULT_AGENTS_DIR
     try:
@@ -95,14 +97,14 @@ def discover_agents(agents_dir: Optional[str] = None) -> List[Dict]:
             logger.debug("[discovery] skip %s: %s", toml_path, exc)
             continue
         caps = t.get("capabilities", {}) or {}
-        mcp = caps.get("mcp_servers") or (t.get("mcp_allowed", {}) or {}).get("servers") or []
+        mcp = extract_mcp_servers(t)
         model = t.get("model", {}) or {}
         out.append({
             "name": t.get("name") or os.path.basename(os.path.dirname(toml_path)),
             "description": t.get("description", ""),
             "model": f"{model.get('provider', '?')}/{model.get('model', '?')}",
             "tools": list(caps.get("tools", []) or []),
-            "mcp_servers": list(mcp),
+            "mcp_servers": mcp,
         })
     return out
 

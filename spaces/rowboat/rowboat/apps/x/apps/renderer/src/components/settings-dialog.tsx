@@ -7,6 +7,8 @@ import { Server, Key, Shield, Palette, Monitor, Sun, Moon, Loader2, CheckCircle2
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
@@ -24,8 +26,9 @@ import { useTheme } from "@/contexts/theme-context"
 import { toast } from "sonner"
 import { AccountSettings } from "@/components/settings/account-settings"
 import { ConnectedAccountsSettings } from "@/components/settings/connected-accounts-settings"
+import { ConnectedPluginSettings } from "@/components/settings/plugin-settings"
 
-type ConfigTab = "account" | "connected-accounts" | "models" | "mcp" | "security" | "appearance" | "note-tagging"
+type ConfigTab = "account" | "connected-accounts" | "plugins" | "models" | "mcp" | "security" | "appearance" | "note-tagging"
 
 interface TabConfig {
   id: ConfigTab
@@ -47,6 +50,12 @@ const tabs: TabConfig[] = [
     label: "Connected Accounts",
     icon: Plug,
     description: "Manage connected services",
+  },
+  {
+    id: "plugins",
+    label: "Plugins",
+    icon: Plug,
+    description: "View and install server-authorized OpenAI plugins",
   },
   {
     id: "models",
@@ -1273,7 +1282,7 @@ export function SettingsDialog({ children }: SettingsDialogProps) {
   }
 
   const loadConfig = useCallback(async (tab: ConfigTab) => {
-    if (tab === "appearance" || tab === "models" || tab === "note-tagging" || tab === "account" || tab === "connected-accounts") return
+    if (tab === "appearance" || tab === "models" || tab === "note-tagging" || tab === "account" || tab === "connected-accounts" || tab === "plugins") return
     const tabConfig = tabs.find((t) => t.id === tab)!
     if (!tabConfig.path) return
     setLoading(true)
@@ -1343,17 +1352,22 @@ export function SettingsDialog({ children }: SettingsDialogProps) {
       <DialogContent
         className="max-w-[900px]! w-[900px] h-[600px] p-0 gap-0 overflow-hidden"
       >
+        <DialogDescription className="sr-only">Configure Desktop settings.</DialogDescription>
         <div className="flex h-full overflow-hidden">
           {/* Sidebar */}
           <div className="w-48 border-r bg-muted/30 p-2 flex flex-col">
             <div className="px-2 py-3 mb-2">
-              <h2 className="font-semibold text-sm">Settings</h2>
+              <DialogTitle className="font-semibold text-sm">Settings</DialogTitle>
             </div>
-            <nav className="flex flex-col gap-1">
+            <nav className="flex flex-col gap-1" aria-label="Settings tabs" role="tablist">
               {visibleTabs.map((tab) => (
                 <button
                   key={tab.id}
                   onClick={() => handleTabChange(tab.id)}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === tab.id}
+                  aria-controls="settings-panel"
                   className={cn(
                     "flex items-center gap-2 px-2 py-2 rounded-md text-sm transition-colors text-left",
                     activeTab === tab.id
@@ -1381,11 +1395,13 @@ export function SettingsDialog({ children }: SettingsDialogProps) {
             </div>
 
             {/* Content */}
-            <div className={cn("flex-1 p-4 min-h-0", activeTab === "models" ? "overflow-y-auto" : activeTab === "account" || activeTab === "connected-accounts" ? "overflow-y-auto" : activeTab === "note-tagging" ? "overflow-hidden flex flex-col" : "overflow-hidden")}>
+            <div id="settings-panel" role="tabpanel" className={cn("flex-1 p-4 min-h-0", activeTab === "models" || activeTab === "plugins" ? "overflow-y-auto" : activeTab === "account" || activeTab === "connected-accounts" ? "overflow-y-auto" : activeTab === "note-tagging" ? "overflow-hidden flex flex-col" : "overflow-hidden")}>
               {activeTab === "account" ? (
                 <AccountSettings dialogOpen={open} />
               ) : activeTab === "connected-accounts" ? (
                 <ConnectedAccountsSettings dialogOpen={open} />
+              ) : activeTab === "plugins" ? (
+                <ConnectedPluginSettings />
               ) : activeTab === "models" ? (
                 rowboatConnected
                   ? <RowboatModelSettings dialogOpen={open} />

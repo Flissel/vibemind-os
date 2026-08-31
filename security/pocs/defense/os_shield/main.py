@@ -21,9 +21,9 @@ import ctypes
 import json
 import os
 import sys
+from typing import Any
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-from llm_client import get_client, get_model
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from autogen_core import AgentId, SingleThreadedAgentRuntime
 
@@ -34,7 +34,24 @@ from analyzer import ThreatAnalyzerAgent
 from enforcer import EnforcerAgent
 from reporter import ReporterAgent
 from baselines import capture_baseline, save_baseline, load_baseline
-from config import WATCH_INTERVAL, OPENAI_API_KEY
+from config import WATCH_INTERVAL
+
+
+SHIELD_ROLE = "security_blue_team"
+
+
+def get_client(role: str) -> Any:
+    """Resolve the configured client lazily at the OS Shield boundary."""
+    from vibemind_shared import get_client as shared_get_client
+
+    return shared_get_client(role)
+
+
+def get_model(role: str) -> str:
+    """Resolve the configured model lazily at the OS Shield boundary."""
+    from vibemind_shared import get_model as shared_get_model
+
+    return shared_get_model(role)
 
 
 def is_admin() -> bool:
@@ -97,6 +114,9 @@ async def main():
         parser.print_help()
         sys.exit(1)
 
+    llm_client = get_client(SHIELD_ROLE)
+    llm_model = get_model(SHIELD_ROLE)
+
     # Banner
     print()
     print("=" * 60)
@@ -114,14 +134,7 @@ async def main():
         print("         Run as Admin for full functionality.")
     print()
 
-    # OpenAI API key (loaded from .env via config.py)
-    if not OPENAI_API_KEY:
-        print("  [ERROR] OPENAI_API_KEY not set!")
-        print("  Add it to .env or: export OPENAI_API_KEY=sk-...")
-        sys.exit(1)
-
-    print(f"  [OK] LLM Model: {get_model('blue_team')}")
-    llm_client = get_client("blue_team")
+    print(f"  [OK] LLM Model: {llm_model}")
 
     # Setup runtime
     print("  [SETUP] Registering agents...", flush=True)
@@ -130,7 +143,7 @@ async def main():
 
     await OrchestratorAgent.register(
         runtime, "orchestrator_agent",
-        lambda: OrchestratorAgent(llm_client),
+        lambda: OrchestratorAgent(llm_client, llm_model),
     )
     await MonitorAgent.register(
         runtime, "monitor_agent",
@@ -138,7 +151,7 @@ async def main():
     )
     await ThreatAnalyzerAgent.register(
         runtime, "analyzer_agent",
-        lambda: ThreatAnalyzerAgent(llm_client),
+        lambda: ThreatAnalyzerAgent(llm_client, llm_model),
     )
     await EnforcerAgent.register(
         runtime, "enforcer_agent",
@@ -152,55 +165,61 @@ async def main():
     runtime.start()
     print("  [SETUP] Agents ready.\n", flush=True)
 
-    # Load or capture baseline
-    baseline = await load_baseline(args.baseline)
-    if baseline is None:
-        print("  [BASELINE] No baseline found. Capturing current state...", flush=True)
-        baseline = await capture_baseline()
-        await save_baseline(baseline, args.baseline)
+    try:
+        # Load or capture baseline
+        baseline = await load_baseline(args.baseline)
+        if baseline is None:
+            print("  [BASELINE] No baseline found. Capturing current state...", flush=True)
+            baseline = await capture_baseline()
+            await save_baseline(baseline, args.baseline)
 
-    if args.scan:
-        # ---- One-shot mode ----
-        report = await run_scan(runtime, baseline, mode="oneshot")
-        await runtime.stop()
+        if args.scan:
+            # ---- One-shot mode ----
+            report = await run_scan(runtime, baseline, mode="oneshot")
 
-        # Update baseline after scan
-        new_baseline = await capture_baseline()
-        await save_baseline(new_baseline, args.baseline)
+            # Update baseline after scan
+            new_baseline = await capture_baseline()
+            await save_baseline(new_baseline, args.baseline)
 
-        # Exit code based on severity
-        if report.overall_severity == "CRITICAL":
-            sys.exit(2)
-        elif report.overall_severity in ("HIGH", "MEDIUM"):
-            sys.exit(1)
-        else:
-            sys.exit(0)
+            # Exit code based on severity
+            if report.overall_severity == "CRITICAL":
+                sys.exit(2)
+            elif report.overall_severity in ("HIGH", "MEDIUM"):
+                sys.exit(1)
+            else:
+                sys.exit(0)
 
-    elif args.watch:
-        # ---- Continuous watch mode ----
-        print(f"  [WATCH] Continuous mode. Interval: {args.interval}s")
-        print(f"  [WATCH] Press Ctrl+C to stop.\n")
+        elif args.watch:
+            # ---- Continuous watch mode ----
+            print(f"  [WATCH] Continuous mode. Interval: {args.interval}s")
+            print(f"  [WATCH] Press Ctrl+C to stop.\n")
 
-        cycle = 0
+            cycle = 0
+            try:
+                while True:
+                    cycle += 1
+                    print(f"\n{'#' * 60}")
+                    print(f"  WATCH CYCLE {cycle}")
+                    print(f"{'#' * 60}\n")
+
+                    await run_scan(runtime, baseline, mode=f"continuous_cycle_{cycle}")
+
+                    # Update baseline
+                    baseline = await capture_baseline()
+                    await save_baseline(baseline, args.baseline)
+
+                    print(f"\n  [WATCH] Next scan in {args.interval}s...\n")
+                    await asyncio.sleep(args.interval)
+
+            except KeyboardInterrupt:
+                print("\n  [WATCH] Stopped by user.")
+    except BaseException:
         try:
-            while True:
-                cycle += 1
-                print(f"\n{'#' * 60}")
-                print(f"  WATCH CYCLE {cycle}")
-                print(f"{'#' * 60}\n")
-
-                await run_scan(runtime, baseline, mode=f"continuous_cycle_{cycle}")
-
-                # Update baseline
-                baseline = await capture_baseline()
-                await save_baseline(baseline, args.baseline)
-
-                print(f"\n  [WATCH] Next scan in {args.interval}s...\n")
-                await asyncio.sleep(args.interval)
-
-        except KeyboardInterrupt:
-            print("\n  [WATCH] Stopped by user.")
-
+            await runtime.stop()
+        except BaseException:
+            pass
+        raise
+    else:
         await runtime.stop()
 
 

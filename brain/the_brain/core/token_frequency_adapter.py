@@ -70,6 +70,7 @@ from core.action_potential_oscillator import (
     Channel
 )
 from core.synchrony_encoder import SynchronyEncoder, SynchronyVector
+from vibemind_shared import OpenFangUnavailable
 
 
 # =============================================================================
@@ -413,7 +414,7 @@ Respond with JSON only:
         oscillator: ActionPotentialOscillator,
         llm_router: Optional[Any] = None,
         use_local_fallback: bool = True,
-        use_ollama: bool = True,
+        use_ollama: bool = False,
         ollama_model: str = "llama3.2:1b",
         ollama_host: str = "localhost",
         ollama_port: int = 11434,
@@ -468,6 +469,8 @@ Respond with JSON only:
                     print(f"[TokenFrequencyAdapter] Using Ollama ({ollama_model})")
                 else:
                     print(f"[TokenFrequencyAdapter] Ollama not available, using local fallback only")
+            except OpenFangUnavailable:
+                raise
             except ImportError as e:
                 print(f"[TokenFrequencyAdapter] Ollama module not found: {e}")
             except Exception as e:
@@ -597,6 +600,8 @@ Respond with JSON only:
                     context_signal='ollama'
                 )
                 self.ollama_calls += 1
+            except OpenFangUnavailable:
+                raise
             except Exception:
                 pass  # Fall through to fallback
 
@@ -686,6 +691,8 @@ Respond with JSON only:
             # Parse JSON response
             return self._parse_llm_response(token, response)
 
+        except OpenFangUnavailable:
+            raise
         except Exception as e:
             print(f"[TokenFrequencyAdapter] LLM classification failed: {e}")
             return None

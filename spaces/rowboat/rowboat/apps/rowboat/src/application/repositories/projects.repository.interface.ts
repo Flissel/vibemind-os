@@ -1,7 +1,16 @@
 import { z } from "zod";
-import { ComposioConnectedAccount, CustomMcpServer, Project } from "@/src/entities/models/project";
+import { ComposioConnectedAccount, CustomMcpServer, Project, type PluginRuntimeStateValue } from "@/src/entities/models/project";
+
 import { Workflow } from "@/app/lib/types/workflow_types";
 import { PaginatedList } from "@/src/entities/common/paginated-list";
+
+/**
+ * Draft and live workflow written together with a runtime mode transition.
+ */
+export interface ProjectWorkflowPair {
+    readonly draftWorkflow: unknown;
+    readonly liveWorkflow: unknown;
+}
 
 /**
  * Schema for creating a new project. Includes name, creator, and optional workflows and secret.
@@ -137,6 +146,25 @@ export interface IProjectsRepository {
      * @returns The updated Project object.
      */
     updateLiveWorkflow(projectId: string, workflow: z.infer<typeof Workflow>): Promise<z.infer<typeof Project>>;
+
+    /**
+     * Compare-and-swap of the plugin runtime state.
+     *
+     * When `workflows` is given they are written in the same conditional
+     * update, so a cutover that materializes plugin bindings and a rollback
+     * that restores the legacy tools can never leave the mode and the workflow
+     * disagreeing.
+     *
+     * The write applies only while the stored revision still equals
+     * expectedRevision; a project document without the field matches only
+     * expectedRevision 0. Implementations must not create the field on reads
+     * and must reject a losing swap with `plugin_runtime_state_conflict`.
+     * @param projectId - The project ID.
+     * @param expectedRevision - The runtime revision the caller observed.
+     * @param state - The next runtime state, already validated.
+     * @returns The stored runtime state.
+     */
+    setPluginRuntimeState(projectId: string, expectedRevision: number, state: PluginRuntimeStateValue, workflows?: ProjectWorkflowPair): Promise<PluginRuntimeStateValue>;
 
     /**
      * Deletes a project by its ID.

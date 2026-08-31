@@ -14,6 +14,8 @@ import { CHILD_TRANSFER_RELATED_INSTRUCTIONS, CONVERSATION_TYPE_INSTRUCTIONS, PI
 import { PrefixLogger } from "@/app/lib/utils";
 import { Message, AssistantMessage, AssistantMessageWithToolCalls, ToolMessage } from "@/app/lib/types/types";
 import { UsageTracker } from "@/app/lib/billing";
+import type { PluginToolAuthorizationContext } from "@/src/application/services/plugin-tool-runtime";
+import { planShadowToolConfig, type PluginRuntimeMode } from "@/src/application/services/plugin-shadow-parity";
 
 // Native handoff support
 import { createAgentHandoff, getSchemaForAgent, createContextFilterForAgent } from "./agent-handoffs";
@@ -1255,6 +1257,8 @@ export async function* streamResponse(
     workflow: z.infer<typeof Workflow>,
     messages: z.infer<typeof Message>[],
     usageTracker: UsageTracker,
+    pluginAuthorizationContext?: PluginToolAuthorizationContext,
+    pluginRuntimeMode: PluginRuntimeMode = "legacy",
 ): AsyncIterable<z.infer<typeof ZOutMessage>> {
     // Divider log for tracking agent loop start
     console.log('-------------------- AGENT LOOP START --------------------');
@@ -1286,8 +1290,13 @@ export async function* streamResponse(
     const stack: string[] = [];
     logger.log(`initialized stack: ${JSON.stringify(stack)}`);
 
+    // resolve which representation owns execution this turn; legacy and shadow
+    // both keep the existing tools authoritative and never emit a duplicate write
+    const runtimePlan = planShadowToolConfig(pluginRuntimeMode, toolConfig);
+    logger.log(`plugin runtime mode: ${pluginRuntimeMode} (active: ${runtimePlan.active}, shadow: ${runtimePlan.shadow.execution}, bindings: ${runtimePlan.shadow.bindings.length})`);
+
     // create tools
-    const tools = createTools(logger, usageTracker, projectId, workflow, toolConfig);
+    const tools = createTools(logger, usageTracker, projectId, workflow, runtimePlan.toolConfig as typeof toolConfig, pluginAuthorizationContext);
 
     // create agents with feature flag support
     const createAgentsFunction = USE_NATIVE_HANDOFFS ? createAgentsWithNativeHandoffs : createAgentsLegacy;

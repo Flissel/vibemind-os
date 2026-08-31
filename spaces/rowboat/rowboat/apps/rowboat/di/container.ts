@@ -1,4 +1,4 @@
-import { asClass, createContainer, InjectionMode } from "awilix";
+import { asClass, asValue, createContainer, InjectionMode } from "awilix";
 
 // Services
 import { RedisPubSubService } from "@/src/infrastructure/services/redis.pub-sub.service";

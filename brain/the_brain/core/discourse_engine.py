@@ -379,8 +379,104 @@ class DiscourseEngine:
         from core.capability_executor import extract_arg
 
         target = cap_match.execution_target
+        strict_mcp_arguments = None
+        strict_validator_cfg = None
+        from core.idea_connect_contract import is_idea_connect_mcp_target
+        if (is_idea_connect_mcp_target(target)
+                and cap_match.capability != "idea_connect"):
+            return {
+                "ok": False,
+                "intent": str(intent_text)[:300],
+                "capability": cap_match.capability,
+                "matched_pattern": cap_match.matched_pattern,
+                "is_direct": True,
+                "direct_target": target,
+                "direct_error": "canonical Ideas MCP target is bound to idea.connect",
+                "tweets": [],
+                "tweet_count": 0,
+                "decision": {},
+                "high_confidence": False,
+                "ts": time.time(),
+            }
+        if cap_match.capability == "idea_connect":
+            try:
+                from core.capability_targets import resolve_canonical_execution_target
+                _, deterministic_target = resolve_canonical_execution_target(
+                    cap_match.capability
+                )
+                if not deterministic_target:
+                    raise RuntimeError("idea.connect MCP target is unavailable")
+                target = deterministic_target
+                from core.idea_connect_contract import (
+                    canonical_idea_connect_arguments,
+                    canonical_idea_connect_validator_config,
+                )
+                strict_mcp_arguments, clarification = canonical_idea_connect_arguments(
+                    intent_text
+                )
+                if strict_mcp_arguments is None:
+                    return {
+                        "ok": False,
+                        "intent": str(intent_text)[:300],
+                        "capability": cap_match.capability,
+                        "matched_pattern": cap_match.matched_pattern,
+                        "is_direct": True,
+                        "direct_target": target,
+                        "direct_error": clarification,
+                        "clarification_required": True,
+                        "tweets": [],
+                        "tweet_count": 0,
+                        "decision": {},
+                        "high_confidence": False,
+                        "ts": time.time(),
+                    }
+                if getattr(self, "_validator", None) is None:
+                    return {
+                        "ok": False,
+                        "intent": str(intent_text)[:300],
+                        "capability": cap_match.capability,
+                        "matched_pattern": cap_match.matched_pattern,
+                        "is_direct": True,
+                        "direct_target": target,
+                        "direct_error": "canonical idea.connect validator unavailable",
+                        "tweets": [],
+                        "tweet_count": 0,
+                        "decision": {},
+                        "high_confidence": False,
+                        "ts": time.time(),
+                    }
+                strict_validator_cfg = canonical_idea_connect_validator_config()
+            except Exception as e:
+                return {
+                    "ok": False,
+                    "intent": str(intent_text)[:300],
+                    "capability": cap_match.capability,
+                    "matched_pattern": cap_match.matched_pattern,
+                    "is_direct": True,
+                    "direct_error": "canonical idea.connect MCP routing unavailable",
+                    "tweets": [],
+                    "tweet_count": 0,
+                    "decision": {},
+                    "high_confidence": False,
+                    "ts": time.time(),
+                }
         executor = self._get_executor(target)
         if executor is None or not executor.is_resolvable():
+            if strict_mcp_arguments is not None:
+                return {
+                    "ok": False,
+                    "intent": str(intent_text)[:300],
+                    "capability": cap_match.capability,
+                    "matched_pattern": cap_match.matched_pattern,
+                    "is_direct": True,
+                    "direct_target": target,
+                    "direct_error": "canonical idea.connect MCP target is unavailable",
+                    "tweets": [],
+                    "tweet_count": 0,
+                    "decision": {},
+                    "high_confidence": False,
+                    "ts": time.time(),
+                }
             # Fall back to normal discourse if target unresolvable.
             logger.warning(
                 f"[discourse] direct target {target!r} unresolvable, "
@@ -389,7 +485,7 @@ class DiscourseEngine:
             return self._fallback_to_broadcast(cap_match, intent_text, ctx_block)
 
         # Extract the positional arg (e.g. bubble name) from the user's intent
-        arg = extract_arg(intent_text, cap_match.arg_extractor)
+        arg = strict_mcp_arguments or extract_arg(intent_text, cap_match.arg_extractor)
         logger.info(
             f"[discourse] capability={cap_match.capability} direct-execute "
             f"target={target} arg={arg!r}"
@@ -398,7 +494,7 @@ class DiscourseEngine:
         # Call the python function directly. arg_kwarg (from YAML) shapes
         # the call: positional fn(arg) by default, or fn({arg_kwarg: arg})
         # for legacy voice-tools that take a params dict.
-        arg_kwarg = getattr(cap_match, "arg_kwarg", None)
+        arg_kwarg = None if strict_mcp_arguments is not None else getattr(cap_match, "arg_kwarg", None)
         if arg is not None:
             exec_result = executor.call_with_arg(arg, arg_kwarg=arg_kwarg)
         else:
@@ -434,7 +530,11 @@ class DiscourseEngine:
         # the record under `validation`. on_fail='retry' triggers one
         # re-call; on_fail='block' converts the record to ok=False.
         validation = None
-        validator_cfg = getattr(cap_match, "validator", None)
+        validator_cfg = (
+            strict_validator_cfg
+            if strict_validator_cfg is not None
+            else getattr(cap_match, "validator", None)
+        )
         if validator_cfg is None and isinstance(getattr(cap_match, "feedback_loop", None), dict):
             # Backwards compat — accept inline 'validator' under feedback_loop too
             validator_cfg = cap_match.feedback_loop.get("validator")
@@ -448,15 +548,41 @@ class DiscourseEngine:
                     raw_result=raw_result,
                 )
             except Exception as e:
-                logger.warning(f"[discourse] validator threw: {e}")
+                if strict_validator_cfg is not None:
+                    logger.warning("[discourse] canonical idea.connect validator threw")
+                else:
+                    logger.warning(f"[discourse] validator threw: {e}")
                 validation = {
                     "valid": False,
-                    "reason": f"validator error: {e}",
+                    "reason": "validator error",
                     "kind": validator_cfg.get("kind") if isinstance(validator_cfg, dict) else "?",
-                    "on_fail": "report",
+                    "on_fail": "block" if strict_validator_cfg is not None else "report",
                     "elapsed_s": 0.0,
-                    "error": f"{type(e).__name__}: {e}",
+                    "error": "validator unavailable",
+                    "verified": None,
+                    "verify_signal": {
+                        "status": "unverified",
+                        "reason": "validator unavailable",
+                    },
                 }
+
+            if strict_validator_cfg is not None and (
+                not isinstance(validation, dict)
+                or validation.get("valid") is not True
+                or validation.get("verified") is not True
+            ):
+                original = dict(validation) if isinstance(validation, dict) else {}
+                original["valid"] = False
+                original["on_fail"] = "block"
+                original.setdefault("verified", None)
+                original.setdefault("verify_signal", {
+                    "status": "unverified",
+                    "reason": "validator unavailable",
+                })
+                original.setdefault("reason", "canonical idea.connect truth unverified")
+                original.setdefault("kind", "truth:supabase_edge_ids")
+                original.setdefault("elapsed_s", 0.0)
+                validation = original
 
             # Retry once if validator said invalid AND on_fail='retry'
             if validation and not validation.get("valid") and validation.get("on_fail") == "retry":

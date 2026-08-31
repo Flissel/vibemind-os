@@ -40,3 +40,6 @@ chunked.jsonl
 crawled.jsonl
 embeddings.jsonl
 rewritten.jsonl
+
+# generated plugin runtime evidence and migration reports
+/.artifacts

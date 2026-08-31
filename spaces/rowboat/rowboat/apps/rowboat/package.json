@@ -13,7 +13,12 @@
     "rag-worker": "tsx app/scripts/rag-worker.ts",
     "jobs-worker": "tsx app/scripts/jobs-worker.ts",
     "mongodb-drop-indexes": "tsx app/scripts/mongodb-drop-indexes.ts",
-    "mongodb-ensure-indexes": "tsx app/scripts/mongodb-ensure-indexes.ts"
+    "mongodb-ensure-indexes": "tsx app/scripts/mongodb-ensure-indexes.ts",
+    "test:plugins": "vitest run test/plugins",
+    "plugins:migrate": "tsx scripts/migrate-openai-plugins.ts",
+    "plugins:verify": "vitest run test/plugins && npm run plugins:migrate -- --dry-run --scope fixtures",
+    "plugins:evidence": "vitest run test/plugins --reporter=json --outputFile=.artifacts/plugin-app-tests.json && npm --prefix ../../packages/openai-plugin-runtime run test -- --reporter=json --outputFile=.artifacts/plugin-runtime-tests.json && python -m pytest ../../../tests/test_openai_plugin_runtime_contract.py -q --junitxml=.artifacts/plugin-space-contract.xml",
+    "plugins:catalog-load": "tsx scripts/load-plugin-catalog.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^1.3.21",
@@ -39,6 +44,7 @@
     "@openai/agents-extensions": "^0.0.15",
     "@primer/react": "^37.27.0",
     "@qdrant/js-client-rest": "^1.13.0",
+    "@rowboat/openai-plugin-runtime": "file:../../packages/openai-plugin-runtime",
     "ai": "^4.3.13",
     "awilix": "^12.0.5",
     "clsx": "^2.1.1",
@@ -79,7 +85,10 @@
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.10",
     "tsx": "^4.19.1",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vite": "6.4.3",
+    "vite-tsconfig-paths": "5.1.4",
+    "vitest": "3.2.7"
   },
   "overrides": {
     "@types/react": "19.1.8",

@@ -15,6 +15,7 @@ dependencies = [
     
     # LLM 相关
     "openai>=1.0.0",
+    "vibemind-shared @ git+https://github.com/Flissel/vibemind-shared.git@609dda92e0f4370c03085a7e2ff6a6f492693d0d",
     
     # Neo4j graph database driver
     "neo4j>=5.15.0",
@@ -44,6 +45,9 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [dependency-groups]
 dev = [

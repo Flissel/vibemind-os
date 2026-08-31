@@ -107,6 +107,7 @@ class Plan:
     # E2E-Trace (2026-06-09): durchgaengige Correlation-ID, am multihop_execute-
     # Entry gesetzt (auch fuer SoM/som-team/no-plan-Zweige, die kein plan_id haben).
     trace_id: str = ""
+    plan_revision: int = 1
     # Laufzeit-Stage-Events (PLAN/EXECUTION/...): {stage, component, ts, outcome}.
     # Nicht in to_dict serialisiert (der PlanRecorder-Snapshot zieht es separat).
     _stages: List[Dict[str, Any]] = field(default_factory=list)
@@ -124,6 +125,7 @@ class Plan:
             "final_synthesis_prompt": self.final_synthesis_prompt,
             "estimated_cost_usd": self.estimated_cost_usd,
             "trace_id": self.trace_id,
+            "plan_revision": self.plan_revision,
         }
 
     @classmethod
@@ -170,6 +172,7 @@ class Plan:
             final_synthesis_prompt=d.get("final_synthesis_prompt") or "",
             estimated_cost_usd=float(d.get("estimated_cost_usd") or 0.0),
             trace_id=d.get("trace_id") or "",
+            plan_revision=d["plan_revision"] if "plan_revision" in d else 1,
         )
 
 
@@ -200,6 +203,9 @@ class HopResult:
     # voice/brain boundary). None means UNVERIFIED, never a success.
     contract_pass: Optional[bool] = None
     reward: float = 0.0  # mirrors contract_pass: True->1.0, False->-1.0, None->0.0
+    authority_status: Optional[str] = None
+    invocation_id: Optional[str] = None
+    pending: bool = False
 
 
 def contract_pass_from(ok: bool, verdict: Optional[Dict[str, Any]]) -> Optional[bool]:
@@ -254,6 +260,8 @@ def validate_plan(
         errors.append("plan_id is empty")
     if not plan.intent:
         errors.append("intent is empty")
+    if not isinstance(plan.plan_revision, int) or isinstance(plan.plan_revision, bool) or plan.plan_revision <= 0:
+        errors.append("plan_revision must be a positive integer")
     if not plan.hops:
         errors.append("plan has zero hops")
         return errors

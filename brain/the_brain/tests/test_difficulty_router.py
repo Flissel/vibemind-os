@@ -151,6 +151,42 @@ def test_meta_messages_not_planned():
     check("echter Intent mit 'Zusammenfassung' bleibt planbar (nicht meta)", out["level"] != "meta")
 
 
+# ── Test 7: E3 (task-brain-0019) — Multi-Verb-Intents IMMER auf hard/SoM ─────
+# Architektur-Entscheidung E3 (User): ab zwei unabhängigen Verben erzeugt Brain
+# einen mehrstufigen Plan über den hard/SoM-Pfad. Die Erkennung (core/multi_verb)
+# hebt easy/medium auf hard; hard/insane bleiben unverändert; meta gewinnt weiter.
+def test_multi_verb_escalates_to_hard():
+    print("Test 7: E3 Multi-Verb → hard (Eskalation über der semantischen Stufe)")
+    r = _router_with_stub()
+    # Level-Tag ans ENDE — vorn würde er die Kommando-Position des ersten Verbs
+    # zerstören (der StubEmbedder findet den Tag überall im Text).
+    # Stub-Embedder würde [[medium]] sagen — Multi-Verb muss auf hard heben
+    out = r.classify("erstelle eine idee und füge sie der bubble hinzu [[medium]]")
+    check("medium + multi-verb → hard", out["level"] == "hard")
+    check("method markiert Eskalation", out["method"] == "multi-verb")
+    # Referenzfall cat0 0.6 (Sequenz-Ellipse), Stub würde easy sagen
+    out2 = r.classify("mach erst A, dann B und dann C [[easy]]")
+    check("easy + multi-verb → hard", out2["level"] == "hard")
+    # insane bleibt insane (SoM/som-team ist ohnehin mehrstufig — kein Downgrade)
+    out3 = r.classify("finde heraus was wir verbessern könnten und schlage etwas vor [[insane]]")
+    check("insane bleibt insane", out3["level"] == "insane")
+    # hard bleibt hard, Methode unverändert semantisch
+    out4 = r.classify("baue ein anschreiben und eine tabelle und leg sie ab [[hard]]")
+    check("hard bleibt hard", out4["level"] == "hard")
+    # Abgrenzung: Aufzählung unter EINEM Verb wird NICHT eskaliert
+    out5 = r.classify("lösche die ideen A, B und C [[medium]]")
+    check("Aufzählung bleibt medium", out5["level"] == "medium")
+    # meta gewinnt weiterhin vor der Multi-Verb-Eskalation
+    out6 = r.classify(
+        "Summarize the following conversation preserving key facts, decisions, "
+        "user preferences, and important context. Output only the summary.")
+    check("meta gewinnt vor multi-verb", out6["level"] == "meta")
+    # Heuristik-Pfad (kein Embedder): Eskalation greift auch dort
+    r2 = _dr.DifficultyRouter(disable_semantic=True)
+    out7 = r2.classify("zeige den status und starte danach den container")
+    check("Heuristik + multi-verb → hard", out7["level"] == "hard")
+
+
 if __name__ == "__main__":
     test_four_levels_classify()
     test_excel_case_is_hard()
@@ -158,6 +194,7 @@ if __name__ == "__main__":
     test_dispatch_mapping()
     test_empty_intent_safe()
     test_meta_messages_not_planned()
+    test_multi_verb_escalates_to_hard()
     print()
     print(f"=== {len(_passed)} PASSED, {len(_failed)} FAILED ===")
     if _failed:

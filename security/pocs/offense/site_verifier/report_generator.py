@@ -13,18 +13,9 @@ Nutzung:
 import asyncio
 import json
 import os
-import sys
 from datetime import datetime
-from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
-
-from dotenv import load_dotenv
-load_dotenv(Path(__file__).parent.parent / ".env")
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-import sys as _sys
-_sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-from llm_client import get_client, get_model
 
 from tools import (
     security_audit, whois_lookup, check_ssl_cert,
@@ -40,13 +31,25 @@ from tools import (
     tls_cipher_suite_grading, cookie_security_audit,
     api_endpoint_discovery, dependency_cve_scan,
     subdomain_takeover_check, secret_validator,
-    # Intelligence
-    site_fingerprint,
-    # v3 dynamic checks
-    source_map_check, csp_analyzer, smart_crawl,
-    dynamic_injection_test, clickjacking_test,
 )
 from browser_verify import browser_verify
+
+
+SITE_VERIFIER_ROLE = "security_analyzer"
+
+
+def get_client(role: str) -> Any:
+    """Resolve the configured client lazily at the report boundary."""
+    from vibemind_shared import get_client as shared_get_client
+
+    return shared_get_client(role)
+
+
+def get_model(role: str) -> str:
+    """Resolve the configured model lazily at the report boundary."""
+    from vibemind_shared import get_model as shared_get_model
+
+    return shared_get_model(role)
 
 
 REPORT_TEMPLATE = """<!DOCTYPE html>
@@ -703,6 +706,34 @@ def build_attack_scenarios_html(issues: list) -> str:
     return html
 
 
+async def _request_llm_report(
+    llm_client: Any,
+    llm_model: str,
+    system_prompt: str,
+    user_prompt: str,
+) -> dict[str, Any]:
+    """Request and decode the configured report without fallback or retry."""
+    llm_response = await llm_client.chat.completions.create(
+        model=llm_model,
+        temperature=0,
+        max_tokens=8000,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    )
+
+    llm_text = llm_response.choices[0].message.content.strip()
+
+    # Strip markdown code fences if present
+    if llm_text.startswith("```"):
+        llm_text = llm_text.split("\n", 1)[1] if "\n" in llm_text else llm_text[3:]
+        if llm_text.endswith("```"):
+            llm_text = llm_text[:-3]
+
+    return json.loads(llm_text)
+
+
 async def generate_report(
     url: str,
     company: str = "Auftraggeber",
@@ -710,26 +741,17 @@ async def generate_report(
 ) -> str:
     """Run all checks and generate HTML report."""
 
+    llm_client = get_client(SITE_VERIFIER_ROLE)
+    llm_model = get_model(SITE_VERIFIER_ROLE)
+
     domain = urlparse(url).netloc or urlparse(url).path.split("/")[0]
 
     print(f"\n  SECURITY AUDIT REPORT GENERATOR")
     print(f"  Target: {url}")
     print(f"  Company: {company}\n")
 
-    # =====================================================
-    # PHASE 0: Site Fingerprinting (adaptive scanning)
-    # =====================================================
-    print("  [1/10] Fingerprinting target...", flush=True)
-    fingerprint = await site_fingerprint(url)
-    site_type = fingerprint["site_type"]
-    risk_profile = fingerprint["risk_profile"]
-    tech_stack = fingerprint["tech_stack"]
-    print(f"         Type: {site_type} | Risk: {risk_profile} | Stack: {', '.join(tech_stack) or 'unknown'} | WAF: {fingerprint.get('waf_hint') or 'none'}", flush=True)
-
-    # =====================================================
-    # PHASE 1: Base checks (always run)
-    # =====================================================
-    print("  [2/10] Running base checks...", flush=True)
+    # Run all checks in parallel
+    print("  [1/8] Running base checks...", flush=True)
 
     whois_result, ssl_result, dns_result, headers_result, content_result, audit_result = (
         await asyncio.gather(
@@ -742,160 +764,54 @@ async def generate_report(
         )
     )
 
-    # Update risk_profile with WHOIS domain age
-    domain_age = whois_result.get("domain_age_days")
-    if domain_age is not None:
-        fingerprint["domain_age_days"] = domain_age
-        if domain_age < 30:
-            risk_profile = "NEW_DOMAIN"
-            fingerprint["risk_profile"] = risk_profile
-            print(f"         ! Domain is only {domain_age} days old → NEW_DOMAIN", flush=True)
+    print(f"  [2/8] Score (base): {audit_result['score']}/100", flush=True)
 
-    print(f"  [2/10] Score (base): {audit_result['score']}/100", flush=True)
+    # Run extended checks (phase 1: independent)
+    print("  [3/8] Running extended checks (subdomains, ports, paths, CORS, robots, CMS, login)...", flush=True)
 
-    # =====================================================
-    # PHASE 2: Adaptive extended checks (based on fingerprint)
-    # =====================================================
+    (robots_result, subdomain_result, cors_result, portscan_result,
+     paths_result, cms_result, login_result, xss_result, sqli_result,
+     redirect_result, methods_result, js_secrets_result,
+     email_result, waf_result, ratelimit_result,
+     zone_transfer_result, breach_result,
+     tls_grade_result, cookie_result, api_result,
+     cve_result) = (
+        await asyncio.gather(
+            robots_sitemap_scan(url),
+            subdomain_enum(domain),
+            cors_check(url),
+            port_scan(domain),
+            path_discovery(url),
+            cms_version_detect(url),
+            login_security_check(url),
+            xss_reflection_check(url),
+            sqli_check(url),
+            open_redirect_check(url),
+            http_methods_check(url),
+            js_secrets_scanner(url),
+            email_spoofing_test(domain),
+            waf_detection(url),
+            rate_limit_check(url),
+            dns_zone_transfer(domain),
+            breach_check(domain),
+            # v2 checks
+            tls_cipher_suite_grading(domain),
+            cookie_security_audit(url),
+            api_endpoint_discovery(url),
+            dependency_cve_scan(url),
+        )
+    )
 
-    # Define which checks to run per site type
-    # All checks are (name, coroutine_fn, args) tuples
-    ALWAYS_RUN = {
-        "robots": (robots_sitemap_scan, [url]),
-        "subdomain": (subdomain_enum, [domain]),
-        "cors": (cors_check, [url]),
-        "port": (port_scan, [domain]),
-        "methods": (http_methods_check, [url]),
-        "js_secrets": (js_secrets_scanner, [url]),
-        "email": (email_spoofing_test, [domain]),
-        "waf": (waf_detection, [url]),
-        "tls_grade": (tls_cipher_suite_grading, [domain]),
-        "cookie": (cookie_security_audit, [url]),
-        # v3: always run these
-        "source_maps": (source_map_check, [url]),
-        "clickjacking": (clickjacking_test, [url]),
-        "crawl": (smart_crawl, [url]),
-    }
-
-    CONDITIONAL_CHECKS = {
-        "paths": (path_discovery, [url]),
-        "cms": (cms_version_detect, [url]),
-        "login": (login_security_check, [url]),
-        "xss": (xss_reflection_check, [url]),
-        "sqli": (sqli_check, [url]),
-        "redirect": (open_redirect_check, [url]),
-        "ratelimit": (rate_limit_check, [url]),
-        "zone_transfer": (dns_zone_transfer, [domain]),
-        "breach": (breach_check, [domain]),
-        "api": (api_endpoint_discovery, [url]),
-        "cve": (dependency_cve_scan, [url]),
-    }
-
-    # Build the check list based on fingerprint
-    checks_to_run = dict(ALWAYS_RUN)
-    skipped = []
-
-    if site_type == "SPA":
-        # SPAs: skip path discovery (catch-all), skip WP-specific checks
-        skipped.extend(["paths", "cms", "login", "ratelimit"])
-        checks_to_run["api"] = CONDITIONAL_CHECKS["api"]
-        checks_to_run["cve"] = CONDITIONAL_CHECKS["cve"]
-        checks_to_run["xss"] = CONDITIONAL_CHECKS["xss"]
-        checks_to_run["sqli"] = CONDITIONAL_CHECKS["sqli"]
-        checks_to_run["redirect"] = CONDITIONAL_CHECKS["redirect"]
-        checks_to_run["breach"] = CONDITIONAL_CHECKS["breach"]
-        checks_to_run["zone_transfer"] = CONDITIONAL_CHECKS["zone_transfer"]
-
-    elif site_type == "CMS_WORDPRESS":
-        # WordPress: full CMS scan, rate limit on wp-login, skip generic API discovery
-        checks_to_run.update(CONDITIONAL_CHECKS)
-        skipped.append("api")  # WP has its own REST API
-        checks_to_run.pop("api", None)
-
-    elif site_type == "PORTAL":
-        # Portals (HIS/QIS, Java): focus on auth, cookies, skip CMS/CVE
-        skipped.extend(["cms", "cve", "api"])
-        checks_to_run["paths"] = CONDITIONAL_CHECKS["paths"]
-        checks_to_run["login"] = CONDITIONAL_CHECKS["login"]
-        checks_to_run["xss"] = CONDITIONAL_CHECKS["xss"]
-        checks_to_run["sqli"] = CONDITIONAL_CHECKS["sqli"]
-        checks_to_run["redirect"] = CONDITIONAL_CHECKS["redirect"]
-        checks_to_run["ratelimit"] = CONDITIONAL_CHECKS["ratelimit"]
-        checks_to_run["breach"] = CONDITIONAL_CHECKS["breach"]
-        checks_to_run["zone_transfer"] = CONDITIONAL_CHECKS["zone_transfer"]
-
-    else:
-        # STATIC, API, CMS_OTHER, UNKNOWN → run everything
-        checks_to_run.update(CONDITIONAL_CHECKS)
-
-    # NEW_DOMAIN overrides: add aggressive checks
-    if risk_profile == "NEW_DOMAIN":
-        if "breach" not in checks_to_run:
-            checks_to_run["breach"] = CONDITIONAL_CHECKS["breach"]
-        # Skip wayback (pointless for new domains) — already handled in base checks
-
-    total_checks = len(checks_to_run)
-    print(f"  [3/10] Running {total_checks} adaptive checks (skipped: {', '.join(skipped) or 'none'})...", flush=True)
-
-    # Execute all selected checks in parallel
-    check_names = list(checks_to_run.keys())
-    check_coros = [fn(*args) for fn, args in checks_to_run.values()]
-    check_results_list = await asyncio.gather(*check_coros, return_exceptions=True)
-
-    # Map results back to names, handle exceptions
-    check_results = {}
-    for name, result_or_exc in zip(check_names, check_results_list):
-        if isinstance(result_or_exc, Exception):
-            check_results[name] = {"issues": [], "error": str(result_or_exc)[:200]}
-        else:
-            check_results[name] = result_or_exc
-
-    # Assign to named variables for backward compatibility
-    robots_result = check_results.get("robots", {"issues": []})
-    subdomain_result = check_results.get("subdomain", {"issues": []})
-    cors_result = check_results.get("cors", {"issues": []})
-    portscan_result = check_results.get("port", {"issues": []})
-    paths_result = check_results.get("paths", {"issues": [], "found_paths": [], "env_leaks": []})
-    cms_result = check_results.get("cms", {"issues": []})
-    login_result = check_results.get("login", {"issues": []})
-    xss_result = check_results.get("xss", {"issues": [], "reflections_found": []})
-    sqli_result = check_results.get("sqli", {"issues": [], "potential_injections": []})
-    redirect_result = check_results.get("redirect", {"issues": []})
-    methods_result = check_results.get("methods", {"issues": []})
-    js_secrets_result = check_results.get("js_secrets", {"issues": [], "secrets_found": []})
-    email_result = check_results.get("email", {"issues": []})
-    waf_result = check_results.get("waf", {"issues": []})
-    ratelimit_result = check_results.get("ratelimit", {"issues": []})
-    zone_transfer_result = check_results.get("zone_transfer", {"issues": []})
-    breach_result = check_results.get("breach", {"issues": []})
-    tls_grade_result = check_results.get("tls_grade", {"issues": [], "grade": "?"})
-    cookie_result = check_results.get("cookie", {"issues": []})
-    api_result = check_results.get("api", {"issues": [], "discovered_endpoints": []})
-    cve_result = check_results.get("cve", {"issues": []})
-
-    # Phase 2b: scan discovered subdomains + takeover check
+    # Phase 2: scan discovered subdomains + takeover check
     subdomain_scan_result = {"issues": []}
     takeover_result = {"issues": []}
     if subdomain_result.get("found_subdomains"):
         risky_subs = [s["subdomain"] for s in subdomain_result["found_subdomains"] if s.get("risky")]
         if risky_subs:
-            print(f"  [3b/10] Scanning {len(risky_subs)} risky subdomains...", flush=True)
+            print(f"  [3b/8] Scanning {len(risky_subs)} risky subdomains...", flush=True)
             subdomain_scan_result = await subdomain_content_scan(",".join(risky_subs))
-        print(f"  [3c/10] Checking subdomain takeover...", flush=True)
+        print(f"  [3c/8] Checking subdomain takeover...", flush=True)
         takeover_result = await subdomain_takeover_check(subdomain_result["found_subdomains"])
-
-    # Phase 2c: dependent checks (need results from Phase 2)
-    source_map_result = check_results.get("source_maps", {"issues": []})
-    clickjacking_result = check_results.get("clickjacking", {"issues": []})
-    crawl_result = check_results.get("crawl", {"issues": [], "forms_found": [], "parameters_found": []})
-
-    # CSP analysis (depends on headers_result)
-    csp_result = await csp_analyzer(url, headers_result)
-
-    # Dynamic injection tests (depends on crawl_result)
-    dynamic_test_result = {"issues": []}
-    if crawl_result.get("parameters_found") or crawl_result.get("forms_found"):
-        print(f"  [3d/10] Dynamic injection testing ({len(crawl_result.get('parameters_found', []))} params, {len(crawl_result.get('forms_found', []))} forms)...", flush=True)
-        dynamic_test_result = await dynamic_injection_test(url, crawl_result)
 
     # Merge all issues into audit_result
     all_extras = [
@@ -908,9 +824,6 @@ async def generate_report(
         # v2 checks
         tls_grade_result, cookie_result, api_result,
         cve_result, takeover_result,
-        # v3 checks
-        source_map_result, csp_result, clickjacking_result,
-        crawl_result, dynamic_test_result,
     ]
     for extra in all_extras:
         for issue in extra.get("issues", []):
@@ -918,10 +831,7 @@ async def generate_report(
             deduction = {"CRITICAL": 25, "HIGH": 15, "MEDIUM": 10, "LOW": 3, "INFO": 0}
             audit_result["score"] = max(0, audit_result["score"] - deduction.get(issue.get("severity", "INFO"), 0))
 
-    # Initialize score for use throughout the pipeline
-    score = audit_result["score"]
-
-    print(f"  [4/8] Score (final): {score}/100", flush=True)
+    print(f"  [4/8] Score (final): {audit_result['score']}/100", flush=True)
     print(f"  [5/8] Total issues: {len(audit_result['issues'])}", flush=True)
 
     # Extended results summary
@@ -982,22 +892,6 @@ async def generate_report(
 
     issues = audit_result["issues"]
     investigations = []
-
-    # --- 0. TLS consistency check: if tls_cipher_suite_grading says A/A+ but security_audit says "TLS failed", debunk it ---
-    tls_grade = tls_grade_result.get("grade", "")
-    if tls_grade in ("A", "A+"):
-        for issue in issues[:]:
-            if issue.get("title") == "TLS connection failed" and issue.get("severity") == "CRITICAL":
-                issue["_original_severity"] = issue["severity"]
-                issue["severity"] = "INFO"
-                issue["title"] += " [FALSE POSITIVE — TLS Grade " + tls_grade + "]"
-                score_refund = 30
-                score = min(100, score + score_refund)
-                investigations.append({
-                    "finding": "TLS connection failed",
-                    "checks": [{"check": "TLS Grade", "result": f"Grade {tls_grade} confirmed by tls_cipher_suite_grading"}],
-                    "verdict": f"FALSE POSITIVE — TLS is healthy (Grade {tls_grade}). The security_audit TLS check timed out.",
-                })
 
     # --- 1. Path Discovery: check actual content (empty body = not really exposed) ---
     for issue in issues[:]:
@@ -1174,7 +1068,8 @@ async def generate_report(
 
     print(f"         Issues: C:{critical_count} H:{high_count} M:{medium_count} L:{low_count} I:{info_count}", flush=True)
 
-    # Score class (score already set and updated during pipeline)
+    # Score class
+    score = audit_result["score"]
     if score >= 80:
         score_class = "good"
     elif score >= 50:
@@ -1212,113 +1107,9 @@ async def generate_report(
         investigation_html = "<p>No findings required further investigation.</p>"
 
     # =====================================================
-    # ATTACK CHAIN CORRELATION ENGINE
-    # =====================================================
-    # Pre-init variables that are set in later phases but referenced by correlation engine
-    secret_validation_result = {"validated": [], "dead_or_fake": [], "inconclusive": [], "total_checked": 0, "live_count": 0, "issues": []}
-
-    print("  [6/10] Correlating attack chains...", flush=True)
-
-    def _has_issue(category=None, title_kw=None, severity=None):
-        """Check if an issue matching criteria exists."""
-        for iss in issues:
-            if severity and iss.get("severity") != severity:
-                continue
-            if category and iss.get("category") != category:
-                continue
-            if title_kw and title_kw.lower() not in iss.get("title", "").lower():
-                continue
-            return True
-        return False
-
-    attack_chains = []
-
-    # Chain 1: XSS + insecure session cookie = session hijacking
-    has_xss = _has_issue(title_kw="xss") or _has_issue(title_kw="reflected")
-    has_insecure_session = any(c.get("is_session_cookie") and c.get("issues") for c in cookie_result.get("cookies_found", []))
-    if has_xss and has_insecure_session:
-        attack_chains.append({
-            "severity": "CRITICAL",
-            "category": "Attack Chain",
-            "title": "Session Hijacking: XSS + Insecure Session Cookies",
-            "description": "XSS reflection combined with session cookies missing HttpOnly flag allows an attacker to steal user sessions with a single crafted URL.",
-            "fix": "1. Fix XSS vulnerabilities. 2. Set HttpOnly + Secure + SameSite=Strict on all session cookies.",
-        })
-
-    # Chain 2: Open DB port + no WAF = directly exploitable database
-    has_db_port = any("3306" in iss.get("title", "") or "5432" in iss.get("title", "") or "27017" in iss.get("title", "") for iss in issues)
-    has_no_waf = not waf_result.get("waf_detected", False)
-    if has_db_port and has_no_waf:
-        attack_chains.append({
-            "severity": "CRITICAL",
-            "category": "Attack Chain",
-            "title": "Database Exposure: Open DB Port + No WAF",
-            "description": "Database port is publicly accessible without a Web Application Firewall. Attackers can attempt direct database connections, brute-force credentials, or exploit known CVEs.",
-            "fix": "1. Close database port via firewall. 2. Deploy WAF. 3. Restrict DB access to application servers only.",
-        })
-
-    # Chain 3: Email spoofing + exposed admin panel = phishing + admin compromise
-    has_email_spoof = email_result.get("spoofable", False)
-    has_admin = _has_issue(title_kw="/admin") or _has_issue(title_kw="admin panel")
-    if has_email_spoof and has_admin:
-        attack_chains.append({
-            "severity": "HIGH",
-            "category": "Attack Chain",
-            "title": "Phishing + Admin Compromise: Email Spoofing + Exposed Admin",
-            "description": "Attacker can send emails appearing to be from this domain (no SPF/DMARC) and direct victims to the exposed admin login for credential harvesting.",
-            "fix": "1. Configure SPF + DMARC + DKIM. 2. Restrict admin panel to VPN/IP whitelist.",
-        })
-
-    # Chain 4: LIVE API keys + no CSP = key theft via XSS
-    has_live_keys = secret_validation_result.get("live_count", 0) > 0
-    has_no_csp = _has_issue(title_kw="Content-Security-Policy")
-    if has_live_keys and (has_no_csp or has_xss):
-        attack_chains.append({
-            "severity": "CRITICAL",
-            "category": "Attack Chain",
-            "title": "API Key Theft: Live Secrets + Missing CSP/XSS",
-            "description": "Live API keys are exposed in JavaScript. Combined with missing Content-Security-Policy or XSS vulnerabilities, any attacker can exfiltrate these keys via injected scripts.",
-            "fix": "1. Remove API keys from frontend code. 2. Implement strict CSP. 3. Use server-side API proxies.",
-        })
-
-    # Chain 5: SSH/FTP exposed + no rate limit = brute force
-    has_ssh = any("22" in iss.get("title", "") and "SSH" in iss.get("title", "") for iss in issues)
-    has_ftp = any("21" in iss.get("title", "") and "FTP" in iss.get("title", "") for iss in issues)
-    if (has_ssh or has_ftp) and has_no_waf:
-        attack_chains.append({
-            "severity": "HIGH",
-            "category": "Attack Chain",
-            "title": f"Brute Force: {'SSH' if has_ssh else 'FTP'} Exposed + No WAF",
-            "description": f"{'SSH' if has_ssh else 'FTP'} port is publicly accessible without rate limiting or WAF protection. Automated brute-force tools can attempt thousands of credential combinations.",
-            "fix": f"1. Restrict {'SSH' if has_ssh else 'FTP'} to VPN/specific IPs. 2. Enable fail2ban. 3. Use key-based auth (SSH) or disable FTP entirely.",
-        })
-
-    # Chain 6: PUT/DELETE methods + no auth = file upload/deletion
-    has_dangerous_methods = _has_issue(title_kw="PUT") or _has_issue(title_kw="DELETE")
-    if has_dangerous_methods and has_no_waf:
-        attack_chains.append({
-            "severity": "HIGH",
-            "category": "Attack Chain",
-            "title": "Unauthorized File Manipulation: PUT/DELETE + No WAF",
-            "description": "Dangerous HTTP methods (PUT/DELETE) are enabled without WAF protection. Attackers can upload web shells or delete critical resources.",
-            "fix": "1. Disable PUT/DELETE methods unless required for API. 2. Deploy WAF with method filtering.",
-        })
-
-    # Add chains to issues
-    for chain in attack_chains:
-        issues.append(chain)
-        deduction = {"CRITICAL": 25, "HIGH": 15}.get(chain["severity"], 0)
-        score = max(0, score - deduction)
-
-    if attack_chains:
-        print(f"         {len(attack_chains)} attack chain(s) identified!", flush=True)
-    else:
-        print(f"         No attack chains detected.", flush=True)
-
-    # =====================================================
     # BROWSER VERIFICATION (Playwright)
     # =====================================================
-    print("  [7/10] Browser verification (Playwright)...", flush=True)
+    print("  [6/9] Browser verification (Playwright)...", flush=True)
 
     browser_result = {"verified_paths": [], "debunked_paths": [], "verified_xss": [],
                       "debunked_xss": [], "screenshots": [], "summary": "Skipped"}
@@ -1362,12 +1153,6 @@ async def generate_report(
                     issue["title"] += " [BROWSER VERIFIED]"
                     break
 
-        # Add browser-discovered issues to main list
-        for issue in browser_result.get("issues", []):
-            issues.append(issue)
-            deduction = {"CRITICAL": 25, "HIGH": 15, "MEDIUM": 10, "LOW": 3, "INFO": 0}
-            score = max(0, score - deduction.get(issue.get("severity", "INFO"), 0))
-
         print(f"  [6/9] Score (after browser verification): {score}/100", flush=True)
 
     except Exception as e:
@@ -1403,9 +1188,6 @@ async def generate_report(
     # LLM-DRIVEN REPORT GENERATION
     # =====================================================
     print("  [8/10] LLM report generation (all sections)...", flush=True)
-
-    llm_client = get_client("report")
-    llm_model = get_model("report", "poc_site_verifier")
 
     # Collect all raw results for the LLM
     all_results = {
@@ -1501,47 +1283,13 @@ async def generate_report(
         f"Write the complete report."
     )
 
-    llm_content = {}
-    try:
-        llm_response = await llm_client.chat.completions.create(
-            model=llm_model,
-            temperature=0,
-            max_tokens=8000,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        )
-
-        llm_text = llm_response.choices[0].message.content.strip()
-
-        # Strip markdown code fences if present
-        if llm_text.startswith("```"):
-            llm_text = llm_text.split("\n", 1)[1] if "\n" in llm_text else llm_text[3:]
-            if llm_text.endswith("```"):
-                llm_text = llm_text[:-3]
-
-        llm_content = json.loads(llm_text)
-        print(f"  [6/8] LLM generated {len(llm_content)} report sections.", flush=True)
-
-    except (json.JSONDecodeError, Exception) as e:
-        print(f"  [!] LLM report generation failed: {e}. Using fallback.", flush=True)
-        # Fallback: generate basic content programmatically
-        fallback_proposal = ""
-        for issue in sorted(issues, key=lambda x: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].index(x.get("severity", "INFO"))):
-            fallback_proposal += f"<li><strong>[{issue['severity']}]</strong> {issue.get('fix', issue.get('title', ''))}</li>\n"
-        llm_content = {
-            "executive_summary": f"<p>Security audit of {domain} completed with a score of {score}/100. {critical_count} critical and {high_count} high severity issues were identified requiring immediate attention.</p>",
-            "domain_info_narrative": "",
-            "investigation_narrative": "",
-            "findings_narrative": "",
-            "tls_narrative": "",
-            "headers_narrative": "",
-            "server_config_narrative": "",
-            "attack_scenarios": build_attack_scenarios_html(issues),
-            "deep_analysis": "",
-            "recommended_actions": fallback_proposal,
-        }
+    llm_content = await _request_llm_report(
+        llm_client,
+        llm_model,
+        system_prompt,
+        user_prompt,
+    )
+    print(f"  [6/8] LLM generated {len(llm_content)} report sections.", flush=True)
 
     # =====================================================
     # FACT-CHECK LLM OUTPUT
@@ -1844,77 +1592,6 @@ async def generate_report(
             for v in verified_xss:
                 evidence_html += f'<li>XSS {v.get("vector_name", "")}: {v.get("reason", "")}</li>\n'
             evidence_html += '</ul></div>\n'
-
-        # Network traffic summary
-        network = browser_result.get("network", {})
-        tp_domains = list(set(tp["domain"] for tp in network.get("third_party_requests", [])))
-        api_calls = network.get("api_calls", [])
-        mixed = network.get("mixed_content", [])
-        ws = network.get("websocket_urls", [])
-
-        if network.get("total_requests", 0) > 0:
-            evidence_html += '<h3 style="margin-top:20px;">Network Traffic Analysis</h3>\n'
-            evidence_html += '<table style="width:100%; border-collapse:collapse; font-size:13px;">\n'
-            evidence_html += f'<tr><th style="text-align:left; padding:6px; border-bottom:1px solid #ddd;">Total Requests</th><td style="padding:6px; border-bottom:1px solid #ddd;">{network["total_requests"]}</td></tr>\n'
-            evidence_html += f'<tr><th style="text-align:left; padding:6px; border-bottom:1px solid #ddd;">API Calls (XHR/Fetch)</th><td style="padding:6px; border-bottom:1px solid #ddd;">{len(api_calls)}</td></tr>\n'
-            evidence_html += f'<tr><th style="text-align:left; padding:6px; border-bottom:1px solid #ddd;">Third-Party Domains</th><td style="padding:6px; border-bottom:1px solid #ddd;">{len(tp_domains)}</td></tr>\n'
-            if tp_domains:
-                evidence_html += f'<tr><th style="text-align:left; padding:6px; border-bottom:1px solid #ddd;">&nbsp;</th><td style="padding:6px; border-bottom:1px solid #ddd; font-size:12px;">{", ".join(tp_domains[:15])}</td></tr>\n'
-            if mixed:
-                evidence_html += f'<tr><th style="text-align:left; padding:6px; border-bottom:1px solid #ddd; color:#c0392b;">Mixed Content (HTTP!)</th><td style="padding:6px; border-bottom:1px solid #ddd; color:#c0392b;">{len(mixed)} insecure resources</td></tr>\n'
-            if ws:
-                evidence_html += f'<tr><th style="text-align:left; padding:6px; border-bottom:1px solid #ddd;">WebSocket Connections</th><td style="padding:6px; border-bottom:1px solid #ddd;">{len(ws)}</td></tr>\n'
-            evidence_html += '</table>\n'
-
-        # Console output
-        console = browser_result.get("console", {})
-        if console.get("errors") or console.get("csp_violations"):
-            evidence_html += '<h3 style="margin-top:20px;">Console Output</h3>\n'
-            if console.get("csp_violations"):
-                evidence_html += f'<div style="padding:8px; background:#fff5f5; border-left:3px solid #c0392b; margin:8px 0; font-size:12px;"><strong>CSP Violations ({len(console["csp_violations"])}):</strong><br>'
-                for v in console["csp_violations"][:5]:
-                    evidence_html += f'<code>{_esc(v[:200])}</code><br>'
-                evidence_html += '</div>\n'
-            if console.get("errors"):
-                evidence_html += f'<div style="padding:8px; background:#fef9e7; border-left:3px solid #f39c12; margin:8px 0; font-size:12px;"><strong>JS Errors ({len(console["errors"])}):</strong><br>'
-                for e in console["errors"][:5]:
-                    evidence_html += f'<code>{_esc(e[:200])}</code><br>'
-                evidence_html += '</div>\n'
-
-        # Browser storage
-        storage = browser_result.get("storage", {})
-        storage_secrets = storage.get("localStorage_secrets", []) + storage.get("sessionStorage_secrets", [])
-        if storage_secrets:
-            evidence_html += '<h3 style="margin-top:20px; color:#c0392b;">Secrets in Browser Storage</h3>\n'
-            evidence_html += '<table style="width:100%; border-collapse:collapse; font-size:13px;">\n'
-            evidence_html += '<thead><tr style="background:#c0392b; color:#fff;"><th style="padding:6px 12px;">Storage</th><th style="padding:6px 12px;">Key</th><th style="padding:6px 12px;">Value (preview)</th><th style="padding:6px 12px;">Length</th></tr></thead><tbody>\n'
-            for s in storage_secrets:
-                storage_type = "localStorage" if s in storage.get("localStorage_secrets", []) else "sessionStorage"
-                evidence_html += f'<tr style="background:#fff5f5;"><td style="padding:6px 12px; border-bottom:1px solid #eee;">{storage_type}</td>'
-                evidence_html += f'<td style="padding:6px 12px; border-bottom:1px solid #eee;"><code>{_esc(s["key"])}</code></td>'
-                evidence_html += f'<td style="padding:6px 12px; border-bottom:1px solid #eee; font-family:monospace;">{_esc(s["value_preview"])}</td>'
-                evidence_html += f'<td style="padding:6px 12px; border-bottom:1px solid #eee;">{s["length"]} chars</td></tr>\n'
-            evidence_html += '</tbody></table>\n'
-
-        # Cookies after JS
-        cookies_js = browser_result.get("cookies_after_js", [])
-        insecure_cookies = [c for c in cookies_js if c.get("issues")]
-        if insecure_cookies:
-            evidence_html += '<h3 style="margin-top:20px;">Cookie Audit (post-JavaScript)</h3>\n'
-            evidence_html += '<table style="width:100%; border-collapse:collapse; font-size:13px;">\n'
-            evidence_html += '<thead><tr style="background:#2c3e50; color:#fff;"><th style="padding:6px 12px;">Cookie</th><th style="padding:6px 12px;">Domain</th><th style="padding:6px 12px;">Secure</th><th style="padding:6px 12px;">HttpOnly</th><th style="padding:6px 12px;">SameSite</th><th style="padding:6px 12px;">Session?</th><th style="padding:6px 12px;">Issues</th></tr></thead><tbody>\n'
-            for c in insecure_cookies:
-                bg = "#fff5f5" if c["is_session"] else "#fff"
-                evidence_html += f'<tr style="background:{bg};">'
-                evidence_html += f'<td style="padding:6px 12px; border-bottom:1px solid #eee;"><code>{_esc(c["name"])}</code></td>'
-                evidence_html += f'<td style="padding:6px 12px; border-bottom:1px solid #eee;">{_esc(c.get("domain",""))}</td>'
-                evidence_html += f'<td style="padding:6px 12px; border-bottom:1px solid #eee;">{"Yes" if c["secure"] else "<strong style=color:#c0392b>No</strong>"}</td>'
-                evidence_html += f'<td style="padding:6px 12px; border-bottom:1px solid #eee;">{"Yes" if c["httpOnly"] else "<strong style=color:#c0392b>No</strong>"}</td>'
-                evidence_html += f'<td style="padding:6px 12px; border-bottom:1px solid #eee;">{c.get("sameSite","?")}</td>'
-                evidence_html += f'<td style="padding:6px 12px; border-bottom:1px solid #eee;">{"Yes" if c["is_session"] else "No"}</td>'
-                evidence_html += f'<td style="padding:6px 12px; border-bottom:1px solid #eee; font-size:12px;">{", ".join(c["issues"])}</td>'
-                evidence_html += '</tr>\n'
-            evidence_html += '</tbody></table>\n'
 
         # Screenshots
         for i, ss in enumerate(screenshots):

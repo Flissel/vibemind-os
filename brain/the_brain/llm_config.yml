@@ -1,81 +1,43 @@
-# ============================================================
-# LLM Configuration — Brain / The_Brain (MultiLLMRouter)
-# ============================================================
-# Zentrale Config fuer alle kognitiven LLM-Aufrufe.
-# Provider wechseln = nur hier aendern, kein Code anfassen.
-#
-# Reihenfolge: overrides[dir][role] > roles[role] > default
-# ============================================================
+# =============================================================================
+# Brain runtime LLM configuration
+# =============================================================================
+# The Brain container copies this file to /app/llm_config.yml. Every listed
+# role must traverse OpenFang; the central llm_config.yml.example is the source
+# of truth and scripts/check_openfang_llm_config.py rejects drift.
+# =============================================================================
 
 keys:
-  openrouter: ${OPENROUTER_API_KEY}
-  openai: ${OPENAI_API_KEY}
+  openfang: ${OPENFANG_API_KEY}
 
 providers:
-  openrouter:
+  openfang:
     type: openai
-    base_url: https://openrouter.ai/api/v1
-    key_ref: openrouter
-  openai:
-    type: openai
-    base_url: https://api.openai.com/v1
-    key_ref: openai
+    base_url: ${OPENFANG_URL}/v1
+    key_ref: openfang
+    fail_closed: true
+    max_retries: 3
+    timeout_seconds: 30
 
-# === Default (dev mode — Groq direct) ===
 default:
-  provider: openrouter
-  model: groq::llama-3.3-70b-versatile
-  temperature: 0.5
+  provider: openfang
+  model: openfang:brain-fallback
+  temperature: 0
 
-# dev roles routed directly to Groq via the `groq::` model-id prefix.
-# MultiLLMRouter (_provider_of, multi_llm_router.py:63) detects this
-# prefix and bypasses OpenRouter, calling Groq's API directly with
-# GROQ_API_KEY. This is the path every successful eval used before the
-# config drifted to the invalid `openrouter/free`.
 roles:
-  fast_reasoning:
-    provider: openrouter
-    model: groq::llama-3.3-70b-versatile
-    temperature: 0.3
-  planning:
-    provider: openrouter
-    model: groq::llama-3.3-70b-versatile
-    temperature: 0.7
-  context_tracking:
-    provider: openrouter
-    model: groq::llama-3.3-70b-versatile
-    temperature: 0.5
-  communication:
-    provider: openrouter
-    model: groq::llama-3.3-70b-versatile
-    temperature: 0.8
-  long_term_memory:
-    provider: openrouter
-    model: groq::llama-3.3-70b-versatile
-    temperature: 0.5
-  supermemory:
-    provider: openrouter
-    model: gpt-4o-mini
-    temperature: 0.5
-  # Canvas reformat (publishing/bubble_sync/format_engine.py): regenerate a
-  # canvas node's rich content_json from FS-edited prose. OpenAI-direct so the
-  # standard get_client_sync path (NOT the brain MultiLLMRouter) reaches it; low
-  # temperature for deterministic schema-following JSON.
-  format_generation:
-    provider: openai
-    model: gpt-4o-mini
-    temperature: 0.2
+  fast_reasoning:                { provider: openfang, model: "openfang:brain-fallback",   temperature: 0.3 }
+  planning:                      { provider: openfang, model: "openfang:brain-planner",    temperature: 0.7 }
+  context_tracking:              { provider: openfang, model: "openfang:brain-knowledge",  temperature: 0.5 }
+  communication:                 { provider: openfang, model: "openfang:brain-writer",     temperature: 0.8 }
+  long_term_memory:              { provider: openfang, model: "openfang:brain-knowledge",  temperature: 0.5 }
+  supermemory:                   { provider: openfang, model: "openfang:brain-knowledge",  temperature: 0.5 }
+  format_generation:             { provider: openfang, model: "openfang:brain-writer",     temperature: 0.2 }
+  brain_fast_reasoning:          { provider: openfang, model: "openfang:brain-fallback",   temperature: 0.3 }
+  brain_planning:                { provider: openfang, model: "openfang:brain-planner",    temperature: 0.7 }
+  brain_context_tracking:        { provider: openfang, model: "openfang:brain-knowledge",  temperature: 0.5 }
+  brain_communication:           { provider: openfang, model: "openfang:brain-writer",     temperature: 0.8 }
+  brain_long_term_memory:        { provider: openfang, model: "openfang:brain-knowledge",  temperature: 0.5 }
+  brain_supermemory:             { provider: openfang, model: "openfang:brain-knowledge",  temperature: 0.5 }
+  brain_data_collector:          { provider: openfang, model: "openfang:brain-researcher", temperature: 0.7 }
+  brain_data_collector_anthropic: { provider: openfang, model: "openfang:brain-researcher", temperature: 0.7 }
 
-# === Production Overrides ===
-overrides:
-  production:
-    fast_reasoning:
-      model: xai/grok-code-fast-1
-    planning:
-      model: openai/gpt-5-pro
-    context_tracking:
-      model: anthropic/claude-sonnet-4.5
-    communication:
-      model: openai/gpt-5-chat
-    long_term_memory:
-      model: google/gemini-2.5-flash
+overrides: {}

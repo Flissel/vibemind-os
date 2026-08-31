@@ -2,11 +2,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir \
-    "autogen-core==0.7.5" \
-    "autogen-ext[grpc]==0.7.5" \
-    "grpcio>=1.62.0" \
-    "openai>=1.0"
+ENV VIBEMIND_CONFIG_DIR=/config
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.legit.txt .
+RUN pip install --no-cache-dir -r requirements.legit.txt
 
 COPY messages.py .
 COPY tools.py .

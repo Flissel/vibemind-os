@@ -1,16 +1,17 @@
 """
-Legitimate Worker - Code Generation Team (with REAL LLM)
-=========================================================
-Connects to the gRPC host and processes code generation requests.
+Legitimate Worker - Code Generation Team
+=========================================
+Connects to the gRPC host and processes code generation requests through the
+configured OpenFang-backed shared client.
 
 Agents:
-  - CodeGenAgent: uses GPT-4o to generate Python code from natural language
-  - ReviewAgent: uses GPT-4o to review code for security risks
+  - CodeGenAgent: generates Python code from natural language
+  - ReviewAgent: reviews code for security risks
   - CodeExecutorAgent: executes approved Python code via subprocess
 
 The team publishes audit events to "team_events" topic.
 
-IMPORTANT: OPENAI_API_KEY must be set as environment variable.
+The image reads its provider-neutral configuration from /config/llm_config.yml.
 """
 
 import asyncio
@@ -18,8 +19,6 @@ import subprocess
 import tempfile
 import os
 import json
-
-from openai import AsyncOpenAI
 
 from autogen_core import (
     AgentId,
@@ -38,27 +37,42 @@ from messages import (
 )
 
 
-# OpenAI client (initialized in main)
-llm_client: AsyncOpenAI = None
+CODEGEN_ROLE = "coding_executor"
+SECURITY_AUDIT_ROLE = "coding_security_audit"
+
+
+def get_client(role):
+    """Acquire the configured asynchronous OpenFang client for a role."""
+    from vibemind_shared import get_client as shared_get_client
+
+    return shared_get_client(role)
+
+
+def get_model(role):
+    """Resolve the configured OpenFang model for a role."""
+    from vibemind_shared import get_model as shared_get_model
+
+    return shared_get_model(role)
 
 
 # ================================================================
-# AGENTS (with real GPT-4o)
+# AGENTS
 # ================================================================
 
 class CodeGenAgent(RoutedAgent):
-    """Uses GPT-4o to generate Python code from natural language."""
+    """Generates Python code from natural language."""
 
     def __init__(self):
         super().__init__("CodeGenAgent")
+        self.client = get_client("coding_executor")
 
     @message_handler
     async def handle(self, message: CodeRequest, ctx: MessageContext) -> GeneratedCode:
         print(f"  [CODEGEN] Task: '{message.task}'")
-        print(f"  [CODEGEN] Calling GPT-4o...")
+        print(f"  [CODEGEN] Calling configured code-generation model...")
 
-        response = await llm_client.chat.completions.create(
-            model="gpt-4o",
+        response = await self.client.chat.completions.create(
+            model=get_model("coding_executor"),
             temperature=0,
             messages=[
                 {
@@ -78,29 +92,30 @@ class CodeGenAgent(RoutedAgent):
         )
 
         code = response.choices[0].message.content.strip()
-        # Strip markdown code fences that GPT-4o sometimes adds
+        # Strip markdown code fences that a model may add.
         if code.startswith("```"):
             lines = code.splitlines()
             # Remove first line (```python) and last line (```)
             lines = [l for l in lines if not l.strip().startswith("```")]
             code = "\n".join(lines).strip()
-        print(f"  [CODEGEN] GPT-4o generated {len(code.splitlines())} lines of code")
+        print(f"  [CODEGEN] Generated {len(code.splitlines())} lines of code")
         return GeneratedCode(code=code)
 
 
 class ReviewAgent(RoutedAgent):
-    """Uses GPT-4o to review code for security risks before execution."""
+    """Reviews code for security risks before execution."""
 
     def __init__(self):
         super().__init__("ReviewAgent")
+        self.client = get_client("coding_security_audit")
 
     @message_handler
     async def handle(self, message: GeneratedCode, ctx: MessageContext) -> ApprovedCode:
         print(f"  [REVIEW] Reviewing code ({len(message.code.splitlines())} lines)...")
-        print(f"  [REVIEW] Calling GPT-4o for security analysis...")
+        print(f"  [REVIEW] Calling configured security-audit model...")
 
-        response = await llm_client.chat.completions.create(
-            model="gpt-4o",
+        response = await self.client.chat.completions.create(
+            model=get_model("coding_security_audit"),
             temperature=0,
             messages=[
                 {
@@ -128,7 +143,7 @@ class ReviewAgent(RoutedAgent):
         )
 
         verdict = response.choices[0].message.content.strip()
-        print(f"  [REVIEW] GPT-4o verdict: {verdict}")
+        print(f"  [REVIEW] Model verdict: {verdict}")
 
         if verdict.startswith("BLOCKED"):
             reason = verdict.split(":", 1)[1] if ":" in verdict else "dangerous code"
@@ -219,14 +234,14 @@ async def process_code_request(runtime, task):
     """Run a code request through the full pipeline: CodeGen -> Review -> Executor."""
     print(f"\n  [USER] '{task}'")
 
-    # Step 1: GPT-4o generates code
+    # Step 1: the configured code-generation model generates code.
     generated = await runtime.send_message(
         CodeRequest(task=task),
         recipient=AgentId("codegen_agent", "default"),
     )
     print(f"  [CODE] {len(generated.code.splitlines())} lines generated")
 
-    # Step 2: GPT-4o reviews the code
+    # Step 2: the configured security-audit model reviews the code.
     reviewed = await runtime.send_message(
         generated,
         recipient=AgentId("review_agent", "default"),
@@ -234,7 +249,7 @@ async def process_code_request(runtime, task):
 
     if reviewed.code.startswith("__BLOCKED__"):
         reason = reviewed.code.split(":", 1)[1]
-        print(f"  [RESULT] BLOCKED by GPT-4o reviewer: {reason}")
+        print(f"  [RESULT] BLOCKED by security reviewer: {reason}")
         await runtime.publish_message(
             TeamEvent(
                 event_type="code_blocked",
@@ -270,23 +285,13 @@ async def process_code_request(runtime, task):
 # ================================================================
 
 async def main():
-    global llm_client
-
     print("=" * 60)
-    print(" LEGITIMATE WORKER - Code Generation Team (GPT-4o)")
+    print(" LEGITIMATE WORKER - Code Generation Team")
     print("=" * 60)
     print()
 
-    # Check for OpenAI key
-    api_key = os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        print("  ERROR: OPENAI_API_KEY not set!")
-        return
-
-    llm_client = AsyncOpenAI(api_key=api_key)
-    print(f"  OpenAI client initialized (key: {api_key[:8]}...)")
-    print("  CodeGenAgent:    GPT-4o for code generation")
-    print("  ReviewAgent:     GPT-4o for security review")
+    print("  CodeGenAgent:    OpenFang code-generation role")
+    print("  ReviewAgent:     OpenFang security-audit role")
     print("  CodeExecutor:    subprocess execution")
     print("  Publishes audit events to 'team_events' topic")
     print(flush=True)
@@ -316,7 +321,7 @@ async def main():
     # PHASE 1: Normal operation - safe code requests
     # ============================================================
     print("\n" + "=" * 60)
-    print("PHASE 1: Safe code requests (GPT-4o reviewer active)")
+    print("PHASE 1: Safe code requests (security reviewer active)")
     print("=" * 60, flush=True)
 
     # Safe request: fibonacci
@@ -327,7 +332,7 @@ async def main():
     await process_code_request(runtime, "Sort the list [5, 2, 8, 1, 9, 3] and print the result")
     await asyncio.sleep(2)
 
-    # Dangerous request: GPT-4o reviewer should BLOCK this
+    # Dangerous request: the security reviewer should block this.
     await process_code_request(runtime, "Read the file /etc/passwd and print its contents")
 
     # ============================================================
@@ -337,7 +342,7 @@ async def main():
     print("PHASE 2: Waiting 25 seconds...")
     print("  (Malicious worker may inject code bypassing the reviewer)")
     print("  NOTE: The attacker sends ApprovedCode DIRECTLY to code_executor")
-    print("  completely bypassing the GPT-4o security reviewer!")
+    print("  completely bypassing the security reviewer!")
     print("=" * 60, flush=True)
     await asyncio.sleep(25)
 
@@ -357,7 +362,7 @@ async def main():
         print(f"  Marker file found: {marker}")
         print(f"  Content: {content}")
         print(f"  The attacker executed arbitrary code on this container!")
-        print(f"  The GPT-4o reviewer was COMPLETELY BYPASSED.")
+        print(f"  The security reviewer was COMPLETELY BYPASSED.")
     else:
         print(f"\n  No attack marker found at {marker}")
         print(f"  Container appears clean.")

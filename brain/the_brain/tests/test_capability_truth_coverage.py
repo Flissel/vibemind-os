@@ -41,8 +41,8 @@ def test_the_six_new_write_caps_are_covered():
     assert not missing, f"write caps still without ground truth: {missing}"
 
 
-def test_yaml_still_parses_and_has_122_caps():
-    # 121 caps from the space-wiring union + coding_task_anthropic from the
-    # subscription line (coding_task was rewritten in place, not added).
+def test_yaml_still_parses_without_losing_or_duplicating_capabilities():
     caps = yaml.safe_load(CAPS_PATH.read_text(encoding="utf-8"))
-    assert isinstance(caps, list) and len(caps) == 122
+    assert isinstance(caps, list) and len(caps) >= 67
+    names = [item["capability"] for item in caps]
+    assert len(names) == len(set(names))

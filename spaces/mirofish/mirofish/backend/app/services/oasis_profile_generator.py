@@ -10,19 +10,18 @@ Optimization improvements:
 
 import json
 import random
-import time
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from openai import OpenAI
-
-from ..config import Config
+from vibemind_shared import get_client_sync, get_model
 from ..utils.logger import get_logger
 from .entity_reader import EntityNode
 from ..storage import GraphStorage
 
 logger = get_logger('mirofish.oasis_profile')
+
+_MIROFISH_ROLE = "space_mirofish"
 
 
 @dataclass
@@ -185,17 +184,11 @@ class OasisProfileGenerator:
         storage: Optional[GraphStorage] = None,
         graph_id: Optional[str] = None
     ):
-        self.api_key = api_key or Config.LLM_API_KEY
-        self.base_url = base_url or Config.LLM_BASE_URL
-        self.model_name = model_name or Config.LLM_MODEL_NAME
-
-        if not self.api_key:
-            raise ValueError("LLM_API_KEY not configured")
-
-        self.client = OpenAI(
-            api_key=self.api_key,
-            base_url=self.base_url
-        )
+        # Retain the public constructor for callers, but gateway configuration is
+        # resolved centrally and cannot be overridden per request.
+        del api_key, base_url, model_name
+        self.model_name = get_model(_MIROFISH_ROLE)
+        self.client = get_client_sync(_MIROFISH_ROLE)
 
         # GraphStorage for hybrid search enrichment
         self.storage = storage
@@ -465,64 +458,35 @@ class OasisProfileGenerator:
                 entity_name, entity_type, entity_summary, entity_attributes, context
             )
 
-        # Try multiple times until successful or max retry attempts reached
-        max_attempts = 3
-        last_error = None
-
-        for attempt in range(max_attempts):
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=[
-                        {"role": "system", "content": self._get_system_prompt(is_individual)},
-                        {"role": "user", "content": prompt}
-                    ],
-                    response_format={"type": "json_object"},
-                    temperature=0.7 - (attempt * 0.1)  # Lower temperature with each retry
-                    # Don't set max_tokens, let LLM generate freely
-                )
-
-                content = response.choices[0].message.content
-
-                # Check if output was truncated (finish_reason is not 'stop')
-                finish_reason = response.choices[0].finish_reason
-                if finish_reason == 'length':
-                    logger.warning(f"LLM output truncated (attempt {attempt+1}), attempting to fix...")
-                    content = self._fix_truncated_json(content)
-
-                # Try to parse JSON
-                try:
-                    result = json.loads(content)
-
-                    # Validate required fields
-                    if "bio" not in result or not result["bio"]:
-                        result["bio"] = entity_summary[:200] if entity_summary else f"{entity_type}: {entity_name}"
-                    if "persona" not in result or not result["persona"]:
-                        result["persona"] = entity_summary or f"{entity_name} is a {entity_type}."
-
-                    return result
-
-                except json.JSONDecodeError as je:
-                    logger.warning(f"JSON parsing failed (attempt {attempt+1}): {str(je)[:80]}")
-
-                    # Try to fix JSON
-                    result = self._try_fix_json(content, entity_name, entity_type, entity_summary)
-                    if result.get("_fixed"):
-                        del result["_fixed"]
-                        return result
-
-                    last_error = je
-
-            except Exception as e:
-                logger.warning(f"LLM call failed (attempt {attempt+1}): {str(e)[:80]}")
-                last_error = e
-                import time
-                time.sleep(1 * (attempt + 1))  # Exponential backoff
-
-        logger.warning(f"LLM persona generation failed ({max_attempts} attempts): {last_error}, using rule-based generation")
-        return self._generate_profile_rule_based(
-            entity_name, entity_type, entity_summary, entity_attributes
+        response = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=[
+                {"role": "system", "content": self._get_system_prompt(is_individual)},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.7,
         )
+
+        content = response.choices[0].message.content
+        if response.choices[0].finish_reason == 'length':
+            logger.warning("LLM output truncated; attempting JSON repair")
+            content = self._fix_truncated_json(content)
+
+        try:
+            result = json.loads(content)
+        except json.JSONDecodeError:
+            result = self._try_fix_json(content, entity_name, entity_type, entity_summary)
+            if not result.get("_fixed"):
+                raise
+            del result["_fixed"]
+
+        if "bio" not in result or not result["bio"]:
+            result["bio"] = entity_summary[:200] if entity_summary else f"{entity_type}: {entity_name}"
+        if "persona" not in result or not result["persona"]:
+            result["persona"] = entity_summary or f"{entity_name} is a {entity_type}."
+
+        return result
     
     def _fix_truncated_json(self, content: str) -> str:
         """Fix truncated JSON (output truncated by max_tokens limit)"""
@@ -811,7 +775,7 @@ Important:
             progress_callback: Progress callback function (current, total, message)
             graph_id: Knowledge graph ID for knowledge graph search to get richer context
             parallel_count: Number of parallel generations, default 5
-            realtime_output_path: Real-time output file path (if provided, write after each generation)
+            realtime_output_path: Output file path (published after the full batch succeeds)
             output_platform: Output platform format ("reddit" or "twitter")
 
         Returns:
@@ -829,9 +793,8 @@ Important:
         completed_count = [0]  # Use list for modification in closure
         lock = Lock()
 
-        # Helper function for real-time file writing
-        def save_profiles_realtime():
-            """Real-time save generated profiles to file"""
+        def publish_profiles():
+            """Publish the complete generated batch to the output file."""
             if not realtime_output_path:
                 return
 
@@ -858,37 +821,22 @@ Important:
                                 writer.writeheader()
                                 writer.writerows(profiles_data)
                 except Exception as e:
-                    logger.warning(f"Real-time profile save failed: {e}")
+                    logger.warning(f"Profile publication failed: {e}")
         
         def generate_single_profile(idx: int, entity: EntityNode) -> tuple:
             """Worker function to generate single profile"""
             entity_type = entity.get_entity_type() or "Entity"
 
-            try:
-                profile = self.generate_profile_from_entity(
-                    entity=entity,
-                    user_id=idx,
-                    use_llm=use_llm
-                )
+            profile = self.generate_profile_from_entity(
+                entity=entity,
+                user_id=idx,
+                use_llm=use_llm
+            )
 
-                # Real-time output generated persona to console and log
-                self._print_generated_profile(entity.name, entity_type, profile)
+            # Real-time output generated persona to console and log
+            self._print_generated_profile(entity.name, entity_type, profile)
 
-                return idx, profile, None
-
-            except Exception as e:
-                logger.error(f"Failed to generate persona for entity {entity.name}: {str(e)}")
-                # Create a fallback profile
-                fallback_profile = OasisAgentProfile(
-                    user_id=idx,
-                    user_name=self._generate_username(entity.name),
-                    name=entity.name,
-                    bio=f"{entity_type}: {entity.name}",
-                    persona=entity.summary or f"A participant in social discussions.",
-                    source_entity_uuid=entity.uuid,
-                    source_entity_type=entity_type,
-                )
-                return idx, fallback_profile, str(e)
+            return idx, profile
 
         logger.info(f"Starting parallel generation of {total} agent personas (parallel count: {parallel_count})...")
         print(f"\n{'='*60}")
@@ -908,44 +856,23 @@ Important:
                 idx, entity = future_to_entity[future]
                 entity_type = entity.get_entity_type() or "Entity"
 
-                try:
-                    result_idx, profile, error = future.result()
-                    profiles[result_idx] = profile
+                result_idx, profile = future.result()
+                profiles[result_idx] = profile
 
-                    with lock:
-                        completed_count[0] += 1
-                        current = completed_count[0]
+                with lock:
+                    completed_count[0] += 1
+                    current = completed_count[0]
 
-                    # Real-time file writing
-                    save_profiles_realtime()
-
-                    if progress_callback:
-                        progress_callback(
-                            current,
-                            total,
-                            f"Completed {current}/{total}: {entity.name} ({entity_type})"
-                        )
-
-                    if error:
-                        logger.warning(f"[{current}/{total}] {entity.name} using fallback persona: {error}")
-                    else:
-                        logger.info(f"[{current}/{total}] Successfully generated persona: {entity.name} ({entity_type})")
-
-                except Exception as e:
-                    logger.error(f"Exception occurred while processing entity {entity.name}: {str(e)}")
-                    with lock:
-                        completed_count[0] += 1
-                    profiles[idx] = OasisAgentProfile(
-                        user_id=idx,
-                        user_name=self._generate_username(entity.name),
-                        name=entity.name,
-                        bio=f"{entity_type}: {entity.name}",
-                        persona=entity.summary or "A participant in social discussions.",
-                        source_entity_uuid=entity.uuid,
-                        source_entity_type=entity_type,
+                if progress_callback:
+                    progress_callback(
+                        current,
+                        total,
+                        f"Completed {current}/{total}: {entity.name} ({entity_type})"
                     )
-                    # Real-time file writing (even for fallback personas)
-                    save_profiles_realtime()
+
+                logger.info(f"[{current}/{total}] Successfully generated persona: {entity.name} ({entity_type})")
+
+        publish_profiles()
 
         print(f"\n{'='*60}")
         print(f"Persona generation complete! Generated {len([p for p in profiles if p])} agents")
@@ -1137,4 +1064,3 @@ Important:
         """[Deprecated] Please use save_profiles() method"""
         logger.warning("save_profiles_to_json is deprecated, please use save_profiles method")
         self.save_profiles(profiles, file_path, platform)
-

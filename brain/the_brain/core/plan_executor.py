@@ -55,6 +55,31 @@ _MAX_PARALLEL = int(os.environ.get("PLAN_MAX_PARALLEL", "4"))
 _DIARY_FAIL_LOG_EVERY = 50
 
 
+def _canonical_space_event_agent(event_id: str) -> Optional[str]:
+    """Return the enabled canonical Space owner for an event, if any.
+
+    The Space registry is the routing authority. Agent YAMLs can add metadata,
+    but must never make a canonical event fall back to its legacy executor.
+    """
+    if not event_id:
+        return None
+    from .space_contract import load_space_contract
+
+    contract = load_space_contract()
+    space_id = contract.event_space_map.get(event_id)
+    if not space_id:
+        return None
+    space = contract.spaces.get(space_id)
+    if not isinstance(space, dict) or not space.get("enabled", True):
+        return None
+    agent = space.get("agent")
+    if not isinstance(agent, str) or not agent.strip():
+        raise RuntimeError(
+            f"canonical space '{space_id}' has no OpenFang agent for '{event_id}'"
+        )
+    return agent.strip()
+
+
 # ── Plan recording (Phase 6.12) ──────────────────────────────────────
 
 
@@ -592,6 +617,7 @@ class PlanExecutor:
         *,
         replanner: Optional[Callable[[Plan, HopResult], Optional[Plan]]] = None,
         confirmed_events: Optional[Set[str]] = None,
+        openfang_handoff_bundle: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Walk the DAG. Returns a dict with `executed` (step_id → HopResult),
         `state`, `plan`, `ok`, `elapsed_s`, `replans`.
@@ -700,9 +726,20 @@ class PlanExecutor:
             "plan_intent": plan.intent or "",
             "plan_rationale": getattr(plan, "rationale", "") or "",
             "plan_id": plan.plan_id,
+            "plan_revision": plan.plan_revision,
             "trace_id": getattr(plan, "trace_id", "") or "",
             "confirmed_events": set(confirmed_events or ()),
         }
+        if isinstance(openfang_handoff_bundle, dict):
+            for key in (
+                "channel_intent",
+                "brain_plan",
+                "space_execution_contracts",
+                "lifecycle",
+                "handoff",
+            ):
+                if key in openfang_handoff_bundle:
+                    plan_ctx[key] = openfang_handoff_bundle[key]
 
         executed: Dict[str, HopResult] = {}
         state: Dict[str, Any] = {}
@@ -727,6 +764,7 @@ class PlanExecutor:
                 for h in ready:
                     failed_deps = [d for d in h.depends_on if not executed[d].ok]
                     if failed_deps:
+                        dependency_pending = any(executed[d].pending for d in failed_deps)
                         # Mark skipped — record a synthetic result
                         skipped = HopResult(
                             step_id=h.step_id,
@@ -734,7 +772,8 @@ class PlanExecutor:
                             error=f"dependency failed: {failed_deps}",
                             capability=h.capability,
                             target=h.execution_target,
-                            contract_pass=False, reward=-1.0,
+                            contract_pass=(None if dependency_pending else False),
+                            reward=(0.0 if dependency_pending else -1.0),
                         )
                         executed[h.step_id] = skipped
                         with self._lock:
@@ -911,6 +950,7 @@ class PlanExecutor:
                         # Replan trigger
                         if (
                             not hr.ok
+                            and not hr.pending
                             and h.on_fail == ON_FAIL_REPLAN
                             and replanner is not None
                             and replan_count < _MAX_REPLANS
@@ -920,6 +960,12 @@ class PlanExecutor:
                                 self.stats["replans_triggered"] += 1
                             new_plan = replanner(plan, hr)
                             if new_plan is not None:
+                                # A replanned hop is a distinct runtime intent.
+                                # Keep the plan identity but rotate its revision
+                                # before any new hop can derive an invocation id.
+                                plan.plan_revision += 1
+                                new_plan.plan_revision = plan.plan_revision
+                                plan_ctx["plan_revision"] = plan.plan_revision
                                 # Merge: keep already-executed hops, replace remaining
                                 done_ids = set(executed.keys())
                                 fresh = [hs for hs in new_plan.hops if hs.step_id not in done_ids]
@@ -944,6 +990,14 @@ class PlanExecutor:
                 "replans": replan_count,
                 "decision_context": decision_context,
             }
+            pending_hop = next((hr for hr in executed.values() if hr.pending), None)
+            if pending_hop is not None:
+                result.update({
+                    "ok": False,
+                    "pending": True,
+                    "authority_status": pending_hop.authority_status,
+                    "invocation_id": pending_hop.invocation_id,
+                })
             self._publish("plan_completed", {
                 "plan_id": plan.plan_id,
                 "ok": ok,
@@ -952,6 +1006,12 @@ class PlanExecutor:
             })
             self._tappend(plan, "execution", "plan-executor",
                          f"completed ok={ok} in {result['elapsed_s']}s")
+
+            # Pending approval is neither a failed execution nor a terminal
+            # learning outcome.  Stop before graph/recall/self-prior updates;
+            # the finally block also suppresses recorder/sequence ingestion.
+            if pending_hop is not None:
+                return result
 
             # Phase 8.B — sync to Neo4j decision graph
             dg = getattr(self, "_decision_graph", None)
@@ -1077,13 +1137,16 @@ class PlanExecutor:
                     "routed_via": "plan-executor",
                     "stages": list(getattr(plan, "_stages", [])),
                 }
-                self.recorder.record(snapshot)
+                if not any(hr.pending for hr in executed.values()):
+                    self.recorder.record(snapshot)
             except Exception as e:
                 logger.debug(f"[plan-executor] record failed: {e}")
 
             # Phase 6.14.4 — also push plan summary into brain-episodic
             # so consolidation + cross-session recall can see plans.
-            if snapshot and self._episodic_enabled:
+            if snapshot and self._episodic_enabled and not any(
+                hr.pending for hr in executed.values()
+            ):
                 try:
                     self._episodic_write(snapshot)
                 except Exception as e:
@@ -1101,7 +1164,7 @@ class PlanExecutor:
                 from core.multihop_kotlin_adapter import (
                     enqueue_plan, ingest_enabled,
                 )
-                if executed:
+                if executed and not any(hr.pending for hr in executed.values()):
                     _tc = ""
                     if os.environ.get("TASK_CLASS_CLUSTERING", "0") in ("1", "true", "True"):
                         try:
@@ -1238,38 +1301,18 @@ class PlanExecutor:
                         contract_pass=False, reward=-1.0,
                     )
 
-        # Phase 11.B — if registry maps this capability/event to an OpenFang agent,
-        # build a vibemind.intent.v1 envelope and route through that agent
-        # instead of direct-calling. The agent's MCP-allowed list contains the
-        # right MCP-server (e.g. spaces-ideas), so Sonnet there picks the tool
-        # and runs it with full context (recall+self_prior+previous_outputs).
-        # If registry doesn't claim this event, falls back to direct target.
+        single_plan_attempt = False
+        strict_mcp_arguments = None
+
+        # A canonical Space event routes through its assigned OpenFang agent.
+        # Agent YAMLs remain metadata, while config/space_agent_registry.yml is
+        # the authority. A missing/down agent must fail in OpenFangExecutor;
+        # it must never re-enable the older direct execution target.
         try:
             from .agent_yaml_registry import get_registry
             from . import intent_envelope as _envelope_mod
-            _registry = get_registry()
-            # Map capability name to event_id (e.g. bubble_create -> bubble.create)
-            cap_to_event = {
-                "bubble_create": "bubble.create",
-                "bubble_update": "bubble.update",
-                "bubble_evaluate": "bubble.evaluate",
-                "bubble_delete": "bubble.delete",
-                "idea_create": "idea.create",
-                "idea_add": "idea.create",
-                "idea_update": "idea.update",
-                "idea_expand": "idea.expand",
-                "idea_connect": "idea.connect",
-                "idea_to_project": "idea.to_project",
-                "code_generate": "code.generate",
-                "code_modify": "code.modify",
-                "code_status": "code.status",
-                "code_show": "code.show",
-                "code_preview_start": "code.preview.start",
-                "code_preview_stop": "code.preview.stop",
-                "code_list": "code.list",
-                "code_cancel": "code.cancel",
-            }
-            event_id = cap_to_event.get(hop.capability or "", hop.capability or "")
+            from .capability_targets import canonical_space_event_id
+            event_id = canonical_space_event_id(hop.capability or "")
             desktop_route = None
             if hop.capability in ("desktop_skill", "browser_automation"):
                 from .desktop_orchestration import DesktopOrchestration
@@ -1291,74 +1334,163 @@ class PlanExecutor:
                         contract_pass=False,
                         reward=-1.0,
                     )
-            if "." not in event_id:
-                # If the capability already has a namespace.action pattern
-                # in some other form, leave as-is; otherwise it won't match
-                # a registry entry and we'll fall back to direct.
-                pass
-            assigned_agent = _registry.get_event_agent(event_id) if event_id else None
-
-            # Explicit remote executors already are the execution authority
-            # (n8n-mcp, coding-engine). Minibook targets return a structured,
-            # redacted truth envelope from the external service. Re-routing any
-            # of them through an LLM agent would discard that contract and
-            # could turn prose into apparent success.
-            preserve_structured_target = event_id.startswith("minibook.")
-            if (assigned_agent and target
-                    and not target.startswith(("openfang:", "n8n-mcp:", "coding-engine:"))
-                    and not preserve_structured_target):
-                # Probe: is the agent reachable in OpenFang? If not, skip
-                # Phase 11.B routing and fall through to the direct target.
-                _agent_known = False
+            # Resolve deterministic MCP metadata after all capability-to-event
+            # mapping (including the desktop route) has completed.  A declared
+            # MCP target is canonical and must replace every legacy target.
+            canonical_agent = _canonical_space_event_agent(event_id)
+            deterministic_target = None
+            if event_id == "idea.connect" and not canonical_agent:
+                return HopResult(
+                    step_id=hop.step_id, ok=False,
+                    error="canonical idea.connect MCP routing: registry agent unavailable",
+                    capability=hop.capability, target=target,
+                    rendered_arg=rendered_arg, kg_hits=kg_hits,
+                    elapsed_s=time.time() - t0,
+                    contract_pass=False, reward=-1.0,
+                )
+            if canonical_agent:
                 try:
-                    _of_url = os.environ.get("OPENFANG_URL", "http://127.0.0.1:4200")
-                    _r = __import__("requests").get(f"{_of_url}/api/agents", timeout=3)
-                    if _r.ok:
-                        _ag = _r.json()
-                        _ag_list = _ag if isinstance(_ag, list) else _ag.get("agents", [])
-                        _agent_known = any(
-                            a.get("name") == assigned_agent for a in _ag_list
-                        )
-                except Exception as _e:
-                    logger.debug(f"[plan-executor] openfang probe: {_e}")
+                    from .capability_targets import resolve_canonical_execution_target
+                    _, deterministic_target = resolve_canonical_execution_target(event_id)
+                except Exception as e:
+                    return HopResult(
+                        step_id=hop.step_id, ok=False,
+                        error=f"canonical deterministic MCP routing: {type(e).__name__}: {e}",
+                        capability=hop.capability, target=target,
+                        rendered_arg=rendered_arg, kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False, reward=-1.0,
+                    )
+            if deterministic_target:
+                expected_target_prefix = f"mcp:{canonical_agent}:"
+                if not deterministic_target.startswith(expected_target_prefix):
+                    return HopResult(
+                        step_id=hop.step_id, ok=False,
+                        error=(
+                            "canonical deterministic MCP routing: agent scope drift "
+                            f"for '{event_id}'"
+                        ),
+                        capability=hop.capability, target=target,
+                        rendered_arg=rendered_arg, kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False, reward=-1.0,
+                    )
+                target = deterministic_target
+            from .idea_connect_contract import is_idea_connect_mcp_target
+            if is_idea_connect_mcp_target(target) and event_id != "idea.connect":
+                return HopResult(
+                    step_id=hop.step_id, ok=False,
+                    error="canonical Ideas MCP target is bound to idea.connect",
+                    capability=hop.capability, target=target,
+                    rendered_arg=rendered_arg, kg_hits=kg_hits,
+                    elapsed_s=time.time() - t0,
+                    contract_pass=False, reward=-1.0,
+                )
+            if event_id == "idea.connect":
+                from .idea_connect_contract import (
+                    canonical_idea_connect_arguments,
+                    canonical_idea_connect_validator_config,
+                )
+                strict_mcp_arguments, clarification = canonical_idea_connect_arguments(rendered_arg)
+                if strict_mcp_arguments is None:
+                    return HopResult(
+                        step_id=hop.step_id, ok=False,
+                        error=clarification,
+                        capability=hop.capability, target=target,
+                        rendered_arg=rendered_arg, kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False, reward=-1.0,
+                    )
+                rendered_arg = strict_mcp_arguments
+                hop.arg_kwarg = None
+                if self.validator is None:
+                    return HopResult(
+                        step_id=hop.step_id, ok=False,
+                        error="canonical idea.connect validator unavailable",
+                        capability=hop.capability, target=target,
+                        rendered_arg=rendered_arg, kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False, reward=-1.0,
+                    )
+                hop.validator = canonical_idea_connect_validator_config()
+            if event_id == "bubble.create" and not deterministic_target:
+                return HopResult(
+                    step_id=hop.step_id, ok=False,
+                    error=(
+                        "canonical deterministic MCP routing: "
+                        "missing MCP execution metadata for bubble.create"
+                    ),
+                    capability=hop.capability, target=target,
+                    rendered_arg=rendered_arg, kg_hits=kg_hits,
+                    elapsed_s=time.time() - t0,
+                    contract_pass=False, reward=-1.0,
+                )
+            if event_id == "bubble.create":
+                # A failed MCP response can follow an already-applied mutation.
+                # Never replay deterministic bubble.create at the Plan layer.
+                single_plan_attempt = True
+            assigned_agent = None
+            try:
+                assigned_agent = get_registry().get_event_agent(event_id) if event_id else None
+            except Exception as registry_error:
+                logger.warning(
+                    "[plan-executor] agent YAML registry unavailable for %s: %s",
+                    event_id,
+                    registry_error,
+                )
 
-                if _agent_known:
-                    # Build envelope and override target
-                    params = {}
-                    if isinstance(rendered_arg, dict):
-                        params = rendered_arg
-                    elif isinstance(rendered_arg, str):
-                        try:
-                            params = json.loads(rendered_arg)
-                            if not isinstance(params, dict):
-                                params = {"value": params}
-                        except Exception:
-                            params = {"value": rendered_arg}
-                    dc = plan_ctx.get("decision_context") or {}
-                    envelope = _envelope_mod.build_envelope(
-                        event_id=event_id,
-                        params=params,
-                        plan_intent=plan_ctx.get("plan_intent", ""),
-                        plan_rationale=plan_ctx.get("plan_rationale", ""),
-                        plan_id=plan_ctx.get("plan_id", ""),
-                        step_id=hop.step_id,
-                        preferred_tool=hop.capability or "",
-                        decision_context=dc,
-                        prev_outputs=state if state else {},
-                    )
-                    target = f"openfang:{assigned_agent}"
-                    rendered_arg = _envelope_mod.envelope_to_message(envelope)
-                    hop.arg_kwarg = None
-                    logger.info(
-                        f"[plan-executor] Phase 11.B route: {event_id} via openfang:{assigned_agent}"
-                    )
-                else:
-                    logger.info(
-                        f"[plan-executor] Phase 11.B: agent '{assigned_agent}' "
-                        f"not in OpenFang — using direct target"
-                    )
+            # Canonical Space ownership wins over Agent-YAML metadata. This
+            # keeps a canonical event fail-closed when the auxiliary YAML
+            # registry cannot load.
+            if canonical_agent:
+                assigned_agent = canonical_agent
+
+            # Minibook targets return a structured, redacted truth envelope from
+            # the external service. Re-routing them through an LLM agent would
+            # discard that contract and could turn prose into apparent success.
+            preserve_structured_target = event_id.startswith("minibook.")
+            authoritative_target = isinstance(target, str) and target.startswith(
+                ("openfang:", "mcp:", "n8n-mcp:", "coding-engine:")
+            )
+            if (assigned_agent and not authoritative_target
+                    and not preserve_structured_target):
+                params = {}
+                if isinstance(rendered_arg, dict):
+                    params = rendered_arg
+                elif isinstance(rendered_arg, str):
+                    try:
+                        params = json.loads(rendered_arg)
+                        if not isinstance(params, dict):
+                            params = {"value": params}
+                    except Exception:
+                        params = {"value": rendered_arg}
+                dc = plan_ctx.get("decision_context") or {}
+                envelope = _envelope_mod.build_envelope(
+                    event_id=event_id,
+                    params=params,
+                    plan_intent=plan_ctx.get("plan_intent", ""),
+                    plan_rationale=plan_ctx.get("plan_rationale", ""),
+                    plan_id=plan_ctx.get("plan_id", ""),
+                    step_id=hop.step_id,
+                    preferred_tool=hop.capability or "",
+                    decision_context=dc,
+                    prev_outputs=state if state else {},
+                )
+                target = f"openfang:{assigned_agent}"
+                rendered_arg = _envelope_mod.envelope_to_message(envelope)
+                hop.arg_kwarg = None
+                logger.info(
+                    f"[plan-executor] canonical route: {event_id} via openfang:{assigned_agent}"
+                )
         except Exception as e:
-            logger.debug(f"[plan-executor] Phase 11.B routing skipped: {e}")
+            return HopResult(
+                step_id=hop.step_id, ok=False,
+                error=f"canonical OpenFang routing: {type(e).__name__}: {e}",
+                capability=hop.capability, target=target,
+                rendered_arg=rendered_arg, kg_hits=kg_hits,
+                elapsed_s=time.time() - t0,
+                contract_pass=False, reward=-1.0,
+            )
 
         if not target:
             # L4 — GapSentinel (the REAL multihop NO_TOOL point). A hop whose capability
@@ -1395,6 +1527,36 @@ class PlanExecutor:
                 contract_pass=False, reward=-1.0,
             )
 
+        # Cognitive OpenFang dispatch is admitted only by the public Shared
+        # handoff validator.  The bundle stays opaque here: Brain neither
+        # creates approval/cost references nor selects any Space/provider/tool.
+        if isinstance(target, str) and target.startswith("openfang:"):
+            try:
+                from vibemind_shared.contracts import (
+                    validate_brain_openfang_handoff_bundle,
+                )
+
+                validate_brain_openfang_handoff_bundle(
+                    plan_ctx["channel_intent"],
+                    plan_ctx["brain_plan"],
+                    plan_ctx["space_execution_contracts"],
+                    plan_ctx["lifecycle"],
+                    plan_ctx["handoff"],
+                )
+            except Exception as e:
+                logger.warning(
+                    "[plan-executor] OpenFang handoff admission rejected: %s",
+                    type(e).__name__,
+                )
+                return HopResult(
+                    step_id=hop.step_id, ok=False,
+                    error=f"OpenFang handoff admission rejected: {type(e).__name__}",
+                    capability=hop.capability, target=target,
+                    rendered_arg=rendered_arg, kg_hits=kg_hits,
+                    elapsed_s=time.time() - t0,
+                    contract_pass=False, reward=-1.0,
+                )
+
         # Build the right executor for the target prefix (Phase 4)
         try:
             from .capability_targets import build_executor
@@ -1424,6 +1586,40 @@ class PlanExecutor:
             # pick the right one (idea_format_mindmap vs _swot, etc).
             "_capability": getattr(hop, "capability", "") or "",
         }
+        if isinstance(target, str) and target.startswith("mcp:"):
+            try:
+                from .capability_targets import find_registered_mcp_authority
+                from .openfang_runtime_authority import (
+                    RuntimeInvocationContext, runtime_invocation_id,
+                )
+                mcp_authority = find_registered_mcp_authority(
+                    *target.split(":", 3)[1:],
+                )
+                if mcp_authority is None or not mcp_authority.space_id:
+                    raise RuntimeError("registered MCP authority metadata unavailable")
+                _extra = {"_runtime_authority": RuntimeInvocationContext(
+                    correlation_id=plan_ctx.get("trace_id") or plan_ctx.get("plan_id", "standalone-plan"),
+                    plan_id=plan_ctx.get("plan_id", "standalone-plan"),
+                    plan_revision=plan_ctx.get("plan_revision", 1),
+                    step_id=hop.step_id,
+                    space_id=mcp_authority.space_id,
+                    agent_name=mcp_authority.agent,
+                    invocation_id=runtime_invocation_id(
+                        plan_ctx.get("plan_id", "standalone-plan"),
+                        plan_ctx.get("plan_revision", 1), hop.step_id,
+                    ),
+                )}
+            except Exception as e:
+                return HopResult(
+                    step_id=hop.step_id, ok=False,
+                    error=f"runtime authority context: {type(e).__name__}: {e}",
+                    capability=hop.capability, target=target,
+                    rendered_arg=rendered_arg, kg_hits=kg_hits,
+                    elapsed_s=time.time() - t0,
+                    contract_pass=False, reward=-1.0,
+                )
+        elif strict_mcp_arguments is not None:
+            _extra = {}
         # Dynamic tool scope (plans/dynamic-agent-tools-prompt.md, Phase 2):
         # Fuer openfang:-Agenten (skill-coordinator/desktop/brain-coder-*/...) waehlt
         # der ToolScopeSelector pro Intent SEMANTISCH die relevanten Tools + baut
@@ -1445,9 +1641,14 @@ class PlanExecutor:
                     _extra["_tool_allowlist"] = _allow
             except Exception as e:  # noqa: BLE001 — nie den Hop daran scheitern lassen
                 logger.warning(f"[plan_exec] tool-scope skipped ({e})")
-        for attempt in range(max(1, hop.retries)):
+        plan_attempts = 1 if single_plan_attempt else max(1, hop.retries)
+        for attempt in range(plan_attempts):
             try:
-                if hop.arg_kwarg:
+                if strict_mcp_arguments is not None and not (
+                    isinstance(target, str) and target.startswith("mcp:")
+                ):
+                    last = exe.call_with_arg(rendered_arg)
+                elif hop.arg_kwarg:
                     last = exe.call_with_arg(rendered_arg, arg_kwarg=hop.arg_kwarg,
                                              extra_params=_extra)
                 else:
@@ -1459,12 +1660,26 @@ class PlanExecutor:
                     "elapsed_s": 0.0,
                     "target": target,
                 }
-            if last.get("ok"):
+            if (
+                last.get("ok")
+                or last.get("pending") is True
+                or last.get("retryable") is False
+            ):
                 break
 
         ok = bool(last.get("ok"))
         result_payload = last.get("result")
         err = None if ok else (last.get("error") or "executor returned not ok")
+        if last.get("pending") is True:
+            return HopResult(
+                step_id=hop.step_id, ok=False, result=result_payload,
+                error="runtime authority approval pending",
+                elapsed_s=round(time.time() - t0, 2), capability=hop.capability,
+                target=target, rendered_arg=rendered_arg, kg_hits=kg_hits,
+                authority_status="pending_approval",
+                invocation_id=last.get("invocation_id"), pending=True,
+                contract_pass=None, reward=0.0,
+            )
 
         # Phase 9.0 — extract MCP tool-call trace from streaming OpenFang
         # responses. Other executor kinds (direct, brain, http) return
@@ -1485,15 +1700,33 @@ class PlanExecutor:
                     arg=rendered_arg,
                     raw_result=result_payload,
                 )
+                if strict_mcp_arguments is not None:
+                    if (not isinstance(verdict, dict)
+                            or verdict.get("valid") is not True
+                            or verdict.get("verified") is not True):
+                        ok = False
+                        err = "validator blocked: canonical idea.connect truth unverified"
+                        with self._lock:
+                            self.stats["validator_blocks"] += 1
                 # on_fail=block converts to overall fail
-                if verdict and not verdict.get("valid") and verdict.get("on_fail") == "block":
+                elif verdict and not verdict.get("valid") and verdict.get("on_fail") == "block":
                     ok = False
                     err = f"validator blocked: {verdict.get('reason')}"
                     with self._lock:
                         self.stats["validator_blocks"] += 1
             except Exception as e:
                 logger.warning(f"[plan-executor] validator threw: {e}")
-                verdict = {"valid": False, "reason": f"validator error: {e}"}
+                verdict = {
+                    "valid": False,
+                    "reason": "validator error",
+                    "kind": "truth:supabase_edge_ids" if strict_mcp_arguments is not None else "unknown",
+                    "on_fail": "block" if strict_mcp_arguments is not None else "report",
+                }
+                if strict_mcp_arguments is not None:
+                    ok = False
+                    err = "validator blocked: canonical idea.connect validator error"
+                    with self._lock:
+                        self.stats["validator_blocks"] += 1
 
         # Baustein D.1 — ground-truth → thought-stream. If the validator ran a
         # `truth:` check, push the WORLD-observed verdict (not the claim) back

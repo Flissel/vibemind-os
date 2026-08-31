@@ -26,12 +26,25 @@ spaces:
     prefixes: [bubble.]
     enabled: true
     description: "Bubble CRUD + navigation on the VibeMind canvas."
-    mcp_servers: [vibemind-db, vibemind]
+    mcp_servers: [vibemind-db, vibemind, spaces-ideas]
+    # M5 2026-08-07: ohne mcp_tools bekommt der Agent KEINE MCP-Tools —
+    # der Generator leitet die tools-Liste nur hieraus ab, nicht aus
+    # mcp_servers (fail-closed by design, sync_openfang_agents.py:86;
+    # im Daemon-Log belegt: tool_names waren nur memory_store/-recall).
+    # Bewusst minimal: genau die drei Operationen, die bubble_promote
+    # braucht (Idee lesen, Projekt anlegen, Idee als promoted markieren).
+    mcp_tools:
+      spaces-ideas: [bubble_create]
+      vibemind-db: [db_ideas_get, db_ideas_update, db_projects_create]
     system_prompt_hint: "You manage bubbles (idea clusters) on the VibeMind canvas. Use the preferred_tool hint in the intent envelope; only call other tools if the hint fails."
     default_context: [current_space, current_bubble, idea_count]
     events:
       bubble.list:              { tool: vibemind_bubbles,       required_params: [] }
-      bubble.create:            { tool: vibemind_bubble_create, required_params: [title] }
+      bubble.create:
+        tool: bubble_create
+        required_params: [title]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
       bubble.enter:             { tool: vibemind_bubble_enter,  required_params: [bubble_name] }
       bubble.exit:              { tool: vibemind_bubble_exit,   required_params: [] }
       bubble.back:              { tool: vibemind_bubble_exit,   required_params: [] }
@@ -52,7 +65,8 @@ spaces:
     prefixes: [idea.]
     enabled: true
     description: "Idea notes inside bubbles — create, update, link, format."
-    mcp_servers: [vibemind-db]
+    mcp_servers: [vibemind-db, spaces-ideas]
+    mcp_tools: { spaces-ideas: [idea_connect] }
     default_context: [current_space, current_bubble, idea_titles]
     events:
       idea.list:                { tool: db_ideas_list,   required_params: [] }
@@ -60,7 +74,11 @@ spaces:
       idea.update:              { tool: db_ideas_update, required_params: [idea_id] }
       idea.delete:              { tool: db_ideas_delete, required_params: [idea_id] }
       idea.find:                { tool: db_ideas_list,   required_params: [query] }
-      idea.connect:             { tool: db_canvas_edge_create, required_params: [from_id, to_id] }
+      idea.connect:
+        tool: idea_connect
+        required_params: [from_id, to_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
       idea.auto_link:           { tool: db_canvas_edge_create, required_params: [] }
       idea.add_image:           { tool: db_ideas_update, required_params: [idea_id] }
       idea.current_space:       { tool: db_ideas_list,   required_params: [] }
@@ -147,34 +165,66 @@ spaces:
     prefixes: [research.]
     enabled: true
     description: "Web research + summarization into ideas."
-    mcp_servers: [vibemind-db, fetch, qdrant]
+    # E9: Die Schreib-Events laufen über spaces-ideas statt über den breiten
+    # vibemind-db-Server. Nach dem Umbinden bindet kein Event mehr ein
+    # vibemind-db-Tool, darum entfällt der Server hier ganz.
+    # qdrant bleibt ohne mcp_tools-Eintrag — Server-Scope ohne abgeleitete
+    # Capability, wie im Bubbles-Block bei `vibemind`.
+    mcp_servers: [fetch, spaces-ideas, qdrant]
+    # M5 2026-08-07 / E10: ohne mcp_tools bekommt der Agent KEINE MCP-Tools —
+    # der Generator leitet die tools-Liste nur hieraus ab, nicht aus
+    # mcp_servers (fail-closed by design, sync_openfang_agents.py:86).
+    # Genau daran war dieser Space bisher nicht ausführbar: alle sechs Events
+    # banden auf Werkzeuge, die das Manifest nie führte.
+    # Bewusst minimal: genau die Werkzeuge, die die Events oben binden.
+    mcp_tools:
+      fetch: [fetch]
+      spaces-ideas: [idea_create, idea_update]
+    # E10: Recherche-Last (ganze Seiten aus fetch, Mehrquellen-Synthese in
+    # openclaw.compare) sprengt gpt-4o-mini/4096. gpt-4o ist in
+    # models_pricing.yml gepflegt, bleibt provider=openai und hebt das
+    # Ausgabelimit auf sein Maximum.
+    model: { model: gpt-4o, max_tokens: 16384 }
     default_context: [current_space, current_bubble]
     events:
-      research.web:         { tool: fetch,           required_params: [query] }
-      research.scrape:      { tool: fetch,           required_params: [url] }
-      research.summarize:   { tool: db_ideas_update, required_params: [idea_id] }
-      research.to_idea:     { tool: db_ideas_create, required_params: [title] }
-      openclaw.research:    { tool: fetch,           required_params: [query] }
-      openclaw.compare:     { tool: fetch,           required_params: [queries] }
+      research.web:         { tool: fetch, required_params: [query] }
+      research.scrape:      { tool: fetch, required_params: [url] }
+      research.summarize:
+        tool: idea_update
+        required_params: [idea_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
+      research.to_idea:
+        tool: idea_create
+        required_params: [title]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
+      openclaw.research:    { tool: fetch, required_params: [query] }
+      openclaw.compare:     { tool: fetch, required_params: [queries] }
 
-  # ─── Roarboot (Knowledge Graph) ─────────────────────────────────────
-  roarboot:
+  # ─── Rowboat (Knowledge Graph) ──────────────────────────────────────
+  rowboat:
     agent: rowboat-chat
     # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
-    prefixes: [roarboot.]
+    prefixes: [rowboat.]
     enabled: true
     description: "Knowledge graph queries, email drafts, decks."
-    mcp_servers: [vibemind-db, fetch]
+    mcp_servers: [vibemind-db, fetch, spaces-rowboat]
+    mcp_tools: { spaces-rowboat: [rowboat_status] }
     default_context: [current_space, recent_intents]
     events:
-      roarboot.search:       { tool: search_knowledge,       required_params: [query] }
-      roarboot.query:        { tool: query_knowledge,        required_params: [query] }
-      roarboot.email_draft:  { tool: draft_email,            required_params: [recipient, topic] }
-      roarboot.meeting_brief: { tool: generate_meeting_brief, required_params: [topic] }
-      roarboot.deck:         { tool: generate_deck,          required_params: [topic] }
-      roarboot.status:       { tool: fetch,      required_params: [] }
-      roarboot.docker.start: { tool: shell_exec, required_params: [] }
-      roarboot.docker.stop:  { tool: shell_exec, required_params: [] }
+      rowboat.search:       { tool: search_knowledge,       required_params: [query] }
+      rowboat.query:        { tool: query_knowledge,        required_params: [query] }
+      rowboat.email_draft:  { tool: draft_email,            required_params: [recipient, topic] }
+      rowboat.meeting_brief: { tool: generate_meeting_brief, required_params: [topic] }
+      rowboat.deck:         { tool: generate_deck,          required_params: [topic] }
+      rowboat.status:
+        tool: rowboat_status
+        required_params: []
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-rowboat }
+      rowboat.docker.start: { tool: shell_exec, required_params: [] }
+      rowboat.docker.stop:  { tool: shell_exec, required_params: [] }
 
   # ─── Minibook (collaboration) ───────────────────────────────────────
   minibook:
@@ -183,12 +233,17 @@ spaces:
     prefixes: [minibook.]
     enabled: true
     description: "Minibook collaboration hub."
-    mcp_servers: [vibemind-db, fetch]
+    mcp_servers: [vibemind-db, fetch, spaces-minibook]
+    mcp_tools: { spaces-minibook: [minibook_status] }
     default_context: [current_space, session_id]
     events:
       minibook.discuss:       { tool: fetch, required_params: [topic] }
       minibook.collaborate:   { tool: fetch, required_params: [topic] }
-      minibook.status:        { tool: fetch, required_params: [] }
+      minibook.status:
+        tool: minibook_status
+        required_params: []
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-minibook }
       minibook.list_projects: { tool: fetch, required_params: [] }
 
   # ─── Schedule (APScheduler tasks) ───────────────────────────────────
@@ -232,35 +287,35 @@ spaces:
 
   # ─── AgentFarm (multi-agent teams) ──────────────────────────────────
   agentfarm:
-    # REG-3 (2026-07-02): canonicalized brain-orchestrator -> vibemind against
-    # the LIVE OpenFang agent list (71 agents; brain-orchestrator NOT deployed,
-    # vibemind IS — openrouter/llama-3.3-70b). Registry is the single truth;
-    # LEGACY_SPACE_AGENT_MAP derives/validates against this (ABSORB-7).
-    agent: vibemind
-    # ABSORB-5/6 (Phase 0): routing bindings derive from HERE (registry = SoT)
-    aliases: [autogen]
-    prefixes: [agentfarm., autogen.]
-    keywords: ["agent.?farm|pipeline|forge|swarm.?team|agent.?team"]
-    # The historical spaces/autogen tree was removed in ec98a0c and its
-    # external/Autogen_AgentFarm source was never versioned.  Keep routing
-    # disabled until a durable runtime replaces the old in-memory runner.
-    enabled: false
-    description: "AutoGen multi-agent team coordination."
+    # 2026-08-18 (user decision, docs/operations/2026-08-18-p1-agentfarm-
+    # captain-cook-befund.md): Captain Cook IS the agentfarm — the space is
+    # redefined by its real runtime. The old AutoGen team events described an
+    # implementation that never had a persistent runtime (source tree removed
+    # in ec98a0c); they described nothing that exists. This is a documented
+    # redefinition, not a silent relabel.
+    # Rule: delegated work goes through the Captain (audited, ledger);
+    # direct Codex sessions are the user's manual channel. No third path.
+    agent: null                    # tool-only: no chat agent; `vibemind`
+                                   # (openrouter) becomes obsolete, not replaced
+    generate_agent: false         # Captain Cook is the runtime; no OpenFang agent.toml
+    aliases: [autogen, captain_cook]
+    prefixes: [agentfarm., captain.]
+    keywords: ["agent.?farm|captain|delivery|orchestrat"]
+    enabled: true
+    description: "Auditable agent-work orchestration: plan, gate, route, ledger (Captain Cook)."
+    mcp_servers: [captain-cook]
     runtime:
-      status: blocked
-      source_path: external/Autogen_AgentFarm
-      blocker: missing_versioned_agentfarm_source
-    mcp_servers: []
+      status: active
+      source_path: spaces/captain_cook
+      transport: mcp               # via OpenFang /mcp -> scripts/mcp_servers/captain_cook_mcp.py
+      token_env: CAPTAIN_RUNTIME_TOKEN   # own key on purpose, never inherited
     default_context: [current_space]
+    # Coarse events outside, fine refs inside: the Brain never invents
+    # batch/subtask/workspace refs — deliver returns them, status passes
+    # them through.
     events:
-      agentfarm.create_team:    { operation: create_team, required_params: [team_name] }
-      agentfarm.run:            { operation: run, required_params: [team_id, task] }
-      agentfarm.status:         { operation: status, required_params: [] }
-      agentfarm.list_teams:     { operation: list_teams, required_params: [] }
-      agentfarm.stop:           { operation: stop, required_params: [run_id] }
-      agentfarm.results:        { operation: results, required_params: [run_id] }
-      agentfarm.list_templates: { operation: list_templates, required_params: [] }
-      agentfarm.collaborate:    { operation: collaborate, required_params: [task, goal] }
+      agentfarm.deliver: { tool: captain_deliver,      required_params: [project_id, prompt_ref] }
+      agentfarm.status:  { tool: captain_codex_status, required_params: [project_id, batch_id, subtask_id, workspace_ref] }
 
   # ─── Video (generation + vision) ────────────────────────────────────
   video:

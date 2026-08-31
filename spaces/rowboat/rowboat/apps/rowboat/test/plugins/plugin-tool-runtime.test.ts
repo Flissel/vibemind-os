@@ -1,0 +1,896 @@
+import { describe, expect, it, vi } from "vitest";
+import catalogFixture from "../../../../config/openai-plugin-catalog.lock.json";
+import {
+  PINNED_PLUGIN_CATALOG_DIGEST,
+  type PluginCatalogLock,
+  type PluginPolicy,
+  type PluginProvider,
+  type ProviderContext,
+  type ProviderBinding,
+} from "@rowboat/openai-plugin-runtime";
+import type {
+  IPluginsRepository,
+  PluginComponentAdmission,
+  PluginCredentialSlot,
+  PluginExecutionDispatchClaim,
+  PluginInstallation,
+  PluginReceipt,
+} from "@/src/application/repositories/plugins.repository.interface";
+import {
+  PluginToolRuntime,
+  PluginToolRuntimeError,
+  type PluginProviderResolutionInput,
+  type PluginToolAuthorizationContext,
+  type PluginToolRuntimeDependencies,
+} from "@/src/application/services/plugin-tool-runtime";
+import { ProjectActionAuthorizationPolicy } from "@/src/application/policies/project-action-authorization.policy";
+import type { IProjectMembersRepository } from "@/src/application/repositories/project-members.repository.interface";
+import type { IApiKeysRepository } from "@/src/application/repositories/api-keys.repository.interface";
+import { WorkflowTool } from "@/app/lib/types/workflow_types";
+
+vi.mock("@/src/application/lib/composio/composio", () => ({
+  composio: Object.freeze({ tools: Object.freeze({ execute: () => { throw new Error("legacy_forbidden"); } }) }),
+}));
+vi.mock("@/di/container", () => ({
+  container: Object.freeze({ resolve: () => { throw new Error("legacy_forbidden"); } }),
+}));
+vi.mock("@/app/lib/qdrant", () => ({
+  qdrantClient: Object.freeze({ query: () => { throw new Error("legacy_forbidden"); } }),
+}));
+
+const catalog = catalogFixture as unknown as PluginCatalogLock;
+const entry = catalog.entries.find((candidate) => candidate.name === "actively")!;
+const selected = entry.components.find(({ component }) => component.kind === "app")!;
+const componentDigest = selected.component.metadata.bindingDigest;
+const providerBinding: ProviderBinding = Object.freeze({
+  id: "actively-provider",
+  providerKind: "rowboat-native",
+  componentDigest,
+});
+const installation: PluginInstallation = Object.freeze({
+  id: "15bc7a6e-a676-4f39-8644-29a9bac00421",
+  projectId: "project-1",
+  pluginName: entry.name,
+  pluginVersion: entry.pluginVersion,
+  sourceCommit: entry.sourceCommit,
+  manifestDigest: entry.manifestDigest,
+  treeDigest: entry.treeDigest,
+  policyVersion: entry.policyVersion,
+  enabled: true,
+  revision: 7,
+  providerBindings: Object.freeze([Object.freeze({ componentId: selected.component.id, binding: providerBinding })]),
+});
+const admission: PluginComponentAdmission = Object.freeze({
+  installationId: installation.id,
+  componentDigest,
+  componentKind: "app",
+  componentName: selected.component.name,
+  status: "admitted",
+  policyVersion: catalog.policyVersion,
+});
+const credentialSlot: PluginCredentialSlot = Object.freeze({
+  id: "slot-1",
+  projectId: installation.projectId,
+  installationId: installation.id,
+  name: "API_TOKEN",
+  reference: Object.freeze({ kind: "environment", reference: "ACTIVELY_API_TOKEN" }),
+});
+const binding = Object.freeze({
+  installationId: installation.id,
+  pluginName: installation.pluginName,
+  componentDigest,
+  providerBindingId: providerBinding.id,
+  capability: "read" as const,
+});
+// The trusted classification must agree with the caller's declared capability
+// (see "rejects caller read downgrade..." below) — a write-path test therefore
+// needs a binding whose declared capability is itself "write".
+const writeBinding = Object.freeze({ ...binding, capability: "write" as const });
+// A different component's admission -- used to prove the pre-provider
+// staleness check (which compares the *whole* admissions list) can trip on
+// a sibling changing, not just the invoked component itself.
+const siblingAdmission: PluginComponentAdmission = Object.freeze({
+  installationId: installation.id,
+  componentDigest: "b".repeat(64),
+  componentKind: "app",
+  componentName: "sibling-component",
+  status: "admitted",
+  policyVersion: catalog.policyVersion,
+});
+
+class FakeRepository implements IPluginsRepository {
+  currentInstallation: PluginInstallation | null = installation;
+  currentAdmissions: readonly PluginComponentAdmission[] = [admission];
+  currentSlots: readonly PluginCredentialSlot[] = [credentialSlot];
+  receipts: PluginReceipt[] = [];
+  credentialReads = 0;
+  receiptFailure = false;
+  receiptHangs = false;
+  installationReads = 0;
+  admissionReads = 0;
+  disableAfterFirstAdmissionRead = false;
+  dispatchClaims: Readonly<Record<string, unknown>>[] = [];
+  claimCalls = 0;
+  async getCatalog(digest: string): Promise<PluginCatalogLock | null> { return digest === catalog.catalogDigest ? catalog : null; }
+  async getInstallation(projectId: string, pluginName: string): Promise<PluginInstallation | null> {
+    this.installationReads += 1;
+    return projectId === installation.projectId && pluginName === installation.pluginName ? this.currentInstallation : null;
+  }
+  async listAdmissions(): Promise<readonly PluginComponentAdmission[]> {
+    this.admissionReads += 1;
+    if (this.disableAfterFirstAdmissionRead && this.admissionReads === 1) {
+      this.currentInstallation = Object.freeze({ ...installation, enabled: false, revision: 8 });
+    }
+    return this.currentAdmissions;
+  }
+  async listCredentialSlots(): Promise<readonly PluginCredentialSlot[]> { this.credentialReads += 1; return this.currentSlots; }
+  async putReceipt(receipt: PluginReceipt): Promise<void> {
+    if (this.receiptHangs) return new Promise<never>(() => undefined);
+    if (this.receiptFailure) throw new Error("database internals secret-value");
+    this.receipts.push(receipt);
+  }
+  async getReceipt(receiptId: string): Promise<PluginReceipt | null> {
+    return this.receipts.find(candidate => candidate.receiptId === receiptId) ?? null;
+  }
+  async claimExecutionDispatch(input: PluginExecutionDispatchClaim): Promise<void> {
+    this.claimCalls += 1;
+    const current = this.currentInstallation;
+    const currentAdmission = this.currentAdmissions.filter((item) => item.componentDigest === input.componentDigest);
+    if (
+      current === null || !current.enabled || current.id !== input.installationId || current.projectId !== input.projectId
+      || current.pluginName !== input.pluginName || current.revision !== input.installationRevision
+      || input.catalogDigest !== catalog.catalogDigest
+      || currentAdmission.length !== 1 || currentAdmission[0]?.status !== "admitted"
+      || currentAdmission[0]?.componentKind !== input.componentKind || currentAdmission[0]?.componentName !== input.componentName
+      || currentAdmission[0]?.policyVersion !== input.admissionPolicyVersion
+      || JSON.stringify(this.currentSlots) !== JSON.stringify(input.credentialSlots)
+    ) throw new Error("execution_claim_conflict");
+    this.dispatchClaims.push(Object.freeze({ requestId: input.requestId, componentDigest: input.componentDigest, providerBindingId: input.providerBindingId }));
+  }
+  async putCatalog(): Promise<void> {}
+  async putCatalogSnapshot(): Promise<void> {}
+  async getCatalogSnapshot(): Promise<null> { return null; }
+  async listCatalogEntries(): Promise<readonly never[]> { return []; }
+  async putCatalogEntries(): Promise<void> {}
+  async putInstallation(): Promise<void> {}
+  async listInstallations(): Promise<readonly PluginInstallation[]> { return []; }
+  async setInstallationEnabled(): Promise<PluginInstallation> { throw new Error("unused"); }
+  async putAdmissions(): Promise<void> {}
+  async putCredentialSlot(): Promise<void> {}
+  async putMigrationRecord(): Promise<void> {}
+  async getMigrationRecord(): Promise<null> { return null; }
+  async getIdempotentReceipt(): Promise<null> { return null; }
+  async installIdempotently(): Promise<never> { throw new Error("unused"); }
+  async setInstallationEnabledIdempotently(): Promise<never> { throw new Error("unused"); }
+}
+
+function setup(options: {
+  readonly operationCapability?: "read" | "write";
+  readonly providerResult?: "success" | "failed" | "hang";
+  readonly providerFailureReason?: string;
+  readonly providerAvailable?: boolean;
+  readonly resolverHangs?: boolean;
+  readonly credentialFailure?: boolean;
+  readonly resolverProxyTrap?: () => void;
+  readonly descriptorProxyTrap?: () => void;
+  readonly directProvider?: boolean;
+  readonly providerOutput?: unknown;
+  readonly resolverMutation?: "disable" | "admission" | "credential";
+  readonly providerMutation?: "disable" | "admission" | "credential";
+  readonly providerWaitsForAbort?: boolean;
+  readonly timeoutMilliseconds?: number;
+  readonly authorizationContext?: PluginToolAuthorizationContext | false;
+  readonly authorize?: (authorization: PluginToolAuthorizationContext, projectId: string) => Promise<void>;
+  readonly releaseWrite?: PluginToolRuntimeDependencies["releaseWrite"];
+  readonly classifyOperation?: PluginToolRuntimeDependencies["classifyOperation"];
+} = {}) {
+  const repository = new FakeRepository();
+  const counters = { authorize: 0, resolve: 0, provider: 0, cancel: 0, legacy: 0 };
+  let observedReference = "";
+  let observedPolicy: PluginPolicy | undefined;
+  let providerSettled = false;
+  const mutateExecutionState = (mutation: "disable" | "admission" | "credential"): void => {
+    if (mutation === "disable") repository.currentInstallation = Object.freeze({ ...installation, enabled: false, revision: 8 });
+    if (mutation === "admission") repository.currentAdmissions = [Object.freeze({ ...admission, status: "rejected", reason: "component_unsupported" })];
+    if (mutation === "credential") repository.currentSlots = [Object.freeze({ ...credentialSlot, reference: Object.freeze({ kind: "environment", reference: "ROTATED_SECRET_REFERENCE" }) })];
+  };
+  const provider: PluginProvider = Object.freeze({
+    id: providerBinding.id,
+    describe: () => options.descriptorProxyTrap === undefined
+      ? Object.freeze({ id: providerBinding.id, kind: providerBinding.providerKind, temporaryAdapter: false })
+      : new Proxy(Object.freeze({ id: providerBinding.id, kind: providerBinding.providerKind, temporaryAdapter: false }), {
+        get: (target, key, receiver) => { options.descriptorProxyTrap?.(); return Reflect.get(target, key, receiver); },
+        ownKeys: () => { options.descriptorProxyTrap?.(); return []; },
+      }),
+    invoke: async (_request: Parameters<PluginProvider["invoke"]>[0], providerContext: ProviderContext): Promise<Awaited<ReturnType<PluginProvider["invoke"]>>> => {
+      counters.provider += 1;
+      if (options.providerWaitsForAbort === true) {
+        const signal = (providerContext as ProviderContext & { readonly signal?: AbortSignal }).signal;
+        if (signal === undefined) return new Promise(() => undefined);
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) resolve();
+          else signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        providerSettled = true;
+        return Object.freeze({ status: "failed" as const, reason: "aborted" });
+      }
+      if (options.providerMutation !== undefined) mutateExecutionState(options.providerMutation);
+      if (options.providerResult === "failed") return Object.freeze({ status: "failed" as const, reason: options.providerFailureReason ?? "remote secret-value failure" });
+      if (options.providerResult === "hang") return new Promise(() => undefined);
+      return Object.freeze({ status: "success" as const, output: options.providerOutput ?? Object.freeze({ ok: true }) });
+    },
+  });
+  const dependencies: PluginToolRuntimeDependencies = Object.freeze({
+    pluginsRepository: repository,
+    authorizationContext: options.authorizationContext === false
+      ? undefined
+      : options.authorizationContext ?? Object.freeze({ caller: "user" as const, userId: "user-1" }),
+    authorizeProject: async (authorization: PluginToolAuthorizationContext, projectId: string) => {
+      counters.authorize += 1;
+      await options.authorize?.(authorization, projectId);
+    },
+    classifyOperation: options.classifyOperation ?? (() => options.operationCapability ?? "read"),
+    resolveProvider: async (input: PluginProviderResolutionInput) => {
+      counters.resolve += 1;
+      observedReference = input.credentialSlots[0]?.reference.reference ?? "";
+      observedPolicy = input.policy;
+      if (options.resolverMutation !== undefined) mutateExecutionState(options.resolverMutation);
+      if (options.resolverHangs === true) return new Promise<never>(() => undefined);
+      if (options.credentialFailure === true) throw new Error("credential_missing");
+      if (options.resolverProxyTrap !== undefined) {
+        return new Proxy(Object.freeze({ status: "available" as const, provider }), {
+          has: () => { options.resolverProxyTrap?.(); return true; },
+          ownKeys: () => { options.resolverProxyTrap?.(); return []; },
+        });
+      }
+      if (options.directProvider === true) return provider as unknown as { readonly status: "unavailable"; readonly reason: "provider_unavailable" };
+      if (options.providerAvailable === false) return Object.freeze({ status: "unavailable" as const, reason: "provider_unavailable" as const });
+      return Object.freeze({ status: "available" as const, provider });
+    },
+    releaseWrite: options.releaseWrite,
+    timeoutMilliseconds: options.timeoutMilliseconds ?? 20,
+    receiptTimeoutMilliseconds: 15,
+    createRequestId: () => "request-1",
+    onCancel: () => { counters.cancel += 1; },
+  });
+  return {
+    runtime: new PluginToolRuntime(dependencies), repository, counters,
+    get observedReference() { return observedReference; },
+    get observedPolicy() { return observedPolicy; },
+    get providerSettled() { return providerSettled; },
+  };
+}
+
+describe("PluginToolRuntime", () => {
+  it("accepts only the strict immutable workflow plugin binding shape", () => {
+    const parsed = WorkflowTool.parse({
+      name: "actively_lookup", description: "lookup", parameters: { type: "object", properties: {} },
+      pluginBinding: binding, isComposio: true,
+    });
+    expect(parsed.pluginBinding).toEqual(binding);
+    expect(Object.isFrozen(parsed.pluginBinding)).toBe(true);
+    expect(() => WorkflowTool.parse({
+      name: "actively_lookup", description: "lookup", parameters: { type: "object", properties: {} },
+      pluginBinding: { ...binding, extra: true },
+    })).toThrow();
+  });
+
+  it("builds a plugin tool that delegates exclusively to the plugin runtime", async () => {
+    const { createPluginTool } = await import("@/src/application/lib/agents-runtime/agent-tools");
+    let calls = 0;
+    const created = createPluginTool(WorkflowTool.parse({
+      name: "actively_lookup", description: "lookup", parameters: { type: "object", properties: {} },
+      pluginBinding: binding, mockTool: true, isMcp: true, isComposio: true, isWebhook: true,
+      mcpServerName: "legacy", composioData: { slug: "LEGACY", noAuth: true, toolkitName: "Legacy", toolkitSlug: "legacy", logo: "legacy" },
+    }), "project-1", async (authorizationContext) => {
+      expect(authorizationContext).toEqual({ caller: "user", userId: "user-1" });
+      return ({
+      invoke: async (receivedBinding, args, context) => {
+        calls += 1;
+        expect(receivedBinding).toEqual(binding);
+        expect(args).toEqual({ query: "safe" });
+        expect(context).toEqual({ projectId: "project-1", operationName: "actively_lookup" });
+        return { status: "success" as const, output: { routed: true } };
+      },
+      });
+    }, Object.freeze({ caller: "user", userId: "user-1" }));
+    const callable = created as unknown as { invoke: (runContext: unknown, input: string) => Promise<string> };
+    expect(await callable.invoke({}, JSON.stringify({ query: "safe" }))).toContain("routed");
+    expect(calls).toBe(1);
+    // This case pulls in the agents runtime module graph on first import, which
+    // takes seconds on a cold or loaded machine; the default 5s budget made it
+    // fail under parallel load without anything being wrong.
+  }, 60_000);
+
+  it("routes the exact current admitted binding and writes only a redacted provenance receipt", async () => {
+    const state = setup();
+    const result = await state.runtime.invoke(binding, { query: "safe" }, { projectId: "project-1", operationName: "lookup" });
+    expect(result).toEqual({ status: "success", output: { ok: true } });
+    expect(state.counters).toMatchObject({ authorize: 1, resolve: 1, provider: 1, legacy: 0 });
+    expect(state.repository.receipts).toHaveLength(1);
+    expect(state.repository.receipts[0]).toMatchObject({ type: "execution", projectId: "project-1", pluginName: "actively", status: "success" });
+    expect(JSON.stringify(state.repository.receipts[0])).not.toContain("query");
+    expect(Object.isFrozen(state.repository.receipts[0])).toBe(true);
+  });
+
+  it("loads current credential references at every call, after authorization and policy gates", async () => {
+    const state = setup();
+    await state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" });
+    state.repository.currentSlots = [Object.freeze({ ...credentialSlot, reference: { kind: "environment" as const, reference: "ROTATED_TOKEN" } })];
+    await state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" });
+    expect(state.repository.credentialReads).toBe(6);
+    expect(state.observedReference).toBe("ROTATED_TOKEN");
+
+    const denied = setup({ authorize: async () => { throw new Error("forbidden secret-policy-detail"); } });
+    await expect(denied.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("authorization_denied");
+    expect(denied.repository.installationReads).toBe(0);
+    expect(denied.repository.credentialReads).toBe(0);
+    expect(denied.counters.resolve).toBe(0);
+  });
+
+  it("fails closed without a trusted actor authorization context before all reads", async () => {
+    const state = setup({ authorizationContext: false });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("authorization_context_missing");
+    expect(state.repository.installationReads).toBe(0);
+    expect(state.repository.credentialReads).toBe(0);
+    expect(state.counters.provider).toBe(0);
+  });
+
+  it.each([
+    Object.freeze({ caller: "user" as const, userId: "user-without-membership" }),
+    Object.freeze({ caller: "api" as const, apiKey: "invalid-api-key" }),
+  ])("rejects an existing project without trusted membership or API-key authority", async (authorizationContext) => {
+    const policy = new ProjectActionAuthorizationPolicy({
+      projectMembersRepository: { exists: async () => false } as unknown as IProjectMembersRepository,
+      apiKeysRepository: { checkAndConsumeKey: async () => false } as unknown as IApiKeysRepository,
+    });
+    const state = setup({
+      authorizationContext,
+      authorize: async (authorization, projectId) => policy.authorize({ ...authorization, projectId }),
+    });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("authorization_denied");
+    expect(state.repository.installationReads).toBe(0);
+    expect(state.repository.credentialReads).toBe(0);
+    expect(state.counters.resolve).toBe(0);
+    expect(state.counters.provider).toBe(0);
+  });
+
+  it.each([
+    ["wrong project", { context: { projectId: "project-2", operationName: "lookup" } }],
+    ["stale installation id", { binding: { ...binding, installationId: "7d6c37cf-b78c-45bf-a6dd-3dcba4e4de31" } }],
+    ["component digest mismatch", { binding: { ...binding, componentDigest: "f".repeat(64) } }],
+    ["provider mismatch", { binding: { ...binding, providerBindingId: "other-provider" } }],
+  ])("fails closed for %s before credentials/provider", async (_name, mutation) => {
+    const state = setup();
+    const candidateBinding = "binding" in mutation ? mutation.binding : binding;
+    const context = "context" in mutation ? mutation.context : { projectId: "project-1", operationName: "lookup" };
+    await expect(state.runtime.invoke(candidateBinding, {}, context)).rejects.toBeInstanceOf(PluginToolRuntimeError);
+    expect(state.repository.credentialReads).toBe(0);
+    expect(state.counters.resolve).toBe(0);
+    expect(state.counters.provider).toBe(0);
+    expect(state.counters.legacy).toBe(0);
+  });
+
+  it("rejects caller read downgrade when trusted operation classification is write", async () => {
+    const state = setup({ operationCapability: "write" });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "mutate" })).rejects.toThrow("capability_mismatch");
+    expect(state.repository.credentialReads).toBe(0);
+    expect(state.counters.provider).toBe(0);
+  });
+
+  it("rejects an invalid current installation revision before admissions or credentials", async () => {
+    const state = setup();
+    state.repository.currentInstallation = Object.freeze({ ...installation, revision: -1 });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("execution_state_invalid");
+    expect(state.repository.credentialReads).toBe(0);
+    expect(state.counters.provider).toBe(0);
+  });
+
+  it("rejects current admission before credentials and unavailable providers without fallback", async () => {
+    const denied = setup();
+    denied.repository.currentAdmissions = [Object.freeze({ ...admission, status: "rejected" as const, reason: "component_unsupported" as const })];
+    await expect(denied.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("admission_denied");
+    expect(denied.repository.credentialReads).toBe(0);
+    expect(denied.counters.provider).toBe(0);
+
+    const unavailable = setup({ providerAvailable: false });
+    await expect(unavailable.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("provider_unavailable");
+    expect(unavailable.counters).toMatchObject({ provider: 0, legacy: 0 });
+  });
+
+  it("never asks OpenFang for a release when admission was already revoked -- the re-check runs before the release gate", async () => {
+    // This is the ordering fix itself: before it, a stale admission was only
+    // discovered *after* the release gate ran, so a human could approve a
+    // write in OpenFang that was refused one line later anyway, with no way
+    // for Rowboat to reconcile the spent approval (see also the receipt
+    // tests below, for the case where the release gate itself refuses).
+    let releaseCalls = 0;
+    const state = setup({
+      operationCapability: "write",
+      releaseWrite: async () => { releaseCalls += 1; return { status: "approved" as const, approvalId: "3f0f8a1e-0000-4000-8000-000000000011" }; },
+    });
+    state.repository.currentAdmissions = [Object.freeze({ ...admission, status: "rejected" as const, reason: "component_unsupported" as const })];
+    await expect(state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup" }))
+      .rejects.toThrow("admission_denied");
+    expect(releaseCalls).toBe(0);
+    expect(state.counters.resolve).toBe(0);
+  });
+
+  it("revalidates installation revision and enabled state before provider dispatch", async () => {
+    const state = setup();
+    state.repository.disableAfterFirstAdmissionRead = true;
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("execution_state_changed");
+    expect(state.repository.installationReads).toBeGreaterThanOrEqual(2);
+    expect(state.counters.provider).toBe(0);
+    expect(state.repository.receipts.some((receipt) => receipt.status === "success")).toBe(false);
+  });
+
+  it.each(["disable", "admission", "credential"] as const)(
+    "atomically rejects resolver-induced %s revocation before provider dispatch",
+    async (resolverMutation) => {
+      const state = setup({ resolverMutation });
+      await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("execution_state_changed");
+      expect(state.repository.claimCalls).toBe(1);
+      expect(state.counters.provider).toBe(0);
+      expect(state.repository.receipts).toHaveLength(0);
+    },
+  );
+
+  it.each(["disable", "admission", "credential"] as const)(
+    "records exactly one redacted failure after provider side effect and concurrent %s",
+    async (providerMutation) => {
+      const state = setup({ providerMutation, providerOutput: Object.freeze({ secret: "raw-provider-secret" }) });
+      await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("execution_state_changed");
+      expect(state.counters.provider).toBe(1);
+      expect(state.repository.receipts).toHaveLength(1);
+      expect(state.repository.receipts[0]).toMatchObject({ status: "failed", reason: "execution_state_changed" });
+      expect(JSON.stringify(state.repository.receipts)).not.toContain("raw-provider-secret");
+      expect(JSON.stringify(state.repository.receipts)).not.toContain("ROTATED_SECRET_REFERENCE");
+    },
+  );
+
+  it("propagates caller abort after dispatch and settles underlying provider work", async () => {
+    const abort = new AbortController();
+    const state = setup({ providerWaitsForAbort: true, timeoutMilliseconds: 200 });
+    const invocation = state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup", signal: abort.signal });
+    const rejection = expect(invocation).rejects.toThrow("request_aborted");
+    await vi.waitFor(() => expect(state.counters.provider).toBe(1));
+    abort.abort();
+    await rejection;
+    expect(state.providerSettled).toBe(true);
+    expect(state.counters.cancel).toBe(1);
+    expect(state.repository.receipts).toHaveLength(1);
+  });
+
+  it("never falls back and redacts provider failures", async () => {
+    const state = setup({ providerResult: "failed" });
+    await expect(state.runtime.invoke(binding, { token: "secret-value" }, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("provider_failed");
+    expect(state.counters).toMatchObject({ provider: 1, legacy: 0 });
+    expect(JSON.stringify(state.repository.receipts)).not.toContain("secret-value");
+  });
+
+  it("lets the kernel's credential_missing reason through and records it on the receipt", async () => {
+    const state = setup({ providerResult: "failed", providerFailureReason: "credential_missing" });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("credential_missing");
+    expect(state.counters).toMatchObject({ provider: 1, legacy: 0 });
+    expect(state.repository.receipts[0]).toMatchObject({ status: "failed", reason: "credential_missing" });
+  });
+
+  it("still normalises a recognised non-credential kernel reason to provider_failed", async () => {
+    const state = setup({ providerResult: "failed", providerFailureReason: "mcp_http_failed" });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("provider_failed");
+    expect(state.repository.receipts[0]).toMatchObject({ status: "failed", reason: "provider_unavailable" });
+  });
+
+  it.each([
+    ["a prototype-pollution-shaped reason", "__proto__"],
+    ["an empty reason", ""],
+  ])("never propagates %s from the provider verbatim -- allowlist rejects, not derives", async (_label, reason) => {
+    const state = setup({ providerResult: "failed", providerFailureReason: reason });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("provider_failed");
+    expect(state.repository.receipts[0]).toMatchObject({ status: "failed", reason: "provider_unavailable" });
+    if (reason.length > 0) expect(JSON.stringify(state.repository.receipts)).not.toContain(reason);
+  });
+
+  // A conforming kernel never sends a reason longer than 4096 bytes -- see
+  // captureProviderResult's shape guard. Tripping it means the provider is
+  // out of contract, and provider_result_invalid says exactly that;
+  // provider_failed would let a misbehaving provider blend in with an
+  // ordinary failure. Pinned at the exact boundary rather than assumed.
+  it("still admits a reason at exactly the 4096-byte boundary as an ordinary, unrecognised failure", async () => {
+    const state = setup({ providerResult: "failed", providerFailureReason: "x".repeat(4096) });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" }))
+      .rejects.toThrow("provider_failed");
+    expect(state.repository.receipts[0]).toMatchObject({ status: "failed", reason: "provider_unavailable" });
+  });
+
+  it("treats a reason one byte past the 4096-byte boundary as a malformed result, not an ordinary failure", async () => {
+    const state = setup({ providerResult: "failed", providerFailureReason: "x".repeat(4097) });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" }))
+      .rejects.toThrow("provider_result_invalid");
+    expect(state.repository.receipts[0]).toMatchObject({ status: "failed", reason: "provider_unavailable" });
+  });
+
+  it("fails with a typed error when the redacted receipt cannot be persisted", async () => {
+    const state = setup();
+    state.repository.receiptFailure = true;
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("receipt_unavailable");
+    expect(state.counters).toMatchObject({ provider: 1, legacy: 0 });
+  });
+
+  it("times out hanging providers, signals cancellation once, and has no fallback", async () => {
+    const state = setup({ providerResult: "hang" });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("provider_timed_out");
+    expect(state.counters).toMatchObject({ provider: 1, cancel: 1, legacy: 0 });
+    expect(state.repository.receipts[0]).toMatchObject({ status: "timed_out" });
+  });
+
+  it("bounds a hanging timeout receipt without replacing the original timeout", async () => {
+    const state = setup({ providerResult: "hang" });
+    state.repository.receiptHangs = true;
+    const watchdog = new Promise<"watchdog">((resolve) => setTimeout(() => resolve("watchdog"), 150));
+    const outcome = await Promise.race([
+      state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" }).then(() => "resolved", (error: unknown) => error),
+      watchdog,
+    ]);
+    expect(outcome).toBeInstanceOf(PluginToolRuntimeError);
+    expect((outcome as PluginToolRuntimeError).code).toBe("provider_timed_out");
+    expect(state.counters).toMatchObject({ cancel: 1, provider: 1, legacy: 0 });
+  });
+
+  it("applies the same deadline while resolving credentials/provider", async () => {
+    const state = setup({ resolverHangs: true });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("provider_timed_out");
+    expect(state.counters).toMatchObject({ resolve: 1, provider: 0, cancel: 1, legacy: 0 });
+  });
+
+  it("applies the whole-call deadline while project authorization is pending", async () => {
+    const state = setup({ authorize: () => new Promise<never>(() => undefined) });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("provider_timed_out");
+    expect(state.repository.credentialReads).toBe(0);
+    expect(state.counters).toMatchObject({ authorize: 1, provider: 0, cancel: 1, legacy: 0 });
+  });
+
+  it("classifies credential failure without exposing reference values or falling back", async () => {
+    const state = setup({ credentialFailure: true });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("credential_missing");
+    expect(state.counters).toMatchObject({ resolve: 1, provider: 0, legacy: 0 });
+    expect(JSON.stringify(state.repository.receipts)).not.toContain("ACTIVELY_API_TOKEN");
+    expect(state.repository.receipts[0]).toMatchObject({ status: "failed", reason: "credential_missing" });
+  });
+
+  it("honors caller abort, cancels once, and prevents provider dispatch", async () => {
+    const state = setup({ providerResult: "hang" });
+    const controller = new AbortController();
+    const pending = state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup", signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toThrow("request_aborted");
+    expect(state.counters).toMatchObject({ provider: 0, cancel: 1, legacy: 0 });
+  });
+
+  it("rejects proxies, accessors and unknown binding fields without invoking them", async () => {
+    const state = setup();
+    let traps = 0;
+    const proxy = new Proxy(binding, { ownKeys: () => { traps += 1; return []; } });
+    await expect(state.runtime.invoke(proxy, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("binding_invalid");
+    expect(traps).toBe(0);
+    const accessor = { ...binding };
+    Object.defineProperty(accessor, "pluginName", { enumerable: true, get: () => { traps += 1; return "actively"; } });
+    await expect(state.runtime.invoke(accessor, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("binding_invalid");
+    expect(traps).toBe(0);
+    await expect(state.runtime.invoke({ ...binding, unexpected: true }, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("binding_invalid");
+  });
+
+  it("rejects proxied repository state before forwarding credentials", async () => {
+    let traps = 0;
+    const state = setup();
+    state.repository.currentInstallation = new Proxy(installation, {
+      get: (target, key, receiver) => { traps += 1; return Reflect.get(target, key, receiver); },
+      ownKeys: () => { traps += 1; return []; },
+    });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("execution_state_invalid");
+    expect(traps).toBeGreaterThan(0); // Promise resolution probes `then`; service still rejects before field use.
+    expect(state.repository.credentialReads).toBe(0);
+    expect(state.counters.provider).toBe(0);
+  });
+
+  it("rejects repository accessors without invoking them", async () => {
+    let getterCalls = 0;
+    const state = setup();
+    const malicious = { ...installation };
+    Object.defineProperty(malicious, "enabled", { enumerable: true, get: () => { getterCalls += 1; return true; } });
+    state.repository.currentInstallation = malicious as PluginInstallation;
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("execution_state_invalid");
+    expect(getterCalls).toBe(0);
+    expect(state.counters.provider).toBe(0);
+  });
+
+  it("rejects a proxied provider resolution without invoking its traps", async () => {
+    let traps = 0;
+    const state = setup({ resolverProxyTrap: () => { traps += 1; } });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("provider_unavailable");
+    expect(traps).toBe(0);
+    expect(state.counters.provider).toBe(0);
+  });
+
+  it("rejects a proxied provider descriptor without invoking its traps", async () => {
+    let traps = 0;
+    const state = setup({ descriptorProxyTrap: () => { traps += 1; } });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("provider_unavailable");
+    expect(traps).toBe(0);
+    expect(state.counters.provider).toBe(0);
+  });
+
+  it("rejects a provider returned outside the hardened resolution envelope", async () => {
+    const state = setup({ directProvider: true });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("provider_unavailable");
+    expect(state.counters.provider).toBe(0);
+  });
+
+  it("rejects provider result accessors without invoking them or writing success", async () => {
+    let getterCalls = 0;
+    const output = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(output, "secret", { enumerable: true, get: () => { getterCalls += 1; return "secret-value"; } });
+    const state = setup({ providerOutput: output });
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("provider_result_invalid");
+    expect(getterCalls).toBe(0);
+    expect(state.repository.receipts.some((receipt) => receipt.status === "success")).toBe(false);
+    expect(JSON.stringify(state.repository.receipts)).not.toContain("secret-value");
+  });
+
+  it("rejects cyclic and oversized provider results with typed redacted failures", async () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    for (const output of [cyclic, { value: "x".repeat(70 * 1024) }, { ["k".repeat(70 * 1024)]: true }]) {
+      const state = setup({ providerOutput: output });
+      await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("provider_result_invalid");
+      expect(state.repository.receipts.some((receipt) => receipt.status === "success")).toBe(false);
+    }
+  });
+
+  it("is pinned to the complete catalog digest", async () => {
+    const state = setup();
+    expect(PINNED_PLUGIN_CATALOG_DIGEST).toBe(catalog.catalogDigest);
+    state.repository.getCatalog = async () => null;
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" })).rejects.toThrow("catalog_unavailable");
+    expect(state.repository.credentialReads).toBe(0);
+  });
+
+  it("runs a write that OpenFang released and records the approval", async () => {
+    const seen: unknown[] = [];
+    const state = setup({
+      operationCapability: "write",
+      releaseWrite: async (request: unknown) => { seen.push(request); return { status: "approved", approvalId: "3f0f8a1e-0000-4000-8000-000000000005" }; },
+    });
+    const result = await state.runtime.invoke(writeBinding, { query: "safe", extra: 1 }, { projectId: "project-1", operationName: "lookup" });
+    expect(result).toEqual({ status: "success", output: { ok: true } });
+    expect(seen).toHaveLength(1);
+    const firstRequest = seen[0] as Readonly<Record<string, unknown>>;
+    // The digest, never the argument values, is what crosses to releaseWrite.
+    expect(firstRequest.argumentsDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(firstRequest)).not.toContain("safe");
+    expect(state.repository.receipts[0]).toMatchObject({ status: "success" });
+    expect(JSON.stringify(state.repository.receipts[0])).toContain("3f0f8a1e-0000-4000-8000-000000000005");
+
+    // Same logical arguments, different key order, must digest identically:
+    // this is what a digest regression (dropping the sort, hashing raw
+    // input, ...) would break, and it would break it silently -- a mismatch
+    // makes captureWriteReleaseRequest throw downstream in production, which
+    // this runtime's own fail-closed catch turns into "unavailable" with no
+    // diagnostic.
+    await state.runtime.invoke(writeBinding, { extra: 1, query: "safe" }, { projectId: "project-1", operationName: "lookup" });
+    expect(seen).toHaveLength(2);
+    const secondRequest = seen[1] as Readonly<Record<string, unknown>>;
+    expect(secondRequest.argumentsDigest).toBe(firstRequest.argumentsDigest);
+  });
+
+  it("writes a receipt naming the approval id when a sibling admission changes while a human is deciding, before the execution_state_changed throw", async () => {
+    // Widening the admission re-check's window (so a release is never
+    // sought for a component whose own admission is already stale) also
+    // widened the pre-provider staleness comparison it feeds: that
+    // comparison now spans the whole release wait too, so a *sibling*
+    // component's admission changing during it -- nothing to do with this
+    // call -- aborts an already-approved write with execution_state_changed.
+    // The abort itself is correct and deliberately not narrowed; what this
+    // pins is that the consumed approval still leaves a local trace.
+    const state = setup({
+      operationCapability: "write",
+      releaseWrite: async () => {
+        state.repository.currentAdmissions = [admission, siblingAdmission];
+        return { status: "approved" as const, approvalId: "3f0f8a1e-0000-4000-8000-000000000014" };
+      },
+    });
+    await expect(state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup" }))
+      .rejects.toThrow("execution_state_changed");
+    expect(state.repository.receipts).toHaveLength(1);
+    expect(state.repository.receipts[0]).toMatchObject({ status: "failed", reason: "execution_state_changed" });
+    expect(JSON.stringify(state.repository.receipts[0])).toContain("3f0f8a1e-0000-4000-8000-000000000014");
+  });
+
+  it("writes no receipt for the same sibling-admission staleness abort on a read -- there is no consumed approval to record", async () => {
+    const state = setup({ operationCapability: "read" });
+    state.repository.currentAdmissions = [admission];
+    const originalListAdmissions = state.repository.listAdmissions.bind(state.repository);
+    let calls = 0;
+    state.repository.listAdmissions = async () => {
+      calls += 1;
+      // The *first* read (the moved-up admission re-check) must still see
+      // the original, single-admission snapshot -- mutate only after
+      // capturing that return value, so the *second* read (the pre-provider
+      // staleness check) is the one that sees the sibling appear.
+      const result = await originalListAdmissions();
+      if (calls === 1) state.repository.currentAdmissions = [admission, siblingAdmission];
+      return result;
+    };
+    await expect(state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" }))
+      .rejects.toThrow("execution_state_changed");
+    expect(state.repository.receipts).toHaveLength(0);
+  });
+
+  it("names the approval id on the failure receipt too, not only on success", async () => {
+    // A write a human approved in OpenFang and that then died further
+    // downstream (at the credential, here) still consumed that approval;
+    // losing the id on the failure path would leave no trace a release ever
+    // happened for this call.
+    const state = setup({
+      operationCapability: "write",
+      releaseWrite: async () => ({ status: "approved" as const, approvalId: "3f0f8a1e-0000-4000-8000-00000000000f" }),
+      providerResult: "failed",
+      providerFailureReason: "credential_missing",
+    });
+    await expect(state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup" }))
+      .rejects.toThrow("credential_missing");
+    expect(state.repository.receipts[0]).toMatchObject({ status: "failed", reason: "credential_missing" });
+    expect(JSON.stringify(state.repository.receipts[0])).toContain("3f0f8a1e-0000-4000-8000-00000000000f");
+  });
+
+  it("resolves the provider with an elevated policy only for a released write", async () => {
+    const state = setup({
+      operationCapability: "write",
+      releaseWrite: async () => ({ status: "approved" as const, approvalId: "3f0f8a1e-0000-4000-8000-00000000000d" }),
+    });
+    await state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup" });
+    expect(state.observedPolicy?.allowWriteCapabilities).toBe(true);
+  });
+
+  it("resolves the provider with the unelevated default policy for a read", async () => {
+    const state = setup({ operationCapability: "read" });
+    await state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "lookup" });
+    expect(state.observedPolicy?.allowWriteCapabilities).toBe(false);
+  });
+
+  it("never leaks an elevated policy to a later call on the same runtime instance", async () => {
+    let releaseCalls = 0;
+    const state = setup({
+      // A single runtime instance handles both a write and, later, a read; the
+      // fixed binding's declared capability must agree with what this
+      // classifies, so the write and read operation names are distinguished
+      // here instead of by a separate setup() per capability.
+      classifyOperation: ({ operationName }) => (operationName === "read-op" ? "read" : "write"),
+      releaseWrite: async () => {
+        releaseCalls += 1;
+        return releaseCalls === 1
+          ? { status: "approved" as const, approvalId: "3f0f8a1e-0000-4000-8000-00000000000e" }
+          : { status: "unavailable" as const };
+      },
+    });
+
+    // First call: released write -- resolution sees the elevated policy.
+    await state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "mutate" });
+    expect(state.observedPolicy?.allowWriteCapabilities).toBe(true);
+    expect(state.counters.resolve).toBe(1);
+
+    // Second call: same runtime instance, this time unavailable -- fails at
+    // the release gate and never reaches resolution at all.
+    await expect(state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "mutate" }))
+      .rejects.toThrow("write_review_required");
+    expect(state.counters.resolve).toBe(1);
+
+    // Third call: a read -- resolution sees the unelevated default policy,
+    // proving the earlier elevation never leaked past its own call.
+    await state.runtime.invoke(binding, {}, { projectId: "project-1", operationName: "read-op" });
+    expect(state.observedPolicy?.allowWriteCapabilities).toBe(false);
+    expect(state.counters.resolve).toBe(2);
+  });
+
+  it("still refuses a write when no releaseWrite is configured", async () => {
+    const state = setup({ operationCapability: "write" });
+    await expect(state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup" }))
+      .rejects.toThrow("write_review_required");
+  });
+
+  it("keeps refusing a write that was denied, expired, or never released, and writes a receipt naming why for each", async () => {
+    for (const decision of [
+      { status: "denied" as const, approvalId: "3f0f8a1e-0000-4000-8000-000000000006" },
+      { status: "expired" as const, approvalId: "3f0f8a1e-0000-4000-8000-000000000007" },
+      { status: "unavailable" as const },
+    ]) {
+      const state = setup({ operationCapability: "write", releaseWrite: async () => decision });
+      await expect(state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup" }))
+        .rejects.toThrow("write_review_required");
+      // Before this fix, a refusal here left zero local evidence: an operator
+      // staring at write_review_required could not tell which of denied,
+      // expired, or unavailable happened, nor that a release was ever
+      // attempted, and a human's own OpenFang decision could never be
+      // reconciled against anything Rowboat recorded.
+      expect(state.repository.receipts).toHaveLength(1);
+      expect(state.repository.receipts[0]).toMatchObject({ status: "denied", reason: "write_review_required" });
+      if ("approvalId" in decision) {
+        expect(JSON.stringify(state.repository.receipts[0])).toContain(decision.approvalId);
+      } else {
+        expect(JSON.stringify(state.repository.receipts[0])).not.toContain("approvalId");
+      }
+    }
+  });
+
+  it("refuses an approved decision whose approvalId is not a UUID -- an empty string must not release -- and still writes a receipt, without the unvalidated id", async () => {
+    for (const approvalId of ["", "not-a-uuid"]) {
+      const state = setup({ operationCapability: "write", releaseWrite: async () => ({ status: "approved" as const, approvalId }) });
+      await expect(state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup" }))
+        .rejects.toThrow("write_review_required");
+      // Never even reaches resolution: an invalid approvalId must not elevate
+      // the policy, so resolveProvider is never called with a write-capable one.
+      expect(state.counters.resolve).toBe(0);
+      expect(state.repository.receipts).toHaveLength(1);
+      expect(state.repository.receipts[0]).toMatchObject({ status: "denied", reason: "write_review_required" });
+      // The invalid id itself is never trusted into the receipt either --
+      // same defensive read as the one that keeps it out of the policy.
+      expect(JSON.stringify(state.repository.receipts[0])).not.toContain("approvalId");
+    }
+  });
+
+  it("never asks for a release for a read", async () => {
+    let asked = 0;
+    const state = setup({ operationCapability: "read", releaseWrite: async () => { asked += 1; return { status: "approved", approvalId: "3f0f8a1e-0000-4000-8000-000000000008" }; } });
+    await state.runtime.invoke({ ...binding, capability: "read" }, {}, { projectId: "project-1", operationName: "lookup" });
+    expect(asked).toBe(0);
+  });
+
+  it("keeps a write under review when the release call itself throws", async () => {
+    // releaseWrite must fail closed: a broken adapter (a malformed request the
+    // port's captureWriteReleaseRequest rejects, a network failure, ...) is
+    // never distinguishable from "no decision" and never approves a write.
+    const state = setup({
+      operationCapability: "write",
+      releaseWrite: async () => { throw new Error("openfang_unavailable"); },
+    });
+    await expect(state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup" }))
+      .rejects.toThrow("write_review_required");
+  });
+
+  it("times out a release call that never settles, rather than refusing as under review", async () => {
+    // Pins the catch at the release gate: deleting its narrow rethrow would
+    // turn this into "write_review_required" instead of the deadline outcome.
+    const state = setup({
+      operationCapability: "write",
+      releaseWrite: () => new Promise<never>(() => undefined),
+    });
+    await expect(state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup" }))
+      .rejects.toThrow("provider_timed_out");
+    expect(state.counters).toMatchObject({ cancel: 1, legacy: 0 });
+    // The release call never produced a decision, so no approvalId exists to
+    // carry -- but the attempt, and why it stopped here, still leaves a trace.
+    expect(state.repository.receipts).toHaveLength(1);
+    expect(state.repository.receipts[0]).toMatchObject({ status: "timed_out", reason: "write_review_required" });
+  });
+
+  it("propagates caller abort while a release is pending", async () => {
+    // Same pin as above for the caller-abort outcome: without the narrow
+    // rethrow, an abort mid-release would surface as write_review_required.
+    const abort = new AbortController();
+    let releaseCalls = 0;
+    const state = setup({
+      operationCapability: "write",
+      timeoutMilliseconds: 200,
+      releaseWrite: async () => { releaseCalls += 1; return new Promise<never>(() => undefined); },
+    });
+    const invocation = state.runtime.invoke(writeBinding, {}, { projectId: "project-1", operationName: "lookup", signal: abort.signal });
+    const rejection = expect(invocation).rejects.toThrow("request_aborted");
+    await vi.waitFor(() => expect(releaseCalls).toBe(1));
+    abort.abort();
+    await rejection;
+    expect(state.counters.cancel).toBe(1);
+    expect(state.repository.receipts).toHaveLength(1);
+    expect(state.repository.receipts[0]).toMatchObject({ status: "timed_out", reason: "write_review_required" });
+  });
+});
