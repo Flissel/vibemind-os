@@ -1425,7 +1425,7 @@ class PlanExecutor:
             "_capability": getattr(hop, "capability", "") or "",
         }
         # Dynamic tool scope (plans/dynamic-agent-tools-prompt.md, Phase 2):
-        # Fuer openfang:-Agenten (skill-coordinator/desktop/openclaude/...) waehlt
+        # Fuer openfang:-Agenten (skill-coordinator/desktop/brain-coder-*/...) waehlt
         # der ToolScopeSelector pro Intent SEMANTISCH die relevanten Tools + baut
         # einen Prompt-Focus, den OpenFangExecutor als message-Praefix setzt
         # (lenkt das Agent-LLM weg vom 71-Tool-Loop). Default-off via
