@@ -78,7 +78,8 @@ zusammen ergäben eine zirkuläre.
 - **Kosten:** die ausgerollte `brain_capabilities_v10.yaml` ist `roarboot`-keyed.
   Ein Rename erzwingt vor dem Deploy einen **v11**-Bump im äußeren Repo.
 
-Ohne diese Entscheidung nicht anfangen.
+**Entschieden am 2026-08-31 vom Nutzer: `rowboat`.** Damit ist dieses Gate offen.
+Der `v11`-Bump im aeusseren Repo ist die Folgekosten-Position, die daraus faellt.
 
 ---
 
@@ -90,8 +91,13 @@ Space-Wiring-Linie 05:57. Der Submodul-Checkout steht auf einem fremden Branch
 mit rund 30 uncommitteten Änderungen. Das WORKBOARD führt mindestens drei
 gleichzeitige Claims.
 
-**Vor Schritt 1 klären, welche Sessions noch laufen.** Eine Zusammenführung, die
-gegen bewegliche Ziele arbeitet, ist verlorene Arbeit.
+**Geprüft am 2026-08-31, 07:37.** Seit der Messung hatten sich zwei fremde Spitzen
+bewegt, beide harmlos: ein Einzeiler gegen einen Import-Shadow auf
+`merge/space-wiring-plus-subscription`, und ein Lizenz-Dokument auf dem äußeren
+`master`, dessen Gitlink unverändert auf `9c83b40` zeigt. **Niemand macht eine
+konkurrierende Zusammenführung**, und die Merge-Basis stand zu dem Zeitpunkt seit
+1h40 still. Das Gate ist damit erfüllt — aber es bleibt gültig: wer später
+wieder aufsetzt, prüft es erneut, statt sich auf diesen Satz zu verlassen.
 
 ---
 
@@ -108,6 +114,25 @@ Seite (97 gegen 443), master kommt also als der additive Teil.
 ---
 
 ## Schritte
+
+### Schritt 0: Die Space-Wiring-Linie ist selbst zweigeteilt — erst die vereinen
+
+**Beim Anfassen gefunden, im Plan vorher nicht enthalten.** `9c83b40`
+(`feat/mcp-tool-hub`, `merge/space-wiring-2026-08-25`) und `546a418`
+(`merge/space-wiring-plus-subscription-2026-08-30`) sind divergiert, gemeinsame
+Basis `e75ccda`:
+
+- nur auf `9c83b40`: der Privacy-Scrub und **zwei Reparaturen des
+  `coding-engine`-Pins** (auf `ec958764`)
+- nur auf `546a418`: die beiden F4-Ground-Truth-Pfad-Fixes und ein Fix gegen einen
+  Import-Shadow — und noch der **kaputte** Pin `3c520e7b`
+
+Sie unterscheiden sich in **vier Dateien ohne Überlappung**. Der Merge ist trivial
+und wurde ausgeführt (`3f6daa0`): Vereinigung beider, mit dem erreichbaren Pin.
+Erst dieses Ergebnis ist die Basis für Schritt 4.
+
+**Gate:** der `coding-engine`-Pin steht auf `ec958764`, und beide F4-Commits sowie
+beide Pin-Reparaturen sind enthalten. Erfüllt.
 
 ### Schritt 1: Fetchen und Stand festschreiben
 
