@@ -1428,7 +1428,7 @@ async def _lifespan(app: FastAPI):
                 "n8n": "n8n workflow automation: create, list, status, execute workflows",
                 "agentfarm": "Multi-agent teams: create_team, run, collaborate, results, templates",
                 "schedule": "Scheduling: cron jobs, reminders, snooze, time-based triggers",
-                "roarboot": "Knowledge graph Roarboot: search, query, email drafts, meeting briefs, decks",
+                "rowboat": "Knowledge graph Rowboat: search, query, email drafts, meeting briefs, decks",
                 "minibook": "Minibook collaborative agent discussions and projects",
                 "video": "Video generation: vision, demo building, lip-sync, voice clone, TTS",
                 "flowzen": "Flowzen Rose recommender: recommend, accept, status",
