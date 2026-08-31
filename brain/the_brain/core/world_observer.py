@@ -143,13 +143,18 @@ def _map_host_path(path: str) -> str:
     raw_map = os.environ.get("GROUND_TRUTH_PATH_MAP", "").strip()
     if not raw_map or not path:
         return path
-    normalized = path.replace("\\", "/")
+    # Collapse separator runs: the {result_path} extractor can deliver
+    # JSON-escaped paths with doubled backslashes (seen live 2026-08-30).
+    # UNC paths would collapse too — out of scope for this mapping; an
+    # unmatched path is returned unchanged anyway.
+    import re as _re
+    normalized = _re.sub(r"[\\/]+", "/", path)
     folded = normalized.casefold()
     for entry in raw_map.split(";"):
         if "=>" not in entry:
             continue
         host_prefix, _, target_prefix = entry.partition("=>")
-        host_prefix = host_prefix.strip().replace("\\", "/").rstrip("/")
+        host_prefix = _re.sub(r"[\\/]+", "/", host_prefix.strip()).rstrip("/")
         target_prefix = target_prefix.strip().rstrip("/")
         if not host_prefix or not target_prefix:
             continue

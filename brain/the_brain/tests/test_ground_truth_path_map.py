@@ -58,6 +58,16 @@ def test_non_matching_prefix_stays_unmapped(tmp_path, monkeypatch):
     assert "mapped_path" not in signal
 
 
+def test_json_escaped_double_backslash_paths_still_map(tmp_path, monkeypatch):
+    """The {result_path} extractor can hand over JSON-escaped paths with
+    doubled backslashes (seen live 2026-08-30) — separator runs must not
+    defeat the prefix match."""
+    (tmp_path / "esc.txt").write_text("e", encoding="utf-8")
+    monkeypatch.setenv("GROUND_TRUTH_PATH_MAP", rf"C:\Users\User=>{tmp_path}")
+    ok, signal, reason = _file_exists("C:\\\\Users\\\\User\\\\esc.txt")
+    assert ok is True, (signal, reason)
+
+
 def test_multiple_and_malformed_entries_are_tolerated(tmp_path, monkeypatch):
     (tmp_path / "z.txt").write_text("z", encoding="utf-8")
     monkeypatch.setenv(
