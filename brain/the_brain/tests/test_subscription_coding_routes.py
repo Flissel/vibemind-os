@@ -500,3 +500,14 @@ def test_third_party_tool_filenames_do_not_block_the_default_coding_route():
     ):
         match = router.route(phrase)
         assert match is not None and match.capability == "coding_task", phrase
+
+
+def test_supabase_targets_count_as_execution_targets_for_the_shortcut():
+    """No-API-budget regression (found live 2026-08-30): supabase: was missing
+    from the has_execution_target whitelist, so every supabase cap fell to the
+    dead LLM planner and failed closed. plan_executor runs supabase: targets
+    (golden-path proven) — the shortcut must accept them."""
+    router = CapabilityRouter(CAPABILITIES_PATH)
+    match = router.route("create bubble ShortcutProbe")
+    assert match is not None and match.capability == "bubble_create"
+    assert match.has_execution_target is True, match.execution_target
