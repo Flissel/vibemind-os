@@ -222,6 +222,22 @@ export interface ResolveOpenFangReleaseWriteOptions {
  * own inputs) means no release is possible, fail closed to `unavailable`
  * without constructing anything. Otherwise delegates to the injected policy
  * implementation for the actual HTTP exchange.
+ *
+ * `OPENFANG_API_KEY` is read here, trimmed the same way, and handed to the
+ * policy so its calls authenticate exactly as `OpenFangCredentialResolver`'s
+ * already do. Both variables are read per call rather than memoized at
+ * startup, for the same reason `resolveOpenFangProvider` reads them per call:
+ * a config change takes effect on the very next call.
+ *
+ * The key is deliberately NOT a precondition. Unlike
+ * `resolveOpenFangCredentialSource` -- where a missing key means "resolve
+ * nothing", because sending a plaintext credential to an unauthenticated
+ * endpoint would be the unsafe direction -- a missing key here must still
+ * ask for the release: the request is only identifiers and digests, and
+ * refusing to ask would turn a configuration gap into a silent refusal of
+ * every write. If the daemon then answers 401, the policy fails closed to
+ * `unavailable` on its own and the write stays under review, which is the
+ * safe direction.
  */
 export async function resolveOpenFangReleaseWrite(
   request: PluginWriteReleaseRequest,
@@ -230,11 +246,13 @@ export async function resolveOpenFangReleaseWrite(
 ): Promise<PluginWriteReleaseDecision> {
   const url = process.env.OPENFANG_URL?.trim();
   if (url === undefined || url.length === 0) return Object.freeze({ status: "unavailable" as const });
+  const apiKey = process.env.OPENFANG_API_KEY?.trim() ?? "";
   return new options.OpenFangWriteReleasePolicyImpl({
     baseUrl: url,
     fetch: options.fetchImpl,
     timeoutMs: options.approvalWindowMs,
     pollIntervalMs: 1_000,
+    ...(apiKey.length === 0 ? {} : { apiKey }),
   }).release(request, signal);
 }
 

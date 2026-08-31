@@ -178,6 +178,52 @@ describe("resolveOpenFangReleaseWrite (container wiring)", () => {
       expect(RecordingPolicy.lastOptions).toMatchObject({ baseUrl: "https://openfang.example.com", timeoutMs: 1_000, pollIntervalMs: 1_000 });
     });
   });
+
+  /**
+   * The release calls must authenticate the same way the credential path
+   * already does. The live end-to-end proof found this composition handing
+   * the policy no key at all, so every create POST hit OpenFang's auth
+   * middleware -- which makes /api/approvals public for GET only -- and came
+   * back 401, leaving every write under review no matter who approved it.
+   * OPENFANG_API_KEY is already in scope here for resolveOpenFangCredentialSource;
+   * these pin that it reaches the release policy too.
+   */
+  it("passes OPENFANG_API_KEY through to the release policy", async () => {
+    await withOpenFangEnv("https://openfang.example.com", "release-key-value", async () => {
+      RecordingPolicy.constructedCount = 0;
+      RecordingPolicy.lastOptions = undefined;
+      await resolveOpenFangReleaseWrite(writeRequest, new AbortController().signal, {
+        approvalWindowMs: 1_000, fetchImpl: neverFetch, OpenFangWriteReleasePolicyImpl: RecordingPolicy,
+      });
+      expect(RecordingPolicy.lastOptions).toMatchObject({ apiKey: "release-key-value" });
+    });
+  });
+
+  it("trims the key it passes through, exactly as resolveOpenFangCredentialSource trims its own", async () => {
+    await withOpenFangEnv("https://openfang.example.com", "  release-key-value  ", async () => {
+      RecordingPolicy.lastOptions = undefined;
+      await resolveOpenFangReleaseWrite(writeRequest, new AbortController().signal, {
+        approvalWindowMs: 1_000, fetchImpl: neverFetch, OpenFangWriteReleasePolicyImpl: RecordingPolicy,
+      });
+      expect(RecordingPolicy.lastOptions).toMatchObject({ apiKey: "release-key-value" });
+    });
+  });
+
+  it("passes no key when OPENFANG_API_KEY is absent or blank -- never an empty bearer, and never a skipped release", async () => {
+    for (const key of [undefined, "", "   "]) {
+      await withOpenFangEnv("https://openfang.example.com", key, async () => {
+        RecordingPolicy.constructedCount = 0;
+        RecordingPolicy.lastOptions = undefined;
+        const decision = await resolveOpenFangReleaseWrite(writeRequest, new AbortController().signal, {
+          approvalWindowMs: 1_000, fetchImpl: neverFetch, OpenFangWriteReleasePolicyImpl: RecordingPolicy,
+        });
+        // The release still happens -- an absent key is not a reason to skip it.
+        expect(RecordingPolicy.constructedCount).toBe(1);
+        expect(decision).toEqual({ status: "approved", approvalId: "3f0f8a1e-0000-4000-8000-000000000099" });
+        expect((RecordingPolicy.lastOptions as { apiKey?: unknown }).apiKey).toBeUndefined();
+      });
+    }
+  });
 });
 
 describe("resolveOpenFangComposedProvider (the exact composition wired into PluginToolRuntimeDependencies.resolveProvider)", () => {

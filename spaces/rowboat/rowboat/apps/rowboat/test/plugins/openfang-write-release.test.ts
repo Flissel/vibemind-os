@@ -145,3 +145,124 @@ describe("OpenFang write release", () => {
     expect(Date.now() - start).toBeLessThan(500);
   });
 });
+
+/**
+ * Authentication on the release calls.
+ *
+ * Found by the live end-to-end proof, not by any unit test on this branch:
+ * this adapter sent no `Authorization` header at all, while OpenFang's own
+ * auth middleware makes `/api/approvals` public for GET only -- every POST
+ * needs the bearer token. So on any daemon with an api_key configured the
+ * create POST answered 401, `#fetchBounded` threw, `release()` returned
+ * `unavailable`, and every write stayed under review however many humans
+ * approved it. Worse, an api_key is not optional in that deployment: OpenFang's
+ * `/api/credentials/issue` refuses outright on a fail-open daemon (empty
+ * api_key AND auth disabled), which is exactly the condition under which the
+ * unauthenticated POST would have worked -- the two are the same predicate,
+ * inverted, so no configuration satisfied both.
+ *
+ * These pin the header itself: its presence, its exact value, that it rides
+ * the poll GET as well as the create POST (a daemon may protect either), and
+ * that an unconfigured key still sends nothing rather than an empty bearer.
+ */
+function headerCapturingFetch(captured: { url: string; method: string; authorization: string | null }[], responses: readonly unknown[]) {
+  let index = 0;
+  return (async (input: string, init?: RequestInit) => {
+    captured.push({
+      url: String(input),
+      method: init?.method ?? "GET",
+      authorization: new Headers(init?.headers).get("authorization"),
+    });
+    const body = responses[Math.min(index++, responses.length - 1)];
+    return { ok: true, status: 200, json: async () => body } as Response;
+  }) as unknown as typeof fetch;
+}
+
+describe("OpenFang write release authentication", () => {
+  const approvalId = "3f0f8a1e-0000-4000-8000-0000000000a1";
+  const responses = [{ id: approvalId }, { approvals: [{ id: approvalId, status: "approved" }] }];
+
+  it("sends Authorization: Bearer <key> on the create POST and on the poll GET alike", async () => {
+    const captured: { url: string; method: string; authorization: string | null }[] = [];
+    const policy = new OpenFangWriteReleasePolicy({
+      baseUrl: "http://openfang.invalid:4200",
+      fetch: headerCapturingFetch(captured, responses),
+      timeoutMs: 1_000, pollIntervalMs: 1,
+      apiKey: "release-key-value",
+    });
+    expect(await policy.release(request, new AbortController().signal)).toEqual({ status: "approved", approvalId });
+    expect(captured).toHaveLength(2);
+    // The create POST.
+    expect(captured[0]!.method).toBe("POST");
+    expect(captured[0]!.authorization).toBe("Bearer release-key-value");
+    // The poll GET -- the half a "the POST is authenticated now" fix forgets.
+    expect(captured[1]!.method).toBe("GET");
+    expect(captured[1]!.authorization).toBe("Bearer release-key-value");
+    // Authenticating must not disturb what the create POST already sends.
+    expect(captured[0]!.url).toBe("http://openfang.invalid:4200/api/approvals");
+  });
+
+  it("preserves the content-type header on the create POST while adding the bearer", async () => {
+    const seen: { contentType: string | null; authorization: string | null }[] = [];
+    const fetchImpl = (async (_input: string, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      seen.push({ contentType: headers.get("content-type"), authorization: headers.get("authorization") });
+      return { ok: true, status: 200, json: async () => ({ id: approvalId, approvals: [{ id: approvalId, status: "approved" }] }) } as Response;
+    }) as unknown as typeof fetch;
+    const policy = new OpenFangWriteReleasePolicy({
+      baseUrl: "http://openfang.invalid:4200", fetch: fetchImpl, timeoutMs: 1_000, pollIntervalMs: 1, apiKey: "k",
+    });
+    await policy.release(request, new AbortController().signal);
+    expect(seen[0]).toEqual({ contentType: "application/json", authorization: "Bearer k" });
+  });
+
+  it("sends no Authorization header at all when no key is configured, and a 401 still fails closed", async () => {
+    const captured: { url: string; method: string; authorization: string | null }[] = [];
+    const policy = new OpenFangWriteReleasePolicy({
+      baseUrl: "http://openfang.invalid:4200",
+      fetch: headerCapturingFetch(captured, responses),
+      timeoutMs: 1_000, pollIntervalMs: 1,
+    });
+    expect(await policy.release(request, new AbortController().signal)).toEqual({ status: "approved", approvalId });
+    expect(captured.map(call => call.authorization)).toEqual([null, null]);
+
+    // And an unconfigured key is never a reason to treat a refusal as a
+    // release: a 401 is still `unavailable`, so the write stays under review.
+    const refused = new OpenFangWriteReleasePolicy({
+      baseUrl: "http://openfang.invalid:4200",
+      fetch: (async () => ({ ok: false, status: 401, json: async () => ({ error: "Missing Authorization: Bearer <api_key> header" }) })) as unknown as typeof fetch,
+      timeoutMs: 1_000, pollIntervalMs: 1,
+    });
+    expect(await refused.release(request, new AbortController().signal)).toEqual({ status: "unavailable" });
+  });
+
+  it("sends no Authorization header for a blank or whitespace-only key rather than an empty bearer", async () => {
+    for (const blank of ["", "   "]) {
+      const captured: { url: string; method: string; authorization: string | null }[] = [];
+      const policy = new OpenFangWriteReleasePolicy({
+        baseUrl: "http://openfang.invalid:4200",
+        fetch: headerCapturingFetch(captured, responses),
+        timeoutMs: 1_000, pollIntervalMs: 1,
+        apiKey: blank,
+      });
+      await policy.release(request, new AbortController().signal);
+      expect(captured.map(call => call.authorization)).toEqual([null, null]);
+    }
+  });
+
+  it("never puts the key in the request body, the URL, or a thrown message", async () => {
+    const key = "release-key-value";
+    const seen: string[] = [];
+    const fetchImpl = (async (input: string, init?: RequestInit) => {
+      seen.push(String(input));
+      if (typeof init?.body === "string") seen.push(init.body);
+      return { ok: false, status: 500, json: async () => ({ error: "internal" }) } as Response;
+    }) as unknown as typeof fetch;
+    const policy = new OpenFangWriteReleasePolicy({
+      baseUrl: "http://openfang.invalid:4200", fetch: fetchImpl, timeoutMs: 1_000, pollIntervalMs: 1, apiKey: key,
+    });
+    const decision = await policy.release(request, new AbortController().signal);
+    expect(decision).toEqual({ status: "unavailable" });
+    expect(seen.join("\n")).not.toContain(key);
+  });
+});

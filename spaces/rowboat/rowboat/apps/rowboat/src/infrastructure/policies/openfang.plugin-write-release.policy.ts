@@ -7,6 +7,24 @@ export interface OpenFangWriteReleaseOptions {
   readonly fetch: typeof fetch;
   readonly timeoutMs: number;
   readonly pollIntervalMs: number;
+  /**
+   * Bearer token this adapter presents to OpenFang's HTTP API, the same one
+   * `OpenFangCredentialResolver` already presents to
+   * `/api/credentials/issue`. Optional: absent (or blank) means send no
+   * `Authorization` header at all, exactly as this adapter behaved before
+   * this field existed -- never an empty `Bearer `.
+   *
+   * It is not optional in practice on any daemon that can also issue
+   * credentials. OpenFang's auth middleware makes `/api/approvals` public
+   * for GET only, so an unauthenticated create POST is answered 401; and its
+   * `/api/credentials/issue` refuses outright on a fail-open daemon (empty
+   * api_key AND auth disabled) -- which is the very condition under which
+   * that unauthenticated POST would have succeeded. The two are the same
+   * predicate, inverted, so without this field no single daemon
+   * configuration could both release a write and issue its credential. That
+   * was found by a live end-to-end run, with every unit test green.
+   */
+  readonly apiKey?: string;
   readonly now?: () => number;
 }
 
@@ -93,12 +111,35 @@ export class OpenFangWriteReleasePolicy implements IPluginWriteReleasePolicy {
     if (signal.aborted) controller.abort();
     else signal.addEventListener("abort", onAbort);
     try {
-      const response = await this.#options.fetch(url, { ...init, signal: controller.signal, redirect: "error" });
+      const response = await this.#options.fetch(url, { ...this.#authorized(init), signal: controller.signal, redirect: "error" });
       if (!response.ok) throw new Error("openfang_unavailable");
       return await response.json();
     } finally {
       clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);
     }
+  }
+
+  /**
+   * Adds `Authorization: Bearer <apiKey>` to a request, preserving whatever
+   * headers it already carries (the create POST's `content-type`).
+   *
+   * Applied in `#fetchBounded`, so it covers *every* exchange this adapter
+   * makes -- the create POST and each poll GET alike. Only the POST is
+   * refused by OpenFang's current middleware, but a daemon may protect the
+   * GET too (a future allowlist change, or dashboard auth), and a release
+   * that can be created but never read back is no release at all.
+   *
+   * With no key, or a blank one, the init is returned untouched: no header
+   * is added, and a 401 then fails closed to `unavailable` through the
+   * ordinary non-OK path, exactly as before. An absent key is never a reason
+   * to skip asking for the release.
+   */
+  #authorized(init: RequestInit): RequestInit {
+    const apiKey = this.#options.apiKey?.trim() ?? "";
+    if (apiKey.length === 0) return init;
+    const headers = new Headers(init.headers);
+    headers.set("Authorization", `Bearer ${apiKey}`);
+    return { ...init, headers };
   }
 }
