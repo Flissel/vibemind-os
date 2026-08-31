@@ -70,9 +70,10 @@ def main() -> int:
             from core.log_retrainer import periodic_retrainer_loop
             _interval = int(os.getenv("BRAIN_RETRAIN_INTERVAL_SECONDS", "3600"))
             if _interval > 0:
-                # eigener Event-Loop nur fuer den Retrainer-Task
-                import threading
-
+                # eigener Event-Loop nur fuer den Retrainer-Task.
+                # (KEIN lokales `import threading` hier — das machte `threading`
+                # funktionslokal und liess Zeile ~96 mit UnboundLocalError
+                # crashen, sobald dieser Branch nicht lief. Live 2026-08-30.)
                 def _retrain_runner():
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)

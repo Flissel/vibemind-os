@@ -125,18 +125,64 @@ def _check_port_open(spec: Dict[str, Any]):
             pass
 
 
+def _map_host_path(path: str) -> str:
+    """F4 (2026-08-30): translate HOST path prefixes to container mounts.
+
+    Coding agents execute on the Windows host while this validator runs in
+    the brain-core container — without a mapping every successful coding op
+    is refuted ("file missing") and the reward signal is poisoned (the
+    learner would train AWAY from working coding routes).
+
+    GROUND_TRUTH_PATH_MAP holds `;`-separated `HOSTPREFIX=>CONTAINERPREFIX`
+    pairs, e.g. `C:\\Users\\User=>/host_users` (pair with a read-only bind
+    mount in the stack file). Prefix matching is case-insensitive and treats
+    `\\` and `/` alike; the first matching pair wins; malformed entries are
+    skipped. Unset/empty map or no match -> path returned unchanged, which
+    is the exact legacy (native-host) behaviour.
+    """
+    raw_map = os.environ.get("GROUND_TRUTH_PATH_MAP", "").strip()
+    if not raw_map or not path:
+        return path
+    # Collapse separator runs: the {result_path} extractor can deliver
+    # JSON-escaped paths with doubled backslashes (seen live 2026-08-30).
+    # UNC paths would collapse too — out of scope for this mapping; an
+    # unmatched path is returned unchanged anyway.
+    import re as _re
+    normalized = _re.sub(r"[\\/]+", "/", path)
+    folded = normalized.casefold()
+    for entry in raw_map.split(";"):
+        if "=>" not in entry:
+            continue
+        host_prefix, _, target_prefix = entry.partition("=>")
+        host_prefix = _re.sub(r"[\\/]+", "/", host_prefix.strip()).rstrip("/")
+        target_prefix = target_prefix.strip().rstrip("/")
+        if not host_prefix or not target_prefix:
+            continue
+        prefix_folded = host_prefix.casefold()
+        if folded == prefix_folded:
+            return target_prefix
+        if folded.startswith(prefix_folded + "/"):
+            return target_prefix + normalized[len(host_prefix):]
+    return path
+
+
 def _check_file_exists(spec: Dict[str, Any]):
     path = spec.get("path")
     if not path:
         return None, {}, "no path given"
+    probe_path = _map_host_path(path)
+    signal: Dict[str, Any] = {"path": path}
+    if probe_path != path:
+        signal["mapped_path"] = probe_path
     try:
-        exists = os.path.exists(path)
+        exists = os.path.exists(probe_path)
         if exists:
-            sz = os.path.getsize(path) if os.path.isfile(path) else None
-            return True, {"path": path, "size": sz}, "file exists"
-        return False, {"path": path}, "file missing"
+            sz = os.path.getsize(probe_path) if os.path.isfile(probe_path) else None
+            signal["size"] = sz
+            return True, signal, "file exists"
+        return False, signal, "file missing"
     except Exception as e:
-        return None, {"path": path}, f"stat error: {e}"
+        return None, signal, f"stat error: {e}"
 
 
 def _check_http_ok(spec: Dict[str, Any]):
