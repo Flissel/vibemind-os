@@ -39,8 +39,8 @@ Ordered by what unblocks the next thing. W1 is the critical path and has its own
 | --- | --- | --- | --- |
 | W1 | OpenFang release path | One GitHub MCP call that runs end to end | `2026-08-30-rowboat-plugin-openfang-release-phase-1.md` |
 | W2 | Component coverage | App components (156 of 1093) and process MCP become executable | written when scheduled |
-| W3 | UI completion | Component-level install, credential binding, plugin tools locked against mocking | written when scheduled |
-| W4 | MCP access | Catalog, install, add-tool and runtime-mode as MCP tools | written when scheduled |
+| W3 | UI completion | Component-level install; plugin tools locked against renaming (credential binding cut) | `2026-08-31-rowboat-plugins-w3-ui-completion.md` |
+| W4 | MCP access | Catalog, install, add-tool and runtime-mode as MCP tools | `2026-08-31-rowboat-plugins-w4-mcp-access.md` |
 | W5 | Deployment | The stack can actually run all of the above | written when scheduled |
 
 ### W1 — OpenFang release path (critical path)
@@ -57,9 +57,13 @@ Two independent pieces. The **connector bridge** is the larger prize: 156 of 109
 
 ### W3 — UI completion
 
-Acceptance: an admitted component of a partially-available plugin can be installed and used; a credential slot can be bound from the UI; a plugin tool cannot be silently mocked.
+Acceptance, **narrowed 2026-08-31**: an admitted component of a partially-available plugin can be installed and used, and a plugin tool cannot be renamed or shown as mocked. Detailed plan: `2026-08-31-rowboat-plugins-w3-ui-completion.md`.
 
-Today `canInstall` requires the *plugin-level* status to be `available`, so one `review_required` component blocks the admitted ones — this is exactly what blocks `github`, whose MCP component is admitted while its skills, app and assets are not. The install dialog also shows credential requirements it can never populate until W1 Task 1 lands.
+The install gate is one line — `assertAdmitted` requires that *no* component has a non-admitted admission, which is what blocks `github` (its MCP component is admitted; its skills, app and assets are not). Measured payoff: this unlocks exactly **three** executable components (`cloudflare-api`, `github`, `notion`); `linear` is already installable. The repository layer already accepts partial installs — the W1 end-to-end proof writes one installation and one admission row by hand — so this is a use-case, preview and UI change with no repository or runtime work.
+
+**Credential-slot binding is cut.** The credential a call uses now comes from OpenFang's allowlist per call, keyed by a catalog constant, so binding a slot in the UI would change nothing about which value is used — it duplicates an existing mechanism. The only thing it could add is per-project credential indirection, which is a kernel change and its own design. What survives is a truthfulness fix to `requiredCredentialNames`, handled separately: today the dialog surfaces `CODEX_HOME` (a home-directory path) as a credential and tells `linear` — the one plugin both installable and executable — that it needs none, which is false.
+
+The real exposure behind "cannot be silently mocked" turned out not to be mocking: execution already ignores the mock flag for plugin tools, and a test pins that. It is **renaming** — the tool name becomes the MCP operation name, the read/write classifier's input, and the `toolName` a human reads in the OpenFang approval.
 
 ### W4 — MCP access
 
@@ -93,7 +97,7 @@ Recommendation: option 2, because it is the only one that keeps the property thi
 | App components cannot execute | W2 |
 | Process MCP cannot execute | W2 |
 | Plugin-level install gate blocks admitted components | W3 |
-| No UI to bind a credential slot | W3 |
+| No UI to bind a credential slot | cut — duplicates OpenFang's allowlist; see W3 |
 | Plugin tools offer mocking and parameter editing | W3 |
 | No MCP tools for plugins; add-tool has no REST route | W4 |
 | Standalone MongoDB, missing envs, missing dist build, missing catalog load | W5 |
