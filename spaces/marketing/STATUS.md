@@ -79,7 +79,7 @@ test_telegram_send           20  Telegram 12-gate + dispatch + no-cross-channel
 
   email     -- send_implemented=true, enabled=false; _send_paranoid.py
   telegram  -- send_implemented=true, enabled=false; _send_telegram.py
-              ALLOWED_CHAT_IDS = {1092040975}  (Felix only, hardcoded)
+              ALLOWED_CHAT_IDS = from TELEGRAM_ALLOWED_CHAT_IDS (empty = fail closed)
               kill-switch: TELEGRAM_SEND_ENABLED env
 
 Both channels have separate 12-gate stacks. marketing_tools.send_campaign

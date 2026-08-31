@@ -56,8 +56,8 @@ Add these lines to your `.env` file in the Tahlamus project root:
 SUPERMEMORY_API_KEY=your_api_key_from_console
 
 # Supabase Configuration (you already have these)
-SUPABASE_URL=https://dgzreelowtzquljhxskq.supabase.co
-SUPABASE_SECRET_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRnenJlZWxvd3R6cXVsamh4c2txIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0OTcyMDU0NiwiZXhwIjoyMDY1Mjk2NTQ2fQ.bXN09OJx2q2UvEMeX-IWTc6TuqKwo1SiMuBnyciY-oI
+SUPABASE_URL=https://YOUR-PROJECT.supabase.co
+SUPABASE_SECRET_KEY=your_secret_key
 
 # OpenRouter (you already have this)
 OPENROUTER_API_KEY=your_openrouter_key

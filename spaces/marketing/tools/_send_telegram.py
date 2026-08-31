@@ -64,12 +64,24 @@ logger = logging.getLogger("marketing.telegram_send")
 # ─── Hardcoded safeguards (the same model as email's ALLOWED_DOMAINS) ──
 
 
-# Felix's personal chat_id from project memory (telegram-brain-gateway).
-# Hardcoded here so a SQL-side widening of telegram_recipients cannot
-# enable sends to other chat_ids without a code review of THIS file.
-_ALLOWED_CHAT_IDS = frozenset({
-    1092040975,                         # Felix (from memory: telegram-notify reference)
-})
+# Operator allowlist, configured via TELEGRAM_ALLOWED_CHAT_IDS (comma-
+# separated numeric ids). Empty or unset means an EMPTY allowlist, i.e. no
+# recipient passes the gate — a SQL-side widening of telegram_recipients
+# still cannot enable sends on its own. Non-numeric entries are dropped.
+def _load_allowed_chat_ids() -> frozenset:
+    ids = set()
+    for part in os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS", "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ids.add(int(part))
+        except ValueError:
+            logger.warning("ignoring non-numeric entry in TELEGRAM_ALLOWED_CHAT_IDS")
+    return frozenset(ids)
+
+
+_ALLOWED_CHAT_IDS = _load_allowed_chat_ids()
 
 _KILL_SWITCH_ENV = "TELEGRAM_SEND_ENABLED"
 _HARD_RECIPIENT_CAP = 100              # tight: Telegram rate-limit is 30 msg/sec network-wide

@@ -2006,7 +2006,7 @@ def reply_proposal_approve(proposal_id: str, payload: dict = Body(...)):
     Body:
         api_key         (operator OR same-as-PROPOSAL_API_KEY)
         approval_token  (the one returned by /request_approval)
-        actor           (e.g. 'telegram:1092040975' or 'openfang:handoff-agent')
+        actor           (e.g. 'telegram:<chat-id>' or 'openfang:handoff-agent')
 
     Effects on valid token:
         - status='draft'+'pending_approval' → 'approved'

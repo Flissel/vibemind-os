@@ -73,7 +73,7 @@ DB (status='pending_approval', approval_token_hash set)
 n8n Workflow 3 (Approval-Orchestrator)
     ↓ POST OpenFang /api/agents/approval-handler/message
 OpenFang approval-handler agent
-    ↓ channel_send (Telegram chat_id 1092040975 hardcoded für Felix)
+    ↓ channel_send (Telegram chat_id aus TELEGRAM_ALLOWED_CHAT_IDS)
 Operator empfängt Card im Telegram
     ↓ APPROVE-Reply → POST /api/reply_proposals/{id}/approve mit signed-token
 DB (status='approved' → 'sent')
@@ -108,7 +108,7 @@ DB (status='approved' → 'sent')
 | Ollama (Selbsthosting) | Lokale LLM-Klassifikation | Self-hosted, no AVV needed |
 | Rowboat (Selbsthosting Docker) | RAG-knowledge | Self-hosted, no AVV needed |
 | n8n (Selbsthosting Docker) | Workflow-orchestration | Self-hosted, no AVV needed |
-| Telegram (BotAPI) | Approval-cards | Drittland-USA. **AVV nötig falls nicht-Felix.** Im aktuellen setup: nur Felix's eigene Chat-ID (1092040975), keine Kunden-Daten gehen rein. |
+| Telegram (BotAPI) | Approval-cards | Drittland-USA. **AVV nötig falls nicht-Felix.** Im aktuellen setup: nur die konfigurierte Operator-Chat-ID (TELEGRAM_ALLOWED_CHAT_IDS), keine Kunden-Daten gehen rein. |
 | OpenFang | Agent-runtime | Self-hosted, no AVV needed |
 
 ---

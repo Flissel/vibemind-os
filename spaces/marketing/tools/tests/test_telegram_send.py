@@ -4,7 +4,7 @@ Mocks _db + urllib (Telegram Bot API calls) so the suite runs without
 supabase OR network access. Verifies:
 
   Allowlist + safeguards:
-    - _ALLOWED_CHAT_IDS is a frozenset, hardcoded
+    - _ALLOWED_CHAT_IDS is a frozenset, env-configured (fail-closed)
     - chat_id outside allowlist -> ParanoidAbort
     - kill-switch env unset in LIVE -> abort
     - freeze-file present -> abort
@@ -36,8 +36,12 @@ from pathlib import Path
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-sys.path.insert(0, str(PKG_ROOT))
+sys.path.insert(0, str(REPO_ROOT))
 
+
+# Example operator id; the real allowlist comes from the environment.
+TEST_CHAT_ID = 1000000001
+os.environ["TELEGRAM_ALLOWED_CHAT_IDS"] = str(TEST_CHAT_ID)
 
 from spaces.marketing.tools import _send_telegram as tg  # noqa: E402
 from spaces.marketing.tools import marketing_tools as mt  # noqa: E402
@@ -123,7 +127,7 @@ def _ok_campaign():
 
 def test_allowed_chat_ids_is_frozenset():
     _check("allowed_is_frozenset", isinstance(tg._ALLOWED_CHAT_IDS, frozenset))
-    _check("felix_chat_id_in_allowlist", 1092040975 in tg._ALLOWED_CHAT_IDS)
+    _check("operator_chat_id_in_allowlist", TEST_CHAT_ID in tg._ALLOWED_CHAT_IDS)
 
 
 def test_chat_id_outside_allowlist_aborts():
@@ -145,7 +149,7 @@ def test_chat_id_non_int_rejected():
 
 def test_allowed_chat_id_passes():
     try:
-        tg._scan_chat_id_allowlist([{"chat_id": 1092040975}])
+        tg._scan_chat_id_allowlist([{"chat_id": TEST_CHAT_ID}])
         _check("allowed_chat_id_passes", True)
     except ParanoidAbort as e:
         _check("allowed_chat_id_passes", False, str(e))
@@ -237,15 +241,15 @@ def test_recipient_cap_aborts(fake):
 
 
 def test_token_deterministic():
-    r1 = tg.compute_confirm_token("c1", "a1", [{"chat_id": 1092040975}])
-    r2 = tg.compute_confirm_token("c1", "a1", [{"chat_id": 1092040975}])
+    r1 = tg.compute_confirm_token("c1", "a1", [{"chat_id": TEST_CHAT_ID}])
+    r2 = tg.compute_confirm_token("c1", "a1", [{"chat_id": TEST_CHAT_ID}])
     _check("token_deterministic", r1 == r2)
 
 
 def test_token_change_invalidates():
-    r1 = tg.compute_confirm_token("c1", "a1", [{"chat_id": 1092040975}])
+    r1 = tg.compute_confirm_token("c1", "a1", [{"chat_id": TEST_CHAT_ID}])
     r2 = tg.compute_confirm_token("c1", "a1",
-                                  [{"chat_id": 1092040975}, {"chat_id": 9}])
+                                  [{"chat_id": TEST_CHAT_ID}, {"chat_id": 9}])
     _check("token_change_invalidates", r1 != r2)
 
 
@@ -272,7 +276,7 @@ def test_token_mismatch_aborts():
 def test_dry_run_never_hits_api(fake):
     fake.row_lookup["FROM marketing.campaigns"] = _ok_campaign()
     fake.list_lookup["JOIN marketing.telegram_recipients"] = [
-        {"chat_id": 1092040975, "handle": "felix",
+        {"chat_id": TEST_CHAT_ID, "handle": "felix",
          "username": "felix_test", "first_name": "Felix",
          "last_name": "", "language_code": "de"},
     ]
@@ -283,7 +287,7 @@ def test_dry_run_never_hits_api(fake):
         r = tg.run("c1", SendMode.DRY_RUN)
     ok = (r["mode"] == "dry_run"
           and r["recipient_count"] == 1
-          and 1092040975 in r.get("chat_ids_preview", [])
+          and TEST_CHAT_ID in r.get("chat_ids_preview", [])
           and isinstance(r.get("confirm_token"), str)
           and len(r["confirm_token"]) == 64)
     _check("dry_run_no_api_calls", ok, f"r={r!r}")
@@ -298,7 +302,7 @@ def test_send_campaign_dispatches_to_telegram(fake):
     NOT _send_paranoid."""
     fake.row_lookup["FROM marketing.campaigns"] = _ok_campaign()
     fake.list_lookup["JOIN marketing.telegram_recipients"] = [
-        {"chat_id": 1092040975, "first_name": "Felix"},
+        {"chat_id": TEST_CHAT_ID, "first_name": "Felix"},
     ]
     paranoid_spy = mock.MagicMock(return_value={"summary": "should not be called"})
     telegram_spy = mock.MagicMock(return_value={"summary": "telegram dispatched",
@@ -358,7 +362,7 @@ def test_telegram_never_calls_email_send_loop(fake):
     from spaces.marketing.tools import _send_paranoid as sp
     fake.row_lookup["FROM marketing.campaigns"] = _ok_campaign()
     fake.list_lookup["JOIN marketing.telegram_recipients"] = [
-        {"chat_id": 1092040975, "first_name": "Felix"},
+        {"chat_id": TEST_CHAT_ID, "first_name": "Felix"},
     ]
     email_loop_spy = mock.MagicMock()
     with mock.patch.object(sp, "_send_loop", email_loop_spy), \

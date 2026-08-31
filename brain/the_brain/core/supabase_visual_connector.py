@@ -280,8 +280,8 @@ class SupabaseVisualConnector:
 # Example usage
 if __name__ == "__main__":
     # Test with provided credentials
-    PROJECT_URL = "https://dgzreelowtzquljhxskq.supabase.co"
-    SECRET_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRnenJlZWxvd3R6cXVsamh4c2txIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0OTcyMDU0NiwiZXhwIjoyMDY1Mjk2NTQ2fQ.bXN09OJx2q2UvEMeX-IWTc6TuqKwo1SiMuBnyciY-oI"
+    PROJECT_URL = "https://YOUR-PROJECT.supabase.co"
+    SECRET_KEY = "your-secret-key"
 
     connector = SupabaseVisualConnector(
         project_url=PROJECT_URL,
