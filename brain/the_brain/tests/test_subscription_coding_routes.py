@@ -38,8 +38,13 @@ def _capability(name: str) -> dict[str, object]:
 
 
 def _template(agent_name: str) -> tuple[str, dict[str, object]]:
+    # Beide Namen sind zulaessig: die openfang-Mainline hat brain-coders Manifest
+    # von agent.toml.tmpl nach agent.toml umbenannt, den {{MEMORY}}-Platzhalter
+    # darin aber behalten. Die Subscription-Agenten tragen weiter .tmpl.
     path = AGENTS_ROOT / agent_name / "agent.toml.tmpl"
-    assert path.is_file(), f"missing agent template: {path}"
+    if not path.is_file():
+        path = AGENTS_ROOT / agent_name / "agent.toml"
+    assert path.is_file(), f"missing agent manifest: {path}"
     raw = path.read_text(encoding="utf-8")
     return raw, tomllib.loads(raw)
 
@@ -456,13 +461,24 @@ def test_subscription_agent_templates_preserve_coding_restrictions_and_use_match
         assert model["base_url"] == contract["wrapper"]
         assert "{{MEMORY}}" in raw
         assert manifest["capabilities"] == base["capabilities"]
-        assert manifest["mcp_servers"] == base["mcp_allowed"]["servers"]
+        # Frueher: Gleichheit mit base["mcp_allowed"]["servers"]. Dieses Feld hat
+        # die openfang-Zusammenfuehrung als totes Config verworfen (das Manifest-
+        # Schema kennt es nicht, beide Linien fordern per Test seine Abwesenheit).
+        # Die alte Referenzliste war byte-genau der heutige Umfang der
+        # Subscription-Agenten; mainlines brain-coder fuehrt davon memory-search
+        # nicht. Geprueft wird deshalb: kein Werkzeug des Basis-Agenten geht
+        # verloren, und beide Lanes haben denselben Umfang.
+        assert set(base["mcp_servers"]) <= set(manifest["mcp_servers"])
         assert manifest["resources"] == base["resources"]
         assert "fallback_models" not in manifest
         assert "api_key_env" not in model
         assert "openrouter" not in raw.lower()
         assert "api.openai.com" not in raw.lower()
         assert "api.anthropic.com" not in raw.lower()
+
+    openai_manifest = _template(OPENAI_AGENT)[1]
+    anthropic_manifest = _template(ANTHROPIC_AGENT)[1]
+    assert openai_manifest["mcp_servers"] == anthropic_manifest["mcp_servers"]
 
 
 def test_actual_router_blocks_unsupported_third_party_providers_fail_closed():
