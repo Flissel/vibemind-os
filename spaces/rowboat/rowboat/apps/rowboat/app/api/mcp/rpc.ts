@@ -15,19 +15,36 @@
  * `streamable-http` sprechen (openclaw tut das gegen `sales-mcp:8765/mcp`),
  * kommen damit zurecht.
  *
- * DIE PROJEKTBINDUNG entsteht NICHT hier. `projectId` ist ein Aufrufparameter,
- * aber `ProjectActionAuthorizationPolicy` im Use-Case prüft, ob der
- * mitgeschickte Schlüssel zu genau diesem Projekt gehört — dieselbe Kante, die
- * auch die Chat-Route trägt. Ein erratener Projektname nützt ohne den
- * passenden Schlüssel nichts.
+ * DIE PROJEKTBINDUNG entsteht NICHT hier. `projectId` bzw. `sourceId`/`fileId`
+ * sind Aufrufparameter, aber `ProjectActionAuthorizationPolicy` im Use-Case
+ * prüft, ob der mitgeschickte Schlüssel zum Projekt der Entität gehört —
+ * dieselbe Kante, die auch die Chat-Route trägt. Eine erratene Quell-ID nützt
+ * ohne den passenden Schlüssel nichts (geprüft am 01.09.2026: alle drei
+ * Lese-Use-Cases holen erst die Entität und autorisieren gegen DEREN projectId).
+ *
+ * FEHLERARTEN. Rowboats Fehlerklassen setzen kein `name`; im Produktions-Build
+ * bleibt vom Klassennamen nur ein Buchstabe übrig (live gesehen: „(a)"). Die
+ * Route übersetzt deshalb in `Ablehnung` mit einer festen Art — nur die kommt
+ * nach außen, nie ein fremder Fehlertext, der den Schlüssel enthalten könnte.
  */
 import { z } from "zod";
 
 export const PROTOCOL_VERSION = "2025-06-18";
 export const SERVER_NAME = "rowboat";
-export const SERVER_VERSION = "0.1.0";
+export const SERVER_VERSION = "0.2.0";
 
-/** Werkzeuge, die dieser Endpunkt anbietet. Bewusst klein gehalten. */
+/** Die Arten, in denen ein Werkzeug scheitern darf. Sonst nichts. */
+export type AblehnungsArt = "nicht gefunden" | "nicht berechtigt" | "ungueltige Anfrage" | "kontingent";
+
+export class Ablehnung extends Error {
+    readonly art: AblehnungsArt;
+    constructor(art: AblehnungsArt) {
+        super(art);
+        this.art = art;
+    }
+}
+
+/** Werkzeuge, die dieser Endpunkt anbietet. Alle lesend. */
 export const TOOLS = [
     {
         name: "rowboat_wissensquellen",
@@ -37,12 +54,52 @@ export const TOOLS = [
         inputSchema: {
             type: "object",
             properties: {
-                projectId: {
-                    type: "string",
-                    description: "Kennung des Rowboat-Projekts.",
-                },
+                projectId: { type: "string", description: "Kennung des Rowboat-Projekts." },
             },
             required: ["projectId"],
+            additionalProperties: false,
+        },
+    },
+    {
+        name: "rowboat_wissensquelle",
+        description:
+            "Liest eine einzelne Wissensquelle: Name, Beschreibung, Typ, Status, Fehler, " +
+            "Zeitstempel. Nur lesend.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                sourceId: { type: "string", description: "Kennung der Wissensquelle (aus rowboat_wissensquellen)." },
+            },
+            required: ["sourceId"],
+            additionalProperties: false,
+        },
+    },
+    {
+        name: "rowboat_dokumente",
+        description:
+            "Listet die Dokumente einer Wissensquelle: Kennung, Name, Typ, Status. " +
+            "Mit mitInhalt=true auch den Text von Textdokumenten. Nur lesend.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                sourceId: { type: "string", description: "Kennung der Wissensquelle." },
+                mitInhalt: { type: "boolean", description: "Textinhalt mitliefern (Vorgabe: nein)." },
+            },
+            required: ["sourceId"],
+            additionalProperties: false,
+        },
+    },
+    {
+        name: "rowboat_datei_url",
+        description:
+            "Liefert eine Download-Adresse fuer ein hochgeladenes Dokument (Datei-Typ). " +
+            "Fuer Text- oder URL-Dokumente gibt es keine. Nur lesend.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                fileId: { type: "string", description: "Kennung des Dokuments (aus rowboat_dokumente)." },
+            },
+            required: ["fileId"],
             additionalProperties: false,
         },
     },
@@ -83,14 +140,43 @@ function ergebnis(id: string | number | null, result: unknown): RpcResponse {
 }
 
 /**
- * Was ein Werkzeug ausführt. Die Route reicht hier die Anbindung an den
+ * Was die Werkzeuge ausführen. Die Route reicht hier die Anbindung an den
  * DI-Container herein — dadurch bleibt dieser Kern frei von Rowboat-Interna
- * und damit prüfbar.
+ * und damit prüfbar. Jede Funktion darf `Ablehnung` werfen; alles andere,
+ * was sie wirft, wird als „Fehler" ohne Wortlaut gemeldet.
  */
 export interface WerkzeugKontext {
     apiKey: string;
     quellenAuflisten(projectId: string, apiKey: string): Promise<unknown>;
+    quelleLesen(sourceId: string, apiKey: string): Promise<unknown>;
+    dokumenteAuflisten(sourceId: string, apiKey: string, mitInhalt: boolean): Promise<unknown>;
+    dateiUrl(fileId: string, apiKey: string): Promise<unknown>;
 }
+
+type Argumente = Record<string, unknown>;
+
+/** Werkzeugname -> Pflichtparameter und Ausführung. Eine Tabelle, kein switch. */
+const AUSFUEHRUNG: Record<string, {
+    pflicht: string;
+    lauf: (args: Argumente, k: WerkzeugKontext) => Promise<unknown>;
+}> = {
+    rowboat_wissensquellen: {
+        pflicht: "projectId",
+        lauf: (a, k) => k.quellenAuflisten(a.projectId as string, k.apiKey),
+    },
+    rowboat_wissensquelle: {
+        pflicht: "sourceId",
+        lauf: (a, k) => k.quelleLesen(a.sourceId as string, k.apiKey),
+    },
+    rowboat_dokumente: {
+        pflicht: "sourceId",
+        lauf: (a, k) => k.dokumenteAuflisten(a.sourceId as string, k.apiKey, a.mitInhalt === true),
+    },
+    rowboat_datei_url: {
+        pflicht: "fileId",
+        lauf: (a, k) => k.dateiUrl(a.fileId as string, k.apiKey),
+    },
+};
 
 /**
  * Beantwortet genau eine JSON-RPC-Nachricht. Wirft nie — jeder Fehler wird zu
@@ -131,24 +217,25 @@ export async function beantworte(
 
         case "tools/call": {
             const name = params?.name;
-            const args = (params?.arguments ?? {}) as Record<string, unknown>;
-            if (name !== "rowboat_wissensquellen") {
+            const args = (params?.arguments ?? {}) as Argumente;
+            const eintrag = typeof name === "string" ? AUSFUEHRUNG[name] : undefined;
+            if (!eintrag) {
                 return fehler(id, ERR.METHOD_NOT_FOUND, `unbekanntes Werkzeug: ${String(name)}`);
             }
-            const projectId = args.projectId;
-            if (typeof projectId !== "string" || projectId.length === 0) {
-                return fehler(id, ERR.INVALID_PARAMS, "projectId fehlt oder ist leer");
+            const wert = args[eintrag.pflicht];
+            if (typeof wert !== "string" || wert.length === 0) {
+                return fehler(id, ERR.INVALID_PARAMS, `${eintrag.pflicht} fehlt oder ist leer`);
             }
             try {
-                const quellen = await kontext.quellenAuflisten(projectId, kontext.apiKey);
+                const daten = await eintrag.lauf(args, kontext);
                 return ergebnis(id, {
-                    content: [{ type: "text", text: JSON.stringify(quellen, null, 2) }],
+                    content: [{ type: "text", text: JSON.stringify(daten, null, 2) }],
                     isError: false,
                 });
             } catch (e: unknown) {
-                // Der Text einer Autorisierungs-Ausnahme kann den Schluessel
-                // enthalten; deshalb wird nur die Art gemeldet, nicht der Wortlaut.
-                const art = e instanceof Error ? e.constructor.name : "Fehler";
+                // Nur die Art, nie der Wortlaut: ein fremder Fehlertext kann den
+                // Schluessel enthalten, und er landet im Protokoll des Aufrufers.
+                const art = e instanceof Ablehnung ? e.art : "Fehler";
                 return ergebnis(id, {
                     content: [{ type: "text", text: `Aufruf abgelehnt (${art})` }],
                     isError: true,

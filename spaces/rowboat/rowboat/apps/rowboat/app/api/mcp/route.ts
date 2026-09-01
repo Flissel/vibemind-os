@@ -7,14 +7,29 @@
  * auf, bevor die erste Funktion beginnt). Dieser Endpunkt loest dieselben
  * Controller auf und uebersetzt nur zwischen JSON-RPC und ihnen.
  *
- * Das Auth-Muster ist das der Chat-Route: Schluessel im Kopf, Projektkennung im
+ * Das Auth-Muster ist das der Chat-Route: Schluessel im Kopf, Kennung im
  * Aufruf, und `ProjectActionAuthorizationPolicy` im Use-Case entscheidet. Diese
  * Route trifft keine eigene Berechtigungsentscheidung — sie reicht nur weiter.
+ *
+ * FEHLER werden hier in `Ablehnung` uebersetzt, bevor sie den Kern erreichen:
+ * Rowboats Fehlerklassen tragen keinen `name`, und der Produktions-Build kuerzt
+ * ihre Klassennamen auf einen Buchstaben (live gesehen: „Aufruf abgelehnt (a)").
+ * Der Wortlaut der Fehler bleibt hier — er kann den Schluessel enthalten.
  */
 import { NextRequest } from "next/server";
 import { container } from "@/di/container";
 import { IListDataSourcesController } from "@/src/interface-adapters/controllers/data-sources/list-data-sources.controller";
-import { beantworte, ERR, type RpcResponse } from "./rpc";
+import { IFetchDataSourceController } from "@/src/interface-adapters/controllers/data-sources/fetch-data-source.controller";
+import { IListDocsInDataSourceController } from "@/src/interface-adapters/controllers/data-sources/list-docs-in-data-source.controller";
+import { IGetDownloadUrlForFileController } from "@/src/interface-adapters/controllers/data-sources/get-download-url-for-file.controller";
+import {
+    BadRequestError,
+    BillingError,
+    NotAuthorizedError,
+    NotFoundError,
+    QuotaExceededError,
+} from "@/src/entities/errors/common";
+import { Ablehnung, beantworte, ERR, type RpcResponse } from "./rpc";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +37,15 @@ function schluesselAus(req: NextRequest): string {
     const kopf = req.headers.get("Authorization") ?? "";
     const teile = kopf.split(" ");
     return teile.length === 2 && teile[0].toLowerCase() === "bearer" ? teile[1] : "";
+}
+
+/** Rowboat-Fehler -> feste Art. Unbekanntes bleibt unbekannt (kein Wortlaut). */
+function uebersetzt(e: unknown): never {
+    if (e instanceof NotFoundError) throw new Ablehnung("nicht gefunden");
+    if (e instanceof NotAuthorizedError) throw new Ablehnung("nicht berechtigt");
+    if (e instanceof BadRequestError) throw new Ablehnung("ungueltige Anfrage");
+    if (e instanceof QuotaExceededError || e instanceof BillingError) throw new Ablehnung("kontingent");
+    throw e;
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
@@ -41,15 +65,14 @@ export async function POST(req: NextRequest): Promise<Response> {
 
     const antwort = await beantworte(roh, {
         apiKey,
-        async quellenAuflisten(projectId: string, schluessel: string) {
+
+        async quellenAuflisten(projectId, schluessel) {
             const controller = container.resolve<IListDataSourcesController>(
                 "listDataSourcesController",
             );
-            const quellen = await controller.execute({
-                caller: "api",
-                apiKey: schluessel,
-                projectId,
-            });
+            const quellen = await controller
+                .execute({ caller: "api", apiKey: schluessel, projectId })
+                .catch(uebersetzt);
             // Nur was ein Aufrufer braucht — keine internen Felder nach aussen.
             return quellen.map((q) => ({
                 id: q.id,
@@ -57,6 +80,54 @@ export async function POST(req: NextRequest): Promise<Response> {
                 status: q.status,
                 active: q.active,
             }));
+        },
+
+        async quelleLesen(sourceId, schluessel) {
+            const controller = container.resolve<IFetchDataSourceController>(
+                "fetchDataSourceController",
+            );
+            const q = await controller
+                .execute({ caller: "api", apiKey: schluessel, sourceId })
+                .catch(uebersetzt);
+            return {
+                id: q.id,
+                name: q.name,
+                description: q.description,
+                typ: q.data.type,
+                status: q.status,
+                active: q.active,
+                error: q.error,
+                createdAt: q.createdAt,
+                lastUpdatedAt: q.lastUpdatedAt,
+            };
+        },
+
+        async dokumenteAuflisten(sourceId, schluessel, mitInhalt) {
+            const controller = container.resolve<IListDocsInDataSourceController>(
+                "listDocsInDataSourceController",
+            );
+            const docs = await controller
+                .execute({ caller: "api", apiKey: schluessel, sourceId })
+                .catch(uebersetzt);
+            return docs.map((d) => ({
+                id: d.id,
+                name: d.name,
+                typ: d.data.type,
+                status: d.status,
+                error: d.error,
+                // Der Inhalt kann gross sein — nur auf ausdruecklichen Wunsch.
+                ...(mitInhalt ? { content: d.content } : {}),
+            }));
+        },
+
+        async dateiUrl(fileId, schluessel) {
+            const controller = container.resolve<IGetDownloadUrlForFileController>(
+                "getDownloadUrlForFileController",
+            );
+            const url = await controller
+                .execute({ caller: "api", apiKey: schluessel, fileId })
+                .catch(uebersetzt);
+            return { url };
         },
     });
 
