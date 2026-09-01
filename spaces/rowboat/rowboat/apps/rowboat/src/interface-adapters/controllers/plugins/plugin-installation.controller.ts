@@ -9,7 +9,10 @@ import { captureRecord } from "./plugin-controller.shared";
 const Base = { projectId: z.string(), pluginName: z.string() };
 const Preview = z.object({ ...Base, catalogDigest: z.string() }).strict();
 const List = z.object({ projectId: z.string(), catalogDigest: z.string() }).strict();
-const Install = z.object({ ...Base, catalogDigest: z.string(), idempotencyKey: z.string(), expectedRevision: z.number().int().nonnegative() }).strict();
+const Install = z.object({
+  ...Base, catalogDigest: z.string(), idempotencyKey: z.string(), expectedRevision: z.number().int().nonnegative(),
+  componentDigests: z.array(z.string()).min(1).max(512).optional(),
+}).strict();
 const Enabled = z.object({ ...Base, catalogDigest: z.string(), enabled: z.boolean(), expectedRevision: z.number().int().nonnegative(), idempotencyKey: z.string() }).strict();
 
 export class PluginInstallationController {
@@ -33,7 +36,7 @@ export class PluginInstallationController {
     return this.dependencies.previewPluginInstallationUseCase.execute({ identity, ...parsed.data });
   }
   async install(request: Request, input: unknown) {
-    const parsed = Install.safeParse(captureRecord(input, ["projectId", "pluginName", "catalogDigest", "idempotencyKey", "expectedRevision"]));
+    const parsed = Install.safeParse(captureRecord(input, ["projectId", "pluginName", "catalogDigest", "idempotencyKey", "expectedRevision", "componentDigests"]));
     if (!parsed.success) throw new Error("request_invalid");
     const identity = await this.dependencies.pluginApiAuthorizationPolicy.authenticate(request);
     return this.dependencies.installPluginUseCase.execute({ identity, ...parsed.data });

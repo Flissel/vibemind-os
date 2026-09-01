@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { PluginCatalogEntry, PluginComponentAdmission, PluginCredentialSlot, PluginInstallation, PluginReceipt } from "../../repositories/plugins.repository.interface";
 import type { PluginCatalogSnapshot } from "../../repositories/plugins.repository.interface";
+import { canonicalComponentSelection } from "./plugin-component-selection";
 import {
   PINNED_OPENAI_PLUGINS_COMMIT,
   PINNED_PLUGIN_CATALOG_DIGEST,
@@ -100,17 +101,40 @@ export function componentDtosFrom(entry: PluginCatalogEntry): readonly PluginCom
   });
 }
 
-export function assertAdmitted(entry: PluginCatalogEntry): void {
+type PluginCatalogComponent = PluginCatalogEntry["components"][number]["component"];
+
+function bindingDigestOf(component: PluginCatalogComponent): string {
+  const value = component.metadata.bindingDigest;
+  if (typeof value !== "string" || !DIGEST.test(value)) serviceError("catalog_entry_invalid");
+  return value;
+}
+
+/** Every component of the plugin - the selection an absent one stands for. */
+export function entryComponentDigests(entry: PluginCatalogEntry): readonly string[] {
+  return canonicalComponentSelection(entry.components.map(({ component }) => bindingDigestOf(component)));
+}
+
+/**
+ * Installation is component-scoped: only the selected components have to be
+ * admitted and runnable. The plugin's own licence admission still gates the
+ * whole install, and a digest that names no component of this plugin is a
+ * request error rather than a silently empty install.
+ */
+export function assertSelectionAdmitted(entry: PluginCatalogEntry, componentDigests: readonly string[]): void {
   if (entry.admission.status !== "admitted") serviceError(entry.admission.reason);
-  if (entry.components.some(({ admission }) => admission.status !== "admitted")) serviceError("component_not_admitted");
-  const unavailable = entry.components.find(({ component }) => component.status === "unavailable" || component.status === "error" || component.reason === "provider_unavailable");
+  const selection = new Set(componentDigests);
+  const selected = entry.components.filter(({ component }) => selection.has(bindingDigestOf(component)));
+  if (selected.length !== selection.size) serviceError("request_invalid");
+  if (selected.some(({ admission }) => admission.status !== "admitted")) serviceError("component_not_admitted");
+  const unavailable = selected.find(({ component }) => component.status === "unavailable" || component.status === "error" || component.reason === "provider_unavailable");
   if (unavailable !== undefined) serviceError(unavailable.component.reason ?? "provider_unavailable");
 }
 
-export function installationFrom(entry: PluginCatalogEntry, projectId: string): PluginInstallation {
+export function installationFrom(entry: PluginCatalogEntry, projectId: string, componentDigests: readonly string[]): PluginInstallation {
+  const selection = new Set(componentDigests);
   const providerBindings = entry.components.flatMap(({ component }) => {
     const binding = component.metadata.providerBinding;
-    if (binding === null || typeof binding !== "object" || Array.isArray(binding)) return [];
+    if (!selection.has(bindingDigestOf(component)) || binding === null || typeof binding !== "object" || Array.isArray(binding)) return [];
     return [{ componentId: component.id, binding }] as unknown as NonNullable<PluginInstallation["providerBindings"]>;
   });
   return Object.freeze({
@@ -121,12 +145,15 @@ export function installationFrom(entry: PluginCatalogEntry, projectId: string): 
   });
 }
 
-export function admissionsFrom(entry: PluginCatalogEntry, installationId: string): readonly PluginComponentAdmission[] {
-  return Object.freeze(entry.components.map(({ component, admission }) => Object.freeze({
-    installationId, componentDigest: component.metadata.bindingDigest, componentKind: component.kind,
-    componentName: component.name, status: admission.status, ...(admission.status === "admitted" ? {} : { reason: admission.reason }),
-    policyVersion: admission.policyVersion,
-  })));
+export function admissionsFrom(entry: PluginCatalogEntry, installationId: string, componentDigests: readonly string[]): readonly PluginComponentAdmission[] {
+  const selection = new Set(componentDigests);
+  return Object.freeze(entry.components
+    .filter(({ component }) => selection.has(bindingDigestOf(component)))
+    .map(({ component, admission }) => Object.freeze({
+      installationId, componentDigest: bindingDigestOf(component), componentKind: component.kind,
+      componentName: component.name, status: admission.status, ...(admission.status === "admitted" ? {} : { reason: admission.reason }),
+      policyVersion: admission.policyVersion,
+    })));
 }
 
 export function slotsFrom(_entry: PluginCatalogEntry, _installationId: string, _projectId: string): readonly PluginCredentialSlot[] {

@@ -736,3 +736,44 @@ describe("project plugin list service boundary", () => {
     expect(Object.isFrozen(result[0]?.components)).toBe(true);
   });
 });
+
+// The install body carries an optional component selection. Leaving it out
+// keeps every existing client working and means "every component".
+
+describe("component-scoped installation over the versioned route", () => {
+  function post(body: string, install: (request: Request, input: unknown) => Promise<unknown>) {
+    return createProjectPluginsRoute({ install }).POST(request("/api/v1/projects/project-1/plugins", {
+      method: "POST", headers: { "content-type": "application/json", "Idempotency-Key": "install-1" }, body,
+    }), { params: Promise.resolve({ projectId: "project-1" }) });
+  }
+
+  it("forwards a selected component digest to the installation controller", async () => {
+    const receipt = Object.freeze({ type: "install" as const, receiptId: "receipt-1", projectId: "project-1", pluginName: "airtable", status: "success" as const, redactions: Object.freeze([]) });
+    const install = vi.fn(async (_request: Request, input: unknown) => {
+      expect(input).toEqual({
+        projectId: "project-1", pluginName: "airtable", catalogDigest, expectedRevision: 0,
+        idempotencyKey: "install-1", componentDigests: [componentDigest],
+      });
+      return receipt;
+    });
+    const response = await post(JSON.stringify({ pluginName: "airtable", catalogDigest, expectedRevision: 0, componentDigests: [componentDigest] }), install);
+    expect(response.status).toBe(201);
+    expect(await json(response)).toEqual(receipt);
+  });
+
+  it("still rejects an unknown field beside the optional selection", async () => {
+    const install = vi.fn();
+    const response = await post(JSON.stringify({ pluginName: "airtable", catalogDigest, expectedRevision: 0, componentDigests: [componentDigest], extra: true }), install);
+    expect(response.status).toBe(400);
+    expect(await json(response)).toEqual({ error: "request_invalid" });
+    expect(install).not.toHaveBeenCalled();
+  });
+
+  it("still requires every mandatory field when a selection is supplied", async () => {
+    const install = vi.fn();
+    const response = await post(JSON.stringify({ pluginName: "airtable", catalogDigest, componentDigests: [componentDigest] }), install);
+    expect(response.status).toBe(400);
+    expect(await json(response)).toEqual({ error: "request_invalid" });
+    expect(install).not.toHaveBeenCalled();
+  });
+});

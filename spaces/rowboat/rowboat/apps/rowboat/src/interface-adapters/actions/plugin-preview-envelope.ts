@@ -21,6 +21,10 @@ const Payload = z.object({
   expectedRevision: z.number().int().nonnegative(),
   componentDecisionsDigest: z.string().regex(DIGEST),
   credentialSlotsDigest: z.string().regex(DIGEST),
+  // A digest of the component selection rather than the selection itself: the
+  // largest plugin in the pinned catalog has 88 components, and 88 digests do
+  // not fit the token size this envelope is capped at.
+  componentSelectionDigest: z.string().regex(DIGEST),
   idempotencyKey: z.string().regex(IDEMPOTENCY),
   operation: z.literal("install"),
   issuedAt: z.number().int().nonnegative(),

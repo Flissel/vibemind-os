@@ -448,11 +448,12 @@ export async function jsonBody(request: Request, timeoutMs = 5_000): Promise<unk
   return parsed;
 }
 
-export function strictObject(value: unknown, allowed: readonly string[]): Readonly<Record<string, unknown>> {
+export function strictObject(value: unknown, allowed: readonly string[], optional: readonly string[] = []): Readonly<Record<string, unknown>> {
   inspectJson(value);
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("request_invalid");
   const keys = Object.keys(value);
-  if (keys.length !== allowed.length || keys.some((key) => !allowed.includes(key))) throw new Error("request_invalid");
+  if (keys.some((key) => !allowed.includes(key) && !optional.includes(key))) throw new Error("request_invalid");
+  if (allowed.some((key) => !keys.includes(key))) throw new Error("request_invalid");
   const output: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const key of keys) output[key] = (value as Record<string, unknown>)[key];
   return Object.freeze(output);

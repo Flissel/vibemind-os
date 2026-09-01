@@ -360,6 +360,7 @@ async function createPluginControllers(): Promise<PluginControllers> {
         scope: pluginSharedModule.fingerprint({ projectId: input.projectId, operation: "install", idempotencyKey: input.idempotencyKey }),
         fingerprint: pluginSharedModule.fingerprint({
           projectId: input.projectId, pluginName: input.pluginName, catalogDigest: input.catalogDigest, expectedRevision: input.expectedRevision,
+          componentSelectionDigest: input.componentSelectionDigest,
         }),
         projectId: input.projectId, pluginName: input.pluginName, catalogDigest: input.catalogDigest, operation: "install",
       });

@@ -75,12 +75,15 @@ export function createProjectPluginsRoute(source: ControllerSource<InstallationC
         const key = idempotencyKey(request);
         const routeParams = await params(context, ["projectId"]);
         assertRoute(request, "POST", ["api", "v1", "projects", routeParams.projectId, "plugins"]);
-        const body = strictObject(await jsonBody(request, options.bodyReadTimeoutMs), ["pluginName", "catalogDigest", "expectedRevision"]);
+        const body = strictObject(await jsonBody(request, options.bodyReadTimeoutMs), ["pluginName", "catalogDigest", "expectedRevision"], ["componentDigests"]);
         const selected = await controller(source);
         if (selected.install === undefined) throw new Error("response_invalid");
         return installResponse(await selected.install(request, {
           projectId: routeParams.projectId, pluginName: body.pluginName, catalogDigest: body.catalogDigest,
           expectedRevision: body.expectedRevision, idempotencyKey: key,
+          // Absent means every component, which is what every client that
+          // predates component-scoped installation already sends.
+          ...(body.componentDigests === undefined ? {} : { componentDigests: body.componentDigests }),
         }));
       } catch (error) { return pluginErrorResponse(error); }
     },

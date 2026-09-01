@@ -15,15 +15,23 @@ const BADGES = Object.freeze({
 /**
  * Only an installed plugin offers its executable components as tools, and only
  * a component that is available and carries a pinned digest can be referenced.
+ *
+ * Installation is component-scoped, so a plugin is offered whenever at least
+ * one of its components is available - which is what makes a partially
+ * available plugin such as `github` installable at all. The status collapses
+ * to "installed" only while every component is available, so an installation
+ * that covers just some of them is recognised by its revision, the field the
+ * list action sets for a real installation only.
  */
 export function toPluginCardView(item: PluginCatalogCardItem) {
   const installed = item.status === "installed";
+  const installationPresent = installed || item.revision !== undefined;
   return Object.freeze({
     pluginName: item.pluginName,
     pluginVersion: item.pluginVersion,
     badge: BADGES[item.status],
     reason: item.reason,
-    canInstall: item.status === "available",
+    canInstall: !installationPresent && item.components.some((component) => component.status === "available"),
     components: Object.freeze(item.components.map((component) => Object.freeze({ ...component }))),
     addableComponents: Object.freeze(item.components
       .filter((component) => (component.kind === "app" || component.kind === "mcp")

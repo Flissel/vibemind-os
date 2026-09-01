@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { PluginApiIdentity } from "@/src/application/policies/plugin-api-authorization.policy";
 import { captureRecord } from "@/src/interface-adapters/controllers/plugins/plugin-controller.shared";
+import { componentSelectionDigest, requestedComponentSelection } from "@/src/application/use-cases/plugins/plugin-component-selection";
 import {
   signPluginPreviewEnvelope, validatePluginPreviewSecret, verifyPluginPreviewEnvelope,
   type PluginPreviewEnvelope,
@@ -17,9 +18,15 @@ const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const IDEMPOTENCY = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
 
+const ComponentDigests = z.array(z.string().regex(DIGEST)).min(1).max(512);
 const ListInput = z.object({ projectId: z.string().regex(ID), catalogDigest: z.string().regex(DIGEST) }).strict();
-const PreviewInput = z.object({ projectId: z.string().regex(ID), pluginName: z.string().regex(ID), catalogDigest: z.string().regex(DIGEST) }).strict();
-const InstallInput = z.object({ previewToken: z.string().min(1).max(4096) }).strict();
+const PreviewInput = z.object({
+  projectId: z.string().regex(ID), pluginName: z.string().regex(ID), catalogDigest: z.string().regex(DIGEST),
+  componentDigests: ComponentDigests.optional(),
+}).strict();
+const InstallInput = z.object({ previewToken: z.string().min(1).max(4096), componentDigests: ComponentDigests.optional() }).strict();
+const PREVIEW_KEYS = Object.freeze(["projectId", "pluginName", "catalogDigest", "componentDigests"]);
+const INSTALL_KEYS = Object.freeze(["previewToken", "componentDigests"]);
 
 export type PluginUiStatus = "available" | "review_required" | "installed" | "partially_available" | "unavailable" | "migration_required" | "error";
 export type PluginUiReason =
@@ -158,6 +165,25 @@ function canonicalStatus(item: SerializedPlugin): PluginUiStatus {
   return "unavailable";
 }
 
+/**
+ * The second gate, component-scoped: every selected digest has to name a
+ * component the server currently reports as available - a status that already
+ * collapses admission and availability. An absent selection stands for every
+ * component, which is the whole-plugin gate this replaces. The licence
+ * decision of the plugin itself still gates the install.
+ */
+function assertSelectionInstallable(item: SerializedPlugin, selection: readonly string[] | undefined): void {
+  if (item.status === "review_required" || item.status === "rejected") {
+    throw new Error(item.reason ?? item.components.find((component) => component.reason !== undefined)?.reason ?? "component_not_admitted");
+  }
+  const components = new Map(item.components.map((component) => [component.componentDigest, component] as const));
+  for (const componentDigest of selection ?? item.components.map((component) => component.componentDigest)) {
+    const component = componentDigest === undefined ? undefined : components.get(componentDigest);
+    if (component === undefined) throw new Error("request_invalid");
+    if (component.status !== "available") throw new Error(component.reason ?? "component_not_admitted");
+  }
+}
+
 function catalogItem(item: SerializedPlugin, installed?: SerializedPlugin): PluginUiCatalogItem {
   const catalogStatus = canonicalStatus(item);
   const status = installed === undefined || catalogStatus !== "available" ? catalogStatus : "installed";
@@ -192,8 +218,9 @@ export function createPluginActionRuntime(dependencies: PluginActionRuntimeDepen
     },
 
     async preview(input: unknown): Promise<PluginUiPreview> {
-      const parsed = parseInput(input, ["projectId", "pluginName", "catalogDigest"], PreviewInput);
+      const parsed = parseInput(input, PREVIEW_KEYS, PreviewInput);
       if (parsed.catalogDigest !== dependencies.pinnedCatalogDigest) throw new Error("request_invalid");
+      const selection = parsed.componentDigests === undefined ? undefined : requestedComponentSelection(parsed.componentDigests);
       const now = dependencies.now?.() ?? Date.now();
       validatePluginPreviewSecret(dependencies.previewSecret);
       const controllers = await dependencies.resolveControllers();
@@ -204,13 +231,16 @@ export function createPluginActionRuntime(dependencies: PluginActionRuntimeDepen
       });
       const item = await json<SerializedPlugin & { credentialSlots: Array<{ name: string; configured: boolean }> }>(previewResponse(raw));
       if (item.pluginName !== parsed.pluginName || item.catalogDigest !== parsed.catalogDigest || item.sourceCommit === undefined) throw new Error("response_invalid");
+      // A selection the caller named is checked before anything is signed, so a
+      // preview is never issued for components that could not be installed.
+      if (selection !== undefined) assertSelectionInstallable(item, selection);
       const idempotencyKey = dependencies.createIdempotencyKey();
       if (!IDEMPOTENCY.test(idempotencyKey)) throw new Error("response_invalid");
       const digests = previewDigests(item);
       const previewToken = signPluginPreviewEnvelope({
         version: "rowboat_plugin_preview_v1", ...actor(identity), projectId: parsed.projectId, pluginName: parsed.pluginName,
         catalogDigest: parsed.catalogDigest, sourceCommit: item.sourceCommit, installationPresent: installation.present,
-        expectedRevision: installation.revision, ...digests,
+        expectedRevision: installation.revision, ...digests, componentSelectionDigest: componentSelectionDigest(selection),
         idempotencyKey, operation: "install", issuedAt: now, expiresAt: now + 5 * 60 * 1000,
       }, dependencies.previewSecret);
       return freeze({
@@ -220,9 +250,13 @@ export function createPluginActionRuntime(dependencies: PluginActionRuntimeDepen
     },
 
     async install(input: unknown): Promise<Readonly<Record<string, unknown>>> {
-      const parsed = parseInput(input, ["previewToken"], InstallInput);
+      const parsed = parseInput(input, INSTALL_KEYS, InstallInput);
       const envelope = verifyPluginPreviewEnvelope(parsed.previewToken, dependencies.previewSecret, dependencies.now?.() ?? Date.now());
       if (envelope.catalogDigest !== dependencies.pinnedCatalogDigest) throw new Error("preview_invalid");
+      const selection = parsed.componentDigests === undefined ? undefined : requestedComponentSelection(parsed.componentDigests);
+      // The envelope authorizes one selection only: a token issued for
+      // component A cannot be replayed to install component B.
+      if (componentSelectionDigest(selection) !== envelope.componentSelectionDigest) throw new Error("preview_invalid");
       const controllers = await dependencies.resolveControllers();
       const identity = await controllers.authenticate(dependencies.createRequest());
       if (!sameActor(identity, envelope)) throw new Error("preview_invalid");
@@ -244,12 +278,11 @@ export function createPluginActionRuntime(dependencies: PluginActionRuntimeDepen
         throw new Error("stale_preview");
       }
       if (envelope.installationPresent) throw new Error("component_not_admitted");
-      if (canonicalStatus(current) !== "available") {
-        throw new Error(current.reason ?? current.components.find((component) => component.reason !== undefined)?.reason ?? "component_not_admitted");
-      }
+      assertSelectionInstallable(current, selection);
       const result = await controllers.installation.install(dependencies.createRequest(), {
         projectId: envelope.projectId, pluginName: envelope.pluginName, catalogDigest: envelope.catalogDigest,
         expectedRevision: envelope.expectedRevision, idempotencyKey: envelope.idempotencyKey,
+        ...(selection === undefined ? {} : { componentDigests: selection }),
       });
       return freeze(await json<Record<string, unknown>>(installResponse(result)));
     },

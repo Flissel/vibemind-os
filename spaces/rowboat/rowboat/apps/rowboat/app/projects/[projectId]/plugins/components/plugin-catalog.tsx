@@ -50,7 +50,7 @@ export function PluginCatalog({ projectId, items }: { readonly projectId: string
           {items.map((item) => <PluginCard key={item.pluginName} item={item} onInstall={select} onAddTool={addTool} />)}
         </div>
       )}
-      {preview !== null && <PluginInstallDialog preview={preview} onClose={() => setPreview(null)} />}
+      {preview !== null && <PluginInstallDialog key={preview.previewToken} projectId={projectId} preview={preview} onClose={() => setPreview(null)} />}
     </div>
   );
 }

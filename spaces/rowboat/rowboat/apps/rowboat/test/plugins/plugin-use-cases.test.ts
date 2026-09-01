@@ -73,6 +73,7 @@ class FakeAuthorization implements IPluginApiAuthorizationPolicy {
 
 class FakeRepository implements IPluginsRepository {
   installationWrites = 0;
+  readonly installs: PluginIdempotentInstall[] = [];
   private readonly results = new Map<string, PluginIdempotentInstallResult>();
   async putCatalog(): Promise<void> {}
   async getCatalog(value: string): Promise<PluginCatalogLock | null> {
@@ -113,6 +114,7 @@ class FakeRepository implements IPluginsRepository {
     const raced = this.results.get(request.scope);
     if (raced !== undefined) return raced;
     this.installationWrites += 1;
+    this.installs.push(request);
     const result = Object.freeze({ receipt: request.receipt, fingerprint: request.fingerprint, replayed: false });
     this.results.set(request.scope, result);
     return result;
@@ -411,5 +413,136 @@ describe("Auth0 JOSE verifier", () => {
     for (const invalid of [wrongIssuer, wrongAudience, wrongSignature]) {
       await expect(verifyAuth0UserToken(invalid, { issuer, audience, key, lookupUserId: lookup })).resolves.toBeNull();
     }
+  });
+});
+
+// Component-scoped installation against the real pinned lock. `github` is the
+// plugin the whole-plugin gate could never install: exactly one of its eight
+// components is admitted, the other seven are `review_required`.
+
+const pinnedLock = catalogLockFixture as unknown as PluginCatalogLock;
+
+function lockRepository(): FakeRepository {
+  const repository = new FakeRepository();
+  repository.getCatalog = async (value) => value === pinnedLock.catalogDigest ? pinnedLock : null;
+  return repository;
+}
+
+function pinnedComponentDigest(pluginName: string, componentId: string): string {
+  const found = pinnedLock.entries.find((candidate) => candidate.pluginName === pluginName)
+    ?.components.find(({ component }) => component.id === componentId);
+  if (found === undefined) throw new Error(`fixture catalog is missing "${componentId}" in "${pluginName}"`);
+  const value = found.component.metadata.bindingDigest;
+  if (typeof value !== "string") throw new Error(`fixture component "${componentId}" has no binding digest`);
+  return value;
+}
+
+const githubMcp = pinnedComponentDigest("github", "mcp:.mcp.json#github");
+const githubSkill = pinnedComponentDigest("github", "skill:skills/github");
+const linearSkill = pinnedComponentDigest("linear", "skill:skills/linear");
+const linearMcp = pinnedComponentDigest("linear", "mcp:.mcp.json#linear");
+
+describe("component-scoped plugin installation", () => {
+  function install(repository: FakeRepository) {
+    return new InstallPluginUseCase({ pluginsRepository: repository, pluginApiAuthorizationPolicy: new FakeAuthorization() });
+  }
+
+  it("pins the catalog facts this suite depends on", () => {
+    expect(githubMcp.startsWith("edaa0cfffb94")).toBe(true);
+    expect(pinnedComponentDigest("cloudflare", "mcp:.mcp.json#cloudflare-api").startsWith("9d39d5e6ba55")).toBe(true);
+  });
+
+  it("installs github with only its admitted mcp component and writes one admission row and one binding", async () => {
+    const repository = lockRepository();
+    const receipt = await install(repository).execute({ ...installRequest, componentDigests: [githubMcp] });
+    expect(receipt).toMatchObject({ type: "install", pluginName: "github", status: "success" });
+    expect(repository.installs).toHaveLength(1);
+    const written = repository.installs[0]!;
+    expect(written.admissions.map((admission) => admission.componentDigest)).toEqual([githubMcp]);
+    expect(written.admissions.map((admission) => admission.status)).toEqual(["admitted"]);
+    expect(written.installation.providerBindings).toHaveLength(1);
+  });
+
+  it("installs every component when no selection is supplied", async () => {
+    const repository = lockRepository();
+    await install(repository).execute({ ...installRequest, pluginName: "linear" });
+    const written = repository.installs[0]!;
+    expect(written.admissions).toHaveLength(5);
+    expect(written.installation.providerBindings).toHaveLength(2);
+  });
+
+  it.each([
+    ["a review_required component", [githubMcp, githubSkill], "component_not_admitted"],
+    ["an empty selection", [], "request_invalid"],
+    ["a digest from another plugin", [linearMcp], "request_invalid"],
+    ["a duplicated digest", [githubMcp, githubMcp], "request_invalid"],
+    ["an uppercase digest", [githubMcp.toUpperCase()], "request_invalid"],
+  ])("refuses %s before any installation write", async (_case, componentDigests, reason) => {
+    const repository = lockRepository();
+    await expect(install(repository).execute({ ...installRequest, componentDigests })).rejects.toThrow(reason);
+    expect(repository.installationWrites).toBe(0);
+  });
+
+  it("treats the same idempotency key with a different selection as a conflict", async () => {
+    const repository = lockRepository();
+    const useCase = install(repository);
+    await useCase.execute({ ...installRequest, pluginName: "linear", componentDigests: [linearSkill] });
+    await expect(useCase.execute({ ...installRequest, pluginName: "linear", componentDigests: [linearMcp] }))
+      .rejects.toThrow("idempotency_conflict");
+    await expect(useCase.execute({ ...installRequest, pluginName: "linear" })).rejects.toThrow("idempotency_conflict");
+    expect(repository.installationWrites).toBe(1);
+  });
+
+  it("replays the same receipt for the same key and the same selection", async () => {
+    const repository = lockRepository();
+    const useCase = install(repository);
+    const request = { ...installRequest, componentDigests: [githubMcp] };
+    const [first, second] = await Promise.all([useCase.execute(request), useCase.execute(request)]);
+    expect(second).toEqual(first);
+    expect(repository.installationWrites).toBe(1);
+  });
+});
+
+describe("enabling a component-scoped installation", () => {
+  function partiallyInstalled(componentDigests: readonly string[]): FakeRepository {
+    const repository = lockRepository();
+    const entry = pinnedLock.entries.find((candidate) => candidate.pluginName === "github")!;
+    repository.getInstallation = async () => Object.freeze({
+      id: "installation-1", projectId: "project-1", pluginName: "github", pluginVersion: entry.pluginVersion,
+      sourceCommit: pinnedLock.sourceCommit, manifestDigest: entry.manifestDigest, treeDigest: entry.treeDigest,
+      policyVersion: entry.policyVersion, enabled: true, revision: 0,
+    });
+    repository.listAdmissions = async () => componentDigests.map((componentDigest) => Object.freeze({
+      installationId: "installation-1", componentDigest, componentKind: "mcp" as const, componentName: "github",
+      status: "admitted" as const, policyVersion: entry.policyVersion,
+    }));
+    repository.setInstallationEnabledIdempotently = async (request) => Object.freeze({
+      receipt: request.receipt, fingerprint: request.fingerprint, replayed: false,
+      installation: Object.freeze({
+        id: "installation-1", projectId: "project-1", pluginName: "github", pluginVersion: entry.pluginVersion,
+        sourceCommit: pinnedLock.sourceCommit, manifestDigest: entry.manifestDigest, treeDigest: entry.treeDigest,
+        policyVersion: entry.policyVersion, enabled: request.enabled, revision: 1,
+      }),
+    });
+    return repository;
+  }
+
+  const request = {
+    identity, projectId: "project-1", pluginName: "github", catalogDigest: PINNED_PLUGIN_CATALOG_DIGEST,
+    enabled: false, expectedRevision: 0, idempotencyKey: "enable-key-1",
+  };
+
+  it("disables an installation that holds only github's admitted component", async () => {
+    const useCase = new SetPluginEnabledUseCase({
+      pluginsRepository: partiallyInstalled([githubMcp]), pluginApiAuthorizationPolicy: new FakeAuthorization(),
+    });
+    await expect(useCase.execute(request)).resolves.toMatchObject({ enabled: false, revision: 1 });
+  });
+
+  it("refuses to toggle an installation holding a component the catalog no longer admits", async () => {
+    const useCase = new SetPluginEnabledUseCase({
+      pluginsRepository: partiallyInstalled([githubMcp, githubSkill]), pluginApiAuthorizationPolicy: new FakeAuthorization(),
+    });
+    await expect(useCase.execute(request)).rejects.toThrow("component_not_admitted");
   });
 });

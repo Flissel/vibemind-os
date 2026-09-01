@@ -12,7 +12,11 @@ import { LEGACY_TOOLS_LABEL } from "@/app/projects/[projectId]/tools/components/
 const digest = "a".repeat(64);
 const sourceCommit = "b".repeat(40);
 
-function card(status: PluginCatalogCardItem["status"], reason?: PluginCatalogCardItem["reason"]): PluginCatalogCardItem {
+function card(
+  status: PluginCatalogCardItem["status"],
+  reason?: PluginCatalogCardItem["reason"],
+  componentStatus = "available",
+): PluginCatalogCardItem {
   return Object.freeze({
     pluginName: "github",
     pluginVersion: "1.0.0",
@@ -20,30 +24,33 @@ function card(status: PluginCatalogCardItem["status"], reason?: PluginCatalogCar
     sourceCommit,
     status,
     ...(reason === undefined ? {} : { reason }),
-    components: Object.freeze([]),
+    components: Object.freeze([Object.freeze({ componentDigest: digest, name: "github", kind: "mcp" as const, status: componentStatus })]),
   });
 }
 
 describe("plugin catalog view state", () => {
+  // Installation is component-scoped, so a plugin is offered whenever at least
+  // one of its components is available and nothing is installed yet - which is
+  // what makes a `partially_available` plugin such as `github` installable.
   it.each([
-    ["available", "Available", true],
-    ["review_required", "Review required", false],
-    ["installed", "Installed", false],
-    ["partially_available", "Partially available", false],
-    ["unavailable", "Unavailable", false],
-    ["migration_required", "Migration required", false],
-    ["error", "Error", false],
-  ] as const)("renders the server-owned %s state", (status, badge, canInstall) => {
-    expect(toPluginCardView(card(status))).toEqual(expect.objectContaining({ badge, canInstall }));
+    ["available", "available", "Available", true],
+    ["review_required", "review_required", "Review required", false],
+    ["installed", "available", "Installed", false],
+    ["partially_available", "available", "Partially available", true],
+    ["unavailable", "unavailable", "Unavailable", false],
+    ["migration_required", "migration_required", "Migration required", false],
+    ["error", "error", "Error", false],
+  ] as const)("renders the server-owned %s state", (status, componentStatus, badge, canInstall) => {
+    expect(toPluginCardView(card(status, undefined, componentStatus))).toEqual(expect.objectContaining({ badge, canInstall }));
   });
 
   it("does not label a partial plugin installed and preserves the policy reason", () => {
     expect(toPluginCardView(card("partially_available", "provider_unavailable"))).toMatchObject({
       badge: "Partially available",
-      canInstall: false,
+      canInstall: true,
       reason: "provider_unavailable",
     });
-    expect(toPluginCardView(card("review_required", "license_review_required")).reason).toBe("license_review_required");
+    expect(toPluginCardView(card("review_required", "license_review_required", "review_required")).reason).toBe("license_review_required");
   });
 
   it("returns deeply immutable hydration-safe view data", () => {
@@ -60,10 +67,10 @@ describe("plugin catalog view state", () => {
   it("shows only component decisions and credential slot requirements in the dialog", () => {
     const view = toPluginInstallDialogView(Object.freeze({
       ...card("available"), previewToken: "signed-preview-token",
-      components: Object.freeze([Object.freeze({ name: "github-mcp", kind: "mcp" as const, status: "available", reason: "write_review_required" as const })]),
+      components: Object.freeze([Object.freeze({ componentDigest: digest, name: "github-mcp", kind: "mcp" as const, status: "available", reason: "write_review_required" as const })]),
       credentialSlots: Object.freeze([Object.freeze({ name: "GITHUB_TOKEN", configured: false })]),
     }));
-    expect(view.components).toEqual([{ name: "github-mcp", kind: "mcp", status: "available", reason: "write_review_required" }]);
+    expect(view.components).toEqual([{ componentDigest: digest, name: "github-mcp", kind: "mcp", status: "available", reason: "write_review_required", selectable: true }]);
     expect(view.credentialSlots).toEqual([{ name: "GITHUB_TOKEN", configured: false }]);
     expect(view.canInstall).toBe(true);
     expect(JSON.stringify(view)).not.toContain("secret");
@@ -602,5 +609,158 @@ describe("plugin tool panel summary", () => {
     ]) {
       expect(pluginToolSummary({ pluginBinding: broken })).toBeNull();
     }
+  });
+});
+
+// A partially available plugin - `github` in the pinned catalog - is installed
+// by naming the components the caller wants. The selection is bound into the
+// signed envelope, so a token issued for one selection cannot install another.
+
+describe("component-scoped installation through the server action", () => {
+  const mcpDigest = "1".repeat(64);
+  const appDigest = "2".repeat(64);
+  const skillDigest = "3".repeat(64);
+  const policyVersion = "openai-plugin-policy-v1";
+  const admitted = Object.freeze({ status: "admitted", policyVersion });
+
+  const partialPreview = Object.freeze({
+    pluginName: "github", catalogDigest: digest, sourceCommit, policyVersion,
+    license: Object.freeze({ declaration: "MIT", decision: "admitted" }), admission: "admitted",
+    components: Object.freeze([
+      Object.freeze({ componentDigest: mcpDigest, name: "github", kind: "mcp", admission: admitted, availability: Object.freeze({ status: "available" }) }),
+      Object.freeze({ componentDigest: appDigest, name: "github", kind: "app", admission: admitted, availability: Object.freeze({ status: "available" }) }),
+      Object.freeze({
+        componentDigest: skillDigest, name: "github", kind: "skill",
+        admission: Object.freeze({ status: "review_required", reason: "write_review_required", policyVersion }),
+        availability: Object.freeze({ status: "available" }),
+      }),
+    ]),
+    credentialSlots: Object.freeze([]),
+  });
+
+  function setup() {
+    let mutations = 0;
+    let installInput: Readonly<Record<string, unknown>> | null = null;
+    let lastReplayInput: Readonly<Record<string, unknown>> | null = null;
+    const runtime = createPluginActionRuntime({
+      resolveControllers: async () => Object.freeze({
+        authenticate: async () => Object.freeze({ kind: "user" as const, userId: "user-1" }),
+        findInstallReplay: async (_request: Request, input: Readonly<Record<string, unknown>>) => { lastReplayInput = input; return null; },
+        catalog: Object.freeze({ execute: async () => [] }),
+        installation: Object.freeze({
+          list: async () => [],
+          preview: async () => partialPreview,
+          install: async (_request: Request, input: Readonly<Record<string, unknown>>) => {
+            mutations += 1; installInput = input;
+            return Object.freeze({ type: "install", receiptId: "receipt-1", projectId: "project-1", pluginName: "github", status: "success", redactions: Object.freeze([]) });
+          },
+        }),
+      }),
+      createRequest: () => new Request("https://rowboat.invalid/internal/plugin-action"),
+      createIdempotencyKey: () => "server-key-1",
+      previewSecret: "s".repeat(64),
+      pinnedCatalogDigest: digest,
+      now: () => 1_700_000_000_000,
+    });
+    const previewFor = async (componentDigests?: readonly string[]) => (await runtime.preview({
+      projectId: "project-1", pluginName: "github", catalogDigest: digest,
+      ...(componentDigests === undefined ? {} : { componentDigests }),
+    })) as unknown as { previewToken: string };
+    return {
+      runtime, previewFor,
+      get mutations() { return mutations; },
+      get installInput() { return installInput; },
+      get lastReplayInput() { return lastReplayInput; },
+    };
+  }
+
+  it("installs a partially available plugin when only its admitted components are selected", async () => {
+    const state = setup();
+    const preview = await state.previewFor([mcpDigest]);
+    await expect(state.runtime.install({ previewToken: preview.previewToken, componentDigests: [mcpDigest] }))
+      .resolves.toMatchObject({ receiptId: "receipt-1" });
+    expect(state.mutations).toBe(1);
+    expect(state.installInput).toEqual({
+      projectId: "project-1", pluginName: "github", catalogDigest: digest,
+      expectedRevision: 0, idempotencyKey: "server-key-1", componentDigests: [mcpDigest],
+    });
+  });
+
+  it("binds the selection into the signed envelope and rejects the same token with another selection", async () => {
+    const state = setup();
+    const preview = await state.previewFor([mcpDigest]);
+    const payload = JSON.parse(Buffer.from(preview.previewToken.split(".")[0]!, "base64url").toString("utf8")) as Record<string, unknown>;
+    expect(payload.componentSelectionDigest).toMatch(/^[a-f0-9]{64}$/);
+    for (const componentDigests of [[appDigest], [mcpDigest, appDigest], undefined]) {
+      await expect(state.runtime.install({
+        previewToken: preview.previewToken, ...(componentDigests === undefined ? {} : { componentDigests }),
+      })).rejects.toThrow("preview_invalid");
+    }
+    expect(state.mutations).toBe(0);
+  });
+
+  it("accepts a selection the caller supplied in another order and hands the replay lookup the bound digest", async () => {
+    const state = setup();
+    const preview = await state.previewFor([appDigest, mcpDigest]);
+    await expect(state.runtime.install({ previewToken: preview.previewToken, componentDigests: [mcpDigest, appDigest] }))
+      .resolves.toMatchObject({ receiptId: "receipt-1" });
+    expect(state.installInput).toMatchObject({ componentDigests: [mcpDigest, appDigest].sort() });
+    expect(state.lastReplayInput).toMatchObject({ componentSelectionDigest: expect.stringMatching(/^[a-f0-9]{64}$/) });
+  });
+
+  it("refuses a selection that names a component the catalog does not admit, before signing anything", async () => {
+    const state = setup();
+    await expect(state.previewFor([mcpDigest, skillDigest])).rejects.toThrow("write_review_required");
+    await expect(state.previewFor(["4".repeat(64)])).rejects.toThrow("request_invalid");
+    await expect(state.previewFor([])).rejects.toThrow("request_invalid");
+    await expect(state.previewFor([mcpDigest, mcpDigest])).rejects.toThrow("request_invalid");
+    expect(state.mutations).toBe(0);
+  });
+
+  it("still refuses to install a partially available plugin whole", async () => {
+    const state = setup();
+    const preview = await state.previewFor();
+    await expect(state.runtime.install({ previewToken: preview.previewToken })).rejects.toThrow("write_review_required");
+    expect(state.mutations).toBe(0);
+  });
+});
+
+describe("component selection in the catalog card and install dialog", () => {
+  const component = (overrides: Record<string, unknown> = {}) => ({ componentDigest: "a".repeat(64), name: "github", kind: "mcp", status: "available", ...overrides });
+  const previewOf = (components: readonly Record<string, unknown>[]) => Object.freeze({
+    pluginName: "github", pluginVersion: "1.0.0", catalogDigest: digest, sourceCommit,
+    status: "partially_available", components, previewToken: "signed-preview-token",
+    credentialSlots: Object.freeze([]),
+  }) as unknown as Parameters<typeof toPluginInstallDialogView>[0];
+
+  it("offers a partially available plugin for installation and an installed one never", () => {
+    const item = (overrides: Record<string, unknown>) => ({
+      pluginName: "github", pluginVersion: "1.0.0", catalogDigest: digest, sourceCommit, ...overrides,
+    }) as PluginCatalogCardItem;
+    const components = [component(), component({ componentDigest: "b".repeat(64), status: "review_required", reason: "write_review_required" })];
+    expect(toPluginCardView(item({ status: "partially_available", components })).canInstall).toBe(true);
+    expect(toPluginCardView(item({ status: "partially_available", components, revision: 3 })).canInstall).toBe(false);
+    expect(toPluginCardView(item({ status: "installed", components })).canInstall).toBe(false);
+    expect(toPluginCardView(item({ status: "unavailable", components: [component({ status: "unavailable", reason: "provider_unavailable" })] })).canInstall).toBe(false);
+  });
+
+  it("preselects every available component and keeps the rest visible but unselectable", () => {
+    const view = toPluginInstallDialogView(previewOf([
+      component({ componentDigest: "b".repeat(64) }),
+      component(),
+      component({ componentDigest: "c".repeat(64), kind: "skill", status: "review_required", reason: "write_review_required" }),
+      component({ componentDigest: undefined, kind: "asset" }),
+    ]));
+    expect(view.defaultSelection).toEqual(["a".repeat(64), "b".repeat(64)]);
+    expect(view.components.map((entry) => entry.selectable)).toEqual([true, true, false, false]);
+    expect(view.components[2]).toMatchObject({ status: "review_required", reason: "write_review_required", selectable: false });
+    expect(view.canInstall).toBe(true);
+    expect(Object.isFrozen(view.defaultSelection)).toBe(true);
+  });
+
+  it("offers no installation when the plugin has no available component", () => {
+    const view = toPluginInstallDialogView(previewOf([component({ status: "review_required", reason: "write_review_required" })]));
+    expect(view.defaultSelection).toEqual([]);
+    expect(view.canInstall).toBe(false);
   });
 });
