@@ -608,3 +608,141 @@ standard two-line Next reference stub) gives exit 0, as above.
   database was never dropped. The projects this proof inserted and their
   receipts remain in `rowboat` as evidence.
 - The shared OpenFang daemon on :4200 was never touched.
+
+---
+
+# Part II — component-scoped installation, proven against Cloudflare
+
+Date: 2026-09-01 (UTC). Branch `claude/rowboat-w3-component-install-v1`
+(`737f32cb`, two commits on top of `c4f869df`), same checkout as Part I.
+
+Test: `apps/rowboat/test/plugins/live-component-install-e2e.test.ts` — opt-in
+by the same three environment variables as Part I. One run, one test, green:
+
+```text
+ ✓ test/plugins/live-component-install-e2e.test.ts (1 test) 4411ms
+```
+
+## II.1 Headline
+
+**Before this branch, `cloudflare` could not be installed at all.** Thirteen of
+its fourteen components are `review_required`; the install gate was
+whole-plugin, so the one admitted component (the `cloudflare-api` MCP server)
+was unreachable. This run installs exactly that component through the real
+`InstallPluginUseCase`, binds it as a workflow tool, releases a call through a
+real OpenFang approval, reaches `https://mcp.cloudflare.com/mcp` over HTTPS,
+and stops at Cloudflare's own 401 — the same shape as Part I's GitHub proof.
+
+```text
+04  cloudflare: 14 components, 1 admitted, selecting cloudflare-api 9d39d5e6ba55...
+05  install without a selection -> component_not_admitted
+06  install with [9d39d5e6ba55...] -> receipt 98858cad-… status=success
+07  installation 6d18b2d6-…: revision=0 providerBindings=["9d39d5e6ba55"] admissions=["cloudflare-api:admitted"]
+08  same idempotency key, selection widened by a non-admitted component -> component_not_admitted
+09  same idempotency key, same selection -> receipt 98858cad-… (replayed)
+10  linear: 5 components, 5 admitted; install [671b665bbf1f...] -> receipt 8f013414-…
+11  linear: same idempotency key, different admitted selection [mcp, app] -> idempotency_conflict
+12  linear admissions after the conflict: ["linear:admitted"]
+13  tool bound: plugin_cloudflare_cloudflare_api added=true
+14  add-tool for a non-selected component -> provider_unavailable
+16  OpenFang approval raised   id=c707c5b4-0d3d-434d-ba22-e4bb8ec3a620 tool_name=search
+17    action_summary  = component 9d39d5e6ba55c780…3ebc6aed arguments d86f6f088747cc14…8fcfa78
+18    approve() -> {"status":200,"body":{"decided_at":"2026-09-01T20:45:21.296384100+00:00","id":"c707c5b4-…","status":"approved"}}
+19  invocation outcome: provider_failed after 1300ms; approval raised: c707c5b4-…
+20  runtime receipt: type=execution status=failed reason=provider_unavailable componentDigest=9d39d5e6ba55... approvalId=c707c5b4-…
+21  decision for c707c5b4-…: status=approved decided_at=2026-09-01T20:45:21.296384100Z
+```
+
+## II.2 What each line proves
+
+- **05** — the old refusal is intact: with no selection, "all components" is
+  meant, and `cloudflare` still fails closed with `component_not_admitted`.
+- **06/07** — with `componentDigests: [9d39d5e6…]` the real use case admits
+  the selection, and the real Mongo repository stores **exactly one**
+  admission row and **exactly one** provider binding — the selection, not the
+  plugin, is what was installed. Asserted, not eyeballed.
+- **08** — widening the same idempotency key by a non-admitted component is
+  refused before the key is even compared: admission runs before the
+  idempotent write. Fail-closed either way.
+- **09** — the same key with the same selection replays the same receipt
+  (`98858cad…` both times). The fingerprint binds the selection digest.
+- **10–12** — the genuine idempotency conflict needs two selections that are
+  both admitted, which `cloudflare` cannot offer. `linear` (five admitted
+  components) does: same key, `[mcp]` then `[mcp, app]` →
+  `idempotency_conflict`, and the installation still holds one admission row.
+- **13/14** — `AddPluginToolUseCase` binds the selected component and refuses
+  a non-selected one (it has no provider binding, so the use case reports
+  `provider_unavailable`; a more specific name is a follow-up, the refusal is
+  what matters).
+- **16–21** — identical mechanics to Part I: the runtime classifies `search`
+  as a write (the pinned component declares no `readOnlyOperations`), OpenFang
+  raises an approval carrying the component digest and an arguments digest
+  and **no argument values** (asserted), a human decision releases the call,
+  the real `HttpMcpProvider` reaches Cloudflare, Cloudflare rejects it, and
+  the execution receipt lands in `plugin_receipts` stamped with the approval
+  id.
+
+## II.3 The rejection is Cloudflare's, not the network's
+
+Direct probe from the same shell, same endpoint, real `initialize` body:
+
+```text
+(a) no Authorization header
+    connect=0.023s tls=0.048s total=0.071s   HTTP/2 401
+    www-authenticate: Bearer realm="OAuth",
+        resource_metadata="https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp"
+    server: cloudflare   cf-ray: a3471f52…-TXL
+
+(b) Authorization: Bearer <obviously fake value>
+    connect=0.020s tls=0.046s total=0.287s   HTTP/2 401
+    www-authenticate: Bearer realm="OAuth", resource_metadata="…", error="invalid_token"
+```
+
+Two different 401s — an OAuth challenge for "no token" versus
+`error="invalid_token"` for "this token" — and the second takes four times as
+long: Cloudflare read the token and evaluated it. TCP and TLS complete in
+tens of milliseconds. The run's 1300 ms is the approval round-trip plus this.
+
+## II.4 The finding this run forces into the open
+
+**`credentialSlots: []` does not mean "no credential".** The pinned catalog
+declares no credential slot for the `cloudflare`, `linear` and `notion` MCP
+components, and the GitHub component declares `GITHUB_PAT_TOKEN`. All four —
+every admitted MCP component in the 180-entry catalog — are OAuth-gated at the
+provider and answer 401 to an unauthenticated `initialize`. So:
+
+- Part I and Part II together prove the **full mechanical chain** for the
+  only two component shapes the catalog has (a declared slot, no slot).
+- Neither proves a provider **accepting** a call. For github, OpenFang can
+  issue the slot; for cloudflare/linear/notion there is no slot for OpenFang
+  to fill, so today's issuance path cannot carry an OAuth bearer to them at
+  all. That is a design gap, not a bug in this branch: it needs a decision on
+  how an operator-obtained OAuth token enters OpenFang's allowlist and under
+  which slot name the provider binding asks for it.
+- "118 admitted components" (the catalog-wide number) is **not** "118
+  executable components": 114 are `app`, `asset` and `skill` components with
+  no runtime call path. The executable set is the four MCP components, all
+  four gated. This branch makes three of them installable that previously
+  were not (cloudflare, linear, notion — each sits beside non-admitted
+  siblings); github was installable before.
+
+## II.5 What is proven, and what is not
+
+**Proven:** component-scoped install through the real use case and the real
+repository, exact admission/binding cardinality, replay and conflict semantics
+of the selection-bound idempotency key, tool binding restricted to the
+selection, and the unchanged release → approval → provider → receipt chain for
+a component with no credential slot.
+
+**Not proven, not claimed:** any provider accepting a call; the UI dialog
+(covered by unit tests only — `plugin-ui-state.test.ts`, including the
+`priorPreviewToken` re-preview); the REST route (`strictObject` +
+`componentDigests` covered by unit tests; the 64-element array bound is a
+parked finding); the Next.js container end to end (same caveat as Part I).
+
+## II.6 Cleanup
+
+The isolated daemon on :4273 (a fresh `OPENFANG_HOME` under the scratchpad,
+generated api_key never printed) was stopped after this run and its home and
+secrets file deleted. `rowboat-rs` stays up with the two projects this run
+inserted as evidence. The shared daemon on :4200 was never touched.
