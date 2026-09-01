@@ -117,14 +117,18 @@ export function entryComponentDigests(entry: PluginCatalogEntry): readonly strin
 /**
  * Installation is component-scoped: only the selected components have to be
  * admitted and runnable. The plugin's own licence admission still gates the
- * whole install, and a digest that names no component of this plugin is a
- * request error rather than a silently empty install.
+ * whole install; a selection that names a digest this plugin does not have, and
+ * an empty selection on a plugin that has components, are request errors rather
+ * than a silently empty install - whoever derived the selection, a caller or the
+ * admission rows of an existing installation.
  */
 export function assertSelectionAdmitted(entry: PluginCatalogEntry, componentDigests: readonly string[]): void {
   if (entry.admission.status !== "admitted") serviceError(entry.admission.reason);
+  if (componentDigests.length === 0 && entry.components.length > 0) serviceError("request_invalid");
+  const known = new Set(entry.components.map(({ component }) => bindingDigestOf(component)));
+  if (componentDigests.some((componentDigest) => !known.has(componentDigest))) serviceError("request_invalid");
   const selection = new Set(componentDigests);
   const selected = entry.components.filter(({ component }) => selection.has(bindingDigestOf(component)));
-  if (selected.length !== selection.size) serviceError("request_invalid");
   if (selected.some(({ admission }) => admission.status !== "admitted")) serviceError("component_not_admitted");
   const unavailable = selected.find(({ component }) => component.status === "unavailable" || component.status === "error" || component.reason === "provider_unavailable");
   if (unavailable !== undefined) serviceError(unavailable.component.reason ?? "provider_unavailable");

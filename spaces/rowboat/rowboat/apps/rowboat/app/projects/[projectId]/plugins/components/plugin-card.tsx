@@ -12,16 +12,23 @@ const BADGES = Object.freeze({
   error: "Error",
 } as const);
 
+// A plugin whose own admission is not decided can never install, however
+// available a component looks. No entry in the pinned catalog is in that state,
+// so this is robustness for a catalog bump rather than a live case. Declared as
+// plain strings because "rejected" is a catalog status the UI status union
+// collapses to "unavailable" before it ever reaches this view.
+const ADMISSION_UNDECIDED: readonly string[] = Object.freeze(["review_required", "rejected"]);
+
 /**
- * Only an installed plugin offers its executable components as tools, and only
- * a component that is available and carries a pinned digest can be referenced.
- *
- * Installation is component-scoped, so a plugin is offered whenever at least
- * one of its components is available - which is what makes a partially
- * available plugin such as `github` installable at all. The status collapses
- * to "installed" only while every component is available, so an installation
- * that covers just some of them is recognised by its revision, the field the
- * list action sets for a real installation only.
+ * Installation is component-scoped, so a plugin is offered whenever its own
+ * admission is decided and at least one of its components is available - which
+ * is what makes a partially available plugin such as `github` installable at
+ * all. The whole-plugin status collapses to "installed" only while every
+ * component is available, so an installation that covers just some of them is
+ * never labelled that way; it is recognised by its revision, the field the list
+ * action sets for a real installation only. Everything that means "there is an
+ * installation" - the badge, the install button, and whether a component can be
+ * added to a workflow - reads that, or a partial install could never be used.
  */
 export function toPluginCardView(item: PluginCatalogCardItem) {
   const installed = item.status === "installed";
@@ -29,9 +36,12 @@ export function toPluginCardView(item: PluginCatalogCardItem) {
   return Object.freeze({
     pluginName: item.pluginName,
     pluginVersion: item.pluginVersion,
-    badge: BADGES[item.status],
+    badge: installationPresent && !installed ? "Installed (partial)" : BADGES[item.status],
     reason: item.reason,
-    canInstall: !installationPresent && item.components.some((component) => component.status === "available"),
+    installationPresent,
+    canInstall: !installationPresent
+      && !ADMISSION_UNDECIDED.includes(item.status)
+      && item.components.some((component) => component.status === "available"),
     components: Object.freeze(item.components.map((component) => Object.freeze({ ...component }))),
     addableComponents: Object.freeze(item.components
       .filter((component) => (component.kind === "app" || component.kind === "mcp")
@@ -41,7 +51,7 @@ export function toPluginCardView(item: PluginCatalogCardItem) {
         name: component.name,
         kind: component.kind,
         componentDigest: component.componentDigest as string,
-        canAdd: installed,
+        canAdd: installationPresent,
       }))),
   });
 }
@@ -88,7 +98,7 @@ export function PluginCard({ item, onInstall, onAddTool }: {
         className="mt-4 rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-zinc-300 dark:disabled:bg-zinc-700"
         aria-label={`Install ${view.pluginName}`}
       >
-        {item.status === "installed" ? "Installed" : "Review installation"}
+        {view.installationPresent ? "Installed" : "Review installation"}
       </button>
     </article>
   );

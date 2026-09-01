@@ -553,7 +553,7 @@ describe("enabling a component-scoped installation", () => {
     const useCase = new SetPluginEnabledUseCase({
       pluginsRepository: partiallyInstalled([]), pluginApiAuthorizationPolicy: new FakeAuthorization(),
     });
-    await expect(useCase.execute(request)).rejects.toThrow("installation_not_found");
+    await expect(useCase.execute(request)).rejects.toThrow("installation_conflict");
   });
 
   it("refuses to toggle an installation holding a component the catalog no longer admits", async () => {

@@ -722,9 +722,10 @@ provider and answer 401 to an unauthenticated `initialize`. So:
 - "118 admitted components" (the catalog-wide number) is **not** "118
   executable components": 114 are `app`, `asset` and `skill` components with
   no runtime call path. The executable set is the four MCP components, all
-  four gated. This branch makes three of them installable that previously
-  were not (cloudflare, linear, notion — each sits beside non-admitted
-  siblings); github was installable before.
+  four gated. This branch makes three plugins installable that previously were
+  not (cloudflare, github, notion — each has exactly one admitted MCP
+  component beside non-admitted siblings); linear is 5/5 admitted and was
+  always installable.
 
 ## II.5 What is proven, and what is not
 

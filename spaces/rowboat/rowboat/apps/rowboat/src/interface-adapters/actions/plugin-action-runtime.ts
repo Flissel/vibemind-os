@@ -303,7 +303,9 @@ export function createPluginActionRuntime(dependencies: PluginActionRuntimeDepen
       if (installation.present !== envelope.installationPresent) {
         throw new Error("stale_preview");
       }
-      if (envelope.installationPresent) throw new Error("component_not_admitted");
+      // Installing what is already installed conflicts with the stored
+      // installation; it says nothing about the components that were selected.
+      if (envelope.installationPresent) throw new Error("installation_conflict");
       assertSelectionInstallable(current, selection);
       const result = await controllers.installation.install(dependencies.createRequest(), {
         projectId: envelope.projectId, pluginName: envelope.pluginName, catalogDigest: envelope.catalogDigest,

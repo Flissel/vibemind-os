@@ -257,10 +257,12 @@ one transaction, or nothing is.
 
 ## Using a plugin from the Rowboat UI
 
-The plugins page lists the pinned catalog. Installing an admitted plugin writes
-an installation with the provider bindings the catalog declares. Each executable
-component of an installed plugin then offers **Add to workflow**, which appends
-a tool to the project draft workflow bound to that component.
+The plugins page lists the pinned catalog. Installation is **per component**:
+the install dialog shows one checkbox per component, pre-checked for every
+component the catalog reports as `available`, and writes an admission row and a
+provider binding for the selected components only. Each executable component of
+an installed plugin then offers **Add to workflow**, which appends a tool to the
+project draft workflow bound to that component.
 
 A tool added this way carries a **native** binding: it has no legacy tool it
 could displace, so the runtime mode gate below does not apply to it and it is
@@ -293,16 +295,57 @@ package `@rowboat/openai-plugin-runtime`: every plugin page fails with
 With `USE_AUTH` unset the plugin actions run as `guest_user`, which needs a
 `project_members` row for the project, otherwise every action is `forbidden`.
 
-A plugin is installable from the UI only while its *plugin-level* status is
-`available`, which means every one of its components is admitted and available.
-A single `review_required` component makes the whole plugin
-`partially_available` and blocks installing the admitted ones - `github` is in
-that bucket today. Re-derived directly from the pinned lock
-(`config/openai-plugin-catalog.lock.json`) against `serializedPlugin`'s own
-criterion (`app/api/v1/projects/[projectId]/plugins/_responses.ts`): a plugin
-counts as installable only if its own admission is `admitted` *and* every one
-of its components is both admitted and `available` or `installed` - **118**
-of the 180 pinned plugins meet that today, not 117.
+### Installing part of a plugin
+
+A plugin is offered from the UI while its own admission is decided and at least
+one of its components is `available`. A plugin the catalog reports as
+`partially_available` (one admitted component beside `review_required`
+siblings) is installable; it is only not installable *as a whole*.
+
+The selection travels as `componentDigests`, sorted, unique and lowercase
+64-hex, and is optional at every boundary:
+
+- `POST /api/v1/projects/{projectId}/plugins` accepts it beside `pluginName`,
+  `catalogDigest` and `expectedRevision`. **Absent means every component**,
+  which is what every client written before this existed already sends.
+- The preview server action accepts it; the install server action takes
+  `{previewToken, componentDigests}`.
+- The signed preview envelope carries a `componentSelectionDigest`, so a token
+  issued for one selection cannot install another. The idempotency fingerprint
+  binds the same digest, so one idempotency key cannot be replayed with a
+  different selection.
+- Admission rows and provider bindings are written for the selected components
+  only. There is no path that adds a further component afterwards: the
+  selection is made once, at install.
+- REST bodies cap every JSON array at 64 elements, so a REST caller can name at
+  most 64 components explicitly. An absent selection still covers all 88
+  components of `zoom`.
+
+Rejections: an empty, duplicated, malformed or foreign digest is
+`request_invalid`; a selected component the catalog does not admit is
+`component_not_admitted`; a selected component that cannot run reports its own
+availability reason; installing a plugin that is already installed is
+`installation_conflict`.
+
+### Catalog facts at digest `11035eb8...`
+
+Re-derived from the pinned lock (`config/openai-plugin-catalog.lock.json`).
+Several of the rulings above rest on these:
+
+- 180 entries and **1093** components, **all 1093 `available`** - what varies
+  across the catalog is admission, not availability.
+- **0** duplicate binding digests: a digest identifies exactly one component.
+- **0** provider bindings declare `pairedComponentDigests`.
+- Installable as a whole - own admission `admitted` *and* every component
+  admitted and `available` or `installed`, which is `serializedPlugin`'s own
+  criterion in `app/api/v1/projects/[projectId]/plugins/_responses.ts` -
+  **118** of 180. Installable per component: **121**. The three this unlocks
+  are **cloudflare**, **github** and **notion**, each of which has exactly one
+  admitted `mcp` component beside non-admitted siblings.
+- Only **4** admitted components are `mcp`, and they are the entire executable
+  set: github, cloudflare, linear and notion. All four are OAuth-gated at the
+  provider; `credentialSlots: []` means "no env-var-style slot declared", not
+  "no credential needed". See `E2E-PROOF.md` Part II.
 
 ## Runtime modes and cutover
 

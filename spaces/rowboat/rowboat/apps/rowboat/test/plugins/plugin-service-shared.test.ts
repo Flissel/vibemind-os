@@ -189,6 +189,11 @@ describe("assertSelectionAdmitted", () => {
 
   it("rejects a digest that belongs to another plugin", () => {
     expect(() => assertSelectionAdmitted(pinnedEntry("github"), [LINEAR_MCP])).toThrow("request_invalid");
+    expect(() => assertSelectionAdmitted(pinnedEntry("github"), [GITHUB_MCP, LINEAR_MCP])).toThrow("request_invalid");
+  });
+
+  it("refuses an empty selection on an entry that has components, whoever derived it", () => {
+    expect(() => assertSelectionAdmitted(pinnedEntry("github"), [])).toThrow("request_invalid");
   });
 
   it("still rejects the whole plugin when its license is not admitted", () => {

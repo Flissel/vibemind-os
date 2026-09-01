@@ -647,13 +647,16 @@ describe("component-scoped installation through the server action", () => {
     let installInput: Readonly<Record<string, unknown>> | null = null;
     let lastReplayInput: Readonly<Record<string, unknown>> | null = null;
     let currentPreview: Readonly<Record<string, unknown>> = partialPreview;
+    let currentInstallations: readonly unknown[] = [];
+    let actor: Readonly<{ kind: "user"; userId: string }> = Object.freeze({ kind: "user", userId: "user-1" });
+    let now = 1_700_000_000_000;
     const runtime = createPluginActionRuntime({
       resolveControllers: async () => Object.freeze({
-        authenticate: async () => Object.freeze({ kind: "user" as const, userId: "user-1" }),
+        authenticate: async () => actor,
         findInstallReplay: async (_request: Request, input: Readonly<Record<string, unknown>>) => { lastReplayInput = input; return null; },
         catalog: Object.freeze({ execute: async () => [] }),
         installation: Object.freeze({
-          list: async () => [],
+          list: async () => currentInstallations,
           preview: async () => currentPreview,
           install: async (_request: Request, input: Readonly<Record<string, unknown>>) => {
             mutations += 1; installInput = input;
@@ -665,7 +668,7 @@ describe("component-scoped installation through the server action", () => {
       createIdempotencyKey: () => "server-key-1",
       previewSecret: "s".repeat(64),
       pinnedCatalogDigest: digest,
-      now: () => 1_700_000_000_000,
+      now: () => now,
     });
     const previewFor = async (componentDigests?: readonly string[], priorPreviewToken?: string) => (await runtime.preview({
       projectId: "project-1", pluginName: "github", catalogDigest: digest,
@@ -675,6 +678,9 @@ describe("component-scoped installation through the server action", () => {
     return {
       runtime, previewFor,
       set preview(value: Readonly<Record<string, unknown>>) { currentPreview = value; },
+      set installations(value: readonly unknown[]) { currentInstallations = value; },
+      set actor(value: Readonly<{ kind: "user"; userId: string }>) { actor = value; },
+      set now(value: number) { now = value; },
       get mutations() { return mutations; },
       get installInput() { return installInput; },
       get lastReplayInput() { return lastReplayInput; },
@@ -764,6 +770,38 @@ describe("component-scoped installation through the server action", () => {
     expect(state.mutations).toBe(1);
   });
 
+  // An install of a plugin that is already installed is a conflict with the
+  // installation that exists, not a decision about its components.
+  it("names an install of an already installed plugin a conflict, not a component decision", async () => {
+    const state = setup();
+    state.installations = [Object.freeze({
+      pluginName: "github", pluginVersion: "1.0.0", catalogDigest: digest, policyVersion,
+      license: Object.freeze({ declaration: "MIT", decision: "admitted" }), admission: "admitted",
+      components: Object.freeze([]), enabled: true, revision: 0,
+    })];
+    const preview = await state.previewFor([mcpDigest]);
+    await expect(state.runtime.install({ previewToken: preview.previewToken, componentDigests: [mcpDigest] }))
+      .rejects.toThrow("installation_conflict");
+    expect(state.mutations).toBe(0);
+  });
+
+  it("refuses a prior envelope from another actor or one that has expired", async () => {
+    const crossActor = setup();
+    const issued = await crossActor.previewFor([mcpDigest]);
+    crossActor.actor = Object.freeze({ kind: "user", userId: "user-2" });
+    await expect(crossActor.runtime.preview({
+      projectId: "project-1", pluginName: "github", catalogDigest: digest, priorPreviewToken: issued.previewToken,
+    })).rejects.toThrow("preview_invalid");
+
+    const expired = setup();
+    const stale = await expired.previewFor([mcpDigest]);
+    expired.now = 1_700_000_300_000;
+    await expect(expired.runtime.preview({
+      projectId: "project-1", pluginName: "github", catalogDigest: digest, priorPreviewToken: stale.previewToken,
+    })).rejects.toThrow("preview_invalid");
+    expect(crossActor.mutations + expired.mutations).toBe(0);
+  });
+
   it("refuses a prior envelope that was issued for another plugin, project or secret", async () => {
     const state = setup();
     const opened = await state.previewFor([mcpDigest]);
@@ -796,6 +834,34 @@ describe("component selection in the catalog card and install dialog", () => {
     expect(toPluginCardView(item({ status: "partially_available", components, revision: 3 })).canInstall).toBe(false);
     expect(toPluginCardView(item({ status: "installed", components })).canInstall).toBe(false);
     expect(toPluginCardView(item({ status: "unavailable", components: [component({ status: "unavailable", reason: "provider_unavailable" })] })).canInstall).toBe(false);
+  });
+
+  it("never offers a plugin whose own admission is not decided, however available a component looks", () => {
+    const item = (status: string) => ({
+      pluginName: "github", pluginVersion: "1.0.0", catalogDigest: digest, sourceCommit, status,
+      components: [component()], reason: "license_review_required",
+    }) as unknown as PluginCatalogCardItem;
+    expect(toPluginCardView(item("review_required")).canInstall).toBe(false);
+    expect(toPluginCardView(item("rejected")).canInstall).toBe(false);
+  });
+
+  // A component-scoped install never reaches whole-plugin status "installed",
+  // so the card has to read the installation from its revision - otherwise a
+  // plugin this branch unlocks could be installed and never used.
+  it("offers the components of an installed partial plugin and says it is installed", () => {
+    const components = [component(), component({ componentDigest: "b".repeat(64), status: "review_required", reason: "write_review_required" })];
+    const base = {
+      pluginName: "github", pluginVersion: "1.0.0", catalogDigest: digest, sourceCommit,
+      status: "partially_available", components,
+    } as unknown as PluginCatalogCardItem;
+    const installed = toPluginCardView({ ...base, revision: 2 } as PluginCatalogCardItem);
+    expect(installed.installationPresent).toBe(true);
+    expect(installed.badge).toBe("Installed (partial)");
+    expect(installed.addableComponents.map((entry) => entry.canAdd)).toEqual([true]);
+    const uninstalled = toPluginCardView(base);
+    expect(uninstalled.installationPresent).toBe(false);
+    expect(uninstalled.badge).toBe("Partially available");
+    expect(uninstalled.addableComponents.map((entry) => entry.canAdd)).toEqual([false]);
   });
 
   it("preselects every available component and keeps the rest visible but unselectable", () => {
