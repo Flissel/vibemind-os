@@ -22,10 +22,10 @@ const ComponentDigests = z.array(z.string().regex(DIGEST)).min(1).max(512);
 const ListInput = z.object({ projectId: z.string().regex(ID), catalogDigest: z.string().regex(DIGEST) }).strict();
 const PreviewInput = z.object({
   projectId: z.string().regex(ID), pluginName: z.string().regex(ID), catalogDigest: z.string().regex(DIGEST),
-  componentDigests: ComponentDigests.optional(),
+  componentDigests: ComponentDigests.optional(), priorPreviewToken: z.string().min(1).max(4096).optional(),
 }).strict();
 const InstallInput = z.object({ previewToken: z.string().min(1).max(4096), componentDigests: ComponentDigests.optional() }).strict();
-const PREVIEW_KEYS = Object.freeze(["projectId", "pluginName", "catalogDigest", "componentDigests"]);
+const PREVIEW_KEYS = Object.freeze(["projectId", "pluginName", "catalogDigest", "componentDigests", "priorPreviewToken"]);
 const INSTALL_KEYS = Object.freeze(["previewToken", "componentDigests"]);
 
 export type PluginUiStatus = "available" | "review_required" | "installed" | "partially_available" | "unavailable" | "migration_required" | "error";
@@ -184,6 +184,26 @@ function assertSelectionInstallable(item: SerializedPlugin, selection: readonly 
   }
 }
 
+/**
+ * What a signed envelope pinned, against what the server reports now: the
+ * provenance of the plugin and the decisions the operator was shown. Install
+ * checks it before mutating, and a re-signed preview checks it against the
+ * envelope the operator actually reviewed, so staleness spans the whole review
+ * rather than the moment between the last preview and the click.
+ */
+function assertEnvelopeStillCurrent(
+  envelope: PluginPreviewEnvelope,
+  item: SerializedPlugin,
+  digests: Readonly<{ componentDecisionsDigest: string; credentialSlotsDigest: string }>,
+): void {
+  if (
+    item.pluginName !== envelope.pluginName || item.catalogDigest !== envelope.catalogDigest
+    || item.sourceCommit !== envelope.sourceCommit
+    || digests.componentDecisionsDigest !== envelope.componentDecisionsDigest
+    || digests.credentialSlotsDigest !== envelope.credentialSlotsDigest
+  ) throw new Error("stale_preview");
+}
+
 function catalogItem(item: SerializedPlugin, installed?: SerializedPlugin): PluginUiCatalogItem {
   const catalogStatus = canonicalStatus(item);
   const status = installed === undefined || catalogStatus !== "available" ? catalogStatus : "installed";
@@ -223,8 +243,17 @@ export function createPluginActionRuntime(dependencies: PluginActionRuntimeDepen
       const selection = parsed.componentDigests === undefined ? undefined : requestedComponentSelection(parsed.componentDigests);
       const now = dependencies.now?.() ?? Date.now();
       validatePluginPreviewSecret(dependencies.previewSecret);
+      // A prior envelope only ever authorizes the plugin it was issued for; a
+      // tampered or expired one authorizes nothing and is not a drift signal.
+      let prior: PluginPreviewEnvelope | undefined;
+      if (parsed.priorPreviewToken !== undefined) {
+        try { prior = verifyPluginPreviewEnvelope(parsed.priorPreviewToken, dependencies.previewSecret, now); }
+        catch { throw new Error("preview_invalid"); }
+        if (prior.projectId !== parsed.projectId || prior.pluginName !== parsed.pluginName || prior.catalogDigest !== parsed.catalogDigest) throw new Error("preview_invalid");
+      }
       const controllers = await dependencies.resolveControllers();
       const identity = await controllers.authenticate(dependencies.createRequest());
+      if (prior !== undefined && !sameActor(identity, prior)) throw new Error("preview_invalid");
       const installation = await projectState(controllers, dependencies.createRequest(), parsed.projectId, parsed.pluginName, parsed.catalogDigest);
       const raw = await controllers.installation.preview(dependencies.createRequest(), {
         projectId: parsed.projectId, pluginName: parsed.pluginName, catalogDigest: parsed.catalogDigest,
@@ -237,6 +266,7 @@ export function createPluginActionRuntime(dependencies: PluginActionRuntimeDepen
       const idempotencyKey = dependencies.createIdempotencyKey();
       if (!IDEMPOTENCY.test(idempotencyKey)) throw new Error("response_invalid");
       const digests = previewDigests(item);
+      if (prior !== undefined) assertEnvelopeStillCurrent(prior, item, digests);
       const previewToken = signPluginPreviewEnvelope({
         version: "rowboat_plugin_preview_v1", ...actor(identity), projectId: parsed.projectId, pluginName: parsed.pluginName,
         catalogDigest: parsed.catalogDigest, sourceCommit: item.sourceCommit, installationPresent: installation.present,
@@ -268,12 +298,8 @@ export function createPluginActionRuntime(dependencies: PluginActionRuntimeDepen
       });
       const current = await json<SerializedPlugin & { credentialSlots: Array<{ name: string; configured: boolean }> }>(previewResponse(previewRaw));
       const currentDigests = previewDigests(current);
-      if (
-        current.pluginName !== envelope.pluginName || current.catalogDigest !== envelope.catalogDigest
-        || current.sourceCommit !== envelope.sourceCommit || installation.revision !== envelope.expectedRevision
-        || currentDigests.componentDecisionsDigest !== envelope.componentDecisionsDigest
-        || currentDigests.credentialSlotsDigest !== envelope.credentialSlotsDigest
-      ) throw new Error("stale_preview");
+      assertEnvelopeStillCurrent(envelope, current, currentDigests);
+      if (installation.revision !== envelope.expectedRevision) throw new Error("stale_preview");
       if (installation.present !== envelope.installationPresent) {
         throw new Error("stale_preview");
       }

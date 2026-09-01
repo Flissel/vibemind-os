@@ -53,6 +53,10 @@ describe("plugin catalog view state", () => {
     expect(toPluginCardView(card("review_required", "license_review_required", "review_required")).reason).toBe("license_review_required");
   });
 
+  it("does not offer a plugin that has no components at all", () => {
+    expect(toPluginCardView({ ...card("available"), components: Object.freeze([]) }).canInstall).toBe(false);
+  });
+
   it("returns deeply immutable hydration-safe view data", () => {
     const view = toPluginCardView(card("available"));
     expect(Object.isFrozen(view)).toBe(true);
@@ -642,6 +646,7 @@ describe("component-scoped installation through the server action", () => {
     let mutations = 0;
     let installInput: Readonly<Record<string, unknown>> | null = null;
     let lastReplayInput: Readonly<Record<string, unknown>> | null = null;
+    let currentPreview: Readonly<Record<string, unknown>> = partialPreview;
     const runtime = createPluginActionRuntime({
       resolveControllers: async () => Object.freeze({
         authenticate: async () => Object.freeze({ kind: "user" as const, userId: "user-1" }),
@@ -649,7 +654,7 @@ describe("component-scoped installation through the server action", () => {
         catalog: Object.freeze({ execute: async () => [] }),
         installation: Object.freeze({
           list: async () => [],
-          preview: async () => partialPreview,
+          preview: async () => currentPreview,
           install: async (_request: Request, input: Readonly<Record<string, unknown>>) => {
             mutations += 1; installInput = input;
             return Object.freeze({ type: "install", receiptId: "receipt-1", projectId: "project-1", pluginName: "github", status: "success", redactions: Object.freeze([]) });
@@ -662,12 +667,14 @@ describe("component-scoped installation through the server action", () => {
       pinnedCatalogDigest: digest,
       now: () => 1_700_000_000_000,
     });
-    const previewFor = async (componentDigests?: readonly string[]) => (await runtime.preview({
+    const previewFor = async (componentDigests?: readonly string[], priorPreviewToken?: string) => (await runtime.preview({
       projectId: "project-1", pluginName: "github", catalogDigest: digest,
       ...(componentDigests === undefined ? {} : { componentDigests }),
+      ...(priorPreviewToken === undefined ? {} : { priorPreviewToken }),
     })) as unknown as { previewToken: string };
     return {
       runtime, previewFor,
+      set preview(value: Readonly<Record<string, unknown>>) { currentPreview = value; },
       get mutations() { return mutations; },
       get installInput() { return installInput; },
       get lastReplayInput() { return lastReplayInput; },
@@ -721,6 +728,53 @@ describe("component-scoped installation through the server action", () => {
     const state = setup();
     const preview = await state.previewFor();
     await expect(state.runtime.install({ previewToken: preview.previewToken })).rejects.toThrow("write_review_required");
+    expect(state.mutations).toBe(0);
+  });
+
+  // The dialog re-previews at click time to authorize the selection the operator
+  // ended up with. Handing back the token the dialog was opened with makes that
+  // re-signing refuse whenever a decision drifted while the dialog was open, so
+  // staleness still spans the whole review rather than the last few milliseconds.
+  it("refuses to re-sign a preview when a decision drifted since the prior envelope", async () => {
+    const state = setup();
+    const opened = await state.previewFor([mcpDigest]);
+    state.preview = Object.freeze({
+      ...partialPreview,
+      components: Object.freeze([
+        Object.freeze({ componentDigest: mcpDigest, name: "github", kind: "mcp", admission: admitted, availability: Object.freeze({ status: "available" }) }),
+        Object.freeze({ componentDigest: appDigest, name: "github", kind: "app", admission: admitted, availability: Object.freeze({ status: "unavailable", reason: "provider_unavailable" }) }),
+        Object.freeze({
+          componentDigest: skillDigest, name: "github", kind: "skill",
+          admission: Object.freeze({ status: "review_required", reason: "write_review_required", policyVersion }),
+          availability: Object.freeze({ status: "available" }),
+        }),
+      ]),
+    });
+    await expect(state.previewFor([mcpDigest], opened.previewToken)).rejects.toThrow("stale_preview");
+    expect(state.mutations).toBe(0);
+  });
+
+  it("re-signs against an unchanged prior envelope and installs with the fresh token", async () => {
+    const state = setup();
+    const opened = await state.previewFor([mcpDigest]);
+    const authorized = await state.previewFor([mcpDigest, appDigest], opened.previewToken);
+    expect(typeof authorized.previewToken).toBe("string");
+    await expect(state.runtime.install({ previewToken: authorized.previewToken, componentDigests: [mcpDigest, appDigest] }))
+      .resolves.toMatchObject({ receiptId: "receipt-1" });
+    expect(state.mutations).toBe(1);
+  });
+
+  it("refuses a prior envelope that was issued for another plugin, project or secret", async () => {
+    const state = setup();
+    const opened = await state.previewFor([mcpDigest]);
+    const last = opened.previewToken.endsWith("A") ? "B" : "A";
+    for (const input of [
+      { projectId: "project-2", pluginName: "github", catalogDigest: digest, priorPreviewToken: opened.previewToken },
+      { projectId: "project-1", pluginName: "other", catalogDigest: digest, priorPreviewToken: opened.previewToken },
+      { projectId: "project-1", pluginName: "github", catalogDigest: digest, priorPreviewToken: `${opened.previewToken.slice(0, -1)}${last}` },
+    ]) {
+      await expect(state.runtime.preview(input)).rejects.toThrow("preview_invalid");
+    }
     expect(state.mutations).toBe(0);
   });
 });

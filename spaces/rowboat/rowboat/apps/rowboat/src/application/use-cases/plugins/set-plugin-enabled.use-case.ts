@@ -21,6 +21,7 @@ export class SetPluginEnabledUseCase {
     // evidence of the install - so a partial installation is toggled against
     // exactly the components it actually holds.
     const admissions = await this.dependencies.pluginsRepository.listAdmissions(installation.id);
+    if (admissions.length === 0 && entry.components.length > 0) serviceError("installation_not_found");
     assertSelectionAdmitted(entry, canonicalComponentSelection(admissions.map((admission) => admission.componentDigest)));
     const result = await this.dependencies.pluginsRepository.setInstallationEnabledIdempotently({
       scope: fingerprint({ projectId: request.projectId, operation: "set_enabled", idempotencyKey: request.idempotencyKey }),

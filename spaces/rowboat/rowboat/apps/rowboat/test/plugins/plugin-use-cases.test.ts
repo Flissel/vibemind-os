@@ -291,6 +291,10 @@ describe("authorized plugin services", () => {
       policyVersion: entry.policyVersion, enabled: true, revision: 0,
     });
     repository.getInstallation = async () => current;
+    repository.listAdmissions = async () => [Object.freeze({
+      installationId: current.id, componentDigest: entry.components[0]!.component.metadata.bindingDigest as string,
+      componentKind: "mcp" as const, componentName: "GitHub", status: "admitted" as const, policyVersion: entry.policyVersion,
+    })];
     let writes = 0;
     let saved: PluginIdempotentEnableResult | null = null;
     repository.setInstallationEnabledIdempotently = async (request) => {
@@ -463,6 +467,12 @@ describe("component-scoped plugin installation", () => {
     expect(written.installation.providerBindings).toHaveLength(1);
   });
 
+  it("still refuses github whole when no selection is supplied", async () => {
+    const repository = lockRepository();
+    await expect(install(repository).execute(installRequest)).rejects.toThrow("component_not_admitted");
+    expect(repository.installationWrites).toBe(0);
+  });
+
   it("installs every component when no selection is supplied", async () => {
     const repository = lockRepository();
     await install(repository).execute({ ...installRequest, pluginName: "linear" });
@@ -537,6 +547,13 @@ describe("enabling a component-scoped installation", () => {
       pluginsRepository: partiallyInstalled([githubMcp]), pluginApiAuthorizationPolicy: new FakeAuthorization(),
     });
     await expect(useCase.execute(request)).resolves.toMatchObject({ enabled: false, revision: 1 });
+  });
+
+  it("refuses to toggle an installation that records no admitted component at all", async () => {
+    const useCase = new SetPluginEnabledUseCase({
+      pluginsRepository: partiallyInstalled([]), pluginApiAuthorizationPolicy: new FakeAuthorization(),
+    });
+    await expect(useCase.execute(request)).rejects.toThrow("installation_not_found");
   });
 
   it("refuses to toggle an installation holding a component the catalog no longer admits", async () => {

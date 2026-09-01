@@ -71,12 +71,15 @@ export function PluginInstallDialog({ projectId, preview, onClose }: {
     : [...current, componentDigest].sort()));
 
   // The envelope in hand authorizes the selection the dialog opened with, so a
-  // changed selection needs its own server-signed preview before it can install.
+  // changed selection needs its own server-signed preview before it can install -
+  // and that re-signing is handed the reviewed envelope, so it refuses whenever a
+  // decision drifted while the dialog was open instead of quietly re-pinning it.
   const install = () => startTransition(async () => {
     setError(null);
     try {
       const authorized = await previewPluginInstallationAction({
         projectId, pluginName: preview.pluginName, catalogDigest: preview.catalogDigest, componentDigests: selected,
+        priorPreviewToken: preview.previewToken,
       });
       await installPluginAction({ previewToken: authorized.previewToken, componentDigests: selected });
       router.refresh();
