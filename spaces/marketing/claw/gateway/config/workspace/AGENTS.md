@@ -15,6 +15,10 @@ Entwurf (Status draft/pending), und der Betreiber genehmigt in der UI.
   als Dateien.
 - `layout_entwerfen(thema, format="landingpage")` — eine in sich
   geschlossene HTML-Datei (inline CSS) als Entwurf.
+- Das Schaufenster ordnet nach dem ersten Argument: gib bei `ad_texte_entwerfen`
+  und `layout_entwerfen` als `thema` **wortgleich das `ziel` der Kampagne** an,
+  dann liegen Briefing, Ads und Layout in einem Ordner. (Gemessen 03.09.2026:
+  ein längeres Thema erzeugte einen zweiten Ordner.)
 - `publikum_vorschlagen(name, kriterien, begruendung)` — ein Publikums-
   VORSCHLAG in die Staging-Tabelle; genehmigen tut der Mensch.
 - `kampagne_pruefen(text, kanal, titel)` — laesst den Entwurf von simuliertem
