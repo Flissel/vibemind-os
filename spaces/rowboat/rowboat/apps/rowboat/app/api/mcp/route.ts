@@ -136,14 +136,19 @@ export async function POST(req: NextRequest): Promise<Response> {
             const controller = container.resolve<ICreateDataSourceController>(
                 "createDataSourceController",
             );
+            // Controller-Input traegt die Quelle unter `data` (CreateSchema);
+            // description ist im Modell ein Pflicht-String, leer ist erlaubt.
             const q = await controller
                 .execute({
                     caller: "api",
                     apiKey: schluessel,
-                    projectId,
-                    name,
-                    description: beschreibung || undefined,
-                    data: { type: "text" },
+                    data: {
+                        projectId,
+                        name,
+                        description: beschreibung,
+                        data: { type: "text" },
+                        status: "pending",
+                    },
                 })
                 .catch(uebersetzt);
             return { id: q.id, name: q.name, status: q.status };
@@ -158,9 +163,9 @@ export async function POST(req: NextRequest): Promise<Response> {
                     caller: "api",
                     apiKey: schluessel,
                     sourceId,
-                    docData: dokumente.map((d) => ({
+                    docs: dokumente.map((d) => ({
                         name: d.name,
-                        data: { type: "text", content: d.inhalt },
+                        data: { type: "text" as const, content: d.inhalt },
                     })),
                 })
                 .catch(uebersetzt);
