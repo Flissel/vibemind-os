@@ -50,5 +50,34 @@ class TestStatistik(unittest.TestCase):
         self.assertNotIn("geheim-777", json.dumps(r))
 
 
+class TestVorschlagUndLesen(unittest.TestCase):
+    def test_publikum_vorschlagen_trifft_proposals_tuer(self):
+        rekorder = Rekorder([(200, json.dumps({"success": True, "proposal_id": "ap-1"}))])
+        with mock.patch.object(werkzeuge, "_roh_anfrage", rekorder), \
+             mock.patch.dict("os.environ", {"MARKETING_API_URL": "http://x:5510",
+                                            "MARKETING_PROPOSAL_API_KEY": "pk1"}):
+            r = werkzeuge.publikum_vorschlagen("KMU Nord", {"tag": "kmu"}, "Testlauf")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(rekorder.aufrufe[0]["url"], "http://x:5510/api/proposals")
+        gesendet = json.loads(rekorder.aufrufe[0]["daten"])
+        self.assertEqual(gesendet["name"], "KMU Nord")
+        self.assertEqual(gesendet["filter_dsl"], {"tag": "kmu"})
+        self.assertEqual(gesendet["api_key"], "pk1")
+
+    def test_publikum_vorschlagen_verlangt_objekt(self):
+        r = werkzeuge.publikum_vorschlagen("X", "kein-objekt")
+        self.assertFalse(r["ok"])
+
+    def test_posteingang_und_kampagnen_sind_gets(self):
+        rekorder = Rekorder([(200, "[]"), (200, "[]")])
+        with mock.patch.object(werkzeuge, "_roh_anfrage", rekorder), \
+             mock.patch.dict("os.environ", {"MARKETING_API_URL": "http://x:5510"}):
+            self.assertTrue(werkzeuge.posteingang_lesen()["ok"])
+            self.assertTrue(werkzeuge.kampagnen_auflisten()["ok"])
+        self.assertEqual([a["url"] for a in rekorder.aufrufe],
+                         ["http://x:5510/api/inbox", "http://x:5510/api/campaigns"])
+        self.assertTrue(all(a["daten"] is None for a in rekorder.aufrufe))
+
+
 if __name__ == "__main__":
     unittest.main()

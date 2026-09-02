@@ -55,6 +55,31 @@ def statistik() -> dict:
     return _api("/api/stats")
 
 
+def publikum_vorschlagen(name: str, kriterien: dict, begruendung: str = "") -> dict:
+    """Publikums-VORSCHLAG in die Staging-Tuer /api/proposals — genehmigen
+    tut der Mensch. source ist fest 'marketing-claw' (unbekannte sources
+    normalisiert der Server zu hand:unknown — sichtbar im Audit, gewollt)."""
+    if not isinstance(kriterien, dict):
+        return {"ok": False, "fehler": "kriterien muss ein Objekt sein"}
+    return _api("/api/proposals", {
+        "api_key": os.environ.get("MARKETING_PROPOSAL_API_KEY", ""),
+        "name": name,
+        "filter_dsl": kriterien,
+        "rationale": begruendung,
+        "source": "marketing-claw",
+    })
+
+
+def posteingang_lesen() -> dict:
+    """Eingegangene Nachrichten (marketing.inbound_messages) — nur lesen."""
+    return _api("/api/inbox")
+
+
+def kampagnen_auflisten() -> dict:
+    """Bestehende Kampagnen — nur lesen."""
+    return _api("/api/campaigns")
+
+
 def _llm_json(system: str, nutzer: str) -> dict:
     """LLM fragen und die Antwort als JSON-Objekt lesen — fail-soft."""
     r = llm.frage(system, nutzer)
