@@ -747,3 +747,85 @@ The isolated daemon on :4273 (a fresh `OPENFANG_HOME` under the scratchpad,
 generated api_key never printed) was stopped after this run and its home and
 secrets file deleted. `rowboat-rs` stays up with the two projects this run
 inserted as evidence. The shared daemon on :4200 was never touched.
+
+---
+
+# Part III — a provider ACCEPTING a released call
+
+Date: 2026-09-02 (UTC). `master` at the commit adding
+`apps/rowboat/test/plugins/live-credential-acceptance-e2e.test.ts` — the
+opt-in test that produced every line below in one run, one test, green:
+
+```text
+ ✓ test/plugins/live-credential-acceptance-e2e.test.ts (1 test) 5716ms
+```
+
+## III.1 Headline
+
+Parts I and II proved the chain up to the provider's own refusal and said so
+plainly: *"Neither proves a provider accepting a call."* This run closes that
+claim. A real fine-grained GitHub PAT was placed in the isolated daemon's
+process environment (never on disk beyond the user's own `.env`, never in
+this repository, never in any log), allowlisted as the one issuable
+reference, and the same chain that ended in 401s now ends in GitHub's answer:
+
+```text
+04  install with [edaa0cfffb94...] -> receipt 153f200b-… status=success
+05  tool bound: plugin_github_github added=true
+06  runtime composed against http://127.0.0.1:4273; operation=get_me
+    (no readOnlyOperations declared -> classified write)
+07  OpenFang approval raised   id=63618280-… tool_name=get_me
+08    action_summary  = component edaa0cff…e2e0fa350 arguments 56551660…0706980
+09    approve() -> {"status":200,"body":{"status":"approved", …}}
+10  invocation outcome: success after ~3.6s; approval raised: 63618280-…
+11  provider result: status=success, authenticated github login=Vibemind-LAB
+12  execution receipt: status=success reason=undefined approvalId=63618280-…
+13  decision for 63618280-…: status=approved decided_at=2026-09-02T22:40:58Z
+```
+
+## III.2 What this run proves
+
+- **The credential transport the user chose works end to end.** OpenFang's
+  `/api/credentials/issue` released `GITHUB_PAT_TOKEN` for exactly this call
+  (the daemon logged `Credential issuance enabled for 1 reference(s):
+  GITHUB_PAT_TOKEN` at boot); `HttpMcpProvider` put it on the wire as a
+  bearer; `https://api.githubcopilot.com/mcp/` accepted it and answered the
+  `get_me` tool call with the authenticated identity. Rowboat held no
+  standing copy at any point — the test process itself only ever held the
+  daemon's api_key.
+- **The operation was chosen to be side-effect-free while still exercising
+  the write gate.** The pinned github component declares no
+  `readOnlyOperations`, so the real classifier routes `get_me` through the
+  release gate: approval raised, human-role decision, THEN issuance, THEN
+  the provider call. Maximal path, zero mutation on GitHub.
+- **The install was component-scoped (W3).** github is 1-of-8 admitted; the
+  selection `[edaa0cff…]` produced exactly one admission row and one
+  provider binding, and the tool bound against that selection.
+- **The approval never carried argument values** — `get_me` takes `{}`, and
+  the summary shows only the component digest and the arguments digest
+  (asserted in the test for Parts I–III alike).
+- **The receipt closes the audit loop**: `status=success`, the component
+  digest, and the very approval id OpenFang shows as `approved`.
+
+## III.3 What is still not proven
+
+- Acceptance for the OAuth-resource components (cloudflare, linear, notion):
+  their references normalize to the resource URL, which OpenFang's
+  `^[A-Za-z_][A-Za-z0-9_]{0,127}$` reference rule refuses, so today the
+  chain fails closed at `credential_missing` before any network I/O for
+  linear/notion, and cloudflare (no declaration at all) still goes out
+  unauthenticated. The name-derivation fix is designed
+  (`OAUTH_BEARER_<HOST_PATH>`) and is Rowboat-side only.
+- Anything on the shared `:4200` daemon, which runs key-less and refuses
+  issuance by design. This proof used an isolated daemon on `:4273`,
+  destroyed after the run.
+
+## III.4 Cleanup and hygiene
+
+The PAT was read from the user's root `.env` by the daemon start script at
+launch time and existed only in that process's environment; no second copy
+was written to disk. Post-run scans: `github_pat_` appears 0 times in the
+evidence log, both daemon logs, and the `plugin_receipts` collection; the
+daemon api_key appears 0 times in the evidence. The `:4273` daemon was
+stopped and its home (including the generated api_key) deleted; `rowboat-rs`
+keeps the run's two projects as evidence; `:4200` was never touched.
