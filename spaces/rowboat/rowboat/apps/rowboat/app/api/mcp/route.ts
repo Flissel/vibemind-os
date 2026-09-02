@@ -22,6 +22,8 @@ import { IListDataSourcesController } from "@/src/interface-adapters/controllers
 import { IFetchDataSourceController } from "@/src/interface-adapters/controllers/data-sources/fetch-data-source.controller";
 import { IListDocsInDataSourceController } from "@/src/interface-adapters/controllers/data-sources/list-docs-in-data-source.controller";
 import { IGetDownloadUrlForFileController } from "@/src/interface-adapters/controllers/data-sources/get-download-url-for-file.controller";
+import { ICreateDataSourceController } from "@/src/interface-adapters/controllers/data-sources/create-data-source.controller";
+import { IAddDocsToDataSourceController } from "@/src/interface-adapters/controllers/data-sources/add-docs-to-data-source.controller";
 import {
     BadRequestError,
     BillingError,
@@ -128,6 +130,41 @@ export async function POST(req: NextRequest): Promise<Response> {
                 .execute({ caller: "api", apiKey: schluessel, fileId })
                 .catch(uebersetzt);
             return { url };
+        },
+
+        async quelleAnlegen(projectId, name, beschreibung, schluessel) {
+            const controller = container.resolve<ICreateDataSourceController>(
+                "createDataSourceController",
+            );
+            const q = await controller
+                .execute({
+                    caller: "api",
+                    apiKey: schluessel,
+                    projectId,
+                    name,
+                    description: beschreibung || undefined,
+                    data: { type: "text" },
+                })
+                .catch(uebersetzt);
+            return { id: q.id, name: q.name, status: q.status };
+        },
+
+        async dokumenteSchreiben(sourceId, dokumente, schluessel) {
+            const controller = container.resolve<IAddDocsToDataSourceController>(
+                "addDocsToDataSourceController",
+            );
+            await controller
+                .execute({
+                    caller: "api",
+                    apiKey: schluessel,
+                    sourceId,
+                    docData: dokumente.map((d) => ({
+                        name: d.name,
+                        data: { type: "text", content: d.inhalt },
+                    })),
+                })
+                .catch(uebersetzt);
+            return { geschrieben: dokumente.length };
         },
     });
 
