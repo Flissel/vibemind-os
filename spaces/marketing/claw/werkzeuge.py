@@ -171,12 +171,14 @@ def kampagne_entwerfen(ziel: str, zielgruppe: str, kanal: str, kontext: str = ""
     })
     if not antwort["ok"]:
         return antwort
+    # Die Route antwortet {success, data: {id, status}} — id liegt unter data.
+    proposal_id = (antwort["daten"].get("data") or {}).get("id") or antwort["daten"].get("id")
     briefing = (f"# Kampagne: {ziel}\n\nZielgruppe: {zielgruppe}\nKanal: {kanal}\n"
-                f"Proposal: {antwort['daten'].get('id', '?')} (Status draft — versendet nichts)\n\n"
+                f"Proposal: {proposal_id or '?'} (Status draft — versendet nichts)\n\n"
                 f"## Betreff\n{entwurf.get('betreff', '')}\n\n## Text\n{entwurf.get('text', '')}\n\n"
                 f"## Begruendung\n{entwurf.get('begruendung', '')}\n")
     dateien = [schaufenster.ablegen(ziel, "briefing.md", briefing)]
-    return {"ok": True, "proposal_id": antwort["daten"].get("id"), "dateien": dateien}
+    return {"ok": True, "proposal_id": proposal_id, "dateien": dateien}
 
 
 def ad_texte_entwerfen(thema: str, n: int = 3) -> dict:

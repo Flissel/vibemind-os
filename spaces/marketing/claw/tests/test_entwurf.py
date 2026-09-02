@@ -27,7 +27,9 @@ class TestEntwurf(unittest.TestCase):
 
     def test_kampagne_entwerfen_erzeugt_draft_und_dateien(self):
         antwort = json.dumps({"betreff": "B", "text": "T", "begruendung": "G"})
-        rekorder = Rekorder([(200, json.dumps({"id": "bp-1", "status": "draft"}))])
+        # Echte Antwortform der Route (gemessen 02.09.2026): id liegt unter data.
+        rekorder = Rekorder([(200, json.dumps(
+            {"success": True, "data": {"id": "bp-1", "status": "draft"}}))])
         with mock.patch.object(llm, "frage",
                                return_value={"ok": True, "text": antwort}), \
              mock.patch.object(werkzeuge, "_roh_anfrage", rekorder):
@@ -69,7 +71,8 @@ class TestEntwurf(unittest.TestCase):
         self.assertTrue(os.path.exists(r["dateien"][0]))
 
     def test_nie_ein_sendepfad(self):
-        rekorder = Rekorder([(200, json.dumps({"id": "bp-1", "status": "draft"}))])
+        rekorder = Rekorder([(200, json.dumps(
+            {"success": True, "data": {"id": "bp-1", "status": "draft"}}))])
         with mock.patch.object(llm, "frage",
                                return_value={"ok": True, "text": json.dumps(
                                    {"betreff": "B", "text": "T", "begruendung": "G"})}), \

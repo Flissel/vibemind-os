@@ -43,5 +43,15 @@
         "requestTimeoutMs": 600000
       }
     }
+  },
+  "tools": {
+    "web": {
+      "search": {
+        "enabled": false
+      },
+      "fetch": {
+        "enabled": false
+      }
+    }
   }
 }
