@@ -40,3 +40,6 @@
 [submodule "spaces/video/laura"]
 	path = spaces/video/laura
 	url = https://github.com/Vibemind-LAB/Lauras_star.git
+[submodule "spaces/sales-claw"]
+	path = spaces/sales-claw
+	url = https://github.com/Flissel/sales-claw.git
