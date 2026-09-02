@@ -10,7 +10,7 @@
   "models": {
     "providers": {
       "shim": {
-        "baseUrl": "http://host.docker.internal:8114/v1",
+        "baseUrl": "http://host.docker.internal:8117/v1",
         "api": "openai-completions",
         "apiKey": "shim-prueft-keinen-schluessel",
         "models": [

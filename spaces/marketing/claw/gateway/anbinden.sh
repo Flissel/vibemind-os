@@ -22,6 +22,23 @@ fi
 echo "1) Saat -> Laufzeit-Volume (Konfig + Workspace), reload"
 docker compose cp config/openclaw.json marketing-claw:/home/node/.openclaw/openclaw.json
 docker compose cp config/workspace/AGENTS.md marketing-claw:/home/node/.openclaw/workspace/AGENTS.md
+
+# Die Saat traegt KEIN Gateway-Token (Geheimnisse gehoeren nicht ins Git) —
+# das Kopieren loescht darum jedes vorhandene. Ohne Token weigert sich
+# `openclaw agent`, eine Websocket-Sitzung zu oeffnen
+# (GatewayCredentialsRequiredError), und der Gateway wuerfe sich sonst bei
+# jedem Start ein neues, das niemand kennt. Also hier eins setzen, wenn keins
+# dasteht — idempotent, und es bleibt im Volume.
+if [ -z "$(docker compose exec -T marketing-claw openclaw config get gateway.auth.token 2>/dev/null | tr -d '\r\n "')" ]; then
+  echo "   Gateway-Token fehlt -> neues erzeugen"
+  NEUES_TOKEN="$(head -c 32 /dev/urandom | base64 | tr -d '=+/' | cut -c1-40)"
+  docker compose exec -T -e NEU="$NEUES_TOKEN" marketing-claw \
+    node -e 'require("node:child_process").execFileSync("openclaw",["config","set","gateway.auth.token",process.env.NEU],{stdio:"ignore"})'
+  unset NEUES_TOKEN
+  docker compose restart marketing-claw >/dev/null
+  sleep 5
+fi
+
 docker compose exec -T marketing-claw openclaw mcp reload >/dev/null
 
 echo "2) Probe"
