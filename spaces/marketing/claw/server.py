@@ -28,7 +28,8 @@ REPO_ROOT = next((p for p in (PKG_ROOT, *PKG_ROOT.parents)
 
 # Schluessel wie die Nachbar-Sidecars: aus der repo-.env nachladen, nie
 # ueberschreiben, kein Key-Material im Launcher-Skript.
-_ENV_KEYS = ("MARKETING_API_KEY", "MARKETING_PROPOSAL_API_KEY")
+_ENV_KEYS = ("MARKETING_API_KEY", "MARKETING_PROPOSAL_API_KEY",
+             "ROWBOAT_URL", "ROWBOAT_PROJECT_ID", "ROWBOAT_API_KEY")
 
 
 def _load_env_fallback() -> None:
@@ -52,6 +53,12 @@ WERKZEUGE = (
     werkzeuge.publikum_vorschlagen,
     werkzeuge.posteingang_lesen,
     werkzeuge.kampagnen_auflisten,
+    # Wissensbasis-Passthrough (Rowboat, nur lesend) — im Sidecar statt als
+    # zweiter MCP-Server im Gateway: Container erreichen im Mirrored-Modus
+    # kein LAN, und der Bearer-Schluessel bleibt so im Host-Prozess.
+    werkzeuge.wissensquellen,
+    werkzeuge.wissensquelle,
+    werkzeuge.dokumente,
 )
 
 HOST = os.environ.get("MARKETING_CLAW_MCP_HOST", "0.0.0.0")

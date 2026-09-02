@@ -18,7 +18,7 @@ FEHLER_MAXLAENGE = 300
 
 
 def _ohne_schluessel(text: str) -> str:
-    for name in ("MARKETING_API_KEY", "MARKETING_PROPOSAL_API_KEY"):
+    for name in ("MARKETING_API_KEY", "MARKETING_PROPOSAL_API_KEY", "ROWBOAT_API_KEY"):
         wert = os.environ.get(name, "")
         if wert and wert in text:
             text = text.replace(wert, "<schluessel>")
@@ -53,6 +53,62 @@ def _api(pfad: str, nutzlast: dict | None = None) -> dict:
 def statistik() -> dict:
     """Kennzahlen des Marketing-Space (accounts, Kampagnen, Audit-Stand)."""
     return _api("/api/stats")
+
+
+def _rowboat(werkzeug: str, argumente: dict) -> dict:
+    """Ein Lese-Werkzeugaufruf gegen Rowboats MCP-Endpunkt auf der VM.
+
+    PASSTHROUGH IM SIDECAR, NICHT IM GATEWAY — Absicht, kein Notbehelf:
+    Container erreichen im WSL-Mirrored-Modus kein LAN (gemessen 02.09.2026),
+    und so bleibt der Bearer-Schluessel im Host-Prozess statt im
+    Gateway-Volume. Die Projektbindung ist fest: projectId kommt aus der
+    Env, nie vom Aufrufer — der Agent kann keine fremden Projekte anfragen.
+    """
+    basis = os.environ.get("ROWBOAT_URL", "").strip().rstrip("/")
+    schluessel = os.environ.get("ROWBOAT_API_KEY", "").strip()
+    fehlt = [n for n, w in (("ROWBOAT_URL", basis), ("ROWBOAT_API_KEY", schluessel),
+                            ("ROWBOAT_PROJECT_ID", os.environ.get("ROWBOAT_PROJECT_ID", "").strip()))
+             if not w]
+    if fehlt:
+        return {"ok": False, "fehler": "Wissensbasis nicht eingerichtet, es fehlt: " + ", ".join(fehlt)}
+    nutzlast = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": werkzeug, "arguments": argumente}}
+    try:
+        status, rumpf = _roh_anfrage(
+            basis + "/api/mcp", json.dumps(nutzlast).encode("utf-8"),
+            {"Authorization": f"Bearer {schluessel}"})
+        if status != 200:
+            return {"ok": False, "fehler": _ohne_schluessel(
+                f"Wissensbasis HTTP {status}: {rumpf[:FEHLER_MAXLAENGE]}")}
+        antwort = json.loads(rumpf)
+        if "error" in antwort:
+            return {"ok": False, "fehler": _ohne_schluessel(
+                str(antwort["error"].get("message", ""))[:FEHLER_MAXLAENGE])}
+        ergebnis = antwort["result"]
+        text = ergebnis["content"][0]["text"]
+        if ergebnis.get("isError"):
+            return {"ok": False, "fehler": _ohne_schluessel(text[:FEHLER_MAXLAENGE])}
+        return {"ok": True, "daten": json.loads(text)}
+    except Exception as e:  # noqa: BLE001 — fail-soft ist der Vertrag
+        return {"ok": False, "fehler": _ohne_schluessel(
+            f"Wissensbasis nicht erreichbar ({type(e).__name__}: {e})")}
+
+
+def wissensquellen() -> dict:
+    """Die Wissensquellen des VibeMind-Projekts (Name, Status). Nur lesend."""
+    return _rowboat("rowboat_wissensquellen",
+                    {"projectId": os.environ.get("ROWBOAT_PROJECT_ID", "").strip()})
+
+
+def wissensquelle(quellen_id: str) -> dict:
+    """Eine Wissensquelle im Detail. Nur lesend."""
+    return _rowboat("rowboat_wissensquelle", {"sourceId": quellen_id})
+
+
+def dokumente(quellen_id: str, mit_inhalt: bool = False) -> dict:
+    """Dokumente einer Wissensquelle, optional mit Text. Nur lesend."""
+    return _rowboat("rowboat_dokumente",
+                    {"sourceId": quellen_id, "mitInhalt": mit_inhalt is True})
 
 
 def publikum_vorschlagen(name: str, kriterien: dict, begruendung: str = "") -> dict:
