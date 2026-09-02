@@ -80,14 +80,20 @@ export function normalizeMcpServer(name: string, input: unknown, componentDigest
   const server = parsed.data;
 
   if (server.type === "http") {
+    const url = secureUrl(server.url, "mcp_url");
+    // A server that declares neither credential is treated as an
+    // OAuth-protected resource at its own URL, so resolution fails closed
+    // unless the operator has provisioned that reference -- "declares
+    // nothing" must never mean "call unauthenticated".
+    const oauthResource = server.oauth_resource === undefined
+      ? (server.bearer_token_env_var === undefined ? url : undefined)
+      : secureUrl(server.oauth_resource, "oauth_resource");
     const result: NormalizedHttpMcp = {
       name,
       kind: "mcp-http",
       componentDigest,
-      url: secureUrl(server.url, "mcp_url"),
-      ...(server.oauth_resource === undefined
-        ? {}
-        : { oauthResource: secureUrl(server.oauth_resource, "oauth_resource") }),
+      url,
+      ...(oauthResource === undefined ? {} : { oauthResource }),
       ...(server.bearer_token_env_var === undefined
         ? {}
         : { bearerTokenReference: server.bearer_token_env_var }),

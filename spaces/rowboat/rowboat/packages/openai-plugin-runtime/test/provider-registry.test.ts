@@ -285,6 +285,38 @@ describe("component provider normalizers", () => {
     }, DIGEST_A)).toMatchObject({ timeoutMilliseconds: MAX_PROCESS_TIMEOUT_MS });
   });
 
+  it("gives an HTTP MCP server with no credential declaration its own URL as the OAuth resource", () => {
+    // Every executable HTTP MCP server in the pinned catalog is auth-gated at
+    // the provider, so "declares nothing" must not mean "call unauthenticated":
+    // it means the server is an OAuth-protected resource at its own URL, and
+    // resolution fails closed unless the operator has provisioned that
+    // reference. A genuinely open server needs an explicit declaration.
+    expect(normalizeMcpServer("bare", {
+      type: "http",
+      url: "https://mcp.cloudflare.com/mcp",
+    }, DIGEST_A)).toEqual({
+      name: "bare",
+      kind: "mcp-http",
+      componentDigest: DIGEST_A,
+      url: "https://mcp.cloudflare.com/mcp",
+      oauthResource: "https://mcp.cloudflare.com/mcp",
+    });
+  });
+
+  it("does not add the OAuth fallback when a bearer token reference is declared", () => {
+    expect(normalizeMcpServer("declared", {
+      type: "http",
+      url: "https://api.example.com/mcp",
+      bearer_token_env_var: "API_TOKEN",
+    }, DIGEST_A)).toEqual({
+      name: "declared",
+      kind: "mcp-http",
+      componentDigest: DIGEST_A,
+      url: "https://api.example.com/mcp",
+      bearerTokenReference: "API_TOKEN",
+    });
+  });
+
   it("normalizes an app only to its exact connector ID", () => {
     expect(normalizeApp("drive", { id: "connector_abcdef", capabilities: ["read"] }, DIGEST_A))
       .toEqual({

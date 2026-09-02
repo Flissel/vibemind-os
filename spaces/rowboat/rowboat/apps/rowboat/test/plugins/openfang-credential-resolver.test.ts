@@ -67,6 +67,47 @@ describe("OpenFangCredentialResolver", () => {
     expect(body).not.toContain(projectId);
   });
 
+  it("derives an env-shaped OpenFang reference name from an oauth resource URL", async () => {
+    // OpenFang's issuance endpoint accepts only ^[A-Za-z_][A-Za-z0-9_]{0,127}$
+    // as a reference name and resolves the value BY that name, so an oauth
+    // reference (a resource URL) must be translated into the deterministic
+    // name the operator provisions: OAUTH_BEARER_ + host and path, uppercased,
+    // with every non-alphanumeric run collapsed to one underscore.
+    const calls: Array<{ body: string }> = [];
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      calls.push({ body: init?.body as string });
+      return jsonResponse(200, { value: "operator-provisioned-token" });
+    }) as unknown as typeof fetch;
+    const resolver = resolverWith(fetchImpl);
+
+    await resolver.resolve({ kind: "oauth", reference: "https://mcp.linear.app/mcp" }, projectId, { signal: new AbortController().signal });
+    expect(JSON.parse(calls[0]!.body)).toEqual({ reference: "OAUTH_BEARER_MCP_LINEAR_APP_MCP" });
+
+    await resolver.resolve({ kind: "oauth", reference: "https://mcp.notion.com" }, projectId, { signal: new AbortController().signal });
+    expect(JSON.parse(calls[1]!.body)).toEqual({ reference: "OAUTH_BEARER_MCP_NOTION_COM" });
+
+    await resolver.resolve({ kind: "oauth", reference: "https://mcp.cloudflare.com/mcp" }, projectId, { signal: new AbortController().signal });
+    expect(JSON.parse(calls[2]!.body)).toEqual({ reference: "OAUTH_BEARER_MCP_CLOUDFLARE_COM_MCP" });
+  });
+
+  it("throws credential_missing before any fetch for an oauth reference that is not a URL", async () => {
+    let fetched = 0;
+    const resolver = resolverWith((async () => { fetched += 1; return jsonResponse(200, { value: "x" }); }) as unknown as typeof fetch);
+    const error = await captureRejection(resolver.resolve({ kind: "oauth", reference: "not-a-url" }, projectId, { signal: new AbortController().signal }));
+    expect(error.message).toBe("credential_missing");
+    expect("cause" in error && error.cause !== undefined).toBe(false);
+    expect(fetched).toBe(0);
+  });
+
+  it("throws credential_missing before any fetch when the derived oauth name would exceed OpenFang's 128-char bound", async () => {
+    let fetched = 0;
+    const resolver = resolverWith((async () => { fetched += 1; return jsonResponse(200, { value: "x" }); }) as unknown as typeof fetch);
+    const longPath = `https://example.com/${"a".repeat(130)}`;
+    const error = await captureRejection(resolver.resolve({ kind: "oauth", reference: longPath }, projectId, { signal: new AbortController().signal }));
+    expect(error.message).toBe("credential_missing");
+    expect(fetched).toBe(0);
+  });
+
   it("throws exactly credential_missing, with no cause, on a 404", async () => {
     const resolver = resolverWith((async () => jsonResponse(404, { error: "credential_unavailable" })) as unknown as typeof fetch);
     const err = await captureRejection(resolver.resolve(reference, projectId, { signal: new AbortController().signal }));

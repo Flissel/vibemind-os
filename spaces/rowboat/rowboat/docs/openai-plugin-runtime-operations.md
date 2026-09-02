@@ -120,6 +120,38 @@ very next call without a process restart:
 | `OPENFANG_URL` | Base URL of the OpenFang daemon that can issue credential values. Must be `https:`, or `http:` to a loopback host (`127.0.0.1`, `localhost`, `::1`) - anything else is refused. |
 | `OPENFANG_API_KEY` | Bearer token this composition presents to OpenFang's HTTP API |
 
+**How a reference becomes the name OpenFang resolves.** OpenFang issues a
+credential BY NAME (its vault → dotenv → env-var chain) and its endpoint
+accepts only `^[A-Za-z_][A-Za-z0-9_]{0,127}$`. The resolver therefore derives
+the wire name from the kernel's credential reference:
+
+- a **bearer** reference (from `bearer_token_env_var`, e.g.
+  `GITHUB_PAT_TOKEN`) passes through verbatim;
+- an **oauth** reference (from `oauth_resource`, a URL) deterministically
+  becomes `OAUTH_BEARER_` + host and path, uppercased, every non-alphanumeric
+  run collapsed to one underscore;
+- an HTTP MCP server that declares **neither** is normalized as an OAuth
+  resource at its own URL - "declares nothing" never means "call
+  unauthenticated"; without a provisioned reference the call fails closed as
+  `credential_missing` before any network I/O.
+
+For the pinned catalog's executable set, the names an operator provisions in
+OpenFang's secrets and allowlists in `OPENFANG_ISSUABLE_CREDENTIALS` are:
+
+| Component | Declared | OpenFang reference name |
+| --- | --- | --- |
+| github | `bearer_token_env_var: GITHUB_PAT_TOKEN` | `GITHUB_PAT_TOKEN` |
+| linear | `oauth_resource: https://mcp.linear.app/mcp` | `OAUTH_BEARER_MCP_LINEAR_APP_MCP` |
+| notion | `oauth_resource: https://mcp.notion.com` | `OAUTH_BEARER_MCP_NOTION_COM` |
+| cloudflare | (nothing - fallback to its own URL) | `OAUTH_BEARER_MCP_CLOUDFLARE_COM_MCP` |
+
+A reference that cannot be derived (an oauth reference that is not a URL, or
+a derived name over the 128-character bound) is refused locally as
+`credential_missing`, before any request to OpenFang. Note the tokens behind
+the three `OAUTH_BEARER_*` names are the operator's to obtain; for linear and
+notion the providers issue short-lived OAuth access tokens, and refreshing
+them inside OpenFang is its own design, not covered here.
+
 `OPENFANG_CREDENTIAL_TIMEOUT_MS` is different: unlike the two above, it is
 parsed exactly once, at composition startup, into `openFangCredentialTimeoutMs`
 (alongside `OPENFANG_APPROVAL_TIMEOUT_MS`, parsed the same way - see "The
@@ -204,8 +236,11 @@ over HTTPS to a real third-party MCP endpoint
 repository root for the full run: one call, the production composition
 (`resolveOpenFangComposedProvider`, `resolveOpenFangReleaseWrite`, and the
 container's other exported seams, called the way `createToolRuntime` calls
-them), no hand-added header anywhere. **Still unproven:** that a *real*
-third-party credential succeeds. The proof's token was deliberately fake, so
+them), no hand-added header anywhere. **Since proven:** E2E-PROOF.md
+Part III repeats this composition with a real `GITHUB_PAT_TOKEN` and the
+provider ACCEPTS the released call (`status=success`, authenticated
+identity returned). In the Part I run described here the token was
+deliberately fake, so
 GitHub's rejection is the intended outcome - the call ends in
 `provider_failed`, a code distinct from `credential_missing` and reachable
 only after the credential itself resolved to a value, so the proof also
@@ -451,9 +486,16 @@ Once that was fixed, one gate remained:
   `OPENFANG_URL` and `OPENFANG_API_KEY` both configured, `resolveProvider`
   wires an `OpenFangCredentialResolver` instead of
   `UnreleasedCredentialResolver` - see "Resolving a credential value from
-  OpenFang" above for the transport and its security shape. The end-to-end
-  call against a real third-party credential still has not been made; only
-  the resolver's own behaviour against an injected `fetch` is proven.
+  OpenFang" above for the transport and its security shape. **The
+  end-to-end call against a real third-party credential HAS now been made
+  and accepted**: E2E-PROOF.md Part III carries a released `get_me` through
+  real issuance of `GITHUB_PAT_TOKEN` to `api.githubcopilot.com`, which
+  answered with the authenticated identity; the receipt landed as
+  `status=success` with the approval id. What remains open is acceptance for
+  the three `OAUTH_BEARER_*` references (see "Resolving a credential value
+  from OpenFang" above for the exact names): the derivation is implemented
+  and unit-proven, the tokens behind the names are the operator's to
+  provision.
 
 Verified live: before the release gate was wired, an invocation failed with
 `provider_unavailable`; after it (Task 4-6), an unreleased write fails with
@@ -670,7 +712,8 @@ stays observably distinct from `credential_missing` (credential never
 resolved) even under a real network exchange, not only in the unit tests
 that exercise the mapping directly. What it does not prove: that a *real*,
 valid third-party credential succeeds - the token was fake by design, so
-only the rejection path is exercised - nor does it exercise the Next.js
+only the rejection path is exercised there (Part III has since proven the
+acceptance path with a real credential) - nor does it exercise the Next.js
 container path itself (the proof assembled `PluginToolRuntimeDependencies`
 by hand from the container's own exported composition seams rather than by
 calling `createPluginControllers()`, which needs Auth0/session
@@ -751,8 +794,12 @@ These are true limits of the current state, not oversights to work around:
   classifier would agree is read-only - today both binding-construction sites
   hard-code `"write"` regardless, so a fixed kernel alone would still never
   see a read reach it. None of this is modified here.
-- **No real, valid third-party credential has ever succeeded, and the
-  Next.js container path itself was not exercised.** `E2E-PROOF.md`
+- **The Next.js container path itself was not exercised.** (A real, valid
+  third-party credential HAS succeeded since: E2E-PROOF.md Part III, a
+  released `get_me` accepted by `api.githubcopilot.com` after real issuance
+  of `GITHUB_PAT_TOKEN`. The remaining acceptance gap is the three
+  `OAUTH_BEARER_*` references, whose tokens are the operator's to
+  provision.) `E2E-PROOF.md`
   (repository root) ran the full chain once, end to end, against a
   purpose-built OpenFang daemon rather than an injected `fetch`: an
   OpenFang-approved write reached the real provider (the Task 4-6
@@ -763,8 +810,9 @@ These are true limits of the current state, not oversights to work around:
   credential was a deliberately fake test value, GitHub refused it and the
   call ended in `provider_failed`, distinct from `credential_missing` -
   see "Released-write proof, and the credential boundary" above for both
-  codes' mechanism, and `E2E-PROOF.md` for the run itself. Still not proven:
-  that a genuine, valid third-party credential succeeds; that the Next.js
+  codes' mechanism, and `E2E-PROOF.md` for the run itself (Part III has since
+  proven the acceptance path with a genuine credential). Still not proven:
+  that the Next.js
   container path behaves this way (the proof assembled
   `PluginToolRuntimeDependencies` by hand from the container's exported
   composition seams rather than by calling `createPluginControllers()`,

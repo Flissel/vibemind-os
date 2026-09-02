@@ -20,11 +20,14 @@
  *
  * The pinned cloudflare MCP component declares `credentialSlots: []`, which is
  * NOT "no credential": the provider is OAuth-gated and answers 401 to an
- * unauthenticated `initialize`. So the expected end state is that Cloudflare
- * REJECTS the call, exactly as GitHub did in live-openfang-e2e.test.ts. That
- * is the success condition: the install, the tool binding, the release and
- * the provider call all worked and only the provider's authorization failed.
- * A stop at `write_review_required` means the release never landed.
+ * unauthenticated `initialize` (proven directly in E2E-PROOF.md II.3, when
+ * this test originally ended at Cloudflare's own 401). Since the
+ * credential-name rules landed, a server that declares nothing is treated as
+ * an OAuth resource at its own URL, so the expected end state is now a
+ * fail-closed `credential_missing` before any network I/O: the daemon
+ * allowlists no `OAUTH_BEARER_MCP_CLOUDFLARE_COM_MCP`. The install, the tool
+ * binding and the release still run and are still asserted. A stop at
+ * `write_review_required` means the release never landed.
  *
  * Opt-in, exactly like live-openfang-e2e.test.ts:
  *   ROWBOAT_LIVE_MONGO_URL=mongodb://127.0.0.1:27017/rowboat
@@ -122,7 +125,7 @@ describe.skipIf(SKIP)("live component-scoped install + release + provider, end t
   });
   afterAll(async () => { await client?.close(); });
 
-  it("installs cloudflare by its one admitted MCP component and carries a call to the real Cloudflare MCP endpoint", async () => {
+  it("installs cloudflare by its one admitted MCP component and fails closed at the unprovisioned OAuth credential", async () => {
     const database = client.db("rowboat");
 
     // ---------------------------------------------------------------- 1.
@@ -273,8 +276,15 @@ describe.skipIf(SKIP)("live component-scoped install + release + provider, end t
     log(`decision for ${String(raised?.id)}: status=${String(decided?.status)} decided_at=${String(decided?.decided_at)}`);
 
     // ---------------------------------------------------------------- 9.
+    // Since the credential-name rules landed, a server that declares no
+    // credential is treated as an OAuth resource at its own URL, so this
+    // released call now fails CLOSED at `credential_missing` (the daemon
+    // allowlists no OAUTH_BEARER_MCP_CLOUDFLARE_COM_MCP) before any network
+    // I/O -- it no longer reaches Cloudflare's 401. The release mechanics
+    // above are unchanged and still asserted: approval raised, approved,
+    // receipt stamped.
     expect(outcome).not.toBe("write_review_required");
-    expect(outcome).toBe("provider_failed");
+    expect(outcome).toBe("credential_missing");
     expect(raised).toBeDefined();
     expect(raised!.tool_name).toBe(OPERATION);
     expect(raised!.action_summary).toContain(componentDigest);

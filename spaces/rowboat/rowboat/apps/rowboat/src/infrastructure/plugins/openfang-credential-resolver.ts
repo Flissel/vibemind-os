@@ -30,6 +30,35 @@ export interface OpenFangCredentialResolverOptions {
  * `credential_missing`, and no thrown message ever carries the credential
  * value, the reference, the token, or the response body.
  */
+// OpenFang resolves a credential BY NAME (vault -> dotenv -> env var) and its
+// issuance endpoint accepts only `^[A-Za-z_][A-Za-z0-9_]{0,127}$`, so a
+// reference must arrive as an env-shaped name. A bearer/environment reference
+// already is one and passes through verbatim. An oauth reference is a resource
+// URL; it deterministically becomes `OAUTH_BEARER_` + host and path,
+// uppercased, every non-alphanumeric run collapsed to one underscore --
+// `https://mcp.linear.app/mcp` -> `OAUTH_BEARER_MCP_LINEAR_APP_MCP` -- which
+// is the exact name the operator provisions in OpenFang's secrets and
+// allowlists in `OPENFANG_ISSUABLE_CREDENTIALS`. A reference that cannot be
+// derived (not a URL, or a name that would exceed OpenFang's bound) yields
+// undefined and the caller fails closed as `credential_missing`.
+const OPENFANG_REFERENCE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+
+function deriveOpenFangReference(reference: CredentialReference): string | undefined {
+  if (reference.kind !== "oauth") return reference.reference;
+  let resource: URL;
+  try {
+    resource = new URL(reference.reference);
+  } catch {
+    return undefined;
+  }
+  const stem = `${resource.host}${resource.pathname}`
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/gu, "_")
+    .replace(/^_+|_+$/gu, "");
+  const derived = `OAUTH_BEARER_${stem}`;
+  return OPENFANG_REFERENCE.test(derived) ? derived : undefined;
+}
+
 export class OpenFangCredentialResolver implements CredentialResolver {
   readonly #options: OpenFangCredentialResolverOptions;
 
@@ -52,6 +81,8 @@ export class OpenFangCredentialResolver implements CredentialResolver {
     } catch {
       throw new Error("credential_missing");
     }
+    const openFangReference = deriveOpenFangReference(reference);
+    if (openFangReference === undefined) throw new Error("credential_missing");
 
     try {
       const body: unknown = await this.#fetchBounded(
@@ -62,7 +93,7 @@ export class OpenFangCredentialResolver implements CredentialResolver {
             "content-type": "application/json",
             Authorization: `Bearer ${this.#options.apiKey}`,
           },
-          body: JSON.stringify({ reference: reference.reference }),
+          body: JSON.stringify({ reference: openFangReference }),
           redirect: "error",
         },
         options?.signal,
