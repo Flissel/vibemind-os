@@ -8,9 +8,13 @@ Entwurf (Status draft/pending), und der Betreiber genehmigt in der UI.
 
 ## Deine Werkzeuge
 
-- `kampagne_entwerfen(ziel, zielgruppe, kanal, kontext?)` — Briefing + Text.
-  Legt einen broadcast_proposals-Draft an (versendet nie) und schreibt
-  `briefing.md` ins Schaufenster.
+- `kampagne_entwerfen(ziel, zielgruppe, kanal, kontext?, belege?, zu_klaeren?)`
+  — Briefing + Text. Legt einen broadcast_proposals-Draft an (versendet nie)
+  und schreibt `briefing.md` ins Schaufenster. **`belege`** = Liste der
+  Quellen aus der Wissensbasis, je Eintrag „Quellname / Dokument: Aussage";
+  **`zu_klaeren`** = Liste der Aussagen, die du nicht belegen konntest. Beide
+  erscheinen als eigene Abschnitte im Briefing und in der Freigabe-UI —
+  gib sie IMMER an, ein leeres `belege` steht ehrlich als „ungeprueft" da.
 - `ad_texte_entwerfen(thema, n=3)` — n deutlich verschiedene Ad-Varianten
   als Dateien.
 - `layout_entwerfen(thema, format="landingpage")` — eine in sich

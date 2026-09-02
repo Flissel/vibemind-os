@@ -219,23 +219,52 @@ def _llm_json(system: str, nutzer: str) -> dict:
         return {"ok": False, "fehler": "LLM-Antwort war kein JSON"}
 
 
-def kampagne_entwerfen(ziel: str, zielgruppe: str, kanal: str, kontext: str = "") -> dict:
+def _liste(werte) -> list:
+    """Belege/Zu-klaeren kommen vom Agenten — als Liste oder als eine Zeile je Eintrag."""
+    if not werte:
+        return []
+    if isinstance(werte, str):
+        return [z.strip("- ").strip() for z in werte.splitlines() if z.strip()]
+    return [str(w).strip() for w in werte if str(w).strip()]
+
+
+def kampagne_entwerfen(ziel: str, zielgruppe: str, kanal: str, kontext: str = "",
+                       belege=None, zu_klaeren=None) -> dict:
     """Entwirft eine Kampagne: Briefing + Text als broadcast_proposals-Draft
-    (Status draft — versendet NIE) plus Dateien im Schaufenster."""
+    (Status draft — versendet NIE) plus Dateien im Schaufenster.
+
+    BELEGPFLICHT (Betreiber-Entscheid 03.09.2026): `belege` sind die Quellen
+    aus der Wissensbasis, auf die sich die Produktaussagen stuetzen (je
+    Eintrag Quellname + Dokument + Aussage); `zu_klaeren` sind Aussagen, die
+    der Agent gern gemacht haette, aber nicht belegen konnte — sie stehen im
+    Briefing, NICHT im Text. Beide liefert der Agent, der die Wissensbasis
+    gelesen hat; das innere LLM erfindet keine Belege.
+    """
+    belege = _liste(belege)
+    zu_klaeren = _liste(zu_klaeren)
     r = _llm_json(
         "Du bist Marketing-Texter fuer VibeMind. Antworte NUR mit einem "
         'JSON-Objekt {"betreff": ..., "text": ..., "begruendung": ...}. '
-        "Deutsch, konkret, keine Superlative ohne Beleg.",
+        "Deutsch, konkret, keine Superlative. Verwende NUR Produktaussagen, "
+        "die im Kontext oder in den Belegen stehen — nichts dazuerfinden.",
         f"Kampagnenziel: {ziel}\nZielgruppe: {zielgruppe}\nKanal: {kanal}\n"
-        f"Kontext:\n{kontext}")
+        f"Kontext:\n{kontext}\n\nBelegte Produktaussagen:\n"
+        + ("\n".join(f"- {b}" for b in belege) or "- (keine)"))
     if not r["ok"]:
         return r
     entwurf = r["daten"]
+    belege_md = "\n".join(f"- {b}" for b in belege) or \
+        "- (keine Belege angegeben — Produktaussagen im Text sind damit ungeprueft)"
+    klaeren_md = "\n".join(f"- {z}" for z in zu_klaeren) or "- (nichts offen)"
     antwort = _api("/api/curator/broadcast_proposals", {
         "api_key": os.environ.get("MARKETING_PROPOSAL_API_KEY", ""),
         "channel": kanal,
         "draft_subject": str(entwurf.get("betreff", "")),
         "draft_body_text": str(entwurf.get("text", "")),
+        # Belege wandern in die Freigabe-UI mit — der Betreiber genehmigt nicht blind.
+        "draft_body_html": ("<h4>Belege</h4><ul>" + "".join(f"<li>{b}</li>" for b in belege)
+                            + "</ul><h4>Zu klaeren</h4><ul>"
+                            + "".join(f"<li>{z}</li>" for z in zu_klaeren) + "</ul>"),
         "actor": "marketing-claw",
     })
     if not antwort["ok"]:
@@ -245,6 +274,7 @@ def kampagne_entwerfen(ziel: str, zielgruppe: str, kanal: str, kontext: str = ""
     briefing = (f"# Kampagne: {ziel}\n\nZielgruppe: {zielgruppe}\nKanal: {kanal}\n"
                 f"Proposal: {proposal_id or '?'} (Status draft — versendet nichts)\n\n"
                 f"## Betreff\n{entwurf.get('betreff', '')}\n\n## Text\n{entwurf.get('text', '')}\n\n"
+                f"## Belege\n{belege_md}\n\n## Zu klaeren\n{klaeren_md}\n\n"
                 f"## Begruendung\n{entwurf.get('begruendung', '')}\n")
     dateien = [schaufenster.ablegen(ziel, "briefing.md", briefing)]
     return {"ok": True, "proposal_id": proposal_id, "dateien": dateien}
