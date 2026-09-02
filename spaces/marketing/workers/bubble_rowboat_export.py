@@ -119,8 +119,12 @@ def dokument_inhalt(bubble: dict) -> str:
     return "\n".join(zeilen)
 
 
-def _bestand(quellen_id: str) -> dict:
+def _bestand(quellen_id: str, griff=None) -> dict:
     """name -> {'inhalte': [...], 'wartet': bool} ueber die vorhandenen Dokumente.
+
+    `griff` ist der Rowboat-Zugriff; wer diese Funktion aus einem anderen
+    Modul benutzt (laura_rowboat_export), reicht seinen eigenen herein —
+    sonst zeigte der Vorgabewert an dessen Ersatz vorbei.
 
     ZWEI GEMESSENE EIGENHEITEN von Rowboat (02.09.2026), die den Vergleich
     bestimmen: (1) gleichnamige Dokumente werden NICHT versioniert, sondern
@@ -131,7 +135,8 @@ def _bestand(quellen_id: str) -> dict:
     vergleicht, haelt frisch Geschriebenes fuer fehlend und schreibt es
     erneut — genau so entstanden hier 14 Dokumente aus 7 Bubbles.
     """
-    r = _rowboat("rowboat_dokumente", {"sourceId": quellen_id, "mitInhalt": True})
+    r = (griff or _rowboat)("rowboat_dokumente",
+                            {"sourceId": quellen_id, "mitInhalt": True})
     if not r["ok"]:
         raise RuntimeError(f"Dokumente nicht lesbar: {r['fehler']}")
     daten = r["daten"] if isinstance(r["daten"], list) else []
