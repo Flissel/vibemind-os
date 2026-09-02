@@ -39,6 +39,26 @@ mit `SHIM_EXTRA_MCP_CONFIG` auf diese Datei. Prüfen:
 
     curl -s http://127.0.0.1:8117/v1/models
 
+## Der irreführende „out of extra usage"-Abbruch (gemessen 03.09.2026)
+
+Der Agentenlauf durchs Gateway brach mit `API Error: 400 You're out of extra
+usage` ab — bei vollem Kontingent: eine Direktprobe gegen denselben Shim mit
+demselben Konto lief Sekunden vorher. Bisektion eines 1:1 nachgespielten
+openclaw-Aufrufs (Request-Dump per `SHIM_DUMP_DIR`): nicht Größe (27.000
+Zeichen laufen), nicht Streaming, nicht die 44 Werkzeuge, kein Emoji — sondern
+zwei Zeilen aus openclaws „Assistant Output Directives" **zusammen**:
+
+    - Native quote/reply: first token `[[reply_to_current]]`; use `[[reply_to:<id>]]` ...
+    - Supported directives are stripped before rendering; channel config still decides delivery.
+
+Jede Zeile allein und jeder Marker allein läuft durch. `[[` → `[ [` heilt es
+deterministisch. Warum die CLI dafür eine Kontingent-Meldung ausgibt, ist
+nicht geklärt — die Meldung ist jedenfalls **kein** Kontingent-Befund.
+Darum trägt diese Instanz `SHIM_NEUTRALIZE_DOUBLE_BRACKETS=1`; openclaw kennt
+laut Schema keinen Schalter, die Direktiven wegzulassen. Für den
+Marketing-Agenten ist die Entschärfung folgenlos: er hat keine Kanäle, also
+nichts, was ein `[[reply_to_current]]` je rendern würde.
+
 ## Grenze
 
 Die CLI-Schleife läuft als der angemeldete Benutzer auf dem Host — sie kann
