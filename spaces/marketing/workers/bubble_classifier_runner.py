@@ -52,7 +52,14 @@ logger = logging.getLogger("marketing.bubble_classifier")
 
 _POLL_INTERVAL_S = float(os.environ.get("BUBBLE_CLASSIFIER_POLL_S", "30"))
 _THRESHOLD = float(os.environ.get("BUBBLE_CLASSIFIER_THRESHOLD", "0.7"))
-_MODEL = os.environ.get("BUBBLE_CLASSIFIER_MODEL", "gpt-4o-mini")
+# Modell-Tuer. Vorgabe seit 02.09.2026: Claude-Shim (Subscription) mit Haiku —
+# Klassifizieren in fuenf Kategorien ist eine kleine, haeufige Aufgabe, und
+# API-Budget gibt es seit 29.08.2026 nicht mehr. Beide Werte sind ueberschreibbar,
+# damit ein Lauf gegen OpenAI weiterhin moeglich bleibt (dann ist OPENAI_API_KEY
+# wieder Pflicht).
+_MODEL = os.environ.get("BUBBLE_CLASSIFIER_MODEL", "claude-code-haiku")
+_BASIS = os.environ.get("BUBBLE_CLASSIFIER_BASE_URL", "http://127.0.0.1:8114/v1")
+_TIMEOUT_S = float(os.environ.get("BUBBLE_CLASSIFIER_TIMEOUT_S", "120"))
 _BATCH = int(os.environ.get("BUBBLE_CLASSIFIER_BATCH", "5"))
 # Only bubbles created at/after this date are auto-picked (historical bubbles
 # need an explicit --ids run — avoids burning tokens on thousands of old rows).
@@ -115,30 +122,50 @@ def _load_env_fallback() -> None:
             return
 
 
+def _ist_openai(basis: str) -> bool:
+    return "api.openai.com" in basis
+
+
 def classify(title: str, description: str) -> dict:
-    """One LLM call -> {category, channels, confidence, reason}. Raises on error."""
-    api_key = os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY not set (env or repo .env)")
+    """One LLM call -> {category, channels, confidence, reason}. Raises on error.
+
+    Laeuft seit dem API-Budget-Stopp (29.08.2026) ueber den Claude-Shim
+    (Subscription, OpenAI-kompatibel) statt gegen api.openai.com. Der Shim
+    prueft keinen Schluessel; gegen die echte OpenAI-Adresse bleibt er Pflicht.
+    Kein response_format: der Shim reicht es nicht durch — stattdessen
+    verlangt der System-Prompt JSON, und Codefences werden hier abgestreift.
+    """
+    kopfzeilen: dict = {}
+    if _ist_openai(_BASIS):
+        _load_env_fallback()
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY not set (env or repo .env)")
+        kopfzeilen["Authorization"] = f"Bearer {api_key}"
 
     text = f"Title: {title or '(untitled)'}\n\n{description or '(no description)'}"
+    nutzlast = {
+        "model": _MODEL,
+        "temperature": 0.1,
+        "messages": [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": text[:4000]},
+        ],
+    }
+    if _ist_openai(_BASIS):
+        nutzlast["response_format"] = {"type": "json_object"}
+
     resp = requests.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}"},
-        json={
-            "model": _MODEL,
-            "temperature": 0.1,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": text[:4000]},
-            ],
-        },
-        timeout=45,
+        _BASIS.rstrip("/") + "/chat/completions",
+        headers=kopfzeilen,
+        json=nutzlast,
+        timeout=_TIMEOUT_S,
     )
     if resp.status_code != 200:
-        raise RuntimeError(f"OpenAI {resp.status_code}: {resp.text[:200]}")
-    raw = resp.json()["choices"][0]["message"]["content"]
+        raise RuntimeError(f"LLM {resp.status_code}: {resp.text[:200]}")
+    raw = resp.json()["choices"][0]["message"]["content"].strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[1].rsplit("```", 1)[0]
     out = json.loads(raw)
 
     category = str(out.get("category", "")).strip()
