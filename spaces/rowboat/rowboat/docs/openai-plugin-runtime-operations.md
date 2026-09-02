@@ -147,7 +147,29 @@ OpenFang's secrets and allowlists in `OPENFANG_ISSUABLE_CREDENTIALS` are:
 
 A reference that cannot be derived (an oauth reference that is not a URL, or
 a derived name over the 128-character bound) is refused locally as
-`credential_missing`, before any request to OpenFang. Note the tokens behind
+`credential_missing`, before any request to OpenFang.
+
+**Provisioning the `OAUTH_BEARER_*` tokens.**
+`scripts/provision-oauth-token.py` automates the whole MCP authorization
+flow except the consent click (protected-resource discovery, dynamic client
+registration, PKCE, localhost callback, token exchange) and appends
+`<NAME>=<token>` to `--out` without ever printing the value. All three
+providers' discovery and registration are verified live; `--dry-run` re-runs
+that proof without opening a browser. The exact commands:
+
+```sh
+python scripts/provision-oauth-token.py https://mcp.cloudflare.com/mcp --out <secrets file>
+python scripts/provision-oauth-token.py https://mcp.linear.app/mcp    --out <secrets file>
+python scripts/provision-oauth-token.py https://mcp.notion.com/mcp    --out <secrets file>     --name OAUTH_BEARER_MCP_NOTION_COM
+```
+
+notion needs `--name`: its live metadata reports the resource as
+`https://mcp.notion.com/mcp`, but the pinned catalog declares
+`oauth_resource: https://mcp.notion.com`, and the resolver derives from the
+catalog - the provisioned name must match the resolver's, not the live one.
+Access tokens from these providers are typically short-lived; a refresh
+token, when granted, is stored alongside as `<NAME>_REFRESH` for a future
+refresh design in OpenFang. Note the tokens behind
 the three `OAUTH_BEARER_*` names are the operator's to obtain; for linear and
 notion the providers issue short-lived OAuth access tokens, and refreshing
 them inside OpenFang is its own design, not covered here.
