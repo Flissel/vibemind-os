@@ -9,6 +9,7 @@ Fail-soft wie sales-claws rowboat.py: keine Funktion wirft; Rueckgabe ist
 Fehlertext steht je ein Schluessel.
 """
 import json
+import time
 import os
 import urllib.request
 
@@ -53,6 +54,74 @@ def _api(pfad: str, nutzlast: dict | None = None) -> dict:
 def statistik() -> dict:
     """Kennzahlen des Marketing-Space (accounts, Kampagnen, Audit-Stand)."""
     return _api("/api/stats")
+
+
+def _mirofish():
+    """Der bestehende Mirofish-Client des Space — spaet importiert, damit
+    dieses Modul ohne ihn nutzbar bleibt (er zieht weitere Abhaengigkeiten)."""
+    from spaces.marketing.mirofish import predict_post_reception
+    return predict_post_reception
+
+
+def _SCHLAF(sekunden: float) -> None:
+    """Eigene Funktion, damit Tests das Warten ersetzen koennen."""
+    time.sleep(sekunden)
+
+
+def kampagne_pruefen(text: str, kanal: str = "telegram", titel: str = "",
+                     frist_s: float = 900.0) -> dict:
+    """Laesst einen Entwurf von simuliertem Publikum bewerten (Mirofish).
+
+    Mirofish baut aus dem Text einen Wissensgraphen, erzeugt hunderte
+    Personas und simuliert die Reaktion; heraus kommt ein Report mit einer
+    Punktzahl 0-100 und Stimmen einzelner Personas. Das ist eine
+    QUALITAETSPRUEFUNG VOR der Freigabe — sie versendet nichts und
+    genehmigt nichts.
+
+    Teuer und langsam (Ollama + Neo4j), deshalb nur auf Abruf und mit
+    Frist: laeuft die Simulation laenger, sagt die Antwort ehrlich, in
+    welcher Phase sie steckt, statt endlos zu warten.
+    """
+    if len((text or "").strip()) < 20:
+        return {"ok": False, "fehler": "Entwurf zu kurz fuer eine Simulation (unter 20 Zeichen)"}
+    klient = _mirofish()
+    bezeichner = f"entwurf-{int(time.time())}"
+    try:
+        zustand = klient.kick_off(bezeichner, text, kanal, bubble_title=titel or None)
+    except Exception as e:  # noqa: BLE001 — ausgeschaltete Mirofish ist Alltag
+        return {"ok": False, "fehler": f"Mirofish nicht nutzbar ({type(e).__name__}: {e})"}
+
+    ende = time.time() + max(0.0, frist_s)
+    while zustand.get("phase") != "done":
+        if time.time() > ende:
+            return {"ok": False,
+                    "fehler": f"Simulation noch nicht fertig (Phase {zustand.get('phase')}) — "
+                              "spaeter erneut pruefen"}
+        try:
+            zustand = klient.poll_status(zustand)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "fehler": f"Mirofish-Lauf abgebrochen ({type(e).__name__}: {e})"}
+        if zustand.get("phase") != "done":
+            _SCHLAF(10)
+
+    try:
+        report = klient.read_report(zustand.get("report_id") or zustand.get("reportId", ""))
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "fehler": f"Report nicht lesbar ({type(e).__name__}: {e})"}
+
+    stimmen = "\n".join(
+        f"- {p.get('name', '?')}: {p.get('stance', p.get('summary', ''))}"
+        for p in (report.get("persona_summary") or [])) or "- (keine Einzelstimmen)"
+    bericht = (f"# Publikumsprobe: {titel or bezeichner}\n\n"
+               f"Kanal: {kanal}\nPunktzahl (0-100): {report.get('score')}\n"
+               f"Report: {report.get('report_id')}\n\n"
+               f"## Geprueft wurde\n\n{text}\n\n"
+               f"## Stimmen aus der Simulation\n\n{stimmen}\n\n"
+               f"## Vollstaendiger Report\n\n"
+               f"{json.dumps(report.get('full_report'), indent=2, ensure_ascii=False)}\n")
+    pfad = schaufenster.ablegen(titel or bezeichner, "publikumsprobe.md", bericht)
+    return {"ok": True, "score": report.get("score"),
+            "report_id": report.get("report_id"), "dateien": [pfad]}
 
 
 def _rowboat(werkzeug: str, argumente: dict) -> dict:

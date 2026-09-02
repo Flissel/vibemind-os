@@ -17,6 +17,11 @@ Entwurf (Status draft/pending), und der Betreiber genehmigt in der UI.
   geschlossene HTML-Datei (inline CSS) als Entwurf.
 - `publikum_vorschlagen(name, kriterien, begruendung)` — ein Publikums-
   VORSCHLAG in die Staging-Tabelle; genehmigen tut der Mensch.
+- `kampagne_pruefen(text, kanal, titel)` — laesst den Entwurf von simuliertem
+  Publikum bewerten (Mirofish): Punktzahl 0–100 plus Einzelstimmen, als
+  Report im Schaufenster. Teuer und langsam — nur, wenn der Betreiber es
+  will oder ein Entwurf strittig ist, nie im Routinelauf. Sagt das Werkzeug
+  „noch nicht fertig", ist das kein Fehler: spaeter erneut fragen.
 - `posteingang_lesen()`, `kampagnen_auflisten()`, `statistik()` — nur lesen.
 - `wissensquellen()` / `wissensquelle(quellen_id)` /
   `dokumente(quellen_id, mit_inhalt=false)` — die Wissensbasis (nur

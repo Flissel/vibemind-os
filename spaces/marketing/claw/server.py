@@ -53,6 +53,9 @@ WERKZEUGE = (
     werkzeuge.publikum_vorschlagen,
     werkzeuge.posteingang_lesen,
     werkzeuge.kampagnen_auflisten,
+    # Qualitaetspruefung vor der Freigabe (Mirofish-Simulation) — teuer und
+    # langsam, deshalb nur auf Abruf; sie versendet und genehmigt nichts.
+    werkzeuge.kampagne_pruefen,
     # Wissensbasis-Passthrough (Rowboat, nur lesend) — im Sidecar statt als
     # zweiter MCP-Server im Gateway: Container erreichen im Mirrored-Modus
     # kein LAN, und der Bearer-Schluessel bleibt so im Host-Prozess.
