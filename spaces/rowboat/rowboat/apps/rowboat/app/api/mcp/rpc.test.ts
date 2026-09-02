@@ -18,6 +18,8 @@ const kontextMit = (schluessel: string, liefert: unknown, wirft?: unknown): Werk
     quelleLesen: lauf,
     dokumenteAuflisten: lauf,
     dateiUrl: lauf,
+    quelleAnlegen: lauf,
+    dokumenteSchreiben: lauf,
   };
 };
 
@@ -35,9 +37,9 @@ r = await beantworte({ jsonrpc: "2.0", id: 2, method: "initialize" }, K());
 pruefe("initialize liefert serverInfo", (r.result as any)?.serverInfo?.name === "rowboat");
 r = await beantworte({ jsonrpc: "2.0", id: 3, method: "tools/list" }, K());
 pruefe("tools/list nennt alle Werkzeuge", (r.result as any)?.tools?.length === TOOLS.length);
-pruefe("es sind vier", TOOLS.length === 4, String(TOOLS.length));
-pruefe("jedes Werkzeug hat genau einen Pflichtparameter",
-  TOOLS.every((t) => t.inputSchema.required.length === 1));
+pruefe("es sind sechs", TOOLS.length === 6, String(TOOLS.length));
+pruefe("jedes Werkzeug hat mindestens einen Pflichtparameter",
+  TOOLS.every((t) => t.inputSchema.required.length >= 1));
 r = await beantworte({ jsonrpc: "2.0", id: 4, method: "gibtsnicht" }, K());
 pruefe("unbekannte Methode -> METHOD_NOT_FOUND", r.error?.code === ERR.METHOD_NOT_FOUND);
 r = await beantworte({ kaputt: true }, K());
@@ -68,6 +70,23 @@ r = await beantworte(aufruf(10, "rowboat_datei_url", { fileId: "f1" }), K());
 pruefe("datei_url: fileId kommt an",
   JSON.stringify(inhalt(r).gesehen) === JSON.stringify(["f1", "schluessel-x"]));
 
+r = await beantworte(aufruf(20, "rowboat_quelle_anlegen",
+  { projectId: "p1", name: "Marketing/Test — X" }), K());
+pruefe("quelle_anlegen: projectId, name, leere beschreibung kommen an",
+  JSON.stringify(inhalt(r).gesehen) === JSON.stringify(["p1", "Marketing/Test — X", "", "schluessel-x"]),
+  JSON.stringify(r));
+r = await beantworte(aufruf(21, "rowboat_quelle_anlegen",
+  { projectId: "p1", name: "N", beschreibung: "B" }), K());
+pruefe("quelle_anlegen: beschreibung kommt an",
+  JSON.stringify(inhalt(r).gesehen) === JSON.stringify(["p1", "N", "B", "schluessel-x"]));
+
+const doks = [{ name: "d1", inhalt: "text eins" }];
+r = await beantworte(aufruf(22, "rowboat_dokumente_schreiben",
+  { sourceId: "s1", dokumente: doks }), K());
+pruefe("dokumente_schreiben: sourceId und dokumente kommen an",
+  JSON.stringify(inhalt(r).gesehen) === JSON.stringify(["s1", doks, "schluessel-x"]),
+  JSON.stringify(r));
+
 console.log("=== Werkzeugaufruf: Pflichtparameter ===");
 for (const [name, pflicht] of [
   ["rowboat_wissensquellen", "projectId"],
@@ -84,6 +103,28 @@ for (const [name, pflicht] of [
 r = await beantworte(aufruf(13, "fremdes_werkzeug", { projectId: "p1" }), K());
 pruefe("unbekanntes Werkzeug abgelehnt", r.error?.code === ERR.METHOD_NOT_FOUND);
 
+for (const [args, grund] of [
+  [{ name: "N" }, "projectId fehlt"],
+  [{ projectId: "p1" }, "name fehlt"],
+  [{ projectId: "", name: "N" }, "projectId leer"],
+] as const) {
+  r = await beantworte(aufruf(23, "rowboat_quelle_anlegen", args as any), K());
+  pruefe(`quelle_anlegen: ${grund} -> INVALID_PARAMS`, r.error?.code === ERR.INVALID_PARAMS,
+    JSON.stringify(r.error));
+}
+for (const [args, grund] of [
+  [{ dokumente: [{ name: "d", inhalt: "i" }] }, "sourceId fehlt"],
+  [{ sourceId: "s1" }, "dokumente fehlt"],
+  [{ sourceId: "s1", dokumente: [] }, "dokumente leer"],
+  [{ sourceId: "s1", dokumente: "x" }, "dokumente kein Array"],
+  [{ sourceId: "s1", dokumente: [{ name: "", inhalt: "i" }] }, "Dokumentname leer"],
+  [{ sourceId: "s1", dokumente: [{ name: "d" }] }, "inhalt fehlt"],
+] as const) {
+  r = await beantworte(aufruf(24, "rowboat_dokumente_schreiben", args as any), K());
+  pruefe(`dokumente_schreiben: ${grund} -> INVALID_PARAMS`, r.error?.code === ERR.INVALID_PARAMS,
+    JSON.stringify(r.error));
+}
+
 console.log("=== Fehlerarten ===");
 r = await beantworte(aufruf(14, "rowboat_wissensquelle", { sourceId: "s1" }),
   kontextMit("k", null, new Ablehnung("nicht gefunden")));
@@ -96,8 +137,11 @@ pruefe("fremder Fehler wird nur als 'Fehler' gemeldet, ohne Wortlaut",
   (r.result as any)?.content?.[0]?.text === "Aufruf abgelehnt (Fehler)", JSON.stringify(r));
 
 console.log("=== Der wichtigste Test: Schluessel darf nie in einer Meldung stehen ===");
-for (const name of ["rowboat_wissensquellen", "rowboat_wissensquelle", "rowboat_dokumente", "rowboat_datei_url"]) {
-  r = await beantworte(aufruf(16, name, { projectId: "p1", sourceId: "s1", fileId: "f1" }),
+for (const name of ["rowboat_wissensquellen", "rowboat_wissensquelle", "rowboat_dokumente",
+                    "rowboat_datei_url", "rowboat_quelle_anlegen", "rowboat_dokumente_schreiben"]) {
+  r = await beantworte(aufruf(16, name,
+    { projectId: "p1", sourceId: "s1", fileId: "f1", name: "N",
+      dokumente: [{ name: "d", inhalt: "i" }] }),
     kontextMit("geheim-123", null, new Error("Bearer geheim-123 abgelehnt")));
   const text = JSON.stringify(r);
   pruefe(`${name}: Ausnahme -> isError`, (r.result as any)?.isError === true);

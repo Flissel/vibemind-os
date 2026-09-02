@@ -31,7 +31,7 @@ import { z } from "zod";
 
 export const PROTOCOL_VERSION = "2025-06-18";
 export const SERVER_NAME = "rowboat";
-export const SERVER_VERSION = "0.2.0";
+export const SERVER_VERSION = "0.3.0";
 
 /** Die Arten, in denen ein Werkzeug scheitern darf. Sonst nichts. */
 export type AblehnungsArt = "nicht gefunden" | "nicht berechtigt" | "ungueltige Anfrage" | "kontingent";
@@ -103,6 +103,51 @@ export const TOOLS = [
             additionalProperties: false,
         },
     },
+    {
+        name: "rowboat_quelle_anlegen",
+        description:
+            "Legt eine neue Text-Wissensquelle im Projekt an. Namensschema: " +
+            "'Bereich/Unterbereich — Name' (z. B. 'Bubbles/Index — Klassifizierte Ideen'). " +
+            "Fuer Sync-Worker gedacht, nicht fuer Agenten-toolFilter.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                projectId: { type: "string", description: "Kennung des Rowboat-Projekts." },
+                name: { type: "string", description: "Quellname nach Namensschema." },
+                beschreibung: { type: "string", description: "Optionale Beschreibung." },
+            },
+            required: ["projectId", "name"],
+            additionalProperties: false,
+        },
+    },
+    {
+        name: "rowboat_dokumente_schreiben",
+        description:
+            "Fuegt einer Text-Wissensquelle Dokumente hinzu (name + inhalt je Dokument). " +
+            "Ersetzt nichts: neue Staende bekommen einen Versions-Suffix im Namen. " +
+            "Fuer Sync-Worker gedacht, nicht fuer Agenten-toolFilter.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                sourceId: { type: "string", description: "Kennung der Wissensquelle." },
+                dokumente: {
+                    type: "array",
+                    description: "Dokumente als {name, inhalt}.",
+                    items: {
+                        type: "object",
+                        properties: {
+                            name: { type: "string" },
+                            inhalt: { type: "string" },
+                        },
+                        required: ["name", "inhalt"],
+                        additionalProperties: false,
+                    },
+                },
+            },
+            required: ["sourceId", "dokumente"],
+            additionalProperties: false,
+        },
+    },
 ] as const;
 
 const RequestSchema = z.object({
@@ -145,36 +190,76 @@ function ergebnis(id: string | number | null, result: unknown): RpcResponse {
  * und damit prüfbar. Jede Funktion darf `Ablehnung` werfen; alles andere,
  * was sie wirft, wird als „Fehler" ohne Wortlaut gemeldet.
  */
+export interface NeuesDokument {
+    name: string;
+    inhalt: string;
+}
+
 export interface WerkzeugKontext {
     apiKey: string;
     quellenAuflisten(projectId: string, apiKey: string): Promise<unknown>;
     quelleLesen(sourceId: string, apiKey: string): Promise<unknown>;
     dokumenteAuflisten(sourceId: string, apiKey: string, mitInhalt: boolean): Promise<unknown>;
     dateiUrl(fileId: string, apiKey: string): Promise<unknown>;
+    quelleAnlegen(projectId: string, name: string, beschreibung: string, apiKey: string): Promise<unknown>;
+    dokumenteSchreiben(sourceId: string, dokumente: NeuesDokument[], apiKey: string): Promise<unknown>;
 }
 
 type Argumente = Record<string, unknown>;
 
-/** Werkzeugname -> Pflichtparameter und Ausführung. Eine Tabelle, kein switch. */
+/** Prüft ein Pflicht-Textfeld. Fehlertext oder null (= in Ordnung). */
+function textPflicht(a: Argumente, feld: string): string | null {
+    const wert = a[feld];
+    return typeof wert === "string" && wert.length > 0 ? null : `${feld} fehlt oder ist leer`;
+}
+
+/** Prüft die Dokumentliste von rowboat_dokumente_schreiben. */
+function dokumentePflicht(a: Argumente): string | null {
+    const roh = a.dokumente;
+    if (!Array.isArray(roh) || roh.length === 0) return "dokumente fehlt oder ist leer";
+    for (const d of roh) {
+        const eintrag = d as Record<string, unknown>;
+        if (typeof eintrag?.name !== "string" || eintrag.name.length === 0) {
+            return "Dokumentname fehlt oder ist leer";
+        }
+        if (typeof eintrag?.inhalt !== "string" || eintrag.inhalt.length === 0) {
+            return "Dokumentinhalt fehlt oder ist leer";
+        }
+    }
+    return null;
+}
+
+/** Werkzeugname -> Pflichtprüfung und Ausführung. Eine Tabelle, kein switch. */
 const AUSFUEHRUNG: Record<string, {
-    pflicht: string;
+    pruefe: (a: Argumente) => string | null;
     lauf: (args: Argumente, k: WerkzeugKontext) => Promise<unknown>;
 }> = {
     rowboat_wissensquellen: {
-        pflicht: "projectId",
+        pruefe: (a) => textPflicht(a, "projectId"),
         lauf: (a, k) => k.quellenAuflisten(a.projectId as string, k.apiKey),
     },
     rowboat_wissensquelle: {
-        pflicht: "sourceId",
+        pruefe: (a) => textPflicht(a, "sourceId"),
         lauf: (a, k) => k.quelleLesen(a.sourceId as string, k.apiKey),
     },
     rowboat_dokumente: {
-        pflicht: "sourceId",
+        pruefe: (a) => textPflicht(a, "sourceId"),
         lauf: (a, k) => k.dokumenteAuflisten(a.sourceId as string, k.apiKey, a.mitInhalt === true),
     },
     rowboat_datei_url: {
-        pflicht: "fileId",
+        pruefe: (a) => textPflicht(a, "fileId"),
         lauf: (a, k) => k.dateiUrl(a.fileId as string, k.apiKey),
+    },
+    rowboat_quelle_anlegen: {
+        pruefe: (a) => textPflicht(a, "projectId") ?? textPflicht(a, "name"),
+        lauf: (a, k) => k.quelleAnlegen(
+            a.projectId as string, a.name as string,
+            typeof a.beschreibung === "string" ? a.beschreibung : "", k.apiKey),
+    },
+    rowboat_dokumente_schreiben: {
+        pruefe: (a) => textPflicht(a, "sourceId") ?? dokumentePflicht(a),
+        lauf: (a, k) => k.dokumenteSchreiben(
+            a.sourceId as string, a.dokumente as NeuesDokument[], k.apiKey),
     },
 };
 
@@ -222,9 +307,9 @@ export async function beantworte(
             if (!eintrag) {
                 return fehler(id, ERR.METHOD_NOT_FOUND, `unbekanntes Werkzeug: ${String(name)}`);
             }
-            const wert = args[eintrag.pflicht];
-            if (typeof wert !== "string" || wert.length === 0) {
-                return fehler(id, ERR.INVALID_PARAMS, `${eintrag.pflicht} fehlt oder ist leer`);
+            const mangel = eintrag.pruefe(args);
+            if (mangel !== null) {
+                return fehler(id, ERR.INVALID_PARAMS, mangel);
             }
             try {
                 const daten = await eintrag.lauf(args, kontext);
