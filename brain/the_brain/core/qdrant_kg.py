@@ -62,17 +62,20 @@ EMBED_MODEL = os.environ.get(
     "BRAIN_KG_EMBED_MODEL",
     "Qwen/Qwen3-Embedding-0.6B",
 )
-SEMANTIC_DIM = 3072
+SEMANTIC_DIM = int(os.environ.get("BRAIN_KG_SEMANTIC_DIM", "3072"))
 NEURAL_DIM = int(os.environ.get("BRAIN_KG_NEURAL_DIM", "20484"))
 EDGE_THRESHOLD = float(os.environ.get("BRAIN_KG_EDGE_THRESHOLD", "0.55"))
 BATCH_SIZE = int(os.environ.get("BRAIN_KG_BATCH_SIZE", "8"))
 BATCH_FLUSH_MS = int(os.environ.get("BRAIN_KG_BATCH_FLUSH_MS", "3000"))
 MAX_LINKED = 50
 
-# Bump this suffix any time SEMANTIC_DIM changes again — ensure_collections()
-# creates a fresh physical collection per suffix and aliases the logical name
-# to it, so a dimension change never requires a caller-visible rename.
-PHYSICAL_VERSION_SUFFIX = "-3072-v1"
+# The suffix follows SEMANTIC_DIM automatically — ensure_collections() creates
+# a fresh physical collection per suffix and aliases the logical name to it, so
+# a dimension change never requires a caller-visible rename. Overridable for a
+# second revision at the same dimension (e.g. a different model, same width).
+PHYSICAL_VERSION_SUFFIX = os.environ.get(
+    "BRAIN_KG_PHYSICAL_SUFFIX", f"-{SEMANTIC_DIM}-v1"
+)
 
 
 def _flag(name: str, default: str = "0") -> bool:
