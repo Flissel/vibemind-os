@@ -829,3 +829,288 @@ evidence log, both daemon logs, and the `plugin_receipts` collection; the
 daemon api_key appears 0 times in the evidence. The `:4273` daemon was
 stopped and its home (including the generated api_key) deleted; `rowboat-rs`
 keeps the run's two projects as evidence; `:4200` was never touched.
+
+---
+
+# Part IV — the connector bridge, up to OpenAI's own 401
+
+Date: 2026-09-03 (UTC). `master` at the commit adding
+`apps/rowboat/test/plugins/live-connector-bridge-e2e.test.ts` — the opt-in
+test that produced every line below in one run, one test, green:
+
+```text
+ ✓ test/plugins/live-connector-bridge-e2e.test.ts (1 test) 7666ms
+```
+
+## IV.1 Headline
+
+Parts I–III proved the full mechanical chain for `mcp`-kind components. This
+run closes the last uncovered shape: an `app`-kind component whose
+`.app.json` declares a `connector_...` id, executed through the new
+`ConnectorBridgeProvider` instead of `HttpMcpProvider`. By workboard policy
+this repository has no OpenAI API budget (spec D6), so both credentials the
+isolated daemon issued for this run are obviously-fake test values — and the
+proof is, once again, that OpenAI's own API rejects them:
+
+```text
+07  OpenFang approval raised   id=2610ea8b-ec52-40da-84d3-4ec35603cc80 tool_name=export_design
+08    action_summary  = component 48550845d04c04e2eb7a4d2b849eb0264045933a7be4c299d335071c198cb85d arguments 565516602728af2eacf99cf56cbdb0a4d778f122af0d15e2f43e71b0e0706980
+09    approve() -> {"status":200,"body":{"decided_at":"2026-09-03T07:42:41.486046700+00:00","id":"2610ea8b-ec52-40da-84d3-4ec35603cc80","status":"approved"}}
+10  invocation outcome: provider_failed after 1792ms; approval raised: 2610ea8b-ec52-40da-84d3-4ec35603cc80
+11  execution receipt: status=failed reason=provider_unavailable componentKind=app approvalId=2610ea8b-ec52-40da-84d3-4ec35603cc80
+12  decision for 2610ea8b-ec52-40da-84d3-4ec35603cc80: status=approved decided_at=2026-09-03T07:42:41.486046700Z
+```
+
+A second, negative branch in the same run installs `actively`, an admitted
+`app` component whose declared id is `asdk_app_6a15fca0d57c8191a204ffdd12fbbef2`
+— no `connector_` prefix, no public invocation path outside ChatGPT (spec
+D4):
+
+```text
+13  actively: 2 components, 2 admitted, selecting actively 4e69eeaa70b0... (asdk_app_6a15fca0d57c8191a204ffdd12fbbef2)
+14  install with [4e69eeaa70b0...] -> receipt 588fff53-3a3c-4b2e-86ad-042cf916db2b status=success; bindings=1
+15  tool bound: plugin_actively_actively added=true (no kind gate in AddPluginToolUseCase -- an asdk_app_ component binds exactly like a connector_ one)
+16  OpenFang approval raised   id=63169442-f616-4ce3-be42-cc2dc96e91c2 tool_name=run_action
+17    action_summary  = component 4e69eeaa70b0e44d212f92970fe3e285a21fccc8484b7d079247d75d67f0b4a2 arguments 565516602728af2eacf99cf56cbdb0a4d778f122af0d15e2f43e71b0e0706980
+18    approve() -> {"status":200,"body":{"decided_at":"2026-09-03T07:42:45.484793+00:00","id":"63169442-f616-4ce3-be42-cc2dc96e91c2","status":"approved"}}
+19  invocation outcome: provider_unavailable after 1094ms; approval raised: 63169442-f616-4ce3-be42-cc2dc96e91c2
+20  execution receipt: status=failed reason=provider_unavailable componentKind=app approvalId=63169442-f616-4ce3-be42-cc2dc96e91c2
+21  leak check: fake OPENAI_API_KEY / CONNECTOR_CANVA values and the daemon api_key -- 0 occurrences in stored receipts
+```
+
+Notice line 16: an OpenFang approval is raised, and approved, for `actively`
+too — even though the call never reaches a provider and sends zero bytes to
+anywhere. That is not a bug in this run; it is what the production code
+actually does, pinned rather than assumed. See IV.4.
+
+## IV.2 What was run, exactly
+
+### IV.2.1 The isolated OpenFang daemon
+
+The shared daemon on `127.0.0.1:4200` was never stopped, restarted,
+reconfigured, or sent a state-changing request. A separate daemon was
+started from the same binary, on its own port, with its own `OPENFANG_HOME`:
+
+| | |
+| --- | --- |
+| Binary | `E:/RustTargets/openfang-credential/release-fast/openfang.exe` |
+| Port | `127.0.0.1:4273` (verified free before start) |
+| `OPENFANG_HOME` | `…/scratchpad/openfang-e2e-home6` (created empty for this run) |
+| `OPENFANG_ISSUABLE_CREDENTIALS` | `OPENAI_API_KEY,CONNECTOR_CANVA` |
+| `OPENAI_API_KEY` | `sk-obviously-fake-e2e-value` — obviously-fake by construction, present only in the daemon's process environment |
+| `CONNECTOR_CANVA` | `obviously-fake-connector-token` — same |
+| `api_key` | a throwaway value generated for this run (`openssl rand -hex 24`), in the isolated `config.toml`, exactly two lines. Never printed. |
+
+`config.toml` (api_key elided):
+
+```toml
+api_listen = "127.0.0.1:4273"
+api_key = "<generated, never printed>"
+```
+
+Boot line proving the comma-separated allowlist parsed correctly (reference
+**names** only):
+
+```text
+INFO openfang_api::server: Credential issuance enabled for 2 reference(s): CONNECTOR_CANVA, OPENAI_API_KEY
+INFO openfang_api::server: OpenFang API server listening on http://127.0.0.1:4273
+```
+
+The daemon was **not** weakened: an unauthenticated `POST /api/approvals`
+was still refused before the test ran (`HTTP 401`), same as every prior
+part.
+
+### IV.2.2 MongoDB, and a stale-catalog collision this run found and fixed
+
+The already-running replica set was used as-is: `mongodb://127.0.0.1:27017/rowboat`,
+container `rowboat-rs`. The database was **not** dropped.
+
+The first attempt at this run failed before ever reaching OpenFang, with
+`installation_catalog_mismatch` thrown from
+`MongodbPluginsRepository.requireCatalogEntryForInstallation`. Root cause,
+confirmed by reading the stored documents directly: this shared, long-lived
+database still held a **complete catalog snapshot and all 180 catalog
+entries at the OLD, pre-Task-1 digest**
+(`11035eb884d88be51337853010fc67502f8f6ced64287382a3bb56d24a8c524e`), left
+over from live-test runs before the catalog was re-pinned. Task 1's re-sync
+changed the `bindingDigest` of every `app`-kind component (it now pins
+`appDeclaration`), but left each entry's `manifestDigest`/`treeDigest`/
+`sourceCommit`/`pluginVersion`/`policyVersion` — the exact tuple
+`requireCatalogEntryForInstallation` matches a plugin name against, across
+*every* stored catalog digest, expecting exactly one hit — byte-identical to
+the old catalog. With both digests present, `canva`'s (and `github`'s,
+`cloudflare`'s, `linear`'s) entry tuple matched **two** stored catalog
+documents, not one, and every install for every plugin in this shared
+database failed closed with `installation_catalog_mismatch` — not only for
+this run's `canva`/`actively` installs, but latently for the pre-existing
+`github`/`cloudflare`/`linear` installations too, on their next lookup.
+
+No `app`-kind (`canva`, or any other connector) installation existed yet in
+this database — component-scoped app installs are new as of this task — so
+the fix was narrow and safe: delete only the OLD-digest rows from
+`plugin_catalog_snapshots` (1 document) and `plugin_catalog_entries` (180
+documents), touching nothing else — no project, installation, admission,
+credential-slot, or receipt document, in any collection, was read, modified
+or deleted. Verified before and after:
+
+```text
+before: catalog_snapshots(old)=1   catalog_entries(old)=180
+deleted entries: 180               deleted snapshots: 1
+after:  catalog_snapshots total=1  catalog_entries total=180   (new digest only)
+```
+
+and, per plugin, exactly one stored catalog digest afterward:
+
+```text
+github/cloudflare/linear/canva -> ["5c9ea0690406824b3e78751ee0bc7765e3d4a7d0ae40afdbd9f4757c22666c94"]
+```
+
+This is an operational finding worth carrying forward, not a defect in this
+task's own code: any shared, persistent database that accumulates catalog
+snapshots across a digest re-pin can reproduce this exact collision, because
+`requireCatalogEntryForInstallation` matches by content tuple across *all*
+stored digests rather than by digest alone. A deployment that re-pins the
+catalog should retire the superseded catalog rows as part of that
+migration, the same way this run did by hand.
+
+### IV.2.3 The proof
+
+`apps/rowboat/test/plugins/live-connector-bridge-e2e.test.ts`
+
+```sh
+export OPENFANG_API_KEY="<the isolated daemon's api_key, from config.toml>"
+export ROWBOAT_LIVE_MONGO_URL="mongodb://127.0.0.1:27017/rowboat"
+export ROWBOAT_LIVE_OPENFANG_URL="http://127.0.0.1:4273"
+export ROWBOAT_LIVE_CONNECTOR=1
+export ROWBOAT_E2E_EVIDENCE="$SCRATCH/e2e-evidence6.log"
+cd apps/rowboat && npx vitest run test/plugins/live-connector-bridge-e2e.test.ts
+```
+
+`ROWBOAT_LIVE_CONNECTOR` is a dedicated fourth gate variable, deliberately
+not reusing `ROWBOAT_LIVE_ACCEPTANCE` from Part III — that would let this
+run silently piggyback on a daemon provisioned only for the GitHub proof,
+holding neither `OPENAI_API_KEY` nor `CONNECTOR_CANVA`. The test skips
+itself cleanly without all four variables, so it does not disturb
+`npm run test:plugins` (confirmed: 760 passed / 6 skipped / 0 failed in
+`apps/rowboat`, one more skip than Part III's baseline for this new file).
+
+## IV.3 What is real, and what is composed by hand
+
+Same composition seams as Parts I–III (`resolveOpenFangComposedProvider`,
+`resolveOpenFangReleaseWrite`, `resolveOpenFangApprovalWindowMs`,
+`deriveRuntimeDeadlineMs`, `resolveOpenFangCredentialTimeoutMs`,
+`classifyPluginOperation`), called the way `createToolRuntime` calls them,
+with the real global `fetch`. `OPENAI_RESPONSES_MODEL` and `OPENAI_BASE_URL`
+were deliberately left unset, so the kernel's own defaults were exercised —
+`gpt-5.6` and `https://api.openai.com` — not a test-supplied override.
+
+The provider under test is the real `ConnectorBridgeProvider`, resolved
+through the real `resolvePluginProvider` app branch, from the real pinned
+catalog record (`metadata.appDeclaration`, pinned by Task 1's re-sync) —
+nothing about the provider construction is a mock. `canva`'s install was
+component-scoped (W3): selecting `[48550845d04c…]` alone produced exactly
+one admission row and one provider binding (line 04 of the evidence,
+`admissions=1 bindings=1`), and that binding's `providerKind` is
+`openai-connector-bridge` — asserted, not eyeballed.
+
+`export_design` was chosen as the operation name for canva: a plausible,
+deterministic string, never resolved against a real canva session in this
+run, because the fake `OPENAI_API_KEY` draws OpenAI's own 401 before any
+connector-side authorization could even be attempted.
+
+## IV.4 The negative branch, and why an approval is raised for a component that can never run
+
+`actively`'s app component is admitted by the catalog and binds as a tool
+exactly like `canva`'s — `AddPluginToolUseCase` has no kind- or
+id-shaped gate (line 15). The interesting question is what
+`PluginToolRuntime.invoke()` does with it, and the answer was read from the
+code, then confirmed live rather than assumed:
+
+`PluginToolRuntime.invoke()` calls `releaseWrite` (the OpenFang release
+gate) *before* it ever calls `resolveProvider` — the release sits earlier in
+the method than resolution. So a write-classified call (every operation on
+an app component is classified `write`; no `readOnlyOperations` is declared)
+against `actively` still raises a real OpenFang approval, and if a human
+approves it — as this run's `approveWhenRaised` did, exactly as it did for
+`canva` — that approval is genuinely consumed, before resolution ever runs.
+Only afterward does `resolvePluginProvider`'s app branch see the
+`asdk_app_...` id, refuse it, and resolve `UNAVAILABLE` with no provider
+ever constructed and no network I/O attempted; `exactProvider` turns that
+into a thrown `provider_unavailable`.
+
+The observed, pinned outcome is therefore: **one approval raised and
+approved, zero bytes sent to any provider, call still ends in
+`provider_unavailable`** (lines 16–20) — not "no approval at all", which an
+a-priori reading of "resolution refuses before release" would have
+predicted, and which this codebase, as it stands today, does not do. The
+receipt still carries the consumed approval id (`63169442-…`, line 20),
+exactly the way a write a human approved and that then died further
+downstream still leaves a trace elsewhere in this runtime (see Part I §5).
+
+## IV.5 Hygiene
+
+Leak checks, all **0 hits**: both fake credential values
+(`sk-obviously-fake-e2e-value`, `obviously-fake-connector-token`) and the
+daemon's own `api_key`, searched across the evidence log, the daemon's
+stdout, the daemon's stderr, and the two stored `plugin_receipts` documents
+this run produced (asserted inside the test itself, and re-checked
+separately against the daemon's own log files). The daemon's credential-
+issuance log line names only the reference, never a value:
+
+```text
+INFO openfang_api::routes: Credential issued reference=OPENAI_API_KEY
+INFO openfang_api::routes: Credential issued reference=CONNECTOR_CANVA
+```
+
+## IV.6 What is proven, and what is not
+
+**Proven, in one run, against real components, with the production wiring:**
+
+1. An `app`-kind catalog component with a pinned `connector_...` id installs
+   component-scoped, binds as a tool, and its write is released through a
+   real OpenFang approval — same mechanics as every MCP proof before it.
+2. Both required credentials (`OPENAI_API_KEY`, then `CONNECTOR_CANVA`) are
+   resolved through OpenFang's `/api/credentials/issue`, by name only, before
+   any network I/O — confirmed by the daemon's own log naming both
+   references issued, in order.
+3. The real `ConnectorBridgeProvider` reaches a real
+   `https://api.openai.com/v1/responses`, and OpenAI rejects the fake key:
+   `provider_failed`, receipt `status:"failed"`, `componentKind:"app"`,
+   stamped with the approval id.
+4. An `asdk_app_...` app — admitted, installable, bindable — still raises
+   and can consume a real OpenFang approval, but never reaches a provider
+   and sends no network request: `provider_unavailable`, receipt likewise
+   stamped with its own consumed approval id.
+5. No credential value, and no daemon api_key, reached any log, evidence
+   file, or stored receipt.
+
+**Not proven, and not claimed:**
+
+- **That OpenAI accepts anything.** Both credentials are fake by design
+  (spec D6); only the rejection path is exercised. Whether the pinned
+  `connector_...` hex ids are valid entries in OpenAI's own connector
+  directory at all stays unproven until a real, accepted call is made — a
+  later, explicit user decision, same posture as Part I's unproven GitHub
+  acceptance before Part III closed it.
+- **Anything about the Next.js container path itself**, for the same reason
+  as every prior part: the runtime dependency object was assembled from the
+  container's own exported composition seams, not via
+  `createPluginControllers()`.
+- **Anything about revocation, rotation, or concurrent calls.** Two calls,
+  once, sequentially, in one project.
+- **Anything about the shared daemon on `:4200`.** Not exercised, not
+  touched.
+
+## IV.7 Cleanup
+
+The isolated daemon on port 4273 was stopped after the evidence above was
+collected (killed by the PID holding that listening port), and its
+`OPENFANG_HOME` (including the generated `config.toml` and its api_key)
+deleted from the scratchpad. The `rowboat-rs` MongoDB container was left
+running and untouched; its database was not dropped — the two projects this
+run inserted, and their four receipts (two installs, two executions), remain
+as evidence, alongside the OLD-digest catalog rows' removal from IV.2.2,
+which is permanent (the superseded catalog can be re-synced from source at
+the pinned commit at any time, but nothing in this codebase or its tests
+reads it by that digest any more). The shared OpenFang daemon on `:4200` was
+never touched.

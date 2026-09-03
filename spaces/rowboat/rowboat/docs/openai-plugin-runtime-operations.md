@@ -27,7 +27,7 @@ for the full mechanism.
 | --- | --- |
 | Plugin source | `openai/plugins@11c74d6ba24d3a6d48f54a194cd00ef3beea18f9` |
 | Plugin count | 180 |
-| Catalog digest | `11035eb884d88be51337853010fc67502f8f6ced64287382a3bb56d24a8c524e` |
+| Catalog digest | `5c9ea0690406824b3e78751ee0bc7765e3d4a7d0ae40afdbd9f4757c22666c94` |
 | Policy version | `rowboat-plugin-policy-v1` |
 | Schema version | `rowboat-plugin-schema-v1` |
 
@@ -275,6 +275,116 @@ needs Auth0/session machinery it has no business standing up), and anything
 about revocation, rotation, or concurrent calls - the proof is one call,
 once.
 
+### The connector bridge
+
+An `app`-kind component whose `.app.json` declares a `connector_...` id
+executes through a second provider, `ConnectorBridgeProvider`
+(`packages/openai-plugin-runtime/src/providers/connector-bridge-provider.ts`),
+instead of `HttpMcpProvider`. It makes exactly one `POST
+{OPENAI_BASE_URL}/v1/responses`, with `tools:[{type:"mcp",
+server_label:<app.name>, connector_id:<the pinned connector_... id>,
+authorization:<the resolved connector credential>, require_approval:"never",
+allowed_tools:[<operationName>]}]`, and reads the `mcp_call` output item back
+from the response. Everything else about the call - the admission gate
+(`mcp_http` + `write`, identical to `HttpMcpProvider`), the OpenFang release
+gate, and the receipt shape - is the same mechanism the rest of this document
+describes; only the provider and its credentials differ.
+
+**Two credentials per call, both through the same `CredentialResolver`, both
+required before any network I/O.** Where an MCP server resolves one
+reference, a connector call resolves two, in this order:
+
+| Reference | Purpose |
+| --- | --- |
+| `OPENAI_API_KEY` | Authenticates the `POST /v1/responses` call itself |
+| `CONNECTOR_<APP_NAME>` | The app's own OAuth token, passed as the `mcp` tool's `authorization` |
+
+`CONNECTOR_<APP_NAME>` is derived the same deterministic way the
+`OAUTH_BEARER_*` names above are: the app's catalog `name`, uppercased, every
+non-alphanumeric run collapsed to one underscore (`deriveConnectorReference`
+in `connector-bridge-provider.ts`; e.g. `canva` -> `CONNECTOR_CANVA`,
+`monday-com` -> `CONNECTOR_MONDAY_COM`). For the pinned catalog's 15 admitted
+`connector_...` app components, the names an operator provisions in
+OpenFang's secrets and allowlists in `OPENFANG_ISSUABLE_CREDENTIALS`
+(alongside `OPENAI_API_KEY`) are:
+
+| App | `CONNECTOR_*` reference |
+| --- | --- |
+| alpaca | `CONNECTOR_ALPACA` |
+| amplitude | `CONNECTOR_AMPLITUDE` |
+| biorender | `CONNECTOR_BIORENDER` |
+| canva | `CONNECTOR_CANVA` |
+| daloopa | `CONNECTOR_DALOOPA` |
+| egnyte | `CONNECTOR_EGNYTE` |
+| fireflies | `CONNECTOR_FIREFLIES` |
+| help-scout | `CONNECTOR_HELP_SCOUT` |
+| intercom | `CONNECTOR_INTERCOM` |
+| jam | `CONNECTOR_JAM` |
+| monday-com | `CONNECTOR_MONDAY_COM` |
+| pipedrive | `CONNECTOR_PIPEDRIVE` |
+| semrush | `CONNECTOR_SEMRUSH` |
+| sendgrid | `CONNECTOR_SENDGRID` |
+| teamwork-com | `CONNECTOR_TEAMWORK_COM` |
+
+A further 14 `connector_...` apps exist in the pinned catalog (gmail,
+google-drive, google-calendar, several outlook/teams/sharepoint surfaces,
+github, vercel and figma among them) but are `review_required`, not
+`admitted`, so none of them is installable yet - this table lists only the
+15 that are.
+
+**Configuration**, read fresh from the environment on every call (same
+convention as `OPENFANG_URL`/`OPENFANG_API_KEY` above - see
+`resolveOpenFangProvider` in `di/plugins-container.ts`):
+
+| Variable | Purpose |
+| --- | --- |
+| `OPENAI_RESPONSES_MODEL` | Optional. Model the connector bridge asks the Responses API for. Default `gpt-5.6`. |
+| `OPENAI_BASE_URL` | Optional. Base URL for the `/v1/responses` call. Default `https://api.openai.com`. Must be `https:`, or `http:` to a loopback host - the same rule the kernel provider's own `validateBaseUrl` enforces. |
+
+Both collapse a blank (unset or whitespace-only) value to the kernel's own
+default rather than an empty string.
+
+**`asdk_app_...` and `templated_apps_...` apps have no public invocation path
+here, by design (spec D4).** These ids only run inside ChatGPT's own Apps SDK
+surface; there is no OpenAI HTTP endpoint this runtime, or any Rowboat
+deployment, could call on their behalf. `resolvePluginProvider`'s app branch
+(`apps/rowboat/src/infrastructure/plugins/provider-resolution.ts`) refuses
+any id that does not start with `connector_` before ever constructing a
+provider, and `ConnectorBridgeProvider`'s own constructor refuses the same
+thing again if somehow reached (`provider_unavailable:not_a_connector`) -
+belt and suspenders, never approximated as "probably fine". `AddPluginToolUseCase`
+has no kind-based gate, so an `asdk_app_...` component still installs and
+binds as a tool exactly like a `connector_...` one; it is the runtime's
+resolution step, not install or add-tool, that draws this line. Because
+`PluginToolRuntime` releases a write *before* it resolves the provider
+(`invoke()`'s release gate runs first, resolution afterward - see
+`plugin-tool-runtime.ts`), invoking such a tool still raises, and if a human
+approves it still consumes, a real OpenFang approval before resolution
+refuses it; no network I/O ever leaves this process either way, approved or
+not. `E2E-PROOF.md` Part IV observed exactly this live, once, and pins it
+rather than assuming it: one approval raised and approved, zero bytes sent to
+any provider, and the call still ending in `provider_unavailable`.
+
+**Process MCP servers are cut from W2 entirely (spec D5), not merely
+unimplemented.** All 3 process-transport MCP components in the pinned
+catalog are `rejected` at admission - policy already refuses to run them, so
+"make process MCP executable" would mean overturning an admission decision
+this runtime never overturns anywhere else, not adding a resolution branch.
+A verified execution root from the content store, mounted into the web
+runtime, remains a prerequisite for process MCP and belongs to deployment
+(W5) whenever an admitted process MCP component first exists.
+
+**Live-proven, once, against OpenAI's own API, with the production
+composition:** a released canva call resolves both `OPENAI_API_KEY` and
+`CONNECTOR_CANVA` per call from OpenFang, then reaches a real `POST
+https://api.openai.com/v1/responses` and draws OpenAI's own 401 on a
+deliberately fake key, ending in `provider_failed` - the receipt lands with
+`componentKind:"app"` and the approval id, same shape as the MCP proofs
+above. See `E2E-PROOF.md` Part IV. Still unproven, and not claimed: that
+OpenAI accepts anything, including whether the pinned `connector_...` hex ids
+are valid entries in OpenAI's own connector directory at all (D6) - only a
+real accepted call could prove that, and none has been made.
+
 The Web install flow additionally requires `PLUGIN_UI_PREVIEW_SECRET` (see the
 repository README). Migration and cutover require:
 
@@ -384,7 +494,7 @@ Rejections: an empty, duplicated, malformed or foreign digest is
 availability reason; installing a plugin that is already installed is
 `installation_conflict`.
 
-### Catalog facts at digest `11035eb8...`
+### Catalog facts at digest `5c9ea069...`
 
 Re-derived from the pinned lock (`config/openai-plugin-catalog.lock.json`).
 Several of the rulings above rest on these:
@@ -399,10 +509,19 @@ Several of the rulings above rest on these:
   **118** of 180. Installable per component: **121**. The three this unlocks
   are **cloudflare**, **github** and **notion**, each of which has exactly one
   admitted `mcp` component beside non-admitted siblings.
-- Only **4** admitted components are `mcp`, and they are the entire executable
-  set: github, cloudflare, linear and notion. All four are OAuth-gated at the
-  provider; `credentialSlots: []` means "no env-var-style slot declared", not
-  "no credential needed". See `E2E-PROOF.md` Part II.
+- Only **4** admitted components are `mcp`: github, cloudflare, linear and
+  notion. All four are OAuth-gated at the provider; `credentialSlots: []`
+  means "no env-var-style slot declared", not "no credential needed". See
+  `E2E-PROOF.md` Part II.
+- **15** admitted `app` components declare a `connector_...` id and execute
+  through the connector bridge (see "The connector bridge" above) - alpaca,
+  amplitude, biorender, canva, daloopa, egnyte, fireflies, help-scout,
+  intercom, jam, monday-com, pipedrive, semrush, sendgrid, teamwork-com.
+  Together with the 4 `mcp` components above, these 19 are the catalog's
+  entire executable set; the remaining 1074 admitted-or-not components (every
+  `skill`, `asset`, the 3 rejected process `mcp` servers, and every
+  `asdk_app_...`/`templated_apps_...` app) have no invocation path in this
+  runtime at all.
 
 ## Runtime modes and cutover
 
@@ -530,12 +649,26 @@ layers each collapsed the specific reason into a generic one. Task 9 closed
 that gap: the same released write now fails with the literal
 `credential_missing`. Both states are traced below.
 
-Two component kinds still cannot execute here at all, and are reported
-unavailable rather than approximated: a **process MCP** server needs a verified
-execution root from the content store, which the web runtime does not mount, and
-an **app** component needs the OpenAI connector bridge, which the provider
-registry refuses by design. Of the 180 pinned plugins that leaves the HTTP MCP
-servers as the executable set.
+Two kinds of catalog record still cannot execute here at all, and both are
+reported unavailable rather than approximated - see "The connector bridge"
+above for the third case (`app` components with a `connector_...` id) that
+now *can*:
+
+- **A process-transport MCP server** needs a verified execution root from the
+  content store, which the web runtime does not mount. Moot for the pinned
+  catalog today regardless: all 3 process MCP components in it are `rejected`
+  at admission (spec D5) - this is a policy decision this runtime never
+  overturns, not a missing resolution branch, and stays out of scope until an
+  admitted process MCP component first exists.
+- **An `app` component whose declared id is `asdk_app_...` or
+  `templated_apps_...`** (spec D4) has no public invocation path outside
+  ChatGPT's own Apps SDK surface. `resolvePluginProvider`'s app branch and
+  `ConnectorBridgeProvider`'s own constructor both refuse it, independently,
+  before any provider is ever built.
+
+Of the 180 pinned plugins the executable set is the 4 admitted `mcp`
+components plus the 15 admitted `connector_...` `app` components - see
+"Catalog facts" above for the exact count and names.
 
 ## Receipts
 

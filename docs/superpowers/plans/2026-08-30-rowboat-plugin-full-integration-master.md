@@ -38,7 +38,7 @@ Ordered by what unblocks the next thing. W1 is the critical path and has its own
 | # | Workstream | Delivers | Detailed plan |
 | --- | --- | --- | --- |
 | W1 | OpenFang release path | One GitHub MCP call that runs end to end | `2026-08-30-rowboat-plugin-openfang-release-phase-1.md` |
-| W2 | Component coverage | App components (156 of 1093) and process MCP become executable | written when scheduled |
+| W2 | Component coverage | **Narrowed 2026-09-03, delivered.** The 15 admitted `connector_...` app components execute through a new connector bridge; process MCP is cut from W2 entirely (all 3 process components are `rejected` at admission - spec D5) and moves to W5, whenever an admitted one first exists | `2026-09-03-rowboat-plugins-w2-connector-bridge.md` |
 | W3 | UI completion | Component-level install; plugin tools locked against renaming (credential binding cut) | `2026-08-31-rowboat-plugins-w3-ui-completion.md` |
 | W4 | MCP access | Catalog, install, add-tool and runtime-mode as MCP tools | `2026-08-31-rowboat-plugins-w4-mcp-access.md` |
 | W5 | Deployment | The stack can actually run all of the above | written when scheduled |
@@ -51,9 +51,9 @@ Contains: credential slots derived from the MCP declaration; an approval port pl
 
 ### W2 — Component coverage
 
-Acceptance: an `app` component of an installed plugin executes, and a `process` MCP server executes.
+Acceptance, **narrowed 2026-09-03** (spec: `docs/superpowers/specs/2026-09-03-rowboat-plugins-w2-connector-bridge.md`, D5): an admitted `app` component whose declared id starts with `connector_` executes; process MCP is cut from this workstream entirely rather than narrowed to "smaller", because every process-transport MCP component in the pinned catalog is `rejected` at admission today - there is no admitted one to make executable, and admitting one is a policy decision this workstream does not make. Detailed plan: `2026-09-03-rowboat-plugins-w2-connector-bridge.md`.
 
-Two independent pieces. The **connector bridge** is the larger prize: 156 of 1093 catalog components are `app`, and the provider registry refuses `openai-connector-bridge` by design, so today they cannot run at all. Building one means deciding what an OpenAI connector call is in Rowboat's terms and who holds the connector session — an architecture decision, not a wiring task. The **process MCP** piece is smaller: it needs the verified execution root from the content store mounted into the web runtime, which is a deployment change plus a resolution branch.
+**Delivered.** The catalog importer pins each app's declared id into component metadata alongside the mcp branch's existing pattern (new catalog digest, byte-reproducible re-sync); a new kernel provider, `ConnectorBridgeProvider`, makes one `POST /v1/responses` per call against the OpenAI Responses API, resolving two credentials per call (`OPENAI_API_KEY` and a per-app `CONNECTOR_<NAME>` reference) through the same OpenFang-backed `CredentialResolver` W1 built, both required before any network I/O; the app-side resolution branch wires it in, refusing any non-`connector_` id (`asdk_app_...`, `templated_apps_...`) before ever constructing a provider. Live-proven once, to the workboard's OpenAI-budget limit (spec D6): a released canva call reaches a real `https://api.openai.com/v1/responses` and draws OpenAI's own 401 on a deliberately fake key, `status=failed reason=provider_failed`, receipt stamped with the approval id - see `E2E-PROOF.md` Part IV. Still unproven: that OpenAI accepts a real call, including whether the pinned `connector_...` ids are valid entries in OpenAI's own connector directory at all.
 
 ### W3 — UI completion
 
@@ -94,8 +94,8 @@ Recommendation: option 2, because it is the only one that keeps the property thi
 | Every operation classified `write` | W1 Task 6 |
 | Write needs an OpenFang release | W1 Tasks 2–4 |
 | Credential is never released | W1 Task 5 |
-| App components cannot execute | W2 |
-| Process MCP cannot execute | W2 |
+| App components cannot execute | W2 — delivered for the 15 admitted `connector_...` apps; `asdk_app_...`/`templated_apps_...` apps have no public path outside ChatGPT and stay unavailable by design (spec D4) |
+| Process MCP cannot execute | cut from W2 to W5 (spec D5) — moot until an admitted process MCP component exists; all 3 in the pinned catalog are `rejected` today |
 | Plugin-level install gate blocks admitted components | W3 |
 | No UI to bind a credential slot | cut — duplicates OpenFang's allowlist; see W3 |
 | Plugin tools offer mocking and parameter editing | W3 |
