@@ -328,6 +328,9 @@ def send_campaign(campaign_id: str,
 _ALLOWED_HAND_SOURCES = (
     "lead-hand", "researcher-hand", "collector-hand",
     "browser-hand", "predictor-hand", "manual",
+    # F2 (03.09.2026): Recherche-Leads aus sales-claw, gespeichert als
+    # hand:sales-claw — die DB-Funktion 041 schreibt denselben Wert.
+    "sales-claw",
 )
 _PROPOSAL_CANDIDATE_CAP = 500   # per-proposal hard ceiling
 
