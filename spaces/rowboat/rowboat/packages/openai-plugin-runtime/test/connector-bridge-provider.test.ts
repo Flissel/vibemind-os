@@ -33,7 +33,7 @@ function canvaApp(overrides: Partial<NormalizedApp> = {}): NormalizedApp {
     name: "canva",
     kind: "app",
     connectorId: "connector_ab12",
-    capabilities: Object.freeze(["write"]),
+    capabilities: Object.freeze(["write"] as const),
     componentDigest: CONNECTOR_DIGEST,
     ...overrides,
   });
