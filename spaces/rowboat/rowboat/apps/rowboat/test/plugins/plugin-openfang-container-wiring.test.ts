@@ -30,6 +30,19 @@ async function withOpenFangEnv<T>(url: string | undefined, apiKey: string | unde
   }
 }
 
+async function withResponsesEnv<T>(model: string | undefined, baseUrl: string | undefined, fn: () => Promise<T>): Promise<T> {
+  const previousModel = process.env.OPENAI_RESPONSES_MODEL;
+  const previousBaseUrl = process.env.OPENAI_BASE_URL;
+  if (model === undefined) delete process.env.OPENAI_RESPONSES_MODEL; else process.env.OPENAI_RESPONSES_MODEL = model;
+  if (baseUrl === undefined) delete process.env.OPENAI_BASE_URL; else process.env.OPENAI_BASE_URL = baseUrl;
+  try {
+    return await fn();
+  } finally {
+    if (previousModel === undefined) delete process.env.OPENAI_RESPONSES_MODEL; else process.env.OPENAI_RESPONSES_MODEL = previousModel;
+    if (previousBaseUrl === undefined) delete process.env.OPENAI_BASE_URL; else process.env.OPENAI_BASE_URL = previousBaseUrl;
+  }
+}
+
 const providerRequest: PluginProviderResolutionRequest = Object.freeze({
   component: Object.freeze({ id: "mcp:.mcp.json#github", name: "github", kind: "mcp", metadata: Object.freeze({}) }),
   entry: Object.freeze({ licenseDeclaration: "MIT" }),
@@ -116,6 +129,73 @@ describe("resolveOpenFangProvider (container wiring)", () => {
         },
       );
       expect(received?.credentialResolver).toBeInstanceOf(OpenFangCredentialResolver);
+    });
+  });
+
+  /**
+   * OPENAI_RESPONSES_MODEL/OPENAI_BASE_URL are the connector-bridge
+   * counterpart of OPENFANG_URL/OPENFANG_API_KEY above: read fresh from
+   * process.env inside resolveOpenFangProvider and forwarded into
+   * PluginProviderResolutionDependencies as responsesModel/openAiBaseUrl so
+   * Task 3's app-component branch in provider-resolution.ts can pick them
+   * up. This pins the exact call (di/plugins-container.ts's
+   * `resolvePluginProviderImpl({ component, entry, binding }, {
+   * credentialResolver, policy, responsesModel, openAiBaseUrl })`) --  if
+   * either field were dropped there, this assertion would fail while every
+   * other test in this file (which never sets these two variables) stayed
+   * green, exactly the failure shape the Task 7 regression this file
+   * otherwise guards against had.
+   */
+  it("forwards OPENAI_RESPONSES_MODEL and OPENAI_BASE_URL as responsesModel/openAiBaseUrl", async () => {
+    await withOpenFangEnv(undefined, undefined, async () => {
+      await withResponsesEnv("gpt-5.7-mini", "https://byo-openai.example.com", async () => {
+        let received: PluginProviderResolutionDependencies | undefined;
+        await resolveOpenFangProvider(
+          { ...providerRequest, policy: DEFAULT_POLICY },
+          {
+            resolvePluginProviderImpl: (_request, dependencies) => { received = dependencies; return UNAVAILABLE_RESOLUTION; },
+            credentialTimeoutMs: 5_000, fetchImpl: neverFetch,
+          },
+        );
+        expect(received?.responsesModel).toBe("gpt-5.7-mini");
+        expect(received?.openAiBaseUrl).toBe("https://byo-openai.example.com");
+      });
+    });
+  });
+
+  it("collapses a blank or whitespace-only OPENAI_RESPONSES_MODEL/OPENAI_BASE_URL to undefined", async () => {
+    await withOpenFangEnv(undefined, undefined, async () => {
+      for (const blank of ["", "   "]) {
+        await withResponsesEnv(blank, blank, async () => {
+          let received: PluginProviderResolutionDependencies | undefined;
+          await resolveOpenFangProvider(
+            { ...providerRequest, policy: DEFAULT_POLICY },
+            {
+              resolvePluginProviderImpl: (_request, dependencies) => { received = dependencies; return UNAVAILABLE_RESOLUTION; },
+              credentialTimeoutMs: 5_000, fetchImpl: neverFetch,
+            },
+          );
+          expect(received?.responsesModel).toBeUndefined();
+          expect(received?.openAiBaseUrl).toBeUndefined();
+        });
+      }
+    });
+  });
+
+  it("leaves responsesModel/openAiBaseUrl undefined when the variables are absent entirely", async () => {
+    await withOpenFangEnv(undefined, undefined, async () => {
+      await withResponsesEnv(undefined, undefined, async () => {
+        let received: PluginProviderResolutionDependencies | undefined;
+        await resolveOpenFangProvider(
+          { ...providerRequest, policy: DEFAULT_POLICY },
+          {
+            resolvePluginProviderImpl: (_request, dependencies) => { received = dependencies; return UNAVAILABLE_RESOLUTION; },
+            credentialTimeoutMs: 5_000, fetchImpl: neverFetch,
+          },
+        );
+        expect(received?.responsesModel).toBeUndefined();
+        expect(received?.openAiBaseUrl).toBeUndefined();
+      });
     });
   });
 });

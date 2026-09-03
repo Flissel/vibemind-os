@@ -77,7 +77,7 @@ export function resolvePluginProvider(
     // very component, not merely some component of the right kind.
     if (request.binding.componentDigest !== request.component.metadata.bindingDigest) return UNAVAILABLE;
     try {
-      const app = normalizeApp(request.component.name, declaration, request.binding.componentDigest as string);
+      const app = normalizeApp(request.component.name, declaration, request.binding.componentDigest);
       // D4: asdk_app_/templated_apps_ ids have no public invocation path
       // outside ChatGPT -- refused here, before ever constructing a provider,
       // in addition to the kernel's own constructor refusing the same thing.
