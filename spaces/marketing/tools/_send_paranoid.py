@@ -1051,6 +1051,13 @@ def run(campaign_id: str, mode: SendMode, *,
     # Gate 6: investor-lockout defense-in-depth recount
     _check_investor_locked(recipients)
 
+    # Gate 13 (F1, 03.09.2026): gemeinsame Verbotsliste mit sales-claw.
+    # Ein Empfaenger, der auf irgendeiner Seite „nein" gesagt hat
+    # (Unsubscribe, Bounce, Widerruf, Loeschantrag), stoppt den GANZEN Lauf —
+    # keine Warnung, kein stilles Ueberspringen: der Betreiber soll es sehen.
+    from .sperrliste import pruefe_empfaenger
+    pruefe_empfaenger(recipients)
+
     # Gate 7: confirm-token compute / verify
     expected_token = compute_confirm_token(campaign_id, audience_id, recipients)
     if mode is SendMode.LIVE:
@@ -1064,7 +1071,7 @@ def run(campaign_id: str, mode: SendMode, *,
             "recipient_count": len(recipients),
             "rate_per_sec": rate_per_sec,
             "gates_passed": ["resolve_campaign", "snapshot_recipients",
-                             "domain_allowlist", "investor_lockout"],
+                             "domain_allowlist", "investor_lockout", "sperrliste"],
             "elapsed_s": round(time.time() - start, 3),
         })
         return {
