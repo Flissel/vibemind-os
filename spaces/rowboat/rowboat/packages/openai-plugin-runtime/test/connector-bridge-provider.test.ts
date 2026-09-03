@@ -353,6 +353,21 @@ describe("ConnectorBridgeProvider", () => {
     })).not.toThrow();
   });
 
+  it("requests exactly one /v1/responses path whether or not the baseUrl ends in a slash", async () => {
+    for (const baseUrl of ["https://x", "https://x/"]) {
+      const resolver = new RecordingCredentialResolver({
+        OPENAI_API_KEY: "sk-fake",
+        CONNECTOR_CANVA: "tok-fake",
+      });
+      const fetchStub = new RecordingFetch(() => ok({ output: [] }));
+      const bridge = new ConnectorBridgeProvider({ ...baseOptions(resolver, fetchStub.impl), baseUrl });
+
+      await bridge.invoke(request, { requestId: "request-1" });
+
+      expect(fetchStub.calls[0]?.url).toBe("https://x/v1/responses");
+    }
+  });
+
   it("resolves failed without any fetch when context.signal is not a real AbortSignal", async () => {
     const resolver = new RecordingCredentialResolver({
       OPENAI_API_KEY: "sk-fake",

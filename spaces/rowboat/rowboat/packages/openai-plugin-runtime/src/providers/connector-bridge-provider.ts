@@ -163,7 +163,10 @@ export class ConnectorBridgeProvider implements PluginProvider {
     this.#credentialResolver = options.credentialResolver;
     this.#fetchImpl = options.fetchImpl ?? globalThis.fetch;
     this.#model = options.model ?? DEFAULT_MODEL;
-    this.#baseUrl = baseUrl;
+    // `validateBaseUrl` accepts a root URL with or without its trailing
+    // slash, so normalize here: the request path is appended verbatim and
+    // `https://host//v1/responses` is a different resource to some proxies.
+    this.#baseUrl = baseUrl.replace(/\/+$/u, "");
     this.#timeoutMilliseconds = timeoutMilliseconds;
     Object.freeze(this);
   }
