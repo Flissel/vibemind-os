@@ -55,6 +55,25 @@ class RecordingCredentialResolver implements CredentialResolver {
   }
 }
 
+// Never resolves on its own -- it only settles (by rejecting) once the
+// signal it was called with fires "abort", the way a real network-backed
+// resolver honors cancellation. Used to exercise the timeout/abort path
+// through credential resolution without a real clock dependency.
+class HangingCredentialResolver implements CredentialResolver {
+  readonly calls: Array<{ reference: CredentialReference; projectId: string }> = [];
+
+  async resolve(
+    reference: CredentialReference,
+    projectId: string,
+    options?: Readonly<{ readonly signal: AbortSignal }>,
+  ) {
+    this.calls.push({ reference, projectId });
+    return new Promise<never>((_resolve, reject) => {
+      options?.signal.addEventListener("abort", () => reject(new Error("resolver_aborted")), { once: true });
+    });
+  }
+}
+
 class RecordingFetch {
   readonly calls: Array<{ url: string; init: RequestInit }> = [];
   #response: () => Response;
@@ -173,6 +192,39 @@ describe("ConnectorBridgeProvider", () => {
     expect(fetchStub.calls).toHaveLength(0);
   });
 
+  it("reports provider_failed, not credential_missing, when the timeout aborts a hanging credential resolution", async () => {
+    const resolver = new HangingCredentialResolver();
+    const fetchStub = new RecordingFetch(() => ok({ output: [] }));
+    const bridge = new ConnectorBridgeProvider({
+      ...baseOptions(resolver, fetchStub.impl),
+      timeoutMilliseconds: 5,
+    });
+
+    const result = await bridge.invoke(request, { requestId: "request-1" });
+
+    expect(result).toEqual({ status: "failed", reason: "provider_failed" });
+    expect(fetchStub.calls).toHaveLength(0);
+  });
+
+  it("reports provider_failed with zero fetches and no resolver-value leak when context.signal is pre-aborted", async () => {
+    const resolver = new RecordingCredentialResolver({
+      OPENAI_API_KEY: "sk-fake",
+      CONNECTOR_CANVA: "tok-fake",
+    });
+    const fetchStub = new RecordingFetch(() => ok({ output: [] }));
+    const bridge = new ConnectorBridgeProvider(baseOptions(resolver, fetchStub.impl));
+    const abortedController = new AbortController();
+    abortedController.abort();
+
+    const result = await bridge.invoke(request, { requestId: "request-1", signal: abortedController.signal });
+
+    expect(result).toEqual({ status: "failed", reason: "provider_failed" });
+    expect(fetchStub.calls).toHaveLength(0);
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain("sk-fake");
+    expect(serialized).not.toContain("tok-fake");
+  });
+
   it("does not leak the upstream error body or either credential on a non-200 response", async () => {
     const resolver = new RecordingCredentialResolver({
       OPENAI_API_KEY: "sk-fake",
@@ -271,6 +323,34 @@ describe("ConnectorBridgeProvider", () => {
       ...baseOptions(resolver, fetchStub.impl),
       baseUrl: "not a url",
     })).toThrow("component_invalid:base_url");
+  });
+
+  it("throws component_invalid:base_url for a baseUrl carrying a query, a hash, or a non-root path", () => {
+    const resolver = new RecordingCredentialResolver();
+    const fetchStub = new RecordingFetch(() => ok({ output: [] }));
+
+    expect(() => new ConnectorBridgeProvider({
+      ...baseOptions(resolver, fetchStub.impl),
+      baseUrl: "https://x/?a=b",
+    })).toThrow("component_invalid:base_url");
+    expect(() => new ConnectorBridgeProvider({
+      ...baseOptions(resolver, fetchStub.impl),
+      baseUrl: "https://x/#f",
+    })).toThrow("component_invalid:base_url");
+    expect(() => new ConnectorBridgeProvider({
+      ...baseOptions(resolver, fetchStub.impl),
+      baseUrl: "https://x/extra",
+    })).toThrow("component_invalid:base_url");
+  });
+
+  it("accepts a root baseUrl with a trailing slash", () => {
+    const resolver = new RecordingCredentialResolver();
+    const fetchStub = new RecordingFetch(() => ok({ output: [] }));
+
+    expect(() => new ConnectorBridgeProvider({
+      ...baseOptions(resolver, fetchStub.impl),
+      baseUrl: "https://x/",
+    })).not.toThrow();
   });
 
   it("resolves failed without any fetch when context.signal is not a real AbortSignal", async () => {

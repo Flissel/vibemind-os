@@ -62,6 +62,9 @@ function validateBaseUrl(raw: string): void {
     (url.protocol !== "https:" && !isLocalHttp)
     || url.username !== ""
     || url.password !== ""
+    || url.search !== ""
+    || url.hash !== ""
+    || url.pathname !== "/"
   ) {
     throw new Error("component_invalid:base_url");
   }
@@ -236,7 +239,23 @@ export class ConnectorBridgeProvider implements PluginProvider {
           Object.freeze({ signal: controller.signal }),
         );
       } catch {
-        return Object.freeze({ status: "failed", reason: "credential_missing" });
+        // An abort/timeout during resolution must not be reported as
+        // credential_missing -- the credential may never have been asked
+        // for, or the resolver's own rejection may just be it honoring the
+        // signal, not a genuine resolution failure. Only a signal that is
+        // NOT aborted here means the resolver itself failed to resolve.
+        return Object.freeze({
+          status: "failed",
+          reason: controller.signal.aborted ? "provider_failed" : "credential_missing",
+        });
+      }
+
+      // Mirrors the HTTP provider's own post-resolution abort check
+      // (mcp-http-provider.ts:365): both credentials may have resolved in
+      // the instant before the timer fired, and neither credential value
+      // must ever reach the fetch call once the deadline has passed.
+      if (controller.signal.aborted) {
+        return Object.freeze({ status: "failed", reason: "provider_failed" });
       }
 
       const requestBody = {

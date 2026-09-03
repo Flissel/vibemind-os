@@ -22,11 +22,19 @@
  *
  * By workboard policy this repository has no OpenAI API budget (spec D6), so
  * both credential values the daemon issues are obviously-fake test values
- * generated for this run. OpenAI's own `/v1/responses` therefore answers the
- * real POST with 401, exactly the way a fake GitHub PAT drew a real 401 from
- * `api.githubcopilot.com` in Part I. `connector_...` id validity against
- * OpenAI's own connector directory stays UNPROVEN by this run (D6) -- only a
- * real accepted call could prove that, and this run makes none.
+ * generated for this run. ConnectorBridgeProvider never surfaces an upstream
+ * HTTP status by design -- a non-200 response and a network failure both
+ * collapse to the same `provider_failed` -- so this test's own outcome does
+ * not by itself distinguish "reached OpenAI and was rejected" from "never
+ * left the host". What this run proves, combined with independent evidence
+ * (a `curl` against the identical endpoint with a fake key of the same
+ * shape, recorded once in E2E-PROOF.md Part IV, which answers 401): the real
+ * global `fetch` issued the POST per the provider's pinned request shape,
+ * and that endpoint rejects this key with 401 -- the provider itself
+ * surfaces no upstream status to this test or its receipt. `connector_...`
+ * id validity against OpenAI's own connector directory stays UNPROVEN by
+ * this run (D6) -- only a real accepted call could prove that, and this run
+ * makes none.
  *
  * A second, negative branch in the same test installs an `asdk_app_...` app
  * (`actively`) -- a component the catalog admits but whose id has no public
@@ -258,8 +266,10 @@ describe.skipIf(SKIP)("live connector-bridge end to end", () => {
     // trivially nothing to leak, but the digest must still be present.
     expect(canvaRaised!.action_summary).toContain(canvaDigest.slice(0, 16));
 
-    // THE claim of this proof: a real POST reached OpenAI's own API and OpenAI
-    // rejected the fake key -- not "no path existed", not a local refusal.
+    // This outcome alone does not prove OpenAI answered -- the provider
+    // collapses a non-200 response and a network failure to the same
+    // reason by design. See the file-header comment for the independent
+    // curl evidence (E2E-PROOF.md Part IV) that closes that gap.
     expect(canvaOutcome).toBe("provider_failed");
 
     // ---------------------------------------------------------------- 7.

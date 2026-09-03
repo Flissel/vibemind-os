@@ -13,7 +13,7 @@ export type PluginStatus = typeof PLUGIN_STATUSES[number];
 export type PluginReasonCode = typeof PLUGIN_REASON_CODES[number];
 
 export const DESKTOP_PLUGIN_CATALOG_PIN = Object.freeze({
-  catalogDigest: '11035eb884d88be51337853010fc67502f8f6ced64287382a3bb56d24a8c524e',
+  catalogDigest: '5c9ea0690406824b3e78751ee0bc7765e3d4a7d0ae40afdbd9f4757c22666c94',
   sourceCommit: '11c74d6ba24d3a6d48f54a194cd00ef3beea18f9',
   policyVersion: 'rowboat-plugin-policy-v1',
 });

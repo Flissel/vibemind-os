@@ -46,6 +46,22 @@ back. Changing the pin is a deliberate code change: update the constants in
 `packages/openai-plugin-runtime/src/domain/catalog.ts`, re-run the sync, and
 re-run the full evidence gate below.
 
+**A re-pin leaves a hazard for any database that already holds rows under
+the OLD digest.** `requireCatalogEntryForInstallation` matches a plugin's
+stored catalog entry by content tuple
+(`manifestDigest`/`treeDigest`/`sourceCommit`/`pluginVersion`/`policyVersion`)
+across *every* stored catalog digest, and that tuple stays byte-identical
+across a re-pin for a plugin whose components did not themselves change
+shape - so a database still holding the superseded digest's
+`plugin_catalog_snapshots` and `plugin_catalog_entries` rows matches two
+documents instead of one and fails `requireCatalogEntryForInstallation` with
+`installation_catalog_mismatch` for every plugin's installation, not only
+the ones the re-pin actually changed. Remediation: delete the superseded
+digest's rows from both collections - and only those rows; no project,
+installation, admission, credential-slot, or receipt document needs
+touching. This happened live once; see `E2E-PROOF.md` Part IV, §IV.2.2, for
+the exact collision and fix.
+
 ### Loading the catalog into MongoDB
 
 The web app reads its catalog from the database, never from the lock file, so a
@@ -290,6 +306,18 @@ from the response. Everything else about the call - the admission gate
 gate, and the receipt shape - is the same mechanism the rest of this document
 describes; only the provider and its credentials differ.
 
+**Argument fidelity and single-execution are advisory here, unlike the MCP
+path.** The provider's `input` string asks the model, in prose, to call
+`operationName` "exactly once with exactly these arguments" and
+`allowed_tools` pins which single tool name the model may invoke - but
+nothing on the OpenAI side enforces either instruction. Across the model
+boundary, the OpenFang approval's arguments digest binds the arguments this
+call *requested* of the model, not the arguments the model actually executes
+with; `allowed_tools` bounds the tool name only, not call count.
+`HttpMcpProvider`'s MCP path has no such gap: it calls the named tool
+directly, once, with the exact arguments it was given, with nothing composed
+in between for a model to reinterpret.
+
 **Two credentials per call, both through the same `CredentialResolver`, both
 required before any network I/O.** Where an MCP server resolves one
 reference, a connector call resolves two, in this order:
@@ -331,6 +359,16 @@ google-drive, google-calendar, several outlook/teams/sharepoint surfaces,
 github, vercel and figma among them) but are `review_required`, not
 `admitted`, so none of them is installable yet - this table lists only the
 15 that are.
+
+Neither the 15 above nor the 14 `review_required` ones are the whole story
+on admitted-but-uncallable apps: of the pinned catalog's **117** admitted
+`app`-kind components, **102** (101 `asdk_app_...` + 1 `templated_apps_...`)
+are genuinely policy-admitted - not merely `review_required` - yet still
+have no public invocation path outside ChatGPT's own Apps SDK surface (spec
+D4; see "asdk_app_... and templated_apps_... apps have no public invocation
+path here" below for the mechanism). Admission and invocability are
+independent questions for this id shape: the 15 `connector_...` apps above
+are the only admitted `app` components this runtime can actually call.
 
 **Configuration**, read fresh from the environment on every call (same
 convention as `OPENFANG_URL`/`OPENFANG_API_KEY` above - see
@@ -380,7 +418,12 @@ composition:** a released canva call resolves both `OPENAI_API_KEY` and
 https://api.openai.com/v1/responses` and draws OpenAI's own 401 on a
 deliberately fake key, ending in `provider_failed` - the receipt lands with
 `componentKind:"app"` and the approval id, same shape as the MCP proofs
-above. See `E2E-PROOF.md` Part IV. Still unproven, and not claimed: that
+above. (The spec's acceptance criterion for this proof names the stored
+receipt's `reason` as `provider_failed`; what actually lands there is
+`provider_unavailable` - `provider_failed` is the runtime's own outcome, and
+the receipt-reason vocabulary predates this bridge and, per "Receipts"
+below, collapses every non-`credential_missing` provider failure to that one
+constant.) See `E2E-PROOF.md` Part IV. Still unproven, and not claimed: that
 OpenAI accepts anything, including whether the pinned `connector_...` hex ids
 are valid entries in OpenAI's own connector directory at all (D6) - only a
 real accepted call could prove that, and none has been made.

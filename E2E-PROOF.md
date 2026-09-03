@@ -849,8 +849,16 @@ run closes the last uncovered shape: an `app`-kind component whose
 `.app.json` declares a `connector_...` id, executed through the new
 `ConnectorBridgeProvider` instead of `HttpMcpProvider`. By workboard policy
 this repository has no OpenAI API budget (spec D6), so both credentials the
-isolated daemon issued for this run are obviously-fake test values — and the
-proof is, once again, that OpenAI's own API rejects them:
+isolated daemon issued for this run are obviously-fake test values.
+`ConnectorBridgeProvider` never surfaces an upstream HTTP status by design —
+a non-200 response and a network failure both collapse to the same
+`provider_failed` — so this run's own `provider_failed` outcome does not by
+itself distinguish "reached OpenAI and was rejected" from "never left the
+host". What this run shows, combined with independent evidence: the real
+global `fetch` issued a POST per the provider's pinned request shape (IV.3),
+and a `curl` against the identical endpoint with a fake key of the same
+shape (IV.6, claim 3) answers `401` — together, the provider's POST reached
+OpenAI and was rejected; the provider itself surfaces no upstream status:
 
 ```text
 07  OpenFang approval raised   id=2610ea8b-ec52-40da-84d3-4ec35603cc80 tool_name=export_design
@@ -1073,10 +1081,29 @@ INFO openfang_api::routes: Credential issued reference=CONNECTOR_CANVA
    resolved through OpenFang's `/api/credentials/issue`, by name only, before
    any network I/O — confirmed by the daemon's own log naming both
    references issued, in order.
-3. The real `ConnectorBridgeProvider` reaches a real
-   `https://api.openai.com/v1/responses`, and OpenAI rejects the fake key:
-   `provider_failed`, receipt `status:"failed"`, `componentKind:"app"`,
-   stamped with the approval id.
+3. The real `ConnectorBridgeProvider`, using the real global `fetch`, issued
+   a real POST to `https://api.openai.com/v1/responses` per its pinned
+   request shape (IV.3): `provider_failed`, receipt `status:"failed"`,
+   `componentKind:"app"`, stamped with the approval id.
+   `ConnectorBridgeProvider` never surfaces an upstream HTTP status by
+   design — a non-200 response and a network failure both collapse to the
+   same `provider_failed` — so that outcome alone does not distinguish
+   "reached OpenAI and was rejected" from "never left the host". Independent
+   evidence closes that gap: a single `curl` against the identical endpoint,
+   with a fake key of the same shape, run once for this proof:
+
+   ```sh
+   curl -s -o /dev/null -w '%{http_code}' https://api.openai.com/v1/responses \
+     -H "Authorization: Bearer sk-obviously-fake-e2e-value" \
+     -H "content-type: application/json" \
+     -d '{}'
+   # -> 401
+   ```
+
+   Together: the endpoint answers `401` to exactly this fake key, and the
+   provider issued a real POST to that same endpoint per its pinned request
+   shape — not that this run itself observed OpenAI's status code, which
+   `ConnectorBridgeProvider` never surfaces to the caller.
 4. An `asdk_app_...` app — admitted, installable, bindable — still raises
    and can consume a real OpenFang approval, but never reaches a provider
    and sends no network request: `provider_unavailable`, receipt likewise
@@ -1100,6 +1127,14 @@ INFO openfang_api::routes: Credential issued reference=CONNECTOR_CANVA
   once, sequentially, in one project.
 - **Anything about the shared daemon on `:4200`.** Not exercised, not
   touched.
+- **Argument fidelity and single-execution across the model boundary.** The
+  OpenFang approval's arguments digest binds the arguments this call
+  *requested* of the model, not what the model actually executes; nothing
+  bounds the model to calling the tool exactly once, and `allowed_tools`
+  pins only the tool name, not call count or argument values. Unlike the MCP
+  path (`HttpMcpProvider`, which calls the named tool directly with the
+  exact arguments given), this is advisory here, not enforced, and this run
+  neither exercises nor proves it either way.
 
 ## IV.7 Cleanup
 
