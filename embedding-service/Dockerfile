@@ -18,6 +18,13 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
+# Rollen-Config (Vektorraum je Rolle). Liegt in /app, also Fundstelle 2
+# der Suchreihenfolge von vibemind_shared; ein Mount nach /config sticht
+# sie weiterhin aus. Ohne diese Datei startet der Dienst nicht.
+# Eigener Dateiname in der Quelle, weil llm_config.yml repoweit ignoriert
+# wird (Schutz vor eingecheckten Schluesseln). Im Image heisst sie wieder so,
+# wie vibemind_shared sie sucht.
+COPY llm_config.embedding-service.yml ./llm_config.yml
 
 EXPOSE 8080
 
