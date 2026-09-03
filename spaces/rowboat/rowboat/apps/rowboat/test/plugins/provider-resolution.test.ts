@@ -29,7 +29,10 @@ describe("plugin provider resolution", () => {
       entry, binding: { ...httpBinding, providerKind: "mcp-process" },
     }, { credentialResolver })).toMatchObject({ status: "unavailable", reason: "provider_unavailable" });
 
-    // The registry itself refuses the connector bridge; no implementation exists.
+    // An app component with no appDeclaration in its metadata (the pre-Task-1
+    // lock shape) still resolves to nothing, even with a connector-bridge
+    // binding -- see the dedicated connector-bridge describe block below for
+    // the positive path and the rest of its fail-closed cases.
     expect(resolvePluginProvider({
       component: component({ kind: "app", id: "app:.app.json#github" }), entry,
       binding: { ...httpBinding, providerKind: "openai-connector-bridge" },
@@ -94,5 +97,42 @@ describe("plugin provider resolution", () => {
     // reach the network attempt instead, which then fails for an unrelated,
     // local reason -- never for write_review_required again.
     expect(elevatedResult.reason).not.toBe("write_review_required");
+  });
+});
+
+describe("connector-bridge app component resolution", () => {
+  const connectorBinding: ProviderBinding = Object.freeze({ id: "app.github", providerKind: "openai-connector-bridge", componentDigest });
+  const appComponent = (overrides: Record<string, unknown> = {}) => Object.freeze({
+    id: "app:.app.json#github", name: "github", kind: "app",
+    metadata: Object.freeze({ digest: "b".repeat(64), bindingDigest: componentDigest, appDeclaration: { id: "connector_ab12", capabilities: ["read"] } }),
+    ...overrides,
+  });
+
+  it("resolves a connector_ app component from its inline appDeclaration", () => {
+    const resolution = resolvePluginProvider({ component: appComponent(), entry, binding: connectorBinding }, { credentialResolver });
+    expect(resolution.status).toBe("available");
+    if (resolution.status !== "available") return;
+    expect(resolution.provider.describe()).toMatchObject({ id: "app.github", kind: "openai-connector-bridge" });
+  });
+
+  it("refuses an asdk_app_ declaration: no public invocation path outside ChatGPT (D4)", () => {
+    const component = appComponent({
+      metadata: { digest: "b".repeat(64), bindingDigest: componentDigest, appDeclaration: { id: "asdk_app_ab12" } },
+    });
+    expect(resolvePluginProvider({ component, entry, binding: connectorBinding }, { credentialResolver }))
+      .toMatchObject({ status: "unavailable", reason: "provider_unavailable" });
+  });
+
+  it("refuses an app component with no appDeclaration in its metadata (pre-Task-1 lock shape)", () => {
+    const component = appComponent({ metadata: { digest: "b".repeat(64), bindingDigest: componentDigest } });
+    expect(resolvePluginProvider({ component, entry, binding: connectorBinding }, { credentialResolver }))
+      .toMatchObject({ status: "unavailable", reason: "provider_unavailable" });
+  });
+
+  it("refuses a connector-bridge binding whose digest does not match the component it names", () => {
+    expect(resolvePluginProvider(
+      { component: appComponent(), entry, binding: { ...connectorBinding, componentDigest: "c".repeat(64) } },
+      { credentialResolver },
+    )).toMatchObject({ status: "unavailable", reason: "provider_unavailable" });
   });
 });

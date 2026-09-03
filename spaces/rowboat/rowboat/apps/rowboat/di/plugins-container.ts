@@ -179,7 +179,14 @@ export async function resolveOpenFangProvider(
       timeoutMs: options.credentialTimeoutMs,
     });
   }
-  return options.resolvePluginProviderImpl({ component, entry, binding }, { credentialResolver, policy });
+  // Read fresh from process.env per call, same as OPENFANG_URL above: a
+  // config change takes effect on the very next call, with no standing copy
+  // memoized at startup. Blank (unset or whitespace-only) collapses to
+  // undefined so the connector-bridge resolution branch falls back to the
+  // kernel's own defaults instead of being handed an empty string.
+  const responsesModel = (process.env.OPENAI_RESPONSES_MODEL ?? "").trim() || undefined;
+  const openAiBaseUrl = (process.env.OPENAI_BASE_URL ?? "").trim() || undefined;
+  return options.resolvePluginProviderImpl({ component, entry, binding }, { credentialResolver, policy, responsesModel, openAiBaseUrl });
 }
 
 /**
