@@ -3,6 +3,7 @@ import { IProjectsRepository } from "../../repositories/projects.repository.inte
 import { IProjectActionAuthorizationPolicy } from "../../policies/project-action-authorization.policy";
 import { IUsageQuotaPolicy } from "../../policies/usage-quota.policy.interface";
 import { Workflow } from "@/app/lib/types/workflow_types";
+import { assertNoPluginToolRenamed } from "../../services/plugin-tool-name-lock";
 
 export const InputSchema = z.object({
     caller: z.enum(["user", "api"]),
@@ -44,6 +45,17 @@ export class UpdateLiveWorkflowUseCase implements IUpdateLiveWorkflowUseCase {
             projectId,
         });
         await this.usageQuotaPolicy.assertAndConsumeProjectAction(projectId);
+
+        // The live workflow is the one that actually executes: a conversation
+        // started without an explicit workflow runs against it. A publish that
+        // renames a plugin-bound tool would therefore make the runtime call a
+        // name no human approved, so it is refused here exactly as on the
+        // draft path.
+        const existingProject = await this.projectsRepository.fetch(projectId);
+        assertNoPluginToolRenamed(
+            request.workflow.tools,
+            existingProject === null ? [] : [existingProject.draftWorkflow, existingProject.liveWorkflow],
+        );
 
         const workflow = { ...request.workflow, lastUpdatedAt: new Date().toISOString() } as z.infer<typeof Workflow>;
         await this.projectsRepository.updateLiveWorkflow(projectId, workflow);

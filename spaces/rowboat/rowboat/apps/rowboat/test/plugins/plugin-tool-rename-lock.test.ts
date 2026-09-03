@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { UpdateDraftWorkflowUseCase } from "@/src/application/use-cases/projects/update-draft-workflow.use-case";
+import { UpdateLiveWorkflowUseCase } from "@/src/application/use-cases/projects/update-live-workflow.use-case";
 import type { IProjectsRepository } from "@/src/application/repositories/projects.repository.interface";
 import type { IProjectActionAuthorizationPolicy } from "@/src/application/policies/project-action-authorization.policy";
 import type { IUsageQuotaPolicy } from "@/src/application/policies/usage-quota.policy.interface";
@@ -124,6 +125,100 @@ describe("locking a plugin-bound tool's name against a rename", () => {
 
         const freshlyBound = workflowOf([pluginTool(correctName)]);
         await expect(useCase.execute(saveRequest(freshlyBound))).rejects.toThrow("plugin_tool_renamed");
+        expect(writes).toEqual([]);
+    });
+});
+
+// A second tool bound to the SAME component. Two shipped legacy-migration
+// recipes really do map two distinct legacy actions onto one catalog
+// component (`legacy-plugin-recipes.ts`: github page-views and
+// repository-clones both target GITHUB; sheets batch-get and batch-update
+// both target SHEETS), and `plugin-binding-materialization.ts` resolves both
+// to the same provider binding -- so two legitimate tools can carry a
+// byte-identical `pluginBinding`. The lock must survive that: it may not
+// lock the pair out of saving, and it may not let one of them take the
+// other's name.
+const secondName = pluginToolName(pluginBinding.pluginName, "Repository Clones", componentDigest);
+
+interface LiveHarness {
+    readonly useCase: UpdateLiveWorkflowUseCase;
+    readonly writes: readonly unknown[];
+}
+
+function liveHarness(
+    persistedDraftWorkflow: z.infer<typeof Workflow>,
+    persistedLiveWorkflow: z.infer<typeof Workflow>,
+): LiveHarness {
+    const writes: unknown[] = [];
+    const projectsRepository: Pick<IProjectsRepository, "fetch" | "updateLiveWorkflow"> = {
+        fetch: async () => ({
+            id: projectId, name: "p", createdAt: "2026-08-01T10:00:00.000Z", createdByUserId: userId,
+            secret: "s", draftWorkflow: persistedDraftWorkflow, liveWorkflow: persistedLiveWorkflow,
+        }) as z.infer<typeof Project>,
+        updateLiveWorkflow: async (_projectId, workflow) => { writes.push(workflow); return {} as z.infer<typeof Project>; },
+    };
+    const useCase = new UpdateLiveWorkflowUseCase({
+        projectsRepository: projectsRepository as IProjectsRepository,
+        projectActionAuthorizationPolicy: { authorize: async () => undefined },
+        usageQuotaPolicy: {
+            assertAndConsumeProjectAction: async () => undefined,
+            assertAndConsumeRunJobAction: async () => undefined,
+        },
+    });
+    return { useCase, writes };
+}
+
+describe("two tools legitimately sharing one plugin binding", () => {
+    it("saves both unchanged -- the pair must not be locked out of its own workflow", async () => {
+        const persisted = workflowOf([pluginTool(correctName), pluginTool(secondName)]);
+        const { useCase, writes } = harness(persisted);
+
+        await useCase.execute(saveRequest(persisted));
+        expect(writes).toHaveLength(1);
+    });
+
+    it("refuses giving one of the pair the other's name -- the swap a single-name map would wave through", async () => {
+        const persisted = workflowOf([pluginTool(correctName), pluginTool(secondName)]);
+        const { useCase, writes } = harness(persisted);
+
+        const swapped = workflowOf([pluginTool(secondName), pluginTool(secondName)]);
+        await expect(useCase.execute(saveRequest(swapped))).rejects.toThrow("plugin_tool_renamed");
+        expect(writes).toEqual([]);
+    });
+
+    it("allows removing one of the pair -- a deletion is not a rename", async () => {
+        const persisted = workflowOf([pluginTool(correctName), pluginTool(secondName)]);
+        const { useCase, writes } = harness(persisted);
+
+        await useCase.execute(saveRequest(workflowOf([pluginTool(secondName)])));
+        expect(writes).toHaveLength(1);
+    });
+});
+
+describe("publishing a workflow live", () => {
+    it("refuses a publish that renames a plugin-bound tool -- the live workflow is what actually executes", async () => {
+        const persisted = workflowOf([pluginTool(correctName)]);
+        const { useCase, writes } = liveHarness(persisted, persisted);
+
+        const renamed = workflowOf([pluginTool(renamedName)]);
+        await expect(useCase.execute(saveRequest(renamed))).rejects.toThrow("plugin_tool_renamed");
+        expect(writes).toEqual([]);
+    });
+
+    it("publishes a tool that exists only in the persisted draft -- the normal add-then-publish flow", async () => {
+        const draft = workflowOf([pluginTool(correctName)]);
+        const live = workflowOf([]);
+        const { useCase, writes } = liveHarness(draft, live);
+
+        await useCase.execute(saveRequest(draft));
+        expect(writes).toHaveLength(1);
+    });
+
+    it("refuses publishing a plugin-bound tool that exists in neither persisted workflow", async () => {
+        const empty = workflowOf([]);
+        const { useCase, writes } = liveHarness(empty, empty);
+
+        await expect(useCase.execute(saveRequest(workflowOf([pluginTool(correctName)])))).rejects.toThrow("plugin_tool_renamed");
         expect(writes).toEqual([]);
     });
 });
