@@ -6,6 +6,7 @@ import {
   type CredentialResolver,
   type SecretValue,
 } from "./credential-resolver.js";
+import { captureProviderInvocation } from "./provider-invocation.js";
 import type {
   PluginProvider,
   ProviderBinding,
@@ -169,30 +170,58 @@ export class ConnectorBridgeProvider implements PluginProvider {
   }
 
   async invoke(request: ProviderRequest, context: ProviderContext): Promise<ProviderResult> {
-    const providerDenial = admissionReason(this.#parentLicense, "mcp_http", this.#policy);
-    if (providerDenial !== undefined) {
-      return Object.freeze({ status: "failed", reason: providerDenial });
-    }
-    const writeDenial = admissionReason(this.#parentLicense, "write", this.#policy);
-    if (writeDenial !== undefined) {
-      return Object.freeze({ status: "failed", reason: writeDenial });
-    }
-
-    const operationName = request.operationName;
-    if (typeof operationName !== "string" || operationName.length === 0) {
-      return Object.freeze({ status: "failed", reason: "provider_failed" });
-    }
-
-    const controller = new AbortController();
-    const onCallerAbort = (): void => controller.abort();
-    if (context.signal?.aborted === true) {
-      controller.abort();
-    } else {
-      context.signal?.addEventListener("abort", onCallerAbort, { once: true });
-    }
-    const timer = setTimeout(() => controller.abort(), this.#timeoutMilliseconds);
+    let controller: AbortController | undefined;
+    let onCallerAbort: (() => void) | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let boundContext: ProviderContext = context;
 
     try {
+      // Every sibling provider starts here (mcp-http-provider.ts:347): the
+      // shared guard bounds/clones arguments, validates identifiers, and
+      // checks the signal shape. Unlike the HTTP provider, this provider's
+      // contract is "invoke() always resolves, never throws" -- so a throw
+      // out of the guard itself (malformed request, hostile arguments,
+      // non-AbortSignal signal, ...) is caught here and folded into the same
+      // generic failure the rest of invoke() uses, before any timer or
+      // listener exists to clean up.
+      const captured = captureProviderInvocation(request, context);
+      request = captured.request;
+      context = captured.context;
+      boundContext = context;
+
+      const providerDenial = admissionReason(this.#parentLicense, "mcp_http", this.#policy);
+      if (providerDenial !== undefined) {
+        return Object.freeze({ status: "failed", reason: providerDenial });
+      }
+      const writeDenial = admissionReason(this.#parentLicense, "write", this.#policy);
+      if (writeDenial !== undefined) {
+        return Object.freeze({ status: "failed", reason: writeDenial });
+      }
+
+      // Mirrors the HTTP provider's component-binding check
+      // (mcp-request.ts's `validateMcpInvocation`): a request can only
+      // invoke the exact app component this provider instance was
+      // constructed for, never another component smuggled in through the
+      // request.
+      if (request.componentName !== this.#app.name) {
+        return Object.freeze({ status: "failed", reason: "provider_failed" });
+      }
+
+      const operationName = request.operationName;
+      if (typeof operationName !== "string" || operationName.length === 0) {
+        return Object.freeze({ status: "failed", reason: "provider_failed" });
+      }
+
+      controller = new AbortController();
+      const activeController = controller;
+      onCallerAbort = (): void => activeController.abort();
+      if (context.signal?.aborted === true) {
+        controller.abort();
+      } else {
+        context.signal?.addEventListener("abort", onCallerAbort, { once: true });
+      }
+      timer = setTimeout(() => activeController.abort(), this.#timeoutMilliseconds);
+
       let apiKey: SecretValue;
       let connectorToken: SecretValue;
       try {
@@ -261,9 +290,15 @@ export class ConnectorBridgeProvider implements PluginProvider {
         return Object.freeze({ status: "failed", reason: "provider_failed" });
       }
       return Object.freeze({ status: "success", output: match.output });
+    } catch {
+      // Anything that escapes the guarded stages above (most notably
+      // `captureProviderInvocation` itself rejecting a malformed request,
+      // hostile arguments, or a non-AbortSignal `context.signal`) still
+      // resolves rather than rejects, per this provider's contract.
+      return Object.freeze({ status: "failed", reason: "provider_failed" });
     } finally {
-      clearTimeout(timer);
-      context.signal?.removeEventListener("abort", onCallerAbort);
+      if (timer !== undefined) clearTimeout(timer);
+      if (onCallerAbort !== undefined) boundContext.signal?.removeEventListener("abort", onCallerAbort);
     }
   }
 }

@@ -122,17 +122,22 @@ describe("ConnectorBridgeProvider", () => {
       tool_choice: string;
       max_output_tokens: number;
       tools: unknown[];
+      input: string;
     };
-    expect(body.model).toBe("gpt-5.6");
-    expect(body.store).toBe(false);
-    expect(body.tool_choice).toBe("required");
-    expect(body.tools[0]).toEqual({
-      type: "mcp",
-      server_label: "canva",
-      connector_id: "connector_ab12",
-      authorization: "tok-fake",
-      require_approval: "never",
-      allowed_tools: ["export_design"],
+    expect(body).toEqual({
+      model: "gpt-5.6",
+      store: false,
+      tool_choice: "required",
+      max_output_tokens: 1024,
+      tools: [{
+        type: "mcp",
+        server_label: "canva",
+        connector_id: "connector_ab12",
+        authorization: "tok-fake",
+        require_approval: "never",
+        allowed_tools: ["export_design"],
+      }],
+      input: `Call the tool export_design exactly once with exactly these arguments, then stop: ${JSON.stringify({ design_id: "d-1" })}`,
     });
   });
 
@@ -238,6 +243,86 @@ describe("ConnectorBridgeProvider", () => {
       ...baseOptions(resolver, fetchStub.impl),
       app: canvaApp({ connectorId: "asdk_app_ab12" }),
     })).toThrow("provider_unavailable:not_a_connector");
+  });
+
+  it("throws provider_invalid:timeout for an out-of-bounds timeoutMilliseconds", () => {
+    const resolver = new RecordingCredentialResolver();
+    const fetchStub = new RecordingFetch(() => ok({ output: [] }));
+
+    expect(() => new ConnectorBridgeProvider({
+      ...baseOptions(resolver, fetchStub.impl),
+      timeoutMilliseconds: 0,
+    })).toThrow("provider_invalid:timeout");
+    expect(() => new ConnectorBridgeProvider({
+      ...baseOptions(resolver, fetchStub.impl),
+      timeoutMilliseconds: 300_001,
+    })).toThrow("provider_invalid:timeout");
+  });
+
+  it("throws component_invalid:base_url for a non-https, non-local baseUrl", () => {
+    const resolver = new RecordingCredentialResolver();
+    const fetchStub = new RecordingFetch(() => ok({ output: [] }));
+
+    expect(() => new ConnectorBridgeProvider({
+      ...baseOptions(resolver, fetchStub.impl),
+      baseUrl: "http://example.com",
+    })).toThrow("component_invalid:base_url");
+    expect(() => new ConnectorBridgeProvider({
+      ...baseOptions(resolver, fetchStub.impl),
+      baseUrl: "not a url",
+    })).toThrow("component_invalid:base_url");
+  });
+
+  it("resolves failed without any fetch when context.signal is not a real AbortSignal", async () => {
+    const resolver = new RecordingCredentialResolver({
+      OPENAI_API_KEY: "sk-fake",
+      CONNECTOR_CANVA: "tok-fake",
+    });
+    const fetchStub = new RecordingFetch(() => ok({ output: [] }));
+    const bridge = new ConnectorBridgeProvider(baseOptions(resolver, fetchStub.impl));
+
+    const result = await bridge.invoke(request, { requestId: "request-1", signal: {} as never });
+
+    expect(result).toEqual({ status: "failed", reason: "provider_failed" });
+    expect(fetchStub.calls).toHaveLength(0);
+    expect(resolver.calls).toHaveLength(0);
+  });
+
+  it("resolves failed without any fetch when componentName does not match the bound app", async () => {
+    const resolver = new RecordingCredentialResolver({
+      OPENAI_API_KEY: "sk-fake",
+      CONNECTOR_CANVA: "tok-fake",
+    });
+    const fetchStub = new RecordingFetch(() => ok({ output: [] }));
+    const bridge = new ConnectorBridgeProvider(baseOptions(resolver, fetchStub.impl));
+
+    const result = await bridge.invoke(
+      { ...request, componentName: "not-canva" },
+      { requestId: "request-1" },
+    );
+
+    expect(result).toEqual({ status: "failed", reason: "provider_failed" });
+    expect(fetchStub.calls).toHaveLength(0);
+    expect(resolver.calls).toHaveLength(0);
+  });
+
+  it("resolves failed without any fetch when arguments carry a prototype-risk key", async () => {
+    const resolver = new RecordingCredentialResolver({
+      OPENAI_API_KEY: "sk-fake",
+      CONNECTOR_CANVA: "tok-fake",
+    });
+    const fetchStub = new RecordingFetch(() => ok({ output: [] }));
+    const bridge = new ConnectorBridgeProvider(baseOptions(resolver, fetchStub.impl));
+    const hostileArguments = JSON.parse('{"constructor":{"polluted":true}}') as Record<string, unknown>;
+
+    const result = await bridge.invoke(
+      { ...request, arguments: hostileArguments },
+      { requestId: "request-1" },
+    );
+
+    expect(result).toEqual({ status: "failed", reason: "provider_failed" });
+    expect(fetchStub.calls).toHaveLength(0);
+    expect(resolver.calls).toHaveLength(0);
   });
 
   it("registers with the provider registry and delegates invoke through the resolved facade", async () => {
