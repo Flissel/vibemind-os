@@ -175,7 +175,13 @@ export function ToolConfig({
     const params = useParams();
     const projectId = params.projectId as string;
     const [selectedParams, setSelectedParams] = useState(new Set([]));
-    const isReadOnly = tool.isMcp || tool.isComposio;
+    // A plugin-bound tool's name is not a display label the user owns: the
+    // server derives and locks it from the binding (see
+    // update-draft-workflow.use-case.ts), so the field -- like an MCP or
+    // Composio tool's -- is read-only here rather than accepting an edit the
+    // next save would refuse anyway.
+    const pluginSummary = pluginToolSummary(tool);
+    const isReadOnly = tool.isMcp || tool.isComposio || pluginSummary !== null;
     const [nameError, setNameError] = useState<string | null>(null);
     const [showSavedBanner, setShowSavedBanner] = useState(false);
     const [localToolName, setLocalToolName] = useState(tool.name);
@@ -322,7 +328,6 @@ export function ToolConfig({
         });
     };
 
-    const pluginSummary = pluginToolSummary(tool);
     return (
         <Panel
             title={
@@ -417,57 +422,62 @@ export function ToolConfig({
                         </div>
                     </div>
                 </SectionCard>
-                {/* Mock Section */}
-                <SectionCard
-                    icon={<Settings className="w-5 h-5 text-indigo-500" />}
-                    title={<span className="whitespace-nowrap">Mock responses</span>}
-                    labelWidth="md:w-32"
-                    className="mb-1"
-                    singleColumnFields={true}
-                >
-                    <div className="flex flex-col gap-4">
-                        <div className="flex flex-col gap-1">
-                            <label className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-1">Mock tool responses</label>
-                            <div className="flex items-center gap-2 mb-1">
-                                <Switch
-                                    isSelected={tool.mockTool}
-                                    onValueChange={(value) => {
-                                        handleUpdate({
-                                            ...tool,
-                                            mockTool: value,
-                                        });
-                                        showSavedMessage();
-                                    }}
-                                    size="sm"
-                                    color="primary"
-                                />
-                                <span className="text-xs text-gray-500 dark:text-gray-400">
-                                    When enabled, this tool will be mocked.
-                                </span>
+                {/* Mock Section — a plugin tool ignores the mock switch entirely at
+                    execution time (its binding is checked before mockTool is), so
+                    showing the control here would be a lie; hide it instead of
+                    rendering an option that does nothing. */}
+                {pluginSummary === null && (
+                    <SectionCard
+                        icon={<Settings className="w-5 h-5 text-indigo-500" />}
+                        title={<span className="whitespace-nowrap">Mock responses</span>}
+                        labelWidth="md:w-32"
+                        className="mb-1"
+                        singleColumnFields={true}
+                    >
+                        <div className="flex flex-col gap-4">
+                            <div className="flex flex-col gap-1">
+                                <label className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-1">Mock tool responses</label>
+                                <div className="flex items-center gap-2 mb-1">
+                                    <Switch
+                                        isSelected={tool.mockTool}
+                                        onValueChange={(value) => {
+                                            handleUpdate({
+                                                ...tool,
+                                                mockTool: value,
+                                            });
+                                            showSavedMessage();
+                                        }}
+                                        size="sm"
+                                        color="primary"
+                                    />
+                                    <span className="text-xs text-gray-500 dark:text-gray-400">
+                                        When enabled, this tool will be mocked.
+                                    </span>
+                                </div>
                             </div>
+                            {tool.mockTool && (
+                                <div className="flex flex-col gap-1 mt-4">
+                                    <label className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-1">Mock Response Instructions</label>
+                                    <span className="text-xs text-gray-500 dark:text-gray-400 mb-1">Describe the response the mock tool should return. This will be shown in the chat when the tool is called.</span>
+                                    <InputField
+                                        type="text"
+                                        value={tool.mockInstructions || ''}
+                                        onChange={(value: string) => {
+                                            handleUpdate({
+                                                ...tool,
+                                                mockInstructions: value
+                                            });
+                                            showSavedMessage();
+                                        }}
+                                        multiline={true}
+                                        placeholder="Mock response instructions..."
+                                        className="w-full text-xs p-2 bg-white dark:bg-gray-900"
+                                    />
+                                </div>
+                            )}
                         </div>
-                        {tool.mockTool && (
-                            <div className="flex flex-col gap-1 mt-4">
-                                <label className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-1">Mock Response Instructions</label>
-                                <span className="text-xs text-gray-500 dark:text-gray-400 mb-1">Describe the response the mock tool should return. This will be shown in the chat when the tool is called.</span>
-                                <InputField
-                                    type="text"
-                                    value={tool.mockInstructions || ''}
-                                    onChange={(value: string) => {
-                                        handleUpdate({
-                                            ...tool,
-                                            mockInstructions: value
-                                        });
-                                        showSavedMessage();
-                                    }}
-                                    multiline={true}
-                                    placeholder="Mock response instructions..."
-                                    className="w-full text-xs p-2 bg-white dark:bg-gray-900"
-                                />
-                            </div>
-                        )}
-                    </div>
-                </SectionCard>
+                    </SectionCard>
+                )}
                 {/* Parameters Section */}
                 <SectionCard
                     icon={<Settings2 className="w-5 h-5 text-indigo-500" />}

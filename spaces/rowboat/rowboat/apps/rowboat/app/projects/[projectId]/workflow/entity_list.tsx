@@ -1,6 +1,7 @@
 import React, { forwardRef, useImperativeHandle } from "react";
 import { z } from "zod";
 import { WorkflowPrompt, WorkflowAgent, WorkflowTool, WorkflowPipeline, Workflow } from "../../../lib/types/workflow_types";
+import { pluginToolSummary } from "../entities/plugin-tool-summary";
 import { Project } from "@/src/entities/models/project";
 import { DataSource } from "@/src/entities/models/data-source";
 import { WithStringId } from "../../../lib/types/types";
@@ -1024,7 +1025,7 @@ export const EntityList = forwardRef<
                                                                                     // Match font styling to other tools even if read-only
                                                                                     "text-zinc-900 dark:text-zinc-100"
                                                                                 )}>{tool.name}</span>
-                                                                                {tool.mockTool && (
+                                                                                {tool.mockTool && pluginToolSummary(tool) === null && (
                                                                                     <span className="ml-2 px-1 py-0 rounded bg-purple-50 text-purple-400 dark:bg-purple-900/40 dark:text-purple-200 text-[11px] font-normal align-middle">Mocked</span>
                                                                                 )}
                                                                                 {!tool.isLibrary && (

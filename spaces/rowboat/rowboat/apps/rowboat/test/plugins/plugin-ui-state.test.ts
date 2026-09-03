@@ -616,6 +616,49 @@ describe("plugin tool panel summary", () => {
   });
 });
 
+// tool_config.tsx and entity_list.tsx both gate on `pluginToolSummary(tool)`:
+// a plugin-bound tool's fields are read-only there for the same reason an MCP
+// or Composio tool's are, and its "Mocked" badge is hidden because execution
+// ignores the mock switch for a plugin tool entirely (createTools branches on
+// `config.pluginBinding` before `config.mockTool` is ever read) -- showing
+// the badge, or letting the locked name be edited, would both be lies the
+// panel used to tell. These pin the exact gates those two files evaluate,
+// as pure boolean logic, without building a DOM.
+describe("plugin tool honesty in the workflow editor", () => {
+  const binding = Object.freeze({
+    installationId: "33333333-3333-4333-8333-333333333333", pluginName: "actively",
+    componentDigest: "e5461d911ee3b869576d8c781ab5401cf38f8c4756a1b6b757f3d0e1ab880392",
+    providerBindingId: "app.actively", capability: "write" as const, origin: "native" as const,
+  });
+
+  // tool_config.tsx: `isReadOnly = tool.isMcp || tool.isComposio || pluginSummary !== null`
+  function isReadOnly(tool: Readonly<{ isMcp?: boolean; isComposio?: boolean; pluginBinding?: unknown }>): boolean {
+    return tool.isMcp === true || tool.isComposio === true || pluginToolSummary(tool) !== null;
+  }
+
+  // entity_list.tsx custom-tools row: `tool.mockTool && pluginToolSummary(tool) === null`
+  function showsMockedBadge(tool: Readonly<{ mockTool?: boolean; pluginBinding?: unknown }>): boolean {
+    return tool.mockTool === true && pluginToolSummary(tool) === null;
+  }
+
+  it("locks a plugin tool's fields the same way an MCP or Composio tool's are locked", () => {
+    expect(isReadOnly({ pluginBinding: binding })).toBe(true);
+    expect(isReadOnly({ isMcp: true })).toBe(true);
+    expect(isReadOnly({ isComposio: true })).toBe(true);
+    expect(isReadOnly({})).toBe(false);
+  });
+
+  it("never shows the Mocked badge on a plugin tool, whatever mockTool says", () => {
+    expect(showsMockedBadge({ mockTool: true, pluginBinding: binding })).toBe(false);
+    expect(showsMockedBadge({ mockTool: false, pluginBinding: binding })).toBe(false);
+  });
+
+  it("still shows the Mocked badge on an ordinary mocked tool, no regression", () => {
+    expect(showsMockedBadge({ mockTool: true })).toBe(true);
+    expect(showsMockedBadge({ mockTool: false })).toBe(false);
+  });
+});
+
 // A partially available plugin - `github` in the pinned catalog - is installed
 // by naming the components the caller wants. The selection is bound into the
 // signed envelope, so a token issued for one selection cannot install another.
