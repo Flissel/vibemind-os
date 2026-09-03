@@ -335,7 +335,15 @@ function expandStructured(
         `app:${relativePath}#${name}`,
         name,
         declaration.success ? "available" : "invalid",
-        metadata(relativePath, recordDigest(declaration.success ? declaration.data : raw, fileDigest)),
+        metadata(
+          relativePath,
+          recordDigest(declaration.success ? declaration.data : raw, fileDigest),
+          // The validated app declaration travels with the catalog so the
+          // connector-bridge provider can be constructed from the pinned
+          // record alone, without reading the content store at call time. It
+          // carries an opaque connector id, never a credential value.
+          declaration.success ? { appDeclaration: definedFields(declaration.data) } : {},
+        ),
       );
     });
   }
@@ -397,12 +405,24 @@ function credentialSlotNames(declaration: Readonly<Record<string, unknown>>): re
 /**
  * Metadata carries only defined values: an optional field that is absent stays
  * absent rather than becoming an undefined entry the metadata contract rejects.
+ * A scalar passes through as-is; an array of scalars (such as a capability
+ * list) passes through as a frozen copy. Nested objects are intentionally
+ * excluded — a declaration field shaped as a record (e.g. a process server's
+ * literal `env` map) may carry compound values this metadata is not meant to
+ * surface, so it stays out rather than being guessed at.
  */
-function definedFields(value: Readonly<Record<string, unknown>>): Readonly<Record<string, string | number | boolean>> {
-  const output: Record<string, string | number | boolean> = {};
+function definedFields(value: Readonly<Record<string, unknown>>): Readonly<Record<string, PluginMetadataValue>> {
+  const output: Record<string, PluginMetadataValue> = {};
   for (const key of Object.keys(value).sort()) {
     const entry = value[key];
-    if (typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean") output[key] = entry;
+    if (typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean") {
+      output[key] = entry;
+    } else if (
+      Array.isArray(entry) &&
+      entry.every((item) => typeof item === "string" || typeof item === "number" || typeof item === "boolean")
+    ) {
+      output[key] = Object.freeze([...entry]) as readonly PluginMetadataValue[];
+    }
   }
   return Object.freeze(output);
 }

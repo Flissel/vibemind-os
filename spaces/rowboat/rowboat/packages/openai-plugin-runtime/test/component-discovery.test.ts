@@ -130,6 +130,39 @@ describe("normalizePlugin", () => {
     ).toBe(true);
   });
 
+  it("pins the validated app declaration into the component metadata, like the mcp branch", async () => {
+    const root = await copyFixture();
+    const existing = JSON.parse(await readFile(join(root, ".app.json"), "utf8")) as {
+      apps: Record<string, unknown>;
+    };
+    await writeFile(
+      join(root, ".app.json"),
+      JSON.stringify({
+        apps: {
+          ...existing.apps,
+          malformed: { id: "not-a-valid-connector-id" },
+        },
+      }),
+      "utf8",
+    );
+    await commitFixture(root, "add invalid app declaration");
+    const plugin = await normalizeFixture(root);
+    const apps = plugin.components.filter(({ kind }) => kind === "app");
+
+    const review = apps.find(({ name }) => name === "review")!;
+    expect(review.metadata.appDeclaration).toEqual({ id: "connector_ab12" });
+    const templated = apps.find(({ name }) => name === "templated")!;
+    expect(templated.metadata.appDeclaration).toEqual({
+      id: "templated_apps_ab12",
+      category: "Work Tracking & Coordination",
+      capabilities: ["read", "write"],
+    });
+    // Eine invalide Deklaration darf KEINE appDeclaration tragen.
+    const malformed = apps.find(({ name }) => name === "malformed")!;
+    expect(malformed.status).toBe("invalid");
+    expect(malformed.metadata.appDeclaration).toBeUndefined();
+  });
+
   it("marks a malformed optional component invalid and the plugin partial", async () => {
     const temporaryRoot = await copyFixture();
     await writeFile(join(temporaryRoot, "hooks.json"), "not json", "utf8");
