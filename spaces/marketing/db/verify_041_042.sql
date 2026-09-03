@@ -15,3 +15,19 @@ BEGIN
     END IF;
 END $$;
 SELECT 'verify 041: ok' AS ergebnis;
+
+DO $$
+BEGIN
+    IF NOT has_function_privilege('sales_app', 'marketing.uebergaben_offen(int)', 'EXECUTE')
+       OR NOT has_function_privilege('sales_app', 'marketing.uebergabe_erledigen(uuid,text,text,text)', 'EXECUTE') THEN
+        RAISE EXCEPTION 'sales_app darf die Uebergabe-Funktionen nicht rufen';
+    END IF;
+    IF has_table_privilege('sales_app', 'marketing.sales_uebergaben', 'SELECT')
+       OR has_table_privilege('sales_app', 'marketing.inbound_messages', 'SELECT') THEN
+        RAISE EXCEPTION 'sales_app hat Tabellenrechte auf Uebergaben/Posteingang — verboten';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_sales_uebergabe') THEN
+        RAISE EXCEPTION 'Trigger trg_sales_uebergabe fehlt';
+    END IF;
+END $$;
+SELECT 'verify 042: ok' AS ergebnis;
