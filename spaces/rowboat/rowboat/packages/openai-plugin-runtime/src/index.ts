@@ -165,6 +165,11 @@ export {
   type HttpMcpTransportInput,
 } from "./providers/mcp-http-provider.js";
 export {
+  ConnectorBridgeProvider,
+  deriveConnectorReference,
+  type ConnectorBridgeProviderOptions,
+} from "./providers/connector-bridge-provider.js";
+export {
   ProcessMcpProvider,
   type ProcessMcpClient,
   type ProcessMcpClientFactory,

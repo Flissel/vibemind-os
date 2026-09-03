@@ -132,9 +132,6 @@ export class ProviderRegistry {
     if (this.#bindings.has(bindingSnapshot.id)) {
       throw new Error(`provider_duplicate:${bindingSnapshot.id}`);
     }
-    if (bindingSnapshot.providerKind === "openai-connector-bridge") {
-      throw new Error("provider_unavailable:openai-connector-bridge");
-    }
     const providerSnapshot = captureProvider(provider);
     const descriptor = providerSnapshot.descriptor;
     if (

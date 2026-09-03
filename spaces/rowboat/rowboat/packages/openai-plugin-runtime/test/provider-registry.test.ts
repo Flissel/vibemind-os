@@ -438,13 +438,24 @@ describe("temporary adapter bindings", () => {
     expect(bindings.every(Object.isFrozen)).toBe(true);
   });
 
-  it("represents the unavailable OpenAI connector bridge without exposing a fallback", () => {
+  it("registers and resolves an OpenAI connector bridge provider like any other kind", async () => {
     const registry = new ProviderRegistry();
-    expect(() => registry.register(
+    const created = createProvider("openai-connector-bridge", "openai-connector-bridge");
+    registry.register(
       binding("openai-connector-bridge", "openai-connector-bridge"),
-      createProvider("openai-connector-bridge", "openai-connector-bridge").provider,
-    )).toThrow("provider_unavailable:openai-connector-bridge");
-    expect(registry.resolve(binding("openai-connector-bridge", "openai-connector-bridge")))
-      .toEqual({ status: "unavailable", reason: "provider_unavailable" });
+      created.provider,
+    );
+
+    const resolution = registry.resolve(binding("openai-connector-bridge", "openai-connector-bridge"));
+    expect(resolution).toMatchObject({ status: "available" });
+    if (resolution.status !== "available") throw new Error("expected available provider");
+    await expect(resolution.provider.invoke({
+      projectId: "project-1",
+      pluginName: "canva",
+      componentName: "canva",
+      capability: "write",
+      arguments: {},
+    }, { requestId: "request-1" })).resolves.toMatchObject({ status: "success" });
+    expect(created.calls).toBe(1);
   });
 });
