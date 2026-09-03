@@ -222,3 +222,46 @@ describe("publishing a workflow live", () => {
         expect(writes).toEqual([]);
     });
 });
+
+describe("a project that is gone", () => {
+    // A deleted or missing project has no persisted names at all, so every
+    // plugin-bound tool is refused rather than written against an empty
+    // baseline. Plain tools stay unaffected.
+    function missingProjectHarness(): { readonly draft: UpdateDraftWorkflowUseCase; readonly live: UpdateLiveWorkflowUseCase; readonly writes: readonly unknown[] } {
+        const writes: unknown[] = [];
+        const projectsRepository: Pick<IProjectsRepository, "fetch" | "updateDraftWorkflow" | "updateLiveWorkflow"> = {
+            fetch: async () => null,
+            updateDraftWorkflow: async (_projectId, workflow) => { writes.push(workflow); return {} as z.infer<typeof Project>; },
+            updateLiveWorkflow: async (_projectId, workflow) => { writes.push(workflow); return {} as z.infer<typeof Project>; },
+        };
+        const dependencies = {
+            projectsRepository: projectsRepository as IProjectsRepository,
+            projectActionAuthorizationPolicy: { authorize: async () => undefined } as IProjectActionAuthorizationPolicy,
+            usageQuotaPolicy: {
+                assertAndConsumeProjectAction: async () => undefined,
+                assertAndConsumeRunJobAction: async () => undefined,
+            } as IUsageQuotaPolicy,
+        };
+        return {
+            draft: new UpdateDraftWorkflowUseCase(dependencies),
+            live: new UpdateLiveWorkflowUseCase(dependencies),
+            writes,
+        };
+    }
+
+    it("refuses a plugin-bound tool on both the draft and the live path", async () => {
+        const { draft, live, writes } = missingProjectHarness();
+        const bound = workflowOf([pluginTool(correctName)]);
+
+        await expect(draft.execute(saveRequest(bound))).rejects.toThrow("plugin_tool_renamed");
+        await expect(live.execute(saveRequest(bound))).rejects.toThrow("plugin_tool_renamed");
+        expect(writes).toEqual([]);
+    });
+
+    it("still lets a workflow without plugin tools through", async () => {
+        const { draft, writes } = missingProjectHarness();
+
+        await draft.execute(saveRequest(workflowOf([plainTool("anything")])));
+        expect(writes).toHaveLength(1);
+    });
+});
