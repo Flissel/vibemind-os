@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, List
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import urlopen
@@ -14,8 +15,11 @@ from vibemind_shared import (
     get_provider_info,
 )
 
-EMBEDDING_ROLE = "fungus_search"
-EMBEDDING_DIMENSION = 3072
+# Rolle und erwartete Vektorbreite sind KEINE Dienst-Politik: die Rolle waehlt
+# der Betreiber (eine Rolle je Vektorraum), die Breite steht in der Shared-Config
+# unter `dim`. Frueher stand hier 3072 fest — dadurch konnte der Dienst nach der
+# Embedder-Migration nicht mehr in die 1024er-Collections des Brain schreiben.
+EMBEDDING_ROLE = os.environ.get("EMBEDDING_ROLE", "fungus_search")
 
 logger = logging.getLogger("embedding_service")
 
@@ -41,13 +45,18 @@ class EmbedBatchResponse(BaseModel):
 def _embedding_config() -> dict[str, Any]:
     config = get_embedding_config(EMBEDDING_ROLE)
     if (
-        config.get("driver") != "openai"
-        or config.get("provider") != "openfang"
+        not isinstance(config.get("driver"), str)
+        or not config["driver"].strip()
+        or not isinstance(config.get("provider"), str)
+        or not config["provider"].strip()
         or not isinstance(config.get("model"), str)
         or not config["model"].strip()
-        or int(config.get("dim", 0)) != EMBEDDING_DIMENSION
+        or int(config.get("dim", 0)) <= 0
     ):
-        raise RuntimeError("fungus_search must use a configured OpenFang embedding backend")
+        raise RuntimeError(
+            f"{EMBEDDING_ROLE} must name a complete embedding backend "
+            "(driver, provider, model, dim) in the shared config"
+        )
     return config
 
 
@@ -56,11 +65,11 @@ def _embedding_backend() -> tuple[dict[str, Any], Any]:
     return config, get_embedding_model(EMBEDDING_ROLE)
 
 
-def _vectors(encoded: Any) -> List[List[float]]:
+def _vectors(encoded: Any, dimension: int) -> List[List[float]]:
     value = encoded.tolist() if hasattr(encoded, "tolist") else encoded
     if not isinstance(value, list) or any(
         not isinstance(vector, list)
-        or len(vector) != EMBEDDING_DIMENSION
+        or len(vector) != dimension
         or any(isinstance(component, bool) or not isinstance(component, (int, float)) for component in vector)
         for vector in value
     ):
@@ -96,8 +105,14 @@ def _check_openfang_health(config: dict[str, Any]) -> None:
 @app.get("/health")
 def health() -> dict[str, Any]:
     try:
-        config, _ = _embedding_backend()
-        _check_openfang_health(config)
+        config, backend = _embedding_backend()
+        if config["provider"] == "openfang":
+            _check_openfang_health(config)
+        else:
+            # Gemessen 2026-09-03: die reine Erreichbarkeitssonde meldete
+            # monatelang "ok", waehrend /embed mit 429 ausfiel. Fuer jeden
+            # anderen Provider beweist der Health-Pfad das Embedding selbst.
+            _vectors(backend.encode(["health"]), int(config["dim"]))
     except Exception as exc:
         logger.warning("embedding service health check failed: %s", exc)
         raise HTTPException(status_code=503, detail="embedding service unavailable") from exc
@@ -105,8 +120,8 @@ def health() -> dict[str, Any]:
 
 
 def _embed(inputs: List[str]) -> List[List[float]]:
-    _, backend = _embedding_backend()
-    return _vectors(backend.encode(inputs))
+    config, backend = _embedding_backend()
+    return _vectors(backend.encode(inputs), int(config["dim"]))
 
 
 @app.post("/embed", response_model=EmbedResponse)
