@@ -37,6 +37,10 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(REPO_ROOT))
+# PKG_ROOT (Elternteil von spaces/) macht `spaces.marketing` importierbar — ohne
+# ihn liefen zwoelf Suiten seit der Adoption gar nicht (gemessen 02.09.2026).
+PKG_ROOT = next(p.parent for p in Path(__file__).resolve().parents if p.name == "spaces")
+sys.path.insert(0, str(PKG_ROOT))
 
 
 # Example operator id; the real allowlist comes from the environment.

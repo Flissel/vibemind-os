@@ -328,6 +328,9 @@ def send_campaign(campaign_id: str,
 _ALLOWED_HAND_SOURCES = (
     "lead-hand", "researcher-hand", "collector-hand",
     "browser-hand", "predictor-hand", "manual",
+    # F2 (03.09.2026): Recherche-Leads aus sales-claw, gespeichert als
+    # hand:sales-claw — die DB-Funktion 041 schreibt denselben Wert.
+    "sales-claw",
 )
 _PROPOSAL_CANDIDATE_CAP = 500   # per-proposal hard ceiling
 
@@ -394,6 +397,12 @@ def propose_audience(name: str,
 
     inserted = 0
     skipped = 0
+    # F1 (03.09.2026): wer auf der gemeinsamen Verbotsliste steht (Unsubscribe,
+    # Bounce, sales-Widerruf, Loeschantrag), kommt gar nicht erst ins Staging —
+    # ein Mensch soll so jemanden nicht einmal zur Genehmigung vorgelegt bekommen.
+    from .sperrliste import filtere_kandidaten
+    cands, gesperrt = filtere_kandidaten(cands)
+    skipped += gesperrt
     if cands:
         # Bulk-insert candidates. ON CONFLICT(proposal_id,email) DO NOTHING
         # silently de-dupes within the proposal.

@@ -1,0 +1,310 @@
+"""marketing-claw-Werkzeuge — Staging rein, Artefakte raus, NIE senden.
+
+Alle Netzpfade laufen ueber die Marketing-API :5510 (X-API-Key) oder den
+Claude-Shim :8114. Es gibt hier bewusst keinen Weg zu einem Sendepfad:
+kein send_*, kein approve_* — genehmigen tut der Mensch in der UI.
+
+Fail-soft wie sales-claws rowboat.py: keine Funktion wirft; Rueckgabe ist
+{"ok": True, ...} oder {"ok": False, "fehler": "..."} — und in keinem
+Fehlertext steht je ein Schluessel.
+"""
+import json
+import time
+import os
+import urllib.request
+
+from spaces.marketing.claw import llm, schaufenster
+
+FEHLER_MAXLAENGE = 300
+
+
+def _ohne_schluessel(text: str) -> str:
+    for name in ("MARKETING_API_KEY", "MARKETING_PROPOSAL_API_KEY", "ROWBOAT_API_KEY"):
+        wert = os.environ.get(name, "")
+        if wert and wert in text:
+            text = text.replace(wert, "<schluessel>")
+    return text
+
+
+def _roh_anfrage(url: str, daten, kopfzeilen: dict) -> tuple:
+    """Der einzige echte Netzgriff — Tests ersetzen genau diese Funktion."""
+    anfrage = urllib.request.Request(
+        url, data=daten, method="POST" if daten is not None else "GET",
+        headers={"Content-Type": "application/json", **kopfzeilen})
+    with urllib.request.urlopen(anfrage, timeout=60) as antwort:
+        return antwort.status, antwort.read().decode("utf-8", "replace")
+
+
+def _api(pfad: str, nutzlast: dict | None = None) -> dict:
+    """GET (nutzlast=None) oder POST gegen die Marketing-API. Wirft nie."""
+    basis = os.environ.get("MARKETING_API_URL", "http://127.0.0.1:5510").rstrip("/")
+    daten = None if nutzlast is None else json.dumps(nutzlast).encode("utf-8")
+    try:
+        status, rumpf = _roh_anfrage(
+            basis + pfad, daten, {"X-API-Key": os.environ.get("MARKETING_API_KEY", "")})
+        if status != 200:
+            return {"ok": False, "fehler": _ohne_schluessel(
+                f"Marketing-API HTTP {status}: {rumpf[:FEHLER_MAXLAENGE]}")}
+        return {"ok": True, "daten": json.loads(rumpf)}
+    except Exception as e:  # noqa: BLE001 — fail-soft ist der Vertrag
+        return {"ok": False, "fehler": _ohne_schluessel(
+            f"Marketing-API nicht erreichbar ({type(e).__name__}: {e})")}
+
+
+def statistik() -> dict:
+    """Kennzahlen des Marketing-Space (accounts, Kampagnen, Audit-Stand)."""
+    return _api("/api/stats")
+
+
+def _mirofish():
+    """Der bestehende Mirofish-Client des Space — spaet importiert, damit
+    dieses Modul ohne ihn nutzbar bleibt (er zieht weitere Abhaengigkeiten)."""
+    from spaces.marketing.mirofish import predict_post_reception
+    return predict_post_reception
+
+
+def _SCHLAF(sekunden: float) -> None:
+    """Eigene Funktion, damit Tests das Warten ersetzen koennen."""
+    time.sleep(sekunden)
+
+
+def kampagne_pruefen(text: str, kanal: str = "telegram", titel: str = "",
+                     frist_s: float = 900.0) -> dict:
+    """Laesst einen Entwurf von simuliertem Publikum bewerten (Mirofish).
+
+    Mirofish baut aus dem Text einen Wissensgraphen, erzeugt hunderte
+    Personas und simuliert die Reaktion; heraus kommt ein Report mit einer
+    Punktzahl 0-100 und Stimmen einzelner Personas. Das ist eine
+    QUALITAETSPRUEFUNG VOR der Freigabe — sie versendet nichts und
+    genehmigt nichts.
+
+    Teuer und langsam (Ollama + Neo4j), deshalb nur auf Abruf und mit
+    Frist: laeuft die Simulation laenger, sagt die Antwort ehrlich, in
+    welcher Phase sie steckt, statt endlos zu warten.
+    """
+    if len((text or "").strip()) < 20:
+        return {"ok": False, "fehler": "Entwurf zu kurz fuer eine Simulation (unter 20 Zeichen)"}
+    klient = _mirofish()
+    bezeichner = f"entwurf-{int(time.time())}"
+    try:
+        zustand = klient.kick_off(bezeichner, text, kanal, bubble_title=titel or None)
+    except Exception as e:  # noqa: BLE001 — ausgeschaltete Mirofish ist Alltag
+        return {"ok": False, "fehler": f"Mirofish nicht nutzbar ({type(e).__name__}: {e})"}
+
+    ende = time.time() + max(0.0, frist_s)
+    while zustand.get("phase") != "done":
+        if time.time() > ende:
+            return {"ok": False,
+                    "fehler": f"Simulation noch nicht fertig (Phase {zustand.get('phase')}) — "
+                              "spaeter erneut pruefen"}
+        try:
+            zustand = klient.poll_status(zustand)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "fehler": f"Mirofish-Lauf abgebrochen ({type(e).__name__}: {e})"}
+        if zustand.get("phase") != "done":
+            _SCHLAF(10)
+
+    try:
+        report = klient.read_report(zustand.get("report_id") or zustand.get("reportId", ""))
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "fehler": f"Report nicht lesbar ({type(e).__name__}: {e})"}
+
+    stimmen = "\n".join(
+        f"- {p.get('name', '?')}: {p.get('stance', p.get('summary', ''))}"
+        for p in (report.get("persona_summary") or [])) or "- (keine Einzelstimmen)"
+    bericht = (f"# Publikumsprobe: {titel or bezeichner}\n\n"
+               f"Kanal: {kanal}\nPunktzahl (0-100): {report.get('score')}\n"
+               f"Report: {report.get('report_id')}\n\n"
+               f"## Geprueft wurde\n\n{text}\n\n"
+               f"## Stimmen aus der Simulation\n\n{stimmen}\n\n"
+               f"## Vollstaendiger Report\n\n"
+               f"{json.dumps(report.get('full_report'), indent=2, ensure_ascii=False)}\n")
+    pfad = schaufenster.ablegen(titel or bezeichner, "publikumsprobe.md", bericht)
+    return {"ok": True, "score": report.get("score"),
+            "report_id": report.get("report_id"), "dateien": [pfad]}
+
+
+def _rowboat(werkzeug: str, argumente: dict) -> dict:
+    """Ein Lese-Werkzeugaufruf gegen Rowboats MCP-Endpunkt auf der VM.
+
+    PASSTHROUGH IM SIDECAR, NICHT IM GATEWAY — Absicht, kein Notbehelf:
+    Container erreichen im WSL-Mirrored-Modus kein LAN (gemessen 02.09.2026),
+    und so bleibt der Bearer-Schluessel im Host-Prozess statt im
+    Gateway-Volume. Die Projektbindung ist fest: projectId kommt aus der
+    Env, nie vom Aufrufer — der Agent kann keine fremden Projekte anfragen.
+    """
+    basis = os.environ.get("ROWBOAT_URL", "").strip().rstrip("/")
+    schluessel = os.environ.get("ROWBOAT_API_KEY", "").strip()
+    fehlt = [n for n, w in (("ROWBOAT_URL", basis), ("ROWBOAT_API_KEY", schluessel),
+                            ("ROWBOAT_PROJECT_ID", os.environ.get("ROWBOAT_PROJECT_ID", "").strip()))
+             if not w]
+    if fehlt:
+        return {"ok": False, "fehler": "Wissensbasis nicht eingerichtet, es fehlt: " + ", ".join(fehlt)}
+    nutzlast = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": werkzeug, "arguments": argumente}}
+    try:
+        status, rumpf = _roh_anfrage(
+            basis + "/api/mcp", json.dumps(nutzlast).encode("utf-8"),
+            {"Authorization": f"Bearer {schluessel}"})
+        if status != 200:
+            return {"ok": False, "fehler": _ohne_schluessel(
+                f"Wissensbasis HTTP {status}: {rumpf[:FEHLER_MAXLAENGE]}")}
+        antwort = json.loads(rumpf)
+        if "error" in antwort:
+            return {"ok": False, "fehler": _ohne_schluessel(
+                str(antwort["error"].get("message", ""))[:FEHLER_MAXLAENGE])}
+        ergebnis = antwort["result"]
+        text = ergebnis["content"][0]["text"]
+        if ergebnis.get("isError"):
+            return {"ok": False, "fehler": _ohne_schluessel(text[:FEHLER_MAXLAENGE])}
+        return {"ok": True, "daten": json.loads(text)}
+    except Exception as e:  # noqa: BLE001 — fail-soft ist der Vertrag
+        return {"ok": False, "fehler": _ohne_schluessel(
+            f"Wissensbasis nicht erreichbar ({type(e).__name__}: {e})")}
+
+
+def wissensquellen() -> dict:
+    """Die Wissensquellen des VibeMind-Projekts (Name, Status). Nur lesend."""
+    return _rowboat("rowboat_wissensquellen",
+                    {"projectId": os.environ.get("ROWBOAT_PROJECT_ID", "").strip()})
+
+
+def wissensquelle(quellen_id: str) -> dict:
+    """Eine Wissensquelle im Detail. Nur lesend."""
+    return _rowboat("rowboat_wissensquelle", {"sourceId": quellen_id})
+
+
+def dokumente(quellen_id: str, mit_inhalt: bool = False) -> dict:
+    """Dokumente einer Wissensquelle, optional mit Text. Nur lesend."""
+    return _rowboat("rowboat_dokumente",
+                    {"sourceId": quellen_id, "mitInhalt": mit_inhalt is True})
+
+
+def publikum_vorschlagen(name: str, kriterien: dict, begruendung: str = "") -> dict:
+    """Publikums-VORSCHLAG in die Staging-Tuer /api/proposals — genehmigen
+    tut der Mensch. source ist fest 'marketing-claw' (unbekannte sources
+    normalisiert der Server zu hand:unknown — sichtbar im Audit, gewollt)."""
+    if not isinstance(kriterien, dict):
+        return {"ok": False, "fehler": "kriterien muss ein Objekt sein"}
+    return _api("/api/proposals", {
+        "api_key": os.environ.get("MARKETING_PROPOSAL_API_KEY", ""),
+        "name": name,
+        "filter_dsl": kriterien,
+        "rationale": begruendung,
+        "source": "marketing-claw",
+    })
+
+
+def posteingang_lesen() -> dict:
+    """Eingegangene Nachrichten (marketing.inbound_messages) — nur lesen."""
+    return _api("/api/inbox")
+
+
+def kampagnen_auflisten() -> dict:
+    """Bestehende Kampagnen — nur lesen."""
+    return _api("/api/campaigns")
+
+
+def _llm_json(system: str, nutzer: str) -> dict:
+    """LLM fragen und die Antwort als JSON-Objekt lesen — fail-soft."""
+    r = llm.frage(system, nutzer)
+    if not r["ok"]:
+        return r
+    text = r["text"].strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+    try:
+        return {"ok": True, "daten": json.loads(text)}
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "fehler": "LLM-Antwort war kein JSON"}
+
+
+def _liste(werte) -> list:
+    """Belege/Zu-klaeren kommen vom Agenten — als Liste oder als eine Zeile je Eintrag."""
+    if not werte:
+        return []
+    if isinstance(werte, str):
+        return [z.strip("- ").strip() for z in werte.splitlines() if z.strip()]
+    return [str(w).strip() for w in werte if str(w).strip()]
+
+
+def kampagne_entwerfen(ziel: str, zielgruppe: str, kanal: str, kontext: str = "",
+                       belege=None, zu_klaeren=None) -> dict:
+    """Entwirft eine Kampagne: Briefing + Text als broadcast_proposals-Draft
+    (Status draft — versendet NIE) plus Dateien im Schaufenster.
+
+    BELEGPFLICHT (Betreiber-Entscheid 03.09.2026): `belege` sind die Quellen
+    aus der Wissensbasis, auf die sich die Produktaussagen stuetzen (je
+    Eintrag Quellname + Dokument + Aussage); `zu_klaeren` sind Aussagen, die
+    der Agent gern gemacht haette, aber nicht belegen konnte — sie stehen im
+    Briefing, NICHT im Text. Beide liefert der Agent, der die Wissensbasis
+    gelesen hat; das innere LLM erfindet keine Belege.
+    """
+    belege = _liste(belege)
+    zu_klaeren = _liste(zu_klaeren)
+    r = _llm_json(
+        "Du bist Marketing-Texter fuer VibeMind. Antworte NUR mit einem "
+        'JSON-Objekt {"betreff": ..., "text": ..., "begruendung": ...}. '
+        "Deutsch, konkret, keine Superlative. Verwende NUR Produktaussagen, "
+        "die im Kontext oder in den Belegen stehen — nichts dazuerfinden.",
+        f"Kampagnenziel: {ziel}\nZielgruppe: {zielgruppe}\nKanal: {kanal}\n"
+        f"Kontext:\n{kontext}\n\nBelegte Produktaussagen:\n"
+        + ("\n".join(f"- {b}" for b in belege) or "- (keine)"))
+    if not r["ok"]:
+        return r
+    entwurf = r["daten"]
+    belege_md = "\n".join(f"- {b}" for b in belege) or \
+        "- (keine Belege angegeben — Produktaussagen im Text sind damit ungeprueft)"
+    klaeren_md = "\n".join(f"- {z}" for z in zu_klaeren) or "- (nichts offen)"
+    antwort = _api("/api/curator/broadcast_proposals", {
+        "api_key": os.environ.get("MARKETING_PROPOSAL_API_KEY", ""),
+        "channel": kanal,
+        "draft_subject": str(entwurf.get("betreff", "")),
+        "draft_body_text": str(entwurf.get("text", "")),
+        # Belege wandern in die Freigabe-UI mit — der Betreiber genehmigt nicht blind.
+        "draft_body_html": ("<h4>Belege</h4><ul>" + "".join(f"<li>{b}</li>" for b in belege)
+                            + "</ul><h4>Zu klaeren</h4><ul>"
+                            + "".join(f"<li>{z}</li>" for z in zu_klaeren) + "</ul>"),
+        "actor": "marketing-claw",
+    })
+    if not antwort["ok"]:
+        return antwort
+    # Die Route antwortet {success, data: {id, status}} — id liegt unter data.
+    proposal_id = (antwort["daten"].get("data") or {}).get("id") or antwort["daten"].get("id")
+    briefing = (f"# Kampagne: {ziel}\n\nZielgruppe: {zielgruppe}\nKanal: {kanal}\n"
+                f"Proposal: {proposal_id or '?'} (Status draft — versendet nichts)\n\n"
+                f"## Betreff\n{entwurf.get('betreff', '')}\n\n## Text\n{entwurf.get('text', '')}\n\n"
+                f"## Belege\n{belege_md}\n\n## Zu klaeren\n{klaeren_md}\n\n"
+                f"## Begruendung\n{entwurf.get('begruendung', '')}\n")
+    dateien = [schaufenster.ablegen(ziel, "briefing.md", briefing)]
+    return {"ok": True, "proposal_id": proposal_id, "dateien": dateien}
+
+
+def ad_texte_entwerfen(thema: str, n: int = 3) -> dict:
+    """n Ad-Text-Varianten als Schaufenster-Dateien. Kein Draft, kein Versand."""
+    n = max(1, min(int(n), 10))
+    dateien = []
+    for i in range(1, n + 1):
+        r = llm.frage(
+            "Du bist Performance-Marketing-Texter. Eine Ad-Variante, Deutsch, "
+            "max 300 Zeichen Haupttext + Ueberschrift. Nur der Anzeigentext.",
+            f"Thema: {thema}\nVariante {i} von {n} — deutlich anders als die vorigen.")
+        if not r["ok"]:
+            return {"ok": False, "fehler": r["fehler"], "dateien": dateien}
+        dateien.append(schaufenster.ablegen(thema, f"ad-{i:02d}.md", r["text"]))
+    return {"ok": True, "dateien": dateien}
+
+
+def layout_entwerfen(thema: str, format: str = "landingpage") -> dict:
+    """Ein HTML-Layout (eine Datei, keine externen Abhaengigkeiten) ins Schaufenster."""
+    r = llm.frage(
+        "Du bist Web-Designer. Antworte NUR mit einer vollstaendigen "
+        "HTML-Datei (inline CSS, keine externen Ressourcen, Deutsch).",
+        f"Format: {format}\nThema: {thema}\nZweck: Entwurf zur Qualitaetsbewertung.")
+    if not r["ok"]:
+        return r
+    text = r["text"].strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+    kurz = "".join(c if c.isalnum() else "-" for c in format.lower())[:30]
+    return {"ok": True, "dateien": [schaufenster.ablegen(thema, f"layout-{kurz}.html", text)]}

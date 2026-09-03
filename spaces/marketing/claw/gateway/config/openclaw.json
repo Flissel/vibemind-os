@@ -1,0 +1,57 @@
+{
+  "gateway": {
+    "mode": "local",
+    "port": 18895,
+    "bind": "loopback",
+    "auth": {
+      "mode": "token"
+    }
+  },
+  "models": {
+    "providers": {
+      "shim": {
+        "baseUrl": "http://host.docker.internal:8117/v1",
+        "api": "openai-completions",
+        "apiKey": "shim-prueft-keinen-schluessel",
+        "models": [
+          {
+            "id": "claude-code-sonnet",
+            "name": "claude-code-sonnet"
+          },
+          {
+            "id": "claude-code-haiku",
+            "name": "claude-code-haiku"
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "shim/claude-code-sonnet"
+      },
+      "workspace": "/home/node/.openclaw/workspace"
+    }
+  },
+  "mcp": {
+    "servers": {
+      "marketing": {
+        "url": "http://host.docker.internal:8130/mcp",
+        "transport": "streamable-http",
+        "connectionTimeoutMs": 30000,
+        "requestTimeoutMs": 600000
+      }
+    }
+  },
+  "tools": {
+    "web": {
+      "search": {
+        "enabled": false
+      },
+      "fetch": {
+        "enabled": false
+      }
+    }
+  }
+}

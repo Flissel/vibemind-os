@@ -20,6 +20,7 @@ from pathlib import Path
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
+PKG_ROOT = next(p.parent for p in Path(__file__).resolve().parents if p.name == "spaces")
 sys.path.insert(0, str(PKG_ROOT))
 
 

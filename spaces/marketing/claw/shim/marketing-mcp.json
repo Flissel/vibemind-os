@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "marketing": {
+      "type": "http",
+      "url": "http://127.0.0.1:8130/mcp"
+    }
+  },
+  "allowedTools": [
+    "mcp__marketing__statistik",
+    "mcp__marketing__kampagne_entwerfen",
+    "mcp__marketing__ad_texte_entwerfen",
+    "mcp__marketing__layout_entwerfen",
+    "mcp__marketing__kampagne_pruefen",
+    "mcp__marketing__publikum_vorschlagen",
+    "mcp__marketing__posteingang_lesen",
+    "mcp__marketing__kampagnen_auflisten",
+    "mcp__marketing__wissensquellen",
+    "mcp__marketing__wissensquelle",
+    "mcp__marketing__dokumente"
+  ]
+}

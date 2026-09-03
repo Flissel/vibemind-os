@@ -1,0 +1,83 @@
+"""Tests fuer die marketing-claw-Werkzeuge — ohne Netz, ohne Dienste.
+
+Der HTTP-Zugriff laeuft ueber werkzeuge._roh_anfrage(url, daten, kopfzeilen),
+das die Tests durch einen Rekorder ersetzen. So beweisen die Tests auch,
+WOHIN gesprochen wird — insbesondere: nie an einen Sendepfad.
+"""
+import json
+import unittest
+from unittest import mock
+
+from spaces.marketing.claw import werkzeuge
+
+
+class Rekorder:
+    def __init__(self, antworten):
+        self.antworten = list(antworten)
+        self.aufrufe = []
+
+    def __call__(self, url, daten, kopfzeilen):
+        self.aufrufe.append({"url": url, "daten": daten, "kopf": kopfzeilen})
+        return self.antworten.pop(0)
+
+
+class TestStatistik(unittest.TestCase):
+    def test_statistik_liest_api_stats(self):
+        rekorder = Rekorder([(200, json.dumps({"accounts": 14746}))])
+        with mock.patch.object(werkzeuge, "_roh_anfrage", rekorder), \
+             mock.patch.dict("os.environ", {"MARKETING_API_URL": "http://x:5510",
+                                            "MARKETING_API_KEY": "k1"}):
+            r = werkzeuge.statistik()
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["daten"]["accounts"], 14746)
+        self.assertEqual(rekorder.aufrufe[0]["url"], "http://x:5510/api/stats")
+        self.assertEqual(rekorder.aufrufe[0]["kopf"].get("X-API-Key"), "k1")
+
+    def test_statistik_failsoft_bei_totem_dienst(self):
+        def kaputt(url, daten, kopfzeilen):
+            raise OSError("connection refused")
+        with mock.patch.object(werkzeuge, "_roh_anfrage", kaputt):
+            r = werkzeuge.statistik()
+        self.assertFalse(r["ok"])
+        self.assertIn("fehler", r)
+
+    def test_kein_schluessel_in_fehlertexten(self):
+        def kaputt(url, daten, kopfzeilen):
+            raise OSError("Bearer geheim-777 abgelehnt")
+        with mock.patch.dict("os.environ", {"MARKETING_API_KEY": "geheim-777"}), \
+             mock.patch.object(werkzeuge, "_roh_anfrage", kaputt):
+            r = werkzeuge.statistik()
+        self.assertNotIn("geheim-777", json.dumps(r))
+
+
+class TestVorschlagUndLesen(unittest.TestCase):
+    def test_publikum_vorschlagen_trifft_proposals_tuer(self):
+        rekorder = Rekorder([(200, json.dumps({"success": True, "proposal_id": "ap-1"}))])
+        with mock.patch.object(werkzeuge, "_roh_anfrage", rekorder), \
+             mock.patch.dict("os.environ", {"MARKETING_API_URL": "http://x:5510",
+                                            "MARKETING_PROPOSAL_API_KEY": "pk1"}):
+            r = werkzeuge.publikum_vorschlagen("KMU Nord", {"tag": "kmu"}, "Testlauf")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(rekorder.aufrufe[0]["url"], "http://x:5510/api/proposals")
+        gesendet = json.loads(rekorder.aufrufe[0]["daten"])
+        self.assertEqual(gesendet["name"], "KMU Nord")
+        self.assertEqual(gesendet["filter_dsl"], {"tag": "kmu"})
+        self.assertEqual(gesendet["api_key"], "pk1")
+
+    def test_publikum_vorschlagen_verlangt_objekt(self):
+        r = werkzeuge.publikum_vorschlagen("X", "kein-objekt")
+        self.assertFalse(r["ok"])
+
+    def test_posteingang_und_kampagnen_sind_gets(self):
+        rekorder = Rekorder([(200, "[]"), (200, "[]")])
+        with mock.patch.object(werkzeuge, "_roh_anfrage", rekorder), \
+             mock.patch.dict("os.environ", {"MARKETING_API_URL": "http://x:5510"}):
+            self.assertTrue(werkzeuge.posteingang_lesen()["ok"])
+            self.assertTrue(werkzeuge.kampagnen_auflisten()["ok"])
+        self.assertEqual([a["url"] for a in rekorder.aufrufe],
+                         ["http://x:5510/api/inbox", "http://x:5510/api/campaigns"])
+        self.assertTrue(all(a["daten"] is None for a in rekorder.aufrufe))
+
+
+if __name__ == "__main__":
+    unittest.main()

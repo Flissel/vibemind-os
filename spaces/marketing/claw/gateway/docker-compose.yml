@@ -1,0 +1,28 @@
+# marketing-claw Gateway — openclaw vor dem marketing-mcp-Sidecar (P1,
+# Spec 2026-09-02). BEWUSST OHNE KANAELE: dieser Agent kann strukturell
+# nichts versenden — er kennt nur die MCP-Server marketing (Entwuerfe ->
+# Staging + Schaufenster) und rowboat (3 Lesewerkzeuge).
+#
+# Schluessel (Rowboat-Bearer, Modell-Provider) kommen NIE hierher oder in
+# die Saat — anbinden.sh setzt sie ins Laufzeit-Volume (Muster sales-claw).
+services:
+  marketing-claw:
+    image: ghcr.io/openclaw/openclaw:2026.7.1-slim
+    container_name: marketing-claw
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Berlin
+      # /home/node gehoert dem node-User des Images — /state gehoerte root,
+      # daher der EACCES-Crash beim ersten Versuch (gleiches Layout wie
+      # sales-claw: State + Keys unter /home/node).
+      - OPENCLAW_STATE_DIR=/home/node/.openclaw
+    volumes:
+      - marketing-claw-state:/home/node/.openclaw
+      - marketing-claw-keys:/home/node/.config/openclaw
+      - ./config/workspace:/seed/workspace:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  marketing-claw-state:
+  marketing-claw-keys:
