@@ -11,8 +11,11 @@ volumes:
 services:
   rowboat:
     build:
-      context: ./apps/rowboat
-      dockerfile: Dockerfile
+      # Repo root, not apps/rowboat: the image must also build the plugin
+      # kernel at packages/openai-plugin-runtime, which the app pulls in as a
+      # `file:` dependency and which the old context could not reach.
+      context: .
+      dockerfile: apps/rowboat/Dockerfile
     ports:
       - "${PORT:-3000}:3000"
     environment:

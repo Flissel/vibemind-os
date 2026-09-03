@@ -1,0 +1,18 @@
+# Build context is the rowboat repo root (see apps/rowboat/Dockerfile).
+# Keep it to what the image actually needs: the app and the plugin kernel.
+**/node_modules
+**/.next
+**/dist
+.git
+**/npm-debug.log
+**/.env*
+apps/x
+apps/rowboatx
+apps/cli
+apps/docs
+apps/python-sdk
+assets
+docs
+.artifacts
+**/.artifacts
+**/coverage

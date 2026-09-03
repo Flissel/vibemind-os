@@ -1,15 +1,41 @@
 # syntax=docker.io/docker/dockerfile:1
 
-FROM node:18-alpine AS base
+# BUILD CONTEXT IS THE ROWBOAT REPO ROOT, not apps/rowboat.
+#
+# `apps/rowboat` depends on the plugin kernel as
+# `"@rowboat/openai-plugin-runtime": "file:../../packages/openai-plugin-runtime"`,
+# and the app consumes its compiled `dist/`, not its sources. With the old
+# context (`./apps/rowboat`) that path pointed outside the build context, so
+# the dependency could not be installed and the plugin runtime could never
+# reach a built image at all. The context is therefore the repo root, and the
+# kernel is built here before the app installs.
+
+# Node 20 on Debian, not Node 18 on Alpine. Two reasons, both measured while
+# building this image: the app's own `sharp` (0.34.2, via next) requires Node
+# >= 20.9.0 and refuses to load on 18, and it ships no musl prebuild, so on
+# Alpine it fails with "linuxmusl-x64 runtime". Either one aborts the Next.js
+# page-data collection and the whole build.
+FROM node:20-slim AS base
+
+# The plugin kernel. Built first and copied into place at the exact relative
+# path the app's `file:` dependency resolves to (/app/apps/rowboat ->
+# ../../packages/openai-plugin-runtime).
+FROM base AS kernel
+WORKDIR /app/packages/openai-plugin-runtime
+COPY packages/openai-plugin-runtime/package.json packages/openai-plugin-runtime/package-lock.json* ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY packages/openai-plugin-runtime/ ./
+RUN npm run build
 
 # Install dependencies only when needed
 FROM base AS deps
-# Check https://github.com/nodejs/docker-node/tree/b4117f9333da4138b03a546ec926ef50a31506c3#nodealpine to understand why libc6-compat might be needed.
-RUN apk add --no-cache libc6-compat
-WORKDIR /app
+# The `file:` dependency is resolved at install time, so the kernel (with its
+# dist already built) must be in place before the app's install runs.
+COPY --from=kernel /app/packages/openai-plugin-runtime /app/packages/openai-plugin-runtime
+WORKDIR /app/apps/rowboat
 
 # Install dependencies based on the preferred package manager
-COPY package.json yarn.lock* package-lock.json* pnpm-lock.yaml* .npmrc* ./
+COPY apps/rowboat/package.json apps/rowboat/yarn.lock* apps/rowboat/package-lock.json* apps/rowboat/pnpm-lock.yaml* apps/rowboat/.npmrc* ./
 RUN \
   if [ -f yarn.lock ]; then yarn --frozen-lockfile; \
   elif [ -f package-lock.json ]; then npm ci; \
@@ -20,9 +46,10 @@ RUN \
 
 # Rebuild the source code only when needed
 FROM base AS builder
-WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
+WORKDIR /app/apps/rowboat
+COPY --from=kernel /app/packages/openai-plugin-runtime /app/packages/openai-plugin-runtime
+COPY --from=deps /app/apps/rowboat/node_modules ./node_modules
+COPY apps/rowboat/ ./
 
 # Next.js collects completely anonymous telemetry data about general usage.
 # Learn more here: https://nextjs.org/telemetry
@@ -36,6 +63,20 @@ RUN \
   else echo "Lockfile not found." && exit 1; \
   fi
 
+# The deploy-step image. The runner above is a standalone bundle with neither
+# tsx nor the catalog lock, so index creation and catalog loading -- which a
+# deployment must run before the app serves a single plugin page -- get their
+# own target with the dev dependencies and the repo layout intact.
+FROM base AS tools
+WORKDIR /app/apps/rowboat
+COPY --from=kernel /app/packages/openai-plugin-runtime /app/packages/openai-plugin-runtime
+COPY --from=deps /app/apps/rowboat/node_modules ./node_modules
+COPY config/ /app/config/
+COPY apps/rowboat/ ./
+ENV NODE_ENV=production
+# Nothing runs by default: a deploy invokes the steps explicitly, in order.
+CMD ["node", "-e", "console.error('run a deploy step explicitly, e.g. npm run mongodb-ensure-indexes'); process.exit(2)"]
+
 # Production image, copy all the files and run next
 FROM base AS runner
 WORKDIR /app
@@ -44,15 +85,28 @@ ENV NODE_ENV=production
 # Uncomment the following line in case you want to disable telemetry during runtime.
 # ENV NEXT_TELEMETRY_DISABLED=1
 
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nextjs
+RUN groupadd --system --gid 1001 nodejs   && useradd --system --uid 1001 --gid nodejs nextjs
 
-COPY --from=builder /app/public ./public
+COPY --from=builder /app/apps/rowboat/public ./public
 
 # Automatically leverage output traces to reduce image size
 # https://nextjs.org/docs/advanced-features/output-file-tracing
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+#
+# The standalone output of a monorepo build keeps the workspace layout, so the
+# server lives at apps/rowboat/server.js with node_modules beside it -- the
+# plugin kernel among them, materialized by the trace.
+COPY --from=builder --chown=nextjs:nodejs /app/apps/rowboat/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/apps/rowboat/.next/static ./apps/rowboat/.next/static
+
+# Next's file tracing does not materialize sharp's platform binaries into the
+# standalone output, so a page that touches sharp answers 500 at runtime even
+# though the build succeeded. Carry the installed copies over as they sit.
+# Next's file tracing does not materialize sharp's platform binaries into the
+# standalone output. npm installs sharp nested under next's own node_modules
+# (it is next's dependency, not the app's), so carry that copy over and make
+# it resolvable from the app as well.
+COPY --from=builder --chown=nextjs:nodejs /app/apps/rowboat/node_modules/next/node_modules/sharp ./apps/rowboat/node_modules/sharp
+COPY --from=builder --chown=nextjs:nodejs /app/apps/rowboat/node_modules/next/node_modules/@img ./apps/rowboat/node_modules/@img
 
 USER nextjs
 
@@ -64,4 +118,4 @@ ENV PORT=3000
 # https://nextjs.org/docs/pages/api-reference/config/next-config-js/output
 ENV HOSTNAME="0.0.0.0"
 ENV PORT=3000
-CMD ["node", "server.js"]
+CMD ["node", "apps/rowboat/server.js"]
