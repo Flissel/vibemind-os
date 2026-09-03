@@ -3,3 +3,8 @@ uvicorn[standard]>=0.30.0
 pydantic>=2.0.0
 vibemind-shared @ git+https://github.com/Flissel/vibemind-shared.git@609dda92e0f4370c03085a7e2ff6a6f492693d0d
 pytest>=8.0.0
+# Transitive Abhaengigkeiten des gepinnten vibemind-shared, die es selbst nicht
+# deklariert (gemessen 03.09.2026 im isolierten Image-Test): memory_rag_sync
+# importiert `requests` beim Laden, der openai/ollama-Embedding-Pfad `numpy`.
+requests>=2.31.0
+numpy>=1.26.0
