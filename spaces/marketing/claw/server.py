@@ -68,6 +68,10 @@ WERKZEUGE = (
     # lagen ungenutzt daneben (gemessen 04.09.2026).
     werkzeuge.videos,
     werkzeuge.video_transkript,
+    # Eine Frage an ALLE Quellen statt Lesen einer einzigen. Rowboat hat keine
+    # Suche und seine Chat-Route landet beim memory_responder (gemessen
+    # 04.09.2026) — also waehlt der Sidecar selbst aus.
+    werkzeuge.wissen_fragen,
 )
 
 HOST = os.environ.get("MARKETING_CLAW_MCP_HOST", "0.0.0.0")

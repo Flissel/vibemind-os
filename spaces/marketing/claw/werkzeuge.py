@@ -13,7 +13,7 @@ import time
 import os
 import urllib.request
 
-from spaces.marketing.claw import laura, llm, schaufenster
+from spaces.marketing.claw import laura, llm, schaufenster, wissen
 
 FEHLER_MAXLAENGE = 300
 
@@ -333,3 +333,81 @@ def video_transkript(video_id: str) -> dict:
     hier steht, gehoert in "Zu klaeren" und nicht in den Entwurf.
     """
     return laura.transkript(video_id)
+
+
+# --- Die ganze Wissensbasis befragen ----------------------------------------
+# `dokumente()` liest EINE Quelle. Der Agent nutzte davon bis 04.09.2026 genau
+# eine von vierzehn — nicht aus Faulheit, sondern weil ihm der Ueberblick
+# fehlte, welche Quelle die Antwort traegt. `wissen_fragen` dreht das um: es
+# sammelt alles, waehlt aus und laesst das Modell mit Belegpflicht antworten.
+
+# Die Wissensbasis aendert sich in Minuten, nicht in Sekunden; ohne
+# Zwischenspeicher kostete jede Frage 15 Abrufe ueber das LAN zur VM.
+_wissen_zwischenspeicher: dict = {}
+WISSEN_FRISCHE_SEKUNDEN = 300
+
+
+def _wissen_sammeln() -> dict:
+    """Alle Dokumente aller Quellen, mit Text. Wirft nie.
+
+    Eine stumme Quelle kippt nicht die ganze Sammlung — sie wird gezaehlt und
+    gemeldet, damit ein Ausfall sichtbar bleibt statt still zu machen.
+    """
+    jetzt = time.time()
+    zwischen = _wissen_zwischenspeicher.get("stand")
+    if zwischen and jetzt - zwischen["zeit"] < WISSEN_FRISCHE_SEKUNDEN:
+        return zwischen["wert"]
+
+    quellen = wissensquellen()
+    if not quellen["ok"]:
+        return quellen
+    stuecke, stumm = [], []
+    for quelle in quellen["daten"]:
+        antwort = dokumente(str(quelle.get("id", "")), mit_inhalt=True)
+        if not antwort["ok"]:
+            stumm.append(quelle.get("name", quelle.get("id")))
+            continue
+        for dok in antwort["daten"]:
+            text = dok.get("content") or dok.get("inhalt") or ""
+            if text.strip():
+                stuecke.append({"quelle": quelle.get("name", "?"),
+                                "dokument": dok.get("name", "?"), "text": text})
+    ergebnis = {"ok": True, "daten": stuecke, "stumme_quellen": stumm}
+    _wissen_zwischenspeicher["stand"] = {"zeit": jetzt, "wert": ergebnis}
+    return ergebnis
+
+
+def wissen_fragen(frage: str) -> dict:
+    """Beantwortet eine Frage aus ALLEN Wissensquellen, mit Belegen. Nur lesend.
+
+    Rueckgabe unter "daten": `antwort` (Text mit Belegen in Klammern),
+    `quellen` (die Dokumente, die wirklich im Auftrag standen — Grundwahrheit,
+    keine Behauptung des Modells) und `geprueft` (wie viele Dokumente die
+    Auswahl gesehen hat).
+
+    Findet die Auswahl nichts, sagt das Werkzeug das und fragt kein Modell.
+    Eine erfundene Antwort waere hier teurer als eine Fehlanzeige.
+    """
+    if not frage or not frage.strip():
+        return {"ok": False, "fehler": "Ohne Frage keine Antwort."}
+    gesammelt = _wissen_sammeln()
+    if not gesammelt["ok"]:
+        return gesammelt
+
+    gewaehlt = wissen.auswaehlen(frage, gesammelt["daten"])
+    belege = [wissen.bezeichnen(s) for s in gewaehlt]
+    if not gewaehlt:
+        return {"ok": True, "daten": {
+            "antwort": ("Dazu steht nichts in der Wissensbasis. "
+                        f"Durchsucht wurden {len(gesammelt['daten'])} Dokumente. "
+                        "Das gehoert unter 'Zu klaeren', nicht in den Entwurf."),
+            "quellen": [], "geprueft": len(gesammelt["daten"])}}
+
+    system, nutzer = wissen.auftrag(frage, gewaehlt)
+    antwort = llm.frage(system, nutzer)
+    if not antwort["ok"]:
+        # Das Modell fehlt, der Rohstoff nicht — wer die Belege kennt, kann
+        # von Hand weiterarbeiten. Sie wegzuwerfen waere Verschwendung.
+        return {"ok": False, "fehler": antwort["fehler"], "quellen": belege}
+    return {"ok": True, "daten": {"antwort": antwort["text"], "quellen": belege,
+                                  "geprueft": len(gesammelt["daten"])}}
