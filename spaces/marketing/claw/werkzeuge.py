@@ -447,3 +447,58 @@ def post_ablegen(name: str, inhalt: str, art: str = "md") -> dict:
     wenn der Betreiber es freigibt.
     """
     return ablage.ablegen(name, inhalt, art)
+
+
+# Wofuer eine Unterlage gedacht ist — steht im DATEINAMEN, nicht in einem
+# Unterordner: `medien.pruefe("Marketing/post.pdf")` lehnt jeden Pfadanteil ab
+# ("kein '/', kein '\\'"), und diese Pruefung ist der Riegel gegen einen
+# Ausbruch aus dem Medienordner. Sortiert wird alphabetisch, also stehen die
+# Unterlagen eines Zwecks in `medien_liste` ohnehin beieinander.
+ZWECKE = ("marketing", "email", "mobile")
+
+# sales-claw riegelt bei 15 MB ab (medien.py MAX_BYTES). Das faellt lieber
+# hier auf als beim Anhaengen eines freigegebenen Entwurfs.
+MAX_ANHANG_BYTES = 15 * 1024 * 1024
+
+
+def pdf_erstellen(name: str, titel: str, text: str, untertitel: str = "",
+                  belege=None, zu_klaeren=None, zweck: str = "marketing",
+                  handlung: str = "") -> dict:
+    """Setzt eine Unterlage als PDF und legt sie ab, wo sales-claw sie findet.
+
+    DAS ERSTE FORMAT, DAS WIRKLICH RAUSGEHEN KANN: eine `.md` liegt zwar im
+    Medienordner, wird aber von `medien_liste` nicht einmal angezeigt —
+    erlaubt sind nur .pdf/.jpg/.jpeg/.png/.mp3/.ogg/.mp4/.ics.
+
+    `handlung` ist der Aufruf zum Handeln — er erscheint als heller Kasten
+    unter dem Text. Ohne echte Adresse lieber leer lassen und die fehlende
+    Adresse unter `zu_klaeren` nennen.
+
+    `zweck` bestimmt den Namensanfang: marketing, email oder mobile.
+    Aussehen und Farben kommen aus dem Pitch-Deck. Versendet wird nichts.
+    """
+    zweck = (zweck or "").strip().lower()
+    if zweck not in ZWECKE:
+        return {"ok": False, "fehler":
+                f"Zweck '{zweck}' gibt es nicht. Erlaubt: " + ", ".join(ZWECKE)}
+    # ERST HIER laden, nicht oben im Modul: `pdf` zieht reportlab nach, und
+    # reportlab liegt nur in `.venv`. Ein Import am Modulkopf haette den
+    # GANZEN Sidecar mitgerissen — alle sechzehn Werkzeuge weg, weil eines
+    # eine Bibliothek vermisst. Fail-soft heisst: nur dieses eine faellt aus.
+    try:
+        from spaces.marketing.claw import pdf
+    except ImportError as e:
+        return {"ok": False, "fehler":
+                f"PDF-Satz nicht verfuegbar ({e}). Der Sidecar braucht "
+                f"reportlab; er startet mit .venv/Scripts/python.exe."}
+    try:
+        roh = pdf.bauen(titel=titel, text=text, untertitel=untertitel,
+                        belege=belege, zu_klaeren=zu_klaeren, handlung=handlung)
+    except Exception as e:  # noqa: BLE001 — fail-soft ist der Vertrag
+        return {"ok": False, "fehler": f"PDF-Satz fehlgeschlagen "
+                                       f"({type(e).__name__}: {e})"}
+    if len(roh) > MAX_ANHANG_BYTES:
+        return {"ok": False, "fehler":
+                f"PDF ist {len(roh) // 1024 // 1024} MB gross; sales-claw "
+                f"haengt hoechstens 15 MB an."}
+    return ablage.ablegen(f"{zweck}-{name}", roh, art="pdf")

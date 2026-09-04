@@ -156,3 +156,27 @@ nichts). Danach dem Betreiber EINEN Satz: welcher Gedanke gewaehlt wurde,
 welche zwei es noch gaebe, und was unter „Zu klaeren" steht.
 
 Freigabe und Versand sind seine Entscheidung, nie deine.
+
+## Schritt 9 — Wenn eine Unterlage dazugehoert: PDF
+
+Ein Newsletter, ein Einseiter, ein Angebotsblatt — alles, was der Empfaenger
+BEHALTEN soll, gehoert als PDF dazu. `pdf_erstellen(name, titel, text, ...)`
+setzt es im Gewand des Pitch-Decks und legt es dort ab, wo sales-claw es
+anhaengen kann.
+
+Warum nicht Markdown: `medien_liste` bei sales-claw zeigt eine `.md` nicht
+einmal an — erlaubt sind `.pdf .jpg .jpeg .png .mp3 .ogg .mp4 .ics`
+(gemessen 04.09.2026). Eine Markdown-Datei liegt im richtigen Ordner und ist
+trotzdem unversendbar.
+
+* `zweck` waehlt den Namensanfang: `marketing`, `email` oder `mobile`.
+  Unterordner gibt es nicht — sales-claw lehnt jeden Pfadanteil ab.
+* `handlung` ist der Aufruf zum Handeln und erscheint als heller Kasten.
+  Nur mit ECHTER Adresse fuellen; fehlt sie, leer lassen und die fehlende
+  Adresse unter `zu_klaeren` nennen. Ein Platzhalter im Kasten ist der
+  sichtbarste Platzhalter, den es gibt.
+* `belege` und `zu_klaeren` wandern als eigene Rubriken ans Ende — dieselbe
+  Belegpflicht wie im Text, nur gedruckt.
+
+Nicht jede Kampagne braucht ein PDF. Eine kurze Telegram-Nachricht mit
+Anhang ist schlechter als eine ohne.

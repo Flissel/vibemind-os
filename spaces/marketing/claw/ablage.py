@@ -37,7 +37,15 @@ ERZEUGT_VERZEICHNIS = "/media-erzeugt"
 # Was ein Agent schreiben darf. Kein ps1, kein exe, kein sh: der Ordner wird
 # von einem Menschen geoeffnet, und eine ausfuehrbare Datei aus einer
 # Maschine hat darin nichts zu suchen.
-ARTEN = {"md": ".md", "html": ".html", "txt": ".txt", "json": ".json"}
+# Textarten (fuer den Betreiber lesbar) und Binaerarten (was sales-claw
+# anhaengen kann). Die Trennung ist keine Kosmetik: `medien.pruefe` laesst nur
+# .pdf/.jpg/.jpeg/.png/.mp3/.ogg/.mp4/.ics durch — eine .md liegt im richtigen
+# Ordner und ist trotzdem unanhaengbar (gemessen 04.09.2026).
+ARTEN = {"md": ".md", "html": ".html", "txt": ".txt", "json": ".json",
+         "pdf": ".pdf", "png": ".png", "jpg": ".jpg", "mp4": ".mp4"}
+
+# Was sales-claw wirklich anhaengen kann (medien.py:57-79).
+ANHAENGBAR = {".pdf", ".jpg", ".jpeg", ".png", ".mp3", ".ogg", ".mp4", ".ics"}
 
 MAX_ZEICHEN = 2_000_000
 
@@ -60,8 +68,10 @@ def _ssh_schreiben(host: str, pfad: str, inhalt: str) -> None:
     """
     ordner = os.path.dirname(pfad)
     befehl = f"mkdir -p '{ordner}' && cat > '{pfad}'"
+    nutzlast = inhalt if isinstance(inhalt, (bytes, bytearray)) \
+        else inhalt.encode("utf-8")
     ergebnis = subprocess.run(
-        ["ssh", host, befehl], input=inhalt.encode("utf-8"),
+        ["ssh", host, befehl], input=nutzlast,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         timeout=SSH_ZEITLIMIT, check=False)
     if ergebnis.returncode != 0:
@@ -97,8 +107,12 @@ def _saeubern(name: str) -> str:
     return re.sub(r"-{2,}", "-", kurz).strip("-")[:80]
 
 
-def ablegen(name: str, inhalt: str, art: str = "md") -> dict:
+def ablegen(name, inhalt, art: str = "md") -> dict:
     """Schreibt `inhalt` nach /media-erzeugt. Wirft nie.
+
+    `inhalt` ist Text ODER Bytes. Ein PDF durch eine Textkodierung zu
+    schicken zerstoert es — deshalb reisen Bytes unveraendert, auch ueber
+    SSH.
 
     Ueberschreibt NICHTS: liegt der Name schon da, bekommt der neue eine
     Zeitmarke. Ein Entwurf, der einen aelteren still ersetzt, ist ein
@@ -109,9 +123,10 @@ def ablegen(name: str, inhalt: str, art: str = "md") -> dict:
         return {"ok": False, "fehler":
                 f"Art '{art}' ist nicht vorgesehen. Erlaubt: "
                 + ", ".join(sorted(ARTEN))}
-    if not inhalt or not inhalt.strip():
+    binaer = isinstance(inhalt, (bytes, bytearray))
+    if not inhalt or (not binaer and not inhalt.strip()):
         return {"ok": False, "fehler": "Ohne Inhalt wird nichts abgelegt."}
-    if len(inhalt) > MAX_ZEICHEN:
+    if not binaer and len(inhalt) > MAX_ZEICHEN:
         return {"ok": False, "fehler":
                 f"Inhalt zu gross ({len(inhalt)} Zeichen, erlaubt {MAX_ZEICHEN})."}
 
@@ -153,8 +168,12 @@ def ablegen(name: str, inhalt: str, art: str = "md") -> dict:
         if os.path.exists(ziel):
             marke = time.strftime("%H%M%S")
             ziel = os.path.join(ordner, f"{sauber}-{marke}{endung}")
-        with open(ziel, "w", encoding="utf-8", newline="\n") as datei:
-            datei.write(inhalt)
+        if binaer:
+            with open(ziel, "wb") as datei:
+                datei.write(inhalt)
+        else:
+            with open(ziel, "w", encoding="utf-8", newline="\n") as datei:
+                datei.write(inhalt)
     except Exception as e:  # noqa: BLE001 — fail-soft ist der Vertrag
         return {"ok": False, "fehler": f"Ablegen fehlgeschlagen "
                                        f"({type(e).__name__}: {e})"}

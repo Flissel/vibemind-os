@@ -21,6 +21,7 @@
     "mcp__marketing__video_transkript",
     "mcp__marketing__wissen_fragen",
     "mcp__marketing__entwuerfe_lesen",
-    "mcp__marketing__post_ablegen"
+    "mcp__marketing__post_ablegen",
+    "mcp__marketing__pdf_erstellen"
   ]
 }

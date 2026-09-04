@@ -83,6 +83,9 @@ WERKZEUGE = (
     # gehoert dem Menschen und ist fuer Dienste schreibgeschuetzt; diese
     # Trennung ist Absicht (sales-mcp/medien.py:45-49).
     werkzeuge.post_ablegen,
+    # PDF: das erste Format, das sales-claw wirklich anhaengen kann — eine
+    # .md liegt im Medienordner und wird von medien_liste nicht mal gezeigt.
+    werkzeuge.pdf_erstellen,
 )
 
 HOST = os.environ.get("MARKETING_CLAW_MCP_HOST", "0.0.0.0")

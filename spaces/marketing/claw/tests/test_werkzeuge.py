@@ -79,5 +79,60 @@ class TestVorschlagUndLesen(unittest.TestCase):
         self.assertTrue(all(a["daten"] is None for a in rekorder.aufrufe))
 
 
+class TestPdfOhneReportlab(unittest.TestCase):
+    """Eine fehlende Bibliothek darf EIN Werkzeug kosten, nicht alle.
+
+    Gemessen 04.09.2026: ein `import pdf` am Modulkopf von `werkzeuge` riss
+    unter dem pyenv-Python neun Testmodule mit — reportlab liegt nur in
+    `.venv`. Seitdem wird `pdf` erst im Aufruf geladen.
+    """
+
+    def test_modulkopf_zieht_reportlab_nicht_nach(self):
+        import ast
+        import pathlib
+        quelle = pathlib.Path(werkzeuge.__file__).read_text(encoding="utf-8")
+        baum = ast.parse(quelle)
+        oben = []
+        for knoten in baum.body:  # nur die oberste Ebene
+            if isinstance(knoten, ast.ImportFrom) and knoten.module:
+                oben += [a.name for a in knoten.names]
+            elif isinstance(knoten, ast.Import):
+                oben += [a.name for a in knoten.names]
+        self.assertNotIn("pdf", oben,
+                         "pdf gehoert in den Funktionsrumpf, nicht an den Modulkopf")
+
+    def test_fehlende_bibliothek_meldet_sich_verstaendlich(self):
+        """Zwei Stellen muessen weg, sonst haengt der Test an der Reihenfolge.
+
+        `from paket import modul` fragt ZUERST das Paket-Attribut ab und erst
+        dann sys.modules. Hat ein frueher gelaufener Test (test_pdf.py) das
+        Modul schon geladen, steht es als Attribut am Paket und ein blosses
+        `sys.modules[...] = None` wird umgangen — der Test lief allein gruen
+        und in der Suite rot. Beides entfernen, danach beides zurueck.
+        """
+        import sys
+        import spaces.marketing.claw as paket
+
+        gemerkt_modul = sys.modules.pop("spaces.marketing.claw.pdf", None)
+        hatte_attribut = hasattr(paket, "pdf")
+        gemerktes_attribut = getattr(paket, "pdf", None)
+        if hatte_attribut:
+            delattr(paket, "pdf")
+        sys.modules["spaces.marketing.claw.pdf"] = None
+        try:
+            r = werkzeuge.pdf_erstellen("a", "T", "Text")
+        finally:
+            sys.modules.pop("spaces.marketing.claw.pdf", None)
+            if gemerkt_modul is not None:
+                sys.modules["spaces.marketing.claw.pdf"] = gemerkt_modul
+            if hatte_attribut:
+                setattr(paket, "pdf", gemerktes_attribut)
+
+        self.assertFalse(r["ok"], r)
+        self.assertIn("reportlab", r["fehler"])
+        # Und der Rest lebt weiter — das ist der eigentliche Punkt.
+        self.assertTrue(callable(werkzeuge.wissen_fragen))
+
+
 if __name__ == "__main__":
     unittest.main()
