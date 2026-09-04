@@ -237,5 +237,95 @@ class TestZweiteRunde(unittest.TestCase):
         self.assertEqual(wissen.auswaehlen("Konto", stuecke, budget=10_000), [])
 
 
+class TestSeltenheitZaehlt(unittest.TestCase):
+    """Nicht jeder Treffer ist gleich viel wert.
+
+    Gemessen 04.09.2026 am echten Bestand: die Frage "Was bietet VibeMind
+    Solo-Gruendern?" holte neun von siebzehn Dokumenten aus dem Kundenprojekt
+    E-Ticketing_DE (HAFAS_Wrapper, FlixBus_Tickets, Klarna_BNPL). Der
+    Allerwelts-Filter griff nicht: "bietet" steht zwar in vielen Dokumenten,
+    aber nicht in mehr als der Haelfte — und zaehlte deshalb genauso viel wie
+    "Gruender". Ein Wort ist so viel wert, wie es selten ist.
+    """
+
+    def _bestand(self):
+        breit = [{"quelle": "Fremd", "dokument": "F%d.md" % i,
+                  "text": "Dieses Dokument bietet Zahlungsabwicklung."} for i in range(8)]
+        breit.append({"quelle": "Produkt", "dokument": "Zielgruppe.md",
+                      "text": "Das Angebot bietet Solo-Gruendern einen eigenen Betrieb."})
+        return breit
+
+    def test_das_seltene_wort_entscheidet(self):
+        gewaehlt = wissen.auswaehlen("Was bietet es Solo-Gruendern?",
+                                     self._bestand(), budget=10_000)
+        self.assertEqual(gewaehlt[0]["dokument"], "Zielgruppe.md")
+
+    def test_ein_allerweltswort_allein_reisst_nicht_alles_herein(self):
+        """'bietet' allein darf die neun Dokumente nicht vor das eine ziehen."""
+        gewaehlt = wissen.auswaehlen("Gruendern bietet", self._bestand(), budget=10_000)
+        self.assertEqual(gewaehlt[0]["dokument"], "Zielgruppe.md")
+
+    def test_gewicht_faellt_mit_der_haeufigkeit(self):
+        selten = wissen.gewicht(df=1, anzahl=100)
+        haeufig = wissen.gewicht(df=90, anzahl=100)
+        self.assertGreater(selten, haeufig)
+        self.assertGreaterEqual(haeufig, 0.0, "kein negatives Gewicht")
+
+    def test_unbekanntes_wort_gilt_als_sehr_spezifisch(self):
+        """'Ideaspace' steht in keinem Dokument woertlich — genau deshalb ist
+        es die schaerfste Angabe, die die Frage macht."""
+        self.assertGreater(wissen.gewicht(df=0, anzahl=100),
+                           wissen.gewicht(df=5, anzahl=100))
+
+    def test_schwache_treffer_kommen_gar_nicht_erst_mit(self):
+        """Der eigentliche Fehler war nicht die Reihenfolge, sondern die
+        Aufnahme: die neun Fremd-Dokumente standen zwar hinten, aber sie
+        standen im Auftrag und faerbten die Antwort."""
+        gewaehlt = wissen.auswaehlen("Was bietet es Solo-Gruendern?",
+                                     self._bestand(), budget=100_000)
+        self.assertEqual([s["dokument"] for s in gewaehlt], ["Zielgruppe.md"])
+
+
+class TestFunktionswoerter(unittest.TestCase):
+    """Ein Funktionswort traegt keine Absicht — auch wenn es selten ist.
+
+    Der harte Beleg, gemessen 04.09.2026 an den 134 echten Dokumenten: das
+    Wort "bietet" steht in genau 8 davon. Damit ist es statistisch SELTEN,
+    die IDF gab ihm volles Gewicht (2,77 — so viel wie "solo") — und diese
+    acht Dokumente gehoerten alle zum Kundenprojekt E-Ticketing_DE. Auf die
+    Frage "Was bietet VibeMind Solo-Gruendern?" kamen so HAFAS_Wrapper,
+    FlixBus_Tickets und Klarna_BNPL in den Auftrag. Keine Korpus-Statistik
+    kann das erkennen: dass "bietet" nichts ueber das Thema sagt, ist eine
+    Eigenschaft der Sprache, nicht dieses Bestandes. Also eine Liste.
+    """
+
+    def _bestand(self):
+        """20 Dokumente. Nur zwei enthalten "bietet" — es ist hier selten."""
+        stuecke = [{"quelle": "Fremd", "dokument": "F%d.md" % i,
+                    "text": "Zahlungsabwicklung und Fahrplanauskunft."} for i in range(17)]
+        stuecke.append({"quelle": "Fremd", "dokument": "Bezahlen.md",
+                        "text": "Der Dienst bietet Kartenzahlung."})
+        stuecke.append({"quelle": "Fremd", "dokument": "Fahrplan.md",
+                        "text": "Die Auskunft bietet Verbindungen."})
+        stuecke.append({"quelle": "Produkt", "dokument": "Zielgruppe.md",
+                        "text": "Gedacht fuer Solo-Gruendern und kleine Teams."})
+        return stuecke
+
+    def test_seltenes_funktionswort_zieht_nichts_herein(self):
+        gewaehlt = wissen.auswaehlen("Was bietet es Solo-Gruendern?",
+                                     self._bestand(), budget=100_000)
+        self.assertEqual([s["dokument"] for s in gewaehlt], ["Zielgruppe.md"])
+
+    def test_eine_frage_nur_aus_funktionswoertern_ist_eine_fehlanzeige(self):
+        self.assertEqual(wissen.auswaehlen("Was kannst du eigentlich machen?",
+                                           self._bestand(), budget=100_000), [])
+
+    def test_funktionswoerter_im_dokument_stoeren_nicht(self):
+        """Gefiltert wird die FRAGE, nicht der Bestand — ein Dokument bleibt
+        ueber seine Inhaltswoerter auffindbar."""
+        gewaehlt = wissen.auswaehlen("Kartenzahlung", self._bestand(), budget=100_000)
+        self.assertEqual([s["dokument"] for s in gewaehlt], ["Bezahlen.md"])
+
+
 if __name__ == "__main__":
     unittest.main()

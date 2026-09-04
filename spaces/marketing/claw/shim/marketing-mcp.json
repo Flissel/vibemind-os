@@ -16,6 +16,9 @@
     "mcp__marketing__kampagnen_auflisten",
     "mcp__marketing__wissensquellen",
     "mcp__marketing__wissensquelle",
-    "mcp__marketing__dokumente"
+    "mcp__marketing__dokumente",
+    "mcp__marketing__videos",
+    "mcp__marketing__video_transkript",
+    "mcp__marketing__wissen_fragen"
   ]
 }

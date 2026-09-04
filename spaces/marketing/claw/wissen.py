@@ -17,6 +17,7 @@ Tages weh tut, ist der Ersatz genau eine Funktion: `auswaehlen`.
 Diese Datei macht KEIN I/O. Das Sammeln steht in `werkzeuge._wissen_sammeln`,
 damit es denselben `_rowboat`-Weg und dieselbe Fehlerbehandlung nutzt.
 """
+import math
 import re
 
 # Woerter unter dieser Laenge tragen nichts zur Auswahl bei ("ist", "der",
@@ -39,7 +40,45 @@ ANTEIL_ALLERWELT = 0.5
 # ist ein Wortanfang zu wenig Absicht: "Konto" traefe sonst "Kontinent".
 PRAEFIX_MINDESTLAENGE = 5
 
+# Ein Dokument muss mindestens diesen Anteil der Punktzahl des besten
+# erreichen, sonst bleibt es draussen. Gemessen 04.09.2026: ohne diese Stufe
+# standen neun Dokumente eines fremden Kundenprojekts im Auftrag, nur weil sie
+# das Wort "bietet" enthielten — hinten in der Reihenfolge, aber eben drin,
+# und sie faerbten die Antwort.
+ANTEIL_MINDESTGUETE = 0.25
+
 BUDGET_ZEICHEN = 60_000
+
+# Woerter, die eine Frage stellen, aber nichts ueber ihr Thema sagen. Sie
+# gehoeren hierher und nicht in die Haeufigkeitsrechnung: dass "bietet" nichts
+# ueber das Thema verraet, ist eine Eigenschaft der SPRACHE, nicht dieses
+# Bestandes. Gemessen 04.09.2026 stand "bietet" in 8 von 134 Dokumenten — die
+# Statistik hielt es fuer selten und damit fuer bedeutsam, und zog damit acht
+# Seiten eines fremden Kundenprojekts in eine Produktfrage.
+#
+# Die Liste filtert nur die FRAGE, nie den Bestand: ein Dokument bleibt ueber
+# seine Inhaltswoerter auffindbar. Kurze Woerter fehlen hier absichtlich —
+# MINDESTLAENGE haelt sie ohnehin schon draussen.
+STOPPWOERTER = frozenset("""
+aber alle allem allen aller alles also andere anderem anderen anderer anderes
+auch beim bereits bietet biete bieten bietest brauche brauchen braucht dabei
+dafuer damit dann darf duerfen dass dein deine deinem deinen deiner denn dessen
+diese diesem diesen dieser dieses doch dort durch eigentlich eine einem einen
+einer eines einfach erst etwa etwas fuer geben gebt gerade gerne gibt gibts
+haben habe hast hatte hatten heisst ihnen ihre ihrem ihren ihrer immer jede
+jedem jeden jeder jedes jetzt kann kannst kein keine keinem keinen keiner
+koennen koennt koennte konnte lassen machen macht mehr moechte moechten muss
+muessen musst nicht nichts noch nutze nutzen nutzt oder ohne schon sehr sein
+seine seinem seinen seiner sich sind sollen sollte soll ueber unser unsere
+unter viel viele vielen vielleicht warum weil welche welchem welchen welcher
+welches wenn werden wird wieso wieviel will wollen wollte worden wozu wurde
+wurden zeig zeige zeigen
+about after also another because been being between both cannot could does
+doing done each else even every from give gives have here how into just like
+made make many more most much must need needs only other our ours over same
+should some such than that their them then there these they this those through
+under very want was were what when where which while will with would your
+""".split())
 
 _WORT = re.compile(r"[^\wäöüßÄÖÜ]+", re.UNICODE)
 
@@ -69,13 +108,6 @@ def treffer(gesucht: set, vorhanden: set) -> int:
     return anzahl
 
 
-def bewerten(frage_begriffe: set, stueck: dict) -> int:
-    """Wie viele Frage-Begriffe kommen vor — im Namen gewichtet, im Text einfach."""
-    name = begriffe(f"{stueck.get('quelle', '')} {stueck.get('dokument', '')}")
-    text = begriffe(stueck.get("text", ""))
-    return GEWICHT_NAME * treffer(frage_begriffe, name) + treffer(frage_begriffe, text)
-
-
 def allerweltsbegriffe(wortmengen: list) -> set:
     """Begriffe, die in mehr als ANTEIL_ALLERWELT der Dokumente stehen.
 
@@ -93,14 +125,46 @@ def allerweltsbegriffe(wortmengen: list) -> set:
     return {wort for wort, anzahl in zaehler.items() if anzahl > grenze}
 
 
+def gewicht(df: int, anzahl: int) -> float:
+    """Wie viel ein Begriff wiegt, der in `df` von `anzahl` Dokumenten steht.
+
+    Die IDF in ihrer geglaetteten Form, `log(1 + N/(1+df))`. Die Lehrbuch-
+    Variante `log(N/df)` wird bei kleinen Bestaenden negativ — bei EINEM
+    Dokument, das den Begriff enthaelt, ergibt sie log(0,5) und deckelt damit
+    jeden Treffer auf null. Die geglaettete bleibt immer positiv und faellt
+    trotzdem streng mit der Haeufigkeit.
+
+    Ein Wort, das fast ueberall steht, wiegt wenig; eines, das nirgends
+    woertlich steht, wiegt am meisten — denn wer danach fragt, meint genau das.
+    """
+    if anzahl <= 0:
+        return 0.0
+    return math.log(1 + anzahl / (1 + df))
+
+
+def gewichte(gesucht: set, zerlegt: list) -> dict:
+    """Je Frage-Begriff sein Gewicht, gemessen am vorliegenden Bestand."""
+    anzahl = len(zerlegt)
+    ergebnis = {}
+    for wort in gesucht:
+        df = sum(1 for name, text in zerlegt if treffer({wort}, name | text))
+        ergebnis[wort] = gewicht(df, anzahl)
+    return ergebnis
+
+
 def _punkten(gesucht: set, stuecke: list, zerlegt: list) -> list:
+    gew = gewichte(gesucht, zerlegt)
     bewertet = []
     for i, (stueck, (name, text)) in enumerate(zip(stuecke, zerlegt)):
-        punkte = GEWICHT_NAME * treffer(gesucht, name) + treffer(gesucht, text)
+        punkte = GEWICHT_NAME * sum(g for w, g in gew.items() if treffer({w}, name))
+        punkte += sum(g for w, g in gew.items() if treffer({w}, text))
         if punkte > 0:
             bewertet.append((punkte, -len(stueck.get("text", "")), i, stueck))
     bewertet.sort(key=lambda b: (-b[0], b[1], b[2]))
-    return bewertet
+    if not bewertet:
+        return []
+    schwelle = bewertet[0][0] * ANTEIL_MINDESTGUETE
+    return [b for b in bewertet if b[0] >= schwelle]
 
 
 def auswaehlen(frage: str, stuecke: list, budget: int = BUDGET_ZEICHEN) -> list:
@@ -117,7 +181,7 @@ def auswaehlen(frage: str, stuecke: list, budget: int = BUDGET_ZEICHEN) -> list:
     ehrliche Fehlanzeige als eine Antwort aus Fuellmaterial. Das beste Stueck
     kommt auch dann durch, wenn es allein das Budget sprengt.
     """
-    gesucht = begriffe(frage)
+    gesucht = begriffe(frage) - STOPPWOERTER
     if not gesucht:
         return []
 
