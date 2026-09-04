@@ -84,7 +84,8 @@ class TestTranskript(unittest.TestCase):
              mock.patch.dict("os.environ", {"LAURA_API_URL": "http://laura:8765"}):
             ergebnis = werkzeuge.video_transkript("a1")
         self.assertTrue(ergebnis["ok"], ergebnis)
-        self.assertEqual(ergebnis["daten"][0]["text"], "Hallo")
+        self.assertEqual(ergebnis["daten"]["segmente"][0]["text"], "Hallo")
+        self.assertEqual(ergebnis["daten"]["text"], "Hallo")
         self.assertEqual(rekorder.aufrufe[0]["url"],
                          "http://laura:8765/assets/a1/transcript")
 
@@ -130,6 +131,122 @@ class TestSicherheit(unittest.TestCase):
             ergebnis = werkzeuge.videos()
         self.assertFalse(ergebnis["ok"])
         self.assertIn("401", ergebnis["fehler"])
+
+
+class TestKompakteAntwort(unittest.TestCase):
+    """Was der Agent bekommt, muss er auch lesen koennen.
+
+    Am ersten echten Video gesehen (04.09.2026): die Antwort von `videos()`
+    war 2.400 Zeichen fuer EIN Video — sechs Dateieintraege mit
+    Container-Pfaden, Pruefsummen und Groessen. Bei sieben Videos waere das
+    eine Wand aus Innereien, in der die zwei Angaben untergehen, die zaehlen:
+    wie das Video heisst und wie lang es ist. Der Agent kann mit
+    `/data/workspace/project-…/proxies/…/proxy.mp4` nichts anfangen — er hat
+    keinen Zugriff auf dieses Dateisystem.
+    """
+
+    def setUp(self):
+        self.env = mock.patch.dict("os.environ", {"LAURA_API_URL": "http://laura:8765"})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def _antwort(self):
+        return [
+            (200, json.dumps([{"id": "p1", "name": "Produktvideos"}])),
+            (200, json.dumps([{
+                "id": "a1", "display_name": "VibeMind Laura Produktvideo",
+                "type": "video", "duration_frames": 1390,
+                "rate_num": 30, "rate_den": 1, "width": 1912, "height": 1034,
+                "codec_video": "h264", "online": True,
+                "source_path": "/data/eingang/x.mp4",
+                "sha256": "7426a86d5883156e0c333eac0cf90fcc362fd31d0cbb4473174eb3f55a9e825d",
+                "files": [{"id": "f1", "kind": "proxy", "path": "/data/w/p.mp4",
+                           "size_bytes": 91456110}] * 6,
+            }])),
+        ]
+
+    def test_die_innereien_bleiben_draussen(self):
+        rekorder = Rekorder(self._antwort())
+        with mock.patch.object(laura, "_roh_anfrage", rekorder):
+            ergebnis = werkzeuge.videos()
+        video = ergebnis["daten"][0]
+        self.assertNotIn("files", video)
+        self.assertNotIn("sha256", video)
+        self.assertNotIn("source_path", video)
+
+    def test_die_angaben_die_zaehlen_bleiben(self):
+        rekorder = Rekorder(self._antwort())
+        with mock.patch.object(laura, "_roh_anfrage", rekorder):
+            video = werkzeuge.videos()["daten"][0]
+        self.assertEqual(video["kennung"], "a1")
+        self.assertEqual(video["name"], "VibeMind Laura Produktvideo")
+        self.assertEqual(video["projekt"], "Produktvideos")
+        self.assertEqual(video["aufloesung"], "1912x1034")
+
+    def test_dauer_in_sekunden_statt_bildern(self):
+        """1390 Bilder bei 30/s sind 46 s. Mit `duration_frames` allein
+        kann niemand etwas anfangen, ohne die Bildrate danebenzulegen."""
+        rekorder = Rekorder(self._antwort())
+        with mock.patch.object(laura, "_roh_anfrage", rekorder):
+            video = werkzeuge.videos()["daten"][0]
+        self.assertEqual(video["dauer_s"], 46)
+
+    def test_bildrate_null_stuerzt_nicht_ab(self):
+        antwort = self._antwort()
+        antwort[1] = (200, json.dumps([{"id": "a1", "display_name": "X",
+                                        "duration_frames": 100, "rate_num": 0,
+                                        "rate_den": 1}]))
+        rekorder = Rekorder(antwort)
+        with mock.patch.object(laura, "_roh_anfrage", rekorder):
+            video = werkzeuge.videos()["daten"][0]
+        self.assertIsNone(video["dauer_s"])
+
+    def test_die_antwort_ist_deutlich_kuerzer(self):
+        rekorder = Rekorder(self._antwort())
+        with mock.patch.object(laura, "_roh_anfrage", rekorder):
+            ergebnis = werkzeuge.videos()
+        self.assertLess(len(json.dumps(ergebnis, ensure_ascii=False)), 400)
+
+
+class TestTranskriptText(unittest.TestCase):
+    """Ein Transkript ist zum ZITIEREN da."""
+
+    def setUp(self):
+        self.env = mock.patch.dict("os.environ", {"LAURA_API_URL": "http://laura:8765"})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def _segmente(self):
+        return (200, json.dumps([
+            {"id": "s1", "start_frame": 0, "end_frame": 60,
+             "text": "This is Laura,", "confidence": 0.9},
+            {"id": "s2", "start_frame": 60, "end_frame": 120,
+             "text": "an autonomous AI video editor.", "confidence": 0.9},
+        ]))
+
+    def test_der_fortlaufende_text_liegt_bei(self):
+        rekorder = Rekorder([self._segmente()])
+        with mock.patch.object(laura, "_roh_anfrage", rekorder):
+            daten = werkzeuge.video_transkript("a1")["daten"]
+        self.assertEqual(daten["text"],
+                         "This is Laura, an autonomous AI video editor.")
+
+    def test_die_segmente_bleiben_fuer_stellenangaben(self):
+        rekorder = Rekorder([self._segmente()])
+        with mock.patch.object(laura, "_roh_anfrage", rekorder):
+            daten = werkzeuge.video_transkript("a1")["daten"]
+        self.assertEqual(len(daten["segmente"]), 2)
+        self.assertEqual(daten["segmente"][0]["start_frame"], 0)
+
+    def test_ohne_analyse_ist_die_liste_leer_und_sagt_es(self):
+        """Ein importiertes Video ohne ASR-Lauf hat kein Transkript. Das ist
+        kein Fehler, aber der Agent muss es merken, statt Stille zu deuten."""
+        rekorder = Rekorder([(200, "[]")])
+        with mock.patch.object(laura, "_roh_anfrage", rekorder):
+            ergebnis = werkzeuge.video_transkript("a1")
+        self.assertTrue(ergebnis["ok"], ergebnis)
+        self.assertEqual(ergebnis["daten"]["text"], "")
+        self.assertIn("hinweis", ergebnis["daten"])
 
 
 if __name__ == "__main__":
