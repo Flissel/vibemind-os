@@ -13,7 +13,7 @@ import time
 import os
 import urllib.request
 
-from spaces.marketing.claw import llm, schaufenster
+from spaces.marketing.claw import laura, llm, schaufenster
 
 FEHLER_MAXLAENGE = 300
 
@@ -308,3 +308,28 @@ def layout_entwerfen(thema: str, format: str = "landingpage") -> dict:
         text = text.split("\n", 1)[1].rsplit("```", 1)[0]
     kurz = "".join(c if c.isalnum() else "-" for c in format.lower())[:30]
     return {"ok": True, "dateien": [schaufenster.ablegen(thema, f"layout-{kurz}.html", text)]}
+
+
+# --- Laura: Bewegtbild als Belegquelle (nur lesend) -------------------------
+# Der Marketing-Agent hatte bis 04.09.2026 keinen Weg zu den Produktvideos;
+# die Entwuerfe beriefen sich deshalb auf Text allein. Diese zwei Werkzeuge
+# sind der Zugang — Passthrough ohne Geschaeftslogik, siehe laura.py.
+
+
+def videos() -> dict:
+    """Die Videos aus Laura, jedes mit Projekt und Kennung. Nur lesend.
+
+    Die Kennung ist der Schluessel fuer video_transkript(). Ist Laura leer,
+    kommt eine leere Liste mit ok=True zurueck — das ist eine Antwort, keine
+    Stoerung.
+    """
+    return laura.alle_videos()
+
+
+def video_transkript(video_id: str) -> dict:
+    """Das Transkript eines Videos — der belegbare Text zum Bild. Nur lesend.
+
+    Segmente mit Zeitstempel. Was hier steht, ist zitierfaehig; was nicht
+    hier steht, gehoert in "Zu klaeren" und nicht in den Entwurf.
+    """
+    return laura.transkript(video_id)

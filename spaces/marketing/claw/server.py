@@ -29,7 +29,8 @@ REPO_ROOT = next((p for p in (PKG_ROOT, *PKG_ROOT.parents)
 # Schluessel wie die Nachbar-Sidecars: aus der repo-.env nachladen, nie
 # ueberschreiben, kein Key-Material im Launcher-Skript.
 _ENV_KEYS = ("MARKETING_API_KEY", "MARKETING_PROPOSAL_API_KEY",
-             "ROWBOAT_URL", "ROWBOAT_PROJECT_ID", "ROWBOAT_API_KEY")
+             "ROWBOAT_URL", "ROWBOAT_PROJECT_ID", "ROWBOAT_API_KEY",
+             "LAURA_API_URL", "LAURA_TOKEN")
 
 
 def _load_env_fallback() -> None:
@@ -62,6 +63,11 @@ WERKZEUGE = (
     werkzeuge.wissensquellen,
     werkzeuge.wissensquelle,
     werkzeuge.dokumente,
+    # Laura-Passthrough (nur lesend): Bewegtbild und Transkript als Beleg.
+    # Ohne diese zwei Werkzeuge kannte der Agent nur Text — die Produktvideos
+    # lagen ungenutzt daneben (gemessen 04.09.2026).
+    werkzeuge.videos,
+    werkzeuge.video_transkript,
 )
 
 HOST = os.environ.get("MARKETING_CLAW_MCP_HOST", "0.0.0.0")
