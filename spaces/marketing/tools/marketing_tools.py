@@ -486,6 +486,40 @@ def list_proposals(status: Optional[str] = "pending_review") -> Dict[str, Any]:
     return {"success": True, "message": f"{len(rows)} proposal(s)", "data": rows}
 
 
+def list_broadcast_proposals(status: Optional[str] = "draft",
+                             channel: Optional[str] = None,
+                             limit: int = 20) -> Dict[str, Any]:
+    """Die KAMPAGNEN-Entwuerfe lesen — was gesendet wuerde, nicht an wen.
+
+    NICHT ZU VERWECHSELN mit `list_proposals`: die liest
+    `marketing.audience_proposals` (Publikums-Vorschlaege, also WEN man
+    anschreibt). Diese hier liest `marketing.broadcast_proposals` (Betreff
+    und Text, also WAS man schreibt). Die Namensaehnlichkeit hat schon
+    einmal getaeuscht: `/api/proposals?status=draft` meldete `0 proposal(s)`,
+    waehrend sieben Telegram-Entwuerfe in der Datenbank standen
+    (gemessen 04.09.2026).
+
+    Nur lesend. Der Rumpf wird auf 4000 Zeichen gekuerzt — wer den ganzen
+    Text braucht, holt den Entwurf einzeln.
+    """
+    bedingungen = []
+    if status:
+        bedingungen.append(f"status = {_db._sql_literal(status)}")
+    if channel:
+        bedingungen.append(f"channel = {_db._sql_literal(channel)}")
+    where = ("WHERE " + " AND ".join(bedingungen)) if bedingungen else ""
+    rows = _db.query_via_docker(
+        f"SELECT id::text AS id, channel, status, draft_subject, "
+        f"       left(coalesce(draft_body_text, ''), 4000) AS draft_body_text, "
+        f"       draft_media_url, created_by, created_at::text AS created_at, "
+        f"       rejection_reason "
+        f"FROM marketing.broadcast_proposals {where} "
+        f"ORDER BY created_at DESC LIMIT {int(limit)}"
+    )
+    return {"success": True, "message": f"{len(rows)} broadcast proposal(s)",
+            "data": rows}
+
+
 def get_proposal(proposal_id: str) -> Dict[str, Any]:
     """Detailed view: proposal + first 20 lead-candidates."""
     p = _db.query_one(

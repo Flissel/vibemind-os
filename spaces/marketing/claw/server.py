@@ -72,6 +72,10 @@ WERKZEUGE = (
     # Suche und seine Chat-Route landet beim memory_responder (gemessen
     # 04.09.2026) — also waehlt der Sidecar selbst aus.
     werkzeuge.wissen_fragen,
+    # Die eigene Historie: ohne sie entstand siebenmal dieselbe Aufzaehlung
+    # (gemessen 04.09.2026). Liest broadcast_proposals, nicht die
+    # gleichnamig wirkenden Publikums-Vorschlaege.
+    werkzeuge.entwuerfe_lesen,
 )
 
 HOST = os.environ.get("MARKETING_CLAW_MCP_HOST", "0.0.0.0")

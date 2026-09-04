@@ -11,6 +11,7 @@ Fehlertext steht je ein Schluessel.
 import json
 import time
 import os
+import urllib.parse
 import urllib.request
 
 from spaces.marketing.claw import laura, llm, schaufenster, wissen
@@ -411,3 +412,23 @@ def wissen_fragen(frage: str) -> dict:
         return {"ok": False, "fehler": antwort["fehler"], "quellen": belege}
     return {"ok": True, "daten": {"antwort": antwort["text"], "quellen": belege,
                                   "geprueft": len(gesammelt["daten"])}}
+
+
+def entwuerfe_lesen(status: str = "draft", kanal: str = "", anzahl: int = 20) -> dict:
+    """Die bisherigen Kampagnen-Entwuerfe lesen (Betreff, Text, Status).
+
+    PFLICHTSCHRITT VOR JEDEM NEUEN ENTWURF. Am 04.09.2026 lagen sieben
+    Entwuerfe derselben Kampagne im Bestand — alle sieben dieselbe
+    Aufzaehlung von vier Funktionen, nur mit anderen Emojis. Wer seine
+    Historie nicht liest, schreibt sie zum achten Mal.
+
+    Liest `marketing.broadcast_proposals` (WAS gesendet wuerde), nicht die
+    Publikums-Vorschlaege. Nur lesend. status="" heisst: alle.
+    """
+    teile = []
+    if status.strip():
+        teile.append("status=" + urllib.parse.quote(status.strip()))
+    if kanal.strip():
+        teile.append("channel=" + urllib.parse.quote(kanal.strip()))
+    teile.append(f"limit={max(1, min(100, int(anzahl)))}")
+    return _api("/api/broadcast_proposals?" + "&".join(teile))

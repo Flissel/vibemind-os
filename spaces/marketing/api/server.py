@@ -469,6 +469,19 @@ def get_proposal_route(proposal_id: str):
     return _call(mt.get_proposal, proposal_id=proposal_id)
 
 
+@app.get("/api/broadcast_proposals")
+def list_broadcast_proposals_route(
+    status: Optional[str] = Query("draft"),
+    channel: Optional[str] = Query(None),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Die Kampagnen-Entwuerfe (Betreff/Text). Der Routenname nennt die
+    Tabelle: `/api/proposals` daneben liest `audience_proposals` und meint
+    etwas anderes — WEN statt WAS."""
+    return _call(mt.list_broadcast_proposals, status=status, channel=channel,
+                 limit=limit)
+
+
 # ─── External integrations (Gmail/Notion/Sheets/Tavily/CSV) ────────────
 # All read-only at source, proposal-only at sink. CHECK constraint on
 # marketing.external_sources + Python ALLOWED_INTEGRATION_KINDS allowlist
