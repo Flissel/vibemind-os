@@ -107,16 +107,33 @@ def _saeubern(name: str) -> str:
     return re.sub(r"-{2,}", "-", kurz).strip("-")[:80]
 
 
-def ablegen(name, inhalt, art: str = "md") -> dict:
+def _fern_vorhanden(host: str, pfad: str) -> bool:
+    """Liegt die Datei drueben schon? Bei Zweifel: ja (dann wird ausgewichen)."""
+    try:
+        ergebnis = subprocess.run(
+            ["ssh", host, f"test -e '{pfad}'"], stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, timeout=SSH_ZEITLIMIT, check=False)
+        return ergebnis.returncode == 0
+    except Exception:  # noqa: BLE001 — Ausweichen ist die sichere Seite
+        return True
+
+
+def ablegen(name, inhalt, art: str = "md", ersetzen: bool = False) -> dict:
     """Schreibt `inhalt` nach /media-erzeugt. Wirft nie.
 
     `inhalt` ist Text ODER Bytes. Ein PDF durch eine Textkodierung zu
     schicken zerstoert es — deshalb reisen Bytes unveraendert, auch ueber
     SSH.
 
-    Ueberschreibt NICHTS: liegt der Name schon da, bekommt der neue eine
-    Zeitmarke. Ein Entwurf, der einen aelteren still ersetzt, ist ein
-    verlorener Entwurf.
+    `ersetzen=False` (Vorgabe) verliert nichts: liegt der Name schon da,
+    bekommt der neue eine Zeitmarke. Ein Beitrag, der einen aelteren still
+    ueberschreibt, ist ein verlorener Beitrag.
+
+    `ersetzen=True` schreibt auf denselben Pfad. Gedacht fuers NEU SETZEN
+    desselben Entwurfs — anderes Layout, gleicher Inhalt; da will niemand
+    zehn Fassungen im Medienordner. Beide Orte halten sich an dieselbe
+    Zusage: bis 04.09.2026 wich die lokale Ablage aus, waehrend die ferne
+    stillschweigend ueberschrieb.
     """
     endung = ARTEN.get((art or "").strip().lower())
     if endung is None:
@@ -147,6 +164,8 @@ def ablegen(name, inhalt, art: str = "md") -> dict:
         # schon auf ein einziges Segment gesaeubert und geprueft wurde.
         ordner = os.environ.get("MEDIA_ERZEUGT_DIR", ERZEUGT_VERZEICHNIS).rstrip("/")
         ziel = f"{ordner}/{dateiname}"
+        if not ersetzen and _fern_vorhanden(host, ziel):
+            ziel = f"{ordner}/{sauber}-{time.strftime('%H%M%S')}{endung}"
         try:
             _ssh_schreiben(host, ziel, inhalt)
         except Exception as e:  # noqa: BLE001 — fail-soft ist der Vertrag
@@ -165,7 +184,7 @@ def ablegen(name, inhalt, art: str = "md") -> dict:
 
     try:
         os.makedirs(ordner, exist_ok=True)
-        if os.path.exists(ziel):
+        if os.path.exists(ziel) and not ersetzen:
             marke = time.strftime("%H%M%S")
             ziel = os.path.join(ordner, f"{sauber}-{marke}{endung}")
         if binaer:

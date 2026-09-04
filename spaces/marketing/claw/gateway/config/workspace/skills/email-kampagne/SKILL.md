@@ -180,3 +180,13 @@ trotzdem unversendbar.
 
 Nicht jede Kampagne braucht ein PDF. Eine kurze Telegram-Nachricht mit
 Anhang ist schlechter als eine ohne.
+
+**Zu einem BESTEHENDEN Entwurf:** `pdf_aus_entwurf(proposal_id, layout=…)`.
+Das nimmt Text, Belege und offene Fragen aus der Datenbank — du gibst nur
+die Kennung und das Gewand. `layout="dunkel"` ist das Pitch-Deck-Gewand
+fuer den Bildschirm, `layout="hell"` fuer Druck und Weiterleitung.
+
+Der Unterschied ist nicht Bequemlichkeit: eine zweite Fassung, die du neu
+schreibst, weicht immer von der ersten ab — und dann steht in der
+Freigabe-UI etwas anderes als im PDF. Aus dem Entwurf gesetzt, ist es
+dasselbe.

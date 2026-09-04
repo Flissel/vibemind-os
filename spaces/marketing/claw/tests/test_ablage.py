@@ -208,5 +208,58 @@ class TestFerneAblage(unittest.TestCase):
         self.assertEqual(gesehen["pfad"], "/ziel/a-b-c.md")
 
 
+class TestErsetzen(unittest.TestCase):
+    """Ueberschreiben ist eine Entscheidung, kein Zufall.
+
+    Gemessen 04.09.2026: lokal legte `ablegen` bei Namensgleichheit eine
+    zweite Datei mit Zeitmarke an, ueber SSH ueberschrieb es stillschweigend.
+    Zwei verschiedene Versprechen im selben Aufruf. Wer denselben Entwurf in
+    einem anderen Layout neu setzt, WILL ersetzen — wer einen neuen Beitrag
+    ablegt, will nichts verlieren. Also sagt der Aufrufer, was gilt.
+    """
+
+    def setUp(self):
+        self.ordner = tempfile.TemporaryDirectory()
+        self.addCleanup(self.ordner.cleanup)
+        self.env = mock.patch.dict("os.environ",
+                                   {"MEDIA_ERZEUGT_DIR": self.ordner.name})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        os.environ.pop("MEDIA_ERZEUGT_SSH_HOST", None)
+
+    def test_vorgabe_bleibt_bewahren(self):
+        eins = ablage.ablegen("gleich", "erster")["daten"]["pfad"]
+        zwei = ablage.ablegen("gleich", "zweiter")["daten"]["pfad"]
+        self.assertNotEqual(eins, zwei)
+
+    def test_ersetzen_schreibt_auf_denselben_pfad(self):
+        eins = ablage.ablegen("gleich", "erster", ersetzen=True)["daten"]["pfad"]
+        zwei = ablage.ablegen("gleich", "zweiter", ersetzen=True)["daten"]["pfad"]
+        self.assertEqual(eins, zwei)
+        with open(eins, encoding="utf-8") as datei:
+            self.assertEqual(datei.read(), "zweiter")
+        self.assertEqual(len(os.listdir(self.ordner.name)), 1)
+
+    def test_ferne_ablage_ohne_ersetzen_weicht_aus(self):
+        """Der Ort darf das Versprechen nicht aendern."""
+        gesehen = []
+        with mock.patch.dict("os.environ", {
+                "MEDIA_ERZEUGT_SSH_HOST": "vm", "MEDIA_ERZEUGT_DIR": "/ziel"}), \
+             mock.patch.object(ablage, "_ssh_schreiben",
+                               lambda h, p, i: gesehen.append(p)), \
+             mock.patch.object(ablage, "_fern_vorhanden", return_value=True):
+            ablage.ablegen("gleich", "x")
+        self.assertNotEqual(gesehen[0], "/ziel/gleich.md")
+
+    def test_ferne_ablage_mit_ersetzen_bleibt_auf_dem_pfad(self):
+        gesehen = []
+        with mock.patch.dict("os.environ", {
+                "MEDIA_ERZEUGT_SSH_HOST": "vm", "MEDIA_ERZEUGT_DIR": "/ziel"}), \
+             mock.patch.object(ablage, "_ssh_schreiben",
+                               lambda h, p, i: gesehen.append(p)):
+            ablage.ablegen("gleich", "x", ersetzen=True)
+        self.assertEqual(gesehen[0], "/ziel/gleich.md")
+
+
 if __name__ == "__main__":
     unittest.main()

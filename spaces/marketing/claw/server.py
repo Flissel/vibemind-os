@@ -86,6 +86,12 @@ WERKZEUGE = (
     # PDF: das erste Format, das sales-claw wirklich anhaengen kann — eine
     # .md liegt im Medienordner und wird von medien_liste nicht mal gezeigt.
     werkzeuge.pdf_erstellen,
+    # Inhalt aus der Datenbank, Aussehen als Parameter: dasselbe
+    # broadcast_proposal in jedem Layout, ohne den Text neu erzeugen zu
+    # lassen. Das ist der Grund, warum die Struktur in draft_channel_params
+    # gehoert und nicht als HTML in den Nachrichtenrumpf.
+    werkzeuge.entwurf_holen,
+    werkzeuge.pdf_aus_entwurf,
 )
 
 HOST = os.environ.get("MARKETING_CLAW_MCP_HOST", "0.0.0.0")

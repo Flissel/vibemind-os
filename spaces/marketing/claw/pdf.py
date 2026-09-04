@@ -33,14 +33,34 @@ from reportlab.platypus import (BaseDocTemplate, Frame, KeepTogether,
                                 PageTemplate, Paragraph, Spacer, Table,
                                 TableStyle)
 
-# Farben aus dem Pitch-Deck, nicht geraten.
-GRUND = colors.HexColor("#0f2422")
-FLAECHE = colors.HexColor("#1d3b39")
-AKZENT = colors.HexColor("#5eead4")
-GOLD = colors.HexColor("#fbbf24")
-TEXT = colors.HexColor("#cfe3df")
-TEXT_HELL = colors.HexColor("#e9fbf6")
-TEXT_LEISE = colors.HexColor("#8aa3a0")
+# LAYOUTS. Der Sinn der Trennung von Inhalt und Aussehen: dasselbe
+# `broadcast_proposal` laesst sich in jedem dieser Gewaender setzen, ohne den
+# Text neu erzeugen zu lassen. Ein neues Layout ist ein Eintrag hier.
+#
+# Die Farben von "dunkel" stammen aus dem Pitch-Deck
+# (`pitch-deck-2026/vibemind-pitch.html`) — das ist, was Aussenstehende von
+# VibeMind sehen. "hell" ist dasselbe Geruest fuer Unterlagen, die gedruckt
+# oder weitergeleitet werden, wo dunkle Flaechen stoeren.
+LAYOUTS = {
+    "dunkel": {
+        "grund": "#0f2422", "flaeche": "#1d3b39", "akzent": "#5eead4",
+        "gold": "#fbbf24", "text": "#cfe3df", "text_hell": "#e9fbf6",
+        "text_leise": "#8aa3a0", "handlung_text": "#0f2422",
+    },
+    "hell": {
+        "grund": "#ffffff", "flaeche": "#0f2422", "akzent": "#0f7a6c",
+        "gold": "#a06a00", "text": "#1f2937", "text_hell": "#0f2422",
+        "text_leise": "#6b7280", "handlung_text": "#ffffff",
+    },
+}
+LAYOUT_VORGABE = "dunkel"
+
+
+def _farben(layout: str) -> dict:
+    """Die Farbtafel eines Layouts. Unbekannt -> Vorgabe, kein Absturz."""
+    tafel = LAYOUTS.get((layout or "").strip().lower() or LAYOUT_VORGABE,
+                        LAYOUTS[LAYOUT_VORGABE])
+    return {name: colors.HexColor(wert) for name, wert in tafel.items()}
 
 RAND = 20 * mm
 KOPF_HOEHE = 34 * mm
@@ -86,57 +106,59 @@ def _sicher(text: str) -> str:
     return (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
-def _stile() -> dict:
+def _stile(f: dict) -> dict:
     normal, fett = schriften()
     return {
         "titel": ParagraphStyle("titel", fontName=fett, fontSize=24, leading=29,
-                                textColor=TEXT_HELL, alignment=TA_LEFT),
+                                textColor=f["text_hell"], alignment=TA_LEFT),
         "unter": ParagraphStyle("unter", fontName=normal, fontSize=11.5, leading=16,
-                                textColor=AKZENT, spaceBefore=3),
+                                textColor=f["akzent"], spaceBefore=3),
         "fliess": ParagraphStyle("fliess", fontName=normal, fontSize=11, leading=17,
-                                 textColor=TEXT, spaceAfter=9),
+                                 textColor=f["text"], spaceAfter=9),
         "punkt": ParagraphStyle("punkt", fontName=normal, fontSize=11, leading=17,
-                                textColor=TEXT, leftIndent=10, bulletIndent=1,
+                                textColor=f["text"], leftIndent=10, bulletIndent=1,
                                 spaceAfter=5),
         "rubrik": ParagraphStyle("rubrik", fontName=fett, fontSize=9.5, leading=13,
-                                 textColor=GOLD, spaceBefore=16, spaceAfter=5),
+                                 textColor=f["gold"], spaceBefore=16, spaceAfter=5),
         "klein": ParagraphStyle("klein", fontName=normal, fontSize=8.5, leading=12.5,
-                                textColor=TEXT_LEISE, spaceAfter=3),
+                                textColor=f["text_leise"], spaceAfter=3),
         "handlung": ParagraphStyle("handlung", fontName=fett, fontSize=12.5,
-                                   leading=18, textColor=GRUND,
+                                   leading=18, textColor=f["handlung_text"],
                                    spaceBefore=2, spaceAfter=2,
                                    leftIndent=6, rightIndent=6),
     }
 
 
-def _kopf_und_grund(leinwand, dokument) -> None:
-    """Dunkler Grund auf jeder Seite, Kopfband nur auf der ersten."""
+def _kopf_und_grund(leinwand, dokument, f: dict) -> None:
+    """Grundflaeche auf jeder Seite, Kopfband nur auf der ersten."""
     breite, hoehe = A4
     leinwand.saveState()
-    leinwand.setFillColor(GRUND)
+    leinwand.setFillColor(f["grund"])
     leinwand.rect(0, 0, breite, hoehe, stroke=0, fill=1)
     if dokument.page == 1:
-        leinwand.setFillColor(FLAECHE)
+        leinwand.setFillColor(f["flaeche"])
         leinwand.rect(0, hoehe - KOPF_HOEHE, breite, KOPF_HOEHE, stroke=0, fill=1)
-        leinwand.setFillColor(AKZENT)
+        leinwand.setFillColor(f["akzent"])
         leinwand.rect(0, hoehe - KOPF_HOEHE - 1.6, breite, 1.6, stroke=0, fill=1)
         normal, fett = schriften()
         leinwand.setFont(fett, 13)
-        leinwand.setFillColor(TEXT_HELL)
+        # Der Schriftzug sitzt IMMER auf der Kopfflaeche, nicht auf dem Grund
+        # — im hellen Layout ist die dunkel, also braucht er dort Kontrast.
+        leinwand.setFillColor(colors.HexColor("#e9fbf6"))
         leinwand.drawString(RAND, hoehe - KOPF_HOEHE + 13 * mm, "VibeMind")
         leinwand.setFont(normal, 8.5)
-        leinwand.setFillColor(TEXT_LEISE)
+        leinwand.setFillColor(colors.HexColor("#8aa3a0"))
         leinwand.drawRightString(breite - RAND, hoehe - KOPF_HOEHE + 13.6 * mm,
                                  "vibemind.space")
     # Fussband auf JEDER Seite: es schliesst die Seite ab und nimmt dem
     # kurzen Einseiter das Vakuum unter dem Text.
-    leinwand.setFillColor(FLAECHE)
+    leinwand.setFillColor(f["flaeche"])
     leinwand.rect(0, 0, breite, FUSS_HOEHE, stroke=0, fill=1)
-    leinwand.setFillColor(AKZENT)
+    leinwand.setFillColor(f["akzent"])
     leinwand.rect(0, FUSS_HOEHE, breite, 1, stroke=0, fill=1)
     normal, _ = schriften()
     leinwand.setFont(normal, 7.5)
-    leinwand.setFillColor(TEXT_LEISE)
+    leinwand.setFillColor(colors.HexColor("#8aa3a0"))
     leinwand.drawString(RAND, FUSS_HOEHE / 2 - 2.6,
                         "VibeMind — agentisches Betriebssystem · vibemind.space")
     if dokument.page > 1:
@@ -160,7 +182,8 @@ def _absaetze(text: str, stile: dict) -> list:
 
 
 def bauen(titel: str, text: str, untertitel: str = "", belege=None,
-          zu_klaeren=None, handlung: str = "") -> bytes:
+          zu_klaeren=None, handlung: str = "",
+          layout: str = LAYOUT_VORGABE) -> bytes:
     """Setzt eine Kampagnen-Unterlage als PDF. Gibt die Bytes zurueck.
 
     Wirft `ValueError` bei leerem Text — anders als die Werkzeuge ringsum,
@@ -169,7 +192,8 @@ def bauen(titel: str, text: str, untertitel: str = "", belege=None,
     """
     if not text or not text.strip():
         raise ValueError("Ohne Text gibt es kein PDF.")
-    stile = _stile()
+    f = _farben(layout)
+    stile = _stile(f)
     puffer = io.BytesIO()
     dokument = BaseDocTemplate(
         puffer, pagesize=A4, title=titel or "VibeMind", author="VibeMind",
@@ -178,8 +202,9 @@ def bauen(titel: str, text: str, untertitel: str = "", belege=None,
     rahmen = Frame(RAND, FUSS_HOEHE + 8 * mm, A4[0] - 2 * RAND,
                    A4[1] - KOPF_HOEHE - FUSS_HOEHE - 20 * mm, id="haupt",
                    leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
-    dokument.addPageTemplates([PageTemplate(id="seite", frames=[rahmen],
-                                            onPage=_kopf_und_grund)])
+    dokument.addPageTemplates([PageTemplate(
+        id="seite", frames=[rahmen],
+        onPage=lambda leinwand, dok: _kopf_und_grund(leinwand, dok, f))])
 
     fluss = [Paragraph(_sicher(titel or ""), stile["titel"])]
     if untertitel.strip():
@@ -195,7 +220,7 @@ def bauen(titel: str, text: str, untertitel: str = "", belege=None,
             [[Paragraph(_sicher(handlung), stile["handlung"])]],
             colWidths=[A4[0] - 2 * RAND],
             style=TableStyle([
-                ("BACKGROUND", (0, 0), (-1, -1), AKZENT),
+                ("BACKGROUND", (0, 0), (-1, -1), f["akzent"]),
                 ("LEFTPADDING", (0, 0), (-1, -1), 10),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 10),
                 ("TOPPADDING", (0, 0), (-1, -1), 9),

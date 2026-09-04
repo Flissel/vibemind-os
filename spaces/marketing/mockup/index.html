@@ -549,6 +549,28 @@
       });
     }
 
+    // Belege und offene Fragen aus draft_channel_params. Sie standen frueher
+    // als HTML im Nachrichtenrumpf; seit 04.09.2026 stehen sie als Struktur
+    // daneben. Der Betreiber soll nicht blind genehmigen — also zeigt die
+    // Ansicht sie, egal wo sie liegen.
+    function belegeBlock(params) {
+      if (!params) return "";
+      let p = params;
+      if (typeof p === "string") { try { p = JSON.parse(p); } catch (e) { return ""; } }
+      const belege = Array.isArray(p.belege) ? p.belege : [];
+      const offen = Array.isArray(p.zu_klaeren) ? p.zu_klaeren : [];
+      if (!belege.length && !offen.length) return "";
+      const liste = (titel, farbe, eintraege) =>
+        eintraege.length
+          ? '<div class="mt-2"><div class="text-[10px] uppercase tracking-wider ' + farbe +
+            '">' + titel + "</div><ul class=\"text-xs text-slate-400 mt-1 space-y-0.5\">" +
+            eintraege.map((e) => "<li>· " + escapeHtml(String(e)) + "</li>").join("") +
+            "</ul></div>"
+          : "";
+      return liste("Belege", "text-amber-300/80", belege) +
+             liste("Zu klären", "text-sky-300/80", offen);
+    }
+
     // ─── Entwuerfe (broadcast_proposals) ─────────────────────────────
     // Liest /api/broadcast_proposals — NICHT /api/proposals: das ist die
     // Publikums-Tabelle und meldete fuer diese Entwuerfe brav "0".
@@ -597,6 +619,7 @@
           "</div>" +
           (kurz ? '<pre class="text-xs text-slate-300 mt-3 whitespace-pre-wrap font-sans">' +
                   escapeHtml(kurz) + "</pre>" : "") +
+          belegeBlock(r.draft_channel_params) +
           (r.rejection_reason ? '<div class="text-xs text-rose-300 mt-2">abgelehnt: ' +
                   escapeHtml(r.rejection_reason) + "</div>" : "") +
           '<div class="text-[10px] text-slate-500 mt-2">id: ' + escapeHtml(r.id || "") + "</div>" +

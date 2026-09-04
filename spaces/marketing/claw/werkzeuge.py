@@ -262,10 +262,18 @@ def kampagne_entwerfen(ziel: str, zielgruppe: str, kanal: str, kontext: str = ""
         "channel": kanal,
         "draft_subject": str(entwurf.get("betreff", "")),
         "draft_body_text": str(entwurf.get("text", "")),
-        # Belege wandern in die Freigabe-UI mit — der Betreiber genehmigt nicht blind.
-        "draft_body_html": ("<h4>Belege</h4><ul>" + "".join(f"<li>{b}</li>" for b in belege)
-                            + "</ul><h4>Zu klaeren</h4><ul>"
-                            + "".join(f"<li>{z}</li>" for z in zu_klaeren) + "</ul>"),
+        # STRUKTUR, NICHT DARSTELLUNG. Frueher standen Belege und "Zu klaeren"
+        # hier als fertiges HTML in `draft_body_html` — der Spalte fuer den
+        # NACHRICHTENRUMPF. Zwei Fehler auf einmal: interne Notizen an einer
+        # Stelle, die spaeter versendet wird, und Daten in Darstellung
+        # gebacken, sodass sich das Aussehen nicht mehr wechseln liess.
+        # `draft_channel_params` ist jsonb, war auf allen Zeilen leer und ist
+        # genau dafuer da.
+        "draft_channel_params": {
+            "ziel": ziel, "zielgruppe": zielgruppe,
+            "belege": belege, "zu_klaeren": zu_klaeren,
+            "begruendung": str(entwurf.get("begruendung", "")),
+        },
         "actor": "marketing-claw",
     })
     if not antwort["ok"]:
@@ -463,7 +471,7 @@ MAX_ANHANG_BYTES = 15 * 1024 * 1024
 
 def pdf_erstellen(name: str, titel: str, text: str, untertitel: str = "",
                   belege=None, zu_klaeren=None, zweck: str = "marketing",
-                  handlung: str = "") -> dict:
+                  handlung: str = "", layout: str = "dunkel") -> dict:
     """Setzt eine Unterlage als PDF und legt sie ab, wo sales-claw sie findet.
 
     DAS ERSTE FORMAT, DAS WIRKLICH RAUSGEHEN KANN: eine `.md` liegt zwar im
@@ -493,7 +501,8 @@ def pdf_erstellen(name: str, titel: str, text: str, untertitel: str = "",
                 f"reportlab; er startet mit .venv/Scripts/python.exe."}
     try:
         roh = pdf.bauen(titel=titel, text=text, untertitel=untertitel,
-                        belege=belege, zu_klaeren=zu_klaeren, handlung=handlung)
+                        belege=belege, zu_klaeren=zu_klaeren, handlung=handlung,
+                        layout=layout)
     except Exception as e:  # noqa: BLE001 — fail-soft ist der Vertrag
         return {"ok": False, "fehler": f"PDF-Satz fehlgeschlagen "
                                        f"({type(e).__name__}: {e})"}
@@ -502,3 +511,70 @@ def pdf_erstellen(name: str, titel: str, text: str, untertitel: str = "",
                 f"PDF ist {len(roh) // 1024 // 1024} MB gross; sales-claw "
                 f"haengt hoechstens 15 MB an."}
     return ablage.ablegen(f"{zweck}-{name}", roh, art="pdf")
+
+
+def entwurf_holen(proposal_id: str) -> dict:
+    """Einen Kampagnen-Entwurf samt Struktur lesen. Nur lesend."""
+    if not proposal_id or not proposal_id.strip():
+        return {"ok": False, "fehler": "Ohne Kennung kein Entwurf."}
+    return _api("/api/curator/broadcast_proposals/"
+                + urllib.parse.quote(proposal_id.strip(), safe="")
+                + "?api_key=" + urllib.parse.quote(
+                    os.environ.get("MARKETING_PROPOSAL_API_KEY", ""), safe=""))
+
+
+def pdf_aus_entwurf(proposal_id: str, layout: str = "dunkel",
+                    handlung: str = "") -> dict:
+    """Setzt einen BESTEHENDEN Entwurf als PDF — Inhalt kommt aus der DB.
+
+    DER UNTERSCHIED ZU `pdf_erstellen`: hier gibst du eine Kennung, keinen
+    Text. Der Inhalt liegt im `broadcast_proposal`, das Aussehen in `layout`.
+    Ein anderes Layout ist damit ein Aufruf und kein neuer Entwurf — kein
+    Modell, keine zweite Fassung, die von der ersten abweicht.
+
+    `layout`: "dunkel" (Pitch-Deck-Gewand, fuer Bildschirm) oder "hell"
+    (fuer Druck und Weiterleitung). `handlung` uebersteuert den Aufruf zum
+    Handeln aus dem Entwurf.
+    """
+    antwort = entwurf_holen(proposal_id)
+    if not antwort["ok"]:
+        return antwort
+    daten = antwort["daten"].get("data") or antwort["daten"]
+    parameter = daten.get("draft_channel_params") or {}
+    if isinstance(parameter, str):
+        try:
+            parameter = json.loads(parameter)
+        except ValueError:
+            parameter = {}
+
+    kanal = (daten.get("channel") or "").strip().lower()
+    # Kanal -> Zweck im Dateinamen. Was nicht passt, ist Marketing.
+    zweck = {"email": "email", "whatsapp": "mobile", "telegram": "mobile"}.get(
+        kanal, "marketing")
+
+    try:
+        from spaces.marketing.claw import pdf
+    except ImportError as e:
+        return {"ok": False, "fehler":
+                f"PDF-Satz nicht verfuegbar ({e}). Der Sidecar braucht "
+                f"reportlab; er startet mit .venv/Scripts/python.exe."}
+    try:
+        roh = pdf.bauen(
+            titel=str(daten.get("draft_subject") or parameter.get("ziel") or "VibeMind"),
+            text=str(daten.get("draft_body_text") or ""),
+            untertitel=str(parameter.get("zielgruppe") or ""),
+            belege=list(parameter.get("belege") or []),
+            zu_klaeren=list(parameter.get("zu_klaeren") or []),
+            handlung=handlung or str(parameter.get("handlung") or ""),
+            layout=layout)
+    except Exception as e:  # noqa: BLE001 — fail-soft ist der Vertrag
+        return {"ok": False, "fehler": f"PDF-Satz fehlgeschlagen "
+                                       f"({type(e).__name__}: {e})"}
+    if len(roh) > MAX_ANHANG_BYTES:
+        return {"ok": False, "fehler":
+                f"PDF ist {len(roh) // 1024 // 1024} MB gross; sales-claw "
+                f"haengt hoechstens 15 MB an."}
+    name = str(parameter.get("ziel") or daten.get("draft_subject") or proposal_id)
+    # ERSETZEN ist hier richtig: es ist derselbe Entwurf, nur neu gesetzt.
+    # Wer zwischen Layouts wechselt, will eine Datei sehen, nicht zehn.
+    return ablage.ablegen(f"{zweck}-{name}", roh, art="pdf", ersetzen=True)

@@ -54,7 +54,7 @@ for w in statistik kampagne_entwerfen ad_texte_entwerfen layout_entwerfen \
          kampagne_pruefen publikum_vorschlagen posteingang_lesen \
          kampagnen_auflisten wissensquellen wissensquelle dokumente \
          videos video_transkript wissen_fragen entwuerfe_lesen post_ablegen \
-         pdf_erstellen; do
+         pdf_erstellen entwurf_holen pdf_aus_entwurf; do
   if printf '%s' "$PROBE" | grep -q "marketing__$w"; then echo "   ok   $w"; else echo "   FEHL $w"; ROT=$((ROT+1)); fi
 done
 # Negativ: nichts Sendendes, nichts Schreibendes, kein Rowboat-Server im Gateway.
@@ -78,4 +78,4 @@ if [ "$ROT" -ne 0 ]; then
   echo "ROT: $ROT" >&2
   exit "$ROT"
 fi
-echo "Gateway abgenommen: 17 Werkzeuge, 2 Fertigkeiten, nichts Sendendes, nichts Schreibendes."
+echo "Gateway abgenommen: 19 Werkzeuge, 2 Fertigkeiten, nichts Sendendes, nichts Schreibendes."

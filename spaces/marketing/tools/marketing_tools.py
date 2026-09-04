@@ -501,6 +501,10 @@ def list_broadcast_proposals(status: Optional[str] = "draft",
 
     Nur lesend. Der Rumpf wird auf 4000 Zeichen gekuerzt — wer den ganzen
     Text braucht, holt den Entwurf einzeln.
+
+    `draft_channel_params` kommt mit: dort stehen seit 04.09.2026 Belege und
+    "Zu klaeren" als Struktur. Ohne sie zeigte die Freigabe-Ansicht den Text
+    ohne seine Belege — und der Betreiber soll nicht blind genehmigen.
     """
     bedingungen = []
     if status:
@@ -512,7 +516,7 @@ def list_broadcast_proposals(status: Optional[str] = "draft",
         f"SELECT id::text AS id, channel, status, draft_subject, "
         f"       left(coalesce(draft_body_text, ''), 4000) AS draft_body_text, "
         f"       draft_media_url, created_by, created_at::text AS created_at, "
-        f"       rejection_reason "
+        f"       rejection_reason, draft_channel_params "
         f"FROM marketing.broadcast_proposals {where} "
         f"ORDER BY created_at DESC LIMIT {int(limit)}"
     )
