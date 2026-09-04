@@ -22,6 +22,12 @@ fi
 echo "1) Saat -> Laufzeit-Volume (Konfig + Workspace), reload"
 docker compose cp config/openclaw.json marketing-claw:/home/node/.openclaw/openclaw.json
 docker compose cp config/workspace/AGENTS.md marketing-claw:/home/node/.openclaw/workspace/AGENTS.md
+# Fertigkeiten (Handwerksregeln je Kanal). AGENTS.md verweist darauf; ohne
+# diese Kopie zeigt der Verweis ins Leere und der Agent faellt auf sein
+# Gedaechtnis zurueck — genau der Zustand, aus dem siebenmal dieselbe
+# Aufzaehlung entstand.
+docker compose exec -T marketing-claw mkdir -p /home/node/.openclaw/workspace/skills
+docker compose cp config/workspace/skills/. marketing-claw:/home/node/.openclaw/workspace/skills/
 
 # Die Saat traegt KEIN Gateway-Token (Geheimnisse gehoeren nicht ins Git) —
 # das Kopieren loescht darum jedes vorhandene. Ohne Token weigert sich
@@ -60,9 +66,15 @@ if docker compose exec -T marketing-claw openclaw mcp list 2>&1 | grep -q rowboa
   echo "   FEHL Gateway kennt noch einen rowboat-Server (gehoert in den Sidecar)"; ROT=$((ROT+1))
 fi
 
+echo "3) Fertigkeiten"
+FERTIG="$(docker compose exec -T marketing-claw openclaw skills 2>&1 || true)"
+for f in email-kampagne whatsapp-nachricht; do
+  if printf '%s' "$FERTIG" | grep -q "$f"; then echo "   ok   $f"; else echo "   FEHL $f"; ROT=$((ROT+1)); fi
+done
+
 if [ "$ROT" -ne 0 ]; then
   echo "--- Probe (Auszug):"; printf '%s\n' "$PROBE" | head -30
   echo "ROT: $ROT" >&2
   exit "$ROT"
 fi
-echo "Gateway abgenommen: 15 Werkzeuge, nichts Sendendes, nichts Schreibendes."
+echo "Gateway abgenommen: 15 Werkzeuge, 2 Fertigkeiten, nichts Sendendes, nichts Schreibendes."
