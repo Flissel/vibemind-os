@@ -86,8 +86,14 @@ schlecht. Ein Beleg sagt, dass etwas WAHR ist — nicht, wie es klingen muss.
 * Was du nicht belegen kannst, kommt unter `## Zu klaeren` — als Frage an
   den Betreiber, nie als Behauptung im Text. Ein leeres „Zu klaeren" ist
   fast immer ein Zeichen, dass du zu wenig gefragt hast.
-* Interne Eigennamen (Mirofish, Rachel, Codenamen) gehoeren nie in den
-  Text. Umschreiben — „simulierte Publikums-Tests" statt „Mirofish".
+* **Interne Eigennamen gehoeren nie in den Text.** Nicht Mirofish, nicht
+  Rachel, kein Codename, kein Spaces-Name, kein Dienstname. Umschreiben,
+  was die Sache TUT: „simulierte Publikums-Tests" statt „Mirofish", „eine
+  einzige Sprachsteuerung" statt „Rachel".
+  Diese Regel wird verletzt, sobald ein Name gut klingt — gemessen
+  04.09.2026 stand „Rachel" im Text, obwohl die Regel schon galt. Ein
+  Eigenname, den kein Aussenstehender kennt, erklaert nichts; er zwingt den
+  Leser, dir zu glauben, und verraet nebenbei die interne Struktur.
 
 ## Schritt 6 — Der Link ist echt oder es gibt keinen
 
@@ -100,11 +106,48 @@ Fehler finden, den du hinterlassen hast.
 * Bis dahin: kein Platzhalter, sondern eine Zeile unter `## Zu klaeren`,
   die sagt, welche Adresse fehlt.
 
-## Schritt 7 — Selbstpruefung gegen Schritt 1
+**KEIN Platzhalter heisst: keiner, in keiner Schreibweise.** Nicht
+`[Link]`, nicht `<hier Adresse>`, nicht `TODO`, nicht `xxx`. Die Regel
+gilt der Sache, nicht der Schreibweise: steht im Text eine Stelle, die
+noch jemand ausfuellen muss, gehoert sie nicht in den Text.
 
-Den fertigen Text noch einmal gegen die Historie halten. Jede
-Uebereinstimmung ab sechs Woertern Folge: umformulieren. Steht wieder
-dieselbe Vierer-Liste da, hast du Schritt 4 nicht gemacht.
+**Merge-Felder sind erlaubt — aber nur die elf, die es wirklich gibt.**
+Der Versand ersetzt `{{feld}}` gegen eine fest einprogrammierte Liste
+(`_send_paranoid.py:508`):
+
+`first_name` · `last_name` · `full_name` · `display_name` · `email` ·
+`company` · `title` · `domain` · `campaign_name` · `msgid_core` ·
+`unsub_url`
+
+Jedes andere `{{...}}` ist KEIN Merge-Feld, sondern ein Platzhalter — und
+der Versand wirft dabei einen Fehler (`unknown merge field`), statt still
+etwas Kaputtes zu schicken. Ein Entwurf mit `{{WAITLIST_LINK}}` ist damit
+nicht unfertig, sondern unsendbar.
+
+Gemessen 04.09.2026, und der Irrtum ist nachvollziehbar: nachdem `[Link]`
+verboten war, erschien `{{WAITLIST_LINK}}` — in der Annahme, das sei ein
+richtiges Merge-Tag. Ist es nicht. Wenn du eine Adresse brauchst, die
+nicht in der Liste oben steht, gehoert sie als echte URL in den Text oder
+als Frage unter `## Zu klaeren`.
+
+## Schritt 7 — Endpruefung, Zeile fuer Zeile
+
+Den fertigen Text noch einmal lesen und diese fuenf Fragen beantworten.
+Jedes Nein heisst: zurueck in den Text, nicht weiter zu Schritt 8.
+
+1. **Schablone?** Gegen die Historie aus Schritt 1 halten. Jede
+   Uebereinstimmung ab sechs Woertern Folge: umformulieren. Steht wieder
+   dieselbe Vierer-Liste da, war Schritt 4 nicht ernst gemeint.
+2. **Platzhalter?** Den Text nach `[`, `{`, `<`, `TODO`, `xxx` absuchen.
+   Jedes `{{feld}}` gegen die Elferliste aus Schritt 6 halten — steht es
+   nicht darin, ist es ein Platzhalter und macht den Entwurf unsendbar.
+   Jeder andere Treffer ist ein Fehler, auch ein huebsch benannter.
+3. **Interner Eigenname?** Jeder Name, den ein Aussenstehender nicht
+   kennen kann, muss raus.
+4. **Ein Gedanke?** Wenn du den Text in einem Satz zusammenfasst und
+   dabei „und ausserdem" brauchst, sind es zwei.
+5. **Nutzen oder Funktion?** Jeden Satz pruefen: steht da, was das System
+   TUT, oder was der Leser DAVON HAT? Das zweite gehoert in den Text.
 
 ## Schritt 8 — Ablegen, nie senden
 

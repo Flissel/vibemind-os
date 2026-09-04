@@ -50,9 +50,18 @@ in drei Saetzen faellt jede unbelegte Behauptung auf.
   Nachricht traegt — nicht als Schmuck. Wenn ein Video passt, nenn in
   einem Halbsatz, was darin zu sehen ist; ungefragte Medien wirken wie
   Spam.
-* **Ein Link, hoechstens.** Und ein echter: `[Link]` ist im fertigen
-  Entwurf verboten. Fehlt die Adresse, gehoert sie unter „Zu klaeren"
-  und nicht in den Text.
+* **Ein Link, hoechstens.** Und ein echter. Platzhalter sind verboten,
+  in JEDER Schreibweise — nicht `[Link]`, nicht `<hier Adresse>`, nicht
+  `TODO`. Fehlt die Adresse, gehoert sie unter „Zu klaeren" und nicht in
+  den Text.
+* **Merge-Felder nur aus der festen Liste** (`_send_paranoid.py:508`):
+  first_name, last_name, full_name, display_name, email, company, title,
+  domain, campaign_name, msgid_core, unsub_url. Jedes andere `{{...}}`
+  ist ein Platzhalter, und der Versand wirft dabei einen Fehler — der
+  Entwurf waere nicht unfertig, sondern unsendbar. Gemessen 04.09.2026
+  entstand genau so ein `{{WAITLIST_LINK}}`.
+* **Keine internen Eigennamen.** Kein Mirofish, kein Rachel, kein
+  Codename. Umschreiben, was die Sache tut.
 
 ## Schritt 4 — Der Ausgang gehoert dem Empfaenger
 
