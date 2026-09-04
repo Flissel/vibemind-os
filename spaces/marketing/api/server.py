@@ -57,6 +57,46 @@ from spaces.marketing.sync import _db  # module-level DB handle for new routes
 logger = logging.getLogger("marketing-http")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
+PKG_ROOT = next(p.parent for p in Path(__file__).resolve().parents if p.name == "spaces")
+REPO_ROOT = next((p for p in (PKG_ROOT, *PKG_ROOT.parents)
+                  if (p / "vibemind-os").is_dir()), PKG_ROOT)
+
+# Schluessel, die dieser Dienst notfalls selbst aus der repo-.env holt.
+_ENV_KEYS = ("MARKETING_API_KEY", "MARKETING_PROPOSAL_API_KEY",
+             "MARKETING_N8N_API_KEY", "MARKETING_UNSUB_SECRET")
+
+
+def _load_env_fallback() -> None:
+    """Fehlende Schluessel aus der repo-.env nachladen — nie ueberschreiben.
+
+    WARUM DAS HIER STEHT. Jeder Nachbardienst des Marketing-Wegs hat diesen
+    Rueckfall (bubble_dispatcher, bubble_classifier_runner, die beiden
+    Rowboat-Exporte, marketing_claw_mcp); der Launcher setzt bewusst kein
+    Key-Material in seine Tabelle. Diese API war die einzige Ausnahme und
+    verliess sich darauf, aus einer Shell zu starten, in der die .env schon
+    geladen war. Startet sie anders — losgeloest, aus einem Dienst, nach
+    einem Neustart — ist MARKETING_PROPOSAL_API_KEY leer, und JEDE
+    schreibende Route antwortet mit 503 "misconfigured". Gemessen
+    04.09.2026: der Marketing-Agent bekam dreimal 503 auf
+    kampagne_entwerfen und konnte keinen einzigen Entwurf ablegen.
+
+    Der Aufruf steht VOR den Konstanten: API_KEY wird beim Import gelesen.
+    """
+    env_file = REPO_ROOT / ".env"
+    if not env_file.exists():
+        return
+    missing = [k for k in _ENV_KEYS if not os.environ.get(k)]
+    if not missing:
+        return
+    for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        for k in missing:
+            if line.startswith(k + "="):
+                os.environ[k] = line.split("=", 1)[1].strip().strip('"').strip("'")
+
+
+_load_env_fallback()
+
 PORT = int(os.environ.get("MARKETING_HTTP_PORT", "5510"))
 HOST = os.environ.get("MARKETING_HTTP_BIND", "127.0.0.1")
 API_KEY = os.environ.get("MARKETING_API_KEY", "").strip()
