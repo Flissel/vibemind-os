@@ -30,7 +30,10 @@ REPO_ROOT = next((p for p in (PKG_ROOT, *PKG_ROOT.parents)
 # ueberschreiben, kein Key-Material im Launcher-Skript.
 _ENV_KEYS = ("MARKETING_API_KEY", "MARKETING_PROPOSAL_API_KEY",
              "ROWBOAT_URL", "ROWBOAT_PROJECT_ID", "ROWBOAT_API_KEY",
-             "LAURA_API_URL", "LAURA_TOKEN")
+             "LAURA_API_URL", "LAURA_TOKEN",
+             # Ablage: OHNE SSH-Host schreibt post_ablegen auf den Windows-
+             # Rechner, und der Beitrag erreicht sales-claw auf der VM nie.
+             "MEDIA_ERZEUGT_SSH_HOST", "MEDIA_ERZEUGT_DIR")
 
 
 def _load_env_fallback() -> None:
@@ -76,6 +79,10 @@ WERKZEUGE = (
     # (gemessen 04.09.2026). Liest broadcast_proposals, nicht die
     # gleichnamig wirkenden Publikums-Vorschlaege.
     werkzeuge.entwuerfe_lesen,
+    # Ablage fuer fertige Beitraege — NUR nach /media-erzeugt. `/media`
+    # gehoert dem Menschen und ist fuer Dienste schreibgeschuetzt; diese
+    # Trennung ist Absicht (sales-mcp/medien.py:45-49).
+    werkzeuge.post_ablegen,
 )
 
 HOST = os.environ.get("MARKETING_CLAW_MCP_HOST", "0.0.0.0")

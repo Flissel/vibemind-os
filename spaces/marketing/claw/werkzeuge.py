@@ -14,7 +14,7 @@ import os
 import urllib.parse
 import urllib.request
 
-from spaces.marketing.claw import laura, llm, schaufenster, wissen
+from spaces.marketing.claw import ablage, laura, llm, schaufenster, wissen
 
 FEHLER_MAXLAENGE = 300
 
@@ -432,3 +432,18 @@ def entwuerfe_lesen(status: str = "draft", kanal: str = "", anzahl: int = 20) ->
         teile.append("channel=" + urllib.parse.quote(kanal.strip()))
     teile.append(f"limit={max(1, min(100, int(anzahl)))}")
     return _api("/api/broadcast_proposals?" + "&".join(teile))
+
+
+def post_ablegen(name: str, inhalt: str, art: str = "md") -> dict:
+    """Legt einen fertigen Beitrag in `/media-erzeugt` ab — dort findet
+    sales-claw ihn.
+
+    `/media` ist der Ordner des MENSCHEN und fuer dich schreibgeschuetzt;
+    hierhin schreibt die Maschine. sales-claw liest beide, in dieser
+    Rangfolge. Erlaubte Arten: md, html, txt, json. Ueberschreibt nie —
+    ein gleichnamiger Beitrag bekommt eine Zeitmarke.
+
+    Das ist eine ABLAGE, kein Versand: was hier liegt, geht erst raus,
+    wenn der Betreiber es freigibt.
+    """
+    return ablage.ablegen(name, inhalt, art)
