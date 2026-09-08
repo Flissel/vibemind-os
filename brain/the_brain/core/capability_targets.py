@@ -418,6 +418,26 @@ class CodingEngineExecutor(_BaseRemoteExecutor):
                 requirements = dict(request_payload)
                 if description not in (None, ""):
                     requirements["description"] = description
+            # The engine's DAGParser reads "requirements" or "features" and
+            # nothing else. A bare {"description": ...} is valid JSON, is
+            # accepted, and yields a job with zero requirements - it runs
+            # and does nothing. A free-text intent from the Brain becomes
+            # one requirement instead. Measured against a live engine on
+            # 2026-09-08: the unwrapped form produced total_requirements=0.
+            if isinstance(requirements, dict) and not (
+                requirements.get("requirements") or requirements.get("features")
+            ):
+                text = requirements.pop("description", "") or ""
+                name = text.strip().split("\n")[0][:80] or "Brain request"
+                requirements = dict(
+                    requirements,
+                    requirements=[{
+                        "id": "REQ-001",
+                        "name": name,
+                        "description": text,
+                        "priority": "high",
+                    }],
+                )
             if not isinstance(requirements, str):
                 requirements = json.dumps(requirements, ensure_ascii=False)
             source_file = request_payload.pop("source_file", None)

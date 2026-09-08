@@ -11,6 +11,7 @@ declarations (``src/api/main.py`` + ``src/api/routes/*.py``) rather than
 restated by hand, and the mocked response bodies are pinned to literals
 that must still be present in that source.
 """
+import json
 from pathlib import Path
 import re
 import sys
@@ -299,3 +300,66 @@ def test_unrecognised_health_body_is_not_healthy(monkeypatch):
 
     assert result["ok"] is False
     assert "unhealthy" in result["error"].lower()
+
+def _submitted_requirements(monkeypatch, **call_kwargs):
+    def request(method, url, **kwargs):
+        if url.endswith("/health"):
+            return _healthy(url)
+        return _Response({"id": 1, "status": "pending"})
+
+    monkeypatch.setattr("core.capability_targets.requests.request",
+                        request)
+    monkeypatch.setenv("CODING_ENGINE_PROJECT_ID", "1")
+    captured = {}
+
+    def capture(method, url, **kwargs):
+        if url.endswith("/health"):
+            return _healthy(url)
+        captured["json"] = kwargs.get("json")
+        return _Response({"id": 1, "status": "pending"})
+
+    monkeypatch.setattr("core.capability_targets.requests.request",
+                        capture)
+    CodingEngineExecutor("coding-engine:POST:/api/v1/jobs").call(
+        **call_kwargs)
+    return json.loads(captured["json"]["requirements_json"])
+
+
+@_needs_engine
+def test_the_engine_parser_only_reads_requirements_or_features():
+    """Pins the assumption the wrapping below depends on. DAGParser
+    reads these two keys and nothing else, so any other shape is valid
+    JSON that yields zero requirements."""
+    parser = (ROOT / "coding-engine" / "src" / "engine"
+              / "dag_parser.py").read_text(encoding="utf-8")
+    assert 'data.get("requirements", [])' in parser
+    assert 'data.get("features", [])' in parser
+
+
+def test_free_text_becomes_one_requirement(monkeypatch):
+    """A bare {"description": ...} parses fine and produces a job with
+    zero requirements - it runs and does nothing. Measured against a
+    live engine on 2026-09-08: unwrapped gave total_requirements=0,
+    wrapped gave 1 requirement and 1 task."""
+    parsed = _submitted_requirements(
+        monkeypatch, description="Ein Skript hello.py")
+    assert list(parsed) == ["requirements"]
+    req = parsed["requirements"][0]
+    assert req["id"] == "REQ-001"
+    assert req["description"] == "Ein Skript hello.py"
+    assert req["name"] == "Ein Skript hello.py"
+
+
+def test_caller_supplied_requirements_are_left_alone(monkeypatch):
+    given = {"requirements": [{"id": "R1", "name": "x",
+                               "description": "y"}]}
+    parsed = _submitted_requirements(monkeypatch,
+                                     requirements_json=given)
+    assert parsed == given
+
+
+def test_features_shape_is_also_left_alone(monkeypatch):
+    given = {"features": [{"id": "F1", "name": "x"}]}
+    parsed = _submitted_requirements(monkeypatch,
+                                     requirements_json=given)
+    assert parsed == given
