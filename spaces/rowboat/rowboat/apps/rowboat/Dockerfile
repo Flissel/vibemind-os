@@ -98,13 +98,17 @@ COPY --from=builder /app/apps/rowboat/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/apps/rowboat/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/apps/rowboat/.next/static ./apps/rowboat/.next/static
 
-# Next's file tracing does not materialize sharp's platform binaries into the
-# standalone output, so a page that touches sharp answers 500 at runtime even
-# though the build succeeded. Carry the installed copies over as they sit.
-# Next's file tracing does not materialize sharp's platform binaries into the
-# standalone output. npm installs sharp nested under next's own node_modules
-# (it is next's dependency, not the app's), so carry that copy over and make
-# it resolvable from the app as well.
+# sharp, twice over, and neither copy survives file tracing on its own.
+#
+# The plugin kernel decodes raster assets (`components/raster-decoder.ts`
+# imports sharp 0.35.3), and Next pulls its own 0.34.x for image optimization.
+# The trace materializes neither module's platform binaries, so every page
+# that touches the kernel -- the workflow page as much as the plugins page --
+# answered 500 with "Could not load the sharp module using the linux-x64
+# runtime", while a plain require of the same module succeeded inside the very
+# same image. Carry both copies over at the paths their callers resolve from.
+COPY --from=builder --chown=nextjs:nodejs /app/packages/openai-plugin-runtime/node_modules/sharp ./packages/openai-plugin-runtime/node_modules/sharp
+COPY --from=builder --chown=nextjs:nodejs /app/packages/openai-plugin-runtime/node_modules/@img ./packages/openai-plugin-runtime/node_modules/@img
 COPY --from=builder --chown=nextjs:nodejs /app/apps/rowboat/node_modules/next/node_modules/sharp ./apps/rowboat/node_modules/sharp
 COPY --from=builder --chown=nextjs:nodejs /app/apps/rowboat/node_modules/next/node_modules/@img ./apps/rowboat/node_modules/@img
 

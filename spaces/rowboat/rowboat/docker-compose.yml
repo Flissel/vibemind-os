@@ -20,7 +20,7 @@ services:
       - "${PORT:-3000}:3000"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - MONGODB_CONNECTION_STRING=mongodb://mongo:27017/rowboat
+      - MONGODB_CONNECTION_STRING=mongodb://mongo:27017/rowboat?replicaSet=rs0
       - USE_AUTH=${USE_AUTH}
       - AUTH0_SECRET=test_secret
       - AUTH0_BASE_URL=http://localhost:3000
@@ -177,7 +177,7 @@ services:
       - EMBEDDING_PROVIDER_BASE_URL=${EMBEDDING_PROVIDER_BASE_URL}
       - EMBEDDING_PROVIDER_API_KEY=${EMBEDDING_PROVIDER_API_KEY}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL}
-      - MONGODB_CONNECTION_STRING=mongodb://mongo:27017/rowboat
+      - MONGODB_CONNECTION_STRING=mongodb://mongo:27017/rowboat?replicaSet=rs0
       - REDIS_URL=redis://redis:6379
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_API_KEY=${QDRANT_API_KEY}
@@ -195,7 +195,7 @@ services:
     command: ["npm", "run", "jobs-worker"]
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - MONGODB_CONNECTION_STRING=mongodb://mongo:27017/rowboat
+      - MONGODB_CONNECTION_STRING=mongodb://mongo:27017/rowboat?replicaSet=rs0
       - REDIS_URL=redis://redis:6379
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_API_KEY=${QDRANT_API_KEY}
@@ -223,14 +223,49 @@ services:
   #     - ROWBOAT_HOST=http://localhost:3000
   #   restart: unless-stopped
 
+  # A single-node REPLICA SET, not a standalone. Every plugin write -- the
+  # catalog load, an installation with its admission rows and provider
+  # bindings, the migration apply -- runs in one transaction, and a standalone
+  # mongod refuses transactions outright (`repository_transaction_failed`).
+  # One node is enough for that; it is still a replica set.
   mongo:
     image: mongo:latest
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     ports:
       - "27017:27017"
     restart: unless-stopped
     attach: false
     volumes:
       - ./data/mongo:/data/db
+    healthcheck:
+      # Healthy only once the set is initiated AND this node is primary, so
+      # dependents do not start against a node that cannot yet accept writes.
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.hello().isWritablePrimary' | grep -q true"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  # Initiates the set once and exits. Idempotent: an already-initiated set
+  # answers `AlreadyInitialized`, which is success for our purposes.
+  mongo-init:
+    image: mongo:latest
+    depends_on:
+      - mongo
+    restart: "no"
+    attach: false
+    entrypoint:
+      - bash
+      - -c
+      - |
+        for i in $$(seq 1 60); do
+          mongosh --host mongo:27017 --quiet --eval 'quit(0)' && break
+          sleep 2
+        done
+        mongosh --host mongo:27017 --quiet --eval '
+          try { rs.status(); print("already initiated"); }
+          catch (e) { rs.initiate({_id: "rs0", members: [{_id: 0, host: "mongo:27017"}]}); }
+        '
 
   redis:
     image: redis:latest

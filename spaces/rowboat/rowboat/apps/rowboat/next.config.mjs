@@ -10,6 +10,14 @@ const nextConfig = {
     // standalone tree keeps the workspace layout: apps/rowboat/server.js next
     // to the traced node_modules.
     outputFileTracingRoot: join(dirname(fileURLToPath(import.meta.url)), '..', '..'),
+    // Next pulls `sharp` in only for its image optimizer, and in the
+    // standalone output that optimizer's bundled loader cannot find the @img
+    // platform binary -- every project page answered 500 with "Could not load
+    // the sharp module using the linux-x64 runtime" while a plain require of
+    // the very same module succeeded inside the image. This is an internal
+    // agent-builder UI: unoptimized images cost nothing here and remove the
+    // dependency on that loader entirely.
+    images: { unoptimized: true },
     serverExternalPackages: [
         'awilix',
         // Bundling sharp breaks its own resolution of the @img platform
