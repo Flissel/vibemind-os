@@ -90,14 +90,25 @@ transaction, a failed load rolls back completely and can simply be re-run.
 The catalog, every installation, the admission batch, and the migration apply
 are each written in one transaction. A standalone `mongod` refuses transactions,
 and the loader fails with `repository_transaction_failed` - verified against a
-standalone container. Both shipped topologies (`docker-compose.yml` and
-`infra/swarm/vibemind-stack.yml`) currently run a standalone `mongo` image, so
-converting them to a single-node replica set is a prerequisite:
+standalone container. One node is enough - it is still a replica set.
 
-```sh
-# container: mongod --replSet rs0 --bind_ip_all
-mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"<host>:27017"}]})'
-```
+`docker-compose.yml` **does this already**: `mongo` runs
+`mongod --replSet rs0 --bind_ip_all`, a one-shot `mongo-init` service initiates
+the set (idempotent - an initiated set answers `AlreadyInitialized`), the
+healthcheck reports healthy only once the node is a writable primary, and every
+consumer addresses `mongodb://mongo:27017/rowboat?replicaSet=rs0`.
+
+`infra/swarm/vibemind-stack.yml` (outer repo) **does not yet**: `rowboat-mongo`
+is still a standalone holding live data, so every plugin write there fails.
+Converting it is an operation on a running datastore, not a file edit: stop the
+service, restart `mongod` with `--replSet rs0`, run
+`rs.initiate({_id:"rs0",members:[{_id:0,host:"rowboat-mongo:27017"}]})` once,
+then switch the connection strings. Existing data survives - the set adopts the
+existing dbpath - but plan it as a maintenance step with a tested rollback.
+
+A host client reaching a published single-node set needs
+`?directConnection=true`, because replica-set discovery hands out the
+in-network hostname the set was initiated with.
 
 ### The kernel is consumed as a build artifact
 
@@ -105,6 +116,41 @@ mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"<host>:2701
 compiled `dist/`. Any change to the kernel needs
 `npm --prefix packages/openai-plugin-runtime run build` before the app sees it,
 and a deployment image must run that build.
+
+The image does. **Its build context is the rowboat repo root, not
+`apps/rowboat`** - with the old context the kernel's `file:` path pointed
+outside the context and `npm ci` failed outright, so no image could carry the
+plugin runtime at all. `apps/rowboat/Dockerfile` therefore builds the kernel in
+its own stage first and places it where the dependency resolves, and it needs
+Node 20 (the app's `sharp`, via next, refuses to load on 18 and has no musl
+prebuild, which also rules out Alpine).
+
+## Deploying: the steps, in order
+
+A deployment that skips these serves a plugin page that either errors or
+refuses every install.
+
+1. **Build the image** from the repo root:
+   `docker build -f apps/rowboat/Dockerfile -t <tag> .`
+   The default target is the app; `--target tools` builds the deploy-step image
+   (same dependencies plus `tsx` and the catalog lock, which the standalone
+   runner deliberately does not carry).
+2. **Provision `PLUGIN_UI_PREVIEW_SECRET`** in the environment the app reads
+   (`.env`, delivered via `env_file`). Without it the page lists the catalog and
+   every install fails `preview_configuration_invalid`. See `.env.example` in
+   the outer repo for all four `PLUGIN_*` variables.
+3. **Ensure the indexes**, from the tools image against the target database:
+   `npm run mongodb-ensure-indexes` - seconds, exits 0.
+4. **Load the catalog**: `npm run plugins:catalog-load`, then the same command
+   with `-- --verify-only`. Reports `entries: 180` at the pinned digest.
+5. **After a catalog re-pin only:** delete the superseded rows first - see
+   "Refreshing the catalog" above. Skipping this fails *every* installation,
+   not only new ones.
+
+Verified on 2026-09-08 against a single-node replica set: indexes exit 0 in 2s,
+the catalog loads 180 entries in 7s, and the plugins page renders the pinned
+catalog server-side. A page that answers `forbidden` is missing its
+`project_members` row, not a broken deployment.
 
 ## Admission and licensing
 
