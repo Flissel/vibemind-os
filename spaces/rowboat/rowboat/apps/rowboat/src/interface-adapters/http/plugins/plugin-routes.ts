@@ -1,6 +1,6 @@
 import {
   assertRoute, catalogResponse, idempotencyKey, installationResponse, installResponse, jsonBody, params,
-  pluginErrorResponse, pluginJson, previewResponse, projectListResponse, query, strictObject,
+  pluginErrorResponse, previewResponse, projectListResponse, query, strictObject, toolBindingResponse,
   assertRouteWithoutQuery, pluginSessionResponse, type CatalogController, type InstallationController, type PluginSessionControllerLike, type RouteContext,
 } from "@/app/api/v1/projects/[projectId]/plugins/_responses";
 
@@ -8,8 +8,6 @@ type ControllerSource<T> = T | (() => Promise<T>);
 type ProjectContext = RouteContext<{ projectId: string }>;
 type PluginContext = RouteContext<{ projectId: string; pluginName: string }>;
 type CatalogItemContext = RouteContext<{ pluginName: string }>;
-
-const TOOL_NAME = /^[a-z0-9_]{1,96}$/;
 
 export interface PluginToolController {
   add(request: Request, input: Readonly<{ projectId: string; pluginName: string; componentDigest: unknown }>): Promise<unknown>;
@@ -50,29 +48,6 @@ async function toolController(): Promise<PluginToolController> {
       });
     },
   };
-}
-
-/**
- * Validates and narrows the use case's AddPluginToolResult down to exactly
- * the two fields the REST contract promises -- the tool cannot be renamed by
- * the caller (W3), so nothing else (projectId, pluginName, componentDigest)
- * needs to leave this route. Own-property/enumerable checks, not a plain
- * `in`/property read, so a getter or prototype trick on a compromised
- * upstream result cannot execute code while this route is shaping it.
- */
-function toolBindingResponse(value: unknown): Response {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("response_invalid");
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) throw new Error("response_invalid");
-  const toolNameDescriptor = Object.getOwnPropertyDescriptor(value, "toolName");
-  const addedDescriptor = Object.getOwnPropertyDescriptor(value, "added");
-  if (toolNameDescriptor === undefined || !("value" in toolNameDescriptor) || !toolNameDescriptor.enumerable) throw new Error("response_invalid");
-  if (addedDescriptor === undefined || !("value" in addedDescriptor) || !addedDescriptor.enumerable) throw new Error("response_invalid");
-  const toolName = toolNameDescriptor.value;
-  const added = addedDescriptor.value;
-  if (typeof toolName !== "string" || !TOOL_NAME.test(toolName)) throw new Error("response_invalid");
-  if (typeof added !== "boolean") throw new Error("response_invalid");
-  return pluginJson({ toolName, added });
 }
 
 export function createPluginSessionRoute(source: ControllerSource<PluginSessionControllerLike>) {

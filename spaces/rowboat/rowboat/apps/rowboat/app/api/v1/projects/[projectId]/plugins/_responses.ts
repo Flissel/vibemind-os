@@ -1,6 +1,7 @@
 import { types as utilTypes } from "node:util";
 import { NextRequest } from "next/server";
 import { z } from "zod";
+import { PLUGIN_TOOL_NAME_PATTERN } from "@/src/application/use-cases/plugins/add-plugin-tool.use-case";
 
 const DIGEST = /^[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
@@ -65,6 +66,19 @@ const Installation = z.object({
   id: z.string().regex(ID), projectId: z.string().regex(ID), pluginName: z.string().regex(ID), pluginVersion: z.string().regex(SAFE_TEXT),
   sourceCommit: z.string().regex(COMMIT), manifestDigest: z.string().regex(DIGEST), treeDigest: z.string().regex(DIGEST),
   policyVersion: z.string().regex(ID), enabled: z.boolean(), revision: z.number().int().nonnegative(), providerBindings: z.array(z.unknown()).optional(),
+}).strict();
+// Validated against the use case's full AddPluginToolResult shape -- not just
+// the two fields the REST contract exposes -- so an unexpected field on a
+// future change to the use case fails closed here instead of silently
+// passing through unreviewed. toolBindingResponse below then hand-picks only
+// {toolName, added} for the client, the same two-step pattern
+// installationResponse uses above.
+const PluginToolBinding = z.object({
+  projectId: z.string().regex(ID),
+  toolName: z.string().regex(PLUGIN_TOOL_NAME_PATTERN),
+  pluginName: z.string().regex(ID),
+  componentDigest: z.string().regex(DIGEST),
+  added: z.boolean(),
 }).strict();
 
 export interface CatalogController {
@@ -565,4 +579,14 @@ export function installationResponse(value: unknown, catalogDigest: string): Res
     projectId: item.projectId, pluginName: item.pluginName, pluginVersion: item.pluginVersion,
     catalogDigest, policyVersion: item.policyVersion, enabled: item.enabled, revision: item.revision,
   });
+}
+
+/**
+ * The tool name is server-derived (pluginToolName) and never accepted from
+ * the caller, so this is the only place a bound tool name is validated
+ * against PLUGIN_TOOL_NAME_PATTERN before it leaves the process.
+ */
+export function toolBindingResponse(value: unknown): Response {
+  const item = parsed(PluginToolBinding, value);
+  return pluginJson({ toolName: item.toolName, added: item.added });
 }

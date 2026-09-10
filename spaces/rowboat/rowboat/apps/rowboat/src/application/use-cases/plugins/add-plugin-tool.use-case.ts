@@ -32,6 +32,16 @@ export interface AddPluginToolDependencies {
 }
 
 /**
+ * The exact shape pluginToolName below can produce: `plugin_` followed by the
+ * lowercased, underscore-joined plugin/component reduction, capped at 96
+ * characters by pluginToolName's own `.slice(0, 96)`. Exported so any code
+ * that must recognize a server-derived plugin tool name -- currently the
+ * tools route's response validator in _responses.ts -- checks against this
+ * pattern instead of carrying a second, driftable copy of it.
+ */
+export const PLUGIN_TOOL_NAME_PATTERN = /^[a-z0-9_]{1,96}$/;
+
+/**
  * Derives the workflow tool name. The agent runtime addresses a tool by name,
  * so it is namespaced by plugin and reduced to the characters a tool name may
  * carry; a component whose name reduces to nothing falls back to its digest.
