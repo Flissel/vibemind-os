@@ -6,6 +6,7 @@ import {
   type CredentialResolver,
   type SecretValue,
 } from "./credential-resolver.js";
+import { OPENAI_API_KEY_CREDENTIAL_REFERENCE, deriveConnectorReference } from "./credential-naming.js";
 import { captureProviderInvocation } from "./provider-invocation.js";
 import type {
   PluginProvider,
@@ -17,25 +18,12 @@ import type {
 } from "./provider.js";
 
 const PROVIDER_ID = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
-const CONNECTOR_NAME_INVALID = /[^A-Z0-9]+/g;
 const LOCAL_BASE_URL_HOSTNAMES = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
 const DEFAULT_MODEL = "gpt-5.6";
 const DEFAULT_BASE_URL = "https://api.openai.com";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 300_000;
-
-/**
- * `CONNECTOR_` + the app name uppercased, with runs of non-alphanumeric
- * characters collapsed to a single underscore (e.g. "canva" ->
- * "CONNECTOR_CANVA", "monday-com" -> "CONNECTOR_MONDAY_COM"). This is the
- * environment-credential reference that carries the connector's per-app
- * OAuth token, resolved through the same `CredentialResolver` as the OpenAI
- * API key -- never a standing secret inside Rowboat itself.
- */
-export function deriveConnectorReference(appName: string): string {
-  return `CONNECTOR_${appName.toUpperCase().replace(CONNECTOR_NAME_INVALID, "_")}`;
-}
 
 // Mirrors the module-local `admissionReason` in mcp-http-provider.ts:260-267
 // exactly (deliberately duplicated rather than exported/refactored: a
@@ -232,7 +220,7 @@ export class ConnectorBridgeProvider implements PluginProvider {
       let connectorToken: SecretValue;
       try {
         apiKey = await this.#credentialResolver.resolve(
-          Object.freeze({ kind: "environment", reference: "OPENAI_API_KEY" }),
+          Object.freeze({ kind: "environment", reference: OPENAI_API_KEY_CREDENTIAL_REFERENCE }),
           request.projectId,
           Object.freeze({ signal: controller.signal }),
         );

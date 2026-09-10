@@ -3,8 +3,11 @@ import type { PluginCatalogEntry, PluginComponentAdmission, PluginCredentialSlot
 import type { PluginCatalogSnapshot } from "../../repositories/plugins.repository.interface";
 import { canonicalComponentSelection } from "./plugin-component-selection";
 import {
+  OPENAI_API_KEY_CREDENTIAL_REFERENCE,
   PINNED_OPENAI_PLUGINS_COMMIT,
   PINNED_PLUGIN_CATALOG_DIGEST,
+  deriveConnectorReference,
+  deriveOAuthBearerReference,
   type PluginComponentKind,
   type PluginComponentStatus,
   type PluginReasonCode,
@@ -50,28 +53,73 @@ export function fingerprint(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(canonicalValue(value))).digest("hex");
 }
 
+function stringField(record: Readonly<Record<string, unknown>>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/**
+ * Every name this reports must be the exact name OpenFang resolves the
+ * credential by - the same derivations `OpenFangCredentialResolver.
+ * #deriveOpenFangReference` and `ConnectorBridgeProvider` use at call time
+ * (both now read `deriveOAuthBearerReference` / `deriveConnectorReference`
+ * from the kernel, "@rowboat/openai-plugin-runtime", so this reads the same
+ * functions rather than re-deriving the shape a third time) - never the raw
+ * oauth resource URL, and never silence for a component that in fact needs
+ * one.
+ */
 export function requiredCredentialNames(entry: PluginCatalogEntry): readonly string[] {
-  // Only a component the catalog actually admits, of kind `mcp`, over HTTP
-  // transport can ever be invoked (a rejected or process-MCP component never
-  // reaches the provider), so only those contribute to what the install
-  // dialog asks the operator for. `credentialSlots` only ever carries the
-  // importer's env-var-style names (`bearer_token_env_var` / `env_vars` -
-  // see `credentialSlotNames` in `component-discovery.ts`, which is fed by
-  // the pinned catalog digest and out of scope to change here), so an
-  // oauth-shaped requirement - `mcpServer.oauth_resource`, the reference
-  // `HttpMcpProvider.#resolveCredential` builds `{kind: "oauth", reference}`
-  // from - has to be read separately or it never surfaces at all.
+  // Only a component the catalog actually admits can ever be invoked (a
+  // rejected or process-MCP component never reaches a provider), so only an
+  // admitted `mcp`-over-HTTP or `app` component contributes to what the
+  // install dialog asks the operator for.
   const names = new Set<string>();
   for (const { component, admission } of entry.components) {
-    if (admission.status !== "admitted" || component.kind !== "mcp" || component.metadata.transport !== "http") continue;
-    const slots = component.metadata.credentialSlots;
-    if (Array.isArray(slots)) {
-      for (const name of slots) if (typeof name === "string" && ID.test(name)) names.add(name);
+    if (admission.status !== "admitted") continue;
+
+    if (component.kind === "mcp" && component.metadata.transport === "http") {
+      // `credentialSlots` only ever carries the importer's env-var-style
+      // names (`bearer_token_env_var` / `env_vars` - see
+      // `credentialSlotNames` in `component-discovery.ts`, out of scope to
+      // change here); a bearer reference is used verbatim, so its name here
+      // is already the name OpenFang resolves it by.
+      const slots = component.metadata.credentialSlots;
+      if (Array.isArray(slots)) {
+        for (const name of slots) if (typeof name === "string" && ID.test(name)) names.add(name);
+      }
+      const mcpServer: unknown = component.metadata.mcpServer;
+      if (mcpServer !== null && typeof mcpServer === "object" && !Array.isArray(mcpServer)) {
+        const record = mcpServer as Readonly<Record<string, unknown>>;
+        const oauthResourceDeclared = stringField(record, "oauth_resource");
+        const bearerDeclared = stringField(record, "bearer_token_env_var");
+        // Mirrors mcp-normalizer.ts's `normalizeMcpServer`: a server that
+        // declares neither credential is still an OAuth-protected resource,
+        // at its own URL - "declares nothing" must never read as "needs
+        // nothing" (this was cloudflare's gap: the catalog carries no
+        // `oauth_resource` hint at all, yet the rule still applies).
+        const oauthResource = oauthResourceDeclared
+          ?? (bearerDeclared === undefined ? stringField(record, "url") : undefined);
+        if (oauthResource !== undefined) {
+          const derived = deriveOAuthBearerReference(oauthResource);
+          if (derived !== undefined) names.add(derived);
+        }
+      }
+      continue;
     }
-    const mcpServer: unknown = component.metadata.mcpServer;
-    if (mcpServer !== null && typeof mcpServer === "object" && !Array.isArray(mcpServer)) {
-      const oauthResource = (mcpServer as Readonly<Record<string, unknown>>).oauth_resource;
-      if (typeof oauthResource === "string" && oauthResource.length > 0) names.add(oauthResource);
+
+    if (component.kind === "app") {
+      const appDeclaration: unknown = component.metadata.appDeclaration;
+      if (appDeclaration !== null && typeof appDeclaration === "object" && !Array.isArray(appDeclaration)) {
+        const id = stringField(appDeclaration as Readonly<Record<string, unknown>>, "id");
+        // Only a `connector_...` id has a public invocation path at all (the
+        // connector-bridge provider itself refuses `asdk_app_`/
+        // `templated_apps_` ids, provider_unavailable:not_a_connector), and
+        // it always needs both the platform key and its own per-app token.
+        if (id !== undefined && id.startsWith("connector_") && typeof component.name === "string" && component.name.length > 0) {
+          names.add(OPENAI_API_KEY_CREDENTIAL_REFERENCE);
+          names.add(deriveConnectorReference(component.name));
+        }
+      }
     }
   }
   return Object.freeze([...names].sort());

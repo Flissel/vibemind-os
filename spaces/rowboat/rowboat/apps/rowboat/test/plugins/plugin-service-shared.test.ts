@@ -4,13 +4,30 @@ import {
   admissionsFrom, assertSelectionAdmitted, entryComponentDigests, installationFrom, requiredCredentialNames,
 } from "@/src/application/use-cases/plugins/plugin-service.shared";
 import { componentSelectionDigest, requestedComponentSelection } from "@/src/application/use-cases/plugins/plugin-component-selection";
+import {
+  OPENAI_API_KEY_CREDENTIAL_REFERENCE,
+  deriveConnectorReference,
+  deriveOAuthBearerReference,
+} from "@rowboat/openai-plugin-runtime";
 import catalogLockFixture from "../../../../config/openai-plugin-catalog.lock.json";
 
 // `requiredCredentialNames` feeds the install dialog's "credentials required"
 // list directly (see `PreviewPluginInstallationUseCase`). It must not surface
 // a slot from a component the catalog does not admit, or from a non-`mcp`
 // component, and it must not miss an oauth-shaped credential requirement just
-// because it only reads env-var-style slot names.
+// because it only reads env-var-style slot names. The names it reports must
+// be the exact names OpenFang resolves - the same derivations the OpenFang
+// credential resolver and the connector-bridge provider use - never the raw
+// oauth resource URL or a silent "nothing" for a component that in fact
+// needs a credential.
+
+/** Fails the test loudly rather than smuggling `undefined` into an
+ *  `.toEqual()` expectation - these URLs are fixture data known to derive. */
+function mustDeriveOAuthBearerReference(resourceUrl: string): string {
+  const derived = deriveOAuthBearerReference(resourceUrl);
+  if (derived === undefined) throw new Error(`test fixture: "${resourceUrl}" was expected to derive an oauth bearer reference`);
+  return derived;
+}
 
 interface RawCatalogLock {
   readonly entries: readonly PluginCatalogEntry[];
@@ -28,12 +45,16 @@ const POLICY_VERSION = "rowboat-plugin-policy-v1";
 const DIGEST = "a".repeat(64);
 
 interface SyntheticComponentSpec {
-  readonly kind: "mcp" | "skill";
+  readonly kind: "mcp" | "skill" | "app";
   readonly admissionStatus: "admitted" | "review_required" | "rejected";
   readonly transport?: "http" | "process";
   readonly credentialSlots?: readonly string[];
   readonly oauthResource?: string;
   readonly bearerTokenEnvVar?: string;
+  /** `app` components only: the id the catalog's `AppDeclarationSchema`
+   *  validates - `connector_...`, `asdk_app_...`, or `templated_apps_...`. */
+  readonly connectorId?: string;
+  readonly componentName?: string;
 }
 
 function syntheticEntry(components: readonly SyntheticComponentSpec[]): PluginCatalogEntry {
@@ -52,16 +73,24 @@ function syntheticEntry(components: readonly SyntheticComponentSpec[]): PluginCa
       const derivedSlots = spec.credentialSlots
         ?? (spec.bearerTokenEnvVar === undefined ? undefined : [spec.bearerTokenEnvVar]);
       if (derivedSlots !== undefined) metadata.credentialSlots = derivedSlots;
-      if (spec.oauthResource !== undefined || spec.bearerTokenEnvVar !== undefined) {
+      // A real `mcp`/`http` component always carries `mcpServer` (`url` is
+      // required by `HttpMcpSchema`), whether or not it declares a
+      // credential - so the synthetic fixture does too, to exercise the
+      // "declares neither" fallback the same way a real cloudflare-shaped
+      // entry does.
+      if (spec.kind === "mcp" && (spec.transport ?? "http") === "http") {
         metadata.mcpServer = {
-          type: spec.transport ?? "http",
+          type: "http",
           url: "https://example.invalid/mcp",
           ...(spec.oauthResource === undefined ? {} : { oauth_resource: spec.oauthResource }),
           ...(spec.bearerTokenEnvVar === undefined ? {} : { bearer_token_env_var: spec.bearerTokenEnvVar }),
         };
       }
+      if (spec.kind === "app" && spec.connectorId !== undefined) {
+        metadata.appDeclaration = { id: spec.connectorId };
+      }
       return {
-        component: { id: `${spec.kind}:synthetic`, name: "Synthetic", kind: spec.kind, status: "available", metadata },
+        component: { id: `${spec.kind}:synthetic`, name: spec.componentName ?? "Synthetic", kind: spec.kind, status: "available", metadata },
         admission: {
           status: spec.admissionStatus, policyVersion: POLICY_VERSION,
           ...(spec.admissionStatus === "admitted" ? {} : { reason: "process_not_admitted" }),
@@ -77,9 +106,11 @@ describe("requiredCredentialNames", () => {
     expect(requiredCredentialNames(entry)).toEqual([]);
   });
 
-  it("yields the oauth reference for linear, which has no bearer slot at all", () => {
+  it("yields the name OpenFang actually resolves for linear's oauth requirement, not the raw resource URL", () => {
+    // linear's mcp component declares `oauth_resource` explicitly - see the
+    // pinned lock - and has no bearer slot at all.
     const entry = pinnedEntry("linear");
-    expect(requiredCredentialNames(entry)).toEqual(["https://mcp.linear.app/mcp"]);
+    expect(requiredCredentialNames(entry)).toEqual([mustDeriveOAuthBearerReference("https://mcp.linear.app/mcp")]);
   });
 
   it("still yields the bearer credential slot name for github", () => {
@@ -87,8 +118,57 @@ describe("requiredCredentialNames", () => {
     expect(requiredCredentialNames(entry)).toEqual(["GITHUB_PAT_TOKEN"]);
   });
 
-  it("also yields the oauth reference for notion, the same shape as linear", () => {
-    expect(requiredCredentialNames(pinnedEntry("notion"))).toEqual(["https://mcp.notion.com"]);
+  it("also yields the derived oauth reference for notion, the same shape as linear", () => {
+    expect(requiredCredentialNames(pinnedEntry("notion"))).toEqual([mustDeriveOAuthBearerReference("https://mcp.notion.com")]);
+  });
+
+  it("yields the derived oauth reference for cloudflare, even though its mcp component declares neither oauth_resource nor a bearer slot", () => {
+    // Per mcp-normalizer.ts: a server that declares neither credential is
+    // still an OAuth-protected resource, at its own URL - "declares nothing"
+    // must never read as "needs nothing" (D6 / the cloudflare gap in the
+    // spec's gap table).
+    const entry = pinnedEntry("cloudflare");
+    expect(requiredCredentialNames(entry)).toEqual([mustDeriveOAuthBearerReference("https://mcp.cloudflare.com/mcp")]);
+  });
+
+  it("yields both the OpenAI API key and the per-app connector reference for canva, which has no mcp component at all", () => {
+    // canva's only executable component is its `app` component (a
+    // `connector_...` id); the connector-bridge provider resolves two
+    // credentials for every call, `OPENAI_API_KEY` and `CONNECTOR_<APP>`.
+    const entry = pinnedEntry("canva");
+    expect(requiredCredentialNames(entry)).toEqual(
+      [OPENAI_API_KEY_CREDENTIAL_REFERENCE, deriveConnectorReference("canva")].sort(),
+    );
+  });
+
+  it("derives the oauth reference from the mcp server's own url when neither oauth_resource nor a bearer slot is declared", () => {
+    const entry = syntheticEntry([
+      { kind: "mcp", admissionStatus: "admitted", transport: "http" },
+    ]);
+    expect(requiredCredentialNames(entry)).toEqual([mustDeriveOAuthBearerReference("https://example.invalid/mcp")]);
+  });
+
+  it("yields both credential names for an admitted connector app", () => {
+    const entry = syntheticEntry([
+      { kind: "app", admissionStatus: "admitted", connectorId: "connector_deadbeef", componentName: "acme" },
+    ]);
+    expect(requiredCredentialNames(entry)).toEqual(
+      [OPENAI_API_KEY_CREDENTIAL_REFERENCE, deriveConnectorReference("acme")].sort(),
+    );
+  });
+
+  it("contributes nothing from an admitted app component that is not a connector id (asdk_app_/templated_apps_)", () => {
+    const entry = syntheticEntry([
+      { kind: "app", admissionStatus: "admitted", connectorId: "asdk_app_deadbeef", componentName: "acme" },
+    ]);
+    expect(requiredCredentialNames(entry)).toEqual([]);
+  });
+
+  it("contributes nothing from a review_required connector app", () => {
+    const entry = syntheticEntry([
+      { kind: "app", admissionStatus: "review_required", connectorId: "connector_deadbeef", componentName: "acme" },
+    ]);
+    expect(requiredCredentialNames(entry)).toEqual([]);
   });
 
   it("yields nothing for figma: its mcp component is itself still review_required", () => {
@@ -126,7 +206,9 @@ describe("requiredCredentialNames", () => {
       { kind: "mcp", admissionStatus: "admitted", transport: "http", bearerTokenEnvVar: "SLOT_A" },
       { kind: "mcp", admissionStatus: "admitted", transport: "http", oauthResource: "https://example.invalid/oauth" },
     ]);
-    expect(requiredCredentialNames(entry)).toEqual(["SLOT_A", "https://example.invalid/oauth"]);
+    expect(requiredCredentialNames(entry)).toEqual(
+      ["SLOT_A", mustDeriveOAuthBearerReference("https://example.invalid/oauth")].sort(),
+    );
   });
 });
 

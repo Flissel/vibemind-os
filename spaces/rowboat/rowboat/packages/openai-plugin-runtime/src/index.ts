@@ -166,9 +166,13 @@ export {
 } from "./providers/mcp-http-provider.js";
 export {
   ConnectorBridgeProvider,
-  deriveConnectorReference,
   type ConnectorBridgeProviderOptions,
 } from "./providers/connector-bridge-provider.js";
+export {
+  OPENAI_API_KEY_CREDENTIAL_REFERENCE,
+  deriveConnectorReference,
+  deriveOAuthBearerReference,
+} from "./providers/credential-naming.js";
 export {
   ProcessMcpProvider,
   type ProcessMcpClient,
