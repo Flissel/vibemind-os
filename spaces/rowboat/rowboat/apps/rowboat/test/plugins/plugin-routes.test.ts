@@ -4,10 +4,12 @@ import { readFileSync } from "node:fs";
 import { PINNED_PLUGIN_CATALOG_DIGEST } from "@rowboat/openai-plugin-runtime";
 import {
   createCatalogCollectionRoute, createCatalogItemRoute, createPluginSessionRoute, createProjectPluginsRoute, createProjectPluginRoute,
+  createProjectPluginToolsRoute, type PluginToolController,
 } from "@/src/interface-adapters/http/plugins/plugin-routes";
 import { ListProjectPluginsUseCase } from "@/src/application/use-cases/plugins/list-project-plugins.use-case";
+import { AddPluginToolUseCase, type AddPluginToolDependencies } from "@/src/application/use-cases/plugins/add-plugin-tool.use-case";
 import type { IPluginApiAuthorizationPolicy, PluginApiIdentity } from "@/src/application/policies/plugin-api-authorization.policy";
-import type { IPluginsRepository, PluginInstallation } from "@/src/application/repositories/plugins.repository.interface";
+import type { IPluginsRepository, PluginCatalogEntry, PluginInstallation } from "@/src/application/repositories/plugins.repository.interface";
 import catalogLockFixture from "../../../../config/openai-plugin-catalog.lock.json";
 import type { PluginCatalogLock } from "@rowboat/openai-plugin-runtime";
 import { Auth0PluginApiAuthorizationPolicy } from "@/src/infrastructure/policies/auth0.plugin-api-authorization.policy";
@@ -775,5 +777,151 @@ describe("component-scoped installation over the versioned route", () => {
     expect(response.status).toBe(400);
     expect(await json(response)).toEqual({ error: "request_invalid" });
     expect(install).not.toHaveBeenCalled();
+  });
+});
+
+describe("binding a plugin tool to a project workflow over the versioned route", () => {
+  const toolProjectId = "11111111-1111-4111-8111-111111111111";
+  const toolInstallationId = "33333333-3333-4333-8333-333333333333";
+  const toolComponentId = "mcp:.mcp.json#github";
+
+  function toolInstallation(overrides: Partial<PluginInstallation> = {}): PluginInstallation {
+    return Object.freeze({
+      id: toolInstallationId, projectId: toolProjectId, pluginName: "github", pluginVersion: "1.0.0",
+      sourceCommit: "1".repeat(40), manifestDigest: digest("b"), treeDigest: digest("c"),
+      policyVersion: "rowboat-plugin-policy-v1", enabled: true, revision: 1,
+      providerBindings: [{ componentId: toolComponentId, binding: { id: "mcp.github", providerKind: "mcp-http", componentDigest } }],
+      ...overrides,
+    }) as PluginInstallation;
+  }
+
+  function toolCatalogEntry(overrides: Record<string, unknown> = {}): PluginCatalogEntry {
+    return Object.freeze({
+      name: "github", pluginName: "github", pluginVersion: "1.0.0", catalogDigest: digest("d"),
+      sourceCommit: "1".repeat(40), manifestDigest: digest("b"), treeDigest: digest("c"),
+      policyVersion: "rowboat-plugin-policy-v1",
+      admission: { status: "admitted", policyVersion: "rowboat-plugin-policy-v1" },
+      components: [{
+        component: {
+          id: toolComponentId, name: "github", kind: "mcp", status: "available",
+          metadata: { digest: digest("e"), bindingDigest: componentDigest, transport: "http" },
+        },
+        admission: { status: "admitted", policyVersion: "rowboat-plugin-policy-v1" },
+      }],
+      ...overrides,
+    }) as unknown as PluginCatalogEntry;
+  }
+
+  function toolWorkflow() {
+    return { agents: [], prompts: [], pipelines: [], startAgent: "a", lastUpdatedAt: "2026-08-01T10:00:00.000Z", tools: [] as unknown[] };
+  }
+
+  // Wires the same shape the production controller does (authenticate, then
+  // forward to the use case) but against a real AddPluginToolUseCase fed
+  // fakes at its repository boundary, never against a mocked use case --
+  // the use case's own business rules (fail-closed, idempotent) stay proven
+  // by test/plugins/add-plugin-tool.test.ts; this only proves the route
+  // wires requests into that exact use case and shapes its result correctly.
+  function toolRoute(options: Readonly<{
+    installation?: PluginInstallation | null;
+    entry?: PluginCatalogEntry | null;
+    workflow?: unknown;
+    authorizeProject?: () => Promise<void>;
+  }> = {}) {
+    const calls: string[] = [];
+    const saveCalls: unknown[] = [];
+    const dependencies: AddPluginToolDependencies = {
+      authorizeProject: async () => { calls.push("authorize"); if (options.authorizeProject !== undefined) await options.authorizeProject(); },
+      loadInstallation: async () => { calls.push("loadInstallation"); return options.installation === undefined ? toolInstallation() : options.installation; },
+      loadCatalogEntry: async () => { calls.push("loadCatalogEntry"); return options.entry === undefined ? toolCatalogEntry() : options.entry; },
+      loadDraftWorkflow: async () => { calls.push("loadDraftWorkflow"); return options.workflow === undefined ? toolWorkflow() : options.workflow; },
+      saveDraftWorkflow: async (_projectId, value) => { calls.push("saveDraftWorkflow"); saveCalls.push(value); },
+    };
+    const useCase = new AddPluginToolUseCase(dependencies);
+    const controller: PluginToolController = {
+      add: async (_request, input) => {
+        if (typeof input.componentDigest !== "string") throw new Error("request_invalid");
+        return useCase.execute({
+          identity: { kind: "user", userId: "user-1" }, projectId: input.projectId, pluginName: input.pluginName, componentDigest: input.componentDigest,
+        });
+      },
+    };
+    return { route: createProjectPluginToolsRoute(controller), calls, saveCalls };
+  }
+
+  function toolPost(body: string) {
+    return request(`/api/v1/projects/${toolProjectId}/plugins/github/tools`, {
+      method: "POST", headers: { "content-type": "application/json" }, body,
+    });
+  }
+
+  const toolParams = { params: Promise.resolve({ projectId: toolProjectId, pluginName: "github" }) };
+
+  it("binds a selected, admitted component and returns the server-derived tool name", async () => {
+    const { route, saveCalls } = toolRoute();
+    const response = await route(toolPost(JSON.stringify({ componentDigest })), toolParams);
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual({ toolName: "plugin_github_github", added: true });
+    expect(saveCalls).toHaveLength(1);
+  });
+
+  it("is idempotent on a repeated call and never adds a second tool", async () => {
+    const first = toolRoute();
+    const firstResponse = await first.route(toolPost(JSON.stringify({ componentDigest })), toolParams);
+    expect(firstResponse.status).toBe(200);
+    expect(await json(firstResponse)).toEqual({ toolName: "plugin_github_github", added: true });
+    const savedWorkflow = first.saveCalls[0] as { tools: unknown[] };
+    expect(savedWorkflow.tools).toHaveLength(1);
+
+    const second = toolRoute({ workflow: { ...toolWorkflow(), tools: savedWorkflow.tools } });
+    const secondResponse = await second.route(toolPost(JSON.stringify({ componentDigest })), toolParams);
+    expect(secondResponse.status).toBe(200);
+    expect(await json(secondResponse)).toEqual({ toolName: "plugin_github_github", added: false });
+    expect(second.saveCalls).toHaveLength(0);
+  });
+
+  it("rejects a component the installation never selected", async () => {
+    const { route, saveCalls } = toolRoute({ installation: toolInstallation({ providerBindings: [] }) });
+    const response = await route(toolPost(JSON.stringify({ componentDigest })), toolParams);
+    expect(response.status).toBe(503);
+    expect(await json(response)).toEqual({ error: "provider_unavailable" });
+    expect(saveCalls).toHaveLength(0);
+  });
+
+  it("rejects a caller without project authorization before any read or write", async () => {
+    const { route, calls, saveCalls } = toolRoute({ authorizeProject: async () => { throw new Error("forbidden"); } });
+    const response = await route(toolPost(JSON.stringify({ componentDigest })), toolParams);
+    expect(response.status).toBe(403);
+    expect(await json(response)).toEqual({ error: "forbidden" });
+    expect(calls).toEqual(["authorize"]);
+    expect(saveCalls).toHaveLength(0);
+  });
+
+  it("keeps the production route module limited to POST and force-dynamic", async () => {
+    const production = await import("@/app/api/v1/projects/[projectId]/plugins/[pluginName]/tools/route");
+    expect(Object.keys(production).sort()).toEqual(["POST", "dynamic"]);
+    expect(production.dynamic).toBe("force-dynamic");
+  });
+
+  it("parses strictly: rejects an unrelated field, a wrong method and a wrong path before the controller", async () => {
+    const add = vi.fn();
+    const route = createProjectPluginToolsRoute({ add });
+    const rejectedExtraField = await route(toolPost(JSON.stringify({ componentDigest, extra: true })), toolParams);
+    expect(rejectedExtraField.status).toBe(400);
+    expect(await json(rejectedExtraField)).toEqual({ error: "request_invalid" });
+
+    const rejectedMethod = await route(request(`/api/v1/projects/${toolProjectId}/plugins/github/tools`, {
+      method: "GET",
+    }), toolParams);
+    expect(rejectedMethod.status).toBe(400);
+    expect(await json(rejectedMethod)).toEqual({ error: "request_invalid" });
+
+    const rejectedPath = await route(request(`/api/v1/projects/${toolProjectId}/plugins/github/not-tools`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ componentDigest }),
+    }), toolParams);
+    expect(rejectedPath.status).toBe(400);
+    expect(await json(rejectedPath)).toEqual({ error: "request_invalid" });
+
+    expect(add).not.toHaveBeenCalled();
   });
 });

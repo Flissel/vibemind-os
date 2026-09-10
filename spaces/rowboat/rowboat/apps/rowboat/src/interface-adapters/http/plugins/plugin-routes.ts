@@ -1,6 +1,6 @@
 import {
   assertRoute, catalogResponse, idempotencyKey, installationResponse, installResponse, jsonBody, params,
-  pluginErrorResponse, previewResponse, projectListResponse, query, strictObject,
+  pluginErrorResponse, pluginJson, previewResponse, projectListResponse, query, strictObject,
   assertRouteWithoutQuery, pluginSessionResponse, type CatalogController, type InstallationController, type PluginSessionControllerLike, type RouteContext,
 } from "@/app/api/v1/projects/[projectId]/plugins/_responses";
 
@@ -8,6 +8,12 @@ type ControllerSource<T> = T | (() => Promise<T>);
 type ProjectContext = RouteContext<{ projectId: string }>;
 type PluginContext = RouteContext<{ projectId: string; pluginName: string }>;
 type CatalogItemContext = RouteContext<{ pluginName: string }>;
+
+const TOOL_NAME = /^[a-z0-9_]{1,96}$/;
+
+export interface PluginToolController {
+  add(request: Request, input: Readonly<{ projectId: string; pluginName: string; componentDigest: unknown }>): Promise<unknown>;
+}
 
 function controller<T>(source: ControllerSource<T>): Promise<T> {
   return typeof source === "function" ? (source as () => Promise<T>)() : Promise.resolve(source);
@@ -26,6 +32,47 @@ async function installationController(): Promise<InstallationController> {
 async function sessionController(): Promise<PluginSessionControllerLike> {
   const { resolvePluginSessionController } = await import("@/di/plugins-container");
   return resolvePluginSessionController();
+}
+
+async function toolController(): Promise<PluginToolController> {
+  const { resolveAddPluginTool, resolvePluginActionIdentity } = await import("@/di/plugins-container");
+  return {
+    add: async (request, input) => {
+      // The tool name is derived server-side (pluginToolName), never taken
+      // from the caller, so nothing here reads or forwards one. The digest
+      // format itself is validated by the use case -- this is only the
+      // narrowing a Request-shaped `unknown` needs before it can be handed
+      // to a function whose signature demands a string.
+      if (typeof input.componentDigest !== "string") throw new Error("request_invalid");
+      const identity = await resolvePluginActionIdentity(request);
+      return resolveAddPluginTool({
+        identity, projectId: input.projectId, pluginName: input.pluginName, componentDigest: input.componentDigest,
+      });
+    },
+  };
+}
+
+/**
+ * Validates and narrows the use case's AddPluginToolResult down to exactly
+ * the two fields the REST contract promises -- the tool cannot be renamed by
+ * the caller (W3), so nothing else (projectId, pluginName, componentDigest)
+ * needs to leave this route. Own-property/enumerable checks, not a plain
+ * `in`/property read, so a getter or prototype trick on a compromised
+ * upstream result cannot execute code while this route is shaping it.
+ */
+function toolBindingResponse(value: unknown): Response {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("response_invalid");
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) throw new Error("response_invalid");
+  const toolNameDescriptor = Object.getOwnPropertyDescriptor(value, "toolName");
+  const addedDescriptor = Object.getOwnPropertyDescriptor(value, "added");
+  if (toolNameDescriptor === undefined || !("value" in toolNameDescriptor) || !toolNameDescriptor.enumerable) throw new Error("response_invalid");
+  if (addedDescriptor === undefined || !("value" in addedDescriptor) || !addedDescriptor.enumerable) throw new Error("response_invalid");
+  const toolName = toolNameDescriptor.value;
+  const added = addedDescriptor.value;
+  if (typeof toolName !== "string" || !TOOL_NAME.test(toolName)) throw new Error("response_invalid");
+  if (typeof added !== "boolean") throw new Error("response_invalid");
+  return pluginJson({ toolName, added });
 }
 
 export function createPluginSessionRoute(source: ControllerSource<PluginSessionControllerLike>) {
@@ -120,8 +167,24 @@ export function createProjectPluginRoute(source: ControllerSource<InstallationCo
   });
 }
 
+export function createProjectPluginToolsRoute(source: ControllerSource<PluginToolController>, options: { readonly bodyReadTimeoutMs?: number } = {}) {
+  return async function projectPluginToolsPOST(request: Request, context: PluginContext): Promise<Response> {
+    try {
+      const routeParams = await params(context, ["projectId", "pluginName"]);
+      assertRoute(request, "POST", ["api", "v1", "projects", routeParams.projectId, "plugins", routeParams.pluginName, "tools"]);
+      const body = strictObject(await jsonBody(request, options.bodyReadTimeoutMs), ["componentDigest"]);
+      const selected = await controller(source);
+      const output = await selected.add(request, {
+        projectId: routeParams.projectId, pluginName: routeParams.pluginName, componentDigest: body.componentDigest,
+      });
+      return toolBindingResponse(output);
+    } catch (error) { return pluginErrorResponse(error); }
+  };
+}
+
 export const catalogCollectionGET = createCatalogCollectionRoute(catalogController);
 export const pluginSessionGET = createPluginSessionRoute(sessionController);
 export const catalogItemGET = createCatalogItemRoute(catalogController);
 export const projectPluginsRoutes = createProjectPluginsRoute(installationController);
 export const projectPluginRoutes = createProjectPluginRoute(installationController);
+export const projectPluginToolsPOST = createProjectPluginToolsRoute(toolController);
