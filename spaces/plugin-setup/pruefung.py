@@ -30,10 +30,22 @@ beiden dort bereits geloesten Fallen -- GitHub/Cloudflare weisen Pythons
 Standard-User-Agent ab (403), manche Zertifikatsketten (z.B. Linear)
 scheitern am Standard-Trust-Store, `certifi` heilt das --:
 spaces/rowboat/rowboat/scripts/provision-oauth-token.py
+
+Hinweis zur `connector`-Pruefung: sie ist eine ECHTE (wenn auch minimale)
+Erzeugungsanfrage an die Responses-API, kein reiner Auth-Check-Endpunkt --
+anders als bei `bearer`/`oauth` gibt es dafuer keinen kostenlosen
+"wer bin ich"-Aufruf. Ein `402`/`429` in der Antwort bezeichnet deshalb ein
+KONTINGENTPROBLEM (kein Guthaben/Rate-Limit auf dem `OPENAI_RESPONSES_MODEL`),
+NICHT einen schlechten Schluessel -- der Statuscode wird unveraendert
+durchgereicht (`gut = False` bei jedem Nicht-200, wie bei den anderen
+Formen), aber ein Mensch, der ihn deutet, sollte 401/403 (Schluessel
+schlecht) von 402/429 (Kontingent leer, Schluessel womoeglich gut)
+unterscheiden koennen.
 """
 from __future__ import annotations
 
 import json
+import os
 import ssl
 import urllib.error
 import urllib.request
@@ -59,6 +71,12 @@ _TIMEOUT_SEKUNDEN = 10.0
 
 _GITHUB_USER_URL = "https://api.github.com/user"
 _RESPONSES_API_URL = "https://api.openai.com/v1/responses"
+
+# Dieselbe Variable, die Rowboats DI-Schicht schon liest
+# (apps/rowboat/di/plugins-container.ts), mit demselben Default --
+# eine tot verdrahtete Modell-Kontingent-Grenze (z.B. gpt-4o-mini auf
+# dieser Maschine) darf einen guten Schluessel nie als schlecht melden.
+_OPENAI_RESPONSES_MODEL_DEFAULT = "gpt-5.6"
 
 # fetch(method, url, *, headers, body, timeout) -> int (HTTP-Statuscode).
 # Wirft bei Netzwerkfehlern/Zeitueberschreitung; ein regulaerer
@@ -118,9 +136,14 @@ def _connector_aufruf(referenz: str, wert: str, ziel: str) -> tuple[str, str, di
         "Accept": "application/json",
         "User-Agent": _USER_AGENT,
     }
+    model = os.environ.get("OPENAI_RESPONSES_MODEL", "").strip() or _OPENAI_RESPONSES_MODEL_DEFAULT
     payload = {
-        "model": "gpt-4o-mini",
+        "model": model,
         "input": "ping",
+        # So wenig wie moeglich erzeugen -- diese Pruefung ist eine echte
+        # Anfrage, keine reine Auth-Probe, und soll Kontingent so wenig wie
+        # moeglich beanspruchen.
+        "max_output_tokens": 1,
         "tools": [
             {
                 "type": "mcp",

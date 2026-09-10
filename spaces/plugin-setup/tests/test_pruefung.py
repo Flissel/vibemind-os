@@ -63,11 +63,13 @@ def test_zeitueberschreitung_ist_nicht_gut_und_stuerzt_nicht_ab():
     assert isinstance(ergebnis["status"], int)
 
 
-def test_wert_taucht_in_keinem_rueckgabefeld_und_keinem_protokoll_auf(caplog):
+def test_wert_taucht_in_keinem_rueckgabefeld_und_keinem_protokoll_auf(caplog, capsys):
     """Die eigentliche Zusicherung der Aufgabe: der Wert reist zum Anbieter
     (im injizierten fetch-Aufruf steht er im Authorization-Header -- das ist
     der einzige Ort, an dem er hingehoert), aber er kommt nirgendwo sonst
-    wieder heraus."""
+    wieder heraus. Deckt beide Leckpfade ab: `logging` (caplog) UND
+    stdout/stderr (capsys) -- ein kuenftiges `print(f"... {wert}")` wuerde
+    an caplog allein vorbeirutschen."""
     fetch = _FakeFetch(401)
     with caplog.at_level(logging.DEBUG):
         ergebnis = pruefe("bearer", "GITHUB_PAT_TOKEN", _FAKE_WERT, "https://api.github.com/user", fetch=fetch)
@@ -85,6 +87,12 @@ def test_wert_taucht_in_keinem_rueckgabefeld_und_keinem_protokoll_auf(caplog):
     # 3. Er steckt in KEINER Protokollzeile (dieses Modul loggt ueberhaupt
     #    nichts -- das ist der Beweis dafuer, per capture statt Kommentar).
     assert _FAKE_WERT not in caplog.text
+
+    # 4. Er steckt in KEINER stdout/stderr-Ausgabe -- die andere Haelfte des
+    #    Beweises, die caplog allein nicht abdeckt (print statt logging).
+    erfasst = capsys.readouterr()
+    assert _FAKE_WERT not in erfasst.out
+    assert _FAKE_WERT not in erfasst.err
 
 
 def test_genau_ein_versuch_kein_wiederholen():
@@ -121,7 +129,8 @@ def test_oauth_ruft_mcp_initialize_gegen_die_ressource_auf():
     assert body["method"] == "initialize"
 
 
-def test_connector_ruft_responses_api_mit_connector_id_auf():
+def test_connector_ruft_responses_api_mit_connector_id_auf(monkeypatch):
+    monkeypatch.delenv("OPENAI_RESPONSES_MODEL", raising=False)
     fetch = _FakeFetch(200)
     pruefe("connector", "CONNECTOR_CANVA", _FAKE_WERT, "connector_canva", fetch=fetch)
     aufruf = fetch.aufrufe[0]
@@ -130,6 +139,21 @@ def test_connector_ruft_responses_api_mit_connector_id_auf():
     assert aufruf["headers"]["Authorization"] == f"Bearer {_FAKE_WERT}"
     body = json.loads(aufruf["body"])
     assert body["tools"][0]["connector_id"] == "connector_canva"
+
+    # Review-Fix: kein totverdrahtetes Modell ohne Guthaben. Ohne env-Var
+    # gilt derselbe Default, den Rowboats DI-Schicht schon verwendet
+    # (apps/rowboat/di/plugins-container.ts, OPENAI_RESPONSES_MODEL).
+    assert body["model"] == "gpt-5.6"
+    # So wenig wie moeglich erzeugen -- eine echte Anfrage, kein Auth-Check.
+    assert body["max_output_tokens"] == 1
+
+
+def test_connector_liest_modell_aus_der_umgebung(monkeypatch):
+    monkeypatch.setenv("OPENAI_RESPONSES_MODEL", "ein-anderes-modell")
+    fetch = _FakeFetch(200)
+    pruefe("connector", "CONNECTOR_CANVA", _FAKE_WERT, "connector_canva", fetch=fetch)
+    body = json.loads(fetch.aufrufe[0]["body"])
+    assert body["model"] == "ein-anderes-modell"
 
 
 def test_unbekannte_pruefform_ist_fail_closed():
