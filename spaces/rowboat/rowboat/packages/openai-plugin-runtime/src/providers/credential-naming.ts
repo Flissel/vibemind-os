@@ -42,6 +42,34 @@ export function deriveOAuthBearerReference(resourceUrl: string): string | undefi
   return OPENFANG_REFERENCE.test(derived) ? derived : undefined;
 }
 
+export interface HttpMcpCredentialDeclaration {
+  readonly url: string;
+  readonly oauthResource?: string;
+  readonly bearerTokenEnvVar?: string;
+}
+
+/**
+ * The one place that decides which resource an HTTP MCP server's oauth
+ * credential requirement resolves to. Both the catalog normalizer
+ * (`normalizeMcpServer`, which builds the `NormalizedHttpMcp` a provider
+ * actually runs against) and Rowboat's `requiredCredentialNames` (which
+ * tells an operator, up front, what to provision) read this - never
+ * re-derive the selection themselves - so a change to the fallback rule
+ * cannot land in only one of the two and go quietly out of sync.
+ *
+ * An explicit `oauth_resource` wins outright, even alongside a bearer
+ * reference. A server that instead declares only `bearer_token_env_var`
+ * needs no oauth resource at all - the bearer reference covers the whole
+ * slot. A server that declares neither is still an OAuth-protected
+ * resource, at its own url: "declares nothing" must never mean "needs
+ * nothing".
+ */
+export function resolveHttpMcpOauthResource(declaration: HttpMcpCredentialDeclaration): string | undefined {
+  if (declaration.oauthResource !== undefined) return declaration.oauthResource;
+  if (declaration.bearerTokenEnvVar !== undefined) return undefined;
+  return declaration.url;
+}
+
 /**
  * `CONNECTOR_` + the app name uppercased, with runs of non-alphanumeric
  * characters collapsed to a single underscore (e.g. "canva" ->

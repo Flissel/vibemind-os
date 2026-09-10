@@ -172,6 +172,8 @@ export {
   OPENAI_API_KEY_CREDENTIAL_REFERENCE,
   deriveConnectorReference,
   deriveOAuthBearerReference,
+  resolveHttpMcpOauthResource,
+  type HttpMcpCredentialDeclaration,
 } from "./providers/credential-naming.js";
 export {
   ProcessMcpProvider,

@@ -1,6 +1,7 @@
 import { posix, win32 } from "node:path";
 import { McpServerSchema } from "../schema/component-schemas.js";
 import { assertBinding } from "../providers/provider-registry.js";
+import { resolveHttpMcpOauthResource } from "../providers/credential-naming.js";
 import type { ProviderBinding } from "../providers/provider.js";
 import type { NormalizedApp } from "./app-normalizer.js";
 
@@ -81,13 +82,16 @@ export function normalizeMcpServer(name: string, input: unknown, componentDigest
 
   if (server.type === "http") {
     const url = secureUrl(server.url, "mcp_url");
-    // A server that declares neither credential is treated as an
-    // OAuth-protected resource at its own URL, so resolution fails closed
-    // unless the operator has provisioned that reference -- "declares
-    // nothing" must never mean "call unauthenticated".
-    const oauthResource = server.oauth_resource === undefined
-      ? (server.bearer_token_env_var === undefined ? url : undefined)
-      : secureUrl(server.oauth_resource, "oauth_resource");
+    // The selection rule itself - which of url/oauth_resource/
+    // bearer_token_env_var wins - lives in `resolveHttpMcpOauthResource`
+    // (credential-naming.ts), shared with Rowboat's `requiredCredentialNames`
+    // (plugin-service.shared.ts), so "declares nothing" reads the same way,
+    // as "still an OAuth-protected resource at its own URL", on both sides.
+    const oauthResource = resolveHttpMcpOauthResource({
+      url,
+      ...(server.oauth_resource === undefined ? {} : { oauthResource: secureUrl(server.oauth_resource, "oauth_resource") }),
+      ...(server.bearer_token_env_var === undefined ? {} : { bearerTokenEnvVar: server.bearer_token_env_var }),
+    });
     const result: NormalizedHttpMcp = {
       name,
       kind: "mcp-http",

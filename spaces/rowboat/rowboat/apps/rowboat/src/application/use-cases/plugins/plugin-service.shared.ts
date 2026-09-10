@@ -8,6 +8,7 @@ import {
   PINNED_PLUGIN_CATALOG_DIGEST,
   deriveConnectorReference,
   deriveOAuthBearerReference,
+  resolveHttpMcpOauthResource,
   type PluginComponentKind,
   type PluginComponentStatus,
   type PluginReasonCode,
@@ -90,24 +91,41 @@ export function requiredCredentialNames(entry: PluginCatalogEntry): readonly str
       const mcpServer: unknown = component.metadata.mcpServer;
       if (mcpServer !== null && typeof mcpServer === "object" && !Array.isArray(mcpServer)) {
         const record = mcpServer as Readonly<Record<string, unknown>>;
-        const oauthResourceDeclared = stringField(record, "oauth_resource");
-        const bearerDeclared = stringField(record, "bearer_token_env_var");
-        // Mirrors mcp-normalizer.ts's `normalizeMcpServer`: a server that
-        // declares neither credential is still an OAuth-protected resource,
-        // at its own URL - "declares nothing" must never read as "needs
-        // nothing" (this was cloudflare's gap: the catalog carries no
-        // `oauth_resource` hint at all, yet the rule still applies).
-        const oauthResource = oauthResourceDeclared
-          ?? (bearerDeclared === undefined ? stringField(record, "url") : undefined);
-        if (oauthResource !== undefined) {
-          const derived = deriveOAuthBearerReference(oauthResource);
-          if (derived !== undefined) names.add(derived);
+        const url = stringField(record, "url");
+        // The selection rule itself - explicit oauth_resource wins; a bearer
+        // reference needs no oauth resource; declaring neither still means
+        // an OAuth-protected resource at the server's own url (this was
+        // cloudflare's gap: the catalog carries no `oauth_resource` hint at
+        // all, yet the rule still applies) - lives in
+        // `resolveHttpMcpOauthResource` (credential-naming.ts), the same
+        // function `normalizeMcpServer` (mcp-normalizer.ts) reads. A
+        // malformed record with no `url` at all contributes nothing rather
+        // than guessing.
+        if (url !== undefined) {
+          const oauthResourceDeclared = stringField(record, "oauth_resource");
+          const bearerDeclared = stringField(record, "bearer_token_env_var");
+          const oauthResource = resolveHttpMcpOauthResource({
+            url,
+            ...(oauthResourceDeclared === undefined ? {} : { oauthResource: oauthResourceDeclared }),
+            ...(bearerDeclared === undefined ? {} : { bearerTokenEnvVar: bearerDeclared }),
+          });
+          if (oauthResource !== undefined) {
+            const derived = deriveOAuthBearerReference(oauthResource);
+            if (derived !== undefined) names.add(derived);
+          }
         }
       }
       continue;
     }
 
     if (component.kind === "app") {
+      // The runtime routes an `app` component through the connector bridge
+      // only when its catalog-stamped `providerBinding.providerKind` is
+      // `"openai-connector-bridge"` (`componentProviderBinding` in
+      // catalog-importer.ts) - read that signal rather than re-deriving it,
+      // so a component with no binding at all (or a future provider kind)
+      // never gets asked to provision a credential nothing would resolve.
+      if (component.metadata.providerBinding?.providerKind !== "openai-connector-bridge") continue;
       const appDeclaration: unknown = component.metadata.appDeclaration;
       if (appDeclaration !== null && typeof appDeclaration === "object" && !Array.isArray(appDeclaration)) {
         const id = stringField(appDeclaration as Readonly<Record<string, unknown>>, "id");

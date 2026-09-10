@@ -8,6 +8,7 @@ import {
   OPENAI_API_KEY_CREDENTIAL_REFERENCE,
   deriveConnectorReference,
   deriveOAuthBearerReference,
+  normalizeMcpServer,
 } from "@rowboat/openai-plugin-runtime";
 import catalogLockFixture from "../../../../config/openai-plugin-catalog.lock.json";
 
@@ -55,6 +56,12 @@ interface SyntheticComponentSpec {
    *  validates - `connector_...`, `asdk_app_...`, or `templated_apps_...`. */
   readonly connectorId?: string;
   readonly componentName?: string;
+  /** `app` components only: the `providerKind` the real importer stamps
+   *  onto `metadata.providerBinding` (`componentProviderBinding` in
+   *  catalog-importer.ts always writes `"openai-connector-bridge"` for any
+   *  `app` component today) - the value the runtime actually routes on.
+   *  Omit to exercise a component with no provider binding at all. */
+  readonly providerBindingKind?: string;
 }
 
 function syntheticEntry(components: readonly SyntheticComponentSpec[]): PluginCatalogEntry {
@@ -88,6 +95,9 @@ function syntheticEntry(components: readonly SyntheticComponentSpec[]): PluginCa
       }
       if (spec.kind === "app" && spec.connectorId !== undefined) {
         metadata.appDeclaration = { id: spec.connectorId };
+      }
+      if (spec.kind === "app" && spec.providerBindingKind !== undefined) {
+        metadata.providerBinding = { id: "app.synthetic", providerKind: spec.providerBindingKind, componentDigest: DIGEST };
       }
       return {
         component: { id: `${spec.kind}:synthetic`, name: spec.componentName ?? "Synthetic", kind: spec.kind, status: "available", metadata },
@@ -148,25 +158,53 @@ describe("requiredCredentialNames", () => {
     expect(requiredCredentialNames(entry)).toEqual([mustDeriveOAuthBearerReference("https://example.invalid/mcp")]);
   });
 
-  it("yields both credential names for an admitted connector app", () => {
+  it("agrees with the kernel's own mcp-normalizer on which resource a declaration-less HTTP server needs - the selection rule, not just a shared literal", () => {
+    // Both `requiredCredentialNames` and `normalizeMcpServer` read
+    // `resolveHttpMcpOauthResource` (credential-naming.ts) for this
+    // decision; this asserts the two real call sites still agree, rather
+    // than asserting each against the same hand-picked string.
+    const declaration = { type: "http" as const, url: "https://example.invalid/mcp" };
+    const entry = syntheticEntry([{ kind: "mcp", admissionStatus: "admitted", transport: "http" }]);
+    const normalized = normalizeMcpServer("agreement-check", declaration, DIGEST);
+    if (normalized.kind !== "mcp-http" || normalized.oauthResource === undefined) {
+      throw new Error("test fixture: expected the normalizer to derive an oauth resource");
+    }
+    expect(requiredCredentialNames(entry)).toEqual([mustDeriveOAuthBearerReference(normalized.oauthResource)]);
+  });
+
+  it("yields both credential names for an admitted connector app whose provider binding actually routes it through the connector bridge", () => {
     const entry = syntheticEntry([
-      { kind: "app", admissionStatus: "admitted", connectorId: "connector_deadbeef", componentName: "acme" },
+      { kind: "app", admissionStatus: "admitted", connectorId: "connector_deadbeef", componentName: "acme", providerBindingKind: "openai-connector-bridge" },
     ]);
     expect(requiredCredentialNames(entry)).toEqual(
       [OPENAI_API_KEY_CREDENTIAL_REFERENCE, deriveConnectorReference("acme")].sort(),
     );
   });
 
-  it("contributes nothing from an admitted app component that is not a connector id (asdk_app_/templated_apps_)", () => {
+  it("contributes nothing from an admitted app component that is not a connector id (asdk_app_/templated_apps_), even with a connector-bridge binding", () => {
     const entry = syntheticEntry([
-      { kind: "app", admissionStatus: "admitted", connectorId: "asdk_app_deadbeef", componentName: "acme" },
+      { kind: "app", admissionStatus: "admitted", connectorId: "asdk_app_deadbeef", componentName: "acme", providerBindingKind: "openai-connector-bridge" },
     ]);
     expect(requiredCredentialNames(entry)).toEqual([]);
   });
 
   it("contributes nothing from a review_required connector app", () => {
     const entry = syntheticEntry([
-      { kind: "app", admissionStatus: "review_required", connectorId: "connector_deadbeef", componentName: "acme" },
+      { kind: "app", admissionStatus: "review_required", connectorId: "connector_deadbeef", componentName: "acme", providerBindingKind: "openai-connector-bridge" },
+    ]);
+    expect(requiredCredentialNames(entry)).toEqual([]);
+  });
+
+  it("contributes nothing from a connector-id app component with no provider binding at all - it has no path to a provider that would ever ask for the credential", () => {
+    const entry = syntheticEntry([
+      { kind: "app", admissionStatus: "admitted", connectorId: "connector_deadbeef", componentName: "acme" },
+    ]);
+    expect(requiredCredentialNames(entry)).toEqual([]);
+  });
+
+  it("contributes nothing from a connector-id app component whose provider binding is some other provider kind", () => {
+    const entry = syntheticEntry([
+      { kind: "app", admissionStatus: "admitted", connectorId: "connector_deadbeef", componentName: "acme", providerBindingKind: "mcp-http" },
     ]);
     expect(requiredCredentialNames(entry)).toEqual([]);
   });
