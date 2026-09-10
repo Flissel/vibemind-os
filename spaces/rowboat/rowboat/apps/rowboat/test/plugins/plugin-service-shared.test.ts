@@ -52,6 +52,10 @@ interface SyntheticComponentSpec {
   readonly credentialSlots?: readonly string[];
   readonly oauthResource?: string;
   readonly bearerTokenEnvVar?: string;
+  /** Leaves `url` out of `mcpServer` to model a malformed record: real
+   *  catalog data always carries one (`HttpMcpSchema` requires it), but
+   *  this function reads `mcpServer` as `unknown` on purpose. */
+  readonly omitUrl?: boolean;
   /** `app` components only: the id the catalog's `AppDeclarationSchema`
    *  validates - `connector_...`, `asdk_app_...`, or `templated_apps_...`. */
   readonly connectorId?: string;
@@ -88,7 +92,7 @@ function syntheticEntry(components: readonly SyntheticComponentSpec[]): PluginCa
       if (spec.kind === "mcp" && (spec.transport ?? "http") === "http") {
         metadata.mcpServer = {
           type: "http",
-          url: "https://example.invalid/mcp",
+          ...(spec.omitUrl === true ? {} : { url: "https://example.invalid/mcp" }),
           ...(spec.oauthResource === undefined ? {} : { oauth_resource: spec.oauthResource }),
           ...(spec.bearerTokenEnvVar === undefined ? {} : { bearer_token_env_var: spec.bearerTokenEnvVar }),
         };
@@ -156,6 +160,24 @@ describe("requiredCredentialNames", () => {
       { kind: "mcp", admissionStatus: "admitted", transport: "http" },
     ]);
     expect(requiredCredentialNames(entry)).toEqual([mustDeriveOAuthBearerReference("https://example.invalid/mcp")]);
+  });
+
+  it("still reports an explicitly declared oauth_resource on a record whose url is missing", () => {
+    // The url is only needed for the FALLBACK arm. A component that plainly
+    // declares a resource must never be reported as needing nothing just
+    // because another field is malformed - that is the same lie this
+    // function exists to end, from the other direction. Unreachable through
+    // today's import pipeline (the schema requires `url`), which is exactly
+    // why it needs a test rather than trust.
+    const entry = syntheticEntry([
+      {
+        kind: "mcp", admissionStatus: "admitted", transport: "http",
+        oauthResource: "https://declared.invalid/oauth", omitUrl: true,
+      },
+    ]);
+    expect(requiredCredentialNames(entry)).toEqual([
+      mustDeriveOAuthBearerReference("https://declared.invalid/oauth"),
+    ]);
   });
 
   it("agrees with the kernel's own mcp-normalizer on which resource a declaration-less HTTP server needs - the selection rule, not just a shared literal", () => {

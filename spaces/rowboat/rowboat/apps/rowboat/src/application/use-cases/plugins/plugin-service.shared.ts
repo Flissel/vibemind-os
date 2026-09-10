@@ -98,18 +98,23 @@ export function requiredCredentialNames(entry: PluginCatalogEntry): readonly str
         // cloudflare's gap: the catalog carries no `oauth_resource` hint at
         // all, yet the rule still applies) - lives in
         // `resolveHttpMcpOauthResource` (credential-naming.ts), the same
-        // function `normalizeMcpServer` (mcp-normalizer.ts) reads. A
-        // malformed record with no `url` at all contributes nothing rather
-        // than guessing.
-        if (url !== undefined) {
-          const oauthResourceDeclared = stringField(record, "oauth_resource");
-          const bearerDeclared = stringField(record, "bearer_token_env_var");
+        // function `normalizeMcpServer` (mcp-normalizer.ts) reads.
+        //
+        // The url is only needed for the FALLBACK arm. An explicitly
+        // declared oauth_resource wins even on a record whose url is
+        // missing or malformed: this function reads `mcpServer` as unknown
+        // on purpose, and reporting "needs nothing" for a component that
+        // plainly declares a resource would be the same lie this whole
+        // function exists to end, only from the other direction.
+        const oauthResourceDeclared = stringField(record, "oauth_resource");
+        const bearerDeclared = stringField(record, "bearer_token_env_var");
+        if (url !== undefined || oauthResourceDeclared !== undefined) {
           const oauthResource = resolveHttpMcpOauthResource({
-            url,
+            url: url ?? "",
             ...(oauthResourceDeclared === undefined ? {} : { oauthResource: oauthResourceDeclared }),
             ...(bearerDeclared === undefined ? {} : { bearerTokenEnvVar: bearerDeclared }),
           });
-          if (oauthResource !== undefined) {
+          if (oauthResource !== undefined && oauthResource !== "") {
             const derived = deriveOAuthBearerReference(oauthResource);
             if (derived !== undefined) names.add(derived);
           }
