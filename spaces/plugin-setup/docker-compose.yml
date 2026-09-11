@@ -1,0 +1,47 @@
+# plugin-setup Gateway -- openclaw vor dem plugin-setup-MCP-Sidecar
+# (Aufgabe 6, Spec 2026-09-08-plugin-setup-agent). Muster:
+# spaces/marketing/claw/gateway/docker-compose.yml. EIN MCP-Server: der
+# host-seitige Sidecar server.py auf :8131 (die vier Werkzeuge). Keine
+# Kanaele, kein zweiter Server -- der Agent kann strukturell nur ueber die
+# vier Werkzeuge wirken.
+#
+# WICHTIG: dieser Compose-Deploy ist EIGENSTAENDIG -- er gehoert NICHT in
+# den bestehenden vibemind-Swarm-Stack (infra/swarm/...) und wird von
+# bootstrap.sh separat hochgefahren (`docker compose up -d` in diesem
+# Verzeichnis), nie ueber `service update`/`stack deploy` auf den
+# laufenden Stack.
+#
+# Schluessel (Rowboat-Bearer, OpenFang-API-Key) kommen NIE hierher oder in
+# die Saat -- anbinden.sh setzt sie ins Laufzeit-Volume (Muster sales-claw
+# / marketing-claw).
+services:
+  plugin-setup-claw:
+    image: ghcr.io/openclaw/openclaw:2026.7.1-slim
+    container_name: plugin-setup-claw
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Berlin
+      # /home/node gehoert dem node-User des Images -- /state gehoerte
+      # root (EACCES-Crash-Muster, s. marketing-claw). Gleiches Layout.
+      - OPENCLAW_STATE_DIR=/home/node/.openclaw
+    volumes:
+      - plugin-setup-claw-state:/home/node/.openclaw
+      - plugin-setup-claw-keys:/home/node/.config/openclaw
+      - ./config/workspace:/seed/workspace:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Gleiche Falle wie marketing-claw: der Image-Healthcheck probt fest
+    # 127.0.0.1:18789; unser Gateway bindet einen anderen Loopback-Port
+    # (config/openclaw.json) -- Port hier auf den tatsaechlich gebundenen
+    # anpassen, bevor dieser Service produktiv laeuft (noch nicht
+    # abgenommen, s. deploy/smoke.sh-Bericht).
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:18896/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 3m
+      timeout: 10s
+      start_period: 90s
+      retries: 3
+
+volumes:
+  plugin-setup-claw-state:
+  plugin-setup-claw-keys:
