@@ -92,12 +92,16 @@ jeder Nachricht stehen, der Wert in keiner.
   - **`ziel` entscheidet fuer `art=oauth`, WOHIN der Wert reist** -- es wird
     zur Adresse eines Aufrufs, der ihn im `Authorization`-Kopf traegt. Du
     erfindest es nie. Es muss `https` sein, ohne Benutzerangabe, Query oder
-    Fragment, und es muss sich nach derselben Regel, die den Referenznamen
-    erzeugt hat, auf genau diese `referenz` zurueckrechnen lassen. Das
-    Werkzeug prueft das und lehnt sonst ab, bevor irgendetwas geschrieben
-    wird -- lies die Ablehnung, rate keine zweite Adresse. Fuer
-    `art=connector` ist `ziel` KEINE Adresse, sondern die `connector_id`
-    (Form `connector_<hex>`); der Aufruf geht dort an eine feste Adresse.
+    Fragment, und sein **Host** muss der Host sein, den `referenz` nennt --
+    nach derselben Regel, die den Referenznamen erzeugt hat. Der **Pfad**
+    darf abweichen, und das ist Absicht: bei manchen Anbietern ist der
+    MCP-Endpunkt ein Pfad UNTER der Ressource, aus der der Referenzname
+    stammt (notion: Name aus `https://mcp.notion.com`, Endpunkt
+    `https://mcp.notion.com/mcp`). Das Werkzeug prueft das und lehnt sonst
+    ab, bevor irgendetwas geschrieben wird -- lies die Ablehnung, rate keine
+    zweite Adresse und wechsle NIE den Host. Fuer `art=connector` ist `ziel`
+    KEINE Adresse, sondern die `connector_id` (Form `connector_<hex>`); der
+    Aufruf geht dort an eine feste Adresse.
   - **Frag den Betreiber IMMER nach dem Wert selbst, tippe ihn nie vor,
     rate ihn nie, erfinde ihn nie.**
   - **Scheitert die Verifikation beim Anbieter** (`ok: false`, ein

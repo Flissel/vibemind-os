@@ -16,10 +16,12 @@ in pruefung.py die ZIELADRESSE eines Aufrufs, der den Wert im
 `Authorization: Bearer`-Kopf traegt. `schluessel_entgegennehmen` prueft es
 darum VOR jedem Schreibzugriff: https (sonst reist das Geheimnis im
 Klartext), kein Benutzer/Query/Fragment (wie Rowboats `secureUrl` auf genau
-diesem Wert), und die Adresse muss sich nach der GETEILTEN Namensregel
-(`deriveOAuthBearerReference`) auf `referenz` zurueckrechnen lassen. Damit
-ist "ein Wert geht nur dorthin, wo sein Referenzname es sagt" strukturell
-statt konventionell. Siehe `_ziel_pruefen`/`_oauth_bearer_referenz`.
+diesem Wert), und der HOST von `ziel` muss nach der GETEILTEN Namensregel
+(`deriveOAuthBearerReference`) der Host sein, den `referenz` nennt. Damit
+ist "ein Wert geht nur zu dem Host, den sein Referenzname nennt"
+strukturell statt konventionell -- host-, NICHT pfadgenau, und der
+Unterschied ist wichtig: siehe den Absatz "DIE HOST-BINDUNG" in
+`_ziel_pruefen`, der auch benennt, was die Bindung NICHT zusichert.
 
 VERBOTSLISTE (Global Constraint, s. Brief): kein Werkzeug gibt je einen
 Credential-WERT zurueck. `schluessel_entgegennehmen` protokolliert/gibt nur
@@ -258,12 +260,43 @@ def _ziel_pruefen(art: str, referenz: str, ziel: str) -> str | None:
                          Rowboat auf genau diesen Wert legt (`secureUrl`,
                          components/mcp-normalizer.ts:37-53): https, kein
                          Benutzer/Passwort, kein Query, kein Fragment. UND
-                         zusaetzlich: die Adresse muss sich nach der
-                         GETEILTEN Regel auf `referenz` zurueckrechnen
-                         lassen. Damit ist "der Wert geht dorthin, wo sein
-                         Referenzname es sagt" strukturell, nicht nur
-                         Konvention: ein erfundenes Ziel traegt nicht mehr
-                         den Namen, unter dem der Wert entgegengenommen wird.
+                         zusaetzlich die Host-Bindung unten.
+
+    DIE HOST-BINDUNG -- was sie zusichert und was NICHT (Runde 2 des
+    Schluss-Reviews; dieser Absatz ist bewusst ausfuehrlich, weil dieser
+    Branch schon vier Ueberbehauptungen genau dieser Form hervorgebracht hat):
+
+      SIE SICHERT ZU: `ziel` zeigt auf den Host, den `referenz` nennt. Die
+      geteilte Regel (`deriveOAuthBearerReference`) wird auf die WURZEL von
+      `ziel` angewandt; `referenz` muss dieser Host-Name sein oder mit ihm
+      plus "_" beginnen. Ein erfundenes Ziel auf einem fremden Host traegt
+      damit nicht mehr den Namen, unter dem der Wert entgegengenommen wird.
+
+      SIE SICHERT NICHT ZU: dass der PFAD stimmt. Das ist Absicht. Runde 1
+      verlangte Gleichheit ueber host+Pfad, und das war zu eng: der gepinnte
+      Katalog fuehrt fuer notion BEIDES -- `https://mcp.notion.com` als
+      `oauth_resource` (und damit als Quelle von `referenz`) und
+      `https://mcp.notion.com/mcp` als MCP-Endpunkt. Pfadgleichheit haette
+      die Verifikation an die Ressourcen-Wurzel gezwungen und einen GUTEN
+      notion-Token als schlecht gemeldet -- genau die Verwechslung
+      "Route-/Kontingentfehler sieht aus wie ein schlechter Schluessel", die
+      der Task-5-Fix beseitigt hat. Pfadgleichheit kauft daneben nichts:
+      der TLS-Gegenpart ist derselbe, und der Anbieter bindet den Token
+      ohnehin an den Host. Rowboat selbst prueft auf diesem Wert `secureUrl`,
+      keine Pfadgleichheit.
+
+      SIE SICHERT AUCH NICHT ZU, dass der Host EINDEUTIG bestimmt ist. Die
+      geteilte Regel ist verlustbehaftet: sie faltet jede Nicht-Alphanumerik
+      zu "_", also ergeben `mcp.notion.com` und `mcp-notion-com` denselben
+      Namen, und ein Host-Label wie `mcp` ist ein Praefix von
+      `MCP_LINEAR_APP_MCP`. Das ist eine Eigenschaft der GETEILTEN Regel, die
+      auch die Fassung aus Runde 1 hatte (dort deckte sich
+      `https://mcp/linear/app/mcp` mit `OAUTH_BEARER_MCP_LINEAR_APP_MCP`);
+      sie wird hier weder eingefuehrt noch geheilt. Praktisch braeuchte ein
+      Angreifer dafuer einen aufloesbaren Host mit gueltigem Zertifikat auf
+      einen solchen Namen -- oeffentlich nicht erreichbar, im feindlichen
+      Intranet ohnehin verloren. Wer das schliessen will, muss die geteilte
+      Regel selbst aendern, auf beiden Seiten.
       art="connector" -- `ziel` ist KEINE Adresse, sondern die `connector_id`
                          im Rumpf eines Aufrufs an die fest verdrahtete
                          `https://api.openai.com/v1/responses`
@@ -308,14 +341,27 @@ def _ziel_pruefen(art: str, referenz: str, ziel: str) -> str | None:
             return "ziel darf keinen Benutzer/kein Passwort enthalten (secureUrl)"
         if teile.query or teile.fragment:
             return "ziel darf keinen Query und kein Fragment enthalten (secureUrl)"
-        abgeleitet = _oauth_bearer_referenz(ziel)
-        if abgeleitet is None:
-            return ("aus ziel laesst sich kein OpenFang-Referenzname ableiten "
-                    "(deriveOAuthBearerReference) -- fail closed statt raten")
-        if abgeleitet != referenz:
-            return (f"ziel gehoert nicht zu referenz {referenz!r}: die geteilte "
-                    f"Namensregel leitet aus ziel {abgeleitet!r} ab. Ein Wert "
-                    "geht nur dorthin, wo sein Referenzname es sagt.")
+        # Verglichen wird der HOST, nicht host+Pfad (Runde 2, s. Docstring):
+        # dieselbe geteilte Regel, angewandt auf die Wurzel von `ziel`. Fuer
+        # `https://mcp.notion.com/mcp` ergibt das `OAUTH_BEARER_MCP_NOTION_COM`.
+        wurzel = f"{teile.scheme}://{teile.netloc}/"
+        host_referenz = _oauth_bearer_referenz(wurzel)
+        if host_referenz is None:
+            return ("aus dem Host von ziel laesst sich kein OpenFang-Referenzname "
+                    "ableiten (deriveOAuthBearerReference) -- fail closed statt raten")
+        # `referenz` ist entweder genau der Host-Name (notion: die
+        # `oauth_resource` IST die Wurzel) oder der Host-Name plus Pfadanteil
+        # (linear/cloudflare/github) -- letzteres genau an einer
+        # Unterstrich-GRENZE. `host_referenz` ist hier der Praefix-Kandidat,
+        # der gefaehrliche Fall also ein KUERZERER Host, dessen Name am
+        # Anfang eines Referenznamens fuer einen laengeren Host steht: ohne
+        # die Grenze ginge `OAUTH_BEARER_MCP_NOTION_COM` (Host
+        # mcp.notion.com) als Praefix von `OAUTH_BEARER_MCP_NOTION_COMEDY_MCP`
+        # (Host mcp.notion.comedy) durch.
+        if not (referenz == host_referenz or referenz.startswith(host_referenz + "_")):
+            return (f"ziel gehoert nicht zum Host von referenz {referenz!r}: der "
+                    f"Host von ziel ergibt {host_referenz!r}. Ein Wert geht nur zu "
+                    "dem Host, den sein Referenzname nennt.")
         return None
     # Jede andere `art` (insbesondere "unbekannt") faellt weiter unten an
     # ablage.entgegennehmen's eigener Pruefung durch -- hier nichts annehmen.
@@ -459,8 +505,9 @@ def schluessel_entgegennehmen(projekt: str, plugin: str, referenz: str, art: str
     `art == "bearer"` bleibt `ziel` leer (pruefung.py ignoriert sie dort).
     Seit dem C3-Fix (Schluss-Review) wird `ziel` nicht mehr nur auf "nicht
     leer" geprueft, sondern vollstaendig -- https, secureUrl-Bedingungen und
-    Rueckrechnung auf `referenz` fuer oauth, connector_id-Form fuer
-    connector. Begruendung und Regelquellen: `_ziel_pruefen`.
+    HOST-Bindung an `referenz` fuer oauth (host-, nicht pfadgenau -- Runde 2;
+    Begruendung und Grenzen stehen bei `_ziel_pruefen`), connector_id-Form
+    fuer connector.
     """
     ziel_fehler = _ziel_pruefen(art, referenz, ziel)
     if ziel_fehler is not None:

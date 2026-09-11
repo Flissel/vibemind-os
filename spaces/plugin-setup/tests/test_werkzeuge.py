@@ -241,7 +241,12 @@ def test_klartext_ziel_wird_vor_jedem_schreibzugriff_abgelehnt(monkeypatch):
     """C3: `ziel` wird in pruefung._oauth_aufruf zur Zieladresse eines
     Aufrufs, der den Wert im `Authorization: Bearer`-Kopf traegt -- ein
     `http:`-Ziel hiesse: das Geheimnis reist im Klartext. Abgelehnt, bevor
-    irgendetwas in Supabase landet."""
+    irgendetwas in Supabase landet.
+
+    Der Host ist hier der RICHTIGE (`mcp.example.com`, passend zu
+    `_OAUTH_REFERENZ`) -- die Ablehnung kommt allein vom fehlenden TLS. Ohne
+    diese Wahl wuerde der Test auch dann noch gruen bleiben, wenn nur die
+    Host-Bindung greift und die https-Pflicht verschwunden waere."""
     aufnahme = _Aufrufe(ergebnis={"ok": True, "referenz": _OAUTH_REFERENZ})
     monkeypatch.setattr(werkzeuge.ablage, "entgegennehmen", aufnahme)
     pruefen = _Aufrufe(ergebnis={"gut": True, "status": 200})
@@ -260,12 +265,13 @@ def test_klartext_ziel_wird_vor_jedem_schreibzugriff_abgelehnt(monkeypatch):
     assert openfang.aufrufe == []
 
 
-def test_oauth_ziel_das_nicht_auf_die_referenz_zurueckrechnet_wird_abgelehnt(monkeypatch):
+def test_oauth_ziel_auf_fremdem_host_wird_abgelehnt(monkeypatch):
     """C3, der eigentliche Punkt: `ziel` ist agentenverfasster Freitext
     (`plugin_bedarf` liefert es nicht). Ein https-Ziel auf einem FREMDEN
-    Host ist technisch einwandfrei und trotzdem falsch -- der Wert ginge
-    woandershin, als sein Referenzname sagt. Die geteilte Regel
-    (deriveOAuthBearerReference) entscheidet, nicht Vertrauen."""
+    Host ist technisch einwandfrei und trotzdem falsch -- der Wert ginge zu
+    einem anderen Host, als sein Referenzname nennt. Der Pfad ist dabei
+    plausibel gewaehlt: es ist der Host, der die Ablehnung ausloest, nicht
+    eine auffaellige Adresse."""
     aufnahme = _Aufrufe(ergebnis={"ok": True, "referenz": _OAUTH_REFERENZ})
     monkeypatch.setattr(werkzeuge.ablage, "entgegennehmen", aufnahme)
     pruefen = _Aufrufe(ergebnis={"gut": True, "status": 200})
@@ -277,6 +283,70 @@ def test_oauth_ziel_das_nicht_auf_die_referenz_zurueckrechnet_wird_abgelehnt(mon
 
     assert ergebnis["ok"] is False
     assert _OAUTH_REFERENZ in ergebnis["fehler"]
+    assert aufnahme.aufrufe == []
+    assert pruefen.aufrufe == []
+
+
+def test_oauth_ziel_darf_ein_pfad_unter_der_ressource_sein_notions_echter_fall(monkeypatch):
+    """RUNDE 2 des Schluss-Reviews: die Bindung ist HOST-, nicht pfadgenau.
+
+    Der gepinnte Katalog fuehrt fuer notion BEIDES -- `https://mcp.notion.com`
+    als `oauth_resource` (und damit als Quelle von `referenz`) und
+    `https://mcp.notion.com/mcp` als MCP-Endpunkt. Die Pfadgleichheit aus
+    Runde 1 haette die Verifikation an die Ressourcen-Wurzel gezwungen und
+    einen GUTEN notion-Token als schlecht gemeldet -- genau die Verwechslung
+    "Route-/Kontingentfehler sieht aus wie ein schlechter Schluessel", gegen
+    die der Task-5-Fix existiert. Beide Adressen stehen unten woertlich so,
+    wie sie im Lock stehen."""
+    referenz = "OAUTH_BEARER_MCP_NOTION_COM"          # aus https://mcp.notion.com
+    assert werkzeuge._oauth_bearer_referenz("https://mcp.notion.com") == referenz
+    monkeypatch.setattr(werkzeuge.ablage, "entgegennehmen",
+                        _Aufrufe(ergebnis={"ok": True, "referenz": referenz}))
+    pruefen = _Aufrufe(ergebnis={"gut": True, "status": 200})
+    monkeypatch.setattr(werkzeuge, "pruefe", pruefen)
+    monkeypatch.setattr(werkzeuge.ablage, "verifizieren", _Aufrufe(ergebnis={"ok": True}))
+    monkeypatch.setattr(werkzeuge, "_openfang_uebernehmen", _Aufrufe(ergebnis={"ok": True, "status": 200}))
+    monkeypatch.setattr(werkzeuge.ablage, "uebernommen", _Aufrufe(ergebnis={"ok": True}))
+
+    ergebnis = werkzeuge.schluessel_entgegennehmen(
+        "proj", "notion", referenz, "oauth", _FAKE_WERT,
+        ziel="https://mcp.notion.com/mcp")       # der MCP-Endpunkt, nicht die Wurzel
+
+    assert ergebnis == {"ok": True, "referenz": referenz}
+    assert pruefen.aufrufe, "der echte notion-Endpunkt muss bis zur Pruefung durchkommen"
+    # Und die Adresse, an die pruefung.py den Wert traegt, ist genau die
+    # uebergebene -- nicht die Wurzel.
+    assert pruefen.aufrufe[0][0][3] == "https://mcp.notion.com/mcp"
+
+
+def test_oauth_host_bindung_faellt_nicht_auf_ein_praefix_ohne_grenze_herein(monkeypatch):
+    """Die Host-Bindung vergleicht an einer Unterstrich-GRENZE, nicht als
+    rohen String-Praefix.
+
+    Richtung beachten -- `host_referenz` ist der Praefix-Kandidat, also ist
+    der gefaehrliche Fall ein KUERZERER Host, dessen Name buchstaeblich am
+    Anfang eines Referenznamens fuer einen LAENGEREN Host steht:
+    `referenz` gehoert zu `mcp.notion.comedy`, `ziel` zeigt auf
+    `mcp.notion.com`. Ohne die Grenze wuerde `OAUTH_BEARER_MCP_NOTION_COM`
+    als Praefix von `OAUTH_BEARER_MCP_NOTION_COMEDY_MCP` durchgehen -- ein
+    Wert, der fuer den einen Host entgegengenommen wurde, ginge an den
+    anderen.
+
+    (Die erste Fassung dieses Tests hatte die beiden Hosts vertauscht und
+    ueberlebte die Mutation "Grenze weggelassen" darum unbemerkt; gefunden
+    von genau dieser Mutationspruefung.)"""
+    referenz = "OAUTH_BEARER_MCP_NOTION_COMEDY_MCP"   # aus https://mcp.notion.comedy/mcp
+    assert werkzeuge._oauth_bearer_referenz("https://mcp.notion.comedy/mcp") == referenz
+    aufnahme = _Aufrufe(ergebnis={"ok": True, "referenz": referenz})
+    monkeypatch.setattr(werkzeuge.ablage, "entgegennehmen", aufnahme)
+    pruefen = _Aufrufe(ergebnis={"gut": True, "status": 200})
+    monkeypatch.setattr(werkzeuge, "pruefe", pruefen)
+
+    ergebnis = werkzeuge.schluessel_entgegennehmen(
+        "proj", "notion", referenz, "oauth", _FAKE_WERT,
+        ziel="https://mcp.notion.com/mcp")           # der KUERZERE, fremde Host
+
+    assert ergebnis["ok"] is False
     assert aufnahme.aufrufe == []
     assert pruefen.aufrufe == []
 
