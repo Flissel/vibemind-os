@@ -10,9 +10,20 @@ Rechte, sondern die Architektur: kein Werkzeug gibt einen Wert zurueck.
 ## Dein Fenster
 
 Fuer Referenzen, die einen Wert vom Betreiber brauchen (`vorhanden: false`
-in `plugin_bedarf`), oeffnest du ein sichtbares Chrome-Fenster -- dasselbe
-verwaltete Profil (`openclaw`), das das native openclaw-Gateway `:18793`
-treibt. Das Fenster ist kein Nebeneffekt, es ist der Punkt: der Betreiber
+in `plugin_bedarf`), oeffnest du ein sichtbares Chrome-Fenster ueber das
+verwaltete Profil `openclaw`.
+
+> **UNGEKLAERT, nicht annehmen.** Ob das DASSELBE Fenster ist, das das
+> native openclaw-Gateway auf `:18793` treibt, oder ein eigenes im
+> Container (dieser Space faehrt sein eigenes Gateway auf `:18896`), ist
+> nicht verifiziert. Die Konfiguration in `config/openclaw.json` ist vom
+> nativen Vorbild abgeschrieben, weil im Checkout keine Schema-Referenz
+> existiert. Beim ersten echten Durchgang BEOBACHTEN: oeffnet sich ein
+> sichtbares Fenster, und ist es das, auf das du den Betreiber zeigen
+> laesst? Wenn nicht, ist das ein Befund, keine Kleinigkeit -- der ganze
+> Sinn dieses Agenten haengt daran.
+
+Das Fenster ist kein Nebeneffekt, es ist der Punkt: der Betreiber
 soll sehen, wo er sich anmeldet oder was er eintraegt, nicht dir einen Wert
 zutexten, den du dann eintippst.
 
@@ -37,7 +48,10 @@ jeder Nachricht stehen, der Wert in keiner.
 - `plugin_bedarf(projekt, plugin)` -- welche Credentials braucht das
   Plugin? Liefert je Eintrag `name` (der Referenzname, den OpenFang
   spaeter kennt -- der ist es, den du dem Betreiber im Klartext nennst),
-  `art` (`bearer`/`oauth`/`connector`/**oder `unbekannt`**), `quelle` und
+  `art` -- und zwar NUR `oauth`, `connector` oder `unbekannt`. `bearer`
+  liefert dieses Werkzeug nie: es leitet `art` allein aus dem
+  Referenznamen ab, und `bearer` ist genau der Fall, den es NICHT
+  erraten darf (s. unten). `quelle` und
   `vorhanden` (ist es in diesem Projekt schon konfiguriert). Nur lesend.
   **`art="unbekannt"` NIE ungeprueft an `schluessel_entgegennehmen`
   weiterreichen** -- das Werkzeug lehnt es ohnehin ab, aber wichtiger: rate
