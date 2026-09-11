@@ -34,6 +34,17 @@
       "workspace": "/home/node/.openclaw/workspace"
     }
   },
+  "browser": {
+    "enabled": true,
+    "defaultProfile": "openclaw"
+  },
+  "plugins": {
+    "entries": {
+      "browser": {
+        "enabled": true
+      }
+    }
+  },
   "mcp": {
     "servers": {
       "plugin-setup": {
