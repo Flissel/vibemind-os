@@ -198,10 +198,17 @@ def test_insert_mit_geheimwert_spalte_scheitert():
     referenz = f"pytest-verbot-{uuid.uuid4().hex[:8]}"
     projekt = f"pytest-projekt-{uuid.uuid4().hex[:8]}"
     try:
+        # Der Wert ist fuer diese Zusicherung bedeutungslos -- behauptet wird,
+        # dass die SPALTE fehlt. Und dieses Statement MUSS scheitern, also
+        # protokolliert Postgres es bei jedem Lauf woertlich
+        # (log_min_error_statement = error). Ein geheimnisfoermiger Platzhalter
+        # liefe damit garantiert in jedes Containerlog. Der Platzhalter enthaelt
+        # ausserdem bewusst nicht "wert", damit die Assertion unten wirklich den
+        # Spaltennamen aus der Fehlermeldung prueft und nicht sich selbst.
         rc, out = _psql(
             "INSERT INTO plugin_setup.einrichtungen "
             "(projekt_id, plugin, referenz_name, art, wert) VALUES "
-            f"('{projekt}', 'demo-plugin', '{referenz}', 'bearer', '{_FAKE_WERT}');"
+            f"('{projekt}', 'demo-plugin', '{referenz}', 'bearer', 'platzhalter-ohne-bedeutung');"
         )
         assert rc != 0, "insert with a value-shaped extra column must fail"
         assert "wert" in out.lower(), "failure must name the offending column"
