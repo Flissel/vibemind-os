@@ -31,29 +31,49 @@
  *                                  call -> receipt carrying the approval id
  *                                  (same production seams as Parts I-IV,
  *                                  same obviously-fake-credential shape as
- *                                  Part I/II: the provider's own 401, not a
- *                                  mock)
+ *                                  Part I/II). `PluginToolRuntime.invoke`
+ *                                  collapses every non-credential provider
+ *                                  failure into `provider_failed`, so that
+ *                                  outcome alone does not prove GitHub's own
+ *                                  rejection rather than, say, a DNS
+ *                                  failure -- an INDEPENDENT direct probe of
+ *                                  the identical endpoint, with the same
+ *                                  fake credential, closes that gap (Part
+ *                                  I section 8's shape, not its citation).
  *   D. hygiene, as an assertion, not a claim: every invented value from A-C
  *      is searched for -- in the Supabase state row, in `vault.secrets`
- *      (with a Postgres-log zero-control window, because a prior finding on
- *      this task showed a value can leak into the server log via a FAILING
- *      statement), in the OpenFang daemon's own log file (if its path is
- *      given), in the Mongo receipt, and in this test's own evidence log --
- *      and asserted absent, not eyeballed.
+ *      (with a Postgres-log zero-control window bracketing BOTH ends, head
+ *      and tail, because a prior finding on this task showed a value can
+ *      leak into the server log via a FAILING statement, and a host/daemon
+ *      clock mismatch could otherwise silently shrink the window from the
+ *      start without the usual single tail-only control catching it), in
+ *      the OpenFang daemon's own log file (required whenever B/C ran --
+ *      the two credential values that ever reach a real store are only
+ *      checked there), in the Mongo receipt, and in this test's own
+ *      evidence log -- and asserted absent, not eyeballed.
  *
  * Opt-in (own variable, like Parts I-IV):
  *   ROWBOAT_LIVE_MONGO_URL=mongodb://127.0.0.1:27017/rowboat
  *   ROWBOAT_LIVE_OPENFANG_URL=http://127.0.0.1:4273
  *   OPENFANG_API_KEY=<the isolated daemon's api_key>
  *   ROWBOAT_LIVE_SETUP_AGENT=1
+ * Required in addition to the four above (not optional -- see D3 below):
+ *   PLUGIN_SETUP_OPENFANG_LOG_FILE=<path>        -- the daemon's own log
+ *                                                    file. B and C always
+ *                                                    run and always place a
+ *                                                    real value into
+ *                                                    OpenFang's custody;
+ *                                                    this file is the ONLY
+ *                                                    surface D checks those
+ *                                                    two values against, so
+ *                                                    D fails outright
+ *                                                    without it rather than
+ *                                                    reporting a green
+ *                                                    verdict it never
+ *                                                    earned.
  * Optional:
  *   ROWBOAT_E2E_EVIDENCE=<path>                 -- step log, mirrored to stdout
  *   PLUGIN_SETUP_PYTHON=<python executable>      -- default "python"
- *   PLUGIN_SETUP_OPENFANG_LOG_FILE=<path>        -- daemon's own log file;
- *                                                    D's daemon-log leak
- *                                                    check is skipped
- *                                                    (logged, not silently)
- *                                                    without it
  *   PLUGIN_SETUP_OPENFANG_HOME=<path>            -- the daemon's OPENFANG_HOME;
  *                                                    B additionally reads
  *                                                    issuable_credentials.list
@@ -116,6 +136,19 @@ const log = (message: string): void => {
 const SECRET_VALUES: string[] = [];
 function invented(label: string): string {
   const value = `obviously-fake-task8-${label}-${randomUUID()}`;
+  SECRET_VALUES.push(value);
+  return value;
+}
+
+// GitHub's edge in front of api.githubcopilot.com validates bearer-token
+// SHAPE before it validates the token itself: a value with no recognized
+// `gh*_` prefix is refused 400 ("badly formatted"), not 401 -- measured
+// directly against the live endpoint while building this test. A
+// plausible-length `ghp_`-shaped value still gets refused for being wrong
+// (401), which is the refusal this proof needs to exercise, and the
+// "OBVIOUSLYFAKETASK8" segment keeps it unmistakably invented.
+function inventedGithubToken(): string {
+  const value = `ghp_OBVIOUSLYFAKETASK8${randomUUID().replace(/-/g, "").slice(0, 18).toUpperCase()}`;
   SECRET_VALUES.push(value);
   return value;
 }
@@ -225,10 +258,17 @@ async function approve(id: string): Promise<{ readonly status: number; readonly 
   return { status: response.status, body: await response.json() };
 }
 
-async function approveWhenRaised(deadlineMs: number): Promise<OpenFangApproval | undefined> {
+// `matches` filters which pending approval this call is allowed to decide
+// -- without it, any stale or unrelated pending approval on the daemon
+// would be approved as a side effect, misattributing this proof's decision
+// to a request it never raised.
+async function approveWhenRaised(
+  deadlineMs: number,
+  matches: (candidate: OpenFangApproval) => boolean,
+): Promise<OpenFangApproval | undefined> {
   const cutoff = Date.now() + deadlineMs;
   while (Date.now() < cutoff) {
-    const pending = (await listApprovals()).find(candidate => candidate.status === "pending");
+    const pending = (await listApprovals()).find(candidate => candidate.status === "pending" && matches(candidate));
     if (pending !== undefined) {
       log(`OpenFang approval raised   id=${pending.id} tool_name=${pending.tool_name}`);
       log(`  action_summary  = ${pending.action_summary}`);
@@ -236,6 +276,26 @@ async function approveWhenRaised(deadlineMs: number): Promise<OpenFangApproval |
       log(`  approve() -> ${JSON.stringify(decision)}`);
       return pending;
     }
+    await new Promise(done => setTimeout(done, 250));
+  }
+  return undefined;
+}
+
+// Polls for C's own execution receipt instead of sleeping a fixed amount --
+// a sleep-based race is a flake waiting to happen.
+async function waitForExecutionReceipt(
+  database: ReturnType<MongoClient["db"]>,
+  forProjectId: string,
+  deadlineMs: number,
+): Promise<Record<string, unknown> | undefined> {
+  const cutoff = Date.now() + deadlineMs;
+  while (Date.now() < cutoff) {
+    const storedDocs = await database.collection("plugin_receipts").find({}).toArray();
+    const payloads = storedDocs
+      .filter(document => typeof document.payload === "string" && (document.payload as string).includes(forProjectId))
+      .map(document => JSON.parse(document.payload as string) as Record<string, unknown>)
+      .filter(payload => payload.type === "execution");
+    if (payloads.length > 0) return payloads[0];
     await new Promise(done => setTimeout(done, 250));
   }
   return undefined;
@@ -289,9 +349,10 @@ const neverStoredReferenz = `TASK8_NEVERSTORED_${randomUUID().replace(/-/g, "").
 // C's credential slot name is fixed by the pinned catalog's github MCP
 // component (GITHUB_PAT_TOKEN) -- not ours to rename.
 const GITHUB_REFERENCE = "GITHUB_PAT_TOKEN";
-const githubWert = invented("rowboat-github");
+const githubWert = inventedGithubToken();
 
 let controlMarker = "";
+let headMarker = "";
 let windowStartIso = "";
 let openfangLogStartSize = -1;
 let installedInstallationId: string | undefined;
@@ -307,6 +368,23 @@ describe.skipIf(SKIP)("plugin-setup-agent live proof (Part V)", () => {
     if (OPENFANG_LOG_FILE !== "" && existsSync(OPENFANG_LOG_FILE)) {
       openfangLogStartSize = statSync(OPENFANG_LOG_FILE).size;
     }
+
+    // D's zero-control window is bracketed at BOTH ends, not sampled at one.
+    // `docker logs --since` compares the HOST-supplied timestamp against
+    // timestamps the DAEMON itself recorded; on a machine where that daemon
+    // runs inside a VM with clock drift, a tail-only control (a marker
+    // emitted only at the end, in D) proves the window's END is captured
+    // but says nothing about whether its START silently excluded the one
+    // stretch (A's run) where a real leak could have occurred. This head
+    // marker is emitted here, immediately after windowStartIso is computed
+    // and before A/B/C run anything -- D asserts it is present in the same
+    // `docker logs --since windowStartIso` fetch the tail marker is
+    // checked against.
+    headMarker = `HEAD_MARKER_TASK8_${randomUUID().replace(/-/g, "")}`;
+    const headContainer = findSupabaseContainer();
+    const headProbe = psql(headContainer, `SELECT plugin_setup.fehlschlagen(${sqlLiteral(headMarker)}, 'x');`);
+    log(`head marker emitted (brackets the window's start): ${headMarker} [expected to fail, unknown referenz] -> exit=${headProbe.code}`);
+
     log(`setup: project=${projectId} db=${DB_NAME} pluginSetupDir=${PLUGIN_SETUP_DIR}`);
   });
 
@@ -430,7 +508,13 @@ describe.skipIf(SKIP)("plugin-setup-agent live proof (Part V)", () => {
       expect(existsSync(listPath)).toBe(true);
       const listContent = readFileSync(listPath, "utf8");
       const names = listContent.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-      log(`issuable_credentials.list: contains ${custodyReferenz}=${String(names.includes(custodyReferenz))}, ${names.length} total reference(s)`);
+      // The total grows across repeated runs of this same proof during
+      // development (no delete endpoint exists -- see afterAll) and across
+      // whatever the environment already held (e.g. PLUGIN_SETUP_PROBE_TOKEN);
+      // the only claim this assertion makes is that THIS run's own
+      // reference is present and the never-stored one is not, not that the
+      // total is any particular number.
+      log(`issuable_credentials.list: contains ${custodyReferenz}=${String(names.includes(custodyReferenz))}, ${names.length} total reference(s) (grows across repeated runs; no delete endpoint)`);
       expect(names).toContain(custodyReferenz);
       expect(names).not.toContain(neverStoredReferenz);
     }
@@ -518,7 +602,10 @@ describe.skipIf(SKIP)("plugin-setup-agent live proof (Part V)", () => {
     const executionBinding = { installationId: installation.id, pluginName: "github", componentDigest, providerBindingId: providerBindings[0]!.binding.id, capability: "write" as const };
     log(`runtime composed against ${process.env.OPENFANG_URL}; operation=${OPERATION} (no readOnlyOperations declared -> classified write)`);
 
-    const approver = approveWhenRaised(30_000);
+    // Filtered by tool_name so a stale/unrelated pending approval on this
+    // shared, long-lived daemon can never be decided as a side effect of
+    // this run's own poll.
+    const approver = approveWhenRaised(30_000, candidate => candidate.tool_name === OPERATION);
     let outcome = "success";
     const started = Date.now();
     try {
@@ -535,23 +622,37 @@ describe.skipIf(SKIP)("plugin-setup-agent live proof (Part V)", () => {
     // No real provider credential is in scope (spec D6-adjacent posture,
     // same as Parts I/II): the fake GITHUB_PAT_TOKEN resolves through the
     // real OpenFangCredentialResolver, and the real HttpMcpProvider reaches
-    // https://api.githubcopilot.com/mcp/ over real HTTPS -- and GitHub
-    // rejects it. That is `provider_failed`, not `credential_missing`: the
-    // credential resolved to A value, the HTTP exchange itself failed. See
-    // E2E-PROOF.md Part I section 5 for the code path this distinguishes.
+    // https://api.githubcopilot.com/mcp/ over real HTTPS. That is
+    // `provider_failed`, not `credential_missing`: the credential resolved
+    // to A value, the HTTP exchange itself failed (E2E-PROOF.md Part I
+    // section 5 for that specific code-path distinction). But
+    // `provider_failed` alone does not distinguish "GitHub rejected it"
+    // from "the network never reached GitHub at all" -- HttpMcpProvider
+    // collapses every non-credential failure into the same reason. An
+    // INDEPENDENT probe of the identical endpoint, with the SAME fake
+    // credential, closes that gap (Part I section 8's shape).
     expect(outcome).toBe("provider_failed");
 
-    await new Promise(done => setTimeout(done, 2_000));
-    const storedDocs = await database.collection("plugin_receipts").find({}).toArray();
-    const payloads = storedDocs
-      .filter(document => typeof document.payload === "string" && (document.payload as string).includes(projectId))
-      .map(document => JSON.parse(document.payload as string) as Record<string, unknown>)
-      .filter(payload => payload.type === "execution");
-    expect(payloads).toHaveLength(1);
-    const execution = payloads[0]!;
-    const output = execution.output as { approvalId?: string; componentDigest?: string } | undefined;
-    log(`execution receipt: status=${String(execution.status)} reason=${String(execution.reason)} approvalId=${String(output?.approvalId)}`);
-    expect(execution.status).toBe("failed");
+    const probeResponse = await fetch("https://api.githubcopilot.com/mcp/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        authorization: `Bearer ${githubWert}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0", id: 1, method: "initialize",
+        params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "vibemind-plugin-setup-agent-proof", version: "1.0" } },
+      }),
+    });
+    log(`independent probe: POST https://api.githubcopilot.com/mcp/ with the same fake ${GITHUB_REFERENCE} -> HTTP ${probeResponse.status}`);
+    expect(probeResponse.status).toBe(401);
+
+    const execution = await waitForExecutionReceipt(database, projectId, 15_000);
+    expect(execution).toBeDefined();
+    const output = execution!.output as { approvalId?: string; componentDigest?: string } | undefined;
+    log(`execution receipt: status=${String(execution!.status)} reason=${String(execution!.reason)} approvalId=${String(output?.approvalId)}`);
+    expect(execution!.status).toBe("failed");
     expect(output?.approvalId).toBe(raised!.id);
     expect(output?.componentDigest).toBe(componentDigest);
 
@@ -573,13 +674,22 @@ describe.skipIf(SKIP)("plugin-setup-agent live proof (Part V)", () => {
     controlMarker = `CONTROL_MARKER_TASK8_${randomUUID().replace(/-/g, "")}`;
     const controlSql = `SELECT plugin_setup.fehlschlagen(${sqlLiteral(controlMarker)}, 'x');`;
     const controlResult = psql(container, controlSql);
-    log(`positive control: fehlschlagen(${controlMarker}) [expected to fail, unknown referenz] -> exit=${controlResult.code}`);
+    log(`positive control (tail): fehlschlagen(${controlMarker}) [expected to fail, unknown referenz] -> exit=${controlResult.code}`);
     expect(controlResult.code).not.toBe(0);
 
+    // The window is bracketed at BOTH ends: `headMarker` (beforeAll, right
+    // after windowStartIso was computed) proves the START is really
+    // captured, `controlMarker` (just above) proves the END is. A
+    // host/daemon clock mismatch that silently shrank the window from the
+    // start -- excluding exactly the stretch where A's fail-closed run
+    // happened -- would still show a tail-only control as passing; it
+    // would NOT show the head marker.
     const logs = dockerLogsSince(container, windowStartIso);
-    const controlHits = (logs.match(new RegExp(controlMarker, "g")) ?? []).length;
-    log(`docker logs --since ${windowStartIso}: control marker hits=${controlHits} (proves the window captures activity)`);
-    expect(controlHits).toBeGreaterThan(0);
+    const headHits = (logs.match(new RegExp(headMarker, "g")) ?? []).length;
+    const tailHits = (logs.match(new RegExp(controlMarker, "g")) ?? []).length;
+    log(`docker logs --since ${windowStartIso}: head marker hits=${headHits}, tail marker hits=${tailHits} (brackets the whole window)`);
+    expect(headHits).toBeGreaterThan(0);
+    expect(tailHits).toBeGreaterThan(0);
 
     for (const secret of SECRET_VALUES) {
       expect(logs).not.toContain(secret);
@@ -604,20 +714,34 @@ describe.skipIf(SKIP)("plugin-setup-agent live proof (Part V)", () => {
     expect(counts).toHaveLength(SECRET_VALUES.length);
     for (const count of counts) expect(count).toBe(0);
 
-    // D3. the daemon's own log file, if its path was given. Zero-control:
-    // assert the file actually grew during this run before trusting an
-    // absence result from it.
-    if (OPENFANG_LOG_FILE === "" || !existsSync(OPENFANG_LOG_FILE)) {
-      log("daemon log check: skipped (PLUGIN_SETUP_OPENFANG_LOG_FILE not given or file not found) -- not claimed, not asserted");
-    } else {
-      const endSize = statSync(OPENFANG_LOG_FILE).size;
-      log(`daemon log ${OPENFANG_LOG_FILE}: size ${openfangLogStartSize} -> ${endSize}`);
-      expect(endSize).toBeGreaterThan(openfangLogStartSize);
-      const content = readFileSync(OPENFANG_LOG_FILE, "utf8");
-      for (const secret of SECRET_VALUES) expect(content).not.toContain(secret);
-      expect(content).toContain(GITHUB_REFERENCE);
-      log(`daemon log: 0 occurrences of any invented value; reference name ${GITHUB_REFERENCE} present (name only)`);
+    // D3. the daemon's own log file -- REQUIRED, not optional. B and C
+    // always run and always place a real value (custodyWert, githubWert)
+    // into OpenFang's custody; neither of those two values ever touches
+    // Postgres, so the daemon's own log is the ONLY surface where they
+    // could be checked at all. A silent skip here would let this test
+    // report "every invented value asserted absent" having never actually
+    // checked the two values that reached a real credential store --
+    // exactly the false-green this assertion exists to prevent.
+    if (OPENFANG_LOG_FILE === "") {
+      throw new Error(
+        "PLUGIN_SETUP_OPENFANG_LOG_FILE is required: without it, custodyWert and githubWert " +
+        "(the only two invented values that ever reach a real credential store) are never " +
+        "checked against any log, and this test would otherwise report a green hygiene " +
+        "verdict it never earned.",
+      );
     }
+    if (!existsSync(OPENFANG_LOG_FILE)) {
+      throw new Error(`PLUGIN_SETUP_OPENFANG_LOG_FILE=${OPENFANG_LOG_FILE} does not exist`);
+    }
+    // Zero-control: assert the file actually grew during this run before
+    // trusting an absence result from it.
+    const endSize = statSync(OPENFANG_LOG_FILE).size;
+    log(`daemon log ${OPENFANG_LOG_FILE}: size ${openfangLogStartSize} -> ${endSize}`);
+    expect(endSize).toBeGreaterThan(openfangLogStartSize);
+    const content = readFileSync(OPENFANG_LOG_FILE, "utf8");
+    for (const secret of SECRET_VALUES) expect(content).not.toContain(secret);
+    expect(content).toContain(GITHUB_REFERENCE);
+    log(`daemon log: 0 occurrences of any invented value; reference name ${GITHUB_REFERENCE} present (name only)`);
 
     // D4. the Mongo receipt from C.
     const database = client.db(DB_NAME);

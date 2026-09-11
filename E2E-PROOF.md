@@ -1155,8 +1155,18 @@ never touched.
 # Part V — the plugin-setup-agent's own chain: proven as three adjacent halves
 
 Date: 2026-09-11 (UTC). `master` at the commit adding
-`apps/rowboat/test/plugins/live-setup-agent-e2e.test.ts`. Checkout:
+`apps/rowboat/test/plugins/live-setup-agent-e2e.test.ts`, updated by a
+review-round-1 fix commit the same day. Checkout:
 `C:/Users/User/Desktop/Vibemind_V1/vibemind-os/.worktrees/setup-agent`.
+
+**Fix round 1 (2026-09-11, same day):** an independent reviewer found the
+first version of this section overclaimed what one assertion actually
+established (§V.4's old "15-21" bullet — see the correction below), found
+the docker-logs zero-control only bracketed one end of the window, and
+found D could report a fully green verdict without ever checking the two
+credential values that reach a real store. All three are fixed below, plus
+two smaller items (approval-poll misattribution, a sleep-based race). This
+section reflects the fixed test and a fresh live run, not the original one.
 
 Parts I-IV proved the release/approval/provider chain from Rowboat's side of
 a credential OpenFang already held. This part proves the piece before that:
@@ -1242,7 +1252,11 @@ This task did not start, stop, restart, or reconfigure any of the above.
 The daemon's issuable list already held one probe entry from the
 controller's own earlier verification, `PLUGIN_SETUP_PROBE_TOKEN`; this
 proof used its own uuid-suffixed reference names throughout and never
-touched that entry.
+touched that entry. (The evidence log below shows the list's total growing
+past two — that is this file's own repeated development/review runs
+accumulating references with no delete endpoint to remove them, not
+unaccounted activity; see the V.4 note at the `issuable_credentials.list`
+line.)
 
 ## V.3 One run, five assertions, all live
 
@@ -1260,48 +1274,59 @@ part uses):
    ✓ D -- hygiene: every invented value, asserted absent, with a zero-control window
 ```
 
-The evidence log, in full (values are never in it — see V.5):
+The evidence log, in full, from the fix-round-1 re-run (values are never in
+it — see V.5):
 
 ```text
-  01  setup: project=dbb63ea7-... db=rowboat pluginSetupDir=.../spaces/plugin-setup
-  02  schluessel_entgegennehmen(TASK8_FAILCLOSED_..., art=bearer, <invented>) -> ok=false status=401
-  03  Supabase row: status=fehlgeschlagen hinweis=401 vault_secret_present=t
-  04  OpenFang issue(TASK8_FAILCLOSED_...) after the fail-closed run -> HTTP 404
-  05  OpenFang store(TASK8_CUSTODY_...) -> HTTP 200
-  06  OpenFang issue(TASK8_CUSTODY_...) -> HTTP 200 value_matches_stored=true
-  07  OpenFang issue(TASK8_NEVERSTORED_...) [never stored] -> HTTP 404
-  08  issuable_credentials.list: contains TASK8_CUSTODY_...=true, 5 total reference(s)
-  09  project dbb63ea7-... inserted into its own database rowboat
-  10  github: 8 components, 1 admitted, selecting github edaa0cfffb94...
-  11    credentialSlots = ["GITHUB_PAT_TOKEN"]
-  12  install with [edaa0cfffb94...] -> receipt a8045744-... status=success
-  13  tool bound: plugin_github_github added=true
-  14  OpenFang store(GITHUB_PAT_TOKEN) [for the runtime's own credential resolver] -> HTTP 200
-  15  runtime composed against http://127.0.0.1:4273; operation=get_me (write)
-  16  OpenFang approval raised   id=a32d8bd2-... tool_name=get_me
-  17    action_summary  = component edaa0cff...fa350 arguments 56551660...0706980
-  18    approve() -> {"status":200,"body":{"status":"approved", ...}}
-  19  invocation outcome: provider_failed after 1751ms; approval raised: a32d8bd2-...
-  20  execution receipt: status=failed reason=provider_unavailable approvalId=a32d8bd2-...
-  21  decision for a32d8bd2-...: status=approved decided_at=2026-09-11T10:14:43.421707400Z
-  22  positive control: fehlschlagen(CONTROL_MARKER_TASK8_...) [expected to fail] -> exit=3
-  23  docker logs --since 2026-09-11T10:14:35.923Z: control marker hits=2 (window captures activity)
-  24  docker logs --since 2026-09-11T10:14:35.923Z: 0 occurrences of any of the 3 invented values
-  25  vault.secrets scan across 3 invented values: counts=[0,0,0]
-  26  daemon log ...live-daemon.log: size 29538 -> 35152
-  27  daemon log: 0 occurrences of any invented value; reference name GITHUB_PAT_TOKEN present (name only)
-  28  plugin_receipts (2 document(s)): 0 occurrences of any invented value
-  29  evidence log: 0 occurrences of any invented value (self-check)
-  30  cleanup: Mongo rows for project dbb63ea7-... removed -- projects=1 installations=1
+  01  head marker emitted (brackets the window's start): HEAD_MARKER_TASK8_a01a0f2e... [expected to fail, unknown referenz] -> exit=3
+  02  setup: project=e4733bfa-... db=rowboat pluginSetupDir=.../spaces/plugin-setup
+  03  schluessel_entgegennehmen(TASK8_FAILCLOSED_..., art=bearer, <invented>) -> ok=false status=401
+  04  Supabase row: status=fehlgeschlagen hinweis=401 vault_secret_present=t
+  05  OpenFang issue(TASK8_FAILCLOSED_...) after the fail-closed run -> HTTP 404
+  06  OpenFang store(TASK8_CUSTODY_...) -> HTTP 200
+  07  OpenFang issue(TASK8_CUSTODY_...) -> HTTP 200 value_matches_stored=true
+  08  OpenFang issue(TASK8_NEVERSTORED_...) [never stored] -> HTTP 404
+  09  issuable_credentials.list: contains TASK8_CUSTODY_...=true, 10 total reference(s)
+      (grows across repeated runs; no delete endpoint)
+  10  project e4733bfa-... inserted into its own database rowboat
+  11  github: 8 components, 1 admitted, selecting github edaa0cfffb94...
+  12    credentialSlots = ["GITHUB_PAT_TOKEN"]
+  13  install with [edaa0cfffb94...] -> receipt b166bc89-... status=success
+  14  tool bound: plugin_github_github added=true
+  15  OpenFang store(GITHUB_PAT_TOKEN) [for the runtime's own credential resolver] -> HTTP 200
+  16  runtime composed against http://127.0.0.1:4273; operation=get_me (write)
+  17  OpenFang approval raised   id=c6d2fd13-... tool_name=get_me
+  18    action_summary  = component edaa0cff...fa350 arguments 56551660...0706980
+  19    approve() -> {"status":200,"body":{"status":"approved", ...}}
+  20  invocation outcome: provider_failed after 1796ms; approval raised: c6d2fd13-...
+  21  independent probe: POST https://api.githubcopilot.com/mcp/ with the same fake
+      GITHUB_PAT_TOKEN -> HTTP 401
+  22  execution receipt: status=failed reason=provider_unavailable approvalId=c6d2fd13-...
+  23  decision for c6d2fd13-...: status=approved decided_at=2026-09-11T10:34:07.813349300Z
+  24  positive control (tail): fehlschlagen(CONTROL_MARKER_TASK8_...) [expected to fail] -> exit=3
+  25  docker logs --since 2026-09-11T10:34:02.253Z: head marker hits=2, tail marker hits=2
+      (brackets the whole window)
+  26  docker logs --since 2026-09-11T10:34:02.253Z: 0 occurrences of any of the 3 invented values
+  27  vault.secrets scan across 3 invented values: counts=[0,0,0]
+  28  daemon log ...live-daemon.log: size 56607 -> 61928
+  29  daemon log: 0 occurrences of any invented value; reference name GITHUB_PAT_TOKEN present (name only)
+  30  plugin_receipts (6 document(s)): 0 occurrences of any invented value
+  31  evidence log: 0 occurrences of any invented value (self-check)
+  32  cleanup: Mongo rows for project e4733bfa-... removed -- projects=1 installations=1
       admissions=1 credentialSlots=0 executionClaims=1 receipts=1
-  31  cleanup: Supabase row+vault-secret for TASK8_FAILCLOSED_... -> exit=0
-  32  cleanup: OpenFang has no credential-delete endpoint -- stored references remain
+  33  cleanup: Supabase row+vault-secret for TASK8_FAILCLOSED_... -> exit=0
+  34  cleanup: OpenFang has no credential-delete endpoint -- stored references remain
       until the controller tears the isolated daemon down
 ```
 
 ## V.4 What each line proves
 
-- **02-03** — `schluessel_entgegennehmen` (the real MCP tool, called
+- **01** — the head marker (fix round 1): emitted in `beforeAll`,
+  immediately after `windowStartIso` is computed and before A/B/C run
+  anything. Its only job is to be found later, in D, inside the exact same
+  `docker logs --since windowStartIso` fetch the tail marker is checked
+  against — see 25 below for why one marker alone was not enough.
+- **03-04** — `schluessel_entgegennehmen` (the real MCP tool, called
   directly, not reimplemented) ran the real order: Supabase insert first
   (`ablage.entgegennehmen`, status `entgegengenommen`), then the real
   network call to `https://api.github.com/user` with an obviously-fake
@@ -1310,52 +1335,91 @@ The evidence log, in full (values are never in it — see V.5):
   (`hinweis=401`) — never the value, never the response body.
   `vault_secret_present=t` confirms the Supabase copy is deliberately still
   there, for diagnosis, exactly as the fail-closed path intends.
-- **04** — OpenFang's own `/api/credentials/issue` answers `404` for that
+- **05** — OpenFang's own `/api/credentials/issue` answers `404` for that
   exact reference name: it never received it. This is checked directly
   against the daemon, not inferred from the Python tool's return value.
-- **05-08** — bypassing the agent's gate on purpose, calling
+- **06-09** — bypassing the agent's gate on purpose, calling
   `/api/credentials/store` directly: `200`, immediately followed (same
   process, no restart) by `/api/credentials/issue` returning the identical
-  value, and a never-stored name refused with `404`. Line 08 confirms the
+  value, and a never-stored name refused with `404`. Line 09 confirms the
   name landed in the daemon's own `issuable_credentials.list` file by
-  reading it directly — the exact artifact the task brief names.
-- **09-13** — component-scoped install (github: 8 components, 1 admitted)
+  reading it directly — the exact artifact the task brief names. The "10
+  total reference(s)" is not a claim about how many *should* be there — see
+  the V.2 note; the only thing asserted is that this run's own name is
+  present and the never-stored one is not.
+- **10-14** — component-scoped install (github: 8 components, 1 admitted)
   through the real `InstallPluginUseCase`, and tool binding through the
   real `AddPluginToolUseCase` — identical mechanics to Parts I-IV.
-- **14** — the github component's fixed credential slot name
+- **15** — the github component's fixed credential slot name
   (`GITHUB_PAT_TOKEN`, not something this task can rename) is placed into
   OpenFang's custody through the **same** `/store` endpoint B just proved,
-  not injected any other way.
-- **15-21** — the real release/approval/provider chain: a write-classified
-  call raises a real approval, a decision releases it, the real
-  `OpenFangCredentialResolver` issues the fake `GITHUB_PAT_TOKEN`, the real
-  `HttpMcpProvider` carries it over real HTTPS to
-  `https://api.githubcopilot.com/mcp/`, and GitHub's own rejection produces
+  not injected any other way. The value itself is now `ghp_`-shaped
+  (`ghp_OBVIOUSLYFAKETASK8...`) rather than a free-form string — see 21
+  below for why that shape matters.
+- **16-20, 22-23** — the real release/approval/provider chain: a
+  write-classified call raises a real approval, a decision releases it, the
+  real `OpenFangCredentialResolver` issues the fake `GITHUB_PAT_TOKEN`, the
+  real `HttpMcpProvider` carries it over real HTTPS to
+  `https://api.githubcopilot.com/mcp/`, and the exchange ends in
   `provider_failed` (not `credential_missing` — the credential resolved to
   a value; the HTTP exchange itself failed; see Part I §5 for the exact
   code path this distinguishes). The receipt (`plugin_receipts`) carries
-  the same approval id OpenFang shows as `approved`.
-- **22-25** — the zero-control window: a deliberately failing SQL statement
-  (an unknown reference passed to `plugin_setup.fehlschlagen`) puts a known,
-  harmless marker into the Postgres log; `docker logs --since <RFC3339>`
-  finds it (`hits=2` — psql echoes the failing statement's own class name
-  once in addition to the server's `ERROR:` line), which is what proves the
-  window/filter genuinely captures activity rather than trivially passing
-  on an empty or misdirected log. Against that same proven-working window,
-  all three invented values from A/B (the fail-closed bearer, the direct
-  custody value) occur **zero** times. `vault.secrets` is scanned directly
-  (not assumed safe merely because it is encrypted) and also comes back
-  zero for all three.
-- **26-27** — the daemon's own log file grew by 5,614 bytes during this
-  run (a zero-control check in its own right: an unchanged file would mean
+  the same approval id OpenFang shows as `approved`. The pending approval
+  this run decides is filtered by `tool_name` before it is approved (fix
+  round 1), so a stale or unrelated pending approval already sitting on
+  this shared, long-lived daemon can never be misattributed as this run's
+  own decision.
+- **21 — the correction this fix round makes.** `provider_failed` by
+  itself does not prove GitHub's own rejection: `HttpMcpProvider` collapses
+  every non-credential failure — a real 401, a DNS failure, a dropped
+  connection — into the identical outcome, and the first version of this
+  section claimed "GitHub's own rejection produces `provider_failed`" on
+  that assertion alone, which the assertion does not establish. This line
+  is the fix: an INDEPENDENT `fetch` to the identical endpoint
+  (`https://api.githubcopilot.com/mcp/`), with the exact same fake
+  `GITHUB_PAT_TOKEN` value the invocation just used, asserting a real HTTP
+  status code. It returned `401` — the same shape Part I §8 used to close
+  this exact gap for its own proof (a direct probe, not the runtime's own
+  collapsed error code). One measured wrinkle while building this: this
+  endpoint validates bearer-token *shape* before validity — a value with no
+  recognized `gh*_` prefix draws `400` ("Authorization header is badly
+  formatted"), not `401`; only a plausible-length `ghp_`-shaped value
+  reaches the "wrong token" check this proof needs. `githubWert` was
+  changed to that shape for exactly this reason (still unmistakably
+  invented — see 15 above).
+- **24-26** — the zero-control window, bracketed at BOTH ends (fix round
+  1). A single tail-only control (a marker emitted only at the end, in D)
+  proves the window's *end* is captured but says nothing about its
+  *start*: `docker logs --since` compares a HOST-supplied timestamp against
+  timestamps the DAEMON itself recorded, and this daemon runs inside a VM
+  with documented clock drift — a window that silently started later than
+  intended would exclude exactly the stretch (A's run) where a real leak
+  could occur, while a tail-only control would still pass. Here both the
+  head marker (line 01, from `beforeAll`) and the tail marker (line 24,
+  freshly triggered in D) are searched for in the same
+  `docker logs --since <RFC3339>` fetch and both are found (`hits=2` each —
+  psql echoes the failing statement's own class name once in addition to
+  the server's `ERROR:` line). Only against that doubly-proven-working
+  window are all three invented values from A/B searched for and found
+  **zero** times. `vault.secrets` is scanned directly (not assumed safe
+  merely because it is encrypted) and also comes back zero for all three.
+- **28-29 — no longer conditional (fix round 1).** The daemon's own log
+  file check used to be skipped, silently reporting green, when its path
+  was not given — but `custodyWert` and `githubWert` never touch Postgres,
+  so this file is the *only* surface either of them is ever checked
+  against; a run without it would claim "every invented value asserted
+  absent" having genuinely checked neither. The test now throws if the
+  path is missing rather than skip. It grew by 5,321 bytes during this run
+  (a zero-control check in its own right: an unchanged file would mean
   nothing was captured), and contains zero occurrences of any invented
   value while still naming `GITHUB_PAT_TOKEN` by reference.
-- **28** — the two receipts this run produced (github's install, github's
-  `get_me` execution) carry zero occurrences of any invented value.
-- **29** — the evidence log itself — this file's own `log()` output — is
+- **30** — the `plugin_receipts` collection (system-wide, not filtered to
+  this run's own project — a broader check than strictly required) carries
+  zero occurrences of any invented value.
+- **31** — the evidence log itself — this file's own `log()` output — is
   scanned last, as a self-check that the harness's own logging discipline
   held.
-- **30-32** — cleanup. Mongo: `MongodbProjectsRepository` binds to a
+- **32-34** — cleanup. Mongo: `MongodbProjectsRepository` binds to a
   module-level singleton (`app/lib/mongodb.ts`: `mongoClient.db("rowboat")`,
   hardcoded, not parameterized) — unlike `MongodbPluginsRepository`, it
   cannot be pointed at a dedicated database, so this run used the same
@@ -1389,10 +1453,15 @@ and `GITHUB_PAT_TOKEN`'s fake value) was searched for, by the test itself
 
 - the Supabase state row (`hinweis` carries only the status code, `401`)
 - `vault.secrets` (`secret`/`name`/`description` columns, scanned directly)
-- `docker logs` on the Supabase container, across a window whose filter was
-  proven working by a deliberate positive control
-- the OpenFang daemon's own log file (whose growth during the run was
-  itself asserted, so the absence check is not vacuous)
+- `docker logs` on the Supabase container, across a window bracketed at
+  both ends by a deliberate positive-control marker (fix round 1 — see
+  V.4's "24-26")
+- the OpenFang daemon's own log file — the ONLY surface where the two
+  values that ever reach a real credential store (`custodyWert`,
+  `githubWert`) are checked at all, so this check is now required rather
+  than skipped when its path is absent (fix round 1 — see V.4's "28-29");
+  its growth during the run is itself asserted, so the absence check is
+  not vacuous
 - the `plugin_receipts` Mongo collection
 - this test's own evidence log
 
@@ -1407,6 +1476,13 @@ never prints or logs that response body's value field (it only compares it
 for equality and logs the boolean result).
 
 ## V.6 Verification commands and their results
+
+Re-run after the fix-round-1 changes above (the token-shape finding in
+V.4's "21" required one more fix mid-round: the direct probe's first
+attempt used a free-form fake value and drew GitHub's edge `400`
+"badly formatted" rather than the `401` "wrong token" this proof needs --
+`githubWert` was changed to a `ghp_`-shaped value, measured live before
+being wired in).
 
 ```text
 $ cd spaces/plugin-setup && python -m pytest -q
@@ -1431,9 +1507,17 @@ without the opt-in variable) and **0 change** to the 792 previously-passing
 tests — this task added no failures and no newly-passing tests to the
 default run.
 
+The skip guard was checked explicitly, both directions, not just inferred
+from the aggregate counts above:
+
 ```text
+$ npx vitest run test/plugins/live-setup-agent-e2e.test.ts    # no opt-in vars set
+  Test Files  1 skipped (1)
+       Tests  5 skipped (5)
+
 $ ROWBOAT_LIVE_MONGO_URL=... ROWBOAT_LIVE_OPENFANG_URL=... OPENFANG_API_KEY=... \
-  ROWBOAT_LIVE_SETUP_AGENT=1 npx vitest run test/plugins/live-setup-agent-e2e.test.ts
+  ROWBOAT_LIVE_SETUP_AGENT=1 PLUGIN_SETUP_OPENFANG_LOG_FILE=... PLUGIN_SETUP_OPENFANG_HOME=... \
+  npx vitest run test/plugins/live-setup-agent-e2e.test.ts
   Test Files  1 passed (1)
        Tests  5 passed (5)
 ```
