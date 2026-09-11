@@ -292,11 +292,22 @@ def _ziel_pruefen(art: str, referenz: str, ziel: str) -> str | None:
       `MCP_LINEAR_APP_MCP`. Das ist eine Eigenschaft der GETEILTEN Regel, die
       auch die Fassung aus Runde 1 hatte (dort deckte sich
       `https://mcp/linear/app/mcp` mit `OAUTH_BEARER_MCP_LINEAR_APP_MCP`);
-      sie wird hier weder eingefuehrt noch geheilt. Praktisch braeuchte ein
-      Angreifer dafuer einen aufloesbaren Host mit gueltigem Zertifikat auf
-      einen solchen Namen -- oeffentlich nicht erreichbar, im feindlichen
-      Intranet ohnehin verloren. Wer das schliessen will, muss die geteilte
-      Regel selbst aendern, auf beiden Seiten.
+      sie wird hier weder eingefuehrt noch geheilt.
+      WIE ERREICHBAR DAS IST, gemessen statt geschaetzt: `-` und `.` falten
+      auf dasselbe `_`, also erfuellt eine ganz gewoehnliche registrierbare
+      Domain die Bindung. Gegen den laufenden Code geprueft -- alle drei
+      werden ZUGELASSEN:
+          OAUTH_BEARER_MCP_NOTION_COM         <- https://mcp-notion.com/
+          OAUTH_BEARER_MCP_LINEAR_APP_MCP     <- https://mcp-linear.app/mcp
+          OAUTH_BEARER_MCP_CLOUDFLARE_COM_MCP <- https://mcp-cloudflare.com/x
+      Das sind registrierbare Domains mit erhaeltlichem Zertifikat, keine
+      Laborkonstrukte. Eine fruehere Fassung dieses Absatzes nannte die
+      Klasse "oeffentlich nicht erreichbar"; das war falsch und stand genau
+      an der Stelle, an der jemand entscheidet, ob die geteilte Regel
+      verschaerft gehoert. Ihr Beispiel `mcp-notion-com` war ein einzelnes
+      Label -- ein Bindestrich zum Punkt verschoben, und es ist eine Domain.
+      Wer das schliessen will, muss `deriveOAuthBearerReference` selbst
+      aendern, auf beiden Seiten; diese Funktion kann es nicht.
       art="connector" -- `ziel` ist KEINE Adresse, sondern die `connector_id`
                          im Rumpf eines Aufrufs an die fest verdrahtete
                          `https://api.openai.com/v1/responses`
@@ -605,8 +616,8 @@ def schluessel_entgegennehmen(projekt: str, plugin: str, referenz: str, art: str
         "fehler": (
             "ZWEI VERWAHRSTELLEN: OpenFang hat den Wert bereits uebernommen, aber "
             f"der Supabase-Uebergang uebernommen() ist nach {_UEBERNOMMEN_VERSUCHE} "
-            "Versuchen gescheitert -- die verschluesselte Supabase-Kopie steht also "
-            "NOCH, und derselbe Wert liegt in zwei Tresoren (D2 verbietet genau das: "
+            "Versuchen gescheitert -- die verschluesselte Supabase-Kopie steht damit "
+            "MOEGLICHERWEISE noch (ein Commit mit anschliessendem Abbruch sieht von hier aus gleich aus), und dann liegt derselbe Wert in zwei Tresoren (D2 verbietet genau das: "
             "zwei Widerrufsflaechen). Abhilfe, genau eine: `ablage.uebernommen("
             f"{referenz!r})` erneut ausfuehren, sobald Supabase wieder erreichbar ist "
             "-- das loescht die Kopie. `schluessel_entgegennehmen` NICHT wiederholen: "
