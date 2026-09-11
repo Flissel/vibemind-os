@@ -476,13 +476,11 @@ def test_mehrzeilige_werte_bleiben_erlaubt(zeichen, name):
         # er liegt byteidentisch im Vault, nur der Rueckweg luegt.
         # Schuld ist NICHT psql: dessen Rohausgabe behaelt das CR-Byte
         # (nachgestellt). Es ist Pythons `subprocess.run(..., text=True)`,
-        # das beim Dekodieren universal newlines anwendet und `
-` zu
-        # `
-` macht. Eine fruehere Fassung dieses Kommentars schob es auf
+        # das beim Dekodieren universal newlines anwendet und CRLF zu LF
+        # macht. Eine fruehere Fassung dieses Kommentars schob es auf
         # `psql -tA`; richtige Folgerung, falscher Mechanismus -- und genau
         # so ein Satz wird spaeter als Grundlage zitiert.
-        # md5 im Server umgeht die Textschicht ganz; das Servercodierung ist
+        # md5 im Server umgeht die Textschicht ganz; die Servercodierung ist
         # UTF8, also rechnen beide Seiten ueber dieselben Bytes.
         in_der_db = _psql_als_postgres_ok(
             "SELECT md5(decrypted_secret) FROM vault.decrypted_secrets WHERE id = "
