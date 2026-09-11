@@ -1229,16 +1229,48 @@ independently-live pieces, plus a hygiene pass that spans all three:
   collection, and in this test's own evidence log — and asserted absent in
   every one, with a test that fails if any value shows up.
 
-**What this does NOT prove, stated plainly**: that a value this proof
-controls can pass real verification and then be taken into OpenFang's
-custody, in one continuous run. That specific link — verification success
-immediately followed by this same value's custody handoff — is proven only
-as two separate mechanisms (A's gate refuses correctly; B's handoff
-mechanism works correctly when reached), not as one join. Closing that gap
-for real needs a real, accepted provider credential — the same posture
-Parts I/II left open and Part III later closed for the release/approval/
-provider chain. No decision was made here to obtain one; that stays a later,
-explicit choice, same as Part III's.
+**What this does NOT prove, stated plainly** — four things, not one. The
+first was named from the start; the other three were missing from this list
+until the whole-branch final review found them, and they matter more,
+because this section's own title claims "the plugin-setup-agent's own
+chain" while three of that agent's four tools and its entire delivery
+surface sit outside the proof.
+
+1. **The verification→custody join.** That a value this proof controls can
+   pass real verification and then be taken into OpenFang's custody, in one
+   continuous run. That specific link — verification success immediately
+   followed by this same value's custody handoff — is proven only as two
+   separate mechanisms (A's gate refuses correctly; B's handoff mechanism
+   works correctly when reached), not as one join. Closing that gap for real
+   needs a real, accepted provider credential — the same posture Parts I/II
+   left open and Part III later closed for the release/approval/provider
+   chain. No decision was made here to obtain one; that stays a later,
+   explicit choice, same as Part III's.
+2. **D5's window is entirely unproven.** No test in this proof drives a
+   browser, and the agent itself never ran. The visible Chrome window the
+   operator is supposed to type into — the decision D5 exists for, and the
+   reason this space carries its own openclaw gateway — has no evidence
+   anywhere in Part V. `config/workspace/AGENTS.md` says so of itself
+   ("UNGEKLAERT, nicht annehmen"); this list says it too, because a proof
+   that stays silent about it reads as if it had been covered.
+3. **No tool was called through MCP or openclaw at all.** A shells
+   `python -c "import werkzeuge; ..."` straight into the module. That proves
+   the Python function; it proves nothing about `server.py`, the
+   streamable-HTTP transport on `:8131`, the tool registration, the
+   container reaching the host sidecar through `host.docker.internal`, or
+   the agent being able to call any of it. The delivery surface is untested.
+4. **C bypasses the new REST route and two of the four tools.** It calls
+   `InstallPluginUseCase` and `AddPluginToolUseCase` directly, with a
+   hand-picked componentDigest — not
+   `POST /api/v1/projects/:id/plugins`, and not
+   `werkzeuge.plugin_installieren` / `werkzeuge.plugin_werkzeug_binden`.
+   That is exactly why this proof did not catch the fact that
+   `plugin_installieren` defaulted to *every* component and was therefore
+   rejected with `component_not_admitted` for three of the four plugins that
+   carry an admitted HTTP-MCP component (fixed in the final-fix round; its
+   report lives in this checkout's plan workspace, which is gitignored, so
+   that round's commit message carries the same accounting): the one path
+   the agent is documented to walk was never walked here.
 
 ## V.2 The environment (prepared before this task, used as-is)
 

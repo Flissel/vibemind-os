@@ -2,13 +2,30 @@
 (`db/0001_plugin_setup.sql`, `db/0002_state_machine.sql`) als Python-
 Schnittstelle fuer den plugin-setup-Agenten.
 
-ROLLE (Review-Vorgabe #3, gemessen 11.09.2026 gegen die laufende
-vibemind_supabase-db): postgres/service_role/supabase_admin umgehen RLS
-strukturell (rolbypassrls=t bzw. Tabellenbesitz) und koennten den in
+ROLLE (Review-Vorgabe #3). KORREKTUR (Schluss-Review, nachgemessen
+11.09.2026 gegen die laufende vibemind_supabase-db): eine fruehere Fassung
+dieses Absatzes behauptete als "gemessen", `service_role` koenne den in
 0002_state_machine.sql erzwungenen Automaten per rohem
-`UPDATE plugin_setup.einrichtungen SET status = ...` umgehen -- genau der
-Review-Befund, den dieser Task loest. Diese Datei verbindet sich darum NIE
-als eine der drei; sie nutzt ausschliesslich die eigens angelegte Rolle
+`UPDATE plugin_setup.einrichtungen SET status = ...` umgehen. Das ist
+FALSCH. Tatsaechlich gemessen (has_table_privilege auf
+plugin_setup.einrichtungen):
+
+    service_role   : update=f  canlogin=f  super=f  bypassrls=t
+    supabase_admin : update=t  canlogin=t  super=t
+    postgres       : update=t  (Eigentuemer der Tabelle)  bypassrls=t
+
+`rolbypassrls=t` hebt nur die RLS auf, nicht das fehlende Tabellenrecht --
+`service_role` hat auf dieser Tabelle ueberhaupt kein UPDATE (und ist mit
+rolcanlogin=f nicht einmal direkt verbindbar). Einen rohen UPDATE koennen
+also NUR der Tabelleneigentuemer (`postgres`) und der Superuser
+(`supabase_admin`) -- DBA-Zugriff, eine andere und deutlich engere
+Risikoklasse als behauptet. Der Grund, sich hier trotzdem nicht als eine
+dieser Rollen zu verbinden, bleibt bestehen (geringste Rechte, und der
+Automat soll nicht davon abhaengen, dass niemand DBA-Zugriff missbraucht);
+nur die Behauptung ueber `service_role` war eine falsche Messaussage.
+
+Diese Datei verbindet sich darum NIE als eine der drei; sie nutzt
+ausschliesslich die eigens angelegte Rolle
 `plugin_setup_agent` (db/0003_least_privilege_role.sql): NOBYPASSRLS, nur
 INSERT auf `einrichtungen` (keine SELECT/UPDATE/DELETE) plus EXECUTE auf
 `verifizieren`/`fehlschlagen`/`uebernommen` und `vault.create_secret`. Ein

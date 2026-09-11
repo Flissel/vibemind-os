@@ -65,8 +65,17 @@ CREATE INDEX IF NOT EXISTS idx_einrichtungen_status ON plugin_setup.einrichtunge
 -- bekommen KEINE Grants auf Schema, Tabellen, Sequenzen oder Funktionen.
 -- RLS wird trotzdem enabled+forced als Verteidigung in der Tiefe — ohne
 -- eine einzige permissive Policy sieht selbst eine Rolle MIT Grant null
--- Zeilen. Nur bypassrls-Rollen (postgres, service_role, supabase_admin)
--- erreichen diese Tabelle überhaupt.
+-- Zeilen.
+--
+-- KORREKTUR (Schluss-Review, nachgemessen 11.09.2026): eine fruehere Fassung
+-- dieser Zeile sagte, "nur bypassrls-Rollen (postgres, service_role,
+-- supabase_admin) erreichen diese Tabelle ueberhaupt". `rolbypassrls` allein
+-- reicht dafuer nicht -- es hebt die RLS auf, ersetzt aber kein Tabellenrecht.
+-- Gemessen erreichen diese Tabelle: `postgres` (Eigentuemer) und
+-- `supabase_admin` (Superuser); `service_role` hat trotz rolbypassrls=t weder
+-- SELECT noch UPDATE darauf (und rolcanlogin=f). Dazu kommt seit 0003 die
+-- Rolle `plugin_setup_agent` -- ausschliesslich INSERT, ueber genau eine
+-- INSERT-Policy.
 -- ============================================================================
 
 REVOKE ALL ON SCHEMA plugin_setup FROM anon, authenticated, PUBLIC;

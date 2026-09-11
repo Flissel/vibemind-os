@@ -3,13 +3,24 @@
 -- Vorgabe #3) — der Agent verbindet sich NICHT als postgres/service_role/
 -- supabase_admin.
 -- ============================================================================
--- Messung an der laufenden Instanz (11.09.2026, vibemind_supabase-db):
---   - postgres  : rolsuper=f, rolbypassrls=t, rolcreaterole=t, rolcreatedb=t
---   - service_role / supabase_admin: rolbypassrls=t (service_role zusaetzlich
---     rolcanlogin=f -- ueberhaupt nicht direkt verbindbar)
---   -> alle drei umgehen RLS strukturell (bypassrls-Attribut bzw. Owner) und
---      koennten die in 0002_state_machine.sql erzwungene Zustandsmaschine
---      per rohem UPDATE umgehen (der Review-Befund, den dieser Task loest).
+-- Messung an der laufenden Instanz (11.09.2026, vibemind_supabase-db),
+-- KORRIGIERT im Schluss-Review (nachgemessen am selben Tag):
+--   - postgres  : rolsuper=f, rolbypassrls=t, rolcreaterole=t, rolcreatedb=t,
+--                 UND Eigentuemer von plugin_setup.einrichtungen
+--   - supabase_admin: rolsuper=t, rolcanlogin=t, rolbypassrls=t
+--   - service_role  : rolbypassrls=t, ABER rolcanlogin=f und
+--                     has_table_privilege(...,'UPDATE') = FALSE
+--   -> Eine fruehere Fassung dieses Kommentars behauptete als "gemessen",
+--      alle drei koennten die in 0002_state_machine.sql erzwungene
+--      Zustandsmaschine per rohem UPDATE umgehen. Das stimmt fuer
+--      `service_role` NICHT: `rolbypassrls` hebt die RLS auf, nicht das
+--      fehlende Tabellenrecht -- ohne GRANT UPDATE gibt es nichts zu
+--      umgehen, und mit rolcanlogin=f ist die Rolle ohnehin nur ueber
+--      SET ROLE erreichbar. Rohes UPDATE koennen NUR der Tabellen-
+--      eigentuemer (postgres) und der Superuser (supabase_admin) --
+--      DBA-Zugriff, eine engere Risikoklasse als behauptet. Der Grund fuer
+--      diese Migration bleibt: geringste Rechte fuer den Agenten, damit der
+--      Automat nicht davon abhaengt, dass niemand DBA-Zugriff missbraucht.
 --   - vault.create_secret ist SECURITY DEFINER (Owner supabase_admin); vorher
 --     nur an postgres/service_role gegrantet (information_schema.
 --     role_routine_grants). Eine neue, engere Rolle braucht ein explizites

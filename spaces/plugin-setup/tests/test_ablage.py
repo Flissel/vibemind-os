@@ -348,10 +348,16 @@ def test_wert_mit_alleinstehender_copy_endezeile_speichert_und_leckt_nicht():
 
 
 def test_rohes_update_scheitert_als_agent_rolle():
-    """Die eigentliche Zusicherung von Review-Vorgabe #3: anders als
-    postgres/service_role/supabase_admin (die RLS strukturell umgehen)
-    kann plugin_setup_agent den Zustandsautomaten NICHT per rohem UPDATE
-    umgehen -- weder mit noch ohne WHERE-Klausel."""
+    """Die eigentliche Zusicherung von Review-Vorgabe #3: plugin_setup_agent
+    kann den Zustandsautomaten NICHT per rohem UPDATE umgehen -- weder mit
+    noch ohne WHERE-Klausel.
+
+    KORREKTUR (Schluss-Review, nachgemessen 11.09.2026): hier stand vorher
+    "anders als postgres/service_role/supabase_admin (die RLS strukturell
+    umgehen)". Fuer `service_role` stimmt das nicht -- rolbypassrls=t hebt
+    nur die RLS auf, und auf dieser Tabelle hat die Rolle gar kein UPDATE
+    (has_table_privilege=f, dazu rolcanlogin=f). Rohes UPDATE koennen nur
+    der Tabelleneigentuemer `postgres` und der Superuser `supabase_admin`."""
     referenz = f"PYTEST_ABLAGE_ROHUPDATE_{uuid.uuid4().hex[:8].upper()}"
     projekt = f"pytest-projekt-{uuid.uuid4().hex[:8]}"
     try:
