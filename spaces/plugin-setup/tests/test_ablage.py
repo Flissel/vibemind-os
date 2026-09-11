@@ -471,9 +471,19 @@ def test_mehrzeilige_werte_bleiben_erlaubt(zeichen, name):
         )
         assert ergebnis["ok"] is True, f"{name} muss erlaubt bleiben"
         # Serverseitig per md5 vergleichen, NICHT ueber die Textausgabe:
-        # `psql -tA` normalisiert ein CR beim Ausgeben, ein Textvergleich
-        # meldet also einen Datenverlust, den es nicht gibt. Nachgemessen:
-        # der Wert liegt byteidentisch im Vault, nur die Ausgabe luegt.
+        # ein Textrundlauf ueber `_psql`/`_psql_als_postgres` ist nicht
+        # CR-exakt, ein CRLF-Wert saehe darum beschaedigt aus. Ist er nicht --
+        # er liegt byteidentisch im Vault, nur der Rueckweg luegt.
+        # Schuld ist NICHT psql: dessen Rohausgabe behaelt das CR-Byte
+        # (nachgestellt). Es ist Pythons `subprocess.run(..., text=True)`,
+        # das beim Dekodieren universal newlines anwendet und `
+` zu
+        # `
+` macht. Eine fruehere Fassung dieses Kommentars schob es auf
+        # `psql -tA`; richtige Folgerung, falscher Mechanismus -- und genau
+        # so ein Satz wird spaeter als Grundlage zitiert.
+        # md5 im Server umgeht die Textschicht ganz; das Servercodierung ist
+        # UTF8, also rechnen beide Seiten ueber dieselben Bytes.
         in_der_db = _psql_als_postgres_ok(
             "SELECT md5(decrypted_secret) FROM vault.decrypted_secrets WHERE id = "
             f"(SELECT vault_secret_id FROM plugin_setup.einrichtungen WHERE referenz_name = '{referenz}');"
