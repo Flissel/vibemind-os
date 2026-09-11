@@ -13,6 +13,8 @@ Regeln, die diese Datei selbst befolgt (Global Constraints im Brief):
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 
 import pytest
 
@@ -165,26 +167,76 @@ def test_aufnahme_scheitert_pruefung_wird_nie_aufgerufen(monkeypatch):
     assert pruefen.aufrufe == []
 
 
-def test_openfang_uebergabe_scheitert_faellt_zurueck_auf_fehlgeschlagen(monkeypatch):
-    """Verifiziert, aber OpenFang lehnt ab (z.B. 503 store_unavailable):
-    Supabase-Uebergang `verifizieren()` wird NICHT aufgerufen (die Zeile
-    bleibt auf `entgegengenommen`, s. Moduldoku), stattdessen
-    `fehlschlagen(referenz, 'openfang:503')` -- ein gueltiger Uebergang."""
+def test_art_unbekannt_wird_abgelehnt_bevor_irgendetwas_in_supabase_landet(monkeypatch):
+    """C2: `art="unbekannt"` (der jetzt-fail-closed-Default von
+    `plugin_bedarf` fuer nicht ableitbare Namen) darf niemals bis zur
+    Anbieter-Pruefung oder gar zu OpenFang durchkommen. Laeuft gegen die
+    ECHTE `ablage.entgegennehmen` (kein Mock) -- ihre eigene Validierung
+    ist die erste Instanz, die `art` prueft, VOR jedem SQL-Aufruf, also
+    braucht dieser Test keine laufende Datenbank."""
+    pruefen = _Aufrufe(ergebnis={"gut": True, "status": 200})
+    monkeypatch.setattr(werkzeuge, "pruefe", pruefen)
+    openfang = _Aufrufe(ergebnis={"ok": True, "status": 200})
+    monkeypatch.setattr(werkzeuge, "_openfang_uebernehmen", openfang)
+
+    ergebnis = werkzeuge.schluessel_entgegennehmen(
+        "proj", "demo-plugin", "PYTEST_UNBEKANNTE_ART", "unbekannt", _FAKE_WERT)
+
+    assert ergebnis["ok"] is False
+    assert pruefen.aufrufe == [], "unbekannte art darf nie bis zur Anbieter-Pruefung kommen"
+    assert openfang.aufrufe == [], "unbekannte art darf OpenFang nie erreichen"
+
+
+def test_openfang_uebergabe_scheitert_bleibt_auf_verifiziert_stehen(monkeypatch):
+    """I2-Fix (Review Runde 1, restaurierte Brief-Reihenfolge): verifiziert,
+    aber OpenFang lehnt ab (z.B. 503 store_unavailable) -- das ist KEIN
+    Credential-Fehler. `verifizieren()` WIRD aufgerufen (Reihenfolge:
+    verifizieren -> OpenFang), `fehlschlagen()` wird NICHT aufgerufen (die
+    Zeile bleibt auf `verifiziert` stehen, die Vault-Kopie bleibt), und die
+    Antwort markiert den Fehler als `retryable`."""
     monkeypatch.setattr(werkzeuge.ablage, "entgegennehmen",
                         _Aufrufe(ergebnis={"ok": True, "referenz": "X"}))
     monkeypatch.setattr(werkzeuge, "pruefe", _Aufrufe(ergebnis={"gut": True, "status": 200}))
-    monkeypatch.setattr(werkzeuge, "_openfang_uebernehmen",
-                        _Aufrufe(ergebnis={"ok": False, "status": 503, "fehler": "OpenFang HTTP 503"}))
     verifizieren = _Aufrufe(ergebnis={"ok": True})
     monkeypatch.setattr(werkzeuge.ablage, "verifizieren", verifizieren)
+    monkeypatch.setattr(werkzeuge, "_openfang_uebernehmen",
+                        _Aufrufe(ergebnis={"ok": False, "status": 503, "fehler": "OpenFang HTTP 503"}))
     fehlschlagen = _Aufrufe(ergebnis={"ok": True})
     monkeypatch.setattr(werkzeuge.ablage, "fehlschlagen", fehlschlagen)
+    uebernommen = _Aufrufe(ergebnis={"ok": True})
+    monkeypatch.setattr(werkzeuge.ablage, "uebernommen", uebernommen)
 
     ergebnis = werkzeuge.schluessel_entgegennehmen("proj", "demo-plugin", "X", "bearer", _FAKE_WERT)
 
     assert ergebnis["ok"] is False
-    assert verifizieren.aufrufe == []
-    assert fehlschlagen.aufrufe == [(("X", "openfang:503"), {})]
+    assert ergebnis.get("retryable") is True
+    assert verifizieren.aufrufe == [(("X",), {})]
+    assert fehlschlagen.aufrufe == [], "OpenFang-Ausfall ist kein Credential-Fehler -- kein fehlschlagen()"
+    assert uebernommen.aufrufe == []
+
+
+def test_openfang_409_meldet_betreiber_entscheidung_kein_autooverwrite(monkeypatch):
+    """409 (reference_exists) heisst: die Referenz koennte bei OpenFang
+    schon einen anderen, bewusst gesetzten Wert tragen. Kein automatisches
+    Ueberschreiben, keine Loeschung der Supabase-Kopie -- eine Entscheidung
+    des Betreibers wird verlangt, nicht getroffen."""
+    monkeypatch.setattr(werkzeuge.ablage, "entgegennehmen",
+                        _Aufrufe(ergebnis={"ok": True, "referenz": "X"}))
+    monkeypatch.setattr(werkzeuge, "pruefe", _Aufrufe(ergebnis={"gut": True, "status": 200}))
+    monkeypatch.setattr(werkzeuge.ablage, "verifizieren", _Aufrufe(ergebnis={"ok": True}))
+    monkeypatch.setattr(werkzeuge, "_openfang_uebernehmen",
+                        _Aufrufe(ergebnis={"ok": False, "status": 409, "fehler": "OpenFang HTTP 409"}))
+    fehlschlagen = _Aufrufe(ergebnis={"ok": True})
+    monkeypatch.setattr(werkzeuge.ablage, "fehlschlagen", fehlschlagen)
+    uebernommen = _Aufrufe(ergebnis={"ok": True})
+    monkeypatch.setattr(werkzeuge.ablage, "uebernommen", uebernommen)
+
+    ergebnis = werkzeuge.schluessel_entgegennehmen("proj", "demo-plugin", "X", "bearer", _FAKE_WERT)
+
+    assert ergebnis["ok"] is False
+    assert "Betreiber" in ergebnis["fehler"]
+    assert fehlschlagen.aufrufe == []
+    assert uebernommen.aufrufe == []
 
 
 # ─── Fail-soft ohne konfigurierte Ziele (Muster marketing/claw/werkzeuge.py) ─
@@ -212,21 +264,82 @@ def test_plugin_werkzeug_binden_ohne_rowboat_env_scheitert_freundlich(monkeypatc
     assert ergebnis["ok"] is False
 
 
-def test_schluessel_entgegennehmen_ohne_openfang_env_scheitert_freundlich_und_fehlschlagen(monkeypatch):
+def test_schluessel_entgegennehmen_ohne_openfang_env_scheitert_freundlich_bleibt_verifiziert(monkeypatch):
+    """OpenFang nicht eingerichtet ist ein Uebergabe-Fehler, kein
+    Credential-Fehler (I2) -- fail-soft, aber `fehlschlagen()` wird NICHT
+    aufgerufen; `verifizieren()` schon (restaurierte Reihenfolge)."""
     monkeypatch.delenv("PLUGIN_SETUP_OPENFANG_URL", raising=False)
     monkeypatch.delenv("PLUGIN_SETUP_OPENFANG_API_KEY", raising=False)
     monkeypatch.setattr(werkzeuge.ablage, "entgegennehmen",
                         _Aufrufe(ergebnis={"ok": True, "referenz": "X"}))
     monkeypatch.setattr(werkzeuge, "pruefe", _Aufrufe(ergebnis={"gut": True, "status": 200}))
+    verifizieren = _Aufrufe(ergebnis={"ok": True})
+    monkeypatch.setattr(werkzeuge.ablage, "verifizieren", verifizieren)
     fehlschlagen = _Aufrufe(ergebnis={"ok": True})
     monkeypatch.setattr(werkzeuge.ablage, "fehlschlagen", fehlschlagen)
 
     ergebnis = werkzeuge.schluessel_entgegennehmen("proj", "demo-plugin", "X", "bearer", _FAKE_WERT)
     assert ergebnis["ok"] is False
-    assert fehlschlagen.aufrufe, "OpenFang nicht eingerichtet muss trotzdem einen DB-Uebergang ausloesen"
+    assert ergebnis.get("retryable") is True
+    assert verifizieren.aufrufe == [(("X",), {})]
+    assert fehlschlagen.aufrufe == []
 
 
 # ─── plugin_bedarf: art-Ableitung aus dem Referenznamen ────────────────────
+
+
+# ─── I4 (Review Runde 1): Kopplung an Rowboats Namensform, nicht nur Vertrauen ─
+
+# spaces/plugin-setup/tests -> spaces
+_SPACES_DIR = Path(__file__).resolve().parents[2]
+_CREDENTIAL_NAMING_TS = (
+    _SPACES_DIR / "rowboat" / "rowboat" / "packages" / "openai-plugin-runtime"
+    / "src" / "providers" / "credential-naming.ts"
+)
+_CATALOG_TS = (
+    _SPACES_DIR / "rowboat" / "rowboat" / "packages" / "openai-plugin-runtime"
+    / "src" / "domain" / "catalog.ts"
+)
+
+
+def test_praefixe_stimmen_mit_rowboats_credential_naming_ts_ueberein():
+    """`_art_aus_referenzname` ist eine VIERTE Ableitung derselben
+    Namensform (Python, invertiert: Name -> art statt art -> Name) -- die
+    eigentliche Reparatur waere, dass Rowboats Preview `kind` mitliefert
+    (repo-uebergreifend, NICHT Teil dieser Runde, s. Bericht). Bis dahin:
+    dieser Test koppelt die beiden hartcodierten Praefixe hart an
+    credential-naming.ts und schlaegt fehl, sobald sie auseinanderlaufen
+    -- mit C2 behoben (kein Fallback auf "bearer" mehr) wird eine
+    Fehlklassifikation dadurch ein sicherer Fehlschlag (`art="unbekannt"`
+    wird von schluessel_entgegennehmen abgelehnt), keine Leckage mehr --
+    die Kopplung ist trotzdem proportional, kein Ersatz fuer die
+    eigentliche Reparatur."""
+    if not _CREDENTIAL_NAMING_TS.is_file():
+        pytest.skip(f"rowboat-Submodul nicht ausgecheckt: {_CREDENTIAL_NAMING_TS}")
+    inhalt = _CREDENTIAL_NAMING_TS.read_text(encoding="utf-8")
+    assert "`OAUTH_BEARER_${stem}`" in inhalt, (
+        "credential-naming.ts::deriveOAuthBearerReference hat das Praefix "
+        "'OAUTH_BEARER_' geaendert -- werkzeuge.py::_art_aus_referenzname "
+        "muss nachgezogen werden")
+    assert "`CONNECTOR_${" in inhalt, (
+        "credential-naming.ts::deriveConnectorReference hat das Praefix "
+        "'CONNECTOR_' geaendert -- werkzeuge.py::_art_aus_referenzname "
+        "muss nachgezogen werden")
+
+
+def test_pinned_catalog_digest_stimmt_mit_rowboats_catalog_ts_ueberein():
+    """`_PINNED_CATALOG_DIGEST_DEFAULT` ist von Hand aus catalog.ts
+    abgeschrieben (11.09.2026) -- dieser Test haelt beide synchron, statt
+    sich auf das Abschreiben selbst zu verlassen."""
+    if not _CATALOG_TS.is_file():
+        pytest.skip(f"rowboat-Submodul nicht ausgecheckt: {_CATALOG_TS}")
+    inhalt = _CATALOG_TS.read_text(encoding="utf-8")
+    treffer = re.search(r'PINNED_PLUGIN_CATALOG_DIGEST\s*=\s*\n?\s*"([0-9a-f]+)"', inhalt)
+    assert treffer, "PINNED_PLUGIN_CATALOG_DIGEST nicht in catalog.ts gefunden (Format geaendert?)"
+    assert treffer.group(1) == werkzeuge._PINNED_CATALOG_DIGEST_DEFAULT, (
+        "Rowboats gepinnter Katalog-Digest hat sich geaendert -- "
+        "werkzeuge.py::_PINNED_CATALOG_DIGEST_DEFAULT muss nachgezogen werden "
+        "(oder ROWBOAT_CATALOG_DIGEST wird produktiv gesetzt)")
 
 
 def test_plugin_bedarf_leitet_art_aus_dem_namen_ab(monkeypatch):
@@ -248,7 +361,10 @@ def test_plugin_bedarf_leitet_art_aus_dem_namen_ab(monkeypatch):
     assert nach_name["OAUTH_BEARER_MCP_EXAMPLE_COM"]["vorhanden"] is False
     assert nach_name["CONNECTOR_CANVA"]["art"] == "connector"
     assert nach_name["CONNECTOR_CANVA"]["vorhanden"] is True
-    assert nach_name["OPENAI_API_KEY"]["art"] == "bearer"
+    # C2-Fix: ein unerkannter Name faellt NIE auf "bearer" zurueck (das
+    # wuerde ihn Richtung api.github.com schicken) -- er wird "unbekannt",
+    # explizit fail closed statt geraten.
+    assert nach_name["OPENAI_API_KEY"]["art"] == "unbekannt"
     assert all(e["quelle"] == "rowboat-preview" for e in ergebnis["daten"])
 
 
@@ -313,10 +429,40 @@ def test_plugin_werkzeug_binden_schickt_nur_componentdigest(monkeypatch):
 
 
 def test_rowboat_http_fehler_leckt_keinen_schluessel(monkeypatch):
+    """Die Fake-Antwort ECHOT den Schluessel im Fehlerkoerper zurueck (ein
+    realistischer Worst-Case -- ein verbosener Fehler-Proxy, der die
+    Anfrage spiegelt) -- ohne das koennte `_ohne_schluessel` komplett
+    entfernt werden und dieser Test bliebe gruen (Review Runde 1: 'kann
+    nicht rot werden'). Mit dem Echo IST er die Zusicherung: der Schluessel
+    steckt im simulierten Rohkoerper, aber NICHT mehr in `ergebnis['fehler']`."""
     monkeypatch.setenv("ROWBOAT_URL", "http://127.0.0.1:3000")
     monkeypatch.setenv("ROWBOAT_API_KEY", "fake-projekt-schluessel-xyz")
-    monkeypatch.setattr(werkzeuge, "_roh_anfrage",
-                        _Aufrufe(ergebnis=(401, json.dumps({"error": "unauthenticated"}))))
+    monkeypatch.setattr(werkzeuge, "_roh_anfrage", _Aufrufe(ergebnis=(
+        401, json.dumps({"error": "unauthenticated",
+                         "empfangene_headers": {"Authorization": "Bearer fake-projekt-schluessel-xyz"}}))))
     ergebnis = werkzeuge.plugin_bedarf("proj", "demo-plugin")
     assert ergebnis["ok"] is False
     assert "fake-projekt-schluessel-xyz" not in ergebnis["fehler"]
+
+
+def test_openfang_uebernehmen_schickt_referenz_wert_overwrite_und_bearer(monkeypatch):
+    """M1: bisher patchte jeder Ordnungstest `_openfang_uebernehmen` selbst
+    -- ein Tippfehler im Pfad/Body/Header waere nie aufgefallen. Dieser
+    Test patcht stattdessen `_roh_anfrage` (den einzigen echten Netzgriff)
+    und prueft die tatsaechliche Anfrageform gegen die Aufgabe-1-Schnittstelle
+    aus dem Brief: `POST /api/credentials/store`, Body
+    `{reference, value, overwrite: false}`, `Authorization: Bearer <key>`."""
+    monkeypatch.setenv("PLUGIN_SETUP_OPENFANG_URL", "http://127.0.0.1:4273")
+    monkeypatch.setenv("PLUGIN_SETUP_OPENFANG_API_KEY", "fake-daemon-schluessel")
+    aufruf = _Aufrufe(ergebnis=(200, json.dumps({"reference": "X", "issuable": True})))
+    monkeypatch.setattr(werkzeuge, "_roh_anfrage", aufruf)
+
+    ergebnis = werkzeuge._openfang_uebernehmen("X", _FAKE_WERT)
+    assert ergebnis == {"ok": True, "status": 200}
+
+    (url, daten, method, kopfzeilen), kwargs = aufruf.aufrufe[0]
+    assert url == "http://127.0.0.1:4273/api/credentials/store"
+    assert method == "POST"
+    assert kopfzeilen == {"Authorization": "Bearer fake-daemon-schluessel"}
+    body = json.loads(daten)
+    assert body == {"reference": "X", "value": _FAKE_WERT, "overwrite": False}

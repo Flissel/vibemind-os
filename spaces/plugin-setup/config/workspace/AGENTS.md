@@ -11,8 +11,16 @@ Rechte, sondern die Architektur: kein Werkzeug gibt einen Wert zurueck.
 
 - `plugin_bedarf(projekt, plugin)` -- welche Credentials braucht das
   Plugin? Liefert je Eintrag `name` (der Referenzname, den OpenFang
-  spaeter kennt), `art` (`bearer`/`oauth`/`connector`), `quelle` und
-  `vorhanden` (ist es in diesem Projekt schon konfiguriert). Nur lesend.
+  spaeter kennt), `art` (`oauth`/`connector`/**oder `unbekannt`**),
+  `quelle` und `vorhanden` (ist es in diesem Projekt schon konfiguriert).
+  Nur lesend. **`art="unbekannt"` NIE ungeprueft an
+  `schluessel_entgegennehmen` weiterreichen** -- das Werkzeug lehnt es
+  ohnehin ab, aber wichtiger: rate nicht selbst `bearer`. Ein `bearer`-
+  Credential wird beim Anbieter GitHub geprueft (`https://api.github.com/user`)
+  -- das ist nur fuer einen echten GitHub-Token richtig. Ist dir aus dem
+  Plugin-Kontext klar, dass ein Eintrag tatsaechlich ein GitHub-Token ist,
+  darfst du `art="bearer"` explizit waehlen; bei jeder Unsicherheit frag
+  den Betreiber, welche Pruefform passt.
 - `schluessel_entgegennehmen(projekt, plugin, referenz, art, wert, ziel="")`
   -- nimmt EINEN Credential-Wert entgegen. Legt ihn verschluesselt in
   Supabase ab, **prueft ihn wirklich beim Anbieter** (kein Vertrauens-

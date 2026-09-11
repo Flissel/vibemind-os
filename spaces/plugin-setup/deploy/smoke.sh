@@ -70,14 +70,22 @@ else
   echo "   FEHL Werkzeugliste stimmt nicht: '$WERKZEUG_NAMEN' != '$ERWARTET'"; ROT=$((ROT+1))
 fi
 
-echo "2) Jedes Werkzeug einmal aufrufen + Verbotsliste pruefen"
+echo "2) Jedes Werkzeug einmal aufrufen + Ergebnisform + Verbotsliste pruefen"
 FAKE_WERT="offensichtlich-erfunden-kein-echtes-secret-smoke-$$"
 SMOKE_REFERENZ="SMOKE_TEST_$$"
+TOOL_JSON="$SERVER_LOG.tool-output.json"
 
-AUSGABE="$("$PY" - "$FAKE_WERT" "$SMOKE_REFERENZ" <<'PYEOF'
+# I5-Fix (Review Runde 1): die Pruefung der vier Werkzeugantworten laeuft
+# jetzt KOMPLETT in Python -- inklusive der Formzusicherung ("ok:false mit
+# den erwarteten Feldern", nicht nur "der Schluessel existiert", der bei
+# einem hartcodierten dict-Literal ohnehin nie fehlen kann) -- und meldet
+# sich ueber den Exit-Code. Das schliesst die zwei Luecken aus dem Review:
+# ein Python-Absturz haette VORHER unter `set -e` die bash-Pruefschleife
+# nie erreicht (toter Zweig); jetzt ist der Exit-Code selbst der Beweis.
+if ! "$PY" - "$FAKE_WERT" "$SMOKE_REFERENZ" "$TOOL_JSON" <<'PYEOF'
 import json, os, sys
 sys.path.insert(0, ".")
-fake_wert, referenz = sys.argv[1], sys.argv[2]
+fake_wert, referenz, ausgabe_pfad = sys.argv[1], sys.argv[2], sys.argv[3]
 
 # Rowboat bewusst NICHT konfiguriert -- die drei Rowboat-Werkzeuge muessen
 # hier freundlich scheitern (fail-soft), kein Absturz.
@@ -96,36 +104,81 @@ ergebnisse = {
     "schluessel_entgegennehmen": werkzeuge.schluessel_entgegennehmen(
         "smoke-projekt", "demo-plugin", referenz, "bearer", fake_wert),
 }
-print(json.dumps(ergebnisse))
+with open(ausgabe_pfad, "w", encoding="utf-8") as f:
+    json.dump(ergebnisse, f)
+
+rot = 0
+
+# Verbotsliste: der erfundene Wert darf in KEINEM Feld irgendeiner Antwort
+# auftauchen -- rekursiv, nicht nur an der Oberflaeche.
+def alle_strings(obj):
+    if isinstance(obj, dict):
+        for v in obj.values():
+            yield from alle_strings(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from alle_strings(v)
+    elif isinstance(obj, str):
+        yield obj
+
+if any(fake_wert in s for s in alle_strings(ergebnisse)):
+    print("   FEHL der erfundene Testwert taucht in einer Werkzeugantwort auf (Verbotsliste verletzt)")
+    rot += 1
+else:
+    print("   ok   kein Werkzeug gibt den Testwert zurueck")
+
+# Ergebnisform pruefen -- nicht nur "der Schluessel existiert" (der
+# existiert bei einem hartcodierten dict-Literal immer), sondern "das
+# Werkzeug hat tatsaechlich fail-soft geantwortet, wie ohne
+# ROWBOAT_URL/ROWBOAT_API_KEY erwartet".
+for name in ("plugin_bedarf", "plugin_installieren", "plugin_werkzeug_binden"):
+    r = ergebnisse[name]
+    if isinstance(r, dict) and r.get("ok") is False and isinstance(r.get("fehler"), str) and (
+        "ROWBOAT_URL" in r["fehler"] or "ROWBOAT_API_KEY" in r["fehler"] or "Rowboat" in r["fehler"]
+    ):
+        print(f"   ok   {name}: fail-soft ohne Rowboat-Konfiguration ({r['fehler'][:60]})")
+    else:
+        print(f"   FEHL {name}: unerwartete Form {r!r}")
+        rot += 1
+
+# schluessel_entgegennehmen: muss bis zur echten Anbieter-Pruefung
+# gekommen sein (status gesetzt, ok=False -- ein absichtlich erfundener
+# Wert kann bei GitHub nie gut sein) UND darf NIE ok=True melden (das
+# waere entweder ein echter GitHub-Erfolg mit einem "erfundenen" Wert --
+# unmoeglich -- oder ein Bug).
+s = ergebnisse["schluessel_entgegennehmen"]
+if isinstance(s, dict) and s.get("ok") is False and s.get("referenz") == referenz \
+        and isinstance(s.get("status"), int):
+    print(f"   ok   schluessel_entgegennehmen: bis zur Anbieter-Pruefung gekommen (status={s['status']})")
+else:
+    print(f"   FEHL schluessel_entgegennehmen: unerwartete Form {s!r}")
+    rot += 1
+
+sys.exit(1 if rot else 0)
 PYEOF
-)"
-
-echo "$AUSGABE" > "$SERVER_LOG.tool-output.json"
-if echo "$AUSGABE" | grep -qF -- "$FAKE_WERT"; then
-  echo "   FEHL der erfundene Testwert taucht in einer Werkzeugantwort auf (Verbotsliste verletzt)"
+then
   ROT=$((ROT+1))
-else
-  echo "   ok   kein Werkzeug gibt den Testwert zurueck"
 fi
-
-for w in plugin_bedarf plugin_installieren plugin_werkzeug_binden schluessel_entgegennehmen; do
-  if echo "$AUSGABE" | "$PY" -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if '$w' in d else 1)"; then
-    echo "   ok   $w wurde aufgerufen und hat geantwortet (siehe $SERVER_LOG.tool-output.json)"
-  else
-    echo "   FEHL $w hat nicht geantwortet"; ROT=$((ROT+1))
-  fi
-done
 
 echo "3) Aufraeumen: die SMOKE_-Zeile aus Supabase entfernen (falls angelegt)"
 CONTAINER="$(docker ps --format '{{.Names}}' | grep -m1 supabase-db || true)"
 if [ -n "$CONTAINER" ]; then
-  docker exec -i "$CONTAINER" psql -U postgres -d postgres -tA >/dev/null 2>&1 <<SQL || true
+  set +e
+  docker exec -i "$CONTAINER" psql -U postgres -d postgres -v ON_ERROR_STOP=1 -tA >/dev/null 2>"$SERVER_LOG.cleanup-err" <<SQL
 DELETE FROM vault.secrets WHERE id IN (
   SELECT vault_secret_id FROM plugin_setup.einrichtungen
    WHERE referenz_name = '${SMOKE_REFERENZ}' AND vault_secret_id IS NOT NULL);
 DELETE FROM plugin_setup.einrichtungen WHERE referenz_name = '${SMOKE_REFERENZ}';
 SQL
-  echo "   ok   aufgeraeumt"
+  CLEANUP_RC=$?
+  set -e
+  if [ "$CLEANUP_RC" -eq 0 ]; then
+    echo "   ok   aufgeraeumt"
+  else
+    echo "   FEHL Aufraeumen scheiterte (rc=$CLEANUP_RC):"; cat "$SERVER_LOG.cleanup-err" >&2
+    ROT=$((ROT+1))
+  fi
+  rm -f "$SERVER_LOG.cleanup-err"
 else
   echo "   uebersprungen (kein supabase-db-Container -- dann gibt es auch keine Zeile)"
 fi

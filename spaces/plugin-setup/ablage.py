@@ -131,11 +131,40 @@ def _psql(sql: str, *, rolle: Optional[str] = None) -> tuple:
     return res.returncode, (res.stdout + res.stderr)
 
 
+def _copy_csv_feld(wert: str) -> str:
+    """Ein einzelnes CSV-Feld (COPY ... WITH (FORMAT csv)), Anfuehrungszeichen
+    verdoppelt -- Postgres' CSV-COPY-Format erlaubt eingebettete Zeilenumbrueche
+    in einem gequoteten Feld, also braucht es (anders als das text-Format)
+    keine \\n/\\t/\\\\-Sonderbehandlung."""
+    return '"' + wert.replace('"', '""') + '"'
+
+
 def entgegennehmen(projekt: str, plugin: str, referenz: str, art: str, wert: str) -> dict:
     """Legt den Wert verschluesselt im Vault ab und daneben die
     Zustandszeile (Status `entgegengenommen`) -- ein einziges Statement,
     darum atomar (siehe Moduldoku). `wert` erscheint in keinem
-    Rueckgabefeld und keiner Fehlermeldung."""
+    Rueckgabefeld und keiner Fehlermeldung.
+
+    C1-FIX (Review Runde 1, 2026-09-11): `wert` reist NICHT mehr als
+    SQL-Literal im Statement-Text -- diese Instanz hat
+    `log_min_error_statement = error`, und jede fehlschlagende Anweisung
+    (z.B. eine `referenz_name`-Kollision) landete darum wortwoertlich in
+    `docker logs <supabase-db>` (gemessen: 37 Treffer nach einer einzigen
+    absichtlich ausgeloesten Kollision). `log_parameter_max_length_on_error
+    = 0` auf dieser Instanz wuerde echte gebundene Parameter schuetzen,
+    aber wir haben keinen nativen Treiber -- nur `docker exec ... psql`
+    (Muster spaces/marketing/sync/_db.py). Der Wert reist darum stattdessen
+    ueber `COPY ... FROM STDIN`: COPY-Nutzdaten sind KEIN Statement-Text,
+    sie laufen als eigener Protokoll-Stream und tauchen in der
+    `STATEMENT:`-Logzeile eines Fehlers nicht auf (bewiesen in
+    tests/test_ablage.py::test_wert_landet_nie_im_postgres_server_log).
+    Eine temporaere Tabelle nimmt die Kopierten Daten auf; `vault.create_secret`
+    liest `wert` aus einer Spalte dieser Tabelle (`t.wert`), nie aus einem
+    Literal. Alles in EINER expliziten Transaktion, damit ein scheiternder
+    INSERT (referenz_name-Kollision) das ganze Statement inkl. des bereits
+    erzeugten Vault-Secrets zurueckrollt -- exakt dieselbe Atomaritaets-
+    Zusicherung wie vorher, nur ohne den Wert im Statement-Text.
+    """
     if art not in _ART_ERLAUBT:
         return {"ok": False, "fehler": f"unbekannte art: {art!r} (erlaubt: {sorted(_ART_ERLAUBT)})"}
     if not _REFERENZ_MUSTER.match(referenz or ""):
@@ -144,16 +173,26 @@ def entgegennehmen(projekt: str, plugin: str, referenz: str, art: str, wert: str
         return {"ok": False, "fehler": "projekt und plugin sind Pflicht"}
     if not wert:
         return {"ok": False, "fehler": "wert fehlt"}
+    if "\x00" in wert:
+        return {"ok": False, "fehler": "wert enthaelt ein NUL-Byte, nicht speicherbar"}
 
     secret_name = f"plugin-setup-{referenz}-{uuid.uuid4().hex[:8]}"
     sql = (
-        "WITH v AS (SELECT vault.create_secret("
-        f"{_sql_literal(wert)}, {_sql_literal(secret_name)}, "
-        f"{_sql_literal('plugin-setup: ' + referenz)}) AS id) "
+        "BEGIN;\n"
+        "CREATE TEMP TABLE _psu_wert (wert text) ON COMMIT DROP;\n"
+        "COPY _psu_wert (wert) FROM STDIN WITH (FORMAT csv, QUOTE '\"');\n"
+        f"{_copy_csv_feld(wert)}\n"
+        "\\.\n"
+        "WITH v AS (\n"
+        "  SELECT vault.create_secret(t.wert, "
+        f"{_sql_literal(secret_name)}, {_sql_literal('plugin-setup: ' + referenz)}) AS id\n"
+        "  FROM _psu_wert t\n"
+        ")\n"
         "INSERT INTO plugin_setup.einrichtungen "
-        "(projekt_id, plugin, referenz_name, art, vault_secret_id) "
+        "(projekt_id, plugin, referenz_name, art, vault_secret_id)\n"
         f"SELECT {_sql_literal(projekt)}, {_sql_literal(plugin)}, "
-        f"{_sql_literal(referenz)}, {_sql_literal(art)}, v.id FROM v;"
+        f"{_sql_literal(referenz)}, {_sql_literal(art)}, v.id FROM v;\n"
+        "COMMIT;\n"
     )
     try:
         rc, out = _psql(sql)

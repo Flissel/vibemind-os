@@ -22,7 +22,8 @@ if [ -z "$CONTAINER" ]; then
   echo "ABBRUCH: kein laufender supabase-db-Container gefunden (docker ps)." >&2
   exit 1
 fi
-for migration in db/0001_plugin_setup.sql db/0002_state_machine.sql db/0003_least_privilege_role.sql; do
+for migration in db/0001_plugin_setup.sql db/0002_state_machine.sql db/0003_least_privilege_role.sql \
+                 db/0004_least_privilege_role_hardening.sql; do
   echo "   -> $migration"
   docker exec -i "$CONTAINER" psql -U postgres -d postgres -v ON_ERROR_STOP=1 -f - < "$migration"
 done

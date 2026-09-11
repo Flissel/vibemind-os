@@ -13,22 +13,37 @@ Credential-WERT zurueck. `schluessel_entgegennehmen` protokolliert/gibt nur
 die `referenz` (den Namen) zurueck, nie `wert`. Getestet in
 tests/test_werkzeuge.py.
 
-REIHENFOLGE in `schluessel_entgegennehmen` (Global Constraint #4, mit einer
-Praezisierung, die der Brief offen liess -- s. Bericht):
+REIHENFOLGE in `schluessel_entgegennehmen` -- Global Constraint #4,
+BUCHSTAEBLICH wie im Brief (Review Runde 1, I2: eine fruehere Fassung
+dieser Datei tauschte `verifizieren()` und die OpenFang-Uebergabe, das
+wurde per Review zurueckgewiesen und ist hier restauriert):
   1. ablage.entgegennehmen(...)          Supabase: Status `entgegengenommen`
   2. pruefung.pruefe(...)                 Aufgabe 5, externer Anbieter-Check
   3a. NICHT gut  -> ablage.fehlschlagen(referenz, str(status)) -- Supabase-
       Kopie bleibt zur Fehlersuche stehen (entgegengenommen -> fehlgeschlagen
       ist ein gueltiger DB-Uebergang).
-  3b. GUT        -> _openfang_uebernehmen(...) (Aufgabe 1). Erst bei dessen
-      Erfolg: ablage.verifizieren(referenz) DANN sofort ablage.uebernommen
-      (referenz) -- beide Uebergaenge direkt hintereinander, damit die Zeile
-      nie unnoetig lange im Zustand `verifiziert` haengt (aus dem es KEINEN
-      Weg zurueck nach `fehlgeschlagen` gibt, s. 0002_state_machine.sql:
-      fehlschlagen() nimmt nur `entgegengenommen`). Scheitert die
-      OpenFang-Uebergabe selbst, bleibt die Zeile in `entgegengenommen` und
-      wandert per `ablage.fehlschlagen(referenz, "openfang:<code>")` dorthin
-      -- ein gueltiger Uebergang, kein Sackgassenzustand.
+  3b. GUT        -> ablage.verifizieren(referenz) (Status `verifiziert`) ->
+      _openfang_uebernehmen(...) (Aufgabe 1) -> bei dessen Erfolg
+      ablage.uebernommen(referenz) (loescht die Supabase-Kopie, Status
+      `uebernommen`).
+  Scheitert die OpenFang-Uebergabe NACH bestandener Verifikation: die Zeile
+  bleibt bewusst auf `verifiziert` stehen, die Vault-Kopie bleibt erhalten
+  -- das ist KEIN Credential-Fehler (der Wert ist gut, nur die Uebergabe
+  scheiterte), also wird `fehlschlagen()` hier NICHT aufgerufen (0002
+  erlaubt sie ohnehin nur aus `entgegengenommen`, und diese Kante absichtlich
+  NICHT zu oeffnen ist eine 0002-Entscheidung, die dieser Task nicht neu
+  aufrollt). `uebernommen()` bleibt aus `verifiziert` heraus aufrufbar --
+  ein spaeterer, manueller Retry (z.B. per `ablage.uebernommen(referenz)`,
+  sobald OpenFang wieder erreichbar ist) kann also noch gelingen; ein
+  erneuter Aufruf von `schluessel_entgegennehmen` selbst mit derselben
+  `referenz` kollidiert dagegen an der UNIQUE-Constraint des ERSTEN
+  Schritts (kein SELECT-Recht fuer `plugin_setup_agent`, s. `ablage.py`,
+  daher kein automatisches Wiederaufsetzen ueber dieses Werkzeug -- ein
+  bewusst nicht geschlossener Rand, s. Bericht). Meldet OpenFang `409`
+  (`reference_exists`), wird NICHT automatisch mit `overwrite=true`
+  ueberschrieben und die Supabase-Kopie bleibt stehen -- ein belegter Name
+  kann ein anderer, bewusst vom Betreiber gesetzter Wert sein; das braucht
+  eine Entscheidung des Betreibers, keine automatische Annahme.
   Nichts wird an OpenFang uebergeben, wenn Schritt 2 nicht `gut` ist.
 
 FAIL-SOFT (Muster spaces/marketing/claw/werkzeuge.py): keine Funktion wirft;
@@ -104,16 +119,30 @@ def _rowboat(pfad: str, method: str = "GET", nutzlast: dict | None = None,
 
 
 def _art_aus_referenzname(name: str) -> str:
-    """Leitet `art` (bearer/oauth/connector) aus dem OpenFang-Referenznamen
-    ab -- derselben Namensform, die Rowboats credential-naming.ts erzeugt
-    (OAUTH_BEARER_<host>..., CONNECTOR_<app>), und die pruefung.py als
-    `art` erwartet. Alles andere (z.B. OPENAI_API_KEY, GITHUB_PAT_TOKEN)
-    ist ein einfacher Bearer-Token."""
+    """Leitet `art` (oauth/connector) aus dem OpenFang-Referenznamen ab --
+    derselben Namensform, die Rowboats credential-naming.ts erzeugt
+    (OAUTH_BEARER_<host>..., CONNECTOR_<app>). NUR diese beiden Praefixe
+    sind sicher ableitbar.
+
+    C2-FIX (Review Runde 1, 2026-09-11): frueher fiel jeder unerkannte Name
+    (z.B. `OPENAI_API_KEY`) auf `"bearer"` zurueck -- und `art=bearer`
+    bedeutet in pruefung.py hartcodiert "ruf https://api.github.com/user
+    mit diesem Wert auf". Ueber `plugin_bedarf` haette das jeden
+    nicht-GitHub-Bearer-Wert (z.B. einen OpenAI-Key) automatisch Richtung
+    GitHub geschickt, sobald ein Agent (s. AGENTS.md: "art direkt
+    weitergeben") die geratene `art` unbesehen uebernimmt -- ein Wert, der
+    seinen Pfad verlaesst. Fail closed statt raten: alles ausser den zwei
+    sicher ableitbaren Praefixen wird `"unbekannt"`, nie `"bearer"`.
+    `schluessel_entgegennehmen`/`ablage.entgegennehmen` lehnen `art` ausser-
+    halb von {bearer, oauth, connector} ohnehin ab, BEVOR irgendetwas in
+    Supabase geschrieben wird -- ein Aufrufer, der `art="bearer"` fuer
+    einen echten GitHub-Token explizit waehlt, bleibt davon unberuehrt
+    (das ist der legitime, im Task 5 vorgesehene Anwendungsfall)."""
     if name.startswith("OAUTH_BEARER_"):
         return "oauth"
     if name.startswith("CONNECTOR_"):
         return "connector"
-    return "bearer"
+    return "unbekannt"
 
 
 def plugin_bedarf(projekt: str, plugin: str) -> dict:
@@ -124,7 +153,10 @@ def plugin_bedarf(projekt: str, plugin: str) -> dict:
     `quelle` benennt, woher die Angabe stammt (hier immer "rowboat-preview",
     da Rowboat bislang die einzige Quelle ist, die Aufgabe 6 kennt); die
     dritte Pruefform "connector" bringt zusaetzlich OPENAI_API_KEY mit (s.
-    plugin-service.shared.ts) -- das ist normal, kein Fehler.
+    plugin-service.shared.ts) -- das ist normal, kein Fehler. `art` kann
+    `"unbekannt"` sein (C2-Fix: NIE automatisch `"bearer"` geraten, s.
+    `_art_aus_referenzname`) -- `schluessel_entgegennehmen` lehnt eine
+    solche `art` ab; ein Mensch muss sie dann bewusst waehlen.
     """
     if not projekt or not plugin:
         return {"ok": False, "fehler": "projekt und plugin sind Pflicht"}
@@ -187,10 +219,15 @@ def schluessel_entgegennehmen(projekt: str, plugin: str, referenz: str, art: str
 
     `wert` erscheint in KEINEM Feld der Rueckgabe und KEINER Fehlermeldung
     -- protokolliert/zurueckgegeben wird ausschliesslich `referenz`.
-    `ziel` ist fuer `art in {oauth, connector}` die Pruefadresse
-    (MCP-Ressource bzw. connector_id); fuer `art == "bearer"` wird sie von
-    pruefung.pruefe() ignoriert und darf leer bleiben.
+    `ziel` ist fuer `art in {oauth, connector}` PFLICHT (die Pruefadresse:
+    MCP-Ressource bzw. connector_id) -- ohne sie wuerde pruefung.pruefe()
+    stillschweigend gegen eine leere/falsche Adresse pruefen, darum wird
+    hier VOR jedem Schreibzugriff abgelehnt (I3-Fix, Review Runde 1). Fuer
+    `art == "bearer"` bleibt `ziel` leer (pruefung.py ignoriert sie dort).
     """
+    if art in ("oauth", "connector") and not (ziel or "").strip():
+        return {"ok": False, "fehler": f"ziel ist fuer art={art!r} Pflicht (I3)"}
+
     aufnahme = ablage.entgegennehmen(projekt, plugin, referenz, art, wert)
     if not aufnahme["ok"]:
         return aufnahme  # enthaelt nie `wert` (ablage.py scrubt es)
@@ -202,27 +239,45 @@ def schluessel_entgegennehmen(projekt: str, plugin: str, referenz: str, art: str
                 "fehler": "Verifikation beim Anbieter fehlgeschlagen",
                 **({} if fehlschlag["ok"] else {"ablage_fehler": fehlschlag["fehler"]})}
 
+    # I2-Fix (Review Runde 1): die urspruengliche Reihenfolge des Briefs --
+    # `verifizieren()` VOR der OpenFang-Uebergabe. `uebernommen()` bleibt
+    # aus `verifiziert` heraus aufrufbar, ein Fehlschlag hier ist also
+    # KEIN Sackgassenzustand (die fruehere Umkehrung dieser Reihenfolge
+    # beruhte auf der falschen Annahme, dass er einer waere).
+    verifiziert = ablage.verifizieren(referenz)
+    if not verifiziert["ok"]:
+        return {"ok": False, "referenz": referenz,
+                "fehler": "Verifikation bestanden, aber der Supabase-Uebergang "
+                          "verifizieren() scheiterte: " + verifiziert["fehler"]}
+
     uebergabe = _openfang_uebernehmen(referenz, wert)
     if not uebergabe["ok"]:
         # Verifiziert, aber OpenFang hat die Uebergabe abgelehnt/ist nicht
-        # erreichbar: der Wert bleibt NUR in Supabase (Aufnahme steht noch
-        # auf `entgegengenommen` -- verifizieren() wurde bewusst noch nicht
-        # aufgerufen, s. Moduldoku), Status wandert nach `fehlgeschlagen`
-        # mit dem Statuscode, NIE mit `wert` oder einem Antwortkoerper.
-        fehlschlag = ablage.fehlschlagen(referenz, f"openfang:{uebergabe['status']}")
-        return {"ok": False, "referenz": referenz,
-                "fehler": "OpenFang-Uebergabe fehlgeschlagen",
-                **({} if fehlschlag["ok"] else {"ablage_fehler": fehlschlag["fehler"]})}
+        # erreichbar: das ist KEIN Credential-Fehler -- der Wert ist gut,
+        # nur die Uebergabe scheiterte. Die Zeile bleibt bewusst auf
+        # `verifiziert` stehen, die Vault-Kopie bleibt erhalten;
+        # `fehlschlagen()` wird NICHT gerufen (0002 erlaubt sie nur aus
+        # `entgegengenommen`, und diese Kante zu oeffnen ist keine
+        # Entscheidung, die dieser Task trifft). `409` (reference_exists)
+        # heisst insbesondere: NICHT automatisch ueberschreiben -- die
+        # Referenz koennte bei OpenFang schon einen anderen, bewusst vom
+        # Betreiber gesetzten Wert tragen; das braucht eine
+        # Betreiber-Entscheidung, keine automatische Annahme.
+        if uebergabe.get("status") == 409:
+            hinweis = (
+                "OpenFang meldet 409 (reference_exists): die Referenz ist dort schon "
+                "belegt -- moeglicherweise ein anderer, vom Betreiber gesetzter Wert. "
+                "Das braucht eine Entscheidung des Betreibers, kein automatisches "
+                "Ueberschreiben. Die Verifikation war gut, der Wert bleibt in Supabase "
+                "(Status 'verifiziert') erhalten.")
+        else:
+            hinweis = (
+                f"OpenFang-Uebergabe nicht erfolgreich (Status {uebergabe.get('status')}) -- "
+                "die Verifikation selbst war gut, der Wert bleibt in Supabase (Status "
+                "'verifiziert') erhalten. Retryable: sobald OpenFang wieder erreichbar "
+                "ist, kann die Uebergabe fuer dieselbe Referenz erneut versucht werden.")
+        return {"ok": False, "referenz": referenz, "retryable": True, "fehler": hinweis}
 
-    verifiziert = ablage.verifizieren(referenz)
-    if not verifiziert["ok"]:
-        # OpenFang hat den Wert bereits -- die Supabase-Seite haengt jetzt
-        # (Zustandssystem-Grenzfall, s. Bericht: keine Race-freie
-        # Zwei-System-Uebergabe ohne verteilte Transaktion). Ehrlich melden
-        # statt einen Erfolg vorzutaeuschen.
-        return {"ok": False, "referenz": referenz,
-                "fehler": "OpenFang hat den Wert, Supabase-Uebergang verifiziert scheiterte: "
-                          + verifiziert["fehler"]}
     freigabe = ablage.uebernommen(referenz)
     if not freigabe["ok"]:
         return {"ok": False, "referenz": referenz,

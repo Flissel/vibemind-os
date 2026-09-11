@@ -24,7 +24,7 @@ der Server als eigenstaendiges Skript gestartet: `python server.py`, nicht
 | `PLUGIN_SETUP_OPENFANG_URL` | Basis-URL des ISOLIERTEN OpenFang-Daemons dieses Tasks (`127.0.0.1:4273`, eigener `OPENFANG_HOME`). NIE `:4200`/`~/.openfang/` (Global Constraints). | `schluessel_entgegennehmen` (nur der letzte Schritt, nach bestandener Verifikation) |
 | `PLUGIN_SETUP_OPENFANG_API_KEY` | API-Key des isolierten Daemons, als `Authorization: Bearer` gesendet. Eigener Name (nicht `OPENFANG_API_KEY`), um Verwechslung mit dem Key eines anderen Daemons auszuschliessen. | s.o. |
 | `PLUGIN_SETUP_DB_CONTAINER` | Override fuer den supabase-db-Container-Namen. Default: Auto-Erkennung per Namenssubstring `supabase-db` (`docker ps`). | `ablage.py` (immer) |
-| `PLUGIN_SETUP_DB_ROLE` | Override der DB-Rolle. Default `plugin_setup_agent` (`db/0003_least_privilege_role.sql`) -- **nie** `postgres`/`service_role`/`supabase_admin` produktiv setzen, das unterlaeuft die in `db/0002_state_machine.sql` erzwungene Zustandsmaschine (Review-Vorgabe #3). | `ablage.py` (immer) |
+| `PLUGIN_SETUP_DB_ROLE` | Override der DB-Rolle. Default `plugin_setup_agent` (`db/0003_least_privilege_role.sql`, gehaertet in `db/0004_least_privilege_role_hardening.sql`) -- **nie** `postgres`/`service_role`/`supabase_admin` produktiv setzen, das unterlaeuft die in `db/0002_state_machine.sql` erzwungene Zustandsmaschine (Review-Vorgabe #3). | `ablage.py` (immer) |
 | `PLUGIN_SETUP_MCP_HOST` / `PLUGIN_SETUP_MCP_PORT` | Bind-Adresse des MCP-Servers. Default `0.0.0.0:8131`. | `server.py` |
 
 Alle Variablen werden zusaetzlich aus der repo-`.env` nachgeladen (nie
