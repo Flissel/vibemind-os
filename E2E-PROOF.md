@@ -1149,3 +1149,307 @@ which is permanent (the superseded catalog can be re-synced from source at
 the pinned commit at any time, but nothing in this codebase or its tests
 reads it by that digest any more). The shared OpenFang daemon on `:4200` was
 never touched.
+
+---
+
+# Part V — the plugin-setup-agent's own chain: proven as three adjacent halves
+
+Date: 2026-09-11 (UTC). `master` at the commit adding
+`apps/rowboat/test/plugins/live-setup-agent-e2e.test.ts`. Checkout:
+`C:/Users/User/Desktop/Vibemind_V1/vibemind-os/.worktrees/setup-agent`.
+
+Parts I-IV proved the release/approval/provider chain from Rowboat's side of
+a credential OpenFang already held. This part proves the piece before that:
+the plugin-setup-agent's own job (`spaces/plugin-setup/`) of taking custody
+of a credential in the first place — Supabase intake, provider verification,
+and the handoff into OpenFang — on top of the same release chain.
+
+## V.0 Two corrections to the plan this task was handed
+
+The brief that drove this task (`.superpowers/sdd/2026-09-08-plugin-setup-agent/task-8-brief.md`)
+named two paths that do not exist in this checkout:
+
+1. It says to append this section to `spaces/rowboat/rowboat/E2E-PROOF.md`.
+   That file does not exist; this document, at the **repository root**, is
+   the one every prior part lives in, and is where this section landed.
+2. It implies Rowboat's compose file lives under `apps/rowboat/`. It is
+   actually at `spaces/rowboat/rowboat/docker-compose.yml` — not touched by
+   this task (the environment was prepared and running before this task
+   started, and stayed running throughout, per its own instructions).
+
+## V.1 The contradiction, and the ruling that resolves it
+
+The setup-agent's own gate is explicit about ordering
+(`spaces/plugin-setup/werkzeuge.py::schluessel_entgegennehmen`, docstring
+lines 16-47): Supabase intake, THEN `pruefung.pruefe()` against the real
+provider, and OpenFang is only ever contacted **after** that verification
+returns `gut: True`. No real provider credential was in scope for this task
+— every value anywhere in this proof is obviously invented — so a value
+this proof controls can never pass verification. "Verification passes and
+OpenFang then takes custody" is therefore **not** a claim this proof can
+make as one continuous run without faking the one gate the whole design
+exists to enforce. It was not faked. Instead this proof runs three adjacent,
+independently-live pieces, plus a hygiene pass that spans all three:
+
+- **A — the fail-closed half**: Supabase intake, a REAL call to the real
+  provider that is REAL-ly refused (GitHub's genuine 401 on an invented
+  bearer token), `fehlschlagen()` recording only the status code, and the
+  Supabase copy staying in place for diagnosis. This is the half the design
+  exists to guarantee, and it is proven live, end to end, through the actual
+  MCP tool (`werkzeuge.schluessel_entgegennehmen`), not a reimplementation
+  of it.
+- **B — the custody half, direct**: bypassing the verification gate on
+  purpose and calling OpenFang's own `POST /api/credentials/store` and
+  `POST /api/credentials/issue` directly, the same way Aufgabe 1's own
+  design intends an already-verified value to be handed over. This proves
+  the mechanism the agent's gate *depends on* works, independently of the
+  gate itself.
+- **C — the Rowboat half**: component-scoped install, tool binding,
+  invocation, the release gate raising a real OpenFang approval, a
+  decision, the real provider called over real HTTPS, and a receipt
+  carrying the approval id — the same production seams Parts I-IV proved,
+  run again here with a value this task placed into OpenFang's custody
+  itself (via the exact mechanism B just proved), not a value the agent's
+  gate ever verified.
+- **D — hygiene, asserted, not claimed**: every invented value used across
+  A-C is searched for — in `docker logs` (with a deliberate zero-control
+  marker, because a prior finding on this task showed a value can leak into
+  the Postgres server log via a *failing* statement), in `vault.secrets`,
+  in the OpenFang daemon's own log file, in the Mongo `plugin_receipts`
+  collection, and in this test's own evidence log — and asserted absent in
+  every one, with a test that fails if any value shows up.
+
+**What this does NOT prove, stated plainly**: that a value this proof
+controls can pass real verification and then be taken into OpenFang's
+custody, in one continuous run. That specific link — verification success
+immediately followed by this same value's custody handoff — is proven only
+as two separate mechanisms (A's gate refuses correctly; B's handoff
+mechanism works correctly when reached), not as one join. Closing that gap
+for real needs a real, accepted provider credential — the same posture
+Parts I/II left open and Part III later closed for the release/approval/
+provider chain. No decision was made here to obtain one; that stays a later,
+explicit choice, same as Part III's.
+
+## V.2 The environment (prepared before this task, used as-is)
+
+| | |
+| --- | --- |
+| OpenFang | already-running isolated daemon, `127.0.0.1:4273`, its own `OPENFANG_HOME` under this session's scratchpad, api_key read from a file, never printed or hardcoded |
+| Mongo | `rowboat-rs`, `mongodb://127.0.0.1:27017/rowboat?replicaSet=rs0`, single-node `rs0`, transactions already verified |
+| Supabase | container matched by `supabase-db`, schema `plugin_setup`, migrations 0001-0004 already applied, role `plugin_setup_agent` present |
+
+This task did not start, stop, restart, or reconfigure any of the above.
+The daemon's issuable list already held one probe entry from the
+controller's own earlier verification, `PLUGIN_SETUP_PROBE_TOKEN`; this
+proof used its own uuid-suffixed reference names throughout and never
+touched that entry.
+
+## V.3 One run, five assertions, all live
+
+`apps/rowboat/test/plugins/live-setup-agent-e2e.test.ts`, opt-in by its own
+variable (`ROWBOAT_LIVE_SETUP_AGENT=1`, alongside the `ROWBOAT_LIVE_MONGO_URL`
+/ `ROWBOAT_LIVE_OPENFANG_URL` / `OPENFANG_API_KEY` convention every prior
+part uses):
+
+```text
+ ✓ test/plugins/live-setup-agent-e2e.test.ts (5 tests) 8.1s
+   ✓ A -- fail-closed: Supabase intake, a real provider 401, nothing reaches OpenFang
+   ✓ A2 -- OpenFang never saw the fail-closed reference
+   ✓ B -- custody, direct: /store -> 200, issuable without a restart, unknown name -> 404
+   ✓ C -- Rowboat: component-scoped install, tool binding, release, decision, provider, receipt
+   ✓ D -- hygiene: every invented value, asserted absent, with a zero-control window
+```
+
+The evidence log, in full (values are never in it — see V.5):
+
+```text
+  01  setup: project=dbb63ea7-... db=rowboat pluginSetupDir=.../spaces/plugin-setup
+  02  schluessel_entgegennehmen(TASK8_FAILCLOSED_..., art=bearer, <invented>) -> ok=false status=401
+  03  Supabase row: status=fehlgeschlagen hinweis=401 vault_secret_present=t
+  04  OpenFang issue(TASK8_FAILCLOSED_...) after the fail-closed run -> HTTP 404
+  05  OpenFang store(TASK8_CUSTODY_...) -> HTTP 200
+  06  OpenFang issue(TASK8_CUSTODY_...) -> HTTP 200 value_matches_stored=true
+  07  OpenFang issue(TASK8_NEVERSTORED_...) [never stored] -> HTTP 404
+  08  issuable_credentials.list: contains TASK8_CUSTODY_...=true, 5 total reference(s)
+  09  project dbb63ea7-... inserted into its own database rowboat
+  10  github: 8 components, 1 admitted, selecting github edaa0cfffb94...
+  11    credentialSlots = ["GITHUB_PAT_TOKEN"]
+  12  install with [edaa0cfffb94...] -> receipt a8045744-... status=success
+  13  tool bound: plugin_github_github added=true
+  14  OpenFang store(GITHUB_PAT_TOKEN) [for the runtime's own credential resolver] -> HTTP 200
+  15  runtime composed against http://127.0.0.1:4273; operation=get_me (write)
+  16  OpenFang approval raised   id=a32d8bd2-... tool_name=get_me
+  17    action_summary  = component edaa0cff...fa350 arguments 56551660...0706980
+  18    approve() -> {"status":200,"body":{"status":"approved", ...}}
+  19  invocation outcome: provider_failed after 1751ms; approval raised: a32d8bd2-...
+  20  execution receipt: status=failed reason=provider_unavailable approvalId=a32d8bd2-...
+  21  decision for a32d8bd2-...: status=approved decided_at=2026-09-11T10:14:43.421707400Z
+  22  positive control: fehlschlagen(CONTROL_MARKER_TASK8_...) [expected to fail] -> exit=3
+  23  docker logs --since 2026-09-11T10:14:35.923Z: control marker hits=2 (window captures activity)
+  24  docker logs --since 2026-09-11T10:14:35.923Z: 0 occurrences of any of the 3 invented values
+  25  vault.secrets scan across 3 invented values: counts=[0,0,0]
+  26  daemon log ...live-daemon.log: size 29538 -> 35152
+  27  daemon log: 0 occurrences of any invented value; reference name GITHUB_PAT_TOKEN present (name only)
+  28  plugin_receipts (2 document(s)): 0 occurrences of any invented value
+  29  evidence log: 0 occurrences of any invented value (self-check)
+  30  cleanup: Mongo rows for project dbb63ea7-... removed -- projects=1 installations=1
+      admissions=1 credentialSlots=0 executionClaims=1 receipts=1
+  31  cleanup: Supabase row+vault-secret for TASK8_FAILCLOSED_... -> exit=0
+  32  cleanup: OpenFang has no credential-delete endpoint -- stored references remain
+      until the controller tears the isolated daemon down
+```
+
+## V.4 What each line proves
+
+- **02-03** — `schluessel_entgegennehmen` (the real MCP tool, called
+  directly, not reimplemented) ran the real order: Supabase insert first
+  (`ablage.entgegennehmen`, status `entgegengenommen`), then the real
+  network call to `https://api.github.com/user` with an obviously-fake
+  bearer, which GitHub genuinely answered `401`. `ablage.fehlschlagen`
+  moved the row to `fehlgeschlagen` and recorded **only** the status code
+  (`hinweis=401`) — never the value, never the response body.
+  `vault_secret_present=t` confirms the Supabase copy is deliberately still
+  there, for diagnosis, exactly as the fail-closed path intends.
+- **04** — OpenFang's own `/api/credentials/issue` answers `404` for that
+  exact reference name: it never received it. This is checked directly
+  against the daemon, not inferred from the Python tool's return value.
+- **05-08** — bypassing the agent's gate on purpose, calling
+  `/api/credentials/store` directly: `200`, immediately followed (same
+  process, no restart) by `/api/credentials/issue` returning the identical
+  value, and a never-stored name refused with `404`. Line 08 confirms the
+  name landed in the daemon's own `issuable_credentials.list` file by
+  reading it directly — the exact artifact the task brief names.
+- **09-13** — component-scoped install (github: 8 components, 1 admitted)
+  through the real `InstallPluginUseCase`, and tool binding through the
+  real `AddPluginToolUseCase` — identical mechanics to Parts I-IV.
+- **14** — the github component's fixed credential slot name
+  (`GITHUB_PAT_TOKEN`, not something this task can rename) is placed into
+  OpenFang's custody through the **same** `/store` endpoint B just proved,
+  not injected any other way.
+- **15-21** — the real release/approval/provider chain: a write-classified
+  call raises a real approval, a decision releases it, the real
+  `OpenFangCredentialResolver` issues the fake `GITHUB_PAT_TOKEN`, the real
+  `HttpMcpProvider` carries it over real HTTPS to
+  `https://api.githubcopilot.com/mcp/`, and GitHub's own rejection produces
+  `provider_failed` (not `credential_missing` — the credential resolved to
+  a value; the HTTP exchange itself failed; see Part I §5 for the exact
+  code path this distinguishes). The receipt (`plugin_receipts`) carries
+  the same approval id OpenFang shows as `approved`.
+- **22-25** — the zero-control window: a deliberately failing SQL statement
+  (an unknown reference passed to `plugin_setup.fehlschlagen`) puts a known,
+  harmless marker into the Postgres log; `docker logs --since <RFC3339>`
+  finds it (`hits=2` — psql echoes the failing statement's own class name
+  once in addition to the server's `ERROR:` line), which is what proves the
+  window/filter genuinely captures activity rather than trivially passing
+  on an empty or misdirected log. Against that same proven-working window,
+  all three invented values from A/B (the fail-closed bearer, the direct
+  custody value) occur **zero** times. `vault.secrets` is scanned directly
+  (not assumed safe merely because it is encrypted) and also comes back
+  zero for all three.
+- **26-27** — the daemon's own log file grew by 5,614 bytes during this
+  run (a zero-control check in its own right: an unchanged file would mean
+  nothing was captured), and contains zero occurrences of any invented
+  value while still naming `GITHUB_PAT_TOKEN` by reference.
+- **28** — the two receipts this run produced (github's install, github's
+  `get_me` execution) carry zero occurrences of any invented value.
+- **29** — the evidence log itself — this file's own `log()` output — is
+  scanned last, as a self-check that the harness's own logging discipline
+  held.
+- **30-32** — cleanup. Mongo: `MongodbProjectsRepository` binds to a
+  module-level singleton (`app/lib/mongodb.ts`: `mongoClient.db("rowboat")`,
+  hardcoded, not parameterized) — unlike `MongodbPluginsRepository`, it
+  cannot be pointed at a dedicated database, so this run used the same
+  shared `rowboat` db every prior Part used and deleted only the rows its
+  own random `projectId` touched (projects, installation, admission,
+  execution claim, receipts) — the shared, reused 180-entry plugin catalog
+  was left alone, deliberately. Supabase: the one row and vault secret this
+  run created were deleted as `postgres` (`plugin_setup_agent` has no
+  DELETE by design). OpenFang: this run probed for a delete/revoke
+  endpoint directly against the running daemon — `DELETE` and `POST` to
+  `/api/credentials/<ref>`, `/revoke`, `/remove`, `/delete` all answered
+  `404` — none exists. The references this run stored
+  (`TASK8_CUSTODY_...`, and `GITHUB_PAT_TOKEN` with an overwritten fake
+  value) therefore remain in the daemon's issuable list until the
+  controller's own teardown of the whole isolated daemon — the identical
+  disposition the environment already specified for
+  `PLUGIN_SETUP_PROBE_TOKEN`. Editing the daemon's live state file by hand
+  while it keeps running was ruled out as a bigger risk than leaving these
+  present: it would mean writing to `OPENFANG_HOME` outside any API the
+  daemon exposes while the process has it open, with no way to verify the
+  daemon does not independently rewrite the same file — exactly the kind
+  of un-reviewable, out-of-band mutation the global constraints ask this
+  task to avoid.
+
+## V.5 Hygiene, as an assertion
+
+Every one of the three invented values used in this proof
+(`TASK8_FAILCLOSED_...`'s bearer value, `TASK8_CUSTODY_...`'s direct value,
+and `GITHUB_PAT_TOKEN`'s fake value) was searched for, by the test itself
+(not by eyeballing output afterward), in:
+
+- the Supabase state row (`hinweis` carries only the status code, `401`)
+- `vault.secrets` (`secret`/`name`/`description` columns, scanned directly)
+- `docker logs` on the Supabase container, across a window whose filter was
+  proven working by a deliberate positive control
+- the OpenFang daemon's own log file (whose growth during the run was
+  itself asserted, so the absence check is not vacuous)
+- the `plugin_receipts` Mongo collection
+- this test's own evidence log
+
+Zero occurrences, in all six, asserted by the test — a run with any
+occurrence would fail, not merely note it.
+
+One legitimate, expected exception, not a leak: OpenFang's own
+`POST /api/credentials/issue` response body to the authorized caller in B
+and C's own custody resolver **does** carry the value back — that is the
+endpoint's job, the intended recipient is this same process, and the test
+never prints or logs that response body's value field (it only compares it
+for equality and logs the boolean result).
+
+## V.6 Verification commands and their results
+
+```text
+$ cd spaces/plugin-setup && python -m pytest -q
+  68 passed in 13.77s
+```
+
+```text
+$ cd spaces/rowboat/rowboat/apps/rowboat && npx tsc --noEmit -p tsconfig.json
+  exit 0
+```
+
+```text
+$ npm run test:plugins        # without the live env vars -- default run
+  Test Files  31 passed | 6 skipped (37)
+       Tests  792 passed | 11 skipped (803)
+```
+
+Baseline in this worktree, before this task's file existed: 31 passed | 5
+skipped (36 files); 792 passed | 6 skipped (798 tests). The delta is exactly
+**+1 skipped file, +5 skipped tests** (this file's five `it()`s, skipped
+without the opt-in variable) and **0 change** to the 792 previously-passing
+tests — this task added no failures and no newly-passing tests to the
+default run.
+
+```text
+$ ROWBOAT_LIVE_MONGO_URL=... ROWBOAT_LIVE_OPENFANG_URL=... OPENFANG_API_KEY=... \
+  ROWBOAT_LIVE_SETUP_AGENT=1 npx vitest run test/plugins/live-setup-agent-e2e.test.ts
+  Test Files  1 passed (1)
+       Tests  5 passed (5)
+```
+
+## V.7 Cleanup
+
+- Mongo: the rows this run's own `projectId` created (projects,
+  installation, admission, execution claim, two receipts) were deleted;
+  the shared plugin catalog was left untouched. `rowboat-rs` stays up.
+- Supabase: the one `plugin_setup.einrichtungen` row and its vault secret
+  were deleted as `postgres`. The container was not stopped, restarted, or
+  reconfigured.
+- OpenFang: no delete/revoke endpoint exists (probed directly, see V.4);
+  the isolated daemon on `:4273` was not restarted, stopped, or
+  reconfigured, and `PLUGIN_SETUP_PROBE_TOKEN` was left untouched. The few
+  additional issuable references this run stored remain until the
+  controller's own teardown of the whole daemon.
+- The shared OpenFang daemon on `:4200` and `~/.openfang/` were never
+  touched, at any point in this task.
