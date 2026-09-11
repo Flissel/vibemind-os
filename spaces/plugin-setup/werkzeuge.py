@@ -263,6 +263,13 @@ def schluessel_entgegennehmen(projekt: str, plugin: str, referenz: str, art: str
         # Referenz koennte bei OpenFang schon einen anderen, bewusst vom
         # Betreiber gesetzten Wert tragen; das braucht eine
         # Betreiber-Entscheidung, keine automatische Annahme.
+        # Minor-Fix (Review Runde 2): 409 trug vorher dasselbe
+        # `retryable: True` wie jeder andere Fehlschlag, obwohl der Text
+        # daneben richtig sagte, dass ein Betreiber entscheiden muss -- ein
+        # Aufrufer, der nur auf `retryable` reagiert (nicht den deutschen
+        # Fliesstext liest), haette 409 endlos automatisch wiederholt, was
+        # bei `overwrite=false` immer wieder 409 ergeben haette. Jetzt hat
+        # 409 sein eigenes, maschinenlesbares Signal statt desselben Flags.
         if uebergabe.get("status") == 409:
             hinweis = (
                 "OpenFang meldet 409 (reference_exists): die Referenz ist dort schon "
@@ -270,12 +277,13 @@ def schluessel_entgegennehmen(projekt: str, plugin: str, referenz: str, art: str
                 "Das braucht eine Entscheidung des Betreibers, kein automatisches "
                 "Ueberschreiben. Die Verifikation war gut, der Wert bleibt in Supabase "
                 "(Status 'verifiziert') erhalten.")
-        else:
-            hinweis = (
-                f"OpenFang-Uebergabe nicht erfolgreich (Status {uebergabe.get('status')}) -- "
-                "die Verifikation selbst war gut, der Wert bleibt in Supabase (Status "
-                "'verifiziert') erhalten. Retryable: sobald OpenFang wieder erreichbar "
-                "ist, kann die Uebergabe fuer dieselbe Referenz erneut versucht werden.")
+            return {"ok": False, "referenz": referenz, "retryable": False,
+                    "erfordert_betreiber_entscheidung": True, "fehler": hinweis}
+        hinweis = (
+            f"OpenFang-Uebergabe nicht erfolgreich (Status {uebergabe.get('status')}) -- "
+            "die Verifikation selbst war gut, der Wert bleibt in Supabase (Status "
+            "'verifiziert') erhalten. Retryable: sobald OpenFang wieder erreichbar "
+            "ist, kann die Uebergabe fuer dieselbe Referenz erneut versucht werden.")
         return {"ok": False, "referenz": referenz, "retryable": True, "fehler": hinweis}
 
     freigabe = ablage.uebernommen(referenz)

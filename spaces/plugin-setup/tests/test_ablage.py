@@ -66,12 +66,29 @@ def _cleanup(referenz: str) -> None:
     """)
 
 
-def _docker_logs(container: str) -> list[str]:
-    """Der komplette stdout+stderr-Log des Containers, als Zeilenliste --
-    Postgres' `log_min_error_statement = error` schreibt eine fehlschlagende
-    Anweisung als `STATEMENT:`-Zeile genau dorthin (`docker logs`)."""
+def _docker_since_timestamp(container: str) -> str:
+    """RFC3339 (Sekundengenauigkeit) 'jetzt', gemessen IM Container (nicht
+    auf dem Host) -- vermeidet Uhrenversatz zwischen beiden. Review Runde 2:
+    die vorherige Fassung zaehlte Log-Zeilen vor/nach und schnitt per Index
+    -- unter Log-Rotation/-Truncation waere das eine STILLE FALSCH-GRUEN-
+    Quelle (der Index zeigt dann auf die falschen Zeilen oder ins Leere).
+    `docker logs --since` filtert stattdessen nach dem Zeitstempel jedes
+    einzelnen Log-Eintrags -- Rotation/Truncation aendern daran nichts."""
     res = subprocess.run(
-        ["docker", "logs", container],
+        ["docker", "exec", "-i", container, "date", "-u", "+%Y-%m-%dT%H:%M:%SZ"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=True, timeout=15,
+    )
+    return res.stdout.strip()
+
+
+def _docker_logs_since(container: str, since: str) -> list[str]:
+    """Der stdout+stderr-Log des Containers AB `since` (RFC3339), als
+    Zeilenliste -- Postgres' `log_min_error_statement = error` schreibt
+    eine fehlschlagende Anweisung als `ERROR:`/`STATEMENT:`/`CONTEXT:`-
+    Zeilen genau dorthin (`docker logs`)."""
+    res = subprocess.run(
+        ["docker", "logs", "--since", since, container],
         capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
     return (res.stdout + res.stderr).splitlines()
@@ -228,15 +245,22 @@ def test_wert_landet_nie_im_postgres_server_log():
     ist auf dieser Instanz aktiv (gemessen), und eine referenz_name-
     Kollision loest garantiert einen Fehler aus -- genau der Pfad, ueber
     den der Wert vorher (als SQL-Literal im Statement-Text) 37-fach in
-    `docker logs` auftauchte. Nach dem Fix (COPY statt Literal) duerfen es
-    ZERO Treffer sein, in genau den Log-Zeilen, die dieser Testlauf selbst
-    erzeugt hat (nicht die gesamte Container-Historie -- die kann von
-    fremden Sessions stammen)."""
+    `docker logs` auftauchte. Nach dem Fix duerfen es ZERO Treffer sein, in
+    genau dem Zeitfenster, das dieser Testlauf selbst erzeugt hat (per
+    `docker logs --since`, nicht per Zeilen-Index -- s. `_docker_since_timestamp`).
+
+    Positiv-Kontrolle (Review Runde 2, "zero-control window"): ein leeres
+    Treffer-Ergebnis ist nur dann aussagekraeftig, wenn das Fenster
+    ueberhaupt etwas enthielt -- sonst waere ein STILLER Filterdefekt (z.B.
+    `--since` liefert versehentlich nichts) nicht von einem echten "kein
+    Leck" zu unterscheiden. Die Kollision loest GARANTIERT eine echte
+    ERROR-Zeile aus; die muss im `--since`-Fenster auftauchen, sonst ist
+    der Test selbst kaputt, nicht (notwendigerweise) der Fix."""
     referenz = f"PYTEST_ABLAGE_LOGLECK_{uuid.uuid4().hex[:8].upper()}"
     projekt = f"pytest-projekt-{uuid.uuid4().hex[:8]}"
     container = _container()
     try:
-        vor = len(_docker_logs(container))
+        seit = _docker_since_timestamp(container)
 
         erster = ablage.entgegennehmen(projekt, "demo-plugin", referenz, "bearer", _FAKE_WERT)
         assert erster["ok"] is True
@@ -244,11 +268,77 @@ def test_wert_landet_nie_im_postgres_server_log():
         zweiter = ablage.entgegennehmen(projekt, "demo-plugin", referenz, "bearer", _FAKE_WERT)
         assert zweiter["ok"] is False
 
-        neue_zeilen = _docker_logs(container)[vor:]
+        neue_zeilen = _docker_logs_since(container, seit)
+
+        # Positiv-Kontrolle: das Fenster muss die echte Kollisions-Fehlerzeile
+        # enthalten -- sonst ist unklar, ob "kein Treffer" unten "kein Leck"
+        # oder "--since hat nichts gefunden" bedeutet.
+        assert any("ERROR" in z for z in neue_zeilen), (
+            "kein 'ERROR' im --since-Fenster gefunden -- entweder loest die "
+            "Kollision keinen Log-Eintrag mehr aus, oder das --since-Fenster "
+            "selbst ist kaputt; ohne diese Kontrolle waere ein leeres "
+            "Treffer-Ergebnis unten nicht von einem defekten Filter zu "
+            "unterscheiden")
+
         treffer = [z for z in neue_zeilen if _FAKE_WERT in z]
         assert treffer == [], (
             f"{len(treffer)} Log-Zeile(n) dieses Testlaufs enthalten den Testwert -- "
             "C1 waere nicht behoben")
+    finally:
+        _cleanup(referenz)
+
+
+def test_wert_mit_alleinstehender_copy_endezeile_speichert_und_leckt_nicht():
+    """C1-Runde-2: `\\.` als eigene Zeile im Wert liess den psql-Client den
+    CSV-COPY-Datenstrom vorzeitig fuer beendet halten (`unterminated CSV
+    quoted field`) -- die `CONTEXT:`-Fehlerzeile zitierte dabei ein
+    Wert-Fragment woertlich, sowohl in `docker logs` als auch im
+    Rueckgabewert von `entgegennehmen()` (der die rohe psql-Ausgabe
+    spiegelte). Nach dem Base64-Fix (COPY traegt nur das base64-Alphabet,
+    das `\\.` und CSV-Quotierung strukturell nicht kennt) muss genau dieser
+    Wert (a) erfolgreich gespeichert werden -- Rundreise ueber den Vault
+    beweist das -- und (b) in keiner Log-Zeile des eigenen Testfensters
+    auftauchen, auch nicht in Fragmenten."""
+    wert = "zeile-eins-mit-geheimnis-XYZQWERTY\n\\.\nzeile-zwei"
+    referenz = f"PYTEST_ABLAGE_BACKSLASHPUNKT_{uuid.uuid4().hex[:8].upper()}"
+    projekt = f"pytest-projekt-{uuid.uuid4().hex[:8]}"
+    container = _container()
+    try:
+        seit = _docker_since_timestamp(container)
+
+        ergebnis = ablage.entgegennehmen(projekt, "demo-plugin", referenz, "bearer", wert)
+        assert ergebnis == {"ok": True, "referenz": referenz}
+
+        # (a) Rundreise: der Wert liegt tatsaechlich unveraendert im Vault
+        # (als postgres gelesen -- plugin_setup_agent selbst darf das nicht,
+        # s. test_rolle_kann_die_tabelle_nicht_lesen).
+        # psql -tA haengt an die Ausgabe genau EINEN abschliessenden
+        # Zeilenumbruch an (nicht Teil des gespeicherten Werts) -- hier
+        # bewusst per [:-1] statt .strip() entfernt, damit ein absichtlich
+        # im Wert enthaltener fuehrender/nachgestellter Leerraum (Teil
+        # dieses Tests: der Wert endet auf "zeile-zwei", kein Newline) nicht
+        # mit-weggeschnitten wird.
+        gespeichert = _psql_als_postgres_ok(
+            "SELECT decrypted_secret FROM vault.decrypted_secrets ds "
+            "JOIN plugin_setup.einrichtungen e ON e.vault_secret_id = ds.id "
+            f"WHERE e.referenz_name = '{referenz}';"
+        )
+        if gespeichert.endswith("\n"):
+            gespeichert = gespeichert[:-1]
+        assert gespeichert == wert
+
+        # (b) keine Log-Zeile des eigenen Fensters enthaelt ein Fragment des
+        # Werts (das laengste unveraenderte Teilstueck reicht als Nachweis).
+        # Die Positiv-Kontrolle fuer den --since-Mechanismus selbst steht
+        # bereits in test_wert_landet_nie_im_postgres_server_log -- dieser
+        # Test loest bewusst KEINEN Fehler aus (der Wert soll erfolgreich
+        # gespeichert werden), ein leeres Fenster ist hier der Normalfall.
+        neue_zeilen = _docker_logs_since(container, seit)
+        fragment = "zeile-eins-mit-geheimnis-XYZQWERTY"
+        treffer = [z for z in neue_zeilen if fragment in z]
+        assert treffer == [], (
+            f"{len(treffer)} Log-Zeile(n) enthalten ein Fragment des Werts -- "
+            "C1-Runde-2 waere nicht behoben")
     finally:
         _cleanup(referenz)
 

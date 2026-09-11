@@ -31,14 +31,17 @@ wirft je. Rueckgabe ist immer `{"ok": True, ...}` oder
 verwenden, nie in einer Log- oder Fehlerzeile.
 
 Atomaritaet: `entgegennehmen()` legt den Vault-Secret UND die Zustandszeile
-in EINEM SQL-Statement an (CTE `WITH v AS (SELECT vault.create_secret(...))
-INSERT ... SELECT ... FROM v`). Scheitert der INSERT (z.B. `referenz_name`
-schon vergeben), rollt Postgres das ganze Statement zurueck -- inklusive des
-Vault-Secrets aus der CTE. Kein verwaister Vault-Eintrag bei einer
-Kollision.
+in EINER expliziten Transaktion an (COPY der base64-kodierten `wert` in eine
+Temp-Tabelle, ein DO-Block-Guard, dann CTE `WITH v AS (SELECT
+vault.create_secret(...)) INSERT ... SELECT ... FROM v`). Scheitert der
+INSERT (z.B. `referenz_name` schon vergeben), rollt Postgres das ganze
+Statement zurueck -- inklusive des Vault-Secrets aus der CTE. Kein
+verwaister Vault-Eintrag bei einer Kollision. Details zum Transportweg
+(base64 statt CSV, und warum) stehen bei `entgegennehmen()` selbst.
 """
 from __future__ import annotations
 
+import base64
 import os
 import re
 import subprocess
@@ -48,6 +51,15 @@ from typing import Optional
 _ART_ERLAUBT = {"bearer", "oauth", "connector"}
 _REFERENZ_MUSTER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 _HINWEIS_MAXLAENGE = 200
+_FEHLER_MAXLAENGE = 200
+
+# Steuerzeichen, die in `wert` weiterhin erlaubt sind (C1-Runde-2, Punkt c):
+# Tab/LF/CR, weil sie in mehrzeiligen Werten wie PEM-Schluesseln legitim
+# vorkommen (gemessen: mehrzeilige PEM-artige Werte, Anfuehrungszeichen,
+# Kommas, Tabs und ein eingebettetes "\." speichern nach dem Base64-Fix
+# alle korrekt). Alles andere im C0-Bereich plus DEL ist verdaechtig genug,
+# um fail-closed abzulehnen, statt es unbesehen zu transportieren.
+_ERLAUBTE_STEUERZEICHEN = {"\t", "\n", "\r"}
 
 _DB_NAME = "postgres"
 _LOCAL_CONTAINER_HINWEIS = "supabase-db"
@@ -131,12 +143,22 @@ def _psql(sql: str, *, rolle: Optional[str] = None) -> tuple:
     return res.returncode, (res.stdout + res.stderr)
 
 
-def _copy_csv_feld(wert: str) -> str:
-    """Ein einzelnes CSV-Feld (COPY ... WITH (FORMAT csv)), Anfuehrungszeichen
-    verdoppelt -- Postgres' CSV-COPY-Format erlaubt eingebettete Zeilenumbrueche
-    in einem gequoteten Feld, also braucht es (anders als das text-Format)
-    keine \\n/\\t/\\\\-Sonderbehandlung."""
-    return '"' + wert.replace('"', '""') + '"'
+def _hat_unzulaessige_steuerzeichen(s: str) -> bool:
+    return any((ord(c) < 0x20 or ord(c) == 0x7F) and c not in _ERLAUBTE_STEUERZEICHEN for c in s)
+
+
+def _erste_fehlerzeile(out: str) -> str:
+    """Nur die ERSTE nichtleere Zeile einer psql-Ausgabe -- psql schreibt
+    die `ERROR:`-Zeile selbst zuerst, `CONTEXT:`/`DETAIL:`/`STATEMENT:`
+    (die im schlimmsten Fall Nutzdaten-Fragmente tragen koennten, s.
+    C1-Runde-2) folgen erst DANACH. Nur Zeile 1 zu nehmen ist darum keine
+    Heuristik, sondern schliesst diese Zeilen strukturell aus, unabhaengig
+    davon, was in ihnen steht."""
+    for zeile in out.splitlines():
+        zeile = zeile.strip()
+        if zeile:
+            return zeile[:_FEHLER_MAXLAENGE]
+    return "(keine Ausgabe)"
 
 
 def entgegennehmen(projekt: str, plugin: str, referenz: str, art: str, wert: str) -> dict:
@@ -150,20 +172,53 @@ def entgegennehmen(projekt: str, plugin: str, referenz: str, art: str, wert: str
     `log_min_error_statement = error`, und jede fehlschlagende Anweisung
     (z.B. eine `referenz_name`-Kollision) landete darum wortwoertlich in
     `docker logs <supabase-db>` (gemessen: 37 Treffer nach einer einzigen
-    absichtlich ausgeloesten Kollision). `log_parameter_max_length_on_error
-    = 0` auf dieser Instanz wuerde echte gebundene Parameter schuetzen,
-    aber wir haben keinen nativen Treiber -- nur `docker exec ... psql`
-    (Muster spaces/marketing/sync/_db.py). Der Wert reist darum stattdessen
-    ueber `COPY ... FROM STDIN`: COPY-Nutzdaten sind KEIN Statement-Text,
-    sie laufen als eigener Protokoll-Stream und tauchen in der
-    `STATEMENT:`-Logzeile eines Fehlers nicht auf (bewiesen in
-    tests/test_ablage.py::test_wert_landet_nie_im_postgres_server_log).
-    Eine temporaere Tabelle nimmt die Kopierten Daten auf; `vault.create_secret`
-    liest `wert` aus einer Spalte dieser Tabelle (`t.wert`), nie aus einem
-    Literal. Alles in EINER expliziten Transaktion, damit ein scheiternder
-    INSERT (referenz_name-Kollision) das ganze Statement inkl. des bereits
-    erzeugten Vault-Secrets zurueckrollt -- exakt dieselbe Atomaritaets-
-    Zusicherung wie vorher, nur ohne den Wert im Statement-Text.
+    absichtlich ausgeloesten Kollision).
+
+    C1-FIX RUNDE 2 (2026-09-11): die erste COPY-Fassung (CSV-Format,
+    QUOTE '"') schloss diesen Sink nicht wirklich -- sie ersetzte "wert
+    steht im Statement-Text" durch "wert kann eine COPY-Parse-Fehlermeldung
+    ausloesen, und DIE landet ebenso im Log". Gemessen: ein `wert`, der
+    eine Zeile enthaelt, die exakt `\\.` lautet, laesst den CSV-Parser mit
+    "unterminated CSV quoted field" abbrechen, und Postgres' `CONTEXT:`-Zeile
+    zu diesem Fehler zitiert das WERT-FRAGMENT woertlich -- in `docker logs`
+    UND (weil `entgegennehmen()` frueher die ganze psql-Ausgabe in `fehler`
+    spiegelte) im Rueckgabewert dieser Funktion. Zwei Sinks, nicht einer,
+    und beide haengen an einer psql-Client-Eigenheit (End-of-Data-Marker
+    `\\.`), nicht an echtem CSV-Verhalten (das serverseitig eingebettete
+    Zeilenumbrueche in einem gequoteten Feld erlaubt -- nur der *psql-Client*
+    scannt zeilenweise nach dem Marker, unabhaengig vom Quoting-Zustand).
+
+    Fix, in drei Teilen:
+      (a) TRANSPORT: `wert` wird client-seitig base64-kodiert, per COPY
+          (TEXT-Format, keine CSV-Quotierung noetig) uebertragen und
+          serverseitig mit `convert_from(decode(t.wert, 'base64'), 'UTF8')`
+          zurueckdekodiert, BEVOR er an `vault.create_secret` geht. Der
+          Punkt ist NICHT, dass Base64 den Wert verbirgt (Base64 EINES
+          Geheimnisses IST das Geheimnis) -- der Punkt ist, dass Base64s
+          Alphabet (A-Z a-z 0-9 + /) weder Backslash noch Zeilenumbruch
+          noch Anfuehrungszeichen kennt: der COPY-End-of-Data-Marker `\\.`
+          kann in einer base64-kodierten Zeile STRUKTURELL nicht auftreten,
+          also kann auch keine `CONTEXT:`-Zeile mit einem Wert-Fragment
+          mehr entstehen -- unabhaengig davon, was `wert` selbst enthaelt.
+      (b) RUECKGABE: `entgegennehmen()` spiegelt bei einem Fehler nicht mehr
+          bis zu 300 Zeichen der rohen psql-Ausgabe -- nur noch die ERSTE
+          Zeile (psql schreibt `ERROR: ...` immer zuerst, `CONTEXT:`/
+          `DETAIL:`/`STATEMENT:` erst danach, s. `_erste_fehlerzeile`), auf
+          200 Zeichen gekappt, UND weiterhin durch `_ohne_wert` geschickt --
+          als Verteidigung in der Tiefe, nicht als die Garantie selbst.
+      (c) EINGABE: Steuerzeichen ausser Tab/LF/CR werden jetzt generell
+          abgelehnt (vorher nur NUL) -- fail-soft, bevor irgendetwas an die
+          Datenbank geht.
+
+    Eine temporaere Tabelle nimmt die kopierten (weiterhin base64-kodierten)
+    Daten auf; ein DO-Block prueft direkt danach, dass GENAU EINE Zeile
+    ankam (macht "COPY liefert 0 Zeilen -> INSERT betrifft 0 Zeilen -> Funktion
+    meldet trotzdem ok:true" durch Konstruktion unerreichbar, statt sich auf
+    einen nie beobachteten Pfad zu verlassen). `vault.create_secret` liest
+    den dekodierten Wert aus einer Spalte dieser Tabelle (`t.wert`), nie aus
+    einem Literal. Alles in EINER expliziten Transaktion, damit ein
+    scheiternder INSERT (referenz_name-Kollision) das ganze Statement inkl.
+    des bereits erzeugten Vault-Secrets zurueckrollt.
     """
     if art not in _ART_ERLAUBT:
         return {"ok": False, "fehler": f"unbekannte art: {art!r} (erlaubt: {sorted(_ART_ERLAUBT)})"}
@@ -175,16 +230,31 @@ def entgegennehmen(projekt: str, plugin: str, referenz: str, art: str, wert: str
         return {"ok": False, "fehler": "wert fehlt"}
     if "\x00" in wert:
         return {"ok": False, "fehler": "wert enthaelt ein NUL-Byte, nicht speicherbar"}
+    if _hat_unzulaessige_steuerzeichen(wert):
+        return {"ok": False, "fehler": "wert enthaelt ein nicht erlaubtes Steuerzeichen "
+                                        "(erlaubt: Tab, LF, CR)"}
+
+    # (a) Base64, EIN Encode-Schritt, EINE Zeile -- kein Zeilenumbruch, kein
+    # Backslash, kein Anfuehrungszeichen moeglich, darum keine CSV-Quotierung
+    # noetig (COPY im Standard-TEXT-Format reicht).
+    wert_b64 = base64.b64encode(wert.encode("utf-8")).decode("ascii")
 
     secret_name = f"plugin-setup-{referenz}-{uuid.uuid4().hex[:8]}"
     sql = (
         "BEGIN;\n"
-        "CREATE TEMP TABLE _psu_wert (wert text) ON COMMIT DROP;\n"
-        "COPY _psu_wert (wert) FROM STDIN WITH (FORMAT csv, QUOTE '\"');\n"
-        f"{_copy_csv_feld(wert)}\n"
+        "CREATE TEMP TABLE _psu_wert (wert_b64 text) ON COMMIT DROP;\n"
+        "COPY _psu_wert (wert_b64) FROM STDIN;\n"
+        f"{wert_b64}\n"
         "\\.\n"
+        "DO $psu_check$\n"
+        "BEGIN\n"
+        "  IF (SELECT count(*) FROM _psu_wert) <> 1 THEN\n"
+        "    RAISE EXCEPTION 'plugin-setup: COPY lieferte nicht genau eine Zeile';\n"
+        "  END IF;\n"
+        "END;\n"
+        "$psu_check$;\n"
         "WITH v AS (\n"
-        "  SELECT vault.create_secret(t.wert, "
+        "  SELECT vault.create_secret(convert_from(decode(t.wert_b64, 'base64'), 'UTF8'), "
         f"{_sql_literal(secret_name)}, {_sql_literal('plugin-setup: ' + referenz)}) AS id\n"
         "  FROM _psu_wert t\n"
         ")\n"
@@ -198,10 +268,11 @@ def entgegennehmen(projekt: str, plugin: str, referenz: str, art: str, wert: str
         rc, out = _psql(sql)
     except Exception as e:  # noqa: BLE001 -- fail-soft ist der Vertrag
         return {"ok": False, "fehler": _ohne_wert(
-            f"Supabase nicht erreichbar ({type(e).__name__}: {e})", wert)}
+            f"Supabase nicht erreichbar ({type(e).__name__}: {e})", wert, wert_b64)}
     if rc != 0:
+        # (b) NUR die erste Zeile, nie die volle Ausgabe -- s. Docstring.
         return {"ok": False, "fehler": _ohne_wert(
-            f"Ablage fehlgeschlagen: {out.strip()[:300]}", wert)}
+            f"Ablage fehlgeschlagen: {_erste_fehlerzeile(out)}", wert, wert_b64)}
     return {"ok": True, "referenz": referenz}
 
 

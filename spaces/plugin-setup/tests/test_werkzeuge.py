@@ -187,6 +187,48 @@ def test_art_unbekannt_wird_abgelehnt_bevor_irgendetwas_in_supabase_landet(monke
     assert openfang.aufrufe == [], "unbekannte art darf OpenFang nie erreichen"
 
 
+@pytest.mark.parametrize("art", ["oauth", "connector"])
+def test_ziel_pflicht_fuer_oauth_und_connector_lehnt_vor_jedem_schreibzugriff_ab(monkeypatch, art):
+    """I3 (Review Runde 2): `werkzeuge.py:228-229` lehnt ein leeres `ziel`
+    fuer `art in {oauth, connector}` ab -- aber ohne diesen Test haette
+    jeder bestehende Ordnungstest weiter gruen geblieben, wenn genau diese
+    zwei Zeilen geloescht wuerden (sie arbeiten alle mit `art="bearer"`
+    oder `"unbekannt"`, fuer die `ziel` nie Pflicht ist). Dieser Test
+    beweist beides: die Ablehnung selbst UND dass sie VOR jedem
+    Schreibzugriff greift -- `ablage.entgegennehmen` wird nie aufgerufen."""
+    aufnahme = _Aufrufe(ergebnis={"ok": True, "referenz": "X"})
+    monkeypatch.setattr(werkzeuge.ablage, "entgegennehmen", aufnahme)
+    pruefen = _Aufrufe(ergebnis={"gut": True, "status": 200})
+    monkeypatch.setattr(werkzeuge, "pruefe", pruefen)
+
+    ergebnis = werkzeuge.schluessel_entgegennehmen(
+        "proj", "demo-plugin", "X", art, _FAKE_WERT, ziel="")
+
+    assert ergebnis["ok"] is False
+    assert "ziel" in ergebnis["fehler"].lower()
+    assert aufnahme.aufrufe == [], "ein fehlendes ziel darf nie zu einem Supabase-Schreibzugriff fuehren"
+    assert pruefen.aufrufe == [], "ein fehlendes ziel darf nie bis zur Anbieter-Pruefung kommen"
+
+
+def test_ziel_gesetzt_fuer_oauth_kommt_durch(monkeypatch):
+    """Gegenprobe zum I3-Test oben: ein NICHT-leeres `ziel` fuer `oauth`
+    darf die Ablehnung nicht auch treffen (sonst waere die Wache zu
+    breit, nicht nur zu schmal)."""
+    monkeypatch.setattr(werkzeuge.ablage, "entgegennehmen",
+                        _Aufrufe(ergebnis={"ok": True, "referenz": "X"}))
+    pruefen = _Aufrufe(ergebnis={"gut": True, "status": 200})
+    monkeypatch.setattr(werkzeuge, "pruefe", pruefen)
+    monkeypatch.setattr(werkzeuge.ablage, "verifizieren", _Aufrufe(ergebnis={"ok": True}))
+    monkeypatch.setattr(werkzeuge, "_openfang_uebernehmen", _Aufrufe(ergebnis={"ok": True, "status": 200}))
+    monkeypatch.setattr(werkzeuge.ablage, "uebernommen", _Aufrufe(ergebnis={"ok": True}))
+
+    ergebnis = werkzeuge.schluessel_entgegennehmen(
+        "proj", "demo-plugin", "X", "oauth", _FAKE_WERT, ziel="https://mcp.example.com/mcp")
+
+    assert ergebnis == {"ok": True, "referenz": "X"}
+    assert pruefen.aufrufe, "mit gesetztem ziel muss die Pruefung tatsaechlich erreicht werden"
+
+
 def test_openfang_uebergabe_scheitert_bleibt_auf_verifiziert_stehen(monkeypatch):
     """I2-Fix (Review Runde 1, restaurierte Brief-Reihenfolge): verifiziert,
     aber OpenFang lehnt ab (z.B. 503 store_unavailable) -- das ist KEIN
@@ -219,7 +261,13 @@ def test_openfang_409_meldet_betreiber_entscheidung_kein_autooverwrite(monkeypat
     """409 (reference_exists) heisst: die Referenz koennte bei OpenFang
     schon einen anderen, bewusst gesetzten Wert tragen. Kein automatisches
     Ueberschreiben, keine Loeschung der Supabase-Kopie -- eine Entscheidung
-    des Betreibers wird verlangt, nicht getroffen."""
+    des Betreibers wird verlangt, nicht getroffen.
+
+    Minor-Fix (Review Runde 2): geprueft wird das maschinenlesbare Signal
+    (`erfordert_betreiber_entscheidung`, `retryable=False`), NICHT das
+    deutsche Wort "Betreiber" im Fliesstext -- ein Aufrufer, der nur den
+    Fliesstext prueft, koennte 409 sonst mit einem generischen Fehlschlag
+    verwechseln und blind automatisch wiederholen."""
     monkeypatch.setattr(werkzeuge.ablage, "entgegennehmen",
                         _Aufrufe(ergebnis={"ok": True, "referenz": "X"}))
     monkeypatch.setattr(werkzeuge, "pruefe", _Aufrufe(ergebnis={"gut": True, "status": 200}))
@@ -234,9 +282,28 @@ def test_openfang_409_meldet_betreiber_entscheidung_kein_autooverwrite(monkeypat
     ergebnis = werkzeuge.schluessel_entgegennehmen("proj", "demo-plugin", "X", "bearer", _FAKE_WERT)
 
     assert ergebnis["ok"] is False
-    assert "Betreiber" in ergebnis["fehler"]
+    assert ergebnis.get("erfordert_betreiber_entscheidung") is True
+    assert ergebnis.get("retryable") is False, "409 darf sich nicht als blind automatisch wiederholbar ausgeben"
     assert fehlschlagen.aufrufe == []
     assert uebernommen.aufrufe == []
+
+
+def test_openfang_409_und_sonstiger_fehlschlag_haben_unterschiedliche_signale(monkeypatch):
+    """Gegenprobe: ein NICHT-409-Fehlschlag (z.B. 503) muss weiterhin
+    `retryable=True` und KEIN `erfordert_betreiber_entscheidung` tragen --
+    sonst waere die Unterscheidung nur fuer 409 sichtbar, nicht als
+    generelles Vertragsmerkmal beider Zweige."""
+    monkeypatch.setattr(werkzeuge.ablage, "entgegennehmen",
+                        _Aufrufe(ergebnis={"ok": True, "referenz": "X"}))
+    monkeypatch.setattr(werkzeuge, "pruefe", _Aufrufe(ergebnis={"gut": True, "status": 200}))
+    monkeypatch.setattr(werkzeuge.ablage, "verifizieren", _Aufrufe(ergebnis={"ok": True}))
+    monkeypatch.setattr(werkzeuge, "_openfang_uebernehmen",
+                        _Aufrufe(ergebnis={"ok": False, "status": 503, "fehler": "OpenFang HTTP 503"}))
+
+    ergebnis = werkzeuge.schluessel_entgegennehmen("proj", "demo-plugin", "X", "bearer", _FAKE_WERT)
+
+    assert ergebnis.get("retryable") is True
+    assert "erfordert_betreiber_entscheidung" not in ergebnis
 
 
 # ─── Fail-soft ohne konfigurierte Ziele (Muster marketing/claw/werkzeuge.py) ─
