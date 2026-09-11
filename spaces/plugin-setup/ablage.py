@@ -148,12 +148,32 @@ def _hat_unzulaessige_steuerzeichen(s: str) -> bool:
 
 
 def _erste_fehlerzeile(out: str) -> str:
-    """Nur die ERSTE nichtleere Zeile einer psql-Ausgabe -- psql schreibt
-    die `ERROR:`-Zeile selbst zuerst, `CONTEXT:`/`DETAIL:`/`STATEMENT:`
-    (die im schlimmsten Fall Nutzdaten-Fragmente tragen koennten, s.
-    C1-Runde-2) folgen erst DANACH. Nur Zeile 1 zu nehmen ist darum keine
-    Heuristik, sondern schliesst diese Zeilen strukturell aus, unabhaengig
-    davon, was in ihnen steht."""
+    """Die Meldungszeile einer psql-Ausgabe -- und NICHTS sonst.
+
+    Warum nicht einfach die erste nichtleere Zeile: `_psql` gibt
+    `stdout + stderr` zurueck, und psql schreibt bei `-tA` die
+    Kommando-Tags jeder Anweisung (`BEGIN`, `CREATE TABLE`, `COPY 1`,
+    `DO`, ...) auf STDOUT, waehrend `ERROR:` auf STDERR geht. Die erste
+    Zeile ist darum immer `BEGIN` und nie die Diagnose. Eine fruehere
+    Fassung behauptete hier, Zeile 1 sei aus strukturellen Gruenden
+    sicher; das war doppelt falsch -- sie war nicht die Fehlerzeile, und
+    die Begruendung haette einen spaeteren Leser dazu verleitet, darauf
+    aufzubauen.
+
+    Also: die erste Zeile nehmen, die mit `ERROR:` oder `FATAL:`
+    beginnt. Das IST eine Heuristik ueber das Ausgabeformat, und sie
+    wird hier nicht als Sicherheitsgrenze benutzt. Die Sicherheit kommt
+    aus zwei anderen Quellen: der Wert reist base64-kodiert und kann
+    darum gar keinen Parse-Fehler und also keine `CONTEXT:`-Zeile mit
+    Nutzdaten erzeugen (s. `entgegennehmen`), und `_ohne_wert` scrubbt
+    als Rueckhalt. Entscheidend fuer diese Funktion ist nur, dass sie
+    NUR die Meldungszeile durchlaesst und die ihr folgenden
+    `CONTEXT:`/`DETAIL:`/`STATEMENT:`-Zeilen nie mitnimmt.
+    """
+    for zeile in out.splitlines():
+        zeile = zeile.strip()
+        if zeile.startswith("ERROR:") or zeile.startswith("FATAL:"):
+            return zeile[:_FEHLER_MAXLAENGE]
     for zeile in out.splitlines():
         zeile = zeile.strip()
         if zeile:

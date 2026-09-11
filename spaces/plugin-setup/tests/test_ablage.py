@@ -20,6 +20,7 @@ Regeln, die diese Datei selbst befolgt (Global Constraints im Brief):
 """
 from __future__ import annotations
 
+import hashlib
 import subprocess
 import sys
 import uuid
@@ -427,3 +428,85 @@ def test_referenz_mit_verbotenen_zeichen_wird_abgelehnt():
     ergebnis = ablage.entgegennehmen("proj", "demo-plugin", "nicht gueltig!", "bearer", _FAKE_WERT)
     assert ergebnis["ok"] is False
     assert _FAKE_WERT not in ergebnis["fehler"]
+
+
+# ─── Die Waechter, die Runde 2 einbaute, aber nicht festhielt ────────────
+#
+# Beide Luecken sind derselbe Fehlertyp wie I3 aus Runde 1: der Code tut das
+# Richtige, aber kein Test faellt, wenn man ihn entfernt. Ein ungepinnter
+# Waechter ist ein Waechter auf Abruf.
+
+
+@pytest.mark.parametrize("steuerzeichen", ["\x0b", "\x1b", "\x7f", "\x01"])
+def test_steuerzeichen_im_wert_werden_abgelehnt(steuerzeichen):
+    """Steuerzeichen ausser Tab/LF/CR werden vor jedem Schreibvorgang
+    abgelehnt. Entfernt man die Pruefung in ablage.entgegennehmen, laeuft
+    der Wert in die Datenbank und dieser Test wird rot."""
+    referenz = f"PYTEST_CTRL_{uuid.uuid4().hex[:8].upper()}"
+    try:
+        ergebnis = ablage.entgegennehmen(
+            f"pytest-projekt-{uuid.uuid4().hex[:8]}", "demo-plugin",
+            referenz, "bearer", f"erfunden{steuerzeichen}wert",
+        )
+        assert ergebnis["ok"] is False
+        # Nichts darf geschrieben worden sein -- fail closed heisst: VOR der DB.
+        assert _psql_als_postgres_ok(
+            f"SELECT count(*) FROM plugin_setup.einrichtungen WHERE referenz_name = '{referenz}';"
+        ).strip() == "0"
+    finally:
+        _cleanup(referenz)
+
+
+@pytest.mark.parametrize("zeichen,name", [("\t", "Tab"), ("\r\n", "CRLF"), ("\n", "LF")])
+def test_mehrzeilige_werte_bleiben_erlaubt(zeichen, name):
+    """Die Gegenprobe zum Test darueber: Tab, CR und LF sind ausdruecklich
+    erlaubt, sonst waere ein PEM-Schluessel nicht ablegbar. Zieht jemand
+    die Steuerzeichen-Pruefung zu weit, wird dieser Test rot."""
+    referenz = f"PYTEST_MEHRZEIL_{uuid.uuid4().hex[:8].upper()}"
+    wert = f"erfunden-oben{zeichen}erfunden-unten"
+    try:
+        ergebnis = ablage.entgegennehmen(
+            f"pytest-projekt-{uuid.uuid4().hex[:8]}", "demo-plugin",
+            referenz, "bearer", wert,
+        )
+        assert ergebnis["ok"] is True, f"{name} muss erlaubt bleiben"
+        # Serverseitig per md5 vergleichen, NICHT ueber die Textausgabe:
+        # `psql -tA` normalisiert ein CR beim Ausgeben, ein Textvergleich
+        # meldet also einen Datenverlust, den es nicht gibt. Nachgemessen:
+        # der Wert liegt byteidentisch im Vault, nur die Ausgabe luegt.
+        in_der_db = _psql_als_postgres_ok(
+            "SELECT md5(decrypted_secret) FROM vault.decrypted_secrets WHERE id = "
+            f"(SELECT vault_secret_id FROM plugin_setup.einrichtungen WHERE referenz_name = '{referenz}');"
+        ).strip()
+        assert in_der_db == hashlib.md5(wert.encode("utf-8")).hexdigest(), \
+            "der Wert muss byteidentisch im Vault liegen"
+    finally:
+        _cleanup(referenz)
+
+
+def test_fehlermeldung_nennt_den_fehler_und_nur_die_meldungszeile():
+    """Zwei Zusicherungen an einem erzwungenen Fehler:
+
+    1. Die Meldung nennt den tatsaechlichen Fehler. psql schreibt bei -tA die
+       Kommando-Tags (BEGIN, CREATE TABLE, COPY 1, DO) auf stdout und ERROR:
+       auf stderr, und `_psql` gibt beides zusammen zurueck -- wer schlicht
+       die erste nichtleere Zeile nimmt, meldet bei JEDEM Fehler "BEGIN".
+    2. Die Meldung traegt NUR die Meldungszeile. CONTEXT:/DETAIL:/STATEMENT:
+       folgen ihr und koennten Nutzdaten-Fragmente tragen -- genau der
+       zweite Abfluss aus der C1-Runde-2.
+    """
+    referenz = f"PYTEST_FEHLTEXT_{uuid.uuid4().hex[:8].upper()}"
+    projekt = f"pytest-projekt-{uuid.uuid4().hex[:8]}"
+    try:
+        assert ablage.entgegennehmen(projekt, "demo-plugin", referenz, "bearer", _FAKE_WERT)["ok"] is True
+        zweiter = ablage.entgegennehmen(projekt, "demo-plugin", referenz, "bearer", _FAKE_WERT)
+        assert zweiter["ok"] is False
+
+        fehler = zweiter["fehler"]
+        assert "ERROR:" in fehler, f"die Diagnose muss den Fehler nennen, nicht ein Kommando-Tag: {fehler!r}"
+        assert "BEGIN" not in fehler, f"Kommando-Tag statt Fehlermeldung: {fehler!r}"
+        for verboten in ("CONTEXT:", "DETAIL:", "STATEMENT:"):
+            assert verboten not in fehler, f"{verboten} darf den Aufrufer nie erreichen: {fehler!r}"
+        assert _FAKE_WERT not in fehler
+    finally:
+        _cleanup(referenz)
