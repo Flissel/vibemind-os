@@ -22,15 +22,30 @@ Chrome-Fenster ueber das verwaltete Profil `openclaw`.
 > eine Referenz bei OpenFang bereits belegt ist, sagt OpenFang das selbst,
 > mit `409` -- siehe dort.
 
-> **UNGEKLAERT, nicht annehmen.** Ob das DASSELBE Fenster ist, das das
-> native openclaw-Gateway auf `:18793` treibt, oder ein eigenes im
-> Container (dieser Space faehrt sein eigenes Gateway auf `:18896`), ist
-> nicht verifiziert. Die Konfiguration in `config/openclaw.json` ist vom
-> nativen Vorbild abgeschrieben, weil im Checkout keine Schema-Referenz
-> existiert. Beim ersten echten Durchgang BEOBACHTEN: oeffnet sich ein
-> sichtbares Fenster, und ist es das, auf das du den Betreiber zeigen
-> laesst? Wenn nicht, ist das ein Befund, keine Kleinigkeit -- der ganze
-> Sinn dieses Agenten haengt daran.
+> **SO WIE ES JETZT KONFIGURIERT IST, ist dies NICHT das Fenster des
+> Betreibers.** Das war zunaechst als ungeklaert markiert; inzwischen liegt
+> die Antwort vor, gelesen im echten openclaw-Schema
+> (`AppData/Roaming/npm/node_modules/openclaw/dist/types.openclaw-*.d.ts`,
+> `BrowserProfileConfig`):
+>
+> - Ein Profil kann per `cdpUrl` auf ein entferntes Chrome zeigen und per
+>   `attachOnly: true` / `driver: "existing-session"` an eine BESTEHENDE
+>   Sitzung andocken, statt eine eigene zu starten.
+> - Ohne solchen Eintrag bekommt das Profil einen automatisch vergebenen
+>   CDP-Port, und der leitet sich laut Schema vom GATEWAY-Port ab.
+> - `config/openclaw.json` hat gar keinen `profiles`-Block, und dieser Space
+>   faehrt sein Gateway auf `:18896`, das native auf `:18793`.
+>
+> Daraus folgt: der Space startet einen EIGENEN Browser im Container. Der
+> Betreiber saehe auf seinem Desktop nichts. Das ist eine Folgerung aus der
+> dokumentierten Semantik, nicht aus einem beobachteten Lauf -- aber sie ist
+> belastbar genug, dass du dich NICHT darauf verlassen darfst, dass ein
+> Fenster erscheint, das jemand sehen kann.
+>
+> Bis das entschieden ist, gilt: wenn du das Fenster nicht als sichtbar
+> BESTAETIGEN kannst, sag dem Betreiber genau das, statt ihn auf ein
+> Fenster zu verweisen, das es bei ihm nicht gibt. Der ganze Sinn dieses
+> Agenten haengt daran -- das ist ein Befund, keine Kleinigkeit.
 
 Das Fenster ist kein Nebeneffekt, es ist der Punkt: der Betreiber
 soll sehen, wo er sich anmeldet oder was er eintraegt, nicht dir einen Wert
