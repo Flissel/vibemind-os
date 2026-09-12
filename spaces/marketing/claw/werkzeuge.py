@@ -14,7 +14,7 @@ import os
 import urllib.parse
 import urllib.request
 
-from spaces.marketing.claw import ablage, laura, llm, schaufenster, wissen
+from spaces.marketing.claw import ablage, laura, llm, schaufenster, stil, wissen
 
 FEHLER_MAXLAENGE = 300
 
@@ -323,6 +323,11 @@ def versand_beauftragen(kanal: str, nachricht: str, empfaenger: str = "",
     """
     if not (nachricht or "").strip():
         return {"ok": False, "fehler": "Die Nachricht ist leer."}
+    # Hausstil auch hier: dieser Weg umgeht `kampagne_entwerfen`, und was
+    # rausgeht, soll denselben Regeln folgen wie das, was entworfen wird.
+    nachricht, gekuerzt = stil.hausstil(nachricht)
+    betreff, n2 = stil.hausstil(betreff or "")
+    gekuerzt += n2
     antwort = _api("/api/versandauftraege", {
         "kanal": kanal, "empfaenger": empfaenger, "nachricht": nachricht,
         "betreff": betreff, "medien_datei": medien_datei,
@@ -338,10 +343,13 @@ def versand_beauftragen(kanal: str, nachricht: str, empfaenger: str = "",
     if not ergebnis.get("ok"):
         return {"ok": False, "fehler": ergebnis.get("grund")
                 or "Der Auftrag wurde ohne Begruendung abgelehnt."}
-    return {"ok": True, "daten": {
-        "auftrag_id": ergebnis.get("id"),
-        "wiederholung": bool(ergebnis.get("wiederholung")),
-        "hinweis": ergebnis.get("grund", "")}}
+    daten = {"auftrag_id": ergebnis.get("id"),
+             "wiederholung": bool(ergebnis.get("wiederholung")),
+             "hinweis": ergebnis.get("grund", "")}
+    if gekuerzt:
+        daten["hausstil"] = (
+            f"{gekuerzt} lange(r) Gedankenstrich(e) gekuerzt (siehe stil.py).")
+    return {"ok": True, "daten": daten}
 
 
 def versandauftraege_lesen(status: str = "", anzahl: int = 20) -> dict:
@@ -392,6 +400,17 @@ def kampagne_entwerfen(ziel: str, zielgruppe: str, kanal: str, kontext: str = ""
     if not r["ok"]:
         return r
     entwurf = r["daten"]
+
+    # HAUSSTIL, bevor der Text irgendwo landet. Hier und nicht erst im PDF:
+    # aus demselben Entwurf entstehen die E-Mail, die Freigabe-Oberflaeche
+    # und das PDF — griffe die Regel erst beim Setzen, traegen die drei
+    # verschiedene Texte. Rueckmeldung eines Lesers am 11.09.2026: lange
+    # Gedankenstriche „sieht zu sehr nach KI aus" (siehe stil.py).
+    eingriffe = 0
+    for schluessel in ("betreff", "text", "begruendung"):
+        gekuerzt, n = stil.hausstil(str(entwurf.get(schluessel, "")))
+        entwurf[schluessel] = gekuerzt
+        eingriffe += n
     belege_md = "\n".join(f"- {b}" for b in belege) or \
         "- (keine Belege angegeben — Produktaussagen im Text sind damit ungeprueft)"
     klaeren_md = "\n".join(f"- {z}" for z in zu_klaeren) or "- (nichts offen)"
@@ -424,7 +443,16 @@ def kampagne_entwerfen(ziel: str, zielgruppe: str, kanal: str, kontext: str = ""
                 f"## Belege\n{belege_md}\n\n## Zu klaeren\n{klaeren_md}\n\n"
                 f"## Begruendung\n{entwurf.get('begruendung', '')}\n")
     dateien = [schaufenster.ablegen(ziel, "briefing.md", briefing)]
-    return {"ok": True, "proposal_id": proposal_id, "dateien": dateien}
+    ergebnis = {"ok": True, "proposal_id": proposal_id, "dateien": dateien}
+    if eingriffe:
+        # Sagen, statt es den Agenten beim naechsten Lesen entdecken zu
+        # lassen: ein stiller Eingriff in seinen Text waere genau die Art
+        # Ueberraschung, die Vertrauen kostet.
+        ergebnis["hausstil"] = (
+            f"{eingriffe} lange(r) Gedankenstrich(e) gekuerzt. Ein Leser hat "
+            f"gemeldet, dass sie zu sehr nach KI aussehen. Schreib sie gleich "
+            f"kurz, dann bleibt dein Text unveraendert.")
+    return ergebnis
 
 
 def ad_texte_entwerfen(thema: str, n: int = 3) -> dict:
