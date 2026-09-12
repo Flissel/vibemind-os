@@ -1,0 +1,47 @@
+# Schlanker Vertrag für den bestehenden Space `mirofish` (ADR-0004).
+#
+# Alle sieben gehen über den `MiroFishExecutor`
+# (brain/the_brain/core/capability_targets.py:1430) an das Backend unter
+# MIROFISH_BASE_URL. Die Trennung ist am Endpunkt und an der zurückgegebenen
+# Identität abgelesen, nicht am Namen:
+#
+#   graph.build   POST /api/graph/build        -> task_id + graph_id, "queued"
+#                 später lesbar über GET /api/graph/task/{id}
+#   simulate      POST /api/simulation/start   -> simulation_id, läuft
+#                 später lesbar über GET /api/simulation/{id}/run-status
+#   predict       POST /api/report/generate    -> report_id
+#   evaluate      POST /api/report/generate    -> report_id
+#                 später lesbar über GET /api/report/{id}
+# Alle vier erzeugen eine dauerhafte Identität, die hinterher wieder gelesen
+# werden kann. Das ist der Beleg dafür, dass etwas entstanden ist.
+#
+#   graph.search  POST /api/report/tools/search — POST nur wegen des
+#                 Anfragekörpers. Der Handler in
+#                 spaces/mirofish/mirofish/backend/app/api/report.py:387
+#                 enthält kein commit/add/INSERT. Liest.
+#   interview     POST /api/simulation/interview — ebenso: der Handler in
+#                 .../api/simulation.py:2137 schreibt nichts. Liest.
+#                 (Die Nachbarroute /interview/history ist eine eigene
+#                 Route und gehört nicht zu dieser Capability.)
+#   status        GET. Liest.
+#
+# Alle sieben tragen `rule:mirofish_evidence`. Für die vier schreibenden ist
+# das kein unabhängiger Beleg: die Identität stammt aus derselben Antwort,
+# die den Erfolg behauptet. Ein `truth:`-Validator müsste die GET-Route
+# nachschlagen, die es für alle vier bereits gibt.
+
+id: mirofish
+description: "Graphen bauen, Simulationen fahren, Berichte erzeugen"
+prefixes: ["mirofish."]
+
+capabilities:
+  # --- erzeugen ---
+  - {name: mirofish.graph.build,  writes: true}
+  - {name: mirofish.simulate,     writes: true}
+  - {name: mirofish.predict,      writes: true}
+  - {name: mirofish.evaluate,     writes: true}
+
+  # --- lesen ---
+  - {name: mirofish.graph.search, writes: false}
+  - {name: mirofish.interview,    writes: false}
+  - {name: mirofish.status,       writes: false}

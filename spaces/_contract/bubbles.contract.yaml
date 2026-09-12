@@ -25,6 +25,9 @@ capabilities:
   - {name: bubble_delete_all,          writes: true}   # kein Ziel
   - {name: bubble_generate_embeddings, writes: true}   # kein Ziel
   - {name: bubble_list,     writes: false}
+  # Nachgetragen 12.09.: fehlte im ersten Wurf. bubble_find_op loest
+  # eine Zeile auf und gibt Text zurueck (supabase_ideas_ops.py:970).
+  - {name: bubble_find,     writes: false}
   - {name: bubble_enter,    writes: false}  # dokumentierter No-op
   - {name: bubble_exit,     writes: false}  # bubble_noop_op
   - {name: bubble_stats,    writes: false}
