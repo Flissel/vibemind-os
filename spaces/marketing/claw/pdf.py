@@ -64,10 +64,38 @@ LAYOUTS = {
 LAYOUT_VORGABE = "dunkel"
 
 
-def _farben(layout: str) -> dict:
-    """Die Farbtafel eines Layouts. Unbekannt -> Vorgabe, kein Absturz."""
-    tafel = LAYOUTS.get((layout or "").strip().lower() or LAYOUT_VORGABE,
-                        LAYOUTS[LAYOUT_VORGABE])
+# Die acht Schluessel, die dieses Modul braucht. Sie stehen auch in
+# marketing.gestalt_pruefen() (Migration 044) — dort wird eine Vorlage
+# geprueft, BEVOR ein Mensch sie freigibt. Hier stehen sie noch einmal, weil
+# dieses Modul ohne Datenbank lauffaehig bleiben muss: es ist der Setzer, und
+# ein Setzer, der eine Datenbank braucht, ist nicht testbar.
+GESTALT_SCHLUESSEL = ("grund", "flaeche", "akzent", "gold", "text",
+                      "text_hell", "text_leise", "handlung_text")
+
+
+def _farben(layout: str, gestalt: dict | None = None) -> dict:
+    """Die Farbtafel. `gestalt` schlaegt `layout`, sonst die eingebaute Tafel.
+
+    SEIT DEM 12.09.2026 KOMMEN LAYOUTS AUS VORLAGEN (Auftrag des Betreibers:
+    „die verschiedenen Layouts via Templates"). `werkzeuge.py` holt eine
+    freigegebene Vorlage aus `marketing.layout_vorlagen` und reicht ihre
+    Gestalt hier herein. Die zwei eingebauten Tafeln bleiben als Rueckfall
+    stehen, damit dieses Modul, die Tests und ein Notlauf ohne Datenbank
+    weiter funktionieren.
+
+    Eine unvollstaendige Gestalt WIRFT, statt still auf die Vorgabe
+    zurueckzufallen: ein Dokument, dem heimlich die halbe Farbtafel eines
+    anderen Layouts untergeschoben wird, sieht falsch aus, ohne dass jemand
+    erfaehrt warum.
+    """
+    if gestalt:
+        fehlt = [k for k in GESTALT_SCHLUESSEL if not str(gestalt.get(k, "")).strip()]
+        if fehlt:
+            raise ValueError("Der Gestalt fehlen Farben: " + ", ".join(fehlt))
+        tafel = {k: str(gestalt[k]).strip() for k in GESTALT_SCHLUESSEL}
+    else:
+        tafel = LAYOUTS.get((layout or "").strip().lower() or LAYOUT_VORGABE,
+                            LAYOUTS[LAYOUT_VORGABE])
     return {name: colors.HexColor(wert) for name, wert in tafel.items()}
 
 # Trennpunkte statt Geviertstrich. Die Fusszeile war eine der drei Quellen
@@ -226,7 +254,7 @@ def _absaetze(text: str, stile: dict) -> list:
 
 def bauen(titel: str, text: str, untertitel: str = "", belege=None,
           zu_klaeren=None, handlung: str = "",
-          layout: str = LAYOUT_VORGABE) -> bytes:
+          layout: str = LAYOUT_VORGABE, gestalt: dict | None = None) -> bytes:
     """Setzt eine Kampagnen-Unterlage als PDF. Gibt die Bytes zurueck.
 
     Wirft `ValueError` bei leerem Text — anders als die Werkzeuge ringsum,
@@ -250,7 +278,7 @@ def bauen(titel: str, text: str, untertitel: str = "", belege=None,
     belege = [stil.striche_kuerzen(str(b)) for b in (belege or [])]
     zu_klaeren = [stil.striche_kuerzen(str(z)) for z in (zu_klaeren or [])]
 
-    f = _farben(layout)
+    f = _farben(layout, gestalt)
     stile = _stile(f)
     puffer = io.BytesIO()
     dokument = BaseDocTemplate(
