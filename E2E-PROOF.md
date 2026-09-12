@@ -1697,20 +1697,43 @@ that bug was caught before it reached the test file, not after).
 
 `--since` takes a Go **duration** (`5m`), never a timestamp, on this
 task's explicit instruction — a timestamp missing a timezone is named as a
-prior, costly trap on this branch. Measured directly, for the record, on
-this Docker Desktop 29.7.2 rather than assumed: a space-separated naive
-timestamp (`"2026-09-12 15:40:55"`) produced an explicit CLI parse error
-(`invalid value for "since": parsing time ... extra text: " 15:40:55"`),
-and a naive ISO timestamp with no offset (`"2026-09-12T15:41:12"`) returned
-zero lines for an instantaneous window — neither reproduced the specific
-"silently ignored, returns the entire log" symptom this task's instructions
-describe. This is recorded as an honest negative finding about *this*
-Docker version, not a rebuttal of the prior incident (which may have hit a
-different client/timestamp-format combination, and is not something this
-task re-derived); the instruction was followed regardless, because the
-duration form has no timezone to omit in the first place — the whole
-failure class is structurally unavailable to it, independent of whether
-today's client happens to also handle the timestamp form gracefully.
+prior, costly trap on this branch.
+
+This paragraph previously recorded a negative finding: that the trap could
+not be reproduced on this Docker Desktop 29.7.2. **That negative finding was
+itself wrong, and is retracted here.** It rested on two non-discriminating
+probes — a space-separated timestamp, which fails loudly with a CLI parse
+error and was never the reported symptom, and a naive ISO timestamp that
+happened to be the host's LOCAL time, which is precisely the case that
+works. Re-measured on the same container and client, with the *same instant*
+expressed four ways (host is UTC+2):
+
+```
+$ docker logs --tail 1000000 <container> | wc -l
+41471
+$ docker logs --since 5m <container> | wc -l
+544
+$ docker logs --since 2026-09-12T13:43:53Z <container> | wc -l     # UTC, WITH Z
+544
+$ docker logs --since 2026-09-12T15:43:53 <container> | wc -l      # local, no offset
+544
+$ docker logs --since 2026-09-12T13:43:53 <container> | wc -l      # UTC, no offset
+19063
+```
+
+So the trap is real, and the earlier description of it — "silently ignored,
+returns the entire log" — was imprecise in a way that matters for anyone
+trying to avoid it. The accurate statement: **a timestamp with no offset is
+interpreted in the HOST's local timezone.** Compute the instant the obvious
+way (`date -u`), hand it over without the `Z`, and the window silently
+reaches back by the UTC offset — here two hours, 19063 lines instead of 544,
+a 35x overshoot with no error and no warning. That is exactly how a window
+meant to start *after* a fix comes to include log lines from *before* it,
+and how a closed leak reads as an open one.
+
+The duration form is used here regardless, and remains the right default:
+it has no timezone to omit, so the whole failure class is structurally
+unavailable to it rather than merely avoided by care.
 
 ## VI.5 What this does NOT prove
 
