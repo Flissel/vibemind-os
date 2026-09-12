@@ -1,0 +1,54 @@
+# Schlanker Vertrag für den bestehenden Space `video` (ADR-0004).
+#
+# Alle acht Capabilities teilen sich ein Ausführungsziel:
+#   direct:spaces.video.execution_target:execute_video
+# Der Verteiler trennt sie aber klar in zwei Gruppen — nachgelesen in
+# spaces/video/execution_target.py:221 ff.
+#
+# LESEND (`_space_status`, bzw. `_read_job` bei mitgegebener job_id):
+#   video_status        ruft video_status() und meldet Provider-Verfügbarkeit
+#   video_team_status   ruft team_pipeline_status()
+# Beide erzeugen nichts; `video.status` mit `job_id` liest nur den Job-Beleg.
+#
+# SCHREIBEND (`_MEDIA_EVENTS`, execution_target.py:106):
+#   video_team_run, video_vision, video_demo_build,
+#   video_lipsync, video_voice_clone, video_voice_tts
+# Jede legt sofort einen Job-Beleg unter $VIBEMIND_VIDEO_JOB_DIR bzw.
+# ~/.vibemind/video-jobs/<job_id>.json an (`_write_job`) und startet einen
+# Thread, der über die Provider Mediendateien erzeugt. Das ist ein
+# Schreibvorgang in zwei Ebenen: Job-Datei und Artefakt auf der Platte.
+#
+# ZWEI DINGE, DIE HIERZU GEHÖREN UND IN capabilities.yaml FEHLEN:
+#
+# 1. Keine der acht Capabilities hat einen Validator — auch die sechs
+#    schreibenden nicht. Der Intake meldet das, und zu Recht.
+#
+# 2. Der Space prüft sich intern bereits unabhängig, und zwar sauber:
+#    `_run_job` zieht vor dem Lauf einen Schnappschuss der Artefakt-Wurzeln
+#    (`_artifact_snapshot`), vergleicht danach (`_changed_artifacts`) und
+#    prüft jeden gemeldeten Pfad mit `resolved.is_file()`. Ein Medien-
+#    Ereignis ohne Artefakt-Nachweis wird `status: failed` — kein
+#    Selbstbericht, sondern eine echte Rückfrage ans Dateisystem.
+#    Dieser Beleg landet im Job-Datensatz, nicht am Aufrufer: `execute_video`
+#    kehrt sofort mit `status: accepted` zurück. Ein naiver
+#    `truth:file_exists` direkt nach dem Aufruf schlüge deshalb fehl, obwohl
+#    nichts kaputt ist. Der richtige Validator muss den Job-Beleg
+#    nachschlagen — das kann `world_observer` heute nicht. Das ist die
+#    eigentliche Lücke dieses Space, nicht ein fehlender Eintrag.
+
+id: video
+description: "Videoerzeugung, Vision, Lipsync, Stimme — asynchron über Job-Belege"
+prefixes: ["video."]
+
+capabilities:
+  # --- lesend: Verfügbarkeit bzw. Job-Stand ---
+  - {name: video_status,      writes: false}
+  - {name: video_team_status, writes: false}
+
+  # --- schreibend: Job-Beleg + Mediendatei ---
+  - {name: video_team_run,    writes: true}
+  - {name: video_vision,      writes: true}
+  - {name: video_demo_build,  writes: true}
+  - {name: video_lipsync,     writes: true}
+  - {name: video_voice_clone, writes: true}
+  - {name: video_voice_tts,   writes: true}

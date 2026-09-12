@@ -1,0 +1,50 @@
+# Schlanker Vertrag für den bestehenden Space `rowboat` (ADR-0004).
+#
+# `writes` ist am Code abgelesen, nicht am Namen geraten. Die Namen hätten
+# hier in die Irre geführt: `rowboat_email_draft` und `rowboat_deck` klingen
+# erzeugend, legen aber nichts ab.
+#
+# Sechs der sieben Capabilities haben dasselbe Ausführungsziel
+# `openfang:rowboat-chat` und laufen über dieselbe Funktion:
+#   spaces/rowboat/tools/roarboot_tools.py  -> RoarbootClient.chat()
+#   -> POST {ROWBOAT_URL}/api/v1/{projectId}/chat
+# Die Antwort ist Text. Sie wird zurückgegeben und an die Electron-UI
+# gesendet (`print(json.dumps(...))`, also stdout — kein Speicher).
+# Weder Entwurf noch Deck noch Briefing werden irgendwo abgelegt:
+#   draft_email        -> Prompt "Draft an email to ..." , Rückgabe Text
+#   generate_deck      -> Prompt "Create a presentation deck about ...", Text
+#   generate_meeting_brief -> Prompt "Prepare a meeting brief ...", Text
+# Deshalb schreibt keine von ihnen im Sinne dieses Vertrags.
+#
+# Die siebte, `rowboat_status`, ist der deterministische Weg
+# (`mcp:rowboat-chat:spaces-rowboat:rowboat_status`): ein HEAD-Aufruf gegen
+# ROWBOAT_URL, siehe spaces/rowboat/mcp_server.py:97. Ihr `truth:http_ok`-
+# Validator prüft Erreichbarkeit, nicht einen Schreibvorgang — das ist
+# korrekt, aber es heißt auch: dieser Space hat keinen einzigen Schreibpfad
+# mit unabhängiger Rückfrage, weil er keinen Schreibpfad hat.
+#
+# ANMERKUNG, die nicht in den Vertrag gehört, aber dazu: der Space HAT
+# zustandsändernde Operationen — start_docker / stop_docker / restart_docker
+# in spaces/rowboat/tools/docker_tools.py, und die Registry führt dafür die
+# Ereignisse `rowboat.docker.start` / `.stop`. Es gibt dazu KEINE Capability.
+# Da das System von Capability zu Ereignis läuft, sind sie über die Brain
+# nicht erreichbar. Ebenso schreibt `process_voice_note` in den Wissensgraph
+# ("Process this voice note and update relevant knowledge") und hat ebenfalls
+# keine Capability. Der Vertrag bildet ab, was routet — die Lücke steht in
+# docs/operations.
+
+id: rowboat
+description: "Wissensgraph abfragen, E-Mail-Entwürfe und Decks aus dem Kontext erzeugen"
+prefixes: ["rowboat."]
+
+capabilities:
+  # --- Chat-Pfad, alle über RoarbootClient.chat(), Rückgabe ist Text ---
+  - {name: rowboat_chat,          writes: false}
+  - {name: rowboat_search,        writes: false}
+  - {name: rowboat_query,         writes: false}
+  - {name: rowboat_email_draft,   writes: false}
+  - {name: rowboat_meeting_brief, writes: false}
+  - {name: rowboat_deck,          writes: false}
+
+  # --- deterministisch, HEAD gegen ROWBOAT_URL ---
+  - {name: rowboat_status,        writes: false}
