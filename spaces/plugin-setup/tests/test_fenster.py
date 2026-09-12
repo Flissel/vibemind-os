@@ -171,3 +171,68 @@ def test_oauth_fehlschlag_zeigt_keinen_token_und_keine_ursache_im_klartext():
     status, html = fenster.oauth_entgegennehmen(a.token, beschaffer, lambda **k: {"ok": True})
     assert status == 200
     assert "offensichtlich-erfunden-oauth-token" not in html
+
+
+def test_oauth_seite_zeigt_das_ziel_html_escaped():
+    """F3 (W7, Schluss-Fix): `ziel` ist agentenverfasst und bindet die
+    `authorize_url`, die `webbrowser.open()` im echten Browser des
+    Betreibers oeffnet. Ohne diese Anzeige klickt der Betreiber blind auf
+    eine Adresse, die er nie gesehen hat -- die Seite muss sie zeigen,
+    escaped wie jede andere agentenverfasste Zeichenkette in diesem Space."""
+    boesartig = "https://evil.example/mcp?x=<script>alert(1)</script>&y=1"
+    a = anfragen.anlegen("proj", "demo", "OAUTH_ZIEL_TEST", "oauth", boesartig)
+    html = fenster.seite_fuer(a)
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+    # Die Adresse selbst (escaped) muss sichtbar sein, nicht nur die Referenz.
+    assert "evil.example" in html
+
+
+def test_ergebnisseite_zwei_verwahrstellen_nennt_die_abhilfe_und_nicht_die_falschen_saetze():
+    """F2 (W2, Schluss-Fix): der schlimmste Fall -- OpenFang hat den Wert
+    schon uebernommen, der Supabase-Uebergang ist endgueltig gescheitert.
+    Die drei Saetze, die fuer jeden ANDEREN Fehlschlag richtig sind, sind
+    hier alle drei falsch und duerfen nicht erscheinen; die tatsaechliche
+    Abhilfe (Supabase-Uebergang erneut ausloesen, NICHT das Formular erneut
+    absenden) muss erscheinen."""
+    def _schreiber_zwei_verwahrstellen(**kwargs):
+        return {"ok": False, "referenz": kwargs["referenz"],
+                "zwei_verwahrstellen": True, "retryable": False,
+                "fehler": "ZWEI VERWAHRSTELLEN: ... (enthaelt keinen Wert)"}
+
+    a = anfragen.anlegen("proj", "demo", "GITHUB_PAT_TOKEN", "bearer", "")
+    status, html = fenster.entgegennehmen(a.token, _FAKE, _schreiber_zwei_verwahrstellen)
+    assert status == 200
+    # (a) die Abhilfe wird genannt
+    assert "Supabase" in html
+    assert "NICHT erneut absenden" in html
+    # (b) die drei falschen Aussagen fuer den Normalfall duerfen NICHT stehen
+    assert "vom Anbieter abgelehnt" not in html
+    assert "Der Wert wurde nicht uebergeben" not in html
+    assert "Der Agent kann eine neue Eingabe anfordern" not in html
+    # weiterhin gilt: kein Wert in der Antwort
+    assert _FAKE not in html
+
+
+def test_oauth_entgegennehmen_zwei_verwahrstellen_ebenfalls_richtig_benannt():
+    """Derselbe `ergebnis`-Vertrag gilt fuer den oauth-Zweig -- der
+    beschaffte Token kann genauso in OpenFang landen und danach am
+    Supabase-Uebergang scheitern wie ein per Formular eingetragener Wert."""
+    erfunden = "offensichtlich-erfunden-oauth-token-verwahrstellen"
+
+    def beschaffer(mcp_url):
+        return "OAUTH_X", erfunden
+
+    def schreiber(**kwargs):
+        return {"ok": False, "referenz": kwargs["referenz"],
+                "zwei_verwahrstellen": True, "retryable": False,
+                "fehler": "ZWEI VERWAHRSTELLEN: ... (enthaelt keinen Wert)"}
+
+    a = anfragen.anlegen("proj", "demo", "OAUTH_X", "oauth", "https://mcp.linear.app/mcp")
+    status, html = fenster.oauth_entgegennehmen(a.token, beschaffer, schreiber)
+    assert status == 200
+    assert "Supabase" in html
+    assert "vom Anbieter abgelehnt" not in html
+    assert "Der Wert wurde nicht uebergeben" not in html
+    assert "Der Agent kann eine neue Eingabe anfordern" not in html
+    assert erfunden not in html

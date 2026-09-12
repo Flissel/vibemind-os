@@ -30,6 +30,7 @@ _KOPF = (
 def seite_fuer(a: "anfragen.Anfrage") -> str:
     ref = _html.escape(a.referenz)
     if a.art == "oauth":
+        ziel = _html.escape(a.ziel)
         return (f"{_KOPF}<h1>Anmeldung noetig</h1>"
                 f'<p>Fuer <code>{ref}</code> sollst du dich hier beim Anbieter '
                 f"anmelden, ohne dass der Token je angezeigt wird. Der Klick "
@@ -38,6 +39,10 @@ def seite_fuer(a: "anfragen.Anfrage") -> str:
                 f"OpenFang und erscheint in keiner Antwort dieses Fensters. "
                 f"Der Link gilt fuer genau einen Versuch -- bei einem Abbruch "
                 f"oder Fehlschlag kann der Agent eine neue Eingabe anfordern.</p>"
+                f"<p><strong>Ziel-Adresse:</strong> <code>{ziel}</code><br>"
+                f"Diese Adresse stammt aus der Anforderung des Agenten, nicht von "
+                f"diesem Fenster selbst -- pruef sie, bevor du auf \"Anmeldung "
+                f"starten\" klickst.</p>"
                 f'<form method="post"><button>Anmeldung starten</button></form>')
     return (f"{_KOPF}<h1>Schluessel eintragen</h1>"
             f'<p>Fuer <code>{ref}</code>. Der Wert wird sofort geprueft und dann an '
@@ -47,11 +52,32 @@ def seite_fuer(a: "anfragen.Anfrage") -> str:
             f"<button>Eintragen</button></form>")
 
 
-def ergebnisseite(ok: bool, referenz: str, hinweis: str) -> str:
+def ergebnisseite(ok: bool, referenz: str, hinweis: str, *,
+                  zwei_verwahrstellen: bool = False) -> str:
+    """`zwei_verwahrstellen=True` markiert den schlimmsten Fehlerfall (s.
+    `werkzeuge.schluessel_entgegennehmen`): OpenFang hat den Wert bereits
+    uebernommen, aber der anschliessende Supabase-Uebergang ist endgueltig
+    gescheitert -- derselbe Wert steht damit moeglicherweise in ZWEI
+    Tresoren. Das ist das GEGENTEIL eines gewoehnlichen Fehlschlags: der
+    Wert WURDE uebergeben, ein erneutes Absenden dieses Formulars hilft
+    nicht (es kollidiert an der UNIQUE-Constraint des ersten Schritts) und
+    "vom Anbieter abgelehnt" waere schlicht falsch. Der Aufrufer entscheidet
+    per `ergebnis.get("zwei_verwahrstellen")` -- diese Funktion selbst
+    bekommt (und braucht) nie einen Wert."""
     ref = _html.escape(referenz)
     if ok:
         return (f"{_KOPF}<h1>Uebernommen</h1><p><code>{ref}</code> ist geprueft und bei "
                 f"OpenFang. Du kannst dieses Fenster schliessen.</p>")
+    if zwei_verwahrstellen:
+        return (f"{_KOPF}<h1>Achtung: zwei Ablagen</h1>"
+                f"<p><code>{ref}</code>: OpenFang hat den Wert bereits uebernommen, "
+                f"aber die anschliessende Uebergabe an die zweite Ablage (Supabase) "
+                f"ist mehrfach gescheitert. Der Wert steht damit moeglicherweise in "
+                f"BEIDEN Ablagen gleichzeitig.</p>"
+                f"<p><strong>Dieses Formular jetzt NICHT erneut absenden</strong> -- "
+                f"das hilft in diesem Fall nicht. Die einzige Abhilfe: wer dieses "
+                f"System betreibt, muss den Supabase-Uebergang fuer diese Referenz "
+                f"erneut ausloesen, sobald Supabase wieder erreichbar ist.</p>")
     return (f"{_KOPF}<h1>Nicht uebernommen</h1>"
             f"<p><code>{ref}</code> wurde vom Anbieter abgelehnt: "
             f"<code>{_html.escape(hinweis)}</code>. Der Wert wurde nicht uebergeben.</p>"
@@ -72,7 +98,8 @@ def entgegennehmen(token: str, wert: str, schreiber) -> tuple[int, str]:
     if ergebnis.get("ok"):
         return 200, ergebnisseite(True, a.referenz, "")
     hinweis = str(ergebnis.get("status", ergebnis.get("fehler", "unbekannt")))
-    return 200, ergebnisseite(False, a.referenz, hinweis)
+    return 200, ergebnisseite(False, a.referenz, hinweis,
+                              zwei_verwahrstellen=bool(ergebnis.get("zwei_verwahrstellen")))
 
 
 def oauth_entgegennehmen(token: str, beschaffer, schreiber) -> tuple[int, str]:
@@ -104,4 +131,5 @@ def oauth_entgegennehmen(token: str, beschaffer, schreiber) -> tuple[int, str]:
     if ergebnis.get("ok"):
         return 200, ergebnisseite(True, a.referenz, "")
     return 200, ergebnisseite(False, a.referenz,
-                              str(ergebnis.get("status", "unbekannt")))
+                              str(ergebnis.get("status", "unbekannt")),
+                              zwei_verwahrstellen=bool(ergebnis.get("zwei_verwahrstellen")))

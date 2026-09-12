@@ -63,11 +63,14 @@ ueberschrieben), wie bei den Nachbar-Sidecars (`spaces/marketing/claw/server.py`
    eigenstaendiges Compose-Projekt hochfahren.
 2. `deploy/anbinden.sh` -- Saat einspielen, Gateway-Token setzen, Werkzeuge
    probieren.
-3. `deploy/smoke.sh` -- ruft testweise vier der fuenf Werkzeuge direkt auf
-   (`plugin_bedarf`, `plugin_installieren`, `plugin_werkzeug_binden`,
-   `schluessel_entgegennehmen`) und prueft die Verbotsliste; NOCH NICHT
-   auf `eingabe_anfordern`/`einrichtung_status` aktualisiert (s. Markierung
-   im Skriptkopf). Siehe dort auch fuer den ehrlichen Geltungsbereich (was
+3. `deploy/smoke.sh` -- prueft in Schritt 1, dass der Server genau die
+   fuenf registrierten Werkzeuge meldet, und ruft in Schritt 2 drei davon
+   (`plugin_bedarf`, `plugin_installieren`, `plugin_werkzeug_binden`) plus
+   die interne, nicht mehr registrierte Funktion
+   `schluessel_entgegennehmen` direkt auf, dann die Verbotsliste.
+   `eingabe_anfordern`/`einrichtung_status` selbst werden in Schritt 2
+   NICHT aufgerufen (s. Markierung im Skriptkopf). Siehe dort auch fuer den
+   ehrlichen Geltungsbereich (was
    auf dieser Maschine nicht mitgeprueft werden konnte).
 
 ## Tests

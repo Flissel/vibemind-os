@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
-# smoke.sh -- Rauchtest der vier (von inzwischen FUENF) Werkzeuge +
-# Verbotsliste. Wiederholbar, raeumt auf, was es anlegt.
+# smoke.sh -- Rauchtest der fuenf registrierten Werkzeuge + der internen
+# Schreibfunktion `schluessel_entgegennehmen` + Verbotsliste. Wiederholbar,
+# raeumt auf, was es anlegt.
 #
-# STAND VERALTET (Entwurf 2026-09-12-eingabefenster, Task 5): `server.
-# WERKZEUGE` hat seither `eingabe_anfordern`/`einrichtung_status` statt
-# `schluessel_entgegennehmen` (das bleibt eine Funktion, ist aber kein
-# MCP-Werkzeug mehr). Dieses Skript ruft weiterhin die VIER alten
-# Werkzeuge direkt auf (inkl. `schluessel_entgegennehmen`, das so nie mehr
-# durch server.py laueft) und prueft NICHT die beiden neuen -- Schritt 1
-# unten (der Registrierungs-Check) wuerde daher ohnehin nicht mehr
-# `ERWARTET` treffen. Als eigener Nachzieher benannt, nicht in dieser
-# Runde behoben (s. README.md "Betrieb").
+# NACHZIEHER BEHOBEN (Schluss-Fix G2, 2026-09-12): `ERWARTET` in Schritt 1
+# traf bis hierher noch die VIER Werkzeuge von vor Aufgabe 5
+# (`plugin_bedarf`, `plugin_installieren`, `plugin_werkzeug_binden`,
+# `schluessel_entgegennehmen`) -- `server.WERKZEUGE` registriert seit
+# Aufgabe 5 tatsaechlich `plugin_bedarf`, `eingabe_anfordern`,
+# `einrichtung_status`, `plugin_installieren`, `plugin_werkzeug_binden`,
+# und `schluessel_entgegennehmen` ist seither KEIN MCP-Werkzeug mehr
+# (bleibt eine gewoehnliche Funktion, der interne Schreibweg des
+# Formulars). `ERWARTET` prueft jetzt genau diese fuenf registrierten
+# Namen. Der direkte Aufruf von `werkzeuge.schluessel_entgegennehmen` in
+# Schritt 2 unten BLEIBT -- er prueft weiterhin, dass der Schreibweg bis
+# zur echten Anbieter-Pruefung kommt -- fuehrt sie aber nirgends mehr als
+# registriertes Werkzeug.
 #
 # EHRLICHER GELTUNGSBEREICH (2026-09-11, s. task-6-report.md fuer Details):
 # Dieses Skript kann NUR pruefen, was auf dieser Maschine tatsaechlich
@@ -21,7 +26,7 @@
 #   - Werkzeuge werden DIREKT importiert und aufgerufen (dieselben
 #     Funktionsobjekte, die server.py bei FastMCP registriert) -- KEIN
 #     Roundtrip durch das MCP-Wire-Protokoll/den openclaw-Container. Der
-#     Beweis "Server startet + meldet 4 Werkzeuge" laeuft separat ueber
+#     Beweis "Server startet + meldet 5 Werkzeuge" laeuft separat ueber
 #     server.py selbst (Schritt 1 unten).
 #   - `schluessel_entgegennehmen` laeuft bis zur echten Anbieter-Pruefung
 #     (Aufgabe 5, ein echter, absichtlich scheiternder Aufruf gegen
@@ -42,7 +47,7 @@ PY="${PLUGIN_SETUP_PYTHON:-python}"
 PORT="${PLUGIN_SETUP_MCP_PORT:-8131}"
 ROT=0
 
-echo "1) Server startet und meldet seine vier Werkzeuge"
+echo "1) Server startet und meldet seine fuenf Werkzeuge"
 SERVER_LOG="$(mktemp)"
 "$PY" server.py >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
@@ -73,9 +78,9 @@ async def go():
 print(",".join(asyncio.run(go())))
 PYEOF
 )"
-ERWARTET="plugin_bedarf,plugin_installieren,plugin_werkzeug_binden,schluessel_entgegennehmen"
+ERWARTET="eingabe_anfordern,einrichtung_status,plugin_bedarf,plugin_installieren,plugin_werkzeug_binden"
 if [ "$WERKZEUG_NAMEN" = "$ERWARTET" ]; then
-  echo "   ok   vier Werkzeuge: $WERKZEUG_NAMEN"
+  echo "   ok   fuenf Werkzeuge: $WERKZEUG_NAMEN"
 else
   echo "   FEHL Werkzeugliste stimmt nicht: '$WERKZEUG_NAMEN' != '$ERWARTET'"; ROT=$((ROT+1))
 fi
@@ -198,6 +203,11 @@ echo "NICHT gepueft (auf dieser Maschine nicht verfuegbar, s. Kopf dieses Skript
 echo "  - OpenFang-Uebergabe (POST /api/credentials/store, 127.0.0.1:4273)"
 echo "  - Rowboat-Install/Tool-Bindung gegen eine echte Instanz"
 echo "  - MCP-Wire-Roundtrip durch das openclaw-Gateway (deploy/anbinden.sh)"
+echo "  - eingabe_anfordern/einrichtung_status selbst (Schritt 2 ruft nur"
+echo "    plugin_bedarf/plugin_installieren/plugin_werkzeug_binden + die"
+echo "    interne Funktion schluessel_entgegennehmen direkt auf -- die zwei"
+echo "    anderen registrierten Werkzeuge sind nur in Schritt 1 an der"
+echo "    Registrierung selbst geprueft, nicht an einem echten Aufruf)"
 
 if [ "$ROT" -ne 0 ]; then
   echo "ROT: $ROT" >&2
