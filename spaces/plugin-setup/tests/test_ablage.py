@@ -524,3 +524,68 @@ def test_fehlermeldung_nennt_den_fehler_und_nur_die_meldungszeile():
         assert _FAKE_WERT not in fehler
     finally:
         _cleanup(referenz)
+
+
+# ─── Aufgabe 1 (Eingabefenster) -- zustand()/neu_aufnehmen() ─────────────
+
+
+def test_zustand_liest_status_und_hinweis_als_agent_rolle():
+    referenz = f"PYTEST_ZUSTAND_{uuid.uuid4().hex[:8].upper()}"
+    projekt = f"pytest-projekt-{uuid.uuid4().hex[:8]}"
+    try:
+        assert ablage.entgegennehmen(projekt, "demo-plugin", referenz, "bearer", _FAKE_WERT)["ok"] is True
+        gelesen = ablage.zustand(referenz)
+        assert gelesen["ok"] is True
+        assert gelesen["zustand"] == "entgegengenommen"
+        assert gelesen["hinweis"] == ""
+        assert _FAKE_WERT not in repr(gelesen)
+
+        assert ablage.fehlschlagen(referenz, "401")["ok"] is True
+        nach = ablage.zustand(referenz)
+        assert nach["zustand"] == "fehlgeschlagen"
+        assert nach["hinweis"] == "401"
+    finally:
+        _cleanup(referenz)
+
+
+def test_zustand_ist_fail_closed_bei_unbekannter_referenz():
+    ergebnis = ablage.zustand(f"PYTEST_NIE_{uuid.uuid4().hex[:8].upper()}")
+    assert ergebnis["ok"] is False
+
+
+def test_neu_aufnehmen_gibt_nur_aus_fehlgeschlagen_frei():
+    referenz = f"PYTEST_NEUAUF_{uuid.uuid4().hex[:8].upper()}"
+    projekt = f"pytest-projekt-{uuid.uuid4().hex[:8]}"
+    try:
+        assert ablage.entgegennehmen(projekt, "demo-plugin", referenz, "bearer", _FAKE_WERT)["ok"] is True
+
+        # Aus 'entgegengenommen' heraus MUSS es scheitern -- sonst waere es
+        # ein Weg, eine laufende Aufnahme zu verwerfen.
+        zu_frueh = ablage.neu_aufnehmen(referenz)
+        assert zu_frueh["ok"] is False
+        assert ablage.zustand(referenz)["zustand"] == "entgegengenommen"
+
+        assert ablage.fehlschlagen(referenz, "401")["ok"] is True
+        assert ablage.neu_aufnehmen(referenz)["ok"] is True
+
+        # Zeile UND Vault-Kopie sind weg, eine neue Aufnahme geht wieder.
+        assert _psql_als_postgres_ok(
+            f"SELECT count(*) FROM plugin_setup.einrichtungen WHERE referenz_name = '{referenz}';"
+        ).strip() == "0"
+        assert ablage.entgegennehmen(projekt, "demo-plugin", referenz, "bearer", _FAKE_WERT)["ok"] is True
+    finally:
+        _cleanup(referenz)
+
+
+def test_neu_aufnehmen_laesst_keinen_verwaisten_vault_eintrag():
+    referenz = f"PYTEST_NEUAUF2_{uuid.uuid4().hex[:8].upper()}"
+    projekt = f"pytest-projekt-{uuid.uuid4().hex[:8]}"
+    try:
+        assert ablage.entgegennehmen(projekt, "demo-plugin", referenz, "bearer", _FAKE_WERT)["ok"] is True
+        assert ablage.fehlschlagen(referenz, "401")["ok"] is True
+        vorher = _psql_als_postgres_ok("SELECT count(*) FROM vault.secrets;").strip()
+        assert ablage.neu_aufnehmen(referenz)["ok"] is True
+        nachher = _psql_als_postgres_ok("SELECT count(*) FROM vault.secrets;").strip()
+        assert int(nachher) == int(vorher) - 1, "neu_aufnehmen muss die Vault-Kopie mitloeschen"
+    finally:
+        _cleanup(referenz)

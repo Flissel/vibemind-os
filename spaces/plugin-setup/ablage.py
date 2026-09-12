@@ -352,3 +352,25 @@ def uebernommen(referenz: str) -> dict:
     if not _REFERENZ_MUSTER.match(referenz or ""):
         return {"ok": False, "fehler": "referenz ungueltig"}
     return _uebergang(f"SELECT plugin_setup.uebernommen({_sql_literal(referenz)});")
+
+
+def zustand(referenz: str) -> dict:
+    """Liest Zustand und Hinweis ueber die bewachte Funktion -- die Rolle
+    hat kein SELECT auf der Tabelle. Gibt NIE vault_secret_id und nie
+    einen Wert zurueck; die Funktion liefert nur zwei Spalten."""
+    rc, out = _psql(
+        f"SELECT status || '|' || hinweis FROM plugin_setup.zustand({_sql_literal(referenz)});"
+    )
+    if rc != 0:
+        return {"ok": False, "fehler": f"Zustand nicht lesbar: {_erste_fehlerzeile(out)}"}
+    zeile = out.strip()
+    if "|" not in zeile:
+        return {"ok": False, "fehler": "Zustand nicht lesbar: unerwartete Antwortform"}
+    status, hinweis = zeile.split("|", 1)
+    return {"ok": True, "zustand": status, "hinweis": hinweis}
+
+
+def neu_aufnehmen(referenz: str) -> dict:
+    """Gibt eine fehlgeschlagene Referenz fuer eine neue Aufnahme frei.
+    Die Wache sitzt in der Datenbank (nur aus 'fehlgeschlagen')."""
+    return _uebergang(f"SELECT plugin_setup.neu_aufnehmen({_sql_literal(referenz)});")

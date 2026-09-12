@@ -28,6 +28,7 @@ _DB_DIR = _HERE.parents[1] / "db"
 _MIGRATION_PATHS = [
     _DB_DIR / "0001_plugin_setup.sql",
     _DB_DIR / "0002_state_machine.sql",
+    _DB_DIR / "0005_fenster_oberflaeche.sql",
 ]
 _DB_USER = "postgres"
 _DB_NAME = "postgres"
@@ -147,7 +148,10 @@ def test_migrations_are_idempotent():
         "SELECT proname FROM pg_proc "
         "WHERE pronamespace = 'plugin_setup'::regnamespace ORDER BY proname;"
     ).strip().splitlines()
-    assert fn_names == ["fehlschlagen", "uebernommen", "verifizieren"]
+    # 0005 (Aufgabe 1, Eingabefenster) fuegt neu_aufnehmen/zustand hinzu --
+    # _MIGRATION_PATHS wendet es oben mit an, darum gehoert es auch hier
+    # zur erwarteten Menge.
+    assert fn_names == ["fehlschlagen", "neu_aufnehmen", "uebernommen", "verifizieren", "zustand"]
 
     zeitpunkte_gone = _psql_ok(
         "SELECT count(*) FROM information_schema.columns "
