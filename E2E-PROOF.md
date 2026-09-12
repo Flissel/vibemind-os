@@ -1569,3 +1569,263 @@ $ ROWBOAT_LIVE_MONGO_URL=... ROWBOAT_LIVE_OPENFANG_URL=... OPENFANG_API_KEY=... 
   controller's own teardown of the whole daemon.
 - The shared OpenFang daemon on `:4200` and `~/.openfang/` were never
   touched, at any point in this task.
+
+# Part VI — the eingabefenster's own live proof: the value through the form, and nowhere else
+
+Date: 2026-09-12 (UTC+2 shell; Postgres/docker log timestamps below are UTC).
+`master` at `2e87bcc3` (139 tests green before this task's file existed).
+Checkout: `C:/Users/User/Desktop/Vibemind_V1/vibemind-os/.worktrees/setup-agent`.
+Docker: client and server both `29.7.2`.
+
+## VI.1 Headline
+
+**One live sidecar process, one real GET/POST round trip through
+`/fenster/{token}`, one real unauthenticated call to `https://api.github.com/user`
+— and an invented value that shows up in none of seven places checked,
+including the one place this branch has already leaked a credential-shaped
+value into twice.**
+
+Part V proved the setup-agent's Supabase→provider→OpenFang chain by calling
+`werkzeuge.schluessel_entgegennehmen` directly. This part proves the piece
+in front of it: the actual HTTP surface a human sits at
+(`spaces/plugin-setup/server.py`'s `/fenster/{token}` routes, run as the
+real subprocess `python server.py`, reached only over real sockets) — the
+"the agent gets a link, a human types the value, the agent never sees it"
+design this whole task line exists for.
+
+## VI.2 What ran, and the real output
+
+`spaces/plugin-setup/tests/test_fenster_live.py`, opt-in by
+`PLUGIN_SETUP_FENSTER_LIVE=1`, mirrors the pattern every other live proof in
+this file uses. One test:
+
+1. Starts `server.py` as a real subprocess on a free loopback port
+   (`PLUGIN_SETUP_MCP_HOST=127.0.0.1`, own port, own
+   `PLUGIN_SETUP_FENSTER_BASIS`), waits for the MCP endpoint to answer (a
+   bare GET on `/mcp` returning `406` — no `Accept: text/event-stream` —
+   means the process is up).
+2. Calls the real MCP tool `eingabe_anfordern` over `/mcp` (`initialize`,
+   then `tools/call`) with `art="bearer"`, `ziel=""` — the combination the
+   code explicitly allows for `bearer` (`werkzeuge._ziel_pruefen` rejects a
+   *non-empty* `ziel` for `art="bearer"`, since the check address is
+   hardcoded to `api.github.com/user`).
+3. GETs the returned one-time link, then POSTs an invented value
+   (`offensichtlich-erfunden-fenster-<uuid4 hex>`) to it — a real HTTP
+   round trip against the real subprocess, not a function call.
+4. Reads the resulting Supabase state, the Postgres server log, and the
+   sidecar's own stdout, asserting the invented value is in none of them.
+
+Run without the opt-in variable:
+
+```text
+$ PYTHONDONTWRITEBYTECODE=1 python -m pytest spaces/plugin-setup/tests/test_fenster_live.py -q
+s                                                                        [100%]
+1 skipped in 0.02s
+```
+
+Run with it:
+
+```text
+$ PLUGIN_SETUP_FENSTER_LIVE=1 PYTHONDONTWRITEBYTECODE=1 python -m pytest spaces/plugin-setup/tests/test_fenster_live.py -q -s
+.
+1 passed in 3.26s
+```
+
+Both directions required, both shown, per this task's own instruction: a
+live proof that greens itself without the opt-in is worthless. The `s`/`.`
+progress characters above are pytest's own, not edited in.
+
+## VI.3 What each of the seven places proves, and why the seventh was added
+
+The brief that drove this task named six places the value must never
+appear, all asserted inside the test itself (not eyeballed after the
+fact): the tool's own response text (before the link is ever followed),
+the GET page's HTML, the POST response's HTML, the Supabase `hinweis`
+column (`LIKE '%<wert>%'`, zero rows), and the sidecar subprocess's own
+stdout log file. `status == "fehlgeschlagen"` is the discriminating
+assertion the brief calls out explicitly: an invented value **must** fail
+real provider verification, or the check proves nothing. It did —
+confirmed live: the operator's environment probe before this task started
+(`https://api.github.com/user` answering unauthenticated requests with
+`401`) is exactly the path this test's `art="bearer"` check walks, and the
+assertion passed, meaning `pruefung.pruefe()` made a real call and got a
+real non-200 back (had the intake step failed before reaching the
+provider, the status would have stayed `entgegengenommen`, not advanced to
+`fehlgeschlagen`).
+
+**The seventh place — added by this task's own ruling, not the original
+brief — is the Postgres CONTAINER LOG.** This is not a hypothetical
+concern on this branch: `spaces/plugin-setup/ablage.py`'s own C1-fix
+documents a literal credential value appearing in `docker logs` **37
+times** after a single deliberately-triggered `referenz_name` collision,
+because this instance runs with `log_min_error_statement = error` and logs
+every *failing* statement's text verbatim — and a second, separate
+incident on this same line (Part V, fix round 1, §V.4/§V.5) found the
+Postgres server log carrying a credential-shaped value that a zero-control
+check had missed because it only bracketed one end of the search window. A
+proof that checked six places and skipped the one place this actually
+happened would have been the same mistake a third time.
+
+## VI.4 The null control, and why it runs before the real assertion
+
+An absence assertion against a log is only as good as the search that
+produced it. Before trusting "the invented value is not in the Postgres
+container log," the test first proves the search *would* find something if
+it were there: it deliberately triggers a real Postgres error —
+`SELECT 1 FROM <a fresh, never-existing table name>;`, run as `postgres`,
+not the fake credential value — and asserts that error's own text shows up
+in `docker logs --since 5m <container>` before checking that the fake
+value does not. Manually verified against the live shared container
+(`vibemind_supabase-db.1.szlphscs1k4me4vwfkck8d6k6`, matched by the
+`supabase-db` substring, the same discovery pattern `ablage.py` and
+`tests/test_eingang.py` already use) before this was wired into the test:
+
+```text
+ERROR:  relation "nullkontrolle_probe_<...>" does not exist
+LINE 1: SELECT 1 FROM nullkontrolle_probe_<...>;
+
+$ docker logs --since 5m <container> | grep -F "nullkontrolle_probe_<...>"
+[local] 2026-09-12 13:40:41.433 UTC [99656] postgres@postgres ERROR:  relation "nullkontrolle_probe_<...>" does not exist at character 15
+[local] 2026-09-12 13:40:41.433 UTC [99656] postgres@postgres STATEMENT:  SELECT 1 FROM nullkontrolle_probe_<...>;
+```
+
+and, in the same window, a string guaranteed absent found nothing (checked
+by grep's own exit status, not by eyeballing whether a line printed — an
+earlier draft of this same manual check piped `grep` into `tail` and read
+`$?` off `tail`, which exits `0` regardless of whether anything matched;
+that bug was caught before it reached the test file, not after).
+
+`--since` takes a Go **duration** (`5m`), never a timestamp, on this
+task's explicit instruction — a timestamp missing a timezone is named as a
+prior, costly trap on this branch. Measured directly, for the record, on
+this Docker Desktop 29.7.2 rather than assumed: a space-separated naive
+timestamp (`"2026-09-12 15:40:55"`) produced an explicit CLI parse error
+(`invalid value for "since": parsing time ... extra text: " 15:40:55"`),
+and a naive ISO timestamp with no offset (`"2026-09-12T15:41:12"`) returned
+zero lines for an instantaneous window — neither reproduced the specific
+"silently ignored, returns the entire log" symptom this task's instructions
+describe. This is recorded as an honest negative finding about *this*
+Docker version, not a rebuttal of the prior incident (which may have hit a
+different client/timestamp-format combination, and is not something this
+task re-derived); the instruction was followed regardless, because the
+duration form has no timezone to omit in the first place — the whole
+failure class is structurally unavailable to it, independent of whether
+today's client happens to also handle the timestamp form gracefully.
+
+## VI.5 What this does NOT prove
+
+Two answers this task was told not to guess at, stated plainly:
+
+1. **The OAuth branch did not run live here.** This test exercises only
+   `art="bearer"` — the combination `_ziel_pruefen` allows with an empty
+   `ziel`. `fenster.oauth_entgegennehmen` and the real provisioner
+   (`provision-oauth-token.py`'s `token_holen`) were not invoked by this
+   task at all; a live OAuth round trip needs an actual browser login
+   against a real provider, which is out of scope here. What covers that
+   branch is Task 6's tests with an injected acquisition seam, not a live
+   run: `tests/test_fenster.py`'s
+   `test_oauth_fehlschlag_zeigt_keinen_token_und_keine_ursache_im_klartext`,
+   and `tests/test_server_formularrouten.py`'s
+   `test_oauth_post_ruft_den_echten_provisioner_statt_den_formular_wert`,
+   `test_oauth_post_bei_beschaffer_fehlschlag_zeigt_keine_ausnahme_und_keinen_token`,
+   and `test_oauth_beschaffung_blockiert_ein_gleichzeitiges_get_nicht` — all
+   four with a fake `beschaffer` standing in for the real provisioner, no
+   network.
+2. **The form was reached only from the host, never through a container.**
+   This test's HTTP client is the pytest process itself on
+   `127.0.0.1`, never `host.docker.internal`, never a container. Whether
+   the guard in front of `/fenster/{token}` (`server.py::_ist_loopback`)
+   behaves differently for container-originated traffic was not tested by
+   this task. What is already known, measured before this task and
+   documented in `server.py`'s own module docstring, and not re-verified
+   here: on this Docker Desktop + WSL-mirrored-networking host,
+   `_ist_loopback` does **not** separate the operator from a container —
+   a request from a container to `host.docker.internal` arrives at the
+   Python process with `request.client.host == "127.0.0.1"`, the same as a
+   host-originated request, even against a listener bound only to
+   `127.0.0.1`. Nothing beyond that measured, narrower claim is asserted
+   here.
+
+## VI.6 What I did not measure myself, named rather than left implicit
+
+This branch's history (see Part V, §V.1) records five prior overclaims
+that were each accurate about what they named and wrong about what sat
+next to it. In that spirit, named plainly rather than smoothed over:
+
+- **No container-originated request was made.** Not `marketing-claw`, not
+  openclaw, not any container hitting `host.docker.internal:<port>` — the
+  host.docker.internal-equals-loopback finding cited above is read from
+  `server.py`'s docstring and Task 5's report, not re-measured in this
+  task.
+- **OpenFang custody was not exercised by this specific test.** Because
+  the invented value fails real verification by design, `pruefung.pruefe()`
+  returns not-good and `schluessel_entgegennehmen` returns before ever
+  calling `_openfang_uebernehmen` — this test never talks to OpenFang, live
+  or otherwise. The custody handoff itself is covered live only by Part
+  V's channel B, through a different mechanism (a direct call to OpenFang's
+  own store/issue endpoints), not by anything in this section.
+- **The Postgres error deliberately triggered for the null control is a
+  real, permanent line in a log shared by every other session using this
+  same `supabase-db` container.** It is inert (no table, row, or state
+  touched — `relation ... does not exist`) and carries no credential-shaped
+  content, but `docker logs` cannot be edited or pruned after the fact;
+  this is a small, deliberate, and irreversible side effect of proving the
+  search mechanism works, not something this task cleaned up (there is
+  nothing to clean up in a log stream).
+- **This test ran once, sequentially, not concurrently with another
+  session's activity against the same container.** Whether the same
+  assertions hold under concurrent load from another session's tests
+  (mentioned as a live possibility in this repo's multi-session-coordination
+  notes) was not checked.
+- **Whether some *future* configuration change to the Supabase instance
+  (a different `log_min_error_statement`, a different log destination)
+  would silently defeat the null control itself** was not checked — the
+  control proves today's configuration surfaces a triggered error; it is
+  not a structural guarantee independent of that configuration.
+
+## VI.7 Verification commands and their results
+
+```text
+$ PYTHONDONTWRITEBYTECODE=1 python -m pytest spaces/plugin-setup/tests/test_fenster_live.py -q
+s                                                                        [100%]
+1 skipped in 0.02s
+
+$ PLUGIN_SETUP_FENSTER_LIVE=1 PYTHONDONTWRITEBYTECODE=1 python -m pytest spaces/plugin-setup/tests/test_fenster_live.py -q -s
+.
+1 passed in 3.26s
+
+$ PYTHONDONTWRITEBYTECODE=1 python -m pytest spaces/plugin-setup/tests -q
+............................................................s......... [ 51%]
+....................................................................    [100%]
+139 passed, 1 skipped in 13.68s
+```
+
+Baseline before this task's file existed: 139 passed (Task 6, fix round 1).
+Delta: **+1 skipped file** in the default run (this test, correctly opted
+out without the live variable), **+1 passed** when opted in, **0 change**
+to the 139 previously-passing tests.
+
+Post-run row count, confirming cleanup (see VI.8):
+
+```text
+$ docker exec -i <supabase-db-container> psql -U postgres -d postgres -tA \
+    -c "SELECT count(*) FROM plugin_setup.einrichtungen WHERE referenz_name LIKE 'PYTEST_FENSTER_%';"
+0
+```
+
+## VI.8 Cleanup
+
+- Supabase: the test's own `finally` block deletes the vault secret (by
+  `vault_secret_id`, if one was ever assigned — for `art="bearer"` the
+  intake step's own Vault write happens before verification, so a row is
+  created and then the whole row is deleted) and the `plugin_setup.einrichtungen`
+  row for its own `referenz_name`, unconditionally, every run whether the
+  test passes or fails. Confirmed empty afterward (§VI.7).
+- The sidecar subprocess is terminated and waited on in the same `finally`
+  block; its stdout log file (a per-run temp file, not a project file) is
+  deleted after being read for the leak check.
+- No container was stopped, restarted, or reconfigured, at any point in
+  this task — `docker exec`/`docker logs`/`docker ps` only, all read-only
+  or additive (the deliberate null-control error, see §VI.6).
+- `~/.openfang/` and the shared daemon on `:4200` were never touched.
+- Nothing was pushed; no gitlink was bumped; nothing was deployed.
