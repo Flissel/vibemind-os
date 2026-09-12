@@ -99,3 +99,62 @@ umgekehrt.
   die Verbindung steht: das ist das bekannte WSL-Mirrored-Verhalten, kein
   Widerspruch. Wer Ports auf dieser Maschine prüft, darf sich darauf nicht
   verlassen — ein echter Verbindungsversuch ist der Beleg.
+
+---
+
+## Nachtrag: die Erreichbarkeit systematisch gemessen
+
+Die beiden Befunde oben fand ich durch Probieren. Das war Glück, also habe ich
+danach **jedes** Ziel angesprochen. Werkzeug:
+`scripts/space_reachability.py` (6 Tests in `scripts/tests/`).
+
+```
+Space        ok   tot  falsch  fehlt   Ursache
+bubbles      11     0       0      2
+coding        0     6       0      2   coding-engine :8140 laeuft nicht
+desktop       0     1       0      0   OpenFang :4200 laeuft nicht
+flowzen       3     0       0      0
+ideas        31     1       0      0   OpenFang :4200 laeuft nicht
+minibook      0     4       0      0   127.0.0.1:8800 antwortet nicht
+mirofish      0     0       7      0   404 unter :5001 - dort sitzt die Brain-API
+research      0     4       0      0   OpenFang :4200 laeuft nicht
+rowboat       0     7       0      0   OpenFang :4200 laeuft nicht
+schedule      7     0       0      0
+video         8     0       0      0
+
+60 von 94 Capabilities haben ein erreichbares Ziel.
+23 sind unerreichbar, weil ein Dienst nicht laeuft - Laufzustand, kein Defekt.
+ 7 zeigen auf den FALSCHEN Dienst - das ist einer.
+ 4 haben gar kein Ziel - bewusst entfernt (bubble_noop_op).
+```
+
+**Die Zahl 60 ist weniger schlimm als sie klingt, und der Rest ist es mehr.**
+Von den 34 nicht erreichbaren gehen **23 auf drei nicht laufende Dienste**
+zurück — OpenFang (13 Capabilities in fünf Spaces), coding-engine (6),
+minibook (4). Das ist Startzustand, kein Fehler im System. Starten würde sie
+alle auf einmal umlegen.
+
+Die **7 falschen** sind dagegen echte Arbeit, und sie sind derselbe eine
+Fehler, siebenmal gezählt: mirofishs Portkollision oben.
+
+**Der größte einzelne Hebel ist OpenFang.** Er trägt 13 der 23 — desktop,
+ideas (`idea_connect`, der einzige MCP-Pfad dort), minibook (`minibook.status`),
+research (alle vier) und rowboat (alle sieben).
+
+**Ich habe ihn NICHT gestartet.** Im WORKBOARD liegt seit dem 11.09. ein
+fremder Claim darauf: `cc-plugin-setup-agent` startet ausdrücklich „einen
+OpenFang-Daemon aus dem neu gebauten Binary". Zwei Sessions, die denselben
+Daemon hochfahren, ist genau der Fall, für den das Board da ist. Wer ihn
+startet, sollte die Regeln aus dem Gedächtnis beachten: **nie die Root-`.env`
+in die Daemon-Umgebung laden** (jeder Wrapper-Agent scheitert dann am Guard
+mit Exit 2), Start wie der Launcher mit PATH-Prepend und `WRAPPER_DIR`.
+
+### Eine Messfalle, die hier teuer gewesen wäre
+
+`Get-NetTCPConnection -LocalPort 5001 -State Listen` meldete **keinen**
+Lauscher, während ein Verbindungsversuch problemlos durchging. Das ist das
+bekannte WSL-Mirrored-Verhalten: Dienste aus der WSL-VM erscheinen nicht in
+der Windows-Portliste, antworten aber über den Loopback. Wer Ports so prüft,
+hält laufende Dienste für tot — und hätte hier den mirofish-Befund genau
+verkehrt herum gedeutet. Das Werkzeug verbindet deshalb wirklich; ein Test
+hält diese Entscheidung fest.
