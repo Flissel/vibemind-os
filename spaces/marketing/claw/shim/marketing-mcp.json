@@ -38,6 +38,8 @@
     "mcp__marketing__pdf_erstellen",
     "mcp__marketing__entwurf_holen",
     "mcp__marketing__pdf_aus_entwurf",
+    "mcp__marketing__versand_beauftragen",
+    "mcp__marketing__versandauftraege_lesen",
     "mcp__laura__list_projects",
     "mcp__laura__list_assets",
     "mcp__laura__get_transcript",

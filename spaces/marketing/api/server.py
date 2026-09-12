@@ -482,6 +482,74 @@ def list_broadcast_proposals_route(
                  limit=limit)
 
 
+# ─── Versandauftraege an sales-claw ────────────────────────────────────
+# Betreiber-Entscheid 12.09.2026: sales-claw ist der EINZIGE Versandweg
+# (Spec docs/superpowers/specs/2026-09-12-sales-claw-einziger-versandweg.md,
+# Migration db/043). Marketing schreibt Text und Unterlage und legt einen
+# AUFTRAG; sales-claw loest die Adresse auf, laesst sie durch seine Tore
+# laufen und macht daraus hoechstens einen Entwurf.
+#
+# HIER WIRD NICHTS GESENDET UND NICHTS GEPRUEFT. Die Pruefung (Kanal, Text,
+# Verbotsliste, Wiederholung) steht in der DB-Funktion, damit sie fuer jeden
+# Rufer gilt und nicht nur fuer den, der diese Route benutzt.
+#
+# Auth: das globale X-API-Key-Middleware oben deckt /api/* ab. Ein
+# zusaetzliches _require_proposal_api_key waere hier falsch — dieser Guard
+# schuetzt Schalter des Versand-Workers, und einen Versand loest ein Auftrag
+# gerade NICHT aus.
+
+
+@app.post("/api/versandauftraege")
+def versandauftrag_anlegen_route(payload: dict = Body(...)):
+    """Einen Versandauftrag anlegen. Body: kanal, empfaenger, nachricht,
+    optional betreff, medien_datei, kampagne, quelle.
+
+    kanal: whatsapp | email | linkedin (Nachricht an einen Kontakt) oder
+    linkedin_post (Beitrag aufs eigene Profil, ohne Empfaenger, Thema im
+    Feld betreff). Telegram fehlt: sales-claw hat dafuer keinen Dispatcher.
+
+    Antwort: {ok, id, wiederholung, grund} — eine Absage ist kein HTTP-Fehler,
+    sondern ok=false mit einem Grund, den ein Agent lesen kann.
+    """
+    from spaces.marketing.sync import _db
+    lit = _db._sql_literal
+    zeile = _db.query_one(
+        "SELECT marketing.versandauftrag_anlegen("
+        f"{lit(str(payload.get('kanal') or ''))}, "
+        f"{lit(str(payload.get('empfaenger') or ''))}, "
+        f"{lit(str(payload.get('nachricht') or ''))}, "
+        f"{lit(str(payload.get('betreff') or ''))}, "
+        f"{lit(str(payload.get('medien_datei') or ''))}, "
+        f"{lit(str(payload.get('kampagne') or ''))}, "
+        f"{lit(str(payload.get('quelle') or ''))}) AS ergebnis")
+    ergebnis = (zeile or {}).get("ergebnis") or {}
+    return {"success": True, "message": "versandauftrag", "data": ergebnis}
+
+
+@app.get("/api/versandauftraege")
+def versandauftraege_list_route(
+    status: Optional[str] = Query(None),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Was aus den Auftraegen geworden ist — offen, angenommen (mit draft_id)
+    oder abgelehnt (mit dem Grund, den sales-claws Tor genannt hat).
+
+    Der Text selbst steht hier NICHT: Marketing hat ihn geschrieben und
+    braucht ihn nicht zurueck; die Liste soll den Stand zeigen, nicht den
+    Inhalt wiederholen."""
+    from spaces.marketing.sync import _db
+    where = ""
+    if status:
+        where = f"WHERE status = {_db._sql_literal(status)}"
+    rows = _db.query_via_docker(
+        f"SELECT id::text AS id, kanal, empfaenger, betreff, medien_datei, "
+        f"       kampagne, quelle, status, draft_id, grund, "
+        f"       created_at::text AS created_at, erledigt_am::text AS erledigt_am "
+        f"FROM marketing.versandauftraege {where} "
+        f"ORDER BY created_at DESC LIMIT {min(max(1, int(limit)), 100)}")
+    return {"success": True, "message": f"{len(rows)} Auftraege", "data": rows}
+
+
 # ─── External integrations (Gmail/Notion/Sheets/Tavily/CSV) ────────────
 # All read-only at source, proposal-only at sink. CHECK constraint on
 # marketing.external_sources + Python ALLOWED_INTEGRATION_KINDS allowlist

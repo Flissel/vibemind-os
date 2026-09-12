@@ -284,10 +284,90 @@ def _kanal_kann_senden(kanal: str) -> tuple:
     return False, hinweis
 
 
+# Die Kanaele, die sales-claw wirklich zustellt. Die Liste steht hier NICHT,
+# um eine Entscheidung zu treffen — die faellt in der DB-Funktion — sondern
+# damit der Hinweistext unten sie nennen kann, ohne einen Netzgriff dafuer
+# zu brauchen. Weicht sie eines Tages ab, sagt die Absage aus der Datenbank
+# die Wahrheit, nicht diese Zeile.
+VERSANDKANAELE = ("whatsapp", "email", "linkedin", "linkedin_post")
+
+
+def versand_beauftragen(kanal: str, nachricht: str, empfaenger: str = "",
+                        betreff: str = "", medien_datei: str = "",
+                        kampagne: str = "", quelle: str = "") -> dict:
+    """Bittet sales-claw, diese Nachricht zuzustellen. DER EINZIGE WEG NACH
+    DRAUSSEN (Betreiber-Entscheid 12.09.2026).
+
+    Dieser Space versendet nichts — er schreibt. Ein Auftrag ist eine BITTE:
+    sales-claw ordnet die Adresse einem Kontakt zu, laesst sie durch seine
+    Tore laufen (gemeinsame Verbotsliste, Loeschantrag, Privat-Flag,
+    UWG-Erstansprache, WhatsApp-Freigabe, Anhang) und macht daraus
+    HOECHSTENS einen Entwurf. Freigeben tut den ein Mensch.
+
+    kanal:
+      whatsapp | email | linkedin  — Nachricht AN EINEN KONTAKT; `empfaenger`
+                                     ist die E-Mail oder die Telefonnummer.
+      linkedin_post                — Beitrag aufs eigene Profil: KEIN
+                                     `empfaenger`, dafuer `betreff` als Thema.
+    Telegram gibt es hier nicht — sales-claw hat dafuer keinen Versandweg.
+
+    medien_datei: der BLOSSE Dateiname aus dem Schaufenster (post_ablegen,
+    pdf_erstellen legen dorthin ab), ohne Pfad.
+
+    Eine Absage kommt als `{"ok": false, "fehler": "<Grund>"}` — flach, nicht
+    als negatives Ergebnis in einer erfolgreichen Huelle: `ok: true` mit einem
+    zweiten `ok: false` darin wird ueberlesen, und das Ueberlesen einer
+    Absage ist hier der teuerste Fehler. Derselbe Auftrag zweimal erzeugt
+    keine zweite Nachricht — die Antwort traegt dann `wiederholung: true`
+    und dieselbe Kennung.
+    """
+    if not (nachricht or "").strip():
+        return {"ok": False, "fehler": "Die Nachricht ist leer."}
+    antwort = _api("/api/versandauftraege", {
+        "kanal": kanal, "empfaenger": empfaenger, "nachricht": nachricht,
+        "betreff": betreff, "medien_datei": medien_datei,
+        "kampagne": kampagne, "quelle": quelle})
+    if not antwort["ok"]:
+        return antwort
+    ergebnis = ((antwort.get("daten") or {}).get("data")) or {}
+    if not isinstance(ergebnis, dict) or "ok" not in ergebnis:
+        return {"ok": False, "fehler": (
+            "Die Marketing-API hat auf den Auftrag etwas Unerwartetes "
+            "geantwortet — es ist unklar, ob er angelegt wurde. Sieh mit "
+            "versandauftraege_lesen nach, bevor du es noch einmal versuchst.")}
+    if not ergebnis.get("ok"):
+        return {"ok": False, "fehler": ergebnis.get("grund")
+                or "Der Auftrag wurde ohne Begruendung abgelehnt."}
+    return {"ok": True, "daten": {
+        "auftrag_id": ergebnis.get("id"),
+        "wiederholung": bool(ergebnis.get("wiederholung")),
+        "hinweis": ergebnis.get("grund", "")}}
+
+
+def versandauftraege_lesen(status: str = "", anzahl: int = 20) -> dict:
+    """Was aus deinen Auftraegen geworden ist: offen, angenommen (mit der
+    Entwurfskennung) oder abgelehnt — dann steht im Grund WOERTLICH, was
+    sales-claws Tor gesagt hat. `status` leer heisst: alle."""
+    pfad = f"/api/versandauftraege?limit={max(1, min(int(anzahl or 20), 100))}"
+    if (status or "").strip():
+        pfad += "&status=" + urllib.parse.quote((status or "").strip())
+    antwort = _api(pfad)
+    if not antwort["ok"]:
+        return antwort
+    return {"ok": True, "daten": (antwort.get("daten") or {}).get("data") or []}
+
+
 def kampagne_entwerfen(ziel: str, zielgruppe: str, kanal: str, kontext: str = "",
                        belege=None, zu_klaeren=None) -> dict:
     """Entwirft eine Kampagne: Briefing + Text als broadcast_proposals-Draft
     (Status draft — versendet NIE) plus Dateien im Schaufenster.
+
+    DAS IST DAS REDAKTIONELLE ARTEFAKT, NICHT DER WEG NACH DRAUSSEN. Ein
+    Vorschlag landet in der Freigabe-Oberflaeche und wird dort gelesen,
+    geaendert und beurteilt — zugestellt wird er nie. Seit dem
+    Betreiber-Entscheid vom 12.09.2026 versendet dieser Space ueberhaupt
+    nichts mehr: wer eine Nachricht raus haben will, ruft
+    `versand_beauftragen` und uebergibt sie sales-claw.
 
     BELEGPFLICHT (Betreiber-Entscheid 03.09.2026): `belege` sind die Quellen
     aus der Wissensbasis, auf die sich die Produktaussagen stuetzen (je

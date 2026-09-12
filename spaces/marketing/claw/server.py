@@ -92,6 +92,13 @@ WERKZEUGE = (
     # gehoert und nicht als HTML in den Nachrichtenrumpf.
     werkzeuge.entwurf_holen,
     werkzeuge.pdf_aus_entwurf,
+    # Der EINZIGE Weg nach draussen (Betreiber-Entscheid 12.09.2026): dieser
+    # Space versendet nichts mehr selbst, er bittet sales-claw. Gemessen
+    # davor: Marketing hat NIE etwas zugestellt (campaign_sends/_openfang/
+    # _telegram je 0 Zeilen), sales-claw 25 mal. Spec
+    # docs/superpowers/specs/2026-09-12-sales-claw-einziger-versandweg.md.
+    werkzeuge.versand_beauftragen,
+    werkzeuge.versandauftraege_lesen,
 )
 
 HOST = os.environ.get("MARKETING_CLAW_MCP_HOST", "0.0.0.0")
