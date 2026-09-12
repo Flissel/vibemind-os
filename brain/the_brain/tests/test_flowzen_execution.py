@@ -133,9 +133,29 @@ def test_registry_capabilities_resolve_to_real_flowzen_executor():
         executor = build_executor(target)
         assert isinstance(executor, SupabaseExecutor)
         assert executor.operation == event_id
-        assert by_name[event_id]["validator"] == {
-            "kind": "rule:flowzen_result", "on_fail": "block"
-        }
+        if event_id == "rose.accept":
+            # Seit 2026-09-12 unabhaengig belegt statt selbstberichtet:
+            # accept_op liest seinen Schreibvorgang zwar intern zurueck
+            # (flowzen_ops.py:78), aber von der Capability-Ebene aus war das
+            # von einem Selbstbericht nicht zu unterscheiden. Das blockierende
+            # Tor bleibt - faellt der Schreibvorgang aus, traegt der Umschlag
+            # keine id, der Platzhalter bleibt ungefuellt und die Beobachtung
+            # gilt als UNVERIFIED, also ungueltig.
+            validator = by_name[event_id]["validator"]
+            assert validator["kind"] == "truth:supabase_row"
+            assert validator["on_fail"] == "block"
+            assert validator["postcondition"] == {
+                "check": "supabase_row",
+                "table": "flowzen_activity",
+                "match": "event_type=eq.recommendation_accepted:{result_id}",
+                "expect": "present",
+            }
+        else:
+            # Die lesenden beiden behalten die Umschlag-Regel: es gibt bei
+            # ihnen keinen Schreibvorgang, den man nachschlagen koennte.
+            assert by_name[event_id]["validator"] == {
+                "kind": "rule:flowzen_result", "on_fail": "block"
+            }
 
 
 def test_plan_executor_resolves_flowzen_capability_and_blocks_invalid_result(monkeypatch):

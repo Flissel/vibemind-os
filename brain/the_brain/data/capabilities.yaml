@@ -24,6 +24,24 @@
     - "openclaw\\s+cron"
     - "cron\\s+(job|task).*(openclaw)"
   execution_target: "direct:spaces.schedule.execution:openclaw_cron"
+  validator:
+    kind: "truth:sqlite_row"
+    # report, nicht block: hier stand bisher GAR kein Validator, und der
+    # Vorgabepfad der SQLite-Datei ist in der Ausbringung unbewiesen
+    # (SCHEDULE_DB_PATH ist nirgends produktiv gesetzt). Ein blockierendes
+    # Tor auf einem ungeklaerten Pfad wuerde Planung lahmlegen statt sie zu
+    # sichern. SCHEDULE_DB_PATH setzen macht die Ruecklesung verlaesslich.
+    on_fail: "report"
+    postcondition:
+      check: sqlite_row
+      path_env: SCHEDULE_DB_PATH
+      path: "spaces/schedule/data/schedule.sqlite3"
+      table: scheduled_tasks
+      match: "id={result_id}"
+      # openclaw_cron setzt immer einen cron-Ausloeser (execution.py:285).
+      expect_column: trigger_type
+      expect_value: cron
+      expect: present
 
 - capability: schedule_create
   description: "create a persistent scheduled task, reminder, timer, alarm or appointment"
@@ -31,24 +49,93 @@
     - "(schedule|create|set|plane|erstelle|stell).*(task|reminder|timer|alarm|termin|erinnerung)"
     - "erinnere mich"
   execution_target: "direct:spaces.schedule.execution:create"
+  validator:
+    kind: "truth:sqlite_row"
+    # report, nicht block: hier stand bisher GAR kein Validator, und der
+    # Vorgabepfad der SQLite-Datei ist in der Ausbringung unbewiesen
+    # (SCHEDULE_DB_PATH ist nirgends produktiv gesetzt). Ein blockierendes
+    # Tor auf einem ungeklaerten Pfad wuerde Planung lahmlegen statt sie zu
+    # sichern. SCHEDULE_DB_PATH setzen macht die Ruecklesung verlaesslich.
+    on_fail: "report"
+    postcondition:
+      check: sqlite_row
+      path_env: SCHEDULE_DB_PATH
+      path: "spaces/schedule/data/schedule.sqlite3"
+      table: scheduled_tasks
+      match: "id={result_id}"
+      expect: present
 
 - capability: schedule_cancel
   description: "cancel a scheduled task or reminder"
   match_patterns:
     - "(cancel|delete|lösche|storniere).*(schedule|task|reminder|termin|erinnerung)"
   execution_target: "direct:spaces.schedule.execution:cancel"
+  validator:
+    kind: "truth:sqlite_row"
+    # report, nicht block: hier stand bisher GAR kein Validator, und der
+    # Vorgabepfad der SQLite-Datei ist in der Ausbringung unbewiesen
+    # (SCHEDULE_DB_PATH ist nirgends produktiv gesetzt). Ein blockierendes
+    # Tor auf einem ungeklaerten Pfad wuerde Planung lahmlegen statt sie zu
+    # sichern. SCHEDULE_DB_PATH setzen macht die Ruecklesung verlaesslich.
+    on_fail: "report"
+    postcondition:
+      check: sqlite_row
+      path_env: SCHEDULE_DB_PATH
+      path: "spaces/schedule/data/schedule.sqlite3"
+      table: scheduled_tasks
+      match: "id={result_id}"
+      # Nicht nur "Zeile noch da", sondern: der Abbruch hat gewirkt.
+      expect_column: status
+      expect_value: cancelled
+      expect: present
 
 - capability: schedule_modify
   description: "modify or reschedule a scheduled task"
   match_patterns:
     - "(modify|change|reschedule|ändere|verschiebe).*(schedule|task|reminder|termin|erinnerung)"
   execution_target: "direct:spaces.schedule.execution:modify"
+  validator:
+    kind: "truth:sqlite_row"
+    # report, nicht block: hier stand bisher GAR kein Validator, und der
+    # Vorgabepfad der SQLite-Datei ist in der Ausbringung unbewiesen
+    # (SCHEDULE_DB_PATH ist nirgends produktiv gesetzt). Ein blockierendes
+    # Tor auf einem ungeklaerten Pfad wuerde Planung lahmlegen statt sie zu
+    # sichern. SCHEDULE_DB_PATH setzen macht die Ruecklesung verlaesslich.
+    on_fail: "report"
+    postcondition:
+      check: sqlite_row
+      path_env: SCHEDULE_DB_PATH
+      path: "spaces/schedule/data/schedule.sqlite3"
+      table: scheduled_tasks
+      match: "id={result_id}"
+      # Nur Vorhandensein. WELCHES Feld geaendert wurde, steht nicht im
+      # Ergebnistext und ist darum nicht nachpruefbar: dieser Beleg sagt
+      # "die Aufgabe existiert danach noch", nicht "sie wurde geaendert".
+      expect: present
 
 - capability: schedule_snooze
   description: "snooze a scheduled task or reminder"
   match_patterns:
     - "(snooze|schlummer|später).*(schedule|task|reminder|termin|erinnerung)?"
   execution_target: "direct:spaces.schedule.execution:snooze"
+  validator:
+    kind: "truth:sqlite_row"
+    # report, nicht block: hier stand bisher GAR kein Validator, und der
+    # Vorgabepfad der SQLite-Datei ist in der Ausbringung unbewiesen
+    # (SCHEDULE_DB_PATH ist nirgends produktiv gesetzt). Ein blockierendes
+    # Tor auf einem ungeklaerten Pfad wuerde Planung lahmlegen statt sie zu
+    # sichern. SCHEDULE_DB_PATH setzen macht die Ruecklesung verlaesslich.
+    on_fail: "report"
+    postcondition:
+      check: sqlite_row
+      path_env: SCHEDULE_DB_PATH
+      path: "spaces/schedule/data/schedule.sqlite3"
+      table: scheduled_tasks
+      match: "id={result_id}"
+      # snooze schreibt den Ausloeser auf ein Datum um (execution.py:278).
+      expect_column: trigger_type
+      expect_value: date
+      expect: present
 
 - capability: schedule_status
   description: "show scheduler status and persistent task counts"
@@ -2042,7 +2129,19 @@
   execution_target: "supabase:rose.accept"
   arg_kwarg: recommendation_log_id
   result_arg_extractor: 'regex:(fzr_[0-9a-f]{16})'
-  validator: { kind: "rule:flowzen_result", on_fail: "block" }
+  validator:
+    kind: "truth:supabase_row"
+    # block bleibt: hier stand schon ein blockierendes Tor (rule:flowzen_result).
+    # Das prueft aber nur den SELBSTBERICHT des Umschlags. accept_op liest zwar
+    # intern zurueck, von hier aussen war das nicht zu unterscheiden. Faellt der
+    # Schreibvorgang aus, traegt der Umschlag keine id, der Platzhalter bleibt
+    # ungefuellt -> UNVERIFIED -> blockiert. Derselbe Schutz, jetzt belegt.
+    on_fail: "block"
+    postcondition:
+      check: supabase_row
+      table: flowzen_activity
+      match: "event_type=eq.recommendation_accepted:{result_id}"
+      expect: present
 
 - capability: rose.status
   description: "Read the latest minimal Flowzen check-in and verified activity status"
