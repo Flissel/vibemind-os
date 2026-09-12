@@ -589,3 +589,72 @@ def test_neu_aufnehmen_laesst_keinen_verwaisten_vault_eintrag():
         assert int(nachher) == int(vorher) - 1, "neu_aufnehmen muss die Vault-Kopie mitloeschen"
     finally:
         _cleanup(referenz)
+
+
+# ─── Fix Runde 1 (Review): die SQL-Wachen direkt, nicht nur den Wrapper ──
+#
+# Review-Befund: `ablage.zustand()` hat einen eigenen, unabhaengigen
+# Fallback (`if "|" not in zeile: return {"ok": False, ...}`). Ein Test, der
+# nur den Wrapper aufruft, kann darum nicht zwischen "die SQL-Wache
+# (IF NOT FOUND THEN RAISE EXCEPTION) hat gegriffen" und "die Antwort hatte
+# zufaellig kein '|' drin" unterscheiden -- er ist gruen, auch wenn die
+# SQL-Wache komplett entfernt wird. Die folgenden Tests rufen die
+# SQL-Funktionen ueber `ablage._psql` DIREKT auf (roh, kein Wrapper
+# dazwischen) und pruefen `rc != 0` -- exakt das Muster, das
+# tests/test_eingang.py fuer verifizieren()/fehlschlagen()/uebernommen()
+# schon benutzt (z.B. test_verifizieren_ist_fail_closed_bei_unbekannter_referenz).
+
+
+def test_zustand_scheitert_roh_bei_unbekannter_referenz():
+    """Direkt gegen die SQL-Funktion, ohne den Python-Wrapper: beweist die
+    Wache selbst (IF NOT FOUND THEN RAISE EXCEPTION), nicht den Fallback
+    von ablage.zustand()."""
+    unbekannt = f"PYTEST_ZUSTAND_ROH_{uuid.uuid4().hex[:8].upper()}"
+    rc, out = ablage._psql(f"SELECT status FROM plugin_setup.zustand('{unbekannt}');")
+    assert rc != 0
+    assert unbekannt in out
+
+
+def test_neu_aufnehmen_scheitert_roh_bei_unbekannter_referenz():
+    """Dieselbe Lücke, gespiegelt fuer neu_aufnehmen(): kein Wrapper-Fallback
+    kann hier etwas verschleiern (neu_aufnehmen() liefert kein Ergebnis,
+    dessen Form der Wrapper umdeuten koennte), aber die Symmetrie zur
+    zustand()-Probe und zur unbekannte-referenz-Probe der Geschwister-
+    Funktionen in test_eingang.py gehoert trotzdem hierhin."""
+    unbekannt = f"PYTEST_NEUAUF_ROH_{uuid.uuid4().hex[:8].upper()}"
+    rc, out = ablage._psql(f"SELECT plugin_setup.neu_aufnehmen('{unbekannt}');")
+    assert rc != 0
+    assert unbekannt in out
+
+
+@pytest.mark.parametrize("ziel_status", ["verifiziert", "uebernommen"])
+def test_neu_aufnehmen_lehnt_auch_verifiziert_und_uebernommen_ab(ziel_status):
+    """Review-Befund: der bestehende Test
+    (test_neu_aufnehmen_gibt_nur_aus_fehlgeschlagen_frei) deckt die
+    Ablehnung nur aus 'entgegengenommen' ab. Der Kommentarkopf von
+    0005_fenster_oberflaeche.sql nennt ausdruecklich 'verifiziert' und
+    'uebernommen' als die Zustaende, vor denen die Wache schuetzen soll --
+    eine Guard-Aenderung wie `IF v_status = 'entgegengenommen'` (statt
+    `IF v_status <> 'fehlgeschlagen'`) wuerde die Ablehnung aus
+    'entgegengenommen' unveraendert lassen und darum am bestehenden Test
+    unentdeckt vorbeikommen, waehrend 'verifiziert'- und 'uebernommen'-
+    Zeilen ploetzlich loeschbar waeren."""
+    referenz = f"PYTEST_NEUAUF_ZUSTAND_{uuid.uuid4().hex[:8].upper()}"
+    projekt = f"pytest-projekt-{uuid.uuid4().hex[:8]}"
+    try:
+        assert ablage.entgegennehmen(projekt, "demo-plugin", referenz, "bearer", _FAKE_WERT)["ok"] is True
+        assert ablage.verifizieren(referenz)["ok"] is True
+        if ziel_status == "uebernommen":
+            assert ablage.uebernommen(referenz)["ok"] is True
+        assert ablage.zustand(referenz)["zustand"] == ziel_status
+
+        ablehnung = ablage.neu_aufnehmen(referenz)
+        assert ablehnung["ok"] is False
+
+        # Kein Teilzustand: Zeile und Status unveraendert.
+        assert ablage.zustand(referenz)["zustand"] == ziel_status
+        assert _psql_als_postgres_ok(
+            f"SELECT count(*) FROM plugin_setup.einrichtungen WHERE referenz_name = '{referenz}';"
+        ).strip() == "1"
+    finally:
+        _cleanup(referenz)
