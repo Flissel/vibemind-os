@@ -53,18 +53,30 @@ Automations- und Session-Faehigkeiten (`config/openclaw.json`: `tools.deny`
 Loopback-Wache trennt auf diesem Host den Container nicht vom Betreiber.
 
 DIESE FASSUNG WAR EBENFALLS UNVOLLSTAENDIG (Review Runde 3, Fix-Runde 3,
-C-Kritisch, SELBE KLASSE VON LUECKE WIE OBEN): `group:automation` fehlte in
-der Deny-Liste. Es enthaelt `gateway` -- das owner-only Werkzeug fuer
-`config.patch`/`config.apply` (openclaw docs/concepts/system-prompt.md) --
-und dieses Werkzeug schuetzt NUR `tools.exec.ask`/`tools.exec.security` vor
-sich selbst, NICHT `tools.deny`. Ohne die Ergaenzung waere der Weg nur zwei
-Schritte statt einer gewesen: `gateway config.patch` (loescht `tools.deny`)
--> Neustart -> `exec` -> `curl` des Tokens. Dieselbe Faehigkeitsluecke wie
-der Shell-Fund, nur eine Ebene hoeher -- eine Aufzaehlung, die nicht auch
-"was kann die Policy selbst aendern" fragt, ist per Konstruktion
-unvollstaendig. `group:sessions` (Subagent-/Session-Werkzeuge, kein Bedarf
-fuer diesen Agenten) ist ebenfalls jetzt in der Deny-Liste, aus derselben
-Vorsicht, auch ohne einen belegten Weg dorthin.
+C-Kritisch): `group:automation` fehlte in der Deny-Liste. Der FIX bleibt
+richtig, aber die BEGRUENDUNG dafuer war falsch, korrigiert in Fix-Runde 4
+-- und das ist selbst die Lehre hier: Fix-Runde 3 las openclaw's PROSA-Doku
+("das owner-only Werkzeug `gateway` schuetzt nur `tools.exec.ask`/
+`tools.exec.security` vor sich selbst") und las das als kurze Denyliste,
+die `tools.deny` fuer `config.patch` offen liesse -- und schloss daraus
+eine zweistufige Eskalationskette (`gateway config.patch` -> `tools.deny`
+loeschen -> Neustart -> `exec` -> `curl`). GEGEN DEN KOMPILIERTEN CODE
+GEPRUEFT (Review Runde 4) ist das falsch: `ALLOWED_GATEWAY_CONFIG_PATHS` in
+diesem Image (2026.7.1) ist eine 19-Muster-ALLOWLIST, und
+`assertGatewayConfigMutationAllowed` wirft fuer alles, was nicht darauf
+passt -- nichts unter `tools.` passt. Die beschriebene Eskalationskette
+existiert in diesem Image schlicht nicht; die Doku las sich wie eine
+Denyliste und war eine Allowlist.
+
+`group:automation` bleibt trotzdem zu Recht denied, aus dem tatsaechlichen
+Grund: es enthaelt `cron` (kann Agenten-Turns zeitgesteuert ausloesen) und
+`gateway`s Neustart-/`update.run`-Flaeche -- beides Faehigkeiten, die dieser
+Agent nicht braucht, UNABHAENGIG davon, ob `gateway` `tools.deny` je aendern
+koennte. Und die Allowlist selbst ist eine Eigenschaft DIESER Image-Version,
+kein Vertrag, den wir kontrollieren -- sie kann bei einem Upgrade in beide
+Richtungen kippen. `group:sessions` (Subagent-/Session-Werkzeuge, kein
+Bedarf fuer diesen Agenten) bleibt aus derselben Vorsicht denied, ebenfalls
+ohne einen belegten Weg dorthin.
 
 Der Schreibweg ist also durch KONFIGURATION verschlossen, nicht durch
 STRUKTUR. `tests/test_openclaw_tool_policy.py` haelt fest, dass diese
@@ -73,11 +85,24 @@ Tripwire fuer eine Aenderung an DIESER Datei, ausdruecklich KEIN Beweis,
 dass (a) der tatsaechlich laufende Container diese Datei so geladen hat
 (unverifiziert, s. Task-5-Report) oder (b) keine hier nicht genannte
 Gruppe/Kombination denselben Weg auf einem anderen Pfad oeffnet -- geprueft
-ist nur, was hier aufgefuehrt ist. Der Fix, der die urspruengliche
+ist nur, was hier aufgefuehrt ist. Zu (b) hat Review Runde 4 gezielt
+nachgesehen: fuenf Gruppen bleiben ungeprueft denied (`group:plugins`,
+`group:nodes`, `group:messaging`, `group:agents`, `group:media`), und
+dieses Image aktiviert `file-transfer` standardmaessig mit einer
+`file_write`-Primitive AUSSERHALB von `group:fs` -- die zwei Kandidaten mit
+plausibel neuem HTTP-/Config-Schreibweg (`file_fetch`, `skill_workshop`)
+sind gegen den kompilierten Code geprueft und beide durch das IMAGE SELBST
+verschlossen (`file_fetch`s URL ist hart auf das lokale Gateway gebunden,
+`skill_workshop` kann seinen Workspace nicht verlassen), nicht durch unsere
+Liste -- die Deckung ist also teils zufaellig, und "auf `profile: minimal`
+mit expliziter `alsoAllow`-Liste statt Denyliste-ueber-`full` umstellen"
+ist der richtig geformte, aber hier bewusst NICHT umgesetzte naechste
+Schritt (gehoert in dieselbe Folgerunde wie der strukturelle Fix unten,
+nicht in eine schliessende Runde). Der Fix, der die urspruengliche
 Zusicherung wiederherstellen wuerde -- `eingabe_anfordern` haendigt dem
 Agenten die Adresse gar nicht erst aus, sondern liefert sie ausschliesslich
-out-of-band an den Betreiber -- ist bewusst NICHT Teil dieser Runde
-(eigener Vertrags-/Entwurfswechsel fuer `eingabe_anfordern`, s.
+out-of-band an den Betreiber -- ist ebenfalls bewusst NICHT Teil dieser
+Runde (eigener Vertrags-/Entwurfswechsel fuer `eingabe_anfordern`, s.
 Task-5-Report und die Korrektur in
 `docs/superpowers/specs/2026-09-12-eingabefenster-design.md` E3).
 

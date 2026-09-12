@@ -26,13 +26,21 @@ _ERFORDERLICHE_DENY_GRUPPEN = {
     "group:fs",          # read/write/edit/apply_patch.
     "group:web",         # web_search/x_search/web_fetch.
     "group:ui",          # browser/canvas.
-    "group:automation",  # heartbeat_respond/cron/gateway -- OHNE das kann
-                          # der Agent per `gateway config.patch` `tools.deny`
-                          # selbst umschreiben (das Werkzeug schuetzt nur
-                          # `tools.exec.ask`/`tools.exec.security`, s.
-                          # openclaw docs/concepts/system-prompt.md) und
-                          # anschliessend neu starten -- der eigentliche
-                          # Fund dieser Runde.
+    "group:automation",  # heartbeat_respond/cron/gateway. Denied wegen
+                          # `cron` (zeitgesteuerte Turns) und `gateway`s
+                          # Neustart-/`update.run`-Flaeche -- NICHT weil
+                          # `gateway` `tools.deny` per `config.patch`
+                          # umschreiben koennte: Fix-Runde 3 hatte genau das
+                          # behauptet und dabei openclaw's Prosa-Doku als
+                          # kurze Denyliste gelesen; gegen den kompilierten
+                          # Code (2026.7.1) ist `ALLOWED_GATEWAY_CONFIG_PATHS`
+                          # tatsaechlich eine 19-Muster-ALLOWLIST und nichts
+                          # unter `tools.` passt darauf -- diese Eskalation
+                          # existiert in diesem Image nicht. Korrigiert in
+                          # Fix-Runde 4; die Allowlist ist eine Eigenschaft
+                          # dieser Image-Version, kein Vertrag, den wir
+                          # kontrollieren, darum bleibt die Gruppe trotzdem
+                          # denied. S. server.py fuer die volle Herleitung.
     "group:sessions",     # sessions_spawn/subagents u.a. -- kein Bedarf.
 }
 

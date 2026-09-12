@@ -64,7 +64,14 @@ fi
 # Negativ: kein zweiter MCP-Server im Gateway (kein direkter OpenFang-/
 # Rowboat-Zugriff am Agenten vorbei -- alles laeuft ueber die fuenf
 # Werkzeuge des Sidecars).
-if docker compose exec -T plugin-setup-claw openclaw mcp list 2>&1 | grep -viE 'plugin-setup|^$' | grep -q .; then
+#
+# `openclaw mcp list` traegt eine Kopfzeile und eine abschliessende
+# `Note:`-Zeile um die eigentliche Serverliste -- keine von beiden enthaelt
+# "plugin-setup", beide ueberleben also den reinen Ausschlussfilter und
+# loesen den FEHL-Zweig auch bei einem gesunden Deployment aus (Review
+# Runde 4, gegen das laufende Image reproduziert). Erst auf die
+# Listenzeilen (`^- `) eingrenzen, DANN ausschliessen.
+if docker compose exec -T plugin-setup-claw openclaw mcp list 2>&1 | grep '^- ' | grep -viE 'plugin-setup' | grep -q .; then
   echo "   FEHL Gateway kennt einen weiteren MCP-Server ausser plugin-setup"; ROT=$((ROT+1))
 fi
 

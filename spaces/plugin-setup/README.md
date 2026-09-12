@@ -22,12 +22,18 @@ zwischen Betreiber und Container (s. `docs/superpowers/specs/
 tatsaechlich davon abhaelt, das Formular selbst zu erreichen, ist seine
 Tool-Policy (`config/openclaw.json`: `tools.deny` = `group:runtime`,
 `group:fs`, `group:web`, `group:ui`, `group:automation`, `group:sessions`
--- `group:automation` schliesst `gateway` ein, ohne das der Agent seine
-eigene `tools.deny` per `config.patch` haette umschreiben und neu starten
-koennen, Review Runde 3 Fix-Runde 3), nicht die Bindung. Das ist KONFIGURATION,
-nicht STRUKTUR -- `tests/test_openclaw_tool_policy.py` ist der Tripwire fuer
-eine Aenderung an dieser Datei, aber kein Beweis, dass der laufende
-Container sie so geladen hat.
+-- `group:automation` bleibt denied wegen `cron` (zeitgesteuerte Turns) und
+`gateway`s Neustart-/`update.run`-Flaeche, NICHT weil `gateway` `tools.deny`
+per `config.patch` umschreiben koennte: Review Runde 3 Fix-Runde 3 hatte
+das behauptet und las damit openclaw's Prosa-Doku falsch (als Denyliste
+statt als die 19-Muster-ALLOWLIST, die der kompilierte Code tatsaechlich
+durchsetzt -- korrigiert in Fix-Runde 4, s. `server.py` fuer die volle
+Herleitung), nicht die Bindung. Das ist KONFIGURATION, nicht STRUKTUR --
+`tests/test_openclaw_tool_policy.py` ist der Tripwire fuer eine Aenderung
+an dieser Datei, aber weder Beweis, dass der laufende Container sie so
+geladen hat, noch dass keine hier nicht genannte Gruppe denselben Weg
+anderswo oeffnet (fuenf Gruppen bleiben aus diesem Grund ungeprueft denied,
+s. `server.py` fuer welche und warum das vorerst genuegt).
 
 `spaces/plugin-setup` traegt bewusst KEIN `__init__.py` (Bindestrich ist
 kein gueltiger Python-Modulname) -- alle Module hier werden bare importiert

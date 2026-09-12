@@ -134,9 +134,13 @@ schließen musste (rohe Messwerte: `task-5-report.md`,
 verhindert, dass der Agent das Formular selbst absendet, ist NICHT diese
 Bindung, sondern dass ihm keine Fähigkeit zur Verfügung steht, die eine
 beliebige HTTP-Anfrage stellen könnte (Tool-Policy in
-`config/openclaw.json`, s. `server.py`) — Konfiguration, nicht Struktur;
-der echte Fix (die Adresse gar nicht erst an den Agenten aushändigen)
-steht als Folgeaufgabe aus.
+`config/openclaw.json`, s. `server.py`) — Konfiguration, nicht Struktur,
+mit Test abgesichert (`tests/test_openclaw_tool_policy.py`), aber ohne
+Beweis, dass (a) der laufende Container diese Datei so geladen hat oder
+(b) keine hier nicht genannte Gruppe denselben Weg anderswo öffnet — fünf
+Gruppen bleiben aus diesem Grund ungeprüft denied, s. `server.py` für
+welche und warum das vorerst genügt; der echte Fix (die Adresse gar nicht
+erst an den Agenten aushändigen) steht als Folgeaufgabe aus.
 
 ### E4 — Die schwebende Anfrage: 15 Minuten, einmal verwendbar
 
