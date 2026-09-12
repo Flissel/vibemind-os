@@ -1500,36 +1500,46 @@
 - capability: code_generate
   description: "Generate code through the health-checked coding-engine control server."
   match_patterns: ["^code\\.generate$", "^(generate|create|erstelle?|generiere?)\\s+(code|projekt|project)"]
-  execution_target: "coding-engine:POST:/api/start"
+  execution_target: "coding-engine:POST:/api/v1/jobs"
   arg_kwarg: description
   validator: {kind: "rule:non_empty_result", on_fail: report}
 
 - capability: code_modify
   description: "Modify code through the health-checked coding-engine control server."
   match_patterns: ["^code\\.modify$", "^(modify|edit|ändere?|bearbeite?)\\s+(code|datei|file)"]
-  execution_target: "coding-engine:POST:/api/start"
+  execution_target: "coding-engine:POST:/api/v1/jobs"
   arg_kwarg: description
   validator: {kind: "rule:non_empty_result", on_fail: report}
 
 - capability: code_status
   description: "Read the current coding-engine execution status."
   match_patterns: ["^code\\.status$", "^(code|coding)[ -]?(status|fortschritt)$"]
-  execution_target: "coding-engine:GET:/api/status"
+  execution_target: "coding-engine:GET:/api/v1/jobs/{job_id}/status"
   validator: {kind: "rule:non_empty_result", on_fail: report}
 
 - capability: code_show
   description: "Show coding-engine execution logs and visible results."
   match_patterns: ["^code\\.show$", "^(show|zeige?)\\s+(code|coding)[ -]?(result|ergebnis|logs?)"]
-  execution_target: "coding-engine:GET:/api/logs"
+  execution_target: "coding-engine:GET:/api/v1/jobs/{job_id}/results"
   validator: {kind: "rule:non_empty_result", on_fail: report}
 
 - capability: code_preview_start
+  # 2026-09-08: disabled - the running engine (src/api/main.py) serves
+  # no preview route at all; the /api/preview/* contract came from the
+  # orphaned infra/control_server/. Left in place, not deleted, so the
+  # intent is still visible if a preview API ever lands.
+  enabled: false
   description: "Start a preview for a coding-engine project."
   match_patterns: ["^code\\.preview\\.start$", "^(start|starte?)\\s+(code|coding)[ -]?preview"]
   execution_target: "coding-engine:POST:/api/preview/create"
   validator: {kind: "rule:non_empty_result", on_fail: report}
 
 - capability: code_preview_stop
+  # 2026-09-08: disabled - the running engine (src/api/main.py) serves
+  # no preview route at all; the /api/preview/* contract came from the
+  # orphaned infra/control_server/. Left in place, not deleted, so the
+  # intent is still visible if a preview API ever lands.
+  enabled: false
   description: "Stop a preview for a coding-engine project."
   match_patterns: ["^code\\.preview\\.stop$", "^(stop|stoppe?)\\s+(code|coding)[ -]?preview"]
   execution_target: "coding-engine:POST:/api/preview/{project_id}/stop"
@@ -1537,15 +1547,15 @@
   validator: {kind: "rule:non_empty_result", on_fail: report}
 
 - capability: code_list
-  description: "List coding-engine previews and queryable results."
+  description: "List coding-engine jobs and their progress."
   match_patterns: ["^code\\.list$", "^(list|liste|zeige?)\\s+(code|coding)[ -]?(projects?|projekte?|previews?)"]
-  execution_target: "coding-engine:GET:/api/preview/"
+  execution_target: "coding-engine:GET:/api/v1/jobs"
   validator: {kind: "rule:non_empty_result", on_fail: report}
 
 - capability: code_cancel
   description: "Cancel the active coding-engine execution."
   match_patterns: ["^code\\.cancel$", "^(cancel|abort|brich|breche)\\s+(code|coding)"]
-  execution_target: "coding-engine:POST:/api/stop"
+  execution_target: "coding-engine:POST:/api/v1/jobs/{job_id}/cancel"
   validator: {kind: "rule:non_empty_result", on_fail: report}
 
 - capability: coding_task_anthropic

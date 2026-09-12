@@ -54,6 +54,11 @@
       <a class="tab-link px-3 py-1.5 rounded-md text-sm border border-transparent text-slate-300 hover:text-white" data-tab="campaigns"  href="#campaigns">Campaigns</a>
       <a class="tab-link px-3 py-1.5 rounded-md text-sm border border-transparent text-slate-300 hover:text-white" data-tab="audiences"  href="#audiences">Audiences</a>
       <a class="tab-link px-3 py-1.5 rounded-md text-sm border border-transparent text-slate-300 hover:text-white" data-tab="proposals"  href="#proposals">Proposals</a>
+      <!-- Entwuerfe (04.09.2026): der Reiter "Proposals" daneben zeigt AUDIENCE-
+           proposals — wen man anschreibt. Hier stehen die Kampagnen-Entwuerfe
+           (broadcast_proposals): was gesendet wuerde. Zwei aehnlich benannte
+           Tabellen; ohne diesen Reiter waren die Entwuerfe unsichtbar. -->
+      <a class="tab-link px-3 py-1.5 rounded-md text-sm border border-transparent text-slate-300 hover:text-white" data-tab="entwuerfe"  href="#entwuerfe">Entwürfe</a>
       <a class="tab-link px-3 py-1.5 rounded-md text-sm border border-transparent text-slate-300 hover:text-white" data-tab="audit"      href="#audit">Audit</a>
       <a class="tab-link px-3 py-1.5 rounded-md text-sm border border-transparent text-slate-300 hover:text-white" data-tab="templates"  href="#templates">Templates</a>
       <a class="tab-link px-3 py-1.5 rounded-md text-sm border border-transparent text-slate-300 hover:text-white" data-tab="channels"   href="#channels">Channels</a>
@@ -166,6 +171,32 @@
   </div>
   <div id="audiences-grid" class="grid grid-cols-1 md:grid-cols-3 gap-4">
     <div class="glass rounded-xl p-5 text-sm text-slate-500">Loading audiences ...</div>
+  </div>
+</section>
+
+<!-- ─── Entwuerfe (broadcast_proposals) — was gesendet wuerde ─────────── -->
+<section data-view="entwuerfe" class="space-y-4 hidden">
+  <div class="flex items-center justify-between flex-wrap gap-2">
+    <h2 class="text-lg font-semibold">Kampagnen-Entwürfe
+      <span id="entw-count" class="text-xs text-slate-400">(lädt ...)</span></h2>
+    <div class="flex items-center gap-2">
+      <select id="entw-status" class="bg-slate-900/60 border border-white/10 rounded px-2 py-1 text-xs">
+        <option value="draft">draft</option>
+        <option value="pending_approval">pending_approval</option>
+        <option value="approved">approved</option>
+        <option value="rejected">rejected</option>
+        <option value="sent">sent</option>
+        <option value="">alle</option>
+      </select>
+      <button id="entw-reload" class="px-3 py-1 rounded bg-white/5 border border-white/10 text-xs">neu laden</button>
+    </div>
+  </div>
+  <div class="text-xs text-slate-400">
+    Was der Marketing-Agent entworfen hat — Betreff und Text.
+    Nur lesend: freigegeben wird über den Approval-Weg, nicht hier.
+  </div>
+  <div id="entwuerfe-list" class="space-y-2">
+    <div class="glass rounded-xl p-5 text-sm text-slate-500">Lädt Entwürfe ...</div>
   </div>
 </section>
 
@@ -348,7 +379,8 @@
 </main>
 
 <footer class="border-t border-white/5 py-4 text-center text-[11px] text-slate-500">
-  Mockup · spaces/marketing/mockup/index.html · static, no backend wiring
+  spaces/marketing/mockup/index.html · Audiences, Proposals, Entwürfe und Audit
+  lesen echte Daten aus der Marketing-API; die übrigen Reiter sind noch Beispiel.
 </footer>
 
 <script>
@@ -515,6 +547,84 @@
         );
         if (el) el.textContent = fmt(body.data.reachable);
       });
+    }
+
+    // Belege und offene Fragen aus draft_channel_params. Sie standen frueher
+    // als HTML im Nachrichtenrumpf; seit 04.09.2026 stehen sie als Struktur
+    // daneben. Der Betreiber soll nicht blind genehmigen — also zeigt die
+    // Ansicht sie, egal wo sie liegen.
+    function belegeBlock(params) {
+      if (!params) return "";
+      let p = params;
+      if (typeof p === "string") { try { p = JSON.parse(p); } catch (e) { return ""; } }
+      const belege = Array.isArray(p.belege) ? p.belege : [];
+      const offen = Array.isArray(p.zu_klaeren) ? p.zu_klaeren : [];
+      if (!belege.length && !offen.length) return "";
+      const liste = (titel, farbe, eintraege) =>
+        eintraege.length
+          ? '<div class="mt-2"><div class="text-[10px] uppercase tracking-wider ' + farbe +
+            '">' + titel + "</div><ul class=\"text-xs text-slate-400 mt-1 space-y-0.5\">" +
+            eintraege.map((e) => "<li>· " + escapeHtml(String(e)) + "</li>").join("") +
+            "</ul></div>"
+          : "";
+      return liste("Belege", "text-amber-300/80", belege) +
+             liste("Zu klären", "text-sky-300/80", offen);
+    }
+
+    // ─── Entwuerfe (broadcast_proposals) ─────────────────────────────
+    // Liest /api/broadcast_proposals — NICHT /api/proposals: das ist die
+    // Publikums-Tabelle und meldete fuer diese Entwuerfe brav "0".
+    async function loadEntwuerfe() {
+      const list = $("#entwuerfe-list");
+      const cnt = $("#entw-count");
+      const sel = $("#entw-status");
+      if (!list) return;
+      const status = sel ? sel.value : "draft";
+      const url = "/api/broadcast_proposals?limit=25" +
+                  (status ? "&status=" + encodeURIComponent(status) : "");
+      const { ok, body } = await safeFetch(url);
+      if (!ok || !body.success) {
+        list.innerHTML =
+          '<div class="glass rounded-xl p-5 text-sm text-rose-300">Entwürfe konnten nicht geladen werden.</div>';
+        if (cnt) cnt.textContent = "(Fehler)";
+        return;
+      }
+      const rows = body.data || [];
+      if (cnt) cnt.textContent = "(" + rows.length + ")";
+      if (rows.length === 0) {
+        list.innerHTML =
+          '<div class="glass rounded-xl p-5 text-sm text-slate-500">Kein Entwurf mit diesem Status.</div>';
+        return;
+      }
+      const farbe = {
+        draft: "border-slate-400/40 text-slate-200",
+        pending_approval: "border-amber-400/40 text-amber-200",
+        approved: "border-emerald-400/40 text-emerald-200",
+        rejected: "border-rose-400/40 text-rose-200",
+        sent: "border-sky-400/40 text-sky-200",
+      };
+      list.innerHTML = rows.map((r) => {
+        const text = (r.draft_body_text || "").trim();
+        const kurz = text.length > 600 ? text.slice(0, 600) + " …" : text;
+        return '<div class="glass rounded-xl p-4">' +
+          '<div class="flex items-start gap-3">' +
+          '<div class="flex-1 min-w-0">' +
+          '<div class="font-semibold">' + escapeHtml(r.draft_subject || "(ohne Betreff)") + "</div>" +
+          '<div class="text-xs text-slate-400 mt-0.5">' + escapeHtml(r.channel || "?") +
+          " · " + escapeHtml((r.created_at || "").slice(0, 16)) +
+          (r.created_by ? " · " + escapeHtml(r.created_by) : "") + "</div>" +
+          "</div>" +
+          '<span class="pill text-xs ' + (farbe[r.status] || "border-white/20 text-slate-300") +
+          '">' + escapeHtml(r.status || "?") + "</span>" +
+          "</div>" +
+          (kurz ? '<pre class="text-xs text-slate-300 mt-3 whitespace-pre-wrap font-sans">' +
+                  escapeHtml(kurz) + "</pre>" : "") +
+          belegeBlock(r.draft_channel_params) +
+          (r.rejection_reason ? '<div class="text-xs text-rose-300 mt-2">abgelehnt: ' +
+                  escapeHtml(r.rejection_reason) + "</div>" : "") +
+          '<div class="text-[10px] text-slate-500 mt-2">id: ' + escapeHtml(r.id || "") + "</div>" +
+          "</div>";
+      }).join("");
     }
 
     // ─── Proposals ───────────────────────────────────────────────────
@@ -692,11 +802,17 @@
       const tab = document.documentElement.dataset.tab;
       if (tab === "audiences") loadAudiences();
       if (tab === "proposals") loadProposals();
+      if (tab === "entwuerfe") loadEntwuerfe();
       if (tab === "audit") loadAudit();
     }
     document.querySelectorAll(".tab-link").forEach((t) =>
       t.addEventListener("click", () => setTimeout(onTabChange, 0))
     );
+    const entwStatus = $("#entw-status");
+    if (entwStatus) entwStatus.addEventListener("change", loadEntwuerfe);
+    const entwReload = $("#entw-reload");
+    if (entwReload) entwReload.addEventListener("click", loadEntwuerfe);
+
     // Initial load if landing on one of these tabs
     setTimeout(onTabChange, 100);
     // Light periodic refresh

@@ -1,0 +1,51 @@
+# Schlanker Vertrag für den bestehenden Space `desktop` (ADR-0004).
+#
+# Der Vertrag ist kurz, weil der Space nur EINE Capability hat. Das ist der
+# eigentliche Befund, nicht eine Eigenschaft des Vertragsformats.
+#
+# `desktop_skill` schreibt. Nicht dem Namen nach, sondern nachgesehen:
+# Ziel ist `openfang:skill-coordinator`, und dessen Kern-Werkzeuge stehen in
+# brain/the_brain/core/tool_scope_selector.py:34 —
+#   handoff_action        klickt und tippt auf dem echten Windows-Desktop
+#   app_launch_or_focus   startet Anwendungen
+#   skill_save_and_index  legt SKILL.md-Dateien an und indexiert sie
+#   skill_search, vision_analyze   (lesend)
+# Die Beschreibung der Capability nennt es selbst: "fill cells type text
+# click buttons ... UI automation on the user's Windows desktop".
+#
+# DREI BEFUNDE, DIE ZUM VERTRAG GEHÖREN:
+#
+# 1. `desktop_skill` hat keinen Validator. Eine Capability, die auf dem
+#    echten Desktop klickt und tippt, meldet ihren Erfolg heute selbst.
+#
+# 2. Die Registry führt für diesen Space 28 Ereignisse — darunter
+#    `messaging.send`, `openclaw.message.send`, `openclaw.fill_form`,
+#    `desktop.click`, `desktop.type`. KEINES davon deklariert
+#    `required_provenance` oder `execution.kind: mcp`, und keines wird über
+#    die Capability-Ebene erreicht: `canonical_space_event_id` kennt nur 18
+#    fest eingetragene Namen (capability_targets.py:1268), `desktop_skill`
+#    ist keiner davon und bildet auf sich selbst ab. Damit gibt
+#    `resolve_registry_execution_target` None zurück, und `_mcp_authority` —
+#    die einzige Stelle, die Provenance erzwingt (capability_targets.py:1156)
+#    — wird nie betreten. Die 28 Ereignisse beschreiben, was der Agent kann;
+#    sie sind kein durchgesetzter Pfad. Gemessen gilt das für fast alles:
+#    von 129 Registry-Ereignissen deklarieren 6 `execution.kind: mcp`
+#    (bubble.create, idea.connect, research.summarize, research.to_idea,
+#    rowboat.status, minibook.status) — nur diese 6 laufen unter dem
+#    geschlossenen Provenance-Tor.
+#
+# 3. Die Registry nennt als Agenten des Space `brain-desktop`; die einzige
+#    Capability zeigt aber auf `skill-coordinator`. Für `skill-coordinator`
+#    gibt es kein Template unter openfang/agents/ und er steht auch nicht
+#    auf der Schutzliste in scripts/sync_openfang_agents.py:163 (dort sind
+#    nur brain-coder, rowboat-chat, brain-fallback als handgepflegt
+#    ausgenommen). Ob er im laufenden Daemon existiert, konnte hier nicht
+#    geprüft werden — OpenFang lief nicht. Das ist offen und gehört geprüft,
+#    bevor jemand diesem Pfad vertraut.
+
+id: desktop
+description: "Desktop- und Fenster-Automatisierung über den Skill-Koordinator"
+prefixes: ["desktop.", "web.", "messaging.", "openclaw."]
+
+capabilities:
+  - {name: desktop_skill, writes: true}

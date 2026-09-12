@@ -22,7 +22,8 @@
             "id": "claude-code-haiku",
             "name": "claude-code-haiku"
           }
-        ]
+        ],
+        "timeoutSeconds": 900
       }
     }
   },
@@ -31,7 +32,8 @@
       "model": {
         "primary": "shim/claude-code-sonnet"
       },
-      "workspace": "/home/node/.openclaw/workspace"
+      "workspace": "/home/node/.openclaw/workspace",
+      "timeoutSeconds": 1200
     }
   },
   "mcp": {

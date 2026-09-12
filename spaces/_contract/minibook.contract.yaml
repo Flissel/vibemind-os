@@ -1,0 +1,30 @@
+# Schlanker Vertrag für den bestehenden Space `minibook` (ADR-0004).
+#
+# Abgelesen an spaces/minibook/tools/minibook_tools.py:65 ff. Alle vier
+# Ereignisse laufen durch dieselbe `execute()`, die aber Methode und
+# Endpunkt je Ereignis setzt:
+#
+#   minibook.discuss      POST {MINIBOOK_URL}/api/v1/projects/{id}/posts
+#                         type "discussion"  -> legt einen Beitrag an
+#   minibook.collaborate  POST derselbe Endpunkt, type "task"
+#                         -> legt einen Beitrag an
+#   minibook.list_projects GET /api/v1/projects
+#   minibook.status        GET /api/v1/status
+#
+# Die beiden POSTs erzeugen einen Beitrag mit Titel, Inhalt und
+# `author_name: "VibeMind Brain"`. Das ist ein Schreibvorgang.
+#
+# ANMERKUNG: `execute()` setzt bei jedem 2xx `status: "verified"`. Das ist
+# ein Etikett, kein Beleg — es sagt nur, dass die Anfrage nicht geworfen hat.
+# `minibook.status` hat als einzige einen echten `truth:http_ok`; die beiden
+# schreibenden haben `rule:minibook_verified_result`.
+
+id: minibook
+description: "Beiträge und Aufgaben in Minibook-Projekten"
+prefixes: ["minibook."]
+
+capabilities:
+  - {name: minibook.discuss,       writes: true}
+  - {name: minibook.collaborate,   writes: true}
+  - {name: minibook.list_projects, writes: false}
+  - {name: minibook.status,        writes: false}

@@ -1,0 +1,28 @@
+# Schlanker Vertrag für den bestehenden Space `research` (ADR-0004).
+#
+# Alle vier gehen über `spaces/research/execution_target.py` an einen Agenten
+# und verlangen Beleg-Werkzeugaufrufe. Nur EINE verlangt Beleg für
+# Persistenz, und das ist die Trennlinie (execution_target.py:66):
+#
+#     if self.operation == "to_idea" and not any(
+#         any(token in str(call.get("tool","")).lower() for token in ("idea","qdrant"))
+#         ...):  return self._unverified("persisted idea evidence is missing")
+#
+# web / scrape / summarize liefern Text mit Quellen-URLs; sie legen nichts ab.
+# to_idea legt eine Idee an — und der Space weiß das selbst, sonst stünde die
+# Sonderprüfung nicht da.
+#
+# ANMERKUNG: Der Beleg für to_idea ist die vom Agenten gemeldete Liste
+# `tool_calls`. Das ist ein Selbstbericht des Agenten, keine unabhängige
+# Rückfrage an den Speicher. Genau dafür ist der `truth:`-Validator da —
+# `research_to_idea` hat aber nur `rule:dict_nonempty`.
+
+id: research
+description: "Web-Recherche, Seiten auslesen, zusammenfassen, in Ideen überführen"
+prefixes: ["research."]
+
+capabilities:
+  - {name: research_web,       writes: false}
+  - {name: research_scrape,    writes: false}
+  - {name: research_summarize, writes: false}
+  - {name: research_to_idea,   writes: true}

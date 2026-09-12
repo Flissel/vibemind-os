@@ -29,7 +29,11 @@ REPO_ROOT = next((p for p in (PKG_ROOT, *PKG_ROOT.parents)
 # Schluessel wie die Nachbar-Sidecars: aus der repo-.env nachladen, nie
 # ueberschreiben, kein Key-Material im Launcher-Skript.
 _ENV_KEYS = ("MARKETING_API_KEY", "MARKETING_PROPOSAL_API_KEY",
-             "ROWBOAT_URL", "ROWBOAT_PROJECT_ID", "ROWBOAT_API_KEY")
+             "ROWBOAT_URL", "ROWBOAT_PROJECT_ID", "ROWBOAT_API_KEY",
+             "LAURA_API_URL", "LAURA_TOKEN",
+             # Ablage: OHNE SSH-Host schreibt post_ablegen auf den Windows-
+             # Rechner, und der Beitrag erreicht sales-claw auf der VM nie.
+             "MEDIA_ERZEUGT_SSH_HOST", "MEDIA_ERZEUGT_DIR")
 
 
 def _load_env_fallback() -> None:
@@ -62,6 +66,39 @@ WERKZEUGE = (
     werkzeuge.wissensquellen,
     werkzeuge.wissensquelle,
     werkzeuge.dokumente,
+    # Laura-Passthrough (nur lesend): Bewegtbild und Transkript als Beleg.
+    # Ohne diese zwei Werkzeuge kannte der Agent nur Text — die Produktvideos
+    # lagen ungenutzt daneben (gemessen 04.09.2026).
+    werkzeuge.videos,
+    werkzeuge.video_transkript,
+    # Eine Frage an ALLE Quellen statt Lesen einer einzigen. Rowboat hat keine
+    # Suche und seine Chat-Route landet beim memory_responder (gemessen
+    # 04.09.2026) — also waehlt der Sidecar selbst aus.
+    werkzeuge.wissen_fragen,
+    # Die eigene Historie: ohne sie entstand siebenmal dieselbe Aufzaehlung
+    # (gemessen 04.09.2026). Liest broadcast_proposals, nicht die
+    # gleichnamig wirkenden Publikums-Vorschlaege.
+    werkzeuge.entwuerfe_lesen,
+    # Ablage fuer fertige Beitraege — NUR nach /media-erzeugt. `/media`
+    # gehoert dem Menschen und ist fuer Dienste schreibgeschuetzt; diese
+    # Trennung ist Absicht (sales-mcp/medien.py:45-49).
+    werkzeuge.post_ablegen,
+    # PDF: das erste Format, das sales-claw wirklich anhaengen kann — eine
+    # .md liegt im Medienordner und wird von medien_liste nicht mal gezeigt.
+    werkzeuge.pdf_erstellen,
+    # Inhalt aus der Datenbank, Aussehen als Parameter: dasselbe
+    # broadcast_proposal in jedem Layout, ohne den Text neu erzeugen zu
+    # lassen. Das ist der Grund, warum die Struktur in draft_channel_params
+    # gehoert und nicht als HTML in den Nachrichtenrumpf.
+    werkzeuge.entwurf_holen,
+    werkzeuge.pdf_aus_entwurf,
+    # Der EINZIGE Weg nach draussen (Betreiber-Entscheid 12.09.2026): dieser
+    # Space versendet nichts mehr selbst, er bittet sales-claw. Gemessen
+    # davor: Marketing hat NIE etwas zugestellt (campaign_sends/_openfang/
+    # _telegram je 0 Zeilen), sales-claw 25 mal. Spec
+    # docs/superpowers/specs/2026-09-12-sales-claw-einziger-versandweg.md.
+    werkzeuge.versand_beauftragen,
+    werkzeuge.versandauftraege_lesen,
 )
 
 HOST = os.environ.get("MARKETING_CLAW_MCP_HOST", "0.0.0.0")

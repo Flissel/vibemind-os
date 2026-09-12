@@ -111,8 +111,23 @@ def dokument_inhalt(projekt: dict, asset: dict, segmente: list) -> str:
         f"Aufloesung: {aufloesung}",
         f"Video-Codec: {asset.get('codec_video') or '(unbekannt)'}",
         f"Datei: {asset.get('source_path') or '(unbekannt)'}",
-        "",
-        "Die Datei bleibt im Dateisystem; hier steht nur ihr Steckbrief.",
+    ]
+    # Die Objekt-Adresse ist das einzige, womit ein ANDERER Rechner das Video holen
+    # kann: `source_path` zeigt auf Lauras Arbeitsplatte und bedeutet anderswo nichts.
+    # Steht sie nicht im Steckbrief, weiss marketing nur, DASS es ein Video gibt --
+    # genau der Zustand, in dem frueher jemand von Hand ueber SSH kopiert hat.
+    objekt = asset.get("object_key")
+    if objekt:
+        kopf += [
+            f"Objekt-Adresse: {objekt}",
+            "",
+            "Die Videodatei selbst wandert nicht hierher. Der lokale Pfad gilt nur auf "
+            "Lauras Rechner; die Objekt-Adresse gilt ueberall und ist der Weg, das "
+            "Material zu holen.",
+        ]
+    else:
+        kopf += ["", "Die Datei bleibt im Dateisystem; hier steht nur ihr Steckbrief."]
+    kopf += [
         "",
         "Gesprochener Inhalt (Transkript):",
     ]

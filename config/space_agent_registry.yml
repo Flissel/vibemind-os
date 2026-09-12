@@ -109,14 +109,17 @@ spaces:
     mcp_servers: [vibemind-db, filesystem, git, github, context7, qdrant, fetch, brain, issue-detector]
     default_context: [current_space, recent_intents]
     events:
-      code.generate:      { tool: "coding-engine:POST:/api/start", required_params: [description] }
-      code.modify:        { tool: "coding-engine:POST:/api/start", required_params: [description, file_path] }
-      code.status:        { tool: "coding-engine:GET:/api/status", required_params: [] }
-      code.show:          { tool: "coding-engine:GET:/api/logs", required_params: [] }
+      code.generate:      { tool: "coding-engine:POST:/api/v1/jobs", required_params: [description] }
+      code.modify:        { tool: "coding-engine:POST:/api/v1/jobs", required_params: [description, file_path] }
+      code.status:        { tool: "coding-engine:GET:/api/v1/jobs/{job_id}/status", required_params: [] }
+      code.show:          { tool: "coding-engine:GET:/api/v1/jobs/{job_id}/results", required_params: [] }
+      # 2026-09-08: the engine (src/api/main.py) serves no /api/preview route.
+      # Both preview capabilities are enabled: false in capabilities.yaml, so
+      # these two events fail closed rather than call a dead contract.
       code.preview.start: { tool: "coding-engine:POST:/api/preview/create", required_params: [project_id, project_path] }
       code.preview.stop:  { tool: "coding-engine:POST:/api/preview/{project_id}/stop", required_params: [project_id] }
-      code.list:          { tool: "coding-engine:GET:/api/preview/", required_params: [] }
-      code.cancel:        { tool: "coding-engine:POST:/api/stop", required_params: [] }
+      code.list:          { tool: "coding-engine:GET:/api/v1/jobs", required_params: [] }
+      code.cancel:        { tool: "coding-engine:POST:/api/v1/jobs/{job_id}/cancel", required_params: [] }
 
   # ─── Desktop automation ─────────────────────────────────────────────
   desktop:
