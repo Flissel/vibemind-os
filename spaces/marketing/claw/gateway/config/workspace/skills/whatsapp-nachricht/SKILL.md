@@ -85,13 +85,43 @@ Einwilligungspruefung am Kontakt. Das ist keine Einschraenkung, sondern die
 richtige Form — eine Rundnachricht auf WhatsApp waere ohnehin das, was
 Schritt 0 verbietet.
 
-Dein Ergebnis ist deshalb **Text plus Begruendung, kein Entwurf**:
+**Seit dem 12.09.2026 gibt es dafuer einen gebauten Weg** — vorher musstest
+du den Text dem Betreiber in die Hand geben und hoffen. Jetzt:
 
-* Gib dem Betreiber den fertigen Nachrichtentext, hoechstens drei Saetze.
-* Nenn dazu: an wen er gehen soll, woraus die Einwilligung hervorgeht, und
-  was unter „Zu klaeren" offen blieb.
-* Gehoert eine Unterlage dazu, leg sie mit `post_ablegen` ab — sales-claw
-  findet sie dort und kann sie anhaengen (pdf, png, jpg, mp4, mp3, ogg, ics).
+```
+versand_beauftragen(kanal="whatsapp",
+                    empfaenger="<Telefonnummer>",
+                    nachricht="<dein Text>",
+                    medien_datei="<optional, blosser Dateiname>",
+                    kampagne="<optional>")
+```
 
-Den Entwurf in der Warteschlange legt dann sales-claw an, mit der
-Kontaktkennung, die es kennt und du nicht.
+Gehoert eine Unterlage dazu, leg sie vorher mit `post_ablegen` oder
+`pdf_erstellen` ab und gib den **blossen Dateinamen** mit, ohne Pfad
+(pdf, png, jpg, mp4, mp3, ogg, ics).
+
+**Was dann passiert, und was du davon wissen musst:** sales-claw ordnet die
+Nummer einem Kontakt zu, prueft die gemeinsame Verbotsliste, den
+Loeschantrag, das Privat-Flag, die UWG-Erstansprache und die
+**Kontakt-Freigabe fuer WhatsApp** — und macht daraus hoechstens einen
+Entwurf, den ein Mensch freigibt. Es geht nichts automatisch raus.
+
+**Eine Absage ist kein Fehler, sondern eine Auskunft.** Kommt
+`{"ok": false, "fehler": "..."}` zurueck, steht darin woertlich, welches Tor
+zugemacht hat. Die haeufigsten:
+
+* *„Kein Kontakt in sales-claw zu …"* — die Nummer ist dort unbekannt. Leg
+  selbst keinen an; das entscheidet der Betreiber.
+* *„Kontakt ist nicht fuer WhatsApp freigegeben"* — die Freigabe erteilt
+  ausschliesslich der Betreiber. Frag ihn, setz sie nicht selbst.
+* *„… steht auf der gemeinsamen Verbotsliste"* — jemand hat „nein" gesagt.
+  Das ist endgueltig, nicht umformulierbar.
+
+Mit `versandauftraege_lesen()` siehst du spaeter, was aus deinen Auftraegen
+geworden ist. **Denselben Auftrag nicht wiederholen**, wenn die Antwort
+unklar war: derselbe Text an dieselbe Nummer erzeugt innerhalb von 24
+Stunden ohnehin keine zweite Nachricht (die Antwort traegt dann
+`wiederholung: true`) — aber erst nachsehen ist billiger als raten.
+
+Sag dem Betreiber zum Schluss einen Satz: an wen die Nachricht geht, woraus
+die Einwilligung hervorgeht, und was unter „Zu klaeren" offen blieb.

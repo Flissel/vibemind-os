@@ -149,13 +149,58 @@ Jedes Nein heisst: zurueck in den Text, nicht weiter zu Schritt 8.
 5. **Nutzen oder Funktion?** Jeden Satz pruefen: steht da, was das System
    TUT, oder was der Leser DAVON HAT? Das zweite gehoert in den Text.
 
-## Schritt 8 — Ablegen, nie senden
+## Schritt 8 — Ablegen (redaktionell), nie selbst senden
 
 `kampagne_entwerfen(...)` legt den Entwurf ab (Status draft, versendet
 nichts). Danach dem Betreiber EINEN Satz: welcher Gedanke gewaehlt wurde,
 welche zwei es noch gaebe, und was unter „Zu klaeren" steht.
 
 Freigabe und Versand sind seine Entscheidung, nie deine.
+
+**Was ein Entwurf IST und was er NICHT ist.** Er ist das redaktionelle
+Artefakt: er landet in der Freigabe-Oberflaeche, wird dort gelesen,
+geaendert und beurteilt. Er ist **nicht** der Weg nach draussen. Das war
+lange missverstaendlich, und die Zahlen zeigen, wie teuer: dieser Space hat
+in seiner ganzen Existenz **keine einzige Nachricht zugestellt** —
+`campaign_sends`, `campaign_sends_openfang` und `campaign_sends_telegram`
+haben je **0 Zeilen** (gemessen 12.09.2026), waehrend nebenan 25 Nachrichten
+wirklich rausgingen. Wer nur einen Entwurf anlegt, hat nichts verschickt.
+
+## Schritt 8b — Der Weg nach draussen: sales-claw beauftragen
+
+**Seit dem Betreiber-Entscheid vom 12.09.2026 versendet dieser Space
+nichts mehr selbst.** Zugestellt wird ausschliesslich ueber sales-claw — pro
+Kontakt, mit den Toren, die dort haengen. Marketings eigene Versender sind
+gesperrt; sie wuerden gar nicht mehr anlaufen.
+
+```
+versand_beauftragen(kanal="email",
+                    empfaenger="<E-Mail-Adresse>",
+                    betreff="<Betreff>",
+                    nachricht="<dein Text>",
+                    medien_datei="<optional, blosser Dateiname>",
+                    kampagne="<optional>",
+                    quelle="broadcast_proposal:<id des Entwurfs>")
+```
+
+`quelle` ist keine Zierde: sie haelt den Auftrag mit dem Entwurf zusammen,
+aus dem er kam. Ohne sie steht spaeter ein Text in der Welt, zu dem niemand
+mehr das Briefing findet.
+
+Es entsteht daraus **hoechstens ein Entwurf** bei sales-claw, den ein Mensch
+freigibt. Es geht nichts automatisch raus.
+
+**Eine Absage ist kein Fehler, sondern eine Auskunft.** Kommt
+`{"ok": false, "fehler": "..."}`, steht darin woertlich, welches Tor
+zugemacht hat — „Kein Kontakt in sales-claw zu …", „… steht auf der
+gemeinsamen Verbotsliste", „Erstansprache ohne dokumentierte Grundlage".
+Keine davon loest sich durch Umformulieren. Mit `versandauftraege_lesen()`
+siehst du spaeter, was aus deinen Auftraegen geworden ist.
+
+**Telegram geht hier nicht.** sales-claw hat dafuer keinen Versandweg, und
+dieser Space darf nicht mehr selbst senden. Ein Telegram-Text bleibt
+vorerst ein Entwurf fuer den Betreiber — sag ihm das dazu, statt es
+unerwaehnt zu lassen.
 
 ## Schritt 9 — Wenn eine Unterlage dazugehoert: PDF
 
