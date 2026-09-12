@@ -1,0 +1,22 @@
+# Schlanker Vertrag für den bestehenden Space `schedule` (ADR-0004).
+#
+# `writes` belegt an spaces/schedule/execution.py:
+#   create/cancel/modify/snooze  -> ScheduleRepository.create bzw. .update
+#   openclaw_cron                -> baut ein Payload und ruft create()
+#   list_tasks/status            -> nur Lesezugriffe
+#
+# Hinweis: create() liest seit 2026-09-12 den gespeicherten Stand zurück,
+# wie update() es seit jeher tut.
+
+id: schedule
+description: "Scheduled tasks and reminders."
+prefixes: ["schedule."]
+
+capabilities:
+  - {name: schedule_create,        writes: true}
+  - {name: schedule_cancel,        writes: true}
+  - {name: schedule_modify,        writes: true}
+  - {name: schedule_snooze,        writes: true}
+  - {name: schedule_openclaw_cron, writes: true}   # ruft create()
+  - {name: schedule_list,          writes: false}  # repo.list()
+  - {name: schedule_status,        writes: false}

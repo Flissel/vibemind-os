@@ -1,0 +1,25 @@
+# Schlanker Vertrag für den bestehenden Space `coding` (ADR-0004).
+#
+# `writes` belegt an der v1-API der coding-engine (src/api/routes/jobs.py),
+# die ich am 2026-09-08 gegen den laufenden Dienst geprüft habe:
+#   POST /api/v1/jobs              legt einen Job an          -> schreibt
+#   POST /api/v1/jobs/{id}/cancel  setzt den Status           -> schreibt
+#   GET  /api/v1/jobs[/{id}/...]   liest                      -> liest
+#
+# code_review und code_search haben KEIN Ausführungsziel. Das ist nach dem
+# Muster von bubble_noop_op (2026-07-14) vermutlich Absicht: lieber eine
+# ehrliche Lücke als ein erfundener Erfolg. Der Intake meldet sie.
+
+id: coding
+description: "Code generation, editing, testing, review."
+prefixes: ["code."]
+
+capabilities:
+  - {name: code_generate, writes: true}    # POST /api/v1/jobs
+  - {name: code_modify,   writes: true}    # POST /api/v1/jobs
+  - {name: code_cancel,   writes: true}    # POST /api/v1/jobs/{id}/cancel
+  - {name: code_list,     writes: false}   # GET  /api/v1/jobs
+  - {name: code_status,   writes: false}   # GET  /api/v1/jobs/{id}/status
+  - {name: code_show,     writes: false}   # GET  /api/v1/jobs/{id}/results
+  - {name: code_review,   writes: false}   # kein Ziel
+  - {name: code_search,   writes: false}   # kein Ziel
