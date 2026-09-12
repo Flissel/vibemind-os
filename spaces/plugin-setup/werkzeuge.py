@@ -1,11 +1,21 @@
 """plugin-setup-Werkzeuge -- der eigenstaendige Space aus Aufgabe 6.
 
-Bindet die Bausteine der Aufgaben 1-5 zu sechs MCP-Werkzeugen zusammen:
+Bindet die Bausteine der Aufgaben 1-5 zu sechs Funktionen zusammen. Das ist
+NICHT dieselbe Zahl wie die MCP-Werkzeuge, die der Agent sieht: `server.py`
+registriert davon nur FUENF (`server.WERKZEUGE`, Aufgabe 5) --
+`schluessel_entgegennehmen` fehlt dort ABSICHTLICH. Es bleibt eine ganz
+gewoehnliche Python-Funktion in diesem Modul, aufgerufen als interner
+Schreibweg des Formulars (`fenster.entgegennehmen`, s. `server.py`), aber
+kein Werkzeug: kein Agent darf einen Credential-WERT je uebergeben koennen,
+und ein MCP-Werkzeug mit einem `wert`-Parameter waere genau dieser Weg.
+`tests/test_server_werkzeugliste.py` haelt beide Haelften dieser Aussage
+fest -- nicht im WERKZEUGE-Tupel, aber weiterhin aufrufbar.
 
   plugin_bedarf(projekt, plugin)             -- was braucht das Plugin, und
                                               aus welchen Komponenten besteht es?
   schluessel_entgegennehmen(projekt, plugin, referenz, art, wert, ziel="")
-                                              -- Supabase -> pruefen -> OpenFang
+                                              -- Supabase -> pruefen -> OpenFang;
+                                              KEIN MCP-Werkzeug (s. oben)
   eingabe_anfordern(projekt, plugin, referenz, art, ziel="")
                                               -- Aufgabe 3: Einmal-Link statt Wert,
                                               dieselben Wachen wie oben, VOR dem Anlegen

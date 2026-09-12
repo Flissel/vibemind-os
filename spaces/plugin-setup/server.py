@@ -21,6 +21,8 @@ _HIER = Path(__file__).resolve().parent
 if str(_HIER) not in sys.path:
     sys.path.insert(0, str(_HIER))
 
+import anfragen  # noqa: E402
+import fenster  # noqa: E402
 import werkzeuge  # noqa: E402
 
 REPO_ROOT = next((p for p in (_HIER, *_HIER.parents) if (p / "vibemind-os").is_dir()), _HIER)
@@ -49,7 +51,8 @@ def _load_env_fallback() -> None:
 
 WERKZEUGE = (
     werkzeuge.plugin_bedarf,
-    werkzeuge.schluessel_entgegennehmen,
+    werkzeuge.eingabe_anfordern,
+    werkzeuge.einrichtung_status,
     werkzeuge.plugin_installieren,
     werkzeuge.plugin_werkzeug_binden,
 )
@@ -68,9 +71,28 @@ def main() -> None:
         server.run(transport="streamable-http", host=HOST, port=PORT)
     except ImportError:
         from mcp.server.fastmcp import FastMCP
+        from starlette.responses import HTMLResponse
         server = FastMCP("plugin-setup", host=HOST, port=PORT)
         for fn in WERKZEUGE:
             server.tool()(fn)
+
+        @server.custom_route("/fenster/{token}", methods=["GET"])
+        async def _fenster_zeigen(request):
+            a = anfragen.holen(request.path_params["token"])
+            if a is None:
+                return HTMLResponse("Link ungueltig.", status_code=404)
+            return HTMLResponse(fenster.seite_fuer(a))
+
+        @server.custom_route("/fenster/{token}", methods=["POST"])
+        async def _fenster_annehmen(request):
+            formular = await request.form()
+            status, html = fenster.entgegennehmen(
+                request.path_params["token"],
+                str(formular.get("wert", "")),
+                werkzeuge.schluessel_entgegennehmen,
+            )
+            return HTMLResponse(html, status_code=status)
+
         server.run(transport="streamable-http")
 
 
