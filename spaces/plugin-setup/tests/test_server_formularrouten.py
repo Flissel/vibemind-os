@@ -10,7 +10,7 @@ _fenster_zeigen`/`_fenster_annehmen`), verkabelt in einer eigenen,
 minimalen `Starlette`-App -- ohne FastMCPs Session-Manager, der fuer diese
 Routen ohnehin nichts beitraegt.
 
-Vier Eigenschaften, alle strukturell, keine per Konvention:
+Fuenf Eigenschaften, alle strukturell, keine per Konvention:
   1. Loopback-Wache: eine Anfrage von einer NICHT-Loopback-Adresse (Stand-
      in fuer "aus dem Container") wird abgelehnt, BEVOR das Token
      angefasst wird. GEMESSENE GRENZE (s. `server.py`-Moduldoku): auf einem
@@ -30,9 +30,23 @@ Vier Eigenschaften, alle strukturell, keine per Konvention:
      leerer oder Nur-Leerzeichen-Wert wird abgelehnt, OHNE das Token zu
      verbrauchen; ein Wert mit Rand-Leerzeichen erreicht den Schreiber
      gestrippt.
+  4. Fix-Runde 1, Befund 1: beide Schreibwege in `_fenster_annehmen`
+     laufen per `run_in_threadpool`, damit ein blockierender Beschaffer
+     (Stand-in fuer `wait_for_callback`s `threading.Event.wait()`, bis
+     zu 300s im echten Provisioner) die EINE Event-Loop des Prozesses
+     nicht fuer jede andere Anfrage sperrt. Geprueft per `asyncio.gather`
+     gegen die echte ASGI-App (httpx `ASGITransport`) -- NICHT per
+     Starlettes synchronem `TestClient`, der keine zwei Anfragen
+     gleichzeitig lostreten kann.
 """
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
+
+import pytest
+from httpx import ASGITransport, AsyncClient
 from starlette.applications import Starlette
 from starlette.routing import Route
 from starlette.testclient import TestClient
@@ -203,3 +217,84 @@ def test_wert_wird_gestrippt_bevor_er_den_schreiber_erreicht(monkeypatch):
     assert r.status_code == 200
     assert len(gerufen) == 1
     assert gerufen[0]["wert"] == "echt-mit-randweiss"
+
+
+@pytest.mark.asyncio
+async def test_oauth_beschaffung_blockiert_ein_gleichzeitiges_get_nicht(monkeypatch):
+    """Mutationsprobe zu Fix-Runde 1, Befund 1: `fenster.oauth_entgegennehmen`
+    haengt im echten Betrieb blockierend auf `threading.Event.wait()`
+    (`wait_for_callback`, bis zu `timeout_seconds=300`) -- OHNE
+    `run_in_threadpool` um den Aufruf in `_fenster_annehmen` wuerde das die
+    EINE Event-Loop des FastMCP-Prozesses fuer JEDE andere Anfrage sperren.
+
+    Aufbau: ein `beschaffer` blockiert SYNCHRON auf einem `threading.Event`,
+    das dieser Test erst setzt, NACHDEM ein zweites, unabhaengiges GET
+    geantwortet hat. POST (oauth, blockiert) und GET (ein normales Formular)
+    laufen NEBENLAEUFIG per `asyncio.gather` gegen die echte ASGI-App
+    (httpx `ASGITransport`, dieselbe `_APP`-Verkabelung wie oben) --
+    Starlettes synchroner `TestClient` kann zwei Anfragen nicht gleichzeitig
+    lostreten, darum hier `httpx.AsyncClient` statt `_HOST_CLIENT`.
+
+    Der Beweis ist NICHT der Statuscode (der ist in beiden Faellen 200),
+    sondern die REIHENFOLGE der Fertigstellung: laeuft der oauth-Zweig im
+    Threadpool, blockiert er nur einen Worker-Thread, die Event-Loop bleibt
+    frei, und das GET antwortet SOFORT -- lange bevor der Beschaffer
+    zurueckkehrt. Faellt `run_in_threadpool` weg, blockiert der synchrone
+    Aufruf die Event-Loop selbst; das GET kann dann erst verarbeitet werden,
+    NACHDEM der Beschaffer zurueckgekehrt ist (hier: nach dem
+    `freigegeben.wait(timeout=5)`-Timeout, da niemand das Event mehr setzt)
+    -- die Reihenfolge kippt zu `["post", "get"]`, und das GET braucht
+    knapp 5s statt Millisekunden. Beides haelt dieser Test fest.
+    """
+    freigegeben = threading.Event()
+    reihenfolge: list[str] = []
+    zeiten: dict[str, float] = {}
+
+    def _blockierender_beschaffer(mcp_url):
+        # Stellvertreter fuer `wait_for_callback`s `threading.Event.wait()`.
+        # `timeout=5` ist nur eine Sicherung gegen einen echten Haenger
+        # dieses Tests, kein Teil der geprueften Eigenschaft.
+        freigegeben.wait(timeout=5)
+        return "ROUTE_NEBENLAEUFIG_OAUTH", "aus-dem-provisioner"
+
+    monkeypatch.setattr(server.werkzeuge, "schluessel_entgegennehmen",
+                        lambda **k: {"ok": True})
+    monkeypatch.setattr(server.provision_oauth_token, "token_holen", _blockierender_beschaffer)
+
+    a_oauth = anfragen.anlegen("proj", "demo", "ROUTE_NEBENLAEUFIG_OAUTH", "oauth",
+                              "https://mcp.example.com/mcp")
+    a_get = anfragen.anlegen("proj", "demo", "ROUTE_NEBENLAEUFIG_GET", "bearer", "")
+
+    start = time.monotonic()
+
+    async with AsyncClient(transport=ASGITransport(app=_APP),
+                           base_url="http://testserver") as client:
+
+        async def _post():
+            r = await client.post(f"/fenster/{a_oauth.token}")
+            reihenfolge.append("post")
+            zeiten["post"] = time.monotonic() - start
+            return r
+
+        async def _get():
+            r = await client.get(f"/fenster/{a_get.token}")
+            reihenfolge.append("get")
+            zeiten["get"] = time.monotonic() - start
+            # Erst JETZT den Beschaffer entriegeln: das POST kann nur dann
+            # vor dem GET fertig werden, wenn die Auslagerung fehlt UND das
+            # GET seinerseits erst nach dem `freigegeben.wait`-Timeout an
+            # die Reihe kommt.
+            freigegeben.set()
+            return r
+
+        post_antwort, get_antwort = await asyncio.gather(_post(), _get())
+
+    assert get_antwort.status_code == 200
+    assert post_antwort.status_code == 200
+    assert reihenfolge == ["get", "post"], (
+        "das GET muss abgeschlossen sein, WAEHREND das blockierende POST "
+        f"noch laeuft -- tatsaechliche Reihenfolge: {reihenfolge}, "
+        f"Zeiten: {zeiten}")
+    assert zeiten["get"] < 1.0, (
+        "das GET durfte durch das laufende, blockierende POST nicht "
+        f"verzoegert werden, brauchte aber {zeiten['get']:.3f}s")

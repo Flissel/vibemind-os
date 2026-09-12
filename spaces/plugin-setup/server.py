@@ -126,6 +126,7 @@ if str(_HIER) not in sys.path:
 import anfragen  # noqa: E402
 import fenster  # noqa: E402
 import werkzeuge  # noqa: E402
+from starlette.concurrency import run_in_threadpool  # noqa: E402
 from starlette.responses import HTMLResponse  # noqa: E402
 
 # `provision-oauth-token.py` liegt in spaces/rowboat, nicht hier, UND sein
@@ -234,10 +235,16 @@ async def _fenster_annehmen(request):
     #     unten fuer diese Anfrage nie erreicht.
     #   - jede andere `art`: ein leerer `wert` (kaputtes/leeres POST) wuerde
     #     ebenfalls das Token verbrauchen und einen leeren Wert vaulten.
+    #
+    # Beide Schreibwege unten laufen per `run_in_threadpool` (Fix-Runde 1,
+    # Befund 1): FastMCP faehrt eine einzige uvicorn-Event-Loop, und ein
+    # synchroner Aufruf -- beim oauth-Zweig bis zu `timeout_seconds=300` --
+    # wuerde sonst jede andere Anfrage dieses Prozesses blockieren.
     vorschau = anfragen.holen(token)
     if vorschau is not None and vorschau.art == "oauth":
-        status, html = fenster.oauth_entgegennehmen(
-            token, provision_oauth_token.token_holen, werkzeuge.schluessel_entgegennehmen)
+        status, html = await run_in_threadpool(
+            fenster.oauth_entgegennehmen, token,
+            provision_oauth_token.token_holen, werkzeuge.schluessel_entgegennehmen)
         return HTMLResponse(html, status_code=status)
 
     formular = await request.form()
@@ -252,7 +259,8 @@ async def _fenster_annehmen(request):
     if vorschau is not None and not wert:
         return HTMLResponse(_WERT_FEHLT, status_code=400)
 
-    status, html = fenster.entgegennehmen(token, wert, werkzeuge.schluessel_entgegennehmen)
+    status, html = await run_in_threadpool(
+        fenster.entgegennehmen, token, wert, werkzeuge.schluessel_entgegennehmen)
     return HTMLResponse(html, status_code=status)
 
 

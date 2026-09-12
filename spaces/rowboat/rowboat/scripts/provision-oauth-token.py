@@ -219,18 +219,33 @@ def _entdecken_und_registrieren(mcp_url: str) -> tuple[str, dict, str, str, str,
     return resource, server_metadata, client_id, verifier, state, authorize_url
 
 
-def token_holen(mcp_url: str) -> tuple[str, str]:
-    """Beschafft einen OAuth-Bearer fuer `mcp_url` und gibt
-    (referenzname, token) zurueck -- schreibt NICHTS.
+def token_holen_voll(mcp_url: str) -> tuple[str, dict]:
+    """Beschafft einen OAuth-Bearer fuer `mcp_url` und gibt (referenzname,
+    tokens) zurueck, wobei `tokens` die VOLLSTAENDIGE JSON-Antwort des
+    Token-Endpunkts ist (u.a. `access_token`, ggf. `refresh_token`,
+    `expires_in`, `scope`) -- schreibt NICHTS.
 
     Herausgezogen aus main(), damit das Eingabefenster denselben Fluss
     benutzt, statt ihn abzuschreiben. main() ruft diese Funktion und
     schreibt danach wie bisher in --out.
+
+    GEHEIMHALTUNG (Fix-Runde 1, Befund 2): `tokens` traegt jetzt sichtbar
+    Klartext (`access_token`, ggf. `refresh_token`). Diese Funktion druckt,
+    loggt und meldet `tokens` NIE als Ganzes -- auch nicht in einer
+    Fehlermeldung oder einem Traceback. Aufrufer duerfen daraus
+    ausschliesslich `expires_in`, `scope` und ein abgeleitetes
+    `refresh=yes|no` drucken, nie `tokens` selbst, `access_token` oder
+    `refresh_token`.
+
+    Druckt bewusst KEINEN `reference name:` mehr (Fix-Runde 1, Befund 3):
+    das war vor `name = args.name or name` in main() und zeigte bei
+    `--name` erst den abgeleiteten, dann den ueberschriebenen Namen. Eine
+    Bibliotheksfunktion druckt keinen Namen -- main() tut das jetzt selbst,
+    mit dem WIRKSAMEN Namen.
     """
     resource, server_metadata, client_id, verifier, state, authorize_url = (
         _entdecken_und_registrieren(mcp_url))
     name = derive_name(resource)
-    print(f"reference name:        {name}")
 
     print("opening the browser; log in and approve there ...")
     webbrowser.open(authorize_url)
@@ -253,7 +268,22 @@ def token_holen(mcp_url: str) -> tuple[str, str]:
     access_token = tokens.get("access_token")
     if not isinstance(access_token, str) or access_token == "":
         raise SystemExit("token endpoint returned no access_token")
-    return name, access_token
+    return name, tokens
+
+
+def token_holen(mcp_url: str) -> tuple[str, str]:
+    """Beschafft einen OAuth-Bearer fuer `mcp_url` und gibt
+    (referenzname, token) zurueck -- schreibt NICHTS.
+
+    Schmale Fassung von `token_holen_voll` fuer das Eingabefenster
+    (`fenster.oauth_entgegennehmen` via `server.py`): Signatur bewusst
+    UNVERAENDERT (Fix-Runde 1, Befund 2, ausdruecklich entschieden) -- ein
+    groesseres Tupel oder eine Datenklasse zoege `fenster.py`, `server.py`
+    und die oauth-Tests mit, und ein Datenklassen-`repr` waere eine neue
+    Leck-Flaeche fuer den Token, fuer nichts.
+    """
+    name, tokens = token_holen_voll(mcp_url)
+    return name, tokens["access_token"]
 
 
 def main() -> None:
@@ -273,10 +303,14 @@ def main() -> None:
         print(f"  {authorize_url}")
         return
 
-    name, access_token = token_holen(args.mcp_url)
+    name, tokens = token_holen_voll(args.mcp_url)
     name = args.name or name
+    print(f"reference name:        {name}")
+    access_token = tokens["access_token"]
 
     lines = [f"{name}={access_token}\n"]
+    if isinstance(tokens.get("refresh_token"), str) and tokens["refresh_token"]:
+        lines.append(f"{name}_REFRESH={tokens['refresh_token']}\n")
     if args.out:
         flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
         descriptor = os.open(args.out, flags, 0o600)
@@ -286,7 +320,8 @@ def main() -> None:
     else:
         destination = "(no --out given; token DISCARDED - rerun with --out)"
 
-    print(f"token issued:          written to {destination}")
+    print(f"token issued:          expires_in={tokens.get('expires_in')} scope={tokens.get('scope')!r} refresh={'yes' if len(lines) > 1 else 'no'}")
+    print(f"written to:            {destination}")
     print(f"allowlist with:        OPENFANG_ISSUABLE_CREDENTIALS={name}")
 
 
