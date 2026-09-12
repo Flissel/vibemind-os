@@ -41,6 +41,7 @@
     "mcp__marketing__vorlagen_auflisten",
     "mcp__marketing__vorlage_vorschlagen",
     "mcp__marketing__vorlage_muster",
+    "mcp__marketing__vorlage_zur_pruefung_senden",
     "mcp__marketing__versand_beauftragen",
     "mcp__marketing__versandauftraege_lesen",
     "mcp__laura__list_projects",

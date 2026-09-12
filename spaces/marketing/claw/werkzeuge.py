@@ -794,6 +794,81 @@ def vorlage_muster(name: str) -> dict:
                     "du nicht.")}}
 
 
+# Die Adresse, an die Vorlagen zur Durchsicht gehen. Aus der Umgebung, nicht
+# fest verdrahtet: sie gehoert dem Betreiber, nicht dem Code. Ohne sie sagt
+# das Werkzeug das klar, statt still an irgendwen zu schicken.
+PRUEFADRESSE_ENV = "MARKETING_PRUEFADRESSE"
+
+
+def vorlage_zur_pruefung_senden(name: str, empfaenger: str = "",
+                                anmerkung: str = "") -> dict:
+    """Schickt das Musterblatt einer Vorlage an die Firmenadresse des
+    Betreibers — damit er sie dort ansieht und antwortet, was nicht passt.
+
+    DER WEG IST DERSELBE WIE FUER JEDE ANDERE NACHRICHT: es entsteht ein
+    Versandauftrag, sales-claw macht daraus einen Entwurf und laesst ihn
+    durch seine Tore, und zugestellt wird erst nach Freigabe. Eine Vorlage
+    zur Durchsicht ist keine Ausnahme vom Hausweg — sie ist ein Beispiel
+    dafuer, dass er traegt.
+
+    Das Musterblatt wird erzeugt, falls es noch keins gibt. `empfaenger`
+    leer heisst: die Adresse aus MARKETING_PRUEFADRESSE.
+
+    `anmerkung` ist ein Satz von dir an den Betreiber: warum diese Vorlage,
+    was du dir dabei gedacht hast. Er entscheidet leichter, wenn er das
+    weiss — und du bekommst eine bessere Antwort.
+    """
+    gesucht = (name or "").strip().lower()
+    if not gesucht:
+        return {"ok": False, "fehler": "Ohne Namen keine Vorlage."}
+
+    adresse = (empfaenger or os.environ.get(PRUEFADRESSE_ENV, "")).strip()
+    if not adresse:
+        return {"ok": False, "fehler": (
+            f"Keine Pruefadresse: weder `empfaenger` gesetzt noch "
+            f"{PRUEFADRESSE_ENV} in der Umgebung. Frag den Betreiber, an "
+            f"welche Adresse Vorlagen zur Durchsicht gehen sollen.")}
+
+    # Musterblatt zuerst — ohne Anschauung ist eine Bitte um Freigabe
+    # sinnlos. `vorlage_muster` ist idempotent (ersetzen=True).
+    muster = vorlage_muster(gesucht)
+    if not muster["ok"]:
+        return muster
+    pfad = muster["daten"]["muster"]
+    datei = pfad.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+
+    stand = muster["daten"].get("status", "?")
+    text = (
+        f"Hallo,\n\n"
+        f"zur Durchsicht: die Layout-Vorlage \"{gesucht}\" (Stand: {stand}).\n"
+        f"Das Musterblatt haengt an - es zeigt jedes Element, das eine echte "
+        f"Unterlage hat: Titel, Untertitel, Fliesstext, Stichpunkte mit "
+        f"Betonung, Handlungskasten und die Rubriken.\n")
+    if (anmerkung or "").strip():
+        text += f"\n{anmerkung.strip()}\n"
+    text += (
+        f"\nWas ich brauche: ein Ja, oder eine Antwort damit, was nicht "
+        f"passt. Beides hilft - eine Ablehnung mit Grund ist mehr wert als "
+        f"ein zoegerndes Ja.\n\n"
+        f"Solange sie nicht freigegeben ist, wird mit ihr nichts gesetzt.\n")
+
+    auftrag = versand_beauftragen(
+        kanal="email", empfaenger=adresse,
+        betreff=f"Layout-Vorlage zur Durchsicht: {gesucht}",
+        nachricht=text, medien_datei=datei,
+        kampagne="layout-vorlage", quelle=f"layout_vorlage:{gesucht}")
+    if not auftrag["ok"]:
+        return {"ok": False, "fehler": (
+            f"Das Musterblatt liegt unter {pfad}, aber der Versandauftrag "
+            f"kam nicht durch: {auftrag['fehler']}")}
+    return {"ok": True, "daten": {
+        "vorlage": gesucht, "status": stand, "muster": pfad,
+        "an": adresse, **(auftrag.get("daten") or {}),
+        "hinweis": ("Der Auftrag liegt bei sales-claw. Daraus wird ein "
+                    "Entwurf, den der Betreiber freigibt - erst dann geht "
+                    "die Mail raus. Das Musterblatt haengt an.")}}
+
+
 def pdf_erstellen(name: str, titel: str, text: str, untertitel: str = "",
                   belege=None, zu_klaeren=None, zweck: str = "marketing",
                   handlung: str = "", layout: str = "dunkel",
