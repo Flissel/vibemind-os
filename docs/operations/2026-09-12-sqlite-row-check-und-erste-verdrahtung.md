@@ -130,3 +130,22 @@ den Job-Beleg nachschlagen.
 GET-Route zum Nachschlagen (`/api/graph/task/{id}`, `/api/simulation/{id}/
 run-status`, `/api/report/{id}`) — dort wäre `truth:http_ok` zu schwach,
 gebraucht würde ein Check, der den Status im JSON liest.
+
+---
+
+## Nachtrag vom selben Tag: schedule ist umgezogen
+
+Der Betreiber hat danach entschieden: **alles Supabase.** `schedule` schreibt
+seither nicht mehr nach SQLite, die fünf Validatoren oben hängen auf
+`truth:supabase_row`, und der `sqlite_row`-Check wird von keiner Capability
+mehr benutzt. Er bleibt als Werkzeug stehen (die 14 Tests gelten weiter), hängt
+aber an nichts.
+
+Was oben trotzdem gültig bleibt: die zwei Fallen (`GROUND_TRUTH_ENABLED` wird
+beim Import gelesen; ein `truth:` ERSETZT eine vorhandene `rule:`) und die
+Unterscheidung „Beleg existiert, aber innerhalb der Operation".
+
+Der Grund für den Umzug stand schon in diesem Text, nur ohne Konsequenz: der
+SQLite-Pfad war in der Ausbringung unbewiesen. Die Ursache war nicht der Pfad,
+sondern ein zweiter Speicher neben einer Tabelle, die es längst gab — siehe
+`2026-09-12-schedule-von-sqlite-nach-supabase.md`.

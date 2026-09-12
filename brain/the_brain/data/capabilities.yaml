@@ -25,22 +25,18 @@
     - "cron\\s+(job|task).*(openclaw)"
   execution_target: "direct:spaces.schedule.execution:openclaw_cron"
   validator:
-    kind: "truth:sqlite_row"
-    # report, nicht block: hier stand bisher GAR kein Validator, und der
-    # Vorgabepfad der SQLite-Datei ist in der Ausbringung unbewiesen
-    # (SCHEDULE_DB_PATH ist nirgends produktiv gesetzt). Ein blockierendes
-    # Tor auf einem ungeklaerten Pfad wuerde Planung lahmlegen statt sie zu
-    # sichern. SCHEDULE_DB_PATH setzen macht die Ruecklesung verlaesslich.
+    kind: "truth:supabase_row"
+    # report, nicht block: hier stand vor dem 12.09. GAR kein Validator,
+    # report ist also reiner Gewinn. Auf block anzuheben ist eine eigene
+    # Entscheidung - sie gehoert hinter einen Nachweis, dass die Rueckfrage
+    # in der ausgebrachten Brain wirklich beobachtet (world_observer liest
+    # SUPABASE_ANON_KEY direkt und kennt die *_FILE-Konvention nicht).
     on_fail: "report"
     postcondition:
-      check: sqlite_row
-      path_env: SCHEDULE_DB_PATH
-      path: "spaces/schedule/data/schedule.sqlite3"
+      check: supabase_row
       table: scheduled_tasks
-      match: "id={result_id}"
-      # openclaw_cron setzt immer einen cron-Ausloeser (execution.py:285).
-      expect_column: trigger_type
-      expect_value: cron
+      # openclaw_cron setzt immer einen cron-Ausloeser (execution.py).
+      match: "id=eq.{result_id}&trigger_type=eq.cron"
       expect: present
 
 - capability: schedule_create
@@ -50,19 +46,17 @@
     - "erinnere mich"
   execution_target: "direct:spaces.schedule.execution:create"
   validator:
-    kind: "truth:sqlite_row"
-    # report, nicht block: hier stand bisher GAR kein Validator, und der
-    # Vorgabepfad der SQLite-Datei ist in der Ausbringung unbewiesen
-    # (SCHEDULE_DB_PATH ist nirgends produktiv gesetzt). Ein blockierendes
-    # Tor auf einem ungeklaerten Pfad wuerde Planung lahmlegen statt sie zu
-    # sichern. SCHEDULE_DB_PATH setzen macht die Ruecklesung verlaesslich.
+    kind: "truth:supabase_row"
+    # report, nicht block: hier stand vor dem 12.09. GAR kein Validator,
+    # report ist also reiner Gewinn. Auf block anzuheben ist eine eigene
+    # Entscheidung - sie gehoert hinter einen Nachweis, dass die Rueckfrage
+    # in der ausgebrachten Brain wirklich beobachtet (world_observer liest
+    # SUPABASE_ANON_KEY direkt und kennt die *_FILE-Konvention nicht).
     on_fail: "report"
     postcondition:
-      check: sqlite_row
-      path_env: SCHEDULE_DB_PATH
-      path: "spaces/schedule/data/schedule.sqlite3"
+      check: supabase_row
       table: scheduled_tasks
-      match: "id={result_id}"
+      match: "id=eq.{result_id}"
       expect: present
 
 - capability: schedule_cancel
@@ -71,22 +65,21 @@
     - "(cancel|delete|lösche|storniere).*(schedule|task|reminder|termin|erinnerung)"
   execution_target: "direct:spaces.schedule.execution:cancel"
   validator:
-    kind: "truth:sqlite_row"
-    # report, nicht block: hier stand bisher GAR kein Validator, und der
-    # Vorgabepfad der SQLite-Datei ist in der Ausbringung unbewiesen
-    # (SCHEDULE_DB_PATH ist nirgends produktiv gesetzt). Ein blockierendes
-    # Tor auf einem ungeklaerten Pfad wuerde Planung lahmlegen statt sie zu
-    # sichern. SCHEDULE_DB_PATH setzen macht die Ruecklesung verlaesslich.
+    kind: "truth:supabase_row"
+    # report, nicht block: hier stand vor dem 12.09. GAR kein Validator,
+    # report ist also reiner Gewinn. Auf block anzuheben ist eine eigene
+    # Entscheidung - sie gehoert hinter einen Nachweis, dass die Rueckfrage
+    # in der ausgebrachten Brain wirklich beobachtet (world_observer liest
+    # SUPABASE_ANON_KEY direkt und kennt die *_FILE-Konvention nicht).
     on_fail: "report"
     postcondition:
-      check: sqlite_row
-      path_env: SCHEDULE_DB_PATH
-      path: "spaces/schedule/data/schedule.sqlite3"
+      check: supabase_row
       table: scheduled_tasks
-      match: "id={result_id}"
       # Nicht nur "Zeile noch da", sondern: der Abbruch hat gewirkt.
-      expect_column: status
-      expect_value: cancelled
+      # PostgREST verundet mehrere Filter, die Verengung steht also
+      # direkt im match - anders als bei sqlite_row, wo sie eigene
+      # Schluessel brauchte.
+      match: "id=eq.{result_id}&status=eq.cancelled"
       expect: present
 
 - capability: schedule_modify
@@ -95,22 +88,20 @@
     - "(modify|change|reschedule|ändere|verschiebe).*(schedule|task|reminder|termin|erinnerung)"
   execution_target: "direct:spaces.schedule.execution:modify"
   validator:
-    kind: "truth:sqlite_row"
-    # report, nicht block: hier stand bisher GAR kein Validator, und der
-    # Vorgabepfad der SQLite-Datei ist in der Ausbringung unbewiesen
-    # (SCHEDULE_DB_PATH ist nirgends produktiv gesetzt). Ein blockierendes
-    # Tor auf einem ungeklaerten Pfad wuerde Planung lahmlegen statt sie zu
-    # sichern. SCHEDULE_DB_PATH setzen macht die Ruecklesung verlaesslich.
+    kind: "truth:supabase_row"
+    # report, nicht block: hier stand vor dem 12.09. GAR kein Validator,
+    # report ist also reiner Gewinn. Auf block anzuheben ist eine eigene
+    # Entscheidung - sie gehoert hinter einen Nachweis, dass die Rueckfrage
+    # in der ausgebrachten Brain wirklich beobachtet (world_observer liest
+    # SUPABASE_ANON_KEY direkt und kennt die *_FILE-Konvention nicht).
     on_fail: "report"
     postcondition:
-      check: sqlite_row
-      path_env: SCHEDULE_DB_PATH
-      path: "spaces/schedule/data/schedule.sqlite3"
+      check: supabase_row
       table: scheduled_tasks
-      match: "id={result_id}"
       # Nur Vorhandensein. WELCHES Feld geaendert wurde, steht nicht im
       # Ergebnistext und ist darum nicht nachpruefbar: dieser Beleg sagt
       # "die Aufgabe existiert danach noch", nicht "sie wurde geaendert".
+      match: "id=eq.{result_id}"
       expect: present
 
 - capability: schedule_snooze
@@ -119,22 +110,18 @@
     - "(snooze|schlummer|später).*(schedule|task|reminder|termin|erinnerung)?"
   execution_target: "direct:spaces.schedule.execution:snooze"
   validator:
-    kind: "truth:sqlite_row"
-    # report, nicht block: hier stand bisher GAR kein Validator, und der
-    # Vorgabepfad der SQLite-Datei ist in der Ausbringung unbewiesen
-    # (SCHEDULE_DB_PATH ist nirgends produktiv gesetzt). Ein blockierendes
-    # Tor auf einem ungeklaerten Pfad wuerde Planung lahmlegen statt sie zu
-    # sichern. SCHEDULE_DB_PATH setzen macht die Ruecklesung verlaesslich.
+    kind: "truth:supabase_row"
+    # report, nicht block: hier stand vor dem 12.09. GAR kein Validator,
+    # report ist also reiner Gewinn. Auf block anzuheben ist eine eigene
+    # Entscheidung - sie gehoert hinter einen Nachweis, dass die Rueckfrage
+    # in der ausgebrachten Brain wirklich beobachtet (world_observer liest
+    # SUPABASE_ANON_KEY direkt und kennt die *_FILE-Konvention nicht).
     on_fail: "report"
     postcondition:
-      check: sqlite_row
-      path_env: SCHEDULE_DB_PATH
-      path: "spaces/schedule/data/schedule.sqlite3"
+      check: supabase_row
       table: scheduled_tasks
-      match: "id={result_id}"
-      # snooze schreibt den Ausloeser auf ein Datum um (execution.py:278).
-      expect_column: trigger_type
-      expect_value: date
+      # snooze schreibt den Ausloeser auf ein Datum um (execution.py).
+      match: "id=eq.{result_id}&trigger_type=eq.date"
       expect: present
 
 - capability: schedule_status
