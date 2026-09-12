@@ -75,11 +75,20 @@ import time
 import uuid
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 
 from pruefung import pruefe
 import ablage
+import anfragen
 
 FEHLER_MAXLAENGE = 300
+
+# Dieselbe erlaubte Menge wie `ablage._ART_ERLAUBT` (kein zweiter, von Hand
+# gepflegter Satz) -- `eingabe_anfordern` braucht sie VOR jedem Anlegen einer
+# schwebenden Anfrage, weil `anfragen.anlegen` selbst `art` nicht prueft
+# (anders als `ablage.entgegennehmen`, das diese Pruefung fuer
+# `schluessel_entgegennehmen` schon mitbringt).
+_ART_ERLAUBT = ablage._ART_ERLAUBT
 
 # --- Die Namensform, in der OpenFang ein Credential kennt --------------------
 # Woertlich aus spaces/rowboat/rowboat/packages/openai-plugin-runtime/src/
@@ -624,6 +633,43 @@ def schluessel_entgegennehmen(projekt: str, plugin: str, referenz: str, art: str
             "der erste Schritt kollidiert an der UNIQUE-Constraint auf referenz_name. "
             "Letzter Fehler: " + letzter_fehler),
     }
+
+
+FENSTER_BASIS = os.environ.get("PLUGIN_SETUP_FENSTER_BASIS", "http://127.0.0.1:8131").rstrip("/")
+
+
+def eingabe_anfordern(projekt: str, plugin: str, referenz: str, art: str, ziel: str = "") -> dict:
+    """Fordert eine Eingabe an und gibt einen EINMAL-LINK zurueck.
+
+    Der Agent bekommt hier einen Zeiger, keinen Wert -- und kann auch
+    keinen hineingeben. Der Link darf im Transkript landen: nach Gebrauch
+    oder nach Ablauf ist er wertlos.
+
+    Die Wachen sind dieselben wie in `schluessel_entgegennehmen` und laufen
+    VOR dem Anlegen. Sonst waere dieser Weg genau die Luecke, die dort
+    geschlossen wurde.
+    """
+    if art not in _ART_ERLAUBT:
+        return {"ok": False, "fehler": f"unbekannte art: {art!r} (erlaubt: {sorted(_ART_ERLAUBT)})"}
+    fehler = _ziel_pruefen(art, referenz, ziel)
+    if fehler is not None:
+        return {"ok": False, "fehler": fehler}
+
+    a = anfragen.anlegen(projekt, plugin, referenz, art, ziel)
+    ablauf = datetime.fromtimestamp(a.ablauf, tz=timezone.utc).isoformat()
+    return {"ok": True, "referenz": referenz, "url": f"{FENSTER_BASIS}/fenster/{a.token}",
+            "ablauf_iso": ablauf}
+
+
+def einrichtung_status(referenz: str) -> dict:
+    """Zustand einer Einrichtung -- nie ein Wert, nie ein Antwortkoerper.
+
+    Schwebt noch eine Anfrage, ist der Zustand `angefordert`; die Datenbank
+    kennt die Referenz dann naemlich noch gar nicht.
+    """
+    if anfragen.offen_fuer(referenz) is not None:
+        return {"ok": True, "zustand": "angefordert", "hinweis": ""}
+    return ablage.zustand(referenz)
 
 
 def plugin_installieren(projekt: str, plugin: str, komponenten: list | None = None) -> dict:

@@ -929,3 +929,42 @@ def test_openfang_uebernehmen_schickt_referenz_wert_overwrite_und_bearer(monkeyp
     assert kopfzeilen == {"Authorization": "Bearer fake-daemon-schluessel"}
     body = json.loads(daten)
     assert body == {"reference": "X", "value": _FAKE_WERT, "overwrite": False}
+
+
+def test_eingabe_anfordern_gibt_link_und_ablauf_aber_nie_einen_wert():
+    ergebnis = werkzeuge.eingabe_anfordern("proj", "demo", "OAUTH_BEARER_MCP_LINEAR_APP_MCP",
+                                           "oauth", "https://mcp.linear.app/mcp")
+    assert ergebnis["ok"] is True
+    assert ergebnis["url"].startswith("http://127.0.0.1:8131/fenster/")
+    assert len(ergebnis["url"].rsplit("/", 1)[1]) >= 32
+    assert "T" in ergebnis["ablauf_iso"]
+    for verboten in ("wert", "value", "secret"):
+        assert verboten not in ergebnis
+
+
+def test_eingabe_anfordern_prueft_ziel_vor_dem_anlegen(monkeypatch):
+    """Dieselbe Wache wie schluessel_entgegennehmen -- sonst waere der
+    Link der Weg, sie zu umgehen."""
+    gelegt = []
+    monkeypatch.setattr(werkzeuge.anfragen, "anlegen",
+                        lambda *a, **k: gelegt.append(a) or (_ for _ in ()).throw(AssertionError))
+    ergebnis = werkzeuge.eingabe_anfordern("proj", "demo", "OAUTH_BEARER_MCP_LINEAR_APP_MCP",
+                                           "oauth", "http://mcp.linear.app/mcp")
+    assert ergebnis["ok"] is False
+    assert gelegt == [], "bei ungueltigem ziel darf keine Anfrage entstehen"
+
+
+def test_einrichtung_status_meldet_angefordert_solange_der_link_offen_ist(monkeypatch):
+    gerufen = []
+    monkeypatch.setattr(werkzeuge.ablage, "zustand", lambda r: gerufen.append(r) or {"ok": True, "zustand": "x", "hinweis": ""})
+    werkzeuge.eingabe_anfordern("proj", "demo", "PYTEST_STATUS_A", "bearer", "")
+    ergebnis = werkzeuge.einrichtung_status("PYTEST_STATUS_A")
+    assert ergebnis == {"ok": True, "zustand": "angefordert", "hinweis": ""}
+    assert gerufen == [], "solange die Anfrage schwebt, wird die DB nicht gefragt"
+
+
+def test_einrichtung_status_reicht_den_datenbankzustand_durch(monkeypatch):
+    monkeypatch.setattr(werkzeuge.ablage, "zustand",
+                        lambda r: {"ok": True, "zustand": "fehlgeschlagen", "hinweis": "401"})
+    ergebnis = werkzeuge.einrichtung_status("PYTEST_STATUS_B")
+    assert ergebnis == {"ok": True, "zustand": "fehlgeschlagen", "hinweis": "401"}
