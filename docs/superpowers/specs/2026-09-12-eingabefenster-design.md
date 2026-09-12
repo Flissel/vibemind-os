@@ -105,16 +105,38 @@ Ersatzlos entfernen wäre nicht strenger — die Zusicherung kommt daher, dass
 das Werkzeug nicht in der Liste steht, nicht daher, dass es die Funktion
 nicht gibt — würde aber den Live-Beweis kosten.
 
-### E3 — Das Formular serviert derselbe Prozess, auf demselben Loopback-Port
+### E3 — Das Formular serviert derselbe Prozess, auf demselben Port
 
-Der Sidecar bindet bereits `127.0.0.1:8131`. Das Formular kommt als eigene
-Route daneben. Begründung: eine schwebende Anfrage ist Prozesszustand, und
-zwei Prozesse bräuchten dafür einen geteilten Speicher — ein Dictionary ist
-hier richtig und stirbt korrekterweise mit dem Prozess.
+Das Formular kommt als eigene Route neben `/mcp`, im selben Prozess.
+Begründung: eine schwebende Anfrage ist Prozesszustand, und zwei Prozesse
+bräuchten dafür einen geteilten Speicher — ein Dictionary ist hier richtig
+und stirbt korrekterweise mit dem Prozess.
 
-Die Bindung bleibt Loopback. Der Agent im Container erreicht den MCP-Teil
-über `host.docker.internal`, der Mensch das Formular über `127.0.0.1` —
-dieselbe Datei, zwei Wege, keine Veröffentlichung nach außen.
+**KORREKTUR (gemessen, Task 5 Fix-Runde 2, 2026-09-12) — diese Annahme war
+falsch:** "Die Bindung bleibt Loopback" stimmte nie mit dem gebauten Server
+zusammen, der `0.0.0.0` bindet (`PLUGIN_SETUP_MCP_HOST`, Default `0.0.0.0`)
+— das MUSS so sein, sonst erreicht der Container `/mcp` gar nicht. Und die
+Folgerung "der Agent im Container erreicht den MCP-Teil über
+`host.docker.internal`, der Mensch das Formular über `127.0.0.1` —
+dieselbe Datei, **zwei Wege**" ist ebenfalls falsch: gemessen aus einem
+laufenden Container (`marketing-claw`) heraus kommt eine Anfrage an
+`host.docker.internal:<port>` beim Python-Prozess mit
+`request.client.host == "127.0.0.1"` an — UND ZWAR AUCH GEGEN EINEN
+LISTENER, DER NUR AUF `127.0.0.1` GEBUNDEN IST. Docker Desktops
+`host.docker.internal`-Brücke terminiert Container-Traffic für den
+Zielprozess wie eine lokale Loopback-Verbindung, unabhängig von dessen
+Bind-Adresse. Es gibt also, jedenfalls auf einem Docker-Desktop/WSL-
+Mirrored-Host wie diesem, **einen** Weg, nicht zwei — der Agent und der
+Mensch sind an dieser Stelle vom Server aus nicht unterscheidbar. Das ist
+die gemessene Wurzel der ganzen Fehlerklasse, die Task 5 Fix-Runde 1/2
+schließen musste (rohe Messwerte: `task-5-report.md`,
+`.superpowers/sdd/2026-09-12-eingabefenster/`). Was heute tatsächlich
+verhindert, dass der Agent das Formular selbst absendet, ist NICHT diese
+Bindung, sondern dass ihm keine Fähigkeit zur Verfügung steht, die eine
+beliebige HTTP-Anfrage stellen könnte (Tool-Policy in
+`config/openclaw.json`, s. `server.py`) — Konfiguration, nicht Struktur;
+der echte Fix (die Adresse gar nicht erst an den Agenten aushändigen)
+steht als Folgeaufgabe aus.
 
 ### E4 — Die schwebende Anfrage: 15 Minuten, einmal verwendbar
 

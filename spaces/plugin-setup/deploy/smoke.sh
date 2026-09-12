@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
-# smoke.sh -- Rauchtest der vier Werkzeuge + Verbotsliste. Wiederholbar,
-# raeumt auf, was es anlegt.
+# smoke.sh -- Rauchtest der vier (von inzwischen FUENF) Werkzeuge +
+# Verbotsliste. Wiederholbar, raeumt auf, was es anlegt.
+#
+# STAND VERALTET (Entwurf 2026-09-12-eingabefenster, Task 5): `server.
+# WERKZEUGE` hat seither `eingabe_anfordern`/`einrichtung_status` statt
+# `schluessel_entgegennehmen` (das bleibt eine Funktion, ist aber kein
+# MCP-Werkzeug mehr). Dieses Skript ruft weiterhin die VIER alten
+# Werkzeuge direkt auf (inkl. `schluessel_entgegennehmen`, das so nie mehr
+# durch server.py laueft) und prueft NICHT die beiden neuen -- Schritt 1
+# unten (der Registrierungs-Check) wuerde daher ohnehin nicht mehr
+# `ERWARTET` treffen. Als eigener Nachzieher benannt, nicht in dieser
+# Runde behoben (s. README.md "Betrieb").
 #
 # EHRLICHER GELTUNGSBEREICH (2026-09-11, s. task-6-report.md fuer Details):
 # Dieses Skript kann NUR pruefen, was auf dieser Maschine tatsaechlich

@@ -683,6 +683,17 @@ def eingabe_anfordern(projekt: str, plugin: str, referenz: str, art: str, ziel: 
     frische oder unbekannte Referenz (der ganz normale Erstversuch) liefert
     `ablage.zustand` `ok: False`, und dieser Zweig wird gar nicht erst
     betreten.
+
+    KOLLISIONS-FIX (Review Runde 3, Fix-Runde 2, Important): eine fruehere
+    Fassung pruefte NUR auf `fehlgeschlagen` und liess jeden anderen
+    bekannten Zustand (`entgegennehmen`, `verifiziert`, `uebernommen`)
+    unbeachtet durchfallen -- also einen neuen Link fuer eine Referenz
+    ausgeben, deren Formular garantiert an genau derselben
+    UNIQUE-Constraint kollidiert waere, nur eben nicht ueber den
+    `neu_aufnehmen`-Zweig. Jetzt ist das eine Ablehnung, nicht ein
+    stillschweigendes Durchfallen: JEDER bekannte Zustand ausser
+    `fehlgeschlagen` liefert `ok: False` mit dem Zustand im Klartext, bevor
+    ueberhaupt ein Token entsteht.
     """
     if art not in _ART_ERLAUBT:
         return {"ok": False, "fehler": f"unbekannte art: {art!r} (erlaubt: {sorted(_ART_ERLAUBT)})"}
@@ -691,10 +702,15 @@ def eingabe_anfordern(projekt: str, plugin: str, referenz: str, art: str, ziel: 
         return {"ok": False, "fehler": fehler}
 
     bisher = ablage.zustand(referenz)
-    if bisher.get("ok") and bisher.get("zustand") == "fehlgeschlagen":
-        neu = ablage.neu_aufnehmen(referenz)
-        if not neu.get("ok"):
-            return {"ok": False, "fehler": neu.get("fehler", "neu_aufnehmen fehlgeschlagen")}
+    if bisher.get("ok"):
+        zustand = bisher.get("zustand")
+        if zustand == "fehlgeschlagen":
+            neu = ablage.neu_aufnehmen(referenz)
+            if not neu.get("ok"):
+                return {"ok": False, "fehler": neu.get("fehler", "neu_aufnehmen fehlgeschlagen")}
+        else:
+            return {"ok": False,
+                    "fehler": f"referenz {referenz!r} ist bereits im Zustand {zustand!r} -- kein neuer Link"}
 
     a = anfragen.anlegen(projekt, plugin, referenz, art, ziel)
     ablauf = datetime.fromtimestamp(a.ablauf, tz=timezone.utc).isoformat()

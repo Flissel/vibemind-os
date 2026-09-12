@@ -1,12 +1,26 @@
 # plugin-setup
 
 Der eigenstaendige Space aus Aufgabe 6
-(`.superpowers/sdd/2026-09-08-plugin-setup-agent/task-6-brief.md`): ein
-MCP-Server (`server.py`, FastMCP auf `0.0.0.0:8131`) mit vier Werkzeugen
-(`werkzeuge.py`), die Aufnahme/Verifikation/Uebernahme eines Plugin-
-Credentials orchestrieren (`ablage.py` = Aufgabe 4/Supabase, `pruefung.py`
-= Aufgabe 5, OpenFang-Uebergabe = Aufgabe 1, Rowboat-Install/Tool-Bindung
-= Aufgaben 2/3).
+(`.superpowers/sdd/2026-09-08-plugin-setup-agent/task-6-brief.md`), seit
+Aufgabe 5 des Entwurfs `2026-09-12-eingabefenster` um das Eingabefenster
+erweitert: ein MCP-Server (`server.py`, FastMCP) mit FUENF Werkzeugen
+(`werkzeuge.py`, `server.WERKZEUGE`), die Aufnahme/Verifikation/Uebernahme
+eines Plugin-Credentials orchestrieren (`ablage.py` = Aufgabe 4/Supabase,
+`pruefung.py` = Aufgabe 5, OpenFang-Uebergabe = Aufgabe 1, Rowboat-Install/
+Tool-Bindung = Aufgaben 2/3). Eine sechste Funktion,
+`schluessel_entgegennehmen`, bleibt im selben Modul, ist aber ABSICHTLICH
+kein registriertes MCP-Werkzeug -- sie ist der interne Schreibweg des
+Formulars unter `/fenster/{token}` (`fenster.py`/`anfragen.py`), das
+derselbe Prozess neben `/mcp` bedient. Die Bind-Adresse ist geladen: sie
+bindet `0.0.0.0`, nicht Loopback -- der Container muss `/mcp` erreichen
+(s. `config/openclaw.json`, `host.docker.internal`). Das Formular hat
+dieselbe Bindung; eine Loopback-Adressprüfung auf den Formular-Routen ist
+auf einem Docker-Desktop/WSL-Mirrored-Host GEMESSEN keine Trennung
+zwischen Betreiber und Container (s. `docs/superpowers/specs/
+2026-09-12-eingabefenster-design.md` E3 und `.superpowers/sdd/
+2026-09-12-eingabefenster/task-5-report.md`) -- was den Agenten heute
+tatsaechlich davon abhaelt, das Formular selbst zu erreichen, ist seine
+Tool-Policy (`config/openclaw.json`: `tools.deny`), nicht die Bindung.
 
 `spaces/plugin-setup` traegt bewusst KEIN `__init__.py` (Bindestrich ist
 kein gueltiger Python-Modulname) -- alle Module hier werden bare importiert
@@ -25,7 +39,7 @@ der Server als eigenstaendiges Skript gestartet: `python server.py`, nicht
 | `PLUGIN_SETUP_OPENFANG_API_KEY` | API-Key des isolierten Daemons, als `Authorization: Bearer` gesendet. Eigener Name (nicht `OPENFANG_API_KEY`), um Verwechslung mit dem Key eines anderen Daemons auszuschliessen. | s.o. |
 | `PLUGIN_SETUP_DB_CONTAINER` | Override fuer den supabase-db-Container-Namen. Default: Auto-Erkennung per Namenssubstring `supabase-db` (`docker ps`). | `ablage.py` (immer) |
 | `PLUGIN_SETUP_DB_ROLE` | Override der DB-Rolle. Default `plugin_setup_agent` (`db/0003_least_privilege_role.sql`, gehaertet in `db/0004_least_privilege_role_hardening.sql`) -- **nie** `postgres`/`service_role`/`supabase_admin` produktiv setzen, das unterlaeuft die in `db/0002_state_machine.sql` erzwungene Zustandsmaschine (Review-Vorgabe #3). | `ablage.py` (immer) |
-| `PLUGIN_SETUP_MCP_HOST` / `PLUGIN_SETUP_MCP_PORT` | Bind-Adresse des MCP-Servers. Default `0.0.0.0:8131`. | `server.py` |
+| `PLUGIN_SETUP_MCP_HOST` / `PLUGIN_SETUP_MCP_PORT` | Bind-Adresse. Default `0.0.0.0:8131` -- gilt fuer `/mcp` UND `/fenster/{token}` (derselbe Prozess, dieselbe Bindung, s. oben). NICHT Loopback, trotz `docs/superpowers/specs/2026-09-12-eingabefenster-design.md` E3s urspruenglicher (korrigierter) Annahme. | `server.py` |
 
 Alle Variablen werden zusaetzlich aus der repo-`.env` nachgeladen (nie
 ueberschrieben), wie bei den Nachbar-Sidecars (`spaces/marketing/claw/server.py`).
@@ -36,8 +50,11 @@ ueberschrieben), wie bei den Nachbar-Sidecars (`spaces/marketing/claw/server.py`
    eigenstaendiges Compose-Projekt hochfahren.
 2. `deploy/anbinden.sh` -- Saat einspielen, Gateway-Token setzen, Werkzeuge
    probieren.
-3. `deploy/smoke.sh` -- alle vier Werkzeuge einmal aufrufen, Verbotsliste
-   pruefen. Siehe der Skriptkopf fuer den ehrlichen Geltungsbereich (was
+3. `deploy/smoke.sh` -- ruft testweise vier der fuenf Werkzeuge direkt auf
+   (`plugin_bedarf`, `plugin_installieren`, `plugin_werkzeug_binden`,
+   `schluessel_entgegennehmen`) und prueft die Verbotsliste; NOCH NICHT
+   auf `eingabe_anfordern`/`einrichtung_status` aktualisiert (s. Markierung
+   im Skriptkopf). Siehe dort auch fuer den ehrlichen Geltungsbereich (was
    auf dieser Maschine nicht mitgeprueft werden konnte).
 
 ## Tests
@@ -48,4 +65,10 @@ python -m pytest spaces/plugin-setup/tests -q
 
 `test_eingang.py`/`test_pruefung.py` (Aufgaben 4/5, unveraendert),
 `test_ablage.py` (Aufgabe 6, echte Supabase, beweist Review-Vorgabe #3),
-`test_werkzeuge.py` (Aufgabe 6, komplett gemockt, keine echten Netz-/DB-Aufrufe).
+`test_werkzeuge.py` (Aufgabe 6, komplett gemockt, keine echten Netz-/DB-Aufrufe),
+`test_anfragen.py`/`test_fenster.py` (Entwurf `2026-09-12-eingabefenster`,
+Aufgaben 2/4), `test_server_werkzeugliste.py` (die Werkzeugliste als
+Sicherheitsgrenze -- prueft die ECHTE FastMCP-Registrierung, nicht nur das
+Tupel), `test_server_formularrouten.py` (Loopback-Wache, oauth-
+Zwischenstand, POST-Body-vs-Query -- echte Requests via Starlettes
+`TestClient`, kein Mock der Routen selbst).

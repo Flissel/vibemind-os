@@ -28,18 +28,37 @@ Quellen (LAN, ein Container in echtem Bridge-Networking ohne Desktops
 Bruecke) und ist darum nicht umsonst, aber sie ist NICHT der Grund, warum
 der `plugin-setup`-Agent diese Route heute nicht erreichen kann.
 
-Der TATSAECHLICHE Grund: der Agent hat kein Werkzeug, das eine beliebige
-HTTP-Anfrage stellen kann. `config/openclaw.json` hat `browser.enabled` UND
-den `browser`-Plugin-Eintrag auf `false` (diese Aenderung, Review Runde 3
--- vorher war das die tatsaechliche Luecke: ein eigener Chrome im
-Container haette den Link, den der Agent selbst als `url` von
-`eingabe_anfordern` bekommt, oeffnen und das Formular absenden koennen),
-`tools.web.search`/`tools.web.fetch` waren schon `false`, und keines der
-fuenf Werkzeuge in `server.WERKZEUGE` nimmt eine URL oder stellt selbst
-einen Netzaufruf. Wird dem Agenten je wieder ein Browser- oder Fetch-
-Werkzeug gegeben, reicht die Loopback-Wache auf einem Docker-Desktop-Host
-wie diesem NICHT aus, das zu kompensieren -- das braucht dann einen
-Mechanismus, der nicht auf der Client-Adresse beruht.
+FRUEHERE FASSUNG DIESES ABSCHNITTS WAR SELBST EINE UNVOLLSTAENDIGE
+AUFZAEHLUNG (Review Runde 3, Fix-Runde 2) -- sie nannte `browser`,
+`tools.web.search`/`tools.web.fetch` und die fuenf MCP-Werkzeuge und schloss
+daraus, der Agent habe "kein Werkzeug, das eine beliebige HTTP-Anfrage
+stellen kann". Sie verschwieg die SHELL: `config/openclaw.json` setzte
+weder `tools.profile` noch `tools.deny` noch einen Sandbox-Modus, und ohne
+das ist das gebaute Tool-Profil `full` ("No restriction"), das laut
+openclaw's eigener Doku `group:runtime` (`exec`/`process`/`code_execution`)
+einschliesst -- Sandboxing ist dort ebenfalls als standardmaessig AUS
+dokumentiert. Ein einziger `exec`-Aufruf im Container
+(`curl -X POST http://host.docker.internal:8131/fenster/<token>
+--data-urlencode "wert=..."`) waere derselbe Weg wie der Browser-Fund
+gewesen, nur durch eine andere Faehigkeit, die die Aufzaehlung nicht
+mitgezaehlt hatte -- und die Loopback-Wache haette ihn nachweislich nicht
+gestoppt (s. oben).
+
+Darum die ehrliche, NICHT aufzaehlende Fassung: kein MCP-Werkzeug, das dem
+Agenten zur Verfuegung steht, nimmt einen Credential-Wert an, und die
+Tool-Policy des Agenten entzieht ihm Shell-, Dateisystem- und
+Web-Faehigkeiten (`config/openclaw.json`: `tools.deny` = `group:runtime`,
+`group:fs`, `group:web`, `group:ui`) -- der Agent haelt trotzdem den
+Einmal-Link, und die Loopback-Wache trennt auf diesem Host den Container
+nicht vom Betreiber. Der Schreibweg ist also durch KONFIGURATION
+verschlossen, nicht durch STRUKTUR: jede Aenderung an `tools.deny`/
+`tools.profile` kann ihn wieder oeffnen, ohne dass ein Test hier rot wird.
+Der Fix, der die urspruengliche Zusicherung wiederherstellen wuerde --
+`eingabe_anfordern` haendigt dem Agenten die Adresse gar nicht erst aus,
+sondern liefert sie ausschliesslich out-of-band an den Betreiber -- ist
+bewusst NICHT Teil dieser Runde (eigener Vertrags-/Entwurfswechsel fuer
+`eingabe_anfordern`, s. Task-5-Report und die Korrektur in
+`docs/superpowers/specs/2026-09-12-eingabefenster-design.md` E3).
 
 `spaces/plugin-setup` traegt bewusst KEIN `__init__.py` und ist per
 Bindestrich kein gueltiger Python-Modulname -- dieser Server (wie
@@ -162,7 +181,14 @@ async def _fenster_annehmen(request):
         return HTMLResponse(_OAUTH_NOCH_NICHT_VERFUEGBAR, status_code=200)
 
     formular = await request.form()
-    wert = str(formular.get("wert", ""))
+    # .strip() VOR der Leer-Pruefung (Review Runde 3, Fix-Runde 2): ohne das
+    # waere ein Wert aus nur Leerzeichen (Copy-Paste-Artefakt, kein echter
+    # Leerstring) `truthy` und erreichte den Tresor und den Anbieter --
+    # also praktisch immer ein Fehlschlag, nur schwerer zu diagnostizieren
+    # als ein ehrliches "Wert fehlt". Der gestrippte Wert geht auch an den
+    # Schreiber, nicht nur in die Pruefung: fuehrende/nachlaufende
+    # Leerzeichen sind nie Teil eines echten Credentials.
+    wert = str(formular.get("wert", "")).strip()
     if vorschau is not None and not wert:
         return HTMLResponse(_WERT_FEHLT, status_code=400)
 

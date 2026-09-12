@@ -32,7 +32,10 @@ def seite_fuer(a: "anfragen.Anfrage") -> str:
     if a.art == "oauth":
         return (f"{_KOPF}<h1>Anmeldung noetig</h1>"
                 f'<p>Fuer <code>{ref}</code> meldest du dich beim Anbieter an. '
-                f"Der Token wird direkt hier entgegengenommen und nie angezeigt.</p>"
+                f"Der Token wird direkt hier entgegengenommen und nie angezeigt. "
+                f"Diese Anmeldung ist heute noch nicht angebunden -- ein Klick "
+                f"zeigt dir das, ohne etwas zu aendern; der Link bleibt fuer "
+                f"einen spaeteren Versuch gueltig.</p>"
                 f'<form method="post"><button>Anmeldung starten</button></form>')
     return (f"{_KOPF}<h1>Schluessel eintragen</h1>"
             f'<p>Fuer <code>{ref}</code>. Der Wert wird sofort geprueft und dann an '

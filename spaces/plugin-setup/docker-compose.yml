@@ -1,9 +1,13 @@
 # plugin-setup Gateway -- openclaw vor dem plugin-setup-MCP-Sidecar
 # (Aufgabe 6, Spec 2026-09-08-plugin-setup-agent). Muster:
 # spaces/marketing/claw/gateway/docker-compose.yml. EIN MCP-Server: der
-# host-seitige Sidecar server.py auf :8131 (die vier Werkzeuge). Keine
-# Kanaele, kein zweiter Server -- der Agent kann strukturell nur ueber die
-# vier Werkzeuge wirken.
+# host-seitige Sidecar server.py auf :8131 (die fuenf Werkzeuge, s.
+# server.WERKZEUGE). Keine Kanaele, kein zweiter MCP-Server -- topologisch
+# die einzige MCP-Anbindung dieses Agenten. Das ist KEINE Zusicherung ueber
+# sonstige Faehigkeiten (Shell, Dateisystem, Web): die verweigert die
+# Tool-Policy in config/openclaw.json (`tools.deny`), nicht diese Topologie
+# -- s. server.py-Moduldoku, Review Runde 3 Fix-Runde 2, fuer die
+# ausformulierte, nicht ueberzeichnende Fassung dieser Zusicherung.
 #
 # WICHTIG: dieser Compose-Deploy ist EIGENSTAENDIG -- er gehoert NICHT in
 # den bestehenden vibemind-Swarm-Stack (infra/swarm/...) und wird von

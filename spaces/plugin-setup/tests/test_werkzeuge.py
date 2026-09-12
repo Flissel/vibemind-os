@@ -978,7 +978,13 @@ def test_eingabe_anfordern_prueft_art_vor_dem_anlegen(monkeypatch):
 
 def test_einrichtung_status_meldet_angefordert_solange_der_link_offen_ist(monkeypatch):
     gerufen = []
-    monkeypatch.setattr(werkzeuge.ablage, "zustand", lambda r: gerufen.append(r) or {"ok": True, "zustand": "x", "hinweis": ""})
+    # `ok: False` -- eine frische/unbekannte Referenz, der ganz normale
+    # Erstversuch: seit dem Kollisions-Fix (Review Runde 3, Fix-Runde 2)
+    # lehnt eingabe_anfordern JEDEN bekannten Zustand ausser
+    # `fehlgeschlagen` ab (s. test_eingabe_anfordern_lehnt_ab_bei_*), ein
+    # Platzhalter-Zustand wie zuvor `"x"` wuerde also selbst abgelehnt und
+    # gar keine Anfrage anlegen.
+    monkeypatch.setattr(werkzeuge.ablage, "zustand", lambda r: gerufen.append(r) or {"ok": False, "fehler": "unbekannte referenz_name"})
     werkzeuge.eingabe_anfordern("proj", "demo", "PYTEST_STATUS_A", "bearer", "")
     # eingabe_anfordern selbst fragt ablage.zustand EINMAL ab (die
     # neu_aufnehmen-Wache, s. unten) -- das ist der einzige erwartete Aufruf
@@ -1038,3 +1044,23 @@ def test_eingabe_anfordern_ruft_neu_aufnehmen_nicht_bei_frischer_oder_unbekannte
     ergebnis = werkzeuge.eingabe_anfordern("proj", "demo", "PYTEST_RETRY_C", "bearer", "")
     assert ergebnis["ok"] is True
     assert aufgerufen == []
+
+
+@pytest.mark.parametrize("zustand", ["entgegengenommen", "verifiziert", "uebernommen"])
+def test_eingabe_anfordern_lehnt_ab_wenn_referenz_bereits_in_anderem_zustand_ist(monkeypatch, zustand):
+    """Kollisions-Fix (Review Runde 3, Fix-Runde 2, Important): eine
+    fruehere Fassung pruefte NUR auf `fehlgeschlagen` und liess jeden
+    anderen bekannten Zustand durchfallen -- also einen Link ausgeben,
+    dessen Formular garantiert an der UNIQUE-Constraint auf referenz_name
+    kollidiert waere. Jetzt lehnt eingabe_anfordern JEDEN bekannten
+    Zustand ausser `fehlgeschlagen` ab, bevor ein Token entsteht, und
+    nennt den Zustand im Klartext."""
+    gelegt = []
+    monkeypatch.setattr(werkzeuge.ablage, "zustand",
+                        lambda r: {"ok": True, "zustand": zustand, "hinweis": ""})
+    monkeypatch.setattr(werkzeuge.anfragen, "anlegen",
+                        lambda *a, **k: gelegt.append(a) or (_ for _ in ()).throw(AssertionError))
+    ergebnis = werkzeuge.eingabe_anfordern("proj", "demo", "PYTEST_KOLLISION", "bearer", "")
+    assert ergebnis["ok"] is False
+    assert zustand in ergebnis["fehler"]
+    assert gelegt == [], f"kein Link fuer eine Referenz, die schon '{zustand}' ist"
