@@ -70,3 +70,58 @@ def test_unbekanntes_token_gibt_404_ohne_den_wert_anzufassen():
                                        lambda **k: gerufen.append(k))
     assert status == 404
     assert gerufen == []
+
+
+def test_referenz_wird_escapiert_in_seite_fuer():
+    """Bösartige Referenz-Namen (mit < > &) müssen escapiert werden."""
+    a = anfragen.anlegen("proj", "demo", "<script>alert(1)</script>", "bearer", "")
+    html = fenster.seite_fuer(a)
+    # Raw markup darf NICHT im HTML sein
+    assert "<script>alert(1)</script>" not in html
+    # Escapierte Form MUSS im HTML sein
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+
+
+def test_referenz_wird_escapiert_in_ergebnisseite():
+    """Bösartige Referenz-Namen müssen auch in der Ergebnisseite escapiert sein."""
+    html_ok = fenster.ergebnisseite(True, "<script>alert(1)</script>", "")
+    assert "<script>alert(1)</script>" not in html_ok
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html_ok
+
+    html_fail = fenster.ergebnisseite(False, "<img src=x onerror=alert(1)>", "test")
+    assert "<img src=x onerror=alert(1)>" not in html_fail
+    assert "&lt;img src=x onerror=alert(1)&gt;" in html_fail
+
+
+def test_statuscode_wird_angezeigt_nicht_der_fehlertext():
+    """Der Status-Code selber muss in der Antwort stehen, nicht nur der Fehlertext."""
+    def _schreiber_mit_code(**kwargs):
+        # Fehler-Meldung mit ANDEREN Ziffern als Status, damit der Test wirklich
+        # beweist dass der Status-Code angezeigt wird
+        return {
+            "ok": False,
+            "referenz": kwargs["referenz"],
+            "status": 403,
+            "fehler": "Zugriff verweigert (Code: neunundzwanzig)"
+        }
+
+    a = anfragen.anlegen("proj", "demo", "SECRET", "bearer", "")
+    status, html = fenster.entgegennehmen(a.token, _FAKE, _schreiber_mit_code)
+    assert status == 200
+    # Der Status-Code selber muss sichtbar sein
+    assert "403" in html
+    # Der Fehlertext mit seinen anderen Ziffern/Text darf NICHT sichtbar sein
+    assert "neunundzwanzig" not in html
+    assert "Zugriff verweigert" not in html
+
+
+def test_oauth_seite_hat_keine_password_eingabe():
+    """OAuth-Flow sollte einen Button haben, keine Passwort-Eingabe."""
+    a = anfragen.anlegen("proj", "demo", "OAUTH_CODE", "oauth", "")
+    html = fenster.seite_fuer(a)
+    # Keine Password-Eingabe
+    assert 'type="password"' not in html
+    # Aber die Referenz sollte trotzdem sichtbar sein
+    assert "OAUTH_CODE" in html
+    # Und es sollte einen Button geben
+    assert "<button>" in html or "<button " in html
