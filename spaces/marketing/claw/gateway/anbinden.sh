@@ -67,7 +67,22 @@ if docker compose exec -T marketing-claw openclaw mcp list 2>&1 | grep -q rowboa
   echo "   FEHL Gateway kennt noch einen rowboat-Server (gehoert in den Sidecar)"; ROT=$((ROT+1))
 fi
 
-echo "3) Fertigkeiten"
+# Laura-Werkzeuge (zweiter MCP-Server im Shim, seit 12.09.2026). Sie kommen
+# NICHT ueber den marketing-Server, sondern direkt aus dem laura-MCP — deshalb
+# eine eigene Probe. `laura_api` MUSS fehlen: es reicht jede API-Route durch
+# und haette die Freigabeliste daneben aufgehoben.
+# Laura haengt seit 12.09.2026 als ZWEITER MCP-Server im Shim. Er kommt NICHT
+# ueber openclaws MCP-Schicht, sondern ueber SHIM_EXTRA_MCP_CONFIG direkt in
+# die Claude-CLI — in `$PROBE` oben kann er also gar nicht auftauchen. Also
+# den Server selbst befragen.
+echo "3) Laura-Werkzeuge (eigener MCP im Shim)"
+if python "$HIER/../shim/laura_probe.py"; then
+  echo "   ok   Freigabeliste deckt sich mit dem, was der Server fuehrt"
+else
+  echo "   FEHL Laura-MCP: siehe Ausgabe oben"; ROT=$((ROT+1))
+fi
+
+echo "4) Fertigkeiten"
 FERTIG="$(docker compose exec -T marketing-claw openclaw skills 2>&1 || true)"
 for f in email-kampagne whatsapp-nachricht; do
   if printf '%s' "$FERTIG" | grep -q "$f"; then echo "   ok   $f"; else echo "   FEHL $f"; ROT=$((ROT+1)); fi
@@ -78,4 +93,4 @@ if [ "$ROT" -ne 0 ]; then
   echo "ROT: $ROT" >&2
   exit "$ROT"
 fi
-echo "Gateway abgenommen: 19 Werkzeuge, 2 Fertigkeiten, nichts Sendendes, nichts Schreibendes."
+echo "Gateway abgenommen: 19 Marketing- + 24 Laura-Werkzeuge, 2 Fertigkeiten, nichts Sendendes, nichts Schreibendes."

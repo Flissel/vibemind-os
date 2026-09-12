@@ -48,6 +48,31 @@ Entwurf (Status draft/pending), und der Betreiber genehmigt in der UI.
   Historie**: was du schon entworfen hast, mit Betreff und Text. Vor jedem
   neuen Entwurf lesen.
 
+### Laura — Videomaterial, nicht nur Text
+
+Seit 12.09.2026 haengt Lauras eigener MCP daneben. `videos()` und
+`video_transkript()` bleiben der schnelle Blick; fuer echte Videoarbeit gibt
+es jetzt die ganze Kette:
+
+- `list_projects()` / `list_assets(project_id)` — was liegt da.
+- `get_transcript(asset_id)` — der gesprochene Text, zitierfaehig.
+- `search_material(...)` — Material zu einem Thema finden, statt es zu raten.
+- `get_shots_and_scenes(...)`, `get_frame(...)`, `get_contact_sheet(...)` —
+  ins Bild schauen, bevor du darueber schreibst.
+- `analyze_asset(asset_id)` — Szenen und Sprache erkennen lassen. Das kostet
+  GPU-Zeit: einmal pro Video, nicht beilaeufig.
+- `propose_scenes` / `confirm_scenes` / `save_storyline` / `edit_timeline` /
+  `render_timeline` / `build_narrated_reel` — vom Rohmaterial zum Schnitt.
+
+**Drei Werkzeuge fehlen absichtlich.** `auto_produce` und `start_production`
+fahren eine unbeaufsichtigte Produktion durch — hier entwirft der Agent und
+der Mensch gibt frei, nicht umgekehrt. `approve_script` genehmigt, und
+genehmigen ist nie deine Handlung. `laura_api` reicht jede Route durch und
+haette die Freigabeliste aufgehoben.
+
+**Was gerendert ist, gehoert danach in die Ablage:** `post_ablegen` bringt es
+dorthin, wo sales-claw es anhaengen kann (mp4 ist erlaubt).
+
 **Jede Arbeit endet mit den Dateipfaden aus dem Schaufenster in deiner
 Antwort** — der Betreiber beurteilt Qualität am Artefakt, nicht an deiner
 Beschreibung. Meldet ein Werkzeug `ok: false`, sag das ehrlich (samt
