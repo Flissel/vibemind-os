@@ -229,6 +229,54 @@ def _liste(werte) -> list:
     return [str(w).strip() for w in werte if str(w).strip()]
 
 
+# Wohin WhatsApp wirklich gehoert. Der Kanal EXISTIERT in diesem Haus — nur
+# nicht in diesem Space: sales-claw verschickt ihn ueber openwa
+# (`dispatch.py`), pro KONTAKT statt als Rundnachricht und mit eigener
+# Einwilligungspruefung. Wer hier einen whatsapp-Entwurf anlegt, legt eine
+# Datei an, die nie rausgeht.
+_WOHIN_STATT = {
+    "whatsapp": ("WhatsApp verschickt sales-claw ueber openwa — pro Kontakt, "
+                 "mit Einwilligungspruefung. Schreib den Text und uebergib ihn "
+                 "dorthin, statt hier einen Rundnachrichten-Entwurf anzulegen."),
+    "linkedin": ("LinkedIn laeuft ueber sales-claws Einmal-Versender, nicht "
+                 "ueber diesen Space."),
+}
+
+
+def _kanal_kann_senden(kanal: str) -> tuple:
+    """(geht, hinweis) — fragt die API, haelt keine Liste im Kopf.
+
+    Ein Kanal ohne gebauten Versandweg nimmt Entwuerfe stumm an: sie landen
+    in broadcast_proposals, sehen fertig aus und koennen nie zugestellt
+    werden (gemessen 04.09. und 12.09.2026 fuer `whatsapp`). Die Auskunft
+    kommt vom Dienst, damit die Pruefung von selbst mitwaechst, sobald ein
+    Versandweg dazukommt.
+
+    Faellt die Auskunft aus, wird NICHT blockiert: ein Entwurf darf nicht an
+    der Verfuegbarkeit einer Nebenroute haengen.
+    """
+    antwort = _api("/api/channels")
+    if not antwort["ok"]:
+        return True, ""
+    kanaele = (antwort.get("daten") or {}).get("data") or []
+    passend = next((k for k in kanaele if k.get("channel") == kanal), None)
+    if passend is None:
+        moeglich = sorted(k["channel"] for k in kanaele
+                          if k.get("enabled") and k.get("send_implemented"))
+        return False, (f"Kanal '{kanal}' kennt die Marketing-API nicht. "
+                       f"Versandfaehig: {', '.join(moeglich) or 'keiner'}.")
+    if passend.get("enabled") and passend.get("send_implemented"):
+        return True, ""
+    moeglich = sorted(k["channel"] for k in kanaele
+                      if k.get("enabled") and k.get("send_implemented"))
+    hinweis = (f"Kanal '{kanal}' hat hier keinen Versandweg — ein Entwurf "
+               f"darauf koennte nie zugestellt werden. Versandfaehig: "
+               f"{', '.join(moeglich) or 'keiner'}.")
+    if kanal in _WOHIN_STATT:
+        hinweis += " " + _WOHIN_STATT[kanal]
+    return False, hinweis
+
+
 def kampagne_entwerfen(ziel: str, zielgruppe: str, kanal: str, kontext: str = "",
                        belege=None, zu_klaeren=None) -> dict:
     """Entwirft eine Kampagne: Briefing + Text als broadcast_proposals-Draft
@@ -243,6 +291,9 @@ def kampagne_entwerfen(ziel: str, zielgruppe: str, kanal: str, kontext: str = ""
     """
     belege = _liste(belege)
     zu_klaeren = _liste(zu_klaeren)
+    geht, hinweis = _kanal_kann_senden(kanal)
+    if not geht:
+        return {"ok": False, "fehler": hinweis}
     r = _llm_json(
         "Du bist Marketing-Texter fuer VibeMind. Antworte NUR mit einem "
         'JSON-Objekt {"betreff": ..., "text": ..., "begruendung": ...}. '

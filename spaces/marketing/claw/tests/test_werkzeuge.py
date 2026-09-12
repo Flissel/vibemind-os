@@ -134,5 +134,91 @@ class TestPdfOhneReportlab(unittest.TestCase):
         self.assertTrue(callable(werkzeuge.wissen_fragen))
 
 
+class TestKanalPruefung(unittest.TestCase):
+    """Ein Entwurf auf einem Kanal ohne Versandweg ist eine Falle.
+
+    Gemessen 04.09. und noch einmal 12.09.2026 an `/api/channels`: `email`
+    und `telegram` stehen auf `enabled: true, send_implemented: true`,
+    `whatsapp` auf `false/false`. `kampagne_entwerfen` reichte den Kanal
+    trotzdem durch — der Entwurf landete in broadcast_proposals, sah fertig
+    aus und konnte nie rausgehen. Schlimmer noch: die Fertigkeit
+    `whatsapp-nachricht` schickte den Agenten genau dorthin.
+
+    WhatsApp GEHT in diesem Haus — nur nicht hier. sales-claw verschickt es
+    ueber openwa (`dispatch.py`, Container laeuft), per KONTAKT statt per
+    Rundnachricht, mit eigener Einwilligungspruefung. Der Fehlertext muss
+    dorthin zeigen, sonst sucht der Agent an der falschen Stelle weiter.
+    """
+
+    def _kanaele(self, whatsapp_an=False):
+        return (200, json.dumps({"success": True, "data": [
+            {"channel": "email", "enabled": True, "send_implemented": True},
+            {"channel": "telegram", "enabled": True, "send_implemented": True},
+            {"channel": "whatsapp", "enabled": whatsapp_an,
+             "send_implemented": whatsapp_an},
+            {"channel": "linkedin", "enabled": False, "send_implemented": False},
+        ]}))
+
+    def test_kanal_ohne_versandweg_wird_abgelehnt(self):
+        rekorder = Rekorder([self._kanaele()])
+        with mock.patch.object(werkzeuge, "_roh_anfrage", rekorder), \
+             mock.patch.dict("os.environ", {"MARKETING_API_URL": "http://x:5510"}):
+            r = werkzeuge.kampagne_entwerfen("Ziel", "Zielgruppe", "whatsapp")
+        self.assertFalse(r["ok"], r)
+        self.assertEqual(len(rekorder.aufrufe), 1,
+                         "nach der Absage darf nichts mehr geschrieben werden")
+
+    def test_die_absage_nennt_den_weg_der_funktioniert(self):
+        rekorder = Rekorder([self._kanaele()])
+        with mock.patch.object(werkzeuge, "_roh_anfrage", rekorder), \
+             mock.patch.dict("os.environ", {"MARKETING_API_URL": "http://x:5510"}):
+            r = werkzeuge.kampagne_entwerfen("Ziel", "Zielgruppe", "whatsapp")
+        self.assertIn("sales-claw", r["fehler"])
+        self.assertIn("email", r["fehler"])
+        self.assertIn("telegram", r["fehler"])
+
+    def test_ein_kanal_mit_versandweg_geht_durch(self):
+        rekorder = Rekorder([
+            self._kanaele(),
+            (200, json.dumps({"betreff": "B", "text": "T", "begruendung": "G"})),
+            (200, json.dumps({"success": True, "data": {"id": "p1"}})),
+        ])
+        with mock.patch.object(werkzeuge, "_roh_anfrage", rekorder), \
+             mock.patch.object(werkzeuge, "_llm_json",
+                               return_value={"ok": True, "daten": {
+                                   "betreff": "B", "text": "T", "begruendung": "G"}}), \
+             mock.patch.dict("os.environ", {"MARKETING_API_URL": "http://x:5510"}):
+            r = werkzeuge.kampagne_entwerfen("Ziel", "Zielgruppe", "telegram")
+        self.assertTrue(r["ok"], r)
+
+    def test_whatsapp_geht_durch_sobald_der_versand_gebaut_ist(self):
+        """Die Pruefung fragt den Dienst, sie haelt keine Liste im Kopf."""
+        rekorder = Rekorder([
+            self._kanaele(whatsapp_an=True),
+            (200, json.dumps({"success": True, "data": {"id": "p1"}})),
+        ])
+        with mock.patch.object(werkzeuge, "_roh_anfrage", rekorder), \
+             mock.patch.object(werkzeuge, "_llm_json",
+                               return_value={"ok": True, "daten": {
+                                   "betreff": "B", "text": "T", "begruendung": "G"}}), \
+             mock.patch.dict("os.environ", {"MARKETING_API_URL": "http://x:5510"}):
+            r = werkzeuge.kampagne_entwerfen("Ziel", "Zielgruppe", "whatsapp")
+        self.assertTrue(r["ok"], r)
+
+    def test_unerreichbare_kanalliste_blockiert_nicht(self):
+        """Ein Ausfall der Auskunft darf die Arbeit nicht anhalten — sonst
+        haengt der Entwurf an der Verfuegbarkeit einer Nebenroute."""
+        antworten = [(500, "kaputt"),
+                     (200, json.dumps({"success": True, "data": {"id": "p1"}}))]
+        rekorder = Rekorder(antworten)
+        with mock.patch.object(werkzeuge, "_roh_anfrage", rekorder), \
+             mock.patch.object(werkzeuge, "_llm_json",
+                               return_value={"ok": True, "daten": {
+                                   "betreff": "B", "text": "T", "begruendung": "G"}}), \
+             mock.patch.dict("os.environ", {"MARKETING_API_URL": "http://x:5510"}):
+            r = werkzeuge.kampagne_entwerfen("Ziel", "Zielgruppe", "telegram")
+        self.assertTrue(r["ok"], r)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -69,8 +69,29 @@ Schliesse so, dass ein „Nein danke" leicht faellt — eine kurze Frage oder
 ein Satz, auf den man einfach antworten kann. Wer keinen bequemen Ausweg
 laesst, bekommt keine Antwort, sondern eine Blockierung.
 
-## Schritt 5 — Ablegen, nie senden
+## Schritt 5 — Uebergeben, nicht ablegen
 
-`kampagne_entwerfen(..., kanal="whatsapp")`. Danach dem Betreiber EINEN
-Satz: an wen, warum diese Person zugestimmt hat, und was unter
-„Zu klaeren" offen blieb.
+**Dieser Space verschickt kein WhatsApp, und er legt dafuer auch keinen
+Entwurf an.** Frueher stand hier `kampagne_entwerfen(..., kanal="whatsapp")`.
+Das war falsch und still falsch: der Entwurf landete in der Datenbank, sah
+fertig aus — und konnte nie zugestellt werden, weil der Kanal hier keinen
+Versandweg hat (`/api/channels`: `enabled: false, send_implemented: false`,
+gemessen 04.09. und 12.09.2026). Seit dem 12.09. weist `kampagne_entwerfen`
+diesen Kanal ab und nennt den richtigen Weg.
+
+WhatsApp GEHT in diesem Haus, nur woanders: **sales-claw** verschickt es
+ueber openwa, pro KONTAKT statt als Rundnachricht, mit eigener
+Einwilligungspruefung am Kontakt. Das ist keine Einschraenkung, sondern die
+richtige Form — eine Rundnachricht auf WhatsApp waere ohnehin das, was
+Schritt 0 verbietet.
+
+Dein Ergebnis ist deshalb **Text plus Begruendung, kein Entwurf**:
+
+* Gib dem Betreiber den fertigen Nachrichtentext, hoechstens drei Saetze.
+* Nenn dazu: an wen er gehen soll, woraus die Einwilligung hervorgeht, und
+  was unter „Zu klaeren" offen blieb.
+* Gehoert eine Unterlage dazu, leg sie mit `post_ablegen` ab — sales-claw
+  findet sie dort und kann sie anhaengen (pdf, png, jpg, mp4, mp3, ogg, ics).
+
+Den Entwurf in der Warteschlange legt dann sales-claw an, mit der
+Kontaktkennung, die es kennt und du nicht.
