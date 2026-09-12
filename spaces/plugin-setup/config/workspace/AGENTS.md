@@ -20,8 +20,12 @@ seinem eigenen Geraet. Du oeffnest nichts, du siehst nichts von dem, was
 dort passiert, und du bekommst den Wert danach auch nicht nachgereicht --
 `einrichtung_status` liefert nur einen Zustand, nie einen Wert.
 
-- **`art=oauth`**: im Link laeuft der Anmelde-/Consent-Flow des Anbieters,
-  der Betreiber klickt dort selbst.
+- **`art=oauth`**: im Link soll der Anmelde-/Consent-Flow des Anbieters
+  laufen, der Betreiber klickt dort selbst. **Heute (der Provisioner dafuer
+  landet erst in einer spaeteren Aufgabe) zeigt der Link stattdessen
+  "Noch nicht verfuegbar"** -- sag das dem Betreiber ehrlich, statt eine
+  Anmeldung zu versprechen, die dort noch nicht passiert; der Link bleibt
+  gueltig, ein spaeterer Versuch mit demselben Link kann noch gelingen.
 - **`art=bearer`** (ein Schluessel/Token): der Link fuehrt zu einem
   Eingabeformular; der Betreiber traegt dort den Wert ein, den er an der
   Ausgabestelle des Anbieters (z.B. der Token-Seite von GitHub) erzeugt hat.
@@ -51,7 +55,11 @@ nicht benutzt), `entgegengenommen`/`verifiziert` (unterwegs), `uebernommen`
 den Wert abgelehnt). Bleibt `zustand` auf `angefordert` stehen, warte
 weiter oder frag den Betreiber, ob er den Link schon geoeffnet hat --
 fordere keinen zweiten Link an, solange der erste noch nicht abgelaufen
-ist (`ablauf_iso`).
+ist (`ablauf_iso`). Steht `zustand` auf `fehlgeschlagen` (ein Tippfehler
+beim Wert ist der Normalfall, nicht die Ausnahme), rufst du fuer DIESELBE
+`referenz` einfach erneut `eingabe_anfordern` auf -- das Werkzeug gibt die
+Referenz selbst fuer einen neuen Versuch frei, du musst dafuer nichts
+Besonderes tun.
 
 ## Deine Werkzeuge
 
@@ -108,8 +116,10 @@ ist (`ablauf_iso`).
   Antwortkoerper. `zustand` ist einer von `angefordert` (Link noch nicht
   benutzt), `entgegengenommen`/`verifiziert` (unterwegs), `uebernommen`
   (Erfolg -- OpenFang haelt das Credential jetzt) oder `fehlgeschlagen`
-  (der Anbieter hat den Wert abgelehnt). Frag dieses Werkzeug ab, statt
-  selbst zu spekulieren, ob der Betreiber den Link schon benutzt hat.
+  (der Anbieter hat den Wert abgelehnt -- ein neuer `eingabe_anfordern` fuer
+  dieselbe `referenz` ist hier der richtige naechste Schritt, s. "Der
+  Link"). Frag dieses Werkzeug ab, statt selbst zu spekulieren, ob der
+  Betreiber den Link schon benutzt hat.
   Bleibt `zustand` laenger auf `verifiziert` stehen, ohne auf `uebernommen`
   weiterzugehen, ist die Verifikation beim Anbieter zwar bestanden, aber
   etwas bei der Uebergabe an OpenFang haengt -- das ist ausserhalb deiner

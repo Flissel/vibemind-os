@@ -931,7 +931,12 @@ def test_openfang_uebernehmen_schickt_referenz_wert_overwrite_und_bearer(monkeyp
     assert body == {"reference": "X", "value": _FAKE_WERT, "overwrite": False}
 
 
-def test_eingabe_anfordern_gibt_link_und_ablauf_aber_nie_einen_wert():
+def test_eingabe_anfordern_gibt_link_und_ablauf_aber_nie_einen_wert(monkeypatch):
+    # Kein echter docker-exec/psql hier -- diese Datei mockt ablage.py
+    # komplett (s. Moduldoku). Eine frische Referenz meldet `ok: False`
+    # (unbekannte referenz_name), also bleibt der neu_aufnehmen-Zweig aus.
+    monkeypatch.setattr(werkzeuge.ablage, "zustand",
+                        lambda r: {"ok": False, "fehler": "unbekannte referenz_name"})
     ergebnis = werkzeuge.eingabe_anfordern("proj", "demo", "OAUTH_BEARER_MCP_LINEAR_APP_MCP",
                                            "oauth", "https://mcp.linear.app/mcp")
     assert ergebnis["ok"] is True
@@ -975,9 +980,14 @@ def test_einrichtung_status_meldet_angefordert_solange_der_link_offen_ist(monkey
     gerufen = []
     monkeypatch.setattr(werkzeuge.ablage, "zustand", lambda r: gerufen.append(r) or {"ok": True, "zustand": "x", "hinweis": ""})
     werkzeuge.eingabe_anfordern("proj", "demo", "PYTEST_STATUS_A", "bearer", "")
+    # eingabe_anfordern selbst fragt ablage.zustand EINMAL ab (die
+    # neu_aufnehmen-Wache, s. unten) -- das ist der einzige erwartete Aufruf
+    # bis hierher.
+    assert gerufen == ["PYTEST_STATUS_A"]
+    gerufen.clear()
     ergebnis = werkzeuge.einrichtung_status("PYTEST_STATUS_A")
     assert ergebnis == {"ok": True, "zustand": "angefordert", "hinweis": ""}
-    assert gerufen == [], "solange die Anfrage schwebt, wird die DB nicht gefragt"
+    assert gerufen == [], "solange die Anfrage schwebt, fragt einrichtung_status die DB kein zweites Mal"
 
 
 def test_einrichtung_status_reicht_den_datenbankzustand_durch(monkeypatch):
@@ -985,3 +995,46 @@ def test_einrichtung_status_reicht_den_datenbankzustand_durch(monkeypatch):
                         lambda r: {"ok": True, "zustand": "fehlgeschlagen", "hinweis": "401"})
     ergebnis = werkzeuge.einrichtung_status("PYTEST_STATUS_B")
     assert ergebnis == {"ok": True, "zustand": "fehlgeschlagen", "hinweis": "401"}
+
+
+def test_eingabe_anfordern_ruft_neu_aufnehmen_wenn_vorher_fehlgeschlagen(monkeypatch):
+    """Review Runde 3, C-Kritisch #3: die Spec nennt 'sich bei einem
+    Schluessel zu vertippen' den NORMALFALL -- ein zweiter Versuch fuer
+    dieselbe Referenz darf nicht an der UNIQUE-Constraint sterben."""
+    aufgerufen = []
+    monkeypatch.setattr(werkzeuge.ablage, "zustand",
+                        lambda r: {"ok": True, "zustand": "fehlgeschlagen", "hinweis": "401"})
+    monkeypatch.setattr(werkzeuge.ablage, "neu_aufnehmen",
+                        lambda r: aufgerufen.append(r) or {"ok": True})
+    ergebnis = werkzeuge.eingabe_anfordern("proj", "demo", "PYTEST_RETRY_A", "bearer", "")
+    assert ergebnis["ok"] is True
+    assert aufgerufen == ["PYTEST_RETRY_A"]
+
+
+def test_eingabe_anfordern_gibt_keinen_link_aus_wenn_neu_aufnehmen_scheitert(monkeypatch):
+    """Ein Link, dessen Formular garantiert an der UNIQUE-Constraint auf
+    referenz_name kollidiert, ist schlimmer als ein ehrliches `ok: False`."""
+    gelegt = []
+    monkeypatch.setattr(werkzeuge.ablage, "zustand",
+                        lambda r: {"ok": True, "zustand": "fehlgeschlagen", "hinweis": "401"})
+    monkeypatch.setattr(werkzeuge.ablage, "neu_aufnehmen",
+                        lambda r: {"ok": False, "fehler": "referenz war nicht im Status fehlgeschlagen"})
+    monkeypatch.setattr(werkzeuge.anfragen, "anlegen",
+                        lambda *a, **k: gelegt.append(a) or (_ for _ in ()).throw(AssertionError))
+    ergebnis = werkzeuge.eingabe_anfordern("proj", "demo", "PYTEST_RETRY_B", "bearer", "")
+    assert ergebnis["ok"] is False
+    assert "fehler" in ergebnis
+    assert gelegt == [], "kein Link, wenn neu_aufnehmen scheitert"
+
+
+def test_eingabe_anfordern_ruft_neu_aufnehmen_nicht_bei_frischer_oder_unbekannter_referenz(monkeypatch):
+    """Der Normalfall (Erstversuch): kein `fehlgeschlagen`-Zustand, also
+    kein neu_aufnehmen-Aufruf."""
+    aufgerufen = []
+    monkeypatch.setattr(werkzeuge.ablage, "zustand",
+                        lambda r: {"ok": False, "fehler": "unbekannte referenz_name"})
+    monkeypatch.setattr(werkzeuge.ablage, "neu_aufnehmen",
+                        lambda r: aufgerufen.append(r) or {"ok": True})
+    ergebnis = werkzeuge.eingabe_anfordern("proj", "demo", "PYTEST_RETRY_C", "bearer", "")
+    assert ergebnis["ok"] is True
+    assert aufgerufen == []

@@ -35,13 +35,13 @@
     }
   },
   "browser": {
-    "enabled": true,
+    "enabled": false,
     "defaultProfile": "openclaw"
   },
   "plugins": {
     "entries": {
       "browser": {
-        "enabled": true
+        "enabled": false
       }
     }
   },

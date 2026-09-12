@@ -18,7 +18,10 @@ fest -- nicht im WERKZEUGE-Tupel, aber weiterhin aufrufbar.
                                               KEIN MCP-Werkzeug (s. oben)
   eingabe_anfordern(projekt, plugin, referenz, art, ziel="")
                                               -- Aufgabe 3: Einmal-Link statt Wert,
-                                              dieselben Wachen wie oben, VOR dem Anlegen
+                                              dieselben Wachen wie oben, VOR dem Anlegen;
+                                              gibt eine `fehlgeschlagene` Referenz per
+                                              `ablage.neu_aufnehmen` fuer einen neuen
+                                              Versuch frei (Review Runde 3)
   einrichtung_status(referenz)               -- Aufgabe 3: nur `zustand`/`hinweis`,
                                               nie ein Wert, nie ein Antwortkoerper
   plugin_installieren(projekt, plugin, komponenten=None) -- Rowboat-Install;
@@ -663,12 +666,35 @@ def eingabe_anfordern(projekt: str, plugin: str, referenz: str, art: str, ziel: 
     Die Wachen sind dieselben wie in `schluessel_entgegennehmen` und laufen
     VOR dem Anlegen. Sonst waere dieser Weg genau die Luecke, die dort
     geschlossen wurde.
+
+    RETRY-FIX (Review Runde 3, C-Kritisch): die Spec nennt "sich bei einem
+    Schluessel zu vertippen" den NORMALFALL -- eine Referenz, die zuvor
+    `fehlgeschlagen` ist, wird hier automatisch fuer eine neue Aufnahme
+    freigegeben (`ablage.neu_aufnehmen`, Aufgabe 1/5, DB-Wache: nur aus
+    `fehlgeschlagen`), BEVOR ein neuer Link entsteht. Ohne das waere ein
+    zweiter `eingabe_anfordern` fuer dieselbe `referenz` ein Link, dessen
+    Formular am ERSTEN Schritt von `schluessel_entgegennehmen`
+    (`ablage.entgegennehmen`) an der UNIQUE-Constraint auf `referenz_name`
+    kollidiert -- der Normalfall waere unwiderruflich verbrannt gewesen.
+    Scheitert `neu_aufnehmen` (z.B. weil die Referenz gerade NICHT
+    `fehlgeschlagen` ist -- etwa ein Wettlauf mit einer anderen Anfrage),
+    wird ausdruecklich KEIN Link ausgegeben: ein Link, der garantiert
+    kollidiert, ist schlimmer als ein ehrliches `ok: False`. Fuer eine
+    frische oder unbekannte Referenz (der ganz normale Erstversuch) liefert
+    `ablage.zustand` `ok: False`, und dieser Zweig wird gar nicht erst
+    betreten.
     """
     if art not in _ART_ERLAUBT:
         return {"ok": False, "fehler": f"unbekannte art: {art!r} (erlaubt: {sorted(_ART_ERLAUBT)})"}
     fehler = _ziel_pruefen(art, referenz, ziel)
     if fehler is not None:
         return {"ok": False, "fehler": fehler}
+
+    bisher = ablage.zustand(referenz)
+    if bisher.get("ok") and bisher.get("zustand") == "fehlgeschlagen":
+        neu = ablage.neu_aufnehmen(referenz)
+        if not neu.get("ok"):
+            return {"ok": False, "fehler": neu.get("fehler", "neu_aufnehmen fehlgeschlagen")}
 
     a = anfragen.anlegen(projekt, plugin, referenz, art, ziel)
     ablauf = datetime.fromtimestamp(a.ablauf, tz=timezone.utc).isoformat()
