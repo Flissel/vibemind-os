@@ -88,12 +88,15 @@ dorthin, wo sales-claw es anhaengen kann (mp4 ist erlaubt).
 
 - `versand_beauftragen(kanal, nachricht, empfaenger?, betreff?, medien_datei?,
   kampagne?, quelle?)` — bittet sales-claw, das zuzustellen. Kanäle:
-  `email`, `whatsapp`, `linkedin` (Nachricht AN EINEN KONTAKT, `empfaenger`
-  ist E-Mail oder Telefonnummer) und `linkedin_post` (Beitrag aufs eigene
-  Profil: **kein** `empfaenger`, dafür `betreff` als Thema). **Telegram gibt
-  es nicht** — dort existiert kein Versandweg; ein Telegram-Text bleibt ein
-  Entwurf für den Betreiber, und das sagst du ihm dazu.
-  `medien_datei` ist der **bloße Dateiname** aus dem Schaufenster, ohne Pfad.
+  `email`, `whatsapp`, `telegram`, `linkedin` (Nachricht AN EINEN KONTAKT)
+  und `linkedin_post` (Beitrag aufs eigene Profil: **kein** `empfaenger`,
+  dafür `betreff` als Thema).
+  `empfaenger` ist die E-Mail, die Telefonnummer oder — bei `telegram` — die
+  **chat_id**, eine positive Zahl wie `1092040975`. Sie sieht einer
+  Telefonnummer zum Verwechseln ähnlich und ist keine: als Nummer gelesen
+  wäre sie eine fremde Rufnummer. Gib sie unverändert weiter.
+  `medien_datei` ist der **bloße Dateiname** aus dem Schaufenster, ohne Pfad
+  — **bei `telegram` gibt es keine Anhänge**, dieser Weg schickt reinen Text.
   `quelle` sollte `broadcast_proposal:<id>` sein, damit Auftrag und Briefing
   zusammenbleiben.
 - `versandauftraege_lesen(status?, anzahl?)` — was aus deinen Aufträgen

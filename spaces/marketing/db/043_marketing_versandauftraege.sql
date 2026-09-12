@@ -10,8 +10,9 @@
 --
 -- EIN AUFTRAG IST EINE BITTE, KEIN BEFEHL. Er loest nie einen Versand aus; er
 -- erzeugt hoechstens einen Entwurf in sales.drafts mit status='pending'. Die
--- Freigabe bleibt beim Menschen, die Zustellung bei den drei Dispatchern
--- (dispatch.py, mail_dispatch.py, linkedin_dispatch.py).
+-- Freigabe bleibt beim Menschen, die Zustellung bei den vier Dispatchern
+-- (dispatch.py, mail_dispatch.py, linkedin_dispatch.py und seit dem
+-- 12.09.2026 telegram_dispatch.py).
 --
 -- WARUM MARKETING NICHT DIREKT IN sales.drafts SCHREIBT: dann liefe der
 -- Auftrag an allen Toren vorbei, die in sales-claws entwurf_erstellen
@@ -80,14 +81,29 @@ $$;
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS marketing.versandauftraege (
     id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    -- Nur die drei Kanaele, die sales-claw wirklich zustellen kann. Telegram
-    -- fehlt mit Absicht: sales-claw hat dafuer keinen Dispatcher (Spec §6.1).
-    kanal        text NOT NULL CHECK (kanal IN ('whatsapp', 'email', 'linkedin')),
-    -- Wie Marketing den Empfaenger kennt: E-Mail oder Telefonnummer. Marketing
-    -- kennt keine lead_id — das Aufloesen ist sales-claws Sache.
-    empfaenger   text NOT NULL,
+    -- Nur die Kanaele, die sales-claw wirklich zustellen kann:
+    --   whatsapp | email | telegram | linkedin  — Nachricht AN EINEN KONTAKT
+    --   linkedin_post                           — Beitrag aufs eigene Profil,
+    --                                             OHNE Empfaenger
+    -- Die Unterscheidung ist keine Spitzfindigkeit: ein Beitrag geht an
+    -- niemanden, also hat er weder Empfaenger noch Einwilligung noch
+    -- Verbotslisten-Frage. sales-claw hat dafuer einen eigenen Weg
+    -- (post_entwurf_erstellen -> linkedin_dispatch -> LinkedIn-API).
+    --
+    -- Telegram stand hier zuerst NICHT (Spec §6.1: „sales-claw hat dafuer
+    -- keinen Dispatcher"). Der wurde am selben Tag nachgebaut
+    -- (telegram_dispatch.py), weil der Kanal sonst ersatzlos weggefallen
+    -- waere — Marketings eigener Telegram-Versender ist seit dem Entscheid
+    -- gesperrt.
+    kanal        text NOT NULL CHECK (kanal IN ('whatsapp', 'email', 'linkedin', 'linkedin_post', 'telegram')),
+    -- Wie Marketing den Empfaenger kennt: E-Mail, Telefonnummer oder — bei
+    -- telegram — eine chat_id. Marketing kennt keine lead_id; das Aufloesen
+    -- ist sales-claws Sache. Bei linkedin_post leer.
+    empfaenger   text NOT NULL DEFAULT '',
     -- Dieselbe Adresse in Sperrlisten-Form. Steht hier, damit der Abgleich und
     -- die Wiederholungserkennung nicht bei jedem Lesen neu normalisieren.
+    -- Formen: 'email:…', 'tel:+…', 'tg:<ziffern>' (KEINE Telefonnummer, siehe
+    -- unten) und bei linkedin_post die Konstante 'post:eigenes-profil'.
     kennung      text NOT NULL,
     betreff      text NOT NULL DEFAULT '',
     nachricht    text NOT NULL,
@@ -106,6 +122,16 @@ CREATE TABLE IF NOT EXISTS marketing.versandauftraege (
     created_at   timestamptz NOT NULL DEFAULT now(),
     erledigt_am  timestamptz
 );
+
+-- Nachtrag 12.09.2026: linkedin_post kam dazu, nachdem beim Verdrahten
+-- auffiel, dass sales-claw fuer Beitraege einen EIGENEN Weg hat
+-- (post_entwurf_erstellen, Sammelkontakt LINKEDIN_POST_LEAD_ID) — und dass
+-- genau das der Kanal ist, fuer den ein Marketing-Agent gebaut ist. Auf einer
+-- frischen Datenbank legt das CREATE oben schon die richtige Regel an; diese
+-- zwei Zeilen ziehen eine bereits bestehende Tabelle nach.
+ALTER TABLE marketing.versandauftraege DROP CONSTRAINT IF EXISTS versandauftraege_kanal_check;
+ALTER TABLE marketing.versandauftraege ADD CONSTRAINT versandauftraege_kanal_check
+    CHECK (kanal IN ('whatsapp', 'email', 'linkedin', 'linkedin_post', 'telegram'));
 
 CREATE INDEX IF NOT EXISTS idx_versandauftraege_offen
     ON marketing.versandauftraege(created_at) WHERE status = 'offen';
@@ -142,10 +168,13 @@ DECLARE
     v_id       uuid;
     v_datei    text := btrim(coalesce(p_medien_datei, ''));
 BEGIN
-    IF coalesce(p_kanal, '') NOT IN ('whatsapp', 'email', 'linkedin') THEN
+    IF coalesce(p_kanal, '') NOT IN ('whatsapp', 'email', 'linkedin',
+                                     'linkedin_post', 'telegram') THEN
         RETURN jsonb_build_object('ok', false, 'grund', format(
             'Unzulaessiger Kanal %L. sales-claw stellt zu: whatsapp, email, '
-            'linkedin. Telegram hat dort keinen Versandweg.', coalesce(p_kanal, '')));
+            'telegram, linkedin (Nachricht an einen Kontakt) und '
+            'linkedin_post (Beitrag aufs eigene Profil, ohne Empfaenger).',
+            coalesce(p_kanal, '')));
     END IF;
     IF length(btrim(coalesce(p_nachricht, ''))) = 0 THEN
         RETURN jsonb_build_object('ok', false, 'grund', 'Die Nachricht ist leer.');
@@ -160,22 +189,64 @@ BEGIN
             'enthaelt einen Pfadanteil.', v_datei));
     END IF;
 
-    v_kennung := compliance.kennung(p_empfaenger);
-    IF v_kennung IS NULL THEN
-        RETURN jsonb_build_object('ok', false, 'grund', format(
-            'Aus %L laesst sich weder eine E-Mail-Adresse noch eine '
-            'Telefonnummer lesen.', coalesce(p_empfaenger, '')));
-    END IF;
+    IF p_kanal = 'linkedin_post' THEN
+        -- Ein Beitrag geht an NIEMANDEN. Es gibt keinen Empfaenger, also auch
+        -- keine Kennung, keine Einwilligung und keine Verbotslisten-Frage —
+        -- die Konstante haelt nur die Wiederholungserkennung am Laufen.
+        IF length(btrim(coalesce(p_empfaenger, ''))) > 0 THEN
+            RETURN jsonb_build_object('ok', false, 'grund',
+                'linkedin_post ist ein Beitrag aufs eigene Profil und hat '
+                'keinen Empfaenger. Fuer eine Nachricht AN jemanden ist der '
+                'Kanal linkedin der richtige.');
+        END IF;
+        -- sales-claws post_entwurf_erstellen macht aus dem Thema den Betreff
+        -- („Post: <thema>") und erkennt daran, ob es zu diesem Thema schon
+        -- einen Beitrag gibt. Ohne Thema faellt der Auftrag erst drueben
+        -- durch — also hier fragen, wo es noch billig ist.
+        IF length(btrim(coalesce(p_betreff, ''))) = 0 THEN
+            RETURN jsonb_build_object('ok', false, 'grund',
+                'Ein Beitrag braucht ein Thema — schreib es ins Feld betreff. '
+                'sales-claw macht daraus den Betreff „Post: <thema>" und '
+                'erkennt daran Doppelungen.');
+        END IF;
+        v_kennung := 'post:eigenes-profil';
+    ELSIF p_kanal = 'telegram' THEN
+        -- EINE CHAT-ID IST KEINE TELEFONNUMMER. Sie sieht einer zum
+        -- Verwechseln aehnlich (die des Betreibers hat zehn Ziffern), und
+        -- compliance.kennung_tel machte daraus `tel:+49…` — eine fremde
+        -- Festnetznummer. Deshalb eine eigene Form, `tg:<ziffern>`, die auch
+        -- gar nicht in compliance.sperrliste passt (deren CHECK kennt nur
+        -- email: und tel:).
+        --
+        -- Die Verbotsliste greift trotzdem, nur woanders: sales-claw loest
+        -- die chat_id einem KONTAKT zu, und dessen E-Mail und Telefonnummer
+        -- pruefen dort dieselben Tore wie bei jedem anderen Kanal. Wer
+        -- irgendwo „nein" gesagt hat, bekommt auch hier nichts.
+        IF btrim(coalesce(p_empfaenger, '')) !~ '^[0-9]{1,18}$'
+           OR btrim(coalesce(p_empfaenger, '')) ~ '^0+$' THEN
+            RETURN jsonb_build_object('ok', false, 'grund', format(
+                'Telegram adressiert ueber eine positive numerische chat_id '
+                '(z. B. 1092040975) — %L ist keine.', coalesce(p_empfaenger, '')));
+        END IF;
+        v_kennung := 'tg:' || btrim(p_empfaenger);
+    ELSE
+        v_kennung := compliance.kennung(p_empfaenger);
+        IF v_kennung IS NULL THEN
+            RETURN jsonb_build_object('ok', false, 'grund', format(
+                'Aus %L laesst sich weder eine E-Mail-Adresse noch eine '
+                'Telefonnummer lesen.', coalesce(p_empfaenger, '')));
+        END IF;
 
-    -- Die gemeinsame Verbotsliste. Sie deckt auch Marketings eigene
-    -- Widerrufe ab: compliance.trg_emails_sperre traegt jeden
-    -- unsubscribed_at und jeden zweiten Bounce selbst ein (013). Ein
-    -- zweiter Blick in marketing.emails waere Doppelung, keine Sicherheit.
-    v_sperre := compliance.ist_gesperrt(v_kennung);
-    IF v_sperre IS NOT NULL THEN
-        RETURN jsonb_build_object('ok', false, 'grund', format(
-            'Dieser Empfaenger steht auf der gemeinsamen Verbotsliste (%s). '
-            'Es entsteht kein Auftrag.', v_sperre));
+        -- Die gemeinsame Verbotsliste. Sie deckt auch Marketings eigene
+        -- Widerrufe ab: compliance.trg_emails_sperre traegt jeden
+        -- unsubscribed_at und jeden zweiten Bounce selbst ein (013). Ein
+        -- zweiter Blick in marketing.emails waere Doppelung, keine Sicherheit.
+        v_sperre := compliance.ist_gesperrt(v_kennung);
+        IF v_sperre IS NOT NULL THEN
+            RETURN jsonb_build_object('ok', false, 'grund', format(
+                'Dieser Empfaenger steht auf der gemeinsamen Verbotsliste (%s). '
+                'Es entsteht kein Auftrag.', v_sperre));
+        END IF;
     END IF;
 
     -- Wiederholung: derselbe Kanal, derselbe Empfaenger, derselbe Text

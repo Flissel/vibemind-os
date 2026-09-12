@@ -97,6 +97,28 @@ BEGIN
         RAISE EXCEPTION 'Eine Absage hat trotzdem eine Zeile angelegt (% -> %)', v_vor, v_nach;
     END IF;
 
+    -- (4b) linkedin_post MIT Empfaenger: Absage (ein Beitrag hat keinen)
+    v_a := marketing.versandauftrag_anlegen('linkedin_post', v_mail, 'Hallo');
+    IF (v_a->>'ok')::boolean THEN
+        RAISE EXCEPTION 'linkedin_post mit Empfaenger angenommen';
+    END IF;
+
+    -- (4c) telegram: eine chat_id ist KEINE Telefonnummer
+    v_a := marketing.versandauftrag_anlegen('telegram', '+49 176 1234567', 'Hallo');
+    IF (v_a->>'ok')::boolean THEN
+        RAISE EXCEPTION 'telegram nahm eine Telefonnummer als chat_id an';
+    END IF;
+    v_a := marketing.versandauftrag_anlegen('telegram', '1092040975', 'Hallo',
+                                            '', '', 'verify043', 'verify043');
+    IF NOT (v_a->>'ok')::boolean THEN
+        RAISE EXCEPTION 'gueltige chat_id abgelehnt: %', v_a->>'grund';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM marketing.versandauftraege
+                   WHERE id = (v_a->>'id')::uuid AND kennung = 'tg:1092040975') THEN
+        RAISE EXCEPTION 'telegram-Auftrag traegt nicht die tg:-Kennung '
+                        '(als tel:+… waere es eine fremde Rufnummer)';
+    END IF;
+
     -- (5) Gesperrter Empfaenger: kein Auftrag
     PERFORM compliance.sperren('email:' || v_gesp, 'verify043', 'Testsperre');
     v_a := marketing.versandauftrag_anlegen('email', v_gesp, 'Hallo');
@@ -124,6 +146,24 @@ BEGIN
     END IF;
     IF NOT (v_b->>'wiederholung')::boolean THEN
         RAISE EXCEPTION 'Wiederholung nicht als solche gemeldet';
+    END IF;
+
+    -- (6b) linkedin_post ohne Thema: Absage (sales-claw braucht den Betreff)
+    v_b := marketing.versandauftrag_anlegen('linkedin_post', '', 'Ein Beitrag');
+    IF (v_b->>'ok')::boolean THEN
+        RAISE EXCEPTION 'linkedin_post ohne Thema angenommen';
+    END IF;
+
+    -- (6c) linkedin_post OHNE Empfaenger, MIT Thema: geht durch, ohne
+    --      Verbotslisten-Frage (ein Beitrag geht an niemanden)
+    v_b := marketing.versandauftrag_anlegen('linkedin_post', '', 'Ein Beitrag',
+                                            'Thema X', '', 'verify043', 'verify043');
+    IF NOT (v_b->>'ok')::boolean THEN
+        RAISE EXCEPTION 'linkedin_post ohne Empfaenger abgelehnt: %', v_b->>'grund';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM marketing.versandauftraege
+                   WHERE id = (v_b->>'id')::uuid AND kennung = 'post:eigenes-profil') THEN
+        RAISE EXCEPTION 'linkedin_post traegt nicht die Post-Kennung';
     END IF;
 
     -- (7) Er steht als offen zum Abholen bereit

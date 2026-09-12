@@ -58,17 +58,20 @@ synchron bleiben müssen. F1 musste die gemeinsame Sperrliste bereits an
 beide anschrauben. Und der Weg mit den meisten Toren hat nie etwas
 zugestellt.
 
-### Die Lücke, die dabei entsteht
+### Die Lücke, die dabei entstand — und noch am selben Tag geschlossen wurde
 
-**sales-claw kann kein Telegram.** Es hat drei Dispatcher — `dispatch.py`
-(WhatsApp über OpenWA), `mail_dispatch.py` (SMTP), `linkedin_dispatch.py`.
-Marketings Telegram-Weg ist in `marketing.channel_config` `enabled` und
-`send_implemented`, hat aber 0 Sendungen bei 1 Empfänger; dort warten 11+
-Entwürfe im Entwürfe-Tab.
+**sales-claw konnte kein Telegram.** Es hatte drei Dispatcher —
+`dispatch.py` (WhatsApp über OpenWA), `mail_dispatch.py` (SMTP),
+`linkedin_dispatch.py`. Marketings Telegram-Weg ist in
+`marketing.channel_config` `enabled` und `send_implemented`, hat aber 0
+Sendungen bei 1 Empfänger; dort warten 11+ Entwürfe im Entwürfe-Tab.
 
-Diese Spec **schließt Telegram nicht an**. Sie stellt den Kanal ausdrücklich
-still und benennt ihn als offene Arbeit (Abschnitt 6), statt so zu tun, als
-sei er abgedeckt.
+Diese Spec schloss Telegram zunächst **nicht** an, sondern stellte den Kanal
+still und benannte ihn als offene Arbeit — statt so zu tun, als sei er
+abgedeckt. Auf Entscheid des Betreibers wurde er am selben Tag nachgebaut
+(`telegram_dispatch.py`, Dienst `sales-telegram`); **Abschnitt 6.1 trägt,
+was dabei herauskam und was dort noch nicht stand.** Dieser Absatz bleibt
+stehen, weil er den Stand beschreibt, aus dem die Entscheidung erwuchs.
 
 ---
 
@@ -96,7 +99,7 @@ bereits in beide Richtungen läuft.
                                         Betreiber gibt frei
                                                  |
                                                  v
-                              dispatch / mail_dispatch / linkedin_dispatch
+            dispatch / mail_dispatch / linkedin_dispatch / telegram_dispatch
 ```
 
 **Warum eine Tabelle und kein direkter Aufruf:** marketing-claw ist ein
@@ -116,8 +119,8 @@ ist eine **Bitte**, kein Befehl; sales-claw entscheidet.
 
 | Feld | Bedeutung |
 |---|---|
-| `kanal` | `whatsapp` \| `email` \| `linkedin` — die drei, die sales-claw zustellen kann |
-| `empfaenger` | E-Mail-Adresse oder Telefonnummer, wie Marketing sie kennt. Marketing kennt keine `lead_id`. |
+| `kanal` | `whatsapp` \| `email` \| `telegram` \| `linkedin` \| `linkedin_post` — was sales-claw zustellen kann (`telegram` und `linkedin_post` kamen beim Bauen dazu, s. 6.1) |
+| `empfaenger` | E-Mail-Adresse, Telefonnummer oder — bei `telegram` — die **chat_id**. Marketing kennt keine `lead_id`. Eine chat_id ist KEINE Telefonnummer: als solche gelesen würde `1092040975` zu `tel:+1092040975`, einem fremden Anschluss. Eigene Kennungsform `tg:<ziffern>`. |
 | `betreff` | nur bei E-Mail sinnvoll, sonst leer |
 | `text` | der fertige Text |
 | `medien_datei` | **bloßer Dateiname** aus `/media-erzeugt`, ohne jede Pfadangabe (sales-claws `medien.pruefe` weist Pfadanteile ab) |
@@ -129,11 +132,15 @@ ist eine **Bitte**, kein Befehl; sales-claw entscheidet.
 Nach dem Vorbild des Triggers in 042, der die Sperrliste vor dem INSERT
 prüft:
 
-1. **Kanal** muss einer der drei sein.
+1. **Kanal** muss einer der zulässigen sein (s. 2.1).
 2. **Text** darf nicht leer sein.
 3. **Gemeinsame Sperrliste** (`compliance.ist_gesperrt`) für
-   `email:<adresse>` bzw. `phone:<nummer>` — gesperrt heißt: kein Auftrag,
-   mit Grund.
+   `email:<adresse>` bzw. `tel:+<nummer>` — gesperrt heißt: kein Auftrag,
+   mit Grund. Bei `telegram` geht das nicht: eine `tg:`-Kennung passt nicht
+   in `compliance.sperrliste` (deren CHECK kennt nur `email:` und `tel:`).
+   Die Sperre greift dort über den **Kontakt** — sales-claw löst die
+   chat_id einem Lead zu, und dessen E-Mail und Nummer prüfen dieselben
+   Tore wie bei jedem anderen Kanal.
 4. **Widerruf im Marketing** (`marketing.emails.unsubscribed_at`) — dito.
 5. **Idempotenz:** derselbe `(kanal, empfaenger, text)`-Auftrag entsteht
    innerhalb von 24 h nur einmal. Ein Agent, der zweimal dasselbe möchte,
@@ -237,12 +244,43 @@ direkt nach pytest gelesen.
 
 ## 6. Ausdrücklich offen
 
-1. **Telegram hat keinen Dispatcher in sales-claw.** Der Kanal fällt mit
-   dieser Spec weg. Die 11+ wartenden Entwürfe im Entwürfe-Tab bleiben
-   liegen. Anschließen hieße: `telegram` in `entwurf_erstellen`s Kanalliste,
-   ein `telegram_dispatch.py` nach dem Muster von `mail_dispatch.py`, und die
-   Opt-in-Prüfung aus `tools/_send_telegram.py` mitnehmen — sie ist gut und
-   soll nicht neu erfunden werden.
+1. ~~**Telegram hat keinen Dispatcher in sales-claw.**~~ **ERLEDIGT am
+   selben Tag** (Betreiber-Entscheid „Dispatcher bauen"). Gebaut wurde genau
+   das, was hier stand: `telegram` in `entwurf_erstellen`s Kanalliste, ein
+   `telegram_dispatch.py` nach dem Muster von `mail_dispatch.py`, und der
+   Dienst `sales-telegram` im Compose.
+
+   **Was beim Bauen dazukam und hier nicht stand:**
+
+   * **Eine chat_id ist keine Telefonnummer.** `sperrliste.kennung_tel`
+     hätte aus `1092040975` die Rufnummer `tel:+1092040975` gemacht — einen
+     fremden Anschluss. Eigenes Modul `telegram_chat.py`, eigene Form
+     `tg:<ziffern>`, und nur positive IDs: negative sind bei Telegram
+     Gruppen, und eine Nachricht an eine Gruppe statt an einen Menschen ist
+     der teuerste Irrtum dieses Kanals.
+   * **`drafts.channel` trug einen CHECK ohne `telegram`.** Jeder Entwurf
+     wäre erst beim INSERT gescheitert, also lange nachdem der Agent den
+     Text geschrieben hat. `db/provision.sql` zieht ihn jetzt idempotent
+     nach; beide Datenbanken eingespielt.
+   * **Erreichbarkeit ist nicht Einwilligung.** Die Opt-in-Überlegung aus
+     `tools/_send_telegram.py` ist mitgenommen — aber als das, was sie ist:
+     dass ein Bot keinen Chat eröffnen kann, macht eine Person
+     *erreichbar*. Das UWG-Tor bleibt davon unberührt, und `telegram` steht
+     ausdrücklich in dessen Kanalliste.
+   * **Keine Anhänge.** Reiner Text, ein `media_ref` wird ausdrücklich
+     fehlgeschlagen gebucht — dieselbe Regel und derselbe Grund wie bei
+     `mail_dispatch`.
+
+   **Was NICHT der Grund war, es zu bauen:** die 11 wartenden Entwürfe. Sie
+   sind (gemessen 12.09.2026) *elfmal dieselbe Nachricht* — „VibeMind Early
+   Access / Warteliste für Solo-Gründer", alle vom 02.–04.09., alle von
+   `curator:marketing-claw`. Das ist das Wiederholungsmuster, das schon am
+   04.09. gemessen wurde: ohne Zugriff auf die eigene Historie schreibt der
+   Agent dieselbe Aufzählung wieder und wieder. Sie gehören aufgeräumt,
+   nicht zugestellt. Und das Telegram-Publikum besteht aus **einer** Person
+   (`marketing.telegram_recipients`: 1 Zeile, der Betreiber selbst) — der
+   Dispatcher ist Vorbau für einen Kanal, den es gibt, den aber nie etwas
+   benutzt hat.
 2. **Erfolgsmetriken zurück an Marketing** — der Betreiber hat das selbst auf
    „später" gelegt. Die Auftragstabelle trägt mit `draft_id` bereits den
    Faden, an dem das später hängen kann.

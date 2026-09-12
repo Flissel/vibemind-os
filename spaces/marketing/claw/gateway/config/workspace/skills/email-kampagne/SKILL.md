@@ -197,10 +197,17 @@ gemeinsamen Verbotsliste", „Erstansprache ohne dokumentierte Grundlage".
 Keine davon loest sich durch Umformulieren. Mit `versandauftraege_lesen()`
 siehst du spaeter, was aus deinen Auftraegen geworden ist.
 
-**Telegram geht hier nicht.** sales-claw hat dafuer keinen Versandweg, und
-dieser Space darf nicht mehr selbst senden. Ein Telegram-Text bleibt
-vorerst ein Entwurf fuer den Betreiber — sag ihm das dazu, statt es
-unerwaehnt zu lassen.
+**Telegram geht seit dem 12.09.2026 auch** — sales-claw hat jetzt einen
+eigenen Dispatcher dafuer. `empfaenger` ist dort die **chat_id**, eine
+positive Zahl wie `1092040975`; sie sieht einer Telefonnummer aehnlich und
+ist keine. Zwei Dinge dazu, die du wissen musst:
+
+* **Anhaenge gibt es auf diesem Weg nicht.** Ein Telegram-Auftrag mit
+  `medien_datei` faellt beim Versand ausdruecklich durch, statt ohne die
+  Unterlage rauszugehen. Gehoert ein PDF dazu, nimm E-Mail.
+* **Das Publikum ist klein.** Gemessen am 12.09.2026 kennt dieses Haus
+  genau EINEN Telegram-Empfaenger, und das ist der Betreiber selbst. Ein
+  „Newsletter" dorthin ist keiner. Frag ihn, bevor du dort etwas planst.
 
 ## Schritt 9 — Wenn eine Unterlage dazugehoert: PDF
 
