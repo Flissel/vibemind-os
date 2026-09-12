@@ -181,3 +181,30 @@ async def test_worker_reloads_persisted_active_tasks_after_reboot(schedule_execu
     assert registered[0]["id"] == created["schedule_id"]
     assert registered[0]["replace_existing"] is True
     assert str(registered[0]["trigger"].timezone) == "Europe/Berlin"
+
+def test_create_returns_the_stored_task_not_its_own_dict(schedule_execution):
+    """`update` liest nach dem Schreiben frisch zurueck und wirft, wenn die
+    Zeile fehlt (`schedule update was not persisted`). `create` tat das
+    nicht: es gab das selbst gebaute Dict zurueck. Bei einem Terminplaner
+    faellt ein nicht persistierter Eintrag erst auf, wenn er nicht feuert."""
+    payload = {"title": "Rueckfrage", "action_text": "tu etwas",
+               "trigger_config": {"cron": "0 9 * * 1"},
+               "timezone": "Europe/Berlin"}
+    result = schedule_execution.create(payload)
+    stored = schedule_execution.ScheduleRepository().get(result["schedule_id"])
+    assert stored is not None
+    assert result["status"] == stored["status"]
+    assert result["trigger_type"] == stored["trigger_type"]
+
+
+def test_create_refuses_when_the_insert_did_not_land(schedule_execution,
+                                                     monkeypatch):
+    """Sabotage: das Einfuegen tut nichts. Ohne Rueckfrage meldet die
+    Operation Erfolg ueber einen Termin, den es nicht gibt."""
+    repo_cls = schedule_execution.ScheduleRepository
+    monkeypatch.setattr(repo_cls, "_insert", lambda self, task: None)
+    with pytest.raises(RuntimeError, match="not persisted"):
+        schedule_execution.create({
+            "title": "verschwindet", "action_text": "x",
+            "trigger_config": {"cron": "0 9 * * 1"},
+            "timezone": "Europe/Berlin"})

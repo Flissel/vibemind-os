@@ -144,7 +144,7 @@ class ScheduleRepository:
                 rows = db.execute("SELECT * FROM scheduled_tasks ORDER BY created_at DESC").fetchall()
         return [self._row(row) for row in rows if row is not None]
 
-    def create(self, task: Mapping[str, Any]) -> None:
+    def _insert(self, task: Mapping[str, Any]) -> None:
         with self._connect() as db:
             db.execute(
                 "INSERT INTO scheduled_tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -153,6 +153,21 @@ class ScheduleRepository:
                  task["timezone"], task["status"], task.get("idempotency_key"),
                  task["created_at"], task["updated_at"]),
             )
+
+    def create(self, task: Mapping[str, Any]) -> Dict[str, Any]:
+        """Legt die Aufgabe an und gibt den GESPEICHERTEN Stand zurueck.
+
+        `update` liest seit jeher nach dem Schreiben frisch zurueck und wirft,
+        wenn die Zeile fehlt. `create` tat das nicht: es fuegte ein und der
+        Aufrufer gab sein selbst gebautes Dict weiter - ein Selbstbericht.
+        Bei einem Terminplaner faellt ein nicht persistierter Eintrag erst
+        auf, wenn er nicht feuert, und dann fehlt die Spur.
+        """
+        self._insert(task)
+        stored = self.get(str(task["id"]))
+        if stored is None:
+            raise RuntimeError("schedule create was not persisted")
+        return stored
 
     def update(self, task_id: str, fields: Mapping[str, Any]) -> Dict[str, Any]:
         allowed = {"title", "action_text", "trigger_type", "trigger_config", "timezone", "status", "updated_at"}
@@ -203,8 +218,8 @@ def create(value: Any) -> Dict[str, Any]:
             "title": title, "action_text": action_text, "trigger_type": trigger_type,
             "trigger_config": trigger_config, "timezone": timezone, "status": "active",
             "idempotency_key": key or None, "created_at": timestamp, "updated_at": timestamp}
-    repo.create(task)
-    return _task_result(task, idempotent_replay=False)
+    stored = repo.create(task)
+    return _task_result(stored, idempotent_replay=False)
 
 
 def list_tasks(value: Any = None) -> Dict[str, Any]:
