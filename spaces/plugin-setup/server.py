@@ -114,6 +114,7 @@ Bindestrich kein gueltiger Python-Modulname -- dieser Server (wie
 werkzeuge.py, ablage.py, pruefung.py) wird darum als eigenstaendiges
 Skript gestartet (`python server.py`), nicht als `-m spaces.plugin-setup...`.
 """
+import importlib.util
 import os
 import sys
 from pathlib import Path
@@ -126,6 +127,20 @@ import anfragen  # noqa: E402
 import fenster  # noqa: E402
 import werkzeuge  # noqa: E402
 from starlette.responses import HTMLResponse  # noqa: E402
+
+# `provision-oauth-token.py` liegt in spaces/rowboat, nicht hier, UND sein
+# Dateiname ist per Bindestrich kein gueltiger Modulname -- ein normaler
+# `import` geht also so oder so nicht. Geladen per `spec_from_file_location`,
+# derselbe Kniff wie in spaces/rowboat/tests/test_openai_plugin_runtime_contract.py.
+# Aufgabe 6: das Eingabefenster ruft dieselbe Beschaffung auf, statt sie
+# abzuschreiben (s. fenster.oauth_entgegennehmen).
+_PROVISIONER_PATH = (_HIER.parent / "rowboat" / "rowboat" / "scripts"
+                     / "provision-oauth-token.py")
+_PROVISIONER_SPEC = importlib.util.spec_from_file_location(
+    "provision_oauth_token", _PROVISIONER_PATH)
+assert _PROVISIONER_SPEC is not None and _PROVISIONER_SPEC.loader is not None
+provision_oauth_token = importlib.util.module_from_spec(_PROVISIONER_SPEC)
+_PROVISIONER_SPEC.loader.exec_module(provision_oauth_token)
 
 REPO_ROOT = next((p for p in (_HIER, *_HIER.parents) if (p / "vibemind-os").is_dir()), _HIER)
 
@@ -170,12 +185,6 @@ _NUR_VOM_HOST = (
     f"{_KOPF}<h1>Nur vom Host aus erreichbar</h1>"
     "<p>Dieses Formular nimmt keine Verbindung von ausserhalb des Hosts an.</p>"
 )
-_OAUTH_NOCH_NICHT_VERFUEGBAR = (
-    f"{_KOPF}<h1>Noch nicht verfuegbar</h1>"
-    "<p>Die Anmeldung per OAuth ueber dieses Fenster ist noch nicht angebunden. "
-    "Dein Link bleibt gueltig -- versuch es in Kuerze erneut oder wende dich an "
-    "den Agenten.</p>"
-)
 _WERT_FEHLT = (
     f"{_KOPF}<h1>Wert fehlt</h1>"
     "<p>Bitte einen Wert eintragen und das Formular erneut absenden. Dein Link "
@@ -215,19 +224,21 @@ async def _fenster_annehmen(request):
     # C-Kritisch (Review Runde 3, Punkt 2): VOR jedem `verbrauchen()` erst
     # ansehen (`anfragen.holen`, konsumiert NICHT), was fuer dieses Token
     # ueberhaupt anfaellt.
-    #   - `art == "oauth"`: der Provisioner fuer den echten Consent-Flow
-    #     landet erst in Aufgabe 6. Ohne diese Abfrage wuerde "Anmeldung
-    #     starten" (die einzige Schaltflaeche der oauth-Seite, kein
-    #     `wert`-Feld) das Token verbrauchen und einen LEEREN Wert an
-    #     `schluessel_entgegennehmen` uebergeben -- ein echter Aufruf beim
-    #     Anbieter mit leerem Bearer, ein Fehlschlag, und die Referenz auf
-    #     `fehlgeschlagen`, fuer nichts. Bis Aufgabe 6 landet: Token bleibt
-    #     GUELTIG, keine Schreibaktion.
+    #   - `art == "oauth"`: die oauth-Seite hat kein `wert`-Feld -- ohne
+    #     diese Abfrage wuerde `request.form()` unten einen LEEREN Wert
+    #     lesen und einen echten Aufruf beim Anbieter mit leerem Bearer
+    #     ausloesen, fuer nichts. Aufgabe 6 zweigt hier stattdessen auf den
+    #     echten Provisioner ab (`fenster.oauth_entgegennehmen`), der das
+    #     Token selbst verbraucht -- unabhaengig davon, ob die Beschaffung
+    #     gelingt (kein Retry auf demselben Link) -- und den Formular-Pfad
+    #     unten fuer diese Anfrage nie erreicht.
     #   - jede andere `art`: ein leerer `wert` (kaputtes/leeres POST) wuerde
     #     ebenfalls das Token verbrauchen und einen leeren Wert vaulten.
     vorschau = anfragen.holen(token)
     if vorschau is not None and vorschau.art == "oauth":
-        return HTMLResponse(_OAUTH_NOCH_NICHT_VERFUEGBAR, status_code=200)
+        status, html = fenster.oauth_entgegennehmen(
+            token, provision_oauth_token.token_holen, werkzeuge.schluessel_entgegennehmen)
+        return HTMLResponse(html, status_code=status)
 
     formular = await request.form()
     # .strip() VOR der Leer-Pruefung (Review Runde 3, Fix-Runde 2): ohne das

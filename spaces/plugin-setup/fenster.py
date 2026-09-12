@@ -32,11 +32,12 @@ def seite_fuer(a: "anfragen.Anfrage") -> str:
     if a.art == "oauth":
         return (f"{_KOPF}<h1>Anmeldung noetig</h1>"
                 f'<p>Fuer <code>{ref}</code> sollst du dich hier beim Anbieter '
-                f"anmelden, ohne dass der Token je angezeigt wird. Diese "
-                f"Anmeldung ist heute noch nicht angebunden -- der Klick auf "
-                f'"Anmeldung starten" unten zeigt dir das, ohne etwas zu '
-                f"aendern; der Link bleibt fuer einen spaeteren Versuch "
-                f"gueltig.</p>"
+                f"anmelden, ohne dass der Token je angezeigt wird. Der Klick "
+                f'auf "Anmeldung starten" unten fuehrt durch die Anmeldung '
+                f"beim Anbieter; der beschaffte Token geht danach direkt an "
+                f"OpenFang und erscheint in keiner Antwort dieses Fensters. "
+                f"Der Link gilt fuer genau einen Versuch -- bei einem Abbruch "
+                f"oder Fehlschlag kann der Agent eine neue Eingabe anfordern.</p>"
                 f'<form method="post"><button>Anmeldung starten</button></form>')
     return (f"{_KOPF}<h1>Schluessel eintragen</h1>"
             f'<p>Fuer <code>{ref}</code>. Der Wert wird sofort geprueft und dann an '
@@ -72,3 +73,35 @@ def entgegennehmen(token: str, wert: str, schreiber) -> tuple[int, str]:
         return 200, ergebnisseite(True, a.referenz, "")
     hinweis = str(ergebnis.get("status", ergebnis.get("fehler", "unbekannt")))
     return 200, ergebnisseite(False, a.referenz, hinweis)
+
+
+def oauth_entgegennehmen(token: str, beschaffer, schreiber) -> tuple[int, str]:
+    """Wie `entgegennehmen`, nur dass der Wert nicht aus dem Formular kommt,
+    sondern aus dem OAuth-Fluss des Anbieters.
+
+    `beschaffer(mcp_url) -> (name, token)` ist die Naht zum Provisioner.
+    Eine Ausnahme daraus wird NICHT durchgereicht: ihre Nachricht koennte
+    den Token enthalten.
+    """
+    a = anfragen.verbrauchen(token)
+    if a is None:
+        return 404, f"{_KOPF}<h1>Link ungueltig</h1><p>Abgelaufen oder schon benutzt.</p>"
+    try:
+        _name, wert = beschaffer(a.ziel)
+    except BaseException:  # noqa: BLE001 -- die Nachricht koennte den Token tragen.
+        # NICHT `except Exception`: der echte Provisioner
+        # (provision-oauth-token.py) meldet erwartete Fehlschlaege
+        # (Discovery/Registrierung/Callback/kein access_token) per
+        # `raise SystemExit(...)` -- und `SystemExit` ist KEIN
+        # `Exception`-Subtyp (`BaseException` direkt), faellt also durch
+        # ein blosses `except Exception` und wuerde unbehandelt bis in den
+        # ASGI-Stack durchschlagen. Belegt: ein `discover_resource_metadata`-
+        # Fehlschlag gegen eine unbekannte Domain reproduziert das (s.
+        # Task-6-Bericht, Abschnitt Mutation-Checks).
+        return 200, ergebnisseite(False, a.referenz, "Anmeldung abgebrochen oder fehlgeschlagen")
+    ergebnis = schreiber(projekt=a.projekt, plugin=a.plugin, referenz=a.referenz,
+                         art=a.art, wert=wert, ziel=a.ziel)
+    if ergebnis.get("ok"):
+        return 200, ergebnisseite(True, a.referenz, "")
+    return 200, ergebnisseite(False, a.referenz,
+                              str(ergebnis.get("status", "unbekannt")))

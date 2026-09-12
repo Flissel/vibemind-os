@@ -182,16 +182,17 @@ def wait_for_callback(expected_state: str, timeout_seconds: int = 300) -> str:
     return result["code"]
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("mcp_url", help="the MCP server URL, e.g. https://mcp.notion.com/mcp")
-    parser.add_argument("--out", help="env file to append <NAME>=<token> to (created 0600 if missing)")
-    parser.add_argument("--name", help="override the derived reference name")
-    parser.add_argument("--dry-run", action="store_true", help="stop after printing the authorization URL")
-    args = parser.parse_args()
+def _entdecken_und_registrieren(mcp_url: str) -> tuple[str, dict, str, str, str, str]:
+    """Discovery (Schritte 1-2) + dynamische Registrierung (Schritt 3) +
+    PKCE/state/authorize_url -- der Teil des Flusses, den `--dry-run` UND
+    `token_holen` beide brauchen, darum hier einmal statt zweimal.
 
-    resource_metadata = discover_resource_metadata(args.mcp_url)
-    resource = resource_metadata.get("resource", args.mcp_url)
+    Gibt (resource, server_metadata, client_id, verifier, state,
+    authorize_url) zurueck. Kein Netzwerkzugriff nach dieser Funktion
+    faengt noch einen Token ab -- das beginnt erst mit dem Browser-Login.
+    """
+    resource_metadata = discover_resource_metadata(mcp_url)
+    resource = resource_metadata.get("resource", mcp_url)
     issuer = resource_metadata["authorization_servers"][0]
     print(f"resource:              {resource}")
     print(f"authorization server:  {issuer}")
@@ -203,7 +204,6 @@ def main() -> None:
     client_id = register_client(registration_endpoint)
     print(f"registered client:     {client_id}")
 
-    name = args.name or derive_name(resource)
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(48)).rstrip(b"=").decode()
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     state = secrets.token_urlsafe(24)
@@ -216,11 +216,21 @@ def main() -> None:
         "state": state,
         "resource": resource,
     })
+    return resource, server_metadata, client_id, verifier, state, authorize_url
+
+
+def token_holen(mcp_url: str) -> tuple[str, str]:
+    """Beschafft einen OAuth-Bearer fuer `mcp_url` und gibt
+    (referenzname, token) zurueck -- schreibt NICHTS.
+
+    Herausgezogen aus main(), damit das Eingabefenster denselben Fluss
+    benutzt, statt ihn abzuschreiben. main() ruft diese Funktion und
+    schreibt danach wie bisher in --out.
+    """
+    resource, server_metadata, client_id, verifier, state, authorize_url = (
+        _entdecken_und_registrieren(mcp_url))
+    name = derive_name(resource)
     print(f"reference name:        {name}")
-    if args.dry_run:
-        print("dry run - authorization URL (not opened):")
-        print(f"  {authorize_url}")
-        return
 
     print("opening the browser; log in and approve there ...")
     webbrowser.open(authorize_url)
@@ -243,10 +253,30 @@ def main() -> None:
     access_token = tokens.get("access_token")
     if not isinstance(access_token, str) or access_token == "":
         raise SystemExit("token endpoint returned no access_token")
+    return name, access_token
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("mcp_url", help="the MCP server URL, e.g. https://mcp.notion.com/mcp")
+    parser.add_argument("--out", help="env file to append <NAME>=<token> to (created 0600 if missing)")
+    parser.add_argument("--name", help="override the derived reference name")
+    parser.add_argument("--dry-run", action="store_true", help="stop after printing the authorization URL")
+    args = parser.parse_args()
+
+    if args.dry_run:
+        resource, _server_metadata, _client_id, _verifier, _state, authorize_url = (
+            _entdecken_und_registrieren(args.mcp_url))
+        name = args.name or derive_name(resource)
+        print(f"reference name:        {name}")
+        print("dry run - authorization URL (not opened):")
+        print(f"  {authorize_url}")
+        return
+
+    name, access_token = token_holen(args.mcp_url)
+    name = args.name or name
 
     lines = [f"{name}={access_token}\n"]
-    if isinstance(tokens.get("refresh_token"), str) and tokens["refresh_token"]:
-        lines.append(f"{name}_REFRESH={tokens['refresh_token']}\n")
     if args.out:
         flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
         descriptor = os.open(args.out, flags, 0o600)
@@ -256,8 +286,7 @@ def main() -> None:
     else:
         destination = "(no --out given; token DISCARDED - rerun with --out)"
 
-    print(f"token issued:          expires_in={tokens.get('expires_in')} scope={tokens.get('scope')!r} refresh={'yes' if len(lines) > 1 else 'no'}")
-    print(f"written to:            {destination}")
+    print(f"token issued:          written to {destination}")
     print(f"allowlist with:        OPENFANG_ISSUABLE_CREDENTIALS={name}")
 
 

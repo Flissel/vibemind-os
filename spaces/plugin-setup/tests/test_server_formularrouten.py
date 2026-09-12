@@ -17,10 +17,15 @@ Vier Eigenschaften, alle strukturell, keine per Konvention:
      Docker-Desktop/WSL-Mirrored-Host trennt diese Pruefung den echten
      Container NICHT vom Host -- dieser Test simuliert nur eine Adresse,
      die nicht ueber Docker Desktops `host.docker.internal`-Bruecke kommt.
-  2. oauth-Zwischenstand: ein POST auf eine `art=oauth`-Anfrage verbraucht
-     das Token NICHT (der echte Provisioner fehlt noch, Aufgabe 6) -- auch
-     wenn der Body einen `wert` enthaelt, damit die Mutation "oauth-Zweig
-     entfernen" nicht zufaellig von der Leer-Wert-Wache mitgefangen wird.
+  2. oauth-Weiche (Aufgabe 6 -- der Provisioner ist jetzt angebunden): ein
+     POST auf eine `art=oauth`-Anfrage nimmt den Wert vom injizierten
+     `beschaffer`, NIE aus dem Formular-Body, auch wenn der Body einen
+     `wert` enthaelt (Mutation-Check: entfernt man die Weiche, faellt die
+     Anfrage auf den Formular-Pfad durch und der Body-Wert erreicht den
+     Schreiber -- HIER faellt das auf, nicht als geaenderter Seitentext).
+     Ein Fehlschlag des `beschaffer` (der echte Provisioner meldet ueber
+     `SystemExit`, kein `Exception`) zeigt eine gewoehnliche Antwort ohne
+     die Ausnahme im Klartext, statt unbehandelt durchzuschlagen.
   3. Der Wert kommt nur aus dem POST-Body, nie aus der Query -- und ein
      leerer oder Nur-Leerzeichen-Wert wird abgelehnt, OHNE das Token zu
      verbrauchen; ein Wert mit Rand-Leerzeichen erreicht den Schreiber
@@ -76,33 +81,69 @@ def test_unbekanntes_token_gibt_404_vom_host_aus():
     assert r.status_code == 404
 
 
-def test_oauth_post_verbraucht_das_token_nicht(monkeypatch):
-    """Der Provisioner fuer den echten Consent-Flow fehlt noch (Aufgabe 6).
-    Ohne die Abfrage in `_fenster_annehmen` wuerde dieser POST das Token
-    verbrauchen und einen LEEREN Wert an den Schreiber reichen.
+def test_oauth_post_ruft_den_echten_provisioner_statt_den_formular_wert(monkeypatch):
+    """Aufgabe 6: der Provisioner ist jetzt angebunden. Ein POST auf eine
+    `art=oauth`-Anfrage muss `fenster.oauth_entgegennehmen` durchlaufen, die
+    den Wert vom injizierten `beschaffer` holt -- NIE aus `request.form()`.
+    Kein Netzwerk hier: `server.provision_oauth_token.token_holen` ist
+    monkeypatched, exakt die Naht, die `fenster.py` dafuer vorsieht.
 
-    Review Runde 3 (Mutation-Check-Fund): eine fruehere Fassung postete
-    ohne Body -- die oauth-Seite hat kein `wert`-Feld, also war der Body
-    ohnehin leer, und der Leer-Wert-Wache (die es unabhaengig gibt) haette
-    den Schreibweg allein schon verhindert. Die Mutation "oauth-Zweig
-    entfernen" haette dann NICHT rot geschlagen, sie haette nur den
-    Seitentext geaendert -- der Test haette also Wortlaut geprueft, nicht
-    das Verhalten. Ein NICHT-leerer `wert` im Body (Stand-in fuer irgendeine
-    kuenftige oauth-Seite mit einem versteckten Feld, oder einen Betreiber,
-    der trotzdem einen Wert mitschickt) isoliert die oauth-Wache: entfernt
-    man NUR sie, faellt dieser Wert durch die Leer-Pruefung (er ist ja
-    nicht leer) und erreicht den Schreiber -- HIER, nicht in
-    test_leerer_wert_wird_abgelehnt_ohne_token_zu_verbrauchen, faellt der
-    Unterschied auf."""
+    Mutation-Check (Review Runde 3, Fix-Runde weiter oben, jetzt fuer den
+    echten Fluss wiederholt): der Body traegt trotzdem einen `wert`
+    (`aus-dem-formular-koerper`), der vom PROVISIONER-Wert
+    (`aus-dem-provisioner`) verschieden ist. Entfernt eine kuenftige
+    Aenderung die `vorschau.art == "oauth"`-Weiche in `_fenster_annehmen`,
+    faellt die Anfrage auf den normalen Formular-Pfad durch: der
+    Leer-Wert-Wache haette dann NICHTS entgegenzusetzen (der Body-Wert ist
+    ja nicht leer), und der Schreiber saehe `aus-dem-formular-koerper` --
+    einen Wert aus dem POST-Body statt aus dem Provisioner, fuer eine
+    `art=oauth`-Anfrage. Genau DIESER Unterschied (welcher Wert den
+    Schreiber erreicht), nicht bloss ein geaenderter Seitentext, ist die
+    Eigenschaft, die dieser Test haelt."""
     gerufen = []
     monkeypatch.setattr(server.werkzeuge, "schluessel_entgegennehmen",
                         lambda **k: gerufen.append(k) or {"ok": True})
+    beschafft = []
+
+    def _beschaffer(mcp_url):
+        beschafft.append(mcp_url)
+        return "ROUTE_OAUTH", "aus-dem-provisioner"
+
+    monkeypatch.setattr(server.provision_oauth_token, "token_holen", _beschaffer)
     a = anfragen.anlegen("proj", "demo", "ROUTE_OAUTH", "oauth", "https://mcp.example.com/mcp")
-    r = _HOST_CLIENT.post(f"/fenster/{a.token}", data={"wert": _FAKE_WERT})
+    r = _HOST_CLIENT.post(f"/fenster/{a.token}", data={"wert": "aus-dem-formular-koerper"})
     assert r.status_code == 200
-    assert "erfuegbar" in r.text  # "Noch nicht verfuegbar"
-    assert gerufen == [], "der Schreibweg darf fuer oauth heute gar nicht erst aufgerufen werden, auch mit einem Wert im Body"
-    assert anfragen.holen(a.token) is not None, "das Token bleibt gueltig fuer einen spaeteren Versuch"
+    assert beschafft == ["https://mcp.example.com/mcp"], "die oauth-Weiche muss den Provisioner mit `ziel` rufen"
+    assert len(gerufen) == 1
+    assert gerufen[0]["wert"] == "aus-dem-provisioner", "der Schreiber muss den Provisioner-Wert sehen, nicht den Formular-Body"
+    assert "aus-dem-provisioner" not in r.text
+    assert "aus-dem-formular-koerper" not in r.text
+    assert anfragen.holen(a.token) is None, "ein erfolgreich beschaffter oauth-Token verbraucht das Token"
+
+
+def test_oauth_post_bei_beschaffer_fehlschlag_zeigt_keine_ausnahme_und_keinen_token(monkeypatch):
+    """Der echte Provisioner meldet erwartete Fehlschlaege (Discovery,
+    Registrierung, Callback-Timeout, fehlender access_token) per
+    `raise SystemExit(...)`, NICHT per `Exception` -- und `SystemExit` ist
+    kein `Exception`-Subtyp. Ein `except Exception` in `oauth_entgegennehmen`
+    wuerde das durchfallen lassen und die Ausnahme unbehandelt bis in den
+    ASGI-Stack durchschlagen (gemessen: genau das geschah hier, bevor der
+    Catch auf `except BaseException` erweitert wurde, s. Task-6-Bericht).
+    Dieser Test haelt fest, dass die Route stattdessen eine gewoehnliche
+    200-Antwort ohne den Token/die Fehlermeldung im Klartext zeigt -- fuer
+    SystemExit UND fuer jede andere Ausnahme gleich."""
+    monkeypatch.setattr(server.werkzeuge, "schluessel_entgegennehmen",
+                        lambda **k: (_ for _ in ()).throw(AssertionError("darf fuer einen Fehlschlag nie gerufen werden")))
+
+    def _beschaffer(mcp_url):
+        raise SystemExit("offensichtlich-erfunden-oauth-fehlertext-koennte-den-token-tragen")
+
+    monkeypatch.setattr(server.provision_oauth_token, "token_holen", _beschaffer)
+    a = anfragen.anlegen("proj", "demo", "ROUTE_OAUTH_FEHL", "oauth", "https://mcp.example.com/mcp")
+    r = _HOST_CLIENT.post(f"/fenster/{a.token}", data={})
+    assert r.status_code == 200
+    assert "offensichtlich-erfunden-oauth-fehlertext-koennte-den-token-tragen" not in r.text
+    assert anfragen.holen(a.token) is None, "ein Fehlschlag verbraucht das Token trotzdem (kein Retry auf demselben Link)"
 
 
 def test_leerer_wert_wird_abgelehnt_ohne_token_zu_verbrauchen(monkeypatch):

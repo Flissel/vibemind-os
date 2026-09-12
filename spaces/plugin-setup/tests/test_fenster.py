@@ -127,11 +127,47 @@ def test_oauth_seite_hat_keine_password_eingabe():
     assert "<button>" in html or "<button " in html
 
 
-def test_oauth_seite_sagt_ehrlich_dass_die_anmeldung_noch_nicht_angebunden_ist():
-    """Review Runde 3, Fix-Runde 3 (Minor): ohne diesen Test waere das
-    Loeschen des Disclaimers eine stille Mutation -- die Seite wuerde
-    wieder unbegrenzt eine Anmeldung versprechen, obwohl das Absenden
-    heute "Noch nicht verfuegbar" zeigt (s. server.py, _fenster_annehmen)."""
+def test_oauth_seite_sagt_ehrlich_dass_der_token_nie_im_fenster_erscheint():
+    """Aufgabe 6: der Provisioner ist jetzt angebunden, der Disclaimer der
+    Vorgaengerfassung ("noch nicht angebunden") ist also nicht mehr wahr --
+    ohne diesen Test waere das stille Wegfallen JEDER Zusicherung an dieser
+    Stelle eine unbemerkte Mutation. Die neue Zusicherung: der beschaffte
+    Token erscheint in keiner Antwort dieses Fensters (s. server.py,
+    _fenster_annehmen -> fenster.oauth_entgegennehmen)."""
     a = anfragen.anlegen("proj", "demo", "OAUTH_DISCLAIMER", "oauth", "")
     html = fenster.seite_fuer(a)
-    assert "noch nicht angebunden" in html
+    assert "erscheint in keiner Antwort" in html
+
+
+def test_oauth_reicht_den_beschafften_token_durch_ohne_ihn_zu_zeigen():
+    a = anfragen.anlegen("proj", "demo", "OAUTH_BEARER_MCP_LINEAR_APP_MCP",
+                         "oauth", "https://mcp.linear.app/mcp")
+    erfunden = "offensichtlich-erfunden-oauth-token"
+
+    def beschaffer(mcp_url):
+        assert mcp_url == "https://mcp.linear.app/mcp"
+        return "OAUTH_BEARER_MCP_LINEAR_APP_MCP", erfunden
+
+    gesehen = {}
+
+    def schreiber(**kwargs):
+        gesehen.update(kwargs)
+        return {"ok": True, "referenz": kwargs["referenz"]}
+
+    status, html = fenster.oauth_entgegennehmen(a.token, beschaffer, schreiber)
+    assert status == 200
+    assert gesehen["wert"] == erfunden
+    assert gesehen["art"] == "oauth"
+    assert erfunden not in html
+
+
+def test_oauth_fehlschlag_zeigt_keinen_token_und_keine_ursache_im_klartext():
+    a = anfragen.anlegen("proj", "demo", "OAUTH_BEARER_MCP_LINEAR_APP_MCP",
+                         "oauth", "https://mcp.linear.app/mcp")
+
+    def beschaffer(mcp_url):
+        raise RuntimeError("offensichtlich-erfunden-oauth-token im Fehlertext")
+
+    status, html = fenster.oauth_entgegennehmen(a.token, beschaffer, lambda **k: {"ok": True})
+    assert status == 200
+    assert "offensichtlich-erfunden-oauth-token" not in html
