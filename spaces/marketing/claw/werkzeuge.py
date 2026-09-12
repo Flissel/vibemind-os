@@ -258,7 +258,14 @@ def _kanal_kann_senden(kanal: str) -> tuple:
     antwort = _api("/api/channels")
     if not antwort["ok"]:
         return True, ""
-    kanaele = (antwort.get("daten") or {}).get("data") or []
+    roh = (antwort.get("daten") or {})
+    kanaele = roh.get("data") if isinstance(roh, dict) else None
+    # Kommt etwas anderes zurueck als eine Liste von Objekten, ist die
+    # Auskunft unbrauchbar — dann NICHT blockieren, sondern durchlassen.
+    # (Ohne diese Pruefung lief die Schleife ueber die Schluessel eines
+    # dicts und starb an `'str' object has no attribute 'get'`.)
+    if not isinstance(kanaele, list) or not all(isinstance(k, dict) for k in kanaele):
+        return True, ""
     passend = next((k for k in kanaele if k.get("channel") == kanal), None)
     if passend is None:
         moeglich = sorted(k["channel"] for k in kanaele

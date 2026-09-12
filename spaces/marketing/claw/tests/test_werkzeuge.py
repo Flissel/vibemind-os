@@ -12,11 +12,33 @@ from spaces.marketing.claw import werkzeuge
 
 
 class Rekorder:
-    def __init__(self, antworten):
+    """Ersetzt den einzigen echten Netzgriff und gibt vorbereitete Antworten.
+
+    DIE KANAL-AUSKUNFT BEANTWORTET ER SELBST. `kampagne_entwerfen` fragt seit
+    dem 12.09.2026 zuerst `/api/channels`, um keinen Entwurf auf einem Kanal
+    ohne Versandweg anzulegen. Das ist Infrastruktur, kein Pruefgegenstand —
+    ein Test ueber Belege soll sie nicht mitschreiben muessen, sonst faellt
+    er um, sobald irgendwo ein Aufruf dazukommt. Wer die Pruefung selbst
+    testen will, gibt `kanaele=` mit; `kanaele=False` schaltet die
+    Selbstantwort ab und laesst die Auskunft aus der Warteschlange kommen.
+    """
+
+    STANDARD_KANAELE = {"success": True, "data": [
+        {"channel": "email", "enabled": True, "send_implemented": True},
+        {"channel": "telegram", "enabled": True, "send_implemented": True},
+        {"channel": "whatsapp", "enabled": False, "send_implemented": False},
+    ]}
+
+    def __init__(self, antworten, kanaele=None):
         self.antworten = list(antworten)
         self.aufrufe = []
+        self.kanaele = self.STANDARD_KANAELE if kanaele is None else kanaele
 
     def __call__(self, url, daten, kopfzeilen):
+        if self.kanaele is not False and url.endswith("/api/channels"):
+            # NICHT mitzaehlen: das beantwortet die Testumgebung selbst, es
+            # ist kein Aufruf, ueber den ein Test etwas aussagen will.
+            return (200, json.dumps(self.kanaele))
         self.aufrufe.append({"url": url, "daten": daten, "kopf": kopfzeilen})
         return self.antworten.pop(0)
 
@@ -151,25 +173,25 @@ class TestKanalPruefung(unittest.TestCase):
     """
 
     def _kanaele(self, whatsapp_an=False):
-        return (200, json.dumps({"success": True, "data": [
+        return {"success": True, "data": [
             {"channel": "email", "enabled": True, "send_implemented": True},
             {"channel": "telegram", "enabled": True, "send_implemented": True},
             {"channel": "whatsapp", "enabled": whatsapp_an,
              "send_implemented": whatsapp_an},
             {"channel": "linkedin", "enabled": False, "send_implemented": False},
-        ]}))
+        ]}
 
     def test_kanal_ohne_versandweg_wird_abgelehnt(self):
-        rekorder = Rekorder([self._kanaele()])
+        rekorder = Rekorder([], kanaele=self._kanaele())
         with mock.patch.object(werkzeuge, "_roh_anfrage", rekorder), \
              mock.patch.dict("os.environ", {"MARKETING_API_URL": "http://x:5510"}):
             r = werkzeuge.kampagne_entwerfen("Ziel", "Zielgruppe", "whatsapp")
         self.assertFalse(r["ok"], r)
-        self.assertEqual(len(rekorder.aufrufe), 1,
-                         "nach der Absage darf nichts mehr geschrieben werden")
+        self.assertEqual(rekorder.aufrufe, [],
+                         "nach der Absage darf nichts geschrieben werden")
 
     def test_die_absage_nennt_den_weg_der_funktioniert(self):
-        rekorder = Rekorder([self._kanaele()])
+        rekorder = Rekorder([], kanaele=self._kanaele())
         with mock.patch.object(werkzeuge, "_roh_anfrage", rekorder), \
              mock.patch.dict("os.environ", {"MARKETING_API_URL": "http://x:5510"}):
             r = werkzeuge.kampagne_entwerfen("Ziel", "Zielgruppe", "whatsapp")
@@ -178,11 +200,9 @@ class TestKanalPruefung(unittest.TestCase):
         self.assertIn("telegram", r["fehler"])
 
     def test_ein_kanal_mit_versandweg_geht_durch(self):
-        rekorder = Rekorder([
-            self._kanaele(),
-            (200, json.dumps({"betreff": "B", "text": "T", "begruendung": "G"})),
-            (200, json.dumps({"success": True, "data": {"id": "p1"}})),
-        ])
+        rekorder = Rekorder(
+            [(200, json.dumps({"success": True, "data": {"id": "p1"}}))],
+            kanaele=self._kanaele())
         with mock.patch.object(werkzeuge, "_roh_anfrage", rekorder), \
              mock.patch.object(werkzeuge, "_llm_json",
                                return_value={"ok": True, "daten": {
@@ -193,10 +213,9 @@ class TestKanalPruefung(unittest.TestCase):
 
     def test_whatsapp_geht_durch_sobald_der_versand_gebaut_ist(self):
         """Die Pruefung fragt den Dienst, sie haelt keine Liste im Kopf."""
-        rekorder = Rekorder([
-            self._kanaele(whatsapp_an=True),
-            (200, json.dumps({"success": True, "data": {"id": "p1"}})),
-        ])
+        rekorder = Rekorder(
+            [(200, json.dumps({"success": True, "data": {"id": "p1"}}))],
+            kanaele=self._kanaele(whatsapp_an=True))
         with mock.patch.object(werkzeuge, "_roh_anfrage", rekorder), \
              mock.patch.object(werkzeuge, "_llm_json",
                                return_value={"ok": True, "daten": {
@@ -208,9 +227,10 @@ class TestKanalPruefung(unittest.TestCase):
     def test_unerreichbare_kanalliste_blockiert_nicht(self):
         """Ein Ausfall der Auskunft darf die Arbeit nicht anhalten — sonst
         haengt der Entwurf an der Verfuegbarkeit einer Nebenroute."""
-        antworten = [(500, "kaputt"),
-                     (200, json.dumps({"success": True, "data": {"id": "p1"}}))]
-        rekorder = Rekorder(antworten)
+        rekorder = Rekorder(
+            [(500, "kaputt"),
+             (200, json.dumps({"success": True, "data": {"id": "p1"}}))],
+            kanaele=False)
         with mock.patch.object(werkzeuge, "_roh_anfrage", rekorder), \
              mock.patch.object(werkzeuge, "_llm_json",
                                return_value={"ok": True, "daten": {
