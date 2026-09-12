@@ -204,9 +204,21 @@ sein eigener Browser, und das ist per Konstruktion sichtbar.
 - **Kein Browser im Container**, kein VNC, keine CDP-Tür. Die
   Container-Variante wird durch diesen Entwurf gerade tragfähig, weil sie
   nichts davon mehr braucht.
-- **Keine Authentifizierung am Formular** über das Einmal-Token hinaus. Die
-  Bindung ist Loopback; wer auf diesem Rechner beliebige Ports erreicht, hat
-  ohnehin gewonnen.
+- **Keine Authentifizierung am Formular** über das Einmal-Token hinaus.
+  **KORREKTUR (gemessen, s. E3) — dieser Absatz widersprach der Korrektur
+  dort, 70 Zeilen weiter oben, und wurde dabei uebersehen:** die Bindung ist
+  NICHT Loopback, sie ist `0.0.0.0` (der Container muss `/mcp` erreichen,
+  und dasselbe Binding trägt `/fenster/{token}`). "Wer beliebige Ports
+  erreicht, hat ohnehin gewonnen" war genau die Schlussfolgerung, die die
+  Messung widerlegt hat: der Container IST die Partei, vor der dieser
+  Entwurf schützen soll, und er erreicht diese Ports über
+  `host.docker.internal` wie jeder andere Aufrufer, ununterscheidbar vom
+  Betreiber selbst (s. E3). Was das Formular heute tatsächlich davor
+  bewahrt, dass der Agent es selbst bedient, ist NICHT die Bindung, sondern
+  dass der Agent keine Fähigkeit hat, selbst eine HTTP-Anfrage zu stellen
+  oder eine Shell zu benutzen (Tool-Policy in `config/openclaw.json`,
+  `tools.deny`) — Konfiguration, nicht Struktur, und mit Test abgesichert
+  (`tests/test_openclaw_tool_policy.py`), aber umkehrbar.
 - **Keine Mehrbenutzer-Sitzungen.** Eine schwebende Anfrage gehört dem
   Menschen, der vor dem Rechner sitzt.
 - **Kein Wiederherstellen schwebender Anfragen über einen Neustart.** Sie

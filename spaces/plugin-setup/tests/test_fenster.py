@@ -125,3 +125,13 @@ def test_oauth_seite_hat_keine_password_eingabe():
     assert "OAUTH_CODE" in html
     # Und es sollte einen Button geben
     assert "<button>" in html or "<button " in html
+
+
+def test_oauth_seite_sagt_ehrlich_dass_die_anmeldung_noch_nicht_angebunden_ist():
+    """Review Runde 3, Fix-Runde 3 (Minor): ohne diesen Test waere das
+    Loeschen des Disclaimers eine stille Mutation -- die Seite wuerde
+    wieder unbegrenzt eine Anmeldung versprechen, obwohl das Absenden
+    heute "Noch nicht verfuegbar" zeigt (s. server.py, _fenster_annehmen)."""
+    a = anfragen.anlegen("proj", "demo", "OAUTH_DISCLAIMER", "oauth", "")
+    html = fenster.seite_fuer(a)
+    assert "noch nicht angebunden" in html

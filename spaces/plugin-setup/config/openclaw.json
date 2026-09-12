@@ -56,7 +56,7 @@
     }
   },
   "tools": {
-    "deny": ["group:runtime", "group:fs", "group:web", "group:ui"],
+    "deny": ["group:runtime", "group:fs", "group:web", "group:ui", "group:automation", "group:sessions"],
     "web": {
       "search": {
         "enabled": false

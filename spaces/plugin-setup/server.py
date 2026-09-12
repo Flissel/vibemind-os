@@ -46,18 +46,39 @@ gestoppt (s. oben).
 
 Darum die ehrliche, NICHT aufzaehlende Fassung: kein MCP-Werkzeug, das dem
 Agenten zur Verfuegung steht, nimmt einen Credential-Wert an, und die
-Tool-Policy des Agenten entzieht ihm Shell-, Dateisystem- und
-Web-Faehigkeiten (`config/openclaw.json`: `tools.deny` = `group:runtime`,
-`group:fs`, `group:web`, `group:ui`) -- der Agent haelt trotzdem den
-Einmal-Link, und die Loopback-Wache trennt auf diesem Host den Container
-nicht vom Betreiber. Der Schreibweg ist also durch KONFIGURATION
-verschlossen, nicht durch STRUKTUR: jede Aenderung an `tools.deny`/
-`tools.profile` kann ihn wieder oeffnen, ohne dass ein Test hier rot wird.
-Der Fix, der die urspruengliche Zusicherung wiederherstellen wuerde --
-`eingabe_anfordern` haendigt dem Agenten die Adresse gar nicht erst aus,
-sondern liefert sie ausschliesslich out-of-band an den Betreiber -- ist
-bewusst NICHT Teil dieser Runde (eigener Vertrags-/Entwurfswechsel fuer
-`eingabe_anfordern`, s. Task-5-Report und die Korrektur in
+Tool-Policy des Agenten entzieht ihm Shell-, Dateisystem-, Web-,
+Automations- und Session-Faehigkeiten (`config/openclaw.json`: `tools.deny`
+= `group:runtime`, `group:fs`, `group:web`, `group:ui`, `group:automation`,
+`group:sessions`) -- der Agent haelt trotzdem den Einmal-Link, und die
+Loopback-Wache trennt auf diesem Host den Container nicht vom Betreiber.
+
+DIESE FASSUNG WAR EBENFALLS UNVOLLSTAENDIG (Review Runde 3, Fix-Runde 3,
+C-Kritisch, SELBE KLASSE VON LUECKE WIE OBEN): `group:automation` fehlte in
+der Deny-Liste. Es enthaelt `gateway` -- das owner-only Werkzeug fuer
+`config.patch`/`config.apply` (openclaw docs/concepts/system-prompt.md) --
+und dieses Werkzeug schuetzt NUR `tools.exec.ask`/`tools.exec.security` vor
+sich selbst, NICHT `tools.deny`. Ohne die Ergaenzung waere der Weg nur zwei
+Schritte statt einer gewesen: `gateway config.patch` (loescht `tools.deny`)
+-> Neustart -> `exec` -> `curl` des Tokens. Dieselbe Faehigkeitsluecke wie
+der Shell-Fund, nur eine Ebene hoeher -- eine Aufzaehlung, die nicht auch
+"was kann die Policy selbst aendern" fragt, ist per Konstruktion
+unvollstaendig. `group:sessions` (Subagent-/Session-Werkzeuge, kein Bedarf
+fuer diesen Agenten) ist ebenfalls jetzt in der Deny-Liste, aus derselben
+Vorsicht, auch ohne einen belegten Weg dorthin.
+
+Der Schreibweg ist also durch KONFIGURATION verschlossen, nicht durch
+STRUKTUR. `tests/test_openclaw_tool_policy.py` haelt fest, dass diese
+sechs Gruppen im EINGECHECKTEN `config/openclaw.json` stehen -- das ist ein
+Tripwire fuer eine Aenderung an DIESER Datei, ausdruecklich KEIN Beweis,
+dass (a) der tatsaechlich laufende Container diese Datei so geladen hat
+(unverifiziert, s. Task-5-Report) oder (b) keine hier nicht genannte
+Gruppe/Kombination denselben Weg auf einem anderen Pfad oeffnet -- geprueft
+ist nur, was hier aufgefuehrt ist. Der Fix, der die urspruengliche
+Zusicherung wiederherstellen wuerde -- `eingabe_anfordern` haendigt dem
+Agenten die Adresse gar nicht erst aus, sondern liefert sie ausschliesslich
+out-of-band an den Betreiber -- ist bewusst NICHT Teil dieser Runde
+(eigener Vertrags-/Entwurfswechsel fuer `eingabe_anfordern`, s.
+Task-5-Report und die Korrektur in
 `docs/superpowers/specs/2026-09-12-eingabefenster-design.md` E3).
 
 `spaces/plugin-setup` traegt bewusst KEIN `__init__.py` und ist per

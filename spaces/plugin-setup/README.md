@@ -20,7 +20,14 @@ zwischen Betreiber und Container (s. `docs/superpowers/specs/
 2026-09-12-eingabefenster-design.md` E3 und `.superpowers/sdd/
 2026-09-12-eingabefenster/task-5-report.md`) -- was den Agenten heute
 tatsaechlich davon abhaelt, das Formular selbst zu erreichen, ist seine
-Tool-Policy (`config/openclaw.json`: `tools.deny`), nicht die Bindung.
+Tool-Policy (`config/openclaw.json`: `tools.deny` = `group:runtime`,
+`group:fs`, `group:web`, `group:ui`, `group:automation`, `group:sessions`
+-- `group:automation` schliesst `gateway` ein, ohne das der Agent seine
+eigene `tools.deny` per `config.patch` haette umschreiben und neu starten
+koennen, Review Runde 3 Fix-Runde 3), nicht die Bindung. Das ist KONFIGURATION,
+nicht STRUKTUR -- `tests/test_openclaw_tool_policy.py` ist der Tripwire fuer
+eine Aenderung an dieser Datei, aber kein Beweis, dass der laufende
+Container sie so geladen hat.
 
 `spaces/plugin-setup` traegt bewusst KEIN `__init__.py` (Bindestrich ist
 kein gueltiger Python-Modulname) -- alle Module hier werden bare importiert
@@ -71,4 +78,7 @@ Aufgaben 2/4), `test_server_werkzeugliste.py` (die Werkzeugliste als
 Sicherheitsgrenze -- prueft die ECHTE FastMCP-Registrierung, nicht nur das
 Tupel), `test_server_formularrouten.py` (Loopback-Wache, oauth-
 Zwischenstand, POST-Body-vs-Query -- echte Requests via Starlettes
-`TestClient`, kein Mock der Routen selbst).
+`TestClient`, kein Mock der Routen selbst), `test_openclaw_tool_policy.py`
+(Tripwire fuer `config/openclaw.json`s `tools.deny`/`browser.enabled` --
+die Konfiguration, die den Agenten heute tatsaechlich vom Schreibweg
+abhaelt, s. oben).
