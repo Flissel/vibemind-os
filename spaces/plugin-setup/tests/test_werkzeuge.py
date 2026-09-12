@@ -954,6 +954,23 @@ def test_eingabe_anfordern_prueft_ziel_vor_dem_anlegen(monkeypatch):
     assert gelegt == [], "bei ungueltigem ziel darf keine Anfrage entstehen"
 
 
+def test_eingabe_anfordern_prueft_art_vor_dem_anlegen(monkeypatch):
+    """Fix Runde 1 (Important): `anfragen.anlegen` prueft `art` selbst
+    nicht, und `_ziel_pruefen`s Fallthrough gibt fuer eine unbekannte `art`
+    `None` zurueck (s. dessen letzter Kommentar) -- ohne einen eigenen
+    `art`-Wache in `eingabe_anfordern` wuerde ein `ziel`, das fuer sich
+    genommen gueltig ist, die Pruefung durchrutschen lassen. `ziel` ist
+    hier darum bewusst GUELTIG (derselbe Wert wie im Erfolgstest), damit
+    NUR die `art`-Wache fuer die Ablehnung verantwortlich sein kann."""
+    gelegt = []
+    monkeypatch.setattr(werkzeuge.anfragen, "anlegen",
+                        lambda *a, **k: gelegt.append(a) or (_ for _ in ()).throw(AssertionError))
+    ergebnis = werkzeuge.eingabe_anfordern("proj", "demo", "OAUTH_BEARER_MCP_LINEAR_APP_MCP",
+                                           "bogus_art", "https://mcp.linear.app/mcp")
+    assert ergebnis["ok"] is False
+    assert gelegt == [], "bei unbekannter art darf keine Anfrage entstehen"
+
+
 def test_einrichtung_status_meldet_angefordert_solange_der_link_offen_ist(monkeypatch):
     gerufen = []
     monkeypatch.setattr(werkzeuge.ablage, "zustand", lambda r: gerufen.append(r) or {"ok": True, "zustand": "x", "hinweis": ""})

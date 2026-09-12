@@ -1,11 +1,16 @@
 """plugin-setup-Werkzeuge -- der eigenstaendige Space aus Aufgabe 6.
 
-Bindet die Bausteine der Aufgaben 1-5 zu vier MCP-Werkzeugen zusammen:
+Bindet die Bausteine der Aufgaben 1-5 zu sechs MCP-Werkzeugen zusammen:
 
   plugin_bedarf(projekt, plugin)             -- was braucht das Plugin, und
                                               aus welchen Komponenten besteht es?
   schluessel_entgegennehmen(projekt, plugin, referenz, art, wert, ziel="")
                                               -- Supabase -> pruefen -> OpenFang
+  eingabe_anfordern(projekt, plugin, referenz, art, ziel="")
+                                              -- Aufgabe 3: Einmal-Link statt Wert,
+                                              dieselben Wachen wie oben, VOR dem Anlegen
+  einrichtung_status(referenz)               -- Aufgabe 3: nur `zustand`/`hinweis`,
+                                              nie ein Wert, nie ein Antwortkoerper
   plugin_installieren(projekt, plugin, komponenten=None) -- Rowboat-Install;
                                               ohne Angabe: alle ZUGELASSENEN
   plugin_werkzeug_binden(projekt, plugin, komponente)    -- Rowboat-Tool-Bindung
