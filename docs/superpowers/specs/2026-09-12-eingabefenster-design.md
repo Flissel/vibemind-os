@@ -137,7 +137,7 @@ beliebige HTTP-Anfrage stellen könnte (Tool-Policy in
 `config/openclaw.json`, s. `server.py`) — Konfiguration, nicht Struktur,
 mit Test abgesichert (`tests/test_openclaw_tool_policy.py`), aber ohne
 Beweis, dass (a) der laufende Container diese Datei so geladen hat oder
-(b) keine hier nicht genannte Gruppe denselben Weg anderswo öffnet — fünf
+(b) keine hier nicht genannte Gruppe denselben Weg anderswo öffnet — sechs
 Gruppen bleiben aus diesem Grund ungeprüft denied, s. `server.py` für
 welche und warum das vorerst genügt; der echte Fix (die Adresse gar nicht
 erst an den Agenten aushändigen) steht als Folgeaufgabe aus.

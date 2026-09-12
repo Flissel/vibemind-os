@@ -34,7 +34,7 @@ _ERFORDERLICHE_DENY_GRUPPEN = {
                           # behauptet und dabei openclaw's Prosa-Doku als
                           # kurze Denyliste gelesen; gegen den kompilierten
                           # Code (2026.7.1) ist `ALLOWED_GATEWAY_CONFIG_PATHS`
-                          # tatsaechlich eine 19-Muster-ALLOWLIST und nichts
+                          # tatsaechlich eine 18-Muster-ALLOWLIST und nichts
                           # unter `tools.` passt darauf -- diese Eskalation
                           # existiert in diesem Image nicht. Korrigiert in
                           # Fix-Runde 4; die Allowlist ist eine Eigenschaft

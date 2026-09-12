@@ -62,7 +62,7 @@ die `tools.deny` fuer `config.patch` offen liesse -- und schloss daraus
 eine zweistufige Eskalationskette (`gateway config.patch` -> `tools.deny`
 loeschen -> Neustart -> `exec` -> `curl`). GEGEN DEN KOMPILIERTEN CODE
 GEPRUEFT (Review Runde 4) ist das falsch: `ALLOWED_GATEWAY_CONFIG_PATHS` in
-diesem Image (2026.7.1) ist eine 19-Muster-ALLOWLIST, und
+diesem Image (2026.7.1) ist eine 18-Muster-ALLOWLIST, und
 `assertGatewayConfigMutationAllowed` wirft fuer alles, was nicht darauf
 passt -- nichts unter `tools.` passt. Die beschriebene Eskalationskette
 existiert in diesem Image schlicht nicht; die Doku las sich wie eine
@@ -86,8 +86,11 @@ dass (a) der tatsaechlich laufende Container diese Datei so geladen hat
 (unverifiziert, s. Task-5-Report) oder (b) keine hier nicht genannte
 Gruppe/Kombination denselben Weg auf einem anderen Pfad oeffnet -- geprueft
 ist nur, was hier aufgefuehrt ist. Zu (b) hat Review Runde 4 gezielt
-nachgesehen: fuenf Gruppen bleiben ungeprueft denied (`group:plugins`,
-`group:nodes`, `group:messaging`, `group:agents`, `group:media`), und
+nachgesehen: sechs Gruppen bleiben ungeprueft denied (`group:plugins`,
+`group:nodes`, `group:messaging`, `group:agents`, `group:media`,
+`group:memory` -- `memory_search`/`memory_get`, lokales Read-only-Recall,
+kein Schreib- oder Exfiltrationspfad, das Risiko dort ist nach heutigem
+Stand nahe null, aber ungeprueft ist ungeprueft), und
 dieses Image aktiviert `file-transfer` standardmaessig mit einer
 `file_write`-Primitive AUSSERHALB von `group:fs` -- die zwei Kandidaten mit
 plausibel neuem HTTP-/Config-Schreibweg (`file_fetch`, `skill_workshop`)

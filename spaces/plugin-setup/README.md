@@ -26,13 +26,13 @@ Tool-Policy (`config/openclaw.json`: `tools.deny` = `group:runtime`,
 `gateway`s Neustart-/`update.run`-Flaeche, NICHT weil `gateway` `tools.deny`
 per `config.patch` umschreiben koennte: Review Runde 3 Fix-Runde 3 hatte
 das behauptet und las damit openclaw's Prosa-Doku falsch (als Denyliste
-statt als die 19-Muster-ALLOWLIST, die der kompilierte Code tatsaechlich
+statt als die 18-Muster-ALLOWLIST, die der kompilierte Code tatsaechlich
 durchsetzt -- korrigiert in Fix-Runde 4, s. `server.py` fuer die volle
 Herleitung), nicht die Bindung. Das ist KONFIGURATION, nicht STRUKTUR --
 `tests/test_openclaw_tool_policy.py` ist der Tripwire fuer eine Aenderung
 an dieser Datei, aber weder Beweis, dass der laufende Container sie so
 geladen hat, noch dass keine hier nicht genannte Gruppe denselben Weg
-anderswo oeffnet (fuenf Gruppen bleiben aus diesem Grund ungeprueft denied,
+anderswo oeffnet (sechs Gruppen bleiben aus diesem Grund ungeprueft denied,
 s. `server.py` fuer welche und warum das vorerst genuegt).
 
 `spaces/plugin-setup` traegt bewusst KEIN `__init__.py` (Bindestrich ist
