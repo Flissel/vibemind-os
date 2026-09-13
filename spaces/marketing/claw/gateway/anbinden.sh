@@ -22,6 +22,12 @@ fi
 echo "1) Saat -> Laufzeit-Volume (Konfig + Workspace), reload"
 docker compose cp config/openclaw.json marketing-claw:/home/node/.openclaw/openclaw.json
 docker compose cp config/workspace/AGENTS.md marketing-claw:/home/node/.openclaw/workspace/AGENTS.md
+# Fertigkeiten (Handwerksregeln je Kanal). AGENTS.md verweist darauf; ohne
+# diese Kopie zeigt der Verweis ins Leere und der Agent faellt auf sein
+# Gedaechtnis zurueck — genau der Zustand, aus dem siebenmal dieselbe
+# Aufzaehlung entstand.
+docker compose exec -T marketing-claw mkdir -p /home/node/.openclaw/workspace/skills
+docker compose cp config/workspace/skills/. marketing-claw:/home/node/.openclaw/workspace/skills/
 
 # Die Saat traegt KEIN Gateway-Token (Geheimnisse gehoeren nicht ins Git) —
 # das Kopieren loescht darum jedes vorhandene. Ohne Token weigert sich
@@ -46,7 +52,9 @@ ROT=0
 PROBE="$(docker compose exec -T marketing-claw openclaw mcp probe marketing --json 2>&1 || true)"
 for w in statistik kampagne_entwerfen ad_texte_entwerfen layout_entwerfen \
          kampagne_pruefen publikum_vorschlagen posteingang_lesen \
-         kampagnen_auflisten wissensquellen wissensquelle dokumente; do
+         kampagnen_auflisten wissensquellen wissensquelle dokumente \
+         videos video_transkript wissen_fragen entwuerfe_lesen post_ablegen \
+         pdf_erstellen entwurf_holen pdf_aus_entwurf; do
   if printf '%s' "$PROBE" | grep -q "marketing__$w"; then echo "   ok   $w"; else echo "   FEHL $w"; ROT=$((ROT+1)); fi
 done
 # Negativ: nichts Sendendes, nichts Schreibendes, kein Rowboat-Server im Gateway.
@@ -59,9 +67,30 @@ if docker compose exec -T marketing-claw openclaw mcp list 2>&1 | grep -q rowboa
   echo "   FEHL Gateway kennt noch einen rowboat-Server (gehoert in den Sidecar)"; ROT=$((ROT+1))
 fi
 
+# Laura-Werkzeuge (zweiter MCP-Server im Shim, seit 12.09.2026). Sie kommen
+# NICHT ueber den marketing-Server, sondern direkt aus dem laura-MCP — deshalb
+# eine eigene Probe. `laura_api` MUSS fehlen: es reicht jede API-Route durch
+# und haette die Freigabeliste daneben aufgehoben.
+# Laura haengt seit 12.09.2026 als ZWEITER MCP-Server im Shim. Er kommt NICHT
+# ueber openclaws MCP-Schicht, sondern ueber SHIM_EXTRA_MCP_CONFIG direkt in
+# die Claude-CLI — in `$PROBE` oben kann er also gar nicht auftauchen. Also
+# den Server selbst befragen.
+echo "3) Laura-Werkzeuge (eigener MCP im Shim)"
+if python "$HIER/../shim/laura_probe.py"; then
+  echo "   ok   Freigabeliste deckt sich mit dem, was der Server fuehrt"
+else
+  echo "   FEHL Laura-MCP: siehe Ausgabe oben"; ROT=$((ROT+1))
+fi
+
+echo "4) Fertigkeiten"
+FERTIG="$(docker compose exec -T marketing-claw openclaw skills 2>&1 || true)"
+for f in email-kampagne whatsapp-nachricht; do
+  if printf '%s' "$FERTIG" | grep -q "$f"; then echo "   ok   $f"; else echo "   FEHL $f"; ROT=$((ROT+1)); fi
+done
+
 if [ "$ROT" -ne 0 ]; then
   echo "--- Probe (Auszug):"; printf '%s\n' "$PROBE" | head -30
   echo "ROT: $ROT" >&2
   exit "$ROT"
 fi
-echo "Gateway abgenommen: 11 Werkzeuge, nichts Sendendes, nichts Schreibendes."
+echo "Gateway abgenommen: 19 Marketing- + 24 Laura-Werkzeuge, 2 Fertigkeiten, nichts Sendendes, nichts Schreibendes."

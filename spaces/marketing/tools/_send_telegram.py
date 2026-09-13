@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..sync import _db
+from . import versandsperre          # Riegel, siehe dort
 from ._send_paranoid import (
     SendMode,
     ParanoidAbort,
@@ -503,6 +504,10 @@ def run(campaign_id: str, mode: SendMode, *,
 
     # Gate 1+2: kill-switch + freeze (LIVE only)
     if mode is SendMode.LIVE:
+        # Gate 0 (12.09.2026): sales-claw ist der einzige Versandweg.
+        # Steht vor allem anderen, damit die Absage nicht davon abhaengt,
+        # ob der Transport gerade erreichbar ist.
+        versandsperre.pruefen('_send_telegram (Telegram-Bot-API)')
         _check_kill_switch()
         _check_freeze()
 

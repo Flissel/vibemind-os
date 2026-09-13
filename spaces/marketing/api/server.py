@@ -57,6 +57,46 @@ from spaces.marketing.sync import _db  # module-level DB handle for new routes
 logger = logging.getLogger("marketing-http")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
+PKG_ROOT = next(p.parent for p in Path(__file__).resolve().parents if p.name == "spaces")
+REPO_ROOT = next((p for p in (PKG_ROOT, *PKG_ROOT.parents)
+                  if (p / "vibemind-os").is_dir()), PKG_ROOT)
+
+# Schluessel, die dieser Dienst notfalls selbst aus der repo-.env holt.
+_ENV_KEYS = ("MARKETING_API_KEY", "MARKETING_PROPOSAL_API_KEY",
+             "MARKETING_N8N_API_KEY", "MARKETING_UNSUB_SECRET")
+
+
+def _load_env_fallback() -> None:
+    """Fehlende Schluessel aus der repo-.env nachladen — nie ueberschreiben.
+
+    WARUM DAS HIER STEHT. Jeder Nachbardienst des Marketing-Wegs hat diesen
+    Rueckfall (bubble_dispatcher, bubble_classifier_runner, die beiden
+    Rowboat-Exporte, marketing_claw_mcp); der Launcher setzt bewusst kein
+    Key-Material in seine Tabelle. Diese API war die einzige Ausnahme und
+    verliess sich darauf, aus einer Shell zu starten, in der die .env schon
+    geladen war. Startet sie anders — losgeloest, aus einem Dienst, nach
+    einem Neustart — ist MARKETING_PROPOSAL_API_KEY leer, und JEDE
+    schreibende Route antwortet mit 503 "misconfigured". Gemessen
+    04.09.2026: der Marketing-Agent bekam dreimal 503 auf
+    kampagne_entwerfen und konnte keinen einzigen Entwurf ablegen.
+
+    Der Aufruf steht VOR den Konstanten: API_KEY wird beim Import gelesen.
+    """
+    env_file = REPO_ROOT / ".env"
+    if not env_file.exists():
+        return
+    missing = [k for k in _ENV_KEYS if not os.environ.get(k)]
+    if not missing:
+        return
+    for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        for k in missing:
+            if line.startswith(k + "="):
+                os.environ[k] = line.split("=", 1)[1].strip().strip('"').strip("'")
+
+
+_load_env_fallback()
+
 PORT = int(os.environ.get("MARKETING_HTTP_PORT", "5510"))
 HOST = os.environ.get("MARKETING_HTTP_BIND", "127.0.0.1")
 API_KEY = os.environ.get("MARKETING_API_KEY", "").strip()
@@ -427,6 +467,87 @@ def list_proposals_route(status: Optional[str] = Query("pending_review")):
 @app.get("/api/proposals/{proposal_id}")
 def get_proposal_route(proposal_id: str):
     return _call(mt.get_proposal, proposal_id=proposal_id)
+
+
+@app.get("/api/broadcast_proposals")
+def list_broadcast_proposals_route(
+    status: Optional[str] = Query("draft"),
+    channel: Optional[str] = Query(None),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Die Kampagnen-Entwuerfe (Betreff/Text). Der Routenname nennt die
+    Tabelle: `/api/proposals` daneben liest `audience_proposals` und meint
+    etwas anderes — WEN statt WAS."""
+    return _call(mt.list_broadcast_proposals, status=status, channel=channel,
+                 limit=limit)
+
+
+# ─── Versandauftraege an sales-claw ────────────────────────────────────
+# Betreiber-Entscheid 12.09.2026: sales-claw ist der EINZIGE Versandweg
+# (Spec docs/superpowers/specs/2026-09-12-sales-claw-einziger-versandweg.md,
+# Migration db/043). Marketing schreibt Text und Unterlage und legt einen
+# AUFTRAG; sales-claw loest die Adresse auf, laesst sie durch seine Tore
+# laufen und macht daraus hoechstens einen Entwurf.
+#
+# HIER WIRD NICHTS GESENDET UND NICHTS GEPRUEFT. Die Pruefung (Kanal, Text,
+# Verbotsliste, Wiederholung) steht in der DB-Funktion, damit sie fuer jeden
+# Rufer gilt und nicht nur fuer den, der diese Route benutzt.
+#
+# Auth: das globale X-API-Key-Middleware oben deckt /api/* ab. Ein
+# zusaetzliches _require_proposal_api_key waere hier falsch — dieser Guard
+# schuetzt Schalter des Versand-Workers, und einen Versand loest ein Auftrag
+# gerade NICHT aus.
+
+
+@app.post("/api/versandauftraege")
+def versandauftrag_anlegen_route(payload: dict = Body(...)):
+    """Einen Versandauftrag anlegen. Body: kanal, empfaenger, nachricht,
+    optional betreff, medien_datei, kampagne, quelle.
+
+    kanal: whatsapp | email | linkedin (Nachricht an einen Kontakt) oder
+    linkedin_post (Beitrag aufs eigene Profil, ohne Empfaenger, Thema im
+    Feld betreff). Telegram fehlt: sales-claw hat dafuer keinen Dispatcher.
+
+    Antwort: {ok, id, wiederholung, grund} — eine Absage ist kein HTTP-Fehler,
+    sondern ok=false mit einem Grund, den ein Agent lesen kann.
+    """
+    from spaces.marketing.sync import _db
+    lit = _db._sql_literal
+    zeile = _db.query_one(
+        "SELECT marketing.versandauftrag_anlegen("
+        f"{lit(str(payload.get('kanal') or ''))}, "
+        f"{lit(str(payload.get('empfaenger') or ''))}, "
+        f"{lit(str(payload.get('nachricht') or ''))}, "
+        f"{lit(str(payload.get('betreff') or ''))}, "
+        f"{lit(str(payload.get('medien_datei') or ''))}, "
+        f"{lit(str(payload.get('kampagne') or ''))}, "
+        f"{lit(str(payload.get('quelle') or ''))}) AS ergebnis")
+    ergebnis = (zeile or {}).get("ergebnis") or {}
+    return {"success": True, "message": "versandauftrag", "data": ergebnis}
+
+
+@app.get("/api/versandauftraege")
+def versandauftraege_list_route(
+    status: Optional[str] = Query(None),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Was aus den Auftraegen geworden ist — offen, angenommen (mit draft_id)
+    oder abgelehnt (mit dem Grund, den sales-claws Tor genannt hat).
+
+    Der Text selbst steht hier NICHT: Marketing hat ihn geschrieben und
+    braucht ihn nicht zurueck; die Liste soll den Stand zeigen, nicht den
+    Inhalt wiederholen."""
+    from spaces.marketing.sync import _db
+    where = ""
+    if status:
+        where = f"WHERE status = {_db._sql_literal(status)}"
+    rows = _db.query_via_docker(
+        f"SELECT id::text AS id, kanal, empfaenger, betreff, medien_datei, "
+        f"       kampagne, quelle, status, draft_id, grund, "
+        f"       created_at::text AS created_at, erledigt_am::text AS erledigt_am "
+        f"FROM marketing.versandauftraege {where} "
+        f"ORDER BY created_at DESC LIMIT {min(max(1, int(limit)), 100)}")
+    return {"success": True, "message": f"{len(rows)} Auftraege", "data": rows}
 
 
 # ─── External integrations (Gmail/Notion/Sheets/Tavily/CSV) ────────────

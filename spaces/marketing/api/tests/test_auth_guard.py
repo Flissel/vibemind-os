@@ -100,6 +100,60 @@ def test_helper_constant_time_compare():
            r is not None and r.status_code == 401)
 
 
+# ─── .env-Rueckfall: der Dienst holt sich fehlende Schluessel selbst ────
+
+
+def test_env_fallback_liest_fehlende_schluessel_aus_der_env_datei(tmp_dir=None):
+    """Gemessen 04.09.2026: die Marketing-API war der einzige Dienst des
+    Marketing-Wegs OHNE diesen Rueckfall — alle Nachbarn (bubble_dispatcher,
+    marketing_claw_mcp, die beiden Exporte) haben ihn. Ohne ihn antwortet
+    jede schreibende Route mit 503 'misconfigured', sobald der Dienst nicht
+    aus einer Shell startet, in der die .env schon geladen war. Genau das
+    passierte: der Agent bekam dreimal 503 auf kampagne_entwerfen.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as ordner:
+        datei = Path(ordner) / ".env"
+        datei.write_text('MARKETING_PROPOSAL_API_KEY="aus-der-datei"\n'
+                         "MARKETING_API_KEY=zweiter\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {}, clear=False), \
+             mock.patch.object(srv, "REPO_ROOT", Path(ordner)):
+            os.environ.pop("MARKETING_PROPOSAL_API_KEY", None)
+            os.environ.pop("MARKETING_API_KEY", None)
+            srv._load_env_fallback()
+            gelesen = os.environ.get("MARKETING_PROPOSAL_API_KEY")
+    _check("env_fallback_liest_datei", gelesen == "aus-der-datei",
+           f"gelesen={gelesen!r}")
+
+
+def test_env_fallback_ueberschreibt_nie_die_prozessumgebung():
+    """Wer den Schluessel bewusst mitgibt, soll ihn behalten."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as ordner:
+        (Path(ordner) / ".env").write_text(
+            "MARKETING_PROPOSAL_API_KEY=aus-der-datei\n", encoding="utf-8")
+        with mock.patch.dict(os.environ,
+                             {"MARKETING_PROPOSAL_API_KEY": "aus-der-umgebung"},
+                             clear=False), \
+             mock.patch.object(srv, "REPO_ROOT", Path(ordner)):
+            srv._load_env_fallback()
+            gelesen = os.environ.get("MARKETING_PROPOSAL_API_KEY")
+    _check("env_fallback_ueberschreibt_nicht", gelesen == "aus-der-umgebung",
+           f"gelesen={gelesen!r}")
+
+
+def test_env_fallback_ohne_datei_ist_kein_absturz():
+    import tempfile
+    with tempfile.TemporaryDirectory() as ordner:
+        with mock.patch.object(srv, "REPO_ROOT", Path(ordner)):
+            try:
+                srv._load_env_fallback()
+                gut = True
+            except Exception:  # noqa: BLE001
+                gut = False
+    _check("env_fallback_ohne_datei_still", gut)
+
+
 # ─── End-to-end via FastAPI TestClient ─────────────────────────────────
 
 

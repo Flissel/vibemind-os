@@ -118,6 +118,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..sync import _db
+from . import versandsperre          # Riegel, siehe dort
 
 logger = logging.getLogger("marketing.send")
 
@@ -1005,6 +1006,10 @@ def run(campaign_id: str, mode: SendMode, *,
 
     # Gate 1+2: kill-switch + freeze (LIVE only)
     if mode is SendMode.LIVE:
+        # Gate 0 (12.09.2026): sales-claw ist der einzige Versandweg.
+        # Steht vor allem anderen, damit die Absage nicht davon abhaengt,
+        # ob der Transport gerade erreichbar ist.
+        versandsperre.pruefen('_send_paranoid (E-Mail ueber Postfix/Mailcow)')
         _check_kill_switch()
         _check_freeze()
         # Gate 2.5: DKIM/SPF/DMARC alignment on the sender domain

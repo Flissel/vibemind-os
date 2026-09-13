@@ -1,0 +1,34 @@
+# Schlanker Vertrag für den bestehenden Space `bubbles` (ADR-0004).
+#
+# `writes` belegt an brain/the_brain/core/supabase_ideas_ops.py:
+#   enter_op    dokumentierter No-op: „there is no session to enter"  -> liest
+#   bubble_noop_op (bubble_exit)  ausdrücklich nichts zu schreiben    -> liest
+#   bubble_stats_op  bubble_node_stats, gibt Text zurück              -> liest
+#   bubble_score_op  liest den vorhandenen Wert und formatiert ihn    -> liest
+#   promote/evaluate/create/update/delete                             -> schreiben
+#
+# bubble_delete_all und bubble_generate_embeddings haben KEIN Ziel. Nach
+# bubble_noop_op ist das Absicht: Schreib-Capabilities ohne echte Umsetzung
+# wurde das Ziel entzogen, damit der GapSentinel die echte Lücke meldet.
+# Sie bleiben hier beansprucht, damit die Lücke sichtbar bleibt.
+
+id: bubbles
+description: "Bubbles: Themenräume für Ideen"
+prefixes: ["bubble."]
+
+capabilities:
+  - {name: bubble_create,   writes: true}
+  - {name: bubble_update,   writes: true}
+  - {name: bubble_delete,   writes: true}
+  - {name: bubble_promote,  writes: true}
+  - {name: bubble_evaluate, writes: true}
+  - {name: bubble_delete_all,          writes: true}   # kein Ziel
+  - {name: bubble_generate_embeddings, writes: true}   # kein Ziel
+  - {name: bubble_list,     writes: false}
+  # Nachgetragen 12.09.: fehlte im ersten Wurf. bubble_find_op loest
+  # eine Zeile auf und gibt Text zurueck (supabase_ideas_ops.py:970).
+  - {name: bubble_find,     writes: false}
+  - {name: bubble_enter,    writes: false}  # dokumentierter No-op
+  - {name: bubble_exit,     writes: false}  # bubble_noop_op
+  - {name: bubble_stats,    writes: false}
+  - {name: bubble_score,    writes: false}  # liest nur, siehe 12.09.

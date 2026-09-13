@@ -272,13 +272,30 @@ class N8nExecutor(_BaseRemoteExecutor):
 
 
 class CodingEngineExecutor(_BaseRemoteExecutor):
-    """Health-gated coding-engine control-server endpoint.
+    """Health-gated coding-engine endpoint, wired to the v1 job API.
 
-    Spec: ``coding-engine:<METHOD>:<route>``.  The pinned coding-engine
-    exposes this contract from ``infra/control_server/server.py`` on port
-    8000.  Every operation first checks ``/api/health`` and fails closed if
-    the service cannot prove itself healthy.
+    Spec: ``coding-engine:<METHOD>:<route>``.
+
+    The routes this used to target (/api/start, /api/status, /api/logs,
+    /api/preview/*) came from infra/control_server/server.py in the
+    coding-engine repo - a dead branch the image never starts, never
+    copies in, and which would launch a script that does not exist in the
+    repo. None of those calls could ever have succeeded. The API the
+    running engine actually serves is src/api/main.py: /health plus
+    /api/v1/jobs and /api/v1/projects.
+
+    Two shape mismatches came with it and are handled here:
+
+    * the health gate asked GET /api/health for {"healthy": true}; the
+      engine answers GET /health with {"status": "healthy"}.
+    * POST /api/v1/jobs requires project_id (int) and requirements_json
+      as a JSON *string*; the Brain has no notion of a project and passed
+      a dict.
     """
+
+    HEALTH_ROUTE = "/health"
+    JOBS_ROUTE = "/api/v1/jobs"
+    PROJECTS_ROUTE = "/api/v1/projects"
 
     def __init__(self, target: str) -> None:
         super().__init__(target)
@@ -294,40 +311,142 @@ class CodingEngineExecutor(_BaseRemoteExecutor):
             "CODING_ENGINE_URL", "http://127.0.0.1:8000"
         ).rstrip("/")
 
+    # -- health ----------------------------------------------------------
     def _assert_healthy(self, timeout: float) -> None:
         response = requests.request(
-            "GET", f"{self.base}/api/health", timeout=min(timeout, 5.0)
+            "GET", f"{self.base}{self.HEALTH_ROUTE}", timeout=min(timeout, 5.0)
         )
         response.raise_for_status()
         body = response.json()
-        if not isinstance(body, dict) or body.get("healthy") is not True:
+        if not isinstance(body, dict):
+            raise RuntimeError(f"coding-engine health is not a mapping: {body!r}")
+        # The engine says {"status": "healthy"}; the older control server
+        # said {"healthy": true}. Accept either, refuse anything else - an
+        # unrecognised body must never read as healthy.
+        healthy = body.get("healthy") is True or body.get("status") == "healthy"
+        if not healthy:
             raise RuntimeError(f"coding-engine unhealthy: {body!r}")
 
+    # -- ids the engine requires and the Brain does not carry ------------
+    def _resolve_project_id(self, timeout: float) -> int:
+        """The project a Brain-triggered job belongs to.
+
+        CODING_ENGINE_PROJECT_ID pins it explicitly. Otherwise the named
+        project is looked up and created once. The engine rejects a job
+        without a project_id, and defaulting to 1 would silently attach
+        Brain runs to whatever project happens to be first.
+        """
+        pinned = os.environ.get("CODING_ENGINE_PROJECT_ID")
+        if pinned:
+            return int(pinned)
+
+        name = os.environ.get("CODING_ENGINE_PROJECT_NAME", "vibemind-brain")
+        listing = requests.request(
+            "GET", f"{self.base}{self.PROJECTS_ROUTE}",
+            params={"limit": 100}, timeout=timeout,
+        )
+        listing.raise_for_status()
+        for project in (listing.json() or {}).get("projects") or []:
+            if project.get("name") == name:
+                return int(project["id"])
+
+        created = requests.request(
+            "POST", f"{self.base}{self.PROJECTS_ROUTE}",
+            json={"name": name,
+                  "description": "Jobs submitted by the VibeMind brain."},
+            timeout=timeout,
+        )
+        created.raise_for_status()
+        return int(created.json()["id"])
+
+    def _resolve_latest_job_id(self, timeout: float, project_id: int) -> int:
+        """The most recent job of our project.
+
+        code.status / code.show / code.cancel carry no job id - they mean
+        "the run that is going on". list_jobs orders by created_at desc,
+        so the first row is that run. Raising when there is none beats
+        probing job 1 and reporting on a stranger's job.
+        """
+        listing = requests.request(
+            "GET", f"{self.base}{self.JOBS_ROUTE}",
+            params={"project_id": project_id, "limit": 1}, timeout=timeout,
+        )
+        listing.raise_for_status()
+        jobs = (listing.json() or {}).get("jobs") or []
+        if not jobs:
+            raise RuntimeError(
+                f"no coding-engine job exists for project {project_id} - "
+                f"nothing to report on"
+            )
+        return int(jobs[0]["id"])
+
+    # -- the call --------------------------------------------------------
     def _call(self, payload: Dict[str, Any]) -> Any:
         timeout = float(os.environ.get("CAPABILITY_HTTP_TIMEOUT_S", "120"))
         self._assert_healthy(timeout)
 
         route = self.route
         request_payload = dict(payload)
-        for name in ("project_id",):
-            marker = "{" + name + "}"
-            if marker in route:
-                value = request_payload.pop(name, None)
-                if value in (None, ""):
-                    raise ValueError(f"coding-engine route requires {name}")
-                route = route.replace(marker, str(value))
+        submits_job = self.method == "POST" and route == self.JOBS_ROUTE
 
-        if route == "/api/start" and "requirements_json" not in request_payload:
+        project_id = None
+        if submits_job or "{project_id}" in route:
+            project_id = request_payload.pop("project_id", None)
+            if project_id in (None, ""):
+                project_id = self._resolve_project_id(timeout)
+            project_id = int(project_id)
+            route = route.replace("{project_id}", str(project_id))
+
+        if "{job_id}" in route:
+            job_id = request_payload.pop("job_id", None)
+            if job_id in (None, ""):
+                job_id = self._resolve_latest_job_id(
+                    timeout, self._resolve_project_id(timeout)
+                )
+            route = route.replace("{job_id}", str(int(job_id)))
+
+        if submits_job:
+            # JobSubmit wants project_id int + requirements_json STRING.
             description = (
                 request_payload.pop("description", None)
                 or request_payload.pop("_intent", None)
                 or request_payload.pop("input", None)
                 or request_payload.pop("value", None)
             )
-            requirements = dict(request_payload)
-            if description not in (None, ""):
-                requirements["description"] = description
-            request_payload = {"requirements_json": requirements}
+            requirements = request_payload.pop("requirements_json", None)
+            if requirements is None:
+                requirements = dict(request_payload)
+                if description not in (None, ""):
+                    requirements["description"] = description
+            # The engine's DAGParser reads "requirements" or "features" and
+            # nothing else. A bare {"description": ...} is valid JSON, is
+            # accepted, and yields a job with zero requirements - it runs
+            # and does nothing. A free-text intent from the Brain becomes
+            # one requirement instead. Measured against a live engine on
+            # 2026-09-08: the unwrapped form produced total_requirements=0.
+            if isinstance(requirements, dict) and not (
+                requirements.get("requirements") or requirements.get("features")
+            ):
+                text = requirements.pop("description", "") or ""
+                name = text.strip().split("\n")[0][:80] or "Brain request"
+                requirements = dict(
+                    requirements,
+                    requirements=[{
+                        "id": "REQ-001",
+                        "name": name,
+                        "description": text,
+                        "priority": "high",
+                    }],
+                )
+            if not isinstance(requirements, str):
+                requirements = json.dumps(requirements, ensure_ascii=False)
+            source_file = request_payload.pop("source_file", None)
+            request_payload = {
+                "project_id": project_id,
+                "requirements_json": requirements,
+            }
+            if source_file:
+                request_payload["source_file"] = source_file
 
         url = f"{self.base}{route}"
         kwargs: Dict[str, Any] = {"timeout": timeout}
@@ -341,6 +460,7 @@ class CodingEngineExecutor(_BaseRemoteExecutor):
         if ct.startswith("application/json"):
             return resp.json()
         return {"raw": resp.text}
+
 
 
 class OpenFangExecutor(_BaseRemoteExecutor):

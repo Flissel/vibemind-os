@@ -11,9 +11,10 @@ Fehlertext steht je ein Schluessel.
 import json
 import time
 import os
+import urllib.parse
 import urllib.request
 
-from spaces.marketing.claw import llm, schaufenster
+from spaces.marketing.claw import ablage, laura, llm, schaufenster, wissen
 
 FEHLER_MAXLAENGE = 300
 
@@ -228,10 +229,145 @@ def _liste(werte) -> list:
     return [str(w).strip() for w in werte if str(w).strip()]
 
 
+# Wohin WhatsApp wirklich gehoert. Der Kanal EXISTIERT in diesem Haus — nur
+# nicht in diesem Space: sales-claw verschickt ihn ueber openwa
+# (`dispatch.py`), pro KONTAKT statt als Rundnachricht und mit eigener
+# Einwilligungspruefung. Wer hier einen whatsapp-Entwurf anlegt, legt eine
+# Datei an, die nie rausgeht.
+_WOHIN_STATT = {
+    "whatsapp": ("WhatsApp verschickt sales-claw ueber openwa — pro Kontakt, "
+                 "mit Einwilligungspruefung. Schreib den Text und uebergib ihn "
+                 "dorthin, statt hier einen Rundnachrichten-Entwurf anzulegen."),
+    "linkedin": ("LinkedIn laeuft ueber sales-claws Einmal-Versender, nicht "
+                 "ueber diesen Space."),
+}
+
+
+def _kanal_kann_senden(kanal: str) -> tuple:
+    """(geht, hinweis) — fragt die API, haelt keine Liste im Kopf.
+
+    Ein Kanal ohne gebauten Versandweg nimmt Entwuerfe stumm an: sie landen
+    in broadcast_proposals, sehen fertig aus und koennen nie zugestellt
+    werden (gemessen 04.09. und 12.09.2026 fuer `whatsapp`). Die Auskunft
+    kommt vom Dienst, damit die Pruefung von selbst mitwaechst, sobald ein
+    Versandweg dazukommt.
+
+    Faellt die Auskunft aus, wird NICHT blockiert: ein Entwurf darf nicht an
+    der Verfuegbarkeit einer Nebenroute haengen.
+    """
+    antwort = _api("/api/channels")
+    if not antwort["ok"]:
+        return True, ""
+    roh = (antwort.get("daten") or {})
+    kanaele = roh.get("data") if isinstance(roh, dict) else None
+    # Kommt etwas anderes zurueck als eine Liste von Objekten, ist die
+    # Auskunft unbrauchbar — dann NICHT blockieren, sondern durchlassen.
+    # (Ohne diese Pruefung lief die Schleife ueber die Schluessel eines
+    # dicts und starb an `'str' object has no attribute 'get'`.)
+    if not isinstance(kanaele, list) or not all(isinstance(k, dict) for k in kanaele):
+        return True, ""
+    passend = next((k for k in kanaele if k.get("channel") == kanal), None)
+    if passend is None:
+        moeglich = sorted(k["channel"] for k in kanaele
+                          if k.get("enabled") and k.get("send_implemented"))
+        return False, (f"Kanal '{kanal}' kennt die Marketing-API nicht. "
+                       f"Versandfaehig: {', '.join(moeglich) or 'keiner'}.")
+    if passend.get("enabled") and passend.get("send_implemented"):
+        return True, ""
+    moeglich = sorted(k["channel"] for k in kanaele
+                      if k.get("enabled") and k.get("send_implemented"))
+    hinweis = (f"Kanal '{kanal}' hat hier keinen Versandweg — ein Entwurf "
+               f"darauf koennte nie zugestellt werden. Versandfaehig: "
+               f"{', '.join(moeglich) or 'keiner'}.")
+    if kanal in _WOHIN_STATT:
+        hinweis += " " + _WOHIN_STATT[kanal]
+    return False, hinweis
+
+
+# Die Kanaele, die sales-claw wirklich zustellt. Die Liste steht hier NICHT,
+# um eine Entscheidung zu treffen — die faellt in der DB-Funktion — sondern
+# damit der Hinweistext unten sie nennen kann, ohne einen Netzgriff dafuer
+# zu brauchen. Weicht sie eines Tages ab, sagt die Absage aus der Datenbank
+# die Wahrheit, nicht diese Zeile.
+VERSANDKANAELE = ("whatsapp", "email", "linkedin", "linkedin_post")
+
+
+def versand_beauftragen(kanal: str, nachricht: str, empfaenger: str = "",
+                        betreff: str = "", medien_datei: str = "",
+                        kampagne: str = "", quelle: str = "") -> dict:
+    """Bittet sales-claw, diese Nachricht zuzustellen. DER EINZIGE WEG NACH
+    DRAUSSEN (Betreiber-Entscheid 12.09.2026).
+
+    Dieser Space versendet nichts — er schreibt. Ein Auftrag ist eine BITTE:
+    sales-claw ordnet die Adresse einem Kontakt zu, laesst sie durch seine
+    Tore laufen (gemeinsame Verbotsliste, Loeschantrag, Privat-Flag,
+    UWG-Erstansprache, WhatsApp-Freigabe, Anhang) und macht daraus
+    HOECHSTENS einen Entwurf. Freigeben tut den ein Mensch.
+
+    kanal:
+      whatsapp | email | linkedin  — Nachricht AN EINEN KONTAKT; `empfaenger`
+                                     ist die E-Mail oder die Telefonnummer.
+      linkedin_post                — Beitrag aufs eigene Profil: KEIN
+                                     `empfaenger`, dafuer `betreff` als Thema.
+    Telegram gibt es hier nicht — sales-claw hat dafuer keinen Versandweg.
+
+    medien_datei: der BLOSSE Dateiname aus dem Schaufenster (post_ablegen,
+    pdf_erstellen legen dorthin ab), ohne Pfad.
+
+    Eine Absage kommt als `{"ok": false, "fehler": "<Grund>"}` — flach, nicht
+    als negatives Ergebnis in einer erfolgreichen Huelle: `ok: true` mit einem
+    zweiten `ok: false` darin wird ueberlesen, und das Ueberlesen einer
+    Absage ist hier der teuerste Fehler. Derselbe Auftrag zweimal erzeugt
+    keine zweite Nachricht — die Antwort traegt dann `wiederholung: true`
+    und dieselbe Kennung.
+    """
+    if not (nachricht or "").strip():
+        return {"ok": False, "fehler": "Die Nachricht ist leer."}
+    antwort = _api("/api/versandauftraege", {
+        "kanal": kanal, "empfaenger": empfaenger, "nachricht": nachricht,
+        "betreff": betreff, "medien_datei": medien_datei,
+        "kampagne": kampagne, "quelle": quelle})
+    if not antwort["ok"]:
+        return antwort
+    ergebnis = ((antwort.get("daten") or {}).get("data")) or {}
+    if not isinstance(ergebnis, dict) or "ok" not in ergebnis:
+        return {"ok": False, "fehler": (
+            "Die Marketing-API hat auf den Auftrag etwas Unerwartetes "
+            "geantwortet — es ist unklar, ob er angelegt wurde. Sieh mit "
+            "versandauftraege_lesen nach, bevor du es noch einmal versuchst.")}
+    if not ergebnis.get("ok"):
+        return {"ok": False, "fehler": ergebnis.get("grund")
+                or "Der Auftrag wurde ohne Begruendung abgelehnt."}
+    return {"ok": True, "daten": {
+        "auftrag_id": ergebnis.get("id"),
+        "wiederholung": bool(ergebnis.get("wiederholung")),
+        "hinweis": ergebnis.get("grund", "")}}
+
+
+def versandauftraege_lesen(status: str = "", anzahl: int = 20) -> dict:
+    """Was aus deinen Auftraegen geworden ist: offen, angenommen (mit der
+    Entwurfskennung) oder abgelehnt — dann steht im Grund WOERTLICH, was
+    sales-claws Tor gesagt hat. `status` leer heisst: alle."""
+    pfad = f"/api/versandauftraege?limit={max(1, min(int(anzahl or 20), 100))}"
+    if (status or "").strip():
+        pfad += "&status=" + urllib.parse.quote((status or "").strip())
+    antwort = _api(pfad)
+    if not antwort["ok"]:
+        return antwort
+    return {"ok": True, "daten": (antwort.get("daten") or {}).get("data") or []}
+
+
 def kampagne_entwerfen(ziel: str, zielgruppe: str, kanal: str, kontext: str = "",
                        belege=None, zu_klaeren=None) -> dict:
     """Entwirft eine Kampagne: Briefing + Text als broadcast_proposals-Draft
     (Status draft — versendet NIE) plus Dateien im Schaufenster.
+
+    DAS IST DAS REDAKTIONELLE ARTEFAKT, NICHT DER WEG NACH DRAUSSEN. Ein
+    Vorschlag landet in der Freigabe-Oberflaeche und wird dort gelesen,
+    geaendert und beurteilt — zugestellt wird er nie. Seit dem
+    Betreiber-Entscheid vom 12.09.2026 versendet dieser Space ueberhaupt
+    nichts mehr: wer eine Nachricht raus haben will, ruft
+    `versand_beauftragen` und uebergibt sie sales-claw.
 
     BELEGPFLICHT (Betreiber-Entscheid 03.09.2026): `belege` sind die Quellen
     aus der Wissensbasis, auf die sich die Produktaussagen stuetzen (je
@@ -242,6 +378,9 @@ def kampagne_entwerfen(ziel: str, zielgruppe: str, kanal: str, kontext: str = ""
     """
     belege = _liste(belege)
     zu_klaeren = _liste(zu_klaeren)
+    geht, hinweis = _kanal_kann_senden(kanal)
+    if not geht:
+        return {"ok": False, "fehler": hinweis}
     r = _llm_json(
         "Du bist Marketing-Texter fuer VibeMind. Antworte NUR mit einem "
         'JSON-Objekt {"betreff": ..., "text": ..., "begruendung": ...}. '
@@ -261,10 +400,18 @@ def kampagne_entwerfen(ziel: str, zielgruppe: str, kanal: str, kontext: str = ""
         "channel": kanal,
         "draft_subject": str(entwurf.get("betreff", "")),
         "draft_body_text": str(entwurf.get("text", "")),
-        # Belege wandern in die Freigabe-UI mit — der Betreiber genehmigt nicht blind.
-        "draft_body_html": ("<h4>Belege</h4><ul>" + "".join(f"<li>{b}</li>" for b in belege)
-                            + "</ul><h4>Zu klaeren</h4><ul>"
-                            + "".join(f"<li>{z}</li>" for z in zu_klaeren) + "</ul>"),
+        # STRUKTUR, NICHT DARSTELLUNG. Frueher standen Belege und "Zu klaeren"
+        # hier als fertiges HTML in `draft_body_html` — der Spalte fuer den
+        # NACHRICHTENRUMPF. Zwei Fehler auf einmal: interne Notizen an einer
+        # Stelle, die spaeter versendet wird, und Daten in Darstellung
+        # gebacken, sodass sich das Aussehen nicht mehr wechseln liess.
+        # `draft_channel_params` ist jsonb, war auf allen Zeilen leer und ist
+        # genau dafuer da.
+        "draft_channel_params": {
+            "ziel": ziel, "zielgruppe": zielgruppe,
+            "belege": belege, "zu_klaeren": zu_klaeren,
+            "begruendung": str(entwurf.get("begruendung", "")),
+        },
         "actor": "marketing-claw",
     })
     if not antwort["ok"]:
@@ -308,3 +455,264 @@ def layout_entwerfen(thema: str, format: str = "landingpage") -> dict:
         text = text.split("\n", 1)[1].rsplit("```", 1)[0]
     kurz = "".join(c if c.isalnum() else "-" for c in format.lower())[:30]
     return {"ok": True, "dateien": [schaufenster.ablegen(thema, f"layout-{kurz}.html", text)]}
+
+
+# --- Laura: Bewegtbild als Belegquelle (nur lesend) -------------------------
+# Der Marketing-Agent hatte bis 04.09.2026 keinen Weg zu den Produktvideos;
+# die Entwuerfe beriefen sich deshalb auf Text allein. Diese zwei Werkzeuge
+# sind der Zugang — Passthrough ohne Geschaeftslogik, siehe laura.py.
+
+
+def videos() -> dict:
+    """Die Videos aus Laura, jedes mit Projekt und Kennung. Nur lesend.
+
+    Die Kennung ist der Schluessel fuer video_transkript(). Ist Laura leer,
+    kommt eine leere Liste mit ok=True zurueck — das ist eine Antwort, keine
+    Stoerung.
+    """
+    return laura.alle_videos()
+
+
+def video_transkript(video_id: str) -> dict:
+    """Das Transkript eines Videos — der belegbare Text zum Bild. Nur lesend.
+
+    Segmente mit Zeitstempel. Was hier steht, ist zitierfaehig; was nicht
+    hier steht, gehoert in "Zu klaeren" und nicht in den Entwurf.
+    """
+    return laura.transkript(video_id)
+
+
+# --- Die ganze Wissensbasis befragen ----------------------------------------
+# `dokumente()` liest EINE Quelle. Der Agent nutzte davon bis 04.09.2026 genau
+# eine von vierzehn — nicht aus Faulheit, sondern weil ihm der Ueberblick
+# fehlte, welche Quelle die Antwort traegt. `wissen_fragen` dreht das um: es
+# sammelt alles, waehlt aus und laesst das Modell mit Belegpflicht antworten.
+
+# Die Wissensbasis aendert sich in Minuten, nicht in Sekunden; ohne
+# Zwischenspeicher kostete jede Frage 15 Abrufe ueber das LAN zur VM.
+_wissen_zwischenspeicher: dict = {}
+WISSEN_FRISCHE_SEKUNDEN = 300
+
+
+def _wissen_sammeln() -> dict:
+    """Alle Dokumente aller Quellen, mit Text. Wirft nie.
+
+    Eine stumme Quelle kippt nicht die ganze Sammlung — sie wird gezaehlt und
+    gemeldet, damit ein Ausfall sichtbar bleibt statt still zu machen.
+    """
+    jetzt = time.time()
+    zwischen = _wissen_zwischenspeicher.get("stand")
+    if zwischen and jetzt - zwischen["zeit"] < WISSEN_FRISCHE_SEKUNDEN:
+        return zwischen["wert"]
+
+    quellen = wissensquellen()
+    if not quellen["ok"]:
+        return quellen
+    stuecke, stumm = [], []
+    for quelle in quellen["daten"]:
+        antwort = dokumente(str(quelle.get("id", "")), mit_inhalt=True)
+        if not antwort["ok"]:
+            stumm.append(quelle.get("name", quelle.get("id")))
+            continue
+        for dok in antwort["daten"]:
+            text = dok.get("content") or dok.get("inhalt") or ""
+            if text.strip():
+                stuecke.append({"quelle": quelle.get("name", "?"),
+                                "dokument": dok.get("name", "?"), "text": text})
+    ergebnis = {"ok": True, "daten": stuecke, "stumme_quellen": stumm}
+    _wissen_zwischenspeicher["stand"] = {"zeit": jetzt, "wert": ergebnis}
+    return ergebnis
+
+
+def wissen_fragen(frage: str) -> dict:
+    """Beantwortet eine Frage aus ALLEN Wissensquellen, mit Belegen. Nur lesend.
+
+    Rueckgabe unter "daten": `antwort` (Text mit Belegen in Klammern),
+    `quellen` (die Dokumente, die wirklich im Auftrag standen — Grundwahrheit,
+    keine Behauptung des Modells) und `geprueft` (wie viele Dokumente die
+    Auswahl gesehen hat).
+
+    Findet die Auswahl nichts, sagt das Werkzeug das und fragt kein Modell.
+    Eine erfundene Antwort waere hier teurer als eine Fehlanzeige.
+    """
+    if not frage or not frage.strip():
+        return {"ok": False, "fehler": "Ohne Frage keine Antwort."}
+    gesammelt = _wissen_sammeln()
+    if not gesammelt["ok"]:
+        return gesammelt
+
+    gewaehlt = wissen.auswaehlen(frage, gesammelt["daten"])
+    belege = [wissen.bezeichnen(s) for s in gewaehlt]
+    if not gewaehlt:
+        return {"ok": True, "daten": {
+            "antwort": ("Dazu steht nichts in der Wissensbasis. "
+                        f"Durchsucht wurden {len(gesammelt['daten'])} Dokumente. "
+                        "Das gehoert unter 'Zu klaeren', nicht in den Entwurf."),
+            "quellen": [], "geprueft": len(gesammelt["daten"])}}
+
+    system, nutzer = wissen.auftrag(frage, gewaehlt)
+    antwort = llm.frage(system, nutzer)
+    if not antwort["ok"]:
+        # Das Modell fehlt, der Rohstoff nicht — wer die Belege kennt, kann
+        # von Hand weiterarbeiten. Sie wegzuwerfen waere Verschwendung.
+        return {"ok": False, "fehler": antwort["fehler"], "quellen": belege}
+    return {"ok": True, "daten": {"antwort": antwort["text"], "quellen": belege,
+                                  "geprueft": len(gesammelt["daten"])}}
+
+
+def entwuerfe_lesen(status: str = "draft", kanal: str = "", anzahl: int = 20) -> dict:
+    """Die bisherigen Kampagnen-Entwuerfe lesen (Betreff, Text, Status).
+
+    PFLICHTSCHRITT VOR JEDEM NEUEN ENTWURF. Am 04.09.2026 lagen sieben
+    Entwuerfe derselben Kampagne im Bestand — alle sieben dieselbe
+    Aufzaehlung von vier Funktionen, nur mit anderen Emojis. Wer seine
+    Historie nicht liest, schreibt sie zum achten Mal.
+
+    Liest `marketing.broadcast_proposals` (WAS gesendet wuerde), nicht die
+    Publikums-Vorschlaege. Nur lesend. status="" heisst: alle.
+    """
+    teile = []
+    if status.strip():
+        teile.append("status=" + urllib.parse.quote(status.strip()))
+    if kanal.strip():
+        teile.append("channel=" + urllib.parse.quote(kanal.strip()))
+    teile.append(f"limit={max(1, min(100, int(anzahl)))}")
+    return _api("/api/broadcast_proposals?" + "&".join(teile))
+
+
+def post_ablegen(name: str, inhalt: str, art: str = "md") -> dict:
+    """Legt einen fertigen Beitrag in `/media-erzeugt` ab — dort findet
+    sales-claw ihn.
+
+    `/media` ist der Ordner des MENSCHEN und fuer dich schreibgeschuetzt;
+    hierhin schreibt die Maschine. sales-claw liest beide, in dieser
+    Rangfolge. Erlaubte Arten: md, html, txt, json. Ueberschreibt nie —
+    ein gleichnamiger Beitrag bekommt eine Zeitmarke.
+
+    Das ist eine ABLAGE, kein Versand: was hier liegt, geht erst raus,
+    wenn der Betreiber es freigibt.
+    """
+    return ablage.ablegen(name, inhalt, art)
+
+
+# Wofuer eine Unterlage gedacht ist — steht im DATEINAMEN, nicht in einem
+# Unterordner: `medien.pruefe("Marketing/post.pdf")` lehnt jeden Pfadanteil ab
+# ("kein '/', kein '\\'"), und diese Pruefung ist der Riegel gegen einen
+# Ausbruch aus dem Medienordner. Sortiert wird alphabetisch, also stehen die
+# Unterlagen eines Zwecks in `medien_liste` ohnehin beieinander.
+ZWECKE = ("marketing", "email", "mobile")
+
+# sales-claw riegelt bei 15 MB ab (medien.py MAX_BYTES). Das faellt lieber
+# hier auf als beim Anhaengen eines freigegebenen Entwurfs.
+MAX_ANHANG_BYTES = 15 * 1024 * 1024
+
+
+def pdf_erstellen(name: str, titel: str, text: str, untertitel: str = "",
+                  belege=None, zu_klaeren=None, zweck: str = "marketing",
+                  handlung: str = "", layout: str = "dunkel") -> dict:
+    """Setzt eine Unterlage als PDF und legt sie ab, wo sales-claw sie findet.
+
+    DAS ERSTE FORMAT, DAS WIRKLICH RAUSGEHEN KANN: eine `.md` liegt zwar im
+    Medienordner, wird aber von `medien_liste` nicht einmal angezeigt —
+    erlaubt sind nur .pdf/.jpg/.jpeg/.png/.mp3/.ogg/.mp4/.ics.
+
+    `handlung` ist der Aufruf zum Handeln — er erscheint als heller Kasten
+    unter dem Text. Ohne echte Adresse lieber leer lassen und die fehlende
+    Adresse unter `zu_klaeren` nennen.
+
+    `zweck` bestimmt den Namensanfang: marketing, email oder mobile.
+    Aussehen und Farben kommen aus dem Pitch-Deck. Versendet wird nichts.
+    """
+    zweck = (zweck or "").strip().lower()
+    if zweck not in ZWECKE:
+        return {"ok": False, "fehler":
+                f"Zweck '{zweck}' gibt es nicht. Erlaubt: " + ", ".join(ZWECKE)}
+    # ERST HIER laden, nicht oben im Modul: `pdf` zieht reportlab nach, und
+    # reportlab liegt nur in `.venv`. Ein Import am Modulkopf haette den
+    # GANZEN Sidecar mitgerissen — alle sechzehn Werkzeuge weg, weil eines
+    # eine Bibliothek vermisst. Fail-soft heisst: nur dieses eine faellt aus.
+    try:
+        from spaces.marketing.claw import pdf
+    except ImportError as e:
+        return {"ok": False, "fehler":
+                f"PDF-Satz nicht verfuegbar ({e}). Der Sidecar braucht "
+                f"reportlab; er startet mit .venv/Scripts/python.exe."}
+    try:
+        roh = pdf.bauen(titel=titel, text=text, untertitel=untertitel,
+                        belege=belege, zu_klaeren=zu_klaeren, handlung=handlung,
+                        layout=layout)
+    except Exception as e:  # noqa: BLE001 — fail-soft ist der Vertrag
+        return {"ok": False, "fehler": f"PDF-Satz fehlgeschlagen "
+                                       f"({type(e).__name__}: {e})"}
+    if len(roh) > MAX_ANHANG_BYTES:
+        return {"ok": False, "fehler":
+                f"PDF ist {len(roh) // 1024 // 1024} MB gross; sales-claw "
+                f"haengt hoechstens 15 MB an."}
+    return ablage.ablegen(f"{zweck}-{name}", roh, art="pdf")
+
+
+def entwurf_holen(proposal_id: str) -> dict:
+    """Einen Kampagnen-Entwurf samt Struktur lesen. Nur lesend."""
+    if not proposal_id or not proposal_id.strip():
+        return {"ok": False, "fehler": "Ohne Kennung kein Entwurf."}
+    return _api("/api/curator/broadcast_proposals/"
+                + urllib.parse.quote(proposal_id.strip(), safe="")
+                + "?api_key=" + urllib.parse.quote(
+                    os.environ.get("MARKETING_PROPOSAL_API_KEY", ""), safe=""))
+
+
+def pdf_aus_entwurf(proposal_id: str, layout: str = "dunkel",
+                    handlung: str = "") -> dict:
+    """Setzt einen BESTEHENDEN Entwurf als PDF — Inhalt kommt aus der DB.
+
+    DER UNTERSCHIED ZU `pdf_erstellen`: hier gibst du eine Kennung, keinen
+    Text. Der Inhalt liegt im `broadcast_proposal`, das Aussehen in `layout`.
+    Ein anderes Layout ist damit ein Aufruf und kein neuer Entwurf — kein
+    Modell, keine zweite Fassung, die von der ersten abweicht.
+
+    `layout`: "dunkel" (Pitch-Deck-Gewand, fuer Bildschirm) oder "hell"
+    (fuer Druck und Weiterleitung). `handlung` uebersteuert den Aufruf zum
+    Handeln aus dem Entwurf.
+    """
+    antwort = entwurf_holen(proposal_id)
+    if not antwort["ok"]:
+        return antwort
+    daten = antwort["daten"].get("data") or antwort["daten"]
+    parameter = daten.get("draft_channel_params") or {}
+    if isinstance(parameter, str):
+        try:
+            parameter = json.loads(parameter)
+        except ValueError:
+            parameter = {}
+
+    kanal = (daten.get("channel") or "").strip().lower()
+    # Kanal -> Zweck im Dateinamen. Was nicht passt, ist Marketing.
+    zweck = {"email": "email", "whatsapp": "mobile", "telegram": "mobile"}.get(
+        kanal, "marketing")
+
+    try:
+        from spaces.marketing.claw import pdf
+    except ImportError as e:
+        return {"ok": False, "fehler":
+                f"PDF-Satz nicht verfuegbar ({e}). Der Sidecar braucht "
+                f"reportlab; er startet mit .venv/Scripts/python.exe."}
+    try:
+        roh = pdf.bauen(
+            titel=str(daten.get("draft_subject") or parameter.get("ziel") or "VibeMind"),
+            text=str(daten.get("draft_body_text") or ""),
+            untertitel=str(parameter.get("zielgruppe") or ""),
+            belege=list(parameter.get("belege") or []),
+            zu_klaeren=list(parameter.get("zu_klaeren") or []),
+            handlung=handlung or str(parameter.get("handlung") or ""),
+            layout=layout)
+    except Exception as e:  # noqa: BLE001 — fail-soft ist der Vertrag
+        return {"ok": False, "fehler": f"PDF-Satz fehlgeschlagen "
+                                       f"({type(e).__name__}: {e})"}
+    if len(roh) > MAX_ANHANG_BYTES:
+        return {"ok": False, "fehler":
+                f"PDF ist {len(roh) // 1024 // 1024} MB gross; sales-claw "
+                f"haengt hoechstens 15 MB an."}
+    name = str(parameter.get("ziel") or daten.get("draft_subject") or proposal_id)
+    # ERSETZEN ist hier richtig: es ist derselbe Entwurf, nur neu gesetzt.
+    # Wer zwischen Layouts wechselt, will eine Datei sehen, nicht zehn.
+    return ablage.ablegen(f"{zweck}-{name}", roh, art="pdf", ersetzen=True)

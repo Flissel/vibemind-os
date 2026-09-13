@@ -117,6 +117,31 @@ class TestLauraExport(unittest.TestCase):
         self.assertEqual(anzahl, 0)
         self.assertEqual(geschrieben, [])
 
+    def test_steckbrief_nennt_die_objekt_adresse_wenn_es_eine_gibt(self):
+        """Ohne die Adresse weiss marketing nur, DASS ein Video existiert.
+
+        Laura fuellt `object_key`, sobald ihr Objektspeicher an ist. Der Steckbrief
+        ist die einzige Stelle, an der beide claws davon erfahren koennen -- steht
+        sie nicht drin, bleibt das Video unerreichbar und jemand kopiert wieder von
+        Hand ueber SSH.
+        """
+        asset = dict(ASSETS[0], object_key="laura/assets/a1.mp4")
+
+        inhalt = lx.dokument_inhalt(PROJEKTE[0], asset, SEGMENTE)
+
+        self.assertIn("laura/assets/a1.mp4", inhalt)
+        # Der lokale Pfad bleibt daneben stehen: er ist weiterhin der Arbeitsweg
+        # fuer alles, was auf derselben Maschine schneidet.
+        self.assertIn("E:/material/interview-felix.mp4", inhalt)
+
+    def test_steckbrief_ohne_objekt_adresse_bleibt_wie_bisher(self):
+        """Der Normalfall: kein Objektspeicher, kein zusaetzliches Feld, keine
+        irrefuehrende Zeile ueber einen Bucket, den es nicht gibt."""
+        inhalt = lx.dokument_inhalt(PROJEKTE[0], ASSETS[0], SEGMENTE)
+
+        self.assertNotIn("Objekt", inhalt)
+        self.assertIn("Die Datei bleibt im Dateisystem", inhalt)
+
     def test_laura_aus_sagt_es_und_schreibt_nichts(self):
         def laura_tot(pfad):
             raise RuntimeError("Laura nicht erreichbar (ConnectionRefusedError)")

@@ -43,3 +43,6 @@
 [submodule "spaces/sales-claw"]
 	path = spaces/sales-claw
 	url = https://github.com/Flissel/sales-claw.git
+[submodule "spaces/learning"]
+	path = spaces/learning
+	url = https://github.com/Flissel/vibemind-learning.git

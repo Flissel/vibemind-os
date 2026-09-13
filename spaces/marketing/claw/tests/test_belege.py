@@ -49,8 +49,17 @@ class TestBelege(unittest.TestCase):
         self.assertIn("keine Belege angegeben", inhalt)
 
     def test_belege_landen_auch_im_draft_kontext(self):
-        """Der Draft in der Staging-Tabelle traegt die Belege im HTML-Feld,
-        damit der Betreiber sie in der UI sieht."""
+        """Der Draft traegt die Belege mit, damit der Betreiber sie in der UI
+        sieht — die Anforderung bleibt, der ORT hat sich geaendert.
+
+        Frueher standen sie als gerendertes HTML in `draft_body_html`, der
+        Spalte fuer den Nachrichtenrumpf. Zwei Fehler: interne Notizen an
+        einer Stelle, die spaeter versendet wird, und Daten in Darstellung
+        gebacken — das Aussehen liess sich damit nicht mehr wechseln, ohne
+        den Text neu erzeugen zu lassen. Seit 04.09.2026 stehen sie als
+        Struktur in `draft_channel_params` (jsonb, war auf allen 17 Zeilen
+        leer), und die Freigabe-Ansicht liest sie von dort.
+        """
         antwort = json.dumps({"betreff": "B", "text": "T", "begruendung": "G"})
         rekorder = Rekorder([(200, json.dumps(
             {"success": True, "data": {"id": "bp-9", "status": "draft"}}))])
@@ -58,7 +67,9 @@ class TestBelege(unittest.TestCase):
              mock.patch.object(werkzeuge, "_roh_anfrage", rekorder):
             werkzeuge.kampagne_entwerfen("Z", "G", "telegram", belege=["Quelle A: Fakt"])
         gesendet = json.loads(rekorder.aufrufe[0]["daten"])
-        self.assertIn("Quelle A", gesendet.get("draft_body_html", ""))
+        self.assertIn("Quelle A: Fakt",
+                      gesendet["draft_channel_params"]["belege"])
+        self.assertNotIn("Quelle A", gesendet.get("draft_body_html") or "")
 
 
 if __name__ == "__main__":

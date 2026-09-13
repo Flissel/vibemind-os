@@ -42,8 +42,17 @@ from pathlib import Path
 PKG_ROOT = next(p.parent for p in Path(__file__).resolve().parents if p.name == "spaces")
 REPO_ROOT = next((p for p in (PKG_ROOT, *PKG_ROOT.parents) if (p / "vibemind-os").is_dir()), PKG_ROOT)
 # Fail loud + early if the script ever moves and we mis-resolve the root.
-assert (REPO_ROOT / "spaces" / "marketing" / "sync" / "_db.py").exists(), (
-    f"REPO_ROOT mis-detected: {REPO_ROOT}"
+#
+# GEGEN PKG_ROOT, NICHT GEGEN REPO_ROOT (korrigiert 12.09.2026): die beiden
+# sind verschiedene Dinge. PKG_ROOT ist das Verzeichnis, das `spaces/`
+# ENTHAELT (hier `vibemind-os`); REPO_ROOT ist das aeussere Repo darueber,
+# und das braucht es nur fuer die `.env`. Die Zusicherung suchte
+# `spaces/marketing/sync/_db.py` unter dem AEUSSEREN Repo — dort liegt es
+# nie, sobald vibemind-os ein Submodul ist. Ergebnis: der Import schlug
+# schon beim Einsammeln fehl und nahm die ganze Marketing-Suite mit
+# (`Interrupted: 1 error during collection`).
+assert (PKG_ROOT / "spaces" / "marketing" / "sync" / "_db.py").exists(), (
+    f"PKG_ROOT mis-detected: {PKG_ROOT}"
 )
 
 ENV_PATH = REPO_ROOT / ".env"
@@ -439,7 +448,9 @@ def worker_once_probe(msgid_core: str) -> bool | None:
         env["MARKETING_IMAP_STATE"] = state_path
         res = subprocess.run(
             [sys.executable, "-m", "spaces.marketing.sync.worker_imap_sync", "--once"],
-            cwd=str(REPO_ROOT),
+            # PKG_ROOT, nicht REPO_ROOT: `python -m spaces.marketing…`
+            # findet das Paket nur dort, wo `spaces/` liegt.
+            cwd=str(PKG_ROOT),
             env=env,
             capture_output=True,
             text=True,

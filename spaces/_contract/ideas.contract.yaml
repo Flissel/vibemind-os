@@ -1,0 +1,63 @@
+# Schlanker Vertrag für den bestehenden Space `ideas` (ADR-0004).
+#
+# Er trägt nur den Anspruch: welche Capability gehört zu diesem Space, und
+# schreibt sie. Ausführungsziel und Validator stehen in capabilities.yaml
+# und werden beim Prüfen dort gelesen — nicht hier wiederholt.
+#
+# `writes` ist am Code abgelesen, nicht am Namen geraten:
+#   supabase:idea.format / .create / .update / .delete / .move /
+#   .to_project / .auto_link / .disconnect  -> schreiben
+#   supabase:idea.list / .count / .find                -> lesen
+#   supabase:idea.llm  -> gemischt, je Capability geprüft:
+#       idea_expand       legt Canvas-Knoten an  (create_canvas_node)  -> schreibt
+#       idea_link_to_root legt eine Kante an     (create_edge)         -> schreibt
+#       idea_classify / idea_explain / idea_analyze_links              -> lesen
+
+id: ideas
+description: "Ideen sammeln, formatieren, verknüpfen und in Projekte überführen"
+prefixes: ["idea."]
+
+capabilities:
+  # --- anlegen und überführen ---
+  - {name: idea_add,               writes: true}
+  - {name: idea_create_batch,      writes: true}
+  - {name: idea_to_project,        writes: true}
+
+  # --- verändern ---
+  - {name: idea_update,            writes: true}
+  - {name: idea_delete,            writes: true}
+  - {name: idea_move,              writes: true}
+
+  # --- Graph ---
+  - {name: idea_connect,           writes: true}
+  - {name: idea_disconnect,        writes: true}
+  - {name: idea_auto_link,         writes: true}
+  - {name: idea_link_to_root,      writes: true}
+
+  # --- Formatierung (schreibt den Knoteninhalt um) ---
+  - {name: idea_format_table,      writes: true}
+  - {name: idea_format_note,       writes: true}
+  - {name: idea_format_action_list, writes: true}
+  - {name: idea_format_pros_cons,  writes: true}
+  - {name: idea_format_hierarchy,  writes: true}
+  - {name: idea_format_specs,      writes: true}
+  - {name: idea_format_kanban,     writes: true}
+  - {name: idea_format_mindmap,    writes: true}
+  - {name: idea_format_swot,       writes: true}
+  - {name: idea_format_user_story, writes: true}
+  - {name: idea_format_flowchart,  writes: true}
+  - {name: idea_convert_format,    writes: true}
+  - {name: idea_format_revert,     writes: true}
+
+  # --- LLM, schreibend ---
+  - {name: idea_expand,            writes: true}
+
+  # --- lesend ---
+  - {name: idea_list,              writes: false}
+  - {name: idea_count,             writes: false}
+  - {name: idea_find,              writes: false}
+  - {name: idea_explain,           writes: false}
+  - {name: idea_classify,          writes: false}
+  - {name: idea_analyze_links,     writes: false}
+  - {name: idea_format_list,       writes: false}
+  - {name: idea_format_get,        writes: false}

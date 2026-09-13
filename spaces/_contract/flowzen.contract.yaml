@@ -1,0 +1,30 @@
+# Schlanker Vertrag für den bestehenden Space `flowzen` (ADR-0004).
+#
+# Abgelesen an brain/the_brain/core/flowzen_ops.py:
+#
+#   rose.recommend  liest flowzen_checkins und rechnet eine Empfehlung
+#                   deterministisch aus. Der Code sagt es selbst:
+#                   `"mutated": False` (Zeile 58). Liest.
+#   rose.accept     POST /flowzen_activity — legt einen Vermerk an. Schreibt.
+#   rose.status     liest flowzen_checkins und flowzen_activity. Liest.
+#
+# BEMERKENSWERT: `accept_op` prüft seinen eigenen Schreibvorgang bereits
+# unabhängig nach — nach dem POST folgt ein GET auf
+# `/flowzen_activity?id=eq.{activity_id}`, und der gelesene `event_type`
+# wird mit dem geschriebenen verglichen (Zeile 78-82). Schlägt das fehl,
+# gibt die Operation `flowzen acceptance read-back failed` zurück.
+#
+# Das ist genau die unabhängige Rückfrage, die ein `truth:`-Validator leisten
+# soll — nur steckt sie INNERHALB der Operation. Von der Capability-Ebene aus
+# ist `rose.accept` deshalb nicht von einem Selbstberichter zu unterscheiden;
+# sein Validator ist `rule:flowzen_result`. Derselbe Fall wie bei
+# schedule_cancel/modify/snooze.
+
+id: flowzen
+description: "Empfehlungen aus Check-ins, Annahme als Aktivität vermerkt"
+prefixes: ["rose."]
+
+capabilities:
+  - {name: rose.recommend, writes: false}
+  - {name: rose.accept,    writes: true}
+  - {name: rose.status,    writes: false}
