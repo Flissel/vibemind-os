@@ -24,17 +24,30 @@ das eine Hoffnung; seit dem Schluss-Review ist es ein gemessenes Argument.
 
 ## Echte Fehler mit Betriebsfolgen
 
-**N1 — `urlopen` wirft bei ≥ 400, damit ist die Fehlerbehandlung
-unerreichbar. VORBESTEHEND** (per `git merge-base` zugeordnet, also nicht von
-diesem Zweig eingeführt). `urllib.request.urlopen` wirft für jeden Status
-≥ 400 einen `HTTPError`, statt ihn zurückzugeben. Folge: in
-`werkzeuge._openfang_uebernehmen` ist der `status != 200`-Pfad und damit der
-gesamte 409-/`erfordert_betreiber_entscheidung`-Block toter Code. Gemessen
-gegen einen lokalen Stellvertreter ergibt ein echter 409:
+**N1 — behoben (`588384f8`, 2026-09-15).** `urllib.request.urlopen` wirft
+für jeden Status ≥ 400 einen `HTTPError`, statt ihn zurückzugeben. Folge
+war: in `werkzeuge._openfang_uebernehmen` war der `status != 200`-Pfad und
+damit der gesamte 409-/`erfordert_betreiber_entscheidung`-Block toter Code.
+Gemessen gegen einen lokalen Stellvertreter ergab ein echter 409:
 `{"status": 0, "fehler": "OpenFang nicht erreichbar (HTTPError: HTTP Error 409: Conflict)"}`
-— der Agent bekommt `retryable: True` und wiederholt endlos, also genau das,
-was der Fix jener Runde verhindern sollte. Dasselbe gilt für `_rowboat`
-(mit 403 gemessen). **Das ist der nächste Punkt, der angefasst gehört.**
+— der Agent bekam `retryable: True` und wiederholte endlos, also genau das,
+was der Fix jener Runde verhindern sollte. Dasselbe galt für `_rowboat`
+(mit 403 gemessen).
+
+Fix sitzt an EINER Stelle, `werkzeuge._roh_anfrage`: sie fängt jetzt genau
+`urllib.error.HTTPError` (nicht `URLError` ohne Status — DNS/Verbindung/
+Timeout fliegen bewusst weiter) und gibt sie wie jede andere Antwort als
+`(status, rumpf)` zurück. Damit sind die Statuszweige beider Aufrufer
+erreichbar, ohne dass ein Aufrufer sich ändern musste. Ein echter 409
+ergibt jetzt `status: 409`, `erfordert_betreiber_entscheidung: True`,
+`retryable: False`. Sicherheitsauflage eingehalten:
+`_openfang_uebernehmen`s Fehlertext bleibt bei `f"OpenFang HTTP {status}"`
+ohne Antwortkörper (der einzige Aufruf, dem ein Credential-WERT im
+Anfragekörper mitgegeben wird); `_rowboat`s Körper darf weiterhin in den
+Fehlertext, bleibt aber durch `_ohne_schluessel` gescrubt — dafür jetzt
+extra getestet. Sechs neue Tests in `tests/test_werkzeuge.py`
+(142 → 148 passed, 1 skipped); die Mutationsprobe (Fang entfernt) wurde
+real ausgeführt und fiel mit `status: 0` / `retryable: True` rot.
 
 **N2 — fester OAuth-Callback-Port 8976 gegen die Threadpool-Auslagerung.**
 Seit beide Schreibwege im Threadpool laufen, können zwei OAuth-Flüsse
@@ -60,6 +73,17 @@ kollidiert", gegen die die Kollisionswache geschrieben wurde.
 des Schluss-Fixes auf zwei Seiten übersehen; vom Implementierer gemeldet
 statt stillschweigend mitgemacht. Hängt an N1 — solange der Block
 unerreichbar ist, ist der Text ohnehin toter Pfad.
+
+**Nachtrag (N1-Fix `588384f8`, 2026-09-15): N4 ist damit keine theoretische
+Ungenauigkeit mehr, sondern eine echte.** Vor dem N1-Fix lief der
+409-/`erfordert_betreiber_entscheidung`-Block nie in Produktion (der Status
+kam nie über `status: 0` hinaus), also war der falsche Text in
+`fenster.ergebnisseite` toter Pfad. N1 macht genau diesen Pfad ERSTMALS
+erreichbar — ein Betreiber, der heute einen echten 409 bekommt, sieht
+`erfordert_betreiber_entscheidung: True` mit einem Hinweistext, der die
+Betreiber-Entscheidung nennt, aber `fenster.ergebnisseite` zeigt ihm
+weiterhin den Normalfall-Text „vom Anbieter abgelehnt" dazu. N4 bleibt
+offen — dieser Task hat ausschließlich N1 behoben, N4 nicht angefasst.
 
 **N5 — die „siebte Prüfstelle" in `E2E-PROOF.md` Teil VI deckt ihre eigene
 Klasse nicht ab.** Der Live-Test prüft das Postgres-Containerlog, bleibt aber
