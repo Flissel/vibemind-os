@@ -49,15 +49,53 @@ extra getestet. Sechs neue Tests in `tests/test_werkzeuge.py`
 (142 → 148 passed, 1 skipped); die Mutationsprobe (Fang entfernt) wurde
 real ausgeführt und fiel mit `status: 0` / `retryable: True` rot.
 
-**N2 — fester OAuth-Callback-Port 8976 gegen die Threadpool-Auslagerung.**
-Seit beide Schreibwege im Threadpool laufen, können zwei OAuth-Flüsse
-gleichzeitig laufen. Gemessen auf diesem Host: `HTTPServer.allow_reuse_address`
-ist `1`, ein zweites Bind auf denselben Port **gelingt**, die Zustellung ist
-undefiniert. Der `state`-Parameter verhindert, dass ein Code beim falschen
-Fluss landet (also kein Leck), aber der richtige Fluss hängt 300 Sekunden mit
-bereits verbranntem Token. Die Nebenläufigkeits-Analyse dieses Zweigs zählte
-Modulzustand auf und übersah das Betriebsmittel daneben — das war eine echte
-Lücke in der Analyse, nicht nur im Code.
+**N2 — behoben (`12a89a93`, 2026-09-15).** Fester OAuth-Callback-Port 8976
+gegen die Threadpool-Auslagerung. Seit beide Schreibwege im Threadpool
+laufen, können zwei OAuth-Flüsse gleichzeitig laufen. Gemessen auf diesem
+Host: `HTTPServer.allow_reuse_address` ist (geerbt) `1`, ein zweites Bind
+auf denselben Port **gelang**, die Zustellung war undefiniert. Der
+`state`-Parameter verhinderte, dass ein Code beim falschen Fluss landet
+(also kein Leck), aber der richtige Fluss hing bis zu 300 Sekunden mit
+bereits verbranntem Token, still. Die Nebenläufigkeits-Analyse dieses
+Zweigs zählte Modulzustand auf und übersah das Betriebsmittel daneben —
+das war eine echte Lücke in der Analyse, nicht nur im Code.
+
+Fix 1: `bind_callback_server()` bindet auf Port 0 (das Betriebssystem
+vergibt einen freien) **vor** der RFC-7591-Registrierung, statt einen
+Port zu raten; `redirect_uri` wird aus dem tatsächlich gebundenen Port
+(`server.server_address[1]`) abgeleitet und an Registrierung,
+`authorize_url` und Token-Tausch durchgereicht. `--callback-port N` ist
+das Ventil für den seltenen Anbieter mit vorregistrierter fester
+Redirect-URI; `--dry-run` geht denselben Bind-vor-Registrierung-Weg, Rest
+der Ausgabe bleibt byte-genau bis auf die Portnummer in der URL.
+
+Fix 2: `allow_reuse_address = False` auf der Serverklasse. GEMESSEN
+(nicht angenommen) auf diesem Windows-Host: ein zweiter Bind auf einen
+bereits belegten FESTEN Port scheitert damit tatsächlich mit `OSError`
+(`WinError 10048`, „Only one usage of each socket address is normally
+permitted") — anders als befürchtet macht `SO_REUSEADDR`s
+Windows-Eigenheit den Fix hier NICHT wirkungslos; kein Ausweichen auf
+`SO_EXCLUSIVEADDRUSE` nötig.
+
+`token_holen(mcp_url) -> tuple[str, str]` (die Naht, die `fenster.py` via
+`server.py` benutzt) bleibt signaturunverändert. Vier neue Tests in
+`tests/test_provisioner_callback_port.py` (155 → 159 passed, 1 skipped);
+die Mutationsprobe für „zwei gleichzeitig gebundene Server bekommen
+verschiedene Ports" wurde real ausgeführt (Port wieder fest auf 8976
+gesetzt) und fiel rot: `OSError: [WinError 10048]` beim zweiten Bind.
+
+Dazu, weil derselbe Testbereich: `anfragen._OFFEN` ist geteilter
+Prozesszustand über die ganze Testsitzung; die N3-Schweben-Wache macht
+das erstmals beobachtbar (ein Test in `test_werkzeuge.py` lässt bewusst
+einen offenen, nie verbrauchten Eintrag für `PYTEST_SCHWEBEND_A` liegen).
+Eine neue `autouse`-Fixture in `tests/conftest.py` leert `_OFFEN` vor und
+nach jedem Test. Geprüft in beiden Dateireihenfolgen (normal und
+umgekehrt) — beide grün; mit der Fixture testweise deaktiviert blieb die
+umgekehrte Reihenfolge in diesem Suite-Stand ebenfalls grün, weil aktuell
+kein anderer Test dieselbe `referenz` wiederverwendet. Die Zeitbombe ist
+damit real (belegter Leck-Fall), aber in der heutigen Testdaten-Kombination
+noch nicht scharf — die Fixture ist vorbeugend, kein Beleg für einen
+beobachteten Fehlschlag.
 
 **N3 — behoben (`6c217efc`, 2026-09-15).** `eingabe_anfordern` bewachte
 jeden bekannten DB-Zustand, aber keine offene schwebende Anfrage. Gemessen:
@@ -187,8 +225,8 @@ Satz ganz oben, warum das kein Blocker ist.
 
 ## Stand (2026-09-15, Nachzieher-Bündel A)
 
-N1, N3, N4, N5, N8, N9, N10, N11, N12, N13 sind behoben (Commits oben bei
-den jeweiligen Punkten). **N2, N6 und N7 bleiben ausdrücklich offen** —
+N1, N2, N3, N4, N5, N8, N9, N10, N11, N12, N13 sind behoben (Commits oben
+bei den jeweiligen Punkten). **N6 und N7 bleiben ausdrücklich offen** —
 sie waren nicht im Umfang dieses Bündels (Entwurfseingriffe mit
 Folgekosten, jeweils eine eigene Runde wert) und wurden nicht angefasst.
 Das Bündel ist damit NICHT vollständig.
