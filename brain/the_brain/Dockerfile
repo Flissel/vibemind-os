@@ -65,8 +65,21 @@ COPY brain/the_brain/requirements.txt \
      brain/the_brain/requirements-tahlamus.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 4. Full brain source into /app (so relative paths are unchanged vs. native).
+# 4. Full brain source into /app.
+#    ACHTUNG: relative Pfade sind hier NICHT wie nativ. Im Repo liegt ein Modul
+#    als brain/the_brain/core/x.py (vier Eltern bis zur Wurzel), hier als
+#    /app/core/x.py (drei). Vier Stellen im Kern rechneten mit parents[3] und
+#    warfen darum in der Ausbringung IndexError: 3 - gemessen am 15.09.2026,
+#    jeder Hop durch die kanonische Space-Routing-Schicht scheiterte daran.
+#    Die Aufloesung laeuft seither ueber space_contract.resolve_registry_path.
 COPY brain/the_brain/ /app/
+
+# 4b. Die Space-Registry. Sie liegt im Repo NEBEN brain/the_brain und faellt
+#     deshalb nicht unter das COPY oben - ohne diese Zeile fehlte sie im Image
+#     ganz, und die Routing-Schicht fand nichts zum Laden. Gleiches Muster wie
+#     Dockerfile.deterministic-gateway, das es laengst richtig macht.
+COPY config/space_agent_registry.yml /app/config/space_agent_registry.yml
+ENV SPACE_AGENT_REGISTRY_PATH=/app/config/space_agent_registry.yml
 
 # Persistent volume mount point (EventRoutingHead/SpaceRoutingHead .pt,
 # ctm_checkpoints, snapshots).

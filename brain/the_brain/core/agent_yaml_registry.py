@@ -120,7 +120,13 @@ class AgentYamlRegistry:
 
             # The space registry is the canonical event/agent source. Agent YAMLs
             # may add metadata, but cannot leave whole event families unroutable.
-            canonical = self.dir.parents[3] / "config" / "space_agent_registry.yml"
+            # Nicht ueber die Ordnertiefe raten - im Container gibt es die
+            # vier Eltern nicht (IndexError: 3).
+            from .space_contract import RegistryNotFound, resolve_registry_path
+            try:
+                canonical = resolve_registry_path(self.dir)
+            except RegistryNotFound:
+                canonical = self.dir / "space_agent_registry.yml"
             if canonical.exists():
                 try:
                     space_data = _yaml.safe_load(canonical.read_text(encoding="utf-8")) or {}

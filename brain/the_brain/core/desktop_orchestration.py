@@ -59,5 +59,5 @@ class DesktopOrchestration:
 
     @classmethod
     def from_repository(cls) -> "DesktopOrchestration":
-        root = Path(__file__).resolve().parents[3]
-        return cls(root / "config" / "space_agent_registry.yml")
+        from .space_contract import resolve_registry_path
+        return cls(resolve_registry_path())
