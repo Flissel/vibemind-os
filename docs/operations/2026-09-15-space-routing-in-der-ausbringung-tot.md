@@ -132,3 +132,41 @@ angesehen.
 auf: `Failed to resolve 'embedding-service'` — der Dienst ist im Swarm nicht
 mehr vorhanden, die KG-Suche der Brain fällt bei jeder Anfrage aus. Eigener
 Befund, hier nur festgehalten.
+
+---
+
+## Nachtrag: es gibt einen Weg ohne Neubau
+
+Eine Suche über das **ganze** Dateisystem des Containers (nicht nur `/app`)
+ergab: die Registry ist dort sehr wohl erreichbar — über eine Host-Einbindung.
+
+```
+docker inspect brain-core:
+  /run/desktop/mnt/host/c/Users/User -> /host_users
+
+im Container lesbar:
+  /host_users/Desktop/Vibemind_V1/vibemind-os/config/space_agent_registry.yml
+  (23421 Bytes, Kopf: "# VibeMind Space→Agent→Tools Registry")
+```
+
+Damit stehen zwei Wege offen, und meine Aussage oben („wirkt erst nach einem
+Neubau") gilt nur für den ersten:
+
+**A — Image neu bauen.** Das `COPY` + `ENV` aus diesem Commit. Die Registry
+liegt dann im Image, der Container ist in sich geschlossen und läuft auch dort,
+wo es kein `/host_users` gibt — auf der Proxmox-VM, auf dem Mini-PC. Braucht
+einen Build und einen Deploy über Launcher/stack-deploy.
+
+**B — nur die Variable setzen.** `SPACE_AGENT_REGISTRY_PATH` in der Stack-Datei
+auf den eingebundenen Host-Pfad zeigen lassen. Kein Neubau nötig, nur ein
+Deploy. **Aber:** der Pfad verdrahtet den Container an einen Windows-Checkout.
+Auf einem Host ohne diese Einbindung fällt er sofort um, und er macht die
+laufende Brain von einem Arbeitsbaum abhängig, in dem mehrere Sessions
+gleichzeitig schreiben.
+
+**Empfehlung: A.** B ist ein zulässiger Behelf, wenn es schnell gehen muss —
+aber dann bitte mit dem Wissen, dass er nicht mitzieht, sobald die Brain
+irgendwo anders läuft.
+
+In beiden Fällen bleibt der Code-Fix nötig: ohne ihn scheitert der Import von
+`space_contract` schon, bevor irgendeine Variable gelesen werden kann.
