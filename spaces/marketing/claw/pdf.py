@@ -22,6 +22,8 @@ import io
 import os
 import re
 
+from spaces.marketing.claw import stil
+
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.pagesizes import A4
@@ -41,6 +43,12 @@ from reportlab.platypus import (BaseDocTemplate, Frame, KeepTogether,
 # (`pitch-deck-2026/vibemind-pitch.html`) — das ist, was Aussenstehende von
 # VibeMind sehen. "hell" ist dasselbe Geruest fuer Unterlagen, die gedruckt
 # oder weitergeleitet werden, wo dunkle Flaechen stoeren.
+# Zur Textfarbe, weil sie danach niemand „aufhellen" soll: `text` ist auf
+# beiden Tafeln bewusst NICHT das reinste Weiss bzw. Schwarz. Ein Mensch hat
+# das am ersten echten PDF geprueft und bestaetigt (11.09.2026): „Finde gut,
+# dass die Schriftfarbe nicht ganz weiss ist, weil leicht graeulich ist laut
+# Studien besser fuers Auge zu lesen." Reines #ffffff auf dunklem Grund
+# flimmert; #cfe3df nimmt dem Kontrast die Haerte, ohne ihn zu verlieren.
 LAYOUTS = {
     "dunkel": {
         "grund": "#0f2422", "flaeche": "#1d3b39", "akzent": "#5eead4",
@@ -56,11 +64,46 @@ LAYOUTS = {
 LAYOUT_VORGABE = "dunkel"
 
 
-def _farben(layout: str) -> dict:
-    """Die Farbtafel eines Layouts. Unbekannt -> Vorgabe, kein Absturz."""
-    tafel = LAYOUTS.get((layout or "").strip().lower() or LAYOUT_VORGABE,
-                        LAYOUTS[LAYOUT_VORGABE])
+# Die acht Schluessel, die dieses Modul braucht. Sie stehen auch in
+# marketing.gestalt_pruefen() (Migration 044) — dort wird eine Vorlage
+# geprueft, BEVOR ein Mensch sie freigibt. Hier stehen sie noch einmal, weil
+# dieses Modul ohne Datenbank lauffaehig bleiben muss: es ist der Setzer, und
+# ein Setzer, der eine Datenbank braucht, ist nicht testbar.
+GESTALT_SCHLUESSEL = ("grund", "flaeche", "akzent", "gold", "text",
+                      "text_hell", "text_leise", "handlung_text")
+
+
+def _farben(layout: str, gestalt: dict | None = None) -> dict:
+    """Die Farbtafel. `gestalt` schlaegt `layout`, sonst die eingebaute Tafel.
+
+    SEIT DEM 12.09.2026 KOMMEN LAYOUTS AUS VORLAGEN (Auftrag des Betreibers:
+    „die verschiedenen Layouts via Templates"). `werkzeuge.py` holt eine
+    freigegebene Vorlage aus `marketing.layout_vorlagen` und reicht ihre
+    Gestalt hier herein. Die zwei eingebauten Tafeln bleiben als Rueckfall
+    stehen, damit dieses Modul, die Tests und ein Notlauf ohne Datenbank
+    weiter funktionieren.
+
+    Eine unvollstaendige Gestalt WIRFT, statt still auf die Vorgabe
+    zurueckzufallen: ein Dokument, dem heimlich die halbe Farbtafel eines
+    anderen Layouts untergeschoben wird, sieht falsch aus, ohne dass jemand
+    erfaehrt warum.
+    """
+    if gestalt:
+        fehlt = [k for k in GESTALT_SCHLUESSEL if not str(gestalt.get(k, "")).strip()]
+        if fehlt:
+            raise ValueError("Der Gestalt fehlen Farben: " + ", ".join(fehlt))
+        tafel = {k: str(gestalt[k]).strip() for k in GESTALT_SCHLUESSEL}
+    else:
+        tafel = LAYOUTS.get((layout or "").strip().lower() or LAYOUT_VORGABE,
+                            LAYOUTS[LAYOUT_VORGABE])
     return {name: colors.HexColor(wert) for name, wert in tafel.items()}
+
+# Trennpunkte statt Geviertstrich. Die Fusszeile war eine der drei Quellen
+# der langen Striche, die ein Leser am 11.09.2026 als zu KI-haft gemeldet hat
+# (siehe stil.py) - und die einzige, die in unserem eigenen Code stand. Als
+# Konstante, damit ein Test sie pruefen kann, ohne den Quelltext samt
+# Kommentaren zu durchsuchen.
+FUSSZEILE = "VibeMind · agentisches Betriebssystem · vibemind.space"
 
 RAND = 20 * mm
 KOPF_HOEHE = 34 * mm
@@ -106,12 +149,41 @@ def _sicher(text: str) -> str:
     return (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
+# `**wort**` wird fett. Rueckmeldung eines Menschen zum ersten echten PDF
+# (11.09.2026): „Ich wuerde bei den Stichpunkten die folgenden Woerter fett
+# machen: Marketing-Beitraege, Support Antworten, Entwicklung." Ein
+# Stichpunkt ohne Betonung liest sich als Aufzaehlung; mit Betonung sieht
+# man beim Ueberfliegen, WORUM es geht.
+#
+# Zwei Sterne, nicht einer: ein einzelner Stern steht in Kampagnentexten
+# haeufig als Aufzaehlungszeichen oder als Fussnotenmarke am Zeilenanfang,
+# und der duerfte dann nicht auszeichnen.
+_FETT = re.compile(r"\*\*(.+?)\*\*", re.S)
+
+
+def _auszeichnen(text: str) -> str:
+    """Erst entschaerfen, DANN auszeichnen — nie umgekehrt.
+
+    Die Reihenfolge ist die ganze Sicherheit dieser Funktion: `_sicher`
+    macht aus jedem `<` ein `&lt;`, und erst danach setzt diese Funktion die
+    einzigen spitzen Klammern, die reportlab sehen soll. Wer zuerst
+    auszeichnete und dann entschaerfte, machte sein eigenes `<b>` wieder
+    kaputt; wer `_sicher` wegliesse, oeffnete den Kampagnentext fuer
+    beliebiges reportlab-Markup.
+    """
+    return _FETT.sub(r"<b>\1</b>", _sicher(text or ""))
+
+
 def _stile(f: dict) -> dict:
     normal, fett = schriften()
     return {
         "titel": ParagraphStyle("titel", fontName=fett, fontSize=24, leading=29,
                                 textColor=f["text_hell"], alignment=TA_LEFT),
-        "unter": ParagraphStyle("unter", fontName=normal, fontSize=11.5, leading=16,
+        # FETT seit dem 11.09.2026 („Zweiter Satz in Tuerkis bei der
+        # Ueberschrift auch in Fett"). Der Untertitel ist der Satz, der sagt,
+        # fuer WEN die Unterlage ist; in der duennen Schrift verschwand er
+        # neben dem 24-Punkt-Titel darueber.
+        "unter": ParagraphStyle("unter", fontName=fett, fontSize=11.5, leading=16,
                                 textColor=f["akzent"], spaceBefore=3),
         "fliess": ParagraphStyle("fliess", fontName=normal, fontSize=11, leading=17,
                                  textColor=f["text"], spaceAfter=9),
@@ -159,8 +231,7 @@ def _kopf_und_grund(leinwand, dokument, f: dict) -> None:
     normal, _ = schriften()
     leinwand.setFont(normal, 7.5)
     leinwand.setFillColor(colors.HexColor("#8aa3a0"))
-    leinwand.drawString(RAND, FUSS_HOEHE / 2 - 2.6,
-                        "VibeMind — agentisches Betriebssystem · vibemind.space")
+    leinwand.drawString(RAND, FUSS_HOEHE / 2 - 2.6, FUSSZEILE)
     if dokument.page > 1:
         leinwand.drawRightString(breite - RAND, FUSS_HOEHE / 2 - 2.6,
                                  str(dokument.page))
@@ -174,16 +245,16 @@ def _absaetze(text: str, stile: dict) -> list:
         zeilen = [z.strip() for z in block.splitlines() if z.strip()]
         if zeilen and all(re.match(r"^[-–—•*]\s+", z) for z in zeilen):
             for z in zeilen:
-                teile.append(Paragraph(_sicher(re.sub(r"^[-–—•*]\s+", "", z)),
+                teile.append(Paragraph(_auszeichnen(re.sub(r"^[-–—•*]\s+", "", z)),
                                        stile["punkt"], bulletText="•"))
         else:
-            teile.append(Paragraph(_sicher(" ".join(zeilen)), stile["fliess"]))
+            teile.append(Paragraph(_auszeichnen(" ".join(zeilen)), stile["fliess"]))
     return teile
 
 
 def bauen(titel: str, text: str, untertitel: str = "", belege=None,
           zu_klaeren=None, handlung: str = "",
-          layout: str = LAYOUT_VORGABE) -> bytes:
+          layout: str = LAYOUT_VORGABE, gestalt: dict | None = None) -> bytes:
     """Setzt eine Kampagnen-Unterlage als PDF. Gibt die Bytes zurueck.
 
     Wirft `ValueError` bei leerem Text — anders als die Werkzeuge ringsum,
@@ -192,7 +263,22 @@ def bauen(titel: str, text: str, untertitel: str = "", belege=None,
     """
     if not text or not text.strip():
         raise ValueError("Ohne Text gibt es kein PDF.")
-    f = _farben(layout)
+
+    # Hausstil auf ALLES, was ein Autor geschrieben hat. Er wird auch schon
+    # beim Entwerfen angewandt (werkzeuge.kampagne_entwerfen), damit
+    # Entwurf, E-Mail und PDF denselben Text tragen — hier steht er trotzdem
+    # ein zweites Mal, weil `pdf_aus_entwurf` auch BESTEHENDE Entwuerfe
+    # setzt, die vor dieser Regel entstanden sind. Dieselbe Funktion, zwei
+    # Aufrufstellen: das ist kein zweiter Ort fuer die Regel, sondern
+    # derselbe Ort zweimal benutzt.
+    titel = stil.striche_kuerzen(titel or "")
+    untertitel = stil.striche_kuerzen(untertitel or "")
+    text = stil.striche_kuerzen(text)
+    handlung = stil.striche_kuerzen(handlung or "")
+    belege = [stil.striche_kuerzen(str(b)) for b in (belege or [])]
+    zu_klaeren = [stil.striche_kuerzen(str(z)) for z in (zu_klaeren or [])]
+
+    f = _farben(layout, gestalt)
     stile = _stile(f)
     puffer = io.BytesIO()
     dokument = BaseDocTemplate(
@@ -206,9 +292,9 @@ def bauen(titel: str, text: str, untertitel: str = "", belege=None,
         id="seite", frames=[rahmen],
         onPage=lambda leinwand, dok: _kopf_und_grund(leinwand, dok, f))])
 
-    fluss = [Paragraph(_sicher(titel or ""), stile["titel"])]
+    fluss = [Paragraph(_auszeichnen(titel or ""), stile["titel"])]
     if untertitel.strip():
-        fluss.append(Paragraph(_sicher(untertitel), stile["unter"]))
+        fluss.append(Paragraph(_auszeichnen(untertitel), stile["unter"]))
     fluss.append(Spacer(1, 9 * mm))
     fluss.extend(_absaetze(text, stile))
 
@@ -217,7 +303,7 @@ def bauen(titel: str, text: str, untertitel: str = "", belege=None,
         # finden, ohne zu suchen.
         fluss.append(Spacer(1, 4 * mm))
         fluss.append(KeepTogether([Table(
-            [[Paragraph(_sicher(handlung), stile["handlung"])]],
+            [[Paragraph(_auszeichnen(handlung), stile["handlung"])]],
             colWidths=[A4[0] - 2 * RAND],
             style=TableStyle([
                 ("BACKGROUND", (0, 0), (-1, -1), f["akzent"]),
@@ -231,12 +317,12 @@ def bauen(titel: str, text: str, untertitel: str = "", belege=None,
         # Zusammenhalten: eine Rubrik allein am Seitenfuss ist ein Fehler,
         # den der Leser dem Absender ankreidet.
         block = [Paragraph("ZU KLÄREN", stile["rubrik"])]
-        block += [Paragraph(_sicher(str(z)), stile["klein"], bulletText="·")
+        block += [Paragraph(_auszeichnen(str(z)), stile["klein"], bulletText="·")
                   for z in zu_klaeren]
         fluss.append(KeepTogether(block))
     if belege:
         block = [Paragraph("BELEGE", stile["rubrik"])]
-        block += [Paragraph(_sicher(str(b)), stile["klein"], bulletText="·")
+        block += [Paragraph(_auszeichnen(str(b)), stile["klein"], bulletText="·")
                   for b in belege]
         fluss.append(KeepTogether(block))
 
@@ -245,6 +331,21 @@ def bauen(titel: str, text: str, untertitel: str = "", belege=None,
 
 
 def seitenzahl(roh: bytes) -> int:
-    """Wie viele Seiten das erzeugte PDF hat — fuer Tests und Ausgaben."""
-    from pypdf import PdfReader
-    return len(PdfReader(io.BytesIO(roh)).pages)
+    """Wie viele Seiten das erzeugte PDF hat. Unlesbar -> 0, nie eine Ausnahme.
+
+    SEIT DEM 15.09.2026 FAIL-SOFT, und das ist kein Detail: seit die
+    Schoenheitspruefung die Seitenzahl braucht, steht diese Funktion IM WEG
+    jeder Unterlage. Warf sie, riss sie das ganze Werkzeug mit — wegen einer
+    Zahl, die nur fuer einen WEICHEN Hinweis gebraucht wird („zwei Seiten
+    sind eine zu viel"). Ein Nebenbefund darf nie das Hauptergebnis
+    verhindern.
+
+    0 statt 1 bei Unlesbarkeit: 1 waere eine Behauptung („eine Seite"), 0
+    ist sichtbar „weiss ich nicht" — und der Umfangshinweis prueft auf > 1,
+    schweigt also genau dann, wenn er nichts weiss.
+    """
+    try:
+        from pypdf import PdfReader
+        return len(PdfReader(io.BytesIO(roh)).pages)
+    except Exception:  # noqa: BLE001 — jede Ursache endet hier gleich
+        return 0

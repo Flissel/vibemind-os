@@ -161,17 +161,29 @@ class TestPdfAusDemEntwurf(unittest.TestCase):
             self.assertFalse(werkzeuge.pdf_aus_entwurf("  ")["ok"])
         self.assertEqual(rekorder.aufrufe, [])
 
-    def test_layout_wird_durchgereicht(self):
-        """Der ganze Punkt: anderes Layout, gleicher Inhalt, ein Aufruf."""
+    def test_die_gestalt_der_vorlage_erreicht_den_setzer(self):
+        """Der ganze Punkt: anderes Aussehen, gleicher Inhalt, ein Aufruf.
+
+        SEIT DEM 12.09.2026 REICHT NICHT MEHR DER NAME DURCH, SONDERN DIE
+        GESTALT. Vorher stand hier `gesehen["layout"] == "hell"` - der Setzer
+        kannte die zwei Tafeln selbst. Jetzt kommen Layouts aus Vorlagen, und
+        `pdf_aus_entwurf` loest sie auf, BEVOR es setzt. Das ist die
+        staerkere Zusicherung: sie prueft, dass die Farben der GEWUENSCHTEN
+        Vorlage ankommen, nicht nur ihr Name.
+        """
         gesehen = {}
-        rekorder = Rekorder([self._entwurf()])
-        with mock.patch.object(werkzeuge, "_roh_anfrage", rekorder), \
-             mock.patch.object(werkzeuge.ablage, "ablegen",
-                               return_value={"ok": True, "daten": {"pfad": "/x/a.pdf"}}), \
-             mock.patch("spaces.marketing.claw.pdf.bauen",
+        eigen = {"success": True, "data": [
+            {"name": "probe", "status": "freigegeben", "grund": "",
+             "gestalt": dict(Rekorder.GESTALT_DUNKEL, grund="#abcdef")}]}
+        rekorder = Rekorder([self._entwurf()], vorlagen=eigen)
+        with mock.patch.object(werkzeuge, "_roh_anfrage", rekorder),              mock.patch.object(werkzeuge.ablage, "ablegen",
+                               return_value={"ok": True, "daten": {"pfad": "/x/a.pdf"}}),              mock.patch("spaces.marketing.claw.pdf.bauen",
                         side_effect=lambda **kw: gesehen.update(kw) or b"%PDF-x"):
-            werkzeuge.pdf_aus_entwurf("prop-1", layout="hell")
-        self.assertEqual(gesehen["layout"], "hell")
+            ergebnis = werkzeuge.pdf_aus_entwurf("prop-1", vorlage="probe")
+        self.assertTrue(ergebnis["ok"], ergebnis)
+        self.assertEqual(gesehen["gestalt"]["grund"], "#abcdef")
+        self.assertNotIn("layout", gesehen,
+                         "der Setzer bekommt die Gestalt, nicht mehr den Namen")
 
     def test_alter_entwurf_ohne_parameter_geht_trotzdem(self):
         """Die 17 Zeilen von vorher haben `{}` — sie duerfen nicht scheitern."""

@@ -33,7 +33,11 @@ _ENV_KEYS = ("MARKETING_API_KEY", "MARKETING_PROPOSAL_API_KEY",
              "LAURA_API_URL", "LAURA_TOKEN",
              # Ablage: OHNE SSH-Host schreibt post_ablegen auf den Windows-
              # Rechner, und der Beitrag erreicht sales-claw auf der VM nie.
-             "MEDIA_ERZEUGT_SSH_HOST", "MEDIA_ERZEUGT_DIR")
+             "MEDIA_ERZEUGT_SSH_HOST", "MEDIA_ERZEUGT_DIR",
+             # Wohin Layout-Vorlagen zur Durchsicht gehen (12.09.2026). Die
+             # Adresse gehoert dem Betreiber, nicht dem Code — ohne sie sagt
+             # das Werkzeug das klar, statt still an irgendwen zu schicken.
+             "MARKETING_PRUEFADRESSE")
 
 
 def _load_env_fallback() -> None:
@@ -92,6 +96,18 @@ WERKZEUGE = (
     # gehoert und nicht als HTML in den Nachrichtenrumpf.
     werkzeuge.entwurf_holen,
     werkzeuge.pdf_aus_entwurf,
+    # Layouts sind seit dem 12.09.2026 VORLAGEN, keine fest verdrahteten
+    # Tafeln mehr — und eine Vorlage gilt erst nach der Freigabe des
+    # Betreibers. Der Agent schlaegt vor und zeigt ein Musterblatt;
+    # entscheiden kann nur ein Mensch (die Entscheidungsroute haengt hinter
+    # einem Schluessel, den dieser Space nicht kennt).
+    werkzeuge.vorlagen_auflisten,
+    werkzeuge.vorlage_vorschlagen,
+    werkzeuge.vorlage_muster,
+    # Die Vorlage geht zur Durchsicht an die Firmenadresse des
+    # Betreibers — ueber denselben Weg wie jede andere Nachricht:
+    # Versandauftrag, sales-claws Tore, Freigabe durch einen Menschen.
+    werkzeuge.vorlage_zur_pruefung_senden,
     # Der EINZIGE Weg nach draussen (Betreiber-Entscheid 12.09.2026): dieser
     # Space versendet nichts mehr selbst, er bittet sales-claw. Gemessen
     # davor: Marketing hat NIE etwas zugestellt (campaign_sends/_openfang/

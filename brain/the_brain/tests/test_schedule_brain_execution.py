@@ -10,11 +10,72 @@ from brain.the_brain.core.plan_executor import PlanExecutor, PlanRecorder
 from brain.the_brain.core.plan_schema import HopSpec, Plan
 
 
+class _FakePostgrest:
+    """Ein kleines Double fuer die eine Tabelle, die schedule benutzt.
+
+    Es bildet NUR nach, was das Repository wirklich aufruft: `eq.`-Filter,
+    select/order/limit, POST und PATCH. Wichtig ist, wo es sich UNBEQUEM
+    verhaelt wie das Original:
+
+      * Ein PATCH ohne Treffer ist KEIN Fehler - PostgREST meldet ihn nicht.
+        Genau deshalb liest `update()` danach zurueck; ein gefaelliges Double
+        wuerde diese Zusage unpruefbar machen.
+      * `trigger_config` wird als Objekt abgelegt, nicht als Text. Schickte
+        der Code es serialisiert, laege ein String im jsonb und jeder Filter
+        darauf ginge ins Leere - der Test unten haelt das fest.
+    """
+
+    def __init__(self) -> None:
+        self.rows: list[dict] = []
+
+    def __call__(self, method, query, *, body=None, prefer=None):
+        import urllib.parse
+        params = dict(urllib.parse.parse_qsl(query))
+        if method == "POST":
+            self.rows.append(dict(body))
+            return None
+        selected = [row for row in self.rows if self._matches(row, params)]
+        if method == "PATCH":
+            for row in selected:
+                row.update(body)
+            return None            # auch ohne Treffer: kein Fehler
+        if params.get("order", "").startswith("created_at"):
+            selected.sort(key=lambda row: str(row.get("created_at")), reverse=True)
+        limit = params.get("limit")
+        if limit:
+            selected = selected[: int(limit)]
+        return [dict(row) for row in selected]
+
+    @staticmethod
+    def _matches(row, params):
+        for key, value in params.items():
+            if key in {"select", "order", "limit"}:
+                continue
+            if not value.startswith("eq."):
+                raise AssertionError(f"unerwarteter Filter: {key}={value}")
+            if str(row.get(key)) != value[3:]:
+                return False
+        return True
+
+
 @pytest.fixture()
-def schedule_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SCHEDULE_DB_PATH", str(tmp_path / "schedule.sqlite3"))
+def schedule_execution(monkeypatch: pytest.MonkeyPatch):
+    """schedule schreibt seit 2026-09-12 nach Supabase, nicht mehr nach SQLite.
+
+    Der Test bleibt hermetisch: statt gegen die geteilte Datenbank zu
+    schreiben, steht das Double hinter `_request`. Die Schicht darueber -
+    Wiederholungsschutz, Ausloeser-Pruefung, Rueckfrage nach dem Schreiben -
+    ist damit unveraendert unter Test.
+    """
+    monkeypatch.setenv("SUPABASE_URL", "http://supabase.test")
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "test-key")
     module = importlib.import_module("spaces.schedule.execution")
-    return importlib.reload(module)
+    module = importlib.reload(module)
+    store = _FakePostgrest()
+    monkeypatch.setattr(module.ScheduleRepository, "_request",
+                        lambda self, method, query, **kw: store(method, query, **kw))
+    module._fake_store = store
+    return module
 
 
 def test_registry_routes_every_schedule_operation_to_real_targets():
@@ -208,3 +269,68 @@ def test_create_refuses_when_the_insert_did_not_land(schedule_execution,
             "title": "verschwindet", "action_text": "x",
             "trigger_config": {"cron": "0 9 * * 1"},
             "timezone": "Europe/Berlin"})
+
+
+# ---------------------------------------------------------------------
+# Zusagen, die erst durch den Umzug nach Supabase entstanden sind
+# ---------------------------------------------------------------------
+
+def test_trigger_config_is_stored_as_an_object_not_as_text(schedule_execution):
+    """Die SQLite-Fassung musste `trigger_config` serialisieren. Bliebe das
+    so, laege hier ein String IM jsonb - die Spalte waere formal gefuellt und
+    jede Abfrage darauf trotzdem blind."""
+    created = schedule_execution.create({
+        "title": "Objekt statt Text", "action_text": "x",
+        "trigger_config": {"cron": "0 9 * * *"}, "timezone": "Europe/Berlin",
+    })
+    gespeichert = schedule_execution._fake_store.rows[0]
+    assert gespeichert["trigger_config"] == {"cron": "0 9 * * *"}
+    assert not isinstance(gespeichert["trigger_config"], str)
+    assert created["trigger_type"] == "cron"
+
+
+def test_an_update_without_a_match_is_reported_not_swallowed(schedule_execution):
+    """PostgREST meldet ein PATCH ohne Treffer NICHT als Fehler. Ohne die
+    Rueckfrage danach wuerde ein Abbruch auf eine nicht existierende Aufgabe
+    als Erfolg zurueckkommen."""
+    with pytest.raises(schedule_execution.ScheduleContractError, match="not found"):
+        schedule_execution.cancel({"task_id": "gibt-es-nicht"})
+
+
+def test_a_store_that_does_not_persist_is_caught_at_create(schedule_execution, monkeypatch):
+    """Der Fehler vom 11.09.: `create` gab sein selbst gebautes Dict weiter,
+    ohne je nachzusehen. Bei einem Terminplaner faellt das erst auf, wenn der
+    Eintrag nicht feuert."""
+    monkeypatch.setattr(schedule_execution.ScheduleRepository, "_request",
+                        lambda self, method, query, **kw: None if method == "POST" else [])
+    with pytest.raises(RuntimeError, match="was not persisted"):
+        schedule_execution.create({
+            "title": "verschwindet", "action_text": "x",
+            "trigger_config": {"cron": "0 9 * * *"}, "timezone": "Europe/Berlin",
+        })
+
+
+def test_the_key_may_come_from_the_file_convention(monkeypatch, tmp_path):
+    """brain-core setzt NUR SUPABASE_ANON_KEY_FILE (Docker-Secret). Wer allein
+    die Variable liest, steht dort ohne Schluessel da."""
+    import importlib as _il
+    secret = tmp_path / "anon.key"
+    secret.write_text("  aus-der-datei  ", encoding="utf-8")
+    monkeypatch.setenv("SUPABASE_URL", "http://supabase.test")
+    monkeypatch.delenv("SUPABASE_ANON_KEY", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
+    monkeypatch.setenv("SUPABASE_ANON_KEY_FILE", str(secret))
+    module = _il.reload(_il.import_module("spaces.schedule.execution"))
+    assert module.ScheduleRepository().key == "aus-der-datei"
+
+
+def test_bearer_is_only_sent_for_a_real_jwt(monkeypatch):
+    """Das lokale Supabase antwortet auf `Bearer anon` mit 401 PGRST301,
+    waehrend der apikey-Kopf allein durchkommt."""
+    import importlib as _il
+    monkeypatch.setenv("SUPABASE_URL", "http://supabase.test")
+    module = _il.reload(_il.import_module("spaces.schedule.execution"))
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "anon")
+    assert "Authorization" not in module.ScheduleRepository()._headers()
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "aaa.bbb.ccc")
+    assert module.ScheduleRepository()._headers()["Authorization"] == "Bearer aaa.bbb.ccc"
