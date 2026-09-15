@@ -298,3 +298,69 @@ async def test_oauth_beschaffung_blockiert_ein_gleichzeitiges_get_nicht(monkeypa
     assert zeiten["get"] < 1.0, (
         "das GET durfte durch das laufende, blockierende POST nicht "
         f"verzoegert werden, brauchte aber {zeiten['get']:.3f}s")
+
+
+@pytest.mark.asyncio
+async def test_bearer_schreiber_blockiert_ein_gleichzeitiges_get_nicht(monkeypatch):
+    """N8: `run_in_threadpool` war bisher nur auf dem OAUTH-Pfad
+    festgenagelt -- eine Mutation, die es NUR um den bearer-Schreibweg in
+    `_fenster_annehmen` herum entfernt, liess bis hierher ALLE Tests gruen,
+    weil kein Test je einen blockierenden `schreiber` fuer den bearer-Pfad
+    simuliert hat (die anderen bearer-Tests oben patchen `schluessel_
+    entgegennehmen` immer auf einen sofort zurueckkehrenden Ersatz).
+
+    Aufbau identisch zum oauth-Pendant oben, nur fuer den bearer-Pfad: ein
+    `schluessel_entgegennehmen`-Ersatz blockiert SYNCHRON auf einem
+    `threading.Event`, das erst gesetzt wird, NACHDEM ein zweites,
+    unabhaengiges GET geantwortet hat. POST (bearer, blockiert) und GET
+    laufen NEBENLAEUFIG per `asyncio.gather` gegen die echte ASGI-App.
+    Beweis ist wieder die REIHENFOLGE der Fertigstellung, nicht der
+    Statuscode: laeuft der bearer-Zweig im Threadpool, blockiert er nur
+    einen Worker-Thread, die Event-Loop bleibt frei, das GET antwortet
+    SOFORT. Faellt `run_in_threadpool` fuer den bearer-Pfad weg, blockiert
+    der synchrone Aufruf die Event-Loop selbst, und das GET kann erst nach
+    dem `freigegeben.wait(timeout=5)`-Timeout verarbeitet werden."""
+    freigegeben = threading.Event()
+    reihenfolge: list[str] = []
+    zeiten: dict[str, float] = {}
+
+    def _blockierender_schreiber(**kwargs):
+        freigegeben.wait(timeout=5)
+        return {"ok": True}
+
+    monkeypatch.setattr(server.werkzeuge, "schluessel_entgegennehmen", _blockierender_schreiber)
+
+    a_post = anfragen.anlegen("proj", "demo", "ROUTE_NEBENLAEUFIG_BEARER", "bearer", "")
+    a_get = anfragen.anlegen("proj", "demo", "ROUTE_NEBENLAEUFIG_GET_BEARER", "bearer", "")
+
+    start = time.monotonic()
+
+    async with AsyncClient(transport=ASGITransport(app=_APP),
+                           base_url="http://testserver") as client:
+
+        async def _post():
+            r = await client.post(f"/fenster/{a_post.token}", data={"wert": _FAKE_WERT})
+            reihenfolge.append("post")
+            zeiten["post"] = time.monotonic() - start
+            return r
+
+        async def _get():
+            r = await client.get(f"/fenster/{a_get.token}")
+            reihenfolge.append("get")
+            zeiten["get"] = time.monotonic() - start
+            # Erst JETZT den Schreiber entriegeln, aus demselben Grund wie
+            # beim oauth-Pendant oben.
+            freigegeben.set()
+            return r
+
+        post_antwort, get_antwort = await asyncio.gather(_post(), _get())
+
+    assert get_antwort.status_code == 200
+    assert post_antwort.status_code == 200
+    assert reihenfolge == ["get", "post"], (
+        "das GET muss abgeschlossen sein, WAEHREND das blockierende bearer-"
+        f"POST noch laeuft -- tatsaechliche Reihenfolge: {reihenfolge}, "
+        f"Zeiten: {zeiten}")
+    assert zeiten["get"] < 1.0, (
+        "das GET durfte durch das laufende, blockierende bearer-POST nicht "
+        f"verzoegert werden, brauchte aber {zeiten['get']:.3f}s")

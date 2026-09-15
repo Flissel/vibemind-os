@@ -137,6 +137,23 @@ from starlette.responses import HTMLResponse  # noqa: E402
 # abzuschreiben (s. fenster.oauth_entgegennehmen).
 _PROVISIONER_PATH = (_HIER.parent / "rowboat" / "rowboat" / "scripts"
                      / "provision-oauth-token.py")
+# N10-FIX (2026-09-15): Verhalten bleibt fail-closed -- ohne spaces/rowboat/
+# soll dieser Server NICHT starten, weil der oauth-Zweig des Eingabefensters
+# (fenster.oauth_entgegennehmen) den ECHTEN Provisioner dort braucht, statt
+# ihn abzuschreiben. Vorher war die Meldung dabei ein nackter
+# `FileNotFoundError` auf den rohen Pfad, ohne zu sagen, WAS fehlt oder
+# WARUM das den Start verhindert -- derselbe Ausnahmetyp, aber mit Kontext.
+if not _PROVISIONER_PATH.exists():
+    raise FileNotFoundError(
+        "plugin-setup braucht spaces/rowboat/ im selben Checkout, um zu "
+        f"starten -- es fehlt: {_PROVISIONER_PATH}. Der oauth-Zweig des "
+        "Eingabefensters (fenster.oauth_entgegennehmen) ruft den ECHTEN "
+        "Provisioner aus spaces/rowboat/rowboat/scripts/"
+        "provision-oauth-token.py auf, statt ihn abzuschreiben (s. Kommentar "
+        "direkt ueber dieser Pruefung) -- ohne diese Datei startet dieser "
+        "Server nicht (fail closed: lieber gar nicht laufen als der "
+        "oauth-Zweig ohne echten Provisioner). Abhilfe: spaces/rowboat/ in "
+        "diesem Checkout mit auschecken, dann den Server erneut starten.")
 _PROVISIONER_SPEC = importlib.util.spec_from_file_location(
     "provision_oauth_token", _PROVISIONER_PATH)
 assert _PROVISIONER_SPEC is not None and _PROVISIONER_SPEC.loader is not None
