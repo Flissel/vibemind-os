@@ -214,6 +214,58 @@ def test_ergebnisseite_zwei_verwahrstellen_nennt_die_abhilfe_und_nicht_die_falsc
     assert _FAKE not in html
 
 
+def test_ergebnisseite_erfordert_betreiber_entscheidung_nennt_die_kollision_und_nicht_die_falschen_saetze():
+    """N4: seit dem N1-Fix (`588384f8`) ist der 409-/`erfordert_betreiber_
+    entscheidung`-Pfad ERSTMALS erreichbar -- vorher war er toter Code und
+    trug ohnehin den (dann folgenlosen) Normalfall-Text. Dieselben drei
+    Saetze, die fuer `zwei_verwahrstellen` falsch sind, sind auch hier
+    falsch, aus einem anderen Grund: es hat niemand etwas abgelehnt, es
+    liegt eine Kollision bei OpenFang vor (die Referenz ist dort schon
+    belegt), und die braucht eine Entscheidung des Betreibers, kein
+    einfaches Wiederholen."""
+    def _schreiber_kollision(**kwargs):
+        return {"ok": False, "referenz": kwargs["referenz"],
+                "erfordert_betreiber_entscheidung": True, "retryable": False,
+                "fehler": "OpenFang meldet 409 (reference_exists) (enthaelt keinen Wert)"}
+
+    a = anfragen.anlegen("proj", "demo", "GITHUB_PAT_TOKEN", "bearer", "")
+    status, html = fenster.entgegennehmen(a.token, _FAKE, _schreiber_kollision)
+    assert status == 200
+    # (a) der richtige Hinweis: Kollision bei OpenFang, Betreiber muss entscheiden
+    assert "bereits" in html
+    assert "Betreiber" in html
+    # (b) die drei falschen Aussagen des Normalfalls duerfen NICHT stehen
+    assert "vom Anbieter abgelehnt" not in html
+    assert "Der Wert wurde nicht uebergeben" not in html
+    assert "Der Agent kann eine neue Eingabe anfordern" not in html
+    assert _FAKE not in html
+
+
+def test_oauth_entgegennehmen_erfordert_betreiber_entscheidung_ebenfalls_richtig_benannt():
+    """Derselbe `ergebnis`-Vertrag gilt fuer den oauth-Zweig -- ein per
+    OAuth beschaffter Token kann genauso an der OpenFang-409-Kollision
+    scheitern wie ein per Formular eingetragener Wert."""
+    erfunden = "offensichtlich-erfunden-oauth-token-kollision"
+
+    def beschaffer(mcp_url):
+        return "OAUTH_X", erfunden
+
+    def schreiber(**kwargs):
+        return {"ok": False, "referenz": kwargs["referenz"],
+                "erfordert_betreiber_entscheidung": True, "retryable": False,
+                "fehler": "OpenFang meldet 409 (reference_exists) (enthaelt keinen Wert)"}
+
+    a = anfragen.anlegen("proj", "demo", "OAUTH_X", "oauth", "https://mcp.linear.app/mcp")
+    status, html = fenster.oauth_entgegennehmen(a.token, beschaffer, schreiber)
+    assert status == 200
+    assert "bereits" in html
+    assert "Betreiber" in html
+    assert "vom Anbieter abgelehnt" not in html
+    assert "Der Wert wurde nicht uebergeben" not in html
+    assert "Der Agent kann eine neue Eingabe anfordern" not in html
+    assert erfunden not in html
+
+
 def test_oauth_entgegennehmen_zwei_verwahrstellen_ebenfalls_richtig_benannt():
     """Derselbe `ergebnis`-Vertrag gilt fuer den oauth-Zweig -- der
     beschaffte Token kann genauso in OpenFang landen und danach am

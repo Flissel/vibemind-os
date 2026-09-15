@@ -53,7 +53,8 @@ def seite_fuer(a: "anfragen.Anfrage") -> str:
 
 
 def ergebnisseite(ok: bool, referenz: str, hinweis: str, *,
-                  zwei_verwahrstellen: bool = False) -> str:
+                  zwei_verwahrstellen: bool = False,
+                  erfordert_betreiber_entscheidung: bool = False) -> str:
     """`zwei_verwahrstellen=True` markiert den schlimmsten Fehlerfall (s.
     `werkzeuge.schluessel_entgegennehmen`): OpenFang hat den Wert bereits
     uebernommen, aber der anschliessende Supabase-Uebergang ist endgueltig
@@ -63,7 +64,22 @@ def ergebnisseite(ok: bool, referenz: str, hinweis: str, *,
     nicht (es kollidiert an der UNIQUE-Constraint des ersten Schritts) und
     "vom Anbieter abgelehnt" waere schlicht falsch. Der Aufrufer entscheidet
     per `ergebnis.get("zwei_verwahrstellen")` -- diese Funktion selbst
-    bekommt (und braucht) nie einen Wert."""
+    bekommt (und braucht) nie einen Wert.
+
+    `erfordert_betreiber_entscheidung=True` (N4-Fix, 2026-09-15) markiert den
+    409-Fall: OpenFang lehnt die Uebernahme ab, weil die Referenz dort schon
+    belegt ist (`overwrite=False`) -- der SOEBEN eingegebene Wert wurde
+    NICHT uebernommen, und die Zeile bleibt in Supabase auf `verifiziert`
+    stehen. Auch das ist ein dritter, eigener Fall, kein `zwei_
+    verwahrstellen` (OpenFang hat den neuen Wert gerade NICHT genommen) und
+    kein gewoehnlicher Fehlschlag ("vom Anbieter abgelehnt" waere falsch --
+    es hat niemand etwas abgelehnt, es liegt eine Kollision bei OpenFang
+    vor, die eine Entscheidung des Betreibers braucht: alten Wert stehen
+    lassen oder ihn bei OpenFang loeschen). Vor dem N1-Fix (`588384f8`) war
+    dieser Pfad toter Code (ein echter 409 kam nie bis hierher durch); seit
+    N1 ist er erreichbar, und dieser Fall war bis zu diesem Fix faelschlich
+    unter dem Normalfall-Text mitgelaufen. Der Aufrufer entscheidet per
+    `ergebnis.get("erfordert_betreiber_entscheidung")`."""
     ref = _html.escape(referenz)
     if ok:
         return (f"{_KOPF}<h1>Uebernommen</h1><p><code>{ref}</code> ist geprueft und bei "
@@ -78,6 +94,19 @@ def ergebnisseite(ok: bool, referenz: str, hinweis: str, *,
                 f"das hilft in diesem Fall nicht. Die einzige Abhilfe: wer dieses "
                 f"System betreibt, muss den Supabase-Uebergang fuer diese Referenz "
                 f"erneut ausloesen, sobald Supabase wieder erreichbar ist.</p>")
+    if erfordert_betreiber_entscheidung:
+        return (f"{_KOPF}<h1>Entscheidung noetig</h1>"
+                f"<p><code>{ref}</code>: die Referenz ist bei OpenFang bereits belegt "
+                f"-- moeglicherweise mit einem anderen, bewusst vom Betreiber gesetzten "
+                f"Wert. Der soeben eingegebene Wert wurde deshalb NICHT bei OpenFang "
+                f"gespeichert.</p>"
+                f"<p>Das ist keine Ablehnung durch den Anbieter -- die Verifikation war "
+                f"gut. Es liegt eine Kollision vor, und die braucht eine Entscheidung "
+                f"des Betreibers: den bestehenden Wert bei OpenFang stehen lassen, oder "
+                f"ihn dort loeschen, damit diese Referenz neu vergeben werden kann.</p>"
+                f"<p><strong>Dieses Formular jetzt nicht einfach erneut absenden</strong> "
+                f"-- ohne diese Entscheidung fuehrt ein neuer Versuch zur selben "
+                f"Kollision.</p>")
     return (f"{_KOPF}<h1>Nicht uebernommen</h1>"
             f"<p><code>{ref}</code> wurde vom Anbieter abgelehnt: "
             f"<code>{_html.escape(hinweis)}</code>. Der Wert wurde nicht uebergeben.</p>"
@@ -98,8 +127,10 @@ def entgegennehmen(token: str, wert: str, schreiber) -> tuple[int, str]:
     if ergebnis.get("ok"):
         return 200, ergebnisseite(True, a.referenz, "")
     hinweis = str(ergebnis.get("status", ergebnis.get("fehler", "unbekannt")))
-    return 200, ergebnisseite(False, a.referenz, hinweis,
-                              zwei_verwahrstellen=bool(ergebnis.get("zwei_verwahrstellen")))
+    return 200, ergebnisseite(
+        False, a.referenz, hinweis,
+        zwei_verwahrstellen=bool(ergebnis.get("zwei_verwahrstellen")),
+        erfordert_betreiber_entscheidung=bool(ergebnis.get("erfordert_betreiber_entscheidung")))
 
 
 def oauth_entgegennehmen(token: str, beschaffer, schreiber) -> tuple[int, str]:
@@ -130,6 +161,7 @@ def oauth_entgegennehmen(token: str, beschaffer, schreiber) -> tuple[int, str]:
                          art=a.art, wert=wert, ziel=a.ziel)
     if ergebnis.get("ok"):
         return 200, ergebnisseite(True, a.referenz, "")
-    return 200, ergebnisseite(False, a.referenz,
-                              str(ergebnis.get("status", "unbekannt")),
-                              zwei_verwahrstellen=bool(ergebnis.get("zwei_verwahrstellen")))
+    return 200, ergebnisseite(
+        False, a.referenz, str(ergebnis.get("status", "unbekannt")),
+        zwei_verwahrstellen=bool(ergebnis.get("zwei_verwahrstellen")),
+        erfordert_betreiber_entscheidung=bool(ergebnis.get("erfordert_betreiber_entscheidung")))
