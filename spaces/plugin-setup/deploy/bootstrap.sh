@@ -2,8 +2,13 @@
 # bootstrap.sh -- legt den plugin-setup-Space an. Wiederholbar (idempotent).
 #
 # Tut GENAU drei Dinge, in dieser Reihenfolge:
-#   1. Wendet die drei Supabase-Migrationen an (0001/0002 aus Aufgabe 4,
-#      0003 -- die geringstberechtigte Rolle -- aus Aufgabe 6).
+#   1. Wendet die fuenf Supabase-Migrationen an (0001/0002 aus Aufgabe 4,
+#      0003 -- die geringstberechtigte Rolle -- und 0004 -- deren
+#      Haertung -- aus Aufgabe 6, 0005 -- die zwei Funktionen des
+#      Eingabefensters -- aus dem Entwurf 2026-09-12-eingabefenster;
+#      N9-FIX 2026-09-15: dieser Kommentar sagte bisher faelschlich
+#      "drei"/"0001-0003", die Schleife unten wandte schon immer alle
+#      fuenf an -- reiner Textfehler, keine Funktionsluecke).
 #   2. Faehrt das eigenstaendige Gateway hoch (docker compose up -d in
 #      diesem Verzeichnis -- NICHT der vibemind-Swarm-Stack, s.
 #      docker-compose.yml-Kommentar).

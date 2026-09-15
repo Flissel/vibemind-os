@@ -59,7 +59,7 @@ ueberschrieben), wie bei den Nachbar-Sidecars (`spaces/marketing/claw/server.py`
 
 ## Betrieb
 
-1. `deploy/bootstrap.sh` -- Supabase-Migrationen anwenden (0001-0003),
+1. `deploy/bootstrap.sh` -- Supabase-Migrationen anwenden (0001-0005),
    eigenstaendiges Compose-Projekt hochfahren.
 2. `deploy/anbinden.sh` -- Saat einspielen, Gateway-Token setzen, Werkzeuge
    probieren.
