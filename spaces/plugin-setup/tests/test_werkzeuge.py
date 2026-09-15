@@ -15,7 +15,10 @@ from __future__ import annotations
 import email.message
 import io
 import json
+import os
 import re
+import subprocess
+import sys
 import urllib.error
 from pathlib import Path
 
@@ -1017,6 +1020,31 @@ def test_openfang_uebernehmen_409_fehlertext_enthaelt_koerper_nicht(monkeypatch)
         assert "reference_exists" not in text
 
 
+def test_openfang_uebernehmen_scrubbt_wert_aus_einer_netzwerkausnahme(monkeypatch):
+    """N11: `_openfang_uebernehmen`s `except`-Zweig ersetzt einen im
+    Ausnahmetext auftauchenden `wert` durch `<wert>` -- Verteidigung in der
+    Tiefe (der Wert reist nur im Anfragekoerper, nie im Fehlertext), aber
+    bisher ungetestet. Gemockt wird `_roh_anfrage` selbst (der Aufruf, den
+    `_openfang_uebernehmen`s `try` umschliesst), NICHT `_openfang_
+    uebernehmen` -- der Scrub liegt in der Funktion unter Test, ein Mock
+    dieser Funktion wuerde den Fall gar nicht durchlaufen lassen."""
+    monkeypatch.setenv("PLUGIN_SETUP_OPENFANG_URL", "http://127.0.0.1:4273")
+    monkeypatch.setenv("PLUGIN_SETUP_OPENFANG_API_KEY", "fake-daemon-schluessel")
+    wert = "offensichtlich-erfunden-openfang-scrub-wert"
+
+    def wirft(*_args, **_kwargs):
+        raise ConnectionResetError(f"peer echoed request body, enthielt: {wert}")
+
+    monkeypatch.setattr(werkzeuge, "_roh_anfrage", wirft)
+
+    ergebnis = werkzeuge._openfang_uebernehmen("X", wert)
+
+    assert ergebnis["ok"] is False
+    assert ergebnis["status"] == 0
+    assert wert not in ergebnis["fehler"]
+    assert "<wert>" in ergebnis["fehler"]
+
+
 def test_schluessel_entgegennehmen_openfang_409_ende_zu_ende_ist_nicht_retryable(monkeypatch):
     """Test 5 (Brief) -- der eigentliche Beleg, nicht nur ein Baustein.
 
@@ -1079,6 +1107,38 @@ def test_rowboat_403_statuszweig_greift_und_schluessel_leckt_nicht(monkeypatch):
 
     assert ergebnis["ok"] is False
     assert "fake-projekt-schluessel-403" not in ergebnis["fehler"]
+
+
+def _fenster_basis_in_frischem_prozess(**zusatz_env) -> str:
+    """N13: `werkzeuge.FENSTER_BASIS` wird einmal beim Modulimport aus
+    Umgebungsvariablen berechnet -- ein `monkeypatch.setenv` danach kaeme zu
+    spaet. Ein frischer Subprozess (statt `importlib.reload`) vermeidet den
+    Fallstrick, dass andere bereits importierte Module (z.B. `server.py` in
+    einer anderen Testdatei) sonst weiter auf die ALTE Modulinstanz zeigen."""
+    ausgabe = subprocess.run(
+        [sys.executable, "-c", "import werkzeuge; print(werkzeuge.FENSTER_BASIS)"],
+        cwd=str(Path(__file__).resolve().parents[1]),
+        env={**os.environ, **zusatz_env},
+        capture_output=True, text=True, timeout=15)
+    assert ausgabe.returncode == 0, ausgabe.stderr
+    return ausgabe.stdout.strip()
+
+
+def test_fenster_basis_folgt_dem_mcp_port_wenn_nicht_ausdruecklich_gesetzt():
+    """N13: vorher war der Vorgabewert fest `http://127.0.0.1:8131`,
+    unabhaengig von `PLUGIN_SETUP_MCP_PORT` -- server.py (`server.PORT`)
+    nimmt seinen Port aber genau aus dieser Variable. Wer den Port
+    umstellt und `PLUGIN_SETUP_FENSTER_BASIS` vergisst, bekam Links auf den
+    ALTEN Port -- still, ohne Fehler."""
+    assert _fenster_basis_in_frischem_prozess(
+        PLUGIN_SETUP_MCP_PORT="9999") == "http://127.0.0.1:9999"
+
+
+def test_fenster_basis_ausdruecklich_gesetzt_gewinnt_trotz_anderem_port():
+    assert _fenster_basis_in_frischem_prozess(
+        PLUGIN_SETUP_MCP_PORT="9999",
+        PLUGIN_SETUP_FENSTER_BASIS="http://example.invalid:1234",
+    ) == "http://example.invalid:1234"
 
 
 def test_eingabe_anfordern_gibt_link_und_ablauf_aber_nie_einen_wert(monkeypatch):
@@ -1214,3 +1274,32 @@ def test_eingabe_anfordern_lehnt_ab_wenn_referenz_bereits_in_anderem_zustand_ist
     assert ergebnis["ok"] is False
     assert zustand in ergebnis["fehler"]
     assert gelegt == [], f"kein Link fuer eine Referenz, die schon '{zustand}' ist"
+
+
+def test_eingabe_anfordern_lehnt_zweiten_link_fuer_dieselbe_referenz_ab_solange_der_erste_schwebt(monkeypatch):
+    """N3: `ablage.zustand` kennt eine schwebende Anfrage noch gar nicht --
+    sie lebt nur in `anfragen._OFFEN` (Prozessspeicher, zwischen
+    `eingabe_anfordern` und dem Absenden des Formulars), nicht in Supabase.
+    Zwei Aufrufe fuer dieselbe `referenz`, BEVOR der erste Link benutzt
+    wird, ergaben deshalb bisher zwei lebende Token; die zweite Formular-
+    Abgabe waere als roher Postgres-Constraint-Fehler (UNIQUE auf
+    referenz_name) beim Betreiber gelandet, statt als verstaendliche
+    Ablehnung hier. `ablage.zustand` bleibt hier bewusst `ok: False`
+    (frische/unbekannte Referenz) -- NUR die Schweben-Wache (`anfragen.
+    offen_fuer`) darf diesen zweiten Aufruf ablehnen."""
+    monkeypatch.setattr(werkzeuge.ablage, "zustand",
+                        lambda r: {"ok": False, "fehler": "unbekannte referenz_name"})
+    erster = werkzeuge.eingabe_anfordern("proj", "demo", "PYTEST_SCHWEBEND_A", "bearer", "")
+    assert erster["ok"] is True
+
+    zweiter = werkzeuge.eingabe_anfordern("proj", "demo", "PYTEST_SCHWEBEND_A", "bearer", "")
+    assert zweiter["ok"] is False
+    assert "url" not in zweiter
+    assert "schon eine Anfrage" in zweiter["fehler"]
+
+    # Nach Verbrauch des ersten Tokens ist die Bahn wieder frei -- die Wache
+    # blockt eine SCHWEBENDE Anfrage, keine abgeschlossene.
+    token = erster["url"].rsplit("/", 1)[1]
+    assert werkzeuge.anfragen.verbrauchen(token) is not None
+    dritter = werkzeuge.eingabe_anfordern("proj", "demo", "PYTEST_SCHWEBEND_A", "bearer", "")
+    assert dritter["ok"] is True

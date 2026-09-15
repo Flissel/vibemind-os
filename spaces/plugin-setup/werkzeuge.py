@@ -670,7 +670,20 @@ def schluessel_entgegennehmen(projekt: str, plugin: str, referenz: str, art: str
     }
 
 
-FENSTER_BASIS = os.environ.get("PLUGIN_SETUP_FENSTER_BASIS", "http://127.0.0.1:8131").rstrip("/")
+# N13-FIX (2026-09-15): der Vorgabewert folgt jetzt PLUGIN_SETUP_MCP_PORT --
+# demselben Wert, aus dem server.py seinen Port nimmt (server.PORT). Vorher
+# war der Fallback fest "8131": wer den Port per PLUGIN_SETUP_MCP_PORT
+# umstellt, aber PLUGIN_SETUP_FENSTER_BASIS vergisst, bekam Links auf den
+# ALTEN Port -- tote Links, und zwar still (kein Fehler, nur ein 404 beim
+# Betreiber). Ein ausdruecklich gesetztes PLUGIN_SETUP_FENSTER_BASIS
+# gewinnt weiterhin unveraendert. Kein Import von server.py hier (der
+# umgekehrte Import -- server.py importiert werkzeuge -- wuerde zirkulaer):
+# derselbe Env-Name, direkt gelesen, ist keine zweite Wahrheit, weil
+# server.PORT dieselbe Variable mit demselben Fallback liest.
+_MCP_PORT_FUER_FENSTER_BASIS = os.environ.get("PLUGIN_SETUP_MCP_PORT", "8131")
+FENSTER_BASIS = os.environ.get(
+    "PLUGIN_SETUP_FENSTER_BASIS", f"http://127.0.0.1:{_MCP_PORT_FUER_FENSTER_BASIS}"
+).rstrip("/")
 
 
 def eingabe_anfordern(projekt: str, plugin: str, referenz: str, art: str, ziel: str = "") -> dict:
@@ -711,6 +724,22 @@ def eingabe_anfordern(projekt: str, plugin: str, referenz: str, art: str, ziel: 
     stillschweigendes Durchfallen: JEDER bekannte Zustand ausser
     `fehlgeschlagen` liefert `ok: False` mit dem Zustand im Klartext, bevor
     ueberhaupt ein Token entsteht.
+
+    SCHWEBEN-WACHE (N3-Fix, 2026-09-15): alle Wachen oben pruefen DB-
+    Zustand (`ablage.zustand`) -- eine schwebende Anfrage (zwischen diesem
+    Aufruf und dem Absenden des Formulars) steht aber gar nicht in der DB,
+    sondern nur in `anfragen._OFFEN` (Prozessspeicher, s. anfragen.py).
+    Zwei Aufrufe fuer dieselbe `referenz`, BEVOR die erste Anfrage
+    abgesendet wird, ergaben deshalb bisher zwei lebende Token fuer
+    dieselbe Referenz; die zweite Formular-Abgabe landet dann als roher
+    Postgres-Constraint-Fehler (UNIQUE auf referenz_name) auf der
+    Betreiberseite, statt als verstaendliche Ablehnung hier. Die Wache
+    unten (VOR dem Anlegen, wie die anderen) lehnt darum jede `referenz`
+    ab, fuer die `anfragen.offen_fuer` schon ein nicht abgelaufenes Token
+    findet -- ENTSCHEIDUNG (nicht denselben Link erneut ausgeben): zwei
+    Wege zu einem Geheimnis sind einer zu viel, und der bestehende Link
+    bleibt ohnehin gueltig und im Transkript des Agenten auffindbar, ein
+    zweiter waere reine Verdopplung ohne Nutzen.
     """
     if art not in _ART_ERLAUBT:
         return {"ok": False, "fehler": f"unbekannte art: {art!r} (erlaubt: {sorted(_ART_ERLAUBT)})"}
@@ -728,6 +757,13 @@ def eingabe_anfordern(projekt: str, plugin: str, referenz: str, art: str, ziel: 
         else:
             return {"ok": False,
                     "fehler": f"referenz {referenz!r} ist bereits im Zustand {zustand!r} -- kein neuer Link"}
+
+    offen = anfragen.offen_fuer(referenz)
+    if offen is not None:
+        ablauf = datetime.fromtimestamp(offen.ablauf, tz=timezone.utc).isoformat()
+        return {"ok": False, "fehler": (
+            f"fuer referenz {referenz!r} laeuft schon eine Anfrage -- sie laeuft "
+            f"am {ablauf} ab, bis dahin gibt es keinen zweiten Link")}
 
     a = anfragen.anlegen(projekt, plugin, referenz, art, ziel)
     ablauf = datetime.fromtimestamp(a.ablauf, tz=timezone.utc).isoformat()
