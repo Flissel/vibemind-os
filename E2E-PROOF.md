@@ -1581,9 +1581,9 @@ Docker: client and server both `29.7.2`.
 
 **One live sidecar process, one real GET/POST round trip through
 `/fenster/{token}`, one real unauthenticated call to `https://api.github.com/user`
-— and an invented value that shows up in none of seven places checked,
-including the one place this branch has already leaked a credential-shaped
-value into twice.**
+— and an invented value that shows up in none of six places checked (plus
+one discriminating assertion, s. §VI.3), including the one place this
+branch has already leaked a credential-shaped value into twice.**
 
 Part V proved the setup-agent's Supabase→provider→OpenFang chain by calling
 `werkzeuge.schluessel_entgegennehmen` directly. This part proves the piece
@@ -1635,25 +1635,32 @@ Both directions required, both shown, per this task's own instruction: a
 live proof that greens itself without the opt-in is worthless. The `s`/`.`
 progress characters above are pytest's own, not edited in.
 
-## VI.3 What each of the seven places proves, and why the seventh was added
+## VI.3 What each of the six places proves, plus one discriminating assertion, and why the sixth place was added
 
-The brief that drove this task named six places the value must never
+The brief that drove this task named five places the value must never
 appear, all asserted inside the test itself (not eyeballed after the
 fact): the tool's own response text (before the link is ever followed),
 the GET page's HTML, the POST response's HTML, the Supabase `hinweis`
 column (`LIKE '%<wert>%'`, zero rows), and the sidecar subprocess's own
-stdout log file. `status == "fehlgeschlagen"` is the discriminating
-assertion the brief calls out explicitly: an invented value **must** fail
-real provider verification, or the check proves nothing. It did —
-confirmed live: the operator's environment probe before this task started
+stdout log file.
+
+**Correction (N5, whole-branch follow-up review, 2026-09-15): an earlier
+draft of this section miscounted by one, calling this "seven places."**
+`status == "fehlgeschlagen"` is the discriminating assertion the brief
+calls out explicitly — but it is not a *place the value could appear*, it
+is the check that the whole test proves anything at all: an invented value
+**must** fail real provider verification, or the six places above prove
+nothing about a value that was ever actually at risk. It did — confirmed
+live: the operator's environment probe before this task started
 (`https://api.github.com/user` answering unauthenticated requests with
 `401`) is exactly the path this test's `art="bearer"` check walks, and the
 assertion passed, meaning `pruefung.pruefe()` made a real call and got a
 real non-200 back (had the intake step failed before reaching the
 provider, the status would have stayed `entgegengenommen`, not advanced to
-`fehlgeschlagen`).
+`fehlgeschlagen`). Counting it as a "place" inflated five real places plus
+the Postgres container log (below) into "seven" instead of six.
 
-**The seventh place — added by this task's own ruling, not the original
+**The sixth place — added by this task's own ruling, not the original
 brief — is the Postgres CONTAINER LOG.** This is not a hypothetical
 concern on this branch: `spaces/plugin-setup/ablage.py`'s own C1-fix
 documents a literal credential value appearing in `docker logs` **37
@@ -1663,8 +1670,40 @@ every *failing* statement's text verbatim — and a second, separate
 incident on this same line (Part V, fix round 1, §V.4/§V.5) found the
 Postgres server log carrying a credential-shaped value that a zero-control
 check had missed because it only bracketed one end of the search window. A
-proof that checked six places and skipped the one place this actually
+proof that checked five places and skipped the one place this actually
 happened would have been the same mistake a third time.
+
+**Two further corrections to this sixth place specifically (N5), neither
+cosmetic — found in the same follow-up review, not caught when this
+section was first written:**
+
+1. **This section's own Postgres-log check does not exercise the class it
+   was added to guard against.** The scenario this test drives
+   (`art="bearer"`, one intake, no collision) never produces the *failing*
+   SQL statement that put a value into the log in the first place — that
+   only happens on a `referenz_name` collision, the exact path behind the
+   37-hits measurement above. Roll the C1 fix in `ablage.py` back
+   entirely, and this section's own assertion would **stay green
+   regardless**, because nothing on this run's path would ever put the
+   value into a failing statement to begin with. What this check actually
+   proves is narrower than "seven/six places checked" reads: that nothing
+   about *this specific run's* intake, verification-failure, and
+   subprocess-stdout path happened to also land the value in the
+   container's error log — real, but not "the C1 fix holds."
+2. **The test that actually exercises the C1 class was never cited here.**
+   `tests/test_ablage.py::test_wert_landet_nie_im_postgres_server_log`
+   deliberately triggers a real `referenz_name` collision — the same path
+   that produced the 37 hits — and asserts the value is absent from the
+   `--since`-windowed `docker logs`, with its own positive control
+   (asserting the collision's own `ERROR` line *is* in the window, so an
+   empty match can't be mistaken for a broken filter). That test is the
+   one that covers this class; this section never named it, even though it
+   is the test that would actually go red on a C1 regression.
+
+The null control in §VI.4 below is unaffected by either correction: it
+proves the `docker logs --since` search mechanism itself surfaces a real
+error when one occurs, not that this section's own scenario would surface
+a C1 regression.
 
 ## VI.4 The null control, and why it runs before the real assertion
 
@@ -1771,9 +1810,12 @@ Two answers this task was told not to guess at, stated plainly:
 
 ## VI.6 What I did not measure myself, named rather than left implicit
 
-This branch's history (see Part V, §V.1) records five prior overclaims
-that were each accurate about what they named and wrong about what sat
-next to it. In that spirit, named plainly rather than smoothed over:
+This branch's history (see Part V's opening "Fix round 1" note, in the
+preamble before §V.0 — corrected here, N12: an earlier draft of this line
+cited §V.1, which is a different list — the four things Part V's own proof
+does not establish, not this one) records five prior overclaims that were
+each accurate about what they named and wrong about what sat next to it.
+In that spirit, named plainly rather than smoothed over:
 
 - **No container-originated request was made.** Not `marketing-claw`, not
   openclaw, not any container hitting `host.docker.internal:<port>` — the
