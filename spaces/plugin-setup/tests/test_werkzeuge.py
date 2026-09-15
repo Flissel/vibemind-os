@@ -12,8 +12,11 @@ Regeln, die diese Datei selbst befolgt (Global Constraints im Brief):
 """
 from __future__ import annotations
 
+import email.message
+import io
 import json
 import re
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -929,6 +932,153 @@ def test_openfang_uebernehmen_schickt_referenz_wert_overwrite_und_bearer(monkeyp
     assert kopfzeilen == {"Authorization": "Bearer fake-daemon-schluessel"}
     body = json.loads(daten)
     assert body == {"reference": "X", "value": _FAKE_WERT, "overwrite": False}
+
+
+# ─── N1: `urlopen` wirft bei >= 400, `_roh_anfrage` faengt es jetzt ────────
+#
+# Befund (docs/superpowers/specs/2026-09-12-eingabefenster-nachzieher.md,
+# N1): `urllib.request.urlopen` wirft bei jedem Status >= 400 eine
+# `HTTPError`, statt sie zurueckzugeben -- die Statuszweige BEIDER
+# Aufrufer (`_openfang_uebernehmen`, `_rowboat`) waren damit fuer echte
+# Fehlerstatus toter Code, jeder 4xx/5xx landete im `except` und ergab
+# `status: 0` ("nicht erreichbar" statt "hat geantwortet").
+
+
+def test_roh_anfrage_gibt_bei_httperror_status_und_koerper_zurueck_statt_zu_werfen(monkeypatch):
+    """Test 1 (Brief): eine ECHTE `HTTPError` (nicht attrappiert) -- `_roh_
+    anfrage` faengt sie und liefert `(code, koerper)` wie jede andere
+    Antwort, statt sie durchzureichen."""
+    koerper = json.dumps({"error": "reference_exists"}).encode("utf-8")
+    fehler = urllib.error.HTTPError(
+        "http://127.0.0.1:4273/api/credentials/store", 409, "Conflict",
+        email.message.Message(), io.BytesIO(koerper))
+
+    def wirft(*_args, **_kwargs):
+        raise fehler
+
+    monkeypatch.setattr(werkzeuge.urllib.request, "urlopen", wirft)
+
+    status, rumpf = werkzeuge._roh_anfrage(
+        "http://127.0.0.1:4273/api/credentials/store", b"{}", "POST", {})
+
+    assert status == 409
+    assert json.loads(rumpf) == {"error": "reference_exists"}
+
+
+def test_roh_anfrage_laesst_urlerror_ohne_status_weiterfliegen(monkeypatch):
+    """Test 2 (Brief): eine `URLError` OHNE Statuscode (DNS, Verbindung
+    abgelehnt, Zeitueberschreitung) ist KEINE Antwort und muss weiter
+    fliegen -- nur die Aufrufer duerfen sie in `status: 0` uebersetzen."""
+    def wirft(*_args, **_kwargs):
+        raise urllib.error.URLError("Connection refused")
+
+    monkeypatch.setattr(werkzeuge.urllib.request, "urlopen", wirft)
+
+    with pytest.raises(urllib.error.URLError):
+        werkzeuge._roh_anfrage(
+            "http://127.0.0.1:4273/api/credentials/store", b"{}", "POST", {})
+
+
+def test_openfang_uebernehmen_409_gibt_status_409_zurueck_nicht_0(monkeypatch):
+    """Test 3 (Brief): der Kern des Fehlers. Vor dem N1-Fix faellt ein
+    echter 409 in `_openfang_uebernehmen`s `except`-Zweig und ergibt
+    `status: 0`. `_roh_anfrage` wird hier (nicht `_openfang_uebernehmen`
+    selbst) gemockt -- der Test laeuft durch den echten Statuszweig
+    (`if status != 200`)."""
+    monkeypatch.setenv("PLUGIN_SETUP_OPENFANG_URL", "http://127.0.0.1:4273")
+    monkeypatch.setenv("PLUGIN_SETUP_OPENFANG_API_KEY", "fake-daemon-schluessel")
+    monkeypatch.setattr(werkzeuge, "_roh_anfrage", _Aufrufe(ergebnis=(
+        409, json.dumps({"error": "reference_exists", "value": _FAKE_WERT}))))
+
+    ergebnis = werkzeuge._openfang_uebernehmen("X", _FAKE_WERT)
+
+    assert ergebnis["ok"] is False
+    assert ergebnis["status"] == 409
+    assert ergebnis["status"] != 0
+
+
+def test_openfang_uebernehmen_409_fehlertext_enthaelt_koerper_nicht(monkeypatch):
+    """Test 4 (Brief): Sicherheitsauflage -- `_openfang_uebernehmen` ist der
+    EINZIGE Aufruf, dem ein Credential-WERT im Anfragekoerper mitgegeben
+    wird, also die einzige Stelle, an der eine Antwort ihn zurueckspiegeln
+    koennte. Der Fehlertext bleibt bei `f"OpenFang HTTP {status}"` -- der
+    (hier absichtlich den Wert enthaltende) simulierte Antwortkoerper darf
+    NICHT hineinlecken."""
+    monkeypatch.setenv("PLUGIN_SETUP_OPENFANG_URL", "http://127.0.0.1:4273")
+    monkeypatch.setenv("PLUGIN_SETUP_OPENFANG_API_KEY", "fake-daemon-schluessel")
+    monkeypatch.setattr(werkzeuge, "_roh_anfrage", _Aufrufe(ergebnis=(
+        409, json.dumps({"error": "reference_exists", "value": _FAKE_WERT}))))
+
+    ergebnis = werkzeuge._openfang_uebernehmen("X", _FAKE_WERT)
+
+    assert ergebnis["fehler"] == "OpenFang HTTP 409"
+    for text in _alle_werte_in(ergebnis):
+        assert _FAKE_WERT not in text
+        assert "reference_exists" not in text
+
+
+def test_schluessel_entgegennehmen_openfang_409_ende_zu_ende_ist_nicht_retryable(monkeypatch):
+    """Test 5 (Brief) -- der eigentliche Beleg, nicht nur ein Baustein.
+
+    WICHTIG: hier wird NICHT `_roh_anfrage` gemockt (das wuerde den N1-Bug
+    gar nicht durchlaufen -- er sitzt GENAU in `_roh_anfrage`s Umgang mit
+    `urlopen`). Gemockt wird stattdessen `urllib.request.urlopen` selbst,
+    mit einer ECHTEN `HTTPError(409)`; `_roh_anfrage`, `_openfang_
+    uebernehmen` und `schluessel_entgegennehmen` laufen alle drei echt mit.
+    Vor dem N1-Fix wirft `_roh_anfrage` die `HTTPError` weiter, sie faellt
+    in `_openfang_uebernehmen`s `except`, ergibt `status: 0`, und
+    `schluessel_entgegennehmen` liefert `retryable: True` (endloses
+    Wiederholen) statt `erfordert_betreiber_entscheidung: True` +
+    `retryable: False`."""
+    monkeypatch.setenv("PLUGIN_SETUP_OPENFANG_URL", "http://127.0.0.1:4273")
+    monkeypatch.setenv("PLUGIN_SETUP_OPENFANG_API_KEY", "fake-daemon-schluessel")
+    monkeypatch.setattr(werkzeuge.ablage, "entgegennehmen",
+                        _Aufrufe(ergebnis={"ok": True, "referenz": "X"}))
+    monkeypatch.setattr(werkzeuge, "pruefe", _Aufrufe(ergebnis={"gut": True, "status": 200}))
+    monkeypatch.setattr(werkzeuge.ablage, "verifizieren", _Aufrufe(ergebnis={"ok": True}))
+    koerper = json.dumps({"error": "reference_exists", "value": _FAKE_WERT}).encode("utf-8")
+    fehler = urllib.error.HTTPError(
+        "http://127.0.0.1:4273/api/credentials/store", 409, "Conflict",
+        email.message.Message(), io.BytesIO(koerper))
+
+    def wirft(*_args, **_kwargs):
+        raise fehler
+
+    monkeypatch.setattr(werkzeuge.urllib.request, "urlopen", wirft)
+    fehlschlagen = _Aufrufe(ergebnis={"ok": True})
+    monkeypatch.setattr(werkzeuge.ablage, "fehlschlagen", fehlschlagen)
+    uebernommen = _Aufrufe(ergebnis={"ok": True})
+    monkeypatch.setattr(werkzeuge.ablage, "uebernommen", uebernommen)
+
+    ergebnis = werkzeuge.schluessel_entgegennehmen("proj", "demo-plugin", "X", "bearer", _FAKE_WERT)
+
+    assert ergebnis["ok"] is False
+    assert ergebnis.get("status") != 0
+    assert ergebnis.get("erfordert_betreiber_entscheidung") is True
+    assert ergebnis.get("retryable") is False
+    assert fehlschlagen.aufrufe == []
+    assert uebernommen.aufrufe == []
+    for text in _alle_werte_in(ergebnis):
+        assert _FAKE_WERT not in text
+
+
+def test_rowboat_403_statuszweig_greift_und_schluessel_leckt_nicht(monkeypatch):
+    """Test 6 (Brief): derselbe N1-Defekt bei `_rowboat`, hier mit 403
+    gemessen (Befund). Der Statuszweig `if status not in (200, 201)` wird
+    durch den N1-Fix ueberhaupt erst erreichbar -- und `_ohne_schluessel`
+    muss auf diesem neu erreichbaren Pfad greifen: der API-Schluessel wird
+    im simulierten Fehlerkoerper ECHOT (Worst-Case, sonst koennte
+    `_ohne_schluessel` entfernt werden und der Test bliebe gruen)."""
+    monkeypatch.setenv("ROWBOAT_URL", "http://127.0.0.1:3000")
+    monkeypatch.setenv("ROWBOAT_API_KEY", "fake-projekt-schluessel-403")
+    monkeypatch.setattr(werkzeuge, "_roh_anfrage", _Aufrufe(ergebnis=(
+        403, json.dumps({"error": "forbidden", "empfangene_headers": {
+            "Authorization": "Bearer fake-projekt-schluessel-403"}}))))
+
+    ergebnis = werkzeuge.plugin_bedarf("proj", "demo-plugin")
+
+    assert ergebnis["ok"] is False
+    assert "fake-projekt-schluessel-403" not in ergebnis["fehler"]
 
 
 def test_eingabe_anfordern_gibt_link_und_ablauf_aber_nie_einen_wert(monkeypatch):

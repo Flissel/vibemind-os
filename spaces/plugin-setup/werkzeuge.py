@@ -91,6 +91,7 @@ import os
 import re
 import time
 import uuid
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -156,12 +157,28 @@ def _ohne_schluessel(text: str) -> str:
 
 
 def _roh_anfrage(url: str, daten, method: str, kopfzeilen: dict) -> tuple:
-    """Der einzige echte Netzgriff -- Tests ersetzen genau diese Funktion."""
+    """Der einzige echte Netzgriff -- Tests ersetzen genau diese Funktion.
+
+    N1-FIX (2026-09-15): `urllib.request.urlopen` WIRFT bei jedem Status
+    >= 400 (`urllib.error.HTTPError`), statt ihn zurueckzugeben -- eine
+    HTTPError ist aber selbst eine Antwort, kein Ausfall: sie traegt
+    `.code` und einen lesbaren `.read()`-Koerper. Wir fangen genau sie und
+    reichen sie wie jede andere Antwort als `(status, rumpf)` durch, damit
+    die Statuszweige BEIDER Aufrufer (`_openfang_uebernehmen`, `_rowboat`)
+    echte Fehlerstatus ueberhaupt erreichen (vorher liefen 409/403 & Co.
+    immer in den `except`-Zweig der Aufrufer und meldeten `status: 0`, als
+    waere der Dienst gar nicht erreichbar). `URLError` OHNE Status (DNS,
+    Verbindung abgelehnt, Zeitueberschreitung) fliegt bewusst WEITER --
+    "nicht erreichbar" ist etwas anderes als "hat mit einem Statuscode
+    geantwortet", und genau das bleibt Sache der Aufrufer (`status: 0`)."""
     anfrage = urllib.request.Request(
         url, data=daten, method=method,
         headers={"Content-Type": "application/json", **kopfzeilen})
-    with urllib.request.urlopen(anfrage, timeout=30) as antwort:
-        return antwort.status, antwort.read().decode("utf-8", "replace")
+    try:
+        with urllib.request.urlopen(anfrage, timeout=30) as antwort:
+            return antwort.status, antwort.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as fehler:
+        return fehler.code, fehler.read().decode("utf-8", "replace")
 
 
 def _rowboat_catalog_digest() -> str:
