@@ -49,7 +49,7 @@ def test_main_schreibt_beide_zeilen_wenn_der_anbieter_einen_refresh_token_ausgib
     }
     monkeypatch.setattr(
         provisioner, "token_holen_voll",
-        lambda mcp_url: ("PLUGIN_SETUP_TEST_MIT_REFRESH", tokens))
+        lambda mcp_url, callback_port=0: ("PLUGIN_SETUP_TEST_MIT_REFRESH", tokens))
     out_pfad = tmp_path / "x.env"
     monkeypatch.setattr(sys, "argv", [
         "provision-oauth-token.py", "https://mcp.example.com/mcp",
@@ -82,7 +82,7 @@ def test_main_schreibt_genau_eine_zeile_wenn_kein_refresh_token_da_ist(
     }
     monkeypatch.setattr(
         provisioner, "token_holen_voll",
-        lambda mcp_url: ("PLUGIN_SETUP_TEST_NUR_ACCESS", tokens))
+        lambda mcp_url, callback_port=0: ("PLUGIN_SETUP_TEST_NUR_ACCESS", tokens))
     out_pfad = tmp_path / "x.env"
     monkeypatch.setattr(sys, "argv", [
         "provision-oauth-token.py", "https://mcp.example.com/mcp",

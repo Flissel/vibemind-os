@@ -44,8 +44,6 @@ import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-CALLBACK_PORT = 8976
-REDIRECT_URI = f"http://127.0.0.1:{CALLBACK_PORT}/callback"
 USER_AGENT = "vibemind-openfang-provisioner/1.0"
 
 # Some providers (Linear) chain through roots missing from older Python
@@ -122,10 +120,10 @@ def discover_authorization_server(issuer: str) -> dict:
     raise SystemExit(f"no authorization-server metadata found for {issuer}")
 
 
-def register_client(registration_endpoint: str) -> str:
+def register_client(registration_endpoint: str, redirect_uri: str) -> str:
     body = json.dumps({
         "client_name": "vibemind-openfang-provisioner",
-        "redirect_uris": [REDIRECT_URI],
+        "redirect_uris": [redirect_uri],
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
         "token_endpoint_auth_method": "none",
@@ -142,39 +140,80 @@ def register_client(registration_endpoint: str) -> str:
     return client_id
 
 
-def wait_for_callback(expected_state: str, timeout_seconds: int = 300) -> str:
-    result: dict[str, str] = {}
-    done = threading.Event()
+class _CallbackHTTPServer(HTTPServer):
+    """N2, Fix 2: a second bind on an already-used FIXED port must fail
+    LOUDLY, not silently take over an in-flight OAuth flow. Plain
+    `http.server.HTTPServer` sets `allow_reuse_address = 1` (inherited,
+    NOT the stdlib socketserver default of 0/False) -- measured on this
+    Windows host, that lets a second `bind()` on the same port SUCCEED,
+    and which of the two flows gets the callback is then undefined.
+    Overriding it to False here measurably restores a loud OSError
+    (Windows: WinError 10048, "Only one usage of each socket address is
+    normally permitted") on the second bind -- see n2-report.md for the
+    raw measurement."""
 
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802 - stdlib naming
-            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            state = (query.get("state") or [""])[0]
-            if state != expected_state:
-                self.send_response(400); self.end_headers()
-                self.wfile.write(b"state mismatch - ignore this window")
-                return
-            if "error" in query:
-                result["error"] = (query.get("error_description") or query["error"])[0]
-            else:
-                result["code"] = (query.get("code") or [""])[0]
-            self.send_response(200)
-            self.send_header("content-type", "text/html")
-            self.end_headers()
-            self.wfile.write(b"<h2>Token received - you can close this window.</h2>")
-            done.set()
+    allow_reuse_address = False
 
-        def log_message(self, *_args: object) -> None:
-            pass
+    def __init__(self, server_address: tuple[str, int], handler_cls: type[BaseHTTPRequestHandler]) -> None:
+        super().__init__(server_address, handler_cls)
+        self.callback_result: dict[str, str] = {}
+        self.callback_done = threading.Event()
+        self.expected_state = ""
 
-    server = HTTPServer(("127.0.0.1", CALLBACK_PORT), Handler)
+
+class _CallbackHandler(BaseHTTPRequestHandler):
+    server: _CallbackHTTPServer  # narrows self.server for attribute access below
+
+    def do_GET(self) -> None:  # noqa: N802 - stdlib naming
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        state = (query.get("state") or [""])[0]
+        if state != self.server.expected_state:
+            self.send_response(400); self.end_headers()
+            self.wfile.write(b"state mismatch - ignore this window")
+            return
+        if "error" in query:
+            self.server.callback_result["error"] = (query.get("error_description") or query["error"])[0]
+        else:
+            self.server.callback_result["code"] = (query.get("code") or [""])[0]
+        self.send_response(200)
+        self.send_header("content-type", "text/html")
+        self.end_headers()
+        self.wfile.write(b"<h2>Token received - you can close this window.</h2>")
+        self.server.callback_done.set()
+
+    def log_message(self, *_args: object) -> None:
+        pass
+
+
+def bind_callback_server(port: int = 0) -> _CallbackHTTPServer:
+    """N2, Fix 1: bind the localhost OAuth callback server BEFORE dynamic
+    client registration, so the `redirect_uri` handed to the
+    authorization server (and printed by `--dry-run`) is the one actually
+    listening -- not a module-constant guess (the old `CALLBACK_PORT =
+    8976`). `port=0` (the default) lets the OS assign a free port each
+    run, which RFC 7591 dynamic registration makes unproblematic (it
+    re-registers fresh every run anyway). `--callback-port` forces a
+    fixed port for the rarer provider that needs a hand-registered,
+    unchanging redirect URI.
+
+    Returns the bound (not yet serving) server; `server.server_address[1]`
+    is the real port. The caller owns `server_close()`."""
+    return _CallbackHTTPServer(("127.0.0.1", port), _CallbackHandler)
+
+
+def wait_for_callback(server: _CallbackHTTPServer, expected_state: str, timeout_seconds: int = 300) -> str:
+    """Serves `server` (already bound by `bind_callback_server`) until the
+    OAuth redirect lands or `timeout_seconds` elapses. Does not close the
+    socket -- that is `bind_callback_server`'s caller's job."""
+    server.expected_state = expected_state
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        if not done.wait(timeout_seconds):
+        if not server.callback_done.wait(timeout_seconds):
             raise SystemExit("timed out waiting for the browser callback")
     finally:
         server.shutdown()
+    result = server.callback_result
     if "error" in result:
         raise SystemExit(f"authorization refused: {result['error']}")
     if not result.get("code"):
@@ -182,10 +221,15 @@ def wait_for_callback(expected_state: str, timeout_seconds: int = 300) -> str:
     return result["code"]
 
 
-def _entdecken_und_registrieren(mcp_url: str) -> tuple[str, dict, str, str, str, str]:
+def _entdecken_und_registrieren(mcp_url: str, redirect_uri: str) -> tuple[str, dict, str, str, str, str]:
     """Discovery (Schritte 1-2) + dynamische Registrierung (Schritt 3) +
     PKCE/state/authorize_url -- der Teil des Flusses, den `--dry-run` UND
     `token_holen` beide brauchen, darum hier einmal statt zweimal.
+
+    `redirect_uri` ist die TATSAECHLICHE Adresse des Callback-Servers, den
+    der Aufrufer per `bind_callback_server` VOR diesem Aufruf schon
+    gebunden hat (N2, Fix 1) -- Registrierung und `authorize_url` benutzen
+    beide diesen Wert, nie einen geratenen Port.
 
     Gibt (resource, server_metadata, client_id, verifier, state,
     authorize_url) zurueck. Kein Netzwerkzugriff nach dieser Funktion
@@ -201,7 +245,7 @@ def _entdecken_und_registrieren(mcp_url: str) -> tuple[str, dict, str, str, str,
     registration_endpoint = server_metadata.get("registration_endpoint")
     if not registration_endpoint:
         raise SystemExit("authorization server offers no dynamic registration; create a client manually")
-    client_id = register_client(registration_endpoint)
+    client_id = register_client(registration_endpoint, redirect_uri)
     print(f"registered client:     {client_id}")
 
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(48)).rstrip(b"=").decode()
@@ -210,7 +254,7 @@ def _entdecken_und_registrieren(mcp_url: str) -> tuple[str, dict, str, str, str,
     authorize_url = f"{server_metadata['authorization_endpoint']}?" + urllib.parse.urlencode({
         "response_type": "code",
         "client_id": client_id,
-        "redirect_uri": REDIRECT_URI,
+        "redirect_uri": redirect_uri,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
         "state": state,
@@ -219,7 +263,7 @@ def _entdecken_und_registrieren(mcp_url: str) -> tuple[str, dict, str, str, str,
     return resource, server_metadata, client_id, verifier, state, authorize_url
 
 
-def token_holen_voll(mcp_url: str) -> tuple[str, dict]:
+def token_holen_voll(mcp_url: str, callback_port: int = 0) -> tuple[str, dict]:
     """Beschafft einen OAuth-Bearer fuer `mcp_url` und gibt (referenzname,
     tokens) zurueck, wobei `tokens` die VOLLSTAENDIGE JSON-Antwort des
     Token-Endpunkts ist (u.a. `access_token`, ggf. `refresh_token`,
@@ -228,6 +272,14 @@ def token_holen_voll(mcp_url: str) -> tuple[str, dict]:
     Herausgezogen aus main(), damit das Eingabefenster denselben Fluss
     benutzt, statt ihn abzuschreiben. main() ruft diese Funktion und
     schreibt danach wie bisher in --out.
+
+    `callback_port` (N2, Fix 1): 0 (Default) laesst das Betriebssystem
+    einen freien Port vergeben -- der Callback-Server wird VOR Discovery/
+    Registrierung gebunden, damit die `redirect_uri`, die beim Anbieter
+    registriert wird, garantiert die ist, auf der tatsaechlich gelauscht
+    wird. Ein fester Wert (CLI: `--callback-port`) ist nur fuer Anbieter
+    gedacht, deren Redirect-URI von Hand vorregistriert ist und sich nicht
+    aendern darf.
 
     GEHEIMHALTUNG (Fix-Runde 1, Befund 2): `tokens` traegt jetzt sichtbar
     Klartext (`access_token`, ggf. `refresh_token`). Diese Funktion druckt,
@@ -243,18 +295,23 @@ def token_holen_voll(mcp_url: str) -> tuple[str, dict]:
     Bibliotheksfunktion druckt keinen Namen -- main() tut das jetzt selbst,
     mit dem WIRKSAMEN Namen.
     """
-    resource, server_metadata, client_id, verifier, state, authorize_url = (
-        _entdecken_und_registrieren(mcp_url))
-    name = derive_name(resource)
+    server = bind_callback_server(callback_port)
+    try:
+        redirect_uri = f"http://127.0.0.1:{server.server_address[1]}/callback"
+        resource, server_metadata, client_id, verifier, state, authorize_url = (
+            _entdecken_und_registrieren(mcp_url, redirect_uri))
+        name = derive_name(resource)
 
-    print("opening the browser; log in and approve there ...")
-    webbrowser.open(authorize_url)
-    code = wait_for_callback(state)
+        print("opening the browser; log in and approve there ...")
+        webbrowser.open(authorize_url)
+        code = wait_for_callback(server, state)
+    finally:
+        server.server_close()
 
     token_body = urllib.parse.urlencode({
         "grant_type": "authorization_code",
         "code": code,
-        "redirect_uri": REDIRECT_URI,
+        "redirect_uri": redirect_uri,
         "client_id": client_id,
         "code_verifier": verifier,
         "resource": resource,
@@ -292,18 +349,27 @@ def main() -> None:
     parser.add_argument("--out", help="env file to append <NAME>=<token> to (created 0600 if missing)")
     parser.add_argument("--name", help="override the derived reference name")
     parser.add_argument("--dry-run", action="store_true", help="stop after printing the authorization URL")
+    parser.add_argument(
+        "--callback-port", type=int, default=0, metavar="N",
+        help="bind the OAuth callback on this fixed port instead of letting the OS assign a free one "
+             "(only for a provider whose redirect URI is pre-registered by hand and must not change)")
     args = parser.parse_args()
 
     if args.dry_run:
-        resource, _server_metadata, _client_id, _verifier, _state, authorize_url = (
-            _entdecken_und_registrieren(args.mcp_url))
+        server = bind_callback_server(args.callback_port)
+        try:
+            redirect_uri = f"http://127.0.0.1:{server.server_address[1]}/callback"
+            resource, _server_metadata, _client_id, _verifier, _state, authorize_url = (
+                _entdecken_und_registrieren(args.mcp_url, redirect_uri))
+        finally:
+            server.server_close()
         name = args.name or derive_name(resource)
         print(f"reference name:        {name}")
         print("dry run - authorization URL (not opened):")
         print(f"  {authorize_url}")
         return
 
-    name, tokens = token_holen_voll(args.mcp_url)
+    name, tokens = token_holen_voll(args.mcp_url, callback_port=args.callback_port)
     name = args.name or name
     print(f"reference name:        {name}")
     access_token = tokens["access_token"]
