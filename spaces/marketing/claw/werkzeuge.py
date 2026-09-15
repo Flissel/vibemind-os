@@ -14,7 +14,8 @@ import os
 import urllib.parse
 import urllib.request
 
-from spaces.marketing.claw import ablage, laura, llm, schaufenster, stil, wissen
+from spaces.marketing.claw import (ablage, laura, llm, schaufenster,
+                                   schoenheit, stil, wissen)
 
 FEHLER_MAXLAENGE = 300
 
@@ -702,6 +703,20 @@ def vorlage_vorschlagen(name: str, beschreibung: str, gestalt: dict) -> dict:
         return {"ok": False, "fehler": (
             "gestalt muss ein Objekt mit acht Farben sein: "
             + ", ".join(GESTALT_FARBEN))}
+
+    # SCHOENHEITSPRUEFUNG VOR DEM VORSCHLAG. Die Datenbank prueft Form und
+    # Gleichheit (Migration 044); hier wird gerechnet, ob man den Text
+    # ueberhaupt LESEN kann — Kontrast nach WCAG 2.1. Eine Vorlage, die
+    # daran scheitert, soll gar nicht erst auf dem Tisch des Betreibers
+    # liegen: er kann eine Zahl wie „2.1:1" nicht ansehen, er sieht nur ein
+    # Musterblatt, das irgendwie schlecht wirkt.
+    schaden = schoenheit.gestalt_pruefen(gestalt)
+    entscheidung = schoenheit.urteil(schaden)
+    if not entscheidung["bestanden"]:
+        return {"ok": False, "fehler": (
+            "Diese Farbtafel ist nicht lesbar:\n- "
+            + "\n- ".join(entscheidung["hart"]))}
+
     antwort = _api("/api/layout_vorlagen", {
         "name": name, "beschreibung": beschreibung, "gestalt": gestalt,
         "von": "marketing-claw"})
@@ -713,12 +728,17 @@ def vorlage_vorschlagen(name: str, beschreibung: str, gestalt: dict) -> dict:
         # erfolgreichen Huelle wird ueberlesen.
         return {"ok": False, "fehler": ergebnis.get("grund")
                 or "Der Vorschlag wurde ohne Begruendung abgewiesen."}
-    return {"ok": True, "daten": {
+    daten = {
         "name": (name or "").strip().lower(), "neu": bool(ergebnis.get("neu")),
         "hinweis": ergebnis.get("grund", ""),
         "naechster_schritt": (
             "Erzeug jetzt mit vorlage_muster(name) ein Musterblatt und gib "
-            "dem Betreiber den Dateipfad. Er entscheidet.")}}
+            "dem Betreiber den Dateipfad. Er entscheidet.")}
+    if entscheidung["weich"]:
+        # Nicht blockieren, aber auch nicht verschweigen: ein Mensch kann
+        # gute Gruende fuer harte Kontraste haben (Druck, Barrierefreiheit).
+        daten["anmerkungen"] = entscheidung["weich"]
+    return {"ok": True, "daten": daten}
 
 
 def _vorlage_holen(name: str) -> tuple:
@@ -928,7 +948,23 @@ def pdf_erstellen(name: str, titel: str, text: str, untertitel: str = "",
         return {"ok": False, "fehler":
                 f"PDF ist {len(roh) // 1024 // 1024} MB gross; sales-claw "
                 f"haengt hoechstens 15 MB an."}
-    return ablage.ablegen(f"{zweck}-{name}", roh, art="pdf")
+
+    # SCHOENHEITSPRUEFUNG NACH DEM SETZEN, VOR DER ABLAGE. Nach dem Setzen,
+    # weil erst dann die Seitenzahl feststeht; vor der Ablage, weil eine
+    # Unterlage mit Platzhalter gar nicht erst dort liegen soll, wo
+    # sales-claw sie anhaengen kann.
+    entscheidung = schoenheit.urteil(schoenheit.unterlage_pruefen(
+        titel=titel, untertitel=untertitel, text=text, handlung=handlung,
+        belege=belege, zu_klaeren=zu_klaeren, seiten=pdf.seitenzahl(roh)))
+    if not entscheidung["bestanden"]:
+        return {"ok": False, "fehler": (
+            "Die Unterlage darf so keinen Kunden erreichen:\n- "
+            + "\n- ".join(entscheidung["hart"]))}
+
+    ergebnis = ablage.ablegen(f"{zweck}-{name}", roh, art="pdf")
+    if ergebnis.get("ok") and entscheidung["weich"]:
+        ergebnis.setdefault("daten", {})["anmerkungen"] = entscheidung["weich"]
+    return ergebnis
 
 
 def entwurf_holen(proposal_id: str) -> dict:
@@ -1000,7 +1036,27 @@ def pdf_aus_entwurf(proposal_id: str, layout: str = "dunkel",
         return {"ok": False, "fehler":
                 f"PDF ist {len(roh) // 1024 // 1024} MB gross; sales-claw "
                 f"haengt hoechstens 15 MB an."}
+    # Dieselbe Pruefung wie in pdf_erstellen - zwei Eingaenge zum selben
+    # Setzer, also auch zwei Mal derselbe Schritt.
+    entscheidung = schoenheit.urteil(schoenheit.unterlage_pruefen(
+        titel=str(daten.get("draft_subject") or ""),
+        untertitel=str(parameter.get("zielgruppe") or ""),
+        text=str(daten.get("draft_body_text") or ""),
+        handlung=handlung or str(parameter.get("handlung") or ""),
+        belege=list(parameter.get("belege") or []),
+        zu_klaeren=list(parameter.get("zu_klaeren") or []),
+        seiten=pdf.seitenzahl(roh)))
+    if not entscheidung["bestanden"]:
+        return {"ok": False, "fehler": (
+            "Die Unterlage darf so keinen Kunden erreichen:\n- "
+            + "\n- ".join(entscheidung["hart"])
+            + "\n(Der Entwurf selbst bleibt unveraendert - korrigier ihn in "
+              "der Freigabe-Oberflaeche und setz ihn neu.)")}
+
     name = str(parameter.get("ziel") or daten.get("draft_subject") or proposal_id)
     # ERSETZEN ist hier richtig: es ist derselbe Entwurf, nur neu gesetzt.
     # Wer zwischen Layouts wechselt, will eine Datei sehen, nicht zehn.
-    return ablage.ablegen(f"{zweck}-{name}", roh, art="pdf", ersetzen=True)
+    ergebnis = ablage.ablegen(f"{zweck}-{name}", roh, art="pdf", ersetzen=True)
+    if ergebnis.get("ok") and entscheidung["weich"]:
+        ergebnis.setdefault("daten", {})["anmerkungen"] = entscheidung["weich"]
+    return ergebnis

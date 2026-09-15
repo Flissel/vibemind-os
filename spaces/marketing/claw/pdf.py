@@ -331,6 +331,21 @@ def bauen(titel: str, text: str, untertitel: str = "", belege=None,
 
 
 def seitenzahl(roh: bytes) -> int:
-    """Wie viele Seiten das erzeugte PDF hat — fuer Tests und Ausgaben."""
-    from pypdf import PdfReader
-    return len(PdfReader(io.BytesIO(roh)).pages)
+    """Wie viele Seiten das erzeugte PDF hat. Unlesbar -> 0, nie eine Ausnahme.
+
+    SEIT DEM 15.09.2026 FAIL-SOFT, und das ist kein Detail: seit die
+    Schoenheitspruefung die Seitenzahl braucht, steht diese Funktion IM WEG
+    jeder Unterlage. Warf sie, riss sie das ganze Werkzeug mit — wegen einer
+    Zahl, die nur fuer einen WEICHEN Hinweis gebraucht wird („zwei Seiten
+    sind eine zu viel"). Ein Nebenbefund darf nie das Hauptergebnis
+    verhindern.
+
+    0 statt 1 bei Unlesbarkeit: 1 waere eine Behauptung („eine Seite"), 0
+    ist sichtbar „weiss ich nicht" — und der Umfangshinweis prueft auf > 1,
+    schweigt also genau dann, wenn er nichts weiss.
+    """
+    try:
+        from pypdf import PdfReader
+        return len(PdfReader(io.BytesIO(roh)).pages)
+    except Exception:  # noqa: BLE001 — jede Ursache endet hier gleich
+        return 0

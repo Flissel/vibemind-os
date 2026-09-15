@@ -60,6 +60,16 @@ Acht Farben, alle als `#rrggbb`:
 | `text_leise` | Fußzeile, Kleingedrucktes |
 | `handlung_text` | Schrift **im** Handlungskasten (liegt auf `akzent`) |
 
+**Die Prüfung läuft, du musst sie nicht aufrufen.** `vorlage_vorschlagen`
+rechnet den Kontrast jeder Farbkombination nach WCAG 2.1 nach und weist ab,
+was nicht lesbar ist — mit der gemessenen Zahl und der Schwelle im
+Fehlertext. Das ist keine Schikane: eine Zahl wie „3.6:1" sieht man einem
+Musterblatt nicht an, und der Betreiber soll nicht das prüfen müssen, was
+eine Maschine ausrechnen kann.
+
+Gemessen am 15.09.2026: die Vorlage `warm-sand`, die vorher durchkam, reißt
+**vier** Schwellen. Niemand hatte es bemerkt.
+
 **Drei Regeln, die aus Schaden entstanden sind:**
 
 1. **`text` ist nie reines Weiß und nie reines Schwarz.** Wörtlich vom
@@ -122,19 +132,25 @@ waren. Ein Bereich wie `10–12 Uhr` ist davon nicht betroffen.
 
 ## Schritt 5 — Ansehen, bevor du es weitergibst
 
-Die Datei liegt jetzt da, wo sales-claw sie anhängen kann. Bevor du dem
-Betreiber sagst „fertig", geh die fünf Fragen durch:
+**Das Nachrechenbare prüft `pdf_erstellen` schon selbst.** Es weist ab, was
+einen Kunden nicht erreichen darf — einen Platzhalter im Handlungskasten
+oder im Text — und nennt dir alles Weitere als `anmerkungen` in der Antwort:
+Stichpunkte ohne Betonung, zu viel Betonung, zweite Seite, fehlende Belege,
+fehlender Handlungskasten. Lies sie. Sie blockieren nicht, weil ein Mensch
+gute Gründe haben kann; sie stehen da, weil man den eigenen Text nach dem
+dritten Lesen nicht mehr sieht.
 
-1. Steht im **Handlungskasten** eine echte Adresse? Ein Platzhalter dort ist
-   der sichtbarste Platzhalter, den es gibt. Fehlt sie, lass den Kasten leer
-   und nenn die fehlende Adresse unter `zu_klaeren`.
-2. Erkennt man beim **Überfliegen** in fünf Sekunden, worum es geht — nur an
+Die Datei liegt jetzt da, wo sales-claw sie anhängen kann. Was die Maschine
+NICHT prüfen kann, bleibt deine Arbeit:
+
+1. Erkennt man beim **Überfliegen** in fünf Sekunden, worum es geht — nur an
    Titel, Untertitel und den fetten Wörtern?
-3. Ist es **eine Seite**? Zwei Seiten für eine Early-Access-Einladung sind
-   eine Seite zu viel. Kürz den Text, nicht die Schrift.
-4. Steht unter **BELEGE** wirklich etwas? Ein leeres Belegfeld ist ehrlich,
-   aber es sagt dem Betreiber: ungeprüft.
-5. Würdest du das einem Menschen geben, den du siezt?
+2. Ist der **eine Gedanke** durchgehalten, oder sind es drei?
+3. Stimmt, was da steht — und steht es so, dass es der Beleg deckt?
+4. Würdest du das einem Menschen geben, den du siezt?
+
+Diese vier kann keine Prüfung für dich beantworten. Alles andere schon —
+und genau deshalb steht es nicht mehr hier.
 
 ## Wann du gar kein PDF machst
 
