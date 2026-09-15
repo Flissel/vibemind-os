@@ -59,15 +59,28 @@ bereits verbranntem Token. Die Nebenläufigkeits-Analyse dieses Zweigs zählte
 Modulzustand auf und übersah das Betriebsmittel daneben — das war eine echte
 Lücke in der Analyse, nicht nur im Code.
 
-**N3 — `eingabe_anfordern` bewacht jeden bekannten DB-Zustand, aber keine
-offene schwebende Anfrage.** Gemessen: zwei Aufrufe ergeben zwei lebende
-Token; die zweite Abgabe landet als roher Postgres-Constraint-Fehler auf der
-Betreiberseite. Fail-closed, aber genau die Klasse „ein Link, der garantiert
-kollidiert", gegen die die Kollisionswache geschrieben wurde.
+**N3 — behoben (`6c217efc`, 2026-09-15).** `eingabe_anfordern` bewachte
+jeden bekannten DB-Zustand, aber keine offene schwebende Anfrage. Gemessen:
+zwei Aufrufe ergaben zwei lebende Token; die zweite Abgabe landete als roher
+Postgres-Constraint-Fehler auf der Betreiberseite. Fail-closed, aber genau
+die Klasse „ein Link, der garantiert kollidiert", gegen die die
+Kollisionswache geschrieben wurde.
+
+Fix: eine neue Wache VOR dem Anlegen (nach den bestehenden DB-Wachen, vor
+`anfragen.anlegen`), die `anfragen.offen_fuer(referenz)` prüft und ablehnt,
+solange schon ein nicht abgelaufenes Token für dieselbe `referenz`
+existiert — mit der Ablaufzeit im Fehlertext. Entscheidung (wie im Brief
+vorgeschlagen): ablehnen statt denselben Link erneut auszugeben, denn zwei
+Wege zu einem Geheimnis sind einer zu viel, und der bestehende Link bleibt
+ohnehin gültig und im Transkript des Agenten auffindbar — ein zweiter wäre
+reine Verdopplung ohne Nutzen. Test + Mutationsprobe (Wache deaktiviert,
+real rot: der zweite Aufruf lieferte `ok: True` statt der erwarteten
+Ablehnung) in `tests/test_werkzeuge.py`.
 
 ## Ungenauigkeiten, die bleiben
 
-**N4 — der 409-Fall trägt weiter den Normalfall-Text.**
+**N4 — behoben (`b7794373`, 2026-09-15).** Ursprünglicher Befund: der
+409-Fall trug weiter den Normalfall-Text.
 `erfordert_betreiber_entscheidung` läuft in `fenster.ergebnisseite` unter
 „vom Anbieter abgelehnt", was dort ebenfalls nicht zutrifft. Beim Zuschnitt
 des Schluss-Fixes auf zwei Seiten übersehen; vom Implementierer gemeldet
@@ -82,17 +95,43 @@ kam nie über `status: 0` hinaus), also war der falsche Text in
 erreichbar — ein Betreiber, der heute einen echten 409 bekommt, sieht
 `erfordert_betreiber_entscheidung: True` mit einem Hinweistext, der die
 Betreiber-Entscheidung nennt, aber `fenster.ergebnisseite` zeigt ihm
-weiterhin den Normalfall-Text „vom Anbieter abgelehnt" dazu. N4 bleibt
-offen — dieser Task hat ausschließlich N1 behoben, N4 nicht angefasst.
+weiterhin den Normalfall-Text „vom Anbieter abgelehnt" dazu. (Zum
+Zeitpunkt des N1-Fixes blieb N4 noch offen — der damalige Task hatte
+ausschließlich N1 behoben, N4 nicht angefasst.)
 
-**N5 — die „siebte Prüfstelle" in `E2E-PROOF.md` Teil VI deckt ihre eigene
-Klasse nicht ab.** Der Live-Test prüft das Postgres-Containerlog, bleibt aber
+**Nachtrag (N4-Fix `b7794373`, 2026-09-15): N4 ist behoben.**
+`fenster.ergebnisseite` unterscheidet jetzt drei Fälle statt zwei
+(`ok`/`zwei_verwahrstellen`/`erfordert_betreiber_entscheidung`), durchgereicht
+von beiden Aufrufern (`entgegennehmen`, `oauth_entgegennehmen`), nach
+demselben Muster wie `zwei_verwahrstellen`. Der Text nennt jetzt die
+Kollision bei OpenFang statt einer Ablehnung durch den Anbieter, und die
+nötige Betreiber-Entscheidung statt eines nahegelegten Retry. Test +
+Mutationsprobe (dritter Fall wieder mit dem Normalfall zusammengelegt,
+real rot: „vom Anbieter abgelehnt ... Der Agent kann eine neue Eingabe
+anfordern" erschien statt des korrekten Hinweises) in
+`tests/test_fenster.py`, für beide Aufrufer.
+
+**N5 — behoben (`ca365916`, 2026-09-15, nur Dokumentation).** Ursprünglicher
+Befund: die „siebte Prüfstelle" in `E2E-PROOF.md` Teil VI deckte ihre eigene
+Klasse nicht ab. Der Live-Test prüft das Postgres-Containerlog, blieb aber
 bei einem vollen Rollback des C1-Fixes **grün**, weil der Glücksfall gar kein
 scheiterndes Statement erzeugt. Die Klasse *ist* abgedeckt — von
 `tests/test_ablage.py::test_wert_landet_nie_im_postgres_server_log`, das Teil
-VI nie zitiert. Die Ergänzung war richtig gemeint und falsch platziert. Dazu
-ein Zählfehler aus dem Plan: „sieben Stellen" zählt `status ==
+VI nie zitierte. Die Ergänzung war richtig gemeint und falsch platziert. Dazu
+ein Zählfehler aus dem Plan: „sieben Stellen" zählte `status ==
 "fehlgeschlagen"` mit, was keine Stelle ist, sondern eine Zusicherung.
+
+Fix: `E2E-PROOF.md` §VI.3 (und die Kopfzeile §VI.1) umgeschrieben auf die
+richtige Zahl — sechs Stellen plus eine Zusicherung, nicht sieben Stellen.
+Zwei explizite Korrekturen ergänzt: (a) der Live-Test-Check selbst deckt
+die C1-Klasse NICHT ab (sein Szenario löst nie das scheiternde Statement
+aus, das den Wert überhaupt erst in den Log brächte — bei einem vollen
+C1-Rollback bliebe genau dieser Test grün), und (b)
+`tests/test_ablage.py::test_wert_landet_nie_im_postgres_server_log` wird
+jetzt als der Test genannt, der die Klasse tatsächlich abdeckt (echte
+referenz_name-Kollision, eigene Positiv-Kontrolle). Keine Schönfärberei:
+die Korrektur benennt explizit, dass Teil VI's eigener Live-Test schwächer
+ist, als er sich liest.
 
 **N6 — `_ziel_pruefen` bindet nur den Host von `ziel`, nie `issuer` oder
 `authorization_endpoint`.** Beide kommen aus den Metadaten des
@@ -108,17 +147,51 @@ Satz ganz oben, warum das kein Blocker ist.
 
 ## Kleines
 
-- **N8** `run_in_threadpool` ist nur auf dem **oauth**-Pfad festgenagelt; die
-  Mutation auf dem bearer-Pfad lässt alle Tests grün.
-- **N9** README und `bootstrap.sh` sprechen von „0001-0003", angewandt sind
-  fünf Migrationen.
-- **N10** `server.py` scheitert beim Import hart ohne `spaces/rowboat/`.
-- **N11** Der ausdrückliche `wert`-Scrub in `_openfang_uebernehmen` ist
-  ungetestet.
-- **N12** `E2E-PROOF.md` VI.6 zitiert §V.1 für eine Liste, die in der
-  V-Präambel steht.
-- **N13** `FENSTER_BASIS` folgt `PLUGIN_SETUP_MCP_PORT` nicht — wer den Port
-  umstellt, bekommt Links auf den alten.
+- **N8 — behoben (`7de911ec`, 2026-09-15).** `run_in_threadpool` war nur auf
+  dem **oauth**-Pfad festgenagelt; die Mutation auf dem bearer-Pfad ließ alle
+  Tests grün. Neue Probe in `tests/test_server_formularrouten.py`, nach dem
+  Muster der bestehenden oauth-Probe (blockierender `schreiber`-Ersatz, GET
+  und POST nebenläufig per `asyncio.gather`, Beweis ist die
+  Fertigstellungsreihenfolge). Mutationsprobe real ausgeführt und rot
+  gewesen (Reihenfolge kippte zu `["post", "get"]`, GET brauchte 5s statt
+  Millisekunden), danach zurückgenommen.
+- **N9 — behoben (`2cd70a14`, 2026-09-15, nur Dokumentation).** README und
+  `bootstrap.sh` sprachen von „0001-0003", angewandt sind fünf Migrationen.
+  Geprüft: `bootstrap.sh`s Schleife wandte schon immer alle fünf Dateien an
+  — reiner Textfehler in Kommentar/README, keine Funktionslücke im Skript.
+  Beide Stellen jetzt auf „0001-0005" korrigiert.
+- **N10 — behoben (`7de911ec`, 2026-09-15).** `server.py` scheiterte beim
+  Import hart ohne `spaces/rowboat/`, mit einem nackten `FileNotFoundError`
+  auf den rohen Pfad. Verhalten bleibt fail-closed (unverändert) — jetzt mit
+  einem expliziten Existenz-Check und einer Meldung, die sagt, was fehlt
+  (`spaces/rowboat/`) und warum (der oauth-Zweig braucht den echten
+  Provisioner dort, keine Abschrift).
+- **N11 — behoben (`6c217efc`, 2026-09-15).** Der ausdrückliche `wert`-Scrub
+  in `_openfang_uebernehmen` war ungetestet. Neuer Test in
+  `tests/test_werkzeuge.py`: `_roh_anfrage` (nicht `_openfang_uebernehmen`
+  selbst) gemockt, wirft eine Ausnahme mit dem Wert im Text; Zusicherung,
+  dass der Rückgabetext den Wert nicht, aber `<wert>` enthält. Mutationsprobe
+  (Scrub deaktiviert) real rot gewesen, danach zurückgenommen.
+- **N12 — behoben (`ca365916`, 2026-09-15, nur Dokumentation).**
+  `E2E-PROOF.md` VI.6 zitierte §V.1 für eine Liste, die tatsächlich in der
+  unnummerierten Präambel vor §V.0 steht (der „Fix round 1"-Absatz direkt
+  unter der Teil-V-Überschrift); §V.1 ist eine andere Liste. Verweis
+  korrigiert.
+- **N13 — behoben (`6c217efc`, 2026-09-15).** `FENSTER_BASIS` folgte
+  `PLUGIN_SETUP_MCP_PORT` nicht — wer den Port umstellte, bekam Links auf
+  den alten, still. Der Vorgabewert leitet sich jetzt aus
+  `PLUGIN_SETUP_MCP_PORT` ab (demselben Wert, den `server.py` für seinen
+  Port liest); ein ausdrücklich gesetztes `PLUGIN_SETUP_FENSTER_BASIS`
+  gewinnt weiterhin. Zwei neue Tests in `tests/test_werkzeuge.py` (frischer
+  Subprozess, da der Wert einmal beim Modulimport berechnet wird).
+
+## Stand (2026-09-15, Nachzieher-Bündel A)
+
+N1, N3, N4, N5, N8, N9, N10, N11, N12, N13 sind behoben (Commits oben bei
+den jeweiligen Punkten). **N2, N6 und N7 bleiben ausdrücklich offen** —
+sie waren nicht im Umfang dieses Bündels (Entwurfseingriffe mit
+Folgekosten, jeweils eine eigene Runde wert) und wurden nicht angefasst.
+Das Bündel ist damit NICHT vollständig.
 
 ## Was am Zweig ausdrücklich NICHT gemessen wurde
 
