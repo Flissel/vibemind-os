@@ -15,6 +15,7 @@ import pathlib
 import subprocess
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -202,14 +203,25 @@ def _spawn_agent_call(job_id: str, brief_text: str) -> None:
     (Auftrag plus Bubble-Inhalt) kann das reissen - genau dann, wenn der
     Auftrag gross und teuer ist. Die Datei ist zugleich der dauerhafte
     Beleg dessen, was tatsaechlich gesendet wurde.
+
+    Verzeichnis anlegen, Request-Datei schreiben, Log oeffnen und der
+    Spawn selbst sind allesamt E/A - jeder Schritt kann mit OSError
+    scheitern (Datentraeger voll, Rechte entzogen, sys.executable nicht
+    auffindbar). Das darf nicht ungefangen aus dieser Funktion und damit
+    aus dem lang laufenden stdio-Server herausfallen: es wird zu einem
+    ToolError, mit der urspruenglichen Fehlermeldung darin sichtbar.
+    Zusaetzlich landet der Grund - best effort - in
+    research_<job_id>.spawn.log: _write_job_file laeuft im Aufrufer vor
+    diesem Aufruf, der Job-Zustand kann also schon existieren, und ohne
+    einen Eintrag hier saehe research_status (Task 5) keine Logdatei und
+    meldete den Job fuer immer 'pending' statt 'failed'. Scheitert sogar
+    das Schreiben dieser Logdatei (z.B. weil schon das Anlegen des
+    Verzeichnisses gescheitert ist), bleibt der ToolError das einzige
+    Signal - eine zweite Exception darf dabei nicht nach aussen dringen.
     """
     base = (os.environ.get("OPENFANG_URL") or "http://127.0.0.1:4200").rstrip("/")
     url = f"{base}/api/agents/{RESEARCHER_AGENT_ID}/message"
     payload = json.dumps({"message": brief_text}, ensure_ascii=False)
-
-    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-    request_path = _request_path(job_id)
-    request_path.write_text(payload, encoding="utf-8")
 
     script = (
         "import sys,urllib.request\n"
@@ -220,16 +232,32 @@ def _spawn_agent_call(job_id: str, brief_text: str) -> None:
         "headers={'Content-Type':'application/json'})\n"
         "urllib.request.urlopen(req,timeout=5400).read()\n"
     )
-    log = open(ARTIFACT_DIR / f"research_{job_id}.spawn.log", "wb")
+
     try:
-        subprocess.Popen(
-            [sys.executable, "-c", script, url, str(request_path)],
-            stdout=log, stderr=log, stdin=subprocess.DEVNULL,
-        )
-    finally:
-        # Das Kind erbt sein eigenes Handle; das Elternhandle hier zu halten
-        # waere ein Leck ueber die Lebensdauer des lang laufenden Servers.
-        log.close()
+        ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+        request_path = _request_path(job_id)
+        request_path.write_text(payload, encoding="utf-8")
+
+        log = open(ARTIFACT_DIR / f"research_{job_id}.spawn.log", "wb")
+        try:
+            subprocess.Popen(
+                [sys.executable, "-c", script, url, str(request_path)],
+                stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+            )
+        finally:
+            # Das Kind erbt sein eigenes Handle; das Elternhandle hier zu
+            # halten waere ein Leck ueber die Lebensdauer des lang
+            # laufenden Servers.
+            log.close()
+    except OSError as exc:
+        try:
+            (ARTIFACT_DIR / f"research_{job_id}.spawn.log").write_text(
+                f"spawn_failed: {exc!r}\n\n{traceback.format_exc()}",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+        raise ToolError(f"spawn_failed: {exc}") from exc
 
 
 def call_tool(name: str, arguments: Mapping[str, Any]) -> dict:
@@ -348,7 +376,21 @@ def main() -> None:
             message = json.loads(line)
         except json.JSONDecodeError:
             continue
-        response = handle_message(message)
+        try:
+            response = handle_message(message)
+        except Exception as exc:  # noqa: BLE001 - letztes Fangnetz des Servers
+            # handle_message faengt ToolError bereits selbst ab. Dieses
+            # Fangnetz ist fuer alles andere: ein unerwarteter Bug oder ein
+            # E/A-Fehler, der (noch) kein ToolError ist. Ohne dieses
+            # try/except reisst eine einzelne fehlerhafte Anfrage den
+            # gesamten lang laufenden stdio-Server fuer alle kuenftigen
+            # Aufrufer mit, statt nur diese eine Anfrage fehlschlagen zu
+            # lassen.
+            message_id = message.get("id") if isinstance(message, Mapping) else None
+            response = {
+                "jsonrpc": "2.0", "id": message_id,
+                "error": {"code": -32603, "message": f"internal_error: {exc}"},
+            }
         if response is not None:
             sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
             sys.stdout.flush()

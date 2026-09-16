@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json as _json
 import tempfile
 import unittest
@@ -241,6 +242,118 @@ class SpawnAgentCallTests(unittest.TestCase):
             self.assertIs(kwargs["stdout"], kwargs["stderr"])
             log_path = tmp / f"research_{job_id}.spawn.log"
             self.assertTrue(log_path.is_file())
+
+
+class SpawnAgentCallErrorHandlingTests(unittest.TestCase):
+    """Review-Nachtrag zu Task 4: die E/A in _spawn_agent_call (Verzeichnis
+    anlegen, Request-Datei schreiben, Log oeffnen, Popen) war ungefangen.
+    Ein OSError dort riss den gesamten lang laufenden stdio-Server mit, nicht
+    nur den einen Aufruf; und wenn der Fehler eintrat, bevor das spawn.log
+    ueberhaupt geschrieben wurde, blieb ein bereits abgelegter Job-Zustand
+    fuer research_status (Task 5) fuer immer 'pending' statt 'failed', weil
+    dessen Kriterium eine nicht-leere Logdatei ist.
+    """
+
+    def test_a_failing_file_write_surfaces_as_a_tool_error_not_a_raw_os_error(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            server = load_server()
+            server.ARTIFACT_DIR = tmp
+            job_id = "job_v1_0000000000000000000000000I"
+
+            with mock.patch.object(server.pathlib.Path, "write_text",
+                                    side_effect=OSError("Datentraeger voll")):
+                with self.assertRaises(server.ToolError) as ctx:
+                    server._spawn_agent_call(job_id, "x")
+
+            # Der urspruengliche Grund muss sichtbar bleiben, nicht in einer
+            # generischen Meldung verschwinden.
+            self.assertIn("Datentraeger voll", str(ctx.exception))
+
+    def test_a_failed_popen_leaves_a_non_empty_spawn_log(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            server = load_server()
+            server.ARTIFACT_DIR = tmp
+            job_id = "job_v1_0000000000000000000000000J"
+
+            with mock.patch.object(server.subprocess, "Popen",
+                                    side_effect=OSError("sys.executable nicht gefunden")):
+                with self.assertRaises(server.ToolError):
+                    server._spawn_agent_call(job_id, "x")
+
+            log_path = tmp / f"research_{job_id}.spawn.log"
+            self.assertTrue(log_path.is_file())
+            content = log_path.read_text(encoding="utf-8")
+            # research_status (Task 5) liest 'failed' nur, wenn die Logdatei
+            # existiert UND nicht leer ist - eine leere Datei waere 'pending'
+            # fuer immer.
+            self.assertGreater(len(content), 0)
+            self.assertIn("sys.executable nicht gefunden", content)
+
+    def test_a_failing_directory_creation_does_not_raise_a_second_exception(self) -> None:
+        # Scheitert schon das Anlegen von ARTIFACT_DIR, kann auch der
+        # Best-effort-Schreibversuch fuer das spawn.log nicht klappen (er
+        # zielt auf denselben, nicht vorhandenen/gesperrten Ordner). Das darf
+        # keine zweite, andere Exception nach aussen werfen - nur den einen
+        # ToolError mit dem urspruenglichen Grund.
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            server = load_server()
+            server.ARTIFACT_DIR = tmp
+            job_id = "job_v1_0000000000000000000000000K"
+
+            with mock.patch.object(server.pathlib.Path, "mkdir",
+                                    side_effect=PermissionError("Zugriff verweigert")):
+                with self.assertRaises(server.ToolError) as ctx:
+                    server._spawn_agent_call(job_id, "x")
+
+            self.assertIn("Zugriff verweigert", str(ctx.exception))
+
+
+class MainLoopResilienceTests(unittest.TestCase):
+    """Review-Nachtrag zu Task 4: main()'s stdin-Schleife hatte kein
+    try/except um handle_message(). Jede unerwartete Exception aus einem
+    Handler (nicht nur ToolError, das handle_message schon selbst faengt)
+    beendete den gesamten Prozess - fuer alle kuenftigen Aufrufer, nicht nur
+    fuer die eine fehlerhafte Anfrage.
+    """
+
+    def test_stdio_loop_survives_an_unexpected_exception_and_keeps_serving(self) -> None:
+        server = load_server()
+        calls = []
+
+        def flaky_handle_message(message):
+            calls.append(message)
+            if len(calls) == 1:
+                raise RuntimeError("unerwarteter Bug, kein ToolError")
+            return {"jsonrpc": "2.0", "id": message.get("id"), "result": {"ok": True}}
+
+        stdin = io.StringIO(
+            '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}\n'
+            '{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}\n'
+        )
+        stdout = io.StringIO()
+
+        with mock.patch.object(server, "handle_message", side_effect=flaky_handle_message), \
+             mock.patch.object(server.sys, "stdin", stdin), \
+             mock.patch.object(server.sys, "stdout", stdout):
+            server.main()
+
+        # Beide Zeilen wurden an handle_message weitergereicht - die
+        # Schleife ist nach der ersten, fehlschlagenden Anfrage nicht
+        # gestorben.
+        self.assertEqual(len(calls), 2)
+
+        lines = [ln for ln in stdout.getvalue().splitlines() if ln.strip()]
+        self.assertEqual(len(lines), 2)
+        first = _json.loads(lines[0])
+        second = _json.loads(lines[1])
+
+        self.assertEqual(first["id"], 1)
+        self.assertNotIn("result", first)
+        self.assertIn("error", first)
+        self.assertEqual(second, {"jsonrpc": "2.0", "id": 2, "result": {"ok": True}})
 
 
 if __name__ == "__main__":
