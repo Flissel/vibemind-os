@@ -113,6 +113,38 @@ auf Bearer-Auth umgestellt werden. Das ist eine Entscheidung über die
 Maschine, kein Deployment-Schritt, und sie gehört dem Betreiber. Alles
 Weitere hängt daran.
 
+**Was D1 kostet — gemessen am 17.09., nicht geschätzt.** Über beide Repos,
+nach Abzug von Dubletten (Worktrees, `dist/`, `logs/recovery`, `.kilo`,
+Caches, gerenderte Stacks): **63 Dateien** nennen `:4200` oder
+`OPENFANG_URL`, davon 20 Konfiguration/Compose/Templates und **42
+ausführbarer Code**. Von diesen 42:
+
+- **12 kennen den Schlüssel bereits** oder setzen einen
+  `Authorization`-Header — darunter Rowboats Resolver und die
+  Brain-Kernpfade `capability_targets.py` / `openfang_runtime_authority.py`
+  / `deterministic_gateway.py`, die ihn sogar UNBEDINGT verlangen.
+- **30 kennen ihn nicht.** Davon sind vier reine Gesundheitsproben
+  (`status_probe_server.py`, `vibemind-spaces.ps1`, `vibemind-start.ps1`,
+  `start.sh`), die nur `/api/health` und `/api/version` abfragen — ob die
+  betroffen wären, hängt davon ab, welche Pfade OpenFangs Auth ausnimmt,
+  und das ist **nicht gemessen**.
+
+Die übrigen 26 sind echte funktionale Clients, und sie verteilen sich über
+das ganze System, nicht über einen Winkel: beide MCP-stdio-Brücken
+(openclaw und openfang), `openfang_agents_server.py`, Marketings
+Freigabe-Brücke (`/api/approvals`, `/api/broadcast_proposals`),
+`hand_bridge.py` (`/api/hands`, `/api/proposals`), der Cron-Registrar
+(`/api/cron/jobs`), `intent_orchestrator.py` (`/api/multihop/execute`),
+`brain_openfang_bridge.py`, `vibemind_mcp.py` und `vibemind_tools.sh`
+(`/api/cortex/*`), vier weitere Brain-Module, der Electron-Manager
+(`/api/shutdown`) und mehrere Batch-Skripte über `/api/agents`.
+
+**Folgerung: D1 ist kein Schalter, sondern ein Projekt mit eigener
+Reihenfolge.** Eine frühere Schätzung in der Arbeitssitzung sprach von „einer
+Handvoll Skripte" — sie stammte aus einem Suchlauf, der bei 60 Treffern
+abgeschnitten war, und ist durch die vollständige Messung widerlegt. Wer D1
+plant, plant 26 Anpassungen plus die Frage, welche Pfade öffentlich bleiben.
+
 **D2: welcher Tresor ist die Autorität?** Naheliegend ist OpenFangs eigener
 — er existiert, ist verschlüsselt, hat eine CLI und einen Endpunkt. Dagegen
 spricht, dass damit die Verfügbarkeit *aller Starts* an OpenFang hängt.
