@@ -289,41 +289,99 @@ def _context_disclosure(brief_text: str) -> tuple[bool, str | None]:
     )
 
 
+def _find_existing_artifact_ref(job_id: str) -> str | None:
+    """Looks up a report artifact already written for this job, if any.
+
+    research_report_artifacts has UNIQUE(job_id, name), and name is
+    deterministic (research_<job_id>.md). Without this check, a second
+    research_status call after a partial failure (artifact row written,
+    canvas_nodes insert then failing) would retry the artifact insert and
+    hit that constraint forever - the job would be permanently stuck with
+    orphaned evidence, unrecoverable by any amount of retrying. Checking
+    first turns that dead end into ordinary retry.
+    """
+    rows = _request(
+        "GET", "research_report_artifacts",
+        params={"select": "artifact_ref", "job_id": f"eq.{job_id}", "limit": "1"},
+    )
+    if isinstance(rows, list) and rows:
+        return rows[0].get("artifact_ref")
+    return None
+
+
+def _find_existing_node_id(bubble_id: str, artifact_ref: str) -> str | None:
+    """Looks up the summary node already written for this artifact, if any.
+
+    Keyed on metadata.artifact_ref, deliberately not on title: a human can
+    rename a node in the bubble after the fact, and canvas_nodes generates
+    its own id (gen_random_uuid()) that this caller never chooses - so
+    artifact_ref, already carried in metadata on write, is the only stable
+    handle a retry can look the node up by.
+    """
+    rows = _request(
+        "GET", "canvas_nodes",
+        params={
+            "select": "id,metadata",
+            "linked_idea_id": f"eq.{bubble_id}",
+            "node_type": "eq.research",
+            "limit": "100",
+        },
+    )
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        metadata = row.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("artifact_ref") == artifact_ref:
+            return row.get("id")
+    return None
+
+
 def _persist_result(job_id: str, state: Mapping[str, Any], text: str, citations: int) -> dict:
-    artifact_ref = brief_mod.new_artifact_ref()
     bubble_id = state["bubble_id"]
     title = f"Research: {state.get('bubble_title') or bubble_id}"
-    internal_context_used, context_disclosure = _context_disclosure(state.get("brief") or "")
 
-    _request("POST", "research_report_artifacts", body={
-        "artifact_ref": artifact_ref,
-        "job_id": job_id,
-        "subject_type": "bubble",
-        "subject_ref": bubble_id,
-        "bubble_id": bubble_id,
-        "artifact_type": "research_report",
-        "name": f"research_{job_id}.md",
-        "rel_path": state.get("report_path"),
-        "format": "markdown",
-        "content_text": text,
-        "depth": state.get("depth"),
-        "output_style": state.get("output_style"),
-        "citation_count": citations,
-        "internal_context_used": internal_context_used,
-        "context_disclosure": context_disclosure,
-    })
+    # Idempotent by job_id: a prior call may already have written the
+    # artifact row (see _find_existing_artifact_ref's docstring for why a
+    # naive retry cannot simply insert again).
+    artifact_ref = _find_existing_artifact_ref(job_id)
+    if artifact_ref is None:
+        artifact_ref = brief_mod.new_artifact_ref()
+        internal_context_used, context_disclosure = _context_disclosure(state.get("brief") or "")
+        _request("POST", "research_report_artifacts", body={
+            "artifact_ref": artifact_ref,
+            "job_id": job_id,
+            "subject_type": "bubble",
+            "subject_ref": bubble_id,
+            "bubble_id": bubble_id,
+            "artifact_type": "research_report",
+            "name": f"research_{job_id}.md",
+            "rel_path": state.get("report_path"),
+            "format": "markdown",
+            "content_text": text,
+            "depth": state.get("depth"),
+            "output_style": state.get("output_style"),
+            "citation_count": citations,
+            "internal_context_used": internal_context_used,
+            "context_disclosure": context_disclosure,
+        })
 
-    summary = text.strip().split("\n\n", 1)[0][:1500]
-    node = _request("POST", "canvas_nodes", body={
-        "id": artifact_ref[-8:],
-        "node_type": "research",
-        "title": title[:120],
-        "content": f"{summary}\n\nVollstaendiger Report: {artifact_ref}\nQuellen: {citations}",
-        "x": 0, "y": 0,
-        "linked_idea_id": bubble_id,
-        "metadata": {"width": 260.0, "height": 160.0, "artifact_ref": artifact_ref},
-    })
-    node_id = node[0]["id"] if isinstance(node, list) and node else None
+    # Idempotent by artifact_ref: same reasoning for the node half of the
+    # write. No explicit id in the insert body - canvas_nodes.id defaults to
+    # gen_random_uuid() at the database, which is the identity source of
+    # truth this lookup relies on, rather than a client-picked 8-hex-char
+    # slice of artifact_ref (roughly 40 bits) that could collide.
+    node_id = _find_existing_node_id(bubble_id, artifact_ref)
+    if node_id is None:
+        summary = text.strip().split("\n\n", 1)[0][:1500]
+        node = _request("POST", "canvas_nodes", body={
+            "node_type": "research",
+            "title": title[:120],
+            "content": f"{summary}\n\nVollstaendiger Report: {artifact_ref}\nQuellen: {citations}",
+            "x": 0, "y": 0,
+            "linked_idea_id": bubble_id,
+            "metadata": {"width": 260.0, "height": 160.0, "artifact_ref": artifact_ref},
+        })
+        node_id = node[0]["id"] if isinstance(node, list) and node else None
 
     return {
         "status": "done",

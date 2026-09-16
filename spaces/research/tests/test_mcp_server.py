@@ -26,6 +26,79 @@ BUBBLE = {"id": "bub123", "title": "Sheerlay", "description": "OCR-Etikettenscan
 NODES = [{"title": "Kernidee", "content": "Etiketten scannen und bewerten"}]
 
 
+class _FakeSupabase:
+    """Honest-enough PostgREST stand-in for research_report_artifacts and
+    canvas_nodes.
+
+    Unlike a fixed canned response per path, this one actually stores rows
+    and answers the eq. filters the server sends - including enforcing the
+    real UNIQUE(job_id, name) constraint on research_report_artifacts. That
+    is what lets a retry test be an actual retry (the second call finds
+    what the first call wrote, or collides the way Postgres would) instead
+    of a hand-scripted call sequence that can't tell a fixed implementation
+    from a broken one.
+    """
+
+    def __init__(self, tool_error_cls: type[Exception]) -> None:
+        self._tool_error_cls = tool_error_cls
+        self.artifacts: list[dict] = []
+        self.nodes: list[dict] = []
+        self.calls: list[tuple[str, str]] = []
+        self.fail_next_node_insert = False
+
+    def __call__(self, method: str, path: str, *, params=None, body=None):
+        self.calls.append((method, path))
+        if path == "research_report_artifacts":
+            return self._artifacts(method, params, body)
+        if path == "canvas_nodes":
+            return self._nodes(method, params, body)
+        raise AssertionError(f"unexpected path: {path}")
+
+    @staticmethod
+    def _eq(params: dict | None, key: str) -> str | None:
+        if not params or key not in params:
+            return None
+        value = params[key]
+        return value[3:] if value.startswith("eq.") else value
+
+    def _artifacts(self, method: str, params, body):
+        if method == "GET":
+            job_id = self._eq(params, "job_id")
+            rows = [r for r in self.artifacts if job_id is None or r["job_id"] == job_id]
+            limit = int(params["limit"]) if params and "limit" in params else None
+            return rows[:limit] if limit is not None else rows
+        if method == "POST":
+            if any(r["job_id"] == body["job_id"] and r["name"] == body["name"] for r in self.artifacts):
+                # Mirrors research_report_artifacts_job_name_key: a second
+                # insert for the same job collides, exactly like a real
+                # UNIQUE(job_id, name) violation would.
+                raise self._tool_error_cls("supabase_http_error: status=409")
+            row = dict(body)
+            self.artifacts.append(row)
+            return [row]
+        raise AssertionError(f"unexpected method {method} for research_report_artifacts")
+
+    def _nodes(self, method: str, params, body):
+        if method == "GET":
+            linked = self._eq(params, "linked_idea_id")
+            node_type = self._eq(params, "node_type")
+            rows = [
+                r for r in self.nodes
+                if (linked is None or r.get("linked_idea_id") == linked)
+                and (node_type is None or r.get("node_type") == node_type)
+            ]
+            return rows
+        if method == "POST":
+            if self.fail_next_node_insert:
+                self.fail_next_node_insert = False
+                raise self._tool_error_cls("supabase_unreachable")
+            row = dict(body)
+            row["id"] = f"node-row-{len(self.nodes) + 1}"
+            self.nodes.append(row)
+            return [row]
+        raise AssertionError(f"unexpected method {method} for canvas_nodes")
+
+
 class ToolSurfaceTests(unittest.TestCase):
     def test_tools_list_is_stable(self) -> None:
         server = load_server()
@@ -444,22 +517,16 @@ class StatusTests(unittest.TestCase):
             server._job_path(job_id).write_text(
                 "# Report\nQuelle: https://example.test/a\n", encoding="utf-8"
             )
-            calls = []
+            fake = _FakeSupabase(server.ToolError)
 
-            def fake_request(method, path, **kwargs):
-                calls.append((method, path))
-                if path == "research_report_artifacts":
-                    return [{"id": "art1"}]
-                return [{"id": "node1"}]
-
-            with mock.patch.object(server, "_request", side_effect=fake_request):
+            with mock.patch.object(server, "_request", side_effect=fake):
                 result = server.call_tool("research_status", {"job_id": job_id})
 
         self.assertEqual(result["status"], "done")
         self.assertEqual(result["citation_count"], 1)
         self.assertRegex(result["artifact_ref"], r"^artifact_v1_[0-9A-HJKMNPQRSTVWXYZ]{26}$")
-        self.assertIn(("POST", "research_report_artifacts"), calls)
-        self.assertIn(("POST", "canvas_nodes"), calls)
+        self.assertIn(("POST", "research_report_artifacts"), fake.calls)
+        self.assertIn(("POST", "canvas_nodes"), fake.calls)
 
     def test_artifact_row_binds_the_report_to_the_triggering_bubble(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -468,19 +535,13 @@ class StatusTests(unittest.TestCase):
             job_id = "job_v1_0000000000000000000000000D"
             self._job_state(server, job_id)
             server._job_path(job_id).write_text("https://example.test/a\n", encoding="utf-8")
-            bodies = {}
+            fake = _FakeSupabase(server.ToolError)
 
-            def fake_request(method, path, **kwargs):
-                if path == "research_report_artifacts":
-                    bodies["artifact"] = kwargs.get("body")
-                    return [{"id": "art1"}]
-                bodies["node"] = kwargs.get("body")
-                return [{"id": "node1"}]
-
-            with mock.patch.object(server, "_request", side_effect=fake_request):
+            with mock.patch.object(server, "_request", side_effect=fake):
                 server.call_tool("research_status", {"job_id": job_id})
 
-        artifact = bodies["artifact"]
+        self.assertEqual(len(fake.artifacts), 1)
+        artifact = fake.artifacts[0]
         self.assertEqual(artifact["subject_type"], "bubble")
         self.assertEqual(artifact["bubble_id"], "bub123")
         self.assertEqual(artifact["citation_count"], 1)
@@ -490,7 +551,8 @@ class StatusTests(unittest.TestCase):
         # angenommen.
         self.assertTrue(artifact["internal_context_used"])
         self.assertIsNone(artifact["context_disclosure"])
-        self.assertEqual(bodies["node"]["linked_idea_id"], "bub123")
+        self.assertEqual(len(fake.nodes), 1)
+        self.assertEqual(fake.nodes[0]["linked_idea_id"], "bub123")
 
     def test_internal_context_used_true_when_brief_still_carries_bubble_background(self) -> None:
         # Gezielte Abweichung vom Brief: internal_context_used wird aus dem
@@ -502,19 +564,13 @@ class StatusTests(unittest.TestCase):
             job_id = "job_v1_0000000000000000000000000L"
             self._job_state(server, job_id)  # Default: voller Brief mit Hintergrund
             server._job_path(job_id).write_text("https://example.test/a\n", encoding="utf-8")
-            bodies = {}
+            fake = _FakeSupabase(server.ToolError)
 
-            def fake_request(method, path, **kwargs):
-                if path == "research_report_artifacts":
-                    bodies["artifact"] = kwargs.get("body")
-                    return [{"id": "art1"}]
-                return [{"id": "node1"}]
-
-            with mock.patch.object(server, "_request", side_effect=fake_request):
+            with mock.patch.object(server, "_request", side_effect=fake):
                 server.call_tool("research_status", {"job_id": job_id})
 
-        self.assertTrue(bodies["artifact"]["internal_context_used"])
-        self.assertIsNone(bodies["artifact"]["context_disclosure"])
+        self.assertTrue(fake.artifacts[0]["internal_context_used"])
+        self.assertIsNone(fake.artifacts[0]["context_disclosure"])
 
     def test_internal_context_used_false_with_disclosure_when_final_brief_dropped_the_background(self) -> None:
         # Negative Richtung: ein Nutzer kann final_brief frei bearbeiten und
@@ -529,21 +585,98 @@ class StatusTests(unittest.TestCase):
             self.assertNotIn(server._BUBBLE_CONTEXT_MARKER, edited_brief)
             self._job_state(server, job_id, brief=edited_brief)
             server._job_path(job_id).write_text("https://example.test/a\n", encoding="utf-8")
-            bodies = {}
+            fake = _FakeSupabase(server.ToolError)
 
-            def fake_request(method, path, **kwargs):
-                if path == "research_report_artifacts":
-                    bodies["artifact"] = kwargs.get("body")
-                    return [{"id": "art1"}]
-                return [{"id": "node1"}]
-
-            with mock.patch.object(server, "_request", side_effect=fake_request):
+            with mock.patch.object(server, "_request", side_effect=fake):
                 server.call_tool("research_status", {"job_id": job_id})
 
-        artifact = bodies["artifact"]
+        artifact = fake.artifacts[0]
         self.assertFalse(artifact["internal_context_used"])
         self.assertIsInstance(artifact["context_disclosure"], str)
         self.assertTrue(artifact["context_disclosure"].strip())
+
+    def test_second_call_recovers_after_the_node_insert_failed_on_the_first(self) -> None:
+        """Review finding (Important, plan-mandated): _persist_result does two
+        sequential POSTs with no transaction. If the artifact insert succeeds
+        and the canvas_nodes insert then raises, research_report_artifacts'
+        UNIQUE(job_id, name) - name is deterministic - made a naive retry
+        collide on the same insert forever: the job was permanently stuck
+        with an orphaned, node-less artifact row. A real, cited report must
+        not become permanently unusable because one HTTP call failed.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            server = self._server_with_artifacts(tmp)
+            job_id = "job_v1_0000000000000000000000000N"
+            self._job_state(server, job_id)
+            server._job_path(job_id).write_text("https://example.test/a\n", encoding="utf-8")
+            fake = _FakeSupabase(server.ToolError)
+            fake.fail_next_node_insert = True
+
+            with mock.patch.object(server, "_request", side_effect=fake):
+                with self.assertRaises(server.ToolError):
+                    server.call_tool("research_status", {"job_id": job_id})
+
+            # Halbfertiger Zustand nach dem ersten, gescheiterten Versuch:
+            # die Artifact-Zeile existiert, der Node fehlt noch.
+            self.assertEqual(len(fake.artifacts), 1)
+            self.assertEqual(len(fake.nodes), 0)
+            first_artifact_ref = fake.artifacts[0]["artifact_ref"]
+
+            with mock.patch.object(server, "_request", side_effect=fake):
+                result = server.call_tool("research_status", {"job_id": job_id})
+
+        self.assertEqual(result["status"], "done")
+        self.assertEqual(result["artifact_ref"], first_artifact_ref)
+        self.assertIsNotNone(result["node_id"])
+        # Genau eine Artifact-Zeile insgesamt ueber beide Aufrufe - der
+        # zweite Aufruf hat NICHT erneut inseriert (das waere der 409 auf
+        # UNIQUE(job_id, name), den die Fake-DB oben simuliert).
+        self.assertEqual(fake.calls.count(("POST", "research_report_artifacts")), 1)
+        # Der Node-Insert wurde zweimal versucht - einmal gescheitert, einmal
+        # erfolgreich - aber nicht dupliziert.
+        self.assertEqual(fake.calls.count(("POST", "canvas_nodes")), 2)
+        self.assertEqual(len(fake.artifacts), 1)
+        self.assertEqual(len(fake.nodes), 1)
+
+    def test_repeat_call_when_both_rows_already_exist_is_idempotent_and_writes_nothing_new(self) -> None:
+        """Review finding, second interleaving: both rows already exist (the
+        first call fully succeeded, and something - the caller, a retry
+        after a timeout on the response - calls research_status again for
+        the same job). Must not insert a second artifact row or a duplicate
+        canvas node.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            server = self._server_with_artifacts(tmp)
+            job_id = "job_v1_0000000000000000000000000O"
+            self._job_state(server, job_id)
+            server._job_path(job_id).write_text("https://example.test/a\n", encoding="utf-8")
+            fake = _FakeSupabase(server.ToolError)
+            existing_ref = server.brief_mod.new_artifact_ref()
+            fake.artifacts.append({
+                "artifact_ref": existing_ref,
+                "job_id": job_id,
+                "name": f"research_{job_id}.md",
+                "bubble_id": "bub123",
+            })
+            fake.nodes.append({
+                "id": "existing-node-1",
+                "linked_idea_id": "bub123",
+                "node_type": "research",
+                "metadata": {"artifact_ref": existing_ref},
+            })
+
+            with mock.patch.object(server, "_request", side_effect=fake):
+                result = server.call_tool("research_status", {"job_id": job_id})
+
+        self.assertEqual(result["status"], "done")
+        self.assertEqual(result["artifact_ref"], existing_ref)
+        self.assertEqual(result["node_id"], "existing-node-1")
+        self.assertNotIn(("POST", "research_report_artifacts"), fake.calls)
+        self.assertNotIn(("POST", "canvas_nodes"), fake.calls)
+        self.assertEqual(len(fake.artifacts), 1)
+        self.assertEqual(len(fake.nodes), 1)
 
     def test_unknown_job_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
