@@ -338,10 +338,14 @@ def _find_existing_node_id(bubble_id: str, artifact_ref: str) -> str | None:
 
 def _persist_result(job_id: str, state: Mapping[str, Any], text: str, citations: int) -> dict:
     bubble_id = state["bubble_id"]
-    # Datum im Titel, damit mehrere Laeufe an derselben Bubble
-    # unterscheidbar bleiben - ein Lauf je Knoten ist der Grund, warum der
-    # Knoten write-once ist und der Volltext hier ueberhaupt stehen darf.
-    stamp = time.strftime("%Y-%m-%d", time.localtime())
+    # Zeitstempel (nicht nur Datum) im Titel, damit mehrere Laeufe an
+    # derselben Bubble unterscheidbar bleiben - auch zwei Laeufe am selben
+    # Kalendertag. Datum allein waere hier eine falsche Behauptung: ein
+    # Recherche-Lauf dauert lange genug, dass zwei echte Laeufe praktisch
+    # nie in derselben Sekunde abschliessen, zwei am selben Tag aber
+    # durchaus vorkommen. Ein Lauf je Knoten ist der Grund, warum der Knoten
+    # write-once ist und der Volltext hier ueberhaupt stehen darf.
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     title = f"Research: {state.get('bubble_title') or bubble_id} {stamp}"
 
     # Idempotent by job_id: a prior call may already have written the

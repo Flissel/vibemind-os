@@ -723,24 +723,35 @@ class StatusTests(unittest.TestCase):
             with mock.patch.object(server, "_request", side_effect=fake):
                 server.call_tool("research_status", {"job_id": job_id})
 
-        self.assertRegex(fake.nodes[0]["title"], r"^Research: Sheerlay \d{4}-\d{2}-\d{2}$")
+        self.assertRegex(
+            fake.nodes[0]["title"],
+            r"^Research: Sheerlay \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$",
+        )
 
     def test_a_second_run_on_the_same_bubble_creates_its_own_node(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             server = self._server_with_artifacts(tmp)
             fake = _FakeSupabase(server.ToolError)
+            reports = {}
             for suffix in ("H", "J"):
                 job_id = f"job_v1_0000000000000000000000000{suffix}"
                 self._job_state(server, job_id)
-                server._job_path(job_id).write_text(
-                    f"Lauf {suffix} https://example.test/{suffix}\n", encoding="utf-8")
+                report = f"Lauf {suffix} https://example.test/{suffix}\n"
+                reports[suffix] = report
+                server._job_path(job_id).write_text(report, encoding="utf-8")
                 with mock.patch.object(server, "_request", side_effect=fake):
                     server.call_tool("research_status", {"job_id": job_id})
 
         self.assertEqual(len(fake.nodes), 2)
         self.assertEqual(len(fake.artifacts), 2)
         self.assertNotEqual(fake.nodes[0]["content"], fake.nodes[1]["content"])
+        # Not just "different" - each node must carry ITS OWN full report,
+        # not a truncated stub. Two different stubs would also differ here;
+        # this is the assertion that actually distinguishes this task's
+        # delta (full text) from the old stub-writing implementation.
+        self.assertEqual(fake.nodes[0]["content"], reports["H"])
+        self.assertEqual(fake.nodes[1]["content"], reports["J"])
 
 
 class FinalBriefPathTests(unittest.TestCase):
