@@ -553,7 +553,14 @@ def test_zustand_ist_fail_closed_bei_unbekannter_referenz():
     assert ergebnis["ok"] is False
 
 
-def test_neu_aufnehmen_gibt_nur_aus_fehlgeschlagen_frei():
+def test_neu_aufnehmen_lehnt_entgegengenommen_ab_gibt_fehlgeschlagen_frei():
+    """Name-Korrektur (Sackgassen-Fix, 16.09.2026): frueher hiess dieser
+    Test 'gibt_nur_aus_fehlgeschlagen_frei' -- seit
+    0006_neu_aufnehmen_ab_verifiziert.sql stimmt das 'nur' nicht mehr,
+    neu_aufnehmen() gibt jetzt AUCH aus 'verifiziert' frei (eigener Test:
+    test_neu_aufnehmen_gibt_aus_verifiziert_frei_sackgassen_fix). Was
+    dieser Test unveraendert beweist: 'entgegengenommen' bleibt abgelehnt,
+    'fehlgeschlagen' bleibt freigegeben."""
     referenz = f"PYTEST_NEUAUF_{uuid.uuid4().hex[:8].upper()}"
     projekt = f"pytest-projekt-{uuid.uuid4().hex[:8]}"
     try:
@@ -572,6 +579,40 @@ def test_neu_aufnehmen_gibt_nur_aus_fehlgeschlagen_frei():
         assert _psql_als_postgres_ok(
             f"SELECT count(*) FROM plugin_setup.einrichtungen WHERE referenz_name = '{referenz}';"
         ).strip() == "0"
+        assert ablage.entgegennehmen(projekt, "demo-plugin", referenz, "bearer", _FAKE_WERT)["ok"] is True
+    finally:
+        _cleanup(referenz)
+
+
+def test_neu_aufnehmen_gibt_aus_verifiziert_frei_sackgassen_fix():
+    """Der Fund, der 0006_neu_aufnehmen_ab_verifiziert.sql ausgeloest hat
+    (s. .superpowers/sdd/sackgasse-brief.md, 16.09.2026): 'verifiziert'
+    war als Durchgangs-, nicht als Ruhezustand entworfen. Lehnt OpenFang
+    ab (409) oder scheitert der anschliessende uebernommen()-Uebergang,
+    bleibt die Zeile auf 'verifiziert' stehen -- und vor diesem Fix gab es
+    von dort keinen Ausgang (fehlschlagen() nimmt nur 'entgegengenommen',
+    uebernommen() setzt einen Wert bei OpenFang voraus, neu_aufnehmen()
+    nahm nur 'fehlgeschlagen'). Dieser Test beweist den Ausgang: aus
+    'verifiziert' heraus gibt neu_aufnehmen() jetzt frei -- Zeile UND
+    Vault-Kopie sind danach weg, eine neue Aufnahme unter derselben
+    referenz_name geht wieder (kein UNIQUE-Constraint-Fehler)."""
+    referenz = f"PYTEST_NEUAUF_VERIFIZIERT_{uuid.uuid4().hex[:8].upper()}"
+    projekt = f"pytest-projekt-{uuid.uuid4().hex[:8]}"
+    try:
+        assert ablage.entgegennehmen(projekt, "demo-plugin", referenz, "bearer", _FAKE_WERT)["ok"] is True
+        assert ablage.verifizieren(referenz)["ok"] is True
+        assert ablage.zustand(referenz)["zustand"] == "verifiziert"
+
+        vorher = _psql_als_postgres_ok("SELECT count(*) FROM vault.secrets;").strip()
+        assert ablage.neu_aufnehmen(referenz)["ok"] is True
+        nachher = _psql_als_postgres_ok("SELECT count(*) FROM vault.secrets;").strip()
+        assert int(nachher) == int(vorher) - 1, "neu_aufnehmen muss die Vault-Kopie mitloeschen"
+
+        assert _psql_als_postgres_ok(
+            f"SELECT count(*) FROM plugin_setup.einrichtungen WHERE referenz_name = '{referenz}';"
+        ).strip() == "0"
+        # Kein UNIQUE-Constraint-Fehler: ein frischer Versuch unter derselben
+        # referenz_name ist wieder moeglich -- das schliesst die Sackgasse.
         assert ablage.entgegennehmen(projekt, "demo-plugin", referenz, "bearer", _FAKE_WERT)["ok"] is True
     finally:
         _cleanup(referenz)
@@ -627,18 +668,31 @@ def test_neu_aufnehmen_scheitert_roh_bei_unbekannter_referenz():
     assert unbekannt in out
 
 
-@pytest.mark.parametrize("ziel_status", ["verifiziert", "uebernommen"])
+@pytest.mark.parametrize("ziel_status", ["uebernommen"])
 def test_neu_aufnehmen_lehnt_auch_verifiziert_und_uebernommen_ab(ziel_status):
     """Review-Befund: der bestehende Test
-    (test_neu_aufnehmen_gibt_nur_aus_fehlgeschlagen_frei) deckt die
-    Ablehnung nur aus 'entgegengenommen' ab. Der Kommentarkopf von
-    0005_fenster_oberflaeche.sql nennt ausdruecklich 'verifiziert' und
+    (test_neu_aufnehmen_lehnt_entgegengenommen_ab_gibt_fehlgeschlagen_frei)
+    deckt die Ablehnung nur aus 'entgegengenommen' ab. Der Kommentarkopf
+    von 0005_fenster_oberflaeche.sql nennt ausdruecklich 'verifiziert' und
     'uebernommen' als die Zustaende, vor denen die Wache schuetzen soll --
     eine Guard-Aenderung wie `IF v_status = 'entgegengenommen'` (statt
     `IF v_status <> 'fehlgeschlagen'`) wuerde die Ablehnung aus
     'entgegengenommen' unveraendert lassen und darum am bestehenden Test
     unentdeckt vorbeikommen, waehrend 'verifiziert'- und 'uebernommen'-
-    Zeilen ploetzlich loeschbar waeren."""
+    Zeilen ploetzlich loeschbar waeren.
+
+    SACKGASSEN-FIX (16.09.2026, 0006_neu_aufnehmen_ab_verifiziert.sql):
+    'verifiziert' gehoerte urspruenglich zu dieser Parametrisierung. Der
+    Fund im ersten echten Lauf durchs Formular (s.
+    .superpowers/sdd/sackgasse-brief.md) macht 'verifiziert' zu einem
+    ABSICHTLICH freigegebenen Ausgangszustand -- die Namensregel des
+    Zustandsautomaten aendert sich, nicht die Wache selbst wird schwaecher:
+    'entgegengenommen' und 'uebernommen' bleiben die beiden, die
+    neu_aufnehmen() nach wie vor kategorisch ablehnt (laufende Aufnahme
+    verwerfen bzw. fertige Einrichtung vergessen); nur 'uebernommen' bleibt
+    darum hier parametrisiert. Der Freigabe-Fall fuer 'verifiziert' hat
+    einen eigenen, positiven Test:
+    test_neu_aufnehmen_gibt_aus_verifiziert_frei_sackgassen_fix."""
     referenz = f"PYTEST_NEUAUF_ZUSTAND_{uuid.uuid4().hex[:8].upper()}"
     projekt = f"pytest-projekt-{uuid.uuid4().hex[:8]}"
     try:

@@ -371,6 +371,12 @@ def zustand(referenz: str) -> dict:
 
 
 def neu_aufnehmen(referenz: str) -> dict:
-    """Gibt eine fehlgeschlagene Referenz fuer eine neue Aufnahme frei.
-    Die Wache sitzt in der Datenbank (nur aus 'fehlgeschlagen')."""
+    """Gibt eine Referenz fuer eine neue Aufnahme frei. Die Wache sitzt in
+    der Datenbank (0006_neu_aufnehmen_ab_verifiziert.sql): nur aus
+    'fehlgeschlagen' ODER 'verifiziert' -- 'verifiziert' seit dem
+    Sackgassen-Fix (16.09.2026, s. .superpowers/sdd/sackgasse-brief.md),
+    weil dieser Zustand sich im ersten echten Lauf als Ruhezustand ohne
+    Ausgang herausstellte (OpenFang lehnt ab, oder der uebernommen()-
+    Uebergang scheitert danach). 'entgegengenommen' und 'uebernommen'
+    bleiben unveraendert abgelehnt."""
     return _uebergang(f"SELECT plugin_setup.neu_aufnehmen({_sql_literal(referenz)});")

@@ -241,3 +241,51 @@ OAuth-Umlauf gegen einen Anbieter. Keine echte OpenFang-Übergabe im
 Live-Test. Keine Prüfung, ob ein laufender Container `config/openclaw.json`
 wirklich lädt. `deploy/smoke.sh` und `anbinden.sh` wurden nicht ausgeführt,
 nur syntaktisch geprüft.
+
+## Nachtrag (2026-09-16) — die Sackgasse, die erst der erste ECHTE Durchgang fand
+
+Am 16.09.2026 ist zum ersten Mal ein echtes Credential durch das
+Eingabefenster gegangen (ein GitHub-PAT, vom Betreiber eingetippt, GitHub
+hat mit 200 bestätigt, OpenFang hat übernommen, die Supabase-Kopie wurde
+gelöscht). Auf dem Weg dorthin hat dieser Lauf einen Entwurfsfehler
+freigelegt, den keine der bisherigen Test-Runden (auch nicht die oben
+dokumentierten N1-N13) gefunden hat — weil alle bisherigen Tests die
+ANTWORTFORM eines OpenFang-409 prüften (Statuscode, `retryable`,
+Fehlertext), nicht, wie ein Betreiber danach weiterkommt.
+
+**Der Befund:** `verifiziert` war beim Entwurf (0002/0005) als
+DURCHGANGS-Zustand gedacht — die Erwartung war, dass er binnen Sekunden in
+`uebernommen` übergeht, sobald OpenFang den Wert entgegennimmt. Lehnt
+OpenFang stattdessen ab (409), oder scheitert der `uebernommen()`-Übergang
+nach einer erfolgreichen Verifikation, bleibt die Zeile auf `verifiziert`
+stehen. Vor diesem Nachtrag gab es von dort keinen Ausgang:
+`fehlschlagen()` nimmt nur `entgegengenommen`, `uebernommen()` setzt
+voraus, dass OpenFang den Wert tatsächlich hat, `neu_aufnehmen()` nahm nur
+`fehlgeschlagen`, und `eingabe_anfordern` lehnte jeden bekannten Zustand
+außer `fehlgeschlagen` ab. Der Betreiber kam ohne Handgriff in der
+Datenbank nicht weiter — gemessen im Live-Lauf, zweimal.
+
+**Warum das ein Entwurfsfehler ist, kein Implementierungsfehler:** jede
+einzelne Wache tat exakt, was sie sollte, und jeder bestehende Test blieb
+grün, weil er genau das prüfte, was er sollte. Die Lücke lag zwischen den
+Bausteinen — im Zustandsdiagramm selbst hatte `verifiziert` einen
+Ausgangspfeil zu wenig. Das findet keine Mutationsprobe eines einzelnen
+Bausteins, weil an keinem einzelnen Baustein etwas falsch war; es
+brauchte einen echten Durchlauf, der den Automaten tatsächlich in diesen
+Zustand brachte und dann versuchte, von dort weiterzukommen.
+
+**Fix:** `neu_aufnehmen(referenz)` akzeptiert seit
+`db/0006_neu_aufnehmen_ab_verifiziert.sql` zusätzlich `verifiziert` als
+Ausgangszustand (dieselbe Löschen-und-neu-Semantik wie beim bestehenden
+`fehlgeschlagen`-Pfad), und `werkzeuge.eingabe_anfordern` behandelt
+`verifiziert` jetzt wie `fehlgeschlagen`: ein neuer Link wird ausgegeben,
+nachdem die alte Zeile freigegeben wurde. `entgegengenommen` und
+`uebernommen` bleiben unverändert ohne Ausweg — das sind die beiden
+Zustände, bei denen ein automatischer Neustart tatsächlich etwas
+verwerfen würde (eine laufende Aufnahme bzw. eine fertige Einrichtung).
+
+Details, die zwei Unterfälle (OpenFang hat abgelehnt vs. OpenFang hat
+angenommen aber der Supabase-Übergang scheiterte) und warum keine direkte
+Kante `verifiziert → fehlgeschlagen` gewählt wurde, stehen im
+Migrations-Kopfkommentar von `db/0006_neu_aufnehmen_ab_verifiziert.sql`
+und im Docstring von `werkzeuge.eingabe_anfordern`.

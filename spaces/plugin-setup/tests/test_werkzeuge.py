@@ -1227,6 +1227,31 @@ def test_eingabe_anfordern_ruft_neu_aufnehmen_wenn_vorher_fehlgeschlagen(monkeyp
     assert aufgerufen == ["PYTEST_RETRY_A"]
 
 
+def test_eingabe_anfordern_ruft_neu_aufnehmen_wenn_vorher_verifiziert(monkeypatch):
+    """Sackgassen-Fix (16.09.2026, s. .superpowers/sdd/sackgasse-brief.md):
+    vor diesem Fix war 'verifiziert' der einzige Zustand ohne Ausgang --
+    lehnte OpenFang mit 409 ab (oder scheiterte der anschliessende
+    uebernommen()-Uebergang), blieb die Zeile stehen und
+    eingabe_anfordern() lehnte JEDEN weiteren Versuch fuer dieselbe
+    Referenz ab (gemessen: "referenz ... ist bereits im Zustand
+    'verifiziert' -- kein neuer Link"), ohne einen Weg zurueck.
+    eingabe_anfordern() muss `verifiziert` jetzt genauso behandeln wie
+    `fehlgeschlagen` -- ueber ablage.neu_aufnehmen() einen frischen
+    Versuch freigeben, statt die Referenz zu verbrennen. Das ist DER Test,
+    der die Sackgasse schliesst; die Bausteine (SQL-Wache in
+    tests/test_ablage.py, Ablehnung aus 'entgegengenommen'/'uebernommen'
+    unveraendert) sind separat geprueft."""
+    aufgerufen = []
+    monkeypatch.setattr(werkzeuge.ablage, "zustand",
+                        lambda r: {"ok": True, "zustand": "verifiziert", "hinweis": ""})
+    monkeypatch.setattr(werkzeuge.ablage, "neu_aufnehmen",
+                        lambda r: aufgerufen.append(r) or {"ok": True})
+    ergebnis = werkzeuge.eingabe_anfordern("proj", "demo", "PYTEST_RETRY_VERIFIZIERT", "bearer", "")
+    assert ergebnis["ok"] is True
+    assert "url" in ergebnis
+    assert aufgerufen == ["PYTEST_RETRY_VERIFIZIERT"]
+
+
 def test_eingabe_anfordern_gibt_keinen_link_aus_wenn_neu_aufnehmen_scheitert(monkeypatch):
     """Ein Link, dessen Formular garantiert an der UNIQUE-Constraint auf
     referenz_name kollidiert, ist schlimmer als ein ehrliches `ok: False`."""
@@ -1256,15 +1281,25 @@ def test_eingabe_anfordern_ruft_neu_aufnehmen_nicht_bei_frischer_oder_unbekannte
     assert aufgerufen == []
 
 
-@pytest.mark.parametrize("zustand", ["entgegengenommen", "verifiziert", "uebernommen"])
+@pytest.mark.parametrize("zustand", ["entgegengenommen", "uebernommen"])
 def test_eingabe_anfordern_lehnt_ab_wenn_referenz_bereits_in_anderem_zustand_ist(monkeypatch, zustand):
     """Kollisions-Fix (Review Runde 3, Fix-Runde 2, Important): eine
     fruehere Fassung pruefte NUR auf `fehlgeschlagen` und liess jeden
     anderen bekannten Zustand durchfallen -- also einen Link ausgeben,
     dessen Formular garantiert an der UNIQUE-Constraint auf referenz_name
-    kollidiert waere. Jetzt lehnt eingabe_anfordern JEDEN bekannten
-    Zustand ausser `fehlgeschlagen` ab, bevor ein Token entsteht, und
-    nennt den Zustand im Klartext."""
+    kollidiert waere. Jetzt lehnt eingabe_anfordern jeden bekannten
+    Zustand ausser `fehlgeschlagen` UND `verifiziert` ab, bevor ein Token
+    entsteht, und nennt den Zustand im Klartext.
+
+    SACKGASSEN-FIX (16.09.2026): `verifiziert` gehoerte urspruenglich zu
+    dieser Parametrisierung (es war ein abgelehnter Zustand wie die
+    anderen beiden) -- der Sackgassen-Fix macht `verifiziert` zu einem
+    dritten Zustand, der wie `fehlgeschlagen` einen neuen Versuch ueber
+    ablage.neu_aufnehmen() freigibt, statt die Referenz zu verbrennen (s.
+    test_eingabe_anfordern_ruft_neu_aufnehmen_wenn_vorher_verifiziert).
+    `entgegengenommen` (laufende Aufnahme) und `uebernommen` (fertige
+    Einrichtung) bleiben unveraendert die einzigen beiden Zustaende, die
+    hier ohne Ausweg abgelehnt werden."""
     gelegt = []
     monkeypatch.setattr(werkzeuge.ablage, "zustand",
                         lambda r: {"ok": True, "zustand": zustand, "hinweis": ""})

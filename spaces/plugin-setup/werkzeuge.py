@@ -725,6 +725,28 @@ def eingabe_anfordern(projekt: str, plugin: str, referenz: str, art: str, ziel: 
     `fehlgeschlagen` liefert `ok: False` mit dem Zustand im Klartext, bevor
     ueberhaupt ein Token entsteht.
 
+    SACKGASSEN-FIX (16.09.2026, erster ECHTER Durchgang durchs Formular,
+    s. .superpowers/sdd/sackgasse-brief.md): `verifiziert` war als
+    DURCHGANGS-Zustand entworfen -- der echte Lauf zeigt, es ist ein
+    RUHE-Zustand ohne Ausgang, sobald OpenFang mit 409 ablehnt (oder gar
+    nicht erreichbar ist) und der anschliessende `uebernommen()`-Uebergang
+    darum nie stattfindet. `fehlschlagen()` greift hier nicht (nur aus
+    `entgegengenommen`), und `uebernommen()` setzt voraus, dass OpenFang
+    den Wert tatsaechlich hat. Der Zweig oben (bisher nur fuer
+    `fehlgeschlagen`) deckt darum jetzt zusaetzlich `verifiziert` ab --
+    dieselbe `ablage.neu_aufnehmen`-DB-Wache
+    (0006_neu_aufnehmen_ab_verifiziert.sql) erlaubt das inzwischen. Zwei
+    Unterfaelle, beide ueber denselben Weg richtig: (a) OpenFang hat
+    abgelehnt -- der Wert liegt nur in der Supabase-Kopie, Loeschen heisst
+    "Betreiber tippt neu", derselbe Preis wie beim `fehlgeschlagen`-Fall;
+    (b) OpenFang hat angenommen, aber der Supabase-Uebergang scheiterte
+    (`zwei_verwahrstellen`) -- der Wert liegt dann in BEIDEN Verwahrstellen,
+    und die Supabase-Kopie zu loeschen ist hier nicht nur zulaessig,
+    sondern GENAU die von D2 verlangte Abhilfe (zwei Verwahrstellen sind
+    das Verbotene); verloren geht nur die Spur in Supabase, nicht der Wert
+    bei OpenFang. `entgegengenommen` und `uebernommen` bleiben unveraendert
+    abgelehnt (Begruendung oben, KOLLISIONS-FIX).
+
     SCHWEBEN-WACHE (N3-Fix, 2026-09-15): alle Wachen oben pruefen DB-
     Zustand (`ablage.zustand`) -- eine schwebende Anfrage (zwischen diesem
     Aufruf und dem Absenden des Formulars) steht aber gar nicht in der DB,
@@ -750,7 +772,7 @@ def eingabe_anfordern(projekt: str, plugin: str, referenz: str, art: str, ziel: 
     bisher = ablage.zustand(referenz)
     if bisher.get("ok"):
         zustand = bisher.get("zustand")
-        if zustand == "fehlgeschlagen":
+        if zustand in ("fehlgeschlagen", "verifiziert"):
             neu = ablage.neu_aufnehmen(referenz)
             if not neu.get("ok"):
                 return {"ok": False, "fehler": neu.get("fehler", "neu_aufnehmen fehlgeschlagen")}

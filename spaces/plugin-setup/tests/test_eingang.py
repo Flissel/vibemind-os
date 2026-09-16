@@ -29,6 +29,16 @@ _MIGRATION_PATHS = [
     _DB_DIR / "0001_plugin_setup.sql",
     _DB_DIR / "0002_state_machine.sql",
     _DB_DIR / "0005_fenster_oberflaeche.sql",
+    # 0006 muss hier mitlaufen: dieses Modul reapplied 0001/0002/0005 vor
+    # JEDEM Testlauf (autouse, s. _migrations_applied unten). Ohne 0006 in
+    # dieser Liste wuerde die Reapplikation von 0005 (CREATE OR REPLACE
+    # FUNCTION neu_aufnehmen) 0006s Fix stillschweigend wieder auf den
+    # alten Guard (nur 'fehlgeschlagen') zuruecksetzen, sobald dieses Modul
+    # NACH 0006s manueller Anwendung importiert wird -- genau die Falle aus
+    # .superpowers/sdd/sackgasse-brief.md ("ein autouse-Fixture, das
+    # Migrationen neu anwendet, ueberschreibt eine DB-gepatchte Mutante
+    # still"), hier aber gegen den ECHTEN Fix statt gegen eine Testmutante.
+    _DB_DIR / "0006_neu_aufnehmen_ab_verifiziert.sql",
 ]
 _DB_USER = "postgres"
 _DB_NAME = "postgres"
