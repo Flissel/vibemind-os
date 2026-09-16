@@ -235,6 +235,14 @@ class StartTests(unittest.TestCase):
 
     def test_edited_brief_is_used_verbatim_when_supplied(self) -> None:
         server = load_server()
+        # Muss einen Ausgabepfad tragen: seit der job_id-Kopplung an den
+        # bestaetigten Brief (siehe FinalBriefPathTests) ist ein final_brief
+        # ohne research_<job_id>.md-Pfad ein Fehler vor dem Start, kein
+        # gueltiger Verbatim-Fall mehr.
+        edited = (
+            "MEIN BEARBEITETER AUFTRAG\n"
+            "Schreibe nach: /tmp/research_job_v1_0000000000000000000000000A.md\n"
+        )
         sent = {}
         with mock.patch.object(server, "_read_bubble", return_value=BUBBLE), \
              mock.patch.object(server, "_read_nodes", return_value=NODES), \
@@ -244,10 +252,10 @@ class StartTests(unittest.TestCase):
             server.call_tool(
                 "research_start",
                 {"bubble_id": "bub123", "brief": "ignoriert", "confirm": True,
-                 "final_brief": "MEIN BEARBEITETER AUFTRAG"},
+                 "final_brief": edited},
             )
 
-        self.assertEqual(sent["text"], "MEIN BEARBEITETER AUFTRAG")
+        self.assertEqual(sent["text"], edited)
 
 
 class SpawnAgentCallTests(unittest.TestCase):
@@ -683,6 +691,60 @@ class StatusTests(unittest.TestCase):
             server = self._server_with_artifacts(Path(raw))
             with self.assertRaises(server.ToolError):
                 server.call_tool("research_status", {"job_id": "job_v1_0000000000000000000000000Z"})
+
+
+class FinalBriefPathTests(unittest.TestCase):
+    def test_confirm_with_final_brief_uses_the_job_id_from_that_brief(self) -> None:
+        server = load_server()
+        edited = (
+            "MEIN BEARBEITETER AUFTRAG\n"
+            "Schreibe nach: /tmp/research_job_v1_0000000000000000000000000A.md\n"
+        )
+        seen = {}
+        with mock.patch.object(server, "_read_bubble", return_value=BUBBLE), \
+             mock.patch.object(server, "_read_nodes", return_value=NODES), \
+             mock.patch.object(server, "_spawn_agent_call"), \
+             mock.patch.object(server, "_write_job_file",
+                               side_effect=lambda job_id, payload: seen.update(
+                                   job_id=job_id, payload=payload)):
+            result = server.call_tool("research_start", {
+                "bubble_id": "bub123", "brief": "x", "confirm": True,
+                "final_brief": edited,
+            })
+
+        self.assertEqual(result["job_id"], "job_v1_0000000000000000000000000A")
+        self.assertEqual(seen["job_id"], "job_v1_0000000000000000000000000A")
+        self.assertIn("job_v1_0000000000000000000000000A", result["report_path"])
+        self.assertIn("job_v1_0000000000000000000000000A", seen["payload"]["report_path"])
+
+    def test_final_brief_without_a_path_is_rejected_before_the_run(self) -> None:
+        server = load_server()
+        with mock.patch.object(server, "_read_bubble", return_value=BUBBLE), \
+             mock.patch.object(server, "_read_nodes", return_value=NODES), \
+             mock.patch.object(server, "_spawn_agent_call") as spawn, \
+             mock.patch.object(server, "_write_job_file") as write:
+            with self.assertRaises(server.ToolError) as ctx:
+                server.call_tool("research_start", {
+                    "bubble_id": "bub123", "brief": "x", "confirm": True,
+                    "final_brief": "Auftrag ohne jeden Pfad.",
+                })
+
+        self.assertTrue(str(ctx.exception).startswith("invalid_arguments"))
+        spawn.assert_not_called()
+        write.assert_not_called()
+
+    def test_confirm_without_final_brief_still_uses_a_fresh_job_id(self) -> None:
+        server = load_server()
+        with mock.patch.object(server, "_read_bubble", return_value=BUBBLE), \
+             mock.patch.object(server, "_read_nodes", return_value=NODES), \
+             mock.patch.object(server, "_spawn_agent_call"), \
+             mock.patch.object(server, "_write_job_file"):
+            result = server.call_tool("research_start", {
+                "bubble_id": "bub123", "brief": "x", "confirm": True,
+            })
+
+        self.assertRegex(result["job_id"], r"^job_v1_[0-9A-HJKMNPQRSTVWXYZ]{26}$")
+        self.assertIn(result["job_id"], result["report_path"])
 
 
 if __name__ == "__main__":

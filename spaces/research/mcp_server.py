@@ -434,6 +434,19 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> dict:
             if not isinstance(final, str) or not final.strip():
                 raise ToolError("invalid_arguments: 'final_brief' must be a non-empty string")
             brief_text = final
+            # Der bestaetigte Brief traegt den Pfad, gegen den der Agent
+            # schreibt. Die job_id folgt IHM, nicht der oben erzeugten -
+            # sonst prueft research_status einen Pfad, in den nie jemand
+            # schreibt. Kein stiller Rueckfall: fehlt der Pfad, ist das ein
+            # Fehler vor dem Start.
+            from_brief = brief_mod.job_id_from_brief(brief_text)
+            if from_brief is None:
+                raise ToolError(
+                    "invalid_arguments: 'final_brief' enthaelt keinen Ausgabepfad "
+                    "der Form research_<job_id>.md - bearbeite die Vorschau, "
+                    "ohne die Pfadzeile zu entfernen"
+                )
+            job_id = from_brief
 
         _write_job_file(job_id, {
             "job_id": job_id,

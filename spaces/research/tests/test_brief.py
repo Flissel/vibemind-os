@@ -121,5 +121,43 @@ class ComposeTests(unittest.TestCase):
         self.assertIn("Wettbewerbsanalyse durchfuehren.", text)
 
 
+class JobIdFromBriefTests(unittest.TestCase):
+    def test_reads_the_job_id_out_of_the_dictated_output_path(self) -> None:
+        brief = load_brief()
+        text = (
+            "[Pflicht]\n"
+            "1. Schreibe den Report unter EXAKT diesem Pfad: "
+            "C:\\Users\\X\\.openfang\\research-artifacts\\research_job_v1_01M2N5VPP9T2PX2GJ7NG3F9XHN.md\n"
+        )
+        self.assertEqual(
+            brief.job_id_from_brief(text), "job_v1_01M2N5VPP9T2PX2GJ7NG3F9XHN"
+        )
+
+    def test_reads_it_from_a_posix_path_too(self) -> None:
+        brief = load_brief()
+        text = "Pfad: /home/u/.openfang/research-artifacts/research_job_v1_0000000000000000000000000A.md"
+        self.assertEqual(
+            brief.job_id_from_brief(text), "job_v1_0000000000000000000000000A"
+        )
+
+    def test_returns_none_when_the_brief_carries_no_path(self) -> None:
+        brief = load_brief()
+        self.assertIsNone(brief.job_id_from_brief("Nur Fliesstext ohne Pfad."))
+
+    def test_ignores_a_malformed_job_id(self) -> None:
+        brief = load_brief()
+        self.assertIsNone(brief.job_id_from_brief("research_job_v1_zzz.md"))
+
+    def test_takes_the_first_when_several_appear(self) -> None:
+        brief = load_brief()
+        text = (
+            "research_job_v1_0000000000000000000000000A.md und spaeter "
+            "research_job_v1_0000000000000000000000000B.md"
+        )
+        self.assertEqual(
+            brief.job_id_from_brief(text), "job_v1_0000000000000000000000000A"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

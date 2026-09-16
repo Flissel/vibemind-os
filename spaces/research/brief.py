@@ -122,3 +122,20 @@ def compose_brief(
    Erfinde nichts. Fehlende Information wird als fehlend benannt.
 3. Antworte am Ende mit genau diesem Pfad.
 """
+
+
+# Muss zur Zeichenklasse der CHECK-Bedingung in
+# 20260817_research_report_artifacts.sql passen.
+_JOB_IN_PATH_RE = re.compile(r"research_(job_v1_[0-9A-HJKMNPQRSTVWXYZ]{26})\.md")
+
+
+def job_id_from_brief(text: str) -> str | None:
+    """Liest die job_id aus dem Ausgabepfad, den der Brief vorschreibt.
+
+    Der bestaetigte Brief traegt den Pfad, gegen den der Agent schreibt.
+    Wer stattdessen eine frische job_id erzeugt, laesst den Lauf gegen einen
+    Pfad pruefen, in den niemand schreibt - genau der Fehler, den diese
+    Funktion behebt.
+    """
+    match = _JOB_IN_PATH_RE.search(text or "")
+    return match.group(1) if match else None
