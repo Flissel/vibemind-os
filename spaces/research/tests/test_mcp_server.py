@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json as _json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -118,6 +120,127 @@ class PreviewTests(unittest.TestCase):
                 )
         self.assertTrue(str(ctx.exception).startswith("invalid_arguments"))
         spawn.assert_not_called()
+
+
+class StartTests(unittest.TestCase):
+    def test_confirm_starts_a_run_and_returns_a_job_id(self) -> None:
+        server = load_server()
+        with mock.patch.object(server, "_read_bubble", return_value=BUBBLE), \
+             mock.patch.object(server, "_read_nodes", return_value=NODES), \
+             mock.patch.object(server, "_spawn_agent_call") as spawn, \
+             mock.patch.object(server, "_write_job_file") as write:
+            result = server.call_tool(
+                "research_start",
+                {"bubble_id": "bub123", "brief": "Aufgabe\nX.", "confirm": True},
+            )
+
+        self.assertEqual(result["status"], "started")
+        self.assertRegex(result["job_id"], r"^job_v1_[0-9A-HJKMNPQRSTVWXYZ]{26}$")
+        self.assertIn(result["job_id"], result["report_path"])
+        spawn.assert_called_once()
+        write.assert_called_once()
+
+    def test_job_file_records_the_bubble_and_the_settings(self) -> None:
+        server = load_server()
+        captured = {}
+        with mock.patch.object(server, "_read_bubble", return_value=BUBBLE), \
+             mock.patch.object(server, "_read_nodes", return_value=NODES), \
+             mock.patch.object(server, "_spawn_agent_call"), \
+             mock.patch.object(server, "_write_job_file",
+                               side_effect=lambda job_id, payload: captured.update(payload)):
+            server.call_tool(
+                "research_start",
+                {"bubble_id": "bub123", "brief": "Aufgabe\nX.", "confirm": True,
+                 "depth": "exhaustive", "output_style": "academic"},
+            )
+
+        self.assertEqual(captured["bubble_id"], "bub123")
+        self.assertEqual(captured["depth"], "exhaustive")
+        self.assertEqual(captured["output_style"], "academic")
+        self.assertIn("brief", captured)
+
+    def test_edited_brief_is_used_verbatim_when_supplied(self) -> None:
+        server = load_server()
+        sent = {}
+        with mock.patch.object(server, "_read_bubble", return_value=BUBBLE), \
+             mock.patch.object(server, "_read_nodes", return_value=NODES), \
+             mock.patch.object(server, "_spawn_agent_call",
+                               side_effect=lambda job_id, text: sent.update(text=text)), \
+             mock.patch.object(server, "_write_job_file"):
+            server.call_tool(
+                "research_start",
+                {"bubble_id": "bub123", "brief": "ignoriert", "confirm": True,
+                 "final_brief": "MEIN BEARBEITETER AUFTRAG"},
+            )
+
+        self.assertEqual(sent["text"], "MEIN BEARBEITETER AUFTRAG")
+
+
+class SpawnAgentCallTests(unittest.TestCase):
+    """Deckt die gezielte Abweichung vom Brief ab: der Request-Body geht als
+    Datei an das Kind, nicht als argv. Windows kappt eine Kommandozeile bei
+    rund 32767 Zeichen; ein langer Brief (Auftrag + Bubble-Inhalt) kann das
+    reissen - genau dann, wenn der Auftrag gross und teuer ist. Diese Tests
+    fallen gegen die woertliche Brief-Referenzimplementierung (die die JSON-
+    Payload direkt als argv[2] uebergibt) durch, nicht nur gegen den Stub.
+    """
+
+    def test_request_body_goes_to_a_file_not_to_argv(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            server = load_server()
+            server.ARTIFACT_DIR = tmp
+            job_id = "job_v1_0000000000000000000000000F"
+            brief_text = "Sehr langer Auftragstext mit vielen Details. " * 200
+
+            with mock.patch.object(server.subprocess, "Popen") as popen:
+                server._spawn_agent_call(job_id, brief_text)
+
+            popen.assert_called_once()
+            args = popen.call_args[0][0]
+            for item in args:
+                self.assertNotIn(brief_text, item)
+
+            request_path = Path(args[-1])
+            self.assertTrue(request_path.is_file())
+            self.assertEqual(request_path.parent, tmp)
+            self.assertEqual(request_path.name, f"research_{job_id}.request.json")
+            body = _json.loads(request_path.read_text(encoding="utf-8"))
+            self.assertEqual(body["message"], brief_text)
+
+    def test_does_not_wait_for_the_child_process(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            server = load_server()
+            server.ARTIFACT_DIR = tmp
+            job_id = "job_v1_0000000000000000000000000G"
+
+            with mock.patch.object(server.subprocess, "Popen") as popen, \
+                 mock.patch.object(server.subprocess, "run") as run, \
+                 mock.patch.object(server.subprocess, "call") as call:
+                server._spawn_agent_call(job_id, "x")
+
+            popen.assert_called_once()
+            run.assert_not_called()
+            call.assert_not_called()
+            popen.return_value.wait.assert_not_called()
+            popen.return_value.communicate.assert_not_called()
+
+    def test_output_is_redirected_to_a_spawn_log_file_and_stdin_is_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            server = load_server()
+            server.ARTIFACT_DIR = tmp
+            job_id = "job_v1_0000000000000000000000000H"
+
+            with mock.patch.object(server.subprocess, "Popen") as popen:
+                server._spawn_agent_call(job_id, "x")
+
+            kwargs = popen.call_args[1]
+            self.assertEqual(kwargs["stdin"], server.subprocess.DEVNULL)
+            self.assertIs(kwargs["stdout"], kwargs["stderr"])
+            log_path = tmp / f"research_{job_id}.spawn.log"
+            self.assertTrue(log_path.is_file())
 
 
 if __name__ == "__main__":

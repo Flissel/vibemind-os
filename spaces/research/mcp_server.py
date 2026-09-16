@@ -12,7 +12,9 @@ import importlib.util
 import json
 import os
 import pathlib
+import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -66,6 +68,7 @@ TOOLS: list[dict[str, Any]] = [
                 "citation_style": {"type": "string", "default": "academic_apa"},
                 "language": {"type": "string", "default": "german"},
                 "confirm": {"type": "boolean", "default": False},
+                "final_brief": {"type": "string"},
             },
             "required": ["bubble_id", "brief"],
             "additionalProperties": False,
@@ -176,6 +179,10 @@ def _job_state_path(job_id: str) -> pathlib.Path:
     return ARTIFACT_DIR / f"research_{job_id}.job.json"
 
 
+def _request_path(job_id: str) -> pathlib.Path:
+    return ARTIFACT_DIR / f"research_{job_id}.request.json"
+
+
 def _write_job_file(job_id: str, payload: dict) -> None:
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     _job_state_path(job_id).write_text(
@@ -184,7 +191,45 @@ def _write_job_file(job_id: str, payload: dict) -> None:
 
 
 def _spawn_agent_call(job_id: str, brief_text: str) -> None:
-    raise ToolError("not_implemented: _spawn_agent_call wird in Task 4 gefuellt")
+    """Stoesst den Agentenlauf an, ohne auf ihn zu warten.
+
+    Der Aufruf blockiert serverseitig ohne Timeout bis zum Ende der
+    Agentenschleife - beim Rauchtest 80 s fuer eine triviale Frage. Der
+    Abholweg ist deshalb die Reportdatei, nicht diese Antwort.
+
+    Der Request-Body geht als Datei an das Kind, nicht als argv: Windows
+    kappt eine Kommandozeile bei rund 32767 Zeichen, und ein langer Brief
+    (Auftrag plus Bubble-Inhalt) kann das reissen - genau dann, wenn der
+    Auftrag gross und teuer ist. Die Datei ist zugleich der dauerhafte
+    Beleg dessen, was tatsaechlich gesendet wurde.
+    """
+    base = (os.environ.get("OPENFANG_URL") or "http://127.0.0.1:4200").rstrip("/")
+    url = f"{base}/api/agents/{RESEARCHER_AGENT_ID}/message"
+    payload = json.dumps({"message": brief_text}, ensure_ascii=False)
+
+    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    request_path = _request_path(job_id)
+    request_path.write_text(payload, encoding="utf-8")
+
+    script = (
+        "import sys,urllib.request\n"
+        "with open(sys.argv[2],'r',encoding='utf-8') as fh:\n"
+        "    body=fh.read()\n"
+        "req=urllib.request.Request(sys.argv[1],"
+        "data=body.encode('utf-8'),method='POST',"
+        "headers={'Content-Type':'application/json'})\n"
+        "urllib.request.urlopen(req,timeout=5400).read()\n"
+    )
+    log = open(ARTIFACT_DIR / f"research_{job_id}.spawn.log", "wb")
+    try:
+        subprocess.Popen(
+            [sys.executable, "-c", script, url, str(request_path)],
+            stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+        )
+    finally:
+        # Das Kind erbt sein eigenes Handle; das Elternhandle hier zu halten
+        # waere ein Leck ueber die Lebensdauer des lang laufenden Servers.
+        log.close()
 
 
 def call_tool(name: str, arguments: Mapping[str, Any]) -> dict:
@@ -223,7 +268,31 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> dict:
                 ),
             }
 
-        raise ToolError("not_implemented: confirm wird in Task 4 gefuellt")
+        final = arguments.get("final_brief")
+        if final is not None:
+            if not isinstance(final, str) or not final.strip():
+                raise ToolError("invalid_arguments: 'final_brief' must be a non-empty string")
+            brief_text = final
+
+        _write_job_file(job_id, {
+            "job_id": job_id,
+            "bubble_id": bubble_id,
+            "bubble_title": bubble.get("title") or bubble_id,
+            "depth": depth,
+            "output_style": output_style,
+            "citation_style": citation_style,
+            "language": language.strip(),
+            "brief": brief_text,
+            "report_path": str(_job_path(job_id)),
+            "started_at": time.time(),
+        })
+        _spawn_agent_call(job_id, brief_text)
+        return {
+            "status": "started",
+            "job_id": job_id,
+            "report_path": str(_job_path(job_id)),
+            "note": "Mit research_status(job_id) den Fortschritt pruefen.",
+        }
 
     if name == "research_status":
         raise ToolError("not_implemented: research_status wird in Task 5 gefuellt")
