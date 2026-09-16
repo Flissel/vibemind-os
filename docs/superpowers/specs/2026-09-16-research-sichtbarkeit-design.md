@@ -132,11 +132,25 @@ Drei Berührungspunkte in `universe_canvas.js`:
    ersten Zeilen der Zusammenfassung zeigt, mit Umschalter
 3. CSS für den aufgeklappten Zustand mit eigenem Scrollbereich
 
+Der Report wird **formatiert** dargestellt, nicht als rohes Markdown — 436 Zeilen mit
+sichtbaren `##` und Pipe-Tabellen wären der Zweck des Aufklappens verfehlt.
+
 **Bindend, und konkret:** Der Reportinhalt darf niemals über `innerHTML` in das Dokument
-gelangen. Er wird über `textContent` gesetzt (oder, falls Markdown-Formatierung gewünscht
-ist, über einen Renderer, der HTML aktiv entfernt statt es durchzulassen). Rahmen, Titel
-und Umschalter dürfen weiterhin als Markup gebaut werden — verboten ist ausschließlich, den
-Reporttext selbst als Markup zu behandeln. Das gilt unabhängig von der Darstellung.
+gelangen — auch nicht gefiltert. Stattdessen baut ein kleiner Renderer die Formatierung
+direkt als DOM-Knoten: `createElement` für die Struktur, `textContent` für jeden Text.
+
+Der Unterschied ist nicht kosmetisch. Wer HTML erzeugt und anschließend säubert, verlässt
+sich darauf, dass der Filter vollständig ist. Wer nie HTML erzeugt, hat keinen Parse-Schritt,
+der eingebettetes Markup interpretieren könnte — ein `<img onerror=…>` im Report wird dann
+zu sichtbarem Text, weil es gar keinen anderen Weg gibt. Deshalb auch kein `marked`, kein
+`DOMPurify`: keine neue Abhängigkeit, kein Filter, dem man vertrauen muss.
+
+Umfang des Renderers: genau die Elemente, die diese Reports verwenden — Überschriften,
+Absätze, Fettung, Listen, Links, Tabellen, Codeblöcke, Zitate. Nicht mehr. Markdown, das
+er nicht kennt, erscheint als Text; das ist der richtige Ausfallmodus.
+
+Rahmen, Titel und Umschalter dürfen weiterhin als Markup gebaut werden — sie stammen aus
+unserem Code, nicht aus dem Report.
 
 ## Datenfluss
 
@@ -196,9 +210,10 @@ Am bestehenden Lauf, nicht an einem neuen — er ist bezahlt und liegt vor:
 - **Der Vault bekommt große Dateien.** 57 KB je Report, mehrere Läufe je Bubble. Für einen
   Markdown-Vault unproblematisch, aber es summiert sich; wenn es stört, ist die eigene
   Artefakt-Spur (D3) der Ausweg.
-- **Der escaped Inhalt verliert Markdown-Formatierung**, solange nicht bewusst ein
-  Markdown-Renderer mit Bereinigung eingesetzt wird. Lesbarkeit vor Schönheit: lieber
-  sichtbares `##` als ausgeführtes `<script>`.
+- **Der eigene Renderer deckt nicht jeden Markdown-Sonderfall ab.** Das ist der bewusst
+  gewählte Preis dafür, keinem Filter vertrauen zu müssen. Unbekannte Syntax erscheint als
+  Text — ein harmloser Ausfallmodus. Wenn die Reports später Konstrukte nutzen, die der
+  Renderer nicht kennt, wird er erweitert, nicht durch eine Bibliothek ersetzt.
 - **Die Registrierung wirkt erst nach der nächsten Anmeldung.** Bis dahin müssen die
   Arbeiter einmal von Hand gestartet werden.
 - **Das 300-Sekunden-Limit bleibt bestehen.** Ein längerer Rechercheauftrag scheitert
