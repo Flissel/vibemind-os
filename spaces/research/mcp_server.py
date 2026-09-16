@@ -260,6 +260,81 @@ def _spawn_agent_call(job_id: str, brief_text: str) -> None:
         raise ToolError(f"spawn_failed: {exc}") from exc
 
 
+# compose_brief (brief.py) opens the bubble-background section of the
+# assembled brief with exactly this literal. Coupled to that template on
+# purpose: if compose_brief's wording ever changes, this constant has to
+# change with it, and the coupling is named here rather than buried as a
+# string literal in _context_disclosure below.
+_BUBBLE_CONTEXT_MARKER = '[Hintergrund aus Bubble'
+
+
+def _context_disclosure(brief_text: str) -> tuple[bool, str | None]:
+    """Derives whether the run actually had the bubble's internal context.
+
+    Never asserts it. research_start's final_brief lets a user replace the
+    assembled instruction verbatim - including deleting the bubble-background
+    section compose_brief emits - so only the brief that was actually sent
+    can answer this, not the fact that a run was started from a bubble at
+    all. internal_context_used is the one column whose purpose is to catch
+    exactly that omission (E12); writing True unconditionally would defeat
+    it.
+    """
+    if _BUBBLE_CONTEXT_MARKER in (brief_text or ""):
+        return True, None
+    return False, (
+        "Ohne Bubble-Hintergrund gelaufen: der tatsaechlich gesendete Brief "
+        "enthielt den von compose_brief erzeugten Abschnitt "
+        f"'{_BUBBLE_CONTEXT_MARKER}...' nicht mehr - vermutlich durch einen "
+        "bearbeiteten final_brief entfernt."
+    )
+
+
+def _persist_result(job_id: str, state: Mapping[str, Any], text: str, citations: int) -> dict:
+    artifact_ref = brief_mod.new_artifact_ref()
+    bubble_id = state["bubble_id"]
+    title = f"Research: {state.get('bubble_title') or bubble_id}"
+    internal_context_used, context_disclosure = _context_disclosure(state.get("brief") or "")
+
+    _request("POST", "research_report_artifacts", body={
+        "artifact_ref": artifact_ref,
+        "job_id": job_id,
+        "subject_type": "bubble",
+        "subject_ref": bubble_id,
+        "bubble_id": bubble_id,
+        "artifact_type": "research_report",
+        "name": f"research_{job_id}.md",
+        "rel_path": state.get("report_path"),
+        "format": "markdown",
+        "content_text": text,
+        "depth": state.get("depth"),
+        "output_style": state.get("output_style"),
+        "citation_count": citations,
+        "internal_context_used": internal_context_used,
+        "context_disclosure": context_disclosure,
+    })
+
+    summary = text.strip().split("\n\n", 1)[0][:1500]
+    node = _request("POST", "canvas_nodes", body={
+        "id": artifact_ref[-8:],
+        "node_type": "research",
+        "title": title[:120],
+        "content": f"{summary}\n\nVollstaendiger Report: {artifact_ref}\nQuellen: {citations}",
+        "x": 0, "y": 0,
+        "linked_idea_id": bubble_id,
+        "metadata": {"width": 260.0, "height": 160.0, "artifact_ref": artifact_ref},
+    })
+    node_id = node[0]["id"] if isinstance(node, list) and node else None
+
+    return {
+        "status": "done",
+        "job_id": job_id,
+        "artifact_ref": artifact_ref,
+        "citation_count": citations,
+        "bubble_id": bubble_id,
+        "node_id": node_id,
+    }
+
+
 def call_tool(name: str, arguments: Mapping[str, Any]) -> dict:
     if name == "research_start":
         bubble_id = _required_string(arguments, "bubble_id")
@@ -323,7 +398,41 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> dict:
         }
 
     if name == "research_status":
-        raise ToolError("not_implemented: research_status wird in Task 5 gefuellt")
+        job_id = _required_string(arguments, "job_id")
+        state_path = _job_state_path(job_id)
+        if not state_path.is_file():
+            raise ToolError(f"not_found: job '{job_id}'")
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+
+        report_path = _job_path(job_id)
+        if not report_path.is_file():
+            # Der Hintergrundprozess schreibt nur dann in spawn.log, wenn er
+            # gescheitert ist (z.B. OpenFang nicht erreichbar). Ohne diese
+            # Pruefung bliebe der Auftrag fuer immer 'pending'.
+            spawn_log = ARTIFACT_DIR / f"research_{job_id}.spawn.log"
+            if spawn_log.is_file() and spawn_log.stat().st_size > 0:
+                detail = spawn_log.read_text(encoding="utf-8", errors="replace")
+                return {
+                    "status": "failed",
+                    "job_id": job_id,
+                    "error": "agent call failed before writing a report",
+                    "detail": detail[-800:],
+                }
+            return {
+                "status": "pending",
+                "job_id": job_id,
+                "waited_seconds": round(time.time() - float(state.get("started_at") or 0)),
+            }
+
+        text = report_path.read_text(encoding="utf-8", errors="replace")
+        citations = brief_mod.count_citations(text)
+        if citations < 1:
+            return {
+                "status": "failed",
+                "job_id": job_id,
+                "error": "no citation found in report - fail-closed",
+            }
+        return _persist_result(job_id, state, text, citations)
 
     raise ToolError(f"unknown_tool: {name}")
 

@@ -356,5 +356,201 @@ class MainLoopResilienceTests(unittest.TestCase):
         self.assertEqual(second, {"jsonrpc": "2.0", "id": 2, "result": {"ok": True}})
 
 
+class StatusTests(unittest.TestCase):
+    """Deckt research_status ab: Beleg ist die Reportdatei am diktierten Pfad
+    plus selbst gezaehlte Quellen - nie der Selbstbericht des Agenten (dessen
+    tool_calls die zugrundeliegende Anbindung ohnehin immer leer liefert).
+    """
+
+    def _server_with_artifacts(self, tmp: Path):
+        server = load_server()
+        server.ARTIFACT_DIR = tmp
+        return server
+
+    def _full_brief(self, server) -> str:
+        # Ein realer, von compose_brief erzeugter Brief - traegt den
+        # Bubble-Hintergrundabschnitt, wie ein unbearbeiteter Lauf ihn sendet.
+        return server.brief_mod.compose_brief(
+            bubble_title="Sheerlay",
+            bubble_nodes=NODES,
+            user_brief="Aufgabe\nWettbewerbsanalyse.",
+            output_path="/tmp/report.md",
+            depth="thorough",
+            output_style="detailed",
+            citation_style="academic_apa",
+            language="german",
+        )
+
+    def _job_state(self, server, job_id: str, *, brief: str | None = None) -> None:
+        server._job_state_path(job_id).write_text(_json.dumps({
+            "job_id": job_id, "bubble_id": "bub123", "bubble_title": "Sheerlay",
+            "depth": "thorough", "output_style": "detailed",
+            "citation_style": "academic_apa", "language": "german",
+            "brief": brief if brief is not None else self._full_brief(server),
+            "report_path": str(server._job_path(job_id)),
+            "started_at": 0,
+        }, ensure_ascii=False), encoding="utf-8")
+
+    def test_missing_report_is_pending_not_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            server = self._server_with_artifacts(tmp)
+            job_id = "job_v1_0000000000000000000000000A"
+            self._job_state(server, job_id)
+            result = server.call_tool("research_status", {"job_id": job_id})
+        self.assertEqual(result["status"], "pending")
+
+    def test_dead_spawn_is_reported_as_failed_not_pending_forever(self) -> None:
+        """Ist OpenFang unerreichbar, stirbt das Kind mit Traceback im spawn.log.
+
+        Ohne diese Pruefung meldete research_status bis in alle Ewigkeit
+        'pending', obwohl nie wieder etwas passieren wird.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            server = self._server_with_artifacts(tmp)
+            job_id = "job_v1_0000000000000000000000000E"
+            self._job_state(server, job_id)
+            (tmp / f"research_{job_id}.spawn.log").write_text(
+                "Traceback (most recent call last):\n"
+                "urllib.error.URLError: <urlopen error [Errno 111] Connection refused>\n",
+                encoding="utf-8",
+            )
+            result = server.call_tool("research_status", {"job_id": job_id})
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("agent call failed", result["error"])
+        self.assertIn("Connection refused", result["detail"])
+
+    def test_report_without_citations_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            server = self._server_with_artifacts(tmp)
+            job_id = "job_v1_0000000000000000000000000B"
+            self._job_state(server, job_id)
+            server._job_path(job_id).write_text("Kein Beleg.", encoding="utf-8")
+            with mock.patch.object(server, "_request") as request:
+                result = server.call_tool("research_status", {"job_id": job_id})
+            request.assert_not_called()
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("citation", result["error"])
+
+    def test_cited_report_is_persisted_as_artifact_and_node(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            server = self._server_with_artifacts(tmp)
+            job_id = "job_v1_0000000000000000000000000C"
+            self._job_state(server, job_id)
+            server._job_path(job_id).write_text(
+                "# Report\nQuelle: https://example.test/a\n", encoding="utf-8"
+            )
+            calls = []
+
+            def fake_request(method, path, **kwargs):
+                calls.append((method, path))
+                if path == "research_report_artifacts":
+                    return [{"id": "art1"}]
+                return [{"id": "node1"}]
+
+            with mock.patch.object(server, "_request", side_effect=fake_request):
+                result = server.call_tool("research_status", {"job_id": job_id})
+
+        self.assertEqual(result["status"], "done")
+        self.assertEqual(result["citation_count"], 1)
+        self.assertRegex(result["artifact_ref"], r"^artifact_v1_[0-9A-HJKMNPQRSTVWXYZ]{26}$")
+        self.assertIn(("POST", "research_report_artifacts"), calls)
+        self.assertIn(("POST", "canvas_nodes"), calls)
+
+    def test_artifact_row_binds_the_report_to_the_triggering_bubble(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            server = self._server_with_artifacts(tmp)
+            job_id = "job_v1_0000000000000000000000000D"
+            self._job_state(server, job_id)
+            server._job_path(job_id).write_text("https://example.test/a\n", encoding="utf-8")
+            bodies = {}
+
+            def fake_request(method, path, **kwargs):
+                if path == "research_report_artifacts":
+                    bodies["artifact"] = kwargs.get("body")
+                    return [{"id": "art1"}]
+                bodies["node"] = kwargs.get("body")
+                return [{"id": "node1"}]
+
+            with mock.patch.object(server, "_request", side_effect=fake_request):
+                server.call_tool("research_status", {"job_id": job_id})
+
+        artifact = bodies["artifact"]
+        self.assertEqual(artifact["subject_type"], "bubble")
+        self.assertEqual(artifact["bubble_id"], "bub123")
+        self.assertEqual(artifact["citation_count"], 1)
+        self.assertEqual(artifact["depth"], "thorough")
+        # Der volle, tatsaechlich gesendete Brief traegt den Bubble-Hintergrund
+        # (siehe _full_brief) - also ist die Behauptung hier wahr, nicht bloss
+        # angenommen.
+        self.assertTrue(artifact["internal_context_used"])
+        self.assertIsNone(artifact["context_disclosure"])
+        self.assertEqual(bodies["node"]["linked_idea_id"], "bub123")
+
+    def test_internal_context_used_true_when_brief_still_carries_bubble_background(self) -> None:
+        # Gezielte Abweichung vom Brief: internal_context_used wird aus dem
+        # tatsaechlich gesendeten Brief abgeleitet, nicht pauschal True
+        # geschrieben. Dieser Test deckt die positive Richtung ab.
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            server = self._server_with_artifacts(tmp)
+            job_id = "job_v1_0000000000000000000000000L"
+            self._job_state(server, job_id)  # Default: voller Brief mit Hintergrund
+            server._job_path(job_id).write_text("https://example.test/a\n", encoding="utf-8")
+            bodies = {}
+
+            def fake_request(method, path, **kwargs):
+                if path == "research_report_artifacts":
+                    bodies["artifact"] = kwargs.get("body")
+                    return [{"id": "art1"}]
+                return [{"id": "node1"}]
+
+            with mock.patch.object(server, "_request", side_effect=fake_request):
+                server.call_tool("research_status", {"job_id": job_id})
+
+        self.assertTrue(bodies["artifact"]["internal_context_used"])
+        self.assertIsNone(bodies["artifact"]["context_disclosure"])
+
+    def test_internal_context_used_false_with_disclosure_when_final_brief_dropped_the_background(self) -> None:
+        # Negative Richtung: ein Nutzer kann final_brief frei bearbeiten und
+        # den von compose_brief erzeugten Bubble-Hintergrundabschnitt
+        # loeschen. Dann darf internal_context_used nicht True behaupten, und
+        # das CHECK verlangt eine Disclosure genau dann, wenn sie fehlt.
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            server = self._server_with_artifacts(tmp)
+            job_id = "job_v1_0000000000000000000000000M"
+            edited_brief = "[Auftrag]\nNur das hier, kein Bubble-Hintergrund mehr.\n"
+            self.assertNotIn(server._BUBBLE_CONTEXT_MARKER, edited_brief)
+            self._job_state(server, job_id, brief=edited_brief)
+            server._job_path(job_id).write_text("https://example.test/a\n", encoding="utf-8")
+            bodies = {}
+
+            def fake_request(method, path, **kwargs):
+                if path == "research_report_artifacts":
+                    bodies["artifact"] = kwargs.get("body")
+                    return [{"id": "art1"}]
+                return [{"id": "node1"}]
+
+            with mock.patch.object(server, "_request", side_effect=fake_request):
+                server.call_tool("research_status", {"job_id": job_id})
+
+        artifact = bodies["artifact"]
+        self.assertFalse(artifact["internal_context_used"])
+        self.assertIsInstance(artifact["context_disclosure"], str)
+        self.assertTrue(artifact["context_disclosure"].strip())
+
+    def test_unknown_job_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            server = self._server_with_artifacts(Path(raw))
+            with self.assertRaises(server.ToolError):
+                server.call_tool("research_status", {"job_id": "job_v1_0000000000000000000000000Z"})
+
+
 if __name__ == "__main__":
     unittest.main()
