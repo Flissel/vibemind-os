@@ -56,52 +56,54 @@ def test_research_executor_has_no_environment_or_openclaw_routing_branch():
     assert "OpenClaw" not in source
 
 
-def test_research_target_returns_sources_and_tool_evidence():
+def test_research_target_verifies_the_report_file_not_the_agent_claim(tmp_path, monkeypatch):
     executor = build_executor("research:web")
-    agent_result = {
-        "ok": True,
-        "result": {
-            "response": "Verified result from https://example.test/report",
-            "tool_calls": [
-                {"tool": "fetch", "input": {"url": "https://example.test/report"}}
-            ],
-        },
-    }
+    report = tmp_path / "report.md"
+    report.write_text("Ergebnis von https://example.test/report\n", encoding="utf-8")
+    monkeypatch.setattr(execution_target, "_report_path", lambda run_id: report)
+
+    agent_result = {"ok": True, "result": {"response": "fertig"}}
     with patch.object(executor, "_agent", Mock(call=Mock(return_value=agent_result))):
         result = executor.call(query="evidence based topic")
 
     assert result["ok"] is True
     assert result["result"]["sources"] == ["https://example.test/report"]
-    assert result["result"]["evidence"]["tool_calls"][0]["tool"] == "fetch"
+    assert result["result"]["evidence"]["citation_count"] == 1
 
 
-def test_research_target_fails_closed_without_external_tool_evidence():
+def test_research_target_fails_closed_when_the_report_file_is_absent(tmp_path, monkeypatch):
     executor = build_executor("research:scrape")
-    agent_result = {
-        "ok": True,
-        "result": {"response": "plausible but unverified", "tool_calls": []},
-    }
+    monkeypatch.setattr(
+        execution_target, "_report_path", lambda run_id: tmp_path / "never-written.md"
+    )
+
+    agent_result = {"ok": True, "result": {"response": "plausibel, aber nichts geschrieben"}}
     with patch.object(executor, "_agent", Mock(call=Mock(return_value=agent_result))):
         result = executor.call(url="https://example.test")
 
     assert result["ok"] is False
-    assert "tool evidence" in result["error"]
+    assert "report file" in result["error"]
 
 
-def test_to_idea_requires_persisted_queryable_artifact_evidence():
-    executor = build_executor("research:to_idea")
-    agent_result = {
-        "ok": True,
-        "result": {
-            "response": "Read https://example.test/source but did not save it",
-            "tool_calls": [{"tool": "fetch", "input": {"url": "https://example.test/source"}}],
-        },
-    }
+def test_research_target_fails_closed_on_a_report_without_citations(tmp_path, monkeypatch):
+    executor = build_executor("research:web")
+    report = tmp_path / "report.md"
+    report.write_text("Kein einziger Beleg.", encoding="utf-8")
+    monkeypatch.setattr(execution_target, "_report_path", lambda run_id: report)
+
+    agent_result = {"ok": True, "result": {"response": "fertig"}}
     with patch.object(executor, "_agent", Mock(call=Mock(return_value=agent_result))):
-        result = executor.call(query="persist this")
+        result = executor.call(query="x")
 
     assert result["ok"] is False
-    assert "persisted idea evidence" in result["error"]
+    assert "citation" in result["error"]
+
+
+def test_instruction_dictates_an_absolute_output_path(monkeypatch):
+    executor = build_executor("research:web")
+    instruction = executor._instruction({"query": "x"}, "job_v1_0000000000000000000000000A")
+    assert "job_v1_0000000000000000000000000A" in instruction
+    assert "file_write" in instruction
 
 
 def test_research_health_is_false_when_external_infrastructure_is_down():

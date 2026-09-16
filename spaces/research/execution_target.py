@@ -1,22 +1,35 @@
 """Verified Research execution over existing OpenFang tools.
 
 The target deliberately rejects prose-only agent answers. A successful result
-must contain an external tool call and at least one source URL, so unavailable
-Fetch/Qdrant infrastructure cannot be mistaken for live research.
+requires the agent to have actually written a report file to a path we
+dictated, and that report must contain at least one source URL that we count
+ourselves. The OpenFang claude-code driver returns `tool_calls: []`
+unconditionally (openfang-runtime/src/drivers/claude_code.rs:579), so a check
+against `tool_calls` can never be satisfied -- the report file is the only
+evidence this process can actually observe.
 """
 
 from __future__ import annotations
 
 import os
+import pathlib
 import re
 from typing import Any, Dict, List
 
 import requests
 
+from spaces.research import brief
+
 
 _URL_RE = re.compile(r"https?://[^\s<>()\]\[\"']+")
 _OPERATIONS = {"web", "scrape", "summarize", "to_idea"}
 _CANONICAL_AGENT = "brain-researcher"
+
+ARTIFACT_DIR = pathlib.Path.home() / ".openfang" / "research-artifacts"
+
+
+def _report_path(run_id: str) -> pathlib.Path:
+    return ARTIFACT_DIR / f"research_{run_id}.md"
 
 
 def _urls(value: Any) -> List[str]:
@@ -50,35 +63,36 @@ class ResearchTarget:
     def call(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
         try:
             payload = self._payload(args, kwargs)
-            delegated = self._agent.call(message=self._instruction(payload))
+            run_id = brief.new_job_id()
+            report = _report_path(run_id)
+            ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+            delegated = self._agent.call(message=self._instruction(payload, run_id))
             if not delegated.get("ok"):
                 return {
                     "ok": False,
                     "error": f"research infrastructure unavailable: {delegated.get('error', 'agent call failed')}",
                     "target": self.target,
                 }
-            result = delegated.get("result")
-            if not isinstance(result, dict):
-                return self._unverified("agent returned no structured evidence")
-            tool_calls = result.get("tool_calls")
-            if not isinstance(tool_calls, list) or not tool_calls:
-                return self._unverified("external tool evidence is missing")
-            if self.operation == "to_idea" and not any(
-                any(token in str(call.get("tool", "")).lower() for token in ("idea", "qdrant"))
-                for call in tool_calls
-                if isinstance(call, dict)
-            ):
-                return self._unverified("persisted idea evidence is missing")
-            sources = _urls(result)
+            # Der Beleg ist die Datei, nicht die Antwort des Agenten. Der
+            # claude-code-Treiber liefert tool_calls grundsaetzlich leer
+            # (openfang-runtime/src/drivers/claude_code.rs:579), darum waere
+            # jede Pruefung darauf unerfuellbar.
+            if not report.is_file():
+                return self._unverified("report file was never written")
+            text = report.read_text(encoding="utf-8", errors="replace")
+            sources = _urls(text)
             if not sources:
-                return self._unverified("source evidence is missing")
+                return self._unverified("no citation found in report")
             return {
                 "ok": True,
                 "result": {
                     "operation": self.operation,
-                    "content": result.get("response", ""),
+                    "content": text,
                     "sources": sources,
-                    "evidence": {"tool_calls": tool_calls},
+                    "evidence": {
+                        "report_path": str(report),
+                        "citation_count": brief.count_citations(text),
+                    },
                 },
                 "target": self.target,
             }
@@ -132,11 +146,12 @@ class ResearchTarget:
             return args[0]
         return {"input": args[0]} if args else {}
 
-    def _instruction(self, payload: Dict[str, Any]) -> str:
+    def _instruction(self, payload: Dict[str, Any], run_id: str) -> str:
         return (
-            f"Execute research.{self.operation} with the available Fetch, Qdrant, "
-            "and idea tools. Do not answer from memory. Return source URLs "
-            "and perform the external tool calls required for verifiable evidence. "
+            f"Execute research.{self.operation} with the available Fetch and web tools. "
+            "Do not answer from memory. Every claim needs a source URL.\n"
+            "Write the full report with file_write to EXACTLY this absolute path: "
+            f"{_report_path(run_id)}\n"
             f"Input: {payload!r}"
         )
 
