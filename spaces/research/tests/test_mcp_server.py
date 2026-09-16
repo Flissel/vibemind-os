@@ -692,6 +692,56 @@ class StatusTests(unittest.TestCase):
             with self.assertRaises(server.ToolError):
                 server.call_tool("research_status", {"job_id": "job_v1_0000000000000000000000000Z"})
 
+    def test_node_carries_the_full_report_not_a_stub(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            server = self._server_with_artifacts(tmp)
+            job_id = "job_v1_0000000000000000000000000F"
+            self._job_state(server, job_id)
+            report = (
+                "# Titel\n\nErster Absatz mit https://example.test/a\n\n"
+                "## Abschnitt\n\nZweiter Absatz, der im Stummel fehlen wuerde.\n"
+            )
+            server._job_path(job_id).write_text(report, encoding="utf-8")
+            fake = _FakeSupabase(server.ToolError)
+            with mock.patch.object(server, "_request", side_effect=fake):
+                server.call_tool("research_status", {"job_id": job_id})
+
+        node = fake.nodes[0]
+        self.assertEqual(node["content"], report)
+        self.assertIn("Zweiter Absatz", node["content"])
+        self.assertNotIn("Vollstaendiger Report:", node["content"])
+
+    def test_node_title_carries_the_date_so_runs_stay_distinguishable(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            server = self._server_with_artifacts(tmp)
+            job_id = "job_v1_0000000000000000000000000G"
+            self._job_state(server, job_id)
+            server._job_path(job_id).write_text("https://example.test/a\n", encoding="utf-8")
+            fake = _FakeSupabase(server.ToolError)
+            with mock.patch.object(server, "_request", side_effect=fake):
+                server.call_tool("research_status", {"job_id": job_id})
+
+        self.assertRegex(fake.nodes[0]["title"], r"^Research: Sheerlay \d{4}-\d{2}-\d{2}$")
+
+    def test_a_second_run_on_the_same_bubble_creates_its_own_node(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            server = self._server_with_artifacts(tmp)
+            fake = _FakeSupabase(server.ToolError)
+            for suffix in ("H", "J"):
+                job_id = f"job_v1_0000000000000000000000000{suffix}"
+                self._job_state(server, job_id)
+                server._job_path(job_id).write_text(
+                    f"Lauf {suffix} https://example.test/{suffix}\n", encoding="utf-8")
+                with mock.patch.object(server, "_request", side_effect=fake):
+                    server.call_tool("research_status", {"job_id": job_id})
+
+        self.assertEqual(len(fake.nodes), 2)
+        self.assertEqual(len(fake.artifacts), 2)
+        self.assertNotEqual(fake.nodes[0]["content"], fake.nodes[1]["content"])
+
 
 class FinalBriefPathTests(unittest.TestCase):
     def test_confirm_with_final_brief_uses_the_job_id_from_that_brief(self) -> None:

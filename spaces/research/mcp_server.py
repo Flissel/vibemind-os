@@ -338,7 +338,11 @@ def _find_existing_node_id(bubble_id: str, artifact_ref: str) -> str | None:
 
 def _persist_result(job_id: str, state: Mapping[str, Any], text: str, citations: int) -> dict:
     bubble_id = state["bubble_id"]
-    title = f"Research: {state.get('bubble_title') or bubble_id}"
+    # Datum im Titel, damit mehrere Laeufe an derselben Bubble
+    # unterscheidbar bleiben - ein Lauf je Knoten ist der Grund, warum der
+    # Knoten write-once ist und der Volltext hier ueberhaupt stehen darf.
+    stamp = time.strftime("%Y-%m-%d", time.localtime())
+    title = f"Research: {state.get('bubble_title') or bubble_id} {stamp}"
 
     # Idempotent by job_id: a prior call may already have written the
     # artifact row (see _find_existing_artifact_ref's docstring for why a
@@ -372,14 +376,22 @@ def _persist_result(job_id: str, state: Mapping[str, Any], text: str, citations:
     # slice of artifact_ref (roughly 40 bits) that could collide.
     node_id = _find_existing_node_id(bubble_id, artifact_ref)
     if node_id is None:
-        summary = text.strip().split("\n\n", 1)[0][:1500]
         node = _request("POST", "canvas_nodes", body={
             "node_type": "research",
             "title": title[:120],
-            "content": f"{summary}\n\nVollstaendiger Report: {artifact_ref}\nQuellen: {citations}",
+            # Volltext, nicht nur eine Kurzfassung: der Knoten ist der Weg,
+            # auf dem der Report in den Vault gelangt (render_canvas_note
+            # schreibt eine Datei je Knoten, mit User-Fence fuer
+            # Annotationen). Tragbar, weil jeder Lauf seinen eigenen Knoten
+            # bekommt und dieser danach nie wieder angefasst wird.
+            "content": text,
             "x": 0, "y": 0,
             "linked_idea_id": bubble_id,
-            "metadata": {"width": 260.0, "height": 160.0, "artifact_ref": artifact_ref},
+            "metadata": {
+                "width": 320.0, "height": 220.0,
+                "artifact_ref": artifact_ref,
+                "citation_count": citations,
+            },
         })
         node_id = node[0]["id"] if isinstance(node, list) and node else None
 
