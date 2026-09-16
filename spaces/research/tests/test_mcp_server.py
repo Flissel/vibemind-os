@@ -83,6 +83,42 @@ class PreviewTests(unittest.TestCase):
                     {"bubble_id": "bub123", "brief": "x", "depth": "ludicrous"},
                 )
 
+    def test_rejects_output_style_outside_the_closed_value_set(self) -> None:
+        server = load_server()
+        with mock.patch.object(server, "_read_bubble", return_value=BUBBLE), \
+             mock.patch.object(server, "_read_nodes", return_value=NODES):
+            with self.assertRaises(server.ToolError):
+                server.call_tool(
+                    "research_start",
+                    {"bubble_id": "bub123", "brief": "x", "output_style": "ludicrous"},
+                )
+
+    def test_rejects_citation_style_outside_the_closed_value_set(self) -> None:
+        server = load_server()
+        with mock.patch.object(server, "_read_bubble", return_value=BUBBLE), \
+             mock.patch.object(server, "_read_nodes", return_value=NODES):
+            with self.assertRaises(server.ToolError):
+                server.call_tool(
+                    "research_start",
+                    {"bubble_id": "bub123", "brief": "x", "citation_style": "ludicrous"},
+                )
+
+    def test_confirm_must_be_an_actual_boolean(self) -> None:
+        # A truthy-but-non-boolean confirm (e.g. the string "false") must not
+        # bypass the preview gate: it is rejected as invalid_arguments before
+        # any run could start - not silently treated as confirm=true.
+        server = load_server()
+        with mock.patch.object(server, "_read_bubble", return_value=BUBBLE), \
+             mock.patch.object(server, "_read_nodes", return_value=NODES), \
+             mock.patch.object(server, "_spawn_agent_call") as spawn:
+            with self.assertRaises(server.ToolError) as ctx:
+                server.call_tool(
+                    "research_start",
+                    {"bubble_id": "bub123", "brief": "x", "confirm": "false"},
+                )
+        self.assertTrue(str(ctx.exception).startswith("invalid_arguments"))
+        spawn.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

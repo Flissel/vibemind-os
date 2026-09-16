@@ -143,6 +143,13 @@ def _choice(arguments: Mapping[str, Any], key: str, allowed: tuple[str, ...], de
     return value
 
 
+def _confirm_flag(arguments: Mapping[str, Any]) -> bool:
+    value = arguments.get("confirm", False)
+    if not isinstance(value, bool):
+        raise ToolError("invalid_arguments: 'confirm' must be a boolean")
+    return value
+
+
 def _read_bubble(bubble_id: str) -> dict:
     rows = _request(
         "GET", "ideas",
@@ -190,6 +197,7 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> dict:
         language = arguments.get("language", "german")
         if not isinstance(language, str) or not language.strip():
             raise ToolError("invalid_arguments: 'language' must be a non-empty string")
+        confirm = _confirm_flag(arguments)
 
         bubble = _read_bubble(bubble_id)
         nodes = _read_nodes(bubble_id)
@@ -205,7 +213,7 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> dict:
             language=language.strip(),
         )
 
-        if not arguments.get("confirm"):
+        if not confirm:
             return {
                 "status": "preview",
                 "brief": brief_text,
