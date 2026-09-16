@@ -10,6 +10,30 @@
 unverändert angewendet (Blob aus Commit `3be78f6a7637b25141f6e0b826d5531d10a9a2bd`,
 2026-08-17). Es wurde keine Zeile der SQL-Datei editiert.
 
+## Wo dieser Eintrag liegt (Branch) — WICHTIG für spätere Leser
+
+**Branch:** `codex/backup-pre-origin-sync-20260825` — **nicht** `master`.
+
+**Verifiziert, nicht angenommen:** `git merge-base --is-ancestor 72daa2a9 master` meldet,
+dass der Commit `72daa2a9` (dieser Eintrag) **nicht** von `master` aus erreichbar ist;
+`git branch --contains 72daa2a9` listet ausschließlich
+`codex/backup-pre-origin-sync-20260825`.
+
+**Warum das so bleibt — bewusste Entscheidung, kein Versehen:** Dieser
+`vibemind-os`-Checkout stand bereits vor Beginn dieser Task auf
+`codex/backup-pre-origin-sync-20260825`, mit 58 fremden, nicht committeten Änderungen
+anderer Sessions im Arbeitsbaum. Das Projekt-`CLAUDE.md` verbietet für dieses Repo, ohne
+ausdrückliche Anforderung neue Feature-Branches anzulegen oder zu wechseln, und ein
+Wechsel auf `master` hätte diese fremde Arbeit gefährdet. Also: auf dem vorgefundenen
+Branch committet — nicht gewechselt, nicht gecherry-pickt, nicht rebased. Diese
+Entscheidung wurde geprüft und bestätigt; sie steht nicht zur Diskussion.
+
+**Konsequenz für alle, die diese Notiz später lesen — insbesondere die Task-8-Ausführung:**
+Vor Weiterverwendung prüfen, von welchem Branch aus diese Datei gerade gelesen wird. Auf
+`master` existiert dieser Eintrag (Stand jetzt) nicht; wer ihn dort braucht, muss Commit
+`72daa2a9` gezielt cherry-picken oder gezielt auf `codex/backup-pre-origin-sync-20260825`
+nachschlagen, statt anzunehmen, ein `master`-Checkout enthalte automatisch diesen Stand.
+
 Hinweis zu Zugangsdaten: `SUPABASE_ANON_KEY` wurde aus `../.env` in eine Shell-Variable
 geladen und nie ausgegeben; `SUPABASE_URL` aus derselben `.env` zeigt auf die Remote-VM
 (`http://192.168.178.65:54321`) und wurde deshalb **nicht** benutzt — stattdessen die im
@@ -111,10 +135,13 @@ PostgREST-Reload-Weg liegen, nicht in der Migration):
   LISTEN/NOTIFY-Session um `09:14:19 UTC` ("Failed listening for database
   notifications ... server closed the connection unexpectedly"), gefolgt von einem
   Reconnect der normalen DB-Pool-Verbindung um `09:14:23`–`09:14:31 UTC`
-  ("Schema cache loaded 30 Relations, 19 Relationships ..."). Dieser Vorfall liegt
-  zeitlich VOR der eigentlichen Migrationsanwendung in dieser Session (Schritt 3 lief
-  gegen ~10:4x UTC) und steht damit in keinem Zusammenhang mit dieser Migration —
-  er ist ein vorbestehender, unabhängiger Zustand der lokalen Supabase-Instanz.
+  ("Schema cache loaded 30 Relations, 19 Relationships ..."). Für Schritt 3 selbst
+  (Migrationsanwendung) wurde keine eigene Sekunden-genaue Uhrzeit protokolliert; sicher
+  ist nur die Reihenfolge: Schritt 3 lief vor dem ersten in dieser Session tatsächlich
+  erfassten Zeitstempel, `10:51:41 UTC` (Host-Uhrzeit, während der Schritt-4-Diagnose
+  abgefragt). Der `09:14:19 UTC`-Abbruch liegt so oder so klar davor und steht in keinem
+  Zusammenhang mit dieser Migration — er ist ein vorbestehender, unabhängiger Zustand der
+  lokalen Supabase-Instanz.
 - Nach Schritt 3 und dem expliziten `NOTIFY` aus Schritt 4 erschien **kein einziger
   neuer Log-Eintrag** in PostgREST (`docker logs --since 1m` direkt nach einem
   erneuten manuellen `NOTIFY` blieb leer) — der PostgREST-Prozess hat die
