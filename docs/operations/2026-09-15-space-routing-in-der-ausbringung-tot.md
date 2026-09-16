@@ -170,3 +170,67 @@ irgendwo anders läuft.
 
 In beiden Fällen bleibt der Code-Fix nötig: ohne ihn scheitert der Import von
 `space_contract` schon, bevor irgendeine Variable gelesen werden kann.
+
+---
+
+## Nachtrag 2 (16.09.): der Fix ist im echten Image-Layout bewiesen
+
+Ohne den Stack anzufassen, in einem Wegwerf-Container mit genau der Form, die
+das neue Dockerfile erzeugt (`/app/core/space_contract.py`, `/app/config/…`):
+
+```
+1) OHNE Registry (Zustand von gestern)
+   Import gelungen. Eltern: 3
+   RegistryNotFound, lesbar: "space registry not found. Set
+   SPACE_AGENT_REGISTRY_PATH, or place config/space_agent_registry.yml above …"
+
+2) MIT Registry + Variable (so legt es das neue Dockerfile)
+   Import gelungen. Eltern: 3
+   Pfad : /app/config/space_agent_registry.yml
+   Spaces: 13 | bubble.create -> bubbles
+
+3) MIT Registry, OHNE Variable (nur Aufwärtssuche)
+   Pfad : /app/config/space_agent_registry.yml
+   Spaces: 13
+```
+
+Drei Dinge sind damit belegt: der **Import** gelingt bei drei Eltern (dort warf
+er vorher), das Scheitern ist **lesbar** statt `IndexError: 3`, und das `COPY`
+allein genügt — die Aufwärtssuche findet die Datei auch ohne die Variable. Das
+`ENV` ist Absicherung, keine Bedingung.
+
+## Zwei Dinge blockieren den Neubau — beide gemessen
+
+**1. Das Submodul `shared` ist im Arbeitsbaum zurückgedreht.**
+
+```
+git diff --submodule=log -- shared
+  Submodule shared fe9c31d2..130518be (rewind)
+    < Merge PR #6  brain-openfang-contract-package
+    < Merge PR #5  embedding-dimension-contract
+    < Merge PR #4  openfang-secret-file-resolution
+    < Merge PR #3  embedding-gateway
+    < Merge PR #2  base-url-env-resolution
+    < Merge PR #1  openfang-client-fail-closed
+```
+
+Das Dockerfile macht `COPY shared/ /opt/vibemind-shared/`. Ein Build **jetzt**
+bäckt diesen Rückstand ins Image — sechs gemergte PRs weniger, darunter der
+Embedding-Dimensions-Vertrag. Das ist fremder Arbeitsstand; ich fasse ihn nicht
+an.
+
+**2. Der laufende Dienst trägt ein anderes Tag als die Stack-Datei.**
+
+```
+Stack-Datei          : image: vibemind-brain-core:latest
+laufender Dienst     : vibemind-brain-core:brain-kg-v1
+```
+
+Ein Build auf `:latest` erreicht die laufenden Dienste also **gar nicht**. Wer
+den Fix ausbringen will, muss das Tag treffen, das der Dienst wirklich benutzt
+(oder ein neues setzen und die Teil-Stack-Datei nachziehen) — und deployen darf
+hier nur Launcher/stack-deploy, nie `service update`.
+
+**Solange beides offen ist, bleibt der Code committet und unausgebracht.** Das
+ist der ehrlichere Zustand als ein Image, das einen Submodul-Rückstand
+festschreibt.
