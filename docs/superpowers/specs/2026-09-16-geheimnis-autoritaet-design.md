@@ -22,6 +22,24 @@ Aufruf gegen den isolierten `:4273` (neues Binary) ergibt **401**, also
 Credential-Endpunkt grundsätzlich seinen Dienst. Das ist das dokumentierte
 Auth-Paradox, hier erneut am laufenden Prozess bestätigt.
 
+**Nachtrag 17.09.: es fehlt sogar der Tresor selbst.** `openfang vault list`
+gegen `OPENFANG_HOME=~/.openfang` antwortet `Vault not initialized. Run:
+openfang vault init`. Der produktive Daemon kann also aus drei
+unabhängigen Gründen heute keine Credentials ausgeben: altes Binary (404),
+fail-open ohne `api_key`, und kein Tresor. Das schärft D1: die Frage ist
+nicht nur „api_key ja/nein", sondern „OpenFang bekommt überhaupt erst einen
+Tresor" — und damit ist D1 kein Schalter, sondern eine Inbetriebnahme.
+
+Dazu gemessen, weil es die Frage „wo liegt das Zeug heute" abschließt:
+`~/.openfang/secrets.env` trägt zehn Schlüssel (OpenRouter, OpenAI, Groq,
+Google, Supermemory, Telegram, Rowboat, Qdrant, n8n, Laura) und **keinen
+GitHub-Token** (Präfix-Test `ghp_|github_pat_|gho_|ghu_|ghs_|ghr_`, null
+Treffer). Der einzige PAT auf diesem Host liegt in der Root-`.env` unter
+`GITHUB_PAT_VIBEMIND-LAB` — und wird von genau einer Codestelle erwähnt,
+die ihn ausdrücklich ÜBERSPRINGT (`voice/python/publishing/bubble_sync/_run_both.py`:
+der Bindestrich im Namen lässt sich in bash nicht exportieren). Benutzt wird
+er also nirgends.
+
 **Es gibt genau einen Konsumenten.** Jeder Aufruf von
 `/api/credentials/issue` im Repo liegt in `spaces/rowboat` (Resolver der
 Plugin-Laufzeit, dessen Tests, die Betriebsdoku). Kein anderer Space, kein
