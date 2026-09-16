@@ -39,6 +39,7 @@ Env
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -524,6 +525,91 @@ def versandauftrag_anlegen_route(payload: dict = Body(...)):
         f"{lit(str(payload.get('quelle') or ''))}) AS ergebnis")
     ergebnis = (zeile or {}).get("ergebnis") or {}
     return {"success": True, "message": "versandauftrag", "data": ergebnis}
+
+
+# ─── Layout-Vorlagen ───────────────────────────────────────────────────
+# Auftrag des Betreibers (12.09.2026): „die verschiedenen Layouts via
+# Templates und Skills ... Template muss vom User abgesegnet werden."
+#
+# DIE TRENNUNG IST DER ZWECK: `propose` darf der Agent, `decide` nur ein
+# Mensch. Darum haengt an `decide` der Proposal-API-Key (derselbe Guard, der
+# die Schalter des Versand-Workers schuetzt) und an `propose` nicht — der
+# Agent kennt diesen Schluessel nicht, und genau das ist das Tor. Stuenden
+# beide hinter demselben Schluessel, waere es eine Formalie.
+
+
+@app.get("/api/layout_vorlagen")
+def layout_vorlagen_list_route(status: Optional[str] = Query(None)):
+    """Die Vorlagen und ihr Stand. Ohne `status`: alle."""
+    from spaces.marketing.sync import _db
+    where = ""
+    if status:
+        where = f"WHERE status = {_db._sql_literal(status)}"
+    rows = _db.query_via_docker(
+        f"SELECT name, beschreibung, gestalt, status, vorgeschlagen_von, "
+        f"       coalesce(entschieden_von,'') AS entschieden_von, "
+        f"       coalesce(entschieden_am::text,'') AS entschieden_am, "
+        f"       grund, muster_datei, created_at::text AS created_at "
+        f"FROM marketing.layout_vorlagen {where} ORDER BY status, name")
+    return {"success": True, "message": f"{len(rows)} Vorlagen", "data": rows}
+
+
+@app.post("/api/layout_vorlagen")
+def layout_vorlage_vorschlagen_route(payload: dict = Body(...)):
+    """Eine Vorlage VORSCHLAGEN. Body: name, beschreibung, gestalt, von.
+
+    Sie entsteht mit status='vorschlag' und wird nie automatisch gueltig.
+    Die Pruefung (acht Farben, Form #rrggbb, Text nicht gleich Grund) steht
+    in der DB-Funktion, damit sie fuer jeden Rufer gilt.
+    """
+    from spaces.marketing.sync import _db
+    lit = _db._sql_literal
+    zeile = _db.query_one(
+        "SELECT marketing.layout_vorschlagen("
+        f"{lit(str(payload.get('name') or ''))}, "
+        f"{lit(str(payload.get('beschreibung') or ''))}, "
+        f"{lit(json.dumps(payload.get('gestalt') or {}, ensure_ascii=False))}::jsonb, "
+        f"{lit(str(payload.get('von') or 'marketing-claw'))}) AS ergebnis")
+    return {"success": True, "message": "layout_vorschlag",
+            "data": (zeile or {}).get("ergebnis") or {}}
+
+
+@app.post("/api/layout_vorlagen/{name}/decide")
+def layout_vorlage_entscheiden_route(name: str, payload: dict = Body(...)):
+    """Eine Vorlage freigeben oder ablehnen — MENSCHENSACHE.
+
+    Guarded by _require_proposal_api_key: derselbe Schluessel, der die
+    Freigabe von Entwuerfen schuetzt. Der Agent hat ihn nicht.
+    """
+    auth_fail = _require_proposal_api_key(payload)
+    if auth_fail is not None:
+        return auth_fail
+    from spaces.marketing.sync import _db
+    lit = _db._sql_literal
+    zeile = _db.query_one(
+        "SELECT marketing.layout_entscheiden("
+        f"{lit(name)}, {lit(str(payload.get('status') or ''))}, "
+        f"{lit(str(payload.get('actor') or 'betreiber'))}, "
+        f"{lit(str(payload.get('grund') or ''))}) AS ergebnis")
+    return {"success": True, "message": "layout_entscheidung",
+            "data": (zeile or {}).get("ergebnis") or {}}
+
+
+@app.post("/api/layout_vorlagen/{name}/muster")
+def layout_vorlage_muster_route(name: str, payload: dict = Body(...)):
+    """Festhalten, WELCHES Muster beim Entscheiden vorlag.
+
+    Ohne diesen Verweis ist „freigegeben" eine Behauptung ueber etwas, das
+    niemand gesehen hat. Der Agent setzt ihn, nachdem er ein Musterblatt
+    erzeugt hat.
+    """
+    from spaces.marketing.sync import _db
+    lit = _db._sql_literal
+    _db.execute_via_docker(
+        f"UPDATE marketing.layout_vorlagen SET muster_datei = "
+        f"{lit(str(payload.get('muster_datei') or ''))} "
+        f"WHERE name = {lit(name)}")
+    return {"success": True, "message": "muster vermerkt", "data": {"name": name}}
 
 
 @app.get("/api/versandauftraege")

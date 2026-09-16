@@ -29,16 +29,37 @@ class Rekorder:
         {"channel": "whatsapp", "enabled": False, "send_implemented": False},
     ]}
 
-    def __init__(self, antworten, kanaele=None):
+    # DIE VORLAGEN-AUSKUNFT EBENSO (12.09.2026). `pdf_erstellen` und
+    # `pdf_aus_entwurf` fragen seit dem Vorlagen-Tor zuerst
+    # `/api/layout_vorlagen`, um kein Layout zu setzen, das niemand
+    # freigegeben hat. Gleiche Begruendung wie bei den Kanaelen: ein Test
+    # ueber den INHALT eines PDFs soll nicht umfallen, weil davor ein
+    # Infrastrukturaufruf dazugekommen ist. `vorlagen=` gibt eigene mit,
+    # `vorlagen=False` schaltet die Selbstantwort ab.
+    GESTALT_DUNKEL = {"grund": "#0f2422", "flaeche": "#1d3b39",
+                      "akzent": "#5eead4", "gold": "#fbbf24",
+                      "text": "#cfe3df", "text_hell": "#e9fbf6",
+                      "text_leise": "#8aa3a0", "handlung_text": "#0f2422"}
+    STANDARD_VORLAGEN = {"success": True, "data": [
+        {"name": "dunkel", "status": "freigegeben", "gestalt": GESTALT_DUNKEL,
+         "grund": ""},
+        {"name": "hell", "status": "vorschlag", "gestalt": GESTALT_DUNKEL,
+         "grund": "nie angesehen"},
+    ]}
+
+    def __init__(self, antworten, kanaele=None, vorlagen=None):
         self.antworten = list(antworten)
         self.aufrufe = []
         self.kanaele = self.STANDARD_KANAELE if kanaele is None else kanaele
+        self.vorlagen = self.STANDARD_VORLAGEN if vorlagen is None else vorlagen
 
     def __call__(self, url, daten, kopfzeilen):
+        # NICHT mitzaehlen: das beantwortet die Testumgebung selbst, es
+        # sind keine Aufrufe, ueber die ein Test etwas aussagen will.
         if self.kanaele is not False and url.endswith("/api/channels"):
-            # NICHT mitzaehlen: das beantwortet die Testumgebung selbst, es
-            # ist kein Aufruf, ueber den ein Test etwas aussagen will.
             return (200, json.dumps(self.kanaele))
+        if self.vorlagen is not False and "/api/layout_vorlagen" in url:
+            return (200, json.dumps(self.vorlagen))
         self.aufrufe.append({"url": url, "daten": daten, "kopf": kopfzeilen})
         return self.antworten.pop(0)
 

@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import sqlite3
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any, Dict, Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -89,80 +90,128 @@ def _validate_trigger(value: Any, timezone: str) -> tuple[str, Dict[str, Any]]:
 
 
 class ScheduleRepository:
-    """SQLite repository; every operation commits before reporting success."""
+    """PostgREST-Repository gegen die geteilte Supabase.
 
-    def __init__(self, path: str | Path | None = None) -> None:
-        configured = path or os.environ.get("SCHEDULE_DB_PATH")
-        self.path = Path(configured) if configured else Path(__file__).parent / "data" / "schedule.sqlite3"
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_schema()
+    Vorher lag hier ein eigener SQLite-Laden. Die Tabelle
+    `public.scheduled_tasks` gab es in Supabase aber schon seit der
+    Initial-Migration (20260411_init_vibemind.sql:246) - mit reicherem
+    Schema, und leer. Es waren also zwei Speicher fuer dieselbe Sache, und
+    nur einer war fuer den Rest des Systems sichtbar: ein `truth:`-Validator,
+    das Dashboard, jede Abfrage von aussen sahen die SQLite-Datei nicht.
+    Betreiberentscheid 2026-09-12: alles Supabase.
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=5)
-        connection.row_factory = sqlite3.Row
-        return connection
+    Jeder Schreibvorgang wird danach frisch gelesen. Das ist keine Vorsicht
+    auf Verdacht: bei einem Terminplaner faellt ein nicht persistierter
+    Eintrag erst auf, wenn er nicht feuert - und dann fehlt die Spur.
+    """
 
-    def _init_schema(self) -> None:
-        with self._connect() as db:
-            db.execute("""
-                CREATE TABLE IF NOT EXISTS scheduled_tasks (
-                    id TEXT PRIMARY KEY,
-                    event_type TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    action_text TEXT NOT NULL,
-                    trigger_type TEXT NOT NULL,
-                    trigger_config TEXT NOT NULL,
-                    timezone TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    idempotency_key TEXT UNIQUE,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-            """)
+    TABLE = "scheduled_tasks"
+    FIELDS = ("id,event_type,title,action_text,trigger_type,trigger_config,"
+              "timezone,status,idempotency_key,created_at,updated_at")
+
+    def __init__(self, base_url: str | None = None, key: str | None = None) -> None:
+        self.base = (base_url or os.environ.get("SUPABASE_URL") or "").strip().rstrip("/")
+        self.key = (key or self._resolve_key()).strip()
+        self.timeout = float(os.environ.get("SCHEDULE_HTTP_TIMEOUT_S", "10"))
+        if not self.base:
+            raise RuntimeError("SUPABASE_URL is not configured - schedule cannot persist")
+        if not self.key:
+            raise RuntimeError("no Supabase key configured - schedule cannot persist")
 
     @staticmethod
-    def _row(row: sqlite3.Row | None) -> Dict[str, Any] | None:
-        if row is None:
+    def _resolve_key() -> str:
+        """Direkte Variable, sonst die *_FILE-Konvention aus dem Stack.
+
+        brain-core bekommt den Schluessel als Docker-Secret gereicht und setzt
+        NUR SUPABASE_ANON_KEY_FILE - wer allein die Variable liest, steht dort
+        ohne Schluessel da. Gleiche Aufloesung wie ideas_client.py:217.
+        """
+        for name in ("SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_ANON_KEY"):
+            value = os.environ.get(name, "").strip()
+            if value:
+                return value
+            path = os.environ.get(name + "_FILE", "").strip()
+            if path:
+                try:
+                    with open(path, "r", encoding="utf-8") as handle:
+                        value = handle.read().strip()
+                except OSError:
+                    value = ""
+                if value:
+                    return value
+        return ""
+
+    def _headers(self) -> Dict[str, str]:
+        headers = {"apikey": self.key, "Accept": "application/json",
+                   "Content-Type": "application/json"}
+        # Bearer NUR bei einem echten JWT: das lokale Supabase antwortet auf
+        # "Bearer anon" mit 401 PGRST301, waehrend der apikey-Kopf allein
+        # durchkommt. Gleiche Regel wie im Ideas-Client.
+        if self.key.count(".") == 2:
+            headers["Authorization"] = "Bearer " + self.key
+        return headers
+
+    def _request(self, method: str, query: str, *, body: Any = None,
+                 prefer: str | None = None) -> Any:
+        url = self.base + "/rest/v1/" + self.TABLE
+        if query:
+            url = url + "?" + query
+        headers = self._headers()
+        if prefer:
+            headers["Prefer"] = prefer
+        payload = None if body is None else json.dumps(body).encode("utf-8")
+        request = urllib.request.Request(url, data=payload, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                raw = response.read()
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+            raise RuntimeError(
+                f"schedule store {method} failed: HTTP {exc.code} {detail}") from exc
+        except Exception as exc:
+            raise RuntimeError(f"schedule store unreachable: {exc}") from exc
+        if not raw:
             return None
-        result = dict(row)
-        result["trigger_config"] = json.loads(result["trigger_config"])
-        return result
+        return json.loads(raw.decode("utf-8"))
+
+    @staticmethod
+    def _row(rows: Any) -> Dict[str, Any] | None:
+        if isinstance(rows, list) and rows and isinstance(rows[0], Mapping):
+            return dict(rows[0])
+        return None
 
     def get(self, task_id: str) -> Dict[str, Any] | None:
-        with self._connect() as db:
-            return self._row(db.execute("SELECT * FROM scheduled_tasks WHERE id = ?", (task_id,)).fetchone())
+        query = urllib.parse.urlencode({
+            "select": self.FIELDS, "id": "eq." + str(task_id), "limit": "1"})
+        return self._row(self._request("GET", query))
 
     def get_by_idempotency_key(self, key: str) -> Dict[str, Any] | None:
-        with self._connect() as db:
-            return self._row(db.execute("SELECT * FROM scheduled_tasks WHERE idempotency_key = ?", (key,)).fetchone())
+        query = urllib.parse.urlencode({
+            "select": self.FIELDS, "idempotency_key": "eq." + str(key), "limit": "1"})
+        return self._row(self._request("GET", query))
 
     def list(self, status_filter: str = "") -> list[Dict[str, Any]]:
-        with self._connect() as db:
-            if status_filter:
-                rows = db.execute("SELECT * FROM scheduled_tasks WHERE status = ? ORDER BY created_at DESC", (status_filter,)).fetchall()
-            else:
-                rows = db.execute("SELECT * FROM scheduled_tasks ORDER BY created_at DESC").fetchall()
-        return [self._row(row) for row in rows if row is not None]
+        params = {"select": self.FIELDS, "order": "created_at.desc"}
+        if status_filter:
+            params["status"] = "eq." + status_filter
+        rows = self._request("GET", urllib.parse.urlencode(params))
+        return [dict(row) for row in rows or [] if isinstance(row, Mapping)]
 
     def _insert(self, task: Mapping[str, Any]) -> None:
-        with self._connect() as db:
-            db.execute(
-                "INSERT INTO scheduled_tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (task["id"], task["event_type"], task["title"], task["action_text"],
-                 task["trigger_type"], json.dumps(task["trigger_config"], sort_keys=True),
-                 task["timezone"], task["status"], task.get("idempotency_key"),
-                 task["created_at"], task["updated_at"]),
-            )
+        # trigger_config ist jsonb - als Objekt senden, nicht als Text. Die
+        # SQLite-Fassung musste serialisieren; hier waere derselbe json.dumps
+        # ein String IM jsonb, und jede Abfrage darauf ginge ins Leere.
+        row = {
+            "id": task["id"], "event_type": task["event_type"], "title": task["title"],
+            "action_text": task["action_text"], "trigger_type": task["trigger_type"],
+            "trigger_config": task["trigger_config"], "timezone": task["timezone"],
+            "status": task["status"], "idempotency_key": task.get("idempotency_key"),
+            "created_at": task["created_at"], "updated_at": task["updated_at"],
+        }
+        self._request("POST", "", body=row, prefer="return=minimal")
 
     def create(self, task: Mapping[str, Any]) -> Dict[str, Any]:
-        """Legt die Aufgabe an und gibt den GESPEICHERTEN Stand zurueck.
-
-        `update` liest seit jeher nach dem Schreiben frisch zurueck und wirft,
-        wenn die Zeile fehlt. `create` tat das nicht: es fuegte ein und der
-        Aufrufer gab sein selbst gebautes Dict weiter - ein Selbstbericht.
-        Bei einem Terminplaner faellt ein nicht persistierter Eintrag erst
-        auf, wenn er nicht feuert, und dann fehlt die Spur.
-        """
+        """Legt die Aufgabe an und gibt den GESPEICHERTEN Stand zurueck."""
         self._insert(task)
         stored = self.get(str(task["id"]))
         if stored is None:
@@ -170,18 +219,18 @@ class ScheduleRepository:
         return stored
 
     def update(self, task_id: str, fields: Mapping[str, Any]) -> Dict[str, Any]:
-        allowed = {"title", "action_text", "trigger_type", "trigger_config", "timezone", "status", "updated_at"}
+        allowed = {"title", "action_text", "trigger_type", "trigger_config",
+                   "timezone", "status", "updated_at"}
         changes = {key: value for key, value in fields.items() if key in allowed}
-        if "trigger_config" in changes:
-            changes["trigger_config"] = json.dumps(changes["trigger_config"], sort_keys=True)
-        assignments = ", ".join(f"{key} = ?" for key in changes)
-        with self._connect() as db:
-            cursor = db.execute(f"UPDATE scheduled_tasks SET {assignments} WHERE id = ?", (*changes.values(), task_id))
-            if cursor.rowcount != 1:
-                raise ScheduleContractError(f"scheduled task not found: {task_id}")
+        if not changes:
+            raise ScheduleContractError("update requires at least one known field")
+        query = urllib.parse.urlencode({"id": "eq." + str(task_id)})
+        self._request("PATCH", query, body=changes, prefer="return=minimal")
         task = self.get(task_id)
         if task is None:
-            raise RuntimeError("schedule update was not persisted")
+            # PostgREST meldet ein PATCH OHNE Treffer nicht als Fehler. Erst
+            # die Rueckfrage unterscheidet "geaendert" von "es gab nichts".
+            raise ScheduleContractError(f"scheduled task not found: {task_id}")
         return task
 
 

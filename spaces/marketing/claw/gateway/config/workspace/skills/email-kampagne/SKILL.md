@@ -229,6 +229,12 @@ trotzdem unversendbar.
   sichtbarste Platzhalter, den es gibt.
 * `belege` und `zu_klaeren` wandern als eigene Rubriken ans Ende — dieselbe
   Belegpflicht wie im Text, nur gedruckt.
+* **`**wort**` wird fett.** Ein Leser hat am 11.09.2026 genau das vermisst:
+  „Ich wuerde bei den Stichpunkten die folgenden Woerter fett machen".
+  Betone das Substantiv, um das es geht, nicht den ganzen Satz.
+* **Keine langen Gedankenstriche.** Derselbe Leser: „Sieht zu sehr nach KI
+  aus." Schreib `-`. Der Space kuerzt sie sonst selbst und sagt es dir.
+  Ein Bereich (`10-12 Uhr`) ist davon nicht betroffen.
 
 Nicht jede Kampagne braucht ein PDF. Eine kurze Telegram-Nachricht mit
 Anhang ist schlechter als eine ohne.

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
@@ -421,6 +422,92 @@ def _check_supabase_node_in_bubble(spec: Dict[str, Any]):
         return None, {"node": node_title, "bubble": bubble_title}, f"node-in-bubble probe error: {e}"
 
 
+_SQLITE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _check_sqlite_row(spec: Dict[str, Any]):
+    """Ground-truth for ops that persist into a local SQLite store.
+
+    The Supabase checks cannot serve every space: `schedule` commits into
+    `scheduled_tasks` in a SQLite file, so its own read-back (the repository
+    re-reads after writing) stays invisible from the capability layer. This
+    check asks the file directly, which is the whole difference between a
+    verified write and a self-report. spec:
+
+        {check: sqlite_row, path_env: SCHEDULE_DB_PATH, path: <fallback>,
+         table: scheduled_tasks, match: "id={result_id}",
+         expect_column: status, expect_value: cancelled, expect: present}
+
+    `match` is a single `column=value` pair, split on the FIRST `=`. The
+    optional `expect_column`/`expect_value` pair narrows the row further -
+    that is how "cancel really left status=cancelled" gets asserted instead
+    of merely "the row is still there".
+
+    Table and column names must match a strict identifier pattern, and
+    values are ALWAYS bound as query parameters, never interpolated: the
+    value reaches us from a regex over the op's own result text, so it is
+    influenced from outside and must never be able to become SQL.
+
+    A missing file, an unknown table or any error yields None (UNVERIFIED,
+    fail-safe) - a probe that cannot look must never claim the act failed.
+    """
+    table = str(spec.get("table") or "").strip()
+    match = str(spec.get("match") or "").strip()
+    expect = (spec.get("expect") or "present").lower()
+    if not _SQLITE_IDENTIFIER.match(table):
+        return None, {"table": table}, "invalid or missing table name"
+    if "=" not in match:
+        return None, {"match": match}, "match must be column=value"
+    column, _, value = match.partition("=")
+    column, value = column.strip(), value.strip()
+    if not _SQLITE_IDENTIFIER.match(column):
+        return None, {"match": match}, "invalid match column"
+    if not value:
+        return None, {"match": match}, "empty match value (nothing to re-query)"
+
+    where = [(column, value)]
+    expect_column = str(spec.get("expect_column") or "").strip()
+    if expect_column:
+        if not _SQLITE_IDENTIFIER.match(expect_column):
+            return None, {"expect_column": expect_column}, "invalid expect column"
+        expect_value = spec.get("expect_value")
+        where.append((expect_column, str(expect_value if expect_value is not None else "")))
+
+    path = os.environ.get(str(spec.get("path_env") or "")) or spec.get("path")
+    if not path:
+        return None, {}, "no sqlite path given"
+    probe_path = _map_host_path(str(path))
+    signal: Dict[str, Any] = {"table": table, "match": match, "expect": expect,
+                              "path": probe_path}
+    if expect_column:
+        signal["expect_column"] = expect_column
+    if not os.path.isfile(probe_path):
+        return None, signal, "sqlite file not found (cannot verify)"
+
+    try:
+        import sqlite3  # lazy: the probe must cost nothing when unused
+        clause = " AND ".join(f'"{name}" = ?' for name, _ in where)
+        query = f'SELECT 1 FROM "{table}" WHERE {clause} LIMIT 1'
+        connection = sqlite3.connect(
+            f"file:{probe_path}?mode=ro", uri=True, timeout=OBSERVE_TIMEOUT)
+        try:
+            row = connection.execute(query, [v for _, v in where]).fetchone()
+        finally:
+            connection.close()
+    except Exception as exc:  # fail-safe
+        return None, signal, f"sqlite probe error: {exc}"
+
+    present = row is not None
+    signal["rows_found"] = 1 if present else 0
+    ok = present if expect == "present" else (not present)
+    # Die Bedingung mitnennen: "row absent" allein liest sich, als fehle die
+    # Zeile, waehrend in Wahrheit oft nur die erwartete WIRKUNG ausblieb
+    # (Zeile da, aber status noch active).
+    described = " and ".join(f"{name}={value}" for name, value in where)
+    return ok, signal, (f"sqlite: {'row present' if present else 'no row'} "
+                        f"for {described} (expected {expect})")
+
+
 # Map of check-name → fn. To add a check, add one function above + an entry here.
 _CHECKS = {
     "process_running": _check_process_running,
@@ -428,6 +515,7 @@ _CHECKS = {
     "file_exists": _check_file_exists,
     "http_ok": _check_http_ok,
     "supabase_row": _check_supabase_row,
+    "sqlite_row": _check_sqlite_row,
     "supabase_edge": _check_supabase_edge,
     "supabase_edge_ids": _check_supabase_edge_ids,
     "supabase_node_in_bubble": _check_supabase_node_in_bubble,

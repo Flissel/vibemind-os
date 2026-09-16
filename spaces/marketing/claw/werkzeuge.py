@@ -14,7 +14,8 @@ import os
 import urllib.parse
 import urllib.request
 
-from spaces.marketing.claw import ablage, laura, llm, schaufenster, wissen
+from spaces.marketing.claw import (ablage, laura, llm, schaufenster,
+                                   schoenheit, stil, wissen)
 
 FEHLER_MAXLAENGE = 300
 
@@ -323,6 +324,11 @@ def versand_beauftragen(kanal: str, nachricht: str, empfaenger: str = "",
     """
     if not (nachricht or "").strip():
         return {"ok": False, "fehler": "Die Nachricht ist leer."}
+    # Hausstil auch hier: dieser Weg umgeht `kampagne_entwerfen`, und was
+    # rausgeht, soll denselben Regeln folgen wie das, was entworfen wird.
+    nachricht, gekuerzt = stil.hausstil(nachricht)
+    betreff, n2 = stil.hausstil(betreff or "")
+    gekuerzt += n2
     antwort = _api("/api/versandauftraege", {
         "kanal": kanal, "empfaenger": empfaenger, "nachricht": nachricht,
         "betreff": betreff, "medien_datei": medien_datei,
@@ -338,10 +344,13 @@ def versand_beauftragen(kanal: str, nachricht: str, empfaenger: str = "",
     if not ergebnis.get("ok"):
         return {"ok": False, "fehler": ergebnis.get("grund")
                 or "Der Auftrag wurde ohne Begruendung abgelehnt."}
-    return {"ok": True, "daten": {
-        "auftrag_id": ergebnis.get("id"),
-        "wiederholung": bool(ergebnis.get("wiederholung")),
-        "hinweis": ergebnis.get("grund", "")}}
+    daten = {"auftrag_id": ergebnis.get("id"),
+             "wiederholung": bool(ergebnis.get("wiederholung")),
+             "hinweis": ergebnis.get("grund", "")}
+    if gekuerzt:
+        daten["hausstil"] = (
+            f"{gekuerzt} lange(r) Gedankenstrich(e) gekuerzt (siehe stil.py).")
+    return {"ok": True, "daten": daten}
 
 
 def versandauftraege_lesen(status: str = "", anzahl: int = 20) -> dict:
@@ -392,6 +401,17 @@ def kampagne_entwerfen(ziel: str, zielgruppe: str, kanal: str, kontext: str = ""
     if not r["ok"]:
         return r
     entwurf = r["daten"]
+
+    # HAUSSTIL, bevor der Text irgendwo landet. Hier und nicht erst im PDF:
+    # aus demselben Entwurf entstehen die E-Mail, die Freigabe-Oberflaeche
+    # und das PDF — griffe die Regel erst beim Setzen, traegen die drei
+    # verschiedene Texte. Rueckmeldung eines Lesers am 11.09.2026: lange
+    # Gedankenstriche „sieht zu sehr nach KI aus" (siehe stil.py).
+    eingriffe = 0
+    for schluessel in ("betreff", "text", "begruendung"):
+        gekuerzt, n = stil.hausstil(str(entwurf.get(schluessel, "")))
+        entwurf[schluessel] = gekuerzt
+        eingriffe += n
     belege_md = "\n".join(f"- {b}" for b in belege) or \
         "- (keine Belege angegeben — Produktaussagen im Text sind damit ungeprueft)"
     klaeren_md = "\n".join(f"- {z}" for z in zu_klaeren) or "- (nichts offen)"
@@ -424,7 +444,16 @@ def kampagne_entwerfen(ziel: str, zielgruppe: str, kanal: str, kontext: str = ""
                 f"## Belege\n{belege_md}\n\n## Zu klaeren\n{klaeren_md}\n\n"
                 f"## Begruendung\n{entwurf.get('begruendung', '')}\n")
     dateien = [schaufenster.ablegen(ziel, "briefing.md", briefing)]
-    return {"ok": True, "proposal_id": proposal_id, "dateien": dateien}
+    ergebnis = {"ok": True, "proposal_id": proposal_id, "dateien": dateien}
+    if eingriffe:
+        # Sagen, statt es den Agenten beim naechsten Lesen entdecken zu
+        # lassen: ein stiller Eingriff in seinen Text waere genau die Art
+        # Ueberraschung, die Vertrauen kostet.
+        ergebnis["hausstil"] = (
+            f"{eingriffe} lange(r) Gedankenstrich(e) gekuerzt. Ein Leser hat "
+            f"gemeldet, dass sie zu sehr nach KI aussehen. Schreib sie gleich "
+            f"kurz, dann bleibt dein Text unveraendert.")
+    return ergebnis
 
 
 def ad_texte_entwerfen(thema: str, n: int = 3) -> dict:
@@ -607,9 +636,263 @@ ZWECKE = ("marketing", "email", "mobile")
 MAX_ANHANG_BYTES = 15 * 1024 * 1024
 
 
+# --- Layout-Vorlagen -------------------------------------------------------
+#
+# Auftrag des Betreibers (12.09.2026): „die verschiedenen Layouts via
+# Templates und Skills ... Template muss vom User abgesegnet werden."
+#
+# Aussehen war bis dahin Code: zwei fest verdrahtete Tafeln in pdf.py. Wer
+# ein drittes Layout wollte, brauchte einen Entwickler — und niemand hatte
+# je eine davon abgenommen. Jetzt sind Layouts Daten mit einem Tor: der
+# Agent SCHLAEGT VOR, ein Mensch ENTSCHEIDET, und gesetzt wird nur, was
+# freigegeben ist.
+#
+# Der Agent kann nicht freigeben, und zwar nicht aus Hoeflichkeit: die
+# Entscheidungsroute haengt hinter MARKETING_PROPOSAL_API_KEY, den dieser
+# Space nicht kennt. Ein Tor, das der Torwaechter selbst oeffnen kann, ist
+# eine Formalie.
+
+# Die acht Farben, die eine Gestalt braucht. Bewusst hier als Konstante,
+# damit der Hinweistext sie nennen kann, ohne dass ein Agent raten muss.
+GESTALT_FARBEN = ("grund", "flaeche", "akzent", "gold", "text",
+                  "text_hell", "text_leise", "handlung_text")
+
+
+def vorlagen_auflisten(status: str = "") -> dict:
+    """Die Layout-Vorlagen und ihr Stand.
+
+    `status` leer heisst alle; sonst `freigegeben`, `vorschlag` oder
+    `abgelehnt`. Setzen kannst du nur, was freigegeben ist — was als
+    Vorschlag dasteht, wartet auf den Betreiber, und was abgelehnt wurde,
+    traegt den Grund bei sich.
+    """
+    pfad = "/api/layout_vorlagen"
+    if (status or "").strip():
+        pfad += "?status=" + urllib.parse.quote(status.strip())
+    antwort = _api(pfad)
+    if not antwort["ok"]:
+        return antwort
+    return {"ok": True, "daten": (antwort.get("daten") or {}).get("data") or []}
+
+
+def vorlage_vorschlagen(name: str, beschreibung: str, gestalt: dict) -> dict:
+    """Ein neues Layout VORSCHLAGEN. Es gilt erst nach Freigabe des Betreibers.
+
+    `name` wird zum Argument von `pdf_erstellen(vorlage=...)`: nur
+    Kleinbuchstaben, Ziffern und Bindestriche, 3 bis 40 Zeichen.
+
+    `gestalt` ist ein Objekt mit ACHT Farben als `#rrggbb`:
+      grund         Seitenhintergrund
+      flaeche       Kopf- und Fussband
+      akzent        Linien, Untertitel, der gefuellte Handlungskasten
+      gold          Rubriken (BELEGE, ZU KLAEREN)
+      text          Fliesstext  — NICHT reinweiss/reinschwarz, siehe Fertigkeit
+      text_hell     Titel
+      text_leise    Fusszeile und Kleingedrucktes
+      handlung_text Schrift IM Handlungskasten (liegt auf `akzent`)
+
+    Die Datenbank prueft, bevor etwas entsteht: fehlende Farbe, falsche
+    Form, Text gleich Grund (unsichtbar) oder handlung_text gleich akzent
+    (leerer Kasten) werden mit Begruendung abgewiesen.
+
+    DANACH: erzeug mit `vorlage_muster(name)` ein Musterblatt und nenn dem
+    Betreiber den Dateipfad. Eine Vorlage freizugeben, ohne sie gesehen zu
+    haben, ist keine Freigabe.
+    """
+    if not isinstance(gestalt, dict):
+        return {"ok": False, "fehler": (
+            "gestalt muss ein Objekt mit acht Farben sein: "
+            + ", ".join(GESTALT_FARBEN))}
+
+    # SCHOENHEITSPRUEFUNG VOR DEM VORSCHLAG. Die Datenbank prueft Form und
+    # Gleichheit (Migration 044); hier wird gerechnet, ob man den Text
+    # ueberhaupt LESEN kann — Kontrast nach WCAG 2.1. Eine Vorlage, die
+    # daran scheitert, soll gar nicht erst auf dem Tisch des Betreibers
+    # liegen: er kann eine Zahl wie „2.1:1" nicht ansehen, er sieht nur ein
+    # Musterblatt, das irgendwie schlecht wirkt.
+    schaden = schoenheit.gestalt_pruefen(gestalt)
+    entscheidung = schoenheit.urteil(schaden)
+    if not entscheidung["bestanden"]:
+        return {"ok": False, "fehler": (
+            "Diese Farbtafel ist nicht lesbar:\n- "
+            + "\n- ".join(entscheidung["hart"]))}
+
+    antwort = _api("/api/layout_vorlagen", {
+        "name": name, "beschreibung": beschreibung, "gestalt": gestalt,
+        "von": "marketing-claw"})
+    if not antwort["ok"]:
+        return antwort
+    ergebnis = ((antwort.get("daten") or {}).get("data")) or {}
+    if not ergebnis.get("ok"):
+        # Flach, wie bei versand_beauftragen: eine Absage in einer
+        # erfolgreichen Huelle wird ueberlesen.
+        return {"ok": False, "fehler": ergebnis.get("grund")
+                or "Der Vorschlag wurde ohne Begruendung abgewiesen."}
+    daten = {
+        "name": (name or "").strip().lower(), "neu": bool(ergebnis.get("neu")),
+        "hinweis": ergebnis.get("grund", ""),
+        "naechster_schritt": (
+            "Erzeug jetzt mit vorlage_muster(name) ein Musterblatt und gib "
+            "dem Betreiber den Dateipfad. Er entscheidet.")}
+    if entscheidung["weich"]:
+        # Nicht blockieren, aber auch nicht verschweigen: ein Mensch kann
+        # gute Gruende fuer harte Kontraste haben (Druck, Barrierefreiheit).
+        daten["anmerkungen"] = entscheidung["weich"]
+    return {"ok": True, "daten": daten}
+
+
+def _vorlage_holen(name: str) -> tuple:
+    """(gestalt, fehler) fuer eine FREIGEGEBENE Vorlage."""
+    antwort = vorlagen_auflisten()
+    if not antwort["ok"]:
+        return None, antwort["fehler"]
+    alle = antwort["daten"]
+    gesucht = (name or "").strip().lower()
+    treffer = next((v for v in alle if v.get("name") == gesucht), None)
+    if treffer is None:
+        frei = sorted(v["name"] for v in alle if v.get("status") == "freigegeben")
+        return None, (f"Keine Vorlage '{gesucht}'. Freigegeben sind: "
+                      f"{', '.join(frei) or 'keine'}.")
+    if treffer.get("status") != "freigegeben":
+        grund = treffer.get("grund") or ""
+        return None, (
+            f"Die Vorlage '{gesucht}' steht auf '{treffer.get('status')}' und "
+            f"darf nicht gesetzt werden."
+            + (f" Grund: {grund}" if grund else "")
+            + " Freigeben kann sie ausschliesslich der Betreiber.")
+    return treffer.get("gestalt") or {}, ""
+
+
+def vorlage_muster(name: str) -> dict:
+    """Ein Musterblatt dieser Vorlage ins Schaufenster — damit der Betreiber
+    SIEHT, was er freigibt.
+
+    Funktioniert ausdruecklich AUCH fuer Vorschlaege: das ist der ganze
+    Zweck. Der Text des Musters ist fest und zeigt jedes Element, das eine
+    echte Unterlage hat — Titel, Untertitel, Fliesstext, Stichpunkte mit
+    Betonung, Handlungskasten, Rubriken.
+    """
+    antwort = vorlagen_auflisten()
+    if not antwort["ok"]:
+        return antwort
+    gesucht = (name or "").strip().lower()
+    treffer = next((v for v in antwort["daten"] if v.get("name") == gesucht), None)
+    if treffer is None:
+        return {"ok": False, "fehler": f"Keine Vorlage '{gesucht}'."}
+
+    from spaces.marketing.claw import pdf
+    try:
+        roh = pdf.bauen(
+            titel="Musterblatt",
+            untertitel=f"Vorlage {gesucht} - so saehe eine Unterlage aus",
+            text=("Dieser Absatz zeigt den Fliesstext. Er ist das, was ein "
+                  "Kunde am laengsten ansieht, also entscheidet seine Farbe "
+                  "ueber die Lesbarkeit der ganzen Seite.\n\n"
+                  "- **Betontes Wort** in einem Stichpunkt\n"
+                  "- Ein zweiter Punkt ohne Betonung, zum Vergleich\n"
+                  "- Ein dritter, damit der Abstand sichtbar wird"),
+            handlung="So sieht der Handlungskasten aus",
+            belege=["Rubriken stehen in der Goldfarbe"],
+            zu_klaeren=["Und so das Kleingedruckte"],
+            gestalt=treffer.get("gestalt") or {})
+    except ValueError as e:
+        return {"ok": False, "fehler": f"Diese Gestalt ist nicht setzbar: {e}"}
+
+    # `ersetzen=True`: ein Musterblatt ist immer die AKTUELLE Gestalt dieser
+    # Vorlage. Zehn Zeitstempel-Fassungen im Medienordner waeren nur Muell,
+    # und der Betreiber soll nicht raten, welche er gerade ansieht.
+    datei = ablage.ablegen(f"muster-vorlage-{gesucht}", roh, art="pdf",
+                           ersetzen=True)
+    if not datei["ok"]:
+        return datei
+    pfad = (datei.get("daten") or {}).get("pfad", "")
+    _api(f"/api/layout_vorlagen/{urllib.parse.quote(gesucht)}/muster",
+         {"muster_datei": pfad})
+    return {"ok": True, "daten": {
+        "vorlage": gesucht, "status": treffer.get("status"), "muster": pfad,
+        "hinweis": ("Gib dem Betreiber diesen Pfad. Freigeben kann nur er — "
+                    "du nicht.")}}
+
+
+# Die Adresse, an die Vorlagen zur Durchsicht gehen. Aus der Umgebung, nicht
+# fest verdrahtet: sie gehoert dem Betreiber, nicht dem Code. Ohne sie sagt
+# das Werkzeug das klar, statt still an irgendwen zu schicken.
+PRUEFADRESSE_ENV = "MARKETING_PRUEFADRESSE"
+
+
+def vorlage_zur_pruefung_senden(name: str, empfaenger: str = "",
+                                anmerkung: str = "") -> dict:
+    """Schickt das Musterblatt einer Vorlage an die Firmenadresse des
+    Betreibers — damit er sie dort ansieht und antwortet, was nicht passt.
+
+    DER WEG IST DERSELBE WIE FUER JEDE ANDERE NACHRICHT: es entsteht ein
+    Versandauftrag, sales-claw macht daraus einen Entwurf und laesst ihn
+    durch seine Tore, und zugestellt wird erst nach Freigabe. Eine Vorlage
+    zur Durchsicht ist keine Ausnahme vom Hausweg — sie ist ein Beispiel
+    dafuer, dass er traegt.
+
+    Das Musterblatt wird erzeugt, falls es noch keins gibt. `empfaenger`
+    leer heisst: die Adresse aus MARKETING_PRUEFADRESSE.
+
+    `anmerkung` ist ein Satz von dir an den Betreiber: warum diese Vorlage,
+    was du dir dabei gedacht hast. Er entscheidet leichter, wenn er das
+    weiss — und du bekommst eine bessere Antwort.
+    """
+    gesucht = (name or "").strip().lower()
+    if not gesucht:
+        return {"ok": False, "fehler": "Ohne Namen keine Vorlage."}
+
+    adresse = (empfaenger or os.environ.get(PRUEFADRESSE_ENV, "")).strip()
+    if not adresse:
+        return {"ok": False, "fehler": (
+            f"Keine Pruefadresse: weder `empfaenger` gesetzt noch "
+            f"{PRUEFADRESSE_ENV} in der Umgebung. Frag den Betreiber, an "
+            f"welche Adresse Vorlagen zur Durchsicht gehen sollen.")}
+
+    # Musterblatt zuerst — ohne Anschauung ist eine Bitte um Freigabe
+    # sinnlos. `vorlage_muster` ist idempotent (ersetzen=True).
+    muster = vorlage_muster(gesucht)
+    if not muster["ok"]:
+        return muster
+    pfad = muster["daten"]["muster"]
+    datei = pfad.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+
+    stand = muster["daten"].get("status", "?")
+    text = (
+        f"Hallo,\n\n"
+        f"zur Durchsicht: die Layout-Vorlage \"{gesucht}\" (Stand: {stand}).\n"
+        f"Das Musterblatt haengt an - es zeigt jedes Element, das eine echte "
+        f"Unterlage hat: Titel, Untertitel, Fliesstext, Stichpunkte mit "
+        f"Betonung, Handlungskasten und die Rubriken.\n")
+    if (anmerkung or "").strip():
+        text += f"\n{anmerkung.strip()}\n"
+    text += (
+        f"\nWas ich brauche: ein Ja, oder eine Antwort damit, was nicht "
+        f"passt. Beides hilft - eine Ablehnung mit Grund ist mehr wert als "
+        f"ein zoegerndes Ja.\n\n"
+        f"Solange sie nicht freigegeben ist, wird mit ihr nichts gesetzt.\n")
+
+    auftrag = versand_beauftragen(
+        kanal="email", empfaenger=adresse,
+        betreff=f"Layout-Vorlage zur Durchsicht: {gesucht}",
+        nachricht=text, medien_datei=datei,
+        kampagne="layout-vorlage", quelle=f"layout_vorlage:{gesucht}")
+    if not auftrag["ok"]:
+        return {"ok": False, "fehler": (
+            f"Das Musterblatt liegt unter {pfad}, aber der Versandauftrag "
+            f"kam nicht durch: {auftrag['fehler']}")}
+    return {"ok": True, "daten": {
+        "vorlage": gesucht, "status": stand, "muster": pfad,
+        "an": adresse, **(auftrag.get("daten") or {}),
+        "hinweis": ("Der Auftrag liegt bei sales-claw. Daraus wird ein "
+                    "Entwurf, den der Betreiber freigibt - erst dann geht "
+                    "die Mail raus. Das Musterblatt haengt an.")}}
+
+
 def pdf_erstellen(name: str, titel: str, text: str, untertitel: str = "",
                   belege=None, zu_klaeren=None, zweck: str = "marketing",
-                  handlung: str = "", layout: str = "dunkel") -> dict:
+                  handlung: str = "", layout: str = "dunkel",
+                  vorlage: str = "") -> dict:
     """Setzt eine Unterlage als PDF und legt sie ab, wo sales-claw sie findet.
 
     DAS ERSTE FORMAT, DAS WIRKLICH RAUSGEHEN KANN: eine `.md` liegt zwar im
@@ -621,7 +904,14 @@ def pdf_erstellen(name: str, titel: str, text: str, untertitel: str = "",
     Adresse unter `zu_klaeren` nennen.
 
     `zweck` bestimmt den Namensanfang: marketing, email oder mobile.
-    Aussehen und Farben kommen aus dem Pitch-Deck. Versendet wird nichts.
+    Versendet wird nichts.
+
+    `vorlage` waehlt das Aussehen und muss FREIGEGEBEN sein — `dunkel` ist
+    es, `hell` (noch) nicht. `vorlagen_auflisten()` zeigt den Stand. Eine
+    nicht freigegebene Vorlage wird mit Begruendung abgewiesen, statt
+    stillschweigend durch eine andere ersetzt zu werden: ein Kunde soll nie
+    etwas sehen, das niemand abgenommen hat. Der alte Name `layout` tut
+    dasselbe und bleibt fuer bestehende Aufrufe erhalten.
     """
     zweck = (zweck or "").strip().lower()
     if zweck not in ZWECKE:
@@ -637,10 +927,20 @@ def pdf_erstellen(name: str, titel: str, text: str, untertitel: str = "",
         return {"ok": False, "fehler":
                 f"PDF-Satz nicht verfuegbar ({e}). Der Sidecar braucht "
                 f"reportlab; er startet mit .venv/Scripts/python.exe."}
+    # DAS VORLAGEN-TOR (12.09.2026). Gesetzt wird nur, was ein Mensch
+    # freigegeben hat. `vorlage` ist der neue Weg; `layout` bleibt als
+    # Altname stehen, damit bestehende Aufrufe nicht brechen — beide zeigen
+    # auf dieselbe Tabelle, denn die zwei eingebauten Tafeln sind dort seit
+    # Migration 044 als Zeilen eingetragen.
+    gewuenscht = (vorlage or layout or "dunkel").strip().lower()
+    gestalt, fehler = _vorlage_holen(gewuenscht)
+    if fehler:
+        return {"ok": False, "fehler": fehler}
+
     try:
         roh = pdf.bauen(titel=titel, text=text, untertitel=untertitel,
                         belege=belege, zu_klaeren=zu_klaeren, handlung=handlung,
-                        layout=layout)
+                        gestalt=gestalt)
     except Exception as e:  # noqa: BLE001 — fail-soft ist der Vertrag
         return {"ok": False, "fehler": f"PDF-Satz fehlgeschlagen "
                                        f"({type(e).__name__}: {e})"}
@@ -648,7 +948,23 @@ def pdf_erstellen(name: str, titel: str, text: str, untertitel: str = "",
         return {"ok": False, "fehler":
                 f"PDF ist {len(roh) // 1024 // 1024} MB gross; sales-claw "
                 f"haengt hoechstens 15 MB an."}
-    return ablage.ablegen(f"{zweck}-{name}", roh, art="pdf")
+
+    # SCHOENHEITSPRUEFUNG NACH DEM SETZEN, VOR DER ABLAGE. Nach dem Setzen,
+    # weil erst dann die Seitenzahl feststeht; vor der Ablage, weil eine
+    # Unterlage mit Platzhalter gar nicht erst dort liegen soll, wo
+    # sales-claw sie anhaengen kann.
+    entscheidung = schoenheit.urteil(schoenheit.unterlage_pruefen(
+        titel=titel, untertitel=untertitel, text=text, handlung=handlung,
+        belege=belege, zu_klaeren=zu_klaeren, seiten=pdf.seitenzahl(roh)))
+    if not entscheidung["bestanden"]:
+        return {"ok": False, "fehler": (
+            "Die Unterlage darf so keinen Kunden erreichen:\n- "
+            + "\n- ".join(entscheidung["hart"]))}
+
+    ergebnis = ablage.ablegen(f"{zweck}-{name}", roh, art="pdf")
+    if ergebnis.get("ok") and entscheidung["weich"]:
+        ergebnis.setdefault("daten", {})["anmerkungen"] = entscheidung["weich"]
+    return ergebnis
 
 
 def entwurf_holen(proposal_id: str) -> dict:
@@ -662,7 +978,7 @@ def entwurf_holen(proposal_id: str) -> dict:
 
 
 def pdf_aus_entwurf(proposal_id: str, layout: str = "dunkel",
-                    handlung: str = "") -> dict:
+                    handlung: str = "", vorlage: str = "") -> dict:
     """Setzt einen BESTEHENDEN Entwurf als PDF — Inhalt kommt aus der DB.
 
     DER UNTERSCHIED ZU `pdf_erstellen`: hier gibst du eine Kennung, keinen
@@ -696,6 +1012,14 @@ def pdf_aus_entwurf(proposal_id: str, layout: str = "dunkel",
         return {"ok": False, "fehler":
                 f"PDF-Satz nicht verfuegbar ({e}). Der Sidecar braucht "
                 f"reportlab; er startet mit .venv/Scripts/python.exe."}
+
+    # Dasselbe Vorlagen-Tor wie in pdf_erstellen. Es steht an BEIDEN Stellen,
+    # weil es zwei Eingaenge zum selben Setzer sind — ein Tor, das nur einer
+    # von zwei Tueren vorhaengt, ist keins.
+    gestalt, fehler = _vorlage_holen((vorlage or layout or "dunkel").strip().lower())
+    if fehler:
+        return {"ok": False, "fehler": fehler}
+
     try:
         roh = pdf.bauen(
             titel=str(daten.get("draft_subject") or parameter.get("ziel") or "VibeMind"),
@@ -704,7 +1028,7 @@ def pdf_aus_entwurf(proposal_id: str, layout: str = "dunkel",
             belege=list(parameter.get("belege") or []),
             zu_klaeren=list(parameter.get("zu_klaeren") or []),
             handlung=handlung or str(parameter.get("handlung") or ""),
-            layout=layout)
+            gestalt=gestalt)
     except Exception as e:  # noqa: BLE001 — fail-soft ist der Vertrag
         return {"ok": False, "fehler": f"PDF-Satz fehlgeschlagen "
                                        f"({type(e).__name__}: {e})"}
@@ -712,7 +1036,27 @@ def pdf_aus_entwurf(proposal_id: str, layout: str = "dunkel",
         return {"ok": False, "fehler":
                 f"PDF ist {len(roh) // 1024 // 1024} MB gross; sales-claw "
                 f"haengt hoechstens 15 MB an."}
+    # Dieselbe Pruefung wie in pdf_erstellen - zwei Eingaenge zum selben
+    # Setzer, also auch zwei Mal derselbe Schritt.
+    entscheidung = schoenheit.urteil(schoenheit.unterlage_pruefen(
+        titel=str(daten.get("draft_subject") or ""),
+        untertitel=str(parameter.get("zielgruppe") or ""),
+        text=str(daten.get("draft_body_text") or ""),
+        handlung=handlung or str(parameter.get("handlung") or ""),
+        belege=list(parameter.get("belege") or []),
+        zu_klaeren=list(parameter.get("zu_klaeren") or []),
+        seiten=pdf.seitenzahl(roh)))
+    if not entscheidung["bestanden"]:
+        return {"ok": False, "fehler": (
+            "Die Unterlage darf so keinen Kunden erreichen:\n- "
+            + "\n- ".join(entscheidung["hart"])
+            + "\n(Der Entwurf selbst bleibt unveraendert - korrigier ihn in "
+              "der Freigabe-Oberflaeche und setz ihn neu.)")}
+
     name = str(parameter.get("ziel") or daten.get("draft_subject") or proposal_id)
     # ERSETZEN ist hier richtig: es ist derselbe Entwurf, nur neu gesetzt.
     # Wer zwischen Layouts wechselt, will eine Datei sehen, nicht zehn.
-    return ablage.ablegen(f"{zweck}-{name}", roh, art="pdf", ersetzen=True)
+    ergebnis = ablage.ablegen(f"{zweck}-{name}", roh, art="pdf", ersetzen=True)
+    if ergebnis.get("ok") and entscheidung["weich"]:
+        ergebnis.setdefault("daten", {})["anmerkungen"] = entscheidung["weich"]
+    return ergebnis

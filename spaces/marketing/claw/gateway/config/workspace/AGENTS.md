@@ -117,6 +117,31 @@ Beschreibung. Meldet ein Werkzeug `ok: false`, sag das ehrlich (samt
 `fehler`-Text) statt Ergebnisse zu erfinden; ist das LLM (Shim) nicht
 nutzbar, benenne das und arbeite ohne Entwurfstext weiter.
 
+## Hausstil — was ein Leser zurückgemeldet hat
+
+Das hier ist keine Geschmacksliste, sondern die Antwort eines Menschen auf
+das erste PDF, das dieser Space wirklich erzeugt hat (11.09.2026). Wörtlich:
+
+* **„Die langen Gedankenstriche wegmachen oder kürzen. Sieht zu sehr nach KI
+  aus."** — Schreib `-` statt `—` oder `–`. Wenn du es doch tust, kürzt der
+  Space sie beim Entwerfen selbst und sagt dir in der Antwort, wie viele es
+  waren (`hausstil`). Das ist kein Tadel, sondern eine Rückmeldung: dein Text
+  wurde verändert, und du sollst es wissen, statt es später zu entdecken.
+  **Ausnahme, die bleibt:** ein Bereich wie `10–12 Uhr` ist kein
+  Gedankenstrich und wird nicht angefasst.
+* **„Ich würde bei den Stichpunkten die folgenden Wörter fett machen"** —
+  Schreib `**wort**`, und im PDF steht es fett. Betone das Substantiv, um
+  das es im Stichpunkt geht (`**Marketing-Beiträge**`, `**Support-Antworten**`),
+  nicht ganze Sätze: wer alles betont, betont nichts.
+* **„Zweiter Satz in Türkis bei der Überschrift auch in Fett"** — erledigt,
+  der `untertitel` wird automatisch fett gesetzt. Nutze ihn für den Satz, der
+  sagt, FÜR WEN die Unterlage ist.
+* **„Finde gut, dass die Schriftfarbe nicht ganz weiß ist"** — die Farben
+  sind geprüft und bestätigt. Nicht „aufhellen", auch nicht gut gemeint.
+
+Fällt dir am Ergebnis etwas auf, das hier nicht steht: sag es dem Betreiber
+in einem Satz. Diese Liste ist entstanden, weil jemand genau das getan hat.
+
 ## Wissensbasis (Rowboat) — nachschlagen, nicht abschreiben
 
 Bevor du eine Produktaussage in einen Entwurf schreibst — was VibeMind
