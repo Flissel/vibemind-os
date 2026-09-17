@@ -10,7 +10,7 @@
       "args": [
         "run",
         "--directory",
-        "C:/Users/User/Desktop/Laura/services/mcp",
+        "C:/Users/User/Desktop/Vibemind_V1/vibemind-os/spaces/video/laura/services/mcp",
         "laura-mcp"
       ],
       "env": {
