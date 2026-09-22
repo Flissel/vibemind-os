@@ -14,7 +14,8 @@
         "laura-mcp"
       ],
       "env": {
-        "LAURA_TOKEN": "laura-ui-test"
+        "LAURA_TOKEN": "laura-ui-test",
+        "LAURA_API_URL": "http://100.67.177.45:8765"
       }
     }
   },
