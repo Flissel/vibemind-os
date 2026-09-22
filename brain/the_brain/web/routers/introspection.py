@@ -3137,8 +3137,9 @@ def _dispatch_to_openfang(
     import os
     import requests
     of_url = os.environ.get("OPENFANG_URL", "http://127.0.0.1:4200").rstrip("/")
+    of_headers = {"Authorization": f"Bearer {os.environ.get('OPENFANG_API_KEY', '')}"}
     try:
-        r = requests.get(f"{of_url}/api/agents", timeout=10)
+        r = requests.get(f"{of_url}/api/agents", headers=of_headers, timeout=10)
         agents = r.json() if r.ok else []
         # Prefer non-phi3 (Sonnet) for actual execution
         target = None
@@ -3166,6 +3167,7 @@ def _dispatch_to_openfang(
         r = requests.post(
             f"{of_url}/api/agents/{agent_id}/message",
             json={"message": composed[:60000], "sender_name": "Brain"},
+            headers=of_headers,
             timeout=600,
         )
         if not r.ok:

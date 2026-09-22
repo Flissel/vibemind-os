@@ -268,6 +268,9 @@ class CapabilityValidator:
         self.openfang_url = (
             openfang_url or os.environ.get("OPENFANG_URL", "http://127.0.0.1:4200")
         ).rstrip("/")
+        self._openfang_headers = {
+            "Authorization": f"Bearer {os.environ.get('OPENFANG_API_KEY', '')}"
+        }
         self.stats: Dict[str, Any] = {
             "validations": 0,
             "valid": 0,
@@ -600,6 +603,7 @@ class CapabilityValidator:
             resp = requests.post(
                 f"{self.openfang_url}/api/agents/{agent_id}/message",
                 json={"message": prompt},
+                headers=self._openfang_headers,
                 timeout=20,
             )
             resp.raise_for_status()
@@ -635,7 +639,11 @@ class CapabilityValidator:
         if agent_name in cache:
             return cache[agent_name]
         try:
-            resp = requests.get(f"{self.openfang_url}/api/agents", timeout=10)
+            resp = requests.get(
+                f"{self.openfang_url}/api/agents",
+                headers=self._openfang_headers,
+                timeout=10,
+            )
             resp.raise_for_status()
             agents = resp.json() if resp.ok else []
             if isinstance(agents, dict):

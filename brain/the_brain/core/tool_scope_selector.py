@@ -108,9 +108,10 @@ class ToolScopeSelector:
                 logger.warning(f"[toolscope] tools_fn fehlgeschlagen ({e})")
                 return []
         base = os.environ.get("OPENFANG_URL", "http://host.docker.internal:4200").rstrip("/")
+        headers = {"Authorization": f"Bearer {os.environ.get('OPENFANG_API_KEY', '')}"}
         try:
             import requests
-            r = requests.get(base + "/api/tools", timeout=5)
+            r = requests.get(base + "/api/tools", headers=headers, timeout=5)
             d = r.json()
             tools = d if isinstance(d, list) else d.get("tools", d.get("data", []))
             return [t for t in tools if isinstance(t, dict) and t.get("name")]

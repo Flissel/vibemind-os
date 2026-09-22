@@ -43,6 +43,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 OPENFANG_URL = os.environ.get("OPENFANG_URL", "http://127.0.0.1:4200").rstrip("/")
+OPENFANG_HEADERS = {"Authorization": f"Bearer {os.environ.get('OPENFANG_API_KEY', '')}"}
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "phi3:mini")
 # scripts/ → the_brain/ → brain/ → vibemind-os/  (4 levels up from this file)
 _VIBEMIND_OS = Path(__file__).resolve().parent.parent.parent.parent
@@ -55,7 +56,7 @@ OPENFANG_PHI3_DIR = Path(os.environ.get(
 
 
 def fetch_agents() -> List[Dict[str, Any]]:
-    r = requests.get(f"{OPENFANG_URL}/api/agents", timeout=10)
+    r = requests.get(f"{OPENFANG_URL}/api/agents", headers=OPENFANG_HEADERS, timeout=10)
     r.raise_for_status()
     return r.json()
 
@@ -186,6 +187,7 @@ def register_clone(toml_path: Path) -> Optional[str]:
         r = requests.post(
             f"{OPENFANG_URL}/api/agents",
             json={"manifest_path": str(toml_path)},
+            headers=OPENFANG_HEADERS,
             timeout=30,
         )
         if r.status_code >= 400:
