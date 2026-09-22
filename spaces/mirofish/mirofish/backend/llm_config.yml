@@ -1,0 +1,31 @@
+# =============================================================================
+# Mirofish runtime LLM configuration
+# =============================================================================
+# Docker copies backend/ into the image, so this file lands at
+# /app/backend/llm_config.yml -- the second path vibemind_shared's loader
+# searches (see backend/app/utils/llm_client.py, the fixed OpenFang gateway).
+# The central llm_config.yml.example is the source of truth and
+# scripts/check_openfang_llm_config.py rejects drift for roles.space_mirofish.
+# =============================================================================
+
+keys:
+  openfang: ${OPENFANG_API_KEY}
+
+providers:
+  openfang:
+    type: openai
+    base_url: ${OPENFANG_URL}/v1
+    key_ref: openfang
+    fail_closed: true
+    max_retries: 3
+    timeout_seconds: 30
+
+default:
+  provider: openfang
+  model: openfang:brain-fallback
+  temperature: 0
+
+roles:
+  space_mirofish: { provider: openfang, model: "openfang:brain-forecaster", temperature: 0.2 }
+
+overrides: {}
