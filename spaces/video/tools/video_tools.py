@@ -134,6 +134,43 @@ def voice_tts(person: str = None, **kwargs) -> Dict[str, Any]:
 
 # ── Status / Info ────────────────────────────────────────────
 
+_ENV_KEYS = ("LAURA_API_URL", "LAURA_VOICEOVER_URL")
+
+
+def _load_env_fallback() -> None:
+    """Fehlende Adressen aus der Repo-`.env` nachladen -- wie die Nachbarmodule.
+
+    Ohne das haengen die Adressen an der Prozessumgebung des Wirts, der diese
+    Werkzeuge aufruft. Seit dem Umzug von Lauras API auf den Mini-PC
+    (22.09.2026) ist die Vorgabe `127.0.0.1:8765` TOT: wer sie erwischt, bekommt
+    "Verbindung verweigert" und haelt Laura fuer kaputt.
+
+    `REPO_ROOT` ist der erste Vorfahr, der ein Verzeichnis `vibemind-os`
+    ENTHAELT -- also das aeussere Repo, nicht vibemind-os selbst. Dieselbe
+    Definition wie in `spaces/marketing/claw/server.py`; die Verwechslung hat
+    beim Umzug einen halben Fehlversuch gekostet.
+
+    Ueberschreibt NIE, was schon gesetzt ist.
+    """
+    hier = Path(__file__).resolve()
+    wurzel = next((p for p in hier.parents if (p / "vibemind-os").is_dir()), None)
+    if wurzel is None:
+        return
+    env_datei = wurzel / ".env"
+    if not env_datei.exists():
+        return
+    fehlend = [k for k in _ENV_KEYS if not os.environ.get(k)]
+    if not fehlend:
+        return
+    for zeile in env_datei.read_text(encoding="utf-8", errors="replace").splitlines():
+        zeile = zeile.strip()
+        for k in fehlend:
+            if zeile.startswith(k + "="):
+                os.environ[k] = zeile.split("=", 1)[1].strip().strip('"').strip("'")
+
+
+_load_env_fallback()
+
 LAURA_URL = os.environ.get("LAURA_API_URL", "http://127.0.0.1:8765")
 VOICEOVER_URL = os.environ.get("LAURA_VOICEOVER_URL", "http://127.0.0.1:8898")
 
