@@ -179,9 +179,33 @@ Die Bindung selbst ist ein echter Entwurfseingriff mit Folgekosten
 (legitime Anbieter delegieren die Anmeldung regelmäßig an einen anderen
 Host) und braucht eine eigene Runde.
 
-**N7 — der Strukturfix.** Dem Agenten den Einmal-Token gar nicht erst in die
-Hand geben, sondern die URL außerhalb seines Kontexts zustellen. Siehe den
-Satz ganz oben, warum das kein Blocker ist.
+**N7 — behoben (2026-09-22, "Listen-Seite am Sidecar").** Der Strukturfix:
+`eingabe_anfordern` gibt seit diesem Fix kein `url`-Feld mehr zurück, nur
+noch `hinweis` mit der festen, tokenlosen Adresse einer neuen Listen-Seite
+(`GET /anfragen`, `server._anfragen_zeigen`, `fenster.listenseite`,
+`anfragen.alle_offenen`). Der Mensch öffnet diese Adresse selbst in seinem
+eigenen Browser (hinter derselben Loopback-Wache wie die Formular-Routen),
+findet dort jede offene Anfrage mit ihrem echten `/fenster/{token}`-Link,
+und klickt sich von dort weiter. Der Agent sieht den Einmal-Link damit
+strukturell nie — vorher war das eine Konfigurationsfrage (Tool-Policy des
+Agenten, s. `server.py`-Moduldoku), jetzt eine, die die Antwortform selbst
+nicht mehr hergibt.
+
+Damit ändert sich auch die Einordnung im Satz ganz oben: das
+Substitutions-Restrisiko (der Agent hält den Token und *könnte* ihn
+missbrauchen) entfällt für den Normalfall vollständig, weil der Token die
+Werkzeug-Antwort nie erreicht. Es bleibt nur, was schon vorher galt und
+strukturell nicht anders lösbar ist: der Agent kann dem Betreiber eine
+falsche Referenz oder ein falsches `ziel` NENNEN (Social Engineering über
+den Chat, nicht über einen gestohlenen Link) — dagegen schützt weiterhin
+nur, dass der Betreiber Referenzname und Ziel-Adresse selbst liest, bevor
+er einträgt (E5/E6 der Spec).
+
+Live bewiesen (`tests/test_fenster_live.py`): die Werkzeug-Antwort trägt
+kein `url`-Feld mehr, und der echte `/fenster/{token}`-Link kommt
+ausschließlich von der Listen-Seite, gescrapt wie ein Mensch es täte.
+`AGENTS.md`/`README.md` sind auf den neuen Vertrag nachgezogen (der Agent
+nennt nur noch die feste Listen-Seiten-Adresse, nie einen Link).
 
 ## Kleines
 
@@ -230,6 +254,13 @@ bei den jeweiligen Punkten). **N6 und N7 bleiben ausdrücklich offen** —
 sie waren nicht im Umfang dieses Bündels (Entwurfseingriffe mit
 Folgekosten, jeweils eine eigene Runde wert) und wurden nicht angefasst.
 Das Bündel ist damit NICHT vollständig.
+
+## Stand (2026-09-22)
+
+**N7 ist jetzt ebenfalls behoben** (eigener Abschnitt oben, "Listen-Seite
+am Sidecar"). **N6 bleibt weiterhin offen** — die Bindung von `_ziel_pruefen`
+an `issuer`/`authorization_endpoint` der Anbieter-Metadaten ist ein
+eigener Entwurfseingriff mit Folgekosten und war nicht Teil dieser Runde.
 
 ## Was am Zweig ausdrücklich NICHT gemessen wurde
 

@@ -38,6 +38,11 @@ Fuenf Eigenschaften, alle strukturell, keine per Konvention:
      gegen die echte ASGI-App (httpx `ASGITransport`) -- NICHT per
      Starlettes synchronem `TestClient`, der keine zwei Anfragen
      gleichzeitig lostreten kann.
+
+N7-FIX (2026-09-22): dieselbe Datei prueft jetzt auch `/anfragen`
+(`server._anfragen_zeigen`, die Listen-Seite) -- dieselbe Loopback-Wache,
+kein Token in der eigenen URL, zeigt aber die echten `/fenster/{token}`-Links
+der offenen Anfragen.
 """
 from __future__ import annotations
 
@@ -59,6 +64,7 @@ _FAKE_WERT = "offensichtlich-erfunden-kein-echtes-secret-route"
 _APP = Starlette(routes=[
     Route("/fenster/{token}", endpoint=server._fenster_zeigen, methods=["GET"]),
     Route("/fenster/{token}", endpoint=server._fenster_annehmen, methods=["POST"]),
+    Route("/anfragen", endpoint=server._anfragen_zeigen, methods=["GET"]),
 ])
 
 # `client=` setzt scope["client"] direkt -- s. Starlette-TestClient-Doku.
@@ -93,6 +99,25 @@ def test_get_von_host_verbraucht_kein_token():
 def test_unbekanntes_token_gibt_404_vom_host_aus():
     r = _HOST_CLIENT.get("/fenster/gibt-es-nicht")
     assert r.status_code == 404
+
+
+def test_anfragen_liste_von_fremder_adresse_wird_abgelehnt():
+    r = _FREMDER_CLIENT.get("/anfragen")
+    assert r.status_code == 403
+
+
+def test_anfragen_liste_vom_host_zeigt_offene_anfrage_und_ihren_echten_link():
+    a = anfragen.anlegen("proj", "demo", "ROUTE_LISTE_OK", "bearer", "")
+    r = _HOST_CLIENT.get("/anfragen")
+    assert r.status_code == 200
+    assert "ROUTE_LISTE_OK" in r.text
+    assert f"/fenster/{a.token}" in r.text
+
+
+def test_anfragen_liste_ohne_offene_anfragen_zeigt_leeren_hinweis():
+    r = _HOST_CLIENT.get("/anfragen")
+    assert r.status_code == 200
+    assert "nichts offen" in r.text.lower()
 
 
 def test_oauth_post_ruft_den_echten_provisioner_statt_den_formular_wert(monkeypatch):

@@ -11,7 +11,11 @@ Tool-Bindung = Aufgaben 2/3). Eine sechste Funktion,
 `schluessel_entgegennehmen`, bleibt im selben Modul, ist aber ABSICHTLICH
 kein registriertes MCP-Werkzeug -- sie ist der interne Schreibweg des
 Formulars unter `/fenster/{token}` (`fenster.py`/`anfragen.py`), das
-derselbe Prozess neben `/mcp` bedient. Die Bind-Adresse ist geladen: sie
+derselbe Prozess neben `/mcp` bedient. N7-FIX (2026-09-22): daneben, unter
+`/anfragen`, sitzt die tokenlose Listen-Seite -- der Agent bekommt von
+`eingabe_anfordern` nur noch diese feste Adresse genannt, nie den
+Einmal-Link selbst; der Betreiber oeffnet `/anfragen` direkt und findet
+dort seinen echten `/fenster/{token}`-Link. Die Bind-Adresse ist geladen: sie
 bindet `0.0.0.0`, nicht Loopback -- der Container muss `/mcp` erreichen
 (s. `config/openclaw.json`, `host.docker.internal`). Das Formular hat
 dieselbe Bindung; eine Loopback-Adressprüfung auf den Formular-Routen ist
@@ -52,7 +56,7 @@ der Server als eigenstaendiges Skript gestartet: `python server.py`, nicht
 | `PLUGIN_SETUP_OPENFANG_API_KEY` | API-Key des isolierten Daemons, als `Authorization: Bearer` gesendet. Eigener Name (nicht `OPENFANG_API_KEY`), um Verwechslung mit dem Key eines anderen Daemons auszuschliessen. | s.o. |
 | `PLUGIN_SETUP_DB_CONTAINER` | Override fuer den supabase-db-Container-Namen. Default: Auto-Erkennung per Namenssubstring `supabase-db` (`docker ps`). | `ablage.py` (immer) |
 | `PLUGIN_SETUP_DB_ROLE` | Override der DB-Rolle. Default `plugin_setup_agent` (`db/0003_least_privilege_role.sql`, gehaertet in `db/0004_least_privilege_role_hardening.sql`) -- **nie** `postgres`/`service_role`/`supabase_admin` produktiv setzen, das unterlaeuft die in `db/0002_state_machine.sql` erzwungene Zustandsmaschine (Review-Vorgabe #3). | `ablage.py` (immer) |
-| `PLUGIN_SETUP_MCP_HOST` / `PLUGIN_SETUP_MCP_PORT` | Bind-Adresse. Default `0.0.0.0:8131` -- gilt fuer `/mcp` UND `/fenster/{token}` (derselbe Prozess, dieselbe Bindung, s. oben). NICHT Loopback, trotz `docs/superpowers/specs/2026-09-12-eingabefenster-design.md` E3s urspruenglicher (korrigierter) Annahme. | `server.py` |
+| `PLUGIN_SETUP_MCP_HOST` / `PLUGIN_SETUP_MCP_PORT` | Bind-Adresse. Default `0.0.0.0:8131` -- gilt fuer `/mcp`, `/fenster/{token}` UND `/anfragen` (derselbe Prozess, dieselbe Bindung, s. oben). NICHT Loopback, trotz `docs/superpowers/specs/2026-09-12-eingabefenster-design.md` E3s urspruenglicher (korrigierter) Annahme. | `server.py` |
 
 Alle Variablen werden zusaetzlich aus der repo-`.env` nachgeladen (nie
 ueberschrieben), wie bei den Nachbar-Sidecars (`spaces/marketing/claw/server.py`).

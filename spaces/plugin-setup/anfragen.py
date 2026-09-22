@@ -83,3 +83,15 @@ def offen_fuer(referenz: str) -> Anfrage | None:
             if a.referenz == referenz and not _abgelaufen(a, jetzt):
                 return a
         return None
+
+
+def alle_offenen() -> list[Anfrage]:
+    """Alle nicht abgelaufenen Anfragen, fruehste Ablaufzeit zuerst -- fuer
+    die Listen-Seite (N7, s. fenster.listenseite): der Mensch oeffnet sie
+    direkt, der Agent bekommt sie nie zu sehen. Raeumt wie `anlegen()`
+    nebenbei abgelaufene Eintraege weg, statt sie nur zu ignorieren."""
+    with _SPERRE:
+        jetzt = time.time()
+        for tot in [t for t, x in _OFFEN.items() if _abgelaufen(x, jetzt)]:
+            del _OFFEN[tot]
+        return sorted(_OFFEN.values(), key=lambda a: a.ablauf)

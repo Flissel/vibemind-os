@@ -14,6 +14,7 @@ koennen pruefen, WELCHE Argumente ankommen.
 from __future__ import annotations
 
 import html as _html
+from datetime import datetime, timezone
 
 import anfragen
 
@@ -50,6 +51,39 @@ def seite_fuer(a: "anfragen.Anfrage") -> str:
             f'<form method="post">'
             f'<input name="wert" type="password" autocomplete="off" autofocus>'
             f"<button>Eintragen</button></form>")
+
+
+def listenseite(eintraege: list["anfragen.Anfrage"]) -> str:
+    """Die Listen-Seite (N7-Fix): tokenlos erreichbar unter `/anfragen`,
+    hinter derselben Loopback-Wache wie die Formular-Routen (s. server.py).
+    Der Mensch oeffnet sie direkt in seinem eigenen Browser -- der Agent
+    bekommt nur noch eine Anweisung, diese feste Adresse zu nennen
+    (werkzeuge.eingabe_anfordern), nie den Einmal-Link selbst.
+
+    Jede Zeile traegt ihren echten `/fenster/{token}`-Link -- das IST der
+    Zweck dieser Seite. Sicher ist das trotzdem: nur ein Loopback-Aufrufer
+    erreicht die Route ueberhaupt (dieselbe Wache wie beim Formular), und
+    der Agent hat keinen Weg, sie sich anzusehen (E3 der Spec: keine
+    Faehigkeit, die eine beliebige HTTP-Anfrage stellen koennte)."""
+    if not eintraege:
+        return (f"{_KOPF}<h1>Offene Anfragen</h1>"
+                "<p>Nichts offen -- keine Anfrage wartet gerade auf dich.</p>")
+    zeilen = []
+    for a in eintraege:
+        ref = _html.escape(a.referenz)
+        plugin = _html.escape(a.plugin)
+        art = _html.escape(a.art)
+        ziel_zeile = f" &middot; <code>{_html.escape(a.ziel)}</code>" if a.ziel else ""
+        ablauf = datetime.fromtimestamp(a.ablauf, tz=timezone.utc).strftime("%H:%M:%S UTC")
+        token = _html.escape(a.token)
+        zeilen.append(
+            f'<li><a href="/fenster/{token}"><code>{ref}</code></a> '
+            f"({plugin}, {art}{ziel_zeile}) &mdash; laeuft ab {ablauf}</li>"
+        )
+    mehrzahl = "n" if len(eintraege) != 1 else ""
+    return (f"{_KOPF}<h1>Offene Anfragen</h1>"
+            f"<p>{len(eintraege)} Anfrage{mehrzahl} wartet, fruehste Ablaufzeit zuerst.</p>"
+            f"<ul>{''.join(zeilen)}</ul>")
 
 
 def ergebnisseite(ok: bool, referenz: str, hinweis: str, *,

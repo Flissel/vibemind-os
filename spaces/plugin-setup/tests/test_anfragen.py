@@ -50,3 +50,27 @@ def test_offen_fuer_findet_die_schwebende_anfrage_einer_referenz():
     assert anfragen.offen_fuer("REF_F").token == a.token
     anfragen.verbrauchen(a.token)
     assert anfragen.offen_fuer("REF_F") is None
+
+
+def test_alle_offenen_ist_leer_ohne_anfragen():
+    assert anfragen.alle_offenen() == []
+
+
+def test_alle_offenen_sortiert_nach_ablaufzeit_fruehste_zuerst():
+    """N7: die Listen-Seite zeigt das Dringendste zuerst -- Reihenfolge darf
+    darum nicht von der Anlage-Reihenfolge abhaengen, nur von `ablauf`."""
+    spaet = anfragen.anlegen("p", "demo", "REF_SPAET", "bearer", "")
+    frueh = anfragen.anlegen("p", "demo", "REF_FRUEH", "bearer", "")
+    anfragen._OFFEN[spaet.token] = dataclasses.replace(spaet, ablauf=time.time() + 500)
+    anfragen._OFFEN[frueh.token] = dataclasses.replace(frueh, ablauf=time.time() + 100)
+    ergebnis = anfragen.alle_offenen()
+    assert [a.referenz for a in ergebnis] == ["REF_FRUEH", "REF_SPAET"]
+
+
+def test_alle_offenen_raeumt_abgelaufene_eintraege_weg(monkeypatch):
+    monkeypatch.setattr(anfragen, "GUELTIGKEIT_SEKUNDEN", 0)
+    a = anfragen.anlegen("p", "demo", "REF_ABGELAUFEN", "bearer", "")
+    time.sleep(0.01)
+    assert anfragen.alle_offenen() == []
+    assert a.token not in anfragen._OFFEN, \
+        "alle_offenen() raeumt wie anlegen() abgelaufene Eintraege weg"

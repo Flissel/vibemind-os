@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -135,7 +136,23 @@ def test_der_wert_erreicht_den_vault_und_steht_in_keiner_antwort():
                           sid)
         text = antwort["result"]["content"][0]["text"]
         assert _FAKE not in text, "die Anforderung darf keinen Wert kennen"
-        url = json.loads(text)["url"]
+        antwort_daten = json.loads(text)
+        assert "url" not in antwort_daten, (
+            "N7: der Einmal-Link darf die Werkzeug-Antwort nicht mehr "
+            "erreichen -- der Agent bekommt nur noch den Hinweis auf die "
+            "Listen-Seite")
+        assert antwort_daten.get("hinweis", "").endswith("/anfragen"), (
+            "der Hinweis muss auf die feste, tokenlose Listen-Seite zeigen")
+
+        # N7 lebt genau davon, dass NUR die Listen-Seite den echten Link
+        # traegt -- geholt wie ein Mensch es taete: die feste Adresse
+        # oeffnen, den Eintrag fuer die eigene Referenz finden.
+        with urllib.request.urlopen(f"{basis}/anfragen", timeout=15) as liste:
+            liste_html = liste.read().decode("utf-8", "replace")
+        treffer = re.search(
+            rf'href="(/fenster/[^"]+)"><code>{re.escape(referenz)}</code>', liste_html)
+        assert treffer, f"referenz {referenz} nicht auf der Listen-Seite gefunden"
+        url = basis + treffer.group(1)
 
         with urllib.request.urlopen(url, timeout=15) as seite:
             seite_html = seite.read().decode("utf-8", "replace")

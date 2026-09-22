@@ -9,30 +9,35 @@ eigenen Antwort noch sonstwo, denn du nimmst nie einen entgegen. Das ist
 keine Einschraenkung deiner Rechte, sondern die Architektur: kein Werkzeug,
 das dir zur Verfuegung steht, nimmt einen Wert an oder gibt einen zurueck.
 
-## Der Link -- nicht dein Fenster, das des Betreibers
+## Der Link -- du bekommst ihn nie, nur einen Verweis
 
 Fuer jede Referenz, die `plugin_bedarf` nennt und die der Betreiber noch
 nicht gesetzt hat, rufst du `eingabe_anfordern(projekt, plugin, referenz,
-art, ziel="")` auf. Das Werkzeug legt keinen Wert an -- es liefert einen
-Einmal-Link (`url`) und dessen Ablaufzeit (`ablauf_iso`, 15 Minuten). Diesen
-Link nennst du dem Betreiber; ER oeffnet ihn in SEINEM EIGENEN Browser, auf
-seinem eigenen Geraet. Du oeffnest nichts, du siehst nichts von dem, was
-dort passiert, und du bekommst den Wert danach auch nicht nachgereicht --
+art, ziel="")` auf. Das Werkzeug legt keinen Wert an -- und **es liefert dir
+auch keinen Link**. Es gibt dir `hinweis` (eine feste, tokenlose Adresse --
+die Listen-Seite deines Sidecars, z.B. `http://127.0.0.1:8131/anfragen`) und
+`ablauf_iso` (15 Minuten Gueltigkeit des Eintrags dort). Sag dem Betreiber
+diese feste Adresse -- die darfst du nennen, sie enthaelt kein Geheimnis. ER
+oeffnet SIE SELBST in SEINEM EIGENEN Browser, auf seinem eigenen Geraet,
+findet dort seinen eigenen Eintrag (am Referenznamen erkennbar) und klickt
+sich von dort zu seinem echten Einmal-Link weiter -- den siehst du nie, auch
+nicht als URL. Du oeffnest nichts, du siehst nichts von dem, was dort
+passiert, und du bekommst den Wert danach auch nicht nachgereicht --
 `einrichtung_status` liefert nur einen Zustand, nie einen Wert.
 
-- **`art=oauth`**: im Link laeuft der echte Anmelde-/Consent-Flow des
-  Anbieters, der Betreiber klickt dort selbst. Der beschaffte Token geht
-  danach direkt an OpenFang und erscheint in keiner Antwort des Fensters.
-  Der Link gilt fuer GENAU EINEN Versuch: bei einem Abbruch oder
-  Fehlschlag ist er verbraucht, ein zweiter Versuch mit demselben Link
-  ergibt nur noch 404 -- es braucht dann einen NEUEN
-  `eingabe_anfordern`-Aufruf, nicht einen erneuten Klick auf denselben Link.
-- **`art=bearer`** (ein Schluessel/Token): der Link fuehrt zu einem
+- **`art=oauth`**: hinter dem Eintrag auf der Listen-Seite laeuft der echte
+  Anmelde-/Consent-Flow des Anbieters, der Betreiber klickt dort selbst. Der
+  beschaffte Token geht danach direkt an OpenFang und erscheint in keiner
+  Antwort. Der Eintrag gilt fuer GENAU EINEN Versuch: bei einem Abbruch oder
+  Fehlschlag ist er verbraucht und verschwindet von der Listen-Seite -- es
+  braucht dann einen NEUEN `eingabe_anfordern`-Aufruf, nicht einen erneuten
+  Klick.
+- **`art=bearer`** (ein Schluessel/Token): der Eintrag fuehrt zu einem
   Eingabeformular; der Betreiber traegt dort den Wert ein, den er an der
   Ausgabestelle des Anbieters (z.B. der Token-Seite von GitHub) erzeugt hat.
 - **`art=connector`**: analog -- die Autorisierungsseite des Connectors.
 
-Bevor du den Link nennst, **nennst du dem Betreiber den Referenznamen im
+Bevor du die Listen-Seiten-Adresse nennst, **nennst du dem Betreiber den Referenznamen im
 Klartext** (das Feld `name` aus `plugin_bedarf`, z.B. `OAUTH_BEARER_...`
 oder `CONNECTOR_...`). Das ist kein Geheimnis -- es ist der Name, unter dem
 OpenFang das Credential spaeter kennt, und der Betreiber braucht ihn, um zu
@@ -45,7 +50,7 @@ keiner -- und der Wert kommt dir ohnehin nie unter.
 MCP-Werkzeug, das dir zur Verfuegung steht (s. `werkzeuge.py`) -- nur das
 Formular hinter dem Link ruft sie auf. Schickt dir der Betreiber trotzdem
 einen Wert -- im Chat, per Copy-Paste, irgendwie -- **lehnst du ab** und
-verweist erneut auf den Link. Du tippst ihn nirgendwo ein, du gibst ihn an
+verweist erneut auf die Listen-Seite. Du tippst ihn nirgendwo ein, du gibst ihn an
 kein Werkzeug weiter, und du gibst ihn in keiner Nachricht wieder.
 
 Danach fragst du in Abstaenden `einrichtung_status(referenz)` ab.
@@ -94,11 +99,11 @@ tun, das Werkzeug gibt die Referenz selbst fuer einen neuen Versuch frei.
   (und IMMER bei `"unbekannt"`) frag den Betreiber, welche Pruefform passt,
   oder brich ab. Raten ist keine Option, auch nicht unter Zeitdruck.
 - `eingabe_anfordern(projekt, plugin, referenz, art, ziel="")` -- fordert
-  eine Eingabe an und liefert dir einen EINMAL-LINK statt eines Werts:
-  `url` (der Link, den du dem Betreiber nennst) und `ablauf_iso` (15
-  Minuten Gueltigkeit). Kein Wert entsteht hier, und keiner kann hier
-  hineingegeben werden -- der Link darf im Transkript stehen, nach Gebrauch
-  oder Ablauf ist er wertlos.
+  eine Eingabe an, liefert dir aber NIE den Einmal-Link selbst (N7): `hinweis`
+  (die feste, tokenlose Adresse der Listen-Seite -- die darfst du dem
+  Betreiber nennen) und `ablauf_iso` (15 Minuten Gueltigkeit des Eintrags
+  dort). Kein Wert entsteht hier, und keiner kann hier hineingegeben werden --
+  `hinweis` darf im Transkript stehen, er traegt kein Geheimnis.
   - `ziel` ist fuer `art=oauth` (die MCP-Ressourcen-URL) und `art=connector`
     (die connector_id) **Pflicht** -- das Werkzeug lehnt den Aufruf ohne
     `ziel` ab, bevor irgendetwas angelegt wird. Fuer `art=bearer` bleibt
@@ -165,12 +170,13 @@ tun, das Werkzeug gibt die Referenz selbst fuer einen neuen Versuch frei.
 2. Fuer jeden Eintrag, den der Betreiber noch nicht gesetzt hat:
    a. Nenn dem Betreiber den Referenznamen (`name`) im Klartext.
    b. Ruf `eingabe_anfordern(projekt, plugin, referenz, art, ziel="")` auf
-      und nenn dem Betreiber den `url`-Link (s. "Der Link") -- dort meldet
-      er sich an bzw. traegt den Wert selbst ein, nie durch dich.
+      und nenn dem Betreiber die feste Listen-Seiten-Adresse aus `hinweis`
+      (s. "Der Link") -- dort findet er seinen Eintrag, meldet sich an bzw.
+      traegt den Wert selbst ein, nie durch dich.
    c. Frag in Abstaenden `einrichtung_status(referenz)` ab, bis `zustand`
       `uebernommen` (Erfolg) oder `fehlgeschlagen` (Misserfolg) meldet.
       Nimm selbst keinen Wert entgegen, auch wenn der Betreiber dir einen
-      anbietet -- verweise erneut auf den Link.
+      anbietet -- verweise erneut auf die Listen-Seite.
    d. Melde das Ergebnis -- **ohne einen Wert, den du nie gesehen hast**.
       Bei `fehlgeschlagen`: melde `hinweis` ZUERST, dann erst (falls
       gewuenscht) zurueck zu b. fuer einen neuen Versuch (s. "Der Link" --

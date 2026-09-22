@@ -30,6 +30,41 @@ def test_seite_zeigt_die_referenz_und_niemals_einen_wert():
     assert _FAKE not in html
 
 
+def test_listenseite_ohne_eintraege_zeigt_klaren_leer_hinweis():
+    html = fenster.listenseite([])
+    assert "nichts offen" in html.lower()
+    assert "<ul>" not in html
+
+
+def test_listenseite_zeigt_referenz_plugin_art_und_den_echten_link():
+    a = anfragen.anlegen("proj-x", "demo-plugin", "GITHUB_PAT_TOKEN", "bearer", "")
+    html = fenster.listenseite([a])
+    assert "GITHUB_PAT_TOKEN" in html
+    assert "demo-plugin" in html
+    assert f'href="/fenster/{a.token}"' in html
+
+
+def test_listenseite_zeigt_ziel_nur_wenn_gesetzt():
+    ohne_ziel = anfragen.anlegen("p", "demo", "REF_OHNE_ZIEL", "bearer", "")
+    mit_ziel = anfragen.anlegen("p", "demo", "REF_MIT_ZIEL", "oauth", "https://mcp.example.com/mcp")
+    html_ohne = fenster.listenseite([ohne_ziel])
+    html_mit = fenster.listenseite([mit_ziel])
+    assert "https://mcp.example.com/mcp" in html_mit
+    assert "mcp.example.com" not in html_ohne
+
+
+def test_listenseite_escaped_referenz_plugin_und_ziel():
+    """Referenz/plugin/art/ziel kommen aus der Anforderung des AGENTEN --
+    dieselbe Vorsicht wie `seite_fuer` (Review Runde 3), sonst waere die
+    Listen-Seite ein Injektionsweg fuer jeden, der `eingabe_anfordern`
+    aufruft."""
+    a = anfragen.anlegen("p", "<script>alert(1)</script>", "REF_XSS", "oauth",
+                         "https://x.example/<script>")
+    html = fenster.listenseite([a])
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;" in html
+
+
 def test_entgegennehmen_reicht_genau_die_felder_der_anfrage_durch():
     a = anfragen.anlegen("proj-x", "demo-plugin", "GITHUB_PAT_TOKEN", "bearer", "")
     status, html = fenster.entgegennehmen(a.token, _FAKE, _schreiber_ok)

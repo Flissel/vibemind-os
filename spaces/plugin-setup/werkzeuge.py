@@ -21,7 +21,11 @@ fest -- nicht im WERKZEUGE-Tupel, aber weiterhin aufrufbar.
                                               dieselben Wachen wie oben, VOR dem Anlegen;
                                               gibt eine `fehlgeschlagene` Referenz per
                                               `ablage.neu_aufnehmen` fuer einen neuen
-                                              Versuch frei (Review Runde 3)
+                                              Versuch frei (Review Runde 3). N7-FIX
+                                              (2026-09-22): der Einmal-Link selbst geht
+                                              NICHT mehr an den Agenten -- er bekommt nur
+                                              den Hinweis, die feste Listen-Seite zu nennen
+                                              (server._anfragen_zeigen)
   einrichtung_status(referenz)               -- Aufgabe 3: nur `zustand`/`hinweis`,
                                               nie ein Wert, nie ein Antwortkoerper
   plugin_installieren(projekt, plugin, komponenten=None) -- Rowboat-Install;
@@ -685,13 +689,26 @@ FENSTER_BASIS = os.environ.get(
     "PLUGIN_SETUP_FENSTER_BASIS", f"http://127.0.0.1:{_MCP_PORT_FUER_FENSTER_BASIS}"
 ).rstrip("/")
 
+# N7-FIX (2026-09-22): die feste, tokenlose Listen-Seite (server.
+# _anfragen_zeigen). Dieser Link enthaelt kein Geheimnis -- er darf an den
+# Agenten gehen, anders als der Einmal-Link hinter jeder einzelnen Anfrage.
+LISTENSEITE_URL = f"{FENSTER_BASIS}/anfragen"
+
 
 def eingabe_anfordern(projekt: str, plugin: str, referenz: str, art: str, ziel: str = "") -> dict:
-    """Fordert eine Eingabe an und gibt einen EINMAL-LINK zurueck.
+    """Fordert eine Eingabe an -- der Agent bekommt NIE den Einmal-Link.
 
-    Der Agent bekommt hier einen Zeiger, keinen Wert -- und kann auch
-    keinen hineingeben. Der Link darf im Transkript landen: nach Gebrauch
-    oder nach Ablauf ist er wertlos.
+    N7-FIX (2026-09-22, Listen-Seite am Sidecar): vor diesem Fix gab diese
+    Funktion `url` zurueck (der Einmal-Link, s. Spec E1) -- das war die
+    gemessene Luecke, die E3 offen liess: der Agent haelt den Link, und ob
+    ihn ausser der Tool-Policy noch etwas Strukturelles daran hindert, ihn
+    selbst zu oeffnen, war eine Konfigurationsfrage, keine strukturelle
+    Zusicherung (s. server.py-Moduldoku). Jetzt bekommt der Agent nur noch
+    `hinweis`: die feste, tokenlose Adresse der Listen-Seite
+    (`LISTENSEITE_URL`, server._anfragen_zeigen) -- die darf er kennen und
+    weitergeben, sie traegt kein Geheimnis. Der Mensch oeffnet sie selbst
+    und findet dort seinen echten `/fenster/{token}`-Link. `einrichtung_
+    status` bleibt der Weg, wie der Agent danach den Fortschritt erfaehrt.
 
     Die Wachen sind dieselben wie in `schluessel_entgegennehmen` und laufen
     VOR dem Anlegen. Sonst waere dieser Weg genau die Luecke, die dort
@@ -789,8 +806,14 @@ def eingabe_anfordern(projekt: str, plugin: str, referenz: str, art: str, ziel: 
 
     a = anfragen.anlegen(projekt, plugin, referenz, art, ziel)
     ablauf = datetime.fromtimestamp(a.ablauf, tz=timezone.utc).isoformat()
-    return {"ok": True, "referenz": referenz, "url": f"{FENSTER_BASIS}/fenster/{a.token}",
-            "ablauf_iso": ablauf}
+    return {
+        "ok": True, "referenz": referenz, "ablauf_iso": ablauf,
+        "hinweis": (
+            f"Der Mensch oeffnet {LISTENSEITE_URL} in seinem eigenen Browser "
+            "und findet dort seinen Einmal-Link -- dieses Werkzeug bekommt "
+            "ihn nie."
+        ),
+    }
 
 
 def einrichtung_status(referenz: str) -> dict:

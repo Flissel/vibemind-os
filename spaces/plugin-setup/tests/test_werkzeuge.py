@@ -1141,7 +1141,9 @@ def test_fenster_basis_ausdruecklich_gesetzt_gewinnt_trotz_anderem_port():
     ) == "http://example.invalid:1234"
 
 
-def test_eingabe_anfordern_gibt_link_und_ablauf_aber_nie_einen_wert(monkeypatch):
+def test_eingabe_anfordern_gibt_hinweis_und_ablauf_aber_nie_den_link(monkeypatch):
+    """N7-FIX: der Agent bekommt NIE mehr den Einmal-Link -- nur noch einen
+    Hinweis, der auf die feste, tokenlose Listen-Seite zeigt."""
     # Kein echter docker-exec/psql hier -- diese Datei mockt ablage.py
     # komplett (s. Moduldoku). Eine frische Referenz meldet `ok: False`
     # (unbekannte referenz_name), also bleibt der neu_aufnehmen-Zweig aus.
@@ -1150,11 +1152,14 @@ def test_eingabe_anfordern_gibt_link_und_ablauf_aber_nie_einen_wert(monkeypatch)
     ergebnis = werkzeuge.eingabe_anfordern("proj", "demo", "OAUTH_BEARER_MCP_LINEAR_APP_MCP",
                                            "oauth", "https://mcp.linear.app/mcp")
     assert ergebnis["ok"] is True
-    assert ergebnis["url"].startswith("http://127.0.0.1:8131/fenster/")
-    assert len(ergebnis["url"].rsplit("/", 1)[1]) >= 32
+    assert "url" not in ergebnis, "der Einmal-Link darf den Agenten nie erreichen (N7)"
+    assert werkzeuge.LISTENSEITE_URL in ergebnis["hinweis"]
     assert "T" in ergebnis["ablauf_iso"]
     for verboten in ("wert", "value", "secret"):
         assert verboten not in ergebnis
+    # Der Hinweis selbst darf kein Token tragen -- er verweist nur auf die
+    # feste Listen-Seiten-Adresse, nie auf einen konkreten /fenster/-Link.
+    assert "/fenster/" not in ergebnis["hinweis"]
 
 
 def test_eingabe_anfordern_prueft_ziel_vor_dem_anlegen(monkeypatch):
@@ -1248,7 +1253,8 @@ def test_eingabe_anfordern_ruft_neu_aufnehmen_wenn_vorher_verifiziert(monkeypatc
                         lambda r: aufgerufen.append(r) or {"ok": True})
     ergebnis = werkzeuge.eingabe_anfordern("proj", "demo", "PYTEST_RETRY_VERIFIZIERT", "bearer", "")
     assert ergebnis["ok"] is True
-    assert "url" in ergebnis
+    assert "url" not in ergebnis, "der Einmal-Link darf den Agenten nie erreichen (N7)"
+    assert "hinweis" in ergebnis
     assert aufgerufen == ["PYTEST_RETRY_VERIFIZIERT"]
 
 
@@ -1333,8 +1339,11 @@ def test_eingabe_anfordern_lehnt_zweiten_link_fuer_dieselbe_referenz_ab_solange_
     assert "schon eine Anfrage" in zweiter["fehler"]
 
     # Nach Verbrauch des ersten Tokens ist die Bahn wieder frei -- die Wache
-    # blockt eine SCHWEBENDE Anfrage, keine abgeschlossene.
-    token = erster["url"].rsplit("/", 1)[1]
+    # blockt eine SCHWEBENDE Anfrage, keine abgeschlossene. Das Token selbst
+    # kommt seit dem N7-Fix nicht mehr aus der Werkzeug-Antwort (die haelt
+    # es strukturell nicht mehr) -- White-Box ueber anfragen._OFFEN, wie es
+    # auch die Listen-Seite (server._anfragen_zeigen) tut.
+    token = werkzeuge.anfragen.offen_fuer("PYTEST_SCHWEBEND_A").token
     assert werkzeuge.anfragen.verbrauchen(token) is not None
     dritter = werkzeuge.eingabe_anfordern("proj", "demo", "PYTEST_SCHWEBEND_A", "bearer", "")
     assert dritter["ok"] is True

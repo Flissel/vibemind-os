@@ -100,14 +100,20 @@ verschlossen (`file_fetch`s URL ist hart auf das lokale Gateway gebunden,
 Liste -- die Deckung ist also teils zufaellig, und "auf `profile: minimal`
 mit expliziter `alsoAllow`-Liste statt Denyliste-ueber-`full` umstellen"
 ist der richtig geformte, aber hier bewusst NICHT umgesetzte naechste
-Schritt (gehoert in dieselbe Folgerunde wie der strukturelle Fix unten,
-nicht in eine schliessende Runde). Der Fix, der die urspruengliche
-Zusicherung wiederherstellen wuerde -- `eingabe_anfordern` haendigt dem
-Agenten die Adresse gar nicht erst aus, sondern liefert sie ausschliesslich
-out-of-band an den Betreiber -- ist ebenfalls bewusst NICHT Teil dieser
-Runde (eigener Vertrags-/Entwurfswechsel fuer `eingabe_anfordern`, s.
-Task-5-Report und die Korrektur in
-`docs/superpowers/specs/2026-09-12-eingabefenster-design.md` E3).
+Schritt (gehoert in dieselbe Folgerunde, nicht in eine schliessende Runde).
+
+N7-FIX (2026-09-22): der strukturelle Fix, der die urspruengliche
+Zusicherung wiederherstellt, ist jetzt umgesetzt -- `eingabe_anfordern`
+haendigt dem Agenten die Adresse nicht mehr aus. Er bekommt nur noch den
+Hinweis, die feste, tokenlose Listen-Seite (`/anfragen`, `_anfragen_zeigen`
+unten) zu nennen; der Mensch oeffnet sie selbst und findet dort seinen
+echten Einmal-Link. Die Listen-Seite sitzt hinter derselben Loopback-Wache
+wie die Formular-Routen -- die oben beschriebene Grenze dieser Wache
+(Docker-Desktop/WSL-Bruecke) gilt darum unveraendert auch fuer sie: der
+Agent hat aber ohnehin keine Faehigkeit, die eine HTTP-Anfrage stellen
+koennte (s. oben), die Listen-Seite ist also nicht der schwaechere Punkt.
+Details: `docs/superpowers/specs/2026-09-12-eingabefenster-design.md` E3,
+`docs/superpowers/specs/2026-09-12-eingabefenster-nachzieher.md` N7.
 
 `spaces/plugin-setup` traegt bewusst KEIN `__init__.py` und ist per
 Bindestrich kein gueltiger Python-Modulname -- dieser Server (wie
@@ -225,6 +231,15 @@ def _ist_loopback(request) -> bool:
     return client is not None and client.host in _LOOPBACK_HOSTS
 
 
+async def _anfragen_zeigen(request):
+    """N7: die Listen-Seite -- tokenlos, hinter derselben Loopback-Wache wie
+    die Formular-Routen. Der Agent bekommt diese feste Adresse als Hinweis
+    von `werkzeuge.eingabe_anfordern` mit, nie einen Einmal-Link direkt."""
+    if not _ist_loopback(request):
+        return HTMLResponse(_NUR_VOM_HOST, status_code=403)
+    return HTMLResponse(fenster.listenseite(anfragen.alle_offenen()))
+
+
 async def _fenster_zeigen(request):
     if not _ist_loopback(request):
         return HTMLResponse(_NUR_VOM_HOST, status_code=403)
@@ -306,6 +321,7 @@ def _baue_server():
         server.tool()(fn)
     server.custom_route("/fenster/{token}", methods=["GET"])(_fenster_zeigen)
     server.custom_route("/fenster/{token}", methods=["POST"])(_fenster_annehmen)
+    server.custom_route("/anfragen", methods=["GET"])(_anfragen_zeigen)
     return server
 
 
