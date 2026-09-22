@@ -475,6 +475,7 @@ class OpenFangExecutor(_BaseRemoteExecutor):
         name = target.split(":", 1)[1] if target.startswith("openfang:") else target
         self.agent_name = name.strip()
         self.base = os.environ.get("OPENFANG_URL", "http://127.0.0.1:4200").rstrip("/")
+        self._headers = {"Authorization": f"Bearer {os.environ.get('OPENFANG_API_KEY', '')}"}
         self._agent_id: Optional[str] = None
 
     def _resolve_id(self, force: bool = False) -> Optional[str]:
@@ -503,7 +504,7 @@ class OpenFangExecutor(_BaseRemoteExecutor):
             # keeps the bounded resolve_budget (~8s) actually enforceable
             # across 4 attempts.
             resp = requests.get(
-                f"{self.base}/api/agents", timeout=(3.05, 4)
+                f"{self.base}/api/agents", headers=self._headers, timeout=(3.05, 4)
             )
             resp.raise_for_status()
         except requests.exceptions.RequestException as e:
@@ -594,7 +595,9 @@ class OpenFangExecutor(_BaseRemoteExecutor):
                         f"[targets:openfang] streaming failed, falling back: {e}"
                     )
             url = f"{self.base}/api/agents/{agent_id}/message"
-            resp = requests.post(url, json={"message": message}, timeout=timeout)
+            resp = requests.post(
+                url, json={"message": message}, headers=self._headers, timeout=timeout
+            )
             resp.raise_for_status()
             ct = resp.headers.get("content-type", "")
             if ct.startswith("application/json"):
@@ -724,7 +727,7 @@ class OpenFangExecutor(_BaseRemoteExecutor):
         import time as _time
         url = f"{self.base}/api/agents/{agent_id}/message/stream"
         resp = requests.post(
-            url, json={"message": message},
+            url, json={"message": message}, headers=self._headers,
             stream=True, timeout=timeout,
         )
         resp.raise_for_status()

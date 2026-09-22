@@ -2651,10 +2651,14 @@ def curator_request_broadcast_approval(proposal_id: str, payload: dict = Body(..
             "timeout_secs": 300,
         }).encode("utf-8")
         of_url = os.environ.get("OPENFANG_URL", "http://localhost:4200").rstrip("/")
+        of_headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {os.environ.get('OPENFANG_API_KEY', '')}",
+        }
         req = _ur.Request(
             f"{of_url}/api/approvals",
             data=of_payload, method="POST",
-            headers={"Content-Type": "application/json"},
+            headers=of_headers,
         )
         with _ur.urlopen(req, timeout=5) as r:
             of_resp = _json.loads(r.read() or b"{}")
@@ -3389,10 +3393,14 @@ def curator_request_approval(proposal_id: str, payload: dict = Body(...)):
             "timeout_secs": 300,
         }).encode("utf-8")
         of_url = os.environ.get("OPENFANG_URL", "http://localhost:4200").rstrip("/")
+        of_headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {os.environ.get('OPENFANG_API_KEY', '')}",
+        }
         req = _ur.Request(
             f"{of_url}/api/approvals",
             data=of_payload, method="POST",
-            headers={"Content-Type": "application/json"},
+            headers=of_headers,
         )
         with _ur.urlopen(req, timeout=5) as r:
             of_resp = _json.loads(r.read() or b"{}")
