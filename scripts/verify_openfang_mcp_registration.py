@@ -52,6 +52,30 @@ CONTRACT_FILENAME = "openfang-mcp-authority-v1.json"
 DEFAULT_BASE_URL = "http://127.0.0.1:4200"
 REQUEST_TIMEOUT_SECONDS = 10
 
+
+def _load_openfang_api_key_fallback() -> None:
+    """Fill OPENFANG_API_KEY from the repo .env if the caller's shell never
+    sourced it (D1 Stufe 2, 2026-09-22 live incident: this verifier hit a
+    real 401 from a shell that had the key in .env but not exported --
+    this script only ever read os.environ, never .env itself)."""
+    if os.environ.get("OPENFANG_API_KEY"):
+        return
+    here = Path(__file__).resolve()
+    repo_root = next((p for p in (here, *here.parents) if (p / "vibemind-os").is_dir()), None)
+    if repo_root is None:
+        return
+    env_file = repo_root / ".env"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if line.startswith("OPENFANG_API_KEY="):
+            os.environ["OPENFANG_API_KEY"] = line.split("=", 1)[1].strip().strip('"').strip("'")
+            break
+
+
+_load_openfang_api_key_fallback()
+
 GOLDEN_PATH_SERVER = "spaces-ideas"
 GOLDEN_PATH_DB = "vibemind-db"
 GOLDEN_PATH_SPACES = ("ideas", "bubbles")

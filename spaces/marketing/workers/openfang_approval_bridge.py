@@ -46,6 +46,24 @@ _POLL_INTERVAL_S = float(os.environ.get("OPENFANG_BRIDGE_POLL_INTERVAL_S", "3"))
 _HTTP_TIMEOUT_S = 8
 
 
+def _load_openfang_api_key_fallback() -> None:
+    """Fill OPENFANG_API_KEY from the repo .env if this sidecar's own
+    process environment never had it exported (D1 Stufe 2, 2026-09-22)."""
+    if os.environ.get("OPENFANG_API_KEY"):
+        return
+    env_file = REPO_ROOT / ".env"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if line.startswith("OPENFANG_API_KEY="):
+            os.environ["OPENFANG_API_KEY"] = line.split("=", 1)[1].strip().strip('"').strip("'")
+            break
+
+
+_load_openfang_api_key_fallback()
+
+
 def _openfang_url() -> str:
     return os.environ.get("OPENFANG_URL", "http://localhost:4200").rstrip("/")
 

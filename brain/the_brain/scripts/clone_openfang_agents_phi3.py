@@ -43,7 +43,6 @@ from typing import Any, Dict, List, Optional
 import requests
 
 OPENFANG_URL = os.environ.get("OPENFANG_URL", "http://127.0.0.1:4200").rstrip("/")
-OPENFANG_HEADERS = {"Authorization": f"Bearer {os.environ.get('OPENFANG_API_KEY', '')}"}
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "phi3:mini")
 # scripts/ → the_brain/ → brain/ → vibemind-os/  (4 levels up from this file)
 _VIBEMIND_OS = Path(__file__).resolve().parent.parent.parent.parent
@@ -53,6 +52,25 @@ OPENFANG_AGENTS_DIR = Path(os.environ.get(
 OPENFANG_PHI3_DIR = Path(os.environ.get(
     "OPENFANG_PHI3_DIR", _VIBEMIND_OS / "openfang" / "agents-phi3",
 ))
+
+
+def _load_openfang_api_key_fallback() -> None:
+    """Fill OPENFANG_API_KEY from the repo .env if the caller's shell never
+    sourced it (D1 Stufe 2, 2026-09-22)."""
+    if os.environ.get("OPENFANG_API_KEY"):
+        return
+    env_file = _VIBEMIND_OS.parent / ".env"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if line.startswith("OPENFANG_API_KEY="):
+            os.environ["OPENFANG_API_KEY"] = line.split("=", 1)[1].strip().strip('"').strip("'")
+            break
+
+
+_load_openfang_api_key_fallback()
+OPENFANG_HEADERS = {"Authorization": f"Bearer {os.environ.get('OPENFANG_API_KEY', '')}"}
 
 
 def fetch_agents() -> List[Dict[str, Any]]:
