@@ -8,7 +8,12 @@ services:
       - .env
     ports:
       - "3000:3000"
-      - "5001:5001"
+      # Host-side remap 5001 -> 5101 (container-internal port unchanged):
+      # 5001 collides on this host with brain/the_brain's ProductionPlanner
+      # REST API. Matches vibemind.config.json's ports.mirofish (5101) and
+      # MIROFISH_BASE_URL as set for the brain services in
+      # infra/swarm/vibemind-stack.yml.
+      - "5101:5001"
     restart: unless-stopped
     volumes:
       - ./backend/uploads:/app/backend/uploads
