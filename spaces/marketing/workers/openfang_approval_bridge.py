@@ -66,9 +66,10 @@ def _proposal_api_key() -> str:
     return k
 
 
-def _http_get_json(url: str) -> dict | None:
+def _http_get_json(url: str, headers: dict | None = None) -> dict | None:
     try:
-        with urllib.request.urlopen(url, timeout=_HTTP_TIMEOUT_S) as r:
+        req = urllib.request.Request(url, headers=headers or {})
+        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as r:
             return json.loads(r.read() or b"{}")
     except Exception as e:
         logger.debug("GET %s failed: %s", url, e)
@@ -100,7 +101,10 @@ def _http_post_json(url: str, body: dict) -> tuple[int, dict | None]:
 
 def _fetch_openfang_state() -> dict[str, str]:
     """Return {openfang_approval_id: status} for all approvals OpenFang knows."""
-    resp = _http_get_json(f"{_openfang_url()}/api/approvals")
+    resp = _http_get_json(
+        f"{_openfang_url()}/api/approvals",
+        headers={"Authorization": f"Bearer {os.environ.get('OPENFANG_API_KEY', '')}"},
+    )
     if not resp:
         return {}
     out: dict[str, str] = {}

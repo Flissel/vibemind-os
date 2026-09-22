@@ -62,6 +62,7 @@ CONFIDENCE_DISPATCH_THRESHOLD = float(os.environ.get("DISCOURSE_CONFIDENCE_THRES
 
 MIROFISH_URL = os.environ.get("MIROFISH_URL", "http://127.0.0.1:5101").rstrip("/")
 OPENFANG_URL = os.environ.get("OPENFANG_URL", "http://127.0.0.1:4200").rstrip("/")
+OPENFANG_HEADERS = {"Authorization": f"Bearer {os.environ.get('OPENFANG_API_KEY', '')}"}
 BRAIN_URL = os.environ.get("BRAIN_URL", "http://127.0.0.1:5000").rstrip("/")
 
 # Where setup_mirofish_brain_sim.py persisted the running sim id
@@ -759,6 +760,7 @@ class DiscourseEngine:
                 r = requests.post(
                     f"{of_url}/api/agents/{agent_id}/message",
                     json={"message": prompt[:30000], "sender_name": "Brain"},
+                    headers=OPENFANG_HEADERS,
                     timeout=INTENT_TIMEOUT_S,
                 )
                 if not r.ok:
@@ -930,7 +932,7 @@ class DiscourseEngine:
         if self._agents:
             return True
         try:
-            r = requests.get(f"{OPENFANG_URL}/api/agents", timeout=5)
+            r = requests.get(f"{OPENFANG_URL}/api/agents", headers=OPENFANG_HEADERS, timeout=5)
             r.raise_for_status()
             all_agents = r.json()
             phi3 = [a for a in all_agents if (a.get("name") or "").endswith("-phi3")]

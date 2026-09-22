@@ -106,12 +106,17 @@ class ResearchTarget:
         openfang_url = os.environ.get("OPENFANG_URL", "http://127.0.0.1:4200").rstrip("/")
         qdrant_url = os.environ.get("QDRANT_URL", "http://127.0.0.1:16333").rstrip("/")
         components: Dict[str, Dict[str, Any]] = {}
+        # Per-target headers: the OpenFang Bearer token must never ride along
+        # to Qdrant's or any other component's health endpoint.
+        target_headers: Dict[str, Dict[str, str]] = {
+            "openfang": {"Authorization": f"Bearer {os.environ.get('OPENFANG_API_KEY', '')}"},
+        }
         for name, url in {
             "openfang": f"{openfang_url}/api/agents",
             "qdrant": f"{qdrant_url}/healthz",
         }.items():
             try:
-                response = requests.get(url, timeout=(2, 3))
+                response = requests.get(url, headers=target_headers.get(name), timeout=(2, 3))
                 response.raise_for_status()
                 components[name] = {"ok": True, "url": url}
             except Exception as exc:

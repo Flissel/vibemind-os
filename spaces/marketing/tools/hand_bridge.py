@@ -77,6 +77,10 @@ def _openfang_url() -> str:
     return os.environ.get("OPENFANG_BASE_URL", OPENFANG_BASE_DEFAULT)
 
 
+def _openfang_headers() -> Dict[str, str]:
+    return {"Authorization": f"Bearer {os.environ.get('OPENFANG_API_KEY', '')}"}
+
+
 def _api_base() -> str:
     return os.environ.get("MARKETING_API_BASE_URL", "http://127.0.0.1:5510")
 
@@ -89,7 +93,7 @@ def _resolve_hand_agent_id(hand_id: str, base: str) -> Optional[str]:
     Hand isn't activated.
     """
     try:
-        req = urllib.request.Request(f"{base}/api/hands", method="GET")
+        req = urllib.request.Request(f"{base}/api/hands", method="GET", headers=_openfang_headers())
         with urllib.request.urlopen(req, timeout=10) as r:
             data = json.loads(r.read() or b"[]")
     except Exception as e:
@@ -164,7 +168,7 @@ def request_hand_research(hand_id: str,
                 f"{of_base}/api/agents/{agent_id}/message",
                 data=payload,
                 method="POST",
-                headers={"Content-Type": "application/json"},
+                headers={"Content-Type": "application/json", **_openfang_headers()},
             )
             with urllib.request.urlopen(req, timeout=timeout_s) as r:
                 resp = json.loads(r.read() or b"{}")
