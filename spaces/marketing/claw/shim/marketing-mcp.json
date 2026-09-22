@@ -54,6 +54,8 @@
     "mcp__laura__search_material",
     "mcp__laura__list_exports",
     "mcp__laura__get_export",
+    "mcp__laura__download_url_for_asset",
+    "mcp__laura__download_url_for_export",
     "mcp__laura__import_status",
     "mcp__laura__job_status",
     "mcp__laura__production_status",
