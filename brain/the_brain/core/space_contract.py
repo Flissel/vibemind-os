@@ -6,6 +6,7 @@ treats that structural result as external execution availability.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
@@ -19,8 +20,50 @@ CANONICAL_ALIASES: Dict[str, str] = {
     "shuttles": "bubbles",
 }
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_REGISTRY_PATH = _REPO_ROOT / "config" / "space_agent_registry.yml"
+_REGISTRY_ENV = "SPACE_AGENT_REGISTRY_PATH"
+_REGISTRY_RELATIVE = Path("config") / "space_agent_registry.yml"
+
+
+class RegistryNotFound(FileNotFoundError):
+    """Die Space-Registry liegt nirgends, wo dieses Modul sie erwartet."""
+
+
+def resolve_registry_path(start: Optional[Path] = None) -> Path:
+    """Findet `config/space_agent_registry.yml`, ohne die Ordnertiefe zu raten.
+
+    Vorher stand an vier Stellen `Path(__file__).resolve().parents[3]`. Das
+    trifft im Repo (`brain/the_brain/core/x.py` -> `vibemind-os`) und bricht in
+    der Ausbringung, wo dieselbe Datei als `/app/core/x.py` liegt: dort gibt es
+    keine vier Eltern, und Python wirft `IndexError: 3` - eine Meldung, die
+    nichts ueber die Ursache sagt. In `space_contract` stand die Zeile sogar auf
+    Modulebene, der Import scheiterte also komplett.
+
+    Reihenfolge:
+      1. `SPACE_AGENT_REGISTRY_PATH` - die ausdrueckliche Ansage gewinnt immer.
+         Denselben Namen setzt bereits `Dockerfile.deterministic-gateway`.
+      2. Aufwaerts suchen, bis `config/space_agent_registry.yml` auftaucht.
+         Das kommt ohne jede Annahme ueber die Tiefe aus.
+      3. Sonst `RegistryNotFound` mit allen geprueften Pfaden - ein Aufrufer
+         soll lesen koennen, WO gesucht wurde, statt `IndexError: 3` zu sehen.
+    """
+    configured = os.environ.get(_REGISTRY_ENV, "").strip()
+    if configured:
+        return Path(configured)
+
+    here = (start or Path(__file__)).resolve()
+    geprueft = []
+    for parent in here.parents:
+        kandidat = parent / _REGISTRY_RELATIVE
+        geprueft.append(kandidat)
+        if kandidat.is_file():
+            return kandidat
+
+    raise RegistryNotFound(
+        f"space registry not found. Set {_REGISTRY_ENV}, or place "
+        f"{_REGISTRY_RELATIVE} above {here}. Tried: "
+        + ", ".join(str(p) for p in geprueft)
+    )
+
 
 
 @dataclass(frozen=True)
@@ -32,7 +75,11 @@ class SpaceContract:
     event_space_map: Mapping[str, str]
 
 
-def load_space_contract(path: Path = DEFAULT_REGISTRY_PATH) -> SpaceContract:
+def load_space_contract(path: Optional[Path] = None) -> SpaceContract:
+    # Erst beim Aufruf aufloesen, nicht beim Import: ein Modul, das sich
+    # beim Laden am Dateisystem festbeisst, nimmt jedem Aufrufer die
+    # Moeglichkeit, den Pfad selbst zu setzen.
+    path = Path(path) if path is not None else resolve_registry_path()
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     spaces = raw.get("spaces")
     if not isinstance(spaces, dict) or not spaces:

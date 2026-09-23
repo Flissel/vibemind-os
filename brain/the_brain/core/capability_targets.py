@@ -1105,10 +1105,11 @@ _RUNTIME_AUTHORITY_REF_KEYS = {"approval_ref", "cost_ref"}
 
 
 def _space_registry_path() -> Path:
-    configured = os.environ.get("SPACE_AGENT_REGISTRY_PATH", "").strip()
-    if configured:
-        return Path(configured)
-    return Path(__file__).resolve().parents[3] / "config" / "space_agent_registry.yml"
+    # Gemeinsame Aufloesung (space_contract.resolve_registry_path): die
+    # Variable gewinnt, sonst wird aufwaerts gesucht. Vorher stand hier
+    # parents[3] - im Container gibt es die nicht.
+    from .space_contract import resolve_registry_path
+    return resolve_registry_path()
 
 
 @dataclass(frozen=True)
