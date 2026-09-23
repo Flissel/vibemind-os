@@ -80,6 +80,37 @@ def _canonical_space_event_agent(event_id: str) -> Optional[str]:
     return agent.strip()
 
 
+def _self_prior_beobachtungen(plan: Any, hop_results: List[Any]) -> List[Tuple[str, bool]]:
+    """Welche (capability, success)-Paare sollen das Selbstbild aktualisieren?
+
+    Brain T1: nur verifizierte Schritte lehren das Selbstbild etwas.
+    `contract_pass is None` heisst "niemand hat nachgesehen" - kein Signal,
+    diese Hops werden uebersprungen. Jede Capability zaehlt hoechstens
+    einmal (der erste verifizierte Treffer zaehlt). Testlaeufe
+    (decision_outcome.is_test_run) liefern nichts, damit sie das
+    Selbstbild nicht verzerren. Capabilities ohne Namen werden ignoriert.
+    """
+    from .decision_outcome import is_test_run
+
+    intent = getattr(plan, "intent", "") or ""
+    trace_id = getattr(plan, "trace_id", "") or ""
+    if is_test_run(intent, trace_id):
+        return []
+
+    beobachtungen: List[Tuple[str, bool]] = []
+    seen_caps: Set[str] = set()
+    for hop in hop_results or []:
+        cap = getattr(hop, "capability", None) or ""
+        if not cap or cap in seen_caps:
+            continue
+        contract_pass = getattr(hop, "contract_pass", None)
+        if contract_pass is None:
+            continue
+        seen_caps.add(cap)
+        beobachtungen.append((cap, contract_pass is True))
+    return beobachtungen
+
+
 # ── Plan recording (Phase 6.12) ──────────────────────────────────────
 
 
@@ -1069,17 +1100,13 @@ class PlanExecutor:
                         kg=self.kg,
                         duration_ms=int(elapsed * 1000),
                     )
-                    # Update self-model: one trait per capability used
-                    seen_caps: set = set()
-                    for hr in hop_results_list:
-                        cap = hr.capability or ""
-                        if not cap or cap in seen_caps:
-                            continue
-                        seen_caps.add(cap)
+                    # Update self-model: one trait per capability used,
+                    # taught only by verified outcomes (Brain T1).
+                    for cap, success in _self_prior_beobachtungen(plan, hop_results_list):
                         decision_self_prior.update(
                             intent_text=plan.intent or "",
                             capability=cap,
-                            success=bool(hr.ok),
+                            success=success,
                             reward=None,
                             plan_id=plan.plan_id,
                             kg=self.kg,

@@ -14,9 +14,15 @@ Schema of a decision_record (lives in `brain-decisions`):
     rationale         Plan rationale from Llama
     capability_chain  ["bubble_create", "openfang:brain-coder", ...]
     hops_count        int
-    success_count     int (hops where ok=True)
+    success_count     int (hops where ok=True) — kept for backward-compat
     fail_count        int
-    outcome           "success" | "partial" | "failure"
+    outcome           "success" | "partial" | "failure" | "unverified"
+                      — aus contract_pass (decision_outcome.verified_outcome),
+                        nicht aus ok
+    verified_success  int (hops where contract_pass is True)
+    verified_failure  int (hops where contract_pass is False)
+    unverified        int (hops without an independent check)
+    is_test           bool — test run, excluded from learning
     reward            float in [-1, 1]  — explicit user feedback if any
     duration_ms       Plan wall-clock
     created_at        unix-ts
@@ -96,6 +102,13 @@ def record(
         summary = _summarize(plan, hop_results)
         content_blob = f"{intent}\n---rationale---\n{rationale}\n---hops---\n{summary}"
 
+        from core.decision_outcome import counts as _counts
+        from core.decision_outcome import is_test_run, verified_outcome
+        trace_id = (getattr(plan, "trace_id", "") if not isinstance(plan, dict)
+                    else plan.get("trace_id", "")) or ""
+        verifiziert = _counts(hop_results)
+        outcome = verified_outcome(hop_results)
+
         payload = {
             "plan_id": plan_id,
             "intent": intent,
@@ -105,6 +118,8 @@ def record(
             "success_count": success_count,
             "fail_count": fail_count,
             "outcome": outcome,
+            **verifiziert,
+            "is_test": is_test_run(intent, trace_id),
             "reward": float(reward) if reward is not None else 0.0,
             "duration_ms": int(duration_ms) if duration_ms else 0,
             "summary": summary,
