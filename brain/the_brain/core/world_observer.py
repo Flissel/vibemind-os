@@ -216,6 +216,30 @@ def _check_http_ok(spec: Dict[str, Any]):
         return None, {"url": url}, f"http probe error: {e}"
 
 
+def _supabase_zugang():
+    """(base, headers, grund) fuer eine unabhaengige Supabase-Nachfrage.
+
+    Keine Vorgabewerte: eine tote Vorgabeadresse oder ein Platzhalter-Schluessel
+    liessen jede Nachfrage still ins Leere laufen (bis 2026-09-23 der Fall).
+    Der Schluessel kommt ueber config.get_secret, das SUPABASE_ANON_KEY_FILE,
+    /run/secrets und die Umgebung der Reihe nach liest. Nur `apikey`, ohne
+    Bearer: PostgREST behandelt die Anfrage dann als anon, so wie die Clients
+    im Betrieb.
+    """
+    base = (os.environ.get("SUPABASE_URL") or "").strip().rstrip("/")
+    if not base:
+        return None, {}, "SUPABASE_URL fehlt - keine Nachfrage moeglich"
+    try:
+        from core.config import get_secret
+        key = get_secret("SUPABASE_ANON_KEY")
+    except Exception:
+        key = os.environ.get("SUPABASE_ANON_KEY")
+    key = (key or "").strip()
+    if not key:
+        return None, {}, "kein Supabase-Schluessel (SUPABASE_ANON_KEY[_FILE])"
+    return base, {"apikey": key}, ""
+
+
 def _check_supabase_row(spec: Dict[str, Any]):
     """Ground-truth for supabase ops via an INDEPENDENT re-query (Baustein D.1).
 
@@ -231,8 +255,9 @@ def _check_supabase_row(spec: Dict[str, Any]):
     expect = (spec.get("expect") or "present").lower()
     if not match:
         return None, {}, "no match filter (nothing to re-query)"
-    base = os.environ.get("SUPABASE_URL", "http://192.168.178.65:54321").rstrip("/")
-    key = os.environ.get("SUPABASE_ANON_KEY", "anon")
+    base, hdr, grund = _supabase_zugang()
+    if base is None:
+        return None, {}, grund
     try:
         import requests  # lazy
     except Exception:
@@ -240,7 +265,7 @@ def _check_supabase_row(spec: Dict[str, Any]):
     try:
         r = requests.get(
             f"{base}/rest/v1/{table}?{match}&select=id&limit=1",
-            headers={"apikey": key}, timeout=OBSERVE_TIMEOUT,
+            headers=hdr, timeout=OBSERVE_TIMEOUT,
         )
         if r.status_code >= 400:
             return None, {"status_code": r.status_code}, f"supabase re-query {r.status_code}"
@@ -265,14 +290,14 @@ def _check_supabase_edge(spec: Dict[str, Any]):
     expect = (spec.get("expect") or "present").lower()
     if not title_a or not title_b:
         return None, {}, "missing edge endpoints (cannot verify)"
-    base = os.environ.get("SUPABASE_URL", "http://192.168.178.65:54321").rstrip("/")
-    key = os.environ.get("SUPABASE_ANON_KEY", "anon")
+    base, hdr, grund = _supabase_zugang()
+    if base is None:
+        return None, {}, grund
     try:
         import requests  # lazy
         import urllib.parse as _u
     except Exception:
         return None, {}, "requests not available"
-    hdr = {"apikey": key}
 
     def _node_id(title):
         r = requests.get(
@@ -387,14 +412,14 @@ def _check_supabase_node_in_bubble(spec: Dict[str, Any]):
     expect = (spec.get("expect") or "present").lower()
     if not node_title or not bubble_title:
         return None, {}, "missing node/bubble (cannot verify)"
-    base = os.environ.get("SUPABASE_URL", "http://192.168.178.65:54321").rstrip("/")
-    key = os.environ.get("SUPABASE_ANON_KEY", "anon")
+    base, hdr, grund = _supabase_zugang()
+    if base is None:
+        return None, {}, grund
     try:
         import requests  # lazy
         import urllib.parse as _u
     except Exception:
         return None, {}, "requests not available"
-    hdr = {"apikey": key}
     try:
         r = requests.get(
             f"{base}/rest/v1/ideas?title=eq.{_u.quote(bubble_title)}&select=id&limit=1",
