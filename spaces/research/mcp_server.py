@@ -191,6 +191,29 @@ def _write_job_file(job_id: str, payload: dict) -> None:
     )
 
 
+def _openfang_api_key() -> str:
+    """OPENFANG_API_KEY aus der Umgebung, sonst aus der .env im Repo-Root.
+
+    Gleiches Muster wie scripts/verify_openfang_mcp_registration.py (D1 Stufe 2):
+    der MCP-Server laeuft oft aus einer Shell, die .env nie geladen hat.
+    """
+    key = os.environ.get("OPENFANG_API_KEY", "").strip()
+    if key:
+        return key
+    here = pathlib.Path(__file__).resolve()
+    repo_root = next((p for p in here.parents if (p / "vibemind-os").is_dir()), None)
+    if repo_root is None:
+        return ""
+    env_file = repo_root / ".env"
+    if not env_file.is_file():
+        return ""
+    for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if line.startswith("OPENFANG_API_KEY="):
+            return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return ""
+
+
 def _spawn_agent_call(job_id: str, brief_text: str) -> None:
     """Stoesst den Agentenlauf an, ohne auf ihn zu warten.
 
@@ -223,15 +246,25 @@ def _spawn_agent_call(job_id: str, brief_text: str) -> None:
     url = f"{base}/api/agents/{RESEARCHER_AGENT_ID}/message"
     payload = json.dumps({"message": brief_text}, ensure_ascii=False)
 
+    # D1 Stufe 2: :4200 verlangt den Bearer-Key (seit OpenFang 0.6.9 auch
+    # von Loopback). Der Key geht ueber die Umgebung ans Kind, nie in argv —
+    # die Kommandozeile ist in der Prozessliste fuer jeden lesbar.
     script = (
-        "import sys,urllib.request\n"
+        "import os,sys,urllib.request\n"
         "with open(sys.argv[2],'r',encoding='utf-8') as fh:\n"
         "    body=fh.read()\n"
+        "headers={'Content-Type':'application/json'}\n"
+        "key=os.environ.get('OPENFANG_API_KEY','').strip()\n"
+        "if key:\n"
+        "    headers['Authorization']='Bearer '+key\n"
         "req=urllib.request.Request(sys.argv[1],"
-        "data=body.encode('utf-8'),method='POST',"
-        "headers={'Content-Type':'application/json'})\n"
+        "data=body.encode('utf-8'),method='POST',headers=headers)\n"
         "urllib.request.urlopen(req,timeout=5400).read()\n"
     )
+    child_env = dict(os.environ)
+    api_key = _openfang_api_key()
+    if api_key:
+        child_env["OPENFANG_API_KEY"] = api_key
 
     try:
         ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
@@ -242,7 +275,7 @@ def _spawn_agent_call(job_id: str, brief_text: str) -> None:
         try:
             subprocess.Popen(
                 [sys.executable, "-c", script, url, str(request_path)],
-                stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+                stdout=log, stderr=log, stdin=subprocess.DEVNULL, env=child_env,
             )
         finally:
             # Das Kind erbt sein eigenes Handle; das Elternhandle hier zu

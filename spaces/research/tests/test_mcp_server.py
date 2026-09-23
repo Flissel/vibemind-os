@@ -808,5 +808,61 @@ class FinalBriefPathTests(unittest.TestCase):
         self.assertIn(result["job_id"], result["report_path"])
 
 
+class ResearchStartSendsOpenFangKeyTests(unittest.TestCase):
+    """Seit OpenFang 0.6.9 (23.09.2026) verlangt :4200 den Bearer-Key auch von
+    Loopback-Aufrufern. Der Research-Start schickte keinen Header — jeder
+    Auftrag scheiterte still mit 401, sichtbar nur in der Spawn-Logdatei.
+    Dieser Test faehrt den ECHTEN Kindprozess gegen einen lokalen HTTP-Server.
+    """
+
+    def test_spawned_call_sends_bearer_key_without_putting_it_on_argv(self) -> None:
+        import http.server
+        import os
+        import threading
+        import time
+
+        seen: dict = {}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                seen["auth"] = self.headers.get("Authorization")
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *args) -> None:
+                pass
+
+        httpd = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as raw:
+                server = load_server()
+                server.ARTIFACT_DIR = Path(raw)
+                env = {
+                    "OPENFANG_URL": f"http://127.0.0.1:{httpd.server_port}",
+                    "OPENFANG_API_KEY": "test-schluessel-123",
+                }
+                real_popen = server.subprocess.Popen
+                argv_seen: list = []
+
+                def spy(args, **kwargs):
+                    argv_seen.extend(args)
+                    return real_popen(args, **kwargs)
+
+                with mock.patch.dict(os.environ, env), \
+                     mock.patch.object(server.subprocess, "Popen", side_effect=spy):
+                    server._spawn_agent_call("job_v1_0000000000000000000000000K", "x")
+                    deadline = time.monotonic() + 20
+                    while "auth" not in seen and time.monotonic() < deadline:
+                        time.sleep(0.1)
+
+            self.assertEqual(seen.get("auth"), "Bearer test-schluessel-123")
+            self.assertFalse(any("test-schluessel-123" in str(a) for a in argv_seen))
+        finally:
+            httpd.shutdown()
+
+
 if __name__ == "__main__":
     unittest.main()
