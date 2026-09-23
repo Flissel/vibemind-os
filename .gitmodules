@@ -46,3 +46,7 @@
 [submodule "spaces/learning"]
 	path = spaces/learning
 	url = https://github.com/Flissel/vibemind-learning.git
+[submodule "spaces/coding/clawcode"]
+	path = spaces/coding/clawcode
+	url = https://github.com/Flissel/ClawCode.git
+	branch = main
