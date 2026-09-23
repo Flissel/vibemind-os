@@ -1,0 +1,152 @@
+# Wirkungsklasse je Capability (Brain T1, Spec 2026-09-23-brain-fertigbauen).
+#   write    aendert einen Speicher (Supabase, Datei, Code, Graph) -> truth: Pflicht
+#   read     Abfrage/Status -> Nachpruefung auf zweitem Weg (Stichprobe genuegt)
+#   external wirkt ausserhalb des Brains -> Spur am Ziel pruefen
+#   answer   reine LLM-Antwort, kein Weltzustand -> nichts nachzufragen
+#   unrouted kein execution_target, nicht ausfuehrbar
+#
+# `restliste`: write-Capabilities OHNE truth:-Pruefung, je mit Begruendung.
+# tests/test_capability_effects.py sorgt dafuer, dass sie nur schrumpft.
+effects:
+  # --- write, mit truth: ---
+  schedule_openclaw_cron: write
+  schedule_create: write
+  schedule_cancel: write
+  schedule_modify: write
+  schedule_snooze: write
+  bubble_evaluate: write
+  bubble_create: write
+  bubble_promote: write
+  bubble_update: write
+  bubble_delete: write
+  bubble_enter: write
+  idea_add: write
+  idea_to_project: write
+  idea_connect: write
+  idea_auto_link: write
+  idea_disconnect: write
+  idea_link_to_root: write
+  idea_move: write
+  idea_update: write
+  idea_delete: write
+  idea_create_batch: write
+  idea_convert_format: write
+  idea_format_table: write
+  idea_format_note: write
+  idea_format_action_list: write
+  idea_format_pros_cons: write
+  idea_format_hierarchy: write
+  idea_format_specs: write
+  idea_format_kanban: write
+  idea_format_mindmap: write
+  idea_format_swot: write
+  idea_format_user_story: write
+  idea_format_flowchart: write
+  coding_task_anthropic: write
+  coding_task: write
+  rose.accept: write
+  # --- write, truth: kommt in Task 5 ---
+  component_note_write: write
+  code_generate: write
+  code_modify: write
+  code_cancel: write
+  code_preview_start: write
+  code_preview_stop: write
+  video_demo_build: write
+  video_lipsync: write
+  video_voice_clone: write
+  video_voice_tts: write
+  video_team_run: write
+  # --- write, Restliste ---
+  idea_format_revert: write
+  bubble_delete_all: write
+  bubble_generate_embeddings: write
+  research_to_idea: write
+  rowboat_email_draft: write
+  rowboat_deck: write
+  openfang_agent_create: write
+  mirofish.graph.build: write
+  mirofish.simulate: write
+  minibook.discuss: write
+  minibook.collaborate: write
+  som_execute: write
+  # --- read ---
+  schedule_status: read
+  schedule_list: read
+  bubble_score: read
+  bubble_list: read
+  bubble_find: read
+  bubble_stats: read
+  idea_list: read
+  idea_count: read
+  idea_find: read
+  idea_format_list: read
+  idea_format_get: read
+  component_requirements: read
+  code_status: read
+  code_show: read
+  code_list: read
+  mirofish.graph.search: read
+  mirofish.status: read
+  research_web: read
+  research_scrape: read
+  rowboat_search: read
+  rowboat_query: read
+  rowboat_status: read
+  minibook.list_projects: read
+  minibook.status: read
+  rose.recommend: read
+  rose.status: read
+  video_status: read
+  video_team_status: read
+  video_vision: read
+  # --- external ---
+  desktop_skill: external
+  browser_automation: external
+  som_resume: external
+  # --- answer ---
+  chitchat: answer
+  bubble_exit: answer
+  idea_expand: answer
+  idea_classify: answer
+  idea_explain: answer
+  idea_analyze_links: answer
+  research_summarize: answer
+  rowboat_chat: answer
+  rowboat_meeting_brief: answer
+  mirofish.predict: answer
+  mirofish.evaluate: answer
+  mirofish.interview: answer
+  som_plan: answer
+  # --- unrouted (kein execution_target) ---
+  agentfarm_create_team: unrouted
+  agentfarm_run: unrouted
+  agentfarm_status: unrouted
+  agentfarm_list_teams: unrouted
+  agentfarm_stop: unrouted
+  agentfarm_results: unrouted
+  agentfarm_list_templates: unrouted
+  agentfarm_collaborate: unrouted
+  code_search: unrouted
+  security_scan: unrouted
+  incident_response: unrouted
+  log_analysis: unrouted
+  knowledge_query: unrouted
+  email_action: unrouted
+  site_check: unrouted
+  code_review: unrouted
+  architecture_question: unrouted
+
+restliste:
+  idea_format_revert: "Beweis braucht content_json == previous_content_json; PostgREST kann zwei Spalten nicht vergleichen -> RPC oder Lese-Endpunkt noetig"
+  bubble_delete_all: "kein execution_target; Loeschen aller Bubbles braucht zuerst eine Freigabe-Regel, dann truth:supabase_row expect absent"
+  bubble_generate_embeddings: "kein execution_target; Nachweis waere embedding_vector IS NOT NULL je Knoten"
+  research_to_idea: "Ergebnisform von research:to_idea nicht belegt; Nachpruefung ueber ideas-Zeile sobald die ID im Ergebnis steht"
+  rowboat_email_draft: "Entwurf entsteht in Rowboat; Nachweis ueber den Rowboat-Dokument-MCP aus T2"
+  rowboat_deck: "Deck entsteht in Rowboat; Nachweis ueber den Rowboat-Dokument-MCP aus T2"
+  openfang_agent_create: "freie Agent-Antwort ohne festen Namen; Nachweis ueber den OpenFang-Auftrag mit Rueckmeldung aus T2"
+  mirofish.graph.build: "MiroFish hat keinen belegten Lese-Endpunkt fuer den gebauten Graphen"
+  mirofish.simulate: "Simulationsergebnis nur im Rueckgabewert; MiroFish-Lese-Endpunkt fehlt"
+  minibook.discuss: "rule:minibook_verified_result liest nur den Rueckgabewert; unabhaengige Nachfrage an Minibook fehlt"
+  minibook.collaborate: "wie minibook.discuss"
+  som_execute: "SoM-Kette fuehrt Unterschritte aus, die selbst geprueft werden; eigener Gesamtnachweis offen"
