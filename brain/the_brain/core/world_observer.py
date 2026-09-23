@@ -195,6 +195,9 @@ def _check_http_ok(spec: Dict[str, Any]):
             url = (os.environ.get(env_name) or "").strip()
             if not url:
                 return None, {}, f"{env_name} is required"
+            path = (spec.get("path") or "").strip()
+            if path:
+                url = url.rstrip("/") + "/" + path.lstrip("/")
     if not url:
         return None, {}, "no url given"
     expect_lt = int(spec.get("expect_status_lt", 400))
@@ -447,6 +450,51 @@ def _check_supabase_node_in_bubble(spec: Dict[str, Any]):
         return None, {"node": node_title, "bubble": bubble_title}, f"node-in-bubble probe error: {e}"
 
 
+def _check_supabase_bubble_node_count(spec: Dict[str, Any]):
+    """Nachpruefung einer Zaehlung (idea_count): canvas_nodes einer Bubble auf
+    zweitem Weg zaehlen. spec:
+        {check: supabase_bubble_node_count, bubble_title: X, expect_count: "12"}
+    Die Zahl kommt aus dem Ergebnistext der Operation ({result_count}). Ist sie
+    keine ganze Zahl, wird nicht nachgefragt (UNVERIFIED)."""
+    bubble_title = (spec.get("bubble_title") or "").strip()
+    try:
+        behauptet = int(str(spec.get("expect_count", "")).strip())
+    except ValueError:
+        return None, {}, "keine behauptete Zahl (nichts nachzuzaehlen)"
+    if not bubble_title:
+        return None, {}, "keine Bubble angegeben"
+    base, hdr, grund = _supabase_zugang()
+    if base is None:
+        return None, {}, grund
+    try:
+        import requests  # lazy
+        import urllib.parse as _u
+    except Exception:
+        return None, {}, "requests not available"
+    try:
+        r = requests.get(
+            f"{base}/rest/v1/ideas?title=eq.{_u.quote(bubble_title)}&select=id&limit=1",
+            headers=hdr, timeout=OBSERVE_TIMEOUT)
+        brows = r.json() if (r.status_code < 400 and r.content) else []
+        if not brows:
+            return None, {"bubble": bubble_title}, "Bubble nicht gefunden (nicht pruefbar)"
+        bid = brows[0]["id"]
+        r2 = requests.get(
+            f"{base}/rest/v1/canvas_nodes?linked_idea_id=eq.{bid}&select=id&limit=1",
+            headers={**hdr, "Prefer": "count=exact"}, timeout=OBSERVE_TIMEOUT)
+        if r2.status_code >= 400:
+            return None, {"status_code": r2.status_code}, f"Zaehl-Nachfrage {r2.status_code}"
+        cr = (r2.headers or {}).get("Content-Range", "")
+        if "/" not in cr or not cr.rsplit("/", 1)[1].isdigit():
+            return None, {"content_range": cr}, "keine Gesamtzahl in Content-Range"
+        gezaehlt = int(cr.rsplit("/", 1)[1])
+        ok = gezaehlt == behauptet
+        return ok, {"bubble": bubble_title, "behauptet": behauptet, "gezaehlt": gezaehlt}, (
+            f"supabase: {gezaehlt} Knoten gezaehlt, {behauptet} behauptet")
+    except Exception as e:  # fail-safe
+        return None, {"bubble": bubble_title}, f"Zaehl-Probe Fehler: {e}"
+
+
 _SQLITE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -544,6 +592,7 @@ _CHECKS = {
     "supabase_edge": _check_supabase_edge,
     "supabase_edge_ids": _check_supabase_edge_ids,
     "supabase_node_in_bubble": _check_supabase_node_in_bubble,
+    "supabase_bubble_node_count": _check_supabase_bubble_node_count,
 }
 
 

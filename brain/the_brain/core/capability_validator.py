@@ -429,12 +429,16 @@ class CapabilityValidator:
         # /-rooted, with an extension) — lets a file_exists check confirm a coding
         # agent's "written to `C:/.../x.py`" actually produced the file.
         mp = re.search(r"([A-Za-z]:[\\/][^\s`'\"<>]+\.\w{1,6}|/[\w./\-]+\.\w{1,6})", rs)
+        # {result_count}: die Zahl, die eine Zaehl-Operation meldet ("'X' has 12
+        # ideas." / "12 ideas in 'X'") - Grundlage fuer supabase_bubble_node_count.
+        mc = re.search(r"\b(\d+)\s+ideas?\b", rs)
         subs = {"arg": str(arg or "").strip(), "result": rs[:200],
                 "result_id": m.group(1) if m else "",
                 "result_title": quoted[0] if quoted else "",
                 "result_title2": quoted[1] if len(quoted) > 1 else "",
                 "result_format": mf.group(1) if mf else "",
-                "result_path": mp.group(1) if mp else ""}
+                "result_path": mp.group(1) if mp else "",
+                "result_count": mc.group(1) if mc else ""}
         out = {}
         for k, val in (pc or {}).items():
             if isinstance(val, str):
