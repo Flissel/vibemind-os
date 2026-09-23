@@ -16,6 +16,10 @@ from core.capability_validator import CapabilityValidator
 @pytest.fixture(autouse=True)
 def _an(monkeypatch, tmp_path):
     monkeypatch.setattr(wo, "GROUND_TRUTH_ENABLED", True)
+    # get_secret() prueft <NAME>_FILE VOR der blossen Env-Variable - eine echte
+    # SUPABASE_ANON_KEY_FILE auf dieser Maschine wuerde sonst den Vorrang haben
+    # und der Test wuerde still einen echten Schluessel benutzen.
+    monkeypatch.delenv("SUPABASE_ANON_KEY_FILE", raising=False)
     monkeypatch.setenv("SUPABASE_URL", "http://supabase-kong:8000")
     monkeypatch.setenv("SUPABASE_ANON_KEY", "k")
     # Ein echtes .env oder /run/secrets darf hier nicht durchsickern - wie in
