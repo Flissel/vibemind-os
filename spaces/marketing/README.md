@@ -1,5 +1,9 @@
 # Vibemind Marketing-Ops Space
 
+> **Cockpit evidence contract:** [COCKPIT_CONTRACT.md](docs/COCKPIT_CONTRACT.md)
+> is authoritative for the static inventory (migrations, event-to-tool mappings,
+> pytest definitions). Counts live only there, so they cannot drift here.
+
 **Status:** Foundation komplett (2026-06-02), bereit für Schicht 2 HTML-Mockup.
 
 This space lives at `vibemind-os/spaces/marketing/` (moved here 2026-08-17). It was

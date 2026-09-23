@@ -1,5 +1,9 @@
 # Marketing-Ops — Agent + Developer Guide
 
+> **Cockpit evidence contract:** [COCKPIT_CONTRACT.md](docs/COCKPIT_CONTRACT.md)
+> is authoritative for the static inventory (migrations, event-to-tool mappings,
+> pytest definitions). Counts live only there, so they cannot drift here.
+
 This file is the entry-point for any agent (or human) touching
 `spaces/marketing/`. It enumerates the modules, their contracts, the
 12+3 safety gates between an LLM-Hand discovery and a sent mail, and

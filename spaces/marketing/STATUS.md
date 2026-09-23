@@ -1,5 +1,9 @@
 # Marketing-Ops — Status snapshot
 
+> **Cockpit evidence contract:** [COCKPIT_CONTRACT.md](docs/COCKPIT_CONTRACT.md)
+> is authoritative for the static inventory (migrations, event-to-tool mappings,
+> pytest definitions). Counts live only there, so they cannot drift here.
+
 _Last refreshed: 2026-06-08 (committed). For live counts run
 `python -c "from spaces.marketing.tools.marketing_tools import get_stats; print(get_stats())"`._
 

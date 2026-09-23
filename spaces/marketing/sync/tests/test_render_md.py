@@ -1,7 +1,6 @@
 """Snapshot + property tests for render_md.
 
-These don't need pytest — they're plain functions called from __main__.
-Run:
+The tests run under pytest and remain callable from ``__main__``. Run:
     python -m spaces.marketing.sync.tests.test_render_md
 
 Exit 0 if all pass.
@@ -53,24 +52,22 @@ def _render(row) -> str:
     return md
 
 
-def _check(label: str, cond: bool, detail: str = "") -> bool:
+def _check(label: str, cond: bool, detail: str = "") -> None:
     mark = "PASS" if cond else "FAIL"
     print(f"  [{mark}] {label}" + (f"  -- {detail}" if detail else ""))
-    return cond
+    assert cond, detail or label
 
 
 def test_empty_account():
     """Account with 0 emails - all empty-states should render correctly."""
     md = _render(_sample_row())
-    return all([
-        _check("empty: 'No emails' text", "_No emails" in md),
-        _check("empty: 'None.' for tags", "## Tags\n\n_None._" in md),
-        _check("empty: 'Not in any audience' text", "_Not in any audience._" in md),
-        _check("empty: 'No campaigns sent' text", "_No campaigns sent" in md),
-        _check("empty: 'No inbound messages' text", "_No inbound messages._" in md),
-        _check("empty: primary_email null in frontmatter", "primary_email: null" in md),
-        _check("empty: all_emails empty list", "all_emails: []" in md),
-    ])
+    _check("empty: 'No emails' text", "_No emails" in md)
+    _check("empty: 'None.' for tags", "## Tags\n\n_None._" in md)
+    _check("empty: 'Not in any audience' text", "_Not in any audience._" in md)
+    _check("empty: 'No campaigns sent' text", "_No campaigns sent" in md)
+    _check("empty: 'No inbound messages' text", "_No inbound messages._" in md)
+    _check("empty: primary_email null in frontmatter", "primary_email: null" in md)
+    _check("empty: all_emails empty list", "all_emails: []" in md)
 
 
 def test_single_email_account():
@@ -93,12 +90,10 @@ def test_single_email_account():
         }],
         primary_email="test@example.com",
     ))
-    return all([
-        _check("single: primary_email set in fm", "primary_email: test@example.com" in md),
-        _check("single: email in body table", "`test@example.com`" in md),
-        _check("single: confidence shown", "0.92" in md),
-        _check("single: lockout 'open'", "_open_" in md),
-    ])
+    _check("single: primary_email set in fm", "primary_email: test@example.com" in md)
+    _check("single: email in body table", "`test@example.com`" in md)
+    _check("single: confidence shown", "0.92" in md)
+    _check("single: lockout 'open'", "_open_" in md)
 
 
 def test_multi_email_ordering():
@@ -124,10 +119,8 @@ def test_multi_email_ordering():
     pos_a = md.find("`a@x.com`")
     pos_b = md.find("`b@x.com`")
     pos_c = md.find("`c@x.com`")
-    return all([
-        _check("multi: b@ is primary", "primary_email: b@x.com" in md),
-        _check("multi: all 3 in body", pos_a > 0 and pos_b > 0 and pos_c > 0),
-    ])
+    _check("multi: b@ is primary", "primary_email: b@x.com" in md)
+    _check("multi: all 3 in body", pos_a > 0 and pos_b > 0 and pos_c > 0)
 
 
 def test_determinism():
@@ -146,7 +139,7 @@ def test_determinism():
     md2 = _render(row)
     h1 = hashlib.sha256(md1.encode()).hexdigest()
     h2 = hashlib.sha256(md2.encode()).hexdigest()
-    return _check("determinism: identical hash on re-render", h1 == h2, f"h1={h1[:12]} h2={h2[:12]}")
+    _check("determinism: identical hash on re-render", h1 == h2, f"h1={h1[:12]} h2={h2[:12]}")
 
 
 def test_quoting():
@@ -154,7 +147,7 @@ def test_quoting():
     md = _render(_sample_row(
         display_name='Mary "Mike" O\'Brien',
     ))
-    return _check(
+    _check(
         "quoting: special-char name in frontmatter",
         'display_name: "Mary \\"Mike\\" O' in md,
     )
@@ -176,12 +169,10 @@ def test_frontmatter_roundtrip():
     )
     md = _render(row)
     parsed = parse_frontmatter(md)
-    return all([
-        _check("roundtrip: parser found block", parsed is not None),
-        _check("roundtrip: handle preserved", parsed and parsed.get("handle") == "testperson"),
-        _check("roundtrip: primary_email preserved", parsed and parsed.get("primary_email") == "rt@example.com"),
-        _check("roundtrip: tags list", parsed and parsed.get("tags") == ["enterprise", "warm"]),
-    ])
+    _check("roundtrip: parser found block", parsed is not None)
+    _check("roundtrip: handle preserved", parsed and parsed.get("handle") == "testperson")
+    _check("roundtrip: primary_email preserved", parsed and parsed.get("primary_email") == "rt@example.com")
+    _check("roundtrip: tags list", parsed and parsed.get("tags") == ["enterprise", "warm"])
 
 
 def test_lockout_flag():
@@ -194,16 +185,14 @@ def test_lockout_flag():
         }],
         primary_email="locked@x.com",
     ))
-    return all([
-        _check("lockout: investor_already_sent: true in fm", "investor_already_sent: true" in md),
-        _check("lockout: 🔒 _sent_ symbol in body", "_sent_" in md),
-    ])
+    _check("lockout: investor_already_sent: true in fm", "investor_already_sent: true" in md)
+    _check("lockout: sent indicator in body", "_sent_" in md)
 
 
 def test_user_fence_present():
     md = _render(_sample_row())
     fence_count = md.count("Custom notes below this line")
-    return _check("fence: user content fence present once", fence_count == 1)
+    _check("fence: user content fence present once", fence_count == 1)
 
 
 def test_strategies_section():
@@ -213,10 +202,8 @@ def test_strategies_section():
              "fitness": 0.95, "success_count": 268},
         ],
     ))
-    return all([
-        _check("strategies: section header", "## Strategies that Generated This Person" in md),
-        _check("strategies: pattern shown", "<first><last>" in md),
-    ])
+    _check("strategies: section header", "## Strategies that Generated This Person" in md)
+    _check("strategies: pattern shown", "<first><last>" in md)
 
 
 def main():
@@ -235,7 +222,11 @@ def main():
     passed = 0
     for t in tests:
         print(f"== {t.__name__} ==")
-        if t():
+        try:
+            t()
+        except AssertionError:
+            pass
+        else:
             passed += 1
         print()
     print(f"=== {passed}/{len(tests)} test groups passed ===")
