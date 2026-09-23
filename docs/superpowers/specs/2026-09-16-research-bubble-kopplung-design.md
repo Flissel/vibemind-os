@@ -107,8 +107,11 @@ zwei Companion-Dokumente. **Keines davon existiert** — geprüft im äußeren R
 - Keine Reparatur des `claude-code`-Treibers, damit er `tool_calls` durchreicht. Das
   wäre ein Eingriff in den OpenFang-Kern mit weit größerem Radius.
 - Keine Wiederbelebung des Event-Wegs.
-- Kein Umbau der bestehenden `research.*`-Registry-Events. Sie bleiben, wie sie sind;
-  der neue Weg tritt daneben.
+- Kein Umbau der `research.*`-Einträge in `space_agent_registry.yml` und
+  `capabilities.yaml`. Die Zuordnung Event → Tool bleibt unverändert; der neue Weg
+  tritt daneben. **Ausgenommen** ist `ResearchTarget` selbst: dessen Beleg-Prüfung wird
+  repariert (siehe Architektur 1), weil sie der eigentliche Fehler ist. Das ändert die
+  Registry nicht, sondern nur, woran ein Lauf als gelungen erkannt wird.
 
 ## Architektur
 

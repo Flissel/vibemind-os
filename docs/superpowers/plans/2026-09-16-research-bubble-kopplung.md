@@ -313,7 +313,7 @@ def compose_brief(
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd vibemind-os && python -m unittest spaces.research.tests.test_brief -v`
-Expected: PASS, 13 Tests.
+Expected: PASS, 14 Tests (4 Ulid, 3 Citation, 2 Expected, 5 Compose).
 
 - [ ] **Step 5: Commit**
 
@@ -462,7 +462,10 @@ class ToolSurfaceTests(unittest.TestCase):
         server = load_server()
         response = server.handle_message({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         start = response["result"]["tools"][0]
-        self.assertEqual(sorted(start["inputSchema"]["required"]), ["bubble_id", "brief"])
+        # sorted() liefert ["brief", "bubble_id"] - "brief" kommt zuerst, weil
+        # an Position 1 'r' < 'u' gilt. Die naheliegende Schreibweise
+        # ["bubble_id", "brief"] koennte nie bestehen.
+        self.assertEqual(sorted(start["inputSchema"]["required"]), ["brief", "bubble_id"])
 
 
 class PreviewTests(unittest.TestCase):
@@ -1517,6 +1520,25 @@ ssh vibemind-offload-1 'DB=$(docker ps --filter name=supabase-db --format "{{.Na
 
 Expected: `BEGIN`, `CREATE TABLE`, fünfmal `CREATE INDEX`, `COMMIT`, `NOTIFY` — kein
 `ERROR`. Der ausgegebene Containername wird im Protokoll festgehalten.
+
+**Gemessene Warnung aus Task 2 — hier zählt sie doppelt:** `NOTIFY pgrst, 'reload schema'`
+ist **nicht verlässlich**. Lokal blieb die Tabelle danach mit `404` unsichtbar, obwohl das
+DDL sauber durchlief, weil PostgREST seinen LISTEN/NOTIFY-Kanal nach einem
+Verbindungsabriss nicht neu abonniert hatte — der Container sah dabei gesund aus. Ein
+erfolgreiches `COMMIT` ist also **kein** Beleg für Sichtbarkeit. Erst Schritt 4 entscheidet.
+
+- [ ] **Step 3b: Sichtbarkeit erzwingen, falls nötig**
+
+Nur ausführen, wenn Schritt 4 unten `404` liefert. PostgREST lädt das Schema auch auf
+`SIGUSR1` neu — ein dokumentierter Mechanismus, kein Eingriff in Daten oder Code:
+
+```bash
+ssh vibemind-offload-1 'REST=$(docker ps --filter name=supabase-rest --format "{{.Names}}" | head -1); \
+  echo "rest=$REST"; docker kill --signal=SIGUSR1 "$REST"'
+```
+
+Danach Schritt 4 wiederholen. Bleibt es auch dann bei `404`, anhalten und berichten —
+nicht den Dienst neu starten und nicht am SQL drehen.
 
 - [ ] **Step 4: Nachprüfen**
 

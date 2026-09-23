@@ -307,3 +307,77 @@ def test_health_fails_closed_on_non_success_openfang_health_response(
 
     assert response.status_code == 503
     assert response.json()["detail"] == "embedding service unavailable"
+
+def _service_with_role(monkeypatch, role, config, vectors):
+    """Baut den Dienst fuer eine beliebige Rolle — die Rolle wird beim Import
+    aus der Umgebung gelesen, also VOR dem Import setzen."""
+    backend = _Backend(vectors)
+    shared = types.ModuleType("vibemind_shared")
+    shared.get_embedding_config = lambda r: dict(config)
+    shared.get_embedding_model = lambda r: backend
+    shared.get_provider_info = lambda r: {
+        "provider": config["provider"],
+        "base_url": "http://ollama.test/v1",
+        "timeout_seconds": 8.0,
+    }
+    monkeypatch.setitem(sys.modules, "vibemind_shared", shared)
+    monkeypatch.setenv("EMBEDDING_ROLE", role)
+    sys.modules.pop("app", None)
+    return importlib.import_module("app"), backend
+
+
+_BRAIN_KG = {
+    "driver": "ollama",
+    "provider": "ollama",
+    "model": "qwen3-embedding:0.6b",
+    "dim": 1024,
+}
+
+
+def test_embed_serves_a_second_role_at_its_own_dimension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Der Brain-KG braucht 1024-dim Vektoren aus einem lokalen Modell; die
+    Breite kommt aus der Rolle, nicht aus einer Konstante im Dienst."""
+    module, backend = _service_with_role(
+        monkeypatch, "brain_kg", _BRAIN_KG, [[0.1] * 1024]
+    )
+    response = TestClient(module.app).post("/embed", json={"text": "hallo"})
+
+    assert response.status_code == 200
+    assert len(response.json()["vector"]) == 1024
+    assert module.EMBEDDING_ROLE == "brain_kg"
+
+
+def test_embed_fails_closed_when_the_vector_width_misses_the_role_dimension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ein Modell, das eine andere Breite liefert als die Rolle vorgibt, wuerde
+    unbrauchbare Vektoren in eine bestehende Collection schreiben."""
+    module, _ = _service_with_role(
+        monkeypatch, "brain_kg", _BRAIN_KG, [[0.1] * 2560]
+    )
+    response = TestClient(module.app).post("/embed", json={"text": "hallo"})
+
+    assert response.status_code == 502
+
+
+def test_health_of_a_non_openfang_role_proves_the_embedding_itself(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gemessen 2026-09-03: die reine Erreichbarkeitssonde meldete "ok",
+    waehrend /embed mit 429 ausfiel. Fuer andere Provider muss /health das
+    Embedding wirklich ausfuehren."""
+    module, backend = _service_with_role(
+        monkeypatch, "brain_kg", _BRAIN_KG, [[0.1] * 1024]
+    )
+    response = TestClient(module.app).get("/health")
+
+    assert response.status_code == 200
+    assert backend.calls == [["health"]]
+
+    module, _ = _service_with_role(
+        monkeypatch, "brain_kg", _BRAIN_KG, [[0.1] * 7]
+    )
+    assert TestClient(module.app).get("/health").status_code == 503
+

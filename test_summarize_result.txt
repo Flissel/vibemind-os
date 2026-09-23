@@ -1,0 +1,7 @@
+1. API Key: OK (sk-or-v1-cfc1bde33d0...)
+FEHLER: AttributeError: 'SupabaseDatabase' object has no attribute 'get_all_bubbles'
+Traceback (most recent call last):
+  File "C:\Users\User\Desktop\Vibemind_V1\vibemind-os\voice\python\tests\test_summarize.py", line 22, in <module>
+    bubbles = db.get_all_bubbles()
+              ^^^^^^^^^^^^^^^^^^
+AttributeError: 'SupabaseDatabase' object has no attribute 'get_all_bubbles'

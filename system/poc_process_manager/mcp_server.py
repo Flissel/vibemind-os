@@ -13,6 +13,15 @@ Tools (Read-Only):
   - zombie_processes:   Hung/not-responding processes
   - service_list:       Windows services with status
 
+Tools (Resource Doctor, read-only — siehe resource_tools.py):
+  - disk_pressure:      Auslastung pro Laufwerk ueber Zeit (HDD/SSD-bewusst)
+  - disk_culprit:       Taeter fuer EIN Laufwerk finden: Datei-Events -> Prozess
+  - io_top:             Prozesse nach I/O-Rate
+  - cpu_ram_hogs:       Dauerlast-CPU und RAM-Wachstum per Sampling
+  - net_top:            Verbindungen pro Prozess + Adapter-Durchsatz
+  - stale_workloads:    vergessene Test-/Build-Laeufe und Temp-Leichen
+  - resource_report:    Triage ueber alle Achsen in einem Aufruf
+
 Tools (Actions — user approves):
   - process_kill:       Kill a process by name or PID
   - process_priority:   Set process priority (realtime, high, normal, low, idle)
@@ -616,6 +625,18 @@ async def service_control(service_name: str, action: str):
         "status_after": status_after,
         "note": "May need admin privileges for some services",
     }, indent=2, default=str)
+
+
+# ── Resource Doctor: Disk/CPU/RAM/Netz-Diagnose (resource_tools.py) ──
+# Faellt weich aus, damit ein Fehler dort nie den ganzen Server abschiesst.
+try:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from resource_tools import register as _register_resource_tools
+
+    _RESOURCE_TOOLS = _register_resource_tools(mcp)
+except Exception as _resource_err:  # pragma: no cover
+    _RESOURCE_TOOLS = []
+    print(f"[process_manager] resource_tools nicht geladen: {_resource_err}", file=sys.stderr)
 
 
 if __name__ == "__main__":

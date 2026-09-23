@@ -1,0 +1,62 @@
+# =============================================================================
+# Rollen-Konfiguration des embedding-service (2026-09-03)
+# =============================================================================
+# vibemind_shared sucht diese Datei in dieser Reihenfolge:
+#   1. $VIBEMIND_CONFIG_DIR/llm_config.yml   (Dockerfile setzt /config)
+#   2. ./llm_config.yml                       (Arbeitsverzeichnis /app)  <- hier
+#   3. neben llm_client.py im Paket
+# Sie wird ins Image kopiert, damit der Dienst ohne Mount und ohne
+# Swarm-Config startet. Ein Mount nach /config sticht sie weiterhin aus.
+#
+# WARUM: bis zum 13.07.2026 embeddete brain-core lokal mit
+# Qwen3-Embedding-0.6B (1024 dim). Die Migration stellte auf OpenAI
+# text-embedding-3-large (3072) um, wurde aber nie gegen den laufenden Stack
+# validiert — die Collections tragen bis heute 1024. Seither passte nichts
+# mehr zusammen, und seit dem Guthaben-Ende liefert OpenAI ohnehin 429.
+# `brain_kg` bringt genau das urspruengliche Modell zurueck, jetzt ueber
+# Ollama am Host: gleicher Vektorraum, gleiche Breite, keine API-Kosten.
+# =============================================================================
+
+keys:
+  openfang: ${OPENFANG_API_KEY}
+
+providers:
+  # Ollama am Windows-Host. Aus einem Swarm-Dienst heraus am 03.09. gemessen:
+  # host.docker.internal:11434 ist erreichbar, die Bridge-IP 172.17.0.1 nicht.
+  # Ollama spricht unter /v1 die OpenAI-kompatible API, die der Treiber nutzt.
+  ollama:
+    type: openai
+    base_url: http://host.docker.internal:11434/v1
+    timeout_seconds: 60
+  openfang:
+    type: openai
+    base_url: ${OPENFANG_URL}/v1
+    key_ref: openfang
+    timeout_seconds: 30
+
+# get_embedding_model() baut zuerst einen Client fuer die Rolle "default";
+# der zeigt hier auf Ollama, damit kein Schluessel noetig ist.
+default:
+  provider: ollama
+  model: qwen3-embedding:0.6b
+  temperature: 0
+
+roles: {}
+
+embeddings:
+  # Aktive Rolle des Dienstes (EMBEDDING_ROLE=brain_kg im Stack).
+  # 1024 ist keine freie Wahl: es ist die Breite der bestehenden
+  # Brain-Collections (21.474 Punkte). Ein anderes Modell derselben Breite
+  # waere ein anderer Vektorraum und wuerde den Bestand entwerten.
+  brain_kg:
+    driver: ollama
+    provider: ollama
+    model: qwen3-embedding:0.6b
+    dim: 1024
+  # Unveraendert, damit der bisherige Pfad waehlbar bleibt (EMBEDDING_ROLE
+  # nicht setzen oder auf fungus_search stellen). Braucht OpenFang + Guthaben.
+  fungus_search:
+    driver: openai
+    provider: openfang
+    model: text-embedding-3-large
+    dim: 3072
