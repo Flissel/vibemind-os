@@ -93,3 +93,18 @@ def test_postcondition_fuellt_sich_aus_dem_ergebnis(name, ergebnis, erwartet):
     pc = CapabilityValidator._template_postcondition(val["postcondition"], "", ergebnis)
     for k, v in erwartet.items():
         assert pc[k] == v, (name, k, pc)
+
+
+def test_registry_quote():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "pruefquote", Path(__file__).resolve().parents[1] / "scripts" / "pruefquote.py")
+    pq = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pq)
+    caps = [{"capability": "a", "validator": {"kind": "truth:supabase_row"}},
+            {"capability": "b", "validator": {"kind": "rule:x"}},
+            {"capability": "c"}]
+    effects = {"effects": {"a": "write", "b": "write", "c": "read"},
+               "restliste": {"b": "Grund"}}
+    q = pq.registry_quote(caps, effects)
+    assert q == {"write_gesamt": 2, "write_mit_truth": 1, "quote_write": 0.5, "restliste": 1}
