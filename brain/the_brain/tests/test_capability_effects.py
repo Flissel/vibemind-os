@@ -64,3 +64,32 @@ def test_restliste_schrumpft_nur():
 
 def test_buergergeld_ist_raus():
     assert not [n for n in _caps() if "buergergeld" in n]
+
+
+import pytest
+
+from core.capability_validator import CapabilityValidator
+
+# (capability, ein realistischer Ergebnistext, erwartete gefuellte Felder)
+FAELLE = [
+    ("component_note_write",
+     {"ok": True, "node_id": "3f2a9c1e-aaaa-bbbb-cccc-1234567890ab"},
+     {"check": "supabase_row", "table": "canvas_nodes",
+      "match": "id=eq.3f2a9c1e-aaaa-bbbb-cccc-1234567890ab"}),
+    ("code_generate", "{'job_id': 'job_7c1d2e3f', 'status': 'queued'}",
+     {"check": "http_ok", "path": "/api/v1/jobs/job_7c1d2e3f/status"}),
+    ("idea_count", "'Marketing' has 12 ideas.",
+     {"check": "supabase_bubble_node_count", "bubble_title": "Marketing",
+      "expect_count": "12"}),
+    ("video_voice_tts", "TTS written to C:/Users/User/Videos/out/tts_01.wav",
+     {"check": "file_exists", "path": "C:/Users/User/Videos/out/tts_01.wav"}),
+]
+
+
+@pytest.mark.parametrize("name,ergebnis,erwartet", FAELLE)
+def test_postcondition_fuellt_sich_aus_dem_ergebnis(name, ergebnis, erwartet):
+    val = _caps()[name]["validator"]
+    assert str(val["kind"]).startswith("truth:")
+    pc = CapabilityValidator._template_postcondition(val["postcondition"], "", ergebnis)
+    for k, v in erwartet.items():
+        assert pc[k] == v, (name, k, pc)

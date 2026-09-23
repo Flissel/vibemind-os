@@ -641,13 +641,14 @@
     - "(note|notiz|spec)\\s+.*\\b(into|in|in die|in der)\\s+.*\\b(bubble|space)\\b"
   execution_target: "supabase:idea.create"
   arg_kwarg: title
-  # Phase 1: stays rule:+block on purpose — a truth: check short-circuits to
-  # UNVERIFIED (valid=True) when the op returns no id, i.e. exactly the failure
-  # case this gate must BLOCK. Upgrading needs create_op to emit a hard
-  # success/failure marker first (follow-up).
+  # T1 (2026-09-23): upgraded to truth:supabase_row. rule:canvas_node_persisted
+  # only trusted the op's self-reported ok/node_id; this independently re-queries
+  # canvas_nodes for the exact row the op claims it wrote. {result_id} stays
+  # unresolved -> UNVERIFIED (never a false REFUTED) exactly like bubble_create.
   validator:
-    kind: rule:canvas_node_persisted
-    on_fail: block
+    kind: "truth:supabase_row"
+    on_fail: "block"
+    postcondition: { check: supabase_row, table: canvas_nodes, match: "id=eq.{result_id}", expect: present }
 
 # ─── Phase 11.H — Idea content-validation capabilities ─────────────────
 # These give the plan-generator access to the rich idea_tools.py functions
@@ -1306,9 +1307,13 @@
     - "(how\\s+many|wie\\s+viele)\\s+ideas?n?"
   execution_target: "supabase:idea.count"  # Phase 11.U.H migrated from direct:spaces.* (not in Brain image)
   arg_kwarg: bubble_id
+  # T1 (2026-09-23): re-count canvas_nodes for the named bubble on a second
+  # path instead of trusting the op's own count. {result_title}/{result_count}
+  # come from the op's own confirmation string ("'X' has 12 ideas.").
   validator:
-    kind: rule:string_nonempty
-    on_fail: report
+    kind: "truth:supabase_bubble_node_count"
+    on_fail: "report"
+    postcondition: { check: supabase_bubble_node_count, bubble_title: "{result_title}", expect_count: "{result_count}" }
 
 - capability: idea_find
   description: "find a specific idea by name, suche die idee X, wo ist die idee Y"
@@ -1576,14 +1581,24 @@
   match_patterns: ["^code\\.generate$", "^(generate|create|erstelle?|generiere?)\\s+(code|projekt|project)"]
   execution_target: "coding-engine:POST:/api/v1/jobs"
   arg_kwarg: description
-  validator: {kind: "rule:non_empty_result", on_fail: report}
+  # T1 (2026-09-23): re-query the coding-engine's own job-status route with
+  # the job_id the create call returned ({result_id}), instead of trusting
+  # rule:non_empty_result which passed on any non-empty dict/string.
+  validator:
+    kind: "truth:http_ok"
+    on_fail: "report"
+    postcondition: { check: http_ok, url_env: CODING_ENGINE_URL, path: "/api/v1/jobs/{result_id}/status" }
 
 - capability: code_modify
   description: "Modify code through the health-checked coding-engine control server."
   match_patterns: ["^code\\.modify$", "^(modify|edit|ändere?|bearbeite?)\\s+(code|datei|file)"]
   execution_target: "coding-engine:POST:/api/v1/jobs"
   arg_kwarg: description
-  validator: {kind: "rule:non_empty_result", on_fail: report}
+  # T1 (2026-09-23): same upgrade as code_generate — see its comment above.
+  validator:
+    kind: "truth:http_ok"
+    on_fail: "report"
+    postcondition: { check: http_ok, url_env: CODING_ENGINE_URL, path: "/api/v1/jobs/{result_id}/status" }
 
 - capability: code_status
   description: "Read the current coding-engine execution status."
@@ -1606,7 +1621,13 @@
   description: "Start a preview for a coding-engine project."
   match_patterns: ["^code\\.preview\\.start$", "^(start|starte?)\\s+(code|coding)[ -]?preview"]
   execution_target: "coding-engine:POST:/api/preview/create"
-  validator: {kind: "rule:non_empty_result", on_fail: report}
+  # T1: schwacher Nachweis (Engine erreichbar). Echter Nachweis braucht eine
+  # Preview-Status-Route; bis dahin in T2 auf die Restliste zurueckstufen, falls
+  # der Live-Lauf zeigt, dass /api/preview/{project_id} existiert.
+  validator:
+    kind: "truth:http_ok"
+    on_fail: "report"
+    postcondition: { check: http_ok, url_env: CODING_ENGINE_URL, path: "/api/v1/jobs" }
 
 - capability: code_preview_stop
   # 2026-09-08: disabled - the running engine (src/api/main.py) serves
@@ -1618,7 +1639,13 @@
   match_patterns: ["^code\\.preview\\.stop$", "^(stop|stoppe?)\\s+(code|coding)[ -]?preview"]
   execution_target: "coding-engine:POST:/api/preview/{project_id}/stop"
   arg_kwarg: project_id
-  validator: {kind: "rule:non_empty_result", on_fail: report}
+  # T1: schwacher Nachweis (Engine erreichbar). Echter Nachweis braucht eine
+  # Preview-Status-Route; bis dahin in T2 auf die Restliste zurueckstufen, falls
+  # der Live-Lauf zeigt, dass /api/preview/{project_id} existiert.
+  validator:
+    kind: "truth:http_ok"
+    on_fail: "report"
+    postcondition: { check: http_ok, url_env: CODING_ENGINE_URL, path: "/api/v1/jobs" }
 
 - capability: code_list
   description: "List coding-engine jobs and their progress."
@@ -1630,7 +1657,12 @@
   description: "Cancel the active coding-engine execution."
   match_patterns: ["^code\\.cancel$", "^(cancel|abort|brich|breche)\\s+(code|coding)"]
   execution_target: "coding-engine:POST:/api/v1/jobs/{job_id}/cancel"
-  validator: {kind: "rule:non_empty_result", on_fail: report}
+  # T1 (2026-09-23): a cancelled job still exists, so its status route still
+  # answers with 200 — same re-query as code_generate/code_modify above.
+  validator:
+    kind: "truth:http_ok"
+    on_fail: "report"
+    postcondition: { check: http_ok, url_env: CODING_ENGINE_URL, path: "/api/v1/jobs/{result_id}/status" }
 
 - capability: coding_task_anthropic
   description: "EXECUTE CODE TASK with the Claude Pro/Max subscription through official Claude Code. Use only when the user explicitly selects Claude or Anthropic; writes real files to disk, runs them, and returns output."
@@ -2161,6 +2193,13 @@
   anchor_phrases: ["run video team pipeline"]
   match_patterns: ["(run|starte|führe).{0,20}video.{0,20}(team|pipeline)"]
   execution_target: "direct:spaces.video.execution_target:execute_video"
+  # T1 (2026-09-23): re-query the filesystem for the output path the Video
+  # Space provider reports ({result_path}), instead of trusting the return
+  # value unchecked.
+  validator:
+    kind: "truth:file_exists"
+    on_fail: "report"
+    postcondition: { check: file_exists, path: "{result_path}" }
 
 - capability: video_vision
   description: "generate a vision video through the Video Space provider"
@@ -2173,21 +2212,49 @@
   anchor_phrases: ["build demo video"]
   match_patterns: ["(build|baue|erstelle).{0,20}demo.{0,10}video"]
   execution_target: "direct:spaces.video.execution_target:execute_video"
+  # T1 (2026-09-23): re-query the filesystem for the output path the Video
+  # Space provider reports ({result_path}), instead of trusting the return
+  # value unchecked.
+  validator:
+    kind: "truth:file_exists"
+    on_fail: "report"
+    postcondition: { check: file_exists, path: "{result_path}" }
 
 - capability: video_lipsync
   description: "run lipsync for video and audio media"
   anchor_phrases: ["lipsync video"]
   match_patterns: ["(lip.?sync|lippensynchron)"]
   execution_target: "direct:spaces.video.execution_target:execute_video"
+  # T1 (2026-09-23): re-query the filesystem for the output path the Video
+  # Space provider reports ({result_path}), instead of trusting the return
+  # value unchecked.
+  validator:
+    kind: "truth:file_exists"
+    on_fail: "report"
+    postcondition: { check: file_exists, path: "{result_path}" }
 
 - capability: video_voice_clone
   description: "clone a voice from reference audio through the Video Space provider"
   anchor_phrases: ["clone voice from audio"]
   match_patterns: ["(clone|klone).{0,15}(voice|stimme)"]
   execution_target: "direct:spaces.video.execution_target:execute_video"
+  # T1 (2026-09-23): re-query the filesystem for the output path the Video
+  # Space provider reports ({result_path}), instead of trusting the return
+  # value unchecked.
+  validator:
+    kind: "truth:file_exists"
+    on_fail: "report"
+    postcondition: { check: file_exists, path: "{result_path}" }
 
 - capability: video_voice_tts
   description: "generate TTS audio through the Video Space provider"
   anchor_phrases: ["video voice tts"]
   match_patterns: ["(tts|text.to.speech).{0,15}(video|voice|stimme)?"]
   execution_target: "direct:spaces.video.execution_target:execute_video"
+  # T1 (2026-09-23): re-query the filesystem for the output path the Video
+  # Space provider reports ({result_path}), instead of trusting the return
+  # value unchecked.
+  validator:
+    kind: "truth:file_exists"
+    on_fail: "report"
+    postcondition: { check: file_exists, path: "{result_path}" }
