@@ -542,9 +542,12 @@ def versandauftrag_anlegen_route(payload: dict = Body(...)):
 def layout_vorlagen_list_route(status: Optional[str] = Query(None)):
     """Die Vorlagen und ihr Stand. Ohne `status`: alle."""
     from spaces.marketing.sync import _db
-    where = ""
+    # Formular-Vorlagen (Terminkarten, Migration 045) gehoeren nicht in die
+    # Layout-Liste: pdf_erstellen wuerde sie sonst als Newsletter-Layout
+    # anbieten, und ihre Gestalt hat keine Farbtafel.
+    where = "WHERE art = 'layout'"
     if status:
-        where = f"WHERE status = {_db._sql_literal(status)}"
+        where += f" AND status = {_db._sql_literal(status)}"
     rows = _db.query_via_docker(
         f"SELECT name, beschreibung, gestalt, status, vorgeschlagen_von, "
         f"       coalesce(entschieden_von,'') AS entschieden_von, "
@@ -608,7 +611,7 @@ def layout_vorlage_muster_route(name: str, payload: dict = Body(...)):
     _db.execute_via_docker(
         f"UPDATE marketing.layout_vorlagen SET muster_datei = "
         f"{lit(str(payload.get('muster_datei') or ''))} "
-        f"WHERE name = {lit(name)}")
+        f"WHERE name = {lit(name)} AND art = 'layout'")
     return {"success": True, "message": "muster vermerkt", "data": {"name": name}}
 
 
