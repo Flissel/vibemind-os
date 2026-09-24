@@ -411,10 +411,17 @@ class CapabilityValidator:
         """Fill {arg} / {result} / {result_id} placeholders in a post-condition from
         the op's arg + result, so a truth: check can re-query the SPECIFIC row the op
         just touched. {result_id} extracts the first id-like token from the result
-        (supabase return=representation gives it). Returns a new dict."""
+        (supabase return=representation gives it). {result_int_id} extracts the first
+        INTEGER id (coding-engine jobs answer with an int id, not a UUID-like token).
+        Returns a new dict."""
         import re
         rs = str(raw_result) if raw_result is not None else ""
         m = re.search(r"id['\"]?\s*[=:]\s*['\"]?([\w-]{6,})", rs)
+        # {result_int_id}: the first integer after a key `id` or `job_id` — e.g. the
+        # coding-engine's {"id": 42, "status": "pending"}. F2 (2026-09-24): {result_id}
+        # needs >=6 chars, so a bare int id like 42 never filled it and the postcondition
+        # stayed unresolved ({...} left in place -> UNVERIFIED, never a re-query).
+        mi = re.search(r"['\"]?(?:job_)?id['\"]?\s*[:=]\s*(\d+)\b", rs)
         # {result_title}: the FIRST quoted name in the result — ops name the row they
         # actually touched ("Bubble 'X' deleted."), so an absent/present re-query on it
         # is grounded in the op's own target, not a guessed filter.
@@ -429,16 +436,19 @@ class CapabilityValidator:
         # /-rooted, with an extension) — lets a file_exists check confirm a coding
         # agent's "written to `C:/.../x.py`" actually produced the file.
         mp = re.search(r"([A-Za-z]:[\\/][^\s`'\"<>]+\.\w{1,6}|/[\w./\-]+\.\w{1,6})", rs)
-        # {result_count}: die Zahl, die eine Zaehl-Operation meldet ("'X' has 12
-        # ideas." / "12 ideas in 'X'") - Grundlage fuer supabase_bubble_node_count.
-        mc = re.search(r"\b(\d+)\s+ideas?\b", rs)
+        # {result_count}: die Zahl, die eine Zaehl-Operation meldet - NUR aus den
+        # beiden tatsaechlich benutzten Formen ("... has 12 ideas." / "12 ideas in
+        # 'X':"), nicht aus jeder beliebigen "N idea(s)"-Stelle im Text (M1,
+        # 2026-09-24: ein Treffer mitten im Fliesstext waere die falsche Zahl).
+        mc = re.search(r"\bhas\s+(\d+)\s+ideas?\b|^(\d+)\s+ideas?\s+in\b", rs)
         subs = {"arg": str(arg or "").strip(), "result": rs[:200],
                 "result_id": m.group(1) if m else "",
+                "result_int_id": mi.group(1) if mi else "",
                 "result_title": quoted[0] if quoted else "",
                 "result_title2": quoted[1] if len(quoted) > 1 else "",
                 "result_format": mf.group(1) if mf else "",
                 "result_path": mp.group(1) if mp else "",
-                "result_count": mc.group(1) if mc else ""}
+                "result_count": (mc.group(1) or mc.group(2)) if mc else ""}
         out = {}
         for k, val in (pc or {}).items():
             if isinstance(val, str):

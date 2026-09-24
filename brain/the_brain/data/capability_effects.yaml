@@ -57,6 +57,9 @@ effects:
   video_voice_clone: write
   video_voice_tts: write
   video_team_run: write
+  # F3 (2026-09-24): erzeugt Video ueber execute_video (_MEDIA_EVENTS), war
+  # faelschlich read - siehe Restliste-Begruendung unten.
+  video_vision: write
   # --- write, Restliste ---
   idea_format_revert: write
   bubble_delete_all: write
@@ -99,7 +102,6 @@ effects:
   rose.status: read
   video_status: read
   video_team_status: read
-  video_vision: read
   # --- external ---
   desktop_skill: external
   browser_automation: external
@@ -150,3 +152,14 @@ restliste:
   minibook.discuss: "rule:minibook_verified_result liest nur den Rueckgabewert; unabhaengige Nachfrage an Minibook fehlt"
   minibook.collaborate: "wie minibook.discuss"
   som_execute: "SoM-Kette fuehrt Unterschritte aus, die selbst geprueft werden; eigener Gesamtnachweis offen"
+  # F2 (2026-09-24, Schlusspruefung T1): execute_video antwortet sofort mit
+  # status accepted und leeren media_paths; Nachweis braucht den Video-Job-Datensatz.
+  video_demo_build: "execute_video antwortet sofort mit status accepted und leeren media_paths; Nachweis braucht den Video-Job-Datensatz"
+  video_lipsync: "execute_video antwortet sofort mit status accepted und leeren media_paths; Nachweis braucht den Video-Job-Datensatz"
+  video_voice_clone: "execute_video antwortet sofort mit status accepted und leeren media_paths; Nachweis braucht den Video-Job-Datensatz"
+  video_voice_tts: "execute_video antwortet sofort mit status accepted und leeren media_paths; Nachweis braucht den Video-Job-Datensatz"
+  video_team_run: "execute_video antwortet sofort mit status accepted und leeren media_paths; Nachweis braucht den Video-Job-Datensatz"
+  code_preview_start: "nur Erreichbarkeit der Engine belegt; Preview-Status-Route fehlt"
+  code_preview_stop: "nur Erreichbarkeit der Engine belegt; Preview-Status-Route fehlt"
+  # F3 (2026-09-24): video_vision war faelschlich read, erzeugt aber ein Video.
+  video_vision: "erzeugt Video (_MEDIA_EVENTS), kein Pfad im Ergebnis"

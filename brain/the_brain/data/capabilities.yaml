@@ -1582,12 +1582,15 @@
   execution_target: "coding-engine:POST:/api/v1/jobs"
   arg_kwarg: description
   # T1 (2026-09-23): re-query the coding-engine's own job-status route with
-  # the job_id the create call returned ({result_id}), instead of trusting
-  # rule:non_empty_result which passed on any non-empty dict/string.
+  # the integer id the create call returned ({result_int_id}), instead of
+  # trusting rule:non_empty_result which passed on any non-empty dict/string.
+  # F2 (2026-09-24): the coding-engine's real reply is {"id": 42, "status":
+  # "pending"} - an integer id, not the {job_id: "job_..."} shape {result_id}
+  # was built for. {result_id} needed >=6 chars and stayed unfilled.
   validator:
     kind: "truth:http_ok"
     on_fail: "report"
-    postcondition: { check: http_ok, url_env: CODING_ENGINE_URL, path: "/api/v1/jobs/{result_id}/status" }
+    postcondition: { check: http_ok, url_env: CODING_ENGINE_URL, path: "/api/v1/jobs/{result_int_id}/status" }
 
 - capability: code_modify
   description: "Modify code through the health-checked coding-engine control server."
@@ -1598,7 +1601,7 @@
   validator:
     kind: "truth:http_ok"
     on_fail: "report"
-    postcondition: { check: http_ok, url_env: CODING_ENGINE_URL, path: "/api/v1/jobs/{result_id}/status" }
+    postcondition: { check: http_ok, url_env: CODING_ENGINE_URL, path: "/api/v1/jobs/{result_int_id}/status" }
 
 - capability: code_status
   description: "Read the current coding-engine execution status."
@@ -1621,13 +1624,12 @@
   description: "Start a preview for a coding-engine project."
   match_patterns: ["^code\\.preview\\.start$", "^(start|starte?)\\s+(code|coding)[ -]?preview"]
   execution_target: "coding-engine:POST:/api/preview/create"
-  # T1: schwacher Nachweis (Engine erreichbar). Echter Nachweis braucht eine
-  # Preview-Status-Route; bis dahin in T2 auf die Restliste zurueckstufen, falls
-  # der Live-Lauf zeigt, dass /api/preview/{project_id} existiert.
-  validator:
-    kind: "truth:http_ok"
-    on_fail: "report"
-    postcondition: { check: http_ok, url_env: CODING_ENGINE_URL, path: "/api/v1/jobs" }
+  # F2 (2026-09-24, Schlusspruefung T1): truth:http_ok gegen /api/v1/jobs
+  # belegte nur Erreichbarkeit der Engine, nicht dass die Preview lief; die
+  # Preview-Status-Route fehlt. Auf den Vor-Task-5-Stand zurueckgesetzt und
+  # in capability_effects.yaml/restliste begruendet (Sperrklinke: restliste
+  # darf kein truth: enthalten).
+  validator: {kind: "rule:non_empty_result", on_fail: report}
 
 - capability: code_preview_stop
   # 2026-09-08: disabled - the running engine (src/api/main.py) serves
@@ -1639,13 +1641,8 @@
   match_patterns: ["^code\\.preview\\.stop$", "^(stop|stoppe?)\\s+(code|coding)[ -]?preview"]
   execution_target: "coding-engine:POST:/api/preview/{project_id}/stop"
   arg_kwarg: project_id
-  # T1: schwacher Nachweis (Engine erreichbar). Echter Nachweis braucht eine
-  # Preview-Status-Route; bis dahin in T2 auf die Restliste zurueckstufen, falls
-  # der Live-Lauf zeigt, dass /api/preview/{project_id} existiert.
-  validator:
-    kind: "truth:http_ok"
-    on_fail: "report"
-    postcondition: { check: http_ok, url_env: CODING_ENGINE_URL, path: "/api/v1/jobs" }
+  # F2 (2026-09-24, Schlusspruefung T1): siehe code_preview_start oben.
+  validator: {kind: "rule:non_empty_result", on_fail: report}
 
 - capability: code_list
   description: "List coding-engine jobs and their progress."
@@ -1662,7 +1659,7 @@
   validator:
     kind: "truth:http_ok"
     on_fail: "report"
-    postcondition: { check: http_ok, url_env: CODING_ENGINE_URL, path: "/api/v1/jobs/{result_id}/status" }
+    postcondition: { check: http_ok, url_env: CODING_ENGINE_URL, path: "/api/v1/jobs/{result_int_id}/status" }
 
 - capability: coding_task_anthropic
   description: "EXECUTE CODE TASK with the Claude Pro/Max subscription through official Claude Code. Use only when the user explicitly selects Claude or Anthropic; writes real files to disk, runs them, and returns output."
@@ -2193,13 +2190,10 @@
   anchor_phrases: ["run video team pipeline"]
   match_patterns: ["(run|starte|führe).{0,20}video.{0,20}(team|pipeline)"]
   execution_target: "direct:spaces.video.execution_target:execute_video"
-  # T1 (2026-09-23): re-query the filesystem for the output path the Video
-  # Space provider reports ({result_path}), instead of trusting the return
-  # value unchecked.
-  validator:
-    kind: "truth:file_exists"
-    on_fail: "report"
-    postcondition: { check: file_exists, path: "{result_path}" }
+  # F2 (2026-09-24, Schlusspruefung T1): execute_video antwortet sofort mit
+  # status accepted und leeren media_paths, kein Pfad zum re-queryen. Der
+  # truth:file_exists-Check gegen {result_path} konnte deshalb nie feuern;
+  # auf den Vor-Task-5-Stand zurueckgesetzt, siehe capability_effects.yaml/restliste.
 
 - capability: video_vision
   description: "generate a vision video through the Video Space provider"
@@ -2212,49 +2206,29 @@
   anchor_phrases: ["build demo video"]
   match_patterns: ["(build|baue|erstelle).{0,20}demo.{0,10}video"]
   execution_target: "direct:spaces.video.execution_target:execute_video"
-  # T1 (2026-09-23): re-query the filesystem for the output path the Video
-  # Space provider reports ({result_path}), instead of trusting the return
-  # value unchecked.
-  validator:
-    kind: "truth:file_exists"
-    on_fail: "report"
-    postcondition: { check: file_exists, path: "{result_path}" }
+  # F2 (2026-09-24): siehe video_team_run oben - execute_video liefert keinen
+  # Pfad, truth:file_exists konnte nie feuern.
 
 - capability: video_lipsync
   description: "run lipsync for video and audio media"
   anchor_phrases: ["lipsync video"]
   match_patterns: ["(lip.?sync|lippensynchron)"]
   execution_target: "direct:spaces.video.execution_target:execute_video"
-  # T1 (2026-09-23): re-query the filesystem for the output path the Video
-  # Space provider reports ({result_path}), instead of trusting the return
-  # value unchecked.
-  validator:
-    kind: "truth:file_exists"
-    on_fail: "report"
-    postcondition: { check: file_exists, path: "{result_path}" }
+  # F2 (2026-09-24): siehe video_team_run oben - execute_video liefert keinen
+  # Pfad, truth:file_exists konnte nie feuern.
 
 - capability: video_voice_clone
   description: "clone a voice from reference audio through the Video Space provider"
   anchor_phrases: ["clone voice from audio"]
   match_patterns: ["(clone|klone).{0,15}(voice|stimme)"]
   execution_target: "direct:spaces.video.execution_target:execute_video"
-  # T1 (2026-09-23): re-query the filesystem for the output path the Video
-  # Space provider reports ({result_path}), instead of trusting the return
-  # value unchecked.
-  validator:
-    kind: "truth:file_exists"
-    on_fail: "report"
-    postcondition: { check: file_exists, path: "{result_path}" }
+  # F2 (2026-09-24): siehe video_team_run oben - execute_video liefert keinen
+  # Pfad, truth:file_exists konnte nie feuern.
 
 - capability: video_voice_tts
   description: "generate TTS audio through the Video Space provider"
   anchor_phrases: ["video voice tts"]
   match_patterns: ["(tts|text.to.speech).{0,15}(video|voice|stimme)?"]
   execution_target: "direct:spaces.video.execution_target:execute_video"
-  # T1 (2026-09-23): re-query the filesystem for the output path the Video
-  # Space provider reports ({result_path}), instead of trusting the return
-  # value unchecked.
-  validator:
-    kind: "truth:file_exists"
-    on_fail: "report"
-    postcondition: { check: file_exists, path: "{result_path}" }
+  # F2 (2026-09-24): siehe video_team_run oben - execute_video liefert keinen
+  # Pfad, truth:file_exists konnte nie feuern.
