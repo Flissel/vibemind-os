@@ -16,6 +16,9 @@
 # … then re-include only the two trees the Brain image needs.
 !brain/
 !shared/
+# Dockerfile kopiert die Space-Agent-Registry (COPY config/space_agent_registry.yml).
+!config/
+!config/space_agent_registry.yml
 
 # Build artefacts / caches inside the re-included trees (these patterns are
 # matched at any depth, so they prune the kept subtrees too).
