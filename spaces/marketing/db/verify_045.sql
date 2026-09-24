@@ -144,7 +144,21 @@ BEGIN
         RAISE EXCEPTION 'PROBE: freigegebene Gestalt UEBERSCHRIEBEN';
     EXCEPTION WHEN raise_exception THEN
         IF SQLERRM LIKE 'PROBE:%' THEN RAISE; END IF;
+        -- M-1: nicht nur, DASS es scheitert, sondern WORAN.
+        IF SQLERRM NOT LIKE '%unveraenderlich%' THEN
+            RAISE EXCEPTION 'PROBE: falsche Fehlermeldung (erwartet "unveraenderlich"): %', SQLERRM;
+        END IF;
     END;
+END $$;
+
+-- M-2: vorlagenauftrag_urteil('ja') muss das Freigabe-Tor selbst wieder
+-- schliessen - nicht erst verify's eigener Reset weiter unten. Sonst waere
+-- unklar, ob die Migration selbst diszipliniert ist oder nur die Probe.
+DO $$ BEGIN
+    IF coalesce(current_setting('marketing.formular_freigabe', true), '') <> '' THEN
+        RAISE EXCEPTION 'PROBE: formular_freigabe stand nach urteil(ja) noch auf %',
+            current_setting('marketing.formular_freigabe', true);
+    END IF;
 END $$;
 
 -- Verbotene Uebergaenge. Der eigene Waechtersatz endet auf „ANGENOMMEN" —
@@ -157,6 +171,10 @@ DO $$ BEGIN
         RAISE EXCEPTION 'PROBE: freigegeben -> neu ANGENOMMEN';
     EXCEPTION WHEN raise_exception THEN
         IF SQLERRM LIKE 'PROBE:%' THEN RAISE; END IF;
+        -- M-1: nicht nur, DASS es scheitert, sondern WORAN.
+        IF SQLERRM NOT LIKE '%Uebergang%' THEN
+            RAISE EXCEPTION 'PROBE: falsche Fehlermeldung (erwartet "Uebergang"): %', SQLERRM;
+        END IF;
     END;
 END $$;
 
@@ -172,10 +190,21 @@ END $$;
 -- dieser Reset macht die Probe zusaetzlich von dieser Selbstdisziplin
 -- unabhaengig.
 SELECT set_config('marketing.formular_freigabe', '', true);
+--
+-- Fix-Runde 1 (046): seit dem neuen Schreibschutz-Trigger braucht JEDE
+-- Schreibaktion auf eine Formular-Zeile eines der beiden Tore (vorlegen ODER
+-- freigabe), nicht nur der Statuswechsel auf freigegeben. Die Anlage der
+-- Probe-Zeile selbst laeuft deshalb jetzt hinter dem vorlegen-Tor (so, wie
+-- es vorlagenauftrag_vorlegen auch taete) - das PRUEFT diese Probe nicht
+-- (das tut verify_046 explizit fuer I-1/I-2), sie baut hier nur ihre
+-- Vorbedingung. Die direkte Freigabe danach bleibt ungeschuetzt und muss
+-- weiter scheitern.
 DO $$ BEGIN
+    PERFORM set_config('marketing.formular_vorlegen', 'an', true);
     INSERT INTO marketing.layout_vorlagen (name, beschreibung, gestalt, status, art,
                                            vorgeschlagen_von)
     VALUES ('probe-formular', '', (SELECT g FROM probe_gestalt), 'vorschlag', 'formular', 'probe');
+    PERFORM set_config('marketing.formular_vorlegen', '', true);
     BEGIN
         UPDATE marketing.layout_vorlagen SET status = 'freigegeben',
                entschieden_von = 'betreiber', entschieden_am = now()
@@ -183,6 +212,10 @@ DO $$ BEGIN
         RAISE EXCEPTION 'PROBE: direkte Freigabe ANGENOMMEN';
     EXCEPTION WHEN raise_exception THEN
         IF SQLERRM LIKE 'PROBE:%' THEN RAISE; END IF;
+        -- M-1: nicht nur, DASS es scheitert, sondern WORAN.
+        IF SQLERRM NOT LIKE '%nur ueber vorlagenauftrag_urteil%' THEN
+            RAISE EXCEPTION 'PROBE: falsche Fehlermeldung (erwartet "nur ueber vorlagenauftrag_urteil"): %', SQLERRM;
+        END IF;
     END;
 END $$;
 
