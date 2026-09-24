@@ -13,7 +13,7 @@ gefunden wurden.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 TEST_TRACE_PREFIX = "test_"
 
@@ -34,8 +34,31 @@ def _cp(hr: Any):
     return getattr(hr, "contract_pass", None)
 
 
+def _verdict(hr: Any):
+    if isinstance(hr, dict):
+        return hr.get("validator_verdict")
+    return getattr(hr, "validator_verdict", None)
+
+
+def wirksamer_befund(hr: Any) -> Optional[bool]:
+    """Der fuer Zaehlung/Lernen wirksame Befund eines Hops.
+
+    F1 (Schlusspruefung): ein `truth:`-Pruefer, der selbst ausfaellt, liefert
+    `validator_verdict={"verified": None, ...}`. Bei `on_fail: block` setzt
+    der Executor `ok=False` und damit `contract_pass=False` — das ist eine
+    Policy-Entscheidung fuer den Nutzer (blockieren), keine verifizierte
+    Aussage. Fuer Zaehlung/Lernen gilt so ein Hop als unverifiziert (None),
+    unabhaengig von `ok`/`contract_pass`. Ein Hop ohne Validator-Urteil oder
+    mit `verified` True/False behaelt sein `contract_pass`.
+    """
+    verdict = _verdict(hr)
+    if isinstance(verdict, dict) and "verified" in verdict and verdict.get("verified") is None:
+        return None
+    return _cp(hr)
+
+
 def counts(hop_results: List[Any]) -> Dict[str, int]:
-    werte = [_cp(h) for h in hop_results or []]
+    werte = [wirksamer_befund(h) for h in hop_results or []]
     return {
         "verified_success": sum(1 for v in werte if v is True),
         "verified_failure": sum(1 for v in werte if v is False),

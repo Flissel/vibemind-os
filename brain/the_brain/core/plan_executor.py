@@ -90,7 +90,7 @@ def _self_prior_beobachtungen(plan: Any, hop_results: List[Any]) -> List[Tuple[s
     (decision_outcome.is_test_run) liefern nichts, damit sie das
     Selbstbild nicht verzerren. Capabilities ohne Namen werden ignoriert.
     """
-    from .decision_outcome import is_test_run
+    from .decision_outcome import is_test_run, wirksamer_befund
 
     intent = getattr(plan, "intent", "") or ""
     trace_id = getattr(plan, "trace_id", "") or ""
@@ -103,11 +103,11 @@ def _self_prior_beobachtungen(plan: Any, hop_results: List[Any]) -> List[Tuple[s
         cap = getattr(hop, "capability", None) or ""
         if not cap or cap in seen_caps:
             continue
-        contract_pass = getattr(hop, "contract_pass", None)
-        if contract_pass is None:
+        befund = wirksamer_befund(hop)
+        if befund is None:
             continue
         seen_caps.add(cap)
-        beobachtungen.append((cap, contract_pass is True))
+        beobachtungen.append((cap, befund is True))
     return beobachtungen
 
 

@@ -106,3 +106,58 @@ def test_beobachtungen_duplikat_capability_nur_einmal():
 def test_beobachtungen_leere_capability_wird_uebersprungen():
     plan = SimpleNamespace(intent="etwas tun", trace_id="tr_1")
     assert _self_prior_beobachtungen(plan, [hr(True, cap="")]) == []
+
+
+# ── F1: Pruefer-Ausfall (validator_verdict.verified is None) ist kein
+# verifiziertes Scheitern, auch wenn on_fail=block ok/contract_pass auf
+# False gesetzt hat ─────────────────────────────────────────────────────
+from core.decision_outcome import wirksamer_befund
+
+
+def hr_verdict(cp, verdict, ok=False, cap="bubble_create"):
+    return SimpleNamespace(
+        ok=ok, contract_pass=cp, validator_verdict=verdict, capability=cap,
+        step_id="s",
+    )
+
+
+def test_wirksamer_befund_unverified_trotz_contract_pass_false():
+    h = hr_verdict(False, {"verified": None, "on_fail": "block"})
+    assert wirksamer_befund(h) is None
+
+
+def test_wirksamer_befund_bleibt_failure_bei_verified_false():
+    h = hr_verdict(False, {"verified": False})
+    assert wirksamer_befund(h) is False
+
+
+def test_wirksamer_befund_bleibt_failure_ohne_verdict():
+    h = hr_verdict(False, None)
+    assert wirksamer_befund(h) is False
+
+
+def test_counts_zaehlt_pruefer_ausfall_als_unverified():
+    h = hr_verdict(False, {"verified": None, "on_fail": "block"})
+    c = counts([h])
+    assert c == {"verified_success": 0, "verified_failure": 0, "unverified": 1}
+
+
+def test_verified_outcome_pruefer_ausfall_ist_unverified():
+    h = hr_verdict(False, {"verified": None, "on_fail": "block"})
+    assert verified_outcome([h]) == "unverified"
+
+
+def test_verified_outcome_verified_false_bleibt_failure():
+    h = hr_verdict(False, {"verified": False})
+    assert verified_outcome([h]) == "failure"
+
+
+def test_verified_outcome_kein_verdict_bleibt_failure():
+    h = hr_verdict(False, None)
+    assert verified_outcome([h]) == "failure"
+
+
+def test_beobachtungen_pruefer_ausfall_liefert_kein_paar():
+    plan = SimpleNamespace(intent="etwas tun", trace_id="tr_1")
+    h = hr_verdict(False, {"verified": None, "on_fail": "block"})
+    assert _self_prior_beobachtungen(plan, [h]) == []
