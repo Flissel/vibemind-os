@@ -104,7 +104,7 @@ def _resolve_container(container: str | None) -> str:
     return find_supabase_container()
 
 
-def _psql_argv(container: str) -> list[str]:
+def _psql_argv(container: str, streng: bool = False) -> list[str]:
     """Build the argv for `psql` reading SQL from stdin, local or over SSH.
 
     SQL is fed on stdin (`-f -`), so it never passes through a shell command
@@ -112,20 +112,33 @@ def _psql_argv(container: str) -> list[str]:
     doubly for the SSH path where args are re-parsed by the remote shell.
     The fixed tokens below contain no spaces, so joining them for the remote
     shell is safe without per-token quoting.
+
+    Fix round 1 (Task 6, 2026-09-24-terminkarten, Ruling 1): plain psql exits
+    0 even when a statement inside the piped script fails (no ON_ERROR_STOP),
+    so a caller reading stdout sees an empty/partial result instead of an
+    error — `query_via_docker` returned `[]` for a failed
+    `vorlagenauftrag_uebernehmen()` call exactly as it would for "nothing to
+    do". `streng=True` adds `-v ON_ERROR_STOP=1`, so psql exits non-zero on
+    the first SQL error and `_run_psql` raises `RuntimeError` instead. Opt-in
+    only — every existing caller keeps today's lenient default (streng=False)
+    unchanged, so this does not alter behaviour for anyone but callers that
+    ask for it.
     """
     user = _cfg("SUPABASE_DB_USER", "supabase_admin")
     db = _cfg("SUPABASE_DB_NAME", "postgres")
-    inner = ["docker", "exec", "-i", container,
-             "psql", "-U", user, "-d", db, "-tA", "-f", "-"]
+    inner = ["docker", "exec", "-i", container, "psql", "-U", user, "-d", db]
+    if streng:
+        inner += ["-v", "ON_ERROR_STOP=1"]
+    inner += ["-tA", "-f", "-"]
     ssh_host = _cfg("SUPABASE_SSH_HOST")
     if ssh_host:
         return ["ssh", ssh_host, *inner]
     return inner
 
 
-def _run_psql(sql: str, container: str | None) -> str:
+def _run_psql(sql: str, container: str | None, streng: bool = False) -> str:
     """Feed `sql` to psql on stdin (local or over SSH); return stdout, raise on error."""
-    argv = _psql_argv(_resolve_container(container))
+    argv = _psql_argv(_resolve_container(container), streng=streng)
     res = subprocess.run(
         argv, input=sql, capture_output=True, text=True,
         encoding="utf-8", errors="replace", check=False,
@@ -135,13 +148,18 @@ def _run_psql(sql: str, container: str | None) -> str:
     return res.stdout
 
 
-def query_via_docker(sql: str, params: dict | None = None, container: str | None = None) -> list[dict]:
+def query_via_docker(sql: str, params: dict | None = None, container: str | None = None,
+                      streng: bool = False) -> list[dict]:
     """Execute SQL, return rows as list[dict].
 
     Uses jsonb_agg + row_to_json to ship results as a single JSON array,
     avoiding shell parsing of psql tabular output. Name kept for backwards
     compat — it now dispatches to local docker-exec OR remote ssh+docker-exec
     depending on SUPABASE_SSH_HOST (see module docstring).
+
+    `streng=True` (see `_psql_argv`) makes an SQL-level error raise
+    `RuntimeError` instead of silently yielding `[]` — opt in for callers
+    that must not misread "the query failed" as "no rows".
     """
     if params:
         # crude but safe param-substitution: inline each %(name)s via the
@@ -155,14 +173,15 @@ def query_via_docker(sql: str, params: dict | None = None, container: str | None
     json_sql = (
         f"SELECT COALESCE(jsonb_agg(row_to_json(t)), '[]'::jsonb) AS rows FROM ({full}) t"
     )
-    out = _run_psql(json_sql, container).strip()
+    out = _run_psql(json_sql, container, streng=streng).strip()
     if not out:
         return []
     return json.loads(out)
 
 
-def query_one(sql: str, params: dict | None = None, container: str | None = None) -> dict | None:
-    rows = query_via_docker(sql, params, container)
+def query_one(sql: str, params: dict | None = None, container: str | None = None,
+              streng: bool = False) -> dict | None:
+    rows = query_via_docker(sql, params, container, streng=streng)
     return rows[0] if rows else None
 
 

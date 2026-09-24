@@ -21,6 +21,17 @@ Controller ruling 22 (Task 6, 2026-09-24-terminkarten):
   3) Deshalb ruft jeder Durchlauf zuerst vorlagenauftraege_wiederaufnehmen
      auf (liegen gebliebene 'in_arbeit'-Zeilen aelter als 15 Minuten werden
      zurueckgestellt), ERST DANACH vorlagenauftrag_uebernehmen().
+
+Fix round 1 (Ruling 1): _db.query_via_docker/query_one exeten ohne weiteres
+Zutun `psql` OHNE `-v ON_ERROR_STOP=1` - ein SQL-Fehler in der Anweisung
+selbst (z. B. eine kaputte Funktion) gibt Exit 0 mit leerem stdout zurueck,
+`query_via_docker` liefert dann `[]`, genau wie "keine Zeile da". Ohne
+Gegenmassnahme haette dieser Arbeiter einen echten SQL-Fehler in
+uebernehmen() als Dauerzustand "leer" fehlgedeutet, statt ihn zu melden.
+Jeder DB-Aufruf hier laeuft deshalb mit `streng=True` - ein SQL-Fehler wird
+zu einer RuntimeError, die (ausserhalb des entwerfen/vorlegen-try-Blocks)
+bis zu main() durchschlaegt und dort als "fehler: ..." in STAND landet,
+statt schweigend "leer" zu melden.
 """
 import json
 import threading
@@ -42,8 +53,9 @@ def ein_durchlauf(db=_db, entwerfen=formular_entwurf.entwerfen) -> str:
     # bevor ueberhaupt ein neuer Auftrag uebernommen wird.
     db.query_via_docker(
         "select marketing.vorlagenauftraege_wiederaufnehmen("
-        f"{lit(WIEDERAUFNAHME_ALTER)}::interval)")
-    zeilen = db.query_via_docker("select * from marketing.vorlagenauftrag_uebernehmen()")
+        f"{lit(WIEDERAUFNAHME_ALTER)}::interval)", streng=True)
+    zeilen = db.query_via_docker("select * from marketing.vorlagenauftrag_uebernehmen()",
+                                  streng=True)
     if not zeilen:
         return "leer"
     auftrag = zeilen[0]
@@ -54,7 +66,7 @@ def ein_durchlauf(db=_db, entwerfen=formular_entwurf.entwerfen) -> str:
             r = db.query_one(
                 "select marketing.vorlagenauftrag_vorlegen("
                 f"{lit(auftrag['id'])}::uuid, {lit(json.dumps(gestalt, ensure_ascii=False))}::jsonb)"
-                " as ergebnis")
+                " as ergebnis", streng=True)
             ergebnis = (r or {}).get("ergebnis") or {}
             if ergebnis.get("ok"):
                 return "vorgelegt"
@@ -63,7 +75,7 @@ def ein_durchlauf(db=_db, entwerfen=formular_entwurf.entwerfen) -> str:
         fehler = f"Unerwarteter Fehler beim Entwerfen/Vorlegen ({type(e).__name__}): {e}"
     db.query_one(
         "select marketing.vorlagenauftrag_zurueckstellen("
-        f"{lit(auftrag['id'])}::uuid, {lit(fehler)}) as ergebnis")
+        f"{lit(auftrag['id'])}::uuid, {lit(fehler)}) as ergebnis", streng=True)
     return "zurueckgestellt"
 
 

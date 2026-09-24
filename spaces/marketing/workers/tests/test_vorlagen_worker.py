@@ -103,5 +103,53 @@ class Ruling22(unittest.TestCase):
         self.assertTrue(any("vorlagenauftraege_wiederaufnehmen" in s for s in db.sql))
 
 
+class Ruling1Fix1(unittest.TestCase):
+    """Fix round 1, Ruling 1 (2026-09-24-terminkarten, Task 6):
+
+    _db.query_via_docker/query_one exekutieren psql standardmaessig OHNE
+    -v ON_ERROR_STOP=1 - ein SQL-Fehler gibt Exit 0 mit leerem stdout
+    zurueck, also `[]`, ununterscheidbar von "keine Zeile da". Der Arbeiter
+    ruft deshalb jetzt jeden DB-Aufruf mit streng=True auf; ein SQL-Fehler
+    beim uebernehmen()-Aufruf (VOR dem try/except fuer entwerfen/vorlegen)
+    muss aus ein_durchlauf herausschlagen, statt als "leer" verkannt zu
+    werden - main()s eigenes try/except faengt es dann als "fehler: ..." in
+    STAND ab (siehe main()).
+    """
+
+    class _DbUebernehmenSchlaegtFehl(_Db):
+        def query_via_docker(self, sql, *a, **k):
+            self.sql.append(sql)
+            if "vorlagenauftrag_uebernehmen" in sql:
+                raise RuntimeError("psql failed: relation does not exist")
+            return [self.auftrag] if self.auftrag else []
+
+    def test_fehler_bei_uebernehmen_schlaegt_aus_ein_durchlauf_heraus(self):
+        db = self._DbUebernehmenSchlaegtFehl(AUFTRAG)
+        aufgerufen = []
+        with self.assertRaises(RuntimeError):
+            w.ein_durchlauf(db, lambda a: aufgerufen.append(a) or ({"felder": []}, ""))
+        # entwerfen() darf gar nicht erst versucht werden - der Fehler
+        # passiert beim Abholen, bevor ueberhaupt ein Auftrag dasteht.
+        self.assertEqual(aufgerufen, [])
+
+    def test_streng_true_wird_bei_jedem_db_aufruf_uebergeben(self):
+        db = _Db(AUFTRAG)
+        aufrufe = []
+        orig_via_docker, orig_one = db.query_via_docker, db.query_one
+
+        def via_docker(sql, *a, **k):
+            aufrufe.append(k.get("streng"))
+            return orig_via_docker(sql, *a, **k)
+
+        def one(sql, *a, **k):
+            aufrufe.append(k.get("streng"))
+            return orig_one(sql, *a, **k)
+
+        db.query_via_docker, db.query_one = via_docker, one
+        w.ein_durchlauf(db, lambda a: ({"felder": []}, ""))
+        self.assertTrue(aufrufe, "kein DB-Aufruf erfasst")
+        self.assertTrue(all(a is True for a in aufrufe), aufrufe)
+
+
 if __name__ == "__main__":
     unittest.main()
