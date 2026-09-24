@@ -168,10 +168,11 @@ def recall(
     now = time.time()
     for h in hits or []:
         p = h.get("payload") or {}
-        sc = p.get("success_count", 0) or 0
-        fc = p.get("fail_count", 0) or 0
-        total = max(1, sc + fc)
-        success_rate = sc / total
+        # F4 (Schlusspruefung T1): Testlaeufe lehren recall() nichts - sonst
+        # verzerren Probe-/Sweep-Ausfuehrungen die Erfolgsquote kuenftiger Plaene.
+        if p.get("is_test") is True:
+            continue
+        success_rate = _erfolgsquote(p)
         out.append({
             "plan_id": p.get("plan_id"),
             "intent": p.get("intent"),
@@ -179,12 +180,30 @@ def recall(
             "capability_chain": p.get("capability_chain", []),
             "outcome": p.get("outcome"),
             "reward": p.get("reward", 0.0),
-            "success_rate": round(success_rate, 2),
+            "success_rate": round(success_rate, 2) if success_rate is not None else None,
             "hops_count": p.get("hops_count", 0),
             "age_seconds": int(now - (p.get("created_at") or now)),
             "score": float(h.get("score", 0.0)),
         })
     return out
+
+
+def _erfolgsquote(p: Dict[str, Any]) -> Optional[float]:
+    """F4: die verifizierte Quote (verified_success/verified_failure) schlaegt
+    die alte, unverifizierte (success_count/fail_count) - aber nur, wenn beide
+    verifizierten Zaehler tatsaechlich im Datensatz stehen (Altbestand vor
+    Task 3/4 hat sie nicht, dort gilt weiter der alte Weg). Sind beide
+    verifizierten Zaehler vorhanden aber 0, ist die Quote UNBEKANNT (None),
+    nicht 0 - "niemand hat nachgesehen" ist kein "0% Erfolg".
+    """
+    vs, vf = p.get("verified_success"), p.get("verified_failure")
+    if vs is not None and vf is not None:
+        total_v = vs + vf
+        return (vs / total_v) if total_v > 0 else None
+    sc = p.get("success_count", 0) or 0
+    fc = p.get("fail_count", 0) or 0
+    total = max(1, sc + fc)
+    return sc / total
 
 
 def format_for_prompt(recalled: List[Dict[str, Any]]) -> str:
@@ -196,11 +215,12 @@ def format_for_prompt(recalled: List[Dict[str, Any]]) -> str:
     for r in recalled[:5]:
         age_h = r.get("age_seconds", 0) // 3600
         outcome = r.get("outcome", "?")
-        sr = r.get("success_rate", 0)
+        sr = r.get("success_rate")
+        sr_str = "?" if sr is None else sr
         chain = " → ".join((r.get("capability_chain") or [])[:5]) or "(no chain)"
         intent = (r.get("intent") or "")[:120]
         lines.append(
-            f"- [{outcome} sr={sr} {age_h}h ago] \"{intent}\"\n"
+            f"- [{outcome} sr={sr_str} {age_h}h ago] \"{intent}\"\n"
             f"  used: {chain}"
         )
     return "\n".join(lines)
