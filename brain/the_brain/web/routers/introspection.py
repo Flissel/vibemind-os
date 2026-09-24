@@ -3567,18 +3567,24 @@ async def decisions_reward(request: Request) -> JSONResponse:
             collection_name="brain-decisions",
             payload=existing, points=[pid],
         )
-        # Propagate to self-model: update each capability used
-        from core import decision_self_prior
-        intent = existing.get("intent", "")
-        for cap in (existing.get("capability_chain") or []):
-            decision_self_prior.update(
-                intent_text=intent, capability=cap,
-                success=(reward > 0), reward=reward,
-                plan_id=plan_id, kg=kg,
-            )
+        # Propagate to self-model: update each capability used. M2 (Schluss-
+        # pruefung T1): ein Testlauf darf das Selbstbild nicht einspeisen, auch
+        # wenn ihm nachtraeglich ein Reward gegeben wird - das reward-Feld auf
+        # dem Datensatz selbst wird oben trotzdem gesetzt.
+        capabilities_updated = 0
+        if existing.get("is_test") is not True:
+            from core import decision_self_prior
+            intent = existing.get("intent", "")
+            for cap in (existing.get("capability_chain") or []):
+                decision_self_prior.update(
+                    intent_text=intent, capability=cap,
+                    success=(reward > 0), reward=reward,
+                    plan_id=plan_id, kg=kg,
+                )
+                capabilities_updated += 1
         return JSONResponse({
             "ok": True, "plan_id": plan_id, "reward": reward,
-            "capabilities_updated": len(existing.get("capability_chain") or []),
+            "capabilities_updated": capabilities_updated,
         })
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
