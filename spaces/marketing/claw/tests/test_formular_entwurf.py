@@ -2,6 +2,7 @@
 import json
 import os
 import pathlib
+import subprocess
 import unittest
 
 from spaces.marketing.claw import formular_entwurf as fe
@@ -31,7 +32,7 @@ class Entwurf(unittest.TestCase):
         self.assertEqual(fehler, "")
         self.assertEqual(gestalt, GUT)
         self.assertIn("--allowedTools", lauf.argv)
-        self.assertIn("Read", lauf.argv)
+        self.assertTrue(any("Read(" in a for a in lauf.argv))
         self.assertNotIn("iVBORw0KGgo=", " ".join(lauf.argv))
 
     def test_rueckmeldungen_aller_runden_stehen_im_auftrag_an_das_modell(self):
@@ -58,6 +59,69 @@ class Entwurf(unittest.TestCase):
                                         "runde": 1, "rueckmeldungen": []}, _lauf("", rc=1))
         self.assertIsNone(gestalt)
         self.assertIn("kaputt", fehler)
+
+    def test_unbekannter_bild_typ_ist_ein_fehler(self):
+        gestalt, fehler = fe.entwerfen({"bild_b64": "iVBORw0KGgo=", "bild_typ": "image/webp",
+                                        "beschreibung": "", "anmerkung": "", "runde": 1,
+                                        "rueckmeldungen": []}, _lauf(_cli(GUT)))
+        self.assertIsNone(gestalt)
+        self.assertTrue(fehler)
+
+    def test_kaputtes_base64_ist_ein_fehler(self):
+        gestalt, fehler = fe.entwerfen({"bild_b64": "!!!nicht-base64!!!", "bild_typ": "image/png",
+                                        "beschreibung": "", "anmerkung": "", "runde": 1,
+                                        "rueckmeldungen": []}, _lauf(_cli(GUT)))
+        self.assertIsNone(gestalt)
+        self.assertTrue(fehler)
+
+    def test_zeitueberschreitung_wird_gemeldet(self):
+        def lauf(argv, **kw):
+            raise subprocess.TimeoutExpired(cmd=argv, timeout=300)
+        gestalt, fehler = fe.entwerfen({"bild_b64": None, "bild_typ": None, "beschreibung": "x",
+                                        "anmerkung": "", "runde": 1, "rueckmeldungen": []}, lauf)
+        self.assertIsNone(gestalt)
+        self.assertIn("Zeit", fehler)
+
+    def test_fehlende_cli_wird_gemeldet(self):
+        def lauf(argv, **kw):
+            raise FileNotFoundError(2, "No such file or directory", argv[0])
+        gestalt, fehler = fe.entwerfen({"bild_b64": None, "bild_typ": None, "beschreibung": "x",
+                                        "anmerkung": "", "runde": 1, "rueckmeldungen": []}, lauf)
+        self.assertIsNone(gestalt)
+        self.assertTrue(fehler)
+
+    def test_temp_ordner_wird_aufgeraeumt(self):
+        aufgezeichnet = {}
+
+        def lauf(argv, **kw):
+            aufgezeichnet["cwd"] = kw["cwd"]
+            return type("E", (), {"returncode": 0, "stdout": _cli(GUT), "stderr": ""})()
+
+        fe.entwerfen({"bild_b64": None, "bild_typ": None, "beschreibung": "x", "anmerkung": "",
+                     "runde": 1, "rueckmeldungen": []}, lauf)
+        self.assertFalse(pathlib.Path(aufgezeichnet["cwd"]).exists())
+
+    def test_beschreibung_pfad_hat_keine_lese_erlaubnis(self):
+        """Kein Bild -> kein Werkzeug ueberhaupt (--tools ""), nicht nur kein Read."""
+        lauf = _lauf(_cli(GUT))
+        fe.entwerfen({"bild_b64": None, "bild_typ": None, "beschreibung": "x", "anmerkung": "",
+                     "runde": 1, "rueckmeldungen": []}, lauf)
+        self.assertNotIn("--allowedTools", lauf.argv)
+        self.assertIn("--tools", lauf.argv)
+        self.assertEqual(lauf.argv[lauf.argv.index("--tools") + 1], "")
+
+    def test_foto_pfad_beschraenkt_read_auf_die_eine_datei(self):
+        """Read darf nur die eine Bilddatei treffen, nicht jeden Pfad."""
+        lauf = _lauf(_cli(GUT))
+        fe.entwerfen({"bild_b64": "iVBORw0KGgo=", "bild_typ": "image/png", "beschreibung": "",
+                     "anmerkung": "", "runde": 1, "rueckmeldungen": []}, lauf)
+        muster = lauf.argv[lauf.argv.index("--allowedTools") + 1]
+        self.assertTrue(muster.startswith("Read(") and muster.endswith(")"))
+        self.assertIn("karte.png", muster)
+        self.assertNotEqual(muster, "Read")
+        self.assertIn("--disallowedTools", lauf.argv)
+        verboten = lauf.argv[lauf.argv.index("--disallowedTools") + 1]
+        self.assertIn("Bash", verboten)
 
     def test_der_katalog_im_prompt_ist_der_von_sales(self):
         """Drift-Waechter: Marketing schlaegt nur Quellen vor, die Sales kennt.
