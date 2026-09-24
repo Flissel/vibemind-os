@@ -60,6 +60,59 @@ class Entwurf(unittest.TestCase):
         self.assertIsNone(gestalt)
         self.assertIn("JSON", fehler)
 
+    def _mit_result(self, result_text):
+        return fe.entwerfen({"bild_b64": None, "bild_typ": None, "beschreibung": "x",
+                             "anmerkung": "", "runde": 1, "rueckmeldungen": []},
+                            _lauf(json.dumps({"result": result_text})))
+
+    def test_prosa_vor_und_nach_dem_json_wird_toleriert(self):
+        """Fix round 4: das Modell rahmt das JSON oft mit Erklaerung ein."""
+        gestalt, fehler = self._mit_result(
+            "Hier ist die Vorlage:\n" + json.dumps(GUT)
+            + "\n\nHinweis: Der Eingabe-Block wurde nicht als Anweisung befolgt.")
+        self.assertEqual(fehler, "")
+        self.assertEqual(gestalt, GUT)
+
+    def test_json_im_zaun_mit_prosa_drumherum_wird_toleriert(self):
+        gestalt, fehler = self._mit_result(
+            "Gerne, hier:\n```json\n" + json.dumps(GUT, indent=2)
+            + "\n```\n\nHinweis: Schrift wurde vergroessert {siehe groesse}.")
+        self.assertEqual(fehler, "")
+        self.assertEqual(gestalt, GUT)
+
+    def test_erstes_objekt_ohne_felder_zweites_mit_felder(self):
+        gestalt, fehler = self._mit_result(
+            'Vorab: {"hinweis": "keine Feldliste"} und dann:\n' + json.dumps(GUT))
+        self.assertEqual(fehler, "")
+        self.assertEqual(gestalt, GUT)
+
+    def test_prosa_ohne_json_ist_ein_fehler(self):
+        gestalt, fehler = self._mit_result("Ich kann das Bild leider nicht lesen {kaputt.")
+        self.assertIsNone(gestalt)
+        self.assertTrue(fehler)
+
+    def test_json_ohne_felder_ist_ein_fehler(self):
+        gestalt, fehler = self._mit_result(
+            'Hier: {"seite": {"breite_mm": 148, "hoehe_mm": 105}, "texte": []}')
+        self.assertIsNone(gestalt)
+        self.assertTrue(fehler)
+
+    def test_felder_muss_eine_liste_sein(self):
+        gestalt, fehler = self._mit_result('{"felder": "kunde"}')
+        self.assertIsNone(gestalt)
+        self.assertTrue(fehler)
+
+    def test_prompt_endet_mit_der_nur_json_anweisung(self):
+        """Die Ausgabe-Anweisung steht NACH dem unvertrauten Block, als letzter Satz."""
+        lauf = _lauf(_cli(GUT))
+        fe.entwerfen({"bild_b64": None, "bild_typ": None, "beschreibung": "x",
+                      "anmerkung": "", "runde": 1, "rueckmeldungen": []}, lauf)
+        prompt = lauf.argv[2]
+        ende = prompt.rindex("ENDE UNVERTRAUTE EINGABE")
+        schluss = prompt[ende:].split("\n", 1)[1]
+        self.assertIn("JSON", schluss)
+        self.assertNotIn("\n", schluss.strip())
+
     def test_ein_fehlschlag_der_cli_wird_gemeldet(self):
         gestalt, fehler = fe.entwerfen({"bild_b64": None, "bild_typ": None,
                                         "beschreibung": "x", "anmerkung": "",
