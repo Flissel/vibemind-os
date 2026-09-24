@@ -85,6 +85,14 @@ $Dienste = @(
             SHIM_NEUTRALIZE_DOUBLE_BRACKETS = '1'
         }
         Was  = 'Modell-Tuer :8117 (eigene Shim-Instanz, :8114 bleibt unberuehrt)'
+    },
+    @{
+        Name = 'marketing_vorlagen_arbeiter'
+        Port = 8131
+        Args = @('-u', '-m', 'spaces.marketing.workers.vorlagen_worker')
+        Cwd  = $OsRoot
+        Env  = @{}
+        Was  = 'Vorlagen-Arbeiter (Terminkarten-Auftraege aus Sales)'
     }
 )
 
