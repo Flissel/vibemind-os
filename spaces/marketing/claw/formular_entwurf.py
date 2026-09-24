@@ -143,8 +143,14 @@ def entwerfen(auftrag: dict, lauf=subprocess.run) -> tuple[dict | None, str]:
             bild_typ = auftrag.get("bild_typ")
             if bild_typ not in ENDUNG:
                 return None, f"Unbekannter Bildtyp: {bild_typ!r} (erlaubt: {', '.join(ENDUNG)})."
+            # PostgreSQLs encode(bytea, 'base64') (die Quelle in
+            # vorlagenauftrag_uebernehmen()) bricht alle 76 Zeichen mit "\n"
+            # um. Erst allen Whitespace entfernen, DANN mit validate=True
+            # dekodieren - sonst haette jedes echte Foto hier als "kaputtes
+            # Base64" abgelehnt, obwohl es gueltig ist.
+            bild_b64_sauber = "".join(str(auftrag["bild_b64"]).split())
             try:
-                rohdaten = base64.b64decode(auftrag["bild_b64"], validate=True)
+                rohdaten = base64.b64decode(bild_b64_sauber, validate=True)
             except (binascii.Error, ValueError):
                 return None, "Die Bilddaten sind kein gueltiges Base64."
             dateiname = ENDUNG[bild_typ]

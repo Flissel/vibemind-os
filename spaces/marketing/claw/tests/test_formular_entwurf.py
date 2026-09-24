@@ -1,4 +1,5 @@
 """Foto oder Beschreibung -> Formular-Gestalt, ueber `claude -p` auf dem Abo."""
+import base64
 import json
 import os
 import pathlib
@@ -77,6 +78,40 @@ class Entwurf(unittest.TestCase):
     def test_kaputtes_base64_ist_ein_fehler(self):
         """Bricht VOR jedem CLI-Aufruf ab - lauf darf nicht aufgerufen werden."""
         gestalt, fehler = fe.entwerfen({"bild_b64": "!!!nicht-base64!!!", "bild_typ": "image/png",
+                                        "beschreibung": "", "anmerkung": "", "runde": 1,
+                                        "rueckmeldungen": []}, _kein_lauf)
+        self.assertIsNone(gestalt)
+        self.assertTrue(fehler)
+
+    def test_pg_base64_mit_zeilenumbruechen_wird_dekodiert(self):
+        """PostgreSQLs encode(bytea, 'base64') (die Quelle aus
+        vorlagenauftrag_uebernehmen()) bricht alle 76 Zeichen mit '\\n' um -
+        das ist die Produktionsform, keine kaputte Eingabe."""
+        rohdaten = bytes(range(256)) * 2  # gross genug fuer mehrere 76-Zeichen-Zeilen
+        roh_b64 = base64.b64encode(rohdaten).decode("ascii")
+        bild_b64 = "\n".join(roh_b64[i:i + 76] for i in range(0, len(roh_b64), 76)) + "\n"
+        self.assertIn("\n", bild_b64)  # Testvoraussetzung: der Umbruch ist wirklich drin
+
+        geschrieben = {}
+
+        def lauf(argv, **kw):
+            ordner = kw["cwd"]
+            [dateiname] = os.listdir(ordner)
+            with open(os.path.join(ordner, dateiname), "rb") as f:
+                geschrieben["inhalt"] = f.read()
+            return type("E", (), {"returncode": 0, "stdout": _cli(GUT), "stderr": ""})()
+
+        gestalt, fehler = fe.entwerfen({"bild_b64": bild_b64, "bild_typ": "image/png",
+                                        "beschreibung": "", "anmerkung": "", "runde": 1,
+                                        "rueckmeldungen": []}, lauf)
+        self.assertEqual(fehler, "")
+        self.assertEqual(gestalt, GUT)
+        self.assertEqual(geschrieben.get("inhalt"), rohdaten)
+
+    def test_base64_mit_ungueltigem_zeichen_bleibt_ein_fehler(self):
+        """Whitespace wird entfernt, aber ein echtes ungueltiges Zeichen
+        (kein Whitespace) bleibt ein Fehler - lauf darf nicht aufgerufen werden."""
+        gestalt, fehler = fe.entwerfen({"bild_b64": "iVBOR!w0KGgo=\n", "bild_typ": "image/png",
                                         "beschreibung": "", "anmerkung": "", "runde": 1,
                                         "rueckmeldungen": []}, _kein_lauf)
         self.assertIsNone(gestalt)
