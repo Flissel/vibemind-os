@@ -113,6 +113,18 @@ class Entwurf(unittest.TestCase):
         self.assertIn("JSON", schluss)
         self.assertNotIn("\n", schluss.strip())
 
+    def test_prompt_verlangt_json_zahlen_und_mindesthoehe(self):
+        """049: die Datenbank lehnt Zahlen in Anfuehrungszeichen und Felder unter
+        6 mm ab - der Prompt muss beides VOR dem unvertrauten Block sagen."""
+        lauf = _lauf(_cli(GUT))
+        fe.entwerfen({"bild_b64": None, "bild_typ": None, "beschreibung": "x",
+                      "anmerkung": "", "runde": 1, "rueckmeldungen": []}, lauf)
+        prompt = lauf.argv[2]
+        vorn = prompt[:prompt.index("BEGINN UNVERTRAUTE EINGABE")]
+        self.assertIn("JSON-Zahl", vorn)
+        self.assertIn("ohne Anfuehrungszeichen und ohne Einheit", vorn)
+        self.assertIn("mindestens 6 mm hoch", vorn)
+
     def test_ein_fehlschlag_der_cli_wird_gemeldet(self):
         gestalt, fehler = fe.entwerfen({"bild_b64": None, "bild_typ": None,
                                         "beschreibung": "x", "anmerkung": "",
