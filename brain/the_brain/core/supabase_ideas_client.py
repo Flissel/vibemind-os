@@ -18,7 +18,13 @@ This module gives Brain its own minimal async path:
 
 Design:
 - Uses the shared httpx.AsyncClient from multi_llm_router (keepalive pool)
-- Supabase URL + (optional) anon-key from env: SUPABASE_URL, SUPABASE_ANON_KEY
+- Supabase URL from SUPABASE_URL; anon-key via core.config.get_secret
+  ("SUPABASE_ANON_KEY"), which reads SUPABASE_ANON_KEY_FILE / /run/secrets /
+  the plain env var, in that order. Both are resolved at construction time
+  (SupabaseIdeasClient.__init__), not as module-level import-time constants —
+  and neither falls back to a dead default address or an "anon" placeholder
+  key (Task 7a, 2026-09-24: exactly that let every request run into a silent
+  401 right after deploy).
 - No supabase-py dep — plain REST
 - All methods return primitive dicts/lists or None on failure
 - Errors are logged, not raised; callers decide how to surface
@@ -33,10 +39,6 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "http://192.168.178.65:54321").rstrip("/")
-SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY", "anon").strip()
-
-
 class SupabaseIdeasClient:
     """Async REST client for canvas_nodes + canvas_edges (and ideas)."""
 
@@ -45,8 +47,23 @@ class SupabaseIdeasClient:
         url: Optional[str] = None,
         anon_key: Optional[str] = None,
     ) -> None:
-        self.url = (url or SUPABASE_URL).rstrip("/")
-        self.key = (anon_key or SUPABASE_KEY).strip() or "anon"
+        # Keine Vorgabewerte: eine tote Vorgabeadresse oder ein
+        # Platzhalter-Schluessel liessen jede Anfrage still ins Leere laufen
+        # (401, bis 2026-09-24 live so vorgefunden). Aufloesung erst hier,
+        # zur Konstruktionszeit, nicht als Modulkonstante zur Importzeit.
+        if url is not None:
+            self.url = url.strip().rstrip("/")
+        else:
+            self.url = (os.environ.get("SUPABASE_URL") or "").strip().rstrip("/")
+        if anon_key is not None:
+            self.key = anon_key.strip()
+        else:
+            try:
+                from core.config import get_secret
+                key = get_secret("SUPABASE_ANON_KEY")
+            except Exception:
+                key = os.environ.get("SUPABASE_ANON_KEY")
+            self.key = (key or "").strip()
         self.rest = f"{self.url}/rest/v1"
         # Stats for /api/llm/stats-style introspection
         self.stats: Dict[str, Any] = {
@@ -83,6 +100,18 @@ class SupabaseIdeasClient:
         correct; if we ever push enough Supabase traffic to care, we'll
         wire this onto the FastAPI event loop instead.
         """
+        if not self.url:
+            self.stats["errors"] += 1
+            self.stats["last_error"] = "Supabase-Zugang fehlt: SUPABASE_URL"
+            logger.warning(f"[supabase] {method} {path}: SUPABASE_URL fehlt")
+            return None
+        if not self.key:
+            self.stats["errors"] += 1
+            self.stats["last_error"] = (
+                "Supabase-Zugang fehlt: Schluessel (SUPABASE_ANON_KEY[_FILE])"
+            )
+            logger.warning(f"[supabase] {method} {path}: Supabase-Schluessel fehlt")
+            return None
         import httpx as _httpx
         url = f"{self.rest}{path}"
         self.stats["calls"] += 1
