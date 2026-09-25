@@ -88,7 +88,7 @@ $Dienste = @(
     },
     @{
         Name = 'marketing_vorlagen_arbeiter'
-        Port = 8131
+        Port = 8132
         Args = @('-u', '-m', 'spaces.marketing.workers.vorlagen_worker')
         Cwd  = $OsRoot
         Env  = @{}

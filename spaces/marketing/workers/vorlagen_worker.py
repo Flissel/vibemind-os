@@ -3,7 +3,7 @@
 Kein Agent, kein Routinelauf: ein fester Arbeiter fragt jede Minute die
 Datenbank, und nur wenn ein Auftrag wartet, entsteht genau ein Modellaufruf
 (formular_entwurf.entwerfen). Gestartet von marketing-dienste-starten.ps1;
-der Gesundheits-Port 8131 ist das Zeichen „laeuft" fuer dieses Skript.
+der Gesundheits-Port 8132 ist das Zeichen „laeuft" fuer dieses Skript.
 
 Controller ruling 22 (Task 6, 2026-09-24-terminkarten):
   1) ein_durchlauf faengt JEDE Ausnahme aus entwerfen() oder aus dem
@@ -41,7 +41,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from spaces.marketing.claw import formular_entwurf
 from spaces.marketing.sync import _db
 
-PORT = 8131
+PORT = 8132  # 8131 gehoert seit 24.09. dem Plugin-Setup (server.py)
 TAKT_S = 60
 WIEDERAUFNAHME_ALTER = "15 minutes"
 STAND = {"letzter_lauf": None, "letztes_ergebnis": None}
