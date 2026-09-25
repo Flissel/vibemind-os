@@ -49,6 +49,12 @@
         <div class="text-[11px] text-slate-400">VibeMind · Brevo-like · Self-hosted</div>
       </div>
     </div>
+    <!-- Schalter Sales <-> Marketing (25.09.2026): der Sales-Link erscheint
+         nur mit gueltigem Rueckweg (schalter.js). -->
+    <div class="flex items-center gap-1 text-xs rounded-full border border-white/10 p-0.5">
+      <a id="schalter-sales" hidden class="px-2.5 py-1 rounded-full text-slate-300 hover:text-white" href="#">Sales</a>
+      <span class="px-2.5 py-1 rounded-full bg-white/10 text-white font-semibold">Marketing</span>
+    </div>
     <nav class="flex items-center gap-1 ml-4 flex-wrap">
       <a class="tab-link px-3 py-1.5 rounded-md text-sm border border-transparent text-slate-300 hover:text-white" data-tab="dashboard"  href="#dashboard">Dashboard</a>
       <a class="tab-link px-3 py-1.5 rounded-md text-sm border border-transparent text-slate-300 hover:text-white" data-tab="campaigns"  href="#campaigns">Campaigns</a>
@@ -819,5 +825,6 @@
     setInterval(() => onTabChange(), 30000);
   })();
 </script>
+<script src="schalter.js"></script>
 </body>
 </html>
