@@ -35,6 +35,9 @@ def test_tailnet_https_wird_angenommen(gut):
     "https://x.ts.net.boese.de", "https://boese.de/?x.ts.net",
     "https://boese.de#.ts.net", "https://ts.net", "https://boese.de",
     "//x.ts.net", "nicht mal eine adresse",
+    # fremdes Tailnet (z. B. oeffentlicher Tailscale-Funnel) — nur das eigene gilt
+    "https://x.tailabcdef.ts.net", "https://tail6c7d61.ts.net",
+    "https://x.tail6c7d61.ts.net.boese.ts.net",
 ])
 def test_alles_andere_wird_abgewiesen(schlecht):
     assert _node(f"s.rueckwegPruefen({json.dumps(schlecht)})") == ""

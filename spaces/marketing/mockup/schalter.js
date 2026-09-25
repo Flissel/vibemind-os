@@ -1,11 +1,15 @@
 // Schalter Marketing -> Sales (sales-claw Spec 2026-09-25-marketing-
 // schalter-design.md §3.3). Der Rueckweg kommt aus ?zurueck= und gilt nur
-// als https-Adresse im Tailnet (*.ts.net) — sonst waere die Seite eine
-// offene Umleitung. Der letzte gueltige Wert wird gemerkt; ein Speicher,
-// der wirft (privates Fenster), darf nichts kaputt machen.
+// als https-Adresse im eigenen Tailnet (*.tail6c7d61.ts.net) — sonst waere
+// die Seite eine offene Umleitung. Der letzte gueltige Wert wird gemerkt;
+// ein Speicher, der wirft (privates Fenster), darf nichts kaputt machen.
 (function (wurzel) {
   "use strict";
   var SCHLUESSEL = "sales_rueckweg";
+  // Nur das EIGENE Tailnet. Ein beliebiges *.ts.net liesse jede oeffentliche
+  // Tailscale-Funnel-Adresse eines Fremden als Rueckweg zu. Wechselt der
+  // Tailnet-Name, muss dieser Wert mit.
+  var EIGENES_TAILNET = ".tail6c7d61.ts.net";
 
   function rueckwegPruefen(roh) {
     if (typeof roh !== "string" || roh.indexOf("https://") !== 0) return "";
@@ -15,6 +19,9 @@
     var host = u.hostname.toLowerCase();
     if (!/^[a-z0-9-]+(\.[a-z0-9-]+)*\.ts\.net$/.test(host)) return "";
     if (host.split(".").length < 3) return "";
+    var rest = host.slice(0, host.length - EIGENES_TAILNET.length);
+    if (host.slice(-EIGENES_TAILNET.length) !== EIGENES_TAILNET ||
+        !/^[a-z0-9-]+$/.test(rest)) return "";
     return roh;
   }
 
