@@ -20,7 +20,8 @@ env var — the re-point to Proxmox is fully reversible.
 
 Selection env (read at call time; also honoured from the repo .env):
   SUPABASE_SSH_HOST      ssh alias/host of the VM (e.g. offload-vm) -> mode A
-  SUPABASE_DB_CONTAINER  remote container name (e.g. debian-supabase-db-1)
+  SUPABASE_DB_CONTAINER  container name (e.g. debian-supabase-db-1); required
+                         in mode A, optional override of the local lookup in B
   SUPABASE_DB_USER       psql role (default supabase_admin)
   SUPABASE_DB_NAME       database (default postgres)
 """
@@ -92,16 +93,22 @@ def find_supabase_container() -> str:
 
 
 def _resolve_container(container: str | None) -> str:
-    """Pick the container to exec into: explicit arg > remote cfg > local lookup."""
+    """Pick the container to exec into: explicit arg > cfg > local lookup.
+
+    Mode B also honours SUPABASE_DB_CONTAINER: a Marketing-API running ON the
+    VM (sales-claw Spec 2026-09-25-marketing-schalter) execs locally into
+    `debian-supabase-db-1`, which the `vibemind_supabase-db` name filter of
+    find_supabase_container() never matches.
+    """
     if container:
         return container
+    name = _cfg("SUPABASE_DB_CONTAINER")
     if _cfg("SUPABASE_SSH_HOST"):
-        name = _cfg("SUPABASE_DB_CONTAINER")
         if not name:
             raise RuntimeError(
                 "SUPABASE_SSH_HOST is set but SUPABASE_DB_CONTAINER is missing")
         return name
-    return find_supabase_container()
+    return name or find_supabase_container()
 
 
 def _psql_argv(container: str, streng: bool = False) -> list[str]:
