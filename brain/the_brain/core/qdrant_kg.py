@@ -116,6 +116,10 @@ COLLECTIONS: Dict[str, str] = {
     "self":       "brain-self",        # Phase 10.2 — self-model: capability-confidence over time
 }
 
+# Brain T2: Altbestaende, die nicht geloescht, sondern verschoben werden.
+COLLECTIONS["episodic_archive"] = "brain-episodic-archive"
+COLLECTIONS["semantic_archive"] = "brain-semantic-archive"
+
 # Baustein D.2 — execution-log collection (RAG-index over multihop history).
 # Only registered when EXECUTION_LOG_ENABLED, so existing deployments don't get
 # a new collection unless they opt in. Stores one embedded summary per step with
@@ -165,6 +169,7 @@ NT_MIROFISH_ENTITY = "mirofish_entity"  # R.6 — Neo4j mirror
 NT_DECISION_RECORD = "decision_record"  # Phase 10.1 — past plan with outcome
 NT_SELF_TRAIT = "self_trait"            # Phase 10.2 — capability-confidence belief
 NT_EXEC_STEP = "exec_step"              # Baustein D.2 — one execution-trace step
+NT_KNOWLEDGE_DOC = "knowledge_doc"      # Brain T2 — Wissensdokument aus dem Tresor
 
 ALL_NODE_TYPES = (
     NT_THOUGHT, NT_RESPONSE, NT_FACT, NT_CONCEPT,
@@ -193,6 +198,7 @@ NODE_TYPE_TO_COLLECTION: Dict[str, str] = {
     NT_DECISION_RECORD: "decisions",   # Phase 10.1
     NT_SELF_TRAIT:      "self",        # Phase 10.2
     NT_EXEC_STEP:       "execlog",     # Baustein D.2
+    NT_KNOWLEDGE_DOC:   "artifacts",   # Brain T2
 }
 
 # Brain-owned collections (not rowboat-artifacts / fungus-code).
