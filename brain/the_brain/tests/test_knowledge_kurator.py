@@ -1,8 +1,10 @@
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from core.knowledge.kurator import EREIGNIS_BEREICHE, Kurator
+from core.knowledge import kurator as kurator_modul
+from core.knowledge.kurator import EREIGNIS_BEREICHE, Kurator, ereignis_melden
 from core.knowledge.schema import Beleg, Dokument, Fakt
 from core.knowledge.tresor import Tresor
 
@@ -96,15 +98,126 @@ def test_leerlauf_ohne_ereignis_erzeugt_keinen_gedanken(monkeypatch):
     assert cte._think_tick() is None
 
 
-def test_ereignis_ruft_den_kurator(monkeypatch):
-    monkeypatch.setattr(brain_chat, "CTE_EVENT_ONLY", True)
+def test_ereignis_melden_schreibt_nur_gemappte_ereignisse_mit_wenigen_feldern(tmp_path, monkeypatch):
+    """Fix-Runde 1, Finding 1: ereignis_melden() ist der Cross-Prozess-Weg -
+    schreibt nur, wenn die Datei konfiguriert ist UND das Ereignis einen
+    Bereich trifft, und nur kind/capability/ts (Datenschutz: keine Intents)."""
+    pfad = tmp_path / "ereignisse.jsonl"
+    monkeypatch.setattr(kurator_modul, "KURATOR_EREIGNIS_DATEI", str(pfad))
+
+    ereignis_melden("action_verified", {"capability": "bubble_create", "intent": "geheimer Text"})
+    ereignis_melden("self_steer_dispatch", {"capability": "irgendwas"})  # nicht gemappt
+
+    zeilen = pfad.read_text(encoding="utf-8").strip().splitlines()
+    assert len(zeilen) == 1
+    eintrag = json.loads(zeilen[0])
+    assert set(eintrag.keys()) == {"kind", "capability", "ts"}
+    assert eintrag["kind"] == "action_verified"
+    assert eintrag["capability"] == "bubble_create"
+
+
+def test_ereignis_melden_ohne_pfad_und_ohne_bereich_tut_nichts(tmp_path, monkeypatch):
+    pfad = tmp_path / "ereignisse.jsonl"
+    monkeypatch.setattr(kurator_modul, "KURATOR_EREIGNIS_DATEI", "")
+    ereignis_melden("action_verified", {"capability": "bubble_create"})
+    assert not pfad.exists()
+
+    monkeypatch.setattr(kurator_modul, "KURATOR_EREIGNIS_DATEI", str(pfad))
+    ereignis_melden("self_steer_dispatch", {"capability": "x"})  # kein Bereich
+    assert not pfad.exists()
+
+
+def test_ereignisse_abarbeiten_vereint_zwei_ereignisse_in_einem_lauf(tmp_path):
+    """Fix-Runde 1, Finding 2: zwei Ereignisse desselben Bereichs duerfen nur
+    EINEN _lauf-Aufruf ausloesen, nicht einen je Ereignis."""
+    pfad = tmp_path / "ereignisse.jsonl"
+    offset_pfad = tmp_path / "ereignisse.jsonl.offset"
+    pfad.write_text(
+        json.dumps({"kind": "action_verified", "capability": "bubble_create", "ts": "t1"}) + "\n"
+        + json.dumps({"kind": "action_verified", "capability": "bubble_edit", "ts": "t2"}) + "\n",
+        encoding="utf-8")
+    aufrufe = []
+    k = Kurator(Tresor(tmp_path / "tresor"), leser=leser(
+        bubbles=lambda j: aufrufe.append("b") or [dok()]))
+
+    erg = k.ereignisse_abarbeiten(str(pfad), str(offset_pfad))
+
+    assert aufrufe == ["b"], "beide Ereignisse bilden auf 'bubbles' ab -> EIN _lauf-Aufruf"
+    assert erg["ereignisse"] == 2
+    assert erg["geschrieben"] == 1
+    assert offset_pfad.read_text(encoding="utf-8").strip() == str(pfad.stat().st_size)
+
+
+def test_ereignisse_abarbeiten_zweiter_lauf_ohne_neue_zeilen_tut_nichts(tmp_path):
+    pfad = tmp_path / "ereignisse.jsonl"
+    offset_pfad = tmp_path / "ereignisse.jsonl.offset"
+    pfad.write_text(json.dumps({"kind": "plan_completed", "capability": ""}) + "\n", encoding="utf-8")
+    aufrufe = []
+    k = Kurator(Tresor(tmp_path / "tresor"), leser=leser(
+        agents=lambda j: aufrufe.append("a") or [],
+        pc_zustand=lambda j: aufrufe.append("p") or None))
+
+    erg1 = k.ereignisse_abarbeiten(str(pfad), str(offset_pfad))
+    assert erg1["ereignisse"] == 1
+    assert aufrufe, "erster Lauf muss die betroffenen Leser rufen"
+
+    aufrufe.clear()
+    erg2 = k.ereignisse_abarbeiten(str(pfad), str(offset_pfad))
+    assert erg2["ereignisse"] == 0
+    assert aufrufe == [], "keine neuen Zeilen -> kein _lauf-Aufruf"
+
+
+def test_ereignisse_abarbeiten_restart_bei_verkuerzter_datei(tmp_path):
+    pfad = tmp_path / "ereignisse.jsonl"
+    offset_pfad = tmp_path / "ereignisse.jsonl.offset"
+    zeile = json.dumps({"kind": "action_verified", "capability": "bubble_create"}) + "\n"
+    pfad.write_text(zeile * 5, encoding="utf-8")
+    aufrufe = []
+    k = Kurator(Tresor(tmp_path / "tresor"), leser=leser(
+        bubbles=lambda j: aufrufe.append("b") or [dok()]))
+    k.ereignisse_abarbeiten(str(pfad), str(offset_pfad))
+    assert aufrufe == ["b"]
+
+    # Datei "rotiert": jetzt kuerzer als der gespeicherte Offset.
+    pfad.write_text(zeile, encoding="utf-8")
+    aufrufe.clear()
+    erg = k.ereignisse_abarbeiten(str(pfad), str(offset_pfad))
+    assert aufrufe == ["b"], "muss bei 0 neu beginnen statt die Zeile zu ueberspringen"
+    assert erg["ereignisse"] == 1
+
+
+def test_ereignisse_abarbeiten_ueberspringt_kaputte_zeile(tmp_path):
+    pfad = tmp_path / "ereignisse.jsonl"
+    offset_pfad = tmp_path / "ereignisse.jsonl.offset"
+    pfad.write_text(
+        "{kaputtes json ohne Ende\n"
+        + json.dumps({"kind": "action_verified", "capability": "bubble_create"}) + "\n",
+        encoding="utf-8")
+    aufrufe = []
+    k = Kurator(Tresor(tmp_path / "tresor"), leser=leser(
+        bubbles=lambda j: aufrufe.append("b") or [dok()]))
+
+    erg = k.ereignisse_abarbeiten(str(pfad), str(offset_pfad))
+
+    assert aufrufe == ["b"]
+    assert erg["ereignisse"] == 1, "nur die gueltige Zeile zaehlt, die kaputte wird uebersprungen"
+
+
+def test_record_event_meldet_kurator_cross_prozess(tmp_path, monkeypatch):
+    """Fix-Runde 1, Finding 1: record_event() meldet zusaetzlich an die
+    Ereignisdatei, unabhaengig davon, ob dieser CTE-Prozess je tickt."""
+    pfad = tmp_path / "ereignisse.jsonl"
+    monkeypatch.setattr(kurator_modul, "KURATOR_EREIGNIS_DATEI", str(pfad))
     cte = brain_chat.ContinuousThinkingEngine()
-    k = MagicMock()
-    k.bei_ereignis.return_value = {"geschrieben": 1}
-    cte.set_kurator(k)
-    cte.record_event("action_verified", {"capability": "bubble_create", "intent": "x"})
-    cte._think_tick()
-    k.bei_ereignis.assert_called_once_with("action_verified", {"capability": "bubble_create", "intent": "x"})
+
+    cte.record_event("action_verified", {"capability": "bubble_create", "intent": "geheim"})
+
+    zeilen = pfad.read_text(encoding="utf-8").strip().splitlines()
+    assert len(zeilen) == 1
+    eintrag = json.loads(zeilen[0])
+    assert eintrag["kind"] == "action_verified"
+    assert eintrag["capability"] == "bubble_create"
+    assert set(eintrag.keys()) == {"kind", "capability", "ts"}
 
 
 def test_speicherschwelle_und_duplikate(monkeypatch):

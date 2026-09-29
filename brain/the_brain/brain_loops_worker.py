@@ -62,27 +62,38 @@ def main() -> int:
     _init_brain_state(state, testing=False)
     _init_production_modules(state)   # startet die Loops (BRAIN_BACKGROUND_LOOPS=1)
 
-    # Brain T2: Kurator - an den Leerlauf-Denker haengen + periodischer Volllauf.
+    # Brain T2 / Fix-Runde 1: Kurator - dieser Thread ist der EINZIGE Aufrufer
+    # (kein CTE-Wiring mehr, siehe kurator.py-Moduldoc). Er arbeitet zuerst die
+    # Cross-Prozess-Ereignisdatei ab (kurzer Takt) und faehrt daneben den
+    # selteneren Volllauf, sobald KURATOR_INTERVAL_S seit dem letzten
+    # verstrichen ist.
     from core.knowledge import kurator as _kur
     if _kur.KURATOR_ENABLED:
         from core.knowledge.tresor import Tresor
         k = _kur.Kurator(Tresor(), kg=getattr(state, "qdrant_kg", None),
                          deuten=(_kur.llm_deuten if _kur.KURATOR_DEUTUNG else None))
-        cte = getattr(state, "continuous_thinking", None)
-        if cte is not None and hasattr(cte, "set_kurator"):
-            cte.set_kurator(k)
 
         def _kurator_takt():
+            letzter_volllauf = 0.0
             while True:
                 try:
-                    print(f"[kurator] Volllauf: {k.voll_durchlauf()}", flush=True)
+                    if _kur.KURATOR_EREIGNIS_DATEI:
+                        erg = k.ereignisse_abarbeiten(
+                            _kur.KURATOR_EREIGNIS_DATEI, _kur.KURATOR_EREIGNIS_DATEI + ".offset")
+                        if erg.get("ereignisse"):
+                            print(f"[kurator] Ereignisse abgearbeitet: {erg}", flush=True)
+                    jetzt = time.time()
+                    if jetzt - letzter_volllauf >= _kur.KURATOR_INTERVAL_S:
+                        print(f"[kurator] Volllauf: {k.voll_durchlauf()}", flush=True)
+                        letzter_volllauf = jetzt
                 except Exception as e:  # noqa: BLE001
-                    print(f"[kurator] Volllauf fehlgeschlagen: {e}", flush=True)
-                time.sleep(_kur.KURATOR_INTERVAL_S)
+                    print(f"[kurator] Takt fehlgeschlagen: {e}", flush=True)
+                time.sleep(_kur.KURATOR_EREIGNIS_TAKT_S)
 
         threading.Thread(target=_kurator_takt, name="Kurator", daemon=True).start()
         print(f"[brain-loops] Kurator aktiv (Deutung={_kur.KURATOR_DEUTUNG}, "
-              f"Takt={_kur.KURATOR_INTERVAL_S}s)", flush=True)
+              f"Ereignis-Takt={_kur.KURATOR_EREIGNIS_TAKT_S}s, "
+              f"Volllauf-Takt={_kur.KURATOR_INTERVAL_S}s)", flush=True)
 
     # Log-Retrainer (lebt sonst in der HTTP-Lifespan) — hier optional nachziehen,
     # damit der Worker auch das inkrementelle EventRoutingHead-Training uebernimmt.

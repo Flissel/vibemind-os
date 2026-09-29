@@ -2913,10 +2913,6 @@ class ContinuousThinkingEngine:
         # forward pass, keeping bridges alive and the dashboard populated.
         self._agent_loop = None
 
-        # Brain T2: Kurator, der bei Ereignissen Wissensdokumente nachfuehrt
-        # (set by brain_loops_worker via set_kurator).
-        self._kurator = None
-
         logger.info(f"ContinuousThinkingEngine initialized (interval={interval_ms}ms)")
 
     @property
@@ -2947,10 +2943,6 @@ class ContinuousThinkingEngine:
         """Attach ThoughtJury for autonomous thought evaluation."""
         self._thought_jury = jury
         logger.info("ContinuousThinkingEngine connected to ThoughtJury")
-
-    def set_kurator(self, kurator) -> None:
-        """Brain T2: Kurator, der bei Ereignissen Wissensdokumente nachfuehrt."""
-        self._kurator = kurator
 
     def on_thought(self, callback: Callable[[ContinuousThought], None]) -> None:
         """Register a callback for new thoughts (for real-time display)."""
@@ -3003,7 +2995,14 @@ class ContinuousThinkingEngine:
 
         The next idle tick will preferentially pull from this queue and
         produce a thought that REFERS to the event, instead of random
-        knowledge reflection. Bounded queue (50) drops oldest on overflow."""
+        knowledge reflection. Bounded queue (50) drops oldest on overflow.
+
+        Fix-Runde 1 (Task-7-Review, Finding 1): also reports the event to the
+        Kurator's cross-process event file (if KURATOR_EREIGNIS_DATEI is
+        set). This CTE instance may never tick (e.g. brain-core runs with
+        BRAIN_BACKGROUND_LOOPS=0, yet PlanExecutor calls record_event() from
+        there) — the file hand-off works regardless of whether this process's
+        CTE ever ticks."""
         try:
             self._event_queue.append({
                 "kind": kind,
@@ -3012,6 +3011,11 @@ class ContinuousThinkingEngine:
             })
         except Exception as e:
             logger.debug(f"[CTE] record_event failed: {e}")
+        try:
+            from core.knowledge import kurator as _kurator_mod
+            _kurator_mod.ereignis_melden(kind, payload)
+        except Exception as e:
+            logger.debug(f"[CTE] ereignis_melden failed: {e}")
 
     def set_discourse_engine_ref(self, de) -> None:
         """Phase 7.5 — read-only ref so CTE can pull `_recent_user_topics`
@@ -3220,11 +3224,6 @@ class ContinuousThinkingEngine:
         if self._event_queue:
             try:
                 evt = self._event_queue.popleft()
-                if self._kurator is not None:
-                    try:
-                        self._kurator.bei_ereignis(evt.get("kind", ""), evt.get("payload") or {})
-                    except Exception as e:
-                        logger.info(f"[CTE] Kurator fehlgeschlagen: {e}")
                 result = self._think_event(evt)
                 if result:
                     return result
