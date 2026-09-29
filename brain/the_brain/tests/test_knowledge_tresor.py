@@ -129,3 +129,55 @@ def test_unbekannter_link_wird_verworfen_bekannter_bleibt(tmp_path):
     assert ok and probleme == []
     gespeichert = t.lesen_von(andere)
     assert gespeichert.links == ["Marketing (a1b2c3)"]
+
+
+# ── Schlusspruefung I1: unveraendertes Dokument wird nicht neu geschrieben ──
+
+def test_unveraendert_nur_stand_anders_schreibt_nicht(tmp_path, monkeypatch):
+    import os
+    from datetime import timedelta
+    t = Tresor(tmp_path)
+    t.schreiben(dok(deutung="Noch roh [B1]."))
+    zaehler = {"n": 0}
+    echter_replace = os.replace
+
+    def zaehlend(src, dst):
+        zaehler["n"] += 1
+        return echter_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", zaehlend)
+    spaeter = T + timedelta(hours=3)
+    neu = dok().model_copy(update={
+        "stand": spaeter,
+        "belege": [b.model_copy(update={"gemessen": spaeter}) for b in dok().belege]})
+    ok, probleme = t.schreiben(neu)
+    assert ok and probleme == []
+    assert zaehler["n"] == 0
+    assert t.letzter_status == "unveraendert"
+    # Fakt geaendert -> wird geschrieben
+    ok, _ = t.schreiben(dok(status="promoted"))
+    assert ok and zaehler["n"] == 1 and t.letzter_status == "geschrieben"
+
+
+def test_schreiben_mit_bekannten_liest_nicht_neu(tmp_path, monkeypatch):
+    t = Tresor(tmp_path)
+    monkeypatch.setattr(Tresor, "bekannte_namen", lambda self: (_ for _ in ()).throw(
+        AssertionError("bekannte_namen darf nicht gerufen werden")))
+    ok, _ = t.schreiben(dok(links=["Andere (zzzzzz)"]), bekannte={"Andere (zzzzzz)"})
+    assert ok
+    assert t.lesen_von(dok()).links == ["Andere (zzzzzz)"]
+
+
+# ── Schlusspruefung I3: unlesbare vorhandene Datei wird nicht ueberschrieben ──
+
+def test_unlesbare_vorhandene_datei_bleibt_byte_gleich(tmp_path):
+    t = Tresor(tmp_path)
+    p = t.pfad(dok())
+    p.parent.mkdir(parents=True)
+    kaputt = b"---\ntyp: bubble\n  : : kaputt [\n---\n# Marketing\nvon Hand\n"
+    p.write_bytes(kaputt)
+    ok, probleme = t.schreiben(dok())
+    assert ok is False
+    assert probleme and "unlesbar" in probleme[0] and str(p) in probleme[0]
+    assert p.read_bytes() == kaputt
+    assert t.letzter_status == "unlesbar"

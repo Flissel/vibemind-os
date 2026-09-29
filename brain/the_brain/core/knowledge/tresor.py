@@ -35,19 +35,26 @@ _REF = re.compile(r"\[B(\d+)\]")
 class Tresor:
     def __init__(self, wurzel: Optional[Path] = None):
         self.wurzel = Path(wurzel or KNOWLEDGE_DIR)
+        self.letzter_status: str = ""
+        self.zuletzt_geschrieben: Optional[Dokument] = None
 
     def pfad(self, dok: Dokument) -> Path:
         return self.wurzel / ORDNER[dok.typ] / f"{dateiname(dok)}.md"
 
-    def lesen_von(self, dok: Dokument) -> Optional[Dokument]:
+    def laden(self, dok: Dokument) -> Tuple[bool, Optional[Dokument]]:
+        """(existiert, dokument). existiert=True mit dokument=None heisst:
+        Datei da, aber nicht parsebar (Schlusspruefung I3)."""
         p = self.pfad(dok)
         if not p.exists():
-            return None
+            return False, None
         try:
-            return lesen(p.read_text(encoding="utf-8"))
+            return True, lesen(p.read_text(encoding="utf-8"))
         except Exception as e:
             logger.warning("[tresor] %s unlesbar: %s", p, e)
-            return None
+            return True, None
+
+    def lesen_von(self, dok: Dokument) -> Optional[Dokument]:
+        return self.laden(dok)[1]
 
     def alle(self) -> List[Dokument]:
         out = []
@@ -72,16 +79,47 @@ class Tresor:
                 return False
         return True
 
-    def deutung_noch_gueltig(self, neu: Dokument) -> bool:
+    def deutung_noch_gueltig(self, neu: Dokument,
+                             geladen: Optional[Tuple[bool, Optional[Dokument]]] = None) -> bool:
         """True, wenn eine vorhandene, nicht leere Deutung des gespeicherten
         Dokuments von den Belegen aus `neu` weiterhin getragen wird und damit
         bei `schreiben(neu)` fuehrend bliebe. Der Kurator (Task 7) nutzt das,
-        um in diesem Fall den LLM-Aufruf zu sparen."""
-        alt = self.lesen_von(neu)
+        um in diesem Fall den LLM-Aufruf zu sparen. `geladen` wie bei
+        `schreiben` (Datei nur einmal lesen)."""
+        alt = (geladen if geladen is not None else self.laden(neu))[1]
         return bool(alt is not None and alt.deutung.strip() and self._deutung_traegt(alt, neu))
 
-    def schreiben(self, neu: Dokument) -> Tuple[bool, List[str]]:
-        alt = self.lesen_von(neu)
+    @staticmethod
+    def _inhalt(d: Dokument) -> tuple:
+        """Was ein Dokument inhaltlich ausmacht - ohne `stand`/`gemessen`
+        (Schlusspruefung I1): Titel, Fakten-Werte, Beleg-(quelle, ziel, feld,
+        wert), Deutung und Links."""
+        return (d.titel,
+                tuple((f.schluessel, f.wert, f.beleg) for f in d.fakten),
+                tuple((b.nr, b.quelle, b.ziel, b.feld, b.wert) for b in d.belege),
+                d.deutung.strip(), tuple(d.links))
+
+    def schreiben(self, neu: Dokument, bekannte: Optional[Set[str]] = None,
+                  geladen: Optional[Tuple[bool, Optional[Dokument]]] = None) -> Tuple[bool, List[str]]:
+        """Prueft und schreibt `neu`. Schlusspruefung I1/I3:
+          - `bekannte`: Menge bekannter Dokumentnamen; wird sie uebergeben,
+            liest `schreiben` NICHT alle Dokumente neu ein (der Kurator
+            ermittelt sie einmal pro Lauf).
+          - `geladen`: Ergebnis von `laden(neu)`, damit der Kurator die Datei
+            nur einmal liest (fuer `deutung_noch_gueltig` und hier).
+          - Datei vorhanden, aber unlesbar -> NICHT schreiben (Handbearbeitung
+            oder von Rowboat umformatierter Kopf bleibt byte-gleich).
+          - Inhalt gleich dem gespeicherten (nur stand/gemessen anders) ->
+            NICHT schreiben, Rueckgabe (True, []).
+        `letzter_status` sagt danach, was passiert ist: geschrieben,
+        unveraendert, abgelehnt oder unlesbar; `zuletzt_geschrieben` ist das
+        endgueltige Dokument (fuer den Index, ohne erneutes Lesen)."""
+        existiert, alt = geladen if geladen is not None else self.laden(neu)
+        self.zuletzt_geschrieben = None
+        if existiert and alt is None:
+            self.letzter_status = "unlesbar"
+            return False, [f"Datei vorhanden, aber unlesbar - Handbearbeitung? "
+                           f"nicht ueberschrieben: {self.pfad(neu)}"]
         if alt is not None and alt.deutung.strip() and self._deutung_traegt(alt, neu):
             # Alte Deutung bleibt fuehrend -- auch wenn die neue nicht leer
             # ist: nur ein veraenderter Belegstand darf eine noch gueltige
@@ -91,16 +129,21 @@ class Tresor:
             neu_nr = {(b.quelle, b.ziel, b.feld): b.nr for b in neu.belege}
             deutung = _REF.sub(lambda m: f"[B{neu_nr[alt_b[int(m.group(1))]]}]", alt.deutung)
             neu = neu.model_copy(update={"deutung": deutung})
-        bekannt = self.bekannte_namen() | {dateiname(neu)}
+        bekannt = (self.bekannte_namen() if bekannte is None else set(bekannte)) | {dateiname(neu)}
         links = [l for l in neu.links if l in bekannt]
         neu = neu.model_copy(update={"links": links})
         probleme = pruefen(neu, bekannte_dokumente=bekannt)
         if probleme:
+            self.letzter_status = "abgelehnt"
             return False, probleme
+        if alt is not None and self._inhalt(alt) == self._inhalt(neu):
+            self.letzter_status = "unveraendert"
+            self.zuletzt_geschrieben = alt
+            return True, []
         p = self.pfad(neu)
-        p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.parent / f".{p.name}.tmp"
         try:
+            p.parent.mkdir(parents=True, exist_ok=True)
             tmp.write_text(rendern(neu), encoding="utf-8")
             os.replace(tmp, p)
         except OSError as e:
@@ -108,5 +151,8 @@ class Tresor:
                 tmp.unlink()
             except OSError:
                 pass
+            self.letzter_status = "abgelehnt"
             return False, [f"Schreiben fehlgeschlagen: {e}"]
+        self.letzter_status = "geschrieben"
+        self.zuletzt_geschrieben = neu
         return True, []

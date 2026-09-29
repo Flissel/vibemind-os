@@ -267,3 +267,68 @@ def test_speicherschwelle_und_duplikate(monkeypatch):
     cb({"content": "Plan X lief verifiziert durch.", "relevance": 0.7, "category": "event"})
     assert len(gespeichert) == 2
     assert gespeichert[0].thought_id == gespeichert[1].thought_id  # gleiche ID -> Qdrant legt zusammen
+
+
+# ── Schlusspruefung I1/I3/I4/I6/M2 ──
+
+def _viele(n):
+    def lies(j):
+        return [Dokument(typ="bubble", id=f"{i:08d}", titel=f"Bubble {i}", stand=j,
+                         fakten=[Fakt(schluessel="status", wert="raw", beleg=1)],
+                         belege=[Beleg(nr=1, quelle="supabase", ziel=f"ideas?id=eq.{i}",
+                                       feld="status", wert="raw", gemessen=j)])
+                for i in range(n)]
+    return lies
+
+
+def test_zweiter_volllauf_ohne_aenderung_schreibt_nichts(tmp_path, monkeypatch):
+    import os
+    t = Tresor(tmp_path)
+    k = Kurator(t, leser=leser(bubbles=_viele(200)))
+    k.voll_durchlauf()
+    assert k.stats["geschrieben"] == 200
+
+    aufrufe = {"bekannte": 0, "replace": 0}
+    echte_namen = Tresor.bekannte_namen
+    echter_replace = os.replace
+
+    def namen_zaehlend(self):
+        aufrufe["bekannte"] += 1
+        return echte_namen(self)
+
+    def replace_zaehlend(src, dst):
+        aufrufe["replace"] += 1
+        return echter_replace(src, dst)
+
+    monkeypatch.setattr(Tresor, "bekannte_namen", namen_zaehlend)
+    monkeypatch.setattr(os, "replace", replace_zaehlend)
+    erg = k.voll_durchlauf()
+    assert aufrufe == {"bekannte": 1, "replace": 0}
+    assert erg["unveraendert"] == 200
+    assert erg["geschrieben"] == 0
+
+
+def test_unveraendertes_dokument_wird_nicht_neu_indexiert(tmp_path, monkeypatch):
+    from core.knowledge import hubs as hubs_modul
+    from core.knowledge import index as index_modul
+    monkeypatch.setattr(index_modul, "verknuepfen", lambda kg, t: 0)
+    monkeypatch.setattr(hubs_modul, "schreiben", lambda t, kg: 0)
+    kg = MagicMock()
+    kg._upsert_point.return_value = "pid"
+    k = Kurator(Tresor(tmp_path), kg=kg, leser=leser())
+    k.voll_durchlauf()
+    n = kg._upsert_point.call_count
+    assert n > 0
+    k.voll_durchlauf()
+    assert kg._upsert_point.call_count == n
+
+
+def test_unlesbare_datei_zaehlt_unlesbar(tmp_path):
+    t = Tresor(tmp_path)
+    p = t.pfad(dok())
+    p.parent.mkdir(parents=True)
+    p.write_text("---\n: [kaputt\n---\n", encoding="utf-8")
+    k = Kurator(t, leser=leser())
+    erg = k.voll_durchlauf()
+    assert erg["unlesbar"] == 1 and erg["geschrieben"] == 0
+    assert p.read_text(encoding="utf-8") == "---\n: [kaputt\n---\n"

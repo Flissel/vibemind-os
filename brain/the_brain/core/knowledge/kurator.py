@@ -37,10 +37,10 @@ import json
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Set, Tuple
 
 from core.knowledge import quellen as _quellen
-from core.knowledge.schema import Dokument, pruefen
+from core.knowledge.schema import Dokument, dateiname, pruefen
 
 logger = logging.getLogger(__name__)
 
@@ -126,16 +126,19 @@ class Kurator:
         self.deuten = deuten
         self.leser = leser
         self.stats = {"geschrieben": 0, "abgelehnt": 0, "quellenfehler": 0,
-                      "deutung_verworfen": 0}
+                      "deutung_verworfen": 0, "unveraendert": 0, "unlesbar": 0}
 
     def _bereiche(self, kind: str, payload: Dict[str, Any]) -> Tuple[str, ...]:
         return bereiche_fuer(kind, payload)
 
-    def _pflegen(self, dok: Dokument) -> None:
+    def _pflegen(self, dok: Dokument, bekannte: Optional[Set[str]] = None) -> None:
+        # Schlusspruefung I1: Datei EINMAL lesen, Ergebnis an
+        # deutung_noch_gueltig und schreiben weitergeben.
+        geladen = self.tresor.laden(dok)
         # Controller-Ruling: LLM nur rufen, wenn die gespeicherte Deutung
         # ohnehin nicht mehr fuehrend bliebe (spart Aufrufe, schuetzt
         # von Hand gepflegte Deutungen).
-        if self.deuten is not None and not self.tresor.deutung_noch_gueltig(dok):
+        if self.deuten is not None and not self.tresor.deutung_noch_gueltig(dok, geladen=geladen):
             try:
                 text = self.deuten(dok)
                 kandidat = dok.model_copy(update={"deutung": text})
@@ -146,22 +149,35 @@ class Kurator:
             except Exception as e:
                 self.stats["deutung_verworfen"] += 1
                 logger.info("[kurator] Deutung fehlgeschlagen: %s", e)
-        ok, probleme = self.tresor.schreiben(dok)
+        ok, probleme = self.tresor.schreiben(dok, bekannte=bekannte, geladen=geladen)
+        status = getattr(self.tresor, "letzter_status", "")
         if not ok:
+            if status == "unlesbar":
+                self.stats["unlesbar"] += 1
+                logger.warning("[kurator] %s nicht ueberschrieben: %s", dok.titel, probleme[:1])
+                return
             self.stats["abgelehnt"] += 1
             logger.warning("[kurator] %s abgelehnt: %s", dok.titel, probleme[:3])
+            return
+        if bekannte is not None:
+            bekannte.add(dateiname(dok))
+        if status == "unveraendert":
+            # Schlusspruefung I1: nichts geschrieben -> auch nicht neu indexieren.
+            self.stats["unveraendert"] += 1
             return
         self.stats["geschrieben"] += 1
         if self.kg is not None:
             try:
                 from core.knowledge.index import eintragen
-                eintragen(self.kg, self.tresor.lesen_von(dok) or dok)
+                eintragen(self.kg, getattr(self.tresor, "zuletzt_geschrieben", None) or dok)
             except Exception as e:
                 logger.info("[kurator] Index fehlgeschlagen: %s", e)
 
     def _lauf(self, namen) -> Dict[str, int]:
         jetzt = datetime.now(timezone.utc)
         vorher = dict(self.stats)
+        # Schlusspruefung I1: bekannte Namen EINMAL pro Lauf, nicht pro Dokument.
+        bekannte = self.tresor.bekannte_namen() if namen else set()
         for name in namen:
             try:
                 ergebnis = getattr(self.leser, name)(jetzt)
@@ -170,7 +186,7 @@ class Kurator:
                 logger.warning("[kurator] Quelle %s ausgefallen: %s", name, e)
                 continue
             for dok in ([ergebnis] if isinstance(ergebnis, Dokument) else (ergebnis or [])):
-                self._pflegen(dok)
+                self._pflegen(dok, bekannte)
         return {k: self.stats[k] - vorher[k] for k in self.stats}
 
     def bei_ereignis(self, kind: str, payload: Dict[str, Any]) -> Dict[str, int]:
