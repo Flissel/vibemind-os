@@ -11,6 +11,7 @@ Fehlertext steht je ein Schluessel.
 import json
 import time
 import os
+import uuid
 import urllib.parse
 import urllib.request
 
@@ -1060,3 +1061,41 @@ def pdf_aus_entwurf(proposal_id: str, layout: str = "dunkel",
     if ergebnis.get("ok") and entscheidung["weich"]:
         ergebnis.setdefault("daten", {})["anmerkungen"] = entscheidung["weich"]
     return ergebnis
+
+
+def _inhalt_id(wert: str) -> str | None:
+    try:
+        return str(uuid.UUID(str(wert)))
+    except ValueError:
+        return None
+
+
+def newsletter_bildplaetze(inhalt_id: str) -> dict:
+    """Die Bildplaetze eines Newsletters: wo im Layout Bilder vorgesehen sind,
+    in welchem Format (Pixel und Seitenverhaeltnis), ob sie leer sind, welcher
+    Text drumherum steht - und der Stand der Bild-Auftraege. Zuerst aufrufen,
+    bevor du ein Bild beauftragst (Fertigkeit newsletter-bild)."""
+    i = _inhalt_id(inhalt_id)
+    if not i:
+        return {"ok": False, "fehler": "inhalt_id muss eine UUID sein"}
+    antwort = _api(f"/api/bilder/agent/{i}/plaetze")
+    if not antwort["ok"]:
+        return antwort
+    return {"ok": True, **(antwort.get("daten") or {})}
+
+
+def newsletter_bild_beauftragen(inhalt_id: str, platz: str = "", hinweis: str = "",
+                                nur_leere: bool = False) -> dict:
+    """Ein Bild fuer einen Bildplatz erzeugen lassen (oder fuer alle: platz leer
+    lassen; nur_leere=True fuellt nur leere Plaetze). `hinweis` ist ein Wunsch
+    in Worten ("waermer", "eher Menschen"). Erzeugt wird am PC, sobald er
+    laeuft; das Ergebnis ist eine neue Fassung, die der Betreiber freigibt.
+    Du erzeugst nie selbst ein Bild - du beauftragst."""
+    i = _inhalt_id(inhalt_id)
+    if not i:
+        return {"ok": False, "fehler": "inhalt_id muss eine UUID sein"}
+    antwort = _api(f"/api/bilder/agent/{i}/auftrag",
+                   {"platz": (platz or "").strip() or None, "hinweis": hinweis or "", "nur_leere": bool(nur_leere)})
+    if not antwort["ok"]:
+        return antwort
+    return {"ok": True, "auftrag": (antwort.get("daten") or {}).get("auftrag")}

@@ -115,6 +115,10 @@ WERKZEUGE = (
     # docs/superpowers/specs/2026-09-12-sales-claw-einziger-versandweg.md.
     werkzeuge.versand_beauftragen,
     werkzeuge.versandauftraege_lesen,
+    # Newsletter-Bilder (Spec 2026-09-29-newsletter-bilder): der Agent fragt
+    # die Bildplaetze ab und BEAUFTRAGT; erzeugt wird nur im Bild-Arbeiter.
+    werkzeuge.newsletter_bildplaetze,
+    werkzeuge.newsletter_bild_beauftragen,
 )
 
 HOST = os.environ.get("MARKETING_CLAW_MCP_HOST", "0.0.0.0")
