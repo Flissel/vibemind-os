@@ -132,7 +132,8 @@ def _block(dok: dict, bid: str, farben: dict, bild_basis: str) -> str:
             name = (p.get("url") or "")[len("medien:"):] or "?"
             return f'<mj-text padding="{polster}" align="{ausr}" color="{_a(farben["text"])}"{hg}>[Bild: {_a(name)}]</mj-text>'
         w, h = _zahl(p.get("width"), 0), _zahl(p.get("height"), 0)
-        masse = (f' width="{w}px"' if w > 0 else "") + (f' height="{h}px"' if h > 0 else "")
+        # Mit Breite traegt die Datei das Verhaeltnis; eine feste Hoehe verzerrte das Bild am Handy.
+        masse = f' width="{w}px"' if w > 0 else (f' height="{h}px"' if h > 0 else "")
         link = p.get("linkHref") or ""
         href = f' href="{_a(link)}"' if isinstance(link, str) and link.startswith("https://") else ""
         return (f'<mj-image padding="{polster}" align="{ausr}" src="{_a(ziel)}" alt="{_a(p.get("alt") or "")}"'

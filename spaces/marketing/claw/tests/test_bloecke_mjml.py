@@ -249,7 +249,9 @@ def _bild(stil=None, **props):
 
 def test_bild_ausrichtung_und_masse():
     m = _mit(_bild({"textAlign": "right"}, width=200, height=100))
-    assert 'align="right"' in m and 'width="200px"' in m and 'height="100px"' in m
+    assert 'align="right"' in m and 'width="200px"' in m
+    # Mit Breite traegt die Datei das Verhaeltnis; keine feste Hoehe (Spec 2026-09-29 §4)
+    assert 'height="100px"' not in m
     assert 'align="left"' in _mit(_bild())
 
 
@@ -303,3 +305,13 @@ def test_ohne_mjml_modul_deutscher_renderfehler(monkeypatch):
         assert "mjml-python fehlt" in str(e)
     else:
         raise AssertionError("RenderFehler erwartet")
+
+
+def test_bild_mit_breite_setzt_keine_feste_hoehe():
+    """Am Handy wird das Bild schmaler; eine feste Hoehe verzerrte es. Das
+    Seitenverhaeltnis traegt die Bilddatei selbst (Spec 2026-09-29-newsletter-
+    bilder §4)."""
+    dok = {"root": {"type": "EmailLayout", "data": {"childrenIds": ["b"]}},
+           "b": {"type": "Image", "data": {"style": {}, "props": {"url": "medien:x.jpg", "width": 552, "height": 276}}}}
+    mjml = b.nach_mjml(dok, "B", "", {}, bild_basis="https://h/b/")
+    assert 'width="552px"' in mjml and 'height="276px"' not in mjml
