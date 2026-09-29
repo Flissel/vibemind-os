@@ -1,6 +1,9 @@
 """Startvorlagen in marketing.newsletter_vorlagen einspielen (sales-claw Spec
 2026-09-29-newsletter-editor-design.md §3.5). Ohne --wirklich nur pruefen:
 je Datei `SELECT marketing.pult_bloecke_fehler(...)`, es wird nichts geaendert.
+Mit --wirklich: eine Vorlage, deren gespeicherte Bloecke der Datei gleichen,
+bleibt unangetastet ("unveraendert", keine neue Fassung). Eingespielt wird
+immer als 'freigegeben' - eine vorhandene Freigabe wird nie zurueckgestuft.
 
     python -m spaces.marketing.scripts.vorlagen_einspielen [--wirklich]
 """
@@ -13,6 +16,9 @@ import sys
 from spaces.marketing.sync import _db
 
 ORDNER = pathlib.Path(__file__).resolve().parents[1] / "vorlagen" / "newsletter"
+# Startvorlagen sind freigegeben; pult_vorlage_speichern setzt den Status, den
+# es bekommt - deshalb nie etwas Niedrigeres uebergeben.
+STATUS = "freigegeben"
 
 
 def main(wirklich: bool) -> int:
@@ -29,10 +35,16 @@ def main(wirklich: bool) -> int:
             print(f"{datei.name}: UNGUELTIG - {grund}")
             fehler += 1
             continue
+        gespeichert = _db.query_one(
+            f"SELECT bloecke, status FROM marketing.newsletter_vorlagen WHERE name = {_db._sql_literal(v['name'])}",
+            streng=True)
+        if gespeichert and gespeichert.get("bloecke") == v["bloecke"]:
+            print(f"{datei.name}: unveraendert (Fassung bleibt, Status {gespeichert.get('status')})")
+            continue
         if wirklich:
             n = _db.query_one(
                 f"SELECT marketing.pult_vorlage_speichern({_db._sql_literal(v['name'])}, "
-                f"{_db._sql_literal(v['beschreibung'])}, {doc}::jsonb, 'startvorlagen', 'freigegeben') AS n",
+                f"{_db._sql_literal(v['beschreibung'])}, {doc}::jsonb, 'startvorlagen', {_db._sql_literal(STATUS)}) AS n",
                 streng=True)["n"]
             print(f"{datei.name}: eingespielt, Fassung {n}")
         else:

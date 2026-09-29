@@ -250,6 +250,9 @@
                 "thema2_titel",
                 "thema2_text"
               ]
+            },
+            {
+              "childrenIds": []
             }
           ]
         }

@@ -40,7 +40,7 @@ def _kinder(b):
 
 
 def _fehler(d: dict) -> str | None:
-    """Python-Spiegel von marketing.pult_bloecke_fehler (054)."""
+    """Python-Spiegel von marketing.pult_bloecke_fehler (054 + 055)."""
     if not isinstance(d, dict) or (d.get("root") or {}).get("type") != "EmailLayout":
         return "Wurzel"
     if len(json.dumps(d, ensure_ascii=False).encode()) > 262144 or len(d) > 151:
@@ -80,6 +80,8 @@ def _fehler(d: dict) -> str | None:
         if typ == "ColumnsContainer":
             if props.get("columnsCount") not in (None, 2, 3) or len(props.get("columns") or []) > 3:
                 return f"{bid}: Spalten"
+        if typ == "Button" and not str(props.get("url") or "").strip():
+            return f"{bid}: Knopf ohne Link"
         for k in ("url", "linkHref"):
             v = props.get(k)
             if not v:
@@ -107,7 +109,11 @@ def _fehler(d: dict) -> str | None:
             if bid in gesehen:
                 return f"mehrfach {bid}"
             gesehen.append(bid)
-            nxt += _kinder(d[bid])
+            kinder = _kinder(d[bid])
+            if bid != "root" and any((d.get(k) or {}).get("type") in ("Container", "ColumnsContainer")
+                                     for k in kinder):
+                return "Rahmen und Spalten nur auf oberster Ebene"
+            nxt += kinder
         front = nxt
         if front:
             tiefe += 1
@@ -214,11 +220,28 @@ def test_keine_echt_wirkenden_beispielwerte(name):
     {"x": {"type": "Text", "data": {"style": {"padding": {"top": 81}}, "props": {"text": "t"}}}},
     {"x": {"type": "Divider", "data": {"props": {"lineColor": "#fff"}}}},
     {"x": {"type": "ColumnsContainer", "data": {"props": {"columnsCount": 4, "columns": []}}}},
+    {"x": {"type": "Button", "data": {"props": {"text": "Los", "url": ""}}}},
+    {"x": {"type": "Button", "data": {"props": {"text": "Los"}}}},
+    {"x": {"type": "Container", "data": {"props": {"childrenIds": ["y"]}}},
+     "y": {"type": "Container", "data": {"props": {"childrenIds": []}}}},
 ])
 def test_spiegel_der_db_pruefung_greift(kaputt):
-    d = {"root": {"type": "EmailLayout", "data": {"childrenIds": list(kaputt)}}, **kaputt}
+    d = {"root": {"type": "EmailLayout", "data": {"childrenIds": [next(iter(kaputt))]}}, **kaputt}
     assert _fehler(d) is not None
 
 
 def test_alle_fuenf_da():
     assert sorted(p.stem for p in ORDNER.glob("*.json")) == sorted(NAMEN)
+
+
+@pytest.mark.parametrize("name", NAMEN)
+def test_spalten_haben_genau_drei_eintraege(name):
+    """Das Editor-Schema (ColumnsContainerPropsSchema) verlangt genau 3 columns-Eintraege,
+    auch bei columnsCount 2 - sonst oeffnet der Editor den Block nicht (final-fix I4)."""
+    for bid, b in _laden(name)["bloecke"].items():
+        if b["type"] == "ColumnsContainer":
+            props = b["data"]["props"]
+            assert len(props["columns"]) == 3, bid
+            assert props["columnsCount"] in (2, 3), bid
+            for c in props["columns"][props["columnsCount"]:]:
+                assert c == {"childrenIds": []}, bid
