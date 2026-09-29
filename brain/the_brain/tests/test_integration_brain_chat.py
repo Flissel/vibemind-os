@@ -6,8 +6,15 @@ import time
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 
-def test_full_brain_chat_integration():
+def test_full_brain_chat_integration(monkeypatch):
     """Test BrainChat with MoltbookStore + Pipeline + Thalamus routing."""
+    # Brain T2: CTE_EVENT_ONLY (default True) would keep the idle background
+    # thread from producing thoughts outside the brief send() window; this
+    # test is about idle continuous thinking, so it opts back into the
+    # pre-T2 behaviour explicitly.
+    from core import brain_chat as _brain_chat_module
+    monkeypatch.setattr(_brain_chat_module, "CTE_EVENT_ONLY", False)
+
     from core.moltbook import MoltbookStore, MoltbookGraph
     store = MoltbookStore(config={'similarity_threshold': 0.3})
     graph = MoltbookGraph()
@@ -115,8 +122,13 @@ def test_brain_chat_with_thalamus_routing():
         assert len(r.routing_weights) == 10  # 10 modalities
 
 
-def test_continuous_thinking_with_moltbook():
+def test_continuous_thinking_with_moltbook(monkeypatch):
     """Test that continuous thinking explores Moltbook knowledge."""
+    # Brain T2: see test_full_brain_chat_integration — idle exploration needs
+    # CTE_EVENT_ONLY off explicitly, since the default (True) blocks it.
+    from core import brain_chat as _brain_chat_module
+    monkeypatch.setattr(_brain_chat_module, "CTE_EVENT_ONLY", False)
+
     from core.moltbook import MoltbookStore
     from core.moltbook_agents import MoltbookFeeder
     from core.brain_chat import ContinuousThinkingEngine

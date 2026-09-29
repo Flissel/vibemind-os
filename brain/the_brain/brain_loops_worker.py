@@ -62,6 +62,28 @@ def main() -> int:
     _init_brain_state(state, testing=False)
     _init_production_modules(state)   # startet die Loops (BRAIN_BACKGROUND_LOOPS=1)
 
+    # Brain T2: Kurator - an den Leerlauf-Denker haengen + periodischer Volllauf.
+    from core.knowledge import kurator as _kur
+    if _kur.KURATOR_ENABLED:
+        from core.knowledge.tresor import Tresor
+        k = _kur.Kurator(Tresor(), kg=getattr(state, "qdrant_kg", None),
+                         deuten=(_kur.llm_deuten if _kur.KURATOR_DEUTUNG else None))
+        cte = getattr(state, "continuous_thinking", None)
+        if cte is not None and hasattr(cte, "set_kurator"):
+            cte.set_kurator(k)
+
+        def _kurator_takt():
+            while True:
+                try:
+                    print(f"[kurator] Volllauf: {k.voll_durchlauf()}", flush=True)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[kurator] Volllauf fehlgeschlagen: {e}", flush=True)
+                time.sleep(_kur.KURATOR_INTERVAL_S)
+
+        threading.Thread(target=_kurator_takt, name="Kurator", daemon=True).start()
+        print(f"[brain-loops] Kurator aktiv (Deutung={_kur.KURATOR_DEUTUNG}, "
+              f"Takt={_kur.KURATOR_INTERVAL_S}s)", flush=True)
+
     # Log-Retrainer (lebt sonst in der HTTP-Lifespan) — hier optional nachziehen,
     # damit der Worker auch das inkrementelle EventRoutingHead-Training uebernimmt.
     if getattr(state, "event_routing_head", None) is not None:

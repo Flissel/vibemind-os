@@ -4,6 +4,7 @@ from collections import deque
 import pytest
 import numpy as np
 from unittest.mock import MagicMock, patch
+from core import brain_chat as brain_chat_module
 from core.brain_chat import (
     BrainChat, BrainChatResponse, ContinuousThinkingEngine,
     ContinuousThought, ContextBundle, ThoughtTrace,
@@ -364,8 +365,14 @@ class TestKnowledgeReflection:
         # Should have variety (not all the same template)
         assert len(contents) > 1, "Knowledge thoughts should use varied templates"
 
-    def test_think_tick_uses_knowledge_when_available(self):
-        """_think_tick() should sometimes produce knowledge thoughts."""
+    def test_think_tick_uses_knowledge_when_available(self, monkeypatch):
+        """_think_tick() should sometimes produce knowledge thoughts.
+
+        Brain T2: CTE_EVENT_ONLY (default True) blocks idle thoughts without
+        an event; this test is about idle knowledge reflection, so it opts
+        back into the pre-T2 behaviour explicitly.
+        """
+        monkeypatch.setattr(brain_chat_module, "CTE_EVENT_ONLY", False)
         ct = ContinuousThinkingEngine(interval_ms=100)
         ct.record_query("What is gravity?")
         ct.record_knowledge(

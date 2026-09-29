@@ -52,6 +52,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger('brain.chat')
 
+# Brain T2: der Leerlauf-Denker denkt nur noch nach Ereignissen (und im aktiven
+# Gespraech). Im Leerlauf ohne Ereignis entsteht kein Gedanke - bis 2026-09-23
+# erzeugte er alle 10 s eine Notfall-Frage, 25.347-mal gespeichert.
+CTE_EVENT_ONLY = os.environ.get("CTE_EVENT_ONLY", "1").lower() in ("1", "true", "yes")
+
 # Try importing ThalamicAdapter (available if thalamic rewiring is deployed)
 try:
     from core.thalamic_adapter import ThalamicAdapter
@@ -2908,6 +2913,10 @@ class ContinuousThinkingEngine:
         # forward pass, keeping bridges alive and the dashboard populated.
         self._agent_loop = None
 
+        # Brain T2: Kurator, der bei Ereignissen Wissensdokumente nachfuehrt
+        # (set by brain_loops_worker via set_kurator).
+        self._kurator = None
+
         logger.info(f"ContinuousThinkingEngine initialized (interval={interval_ms}ms)")
 
     @property
@@ -2938,6 +2947,10 @@ class ContinuousThinkingEngine:
         """Attach ThoughtJury for autonomous thought evaluation."""
         self._thought_jury = jury
         logger.info("ContinuousThinkingEngine connected to ThoughtJury")
+
+    def set_kurator(self, kurator) -> None:
+        """Brain T2: Kurator, der bei Ereignissen Wissensdokumente nachfuehrt."""
+        self._kurator = kurator
 
     def on_thought(self, callback: Callable[[ContinuousThought], None]) -> None:
         """Register a callback for new thoughts (for real-time display)."""
@@ -3207,11 +3220,21 @@ class ContinuousThinkingEngine:
         if self._event_queue:
             try:
                 evt = self._event_queue.popleft()
+                if self._kurator is not None:
+                    try:
+                        self._kurator.bei_ereignis(evt.get("kind", ""), evt.get("payload") or {})
+                    except Exception as e:
+                        logger.info(f"[CTE] Kurator fehlgeschlagen: {e}")
                 result = self._think_event(evt)
                 if result:
                     return result
             except Exception as e:
                 logger.debug(f"[CTE] _think_event failed: {e}")
+
+        # Brain T2: im Leerlauf (kein aktives Gespraech) ohne Ereignis entsteht
+        # kein Gedanke mehr, solange CTE_EVENT_ONLY gesetzt ist.
+        if CTE_EVENT_ONLY and self._mode != "active":
+            return None
 
         # Phase 7.5 — fall back to recent user topics if no event but
         # the user is actively working on something. ~25% chance to seed

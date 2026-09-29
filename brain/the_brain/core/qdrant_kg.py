@@ -69,6 +69,10 @@ BATCH_SIZE = int(os.environ.get("BRAIN_KG_BATCH_SIZE", "8"))
 BATCH_FLUSH_MS = int(os.environ.get("BRAIN_KG_BATCH_FLUSH_MS", "3000"))
 MAX_LINKED = 50
 
+# Brain T2: Gedanken unter dieser Relevanz werden nicht gespeichert (Notfall-
+# Texte des Leerlauf-Denkers haben 0.1).
+KG_THOUGHT_MIN_RELEVANCE = float(os.environ.get("KG_THOUGHT_MIN_RELEVANCE", "0.3"))
+
 # The suffix follows SEMANTIC_DIM automatically — ensure_collections() creates
 # a fresh physical collection per suffix and aliases the logical name to it, so
 # a dimension change never requires a caller-visible rename. Overridable for a
@@ -1109,6 +1113,7 @@ class QdrantKG:
                     conf = float(get("confidence", 0.5) or 0.5)
                     val = float(get("emotional_valence", 0.0) or 0.0)
                     ar = float(get("arousal", 0.0) or 0.0)
+                    relevance = float(get("relevance", 1.0) or 0.0)
                     created = float(get("timestamp", time.time()))
                     tags = list(get("tags") or [])
                     space_hint = get("space_hint")
@@ -1122,6 +1127,7 @@ class QdrantKG:
                     conf = float(g("confidence", 0.5) or 0.5)
                     val = float(g("emotional_valence", 0.0) or 0.0)
                     ar = float(g("arousal", 0.0) or 0.0)
+                    relevance = float(g("relevance", 1.0) or 0.0)
                     created = float(g("timestamp", time.time()))
                     tags = list(g("tags") or [])
                     space_hint = g("space_hint")
@@ -1130,6 +1136,11 @@ class QdrantKG:
 
                 if not content or len(content.strip()) < 3:
                     return
+                if relevance < KG_THOUGHT_MIN_RELEVANCE:
+                    return
+                # Gleicher Inhalt -> gleiche ID -> Qdrant legt zusammen statt zu stapeln.
+                norm = " ".join(content.lower().split())[:300]
+                tid = "thought::" + hashlib.sha256(norm.encode("utf-8")).hexdigest()[:24]
 
                 self.upsert_thought(ThoughtDoc(
                     thought_id=str(tid),
