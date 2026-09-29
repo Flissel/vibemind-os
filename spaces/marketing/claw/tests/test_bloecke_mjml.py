@@ -111,3 +111,46 @@ def test_null_kinder_sind_leer():
           "c": {"type": "Container", "data": {"props": {"childrenIds": None}}},
           "k": {"type": "ColumnsContainer", "data": {"props": {"columnsCount": 2, "columns": [{"childrenIds": None}]}}}}
     assert "Musterstr. 1" in b.rendern(d2, "B", "", PFLICHT)
+
+
+def test_fusszeile_behaelt_lesbare_textfarbe():
+    d = {"root": {"type": "EmailLayout", "data": {"backdropColor": "#0f2422", "canvasColor": "#1d3b39",
+         "textColor": "#cfe3df", "childrenIds": []}}}
+    fuss = b.nach_mjml(d, "B", "", PFLICHT).split('<mj-section padding="16px 0">')[1]
+    assert 'color="#cfe3df"' in fuss
+
+
+def test_fusszeile_kaputte_farbe_stuerzt_nicht():
+    d = {"root": {"type": "EmailLayout", "data": {"backdropColor": "rot", "textColor": "x", "childrenIds": []}}}
+    assert 'color="#111111"' in b.nach_mjml(d, "B", "", PFLICHT)
+
+
+def _text_html(text):
+    d = {**DOK, "t": {"type": "Text", "data": {"props": {"text": text, "markdown": True}}}}
+    return b.rendern(d, "B", "", PFLICHT)
+
+
+def test_url_mit_sternen_bleibt_heil():
+    h = _text_html("[t](https://e.com/a**b**c_d_e)")
+    assert 'href="https://e.com/a**b**c_d_e"' in h
+    assert "<strong>" not in h
+
+
+def test_fett_um_link():
+    h = _text_html("**[t](https://x.de)**")
+    assert '<strong><a href="https://x.de"' in h
+
+
+def test_nul_im_text_ist_harmlos():
+    assert "Hi" in _text_html("Hi \x005\x00")
+
+
+def test_bild_basis_ohne_schraegstrich():
+    assert b.bild_adresse("medien:a.png", "https://h/m") == "https://h/m/a.png"
+
+
+def test_unsaubere_zahlen_und_ausrichtung():
+    d = {**DOK, "t": {"type": "Text", "data": {"style": {"fontSize": "gross", "textAlign": "x\"y",
+         "padding": {"top": "abc"}}, "props": {"text": "Hi"}}}}
+    h = b.rendern(d, "B", "", PFLICHT)
+    assert "Hi" in h and 'x"y' not in h
