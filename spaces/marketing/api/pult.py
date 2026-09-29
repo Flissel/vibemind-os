@@ -53,7 +53,7 @@ from typing import Callable
 from fastapi import APIRouter, Body, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response
 
-from spaces.marketing.claw import pult_render
+from spaces.marketing.claw import bloecke_mjml, pult_render
 from spaces.marketing.sync import _db
 
 router = APIRouter(prefix="/api/pult")
@@ -61,6 +61,9 @@ _ARTEN = ("newsletter", "post", "material")
 _STATUS = ("entwurf", "freigegeben", "abgelehnt")
 _FORMATE = ("mail", "handy", "pdf")
 _NAME = re.compile(r"^[a-z][a-z0-9_-]{0,40}$")
+_VORLAGE = re.compile(r"^[a-z][a-z0-9-]{1,40}$")
+_BILD_BASIS = re.compile(r'^https://[^\s"\'<>]+/$')
+_URHEBER = ("betreiber", "agent")
 _NICHT_ERREICHBAR = "Marketing-Datenbank nicht erreichbar"
 _UNGUELTIGE_EINGABE = "Ungueltige Eingabe (unzulaessiges Zeichen)"
 
@@ -226,6 +229,96 @@ def inhalte(mandant: str | None = None, art: str | None = None, status: str | No
     return {"inhalte": zeilen}
 
 
+def _bild_basis(wert: str | None) -> str:
+    wert = wert or ""
+    if wert and not _BILD_BASIS.match(wert):
+        raise HTTPException(422, "bild_basis muss mit https:// beginnen, auf / enden und darf keine Anfuehrungszeichen oder Leerzeichen enthalten")
+    return wert
+
+
+def _bloecke_html(dok, betreff: str, vorschautext: str, pflichtteil: dict, fmt: str, bild_basis: str) -> HTMLResponse:
+    if fmt == "pdf":
+        raise HTTPException(422, "PDF gibt es fuer Editor-Newsletter noch nicht")
+    try:
+        return HTMLResponse(bloecke_mjml.rendern(
+            dok, betreff, vorschautext, pflichtteil or {},
+            bild_basis=bild_basis, handy=(fmt == "handy")))
+    except bloecke_mjml.RenderFehler as e:
+        raise HTTPException(422, str(e))
+
+
+@router.post("/inhalte/aus_vorlage")
+def inhalt_aus_vorlage(payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    _schluessel(x_pult_key)
+    vorlage = payload.get("vorlage")
+    if not isinstance(vorlage, str) or not _VORLAGE.match(vorlage):
+        raise HTTPException(422, "Unbekannte Vorlage")
+    titel = payload.get("titel")
+    if not isinstance(titel, str) or not titel.strip():
+        raise HTTPException(422, "titel fehlt")
+    m = _mandant(payload.get("mandant"))
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_inhalt_aus_vorlage({lit(vorlage)}, {lit(titel.strip())}, {lit(m)}) AS id")
+    return {"id": str(zeile["id"])}
+
+
+@router.get("/vorlagen")
+def vorlagen(mandant: str | None = None, status: str | None = None,
+             x_pult_key: str | None = Header(None)):
+    _schluessel(x_pult_key)
+    m = _mandant(mandant)
+    s = _auswahl(status, ("entwurf", "freigegeben"), "status")
+    wo = [f"mandant = {lit(m)}"] + ([f"status = {lit(s)}"] if s else [])
+    zeilen = _lesen(lambda:
+        "SELECT name, beschreibung, status, fassung FROM marketing.newsletter_vorlagen "
+        f"WHERE {' AND '.join(wo)} ORDER BY name")
+    return {"vorlagen": zeilen}
+
+
+@router.get("/vorlagen/{name}/vorschau")
+def vorlage_vorschau(name: str, format: str = "mail", bild_basis: str = "",
+                     mandant: str | None = None, x_pult_key: str | None = Header(None)):
+    _schluessel(x_pult_key)
+    if not _VORLAGE.match(name):
+        raise HTTPException(404, "Unbekannte Vorlage")
+    fmt = _auswahl(format, ("mail", "handy"), "format") or "mail"
+    basis = _bild_basis(bild_basis)
+    m = _mandant(mandant)
+    zeile = _lesen_einer(lambda:
+        "SELECT v.bloecke, v.beschreibung, m.pflichtteil "
+        "FROM marketing.newsletter_vorlagen v JOIN marketing.mandanten m ON m.id = v.mandant "
+        f"WHERE v.name = {lit(name)} AND v.mandant = {lit(m)}")
+    if not zeile:
+        raise HTTPException(404, "Unbekannte Vorlage")
+    return _bloecke_html(zeile["bloecke"], zeile.get("beschreibung") or "", "", zeile.get("pflichtteil"), fmt, basis)
+
+
+@router.post("/inhalte/{iid}/bloecke")
+def bloecke_speichern(iid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    _schluessel(x_pult_key)
+    i = _uuid_oder_404(iid)
+    basis = payload.get("basis_fassung")
+    if isinstance(basis, bool) or not isinstance(basis, int) or basis < 0:
+        raise HTTPException(422, "basis_fassung muss eine ganze Zahl >= 0 sein")
+    bloecke = payload.get("bloecke")
+    if not isinstance(bloecke, dict):
+        raise HTTPException(422, "bloecke fehlt")
+    urheber = payload.get("urheber", "betreiber")
+    if urheber not in _URHEBER:
+        raise HTTPException(422, "urheber muss betreiber oder agent sein")
+    als_kopie = payload.get("als_kopie", False)
+    if not isinstance(als_kopie, bool):
+        raise HTTPException(422, "als_kopie muss true oder false sein")
+    betreff = payload.get("betreff", "")
+    vorschautext = payload.get("vorschautext", "")
+    if not isinstance(betreff, str) or not isinstance(vorschautext, str):
+        raise HTTPException(422, "betreff und vorschautext muessen Text sein")
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_bloecke_speichern({lit(i)}::uuid, {int(basis)}, {lit(betreff)}, "
+        f"{lit(vorschautext)}, {lit(json.dumps(bloecke, ensure_ascii=False))}::jsonb, "
+        f"{lit(urheber)}, {'true' if als_kopie else 'false'}) AS fassung")
+    return {"fassung": int(zeile["fassung"])}
+
 @router.get("/inhalte/{iid}")
 def inhalt(iid: str, x_pult_key: str | None = Header(None)):
     _schluessel(x_pult_key)
@@ -246,7 +339,7 @@ def inhalt(iid: str, x_pult_key: str | None = Header(None)):
         raise HTTPException(404, "Unbekannter Inhalt")
     alter_weg = kopf.pop("alter_weg", None)
     fassungen = _lesen(lambda:
-        "SELECT fassung, felder, layout, urheber, erstellt_am::text AS erstellt_am "
+        "SELECT fassung, felder, layout, urheber, erstellt_am::text AS erstellt_am, format, bloecke "
         f"FROM marketing.inhalt_fassungen WHERE inhalt = {lit(i)}::uuid ORDER BY fassung DESC")
     return {"inhalt": kopf, "fassungen": fassungen, "alter_weg": alter_weg or None}
 
@@ -267,11 +360,12 @@ def fassung_speichern(iid: str, payload: dict = Body(...), x_pult_key: str | Non
 
 
 @router.get("/inhalte/{iid}/vorschau")
-def vorschau(iid: str, fassung: int = Query(..., ge=1), format: str = "mail",
+def vorschau(iid: str, fassung: int = Query(..., ge=1), format: str = "mail", bild_basis: str = "",
              x_pult_key: str | None = Header(None)):
     _schluessel(x_pult_key)
     i = _uuid_oder_404(iid)
     fmt = _auswahl(format, _FORMATE, "format")
+    basis = _bild_basis(bild_basis)
     # Die Fassung zeigt das Layout in der Fassung, mit der sie gespeichert
     # wurde (layout_fassungen, unveraenderlich) - nicht das heutige Aussehen.
     # Fehlt der Pin (layout_fassung NULL), bleibt die aktuelle Gestalt. Die
@@ -280,16 +374,20 @@ def vorschau(iid: str, fassung: int = Query(..., ge=1), format: str = "mail",
     # ungeprueft im style-Attribut.
     gestalt_sql = "coalesce(lf.gestalt, l.gestalt)"
     zeile = _lesen_einer(lambda:
-        f"SELECT f.felder, {gestalt_sql} AS gestalt, m.pflichtteil, "
-        f"marketing.pult_gestalt_fehler({gestalt_sql}) AS gestalt_fehler "
+        f"SELECT f.felder, f.format, f.bloecke, {gestalt_sql} AS gestalt, m.pflichtteil, "
+        f"CASE WHEN f.format = 'felder' THEN marketing.pult_gestalt_fehler({gestalt_sql}) END AS gestalt_fehler "
         "FROM marketing.inhalt_fassungen f "
         "JOIN marketing.inhalte i ON i.id = f.inhalt "
         "JOIN marketing.mandanten m ON m.id = i.mandant "
-        "JOIN marketing.layout_vorlagen l ON l.name = f.layout "
+        "LEFT JOIN marketing.layout_vorlagen l ON l.name = f.layout "
         "LEFT JOIN marketing.layout_fassungen lf ON lf.layout = f.layout AND lf.fassung = f.layout_fassung "
         f"WHERE f.inhalt = {lit(i)}::uuid AND f.fassung = {int(fassung)}")
     if not zeile:
         raise HTTPException(404, "Unbekannte Fassung")
+    if zeile.get("format") == "bloecke":
+        felder = zeile.get("felder") or {}
+        return _bloecke_html(zeile["bloecke"], felder.get("betreff", ""), felder.get("vorschautext", ""),
+                             zeile.get("pflichtteil"), fmt, basis)
     if zeile.get("gestalt_fehler"):
         raise HTTPException(422, str(zeile["gestalt_fehler"]))
     return _rendern(zeile["felder"], zeile["gestalt"], zeile["pflichtteil"], fmt)

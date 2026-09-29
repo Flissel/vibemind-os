@@ -364,3 +364,128 @@ def test_inhalt_ohne_herkunft_alter_weg_null(db, c):
                       "status": "entwurf", "alter_weg": None}], []]
     r = c.get(f"/api/pult/inhalte/{IID}", headers=H)
     assert r.status_code == 200 and r.json()["alter_weg"] is None
+
+
+# --- Task 3 (Newsletter-Editor E1): Bloecke, Vorlagen, Editor-Vorschau ---
+DOK = {"root": {"type": "EmailLayout", "data": {"childrenIds": ["t"]}},
+       "t": {"type": "Text", "data": {"props": {"text": "Hallo Pult"}}}}
+
+
+def test_bloecke_speichern(db, c):
+    db.antworten = [[{"fassung": 4}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/bloecke", headers=H,
+               json={"basis_fassung": 3, "betreff": "B", "vorschautext": "", "bloecke": DOK})
+    assert r.status_code == 200 and r.json() == {"fassung": 4}
+    sql = db.sql[-1]
+    assert "marketing.pult_bloecke_speichern(" in sql and ", 3, " in sql and "'betreiber'" in sql and "false" in sql
+
+
+def test_bloecke_als_kopie_und_agent(db, c):
+    db.antworten = [[{"fassung": 5}]]
+    c.post(f"/api/pult/inhalte/{IID}/bloecke", headers=H,
+           json={"basis_fassung": 3, "betreff": "B", "vorschautext": "", "bloecke": DOK,
+                 "als_kopie": True, "urheber": "agent"})
+    assert "true" in db.sql[-1] and "'agent'" in db.sql[-1]
+
+
+def test_bloecke_ohne_dict_oder_basis_422_ohne_db(db, c):
+    for body in ({"basis_fassung": 1, "betreff": "B", "bloecke": "nein"},
+                 {"basis_fassung": "x", "betreff": "B", "bloecke": DOK},
+                 {"basis_fassung": True, "betreff": "B", "bloecke": DOK},
+                 {"basis_fassung": -1, "betreff": "B", "bloecke": DOK},
+                 {"basis_fassung": 1, "betreff": "B", "bloecke": DOK, "als_kopie": "ja"},
+                 {"basis_fassung": 1, "betreff": "B", "bloecke": DOK, "urheber": "fremd"}):
+        assert c.post(f"/api/pult/inhalte/{IID}/bloecke", headers=H, json=body).status_code == 422
+    assert db.sql == []
+
+
+def test_bloecke_ohne_schluessel_401(db, c):
+    r = c.post(f"/api/pult/inhalte/{IID}/bloecke", json={"basis_fassung": 1, "betreff": "B", "bloecke": DOK})
+    assert r.status_code == 401 and db.sql == []
+
+
+def test_konflikt_wird_422_mit_text(db, c, monkeypatch):
+    def wirft(*a, **k):
+        raise RuntimeError("ERROR:  Inzwischen gibt es Fassung 7 - neu laden oder als Kopie behalten")
+    monkeypatch.setattr(_db, "query_one", wirft)
+    r = c.post(f"/api/pult/inhalte/{IID}/bloecke", headers=H,
+               json={"basis_fassung": 3, "betreff": "B", "vorschautext": "", "bloecke": DOK})
+    assert r.status_code == 422 and r.json()["detail"].startswith("Inzwischen gibt es Fassung 7")
+
+
+def _bloecke_zeile(**extra):
+    z = {"felder": {"betreff": "B", "vorschautext": ""}, "format": "bloecke", "bloecke": DOK,
+         "gestalt": GESTALT, "pflichtteil": {"impressum": "I", "abmelde_hinweis": ""}, "gestalt_fehler": None}
+    z.update(extra)
+    return z
+
+
+def test_vorschau_bloecke_nutzt_bild_basis(db, c):
+    db.antworten = [[_bloecke_zeile()]]
+    r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=1&format=mail&bild_basis=https://h.ts.net/marketing/bild/t/", headers=H)
+    assert r.status_code == 200 and "Hallo Pult" in r.text
+
+
+def test_vorschau_bloecke_ueberspringt_gestaltpruefung(db, c):
+    # ein (fuer felder gueltiger) gestalt_fehler darf den Bloecke-Zweig nicht stoppen
+    db.antworten = [[_bloecke_zeile(gestalt_fehler="Farbe ungueltig")]]
+    r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=1&format=handy", headers=H)
+    assert r.status_code == 200 and "Hallo Pult" in r.text
+
+
+def test_vorschau_bloecke_pdf_422(db, c):
+    db.antworten = [[_bloecke_zeile()]]
+    r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=1&format=pdf", headers=H)
+    assert r.status_code == 422 and "PDF" in r.json()["detail"]
+
+
+def test_vorschau_bloecke_renderfehler_422(db, c, monkeypatch):
+    from spaces.marketing.claw import bloecke_mjml
+    def wirft(*a, **k):
+        raise bloecke_mjml.RenderFehler("Unbekannter Block")
+    monkeypatch.setattr(bloecke_mjml, "rendern", wirft)
+    db.antworten = [[_bloecke_zeile()]]
+    r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=1&format=mail", headers=H)
+    assert r.status_code == 422 and r.json()["detail"] == "Unbekannter Block"
+
+
+def test_bild_basis_wird_geprueft(db, c):
+    for schlecht in ("http://h/", "https://h/x", 'https://h/"/', "javascript:x/"):
+        r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=1&format=mail&bild_basis={schlecht}", headers=H)
+        assert r.status_code == 422, schlecht
+    assert db.sql == []
+
+
+def test_inhalt_liefert_format_und_bloecke(db, c):
+    db.antworten = [[{"id": IID, "mandant": "vibemind", "art": "newsletter", "titel": "T", "status": "entwurf",
+                      "freigegebene_fassung": None, "entschieden_von": None, "entschieden_am": None,
+                      "grund": None, "alter_weg": None}],
+                    [{"fassung": 1, "felder": {}, "layout": None, "urheber": "betreiber",
+                      "erstellt_am": "x", "format": "bloecke", "bloecke": DOK}]]
+    r = c.get(f"/api/pult/inhalte/{IID}", headers=H)
+    assert r.status_code == 200 and r.json()["fassungen"][0]["format"] == "bloecke"
+    assert "f.format" in db.sql[-1] or "format" in db.sql[-1]
+
+
+def test_vorlagen_liste_und_aus_vorlage(db, c):
+    db.antworten = [[{"name": "leer", "beschreibung": "L", "status": "freigegeben", "fassung": 1}]]
+    r = c.get("/api/pult/vorlagen?mandant=vibemind", headers=H)
+    assert r.json()["vorlagen"][0]["name"] == "leer"
+    db.antworten = [[{"id": IID}]]
+    r = c.post("/api/pult/inhalte/aus_vorlage", headers=H, json={"vorlage": "leer", "titel": "Oktober"})
+    assert r.json() == {"id": IID} and "marketing.pult_inhalt_aus_vorlage(" in db.sql[-1]
+
+
+def test_aus_vorlage_name_geprueft(db, c):
+    r = c.post("/api/pult/inhalte/aus_vorlage", headers=H, json={"vorlage": "../x", "titel": "T"})
+    assert r.status_code == 422 and db.sql == []
+
+
+def test_vorlage_vorschau(db, c):
+    db.antworten = [[{"bloecke": DOK, "beschreibung": "Beschr", "pflichtteil": {"impressum": "I"}}]]
+    r = c.get("/api/pult/vorlagen/leer/vorschau?format=mail", headers=H)
+    assert r.status_code == 200 and "Hallo Pult" in r.text
+    assert c.get("/api/pult/vorlagen/../x/vorschau", headers=H).status_code in (404, 422)
+    assert c.get("/api/pult/vorlagen/leer/vorschau?format=pdf", headers=H).status_code == 422
+    db.antworten = [[]]
+    assert c.get("/api/pult/vorlagen/leer/vorschau", headers=H).status_code == 404
