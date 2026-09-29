@@ -9,7 +9,13 @@ import ipaddress
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any, Mapping
+
+# Brain T2: dieselbe Tresor-Logik wie der Kurator (Pruefung vor dem Schreiben).
+_BRAIN = Path(__file__).resolve().parents[2] / "brain" / "the_brain"
+if str(_BRAIN) not in sys.path:
+    sys.path.insert(0, str(_BRAIN))
 
 
 SERVER_NAME = "spaces-rowboat"
@@ -17,11 +23,30 @@ SERVER_VERSION = "1.0.0"
 PROTOCOL_VERSION = "2024-11-05"
 REQUEST_TIMEOUT_SECONDS = 5
 
-TOOLS: list[dict[str, Any]] = [{
-    "name": "rowboat_status",
-    "description": "Read the configured Rowboat HTTP status using HEAD.",
-    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
-}]
+TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "rowboat_status",
+        "description": "Read the configured Rowboat HTTP status using HEAD.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "knowledge_list",
+        "description": "Wissensdokumente auflisten (optional nach typ).",
+        "inputSchema": {"type": "object", "properties": {"typ": {"type": "string"}}},
+    },
+    {
+        "name": "knowledge_read",
+        "description": "Ein Wissensdokument (Markdown) lesen.",
+        "inputSchema": {"type": "object", "properties": {"datei": {"type": "string"}},
+                         "required": ["datei"]},
+    },
+    {
+        "name": "knowledge_write",
+        "description": "Wissensdokument schreiben - nur wenn Fakten und Deutung belegt sind.",
+        "inputSchema": {"type": "object", "properties": {"dokument": {"type": "object"}},
+                         "required": ["dokument"]},
+    },
+]
 
 
 class ToolError(Exception):
@@ -128,6 +153,65 @@ def _tool_result(payload: Mapping[str, Any], *, is_error: bool = False) -> dict[
     }
 
 
+def _knowledge_root() -> Path:
+    """KNOWLEDGE_DIR wird pro Aufruf gelesen, nicht beim Import (Tresor-Default gilt nur als Fallback)."""
+    return Path(os.environ.get("KNOWLEDGE_DIR") or Path.home() / ".rowboat" / "knowledge")
+
+
+def _sicherer_wissenspfad(wurzel: Path, datei: str) -> "Path | None":
+    """Loest `datei` relativ zum Wissensordner auf. Liefert None bei Pfaden ausserhalb
+    der Wurzel (auch absolute Pfade und `..`) oder wenn die Datei nicht auf `.md` endet."""
+    try:
+        kandidat = (wurzel / datei).resolve()
+        wurzel_resolved = wurzel.resolve()
+    except (OSError, ValueError):
+        return None
+    if kandidat != wurzel_resolved and wurzel_resolved not in kandidat.parents:
+        return None
+    if kandidat.suffix.lower() != ".md":
+        return None
+    return kandidat
+
+
+def _knowledge_tool_call(name: str, arguments: Any) -> dict[str, Any]:
+    """Bearbeitet knowledge_list/knowledge_read/knowledge_write. Schreiben laeuft
+    ausschliesslich ueber Tresor.schreiben (Pruefung vor jedem Schreiben)."""
+    from core.knowledge.schema import ORDNER, Dokument, dateiname
+    from core.knowledge.tresor import Tresor
+
+    if not isinstance(arguments, Mapping):
+        return _tool_result({"error": "invalid_arguments: arguments must be an object"}, is_error=True)
+    tresor = Tresor(_knowledge_root())
+
+    if name == "knowledge_list":
+        typ = arguments.get("typ")
+        dokumente = [
+            {"typ": d.typ, "id": d.id, "titel": d.titel, "datei": f"{ORDNER[d.typ]}/{dateiname(d)}.md"}
+            for d in tresor.alle() if not typ or d.typ == typ
+        ]
+        return _tool_result({"dokumente": dokumente})
+
+    if name == "knowledge_read":
+        datei = arguments.get("datei")
+        if not isinstance(datei, str) or not datei:
+            return _tool_result({"error": "invalid_arguments: datei is required"}, is_error=True)
+        pfad = _sicherer_wissenspfad(tresor.wurzel, datei)
+        if pfad is None or not pfad.is_file():
+            return _tool_result(
+                {"error": "invalid_path: datei must be a markdown file inside the knowledge root"},
+                is_error=True,
+            )
+        return _tool_result({"datei": datei, "inhalt": pfad.read_text(encoding="utf-8")})
+
+    # knowledge_write
+    try:
+        dok = Dokument(**arguments["dokument"])
+    except Exception as exc:
+        return _tool_result({"ok": False, "probleme": [f"Schema: {exc}"]})
+    ok, probleme = tresor.schreiben(dok)
+    return _tool_result({"ok": ok, "probleme": probleme})
+
+
 def handle_message(message: Mapping[str, Any]) -> dict[str, Any] | None:
     request_id = message.get("id")
     method = message.get("method")
@@ -143,9 +227,17 @@ def handle_message(message: Mapping[str, Any]) -> dict[str, Any] | None:
         return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": TOOLS}}
     if method == "tools/call":
         params = message.get("params")
-        if not isinstance(params, Mapping) or params.get("name") != "rowboat_status":
+        if not isinstance(params, Mapping):
             return {"jsonrpc": "2.0", "id": request_id, "result": _tool_result(
-                {"error": "unknown_tool: rowboat_status is the only supported tool"}, is_error=True,
+                {"error": "invalid_params: params must be an object"}, is_error=True,
+            )}
+        name = params.get("name")
+        if name in ("knowledge_list", "knowledge_read", "knowledge_write"):
+            return {"jsonrpc": "2.0", "id": request_id,
+                    "result": _knowledge_tool_call(name, params.get("arguments"))}
+        if name != "rowboat_status":
+            return {"jsonrpc": "2.0", "id": request_id, "result": _tool_result(
+                {"error": f"unknown_tool: {name!r} is not supported"}, is_error=True,
             )}
         arguments = params.get("arguments", {})
         if not isinstance(arguments, Mapping):
