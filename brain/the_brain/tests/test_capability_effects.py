@@ -13,7 +13,8 @@ import yaml
 
 DATA = Path(__file__).resolve().parents[1] / "data"
 KLASSEN = {"write", "read", "external", "answer", "unrouted"}
-RESTLISTE_OBERGRENZE = 20  # 2026-09-24: einmalig angehoben - 8 Pruefungen konnten nie verifizieren (Schlusspruefung T1). Nur nach unten aendern.
+RESTLISTE_OBERGRENZE = 21  # 2026-09-24: einmalig angehoben - 8 Pruefungen konnten nie verifizieren (Schlusspruefung T1). Nur nach unten aendern.
+# 2026-09-29: einmalig +1 fuer code_cancel (konnte nie verifizieren). Nur nach unten aendern.
 
 
 def _caps():

@@ -163,3 +163,6 @@ restliste:
   code_preview_stop: "nur Erreichbarkeit der Engine belegt; Preview-Status-Route fehlt"
   # F3 (2026-09-24): video_vision war faelschlich read, erzeugt aber ein Video.
   video_vision: "erzeugt Video (_MEDIA_EVENTS), kein Pfad im Ergebnis"
+  # T2 Task 0b, Punkt B (2026-09-29): truth:http_ok auf {result_int_id} konnte
+  # hier strukturell nie verifizieren - siehe Begruendung unten.
+  code_cancel: "Engine antwortet {\"message\": \"Job N cancelled\"} ohne id; Nachweis braucht GET /api/v1/jobs/{id}/status mit der id aus dem Aufruf, nicht aus der Antwort"
