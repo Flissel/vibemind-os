@@ -77,3 +77,14 @@ def test_lesen_uebernimmt_handbearbeitete_deutung():
 def test_unbekannter_typ_scheitert_schon_beim_bauen():
     with pytest.raises(Exception):
         dok(typ="rezept")
+
+
+def test_deutung_mit_ueberschrift_wird_abgelehnt():
+    d = dok(deutung="Line one [B1].\n## Sub\nLine two [B1].")
+    probleme = pruefen(d)
+    assert any("Ueberschrift" in p for p in probleme)
+
+
+def test_deutung_mit_rautenzeichen_in_satz_bleibt_gueltig():
+    d = dok(deutung="Ticket #12 ist offen [B1].")
+    assert pruefen(d) == []

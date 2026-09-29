@@ -84,6 +84,9 @@ def pruefen(dok: Dokument, bekannte_dokumente: Optional[Set[str]] = None) -> Lis
         elif b.wert != f.wert:
             probleme.append(f"Fakt '{f.schluessel}' weicht von B{f.beleg} ab "
                             f"({f.wert!r} gegen {b.wert!r})")
+    for zeile in dok.deutung.splitlines():
+        if zeile.lstrip().startswith("#"):
+            probleme.append(f"Deutung darf keine Ueberschrift enthalten: {zeile[:60]}")
     for satz in deutung_saetze(dok.deutung):
         refs = [int(n) for n in _BELEG_REF.findall(satz)]
         if not refs:
