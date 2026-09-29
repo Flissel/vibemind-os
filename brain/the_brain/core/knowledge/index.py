@@ -45,3 +45,20 @@ def neu_aufbauen(kg: Any, tresor) -> Dict[str, int]:
         else:
             fehler += 1
     return {"dokumente": len(docs), "geschrieben": geschrieben, "fehler": fehler}
+
+
+def verknuepfen(kg: Any, tresor) -> int:
+    """Wikilinks -> payload.linked.ideas (external_ids), damit der Gardener sie begeht."""
+    from core.qdrant_kg import COLLECTIONS, _point_id
+    docs = tresor.alle()
+    nach_name = {dateiname(d): doc_external_id(d) for d in docs}
+    kanten = 0
+    for d in docs:
+        ziele = [nach_name[l] for l in d.links if l in nach_name]
+        if not ziele:
+            continue
+        kg.client.set_payload(collection_name=COLLECTIONS["artifacts"],
+                              payload={"linked": {"ideas": ziele}},
+                              points=[_point_id(doc_external_id(d))])
+        kanten += len(ziele)
+    return kanten

@@ -61,6 +61,10 @@ GARDEN_COLLECTIONS = ("brain-episodic", "brain-semantic", "brain-procedural", "r
 # Read-only collections (artifacts) are visited for walks but never pruned.
 MUTABLE_COLLECTIONS = {"brain-episodic", "brain-semantic", "brain-procedural"}
 
+# Brain T2: auf Wissensdokumenten darf der Gardener die Aktivierung erhoehen
+# (daraus entstehen die Hub-Notizen), aber NIE beschneiden.
+ACTIVATION_ONLY_COLLECTIONS = {"rowboat-artifacts"}
+
 
 class MCMPGardener:
     """Pheromone walker + pruner over Brain cognitive collections."""
@@ -246,8 +250,9 @@ class MCMPGardener:
 
     def _bump_activation(self, coll: str, pid: str, delta: float) -> None:
         """Increment `activation_strength` on a point. Skip if collection
-        is read-only (e.g. rowboat-artifacts)."""
-        if coll not in MUTABLE_COLLECTIONS:
+        is neither mutable nor activation-only (e.g. rowboat-artifacts darf
+        die Aktivierung erhoehen, aber nicht beschneiden werden)."""
+        if coll not in MUTABLE_COLLECTIONS and coll not in ACTIVATION_ONLY_COLLECTIONS:
             return
         try:
             # Fetch current to compute new value

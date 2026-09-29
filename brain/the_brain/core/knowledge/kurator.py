@@ -177,7 +177,15 @@ class Kurator:
         return self._lauf(self._bereiche(kind, payload))
 
     def voll_durchlauf(self) -> Dict[str, int]:
-        return self._lauf(("bubbles", "coding_projekte", "agents", "pc_zustand", "user"))
+        ergebnis = self._lauf(("bubbles", "coding_projekte", "agents", "pc_zustand", "user"))
+        if self.kg is not None:
+            try:
+                from core.knowledge import hubs, index
+                ergebnis["kanten"] = index.verknuepfen(self.kg, self.tresor)
+                ergebnis["hubs"] = hubs.schreiben(self.tresor, self.kg)
+            except Exception as e:
+                logger.info("[kurator] Verbindungen fehlgeschlagen: %s", e)
+        return ergebnis
 
     def ereignisse_abarbeiten(self, pfad: str, offset_pfad: str) -> Dict[str, int]:
         """Fix-Runde 1 (Finding 1+2): arbeitet die seit dem letzten Lauf an
