@@ -5,6 +5,11 @@ Quelle.
 
 Alles Fremde (Entwurfstext, Kopf/Fuss, Impressum) wird escaped; Links nur
 https; Logos nur als data:-Bild (kein Nachladen fremder Server beim Oeffnen).
+
+Die Gestalt wird hier NICHT geprueft: ihre Farben landen in style-Attributen.
+Jeder Aufrufer muss sie vorher mit marketing.pult_gestalt_fehler pruefen (und
+bei einem Grund oder einer fehlgeschlagenen Pruefung nicht rendern) - so tun
+es /api/pult/layouts/vorschau und /api/pult/inhalte/{id}/vorschau.
 """
 from __future__ import annotations
 

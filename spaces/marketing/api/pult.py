@@ -230,15 +230,25 @@ def inhalte(mandant: str | None = None, art: str | None = None, status: str | No
 def inhalt(iid: str, x_pult_key: str | None = Header(None)):
     _schluessel(x_pult_key)
     i = _uuid_oder_404(iid)
+    # alter_weg: stammt der Inhalt aus dem alten Freigabeweg (broadcast_
+    # proposals -> Telegram -> n8n), steht dort sein eigener Status. Die
+    # Bruecke spiegelt nur alt -> Pult; ein Urteil hier stoppt den alten Weg
+    # NICHT - die Oberflaeche muss das zeigen (final-fix-findings.md I3).
     kopf = _lesen_einer(lambda:
-        "SELECT id, mandant, art, titel, status, freigegebene_fassung, entschieden_von, "
-        f"entschieden_am::text AS entschieden_am, grund FROM marketing.inhalte WHERE id = {lit(i)}::uuid")
+        "SELECT i.id, i.mandant, i.art, i.titel, i.status, i.freigegebene_fassung, i.entschieden_von, "
+        "i.entschieden_am::text AS entschieden_am, i.grund, "
+        "CASE WHEN i.herkunft_proposal IS NULL THEN NULL "
+        "ELSE jsonb_build_object('status', p.status, 'kanal', p.channel) END AS alter_weg "
+        "FROM marketing.inhalte i "
+        "LEFT JOIN marketing.broadcast_proposals p ON p.id = i.herkunft_proposal "
+        f"WHERE i.id = {lit(i)}::uuid")
     if not kopf:
         raise HTTPException(404, "Unbekannter Inhalt")
+    alter_weg = kopf.pop("alter_weg", None)
     fassungen = _lesen(lambda:
         "SELECT fassung, felder, layout, urheber, erstellt_am::text AS erstellt_am "
         f"FROM marketing.inhalt_fassungen WHERE inhalt = {lit(i)}::uuid ORDER BY fassung DESC")
-    return {"inhalt": kopf, "fassungen": fassungen}
+    return {"inhalt": kopf, "fassungen": fassungen, "alter_weg": alter_weg or None}
 
 
 @router.post("/inhalte/{iid}/fassungen")
@@ -262,14 +272,26 @@ def vorschau(iid: str, fassung: int = Query(..., ge=1), format: str = "mail",
     _schluessel(x_pult_key)
     i = _uuid_oder_404(iid)
     fmt = _auswahl(format, _FORMATE, "format")
+    # Die Fassung zeigt das Layout in der Fassung, mit der sie gespeichert
+    # wurde (layout_fassungen, unveraenderlich) - nicht das heutige Aussehen.
+    # Fehlt der Pin (layout_fassung NULL), bleibt die aktuelle Gestalt. Die
+    # zu rendernde Gestalt wird in DERSELBEN strengen Abfrage geprueft: eine
+    # gespeicherte, ungueltige Gestalt ist 422 mit Grund, nie ein 500 und nie
+    # ungeprueft im style-Attribut.
+    gestalt_sql = "coalesce(lf.gestalt, l.gestalt)"
     zeile = _lesen_einer(lambda:
-        "SELECT f.felder, l.gestalt, m.pflichtteil FROM marketing.inhalt_fassungen f "
+        f"SELECT f.felder, {gestalt_sql} AS gestalt, m.pflichtteil, "
+        f"marketing.pult_gestalt_fehler({gestalt_sql}) AS gestalt_fehler "
+        "FROM marketing.inhalt_fassungen f "
         "JOIN marketing.inhalte i ON i.id = f.inhalt "
         "JOIN marketing.mandanten m ON m.id = i.mandant "
         "JOIN marketing.layout_vorlagen l ON l.name = f.layout "
+        "LEFT JOIN marketing.layout_fassungen lf ON lf.layout = f.layout AND lf.fassung = f.layout_fassung "
         f"WHERE f.inhalt = {lit(i)}::uuid AND f.fassung = {int(fassung)}")
     if not zeile:
         raise HTTPException(404, "Unbekannte Fassung")
+    if zeile.get("gestalt_fehler"):
+        raise HTTPException(422, str(zeile["gestalt_fehler"]))
     return _rendern(zeile["felder"], zeile["gestalt"], zeile["pflichtteil"], fmt)
 
 

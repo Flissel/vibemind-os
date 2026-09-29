@@ -311,3 +311,56 @@ def test_layout_fassung_speichern_ruft_db_funktion(db, c):
                json={"gestalt": GESTALT, "von": "felix"})
     assert r.status_code == 200 and r.json() == {"fassung": 3}
     assert "marketing.pult_layout_speichern(" in db.sql[0]
+
+
+# ─── Final-Review Fix-Welle (final-fix-findings.md) ──────────────────────
+# I2: eine alte Fassung wird mit IHRER Layout-Fassung gezeigt, nicht mit dem
+# heutigen Aussehen; die gerenderte Gestalt wird vorher geprueft.
+
+def test_vorschau_nutzt_gepinnte_layout_fassung(db, c):
+    gepinnt = dict(GESTALT, grund="#123456", text="#abcdef")
+    db.antworten = [[{"felder": FELDER, "gestalt": gepinnt, "gestalt_fehler": None,
+                      "pflichtteil": {"impressum": "I", "abmelde_hinweis": "A"}}]]
+    r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=1&format=mail", headers=H)
+    assert r.status_code == 200
+    sql = db.sql[0]
+    assert "LEFT JOIN marketing.layout_fassungen lf" in sql
+    assert "lf.layout = f.layout" in sql and "lf.fassung = f.layout_fassung" in sql
+    assert "coalesce(lf.gestalt, l.gestalt) AS gestalt" in sql
+    assert "marketing.pult_gestalt_fehler(coalesce(lf.gestalt, l.gestalt))" in sql
+    assert "#123456" in r.text and "#abcdef" in r.text
+    assert GESTALT["grund"] not in r.text
+
+
+def test_vorschau_ungueltige_gespeicherte_gestalt_422(db, c, monkeypatch):
+    aufgerufen = []
+    monkeypatch.setattr(pult, "_rendern", lambda *a, **k: aufgerufen.append(1))
+    db.antworten = [[{"felder": FELDER, "gestalt": dict(GESTALT, grund="rot"),
+                      "gestalt_fehler": "grund muss eine Farbe #rrggbb sein",
+                      "pflichtteil": {"impressum": "I", "abmelde_hinweis": "A"}}]]
+    r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=1&format=mail", headers=H)
+    assert r.status_code == 422 and r.json()["detail"] == "grund muss eine Farbe #rrggbb sein"
+    assert aufgerufen == []
+
+
+# I3: der alte Freigabeweg (broadcast_proposals) wird mitgeliefert.
+
+def test_inhalt_liefert_alten_weg(db, c):
+    db.antworten = [[{"id": IID, "mandant": "vibemind", "art": "post", "titel": "X",
+                      "status": "entwurf", "alter_weg": {"status": "pending_approval", "kanal": "linkedin"}}],
+                    [{"fassung": 1, "felder": FELDER, "layout": "dunkel", "urheber": "agent",
+                      "erstellt_am": "x"}]]
+    r = c.get(f"/api/pult/inhalte/{IID}", headers=H)
+    assert r.status_code == 200
+    j = r.json()
+    assert j["alter_weg"] == {"status": "pending_approval", "kanal": "linkedin"}
+    assert "alter_weg" not in j["inhalt"]
+    assert "LEFT JOIN marketing.broadcast_proposals p ON p.id = i.herkunft_proposal" in db.sql[0]
+    assert "p.status" in db.sql[0] and "p.channel" in db.sql[0]
+
+
+def test_inhalt_ohne_herkunft_alter_weg_null(db, c):
+    db.antworten = [[{"id": IID, "mandant": "vibemind", "art": "newsletter", "titel": "X",
+                      "status": "entwurf", "alter_weg": None}], []]
+    r = c.get(f"/api/pult/inhalte/{IID}", headers=H)
+    assert r.status_code == 200 and r.json()["alter_weg"] is None
