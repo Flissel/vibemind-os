@@ -421,7 +421,7 @@ class CapabilityValidator:
         # coding-engine's {"id": 42, "status": "pending"}. F2 (2026-09-24): {result_id}
         # needs >=6 chars, so a bare int id like 42 never filled it and the postcondition
         # stayed unresolved ({...} left in place -> UNVERIFIED, never a re-query).
-        mi = re.search(r"['\"]?(?:job_)?id['\"]?\s*[:=]\s*(\d+)\b", rs)
+        mi = re.search(r"(?<![\w])['\"]?(?:job_)?id['\"]?\s*[:=]\s*(\d+)\b", rs)
         # {result_title}: the FIRST quoted name in the result — ops name the row they
         # actually touched ("Bubble 'X' deleted."), so an absent/present re-query on it
         # is grounded in the op's own target, not a guessed filter.

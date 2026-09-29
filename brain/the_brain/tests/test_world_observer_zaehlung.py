@@ -97,6 +97,36 @@ def test_platzhalter_offen_bleibt_offen():
     assert pc["expect_count"] == "{result_count}"
 
 
+def test_platzhalter_result_int_id_ignoriert_project_id():
+    """{result_int_id} durfte nicht in `project_id` matchen (fehlende linke
+    Wortgrenze) - sonst fragt http_ok den falschen Job ab."""
+    pc = CapabilityValidator._template_postcondition(
+        {"path": "/api/v1/jobs/{result_int_id}/status"}, arg="",
+        raw_result="{'project_id': 7, 'id': 42}")
+    assert pc["path"] == "/api/v1/jobs/42/status"
+
+
+def test_platzhalter_result_int_id_findet_job_id():
+    pc = CapabilityValidator._template_postcondition(
+        {"path": "/api/v1/jobs/{result_int_id}/status"}, arg="",
+        raw_result="{'job_id': 9}")
+    assert pc["path"] == "/api/v1/jobs/9/status"
+
+
+def test_platzhalter_result_int_id_ohne_id_bleibt_offen():
+    pc = CapabilityValidator._template_postcondition(
+        {"path": "/api/v1/jobs/{result_int_id}/status"}, arg="",
+        raw_result="{'project_id': 7}")
+    assert pc["path"] == "/api/v1/jobs/{result_int_id}/status"
+
+
+def test_platzhalter_result_int_id_bestehender_fall_bleibt_gruen():
+    pc = CapabilityValidator._template_postcondition(
+        {"path": "/api/v1/jobs/{result_int_id}/status"}, arg="",
+        raw_result="{'id': 42, 'status': 'pending'}")
+    assert pc["path"] == "/api/v1/jobs/42/status"
+
+
 def test_http_ok_mit_url_env_und_pfad(monkeypatch):
     monkeypatch.setenv("CODING_ENGINE_URL", "http://coding-engine:8000/")
     with patch("requests.get", return_value=_antwort(status=200)) as get:
