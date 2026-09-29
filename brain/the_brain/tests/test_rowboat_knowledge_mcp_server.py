@@ -9,6 +9,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from core.knowledge import nachfrage as nachfrage_modul
 from core.knowledge.schema import Beleg, Dokument, Fakt
 from core.knowledge.tresor import Tresor
 
@@ -78,6 +79,7 @@ def test_knowledge_write_prueft_vor_dem_schreiben(tmp_path, monkeypatch):
 
 def test_knowledge_write_schreibt_gueltiges_dokument_ueber_tresor(tmp_path, monkeypatch):
     monkeypatch.setenv("KNOWLEDGE_DIR", str(tmp_path))
+    monkeypatch.setattr(nachfrage_modul, "nachfragen", lambda b: True)
     server = load_server()
     dok = json.loads(_valider_dok().model_dump_json())
     response = _knowledge_call(server, "knowledge_write", {"dokument": dok}, request_id=3)
@@ -136,3 +138,77 @@ def test_unknown_tool_is_rejected():
     server = load_server()
     response = _knowledge_call(server, "rowboat_status", {}, request_id=9)
     assert response["result"]["isError"] is True
+
+
+# ── Schlusspruefung I7: knowledge_write nur mit bestaetigten Belegen ──
+
+def _zwei_belege_dok():
+    d = _valider_dok(deutung="Roh und neu [B1] [B2].")
+    return d.model_copy(update={
+        "fakten": d.fakten + [Fakt(schluessel="score", wert="7", beleg=2)],
+        "belege": d.belege + [Beleg(nr=2, quelle="supabase", ziel="ideas?id=eq.a1b2c3d4&select=score",
+                                    feld="score", wert="7", gemessen=_STAND)]})
+
+
+def test_knowledge_write_alle_belege_bestaetigt_wird_geschrieben(tmp_path, monkeypatch):
+    monkeypatch.setenv("KNOWLEDGE_DIR", str(tmp_path))
+    gefragt = []
+    monkeypatch.setattr(nachfrage_modul, "nachfragen", lambda b: gefragt.append(b.nr) or True)
+    server = load_server()
+    dok = json.loads(_zwei_belege_dok().model_dump_json())
+    assert _payload(_knowledge_call(server, "knowledge_write", {"dokument": dok})) == \
+        {"ok": True, "probleme": []}
+    assert gefragt == [1, 2]
+    assert (tmp_path / "Bubbles" / "Marketing (a1b2c3).md").exists()
+
+
+def test_knowledge_write_falscher_beleg_wird_abgelehnt(tmp_path, monkeypatch):
+    monkeypatch.setenv("KNOWLEDGE_DIR", str(tmp_path))
+    monkeypatch.setattr(nachfrage_modul, "nachfragen", lambda b: b.nr != 2)
+    server = load_server()
+    dok = json.loads(_zwei_belege_dok().model_dump_json())
+    payload = _payload(_knowledge_call(server, "knowledge_write", {"dokument": dok}))
+    assert payload == {"ok": False, "probleme": [
+        "Beleg B2 an der Quelle nicht bestaetigt: supabase ideas?id=eq.a1b2c3d4&select=score score"]}
+    assert not list(tmp_path.rglob("*.md"))
+
+
+def test_knowledge_write_nicht_pruefbarer_beleg_wird_abgelehnt(tmp_path, monkeypatch):
+    monkeypatch.setenv("KNOWLEDGE_DIR", str(tmp_path))
+    monkeypatch.setattr(nachfrage_modul, "nachfragen", lambda b: None if b.nr == 1 else True)
+    server = load_server()
+    dok = json.loads(_zwei_belege_dok().model_dump_json())
+    payload = _payload(_knowledge_call(server, "knowledge_write", {"dokument": dok}))
+    assert payload["ok"] is False
+    assert payload["probleme"][0].startswith("Beleg B1 an der Quelle nicht bestaetigt")
+    assert not list(tmp_path.rglob("*.md"))
+
+
+# ── Schlusspruefung M3: nur Wissensordner (oberste Ebene) und Hubs/ ──
+
+def _fremd_dok_text():
+    from core.knowledge.schema import rendern
+    return rendern(_valider_dok().model_copy(update={"id": "bbbbbb22", "titel": "Geheim"}))
+
+
+def test_knowledge_read_und_list_ignorieren_fremde_ordner(tmp_path, monkeypatch):
+    monkeypatch.setenv("KNOWLEDGE_DIR", str(tmp_path))
+    (tmp_path / "Bewerbung").mkdir()
+    (tmp_path / "Bewerbung" / "x.md").write_text(_fremd_dok_text(), encoding="utf-8")
+    (tmp_path / "Bubbles" / "Veraltet").mkdir(parents=True)
+    (tmp_path / "Bubbles" / "Veraltet" / "alt.md").write_text(_fremd_dok_text(), encoding="utf-8")
+    (tmp_path / "notiz.md").write_text("# Wurzelnotiz\n", encoding="utf-8")
+    server = load_server()
+    for datei in ("Bewerbung/x.md", "Bubbles/Veraltet/alt.md", "notiz.md"):
+        response = _knowledge_call(server, "knowledge_read", {"datei": datei})
+        assert response["result"]["isError"] is True, datei
+    assert _payload(_knowledge_call(server, "knowledge_list", {}))["dokumente"] == []
+
+
+def test_knowledge_read_erlaubt_hubs(tmp_path, monkeypatch):
+    monkeypatch.setenv("KNOWLEDGE_DIR", str(tmp_path))
+    (tmp_path / "Hubs").mkdir()
+    (tmp_path / "Hubs" / "Bubbles.md").write_text("# Bubbles\n", encoding="utf-8")
+    server = load_server()
+    payload = _payload(_knowledge_call(server, "knowledge_read", {"datei": "Hubs/Bubbles.md"}))
+    assert payload["inhalt"] == "# Bubbles\n"

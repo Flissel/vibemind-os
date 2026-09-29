@@ -40,7 +40,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "knowledge_write",
-        "description": "Wissensdokument schreiben - nur wenn Fakten und Deutung belegt sind.",
+        "description": "Wissensdokument schreiben - nur wenn Fakten und Deutung belegt und alle Belege an ihrer Quelle bestaetigt sind.",
         "inputSchema": {"type": "object", "properties": {"dokument": {"type": "object"}},
                          "required": ["dokument"]},
     },
@@ -71,13 +71,21 @@ def _sicherer_wissenspfad(wurzel: Path, datei: str) -> "Path | None":
         return None
     if kandidat.suffix.lower() != ".md":
         return None
+    # Brain T2 Schlusspruefung M3 (Datenschutz): nur die oberste Ebene der
+    # Wissensordner (ORDNER) und Hubs/ - andere Rowboat-Ordner (z.B.
+    # Bewerbung/, Notes/) und Unterordner wie Veraltet/ bleiben verborgen.
+    from core.knowledge.schema import ORDNER
+    teile = kandidat.relative_to(wurzel_resolved).parts
+    if len(teile) != 2 or teile[0] not in set(ORDNER.values()) | {"Hubs"}:
+        return None
     return kandidat
 
 
 def _knowledge_tool_call(name: str, arguments: Any) -> dict[str, Any]:
     """Bearbeitet knowledge_list/knowledge_read/knowledge_write. Schreiben laeuft
     ausschliesslich ueber Tresor.schreiben (Pruefung vor jedem Schreiben)."""
-    from core.knowledge.schema import ORDNER, Dokument, dateiname
+    from core.knowledge import nachfrage
+    from core.knowledge.schema import ORDNER, Dokument, dateiname, pruefen
     from core.knowledge.tresor import Tresor
 
     if not isinstance(arguments, Mapping):
@@ -109,6 +117,20 @@ def _knowledge_tool_call(name: str, arguments: Any) -> dict[str, Any]:
         dok = Dokument(**arguments["dokument"])
     except Exception as exc:
         return _tool_result({"ok": False, "probleme": [f"Schema: {exc}"]})
+    # Innere Konsistenz zuerst (billig, ohne Netz) ...
+    probleme = pruefen(dok)
+    if probleme:
+        return _tool_result({"ok": False, "probleme": probleme})
+    # ... dann Brain T2 Schlusspruefung I7: jeder Beleg muss an seiner
+    # Quelle bestaetigt werden (True). False = falsch, None = nicht pruefbar
+    # -> ablehnen, nichts schreiben. So kann ein Agent keine erfundenen
+    # Fakten/Belege in den Tresor bringen.
+    nicht_bestaetigt = [
+        f"Beleg B{b.nr} an der Quelle nicht bestaetigt: {b.quelle} {b.ziel} {b.feld}"
+        for b in dok.belege if nachfrage.nachfragen(b) is not True
+    ]
+    if nicht_bestaetigt:
+        return _tool_result({"ok": False, "probleme": nicht_bestaetigt})
     ok, probleme = tresor.schreiben(dok)
     return _tool_result({"ok": ok, "probleme": probleme})
 
