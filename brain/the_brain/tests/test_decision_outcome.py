@@ -161,3 +161,18 @@ def test_beobachtungen_pruefer_ausfall_liefert_kein_paar():
     plan = SimpleNamespace(intent="etwas tun", trace_id="tr_1")
     h = hr_verdict(False, {"verified": None, "on_fail": "block"})
     assert _self_prior_beobachtungen(plan, [h]) == []
+
+
+# ── T2 Task 0b, Punkt C: exakte Verdict-Form aus dem Exception-Zweig in
+# plan_executor._exec_hop (core/plan_executor.py, "validator threw") ───────
+
+
+def test_pruefer_absturz_exaktes_exception_verdict_ist_unverified():
+    h = hr_verdict(
+        False,
+        {"valid": False, "reason": "validator error", "verified": None},
+    )
+    plan = SimpleNamespace(intent="etwas tun", trace_id="tr_1")
+    assert wirksamer_befund(h) is None
+    assert verified_outcome([h]) == "unverified"
+    assert _self_prior_beobachtungen(plan, [h]) == []

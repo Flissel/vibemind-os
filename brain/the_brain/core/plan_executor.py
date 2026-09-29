@@ -1743,11 +1743,17 @@ class PlanExecutor:
                         self.stats["validator_blocks"] += 1
             except Exception as e:
                 logger.warning(f"[plan-executor] validator threw: {e}")
+                # T2 Task 0b, Punkt C: ein abgestuerzter Pruefer ist nie ein
+                # verifiziertes Scheitern. "verified": None markiert das explizit,
+                # damit decision_outcome.wirksamer_befund den Hop als unverifiziert
+                # zaehlt statt als verified_failure - auch wenn die Blockade
+                # (ok=False) unter strict MCP als Policy-Entscheidung bestehen bleibt.
                 verdict = {
                     "valid": False,
                     "reason": "validator error",
                     "kind": "truth:supabase_edge_ids" if strict_mcp_arguments is not None else "unknown",
                     "on_fail": "block" if strict_mcp_arguments is not None else "report",
+                    "verified": None,
                 }
                 if strict_mcp_arguments is not None:
                     ok = False

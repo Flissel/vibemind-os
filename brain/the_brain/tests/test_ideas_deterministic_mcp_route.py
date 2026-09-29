@@ -178,6 +178,30 @@ def test_plan_idea_connect_validator_exception_blocks_result(monkeypatch) -> Non
     assert "validator" in (result.error or "")
 
 
+def test_plan_idea_connect_validator_exception_is_unverified_not_failed(monkeypatch) -> None:
+    """T2 Task 0b, Punkt C: ein abgestuerzter Pruefer ist kein verifiziertes
+    Scheitern. Unter strict MCP bleibt die Blockade (ok=False, Policy), aber
+    das Exception-Verdict muss "verified": None tragen - sonst zaehlt
+    decision_outcome.wirksamer_befund den Hop als verified_failure statt als
+    unverifizierten Pruefer-Ausfall."""
+    executor = _Executor(_mcp_receipt())
+    monkeypatch.setattr("core.plan_executor.PlanExecutor._capture_kg_hits", lambda *args: [])
+    monkeypatch.setattr("core.capability_targets.build_executor", lambda _target: executor)
+
+    result = PlanExecutor(validator=_RecordingValidator(raises=True))._exec_hop(
+        _idea_connect_hop("direct:legacy"), {}
+    )
+
+    assert result.ok is False
+    assert result.contract_pass is False  # Policy-Blockade (strict MCP) bleibt
+    assert result.validator_verdict is not None
+    assert "verified" in result.validator_verdict
+    assert result.validator_verdict["verified"] is None
+
+    from core.decision_outcome import wirksamer_befund
+    assert wirksamer_befund(result) is None
+
+
 def test_plan_idea_connect_rejects_legacy_or_extra_arguments_before_build(monkeypatch) -> None:
     built_targets: list[str] = []
     monkeypatch.setattr(
