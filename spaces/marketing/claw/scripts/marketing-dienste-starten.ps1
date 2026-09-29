@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-    Startet die drei Host-Dienste der Marketing-Kette, falls sie nicht laufen.
+    Startet die Host-Dienste der Marketing-Kette, falls sie nicht laufen.
+    ComfyUI hat sein eigenes venv (E:\ComfyUI\.venv), der Eintrag nennt es in `Python`.
 
 .BESCHREIBUNG
     WARUM ES DIESES SKRIPT GIBT (gemessen 15.09.2026):
@@ -93,6 +94,23 @@ $Dienste = @(
         Cwd  = $OsRoot
         Env  = @{}
         Was  = 'Vorlagen-Arbeiter (Terminkarten-Auftraege aus Sales)'
+    },
+    @{
+        Name   = 'comfyui'
+        Port   = 8188
+        Python = 'E:\ComfyUI\.venv\Scripts\python.exe'
+        Args   = @('main.py', '--listen', '127.0.0.1', '--port', '8188')
+        Cwd    = 'E:\ComfyUI'
+        Env    = @{}
+        Was    = 'ComfyUI (Bildmodell FLUX.1-schnell, nur lokal)'
+    },
+    @{
+        Name = 'marketing_bild_arbeiter'
+        Port = 8133
+        Args = @('-u', '-m', 'spaces.marketing.workers.bild_worker')
+        Cwd  = $OsRoot
+        Env  = @{}
+        Was  = 'Bild-Arbeiter (Newsletter-Bilder, holt Auftraege von der VM)'
     }
 )
 
@@ -127,7 +145,7 @@ foreach ($d in $Dienste) {
     $env:PYTHONIOENCODING = 'utf-8'
     foreach ($k in $d.Env.Keys) { Set-Item -Path "env:$k" -Value $d.Env[$k] }
 
-    $p = Start-Process -FilePath $Venv -ArgumentList $d.Args -WorkingDirectory $d.Cwd `
+    $p = Start-Process -FilePath $(if ($d.Python) { $d.Python } else { $Venv }) -ArgumentList $d.Args -WorkingDirectory $d.Cwd `
         -RedirectStandardOutput (Join-Path $LogDir "$($d.Name).log") `
         -RedirectStandardError  (Join-Path $LogDir "$($d.Name).err.log") `
         -WindowStyle Hidden -PassThru

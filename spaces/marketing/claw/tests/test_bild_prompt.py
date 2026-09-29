@@ -1,0 +1,57 @@
+import json
+
+from spaces.marketing.claw import bild_prompt as bp
+
+PLATZ = {"id": "kopf", "alt": "Team im Buero", "kontext": "Herbst-Update | Neue Funktionen", "verhaeltnis": "2:1"}
+
+
+def falsch(antwort):
+    gesendet = []
+
+    def http(pfad, daten, zeitlimit=120):
+        gesendet.append((pfad, daten))
+        return {"response": antwort}
+    return http, gesendet
+
+
+def test_prompt_mit_stil_und_verbot(monkeypatch):
+    http, gesendet = falsch("A calm team at a bright desk, morning light")
+    monkeypatch.setattr(bp, "_ollama", http)
+    p = bp.prompt_schreiben(PLATZ, "Newsletter Oktober", "waermer")
+    assert p.startswith("A calm team at a bright desk") and bp.VERBOT in p and bp.STIL in p
+    pfad, daten = gesendet[0]
+    assert pfad == "/api/generate" and daten["keep_alive"] == 0 and daten["model"] == bp.TEXT_MODELL
+    assert "waermer" in daten["prompt"] and "Herbst-Update" in daten["prompt"] and "2:1" in daten["prompt"]
+
+
+def test_bereinigen():
+    assert bp.bereinigen('Here is your prompt:\n"A teal city at dusk"\n\nExtra') == "A teal city at dusk"
+    assert bp.bereinigen("  ") == ""
+    assert len(bp.bereinigen("word " * 500)) <= 400
+    assert "\n" not in bp.bereinigen("line one\nline two")
+
+
+def test_leere_antwort_faellt_auf_alt_und_titel_zurueck(monkeypatch):
+    http, _ = falsch("   ")
+    monkeypatch.setattr(bp, "_ollama", http)
+    p = bp.prompt_schreiben(PLATZ, "Newsletter Oktober", "")
+    assert p.startswith("Team im Buero, Newsletter Oktober")
+
+
+def test_pruefen_ok_und_befunde(monkeypatch):
+    for antwort, erwartet in (
+        ({"passt": True, "schrift": False, "entstellt": False, "grund": ""}, (True, "")),
+        ({"passt": True, "schrift": True, "entstellt": False, "grund": "Buchstaben"}, (False, "Schrift im Bild")),
+        ({"passt": False, "schrift": False, "entstellt": False, "grund": "Thema verfehlt"}, (False, "passt nicht: Thema verfehlt")),
+        ({"passt": True, "schrift": False, "entstellt": True, "grund": ""}, (False, "entstellte Figuren")),
+    ):
+        http, gesendet = falsch(json.dumps(antwort))
+        monkeypatch.setattr(bp, "_ollama", http)
+        assert bp.pruefen(b"\x89PNG", "p") == erwartet
+        assert gesendet[0][1]["images"] and gesendet[0][1]["format"] == "json" and gesendet[0][1]["keep_alive"] == 0
+
+
+def test_pruefen_unlesbar_gilt_als_ungeprueft_ok(monkeypatch):
+    http, _ = falsch("kein json")
+    monkeypatch.setattr(bp, "_ollama", http)
+    assert bp.pruefen(b"\x89PNG", "p") == (True, "Selbstpruefung unlesbar - ungeprueft eingesetzt")
