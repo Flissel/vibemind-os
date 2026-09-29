@@ -20,6 +20,12 @@ logger = logging.getLogger(__name__)
 FEHLER: Counter = Counter()
 PC_ZUSTAND_ID = "system"
 PC_ZUSTAND_TITEL = "PC-Zustand"
+# Abfragelimits der Listenleser; liefert ein Leser genau so viele Zeilen, kann
+# die Liste gekappt sein (der Kurator verschiebt dann nichts nach Veraltet/).
+BUBBLES_LIMIT = 1000
+CODING_LIMIT = 200
+# Pro Leser-Aufruf gesetzt: True, wenn die Antwort genau am Limit lag.
+GEKAPPT: dict = {"bubbles": False, "coding_projekte": False}
 
 
 class Sammler:
@@ -48,8 +54,9 @@ def _pc_link() -> str:
 
 def bubbles(jetzt: datetime) -> List[Dokument]:
     liste = ("ideas?parent_id=is.null&select=id,title,status,score,updated_at,"
-             "promoted_to_project_id&limit=1000")
+             f"promoted_to_project_id&limit={BUBBLES_LIMIT}")
     rows, _, _ = abfragen("supabase", liste)
+    GEKAPPT["bubbles"] = len(rows or []) >= BUBBLES_LIMIT
     projekte = {}
     try:
         prow, _, _ = abfragen("supabase", "swe_design_runs?select=id,project_name,project_id&limit=1000")
@@ -80,7 +87,8 @@ def bubbles(jetzt: datetime) -> List[Dokument]:
 def coding_projekte(jetzt: datetime) -> List[Dokument]:
     rows, _, _ = abfragen("supabase", "swe_design_runs?select=id,project_name,status,"
                           "completed_stages,total_stages,gitea_repo,project_id,created_at"
-                          "&order=created_at.desc&limit=200")
+                          f"&order=created_at.desc&limit={CODING_LIMIT}")
+    GEKAPPT["coding_projekte"] = len(rows or []) >= CODING_LIMIT
     out = []
     for r in rows or []:
         rid = str(r["id"])

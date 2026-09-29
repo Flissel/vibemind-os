@@ -479,3 +479,116 @@ def test_index_ohne_punkt_id_zaehlt_als_fehler(tmp_path, monkeypatch):
     kg._upsert_point.return_value = None  # _upsert_point schluckt Fehler und gibt None
     erg = Kurator(Tresor(tmp_path), kg=kg, leser=leser()).voll_durchlauf()
     assert erg["index_fehler"] == 1
+
+
+# ── Restfehler N1/N2/N4 vor dem Einschalten ──
+
+def test_volllauf_uebernimmt_neu_indexiert_in_ergebnis_und_stats(tmp_path, monkeypatch):
+    from core.knowledge import hubs as hubs_modul
+    from core.knowledge import index as index_modul
+    kanten = index_modul.Kanten(3)
+    kanten.neu_indexiert = 2
+    monkeypatch.setattr(index_modul, "verknuepfen", lambda kg, t: kanten)
+    monkeypatch.setattr(hubs_modul, "schreiben", lambda t, kg: 0)
+    k = Kurator(Tresor(tmp_path), kg=MagicMock(), leser=leser())
+    erg = k.voll_durchlauf()
+    assert erg["kanten"] == 3 and erg["neu_indexiert"] == 2
+    assert k.stats["neu_indexiert"] == 2
+
+
+def _liste_leser(namen_liste):
+    """Liefert die ersten len(namen_liste) Bubbles aus _viele (Nr = Index)."""
+    return lambda j: _viele(10)(j)[:len(namen_liste)]
+
+
+def _mit_bestand(tmp_path, n):
+    t = Tresor(tmp_path)
+    ids = [f"{i:08d}" for i in range(n)]
+    Kurator(t, leser=leser(bubbles=_liste_leser(ids))).voll_durchlauf()
+    assert len(t.alle()) == n
+    return t, ids
+
+
+def test_leere_leserliste_verschiebt_nichts(tmp_path, caplog):
+    import logging
+    t, _ = _mit_bestand(tmp_path, 3)
+    with caplog.at_level(logging.WARNING):
+        erg = Kurator(t, leser=leser(bubbles=lambda j: [])).voll_durchlauf()
+    assert erg["veraltet"] == 0 and erg["veraltet_uebersprungen"] == 1
+    assert not (tmp_path / "Bubbles" / "Veraltet").exists()
+    assert len(t.alle()) == 3
+    assert any("leer" in r.message for r in caplog.records if r.levelno == logging.WARNING)
+
+
+def test_massenbremse_4_von_5_verschiebt_nichts(tmp_path, caplog):
+    import logging
+    t, ids = _mit_bestand(tmp_path, 5)
+    with caplog.at_level(logging.WARNING):
+        erg = Kurator(t, leser=leser(bubbles=_liste_leser(ids[:1]))).voll_durchlauf()
+    assert erg["veraltet"] == 0 and erg["veraltet_uebersprungen"] == 1
+    assert len(t.alle()) == 5
+    assert any("4" in r.message and "5" in r.message for r in caplog.records)
+
+
+def test_ein_von_zehn_wird_verschoben(tmp_path):
+    t, ids = _mit_bestand(tmp_path, 10)
+    erg = Kurator(t, leser=leser(bubbles=_liste_leser(ids[:9]))).voll_durchlauf()
+    assert erg["veraltet"] == 1 and erg["veraltet_uebersprungen"] == 0
+    assert len(t.alle()) == 9
+
+
+def test_bis_zu_drei_von_vier_verschieben_ist_erlaubt(tmp_path):
+    """Grenze: mehr als 50 % UND mehr als 3 -> 3 von 4 wandern (nicht mehr als 3)."""
+    t, ids = _mit_bestand(tmp_path, 4)
+    erg = Kurator(t, leser=leser(bubbles=_liste_leser(ids[:1]))).voll_durchlauf()
+    assert erg["veraltet"] == 3
+
+
+def test_gekappter_leser_verschiebt_nichts(tmp_path):
+    t, ids = _mit_bestand(tmp_path, 10)
+    ns = leser(bubbles=_liste_leser(ids[:9]))
+    ns.GEKAPPT = {"bubbles": True}
+    erg = Kurator(t, leser=ns).voll_durchlauf()
+    assert erg["veraltet"] == 0 and erg["veraltet_uebersprungen"] == 1
+    assert len(t.alle()) == 10
+
+
+def test_quellen_leser_melden_gekappt_bei_genau_limit(monkeypatch):
+    from core.knowledge import quellen as q
+    rows = [{"id": f"i{n}", "title": "t"} for n in range(q.BUBBLES_LIMIT)]
+
+    def abf(quelle, ziel, mit_zaehlung=False):
+        if ziel.startswith("ideas?"):
+            return rows, None, 200
+        return [], 0, 200
+    monkeypatch.setattr(q, "abfragen", abf)
+    q.bubbles(T)
+    assert q.GEKAPPT["bubbles"] is True
+    rows.pop()
+    q.bubbles(T)
+    assert q.GEKAPPT["bubbles"] is False
+
+
+def test_quellen_coding_gekappt_bei_genau_limit(monkeypatch):
+    from core.knowledge import quellen as q
+    rows = [{"id": n, "project_name": "p"} for n in range(q.CODING_LIMIT)]
+    monkeypatch.setattr(q, "abfragen", lambda *a, **k: (rows, None, 200))
+    q.coding_projekte(T)
+    assert q.GEKAPPT["coding_projekte"] is True
+
+
+def test_unlesbare_datei_ruft_deuten_nicht(tmp_path):
+    t = Tresor(tmp_path)
+    p = t.pfad(dok())
+    p.parent.mkdir(parents=True)
+    p.write_bytes("---\n: [kaputt\n---\n".encode("utf-8"))
+    vorher = p.read_bytes()
+    aufrufe = []
+
+    def zaehlend(d):
+        aufrufe.append(1)
+        return "x [B1]."
+    erg = Kurator(t, deuten=zaehlend, leser=leser()).voll_durchlauf()
+    assert aufrufe == []
+    assert erg["unlesbar"] == 1 and erg["geschrieben"] == 0
+    assert p.read_bytes() == vorher

@@ -62,17 +62,58 @@ def test_verknuepfen_entfernter_wikilink_verschwindet_aus_linked_ideas(tmp_path)
         "entfernter Wikilink darf nicht mehr in linked.ideas stehen"
 
 
-def test_verknuepfen_ueberspringt_fehlenden_punkt(tmp_path):
+def test_verknuepfen_ueberspringt_punkt_wenn_eintragen_scheitert(tmp_path):
     t = Tresor(tmp_path)
     t.schreiben(dok("aaaaaa1", "Alpha"))
     t.schreiben(dok("bbbbbb2", "Beta", links=["Alpha (aaaaaa)"]))
     kg = MagicMock()
-    kg.client.retrieve.return_value = []  # Punkt existiert noch nicht in Qdrant
+    kg.client.retrieve.return_value = []  # Punkt fehlt in Qdrant
+    kg._upsert_point.return_value = None  # und Neu-Indexieren scheitert ebenfalls
 
     n = index.verknuepfen(kg, t)
 
     assert n == 0
+    assert n.neu_indexiert == 0
     kg.client.set_payload.assert_not_called()
+
+
+def test_verknuepfen_indexiert_dokument_ohne_punkt_neu_und_setzt_links(monkeypatch, tmp_path):
+    """N1 Selbstheilung: fehlt der Punkt (Qdrant war aus / Collection neu),
+    wird eintragen() gerufen und danach der Link gesetzt."""
+    t = Tresor(tmp_path)
+    t.schreiben(dok("aaaaaa1", "Alpha"))
+    t.schreiben(dok("bbbbbb2", "Beta", links=["Alpha (aaaaaa)"]))
+    kg = MagicMock()
+    kg.client.retrieve.return_value = []
+    eingetragen = []
+
+    def fake_eintragen(kg_, d):
+        eingetragen.append(d.id)
+        return "pid"
+
+    monkeypatch.setattr(index, "eintragen", fake_eintragen)
+
+    n = index.verknuepfen(kg, t)
+
+    assert sorted(eingetragen) == ["aaaaaa1", "bbbbbb2"]
+    assert n.neu_indexiert == 2
+    assert n == 1, "Beta -> Alpha"
+    aufrufe = {c.kwargs["points"][0]: c.kwargs["payload"]["linked"]["ideas"]
+               for c in kg.client.set_payload.call_args_list}
+    assert ["doc::bubble::aaaaaa1"] in aufrufe.values()
+
+
+def test_verknuepfen_ruft_eintragen_nicht_wenn_punkt_da_ist(monkeypatch, tmp_path):
+    t = Tresor(tmp_path)
+    t.schreiben(dok("aaaaaa1", "Alpha"))
+    kg = MagicMock()
+    kg.client.retrieve.return_value = [_punkt({"linked": {}})]
+    monkeypatch.setattr(index, "eintragen",
+                        lambda *a: (_ for _ in ()).throw(AssertionError("darf nicht")))
+
+    n = index.verknuepfen(kg, t)
+
+    assert n.neu_indexiert == 0
 
 
 def test_schreiben_ruft_scroll_mit_erwarteten_keyword_namen(tmp_path):

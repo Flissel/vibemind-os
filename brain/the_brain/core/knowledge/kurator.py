@@ -137,7 +137,8 @@ class Kurator:
         self.leser = leser
         self.stats = {"geschrieben": 0, "abgelehnt": 0, "quellenfehler": 0,
                       "deutung_verworfen": 0, "unveraendert": 0, "unlesbar": 0,
-                      "veraltet": 0, "index_fehler": 0}
+                      "veraltet": 0, "index_fehler": 0, "neu_indexiert": 0,
+                      "veraltet_uebersprungen": 0}
 
     def _bereiche(self, kind: str, payload: Dict[str, Any]) -> Tuple[str, ...]:
         return bereiche_fuer(kind, payload)
@@ -146,6 +147,12 @@ class Kurator:
         # Schlusspruefung I1: Datei EINMAL lesen, Ergebnis an
         # deutung_noch_gueltig und schreiben weitergeben.
         geladen = self.tresor.laden(dok)
+        # N4: vorhanden, aber unlesbar -> weder Deutung (LLM-Kosten) noch
+        # Schreiben; dieselbe Pruefung wie Tresor.schreiben.
+        if geladen[0] and geladen[1] is None:
+            self.stats["unlesbar"] += 1
+            logger.warning("[kurator] %s unlesbar - nicht gedeutet, nicht ueberschrieben", dok.titel)
+            return
         # Controller-Ruling: LLM nur rufen, wenn die gespeicherte Deutung
         # ohnehin nicht mehr fuehrend bliebe (spart Aufrufe, schuetzt
         # von Hand gepflegte Deutungen).
@@ -216,17 +223,41 @@ class Kurator:
             # was die Quelle nicht mehr liefert, nach <Ordner>/Veraltet/.
             typ = LISTEN_LESER.get(name)
             if typ is not None:
-                try:
-                    weg = self.tresor.veraltete_verschieben(
-                        typ, {dateiname(d) for d in docs if isinstance(d, Dokument)})
-                    self.stats["veraltet"] += len(weg)
-                    bekannte.difference_update(weg)
-                    if weg:
-                        logger.info("[kurator] %d %s-Dokument(e) nach Veraltet verschoben",
-                                    len(weg), typ)
-                except Exception as e:
-                    logger.warning("[kurator] Veraltet-Pruefung %s fehlgeschlagen: %s", name, e)
+                self._veraltete_pruefen(name, typ, docs, bekannte)
         return {k: self.stats[k] - vorher[k] for k in self.stats}
+
+    def _veraltete_pruefen(self, name: str, typ: str, docs, bekannte: Set[str]) -> None:
+        """Verschiebt Nicht-mehr-Gelieferte nach Veraltet/ - ausser die Liste
+        ist verdaechtig (N2): leer, gekappt (Limit erreicht) oder so, dass die
+        Massenbremse (>50 % UND >3 Dokumente) greift."""
+        try:
+            geliefert = {dateiname(d) for d in docs if isinstance(d, Dokument)}
+            vorhanden = {dateiname(d) for d in self.tresor.alle() if d.typ == typ}
+            if not vorhanden - geliefert:
+                return  # nichts zu verschieben, nichts zu schuetzen
+            if not geliefert:
+                self.stats["veraltet_uebersprungen"] += 1
+                logger.warning("[kurator] Quelle %s lieferte eine leere Liste - "
+                               "nichts nach Veraltet verschoben", name)
+                return
+            if getattr(self.leser, "GEKAPPT", {}).get(name):
+                self.stats["veraltet_uebersprungen"] += 1
+                logger.warning("[kurator] Quelle %s hat ihr Limit erreicht (Liste evtl. "
+                               "gekappt) - nichts nach Veraltet verschoben", name)
+                return
+            wuerde = len(vorhanden - geliefert)
+            if wuerde > 3 and wuerde * 2 > len(vorhanden):
+                self.stats["veraltet_uebersprungen"] += 1
+                logger.warning("[kurator] Massenbremse %s: %d von %d Dokumenten wuerden nach "
+                               "Veraltet wandern - nichts verschoben", name, wuerde, len(vorhanden))
+                return
+            weg = self.tresor.veraltete_verschieben(typ, geliefert)
+            self.stats["veraltet"] += len(weg)
+            bekannte.difference_update(weg)
+            if weg:
+                logger.info("[kurator] %d %s-Dokument(e) nach Veraltet verschoben", len(weg), typ)
+        except Exception as e:
+            logger.warning("[kurator] Veraltet-Pruefung %s fehlgeschlagen: %s", name, e)
 
     def bei_ereignis(self, kind: str, payload: Dict[str, Any]) -> Dict[str, int]:
         return self._lauf(self._bereiche(kind, payload))
@@ -236,7 +267,11 @@ class Kurator:
         if self.kg is not None:
             try:
                 from core.knowledge import hubs, index
-                ergebnis["kanten"] = index.verknuepfen(self.kg, self.tresor)
+                kanten = index.verknuepfen(self.kg, self.tresor)
+                ergebnis["kanten"] = kanten
+                neu = getattr(kanten, "neu_indexiert", 0)
+                self.stats["neu_indexiert"] += neu
+                ergebnis["neu_indexiert"] = neu
                 ergebnis["hubs"] = hubs.schreiben(self.tresor, self.kg)
             except Exception as e:
                 logger.info("[kurator] Verbindungen fehlgeschlagen: %s", e)

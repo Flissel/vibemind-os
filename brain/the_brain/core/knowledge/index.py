@@ -47,7 +47,13 @@ def neu_aufbauen(kg: Any, tresor) -> Dict[str, int]:
     return {"dokumente": len(docs), "geschrieben": geschrieben, "fehler": fehler}
 
 
-def verknuepfen(kg: Any, tresor) -> int:
+class Kanten(int):
+    """Anzahl gesetzter Kanten; `neu_indexiert` = Dokumente, deren Punkt fehlte
+    und die dabei neu eingetragen wurden (Selbstheilung, N1)."""
+    neu_indexiert: int = 0
+
+
+def verknuepfen(kg: Any, tresor) -> Kanten:
     """Wikilinks -> payload.linked.ideas (external_ids), damit der Gardener sie begeht.
 
     Fix-Runde 1 (Finding 1): Qdrants set_payload ersetzt nur TOP-LEVEL-Keys -
@@ -56,14 +62,16 @@ def verknuepfen(kg: Any, tresor) -> int:
     geschrieben hat. Deshalb read-merge-write wie dort: bestehenden linked-
     Dict lesen, NUR linked.ideas ersetzen (auch auf leer, wenn ein Wikilink
     entfernt wurde), alles andere unangetastet lassen. Existiert der Punkt
-    noch nicht in Qdrant, wird das Dokument uebersprungen (zaehlt nicht als
-    verknuepft) statt einen leeren Punkt anzulegen.
+    noch nicht in Qdrant (Qdrant war bei einem Lauf aus, Collection neu
+    angelegt), wird das Dokument per eintragen() neu indexiert (Selbstheilung,
+    N1) und danach normal verlinkt. Scheitert das, wird es uebersprungen.
     """
     from core.qdrant_kg import COLLECTIONS, _empty_linked, _point_id
     docs = tresor.alle()
     nach_name = {dateiname(d): doc_external_id(d) for d in docs}
     coll = COLLECTIONS["artifacts"]
     kanten = 0
+    neu = 0
     for d in docs:
         ziele = [nach_name[l] for l in d.links if l in nach_name]
         pid = _point_id(doc_external_id(d))
@@ -72,9 +80,19 @@ def verknuepfen(kg: Any, tresor) -> int:
         except Exception:
             continue
         if not rec:
-            continue
-        linked = dict((rec[0].payload or {}).get("linked") or _empty_linked())
+            try:
+                if not eintragen(kg, d):
+                    continue
+            except Exception:
+                continue
+            neu += 1
+            basis = None
+        else:
+            basis = (rec[0].payload or {}).get("linked")
+        linked = dict(basis or _empty_linked())
         linked["ideas"] = ziele
         kg.client.set_payload(collection_name=coll, payload={"linked": linked}, points=[pid])
         kanten += len(ziele)
-    return kanten
+    erg = Kanten(kanten)
+    erg.neu_indexiert = neu
+    return erg
