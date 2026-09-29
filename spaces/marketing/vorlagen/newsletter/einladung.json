@@ -1,0 +1,228 @@
+{
+  "name": "einladung",
+  "beschreibung": "Einladung: Datum, Uhrzeit und Ort in einem Kasten, Knopf zum Anmelden.",
+  "bloecke": {
+    "root": {
+      "type": "EmailLayout",
+      "data": {
+        "backdropColor": "#1d3b39",
+        "canvasColor": "#0f2422",
+        "textColor": "#cfe3df",
+        "fontFamily": "MODERN_SANS",
+        "childrenIds": [
+          "logo",
+          "marke",
+          "kopf",
+          "einleitung",
+          "eckdaten",
+          "knopf",
+          "hinweis"
+        ]
+      }
+    },
+    "logo": {
+      "type": "Image",
+      "data": {
+        "style": {
+          "padding": {
+            "top": 40,
+            "bottom": 8,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "url": "medien:vibemind-logo.png",
+          "alt": "VibeMind",
+          "width": 150,
+          "linkHref": "https://vibemind.space",
+          "contentAlignment": "middle"
+        }
+      }
+    },
+    "marke": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "color": "#5eead4",
+          "fontSize": 12,
+          "fontWeight": "bold",
+          "textAlign": "left",
+          "padding": {
+            "top": 32,
+            "bottom": 8,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "text": "EINLADUNG"
+        }
+      }
+    },
+    "kopf": {
+      "type": "Heading",
+      "data": {
+        "style": {
+          "color": "#e9fbf6",
+          "fontWeight": "bold",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 16,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "level": "h1",
+          "text": "Du bist eingeladen"
+        }
+      }
+    },
+    "einleitung": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "fontSize": 16,
+          "fontWeight": "normal",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 28,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "text": "Wir laden dich zu einem Abend mit Gesprächen, Einblicken und guter Gesellschaft ein. Sag in einem Satz, was die Gäste erwartet."
+        }
+      }
+    },
+    "datum": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "fontSize": 16,
+          "fontWeight": "normal",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 20,
+            "left": 0,
+            "right": 0
+          }
+        },
+        "props": {
+          "text": "**Datum**\nDonnerstag, 15. Oktober 2026",
+          "markdown": true
+        }
+      }
+    },
+    "uhrzeit": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "fontSize": 16,
+          "fontWeight": "normal",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 20,
+            "left": 0,
+            "right": 0
+          }
+        },
+        "props": {
+          "text": "**Uhrzeit**\n18:00 bis 20:30 Uhr",
+          "markdown": true
+        }
+      }
+    },
+    "ort": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "fontSize": 16,
+          "fontWeight": "normal",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 0,
+            "left": 0,
+            "right": 0
+          }
+        },
+        "props": {
+          "text": "**Ort**\nVibeMind Studio, Musterstraße 1, 10115 Berlin",
+          "markdown": true
+        }
+      }
+    },
+    "eckdaten": {
+      "type": "Container",
+      "data": {
+        "style": {
+          "backgroundColor": "#16302d",
+          "padding": {
+            "top": 28,
+            "bottom": 28,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "childrenIds": [
+            "datum",
+            "uhrzeit",
+            "ort"
+          ]
+        }
+      }
+    },
+    "knopf": {
+      "type": "Button",
+      "data": {
+        "style": {
+          "fontSize": 16,
+          "fontWeight": "bold",
+          "textAlign": "left",
+          "padding": {
+            "top": 32,
+            "bottom": 24,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "text": "Platz sichern",
+          "url": "https://vibemind.space",
+          "buttonStyle": "rounded",
+          "size": "large",
+          "buttonBackgroundColor": "#5eead4",
+          "buttonTextColor": "#0f2422"
+        }
+      }
+    },
+    "hinweis": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "fontSize": 14,
+          "fontWeight": "normal",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 48,
+            "left": 40,
+            "right": 40
+          },
+          "color": "#8fb3ad"
+        },
+        "props": {
+          "text": "Die Plätze sind begrenzt. Bitte melde dich bis zum 8. Oktober an. Falls du doch nicht kannst, antworte einfach auf diese Mail."
+        }
+      }
+    }
+  }
+}

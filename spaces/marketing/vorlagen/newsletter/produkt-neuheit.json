@@ -1,0 +1,365 @@
+{
+  "name": "produkt-neuheit",
+  "beschreibung": "Produkt-Neuheit: großes Produktbild, drei Nutzen nebeneinander, Knopf.",
+  "bloecke": {
+    "root": {
+      "type": "EmailLayout",
+      "data": {
+        "backdropColor": "#1d3b39",
+        "canvasColor": "#0f2422",
+        "textColor": "#cfe3df",
+        "fontFamily": "MODERN_SANS",
+        "childrenIds": [
+          "logo",
+          "produktbild",
+          "marke",
+          "kopf",
+          "einleitung",
+          "nutzen",
+          "knopf"
+        ]
+      }
+    },
+    "logo": {
+      "type": "Image",
+      "data": {
+        "style": {
+          "padding": {
+            "top": 40,
+            "bottom": 24,
+            "left": 32,
+            "right": 32
+          }
+        },
+        "props": {
+          "url": "medien:vibemind-logo.png",
+          "alt": "VibeMind",
+          "width": 150,
+          "linkHref": "https://vibemind.space",
+          "contentAlignment": "middle"
+        }
+      }
+    },
+    "produktbild": {
+      "type": "Image",
+      "data": {
+        "style": {
+          "padding": {
+            "top": 8,
+            "bottom": 8,
+            "left": 32,
+            "right": 32
+          }
+        },
+        "props": {
+          "url": "medien:produkt.png",
+          "alt": "Produktbild",
+          "width": 536,
+          "linkHref": "https://vibemind.space",
+          "contentAlignment": "middle"
+        }
+      }
+    },
+    "marke": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "color": "#5eead4",
+          "fontSize": 12,
+          "fontWeight": "bold",
+          "textAlign": "left",
+          "padding": {
+            "top": 32,
+            "bottom": 8,
+            "left": 32,
+            "right": 32
+          }
+        },
+        "props": {
+          "text": "PRODUKT-NEUHEIT"
+        }
+      }
+    },
+    "kopf": {
+      "type": "Heading",
+      "data": {
+        "style": {
+          "color": "#e9fbf6",
+          "fontWeight": "bold",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 16,
+            "left": 32,
+            "right": 32
+          }
+        },
+        "props": {
+          "level": "h1",
+          "text": "Name der Neuheit"
+        }
+      }
+    },
+    "einleitung": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "fontSize": 16,
+          "fontWeight": "normal",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 24,
+            "left": 32,
+            "right": 32
+          }
+        },
+        "props": {
+          "text": "Stell die Neuheit in zwei Sätzen vor: was sie ist und für wen sie gemacht wurde."
+        }
+      }
+    },
+    "nutzen1_marke": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "color": "#5eead4",
+          "fontSize": 12,
+          "fontWeight": "bold",
+          "textAlign": "left",
+          "padding": {
+            "top": 8,
+            "bottom": 6,
+            "left": 32,
+            "right": 32
+          }
+        },
+        "props": {
+          "text": "01"
+        }
+      }
+    },
+    "nutzen1_titel": {
+      "type": "Heading",
+      "data": {
+        "style": {
+          "color": "#e9fbf6",
+          "fontWeight": "bold",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 6,
+            "left": 32,
+            "right": 32
+          }
+        },
+        "props": {
+          "level": "h3",
+          "text": "Schneller"
+        }
+      }
+    },
+    "nutzen1_text": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "fontSize": 14,
+          "fontWeight": "normal",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 8,
+            "left": 32,
+            "right": 32
+          }
+        },
+        "props": {
+          "text": "Was jetzt weniger Zeit kostet."
+        }
+      }
+    },
+    "nutzen2_marke": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "color": "#5eead4",
+          "fontSize": 12,
+          "fontWeight": "bold",
+          "textAlign": "left",
+          "padding": {
+            "top": 8,
+            "bottom": 6,
+            "left": 32,
+            "right": 32
+          }
+        },
+        "props": {
+          "text": "02"
+        }
+      }
+    },
+    "nutzen2_titel": {
+      "type": "Heading",
+      "data": {
+        "style": {
+          "color": "#e9fbf6",
+          "fontWeight": "bold",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 6,
+            "left": 32,
+            "right": 32
+          }
+        },
+        "props": {
+          "level": "h3",
+          "text": "Einfacher"
+        }
+      }
+    },
+    "nutzen2_text": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "fontSize": 14,
+          "fontWeight": "normal",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 8,
+            "left": 32,
+            "right": 32
+          }
+        },
+        "props": {
+          "text": "Was jetzt ohne Umwege geht."
+        }
+      }
+    },
+    "nutzen3_marke": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "color": "#5eead4",
+          "fontSize": 12,
+          "fontWeight": "bold",
+          "textAlign": "left",
+          "padding": {
+            "top": 8,
+            "bottom": 6,
+            "left": 32,
+            "right": 32
+          }
+        },
+        "props": {
+          "text": "03"
+        }
+      }
+    },
+    "nutzen3_titel": {
+      "type": "Heading",
+      "data": {
+        "style": {
+          "color": "#e9fbf6",
+          "fontWeight": "bold",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 6,
+            "left": 32,
+            "right": 32
+          }
+        },
+        "props": {
+          "level": "h3",
+          "text": "Sicherer"
+        }
+      }
+    },
+    "nutzen3_text": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "fontSize": 14,
+          "fontWeight": "normal",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 8,
+            "left": 32,
+            "right": 32
+          }
+        },
+        "props": {
+          "text": "Worauf du dich verlassen kannst."
+        }
+      }
+    },
+    "nutzen": {
+      "type": "ColumnsContainer",
+      "data": {
+        "style": {
+          "padding": {
+            "top": 0,
+            "bottom": 0,
+            "left": 32,
+            "right": 32
+          }
+        },
+        "props": {
+          "columnsCount": 3,
+          "columnsGap": 16,
+          "contentAlignment": "top",
+          "columns": [
+            {
+              "childrenIds": [
+                "nutzen1_marke",
+                "nutzen1_titel",
+                "nutzen1_text"
+              ]
+            },
+            {
+              "childrenIds": [
+                "nutzen2_marke",
+                "nutzen2_titel",
+                "nutzen2_text"
+              ]
+            },
+            {
+              "childrenIds": [
+                "nutzen3_marke",
+                "nutzen3_titel",
+                "nutzen3_text"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "knopf": {
+      "type": "Button",
+      "data": {
+        "style": {
+          "fontSize": 16,
+          "fontWeight": "bold",
+          "textAlign": "left",
+          "padding": {
+            "top": 32,
+            "bottom": 48,
+            "left": 32,
+            "right": 32
+          }
+        },
+        "props": {
+          "text": "Jetzt entdecken",
+          "url": "https://vibemind.space",
+          "buttonStyle": "rounded",
+          "size": "large",
+          "buttonBackgroundColor": "#5eead4",
+          "buttonTextColor": "#0f2422"
+        }
+      }
+    }
+  }
+}

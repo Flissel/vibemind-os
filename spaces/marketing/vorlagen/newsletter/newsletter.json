@@ -1,0 +1,358 @@
+{
+  "name": "newsletter",
+  "beschreibung": "Klassischer Newsletter: Einleitung, zwei Themen nebeneinander, Ausblick und Knopf.",
+  "bloecke": {
+    "root": {
+      "type": "EmailLayout",
+      "data": {
+        "backdropColor": "#1d3b39",
+        "canvasColor": "#0f2422",
+        "textColor": "#cfe3df",
+        "fontFamily": "MODERN_SANS",
+        "childrenIds": [
+          "logo",
+          "marke",
+          "kopf",
+          "einleitung",
+          "spalten",
+          "trenner",
+          "ausblick_titel",
+          "ausblick_text",
+          "knopf",
+          "gruss"
+        ]
+      }
+    },
+    "logo": {
+      "type": "Image",
+      "data": {
+        "style": {
+          "padding": {
+            "top": 40,
+            "bottom": 8,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "url": "medien:vibemind-logo.png",
+          "alt": "VibeMind",
+          "width": 150,
+          "linkHref": "https://vibemind.space",
+          "contentAlignment": "middle"
+        }
+      }
+    },
+    "marke": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "color": "#5eead4",
+          "fontSize": 12,
+          "fontWeight": "bold",
+          "textAlign": "left",
+          "padding": {
+            "top": 32,
+            "bottom": 8,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "text": "NEWSLETTER  ·  AUSGABE 01"
+        }
+      }
+    },
+    "kopf": {
+      "type": "Heading",
+      "data": {
+        "style": {
+          "color": "#e9fbf6",
+          "fontWeight": "bold",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 16,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "level": "h1",
+          "text": "Dein Thema in einem Satz"
+        }
+      }
+    },
+    "einleitung": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "fontSize": 16,
+          "fontWeight": "normal",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 24,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "text": "Schön, dass du dabei bist. Erzähl hier in zwei, drei Sätzen, worum es in dieser Ausgabe geht und warum es sich lohnt, weiterzulesen."
+        }
+      }
+    },
+    "thema1_marke": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "color": "#5eead4",
+          "fontSize": 12,
+          "fontWeight": "bold",
+          "textAlign": "left",
+          "padding": {
+            "top": 8,
+            "bottom": 6,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "text": "THEMA 1"
+        }
+      }
+    },
+    "thema1_titel": {
+      "type": "Heading",
+      "data": {
+        "style": {
+          "color": "#e9fbf6",
+          "fontWeight": "bold",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 8,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "level": "h3",
+          "text": "Erstes Thema"
+        }
+      }
+    },
+    "thema1_text": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "fontSize": 15,
+          "fontWeight": "normal",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 8,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "text": "Zwei Sätze zum ersten Thema: was passiert ist und was es für dich bedeutet."
+        }
+      }
+    },
+    "thema2_marke": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "color": "#5eead4",
+          "fontSize": 12,
+          "fontWeight": "bold",
+          "textAlign": "left",
+          "padding": {
+            "top": 8,
+            "bottom": 6,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "text": "THEMA 2"
+        }
+      }
+    },
+    "thema2_titel": {
+      "type": "Heading",
+      "data": {
+        "style": {
+          "color": "#e9fbf6",
+          "fontWeight": "bold",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 8,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "level": "h3",
+          "text": "Zweites Thema"
+        }
+      }
+    },
+    "thema2_text": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "fontSize": 15,
+          "fontWeight": "normal",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 8,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "text": "Zwei Sätze zum zweiten Thema: ein Ergebnis, eine Zahl oder ein Einblick."
+        }
+      }
+    },
+    "spalten": {
+      "type": "ColumnsContainer",
+      "data": {
+        "style": {
+          "padding": {
+            "top": 0,
+            "bottom": 0,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "columnsCount": 2,
+          "columnsGap": 24,
+          "contentAlignment": "top",
+          "columns": [
+            {
+              "childrenIds": [
+                "thema1_marke",
+                "thema1_titel",
+                "thema1_text"
+              ]
+            },
+            {
+              "childrenIds": [
+                "thema2_marke",
+                "thema2_titel",
+                "thema2_text"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "trenner": {
+      "type": "Divider",
+      "data": {
+        "style": {
+          "padding": {
+            "top": 32,
+            "bottom": 32,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "lineColor": "#2a534e",
+          "lineHeight": 1
+        }
+      }
+    },
+    "ausblick_titel": {
+      "type": "Heading",
+      "data": {
+        "style": {
+          "color": "#e9fbf6",
+          "fontWeight": "bold",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 12,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "level": "h2",
+          "text": "Was als Nächstes kommt"
+        }
+      }
+    },
+    "ausblick_text": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "fontSize": 16,
+          "fontWeight": "normal",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 8,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "text": "Ein kurzer Ausblick auf die nächsten Wochen: ein Termin, eine Neuerung oder eine Frage, auf die du dich über Antworten freust."
+        }
+      }
+    },
+    "knopf": {
+      "type": "Button",
+      "data": {
+        "style": {
+          "fontSize": 16,
+          "fontWeight": "bold",
+          "textAlign": "left",
+          "padding": {
+            "top": 16,
+            "bottom": 32,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "text": "Mehr lesen",
+          "url": "https://vibemind.space",
+          "buttonStyle": "rounded",
+          "size": "large",
+          "buttonBackgroundColor": "#5eead4",
+          "buttonTextColor": "#0f2422"
+        }
+      }
+    },
+    "gruss": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "fontSize": 16,
+          "fontWeight": "normal",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 48,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "text": "Bis bald\n**Dein VibeMind-Team**",
+          "markdown": true
+        }
+      }
+    }
+  }
+}

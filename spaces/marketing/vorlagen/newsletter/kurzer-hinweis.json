@@ -1,0 +1,101 @@
+{
+  "name": "kurzer-hinweis",
+  "beschreibung": "Kurzer Hinweis: eine Überschrift, zwei Sätze und ein Link im Text.",
+  "bloecke": {
+    "root": {
+      "type": "EmailLayout",
+      "data": {
+        "backdropColor": "#1d3b39",
+        "canvasColor": "#0f2422",
+        "textColor": "#cfe3df",
+        "fontFamily": "MODERN_SANS",
+        "childrenIds": [
+          "logo",
+          "kopf",
+          "text",
+          "gruss"
+        ]
+      }
+    },
+    "logo": {
+      "type": "Image",
+      "data": {
+        "style": {
+          "padding": {
+            "top": 40,
+            "bottom": 16,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "url": "medien:vibemind-logo.png",
+          "alt": "VibeMind",
+          "width": 150,
+          "linkHref": "https://vibemind.space",
+          "contentAlignment": "middle"
+        }
+      }
+    },
+    "kopf": {
+      "type": "Heading",
+      "data": {
+        "style": {
+          "color": "#e9fbf6",
+          "fontWeight": "bold",
+          "textAlign": "left",
+          "padding": {
+            "top": 24,
+            "bottom": 12,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "level": "h2",
+          "text": "Kurz zur Info"
+        }
+      }
+    },
+    "text": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "fontSize": 16,
+          "fontWeight": "normal",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 24,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "text": "Hier steht in einem Satz, was sich ändert. Alle Einzelheiten findest du [auf unserer Seite](https://vibemind.space).",
+          "markdown": true
+        }
+      }
+    },
+    "gruss": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "fontSize": 15,
+          "fontWeight": "normal",
+          "textAlign": "left",
+          "padding": {
+            "top": 0,
+            "bottom": 48,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "text": "Danke dir\n**Dein VibeMind-Team**",
+          "markdown": true
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,175 @@
+{
+  "name": "ankuendigung",
+  "beschreibung": "Ankündigung: große Überschrift, kurzer Text, ein großer Knopf und eine Fußnote.",
+  "bloecke": {
+    "root": {
+      "type": "EmailLayout",
+      "data": {
+        "backdropColor": "#1d3b39",
+        "canvasColor": "#0f2422",
+        "textColor": "#cfe3df",
+        "fontFamily": "MODERN_SANS",
+        "childrenIds": [
+          "logo",
+          "marke",
+          "kopf",
+          "text",
+          "knopf",
+          "abstand",
+          "trenner",
+          "fussnote"
+        ]
+      }
+    },
+    "logo": {
+      "type": "Image",
+      "data": {
+        "style": {
+          "padding": {
+            "top": 48,
+            "bottom": 8,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "url": "medien:vibemind-logo.png",
+          "alt": "VibeMind",
+          "width": 150,
+          "linkHref": "https://vibemind.space",
+          "contentAlignment": "middle"
+        }
+      }
+    },
+    "marke": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "color": "#5eead4",
+          "fontSize": 12,
+          "fontWeight": "bold",
+          "textAlign": "center",
+          "padding": {
+            "top": 40,
+            "bottom": 12,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "text": "ANKÜNDIGUNG"
+        }
+      }
+    },
+    "kopf": {
+      "type": "Heading",
+      "data": {
+        "style": {
+          "color": "#e9fbf6",
+          "fontWeight": "bold",
+          "textAlign": "center",
+          "padding": {
+            "top": 0,
+            "bottom": 20,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "level": "h1",
+          "text": "Das Wichtigste in einem Satz"
+        }
+      }
+    },
+    "text": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "fontSize": 17,
+          "fontWeight": "normal",
+          "textAlign": "center",
+          "padding": {
+            "top": 0,
+            "bottom": 16,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "text": "Beschreib in zwei kurzen Sätzen, was sich ändert und warum es dich freut. Mehr braucht eine gute Ankündigung nicht."
+        }
+      }
+    },
+    "knopf": {
+      "type": "Button",
+      "data": {
+        "style": {
+          "fontSize": 16,
+          "fontWeight": "bold",
+          "textAlign": "center",
+          "padding": {
+            "top": 16,
+            "bottom": 8,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "text": "Jetzt ansehen",
+          "url": "https://vibemind.space",
+          "buttonStyle": "rounded",
+          "size": "large",
+          "buttonBackgroundColor": "#5eead4",
+          "buttonTextColor": "#0f2422"
+        }
+      }
+    },
+    "abstand": {
+      "type": "Spacer",
+      "data": {
+        "style": {},
+        "props": {
+          "height": 40
+        }
+      }
+    },
+    "trenner": {
+      "type": "Divider",
+      "data": {
+        "style": {
+          "padding": {
+            "top": 0,
+            "bottom": 24,
+            "left": 40,
+            "right": 40
+          }
+        },
+        "props": {
+          "lineColor": "#2a534e",
+          "lineHeight": 1
+        }
+      }
+    },
+    "fussnote": {
+      "type": "Text",
+      "data": {
+        "style": {
+          "fontSize": 13,
+          "fontWeight": "normal",
+          "textAlign": "center",
+          "padding": {
+            "top": 0,
+            "bottom": 48,
+            "left": 40,
+            "right": 40
+          },
+          "color": "#8fb3ad"
+        },
+        "props": {
+          "text": "*Gilt ab dem 1. Oktober. Alle Details findest du auf unserer Seite.*",
+          "markdown": true
+        }
+      }
+    }
+  }
+}
