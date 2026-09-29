@@ -332,3 +332,80 @@ def test_unlesbare_datei_zaehlt_unlesbar(tmp_path):
     erg = k.voll_durchlauf()
     assert erg["unlesbar"] == 1 and erg["geschrieben"] == 0
     assert p.read_text(encoding="utf-8") == "---\n: [kaputt\n---\n"
+
+
+# ── Schlusspruefung I4: ein unerwarteter Fehler stoppt nichts dauerhaft ──
+
+def test_leser_wirft_valueerror_andere_laufen_offset_vorgerueckt(tmp_path):
+    pfad = tmp_path / "ereignisse.jsonl"
+    offset_pfad = tmp_path / "ereignisse.jsonl.offset"
+    pfad.write_text(json.dumps({"kind": "plan_completed", "capability": ""}) + "\n", encoding="utf-8")
+    aufrufe = []
+
+    def kaputt(j):
+        raise ValueError("unerwartet")
+
+    k = Kurator(Tresor(tmp_path / "tresor"), leser=leser(
+        agents=kaputt, pc_zustand=lambda j: aufrufe.append("p") or None))
+    erg = k.ereignisse_abarbeiten(str(pfad), str(offset_pfad))
+    assert aufrufe == ["p"], "pc_zustand muss trotz werfendem agents-Leser laufen"
+    assert erg["quellenfehler"] == 1
+    assert offset_pfad.read_text(encoding="utf-8").strip() == str(pfad.stat().st_size)
+
+
+def test_dokument_fehler_bricht_den_lauf_nicht_ab(tmp_path):
+    t = Tresor(tmp_path)
+    echt = t.schreiben
+
+    def schreiben(neu, **kw):
+        if neu.id == "00000000":
+            raise KeyError("kaputt")
+        return echt(neu, **kw)
+
+    t.schreiben = schreiben
+    k = Kurator(t, leser=leser(bubbles=_viele(3)))
+    erg = k.voll_durchlauf()
+    assert erg["abgelehnt"] == 1 and erg["geschrieben"] == 2
+
+
+def test_halbe_letzte_zeile_wird_beim_naechsten_takt_komplett_gelesen(tmp_path):
+    pfad = tmp_path / "ereignisse.jsonl"
+    offset_pfad = tmp_path / "ereignisse.jsonl.offset"
+    erste = json.dumps({"kind": "action_verified", "capability": "bubble_create"}) + "\n"
+    zweite = json.dumps({"kind": "plan_completed", "capability": ""}) + "\n"
+    pfad.write_bytes((erste + zweite[:10]).encode("utf-8"))
+    aufrufe = []
+    k = Kurator(Tresor(tmp_path / "tresor"), leser=leser(
+        bubbles=lambda j: aufrufe.append("b") or [],
+        agents=lambda j: aufrufe.append("a") or [],
+        pc_zustand=lambda j: aufrufe.append("p") or None))
+    erg = k.ereignisse_abarbeiten(str(pfad), str(offset_pfad))
+    assert erg["ereignisse"] == 1 and aufrufe == ["b"]
+    assert offset_pfad.read_text(encoding="utf-8").strip() == str(len(erste.encode("utf-8")))
+
+    with open(pfad, "ab") as f:
+        f.write(zweite[10:].encode("utf-8"))
+    aufrufe.clear()
+    erg = k.ereignisse_abarbeiten(str(pfad), str(offset_pfad))
+    assert erg["ereignisse"] == 1
+    assert sorted(aufrufe) == ["a", "p"]
+
+
+def test_takt_schleife_volllauf_fehler_wiederholt_erst_nach_intervall():
+    uhr = iter([1000.0, 1030.0, 1060.0, 1900.0])
+    volllaeufe, ereignislaeufe = [], []
+
+    class FakeKurator:
+        def ereignisse_abarbeiten(self, pfad, offset_pfad):
+            ereignislaeufe.append(pfad)
+            raise OSError("Ereignis kaputt")
+
+        def voll_durchlauf(self):
+            volllaeufe.append(1)
+            raise ValueError("Volllauf kaputt")
+
+    kurator_modul.takt_schleife(FakeKurator(), ereignis_datei="e.jsonl", intervall_s=900.0,
+                                takt_s=30.0, zeit=lambda: next(uhr), schlafen=lambda s: None,
+                                runden=4)
+    assert len(ereignislaeufe) == 4, "Ereignis-Fehler darf den Takt nicht stoppen"
+    assert volllaeufe == [1, 1], "Volllauf bei t=1000 (Fehler) und erst wieder bei t=1900"

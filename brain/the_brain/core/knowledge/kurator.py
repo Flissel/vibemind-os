@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional, Set, Tuple
 
@@ -179,14 +180,22 @@ class Kurator:
         # Schlusspruefung I1: bekannte Namen EINMAL pro Lauf, nicht pro Dokument.
         bekannte = self.tresor.bekannte_namen() if namen else set()
         for name in namen:
+            # Schlusspruefung I4: JEDER Fehler eines Lesers zaehlt als
+            # Quellenfehler - die anderen Bereiche laufen weiter.
             try:
                 ergebnis = getattr(self.leser, name)(jetzt)
-            except RuntimeError as e:
+            except Exception as e:
                 self.stats["quellenfehler"] += 1
                 logger.warning("[kurator] Quelle %s ausgefallen: %s", name, e)
                 continue
             for dok in ([ergebnis] if isinstance(ergebnis, Dokument) else (ergebnis or [])):
-                self._pflegen(dok, bekannte)
+                # ... und jeder Fehler an einem Dokument nur als abgelehnt.
+                try:
+                    self._pflegen(dok, bekannte)
+                except Exception as e:
+                    self.stats["abgelehnt"] += 1
+                    logger.warning("[kurator] %s unerwartet fehlgeschlagen: %s",
+                                   getattr(dok, "titel", "?"), e)
         return {k: self.stats[k] - vorher[k] for k in self.stats}
 
     def bei_ereignis(self, kind: str, payload: Dict[str, Any]) -> Dict[str, int]:
@@ -210,10 +219,12 @@ class Kurator:
         kaputte Zeilen, vereinigt die Bereiche aller neuen Ereignisse und
         ruft `_lauf` GENAU EINMAL (kein Aufruf, wenn die Menge leer ist -
         z.B. keine neuen Zeilen oder nur ungemappte Ereignisse). Der neue
-        Offset wird erst NACH dem Lauf geschrieben, damit ein Absturz
+        Offset wird erst NACH dem Lauf geschrieben, damit ein Prozess-Absturz
         mittendrin dieselben Zeilen beim naechsten Mal erneut abarbeitet statt
-        sie zu verlieren. Ist die Datei kuerzer als der gespeicherte Offset
-        (rotiert/gekuerzt), wird bei 0 neu begonnen."""
+        sie zu verlieren; gezaehlte Fehler im Lauf halten ihn NICHT auf
+        (Schlusspruefung I4). Nur vollstaendige Zeilen (Ende b"\\n") zaehlen.
+        Ist die Datei kuerzer als der gespeicherte Offset (rotiert/gekuerzt),
+        wird bei 0 neu begonnen."""
         leer: Dict[str, int] = {k: 0 for k in self.stats}
         leer["ereignisse"] = 0
 
@@ -238,7 +249,9 @@ class Kurator:
                 f.seek(offset)
                 while True:
                     zeile = f.readline()
-                    if not zeile:
+                    if not zeile or not zeile.endswith(b"\n"):
+                        # Halb geschriebene letzte Zeile: Offset davor lassen,
+                        # der naechste Takt liest sie vollstaendig.
                         break
                     neu_offset = f.tell()
                     try:
@@ -255,7 +268,15 @@ class Kurator:
             logger.warning("[kurator] Ereignisdatei %s nicht lesbar: %s", pfad, e)
             return dict(leer)
 
-        ergebnis = self._lauf(tuple(bereiche)) if bereiche else {k: 0 for k in self.stats}
+        # Schlusspruefung I4: der Offset rueckt auch dann vor, wenn der Lauf
+        # Fehler zaehlte oder unerwartet warf - die Fehler sind gezaehlt, der
+        # naechste Volllauf holt nach. Sonst wuerde jeder Takt dieselben
+        # Zeilen (und denselben Fehler) wiederholen.
+        try:
+            ergebnis = self._lauf(tuple(bereiche)) if bereiche else {k: 0 for k in self.stats}
+        except Exception as e:
+            logger.warning("[kurator] Ereignislauf fehlgeschlagen: %s", e)
+            ergebnis = {k: 0 for k in self.stats}
 
         try:
             with open(offset_pfad, "w", encoding="utf-8") as f:
@@ -266,3 +287,36 @@ class Kurator:
         ergebnis = dict(ergebnis)
         ergebnis["ereignisse"] = anzahl
         return ergebnis
+
+
+def takt_schleife(k, *, ereignis_datei: str, intervall_s: float, takt_s: float,
+                  zeit: Callable[[], float] = time.time,
+                  schlafen: Callable[[float], None] = time.sleep,
+                  runden: Optional[int] = None) -> None:
+    """Kurator-Takt des brain-loops-Workers (Schlusspruefung I4).
+
+    Ereignis-Takt und Volllauf laufen in GETRENNTEN try-Bloecken: ein Fehler
+    im einen haelt den anderen nicht auf. `letzter_volllauf` wird im
+    `finally` gesetzt - ein fehlgeschlagener Volllauf wird also erst nach
+    `intervall_s` wiederholt, nicht in jedem Takt. `runden` (nur fuer Tests)
+    begrenzt die Schleife; None = endlos."""
+    letzter_volllauf = 0.0
+    n = 0
+    while runden is None or n < runden:
+        n += 1
+        if ereignis_datei:
+            try:
+                erg = k.ereignisse_abarbeiten(ereignis_datei, ereignis_datei + ".offset")
+                if erg.get("ereignisse"):
+                    print(f"[kurator] Ereignisse abgearbeitet: {erg}", flush=True)
+            except Exception as e:  # noqa: BLE001
+                print(f"[kurator] Ereignis-Takt fehlgeschlagen: {e}", flush=True)
+        jetzt = zeit()
+        if jetzt - letzter_volllauf >= intervall_s:
+            try:
+                print(f"[kurator] Volllauf: {k.voll_durchlauf()}", flush=True)
+            except Exception as e:  # noqa: BLE001
+                print(f"[kurator] Volllauf fehlgeschlagen: {e}", flush=True)
+            finally:
+                letzter_volllauf = jetzt
+        schlafen(takt_s)

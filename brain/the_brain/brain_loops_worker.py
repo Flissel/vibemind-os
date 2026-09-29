@@ -74,21 +74,11 @@ def main() -> int:
                          deuten=(_kur.llm_deuten if _kur.KURATOR_DEUTUNG else None))
 
         def _kurator_takt():
-            letzter_volllauf = 0.0
-            while True:
-                try:
-                    if _kur.KURATOR_EREIGNIS_DATEI:
-                        erg = k.ereignisse_abarbeiten(
-                            _kur.KURATOR_EREIGNIS_DATEI, _kur.KURATOR_EREIGNIS_DATEI + ".offset")
-                        if erg.get("ereignisse"):
-                            print(f"[kurator] Ereignisse abgearbeitet: {erg}", flush=True)
-                    jetzt = time.time()
-                    if jetzt - letzter_volllauf >= _kur.KURATOR_INTERVAL_S:
-                        print(f"[kurator] Volllauf: {k.voll_durchlauf()}", flush=True)
-                        letzter_volllauf = jetzt
-                except Exception as e:  # noqa: BLE001
-                    print(f"[kurator] Takt fehlgeschlagen: {e}", flush=True)
-                time.sleep(_kur.KURATOR_EREIGNIS_TAKT_S)
+            # Schlusspruefung I4: Ereignis-Takt und Volllauf in getrennten
+            # try-Bloecken, letzter_volllauf im finally (kurator.takt_schleife).
+            _kur.takt_schleife(k, ereignis_datei=_kur.KURATOR_EREIGNIS_DATEI,
+                               intervall_s=_kur.KURATOR_INTERVAL_S,
+                               takt_s=_kur.KURATOR_EREIGNIS_TAKT_S)
 
         threading.Thread(target=_kurator_takt, name="Kurator", daemon=True).start()
         print(f"[brain-loops] Kurator aktiv (Deutung={_kur.KURATOR_DEUTUNG}, "
