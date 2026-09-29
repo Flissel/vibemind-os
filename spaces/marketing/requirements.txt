@@ -5,7 +5,9 @@
 # mjml-python (claw/bloecke_mjml.py, erst beim Rendern). Der marketing-claw
 # (MCP-Dienst auf dem PC) braucht zusaetzlich `mcp`; pypdf ist dort optional
 # (Seitenzahl, fail-soft) - beides gehoert nicht auf die VM.
+# pillow (api/bilder.py: Pruefung abgelieferter JPEGs; kommt mit reportlab ohnehin mit, hier ausdruecklich)
 fastapi
 uvicorn
 reportlab
 mjml-python==1.4.2
+pillow

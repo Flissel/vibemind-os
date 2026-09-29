@@ -1,0 +1,208 @@
+"""Bild-Auftraege der Newsletter (sales-claw Spec 2026-09-29-newsletter-bilder-
+und-gestaltung-design.md §6.2). Drei Gespraechspartner, drei Schluessel:
+  /api/pult/inhalte/{iid}/bilder  Sales-Oberflaeche (X-Pult-Key, pult._schluessel)
+  /api/bilder/agent/*             Marketing-Agent am PC (X-API-Key, globale Middleware)
+  /api/bilder/arbeiter/*          Bild-Arbeiter am PC gegen die VM (X-Bild-Key)
+Regeln (Vergabe, Einsetzen, wer gewinnt) stehen in den DB-Funktionen aus 056;
+hier nur Formen, Dateiablage und Weitergabe - fail-closed wie pult.py."""
+from __future__ import annotations
+
+import hmac
+import io
+import json
+import os
+import re
+import uuid as _uuid
+
+from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
+
+from spaces.marketing.api.pult import _lesen, _lesen_einer, _schluessel, _schreiben, _uuid_oder_404, lit
+from spaces.marketing.claw import bildplaetze
+
+router = APIRouter(prefix="/api/bilder")
+pult_router = APIRouter(prefix="/api/pult")
+_PLATZ = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_NAME = re.compile(r"^nl-[0-9a-f]{8}-[A-Za-z0-9_-]{1,64}\.jpg$")
+BILD_MAX = 1024 * 1024
+KANTE_MIN, KANTE_MAX = 64, 2400
+FRIST = "10 minutes"
+_STAND_SQL = ("SELECT id, platz, nur_leere, hinweis, status, befund, versuche, urheber, "
+              "erstellt_am::text AS erstellt_am, geaendert_am::text AS geaendert_am "
+              "FROM marketing.bild_auftraege WHERE inhalt = {i}::uuid ORDER BY erstellt_am DESC LIMIT 30")
+
+
+def _bild_schluessel(x_bild_key: str | None) -> None:
+    erwartet = os.environ.get("MARKETING_BILD_KEY", "").strip()
+    if not erwartet:
+        raise HTTPException(503, "misconfigured: MARKETING_BILD_KEY fehlt")
+    k = (x_bild_key or "").strip()
+    if not k or not hmac.compare_digest(k.encode("utf-8", "replace"), erwartet.encode("utf-8", "replace")):
+        raise HTTPException(401, "Bild-Schluessel fehlt oder falsch")
+
+
+def _ordner() -> str:
+    o = os.environ.get("MARKETING_BILD_ORDNER", "").strip()
+    if not o or not os.path.isdir(o):
+        raise HTTPException(503, "misconfigured: MARKETING_BILD_ORDNER fehlt")
+    return o
+
+
+def _auftrag_id(wert: str) -> str:
+    try:
+        return str(_uuid.UUID(wert))
+    except ValueError:
+        raise HTTPException(404, "Unbekannter Auftrag")
+
+
+def _anlegen(iid: str, payload, urheber: str) -> dict:
+    i = _uuid_oder_404(iid)
+    if not isinstance(payload, dict):
+        raise HTTPException(422, "Body muss ein Objekt sein")
+    platz = payload.get("platz")
+    if platz is not None and (not isinstance(platz, str) or not _PLATZ.match(platz)):
+        raise HTTPException(422, "platz muss eine Block-ID sein")
+    hinweis = payload.get("hinweis", "")
+    if not isinstance(hinweis, str) or len(hinweis) > 500:
+        raise HTTPException(422, "hinweis muss Text mit hoechstens 500 Zeichen sein")
+    nur_leere = payload.get("nur_leere", False)
+    if not isinstance(nur_leere, bool):
+        raise HTTPException(422, "nur_leere muss true oder false sein")
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_bild_auftrag({lit(i)}::uuid, {lit(platz) if platz else 'NULL'}, "
+        f"{'true' if nur_leere else 'false'}, {lit(hinweis.strip())}, {lit(urheber)}) AS id")
+    return {"auftrag": str(zeile["id"])}
+
+
+def _stand(i: str) -> list:
+    return _lesen(lambda: _STAND_SQL.format(i=lit(i)))
+
+
+@pult_router.post("/inhalte/{iid}/bilder")
+def pult_auftrag(iid: str, payload: dict = Body(default={}), x_pult_key: str | None = Header(None)):
+    _schluessel(x_pult_key)
+    return _anlegen(iid, payload, "mensch")
+
+
+@pult_router.get("/inhalte/{iid}/bilder")
+def pult_stand(iid: str, x_pult_key: str | None = Header(None)):
+    _schluessel(x_pult_key)
+    return {"auftraege": _stand(_uuid_oder_404(iid))}
+
+
+@router.get("/agent/{iid}/plaetze")
+def agent_plaetze(iid: str):
+    i = _uuid_oder_404(iid)
+    f = _lesen_einer(lambda:
+        f"SELECT fassung, bloecke FROM marketing.inhalt_fassungen WHERE inhalt = {lit(i)}::uuid "
+        "ORDER BY fassung DESC LIMIT 1")
+    if not f:
+        raise HTTPException(404, "Unbekannter Inhalt")
+    plaetze = [p.als_dict() for p in bildplaetze.finde(f.get("bloecke") or {})]
+    return {"fassung": int(f["fassung"]), "plaetze": plaetze, "auftraege": _stand(i)}
+
+
+@router.post("/agent/{iid}/auftrag")
+def agent_auftrag(iid: str, payload: dict = Body(default={})):
+    return _anlegen(iid, payload, "agent")
+
+
+@router.post("/arbeiter/naechster")
+def arbeiter_naechster(x_bild_key: str | None = Header(None)):
+    _bild_schluessel(x_bild_key)
+    zeile = _schreiben(lambda: f"SELECT marketing.pult_bild_naechster({lit(FRIST)}::interval) AS a")
+    return {"auftrag": zeile.get("a")}
+
+
+@router.post("/arbeiter/{aid}/weiter")
+def arbeiter_weiter(aid: str, x_bild_key: str | None = Header(None)):
+    _bild_schluessel(x_bild_key)
+    a = _auftrag_id(aid)
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_bild_verlaengern({lit(a)}::uuid, {lit(FRIST)}::interval) AS ok")
+    return {"ok": bool(zeile.get("ok"))}
+
+
+def _jpeg_pruefen(roh: bytes) -> None:
+    if not roh.startswith(b"\xff\xd8\xff"):
+        raise HTTPException(422, "Nur JPEG")
+    from PIL import Image, UnidentifiedImageError
+    try:
+        with Image.open(io.BytesIO(roh)) as bild:
+            bild.verify()
+        with Image.open(io.BytesIO(roh)) as bild:
+            fmt, (w, h) = bild.format, bild.size
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+        raise HTTPException(422, "Bilddatei ist kaputt")
+    if fmt != "JPEG" or not (KANTE_MIN <= w <= KANTE_MAX and KANTE_MIN <= h <= KANTE_MAX):
+        raise HTTPException(422, f"JPEG mit Kanten {KANTE_MIN}-{KANTE_MAX} px noetig")
+
+
+@router.post("/arbeiter/{aid}/bild")
+async def arbeiter_bild(aid: str, request: Request, platz: str = Query(""),
+                        x_bild_key: str | None = Header(None)):
+    _bild_schluessel(x_bild_key)
+    a = _auftrag_id(aid)
+    if not _PLATZ.match(platz or ""):
+        raise HTTPException(422, "platz muss eine Block-ID sein")
+    ordner = _ordner()
+    try:
+        laenge = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        laenge = 0
+    if laenge > BILD_MAX:
+        raise HTTPException(413, "Bild groesser als 1 MB")
+    roh = bytearray()
+    async for stueck in request.stream():
+        roh += stueck
+        if len(roh) > BILD_MAX:
+            raise HTTPException(413, "Bild groesser als 1 MB")
+    _jpeg_pruefen(bytes(roh))
+    fehler = _lesen_einer(lambda:
+        f"SELECT marketing.pult_bild_datei_fehler({lit(a)}::uuid, {lit(platz)}) AS f")
+    if fehler is None:
+        raise HTTPException(503, "Marketing-Datenbank nicht erreichbar")
+    if fehler.get("f"):
+        raise HTTPException(422, str(fehler["f"]))
+    name = f"nl-{a[:8]}-{platz}.jpg"
+    ziel = os.path.join(ordner, name)
+    zwischen = ziel + ".teil"
+    with open(zwischen, "wb") as f:
+        f.write(roh)
+    os.chmod(zwischen, 0o644)
+    os.replace(zwischen, ziel)
+    return {"name": name}
+
+
+@router.post("/arbeiter/{aid}/fertig")
+def arbeiter_fertig(aid: str, payload: dict = Body(...), x_bild_key: str | None = Header(None)):
+    _bild_schluessel(x_bild_key)
+    a = _auftrag_id(aid)
+    ergebnis = payload.get("ergebnis")
+    befund = payload.get("befund", "")
+    if not isinstance(ergebnis, dict) or not isinstance(befund, str):
+        raise HTTPException(422, "ergebnis (Objekt) und befund (Text) noetig")
+    ordner = _ordner()
+    medien = {}
+    for platz, name in ergebnis.items():
+        if (not isinstance(platz, str) or not _PLATZ.match(platz) or not isinstance(name, str)
+                or not _NAME.match(name) or not name.startswith(f"nl-{a[:8]}-")
+                or not os.path.isfile(os.path.join(ordner, name))):
+            raise HTTPException(422, f"Ungueltiges Ergebnis fuer {str(platz)[:64]}")
+        medien[platz] = "medien:" + name
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_bild_einsetzen({lit(a)}::uuid, "
+        f"{lit(json.dumps(medien, ensure_ascii=False))}::jsonb, {lit(befund[:500])}) AS e")
+    return zeile.get("e") or {}
+
+
+@router.post("/arbeiter/{aid}/zurueck")
+def arbeiter_zurueck(aid: str, payload: dict = Body(...), x_bild_key: str | None = Header(None)):
+    _bild_schluessel(x_bild_key)
+    a = _auftrag_id(aid)
+    befund, endgueltig = payload.get("befund", ""), payload.get("endgueltig", False)
+    if not isinstance(befund, str) or not isinstance(endgueltig, bool):
+        raise HTTPException(422, "befund (Text) und endgueltig (true/false) noetig")
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_bild_zurueck({lit(a)}::uuid, {lit(befund[:500])}, "
+        f"{'true' if endgueltig else 'false'}) AS s")
+    return {"status": zeile.get("s")}

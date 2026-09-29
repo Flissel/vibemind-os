@@ -119,9 +119,12 @@ async def _api_key_check(request: Request, call_next):
     # router has its own mandatory key check (pult.py::_schluessel, 503 when
     # unconfigured, 401 on mismatch) -- it must not be gated a second time by
     # a header the Sales-UI never sends (fix round 1, task-3-report.md).
+    # /api/bilder/arbeiter/* hat einen eigenen Pflichtschluessel
+    # (bilder._bild_schluessel, X-Bild-Key); der Arbeiter kennt den X-API-Key nicht.
     path = request.url.path
     if (API_KEY and path.startswith("/api/") and path != "/api/health"
-            and not path.startswith("/api/pult/")):
+            and not path.startswith("/api/pult/")
+            and not path.startswith("/api/bilder/arbeiter/")):
         if request.headers.get("X-API-Key") != API_KEY:
             return JSONResponse({"error": "invalid api key"}, status_code=401)
     return await call_next(request)
@@ -3467,6 +3470,9 @@ else:
 from spaces.marketing.api import pult as _pult  # noqa: E402
 
 app.include_router(_pult.router)
+from spaces.marketing.api import bilder as _bilder  # noqa: E402
+app.include_router(_bilder.router)
+app.include_router(_bilder.pult_router)
 
 
 # ─── Static-serve of the mockup ───────────────────────────────────────
