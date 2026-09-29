@@ -100,7 +100,11 @@ BEGIN
   END;
 
   -- Eine veraltete Fassungsnummer wird zurueckgewiesen.
-  SELECT id INTO v_i FROM marketing.inhalte WHERE status = 'entwurf' AND herkunft_proposal IS NOT NULL LIMIT 1;
+  -- (054: Block-Newsletter nehmen keine Feld-Fassung mehr an - daher nur Inhalte im Feldformat)
+  SELECT id INTO v_i FROM marketing.inhalte i WHERE status = 'entwurf' AND herkunft_proposal IS NOT NULL
+     AND (SELECT format FROM marketing.inhalt_fassungen f WHERE f.inhalt = i.id ORDER BY fassung DESC LIMIT 1) = 'felder'
+   LIMIT 1;
+  IF v_i IS NULL THEN RAISE EXCEPTION 'PROBE: kein Entwurf im Feldformat fuer den Test vorhanden'; END IF;
   SELECT max(fassung) INTO v_neueste FROM marketing.inhalt_fassungen WHERE inhalt = v_i;
   v_n := marketing.pult_fassung_speichern(v_i, '{"betreff":"neu","abschnitte":[{"titel":"","text":"y"}]}', 'dunkel', 'betreiber');
   IF v_n <> v_neueste + 1 THEN RAISE EXCEPTION 'PROBE: neue Fassung nicht wie erwartet'; END IF;
