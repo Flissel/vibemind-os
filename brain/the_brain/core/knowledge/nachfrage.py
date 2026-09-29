@@ -79,6 +79,16 @@ def wert_von(quelle: str, ziel: str, feld: str) -> Optional[str]:
         return None if gesamt is None else str(gesamt)
     if feld == "#status":
         return str(status)
+    m = re.match(r"^#agent:([^:]+):(ok|fehler)$", feld)
+    if m:
+        aid, art = m.groups()
+        eintraege = (daten or {}).get("entries", []) if isinstance(daten, dict) else []
+        passt = [e for e in eintraege if e.get("agent_id") == aid]
+        if art == "ok":
+            return str(sum(1 for e in passt if e.get("outcome") == "ok"))
+        return str(sum(1 for e in passt if str(e.get("outcome", "")).startswith("error")))
+    if feld == "#running":
+        return str(sum(1 for a in (daten or []) if isinstance(a, dict) and a.get("state") == "Running"))
     return feld_lesen(daten, feld)
 
 
