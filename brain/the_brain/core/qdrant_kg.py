@@ -551,14 +551,23 @@ class QdrantKG:
             vec = self._embedder_ready().encode(text)
             pid = _point_id(external_id)
 
-            # Preserve existing linked.* if the point already exists
+            # Preserve existing linked.* if the point already exists.
+            # Brain T2 Schlusspruefung I2: ebenso activation_strength und
+            # edge_weights (vom Gardener gepflegt) - sonst setzt jedes
+            # Neu-Indexieren die Aktivierung auf 0 und die Hubs sortieren
+            # nur noch alphabetisch. Setzt payload_extra einen der Werte
+            # explizit (z.B. upsert_space/upsert_event mit 0.0), gewinnt er.
             existing_linked = None
+            erhalten: Dict[str, Any] = {}
             try:
                 rec = self.client.retrieve(
                     collection_name=coll, ids=[pid], with_payload=True,
                 )
                 if rec and rec[0].payload:
                     existing_linked = rec[0].payload.get("linked")
+                    for key in ("activation_strength", "edge_weights"):
+                        if key in rec[0].payload and key not in payload_extra:
+                            erhalten[key] = rec[0].payload[key]
             except Exception:
                 pass
 
@@ -567,6 +576,7 @@ class QdrantKG:
                 "content": text[:2000],
                 "created_at": int(payload_extra.get("created_at", time.time())),
                 "linked": existing_linked or _empty_linked(),
+                **erhalten,
                 # Phase C identity stamp — {} (no-op) for the default identity,
                 # so payloads stay byte-identical until BRAIN_ID/SPACE_ID set.
                 # Placed before payload_extra so an explicit caller value wins.
@@ -819,11 +829,17 @@ class QdrantKG:
                 vector = self._embedder_ready().encode(text)
 
             self_coll = self.collection_for(self_node_type)
+            # Brain T2 Schlusspruefung M1: keine Kanten in/aus dem Archiv.
+            archiv = {COLLECTIONS[c] for c in ARCHIVE_COLLECTIONS}
+            if self_coll in archiv:
+                return
             self_links: Dict[str, List[str]] = _empty_linked()
             all_hits: List[tuple] = []  # (collection_name, hit)
 
             # Search across every cognitive collection (Brain + Rowboat artifacts)
             for logical_name, coll_name in COLLECTIONS.items():
+                if logical_name in ARCHIVE_COLLECTIONS:
+                    continue
                 try:
                     hits = self.client.query_points(
                         collection_name=coll_name,

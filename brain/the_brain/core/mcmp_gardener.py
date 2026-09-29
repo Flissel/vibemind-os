@@ -40,6 +40,7 @@ import os
 import random
 import threading
 import time
+import uuid
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
@@ -156,12 +157,24 @@ class MCMPGardener:
 
         for coll in colls_to_try:
             try:
+                # Brain T2 Schlusspruefung I2: ab einer zufaelligen Offset-ID
+                # scrollen (Punkt-IDs sind UUIDs) - sonst kaemen immer dieselben
+                # ersten ~20 Punkte dran. Leer ab dort -> von vorne.
                 scrolled, _ = self.kg.client.scroll(
                     collection_name=coll,
                     limit=max(n * 3, 20),
+                    offset=str(uuid.uuid4()),
                     with_payload=True,
                     with_vectors=False,
                 )
+                if not scrolled:
+                    scrolled, _ = self.kg.client.scroll(
+                        collection_name=coll,
+                        limit=max(n * 3, 20),
+                        offset=None,
+                        with_payload=True,
+                        with_vectors=False,
+                    )
                 if not scrolled:
                     continue  # empty collection — try the other
                 random.shuffle(scrolled)

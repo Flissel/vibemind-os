@@ -66,3 +66,85 @@ def test_gardener_locate_ueberspringt_archiv_collections():
     # alle nicht-archivierten Collections wurden weiterhin durchsucht
     erwartet = {v for k, v in kgmod.COLLECTIONS.items() if k not in kgmod.ARCHIVE_COLLECTIONS}
     assert erwartet <= aufgerufen
+
+
+# ── Schlusspruefung M1: keine Kanten in/aus dem Archiv ──
+
+def test_build_edges_ueberspringt_archiv_collections():
+    kg = _make_kg()
+    kg._build_edges("pid-1", "text", kgmod.NT_KNOWLEDGE_DOC, vector=[0.1, 0.2])
+    aufgerufen = {c.kwargs["collection_name"] for c in kg.client.query_points.call_args_list}
+    archiv_namen = {kgmod.COLLECTIONS[c] for c in kgmod.ARCHIVE_COLLECTIONS}
+    assert aufgerufen, "nicht-archivierte Collections werden weiter durchsucht"
+    assert not (aufgerufen & archiv_namen)
+
+
+# ── Schlusspruefung I2: Aktivierung ueberlebt das Neu-Indexieren ──
+
+def _rec(payload):
+    r = MagicMock()
+    r.payload = payload
+    return r
+
+
+def test_upsert_behaelt_activation_strength_und_edge_weights():
+    kg = _make_kg()
+    kg._embedder.encode.return_value = [0.1, 0.2]
+    kg.client.retrieve.return_value = [_rec({
+        "linked": {"ideas": ["x"]}, "activation_strength": 3.0, "edge_weights": {"x": 0.5}})]
+    kg._upsert_point(external_id="doc::bubble::a", node_type=kgmod.NT_KNOWLEDGE_DOC,
+                     text="t", payload_extra={"titel": "A"})
+    payload = kg.client.upsert.call_args.kwargs["points"][0].payload
+    assert payload["activation_strength"] == 3.0
+    assert payload["edge_weights"] == {"x": 0.5}
+    assert payload["linked"] == {"ideas": ["x"]}
+
+
+def test_upsert_explizite_activation_strength_gewinnt():
+    kg = _make_kg()
+    kg._embedder.encode.return_value = [0.1, 0.2]
+    kg.client.retrieve.return_value = [_rec({"activation_strength": 3.0})]
+    kg._upsert_point(external_id="doc::bubble::a", node_type=kgmod.NT_KNOWLEDGE_DOC,
+                     text="t", payload_extra={"activation_strength": 0.0})
+    payload = kg.client.upsert.call_args.kwargs["points"][0].payload
+    assert payload["activation_strength"] == 0.0
+
+
+def test_upsert_neuer_punkt_ohne_aktivierung():
+    kg = _make_kg()
+    kg._embedder.encode.return_value = [0.1, 0.2]
+    kg.client.retrieve.return_value = []
+    kg._upsert_point(external_id="doc::bubble::a", node_type=kgmod.NT_KNOWLEDGE_DOC,
+                     text="t", payload_extra={})
+    payload = kg.client.upsert.call_args.kwargs["points"][0].payload
+    assert "activation_strength" not in payload and "edge_weights" not in payload
+
+
+# ── Schlusspruefung I2: Gardener-Seeds streuen (zufaelliger Offset) ──
+
+def test_gardener_seeds_scrollen_ab_zufaelligem_offset():
+    kg = MagicMock()
+    rec = MagicMock()
+    rec.id = "p1"
+    rec.payload = {}
+    kg.client.scroll.return_value = ([rec], None)
+    g = MCMPGardener(kg)
+    g._sample_seeds(1)
+    g._sample_seeds(1)
+    offsets = [c.kwargs.get("offset") for c in kg.client.scroll.call_args_list]
+    assert len(offsets) == 2
+    assert all(o for o in offsets), "jeder Scroll braucht einen Offset"
+    assert offsets[0] != offsets[1]
+
+
+def test_gardener_seeds_leer_ab_offset_dann_von_vorne():
+    kg = MagicMock()
+    rec = MagicMock()
+    rec.id = "p1"
+    rec.payload = {}
+    kg.client.scroll.side_effect = lambda **kw: ([], None) if kw.get("offset") else ([rec], None)
+    g = MCMPGardener(kg)
+    seeds = g._sample_seeds(1)
+    assert [s[1] for s in seeds] == ["p1"]
+    offsets = [c.kwargs.get("offset") for c in kg.client.scroll.call_args_list]
+    assert offsets[0] and offsets[1] is None
