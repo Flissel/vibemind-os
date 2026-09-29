@@ -254,8 +254,8 @@ def inhalt_aus_vorlage(payload: dict = Body(...), x_pult_key: str | None = Heade
     if not isinstance(vorlage, str) or not _VORLAGE.match(vorlage):
         raise HTTPException(422, "Unbekannte Vorlage")
     titel = payload.get("titel")
-    if not isinstance(titel, str) or not titel.strip():
-        raise HTTPException(422, "titel fehlt")
+    if not isinstance(titel, str) or not titel.strip() or len(titel.strip()) > 200:
+        raise HTTPException(422, "titel fehlt oder ist laenger als 200 Zeichen")
     m = _mandant(payload.get("mandant"))
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_inhalt_aus_vorlage({lit(vorlage)}, {lit(titel.strip())}, {lit(m)}) AS id")
@@ -267,7 +267,7 @@ def vorlagen(mandant: str | None = None, status: str | None = None,
              x_pult_key: str | None = Header(None)):
     _schluessel(x_pult_key)
     m = _mandant(mandant)
-    s = _auswahl(status, ("entwurf", "freigegeben"), "status")
+    s = _auswahl(status, ("vorschlag", "freigegeben"), "status")
     wo = [f"mandant = {lit(m)}"] + ([f"status = {lit(s)}"] if s else [])
     zeilen = _lesen(lambda:
         "SELECT name, beschreibung, status, fassung FROM marketing.newsletter_vorlagen "

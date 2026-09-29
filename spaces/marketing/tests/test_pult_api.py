@@ -464,7 +464,8 @@ def test_inhalt_liefert_format_und_bloecke(db, c):
                       "erstellt_am": "x", "format": "bloecke", "bloecke": DOK}]]
     r = c.get(f"/api/pult/inhalte/{IID}", headers=H)
     assert r.status_code == 200 and r.json()["fassungen"][0]["format"] == "bloecke"
-    assert "f.format" in db.sql[-1] or "format" in db.sql[-1]
+    import re
+    assert re.search(r"SELECT[^;]*\bformat\b[^;]*\bbloecke\b[^;]*FROM marketing\.inhalt_fassungen", db.sql[-1])
 
 
 def test_vorlagen_liste_und_aus_vorlage(db, c):
@@ -489,3 +490,21 @@ def test_vorlage_vorschau(db, c):
     assert c.get("/api/pult/vorlagen/leer/vorschau?format=pdf", headers=H).status_code == 422
     db.antworten = [[]]
     assert c.get("/api/pult/vorlagen/leer/vorschau", headers=H).status_code == 404
+
+
+def test_vorlagen_status_filter(db, c):
+    db.antworten = [[]]
+    assert c.get("/api/pult/vorlagen?status=vorschlag", headers=H).status_code == 200
+    assert "status = 'vorschlag'" in db.sql[-1]
+    n = len(db.sql)
+    assert c.get("/api/pult/vorlagen?status=entwurf", headers=H).status_code == 422
+    assert len(db.sql) == n
+
+
+def test_aus_vorlage_titel_laenge(db, c):
+    for titel in ("", "   ", "x" * 201):
+        r = c.post("/api/pult/inhalte/aus_vorlage", headers=H, json={"vorlage": "leer", "titel": titel})
+        assert r.status_code == 422
+    assert db.sql == []
+    db.antworten = [[{"id": IID}]]
+    assert c.post("/api/pult/inhalte/aus_vorlage", headers=H, json={"vorlage": "leer", "titel": "x" * 200}).status_code == 200
