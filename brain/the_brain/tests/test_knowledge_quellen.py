@@ -65,6 +65,46 @@ def test_ausgefallene_quelle_liefert_nichts_und_zaehlt(monkeypatch):
     assert q.FEHLER["agents"] == 1
 
 
+def _dienst_env(monkeypatch):
+    monkeypatch.setenv("QDRANT_URL", "http://qdrant:6333")
+    monkeypatch.setenv("EMBEDDING_SERVICE_URL", "http://embedding:8080")
+    monkeypatch.setenv("OPENFANG_URL", "http://openfang:4200")
+    monkeypatch.setenv("SUPABASE_URL", "http://supabase:8000")
+
+
+def test_pc_zustand_dienst_ausgefallen_bleibt_im_dokument(monkeypatch):
+    _dienst_env(monkeypatch)
+    q.FEHLER.clear()
+    monkeypatch.setattr(q, "abfragen", fake({
+        ("http", "http://qdrant:6333/healthz"): RuntimeError("Transport: weg"),
+        ("http", "http://embedding:8080/health"): (None, None, 200),
+        ("http", "http://openfang:4200/api/health"): (None, None, 200),
+        ("http", "http://supabase:8000/auth/v1/health"): (None, None, 200),
+        ("openfang", "/api/agents"): ([{"state": "Running"}], None, 200),
+    }))
+    d = q.pc_zustand(T)
+    f = {x.schluessel: x.wert for x in d.fakten}
+    assert f["dienst_qdrant"] == "nicht erreichbar"
+    assert f["dienst_embedding"] == "200"
+    assert f["dienst_openfang"] == "200"
+    assert f["dienst_supabase"] == "200"
+    assert q.FEHLER["dienst_qdrant"] == 1
+    assert pruefen(d) == []
+
+
+def test_pc_zustand_agentenliste_ausgefallen_wirft(monkeypatch):
+    _dienst_env(monkeypatch)
+    monkeypatch.setattr(q, "abfragen", fake({
+        ("http", "http://qdrant:6333/healthz"): (None, None, 200),
+        ("http", "http://embedding:8080/health"): (None, None, 200),
+        ("http", "http://openfang:4200/api/health"): (None, None, 200),
+        ("http", "http://supabase:8000/auth/v1/health"): (None, None, 200),
+        ("openfang", "/api/agents"): RuntimeError("Transport: weg"),
+    }))
+    with pytest.raises(RuntimeError):
+        q.pc_zustand(T)
+
+
 def test_user_ohne_inhalte_nur_zahlen(monkeypatch):
     monkeypatch.setattr(q, "abfragen", fake({
         ("supabase", "flowzen_checkins?"): ([{"mood": "focused", "energy": 7,

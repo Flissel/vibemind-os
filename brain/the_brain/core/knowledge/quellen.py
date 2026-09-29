@@ -141,6 +141,10 @@ def pc_zustand(jetzt: datetime) -> Dokument:
             s.fakt(f"dienst_{name}", "http", url, "#status", status)
         except RuntimeError:
             FEHLER[f"dienst_{name}"] += 1
+            # "nicht erreichbar" IST die Messung, nicht deren Ausfall: das
+            # Dokument bleibt vollstaendig (jeder konfigurierte Dienst hat
+            # einen Fakt), statt den Dienst kommentarlos wegzulassen.
+            s.fakt(f"dienst_{name}", "http", url, "#status", "nicht erreichbar")
     liste, _, _ = abfragen("openfang", "/api/agents")
     laufend = sum(1 for a in liste or [] if a.get("state") == "Running")
     # Zaehlung als Beleg: Nachfrage zaehlt dieselbe Liste neu (feld #running).
