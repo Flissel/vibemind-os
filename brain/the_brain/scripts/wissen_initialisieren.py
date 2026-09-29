@@ -1,6 +1,7 @@
 """Ersteinrichtung: alle Wissensdokumente aus den Quellen anlegen, Index bauen.
 
   python scripts/wissen_initialisieren.py [--ohne-deutung]
+Deutung per LLM nur mit KURATOR_DEUTUNG=1 (und ohne --ohne-deutung).
 Laeuft im brain-loops-Container (dort ist der Wissensordner beschreibbar).
 """
 from __future__ import annotations
@@ -32,7 +33,10 @@ def main(argv=None) -> int:
         kg = None
         print(f"# Qdrant nicht verfuegbar, nur Dateien: {e}")
     t = Tresor()
-    k = kurator.Kurator(t, kg=None, deuten=None if a.ohne_deutung else kurator.llm_deuten)
+    # Schlusspruefung M4: Deutung nur, wenn der Schalter KURATOR_DEUTUNG an
+    # ist UND nicht --ohne-deutung (Standard folgt dem Schalter wie im Worker).
+    deuten = kurator.llm_deuten if (kurator.KURATOR_DEUTUNG and not a.ohne_deutung) else None
+    k = kurator.Kurator(t, kg=None, deuten=deuten)
     print(json.dumps({"kurator": k.voll_durchlauf(), "quellenfehler": dict(quellen.FEHLER)}))
     if kg is not None:
         print(json.dumps({"index": index.neu_aufbauen(kg, t)}))

@@ -451,3 +451,31 @@ def test_pc_zustand_und_user_werden_nie_veraltet(tmp_path):
     erg = Kurator(t, leser=leser(pc_zustand=lambda j: None)).voll_durchlauf()
     assert erg["veraltet"] == 0
     assert (tmp_path / "System" / "PC-Zustand (system).md").exists()
+
+
+# ── Schlusspruefung M2: Index-Fehler werden gezaehlt und laut geloggt ──
+
+def test_index_fehler_gezaehlt_und_warning(tmp_path, monkeypatch, caplog):
+    import logging
+    from core.knowledge import hubs as hubs_modul
+    from core.knowledge import index as index_modul
+    monkeypatch.setattr(index_modul, "verknuepfen", lambda kg, t: 0)
+    monkeypatch.setattr(hubs_modul, "schreiben", lambda t, kg: 0)
+    kg = MagicMock()
+    kg._upsert_point.side_effect = RuntimeError("Qdrant weg")
+    k = Kurator(Tresor(tmp_path), kg=kg, leser=leser(bubbles=_viele(2)))
+    with caplog.at_level(logging.WARNING, logger="core.knowledge.kurator"):
+        erg = k.voll_durchlauf()
+    assert erg["index_fehler"] == 2 and erg["geschrieben"] == 2
+    assert any("Index" in r.getMessage() and r.levelno == logging.WARNING for r in caplog.records)
+
+
+def test_index_ohne_punkt_id_zaehlt_als_fehler(tmp_path, monkeypatch):
+    from core.knowledge import hubs as hubs_modul
+    from core.knowledge import index as index_modul
+    monkeypatch.setattr(index_modul, "verknuepfen", lambda kg, t: 0)
+    monkeypatch.setattr(hubs_modul, "schreiben", lambda t, kg: 0)
+    kg = MagicMock()
+    kg._upsert_point.return_value = None  # _upsert_point schluckt Fehler und gibt None
+    erg = Kurator(Tresor(tmp_path), kg=kg, leser=leser()).voll_durchlauf()
+    assert erg["index_fehler"] == 1

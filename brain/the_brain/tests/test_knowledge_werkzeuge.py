@@ -334,3 +334,42 @@ def test_messen_fluechtige_belege_zaehlen_nicht_in_die_quote(tmp_path):
     assert r["belege_stimmen"] == 1
     assert r["fluechtig_gesamt"] == 2
     assert r["fluechtig_stimmen"] == 1
+
+
+# ── Schlusspruefung M4: Deutung nur, wenn KURATOR_DEUTUNG wahr UND nicht --ohne-deutung ──
+
+def _init_mit_fakes(monkeypatch, deutung_schalter, argv):
+    from core import qdrant_kg
+    from core.knowledge import kurator
+    m = _mod("wissen_initialisieren")
+    erfasst = {}
+
+    class FakeKurator:
+        def __init__(self, tresor, kg=None, deuten=None, **kw):
+            erfasst["deuten"] = deuten
+
+        def voll_durchlauf(self):
+            return {}
+
+    def kein_qdrant(*a, **kw):
+        raise RuntimeError("kein Qdrant im Test")
+
+    monkeypatch.setattr(qdrant_kg, "QdrantKG", kein_qdrant)
+    monkeypatch.setattr(kurator, "Kurator", FakeKurator)
+    monkeypatch.setattr(kurator, "KURATOR_DEUTUNG", deutung_schalter)
+    monkeypatch.setattr(m, "Tresor", lambda *a, **kw: object())
+    assert m.main(argv) == 0
+    return erfasst["deuten"]
+
+
+def test_initialisieren_ohne_schalter_keine_deutung(monkeypatch):
+    assert _init_mit_fakes(monkeypatch, False, []) is None
+
+
+def test_initialisieren_mit_schalter_deutet(monkeypatch):
+    from core.knowledge import kurator
+    assert _init_mit_fakes(monkeypatch, True, []) is kurator.llm_deuten
+
+
+def test_initialisieren_schalter_an_aber_ohne_deutung_flag(monkeypatch):
+    assert _init_mit_fakes(monkeypatch, True, ["--ohne-deutung"]) is None

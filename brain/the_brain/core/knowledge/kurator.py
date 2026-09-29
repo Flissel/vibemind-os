@@ -137,7 +137,7 @@ class Kurator:
         self.leser = leser
         self.stats = {"geschrieben": 0, "abgelehnt": 0, "quellenfehler": 0,
                       "deutung_verworfen": 0, "unveraendert": 0, "unlesbar": 0,
-                      "veraltet": 0}
+                      "veraltet": 0, "index_fehler": 0}
 
     def _bereiche(self, kind: str, payload: Dict[str, Any]) -> Tuple[str, ...]:
         return bereiche_fuer(kind, payload)
@@ -178,11 +178,16 @@ class Kurator:
             return
         self.stats["geschrieben"] += 1
         if self.kg is not None:
+            # Schlusspruefung M2: Index-Fehler zaehlen und als WARNING loggen.
+            # _upsert_point schluckt Fehler und gibt None - das zaehlt mit.
             try:
                 from core.knowledge.index import eintragen
-                eintragen(self.kg, getattr(self.tresor, "zuletzt_geschrieben", None) or dok)
+                pid = eintragen(self.kg, getattr(self.tresor, "zuletzt_geschrieben", None) or dok)
+                if not pid:
+                    raise RuntimeError("kein Punkt geschrieben")
             except Exception as e:
-                logger.info("[kurator] Index fehlgeschlagen: %s", e)
+                self.stats["index_fehler"] += 1
+                logger.warning("[kurator] Index fuer %s fehlgeschlagen: %s", dok.titel, e)
 
     def _lauf(self, namen) -> Dict[str, int]:
         jetzt = datetime.now(timezone.utc)
