@@ -25,7 +25,10 @@ SCHRIFTEN = {
     'MONOSPACE': '"Nimbus Mono PS", "Courier New", "Cutive Mono", monospace',
 }
 GROESSE_UEBERSCHRIFT = {"h1": 32, "h2": 24, "h3": 20}
-KNOPF_RUNDUNG = {"rectangle": 0, "rounded": 6, "pill": 64}
+KNOPF_RUNDUNG = {"rectangle": 0, "rounded": 4, "pill": 64}
+KNOPF_GROESSE = {"x-small": (4, 8), "small": (8, 12), "medium": (12, 20), "large": (16, 32)}
+KNOPF_FARBE = "#999999"
+KARTEN_RAND = 24
 _FETT = re.compile(r"\*\*(.+?)\*\*")
 _KURSIV = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
 _LINK = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
@@ -66,7 +69,7 @@ def _fuss_farbe(text: str, grund: str) -> str:
         if kontrast(text, grund) >= 4.5:
             return text
         return max(("#ffffff", "#111111"), key=lambda c: kontrast(c, grund))
-    except ValueError:
+    except (ValueError, AttributeError, TypeError):
         return "#111111"
 
 
@@ -96,6 +99,12 @@ def _text(roh: str, markdown: bool) -> str:
     return sicher.replace("\n", "<br>")
 
 
+def _hg(s: dict) -> str:
+    """Hintergrund eines einzelnen Blocks (style.backgroundColor) als MJML-Attribut."""
+    farbe = s.get("backgroundColor")
+    return f' container-background-color="{_a(farbe)}"' if isinstance(farbe, str) and farbe else ""
+
+
 def _block(dok: dict, bid: str, farben: dict, bild_basis: str) -> str:
     b = dok.get(bid) or {}
     typ = b.get("type")
@@ -104,42 +113,65 @@ def _block(dok: dict, bid: str, farben: dict, bild_basis: str) -> str:
     polster = _polster(s)
     ausr = _ausrichtung(s.get("textAlign"))
     farbe = s.get("color") or farben["text"]
+    gewicht = s.get("fontWeight") if s.get("fontWeight") in ("bold", "normal") else None
+    hg = _hg(s)
     if typ == "Heading":
-        groesse = GROESSE_UEBERSCHRIFT.get(p.get("level") or "h2", 24)
-        return (f'<mj-text padding="{polster}" align="{_a(ausr)}" color="{_a(farbe)}" font-size="{groesse}px" '
-                f'font-weight="{_a(s.get("fontWeight") or "bold")}" line-height="1.25">{_text(p.get("text") or "", False)}</mj-text>')
+        standard = GROESSE_UEBERSCHRIFT.get(p.get("level") or "h2", 24)
+        groesse = _zahl(s.get("fontSize"), standard) if s.get("fontSize") else standard
+        return (f'<mj-text padding="{polster}" align="{ausr}" color="{_a(farbe)}" font-size="{groesse}px" '
+                f'font-weight="{gewicht or "bold"}" line-height="1.25"{hg}>{_text(p.get("text") or "", False)}</mj-text>')
     if typ == "Text":
         groesse = _zahl(s.get("fontSize"), 16)
-        return (f'<mj-text padding="{polster}" align="{_a(ausr)}" color="{_a(farbe)}" font-size="{groesse}px" '
-                f'font-weight="{_a(s.get("fontWeight") or "normal")}" line-height="1.55">'
+        return (f'<mj-text padding="{polster}" align="{ausr}" color="{_a(farbe)}" font-size="{groesse}px" '
+                f'font-weight="{gewicht or "normal"}" line-height="1.55"{hg}>'
                 f'{_text(p.get("text") or "", bool(p.get("markdown")))}</mj-text>')
     if typ == "Image":
         ziel = bild_adresse(p.get("url") or "", bild_basis)
         if not ziel:
             name = (p.get("url") or "")[len("medien:"):] or "?"
-            return f'<mj-text padding="{polster}" align="center" color="{_a(farben["text"])}">[Bild: {_a(name)}]</mj-text>'
-        breite = f' width="{_zahl(p.get("width"), 0)}px"' if _zahl(p.get("width"), 0) > 0 else ""
+            return f'<mj-text padding="{polster}" align="{ausr}" color="{_a(farben["text"])}"{hg}>[Bild: {_a(name)}]</mj-text>'
+        w, h = _zahl(p.get("width"), 0), _zahl(p.get("height"), 0)
+        masse = (f' width="{w}px"' if w > 0 else "") + (f' height="{h}px"' if h > 0 else "")
         link = p.get("linkHref") or ""
-        href = f' href="{_a(link)}"' if link.startswith("https://") else ""
-        return f'<mj-image padding="{polster}" src="{_a(ziel)}" alt="{_a(p.get("alt") or "")}"{breite}{href} />'
+        href = f' href="{_a(link)}"' if isinstance(link, str) and link.startswith("https://") else ""
+        return (f'<mj-image padding="{polster}" align="{ausr}" src="{_a(ziel)}" alt="{_a(p.get("alt") or "")}"'
+                f'{masse}{href}{hg} />')
     if typ == "Button":
         url = p.get("url") or ""
-        if not url.startswith("https://"):
+        if not isinstance(url, str) or not url.startswith("https://"):
             return ""
-        rund = KNOPF_RUNDUNG.get(p.get("buttonStyle") or "rounded", 6)
-        return (f'<mj-button padding="{polster}" href="{_a(url)}" align="{_a(ausr)}" border-radius="{rund}px" '
-                f'background-color="{_a(p.get("buttonBackgroundColor") or farben["akzent"])}" '
-                f'color="{_a(p.get("buttonTextColor") or "#ffffff")}" font-weight="bold">{_text(p.get("text") or "", False)}</mj-button>')
+        rund = KNOPF_RUNDUNG.get(p.get("buttonStyle") or "rounded", 4)
+        senk, waag = KNOPF_GROESSE.get(p.get("size") or "medium", KNOPF_GROESSE["medium"])
+        voll = ' width="100%"' if p.get("fullWidth") else ""
+        return (f'<mj-button padding="{polster}" href="{_a(url)}" align="{ausr}" border-radius="{rund}px" '
+                f'inner-padding="{senk}px {waag}px" font-size="{_zahl(s.get("fontSize"), 16)}px" '
+                f'background-color="{_a(p.get("buttonBackgroundColor") or KNOPF_FARBE)}" '
+                f'color="{_a(p.get("buttonTextColor") or "#FFFFFF")}" font-weight="{gewicht or "bold"}"{voll}{hg}>'
+                f'{_text(p.get("text") or "", False)}</mj-button>')
     if typ == "Divider":
-        return (f'<mj-divider padding="{polster}" border-color="{_a(p.get("lineColor") or "#cccccc")}" '
-                f'border-width="{_zahl(p.get("lineHeight"), 1)}px" />')
+        return (f'<mj-divider padding="{polster}" border-color="{_a(p.get("lineColor") or "#333333")}" '
+                f'border-width="{_zahl(p.get("lineHeight"), 1)}px"{hg} />')
     if typ == "Spacer":
         return f'<mj-spacer height="{_zahl(p.get("height"), 16)}px" />'
     return ""
 
 
+def _spalten_polster(index: int, anzahl: int, luecke: int) -> tuple[float, float]:
+    """Wie getPaddingBefore/After im Email Builder: die Luecke wird auf die Spaltenraender verteilt."""
+    if anzahl == 2:
+        return (0 if index == 0 else luecke / 2, luecke / 2 if index == 0 else 0)
+    vor = (0, luecke / 3, 2 * luecke / 3)[index]
+    nach = (2 * luecke / 3, luecke / 3, 0)[index]
+    return vor, nach
+
+
+def _px(x: float) -> str:
+    return f"{x:g}px"
+
+
 def _kinder_als_section(dok: dict, ids: list, farben: dict, bild_basis: str) -> str:
     teile, spalte = [], []
+
     def spalte_schliessen():
         if spalte:
             teile.append(f'<mj-section background-color="{_a(farben["flaeche"])}" padding="0"><mj-column>{"".join(spalte)}</mj-column></mj-section>')
@@ -147,23 +179,41 @@ def _kinder_als_section(dok: dict, ids: list, farben: dict, bild_basis: str) -> 
     for bid in ids or []:
         b = dok.get(bid) or {}
         typ = b.get("type")
+        stil = (b.get("data") or {}).get("style") or {}
         props = (b.get("data") or {}).get("props") or {}
         if typ == "ColumnsContainer":
             spalte_schliessen()
-            anzahl = _zahl(props.get("columnsCount"), 2)
-            spalten = (props.get("columns") or [])[:anzahl]
-            inhalt = "".join(
-                "<mj-column>" + "".join(_block(dok, k, farben, bild_basis) for k in (c.get("childrenIds") or [])) + "</mj-column>"
-                for c in spalten)
-            teile.append(f'<mj-section background-color="{_a(farben["flaeche"])}" padding="0">{inhalt}</mj-section>')
+            anzahl = 3 if _zahl(props.get("columnsCount"), 2) == 3 else 2
+            luecke = max(0, _zahl(props.get("columnsGap"), 0))
+            senk = props.get("contentAlignment") if props.get("contentAlignment") in ("top", "middle", "bottom") else "middle"
+            fest = props.get("fixedWidths") if isinstance(props.get("fixedWidths"), list) else []
+            spalten = list(props.get("columns") or [])[:anzahl]
+            spalten += [{}] * (anzahl - len(spalten))
+            inhalt = ""
+            for i, c in enumerate(spalten):
+                c = c if isinstance(c, dict) else {}
+                vor, nach = _spalten_polster(i, anzahl, luecke)
+                breite = _zahl(fest[i], 0) if i < len(fest) and fest[i] else 0
+                w = f' width="{breite}px"' if breite > 0 else ""
+                inhalt += (f'<mj-column vertical-align="{senk}" padding="0 {_px(nach)} 0 {_px(vor)}"{w}>'
+                           + "".join(_block(dok, k, farben, bild_basis) for k in (c.get("childrenIds") or []))
+                           + "</mj-column>")
+            hg = stil.get("backgroundColor") or farben["flaeche"]
+            pol = _polster(stil) if isinstance(stil.get("padding"), dict) else "0"
+            teile.append(f'<mj-section background-color="{_a(hg)}" padding="{pol}">{inhalt}</mj-section>')
         elif typ == "Container":
             spalte_schliessen()
-            stil = (b.get("data") or {}).get("style") or {}
             hg = stil.get("backgroundColor") or farben["flaeche"]
             kinder = props.get("childrenIds") or []
             inhalt = "".join(_block(dok, k, farben, bild_basis) for k in kinder)
-            teile.append(f'<mj-section background-color="{_a(hg)}" border-radius="{_zahl(stil.get("borderRadius"), 0)}px" '
-                         f'padding="{_polster(stil)}"><mj-column>{inhalt}</mj-column></mj-section>')
+            rand = stil.get("borderColor")
+            rahmen = f' border="1px solid {_a(rand)}"' if isinstance(rand, str) and rand else ""
+            pol = _polster(stil) if isinstance(stil.get("padding"), dict) else "0"
+            # Karte: aussen die Flaeche, innen die Containerfarbe mit Rundung und Innenabstand
+            teile.append(
+                f'<mj-wrapper background-color="{_a(farben["flaeche"])}" padding="0 {KARTEN_RAND}px">'
+                f'<mj-section background-color="{_a(hg)}" border-radius="{_zahl(stil.get("borderRadius"), 0)}px"{rahmen} '
+                f'padding="{pol}"><mj-column>{inhalt}</mj-column></mj-section></mj-wrapper>')
         else:
             spalte.append(_block(dok, bid, farben, bild_basis))
     spalte_schliessen()

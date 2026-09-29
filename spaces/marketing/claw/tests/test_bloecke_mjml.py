@@ -154,3 +154,130 @@ def test_unsaubere_zahlen_und_ausrichtung():
          "padding": {"top": "abc"}}, "props": {"text": "Hi"}}}}
     h = b.rendern(d, "B", "", PFLICHT)
     assert "Hi" in h and 'x"y' not in h
+
+
+# ---- Runde 2: Eigenschaften der Email-Builder-Bloecke ----
+
+def _mit(blocks, ids=None, **wurzel):
+    daten = {"backdropColor": "#0f2422", "canvasColor": "#0f2422", "textColor": "#cfe3df",
+             "childrenIds": ids if ids is not None else list(blocks)}
+    daten.update(wurzel)
+    return b.nach_mjml({"root": {"type": "EmailLayout", "data": daten}, **blocks}, "B", "", PFLICHT,
+                       bild_basis="https://h/m/")
+
+
+def _spalten(**props):
+    return {"c": {"type": "ColumnsContainer", "data": {"props": {"columns": [
+        {"childrenIds": ["x"]}, {"childrenIds": ["x"]}, {"childrenIds": ["x"]}], **props}}},
+        "x": {"type": "Text", "data": {"props": {"text": "t"}}}}
+
+
+def test_spalten_luecke_zwei():
+    m = _mit(_spalten(columnsCount=2, columnsGap=24), ["c"])
+    assert 'padding="0 12px 0 0px"' in m and 'padding="0 0px 0 12px"' in m
+
+
+def test_spalten_luecke_drei():
+    m = _mit(_spalten(columnsCount=3, columnsGap=30), ["c"])
+    assert 'padding="0 20px 0 0px"' in m and 'padding="0 10px 0 10px"' in m and 'padding="0 0px 0 20px"' in m
+
+
+def test_spalten_ausrichtung_senkrecht():
+    assert m_va(_spalten(columnsCount=2, contentAlignment="top")) == "top"
+    assert m_va(_spalten(columnsCount=2)) == "middle"
+    assert m_va(_spalten(columnsCount=2, contentAlignment="bottom")) == "bottom"
+
+
+def m_va(blocks):
+    return re.search(r'<mj-column vertical-align="(\w+)"', _mit(blocks, ["c"])).group(1)
+
+
+def test_container_ist_karte():
+    bl = {"k": {"type": "Container", "data": {"style": {"backgroundColor": "#16302d", "borderRadius": 12,
+               "padding": {"top": 10, "bottom": 10, "left": 20, "right": 20}}, "props": {"childrenIds": ["x"]}}},
+          "x": {"type": "Text", "data": {"props": {"text": "t"}}}}
+    m = _mit(bl, ["k"], canvasColor="#ffffff")
+    assert '<mj-wrapper background-color="#ffffff" padding="0 24px">' in m
+    assert 'background-color="#16302d" border-radius="12px"' in m
+    assert 'padding="10px 20px 10px 20px"' in m
+
+
+def test_container_rahmen():
+    bl = {"k": {"type": "Container", "data": {"style": {"borderColor": "#ff0000"}, "props": {"childrenIds": []}}}}
+    assert 'border="1px solid #ff0000"' in _mit(bl, ["k"])
+
+
+def _knopf(**props):
+    return {"k": {"type": "Button", "data": {"style": {}, "props": {"text": "Los", "url": "https://x.de", **props}}}}
+
+
+def test_knopf_groessen():
+    for name, wert in (("x-small", "4px 8px"), ("small", "8px 12px"), ("medium", "12px 20px"), ("large", "16px 32px")):
+        assert f'inner-padding="{wert}"' in _mit(_knopf(size=name)), name
+    assert 'inner-padding="12px 20px"' in _mit(_knopf())
+
+
+def test_knopf_volle_breite_und_form():
+    assert 'width="100%"' in _mit(_knopf(fullWidth=True))
+    assert "width=" not in _mit(_knopf()).split("<mj-button")[1].split(">")[0]
+    assert 'border-radius="4px"' in _mit(_knopf())
+    assert 'border-radius="0px"' in _mit(_knopf(buttonStyle="rectangle"))
+    assert 'border-radius="64px"' in _mit(_knopf(buttonStyle="pill"))
+
+
+def test_knopf_ausrichtung_und_schrift():
+    bl = _knopf()
+    bl["k"]["data"]["style"] = {"textAlign": "right", "fontSize": 20, "fontWeight": "normal"}
+    m = _mit(bl)
+    assert 'align="right"' in m and 'font-size="20px"' in m and 'font-weight="normal"' in m
+
+
+def _ueberschrift(stil, level="h1"):
+    return {"h": {"type": "Heading", "data": {"style": stil, "props": {"text": "T", "level": level}}}}
+
+
+def test_ueberschrift_schriftgroesse_und_gewicht():
+    assert 'font-size="32px"' in _mit(_ueberschrift({}))
+    assert 'font-size="40px"' in _mit(_ueberschrift({"fontSize": 40}))
+    assert 'font-weight="normal"' in _mit(_ueberschrift({"fontWeight": "normal"}))
+    assert 'font-weight="bold"' in _mit(_ueberschrift({}))
+
+
+def _bild(stil=None, **props):
+    return {"i": {"type": "Image", "data": {"style": stil or {}, "props": {"url": "medien:a.png", **props}}}}
+
+
+def test_bild_ausrichtung_und_masse():
+    m = _mit(_bild({"textAlign": "right"}, width=200, height=100))
+    assert 'align="right"' in m and 'width="200px"' in m and 'height="100px"' in m
+    assert 'align="left"' in _mit(_bild())
+
+
+def test_bild_hintergrund():
+    assert 'container-background-color="#112233"' in _mit(_bild({"backgroundColor": "#112233"}))
+
+
+def test_trenner_breite_farbe_und_polster():
+    bl = {"d": {"type": "Divider", "data": {"style": {"padding": {"top": 1, "bottom": 2, "left": 3, "right": 4}},
+               "props": {"lineColor": "#2a534e", "lineHeight": 3}}}}
+    m = _mit(bl)
+    assert 'border-width="3px"' in m and 'border-color="#2a534e"' in m and 'padding="1px 4px 2px 3px"' in m
+
+
+def test_kaputte_farben_stuerzen_nicht():
+    d = {"root": {"type": "EmailLayout", "data": {"backdropColor": ["a"], "textColor": 5, "childrenIds": []}}}
+    assert "<mj-section" in b.nach_mjml(d, "B", "", PFLICHT)
+
+
+def test_alle_startvorlagen_rendern():
+    import json
+    from pathlib import Path
+    ordner = Path(__file__).resolve().parents[2] / "vorlagen" / "newsletter"
+    dateien = sorted(ordner.glob("*.json"))
+    assert len(dateien) >= 5
+    for datei in dateien:
+        vorlage = json.loads(datei.read_text(encoding="utf-8"))
+        for handy in (False, True):
+            html = b.rendern(vorlage["bloecke"], "Betreff", "Vorab", PFLICHT,
+                             bild_basis="https://h/m/", handy=handy)
+            assert "Musterstr. 1" in html, datei.name
