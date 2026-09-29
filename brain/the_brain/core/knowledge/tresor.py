@@ -66,6 +66,33 @@ class Tresor:
                     continue  # freie Notiz ohne Kopf
         return out
 
+    def veraltete_verschieben(self, typ: str, geliefert: Set[str]) -> List[str]:
+        """Schlusspruefung I6: verschiebt jedes Dokument vom Typ `typ` in der
+        obersten Ebene seines Ordners, dessen Name nicht in `geliefert` steht,
+        nach `<Ordner>/Veraltet/` (verschieben, nicht loeschen). Freie Notizen
+        ohne Kopf und Dokumente anderen Typs bleiben liegen. `alle()` liest nur
+        die oberste Ebene - Veraltetes faellt damit aus Nachfrage und Links.
+        Gibt die verschobenen Namen zurueck."""
+        ordner = self.wurzel / ORDNER[typ]
+        verschoben: List[str] = []
+        for p in sorted(ordner.glob("*.md")):
+            if p.stem in geliefert:
+                continue
+            try:
+                d = lesen(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue  # freie Notiz / unlesbar: nie anfassen
+            if d.typ != typ:
+                continue
+            ziel = ordner / "Veraltet" / p.name
+            try:
+                ziel.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(p, ziel)
+                verschoben.append(p.stem)
+            except OSError as e:
+                logger.warning("[tresor] %s nicht nach Veraltet verschiebbar: %s", p, e)
+        return verschoben
+
     def bekannte_namen(self) -> Set[str]:
         return {dateiname(d) for d in self.alle()}
 

@@ -308,3 +308,29 @@ def test_wissen_initialisieren_ensure_collections_faellt_kg_bleibt_none(monkeypa
     assert rc == 0
     assert aufrufe["kg"] is None
     assert "index_aufgerufen" not in aufrufe  # Datei-Modus: kein Index-Aufbau
+
+
+def test_messen_fluechtige_belege_zaehlen_nicht_in_die_quote(tmp_path):
+    """Schlusspruefung I6: #agent:* (gleitendes Audit-Fenster) und *last_active
+    aendern sich staendig - sie werden separat ausgewiesen, nicht in der Quote."""
+    t = Tresor(tmp_path)
+    g = T
+    d = Dokument(typ="agent", id="agent0001", titel="Coder", stand=g,
+                 fakten=[Fakt(schluessel="zustand", wert="Running", beleg=1),
+                         Fakt(schluessel="zuletzt_aktiv", wert="t1", beleg=2),
+                         Fakt(schluessel="aktionen_ok", wert="5", beleg=3)],
+                 belege=[Beleg(nr=1, quelle="openfang", ziel="/api/agents",
+                               feld="[name=Coder].state", wert="Running", gemessen=g),
+                         Beleg(nr=2, quelle="openfang", ziel="/api/agents",
+                               feld="[name=Coder].last_active", wert="t1", gemessen=g),
+                         Beleg(nr=3, quelle="openfang", ziel="/api/audit/recent?n=500",
+                               feld="#agent:agent0001:ok", wert="5", gemessen=g)])
+    t.schreiben(d)
+    m = _mod("wissen_messen")
+    antworten = {"[name=Coder].state": True, "[name=Coder].last_active": False,
+                 "#agent:agent0001:ok": True}
+    r = m.messen(t, nachfragen=lambda b: antworten[b.feld])
+    assert r["nachfrage_quote"] == 1.0
+    assert r["belege_stimmen"] == 1
+    assert r["fluechtig_gesamt"] == 2
+    assert r["fluechtig_stimmen"] == 1

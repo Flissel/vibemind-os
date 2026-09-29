@@ -409,3 +409,45 @@ def test_takt_schleife_volllauf_fehler_wiederholt_erst_nach_intervall():
                                 runden=4)
     assert len(ereignislaeufe) == 4, "Ereignis-Fehler darf den Takt nicht stoppen"
     assert volllaeufe == [1, 1], "Volllauf bei t=1000 (Fehler) und erst wieder bei t=1900"
+
+
+# ── Schlusspruefung I6: Dokumente geloeschter Quellen wandern nach Veraltet/ ──
+
+def test_verschwundene_bubble_wandert_nach_veraltet(tmp_path):
+    t = Tresor(tmp_path)
+    liefern = {"n": 3}
+    k = Kurator(t, leser=leser(bubbles=lambda j: _viele(liefern["n"])(j)))
+    k.voll_durchlauf()
+    (tmp_path / "Bubbles" / "freie Notiz.md").write_text("# ohne Kopf\n", encoding="utf-8")
+    liefern["n"] = 2
+    erg = k.voll_durchlauf()
+    assert erg["veraltet"] == 1
+    assert (tmp_path / "Bubbles" / "Veraltet" / "Bubble 2 (000000).md").exists()
+    assert not (tmp_path / "Bubbles" / "Bubble 2 (000000).md").exists()
+    assert (tmp_path / "Bubbles" / "freie Notiz.md").exists(), "freie Notiz bleibt liegen"
+    assert sorted(d.id for d in t.alle()) == ["00000000", "00000001"]
+
+
+def test_leser_wirft_nichts_wird_verschoben(tmp_path):
+    t = Tresor(tmp_path)
+    Kurator(t, leser=leser(bubbles=_viele(2))).voll_durchlauf()
+
+    def kaputt(j):
+        raise RuntimeError("Supabase weg")
+
+    erg = Kurator(t, leser=leser(bubbles=kaputt)).voll_durchlauf()
+    assert erg["veraltet"] == 0
+    assert not (tmp_path / "Bubbles" / "Veraltet").exists()
+    assert len(t.alle()) == 2
+
+
+def test_pc_zustand_und_user_werden_nie_veraltet(tmp_path):
+    t = Tresor(tmp_path)
+    pc = Dokument(typ="pc_zustand", id="system", titel="PC-Zustand", stand=T,
+                  fakten=[Fakt(schluessel="x", wert="1", beleg=1)],
+                  belege=[Beleg(nr=1, quelle="http", ziel="http://a", feld="#status",
+                                wert="1", gemessen=T)])
+    Kurator(t, leser=leser(pc_zustand=lambda j: pc)).voll_durchlauf()
+    erg = Kurator(t, leser=leser(pc_zustand=lambda j: None)).voll_durchlauf()
+    assert erg["veraltet"] == 0
+    assert (tmp_path / "System" / "PC-Zustand (system).md").exists()

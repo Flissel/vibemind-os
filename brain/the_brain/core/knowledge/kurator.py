@@ -68,7 +68,16 @@ EREIGNIS_BEREICHE: Dict[str, Tuple[str, ...]] = {
     # emittiert. Das User-Dokument wird vom Volllauf aufgefrischt.
 }
 
-_DEUTEN_PROMPT = """Du schreibst den Abschnitt "Deutung" eines Wissensdokuments.
+# Schlusspruefung I6: Leser, die die VOLLE Liste ihres Typs liefern. Nur fuer
+# sie gilt "nicht mehr geliefert = veraltet" (pc_zustand/user sind Einzel-
+# dokumente, die immer existieren).
+LISTEN_LESER: Dict[str, str] = {
+    "bubbles": "bubble",
+    "coding_projekte": "coding_projekt",
+    "agents": "agent",
+}
+
+_DEUTEN_PROMPT ="""Du schreibst den Abschnitt "Deutung" eines Wissensdokuments.
 Regeln: hoechstens 4 Saetze, Deutsch. JEDER Satz endet mit mindestens einer
 Belegnummer wie [B1], die unten existiert. Nichts erfinden, was die Belege nicht
 tragen. Keine Aufzaehlung, kein Titel.
@@ -127,7 +136,8 @@ class Kurator:
         self.deuten = deuten
         self.leser = leser
         self.stats = {"geschrieben": 0, "abgelehnt": 0, "quellenfehler": 0,
-                      "deutung_verworfen": 0, "unveraendert": 0, "unlesbar": 0}
+                      "deutung_verworfen": 0, "unveraendert": 0, "unlesbar": 0,
+                      "veraltet": 0}
 
     def _bereiche(self, kind: str, payload: Dict[str, Any]) -> Tuple[str, ...]:
         return bereiche_fuer(kind, payload)
@@ -188,7 +198,8 @@ class Kurator:
                 self.stats["quellenfehler"] += 1
                 logger.warning("[kurator] Quelle %s ausgefallen: %s", name, e)
                 continue
-            for dok in ([ergebnis] if isinstance(ergebnis, Dokument) else (ergebnis or [])):
+            docs = [ergebnis] if isinstance(ergebnis, Dokument) else list(ergebnis or [])
+            for dok in docs:
                 # ... und jeder Fehler an einem Dokument nur als abgelehnt.
                 try:
                     self._pflegen(dok, bekannte)
@@ -196,6 +207,20 @@ class Kurator:
                     self.stats["abgelehnt"] += 1
                     logger.warning("[kurator] %s unerwartet fehlgeschlagen: %s",
                                    getattr(dok, "titel", "?"), e)
+            # Schlusspruefung I6: nach ERFOLGREICHEM Listen-Leserlauf wandert,
+            # was die Quelle nicht mehr liefert, nach <Ordner>/Veraltet/.
+            typ = LISTEN_LESER.get(name)
+            if typ is not None:
+                try:
+                    weg = self.tresor.veraltete_verschieben(
+                        typ, {dateiname(d) for d in docs if isinstance(d, Dokument)})
+                    self.stats["veraltet"] += len(weg)
+                    bekannte.difference_update(weg)
+                    if weg:
+                        logger.info("[kurator] %d %s-Dokument(e) nach Veraltet verschoben",
+                                    len(weg), typ)
+                except Exception as e:
+                    logger.warning("[kurator] Veraltet-Pruefung %s fehlgeschlagen: %s", name, e)
         return {k: self.stats[k] - vorher[k] for k in self.stats}
 
     def bei_ereignis(self, kind: str, payload: Dict[str, Any]) -> Dict[str, int]:
