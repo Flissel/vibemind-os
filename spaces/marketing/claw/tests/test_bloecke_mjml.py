@@ -281,3 +281,25 @@ def test_alle_startvorlagen_rendern():
             html = b.rendern(vorlage["bloecke"], "Betreff", "Vorab", PFLICHT,
                              bild_basis="https://h/m/", handy=handy)
             assert "Musterstr. 1" in html, datei.name
+
+
+# Schlussrunde E1 (final-fix-findings.md): Absaetze und fehlendes mjml-python
+
+def test_absaetze_leerzeile_und_umbruch():
+    """Leerzeile = neuer Absatz (<br><br>), einfacher Umbruch = <br> - auch bei CRLF,
+    mehreren Leerzeilen und Leerzeichen in der Leerzeile."""
+    for roh, erwartet in (("a\nb", "a<br>b"), ("a\n\nb", "a<br><br>b"), ("a\n\n\n\nb", "a<br><br>b"),
+                          ("a\r\n\r\nb", "a<br><br>b"), ("a\n  \t\nb", "a<br><br>b"), ("a\r\nb", "a<br>b")):
+        for markdown in (True, False):
+            assert b._text(roh, markdown) == erwartet, (roh, markdown)
+
+
+def test_ohne_mjml_modul_deutscher_renderfehler(monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, "mjml", None)   # import mjml -> ImportError
+    try:
+        b.rendern(DOK, "B", "", PFLICHT)
+    except b.RenderFehler as e:
+        assert "mjml-python fehlt" in str(e)
+    else:
+        raise AssertionError("RenderFehler erwartet")

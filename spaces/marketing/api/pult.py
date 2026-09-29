@@ -338,10 +338,32 @@ def inhalt(iid: str, x_pult_key: str | None = Header(None)):
     if not kopf:
         raise HTTPException(404, "Unbekannter Inhalt")
     alter_weg = kopf.pop("alter_weg", None)
+    # bloecke nur fuer die neueste Fassung (Entwurfsseite und Editor brauchen
+    # nur sie) - aeltere Dokumente wuerden die Antwort nur aufblaehen.
     fassungen = _lesen(lambda:
-        "SELECT fassung, felder, layout, urheber, erstellt_am::text AS erstellt_am, format, bloecke "
+        "SELECT fassung, felder, layout, urheber, erstellt_am::text AS erstellt_am, format, "
+        "CASE WHEN fassung = max(fassung) OVER () THEN bloecke END AS bloecke "
         f"FROM marketing.inhalt_fassungen WHERE inhalt = {lit(i)}::uuid ORDER BY fassung DESC")
+    for nr, f in enumerate(fassungen):
+        if nr and isinstance(f, dict):
+            f["bloecke"] = None
     return {"inhalt": kopf, "fassungen": fassungen, "alter_weg": alter_weg or None}
+
+
+@router.post("/inhalte/{iid}/in_bloecke")
+def in_bloecke(iid: str, payload: dict = Body(default={}), x_pult_key: str | None = Header(None)):
+    """Feld-Newsletter (Bruecke aus dem alten Weg) ins Editor-Format
+    uebernehmen: marketing.pult_in_bloecke_uebernehmen (055) legt eine neue
+    Block-Fassung an und lehnt alles andere mit deutschem Grund ab (422)."""
+    _schluessel(x_pult_key)
+    i = _uuid_oder_404(iid)
+    von = payload.get("von", "betreiber") if isinstance(payload, dict) else "betreiber"
+    if not isinstance(von, str):
+        raise HTTPException(422, "von muss Text sein")
+    von = von.strip() or "betreiber"
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_in_bloecke_uebernehmen({lit(i)}::uuid, {lit(von)}) AS fassung")
+    return {"fassung": int(zeile["fassung"])}
 
 
 @router.post("/inhalte/{iid}/fassungen")

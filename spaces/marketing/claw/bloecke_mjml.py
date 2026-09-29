@@ -9,8 +9,6 @@ import html
 import re
 import urllib.parse
 
-import mjml
-
 from spaces.marketing.claw.schoenheit import kontrast
 
 SCHRIFTEN = {
@@ -32,6 +30,8 @@ KARTEN_RAND = 24
 _FETT = re.compile(r"\*\*(.+?)\*\*")
 _KURSIV = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
 _LINK = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
+# Absatz: Leerzeile (auch mit Leerzeichen/Tabs, auch mehrere) -> <br><br>; einfacher Umbruch -> <br>
+_ABSATZ = re.compile(r"\n[ \t]*\n(?:[ \t]*\n)*")
 
 
 class RenderFehler(Exception):
@@ -96,7 +96,8 @@ def _text(roh: str, markdown: bool) -> str:
         sicher = _FETT.sub(r"<strong>\1</strong>", sicher)
         sicher = _KURSIV.sub(r"<em>\1</em>", sicher)
         sicher = re.sub(r"\x00(\d+)\x00", lambda m: links[int(m.group(1))], sicher)
-    return sicher.replace("\n", "<br>")
+    sicher = sicher.replace("\r\n", "\n").replace("\r", "\n")
+    return _ABSATZ.sub("<br><br>", sicher).replace("\n", "<br>")
 
 
 def _hg(s: dict) -> str:
@@ -174,7 +175,7 @@ def _kinder_als_section(dok: dict, ids: list, farben: dict, bild_basis: str) -> 
 
     def spalte_schliessen():
         if spalte:
-            teile.append(f'<mj-section background-color="{_a(farben["flaeche"])}" padding="0"><mj-column>{"".join(spalte)}</mj-column></mj-section>')
+            teile.append(f'<mj-section background-color="{_a(farben["innen"])}" padding="0"><mj-column>{"".join(spalte)}</mj-column></mj-section>')
             spalte.clear()
     for bid in ids or []:
         b = dok.get(bid) or {}
@@ -198,12 +199,12 @@ def _kinder_als_section(dok: dict, ids: list, farben: dict, bild_basis: str) -> 
                 inhalt += (f'<mj-column vertical-align="{senk}" padding="0 {_px(nach)} 0 {_px(vor)}"{w}>'
                            + "".join(_block(dok, k, farben, bild_basis) for k in (c.get("childrenIds") or []))
                            + "</mj-column>")
-            hg = stil.get("backgroundColor") or farben["flaeche"]
+            hg = stil.get("backgroundColor") or farben["innen"]
             pol = _polster(stil) if isinstance(stil.get("padding"), dict) else "0"
             teile.append(f'<mj-section background-color="{_a(hg)}" padding="{pol}">{inhalt}</mj-section>')
         elif typ == "Container":
             spalte_schliessen()
-            hg = stil.get("backgroundColor") or farben["flaeche"]
+            hg = stil.get("backgroundColor") or farben["innen"]
             kinder = props.get("childrenIds") or []
             inhalt = "".join(_block(dok, k, farben, bild_basis) for k in kinder)
             rand = stil.get("borderColor")
@@ -211,7 +212,7 @@ def _kinder_als_section(dok: dict, ids: list, farben: dict, bild_basis: str) -> 
             pol = _polster(stil) if isinstance(stil.get("padding"), dict) else "0"
             # Karte: aussen die Flaeche, innen die Containerfarbe mit Rundung und Innenabstand
             teile.append(
-                f'<mj-wrapper background-color="{_a(farben["flaeche"])}" padding="0 {KARTEN_RAND}px">'
+                f'<mj-wrapper background-color="{_a(farben["innen"])}" padding="0 {KARTEN_RAND}px">'
                 f'<mj-section background-color="{_a(hg)}" border-radius="{_zahl(stil.get("borderRadius"), 0)}px"{rahmen} '
                 f'padding="{pol}"><mj-column>{inhalt}</mj-column></mj-section></mj-wrapper>')
         else:
@@ -223,13 +224,14 @@ def _kinder_als_section(dok: dict, ids: list, farben: dict, bild_basis: str) -> 
 def nach_mjml(dokument: dict, betreff: str, vorschautext: str, pflichtteil: dict,
               bild_basis: str = "", breite: int = 600) -> str:
     wurzel = (dokument.get("root") or {}).get("data") or {}
-    farben = {"grund": wurzel.get("backdropColor") or "#f2f5f7",
-              "flaeche": wurzel.get("canvasColor") or "#ffffff",
+    # aussen = Flaeche um die Mail (backdropColor), innen = Inhaltsflaeche (canvasColor)
+    farben = {"aussen": wurzel.get("backdropColor") or "#f2f5f7",
+              "innen": wurzel.get("canvasColor") or "#ffffff",
               "text": wurzel.get("textColor") or "#242424",
               "akzent": "#5eead4"}
     schrift = SCHRIFTEN.get(wurzel.get("fontFamily") or "MODERN_SANS", SCHRIFTEN["MODERN_SANS"]).replace('"', "'")
     rumpf = _kinder_als_section(dokument, wurzel.get("childrenIds") or [], farben, bild_basis)
-    fuss_farbe = _fuss_farbe(farben["text"], farben["grund"])
+    fuss_farbe = _fuss_farbe(farben["text"], farben["aussen"])
     impressum = (pflichtteil.get("impressum") or "").strip()
     impressum_html = (_a(impressum) if impressum else
                       '<strong style="color:#ef4444">Impressum fehlt &ndash; im Mandanten hinterlegen</strong>')
@@ -238,11 +240,18 @@ def nach_mjml(dokument: dict, betreff: str, vorschautext: str, pflichtteil: dict
             f'color="{_a(fuss_farbe)}" line-height="1.5">{impressum_html}<br>{abmelden}</mj-text></mj-column></mj-section>')
     return (f'<mjml><mj-head><mj-title>{_a(betreff)}</mj-title><mj-preview>{_a(vorschautext)}</mj-preview>'
             f'<mj-attributes><mj-all font-family="{_a(schrift)}" /></mj-attributes></mj-head>'
-            f'<mj-body background-color="{_a(farben["grund"])}" width="{_zahl(breite, 600)}px">{rumpf}{fuss}</mj-body></mjml>')
+            f'<mj-body background-color="{_a(farben["aussen"])}" width="{_zahl(breite, 600)}px">{rumpf}{fuss}</mj-body></mjml>')
 
 
 def rendern(dokument: dict, betreff: str, vorschautext: str, pflichtteil: dict,
             bild_basis: str = "", handy: bool = False) -> str:
+    # mjml-python erst hier laden: fehlt das Paket, faellt nur die Bloecke-
+    # Vorschau aus (422 mit Grund), nicht die ganze Marketing-API.
+    try:
+        import mjml
+    except ImportError as e:
+        raise RenderFehler("mjml-python fehlt auf diesem Rechner - der Newsletter laesst sich nicht setzen "
+                           "(pip install -r spaces/marketing/requirements.txt)") from e
     quelle = nach_mjml(dokument, betreff, vorschautext, pflichtteil, bild_basis, 380 if handy else 600)
     try:
         return mjml.mjml2html(quelle)

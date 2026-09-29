@@ -508,3 +508,88 @@ def test_aus_vorlage_titel_laenge(db, c):
     assert db.sql == []
     db.antworten = [[{"id": IID}]]
     assert c.post("/api/pult/inhalte/aus_vorlage", headers=H, json={"vorlage": "leer", "titel": "x" * 200}).status_code == 200
+
+# --- Schlussrunde E1 (final-fix-findings.md) ---
+
+def test_api_laedt_ohne_mjml_und_feldvorschau_geht(tmp_path):
+    """I6: fehlt mjml-python, startet die API trotzdem; die Feld-Vorschau geht,
+    eine Bloecke-Vorschau ist 422 mit deutschem Grund (eigener Prozess, damit
+    der Import wirklich frisch laeuft)."""
+    import subprocess
+    import sys
+    import textwrap
+    from pathlib import Path
+    wurzel = Path(__file__).resolve().parents[3]
+    skript = tmp_path / "ohne_mjml.py"
+    skript.write_text(textwrap.dedent(f"""
+        import os, sys
+        sys.path.insert(0, {str(wurzel)!r})
+        sys.modules["mjml"] = None
+        os.environ["MARKETING_PULT_KEY"] = "k"
+        from fastapi.testclient import TestClient
+        from spaces.marketing.api import server
+        from spaces.marketing.sync import _db
+        G = {GESTALT!r}
+        zeilen = [
+            [{{"felder": {FELDER!r}, "format": "felder", "bloecke": None, "gestalt": G,
+               "pflichtteil": {{"impressum": "I", "abmelde_hinweis": "A"}}, "gestalt_fehler": None}}],
+            [{{"felder": {{"betreff": "B"}}, "format": "bloecke", "bloecke": {DOK!r}, "gestalt": G,
+               "pflichtteil": {{"impressum": "I"}}, "gestalt_fehler": None}}]]
+        _db.query_one = lambda sql, streng=False, **k: zeilen.pop(0)[0]
+        c = TestClient(server.app)
+        h = {{"X-Pult-Key": "k"}}
+        r1 = c.get("/api/pult/inhalte/{IID}/vorschau?fassung=1&format=mail", headers=h)
+        r2 = c.get("/api/pult/inhalte/{IID}/vorschau?fassung=2&format=mail", headers=h)
+        print(r1.status_code, r2.status_code, r2.json()["detail"])
+    """), encoding="utf-8")
+    p = subprocess.run([sys.executable, str(skript)], capture_output=True, text=True, encoding="utf-8",
+                       cwd=str(wurzel), timeout=120)
+    assert p.returncode == 0, p.stderr[-2000:]
+    zeile = p.stdout.strip().splitlines()[-1]
+    assert zeile.startswith("200 422 ") and "mjml-python fehlt" in zeile, zeile
+
+
+def test_inhalt_bloecke_nur_fuer_neueste_fassung(db, c):
+    db.antworten = [[{"id": IID, "mandant": "vibemind", "art": "newsletter", "titel": "T", "status": "entwurf",
+                      "alter_weg": None}],
+                    [{"fassung": 3, "felder": {}, "layout": None, "urheber": "betreiber", "erstellt_am": "x",
+                      "format": "bloecke", "bloecke": DOK},
+                     {"fassung": 2, "felder": {}, "layout": None, "urheber": "agent", "erstellt_am": "x",
+                      "format": "bloecke", "bloecke": DOK}]]
+    r = c.get(f"/api/pult/inhalte/{IID}", headers=H)
+    f = r.json()["fassungen"]
+    assert f[0]["bloecke"] == DOK and f[1]["bloecke"] is None
+    assert "max(fassung) OVER ()" in db.sql[-1]
+
+
+def test_in_bloecke_uebernehmen(db, c):
+    db.antworten = [[{"fassung": 4}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/in_bloecke", headers=H, json={"von": "felix"})
+    assert r.status_code == 200 and r.json() == {"fassung": 4}
+    assert f"marketing.pult_in_bloecke_uebernehmen('{IID}'::uuid, 'felix')" in db.sql[-1]
+
+
+def test_in_bloecke_ohne_von_ist_betreiber(db, c):
+    db.antworten = [[{"fassung": 2}]]
+    assert c.post(f"/api/pult/inhalte/{IID}/in_bloecke", headers=H, json={}).status_code == 200
+    assert ", 'betreiber')" in db.sql[-1]
+
+
+def test_in_bloecke_ablehnung_422_mit_grund(db, c, monkeypatch):
+    def wirft(*a, **k):
+        raise RuntimeError("ERROR:  Dieser Newsletter ist schon im Editor-Format")
+    monkeypatch.setattr(_db, "query_one", wirft)
+    r = c.post(f"/api/pult/inhalte/{IID}/in_bloecke", headers=H, json={"von": "felix"})
+    assert r.status_code == 422 and r.json()["detail"] == "Dieser Newsletter ist schon im Editor-Format"
+
+
+def test_in_bloecke_schluessel_id_und_verbindung(db, c, monkeypatch):
+    assert c.post(f"/api/pult/inhalte/{IID}/in_bloecke", json={}).status_code == 401
+    assert c.post("/api/pult/inhalte/kein-uuid/in_bloecke", headers=H, json={}).status_code == 404
+    assert c.post(f"/api/pult/inhalte/{IID}/in_bloecke", headers=H, json={"von": 5}).status_code == 422
+    assert db.sql == []
+    def wirft(*a, **k):
+        raise RuntimeError("ssh: connect to host offload-vm: Connection refused")
+    monkeypatch.setattr(_db, "query_one", wirft)
+    r = c.post(f"/api/pult/inhalte/{IID}/in_bloecke", headers=H, json={})
+    assert r.status_code == 503 and "offload" not in r.text
