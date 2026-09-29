@@ -2,6 +2,7 @@
 -- 2026-09-29-newsletter-editor-design.md §3.3/§3.5). Nur Ergaenzungen.
 -- Farbbedeutung: backdropColor = Layout flaeche, canvasColor = grund, textColor = text.
 -- Idempotent: die Uebernahme greift nur, solange die neueste Fassung 'felder' ist.
+-- Nach 053 muss 054 (und 055) folgen; 053 allein erneut einzuspielen setzt den strengeren Pruefer aus 054 zurueck.
 BEGIN;
 
 ALTER TABLE marketing.inhalt_fassungen ADD COLUMN IF NOT EXISTS format text NOT NULL DEFAULT 'felder';
