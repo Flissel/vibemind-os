@@ -64,7 +64,7 @@ REPO_ROOT = next((p for p in (PKG_ROOT, *PKG_ROOT.parents)
 
 # Schluessel, die dieser Dienst notfalls selbst aus der repo-.env holt.
 _ENV_KEYS = ("MARKETING_API_KEY", "MARKETING_PROPOSAL_API_KEY",
-             "MARKETING_N8N_API_KEY", "MARKETING_UNSUB_SECRET")
+             "MARKETING_N8N_API_KEY", "MARKETING_UNSUB_SECRET", "MARKETING_PULT_KEY")
 
 
 def _load_env_fallback() -> None:
@@ -3455,6 +3455,12 @@ if CURATOR_DIR.is_dir():
     )
 else:
     logger.warning("curator dir not found: %s -- /curator/ disabled", CURATOR_DIR)
+
+
+# ─── Pult-Router (Sales-Oberflaeche, X-Pult-Key) ───────────────────────
+from spaces.marketing.api import pult as _pult  # noqa: E402
+
+app.include_router(_pult.router)
 
 
 # ─── Static-serve of the mockup ───────────────────────────────────────
