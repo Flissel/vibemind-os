@@ -217,7 +217,7 @@ class MCMPGardener:
           - external id (thought_id, bubble_id, idea_id, ...) → deterministic
             UUID via same hash as qdrant_kg._point_id, then retrieve
         """
-        from core.qdrant_kg import COLLECTIONS, _point_id
+        from core.qdrant_kg import ARCHIVE_COLLECTIONS, COLLECTIONS, _point_id
         # Compute the deterministic UUID for the external id form
         try:
             uuid_guess = _point_id(ref)
@@ -228,7 +228,11 @@ class MCMPGardener:
         if uuid_guess and uuid_guess != ref:
             candidates.append(uuid_guess)
 
+        # Fix-Runde 1, Finding 3: Archiv-Collections sind kein Teil des
+        # normalen Rundgangs — nicht mit durchsuchen.
         for logical, coll_name in COLLECTIONS.items():
+            if logical in ARCHIVE_COLLECTIONS:
+                continue
             for cand in candidates:
                 try:
                     rec = self.kg.client.retrieve(

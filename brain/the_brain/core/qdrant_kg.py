@@ -120,6 +120,12 @@ COLLECTIONS: Dict[str, str] = {
 COLLECTIONS["episodic_archive"] = "brain-episodic-archive"
 COLLECTIONS["semantic_archive"] = "brain-semantic-archive"
 
+# Fix-Runde 1, Finding 3: Archiv-Collections (logische Namen) sind kein Teil
+# des normalen Recalls. Der Default-Multi-Collection-Pfad in search() und der
+# Punkt-Lookup in mcmp_gardener._locate() ueberspringen sie; ein expliziter
+# collection="episodic_archive"/"semantic_archive" funktioniert weiterhin.
+ARCHIVE_COLLECTIONS = {"episodic_archive", "semantic_archive"}
+
 # Baustein D.2 — execution-log collection (RAG-index over multihop history).
 # Only registered when EXECUTION_LOG_ENABLED, so existing deployments don't get
 # a new collection unless they opt in. Stores one embedded summary per step with
@@ -995,7 +1001,11 @@ class QdrantKG:
                     qdrant_name = collection
                 colls_to_query = [qdrant_name]
             else:
-                colls_to_query = [COLLECTIONS[c] for c in COLLECTIONS]
+                # Fix-Runde 1, Finding 3: Archiv-Collections nicht im
+                # Default-Recall durchsuchen — nur ueber explizites
+                # collection=<logischer Name> erreichbar.
+                colls_to_query = [COLLECTIONS[c] for c in COLLECTIONS
+                                  if c not in ARCHIVE_COLLECTIONS]
 
             # Optional node_type + payload filters (must-conditions)
             must = []
