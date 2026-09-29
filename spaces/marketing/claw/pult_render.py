@@ -52,13 +52,19 @@ def _absaetze(text: str, farbe: str, abstand: int) -> str:
 def _band_schrift(g: dict) -> tuple[str, str]:
     """(Schrift, gedaempfte Schrift) fuer das Kopf-/Fussband auf `flaeche`.
 
-    Die Schrift ist die von text_hell, #ffffff oder #111111, die gegen flaeche
-    den hoechsten Kontrast hat - in "hell"/"warm-sand" ist flaeche das dunkle
+    Die Schrift ist text_hell, wenn die gegen flaeche lesbar ist (>= 4.5) -
+    der Betreiber will lieber nicht reinweiss (pdf.py, 11.09.2026). Sonst die
+    bessere von #ffffff/#111111: in "hell"/"warm-sand" ist flaeche das dunkle
     Band, text_hell aber dunkel (fuer den hellen grund). Die gedaempfte Schrift
     ist text_leise, wenn die gegen flaeche lesbar ist, sonst dieselbe Wahl."""
     flaeche = g["flaeche"]
-    kandidaten = [c for c in (g.get("text_hell"), "#ffffff", "#111111") if c]
-    schrift = max(kandidaten, key=lambda c: schoenheit.kontrast(c, flaeche))
+    text_hell = g.get("text_hell") or ""
+    try:
+        hell_ok = schoenheit.kontrast(text_hell, flaeche) >= schoenheit.KONTRAST_TEXT
+    except ValueError:
+        hell_ok = False
+    schrift = text_hell if hell_ok else max(
+        ("#ffffff", "#111111"), key=lambda c: schoenheit.kontrast(c, flaeche))
     leise = g.get("text_leise") or ""
     try:
         leise_ok = schoenheit.kontrast(leise, flaeche) >= schoenheit.KONTRAST_TEXT

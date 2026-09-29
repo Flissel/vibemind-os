@@ -141,6 +141,21 @@ def test_inhalt_liegt_auf_grund_band_auf_flaeche(name):
     assert knopf == [(g["handlung_text"], g["akzent"])]
 
 
+def test_band_bevorzugt_text_hell_wenn_lesbar():
+    # Betreiber (pdf.py, 11.09.2026): lieber nicht reinweiss. "dunkel" hat
+    # text_hell #e9fbf6 mit 11.28 gegen flaeche - der bleibt, obwohl #ffffff
+    # noch etwas mehr Kontrast haette.
+    assert r._band_schrift(pdf.LAYOUTS["dunkel"])[0] == "#e9fbf6"
+    paare = farb_paare(r.mail_html(FELDER, dict(pdf.LAYOUTS["dunkel"], kopf_text="K",
+                                                fuss_text="F"), PFLICHT))
+    assert ("td", "#e9fbf6", pdf.LAYOUTS["dunkel"]["flaeche"]) in paare
+    # "hell": text_hell ist dunkel wie flaeche -> lesbarer Ersatz.
+    hell = pdf.LAYOUTS["hell"]
+    schrift = r._band_schrift(hell)[0]
+    assert schrift in ("#ffffff", "#111111") and schrift != hell["text_hell"]
+    assert schoenheit.kontrast(schrift, hell["flaeche"]) >= 4.5
+
+
 def test_ohne_kopf_und_logo_kein_kopfband():
     g = dict(pdf.LAYOUTS["hell"])
     html = r.mail_html(FELDER, g, PFLICHT)
