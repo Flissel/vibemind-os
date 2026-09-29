@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 pytest.importorskip("mcp")
 
@@ -99,3 +100,61 @@ def test_agent_task_ohne_message_wird_abgelehnt():
     s = _srv()
     out = asyncio.run(s.call_tool("openfang_agent_task", {"agent": "brain-planner"}))
     assert out[0].text.startswith("error:")
+
+
+# --- Fix-Runde 2 (Review-Befund Medium): _json ohne try/except um requests.request
+# liess requests.ConnectionError/Timeout roh bis zum generischen MCP-SDK-Handler
+# durch, statt der freundlichen Meldung, die _http fuer denselben Fall gibt. ---
+
+def test_agent_recent_connection_error_gibt_freundliche_meldung_statt_ausnahme():
+    s = _srv()
+    with patch("requests.request", side_effect=requests.exceptions.ConnectionError()):
+        out = asyncio.run(s.call_tool("openfang_agent_recent", {"agent": "brain-planner"}))
+    assert out[0].text.startswith("error:")
+    assert "cannot reach OpenFang" in out[0].text
+    assert "is the daemon running on :4200" in out[0].text
+
+
+def test_agent_task_connection_error_gibt_freundliche_meldung_statt_ausnahme():
+    s = _srv()
+    with patch("requests.request", side_effect=requests.exceptions.ConnectionError()):
+        out = asyncio.run(s.call_tool("openfang_agent_task",
+                                      {"agent": "brain-planner", "message": "Status?"}))
+    assert out[0].text.startswith("error:")
+    assert "cannot reach OpenFang" in out[0].text
+
+
+def test_agent_recent_timeout_gibt_freundliche_meldung_statt_ausnahme():
+    s = _srv()
+    with patch("requests.request", side_effect=requests.exceptions.Timeout()):
+        out = asyncio.run(s.call_tool("openfang_agent_recent", {"agent": "brain-planner"}))
+    assert out[0].text.startswith("error:")
+    assert "timed out" in out[0].text
+
+
+def test_agent_task_timeout_gibt_freundliche_meldung_statt_ausnahme():
+    s = _srv()
+    with patch("requests.request", side_effect=requests.exceptions.Timeout()):
+        out = asyncio.run(s.call_tool("openfang_agent_task",
+                                      {"agent": "brain-planner", "message": "Status?"}))
+    assert out[0].text.startswith("error:")
+    assert "timed out" in out[0].text
+
+
+def test_agent_recent_sonstige_request_exception_gibt_fehlertext_statt_ausnahme():
+    s = _srv()
+    with patch("requests.request", side_effect=requests.exceptions.RequestException("kaputt")):
+        out = asyncio.run(s.call_tool("openfang_agent_recent", {"agent": "brain-planner"}))
+    assert out[0].text.startswith("error:")
+    assert "kaputt" in out[0].text
+
+
+def test_agent_recent_nicht_json_antwort_gibt_fehlertext_statt_ausnahme():
+    s = _srv()
+    kaputte_antwort = MagicMock(status_code=200)
+    kaputte_antwort.json.side_effect = ValueError("Expecting value")
+    kaputte_antwort.text = "<html>kein JSON</html>"
+    with patch("requests.request", return_value=kaputte_antwort):
+        out = asyncio.run(s.call_tool("openfang_agent_recent", {"agent": "brain-planner"}))
+    assert out[0].text.startswith("error:")
+    assert "not JSON" in out[0].text
