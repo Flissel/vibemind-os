@@ -24,6 +24,7 @@
       "type": "Image",
       "data": {
         "style": {
+          "textAlign": "center",
           "padding": {
             "top": 40,
             "bottom": 8,
@@ -114,7 +115,7 @@
           }
         },
         "props": {
-          "text": "**Datum**\nDonnerstag, 15. Oktober 2026",
+          "text": "**Datum**\n[Wochentag, Datum]",
           "markdown": true
         }
       }
@@ -134,7 +135,7 @@
           }
         },
         "props": {
-          "text": "**Uhrzeit**\n18:00 bis 20:30 Uhr",
+          "text": "**Uhrzeit**\n[Uhrzeit]",
           "markdown": true
         }
       }
@@ -154,7 +155,7 @@
           }
         },
         "props": {
-          "text": "**Ort**\nVibeMind Studio, Musterstraße 1, 10115 Berlin",
+          "text": "**Ort**\n[Ort, Adresse]",
           "markdown": true
         }
       }
@@ -164,11 +165,12 @@
       "data": {
         "style": {
           "backgroundColor": "#16302d",
+          "borderRadius": 12,
           "padding": {
-            "top": 28,
-            "bottom": 28,
-            "left": 40,
-            "right": 40
+            "top": 24,
+            "bottom": 24,
+            "left": 16,
+            "right": 16
           }
         },
         "props": {
@@ -220,7 +222,7 @@
           "color": "#8fb3ad"
         },
         "props": {
-          "text": "Die Plätze sind begrenzt. Bitte melde dich bis zum 8. Oktober an. Falls du doch nicht kannst, antworte einfach auf diese Mail."
+          "text": "Die Plätze sind begrenzt. Bitte melde dich bis zum [Anmeldeschluss] an. Falls du doch nicht kannst, antworte einfach auf diese Mail."
         }
       }
     }

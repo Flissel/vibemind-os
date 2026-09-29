@@ -21,6 +21,7 @@
       "type": "Image",
       "data": {
         "style": {
+          "textAlign": "center",
           "padding": {
             "top": 40,
             "bottom": 16,

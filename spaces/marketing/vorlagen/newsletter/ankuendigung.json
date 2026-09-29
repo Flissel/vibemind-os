@@ -25,6 +25,7 @@
       "type": "Image",
       "data": {
         "style": {
+          "textAlign": "center",
           "padding": {
             "top": 48,
             "bottom": 8,
@@ -166,7 +167,7 @@
           "color": "#8fb3ad"
         },
         "props": {
-          "text": "*Gilt ab dem 1. Oktober. Alle Details findest du auf unserer Seite.*",
+          "text": "*Gilt ab [Datum]. Alle Details findest du auf unserer Seite.*",
           "markdown": true
         }
       }

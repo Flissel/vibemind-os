@@ -24,11 +24,12 @@
       "type": "Image",
       "data": {
         "style": {
+          "textAlign": "center",
           "padding": {
             "top": 40,
             "bottom": 24,
-            "left": 32,
-            "right": 32
+            "left": 40,
+            "right": 40
           }
         },
         "props": {
@@ -44,17 +45,18 @@
       "type": "Image",
       "data": {
         "style": {
+          "textAlign": "center",
           "padding": {
             "top": 8,
             "bottom": 8,
-            "left": 32,
-            "right": 32
+            "left": 40,
+            "right": 40
           }
         },
         "props": {
           "url": "medien:produkt.png",
           "alt": "Produktbild",
-          "width": 536,
+          "width": 520,
           "linkHref": "https://vibemind.space",
           "contentAlignment": "middle"
         }
@@ -71,8 +73,8 @@
           "padding": {
             "top": 32,
             "bottom": 8,
-            "left": 32,
-            "right": 32
+            "left": 40,
+            "right": 40
           }
         },
         "props": {
@@ -90,8 +92,8 @@
           "padding": {
             "top": 0,
             "bottom": 16,
-            "left": 32,
-            "right": 32
+            "left": 40,
+            "right": 40
           }
         },
         "props": {
@@ -110,8 +112,8 @@
           "padding": {
             "top": 0,
             "bottom": 24,
-            "left": 32,
-            "right": 32
+            "left": 40,
+            "right": 40
           }
         },
         "props": {
@@ -130,8 +132,8 @@
           "padding": {
             "top": 8,
             "bottom": 6,
-            "left": 32,
-            "right": 32
+            "left": 0,
+            "right": 0
           }
         },
         "props": {
@@ -149,8 +151,8 @@
           "padding": {
             "top": 0,
             "bottom": 6,
-            "left": 32,
-            "right": 32
+            "left": 0,
+            "right": 0
           }
         },
         "props": {
@@ -169,8 +171,8 @@
           "padding": {
             "top": 0,
             "bottom": 8,
-            "left": 32,
-            "right": 32
+            "left": 0,
+            "right": 0
           }
         },
         "props": {
@@ -189,8 +191,8 @@
           "padding": {
             "top": 8,
             "bottom": 6,
-            "left": 32,
-            "right": 32
+            "left": 0,
+            "right": 0
           }
         },
         "props": {
@@ -208,8 +210,8 @@
           "padding": {
             "top": 0,
             "bottom": 6,
-            "left": 32,
-            "right": 32
+            "left": 0,
+            "right": 0
           }
         },
         "props": {
@@ -228,8 +230,8 @@
           "padding": {
             "top": 0,
             "bottom": 8,
-            "left": 32,
-            "right": 32
+            "left": 0,
+            "right": 0
           }
         },
         "props": {
@@ -248,8 +250,8 @@
           "padding": {
             "top": 8,
             "bottom": 6,
-            "left": 32,
-            "right": 32
+            "left": 0,
+            "right": 0
           }
         },
         "props": {
@@ -267,8 +269,8 @@
           "padding": {
             "top": 0,
             "bottom": 6,
-            "left": 32,
-            "right": 32
+            "left": 0,
+            "right": 0
           }
         },
         "props": {
@@ -287,8 +289,8 @@
           "padding": {
             "top": 0,
             "bottom": 8,
-            "left": 32,
-            "right": 32
+            "left": 0,
+            "right": 0
           }
         },
         "props": {
@@ -303,13 +305,13 @@
           "padding": {
             "top": 0,
             "bottom": 0,
-            "left": 32,
-            "right": 32
+            "left": 40,
+            "right": 40
           }
         },
         "props": {
           "columnsCount": 3,
-          "columnsGap": 16,
+          "columnsGap": 24,
           "contentAlignment": "top",
           "columns": [
             {
@@ -347,8 +349,8 @@
           "padding": {
             "top": 32,
             "bottom": 48,
-            "left": 32,
-            "right": 32
+            "left": 40,
+            "right": 40
           }
         },
         "props": {

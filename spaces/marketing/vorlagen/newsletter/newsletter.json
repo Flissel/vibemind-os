@@ -27,6 +27,7 @@
       "type": "Image",
       "data": {
         "style": {
+          "textAlign": "center",
           "padding": {
             "top": 40,
             "bottom": 8,
@@ -59,7 +60,7 @@
           }
         },
         "props": {
-          "text": "NEWSLETTER  ·  AUSGABE 01"
+          "text": "NEWSLETTER  ·  AUSGABE [Nr]"
         }
       }
     },
@@ -113,8 +114,8 @@
           "padding": {
             "top": 8,
             "bottom": 6,
-            "left": 40,
-            "right": 40
+            "left": 0,
+            "right": 0
           }
         },
         "props": {
@@ -132,8 +133,8 @@
           "padding": {
             "top": 0,
             "bottom": 8,
-            "left": 40,
-            "right": 40
+            "left": 0,
+            "right": 0
           }
         },
         "props": {
@@ -152,8 +153,8 @@
           "padding": {
             "top": 0,
             "bottom": 8,
-            "left": 40,
-            "right": 40
+            "left": 0,
+            "right": 0
           }
         },
         "props": {
@@ -172,8 +173,8 @@
           "padding": {
             "top": 8,
             "bottom": 6,
-            "left": 40,
-            "right": 40
+            "left": 0,
+            "right": 0
           }
         },
         "props": {
@@ -191,8 +192,8 @@
           "padding": {
             "top": 0,
             "bottom": 8,
-            "left": 40,
-            "right": 40
+            "left": 0,
+            "right": 0
           }
         },
         "props": {
@@ -211,8 +212,8 @@
           "padding": {
             "top": 0,
             "bottom": 8,
-            "left": 40,
-            "right": 40
+            "left": 0,
+            "right": 0
           }
         },
         "props": {

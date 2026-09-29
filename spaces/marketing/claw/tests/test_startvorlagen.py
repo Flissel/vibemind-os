@@ -161,6 +161,50 @@ def test_vorlage_im_vibemind_stil(name):
     assert len(knoepfe) == (0 if name == "kurzer-hinweis" else 1)
 
 
+RAND = 40  # gemeinsame Textlinie aller Vorlagen
+
+
+def _links(b):
+    return ((b.get("data") or {}).get("style") or {}).get("padding", {}).get("left", 24)
+
+
+def _rechts(b):
+    return ((b.get("data") or {}).get("style") or {}).get("padding", {}).get("right", 24)
+
+
+@pytest.mark.parametrize("name", NAMEN)
+def test_textkante_einheitlich(name):
+    """Alles, was Text traegt, beginnt auf derselben Linie - auch in Spalten und Karten.
+    Spalten: Rand am ColumnsContainer, Bloecke darin 0, Abstand ueber columnsGap.
+    Karten: der Uebersetzer rueckt Container um KARTEN_RAND ein, der Innenabstand gleicht aus."""
+    d = _laden(name)["bloecke"]
+    for bid in d["root"]["data"]["childrenIds"]:
+        b = d[bid]
+        if b["type"] in ("Image", "Spacer"):
+            continue
+        if b["type"] == "ColumnsContainer":
+            assert (_links(b), _rechts(b)) == (RAND, RAND), bid
+            assert b["data"]["props"]["columnsGap"] > 0, bid
+            for kid in _kinder(b):
+                assert (_links(d[kid]), _rechts(d[kid])) == (0, 0), kid
+        elif b["type"] == "Container":
+            assert bloecke_mjml.KARTEN_RAND + _links(b) == RAND, bid
+            assert bloecke_mjml.KARTEN_RAND + _rechts(b) == RAND, bid
+            for kid in _kinder(b):
+                assert (_links(d[kid]), _rechts(d[kid])) == (0, 0), kid
+        else:
+            assert (_links(b), _rechts(b)) == (RAND, RAND), bid
+
+
+@pytest.mark.parametrize("name", NAMEN)
+def test_keine_echt_wirkenden_beispielwerte(name):
+    """Beispielwerte stehen in [Klammern], damit nichts Echtes versehentlich rausgeht."""
+    roh = (ORDNER / f"{name}.json").read_text(encoding="utf-8")
+    assert not re.search(r"\b(19|20)\d\d\b|\d{1,2}:\d\d|\b\d{5}\b|stra(ss|ß)e|"
+                         r"\b(Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)\b",
+                         roh, re.I)
+
+
 @pytest.mark.parametrize("kaputt", [
     {"x": {"type": "Text", "data": {"props": {"text": "<b>x</b>", "markdown": True}}}},
     {"x": {"type": "Text", "data": {"props": {"text": "siehe www.example.de", "markdown": True}}}},
