@@ -49,14 +49,18 @@ EXCEPTION WHEN raise_exception THEN
   IF SQLERRM LIKE 'PROBE:%' THEN RAISE; END IF;
 END $$;
 -- Entscheiden: freigeben setzt die neueste Fassung, zweimal entscheiden geht nicht
-DO $$ DECLARE v_i uuid; v_s text; BEGIN
+-- (Fix-Runde 1 / I3: pult_entscheiden bekam einen Pflicht-Parameter p_fassung
+-- in 051 - diese zwei Aufrufe sind deshalb auf die neue 5-Parameter-Signatur
+-- umgestellt; siehe task-1-report.md Abschnitt "Fix round 1".)
+DO $$ DECLARE v_i uuid; v_s text; v_fassung int; BEGIN
   SELECT id INTO v_i FROM marketing.inhalte WHERE status='entwurf' LIMIT 1;
-  v_s := marketing.pult_entscheiden(v_i, 'freigeben', 'felix', NULL);
+  SELECT max(fassung) INTO v_fassung FROM marketing.inhalt_fassungen WHERE inhalt=v_i;
+  v_s := marketing.pult_entscheiden(v_i, v_fassung, 'freigeben', 'felix', NULL);
   IF v_s <> 'freigegeben' OR (SELECT freigegebene_fassung FROM marketing.inhalte WHERE id=v_i)
      <> (SELECT max(fassung) FROM marketing.inhalt_fassungen WHERE inhalt=v_i) THEN
     RAISE EXCEPTION 'PROBE: Freigabe setzt nicht die neueste Fassung'; END IF;
   BEGIN
-    PERFORM marketing.pult_entscheiden(v_i, 'ablehnen', 'felix', 'x');
+    PERFORM marketing.pult_entscheiden(v_i, v_fassung, 'ablehnen', 'felix', 'x');
     RAISE EXCEPTION 'PROBE: zweites Urteil ging durch';
   EXCEPTION WHEN raise_exception THEN
     IF SQLERRM LIKE 'PROBE:%' THEN RAISE; END IF;
