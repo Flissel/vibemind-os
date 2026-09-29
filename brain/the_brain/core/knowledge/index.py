@@ -48,17 +48,33 @@ def neu_aufbauen(kg: Any, tresor) -> Dict[str, int]:
 
 
 def verknuepfen(kg: Any, tresor) -> int:
-    """Wikilinks -> payload.linked.ideas (external_ids), damit der Gardener sie begeht."""
-    from core.qdrant_kg import COLLECTIONS, _point_id
+    """Wikilinks -> payload.linked.ideas (external_ids), damit der Gardener sie begeht.
+
+    Fix-Runde 1 (Finding 1): Qdrants set_payload ersetzt nur TOP-LEVEL-Keys -
+    ein blindes {"linked": {"ideas": [...]}} wuerde also linked.bubbles/
+    thoughts/spaces/... loeschen, die _build_edges (qdrant_kg.py) bereits
+    geschrieben hat. Deshalb read-merge-write wie dort: bestehenden linked-
+    Dict lesen, NUR linked.ideas ersetzen (auch auf leer, wenn ein Wikilink
+    entfernt wurde), alles andere unangetastet lassen. Existiert der Punkt
+    noch nicht in Qdrant, wird das Dokument uebersprungen (zaehlt nicht als
+    verknuepft) statt einen leeren Punkt anzulegen.
+    """
+    from core.qdrant_kg import COLLECTIONS, _empty_linked, _point_id
     docs = tresor.alle()
     nach_name = {dateiname(d): doc_external_id(d) for d in docs}
+    coll = COLLECTIONS["artifacts"]
     kanten = 0
     for d in docs:
         ziele = [nach_name[l] for l in d.links if l in nach_name]
-        if not ziele:
+        pid = _point_id(doc_external_id(d))
+        try:
+            rec = kg.client.retrieve(collection_name=coll, ids=[pid], with_payload=True)
+        except Exception:
             continue
-        kg.client.set_payload(collection_name=COLLECTIONS["artifacts"],
-                              payload={"linked": {"ideas": ziele}},
-                              points=[_point_id(doc_external_id(d))])
+        if not rec:
+            continue
+        linked = dict((rec[0].payload or {}).get("linked") or _empty_linked())
+        linked["ideas"] = ziele
+        kg.client.set_payload(collection_name=coll, payload={"linked": linked}, points=[pid])
         kanten += len(ziele)
     return kanten

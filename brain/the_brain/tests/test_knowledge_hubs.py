@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from core.knowledge import hubs, index
@@ -15,6 +16,10 @@ def dok(id, titel, links=()):
                     links=list(links))
 
 
+def _punkt(payload):
+    return SimpleNamespace(payload=payload)
+
+
 def test_hub_sortiert_nach_aktivierung_mit_wikilinks():
     docs = [dok("aaaaaa1", "Alpha"), dok("bbbbbb2", "Beta")]
     akt = {"doc::bubble::aaaaaa1": 0.4, "doc::bubble::bbbbbb2": 3.0}
@@ -23,15 +28,67 @@ def test_hub_sortiert_nach_aktivierung_mit_wikilinks():
     assert text.index("[[Beta (bbbbbb)]]") < text.index("[[Alpha (aaaaaa)]]")
 
 
-def test_verknuepfen_setzt_linked(tmp_path):
+def test_verknuepfen_ersetzt_nur_linked_ideas(tmp_path):
+    """Fix-Runde 1, Finding 1: set_payload ersetzt in Qdrant nur TOP-LEVEL-
+    Keys - ein blindes {"linked": {"ideas": [...]}} wuerde also linked.bubbles/
+    thoughts/... loeschen, die _build_edges bereits geschrieben hat.
+    verknuepfen muss deshalb read-merge-write machen: bestehenden linked-Dict
+    lesen, NUR linked.ideas ersetzen, alles andere unangetastet lassen."""
     t = Tresor(tmp_path)
     t.schreiben(dok("aaaaaa1", "Alpha"))
     t.schreiben(dok("bbbbbb2", "Beta", links=["Alpha (aaaaaa)"]))
     kg = MagicMock()
+    kg.client.retrieve.return_value = [_punkt({"linked": {"bubbles": ["X"], "ideas": ["stale"]}})]
+
     n = index.verknuepfen(kg, t)
+
     assert n == 1
     kw = kg.client.set_payload.call_args.kwargs
-    assert kw["payload"] == {"linked": {"ideas": ["doc::bubble::aaaaaa1"]}}
+    assert kw["payload"]["linked"]["ideas"] == ["doc::bubble::aaaaaa1"]
+    assert kw["payload"]["linked"]["bubbles"] == ["X"], "andere Kantenlisten bleiben unangetastet"
+
+
+def test_verknuepfen_entfernter_wikilink_verschwindet_aus_linked_ideas(tmp_path):
+    t = Tresor(tmp_path)
+    t.schreiben(dok("aaaaaa1", "Alpha"))
+    t.schreiben(dok("bbbbbb2", "Beta"))  # Wikilink zu Alpha wurde im Text entfernt
+    kg = MagicMock()
+    kg.client.retrieve.return_value = [_punkt({"linked": {"ideas": ["doc::bubble::aaaaaa1"]}})]
+
+    index.verknuepfen(kg, t)
+
+    kw = kg.client.set_payload.call_args.kwargs
+    assert kw["payload"]["linked"]["ideas"] == [], \
+        "entfernter Wikilink darf nicht mehr in linked.ideas stehen"
+
+
+def test_verknuepfen_ueberspringt_fehlenden_punkt(tmp_path):
+    t = Tresor(tmp_path)
+    t.schreiben(dok("aaaaaa1", "Alpha"))
+    t.schreiben(dok("bbbbbb2", "Beta", links=["Alpha (aaaaaa)"]))
+    kg = MagicMock()
+    kg.client.retrieve.return_value = []  # Punkt existiert noch nicht in Qdrant
+
+    n = index.verknuepfen(kg, t)
+
+    assert n == 0
+    kg.client.set_payload.assert_not_called()
+
+
+def test_schreiben_ruft_scroll_mit_erwarteten_keyword_namen(tmp_path):
+    """Finding 2b: dieselben Keyword-Namen wie der Rest von core/ (siehe
+    decision_self_prior.py/discourse_engine.py): collection_name, scroll_filter,
+    limit, offset, with_payload, with_vectors."""
+    t = Tresor(tmp_path)
+    t.schreiben(dok("aaaaaa1", "Alpha"))
+    kg = MagicMock()
+    kg.client.scroll.return_value = ([], None)
+
+    hubs.schreiben(t, kg)
+
+    kw = kg.client.scroll.call_args.kwargs
+    assert set(kw.keys()) == {"collection_name", "scroll_filter", "limit", "offset",
+                              "with_payload", "with_vectors"}
 
 
 def test_hubs_datei_ohne_yaml_kopf_wird_von_tresor_ignoriert(tmp_path):

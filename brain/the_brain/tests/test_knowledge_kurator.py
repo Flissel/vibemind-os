@@ -67,6 +67,42 @@ def test_index_wird_nachgezogen(tmp_path):
     assert kg._upsert_point.call_args_list[0].kwargs["external_id"] == "doc::bubble::a1b2c3d4"
 
 
+def test_voll_durchlauf_ruft_verknuepfen_und_hubs_ereignisse_abarbeiten_nicht(tmp_path, monkeypatch):
+    """Fix-Runde 1, Finding 2a: 'verknuepfen + hubs' gehoert NUR in den
+    Volllauf (Brief Step 6), nicht in ereignisse_abarbeiten - sonst wuerden
+    Wikilinks/Hub-Notizen bei jedem einzelnen Cross-Prozess-Ereignis neu
+    geschrieben statt nur beim periodischen Volllauf."""
+    from core.knowledge import hubs as hubs_modul
+    from core.knowledge import index as index_modul
+
+    aufrufe = {"verknuepfen": 0, "hubs": 0}
+
+    def fake_verknuepfen(kg, tresor):
+        aufrufe["verknuepfen"] += 1
+        return 0
+
+    def fake_hubs(tresor, kg):
+        aufrufe["hubs"] += 1
+        return 0
+
+    monkeypatch.setattr(index_modul, "verknuepfen", fake_verknuepfen)
+    monkeypatch.setattr(hubs_modul, "schreiben", fake_hubs)
+
+    kg = MagicMock()
+    k = Kurator(Tresor(tmp_path), kg=kg, leser=leser())
+
+    k.voll_durchlauf()
+    assert aufrufe == {"verknuepfen": 1, "hubs": 1}
+
+    pfad = tmp_path / "ereignisse.jsonl"
+    offset_pfad = tmp_path / "ereignisse.jsonl.offset"
+    pfad.write_text(json.dumps({"kind": "action_verified", "capability": "bubble_create"}) + "\n",
+                    encoding="utf-8")
+    k.ereignisse_abarbeiten(str(pfad), str(offset_pfad))
+    assert aufrufe == {"verknuepfen": 1, "hubs": 1}, \
+        "ereignisse_abarbeiten darf verknuepfen/hubs NICHT aufrufen"
+
+
 def test_deuten_gespart_wenn_deutung_noch_gueltig_sonst_gerufen(tmp_path):
     """Controller-Ruling (Task 7): self.deuten(dok) wird nur gerufen, wenn
     self.deuten gesetzt ist UND die gespeicherte Deutung nicht mehr gueltig
