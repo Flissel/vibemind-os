@@ -98,16 +98,17 @@ def test_archivieren_happy_path_loescht_genau_die_kopierten_ids():
         {"id": "id1", "vector": [0.1, 0.2], "payload": {"a": 1}},
         {"id": "id2", "vector": [0.3, 0.4], "payload": {"b": 2}},
     ]
-    nach_zaehlungen = iter([0, 2])  # vorher=0, nachher=0+2 (Kopie schlug voll durch)
 
     def fake_post(url, json=None, timeout=None):
         basis = url.split("?", 1)[0]
         if basis.endswith("/collections/brain-episodic/points/count"):
             return FakeResp({"result": {"count": 2}})
-        if basis.endswith("/collections/brain-episodic-archive/points/count"):
-            return FakeResp({"result": {"count": next(nach_zaehlungen)}})
         if basis.endswith("/collections/brain-episodic/points/scroll"):
             return FakeResp({"result": {"points": punkte, "next_page_offset": None}})
+        if basis.endswith("/collections/brain-episodic-archive/points"):
+            # ID-Rueckholung zur Bestaetigung: beide gefunden.
+            angefragt = set(json["ids"])
+            return FakeResp({"result": [{"id": i} for i in ("id1", "id2") if i in angefragt]})
         if basis.endswith("/collections/brain-episodic/points/delete"):
             return FakeResp({"result": None})
         raise AssertionError(f"unerwartete POST-URL: {url}")
@@ -129,28 +130,99 @@ def test_archivieren_happy_path_loescht_genau_die_kopierten_ids():
     assert rc == 0
     assert mock_put.call_count == 1
     assert len(gel_calls) == 1
-    assert gel_calls[0].kwargs["json"]["points"] == ["id1", "id2"]
+    assert sorted(gel_calls[0].kwargs["json"]["points"]) == ["id1", "id2"]
 
 
-def test_archivieren_zaehlung_stimmt_nicht_loescht_nichts():
-    """Archiv waechst um weniger als kopiert -> Abbruch, kein Loeschen."""
+def test_archivieren_quelle_veraendert_waehrend_lauf_loescht_nichts():
+    """Vorab-Zaehlung und tatsaechlich kopierte Punkte weichen ab (Quelle hat
+    sich waehrend des Laufs veraendert) -> Abbruch vor der Archiv-Bestaetigung,
+    nichts geloescht."""
     m = _mod("archivieren")
-    punkte = [
-        {"id": "id1", "vector": [0.1], "payload": {}},
-        {"id": "id2", "vector": [0.2], "payload": {}},
-    ]
-    nach_zaehlungen = iter([0, 1])  # vorher=0, nachher=1 statt erwarteter 2
+    punkte = [{"id": "id1", "vector": [0.1], "payload": {}}]  # nur 1 statt gezaehlter 2
 
     def fake_post(url, json=None, timeout=None):
         basis = url.split("?", 1)[0]
         if basis.endswith("/collections/brain-episodic/points/count"):
             return FakeResp({"result": {"count": 2}})
-        if basis.endswith("/collections/brain-episodic-archive/points/count"):
-            return FakeResp({"result": {"count": next(nach_zaehlungen)}})
         if basis.endswith("/collections/brain-episodic/points/scroll"):
             return FakeResp({"result": {"points": punkte, "next_page_offset": None}})
+        raise AssertionError(f"Bestaetigung/Loeschung duerfen hier nicht laufen: {url}")
+
+    def fake_put(url, json=None, timeout=None):
+        return FakeResp({"result": None})
+
+    mock_post = patch.object(m.requests, "post", side_effect=fake_post).start()
+    mock_put = patch.object(m.requests, "put", side_effect=fake_put).start()
+    try:
+        rc = m.main(_archiv_argv(ausfuehren=True))
+    finally:
+        patch.stopall()
+    assert rc == 1
+    assert mock_put.call_count == 1  # die eine Seite wurde noch kopiert
+
+
+def test_archivieren_retry_ohne_archiv_wachstum_erfolgreich():
+    """Fix-Runde 1, Finding 1: ein erneuter Lauf, bei dem das Archiv die IDs
+    schon vollstaendig enthaelt (kein Wachstum durch das erneute Upsert), muss
+    trotzdem erfolgreich abschliessen und aus der Quelle loeschen - die alte
+    Vorher/Nachher-Zaehlung waere hier fuer immer haengengeblieben (Finding),
+    weil ein erneuter Lauf das Archiv nie mehr waechst."""
+    m = _mod("archivieren")
+    punkte = [
+        {"id": "id1", "vector": [0.1], "payload": {}},
+        {"id": "id2", "vector": [0.2], "payload": {}},
+    ]
+
+    def fake_post(url, json=None, timeout=None):
+        basis = url.split("?", 1)[0]
+        if basis.endswith("/collections/brain-episodic/points/count"):
+            return FakeResp({"result": {"count": 2}})
+        if basis.endswith("/collections/brain-episodic/points/scroll"):
+            return FakeResp({"result": {"points": punkte, "next_page_offset": None}})
+        if basis.endswith("/collections/brain-episodic-archive/points"):
+            # Archiv hatte die IDs schon VOR diesem Upsert - waechst also
+            # nicht, ist aber trotzdem vollstaendig bestaetigt.
+            return FakeResp({"result": [{"id": "id1"}, {"id": "id2"}]})
         if basis.endswith("/collections/brain-episodic/points/delete"):
-            raise AssertionError("darf bei Zaehl-Mismatch nicht aufgerufen werden")
+            return FakeResp({"result": None})
+        raise AssertionError(f"unerwartete POST-URL: {url}")
+
+    def fake_put(url, json=None, timeout=None):
+        return FakeResp({"result": None})  # Upsert - idempotent, kein Fehler
+
+    mock_post = patch.object(m.requests, "post", side_effect=fake_post).start()
+    patch.object(m.requests, "put", side_effect=fake_put).start()
+    try:
+        rc = m.main(_archiv_argv(ausfuehren=True))
+    finally:
+        gel_calls = [c for c in mock_post.call_args_list
+                     if c.args[0].split("?", 1)[0].endswith("/points/delete")]
+        patch.stopall()
+    assert rc == 0
+    assert len(gel_calls) == 1
+    assert sorted(gel_calls[0].kwargs["json"]["points"]) == ["id1", "id2"]
+
+
+def test_archivieren_teilweise_bestaetigt_loescht_nichts():
+    """Nur ein Teil der kopierten IDs laesst sich im Archiv per ID
+    zurueckholen (z.B. eine Seite kam nicht durch) -> Abbruch, nichts
+    geloescht."""
+    m = _mod("archivieren")
+    punkte = [
+        {"id": "id1", "vector": [0.1], "payload": {}},
+        {"id": "id2", "vector": [0.2], "payload": {}},
+    ]
+
+    def fake_post(url, json=None, timeout=None):
+        basis = url.split("?", 1)[0]
+        if basis.endswith("/collections/brain-episodic/points/count"):
+            return FakeResp({"result": {"count": 2}})
+        if basis.endswith("/collections/brain-episodic/points/scroll"):
+            return FakeResp({"result": {"points": punkte, "next_page_offset": None}})
+        if basis.endswith("/collections/brain-episodic-archive/points"):
+            return FakeResp({"result": [{"id": "id1"}]})  # id2 fehlt im Archiv
+        if basis.endswith("/collections/brain-episodic/points/delete"):
+            raise AssertionError("darf bei unvollstaendiger Bestaetigung nicht aufgerufen werden")
         raise AssertionError(f"unerwartete POST-URL: {url}")
 
     def fake_put(url, json=None, timeout=None):
@@ -163,7 +235,76 @@ def test_archivieren_zaehlung_stimmt_nicht_loescht_nichts():
     finally:
         patch.stopall()
     assert rc == 1
-    assert mock_put.call_count == 1  # kopiert wurde noch
-    # keine Loesch-POSTs unter den aufgezeichneten Aufrufen
-    assert not any(c.args[0].split("?", 1)[0].endswith("/points/delete")
-                   for c in mock_post.call_args_list)
+    assert mock_put.call_count == 1
+
+
+def test_archivieren_benannte_vektoren_unveraendert_durchgereicht():
+    """Fix-Runde 1, Finding 1 (c): Punkte mit benannten Vektoren (dict statt
+    Liste) werden unveraendert in den PUT-Body kopiert."""
+    m = _mod("archivieren")
+    vektor = {"semantic": [0.1, 0.2], "neural": [0.3, 0.4]}
+    punkte = [{"id": "id1", "vector": vektor, "payload": {}}]
+
+    def fake_post(url, json=None, timeout=None):
+        basis = url.split("?", 1)[0]
+        if basis.endswith("/collections/brain-episodic/points/count"):
+            return FakeResp({"result": {"count": 1}})
+        if basis.endswith("/collections/brain-episodic/points/scroll"):
+            return FakeResp({"result": {"points": punkte, "next_page_offset": None}})
+        if basis.endswith("/collections/brain-episodic-archive/points"):
+            return FakeResp({"result": [{"id": "id1"}]})
+        if basis.endswith("/collections/brain-episodic/points/delete"):
+            return FakeResp({"result": None})
+        raise AssertionError(f"unerwartete POST-URL: {url}")
+
+    gesehene_vektoren = []
+
+    def fake_put(url, json=None, timeout=None):
+        gesehene_vektoren.append(json["points"][0]["vector"])
+        return FakeResp({"result": None})
+
+    patch.object(m.requests, "post", side_effect=fake_post).start()
+    patch.object(m.requests, "put", side_effect=fake_put).start()
+    try:
+        rc = m.main(_archiv_argv(ausfuehren=True))
+    finally:
+        patch.stopall()
+    assert rc == 0
+    assert gesehene_vektoren == [vektor]
+
+
+# ---------------------------------------------------------------------
+# wissen_initialisieren.py: Finding 2 (Fix-Runde 1) - wenn QdrantKG()
+# gelingt, aber ensure_collections() wirft, muss kg trotzdem auf None
+# zurueckfallen (Datei-Modus), statt mit einer halb eingerichteten KG in
+# index.neu_aufbauen zu laufen.
+# ---------------------------------------------------------------------
+
+def test_wissen_initialisieren_ensure_collections_faellt_kg_bleibt_none(monkeypatch):
+    m = _mod("wissen_initialisieren")
+
+    class KaputtesQdrantKG:
+        def __init__(self):
+            pass
+
+        def ensure_collections(self):
+            raise RuntimeError("qdrant weg")
+
+    aufrufe = {}
+
+    class FakeKurator:
+        def __init__(self, tresor, kg=None, deuten=None):
+            aufrufe["kg"] = kg
+
+        def voll_durchlauf(self):
+            return {"geschrieben": 0}
+
+    monkeypatch.setattr("core.qdrant_kg.QdrantKG", KaputtesQdrantKG)
+    monkeypatch.setattr(m.kurator, "Kurator", FakeKurator)
+    monkeypatch.setattr(m.index, "neu_aufbauen",
+                         lambda *a, **kw: aufrufe.setdefault("index_aufgerufen", True))
+
+    rc = m.main([])
+    assert rc == 0
+    assert aufrufe["kg"] is None
+    assert "index_aufgerufen" not in aufrufe  # Datei-Modus: kein Index-Aufbau

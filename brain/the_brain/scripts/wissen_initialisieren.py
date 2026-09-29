@@ -15,16 +15,21 @@ from core.knowledge import index, kurator, quellen  # noqa: E402
 from core.knowledge.tresor import Tresor  # noqa: E402
 
 
-def main() -> int:
+def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ohne-deutung", action="store_true")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
     kg = None
     try:
         from core.qdrant_kg import QdrantKG
         kg = QdrantKG()
         kg.ensure_collections()
     except Exception as e:
+        # Fix-Runde 1 (Finding 2): ensure_collections() kann NACH einem
+        # erfolgreichen QdrantKG() noch werfen (kg ist dann schon gebunden).
+        # Ohne Reset wuerde unten trotzdem gegen eine halb eingerichtete KG
+        # indexiert - explizit auf Datei-Modus zurueckfallen.
+        kg = None
         print(f"# Qdrant nicht verfuegbar, nur Dateien: {e}")
     t = Tresor()
     k = kurator.Kurator(t, kg=None, deuten=None if a.ohne_deutung else kurator.llm_deuten)
