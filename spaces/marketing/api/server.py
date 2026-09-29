@@ -115,7 +115,13 @@ app = FastAPI(
 
 @app.middleware("http")
 async def _api_key_check(request: Request, call_next):
-    if API_KEY and request.url.path.startswith("/api/") and request.url.path != "/api/health":
+    # /api/pult/* is exempt: the Sales-UI speaks only X-Pult-Key, and that
+    # router has its own mandatory key check (pult.py::_schluessel, 503 when
+    # unconfigured, 401 on mismatch) -- it must not be gated a second time by
+    # a header the Sales-UI never sends (fix round 1, task-3-report.md).
+    path = request.url.path
+    if (API_KEY and path.startswith("/api/") and path != "/api/health"
+            and not path.startswith("/api/pult/")):
         if request.headers.get("X-API-Key") != API_KEY:
             return JSONResponse({"error": "invalid api key"}, status_code=401)
     return await call_next(request)
