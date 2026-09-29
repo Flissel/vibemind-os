@@ -1,102 +1,212 @@
 {
-  "name": "kurzer-hinweis",
-  "beschreibung": "Kurzer Hinweis: eine Überschrift, zwei Sätze und ein Link im Text.",
-  "bloecke": {
-    "root": {
-      "type": "EmailLayout",
-      "data": {
-        "backdropColor": "#1d3b39",
-        "canvasColor": "#0f2422",
-        "textColor": "#cfe3df",
-        "fontFamily": "MODERN_SANS",
-        "childrenIds": [
-          "logo",
-          "kopf",
-          "text",
-          "gruss"
-        ]
-      }
+ "name": "kurzer-hinweis",
+ "beschreibung": "Kurzer Hinweis: schmales Banner, ein Satz, ein Knopf.",
+ "bloecke": {
+  "root": {
+   "type": "EmailLayout",
+   "data": {
+    "backdropColor": "#1d3b39",
+    "canvasColor": "#0f2422",
+    "textColor": "#cfe3df",
+    "fontFamily": "MODERN_SANS",
+    "childrenIds": [
+     "marke_kopf",
+     "kopfzeile",
+     "banner",
+     "titel",
+     "text",
+     "knopf",
+     "fuss_trenner",
+     "fuss_gruss",
+     "fuss_link"
+    ]
+   }
+  },
+  "marke_kopf": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 18,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 32,
+      "bottom": 4,
+      "left": 40,
+      "right": 40
+     },
+     "color": "#e9fbf6"
     },
-    "logo": {
-      "type": "Image",
-      "data": {
-        "style": {
-          "textAlign": "center",
-          "padding": {
-            "top": 40,
-            "bottom": 16,
-            "left": 40,
-            "right": 40
-          }
-        },
-        "props": {
-          "url": "medien:vibemind-logo.png",
-          "alt": "VibeMind",
-          "width": 150,
-          "linkHref": "https://vibemind.space",
-          "contentAlignment": "middle"
-        }
-      }
-    },
-    "kopf": {
-      "type": "Heading",
-      "data": {
-        "style": {
-          "color": "#e9fbf6",
-          "fontWeight": "bold",
-          "textAlign": "left",
-          "padding": {
-            "top": 24,
-            "bottom": 12,
-            "left": 40,
-            "right": 40
-          }
-        },
-        "props": {
-          "level": "h2",
-          "text": "Kurz zur Info"
-        }
-      }
-    },
-    "text": {
-      "type": "Text",
-      "data": {
-        "style": {
-          "fontSize": 16,
-          "fontWeight": "normal",
-          "textAlign": "left",
-          "padding": {
-            "top": 0,
-            "bottom": 24,
-            "left": 40,
-            "right": 40
-          }
-        },
-        "props": {
-          "text": "Hier steht in einem Satz, was sich ändert. Alle Einzelheiten findest du [auf unserer Seite](https://vibemind.space).",
-          "markdown": true
-        }
-      }
-    },
-    "gruss": {
-      "type": "Text",
-      "data": {
-        "style": {
-          "fontSize": 15,
-          "fontWeight": "normal",
-          "textAlign": "left",
-          "padding": {
-            "top": 0,
-            "bottom": 48,
-            "left": 40,
-            "right": 40
-          }
-        },
-        "props": {
-          "text": "Danke dir\n**Dein VibeMind-Team**",
-          "markdown": true
-        }
-      }
+    "props": {
+     "text": "**VibeMind**",
+     "markdown": true
     }
+   }
+  },
+  "kopfzeile": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 12,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 24,
+      "left": 40,
+      "right": 40
+     },
+     "color": "#8aa3a0"
+    },
+    "props": {
+     "text": "KURZ NOTIERT",
+     "markdown": false
+    }
+   }
+  },
+  "banner": {
+   "type": "Image",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 24,
+      "left": 24,
+      "right": 24
+     },
+     "textAlign": "center"
+    },
+    "props": {
+     "url": "medien:platzhalter-3x1.png",
+     "alt": "Schmales Bannerbild zum Hinweis",
+     "width": 552,
+     "height": 184,
+     "contentAlignment": "middle"
+    }
+   }
+  },
+  "titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "color": "#e9fbf6",
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 12,
+      "left": 40,
+      "right": 40
+     }
+    },
+    "props": {
+     "level": "h2",
+     "text": "Der Hinweis in einem Satz"
+    }
+   }
+  },
+  "text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 16,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 16,
+      "left": 40,
+      "right": 40
+     },
+     "color": "#cfe3df"
+    },
+    "props": {
+     "text": "Zwei, drei Sätze. Mehr braucht ein kurzer Hinweis nicht.",
+     "markdown": true
+    }
+   }
+  },
+  "knopf": {
+   "type": "Button",
+   "data": {
+    "style": {
+     "textAlign": "left",
+     "padding": {
+      "top": 8,
+      "bottom": 32,
+      "left": 40,
+      "right": 40
+     },
+     "fontSize": 16
+    },
+    "props": {
+     "text": "Details",
+     "url": "https://vibemind.space",
+     "buttonBackgroundColor": "#5eead4",
+     "buttonTextColor": "#0f2422",
+     "buttonStyle": "rounded",
+     "size": "large"
+    }
+   }
+  },
+  "fuss_trenner": {
+   "type": "Divider",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 24,
+      "bottom": 16,
+      "left": 40,
+      "right": 40
+     }
+    },
+    "props": {
+     "lineColor": "#2c4f4b",
+     "lineHeight": 1
+    }
+   }
+  },
+  "fuss_gruss": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 15,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 8,
+      "left": 40,
+      "right": 40
+     },
+     "color": "#cfe3df"
+    },
+    "props": {
+     "text": "Bis bald,  \n**Felix** · VibeMind",
+     "markdown": true
+    }
+   }
+  },
+  "fuss_link": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 13,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 40,
+      "left": 40,
+      "right": 40
+     },
+     "color": "#8aa3a0"
+    },
+    "props": {
+     "text": "[vibemind.space](https://vibemind.space)",
+     "markdown": true
+    }
+   }
   }
+ }
 }

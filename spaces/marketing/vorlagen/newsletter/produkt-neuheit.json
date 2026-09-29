@@ -1,367 +1,462 @@
 {
-  "name": "produkt-neuheit",
-  "beschreibung": "Produkt-Neuheit: großes Produktbild, drei Nutzen nebeneinander, Knopf.",
-  "bloecke": {
-    "root": {
-      "type": "EmailLayout",
-      "data": {
-        "backdropColor": "#1d3b39",
-        "canvasColor": "#0f2422",
-        "textColor": "#cfe3df",
-        "fontFamily": "MODERN_SANS",
-        "childrenIds": [
-          "logo",
-          "produktbild",
-          "marke",
-          "kopf",
-          "einleitung",
-          "nutzen",
-          "knopf"
-        ]
-      }
+ "name": "produkt-neuheit",
+ "beschreibung": "Produkt-Neuheit: Produktbild, Nutzen, drei Vorteile mit Symbolbildern.",
+ "bloecke": {
+  "root": {
+   "type": "EmailLayout",
+   "data": {
+    "backdropColor": "#1d3b39",
+    "canvasColor": "#0f2422",
+    "textColor": "#cfe3df",
+    "fontFamily": "MODERN_SANS",
+    "childrenIds": [
+     "marke_kopf",
+     "kopfzeile",
+     "kopf_marke",
+     "kopf_titel",
+     "produkt_bild",
+     "einleitung",
+     "vorteile",
+     "knopf",
+     "fuss_trenner",
+     "fuss_gruss",
+     "fuss_link"
+    ]
+   }
+  },
+  "marke_kopf": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 18,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 32,
+      "bottom": 4,
+      "left": 40,
+      "right": 40
+     },
+     "color": "#e9fbf6"
     },
-    "logo": {
-      "type": "Image",
-      "data": {
-        "style": {
-          "textAlign": "center",
-          "padding": {
-            "top": 40,
-            "bottom": 24,
-            "left": 40,
-            "right": 40
-          }
-        },
-        "props": {
-          "url": "medien:vibemind-logo.png",
-          "alt": "VibeMind",
-          "width": 150,
-          "linkHref": "https://vibemind.space",
-          "contentAlignment": "middle"
-        }
-      }
-    },
-    "produktbild": {
-      "type": "Image",
-      "data": {
-        "style": {
-          "textAlign": "center",
-          "padding": {
-            "top": 8,
-            "bottom": 8,
-            "left": 40,
-            "right": 40
-          }
-        },
-        "props": {
-          "url": "medien:produkt.png",
-          "alt": "Produktbild",
-          "width": 520,
-          "linkHref": "https://vibemind.space",
-          "contentAlignment": "middle"
-        }
-      }
-    },
-    "marke": {
-      "type": "Text",
-      "data": {
-        "style": {
-          "color": "#5eead4",
-          "fontSize": 12,
-          "fontWeight": "bold",
-          "textAlign": "left",
-          "padding": {
-            "top": 32,
-            "bottom": 8,
-            "left": 40,
-            "right": 40
-          }
-        },
-        "props": {
-          "text": "PRODUKT-NEUHEIT"
-        }
-      }
-    },
-    "kopf": {
-      "type": "Heading",
-      "data": {
-        "style": {
-          "color": "#e9fbf6",
-          "fontWeight": "bold",
-          "textAlign": "left",
-          "padding": {
-            "top": 0,
-            "bottom": 16,
-            "left": 40,
-            "right": 40
-          }
-        },
-        "props": {
-          "level": "h1",
-          "text": "Name der Neuheit"
-        }
-      }
-    },
-    "einleitung": {
-      "type": "Text",
-      "data": {
-        "style": {
-          "fontSize": 16,
-          "fontWeight": "normal",
-          "textAlign": "left",
-          "padding": {
-            "top": 0,
-            "bottom": 24,
-            "left": 40,
-            "right": 40
-          }
-        },
-        "props": {
-          "text": "Stell die Neuheit in zwei Sätzen vor: was sie ist und für wen sie gemacht wurde."
-        }
-      }
-    },
-    "nutzen1_marke": {
-      "type": "Text",
-      "data": {
-        "style": {
-          "color": "#5eead4",
-          "fontSize": 12,
-          "fontWeight": "bold",
-          "textAlign": "left",
-          "padding": {
-            "top": 8,
-            "bottom": 6,
-            "left": 0,
-            "right": 0
-          }
-        },
-        "props": {
-          "text": "01"
-        }
-      }
-    },
-    "nutzen1_titel": {
-      "type": "Heading",
-      "data": {
-        "style": {
-          "color": "#e9fbf6",
-          "fontWeight": "bold",
-          "textAlign": "left",
-          "padding": {
-            "top": 0,
-            "bottom": 6,
-            "left": 0,
-            "right": 0
-          }
-        },
-        "props": {
-          "level": "h3",
-          "text": "Schneller"
-        }
-      }
-    },
-    "nutzen1_text": {
-      "type": "Text",
-      "data": {
-        "style": {
-          "fontSize": 14,
-          "fontWeight": "normal",
-          "textAlign": "left",
-          "padding": {
-            "top": 0,
-            "bottom": 8,
-            "left": 0,
-            "right": 0
-          }
-        },
-        "props": {
-          "text": "Was jetzt weniger Zeit kostet."
-        }
-      }
-    },
-    "nutzen2_marke": {
-      "type": "Text",
-      "data": {
-        "style": {
-          "color": "#5eead4",
-          "fontSize": 12,
-          "fontWeight": "bold",
-          "textAlign": "left",
-          "padding": {
-            "top": 8,
-            "bottom": 6,
-            "left": 0,
-            "right": 0
-          }
-        },
-        "props": {
-          "text": "02"
-        }
-      }
-    },
-    "nutzen2_titel": {
-      "type": "Heading",
-      "data": {
-        "style": {
-          "color": "#e9fbf6",
-          "fontWeight": "bold",
-          "textAlign": "left",
-          "padding": {
-            "top": 0,
-            "bottom": 6,
-            "left": 0,
-            "right": 0
-          }
-        },
-        "props": {
-          "level": "h3",
-          "text": "Einfacher"
-        }
-      }
-    },
-    "nutzen2_text": {
-      "type": "Text",
-      "data": {
-        "style": {
-          "fontSize": 14,
-          "fontWeight": "normal",
-          "textAlign": "left",
-          "padding": {
-            "top": 0,
-            "bottom": 8,
-            "left": 0,
-            "right": 0
-          }
-        },
-        "props": {
-          "text": "Was jetzt ohne Umwege geht."
-        }
-      }
-    },
-    "nutzen3_marke": {
-      "type": "Text",
-      "data": {
-        "style": {
-          "color": "#5eead4",
-          "fontSize": 12,
-          "fontWeight": "bold",
-          "textAlign": "left",
-          "padding": {
-            "top": 8,
-            "bottom": 6,
-            "left": 0,
-            "right": 0
-          }
-        },
-        "props": {
-          "text": "03"
-        }
-      }
-    },
-    "nutzen3_titel": {
-      "type": "Heading",
-      "data": {
-        "style": {
-          "color": "#e9fbf6",
-          "fontWeight": "bold",
-          "textAlign": "left",
-          "padding": {
-            "top": 0,
-            "bottom": 6,
-            "left": 0,
-            "right": 0
-          }
-        },
-        "props": {
-          "level": "h3",
-          "text": "Sicherer"
-        }
-      }
-    },
-    "nutzen3_text": {
-      "type": "Text",
-      "data": {
-        "style": {
-          "fontSize": 14,
-          "fontWeight": "normal",
-          "textAlign": "left",
-          "padding": {
-            "top": 0,
-            "bottom": 8,
-            "left": 0,
-            "right": 0
-          }
-        },
-        "props": {
-          "text": "Worauf du dich verlassen kannst."
-        }
-      }
-    },
-    "nutzen": {
-      "type": "ColumnsContainer",
-      "data": {
-        "style": {
-          "padding": {
-            "top": 0,
-            "bottom": 0,
-            "left": 40,
-            "right": 40
-          }
-        },
-        "props": {
-          "columnsCount": 3,
-          "columnsGap": 24,
-          "contentAlignment": "top",
-          "columns": [
-            {
-              "childrenIds": [
-                "nutzen1_marke",
-                "nutzen1_titel",
-                "nutzen1_text"
-              ]
-            },
-            {
-              "childrenIds": [
-                "nutzen2_marke",
-                "nutzen2_titel",
-                "nutzen2_text"
-              ]
-            },
-            {
-              "childrenIds": [
-                "nutzen3_marke",
-                "nutzen3_titel",
-                "nutzen3_text"
-              ]
-            }
-          ]
-        }
-      }
-    },
-    "knopf": {
-      "type": "Button",
-      "data": {
-        "style": {
-          "fontSize": 16,
-          "fontWeight": "bold",
-          "textAlign": "left",
-          "padding": {
-            "top": 32,
-            "bottom": 48,
-            "left": 40,
-            "right": 40
-          }
-        },
-        "props": {
-          "text": "Jetzt entdecken",
-          "url": "https://vibemind.space",
-          "buttonStyle": "rounded",
-          "size": "large",
-          "buttonBackgroundColor": "#5eead4",
-          "buttonTextColor": "#0f2422"
-        }
-      }
+    "props": {
+     "text": "**VibeMind**",
+     "markdown": true
     }
+   }
+  },
+  "kopfzeile": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 12,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 24,
+      "left": 40,
+      "right": 40
+     },
+     "color": "#8aa3a0"
+    },
+    "props": {
+     "text": "PRODUKT-NEUHEIT",
+     "markdown": false
+    }
+   }
+  },
+  "kopf_marke": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 12,
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 8,
+      "bottom": 8,
+      "left": 40,
+      "right": 40
+     },
+     "color": "#5eead4"
+    },
+    "props": {
+     "text": "NEU",
+     "markdown": false
+    }
+   }
+  },
+  "kopf_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "color": "#e9fbf6",
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 16,
+      "left": 40,
+      "right": 40
+     }
+    },
+    "props": {
+     "level": "h1",
+     "text": "Produktname – was es besser macht"
+    }
+   }
+  },
+  "produkt_bild": {
+   "type": "Image",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 24,
+      "left": 40,
+      "right": 40
+     },
+     "textAlign": "center"
+    },
+    "props": {
+     "url": "medien:platzhalter-16x9.png",
+     "alt": "Das neue Produkt im Einsatz",
+     "width": 520,
+     "height": 293,
+     "contentAlignment": "middle"
+    }
+   }
+  },
+  "einleitung": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 17,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 24,
+      "left": 40,
+      "right": 40
+     },
+     "color": "#cfe3df"
+    },
+    "props": {
+     "text": "Zwei Sätze: welches Problem es löst und für wen.",
+     "markdown": true
+    }
+   }
+  },
+  "v1_bild": {
+   "type": "Image",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 10,
+      "left": 0,
+      "right": 0
+     },
+     "textAlign": "left"
+    },
+    "props": {
+     "url": "medien:platzhalter-1x1.png",
+     "alt": "Symbolbild erster Vorteil",
+     "width": 162,
+     "height": 162,
+     "contentAlignment": "middle"
+    }
+   }
+  },
+  "v1_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "color": "#e9fbf6",
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 4,
+      "left": 0,
+      "right": 0
+     }
+    },
+    "props": {
+     "level": "h3",
+     "text": "Vorteil 1"
+    }
+   }
+  },
+  "v1_text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 14,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "color": "#cfe3df"
+    },
+    "props": {
+     "text": "Ein kurzer Satz.",
+     "markdown": true
+    }
+   }
+  },
+  "v2_bild": {
+   "type": "Image",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 10,
+      "left": 0,
+      "right": 0
+     },
+     "textAlign": "left"
+    },
+    "props": {
+     "url": "medien:platzhalter-1x1.png",
+     "alt": "Symbolbild zweiter Vorteil",
+     "width": 162,
+     "height": 162,
+     "contentAlignment": "middle"
+    }
+   }
+  },
+  "v2_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "color": "#e9fbf6",
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 4,
+      "left": 0,
+      "right": 0
+     }
+    },
+    "props": {
+     "level": "h3",
+     "text": "Vorteil 2"
+    }
+   }
+  },
+  "v2_text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 14,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "color": "#cfe3df"
+    },
+    "props": {
+     "text": "Ein kurzer Satz.",
+     "markdown": true
+    }
+   }
+  },
+  "v3_bild": {
+   "type": "Image",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 10,
+      "left": 0,
+      "right": 0
+     },
+     "textAlign": "left"
+    },
+    "props": {
+     "url": "medien:platzhalter-1x1.png",
+     "alt": "Symbolbild dritter Vorteil",
+     "width": 162,
+     "height": 162,
+     "contentAlignment": "middle"
+    }
+   }
+  },
+  "v3_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "color": "#e9fbf6",
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 4,
+      "left": 0,
+      "right": 0
+     }
+    },
+    "props": {
+     "level": "h3",
+     "text": "Vorteil 3"
+    }
+   }
+  },
+  "v3_text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 14,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "color": "#cfe3df"
+    },
+    "props": {
+     "text": "Ein kurzer Satz.",
+     "markdown": true
+    }
+   }
+  },
+  "vorteile": {
+   "type": "ColumnsContainer",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 24,
+      "left": 40,
+      "right": 40
+     }
+    },
+    "props": {
+     "columnsCount": 3,
+     "columnsGap": 16,
+     "contentAlignment": "top",
+     "columns": [
+      {
+       "childrenIds": [
+        "v1_bild",
+        "v1_titel",
+        "v1_text"
+       ]
+      },
+      {
+       "childrenIds": [
+        "v2_bild",
+        "v2_titel",
+        "v2_text"
+       ]
+      },
+      {
+       "childrenIds": [
+        "v3_bild",
+        "v3_titel",
+        "v3_text"
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "knopf": {
+   "type": "Button",
+   "data": {
+    "style": {
+     "textAlign": "center",
+     "padding": {
+      "top": 8,
+      "bottom": 32,
+      "left": 40,
+      "right": 40
+     },
+     "fontSize": 16
+    },
+    "props": {
+     "text": "Ausprobieren",
+     "url": "https://vibemind.space",
+     "buttonBackgroundColor": "#5eead4",
+     "buttonTextColor": "#0f2422",
+     "buttonStyle": "rounded",
+     "size": "large"
+    }
+   }
+  },
+  "fuss_trenner": {
+   "type": "Divider",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 24,
+      "bottom": 16,
+      "left": 40,
+      "right": 40
+     }
+    },
+    "props": {
+     "lineColor": "#2c4f4b",
+     "lineHeight": 1
+    }
+   }
+  },
+  "fuss_gruss": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 15,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 8,
+      "left": 40,
+      "right": 40
+     },
+     "color": "#cfe3df"
+    },
+    "props": {
+     "text": "Bis bald,  \n**Felix** · VibeMind",
+     "markdown": true
+    }
+   }
+  },
+  "fuss_link": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 13,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 40,
+      "left": 40,
+      "right": 40
+     },
+     "color": "#8aa3a0"
+    },
+    "props": {
+     "text": "[vibemind.space](https://vibemind.space)",
+     "markdown": true
+    }
+   }
   }
+ }
 }

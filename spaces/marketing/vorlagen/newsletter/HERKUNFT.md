@@ -20,3 +20,5 @@ Die fünf Vorlagen in diesem Ordner (`newsletter`, `ankuendigung`, `einladung`,
 
 Prüfung: `spaces/marketing/claw/tests/test_startvorlagen.py`; gegen die Datenbank
 `python -m spaces.marketing.scripts.vorlagen_einspielen` (ohne `--wirklich` nur prüfen).
+
+29.09.2026 (Spec newsletter-bilder): die fuenf Vorlagen werden von `scripts/vorlagen_bauen.py` erzeugt; Bildplaetze tragen Platzhalter aus `platzhalter/` (erzeugt von `scripts/platzhalter_erzeugen.py`, eigene Grafik, keine fremde Lizenz). Aenderungen im Bauer, nicht in den JSONs.

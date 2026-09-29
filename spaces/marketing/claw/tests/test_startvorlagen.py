@@ -152,11 +152,10 @@ def test_vorlage_gueltig_und_rendert(name):
 
 @pytest.mark.parametrize("name", NAMEN)
 def test_vorlage_im_vibemind_stil(name):
-    """Farbbedeutung (binding): Aussenflaeche, Inhaltsflaeche, Text; Logo; hoechstens ein Knopf in Akzent."""
+    """Farbbedeutung (binding): Aussenflaeche, Inhaltsflaeche, Text; hoechstens ein Knopf in Akzent."""
     d = _laden(name)["bloecke"]
     wurzel = d["root"]["data"]
     assert {k: wurzel[k] for k in LAYOUT_DUNKEL} == LAYOUT_DUNKEL
-    assert any(b["type"] == "Image" and b["data"]["props"]["url"] == "medien:vibemind-logo.png" for b in d.values())
     for b in d.values():
         if b["type"] == "Heading":
             assert b["data"]["style"]["color"] == "#e9fbf6"
@@ -164,7 +163,7 @@ def test_vorlage_im_vibemind_stil(name):
     assert len(knoepfe) <= 1
     for k in knoepfe:
         assert (k["buttonBackgroundColor"], k["buttonTextColor"]) == ("#5eead4", "#0f2422")
-    assert len(knoepfe) == (0 if name == "kurzer-hinweis" else 1)
+    assert len(knoepfe) == 1
 
 
 RAND = 40  # gemeinsame Textlinie aller Vorlagen
@@ -245,3 +244,38 @@ def test_spalten_haben_genau_drei_eintraege(name):
             assert props["columnsCount"] in (2, 3), bid
             for c in props["columns"][props["columnsCount"]:]:
                 assert c == {"childrenIds": []}, bid
+
+
+from spaces.marketing.claw import bildplaetze
+
+PLAETZE_SOLL = {"newsletter": ["2:1", "4:3", "4:3", "16:9"], "ankuendigung": ["2:1", "16:9"],
+                "einladung": ["2:1", "1:1", "1:1", "1:1"], "produkt-neuheit": ["16:9", "1:1", "1:1", "1:1"],
+                "kurzer-hinweis": ["3:1"]}
+PLATZHALTER_ORDNER = ORDNER / "platzhalter"
+
+
+@pytest.mark.parametrize("name", NAMEN)
+def test_vorlage_hat_die_bildplaetze_der_spec(name):
+    v = json.loads((ORDNER / f"{name}.json").read_text(encoding="utf-8"))
+    plaetze = bildplaetze.finde(v["bloecke"])
+    assert [p.verhaeltnis for p in plaetze] == PLAETZE_SOLL[name]
+    assert all(p.leer for p in plaetze)
+    for p in plaetze:
+        datei = PLATZHALTER_ORDNER / p.url[len("medien:"):]
+        assert datei.is_file(), f"{name}: Platzhalter {datei.name} fehlt"
+        assert p.alt, f"{name}/{p.id}: Alternativtext fehlt (Hinweis fuer den Agenten)"
+
+
+@pytest.mark.parametrize("name", NAMEN)
+def test_vorlage_ohne_logo_bild_mit_schriftzug(name):
+    roh = (ORDNER / f"{name}.json").read_text(encoding="utf-8")
+    assert "vibemind-logo.png" not in roh and "VibeMind" in roh
+
+
+def test_platzhalter_sind_klein_und_im_verhaeltnis():
+    from PIL import Image
+    for datei in PLATZHALTER_ORDNER.glob("platzhalter-*.png"):
+        a, b = (int(x) for x in datei.stem.split("-")[1].split("x"))
+        with Image.open(datei) as bild:
+            assert abs(bild.width / bild.height - a / b) < 0.02
+        assert datei.stat().st_size < 150 * 1024

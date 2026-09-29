@@ -1,230 +1,483 @@
 {
-  "name": "einladung",
-  "beschreibung": "Einladung: Datum, Uhrzeit und Ort in einem Kasten, Knopf zum Anmelden.",
-  "bloecke": {
-    "root": {
-      "type": "EmailLayout",
-      "data": {
-        "backdropColor": "#1d3b39",
-        "canvasColor": "#0f2422",
-        "textColor": "#cfe3df",
-        "fontFamily": "MODERN_SANS",
-        "childrenIds": [
-          "logo",
-          "marke",
-          "kopf",
-          "einleitung",
-          "eckdaten",
-          "knopf",
-          "hinweis"
-        ]
-      }
+ "name": "einladung",
+ "beschreibung": "Einladung: Stimmungsbild, Eckdaten, drei Programmpunkte mit Bildern, Zusage-Knopf.",
+ "bloecke": {
+  "root": {
+   "type": "EmailLayout",
+   "data": {
+    "backdropColor": "#1d3b39",
+    "canvasColor": "#0f2422",
+    "textColor": "#cfe3df",
+    "fontFamily": "MODERN_SANS",
+    "childrenIds": [
+     "marke_kopf",
+     "kopfzeile",
+     "kopf_bild",
+     "kopf_marke",
+     "kopf_titel",
+     "eckdaten",
+     "erwartet_titel",
+     "programm",
+     "knopf",
+     "fuss_trenner",
+     "fuss_gruss",
+     "fuss_link"
+    ]
+   }
+  },
+  "marke_kopf": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 18,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 32,
+      "bottom": 4,
+      "left": 40,
+      "right": 40
+     },
+     "color": "#e9fbf6"
     },
-    "logo": {
-      "type": "Image",
-      "data": {
-        "style": {
-          "textAlign": "center",
-          "padding": {
-            "top": 40,
-            "bottom": 8,
-            "left": 40,
-            "right": 40
-          }
-        },
-        "props": {
-          "url": "medien:vibemind-logo.png",
-          "alt": "VibeMind",
-          "width": 150,
-          "linkHref": "https://vibemind.space",
-          "contentAlignment": "middle"
-        }
-      }
-    },
-    "marke": {
-      "type": "Text",
-      "data": {
-        "style": {
-          "color": "#5eead4",
-          "fontSize": 12,
-          "fontWeight": "bold",
-          "textAlign": "left",
-          "padding": {
-            "top": 32,
-            "bottom": 8,
-            "left": 40,
-            "right": 40
-          }
-        },
-        "props": {
-          "text": "EINLADUNG"
-        }
-      }
-    },
-    "kopf": {
-      "type": "Heading",
-      "data": {
-        "style": {
-          "color": "#e9fbf6",
-          "fontWeight": "bold",
-          "textAlign": "left",
-          "padding": {
-            "top": 0,
-            "bottom": 16,
-            "left": 40,
-            "right": 40
-          }
-        },
-        "props": {
-          "level": "h1",
-          "text": "Du bist eingeladen"
-        }
-      }
-    },
-    "einleitung": {
-      "type": "Text",
-      "data": {
-        "style": {
-          "fontSize": 16,
-          "fontWeight": "normal",
-          "textAlign": "left",
-          "padding": {
-            "top": 0,
-            "bottom": 28,
-            "left": 40,
-            "right": 40
-          }
-        },
-        "props": {
-          "text": "Wir laden dich zu einem Abend mit Gesprächen, Einblicken und guter Gesellschaft ein. Sag in einem Satz, was die Gäste erwartet."
-        }
-      }
-    },
-    "datum": {
-      "type": "Text",
-      "data": {
-        "style": {
-          "fontSize": 16,
-          "fontWeight": "normal",
-          "textAlign": "left",
-          "padding": {
-            "top": 0,
-            "bottom": 20,
-            "left": 0,
-            "right": 0
-          }
-        },
-        "props": {
-          "text": "**Datum**\n[Wochentag, Datum]",
-          "markdown": true
-        }
-      }
-    },
-    "uhrzeit": {
-      "type": "Text",
-      "data": {
-        "style": {
-          "fontSize": 16,
-          "fontWeight": "normal",
-          "textAlign": "left",
-          "padding": {
-            "top": 0,
-            "bottom": 20,
-            "left": 0,
-            "right": 0
-          }
-        },
-        "props": {
-          "text": "**Uhrzeit**\n[Uhrzeit]",
-          "markdown": true
-        }
-      }
-    },
-    "ort": {
-      "type": "Text",
-      "data": {
-        "style": {
-          "fontSize": 16,
-          "fontWeight": "normal",
-          "textAlign": "left",
-          "padding": {
-            "top": 0,
-            "bottom": 0,
-            "left": 0,
-            "right": 0
-          }
-        },
-        "props": {
-          "text": "**Ort**\n[Ort, Adresse]",
-          "markdown": true
-        }
-      }
-    },
-    "eckdaten": {
-      "type": "Container",
-      "data": {
-        "style": {
-          "backgroundColor": "#16302d",
-          "borderRadius": 12,
-          "padding": {
-            "top": 24,
-            "bottom": 24,
-            "left": 16,
-            "right": 16
-          }
-        },
-        "props": {
-          "childrenIds": [
-            "datum",
-            "uhrzeit",
-            "ort"
-          ]
-        }
-      }
-    },
-    "knopf": {
-      "type": "Button",
-      "data": {
-        "style": {
-          "fontSize": 16,
-          "fontWeight": "bold",
-          "textAlign": "left",
-          "padding": {
-            "top": 32,
-            "bottom": 24,
-            "left": 40,
-            "right": 40
-          }
-        },
-        "props": {
-          "text": "Platz sichern",
-          "url": "https://vibemind.space",
-          "buttonStyle": "rounded",
-          "size": "large",
-          "buttonBackgroundColor": "#5eead4",
-          "buttonTextColor": "#0f2422"
-        }
-      }
-    },
-    "hinweis": {
-      "type": "Text",
-      "data": {
-        "style": {
-          "fontSize": 14,
-          "fontWeight": "normal",
-          "textAlign": "left",
-          "padding": {
-            "top": 0,
-            "bottom": 48,
-            "left": 40,
-            "right": 40
-          },
-          "color": "#8fb3ad"
-        },
-        "props": {
-          "text": "Die Plätze sind begrenzt. Bitte melde dich bis zum [Anmeldeschluss] an. Falls du doch nicht kannst, antworte einfach auf diese Mail."
-        }
-      }
+    "props": {
+     "text": "**VibeMind**",
+     "markdown": true
     }
+   }
+  },
+  "kopfzeile": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 12,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 24,
+      "left": 40,
+      "right": 40
+     },
+     "color": "#8aa3a0"
+    },
+    "props": {
+     "text": "EINLADUNG",
+     "markdown": false
+    }
+   }
+  },
+  "kopf_bild": {
+   "type": "Image",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "textAlign": "center"
+    },
+    "props": {
+     "url": "medien:platzhalter-2x1.png",
+     "alt": "Stimmungsbild zur Veranstaltung",
+     "width": 600,
+     "height": 300,
+     "contentAlignment": "middle"
+    }
+   }
+  },
+  "kopf_marke": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 12,
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 32,
+      "bottom": 8,
+      "left": 40,
+      "right": 40
+     },
+     "color": "#5eead4"
+    },
+    "props": {
+     "text": "DU BIST EINGELADEN",
+     "markdown": false
+    }
+   }
+  },
+  "kopf_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "color": "#e9fbf6",
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 12,
+      "left": 40,
+      "right": 40
+     }
+    },
+    "props": {
+     "level": "h1",
+     "text": "Name der Veranstaltung"
+    }
+   }
+  },
+  "eckdaten": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 16,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 24,
+      "left": 40,
+      "right": 40
+     },
+     "color": "#cfe3df"
+    },
+    "props": {
+     "text": "**Wann:** [Datum], [Uhrzeit]  \n**Wo:** [Ort oder Online-Link]  \n**Dauer:** [Dauer]",
+     "markdown": true
+    }
+   }
+  },
+  "erwartet_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "color": "#e9fbf6",
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 8,
+      "bottom": 16,
+      "left": 40,
+      "right": 40
+     }
+    },
+    "props": {
+     "level": "h2",
+     "text": "Was dich erwartet"
+    }
+   }
+  },
+  "p1_bild": {
+   "type": "Image",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 10,
+      "left": 0,
+      "right": 0
+     },
+     "textAlign": "left"
+    },
+    "props": {
+     "url": "medien:platzhalter-1x1.png",
+     "alt": "Bild zum ersten Programmpunkt",
+     "width": 162,
+     "height": 162,
+     "contentAlignment": "middle"
+    }
+   }
+  },
+  "p1_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "color": "#e9fbf6",
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 4,
+      "left": 0,
+      "right": 0
+     }
+    },
+    "props": {
+     "level": "h3",
+     "text": "Punkt 1"
+    }
+   }
+  },
+  "p1_text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 14,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "color": "#cfe3df"
+    },
+    "props": {
+     "text": "Ein Satz dazu.",
+     "markdown": true
+    }
+   }
+  },
+  "p2_bild": {
+   "type": "Image",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 10,
+      "left": 0,
+      "right": 0
+     },
+     "textAlign": "left"
+    },
+    "props": {
+     "url": "medien:platzhalter-1x1.png",
+     "alt": "Bild zum zweiten Programmpunkt",
+     "width": 162,
+     "height": 162,
+     "contentAlignment": "middle"
+    }
+   }
+  },
+  "p2_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "color": "#e9fbf6",
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 4,
+      "left": 0,
+      "right": 0
+     }
+    },
+    "props": {
+     "level": "h3",
+     "text": "Punkt 2"
+    }
+   }
+  },
+  "p2_text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 14,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "color": "#cfe3df"
+    },
+    "props": {
+     "text": "Ein Satz dazu.",
+     "markdown": true
+    }
+   }
+  },
+  "p3_bild": {
+   "type": "Image",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 10,
+      "left": 0,
+      "right": 0
+     },
+     "textAlign": "left"
+    },
+    "props": {
+     "url": "medien:platzhalter-1x1.png",
+     "alt": "Bild zum dritten Programmpunkt",
+     "width": 162,
+     "height": 162,
+     "contentAlignment": "middle"
+    }
+   }
+  },
+  "p3_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "color": "#e9fbf6",
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 4,
+      "left": 0,
+      "right": 0
+     }
+    },
+    "props": {
+     "level": "h3",
+     "text": "Punkt 3"
+    }
+   }
+  },
+  "p3_text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 14,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "color": "#cfe3df"
+    },
+    "props": {
+     "text": "Ein Satz dazu.",
+     "markdown": true
+    }
+   }
+  },
+  "programm": {
+   "type": "ColumnsContainer",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 24,
+      "left": 40,
+      "right": 40
+     }
+    },
+    "props": {
+     "columnsCount": 3,
+     "columnsGap": 16,
+     "contentAlignment": "top",
+     "columns": [
+      {
+       "childrenIds": [
+        "p1_bild",
+        "p1_titel",
+        "p1_text"
+       ]
+      },
+      {
+       "childrenIds": [
+        "p2_bild",
+        "p2_titel",
+        "p2_text"
+       ]
+      },
+      {
+       "childrenIds": [
+        "p3_bild",
+        "p3_titel",
+        "p3_text"
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "knopf": {
+   "type": "Button",
+   "data": {
+    "style": {
+     "textAlign": "center",
+     "padding": {
+      "top": 8,
+      "bottom": 32,
+      "left": 40,
+      "right": 40
+     },
+     "fontSize": 16
+    },
+    "props": {
+     "text": "Jetzt zusagen",
+     "url": "https://vibemind.space",
+     "buttonBackgroundColor": "#5eead4",
+     "buttonTextColor": "#0f2422",
+     "buttonStyle": "rounded",
+     "size": "large"
+    }
+   }
+  },
+  "fuss_trenner": {
+   "type": "Divider",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 24,
+      "bottom": 16,
+      "left": 40,
+      "right": 40
+     }
+    },
+    "props": {
+     "lineColor": "#2c4f4b",
+     "lineHeight": 1
+    }
+   }
+  },
+  "fuss_gruss": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 15,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 8,
+      "left": 40,
+      "right": 40
+     },
+     "color": "#cfe3df"
+    },
+    "props": {
+     "text": "Bis bald,  \n**Felix** · VibeMind",
+     "markdown": true
+    }
+   }
+  },
+  "fuss_link": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontSize": 13,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 40,
+      "left": 40,
+      "right": 40
+     },
+     "color": "#8aa3a0"
+    },
+    "props": {
+     "text": "[vibemind.space](https://vibemind.space)",
+     "markdown": true
+    }
+   }
   }
+ }
 }
