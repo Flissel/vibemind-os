@@ -92,3 +92,28 @@ def test_selbstpruefung_per_schalter_an(monkeypatch):
     http, gesendet = falsch(json.dumps({"passt": True, "schrift": True, "entstellt": False, "grund": ""}))
     monkeypatch.setattr(bp, "_ollama", http)
     assert bp.pruefen(b"\x89PNG", "p") == (False, "Schrift im Bild") and gesendet
+
+
+def test_num_ctx_in_jedem_ollama_aufruf(monkeypatch):
+    http, gesendet = falsch("A calm scene")
+    monkeypatch.setattr(bp, "_ollama", http)
+    bp.prompt_schreiben(PLATZ, "T", "")
+    bp.bearbeitungs_prompt("Skyline at night", PLATZ, "T", "warmer light")
+    bp.pruefen(b"\x89PNG", "p")                                  # Schalter ist in dieser Datei an
+    assert all(d["options"]["num_ctx"] == 4096 for _, d in gesendet) and len(gesendet) == 3
+
+
+def test_bearbeitungs_prompt_ohne_stil_mit_verbot(monkeypatch):
+    http, gesendet = falsch("Same skyline, warm golden light, no signs")
+    monkeypatch.setattr(bp, "_ollama", http)
+    p = bp.bearbeitungs_prompt("Skyline at night.", PLATZ, "Oktober", "keine Leuchtschrift, waermer")
+    assert p.startswith("Same skyline, warm golden light") and bp.VERBOT in p and bp.STIL not in p
+    anfrage = gesendet[0][1]["prompt"]
+    assert "Skyline at night." in anfrage and "keine Leuchtschrift" in anfrage
+
+
+def test_bearbeitungs_prompt_rueckfall(monkeypatch):
+    http, _ = falsch("  ")
+    monkeypatch.setattr(bp, "_ollama", http)
+    assert bp.bearbeitungs_prompt("", PLATZ, "Oktober", "").startswith("Team im Buero")
+    assert bp.bearbeitungs_prompt("Skyline.", PLATZ, "Oktober", "warm").startswith("warm, Skyline.")
