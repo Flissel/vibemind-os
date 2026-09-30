@@ -1,6 +1,15 @@
 import json
 
+import pytest
+
 from spaces.marketing.claw import bild_prompt as bp
+
+
+@pytest.fixture(autouse=True)
+def _selbstpruefung_an(monkeypatch):
+    """Die Pruef-Tests pruefen die eingeschaltete Selbstpruefung (Schalter)."""
+    monkeypatch.setenv("BILD_SELBSTPRUEFUNG", "1")
+
 
 PLATZ = {"id": "kopf", "alt": "Team im Buero", "kontext": "Herbst-Update | Neue Funktionen", "verhaeltnis": "2:1"}
 
@@ -68,3 +77,18 @@ def test_pruefen_json_strings_zaehlen_nicht_als_wahr(monkeypatch):
         http, _ = falsch(json.dumps(antwort))
         monkeypatch.setattr(bp, "_ollama", http)
         assert bp.pruefen(b"\x89PNG", "p")[0] is erwartet, antwort
+
+
+def test_selbstpruefung_standardmaessig_aus(monkeypatch):
+    """Gemessen 30.09.: qwen2.5vl:7b braucht 37,6 GB RAM (verfuegbar 33,4), 3b lief
+    ins Zeitlimit. Ohne Schalter wird nicht geprueft und Ollama nicht gerufen."""
+    monkeypatch.delenv("BILD_SELBSTPRUEFUNG", raising=False)
+    monkeypatch.setattr(bp, "_ollama", lambda *a, **k: (_ for _ in ()).throw(AssertionError("kein Aufruf")))
+    assert bp.pruefen(b"\x89PNG", "p") == (True, "")
+
+
+def test_selbstpruefung_per_schalter_an(monkeypatch):
+    monkeypatch.setenv("BILD_SELBSTPRUEFUNG", "1")
+    http, gesendet = falsch(json.dumps({"passt": True, "schrift": True, "entstellt": False, "grund": ""}))
+    monkeypatch.setattr(bp, "_ollama", http)
+    assert bp.pruefen(b"\x89PNG", "p") == (False, "Schrift im Bild") and gesendet

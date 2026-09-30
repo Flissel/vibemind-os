@@ -73,7 +73,12 @@ def prompt_schreiben(platz: dict, titel: str, hinweis: str) -> str:
 
 
 def pruefen(png: bytes, prompt: str) -> tuple[bool, str]:
-    antwort = _ollama("/api/generate", {"model": SEH_MODELL, "prompt": _PRUEFUNG.format(prompt=prompt[:600]),
+    # Schalter BILD_SELBSTPRUEFUNG=1. Standard aus - gemessen 30.09.2026: das
+    # Sehmodell qwen2.5vl:7b verlangt 37,6 GB RAM (frei 33,4), 3b lief ins
+    # Zeitlimit. Ohne Pruefung wird das FLUX-Bild direkt uebernommen.
+    if os.environ.get("BILD_SELBSTPRUEFUNG", "") != "1":
+        return True, ""
+    antwort =_ollama("/api/generate", {"model": SEH_MODELL, "prompt": _PRUEFUNG.format(prompt=prompt[:600]),
                                         "images": [base64.b64encode(png).decode("ascii")], "format": "json",
                                         "stream": False, "keep_alive": 0}, zeitlimit=180)
     try:
