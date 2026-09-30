@@ -55,3 +55,16 @@ def test_pruefen_unlesbar_gilt_als_ungeprueft_ok(monkeypatch):
     http, _ = falsch("kein json")
     monkeypatch.setattr(bp, "_ollama", http)
     assert bp.pruefen(b"\x89PNG", "p") == (True, "Selbstpruefung unlesbar - ungeprueft eingesetzt")
+
+
+def test_pruefen_json_strings_zaehlen_nicht_als_wahr(monkeypatch):
+    # "false" als String ist in Python truthy - darf weder "passt" noch "keine Schrift" bedeuten
+    for antwort, erwartet in (
+        ({"passt": "false", "schrift": False, "entstellt": False, "grund": ""}, False),
+        ({"passt": True, "schrift": "false", "entstellt": False, "grund": ""}, False),
+        ({"passt": True, "schrift": False, "entstellt": "false", "grund": ""}, False),
+        ({"passt": 1, "schrift": 0, "entstellt": 0, "grund": ""}, False),
+    ):
+        http, _ = falsch(json.dumps(antwort))
+        monkeypatch.setattr(bp, "_ollama", http)
+        assert bp.pruefen(b"\x89PNG", "p")[0] is erwartet, antwort

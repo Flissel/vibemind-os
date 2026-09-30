@@ -158,3 +158,56 @@ def test_zurueck_und_weiter(db, c):
     assert r.json() == {"status": "offen"} and "false" in db.sql[0]
     assert c.post(f"/api/bilder/arbeiter/{AID}/weiter", headers={"X-Bild-Key": BK}).json() == {"ok": True}
     assert "'10 minutes'" in db.sql[1]
+
+
+def test_agent_routen_ohne_api_key_503(db, c, monkeypatch):
+    monkeypatch.setattr(server, "API_KEY", "")
+    r = c.get(f"/api/bilder/agent/{IID}/plaetze")
+    assert r.status_code == 503 and "MARKETING_API_KEY" in r.json()["detail"]
+    r = c.post(f"/api/bilder/agent/{IID}/auftrag", json={"nur_leere": True})
+    assert r.status_code == 503 and "MARKETING_API_KEY" in r.json()["detail"]
+    assert db.sql == []
+
+
+def test_platz_mit_zeilenumbruch_422(db, c):
+    db.antworten = [[{"f": None}]]
+    r = c.post(f"/api/bilder/arbeiter/{AID}/bild?platz=kopf%0A", headers={"X-Bild-Key": BK}, content=jpeg())
+    assert r.status_code == 422
+    r = c.post(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK}, json={"platz": "kopf\n"})
+    assert r.status_code == 422
+    assert list(db.ordner.iterdir()) == [] and db.sql == []
+
+
+def test_fertig_name_mit_zeilenumbruch_422(db, c):
+    (db.ordner / "nl-0123abcd-kopf.jpg").write_bytes(jpeg())
+    r = c.post(f"/api/bilder/arbeiter/{AID}/fertig", headers={"X-Bild-Key": BK},
+               json={"ergebnis": {"kopf": "nl-0123abcd-kopf.jpg\n"}, "befund": ""})
+    assert r.status_code == 422 and db.sql == []
+
+
+def test_abgeschnittenes_jpeg_422(db, c):
+    ganz = jpeg(640, 320)
+    db.antworten = [[{"f": None}]]
+    r = c.post(f"/api/bilder/arbeiter/{AID}/bild?platz=kopf", headers={"X-Bild-Key": BK},
+               content=ganz[: len(ganz) // 2])
+    assert r.status_code == 422
+    assert list(db.ordner.iterdir()) == []
+
+
+def test_ordner_nicht_beschreibbar_503(db, c, monkeypatch):
+    from spaces.marketing.api import bilder
+    monkeypatch.setattr(bilder.os, "access", lambda pfad, modus: False)
+    r = c.post(f"/api/bilder/arbeiter/{AID}/bild?platz=kopf", headers={"X-Bild-Key": BK}, content=jpeg())
+    assert r.status_code == 503 and "misconfigured" in r.json()["detail"]
+
+
+def test_schreibfehler_raeumt_teil_datei_weg_503(db, c, monkeypatch):
+    from spaces.marketing.api import bilder
+
+    def kaputt(*_a, **_k):
+        raise OSError("Datentraeger voll")
+    monkeypatch.setattr(bilder.os, "replace", kaputt)
+    db.antworten = [[{"f": None}]]
+    r = c.post(f"/api/bilder/arbeiter/{AID}/bild?platz=kopf", headers={"X-Bild-Key": BK}, content=jpeg())
+    assert r.status_code == 503 and r.json()["detail"] == "Bild konnte nicht abgelegt werden"
+    assert list(db.ordner.iterdir()) == []

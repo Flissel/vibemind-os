@@ -28,6 +28,9 @@ _HIER = Path(__file__).resolve()
 REPO_ROOT = next((p for p in _HIER.parents if (p / "vibemind-os").is_dir()), _HIER.parents[3])
 STARTER = _HIER.parents[1] / "claw" / "scripts" / "marketing-dienste-starten.ps1"
 STAND = {"letzter_lauf": None, "letztes_ergebnis": None}
+START_SCHONFRIST_S = 120      # nach Arbeiterstart: Starter-Skript startet die Dienste gerade selbst
+START_ABSTAND_S = 600         # hoechstens ein Dienststart je 10 Minuten
+START = {"arbeiter": None, "dienste": None}   # time.monotonic()-Zeitpunkte
 
 
 class ApiFehler(Exception):
@@ -96,58 +99,101 @@ def verkleinern(png: bytes, breite: int, hoehe: int) -> bytes:
 
 
 def dienste_starten() -> None:
+    """Startet ComfyUI/Ollama ueber das Starter-Skript. Kein Warten hier: der
+    naechste Takt prueft erneut (ComfyUI braucht ~60 s bis /system_stats)."""
     subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(STARTER)],
                    capture_output=True, timeout=240)
-    time.sleep(60)   # ComfyUI braucht ~60 s bis /system_stats antwortet
 
 
-def ein_durchlauf(api, comfy=bild_comfy, prompt=bild_prompt, starten=dienste_starten) -> str:
+def _dienste_bereit(comfy, prompt, starten, uhr) -> bool:
+    """ComfyUI und Ollama pruefen, BEVOR ein Auftrag genommen wird. Laufen sie
+    nicht, hoechstens alle 10 min starten und nie in den ersten 120 s nach dem
+    Arbeiterstart (dann startet marketing-dienste-starten.ps1 sie gerade selbst)."""
+    jetzt = uhr()
+    if START["arbeiter"] is None:
+        START["arbeiter"] = jetzt
+    if comfy.laeuft() and prompt.laeuft():
+        return True
+    if (jetzt - START["arbeiter"] >= START_SCHONFRIST_S
+            and (START["dienste"] is None or jetzt - START["dienste"] >= START_ABSTAND_S)):
+        START["dienste"] = jetzt
+        starten()
+    return False
+
+
+def _erzeugen(api, aid, auftrag, ziele, comfy, prompt):
+    """Erzeugt und liefert je Platz ab. Rueckgabe (ergebnis, befunde) oder
+    "verworfen", wenn der Auftrag dem Arbeiter nicht mehr gehoert."""
+    ergebnis, befunde = {}, []
+    for platz in ziele:
+        text = prompt.prompt_schreiben(platz.als_dict(), str(auftrag.get("titel") or ""),
+                                       str(auftrag.get("hinweis") or ""))
+        letzter = ""
+        for _ in range(VERSUCHE_JE_PLATZ):
+            if not api.weiter(aid):   # Vergabe je Versuch verlaengern (Kaltstart ~300 s, Vergabe 10 min)
+                return "verworfen"
+            try:
+                png = comfy.erzeugen(text, platz.erzeug_breite, platz.erzeug_hoehe, random.randrange(2**31),
+                                     zeitlimit_s=ERZEUGUNG_ZEITLIMIT_S)
+            finally:
+                comfy.freigeben()
+            ok, letzter = prompt.pruefen(png, text)
+            if not ok:
+                continue
+            jpeg = verkleinern(png, platz.erzeug_breite, platz.erzeug_hoehe)
+            if not api.weiter(aid):   # 540 s Erzeugung + 180 s Pruefung koennen die Vergabe ueberziehen
+                return "verworfen"
+            try:
+                ergebnis[platz.id] = api.bild(aid, platz.id, jpeg)
+            except ApiFehler as e:
+                if e.code != 422:
+                    raise
+                if "in Arbeit" in e.grund:
+                    return "verworfen"
+                befunde.append(f"{platz.id}: {e.grund}")
+                break
+            if letzter:
+                befunde.append(f"{platz.id}: {letzter}")
+            break
+        else:
+            befunde.append(f"{platz.id}: {letzter}")
+    return ergebnis, befunde
+
+
+def ein_durchlauf(api, comfy=bild_comfy, prompt=bild_prompt, starten=dienste_starten,
+                  uhr=time.monotonic) -> str:
+    if not _dienste_bereit(comfy, prompt, starten, uhr):
+        return "wartet"
     auftrag = api.naechster()
     if not auftrag:
         return "leer"
     aid = str(auftrag["id"])
-    if not (comfy.laeuft() and prompt.laeuft()):
-        starten()
-        if not (comfy.laeuft() and prompt.laeuft()):
-            api.zurueck(aid, "ComfyUI oder Ollama laeuft nicht", False)
+    # Ab hier gehoert der Auftrag dem Arbeiter: jede Stoerung gibt ihn zurueck,
+    # statt die Vergabe bis zum Ablauf zu blockieren.
+    try:
+        ziele = [p for p in bildplaetze.finde(auftrag.get("bloecke") or {})
+                 if (auftrag.get("platz") in (None, p.id)) and (not auftrag.get("nur_leere") or p.leer)]
+        if not ziele:
+            api.zurueck(aid, "Keine passenden Bildplaetze", True)
             return "zurueck"
-    ziele = [p for p in bildplaetze.finde(auftrag.get("bloecke") or {})
-             if (auftrag.get("platz") in (None, p.id)) and (not auftrag.get("nur_leere") or p.leer)]
-    if not ziele:
-        api.zurueck(aid, "Keine passenden Bildplaetze", True)
-        return "zurueck"
-    ergebnis, befunde = {}, []
-    try:
-        for platz in ziele:
-            text = prompt.prompt_schreiben(platz.als_dict(), str(auftrag.get("titel") or ""),
-                                           str(auftrag.get("hinweis") or ""))
-            letzter = ""
-            for _ in range(VERSUCHE_JE_PLATZ):
-                api.weiter(aid)   # Vergabe je Versuch verlaengern (Kaltstart ~300 s, Vergabe 10 min)
-                png = comfy.erzeugen(text, platz.erzeug_breite, platz.erzeug_hoehe, random.randrange(2**31),
-                                     zeitlimit_s=ERZEUGUNG_ZEITLIMIT_S)
-                comfy.freigeben()
-                ok, letzter = prompt.pruefen(png, text)
-                if ok:
-                    ergebnis[platz.id] = api.bild(aid, platz.id, verkleinern(png, platz.erzeug_breite, platz.erzeug_hoehe))
-                    if letzter:
-                        befunde.append(f"{platz.id}: {letzter}")
-                    break
-            else:
-                befunde.append(f"{platz.id}: {letzter}")
-    except (bild_comfy.ComfyFehler, OSError, TimeoutError) as e:
-        api.zurueck(aid, f"Erzeugung unterbrochen: {e}", False)
-        return "zurueck"
-    if not ergebnis:
-        api.zurueck(aid, "; ".join(befunde) or "Kein Bild bestanden", True)
-        return "zurueck"
-    try:
-        api.fertig(aid, ergebnis, "; ".join(befunde))
-    except ApiFehler as e:
-        if e.code == 422 and "nicht in Arbeit" in e.grund:
+        erg = _erzeugen(api, aid, auftrag, ziele, comfy, prompt)
+        if erg == "verworfen":
             return "verworfen"
-        raise
-    return "fertig"
+        ergebnis, befunde = erg
+        if not ergebnis:
+            api.zurueck(aid, "; ".join(befunde) or "Kein Bild bestanden", True)
+            return "zurueck"
+        try:
+            api.fertig(aid, ergebnis, "; ".join(befunde))
+        except ApiFehler as e:
+            if e.code == 422 and "in Arbeit" in e.grund:
+                return "verworfen"
+            raise
+        return "fertig"
+    except (bild_comfy.ComfyFehler, ApiFehler, ValueError, OSError, TimeoutError, KeyError, TypeError) as e:
+        # ValueError deckt JSONDecodeError, OSError deckt URLError und PIL.UnidentifiedImageError.
+        api.zurueck(aid, f"Erzeugung unterbrochen: {type(e).__name__}: {e}", False)
+        return "zurueck"
 
 
 class _Gesundheit(BaseHTTPRequestHandler):
@@ -168,6 +214,7 @@ def main() -> None:
     if not basis or not schluessel:
         raise SystemExit("MARKETING_BILD_URL/MARKETING_BILD_KEY fehlen in Vibemind_V1/.env")
     api = ArbeiterApi(basis, schluessel)
+    START["arbeiter"] = time.monotonic()
     threading.Thread(target=HTTPServer(("127.0.0.1", PORT), _Gesundheit).serve_forever, daemon=True).start()
     while True:
         try:

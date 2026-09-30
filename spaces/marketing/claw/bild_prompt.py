@@ -78,7 +78,11 @@ def pruefen(png: bytes, prompt: str) -> tuple[bool, str]:
                                         "stream": False, "keep_alive": 0}, zeitlimit=180)
     try:
         urteil = json.loads(antwort.get("response") or "")
-        passt, schrift, entstellt = bool(urteil["passt"]), bool(urteil["schrift"]), bool(urteil["entstellt"])
+        # Nur echte JSON-Booleans zaehlen ("false" als Text waere in Python wahr):
+        # passt nur bei true, frei von Schrift/Entstellung nur bei false.
+        passt = urteil["passt"] is True
+        schrift = urteil["schrift"] is not False
+        entstellt = urteil["entstellt"] is not False
     except (ValueError, KeyError, TypeError):
         return True, "Selbstpruefung unlesbar - ungeprueft eingesetzt"
     if schrift:

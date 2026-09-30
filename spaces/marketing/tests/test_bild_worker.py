@@ -1,5 +1,6 @@
 import io
 
+import pytest
 from PIL import Image
 
 from spaces.marketing.claw import bild_comfy
@@ -73,6 +74,11 @@ class Prompt:
         return self.urteile.pop(0) if self.urteile else (True, "")
 
 
+@pytest.fixture(autouse=True)
+def _start_zustand(monkeypatch):
+    monkeypatch.setattr(bw, "START", {"arbeiter": None, "dienste": None})
+
+
 AUFTRAG = {"id": "0123abcd-0000-0000-0000-000000000000", "platz": None, "nur_leere": True, "hinweis": "",
            "bloecke": DOC, "titel": "Oktober", "fassung": 1}
 
@@ -102,11 +108,51 @@ def test_dreimal_durchgefallen_endgueltig_fehler():
     assert api.log[-1] == ("zurueck", "kopf: Schrift im Bild", True)
 
 
-def test_comfy_tot_wird_gestartet_sonst_zurueck_nicht_endgueltig():
-    gestartet = []
-    api = Api(dict(AUFTRAG))
-    assert bw.ein_durchlauf(api, Comfy(laeuft=False), Prompt(), starten=lambda: gestartet.append(1)) == "zurueck"
-    assert gestartet == [1] and api.log[-1][0] == "zurueck" and api.log[-1][2] is False
+class Uhr:
+    def __init__(self, t=0.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+
+class ZaehlApi(Api):
+    def __init__(self, auftrag):
+        super().__init__(auftrag)
+        self.gefragt = 0
+
+    def naechster(self):
+        self.gefragt += 1
+        return super().naechster()
+
+
+def test_dienste_aus_kein_auftrag_genommen_und_start_gedrosselt():
+    uhr, gestartet = Uhr(1000.0), []
+    api = ZaehlApi(dict(AUFTRAG))
+
+    def lauf():
+        return bw.ein_durchlauf(api, Comfy(laeuft=False), Prompt(), starten=lambda: gestartet.append(uhr.t), uhr=uhr)
+
+    assert lauf() == "wartet"                 # Arbeiter gerade gestartet: noch kein Start
+    assert gestartet == [] and api.gefragt == 0
+    uhr.t += 119
+    assert lauf() == "wartet" and gestartet == []
+    uhr.t += 2                                # > 120 s nach Arbeiterstart
+    assert lauf() == "wartet" and gestartet == [1121.0]
+    uhr.t += 599                              # innerhalb von 10 min kein zweiter Start
+    assert lauf() == "wartet" and gestartet == [1121.0]
+    uhr.t += 1
+    assert lauf() == "wartet" and gestartet == [1121.0, 1721.0]
+    assert api.gefragt == 0 and api.log == []
+
+
+def test_ollama_aus_nimmt_auch_keinen_auftrag():
+    class P(Prompt):
+        def laeuft(self):
+            return False
+    api = ZaehlApi(dict(AUFTRAG))
+    assert bw.ein_durchlauf(api, Comfy(), P(), starten=lambda: None, uhr=Uhr()) == "wartet"
+    assert api.gefragt == 0
 
 
 def test_comfy_fehler_mitten_drin():
@@ -136,6 +182,87 @@ def test_fertig_abgelehnt_weil_verworfen_ist_kein_absturz():
     assert bw.ein_durchlauf(Verworfen(dict(AUFTRAG)), Comfy(), Prompt(), starten=lambda: None) == "verworfen"
 
 
+def test_fertig_abgelehnt_serverwortlaut_nicht_mehr_in_arbeit():
+    class Verworfen(Api):
+        def fertig(self, aid, ergebnis, befund):
+            raise bw.ApiFehler(422, "Auftrag ist nicht (mehr) in Arbeit")
+    api = Verworfen(dict(AUFTRAG))
+    assert bw.ein_durchlauf(api, Comfy(), Prompt(), starten=lambda: None) == "verworfen"
+    assert not [e for e in api.log if e[0] == "zurueck"]
+
+
+def test_bild_422_nicht_mehr_in_arbeit_ist_verworfen_ohne_zurueck():
+    class A(Api):
+        def bild(self, aid, platz, jpeg):
+            raise bw.ApiFehler(422, "Auftrag ist nicht (mehr) in Arbeit")
+    api = A(dict(AUFTRAG))
+    assert bw.ein_durchlauf(api, Comfy(), Prompt(), starten=lambda: None) == "verworfen"
+    assert not [e for e in api.log if e[0] in ("zurueck", "fertig")]
+
+
+def test_bild_422_anderer_grund_ueberspringt_nur_den_platz():
+    zwei = dict(AUFTRAG, nur_leere=False)       # kopf und neben
+    class A(Api):
+        def bild(self, aid, platz, jpeg):
+            if platz == "kopf":
+                raise bw.ApiFehler(422, "Bildplatz gibt es nicht")
+            return super().bild(aid, platz, jpeg)
+    api = A(zwei)
+    assert bw.ein_durchlauf(api, Comfy(), Prompt(), starten=lambda: None) == "fertig"
+    assert api.log[-1][0] == "fertig" and api.log[-1][1] == {"neben": "nl-0123abcd-neben.jpg"}
+    assert "kopf: Bildplatz gibt es nicht" in api.log[-1][2]
+
+
+def test_weiter_false_ist_verworfen_ohne_weitere_erzeugung():
+    class A(Api):
+        def weiter(self, aid):
+            self.log.append(("weiter", aid)); return False
+    api, comfy = A(dict(AUFTRAG)), Comfy()
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None) == "verworfen"
+    assert comfy.masse == [] and not [e for e in api.log if e[0] in ("zurueck", "fertig", "bild")]
+
+
+def test_weiter_false_vor_dem_abliefern_ist_verworfen():
+    class A(Api):
+        def weiter(self, aid):
+            self.log.append(("weiter", aid))
+            return len([e for e in self.log if e[0] == "weiter"]) < 2
+    api, comfy = A(dict(AUFTRAG)), Comfy()
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None) == "verworfen"
+    assert len(comfy.masse) == 1 and not [e for e in api.log if e[0] in ("bild", "zurueck", "fertig")]
+
+
+def test_prompt_valueerror_wird_zurueck_nicht_endgueltig():
+    class P(Prompt):
+        def prompt_schreiben(self, platz, titel, hinweis):
+            raise ValueError("Expecting value: line 1 column 1")
+    api = Api(dict(AUFTRAG))
+    assert bw.ein_durchlauf(api, Comfy(), P(), starten=lambda: None) == "zurueck"
+    assert api.log[-1][0] == "zurueck" and api.log[-1][2] is False and "Expecting value" in api.log[-1][1]
+
+
+def test_api_fehler_500_und_kaputtes_png_werden_zurueck():
+    class A(Api):
+        def bild(self, aid, platz, jpeg):
+            raise bw.ApiFehler(500, "Internal Server Error")
+    api = A(dict(AUFTRAG))
+    assert bw.ein_durchlauf(api, Comfy(), Prompt(), starten=lambda: None) == "zurueck"
+    assert api.log[-1][0] == "zurueck" and api.log[-1][2] is False
+
+    class KaputtComfy(Comfy):
+        def erzeugen(self, prompt, b, h, seed, zeitlimit_s=300):
+            return b"kein-png-kaputt"
+    api = Api(dict(AUFTRAG))
+    assert bw.ein_durchlauf(api, KaputtComfy(), Prompt(), starten=lambda: None) == "zurueck"
+    assert api.log[-1][0] == "zurueck" and api.log[-1][2] is False
+
+
+def test_freigeben_auch_wenn_erzeugen_scheitert():
+    comfy = Comfy(fehler=bild_comfy.ComfyFehler("Zeitlimit"))
+    bw.ein_durchlauf(Api(dict(AUFTRAG)), comfy, Prompt(), starten=lambda: None)
+    assert comfy.frei == 1
+
+
 def test_verkleinern_trifft_masse_und_groesse():
     j = bw.verkleinern(png(1216, 624), 1200, 608)
     with Image.open(io.BytesIO(j)) as b:
@@ -153,5 +280,6 @@ def test_weiter_vor_jedem_versuch_und_zeitlimit_540():
 
     api = Api(dict(AUFTRAG))
     bw.ein_durchlauf(api, C(), Prompt([(False, "x"), (False, "y"), (True, "")]), starten=lambda: None)
-    assert [e for e in api.log if e[0] == "weiter"] == [("weiter", AUFTRAG["id"])] * 3
+    # vor jedem Versuch und noch einmal vor dem Abliefern
+    assert [e for e in api.log if e[0] == "weiter"] == [("weiter", AUFTRAG["id"])] * 4
     assert zeitlimits == [540, 540, 540]

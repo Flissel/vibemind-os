@@ -100,11 +100,15 @@ BEGIN
   SELECT * INTO a FROM marketing.bild_auftraege WHERE status = 'offen'
    ORDER BY erstellt_am LIMIT 1 FOR UPDATE SKIP LOCKED;
   IF NOT FOUND THEN RETURN NULL; END IF;
-  UPDATE marketing.bild_auftraege
-     SET status = 'in_arbeit', versuche = versuche + 1, vergeben_bis = now() + p_frist, geaendert_am = now()
-   WHERE id = a.id;
   SELECT fassung, bloecke, felder INTO f FROM marketing.inhalt_fassungen
    WHERE inhalt = a.inhalt ORDER BY fassung DESC LIMIT 1;
+  -- Grundfassung = die Fassung, die der Arbeiter bekommt. "Belegt" heisst dann
+  -- "waehrend der Erzeugung geaendert" - nicht "seit Anlage des Auftrags"; sonst
+  -- verfiele ein Neu-erzeugen-Auftrag, wenn vorher ein anderer Auftrag den Platz fuellte.
+  UPDATE marketing.bild_auftraege
+     SET status = 'in_arbeit', versuche = versuche + 1, vergeben_bis = now() + p_frist,
+         grund_fassung = f.fassung, geaendert_am = now()
+   WHERE id = a.id;
   SELECT titel INTO v_titel FROM marketing.inhalte WHERE id = a.inhalt;
   RETURN jsonb_build_object('id', a.id, 'inhalt', a.inhalt, 'platz', a.platz, 'nur_leere', a.nur_leere,
            'hinweis', a.hinweis, 'versuche', a.versuche + 1, 'fassung', f.fassung, 'bloecke', f.bloecke,
@@ -179,7 +183,10 @@ BEGIN
   END IF;
   v_befund := concat_ws('; ', nullif(btrim(coalesce(p_befund, '')), ''),
                         nullif(array_to_string(v_weg, '; '), ''));
-  UPDATE marketing.bild_auftraege SET status = 'fertig', ergebnis = p_ergebnis, befund = coalesce(v_befund, ''),
+  -- Nichts eingesetzt: fehler mit Befund (nicht fertig), damit die Oberflaeche es zeigt.
+  UPDATE marketing.bild_auftraege
+     SET status = CASE WHEN array_length(v_ein, 1) IS NULL THEN 'fehler' ELSE 'fertig' END,
+         ergebnis = p_ergebnis, befund = coalesce(v_befund, ''),
          vergeben_bis = NULL, geaendert_am = now() WHERE id = a.id;
   RETURN jsonb_build_object('fassung', v_n, 'eingesetzt', to_jsonb(v_ein), 'uebersprungen', to_jsonb(v_weg));
 END $$;

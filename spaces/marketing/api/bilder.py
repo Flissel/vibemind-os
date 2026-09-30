@@ -21,8 +21,8 @@ from spaces.marketing.claw import bildplaetze
 
 router = APIRouter(prefix="/api/bilder")
 pult_router = APIRouter(prefix="/api/pult")
-_PLATZ = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-_NAME = re.compile(r"^nl-[0-9a-f]{8}-[A-Za-z0-9_-]{1,64}\.jpg$")
+_PLATZ = re.compile(r"[A-Za-z0-9_-]{1,64}")          # nur mit fullmatch benutzen
+_NAME = re.compile(r"nl-[0-9a-f]{8}-[A-Za-z0-9_-]{1,64}\.jpg")   # nur mit fullmatch benutzen
 BILD_MAX = 1024 * 1024
 KANTE_MIN, KANTE_MAX = 64, 2400
 FRIST = "10 minutes"
@@ -44,7 +44,18 @@ def _ordner() -> str:
     o = os.environ.get("MARKETING_BILD_ORDNER", "").strip()
     if not o or not os.path.isdir(o):
         raise HTTPException(503, "misconfigured: MARKETING_BILD_ORDNER fehlt")
+    if not os.access(o, os.W_OK):
+        raise HTTPException(503, "misconfigured: MARKETING_BILD_ORDNER nicht beschreibbar")
     return o
+
+
+def _agent_schluessel() -> None:
+    """Fail-closed: ohne MARKETING_API_KEY laesst die Middleware alles durch -
+    die Agent-Routen legen aber Auftraege an. Gelesen wie die Middleware
+    (server.API_KEY zur Anfragezeit); Import hier, sonst Kreisimport."""
+    from spaces.marketing.api import server
+    if not server.API_KEY:
+        raise HTTPException(503, "misconfigured: MARKETING_API_KEY fehlt")
 
 
 def _auftrag_id(wert: str) -> str:
@@ -59,7 +70,7 @@ def _anlegen(iid: str, payload, urheber: str) -> dict:
     if not isinstance(payload, dict):
         raise HTTPException(422, "Body muss ein Objekt sein")
     platz = payload.get("platz")
-    if platz is not None and (not isinstance(platz, str) or not _PLATZ.match(platz)):
+    if platz is not None and (not isinstance(platz, str) or not _PLATZ.fullmatch(platz)):
         raise HTTPException(422, "platz muss eine Block-ID sein")
     hinweis = payload.get("hinweis", "")
     if not isinstance(hinweis, str) or len(hinweis) > 500:
@@ -91,6 +102,7 @@ def pult_stand(iid: str, x_pult_key: str | None = Header(None)):
 
 @router.get("/agent/{iid}/plaetze")
 def agent_plaetze(iid: str):
+    _agent_schluessel()
     i = _uuid_oder_404(iid)
     f = _lesen_einer(lambda:
         f"SELECT fassung, bloecke FROM marketing.inhalt_fassungen WHERE inhalt = {lit(i)}::uuid "
@@ -103,6 +115,7 @@ def agent_plaetze(iid: str):
 
 @router.post("/agent/{iid}/auftrag")
 def agent_auftrag(iid: str, payload: dict = Body(default={})):
+    _agent_schluessel()
     return _anlegen(iid, payload, "agent")
 
 
@@ -131,6 +144,7 @@ def _jpeg_pruefen(roh: bytes) -> None:
             bild.verify()
         with Image.open(io.BytesIO(roh)) as bild:
             fmt, (w, h) = bild.format, bild.size
+            bild.load()   # ganz dekodieren: abgeschnittene JPEGs bestehen verify()
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
         raise HTTPException(422, "Bilddatei ist kaputt")
     if fmt != "JPEG" or not (KANTE_MIN <= w <= KANTE_MAX and KANTE_MIN <= h <= KANTE_MAX):
@@ -142,7 +156,7 @@ async def arbeiter_bild(aid: str, request: Request, platz: str = Query(""),
                         x_bild_key: str | None = Header(None)):
     _bild_schluessel(x_bild_key)
     a = _auftrag_id(aid)
-    if not _PLATZ.match(platz or ""):
+    if not _PLATZ.fullmatch(platz or ""):
         raise HTTPException(422, "platz muss eine Block-ID sein")
     ordner = _ordner()
     try:
@@ -166,10 +180,17 @@ async def arbeiter_bild(aid: str, request: Request, platz: str = Query(""),
     name = f"nl-{a[:8]}-{platz}.jpg"
     ziel = os.path.join(ordner, name)
     zwischen = ziel + ".teil"
-    with open(zwischen, "wb") as f:
-        f.write(roh)
-    os.chmod(zwischen, 0o644)
-    os.replace(zwischen, ziel)
+    try:
+        with open(zwischen, "wb") as f:
+            f.write(roh)
+        os.chmod(zwischen, 0o644)
+        os.replace(zwischen, ziel)
+    except OSError:
+        try:
+            os.remove(zwischen)
+        except OSError:
+            pass
+        raise HTTPException(503, "Bild konnte nicht abgelegt werden")
     return {"name": name}
 
 
@@ -184,8 +205,8 @@ def arbeiter_fertig(aid: str, payload: dict = Body(...), x_bild_key: str | None 
     ordner = _ordner()
     medien = {}
     for platz, name in ergebnis.items():
-        if (not isinstance(platz, str) or not _PLATZ.match(platz) or not isinstance(name, str)
-                or not _NAME.match(name) or not name.startswith(f"nl-{a[:8]}-")
+        if (not isinstance(platz, str) or not _PLATZ.fullmatch(platz) or not isinstance(name, str)
+                or not _NAME.fullmatch(name) or not name.startswith(f"nl-{a[:8]}-")
                 or not os.path.isfile(os.path.join(ordner, name))):
             raise HTTPException(422, f"Ungueltiges Ergebnis fuer {str(platz)[:64]}")
         medien[platz] = "medien:" + name

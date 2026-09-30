@@ -52,6 +52,9 @@ DO $$ DECLARE v_i uuid := (SELECT v FROM _p WHERE k = 'inhalt')::uuid; v_a uuid;
   r := marketing.pult_bild_einsetzen(v_a, '{"held":"medien:nl-4567abcd-held.jpg"}', '');
   IF r->'fassung' <> 'null'::jsonb OR r->>'uebersprungen' NOT LIKE '%inzwischen belegt%' THEN RAISE EXCEPTION 'PROBE 3b %', r; END IF;
   IF (SELECT max(fassung) FROM marketing.inhalt_fassungen WHERE inhalt = v_i) <> 3 THEN RAISE EXCEPTION 'PROBE 3c'; END IF;
+  -- nichts eingesetzt -> fehler mit Befund, nicht fertig
+  IF (SELECT status || '|' || befund FROM marketing.bild_auftraege WHERE id = v_a) NOT LIKE 'fehler|%inzwischen belegt%' THEN
+    RAISE EXCEPTION 'PROBE 3d: %', (SELECT row_to_json(x) FROM marketing.bild_auftraege x WHERE id = v_a); END IF;
 END $$;
 
 -- 4) Neu erzeugen, Platz zeigt noch das Agentenbild der Grundfassung -> wird ersetzt
@@ -74,6 +77,8 @@ DO $$ DECLARE v_i uuid := (SELECT v FROM _p WHERE k = 'inhalt')::uuid; v_a uuid;
   PERFORM marketing.pult_bloecke_speichern(v_i, 5, 'Probe Bilder', '', d, 'betreiber', false);  -- Fassung 6
   r := marketing.pult_bild_einsetzen(v_a, '{"held":"medien:nl-11112222-held.jpg"}', '');
   IF r->'fassung' <> 'null'::jsonb OR r->>'uebersprungen' NOT LIKE '%gibt es nicht mehr%' THEN RAISE EXCEPTION 'PROBE 5 %', r; END IF;
+  IF (SELECT status || '|' || befund FROM marketing.bild_auftraege WHERE id = v_a) NOT LIKE 'fehler|%gibt es nicht mehr%' THEN
+    RAISE EXCEPTION 'PROBE 5a: %', (SELECT row_to_json(x) FROM marketing.bild_auftraege x WHERE id = v_a); END IF;
   BEGIN
     PERFORM marketing.pult_bild_auftrag(v_i, 'held', false, '', 'mensch');
     RAISE EXCEPTION 'PROBE 5b: Auftrag fuer fehlenden Platz angenommen';
@@ -126,6 +131,29 @@ DO $$ DECLARE v_i uuid; v_a uuid; BEGIN
   EXCEPTION WHEN raise_exception THEN
     IF SQLERRM NOT LIKE 'Der Hinweis ist zu lang%' THEN RAISE; END IF;
   END;
+END $$;
+
+-- 8) System-Auftrag "alle leeren" wartet, danach expliziter Auftrag fuer "held" mit Hinweis.
+--    Beide laufen nacheinander: der explizite muss das eben eingesetzte Bild ERSETZEN
+--    (Grundfassung wird bei der Vergabe neu gesetzt), statt als "belegt" zu verfallen.
+DO $$ DECLARE v_i uuid; v_s uuid; v_x uuid; j jsonb; r jsonb; BEGIN
+  v_i := marketing.pult_inhalt_aus_vorlage('probe-bilder', 'Probe Nacheinander', 'vibemind');
+  v_s := (SELECT id FROM marketing.bild_auftraege WHERE inhalt = v_i);
+  v_x := marketing.pult_bild_auftrag(v_i, 'held', false, 'mit Meer', 'mensch');
+  UPDATE marketing.bild_auftraege SET erstellt_am = now() - interval '4 days' WHERE id = v_s;
+  UPDATE marketing.bild_auftraege SET erstellt_am = now() - interval '3 days' WHERE id = v_x;
+  j := marketing.pult_bild_naechster('10 minutes');
+  IF (j->>'id')::uuid <> v_s THEN RAISE EXCEPTION 'PROBE 8a: %', j; END IF;
+  r := marketing.pult_bild_einsetzen(v_s, '{"held":"medien:nl-aaaa0000-held.jpg"}', '');
+  IF (r->>'fassung')::int <> 2 THEN RAISE EXCEPTION 'PROBE 8b: %', r; END IF;
+  j := marketing.pult_bild_naechster('10 minutes');
+  IF (j->>'id')::uuid <> v_x OR (j->>'fassung')::int <> 2 OR j->>'hinweis' <> 'mit Meer' THEN RAISE EXCEPTION 'PROBE 8c: %', j; END IF;
+  IF (SELECT grund_fassung FROM marketing.bild_auftraege WHERE id = v_x) <> 2 THEN RAISE EXCEPTION 'PROBE 8d: Grundfassung nicht neu gesetzt'; END IF;
+  r := marketing.pult_bild_einsetzen(v_x, '{"held":"medien:nl-bbbb1111-held.jpg"}', '');
+  IF (r->>'fassung')::int <> 3 OR r->>'eingesetzt' NOT LIKE '%held%' THEN RAISE EXCEPTION 'PROBE 8e: %', r; END IF;
+  IF (SELECT bloecke #>> '{held,data,props,url}' FROM marketing.inhalt_fassungen WHERE inhalt = v_i AND fassung = 3)
+     <> 'medien:nl-bbbb1111-held.jpg' THEN RAISE EXCEPTION 'PROBE 8f'; END IF;
+  IF (SELECT status FROM marketing.bild_auftraege WHERE id = v_x) <> 'fertig' THEN RAISE EXCEPTION 'PROBE 8g'; END IF;
 END $$;
 
 SELECT 'verify_056: alle Proben gruen' AS ergebnis;
