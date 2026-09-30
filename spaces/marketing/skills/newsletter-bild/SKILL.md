@@ -23,6 +23,15 @@ freigibt.
    - Unklar -> den Betreiber mit der Liste (id + alt) fragen, nicht raten.
 3. `newsletter_bild_beauftragen(inhalt_id, platz=<id>, hinweis=<Wunsch>)`.
    - Hinweis in Worten des Betreibers, knapp ("waermer", "Menschen statt Technik").
+   - Das Bild wird immer neu aus der Motivbeschreibung plus dem Wunsch erzeugt
+     (keine Pixel-Bearbeitung). `staerke` 0-100 (Standard 55) steuert, wie nah es
+     am Original bleibt: `staerke` 35 = nah am Original (Motiv, Umgebung und
+     Bildaufbau der Beschreibung bleiben), 75 = freier (nur das Thema bleibt),
+     100 oder `modus="neu"` = ganz neu.
+   - "Schrift weg", "waermer", "heller" -> 35; "anderer Stil, gleiches Thema" -> 75;
+     "anderes Motiv" -> 100 oder neu.
+   - Nach dem Lauf steht im Stand je Platz `messung.aehnlich_original` (0-1): die
+     "Themen-Aehnlichkeit" zwischen neuem und altem Bild. Nenne dem Betreiber diesen Wert.
    - Alle leeren Plaetze fuellen: `platz` leer lassen, `nur_leere=True`.
    - Alle neu: `platz` leer lassen, `nur_leere=False`.
 4. Dem Betreiber sagen, dass das Bild erzeugt wird, sobald der PC laeuft, und

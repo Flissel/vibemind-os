@@ -16,6 +16,8 @@ import uuid as _uuid
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
 
+from fastapi.responses import FileResponse
+
 from spaces.marketing.api.pult import _lesen, _lesen_einer, _schluessel, _schreiben, _uuid_oder_404, lit
 from spaces.marketing.claw import bildplaetze
 
@@ -23,10 +25,14 @@ router = APIRouter(prefix="/api/bilder")
 pult_router = APIRouter(prefix="/api/pult")
 _PLATZ = re.compile(r"[A-Za-z0-9_-]{1,64}")          # nur mit fullmatch benutzen
 _NAME = re.compile(r"nl-[0-9a-f]{8}-[A-Za-z0-9_-]{1,64}\.jpg")   # nur mit fullmatch benutzen
+_BILDDATEI = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(png|jpe?g|gif|webp)", re.IGNORECASE)   # fullmatch
+_BILDTYP = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}
+_MESSWERTE = ("aehnlich_original", "naeher_am_hinweis")
 BILD_MAX = 1024 * 1024
 KANTE_MIN, KANTE_MAX = 64, 2400
 FRIST = "10 minutes"
 _STAND_SQL = ("SELECT id, platz, nur_leere, hinweis, status, befund, versuche, urheber, "
+              "staerke, modus, messung, "
               "erstellt_am::text AS erstellt_am, geaendert_am::text AS geaendert_am "
               "FROM marketing.bild_auftraege WHERE inhalt = {i}::uuid ORDER BY erstellt_am DESC LIMIT 30")
 
@@ -78,9 +84,15 @@ def _anlegen(iid: str, payload, urheber: str) -> dict:
     nur_leere = payload.get("nur_leere", False)
     if not isinstance(nur_leere, bool):
         raise HTTPException(422, "nur_leere muss true oder false sein")
+    staerke = payload.get("staerke", 55)
+    if isinstance(staerke, bool) or not isinstance(staerke, int) or not 0 <= staerke <= 100:
+        raise HTTPException(422, "staerke muss eine ganze Zahl von 0 bis 100 sein")
+    modus = payload.get("modus", "ueberarbeiten")
+    if modus not in ("neu", "ueberarbeiten"):
+        raise HTTPException(422, "modus muss neu oder ueberarbeiten sein")
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_bild_auftrag({lit(i)}::uuid, {lit(platz) if platz else 'NULL'}, "
-        f"{'true' if nur_leere else 'false'}, {lit(hinweis.strip())}, {lit(urheber)}) AS id")
+        f"{'true' if nur_leere else 'false'}, {lit(hinweis.strip())}, {lit(urheber)}, {int(staerke)}, {lit(modus)}) AS id")
     return {"auftrag": str(zeile["id"])}
 
 
@@ -123,7 +135,12 @@ def agent_auftrag(iid: str, payload: dict = Body(default={})):
 def arbeiter_naechster(x_bild_key: str | None = Header(None)):
     _bild_schluessel(x_bild_key)
     zeile = _schreiben(lambda: f"SELECT marketing.pult_bild_naechster({lit(FRIST)}::interval) AS a")
-    return {"auftrag": zeile.get("a")}
+    a = zeile.get("a")
+    if isinstance(a, dict) and a.get("id"):
+        z = _lesen_einer(lambda:
+            f"SELECT staerke, modus FROM marketing.bild_auftraege WHERE id = {lit(a['id'])}::uuid")
+        a.update(z or {})
+    return {"auftrag": a}
 
 
 @router.post("/arbeiter/{aid}/weiter")
@@ -149,6 +166,36 @@ def _jpeg_pruefen(roh: bytes) -> None:
         raise HTTPException(422, "Bilddatei ist kaputt")
     if fmt != "JPEG" or not (KANTE_MIN <= w <= KANTE_MAX and KANTE_MIN <= h <= KANTE_MAX):
         raise HTTPException(422, f"JPEG mit Kanten {KANTE_MIN}-{KANTE_MAX} px noetig")
+
+
+@router.get("/arbeiter/{aid}/quelle")
+def arbeiter_quelle(aid: str, platz: str = Query(""), x_bild_key: str | None = Header(None)):
+    _bild_schluessel(x_bild_key)
+    a = _auftrag_id(aid)
+    if not _PLATZ.fullmatch(platz or ""):
+        raise HTTPException(422, "platz muss eine Block-ID sein")
+    fehler = _lesen_einer(lambda: f"SELECT marketing.pult_bild_datei_fehler({lit(a)}::uuid, {lit(platz)}) AS f")
+    if fehler is None:
+        raise HTTPException(503, "Marketing-Datenbank nicht erreichbar")
+    if fehler.get("f"):
+        raise HTTPException(422, str(fehler["f"]))
+    z = _lesen_einer(lambda:
+        "SELECT f.bloecke #>> ARRAY[" + lit(platz) + ", 'data', 'props', 'url'] AS url "
+        "FROM marketing.bild_auftraege b JOIN marketing.inhalt_fassungen f ON f.inhalt = b.inhalt "
+        f"WHERE b.id = {lit(a)}::uuid ORDER BY f.fassung DESC LIMIT 1")
+    url = str((z or {}).get("url") or "")
+    if not url.startswith("medien:") or bildplaetze.ist_leer(url):
+        raise HTTPException(404, "Kein Bild im Platz")
+    name = url[len("medien:"):]
+    if not _BILDDATEI.fullmatch(name) or ".." in name:
+        raise HTTPException(404, "Kein Bild im Platz")
+    ordner = [os.environ.get("MARKETING_MEDIEN_ORDNER", "").strip(), _ordner()]
+    for o in ordner:
+        pfad = os.path.join(o, name) if o else ""
+        if pfad and os.path.isfile(pfad):
+            return FileResponse(pfad, media_type=_BILDTYP[os.path.splitext(name)[1].lower()],
+                                headers={"Cache-Control": "no-store"})
+    raise HTTPException(404, "Bilddatei fehlt")
 
 
 @router.post("/arbeiter/{aid}/bild")
@@ -210,9 +257,19 @@ def arbeiter_fertig(aid: str, payload: dict = Body(...), x_bild_key: str | None 
                 or not os.path.isfile(os.path.join(ordner, name))):
             raise HTTPException(422, f"Ungueltiges Ergebnis fuer {str(platz)[:64]}")
         medien[platz] = "medien:" + name
+    messung = payload.get("messung") or {}
+    if not isinstance(messung, dict):
+        raise HTTPException(422, "messung muss ein Objekt sein")
+    for platz, werte in messung.items():
+        if platz not in medien or not isinstance(werte, dict) or set(werte) - set(_MESSWERTE):
+            raise HTTPException(422, f"Ungueltige Messung fuer {str(platz)[:64]}")
+        for w in werte.values():
+            if w is not None and (isinstance(w, bool) or not isinstance(w, (int, float)) or not -1 <= w <= 1):
+                raise HTTPException(422, f"Ungueltige Messung fuer {platz}")
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_bild_einsetzen({lit(a)}::uuid, "
-        f"{lit(json.dumps(medien, ensure_ascii=False))}::jsonb, {lit(befund[:500])}) AS e")
+        f"{lit(json.dumps(medien, ensure_ascii=False))}::jsonb, {lit(befund[:500])}, "
+        f"{lit(json.dumps(messung, ensure_ascii=False))}::jsonb) AS e")
     return zeile.get("e") or {}
 
 

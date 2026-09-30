@@ -1085,17 +1085,21 @@ def newsletter_bildplaetze(inhalt_id: str) -> dict:
 
 
 def newsletter_bild_beauftragen(inhalt_id: str, platz: str = "", hinweis: str = "",
-                                nur_leere: bool = False) -> dict:
+                                nur_leere: bool = False, staerke: int = 55,
+                                modus: str = "ueberarbeiten") -> dict:
     """Ein Bild fuer einen Bildplatz erzeugen lassen (oder fuer alle: platz leer
     lassen; nur_leere=True fuellt nur leere Plaetze). `hinweis` ist ein Wunsch
     in Worten ("waermer", "eher Menschen"). Erzeugt wird am PC, sobald er
     laeuft; das Ergebnis ist eine neue Fassung, die der Betreiber freigibt.
+    `staerke` 0-100: wie stark das vorhandene Bild ueberarbeitet wird (niedrig =
+    Aufbau bleibt, 100 = ganz neu); `modus` `neu` erzeugt ohne Ausgangsbild.
     Du erzeugst nie selbst ein Bild - du beauftragst."""
     i = _inhalt_id(inhalt_id)
     if not i:
         return {"ok": False, "fehler": "inhalt_id muss eine UUID sein"}
     antwort = _api(f"/api/bilder/agent/{i}/auftrag",
-                   {"platz": (platz or "").strip() or None, "hinweis": hinweis or "", "nur_leere": bool(nur_leere)})
+                   {"platz": (platz or "").strip() or None, "hinweis": hinweis or "", "nur_leere": bool(nur_leere),
+                    "staerke": staerke, "modus": modus})
     if not antwort["ok"]:
         return antwort
     return {"ok": True, "auftrag": (antwort.get("daten") or {}).get("auftrag")}

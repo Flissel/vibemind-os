@@ -211,3 +211,89 @@ def test_schreibfehler_raeumt_teil_datei_weg_503(db, c, monkeypatch):
     r = c.post(f"/api/bilder/arbeiter/{AID}/bild?platz=kopf", headers={"X-Bild-Key": BK}, content=jpeg())
     assert r.status_code == 503 and r.json()["detail"] == "Bild konnte nicht abgelegt werden"
     assert list(db.ordner.iterdir()) == []
+
+
+def test_auftrag_mit_staerke_und_modus(db, c):
+    db.antworten = [[{"id": "a9"}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK},
+               json={"platz": "kopf", "hinweis": "waermer", "staerke": 30, "modus": "ueberarbeiten"})
+    assert r.status_code == 200
+    assert ", 30, 'ueberarbeiten') AS id" in db.sql[0]
+
+
+def test_auftrag_standard_55_ueberarbeiten(db, c):
+    db.antworten = [[{"id": "a9"}]]
+    c.post(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK}, json={"platz": "kopf"})
+    assert ", 55, 'ueberarbeiten') AS id" in db.sql[0]
+
+
+@pytest.mark.parametrize("body", [{"staerke": 101}, {"staerke": -1}, {"staerke": True}, {"staerke": "55"},
+                                  {"staerke": 5.5}, {"modus": "malen"}, {"modus": 1}])
+def test_auftrag_formen_staerke_modus(db, c, body):
+    assert c.post(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK}, json=body).status_code == 422
+    assert db.sql == []
+
+
+def test_stand_liefert_staerke_modus_messung(db, c):
+    db.antworten = [[{"id": "a1"}]]
+    c.get(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK})
+    assert "staerke, modus, messung" in db.sql[0]
+
+
+def test_naechster_ergaenzt_staerke_modus(db, c):
+    db.antworten = [[{"a": {"id": AID, "platz": None}}], [{"staerke": 40, "modus": "ueberarbeiten"}]]
+    a = c.post("/api/bilder/arbeiter/naechster", headers={"X-Bild-Key": BK}).json()["auftrag"]
+    assert a["staerke"] == 40 and a["modus"] == "ueberarbeiten"
+
+
+def test_quelle_menschen_ordner_zuerst(db, c, monkeypatch, tmp_path):
+    mensch = tmp_path / "media"
+    mensch.mkdir()
+    (mensch / "eigen.png").write_bytes(b"\x89PNG\r\n\x1a\nMENSCH")
+    (db.ordner / "eigen.png").write_bytes(b"\x89PNG\r\n\x1a\nSYSTEM")
+    monkeypatch.setenv("MARKETING_MEDIEN_ORDNER", str(mensch))
+    db.antworten = [[{"f": None}], [{"url": "medien:eigen.png"}]]
+    r = c.get(f"/api/bilder/arbeiter/{AID}/quelle?platz=kopf", headers={"X-Bild-Key": BK})
+    assert r.status_code == 200 and r.content.endswith(b"MENSCH") and r.headers["content-type"] == "image/png"
+
+
+def test_quelle_aus_media_erzeugt(db, c):
+    (db.ordner / "nl-0123abcd-kopf.jpg").write_bytes(jpeg())
+    db.antworten = [[{"f": None}], [{"url": "medien:nl-0123abcd-kopf.jpg"}]]
+    r = c.get(f"/api/bilder/arbeiter/{AID}/quelle?platz=kopf", headers={"X-Bild-Key": BK})
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
+
+
+@pytest.mark.parametrize("url,code", [("medien:platzhalter-2x1.png", 404), ("", 404),
+                                      ("medien:../../etc/passwd", 404), ("medien:weg.jpg", 404),
+                                      ("https://x.de/a.jpg", 404)])
+def test_quelle_ablehnen(db, c, url, code):
+    db.antworten = [[{"f": None}], [{"url": url}]]
+    assert c.get(f"/api/bilder/arbeiter/{AID}/quelle?platz=kopf", headers={"X-Bild-Key": BK}).status_code == code
+
+
+def test_quelle_schluessel_und_auftrag(db, c):
+    assert c.get(f"/api/bilder/arbeiter/{AID}/quelle?platz=kopf").status_code == 401
+    db.antworten = [[{"f": "Platz gehoert nicht zu diesem Auftrag"}]]
+    r = c.get(f"/api/bilder/arbeiter/{AID}/quelle?platz=kopf", headers={"X-Bild-Key": BK})
+    assert r.status_code == 422 and "gehoert nicht" in r.json()["detail"]
+    assert c.get(f"/api/bilder/arbeiter/{AID}/quelle?platz=kopf%0A", headers={"X-Bild-Key": BK}).status_code == 422
+
+
+def test_fertig_mit_messung(db, c):
+    (db.ordner / "nl-0123abcd-kopf.jpg").write_bytes(jpeg())
+    db.antworten = [[{"e": {"fassung": 5}}]]
+    r = c.post(f"/api/bilder/arbeiter/{AID}/fertig", headers={"X-Bild-Key": BK},
+               json={"ergebnis": {"kopf": "nl-0123abcd-kopf.jpg"}, "befund": "",
+                     "messung": {"kopf": {"aehnlich_original": 0.82, "naeher_am_hinweis": None}}})
+    assert r.status_code == 200 and '"aehnlich_original": 0.82' in db.sql[0] and "::jsonb, '', " in db.sql[0]
+
+
+@pytest.mark.parametrize("messung", [{"kopf": {"aehnlich_original": 2}}, {"kopf": {"x": 0.1}},
+                                     {"fremd": {"aehnlich_original": 0.5}}, {"kopf": {"aehnlich_original": True}},
+                                     [1], {"kopf": 0.5}])
+def test_fertig_messung_ablehnen(db, c, messung):
+    (db.ordner / "nl-0123abcd-kopf.jpg").write_bytes(jpeg())
+    r = c.post(f"/api/bilder/arbeiter/{AID}/fertig", headers={"X-Bild-Key": BK},
+               json={"ergebnis": {"kopf": "nl-0123abcd-kopf.jpg"}, "befund": "", "messung": messung})
+    assert r.status_code == 422 and db.sql == []

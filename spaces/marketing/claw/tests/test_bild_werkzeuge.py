@@ -17,9 +17,11 @@ def test_beauftragen_schickt_formen(monkeypatch):
                         {"ok": True, "daten": {"auftrag": "a1"}})
     r = werkzeuge.newsletter_bild_beauftragen(IID, platz="kopf", hinweis="waermer")
     assert r == {"ok": True, "auftrag": "a1"}
-    assert gerufen[0] == (f"/api/bilder/agent/{IID}/auftrag", {"platz": "kopf", "hinweis": "waermer", "nur_leere": False})
+    assert gerufen[0] == (f"/api/bilder/agent/{IID}/auftrag", {"platz": "kopf", "hinweis": "waermer", "nur_leere": False,
+                                                                  "staerke": 55, "modus": "ueberarbeiten"})
     werkzeuge.newsletter_bild_beauftragen(IID, nur_leere=True)
-    assert gerufen[1][1] == {"platz": None, "hinweis": "", "nur_leere": True}
+    assert gerufen[1][1] == {"platz": None, "hinweis": "", "nur_leere": True,
+                               "staerke": 55, "modus": "ueberarbeiten"}
 
 
 def test_ungueltige_id_ohne_netz(monkeypatch):
@@ -31,3 +33,11 @@ def test_ungueltige_id_ohne_netz(monkeypatch):
 def test_im_werkzeugkasten():
     assert werkzeuge.newsletter_bildplaetze in server.WERKZEUGE
     assert werkzeuge.newsletter_bild_beauftragen in server.WERKZEUGE
+
+
+def test_beauftragen_mit_staerke_und_modus(monkeypatch):
+    gerufen = []
+    monkeypatch.setattr(werkzeuge, "_api", lambda pfad, nutzlast=None: gerufen.append(nutzlast) or
+                        {"ok": True, "daten": {"auftrag": "a1"}})
+    werkzeuge.newsletter_bild_beauftragen(IID, platz="kopf", hinweis="waermer", staerke=30)
+    assert gerufen[0] == {"platz": "kopf", "hinweis": "waermer", "nur_leere": False, "staerke": 30, "modus": "ueberarbeiten"}
