@@ -14,15 +14,18 @@ import subprocess
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from spaces.marketing.claw import bild_comfy, bild_prompt, bildplaetze
+from spaces.marketing.claw import bild_comfy, bild_messen, bild_prompt, bild_sehen, bildplaetze
 
 PORT = 8133
 TAKT_S = 20
 VERSUCHE_JE_PLATZ = 3
+GRENZE_STAERKE = 60           # bis hierhin: Motiv nah halten und Aehnlichkeit erzwingen
+MIN_AEHNLICH = 0.75           # CLIP cos(alt, neu) bei staerke <= GRENZE_STAERKE
 ERZEUGUNG_ZEITLIMIT_S = 540
 JPEG_ZIEL = 250 * 1024
 _HIER = Path(__file__).resolve()
@@ -41,9 +44,12 @@ class ApiFehler(Exception):
 
 
 def umgebung_laden() -> None:
-    """MARKETING_BILD_URL/KEY aus Vibemind_V1/.env, wenn nicht gesetzt (Muster claw/server.py)."""
+    """MARKETING_BILD_URL/KEY und FASTEMBED_CACHE_PATH aus Vibemind_V1/.env, wenn
+    nicht gesetzt (Muster claw/server.py). Ohne FASTEMBED_CACHE_PATH laedt CLIP
+    (bild_messen) sein Modell bei jedem Start neu in ein Temp-Verzeichnis."""
     datei = REPO_ROOT / ".env"
-    fehlend = [k for k in ("MARKETING_BILD_URL", "MARKETING_BILD_KEY") if not os.environ.get(k)]
+    fehlend = [k for k in ("MARKETING_BILD_URL", "MARKETING_BILD_KEY", "FASTEMBED_CACHE_PATH")
+               if not os.environ.get(k)]
     if not fehlend or not datei.exists():
         return
     for zeile in datei.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -94,8 +100,21 @@ class ArbeiterApi:
     def bild(self, aid, platz, jpeg: bytes) -> str:
         return self._post(f"/{aid}/bild?platz={urllib.request.quote(platz)}", roh=jpeg, typ="image/jpeg")["name"]
 
-    def fertig(self, aid, ergebnis: dict, befund: str) -> dict:
-        return self._post(f"/{aid}/fertig", {"ergebnis": ergebnis, "befund": befund})
+    def quelle(self, aid, platz) -> bytes | None:
+        """Aktuelles Bild des Platzes von der VM; 404 (kein Bild) -> None."""
+        req = urllib.request.Request(
+            f"{self.basis}/api/bilder/arbeiter/{aid}/quelle?platz={urllib.parse.quote(platz)}")
+        req.add_unredirected_header("X-Bild-Key", self.schluessel)
+        try:
+            with urllib.request.urlopen(req, timeout=60, context=self.tls) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None
+            raise ApiFehler(e.code, "Quellbild nicht abrufbar") from None
+
+    def fertig(self, aid, ergebnis: dict, befund: str, messung: dict | None = None) -> dict:
+        return self._post(f"/{aid}/fertig", {"ergebnis": ergebnis, "befund": befund, "messung": messung or {}})
 
     def zurueck(self, aid, befund: str, endgueltig: bool) -> str:
         return self._post(f"/{aid}/zurueck", {"befund": befund[:500], "endgueltig": endgueltig}).get("status", "")
@@ -136,28 +155,49 @@ def _dienste_bereit(comfy, prompt, starten, uhr) -> bool:
     return False
 
 
-def _erzeugen(api, aid, auftrag, ziele, comfy, prompt):
-    """Erzeugt und liefert je Platz ab. Rueckgabe (ergebnis, befunde) oder
-    "verworfen", wenn der Auftrag dem Arbeiter nicht mehr gehoert."""
-    # Erst alle Prompts (Ollama, keep_alive 0), dann alle Bilder am Stueck:
-    # ComfyUI laedt die Modelle (~11 GB, gemessen 30.09. ~118 s von der HDD
-    # E:, Rechnen nur ~6 s) so EINMAL je Auftrag. Nach jedem Bild freigeben
-    # nur, wenn danach das Sehmodell der Selbstpruefung den Grafikspeicher braucht.
+def _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen):
+    """Phase 1 (Ollama, keep_alive 0): je Platz Quelle holen, sehen, Prompt.
+    Phase 2: alle Bilder am Stueck mit FLUX, /free am Ende - ComfyUI laedt die
+    Modelle (~11 GB, gemessen 30.09. ~118 s von der HDD E:, Rechnen nur ~6 s) so
+    EINMAL je Auftrag; je Bild freigeben nur, wenn danach das Sehmodell der
+    Selbstpruefung den Grafikspeicher braucht. CLIP-Messung je Bild auf der CPU.
+    Ueberarbeiten = "neu mit Motiv" (Betreiber-Entscheid 30.09.): immer
+    Text-zu-Bild in Platzmassen, die Quelle dient nur Sehen und Messen.
+    Rueckgabe (ergebnis, befunde, messwerte) oder "verworfen"."""
+    staerke = int(auftrag.get("staerke") if auftrag.get("staerke") is not None else 55)
+    modus = auftrag.get("modus") or "ueberarbeiten"
+    titel, hinweis = str(auftrag.get("titel") or ""), str(auftrag.get("hinweis") or "")
+    befunde, arbeit = [], []
+    for platz in ziele:
+        quelle = None
+        if modus == "ueberarbeiten" and staerke < 100 and not platz.leer:
+            quelle = api.quelle(aid, platz.id)
+            if quelle is None:
+                befunde.append(f"{platz.id}: Quellbild fehlt - neu erzeugt")
+        if quelle is not None:
+            beschreibung = sehen.beschreiben(quelle)
+            if not beschreibung:
+                befunde.append(f"{platz.id}: ohne Bildbeschreibung")
+            text = prompt.bearbeitungs_prompt(beschreibung, platz.als_dict(), titel, hinweis,
+                                              nah=staerke <= GRENZE_STAERKE)
+        else:
+            text = prompt.prompt_schreiben(platz.als_dict(), titel, hinweis)
+        arbeit.append((platz, text, quelle))
     je_bild_freigeben = os.environ.get("BILD_SELBSTPRUEFUNG", "") == "1"
-    texte = {platz.id: prompt.prompt_schreiben(platz.als_dict(), str(auftrag.get("titel") or ""),
-                                               str(auftrag.get("hinweis") or ""))
-             for platz in ziele}
     try:
-        return _bilder(api, aid, ziele, texte, comfy, prompt, je_bild_freigeben)
+        erg = _bilder(api, aid, arbeit, staerke, hinweis, comfy, prompt, messen, je_bild_freigeben, befunde)
     finally:
         comfy.freigeben()
+    if erg == "verworfen":
+        return erg
+    ergebnis, messwerte = erg
+    return ergebnis, befunde, messwerte
 
 
-def _bilder(api, aid, ziele, texte, comfy, prompt, je_bild_freigeben):
-    ergebnis, befunde = {}, []
-    for platz in ziele:
-        text = texte[platz.id]
-        letzter = ""
+def _bilder(api, aid, arbeit, staerke, hinweis, comfy, prompt, messen, je_bild_freigeben, befunde):
+    ergebnis, messwerte = {}, {}
+    for platz, text, quelle in arbeit:
+        bestes, letzter = None, ""            # bestes = (aehnlich, png, messung, pruef_notiz)
         for _ in range(VERSUCHE_JE_PLATZ):
             if not api.weiter(aid):   # Vergabe je Versuch verlaengern (Kaltstart ~300 s, Vergabe 10 min)
                 return "verworfen"
@@ -167,31 +207,49 @@ def _bilder(api, aid, ziele, texte, comfy, prompt, je_bild_freigeben):
             finally:
                 if je_bild_freigeben:
                     comfy.freigeben()
-            ok, letzter = prompt.pruefen(png, text)
+            ok, notiz = prompt.pruefen(png, text)
             if not ok:
+                letzter = notiz
                 continue
-            jpeg = verkleinern(png, platz.erzeug_breite, platz.erzeug_hoehe)
-            if not api.weiter(aid):   # 540 s Erzeugung + 180 s Pruefung koennen die Vergabe ueberziehen
-                return "verworfen"
-            try:
-                ergebnis[platz.id] = api.bild(aid, platz.id, jpeg)
-            except ApiFehler as e:
-                if e.code != 422:
-                    raise
-                if "in Arbeit" in e.grund:
-                    return "verworfen"
-                befunde.append(f"{platz.id}: {e.grund}")
-                break
-            if letzter:
-                befunde.append(f"{platz.id}: {letzter}")
+            m = messen.messen(quelle, png, hinweis) if quelle is not None else {}
+            aehnlich = m.get("aehnlich_original")
+            zu_fern = (quelle is not None and staerke <= GRENZE_STAERKE and aehnlich is not None
+                       and aehnlich < MIN_AEHNLICH)
+            if bestes is None or (aehnlich or 0) > (bestes[0] or 0):
+                bestes = (aehnlich, png, m, notiz)
+            if zu_fern:
+                letzter = f"Aehnlichkeit {aehnlich:.2f} unter {MIN_AEHNLICH}"
+                continue
+            bestes, letzter = (aehnlich, png, m, notiz), ""
             break
-        else:
+        if bestes is None:
             befunde.append(f"{platz.id}: {letzter}")
-    return ergebnis, befunde
+            continue
+        # Nur zu unaehnliche Kandidaten gesehen: das aehnlichste nehmen (aehnlich ist dann gesetzt).
+        aehnlich, png, m, notiz = bestes
+        if letzter:
+            befunde.append(f"{platz.id}: {letzter} - bestes Bild ({aehnlich:.2f}) genommen")
+        if notiz:                     # z.B. "Selbstpruefung unlesbar - ungeprueft eingesetzt"
+            befunde.append(f"{platz.id}: {notiz}")
+        jpeg = verkleinern(png, platz.erzeug_breite, platz.erzeug_hoehe)
+        if not api.weiter(aid):   # 540 s Erzeugung + 180 s Pruefung koennen die Vergabe ueberziehen
+            return "verworfen"
+        try:
+            ergebnis[platz.id] = api.bild(aid, platz.id, jpeg)
+        except ApiFehler as e:
+            if e.code != 422:
+                raise
+            if "in Arbeit" in e.grund:
+                return "verworfen"
+            befunde.append(f"{platz.id}: {e.grund}")
+            continue
+        if m:
+            messwerte[platz.id] = m
+    return ergebnis, messwerte
 
 
 def ein_durchlauf(api, comfy=bild_comfy, prompt=bild_prompt, starten=dienste_starten,
-                  uhr=time.monotonic) -> str:
+                  uhr=time.monotonic, sehen=bild_sehen, messen=bild_messen) -> str:
     if not _dienste_bereit(comfy, prompt, starten, uhr):
         return "wartet"
     auftrag = api.naechster()
@@ -206,15 +264,15 @@ def ein_durchlauf(api, comfy=bild_comfy, prompt=bild_prompt, starten=dienste_sta
         if not ziele:
             api.zurueck(aid, "Keine passenden Bildplaetze", True)
             return "zurueck"
-        erg = _erzeugen(api, aid, auftrag, ziele, comfy, prompt)
+        erg = _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen)
         if erg == "verworfen":
             return "verworfen"
-        ergebnis, befunde = erg
+        ergebnis, befunde, messwerte = erg
         if not ergebnis:
             api.zurueck(aid, "; ".join(befunde) or "Kein Bild bestanden", True)
             return "zurueck"
         try:
-            api.fertig(aid, ergebnis, "; ".join(befunde))
+            api.fertig(aid, ergebnis, "; ".join(befunde), messwerte)
         except ApiFehler as e:
             if e.code == 422 and "in Arbeit" in e.grund:
                 return "verworfen"

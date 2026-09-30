@@ -22,7 +22,7 @@ def png(w, h):
 
 class Api:
     def __init__(self, auftrag):
-        self.auftrag, self.log = auftrag, []
+        self.auftrag, self.log, self.quellen, self.messung = auftrag, [], {}, None
 
     def naechster(self):
         a, self.auftrag = self.auftrag, None
@@ -35,8 +35,11 @@ class Api:
         assert jpeg[:3] == b"\xff\xd8\xff" and len(jpeg) < 1024 * 1024
         self.log.append(("bild", platz)); return f"nl-{aid[:8]}-{platz}.jpg"
 
-    def fertig(self, aid, ergebnis, befund):
-        self.log.append(("fertig", ergebnis, befund)); return {"fassung": 2}
+    def quelle(self, aid, platz):
+        self.log.append(("quelle", platz)); return self.quellen.get(platz)
+
+    def fertig(self, aid, ergebnis, befund, messung=None):
+        self.log.append(("fertig", ergebnis, befund)); self.messung = messung; return {"fassung": 2}
 
     def zurueck(self, aid, befund, endgueltig):
         self.log.append(("zurueck", befund, endgueltig)); return "offen"
@@ -46,7 +49,7 @@ class Comfy:
     ComfyFehler = bild_comfy.ComfyFehler
 
     def __init__(self, laeuft=True, fehler=None):
-        self._laeuft, self.fehler, self.masse, self.frei = laeuft, fehler, [], 0
+        self._laeuft, self.fehler, self.masse, self.frei, self.ueber = laeuft, fehler, [], 0, []
 
     def laeuft(self):
         return self._laeuft
@@ -56,19 +59,26 @@ class Comfy:
             raise self.fehler
         self.masse.append((b, h)); return png(b, h)
 
+    def ueberarbeiten(self, prompt, quelle, b, h, seed, staerke, zeitlimit_s=300):
+        self.ueber.append((b, h, staerke, quelle)); return png(b, h)
+
     def freigeben(self):
         self.frei += 1
 
 
 class Prompt:
     def __init__(self, urteile=None):
-        self.urteile = list(urteile or [])
+        self.urteile, self.nah = list(urteile or []), []
 
     def laeuft(self):
         return True
 
     def prompt_schreiben(self, platz, titel, hinweis):
         return f"bild fuer {platz['id']}"
+
+    def bearbeitungs_prompt(self, beschreibung, platz, titel, hinweis, nah=True):
+        self.nah.append(nah)
+        return f"edit {platz['id']} | {beschreibung}"
 
     def pruefen(self, png_, prompt):
         return self.urteile.pop(0) if self.urteile else (True, "")
@@ -80,7 +90,8 @@ def _start_zustand(monkeypatch):
 
 
 AUFTRAG = {"id": "0123abcd-0000-0000-0000-000000000000", "platz": None, "nur_leere": True, "hinweis": "",
-           "bloecke": DOC, "titel": "Oktober", "fassung": 1}
+           "bloecke": DOC, "titel": "Oktober", "fassung": 1,
+           "modus": "neu"}                     # "neu": bestehende Tests rufen nie Sehmodell/CLIP
 
 
 def test_leer():
@@ -177,14 +188,14 @@ def test_kein_passender_platz_ist_fehler_mit_befund():
 
 def test_fertig_abgelehnt_weil_verworfen_ist_kein_absturz():
     class Verworfen(Api):
-        def fertig(self, aid, ergebnis, befund):
+        def fertig(self, aid, ergebnis, befund, messung=None):
             raise bw.ApiFehler(422, "Auftrag ist nicht in Arbeit (verworfen)")
     assert bw.ein_durchlauf(Verworfen(dict(AUFTRAG)), Comfy(), Prompt(), starten=lambda: None) == "verworfen"
 
 
 def test_fertig_abgelehnt_serverwortlaut_nicht_mehr_in_arbeit():
     class Verworfen(Api):
-        def fertig(self, aid, ergebnis, befund):
+        def fertig(self, aid, ergebnis, befund, messung=None):
             raise bw.ApiFehler(422, "Auftrag ist nicht (mehr) in Arbeit")
     api = Verworfen(dict(AUFTRAG))
     assert bw.ein_durchlauf(api, Comfy(), Prompt(), starten=lambda: None) == "verworfen"
@@ -329,3 +340,184 @@ def test_mit_selbstpruefung_je_bild_freigeben(monkeypatch):
     comfy = Comfy()
     bw.ein_durchlauf(Api(dict(AUFTRAG, nur_leere=False)), comfy, Prompt(), starten=lambda: None)
     assert comfy.frei == 3                                     # je Bild + einmal am Ende
+
+
+class Sehen:
+    def __init__(self, text="a skyline"):
+        self.text, self.gesehen = text, []
+
+    def beschreiben(self, bild):
+        self.gesehen.append(bild)
+        return self.text
+
+
+class Messen:
+    def __init__(self, werte):
+        self.werte = list(werte)
+
+    def messen(self, alt, neu, hinweis):
+        return self.werte.pop(0) if self.werte else {"aehnlich_original": 0.9, "naeher_am_hinweis": 0.02}
+
+
+UEBER = dict(AUFTRAG, platz="neben", nur_leere=False, hinweis="waermer", staerke=40, modus="ueberarbeiten")
+
+
+def test_ueberarbeiten_ablauf_und_messung():
+    api, comfy, sehen = Api(dict(UEBER)), Comfy(), Sehen()
+    api.quellen["neben"] = b"ALT"
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=sehen,
+                            messen=Messen([{"aehnlich_original": 0.88, "naeher_am_hinweis": 0.04}])) == "fertig"
+    # Betreiber-Entscheid 30.09. "neu mit Motiv": Text-zu-Bild in Platzmassen, nie Bild-zu-Bild
+    assert sehen.gesehen == [b"ALT"] and comfy.masse == [(1200, 608)] and comfy.ueber == []
+    assert api.messung == {"neben": {"aehnlich_original": 0.88, "naeher_am_hinweis": 0.04}}
+
+
+def test_leerer_platz_wird_neu_erzeugt_ohne_quelle():
+    a = dict(UEBER, platz="kopf")                          # kopf ist Platzhalter = leer
+    api, comfy = Api(a), Comfy()
+    bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=Sehen(), messen=Messen([]))
+    assert comfy.ueber == [] and comfy.masse == [(1200, 608)] and ("quelle", "kopf") not in api.log
+
+
+def test_staerke_100_ist_neu():
+    api, comfy = Api(dict(UEBER, staerke=100)), Comfy()
+    api.quellen["neben"] = b"ALT"
+    bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=Sehen(), messen=Messen([]))
+    assert comfy.ueber == [] and len(comfy.masse) == 1
+
+
+def test_quelle_fehlt_neu_mit_befund():
+    api, comfy = Api(dict(UEBER)), Comfy()                  # quellen leer -> None
+    bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=Sehen(), messen=Messen([]))
+    assert comfy.ueber == [] and len(comfy.masse) == 1
+    assert "neben: Quellbild fehlt - neu erzeugt" in api.log[-1][2]
+
+
+def test_ohne_beschreibung_mit_befund():
+    api, comfy = Api(dict(UEBER)), Comfy()
+    api.quellen["neben"] = b"ALT"
+    bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=Sehen(""), messen=Messen([]))
+    assert len(comfy.masse) == 1 and comfy.ueber == [] and "neben: ohne Bildbeschreibung" in api.log[-1][2]
+
+
+def test_zu_unaehnlich_wiederholen_dann_bestes():
+    api, comfy = Api(dict(UEBER)), Comfy()
+    api.quellen["neben"] = b"ALT"
+    werte = [{"aehnlich_original": 0.5, "naeher_am_hinweis": 0.1}, {"aehnlich_original": 0.7, "naeher_am_hinweis": 0.1},
+             {"aehnlich_original": 0.6, "naeher_am_hinweis": 0.1}]
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=Sehen(), messen=Messen(werte)) == "fertig"
+    assert len(comfy.masse) == 3 and comfy.ueber == [] and api.messung["neben"]["aehnlich_original"] == 0.7
+    assert "Aehnlichkeit 0.60 unter 0.75 - bestes Bild (0.70) genommen" in api.log[-1][2]
+
+
+def test_hohe_staerke_keine_aehnlichkeitsschwelle():
+    api, comfy = Api(dict(UEBER, staerke=80)), Comfy()
+    api.quellen["neben"] = b"ALT"
+    bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=Sehen(),
+                     messen=Messen([{"aehnlich_original": 0.4, "naeher_am_hinweis": 0.2}]))
+    assert len(comfy.masse) == 1 and comfy.ueber == [] and api.log[-1][2] == ""
+
+
+def test_ueberarbeiten_ohne_hinweis():
+    api, comfy = Api(dict(UEBER, hinweis="")), Comfy()
+    api.quellen["neben"] = b"ALT"
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=Sehen(),
+                            messen=Messen([{"aehnlich_original": 0.9, "naeher_am_hinweis": None}])) == "fertig"
+    assert api.messung["neben"]["naeher_am_hinweis"] is None
+
+
+def test_erst_sehen_dann_flux_einmal_freigeben(monkeypatch):
+    monkeypatch.delenv("BILD_SELBSTPRUEFUNG", raising=False)
+    folge = []
+
+    class S(Sehen):
+        def beschreiben(self, bild):
+            folge.append("sehen")
+            return "x"
+
+    class C(Comfy):
+        def ueberarbeiten(self, *a, **k):
+            folge.append("flux")
+            return super().ueberarbeiten(*a, **k)
+
+        def erzeugen(self, *a, **k):
+            folge.append("flux")
+            return super().erzeugen(*a, **k)
+
+        def freigeben(self):
+            folge.append("frei")
+
+    api = Api(dict(UEBER, platz=None))                     # kopf (leer, neu) + neben (ueberarbeiten)
+    api.quellen["neben"] = b"ALT"
+    bw.ein_durchlauf(api, C(), Prompt(), starten=lambda: None, sehen=S(), messen=Messen([]))
+    assert folge == ["sehen", "flux", "flux", "frei"]
+
+
+@pytest.mark.parametrize("staerke, nah", [(0, True), (40, True), (60, True), (61, False), (99, False)])
+def test_nah_bis_grenze_staerke(staerke, nah):
+    api, prompt = Api(dict(UEBER, staerke=staerke)), Prompt()
+    api.quellen["neben"] = b"ALT"
+    bw.ein_durchlauf(api, Comfy(), prompt, starten=lambda: None, sehen=Sehen(), messen=Messen([]))
+    assert prompt.nah == [nah]
+
+
+def test_selbstpruefung_notiz_bleibt_befund_beim_ueberarbeiten():
+    """Wie bisher beim Neu-Erzeugen: 'ungeprueft eingesetzt' geht nicht verloren."""
+    api = Api(dict(UEBER))
+    api.quellen["neben"] = b"ALT"
+    bw.ein_durchlauf(api, Comfy(), Prompt([(True, "Selbstpruefung unlesbar - ungeprueft eingesetzt")]),
+                     starten=lambda: None, sehen=Sehen(), messen=Messen([]))
+    assert api.log[-1][0] == "fertig" and "neben: Selbstpruefung unlesbar" in api.log[-1][2]
+
+
+def test_umgebung_laden_holt_auch_fastembed_cache(monkeypatch, tmp_path):
+    """Ohne FASTEMBED_CACHE_PATH laedt CLIP bei jedem Start neu in ein Temp-Verzeichnis."""
+    import os
+    (tmp_path / ".env").write_text('MARKETING_BILD_URL=https://vm\nMARKETING_BILD_KEY="k"\n'
+                                   "FASTEMBED_CACHE_PATH=E:/cache/fastembed\n", encoding="utf-8")
+    monkeypatch.setattr(bw, "REPO_ROOT", tmp_path)
+    for k in ("MARKETING_BILD_URL", "MARKETING_BILD_KEY", "FASTEMBED_CACHE_PATH"):
+        monkeypatch.delenv(k, raising=False)
+    bw.umgebung_laden()
+    assert os.environ["FASTEMBED_CACHE_PATH"] == "E:/cache/fastembed" and os.environ["MARKETING_BILD_KEY"] == "k"
+    monkeypatch.delenv("FASTEMBED_CACHE_PATH")            # Marketing-Schluessel schon gesetzt
+    bw.umgebung_laden()
+    assert os.environ["FASTEMBED_CACHE_PATH"] == "E:/cache/fastembed"
+
+
+class _Antwort:
+    def __init__(self, rumpf):
+        self.rumpf = rumpf
+
+    def read(self):
+        return self.rumpf
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_arbeiter_api_quelle_404_ist_none_und_fertig_mit_messung(monkeypatch):
+    import json
+    import urllib.error
+    gesehen = []
+
+    def urlopen(req, timeout=None, context=None):
+        gesehen.append(req)
+        if "/quelle" in req.full_url:
+            if "platz=fehlt" in req.full_url:
+                raise urllib.error.HTTPError(req.full_url, 404, "nf", {}, None)
+            return _Antwort(b"ALT")
+        return _Antwort(b"{}")
+
+    monkeypatch.setattr(bw.urllib.request, "urlopen", urlopen)
+    api = bw.ArbeiterApi("https://vm/", "geheim")
+    assert api.quelle("a1", "neben") == b"ALT" and api.quelle("a1", "fehlt") is None
+    assert gesehen[0].full_url == "https://vm/api/bilder/arbeiter/a1/quelle?platz=neben"
+    assert gesehen[0].unredirected_hdrs.get("X-bild-key") == "geheim"
+    api.fertig("a1", {"neben": "x.jpg"}, "", {"neben": {"aehnlich_original": 0.9}})
+    assert json.loads(gesehen[-1].data)["messung"] == {"neben": {"aehnlich_original": 0.9}}
+    api.fertig("a1", {}, "")
+    assert json.loads(gesehen[-1].data)["messung"] == {}

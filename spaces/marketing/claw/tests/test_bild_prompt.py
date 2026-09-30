@@ -119,6 +119,20 @@ def test_bearbeitungs_prompt_rueckfall(monkeypatch):
     assert bp.bearbeitungs_prompt("Skyline.", PLATZ, "Oktober", "warm").startswith("warm, Skyline.")
 
 
+NAH = "Behalte Motiv, Umgebung und Bildaufbau der Beschreibung bei; ändere nur, was der Wunsch verlangt."
+FREI = "Nur das Thema der Beschreibung bleibt; gestalte Bildaufbau frei."
+
+
+def test_bearbeitungs_prompt_nah_und_frei(monkeypatch):
+    http, gesendet = falsch("Same skyline")
+    monkeypatch.setattr(bp, "_ollama", http)
+    bp.bearbeitungs_prompt("Skyline.", PLATZ, "T", "warm")                 # Standard nah=True
+    bp.bearbeitungs_prompt("Skyline.", PLATZ, "T", "warm", nah=True)
+    bp.bearbeitungs_prompt("Skyline.", PLATZ, "T", "warm", nah=False)
+    for (_, d), erwartet, fehlt in ((gesendet[0], NAH, FREI), (gesendet[1], NAH, FREI), (gesendet[2], FREI, NAH)):
+        assert erwartet in d["prompt"] and fehlt not in d["prompt"]
+
+
 def test_bearbeitungs_prompt_filtert_rohe_beschreibung(monkeypatch):
     http, gesendet = falsch("Same skyline")
     monkeypatch.setattr(bp, "_ollama", http)
