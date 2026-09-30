@@ -283,3 +283,18 @@ def test_weiter_vor_jedem_versuch_und_zeitlimit_540():
     # vor jedem Versuch und noch einmal vor dem Abliefern
     assert [e for e in api.log if e[0] == "weiter"] == [("weiter", AUFTRAG["id"])] * 4
     assert zeitlimits == [540, 540, 540]
+
+
+def test_tls_kontext_nimmt_certifi_wenn_vorhanden(monkeypatch):
+    """Die Tailnet-Kette der VM endet fuer Windows-Python ueber eine abgelaufene
+    Querzertifizierung; mit dem certifi-Buendel geht es (gemessen 30.09.)."""
+    import ssl
+    import sys
+    import types
+    geladen = []
+    falsch = types.SimpleNamespace(where=lambda: "C:/certifi/cacert.pem")
+    monkeypatch.setitem(sys.modules, "certifi", falsch)
+    monkeypatch.setattr(ssl, "create_default_context", lambda cafile=None: geladen.append(cafile) or "ctx")
+    assert bw.tls_kontext() == "ctx" and geladen == ["C:/certifi/cacert.pem"]
+    monkeypatch.setitem(sys.modules, "certifi", None)          # import certifi -> ImportError
+    assert bw.tls_kontext() == "ctx" and geladen[-1] is None

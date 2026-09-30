@@ -9,6 +9,7 @@ import io
 import json
 import os
 import random
+import ssl
 import subprocess
 import threading
 import time
@@ -51,9 +52,23 @@ def umgebung_laden() -> None:
                 os.environ[k] = zeile.split("=", 1)[1].strip().strip('"').strip("'")
 
 
+def tls_kontext() -> ssl.SSLContext:
+    """TLS gegen die Tailnet-Adresse der VM. Gemessen 30.09.2026: deren Let's-
+    Encrypt-Kette (YE1 -> Root YE -> ISRG Root X2) endet fuer das Windows-
+    Python ueber die abgelaufene X2/X1-Querzertifizierung ("certificate has
+    expired"); Windows selbst laedt X2 bei Bedarf nach, OpenSSL nicht. Das
+    certifi-Buendel enthaelt X2 - also das nehmen, wenn es da ist."""
+    try:
+        import certifi
+    except ImportError:
+        return ssl.create_default_context()
+    return ssl.create_default_context(cafile=certifi.where())
+
+
 class ArbeiterApi:
     def __init__(self, basis: str, schluessel: str):
         self.basis, self.schluessel = basis.rstrip("/"), schluessel
+        self.tls = tls_kontext()
 
     def _post(self, pfad: str, daten=None, roh: bytes | None = None, typ="application/json"):
         koerper = roh if roh is not None else (json.dumps(daten).encode("utf-8") if daten is not None else b"")
@@ -61,7 +76,7 @@ class ArbeiterApi:
                                      headers={"Content-Type": typ})
         req.add_unredirected_header("X-Bild-Key", self.schluessel)
         try:
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with urllib.request.urlopen(req, timeout=60, context=self.tls) as r:
                 return json.loads(r.read() or b"{}")
         except urllib.error.HTTPError as e:
             try:
