@@ -298,3 +298,34 @@ def test_tls_kontext_nimmt_certifi_wenn_vorhanden(monkeypatch):
     assert bw.tls_kontext() == "ctx" and geladen == ["C:/certifi/cacert.pem"]
     monkeypatch.setitem(sys.modules, "certifi", None)          # import certifi -> ImportError
     assert bw.tls_kontext() == "ctx" and geladen[-1] is None
+
+
+def test_modelle_einmal_je_auftrag_laden(monkeypatch):
+    """Gemessen 30.09.: ~118 s von 124 s je Bild waren Modell-Laden von der HDD.
+    Ohne Selbstpruefung: erst alle Prompts, dann alle Bilder, EIN /free am Ende."""
+    monkeypatch.delenv("BILD_SELBSTPRUEFUNG", raising=False)
+    folge = []
+
+    class C(Comfy):
+        def erzeugen(self, prompt, b, h, seed, zeitlimit_s=300):
+            folge.append("bild")
+            return super().erzeugen(prompt, b, h, seed, zeitlimit_s)
+
+        def freigeben(self):
+            folge.append("frei")
+
+    class P(Prompt):
+        def prompt_schreiben(self, platz, titel, hinweis):
+            folge.append("prompt")
+            return super().prompt_schreiben(platz, titel, hinweis)
+
+    a = dict(AUFTRAG, nur_leere=False)                       # beide Plaetze kopf + neben
+    assert bw.ein_durchlauf(Api(a), C(), P(), starten=lambda: None) == "fertig"
+    assert folge == ["prompt", "prompt", "bild", "bild", "frei"]
+
+
+def test_mit_selbstpruefung_je_bild_freigeben(monkeypatch):
+    monkeypatch.setenv("BILD_SELBSTPRUEFUNG", "1")
+    comfy = Comfy()
+    bw.ein_durchlauf(Api(dict(AUFTRAG, nur_leere=False)), comfy, Prompt(), starten=lambda: None)
+    assert comfy.frei == 3                                     # je Bild + einmal am Ende

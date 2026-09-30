@@ -139,10 +139,24 @@ def _dienste_bereit(comfy, prompt, starten, uhr) -> bool:
 def _erzeugen(api, aid, auftrag, ziele, comfy, prompt):
     """Erzeugt und liefert je Platz ab. Rueckgabe (ergebnis, befunde) oder
     "verworfen", wenn der Auftrag dem Arbeiter nicht mehr gehoert."""
+    # Erst alle Prompts (Ollama, keep_alive 0), dann alle Bilder am Stueck:
+    # ComfyUI laedt die Modelle (~11 GB, gemessen 30.09. ~118 s von der HDD
+    # E:, Rechnen nur ~6 s) so EINMAL je Auftrag. Nach jedem Bild freigeben
+    # nur, wenn danach das Sehmodell der Selbstpruefung den Grafikspeicher braucht.
+    je_bild_freigeben = os.environ.get("BILD_SELBSTPRUEFUNG", "") == "1"
+    texte = {platz.id: prompt.prompt_schreiben(platz.als_dict(), str(auftrag.get("titel") or ""),
+                                               str(auftrag.get("hinweis") or ""))
+             for platz in ziele}
+    try:
+        return _bilder(api, aid, ziele, texte, comfy, prompt, je_bild_freigeben)
+    finally:
+        comfy.freigeben()
+
+
+def _bilder(api, aid, ziele, texte, comfy, prompt, je_bild_freigeben):
     ergebnis, befunde = {}, []
     for platz in ziele:
-        text = prompt.prompt_schreiben(platz.als_dict(), str(auftrag.get("titel") or ""),
-                                       str(auftrag.get("hinweis") or ""))
+        text = texte[platz.id]
         letzter = ""
         for _ in range(VERSUCHE_JE_PLATZ):
             if not api.weiter(aid):   # Vergabe je Versuch verlaengern (Kaltstart ~300 s, Vergabe 10 min)
@@ -151,7 +165,8 @@ def _erzeugen(api, aid, auftrag, ziele, comfy, prompt):
                 png = comfy.erzeugen(text, platz.erzeug_breite, platz.erzeug_hoehe, random.randrange(2**31),
                                      zeitlimit_s=ERZEUGUNG_ZEITLIMIT_S)
             finally:
-                comfy.freigeben()
+                if je_bild_freigeben:
+                    comfy.freigeben()
             ok, letzter = prompt.pruefen(png, text)
             if not ok:
                 continue
