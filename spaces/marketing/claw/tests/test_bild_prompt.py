@@ -117,3 +117,10 @@ def test_bearbeitungs_prompt_rueckfall(monkeypatch):
     monkeypatch.setattr(bp, "_ollama", http)
     assert bp.bearbeitungs_prompt("", PLATZ, "Oktober", "").startswith("Team im Buero")
     assert bp.bearbeitungs_prompt("Skyline.", PLATZ, "Oktober", "warm").startswith("warm, Skyline.")
+
+
+def test_bearbeitungs_prompt_filtert_rohe_beschreibung(monkeypatch):
+    http, gesendet = falsch("Same skyline")
+    monkeypatch.setattr(bp, "_ollama", http)
+    bp.bearbeitungs_prompt("Skyline at night. A sign says CAFE.", PLATZ, "T", "warm")
+    assert "CAFE" not in gesendet[0][1]["prompt"] and "Skyline at night." in gesendet[0][1]["prompt"]

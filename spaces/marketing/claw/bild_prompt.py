@@ -37,6 +37,23 @@ Antworte NUR als JSON: {{"passt": true/false, "schrift": true/false, "entstellt"
 passt = zeigt ungefaehr die Beschreibung; schrift = sichtbare Buchstaben/Woerter/Logos;
 entstellt = verzerrte Gesichter, Haende oder Koerper."""
 
+_ZITAT = re.compile(r"[\"“”„][^\"“”„]{1,60}[\"“”„]")
+_SATZ = re.compile(r"(?<=[.!?])\s+")
+_SCHRIFT = re.compile(
+    r"\b(text|words?|letters?|lettering|signage|signboard|signs?\s+(?:says?|saying|reads?)|banner|logos?|"
+    r"caption|inscribed|labell?ed|spelling|displays|reads|written)\b", re.IGNORECASE)
+_GROSS = re.compile(r"\b[A-Z]{3,}\b")
+
+
+def ohne_schrift(text: str) -> str:
+    """Entfernt alles, was sichtbare Schrift nennt: woertlich zitierte Stellen (nur
+    doppelte/typografische Anfuehrungszeichen, nie den Apostroph), jeden Satz mit
+    Schrift-Stichwort und jeden Satz mit GROSSGESCHRIEBENEM Wort ab 3 Buchstaben."""
+    roh = _ZITAT.sub("", text or "")
+    saetze = [x for x in _SATZ.split(roh) if x.strip() and not _SCHRIFT.search(x) and not _GROSS.search(x)]
+    return re.sub(r"\s{2,}", " ", " ".join(saetze)).strip()
+
+
 _BEARBEITUNG = """Du schreibst EINE englische Bildbeschreibung (hoechstens 60 Woerter) fuer die UEBERARBEITUNG
 eines vorhandenen Bildes. Uebernimm aus dem Ist-Zustand, was bleiben soll, und setze den Wunsch um.
 Beschreibe nie Schrift, Buchstaben, Schilder mit Text oder Logos. Gib NUR die Beschreibung aus.
@@ -114,12 +131,12 @@ def pruefen(png: bytes, prompt: str) -> tuple[bool, str]:
 def bearbeitungs_prompt(beschreibung: str, platz: dict, titel: str, hinweis: str) -> str:
     """Prompt fuer Bild-zu-Bild: Ist-Zustand + Wunsch. Ohne STIL - das Ausgangsbild
     traegt den Stil schon, und ein Wunsch wie 'waermer' soll ihn aendern duerfen."""
-    anfrage = _BEARBEITUNG.format(beschreibung=(beschreibung or "-")[:600],
+    anfrage = _BEARBEITUNG.format(beschreibung=(ohne_schrift(beschreibung) or "-")[:600],
                                   alt=str(platz.get("alt") or "")[:200], hinweis=(hinweis or "-")[:500])
     antwort = _ollama("/api/generate", {"model": TEXT_MODELL, "prompt": anfrage, "stream": False,
                                         "keep_alive": 0, "options": {"temperature": 0.5, "num_ctx": NUM_CTX}})
     kern = bereinigen(antwort.get("response", ""))
     if not kern:
-        teile = [(hinweis or "").strip(), (beschreibung or "").strip(), str(platz.get("alt") or "").strip(), titel.strip()]
+        teile = [(hinweis or "").strip(), ohne_schrift(beschreibung).strip(), str(platz.get("alt") or "").strip(), titel.strip()]
         kern = ", ".join(t for t in teile if t)[:PROMPT_MAX] or "abstract network"
     return f"{kern}, {VERBOT}"
