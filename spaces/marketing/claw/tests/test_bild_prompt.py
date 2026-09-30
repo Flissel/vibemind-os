@@ -133,6 +133,14 @@ def test_bearbeitungs_prompt_nah_und_frei(monkeypatch):
         assert erwartet in d["prompt"] and fehlt not in d["prompt"]
 
 
+def test_bearbeitungs_prompt_sagt_neues_bild_mit_motiv(monkeypatch):
+    http, gesendet = falsch("Same skyline")
+    monkeypatch.setattr(bp, "_ollama", http)
+    bp.bearbeitungs_prompt("Skyline.", PLATZ, "T", "warm")
+    erste = gesendet[0][1]["prompt"].splitlines()[0]
+    assert "NEUES Bild" in erste and "Motiv" in erste and "UEBERARBEITUNG" not in gesendet[0][1]["prompt"]
+
+
 def test_bearbeitungs_prompt_filtert_rohe_beschreibung(monkeypatch):
     http, gesendet = falsch("Same skyline")
     monkeypatch.setattr(bp, "_ollama", http)

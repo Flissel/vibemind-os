@@ -485,12 +485,96 @@ def test_umgebung_laden_holt_auch_fastembed_cache(monkeypatch, tmp_path):
     assert os.environ["FASTEMBED_CACHE_PATH"] == "E:/cache/fastembed"
 
 
-class _Antwort:
-    def __init__(self, rumpf):
-        self.rumpf = rumpf
+DOC2 = dict(DOC, root={"type": "EmailLayout", "data": {"childrenIds": ["neben", "unten", "t"]}},
+            unten=DOC["neben"])                          # zwei belegte Plaetze
 
-    def read(self):
-        return self.rumpf
+
+def test_quelle_422_nicht_mehr_in_arbeit_ist_verworfen():
+    class A(Api):
+        def quelle(self, aid, platz):
+            raise bw.ApiFehler(422, "Auftrag ist nicht (mehr) in Arbeit")
+    api, comfy = A(dict(UEBER)), Comfy()
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=Sehen(), messen=Messen([])) == "verworfen"
+    assert comfy.masse == [] and not [e for e in api.log if e[0] in ("zurueck", "fertig", "bild")]
+
+
+def test_weiter_vor_jeder_quelle_in_phase_1():
+    api = Api(dict(UEBER, platz=None, bloecke=DOC2))
+    api.quellen.update(neben=b"ALT", unten=b"ALT")
+    assert bw.ein_durchlauf(api, Comfy(), Prompt(), starten=lambda: None, sehen=Sehen(), messen=Messen([])) == "fertig"
+    phase1 = [e[0] for e in api.log][:4]
+    assert phase1 == ["weiter", "quelle", "weiter", "quelle"]
+
+
+def test_weiter_false_in_phase_1_ist_verworfen_ohne_erzeugen():
+    class A(Api):
+        def weiter(self, aid):
+            self.log.append(("weiter", aid)); return False
+    api, comfy, sehen = A(dict(UEBER)), Comfy(), Sehen()
+    api.quellen["neben"] = b"ALT"
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=sehen, messen=Messen([])) == "verworfen"
+    assert comfy.masse == [] and sehen.gesehen == [] and ("quelle", "neben") not in api.log
+    assert not [e for e in api.log if e[0] in ("zurueck", "fertig", "bild")]
+
+
+def test_bestes_bild_befund_nennt_aehnlichkeit_nicht_selbstpruefung():
+    api = Api(dict(UEBER))
+    api.quellen["neben"] = b"ALT"
+    bw.ein_durchlauf(api, Comfy(), Prompt([(True, ""), (False, "Schrift im Bild"), (False, "Schrift im Bild")]),
+                     starten=lambda: None, sehen=Sehen(),
+                     messen=Messen([{"aehnlich_original": 0.5, "naeher_am_hinweis": 0.1}]))
+    befund = api.log[-1][2]
+    assert api.log[-1][0] == "fertig" and "Schrift im Bild - bestes" not in befund
+    assert "neben: Aehnlichkeit 0.50 unter 0.75 - bestes Bild (0.50) genommen" in befund
+
+
+def test_ohne_messung_befund_bei_niedriger_staerke():
+    api = Api(dict(UEBER))
+    api.quellen["neben"] = b"ALT"
+    assert bw.ein_durchlauf(api, Comfy(), Prompt(), starten=lambda: None, sehen=Sehen(),
+                            messen=Messen([{}])) == "fertig"
+    assert "neben: ohne Messung" in api.log[-1][2] and api.messung == {}
+
+
+def test_quelle_zu_gross_neu_erzeugt():
+    api, comfy, sehen = Api(dict(UEBER)), Comfy(), Sehen()
+    api.quellen["neben"] = b"x" * (bw.QUELLE_MAX + 1)
+    bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=sehen, messen=Messen([]))
+    assert sehen.gesehen == [] and len(comfy.masse) == 1
+    assert "neben: Quellbild zu gross - neu erzeugt" in api.log[-1][2]
+
+
+def test_arbeiter_api_quelle_422_grund_und_groessendeckel(monkeypatch):
+    import urllib.error
+    gelesen = []
+
+    def urlopen(req, timeout=None, context=None):
+        if "platz=weg" in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 422, "x", {},
+                                         io.BytesIO(b'{"detail": "Auftrag ist nicht (mehr) in Arbeit"}'))
+        if "platz=kaputt" in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 500, "x", {}, io.BytesIO(b"<html>"))
+        return _Antwort(b"y" * (bw.QUELLE_MAX + 50), gelesen)
+
+    monkeypatch.setattr(bw.urllib.request, "urlopen", urlopen)
+    api = bw.ArbeiterApi("https://vm", "k")
+    with pytest.raises(bw.ApiFehler) as e:
+        api.quelle("a1", "weg")
+    assert e.value.code == 422 and e.value.grund == "Auftrag ist nicht (mehr) in Arbeit"
+    with pytest.raises(bw.ApiFehler) as e:
+        api.quelle("a1", "kaputt")
+    assert e.value.code == 500 and e.value.grund == "Quellbild nicht abrufbar"
+    assert len(api.quelle("a1", "gross")) == bw.QUELLE_MAX + 1 and gelesen == [bw.QUELLE_MAX + 1]
+
+
+class _Antwort:
+    def __init__(self, rumpf, gelesen=None):
+        self.rumpf, self.gelesen = rumpf, gelesen
+
+    def read(self, n=-1):
+        if self.gelesen is not None:
+            self.gelesen.append(n)
+        return self.rumpf if n is None or n < 0 else self.rumpf[:n]
 
     def __enter__(self):
         return self

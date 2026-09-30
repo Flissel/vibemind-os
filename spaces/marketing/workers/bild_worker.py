@@ -26,6 +26,7 @@ TAKT_S = 20
 VERSUCHE_JE_PLATZ = 3
 GRENZE_STAERKE = 60           # bis hierhin: Motiv nah halten und Aehnlichkeit erzwingen
 MIN_AEHNLICH = 0.75           # CLIP cos(alt, neu) bei staerke <= GRENZE_STAERKE
+QUELLE_MAX = 1024 * 1024      # Quellbild groesser -> wie fehlend (abgelieferte Bilder sind <= 1 MB)
 ERZEUGUNG_ZEITLIMIT_S = 540
 JPEG_ZIEL = 250 * 1024
 _HIER = Path(__file__).resolve()
@@ -71,6 +72,14 @@ def tls_kontext() -> ssl.SSLContext:
     return ssl.create_default_context(cafile=certifi.where())
 
 
+def _grund(e: urllib.error.HTTPError) -> str:
+    """detail aus dem JSON-Fehlerkoerper der API; "" wenn keiner lesbar ist."""
+    try:
+        return str(json.loads(e.read() or b"{}").get("detail", ""))[:300]
+    except (ValueError, OSError, AttributeError):
+        return ""
+
+
 class ArbeiterApi:
     def __init__(self, basis: str, schluessel: str):
         self.basis, self.schluessel = basis.rstrip("/"), schluessel
@@ -85,11 +94,7 @@ class ArbeiterApi:
             with urllib.request.urlopen(req, timeout=60, context=self.tls) as r:
                 return json.loads(r.read() or b"{}")
         except urllib.error.HTTPError as e:
-            try:
-                grund = json.loads(e.read() or b"{}").get("detail", "")
-            except (ValueError, OSError, AttributeError):
-                grund = ""
-            raise ApiFehler(e.code, str(grund)[:300]) from None
+            raise ApiFehler(e.code, _grund(e)) from None
 
     def naechster(self):
         return self._post("/naechster").get("auftrag")
@@ -101,17 +106,18 @@ class ArbeiterApi:
         return self._post(f"/{aid}/bild?platz={urllib.request.quote(platz)}", roh=jpeg, typ="image/jpeg")["name"]
 
     def quelle(self, aid, platz) -> bytes | None:
-        """Aktuelles Bild des Platzes von der VM; 404 (kein Bild) -> None."""
+        """Aktuelles Bild des Platzes von der VM; 404 (kein Bild) -> None. Liest
+        hoechstens QUELLE_MAX + 1 Bytes - laenger heisst zu gross (_erzeugen)."""
         req = urllib.request.Request(
             f"{self.basis}/api/bilder/arbeiter/{aid}/quelle?platz={urllib.parse.quote(platz)}")
         req.add_unredirected_header("X-Bild-Key", self.schluessel)
         try:
             with urllib.request.urlopen(req, timeout=60, context=self.tls) as r:
-                return r.read()
+                return r.read(QUELLE_MAX + 1)
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 return None
-            raise ApiFehler(e.code, "Quellbild nicht abrufbar") from None
+            raise ApiFehler(e.code, _grund(e) or "Quellbild nicht abrufbar") from None
 
     def fertig(self, aid, ergebnis: dict, befund: str, messung: dict | None = None) -> dict:
         return self._post(f"/{aid}/fertig", {"ergebnis": ergebnis, "befund": befund, "messung": messung or {}})
@@ -171,8 +177,20 @@ def _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen):
     for platz in ziele:
         quelle = None
         if modus == "ueberarbeiten" and staerke < 100 and not platz.leer:
-            quelle = api.quelle(aid, platz.id)
-            if quelle is None:
+            # Die VM gibt die Quelle nur bei laufender Vergabe heraus, und Sehen +
+            # Prompt mit kalten Modellen von der HDD dauern Minuten je Platz.
+            if not api.weiter(aid):
+                return "verworfen"
+            try:
+                quelle = api.quelle(aid, platz.id)
+            except ApiFehler as e:
+                if e.code == 422 and "in Arbeit" in e.grund:
+                    return "verworfen"
+                raise
+            if quelle is not None and len(quelle) > QUELLE_MAX:
+                quelle = None
+                befunde.append(f"{platz.id}: Quellbild zu gross - neu erzeugt")
+            elif quelle is None:
                 befunde.append(f"{platz.id}: Quellbild fehlt - neu erzeugt")
         if quelle is not None:
             beschreibung = sehen.beschreiben(quelle)
@@ -197,7 +215,9 @@ def _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen):
 def _bilder(api, aid, arbeit, staerke, hinweis, comfy, prompt, messen, je_bild_freigeben, befunde):
     ergebnis, messwerte = {}, {}
     for platz, text, quelle in arbeit:
-        bestes, letzter = None, ""            # bestes = (aehnlich, png, messung, pruef_notiz)
+        # bestes = (aehnlich, png, messung, pruef_notiz); pruef_grund und fern getrennt,
+        # damit der "bestes Bild"-Befund nie einen Selbstpruefungs-Grund nennt.
+        bestes, pruef_grund, fern, getroffen = None, "", "", False
         for _ in range(VERSUCHE_JE_PLATZ):
             if not api.weiter(aid):   # Vergabe je Versuch verlaengern (Kaltstart ~300 s, Vergabe 10 min)
                 return "verworfen"
@@ -209,7 +229,7 @@ def _bilder(api, aid, arbeit, staerke, hinweis, comfy, prompt, messen, je_bild_f
                     comfy.freigeben()
             ok, notiz = prompt.pruefen(png, text)
             if not ok:
-                letzter = notiz
+                pruef_grund = notiz
                 continue
             m = messen.messen(quelle, png, hinweis) if quelle is not None else {}
             aehnlich = m.get("aehnlich_original")
@@ -218,17 +238,18 @@ def _bilder(api, aid, arbeit, staerke, hinweis, comfy, prompt, messen, je_bild_f
             if bestes is None or (aehnlich or 0) > (bestes[0] or 0):
                 bestes = (aehnlich, png, m, notiz)
             if zu_fern:
-                letzter = f"Aehnlichkeit {aehnlich:.2f} unter {MIN_AEHNLICH}"
+                fern = f"Aehnlichkeit {aehnlich:.2f} unter {MIN_AEHNLICH}"
                 continue
-            bestes, letzter = (aehnlich, png, m, notiz), ""
+            bestes, getroffen = (aehnlich, png, m, notiz), True
             break
         if bestes is None:
-            befunde.append(f"{platz.id}: {letzter}")
+            befunde.append(f"{platz.id}: {pruef_grund}")
             continue
-        # Nur zu unaehnliche Kandidaten gesehen: das aehnlichste nehmen (aehnlich ist dann gesetzt).
         aehnlich, png, m, notiz = bestes
-        if letzter:
-            befunde.append(f"{platz.id}: {letzter} - bestes Bild ({aehnlich:.2f}) genommen")
+        if not getroffen:             # nur zu unaehnliche Kandidaten: das aehnlichste (aehnlich gesetzt)
+            befunde.append(f"{platz.id}: {fern} - bestes Bild ({aehnlich:.2f}) genommen")
+        if quelle is not None and staerke <= GRENZE_STAERKE and not m:
+            befunde.append(f"{platz.id}: ohne Messung")
         if notiz:                     # z.B. "Selbstpruefung unlesbar - ungeprueft eingesetzt"
             befunde.append(f"{platz.id}: {notiz}")
         jpeg = verkleinern(png, platz.erzeug_breite, platz.erzeug_hoehe)
