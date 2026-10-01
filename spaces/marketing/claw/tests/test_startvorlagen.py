@@ -16,7 +16,7 @@ ORDNER = pathlib.Path(__file__).resolve().parents[2] / "vorlagen" / "newsletter"
 NAMEN = ["newsletter", "ankuendigung", "einladung", "produkt-neuheit", "kurzer-hinweis"]
 ERLAUBT = {"EmailLayout", "Heading", "Text", "Button", "Image", "Divider", "Spacer", "Container", "ColumnsContainer"}
 SCHRIFTEN = {"MODERN_SANS", "BOOK_SANS", "ORGANIC_SANS", "GEOMETRIC_SANS", "HEAVY_SANS", "ROUNDED_SANS",
-             "MODERN_SERIF", "BOOK_SERIF", "MONOSPACE"}
+             "MODERN_SERIF", "BOOK_SERIF", "MONOSPACE", "ANZEIGE", "TEXT"}
 FARBEN = ("color", "backgroundColor", "backdropColor", "canvasColor", "textColor",
           "buttonBackgroundColor", "buttonTextColor", "lineColor", "borderColor")
 WAHL = {"textAlign": {"left", "center", "right"}, "fontWeight": {"bold", "normal"}}
@@ -63,6 +63,24 @@ def _fehler(d: dict) -> str | None:
                 and _zahl_ok(props.get("width"), 1, 600) and _zahl_ok(props.get("height"), 0, 600)
                 and _zahl_ok(props.get("lineHeight"), 1, 10) and _zahl_ok(props.get("columnsGap"), 0, 48)):
             return f"{bid}: Zahl"
+        if not (_zahl_ok(style.get("letterSpacing"), -2, 8) and _zahl_ok(style.get("lineHeight"), 0.9, 2.0)):
+            return f"{bid}: Feinheiten"
+        if style.get("textTransform") not in (None, "none", "uppercase"):
+            return f"{bid}: Versalien"
+        ov = style.get("overlay")
+        if ov is not None and (not isinstance(ov, dict) or not re.fullmatch(r"#[0-9a-fA-F]{6}", str(ov.get("farbe")))
+                               or not _zahl_ok(ov.get("deckkraft"), 0, 100)):
+            return f"{bid}: Farbfeld"
+        for k in ("sw", "grafik"):
+            if props.get(k) is not None and not isinstance(props.get(k), bool):
+                return f"{bid}: {k}"
+        if bid == "root":
+            sw = (b.get("data") or {}).get("schriften")
+            ids = {"cormorant", "dm-sans", "playfair", "poppins", "young-serif", "manrope", "bodoni",
+                   "montserrat", "josefin", "oxanium", "rajdhani"}
+            if sw is not None and (not isinstance(sw, dict) or not set(sw) <= {"anzeige", "text"}
+                                   or not all(v in ids for v in sw.values())):
+                return "root: Schriften"
         pad = style.get("padding")
         if pad is not None and (not isinstance(pad, dict) or not all(_zahl_ok(v, 0, 80) for v in pad.values())):
             return f"{bid}: Abstand"
@@ -86,7 +104,7 @@ def _fehler(d: dict) -> str | None:
             v = props.get(k)
             if not v:
                 continue
-            if typ == "Image" and k == "url":
+            if typ in ("Image", "Container") and k == "url":
                 if not BILD.match(v) or ".." in v:
                     return f"{bid}: Bild"
             elif not re.fullmatch(r"https://[^\s\"<>]+", v):
@@ -279,3 +297,21 @@ def test_platzhalter_sind_klein_und_im_verhaeltnis():
         with Image.open(datei) as bild:
             assert abs(bild.width / bild.height - a / b) < 0.02
         assert datei.stat().st_size < 150 * 1024
+
+
+@pytest.mark.parametrize("kaputt", [
+    {"style": {"letterSpacing": 9}}, {"style": {"textTransform": "lowercase"}},
+    {"style": {"lineHeight": 3}}, {"style": {"overlay": {"farbe": "rot", "deckkraft": 50}}},
+    {"style": {"fontFamily": "COMIC"}}, {"props": {"sw": "ja"}}])
+def test_neue_felder_werden_geprueft(kaputt):
+    d = {"root": {"type": "EmailLayout", "data": {"childrenIds": ["h"]}},
+         "h": {"type": "Heading", "data": {"style": kaputt.get("style", {}), "props": {"text": "x", **kaputt.get("props", {})}}}}
+    assert _fehler(d)
+
+
+def test_container_mit_medien_hintergrund_gueltig():
+    d = {"root": {"type": "EmailLayout", "data": {"childrenIds": ["k"], "schriften": {"anzeige": "josefin", "text": "josefin"}}},
+         "k": {"type": "Container", "data": {"style": {"overlay": {"farbe": "#2f4858", "deckkraft": 80}},
+                                              "props": {"url": "medien:platzhalter-2x1.png", "width": 600, "height": 300,
+                                                        "childrenIds": []}}}}
+    assert _fehler(d) is None
