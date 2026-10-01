@@ -593,3 +593,43 @@ def test_in_bloecke_schluessel_id_und_verbindung(db, c, monkeypatch):
     monkeypatch.setattr(_db, "query_one", wirft)
     r = c.post(f"/api/pult/inhalte/{IID}/in_bloecke", headers=H, json={})
     assert r.status_code == 503 and "offload" not in r.text
+
+
+# --- Medien-Verweise (Betreiber 01.10.2026: Bilder aus der Bibliothek loeschen) ---
+
+def test_medien_verweise_ohne_schluessel_401(db, c):
+    assert c.get("/api/pult/medien/verweise?name=a.jpg").status_code == 401
+    assert db.sql == []
+
+
+def test_medien_verweise_liefert_treffer_einmal_je_inhalt(db, c):
+    db.antworten = [[{"id": "a1", "titel": "Herbst", "status": "entwurf", "art": "newsletter", "wo": "aktuell"},
+                     {"id": "a1", "titel": "Herbst", "status": "entwurf", "art": "newsletter", "wo": "aktuell"},
+                     {"id": "b2", "titel": "Sommer", "status": "freigegeben", "art": "newsletter",
+                      "wo": "freigegeben"}]]
+    r = c.get("/api/pult/medien/verweise", params={"name": "nl-0cc7a17f-kopf_bild.jpg"}, headers=H)
+    assert r.status_code == 200
+    assert [v["id"] for v in r.json()["verweise"]] == ["a1", "b2"]
+    sql = db.sql[0]
+    # exakt der gespeicherte Wert samt Anfuehrungszeichen - kein Praefix-Treffer auf aehnliche Namen
+    assert '"medien:nl-0cc7a17f-kopf_bild.jpg"' in sql
+    assert "abgelehnt" in sql and "freigegebene_fassung" in sql and "ORDER BY fassung DESC" in sql
+
+
+def test_medien_verweise_umlaut_wie_jsonb_text(db, c):
+    db.antworten = [[]]
+    r = c.get("/api/pult/medien/verweise", params={"name": "Bäckerei Foto.png"}, headers=H)
+    assert r.status_code == 200 and r.json() == {"verweise": []}
+    assert '"medien:Bäckerei Foto.png"' in db.sql[0]
+
+
+@pytest.mark.parametrize("name", ["", "../x.jpg", "a/b.jpg", "a\b.jpg", 'a".jpg', "..", "x" * 201])
+def test_medien_verweise_ungueltiger_name_422(db, c, name):
+    r = c.get("/api/pult/medien/verweise", params={"name": name}, headers=H)
+    assert r.status_code == 422 and db.sql == []
+
+
+def test_medien_verweise_db_weg_503(db, c):
+    db.fehler = [RuntimeError("ssh kaputt")]
+    r = c.get("/api/pult/medien/verweise", params={"name": "a.jpg"}, headers=H)
+    assert r.status_code == 503 and "ssh" not in r.text

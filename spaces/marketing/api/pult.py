@@ -485,3 +485,39 @@ def layout_standard(name: str, x_pult_key: str | None = Header(None)):
         raise HTTPException(404, "Unbekanntes Layout")
     _schreiben(lambda: f"SELECT marketing.pult_layout_als_standard({lit(name)}) IS NULL AS ok")
     return {"ok": True}
+
+
+# Medien-Verweise (Betreiber 01.10.2026: Bilder aus der Bibliothek loeschen).
+# sales-ui fragt VOR dem Loeschen einer Datei, welche Inhalte sie noch tragen.
+# Gesperrt ist, was die Datei in der NEUESTEN Fassung eines nicht abgelehnten
+# Inhalts oder in der FREIGEGEBENEN (= versendbaren/versendeten) Fassung
+# nutzt; aeltere, ersetzte Fassungen sperren nicht. Gesucht wird der exakt
+# gespeicherte JSON-Wert "medien:<name>" samt Anfuehrungszeichen, damit
+# "a.jpg" nicht in "aa.jpg" trifft; ensure_ascii=False wie jsonb::text.
+_MEDIEN_NAME = re.compile(r'^[^/\\"\x00-\x1f]{1,200}$')
+_VERWEISE_SQL = (
+    "SELECT i.id::text AS id, i.titel, i.status, i.art, 'aktuell' AS wo FROM marketing.inhalte i "
+    "JOIN LATERAL (SELECT bloecke, felder FROM marketing.inhalt_fassungen f WHERE f.inhalt = i.id "
+    "ORDER BY fassung DESC LIMIT 1) n ON true "
+    "WHERE i.status <> 'abgelehnt' "
+    "AND (strpos(coalesce(n.bloecke::text, ''), {w}) > 0 OR strpos(coalesce(n.felder::text, ''), {w}) > 0) "
+    "UNION ALL "
+    "SELECT i.id::text, i.titel, i.status, i.art, 'freigegeben' FROM marketing.inhalte i "
+    "JOIN marketing.inhalt_fassungen f ON f.inhalt = i.id AND f.fassung = i.freigegebene_fassung "
+    "WHERE i.status = 'freigegeben' "
+    "AND (strpos(coalesce(f.bloecke::text, ''), {w}) > 0 OR strpos(coalesce(f.felder::text, ''), {w}) > 0)")
+
+
+@router.get("/medien/verweise")
+def medien_verweise(name: str = Query(""), x_pult_key: str | None = Header(None)):
+    _schluessel(x_pult_key)
+    if not _MEDIEN_NAME.match(name or "") or name.strip(".") == "":
+        raise HTTPException(422, "Unbekannter Dateiname")
+    wert = json.dumps("medien:" + name, ensure_ascii=False)
+    zeilen = _lesen(lambda: _VERWEISE_SQL.format(w=lit(wert)))
+    gesehen, verweise = set(), []
+    for z in zeilen:
+        if isinstance(z, dict) and z.get("id") not in gesehen:
+            gesehen.add(z.get("id"))
+            verweise.append({k: z.get(k) for k in ("id", "titel", "status", "art", "wo")})
+    return {"verweise": verweise}
