@@ -2,6 +2,7 @@
 import re
 
 from spaces.marketing.claw import bloecke_mjml as b
+from spaces.marketing.claw import schriften
 
 PFLICHT = {"impressum": "VibeMind, Musterstr. 1", "abmelde_hinweis": "Abmelden: {abmeldelink}"}
 DOK = {
@@ -318,7 +319,6 @@ def test_bild_mit_breite_setzt_keine_feste_hoehe():
 
 
 # --- Neue Gestaltungsmittel (Spec 2026-10-01 §4) ---
-from spaces.marketing.claw import bloecke_mjml as bm2, schriften
 
 
 def _dok(*bloecke, **wurzel):
@@ -329,17 +329,22 @@ def _dok(*bloecke, **wurzel):
     return d
 
 
+ALT_DOK = {'root': {'type': 'EmailLayout', 'data': {'backdropColor': '#f2f5f7', 'canvasColor': '#ffffff', 'textColor': '#242424', 'fontFamily': 'BOOK_SERIF', 'childrenIds': ['h', 't', 'i', 'k', 'c']}}, 'h': {'type': 'Heading', 'data': {'style': {'textAlign': 'center'}, 'props': {'text': 'Titel\r\nZeile\n\nAbsatz', 'level': 'h1'}}}, 't': {'type': 'Text', 'data': {'style': {}, 'props': {'text': 'Hallo **Welt** und *mehr* [L](https://v.space)\nZwei', 'markdown': True}}}, 'i': {'type': 'Image', 'data': {'style': {}, 'props': {'url': 'medien:a.jpg', 'alt': 'A', 'width': 200}}}, 'k': {'type': 'Button', 'data': {'style': {}, 'props': {'text': 'Jetzt', 'url': 'https://v.space', 'buttonBackgroundColor': '#5eead4', 'buttonTextColor': '#0f2422', 'buttonStyle': 'pill'}}}, 'c': {'type': 'Container', 'data': {'style': {'backgroundColor': '#eeeeee', 'borderRadius': 8, 'borderColor': '#cccccc', 'padding': {'top': 8, 'right': 8, 'bottom': 8, 'left': 8}}, 'props': {'childrenIds': ['ct']}}}, 'ct': {'type': 'Text', 'data': {'style': {}, 'props': {'text': 'In Karte'}}}}
+ALT_MJML = '<mjml><mj-head><mj-title>B</mj-title><mj-preview>V</mj-preview><mj-attributes><mj-all font-family="&#x27;Iowan Old Style&#x27;, &#x27;Palatino Linotype&#x27;, &#x27;URW Palladio L&#x27;, P052, serif" /></mj-attributes></mj-head><mj-body background-color="#f2f5f7" width="600px"><mj-section background-color="#ffffff" padding="0"><mj-column><mj-text padding="0px 24px 0px 24px" align="center" color="#242424" font-size="32px" font-weight="bold" line-height="1.25">Titel<br>Zeile<br><br>Absatz</mj-text><mj-text padding="0px 24px 0px 24px" align="left" color="#242424" font-size="16px" font-weight="normal" line-height="1.55">Hallo <strong>Welt</strong> und <em>mehr</em> <a href="https://v.space" style="color:inherit">L</a><br>Zwei</mj-text><mj-image padding="0px 24px 0px 24px" align="left" src="https://x.de/b/a.jpg" alt="A" width="200px" /><mj-button padding="0px 24px 0px 24px" href="https://v.space" align="left" border-radius="64px" inner-padding="12px 20px" font-size="16px" background-color="#5eead4" color="#0f2422" font-weight="bold">Jetzt</mj-button></mj-column></mj-section><mj-wrapper background-color="#ffffff" padding="0 24px"><mj-section background-color="#eeeeee" border-radius="8px" border="1px solid #cccccc" padding="8px 8px 8px 8px"><mj-column><mj-text padding="0px 24px 0px 24px" align="left" color="#242424" font-size="16px" font-weight="normal" line-height="1.55">In Karte</mj-text></mj-column></mj-section></mj-wrapper><mj-section padding="16px 0"><mj-column><mj-text align="center" font-size="11px" color="#242424" line-height="1.5">Imp<br>Ab [Abmeldelink]</mj-text></mj-column></mj-section></mj-body></mjml>'
+
+
 def test_alte_dokumente_unveraendert():
-    d = _dok(("t", "Text", {"style": {}, "props": {"text": "Hallo"}}))
-    assert bm2.nach_mjml(d, "B", "V", {}) == bm2.nach_mjml(d, "B", "V", {}, schrift_basis="")
-    assert "mj-font" not in bm2.nach_mjml(d, "B", "V", {})
+    """Golden: MJML aus Stand a9bfca58 (vor den neuen Gestaltungsmitteln), Byte fuer Byte."""
+    assert b.nach_mjml(ALT_DOK, "B", "V", {"impressum": "Imp", "abmelde_hinweis": "Ab {abmeldelink}"},
+                       bild_basis="https://x.de/b/") == ALT_MJML
+    assert "mj-font" not in ALT_MJML
 
 
 def test_anzeige_schrift_laufweite_versalien_zeilenhoehe():
     d = _dok(("h", "Heading", {"style": {"fontFamily": "ANZEIGE", "letterSpacing": 3, "textTransform": "uppercase",
                                           "lineHeight": 1.1}, "props": {"text": "Titel", "level": "h1"}}),
              schriften={"anzeige": "playfair", "text": "poppins"})
-    m = bm2.nach_mjml(d, "B", "V", {}, schrift_basis="https://x.de/marketing/schrift/")
+    m = b.nach_mjml(d, "B", "V", {}, schrift_basis="https://x.de/marketing/schrift/")
     assert "font-family=\"'Playfair Display', Georgia" in m
     assert 'letter-spacing="3px"' in m and 'text-transform="uppercase"' in m and 'line-height="1.1"' in m
     assert '<mj-font name="Playfair Display" href="https://x.de/marketing/schrift/schriften.css"' in m
@@ -349,37 +354,37 @@ def test_anzeige_schrift_laufweite_versalien_zeilenhoehe():
 def test_ohne_schrift_basis_kein_mj_font_aber_stapel():
     d = _dok(("h", "Heading", {"style": {"fontFamily": "ANZEIGE"}, "props": {"text": "T"}}),
              schriften={"anzeige": "oxanium", "text": "rajdhani"})
-    m = bm2.nach_mjml(d, "B", "V", {})
+    m = b.nach_mjml(d, "B", "V", {})
     assert "mj-font" not in m and "'Oxanium', 'Trebuchet MS'" in m
 
 
 def test_kursiv_in_ueberschrift():
     d = _dok(("h", "Heading", {"style": {}, "props": {"text": "Herbst*brief*"}}))
-    assert "Herbst<em>brief</em>" in bm2.nach_mjml(d, "B", "V", {})
+    assert "Herbst<em>brief</em>" in b.nach_mjml(d, "B", "V", {})
 
 
 def test_container_hintergrundbild_und_farbfeld():
     d = _dok(("k", "Container", {"style": {"backgroundColor": "#2f4858", "overlay": {"farbe": "#2f4858", "deckkraft": 80}},
                                   "props": {"url": "medien:kopf.jpg", "width": 600, "height": 300, "childrenIds": []}}))
-    m = bm2.nach_mjml(d, "B", "V", {}, bild_basis="https://x.de/marketing/bild/1.a/")
+    m = b.nach_mjml(d, "B", "V", {}, bild_basis="https://x.de/marketing/bild/1.a/")
     assert 'background-url="https://x.de/marketing/bild/1.a/kopf.jpg"' in m
     assert 'background-size="cover"' in m and "rgba(47,72,88,0.8)" in m
 
 
 def test_schwarz_weiss_haengt_sw_an():
     d = _dok(("i", "Image", {"style": {}, "props": {"url": "medien:a.jpg", "width": 600, "height": 300, "sw": True}}))
-    assert 'src="https://x.de/b/a.jpg?sw=1"' in bm2.nach_mjml(d, "B", "V", {}, bild_basis="https://x.de/b/")
+    assert 'src="https://x.de/b/a.jpg?sw=1"' in b.nach_mjml(d, "B", "V", {}, bild_basis="https://x.de/b/")
 
 
 def test_dunkel_setzt_color_scheme():
     d = _dok(("t", "Text", {"style": {}, "props": {"text": "x"}}), dunkel=True)
-    m = bm2.nach_mjml(d, "B", "V", {})
+    m = b.nach_mjml(d, "B", "V", {})
     assert 'name="color-scheme" content="dark"' in m
 
 
 def test_dunkel_rendert_echt_und_meta_bleibt_erhalten():
     d = _dok(("t", "Text", {"style": {}, "props": {"text": "x"}}), dunkel=True)
-    html_ = bm2.rendern(d, "B", "V", {})
+    html_ = b.rendern(d, "B", "V", {})
     assert 'name="color-scheme"' in html_ and 'content="dark"' in html_
     assert "supported-color-schemes" in html_
 
@@ -390,7 +395,7 @@ def test_neue_mittel_rendern_echt():
              ("k", "Container", {"style": {"backgroundColor": "#2f4858", "overlay": {"farbe": "#2f4858", "deckkraft": 80}},
                                  "props": {"url": "medien:kopf.jpg", "height": 300, "childrenIds": ["h"]}}),
              schriften={"anzeige": "playfair", "text": "poppins"})
-    h = bm2.rendern(d, "B", "V", {}, bild_basis="https://x.de/marketing/bild/1.a/",
+    h = b.rendern(d, "B", "V", {}, bild_basis="https://x.de/marketing/bild/1.a/",
                     schrift_basis="https://x.de/marketing/schrift/")
     assert "Herbst<em>brief</em>" in h and "kopf.jpg" in h
 
@@ -398,7 +403,7 @@ def test_neue_mittel_rendern_echt():
 def test_unbekannte_schrift_id_faellt_auf_standard():
     d = _dok(("h", "Heading", {"style": {"fontFamily": "ANZEIGE"}, "props": {"text": "T"}}),
              schriften={"anzeige": "comic-sans", "text": "nix"})
-    m = bm2.nach_mjml(d, "B", "V", {})
+    m = b.nach_mjml(d, "B", "V", {})
     assert "comic" not in m.lower() and "mj-font" not in m
 
 

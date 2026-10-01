@@ -28,6 +28,7 @@ KNOPF_RUNDUNG = {"rectangle": 0, "rounded": 4, "pill": 64}
 KNOPF_GROESSE = {"x-small": (4, 8), "small": (8, 12), "medium": (12, 20), "large": (16, 32)}
 KNOPF_FARBE = "#999999"
 KARTEN_RAND = 24
+BILD_ABSTAND_TEILER = 6  # Abstandhalter ueber dem Inhalt einer Bild-Section = Hoehe / 6
 _FETT = re.compile(r"\*\*(.+?)\*\*")
 _KURSIV = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
 _LINK = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
@@ -101,6 +102,7 @@ def _text(roh: str, markdown: bool) -> str:
     return _ABSATZ.sub("<br><br>", sicher).replace("\n", "<br>")
 
 
+# _af: Attributwerte mit Schriftstapeln (Apostrophe bleiben); _a: alles andere.
 def _af(wert) -> str:
     """Attributwert in doppelten Anfuehrungszeichen: Apostrophe (Schriftnamen) bleiben lesbar."""
     return html.escape(str(wert), quote=False).replace('"', "&quot;")
@@ -143,9 +145,8 @@ def _zeilenhoehe(s: dict, standard: str) -> str:
 
 
 def _kursiv(roh: str) -> str:
-    """Ueberschrift: nur *kursiv* wird umgesetzt, alles andere bleibt Text."""
-    sicher = _a(roh).replace(chr(0), "")
-    return _KURSIV.sub(r"<em>\1</em>", sicher).replace("\n", "<br>")
+    """Ueberschrift: wie _text(markdown=False) (Umbrueche, Escaping), zusaetzlich nur *kursiv*."""
+    return _KURSIV.sub(r"<em>\1</em>", _text(roh, False))
 
 
 def _hg(s: dict) -> str:
@@ -272,7 +273,7 @@ def _kinder_als_section(dok: dict, ids: list, farben: dict, bild_basis: str) -> 
                 teile.append(
                     f'<mj-section background-url="{_a(bild)}" background-size="cover" background-repeat="no-repeat" '
                     f'background-color="{_a(hg)}" padding="{pol}"><mj-column{spalte_attr}>'
-                    + (f'<mj-spacer height="{hoehe // 6}px" />' if hoehe else "")
+                    + (f'<mj-spacer height="{hoehe // BILD_ABSTAND_TEILER}px" />' if hoehe else "")
                     + f'{inhalt}</mj-column></mj-section>')
                 continue
             # Karte: aussen die Flaeche, innen die Containerfarbe mit Rundung und Innenabstand
