@@ -1,0 +1,607 @@
+{
+ "name": "minimal",
+ "beschreibung": "Minimal: modern und reduziert - Linkzeile, riesiger dünner Titel, fast schwarz-weiß, Akzent nur im Pfeil.",
+ "bloecke": {
+  "root": {
+   "type": "EmailLayout",
+   "data": {
+    "backdropColor": "#e8e6e0",
+    "canvasColor": "#f4f3ef",
+    "textColor": "#111111",
+    "childrenIds": [
+     "nav",
+     "nav_linie",
+     "marke_logo",
+     "marke_wort",
+     "haupt",
+     "zitat_linie",
+     "zitat",
+     "neben_bild",
+     "neben_titel",
+     "neben_text",
+     "knopf",
+     "fuss_linie",
+     "fuss"
+    ],
+    "schriften": {
+     "anzeige": "manrope",
+     "text": "manrope"
+    },
+    "rollen": {
+     "marke_logo/data/props/url": "logo",
+     "marke_wort/data/props/text": "laden",
+     "zitat_pfeil/data/style/color": "akzent_text",
+     "knopf/data/props/buttonBackgroundColor": "akzent",
+     "knopf/data/props/buttonTextColor": "auf_akzent"
+    }
+   }
+  },
+  "nav1": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 11,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "color": "#111111",
+     "textTransform": "uppercase",
+     "letterSpacing": 2.5
+    },
+    "props": {
+     "text": "Laden",
+     "markdown": false
+    }
+   }
+  },
+  "nav2": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 11,
+     "fontWeight": "normal",
+     "textAlign": "center",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "color": "#111111",
+     "textTransform": "uppercase",
+     "letterSpacing": 2.5
+    },
+    "props": {
+     "text": "Angebote",
+     "markdown": false
+    }
+   }
+  },
+  "nav3": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 11,
+     "fontWeight": "normal",
+     "textAlign": "right",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "color": "#111111",
+     "textTransform": "uppercase",
+     "letterSpacing": 2.5
+    },
+    "props": {
+     "text": "Kontakt",
+     "markdown": false
+    }
+   }
+  },
+  "nav": {
+   "type": "ColumnsContainer",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 24,
+      "bottom": 10,
+      "left": 32,
+      "right": 32
+     }
+    },
+    "props": {
+     "columnsCount": 3,
+     "columnsGap": 0,
+     "contentAlignment": "middle",
+     "columns": [
+      {
+       "childrenIds": [
+        "nav1"
+       ]
+      },
+      {
+       "childrenIds": [
+        "nav2"
+       ]
+      },
+      {
+       "childrenIds": [
+        "nav3"
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "nav_linie": {
+   "type": "Divider",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 32,
+      "right": 32
+     }
+    },
+    "props": {
+     "lineHeight": 1,
+     "lineColor": "#111111"
+    }
+   }
+  },
+  "marke_logo": {
+   "type": "Image",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 28,
+      "bottom": 20,
+      "left": 32,
+      "right": 32
+     },
+     "textAlign": "left"
+    },
+    "props": {
+     "url": "medien:platzhalter-3x1.png",
+     "alt": "Logo",
+     "width": 170,
+     "height": 56,
+     "grafik": true,
+     "contentAlignment": "middle"
+    }
+   }
+  },
+  "marke_wort": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "fontFamily": "ANZEIGE",
+     "fontSize": 52,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 24,
+      "bottom": 24,
+      "left": 32,
+      "right": 32
+     },
+     "color": "#111111",
+     "textTransform": "uppercase",
+     "letterSpacing": -1,
+     "lineHeight": 1.0
+    },
+    "props": {
+     "level": "h1",
+     "text": "[Laden]"
+    }
+   }
+  },
+  "haupt_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "fontFamily": "ANZEIGE",
+     "fontSize": 20,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 12,
+      "left": 0,
+      "right": 0
+     },
+     "color": "#111111",
+     "textTransform": "uppercase",
+     "letterSpacing": 0.5,
+     "lineHeight": 1.2
+    },
+    "props": {
+     "level": "h2",
+     "text": "[Die Überschrift zum Hauptthema]"
+    }
+   }
+  },
+  "haupt_text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 15,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "lineHeight": 1.65
+    },
+    "props": {
+     "text": "[Drei Sätze: was neu ist, für wen und bis wann. Mehr braucht es nicht.]",
+     "markdown": true
+    }
+   }
+  },
+  "haupt_bild": {
+   "type": "Image",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "textAlign": "center"
+    },
+    "props": {
+     "url": "medien:platzhalter-1x1.png",
+     "alt": "Ruhiges Foto zum Hauptthema",
+     "width": 256,
+     "height": 256,
+     "contentAlignment": "middle"
+    }
+   }
+  },
+  "haupt": {
+   "type": "ColumnsContainer",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 8,
+      "bottom": 32,
+      "left": 32,
+      "right": 32
+     }
+    },
+    "props": {
+     "columnsCount": 2,
+     "columnsGap": 24,
+     "contentAlignment": "top",
+     "columns": [
+      {
+       "childrenIds": [
+        "haupt_titel",
+        "haupt_text"
+       ]
+      },
+      {
+       "childrenIds": [
+        "haupt_bild"
+       ]
+      },
+      {
+       "childrenIds": []
+      }
+     ]
+    }
+   }
+  },
+  "zitat_linie": {
+   "type": "Divider",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 32,
+      "right": 32
+     }
+    },
+    "props": {
+     "lineHeight": 1,
+     "lineColor": "#111111"
+    }
+   }
+  },
+  "zitat_pfeil": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 28,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "lineHeight": 1.0,
+     "color": "#c2410c"
+    },
+    "props": {
+     "text": "→",
+     "markdown": false
+    }
+   }
+  },
+  "zitat_text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 16,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "color": "#111111",
+     "textTransform": "uppercase",
+     "letterSpacing": 0.5,
+     "lineHeight": 1.35
+    },
+    "props": {
+     "text": "[Ein Satz, der hängen bleibt – ein Versprechen an eure Kundschaft.]",
+     "markdown": false
+    }
+   }
+  },
+  "zitat": {
+   "type": "ColumnsContainer",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 28,
+      "bottom": 28,
+      "left": 32,
+      "right": 32
+     }
+    },
+    "props": {
+     "columnsCount": 2,
+     "columnsGap": 8,
+     "contentAlignment": "middle",
+     "columns": [
+      {
+       "childrenIds": [
+        "zitat_pfeil"
+       ]
+      },
+      {
+       "childrenIds": [
+        "zitat_text"
+       ]
+      },
+      {
+       "childrenIds": []
+      }
+     ],
+     "fixedWidths": [
+      56,
+      480,
+      null
+     ]
+    }
+   }
+  },
+  "neben_bild": {
+   "type": "Image",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 20,
+      "left": 32,
+      "right": 32
+     },
+     "textAlign": "center"
+    },
+    "props": {
+     "url": "medien:platzhalter-2x1.png",
+     "alt": "Breites Foto zum zweiten Thema",
+     "width": 536,
+     "height": 268,
+     "contentAlignment": "middle"
+    }
+   }
+  },
+  "neben_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "fontFamily": "ANZEIGE",
+     "fontSize": 20,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 10,
+      "left": 32,
+      "right": 32
+     },
+     "color": "#111111",
+     "textTransform": "uppercase",
+     "letterSpacing": 0.5,
+     "lineHeight": 1.2
+    },
+    "props": {
+     "level": "h2",
+     "text": "[Das zweite Thema]"
+    }
+   }
+  },
+  "neben_text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 15,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 20,
+      "left": 32,
+      "right": 32
+     },
+     "lineHeight": 1.65
+    },
+    "props": {
+     "text": "[Zwei Sätze dazu.]",
+     "markdown": true
+    }
+   }
+  },
+  "knopf": {
+   "type": "Button",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 15,
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 4,
+      "bottom": 36,
+      "left": 32,
+      "right": 32
+     }
+    },
+    "props": {
+     "text": "[Mehr erfahren] →",
+     "url": "https://www.example.de",
+     "buttonStyle": "rectangle",
+     "size": "medium",
+     "buttonBackgroundColor": "#c2410c",
+     "buttonTextColor": "#ffffff"
+    }
+   }
+  },
+  "fuss_linie": {
+   "type": "Divider",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 32,
+      "right": 32
+     }
+    },
+    "props": {
+     "lineHeight": 1,
+     "lineColor": "#111111"
+    }
+   }
+  },
+  "fuss_links": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 11,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "color": "#55534e",
+     "textTransform": "uppercase",
+     "letterSpacing": 2.5
+    },
+    "props": {
+     "text": "[Website]",
+     "markdown": false
+    }
+   }
+  },
+  "fuss_rechts": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 11,
+     "fontWeight": "normal",
+     "textAlign": "right",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "color": "#55534e",
+     "textTransform": "uppercase",
+     "letterSpacing": 2.5
+    },
+    "props": {
+     "text": "Ausgabe [Nr]",
+     "markdown": false
+    }
+   }
+  },
+  "fuss": {
+   "type": "ColumnsContainer",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 14,
+      "bottom": 24,
+      "left": 32,
+      "right": 32
+     }
+    },
+    "props": {
+     "columnsCount": 2,
+     "columnsGap": 16,
+     "contentAlignment": "top",
+     "columns": [
+      {
+       "childrenIds": [
+        "fuss_links"
+       ]
+      },
+      {
+       "childrenIds": [
+        "fuss_rechts"
+       ]
+      },
+      {
+       "childrenIds": []
+      }
+     ]
+    }
+   }
+  }
+ }
+}

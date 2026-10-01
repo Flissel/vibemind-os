@@ -1,0 +1,648 @@
+{
+ "name": "zeitung",
+ "beschreibung": "Zeitung: kräftig - riesiger Serifentitel in Ladenfarbe zwischen zwei Linien, Leitband, Farbblock, Fotos in Schwarz-Weiß.",
+ "bloecke": {
+  "root": {
+   "type": "EmailLayout",
+   "data": {
+    "backdropColor": "#ebe2d2",
+    "canvasColor": "#f8f1e6",
+    "textColor": "#2a2522",
+    "childrenIds": [
+     "kopf",
+     "kopf_linie_oben",
+     "marke_logo",
+     "marke_wort",
+     "kopf_linie_unten",
+     "band",
+     "haupt",
+     "aktion",
+     "neben",
+     "schluss_linie",
+     "schluss_text",
+     "knopf",
+     "fuss"
+    ],
+    "schriften": {
+     "anzeige": "playfair",
+     "text": "poppins"
+    },
+    "rollen": {
+     "kopf_ausgabe/data/style/color": "akzent_text",
+     "kopf_handle/data/style/color": "akzent_text",
+     "kopf_linie_oben/data/props/lineColor": "akzent",
+     "marke_logo/data/props/url": "logo",
+     "marke_wort/data/style/color": "akzent_text",
+     "marke_wort/data/props/text": "laden",
+     "kopf_linie_unten/data/props/lineColor": "akzent",
+     "band/data/style/color": "auf_akzent",
+     "band/data/style/backgroundColor": "akzent",
+     "haupt_marke/data/style/color": "akzent_text",
+     "aktion_titel/data/style/color": "auf_akzent",
+     "aktion_text/data/style/color": "auf_akzent",
+     "aktion/data/style/backgroundColor": "akzent",
+     "neben_marke/data/style/color": "akzent_text",
+     "schluss_linie/data/props/lineColor": "akzent",
+     "knopf/data/props/buttonBackgroundColor": "akzent",
+     "knopf/data/props/buttonTextColor": "auf_akzent",
+     "fuss/data/style/color": "akzent_text"
+    }
+   }
+  },
+  "kopf_ausgabe": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 11,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "textTransform": "uppercase",
+     "letterSpacing": 2.5,
+     "color": "#c2410c"
+    },
+    "props": {
+     "text": "Ausgabe [Nr] · [Monat]",
+     "markdown": false
+    }
+   }
+  },
+  "kopf_handle": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 11,
+     "fontWeight": "normal",
+     "textAlign": "right",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "textTransform": "uppercase",
+     "letterSpacing": 2.5,
+     "color": "#c2410c"
+    },
+    "props": {
+     "text": "@[instagram]",
+     "markdown": false
+    }
+   }
+  },
+  "kopf": {
+   "type": "ColumnsContainer",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 24,
+      "bottom": 8,
+      "left": 32,
+      "right": 32
+     }
+    },
+    "props": {
+     "columnsCount": 2,
+     "columnsGap": 16,
+     "contentAlignment": "middle",
+     "columns": [
+      {
+       "childrenIds": [
+        "kopf_ausgabe"
+       ]
+      },
+      {
+       "childrenIds": [
+        "kopf_handle"
+       ]
+      },
+      {
+       "childrenIds": []
+      }
+     ]
+    }
+   }
+  },
+  "kopf_linie_oben": {
+   "type": "Divider",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 32,
+      "right": 32
+     }
+    },
+    "props": {
+     "lineHeight": 1,
+     "lineColor": "#c2410c"
+    }
+   }
+  },
+  "marke_logo": {
+   "type": "Image",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 14,
+      "bottom": 10,
+      "left": 32,
+      "right": 32
+     },
+     "textAlign": "center"
+    },
+    "props": {
+     "url": "medien:platzhalter-3x1.png",
+     "alt": "Logo",
+     "width": 180,
+     "height": 60,
+     "grafik": true,
+     "contentAlignment": "middle"
+    }
+   }
+  },
+  "marke_wort": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "fontFamily": "ANZEIGE",
+     "fontSize": 56,
+     "fontWeight": "bold",
+     "textAlign": "center",
+     "padding": {
+      "top": 12,
+      "bottom": 12,
+      "left": 32,
+      "right": 32
+     },
+     "letterSpacing": -1,
+     "lineHeight": 1.0,
+     "color": "#c2410c"
+    },
+    "props": {
+     "level": "h1",
+     "text": "[Laden]"
+    }
+   }
+  },
+  "kopf_linie_unten": {
+   "type": "Divider",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 12,
+      "left": 32,
+      "right": 32
+     }
+    },
+    "props": {
+     "lineHeight": 1,
+     "lineColor": "#c2410c"
+    }
+   }
+  },
+  "band": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 12,
+     "fontWeight": "bold",
+     "textAlign": "center",
+     "padding": {
+      "top": 9,
+      "bottom": 9,
+      "left": 32,
+      "right": 32
+     },
+     "textTransform": "uppercase",
+     "letterSpacing": 3,
+     "color": "#ffffff",
+     "backgroundColor": "#c2410c"
+    },
+    "props": {
+     "text": "Neues aus Laden & Werkstatt",
+     "markdown": false
+    }
+   }
+  },
+  "haupt_marke": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 11,
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 8,
+      "left": 0,
+      "right": 0
+     },
+     "textTransform": "uppercase",
+     "letterSpacing": 2.5,
+     "color": "#c2410c"
+    },
+    "props": {
+     "text": "Top-Thema",
+     "markdown": false
+    }
+   }
+  },
+  "haupt_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "fontFamily": "ANZEIGE",
+     "fontSize": 28,
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 12,
+      "left": 0,
+      "right": 0
+     },
+     "color": "#2a2522",
+     "lineHeight": 1.1
+    },
+    "props": {
+     "level": "h2",
+     "text": "[Die Schlagzeile zum Hauptthema]"
+    }
+   }
+  },
+  "haupt_text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 15,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "lineHeight": 1.6
+    },
+    "props": {
+     "text": "[Drei, vier Sätze: was es Neues gibt, warum es sich lohnt und bis wann. Kurz und konkret wie eine Zeitungsmeldung.]",
+     "markdown": true
+    }
+   }
+  },
+  "haupt_bild": {
+   "type": "Image",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "textAlign": "center"
+    },
+    "props": {
+     "url": "medien:platzhalter-4x3.png",
+     "alt": "Foto zum Hauptthema (wird schwarz-weiß gezeigt)",
+     "width": 256,
+     "height": 192,
+     "contentAlignment": "middle",
+     "sw": true
+    }
+   }
+  },
+  "haupt": {
+   "type": "ColumnsContainer",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 32,
+      "bottom": 28,
+      "left": 32,
+      "right": 32
+     }
+    },
+    "props": {
+     "columnsCount": 2,
+     "columnsGap": 24,
+     "contentAlignment": "top",
+     "columns": [
+      {
+       "childrenIds": [
+        "haupt_marke",
+        "haupt_titel",
+        "haupt_text"
+       ]
+      },
+      {
+       "childrenIds": [
+        "haupt_bild"
+       ]
+      },
+      {
+       "childrenIds": []
+      }
+     ]
+    }
+   }
+  },
+  "aktion_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 24,
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 10,
+      "left": 0,
+      "right": 0
+     },
+     "textTransform": "uppercase",
+     "letterSpacing": 0.5,
+     "lineHeight": 1.15,
+     "color": "#ffffff"
+    },
+    "props": {
+     "level": "h2",
+     "text": "[Angebot: ein Satz, der neugierig macht]"
+    }
+   }
+  },
+  "aktion_text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 15,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "color": "#ffffff"
+    },
+    "props": {
+     "text": "[Was es gibt, bis wann, und wie man es bekommt.]",
+     "markdown": true
+    }
+   }
+  },
+  "aktion": {
+   "type": "Container",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 24,
+      "bottom": 24,
+      "left": 8,
+      "right": 8
+     },
+     "backgroundColor": "#c2410c",
+     "borderRadius": 0
+    },
+    "props": {
+     "childrenIds": [
+      "aktion_titel",
+      "aktion_text"
+     ]
+    }
+   }
+  },
+  "neben_bild": {
+   "type": "Image",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "textAlign": "center"
+    },
+    "props": {
+     "url": "medien:platzhalter-4x3.png",
+     "alt": "Foto zum zweiten Thema (wird schwarz-weiß gezeigt)",
+     "width": 256,
+     "height": 192,
+     "contentAlignment": "middle",
+     "sw": true
+    }
+   }
+  },
+  "neben_marke": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 11,
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 8,
+      "left": 0,
+      "right": 0
+     },
+     "textTransform": "uppercase",
+     "letterSpacing": 2.5,
+     "color": "#c2410c"
+    },
+    "props": {
+     "text": "[Rubrik]",
+     "markdown": false
+    }
+   }
+  },
+  "neben_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "fontFamily": "ANZEIGE",
+     "fontSize": 22,
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 8,
+      "left": 0,
+      "right": 0
+     },
+     "color": "#2a2522",
+     "lineHeight": 1.15
+    },
+    "props": {
+     "level": "h3",
+     "text": "[Das zweite Thema]"
+    }
+   }
+  },
+  "neben_text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 15,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "lineHeight": 1.6
+    },
+    "props": {
+     "text": "[Zwei Sätze dazu – was, wann, wo.]",
+     "markdown": true
+    }
+   }
+  },
+  "neben": {
+   "type": "ColumnsContainer",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 32,
+      "bottom": 24,
+      "left": 32,
+      "right": 32
+     }
+    },
+    "props": {
+     "columnsCount": 2,
+     "columnsGap": 24,
+     "contentAlignment": "middle",
+     "columns": [
+      {
+       "childrenIds": [
+        "neben_bild"
+       ]
+      },
+      {
+       "childrenIds": [
+        "neben_marke",
+        "neben_titel",
+        "neben_text"
+       ]
+      },
+      {
+       "childrenIds": []
+      }
+     ]
+    }
+   }
+  },
+  "schluss_linie": {
+   "type": "Divider",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 8,
+      "bottom": 0,
+      "left": 32,
+      "right": 32
+     }
+    },
+    "props": {
+     "lineHeight": 1,
+     "lineColor": "#c2410c"
+    }
+   }
+  },
+  "schluss_text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 16,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 24,
+      "bottom": 8,
+      "left": 32,
+      "right": 32
+     },
+     "color": "#2a2522",
+     "lineHeight": 1.6
+    },
+    "props": {
+     "text": "[Ein Satz zum Schluss – eine Einladung, vorbeizukommen.]",
+     "markdown": true
+    }
+   }
+  },
+  "knopf": {
+   "type": "Button",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 15,
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 8,
+      "bottom": 32,
+      "left": 32,
+      "right": 32
+     }
+    },
+    "props": {
+     "text": "[Jetzt vorbeischauen]",
+     "url": "https://www.example.de",
+     "buttonStyle": "rectangle",
+     "size": "medium",
+     "buttonBackgroundColor": "#c2410c",
+     "buttonTextColor": "#ffffff"
+    }
+   }
+  },
+  "fuss": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 11,
+     "fontWeight": "normal",
+     "textAlign": "center",
+     "padding": {
+      "top": 8,
+      "bottom": 24,
+      "left": 32,
+      "right": 32
+     },
+     "textTransform": "uppercase",
+     "letterSpacing": 2.5,
+     "color": "#c2410c"
+    },
+    "props": {
+     "text": "[Telefon] · [Website] · @[instagram]",
+     "markdown": false
+    }
+   }
+  }
+ }
+}

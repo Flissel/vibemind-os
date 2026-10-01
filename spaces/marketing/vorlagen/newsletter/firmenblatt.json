@@ -1,0 +1,770 @@
+{
+ "name": "firmenblatt",
+ "beschreibung": "Firmenblatt: strukturiert - Kopf in der Zweitfarbe mit Serifentitel, Kontaktleiste, Rubriken, getöntes Feld.",
+ "bloecke": {
+  "root": {
+   "type": "EmailLayout",
+   "data": {
+    "backdropColor": "#eceef0",
+    "canvasColor": "#ffffff",
+    "textColor": "#2b2724",
+    "childrenIds": [
+     "kopf",
+     "kontakt",
+     "haupt_bild",
+     "haupt_marke",
+     "haupt_titel",
+     "haupt_text",
+     "rubriken",
+     "feld",
+     "schluss_text",
+     "knopf",
+     "fuss_linie",
+     "fuss"
+    ],
+    "schriften": {
+     "anzeige": "young-serif",
+     "text": "poppins"
+    },
+    "rollen": {
+     "marke_logo/data/props/url": "logo",
+     "marke_wort/data/style/color": "auf_zweit",
+     "marke_wort/data/props/text": "laden",
+     "kopf_titel/data/style/color": "akzent_hell",
+     "kopf_ausgabe/data/style/color": "auf_zweit",
+     "kopf/data/style/backgroundColor": "zweit",
+     "kontakt/data/style/backgroundColor": "akzent_hell",
+     "haupt_marke/data/style/color": "akzent_text",
+     "haupt_titel/data/style/color": "zweit",
+     "rubrik1_marke/data/style/color": "akzent_text",
+     "rubrik1_titel/data/style/color": "zweit",
+     "rubrik2_marke/data/style/color": "akzent_text",
+     "rubrik2_titel/data/style/color": "zweit",
+     "feld_marke/data/style/color": "zweit",
+     "feld_titel/data/style/color": "zweit",
+     "feld/data/style/backgroundColor": "akzent_hell",
+     "knopf/data/props/buttonBackgroundColor": "akzent",
+     "knopf/data/props/buttonTextColor": "auf_akzent"
+    }
+   }
+  },
+  "marke_logo": {
+   "type": "Image",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 12,
+      "left": 0,
+      "right": 0
+     },
+     "textAlign": "left"
+    },
+    "props": {
+     "url": "medien:platzhalter-3x1.png",
+     "alt": "Logo",
+     "width": 150,
+     "height": 50,
+     "grafik": true,
+     "contentAlignment": "middle"
+    }
+   }
+  },
+  "marke_wort": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "fontFamily": "ANZEIGE",
+     "fontSize": 34,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "lineHeight": 1.05,
+     "color": "#ffffff"
+    },
+    "props": {
+     "level": "h1",
+     "text": "[Laden]"
+    }
+   }
+  },
+  "kopf_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "fontFamily": "ANZEIGE",
+     "fontSize": 34,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "lineHeight": 1.05,
+     "color": "#f9ece7"
+    },
+    "props": {
+     "level": "h2",
+     "text": "*Rundbrief*"
+    }
+   }
+  },
+  "kopf_ausgabe": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 11,
+     "fontWeight": "normal",
+     "textAlign": "right",
+     "padding": {
+      "top": 0,
+      "bottom": 4,
+      "left": 0,
+      "right": 0
+     },
+     "textTransform": "uppercase",
+     "letterSpacing": 2.5,
+     "color": "#ffffff"
+    },
+    "props": {
+     "text": "[Monat]  \nAusgabe [Nr]",
+     "markdown": false
+    }
+   }
+  },
+  "kopf": {
+   "type": "ColumnsContainer",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 32,
+      "bottom": 28,
+      "left": 32,
+      "right": 32
+     },
+     "backgroundColor": "#2f4858"
+    },
+    "props": {
+     "columnsCount": 2,
+     "columnsGap": 16,
+     "contentAlignment": "bottom",
+     "columns": [
+      {
+       "childrenIds": [
+        "marke_logo",
+        "marke_wort",
+        "kopf_titel"
+       ]
+      },
+      {
+       "childrenIds": [
+        "kopf_ausgabe"
+       ]
+      },
+      {
+       "childrenIds": []
+      }
+     ],
+     "fixedWidths": [
+      372,
+      164,
+      null
+     ]
+    }
+   }
+  },
+  "kontakt1": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 11,
+     "fontWeight": "bold",
+     "textAlign": "center",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "color": "#2b2724",
+     "letterSpacing": 1
+    },
+    "props": {
+     "text": "[Telefon]",
+     "markdown": false
+    }
+   }
+  },
+  "kontakt2": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 11,
+     "fontWeight": "bold",
+     "textAlign": "center",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "color": "#2b2724",
+     "letterSpacing": 1
+    },
+    "props": {
+     "text": "[Website]",
+     "markdown": false
+    }
+   }
+  },
+  "kontakt3": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 11,
+     "fontWeight": "bold",
+     "textAlign": "center",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "color": "#2b2724",
+     "letterSpacing": 1
+    },
+    "props": {
+     "text": "@[instagram]",
+     "markdown": false
+    }
+   }
+  },
+  "kontakt": {
+   "type": "ColumnsContainer",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 10,
+      "bottom": 10,
+      "left": 32,
+      "right": 32
+     },
+     "backgroundColor": "#f9ece7"
+    },
+    "props": {
+     "columnsCount": 3,
+     "columnsGap": 0,
+     "contentAlignment": "middle",
+     "columns": [
+      {
+       "childrenIds": [
+        "kontakt1"
+       ]
+      },
+      {
+       "childrenIds": [
+        "kontakt2"
+       ]
+      },
+      {
+       "childrenIds": [
+        "kontakt3"
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "haupt_bild": {
+   "type": "Image",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "textAlign": "center"
+    },
+    "props": {
+     "url": "medien:platzhalter-2x1.png",
+     "alt": "Großes Bild zum Top-Thema",
+     "width": 600,
+     "height": 300,
+     "contentAlignment": "middle"
+    }
+   }
+  },
+  "haupt_marke": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 11,
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 32,
+      "bottom": 6,
+      "left": 32,
+      "right": 32
+     },
+     "textTransform": "uppercase",
+     "letterSpacing": 2.5,
+     "color": "#c2410c"
+    },
+    "props": {
+     "text": "Top-Thema",
+     "markdown": false
+    }
+   }
+  },
+  "haupt_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "fontFamily": "ANZEIGE",
+     "fontSize": 28,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 12,
+      "left": 32,
+      "right": 32
+     },
+     "lineHeight": 1.15,
+     "color": "#2f4858"
+    },
+    "props": {
+     "level": "h2",
+     "text": "[Die Überschrift zum Top-Thema]"
+    }
+   }
+  },
+  "haupt_text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 15,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 28,
+      "left": 32,
+      "right": 32
+     },
+     "lineHeight": 1.65
+    },
+    "props": {
+     "text": "[Drei, vier Sätze: was es Neues gibt und warum es eure Kundschaft interessiert. Ein konkretes Detail macht es greifbar.]",
+     "markdown": true
+    }
+   }
+  },
+  "rubrik1_marke": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 11,
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 6,
+      "left": 0,
+      "right": 0
+     },
+     "textTransform": "uppercase",
+     "letterSpacing": 2.5,
+     "color": "#c2410c"
+    },
+    "props": {
+     "text": "[Rubrik eins]",
+     "markdown": false
+    }
+   }
+  },
+  "rubrik1_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "fontFamily": "ANZEIGE",
+     "fontSize": 20,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 8,
+      "left": 0,
+      "right": 0
+     },
+     "lineHeight": 1.2,
+     "color": "#2f4858"
+    },
+    "props": {
+     "level": "h3",
+     "text": "[Kurzes Thema 1]"
+    }
+   }
+  },
+  "rubrik1_text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 14,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "lineHeight": 1.6
+    },
+    "props": {
+     "text": "[Zwei Sätze dazu.]",
+     "markdown": true
+    }
+   }
+  },
+  "rubrik2_marke": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 11,
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 6,
+      "left": 0,
+      "right": 0
+     },
+     "textTransform": "uppercase",
+     "letterSpacing": 2.5,
+     "color": "#c2410c"
+    },
+    "props": {
+     "text": "[Rubrik zwei]",
+     "markdown": false
+    }
+   }
+  },
+  "rubrik2_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "fontFamily": "ANZEIGE",
+     "fontSize": 20,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 8,
+      "left": 0,
+      "right": 0
+     },
+     "lineHeight": 1.2,
+     "color": "#2f4858"
+    },
+    "props": {
+     "level": "h3",
+     "text": "[Kurzes Thema 2]"
+    }
+   }
+  },
+  "rubrik2_text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 14,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "lineHeight": 1.6
+    },
+    "props": {
+     "text": "[Zwei Sätze dazu.]",
+     "markdown": true
+    }
+   }
+  },
+  "rubriken": {
+   "type": "ColumnsContainer",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 4,
+      "bottom": 32,
+      "left": 32,
+      "right": 32
+     }
+    },
+    "props": {
+     "columnsCount": 2,
+     "columnsGap": 32,
+     "contentAlignment": "top",
+     "columns": [
+      {
+       "childrenIds": [
+        "rubrik1_marke",
+        "rubrik1_titel",
+        "rubrik1_text"
+       ]
+      },
+      {
+       "childrenIds": [
+        "rubrik2_marke",
+        "rubrik2_titel",
+        "rubrik2_text"
+       ]
+      },
+      {
+       "childrenIds": []
+      }
+     ]
+    }
+   }
+  },
+  "feld_marke": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 11,
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 6,
+      "left": 0,
+      "right": 0
+     },
+     "textTransform": "uppercase",
+     "letterSpacing": 2.5,
+     "color": "#2f4858"
+    },
+    "props": {
+     "text": "Service",
+     "markdown": false
+    }
+   }
+  },
+  "feld_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "fontFamily": "ANZEIGE",
+     "fontSize": 22,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 8,
+      "left": 0,
+      "right": 0
+     },
+     "lineHeight": 1.2,
+     "color": "#2f4858"
+    },
+    "props": {
+     "level": "h3",
+     "text": "[Ein Service, den man kennen sollte]"
+    }
+   }
+  },
+  "feld_text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 14,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "color": "#2b2724",
+     "lineHeight": 1.6
+    },
+    "props": {
+     "text": "[Wie es funktioniert – in zwei Sätzen.]",
+     "markdown": true
+    }
+   }
+  },
+  "feld_bild": {
+   "type": "Image",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "textAlign": "center"
+    },
+    "props": {
+     "url": "medien:platzhalter-4x3.png",
+     "alt": "Foto zum Service",
+     "width": 256,
+     "height": 192,
+     "contentAlignment": "middle"
+    }
+   }
+  },
+  "feld": {
+   "type": "ColumnsContainer",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 28,
+      "bottom": 28,
+      "left": 32,
+      "right": 32
+     },
+     "backgroundColor": "#f9ece7"
+    },
+    "props": {
+     "columnsCount": 2,
+     "columnsGap": 24,
+     "contentAlignment": "middle",
+     "columns": [
+      {
+       "childrenIds": [
+        "feld_marke",
+        "feld_titel",
+        "feld_text"
+       ]
+      },
+      {
+       "childrenIds": [
+        "feld_bild"
+       ]
+      },
+      {
+       "childrenIds": []
+      }
+     ]
+    }
+   }
+  },
+  "schluss_text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 15,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 32,
+      "bottom": 8,
+      "left": 32,
+      "right": 32
+     },
+     "lineHeight": 1.6
+    },
+    "props": {
+     "text": "[Ein Satz zum Schluss: wann ihr erreichbar seid und wie man einen Termin bekommt.]",
+     "markdown": true
+    }
+   }
+  },
+  "knopf": {
+   "type": "Button",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 15,
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 8,
+      "bottom": 32,
+      "left": 32,
+      "right": 32
+     }
+    },
+    "props": {
+     "text": "[Termin vereinbaren]",
+     "url": "https://www.example.de",
+     "buttonStyle": "rounded",
+     "size": "medium",
+     "buttonBackgroundColor": "#c2410c",
+     "buttonTextColor": "#ffffff"
+    }
+   }
+  },
+  "fuss_linie": {
+   "type": "Divider",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 32,
+      "right": 32
+     }
+    },
+    "props": {
+     "lineHeight": 1,
+     "lineColor": "#e4e1dd"
+    }
+   }
+  },
+  "fuss": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 11,
+     "fontWeight": "normal",
+     "textAlign": "center",
+     "padding": {
+      "top": 16,
+      "bottom": 24,
+      "left": 32,
+      "right": 32
+     },
+     "color": "#5f5a55",
+     "textTransform": "uppercase",
+     "letterSpacing": 2.5
+    },
+    "props": {
+     "text": "[Laden] · [Ort]",
+     "markdown": false
+    }
+   }
+  }
+ }
+}

@@ -1,4 +1,4 @@
-"""Die fuenf Startvorlagen: vollstaendig, im erlaubten Format, rendern fehlerfrei.
+"""Die sieben Startvorlagen (Spec 2026-10-01-newsletter-vorlagen-profi): vollstaendig, im erlaubten Format, rendern fehlerfrei.
 
 `_fehler` spiegelt marketing.pult_bloecke_fehler (db/053 + 054) so weit, dass
 eine Vorlage, die hier gruen ist, auch in der DB gueltig ist. Die echte
@@ -10,10 +10,10 @@ import re
 
 import pytest
 
-from spaces.marketing.claw import bloecke_mjml
+from spaces.marketing.claw import bloecke_mjml, schoenheit, vorlagen_marke
 
 ORDNER = pathlib.Path(__file__).resolve().parents[2] / "vorlagen" / "newsletter"
-NAMEN = ["newsletter", "ankuendigung", "einladung", "produkt-neuheit", "kurzer-hinweis"]
+NAMEN = ["studio", "zeitung", "firmenblatt", "minimal", "klassik", "bildkopf", "tech"]
 ERLAUBT = {"EmailLayout", "Heading", "Text", "Button", "Image", "Divider", "Spacer", "Container", "ColumnsContainer"}
 SCHRIFTEN = {"MODERN_SANS", "BOOK_SANS", "ORGANIC_SANS", "GEOMETRIC_SANS", "HEAVY_SANS", "ROUNDED_SANS",
              "MODERN_SERIF", "BOOK_SERIF", "MONOSPACE", "ANZEIGE", "TEXT"}
@@ -23,7 +23,6 @@ WAHL = {"textAlign": {"left", "center", "right"}, "fontWeight": {"bold", "normal
 PROPS_WAHL = {"buttonStyle": {"rectangle", "pill", "rounded"}, "size": {"x-small", "small", "medium", "large"},
               "contentAlignment": {"top", "middle", "bottom"}}
 BILD = re.compile(r"^medien:[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(png|jpe?g|gif|webp)$")
-LAYOUT_DUNKEL = {"backdropColor": "#1d3b39", "canvasColor": "#0f2422", "textColor": "#cfe3df"}
 
 
 def _zahl_ok(v, lo, hi):
@@ -156,10 +155,10 @@ def test_vorlage_gueltig_und_rendert(name):
     for bid, b in d.items():
         assert b["type"] in ERLAUBT, (bid, b["type"])
         props = (b.get("data") or {}).get("props") or {}
-        if b["type"] == "Image":
+        if b["type"] == "Image" or (b["type"] == "Container" and props.get("url")):
             assert re.match(r"^medien:[A-Za-z0-9._-]+$", props["url"])
         for k in ("url", "linkHref"):
-            if b["type"] != "Image" and props.get(k):
+            if b["type"] not in ("Image", "Container") and props.get(k):
                 assert props[k].startswith("https://")
     assert _fehler(d) is None, _fehler(d)
     html = bloecke_mjml.rendern(d, v["beschreibung"], "", {"impressum": "I", "abmelde_hinweis": ""},
@@ -169,23 +168,8 @@ def test_vorlage_gueltig_und_rendert(name):
     (pathlib.Path(__file__).parent / "_ausgabe" / f"{name}.html").write_text(html, encoding="utf-8")
 
 
-@pytest.mark.parametrize("name", NAMEN)
-def test_vorlage_im_vibemind_stil(name):
-    """Farbbedeutung (binding): Aussenflaeche, Inhaltsflaeche, Text; hoechstens ein Knopf in Akzent."""
-    d = _laden(name)["bloecke"]
-    wurzel = d["root"]["data"]
-    assert {k: wurzel[k] for k in LAYOUT_DUNKEL} == LAYOUT_DUNKEL
-    for b in d.values():
-        if b["type"] == "Heading":
-            assert b["data"]["style"]["color"] == "#e9fbf6"
-    knoepfe = [b["data"]["props"] for b in d.values() if b["type"] == "Button"]
-    assert len(knoepfe) <= 1
-    for k in knoepfe:
-        assert (k["buttonBackgroundColor"], k["buttonTextColor"]) == ("#5eead4", "#0f2422")
-    assert len(knoepfe) == 1
-
-
-RAND = 40  # gemeinsame Textlinie aller Vorlagen
+RAND = 32  # gemeinsame Textlinie aller Vorlagen (Spec 2026-10-01 §3.1: Raender 32 px)
+TEXTTRAEGER = ("Heading", "Text", "Button", "Divider")
 
 
 def _links(b):
@@ -198,25 +182,31 @@ def _rechts(b):
 
 @pytest.mark.parametrize("name", NAMEN)
 def test_textkante_einheitlich(name):
-    """Alles, was Text traegt, beginnt auf derselben Linie - auch in Spalten und Karten.
-    Spalten: Rand am ColumnsContainer, Bloecke darin 0, Abstand ueber columnsGap.
-    Karten: der Uebersetzer rueckt Container um KARTEN_RAND ein, der Innenabstand gleicht aus."""
+    """Alles, was Text traegt, beginnt auf derselben Linie (32 px). Spalten: Abschnittsrand plus
+    Blockrand der aeusseren Spalten = RAND. Bild-Abschnitte (Container mit url): Farbtafel an RAND,
+    Text darin mit Innenabstand.
+    Karten: der Uebersetzer rueckt sie um KARTEN_RAND ein; ihr Inhalt darf weiter innen liegen."""
     d = _laden(name)["bloecke"]
     for bid in d["root"]["data"]["childrenIds"]:
         b = d[bid]
-        if b["type"] in ("Image", "Spacer"):
-            continue
+        props = b["data"].get("props") or {}
         if b["type"] == "ColumnsContainer":
-            assert (_links(b), _rechts(b)) == (RAND, RAND), bid
-            assert b["data"]["props"]["columnsGap"] > 0, bid
-            for kid in _kinder(b):
-                assert (_links(d[kid]), _rechts(d[kid])) == (0, 0), kid
+            n = props["columnsCount"]
+            erste = [k for k in props["columns"][0]["childrenIds"] if d[k]["type"] in TEXTTRAEGER]
+            letzte = [k for k in props["columns"][n - 1]["childrenIds"] if d[k]["type"] in TEXTTRAEGER]
+            for k in erste:
+                assert _links(b) + _links(d[k]) == RAND, (bid, k)
+            for k in letzte:
+                assert _rechts(b) + _rechts(d[k]) == RAND, (bid, k)
+        elif b["type"] == "Container" and props.get("url"):
+            for k in _kinder(b):
+                if d[k]["type"] in TEXTTRAEGER:
+                    assert _links(b) == RAND and _links(b) + _links(d[k]) >= RAND, (bid, k)
         elif b["type"] == "Container":
-            assert bloecke_mjml.KARTEN_RAND + _links(b) == RAND, bid
-            assert bloecke_mjml.KARTEN_RAND + _rechts(b) == RAND, bid
-            for kid in _kinder(b):
-                assert (_links(d[kid]), _rechts(d[kid])) == (0, 0), kid
-        else:
+            for k in _kinder(b):
+                if d[k]["type"] in TEXTTRAEGER:
+                    assert bloecke_mjml.KARTEN_RAND + _links(b) + _links(d[k]) >= RAND, (bid, k)
+        elif b["type"] in TEXTTRAEGER:
             assert (_links(b), _rechts(b)) == (RAND, RAND), bid
 
 
@@ -224,8 +214,9 @@ def test_textkante_einheitlich(name):
 def test_keine_echt_wirkenden_beispielwerte(name):
     """Beispielwerte stehen in [Klammern], damit nichts Echtes versehentlich rausgeht."""
     roh = (ORDNER / f"{name}.json").read_text(encoding="utf-8")
-    assert not re.search(r"\b(19|20)\d\d\b|\d{1,2}:\d\d|\b\d{5}\b|stra(ss|ß)e|"
-                         r"\b(Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)\b",
+    assert not re.search(r"(?<![#\w])(19|20)\d\d\b|\d{1,2}:\d\d|(?<![#\w])\d{4,}\b|stra(ss|ß)e|gasse\b|"
+                         r"\b(Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)\b|"
+                         r"[\w.-]+@[\w-]+\.[a-z]{2,}|vibemind|https://(?!www\.example\.de)",
                          roh, re.I)
 
 
@@ -248,10 +239,6 @@ def test_spiegel_der_db_pruefung_greift(kaputt):
     assert _fehler(d) is not None
 
 
-def test_alle_fuenf_da():
-    assert sorted(p.stem for p in ORDNER.glob("*.json")) == sorted(NAMEN)
-
-
 @pytest.mark.parametrize("name", NAMEN)
 def test_spalten_haben_genau_drei_eintraege(name):
     """Das Editor-Schema (ColumnsContainerPropsSchema) verlangt genau 3 columns-Eintraege,
@@ -267,9 +254,11 @@ def test_spalten_haben_genau_drei_eintraege(name):
 
 from spaces.marketing.claw import bildplaetze
 
-PLAETZE_SOLL = {"newsletter": ["2:1", "4:3", "4:3", "16:9"], "ankuendigung": ["2:1", "16:9"],
-                "einladung": ["2:1", "1:1", "1:1", "1:1"], "produkt-neuheit": ["16:9", "1:1", "1:1", "1:1"],
-                "kurzer-hinweis": ["3:1"]}
+PLAETZE_SOLL = {"studio": ["1:1", "4:3", "4:3", "4:3"], "zeitung": ["4:3", "4:3"],
+                "firmenblatt": ["2:1", "4:3"], "minimal": ["1:1", "2:1"], "klassik": ["1:1", "1:1", "1:1"],
+                "bildkopf": ["2:1", "1:1", "4:3"], "tech": []}
+NUR_DIESE = {"platzhalter-16x9.png", "platzhalter-1x1.png", "platzhalter-2x1.png", "platzhalter-3x1.png",
+             "platzhalter-4x3.png"}
 PLATZHALTER_ORDNER = ORDNER / "platzhalter"
 
 
@@ -281,14 +270,8 @@ def test_vorlage_hat_die_bildplaetze_der_spec(name):
     assert all(p.leer for p in plaetze)
     for p in plaetze:
         datei = PLATZHALTER_ORDNER / p.url[len("medien:"):]
-        assert datei.is_file(), f"{name}: Platzhalter {datei.name} fehlt"
+        assert datei.is_file() and datei.name in NUR_DIESE, f"{name}: Platzhalter {datei.name} fehlt"
         assert p.alt, f"{name}/{p.id}: Alternativtext fehlt (Hinweis fuer den Agenten)"
-
-
-@pytest.mark.parametrize("name", NAMEN)
-def test_vorlage_ohne_logo_bild_mit_schriftzug(name):
-    roh = (ORDNER / f"{name}.json").read_text(encoding="utf-8")
-    assert "vibemind-logo.png" not in roh and "VibeMind" in roh
 
 
 def test_platzhalter_sind_klein_und_im_verhaeltnis():
@@ -341,3 +324,94 @@ def test_farbfeld_ohne_deckkraft_wird_abgelehnt():
     d = {"root": {"type": "EmailLayout", "data": {"childrenIds": ["h"]}},
          "h": {"type": "Heading", "data": {"style": {"overlay": {"farbe": "#2f4858"}}, "props": {"text": "x"}}}}
     assert _fehler(d)
+
+
+def _texte(dok):
+    """Alle Zeichenketten (Blatt-Werte) eines Dokuments ausser der Rollen-Tabelle."""
+    def gehen(x):
+        if isinstance(x, dict):
+            for k, v in x.items():
+                if k != "rollen":
+                    yield from gehen(v)
+        elif isinstance(x, list):
+            for v in x:
+                yield from gehen(v)
+        elif isinstance(x, str):
+            yield x
+    return list(gehen(dok))
+
+
+PALETTEN = [{"akzent": "#facc15"}, {"akzent": "#111111", "flaeche": "#111111"},
+            {"akzent": "#c2410c", "flaeche": "#2f4858"}, {"akzent": "#9ca3af"}]
+SCHRIFTPAAR = {"studio": ("cormorant", "dm-sans"), "zeitung": ("playfair", "poppins"),
+               "firmenblatt": ("young-serif", "poppins"), "minimal": ("manrope", "manrope"),
+               "klassik": ("bodoni", "montserrat"), "bildkopf": ("josefin", "josefin"), "tech": ("oxanium", "rajdhani")}
+
+
+def test_alle_sieben_da():
+    assert sorted(p.stem for p in ORDNER.glob("*.json")) == sorted(NAMEN)
+
+
+@pytest.mark.parametrize("name", NAMEN)
+def test_schriftpaar_und_marke(name):
+    d = _laden(name)["bloecke"]
+    w = d["root"]["data"]
+    assert (w["schriften"]["anzeige"], w["schriften"]["text"]) == SCHRIFTPAAR[name]
+    assert "marke_logo" in d and "marke_wort" in d
+    assert w["rollen"]["marke_logo/data/props/url"] == "logo" and w["rollen"]["marke_wort/data/props/text"] == "laden"
+
+
+@pytest.mark.parametrize("name", NAMEN)
+def test_rollen_zeigen_auf_vorhandene_felder(name):
+    """Jede Rolle trifft einen Block und ein Feld, das die Vorlage schon mit einem Musterwert traegt."""
+    d = _laden(name)["bloecke"]
+    for pfad in d["root"]["data"]["rollen"]:
+        teile = pfad.split("/")
+        knoten = d[teile[0]]
+        for t in teile[1:]:
+            assert isinstance(knoten, dict) and t in knoten, pfad
+            knoten = knoten[t]
+
+
+@pytest.mark.parametrize("name", NAMEN)
+@pytest.mark.parametrize("gestalt", PALETTEN)
+@pytest.mark.parametrize("logo", [False, True])
+def test_jede_palette_gueltig_lesbar_und_klein(name, gestalt, logo):
+    d = _laden(name)["bloecke"]
+    grund = d["root"]["data"].get("canvasColor") or "#ffffff"
+    werte = {**vorlagen_marke.rollen(gestalt, grund), "laden": "Radhaus Jena",
+             "signal_bild": "medien:tech-signal-aaaaaa.png", "glow_bild": "medien:tech-glow-aaaaaa.jpg"}
+    if logo:
+        werte["logo"] = "medien:logo-radhaus-0123456789.png"
+    fertig = vorlagen_marke.einsetzen(d, werte)
+    assert _fehler(fertig) is None
+    assert schoenheit.bloecke_pruefen(fertig) == []
+    html = bloecke_mjml.rendern(fertig, "Betreff", "Vorschau", {"impressum": "Radhaus Jena, Wagnergasse 5",
+                                "abmelde_hinweis": "Abmelden: {abmeldelink}"},
+                                bild_basis="https://ui.example.de/marketing/bild/1.a/",
+                                schrift_basis="https://ui.example.de/marketing/schrift/")
+    assert len(html.encode("utf-8")) < 102 * 1024
+    # Brief-Fassung `"{" not in "".join(str(v) ...)` ist immer falsch (str(dict) beginnt mit "{");
+    # gemeint ist: keine Rolle bleibt als {…} in einem Wert stehen.
+    assert not [t for t in _texte({k: v for k, v in fertig.items() if k != "root"}) if "{" in t]
+    assert ("marke_logo" in fertig) is logo and ("marke_wort" in fertig) is not logo
+
+
+@pytest.mark.parametrize("name", NAMEN)
+def test_mindestens_ein_leerer_bildplatz(name):
+    assert any(p.leer for p in bildplaetze.finde(_laden(name)["bloecke"])) or name == "tech"
+
+
+def test_tech_traegt_grafikrollen():
+    w = _laden("tech")["bloecke"]["root"]["data"]
+    assert {"signal_bild", "glow_bild"} <= set(w["rollen"].values()) and w.get("dunkel") is True
+
+
+@pytest.mark.parametrize("name", NAMEN)
+def test_genau_ein_knopf_in_ladenfarbe(name):
+    d = _laden(name)["bloecke"]
+    knoepfe = [bid for bid, b in d.items() if b["type"] == "Button"]
+    assert len(knoepfe) == 1
+    r = d["root"]["data"]["rollen"]
+    assert r[f"{knoepfe[0]}/data/props/buttonBackgroundColor"] == "akzent"
+    assert r[f"{knoepfe[0]}/data/props/buttonTextColor"] == "auf_akzent"

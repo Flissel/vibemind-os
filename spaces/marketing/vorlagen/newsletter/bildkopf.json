@@ -1,0 +1,527 @@
+{
+ "name": "bildkopf",
+ "beschreibung": "Bildkopf: stimmungsvoll - Foto als Kopf mit Farbfeld und Titel, Farbband mit Bild, Tipp-Kasten.",
+ "bloecke": {
+  "root": {
+   "type": "EmailLayout",
+   "data": {
+    "backdropColor": "#e3dfda",
+    "canvasColor": "#efecea",
+    "textColor": "#2b2724",
+    "childrenIds": [
+     "kopf",
+     "band",
+     "neben",
+     "tipps",
+     "schluss_text",
+     "knopf",
+     "fuss"
+    ],
+    "schriften": {
+     "anzeige": "josefin",
+     "text": "josefin"
+    },
+    "rollen": {
+     "marke_logo/data/props/url": "logo",
+     "marke_wort/data/style/color": "auf_zweit",
+     "marke_wort/data/props/text": "laden",
+     "kopf_titel/data/style/color": "auf_zweit",
+     "kopf_linie/data/props/lineColor": "auf_zweit",
+     "kopf_ausgabe/data/style/color": "auf_zweit",
+     "kopf/data/style/backgroundColor": "zweit",
+     "kopf/data/style/overlay/farbe": "zweit",
+     "band_titel/data/style/color": "auf_zweit",
+     "band_text/data/style/color": "auf_zweit",
+     "band/data/style/backgroundColor": "zweit",
+     "tipps_titel/data/style/color": "auf_akzent",
+     "tipps_text/data/style/color": "auf_akzent",
+     "tipps/data/style/backgroundColor": "akzent",
+     "knopf/data/props/buttonBackgroundColor": "akzent",
+     "knopf/data/props/buttonTextColor": "auf_akzent"
+    }
+   }
+  },
+  "marke_logo": {
+   "type": "Image",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 12,
+      "left": 28,
+      "right": 28
+     },
+     "textAlign": "left"
+    },
+    "props": {
+     "url": "medien:platzhalter-3x1.png",
+     "alt": "Logo",
+     "width": 150,
+     "height": 50,
+     "grafik": true,
+     "contentAlignment": "middle"
+    }
+   }
+  },
+  "marke_wort": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "fontFamily": "ANZEIGE",
+     "fontSize": 24,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 4,
+      "left": 28,
+      "right": 28
+     },
+     "lineHeight": 1.1,
+     "color": "#ffffff"
+    },
+    "props": {
+     "level": "h2",
+     "text": "[Laden]"
+    }
+   }
+  },
+  "kopf_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "fontFamily": "ANZEIGE",
+     "fontSize": 30,
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 12,
+      "left": 28,
+      "right": 28
+     },
+     "textTransform": "uppercase",
+     "letterSpacing": 6,
+     "lineHeight": 1.1,
+     "color": "#ffffff"
+    },
+    "props": {
+     "level": "h1",
+     "text": "Newsletter"
+    }
+   }
+  },
+  "kopf_linie": {
+   "type": "Divider",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 10,
+      "left": 28,
+      "right": 28
+     }
+    },
+    "props": {
+     "lineHeight": 1,
+     "lineColor": "#ffffff"
+    }
+   }
+  },
+  "kopf_ausgabe": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 11,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 32,
+      "left": 28,
+      "right": 28
+     },
+     "textTransform": "uppercase",
+     "letterSpacing": 2.5,
+     "color": "#ffffff"
+    },
+    "props": {
+     "text": "[Monat] / Ausgabe [Nr]",
+     "markdown": false
+    }
+   }
+  },
+  "kopf": {
+   "type": "Container",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 48,
+      "left": 32,
+      "right": 80
+     },
+     "backgroundColor": "#2f4858",
+     "overlay": {
+      "farbe": "#2f4858",
+      "deckkraft": 86
+     }
+    },
+    "props": {
+     "url": "medien:platzhalter-2x1.png",
+     "alt": "Stimmungsfoto als Hintergrund des Kopfes",
+     "width": 600,
+     "height": 300,
+     "childrenIds": [
+      "marke_logo",
+      "marke_wort",
+      "kopf_titel",
+      "kopf_linie",
+      "kopf_ausgabe"
+     ]
+    }
+   }
+  },
+  "band_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "fontFamily": "ANZEIGE",
+     "fontSize": 22,
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 28,
+      "bottom": 10,
+      "left": 0,
+      "right": 24
+     },
+     "lineHeight": 1.2,
+     "color": "#ffffff"
+    },
+    "props": {
+     "level": "h2",
+     "text": "[Die Überschrift zum Hauptthema]"
+    }
+   }
+  },
+  "band_text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 15,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 28,
+      "left": 0,
+      "right": 24
+     },
+     "lineHeight": 1.6,
+     "color": "#ffffff"
+    },
+    "props": {
+     "text": "[Zwei, drei Sätze: was es Neues gibt und warum es sich lohnt.]",
+     "markdown": true
+    }
+   }
+  },
+  "band_bild": {
+   "type": "Image",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "textAlign": "center"
+    },
+    "props": {
+     "url": "medien:platzhalter-1x1.png",
+     "alt": "Foto zum Hauptthema",
+     "width": 284,
+     "height": 284,
+     "contentAlignment": "middle"
+    }
+   }
+  },
+  "band": {
+   "type": "ColumnsContainer",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 32,
+      "right": 0
+     },
+     "backgroundColor": "#2f4858"
+    },
+    "props": {
+     "columnsCount": 2,
+     "columnsGap": 0,
+     "contentAlignment": "middle",
+     "columns": [
+      {
+       "childrenIds": [
+        "band_titel",
+        "band_text"
+       ]
+      },
+      {
+       "childrenIds": [
+        "band_bild"
+       ]
+      },
+      {
+       "childrenIds": []
+      }
+     ]
+    }
+   }
+  },
+  "neben_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "fontFamily": "ANZEIGE",
+     "fontSize": 20,
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 8,
+      "left": 0,
+      "right": 0
+     },
+     "color": "#2b2724",
+     "lineHeight": 1.2
+    },
+    "props": {
+     "level": "h3",
+     "text": "[Das zweite Thema]"
+    }
+   }
+  },
+  "neben_text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 15,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "lineHeight": 1.6
+    },
+    "props": {
+     "text": "[Zwei Sätze dazu – zum Beispiel ein Service, den man online buchen kann.]",
+     "markdown": true
+    }
+   }
+  },
+  "neben_bild": {
+   "type": "Image",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "textAlign": "center"
+    },
+    "props": {
+     "url": "medien:platzhalter-4x3.png",
+     "alt": "Foto zum zweiten Thema",
+     "width": 256,
+     "height": 192,
+     "contentAlignment": "middle"
+    }
+   }
+  },
+  "neben": {
+   "type": "ColumnsContainer",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 32,
+      "bottom": 32,
+      "left": 32,
+      "right": 32
+     }
+    },
+    "props": {
+     "columnsCount": 2,
+     "columnsGap": 24,
+     "contentAlignment": "middle",
+     "columns": [
+      {
+       "childrenIds": [
+        "neben_titel",
+        "neben_text"
+       ]
+      },
+      {
+       "childrenIds": [
+        "neben_bild"
+       ]
+      },
+      {
+       "childrenIds": []
+      }
+     ]
+    }
+   }
+  },
+  "tipps_titel": {
+   "type": "Heading",
+   "data": {
+    "style": {
+     "fontFamily": "ANZEIGE",
+     "fontSize": 20,
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 10,
+      "left": 0,
+      "right": 0
+     },
+     "lineHeight": 1.2,
+     "color": "#ffffff"
+    },
+    "props": {
+     "level": "h3",
+     "text": "[Drei Tipps für …]"
+    }
+   }
+  },
+  "tipps_text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 15,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 0,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+     },
+     "lineHeight": 1.8,
+     "color": "#ffffff"
+    },
+    "props": {
+     "text": "**1** · [Erster Tipp]  \n**2** · [Zweiter Tipp]  \n**3** · [Dritter Tipp]",
+     "markdown": true
+    }
+   }
+  },
+  "tipps": {
+   "type": "Container",
+   "data": {
+    "style": {
+     "padding": {
+      "top": 24,
+      "bottom": 24,
+      "left": 8,
+      "right": 8
+     },
+     "backgroundColor": "#c2410c",
+     "borderRadius": 0
+    },
+    "props": {
+     "childrenIds": [
+      "tipps_titel",
+      "tipps_text"
+     ]
+    }
+   }
+  },
+  "schluss_text": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 16,
+     "fontWeight": "normal",
+     "textAlign": "left",
+     "padding": {
+      "top": 32,
+      "bottom": 8,
+      "left": 32,
+      "right": 32
+     },
+     "lineHeight": 1.6
+    },
+    "props": {
+     "text": "[Ein Satz zum Schluss – eine Einladung, vorbeizukommen.]",
+     "markdown": true
+    }
+   }
+  },
+  "knopf": {
+   "type": "Button",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 15,
+     "fontWeight": "bold",
+     "textAlign": "left",
+     "padding": {
+      "top": 8,
+      "bottom": 32,
+      "left": 32,
+      "right": 32
+     }
+    },
+    "props": {
+     "text": "[Jetzt vorbeikommen]",
+     "url": "https://www.example.de",
+     "buttonStyle": "rounded",
+     "size": "medium",
+     "buttonBackgroundColor": "#c2410c",
+     "buttonTextColor": "#ffffff"
+    }
+   }
+  },
+  "fuss": {
+   "type": "Text",
+   "data": {
+    "style": {
+     "fontFamily": "TEXT",
+     "fontSize": 11,
+     "fontWeight": "normal",
+     "textAlign": "center",
+     "padding": {
+      "top": 0,
+      "bottom": 24,
+      "left": 32,
+      "right": 32
+     },
+     "color": "#5f5a55",
+     "textTransform": "uppercase",
+     "letterSpacing": 2.5
+    },
+    "props": {
+     "text": "[Telefon] · [Website] · @[instagram]",
+     "markdown": false
+    }
+   }
+  }
+ }
+}
