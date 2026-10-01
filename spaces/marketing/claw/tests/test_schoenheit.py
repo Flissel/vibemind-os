@@ -179,6 +179,28 @@ class Bloecke(unittest.TestCase):
         d["t"]["data"]["style"]["color"] = "#222222"
         assert schoenheit.bloecke_pruefen(d) == []
 
+    def test_bloecke_pruefen_heading_mit_expliziter_fontsize_unter_24(self):
+        """Heading with explicit fontSize < 24 must use 4.5:1, not 3:1."""
+        d = {"root": {"type": "EmailLayout", "data": {"childrenIds": ["h"], "canvasColor": "#ffffff"}},
+             "h": {"type": "Heading", "data": {"style": {"color": "#666666", "fontSize": 18}, "props": {"text": "x"}}}}
+        # #666666 on #ffffff is ~7.6:1, meets 4.5:1 constraint for Heading with fontSize < 24
+        befunde = schoenheit.bloecke_pruefen(d)
+        self.assertEqual(befunde, [])
+        # Now make it fail 4.5:1
+        d["h"]["data"]["style"]["color"] = "#dddddd"
+        befunde = schoenheit.bloecke_pruefen(d)
+        self.assertTrue(befunde)
+        self.assertIn("4.5", befunde[0]["satz"])
+
+    def test_bloecke_pruefen_malformed_document(self):
+        """Malformed document (non-dict block, invalid color) should be caught gracefully."""
+        d = {"root": {"type": "EmailLayout", "data": {"childrenIds": ["bad"], "canvasColor": "#ffffff"}},
+             "bad": "not a dict",
+             "t": {"type": "Text", "data": {"style": {"color": "rot"}, "props": {"text": "x"}}}}
+        befunde = schoenheit.bloecke_pruefen(d)
+        # Should not raise, should return findings (caught in exception handler)
+        self.assertIsInstance(befunde, list)
+
 
 class ImWeg(unittest.TestCase):
     """Die Pruefung muss LAUFEN, nicht danebenstehen."""

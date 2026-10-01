@@ -74,3 +74,26 @@ def test_unbekannte_rolle_und_kaputter_pfad_stoeren_nicht():
     d["root"]["data"]["rollen"]["gibtsnicht/data/x"] = "akzent"
     d["root"]["data"]["rollen"]["band/data/style/color"] = "unbekannt"
     assert vm.einsetzen(d, {"akzent": "#123456", "laden": "L"})["band"]["data"]["style"].get("color") is None
+
+
+def test_auf_zweit_mindestens_4_5_gegen_zweit():
+    """Mid-grey flaeche (#7c7c7c) meets 3:1 against white but neither weiss nor
+    dunkelgrau reaches 4.5:1 against it. rollen() must darken zweit until weiss reaches 4.5:1."""
+    r = vm.rollen({"akzent": "#c2410c", "flaeche": "#7c7c7c"}, WEISS)
+    assert schoenheit.kontrast(r["auf_zweit"], r["zweit"]) >= 4.5
+
+
+def test_logo_ablegen_fehler_gibt_none_ohne_tmp_rest(tmp_path, monkeypatch):
+    """If write/replace fails (disk full, permission, Windows sharing), return None and clean up .tmp."""
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"x" * 40).decode()
+    g = {"logo": f"data:image/png;base64,{png}"}
+
+    def fail_replace(*args, **kwargs):
+        raise OSError("mock write failure")
+
+    monkeypatch.setattr("os.replace", fail_replace)
+    result = vm.logo_ablegen(g, "radhaus", str(tmp_path))
+    assert result is None
+    # No .tmp file should be left behind
+    tmp_files = [f for f in tmp_path.iterdir() if f.name.endswith(".tmp")]
+    assert not tmp_files

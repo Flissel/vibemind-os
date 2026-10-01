@@ -8,6 +8,7 @@ import copy
 import hashlib
 import os
 import re
+import tempfile
 
 from spaces.marketing.claw.schoenheit import kontrast
 
@@ -53,12 +54,15 @@ def rollen(gestalt: dict | None, grund: str) -> dict[str, str]:
     zweit = str(g.get("flaeche") or "").lower()
     if not _HEX.match(zweit) or kontrast(zweit, "#ffffff") < 3:
         zweit = _bis_kontrast(mischen(akzent, "#000000", 0.55), "#ffffff", 7)
+    # If auf_zweit cannot reach 4.5:1 against zweit, darken zweit until weiss reaches 4.5:1
+    if kontrast("#ffffff", zweit) < 4.5:
+        zweit = _bis_kontrast(zweit, "#ffffff", 4.5)
     return {
         "akzent": akzent,
         "zweit": zweit,
         "akzent_hell": mischen("#ffffff", akzent, 0.10),
         "auf_akzent": _auf(akzent),
-        "auf_zweit": _auf(zweit),
+        "auf_zweit": "#ffffff" if kontrast("#ffffff", zweit) >= 4.5 else _auf(zweit),
         "akzent_text": _bis_kontrast(akzent, grund if _HEX.match(grund or "") else "#ffffff", 4.5),
         "akzent_ring1": mischen(akzent, INK, 0.55),
         "akzent_ring2": mischen(akzent, INK, 0.40),
@@ -79,10 +83,19 @@ def logo_ablegen(gestalt: dict | None, mandant: str, ordner: str) -> str | None:
     name = f"logo-{mandant}-{hashlib.sha256(roh).hexdigest()[:10]}.{endung}"
     ziel = os.path.join(ordner, name)
     if not os.path.exists(ziel):
-        tmp = ziel + ".tmp"
-        with open(tmp, "wb") as f:
-            f.write(roh)
-        os.replace(tmp, ziel)
+        try:
+            fd, tmp = tempfile.mkstemp(dir=ordner, suffix=".tmp")
+            try:
+                os.write(fd, roh)
+            finally:
+                os.close(fd)
+            os.replace(tmp, ziel)
+        except OSError:
+            try:
+                os.unlink(tmp)
+            except (OSError, NameError):
+                pass
+            return None
     return f"medien:{name}"
 
 

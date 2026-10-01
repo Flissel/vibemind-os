@@ -235,7 +235,9 @@ def bloecke_pruefen(dok: dict) -> list:
                 vorne, hinten, ziel = p.get("buttonTextColor") or "#ffffff", p.get("buttonBackgroundColor") or "#999999", 3.0
             else:
                 vorne, hinten = s.get("color") or textfarbe, grund
-                gross = typ == "Heading" or (s.get("fontSize") or 16) >= 24
+                # Heading with explicit fontSize < 24 uses 4.5:1; only Heading >= 24 px or without explicit fontSize gets 3:1
+                fontSize = s.get("fontSize")
+                gross = (typ == "Heading" and (fontSize is None or fontSize >= 24)) or (typ != "Heading" and (fontSize or 16) >= 24)
                 ziel = 3.0 if gross else KONTRAST_TEXT
             if kontrast(vorne, hinten) < ziel:
                 befunde.append(befund("hart", "kontrast", f"{bid}: {vorne} auf {hinten} unter {ziel}:1"))
