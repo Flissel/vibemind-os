@@ -170,6 +170,16 @@ class Unterlage(unittest.TestCase):
         self.assertIn("Kein Handlungskasten", " ".join(urteil["weich"]))
 
 
+class Bloecke(unittest.TestCase):
+
+    def test_bloecke_pruefen_findet_schwachen_kontrast(self):
+        d = {"root": {"type": "EmailLayout", "data": {"childrenIds": ["t"], "canvasColor": "#ffffff"}},
+             "t": {"type": "Text", "data": {"style": {"color": "#dddddd"}, "props": {"text": "x"}}}}
+        assert schoenheit.bloecke_pruefen(d)
+        d["t"]["data"]["style"]["color"] = "#222222"
+        assert schoenheit.bloecke_pruefen(d) == []
+
+
 class ImWeg(unittest.TestCase):
     """Die Pruefung muss LAUFEN, nicht danebenstehen."""
 
