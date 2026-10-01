@@ -27,10 +27,11 @@ def _speichern(bild: Image.Image, pfad: str, fmt: str, ordner: str) -> bool:
     """Bild atomar speichern mit Tempfile-Muster.
 
     Returns:
-        True bei Erfolg, False bei OSError (TMP wird aufgeräumt).
+        True bei Erfolg, False bei Exception (TMP wird aufgeräumt).
     """
     fd = None
     tmp = None
+    success = False
     try:
         # Tempfile im selben Ordner erzeugen
         fd, tmp = tempfile.mkstemp(dir=ordner, suffix=".tmp")
@@ -40,22 +41,26 @@ def _speichern(bild: Image.Image, pfad: str, fmt: str, ordner: str) -> bool:
         # Speichern mit optimalen Einstellungen
         bild.save(tmp, fmt, **({"quality": 88} if fmt == "JPEG" else {"optimize": True}))
 
+        # Lesbar für andere Prozesse (mkstemp erzeugt 0600)
+        os.chmod(tmp, 0o644)
+
         # Atomar ersetzen
         os.replace(tmp, pfad)
+        success = True
         return True
-    except OSError:
+    except Exception:
         # Bei Fehler Tempfile aufräumen
-        if tmp and os.path.exists(tmp):
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
         return False
     finally:
         if fd is not None:
             try:
                 os.close(fd)
-            except OSError:
+            except Exception:
+                pass
+        if not success and tmp and os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except Exception:
                 pass
 
 

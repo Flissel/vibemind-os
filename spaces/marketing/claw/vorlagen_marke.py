@@ -89,6 +89,8 @@ def logo_ablegen(gestalt: dict | None, mandant: str, ordner: str) -> str | None:
                 os.write(fd, roh)
             finally:
                 os.close(fd)
+            # Lesbar für andere Prozesse (mkstemp erzeugt 0600)
+            os.chmod(tmp, 0o644)
             os.replace(tmp, ziel)
         except OSError:
             try:

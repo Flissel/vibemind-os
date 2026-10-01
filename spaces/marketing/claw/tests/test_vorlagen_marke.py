@@ -1,5 +1,7 @@
 import base64
 import copy
+import os
+import stat
 
 import pytest
 
@@ -97,3 +99,14 @@ def test_logo_ablegen_fehler_gibt_none_ohne_tmp_rest(tmp_path, monkeypatch):
     # No .tmp file should be left behind
     tmp_files = [f for f in tmp_path.iterdir() if f.name.endswith(".tmp")]
     assert not tmp_files
+
+
+@pytest.mark.skipif(os.name == "nt", reason="chmod ist auf Windows ein No-Op")
+def test_logo_datei_lesbar(tmp_path):
+    """Logo-Datei hat Modus 0644 (lesbar für andere)."""
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"x" * 40).decode()
+    g = {"logo": f"data:image/png;base64,{png}"}
+    vm.logo_ablegen(g, "radhaus", str(tmp_path))
+    datei = list(tmp_path.glob("logo-radhaus-*.png"))[0]
+    mode = stat.S_IMODE(os.stat(datei).st_mode)
+    assert mode == 0o644
