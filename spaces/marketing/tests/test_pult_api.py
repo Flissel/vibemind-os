@@ -472,7 +472,7 @@ def test_vorlagen_liste_und_aus_vorlage(db, c):
     db.antworten = [[{"name": "leer", "beschreibung": "L", "status": "freigegeben", "fassung": 1}]]
     r = c.get("/api/pult/vorlagen?mandant=vibemind", headers=H)
     assert r.json()["vorlagen"][0]["name"] == "leer"
-    db.antworten = [[{"id": IID}]]
+    db.antworten = [[{"bloecke": DOK}], [{"laden": "L", "layout": None, "gestalt": None}], [{"id": IID}]]
     r = c.post("/api/pult/inhalte/aus_vorlage", headers=H, json={"vorlage": "leer", "titel": "Oktober"})
     assert r.json() == {"id": IID} and "marketing.pult_inhalt_aus_vorlage(" in db.sql[-1]
 
@@ -483,7 +483,8 @@ def test_aus_vorlage_name_geprueft(db, c):
 
 
 def test_vorlage_vorschau(db, c):
-    db.antworten = [[{"bloecke": DOK, "beschreibung": "Beschr", "pflichtteil": {"impressum": "I"}}]]
+    db.antworten = [[{"bloecke": DOK, "beschreibung": "Beschr", "pflichtteil": {"impressum": "I"}}],
+                    [{"laden": "L", "layout": None, "gestalt": None}]]
     r = c.get("/api/pult/vorlagen/leer/vorschau?format=mail", headers=H)
     assert r.status_code == 200 and "Hallo Pult" in r.text
     assert c.get("/api/pult/vorlagen/../x/vorschau", headers=H).status_code in (404, 422)
@@ -506,8 +507,54 @@ def test_aus_vorlage_titel_laenge(db, c):
         r = c.post("/api/pult/inhalte/aus_vorlage", headers=H, json={"vorlage": "leer", "titel": titel})
         assert r.status_code == 422
     assert db.sql == []
-    db.antworten = [[{"id": IID}]]
+    db.antworten = [[{"bloecke": DOK}], [{"laden": "L", "layout": None, "gestalt": None}], [{"id": IID}]]
     assert c.post("/api/pult/inhalte/aus_vorlage", headers=H, json={"vorlage": "leer", "titel": "x" * 200}).status_code == 200
+
+def test_aus_vorlage_fuellt_rollen_und_uebergibt_dokument(db, c, monkeypatch, tmp_path):
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    vorlage = {"root": {"type": "EmailLayout", "data": {"childrenIds": ["marke_wort", "band"], "canvasColor": "#ffffff",
+               "rollen": {"band/data/style/backgroundColor": "akzent", "marke_wort/data/props/text": "laden"}}},
+               "marke_wort": {"type": "Heading", "data": {"props": {"text": "[Laden]"}}},
+               "band": {"type": "Text", "data": {"style": {"backgroundColor": "#c2410c"}, "props": {"text": "x"}}}}
+    db.antworten = [[{"bloecke": vorlage}],
+                    [{"laden": "Radhaus Jena", "layout": "radhaus-nl", "gestalt": {"akzent": "#123456"}}],
+                    [{"id": "11111111-1111-1111-1111-111111111111"}]]
+    r = c.post("/api/pult/inhalte/aus_vorlage", json={"vorlage": "studio", "titel": "Oktober", "mandant": "radhaus"},
+               headers=H)
+    assert r.status_code == 200, r.text
+    sql = db.sql[2]
+    assert "pult_inhalt_aus_vorlage" in sql and "#123456" in sql and "Radhaus Jena" in sql and "'radhaus-nl'" in sql
+    assert "fuer_alle" in db.sql[0]
+
+
+def test_aus_vorlage_ohne_layout_ersatzpalette(db, c, monkeypatch, tmp_path):
+    monkeypatch.delenv("MARKETING_BILD_ORDNER", raising=False)
+    vorlage = {"root": {"type": "EmailLayout", "data": {"childrenIds": [], "rollen": {}}}}
+    db.antworten = [[{"bloecke": vorlage}], [{"laden": "L", "layout": None, "gestalt": None}], [{"id": "x"}]]
+    assert c.post("/api/pult/inhalte/aus_vorlage", json={"vorlage": "studio", "titel": "T", "mandant": "radhaus"},
+                  headers=H).status_code == 200
+
+
+def test_aus_vorlage_unbekannt_422(db, c):
+    db.antworten = [[]]
+    r = c.post("/api/pult/inhalte/aus_vorlage", json={"vorlage": "studio", "titel": "T"}, headers=H)
+    assert r.status_code == 422
+
+
+def test_vorlagenliste_eigene_und_fuer_alle(db, c):
+    db.antworten = [[{"name": "studio", "beschreibung": "", "status": "freigegeben", "fassung": 1}]]
+    assert c.get("/api/pult/vorlagen?mandant=radhaus", headers=H).status_code == 200
+    assert "fuer_alle" in db.sql[0] and "zurueckgezogen" in db.sql[0]
+
+
+def test_erzeugt_ordner_nur_wenn_beschreibbar(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    assert pult._erzeugt_ordner() == str(tmp_path)
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path / "gibtsnicht"))
+    assert pult._erzeugt_ordner() == ""
+    monkeypatch.delenv("MARKETING_BILD_ORDNER", raising=False)
+    assert pult._erzeugt_ordner() == ""
+
 
 # --- Schlussrunde E1 (final-fix-findings.md) ---
 
@@ -633,3 +680,44 @@ def test_medien_verweise_db_weg_503(db, c):
     db.fehler = [RuntimeError("ssh kaputt")]
     r = c.get("/api/pult/medien/verweise", params={"name": "a.jpg"}, headers=H)
     assert r.status_code == 503 and "ssh" not in r.text
+
+
+def test_schrift_basis_aus_bild_basis():
+    assert pult.schrift_basis_aus("https://ui.tail.ts.net:8445/marketing/bild/123.abc/") == \
+        "https://ui.tail.ts.net:8445/marketing/schrift/"
+    assert pult.schrift_basis_aus("") == "" and pult.schrift_basis_aus("https://x/andere/") == ""
+
+
+
+# --- Task 7 Fix-Runde 1: Vorlagen-Vorschau zeigt die gefuellte Vorlage des Ladens ---
+
+VORLAGE_ROLLEN = {"root": {"type": "EmailLayout", "data": {
+    "childrenIds": ["marke_logo", "marke_wort", "band", "glow"], "canvasColor": "#ffffff",
+    "rollen": {"band/data/style/backgroundColor": "akzent", "marke_wort/data/props/text": "laden",
+               "marke_logo/data/props/url": "logo", "glow/data/props/url": "glow_bild"}}},
+    "marke_logo": {"type": "Image", "data": {"style": {}, "props": {"url": "medien:platzhalter-3x1.png", "width": 120}}},
+    "marke_wort": {"type": "Heading", "data": {"style": {}, "props": {"text": "[Laden]"}}},
+    "band": {"type": "Text", "data": {"style": {"backgroundColor": "#c2410c"}, "props": {"text": "Band"}}},
+    "glow": {"type": "Image", "data": {"style": {}, "props": {"url": "medien:tech-glow-c2410c.jpg", "width": 600,
+                                                              "grafik": True}}}}
+
+
+def test_vorlage_vorschau_fuellt_fuer_den_laden(db, c, monkeypatch, tmp_path):
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    db.antworten = [[{"bloecke": VORLAGE_ROLLEN, "beschreibung": "B", "pflichtteil": {"impressum": "I"}}],
+                    [{"laden": "Radhaus Jena", "layout": "radhaus-nl", "gestalt": {"akzent": "#123456"}}]]
+    r = c.get("/api/pult/vorlagen/studio/vorschau?format=mail&mandant=radhaus"
+              "&bild_basis=https://h.ts.net/marketing/bild/t/", headers=H)
+    assert r.status_code == 200, r.text
+    assert "#123456" in r.text and "Radhaus Jena" in r.text and "[Laden]" not in r.text
+    assert "tech-glow-c2410c" not in r.text and "tech-glow-123456.jpg" in r.text
+    assert "platzhalter-3x1" not in r.text                  # kein Logo: Logo-Block faellt weg
+    assert "newsletter_vorlagen" in db.sql[0] and "layout_vorlagen" in db.sql[1]
+
+
+def test_fuellen_ist_ein_gemeinsamer_helfer(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    fertig, layout = pult._vorlage_fuellen(VORLAGE_ROLLEN, "radhaus",
+                                           {"laden": "Radhaus Jena", "layout": "nl", "gestalt": {"akzent": "#123456"}})
+    assert layout == "nl" and fertig["band"]["data"]["style"]["backgroundColor"] == "#123456"
+    assert fertig["marke_wort"]["data"]["props"]["text"] == "Radhaus Jena" and "marke_logo" not in fertig

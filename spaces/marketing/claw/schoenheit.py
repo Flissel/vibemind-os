@@ -207,6 +207,45 @@ def unterlage_pruefen(titel: str = "", untertitel: str = "", text: str = "",
     return befunde
 
 
+def bloecke_pruefen(dok: dict) -> list:
+    """Kontrast je Text-/Ueberschrift-/Knopfblock gegen seinen Grund (Block, Rahmen, Seite).
+    Fliesstext >= 4,5:1, Ueberschriften ab 24 px und Knopftext >= 3:1. Wirft nie."""
+    befunde = []
+    try:
+        wurzel = (dok.get("root") or {}).get("data") or {}
+        seite = wurzel.get("canvasColor") or "#ffffff"
+        textfarbe = wurzel.get("textColor") or "#242424"
+        grund_von = {}
+        for bid, b in dok.items():
+            data = (b or {}).get("data") or {}
+            hg = (data.get("style") or {}).get("backgroundColor")
+            for k in ((data.get("props") or {}).get("childrenIds") or []):
+                grund_von[k] = hg or seite
+            for sp in (data.get("props") or {}).get("columns") or []:
+                for k in (sp or {}).get("childrenIds") or []:
+                    grund_von[k] = hg or seite
+        for bid, b in dok.items():
+            typ = (b or {}).get("type")
+            data = (b or {}).get("data") or {}
+            s, p = data.get("style") or {}, data.get("props") or {}
+            if typ not in ("Text", "Heading", "Button"):
+                continue
+            grund = s.get("backgroundColor") or grund_von.get(bid, seite)
+            if typ == "Button":
+                vorne, hinten, ziel = p.get("buttonTextColor") or "#ffffff", p.get("buttonBackgroundColor") or "#999999", 3.0
+            else:
+                vorne, hinten = s.get("color") or textfarbe, grund
+                # Heading with explicit fontSize < 24 uses 4.5:1; only Heading >= 24 px or without explicit fontSize gets 3:1
+                fontSize = s.get("fontSize")
+                gross = (typ == "Heading" and (fontSize is None or fontSize >= 24)) or (typ != "Heading" and (fontSize or 16) >= 24)
+                ziel = 3.0 if gross else KONTRAST_TEXT
+            if kontrast(vorne, hinten) < ziel:
+                befunde.append(befund("hart", "kontrast", f"{bid}: {vorne} auf {hinten} unter {ziel}:1"))
+    except (ValueError, AttributeError, TypeError):
+        befunde.append(befund("hart", "kontrast", "Dokument nicht pruefbar"))
+    return befunde
+
+
 def urteil(befunde: list) -> dict:
     """Die Befunde zu einer Antwort buendeln, die ein Agent lesen kann."""
     hart = [b for b in befunde if b["schwere"] == "hart"]

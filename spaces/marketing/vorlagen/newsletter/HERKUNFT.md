@@ -1,24 +1,35 @@
-# Herkunft der Startvorlagen
+# Herkunft der Newsletter-Vorlagen
 
-Die fünf Vorlagen in diesem Ordner (`newsletter`, `ankuendigung`, `einladung`,
-`produkt-neuheit`, `kurzer-hinweis`) sind eigene Arbeit für VibeMind.
+Seit 01.10.2026 liegen hier sieben Vorlagen für Läden: `studio`, `zeitung`,
+`firmenblatt`, `minimal`, `klassik`, `bildkopf`, `tech`
+(Spec: sales-claw `docs/superpowers/specs/2026-10-01-newsletter-vorlagen-profi-design.md`).
+Die fünf alten Startvorlagen (`newsletter`, `ankuendigung`, `einladung`,
+`produkt-neuheit`, `kurzer-hinweis`) sind entfernt. `vorlagen_einspielen --wirklich`
+setzt sie in der DB auf `zurueckgezogen`. Bestehende Entwürfe bleiben unberührt.
 
+- **Eigene Arbeit nach einem Musterkatalog.** Gemeinsame Gestaltungsmuster
+  (Masthead-Typen M1–M7, Meta-Zeilen in gesperrten Versalien, Fotostreifen,
+  Farbblöcke, Fußband) wurden aus öffentlich sichtbaren Newsletter-Beispielen
+  abgeleitet (Spec §2). Keine Vorlage ist kopiert. Es wurden weder Texte noch Bilder
+  noch Layoutdateien übernommen.
 - **Format:** Dokumentformat von Email Builder JS (usewaypoint/email-builder-js,
-  MIT-Lizenz, Stand `ce3e610`): `root` als `EmailLayout`, Blöcke `Heading`, `Text`,
-  `Button`, `Image`, `Divider`, `Spacer`, `Container`, `ColumnsContainer`.
-- **Aufbau:** Abstände und Hierarchie nach den Mustern der Beispielvorlagen aus
-  Email Builder JS (`examples/vite-emailbuilder-mui/src/getConfiguration/sample/`)
-  und dem üblichen Aufbau der MJML-Vorlagengalerie (Logo oben, Überschrift,
-  Einleitung, Inhalt, ein Knopf, Fuß). Kein Text und kein Bild daraus übernommen.
-- **Texte:** eigene deutsche Platzhaltertexte in der Du-Form.
-- **Farben:** Layout `dunkel` in der Farbbedeutung der Pult-Vorschau
-  (`backdropColor` = Außenfläche `#1d3b39`, `canvasColor` = Inhaltsfläche `#0f2422`,
-  `textColor` = Fließtext `#cfe3df`, Überschriften `#e9fbf6`, Knopf `#5eead4` mit
-  Schrift `#0f2422`).
-- **Bilder:** nur Verweise auf die Medienablage (`medien:vibemind-logo.png`,
-  `medien:produkt.png`); die Dateien selbst liegen nicht hier.
+  MIT-Lizenz), erweitert um die Felder aus Spec §4 (`ANZEIGE`/`TEXT`,
+  `letterSpacing`, `textTransform`, `lineHeight`, Container-Hintergrundbild mit
+  `overlay`, `sw`, `grafik`, `root.data.schriften`, `root.data.dunkel`).
+- **Schriften:** Jede Vorlage nennt ein Schriftpaar (`root.data.schriften`). Alle
+  Schriften stehen unter der SIL Open Font License und werden von sales-ui ausgeliefert,
+  nie über Google Fonts.
+- **Farben:** Neutrale Töne sind fest. Ladenfarben stehen als Rollen in
+  `root.data.rollen` und tragen in der Datei Musterwerte (Terrakotta `#c2410c`,
+  Schiefer `#2f4858`). Beim Anlegen füllt `vorlagen_marke.einsetzen` sie.
+- **Texte:** Eigene deutsche Platzhalter für Läden in `[Klammern]`. Sie enthalten
+  keine echten Kontaktdaten.
+- **Bilder:** Die Bildplätze verweisen auf `platzhalter/` (eigene Grafik, erzeugt von
+  `scripts/platzhalter_erzeugen.py`). Die Grafiken für tech (Signal, Lichtschein) erzeugt
+  `claw/vorlagen_grafik.py` beim Anlegen.
 
-Prüfung: `spaces/marketing/claw/tests/test_startvorlagen.py`; gegen die Datenbank
-`python -m spaces.marketing.scripts.vorlagen_einspielen` (ohne `--wirklich` nur prüfen).
-
-29.09.2026 (Spec newsletter-bilder): die fuenf Vorlagen werden von `scripts/vorlagen_bauen.py` erzeugt; Bildplaetze tragen Platzhalter aus `platzhalter/` (erzeugt von `scripts/platzhalter_erzeugen.py`, eigene Grafik, keine fremde Lizenz). Aenderungen im Bauer, nicht in den JSONs.
+Die JSONs erzeugt `scripts/vorlagen_bauen.py`. Änderungen gehören in den Bauer, nicht
+in die JSONs. Geprüft wird mit `spaces/marketing/claw/tests/test_startvorlagen.py`
+(Spiegel der DB-Prüfung, Kontrast für vier Ladenpaletten, Größe unter 102 KB).
+Gegen die DB prüft `python -m spaces.marketing.scripts.vorlagen_einspielen`; ohne
+`--wirklich` wird nur geprüft. Die neuen Felder sind erst nach Migration 058 gültig.

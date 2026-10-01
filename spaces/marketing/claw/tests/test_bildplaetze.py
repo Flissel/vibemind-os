@@ -87,3 +87,25 @@ def test_erzeugmasse_sind_16er_und_gross_genug():
         assert p.erzeug_breite % 16 == 0 and p.erzeug_hoehe % 16 == 0
         assert p.erzeug_breite >= 2 * p.anzeige_breite - 15
         assert abs(p.erzeug_breite / p.erzeug_hoehe - w / h) < 0.05
+
+
+def test_container_hintergrund_ist_platz():
+    d = dok(["kopf"], kopf={"type": "Container", "data": {"style": {"backgroundColor": "#2f4858"},
+            "props": {"url": "medien:platzhalter-2x1.png", "width": 600, "height": 300, "childrenIds": ["t"]}}},
+            t=text("Titel"))
+    plaetze = bp.finde(d)
+    assert [p.id for p in plaetze] == ["kopf"]
+    p = plaetze[0]
+    assert (p.anzeige_breite, p.anzeige_hoehe, p.verhaeltnis, p.leer, p.flaeche) == (600, 300, "2:1", True, "#2f4858")
+    assert "Titel" in p.kontext
+
+
+def test_container_ohne_url_ist_kein_platz():
+    d = dok(["k"], k={"type": "Container", "data": {"style": {}, "props": {"width": 600, "height": 300, "childrenIds": []}}})
+    assert bp.finde(d) == []
+
+
+def test_grafik_ist_kein_platz():
+    d = dok(["g"], g={"type": "Image", "data": {"style": {}, "props": {"url": "medien:tech-signal-b5f750.png",
+                                                                       "width": 536, "height": 380, "grafik": True}}})
+    assert bp.finde(d) == []

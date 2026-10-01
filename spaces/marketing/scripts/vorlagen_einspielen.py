@@ -4,6 +4,10 @@ je Datei `SELECT marketing.pult_bloecke_fehler(...)`, es wird nichts geaendert.
 Mit --wirklich: eine Vorlage, deren gespeicherte Bloecke der Datei gleichen,
 bleibt unangetastet ("unveraendert", keine neue Fassung). Eingespielt wird
 immer als 'freigegeben' - eine vorhandene Freigabe wird nie zurueckgestuft.
+Danach (Spec 2026-10-01-newsletter-vorlagen-profi §5.5) wird jede Datei-Vorlage
+mit `fuer_alle = true` fuer jeden Laden freigegeben, und die alten Startvorlagen
+(ALTE), zu denen es keine Datei mehr gibt, bekommen den Status 'zurueckgezogen' -
+nur wenn alle Dateien gueltig waren. Bestehende Entwuerfe bleiben unberuehrt.
 
     python -m spaces.marketing.scripts.vorlagen_einspielen [--wirklich]
 """
@@ -19,10 +23,18 @@ ORDNER = pathlib.Path(__file__).resolve().parents[1] / "vorlagen" / "newsletter"
 # Startvorlagen sind freigegeben; pult_vorlage_speichern setzt den Status, den
 # es bekommt - deshalb nie etwas Niedrigeres uebergeben.
 STATUS = "freigegeben"
+# Startvorlagen bis 01.10.2026; ohne Datei werden sie fuer neue Newsletter zurueckgezogen.
+ALTE = ("newsletter", "ankuendigung", "einladung", "produkt-neuheit", "kurzer-hinweis")
+
+
+def _schreiben(sql: str) -> str:
+    """UPDATE ... RETURNING streng ausfuehren (ein SQL-Fehler bricht ab, statt still leer zu sein)."""
+    return _db._run_psql(sql, None, streng=True)
 
 
 def main(wirklich: bool) -> int:
     fehler = 0
+    gueltig: list[str] = []
     for datei in sorted(ORDNER.glob("*.json")):
         v = json.loads(datei.read_text(encoding="utf-8"))
         if v.get("name") != datei.stem:
@@ -40,6 +52,7 @@ def main(wirklich: bool) -> int:
             streng=True)
         if gespeichert and gespeichert.get("bloecke") == v["bloecke"]:
             print(f"{datei.name}: unveraendert (Fassung bleibt, Status {gespeichert.get('status')})")
+            gueltig.append(v["name"])
             continue
         if wirklich:
             n = _db.query_one(
@@ -49,7 +62,29 @@ def main(wirklich: bool) -> int:
             print(f"{datei.name}: eingespielt, Fassung {n}")
         else:
             print(f"{datei.name}: gueltig")
-    return 1 if fehler else 0
+        gueltig.append(v["name"])
+    for name in gueltig:
+        if wirklich:
+            _schreiben(f"UPDATE marketing.newsletter_vorlagen SET fuer_alle = true "
+                       f"WHERE name = {_db._sql_literal(name)} RETURNING name;")
+            print(f"{name}: fuer alle Laeden freigegeben")
+        else:
+            print(f"{name}: wuerde fuer alle Laeden freigegeben")
+    if fehler:
+        print("Alte Startvorlagen bleiben, solange eine Datei ungueltig ist.")
+        return 1
+    for name in ALTE:
+        if (ORDNER / f"{name}.json").exists():
+            continue
+        if not wirklich:
+            print(f"{name}: würde zurückgezogen")
+            continue
+        aus = _schreiben(f"UPDATE marketing.newsletter_vorlagen SET status = 'zurueckgezogen' "
+                         f"WHERE name = {_db._sql_literal(name)} AND status <> 'zurueckgezogen' RETURNING name;")
+        # psql -tA gibt die RETURNING-Zeilen und danach immer den Stempel "UPDATE <n>" aus
+        geaendert = name in [z.strip() for z in aus.splitlines() if not z.startswith("UPDATE ")]
+        print(f"{name}: zurückgezogen" if geaendert else f"{name}: nicht vorhanden oder schon zurückgezogen")
+    return 0
 
 
 if __name__ == "__main__":

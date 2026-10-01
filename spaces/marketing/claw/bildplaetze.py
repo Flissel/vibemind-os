@@ -81,13 +81,18 @@ def _auf16(x: float) -> int:
 
 def _platz(dok: dict, bid: str, verfuegbar: float, geschwister: list, flaeche: str = "") -> Platz | None:
     b = dok.get(bid)
-    if not isinstance(b, dict) or b.get("type") != "Image":
+    if not isinstance(b, dict) or b.get("type") not in ("Image", "Container"):
         return None
     style, props = _daten(b)
+    if props.get("grafik") is True:      # erzeugte Grafik (Pillow), kein Foto-Platz
+        return None
+    container = b.get("type") == "Container"
+    if container and not props.get("url"):
+        return None
     w, h = _zahl(props.get("width"), 0), _zahl(props.get("height"), 0)
     if w <= 0 or h <= 0:
         return None
-    links, rechts = _lr(style, 24)
+    links, rechts = (0, 0) if container else _lr(style, 24)
     platz_breite = max(16, int(verfuegbar - links - rechts))
     anzeige_b = min(w, platz_breite)
     anzeige_h = max(1, round(h * anzeige_b / w))
@@ -95,7 +100,10 @@ def _platz(dok: dict, bid: str, verfuegbar: float, geschwister: list, flaeche: s
     erzeug_h = _auf16(erzeug_b * h / w)
     a, c = _gekuerzt(w, h)
     i = geschwister.index(bid) if bid in geschwister else 0
-    nachbarn = [_textinhalt(dok.get(x)) for x in geschwister[max(0, i - 2):i] + geschwister[i + 1:i + 3]]
+    if container:   # Kontext aus den Kindtexten des Containers
+        nachbarn = [_textinhalt(dok.get(x)) for x in geschwister[:4]]
+    else:
+        nachbarn = [_textinhalt(dok.get(x)) for x in geschwister[max(0, i - 2):i] + geschwister[i + 1:i + 3]]
     kontext = " | ".join(t for t in nachbarn if t)[:KONTEXT_MAX]
     url = str(props.get("url") or "")
     return Platz(bid, int(anzeige_b), int(anzeige_h), erzeug_b, erzeug_h, f"{a}:{c}",
@@ -129,6 +137,8 @@ def finde(dok: dict) -> list[Platz]:
                         plaetze.append(p)
         elif typ == "Container":
             kinder = [x for x in (props.get("childrenIds") or []) if isinstance(x, str)]
+            if (p := _platz(dok, bid, MAIL_BREITE, kinder, style.get("backgroundColor") or innen)):
+                plaetze.append(p)
             cl, cr = _lr(style, 0) if isinstance(style.get("padding"), dict) else (0, 0)
             for k in kinder:
                 if (p := _platz(dok, k, MAIL_BREITE - 2 * KARTEN_RAND - cl - cr, kinder,
