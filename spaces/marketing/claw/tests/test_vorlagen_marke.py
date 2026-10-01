@@ -110,3 +110,40 @@ def test_logo_datei_lesbar(tmp_path):
     datei = list(tmp_path.glob("logo-radhaus-*.png"))[0]
     mode = stat.S_IMODE(os.stat(datei).st_mode)
     assert mode == 0o644
+
+
+# --- Task 7 Fix-Runde 1 (Controller-Weisung) ---
+
+@pytest.mark.parametrize("vorher,nachher", [("*[Laden]*", "*Radhaus Jena*"), ("[Laden]", "Radhaus Jena"),
+                                            ("**[Laden]**", "Radhaus Jena"), ("*", "Radhaus Jena")])
+def test_laden_behaelt_kursiv_huelle(vorher, nachher):
+    d = copy.deepcopy(DOK)
+    d["marke_wort"]["data"]["props"]["text"] = vorher
+    assert vm.einsetzen(d, {"laden": "Radhaus Jena"})["marke_wort"]["data"]["props"]["text"] == nachher
+
+
+def test_kursiv_huelle_nur_fuer_laden():
+    d = copy.deepcopy(DOK)
+    d["band"]["data"]["style"]["backgroundColor"] = "*x*"
+    assert vm.einsetzen(d, {"akzent": "#123456"})["band"]["data"]["style"]["backgroundColor"] == "#123456"
+
+
+INK = "#080b13"
+
+
+@pytest.mark.parametrize("akzent", ["#111111", "#000000", "#1d2a44", "#2563eb", "#c2410c"])
+def test_dunkler_grund_hellt_dunklen_akzent_auf(akzent):
+    r = vm.rollen({"akzent": akzent}, INK)
+    assert schoenheit.kontrast(r["akzent"], INK) >= 3
+    assert schoenheit.kontrast(r["auf_akzent"], r["akzent"]) >= 3
+    assert schoenheit.kontrast(r["akzent_text"], INK) >= 4.5
+
+
+def test_dunkler_grund_laesst_lesbaren_akzent():
+    assert vm.rollen({"akzent": "#b5f750"}, INK)["akzent"] == "#b5f750"
+
+
+@pytest.mark.parametrize("akzent", ["#facc15", "#111111", "#9ca3af"])
+def test_heller_grund_unveraendert(akzent):
+    assert vm.rollen({"akzent": akzent}, WEISS)["akzent"] == akzent
+    assert vm.rollen({"akzent": akzent}, "#faf7f2")["akzent"] == akzent

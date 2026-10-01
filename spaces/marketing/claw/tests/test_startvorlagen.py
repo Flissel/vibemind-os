@@ -395,6 +395,10 @@ def test_jede_palette_gueltig_lesbar_und_klein(name, gestalt, logo):
     # gemeint ist: keine Rolle bleibt als {…} in einem Wert stehen.
     assert not [t for t in _texte({k: v for k, v in fertig.items() if k != "root"}) if "{" in t]
     assert ("marke_logo" in fertig) is logo and ("marke_wort" in fertig) is not logo
+    if name == "klassik" and not logo:
+        assert fertig["marke_wort"]["data"]["props"]["text"] == "*Radhaus Jena*"
+    if name == "tech":      # dunkler Grund: Akzent (Knopf, Rahmen) bleibt sichtbar
+        assert schoenheit.kontrast(werte["akzent"], grund) >= 3
 
 
 @pytest.mark.parametrize("name", NAMEN)

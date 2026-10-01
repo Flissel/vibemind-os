@@ -81,7 +81,9 @@ def main(wirklich: bool) -> int:
             continue
         aus = _schreiben(f"UPDATE marketing.newsletter_vorlagen SET status = 'zurueckgezogen' "
                          f"WHERE name = {_db._sql_literal(name)} AND status <> 'zurueckgezogen' RETURNING name;")
-        print(f"{name}: zurückgezogen" if aus.strip() else f"{name}: nicht vorhanden oder schon zurückgezogen")
+        # psql -tA gibt die RETURNING-Zeilen und danach immer den Stempel "UPDATE <n>" aus
+        geaendert = name in [z.strip() for z in aus.splitlines() if not z.startswith("UPDATE ")]
+        print(f"{name}: zurückgezogen" if geaendert else f"{name}: nicht vorhanden oder schon zurückgezogen")
     return 0
 
 

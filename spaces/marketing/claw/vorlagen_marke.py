@@ -10,7 +10,7 @@ import os
 import re
 import tempfile
 
-from spaces.marketing.claw.schoenheit import kontrast
+from spaces.marketing.claw.schoenheit import kontrast, leuchtdichte
 
 ERSATZ_AKZENT = "#2563eb"
 FAST_SCHWARZ = "#1a1a1a"
@@ -51,6 +51,10 @@ def rollen(gestalt: dict | None, grund: str) -> dict[str, str]:
     g = gestalt if isinstance(gestalt, dict) else {}
     akzent = str(g.get("akzent") or "").lower()
     akzent = akzent if _HEX.match(akzent) else ERSATZ_AKZENT
+    if _HEX.match(grund or "") and leuchtdichte(grund) < 0.2 and kontrast(akzent, grund) < 3:
+        # dunkler Vorlagengrund (tech): ein dunkler Ladenakzent verschwaende als Knopf/Rahmen -
+        # Richtung Weiss aufhellen, bis er sich mit 3:1 abhebt. Heller Grund bleibt unberuehrt.
+        akzent = _bis_kontrast(akzent, grund, 3)
     zweit = str(g.get("flaeche") or "").lower()
     if not _HEX.match(zweit) or kontrast(zweit, "#ffffff") < 3:
         zweit = _bis_kontrast(mischen(akzent, "#000000", 0.55), "#ffffff", 7)
@@ -101,6 +105,18 @@ def logo_ablegen(gestalt: dict | None, mandant: str, ordner: str) -> str | None:
     return f"medien:{name}"
 
 
+_KURSIV_HUELLE = re.compile(r"^\*(?!\*).+(?<!\*)\*$", re.S)
+
+
+def _lesen(dok: dict, pfad: str):
+    knoten = dok
+    for t in pfad.split("/"):
+        if not isinstance(knoten, dict):
+            return None
+        knoten = knoten.get(t)
+    return knoten
+
+
 def _setzen(dok: dict, pfad: str, wert: str) -> None:
     teile = pfad.split("/")
     knoten = dok.get(teile[0])
@@ -129,6 +145,9 @@ def einsetzen(dok: dict, werte: dict[str, str]) -> dict:
     rollen_tab = ((d.get("root") or {}).get("data") or {}).get("rollen") or {}
     for pfad, rolle in rollen_tab.items():
         if rolle in werte and pfad.split("/")[0] in d:
-            _setzen(d, pfad, werte[rolle])
+            wert = werte[rolle]
+            if rolle == "laden" and _KURSIV_HUELLE.match(str(_lesen(d, pfad) or "")):
+                wert = f"*{wert}*"          # "*[Laden]*" bleibt kursiv (klassik)
+            _setzen(d, pfad, wert)
     _entfernen(d, "marke_wort" if werte.get("logo") else "marke_logo")
     return d

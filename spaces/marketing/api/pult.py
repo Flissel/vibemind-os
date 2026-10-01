@@ -266,6 +266,33 @@ def _erzeugt_ordner() -> str:
     return ""
 
 
+def _laden_lesen(m: str) -> dict:
+    """Name und Standard-Newsletter-Layout (Gestalt) des Ladens; {} wenn es keins gibt."""
+    return _lesen_einer(lambda:
+        "SELECT m.name AS laden, l.name AS layout, l.gestalt FROM marketing.mandanten m "
+        "LEFT JOIN marketing.layout_vorlagen l ON l.mandant = m.id AND l.standard AND l.inhaltsart = 'newsletter' "
+        f"WHERE m.id = {lit(m)}") or {}
+
+
+def _vorlage_fuellen(dok: dict, m: str, laden: dict) -> tuple[dict, str | None]:
+    """Vorlage mit der Marke des Ladens fuellen (Spec 2026-10-01 §5): Farbrollen, Name, Logo-Datei,
+    tech-Grafiken. Gemeinsam fuer "Neu aus Vorlage" und die Vorlagen-Vorschau. Gibt das fertige
+    Dokument und den Namen des Standard-Layouts (oder None) zurueck."""
+    grund = ((dok.get("root") or {}).get("data") or {}).get("canvasColor") or "#ffffff"
+    werte: dict = vorlagen_marke.rollen(laden.get("gestalt"), grund)
+    ordner = _erzeugt_ordner()
+    werte["laden"] = str(laden.get("laden") or m)
+    logo = vorlagen_marke.logo_ablegen(laden.get("gestalt"), m, ordner)
+    if logo:
+        werte["logo"] = logo
+    rollen_tab = ((dok.get("root") or {}).get("data") or {}).get("rollen") or {}
+    if "signal_bild" in rollen_tab.values():
+        werte["signal_bild"] = vorlagen_grafik.signal(werte["akzent"], ordner) or "medien:platzhalter-4x3.png"
+    if "glow_bild" in rollen_tab.values():
+        werte["glow_bild"] = vorlagen_grafik.glow(werte["akzent"], ordner) or "medien:platzhalter-4x3.png"
+    return vorlagen_marke.einsetzen(dok, werte), laden.get("layout")
+
+
 @router.post("/inhalte/aus_vorlage")
 def inhalt_aus_vorlage(payload: dict = Body(...), x_pult_key: str | None = Header(None)):
     _schluessel(x_pult_key)
@@ -281,25 +308,7 @@ def inhalt_aus_vorlage(payload: dict = Body(...), x_pult_key: str | None = Heade
         f"WHERE name = {lit(vorlage)} AND status = 'freigegeben' AND (mandant = {lit(m)} OR fuer_alle)")
     if not v:
         raise HTTPException(422, f"Vorlage {vorlage} gibt es nicht oder sie ist nicht freigegeben")
-    laden = _lesen_einer(lambda:
-        "SELECT m.name AS laden, l.name AS layout, l.gestalt FROM marketing.mandanten m "
-        "LEFT JOIN marketing.layout_vorlagen l ON l.mandant = m.id AND l.standard AND l.inhaltsart = 'newsletter' "
-        f"WHERE m.id = {lit(m)}") or {}
-    dok = v["bloecke"]
-    grund = ((dok.get("root") or {}).get("data") or {}).get("canvasColor") or "#ffffff"
-    werte: dict = vorlagen_marke.rollen(laden.get("gestalt"), grund)
-    ordner = _erzeugt_ordner()
-    werte["laden"] = str(laden.get("laden") or m)
-    logo = vorlagen_marke.logo_ablegen(laden.get("gestalt"), m, ordner)
-    if logo:
-        werte["logo"] = logo
-    rollen_tab = ((dok.get("root") or {}).get("data") or {}).get("rollen") or {}
-    if "signal_bild" in rollen_tab.values():
-        werte["signal_bild"] = vorlagen_grafik.signal(werte["akzent"], ordner) or "medien:platzhalter-4x3.png"
-    if "glow_bild" in rollen_tab.values():
-        werte["glow_bild"] = vorlagen_grafik.glow(werte["akzent"], ordner) or "medien:platzhalter-4x3.png"
-    fertig = vorlagen_marke.einsetzen(dok, werte)
-    layout = laden.get("layout")
+    fertig, layout = _vorlage_fuellen(v["bloecke"], m, _laden_lesen(m))
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_inhalt_aus_vorlage({lit(vorlage)}, {lit(titel.strip())}, {lit(m)}, "
         f"{lit(json.dumps(fertig, ensure_ascii=False))}::jsonb, {lit(layout) if layout else 'NULL'}) AS id")
@@ -335,7 +344,10 @@ def vorlage_vorschau(name: str, format: str = "mail", bild_basis: str = "",
         f"{lit(m)} WHERE v.name = {lit(name)} AND (v.mandant = {lit(m)} OR v.fuer_alle)")
     if not zeile:
         raise HTTPException(404, "Unbekannte Vorlage")
-    return _bloecke_html(zeile["bloecke"], zeile.get("beschreibung") or "", "", zeile.get("pflichtteil"), fmt, basis)
+    # Vorschau fuer den anfragenden Laden: dieselbe Fuellung wie "Neu aus Vorlage" (keine
+    # Musterfarben, keine Muster-Grafiknamen, nicht Logo und Wortmarke zugleich)
+    fertig, _ = _vorlage_fuellen(zeile["bloecke"], m, _laden_lesen(m))
+    return _bloecke_html(fertig, zeile.get("beschreibung") or "", "", zeile.get("pflichtteil"), fmt, basis)
 
 
 @router.post("/inhalte/{iid}/bloecke")

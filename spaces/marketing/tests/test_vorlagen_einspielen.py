@@ -77,9 +77,9 @@ class Schreiber:
     def __call__(self, sql, container=None, streng=False):
         assert streng, "Schreiben nur streng (ON_ERROR_STOP)"
         self.sql.append(sql)
-        if "zurueckgezogen" in sql:
-            return "".join(f"{n}\n" for n in self.vorhanden if f"name = '{n}'" in sql)
-        return "x\n"
+        # echte psql-Ausgabe (-tA): zurueckgegebene Zeilen, dann der Befehlsstempel - auch bei 0 Zeilen
+        treffer = [n for n in self.vorhanden if f"name = '{n}'" in sql] if "zurueckgezogen" in sql else ["x"]
+        return "".join(f"{n}\n" for n in treffer) + f"UPDATE {len(treffer)}\n"
 
 
 def test_wirklich_gibt_frei_fuer_alle_und_zieht_alte_zurueck(ordner, monkeypatch, capsys):
@@ -95,6 +95,8 @@ def test_wirklich_gibt_frei_fuer_alle_und_zieht_alte_zurueck(ordner, monkeypatch
     assert all("status <> 'zurueckgezogen'" in s for s in zurueck)
     assert "newsletter: zurückgezogen" in aus and "einladung: zurückgezogen" in aus
     assert "ankuendigung: zurückgezogen" not in aus
+    assert "ankuendigung: nicht vorhanden oder schon zurückgezogen" in aus
+    assert "kurzer-hinweis: nicht vorhanden oder schon zurückgezogen" in aus
 
 
 def test_alte_mit_datei_bleiben(ordner, monkeypatch, capsys):
