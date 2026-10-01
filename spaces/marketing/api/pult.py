@@ -53,7 +53,7 @@ from typing import Callable
 from fastapi import APIRouter, Body, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response
 
-from spaces.marketing.claw import bloecke_mjml, pult_render
+from spaces.marketing.claw import bloecke_mjml, pult_render, vorlagen_grafik, vorlagen_marke
 from spaces.marketing.sync import _db
 
 router = APIRouter(prefix="/api/pult")
@@ -256,6 +256,16 @@ def _bloecke_html(dok, betreff: str, vorschautext: str, pflichtteil: dict, fmt: 
         raise HTTPException(422, str(e))
 
 
+def _erzeugt_ordner() -> str:
+    """Ablage fuer erzeugte Medien (MARKETING_BILD_ORDNER) -- nur wenn es ein
+    beschreibbarer Ordner ist, sonst "". Bewusst ohne api.bilder (Zirkelimport,
+    und dessen _ordner() wirft 503): "Neu" darf an fehlender Ablage nie scheitern."""
+    ordner = os.environ.get("MARKETING_BILD_ORDNER", "").strip()
+    if ordner and os.path.isdir(ordner) and os.access(ordner, os.W_OK):
+        return ordner
+    return ""
+
+
 @router.post("/inhalte/aus_vorlage")
 def inhalt_aus_vorlage(payload: dict = Body(...), x_pult_key: str | None = Header(None)):
     _schluessel(x_pult_key)
@@ -266,8 +276,33 @@ def inhalt_aus_vorlage(payload: dict = Body(...), x_pult_key: str | None = Heade
     if not isinstance(titel, str) or not titel.strip() or len(titel.strip()) > 200:
         raise HTTPException(422, "titel fehlt oder ist laenger als 200 Zeichen")
     m = _mandant(payload.get("mandant"))
+    v = _lesen_einer(lambda:
+        "SELECT bloecke FROM marketing.newsletter_vorlagen "
+        f"WHERE name = {lit(vorlage)} AND status = 'freigegeben' AND (mandant = {lit(m)} OR fuer_alle)")
+    if not v:
+        raise HTTPException(422, f"Vorlage {vorlage} gibt es nicht oder sie ist nicht freigegeben")
+    laden = _lesen_einer(lambda:
+        "SELECT m.name AS laden, l.name AS layout, l.gestalt FROM marketing.mandanten m "
+        "LEFT JOIN marketing.layout_vorlagen l ON l.mandant = m.id AND l.standard AND l.inhaltsart = 'newsletter' "
+        f"WHERE m.id = {lit(m)}") or {}
+    dok = v["bloecke"]
+    grund = ((dok.get("root") or {}).get("data") or {}).get("canvasColor") or "#ffffff"
+    werte: dict = vorlagen_marke.rollen(laden.get("gestalt"), grund)
+    ordner = _erzeugt_ordner()
+    werte["laden"] = str(laden.get("laden") or m)
+    logo = vorlagen_marke.logo_ablegen(laden.get("gestalt"), m, ordner)
+    if logo:
+        werte["logo"] = logo
+    rollen_tab = ((dok.get("root") or {}).get("data") or {}).get("rollen") or {}
+    if "signal_bild" in rollen_tab.values():
+        werte["signal_bild"] = vorlagen_grafik.signal(werte["akzent"], ordner) or "medien:platzhalter-4x3.png"
+    if "glow_bild" in rollen_tab.values():
+        werte["glow_bild"] = vorlagen_grafik.glow(werte["akzent"], ordner) or "medien:platzhalter-4x3.png"
+    fertig = vorlagen_marke.einsetzen(dok, werte)
+    layout = laden.get("layout")
     zeile = _schreiben(lambda:
-        f"SELECT marketing.pult_inhalt_aus_vorlage({lit(vorlage)}, {lit(titel.strip())}, {lit(m)}) AS id")
+        f"SELECT marketing.pult_inhalt_aus_vorlage({lit(vorlage)}, {lit(titel.strip())}, {lit(m)}, "
+        f"{lit(json.dumps(fertig, ensure_ascii=False))}::jsonb, {lit(layout) if layout else 'NULL'}) AS id")
     return {"id": str(zeile["id"])}
 
 
@@ -276,8 +311,9 @@ def vorlagen(mandant: str | None = None, status: str | None = None,
              x_pult_key: str | None = Header(None)):
     _schluessel(x_pult_key)
     m = _mandant(mandant)
-    s = _auswahl(status, ("vorschlag", "freigegeben"), "status")
-    wo = [f"mandant = {lit(m)}"] + ([f"status = {lit(s)}"] if s else [])
+    s = _auswahl(status, ("vorschlag", "freigegeben", "zurueckgezogen"), "status")
+    wo = [f"(mandant = {lit(m)} OR fuer_alle)"] + (
+        [f"status = {lit(s)}"] if s else ["status <> 'zurueckgezogen'"])
     zeilen = _lesen(lambda:
         "SELECT name, beschreibung, status, fassung FROM marketing.newsletter_vorlagen "
         f"WHERE {' AND '.join(wo)} ORDER BY name")
@@ -295,8 +331,8 @@ def vorlage_vorschau(name: str, format: str = "mail", bild_basis: str = "",
     m = _mandant(mandant)
     zeile = _lesen_einer(lambda:
         "SELECT v.bloecke, v.beschreibung, m.pflichtteil "
-        "FROM marketing.newsletter_vorlagen v JOIN marketing.mandanten m ON m.id = v.mandant "
-        f"WHERE v.name = {lit(name)} AND v.mandant = {lit(m)}")
+        "FROM marketing.newsletter_vorlagen v JOIN marketing.mandanten m ON m.id = "
+        f"{lit(m)} WHERE v.name = {lit(name)} AND (v.mandant = {lit(m)} OR v.fuer_alle)")
     if not zeile:
         raise HTTPException(404, "Unbekannte Vorlage")
     return _bloecke_html(zeile["bloecke"], zeile.get("beschreibung") or "", "", zeile.get("pflichtteil"), fmt, basis)

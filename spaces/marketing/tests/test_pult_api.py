@@ -472,7 +472,7 @@ def test_vorlagen_liste_und_aus_vorlage(db, c):
     db.antworten = [[{"name": "leer", "beschreibung": "L", "status": "freigegeben", "fassung": 1}]]
     r = c.get("/api/pult/vorlagen?mandant=vibemind", headers=H)
     assert r.json()["vorlagen"][0]["name"] == "leer"
-    db.antworten = [[{"id": IID}]]
+    db.antworten = [[{"bloecke": DOK}], [{"laden": "L", "layout": None, "gestalt": None}], [{"id": IID}]]
     r = c.post("/api/pult/inhalte/aus_vorlage", headers=H, json={"vorlage": "leer", "titel": "Oktober"})
     assert r.json() == {"id": IID} and "marketing.pult_inhalt_aus_vorlage(" in db.sql[-1]
 
@@ -506,8 +506,54 @@ def test_aus_vorlage_titel_laenge(db, c):
         r = c.post("/api/pult/inhalte/aus_vorlage", headers=H, json={"vorlage": "leer", "titel": titel})
         assert r.status_code == 422
     assert db.sql == []
-    db.antworten = [[{"id": IID}]]
+    db.antworten = [[{"bloecke": DOK}], [{"laden": "L", "layout": None, "gestalt": None}], [{"id": IID}]]
     assert c.post("/api/pult/inhalte/aus_vorlage", headers=H, json={"vorlage": "leer", "titel": "x" * 200}).status_code == 200
+
+def test_aus_vorlage_fuellt_rollen_und_uebergibt_dokument(db, c, monkeypatch, tmp_path):
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    vorlage = {"root": {"type": "EmailLayout", "data": {"childrenIds": ["marke_wort", "band"], "canvasColor": "#ffffff",
+               "rollen": {"band/data/style/backgroundColor": "akzent", "marke_wort/data/props/text": "laden"}}},
+               "marke_wort": {"type": "Heading", "data": {"props": {"text": "[Laden]"}}},
+               "band": {"type": "Text", "data": {"style": {"backgroundColor": "#c2410c"}, "props": {"text": "x"}}}}
+    db.antworten = [[{"bloecke": vorlage}],
+                    [{"laden": "Radhaus Jena", "layout": "radhaus-nl", "gestalt": {"akzent": "#123456"}}],
+                    [{"id": "11111111-1111-1111-1111-111111111111"}]]
+    r = c.post("/api/pult/inhalte/aus_vorlage", json={"vorlage": "studio", "titel": "Oktober", "mandant": "radhaus"},
+               headers=H)
+    assert r.status_code == 200, r.text
+    sql = db.sql[2]
+    assert "pult_inhalt_aus_vorlage" in sql and "#123456" in sql and "Radhaus Jena" in sql and "'radhaus-nl'" in sql
+    assert "fuer_alle" in db.sql[0]
+
+
+def test_aus_vorlage_ohne_layout_ersatzpalette(db, c, monkeypatch, tmp_path):
+    monkeypatch.delenv("MARKETING_BILD_ORDNER", raising=False)
+    vorlage = {"root": {"type": "EmailLayout", "data": {"childrenIds": [], "rollen": {}}}}
+    db.antworten = [[{"bloecke": vorlage}], [{"laden": "L", "layout": None, "gestalt": None}], [{"id": "x"}]]
+    assert c.post("/api/pult/inhalte/aus_vorlage", json={"vorlage": "studio", "titel": "T", "mandant": "radhaus"},
+                  headers=H).status_code == 200
+
+
+def test_aus_vorlage_unbekannt_422(db, c):
+    db.antworten = [[]]
+    r = c.post("/api/pult/inhalte/aus_vorlage", json={"vorlage": "studio", "titel": "T"}, headers=H)
+    assert r.status_code == 422
+
+
+def test_vorlagenliste_eigene_und_fuer_alle(db, c):
+    db.antworten = [[{"name": "studio", "beschreibung": "", "status": "freigegeben", "fassung": 1}]]
+    assert c.get("/api/pult/vorlagen?mandant=radhaus", headers=H).status_code == 200
+    assert "fuer_alle" in db.sql[0] and "zurueckgezogen" in db.sql[0]
+
+
+def test_erzeugt_ordner_nur_wenn_beschreibbar(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    assert pult._erzeugt_ordner() == str(tmp_path)
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path / "gibtsnicht"))
+    assert pult._erzeugt_ordner() == ""
+    monkeypatch.delenv("MARKETING_BILD_ORDNER", raising=False)
+    assert pult._erzeugt_ordner() == ""
+
 
 # --- Schlussrunde E1 (final-fix-findings.md) ---
 
