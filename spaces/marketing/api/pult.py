@@ -229,6 +229,14 @@ def inhalte(mandant: str | None = None, art: str | None = None, status: str | No
     return {"inhalte": zeilen}
 
 
+_BILD_BASIS_HOST = re.compile(r"^(https://[^/\s\"'<>]+)/marketing/bild/[^/\s\"'<>]+/$")
+
+
+def schrift_basis_aus(bild_basis: str) -> str:
+    m = _BILD_BASIS_HOST.match(bild_basis or "")
+    return f"{m.group(1)}/marketing/schrift/" if m else ""
+
+
 def _bild_basis(wert: str | None) -> str:
     wert = wert or ""
     if wert and not _BILD_BASIS.match(wert):
@@ -242,7 +250,8 @@ def _bloecke_html(dok, betreff: str, vorschautext: str, pflichtteil: dict, fmt: 
     try:
         return HTMLResponse(bloecke_mjml.rendern(
             dok, betreff, vorschautext, pflichtteil or {},
-            bild_basis=bild_basis, handy=(fmt == "handy")))
+            bild_basis=bild_basis, handy=(fmt == "handy"),
+            schrift_basis=schrift_basis_aus(bild_basis)))
     except bloecke_mjml.RenderFehler as e:
         raise HTTPException(422, str(e))
 

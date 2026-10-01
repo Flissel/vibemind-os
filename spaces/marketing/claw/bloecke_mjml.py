@@ -9,6 +9,7 @@ import html
 import re
 import urllib.parse
 
+from spaces.marketing.claw import schriften
 from spaces.marketing.claw.schoenheit import kontrast
 
 SCHRIFTEN = {
@@ -100,6 +101,53 @@ def _text(roh: str, markdown: bool) -> str:
     return _ABSATZ.sub("<br><br>", sicher).replace("\n", "<br>")
 
 
+def _af(wert) -> str:
+    """Attributwert in doppelten Anfuehrungszeichen: Apostrophe (Schriftnamen) bleiben lesbar."""
+    return html.escape(str(wert), quote=False).replace('"', "&quot;")
+
+
+def _rgba(farbe: str, deckkraft) -> str:
+    h = str(farbe or "")
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", h):
+        return ""
+    d = max(0, min(100, _zahl(deckkraft, 100))) / 100
+    return f"rgba({int(h[1:3], 16)},{int(h[3:5], 16)},{int(h[5:7], 16)},{d:g})"
+
+
+def _schrift(s: dict, farben: dict) -> str:
+    """font-family-Attribut fuer ANZEIGE/TEXT (Vorlagenschrift) oder die 9 Altschluessel."""
+    ff = s.get("fontFamily")
+    if ff == "ANZEIGE" and farben.get("anzeige"):
+        return f' font-family="{_af(farben["anzeige"])}"'
+    if ff == "TEXT" and farben.get("textschrift"):
+        return f' font-family="{_af(farben["textschrift"])}"'
+    if ff in SCHRIFTEN:
+        return f' font-family="{_af(SCHRIFTEN[ff])}"'
+    return ""
+
+
+def _feinheiten(s: dict) -> str:
+    out = ""
+    if isinstance(s.get("letterSpacing"), (int, float)) and not isinstance(s.get("letterSpacing"), bool):
+        out += f' letter-spacing="{max(-2, min(8, s["letterSpacing"])):g}px"'
+    if s.get("textTransform") == "uppercase":
+        out += ' text-transform="uppercase"'
+    return out
+
+
+def _zeilenhoehe(s: dict, standard: str) -> str:
+    v = s.get("lineHeight")
+    if isinstance(v, (int, float)) and not isinstance(v, bool) and 0.9 <= v <= 2.0:
+        return f"{v:g}"
+    return standard
+
+
+def _kursiv(roh: str) -> str:
+    """Ueberschrift: nur *kursiv* wird umgesetzt, alles andere bleibt Text."""
+    sicher = _a(roh).replace(chr(0), "")
+    return _KURSIV.sub(r"<em>\1</em>", sicher).replace("\n", "<br>")
+
+
 def _hg(s: dict) -> str:
     """Hintergrund eines einzelnen Blocks (style.backgroundColor) als MJML-Attribut."""
     farbe = s.get("backgroundColor")
@@ -120,17 +168,21 @@ def _block(dok: dict, bid: str, farben: dict, bild_basis: str) -> str:
         standard = GROESSE_UEBERSCHRIFT.get(p.get("level") or "h2", 24)
         groesse = _zahl(s.get("fontSize"), standard) if s.get("fontSize") else standard
         return (f'<mj-text padding="{polster}" align="{ausr}" color="{_a(farbe)}" font-size="{groesse}px" '
-                f'font-weight="{gewicht or "bold"}" line-height="1.25"{hg}>{_text(p.get("text") or "", False)}</mj-text>')
+                f'font-weight="{gewicht or "bold"}" line-height="{_zeilenhoehe(s, "1.25")}"'
+                f'{_schrift(s, farben)}{_feinheiten(s)}{hg}>{_kursiv(p.get("text") or "")}</mj-text>')
     if typ == "Text":
         groesse = _zahl(s.get("fontSize"), 16)
         return (f'<mj-text padding="{polster}" align="{ausr}" color="{_a(farbe)}" font-size="{groesse}px" '
-                f'font-weight="{gewicht or "normal"}" line-height="1.55"{hg}>'
+                f'font-weight="{gewicht or "normal"}" line-height="{_zeilenhoehe(s, "1.55")}"'
+                f'{_schrift(s, farben)}{_feinheiten(s)}{hg}>'
                 f'{_text(p.get("text") or "", bool(p.get("markdown")))}</mj-text>')
     if typ == "Image":
         ziel = bild_adresse(p.get("url") or "", bild_basis)
         if not ziel:
             name = (p.get("url") or "")[len("medien:"):] or "?"
             return f'<mj-text padding="{polster}" align="{ausr}" color="{_a(farben["text"])}"{hg}>[Bild: {_a(name)}]</mj-text>'
+        if p.get("sw") is True:
+            ziel += "?sw=1"
         w, h = _zahl(p.get("width"), 0), _zahl(p.get("height"), 0)
         # Mit Breite traegt die Datei das Verhaeltnis; eine feste Hoehe verzerrte das Bild am Handy.
         masse = f' width="{w}px"' if w > 0 else (f' height="{h}px"' if h > 0 else "")
@@ -148,7 +200,7 @@ def _block(dok: dict, bid: str, farben: dict, bild_basis: str) -> str:
         return (f'<mj-button padding="{polster}" href="{_a(url)}" align="{ausr}" border-radius="{rund}px" '
                 f'inner-padding="{senk}px {waag}px" font-size="{_zahl(s.get("fontSize"), 16)}px" '
                 f'background-color="{_a(p.get("buttonBackgroundColor") or KNOPF_FARBE)}" '
-                f'color="{_a(p.get("buttonTextColor") or "#FFFFFF")}" font-weight="{gewicht or "bold"}"{voll}{hg}>'
+                f'color="{_a(p.get("buttonTextColor") or "#FFFFFF")}" font-weight="{gewicht or "bold"}"{_schrift(s, farben)}{voll}{hg}>'
                 f'{_text(p.get("text") or "", False)}</mj-button>')
     if typ == "Divider":
         return (f'<mj-divider padding="{polster}" border-color="{_a(p.get("lineColor") or "#333333")}" '
@@ -211,6 +263,18 @@ def _kinder_als_section(dok: dict, ids: list, farben: dict, bild_basis: str) -> 
             rand = stil.get("borderColor")
             rahmen = f' border="1px solid {_a(rand)}"' if isinstance(rand, str) and rand else ""
             pol = _polster(stil) if isinstance(stil.get("padding"), dict) else "0"
+            bild = bild_adresse(props.get("url") or "", bild_basis)
+            if bild:
+                ov = stil.get("overlay") if isinstance(stil.get("overlay"), dict) else {}
+                feld = _rgba(ov.get("farbe"), ov.get("deckkraft"))
+                spalte_attr = f' background-color="{feld}"' if feld else ""
+                hoehe = _zahl(props.get("height"), 0)
+                teile.append(
+                    f'<mj-section background-url="{_a(bild)}" background-size="cover" background-repeat="no-repeat" '
+                    f'background-color="{_a(hg)}" padding="{pol}"><mj-column{spalte_attr}>'
+                    + (f'<mj-spacer height="{hoehe // 6}px" />' if hoehe else "")
+                    + f'{inhalt}</mj-column></mj-section>')
+                continue
             # Karte: aussen die Flaeche, innen die Containerfarbe mit Rundung und Innenabstand
             teile.append(
                 f'<mj-wrapper background-color="{_a(farben["innen"])}" padding="0 {KARTEN_RAND}px">'
@@ -223,7 +287,7 @@ def _kinder_als_section(dok: dict, ids: list, farben: dict, bild_basis: str) -> 
 
 
 def nach_mjml(dokument: dict, betreff: str, vorschautext: str, pflichtteil: dict,
-              bild_basis: str = "", breite: int = 600) -> str:
+              bild_basis: str = "", breite: int = 600, schrift_basis: str = "") -> str:
     wurzel = (dokument.get("root") or {}).get("data") or {}
     # aussen = Flaeche um die Mail (backdropColor), innen = Inhaltsflaeche (canvasColor)
     farben = {"aussen": wurzel.get("backdropColor") or "#f2f5f7",
@@ -231,6 +295,22 @@ def nach_mjml(dokument: dict, betreff: str, vorschautext: str, pflichtteil: dict
               "text": wurzel.get("textColor") or "#242424",
               "akzent": "#5eead4"}
     schrift = SCHRIFTEN.get(wurzel.get("fontFamily") or "MODERN_SANS", SCHRIFTEN["MODERN_SANS"]).replace('"', "'")
+    sw = wurzel.get("schriften") if isinstance(wurzel.get("schriften"), dict) else {}
+    anzeige, textschrift = schriften.css_familie(sw.get("anzeige")), schriften.css_familie(sw.get("text"))
+    farben["anzeige"], farben["textschrift"] = anzeige, textschrift
+    schrift_attr = _a(schrift)
+    if textschrift:
+        schrift_attr = _af(textschrift.replace('"', "'"))
+    koepfe = ""
+    if schrift_basis.startswith("https://") and schrift_basis.endswith("/"):
+        for sid in sorted({s for s in (sw.get("anzeige"), sw.get("text")) if isinstance(s, str)}):
+            if sid in schriften.REGISTER:
+                koepfe += (f'<mj-font name="{_a(schriften.REGISTER[sid]["familie"])}" '
+                           f'href="{_a(schrift_basis)}schriften.css" />')
+    dunkel_meta = ""
+    if wurzel.get("dunkel") is True:
+        dunkel_meta = ('<mj-raw><meta name="color-scheme" content="dark"><meta name="supported-color-schemes" '
+                       'content="dark"></mj-raw>')
     rumpf = _kinder_als_section(dokument, wurzel.get("childrenIds") or [], farben, bild_basis)
     fuss_farbe = _fuss_farbe(farben["text"], farben["aussen"])
     impressum = (pflichtteil.get("impressum") or "").strip()
@@ -239,13 +319,13 @@ def nach_mjml(dokument: dict, betreff: str, vorschautext: str, pflichtteil: dict
     abmelden = _a((pflichtteil.get("abmelde_hinweis") or "").replace("{abmeldelink}", "[Abmeldelink]"))
     fuss = (f'<mj-section padding="16px 0"><mj-column><mj-text align="center" font-size="11px" '
             f'color="{_a(fuss_farbe)}" line-height="1.5">{impressum_html}<br>{abmelden}</mj-text></mj-column></mj-section>')
-    return (f'<mjml><mj-head><mj-title>{_a(betreff)}</mj-title><mj-preview>{_a(vorschautext)}</mj-preview>'
-            f'<mj-attributes><mj-all font-family="{_a(schrift)}" /></mj-attributes></mj-head>'
+    return (f'<mjml><mj-head><mj-title>{_a(betreff)}</mj-title><mj-preview>{_a(vorschautext)}</mj-preview>{koepfe}{dunkel_meta}'
+            f'<mj-attributes><mj-all font-family="{schrift_attr}" /></mj-attributes></mj-head>'
             f'<mj-body background-color="{_a(farben["aussen"])}" width="{_zahl(breite, 600)}px">{rumpf}{fuss}</mj-body></mjml>')
 
 
 def rendern(dokument: dict, betreff: str, vorschautext: str, pflichtteil: dict,
-            bild_basis: str = "", handy: bool = False) -> str:
+            bild_basis: str = "", handy: bool = False, schrift_basis: str = "") -> str:
     # mjml-python erst hier laden: fehlt das Paket, faellt nur die Bloecke-
     # Vorschau aus (422 mit Grund), nicht die ganze Marketing-API.
     try:
@@ -253,7 +333,8 @@ def rendern(dokument: dict, betreff: str, vorschautext: str, pflichtteil: dict,
     except ImportError as e:
         raise RenderFehler("mjml-python fehlt auf diesem Rechner - der Newsletter laesst sich nicht setzen "
                            "(pip install -r spaces/marketing/requirements.txt)") from e
-    quelle = nach_mjml(dokument, betreff, vorschautext, pflichtteil, bild_basis, 380 if handy else 600)
+    quelle = nach_mjml(dokument, betreff, vorschautext, pflichtteil, bild_basis, 380 if handy else 600,
+                      schrift_basis)
     try:
         return mjml.mjml2html(quelle)
     except Exception as e:  # mrml meldet Englisch; nach aussen deutsch

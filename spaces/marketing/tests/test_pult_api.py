@@ -633,3 +633,9 @@ def test_medien_verweise_db_weg_503(db, c):
     db.fehler = [RuntimeError("ssh kaputt")]
     r = c.get("/api/pult/medien/verweise", params={"name": "a.jpg"}, headers=H)
     assert r.status_code == 503 and "ssh" not in r.text
+
+
+def test_schrift_basis_aus_bild_basis():
+    assert pult.schrift_basis_aus("https://ui.tail.ts.net:8445/marketing/bild/123.abc/") == \
+        "https://ui.tail.ts.net:8445/marketing/schrift/"
+    assert pult.schrift_basis_aus("") == "" and pult.schrift_basis_aus("https://x/andere/") == ""
