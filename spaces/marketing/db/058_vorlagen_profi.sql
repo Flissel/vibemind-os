@@ -119,14 +119,18 @@ BEGIN
     IF v_style ? 'overlay' AND jsonb_typeof(v_style->'overlay') <> 'null' AND NOT (
          jsonb_typeof(v_style->'overlay') = 'object'
          AND coalesce(v_style->'overlay'->>'farbe', '') ~ '^#[0-9a-fA-F]{6}$'
+         AND coalesce(jsonb_typeof(v_style->'overlay'->'deckkraft'), '') = 'number'
          AND marketing._bloecke_zahl_ok(v_style->'overlay'->'deckkraft', 0, 100)) THEN
       RETURN format('Farbfeld in %s braucht farbe #rrggbb und deckkraft 0-100', v_id); END IF;
     IF (v_props ? 'sw' AND jsonb_typeof(v_props->'sw') NOT IN ('boolean','null'))
        OR (v_props ? 'grafik' AND jsonb_typeof(v_props->'grafik') NOT IN ('boolean','null')) THEN
       RETURN format('sw/grafik in %s muss true oder false sein', v_id); END IF;
+    IF v_id = 'root' AND v_b->'data' ? 'schriften'
+       AND jsonb_typeof(v_b->'data'->'schriften') NOT IN ('object','null') THEN
+      RETURN 'Schriftpaar der Vorlage muss ein Objekt sein'; END IF;
     IF v_id = 'root' AND jsonb_typeof(v_b->'data'->'schriften') = 'object' AND EXISTS (
          SELECT 1 FROM jsonb_each_text(v_b->'data'->'schriften') e
-          WHERE e.key NOT IN ('anzeige','text') OR NOT e.value = ANY(c_vorlagenschriften)) THEN
+          WHERE e.key NOT IN ('anzeige','text') OR e.value IS NULL OR NOT e.value = ANY(c_vorlagenschriften)) THEN
       RETURN 'Schriftpaar der Vorlage ist nicht erlaubt'; END IF;
     IF v_typ = 'Heading' AND NOT marketing._bloecke_wahl_ok(v_props->'level', ARRAY['h1','h2','h3']) THEN
       RETURN format('Ueberschrift-Ebene in %s muss h1, h2 oder h3 sein', v_id); END IF;

@@ -69,6 +69,7 @@ def _fehler(d: dict) -> str | None:
             return f"{bid}: Versalien"
         ov = style.get("overlay")
         if ov is not None and (not isinstance(ov, dict) or not re.fullmatch(r"#[0-9a-fA-F]{6}", str(ov.get("farbe")))
+                               or isinstance(ov.get("deckkraft"), bool) or not isinstance(ov.get("deckkraft"), (int, float))
                                or not _zahl_ok(ov.get("deckkraft"), 0, 100)):
             return f"{bid}: Farbfeld"
         for k in ("sw", "grafik"):
@@ -315,3 +316,28 @@ def test_container_mit_medien_hintergrund_gueltig():
                                               "props": {"url": "medien:platzhalter-2x1.png", "width": 600, "height": 300,
                                                         "childrenIds": []}}}}
     assert _fehler(d) is None
+
+
+def _wurzel(**data):
+    return {"root": {"type": "EmailLayout", "data": {"childrenIds": [], **data}}}
+
+
+@pytest.mark.parametrize("schriften", ["x", [], {"anzeige": None}, {"farbe": "poppins"}])
+def test_schriften_falsch_wird_abgelehnt(schriften):
+    assert _fehler(_wurzel(schriften=schriften))
+
+
+def test_schriften_null_ist_erlaubt():
+    assert _fehler(_wurzel(schriften=None)) is None
+
+
+def test_grafik_kein_bool_wird_abgelehnt():
+    d = {"root": {"type": "EmailLayout", "data": {"childrenIds": ["i"]}},
+         "i": {"type": "Image", "data": {"props": {"url": "medien:a.png", "grafik": "ja"}}}}
+    assert _fehler(d)
+
+
+def test_farbfeld_ohne_deckkraft_wird_abgelehnt():
+    d = {"root": {"type": "EmailLayout", "data": {"childrenIds": ["h"]}},
+         "h": {"type": "Heading", "data": {"style": {"overlay": {"farbe": "#2f4858"}}, "props": {"text": "x"}}}}
+    assert _fehler(d)
