@@ -23,11 +23,16 @@ def falsch(antwort):
     return http, gesendet
 
 
-def test_prompt_mit_stil_und_verbot(monkeypatch):
+DUNKEL = {"innen": "#0f2422", "aussen": "#1d3b39", "text": "#cfe3df", "akzent": "#5eead4"}
+HELL = {"innen": "#ffffff", "aussen": "#f2f5f7", "text": "#242424", "akzent": "#c0392b"}
+
+
+def test_prompt_mit_qualitaet_und_verbot_ohne_festen_farbstil(monkeypatch):
     http, gesendet = falsch("A calm team at a bright desk, morning light")
     monkeypatch.setattr(bp, "_ollama", http)
     p = bp.prompt_schreiben(PLATZ, "Newsletter Oktober", "waermer")
-    assert p.startswith("A calm team at a bright desk") and bp.VERBOT in p and bp.STIL in p
+    assert p.startswith("A calm team at a bright desk") and bp.VERBOT in p and bp.QUALITAET in p
+    assert "turquoise" not in p and "teal" not in p and "natural colors" in p
     pfad, daten = gesendet[0]
     assert pfad == "/api/generate" and daten["keep_alive"] == 0 and daten["model"] == bp.TEXT_MODELL
     assert "waermer" in daten["prompt"] and "Herbst-Update" in daten["prompt"] and "2:1" in daten["prompt"]
@@ -103,11 +108,31 @@ def test_num_ctx_in_jedem_ollama_aufruf(monkeypatch):
     assert all(d["options"]["num_ctx"] == 4096 for _, d in gesendet) and len(gesendet) == 3
 
 
-def test_bearbeitungs_prompt_ohne_stil_mit_verbot(monkeypatch):
+def test_prompt_nimmt_die_layoutfarben(monkeypatch):
+    monkeypatch.setattr(bp, "_ollama", falsch("A calm team at a desk")[0])
+    hell = bp.prompt_schreiben({**PLATZ, "palette": HELL, "flaeche": "#ffffff"}, "Oktober", "")
+    dunkel = bp.prompt_schreiben({**PLATZ, "palette": DUNKEL, "flaeche": "#0f2422"}, "Oktober", "")
+    assert "white background" in hell and "dark red accents" in hell and "teal" not in hell
+    assert "near-black teal background" in dunkel and "blend softly into near-black teal" in dunkel
+
+
+def test_bearbeitungs_prompt_layoutfarben_statt_altem_bild(monkeypatch):
+    http, gesendet = falsch("Same skyline, calm evening")
+    monkeypatch.setattr(bp, "_ollama", http)
+    p = bp.bearbeitungs_prompt("Blue skyline at night.", {**PLATZ, "palette": HELL, "flaeche": "#ffffff"},
+                               "Oktober", "keine Leuchtschrift")
+    assert p.startswith("Same skyline, calm evening") and bp.VERBOT in p and "white background" in p
+    anfrage = gesendet[0][1]["prompt"]
+    assert "white background" in anfrage and "nicht die des vorhandenen Bildes" in anfrage
+
+
+def test_bearbeitungs_prompt_farbwunsch_rahmt_nur_weich(monkeypatch):
     http, gesendet = falsch("Same skyline, warm golden light, no signs")
     monkeypatch.setattr(bp, "_ollama", http)
-    p = bp.bearbeitungs_prompt("Skyline at night.", PLATZ, "Oktober", "keine Leuchtschrift, waermer")
-    assert p.startswith("Same skyline, warm golden light") and bp.VERBOT in p and bp.STIL not in p
+    p = bp.bearbeitungs_prompt("Skyline at night.", {**PLATZ, "palette": DUNKEL, "flaeche": "#0f2422"},
+                               "Oktober", "keine Leuchtschrift, waermer")
+    assert p.startswith("Same skyline, warm golden light") and bp.VERBOT in p
+    assert "harmonizing with the layout colors" in p and "color palette matching" not in p
     anfrage = gesendet[0][1]["prompt"]
     assert "Skyline at night." in anfrage and "keine Leuchtschrift" in anfrage
 

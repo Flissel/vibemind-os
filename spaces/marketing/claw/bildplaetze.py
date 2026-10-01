@@ -31,6 +31,7 @@ class Platz:
     url: str
     alt: str
     kontext: str
+    flaeche: str = ""   # Farbe der Flaeche hinter dem Bild (Bild > Container > canvasColor)
 
     def als_dict(self) -> dict:
         return asdict(self)
@@ -78,7 +79,7 @@ def _auf16(x: float) -> int:
     return max(16, int(math.ceil(x / 16.0)) * 16)
 
 
-def _platz(dok: dict, bid: str, verfuegbar: float, geschwister: list) -> Platz | None:
+def _platz(dok: dict, bid: str, verfuegbar: float, geschwister: list, flaeche: str = "") -> Platz | None:
     b = dok.get(bid)
     if not isinstance(b, dict) or b.get("type") != "Image":
         return None
@@ -98,7 +99,8 @@ def _platz(dok: dict, bid: str, verfuegbar: float, geschwister: list) -> Platz |
     kontext = " | ".join(t for t in nachbarn if t)[:KONTEXT_MAX]
     url = str(props.get("url") or "")
     return Platz(bid, int(anzeige_b), int(anzeige_h), erzeug_b, erzeug_h, f"{a}:{c}",
-                 ist_leer(url), url, str(props.get("alt") or ""), kontext)
+                 ist_leer(url), url, str(props.get("alt") or ""), kontext,
+                 str(style.get("backgroundColor") or flaeche))
 
 
 def finde(dok: dict) -> list[Platz]:
@@ -106,6 +108,7 @@ def finde(dok: dict) -> list[Platz]:
         return []
     wurzel = (dok.get("root") or {}).get("data") or {}
     oben = [x for x in (wurzel.get("childrenIds") or []) if isinstance(x, str)]
+    innen = str(wurzel.get("canvasColor") or "#ffffff")   # Standard wie bloecke_mjml
     plaetze: list[Platz] = []
     for bid in oben:
         b = dok.get(bid)
@@ -122,14 +125,15 @@ def finde(dok: dict) -> list[Platz]:
                 kinder = [x for x in ((c or {}).get("childrenIds") or []) if isinstance(x, str)]
                 vor, nach = _spalten_polster(i, anzahl, luecke)
                 for k in kinder:
-                    if (p := _platz(dok, k, spalte - vor - nach, kinder)):
+                    if (p := _platz(dok, k, spalte - vor - nach, kinder, style.get("backgroundColor") or innen)):
                         plaetze.append(p)
         elif typ == "Container":
             kinder = [x for x in (props.get("childrenIds") or []) if isinstance(x, str)]
             cl, cr = _lr(style, 0) if isinstance(style.get("padding"), dict) else (0, 0)
             for k in kinder:
-                if (p := _platz(dok, k, MAIL_BREITE - 2 * KARTEN_RAND - cl - cr, kinder)):
+                if (p := _platz(dok, k, MAIL_BREITE - 2 * KARTEN_RAND - cl - cr, kinder,
+                                style.get("backgroundColor") or innen)):
                     plaetze.append(p)
-        elif (p := _platz(dok, bid, MAIL_BREITE, oben)):
+        elif (p := _platz(dok, bid, MAIL_BREITE, oben, innen)):
             plaetze.append(p)
     return plaetze

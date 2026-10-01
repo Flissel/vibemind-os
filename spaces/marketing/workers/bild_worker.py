@@ -19,7 +19,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from spaces.marketing.claw import bild_comfy, bild_messen, bild_prompt, bild_sehen, bildplaetze
+from spaces.marketing.claw import bild_comfy, bild_farben, bild_messen, bild_prompt, bild_sehen, bildplaetze
 
 PORT = 8133
 TAKT_S = 20
@@ -182,7 +182,7 @@ def _dienste_bereit(comfy, prompt, starten, uhr) -> bool:
 def _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen):
     """Phase 1 (Ollama, keep_alive 0): je Platz Quelle holen, sehen, Prompt.
     Phase 2: alle Bilder am Stueck mit FLUX, /free am Ende - ComfyUI laedt die
-    Modelle (~11 GB, gemessen 30.09. ~118 s von der HDD E:, Rechnen nur ~6 s) so
+    Modelle (~11 GB, gemessen 01.10. ~92 s auch von der SSD, Rechnen ~6-10 s) so
     EINMAL je Auftrag; je Bild freigeben nur, wenn danach das Sehmodell der
     Selbstpruefung den Grafikspeicher braucht. CLIP-Messung je Bild auf der CPU.
     Ueberarbeiten = "neu mit Motiv" (Betreiber-Entscheid 30.09.): immer
@@ -192,6 +192,7 @@ def _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen):
     modus = auftrag.get("modus") or "ueberarbeiten"
     titel, hinweis = str(auftrag.get("titel") or ""), str(auftrag.get("hinweis") or "")
     befunde, arbeit = [], []
+    palette = bild_farben.palette(auftrag.get("bloecke"))
     for platz in ziele:
         quelle = None
         if modus == "ueberarbeiten" and staerke < 100 and not platz.leer:
@@ -217,11 +218,13 @@ def _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen):
         beschreibung = sehen.beschreiben(quelle) if quelle is not None else ""
         if quelle is not None and not beschreibung:
             befunde.append(f"{platz.id}: ohne Bildbeschreibung")
+        # Layoutfarben der Fassung reisen im Platz mit (Betreiber 01.10.: Bild fuegt sich ins Layout).
+        daten = {**platz.als_dict(), "palette": palette}
         if beschreibung:
-            text = prompt.bearbeitungs_prompt(beschreibung, platz.als_dict(), titel, hinweis,
+            text = prompt.bearbeitungs_prompt(beschreibung, daten, titel, hinweis,
                                               nah=staerke <= GRENZE_STAERKE)
         else:   # neu, oder Sehen gescheitert: alt + Kontext + Hinweis (Spec §7)
-            text = prompt.prompt_schreiben(platz.als_dict(), titel, hinweis)
+            text = prompt.prompt_schreiben(daten, titel, hinweis)
         arbeit.append((platz, text, quelle))
     je_bild_freigeben = os.environ.get("BILD_SELBSTPRUEFUNG", "") == "1"
     try:
