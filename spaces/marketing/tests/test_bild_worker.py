@@ -20,6 +20,9 @@ def png(w, h):
     return b.getvalue()
 
 
+ALT = png(64, 32)                          # echtes Quellbild: der Arbeiter normalisiert mit PIL
+
+
 class Api:
     def __init__(self, auftrag):
         self.auftrag, self.log, self.quellen, self.messung = auftrag, [], {}, None
@@ -364,11 +367,11 @@ UEBER = dict(AUFTRAG, platz="neben", nur_leere=False, hinweis="waermer", staerke
 
 def test_ueberarbeiten_ablauf_und_messung():
     api, comfy, sehen = Api(dict(UEBER)), Comfy(), Sehen()
-    api.quellen["neben"] = b"ALT"
+    api.quellen["neben"] = ALT
     assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=sehen,
                             messen=Messen([{"aehnlich_original": 0.88, "naeher_am_hinweis": 0.04}])) == "fertig"
     # Betreiber-Entscheid 30.09. "neu mit Motiv": Text-zu-Bild in Platzmassen, nie Bild-zu-Bild
-    assert sehen.gesehen == [b"ALT"] and comfy.masse == [(1200, 608)] and comfy.ueber == []
+    assert [Image.open(io.BytesIO(b)).size for b in sehen.gesehen] == [(64, 32)] and comfy.masse == [(1200, 608)] and comfy.ueber == []
     assert api.messung == {"neben": {"aehnlich_original": 0.88, "naeher_am_hinweis": 0.04}}
 
 
@@ -381,7 +384,7 @@ def test_leerer_platz_wird_neu_erzeugt_ohne_quelle():
 
 def test_staerke_100_ist_neu():
     api, comfy = Api(dict(UEBER, staerke=100)), Comfy()
-    api.quellen["neben"] = b"ALT"
+    api.quellen["neben"] = ALT
     bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=Sehen(), messen=Messen([]))
     assert comfy.ueber == [] and len(comfy.masse) == 1
 
@@ -395,14 +398,14 @@ def test_quelle_fehlt_neu_mit_befund():
 
 def test_ohne_beschreibung_mit_befund():
     api, comfy = Api(dict(UEBER)), Comfy()
-    api.quellen["neben"] = b"ALT"
+    api.quellen["neben"] = ALT
     bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=Sehen(""), messen=Messen([]))
     assert len(comfy.masse) == 1 and comfy.ueber == [] and "neben: ohne Bildbeschreibung" in api.log[-1][2]
 
 
 def test_zu_unaehnlich_wiederholen_dann_bestes():
     api, comfy = Api(dict(UEBER)), Comfy()
-    api.quellen["neben"] = b"ALT"
+    api.quellen["neben"] = ALT
     werte = [{"aehnlich_original": 0.5, "naeher_am_hinweis": 0.1}, {"aehnlich_original": 0.7, "naeher_am_hinweis": 0.1},
              {"aehnlich_original": 0.6, "naeher_am_hinweis": 0.1}]
     assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=Sehen(), messen=Messen(werte)) == "fertig"
@@ -412,7 +415,7 @@ def test_zu_unaehnlich_wiederholen_dann_bestes():
 
 def test_hohe_staerke_keine_aehnlichkeitsschwelle():
     api, comfy = Api(dict(UEBER, staerke=80)), Comfy()
-    api.quellen["neben"] = b"ALT"
+    api.quellen["neben"] = ALT
     bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=Sehen(),
                      messen=Messen([{"aehnlich_original": 0.4, "naeher_am_hinweis": 0.2}]))
     assert len(comfy.masse) == 1 and comfy.ueber == [] and api.log[-1][2] == ""
@@ -420,7 +423,7 @@ def test_hohe_staerke_keine_aehnlichkeitsschwelle():
 
 def test_ueberarbeiten_ohne_hinweis():
     api, comfy = Api(dict(UEBER, hinweis="")), Comfy()
-    api.quellen["neben"] = b"ALT"
+    api.quellen["neben"] = ALT
     assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=Sehen(),
                             messen=Messen([{"aehnlich_original": 0.9, "naeher_am_hinweis": None}])) == "fertig"
     assert api.messung["neben"]["naeher_am_hinweis"] is None
@@ -448,7 +451,7 @@ def test_erst_sehen_dann_flux_einmal_freigeben(monkeypatch):
             folge.append("frei")
 
     api = Api(dict(UEBER, platz=None))                     # kopf (leer, neu) + neben (ueberarbeiten)
-    api.quellen["neben"] = b"ALT"
+    api.quellen["neben"] = ALT
     bw.ein_durchlauf(api, C(), Prompt(), starten=lambda: None, sehen=S(), messen=Messen([]))
     assert folge == ["sehen", "flux", "flux", "frei"]
 
@@ -456,7 +459,7 @@ def test_erst_sehen_dann_flux_einmal_freigeben(monkeypatch):
 @pytest.mark.parametrize("staerke, nah", [(0, True), (40, True), (60, True), (61, False), (99, False)])
 def test_nah_bis_grenze_staerke(staerke, nah):
     api, prompt = Api(dict(UEBER, staerke=staerke)), Prompt()
-    api.quellen["neben"] = b"ALT"
+    api.quellen["neben"] = ALT
     bw.ein_durchlauf(api, Comfy(), prompt, starten=lambda: None, sehen=Sehen(), messen=Messen([]))
     assert prompt.nah == [nah]
 
@@ -464,7 +467,7 @@ def test_nah_bis_grenze_staerke(staerke, nah):
 def test_selbstpruefung_notiz_bleibt_befund_beim_ueberarbeiten():
     """Wie bisher beim Neu-Erzeugen: 'ungeprueft eingesetzt' geht nicht verloren."""
     api = Api(dict(UEBER))
-    api.quellen["neben"] = b"ALT"
+    api.quellen["neben"] = ALT
     bw.ein_durchlauf(api, Comfy(), Prompt([(True, "Selbstpruefung unlesbar - ungeprueft eingesetzt")]),
                      starten=lambda: None, sehen=Sehen(), messen=Messen([]))
     assert api.log[-1][0] == "fertig" and "neben: Selbstpruefung unlesbar" in api.log[-1][2]
@@ -500,7 +503,7 @@ def test_quelle_422_nicht_mehr_in_arbeit_ist_verworfen():
 
 def test_weiter_vor_jeder_quelle_in_phase_1():
     api = Api(dict(UEBER, platz=None, bloecke=DOC2))
-    api.quellen.update(neben=b"ALT", unten=b"ALT")
+    api.quellen.update(neben=ALT, unten=ALT)
     assert bw.ein_durchlauf(api, Comfy(), Prompt(), starten=lambda: None, sehen=Sehen(), messen=Messen([])) == "fertig"
     phase1 = [e[0] for e in api.log][:4]
     assert phase1 == ["weiter", "quelle", "weiter", "quelle"]
@@ -511,7 +514,7 @@ def test_weiter_false_in_phase_1_ist_verworfen_ohne_erzeugen():
         def weiter(self, aid):
             self.log.append(("weiter", aid)); return False
     api, comfy, sehen = A(dict(UEBER)), Comfy(), Sehen()
-    api.quellen["neben"] = b"ALT"
+    api.quellen["neben"] = ALT
     assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=sehen, messen=Messen([])) == "verworfen"
     assert comfy.masse == [] and sehen.gesehen == [] and ("quelle", "neben") not in api.log
     assert not [e for e in api.log if e[0] in ("zurueck", "fertig", "bild")]
@@ -519,7 +522,7 @@ def test_weiter_false_in_phase_1_ist_verworfen_ohne_erzeugen():
 
 def test_bestes_bild_befund_nennt_aehnlichkeit_nicht_selbstpruefung():
     api = Api(dict(UEBER))
-    api.quellen["neben"] = b"ALT"
+    api.quellen["neben"] = ALT
     bw.ein_durchlauf(api, Comfy(), Prompt([(True, ""), (False, "Schrift im Bild"), (False, "Schrift im Bild")]),
                      starten=lambda: None, sehen=Sehen(),
                      messen=Messen([{"aehnlich_original": 0.5, "naeher_am_hinweis": 0.1}]))
@@ -530,7 +533,7 @@ def test_bestes_bild_befund_nennt_aehnlichkeit_nicht_selbstpruefung():
 
 def test_ohne_messung_befund_bei_niedriger_staerke():
     api = Api(dict(UEBER))
-    api.quellen["neben"] = b"ALT"
+    api.quellen["neben"] = ALT
     assert bw.ein_durchlauf(api, Comfy(), Prompt(), starten=lambda: None, sehen=Sehen(),
                             messen=Messen([{}])) == "fertig"
     assert "neben: ohne Messung" in api.log[-1][2] and api.messung == {}
@@ -605,3 +608,91 @@ def test_arbeiter_api_quelle_404_ist_none_und_fertig_mit_messung(monkeypatch):
     assert json.loads(gesehen[-1].data)["messung"] == {"neben": {"aehnlich_original": 0.9}}
     api.fertig("a1", {}, "")
     assert json.loads(gesehen[-1].data)["messung"] == {}
+
+
+class MerkMessen(Messen):
+    def __init__(self, werte=()):
+        super().__init__(werte)
+        self.alt = []
+
+    def messen(self, alt, neu, hinweis):
+        self.alt.append(alt)
+        return super().messen(alt, neu, hinweis)
+
+
+class MerkComfy(Comfy):
+    def __init__(self):
+        super().__init__()
+        self.prompts = []
+
+    def erzeugen(self, prompt, b, h, seed, zeitlimit_s=300):
+        self.prompts.append(prompt)
+        return super().erzeugen(prompt, b, h, seed, zeitlimit_s)
+
+
+def _grosses_jpeg() -> bytes:
+    import os
+    roh = os.urandom(2000 * 1500 * 3)
+    b = io.BytesIO()
+    Image.frombytes("RGB", (2000, 1500), roh).save(b, "JPEG", quality=95)
+    return b.getvalue()
+
+
+def test_quelle_bis_16_mb():
+    assert bw.QUELLE_MAX == 16 * 1024 * 1024
+
+
+def test_grosse_jpeg_quelle_wird_am_pc_normalisiert():
+    gross = _grosses_jpeg()
+    assert 1024 * 1024 < len(gross) <= bw.QUELLE_MAX            # frueher: "zu gross"
+    api, sehen, messen = Api(dict(UEBER)), Sehen(), MerkMessen()
+    api.quellen["neben"] = gross
+    assert bw.ein_durchlauf(api, Comfy(), Prompt(), starten=lambda: None, sehen=sehen, messen=messen) == "fertig"
+    assert len(sehen.gesehen) == 1 and sehen.gesehen[0][:8] == b"\x89PNG\r\n\x1a\n"
+    with Image.open(io.BytesIO(sehen.gesehen[0])) as bild:
+        assert max(bild.size) <= 1536 and bild.size == (1536, 1152) and bild.mode == "RGB"
+    assert messen.alt == [sehen.gesehen[0]]                    # CLIP misst dieselben Bytes
+    assert "zu gross" not in api.log[-1][2] and "unlesbar" not in api.log[-1][2]
+
+
+def test_kleine_quelle_wird_nicht_vergroessert_aber_rgb_png():
+    b = io.BytesIO()
+    Image.new("P", (300, 200)).save(b, "GIF")
+    api, sehen = Api(dict(UEBER)), Sehen()
+    api.quellen["neben"] = b.getvalue()
+    bw.ein_durchlauf(api, Comfy(), Prompt(), starten=lambda: None, sehen=sehen, messen=Messen([]))
+    with Image.open(io.BytesIO(sehen.gesehen[0])) as bild:
+        assert bild.format == "PNG" and bild.size == (300, 200) and bild.mode == "RGB"
+
+
+def test_unlesbare_quelle_neu_erzeugt_mit_befund():
+    api, comfy, sehen, messen = Api(dict(UEBER)), MerkComfy(), Sehen(), MerkMessen()
+    api.quellen["neben"] = b"\xff\xd8\xffkein bild"
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=sehen, messen=messen) == "fertig"
+    assert sehen.gesehen == [] and messen.alt == [] and comfy.prompts == ["bild fuer neben"]
+    assert "neben: Quellbild unlesbar - neu erzeugt" in api.log[-1][2]
+
+
+def test_dekompressionsbombe_ist_unlesbar(monkeypatch):
+    echt, aufrufe = Image.open, []
+
+    def bombe(*a, **k):                                   # nur die Quelle ist die Bombe
+        aufrufe.append(1)
+        if len(aufrufe) == 1:
+            raise Image.DecompressionBombError("zu viele Pixel")
+        return echt(*a, **k)
+    monkeypatch.setattr(Image, "open", bombe)
+    api, sehen = Api(dict(UEBER)), Sehen()
+    api.quellen["neben"] = ALT
+    bw.ein_durchlauf(api, Comfy(), Prompt(), starten=lambda: None, sehen=sehen, messen=Messen([]))
+    assert sehen.gesehen == [] and "neben: Quellbild unlesbar - neu erzeugt" in api.log[-1][2]
+
+
+def test_ohne_beschreibung_prompt_aus_alt_kontext_hinweis():
+    """Spec §7: scheitert das Sehen, schreibt der Arbeiter den Prompt wie beim
+    Neu-Erzeugen (alt + Kontext + Hinweis), nicht aus einer leeren Beschreibung."""
+    api, comfy, prompt = Api(dict(UEBER)), MerkComfy(), Prompt()
+    api.quellen["neben"] = ALT
+    bw.ein_durchlauf(api, comfy, prompt, starten=lambda: None, sehen=Sehen(""), messen=Messen([]))
+    assert comfy.prompts == ["bild fuer neben"] and prompt.nah == []
+    assert "neben: ohne Bildbeschreibung" in api.log[-1][2]

@@ -26,7 +26,8 @@ TAKT_S = 20
 VERSUCHE_JE_PLATZ = 3
 GRENZE_STAERKE = 60           # bis hierhin: Motiv nah halten und Aehnlichkeit erzwingen
 MIN_AEHNLICH = 0.75           # CLIP cos(alt, neu) bei staerke <= GRENZE_STAERKE
-QUELLE_MAX = 1024 * 1024      # Quellbild groesser -> wie fehlend (abgelieferte Bilder sind <= 1 MB)
+QUELLE_MAX = 16 * 1024 * 1024  # Quellbild groesser -> wie fehlend (Menschen legen auch Kamera-Fotos ab)
+QUELLE_KANTE = 1536           # Quelle vor Sehen/CLIP am PC auf diese laengste Kante verkleinern
 ERZEUGUNG_ZEITLIMIT_S = 540
 JPEG_ZIEL = 250 * 1024
 _HIER = Path(__file__).resolve()
@@ -138,6 +139,23 @@ def verkleinern(png: bytes, breite: int, hoehe: int) -> bytes:
         return b.getvalue()
 
 
+def quelle_normalisieren(roh: bytes) -> bytes | None:
+    """Quellbild am PC dekodieren, nach RGB, laengste Kante <= QUELLE_KANTE,
+    als PNG neu kodieren - diese Bytes bekommen Sehmodell und CLIP. Menschen
+    legen in media/ beliebige Fotos ab (gross, GIF, Palette, Alpha). Unlesbar
+    oder Dekompressionsbombe -> None (Arbeiter erzeugt dann neu)."""
+    from PIL import Image
+    try:
+        with Image.open(io.BytesIO(roh)) as bild:
+            bild = bild.convert("RGB")
+            bild.thumbnail((QUELLE_KANTE, QUELLE_KANTE), Image.LANCZOS)
+            b = io.BytesIO()
+            bild.save(b, "PNG")
+            return b.getvalue()
+    except (Image.DecompressionBombError, OSError, ValueError, SyntaxError):
+        return None
+
+
 def dienste_starten() -> None:
     """Startet ComfyUI/Ollama ueber das Starter-Skript. Kein Warten hier: der
     naechste Takt prueft erneut (ComfyUI braucht ~60 s bis /system_stats)."""
@@ -192,13 +210,17 @@ def _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen):
                 befunde.append(f"{platz.id}: Quellbild zu gross - neu erzeugt")
             elif quelle is None:
                 befunde.append(f"{platz.id}: Quellbild fehlt - neu erzeugt")
-        if quelle is not None:
-            beschreibung = sehen.beschreiben(quelle)
-            if not beschreibung:
-                befunde.append(f"{platz.id}: ohne Bildbeschreibung")
+            else:
+                quelle = quelle_normalisieren(quelle)
+                if quelle is None:
+                    befunde.append(f"{platz.id}: Quellbild unlesbar - neu erzeugt")
+        beschreibung = sehen.beschreiben(quelle) if quelle is not None else ""
+        if quelle is not None and not beschreibung:
+            befunde.append(f"{platz.id}: ohne Bildbeschreibung")
+        if beschreibung:
             text = prompt.bearbeitungs_prompt(beschreibung, platz.als_dict(), titel, hinweis,
                                               nah=staerke <= GRENZE_STAERKE)
-        else:
+        else:   # neu, oder Sehen gescheitert: alt + Kontext + Hinweis (Spec §7)
             text = prompt.prompt_schreiben(platz.als_dict(), titel, hinweis)
         arbeit.append((platz, text, quelle))
     je_bild_freigeben = os.environ.get("BILD_SELBSTPRUEFUNG", "") == "1"

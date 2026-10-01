@@ -41,3 +41,17 @@ def test_beauftragen_mit_staerke_und_modus(monkeypatch):
                         {"ok": True, "daten": {"auftrag": "a1"}})
     werkzeuge.newsletter_bild_beauftragen(IID, platz="kopf", hinweis="waermer", staerke=30)
     assert gerufen[0] == {"platz": "kopf", "hinweis": "waermer", "nur_leere": False, "staerke": 30, "modus": "ueberarbeiten"}
+
+
+def test_docstring_beschreibt_staerke_wie_der_arbeiter_sie_umsetzt():
+    doc = werkzeuge.newsletter_bild_beauftragen.__doc__ or ""
+    assert "35" in doc and "75" in doc
+    assert "Aufbau bleibt" not in doc
+    assert "aehnlich_original" in doc
+
+
+def test_skill_alle_neu_mit_staerke_100():
+    from pathlib import Path
+    skill = (Path(werkzeuge.__file__).resolve().parents[1] / "skills" / "newsletter-bild" / "SKILL.md").read_text(encoding="utf-8")
+    zeile = next(z for z in skill.splitlines() if "Alle neu" in z)
+    assert "staerke=100" in zeile

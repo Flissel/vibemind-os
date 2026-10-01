@@ -1,6 +1,7 @@
 """Bild-Endpunkte ohne echte DB (FalscheDB wie test_pult_api)."""
 import io
 import json
+import os
 
 import pytest
 from fastapi.testclient import TestClient
@@ -297,3 +298,42 @@ def test_fertig_messung_ablehnen(db, c, messung):
     r = c.post(f"/api/bilder/arbeiter/{AID}/fertig", headers={"X-Bild-Key": BK},
                json={"ergebnis": {"kopf": "nl-0123abcd-kopf.jpg"}, "befund": "", "messung": messung})
     assert r.status_code == 422 and db.sql == []
+
+
+@pytest.mark.parametrize("name,typ", [("Team Foto (1).jpg", "image/jpeg"), ("Grüße.png", "image/png"),
+                                      ("Bild.WEBP", "image/webp")])
+def test_quelle_menschen_namen_wie_sales_ui(db, c, monkeypatch, tmp_path, name, typ):
+    mensch = tmp_path / "media"
+    mensch.mkdir()
+    (mensch / name).write_bytes(b"MENSCH")
+    monkeypatch.setenv("MARKETING_MEDIEN_ORDNER", str(mensch))
+    db.antworten = [[{"f": None}], [{"url": "medien:" + name}]]
+    r = c.get(f"/api/bilder/arbeiter/{AID}/quelle?platz=kopf", headers={"X-Bild-Key": BK})
+    assert r.status_code == 200 and r.content == b"MENSCH" and r.headers["content-type"] == typ
+
+
+@pytest.mark.parametrize("name", [".versteckt.png", "a/b.png", "a\\b.png", "c:b.png", "a\x00.png", "a..b.png",
+                                  "bild.svg", "bild", ".."])
+def test_quelle_menschen_namen_ablehnen(db, c, monkeypatch, tmp_path, name):
+    mensch = tmp_path / "media"
+    (mensch / "a").mkdir(parents=True)
+    (mensch / ".versteckt.png").write_bytes(b"X")
+    (mensch / "a" / "b.png").write_bytes(b"X")
+    (mensch / "bild.svg").write_bytes(b"X")
+    monkeypatch.setenv("MARKETING_MEDIEN_ORDNER", str(mensch))
+    db.antworten = [[{"f": None}], [{"url": "medien:" + name}]]
+    assert c.get(f"/api/bilder/arbeiter/{AID}/quelle?platz=kopf", headers={"X-Bild-Key": BK}).status_code == 404
+
+
+def test_quelle_symlink_nach_draussen_404(db, c, monkeypatch, tmp_path):
+    mensch = tmp_path / "media"
+    mensch.mkdir()
+    draussen = tmp_path / "geheim.png"
+    draussen.write_bytes(b"GEHEIM")
+    try:
+        os.symlink(draussen, mensch / "link.png")
+    except (OSError, NotImplementedError, AttributeError):
+        pytest.skip("os.symlink hier nicht verfuegbar (Windows ohne Symlink-Recht)")
+    monkeypatch.setenv("MARKETING_MEDIEN_ORDNER", str(mensch))
+    db.antworten = [[{"f": None}], [{"url": "medien:link.png"}]]
+    assert c.get(f"/api/bilder/arbeiter/{AID}/quelle?platz=kopf", headers={"X-Bild-Key": BK}).status_code == 404

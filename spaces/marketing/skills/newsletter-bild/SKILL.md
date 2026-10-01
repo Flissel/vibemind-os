@@ -33,7 +33,7 @@ freigibt.
    - Nach dem Lauf steht im Stand je Platz `messung.aehnlich_original` (0-1): die
      "Themen-Aehnlichkeit" zwischen neuem und altem Bild. Nenne dem Betreiber diesen Wert.
    - Alle leeren Plaetze fuellen: `platz` leer lassen, `nur_leere=True`.
-   - Alle neu: `platz` leer lassen, `nur_leere=False`.
+   - Alle neu: `platz` leer lassen, `nur_leere=False`, `staerke=100` (oder `modus="neu"`).
 4. Dem Betreiber sagen, dass das Bild erzeugt wird, sobald der PC laeuft, und
    dass es als neue Fassung im Pult erscheint.
 

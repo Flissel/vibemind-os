@@ -1091,8 +1091,12 @@ def newsletter_bild_beauftragen(inhalt_id: str, platz: str = "", hinweis: str = 
     lassen; nur_leere=True fuellt nur leere Plaetze). `hinweis` ist ein Wunsch
     in Worten ("waermer", "eher Menschen"). Erzeugt wird am PC, sobald er
     laeuft; das Ergebnis ist eine neue Fassung, die der Betreiber freigibt.
-    `staerke` 0-100: wie stark das vorhandene Bild ueberarbeitet wird (niedrig =
-    Aufbau bleibt, 100 = ganz neu); `modus` `neu` erzeugt ohne Ausgangsbild.
+    Das Bild wird immer NEU erzeugt, aus einer Beschreibung des aktuellen
+    Motivs plus dem Wunsch (keine Pixel-Bearbeitung). `staerke` 0-100
+    (Standard 55): 35 = nah am Original (Motiv, Umgebung und Bildaufbau der
+    Beschreibung bleiben), 75 = freier (nur das Thema bleibt), 100 oder
+    `modus` "neu" = ganz neu ohne Beschreibung. `messung.aehnlich_original`
+    im Stand ist die Themen-Aehnlichkeit zwischen neuem und altem Bild (0-1).
     Du erzeugst nie selbst ein Bild - du beauftragst."""
     i = _inhalt_id(inhalt_id)
     if not i:

@@ -25,7 +25,6 @@ router = APIRouter(prefix="/api/bilder")
 pult_router = APIRouter(prefix="/api/pult")
 _PLATZ = re.compile(r"[A-Za-z0-9_-]{1,64}")          # nur mit fullmatch benutzen
 _NAME = re.compile(r"nl-[0-9a-f]{8}-[A-Za-z0-9_-]{1,64}\.jpg")   # nur mit fullmatch benutzen
-_BILDDATEI = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(png|jpe?g|gif|webp)", re.IGNORECASE)   # fullmatch
 _BILDTYP = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}
 _MESSWERTE = ("aehnlich_original", "naeher_am_hinweis")
 BILD_MAX = 1024 * 1024
@@ -187,15 +186,37 @@ def arbeiter_quelle(aid: str, platz: str = Query(""), x_bild_key: str | None = H
     if not url.startswith("medien:") or bildplaetze.ist_leer(url):
         raise HTTPException(404, "Kein Bild im Platz")
     name = url[len("medien:"):]
-    if not _BILDDATEI.fullmatch(name) or ".." in name:
+    if not _bilddatei_name_ok(name):
         raise HTTPException(404, "Kein Bild im Platz")
     ordner = [os.environ.get("MARKETING_MEDIEN_ORDNER", "").strip(), _ordner()]
     for o in ordner:
-        pfad = os.path.join(o, name) if o else ""
-        if pfad and os.path.isfile(pfad):
+        pfad = _im_ordner(o, name) if o else None
+        if pfad:
             return FileResponse(pfad, media_type=_BILDTYP[os.path.splitext(name)[1].lower()],
                                 headers={"Cache-Control": "no-store"})
     raise HTTPException(404, "Bilddatei fehlt")
+
+
+def _bilddatei_name_ok(name: str) -> bool:
+    """Regel wie sales-ui: schlichter Dateiname (kein / \\ : NUL, nicht mit '.'
+    beginnend, kein '..'), Endung png/jpg/jpeg/gif/webp. Leerzeichen, Umlaute,
+    Klammern erlaubt (Menschen legen Dateien so in media/ ab)."""
+    if not name or len(name) > 255 or name.startswith(".") or ".." in name:
+        return False
+    if any(z in name for z in "/\\:\x00") or any(ord(z) < 32 for z in name):
+        return False
+    return os.path.splitext(name)[1].lower() in _BILDTYP
+
+
+def _im_ordner(ordner: str, name: str) -> str | None:
+    """Datei nur liefern, wenn sie aufgeloest (Symlinks) im aufgeloesten Ordner liegt."""
+    basis = os.path.realpath(ordner)
+    pfad = os.path.realpath(os.path.join(basis, name))
+    try:
+        drin = os.path.commonpath([basis, pfad]) == basis and pfad != basis
+    except ValueError:   # verschiedene Laufwerke
+        return None
+    return pfad if drin and os.path.isfile(pfad) else None
 
 
 @router.post("/arbeiter/{aid}/bild")
