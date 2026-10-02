@@ -73,11 +73,11 @@ def chat_stand(iid: str, x_pult_key: str | None = Header(None)):
     _schreiben(lambda: f"SELECT marketing.pult_chat_aufraeumen({lit(i)}::uuid) IS NULL AS ok")
     verlauf = _lesen(lambda:
         "SELECT * FROM (SELECT id, art, nachricht, antwort, status, hinweise, ergebnis, fassung_vorher, "
-        "fassung_nachher, erstellt_am::text AS erstellt_am, erstellt_am AS t "
+        "fassung_nachher, erstellt_am::text AS erstellt_am, erstellt_am AS sortiert_am "
         f"FROM marketing.chat_auftraege WHERE inhalt = {lit(i)}::uuid ORDER BY erstellt_am DESC LIMIT 30) q "
-        "ORDER BY t")
+        "ORDER BY sortiert_am")
     for z in verlauf:
-        z.pop("t", None)
+        z.pop("sortiert_am", None)
     return {"laeuft": any(z.get("status") in ("offen", "in_arbeit") for z in verlauf), "verlauf": verlauf}
 
 

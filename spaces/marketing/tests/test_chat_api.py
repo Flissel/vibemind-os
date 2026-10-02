@@ -83,16 +83,26 @@ def test_stand_raeumt_zuerst_auf(umg):
     f, _, c = umg
     f.antworten += [[{"ok": True}], [
         {"id": BID, "art": "chat", "nachricht": "a", "antwort": "b", "status": "fertig", "hinweise": [], "ergebnis": {},
-         "fassung_vorher": 1, "fassung_nachher": 2, "erstellt_am": "1", "t": "1"},
+         "fassung_vorher": 1, "fassung_nachher": 2, "erstellt_am": "1", "sortiert_am": "1"},
         {"id": AID, "art": "chat", "nachricht": "c", "antwort": "", "status": "in_arbeit", "hinweise": [], "ergebnis": {},
-         "fassung_vorher": 2, "fassung_nachher": None, "erstellt_am": "2", "t": "2"}]]
+         "fassung_vorher": 2, "fassung_nachher": None, "erstellt_am": "2", "sortiert_am": "2"}]]
     r = c.get(f"/api/pult/inhalte/{IID}/chat", headers=H)
     assert r.status_code == 200, r.text
     d = r.json()
     assert "marketing.pult_chat_aufraeumen(" in f.sql[0]
     assert "chat_auftraege" in f.sql[1] and "LIMIT 30" in f.sql[1]
     assert d["laeuft"] is True and [z["id"] for z in d["verlauf"]] == [BID, AID]
-    assert "t" not in d["verlauf"][0] and d["verlauf"][0]["fassung_nachher"] == 2
+    assert "sortiert_am" not in d["verlauf"][0] and d["verlauf"][0]["fassung_nachher"] == 2
+
+
+def test_stand_sql_ohne_spaltenname_t(umg):
+    # query_via_docker haengt die Abfrage als Unterabfrage `t` ein; eine Spalte `t` bricht den Wrapper (503).
+    import re
+    f, _, c = umg
+    f.antworten += [[{"ok": True}], []]
+    assert c.get(f"/api/pult/inhalte/{IID}/chat", headers=H).status_code == 200
+    assert not re.search(r"AS t", f.sql[1], re.I), f.sql[1]
+    assert not re.search(r"ORDER BY t", f.sql[1], re.I), f.sql[1]
 
 
 def test_rueckgaengig_nimmt_fassung_vorher(umg):
