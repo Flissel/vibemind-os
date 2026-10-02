@@ -74,7 +74,7 @@ $Dienste = @(
     @{
         Name = 'marketing_claw_shim'
         Port = 8117
-        Args = @((Join-Path $env:USERPROFILE '.local\bin\claude_code_openai_shim.py'),
+        Args = @((Join-Path $SpaceRoot 'claw\shim\marketing_shim.py'),
                  '--host', '127.0.0.1', '--port', '8117')
         Cwd  = $Root
         Env  = @{
