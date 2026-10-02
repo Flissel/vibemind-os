@@ -38,7 +38,8 @@ def gestaltungen_rechnen(dok: dict) -> tuple[dict, list[str]]:
     for bid, b in neu.items():
         if not isinstance(b, dict) or b.get("type") != "Image":
             continue
-        props = (b.get("data") or {}).get("props")
+        data = b.get("data")
+        props = data.get("props") if isinstance(data, dict) else None
         g = props.get("gestaltung") if isinstance(props, dict) else None
         if not isinstance(g, dict):
             continue
@@ -54,9 +55,13 @@ def gestaltungen_rechnen(dok: dict) -> tuple[dict, list[str]]:
 
 
 def verwiesene_gs() -> set[str]:
+    """Alle Entwurfsbilder, auf die Fassungen, Vorlagen oder Vorlagen-Fassungen verweisen."""
     zeilen = _lesen(lambda:
-        "SELECT DISTINCT m[1] AS m FROM marketing.inhalt_fassungen f, "
-        "LATERAL regexp_matches(f.bloecke::text, 'medien:(gs-[0-9a-f]{12}\\.jpg)', 'g') AS m")
+        "SELECT DISTINCT m[1] AS m FROM ("
+        "SELECT bloecke FROM marketing.inhalt_fassungen UNION ALL "
+        "SELECT bloecke FROM marketing.newsletter_vorlagen UNION ALL "
+        "SELECT bloecke FROM marketing.newsletter_vorlagen_fassungen) q, "
+        "LATERAL regexp_matches(q.bloecke::text, 'medien:(gs-[0-9a-f]{12}\.jpg)', 'g') AS m")
     return {str(z["m"]) for z in zeilen if z.get("m")}
 
 
@@ -65,9 +70,9 @@ def aufraeumen_falls_faellig(jetzt: float | None = None) -> None:
     t = time.time() if jetzt is None else jetzt
     if t - _zuletzt < AUFRAEUM_ABSTAND_S:
         return
-    _zuletzt = t
     try:
         gestaltung.aufraeumen(_ordner(), verwiesene_gs(), t)
+        _zuletzt = t   # erst nach Erfolg: ein Fehler sperrt nicht fuer eine Stunde
     except Exception:   # nie in die Anfrage hinein
         log.warning("Aufraeumen der Entwurfsbilder fehlgeschlagen", exc_info=True)
 

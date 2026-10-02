@@ -101,16 +101,32 @@ def test_verwiesene_gs_und_aufraeumen_stuendlich(umg):
     ga.aufraeumen_falls_faellig(jetzt=1_000_000_000.0)
     assert not (ordner / alt).exists() and (ordner / bleibt).exists()
     assert "regexp_matches" in f.sql[0] and f.sql[0].lstrip().upper().startswith("SELECT")
+    for tabelle in ("inhalt_fassungen", "newsletter_vorlagen_fassungen", "newsletter_vorlagen "):
+        assert tabelle in f.sql[0] + " "
+    assert len(f.sql) == 1   # eine einzige Abfrage
     n = len(f.sql)
     ga.aufraeumen_falls_faellig(jetzt=1_000_000_000.0 + 60)   # zu frueh
     assert len(f.sql) == n
 
 
-def test_aufraeumen_schluckt_fehler(umg):
+def test_aufraeumen_schluckt_fehler_behaelt_dateien_und_versucht_erneut(umg):
     from spaces.marketing.api import gestaltung as ga
-    f, _ = umg
+    f, ordner = umg
+    alt = "gs-" + "a" * 12 + ".jpg"
+    (ordner / alt).write_bytes(b"x")
+    os.utime(ordner / alt, (1, 1))
     f.fehler.append(RuntimeError("db weg"))
     ga.aufraeumen_falls_faellig(jetzt=1_000_000_000.0)   # darf nicht werfen
+    assert (ordner / alt).exists()
+    ga.aufraeumen_falls_faellig(jetzt=1_000_000_000.0 + 60)   # kein Stundensperre nach Fehler
+    assert not (ordner / alt).exists()
+
+
+def test_gestaltungen_rechnen_ueberspringt_kaputte_bloecke(umg):
+    from spaces.marketing.api import gestaltung as ga
+    dok = {"a": {"type": "Image", "data": None}, "b": {"type": "Image", "data": {"props": "x"}}, "c": "x"}
+    neu, hinweise = ga.gestaltungen_rechnen(dok)
+    assert neu == dok and hinweise == []
 
 
 def test_bildplaetze_ueberspringen_flaechen():
