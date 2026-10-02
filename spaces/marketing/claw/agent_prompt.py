@@ -39,7 +39,7 @@ BLOCK-IDS UND neu:<n>
 Blöcke stehen im Kontext als {id: {type, data:{style, props}}}; "root" ist die Wurzel und nur für farben_setzen. \
 "nach" = id des Blocks, hinter den eingefügt wird, null = ans Ende. Eine mit flaeche_anlegen neu erzeugte Fläche hat \
 noch keine id: verweise in späteren Änderungen derselben Antwort mit "neu:1" (erste angelegte Fläche), "neu:2" usw. \
-(neu:<n>) – in jedem Parameter, der eine Block-id nimmt (nach, id, flaeche, platz, flaechen).
+(neu:<n>) – in jedem Parameter, der eine Block-id nimmt (nach, id, flaeche, flaechen).
 
 WERKZEUGE (Parameter; * = Pflicht)
 Newsletter
@@ -57,7 +57,7 @@ Flächen (ein Image-Block mit Ebenen aus Text und Bildern; wird zu einem Bild ge
 - ebene_reihenfolge: flaeche*, ids* (alle Ebenen-ids je einmal, unten nach oben).
 - ebene_loeschen: flaeche*, id*.
 - format_setzen: flaeche*, format*.   hintergrund_setzen: flaeche*, farbe*.
-Ebenen (Koordinaten in 600er-Einheiten, die Fläche ist 600 breit; x, y = Mittelpunkt der Ebene)
+Ebenen (Koordinaten in 600er-Einheiten, die Fläche ist 600 breit; x, y = Mittelpunkt der Ebene; x -600..1200, y -750..1500)
 - Text: art "text", x*, y*, text*, schrift*, gewicht*, groesse*, farbe*, kursiv (bool), ausrichtung \
 (links|mitte|rechts), zeilenabstand (0.8-2.0, Standard 1.2), drehung (-180..180).
 - Bild: art "bild", x*, y*, quelle* ("medien:<Dateiname>" aus der Medienliste), breite* (8-3000), drehung.
@@ -65,9 +65,10 @@ Ebenen (Koordinaten in 600er-Einheiten, die Fläche ist 600 breit; x, y = Mittel
 Höchstens 20 Ebenen je Fläche. Ebenen-id nur A-Z a-z 0-9 _ - (1-32 Zeichen).
 - Formate (Höhe bei 600 Breite): quer 3:2 (400), quadrat 1:1 (600), hoch 4:5 (750), banner 3:1 (200).
 Bilder (laufen im Hintergrund; sag "Bild wird erzeugt, kommt als neue Fassung" und warte nicht)
-- bild_erzeugen: platz*, hinweis* (Motivbeschreibung, höchstens 500 Zeichen). platz = id eines Bildblocks oder einer Fläche.
+- bild_erzeugen: platz*, hinweis* (Motivbeschreibung, höchstens 500 Zeichen). platz = id eines vorhandenen Bildblocks.
 - bild_freistellen: platz*.
 - bild_aus_medien: platz*, quelle* (Name aus der Medienliste, nie erfunden).
+platz nimmt nur vorhandene Bildplatz-ids, nie eine Fläche und nie neu:<n>; Bilder in Flächen sind Bild-Ebenen.
 Abschluss
 - entwurf_speichern: notiz* (höchstens 200 Zeichen; einmal je Antwort).
 - export_vorschlagen: newsletter* (true/false), flaechen* (Liste aus Flächen-ids oder "alle"; einmal je Antwort).
@@ -95,21 +96,26 @@ Ist die Anfrage unklar, frag in "antwort" kurz nach und lass "aenderungen" leer.
 SYSTEM: str = _SYSTEM.replace("__MAX__", str(MAX_AENDERUNGEN)).replace("__SCHRIFTEN__", _schnitte())
 
 
-def _schriften_des_newsletters(dok: dict, root_daten: dict) -> list[str]:
-    ids: list[str] = []
-    fam = root_daten.get("fontFamily")
-    if isinstance(fam, str) and fam:
-        ids.append(fam)
+def _schriften_des_newsletters(dok: dict, root_daten: dict) -> str:
+    teile: list[str] = []
+    sw = root_daten.get("schriften") if isinstance(root_daten.get("schriften"), dict) else {}
+    for schluessel, etikett in (("anzeige", "Anzeige"), ("text", "Text")):
+        sid = sw.get(schluessel)
+        if isinstance(sid, str) and sid in REGISTER:
+            teile.append(f"{etikett}: {sid}")
+    bekannt = {sw.get("anzeige"), sw.get("text")}
+    flaechen: list[str] = []
     for b in dok.values():
         props = ((b.get("data") or {}).get("props") or {}) if isinstance(b, dict) else {}
         g = props.get("gestaltung") if isinstance(props, dict) else None
         ebenen = g.get("ebenen") if isinstance(g, dict) and isinstance(g.get("ebenen"), list) else []
         for e in ebenen:
-            if isinstance(e, dict) and e.get("art") == "text" and isinstance(e.get("schrift"), str) \
-                    and e["schrift"] not in ids:
-                ids.append(e["schrift"])
-    return ids
-
+            sid = e.get("schrift") if isinstance(e, dict) and e.get("art") == "text" else None
+            if isinstance(sid, str) and sid in REGISTER and sid not in bekannt and sid not in flaechen:
+                flaechen.append(sid)
+    if flaechen:
+        teile.append("in Flächen: " + ", ".join(flaechen))
+    return ", ".join(teile) or "noch keine"
 
 def nutzer_text(auftrag: dict, medien: list[str]) -> str:
     dok = auftrag.get("bloecke") if isinstance(auftrag.get("bloecke"), dict) else {}
@@ -127,7 +133,7 @@ def nutzer_text(auftrag: dict, medien: list[str]) -> str:
             teile.append(f"{etikett}: {auftrag[schluessel]}")
     teile += [
         "LADENFARBEN (root.data): " + json.dumps(farben, ensure_ascii=False),
-        "SCHRIFTEN IM NEWSLETTER: " + (", ".join(_schriften_des_newsletters(dok, root_daten)) or "noch keine"),
+        "SCHRIFTEN IM NEWSLETTER: " + _schriften_des_newsletters(dok, root_daten),
         f"MEDIEN ({len(frei)}): " + (", ".join(frei) or "keine"),
         "BLÖCKE (JSON): " + json.dumps(dok, ensure_ascii=False, separators=(",", ":")),
     ]
@@ -140,7 +146,7 @@ def nutzer_text(auftrag: dict, medien: list[str]) -> str:
     return "\n".join(teile)
 
 
-_ZAUN = re.compile(r"```[A-Za-z0-9_-]*")
+_ZAUN = re.compile(r"^[ \t]*```[A-Za-z0-9_-]*[ \t]*$", re.M)
 
 
 def _objekte(text: str) -> list[str]:

@@ -106,13 +106,41 @@ def test_nutzer_text_verlauf_letzte_10_und_kontext():
     assert "flaeche:f1" in t and "e1" in t
 
 
-def test_nutzer_text_schriften_der_flaechen():
-    b = _auftrag()["bloecke"]
-    b["f1"] = {"type": "Image", "data": {"props": {"gestaltung": {"ebenen": [
-        {"art": "text", "schrift": "playfair"}, {"art": "bild", "quelle": "medien:a.png"}]}}}}
-    t = ap.nutzer_text(_auftrag(bloecke=b), [])
-    assert "SCHRIFTEN IM NEWSLETTER: playfair" in t
+def test_nutzer_text_schriften_aus_root_und_flaechen():
+    a = _auftrag()
+    a["bloecke"]["root"]["data"]["schriften"] = {"anzeige": "bodoni", "text": "manrope"}
+    a["bloecke"]["root"]["data"]["fontFamily"] = "MODERN_SANS"
+    a["bloecke"]["f1"] = {"type": "Image", "data": {"props": {"gestaltung": {"ebenen": [
+        {"art": "text", "schrift": "playfair"}, {"art": "text", "schrift": "bodoni"},
+        {"art": "bild", "quelle": "medien:a.png"}]}}}}
+    zeile = next(z for z in ap.nutzer_text(a, []).split("\n") if z.startswith("SCHRIFTEN IM NEWSLETTER"))
+    assert zeile == "SCHRIFTEN IM NEWSLETTER: Anzeige: bodoni, Text: manrope, in Flächen: playfair"
+    assert "MODERN_SANS" not in zeile
 
+
+def test_nutzer_text_unbekannte_schrift_ignoriert():
+    a = _auftrag()
+    a["bloecke"]["root"]["data"]["schriften"] = {"anzeige": "comic-sans", "text": "dm-sans"}
+    a["bloecke"]["f1"] = {"type": "Image", "data": {"props": {"gestaltung": {"ebenen": [
+        {"art": "text", "schrift": "nichtda"}]}}}}
+    zeile = next(z for z in ap.nutzer_text(a, []).split("\n") if z.startswith("SCHRIFTEN IM NEWSLETTER"))
+    assert zeile == "SCHRIFTEN IM NEWSLETTER: Text: dm-sans"
+    assert ap.nutzer_text(_auftrag(), []).count("SCHRIFTEN IM NEWSLETTER: noch keine") == 1
+
+
+def test_system_platz_ohne_neu_und_koordinaten():
+    assert "platz" not in ap.SYSTEM.split("BLOCK-IDS UND neu:<n>")[1].split("WERKZEUGE")[0]
+    assert "nur vorhandene Bildplatz-ids" in ap.SYSTEM and "nie eine Fläche" in ap.SYSTEM
+    assert "-600" in ap.SYSTEM and "1200" in ap.SYSTEM and "-750" in ap.SYSTEM and "1500" in ap.SYSTEM
+
+
+def test_array_mit_einem_objekt_wird_akzeptiert():
+    assert ap.antwort_lesen('[{"antwort":"a","aenderungen":[]}]') == {"antwort": "a", "aenderungen": []}
+
+
+def test_backticks_in_antwort_bleiben():
+    r = ap.antwort_lesen('```json\n{"antwort": "Nutze ```code``` hier", "aenderungen": []}\n```')
+    assert r["antwort"] == "Nutze ```code``` hier"
 
 def test_korrektur_text():
     t = ap.korrektur_text("block_loeschen: Block x gibt es nicht")
