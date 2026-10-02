@@ -9,6 +9,9 @@
 --      beendet auch 'wartet'.
 -- 'wartet' zaehlt weder fuer die Speichersperre (pult_bloecke_speichern prueft nur
 -- offen|in_arbeit, bleibt unveraendert) noch fuer chat_auftraege_ein_laufender.
+-- Sperrreihenfolge in ALLEN 061-Funktionen, die beides sperren: erst marketing.inhalte,
+-- dann marketing.chat_auftraege (pult_bloecke_speichern sperrt den Inhalt ebenfalls) -
+-- sonst Deadlock zwischen Stopp-Klick und fertig/Abschluss des Arbeiters.
 -- Nach jedem Replay verify_060 und verify_061 laufen lassen.
 BEGIN;
 
@@ -62,7 +65,8 @@ CREATE OR REPLACE FUNCTION marketing.pult_chat_vormerken(
 LANGUAGE plpgsql AS $$
 DECLARE v_art text; v_status text; v_id uuid;
 BEGIN
-  -- Inhalt sperren: serialisiert mit Anlegen, fertig-Freigabe und Handspeichern
+  -- Inhalt sperren: serialisiert mit Anlegen, Stopp, fertig (samt Freigabe der Vormerkung),
+  -- Stopp-Abschluss und Handspeichern - die sperren alle zuerst den Inhalt
   SELECT art, status INTO v_art, v_status FROM marketing.inhalte WHERE id = p_inhalt FOR UPDATE;
   IF v_art IS DISTINCT FROM 'newsletter' OR v_status IS DISTINCT FROM 'entwurf' THEN
     RAISE EXCEPTION 'Nur Newsletter-Entwürfe'; END IF;
@@ -127,16 +131,17 @@ CREATE OR REPLACE FUNCTION marketing.pult_chat_zwischenstand(
 LANGUAGE plpgsql AS $$
 DECLARE a marketing.chat_auftraege;
 BEGIN
+  -- sperrt nur den Auftrag (kein Inhalt) - keine Sperrreihenfolge zu beachten
   SELECT * INTO a FROM marketing.chat_auftraege WHERE id = p_auftrag FOR UPDATE;
   IF NOT FOUND OR a.status <> 'in_arbeit' OR a.vergeben_bis IS NULL OR a.vergeben_bis <= now() THEN
     RETURN jsonb_build_object('weiter', false, 'grund', 'verloren'); END IF;
   IF p_bloecke IS NULL OR jsonb_typeof(p_bloecke) <> 'object' THEN
     RAISE EXCEPTION 'Zwischenstand muss ein Objekt sein'; END IF;
-  IF length(p_bloecke::text) > 262144 THEN RAISE EXCEPTION 'Zwischenstand zu groß'; END IF;
+  IF octet_length(p_bloecke::text) > 262144 THEN RAISE EXCEPTION 'Zwischenstand zu groß'; END IF;
   UPDATE marketing.chat_auftraege
      SET zwischenstand = p_bloecke, schritt = left(coalesce(p_schritt, ''), 80),
          schritt_nr = coalesce(p_nr, 0), zwischen_am = now(),
-         vergeben_bis = now() + p_frist, geaendert_am = now()
+         vergeben_bis = now() + coalesce(p_frist, interval '5 minutes'), geaendert_am = now()
    WHERE id = a.id;
   IF a.stopp IS NOT NULL THEN
     RETURN jsonb_build_object('weiter', false, 'grund', 'stopp', 'stopp', a.stopp); END IF;
@@ -144,7 +149,11 @@ BEGIN
 END $$;
 
 -- 4) Stopp
-CREATE OR REPLACE FUNCTION marketing.pult_chat_stoppen(p_inhalt uuid, p_art text) RETURNS jsonb
+-- p_auftrag (optional): der Auftrag, den der Betreiber stoppen wollte. Laeuft inzwischen ein
+-- anderer (z. B. die gerade freigegebene Vormerkung), passiert nichts: {veraltet:true}.
+DROP FUNCTION IF EXISTS marketing.pult_chat_stoppen(uuid, text);
+CREATE OR REPLACE FUNCTION marketing.pult_chat_stoppen(
+    p_inhalt uuid, p_art text, p_auftrag uuid DEFAULT NULL) RETURNS jsonb
 LANGUAGE plpgsql AS $$
 DECLARE a marketing.chat_auftraege;
 BEGIN
@@ -154,6 +163,8 @@ BEGIN
   PERFORM marketing.pult_chat_aufraeumen(p_inhalt);
   SELECT * INTO a FROM marketing.chat_auftraege
    WHERE inhalt = p_inhalt AND status IN ('offen','in_arbeit') FOR UPDATE;
+  IF p_auftrag IS NOT NULL AND (NOT FOUND OR a.id <> p_auftrag) THEN
+    RETURN jsonb_build_object('abgeschlossen', false, 'veraltet', true); END IF;
   IF NOT FOUND THEN RAISE EXCEPTION 'Der Assistent arbeitet gerade nicht'; END IF;
   IF a.status = 'offen' THEN
     UPDATE marketing.chat_auftraege
@@ -184,8 +195,12 @@ $$;
 CREATE OR REPLACE FUNCTION marketing.pult_chat_stopp_abschliessen(
     p_auftrag uuid, p_bloecke jsonb, p_hinweis text) RETURNS jsonb
 LANGUAGE plpgsql AS $$
-DECLARE a marketing.chat_auftraege; f record; v_n int; v_hinweise jsonb;
+DECLARE a marketing.chat_auftraege; f record; v_n int; v_hinweise jsonb; v_inhalt uuid;
 BEGIN
+  -- Sperrreihenfolge: erst den Inhalt (ungesperrt nachgeschlagen), dann den Auftrag
+  SELECT inhalt INTO v_inhalt FROM marketing.chat_auftraege WHERE id = p_auftrag;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Unbekannter Auftrag'; END IF;
+  PERFORM 1 FROM marketing.inhalte WHERE id = v_inhalt FOR UPDATE;
   SELECT * INTO a FROM marketing.chat_auftraege WHERE id = p_auftrag FOR UPDATE;
   IF NOT FOUND THEN RAISE EXCEPTION 'Unbekannter Auftrag'; END IF;
   IF a.status <> 'in_arbeit' THEN                -- schon abgeschlossen: nichts zu tun
@@ -220,8 +235,12 @@ END $$;
 CREATE OR REPLACE FUNCTION marketing.pult_chat_fertig(
     p_auftrag uuid, p_antwort text, p_bloecke jsonb, p_hinweise jsonb, p_ergebnis jsonb) RETURNS jsonb
 LANGUAGE plpgsql AS $$
-DECLARE a marketing.chat_auftraege; f record; v_n int;
+DECLARE a marketing.chat_auftraege; f record; v_n int; v_inhalt uuid;
 BEGIN
+  -- Sperrreihenfolge: erst den Inhalt (ungesperrt nachgeschlagen), dann den Auftrag
+  SELECT inhalt INTO v_inhalt FROM marketing.chat_auftraege WHERE id = p_auftrag;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Unbekannter Auftrag'; END IF;
+  PERFORM 1 FROM marketing.inhalte WHERE id = v_inhalt FOR UPDATE;
   SELECT * INTO a FROM marketing.chat_auftraege WHERE id = p_auftrag FOR UPDATE;
   IF NOT FOUND THEN RAISE EXCEPTION 'Unbekannter Auftrag'; END IF;
   IF a.status <> 'in_arbeit' OR a.vergeben_bis IS NULL OR a.vergeben_bis <= now() THEN

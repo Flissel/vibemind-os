@@ -27,6 +27,8 @@ DO $$ BEGIN
              AND pg_get_constraintdef(oid) LIKE '%in_arbeit%') LIKE '%wartet%', '0: Status kennt wartet';
   ASSERT to_regclass('marketing.chat_auftraege_ein_laufender') IS NOT NULL, '0: Index laufend bleibt';
   ASSERT to_regclass('marketing.chat_auftraege_eine_vormerkung') IS NOT NULL, '0: Index Vormerkung';
+  ASSERT (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+           WHERE n.nspname = 'marketing' AND p.proname = 'pult_chat_stoppen') = 1, '0: genau eine pult_chat_stoppen';
 END $$;
 
 DO $$ DECLARE
@@ -84,6 +86,15 @@ BEGIN
   BEGIN PERFORM marketing.pult_chat_zwischenstand(a1, jsonb_build_object('x', repeat('a', 262200)), 's', 2, '5 minutes');
   EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
   ASSERT v_fehler LIKE '%Zwischenstand zu gro%', format('3b: zu gross: %s', v_fehler);
+  v_fehler := NULL;   -- Bytes zaehlen, nicht Zeichen: 140000 x 'ä' = 280000 Bytes
+  BEGIN PERFORM marketing.pult_chat_zwischenstand(a1, jsonb_build_object('x', repeat('ä', 140000)), 's', 2, '5 minutes');
+  EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+  ASSERT v_fehler LIKE '%Zwischenstand zu gro%', format('3b: Bytes statt Zeichen: %s', v_fehler);
+  UPDATE marketing.chat_auftraege SET vergeben_bis = now() + interval '1 minute' WHERE id = a1;
+  j := marketing.pult_chat_zwischenstand(a1, d, 'Titel setzen', 1, NULL);
+  ASSERT j = '{"weiter":true}'::jsonb
+     AND (SELECT vergeben_bis FROM marketing.chat_auftraege WHERE id = a1) = now() + interval '5 minutes',
+         '3f: Frist NULL => 5 Minuten';
   v_fehler := NULL;
   BEGIN PERFORM marketing.pult_chat_zwischenstand(a1, '[]', 's', 2, '5 minutes'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
   ASSERT v_fehler IS NOT NULL, '3c: kein Objekt muss scheitern';
@@ -104,6 +115,13 @@ BEGIN
   ASSERT r.status = 'fertig' AND r.zwischenstand IS NULL AND r.schritt = '', '4: Zwischenstand geleert';
   SELECT * INTO r FROM marketing.chat_auftraege WHERE id = w;
   ASSERT r.status = 'offen' AND r.erstellt_am = now(), format('4: Vormerkung freigegeben: %s', r.status);
+  j := marketing.pult_chat_zwischenstand(a1, d, 's', 9, '5 minutes');
+  ASSERT j = '{"weiter":false,"grund":"verloren"}'::jsonb, format('4: Zwischenstand nach fertig verloren: %s', j);
+  -- ein verspaeteter Stopp fuer a1 trifft die freigegebene Vormerkung nicht
+  j := marketing.pult_chat_stoppen(v_i, 'verwerfen', a1);
+  ASSERT j = '{"abgeschlossen":false,"veraltet":true}'::jsonb, format('4: veralteter Stopp: %s', j);
+  SELECT * INTO r FROM marketing.chat_auftraege WHERE id = w;
+  ASSERT r.status = 'offen' AND r.stopp IS NULL, '4: Vormerkung unberuehrt';
 
   -- 5) zurueck gibt nicht frei; wartet sperrt das Handspeichern nicht
   j := marketing.pult_chat_naechster('5 minutes');
@@ -166,6 +184,8 @@ BEGIN
      AND r.ergebnis->>'notiz' = 'gestoppt nach Schritt 3', format('7: Auftrag: %s / %s', r.antwort, r.ergebnis);
   ASSERT (SELECT status FROM marketing.chat_auftraege WHERE id = w) = 'wartet', '7: Stopp gibt Vormerkung nicht frei';
   ASSERT NOT EXISTS (SELECT 1 FROM marketing.pult_chat_stopp_faellig() s(id) WHERE s.id = a2), '7: nicht mehr faellig';
+  j := marketing.pult_chat_zwischenstand(a2, d, 's', 9, '5 minutes');
+  ASSERT j = '{"weiter":false,"grund":"verloren"}'::jsonb, format('7: Zwischenstand nach Abschluss verloren: %s', j);
   j := marketing.pult_chat_stopp_abschliessen(a2, d, NULL);
   ASSERT j->>'status' = 'fertig' AND (SELECT max(fassung) FROM marketing.inhalt_fassungen WHERE inhalt = v_i) = v_n,
          format('7: zweites Abschliessen ohne neue Fassung: %s', j);
@@ -174,8 +194,8 @@ BEGIN
   a2 := marketing.pult_chat_vormerkung_starten(v_i);
   PERFORM marketing.pult_chat_naechster('5 minutes');
   PERFORM marketing.pult_chat_zwischenstand(a2, d, 'Eins', 1, '5 minutes');
-  j := marketing.pult_chat_stoppen(v_i, 'verwerfen');
-  ASSERT j->>'abgeschlossen' = 'false', '8: Stopp laufend';
+  j := marketing.pult_chat_stoppen(v_i, 'verwerfen', a2);
+  ASSERT j->>'abgeschlossen' = 'false' AND (j->>'id')::uuid = a2, format('8: Stopp mit passender id: %s', j);
   j := marketing.pult_chat_stopp_abschliessen(a2, d, NULL);
   ASSERT j->>'status' = 'fehler' AND j->'fassung' IS NULL, format('8: verwerfen: %s', j);
   ASSERT (SELECT max(fassung) FROM marketing.inhalt_fassungen WHERE inhalt = v_i) = v_n, '8: keine Fassung';
