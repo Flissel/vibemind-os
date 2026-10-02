@@ -356,6 +356,7 @@ def text_stuecke(zeilen: Iterable[str]) -> Iterator[str]:
     """
 
     geliefert = False
+    neuer_turn = False
     for zeile in zeilen:
         try:
             obj = json.loads(zeile)
@@ -367,7 +368,11 @@ def text_stuecke(zeilen: Iterable[str]) -> Iterator[str]:
         if art == "stream_event":
             event = obj.get("event")
             delta = event.get("delta") if isinstance(event, dict) else None
-            if (
+            if isinstance(event, dict) and event.get("type") == "message_start":
+                # Neue Assistenten-Nachricht (nach Werkzeugaufruf): Text davor
+                # sauber trennen, sonst klebt "Ich suche ..." an der Antwort.
+                neuer_turn = geliefert
+            elif (
                 isinstance(event, dict)
                 and event.get("type") == "content_block_delta"
                 and isinstance(delta, dict)
@@ -375,6 +380,9 @@ def text_stuecke(zeilen: Iterable[str]) -> Iterator[str]:
                 and isinstance(delta.get("text"), str)
                 and delta["text"]
             ):
+                if neuer_turn:
+                    neuer_turn = False
+                    yield "\n\n"
                 geliefert = True
                 yield delta["text"]
         elif art == "result":
@@ -547,6 +555,12 @@ class Handler(BaseHTTPRequestHandler):
                 senden({}, "stop")
             except ShimError as exc:
                 senden({"content": str(exc)}, "error")
+            except (BrokenPipeError, ConnectionError):
+                raise
+            except Exception as exc:  # noqa: BLE001 -- jeder Fehler muss als Chunk ankommen
+                sys.stderr.write(f"stream failure: {exc!r}\n")
+                sys.stderr.flush()
+                senden({"content": f"unexpected shim failure ({type(exc).__name__})"}, "error")
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
         except (BrokenPipeError, ConnectionError):

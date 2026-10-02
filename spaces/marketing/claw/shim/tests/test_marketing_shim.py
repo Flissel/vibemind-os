@@ -59,11 +59,11 @@ def _cli_huelle(tmp_path: Path) -> str:
 
 @pytest.fixture()
 def server(tmp_path):
-    def starten(modus: str = ""):
+    def starten(modus: str = "", cli: str | None = None):
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             port = s.getsockname()[1]
-        env = dict(os.environ, CLAUDE_CODE_CLI=_cli_huelle(tmp_path), FALSCH_MODUS=modus)
+        env = dict(os.environ, CLAUDE_CODE_CLI=cli or _cli_huelle(tmp_path), FALSCH_MODUS=modus)
         proc = subprocess.Popen(
             [sys.executable, str(SHIM_DIR / "marketing_shim.py"), "--port", str(port)],
             env=env, stderr=subprocess.DEVNULL,
@@ -139,3 +139,37 @@ def test_cli_exit_im_stream_gibt_error_chunk(server):
     letzter = json.loads(daten[-2][1])
     assert letzter["choices"][0]["finish_reason"] == "error"
     assert "3" in letzter["choices"][0]["delta"]["content"]
+
+
+def _delta(text: str) -> str:
+    return ('{"type":"stream_event","event":{"type":"content_block_delta","index":0,'
+            '"delta":{"type":"text_delta","text":"%s"}}}' % text)
+
+
+START = '{"type":"stream_event","event":{"type":"message_start"}}'
+
+
+def test_text_stuecke_trennt_zwischenturns():
+    zeilen = [START, _delta("Ich suche"), START, _delta("Fertig"), START]
+    assert list(shim.text_stuecke(zeilen)) == ["Ich suche", "\n\n", "Fertig"]
+
+
+def test_text_stuecke_result_rueckfall_ohne_delta():
+    zeilen = ['{"type":"result","is_error":false,"result":"nur result"}']
+    assert list(shim.text_stuecke(zeilen)) == ["nur result"]
+
+
+def test_stream_zwei_turns_e2e(server):
+    daten = list(_chunks(_post(server("zweiturns"), True)))
+    texte = [json.loads(p)["choices"][0]["delta"].get("content") for _, p in daten[:-1]]
+    assert "".join(t for t in texte if t) == "Ich suche\n\nFertig"
+
+
+def test_fehlende_cli_gibt_error_chunk(server, tmp_path):
+    nichts = str(tmp_path / "gibt-es-nicht.exe")
+    daten = list(_chunks(_post(server(cli=nichts), True)))
+    assert daten[-1][1] == "[DONE]"
+    inhalt = json.loads(daten[-2][1])["choices"][0]
+    assert inhalt["finish_reason"] == "error"
+    assert "FileNotFoundError" in inhalt["delta"]["content"]
+    assert nichts not in inhalt["delta"]["content"]
