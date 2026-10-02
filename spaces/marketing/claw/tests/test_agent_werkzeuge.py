@@ -375,3 +375,20 @@ def test_fehler_bricht_alles_ab_und_original_bleibt():
 
 def test_werkzeuge_vollstaendig():
     assert len(aw.WERKZEUGE) == 17 and set(aw.WERKZEUGE) == set(aw.PARAMETER)
+
+
+def test_schritt_wird_akzeptiert_und_aendert_nichts():
+    basis = [{"werkzeug": "block_aendern", "id": "kopf", "props": {"text": "Neu"}}]
+    mit = [dict(basis[0], schritt="Titel setzen")]
+    assert lauf(mit).bloecke == lauf(basis).bloecke
+    for name, (pflicht, optional) in aw.PARAMETER.items():
+        assert "schritt" in optional, name
+
+
+def test_schritt_81_zeichen_ist_fehler_80_ok():
+    a = {"werkzeug": "block_loeschen", "id": "kopf"}
+    lauf([dict(a, schritt="x" * 80)])
+    with pytest.raises(WerkzeugFehler, match="block_loeschen: schritt höchstens 80 Zeichen"):
+        lauf([dict(a, schritt="x" * 81)])
+    with pytest.raises(WerkzeugFehler, match="schritt"):
+        lauf([dict(a, schritt=5)])

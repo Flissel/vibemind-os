@@ -145,3 +145,9 @@ def test_backticks_in_antwort_bleiben():
 def test_korrektur_text():
     t = ap.korrektur_text("block_loeschen: Block x gibt es nicht")
     assert "block_loeschen: Block x gibt es nicht" in t and "JSON" in t
+
+
+def test_system_verlangt_schritt_und_reihenfolge():
+    assert '"schritt"' in ap.SYSTEM
+    assert "zuerst Struktur, dann Inhalt, dann Feinschliff" in ap.SYSTEM
+    assert len(ap.SYSTEM) < 12000

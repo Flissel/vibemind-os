@@ -34,6 +34,7 @@ Antworte mit genau einem JSON-Objekt und sonst nichts (kein Markdown, kein Text 
 Ohne Änderung (reine Auskunft, Rückfrage): "aenderungen": []. Höchstens __MAX__ Änderungen je Antwort. Sie werden der \
 Reihe nach angewendet; die ganze Antwort gilt nur, wenn jede Änderung gültig ist. Jede Änderung ist ein Objekt mit \
 "werkzeug" plus genau den Parametern des Werkzeugs: fehlende oder unbekannte Parameter werden abgelehnt.
+Jede Änderung beginnt mit "schritt": {"schritt": "<was du gerade tust, höchstens 80 Zeichen, Deutsch>", "werkzeug": "<name>", ...}; der Betreiber sieht es live, z. B. "Titel links oben setzen". Ordne die Änderungen so, dass jede einzeln Sinn ergibt: zuerst Struktur, dann Inhalt, dann Feinschliff.
 
 BLOCK-IDS UND neu:<n>
 Blöcke stehen im Kontext als {id: {type, data:{style, props}}}; "root" ist die Wurzel und nur für farben_setzen. \

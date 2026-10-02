@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from spaces.marketing.claw import bildplaetze, gestaltung
 
 MAX_AENDERUNGEN = 40
+MAX_SCHRITT = 80
 NEU = re.compile(r"^neu:([1-9][0-9]*)$")
 _FARBE = re.compile(r"^#[0-9a-fA-F]{6}$")
 EINFUEGBAR = ("Heading", "Text", "Button", "Image", "Divider", "Spacer")
@@ -49,6 +50,9 @@ PARAMETER: dict[str, tuple[set, set]] = {
     "entwurf_speichern": ({"notiz"}, set()),
     "export_vorschlagen": ({"newsletter", "flaechen"}, set()),
 }
+
+# jede Aenderung darf ein "schritt" tragen (Anzeigetext im Live-Editor); anwenden ignoriert ihn
+PARAMETER = {n: (pf, op | {"schritt"}) for n, (pf, op) in PARAMETER.items()}
 
 
 class WerkzeugFehler(ValueError):
@@ -425,7 +429,10 @@ def _form_pruefen(a) -> str:
     if not isinstance(name, str) or name not in WERKZEUGE:
         raise WerkzeugFehler(f"{name if isinstance(name, str) else '?'}: unbekanntes Werkzeug")
     pflicht, optional = PARAMETER[name]
-    given = set(a) - {"werkzeug"}
+    schritt = a.get("schritt")
+    if "schritt" in a and (not isinstance(schritt, str) or len(schritt) > MAX_SCHRITT):
+        raise WerkzeugFehler(f"{name}: schritt höchstens {MAX_SCHRITT} Zeichen")
+    given = set(a) - {"werkzeug", "schritt"}
     fehlt, fremd = sorted(pflicht - given), sorted(given - pflicht - optional)
     if fehlt:
         raise WerkzeugFehler(f"{name}: Parameter fehlt: {', '.join(fehlt)}")
