@@ -128,3 +128,18 @@ def test_wiederverwendung_frischt_mtime_auf(tmp_path):
     os.utime(pfad, (alt, alt))
     gs.rechnen(g, [], str(tmp_path))
     assert pfad.stat().st_mtime > time.time() - 60
+
+def _tinten_box(tmp_path, t):
+    g = leer(fmt="quadrat", hg="#FFFFFF", ebenen=[text(text=t, schrift="playfair", gewicht=900, groesse=64,
+                                                       zeilenabstand=1.0, x=300, y=300, farbe="#000000")])
+    im, _ = gs.bild_rechnen(g, [str(tmp_path)])
+    box = im.convert("L").point(lambda v: 255 if v < 128 else 0).getbbox()
+    assert box is not None
+    return box
+
+def test_mehrzeiliger_text_wird_nicht_abgeschnitten(tmp_path):
+    eine = _tinten_box(tmp_path, "Herbst")
+    ohne = _tinten_box(tmp_path, "Herbst\nim Laden")
+    mit = _tinten_box(tmp_path, "Herbst\nim Lagen")   # g hat Unterlaenge
+    assert (ohne[3] - ohne[1]) >= 1.8 * (eine[3] - eine[1])
+    assert mit[3] - ohne[3] >= 10   # Unterlaenge der zweiten Zeile ist da, nicht an der Ebenenkante gekappt

@@ -117,7 +117,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from spaces.marketing.claw.schoenheit import kontrast
 
-RENDERER = 1
+RENDERER = 2   # 2: Textebenen mit Polster, Zeilen sitzen wie CSS (Halbleading)
 MAX_BYTES = 1024 * 1024
 MAX_PIXEL = 40_000_000
 AUFRAEUM_ALTER_S = 7 * 86400
@@ -155,19 +155,24 @@ def _laden(pfad: str, name: str) -> Image.Image:
         raise GestaltungFehler(f"Bild {name} ist nicht lesbar")
 
 
-def _text_ebene(e: dict) -> Image.Image:
+def _text_ebene(e: dict) -> tuple[Image.Image, tuple[int, int]]:
+    """Liefert (gepolsterte Ebene, (w, h) des ungepolsterten Textkastens). Das Polster ist
+    allseitig gleich gross, die Mitte der Ebene bleibt also die Mitte des Textkastens."""
     font = ImageFont.truetype(schrift_datei(e["schrift"], e["gewicht"], e["kursiv"]), int(round(e["groesse"] * FAKTOR)))
     zeilen = e["text"].split("\n")
     zh = e["groesse"] * FAKTOR * e["zeilenabstand"]
     breiten = [font.getlength(z) for z in zeilen]
     w = max(1, int(math.ceil(max(breiten))))
     h = max(1, int(math.ceil(zh * len(zeilen))))
-    ebene = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    p = int(math.ceil(e["groesse"] * FAKTOR * 0.6))
+    ebene = Image.new("RGBA", (w + 2 * p, h + 2 * p), (0, 0, 0, 0))
     d = ImageDraw.Draw(ebene)
     anker = {"links": ("la", 0), "mitte": ("ma", w / 2), "rechts": ("ra", w)}[e["ausrichtung"]]
+    asc, desc = font.getmetrics()
     for i, z in enumerate(zeilen):
-        d.text((anker[1], i * zh + (zh - e["groesse"] * FAKTOR) / 2), z, font=font, fill=e["farbe"], anchor=anker[0])
-    return ebene
+        # wie CSS: Inhaltsflaeche (Ascent+Descent) mittig in der Zeilenbox
+        d.text((p + anker[1], p + i * zh + (zh - (asc + desc)) / 2), z, font=font, fill=e["farbe"], anchor=anker[0])
+    return ebene, (w, h)
 
 
 def _einsetzen(leinwand: Image.Image, ebene: Image.Image, e: dict) -> tuple[int, int, int, int]:
@@ -203,11 +208,15 @@ def bild_rechnen(g: dict, quellen: list[str]) -> tuple[Image.Image, list[str]]:
             box = _einsetzen(leinwand, ebene, e)
             beschreibung = f"Bild {name}"
         else:
-            ebene = _text_ebene(e)
-            cl, co = max(0, int(e["x"] * FAKTOR - ebene.width / 2)), max(0, int(e["y"] * FAKTOR - ebene.height / 2))
-            cr, cu = min(w, int(e["x"] * FAKTOR + ebene.width / 2) + 1), min(h, int(e["y"] * FAKTOR + ebene.height / 2) + 1)
+            ebene, (tw, th) = _text_ebene(e)
+            # Hinweise (Kontrast, ausserhalb) gelten dem ungepolsterten Textkasten, nicht dem Polster
+            cl, co = max(0, int(e["x"] * FAKTOR - tw / 2)), max(0, int(e["y"] * FAKTOR - th / 2))
+            cr, cu = min(w, int(e["x"] * FAKTOR + tw / 2) + 1), min(h, int(e["y"] * FAKTOR + th / 2) + 1)
             unter = leinwand.crop((cl, co, cr, cu)) if cl < cr and co < cu else None
-            box = _einsetzen(leinwand, ebene, e)
+            _einsetzen(leinwand, ebene, e)
+            kasten = Image.new("1", (tw, th)).rotate(-e["drehung"], expand=True) if e["drehung"] else Image.new("1", (tw, th))
+            kl, ko = int(round(e["x"] * FAKTOR - kasten.width / 2)), int(round(e["y"] * FAKTOR - kasten.height / 2))
+            box = (kl, ko, kl + kasten.width, ko + kasten.height)
             kurz = e["text"].split("\n")[0][:30]
             beschreibung = f"Text „{kurz}“"
             if e["groesse"] < 22:
