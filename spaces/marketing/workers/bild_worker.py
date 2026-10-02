@@ -183,7 +183,7 @@ def dienste_starten() -> None:
 
 
 def ollama_starten() -> None:
-    """Startet Ollama (Betreiber hat den Task OllamaServe am 24.09. absichtlich
+    r"""Startet Ollama (Betreiber hat den Task OllamaServe am 24.09. absichtlich
     abgeschaltet: nur bei Bedarf). Programm aus OLLAMA_APP, sonst
     %LOCALAPPDATA%\Programs\Ollama\ollama app.exe; fehlt die Datei, passiert nichts."""
     exe = os.environ.get("OLLAMA_APP") or str(
