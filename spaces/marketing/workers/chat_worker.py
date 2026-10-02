@@ -4,6 +4,7 @@ ueber den lokalen OpenAI-kompatiblen Shim :8117, prueft und wendet die JSON-Aend
 an und meldet zurueck. Gestartet von marketing-dienste-starten.ps1; Gesundheits-Port 8134."""
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import threading
@@ -98,32 +99,102 @@ def frage(system: str, nachrichten: list[dict], url: str = LLM_URL, modell: str 
     return text
 
 
-def chat_bearbeiten(api, auftrag, fragen=frage, uhr=time.monotonic, schlafen=time.sleep) -> str:
+HALTEN_TAKT_S = 60
+FREMD = (404, 409, 422)      # Auftrag gehoert uns nicht mehr
+
+
+class _Halter:
+    def __init__(self):
+        self.verloren = threading.Event()
+
+
+@contextlib.contextmanager
+def halten(api, aid, takt_s: float = HALTEN_TAKT_S):
+    """Verlaengert die Vergabe alle takt_s Sekunden, solange der Block laeuft (Claude-Antworten
+    dauern bis 300 s, die Vergabe nur 5 min). Meldet die Vergabe `verloren`, sobald weiter
+    False liefert oder der Auftrag nicht mehr unser ist; Netzstoerungen werden uebersprungen."""
+    halter, ende = _Halter(), threading.Event()
+
+    def lauf():
+        while not ende.wait(takt_s):
+            try:
+                if not api.weiter(aid):
+                    halter.verloren.set()
+                    return
+            except ApiFehler as e:
+                if e.code in FREMD:
+                    halter.verloren.set()
+                    return
+            except (OSError, ValueError):
+                pass
+    faden = threading.Thread(target=lauf, daemon=True)
+    faden.start()
+    try:
+        yield halter
+    finally:
+        ende.set()
+        faden.join(timeout=1)
+
+
+def _kurz(e: BaseException) -> str:
+    return f"{type(e).__name__}: {e}"[:150]
+
+
+def _freigeben(api, aid, text: str, e: BaseException) -> None:
+    """Auftrag nach einer Stoerung zurueckgeben - einmal, Fehler dabei werden verschluckt.
+    Gehoert der Auftrag uns nicht mehr (404/409/422), passiert nichts."""
+    if isinstance(e, ApiFehler) and e.code in FREMD:
+        return
+    try:
+        api.zurueck(aid, text)
+    except Exception:  # noqa: BLE001 - die VM gibt den Auftrag nach Ablauf selbst frei
+        pass
+
+
+def chat_bearbeiten(api, auftrag, fragen=frage, uhr=time.monotonic, schlafen=time.sleep,
+                    halten_takt_s: float = HALTEN_TAKT_S) -> str:
     aid = str(auftrag["id"])
-    medien = list(auftrag.get("medien") or [])
-    nachrichten = [{"role": "user", "content": agent_prompt.nutzer_text(auftrag, medien)}]
-    beginn = uhr()
+    versucht = []            # zurueck wurde schon aufgerufen
 
     def zurueckgeben(text: str) -> str:
+        versucht.append(1)
         api.zurueck(aid, text)
         return "fehler"
+    try:
+        return _bearbeiten(api, auftrag, aid, fragen, uhr, schlafen, halten_takt_s, zurueckgeben)
+    except (ApiFehler, OSError, ValueError) as e:
+        if not versucht:
+            _freigeben(api, aid, NICHT_ERREICHBAR, e)
+        return "fehler"
 
+
+def _bearbeiten(api, auftrag, aid, fragen, uhr, schlafen, halten_takt_s, zurueckgeben) -> str:
+    medien = list(auftrag.get("medien") or [])
+    nachrichten = [{"role": "user", "content": agent_prompt.nutzer_text(auftrag, medien)}]
     fehler = ""
     for versuch in (1, 2):
-        while True:
-            try:
-                text = fragen(agent_prompt.SYSTEM, nachrichten)
-                break
-            except LlmFehler:
-                if uhr() - beginn >= SHIM_BIS_S:
-                    return zurueckgeben(NICHT_ERREICHBAR)
-                if not api.weiter(aid):
-                    return "fehler"          # Vergabe verloren: die VM hat den Auftrag schon verworfen
-                schlafen(SHIM_PAUSE_S)
+        beginn = uhr()       # Shim-Fenster je Frage
+        with halten(api, aid, halten_takt_s) as halter:
+            while True:
+                try:
+                    text = fragen(agent_prompt.SYSTEM, nachrichten)
+                    break
+                except LlmFehler:
+                    if halter.verloren.is_set():
+                        return "fehler"
+                    if uhr() - beginn >= SHIM_BIS_S:
+                        return zurueckgeben(NICHT_ERREICHBAR)
+                    if not api.weiter(aid):
+                        return "fehler"      # Vergabe verloren: die VM hat den Auftrag schon verworfen
+                    schlafen(SHIM_PAUSE_S)
+        if halter.verloren.is_set():
+            return "fehler"
         try:
             antwort = agent_prompt.antwort_lesen(text)
             ergebnis = agent_werkzeuge.anwenden(auftrag.get("bloecke") or {}, antwort["aenderungen"], set(medien))
             if ergebnis.geaendert:
+                if not api.weiter(aid):
+                    return "fehler"
                 grund = api.pruefen(aid, ergebnis.bloecke)
                 if grund:
                     raise agent_werkzeuge.WerkzeugFehler(grund)
@@ -134,6 +205,8 @@ def chat_bearbeiten(api, auftrag, fragen=frage, uhr=time.monotonic, schlafen=tim
                                 {"role": "user", "content": agent_prompt.korrektur_text(fehler)}]
                 continue
             return zurueckgeben(NICHT_UMGESETZT + fehler)
+        if not api.weiter(aid):
+            return "fehler"
         antwort_vm = api.fertig(aid, {
             "antwort": antwort["antwort"],
             "bloecke": ergebnis.bloecke if ergebnis.geaendert else None,
@@ -142,18 +215,23 @@ def chat_bearbeiten(api, auftrag, fragen=frage, uhr=time.monotonic, schlafen=tim
             "notiz": ergebnis.notiz,
         })
         return "fehler" if antwort_vm.get("status") == "fehler" else "fertig"
-    return zurueckgeben(NICHT_UMGESETZT + fehler)   # nicht erreichbar, haelt die Funktion total
+    return zurueckgeben(NICHT_UMGESETZT + fehler)
 
 
-def ein_durchlauf(api, fragen=frage, exportieren=None, uhr=time.monotonic, schlafen=time.sleep) -> str:
+def ein_durchlauf(api, fragen=frage, exportieren=None, uhr=time.monotonic, schlafen=time.sleep,
+                  halten_takt_s: float = HALTEN_TAKT_S) -> str:
     auftrag = api.naechster()
     if not auftrag:
         return "leer"
     if auftrag.get("art") == "export":
-        if exportieren is None:
-            from spaces.marketing.workers.export_worker import exportieren   # Task 12; braucht Playwright
-        return exportieren(api, auftrag)
-    return chat_bearbeiten(api, auftrag, fragen, uhr, schlafen)
+        try:
+            if exportieren is None:
+                from spaces.marketing.workers.export_worker import exportieren   # Task 12; braucht Playwright
+            return exportieren(api, auftrag)
+        except Exception as e:  # noqa: BLE001 - Auftrag gehoert uns, also zurueckgeben
+            _freigeben(api, str(auftrag["id"]), "Export nicht möglich: " + _kurz(e), e)
+            return "fehler"
+    return chat_bearbeiten(api, auftrag, fragen, uhr, schlafen, halten_takt_s)
 
 
 class _Gesundheit(BaseHTTPRequestHandler):
@@ -168,6 +246,15 @@ class _Gesundheit(BaseHTTPRequestHandler):
         pass
 
 
+def schleifenschritt(api, ein=ein_durchlauf) -> None:
+    try:
+        STAND["letztes_ergebnis"] = ein(api)
+    except Exception as e:  # noqa: BLE001 - ein Fehler darf die Schleife nicht toeten
+        STAND["letztes_ergebnis"] = f"fehler: {type(e).__name__}: {e}"[:200]
+    STAND["letzter_lauf"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    print(STAND, flush=True)
+
+
 def main() -> None:
     umgebung_laden()
     basis, schluessel = os.environ.get("MARKETING_BILD_URL", ""), os.environ.get("MARKETING_BILD_KEY", "")
@@ -176,12 +263,7 @@ def main() -> None:
     api = ChatApi(basis, schluessel)
     threading.Thread(target=HTTPServer(("127.0.0.1", PORT), _Gesundheit).serve_forever, daemon=True).start()
     while True:
-        try:
-            STAND["letztes_ergebnis"] = ein_durchlauf(api)
-        except Exception as e:  # noqa: BLE001 - ein Fehler darf die Schleife nicht toeten
-            STAND["letztes_ergebnis"] = f"fehler: {type(e).__name__}: {e}"[:300]
-        STAND["letzter_lauf"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        print(STAND, flush=True)
+        schleifenschritt(api)
         time.sleep(TAKT_S)
 
 
