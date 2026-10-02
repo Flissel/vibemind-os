@@ -15,6 +15,7 @@ from spaces.marketing.workers.chat_worker import FREMD, HALTEN_TAKT_S, _kurz, ha
 GERAETE = {"handy": 375, "tablet": 768, "pc": 1200}
 BASIS = "https://export.vibemind.invalid/"
 JPEG_GRENZE = 4 * 1024 * 1024
+MAX_HOEHE = 16000
 HOEHE = 800
 NICHT_MOEGLICH = "Export nicht möglich: "
 
@@ -45,17 +46,19 @@ def jpeg_passend(png: bytes, grenze: int = JPEG_GRENZE) -> bytes:
         bild.save(puffer, "JPEG", quality=qualitaet, optimize=True)
         if puffer.tell() <= grenze:
             return puffer.getvalue()
-    raise ValueError(f"Das Bild bleibt auch bei Qualität 52 über {grenze // (1024 * 1024)} MB")
+    raise ValueError(f"Das Bild bleibt auch bei Qualität 52 über {grenze / 2**20:.1f} MB")
 
 
 class _Routen:
     """Beantwortet die Anfragen der Seite an BASIS; alles andere wird abgebrochen."""
 
     def __init__(self, api, aid):
-        self.api, self.aid, self.medien, self.fehlt = api, aid, {}, []
+        self.api, self.aid, self.medien, self.fehlt, self.fehler = api, aid, {}, [], None
 
     def __call__(self, route):
         try:
+            if not route.request.url.startswith(BASIS):
+                return route.abort()
             pfad = urllib.parse.unquote(urllib.parse.urlsplit(route.request.url).path)
             if pfad.startswith("/medien/"):
                 name = pfad[len("/medien/"):]
@@ -75,7 +78,9 @@ class _Routen:
                     with open(voll, "rb") as f:
                         return route.fulfill(status=200, body=f.read(), content_type="font/woff2")
             return route.abort()
-        except Exception:  # noqa: BLE001 - nie die Seite haengen lassen
+        except Exception as e:  # noqa: BLE001 - Seite nicht haengen lassen, Fehler nach set_content melden
+            if self.fehler is None:
+                self.fehler = e
             return route.abort()
 
 
@@ -130,9 +135,20 @@ class _Verloren(Exception):
 
 
 def _schliessen(objekt) -> None:
+    """Schliessen darf einen Ursprungsfehler nie ueberdecken."""
     schliessen = getattr(objekt, "close", None)
     if schliessen:
-        schliessen()
+        try:
+            schliessen()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _hoehe_pruefen(png: bytes) -> None:
+    from PIL import Image
+    with Image.open(io.BytesIO(png)) as bild:
+        if bild.size[1] > MAX_HOEHE:
+            raise ValueError("Newsletter ist zu lang für ein Bild (über 16 000 px)")
 
 
 def _grund(e: BaseException) -> str:
@@ -150,13 +166,17 @@ def _fotografieren(api, auftrag, aid, slug, html, browser_starten, halten_takt_s
                 seite = browser.new_page(viewport={"width": breite, "height": HOEHE})
                 try:
                     routen = _Routen(api, aid)
-                    seite.route(BASIS + "**", routen)
+                    seite.route("**/*", routen)
                     seite.set_content(html, wait_until="networkidle")
+                    if routen.fehler is not None:
+                        raise routen.fehler
                     if routen.fehlt:
                         raise ValueError(f"Bild {routen.fehlt[0]} fehlt in den Medien")
+                    seite.evaluate("document.fonts.ready")
                     png = seite.screenshot(full_page=True, type="png")
                 finally:
                     _schliessen(seite)
+                _hoehe_pruefen(png)
                 namen.append(api.datei(aid, f"{slug}-{geraet}.jpg", jpeg_passend(png)))
         finally:
             _schliessen(browser)

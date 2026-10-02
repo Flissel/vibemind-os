@@ -1,3 +1,4 @@
+import fnmatch
 import io
 import os
 
@@ -60,29 +61,43 @@ class Seite:
 
     def route(self, muster, handler):
         self.muster, self.handler = muster, handler
+        self.browser.muster.append(muster)
+
+    def evaluate(self, ausdruck):
+        self.browser.auswertungen.append(ausdruck)
 
     def set_content(self, html, wait_until=None):
         self.browser.inhalte.append((self.viewport["width"], html, wait_until))
         for url in self.browser.anfragen:
+            if not fnmatch.fnmatch(url, self.muster):
+                continue
             r = Route(url); self.handler(r); self.browser.routen.append((url, r.ergebnis))
 
     def screenshot(self, full_page=False, type="png"):
         if self.browser.screenshot_fehler:
             raise RuntimeError("Chromium abgestuerzt")
-        return png()
+        self.browser.ereignisse.append("screenshot")
+        return self.browser.png or png()
 
-    def close(self): pass
+    def close(self):
+        if self.browser.schliess_fehler:
+            raise RuntimeError("close kaputt")
 
 
 class Browser:
-    def __init__(self, anfragen=(), screenshot_fehler=False):
+    def __init__(self, anfragen=(), screenshot_fehler=False, png=None, schliess_fehler=False):
         self.anfragen, self.screenshot_fehler = list(anfragen), screenshot_fehler
+        self.png, self.schliess_fehler = png, schliess_fehler
         self.inhalte, self.routen, self.zu = [], [], False
+        self.muster, self.auswertungen, self.ereignisse = [], [], []
 
     def new_page(self, **kw):
         return Seite(self, kw["viewport"])
 
-    def close(self): self.zu = True
+    def close(self):
+        self.zu = True
+        if self.schliess_fehler:
+            raise RuntimeError("browser close kaputt")
 
 
 def test_schriften_css_hat_22_font_face_mit_relativen_urls():
@@ -136,6 +151,7 @@ def test_route_liefert_medien_css_schrift_und_bricht_fremdes_ab():
     assert ergebnis[ew.BASIS + "medien/a%20b.jpg"][1]["body"] == b"BILD"
     assert "@font-face" in ergebnis[ew.BASIS + "schrift/schriften.css"][1]["body"]
     assert ergebnis[ew.BASIS + "schrift/dm-sans-400-normal.woff2"][1]["content_type"] == "font/woff2"
+    assert set(b.muster) == {"**/*"}
     assert ergebnis["https://fremd.example/x.png"][0] == "abort"
     assert ergebnis[ew.BASIS + "schrift/../../etc/passwd"][0] == "abort"
     assert ("medium", "a b.jpg") in api.log
@@ -168,3 +184,58 @@ def test_browserstart_fehler_und_fremder_auftrag():
     api = Fremd()
     assert ew.exportieren(api, AUFTRAG, browser_starten=lambda: Browser()) == "fehler"
     assert not [e for e in api.log if e[0] == "zurueck"]
+
+
+def test_fremde_anfrage_wird_ueber_catch_all_abgebrochen():
+    b = Browser(["https://fremd.example/a.css", "http://localhost:8080/x"])
+    assert ew.exportieren(Api(), AUFTRAG, browser_starten=lambda: b) == "fertig"
+    assert b.muster and set(b.muster) == {"**/*"}
+    assert [r[1][0] for r in b.routen] == ["abort"] * 6
+
+
+def test_medium_netzfehler_bricht_ab_statt_stilles_fehlen():
+    class Kaputt(Api):
+        def medium(self, aid, name): raise ApiFehler(502, "bad gateway")
+    api = Kaputt()
+    b = Browser([ew.BASIS + "medien/a.jpg"])
+    assert ew.exportieren(api, AUFTRAG, browser_starten=lambda: b) == "fehler"
+    zur = [e for e in api.log if e[0] == "zurueck"]
+    assert len(zur) == 1 and zur[0][2].startswith("Export nicht möglich: ") and "502" in zur[0][2]
+    assert not [e for e in api.log if e[0] in ("fertig", "datei")]
+
+
+def test_medium_leasverlust_kein_zurueck():
+    class Fremd(Api):
+        def medium(self, aid, name): raise ApiFehler(409, "weg")
+    api = Fremd()
+    b = Browser([ew.BASIS + "medien/a.jpg"])
+    assert ew.exportieren(api, AUFTRAG, browser_starten=lambda: b) == "fehler"
+    assert not [e for e in api.log if e[0] in ("zurueck", "fertig", "datei")]
+
+
+def test_schriften_werden_vor_dem_screenshot_abgewartet():
+    b = Browser()
+    ew.exportieren(Api(), AUFTRAG, browser_starten=lambda: b)
+    assert b.auswertungen == ["document.fonts.ready"] * 3
+    assert b.ereignisse == ["screenshot"] * 3
+
+
+def test_zu_hoher_screenshot_wird_abgelehnt():
+    puffer = io.BytesIO(); Image.new("RGB", (10, 16001)).save(puffer, "PNG")
+    api = Api()
+    assert ew.exportieren(api, AUFTRAG, browser_starten=lambda: Browser(png=puffer.getvalue())) == "fehler"
+    assert api.log[-1] == ("zurueck", "a1", "Export nicht möglich: Newsletter ist zu lang für ein Bild (über 16 000 px)")
+
+
+def test_groessenmeldung_in_mb_mit_einer_nachkommastelle():
+    rauschen = Image.frombytes("RGB", (2500, 2500), os.urandom(2500 * 2500 * 3))
+    puffer = io.BytesIO(); rauschen.save(puffer, "PNG")
+    with pytest.raises(ValueError, match=r"über 1\.5 MB"):
+        ew.jpeg_passend(puffer.getvalue(), grenze=int(1.5 * 2**20))
+
+
+def test_close_fehler_ueberdecken_den_ursprungsfehler_nicht():
+    api, b = Api(), Browser(screenshot_fehler=True, schliess_fehler=True)
+    assert ew.exportieren(api, AUFTRAG, browser_starten=lambda: b) == "fehler"
+    zur = [e for e in api.log if e[0] == "zurueck"]
+    assert len(zur) == 1 and "Chromium" in zur[0][2]
