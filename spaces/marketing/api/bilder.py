@@ -24,7 +24,7 @@ from spaces.marketing.claw import bildplaetze
 router = APIRouter(prefix="/api/bilder")
 pult_router = APIRouter(prefix="/api/pult")
 _PLATZ = re.compile(r"[A-Za-z0-9_-]{1,64}")          # nur mit fullmatch benutzen
-_NAME = re.compile(r"nl-[0-9a-f]{8}-[A-Za-z0-9_-]{1,64}\.jpg")   # nur mit fullmatch benutzen
+_NAME = re.compile(r"nl-[0-9a-f]{8}-[A-Za-z0-9_-]{1,64}(?:\.jpg|-frei\.png)")   # nur mit fullmatch benutzen
 _BILDTYP = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}
 _MESSWERTE = ("aehnlich_original", "naeher_am_hinweis")
 BILD_MAX = 1024 * 1024

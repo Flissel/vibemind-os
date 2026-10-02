@@ -459,3 +459,30 @@ def test_freistellen_unbekannter_inhalt_404(db, c):
     r = c.post(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK},
                json={"platz": "t1_bild", "modus": "freistellen"})
     assert r.status_code == 404
+
+
+def test_fertig_nimmt_frei_png_name(db, c):
+    (db.ordner / "nl-0123abcd-kopf_bild-frei.png").write_bytes(png())
+    db.antworten = [[{"e": {"fassung": 5, "eingesetzt": ["kopf_bild"], "uebersprungen": []}}]]
+    r = c.post(f"/api/bilder/arbeiter/{AID}/fertig", headers={"X-Bild-Key": BK},
+               json={"ergebnis": {"kopf_bild": "nl-0123abcd-kopf_bild-frei.png"}, "befund": ""})
+    assert r.status_code == 200 and r.json()["fassung"] == 5
+    assert "medien:nl-0123abcd-kopf_bild-frei.png" in db.sql[0]
+
+
+@pytest.mark.parametrize("name", [
+    "nl-0123abcd-kopf.png",              # PNG ohne -frei
+    "nl-0123abcd-kopf.gif",
+    "nl-0123abcd-kopf-frei.gif",
+    "nl-0123abcd-kopf-frei.png.jpg",
+    "nl-0123abcd-ko/pf-frei.png",
+    "nl-0123abcd-../x-frei.png",
+    "../nl-0123abcd-kopf-frei.png",
+    "nl-0123abcd-kopf-frei.png\n",
+])
+def test_fertig_lehnt_falsche_png_namen_ab(db, c, name):
+    (db.ordner / "nl-0123abcd-kopf.png").write_bytes(png())
+    (db.ordner / "nl-0123abcd-kopf.gif").write_bytes(png())
+    r = c.post(f"/api/bilder/arbeiter/{AID}/fertig", headers={"X-Bild-Key": BK},
+               json={"ergebnis": {"kopf": name}, "befund": ""})
+    assert r.status_code == 422 and db.sql == []

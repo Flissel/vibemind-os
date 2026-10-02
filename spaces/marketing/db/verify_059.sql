@@ -1,5 +1,7 @@
 -- Nachweise fuer 059, nur ueber migration_probe (Transaktion + ROLLBACK).
 DO $$ DECLARE v_inhalt uuid; v_platz text; v_id uuid; v_modus text; BEGIN
+  ASSERT pg_get_functiondef('marketing.pult_bild_einsetzen(uuid, jsonb, text)'::regprocedure) LIKE '%-frei%',
+         'pult_bild_einsetzen nimmt -frei.png-Namen';
   ASSERT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'bild_auftraege_modus_check'
                  AND pg_get_constraintdef(oid) LIKE '%freistellen%'), 'Modus-Check kennt freistellen';
   -- Find newest fassung of a draft newsletter and first image slot in it
