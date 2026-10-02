@@ -1,4 +1,5 @@
 import json
+import random
 
 from spaces.marketing.claw.agent_strom import StromLeser
 
@@ -118,3 +119,38 @@ def test_nichts_mehr_nach_array_ende():
 def test_text_sammelt_alles():
     s, _ = alles("Vor " + GANZ, 5)
     assert s.text == "Vor " + GANZ
+
+
+ANTWORT = json.dumps({"antwort": "Fertig { [ ", "aenderungen": [A1, A2, A3]}, ensure_ascii=False)
+NL = chr(10)
+FAELLE = [
+    "[" + ANTWORT + "]",
+    "```json" + NL + "[" + NL + ANTWORT + NL + "]" + NL + "```",
+    "Siehe { Hinweis" + NL + ANTWORT,
+    "Siehe [1 Hinweis" + NL + NL + ANTWORT,
+    "Erst { dann [ dann ( " + chr(34) + "x" + NL + NL + "[" + ANTWORT + "]",
+    '{"vorher": 1}' + NL + ANTWORT,
+    "{}" + NL + "{ }" + NL + ANTWORT,
+]
+
+
+def test_huelle_und_unausgewogener_vortext():
+    for text in FAELLE:
+        for n in (None, 1, 3):
+            _, aus = alles(text, n)
+            assert aus == [A1, A2, A3], (text[:30], n)
+
+
+def test_zufaellige_chunkings_gleich_ganztext():
+    rng = random.Random(7)
+    for text in FAELLE:
+        ganz = alles(text)[1]
+        assert ganz == [A1, A2, A3]
+        for _ in range(300 // len(FAELLE) + 1):
+            s, aus, i = StromLeser(), [], 0
+            while i < len(text):
+                k = rng.randint(1, 9)
+                aus += s.futter(text[i:i + k])
+                i += k
+            assert aus == ganz
+            assert s.text == text

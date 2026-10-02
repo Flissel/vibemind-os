@@ -21,6 +21,7 @@ class StromLeser:
         self._im_array = False
         self._element: list[str] = []
         self._fertig = False
+        self._kandidat = False             # { gesehen, wartet auf " oder } als naechstes Zeichen
         self._zaehler = 0
 
     @property
@@ -41,6 +42,21 @@ class StromLeser:
 
     def _kopf_zeichen(self, c: str) -> None:
         """Zeichen ausserhalb der Array-Elemente: Vortext, oberstes Objekt, Schluessel-Erkennung."""
+        if self._tiefe == 0 and not self._im_string:
+            # Vortext/Huelle: aeussere [ zaehlen nicht, unausgewogene Klammern im Vortext auch nicht. Ein Objekt
+            # beginnt erst bei { mit folgendem " oder }.
+            if self._kandidat:
+                if c.isspace():
+                    return
+                self._kandidat = False
+                if c == '"':
+                    self._tiefe, self._im_string, self._schluessel = 1, True, []
+                    return
+                if c == "}":
+                    return
+            if c == "{":
+                self._kandidat = True
+            return
         if self._im_string:
             self._string_schritt(c)
             if not self._im_string:
