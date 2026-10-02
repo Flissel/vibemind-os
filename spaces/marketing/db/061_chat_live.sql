@@ -73,6 +73,16 @@ BEGIN
     RAISE EXCEPTION 'Kontext muss ein Objekt sein'; END IF;
   PERFORM marketing.pult_chat_aufraeumen(p_inhalt);
   IF NOT EXISTS (SELECT 1 FROM marketing.chat_auftraege WHERE inhalt = p_inhalt AND status IN ('offen','in_arbeit')) THEN
+    -- Liegengebliebene Vormerkung (nach fehler/Stopp) uebernehmen und starten, damit kein
+    -- zweiter Auftrag stehen bleibt, den ein spaeteres fertig ungefragt freigaebe.
+    UPDATE marketing.chat_auftraege
+       SET nachricht = btrim(p_nachricht), kontext = coalesce(p_kontext, '{}'::jsonb),
+           status = 'offen', erstellt_am = now(), stopp = NULL, stopp_am = NULL,
+           fassung_vorher = (SELECT max(fassung) FROM marketing.inhalt_fassungen WHERE inhalt = p_inhalt),
+           geaendert_am = now()
+     WHERE inhalt = p_inhalt AND status = 'wartet'
+    RETURNING id INTO v_id;
+    IF v_id IS NOT NULL THEN RETURN jsonb_build_object('id', v_id, 'status', 'offen'); END IF;
     v_id := marketing.pult_chat_anlegen(p_inhalt, 'chat', p_nachricht, p_kontext);
     RETURN jsonb_build_object('id', v_id, 'status', 'offen');
   END IF;

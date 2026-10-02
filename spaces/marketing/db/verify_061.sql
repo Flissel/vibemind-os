@@ -202,6 +202,33 @@ BEGIN
   BEGIN PERFORM marketing.pult_chat_stoppen(v_i, 'behalten'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
   ASSERT v_fehler IS NOT NULL, '10: Stopp ohne Lauf muss scheitern';
 
+  -- 10b) Liegengebliebene Vormerkung (nach fehler bzw. Stopp) + Vormerken ohne Lauf
+  --      => dieselbe Zeile wird uebernommen und gestartet, kein zweiter Auftrag
+  a2 := (marketing.pult_chat_vormerken(v_i, 'Lauf A', '{}')->>'id')::uuid;
+  PERFORM marketing.pult_chat_naechster('5 minutes');
+  w := (marketing.pult_chat_vormerken(v_i, 'Alt A', '{}')->>'id')::uuid;
+  PERFORM marketing.pult_chat_zurueck(a2, 'Ging nicht');
+  ASSERT (SELECT status FROM marketing.chat_auftraege WHERE id = w) = 'wartet', '10b: Vormerkung liegt nach fehler';
+  j := marketing.pult_chat_vormerken(v_i, 'Neu A', '{"auswahl":"z1"}');
+  ASSERT j->>'status' = 'offen' AND (j->>'id')::uuid = w, format('10b: alte Vormerkung uebernommen: %s', j);
+  SELECT * INTO r FROM marketing.chat_auftraege WHERE id = w;
+  ASSERT r.status = 'offen' AND r.nachricht = 'Neu A' AND r.kontext->>'auswahl' = 'z1' AND r.erstellt_am = now()
+     AND r.stopp IS NULL AND r.fassung_vorher = v_n, '10b: Text ersetzt und gestartet';
+  ASSERT (SELECT count(*) FROM marketing.chat_auftraege WHERE inhalt = v_i AND status IN ('offen','in_arbeit','wartet')) = 1,
+         '10b: genau ein Auftrag, keine Vormerkung uebrig';
+  -- dasselbe nach einem Stopp
+  ASSERT (marketing.pult_chat_naechster('5 minutes')->>'id')::uuid = w, '10b: abgeholt';
+  w2 := (marketing.pult_chat_vormerken(v_i, 'Alt B', '{}')->>'id')::uuid;
+  PERFORM marketing.pult_chat_stoppen(v_i, 'verwerfen');
+  ASSERT (marketing.pult_chat_stopp_abschliessen(w, NULL, NULL))->>'status' = 'fehler', '10b: gestoppt';
+  ASSERT (SELECT status FROM marketing.chat_auftraege WHERE id = w2) = 'wartet', '10b: Vormerkung liegt nach Stopp';
+  j := marketing.pult_chat_vormerken(v_i, 'Neu B', '{}');
+  ASSERT j->>'status' = 'offen' AND (j->>'id')::uuid = w2, format('10b: nach Stopp uebernommen: %s', j);
+  ASSERT (SELECT count(*) FROM marketing.chat_auftraege WHERE inhalt = v_i AND status IN ('offen','in_arbeit','wartet')) = 1,
+         '10b: nach Stopp genau ein Auftrag';
+  ASSERT NOT EXISTS (SELECT 1 FROM marketing.chat_auftraege WHERE inhalt = v_i AND status = 'wartet'), '10b: kein wartet';
+  ASSERT (marketing.pult_chat_stoppen(v_i, 'verwerfen'))->>'abgeschlossen' = 'true', '10b: aufgeraeumt';
+
   -- 11) Requeue ueberspringt gestoppte Auftraege
   a2 := (marketing.pult_chat_vormerken(v_i, 'Achte', '{}')->>'id')::uuid;
   PERFORM marketing.pult_chat_naechster('5 minutes');
