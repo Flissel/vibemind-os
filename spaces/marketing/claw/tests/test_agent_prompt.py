@@ -95,7 +95,8 @@ def test_nutzer_text_medien_gs_und_kappe():
     medien = [f"m{i}.png" for i in range(300)] + ["gs-abc123def456.jpg"]
     t = ap.nutzer_text(_auftrag(), medien)
     assert "gs-" not in t
-    zeile = next(z for z in t.split("\n") if z.startswith("MEDIEN"))\n    assert len(zeile.split(": ", 1)[1].split(", ")) == 200 and "m199.png" in zeile and "m200.png" not in zeile
+    zeile = next(z for z in t.split("\n") if z.startswith("MEDIEN"))
+    assert len(zeile.split(": ", 1)[1].split(", ")) == 200 and "m199.png" in zeile and "m200.png" not in zeile
 
 
 def test_nutzer_text_verlauf_letzte_10_und_kontext():
