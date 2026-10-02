@@ -98,7 +98,7 @@ def test_stand_raeumt_zuerst_auf(umg):
 def test_rueckgaengig_nimmt_fassung_vorher(umg):
     f, _, c = umg
     alt = {"root": {"type": "EmailLayout", "data": {"childrenIds": []}}}
-    f.antworten += [[{"fassung_vorher": 3, "bloecke": alt, "betreff": "B", "vorschautext": "V", "neueste": 5}],
+    f.antworten += [[{"fassung_vorher": 3, "fassung_nachher": 5, "bloecke": alt, "betreff": "B", "vorschautext": "V", "neueste": 5}],
                     [{"fassung": 6}]]
     r = c.post(f"/api/pult/inhalte/{IID}/chat/rueckgaengig", json={"auftrag": AID}, headers=H)
     assert r.status_code == 200, r.text
@@ -106,6 +106,16 @@ def test_rueckgaengig_nimmt_fassung_vorher(umg):
     assert "fassung_vorher" in f.sql[0] and "status = 'fertig'" in f.sql[0]
     assert "marketing.pult_bloecke_speichern(" in f.sql[1] and ", 5, 'B', 'V'," in f.sql[1]
     assert "EmailLayout" in f.sql[1] and "'betreiber', false" in f.sql[1]
+
+
+def test_rueckgaengig_nur_auf_der_neuesten_fassung(umg):
+    f, _, c = umg
+    alt = {"root": {"type": "EmailLayout", "data": {"childrenIds": []}}}
+    f.antworten += [[{"fassung_vorher": 3, "fassung_nachher": 4, "bloecke": alt, "betreff": "B",
+                      "vorschautext": "V", "neueste": 5}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/chat/rueckgaengig", json={"auftrag": AID}, headers=H)
+    assert r.status_code == 422, r.text
+    assert "neuere Fassung" in r.json()["detail"] and len(f.sql) == 1   # nichts gespeichert
 
 
 def test_rueckgaengig_ohne_passenden_auftrag_422(umg):

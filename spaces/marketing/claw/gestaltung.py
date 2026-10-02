@@ -244,7 +244,9 @@ def rechnen(g: dict, quellen: list[str], ziel: str) -> dict:
     pfad = os.path.join(ziel, name)
     hinweise: list[str]
     bild, hinweise = bild_rechnen(g, quellen)
-    if not os.path.exists(pfad):
+    if os.path.exists(pfad):
+        os.utime(pfad, None)   # frisch halten: sonst raeumt aufraeumen() es nach 7 Tagen ab
+    else:
         _speichern(bild, pfad, ziel)
     return {"url": f"medien:{name}", "name": name, "width": BREITE, "height": hoehe(g["format"]), "hinweise": hinweise}
 

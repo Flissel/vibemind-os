@@ -239,3 +239,15 @@ def test_close_fehler_ueberdecken_den_ursprungsfehler_nicht():
     assert ew.exportieren(api, AUFTRAG, browser_starten=lambda: b) == "fehler"
     zur = [e for e in api.log if e[0] == "zurueck"]
     assert len(zur) == 1 and "Chromium" in zur[0][2]
+
+
+def test_viewport_ist_minimal_damit_kein_leerraum_unter_kurzem_inhalt_entsteht():
+    seiten = []
+    class B(Browser):
+        def new_page(self, **kw):
+            seiten.append(kw["viewport"])
+            return super().new_page(**kw)
+    b = B()
+    ew.exportieren(Api(), AUFTRAG, browser_starten=lambda: b)
+    assert [v["width"] for v in seiten] == [375, 768, 1200]
+    assert all(v["height"] <= 2 for v in seiten)

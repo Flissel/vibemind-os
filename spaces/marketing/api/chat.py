@@ -90,7 +90,7 @@ def chat_rueckgaengig(iid: str, payload: dict = Body(...), x_pult_key: str | Non
         raise HTTPException(422, "auftrag fehlt")
     a = _auftrag_id(a)
     z = _lesen_einer(lambda:
-        "SELECT a.fassung_vorher, f.bloecke, coalesce(f.felder->>'betreff', '') AS betreff, "
+        "SELECT a.fassung_vorher, a.fassung_nachher, f.bloecke, coalesce(f.felder->>'betreff', '') AS betreff, "
         "coalesce(f.felder->>'vorschautext', '') AS vorschautext, "
         "(SELECT max(fassung) FROM marketing.inhalt_fassungen WHERE inhalt = a.inhalt) AS neueste "
         "FROM marketing.chat_auftraege a JOIN marketing.inhalt_fassungen f "
@@ -101,6 +101,8 @@ def chat_rueckgaengig(iid: str, payload: dict = Body(...), x_pult_key: str | Non
         raise HTTPException(422, "Dieser Auftrag hat nichts geändert, das sich rückgängig machen ließe")
     if not isinstance(z.get("bloecke"), dict):
         raise HTTPException(422, "Die vorige Fassung hat keine Blöcke")
+    if z.get("fassung_nachher") != z.get("neueste"):
+        raise HTTPException(422, "Seitdem gibt es eine neuere Fassung – Rückgängig ist nicht mehr möglich.")
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_bloecke_speichern({lit(i)}::uuid, {int(z['neueste'])}, {lit(z['betreff'])}, "
         f"{lit(z['vorschautext'])}, {lit(json.dumps(z['bloecke'], ensure_ascii=False))}::jsonb, "

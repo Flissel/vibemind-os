@@ -44,7 +44,8 @@ def gestaltungen_rechnen(dok: dict) -> tuple[dict, list[str]]:
         if not isinstance(g, dict):
             continue
         try:
-            if props.get("url") == "medien:" + gestaltung.name_fuer(g):
+            name = gestaltung.name_fuer(g)
+            if props.get("url") == "medien:" + name and os.path.exists(os.path.join(ordner, name)):
                 continue
             erg = gestaltung.rechnen(g, quellen(), ordner)
         except gestaltung.GestaltungFehler as e:
@@ -61,7 +62,7 @@ def verwiesene_gs() -> set[str]:
         "SELECT bloecke FROM marketing.inhalt_fassungen UNION ALL "
         "SELECT bloecke FROM marketing.newsletter_vorlagen UNION ALL "
         "SELECT bloecke FROM marketing.newsletter_vorlagen_fassungen) q, "
-        "LATERAL regexp_matches(q.bloecke::text, 'medien:(gs-[0-9a-f]{12}\.jpg)', 'g') AS m")
+        "LATERAL regexp_matches(q.bloecke::text, 'medien:(gs-[0-9a-f]{12}\\.jpg)', 'g') AS m")
     return {str(z["m"]) for z in zeilen if z.get("m")}
 
 

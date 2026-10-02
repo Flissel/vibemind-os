@@ -16,7 +16,7 @@ GERAETE = {"handy": 375, "tablet": 768, "pc": 1200}
 BASIS = "https://export.vibemind.invalid/"
 JPEG_GRENZE = 4 * 1024 * 1024
 MAX_HOEHE = 16000
-HOEHE = 800
+HOEHE = 1   # full_page nimmt die Dokumenthoehe: kein Leerraum unter kurzem Inhalt
 NICHT_MOEGLICH = "Export nicht möglich: "
 
 

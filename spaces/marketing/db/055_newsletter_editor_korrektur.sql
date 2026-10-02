@@ -1,3 +1,5 @@
+-- RUNBOOK: Nach 060 NIE erneut einspielen: ueberschreibt die 060-Huellen (Sperre, Gestaltungspruefung).
+-- Nach jedem Migrations-Replay verify_060 laufen lassen.
 -- 055_newsletter_editor_korrektur.sql — Schlussrunde Newsletter-Editor E1
 -- (sales-claw final-fix-findings.md I2/I3/I5/I8). 053/054 sind produktiv
 -- angewendet; diese Datei ersetzt pult_bloecke_fehler per CREATE OR REPLACE

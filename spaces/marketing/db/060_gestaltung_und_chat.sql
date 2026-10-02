@@ -1,3 +1,5 @@
+-- RUNBOOK: Nach 060 NIE erneut einspielen: ueberschreibt die 060-Huellen (Sperre, Gestaltungspruefung).
+-- Nach jedem Migrations-Replay verify_060 laufen lassen.
 -- 060: Newsletter-Gestaltung und Assistent (sales-claw Spec 2026-10-02
 -- newsletter-gestaltung-und-agent-design.md). Idempotent, eine Transaktion.
 --   1) pult_bloecke_fehler kennt props.gestaltung (nur im Image-Block)

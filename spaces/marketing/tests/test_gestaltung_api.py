@@ -78,8 +78,20 @@ def test_gestaltungen_rechnen_ueberspringt_aktuelle_url(umg):
     from spaces.marketing.claw import gestaltung as gc
     g = dict(G, ebenen=[{"id": "b", "art": "bild", "quelle": "medien:weg.png", "x": 1, "y": 1, "breite": 10, "drehung": 0}])
     dok = _dok(g, "medien:" + gc.name_fuer(g))
+    (umg[1] / gc.name_fuer(g)).write_bytes(b"x")   # Datei vorhanden: nichts zu rechnen
     neu, _ = ga.gestaltungen_rechnen(dok)   # wuerde sonst an der fehlenden Quelle scheitern
     assert neu == dok
+
+
+def test_gestaltungen_rechnen_rechnet_neu_wenn_datei_fehlt(umg):
+    from spaces.marketing.api import gestaltung as ga
+    from spaces.marketing.claw import gestaltung as gc
+    f, ordner = umg
+    name = gc.name_fuer(G)
+    dok = _dok(G, "medien:" + name)
+    assert not (ordner / name).exists()
+    ga.gestaltungen_rechnen(dok)
+    assert (ordner / name).exists()
 
 
 def test_gestaltungen_rechnen_fehler_mit_blockid(umg):

@@ -1,3 +1,5 @@
+-- RUNBOOK: Nach 060 NIE erneut einspielen: ueberschreibt die 060-Huellen (Sperre, Gestaltungspruefung).
+-- Nach jedem Migrations-Replay verify_060 laufen lassen.
 -- 058: Newsletter-Vorlagen in Profi-Qualitaet (sales-claw Spec 2026-10-01
 -- newsletter-vorlagen-profi-design.md). Idempotent, eine Transaktion.
 --   1) Vorlagen fuer alle Laeden (fuer_alle) und Status zurueckgezogen

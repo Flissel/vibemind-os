@@ -65,9 +65,9 @@ def test_bombe(tmp_path):
 def test_hash_stabil_und_idempotent(tmp_path):
     g = leer(ebenen=[text()])
     assert gs.schluessel(g) == gs.schluessel(dict(reversed(list(g.items()))))
-    a = gs.rechnen(g, [str(tmp_path)], str(tmp_path)); t = os.path.getmtime(tmp_path / a["name"])
-    time.sleep(0.05); b = gs.rechnen(g, [str(tmp_path)], str(tmp_path))
-    assert a["name"] == b["name"] and os.path.getmtime(tmp_path / a["name"]) == t
+    a = gs.rechnen(g, [str(tmp_path)], str(tmp_path)); inhalt = (tmp_path / a["name"]).read_bytes()
+    b = gs.rechnen(g, [str(tmp_path)], str(tmp_path))
+    assert a["name"] == b["name"] and (tmp_path / a["name"]).read_bytes() == inhalt   # nicht neu geschrieben
     assert gs.schluessel(leer(ebenen=[text(text="Anders")])) != gs.schluessel(g)
 
 def test_hinweise(tmp_path):
@@ -118,3 +118,13 @@ def test_positive_drehung_dreht_im_uhrzeigersinn(tmp_path):
     im, _ = gs.bild_rechnen(g, [str(tmp_path)])
     oben, unten = im.getpixel((600, 340)), im.getpixel((600, 460))
     assert oben[0] > 240 and oben[1] < 40 and unten[1] > 240
+
+
+def test_wiederverwendung_frischt_mtime_auf(tmp_path):
+    g = {"version": 1, "format": "quer", "hintergrund": "#FFFFFF", "ebenen": []}
+    erg = gs.rechnen(g, [], str(tmp_path))
+    pfad = tmp_path / erg["name"]
+    alt = time.time() - 30 * 86400
+    os.utime(pfad, (alt, alt))
+    gs.rechnen(g, [], str(tmp_path))
+    assert pfad.stat().st_mtime > time.time() - 60

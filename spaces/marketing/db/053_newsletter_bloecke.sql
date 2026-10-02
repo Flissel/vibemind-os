@@ -1,3 +1,5 @@
+-- RUNBOOK: Nach 060 NIE erneut einspielen: ueberschreibt die 060-Huellen (Sperre, Gestaltungspruefung).
+-- Nach jedem Migrations-Replay verify_060 laufen lassen.
 -- 053_newsletter_bloecke.sql — Blockformat fuer Newsletter (sales-claw Spec
 -- 2026-09-29-newsletter-editor-design.md §3.3/§3.5). Nur Ergaenzungen.
 -- Farbbedeutung: backdropColor = Layout flaeche, canvasColor = grund, textColor = text.
