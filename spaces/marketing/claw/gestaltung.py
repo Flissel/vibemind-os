@@ -197,19 +197,22 @@ def bild_rechnen(g: dict, quellen: list[str]) -> tuple[Image.Image, list[str]]:
             quelle = _laden(_pfad(e["quelle"], quellen), name)
             bw = max(1, int(round(e["breite"] * FAKTOR)))
             bh = max(1, int(round(quelle.height * bw / quelle.width)))
+            if bw * bh > MAX_PIXEL:
+                raise GestaltungFehler(f"Bild {name} ist zu groß")
             ebene = quelle.resize((bw, bh), Image.LANCZOS)
             box = _einsetzen(leinwand, ebene, e)
             beschreibung = f"Bild {name}"
         else:
             ebene = _text_ebene(e)
-            unter = leinwand.crop((max(0, int(e["x"] * FAKTOR - ebene.width / 2)), max(0, int(e["y"] * FAKTOR - ebene.height / 2)),
-                                   min(w, int(e["x"] * FAKTOR + ebene.width / 2) + 1), min(h, int(e["y"] * FAKTOR + ebene.height / 2) + 1)))
+            cl, co = max(0, int(e["x"] * FAKTOR - ebene.width / 2)), max(0, int(e["y"] * FAKTOR - ebene.height / 2))
+            cr, cu = min(w, int(e["x"] * FAKTOR + ebene.width / 2) + 1), min(h, int(e["y"] * FAKTOR + ebene.height / 2) + 1)
+            unter = leinwand.crop((cl, co, cr, cu)) if cl < cr and co < cu else None
             box = _einsetzen(leinwand, ebene, e)
             kurz = e["text"].split("\n")[0][:30]
             beschreibung = f"Text „{kurz}“"
             if e["groesse"] < 22:
                 hinweise.append(f"{beschreibung} ist am Handy unter 12 px")
-            if unter.width and unter.height:
+            if unter is not None and unter.width and unter.height:
                 mittel = unter.convert("RGB").resize((1, 1), Image.BOX).getpixel((0, 0))
                 grund = "#%02x%02x%02x" % mittel
                 if kontrast(e["farbe"].lower(), grund) < 3.0:

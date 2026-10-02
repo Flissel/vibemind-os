@@ -99,3 +99,22 @@ def test_aufraeumen(tmp_path):
         os.utime(tmp_path / n, (alt, alt))
     weg = gs.aufraeumen(str(tmp_path), {"gs-bbbbbbbbbbbb.jpg"})
     assert weg == ["gs-aaaaaaaaaaaa.jpg"] and (tmp_path / "nl-12345678-x.jpg").exists()
+
+
+def test_text_ganz_ausserhalb_stuerzt_nicht_ab(tmp_path):
+    _, hinweise = gs.bild_rechnen(leer(ebenen=[text(x=1100)]), [str(tmp_path)])
+    assert any("außerhalb" in h for h in hinweise)
+
+def test_uebergrosses_bild_wird_abgelehnt(tmp_path):
+    Image.new("RGB", (100, 100000), (0, 0, 0)).save(tmp_path / "hoch.png")
+    g = leer(ebenen=[{"id": "b", "art": "bild", "quelle": "medien:hoch.png", "x": 300, "y": 200, "breite": 3000, "drehung": 0}])
+    with pytest.raises(gs.GestaltungFehler, match="zu groß"):
+        gs.bild_rechnen(g, [str(tmp_path)])
+
+def test_positive_drehung_dreht_im_uhrzeigersinn(tmp_path):
+    q = Image.new("RGB", (100, 100), (255, 255, 255)); q.paste((255, 0, 0), (0, 0, 50, 100))  # linke Haelfte rot
+    q.save(tmp_path / "lr.png")
+    g = leer(ebenen=[{"id": "b", "art": "bild", "quelle": "medien:lr.png", "x": 300, "y": 200, "breite": 100, "drehung": 90}])
+    im, _ = gs.bild_rechnen(g, [str(tmp_path)])
+    oben, unten = im.getpixel((600, 340)), im.getpixel((600, 460))
+    assert oben[0] > 240 and oben[1] < 40 and unten[1] > 240
