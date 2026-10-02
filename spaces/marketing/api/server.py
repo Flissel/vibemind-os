@@ -121,10 +121,12 @@ async def _api_key_check(request: Request, call_next):
     # a header the Sales-UI never sends (fix round 1, task-3-report.md).
     # /api/bilder/arbeiter/* hat einen eigenen Pflichtschluessel
     # (bilder._bild_schluessel, X-Bild-Key); der Arbeiter kennt den X-API-Key nicht.
+    # /api/chat/arbeiter/* (Chat-Arbeiter) ebenso, gleicher Schluessel.
     path = request.url.path
     if (API_KEY and path.startswith("/api/") and path != "/api/health"
             and not path.startswith("/api/pult/")
-            and not path.startswith("/api/bilder/arbeiter/")):
+            and not path.startswith("/api/bilder/arbeiter/")
+            and not path.startswith("/api/chat/arbeiter/")):
         if request.headers.get("X-API-Key") != API_KEY:
             return JSONResponse({"error": "invalid api key"}, status_code=401)
     return await call_next(request)
@@ -3475,6 +3477,9 @@ app.include_router(_bilder.router)
 app.include_router(_bilder.pult_router)
 from spaces.marketing.api import gestaltung as _gestaltung  # noqa: E402
 app.include_router(_gestaltung.pult_router)
+from spaces.marketing.api import chat as _chat  # noqa: E402
+app.include_router(_chat.pult_router)
+app.include_router(_chat.arbeiter_router)
 
 
 # ─── Static-serve of the mockup ───────────────────────────────────────
