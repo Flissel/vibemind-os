@@ -3473,6 +3473,8 @@ app.include_router(_pult.router)
 from spaces.marketing.api import bilder as _bilder  # noqa: E402
 app.include_router(_bilder.router)
 app.include_router(_bilder.pult_router)
+from spaces.marketing.api import gestaltung as _gestaltung  # noqa: E402
+app.include_router(_gestaltung.pult_router)
 
 
 # ─── Static-serve of the mockup ───────────────────────────────────────

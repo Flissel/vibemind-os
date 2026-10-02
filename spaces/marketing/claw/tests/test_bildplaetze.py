@@ -109,3 +109,10 @@ def test_grafik_ist_kein_platz():
     d = dok(["g"], g={"type": "Image", "data": {"style": {}, "props": {"url": "medien:tech-signal-b5f750.png",
                                                                        "width": 536, "height": 380, "grafik": True}}})
     assert bp.finde(d) == []
+
+
+def test_gestaltungsflaeche_ist_kein_platz():
+    b = bild("medien:gs-aaaaaaaaaaaa.jpg", 600, 400)
+    b["data"]["props"]["gestaltung"] = {"version": 1, "format": "quer", "hintergrund": "#FFFFFF", "ebenen": []}
+    assert bp.finde(dok(["f"], f=b)) == []
+    assert len(bp.finde(dok(["f"], f=bild("medien:x.png", 600, 400)))) == 1

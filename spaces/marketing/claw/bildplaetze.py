@@ -86,6 +86,8 @@ def _platz(dok: dict, bid: str, verfuegbar: float, geschwister: list, flaeche: s
     style, props = _daten(b)
     if props.get("grafik") is True:      # erzeugte Grafik (Pillow), kein Foto-Platz
         return None
+    if isinstance(props.get("gestaltung"), dict):   # Gestaltungs-Flaeche, kein Foto-Platz
+        return None
     container = b.get("type") == "Container"
     if container and not props.get("url"):
         return None
