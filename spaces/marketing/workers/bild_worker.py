@@ -26,6 +26,8 @@ TAKT_S = 20
 VERSUCHE_JE_PLATZ = 3
 GRENZE_STAERKE = 60           # bis hierhin: Motiv nah halten und Aehnlichkeit erzwingen
 MIN_AEHNLICH = 0.75           # CLIP cos(alt, neu) bei staerke <= GRENZE_STAERKE
+FREI_MIN, FREI_MAX = 0.02, 0.98     # Vordergrundanteil (Alpha > 128) ausserhalb = kein klares Motiv
+PNG_MAX = 4 * 1024 * 1024           # Obergrenze der VM-Route fuer freigestellte PNG
 QUELLE_MAX = 16 * 1024 * 1024  # Quellbild groesser -> wie fehlend (Menschen legen auch Kamera-Fotos ab)
 QUELLE_KANTE = 1536           # Quelle vor Sehen/CLIP am PC auf diese laengste Kante verkleinern
 ERZEUGUNG_ZEITLIMIT_S = 540
@@ -103,8 +105,10 @@ class ArbeiterApi:
     def weiter(self, aid):
         return bool(self._post(f"/{aid}/weiter").get("ok"))
 
-    def bild(self, aid, platz, jpeg: bytes) -> str:
-        return self._post(f"/{aid}/bild?platz={urllib.request.quote(platz)}", roh=jpeg, typ="image/jpeg")["name"]
+    def bild(self, aid, platz, daten: bytes, format: str = "jpg") -> str:
+        png = format == "png"
+        pfad = f"/{aid}/bild?platz={urllib.request.quote(platz)}" + ("&format=png" if png else "")
+        return self._post(pfad, roh=daten, typ="image/png" if png else "image/jpeg")["name"]
 
     def quelle(self, aid, platz) -> bytes | None:
         """Aktuelles Bild des Platzes von der VM; 404 (kein Bild) -> None. Liest
@@ -177,6 +181,69 @@ def _dienste_bereit(comfy, prompt, starten, uhr) -> bool:
         START["dienste"] = jetzt
         starten()
     return False
+
+
+def vordergrund_anteil(png: bytes) -> float:
+    from PIL import Image
+    with Image.open(io.BytesIO(png)) as b:
+        a = b.convert("RGBA").getchannel("A")
+        hist = a.histogram()
+        return sum(hist[129:]) / max(1, a.size[0] * a.size[1])
+
+
+def png_passend(png: bytes, grenze: int | None = None) -> bytes:
+    """PNG <= Grenze unveraendert; sonst laengste Kante auf 1600 px verkleinert."""
+    if len(png) <= (PNG_MAX if grenze is None else grenze):
+        return png
+    from PIL import Image
+    with Image.open(io.BytesIO(png)) as b:
+        b = b.convert("RGBA")
+        b.thumbnail((1600, 1600), Image.LANCZOS)
+        out = io.BytesIO()
+        b.save(out, "PNG", optimize=True)
+        return out.getvalue()
+
+
+def _freistellen(api, aid, auftrag, ziele, comfy):
+    """Freistellen eines belegten Bildplatzes (BiRefNet in ComfyUI). Kein Sehmodell,
+    kein Prompt, kein FLUX. Rueckgabe (ergebnis, befunde, {}) wie _erzeugen oder "verworfen"."""
+    platz = next((p for p in ziele if p.id == auftrag.get("platz")), None)
+    if platz is None or platz.leer:
+        return {}, ["Freistellen braucht einen Bildplatz mit Bild"], {}
+    if not api.weiter(aid):
+        return "verworfen"
+    try:
+        roh = api.quelle(aid, platz.id)
+    except ApiFehler as e:
+        if e.code == 422 and "in Arbeit" in e.grund:
+            return "verworfen"
+        raise
+    quelle = quelle_normalisieren(roh) if roh and len(roh) <= QUELLE_MAX else None
+    if quelle is None:
+        return {}, [f"{platz.id}: Quellbild fehlt oder unlesbar"], {}
+    try:
+        frei = comfy.freistellen(quelle)
+    except bild_comfy.ComfyFehler as e:
+        return {}, [f"Freistellen nicht verfügbar: {e}"], {}
+    finally:
+        comfy.freigeben()
+    anteil = vordergrund_anteil(frei)
+    if not FREI_MIN <= anteil <= FREI_MAX:
+        return {}, ["Kein klares Motiv gefunden"], {}
+    daten = png_passend(frei)
+    if len(daten) > PNG_MAX:
+        return {}, [f"{platz.id}: freigestelltes Bild zu groß"], {}
+    if not api.weiter(aid):
+        return "verworfen"
+    try:
+        name = api.bild(aid, platz.id, daten, format="png")
+    except ApiFehler as e:
+        if e.code != 422:
+            raise
+        if "in Arbeit" in e.grund:
+            return "verworfen"
+        return {}, [f"{platz.id}: {e.grund}"], {}
+    return {platz.id: name}, [f"freigestellt ({anteil:.0%} Motiv)"], {}
 
 
 def _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen):
@@ -310,7 +377,10 @@ def ein_durchlauf(api, comfy=bild_comfy, prompt=bild_prompt, starten=dienste_sta
         if not ziele:
             api.zurueck(aid, "Keine passenden Bildplaetze", True)
             return "zurueck"
-        erg = _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen)
+        if auftrag.get("modus") == "freistellen":
+            erg = _freistellen(api, aid, auftrag, ziele, comfy)
+        else:
+            erg = _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen)
         if erg == "verworfen":
             return "verworfen"
         ergebnis, befunde, messwerte = erg

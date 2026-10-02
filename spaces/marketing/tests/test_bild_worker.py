@@ -26,6 +26,7 @@ ALT = png(64, 32)                          # echtes Quellbild: der Arbeiter norm
 class Api:
     def __init__(self, auftrag):
         self.auftrag, self.log, self.quellen, self.messung = auftrag, [], {}, None
+        self.hochgeladen = []
 
     def naechster(self):
         a, self.auftrag = self.auftrag, None
@@ -34,8 +35,12 @@ class Api:
     def weiter(self, aid):
         self.log.append(("weiter", aid)); return True
 
-    def bild(self, aid, platz, jpeg):
-        assert jpeg[:3] == b"\xff\xd8\xff" and len(jpeg) < 1024 * 1024
+    def bild(self, aid, platz, daten, format="jpg"):
+        if format == "png":
+            assert daten[:8] == b"\x89PNG\r\n\x1a\n" and len(daten) <= 4 * 1024 * 1024
+            self.hochgeladen.append((aid, platz, format))
+            self.log.append(("bild", platz)); return f"nl-{aid[:8]}-{platz}-frei.png"
+        assert daten[:3] == b"\xff\xd8\xff" and len(daten) < 1024 * 1024
         self.log.append(("bild", platz)); return f"nl-{aid[:8]}-{platz}.jpg"
 
     def quelle(self, aid, platz):
@@ -53,6 +58,7 @@ class Comfy:
 
     def __init__(self, laeuft=True, fehler=None):
         self._laeuft, self.fehler, self.masse, self.frei, self.ueber = laeuft, fehler, [], 0, []
+        self.freigestellt, self.frei_png = [], None
 
     def laeuft(self):
         return self._laeuft
@@ -64,6 +70,12 @@ class Comfy:
 
     def ueberarbeiten(self, prompt, quelle, b, h, seed, staerke, zeitlimit_s=300):
         self.ueber.append((b, h, staerke, quelle)); return png(b, h)
+
+    def freistellen(self, quelle, zeitlimit_s=300):
+        self.freigestellt.append(quelle)
+        if self.fehler:
+            raise self.fehler
+        return self.frei_png
 
     def freigeben(self):
         self.frei += 1
@@ -696,3 +708,143 @@ def test_ohne_beschreibung_prompt_aus_alt_kontext_hinweis():
     bw.ein_durchlauf(api, comfy, prompt, starten=lambda: None, sehen=Sehen(""), messen=Messen([]))
     assert comfy.prompts == ["bild fuer neben"] and prompt.nah == []
     assert "neben: ohne Bildbeschreibung" in api.log[-1][2]
+
+
+# --- Freistellen (Newsletter-Bild ohne Hintergrund) ---------------------------------
+
+def _rgba(anteil: float, groesse=(100, 100)) -> bytes:
+    bild = Image.new("RGBA", groesse, (0, 0, 0, 0))
+    voll = int(groesse[0] * groesse[1] * anteil)
+    px = bild.load()
+    for i in range(voll):
+        px[i % groesse[0], i // groesse[0]] = (200, 100, 50, 255)
+    b = io.BytesIO()
+    bild.save(b, "PNG")
+    return b.getvalue()
+
+
+FREI = dict(AUFTRAG, platz="neben", nur_leere=False, staerke=0, modus="freistellen")
+
+
+class VerbotenPrompt(Prompt):
+    def prompt_schreiben(self, *a, **k):
+        raise AssertionError("Freistellen braucht keinen Prompt")
+
+    bearbeitungs_prompt = pruefen = prompt_schreiben
+
+
+class VerbotenSehen:
+    def beschreiben(self, bild):
+        raise AssertionError("Freistellen braucht kein Sehmodell")
+
+
+def _frei_lauf(api, comfy):
+    def kein_flux(*a, **k):
+        raise AssertionError("kein FLUX beim Freistellen")
+    comfy.erzeugen = comfy.ueberarbeiten = kein_flux
+    return bw.ein_durchlauf(api, comfy, VerbotenPrompt(), starten=lambda: None, sehen=VerbotenSehen(),
+                            messen=Messen([]))
+
+
+def test_vordergrund_anteil():
+    assert abs(bw.vordergrund_anteil(_rgba(0.5)) - 0.5) < 0.02
+
+
+def test_png_passend_laesst_kleines_unveraendert():
+    roh = _rgba(0.5)
+    assert bw.png_passend(roh) is roh
+
+
+def test_png_passend_verkleinert_grosses():
+    gross = Image.effect_noise((2400, 1600), 80).convert("RGBA")
+    b = io.BytesIO()
+    gross.save(b, "PNG")
+    roh = b.getvalue()
+    klein = bw.png_passend(roh, grenze=len(roh) - 1)
+    with Image.open(io.BytesIO(klein)) as k:
+        assert max(k.size) == 1600 and k.mode == "RGBA"
+
+
+@pytest.mark.parametrize("anteil,erwartet", [(0.5, "fertig"), (0.005, "zurueck"), (0.995, "zurueck")])
+def test_freistellen_qualitaetsregel(anteil, erwartet):
+    api, comfy = Api(dict(FREI)), Comfy()
+    api.quellen["neben"] = ALT
+    comfy.frei_png = _rgba(anteil)
+    assert _frei_lauf(api, comfy) == erwartet
+    assert comfy.frei == 1
+    if erwartet == "fertig":
+        assert api.hochgeladen == [(FREI["id"], "neben", "png")]
+        assert api.log[-1][:2] == ("fertig", {"neben": "nl-0123abcd-neben-frei.png"})
+        with Image.open(io.BytesIO(comfy.freigestellt[0])) as q:      # normalisierte Quelle
+            assert q.mode == "RGB" and q.size == (64, 32)
+    else:
+        assert api.hochgeladen == [] and api.log[-1] == ("zurueck", "Kein klares Motiv gefunden", True)
+
+
+def test_freistellen_ohne_modell_gibt_zurueck():
+    api = Api(dict(FREI))
+    api.quellen["neben"] = ALT
+    comfy = Comfy(fehler=bild_comfy.ComfyFehler("Erzeugung in ComfyUI fehlgeschlagen"))
+    assert _frei_lauf(api, comfy) == "zurueck"
+    assert api.log[-1][0] == "zurueck" and "Freistellen nicht verfügbar" in api.log[-1][1]
+    assert api.log[-1][2] is True and comfy.frei == 1
+
+
+def test_freistellen_quelle_fehlt_oder_unlesbar():
+    for roh in (None, b"\xff\xd8\xffkein bild"):
+        api, comfy = Api(dict(FREI)), Comfy()
+        api.quellen["neben"] = roh
+        assert _frei_lauf(api, comfy) == "zurueck"
+        assert api.log[-1] == ("zurueck", "neben: Quellbild fehlt oder unlesbar", True)
+        assert comfy.freigestellt == []
+
+
+def test_freistellen_platzhalter_ist_fehler():
+    api, comfy = Api(dict(FREI, platz="kopf")), Comfy()           # kopf = Platzhalter
+    assert _frei_lauf(api, comfy) == "zurueck"
+    assert api.log[-1][1] == "Freistellen braucht einen Bildplatz mit Bild" and comfy.freigestellt == []
+
+
+def test_freistellen_weiter_false_ist_verworfen():
+    class A(Api):
+        def weiter(self, aid):
+            self.log.append(("weiter", aid)); return False
+    api, comfy = A(dict(FREI)), Comfy()
+    assert _frei_lauf(api, comfy) == "verworfen" and comfy.freigestellt == []
+    assert not [e for e in api.log if e[0] in ("zurueck", "fertig", "bild")]
+
+
+def test_freistellen_png_zu_gross_auch_nach_verkleinern(monkeypatch):
+    monkeypatch.setattr(bw, "PNG_MAX", 10)
+    api, comfy = Api(dict(FREI)), Comfy()
+    api.quellen["neben"] = ALT
+    comfy.frei_png = _rgba(0.5)
+    assert _frei_lauf(api, comfy) == "zurueck"
+    assert api.log[-1] == ("zurueck", "neben: freigestelltes Bild zu groß", True)
+
+
+def test_arbeiter_api_bild_format_png_und_jpg(monkeypatch):
+    gesehen = []
+
+    def urlopen(req, timeout=None, context=None):
+        gesehen.append(req)
+        return _Antwort(b'{"name": "x"}')
+
+    monkeypatch.setattr(bw.urllib.request, "urlopen", urlopen)
+    api = bw.ArbeiterApi("https://vm", "k")
+    api.bild("a1", "neben", b"P", format="png")
+    assert gesehen[-1].full_url.endswith("/a1/bild?platz=neben&format=png")
+    assert gesehen[-1].get_header("Content-type") == "image/png"
+    api.bild("a1", "neben", b"J")
+    assert gesehen[-1].get_header("Content-type") == "image/jpeg" and "format=png" not in gesehen[-1].full_url
+
+
+def test_comfy_freistellen_laedt_hoch_und_setzt_bildname(monkeypatch):
+    hoch, lauf = [], []
+    monkeypatch.setattr(bild_comfy, "_hochladen", lambda name, daten: hoch.append((name, daten)) or "hoch.png")
+    monkeypatch.setattr(bild_comfy, "_ausfuehren", lambda ablauf, z: lauf.append((ablauf, z)) or b"PNG")
+    assert bild_comfy.freistellen(b"quelle", zeitlimit_s=77) == b"PNG"
+    assert hoch[0][1] == b"quelle" and lauf[0][0]["1"]["inputs"]["image"] == "hoch.png" and lauf[0][1] == 77
+    assert lauf[0][0]["2"]["inputs"]["bg_removal_name"] == "birefnet.safetensors"
+    with pytest.raises(bild_comfy.ComfyFehler):
+        bild_comfy.freistellen(b"")

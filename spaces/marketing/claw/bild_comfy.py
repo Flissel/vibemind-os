@@ -117,3 +117,18 @@ def ueberarbeiten(prompt: str, quelle: bytes, breite: int, hoehe: int, seed: int
     ablauf["11"]["inputs"]["width"], ablauf["11"]["inputs"]["height"] = breite, hoehe
     ablauf["7"]["inputs"].update(seed=int(seed), denoise=round(denoise, 2), steps=SCHRITTE_UEBERARBEITEN)
     return _ausfuehren(ablauf, zeitlimit_s)
+
+
+ABLAUF_FREISTELLEN = Path(os.environ.get("COMFYUI_ABLAUF_FREISTELLEN") or
+                          Path(__file__).resolve().parents[1] / "bilder" / "freistellen_api.json")
+
+
+def freistellen(quelle: bytes, zeitlimit_s: int = 300) -> bytes:
+    """Hintergrund entfernen (BiRefNet, Knoten 2-5 der Ablaufdatei); PNG mit Alpha
+    in Originalgroesse. Fehlt das Modell, meldet ComfyUI das als ComfyFehler."""
+    if not quelle:
+        raise ComfyFehler("Ausgangsbild fehlt")
+    name = _hochladen(f"nl-frei-{uuid.uuid4().hex[:12]}.img", quelle)
+    ablauf = json.loads(ABLAUF_FREISTELLEN.read_text(encoding="utf-8"))
+    ablauf["1"]["inputs"]["image"] = name
+    return _ausfuehren(ablauf, zeitlimit_s)
