@@ -1,6 +1,6 @@
 """Bild-Arbeiter am PC (sales-claw Spec 2026-09-29-newsletter-bilder-und-
 gestaltung-design.md §7.2). Holt Auftraege von der Marketing-API der VM
-(Tailnet, X-Bild-Key), erzeugt mit ComfyUI, prueft mit Ollama, liefert JPEGs ab.
+(Tailnet, X-Bild-Key), erzeugt mit ComfyUI, prueft mit Ollama (nur bei Bedarf gestartet), liefert JPEGs ab.
 Die VM schreibt die Fassung. Gestartet von marketing-dienste-starten.ps1;
 Gesundheits-Port 8133."""
 from __future__ import annotations
@@ -37,6 +37,8 @@ REPO_ROOT = next((p for p in _HIER.parents if (p / "vibemind-os").is_dir()), _HI
 STARTER = _HIER.parents[1] / "claw" / "scripts" / "marketing-dienste-starten.ps1"
 STAND = {"letzter_lauf": None, "letztes_ergebnis": None}
 START_SCHONFRIST_S = 120      # nach Arbeiterstart: Starter-Skript startet die Dienste gerade selbst
+OLLAMA_WARTE_S = 90           # so lange auf Ollama warten, nachdem es gestartet wurde
+OLLAMA_POLL_S = 3
 START_ABSTAND_S = 600         # hoechstens ein Dienststart je 10 Minuten
 START = {"arbeiter": None, "dienste": None}   # time.monotonic()-Zeitpunkte
 
@@ -160,21 +162,63 @@ def quelle_normalisieren(roh: bytes) -> bytes | None:
         return None
 
 
+def _abgekoppelt() -> dict:
+    """Popen-Argumente: kein Pipe-Handle erben, eigene Prozessgruppe, nie warten.
+    (capture_output + run() haengt unter Windows, solange ein Enkelprozess die
+    Pipe-Handles haelt - gemessen 02.10.: Schleife stand seit 11:33.)"""
+    k: dict = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    if os.name == "nt":
+        k["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        k["start_new_session"] = True
+    return k
+
+
 def dienste_starten() -> None:
-    """Startet ComfyUI/Ollama ueber das Starter-Skript. Kein Warten hier: der
-    naechste Takt prueft erneut (ComfyUI braucht ~60 s bis /system_stats)."""
-    subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(STARTER)],
-                   capture_output=True, timeout=240)
+    """Startet ComfyUI ueber das Starter-Skript (Ollama startet es nicht, siehe
+    ollama_starten). Abgekoppelt und ohne Warten: der naechste Takt prueft
+    erneut (ComfyUI braucht ~60 s bis /system_stats)."""
+    subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(STARTER)],
+                     **_abgekoppelt())
 
 
-def _dienste_bereit(comfy, prompt, starten, uhr) -> bool:
-    """ComfyUI und Ollama pruefen, BEVOR ein Auftrag genommen wird. Laufen sie
-    nicht, hoechstens alle 10 min starten und nie in den ersten 120 s nach dem
-    Arbeiterstart (dann startet marketing-dienste-starten.ps1 sie gerade selbst)."""
+def ollama_starten() -> None:
+    """Startet Ollama (Betreiber hat den Task OllamaServe am 24.09. absichtlich
+    abgeschaltet: nur bei Bedarf). Programm aus OLLAMA_APP, sonst
+    %LOCALAPPDATA%\Programs\Ollama\ollama app.exe; fehlt die Datei, passiert nichts."""
+    exe = os.environ.get("OLLAMA_APP") or str(
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama app.exe")
+    if not Path(exe).is_file():
+        return
+    subprocess.Popen([exe], **_abgekoppelt())
+
+
+def _ollama_bereit(api, aid, prompt, ollama, uhr, schlafen) -> bool | str:
+    """Ollama nur fuer Auftraege, die es brauchen (neu/ueberarbeiten), NACH der
+    Vergabe: einmal starten, bis OLLAMA_WARTE_S pollen. True = laeuft, False =
+    nicht erreichbar, "verworfen" = Vergabe weg."""
+    if prompt.laeuft():
+        return True
+    if not api.weiter(aid):
+        return "verworfen"
+    ollama()
+    ende = uhr() + OLLAMA_WARTE_S
+    while uhr() < ende:
+        schlafen(OLLAMA_POLL_S)
+        if prompt.laeuft():
+            return True
+    return prompt.laeuft()
+
+
+def _dienste_bereit(comfy, starten, uhr) -> bool:
+    """Nur ComfyUI pruefen, BEVOR ein Auftrag genommen wird (Freistellen braucht
+    kein Ollama; das holt _ollama_bereit bei Bedarf). Laeuft es nicht, hoechstens
+    alle 10 min starten und nie in den ersten 120 s nach dem Arbeiterstart (dann
+    startet marketing-dienste-starten.ps1 es gerade selbst)."""
     jetzt = uhr()
     if START["arbeiter"] is None:
         START["arbeiter"] = jetzt
-    if comfy.laeuft() and prompt.laeuft():
+    if comfy.laeuft():
         return True
     if (jetzt - START["arbeiter"] >= START_SCHONFRIST_S
             and (START["dienste"] is None or jetzt - START["dienste"] >= START_ABSTAND_S)):
@@ -362,8 +406,9 @@ def _bilder(api, aid, arbeit, staerke, hinweis, comfy, prompt, messen, je_bild_f
 
 
 def ein_durchlauf(api, comfy=bild_comfy, prompt=bild_prompt, starten=dienste_starten,
-                  uhr=time.monotonic, sehen=bild_sehen, messen=bild_messen) -> str:
-    if not _dienste_bereit(comfy, prompt, starten, uhr):
+                  uhr=time.monotonic, sehen=bild_sehen, messen=bild_messen,
+                  ollama_starten=ollama_starten, schlafen=time.sleep) -> str:
+    if not _dienste_bereit(comfy, starten, uhr):
         return "wartet"
     auftrag = api.naechster()
     if not auftrag:
@@ -380,6 +425,12 @@ def ein_durchlauf(api, comfy=bild_comfy, prompt=bild_prompt, starten=dienste_sta
         if auftrag.get("modus") == "freistellen":
             erg = _freistellen(api, aid, auftrag, ziele, comfy)
         else:
+            bereit = _ollama_bereit(api, aid, prompt, ollama_starten, uhr, schlafen)
+            if bereit == "verworfen":
+                return "verworfen"
+            if not bereit:
+                api.zurueck(aid, "Ollama nicht erreichbar – Bildbeschreibung nicht moeglich", False)
+                return "zurueck"
             erg = _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen)
         if erg == "verworfen":
             return "verworfen"

@@ -172,13 +172,126 @@ def test_dienste_aus_kein_auftrag_genommen_und_start_gedrosselt():
     assert api.gefragt == 0 and api.log == []
 
 
-def test_ollama_aus_nimmt_auch_keinen_auftrag():
+def test_ollama_aus_haelt_comfy_laufende_auftraege_nicht_auf():
+    """Ollama ist normalerweise aus (Betreiber 24.09.): vor dem Auftrag zaehlt nur ComfyUI."""
     class P(Prompt):
         def laeuft(self):
-            return False
+            raise AssertionError("vor dem Auftrag wird Ollama nicht geprueft")
+    api = ZaehlApi(None)
+    assert bw.ein_durchlauf(api, Comfy(), P(), starten=lambda: None, uhr=Uhr()) == "leer"
+    assert api.gefragt == 1
+
+
+class OllamaAus(Prompt):
+    """Ollama aus; kommt nach `hoch_nach` Abfragen hoch (None = bleibt aus)."""
+    def __init__(self, hoch_nach=None):
+        super().__init__()
+        self.hoch_nach, self.abfragen = hoch_nach, 0
+
+    def laeuft(self):
+        self.abfragen += 1
+        return self.hoch_nach is not None and self.abfragen > self.hoch_nach
+
+
+class Schlaf:
+    def __init__(self, uhr):
+        self.uhr, self.n = uhr, 0
+
+    def __call__(self, s):
+        self.n += 1
+        self.uhr.t += s
+
+
+def test_freistellen_laeuft_bei_ollama_aus_ohne_ollama_zu_starten():
+    class P(VerbotenPrompt):
+        def laeuft(self):
+            raise AssertionError("Freistellen fragt Ollama nie")
+    comfy, api, start = Comfy(), Api(dict(FREI)), []
+    comfy.frei_png = _rgba(0.5)
+    api.quellen["neben"] = ALT
+    uhr = Uhr()
+    r = bw.ein_durchlauf(api, comfy, P(), starten=lambda: None, sehen=VerbotenSehen(), messen=Messen([]),
+                         ollama_starten=lambda: start.append(1), uhr=uhr, schlafen=Schlaf(uhr))
+    assert r == "fertig" and start == []
+
+
+def test_neu_bei_ollama_aus_startet_ollama_einmal_und_wartet():
+    uhr, start = Uhr(), []
+    schlaf, prompt, api = Schlaf(uhr), OllamaAus(hoch_nach=3), Api(dict(AUFTRAG))
+    r = bw.ein_durchlauf(api, Comfy(), prompt, starten=lambda: None, uhr=uhr, schlafen=schlaf,
+                         ollama_starten=lambda: start.append(1))
+    assert r == "fertig" and start == [1] and schlaf.n >= 1
+    assert api.log.index(("weiter", AUFTRAG["id"])) < api.log.index(("bild", "kopf"))
+
+
+def test_neu_ollama_bleibt_aus_gibt_auftrag_zurueck():
+    uhr, start = Uhr(), []
+    schlaf, api, comfy = Schlaf(uhr), Api(dict(AUFTRAG)), Comfy()
+    r = bw.ein_durchlauf(api, comfy, OllamaAus(None), starten=lambda: None, uhr=uhr, schlafen=schlaf,
+                         ollama_starten=lambda: start.append(1))
+    assert r == "zurueck" and start == [1] and comfy.masse == []
+    assert api.log[-1] == ("zurueck", "Ollama nicht erreichbar – Bildbeschreibung nicht moeglich", False)
+    assert uhr.t >= bw.OLLAMA_WARTE_S
+
+
+def test_ueberarbeiten_bei_ollama_aus_startet_ollama():
+    uhr, start = Uhr(), []
+    api = Api(dict(AUFTRAG, modus="ueberarbeiten"))
+    bw.ein_durchlauf(api, Comfy(), OllamaAus(None), starten=lambda: None, uhr=uhr, schlafen=Schlaf(uhr),
+                     ollama_starten=lambda: start.append(1))
+    assert start == [1] and api.log[-1][0] == "zurueck"
+
+
+def test_ollama_wartet_nicht_wenn_comfy_aus():
     api = ZaehlApi(dict(AUFTRAG))
-    assert bw.ein_durchlauf(api, Comfy(), P(), starten=lambda: None, uhr=Uhr()) == "wartet"
+    assert bw.ein_durchlauf(api, Comfy(laeuft=False), OllamaAus(), starten=lambda: None, uhr=Uhr()) == "wartet"
     assert api.gefragt == 0
+
+
+def test_dienste_starten_nicht_blockierend(monkeypatch):
+    aufrufe = []
+
+    class P:
+        def __init__(self, *a, **k):
+            aufrufe.append((a, k))
+
+        def wait(self, *a, **k):
+            raise AssertionError("nicht warten")
+        communicate = poll = wait
+
+    def kein_run(*a, **k):
+        raise AssertionError("subprocess.run blockiert")
+    monkeypatch.setattr(bw.subprocess, "Popen", P)
+    monkeypatch.setattr(bw.subprocess, "run", kein_run)
+    bw.dienste_starten()
+    (a, k), = aufrufe
+    assert str(bw.STARTER) in a[0]
+    assert k["stdin"] == k["stdout"] == k["stderr"] == bw.subprocess.DEVNULL
+    assert "capture_output" not in k and "timeout" not in k
+    if bw.os.name == "nt":
+        assert k["creationflags"] == bw.subprocess.DETACHED_PROCESS | bw.subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        assert k["start_new_session"] is True
+
+
+def test_ollama_starten_nimmt_ollama_app_oder_standardpfad(monkeypatch, tmp_path):
+    aufrufe = []
+    monkeypatch.setattr(bw.subprocess, "Popen", lambda *a, **k: aufrufe.append((a, k)))
+    exe = tmp_path / "ollama app.exe"
+    monkeypatch.setenv("OLLAMA_APP", str(exe))
+    bw.ollama_starten()
+    assert aufrufe == []                      # Datei fehlt: nichts tun
+    exe.write_bytes(b"")
+    bw.ollama_starten()
+    (a, k), = aufrufe
+    assert a[0] == [str(exe)] and k["stdout"] == bw.subprocess.DEVNULL
+    monkeypatch.delenv("OLLAMA_APP")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    ziel = tmp_path / "Programs" / "Ollama"
+    ziel.mkdir(parents=True)
+    (ziel / "ollama app.exe").write_bytes(b"")
+    bw.ollama_starten()
+    assert aufrufe[1][0][0] == [str(ziel / "ollama app.exe")]
 
 
 def test_comfy_fehler_mitten_drin():
