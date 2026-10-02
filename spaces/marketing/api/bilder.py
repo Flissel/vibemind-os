@@ -28,6 +28,8 @@ _NAME = re.compile(r"nl-[0-9a-f]{8}-[A-Za-z0-9_-]{1,64}\.jpg")   # nur mit fullm
 _BILDTYP = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}
 _MESSWERTE = ("aehnlich_original", "naeher_am_hinweis")
 BILD_MAX = 1024 * 1024
+PNG_MAX = 4 * 1024 * 1024
+PNG_KOPF = bytes((137, 80, 78, 71, 13, 10, 26, 10))   # PNG-Signatur
 KANTE_MIN, KANTE_MAX = 64, 2400
 FRIST = "10 minutes"
 _STAND_SQL = ("SELECT id, platz, nur_leere, hinweis, status, befund, versuche, urheber, "
@@ -70,6 +72,19 @@ def _auftrag_id(wert: str) -> str:
         raise HTTPException(404, "Unbekannter Auftrag")
 
 
+def _echtes_bild_pruefen(i: str, platz: str) -> None:
+    """Freistellen nur fuer einen Platz der neuesten Fassung, der ein echtes Bild
+    traegt (kein Platzhalter, keine erzeugte Grafik - finde() laesst Grafiken weg)."""
+    f = _lesen_einer(lambda:
+        f"SELECT bloecke FROM marketing.inhalt_fassungen WHERE inhalt = {lit(i)}::uuid "
+        "ORDER BY fassung DESC LIMIT 1")
+    if not f:
+        raise HTTPException(404, "Unbekannter Inhalt")
+    echt = [p for p in bildplaetze.finde(f.get("bloecke") or {}) if p.id == platz and not bildplaetze.ist_leer(p.url)]
+    if not echt:
+        raise HTTPException(422, "Freistellen geht nur bei einem Bildplatz mit echtem Bild")
+
+
 def _anlegen(iid: str, payload, urheber: str) -> dict:
     i = _uuid_oder_404(iid)
     if not isinstance(payload, dict):
@@ -87,8 +102,13 @@ def _anlegen(iid: str, payload, urheber: str) -> dict:
     if isinstance(staerke, bool) or not isinstance(staerke, int) or not 0 <= staerke <= 100:
         raise HTTPException(422, "staerke muss eine ganze Zahl von 0 bis 100 sein")
     modus = payload.get("modus", "ueberarbeiten")
-    if modus not in ("neu", "ueberarbeiten"):
-        raise HTTPException(422, "modus muss neu oder ueberarbeiten sein")
+    if modus not in ("neu", "ueberarbeiten", "freistellen"):
+        raise HTTPException(422, "modus muss neu, ueberarbeiten oder freistellen sein")
+    if modus == "freistellen":
+        if not platz:
+            raise HTTPException(422, "Freistellen braucht einen Bildplatz (platz)")
+        _echtes_bild_pruefen(i, platz)
+        staerke, nur_leere = 0, False
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_bild_auftrag({lit(i)}::uuid, {lit(platz) if platz else 'NULL'}, "
         f"{'true' if nur_leere else 'false'}, {lit(hinweis.strip())}, {lit(urheber)}, {int(staerke)}, {lit(modus)}) AS id")
@@ -128,6 +148,22 @@ def agent_plaetze(iid: str):
 def agent_auftrag(iid: str, payload: dict = Body(default={})):
     _agent_schluessel()
     return _anlegen(iid, payload, "agent")
+
+
+def _png_pruefen(roh: bytes) -> None:
+    if not roh.startswith(PNG_KOPF):
+        raise HTTPException(422, "Kein PNG")
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(roh)) as b:
+            b.verify()
+        with Image.open(io.BytesIO(roh)) as b:
+            if b.mode not in ("RGBA", "LA") and "transparency" not in b.info:
+                raise HTTPException(422, "PNG ohne Transparenz")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(422, "PNG nicht lesbar")
 
 
 @router.post("/arbeiter/naechster")
@@ -220,32 +256,36 @@ def _im_ordner(ordner: str, name: str) -> str | None:
 
 
 @router.post("/arbeiter/{aid}/bild")
-async def arbeiter_bild(aid: str, request: Request, platz: str = Query(""),
+async def arbeiter_bild(aid: str, request: Request, platz: str = Query(""), format: str = Query("jpg"),
                         x_bild_key: str | None = Header(None)):
     _bild_schluessel(x_bild_key)
     a = _auftrag_id(aid)
     if not _PLATZ.fullmatch(platz or ""):
         raise HTTPException(422, "platz muss eine Block-ID sein")
+    if format not in ("jpg", "png"):
+        raise HTTPException(422, "format muss jpg oder png sein")
+    png = format == "png"
+    grenze, grenztext = (PNG_MAX, "4 MB") if png else (BILD_MAX, "1 MB")
     ordner = _ordner()
     try:
         laenge = int(request.headers.get("content-length") or 0)
     except ValueError:
         laenge = 0
-    if laenge > BILD_MAX:
-        raise HTTPException(413, "Bild groesser als 1 MB")
+    if laenge > grenze:
+        raise HTTPException(413, f"Bild groesser als {grenztext}")
     roh = bytearray()
     async for stueck in request.stream():
         roh += stueck
-        if len(roh) > BILD_MAX:
-            raise HTTPException(413, "Bild groesser als 1 MB")
-    _jpeg_pruefen(bytes(roh))
+        if len(roh) > grenze:
+            raise HTTPException(413, f"Bild groesser als {grenztext}")
+    (_png_pruefen if png else _jpeg_pruefen)(bytes(roh))
     fehler = _lesen_einer(lambda:
         f"SELECT marketing.pult_bild_datei_fehler({lit(a)}::uuid, {lit(platz)}) AS f")
     if fehler is None:
         raise HTTPException(503, "Marketing-Datenbank nicht erreichbar")
     if fehler.get("f"):
         raise HTTPException(422, str(fehler["f"]))
-    name = f"nl-{a[:8]}-{platz}.jpg"
+    name = f"nl-{a[:8]}-{platz}-frei.png" if png else f"nl-{a[:8]}-{platz}.jpg"
     ziel = os.path.join(ordner, name)
     zwischen = ziel + ".teil"
     try:

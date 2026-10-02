@@ -337,3 +337,125 @@ def test_quelle_symlink_nach_draussen_404(db, c, monkeypatch, tmp_path):
     monkeypatch.setenv("MARKETING_MEDIEN_ORDNER", str(mensch))
     db.antworten = [[{"f": None}], [{"url": "medien:link.png"}]]
     assert c.get(f"/api/bilder/arbeiter/{AID}/quelle?platz=kopf", headers={"X-Bild-Key": BK}).status_code == 404
+
+
+# ---- Freistellen (Task 2) -------------------------------------------------
+
+def png(alpha=True, groesse=(64, 64)) -> bytes:
+    b = io.BytesIO()
+    Image.new("RGBA" if alpha else "RGB", groesse, (10, 20, 30, 0) if alpha else (10, 20, 30)).save(b, "PNG")
+    return b.getvalue()
+
+
+def _png_hoch(roh, platz="kopf_bild", extra=""):
+    return roh, f"/api/bilder/arbeiter/{AID}/bild?platz={platz}&format=png{extra}"
+
+
+def test_png_upload_frei(db, c):
+    db.antworten = [[{"f": None}]]
+    daten, url = _png_hoch(png())
+    r = c.post(url, headers={"X-Bild-Key": BK}, content=daten)
+    assert r.status_code == 200 and r.json() == {"name": "nl-0123abcd-kopf_bild-frei.png"}
+    assert (db.ordner / "nl-0123abcd-kopf_bild-frei.png").read_bytes()[:4] == b"\x89PNG"
+    assert not (db.ordner / "nl-0123abcd-kopf_bild-frei.png.teil").exists()
+
+
+@pytest.mark.parametrize("roh", [b"\xff\xd8\xff" + b"x" * 50, b"\x89PNGkaputt", "ohne_alpha"],
+                         ids=["jpeg-als-png", "kaputt", "ohne-alpha"])
+def test_png_upload_abgelehnt(db, c, roh):
+    db.antworten = [[{"f": None}]]
+    daten = png(alpha=False) if roh == "ohne_alpha" else roh
+    r = c.post(f"/api/bilder/arbeiter/{AID}/bild?platz=kopf_bild&format=png",
+               headers={"X-Bild-Key": BK}, content=daten)
+    assert r.status_code == 422
+    assert list(db.ordner.iterdir()) == []
+
+
+def test_png_zu_gross(db, c):
+    db.antworten = [[{"f": None}]]
+    r = c.post(f"/api/bilder/arbeiter/{AID}/bild?platz=kopf_bild&format=png", headers={"X-Bild-Key": BK},
+               content=b"\x89PNG" + b"0" * (4 * 1024 * 1024 + 1))
+    assert r.status_code == 413 and "4 MB" in r.json()["detail"]
+    assert list(db.ordner.iterdir()) == []
+
+
+def test_png_ueber_1mb_ok_wenn_unter_4mb(db, c):
+    # JPEG-Grenze (1 MB) gilt nicht fuer PNG: inkompressibles RGBA-PNG ~1,5 MB
+    b = io.BytesIO()
+    Image.frombytes("RGBA", (600, 600), os.urandom(600 * 600 * 4)).save(b, "PNG")
+    roh = b.getvalue()
+    assert 1024 * 1024 < len(roh) < 4 * 1024 * 1024
+    db.antworten = [[{"f": None}]]
+    r = c.post(f"/api/bilder/arbeiter/{AID}/bild?platz=kopf_bild&format=png",
+               headers={"X-Bild-Key": BK}, content=roh)
+    assert r.status_code == 200
+
+
+def test_jpeg_weg_unveraendert_format_jpg_explizit(db, c):
+    db.antworten = [[{"f": None}]]
+    r = c.post(f"/api/bilder/arbeiter/{AID}/bild?platz=kopf&format=jpg", headers={"X-Bild-Key": BK}, content=jpeg())
+    assert r.status_code == 200 and r.json() == {"name": "nl-0123abcd-kopf.jpg"}
+    assert (db.ordner / "nl-0123abcd-kopf.jpg").read_bytes()[:3] == b"\xff\xd8\xff"
+
+
+def test_jpeg_zu_gross_bleibt_1mb(db, c):
+    r = c.post(f"/api/bilder/arbeiter/{AID}/bild?platz=kopf&format=jpg", headers={"X-Bild-Key": BK},
+               content=b"\xff\xd8\xff" + b"0" * (1024 * 1024))
+    assert r.status_code == 413 and "1 MB" in r.json()["detail"]
+
+
+def test_png_in_jpeg_weg_bleibt_abgelehnt(db, c):
+    db.antworten = [[{"f": None}]]
+    r = c.post(f"/api/bilder/arbeiter/{AID}/bild?platz=kopf", headers={"X-Bild-Key": BK}, content=png())
+    assert r.status_code == 422 and list(db.ordner.iterdir()) == []
+
+
+def test_unbekanntes_format_422(db, c):
+    r = c.post(f"/api/bilder/arbeiter/{AID}/bild?platz=kopf&format=gif", headers={"X-Bild-Key": BK}, content=jpeg())
+    assert r.status_code == 422 and db.sql == []
+
+
+def _doc(url="medien:nl-1234abcd-kopf_bild.jpg", grafik=False, bid="t1_bild"):
+    props = {"url": url, "width": 600, "height": 300}
+    if grafik:
+        props["grafik"] = True
+    return {"root": {"type": "EmailLayout", "data": {"childrenIds": [bid]}},
+            bid: {"type": "Image", "data": {"style": {"padding": {"left": 0, "right": 0}}, "props": props}}}
+
+
+def test_freistellen_echtes_bild_legt_auftrag_an(db, c):
+    db.antworten = [[{"bloecke": _doc()}], [{"id": "a-frei"}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK},
+               json={"platz": "t1_bild", "modus": "freistellen", "staerke": 80, "nur_leere": True})
+    assert r.status_code == 200 and r.json() == {"auftrag": "a-frei"}
+    assert "marketing.inhalt_fassungen" in db.sql[0] and "ORDER BY fassung DESC LIMIT 1" in db.sql[0]
+    assert "marketing.pult_bild_auftrag(" in db.sql[1]
+    assert "'t1_bild'" in db.sql[1] and ", false, " in db.sql[1]
+    assert ", 0, 'freistellen') AS id" in db.sql[1]
+
+
+@pytest.mark.parametrize("doc", [
+    _doc(url="medien:platzhalter-2x1.png"),
+    _doc(url=""),
+    _doc(grafik=True),
+    _doc(bid="anderer"),
+], ids=["platzhalter", "leer", "grafik", "platz-fehlt"])
+def test_freistellen_ohne_echtes_bild_422(db, c, doc):
+    db.antworten = [[{"bloecke": doc}], [{"id": "darf-nicht"}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK},
+               json={"platz": "t1_bild", "modus": "freistellen"})
+    assert r.status_code == 422
+    assert r.json()["detail"] == "Freistellen geht nur bei einem Bildplatz mit echtem Bild"
+    assert not any("pult_bild_auftrag" in s for s in db.sql)
+
+
+def test_freistellen_ohne_platz_422(db, c):
+    r = c.post(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK}, json={"modus": "freistellen"})
+    assert r.status_code == 422 and db.sql == []
+
+
+def test_freistellen_unbekannter_inhalt_404(db, c):
+    db.antworten = [[]]
+    r = c.post(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK},
+               json={"platz": "t1_bild", "modus": "freistellen"})
+    assert r.status_code == 404
