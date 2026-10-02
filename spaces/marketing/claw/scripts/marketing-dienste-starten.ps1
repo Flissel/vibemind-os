@@ -111,6 +111,14 @@ $Dienste = @(
         Cwd  = $OsRoot
         Env  = @{}
         Was  = 'Bild-Arbeiter (Newsletter-Bilder, holt Auftraege von der VM)'
+    },
+    @{
+        Name = 'marketing_chat_arbeiter'
+        Port = 8134
+        Args = @('-u', '-m', 'spaces.marketing.workers.chat_worker')
+        Cwd  = $OsRoot
+        Env  = @{}
+        Was  = 'Chat-Arbeiter (Gestaltungs-Agent, fragt Claude ueber den Shim :8117)'
     }
 )
 
