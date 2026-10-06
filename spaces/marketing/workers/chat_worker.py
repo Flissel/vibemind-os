@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import datetime
 import io
 import json
 import os
@@ -21,7 +22,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from PIL import Image, ImageOps
 
-from spaces.marketing.claw import agent_prompt, agent_strom, agent_werkzeuge, bildplaetze, unterlagen
+from spaces.marketing.claw import agent_prompt, agent_strom, agent_werkzeuge, bildplaetze, markenwissen, unterlagen
 from spaces.marketing.workers.bild_worker import ApiFehler, _grund, tls_kontext, umgebung_laden
 
 PORT = 8134
@@ -565,11 +566,22 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
         bildteile, unterlagen_text, auswahl_text, hinweise = anhaenge_vorbereiten(api, aid, auftrag, bilder)
     if halter.verloren.is_set():
         return "fehler"
+    # Markenwissen der Firma des Auftrags (nur deren Ordner); ohne Mandant (alter Auftrag) entfaellt es.
+    mandant = str(auftrag.get("mandant") or "")
+    name = str(auftrag.get("mandant_name") or mandant)
+    wissen = markenwissen.Wissen(text="", hinweise=[], ordner=None)
+    if name:
+        wissen = markenwissen.laden(markenwissen.wurzel(), mandant, name,
+                                    f"{auftrag.get('nachricht', '')} {auftrag.get('titel', '')}")
+        hinweise += wissen.hinweise
+    if auftrag.get("medien_hinweis"):
+        hinweise.insert(0, str(auftrag["medien_hinweis"]))
     angehaengt = [n for n, _ in bilder]
     medien = angehaengt + [m for m in medien if m not in angehaengt]   # Anhaenge zuerst, auch live erlaubt
     live.medien.update(angehaengt)
     text_nutzer = agent_prompt.nutzer_text(auftrag, medien, unterlagen=unterlagen_text, auswahl_text=auswahl_text,
-                                           hinweise=hinweise, bilder=bilder)
+                                           hinweise=hinweise, bilder=bilder, markenwissen=wissen.text,
+                                           mandant_name=name)
     # Mit Bildern ist die erste Nachricht eine Teil-Liste; sie bleibt auch in der Korrekturrunde so.
     nachrichten = [{"role": "user", "content": [{"type": "text", "text": text_nutzer}, *bildteile]
                     if bildteile else text_nutzer}]
@@ -627,8 +639,17 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
             live.endstand(bloecke, antwort["aenderungen"])     # ein Stopp hier gewinnt noch vor fertig
         if not api.weiter(aid):
             return "fehler"
+        text_antwort = antwort["antwort"]
+        if antwort["notizen"]:      # Ruling R2: erst jetzt, unmittelbar vor fertig - Stopp/Fehler kommen nie hierher
+            titel, notiz_hinweise = markenwissen.notizen_schreiben(
+                wissen.ordner, name, antwort["notizen"],
+                {"newsletter": auftrag.get("titel", ""), "bitte": auftrag.get("nachricht", "")},
+                datetime.date.today())
+            hinweise += notiz_hinweise
+            if titel:
+                text_antwort += "\n\n" + "\n".join(f"Notiz in Rowboat abgelegt: {t}" for t in titel)
         antwort_vm = api.fertig(aid, {
-            "antwort": _mit_hinweisen(hinweise, antwort["antwort"]),
+            "antwort": _mit_hinweisen(hinweise, text_antwort),
             "bloecke": bloecke if ergebnis.geaendert else None,
             "bildauftraege": bildauftraege,
             "export_vorschlag": export,

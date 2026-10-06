@@ -6,6 +6,15 @@ import pytest
 
 from spaces.marketing.workers import chat_worker as cw
 
+
+@pytest.fixture(autouse=True)
+def _wissen_ordner(tmp_path, monkeypatch):
+    """Die Rowboat-Ablage des Nutzers wird nie angefasst: leere Wurzel unter tmp_path."""
+    wurzel = tmp_path / "wissen"
+    wurzel.mkdir()
+    monkeypatch.setenv("ROWBOAT_WISSEN_ORDNER", str(wurzel))
+    return wurzel
+
 DOC = {"root": {"type": "EmailLayout", "data": {"backdropColor": "#ffffff", "childrenIds": ["t"]}},
        "t": {"type": "Text", "data": {"props": {"text": "Herbst"}}}}
 AUFTRAG = {"id": "a1", "art": "chat", "bloecke": DOC, "medien": ["a.jpg"], "kontext": {}, "nachricht": "Hintergrund rot"}
@@ -1069,3 +1078,105 @@ def test_angehaengtes_bild_hat_mediennamen_im_prompt_und_ist_erlaubt(monkeypatch
     assert gesehen and all(name in m for m in gesehen)         # live und final
     daten = api.aufrufe("fertig")[0][2]
     assert daten["bloecke"]["p1"]["data"]["props"]["url"] == "medien:" + name
+
+
+# --- Markenwissen und Agent-Notizen (Spec 2026-10-06-mandanten-markenwissen) ---
+
+MARKE = "# VibeMind\n\n## Wer wir sind\nWir bauen Betriebssysteme fuer Teams mit Herz und Verstand."
+
+
+def _firma(wurzel, name="VibeMind", marke=MARKE):
+    ordner = wurzel / name
+    ordner.mkdir()
+    if marke is not None:
+        (ordner / "Marke.md").write_text(marke, encoding="utf-8")
+    return ordner
+
+
+def _auftrag(**extra):
+    return {**AUFTRAG, "mandant": "vibemind", "mandant_name": "VibeMind", "titel": "Herbst-Brief", **extra}
+
+
+def _prompt(fragen):
+    return fragen.gesehen[0][1][0]["content"]
+
+
+def test_prompt_enthaelt_markenwissen_der_firma_aber_nicht_das_der_anderen(_wissen_ordner):
+    _firma(_wissen_ordner)
+    _firma(_wissen_ordner, "fin2gether", "# fin2gether\n\nGeheimnis der anderen Firma, lang genug fuer die Mindestlaenge.")
+    fragen = Fragen(GUT)
+    assert cw.chat_bearbeiten(Api(), _auftrag(), fragen) == "fertig"
+    assert "Markenwissen VibeMind" in _prompt(fragen) and "Betriebssysteme fuer Teams" in _prompt(fragen)
+    assert "Geheimnis der anderen Firma" not in _prompt(fragen)
+    fragen2 = Fragen(GUT)
+    cw.chat_bearbeiten(Api(), _auftrag(mandant="fin2gether", mandant_name="fin2gether"), fragen2)
+    assert "Geheimnis der anderen Firma" in _prompt(fragen2) and "Betriebssysteme" not in _prompt(fragen2)
+
+
+def test_fehlender_firmenordner_gibt_hinweis_in_der_fertigen_antwort():
+    api = Api()
+    assert cw.chat_bearbeiten(api, _auftrag(), Fragen(GUT)) == "fertig"
+    antwort = api.aufrufe("fertig")[0][2]["antwort"]
+    assert "Hinweis: Kein Markenwissen für VibeMind hinterlegt (companys/VibeMind fehlt/leer)" in antwort
+
+
+def test_antwort_mit_notizen_legt_datei_ab_und_nennt_sie(_wissen_ordner):
+    ordner = _firma(_wissen_ordner)
+    text = json.dumps({"antwort": "Erledigt.", "aenderungen": [],
+                       "notizen": [{"titel": "Ton gelernt", "text": "Duzen ist gewuenscht."}]})
+    api = Api()
+    assert cw.chat_bearbeiten(api, _auftrag(), Fragen(text)) == "fertig"
+    dateien = list((ordner / "Agent-Notizen").glob("*.md"))
+    assert len(dateien) == 1 and "ton-gelernt" in dateien[0].name
+    inhalt = dateien[0].read_text(encoding="utf-8")
+    assert "Duzen ist gewuenscht." in inhalt and "Herbst-Brief" in inhalt and "Hintergrund rot" in inhalt
+    antwort = api.aufrufe("fertig")[0][2]["antwort"]
+    assert antwort.endswith("Erledigt.\n\nNotiz in Rowboat abgelegt: Ton gelernt")
+
+
+def test_notizen_werden_erst_nach_dem_letzten_weiter_vor_fertig_geschrieben(_wissen_ordner, monkeypatch):
+    _firma(_wissen_ordner)
+    text = json.dumps({"antwort": "ok", "aenderungen": [], "notizen": [{"titel": "N", "text": "T"}]})
+    api = Api()
+    from spaces.marketing.claw import markenwissen
+    echt = markenwissen.notizen_schreiben
+
+    def spion(*a, **k):
+        api.log.append(("notizen",))
+        return echt(*a, **k)
+    monkeypatch.setattr(markenwissen, "notizen_schreiben", spion)
+    cw.chat_bearbeiten(api, _auftrag(), Fragen(text))
+    namen = [e[0] for e in api.log]
+    assert namen[-2:] == ["notizen", "fertig"] and namen[-3] == "weiter"
+
+
+def test_stopp_vor_fertig_schreibt_keine_notiz(_wissen_ordner):
+    ordner = _firma(_wissen_ordner)
+    text = json.dumps({"antwort": "ok", "aenderungen": [{"werkzeug": "farben_setzen", "backdropColor": "#ff0000"}],
+                       "notizen": [{"titel": "N", "text": "T"}]})
+    api = Api()
+    api.zwischen = [{"weiter": False, "grund": "stopp", "stopp": "verwerfen"}]
+    assert cw.chat_bearbeiten(api, _auftrag(), Fragen(text)) == "gestoppt"
+    assert not (ordner / "Agent-Notizen").exists() and api.aufrufe("fertig") == []
+
+
+def test_notiz_bei_fehlendem_ordner_wird_hinweis_und_ordner_nicht_angelegt(_wissen_ordner):
+    text = json.dumps({"antwort": "ok", "aenderungen": [], "notizen": [{"titel": "N", "text": "T"}]})
+    api = Api()
+    assert cw.chat_bearbeiten(api, _auftrag(), Fragen(text)) == "fertig"
+    antwort = api.aufrufe("fertig")[0][2]["antwort"]
+    assert "Notiz nicht abgelegt: companys/VibeMind fehlt" in antwort and "Notiz in Rowboat abgelegt" not in antwort
+    assert list(_wissen_ordner.iterdir()) == []
+
+
+def test_medien_hinweis_steht_als_erster_hinweis():
+    api = Api()
+    assert cw.chat_bearbeiten(api, _auftrag(medien_hinweis="Bildzuordnung nicht erreichbar"), Fragen(GUT)) == "fertig"
+    zeilen = api.aufrufe("fertig")[0][2]["antwort"].splitlines()
+    assert zeilen[0] == "Hinweis: Bildzuordnung nicht erreichbar" and "Kein Markenwissen" in zeilen[1]
+
+
+def test_auftrag_ohne_mandant_laedt_kein_markenwissen_und_macht_keinen_hinweis():
+    api = Api()
+    assert cw.chat_bearbeiten(api, AUFTRAG, Fragen(GUT)) == "fertig"
+    assert api.aufrufe("fertig")[0][2]["antwort"] == "Erledigt."

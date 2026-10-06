@@ -125,6 +125,22 @@ $Dienste = @(
     }
 )
 
+# Markenwissen-Vorlagen (Spec 2026-10-06): je Firma ohne Ordner eine leere Marke.md in der Rowboat-Ablage
+# (ROWBOAT_WISSEN_ORDNER bleibt ungesetzt, es gilt die Vorgabe). Bestehendes bleibt unberuehrt; ein Fehler
+# wird nur protokolliert und bricht den Start nicht ab.
+function Initialize-Markenwissen {
+    try {
+        Push-Location $OsRoot
+        $ausgabe = & $Venv -m spaces.marketing.claw.markenwissen vorlagen VibeMind fin2gether 2>&1
+        if ($LASTEXITCODE -ne 0) { throw ($ausgabe | Out-String) }
+        $ausgabe | ForEach-Object { Write-Output "  $_" }
+    } catch {
+        Write-Warning ("  Markenwissen-Vorlagen nicht angelegt: " + $_.Exception.Message.Trim())
+    } finally {
+        Pop-Location
+    }
+}
+
 function Test-Port([int]$Port) {
     $null -ne (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
                Select-Object -First 1)
@@ -151,6 +167,8 @@ foreach ($d in $Dienste) {
             Move-Item $f $ziel -Force -ErrorAction SilentlyContinue
         }
     }
+
+    if ($d.Name -eq 'marketing_chat_arbeiter') { Initialize-Markenwissen }
 
     $env:PYTHONUNBUFFERED = '1'
     $env:PYTHONIOENCODING = 'utf-8'
