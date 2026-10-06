@@ -23,14 +23,14 @@ BEGIN
   -- 2) CHECK: Pfadtrenner, zwei Punkte, Backslash (echt: 'a\b.jpg' unter standard_conforming_strings),
   --    Ruecktaste (E'a\b.jpg'), Anfuehrungszeichen, Zeilenumbruch, leer, zu lang
   v_n := 0;
-  FOREACH v_m IN ARRAY ARRAY['a/b.jpg', '..x.jpg', 'a..b.jpg', 'a\b.jpg', E'a\b.jpg','a"b.jpg', E'a\nb.jpg', '', repeat('x', 201)] LOOP
+  FOREACH v_m IN ARRAY ARRAY['a/b.jpg', '..x.jpg', 'a..b.jpg', 'a\b.jpg', E'a\b.jpg', 'a"b.jpg', E'a\nb.jpg', '', repeat('x', 201)] LOOP
     v_fehler := NULL;
     BEGIN INSERT INTO marketing.medien_mandant (dateiname, mandant) VALUES (v_m, 'vibemind');
     EXCEPTION WHEN check_violation THEN v_fehler := SQLERRM; END;
     ASSERT v_fehler IS NOT NULL, format('2: Dateiname muss scheitern: %L', v_m);
     v_n := v_n + 1;
   END LOOP;
-  ASSERT v_n = 9,'2: alle Faelle geprueft';
+  ASSERT v_n = 9, '2: alle Faelle geprueft';
 
   -- 3) gueltige Namen, NULL-Mandant erlaubt
   INSERT INTO marketing.medien_mandant (dateiname, mandant) VALUES ('logo-fin2gether-0123456789.png', 'fin2gether');
