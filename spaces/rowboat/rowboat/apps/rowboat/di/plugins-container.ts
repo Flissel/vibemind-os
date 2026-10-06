@@ -116,7 +116,7 @@ function isSecureOpenFangCredentialUrl(raw: string): boolean {
  * a change here (e.g. `&&` silently becoming `||`) is a unit-test failure,
  * not a defect the suite stays green through. Returns `undefined` -- meaning
  * "fall back to UnreleasedCredentialResolver, resolve nothing" -- unless
- * every one of these holds: both variables are present and non-blank once
+ * every one of these holds: all three variables (URL, API key, issue key) are present and non-blank once
  * trimmed (a `.env` typo like `OPENFANG_API_KEY=" "` must not construct a
  * live resolver that then sends `Authorization: Bearer ` to OpenFang and
  * fails only on the wire), and the URL is secure per
@@ -127,12 +127,14 @@ function isSecureOpenFangCredentialUrl(raw: string): boolean {
 export function resolveOpenFangCredentialSource(
   rawUrl: string | undefined,
   rawApiKey: string | undefined,
-): Readonly<{ readonly baseUrl: string; readonly apiKey: string }> | undefined {
+  rawIssueKey: string | undefined,
+): Readonly<{ readonly baseUrl: string; readonly apiKey: string; readonly issueKey: string }> | undefined {
   const baseUrl = rawUrl?.trim() ?? "";
   const apiKey = rawApiKey?.trim() ?? "";
-  if (baseUrl.length === 0 || apiKey.length === 0) return undefined;
+  const issueKey = rawIssueKey?.trim() ?? "";
+  if (baseUrl.length === 0 || apiKey.length === 0 || issueKey.length === 0) return undefined;
   if (!isSecureOpenFangCredentialUrl(baseUrl)) return undefined;
-  return Object.freeze({ baseUrl, apiKey });
+  return Object.freeze({ baseUrl, apiKey, issueKey });
 }
 
 export interface ResolveOpenFangProviderOptions {
@@ -168,13 +170,18 @@ export async function resolveOpenFangProvider(
 ): Promise<ProviderResolution> {
   const { component, entry, binding, policy } = request;
   const { UnreleasedCredentialResolver } = await import("@/src/infrastructure/plugins/provider-resolution");
-  const openFangCredentialSource = resolveOpenFangCredentialSource(process.env.OPENFANG_URL, process.env.OPENFANG_API_KEY);
+  const openFangCredentialSource = resolveOpenFangCredentialSource(
+    process.env.OPENFANG_URL,
+    process.env.OPENFANG_API_KEY,
+    process.env.OPENFANG_ISSUE_KEY,
+  );
   let credentialResolver: CredentialResolver = new UnreleasedCredentialResolver();
   if (openFangCredentialSource !== undefined) {
     const { OpenFangCredentialResolver } = await import("@/src/infrastructure/plugins/openfang-credential-resolver");
     credentialResolver = new OpenFangCredentialResolver({
       baseUrl: openFangCredentialSource.baseUrl,
       apiKey: openFangCredentialSource.apiKey,
+      issueKey: openFangCredentialSource.issueKey,
       fetch: options.fetchImpl,
       timeoutMs: options.credentialTimeoutMs,
     });

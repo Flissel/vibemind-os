@@ -20,6 +20,8 @@ const neverFetch = (async () => { throw new Error("fetch must not be called in t
 async function withOpenFangEnv<T>(url: string | undefined, apiKey: string | undefined, fn: () => Promise<T>): Promise<T> {
   const previousUrl = process.env.OPENFANG_URL;
   const previousKey = process.env.OPENFANG_API_KEY;
+  const previousIssueKey = process.env.OPENFANG_ISSUE_KEY;
+  process.env.OPENFANG_ISSUE_KEY = "test-issue-key";
   if (url === undefined) delete process.env.OPENFANG_URL; else process.env.OPENFANG_URL = url;
   if (apiKey === undefined) delete process.env.OPENFANG_API_KEY; else process.env.OPENFANG_API_KEY = apiKey;
   try {
@@ -27,6 +29,7 @@ async function withOpenFangEnv<T>(url: string | undefined, apiKey: string | unde
   } finally {
     if (previousUrl === undefined) delete process.env.OPENFANG_URL; else process.env.OPENFANG_URL = previousUrl;
     if (previousKey === undefined) delete process.env.OPENFANG_API_KEY; else process.env.OPENFANG_API_KEY = previousKey;
+    if (previousIssueKey === undefined) delete process.env.OPENFANG_ISSUE_KEY; else process.env.OPENFANG_ISSUE_KEY = previousIssueKey;
   }
 }
 
@@ -129,6 +132,21 @@ describe("resolveOpenFangProvider (container wiring)", () => {
         },
       );
       expect(received?.credentialResolver).toBeInstanceOf(OpenFangCredentialResolver);
+    });
+  });
+
+  it("falls back to UnreleasedCredentialResolver when OPENFANG_ISSUE_KEY is missing", async () => {
+    await withOpenFangEnv("https://openfang.example.com", "test-key", async () => {
+      delete process.env.OPENFANG_ISSUE_KEY;
+      let received: PluginProviderResolutionDependencies | undefined;
+      await resolveOpenFangProvider(
+        { ...providerRequest, policy: DEFAULT_POLICY },
+        {
+          resolvePluginProviderImpl: (_request, dependencies) => { received = dependencies; return UNAVAILABLE_RESOLUTION; },
+          credentialTimeoutMs: 5_000, fetchImpl: neverFetch,
+        },
+      );
+      expect(received?.credentialResolver).toBeInstanceOf(UnreleasedCredentialResolver);
     });
   });
 

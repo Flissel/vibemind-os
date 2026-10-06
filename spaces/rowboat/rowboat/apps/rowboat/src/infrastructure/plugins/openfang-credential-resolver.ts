@@ -10,6 +10,8 @@ import {
 export interface OpenFangCredentialResolverOptions {
   readonly baseUrl: string;
   readonly apiKey: string;
+  /** Separate key for /api/credentials/issue, sent as X-OpenFang-Issue-Key. Never logged or put in an error. */
+  readonly issueKey: string;
   readonly fetch: typeof fetch;
   readonly timeoutMs: number;
 }
@@ -78,6 +80,7 @@ export class OpenFangCredentialResolver implements CredentialResolver {
           headers: {
             "content-type": "application/json",
             Authorization: `Bearer ${this.#options.apiKey}`,
+            "X-OpenFang-Issue-Key": this.#options.issueKey,
           },
           body: JSON.stringify({ reference: openFangReference }),
           redirect: "error",
