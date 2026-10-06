@@ -154,12 +154,23 @@ foreach ($d in $Dienste) {
 
     $env:PYTHONUNBUFFERED = '1'
     $env:PYTHONIOENCODING = 'utf-8'
-    foreach ($k in $d.Env.Keys) { Set-Item -Path "env:$k" -Value $d.Env[$k] }
+    # Nur der gestartete Dienst soll diese Schluessel erben: alten Stand merken
+    # und direkt nach Start-Process zurueckrollen (sonst erbt z. B. der Chat-
+    # Arbeiter VIBEMIND_AGENT des Shims und bucht unter dessen Namen).
+    $vorher = @{}
+    foreach ($k in $d.Env.Keys) {
+        $vorher[$k] = [Environment]::GetEnvironmentVariable($k, 'Process')
+        Set-Item -Path "env:$k" -Value $d.Env[$k]
+    }
 
     $p = Start-Process -FilePath $(if ($d.Python) { $d.Python } else { $Venv }) -ArgumentList $d.Args -WorkingDirectory $d.Cwd `
         -RedirectStandardOutput (Join-Path $LogDir "$($d.Name).log") `
         -RedirectStandardError  (Join-Path $LogDir "$($d.Name).err.log") `
         -WindowStyle Hidden -PassThru
+    foreach ($k in $d.Env.Keys) {
+        if ($null -eq $vorher[$k]) { Remove-Item -Path "env:$k" -ErrorAction SilentlyContinue }
+        else { Set-Item -Path "env:$k" -Value $vorher[$k] }
+    }
     Write-Output ("  gestartet :{0,-5} PID {1,-6} {2}" -f $d.Port, $p.Id, $d.Was)
     $gestartet++
 }
