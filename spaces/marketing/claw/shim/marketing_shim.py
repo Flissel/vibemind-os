@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import importlib.util
 import json
 import os
 import pathlib
@@ -44,6 +45,58 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Iterable, Iterator
+
+
+_BUDGET_CACHE: dict[str, Any] = {}
+
+
+def _budget_modul() -> Any:
+    pfad = os.environ.get("VIBEMIND_BUDGET_MODUL", "").strip()
+    if pfad not in _BUDGET_CACHE:
+        spec = importlib.util.spec_from_file_location("claude_budget_ext", pfad)
+        if spec is None or spec.loader is None:
+            raise ImportError(pfad)
+        modul = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(modul)
+        _BUDGET_CACHE[pfad] = modul
+    return _BUDGET_CACHE[pfad]
+
+
+def budget_pruefen() -> tuple[bool, str]:
+    """Budget-Waechter (Spec 2026-10-06). Ohne VIBEMIND_AGENT aus (Tests, VM)."""
+    agent = os.environ.get("VIBEMIND_AGENT", "").strip()
+    if not agent:
+        return True, "aus"
+    try:
+        e = _budget_modul().pruefen(agent)
+    except Exception:  # noqa: BLE001 - fail-closed
+        return False, "waechter_fehler"
+    return bool(e.erlaubt), str(e.grund)
+
+
+def budget_buchen(ergebnis: str, dauer_s: float) -> None:
+    agent = os.environ.get("VIBEMIND_AGENT", "").strip()
+    if not agent:
+        return
+    try:
+        _budget_modul().buchen(agent, ergebnis, dauer_s)
+    except Exception as exc:  # noqa: BLE001 - Buchung darf den Dienst nicht kippen
+        sys.stderr.write("budget: buchung fehlgeschlagen: %s\n" % exc)
+
+
+def _gebucht(pieces: Iterator[str], start: float) -> Iterator[str]:
+    """Reicht die Text-Stuecke durch und bucht am Ende (ok, oder fehler bei Ausnahme)."""
+    ergebnis = "ok"
+    try:
+        yield from pieces
+    except BaseException:
+        ergebnis = "fehler"
+        raise
+    finally:
+        close = getattr(pieces, "close", None)
+        if close:
+            close()
+        budget_buchen(ergebnis, time.monotonic() - start)
 
 DEFAULT_MODEL_ID = "claude-code"
 # Model ids we advertise. The bare id lets the CLI pick the account default;
@@ -729,6 +782,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send_error(400, f"invalid request body: {exc}")
             return
 
+        erlaubt, grund = budget_pruefen()
+        if not erlaubt:
+            agent = os.environ.get("VIBEMIND_AGENT", "")
+            self._send_json(429, {"error": {"message": f"budget: abgelehnt ({grund}) fuer {agent}", "type": "budget"}})
+            return
+        budget_start = time.monotonic()
+
         model = str(body.get("model") or DEFAULT_MODEL_ID)
         messages = body.get("messages") or []
         bilder_ordner: str | None = None
@@ -736,7 +796,7 @@ class Handler(BaseHTTPRequestHandler):
             if _hat_bildteile(messages):
                 bilder_ordner = tempfile.mkdtemp(prefix="mshim-")
                 messages, _ = bildteile_ablegen(messages, bilder_ordner)
-            self._antworten(body, messages, model, bilder_ordner)
+            self._antworten(body, messages, model, bilder_ordner, budget_start)
         except ShimEingabeFehler as exc:
             self._send_error(400, str(exc))
         finally:
@@ -745,7 +805,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _antworten(
         self, body: dict[str, Any], messages: list[dict[str, Any]], model: str,
-        bilder_ordner: str | None,
+        bilder_ordner: str | None, budget_start: float,
     ) -> None:
         system_prompt, transcript = render_messages(messages)
 
@@ -791,13 +851,16 @@ class Handler(BaseHTTPRequestHandler):
         # andere Aufrufer (z. B. openclaw mit stream:true) bekommen das Original-Verhalten.
         if body.get("stream") and body.get("marketing_stream") is True:
             self._send_stream(
-                stream_claude(
-                    system_prompt=system_prompt,
-                    transcript=transcript,
-                    model=model,
-                    timeout=self.timeout_seconds,
-                    response_format=body.get("response_format"),
-                    bilder_ordner=bilder_ordner,
+                _gebucht(
+                    stream_claude(
+                        system_prompt=system_prompt,
+                        transcript=transcript,
+                        model=model,
+                        timeout=self.timeout_seconds,
+                        response_format=body.get("response_format"),
+                        bilder_ordner=bilder_ordner,
+                    ),
+                    budget_start,
                 ),
                 model,
             )
@@ -814,12 +877,15 @@ class Handler(BaseHTTPRequestHandler):
             )
             completion = to_completion(payload, model)
         except ShimError as exc:
+            budget_buchen("fehler", time.monotonic() - budget_start)
             self._send_error(502, str(exc))
             return
         except Exception as exc:  # pragma: no cover - defensive
+            budget_buchen("fehler", time.monotonic() - budget_start)
             self._send_error(500, f"unexpected shim failure: {exc}")
             return
 
+        budget_buchen("ok", time.monotonic() - budget_start)
         if body.get("stream"):
             self._send_stream_einzeln(completion)
             return

@@ -359,3 +359,67 @@ def test_ohne_bildteile_argumente_unveraendert(server, protokoll):
     assert "--add-dir" not in argv and "--allowedTools" not in argv and "Read" not in argv
     assert "--disallowedTools" not in argv
     assert argv[:3] == ["-p", "--output-format", "json"]
+
+
+# -- Budget-Waechter (Spec 2026-10-06) ---------------------------------------
+def _budget_modul(tmp_path, erlaubt: bool, grund: str):
+    p = tmp_path / "budget_fake.py"
+    p.write_text(
+        "from types import SimpleNamespace\n"
+        "GEBUCHT = []\n"
+        f"def pruefen(agent, *, umgebung=None):\n    return SimpleNamespace(erlaubt={erlaubt}, grund={grund!r}, agent=agent)\n"
+        "def buchen(agent, ergebnis, dauer_s, *, umgebung=None):\n    GEBUCHT.append((agent, ergebnis))\n",
+        encoding="utf-8")
+    return p
+
+
+def test_budget_aus_ohne_agentenname(monkeypatch):
+    monkeypatch.delenv("VIBEMIND_AGENT", raising=False)
+    assert shim.budget_pruefen() == (True, "aus")
+
+
+def test_budget_ablehnung(monkeypatch, tmp_path):
+    monkeypatch.setenv("VIBEMIND_AGENT", "marketing-chat")
+    monkeypatch.setenv("VIBEMIND_BUDGET_MODUL", str(_budget_modul(tmp_path, False, "tagesgrenze")))
+    shim._BUDGET_CACHE.clear()
+    assert shim.budget_pruefen() == (False, "tagesgrenze")
+
+
+def test_budget_erlaubt_uebergang(monkeypatch, tmp_path):
+    monkeypatch.setenv("VIBEMIND_AGENT", "marketing-chat")
+    monkeypatch.setenv("VIBEMIND_BUDGET_MODUL", str(_budget_modul(tmp_path, True, "ok_uebergang")))
+    shim._BUDGET_CACHE.clear()
+    assert shim.budget_pruefen() == (True, "ok_uebergang")
+
+
+def test_budget_modul_fehlt_ist_waechter_fehler(monkeypatch, tmp_path):
+    monkeypatch.setenv("VIBEMIND_AGENT", "marketing-chat")
+    monkeypatch.setenv("VIBEMIND_BUDGET_MODUL", str(tmp_path / "gibtsnicht.py"))
+    shim._BUDGET_CACHE.clear()
+    assert shim.budget_pruefen() == (False, "waechter_fehler")
+
+
+def test_budget_ablehnung_http_429_ohne_cli_aufruf(server, protokoll, monkeypatch, tmp_path):
+    monkeypatch.setenv("VIBEMIND_AGENT", "marketing-chat")
+    monkeypatch.setenv("VIBEMIND_BUDGET_MODUL", str(_budget_modul(tmp_path, False, "tagesgrenze")))
+    resp = _post(server(), False)
+    assert resp.status == 429
+    err = json.loads(resp.read())["error"]
+    assert err["type"] == "budget"
+    assert "tagesgrenze" in err["message"] and "marketing-chat" in err["message"]
+    assert not protokoll.exists()  # falsche_cli.py wurde nie gestartet
+
+
+def test_budget_erlaubt_http_bucht_ok(server, protokoll, monkeypatch, tmp_path):
+    modul = _budget_modul(tmp_path, True, "ok")
+    log = tmp_path / "gebucht.txt"
+    modul.write_text(modul.read_text(encoding="utf-8").replace(
+        "GEBUCHT.append((agent, ergebnis))",
+        f"open({str(log)!r}, 'a').write(agent + ':' + ergebnis + chr(10))"), encoding="utf-8")
+    monkeypatch.setenv("VIBEMIND_AGENT", "marketing-chat")
+    monkeypatch.setenv("VIBEMIND_BUDGET_MODUL", str(modul))
+    resp = _post(server(), False)
+    assert resp.status == 200
+    resp.read()
+    assert protokoll.exists()
+    assert log.read_text(encoding="utf-8").strip() == "marketing-chat:ok"
