@@ -57,7 +57,13 @@ def _budget_modul() -> Any:
         if spec is None or spec.loader is None:
             raise ImportError(pfad)
         modul = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(modul)
+        # @dataclass sucht sys.modules[cls.__module__]; ohne Eintrag scheitert das Laden.
+        sys.modules[spec.name] = modul
+        try:
+            spec.loader.exec_module(modul)
+        except BaseException:
+            sys.modules.pop(spec.name, None)
+            raise
         _BUDGET_CACHE[pfad] = modul
     return _BUDGET_CACHE[pfad]
 

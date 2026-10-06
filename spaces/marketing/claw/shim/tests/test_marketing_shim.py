@@ -373,6 +373,24 @@ def _budget_modul(tmp_path, erlaubt: bool, grund: str):
     return p
 
 
+def test_budget_modul_mit_dataclass_und_future_annotations(monkeypatch, tmp_path):
+    """Regression: ohne sys.modules-Eintrag scheitert @dataclass -> alles 429."""
+    p = tmp_path / "budget_dataclass.py"
+    p.write_text(
+        "from __future__ import annotations\n"
+        "from dataclasses import dataclass\n"
+        "@dataclass(frozen=True)\n"
+        "class Entscheidung:\n    erlaubt: bool\n    grund: str\n    agent: str\n"
+        "def pruefen(agent, *, umgebung=None):\n    return Entscheidung(True, 'ok_dc', agent)\n"
+        "def buchen(agent, ergebnis, dauer_s, *, umgebung=None):\n    pass\n",
+        encoding="utf-8")
+    monkeypatch.setenv("VIBEMIND_AGENT", "marketing-chat")
+    monkeypatch.setenv("VIBEMIND_BUDGET_MODUL", str(p))
+    shim._BUDGET_CACHE.clear()
+    assert shim.budget_pruefen() == (True, "ok_dc")
+    shim._BUDGET_CACHE.clear()
+
+
 def test_budget_aus_ohne_agentenname(monkeypatch):
     monkeypatch.delenv("VIBEMIND_AGENT", raising=False)
     assert shim.budget_pruefen() == (True, "aus")
