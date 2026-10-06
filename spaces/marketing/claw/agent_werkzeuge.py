@@ -247,7 +247,7 @@ class _Lauf:
             self.b.pop(k, None)
 
     def farben_setzen(self, a: dict) -> None:
-        farben = {k: v for k, v in a.items() if k != "werkzeug"}
+        farben = {k: v for k, v in a.items() if k not in ("werkzeug", "schritt")}
         if not farben:
             raise WerkzeugFehler("mindestens eine Farbe (backdropColor, canvasColor, textColor)")
         for k, v in farben.items():

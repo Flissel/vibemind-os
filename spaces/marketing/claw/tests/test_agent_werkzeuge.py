@@ -392,3 +392,9 @@ def test_schritt_81_zeichen_ist_fehler_80_ok():
         lauf([dict(a, schritt="x" * 81)])
     with pytest.raises(WerkzeugFehler, match="schritt"):
         lauf([dict(a, schritt=5)])
+
+
+def test_schritt_ist_bei_farben_setzen_keine_farbe():
+    e = lauf([{"werkzeug": "farben_setzen", "backdropColor": "#000000", "schritt": "Hintergrund dunkel"}])
+    assert e.bloecke["root"]["data"]["backdropColor"] == "#000000"
+    assert "schritt" not in e.bloecke["root"]["data"]
