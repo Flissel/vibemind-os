@@ -3480,6 +3480,8 @@ app.include_router(_gestaltung.pult_router)
 from spaces.marketing.api import chat as _chat  # noqa: E402
 app.include_router(_chat.pult_router)
 app.include_router(_chat.arbeiter_router)
+from spaces.marketing.api import medien_mandant as _medien_mandant  # noqa: E402
+app.include_router(_medien_mandant.router)
 
 
 # ─── Static-serve of the mockup ───────────────────────────────────────
