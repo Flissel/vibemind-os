@@ -536,14 +536,14 @@ def test_stand_enthaelt_live_und_vorgemerkt(umg):
                 "ergebnis": {}, "fassung_vorher": 2, "fassung_nachher": None, "erstellt_am": "2", "sortiert_am": "2"}]
     f.antworten += [[{"ok": True}], [], verlauf, [
         {"id": AID, "status": "in_arbeit", "nachricht": "c", "schritt": "Titel setzen", "schritt_nr": 3,
-         "zwischenstand": _dok()},
+         "zwischenstand": _dok(), "stopp": "verwerfen"},
         {"id": BID, "status": "wartet", "nachricht": "Danach kürzer", "schritt": "", "schritt_nr": 0,
          "zwischenstand": None}]]
     r = c.get(f"/api/pult/inhalte/{IID}/chat", headers=H)
     assert r.status_code == 200, r.text
     d = r.json()
     assert d["laeuft"] is True
-    assert d["live"] == {"schritt": "Titel setzen", "schritt_nr": 3, "zwischenstand": _dok()}
+    assert d["live"] == {"schritt": "Titel setzen", "schritt_nr": 3, "zwischenstand": _dok(), "stopp": "verwerfen"}
     assert d["vorgemerkt"] == {"id": BID, "nachricht": "Danach kürzer"}
     assert "status IN ('in_arbeit', 'wartet')" in f.sql[3]
 
@@ -671,3 +671,75 @@ def test_gestoppt_formen_und_schluessel(umg):
     assert c.post(GESTOPPT, json={"bloecke": []}, headers=HB).status_code == 422
     assert f.sql == []
     assert c.post(GESTOPPT, json={"bloecke": None}, headers=HB).status_code == 404     # unbekannter Auftrag
+
+
+def test_stopp_zwischenstand_kaputt_schliesst_mit_null_ab(umg, monkeypatch):
+    """Jede Nicht-HTTP-Ausnahme beim Rechnen/Pruefen heisst ungueltig: NULL + Hinweis, nie haengen."""
+    from spaces.marketing.api import chat as ch
+    def kaputt(_b):
+        raise TypeError("kaputter Zwischenstand")
+    monkeypatch.setattr(ch, "gestaltungen_rechnen", kaputt)
+    f, _, c = umg
+    _faellig(f, "behalten", _dok())
+    f.antworten += [[{"e": {"status": "fehler"}}], [], []]
+    assert c.get(f"/api/pult/inhalte/{IID}/chat", headers=H).status_code == 200
+    ab = next(s for s in f.sql if "marketing.pult_chat_stopp_abschliessen(" in s)
+    assert ", NULL, " in ab and "Zwischenstand nicht übernommen" in ab
+
+
+def test_stopp_db_nicht_erreichbar_bleibt_zum_wiederholen(umg, monkeypatch):
+    """Ein 503 (DB weg) ist keine Ungueltigkeit: nicht mit NULL abschliessen."""
+    from spaces.marketing.api import chat as ch
+    from fastapi import HTTPException
+    def weg(_b):
+        raise HTTPException(503, "DB nicht erreichbar")
+    monkeypatch.setattr(ch, "_rechnen_und_pruefen", weg)
+    f, _, c = umg
+    _faellig(f, "behalten", _dok())
+    assert c.get(f"/api/pult/inhalte/{IID}/chat", headers=H).status_code == 200
+    assert all("pult_chat_stopp_abschliessen(" not in s for s in f.sql)
+
+
+def _drei_faellige(f):
+    f.antworten += [[{"id": AID}, {"id": BID}, {"id": IID}]]
+    for _ in range(3):
+        f.antworten += [[{"stopp": "verwerfen", "status": "in_arbeit", "zwischenstand": None}],
+                        [{"e": {"status": "fehler"}}]]
+
+
+def test_stopps_hoechstens_zwei_je_stand_abruf(umg):
+    f, _, c = umg
+    f.antworten += [[{"ok": True}]]
+    _drei_faellige(f)
+    assert c.get(f"/api/pult/inhalte/{IID}/chat", headers=H).status_code == 200
+    assert len([s for s in f.sql if "marketing.pult_chat_stopp_abschliessen(" in s]) == 2
+
+
+def test_naechster_schliesst_faellige_stopps_ab(umg):
+    f, _, c = umg
+    f.antworten += [[{"a": None}]]
+    _drei_faellige(f)
+    r = c.post("/api/chat/arbeiter/naechster", headers=HB)
+    assert r.status_code == 200 and r.json() == {"auftrag": None}
+    assert len([s for s in f.sql if "marketing.pult_chat_stopp_abschliessen(" in s]) == 2
+
+
+def test_naechster_ignoriert_fehler_beim_stopp_abschliessen(umg):
+    f, _, c = umg
+    f.antworten += [[{"a": None}]]
+    f.fehler += [None, RuntimeError("ssh weg")]
+    r = c.post("/api/chat/arbeiter/naechster", headers=HB)
+    assert r.status_code == 200 and r.json() == {"auftrag": None}
+
+
+def test_zwischenstand_zu_tief_verschachtelt_422(umg):
+    f, _, c = umg
+    tief = b'{"bloecke":' + b"[" * 100000 + b"]" * 100000 + b',"schritt":"x","nr":1}'
+    assert c.post(ZW, content=tief, headers=HB).status_code == 422
+    assert f.sql == []
+
+
+def test_stopp_auftrag_keine_uuid_422(umg):
+    f, _, c = umg
+    r = c.post(f"/api/pult/inhalte/{IID}/chat/stopp", json={"art": "behalten", "auftrag": "nicht-uuid"}, headers=H)
+    assert r.status_code == 422 and f.sql == []

@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import tempfile
+import uuid
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -42,6 +43,7 @@ NICHT_UMGESETZT = "Das habe ich nicht umsetzen können: "
 GEAENDERT = "Der Newsletter wurde inzwischen geändert – bitte schick die Nachricht noch einmal."
 ZWISCHENSTAND_KOERPER_MAX = 300 * 1024    # ganzer Body; die Bloecke selbst prueft die DB (<= 256 KB)
 SCHRITT_MAX = 80
+STOPPS_JE_ABRUF = 2                        # Rechnen kostet; der Rest kommt beim naechsten Abruf
 STOPP_ARTEN = ("behalten", "verwerfen")
 STOPP_UNGUELTIG = "Zwischenstand nicht übernommen: "
 STOPP_GESPEICHERT = "Inzwischen gespeichert – Zwischenstand verworfen"
@@ -97,11 +99,11 @@ def chat_stand(iid: str, x_pult_key: str | None = Header(None)):
         z.pop("sortiert_am", None)
     live, vorgemerkt = None, None
     for z in _lesen(lambda:
-            "SELECT id, status, nachricht, schritt, schritt_nr, zwischenstand FROM marketing.chat_auftraege "
+            "SELECT id, status, nachricht, schritt, schritt_nr, zwischenstand, stopp FROM marketing.chat_auftraege "
             f"WHERE inhalt = {lit(i)}::uuid AND status IN ('in_arbeit', 'wartet')"):
         if z.get("status") == "in_arbeit":
             live = {"schritt": z.get("schritt") or "", "schritt_nr": z.get("schritt_nr") or 0,
-                    "zwischenstand": z.get("zwischenstand")}
+                    "zwischenstand": z.get("zwischenstand"), "stopp": z.get("stopp")}
         else:
             vorgemerkt = {"id": str(z.get("id")), "nachricht": z.get("nachricht")}
     return {"laeuft": any(z.get("status") in ("offen", "in_arbeit") for z in verlauf), "verlauf": verlauf,
@@ -145,7 +147,12 @@ def chat_stoppen(iid: str, payload: dict = Body(...), x_pult_key: str | None = H
         raise HTTPException(422, "art muss behalten oder verwerfen sein")
     if auftrag is not None and not isinstance(auftrag, str):
         raise HTTPException(422, "auftrag muss eine Auftrags-ID sein")
-    a = f"{lit(_auftrag_id(auftrag))}::uuid" if auftrag is not None else "NULL"
+    if auftrag is not None:
+        try:
+            auftrag = str(uuid.UUID(auftrag))
+        except ValueError:
+            raise HTTPException(422, "auftrag muss eine Auftrags-ID sein")
+    a = f"{lit(auftrag)}::uuid" if auftrag is not None else "NULL"
     s = _schreiben(lambda: f"SELECT marketing.pult_chat_stoppen({lit(i)}::uuid, {lit(art)}, {a}) AS s").get("s") or {}
     erg = {"abgeschlossen": bool(s.get("abgeschlossen"))}
     if s.get("veraltet"):
@@ -339,10 +346,13 @@ def arbeiter_naechster(x_bild_key: str | None = Header(None)):
     _bild_schluessel(x_bild_key)
     zeile = _schreiben(lambda: f"SELECT marketing.pult_chat_naechster({lit(FRIST)}::interval) AS a")
     a = zeile.get("a")
-    if not (isinstance(a, dict) and a.get("id")):
-        return {"auftrag": None}
-    a["medien"] = _medien()
-    return {"auftrag": a}
+    if isinstance(a, dict) and a.get("id"):
+        a["medien"] = _medien()
+        antwort = {"auftrag": a}
+    else:
+        antwort = {"auftrag": None}
+    _stopps_abschliessen()             # auch ohne offenen Editor; wirft nie
+    return antwort
 
 
 @arbeiter_router.post("/{aid}/weiter")
@@ -410,7 +420,12 @@ def _stopp_abschliessen(a: str, job: dict, bloecke) -> dict:
     if job.get("status") != "in_arbeit" or job.get("stopp") != "behalten" or not isinstance(bloecke, dict):
         bloecke = None
     else:
-        bloecke, hinweise, fehler = _rechnen_und_pruefen(bloecke)
+        try:
+            bloecke, hinweise, fehler = _rechnen_und_pruefen(bloecke)
+        except HTTPException:
+            raise                      # z.B. 503: DB weg, spaeter erneut versuchen
+        except Exception as e:         # noqa: BLE001 - kaputter Zwischenstand darf nie haengen bleiben
+            bloecke, hinweise, fehler = None, [], f"{type(e).__name__}: {e}"
         hinweis = STOPP_UNGUELTIG + fehler if fehler else "; ".join(hinweise)
     try:
         return _abschliessen_sql(a, bloecke, hinweis)
@@ -429,11 +444,11 @@ def _stopps_abschliessen() -> None:
     """Gestoppte Auftraege, deren Arbeiter sich binnen 15 s nicht gemeldet hat, aus dem
     letzten Zwischenstand abschliessen. Wirft nie (der Stand-Abruf darf daran nicht scheitern)."""
     try:
-        faellig = _lesen(lambda: "SELECT id FROM marketing.pult_chat_stopp_faellig() AS id")
+        faellig = _lesen(lambda: f"SELECT id FROM marketing.pult_chat_stopp_faellig() AS id LIMIT {STOPPS_JE_ABRUF}")
     except HTTPException as e:
         log.warning("Faellige Stopps nicht lesbar: %s", e.detail)
         return
-    for z in faellig:
+    for z in faellig[:STOPPS_JE_ABRUF]:
         a = str(z.get("id"))
         try:
             job = _gestoppter_auftrag(a)
@@ -546,7 +561,7 @@ async def _json_gekappt(request: Request, grenze: int) -> dict:
             raise HTTPException(413, "Zwischenstand zu groß")
     try:
         payload = json.loads(bytes(roh))
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):
         raise HTTPException(422, "Body muss JSON sein")
     if not isinstance(payload, dict):
         raise HTTPException(422, "Body muss ein Objekt sein")
