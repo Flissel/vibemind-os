@@ -49,6 +49,13 @@ STOPP_UNGUELTIG = "Zwischenstand nicht übernommen: "
 STOPP_GESPEICHERT = "Inzwischen gespeichert – Zwischenstand verworfen"
 _ENTWURF = re.compile(r"gs-[0-9a-f]{12}\.jpg")                                   # nur fullmatch
 _MEDIEN_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(png|jpe?g|gif|webp)")   # DB-URL-Regex ohne medien:
+# nur Arbeiter-Medienroute und Anhaenge: wie _MEDIEN_NAME, dazu Dokumente (Medienliste/DB bleiben bilderrein)
+_ARBEITER_DATEI = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(png|jpe?g|gif|webp|pdf|docx|txt|md)")
+_DOK_TYP = {".pdf": "application/pdf", ".txt": "text/plain; charset=utf-8", ".md": "text/markdown; charset=utf-8",
+            ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+_KONTEXT_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+KONTEXT_MAX = 4096
+AUSWAHL_MAX, ANHAENGE_MAX, KURZ_MAX = 8, 5, 80
 _EXPORT_NAME = re.compile(r"([a-z0-9-]{1,60})-(handy|tablet|pc)\.jpg")
 _UMLAUTE = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
 
@@ -70,7 +77,40 @@ def _nachricht_und_kontext(payload: dict) -> tuple[str, dict]:
     kontext = payload.get("kontext") or {}
     if not isinstance(kontext, dict):
         raise HTTPException(422, "kontext muss ein Objekt sein")
+    if len(json.dumps(kontext, ensure_ascii=False).encode("utf-8")) > KONTEXT_MAX:
+        raise HTTPException(422, "kontext ist zu groß (höchstens 4 KB)")
+    _auswahl_pruefen(kontext.get("auswahl"))
+    if "anhaenge" in kontext:
+        _anhaenge_pruefen(kontext["anhaenge"])
     return nachricht, kontext
+
+
+def _auswahl_pruefen(auswahl) -> None:
+    if auswahl is None or isinstance(auswahl, str):   # Altform
+        return
+    if not isinstance(auswahl, list) or len(auswahl) > AUSWAHL_MAX:
+        raise HTTPException(422, f"kontext.auswahl: höchstens {AUSWAHL_MAX} Elemente")
+    for e in auswahl:
+        if not isinstance(e, dict) or e.get("art") not in ("block", "ebene"):
+            raise HTTPException(422, "kontext.auswahl: art muss block oder ebene sein")
+        for feld in ("id", "flaeche"):
+            w = e.get(feld)
+            if (feld == "id" or w is not None) and not (isinstance(w, str) and _KONTEXT_ID.fullmatch(w)):
+                raise HTTPException(422, f"kontext.auswahl: {feld} ungültig")
+        kurz = e.get("kurz", "")
+        if not isinstance(kurz, str) or len(kurz) > KURZ_MAX:
+            raise HTTPException(422, f"kontext.auswahl: kurz höchstens {KURZ_MAX} Zeichen")
+
+
+def _anhaenge_pruefen(anhaenge) -> None:
+    if not isinstance(anhaenge, list) or len(anhaenge) > ANHAENGE_MAX:
+        raise HTTPException(422, f"kontext.anhaenge: höchstens {ANHAENGE_MAX} Anhänge")
+    for e in anhaenge:
+        if not isinstance(e, dict) or e.get("art") not in ("bild", "dokument"):
+            raise HTTPException(422, "kontext.anhaenge: art muss bild oder dokument sein")
+        n = e.get("name")
+        if not (isinstance(n, str) and _ARBEITER_DATEI.fullmatch(n)):
+            raise HTTPException(422, "kontext.anhaenge: Dateiname ungültig")
 
 
 @pult_router.post("/inhalte/{iid}/chat")
@@ -610,17 +650,22 @@ async def arbeiter_gestoppt(aid: str, request: Request, x_bild_key: str | None =
     return await run_in_threadpool(abschliessen)
 
 
+def _dateityp(name: str) -> str:
+    endung = os.path.splitext(name)[1].lower()
+    return _BILDTYP.get(endung) or _DOK_TYP.get(endung, "application/octet-stream")
+
+
 @arbeiter_router.get("/{aid}/medien/{name}")
 def arbeiter_medien(aid: str, name: str, x_bild_key: str | None = Header(None)):
     _bild_schluessel(x_bild_key)
     a = _auftrag_id(aid)
-    if not _MEDIEN_NAME.fullmatch(name):
+    if not _ARBEITER_DATEI.fullmatch(name):
         raise HTTPException(404, "Unbekannte Datei")
     _in_arbeit(a, 404)
     for o in quellen():
         pfad = _im_ordner(o, name)
         if pfad:
-            return FileResponse(pfad, media_type=_BILDTYP.get(os.path.splitext(name)[1].lower(), "image/jpeg"),
+            return FileResponse(pfad, media_type=_dateityp(name),
                                 headers={"Cache-Control": "no-store"})
     raise HTTPException(404, "Unbekannte Datei")
 

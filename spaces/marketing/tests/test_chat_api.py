@@ -764,3 +764,78 @@ def test_stopp_auftrag_keine_uuid_422(umg):
     f, _, c = umg
     r = c.post(f"/api/pult/inhalte/{IID}/chat/stopp", json={"art": "behalten", "auftrag": "nicht-uuid"}, headers=H)
     assert r.status_code == 422 and f.sql == []
+
+
+# ─── Kontext: Auswahl und Anhaenge ──────────────────────────────────────
+
+
+def _anlegen_mit(c, kontext):
+    return c.post(f"/api/pult/inhalte/{IID}/chat", json={"nachricht": "x", "kontext": kontext}, headers=H)
+
+
+GUTE_AUSWAHL = [{"art": "block", "id": "b-1", "flaeche": "f_2", "kurz": "Titel"}, {"art": "ebene", "id": "e1", "kurz": ""}]
+GUTE_ANHAENGE = [{"name": "foto.jpg", "art": "bild"}, {"name": "preise.pdf", "art": "dokument"}]
+
+
+def test_kontext_gueltige_auswahl_und_anhaenge(umg):
+    f, _, c = umg
+    f.antworten.append([{"id": AID}])
+    r = _anlegen_mit(c, {"auswahl": GUTE_AUSWAHL, "anhaenge": GUTE_ANHAENGE})
+    assert r.status_code == 200, r.text
+    f.antworten.append([{"v": {}}])
+    r = c.put(f"/api/pult/inhalte/{IID}/chat/vormerkung", json={"nachricht": "y", "kontext": {"auswahl": GUTE_AUSWAHL, "anhaenge": GUTE_ANHAENGE}}, headers=H)
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.parametrize("auswahl", [None, "Titel", [], "b-1"])
+def test_kontext_auswahl_altform_bleibt_erlaubt(umg, auswahl):
+    f, _, c = umg
+    f.antworten.append([{"id": AID}])
+    assert _anlegen_mit(c, {"auswahl": auswahl}).status_code == 200
+
+
+@pytest.mark.parametrize("kontext", [
+    {"auswahl": [{"art": "block", "id": f"b{i}", "kurz": "x"} for i in range(9)]},
+    {"auswahl": [{"art": "bild", "id": "b1", "kurz": "x"}]},
+    {"auswahl": [{"art": "block", "id": "../b", "kurz": "x"}]},
+    {"auswahl": [{"art": "block", "id": "b" * 65, "kurz": "x"}]},
+    {"auswahl": [{"art": "block", "id": "b1", "flaeche": "a b", "kurz": "x"}]},
+    {"auswahl": [{"art": "block", "id": "b1", "kurz": "x" * 81}]},
+    {"auswahl": [{"art": "block", "id": "b1", "kurz": 5}]},
+    {"auswahl": ["b1"]},
+    {"auswahl": {"art": "block"}},
+    {"anhaenge": [{"name": f"a{i}.png", "art": "bild"} for i in range(6)]},
+    {"anhaenge": [{"name": "foto.jpg", "art": "video"}]},
+    {"anhaenge": [{"name": "../x.pdf", "art": "dokument"}]},
+    {"anhaenge": [{"name": "x.exe", "art": "dokument"}]},
+    {"anhaenge": ["foto.jpg"]},
+    {"anhaenge": "foto.jpg"},
+    {"anhaenge": None},
+])
+def test_kontext_ungueltig_422_ohne_sql(umg, kontext):
+    f, _, c = umg
+    r = _anlegen_mit(c, kontext)
+    assert r.status_code == 422 and r.json()["detail"], r.text
+    assert f.sql == []
+    r = c.put(f"/api/pult/inhalte/{IID}/chat/vormerkung", json={"nachricht": "y", "kontext": kontext}, headers=H)
+    assert r.status_code == 422 and f.sql == []
+
+
+def test_kontext_ueber_4kb_422(umg):
+    f, _, c = umg
+    assert _anlegen_mit(c, {"fenster": "x" * 4100}).status_code == 422 and f.sql == []
+
+
+def test_medien_liefert_dokumente_nur_ueber_arbeiterroute(umg):
+    f, ordner, c = umg
+    (ordner / "preise.pdf").write_bytes(b"%PDF-1.4")
+    f.antworten.append([JOB])
+    r = c.get(f"/api/chat/arbeiter/{AID}/medien/preise.pdf", headers=HB)
+    assert r.status_code == 200 and r.content == b"%PDF-1.4"
+    assert "pdf" in r.headers["content-type"]
+    for boese in ("..%2Fx.pdf", ".x.pdf", "x.exe"):
+        f.antworten.append([JOB])
+        assert c.get(f"/api/chat/arbeiter/{AID}/medien/{boese}", headers=HB).status_code == 404
+    # die Medienliste (Bilder fuer den Agenten) bleibt bilderrein
+    from spaces.marketing.api import chat
+    assert "preise.pdf" not in chat._medien()
