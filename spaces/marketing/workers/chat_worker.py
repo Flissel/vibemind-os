@@ -478,16 +478,19 @@ def _bildteil(art: str, puffer: io.BytesIO) -> dict:
     return {"type": "image_url", "image_url": {"url": url}}
 
 
-def anhaenge_vorbereiten(api, aid, auftrag: dict) -> tuple[list[dict], str, str, list[str]]:
+def anhaenge_vorbereiten(api, aid, auftrag: dict,
+                         bilder: list[tuple[str, str]] | None = None) -> tuple[list[dict], str, str, list[str]]:
     """(bildteile, unterlagen, auswahl_text, hinweise) aus kontext.anhaenge und kontext.auswahl: Bilder
     (Anhaenge vor markierten, hoechstens MAX_BILDER) als Bildteile, Dokumente als Unterlagen-Text, die
-    Auswahl als JSON. Was fehlt oder unlesbar ist, wird ein Hinweis; die Funktion wirft nicht."""
+    Auswahl als JSON. Was fehlt oder unlesbar ist, wird ein Hinweis; die Funktion wirft nicht.
+    bilder (optional, Ausgabe): (Mediennamen, Herkunft) je mitgeschicktem Bildteil, in Bildteil-Reihenfolge."""
     kontext = auftrag.get("kontext") if isinstance(auftrag.get("kontext"), dict) else {}
     markiert, chip_bilder, hinweise = _auswahl_aufloesen(auftrag, kontext)
     anhaenge = kontext.get("anhaenge") if isinstance(kontext.get("anhaenge"), list) else []
     anhaenge = [a for a in anhaenge if isinstance(a, dict) and isinstance(a.get("name"), str) and a["name"]]
     anhaenge = anhaenge[:MAX_ANHAENGE]
-    namen = list(dict.fromkeys([a["name"] for a in anhaenge if a.get("art") == "bild"] + chip_bilder))
+    anhang_namen = [a["name"] for a in anhaenge if a.get("art") == "bild"]
+    namen = list(dict.fromkeys(anhang_namen + chip_bilder))
     bildteile: list[dict] = []
     for i, name in enumerate(namen):
         if len(bildteile) >= MAX_BILDER:
@@ -501,6 +504,8 @@ def anhaenge_vorbereiten(api, aid, auftrag: dict) -> tuple[list[dict], str, str,
             hinweise.append(f"{name} ist kein lesbares Bild oder zu groß und wurde übersprungen.")
             continue
         bildteile.append(teil)
+        if bilder is not None:
+            bilder.append((name, "Anhang" if name in anhang_namen else "markiert"))
     dateien = []
     for a in anhaenge:
         if a.get("art") == "dokument":
@@ -555,12 +560,16 @@ def chat_bearbeiten(api, auftrag, fragen_strom=frage_strom, uhr=time.monotonic, 
 
 def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, zurueckgeben, live: _Live) -> str:
     medien = list(auftrag.get("medien") or [])
+    bilder: list[tuple[str, str]] = []
     with halten(api, aid, halten_takt_s) as halter:      # Anhaenge laden kann dauern
-        bildteile, unterlagen_text, auswahl_text, hinweise = anhaenge_vorbereiten(api, aid, auftrag)
+        bildteile, unterlagen_text, auswahl_text, hinweise = anhaenge_vorbereiten(api, aid, auftrag, bilder)
     if halter.verloren.is_set():
         return "fehler"
+    angehaengt = [n for n, _ in bilder]
+    medien = angehaengt + [m for m in medien if m not in angehaengt]   # Anhaenge zuerst, auch live erlaubt
+    live.medien.update(angehaengt)
     text_nutzer = agent_prompt.nutzer_text(auftrag, medien, unterlagen=unterlagen_text, auswahl_text=auswahl_text,
-                                           hinweise=hinweise)
+                                           hinweise=hinweise, bilder=bilder)
     # Mit Bildern ist die erste Nachricht eine Teil-Liste; sie bleibt auch in der Korrekturrunde so.
     nachrichten = [{"role": "user", "content": [{"type": "text", "text": text_nutzer}, *bildteile]
                     if bildteile else text_nutzer}]

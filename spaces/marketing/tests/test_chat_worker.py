@@ -1043,3 +1043,29 @@ def test_frage_strom_400_ist_shim_abgelehnt(monkeypatch):
     monkeypatch.setattr(cw.urllib.request, "urlopen", fake)
     with pytest.raises(cw.ShimAbgelehnt):
         list(cw.frage_strom("S", []))
+
+
+def test_angehaengtes_bild_hat_mediennamen_im_prompt_und_ist_erlaubt(monkeypatch):
+    name = "nl-6c242352-streifen_bild3-frei.png"
+    api = MedienApi({name: _png()})
+    auftrag = _mit_kontext(anhaenge=[{"name": name, "art": "bild"}])
+    auftrag["bloecke"] = {"root": {"type": "EmailLayout", "data": {"childrenIds": ["p1"]}},
+                          "p1": {"type": "Image", "data": {"props": {
+                              "url": "medien:platzhalter-4x3.png", "width": 400, "height": 300, "alt": ""}}}}
+    assert name not in auftrag["medien"]                       # nur im Anhang, nicht in der Medienliste
+    aenderung = {"werkzeug": "bild_aus_medien", "platz": "p1", "quelle": "medien:" + name}
+    antwort = json.dumps({"antwort": "Gesetzt.", "aenderungen": [aenderung]})
+    echt, gesehen = cw.agent_werkzeuge.anwenden, []
+
+    def spion(dok, aenderungen, medien):
+        gesehen.append(set(medien))
+        return echt(dok, aenderungen, medien)
+    monkeypatch.setattr(cw.agent_werkzeuge, "anwenden", spion)
+    fragen = Fragen(antwort)
+    assert cw.chat_bearbeiten(api, auftrag, fragen) == "fertig"
+    text = fragen.gesehen[0][1][0]["content"][0]["text"]
+    assert f"- Bild 1 = medien:{name} (Anhang)" in text
+    assert f"MEDIEN (2): {name}," in text
+    assert gesehen and all(name in m for m in gesehen)         # live und final
+    daten = api.aufrufe("fertig")[0][2]
+    assert daten["bloecke"]["p1"]["data"]["props"]["url"] == "medien:" + name

@@ -134,7 +134,8 @@ def _auswahl_kurz(kontext: dict, auswahl_text: str) -> str:
 
 
 def nutzer_text(auftrag: dict, medien: list[str], *, unterlagen: str = "", auswahl_text: str = "",
-                hinweise: list[str] | tuple[str, ...] = ()) -> str:
+                hinweise: list[str] | tuple[str, ...] = (),
+                bilder: list[tuple[str, str]] | tuple[tuple[str, str], ...] = ()) -> str:
     """Kontext der ersten Nutzernachricht. auswahl_text ist die markierte Auswahl als JSON (Blöcke/Ebenen
     vollständig), unterlagen der Text aus hochgeladenen Dokumenten, hinweise fehlende Elemente/Anhänge."""
     dok = auftrag.get("bloecke") if isinstance(auftrag.get("bloecke"), dict) else {}
@@ -163,6 +164,11 @@ def nutzer_text(auftrag: dict, medien: list[str], *, unterlagen: str = "", auswa
             teile.append(f"Betreiber: {v.get('nachricht', '')}\nDu: {v.get('antwort', '')}")
     if auswahl_text:
         teile += ["Markiert (damit ist ‚das/hier/diese‘ gemeint):", auswahl_text]
+    if bilder:
+        teile.append("Angehängte Bilder (in dieser Reihenfolge als Bild 1, 2, … beigefügt):")
+        teile += [f"- Bild {i} = medien:{name} ({herkunft})" for i, (name, herkunft) in enumerate(bilder, 1)]
+        teile.append("Diese Bilder sind in den Medien und können direkt mit bild_aus_medien bzw. als quelle "
+                     "einer Bild-Ebene verwendet werden.")
     if unterlagen:
         teile += ["Unterlagen:", unterlagen]
     if hinweise:
