@@ -67,7 +67,6 @@ effects:
   research_to_idea: write
   rowboat_email_draft: write
   rowboat_deck: write
-  openfang_agent_create: write
   mirofish.graph.build: write
   mirofish.simulate: write
   minibook.discuss: write
@@ -134,7 +133,6 @@ effects:
   incident_response: unrouted
   log_analysis: unrouted
   knowledge_query: unrouted
-  email_action: unrouted
   site_check: unrouted
   code_review: unrouted
   architecture_question: unrouted
@@ -146,7 +144,6 @@ restliste:
   research_to_idea: "Ergebnisform von research:to_idea nicht belegt; Nachpruefung ueber ideas-Zeile sobald die ID im Ergebnis steht"
   rowboat_email_draft: "Entwurf entsteht in Rowboat; Nachweis ueber den Rowboat-Dokument-MCP aus T2"
   rowboat_deck: "Deck entsteht in Rowboat; Nachweis ueber den Rowboat-Dokument-MCP aus T2"
-  openfang_agent_create: "freie Agent-Antwort ohne festen Namen; Nachweis ueber den OpenFang-Auftrag mit Rueckmeldung aus T2"
   mirofish.graph.build: "MiroFish hat keinen belegten Lese-Endpunkt fuer den gebauten Graphen"
   mirofish.simulate: "Simulationsergebnis nur im Rueckgabewert; MiroFish-Lese-Endpunkt fehlt"
   minibook.discuss: "rule:minibook_verified_result liest nur den Rueckgabewert; unabhaengige Nachfrage an Minibook fehlt"

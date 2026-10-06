@@ -330,6 +330,7 @@
       KEY_GAP: <the single most important missing item from your perspective>
       NEXT_STEP: <one concrete actionable next step the user should take>
 
+# 2026-10-06 Teilprojekt A: Fungus-Agent raus (Schein-Routing, nie Ergebnis); Fungus-Weg baut Teilprojekt B.
 - capability: code_search
   description: "find code locate function class method implementation source file, where is X, find me the X, locate where Y is, get code snippets relevant to a topic, search the codebase for patterns or definitions"
   # Phase 2.5 — extra anchor phrases for semantic match (max-cosine across all)
@@ -346,8 +347,8 @@
     - "wie (funktioniert|geht)\\s+\\w+"
     - "code (for|about|that does)\\s+\\w+"
   agents:
-    primary: [fungus-search]
-    supporting: [brain-coder, rowboat-knowledge]
+    primary: [brain-coder]
+    supporting: [rowboat-knowledge]
 
 - capability: security_scan
   description: "scan for vulnerabilities, audit secrets, check security posture"
@@ -423,21 +424,6 @@
   agents:
     primary: [rowboat-knowledge, supermemory]
     supporting: [fungus-search]
-
-- capability: email_action
-  description: "compose send personalise route an email, draft a message, follow-up note, write to team, reply to incoming mail, email automation"
-  anchor_phrases:
-    - "compose a follow-up message"
-    - "draft an email to the team"
-    - "write a reply to a mail"
-    - "send a notification message"
-  match_patterns:
-    - "(send|write|compose|schick) (an|eine)?\\s*(e?mail|nachricht)"
-    - "(reply to|antwort auf)\\s+\\w+"
-    - "email (to|an)\\s+\\w+"
-  agents:
-    primary: [poc-email-response, poc-email-sender]
-    supporting: [poc-email-personalizer, poc-email-verteiler]
 
 - capability: site_check
   description: "verify website service endpoint url is up reachable online responding healthy ping URL availability check"
@@ -1063,6 +1049,7 @@
 # These run the standard discourse round but to a small focused agent set
 # instead of broadcasting to all 25.
 
+# 2026-10-06 Teilprojekt A: Fungus-Agent raus (Schein-Routing, nie Ergebnis); Fungus-Weg baut Teilprojekt B.
 - capability: code_review
   description: "review code diff pull request changes for bugs style security tests quality"
   match_patterns:
@@ -1071,8 +1058,8 @@
     - "ist (?:das|der code|mein code)\\s+(?:okay|gut|sicher|sauber)"
     - "look (?:at|over)\\s+(?:my\\s+|the\\s+)?code"
   agents:
-    primary: [brain-coder, fungus-search]
-    supporting: [poc-security-scanner, rowboat-knowledge]
+    primary: [brain-coder]
+    supporting: [rowboat-knowledge]
   # When agents respond, aggregator gets a structured prompt asking each
   # for AGREE/DISAGREE + KEY_GAP + NEXT_STEP. Different from the broadcast
   # default ("each propose your own answer") — here the supporting agents
@@ -1084,8 +1071,9 @@
     enabled: false  # Phase 2.5 — not wired for broadcast yet
     pattern: proposer_evaluator
     proposer: [brain-coder]
-    evaluators: [fungus-search, poc-security-scanner, rowboat-knowledge]
+    evaluators: [rowboat-knowledge]
 
+# 2026-10-06 Teilprojekt A: Fungus-Agent raus (Schein-Routing, nie Ergebnis); Fungus-Weg baut Teilprojekt B.
 - capability: architecture_question
   description: "explain architecture how does X work understand a system component design decision, walk me through the pipeline routing flow, describe relationship between brain openfang mirofish components, what is the role of, give me an overview"
   anchor_phrases:
@@ -1101,7 +1089,7 @@
     - "(explain|erklär|erkläre)\\s+(?:the\\s+|how\\s+|wie\\s+)?(brain|mirofish|openfang|fungus|capability|router|discourse|agent|bubble|architecture|system|pipeline)"
     - "(architecture|architektur) (of|für|von)"
   agents:
-    primary: [fungus-search, brain-coder]
+    primary: [brain-coder]
     supporting: [rowboat-knowledge]
 
 # ─── Phase 11.N: Bubble + Idea CRUD/Navigation ──────────────────────
@@ -1985,34 +1973,6 @@
   agents:
     primary: [rowboat-chat]
     supporting: []
-
-- capability: openfang_agent_create
-  description: "create a new OpenFang agent, spawn agent from template, build agent for task X, configure agent tools/MCP servers/system prompt — wraps :4200/api/agents/* via the openfang-agents MCP server"
-  match_patterns:
-    # English: create/spawn/build [an] [openfang] agent
-    - "(create|spawn|build|make)\\s+(an?\\s+)?(new\\s+)?(openfang\\s+)?agent\\b"
-    # German: erstelle/baue/starte/spawn [einen] [neuen] [openfang] agent[en]
-    - "(erstelle|baue|spawn|starte|create)\\s+(einen?\\s+)?(neuen?\\s+)?(openfang[- ]?)?agent(en)?\\b"
-    # Explicit "openfang agent" subject + verb in any order
-    - "openfang[- ]?agent\\s+(create|spawn|build|erstelle|anlegen|bauen|starten)"
-    # List request — also routes here for the "what's running" sub-question
-    - "(list|zeig\\w*|show|liste)\\s+(all\\s+|alle\\s+)?(openfang\\s+)?agents?\\b"
-  # Phase 2 (Sofort-Fix 2026-05-20): route to fungus-search (Running, claude-code
-  # provider, has MCP access via :4200/mcp aggregator). The agent sees the user
-  # intent via /api/agents/{id}/message and uses its MCP tools (incl. the new
-  # openfang-agents server) to spawn/patch/kill via natural language.
-  # → Brain → OpenFang Claude-Agent → MCP-Tools → :4200/api/agents (Variante 2)
-  #
-  # Phase 4 follow-up (deferred — needs /api/mcp/dispatch route in Brain):
-  # execution_target: "mcp:openfang-agents:openfang_agent_spawn_from_template"
-  # would be the deterministic direct-call variant. McpExecutor in
-  # capability_targets.py:621 is currently a Phase-4 stub that POSTs to a
-  # non-existent /api/mcp/dispatch route. Until that route is implemented,
-  # use the openfang: target above.
-  execution_target: "openfang:fungus-search"
-  # Try to extract the template/role name from the intent:
-  # "agent for code-review", "agent namens X", "agent named X"
-  result_arg_extractor: 'regex:agent\s+(?:for|für|named|namens)\s+(.+?)(?:\s+(?:with|mit|using|und|and)|$)'
 
 # ============================================================
 # Minibook collaboration projection

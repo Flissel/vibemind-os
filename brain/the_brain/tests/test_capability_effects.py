@@ -13,7 +13,8 @@ import yaml
 
 DATA = Path(__file__).resolve().parents[1] / "data"
 KLASSEN = {"write", "read", "external", "answer", "unrouted"}
-RESTLISTE_OBERGRENZE = 21  # 2026-09-24: einmalig angehoben - 8 Pruefungen konnten nie verifizieren (Schlusspruefung T1). Nur nach unten aendern.
+RESTLISTE_OBERGRENZE = 20  # 2026-09-24: einmalig angehoben - 8 Pruefungen konnten nie verifizieren (Schlusspruefung T1). Nur nach unten aendern.
+# 2026-10-06: -1 (openfang_agent_create entfernt). Nur nach unten aendern.
 # 2026-09-29: einmalig +1 fuer code_cancel (konnte nie verifizieren). Nur nach unten aendern.
 
 
@@ -120,3 +121,15 @@ def test_registry_quote():
                "restliste": {"b": "Grund"}}
     q = pq.registry_quote(caps, effects)
     assert q == {"write_gesamt": 2, "write_mit_truth": 1, "quote_write": 0.5, "restliste": 1}
+
+
+def test_teilprojekt_a_altlasten_sind_raus():
+    caps = _caps()
+    assert "openfang_agent_create" not in caps
+    assert "email_action" not in caps
+    for name in ("code_search", "code_review", "architecture_question"):
+        agenten = caps[name].get("agents") or {}
+        alle = set(agenten.get("primary") or []) | set(agenten.get("supporting") or [])
+        alle |= set((caps[name].get("feedback_loop") or {}).get("evaluators") or [])
+        assert "fungus-search" not in alle and "poc-security-scanner" not in alle, name
+        assert agenten.get("primary"), name
