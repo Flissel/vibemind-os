@@ -288,6 +288,7 @@ def _build_command(
     response_format: Any,
     streaming: bool,
     bilder_ordner: str | None = None,
+    ohne_werkzeuge: bool = False,
 ) -> tuple[list[str], str | None, dict[str, str]]:
     """Baut (argv, system_prompt_file, environment) -- gemeinsam fuer beide Pfade."""
 
@@ -342,7 +343,9 @@ def _build_command(
     # Ohne SHIM_EXTRA_MCP_CONFIG aendert sich fuer bestehende Verbraucher
     # (Hermes, Captain) nichts -- das ist der Sinn des Tors.
     extra_pfad = os.environ.get("SHIM_EXTRA_MCP_CONFIG", "").strip()
-    if extra_pfad and os.path.isfile(extra_pfad):
+    # ohne_werkzeuge (Body-Flag marketing_ohne_werkzeuge): der Chat-Agent antwortet nur mit JSON und
+    # liest fremden Text (Unterlagen, Bilder) -- er bekommt die Marketing-Werkzeuge nicht.
+    if extra_pfad and os.path.isfile(extra_pfad) and not ohne_werkzeuge:
         try:
             extra = json.loads(pathlib.Path(extra_pfad).read_text(encoding="utf-8"))
         except Exception as exc:  # noqa: BLE001 -- eine kaputte Datei darf den Dienst nicht kippen
@@ -441,6 +444,7 @@ def run_claude(
     timeout: float,
     response_format: Any = None,
     bilder_ordner: str | None = None,
+    ohne_werkzeuge: bool = False,
 ) -> dict[str, Any]:
     argv, system_prompt_file, environment = _build_command(
         system_prompt=system_prompt,
@@ -448,6 +452,7 @@ def run_claude(
         response_format=response_format,
         streaming=False,
         bilder_ordner=bilder_ordner,
+        ohne_werkzeuge=ohne_werkzeuge,
     )
 
     try:
@@ -545,6 +550,7 @@ def stream_claude(
     timeout: float,
     response_format: Any = None,
     bilder_ordner: str | None = None,
+    ohne_werkzeuge: bool = False,
 ) -> Iterator[str]:
     """Startet die CLI mit stream-json und liefert Text-Stuecke, sobald sie kommen."""
 
@@ -554,6 +560,7 @@ def stream_claude(
         response_format=response_format,
         streaming=True,
         bilder_ordner=bilder_ordner,
+        ohne_werkzeuge=ohne_werkzeuge,
     )
     fehler_datei = tempfile.TemporaryFile()
     proc: subprocess.Popen[str] | None = None
@@ -808,6 +815,7 @@ class Handler(BaseHTTPRequestHandler):
         bilder_ordner: str | None, budget_start: float,
     ) -> None:
         system_prompt, transcript = render_messages(messages)
+        ohne_werkzeuge = body.get("marketing_ohne_werkzeuge") is True
 
         roles = [str(m.get("role", "?")) for m in messages]
         tool_names = [
@@ -859,6 +867,7 @@ class Handler(BaseHTTPRequestHandler):
                         timeout=self.timeout_seconds,
                         response_format=body.get("response_format"),
                         bilder_ordner=bilder_ordner,
+                        ohne_werkzeuge=ohne_werkzeuge,
                     ),
                     budget_start,
                 ),
@@ -874,6 +883,7 @@ class Handler(BaseHTTPRequestHandler):
                 timeout=self.timeout_seconds,
                 response_format=body.get("response_format"),
                 bilder_ordner=bilder_ordner,
+                ohne_werkzeuge=ohne_werkzeuge,
             )
             completion = to_completion(payload, model)
         except ShimError as exc:

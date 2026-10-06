@@ -423,3 +423,57 @@ def test_budget_erlaubt_http_bucht_ok(server, protokoll, monkeypatch, tmp_path):
     resp.read()
     assert protokoll.exists()
     assert log.read_text(encoding="utf-8").strip() == "marketing-chat:ok"
+
+
+def _extra_config(tmp_path: Path, monkeypatch) -> None:
+    datei = tmp_path / "extra-mcp.json"
+    datei.write_text(json.dumps({"mcpServers": {"marketing": {"command": "x"}},
+                                 "allowedTools": ["mcp__marketing__versand_beauftragen"]}), encoding="utf-8")
+    monkeypatch.setenv("SHIM_EXTRA_MCP_CONFIG", str(datei))
+    monkeypatch.setattr(shim, "resolve_cli", lambda: "cli")
+
+
+def _bauen(**kw):
+    argv, datei, _ = shim._build_command(system_prompt="S", model=None, response_format=None, streaming=False, **kw)
+    if datei:
+        os.unlink(datei)
+    return argv
+
+
+def test_ohne_flag_behaelt_marketing_werkzeuge(tmp_path, monkeypatch):
+    _extra_config(tmp_path, monkeypatch)
+    argv = _bauen()
+    assert "marketing" in json.loads(argv[argv.index("--mcp-config") + 1])["mcpServers"]
+    assert "mcp__marketing__versand_beauftragen" in argv
+
+
+def test_flag_ohne_werkzeuge_laesst_extra_server_weg(tmp_path, monkeypatch):
+    _extra_config(tmp_path, monkeypatch)
+    argv = _bauen(ohne_werkzeuge=True)
+    assert json.loads(argv[argv.index("--mcp-config") + 1]) == {"mcpServers": {}}
+    assert not any(a.startswith("mcp__") for a in argv) and "--allowedTools" not in argv
+
+
+def test_flag_ohne_werkzeuge_behaelt_bild_read_und_sperren(tmp_path, monkeypatch):
+    _extra_config(tmp_path, monkeypatch)
+    argv = _bauen(ohne_werkzeuge=True, bilder_ordner=str(tmp_path))
+    assert argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")] == [f"Read({tmp_path}/**)"]
+    assert "Bash" in argv[argv.index("--disallowedTools") + 1:]
+    assert not any(a.startswith("mcp__") for a in argv)
+
+
+@pytest.mark.parametrize("flag,stream", [(True, False), (True, True), (False, False)])
+def test_body_flag_marketing_ohne_werkzeuge_erreicht_die_cli(server, protokoll, tmp_path, monkeypatch, flag, stream):
+    _extra_config(tmp_path, monkeypatch)
+    conn = http.client.HTTPConnection("127.0.0.1", server(), timeout=30)
+    body = {"stream": stream, "messages": [{"role": "user", "content": "hi"}]}
+    if stream:
+        body["marketing_stream"] = True
+    if flag:
+        body["marketing_ohne_werkzeuge"] = True
+    conn.request("POST", "/v1/chat/completions", json.dumps(body), {"Content-Type": "application/json"})
+    conn.getresponse().read()
+    argv = _geladen(protokoll)["argv"]
+    server_cfg = json.loads(argv[argv.index("--mcp-config") + 1])["mcpServers"]
+    assert ("marketing" in server_cfg) is (not flag)
+    assert ("mcp__marketing__versand_beauftragen" in argv) is (not flag)

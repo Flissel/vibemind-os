@@ -102,7 +102,8 @@ class ChatApi:
 
 def frage(system: str, nachrichten: list[dict], url: str = LLM_URL, modell: str = MODELL) -> str:
     """Eine Anfrage an den OpenAI-kompatiblen Shim (kein tool_calls, nur Text)."""
-    koerper = {"model": modell, "messages": [{"role": "system", "content": system}, *nachrichten]}
+    koerper = {"model": modell, "marketing_ohne_werkzeuge": True,
+               "messages": [{"role": "system", "content": system}, *nachrichten]}
     req = urllib.request.Request(url.rstrip("/") + "/chat/completions",
                                  data=json.dumps(koerper).encode("utf-8"), method="POST",
                                  headers={"Content-Type": "application/json"})
@@ -122,7 +123,7 @@ def frage_strom(system: str, nachrichten: list[dict], url: str = LLM_URL, modell
     """Wie frage, aber als SSE-Strom des Shims: liefert jedes Text-Stueck (delta.content), sobald es da ist.
     Fehler-Chunk (finish_reason "error"), Abbruch ohne Abschluss, Muell oder eine leere Antwort => LlmFehler.
     Schliesst der Aufrufer den Strom (close), wird die Verbindung zum Shim geschlossen."""
-    koerper = {"model": modell, "stream": True, "marketing_stream": True, "messages": [{"role": "system", "content": system}, *nachrichten]}
+    koerper = {"model": modell, "stream": True, "marketing_stream": True, "marketing_ohne_werkzeuge": True, "messages": [{"role": "system", "content": system}, *nachrichten]}
     req = urllib.request.Request(url.rstrip("/") + "/chat/completions",
                                  data=json.dumps(koerper).encode("utf-8"), method="POST",
                                  headers={"Content-Type": "application/json"})
@@ -367,6 +368,7 @@ MAX_KANTE = 1568                   # laengste Kante, mit der Claude ein Bild ohn
 MAX_BILD_PIXEL = 50_000_000        # mehr Pixel wird nie dekodiert (Dekompressionsbombe), sondern uebersprungen
 MAX_BILD_BYTES = 10 * 1024 * 1024  # je Bild kodiert (Grenze des Shims)
 MAX_AUSWAHL = 8
+BILD_FORMATE = ("PNG", "JPEG", "WEBP", "GIF", "BMP")   # nie ueber die Endung: der Inhalt ist fremd
 MAX_ANHAENGE = 5
 MAX_HINWEIS = 200
 MAX_HINWEISE = 1500                # zusammen vor der Antwort; die VM kuerzt die Antwort bei 4000 Zeichen
@@ -396,13 +398,9 @@ def _ebene_finden(bloecke: dict, fid, eid) -> dict | None:
 
 
 def _auswahl_liste(kontext: dict) -> list[dict]:
-    """Chips [{art, id, flaeche?, kurz}] oder Altform: eine einzelne id (in einer Flaeche eine Ebene)."""
+    """Nur ausdrueckliche Chips [{art, id, flaeche?, kurz}] zaehlen. Die Altform (eine einzelne id oder ein String)
+    schickt der Editor mit dem gerade selektierten Block bei jeder Nachricht mit: gueltig, aber keine Markierung."""
     auswahl = kontext.get("auswahl")
-    if isinstance(auswahl, str) and auswahl:
-        fenster = str(kontext.get("fenster") or "")
-        if fenster.startswith("flaeche:"):
-            return [{"art": "ebene", "flaeche": fenster[len("flaeche:"):], "id": auswahl}]
-        return [{"art": "block", "id": auswahl}]
     if isinstance(auswahl, list):
         return [a for a in auswahl if isinstance(a, dict) and isinstance(a.get("id"), str)][:MAX_AUSWAHL]
     return []
@@ -452,7 +450,7 @@ def _bild_als_teil(roh: bytes) -> dict | None:
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(io.BytesIO(roh)) as quelle:
+            with Image.open(io.BytesIO(roh), formats=BILD_FORMATE) as quelle:
                 breite, hoehe = quelle.size
                 if breite <= 0 or hoehe <= 0 or breite * hoehe > MAX_BILD_PIXEL:
                     return None
@@ -518,7 +516,14 @@ def anhaenge_vorbereiten(api, aid, auftrag: dict) -> tuple[list[dict], str, str,
 def _mit_hinweisen(hinweise: list[str], antwort: str) -> str:
     if not hinweise:
         return antwort
-    kopf = "\n".join("Hinweis: " + h[:MAX_HINWEIS] for h in hinweise)[:MAX_HINWEISE]
+    zeilen, laenge = [], 0
+    for h in hinweise:
+        zeile = "Hinweis: " + h[:MAX_HINWEIS]
+        laenge += len(zeile) + (1 if zeilen else 0)
+        if laenge > MAX_HINWEISE:
+            break                      # nur ganze Zeilen, nie mitten in einer abschneiden
+        zeilen.append(zeile)
+    kopf = "\n".join(zeilen)
     return kopf + "\n\n" + antwort
 
 
@@ -574,7 +579,7 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
                     if isinstance(e, ShimAbgelehnt) and mit_bildern:   # einmal sofort ohne Bilder
                         mit_bildern = False
                         nachrichten[0] = {"role": "user", "content": text_nutzer}
-                        hinweise.append(BILDER_ABGELEHNT)
+                        hinweise.insert(0, BILDER_ABGELEHNT)
                         continue
                     if beginn is None:
                         beginn = uhr()

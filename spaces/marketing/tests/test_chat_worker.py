@@ -205,7 +205,8 @@ def test_frage_baut_openai_request(monkeypatch):
     monkeypatch.setattr(cw.urllib.request, "urlopen", fake)
     assert cw.frage("SYS", [{"role": "user", "content": "hi"}]) == "hallo"
     assert gesehen["url"] == cw.LLM_URL + "/chat/completions" and gesehen["methode"] == "POST"
-    assert gesehen["body"] == {"model": cw.MODELL, "messages": [{"role": "system", "content": "SYS"},
+    assert gesehen["body"] == {"model": cw.MODELL, "marketing_ohne_werkzeuge": True,
+                               "messages": [{"role": "system", "content": "SYS"},
                                                                 {"role": "user", "content": "hi"}]}
     assert gesehen["timeout"] == 300
 
@@ -622,6 +623,7 @@ def test_frage_strom_liefert_stuecke_und_fragt_mit_stream(monkeypatch):
     assert list(cw.frage_strom("SYS", [{"role": "user", "content": "hi"}])) == ["Hal", "lö", "\n\nWelt"]
     assert gesehen["url"] == cw.LLM_URL + "/chat/completions" and gesehen["timeout"] == 300
     assert gesehen["body"] == {"model": cw.MODELL, "stream": True, "marketing_stream": True,
+                               "marketing_ohne_werkzeuge": True,
                                "messages": [{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}]}
 
 
@@ -930,16 +932,57 @@ def test_markierter_aber_fehlender_block_gibt_hinweis_und_nachricht_laeuft():
     assert [e["id"] for e in _markiert(text)] == ["t"]
 
 
-@pytest.mark.parametrize("kontext,erwartet", [
-    ({"fenster": "newsletter", "auswahl": "b1"}, ("block", "b1")),
-    ({"fenster": "flaeche:f1", "auswahl": "eb1"}, ("ebene", "eb1")),
+@pytest.mark.parametrize("kontext", [
+    {"fenster": "newsletter", "auswahl": "b1"},
+    {"fenster": "flaeche:f1", "auswahl": "eb1"},
+    {"fenster": "newsletter", "auswahl": "hund"},
 ])
-def test_altform_auswahl_als_einzelne_id(kontext, erwartet):
+def test_altform_auswahl_ist_keine_markierung(kontext):
+    """Der Editor schickt den selektierten Block so bei jeder Nachricht mit: weder Markiert noch Bild noch Hinweis."""
     api = MedienApi({"katze.jpg": _jpg(), "hund.png": _png()})
     teile, _, auswahl_text, hinweise = cw.anhaenge_vorbereiten(
         api, "a1", {**AUFTRAG, "bloecke": DOC_AUSWAHL, "kontext": kontext})
-    eintrag, = json.loads(auswahl_text)
-    assert (eintrag["art"], eintrag["id"]) == erwartet and hinweise == [] and len(teile) == 1
+    assert (teile, auswahl_text, hinweise) == ([], "", [])
+
+
+def test_frage_nicht_stream_sendet_ohne_werkzeuge_flag(monkeypatch):
+    gesehen = {}
+
+    def fake(req, timeout=None, context=None):
+        gesehen["body"] = json.loads(req.data)
+        return _Antwort(json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode())
+    monkeypatch.setattr(cw.urllib.request, "urlopen", fake)
+    assert cw.frage("SYS", [{"role": "user", "content": "hi"}]) == "ok"
+    assert gesehen["body"]["marketing_ohne_werkzeuge"] is True
+
+
+def test_bilder_abgelehnt_steht_vor_den_anderen_hinweisen():
+    uhr, api = Uhr(), MedienApi({"foto.png": _png()})
+    fragen = Fragen(cw.ShimAbgelehnt("400"), GUT)
+    auftrag = _mit_kontext(anhaenge=[{"name": "foto.png", "art": "bild"}, {"name": "weg.png", "art": "bild"}])
+    assert cw.chat_bearbeiten(api, auftrag, fragen, uhr, uhr.schlafen) == "fertig"
+    antwort = api.aufrufe("fertig")[0][2]["antwort"]
+    assert antwort.startswith("Hinweis: Bilder konnten nicht übergeben werden")
+    assert "weg.png" in antwort
+
+
+def test_hinweiskopf_schneidet_nur_ganze_zeilen():
+    hinweise = [f"{i}" + "x" * 190 for i in range(20)]
+    text = cw._mit_hinweisen(hinweise, "Antwort.")
+    assert text.endswith("\n\nAntwort.")
+    kopf = text[:-len("\n\nAntwort.")]
+    assert len(kopf) <= cw.MAX_HINWEISE
+    zeilen = kopf.split("\n")
+    assert 1 < len(zeilen) < 20 and all(z.startswith("Hinweis: ") and z.endswith("x" * 190) for z in zeilen)
+
+
+def test_bild_mit_fremdem_format_wird_uebersprungen():
+    puffer = io.BytesIO()
+    Image.new("RGB", (20, 20)).save(puffer, "TIFF")           # Endung .png, Inhalt TIFF
+    api = MedienApi({"tarnung.png": puffer.getvalue(), "gut.png": _png()})
+    teile, _, _, hinweise = cw.anhaenge_vorbereiten(api, "a1", _mit_kontext(anhaenge=[
+        {"name": "tarnung.png", "art": "bild"}, {"name": "gut.png", "art": "bild"}]))
+    assert len(teile) == 1 and any("tarnung.png" in h for h in hinweise)
 
 
 def test_ohne_kontext_nichts_zu_tun():
