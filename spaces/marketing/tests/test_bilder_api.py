@@ -22,11 +22,26 @@ def jpeg(w=320, h=160) -> bytes:
     return b.getvalue()
 
 
+class FalschePsql:
+    """Faelschung von _db._run_psql (Zuordnungs-Schreibweg, medien_mandant)."""
+    def __init__(self, db):
+        self.db, self.sql, self.vorher, self.fehler = db, [], [], []
+
+    def __call__(self, sql, container, streng=False):
+        self.sql.append(sql)
+        self.vorher.append(len(self.db.sql))   # DB-Aufrufe vor dieser Zuordnung
+        if self.fehler:
+            raise self.fehler.pop(0)
+        return "1\n"
+
+
 @pytest.fixture
 def db(monkeypatch, tmp_path):
     f = FalscheDB()
+    f.psql = FalschePsql(f)
     monkeypatch.setattr(_db, "query_via_docker", f.query)
     monkeypatch.setattr(_db, "query_one", f.one)
+    monkeypatch.setattr(_db, "_run_psql", f.psql)
     monkeypatch.setenv("MARKETING_PULT_KEY", PK)
     monkeypatch.setenv("MARKETING_BILD_KEY", BK)
     monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
@@ -143,6 +158,10 @@ def test_fertig_prueft_namen_und_datei(db, c):
                json={"ergebnis": {"kopf": "nl-0123abcd-kopf.jpg"}, "befund": ""})
     assert r.status_code == 200 and r.json()["fassung"] == 4
     assert "medien:nl-0123abcd-kopf.jpg" in db.sql[0]
+    # Zuordnung zuerst (vor pult_bild_einsetzen), ueber den Bildauftrag
+    assert len(db.psql.sql) == 1 and db.psql.vorher == [0]
+    assert "marketing.medien_mandant" in db.psql.sql[0] and "bild_auftraege" in db.psql.sql[0]
+    assert "'nl-0123abcd-kopf.jpg'" in db.psql.sql[0] and AID in db.psql.sql[0]
     # Datei fehlt / fremder Name -> 422 ohne DB
     db.sql.clear()
     assert c.post(f"/api/bilder/arbeiter/{AID}/fertig", headers={"X-Bild-Key": BK},
@@ -468,6 +487,7 @@ def test_fertig_nimmt_frei_png_name(db, c):
                json={"ergebnis": {"kopf_bild": "nl-0123abcd-kopf_bild-frei.png"}, "befund": ""})
     assert r.status_code == 200 and r.json()["fassung"] == 5
     assert "medien:nl-0123abcd-kopf_bild-frei.png" in db.sql[0]
+    assert db.psql.vorher == [0] and "'nl-0123abcd-kopf_bild-frei.png'" in db.psql.sql[0]
 
 
 @pytest.mark.parametrize("name", [
@@ -486,3 +506,19 @@ def test_fertig_lehnt_falsche_png_namen_ab(db, c, name):
     r = c.post(f"/api/bilder/arbeiter/{AID}/fertig", headers={"X-Bild-Key": BK},
                json={"ergebnis": {"kopf": name}, "befund": ""})
     assert r.status_code == 422 and db.sql == []
+
+
+def test_fertig_zuordnung_503_setzt_nicht_ein(db, c):
+    (db.ordner / "nl-0123abcd-kopf.jpg").write_bytes(jpeg())
+    db.psql.fehler = [RuntimeError("verbindung weg")]
+    r = c.post(f"/api/bilder/arbeiter/{AID}/fertig", headers={"X-Bild-Key": BK},
+               json={"ergebnis": {"kopf": "nl-0123abcd-kopf.jpg"}, "befund": ""})
+    assert r.status_code == 503
+    assert len(db.psql.sql) == 1
+    assert not any("pult_bild_einsetzen" in s for s in db.sql)
+
+
+def test_fertig_ungueltiges_ergebnis_ordnet_nicht_zu(db, c):
+    r = c.post(f"/api/bilder/arbeiter/{AID}/fertig", headers={"X-Bild-Key": BK},
+               json={"ergebnis": {"kopf": "nl-0123abcd-weg.jpg"}})
+    assert r.status_code == 422 and db.psql.sql == [] and db.sql == []

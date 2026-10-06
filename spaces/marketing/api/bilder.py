@@ -327,6 +327,10 @@ def arbeiter_fertig(aid: str, payload: dict = Body(...), x_bild_key: str | None 
         for w in werte.values():
             if w is not None and (isinstance(w, bool) or not isinstance(w, (int, float)) or not -1 <= w <= 1):
                 raise HTTPException(422, f"Ungueltige Messung fuer {platz}")
+    # Erst der Firma des Newsletters zuordnen, dann einsetzen: scheitert die Zuordnung,
+    # geht der Fehler an den Bild-Arbeiter (Wiederholung), die Datei bleibt unverwiesen.
+    from spaces.marketing.api import medien_mandant
+    medien_mandant.zuordnen_fuer_bildauftrag(a, list(ergebnis.values()))
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_bild_einsetzen({lit(a)}::uuid, "
         f"{lit(json.dumps(medien, ensure_ascii=False))}::jsonb, {lit(befund[:500])}, "
