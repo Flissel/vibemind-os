@@ -17,6 +17,7 @@ function resolverWith(fetchImpl: typeof fetch, timeoutMs = 1_000): OpenFangCrede
   return new OpenFangCredentialResolver({
     baseUrl: "http://openfang.invalid:4200",
     apiKey: "test-openfang-key",
+    issueKey: "test-issue-key",
     fetch: fetchImpl,
     timeoutMs,
   });
@@ -40,6 +41,25 @@ async function captureRejection(promise: Promise<unknown>): Promise<Error> {
 }
 
 describe("OpenFangCredentialResolver", () => {
+  it("sends the issue key in X-OpenFang-Issue-Key next to the bearer token", async () => {
+    const calls: Array<{ init: RequestInit }> = [];
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      calls.push({ init: init ?? {} });
+      return jsonResponse(200, { reference: "GITHUB_PAT_TOKEN", value: "ghp_x" });
+    }) as unknown as typeof fetch;
+    await resolverWith(fetchImpl).resolve(reference, projectId, { signal: new AbortController().signal });
+    const headers = calls[0]!.init.headers as Record<string, string>;
+    expect(headers["X-OpenFang-Issue-Key"]).toBe("test-issue-key");
+    expect(headers["Authorization"]).toBe("Bearer test-openfang-key");
+  });
+
+  it("never puts the issue key into a thrown error", async () => {
+    const resolver = resolverWith((async () => jsonResponse(404, { error: "credential_unavailable" })) as unknown as typeof fetch);
+    const err = await captureRejection(resolver.resolve(reference, projectId, { signal: new AbortController().signal }));
+    expect(err.message).toBe("credential_missing");
+    expect(String(err.stack)).not.toContain("test-issue-key");
+    expect((err as { cause?: unknown }).cause).toBeUndefined();
+  });
   it("resolves a 200 response to a SecretValue whose revealed value matches, without leaking it through JSON.stringify", async () => {
     const resolver = resolverWith((async () => jsonResponse(200, { reference: "GITHUB_PAT_TOKEN", value: "ghp_super_secret" })) as unknown as typeof fetch);
     const secret = await resolver.resolve(reference, projectId, { signal: new AbortController().signal });

@@ -48,29 +48,37 @@ describe("resolveOpenFangCredentialTimeoutMs", () => {
 describe("resolveOpenFangCredentialSource", () => {
   const secureUrl = "https://openfang.example.com";
   const apiKey = "test-openfang-key";
+  const issueKey = "test-issue-key";
+
+  it("authorizes OpenFang only when url, api key AND issue key are set", () => {
+    expect(resolveOpenFangCredentialSource("https://pc.ts.net", "k", "")).toBeUndefined();
+    expect(resolveOpenFangCredentialSource("https://pc.ts.net", "k", undefined)).toBeUndefined();
+    expect(resolveOpenFangCredentialSource("https://pc.ts.net", "k", "   ")).toBeUndefined();
+    expect(resolveOpenFangCredentialSource("https://pc.ts.net", "k", "ik")).toEqual({ baseUrl: "https://pc.ts.net", apiKey: "k", issueKey: "ik" });
+  });
 
   it("is undefined when either variable is missing, empty, or whitespace-only", () => {
-    expect(resolveOpenFangCredentialSource(undefined, undefined)).toBeUndefined();
-    expect(resolveOpenFangCredentialSource("", "")).toBeUndefined();
-    expect(resolveOpenFangCredentialSource("   ", "   ")).toBeUndefined();
-    expect(resolveOpenFangCredentialSource(secureUrl, undefined)).toBeUndefined();
-    expect(resolveOpenFangCredentialSource(undefined, apiKey)).toBeUndefined();
-    expect(resolveOpenFangCredentialSource(secureUrl, "")).toBeUndefined();
-    expect(resolveOpenFangCredentialSource("", apiKey)).toBeUndefined();
-    expect(resolveOpenFangCredentialSource(secureUrl, "   ")).toBeUndefined();
-    expect(resolveOpenFangCredentialSource("   ", apiKey)).toBeUndefined();
+    expect(resolveOpenFangCredentialSource(undefined, undefined, issueKey)).toBeUndefined();
+    expect(resolveOpenFangCredentialSource("", "", issueKey)).toBeUndefined();
+    expect(resolveOpenFangCredentialSource("   ", "   ", issueKey)).toBeUndefined();
+    expect(resolveOpenFangCredentialSource(secureUrl, undefined, issueKey)).toBeUndefined();
+    expect(resolveOpenFangCredentialSource(undefined, apiKey, issueKey)).toBeUndefined();
+    expect(resolveOpenFangCredentialSource(secureUrl, "", issueKey)).toBeUndefined();
+    expect(resolveOpenFangCredentialSource("", apiKey, issueKey)).toBeUndefined();
+    expect(resolveOpenFangCredentialSource(secureUrl, "   ", issueKey)).toBeUndefined();
+    expect(resolveOpenFangCredentialSource("   ", apiKey, issueKey)).toBeUndefined();
   });
 
   it("is defined, with both values trimmed, when both are present, non-blank, and the URL is secure", () => {
-    expect(resolveOpenFangCredentialSource(secureUrl, apiKey)).toEqual({ baseUrl: secureUrl, apiKey });
-    expect(resolveOpenFangCredentialSource(`  ${secureUrl}  `, `  ${apiKey}  `)).toEqual({ baseUrl: secureUrl, apiKey });
+    expect(resolveOpenFangCredentialSource(secureUrl, apiKey, issueKey)).toEqual({ baseUrl: secureUrl, apiKey, issueKey });
+    expect(resolveOpenFangCredentialSource(`  ${secureUrl}  `, `  ${apiKey}  `, issueKey)).toEqual({ baseUrl: secureUrl, apiKey, issueKey });
   });
 
   it("does not construct a resolver from a trailing-space-only value that would send a blank bearer token", () => {
     // A `.env` typo like OPENFANG_API_KEY=" " must fail closed here, not
     // reach the wire as `Authorization: Bearer  `.
-    expect(resolveOpenFangCredentialSource(secureUrl, " ")).toBeUndefined();
-    expect(resolveOpenFangCredentialSource(" ", apiKey)).toBeUndefined();
+    expect(resolveOpenFangCredentialSource(secureUrl, " ", issueKey)).toBeUndefined();
+    expect(resolveOpenFangCredentialSource(" ", apiKey, issueKey)).toBeUndefined();
   });
 
   it("is undefined for a URL that is neither https nor loopback, even with a well-formed key", () => {
@@ -81,7 +89,7 @@ describe("resolveOpenFangCredentialSource", () => {
       "not-a-url",
       "",
     ]) {
-      expect(resolveOpenFangCredentialSource(insecure, apiKey)).toBeUndefined();
+      expect(resolveOpenFangCredentialSource(insecure, apiKey, issueKey)).toBeUndefined();
     }
   });
 
@@ -93,7 +101,7 @@ describe("resolveOpenFangCredentialSource", () => {
       "http://localhost:4200",
       "http://[::1]:4200",
     ]) {
-      expect(resolveOpenFangCredentialSource(secure, apiKey)).toEqual({ baseUrl: secure, apiKey });
+      expect(resolveOpenFangCredentialSource(secure, apiKey, issueKey)).toEqual({ baseUrl: secure, apiKey, issueKey });
     }
   });
 
@@ -105,7 +113,7 @@ describe("resolveOpenFangCredentialSource", () => {
       "http://notlocalhost.example.com",
       "http://evil.example.com/127.0.0.1",
     ]) {
-      expect(resolveOpenFangCredentialSource(spoofed, apiKey)).toBeUndefined();
+      expect(resolveOpenFangCredentialSource(spoofed, apiKey, issueKey)).toBeUndefined();
     }
   });
 });

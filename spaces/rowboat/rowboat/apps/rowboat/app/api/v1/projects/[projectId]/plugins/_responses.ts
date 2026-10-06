@@ -1,5 +1,5 @@
 import { types as utilTypes } from "node:util";
-import { NextRequest } from "next/server";
+import type { NextRequest } from "next/server";
 import { z } from "zod";
 import { PLUGIN_TOOL_NAME_PATTERN } from "@/src/application/use-cases/plugins/add-plugin-tool.use-case";
 
@@ -146,7 +146,13 @@ export function pluginErrorResponse(error: unknown): Response {
   return reason === null ? pluginJson({ error: "internal_error" }, 500) : pluginJson({ error: reason }, ERROR_STATUS[reason]);
 }
 
-const NEXT_REQUEST_URL_GETTER = Object.getOwnPropertyDescriptor(NextRequest.prototype, "url")?.get;
+// All getters come from the global fetch Request.prototype, never from this
+// module's NextRequest: a production `next build` carries several NextRequest
+// copies (webpack-bundled ones and the one in Next's app-route runtime that
+// builds the request handed to route handlers). A getter taken from one copy
+// reads that copy's private internal symbol and throws on the others, while the
+// Request.prototype getters brand-check the real fetch internals of every copy.
+const REQUEST_URL_GETTER = Object.getOwnPropertyDescriptor(Request.prototype, "url")?.get;
 const REQUEST_METHOD_GETTER = Object.getOwnPropertyDescriptor(Request.prototype, "method")?.get;
 const REQUEST_HEADERS_GETTER = Object.getOwnPropertyDescriptor(Request.prototype, "headers")?.get;
 const REQUEST_BODY_GETTER = Object.getOwnPropertyDescriptor(Request.prototype, "body")?.get;
@@ -163,12 +169,27 @@ function validatedHeaders(request: Request): Headers {
   return candidate as Headers;
 }
 
+/**
+ * Accepts an instance of any NextRequest copy: a class that extends the global
+ * fetch Request directly (exactly one level). This is structural, not an
+ * identity check against this module's NextRequest.prototype, because the
+ * production build hands route handlers a NextRequest from a different copy.
+ * Plain Requests (no NextRequest layer), deeper subclasses, a NextRequest
+ * layer that redefines method/headers/body/signal (no NextRequest copy does),
+ * proxies on the request or its prototype, and own method/url/headers/body/signal overrides
+ * stay rejected; the Request.prototype getters below brand-check the real
+ * fetch internals, so prototype-only fakes are rejected too.
+ */
 function assertRequest(request: Request): asserts request is NextRequest {
-  if (utilTypes.isProxy(request) || Object.getPrototypeOf(request) !== NextRequest.prototype) throw new Error("request_invalid");
-  if (NEXT_REQUEST_URL_GETTER === undefined || REQUEST_METHOD_GETTER === undefined || REQUEST_HEADERS_GETTER === undefined || REQUEST_BODY_GETTER === undefined || REQUEST_SIGNAL_GETTER === undefined) throw new Error("request_invalid");
+  if (request === null || typeof request !== "object" || utilTypes.isProxy(request)) throw new Error("request_invalid");
+  const prototype: unknown = Object.getPrototypeOf(request);
+  if (prototype === null || typeof prototype !== "object" || utilTypes.isProxy(prototype)
+    || prototype === Request.prototype || Object.getPrototypeOf(prototype) !== Request.prototype
+    || ["method", "headers", "body", "signal"].some((key) => Object.getOwnPropertyDescriptor(prototype, key) !== undefined)) throw new Error("request_invalid");
+  if (REQUEST_URL_GETTER === undefined || REQUEST_METHOD_GETTER === undefined || REQUEST_HEADERS_GETTER === undefined || REQUEST_BODY_GETTER === undefined || REQUEST_SIGNAL_GETTER === undefined) throw new Error("request_invalid");
   for (const key of ["method", "url", "headers", "body", "signal"]) if (Object.getOwnPropertyDescriptor(request, key) !== undefined) throw new Error("request_invalid");
   try {
-    NEXT_REQUEST_URL_GETTER.call(request);
+    REQUEST_URL_GETTER.call(request);
     REQUEST_METHOD_GETTER.call(request);
     REQUEST_HEADERS_GETTER.call(request);
     REQUEST_BODY_GETTER.call(request);
