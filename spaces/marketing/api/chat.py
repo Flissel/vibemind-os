@@ -402,7 +402,8 @@ def _medien(sichtbar: Callable[[str], bool]) -> list[str]:
         except OSError:
             continue
         for n in eintraege:
-            if _MEDIEN_NAME.fullmatch(n) and not _ENTWURF.fullmatch(n) and os.path.isfile(os.path.join(o, n))                     and sichtbar(n):
+            if (_MEDIEN_NAME.fullmatch(n) and not _ENTWURF.fullmatch(n) and os.path.isfile(os.path.join(o, n))
+                    and sichtbar(n)):
                 namen.add(n)
     return sorted(namen)[:MEDIEN_MAX]   # erst filtern, dann kappen
 

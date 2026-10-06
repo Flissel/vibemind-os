@@ -28,6 +28,13 @@ def _gueltig(name) -> bool:
     return isinstance(name, str) and _DATEI.fullmatch(name) is not None and ".." not in name
 
 
+def _mandant_pflicht(wert) -> str:
+    """Mandant ausdruecklich angeben: kein Rueckfall auf vibemind (fail-closed)."""
+    if not isinstance(wert, str) or not wert:
+        raise HTTPException(422, "Unbekannter Mandant")
+    return _mandant(wert)
+
+
 def _pruefen(namen: list) -> list[str]:
     if any(not _gueltig(n) for n in namen):
         raise HTTPException(422, "Unbekannter Dateiname")
@@ -137,7 +144,7 @@ def mandanten_liste(x_pult_key: str | None = Header(None)):
 @router.post("/medien/sichtbar")
 def medien_sichtbar(payload: dict = Body(...), x_pult_key: str | None = Header(None)):
     _schluessel(x_pult_key)
-    m = _mandant(payload.get("mandant"))
+    m = _mandant_pflicht(payload.get("mandant"))
     namen = payload.get("namen")
     if not isinstance(namen, list) or len(namen) > NAMEN_MAX:
         raise HTTPException(422, f"namen muss eine Liste mit hoechstens {NAMEN_MAX} Eintraegen sein")
@@ -167,9 +174,11 @@ def medien_zuordnung(payload: dict = Body(...), x_pult_key: str | None = Header(
     datei = payload.get("dateiname")
     if not _gueltig(datei):
         raise HTTPException(422, "Unbekannter Dateiname")
-    m = payload.get("mandant")
-    if m is not None:
-        m = _mandant(m)
+    if "mandant" not in payload:
+        raise HTTPException(422, "mandant fehlt (null = Gemeinsam)")
+    m = payload["mandant"]
+    if m is not None:   # nur JSON null heisst Gemeinsam
+        m = _mandant_pflicht(m)
         sicht(m)   # unbekannter Mandant -> 422
     zuordnen([datei], m)
     return {"dateiname": datei, "mandant": m}

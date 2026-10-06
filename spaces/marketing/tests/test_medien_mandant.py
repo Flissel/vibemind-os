@@ -134,6 +134,19 @@ def test_sichtbar_db_fehler_503_nie_alles_sichtbar(umg):
     assert r.status_code == 503
 
 
+@pytest.mark.parametrize("body", [
+    {"mandant": "", "namen": ["a.jpg"]},
+    {"namen": ["a.jpg"]},
+    {"mandant": None, "namen": ["a.jpg"]},
+    {"mandant": 5, "namen": ["a.jpg"]},
+    {"mandant": "Vibe Mind", "namen": ["a.jpg"]},
+])
+def test_sichtbar_ohne_gueltigen_mandant_422_kein_rueckfall(umg, body):
+    f, _, c = umg
+    r = c.post("/api/pult/medien/sichtbar", json=body, headers=H)
+    assert r.status_code == 422 and f.sql == []
+
+
 def test_dateiname_regel():
     assert not mm._gueltig("a\x7fb.jpg") and not mm._gueltig("a\x00.jpg") and not mm._gueltig("a..b.jpg")
     assert mm._gueltig("ä ö.jpg") and not mm._gueltig("x" * 201) and mm._gueltig("x" * 200)
@@ -155,6 +168,19 @@ def test_zuordnung_mit_mandant(umg):
     r = c.post("/api/pult/medien/zuordnung", json={"dateiname": "a.jpg", "mandant": "laura"}, headers=H)
     assert r.status_code == 200 and r.json()["mandant"] == "laura"
     assert "SELECT n, 'laura' FROM unnest" in p.sql[0]
+
+
+@pytest.mark.parametrize("body", [
+    {"dateiname": "a.jpg", "mandant": ""},
+    {"dateiname": "a.jpg"},
+    {"dateiname": "a.jpg", "mandant": 5},
+    {"dateiname": "a.jpg", "mandant": False},
+    {"dateiname": "a.jpg", "mandant": ["laura"]},
+])
+def test_zuordnung_nur_null_ist_gemeinsam_sonst_422(umg, body):
+    f, p, c = umg
+    r = c.post("/api/pult/medien/zuordnung", json=body, headers=H)
+    assert r.status_code == 422 and f.sql == [] and p.sql == []
 
 
 def test_zuordnung_unbekannter_mandant_422(umg):

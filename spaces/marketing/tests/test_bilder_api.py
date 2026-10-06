@@ -522,3 +522,49 @@ def test_fertig_ungueltiges_ergebnis_ordnet_nicht_zu(db, c):
     r = c.post(f"/api/bilder/arbeiter/{AID}/fertig", headers={"X-Bild-Key": BK},
                json={"ergebnis": {"kopf": "nl-0123abcd-weg.jpg"}})
     assert r.status_code == 422 and db.psql.sql == [] and db.sql == []
+
+
+# --- Zuordnung schon beim Hochladen (I1) -----------------------------------
+
+
+@pytest.mark.parametrize("fmt,inhalt,name", [
+    ("jpg", jpeg, "nl-0123abcd-kopf.jpg"),
+    ("png", png, "nl-0123abcd-kopf-frei.png"),
+], ids=["jpeg", "freigestellt"])
+def test_bild_ablegen_ordnet_vor_der_datei_zu(db, c, monkeypatch, fmt, inhalt, name):
+    db.antworten = [[{"f": None}]]
+    gesehen = []
+    echt = db.psql.__call__
+
+    def mit_blick(sql, container, streng=False):
+        gesehen.append(sorted(p.name for p in db.ordner.iterdir()))
+        return echt(sql, container, streng)
+    monkeypatch.setattr(_db, "_run_psql", mit_blick)
+    r = c.post(f"/api/bilder/arbeiter/{AID}/bild?platz=kopf&format={fmt}", headers={"X-Bild-Key": BK},
+               content=inhalt())
+    assert r.status_code == 200 and r.json() == {"name": name}
+    assert gesehen == [[]]   # Zuordnung lief, bevor irgendeine Datei im Ordner lag
+    assert (db.ordner / name).is_file()
+
+
+def test_bild_ablegen_zuordnung_503_legt_nichts_ab(db, c):
+    db.antworten = [[{"f": None}]]
+    db.psql.fehler = [RuntimeError("psql failed: connection refused")]
+    r = c.post(f"/api/bilder/arbeiter/{AID}/bild?platz=kopf", headers={"X-Bild-Key": BK}, content=jpeg())
+    assert r.status_code == 503
+    assert len(db.psql.sql) == 1 and "marketing.medien_mandant" in db.psql.sql[0]
+    assert "bild_auftraege" in db.psql.sql[0] and "'nl-0123abcd-kopf.jpg'" in db.psql.sql[0]
+    assert list(db.ordner.iterdir()) == []
+
+
+def test_bild_ablegen_unbekannter_auftrag_404_legt_nichts_ab(db, c, monkeypatch):
+    db.antworten = [[{"f": None}]]
+    monkeypatch.setattr(_db, "_run_psql", lambda sql, container, streng=False: "0\n")
+    r = c.post(f"/api/bilder/arbeiter/{AID}/bild?platz=kopf", headers={"X-Bild-Key": BK}, content=jpeg())
+    assert r.status_code == 404 and list(db.ordner.iterdir()) == []
+
+
+def test_bild_db_verweigert_ordnet_nicht_zu(db, c):
+    db.antworten = [[{"f": "Auftrag ist nicht (mehr) in Arbeit"}]]
+    r = c.post(f"/api/bilder/arbeiter/{AID}/bild?platz=kopf", headers={"X-Bild-Key": BK}, content=jpeg())
+    assert r.status_code == 422 and db.psql.sql == []

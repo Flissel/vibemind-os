@@ -372,7 +372,8 @@ MAX_AUSWAHL = 8
 BILD_FORMATE = ("PNG", "JPEG", "WEBP", "GIF", "BMP")   # nie ueber die Endung: der Inhalt ist fremd
 MAX_ANHAENGE = 5
 MAX_HINWEIS = 200
-MAX_HINWEISE = 1500                # zusammen vor der Antwort; die VM kuerzt die Antwort bei 4000 Zeichen
+MAX_HINWEISE = 1500                # zusammen vor der Antwort
+VM_ANTWORT_MAX = 4000              # die VM kuerzt die ganze Antwort (Hinweise + Text) hier
 BILDER_ABGELEHNT = "Bilder konnten nicht übergeben werden, ich habe ohne sie geantwortet."
 
 
@@ -522,15 +523,19 @@ def anhaenge_vorbereiten(api, aid, auftrag: dict,
 def _mit_hinweisen(hinweise: list[str], antwort: str) -> str:
     if not hinweise:
         return antwort
+    # Der Text (mit den "Notiz in Rowboat abgelegt"-Zeilen am Ende) muss ganz in die
+    # VM-Grenze passen: die Hinweise bekommen nur, was neben ihm frei bleibt.
+    grenze = min(MAX_HINWEISE, VM_ANTWORT_MAX - len(antwort) - len("\n\n"))
     zeilen, laenge = [], 0
     for h in hinweise:
         zeile = "Hinweis: " + h[:MAX_HINWEIS]
         laenge += len(zeile) + (1 if zeilen else 0)
-        if laenge > MAX_HINWEISE:
+        if laenge > grenze:
             break                      # nur ganze Zeilen, nie mitten in einer abschneiden
         zeilen.append(zeile)
-    kopf = "\n".join(zeilen)
-    return kopf + "\n\n" + antwort
+    if not zeilen:
+        return antwort
+    return "\n".join(zeilen) + "\n\n" + antwort
 
 
 def chat_bearbeiten(api, auftrag, fragen_strom=frage_strom, uhr=time.monotonic, schlafen=time.sleep,
@@ -581,7 +586,7 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
     live.medien.update(angehaengt)
     text_nutzer = agent_prompt.nutzer_text(auftrag, medien, unterlagen=unterlagen_text, auswahl_text=auswahl_text,
                                            hinweise=hinweise, bilder=bilder, markenwissen=wissen.text,
-                                           mandant_name=name)
+                                           mandant_name=name, notizen_text=wissen.notizen)
     # Mit Bildern ist die erste Nachricht eine Teil-Liste; sie bleibt auch in der Korrekturrunde so.
     nachrichten = [{"role": "user", "content": [{"type": "text", "text": text_nutzer}, *bildteile]
                     if bildteile else text_nutzer}]
@@ -640,12 +645,16 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
         if not api.weiter(aid):
             return "fehler"
         text_antwort = antwort["antwort"]
-        if antwort["notizen"]:      # Ruling R2: erst jetzt, unmittelbar vor fertig - Stopp/Fehler kommen nie hierher
+        # Ruling R2: erst jetzt, unmittelbar vor fertig - Stopp/Fehler kommen nie hierher.
+        # Alter Auftrag ohne Firma: keine Notiz und kein Hinweis (es gibt keinen Ordner zu nennen).
+        if antwort["notizen"] and name:
             titel, notiz_hinweise = markenwissen.notizen_schreiben(
                 wissen.ordner, name, antwort["notizen"],
                 {"newsletter": auftrag.get("titel", ""), "bitte": auftrag.get("nachricht", "")},
                 datetime.date.today())
-            hinweise += notiz_hinweise
+            # Vor die Markenwissen-Hinweise (uebersprungen/gekuerzt): die kappt die Hinweisgrenze zuerst.
+            vor = next((i for i, h in enumerate(hinweise) if h in wissen.hinweise), len(hinweise))
+            hinweise[vor:vor] = notiz_hinweise
             if titel:
                 text_antwort += "\n\n" + "\n".join(f"Notiz in Rowboat abgelegt: {t}" for t in titel)
         antwort_vm = api.fertig(aid, {

@@ -18,6 +18,7 @@ from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
 
 from fastapi.responses import FileResponse
 
+from spaces.marketing.api import medien_mandant
 from spaces.marketing.api.pult import _lesen, _lesen_einer, _schluessel, _schreiben, _uuid_oder_404, lit
 from spaces.marketing.claw import bildplaetze
 
@@ -286,6 +287,9 @@ async def arbeiter_bild(aid: str, request: Request, platz: str = Query(""), form
     if fehler.get("f"):
         raise HTTPException(422, str(fehler["f"]))
     name = f"nl-{a[:8]}-{platz}-frei.png" if png else f"nl-{a[:8]}-{platz}.jpg"
+    # Erst der Firma des Newsletters zuordnen, dann ablegen: scheitert die Zuordnung,
+    # entsteht keine Datei - nie ein Zeitfenster, in dem sie als Gemeinsam sichtbar ist.
+    medien_mandant.zuordnen_fuer_bildauftrag(a, [name])
     ziel = os.path.join(ordner, name)
     zwischen = ziel + ".teil"
     try:
@@ -327,9 +331,8 @@ def arbeiter_fertig(aid: str, payload: dict = Body(...), x_bild_key: str | None 
         for w in werte.values():
             if w is not None and (isinstance(w, bool) or not isinstance(w, (int, float)) or not -1 <= w <= 1):
                 raise HTTPException(422, f"Ungueltige Messung fuer {platz}")
-    # Erst der Firma des Newsletters zuordnen, dann einsetzen: scheitert die Zuordnung,
-    # geht der Fehler an den Bild-Arbeiter (Wiederholung), die Datei bleibt unverwiesen.
-    from spaces.marketing.api import medien_mandant
+    # Zuordnung schon beim Hochladen; hier noch einmal (idempotent) als Sicherheitsnetz.
+    # Scheitert sie, geht der Fehler an den Bild-Arbeiter (Wiederholung), die Datei bleibt unverwiesen.
     medien_mandant.zuordnen_fuer_bildauftrag(a, list(ergebnis.values()))
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_bild_einsetzen({lit(a)}::uuid, "

@@ -54,6 +54,9 @@ class Wissen:
     text: str            # fertiger Prompt-Abschnitt ohne Kopfzeile ("" = keins)
     hinweise: list[str]
     ordner: str | None   # gefundener Firmenordner (fuer Notizen)
+    # Fruehere Agent-Notizen (Agent-Notizen/), getrennt vom Markenwissen: vom Agenten selbst
+    # geschrieben, ungeprueft - eigener Abschnitt, damit sie nie als Markenwissen gelten.
+    notizen: str = ""
 
 
 def wurzel() -> str:
@@ -260,8 +263,13 @@ def _laden(ordner: str, name: str, frage: str) -> Wissen:
     genommen = len(gewaehlt) + (marke is not None)
     if genommen < vorhanden:
         hinweise.append(_gekuerzt(genommen, vorhanden))
-    teile = kopf + [_abschnitt(s["dokument"], s["text"]) for s in gewaehlt]
-    return Wissen(text=_TRENNER.join(teile), hinweise=hinweise, ordner=ordner)
+    # Auswahl und Budget gelten fuer alles zusammen; nur die Ausgabe wird getrennt.
+    teile = kopf + [_abschnitt(s["dokument"], s["text"]) for s in gewaehlt if not _ist_notiz(s["dokument"])]
+    notizen = [_abschnitt(s["dokument"], s["text"]) for s in gewaehlt if _ist_notiz(s["dokument"])]
+    if not teile:
+        hinweise.append(_kein_wissen(name))
+    return Wissen(text=_TRENNER.join(teile), hinweise=hinweise, ordner=ordner,
+                  notizen=_TRENNER.join(notizen))
 
 
 def laden(wurzel: str, mandant: str, name: str, frage: str) -> Wissen:
@@ -310,7 +318,8 @@ def _inhalt(titel: str, text: str, kopf: dict, heute: datetime.date) -> str:
     return (f"# {titel}\n\n"
             f"- Datum: {heute:%Y-%m-%d}\n"
             f"- Newsletter: {_einzeilig(kopf.get('newsletter'))}\n"
-            f"- Bitte des Betreibers: {_einzeilig(kopf.get('bitte'))[:_BITTE_MAX]}\n\n"
+            f"- Bitte des Betreibers: {_einzeilig(kopf.get('bitte'))[:_BITTE_MAX]}\n"
+            f"- Verfasst von: Gestaltungs-Agent (ungeprüft)\n\n"
             f"{text}\n")
 
 
