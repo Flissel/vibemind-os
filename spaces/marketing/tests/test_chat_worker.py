@@ -38,6 +38,14 @@ class Api:
     def zurueck(self, aid, antwort):
         self.log.append(("zurueck", aid, antwort)); return "offen"
 
+    def zwischenstand(self, aid, bloecke, schritt, nr):
+        self.log.append(("zwischenstand", aid, bloecke, schritt, nr))
+        zwischen = getattr(self, "zwischen", None)
+        return zwischen.pop(0) if zwischen else {"weiter": True}
+
+    def gestoppt(self, aid, bloecke):
+        self.log.append(("gestoppt", aid, bloecke)); return {"status": "fertig"}
+
     def aufrufe(self, name):
         return [e for e in self.log if e[0] == name]
 
@@ -398,3 +406,267 @@ def test_schleifenschritt_ueberlebt_ausnahme_und_kuerzt(capsys):
     assert len(cw.STAND["letztes_ergebnis"]) <= 200 and cw.STAND["letzter_lauf"]
     cw.schleifenschritt(None, lambda api: "leer")
     assert cw.STAND["letztes_ergebnis"] == "leer"
+
+
+# ---- Task 5: Streaming und Zwischenstaende -------------------------------------------------
+FL = {"werkzeug": "flaeche_anlegen", "nach": "t", "format": "quer", "hintergrund": "#ffffff", "alt": "Aktion",
+      "schritt": "Fläche anlegen"}
+
+
+def farbe(wert, schritt):
+    return {"werkzeug": "farben_setzen", "backdropColor": wert, "schritt": schritt}
+
+
+def text(wert, schritt):
+    return {"werkzeug": "block_aendern", "id": "t", "props": {"text": wert}, "schritt": schritt}
+
+
+def stuecke(aenderungen, antwort="Erledigt."):
+    """Antwort-JSON so zerlegt, dass jedes Stueck genau eine Aenderung abschliesst (plus Schluss-Stueck)."""
+    kopf = '{"antwort": ' + json.dumps(antwort) + ', "aenderungen": ['
+    teile = [json.dumps(a, ensure_ascii=False) for a in aenderungen]
+    return [kopf + teile[0]] + ["," + t for t in teile[1:]] + ["]}"]
+
+
+class Strom:
+    """Fake fuer frage_strom: je Aufruf eine Runde. In einer Runde ist str ein Stueck, eine Zahl stellt
+    die Uhr vor, eine Exception wird mitten im Strom geworfen; eine Exception als Runde schon beim Aufruf."""
+    def __init__(self, uhr, *runden):
+        self.uhr, self.runden, self.gesehen, self.geschlossen = uhr, list(runden), [], 0
+
+    def __call__(self, system, nachrichten):
+        self.gesehen.append([dict(n) for n in nachrichten])
+        runde = self.runden.pop(0)
+        if isinstance(runde, Exception):
+            raise runde
+        return self._lauf(runde)
+
+    def _lauf(self, runde):
+        try:
+            for e in runde:
+                if isinstance(e, Exception):
+                    raise e
+                if isinstance(e, (int, float)):
+                    self.uhr.t += e
+                    continue
+                yield e
+        except GeneratorExit:
+            self.geschlossen += 1
+            raise
+
+
+def zw(api):
+    return api.aufrufe("zwischenstand")
+
+
+def bearbeiten(api, strom, uhr, drossel_s=1.0):
+    return cw.chat_bearbeiten(api, AUFTRAG, strom, uhr, uhr.schlafen, halten_takt_s=60, drossel_s=drossel_s)
+
+
+def test_zwischenstaende_gedrosselt_mit_schritten_und_letzter_vor_fertig():
+    uhr, api = Uhr(), Api()
+    s = stuecke([text("Eins", "Titel ändern"), farbe("#111111", "Farbe eins"), farbe("#222222", "Farbe zwei"),
+                 text("Vier", "Text vier")])
+    strom = Strom(uhr, [s[0], 0.5, s[1], 0.7, s[2], 0.3, s[3], s[4]])
+    assert bearbeiten(api, strom, uhr) == "fertig"
+    assert [(e[3], e[4]) for e in zw(api)] == [("Titel ändern", 1), ("Farbe zwei", 3), ("Text vier", 4)]
+    zweiter = zw(api)[1][2]
+    assert zweiter["root"]["data"]["backdropColor"] == "#222222" and zweiter["t"]["data"]["props"]["text"] == "Eins"
+    fertig = api.aufrufe("fertig")[0][2]
+    assert zw(api)[-1][2] == fertig["bloecke"] and fertig["bloecke"]["t"]["data"]["props"]["text"] == "Vier"
+    namen = [e[0] for e in api.log]
+    assert max(i for i, n in enumerate(namen) if n == "zwischenstand") < namen.index("fertig")
+    assert namen[namen.index("fertig") - 1] == "weiter"
+    assert DOC["t"]["data"]["props"]["text"] == "Herbst"
+
+
+def test_schritt_ohne_text_ist_der_werkzeugname():
+    uhr, api = Uhr(), Api()
+    strom = Strom(uhr, stuecke([{"werkzeug": "farben_setzen", "backdropColor": "#ff0000"}]))
+    assert bearbeiten(api, strom, uhr) == "fertig"
+    assert zw(api)[0][3] == "farben_setzen"
+
+
+def test_stopp_behalten_meldet_letzten_gueltigen_stand_und_kein_fertig():
+    uhr, api = Uhr(), Api()
+    api.zwischen = [{"weiter": True}, {"weiter": False, "grund": "stopp", "stopp": "behalten"}]
+    s = stuecke([text("Eins", "Titel"), farbe("#111111", "Farbe"), farbe("#222222", "Noch eine")])
+    strom = Strom(uhr, [s[0], 1.0, s[1], 1.0, s[2], s[3]])
+    assert bearbeiten(api, strom, uhr) == "gestoppt"
+    (_, aid, bloecke), = api.aufrufe("gestoppt")
+    assert aid == "a1" and bloecke["root"]["data"]["backdropColor"] == "#111111"
+    assert bloecke["t"]["data"]["props"]["text"] == "Eins" and bloecke == zw(api)[1][2]
+    assert api.aufrufe("fertig") == [] and api.aufrufe("zurueck") == [] and api.aufrufe("pruefen") == []
+    assert strom.geschlossen == 1
+
+
+def test_stopp_verwerfen_meldet_none():
+    uhr, api = Uhr(), Api()
+    api.zwischen = [{"weiter": False, "grund": "stopp", "stopp": "verwerfen"}]
+    strom = Strom(uhr, stuecke([text("Eins", "Titel"), farbe("#111111", "Farbe")]))
+    assert bearbeiten(api, strom, uhr) == "gestoppt"
+    assert api.aufrufe("gestoppt") == [("gestoppt", "a1", None)]
+    assert api.aufrufe("fertig") == [] and api.aufrufe("zurueck") == [] and strom.geschlossen == 1
+
+
+def test_verloren_beim_zwischenstand_bricht_ohne_weiteren_aufruf_ab():
+    uhr, api = Uhr(), Api()
+    api.zwischen = [{"weiter": False, "grund": "verloren"}]
+    strom = Strom(uhr, stuecke([text("Eins", "Titel"), farbe("#111111", "Farbe")]))
+    assert bearbeiten(api, strom, uhr) == "fehler"
+    assert [e[0] for e in api.log] == ["zwischenstand"] and strom.geschlossen == 1
+
+
+def test_ungueltige_einzelaenderung_laesst_live_stand_und_korrektur_beginnt_vom_original():
+    uhr, api = Uhr(), Api()
+    erste = stuecke([text("Eins", "Titel"), farbe("rot", "Kaputt"), farbe("#333333", "Farbe")])
+    strom = Strom(uhr, erste, stuecke([farbe("#ff0000", "Rot")]))
+    assert bearbeiten(api, strom, uhr, drossel_s=0) == "fertig"
+    z = zw(api)
+    assert [(e[3], e[4]) for e in z[:2]] == [("Titel", 1), ("Farbe", 2)]      # die kaputte zaehlt nicht
+    assert z[1][2]["root"]["data"]["backdropColor"] == "#333333" and z[1][2]["t"]["data"]["props"]["text"] == "Eins"
+    assert "backdropColor" in strom.gesehen[1][2]["content"]                  # Korrekturrunde mit dem Fehler
+    korrektur = z[2][2]
+    assert korrektur["t"]["data"]["props"]["text"] == "Herbst"
+    assert korrektur["root"]["data"]["backdropColor"] == "#ff0000"
+    assert api.aufrufe("fertig")[0][2]["bloecke"] == z[-1][2] and api.aufrufe("zurueck") == []
+
+
+def test_strom_bricht_nach_der_haelfte_ab_wird_wiederholt_ohne_doppelte_aenderung():
+    uhr, api = Uhr(), Api()
+    s = stuecke([FL, text("Eins", "Titel")])
+    strom = Strom(uhr, [s[0], cw.LlmFehler("CLI gestorben")], s)
+    assert bearbeiten(api, strom, uhr, drossel_s=0) == "fertig"
+    assert len(strom.gesehen) == 2 and api.aufrufe("zurueck") == [] and uhr.t == cw.SHIM_PAUSE_S
+    z = zw(api)
+    assert [(e[3], e[4]) for e in z] == [("Fläche anlegen", 1), ("Fläche anlegen", 1), ("Titel", 2), ("Titel", 2)]
+    for e in z:
+        assert sum(1 for b in e[2].values() if b["type"] == "Image") == 1
+
+
+def test_strom_faellt_dauerhaft_aus_gibt_nach_180_s_zurueck():
+    uhr, api = Uhr(), Api()
+    strom = Strom(uhr, *([[stuecke([FL])[0], cw.LlmFehler("weg")]] * 40))
+    assert bearbeiten(api, strom, uhr, drossel_s=0) == "fehler"
+    assert api.aufrufe("zurueck")[0][2] == cw.NICHT_ERREICHBAR and api.aufrufe("fertig") == []
+
+
+@pytest.mark.parametrize("art", ["behalten", "verwerfen"])
+def test_stopp_waehrend_korrekturversuch_gewinnt(art):
+    uhr, api = Uhr(), Api()
+    api.zwischen = [{"weiter": False, "grund": "stopp", "stopp": art}]
+    strom = Strom(uhr, stuecke([farbe("rot", "Kaputt")]), stuecke([farbe("#ff0000", "Rot"), text("Eins", "Titel")]))
+    assert bearbeiten(api, strom, uhr, drossel_s=0) == "gestoppt"
+    assert len(strom.gesehen) == 2 and strom.geschlossen == 1
+    (_, _, bloecke), = api.aufrufe("gestoppt")
+    if art == "verwerfen":
+        assert bloecke is None
+    else:
+        assert bloecke["root"]["data"]["backdropColor"] == "#ff0000"
+        assert bloecke["t"]["data"]["props"]["text"] == "Herbst"
+    assert api.aufrufe("fertig") == [] and api.aufrufe("zurueck") == []
+
+
+def test_stopp_beim_letzten_zwischenstand_vor_fertig_gewinnt():
+    uhr, api = Uhr(), Api()
+    api.zwischen = [{"weiter": True}, {"weiter": False, "grund": "stopp", "stopp": "behalten"}]
+    assert bearbeiten(api, Strom(uhr, stuecke([farbe("#ff0000", "Rot")])), uhr) == "gestoppt"
+    assert len(zw(api)) == 2 and api.aufrufe("pruefen")
+    assert api.aufrufe("gestoppt")[0][2]["root"]["data"]["backdropColor"] == "#ff0000"
+    assert api.aufrufe("fertig") == []
+
+
+def test_neu_verweis_wird_live_aufgeloest_und_ids_bleiben_stabil():
+    uhr, api = Uhr(), Api()
+    hintergrund = {"werkzeug": "hintergrund_setzen", "flaeche": "neu:1", "farbe": "#000000", "schritt": "Hintergrund"}
+    assert bearbeiten(api, Strom(uhr, stuecke([FL, hintergrund])), uhr, drossel_s=0) == "fertig"
+    erster, zweiter = zw(api)[0], zw(api)[1]
+    assert (zweiter[3], zweiter[4]) == ("Hintergrund", 2)
+    ids = [k for k in erster[2] if k.startswith("agent-")]
+    assert len(ids) == 1 and ids == [k for k in zweiter[2] if k.startswith("agent-")]
+    assert erster[2][ids[0]] != zweiter[2][ids[0]]
+
+
+def test_zwischenstand_netzfehler_bricht_den_lauf_nicht_ab():
+    uhr, api = Uhr(), Api()
+
+    def kaputt(*a):
+        api.log.append(("zwischenstand",))
+        raise urllib.error.URLError("weg")
+    api.zwischenstand = kaputt
+    assert bearbeiten(api, Strom(uhr, stuecke([farbe("#ff0000", "Rot")])), uhr) == "fertig"
+    assert api.aufrufe("zurueck") == [] and len(api.aufrufe("zwischenstand")) == 2
+
+
+def test_ein_durchlauf_streamt_standardmaessig():
+    assert cw.ein_durchlauf.__defaults__[0] is cw.frage_strom
+    assert cw.chat_bearbeiten.__defaults__[0] is cw.frage_strom
+
+
+def _sse(*chunks, done=True):
+    zeilen = [b"data: " + json.dumps(c).encode() + b"\n\n" for c in chunks]
+    return b"".join(zeilen) + (b"data: [DONE]\n\n" if done else b"")
+
+
+def _chunk(inhalt, ende=None):
+    return {"object": "chat.completion.chunk", "choices": [{"delta": {"content": inhalt}, "finish_reason": ende}]}
+
+
+def test_frage_strom_liefert_stuecke_und_fragt_mit_stream(monkeypatch):
+    gesehen = {}
+
+    def fake(req, timeout=None, context=None):
+        gesehen.update(url=req.full_url, body=json.loads(req.data), timeout=timeout)
+        return _Antwort(_sse(_chunk("Hal"), _chunk("lö"), _chunk("\n\nWelt"), _chunk("", "stop")))
+    monkeypatch.setattr(cw.urllib.request, "urlopen", fake)
+    assert list(cw.frage_strom("SYS", [{"role": "user", "content": "hi"}])) == ["Hal", "lö", "\n\nWelt"]
+    assert gesehen["url"] == cw.LLM_URL + "/chat/completions" and gesehen["timeout"] == 300
+    assert gesehen["body"] == {"model": cw.MODELL, "stream": True,
+                               "messages": [{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}]}
+
+
+def test_frage_strom_fehler_chunk_ist_llmfehler(monkeypatch):
+    monkeypatch.setattr(cw.urllib.request, "urlopen",
+                        lambda *a, **k: _Antwort(_sse(_chunk("Hal"), _chunk("CLI tot", "error"))))
+    strom = cw.frage_strom("S", [])
+    assert next(strom) == "Hal"
+    with pytest.raises(cw.LlmFehler, match="CLI tot"):
+        next(strom)
+
+
+@pytest.mark.parametrize("roh", [_sse(_chunk("Hal"), done=False), b"data: kein json\n\n", _sse(_chunk("", "stop")),
+                                 b'data: {"choices": []}\n\n'])
+def test_frage_strom_abbruch_oder_muell_ist_llmfehler(monkeypatch, roh):
+    monkeypatch.setattr(cw.urllib.request, "urlopen", lambda *a, **k: _Antwort(roh))
+    with pytest.raises(cw.LlmFehler):
+        list(cw.frage_strom("S", []))
+
+
+@pytest.mark.parametrize("fehler", [urllib.error.URLError("refused"), TimeoutError(), ConnectionResetError()])
+def test_frage_strom_netzfehler_ist_llmfehler(monkeypatch, fehler):
+    def fake(*a, **k):
+        raise fehler
+    monkeypatch.setattr(cw.urllib.request, "urlopen", fake)
+    with pytest.raises(cw.LlmFehler):
+        list(cw.frage_strom("S", []))
+
+
+def test_frage_strom_schliessen_schliesst_die_verbindung(monkeypatch):
+    antwort = _Antwort(_sse(_chunk("a"), _chunk("b"), _chunk("", "stop")))
+    monkeypatch.setattr(cw.urllib.request, "urlopen", lambda *a, **k: antwort)
+    strom = cw.frage_strom("S", [])
+    assert next(strom) == "a"
+    strom.close()
+    assert antwort.closed
+
+
+def test_chatapi_zwischenstand_und_gestoppt(monkeypatch):
+    api, g = _api_mit_antwort(monkeypatch, b'{"weiter": false, "grund": "stopp", "stopp": "behalten"}')
+    assert api.zwischenstand("a1", DOC, "Farbe", 3) == {"weiter": False, "grund": "stopp", "stopp": "behalten"}
+    assert g["url"] == "https://vm/api/chat/arbeiter/a1/zwischenstand" and g["key"] == "GEHEIM"
+    assert json.loads(g["data"]) == {"bloecke": DOC, "schritt": "Farbe", "nr": 3}
+    api.zwischenstand("a1", DOC, "x" * 200, 1)
+    assert len(json.loads(g["data"])["schritt"]) == 80
+    api, g = _api_mit_antwort(monkeypatch, b'{"status": "fertig", "fassung": 4}')
+    assert api.gestoppt("a1", None) == {"status": "fertig", "fassung": 4}
+    assert g["url"].endswith("/a1/gestoppt") and json.loads(g["data"]) == {"bloecke": None}

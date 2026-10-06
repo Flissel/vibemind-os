@@ -12,9 +12,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from spaces.marketing.claw import agent_prompt, agent_werkzeuge
+from spaces.marketing.claw import agent_prompt, agent_strom, agent_werkzeuge
 from spaces.marketing.workers.bild_worker import ApiFehler, _grund, tls_kontext, umgebung_laden
 
 PORT = 8134
@@ -22,6 +23,8 @@ TAKT_S = 3
 SHIM_BIS_S = 180
 SHIM_PAUSE_S = 10
 LLM_ZEITLIMIT_S = 300
+DROSSEL_S = 1.0          # hoechstens ein Zwischenstand je Sekunde (der letzte vor fertig immer)
+SCHRITT_MAX = 80
 LLM_URL = os.environ.get("MARKETING_CHAT_LLM_URL", "http://127.0.0.1:8117/v1")
 MODELL = os.environ.get("MARKETING_CHAT_MODELL", "claude-code-sonnet")
 NICHT_ERREICHBAR = "Der Assistent ist gerade nicht erreichbar"
@@ -80,6 +83,12 @@ class ChatApi:
     def datei(self, aid, name, roh: bytes) -> str:
         return self._post(f"/{aid}/datei?name={urllib.parse.quote(name)}", roh=roh, typ="image/jpeg")["name"]
 
+    def zwischenstand(self, aid, bloecke: dict, schritt: str, nr: int) -> dict:
+        return self._post(f"/{aid}/zwischenstand", {"bloecke": bloecke, "schritt": schritt[:SCHRITT_MAX], "nr": nr})
+
+    def gestoppt(self, aid, bloecke: dict | None) -> dict:
+        return self._post(f"/{aid}/gestoppt", {"bloecke": bloecke})
+
 
 def frage(system: str, nachrichten: list[dict], url: str = LLM_URL, modell: str = MODELL) -> str:
     """Eine Anfrage an den OpenAI-kompatiblen Shim (kein tool_calls, nur Text)."""
@@ -97,6 +106,47 @@ def frage(system: str, nachrichten: list[dict], url: str = LLM_URL, modell: str 
     if not isinstance(text, str) or not text.strip():
         raise LlmFehler("Leere Antwort")
     return text
+
+
+def frage_strom(system: str, nachrichten: list[dict], url: str = LLM_URL, modell: str = MODELL) -> Iterator[str]:
+    """Wie frage, aber als SSE-Strom des Shims: liefert jedes Text-Stueck (delta.content), sobald es da ist.
+    Fehler-Chunk (finish_reason "error"), Abbruch ohne Abschluss, Muell oder eine leere Antwort => LlmFehler.
+    Schliesst der Aufrufer den Strom (close), wird die Verbindung zum Shim geschlossen."""
+    koerper = {"model": modell, "stream": True, "messages": [{"role": "system", "content": system}, *nachrichten]}
+    req = urllib.request.Request(url.rstrip("/") + "/chat/completions",
+                                 data=json.dumps(koerper).encode("utf-8"), method="POST",
+                                 headers={"Content-Type": "application/json"})
+    try:
+        antwort = urllib.request.urlopen(req, timeout=LLM_ZEITLIMIT_S)
+    except (OSError, TimeoutError, ValueError) as e:
+        raise LlmFehler(_kurz(e)) from None
+    abgeschlossen, etwas = False, False
+    with antwort:
+        try:
+            for zeile in antwort:
+                zeile = zeile.decode("utf-8").strip()
+                if not zeile.startswith("data:"):
+                    continue
+                daten = zeile[5:].strip()
+                if daten == "[DONE]":
+                    abgeschlossen = True
+                    break
+                wahl = json.loads(daten)["choices"][0]
+                inhalt = (wahl.get("delta") or {}).get("content") or ""
+                if wahl.get("finish_reason") == "error":
+                    raise LlmFehler(("Shim: " + inhalt)[:200] if inhalt else "Shim-Fehler")
+                if wahl.get("finish_reason") == "stop":
+                    abgeschlossen = True
+                if inhalt:
+                    etwas = etwas or bool(inhalt.strip())
+                    yield inhalt
+        except (OSError, TimeoutError, ValueError, KeyError, IndexError, TypeError, AttributeError) as e:
+            # OSError deckt Verbindungsabbruch, ValueError deckt JSONDecodeError/UnicodeDecodeError.
+            raise LlmFehler(_kurz(e)) from None
+    if not abgeschlossen:
+        raise LlmFehler("Strom ohne Abschluss abgebrochen")
+    if not etwas:
+        raise LlmFehler("Leere Antwort")
 
 
 HALTEN_TAKT_S = 60
@@ -151,8 +201,122 @@ def _freigeben(api, aid, text: str, e: BaseException) -> None:
         pass
 
 
-def chat_bearbeiten(api, auftrag, fragen=frage, uhr=time.monotonic, schlafen=time.sleep,
-                    halten_takt_s: float = HALTEN_TAKT_S) -> str:
+class _Stopp(Exception):
+    def __init__(self, art):
+        self.art = art
+
+
+class _Verloren(Exception):
+    pass
+
+
+# Werkzeuge, deren Flaeche Claude spaeter mit neu:<n> anspricht (agent_werkzeuge._Lauf.neu)
+NEU_WERKZEUGE = ("flaeche_anlegen",)
+
+
+def _neu_aufloesen(wert, neu_ids: list):
+    """Ersetzt neu:<n> durch die id, die die n-te flaeche_anlegen im Live-Stand bekommen hat. Ohne
+    bekannte id bleibt der Verweis stehen, dann lehnt anwenden die Aenderung ab."""
+    if isinstance(wert, str):
+        m = agent_werkzeuge.NEU.match(wert)
+        if m and int(m.group(1)) <= len(neu_ids) and neu_ids[int(m.group(1)) - 1]:
+            return neu_ids[int(m.group(1)) - 1]
+        return wert
+    if isinstance(wert, dict):
+        return {k: v if k == "schritt" else _neu_aufloesen(v, neu_ids) for k, v in wert.items()}
+    if isinstance(wert, list):
+        return [_neu_aufloesen(v, neu_ids) for v in wert]
+    return wert
+
+
+class _Live:
+    """Live-Stand eines Laufs: jede fertig gelesene Aenderung wird einzeln auf die Arbeitskopie angewandt
+    (stabile Block-ids, neu:<n> ueber die Live-ids aufgeloest); eine ungueltige wird gemerkt und laesst den
+    Stand unveraendert - entscheidend bleibt die Gesamtpruefung am Ende. Meldet gedrosselt als Zwischenstand;
+    die Antwort darauf kann _Stopp oder _Verloren ausloesen."""
+
+    def __init__(self, api, aid, original: dict, medien: set, uhr, drossel_s: float):
+        self.api, self.aid, self.original, self.medien = api, aid, original, medien
+        self.uhr, self.drossel_s = uhr, drossel_s
+        self.gesendet_am = None
+        self.neu_beginnen()
+
+    def neu_beginnen(self) -> None:
+        """Jeder Strom (Wiederholung, Korrekturversuch) beginnt beim Original. Der zuletzt gemeldete
+        Zwischenstand bleibt bei der VM stehen, bis der neue Strom etwas Gueltiges meldet."""
+        self.kopie, self.gueltig, self.neu_ids, self.fehler = self.original, None, [], []
+        self.nr, self.schritt, self.offen = 0, "", False
+
+    def aenderung(self, a: dict) -> None:
+        werkzeug = a.get("werkzeug")
+        vorher = set(self.kopie) if isinstance(self.kopie, dict) else set()
+        try:
+            erg = agent_werkzeuge.anwenden(self.kopie, [_neu_aufloesen(a, self.neu_ids)], self.medien)
+        except agent_werkzeuge.WerkzeugFehler as e:
+            self.fehler.append(str(e))
+            if werkzeug in NEU_WERKZEUGE:
+                self.neu_ids.append(None)        # Nummerierung von neu:<n> bleibt wie in der Gesamtliste
+            return
+        if werkzeug in NEU_WERKZEUGE:
+            neue = [k for k in erg.bloecke if k not in vorher]
+            self.neu_ids.append(neue[0] if len(neue) == 1 else None)
+        self.kopie = self.gueltig = erg.bloecke
+        self.nr += 1
+        self.schritt = str(a.get("schritt") or werkzeug)[:SCHRITT_MAX]
+        self.offen = True
+
+    def melden(self, immer: bool = False) -> None:
+        if not (self.offen or immer):
+            return
+        jetzt = self.uhr()
+        if not immer and self.gesendet_am is not None and jetzt - self.gesendet_am < self.drossel_s:
+            return
+        self.gesendet_am, self.offen = jetzt, False
+        try:
+            r = self.api.zwischenstand(self.aid, self.kopie, self.schritt, self.nr)
+        except ApiFehler as e:
+            if e.code == 404:
+                raise _Verloren from None
+            return                   # z.B. 413 zu gross: nur die Anzeige faellt aus, der Lauf geht weiter
+        except (OSError, ValueError):
+            return
+        if not r.get("weiter"):
+            if r.get("grund") == "stopp":
+                raise _Stopp(r.get("stopp"))
+            raise _Verloren
+
+    def endstand(self, bloecke: dict, aenderungen: list) -> None:
+        """Letzter Zwischenstand vor fertig: der gepruefte Gesamtstand, ungedrosselt."""
+        letzte = aenderungen[-1] if aenderungen and isinstance(aenderungen[-1], dict) else {}
+        self.kopie = self.gueltig = bloecke
+        self.nr = len(aenderungen)
+        self.schritt = str(letzte.get("schritt") or letzte.get("werkzeug") or "")[:SCHRITT_MAX]
+        self.melden(immer=True)
+
+
+def _strom_lesen(fragen_strom, nachrichten, live: _Live, halter) -> str:
+    """Liest einen Strom ganz; jede neue vollstaendige Aenderung geht sofort in den Live-Stand."""
+    live.neu_beginnen()
+    leser = agent_strom.StromLeser()
+    strom = iter(fragen_strom(agent_prompt.SYSTEM, nachrichten))
+    try:
+        for stueck in strom:
+            if halter.verloren.is_set():
+                raise _Verloren
+            for a in leser.futter(stueck):
+                live.aenderung(a)
+            live.melden()
+    finally:
+        schliessen = getattr(strom, "close", None)
+        if schliessen:
+            schliessen()             # bei Stopp/Verlust: Verbindung zum Shim schliessen
+    if not leser.text.strip():
+        raise LlmFehler("Leere Antwort")
+    return leser.text
+
+
+def chat_bearbeiten(api, auftrag, fragen_strom=frage_strom, uhr=time.monotonic, schlafen=time.sleep,
+                    halten_takt_s: float = HALTEN_TAKT_S, drossel_s: float = DROSSEL_S) -> str:
     aid = str(auftrag["id"])
     versucht = []            # zurueck wurde schon aufgerufen
 
@@ -160,15 +324,24 @@ def chat_bearbeiten(api, auftrag, fragen=frage, uhr=time.monotonic, schlafen=tim
         versucht.append(1)
         api.zurueck(aid, text)
         return "fehler"
+    live = _Live(api, aid, auftrag.get("bloecke") or {}, set(auftrag.get("medien") or []), uhr, drossel_s)
     try:
-        return _bearbeiten(api, auftrag, aid, fragen, uhr, schlafen, halten_takt_s, zurueckgeben)
+        return _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, zurueckgeben, live)
+    except _Stopp as s:
+        try:
+            api.gestoppt(aid, live.gueltig if s.art == "behalten" else None)
+        except (ApiFehler, OSError, ValueError):
+            pass             # die VM schliesst einen gestoppten Auftrag nach 15 s selbst ab
+        return "gestoppt"
+    except _Verloren:
+        return "fehler"
     except (ApiFehler, OSError, ValueError) as e:
         if not versucht:
             _freigeben(api, aid, NICHT_ERREICHBAR, e)
         return "fehler"
 
 
-def _bearbeiten(api, auftrag, aid, fragen, uhr, schlafen, halten_takt_s, zurueckgeben) -> str:
+def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, zurueckgeben, live: _Live) -> str:
     medien = list(auftrag.get("medien") or [])
     nachrichten = [{"role": "user", "content": agent_prompt.nutzer_text(auftrag, medien)}]
     fehler = ""
@@ -177,9 +350,9 @@ def _bearbeiten(api, auftrag, aid, fragen, uhr, schlafen, halten_takt_s, zurueck
         with halten(api, aid, halten_takt_s) as halter:
             while True:
                 try:
-                    text = fragen(agent_prompt.SYSTEM, nachrichten)
+                    text = _strom_lesen(fragen_strom, nachrichten, live, halter)
                     break
-                except LlmFehler:
+                except LlmFehler:    # Shim nicht erreichbar oder Strom mittendrin abgebrochen
                     if halter.verloren.is_set():
                         return "fehler"
                     if uhr() - beginn >= SHIM_BIS_S:
@@ -205,6 +378,8 @@ def _bearbeiten(api, auftrag, aid, fragen, uhr, schlafen, halten_takt_s, zurueck
                                 {"role": "user", "content": agent_prompt.korrektur_text(fehler)}]
                 continue
             return zurueckgeben(NICHT_UMGESETZT + fehler)
+        if ergebnis.geaendert or live.gesendet_am is not None:
+            live.endstand(ergebnis.bloecke, antwort["aenderungen"])     # ein Stopp hier gewinnt noch vor fertig
         if not api.weiter(aid):
             return "fehler"
         antwort_vm = api.fertig(aid, {
@@ -218,7 +393,7 @@ def _bearbeiten(api, auftrag, aid, fragen, uhr, schlafen, halten_takt_s, zurueck
     return zurueckgeben(NICHT_UMGESETZT + fehler)
 
 
-def ein_durchlauf(api, fragen=frage, exportieren=None, uhr=time.monotonic, schlafen=time.sleep,
+def ein_durchlauf(api, fragen_strom=frage_strom, exportieren=None, uhr=time.monotonic, schlafen=time.sleep,
                   halten_takt_s: float = HALTEN_TAKT_S) -> str:
     auftrag = api.naechster()
     if not auftrag:
@@ -231,7 +406,7 @@ def ein_durchlauf(api, fragen=frage, exportieren=None, uhr=time.monotonic, schla
         except Exception as e:  # noqa: BLE001 - Auftrag gehoert uns, also zurueckgeben
             _freigeben(api, str(auftrag["id"]), "Export nicht möglich: " + _kurz(e), e)
             return "fehler"
-    return chat_bearbeiten(api, auftrag, fragen, uhr, schlafen, halten_takt_s)
+    return chat_bearbeiten(api, auftrag, fragen_strom, uhr, schlafen, halten_takt_s)
 
 
 class _Gesundheit(BaseHTTPRequestHandler):
