@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { PINNED_PLUGIN_CATALOG_DIGEST } from "@rowboat/openai-plugin-runtime";
 import {
   createCatalogCollectionRoute, createCatalogItemRoute, createPluginSessionRoute, createProjectPluginsRoute, createProjectPluginRoute,
@@ -78,6 +79,29 @@ function proxyNextRequestEquivalent(target: NextRequest): NextRequest {
 }
 
 async function json(response: Response): Promise<unknown> { return response.json(); }
+
+/**
+ * A production `next build` carries several copies of the NextRequest class:
+ * webpack-bundled ones that route modules import, and the one inside Next's
+ * app-route runtime that constructs the request handed to route handlers.
+ * Loading Next's request module a second time, outside the require cache,
+ * yields exactly such a foreign copy: it extends the global Request and keeps
+ * its own `Symbol("internal request")` state, but is not this module's class.
+ */
+function foreignNextRequestClass(): typeof NextRequest {
+  const load = createRequire(import.meta.url);
+  const modulePath = load.resolve("next/dist/server/web/spec-extension/request.js");
+  const cached = load.cache[modulePath];
+  delete load.cache[modulePath];
+  try {
+    const { NextRequest: Foreign } = load(modulePath) as { NextRequest: typeof NextRequest };
+    if (Foreign === NextRequest || Object.getPrototypeOf(Foreign.prototype) !== Request.prototype) throw new Error("foreign_copy_unavailable");
+    return Foreign;
+  } finally {
+    if (cached === undefined) delete load.cache[modulePath];
+    else load.cache[modulePath] = cached;
+  }
+}
 
 describe("versioned plugin catalog routes", () => {
   it("keeps Next route modules limited to supported handler exports", async () => {
@@ -689,6 +713,106 @@ describe("versioned project plugin routes", () => {
     }), { params: Promise.resolve({ projectId: "project-1" }) });
     expect(response.status).toBe(200);
     expect(await json(response)).toEqual({ items: [] });
+  });
+});
+
+describe("plugin routes under a production build with several NextRequest copies", () => {
+  const Foreign = foreignNextRequestClass();
+  const foreign = (path: string, init?: ConstructorParameters<typeof NextRequest>[1]): NextRequest => new Foreign(`https://rowboat.invalid${path}`, init);
+  const projectKeyPolicy = () => new Auth0PluginApiAuthorizationPolicy({
+    pluginUserSessionProvider: { getUserId: async () => null },
+    pluginProjectApiKeyVerifier: { verify: async (token) => token === "project-token" ? "project-1" : null },
+    pluginUserTokenVerifier: { verify: async () => null }, projectMembersRepository: { exists: async () => false } as never,
+    pluginAuthEnabled: true,
+  });
+
+  it("authenticates a bearer on a request built by a foreign NextRequest copy", async () => {
+    await expect(projectKeyPolicy().authenticate(foreign("/api/v1/plugins", { headers: { authorization: "Bearer project-token" } })))
+      .resolves.toEqual({ kind: "project_api_key", projectId: "project-1" });
+  });
+
+  it("serves the catalog collection to a foreign NextRequest copy through the real controller and policy", async () => {
+    const calls: PluginApiIdentity[] = [];
+    const controller = new PluginCatalogController({
+      pluginApiAuthorizationPolicy: projectKeyPolicy(),
+      listPluginCatalogUseCase: { execute: async ({ identity }: { identity: PluginApiIdentity }) => { calls.push(identity); return [catalogItem]; } } as unknown as ListPluginCatalogUseCase,
+    });
+    const response = await createCatalogCollectionRoute(controller)(foreign(`/api/v1/plugins?catalogDigest=${catalogDigest}`, {
+      headers: { authorization: "Bearer project-token" },
+    }));
+    expect(response.status).toBe(200);
+    expect((await response.json() as { items: unknown[] }).items).toHaveLength(1);
+    expect(calls).toEqual([{ kind: "project_api_key", projectId: "project-1" }]);
+  });
+
+  it("lists project plugins for a foreign NextRequest copy through the real controller and use case", async () => {
+    const authorization = projectKeyPolicy();
+    const controller = new PluginInstallationController({
+      pluginApiAuthorizationPolicy: authorization,
+      listProjectPluginsUseCase: new ListProjectPluginsUseCase({
+        pluginApiAuthorizationPolicy: authorization,
+        pluginsRepository: { getCatalog: async () => catalogLockFixture as unknown as PluginCatalogLock, listInstallations: async () => [] } as unknown as IPluginsRepository,
+      }),
+      previewPluginInstallationUseCase: {} as PreviewPluginInstallationUseCase,
+      installPluginUseCase: {} as InstallPluginUseCase,
+      setPluginEnabledUseCase: {} as SetPluginEnabledUseCase,
+    });
+    const response = await createProjectPluginsRoute(controller).GET(foreign(`/api/v1/projects/project-1/plugins?catalogDigest=${catalogDigest}`, {
+      headers: { authorization: "Bearer project-token" },
+    }), { params: Promise.resolve({ projectId: "project-1" }) });
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual({ items: [] });
+  });
+
+  it("reads a bounded JSON body, signal and idempotency key from a foreign NextRequest copy", async () => {
+    const receipt = Object.freeze({ type: "install" as const, receiptId: "receipt-1", projectId: "project-1", pluginName: "airtable", status: "success" as const, redactions: Object.freeze([]) });
+    const install = vi.fn(async (_request: Request, input: unknown) => {
+      expect(input).toEqual({ projectId: "project-1", pluginName: "airtable", catalogDigest, expectedRevision: 0, idempotencyKey: "install-1" });
+      return receipt;
+    });
+    const response = await createProjectPluginsRoute({ install }).POST(foreign("/api/v1/projects/project-1/plugins", {
+      method: "POST", headers: { "content-type": "application/json", "Idempotency-Key": "install-1" },
+      body: JSON.stringify({ pluginName: "airtable", catalogDigest, expectedRevision: 0 }),
+    }), { params: Promise.resolve({ projectId: "project-1" }) });
+    expect(response.status).toBe(201);
+    expect(await json(response)).toEqual(receipt);
+  });
+
+  it("still rejects proxies, subclasses, prototype-only fakes and own-property overrides of a foreign copy", async () => {
+    let resolutions = 0;
+    const route = createCatalogCollectionRoute(async () => { resolutions += 1; return { execute: async () => [catalogItem] }; });
+    class ForeignSubclass extends Foreign {}
+    let overrideCalls = 0;
+    class AccessorOverride extends Request { override get headers(): Headers { overrideCalls += 1; throw new Error("side_effect"); } }
+    const ownUrl = foreign(`/api/v1/plugins?catalogDigest=${catalogDigest}`);
+    Object.defineProperty(ownUrl, "url", { value: `https://rowboat.invalid/api/v1/plugins?catalogDigest=${catalogDigest}` });
+    const ownHeaders = foreign(`/api/v1/plugins?catalogDigest=${catalogDigest}`);
+    Object.defineProperty(ownHeaders, "headers", { value: new Headers() });
+    let proxyCalls = 0;
+    const proxied = new Proxy(foreign(`/api/v1/plugins?catalogDigest=${catalogDigest}`), {
+      get: (target, key, receiver) => { proxyCalls += 1; return Reflect.get(target, key, receiver); },
+    });
+    const notARequest = Object.create(Foreign.prototype) as NextRequest;
+    const policy = projectKeyPolicy();
+    for (const candidate of [
+      new ForeignSubclass(`https://rowboat.invalid/api/v1/plugins?catalogDigest=${catalogDigest}`),
+      new AccessorOverride(`https://rowboat.invalid/api/v1/plugins?catalogDigest=${catalogDigest}`),
+      new Request(`https://rowboat.invalid/api/v1/plugins?catalogDigest=${catalogDigest}`),
+      notARequest,
+      ownUrl,
+      ownHeaders,
+      proxied,
+    ]) {
+      const response = await route(candidate);
+      expect(response.status).toBe(400);
+      expect(await json(response)).toEqual({ error: "request_invalid" });
+    }
+    for (const candidate of [notARequest, ownHeaders, proxied]) {
+      await expect(policy.authenticate(candidate)).rejects.toThrow("request_invalid");
+    }
+    expect(resolutions).toBe(0);
+    expect(proxyCalls).toBe(0);
+    expect(overrideCalls).toBe(0);
   });
 });
 

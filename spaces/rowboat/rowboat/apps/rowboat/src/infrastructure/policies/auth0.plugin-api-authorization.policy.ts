@@ -1,6 +1,5 @@
 import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from "jose";
 import { types as utilTypes } from "node:util";
-import { NextRequest } from "next/server";
 import { USE_AUTH } from "@/app/lib/feature_flags";
 import type { IApiKeysRepository } from "@/src/application/repositories/api-keys.repository.interface";
 import type { IProjectMembersRepository } from "@/src/application/repositories/project-members.repository.interface";
@@ -72,11 +71,21 @@ export class JoseAuth0UserTokenVerifier implements PluginUserTokenVerifier {
 
 const REQUEST_HEADERS_GETTER = Object.getOwnPropertyDescriptor(Request.prototype, "headers")?.get;
 const HEADERS_GET = Headers.prototype.get;
+const FETCH_ACCESSORS = Object.freeze(["method", "headers", "body", "signal"] as const);
 
 function authorizationHeader(request: Request): string | null {
   if (utilTypes.isProxy(request) || REQUEST_HEADERS_GETTER === undefined) throw new Error("request_invalid");
-  const prototype = Object.getPrototypeOf(request);
-  if (prototype !== Request.prototype && prototype !== NextRequest.prototype) throw new Error("request_invalid");
+  // A plain fetch Request, or an instance of any NextRequest copy (a class that
+  // extends the global Request directly). No identity check against this
+  // module's NextRequest.prototype: a production `next build` carries several
+  // NextRequest copies and route handlers receive one from Next's app-route
+  // runtime. The Request.prototype headers getter below brand-checks the real
+  // fetch internals, so prototype-only fakes are still rejected, and a subclass
+  // that redefines a fetch accessor (NextRequest copies never do) is rejected.
+  const prototype: unknown = Object.getPrototypeOf(request);
+  if (prototype === null || typeof prototype !== "object" || utilTypes.isProxy(prototype)) throw new Error("request_invalid");
+  if (prototype !== Request.prototype && (Object.getPrototypeOf(prototype) !== Request.prototype
+    || FETCH_ACCESSORS.some((key) => Object.getOwnPropertyDescriptor(prototype, key) !== undefined))) throw new Error("request_invalid");
   if (Object.getOwnPropertyDescriptor(request, "headers") !== undefined) throw new Error("request_invalid");
   let headers: Headers;
   try { headers = REQUEST_HEADERS_GETTER.call(request) as Headers; } catch { throw new Error("request_invalid"); }
