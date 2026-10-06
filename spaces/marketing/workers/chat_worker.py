@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -229,6 +230,26 @@ def _neu_aufloesen(wert, neu_ids: list):
     return wert
 
 
+# zufaellige ids aus agent_werkzeuge (neue_id: agent-<hex6>, Ebenen: e-<hex6>), als JSON-String
+_ZUFALLS_ID = re.compile(r'"((?:agent|e)-[0-9a-f]{6})"')
+
+
+def _id_zuordnung(original: dict, gesamt: dict, live: dict) -> dict | None:
+    """Zuordnung der neuen zufaelligen ids von gesamt auf live (nach erstem Auftreten; beide Staende entstehen
+    aus derselben Aenderungsfolge, also in derselben Reihenfolge). None, wenn die Staende mit dieser Zuordnung
+    nicht exakt gleich sind."""
+    alt = set(_ZUFALLS_ID.findall(json.dumps(original, ensure_ascii=False)))
+    tg, tl = json.dumps(gesamt, ensure_ascii=False), json.dumps(live, ensure_ascii=False)
+    ng = [i for i in dict.fromkeys(_ZUFALLS_ID.findall(tg)) if i not in alt]
+    nl = [i for i in dict.fromkeys(_ZUFALLS_ID.findall(tl)) if i not in alt]
+    if len(ng) != len(nl):
+        return None
+    zu = dict(zip(ng, nl))
+    if _ZUFALLS_ID.sub(lambda m: '"' + zu.get(m.group(1), m.group(1)) + '"', tg) != tl:
+        return None
+    return zu
+
+
 class _Live:
     """Live-Stand eines Laufs: jede fertig gelesene Aenderung wird einzeln auf die Arbeitskopie angewandt
     (stabile Block-ids, neu:<n> ueber die Live-ids aufgeloest); eine ungueltige wird gemerkt und laesst den
@@ -245,7 +266,16 @@ class _Live:
         """Jeder Strom (Wiederholung, Korrekturversuch) beginnt beim Original. Der zuletzt gemeldete
         Zwischenstand bleibt bei der VM stehen, bis der neue Strom etwas Gueltiges meldet."""
         self.kopie, self.gueltig, self.neu_ids, self.fehler = self.original, None, [], []
+        self.angewandt: list[dict] = []
         self.nr, self.schritt, self.offen = 0, "", False
+
+    def zuordnung(self, aenderungen: list, leser_fehler: list, gesamt: dict) -> dict | None:
+        """R11: Der Live-Stand gilt als Ergebnis, wenn der Strom sauber lief (keine ungueltige Einzelaenderung,
+        nichts Unlesbares), genau die Gesamtliste live angewandt wurde und beide Staende bis auf die zufaelligen
+        ids gleich sind. Liefert dann die Zuordnung Gesamt-id -> Live-id, sonst None (Rueckfall Gesamtliste)."""
+        if self.fehler or leser_fehler or self.angewandt != aenderungen:
+            return None
+        return _id_zuordnung(self.original, gesamt, self.kopie)
 
     def aenderung(self, a: dict) -> None:
         werkzeug = a.get("werkzeug")
@@ -261,6 +291,7 @@ class _Live:
             neue = [k for k in erg.bloecke if k not in vorher]
             self.neu_ids.append(neue[0] if len(neue) == 1 else None)
         self.kopie = self.gueltig = erg.bloecke
+        self.angewandt.append(a)
         self.nr += 1
         self.schritt = str(a.get("schritt") or werkzeug)[:SCHRITT_MAX]
         self.offen = True
@@ -294,8 +325,9 @@ class _Live:
         self.melden(immer=True)
 
 
-def _strom_lesen(fragen_strom, nachrichten, live: _Live, halter) -> str:
-    """Liest einen Strom ganz; jede neue vollstaendige Aenderung geht sofort in den Live-Stand."""
+def _strom_lesen(fragen_strom, nachrichten, live: _Live, halter) -> tuple[str, list[str]]:
+    """Liest einen Strom ganz; jede neue vollstaendige Aenderung geht sofort in den Live-Stand.
+    Liefert den ganzen Text und die Lesefehler des StromLesers (unlesbare Aenderungen)."""
     live.neu_beginnen()
     leser = agent_strom.StromLeser()
     strom = iter(fragen_strom(agent_prompt.SYSTEM, nachrichten))
@@ -312,7 +344,7 @@ def _strom_lesen(fragen_strom, nachrichten, live: _Live, halter) -> str:
             schliessen()             # bei Stopp/Verlust: Verbindung zum Shim schliessen
     if not leser.text.strip():
         raise LlmFehler("Leere Antwort")
-    return leser.text
+    return leser.text, list(leser.fehler)
 
 
 def chat_bearbeiten(api, auftrag, fragen_strom=frage_strom, uhr=time.monotonic, schlafen=time.sleep,
@@ -346,15 +378,17 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
     nachrichten = [{"role": "user", "content": agent_prompt.nutzer_text(auftrag, medien)}]
     fehler = ""
     for versuch in (1, 2):
-        beginn = uhr()       # Shim-Fenster je Frage
+        beginn = None        # Shim-Fenster je Frage, ab dem ersten Ausfall (ein langer Strom zaehlt nicht mit)
         with halten(api, aid, halten_takt_s) as halter:
             while True:
                 try:
-                    text = _strom_lesen(fragen_strom, nachrichten, live, halter)
+                    text, leser_fehler = _strom_lesen(fragen_strom, nachrichten, live, halter)
                     break
                 except LlmFehler:    # Shim nicht erreichbar oder Strom mittendrin abgebrochen
                     if halter.verloren.is_set():
                         return "fehler"
+                    if beginn is None:
+                        beginn = uhr()
                     if uhr() - beginn >= SHIM_BIS_S:
                         return zurueckgeben(NICHT_ERREICHBAR)
                     if not api.weiter(aid):
@@ -365,10 +399,17 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
         try:
             antwort = agent_prompt.antwort_lesen(text)
             ergebnis = agent_werkzeuge.anwenden(auftrag.get("bloecke") or {}, antwort["aenderungen"], set(medien))
+            bloecke, bildauftraege, export = ergebnis.bloecke, ergebnis.bildauftraege, ergebnis.export_vorschlag
             if ergebnis.geaendert:
+                zu = live.zuordnung(antwort["aenderungen"], leser_fehler, ergebnis.bloecke)
+                if zu is not None:   # R11: der Live-Stand wird die Fassung, ids bleiben die aus der Anzeige
+                    bloecke = live.kopie
+                    bildauftraege = [{**b, "platz": zu.get(b.get("platz"), b.get("platz"))} for b in bildauftraege]
+                    if export is not None:
+                        export = {**export, "flaechen": [zu.get(f, f) for f in export["flaechen"]]}
                 if not api.weiter(aid):
                     return "fehler"
-                grund = api.pruefen(aid, ergebnis.bloecke)
+                grund = api.pruefen(aid, bloecke)
                 if grund:
                     raise agent_werkzeuge.WerkzeugFehler(grund)
         except (agent_prompt.AntwortFehler, agent_werkzeuge.WerkzeugFehler) as e:
@@ -377,16 +418,17 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
                 nachrichten += [{"role": "assistant", "content": text},
                                 {"role": "user", "content": agent_prompt.korrektur_text(fehler)}]
                 continue
+            live.melden(immer=True)  # steht ein Stopp an, gewinnt er vor dem Zurueckgeben
             return zurueckgeben(NICHT_UMGESETZT + fehler)
         if ergebnis.geaendert or live.gesendet_am is not None:
-            live.endstand(ergebnis.bloecke, antwort["aenderungen"])     # ein Stopp hier gewinnt noch vor fertig
+            live.endstand(bloecke, antwort["aenderungen"])     # ein Stopp hier gewinnt noch vor fertig
         if not api.weiter(aid):
             return "fehler"
         antwort_vm = api.fertig(aid, {
             "antwort": antwort["antwort"],
-            "bloecke": ergebnis.bloecke if ergebnis.geaendert else None,
-            "bildauftraege": ergebnis.bildauftraege,
-            "export_vorschlag": ergebnis.export_vorschlag,
+            "bloecke": bloecke if ergebnis.geaendert else None,
+            "bildauftraege": bildauftraege,
+            "export_vorschlag": export,
             "notiz": ergebnis.notiz,
         })
         return "fehler" if antwort_vm.get("status") == "fehler" else "fertig"

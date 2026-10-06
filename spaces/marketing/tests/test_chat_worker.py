@@ -670,3 +670,89 @@ def test_chatapi_zwischenstand_und_gestoppt(monkeypatch):
     api, g = _api_mit_antwort(monkeypatch, b'{"status": "fertig", "fassung": 4}')
     assert api.gestoppt("a1", None) == {"status": "fertig", "fassung": 4}
     assert g["url"].endswith("/a1/gestoppt") and json.loads(g["data"]) == {"bloecke": None}
+
+
+# ---- Task 5 Fix-Runde 1 --------------------------------------------------------------------
+TEXT_EBENE = {"art": "text", "x": 300, "y": 200, "text": "Hallo", "schrift": "dm-sans", "gewicht": 400,
+              "groesse": 40, "farbe": "#111111"}
+
+
+def _agent_ids(bloecke):
+    return [k for k in bloecke if k.startswith("agent-")]
+
+
+def _ebenen_ids(bloecke, fid):
+    return [e["id"] for e in bloecke[fid]["data"]["props"]["gestaltung"]["ebenen"]]
+
+
+def test_live_ids_bleiben_im_letzten_zwischenstand_und_in_fertig():
+    uhr, api = Uhr(), Api()
+    ebene = {"werkzeug": "ebene_hinzufuegen", "flaeche": "neu:1", "ebene": TEXT_EBENE, "schritt": "Text"}
+    export = {"werkzeug": "export_vorschlagen", "newsletter": False, "flaechen": ["neu:1"], "schritt": "Export"}
+    assert bearbeiten(api, Strom(uhr, stuecke([FL, ebene, export])), uhr, drossel_s=0) == "fertig"
+    z = zw(api)
+    live_ids = _agent_ids(z[0][2])
+    assert len(live_ids) == 1
+    live_ebenen = _ebenen_ids(z[1][2], live_ids[0])
+    assert len(live_ebenen) == 1
+    daten = api.aufrufe("fertig")[0][2]
+    assert _agent_ids(daten["bloecke"]) == live_ids and _ebenen_ids(daten["bloecke"], live_ids[0]) == live_ebenen
+    assert z[-1][2] == daten["bloecke"] and z[-1][2] == z[-2][2]          # Endstand = letzter Live-Stand
+    assert daten["export_vorschlag"] == {"newsletter": False, "flaechen": live_ids}
+    assert api.aufrufe("pruefen")[0][2] == daten["bloecke"]
+
+
+def test_ungueltige_live_aenderung_faellt_auf_die_gesamtliste_zurueck(monkeypatch):
+    uhr, api = Uhr(), Api()
+    echt, gesehen = cw.agent_werkzeuge.anwenden, []
+
+    def einmal_kaputt(dok, aenderungen, medien):
+        gesehen.append(len(aenderungen))
+        if len(gesehen) == 1:
+            raise cw.agent_werkzeuge.WerkzeugFehler("live kaputt")
+        return echt(dok, aenderungen, medien)
+    monkeypatch.setattr(cw.agent_werkzeuge, "anwenden", einmal_kaputt)
+    assert bearbeiten(api, Strom(uhr, stuecke([FL, text("Eins", "Titel")])), uhr, drossel_s=0) == "fertig"
+    z = zw(api)
+    assert _agent_ids(z[0][2]) == []                                   # die Flaeche fehlte live
+    daten = api.aufrufe("fertig")[0][2]
+    assert len(_agent_ids(daten["bloecke"])) == 1 and daten["bloecke"]["t"]["data"]["props"]["text"] == "Eins"
+    assert z[-1][2] == daten["bloecke"]
+
+
+def test_strom_bricht_nach_langer_zeit_ab_wird_trotzdem_wiederholt():
+    uhr, api = Uhr(), Api()
+    s = stuecke([farbe("#ff0000", "Rot")])
+    strom = Strom(uhr, [s[0], 200, cw.LlmFehler("CLI gestorben")], s)
+    assert bearbeiten(api, strom, uhr) == "fertig"
+    assert len(strom.gesehen) == 2 and api.aufrufe("zurueck") == []
+
+
+def test_korrektur_scheitert_aber_stopp_steht_an_stopp_gewinnt():
+    uhr, api = Uhr(), Api()
+    api.zwischen = [{"weiter": False, "grund": "stopp", "stopp": "verwerfen"}]
+    assert bearbeiten(api, Strom(uhr, ["kein json"], ["immer noch nicht"]), uhr) == "gestoppt"
+    assert api.aufrufe("gestoppt") == [("gestoppt", "a1", None)] and api.aufrufe("zurueck") == []
+
+
+class _Rinnsal(io.RawIOBase):
+    """Liefert die Bytes in winzigen Lesestuecken, damit eine data-Zeile ueber mehrere reads geht."""
+    def __init__(self, roh, groesse=7):
+        self.roh, self.pos, self.groesse = roh, 0, groesse
+
+    def readable(self):
+        return True
+
+    def readinto(self, puffer):
+        n = min(len(puffer), self.groesse, len(self.roh) - self.pos)
+        puffer[:n] = self.roh[self.pos:self.pos + n]
+        self.pos += n
+        return n
+
+
+def test_frage_strom_crlf_kommentare_und_geteilte_zeilen(monkeypatch):
+    roh = (b": keep-alive\r\n\r\n"
+           + _sse(_chunk("Hallo "), _chunk("Welt"), _chunk("", "stop")).replace(b"\n", b"\r\n")
+           .replace(b"data: [DONE]", b": keep-alive\r\n\r\ndata: [DONE]"))
+    monkeypatch.setattr(cw.urllib.request, "urlopen", lambda *a, **k: io.BufferedReader(_Rinnsal(roh), 8))
+    assert list(cw.frage_strom("S", [])) == ["Hallo ", "Welt"]
