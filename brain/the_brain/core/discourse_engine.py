@@ -937,8 +937,11 @@ class DiscourseEngine:
             all_agents = r.json()
             phi3 = [a for a in all_agents if (a.get("name") or "").endswith("-phi3")]
             if not phi3:
-                # fallback: all running agents (in case clones not registered yet)
-                phi3 = [a for a in all_agents if a.get("state") == "Running"]
+                # Kein Rueckfall auf alle laufenden Agenten (Spec 2026-10-06):
+                # das wuerde jeden Agenten ueber das Claude-Abo anstossen.
+                self.stats["last_error"] = "keine Discourse-Agenten (-phi3)"
+                self._agents = []
+                return False
             self._agents = phi3
             self.stats["agents_loaded"] = len(phi3)
             return bool(phi3)
