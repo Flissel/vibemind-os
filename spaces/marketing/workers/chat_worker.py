@@ -4,7 +4,9 @@ ueber den lokalen OpenAI-kompatiblen Shim :8117, prueft und wendet die JSON-Aend
 an und meldet zurueck. Gestartet von marketing-dienste-starten.ps1; Gesundheits-Port 8134."""
 from __future__ import annotations
 
+import base64
 import contextlib
+import io
 import json
 import os
 import re
@@ -13,10 +15,13 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import warnings
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from spaces.marketing.claw import agent_prompt, agent_strom, agent_werkzeuge
+from PIL import Image, ImageOps
+
+from spaces.marketing.claw import agent_prompt, agent_strom, agent_werkzeuge, bildplaetze, unterlagen
 from spaces.marketing.workers.bild_worker import ApiFehler, _grund, tls_kontext, umgebung_laden
 
 PORT = 8134
@@ -35,6 +40,10 @@ STAND = {"letzter_lauf": None, "letztes_ergebnis": None}
 
 class LlmFehler(Exception):
     pass
+
+
+class ShimAbgelehnt(LlmFehler):
+    """Der Shim hat die Anfrage selbst abgelehnt (HTTP 400, z. B. ungueltige Bildteile)."""
 
 
 class ChatApi:
@@ -119,6 +128,10 @@ def frage_strom(system: str, nachrichten: list[dict], url: str = LLM_URL, modell
                                  headers={"Content-Type": "application/json"})
     try:
         antwort = urllib.request.urlopen(req, timeout=LLM_ZEITLIMIT_S)
+    except urllib.error.HTTPError as e:
+        if e.code == 400:
+            raise ShimAbgelehnt(_kurz(e)) from None
+        raise LlmFehler(_kurz(e)) from None
     except (OSError, TimeoutError, ValueError) as e:
         raise LlmFehler(_kurz(e)) from None
     abgeschlossen, etwas = False, False
@@ -347,6 +360,168 @@ def _strom_lesen(fragen_strom, nachrichten, live: _Live, halter) -> tuple[str, l
     return leser.text, list(leser.fehler)
 
 
+# --- Auswahl, Bilder und Unterlagen der Nachricht (sales-claw Spec 2026-10-06-chat-kontext-und-uploads) ---
+
+MAX_BILDER = 6                     # je Anfrage (Grenze des Shims); Anhaenge vor Bildern aus der Auswahl
+MAX_KANTE = 1568                   # laengste Kante, mit der Claude ein Bild ohne eigenes Verkleinern sieht
+MAX_BILD_PIXEL = 50_000_000        # mehr Pixel wird nie dekodiert (Dekompressionsbombe), sondern uebersprungen
+MAX_BILD_BYTES = 10 * 1024 * 1024  # je Bild kodiert (Grenze des Shims)
+MAX_AUSWAHL = 8
+MAX_ANHAENGE = 5
+MAX_HINWEIS = 200
+MAX_HINWEISE = 1500                # zusammen vor der Antwort; die VM kuerzt die Antwort bei 4000 Zeichen
+BILDER_ABGELEHNT = "Bilder konnten nicht übergeben werden, ich habe ohne sie geantwortet."
+
+
+def _props(b) -> dict:
+    daten = b.get("data") if isinstance(b, dict) else None
+    props = daten.get("props") if isinstance(daten, dict) else None
+    return props if isinstance(props, dict) else {}
+
+
+def _medienname(url) -> str | None:
+    """Name aus "medien:<name>"; leere Plaetze und Platzhalterbilder zaehlen nicht."""
+    if isinstance(url, str) and url.startswith("medien:") and not bildplaetze.ist_leer(url):
+        return url[len("medien:"):] or None
+    return None
+
+
+def _ebene_finden(bloecke: dict, fid, eid) -> dict | None:
+    gestaltung = _props(bloecke.get(fid)).get("gestaltung") if isinstance(fid, str) else None
+    ebenen = gestaltung.get("ebenen") if isinstance(gestaltung, dict) else None
+    for e in ebenen if isinstance(ebenen, list) else []:
+        if isinstance(e, dict) and e.get("id") == eid:
+            return e
+    return None
+
+
+def _auswahl_liste(kontext: dict) -> list[dict]:
+    """Chips [{art, id, flaeche?, kurz}] oder Altform: eine einzelne id (in einer Flaeche eine Ebene)."""
+    auswahl = kontext.get("auswahl")
+    if isinstance(auswahl, str) and auswahl:
+        fenster = str(kontext.get("fenster") or "")
+        if fenster.startswith("flaeche:"):
+            return [{"art": "ebene", "flaeche": fenster[len("flaeche:"):], "id": auswahl}]
+        return [{"art": "block", "id": auswahl}]
+    if isinstance(auswahl, list):
+        return [a for a in auswahl if isinstance(a, dict) and isinstance(a.get("id"), str)][:MAX_AUSWAHL]
+    return []
+
+
+def _auswahl_aufloesen(auftrag: dict, kontext: dict) -> tuple[list[dict], list[str], list[str]]:
+    """(markierte Eintraege mit vollstaendigem Block bzw. vollstaendiger Ebene, Mediennamen der markierten
+    Bilder, Hinweise zu markierten Elementen, die es nicht mehr gibt)."""
+    bloecke = auftrag.get("bloecke") if isinstance(auftrag.get("bloecke"), dict) else {}
+    fenster = str(kontext.get("fenster") or "")
+    markiert, bilder, hinweise = [], [], []
+    for a in _auswahl_liste(kontext):
+        if a.get("art") == "ebene":
+            fid = a.get("flaeche") or (fenster[len("flaeche:"):] if fenster.startswith("flaeche:") else None)
+            gefunden = _ebene_finden(bloecke, fid, a["id"])
+        else:
+            gefunden = bloecke.get(a["id"])
+        if not isinstance(gefunden, dict):
+            hinweise.append(f"Das markierte Element „{str(a.get('kurz') or a['id'])[:80]}“ gibt es nicht mehr.")
+        elif a.get("art") == "ebene":
+            markiert.append({**a, "flaeche": fid, "ebene": gefunden})
+            if gefunden.get("art") == "bild":
+                bilder.append(_medienname(gefunden.get("quelle")))
+        else:
+            markiert.append({**a, "block": gefunden})
+            if gefunden.get("type") == "Image":            # Bildblock oder Flaeche (deren gerechnetes gs-Bild)
+                bilder.append(_medienname(_props(gefunden).get("url")))
+    return markiert, [n for n in bilder if n], hinweise
+
+
+def _holen(api, aid, name: str, hinweise: list[str]) -> bytes | None:
+    try:
+        roh = api.medium(aid, name)
+    except (ApiFehler, OSError, ValueError):
+        hinweise.append(f"{name} konnte nicht geladen werden.")
+        return None
+    if not roh:
+        hinweise.append(f"{name} fehlt in den Medien.")
+        return None
+    return roh
+
+
+def _bild_als_teil(roh: bytes) -> dict | None:
+    """Bildteil fuer den Shim: auf MAX_KANTE verkleinert, JPEG (mit Transparenz PNG) als data-URL.
+    None, wenn das Bild unlesbar ist oder mehr als MAX_BILD_PIXEL hat - die Groesse steht im Kopf und wird
+    vor jedem Dekodieren geprueft. Wirft nie."""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(roh)) as quelle:
+                breite, hoehe = quelle.size
+                if breite <= 0 or hoehe <= 0 or breite * hoehe > MAX_BILD_PIXEL:
+                    return None
+                quelle.draft(None, (MAX_KANTE, MAX_KANTE))    # JPEG: schon beim Dekodieren verkleinern
+                bild = ImageOps.exif_transpose(quelle)
+                bild.thumbnail((MAX_KANTE, MAX_KANTE))
+                if bild.mode in ("RGBA", "LA", "PA") or (bild.mode == "P" and "transparency" in bild.info):
+                    bild = bild.convert("RGBA")
+                    puffer, art = io.BytesIO(), "png"
+                    bild.save(puffer, "PNG", optimize=True)
+                    if puffer.tell() <= MAX_BILD_BYTES:
+                        return _bildteil(art, puffer)
+                    flach = Image.new("RGB", bild.size, (255, 255, 255))   # zu gross als PNG: auf Weiss
+                    flach.paste(bild, mask=bild.getchannel("A"))
+                    bild = flach
+                puffer, art = io.BytesIO(), "jpeg"
+                bild.convert("RGB").save(puffer, "JPEG", quality=85)
+    except Exception:  # noqa: BLE001 - jedes unlesbare Bild (kaputt, Bombe, fremdes Format) wird uebersprungen
+        return None
+    return _bildteil(art, puffer) if puffer.tell() <= MAX_BILD_BYTES else None
+
+
+def _bildteil(art: str, puffer: io.BytesIO) -> dict:
+    url = f"data:image/{art};base64," + base64.b64encode(puffer.getvalue()).decode("ascii")
+    return {"type": "image_url", "image_url": {"url": url}}
+
+
+def anhaenge_vorbereiten(api, aid, auftrag: dict) -> tuple[list[dict], str, str, list[str]]:
+    """(bildteile, unterlagen, auswahl_text, hinweise) aus kontext.anhaenge und kontext.auswahl: Bilder
+    (Anhaenge vor markierten, hoechstens MAX_BILDER) als Bildteile, Dokumente als Unterlagen-Text, die
+    Auswahl als JSON. Was fehlt oder unlesbar ist, wird ein Hinweis; die Funktion wirft nicht."""
+    kontext = auftrag.get("kontext") if isinstance(auftrag.get("kontext"), dict) else {}
+    markiert, chip_bilder, hinweise = _auswahl_aufloesen(auftrag, kontext)
+    anhaenge = kontext.get("anhaenge") if isinstance(kontext.get("anhaenge"), list) else []
+    anhaenge = [a for a in anhaenge if isinstance(a, dict) and isinstance(a.get("name"), str) and a["name"]]
+    anhaenge = anhaenge[:MAX_ANHAENGE]
+    namen = list(dict.fromkeys([a["name"] for a in anhaenge if a.get("art") == "bild"] + chip_bilder))
+    bildteile: list[dict] = []
+    for i, name in enumerate(namen):
+        if len(bildteile) >= MAX_BILDER:
+            hinweise.append(f"Höchstens {MAX_BILDER} Bilder je Nachricht, nicht mitgeschickt: {', '.join(namen[i:])}.")
+            break
+        roh = _holen(api, aid, name, hinweise)
+        if roh is None:
+            continue
+        teil = _bild_als_teil(roh)
+        if teil is None:
+            hinweise.append(f"{name} ist kein lesbares Bild oder zu groß und wurde übersprungen.")
+            continue
+        bildteile.append(teil)
+    dateien = []
+    for a in anhaenge:
+        if a.get("art") == "dokument":
+            roh = _holen(api, aid, a["name"], hinweise)
+            if roh is not None:
+                dateien.append((a["name"], roh))
+    text, unlesbar = unterlagen.unterlagen_text(dateien) if dateien else ("", [])
+    hinweise += unlesbar
+    auswahl_text = json.dumps(markiert, ensure_ascii=False, separators=(",", ":")) if markiert else ""
+    return bildteile, text, auswahl_text, hinweise
+
+
+def _mit_hinweisen(hinweise: list[str], antwort: str) -> str:
+    if not hinweise:
+        return antwort
+    kopf = "\n".join("Hinweis: " + h[:MAX_HINWEIS] for h in hinweise)[:MAX_HINWEISE]
+    return kopf + "\n\n" + antwort
+
+
 def chat_bearbeiten(api, auftrag, fragen_strom=frage_strom, uhr=time.monotonic, schlafen=time.sleep,
                     halten_takt_s: float = HALTEN_TAKT_S, drossel_s: float = DROSSEL_S) -> str:
     aid = str(auftrag["id"])
@@ -375,7 +550,16 @@ def chat_bearbeiten(api, auftrag, fragen_strom=frage_strom, uhr=time.monotonic, 
 
 def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, zurueckgeben, live: _Live) -> str:
     medien = list(auftrag.get("medien") or [])
-    nachrichten = [{"role": "user", "content": agent_prompt.nutzer_text(auftrag, medien)}]
+    with halten(api, aid, halten_takt_s) as halter:      # Anhaenge laden kann dauern
+        bildteile, unterlagen_text, auswahl_text, hinweise = anhaenge_vorbereiten(api, aid, auftrag)
+    if halter.verloren.is_set():
+        return "fehler"
+    text_nutzer = agent_prompt.nutzer_text(auftrag, medien, unterlagen=unterlagen_text, auswahl_text=auswahl_text,
+                                           hinweise=hinweise)
+    # Mit Bildern ist die erste Nachricht eine Teil-Liste; sie bleibt auch in der Korrekturrunde so.
+    nachrichten = [{"role": "user", "content": [{"type": "text", "text": text_nutzer}, *bildteile]
+                    if bildteile else text_nutzer}]
+    mit_bildern = bool(bildteile)
     fehler = ""
     for versuch in (1, 2):
         beginn = None        # Shim-Fenster je Frage, ab dem ersten Ausfall (ein langer Strom zaehlt nicht mit)
@@ -384,9 +568,14 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
                 try:
                     text, leser_fehler = _strom_lesen(fragen_strom, nachrichten, live, halter)
                     break
-                except LlmFehler:    # Shim nicht erreichbar oder Strom mittendrin abgebrochen
+                except LlmFehler as e:    # Shim nicht erreichbar oder Strom mittendrin abgebrochen
                     if halter.verloren.is_set():
                         return "fehler"
+                    if isinstance(e, ShimAbgelehnt) and mit_bildern:   # einmal sofort ohne Bilder
+                        mit_bildern = False
+                        nachrichten[0] = {"role": "user", "content": text_nutzer}
+                        hinweise.append(BILDER_ABGELEHNT)
+                        continue
                     if beginn is None:
                         beginn = uhr()
                     if uhr() - beginn >= SHIM_BIS_S:
@@ -425,7 +614,7 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
         if not api.weiter(aid):
             return "fehler"
         antwort_vm = api.fertig(aid, {
-            "antwort": antwort["antwort"],
+            "antwort": _mit_hinweisen(hinweise, antwort["antwort"]),
             "bloecke": bloecke if ergebnis.geaendert else None,
             "bildauftraege": bildauftraege,
             "export_vorschlag": export,

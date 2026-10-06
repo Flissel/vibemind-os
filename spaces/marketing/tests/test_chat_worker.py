@@ -756,3 +756,247 @@ def test_frage_strom_crlf_kommentare_und_geteilte_zeilen(monkeypatch):
            .replace(b"data: [DONE]", b": keep-alive\r\n\r\ndata: [DONE]"))
     monkeypatch.setattr(cw.urllib.request, "urlopen", lambda *a, **k: io.BufferedReader(_Rinnsal(roh), 8))
     assert list(cw.frage_strom("S", [])) == ["Hallo ", "Welt"]
+
+
+# --- Task 3: Auswahl, Bilder, Unterlagen -------------------------------------------------------------
+
+import base64  # noqa: E402
+
+from PIL import Image  # noqa: E402
+
+MARKIERT = "Markiert (damit ist ‚das/hier/diese‘ gemeint):"
+
+
+def _png(breite=40, hoehe=30, modus="RGB", farbe=(200, 10, 10)) -> bytes:
+    puffer = io.BytesIO()
+    Image.new(modus, (breite, hoehe), farbe).save(puffer, "PNG")
+    return puffer.getvalue()
+
+
+def _jpg(breite=40, hoehe=30) -> bytes:
+    puffer = io.BytesIO()
+    Image.new("RGB", (breite, hoehe), (10, 200, 10)).save(puffer, "JPEG")
+    return puffer.getvalue()
+
+
+class MedienApi(Api):
+    def __init__(self, medien=None, **kw):
+        super().__init__(**kw)
+        self.medien = dict(medien or {})
+
+    def medium(self, aid, name):
+        self.log.append(("medium", aid, name))
+        wert = self.medien.get(name)
+        if isinstance(wert, Exception):
+            raise wert
+        return wert
+
+
+FLAECHE = {"type": "Image", "data": {"props": {"url": "medien:gs-f1.jpg", "alt": "Fläche", "gestaltung": {
+    "version": 1, "format": "quer", "hintergrund": "#ffffff", "ebenen": [
+        {"id": "eb1", "art": "bild", "x": 300, "y": 200, "quelle": "medien:hund.png", "breite": 200},
+        {"id": "et1", "art": "text", "x": 300, "y": 100, "text": "Hallo", "schrift": "bodoni", "gewicht": 400,
+         "groesse": 40, "farbe": "#000000"}]}}}}
+DOC_AUSWAHL = {"root": {"type": "EmailLayout", "data": {"backdropColor": "#ffffff",
+                                                        "childrenIds": ["t", "b1", "f1", "p1"]}},
+               "t": {"type": "Text", "data": {"props": {"text": "Herbst"}}},
+               "b1": {"type": "Image", "data": {"props": {"url": "medien:katze.jpg", "alt": "Katze"}}},
+               "p1": {"type": "Image", "data": {"props": {"url": "medien:platzhalter-4x3.png", "alt": ""}}},
+               "f1": FLAECHE}
+
+
+def _mit_kontext(**kontext):
+    return {**AUFTRAG, "bloecke": DOC_AUSWAHL, "kontext": {"fenster": "newsletter", **kontext}}
+
+
+def _bild_url(teil):
+    assert teil["type"] == "image_url"
+    return teil["image_url"]["url"]
+
+
+def _bild_groesse(teil):
+    return Image.open(io.BytesIO(base64.b64decode(_bild_url(teil).split(",", 1)[1]))).size
+
+
+def _markiert(text):
+    return json.loads(text.split(MARKIERT, 1)[1].split("\n")[1])
+
+
+def test_bild_anhang_wird_bildteil_im_request():
+    api = MedienApi({"foto.png": _png()})
+    fragen = Fragen(NUR_TEXT)
+    assert cw.chat_bearbeiten(api, _mit_kontext(anhaenge=[{"name": "foto.png", "art": "bild"}]), fragen) == "fertig"
+    inhalt = fragen.gesehen[0][1][0]["content"]
+    assert isinstance(inhalt, list) and inhalt[0]["type"] == "text"
+    assert "NACHRICHT: Hintergrund rot" in inhalt[0]["text"]
+    assert _bild_url(inhalt[1]).startswith("data:image/jpeg;base64,") and _bild_groesse(inhalt[1]) == (40, 30)
+    assert api.aufrufe("fertig")[0][2]["antwort"] == "Da ist nichts zu tun."      # keine Hinweise
+
+
+def test_grosses_bild_wird_auf_1568_verkleinert_und_transparenz_bleibt_png():
+    api = MedienApi({"gross.jpg": _jpg(4000, 2000), "logo.png": _png(3200, 3200, "RGBA", (0, 0, 0, 0))})
+    teile, _, _, hinweise = cw.anhaenge_vorbereiten(api, "a1", _mit_kontext(anhaenge=[
+        {"name": "gross.jpg", "art": "bild"}, {"name": "logo.png", "art": "bild"}]))
+    assert hinweise == []
+    assert [_bild_groesse(t) for t in teile] == [(1568, 784), (1568, 1568)]
+    assert _bild_url(teile[1]).startswith("data:image/png;base64,")
+
+
+def test_acht_bilder_werden_sechs_mit_hinweis_anhaenge_zuerst():
+    medien = {f"a{i}.png": _png() for i in range(5)}
+    medien.update({"katze.jpg": _jpg(), "hund.png": _png(), "gs-f1.jpg": _jpg()})
+    api = MedienApi(medien)
+    auftrag = _mit_kontext(anhaenge=[{"name": f"a{i}.png", "art": "bild"} for i in range(5)],
+                           auswahl=[{"art": "block", "id": "b1", "kurz": "Katze"},
+                                    {"art": "ebene", "flaeche": "f1", "id": "eb1", "kurz": "Hund"},
+                                    {"art": "block", "id": "f1", "kurz": "Fläche"}])
+    teile, _, _, hinweise = cw.anhaenge_vorbereiten(api, "a1", auftrag)
+    assert len(teile) == 6
+    assert [e[2] for e in api.aufrufe("medium")] == ["a0.png", "a1.png", "a2.png", "a3.png", "a4.png", "katze.jpg"]
+    assert len(hinweise) == 1 and "6" in hinweise[0] and "hund.png" in hinweise[0] and "gs-f1.jpg" in hinweise[0]
+
+
+def test_dekompressionsbombe_wird_uebersprungen_mit_hinweis():
+    puffer = io.BytesIO()
+    Image.new("1", (9000, 9000)).save(puffer, "PNG")           # klein gepackt, 81 Mio. Pixel
+    api = MedienApi({"bombe.png": puffer.getvalue(), "gut.png": _png(), "kaputt.jpg": b"kein bild"})
+    fragen = Fragen(NUR_TEXT)
+    auftrag = _mit_kontext(anhaenge=[{"name": "bombe.png", "art": "bild"}, {"name": "kaputt.jpg", "art": "bild"},
+                                     {"name": "gut.png", "art": "bild"}])
+    assert cw.chat_bearbeiten(api, auftrag, fragen) == "fertig"
+    assert [t["type"] for t in fragen.gesehen[0][1][0]["content"]] == ["text", "image_url"]
+    antwort = api.aufrufe("fertig")[0][2]["antwort"]
+    assert antwort.startswith("Hinweis: ") and "bombe.png" in antwort and "kaputt.jpg" in antwort
+    assert antwort.endswith("\n\nDa ist nichts zu tun.")
+
+
+def test_pdf_anhang_landet_als_unterlage_im_text(monkeypatch):
+    monkeypatch.setattr(cw.unterlagen, "text_aus",
+                        lambda name, roh: "Herbstaktion 20 Prozent" if name == "flyer.pdf" else "")
+    api = MedienApi({"flyer.pdf": b"%PDF-1.4 ...", "leer.pdf": b"%PDF"})
+    fragen = Fragen(NUR_TEXT)
+    auftrag = _mit_kontext(anhaenge=[{"name": "flyer.pdf", "art": "dokument"}, {"name": "leer.pdf", "art": "dokument"},
+                                     {"name": "weg.docx", "art": "dokument"}])
+    assert cw.chat_bearbeiten(api, auftrag, fragen) == "fertig"
+    inhalt = fragen.gesehen[0][1][0]["content"]
+    assert isinstance(inhalt, str)                       # ohne Bilder bleibt die Nachricht reiner Text
+    assert "Unterlage: flyer.pdf\nHerbstaktion 20 Prozent" in inhalt
+    antwort = api.aufrufe("fertig")[0][2]["antwort"]
+    assert "leer.pdf hat keinen lesbaren Text" in antwort and "weg.docx" in antwort
+
+
+def test_txt_anhang_echt_gelesen():
+    api = MedienApi({"notiz.txt": "Bitte Herbstfarben".encode()})
+    _, unterlagen, _, hinweise = cw.anhaenge_vorbereiten(
+        api, "a1", _mit_kontext(anhaenge=[{"name": "notiz.txt", "art": "dokument"}]))
+    assert unterlagen == "Unterlage: notiz.txt\nBitte Herbstfarben" and hinweise == []
+
+
+def test_markierter_block_und_ebene_im_abschnitt_markiert():
+    api = MedienApi({"katze.jpg": _jpg(), "hund.png": _png()})
+    fragen = Fragen(NUR_TEXT)
+    auftrag = _mit_kontext(auswahl=[{"art": "block", "id": "t", "kurz": "Text Herbst"},
+                                    {"art": "ebene", "flaeche": "f1", "id": "et1", "kurz": "Hallo"}])
+    assert cw.chat_bearbeiten(api, auftrag, fragen) == "fertig"
+    text = fragen.gesehen[0][1][0]["content"]
+    assert isinstance(text, str)                         # weder Text-Block noch Text-Ebene bringen ein Bild
+    eintraege = _markiert(text)
+    assert eintraege[0] == {"art": "block", "id": "t", "kurz": "Text Herbst", "block": DOC_AUSWAHL["t"]}
+    assert eintraege[1]["art"] == "ebene" and eintraege[1]["flaeche"] == "f1"
+    assert eintraege[1]["ebene"]["text"] == "Hallo"
+    assert api.aufrufe("medium") == []
+
+
+def test_markiertes_bild_und_platzhalter():
+    api = MedienApi({"katze.jpg": _jpg(), "hund.png": _png()})
+    teile, _, _, hinweise = cw.anhaenge_vorbereiten(api, "a1", _mit_kontext(auswahl=[
+        {"art": "block", "id": "b1"}, {"art": "block", "id": "p1"}, {"art": "ebene", "flaeche": "f1", "id": "eb1"}]))
+    assert len(teile) == 2 and hinweise == []
+    assert [e[2] for e in api.aufrufe("medium")] == ["katze.jpg", "hund.png"]
+
+
+def test_markierter_aber_fehlender_block_gibt_hinweis_und_nachricht_laeuft():
+    api = MedienApi()
+    fragen = Fragen(GUT)
+    auftrag = _mit_kontext(auswahl=[{"art": "block", "id": "weg", "kurz": "Alter Titel"},
+                                    {"art": "ebene", "flaeche": "f1", "id": "e-weg", "kurz": "Alte Ebene"},
+                                    {"art": "block", "id": "t", "kurz": "Herbst"}])
+    assert cw.chat_bearbeiten(api, auftrag, fragen) == "fertig"
+    daten = api.aufrufe("fertig")[0][2]
+    assert "Alter Titel" in daten["antwort"] and "Alte Ebene" in daten["antwort"]
+    assert daten["antwort"].startswith("Hinweis: ") and daten["antwort"].endswith("\n\nErledigt.")
+    text = fragen.gesehen[0][1][0]["content"]
+    assert "Alter Titel" in text                        # Claude erfaehrt es auch
+    assert [e["id"] for e in _markiert(text)] == ["t"]
+
+
+@pytest.mark.parametrize("kontext,erwartet", [
+    ({"fenster": "newsletter", "auswahl": "b1"}, ("block", "b1")),
+    ({"fenster": "flaeche:f1", "auswahl": "eb1"}, ("ebene", "eb1")),
+])
+def test_altform_auswahl_als_einzelne_id(kontext, erwartet):
+    api = MedienApi({"katze.jpg": _jpg(), "hund.png": _png()})
+    teile, _, auswahl_text, hinweise = cw.anhaenge_vorbereiten(
+        api, "a1", {**AUFTRAG, "bloecke": DOC_AUSWAHL, "kontext": kontext})
+    eintrag, = json.loads(auswahl_text)
+    assert (eintrag["art"], eintrag["id"]) == erwartet and hinweise == [] and len(teile) == 1
+
+
+def test_ohne_kontext_nichts_zu_tun():
+    assert cw.anhaenge_vorbereiten(Api(), "a1", {**AUFTRAG, "kontext": None}) == ([], "", "", [])
+    assert cw.anhaenge_vorbereiten(Api(), "a1", {**AUFTRAG, "kontext": {"fenster": "newsletter", "auswahl": None}}) \
+        == ([], "", "", [])
+
+
+def test_medium_fehler_wird_hinweis_statt_absturz():
+    api = MedienApi({"foto.png": cw.ApiFehler(503, "weg"), "doc.pdf": OSError("netz")})
+    teile, unterlagen, _, hinweise = cw.anhaenge_vorbereiten(api, "a1", _mit_kontext(anhaenge=[
+        {"name": "foto.png", "art": "bild"}, {"name": "doc.pdf", "art": "dokument"}]))
+    assert teile == [] and unterlagen == "" and len(hinweise) == 2
+
+
+def test_shim_lehnt_bilder_ab_einmal_ohne_bilder_wiederholen():
+    uhr, api = Uhr(), MedienApi({"foto.png": _png()})
+    fragen = Fragen(cw.ShimAbgelehnt("400"), GUT)
+    auftrag = _mit_kontext(anhaenge=[{"name": "foto.png", "art": "bild"}])
+    assert cw.chat_bearbeiten(api, auftrag, fragen, uhr, uhr.schlafen) == "fertig"
+    assert isinstance(fragen.gesehen[0][1][0]["content"], list)
+    zweite = fragen.gesehen[1][1][0]["content"]
+    assert isinstance(zweite, str) and "NACHRICHT: Hintergrund rot" in zweite
+    assert uhr.t == 0                                    # sofort wiederholt, ohne Shim-Pause
+    assert api.aufrufe("fertig")[0][2]["antwort"].startswith("Hinweis: Bilder konnten nicht übergeben werden")
+    assert api.aufrufe("zurueck") == []
+
+
+def test_korrekturrunde_behaelt_die_bilder():
+    api = MedienApi({"foto.png": _png()})
+    fragen = Fragen("kein json", GUT)
+    assert cw.chat_bearbeiten(api, _mit_kontext(anhaenge=[{"name": "foto.png", "art": "bild"}]), fragen) == "fertig"
+    zweite = fragen.gesehen[1][1]
+    assert [n["role"] for n in zweite] == ["user", "assistant", "user"]
+    assert zweite[0]["content"] == fragen.gesehen[0][1][0]["content"] and isinstance(zweite[0]["content"], list)
+
+
+def test_shim_400_ohne_bilder_bleibt_wie_bisher_ein_shim_ausfall():
+    uhr, api = Uhr(), Api()
+    fragen = Fragen(cw.ShimAbgelehnt("400"), GUT)
+    assert cw.chat_bearbeiten(api, AUFTRAG, fragen, uhr, uhr.schlafen) == "fertig"
+    assert uhr.t == cw.SHIM_PAUSE_S and api.aufrufe("fertig")[0][2]["antwort"] == "Erledigt."
+
+
+def test_bildteile_besteht_die_pruefung_des_shims(tmp_path):
+    from spaces.marketing.claw.shim import marketing_shim
+    api = MedienApi({"gross.jpg": _jpg(3000, 2000), "logo.png": _png(50, 50, "RGBA", (0, 0, 0, 0))})
+    teile, _, _, _ = cw.anhaenge_vorbereiten(api, "a1", _mit_kontext(anhaenge=[
+        {"name": "gross.jpg", "art": "bild"}, {"name": "logo.png", "art": "bild"}]))
+    _, pfade = marketing_shim.bildteile_ablegen([{"role": "user", "content": [{"type": "text", "text": "x"}, *teile]}],
+                                                str(tmp_path))
+    assert [p.rsplit(".", 1)[1] for p in pfade] == ["jpg", "png"]
+
+
+def test_frage_strom_400_ist_shim_abgelehnt(monkeypatch):
+    def fake(*a, **k):
+        raise urllib.error.HTTPError("u", 400, "Bad Request", {}, io.BytesIO(b'{"error":{"message":"Bild"}}'))
+    monkeypatch.setattr(cw.urllib.request, "urlopen", fake)
+    with pytest.raises(cw.ShimAbgelehnt):
+        list(cw.frage_strom("S", []))

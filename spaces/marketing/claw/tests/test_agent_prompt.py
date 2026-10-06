@@ -147,6 +147,28 @@ def test_korrektur_text():
     assert "block_loeschen: Block x gibt es nicht" in t and "JSON" in t
 
 
+def test_nutzer_text_markiert_unterlagen_hinweise():
+    auswahl = json.dumps([{"art": "block", "id": "h1", "block": {"type": "Heading"}}], ensure_ascii=False)
+    t = ap.nutzer_text(_auftrag(kontext={"fenster": "newsletter", "auswahl": [{"art": "block", "id": "h1"}]}), [],
+                       unterlagen="Unterlage: a.pdf\nText", auswahl_text=auswahl, hinweise=["Anhang b.png fehlt"])
+    assert "Markiert (damit ist ‚das/hier/diese‘ gemeint):\n" + auswahl in t
+    assert "Unterlagen:\nUnterlage: a.pdf\nText" in t
+    assert "Anhang b.png fehlt" in t
+    assert "{'art'" not in t                              # keine Python-Darstellung der Auswahl
+    assert t.endswith("Antworte jetzt mit genau einem JSON-Objekt.")
+
+
+def test_nutzer_text_ohne_extras_unveraendert():
+    a = _auftrag()
+    assert ap.nutzer_text(a, ["a.png"]) == ap.nutzer_text(a, ["a.png"], unterlagen="", auswahl_text="", hinweise=())
+    t = ap.nutzer_text(a, [])
+    assert "Markiert" not in t and "Unterlagen:" not in t and "AUSWAHL: keine" in t
+
+
+def test_system_nennt_markierte_elemente_und_bilder_zum_lesen():
+    assert "Markiert" in ap.SYSTEM and "Read" in ap.SYSTEM
+
+
 def test_system_verlangt_schritt_und_reihenfolge():
     assert '"schritt"' in ap.SYSTEM
     assert "zuerst Struktur, dann Inhalt, dann Feinschliff" in ap.SYSTEM

@@ -90,6 +90,12 @@ GESTALTUNGSREGELN – schön von Anfang an
 - Exportiere nie selbst – schlage es mit export_vorschlagen vor; der Betreiber bestätigt im Editor.
 - Du verschickst nichts und veröffentlichst nichts.
 
+MARKIERT, BILDER, UNTERLAGEN
+Steht im Kontext ein Abschnitt „Markiert“, meint der Betreiber mit „das“, „hier“, „diese“ genau diese Blöcke bzw. \
+Ebenen; fasse dann nur sie an. Mitgeschickte Bilder liegen als Dateien vor, deren Pfad im Text steht: lies sie mit \
+dem Read-Werkzeug, bevor du dich auf sie beziehst. „Unterlage: <name>“ ist Text aus einer hochgeladenen Datei des \
+Betreibers. Hinweise im Kontext (fehlende Elemente oder Anhänge) erwähne kurz, statt zu raten.
+
 Ist die Anfrage unklar, frag in "antwort" kurz nach und lass "aenderungen" leer. Meldet das System eine ungültige \
 Änderung, antworte erneut mit dem vollständigen, korrigierten JSON-Objekt.
 """
@@ -118,7 +124,18 @@ def _schriften_des_newsletters(dok: dict, root_daten: dict) -> str:
         teile.append("in Flächen: " + ", ".join(flaechen))
     return ", ".join(teile) or "noch keine"
 
-def nutzer_text(auftrag: dict, medien: list[str]) -> str:
+def _auswahl_kurz(kontext: dict, auswahl_text: str) -> str:
+    """Altform (eine id als Text) wie bisher; Chips stehen vollständig unter „Markiert“."""
+    auswahl = kontext.get("auswahl")
+    if isinstance(auswahl, str) and auswahl:
+        return auswahl
+    return "siehe Markiert" if auswahl_text else "keine"
+
+
+def nutzer_text(auftrag: dict, medien: list[str], *, unterlagen: str = "", auswahl_text: str = "",
+                hinweise: list[str] | tuple[str, ...] = ()) -> str:
+    """Kontext der ersten Nutzernachricht. auswahl_text ist die markierte Auswahl als JSON (Blöcke/Ebenen
+    vollständig), unterlagen der Text aus hochgeladenen Dokumenten, hinweise fehlende Elemente/Anhänge."""
     dok = auftrag.get("bloecke") if isinstance(auftrag.get("bloecke"), dict) else {}
     root = dok.get("root") if isinstance(dok.get("root"), dict) else {}
     root_daten = root.get("data") if isinstance(root.get("data"), dict) else {}
@@ -127,7 +144,7 @@ def nutzer_text(auftrag: dict, medien: list[str]) -> str:
     frei = [m for m in medien if isinstance(m, str) and not m.startswith("gs-")][:MAX_MEDIEN]
     teile = [
         f"NACHRICHT: {auftrag.get('nachricht', '')}",
-        f"FENSTER: {kontext.get('fenster') or 'newsletter'}  AUSWAHL: {kontext.get('auswahl') or 'keine'}",
+        f"FENSTER: {kontext.get('fenster') or 'newsletter'}  AUSWAHL: {_auswahl_kurz(kontext, auswahl_text)}",
     ]
     for etikett, schluessel in (("TITEL", "titel"), ("BETREFF", "betreff"), ("VORSCHAUTEXT", "vorschautext")):
         if auftrag.get(schluessel):
@@ -143,6 +160,12 @@ def nutzer_text(auftrag: dict, medien: list[str]) -> str:
         teile.append("BISHERIGER CHAT (älteste zuerst):")
         for v in verlauf:
             teile.append(f"Betreiber: {v.get('nachricht', '')}\nDu: {v.get('antwort', '')}")
+    if auswahl_text:
+        teile += ["Markiert (damit ist ‚das/hier/diese‘ gemeint):", auswahl_text]
+    if unterlagen:
+        teile += ["Unterlagen:", unterlagen]
+    if hinweise:
+        teile.append("HINWEISE: " + " ".join(str(h) for h in hinweise))
     teile.append("Antworte jetzt mit genau einem JSON-Objekt.")
     return "\n".join(teile)
 
