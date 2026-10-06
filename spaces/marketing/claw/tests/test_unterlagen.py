@@ -5,6 +5,8 @@ unterlagen_text macht daraus einen Hinweis.
 """
 import io
 import unittest
+import zipfile
+from unittest import mock
 
 from docx import Document
 from pypdf import PdfReader, PdfWriter
@@ -84,6 +86,30 @@ class TextAus(unittest.TestCase):
         self.assertEqual(text_aus("a.docx", b"PK\x03\x04 kaputt"), "")
         self.assertEqual(text_aus("a.docx", b"kein zip"), "")
 
+    def test_utf8_bom_und_utf16(self):
+        self.assertEqual(text_aus("a.txt", "\ufeffKäse".encode("utf-8")), "Käse")
+        self.assertEqual(text_aus("a.txt", "Käse ß".encode("utf-16")), "Käse ß")
+        self.assertEqual(text_aus("a.md", "Käse".encode("utf-16-be").join([b"\xfe\xff", b""])), "Käse")
+
+    def test_docx_zip_bombe(self):
+        puffer = io.BytesIO()
+        with zipfile.ZipFile(puffer, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("word/document.xml", "<a>" + "0" * 1_000_000 + "</a>")
+        bombe = puffer.getvalue()
+        self.assertLess(len(bombe), 20_000)
+        with mock.patch.object(unterlagen, "_MAX_DOCUMENT_XML", 100_000):
+            self.assertEqual(text_aus("a.docx", bombe), "")
+        # Gesamtgroesse aller Mitglieder
+        ok = _docx(["Hallo"])
+        with mock.patch.object(unterlagen, "_MAX_ENTPACKT", 100):
+            self.assertEqual(text_aus("a.docx", ok), "")
+        self.assertIn("Hallo", text_aus("a.docx", ok))
+
+    def test_pdf_riesige_einzelseite(self):
+        with mock.patch.object(unterlagen, "LESE_GRENZE", 50):
+            t = text_aus("a.pdf", _pdf(["w" * 400]))
+        self.assertLessEqual(len(t), 50)
+
     def test_unbekannte_endung(self):
         self.assertEqual(text_aus("a.exe", b"text"), "")
         self.assertEqual(text_aus("ohne", b"text"), "")
@@ -127,13 +153,25 @@ class UnterlagenText(unittest.TestCase):
         dateien = [("a.txt", b"a" * 30_000), ("b.txt", b"b" * 15_000), ("c.txt", b"c" * 5_000)]
         text, hinweise = unterlagen_text(dateien)
         self.assertEqual(text.count("[gekürzt]"), 3)
-        self.assertLessEqual(len(text) - 3 * len("[gekürzt]"), MAX_ZEICHEN + 100)  # Koepfe/Trenner
         teile = text.split("\n\nUnterlage: ")
         la, lb, lc = (t.count(x) for t, x in zip(teile, "abc"))
-        self.assertAlmostEqual(la / lb, 2.0, delta=0.05)
-        self.assertAlmostEqual(lb / lc, 3.0, delta=0.1)
+        self.assertGreater(la, lb)
+        self.assertGreater(lb, lc)
         self.assertGreater(lc, 1500)
+        self.assertLessEqual(len(text), MAX_ZEICHEN)
         self.assertEqual(hinweise, [])
+
+    def test_viele_kleine_dateien_gesamt_inklusive_koepfe(self):
+        dateien = [(f"datei{i}.txt", b"t" * 900) for i in range(40)]
+        text, _ = unterlagen_text(dateien)
+        self.assertLessEqual(len(text), MAX_ZEICHEN)
+        self.assertEqual(text.count("Unterlage: "), 40)
+
+    def test_kleine_datei_neben_riesiger_behaelt_text(self):
+        text, _ = unterlagen_text([("gross.txt", b"g" * 100_000), ("klein.txt", b"Preis 4,50")])
+        self.assertLessEqual(len(text), MAX_ZEICHEN)
+        self.assertIn("Unterlage: klein.txt\nPreis 4,50", text)
+        self.assertEqual(text.count("[gekürzt]"), 1)
 
     def test_kein_vermerk_wenn_es_passt(self):
         text, _ = unterlagen_text([("a.txt", b"a" * 100)])
