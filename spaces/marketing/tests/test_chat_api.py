@@ -81,16 +81,18 @@ def test_anlegen_ohne_pult_schluessel_401(umg):
 
 def test_stand_raeumt_zuerst_auf(umg):
     f, _, c = umg
-    f.antworten += [[{"ok": True}], [
+    f.antworten += [[{"ok": True}], [], [
         {"id": BID, "art": "chat", "nachricht": "a", "antwort": "b", "status": "fertig", "hinweise": [], "ergebnis": {},
          "fassung_vorher": 1, "fassung_nachher": 2, "erstellt_am": "1", "sortiert_am": "1"},
         {"id": AID, "art": "chat", "nachricht": "c", "antwort": "", "status": "in_arbeit", "hinweise": [], "ergebnis": {},
-         "fassung_vorher": 2, "fassung_nachher": None, "erstellt_am": "2", "sortiert_am": "2"}]]
+         "fassung_vorher": 2, "fassung_nachher": None, "erstellt_am": "2", "sortiert_am": "2"}], []]
     r = c.get(f"/api/pult/inhalte/{IID}/chat", headers=H)
     assert r.status_code == 200, r.text
     d = r.json()
     assert "marketing.pult_chat_aufraeumen(" in f.sql[0]
-    assert "chat_auftraege" in f.sql[1] and "LIMIT 30" in f.sql[1]
+    assert "marketing.pult_chat_stopp_faellig()" in f.sql[1]
+    assert "chat_auftraege" in f.sql[2] and "LIMIT 30" in f.sql[2] and "<> 'wartet'" in f.sql[2]
+    assert d["live"] is None and d["vorgemerkt"] is None
     assert d["laeuft"] is True and [z["id"] for z in d["verlauf"]] == [BID, AID]
     assert "sortiert_am" not in d["verlauf"][0] and d["verlauf"][0]["fassung_nachher"] == 2
 
@@ -99,10 +101,12 @@ def test_stand_sql_ohne_spaltenname_t(umg):
     # query_via_docker haengt die Abfrage als Unterabfrage `t` ein; eine Spalte `t` bricht den Wrapper (503).
     import re
     f, _, c = umg
-    f.antworten += [[{"ok": True}], []]
+    f.antworten += [[{"ok": True}], [], [], []]
     assert c.get(f"/api/pult/inhalte/{IID}/chat", headers=H).status_code == 200
-    assert not re.search(r"AS t", f.sql[1], re.I), f.sql[1]
-    assert not re.search(r"ORDER BY t", f.sql[1], re.I), f.sql[1]
+    assert len(f.sql) == 4
+    for s in f.sql:
+        assert not re.search(r"\bAS t\b", s, re.I), s
+        assert not re.search(r"ORDER BY t\b", s, re.I), s
 
 
 def test_rueckgaengig_nimmt_fassung_vorher(umg):
@@ -394,3 +398,276 @@ def test_datei_ablehnungen(umg):
     f.antworten.append([dict(EXPORT_JOB, art="chat")])
     assert c.post(basis + "oktober-angebot-pc.jpg", content=_jpeg(), headers=HB).status_code == 422
     assert list(ordner.iterdir()) == []
+
+
+# ─── Live: Zwischenstand, Vormerken, Stopp (Spec 2026-10-02-newsletter-agent-live) ──
+
+
+ZW = f"/api/chat/arbeiter/{AID}/zwischenstand"
+GESTOPPT = f"/api/chat/arbeiter/{AID}/gestoppt"
+
+
+def test_zwischenstand_reicht_durch_und_gibt_weiter(umg):
+    f, _, c = umg
+    f.antworten.append([{"z": {"weiter": True}}])
+    r = c.post(ZW, json={"bloecke": _dok(), "schritt": "Titel setzen", "nr": 3}, headers=HB)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"weiter": True}
+    assert len(f.sql) == 1 and "marketing.pult_chat_zwischenstand(" in f.sql[0]
+    assert f"'{AID}'::uuid" in f.sql[0] and "'Titel setzen', 3, '5 minutes'::interval" in f.sql[0]
+    assert "EmailLayout" in f.sql[0]
+    assert "pult_bloecke_fehler" not in f.sql[0]      # Zwischenstand wird nicht validiert
+
+
+def test_zwischenstand_meldet_stopp(umg):
+    f, _, c = umg
+    f.antworten.append([{"z": {"weiter": False, "grund": "stopp", "stopp": "behalten"}}])
+    r = c.post(ZW, json={"bloecke": {}, "schritt": "", "nr": 0}, headers=HB)
+    assert r.json() == {"weiter": False, "grund": "stopp", "stopp": "behalten"}
+
+
+def test_zwischenstand_ohne_schluessel_401(umg):
+    f, _, c = umg
+    assert c.post(ZW, json={"bloecke": {}, "schritt": "x", "nr": 1}).status_code == 401
+    assert c.post(ZW, json={"bloecke": {}, "schritt": "x", "nr": 1}, headers={"X-Bild-Key": "falsch"}).status_code == 401
+    assert f.sql == []
+
+
+def test_zwischenstand_zu_gross_ohne_sql(umg):
+    f, _, c = umg
+    gross = {"root": {"type": "Text", "data": {"props": {"text": "x" * (300 * 1024)}}}}
+    r = c.post(ZW, json={"bloecke": gross, "schritt": "x", "nr": 1}, headers=HB)
+    assert r.status_code == 413 and f.sql == []
+
+    # ohne Content-Length (chunked): gekappt gelesen
+    def stuecke():
+        for _ in range(40):
+            yield b"x" * 10_000
+    r = c.post(ZW, content=stuecke(), headers=dict(HB, **{"Content-Type": "application/json"}))
+    assert r.status_code == 413 and f.sql == []
+
+
+def test_zwischenstand_formen_422_ohne_sql(umg):
+    f, _, c = umg
+    for body in ({"bloecke": [], "schritt": "x", "nr": 1}, {"bloecke": {}, "schritt": "x" * 81, "nr": 1},
+                 {"bloecke": {}, "schritt": 5, "nr": 1}, {"bloecke": {}, "schritt": "x", "nr": -1},
+                 {"bloecke": {}, "schritt": "x", "nr": True}, {"bloecke": {}, "schritt": "x", "nr": "2"}, []):
+        assert c.post(ZW, json=body, headers=HB).status_code == 422, body
+    assert c.post(ZW, content=b"{kaputt", headers=HB).status_code == 422
+    assert c.post("/api/chat/arbeiter/nicht-uuid/zwischenstand", json={"bloecke": {}, "schritt": "", "nr": 0},
+                  headers=HB).status_code == 404
+    assert f.sql == []
+
+
+def test_zwischenstand_db_ablehnung_422(umg):
+    f, _, c = umg
+    f.fehler.append(_db_fehler("Zwischenstand zu groß"))
+    r = c.post(ZW, json={"bloecke": {}, "schritt": "", "nr": 0}, headers=HB)
+    assert r.status_code == 422 and r.json()["detail"] == "Zwischenstand zu groß"
+
+
+def test_vormerken_put_delete_starten(umg):
+    f, _, c = umg
+    basis = f"/api/pult/inhalte/{IID}/chat/vormerkung"
+    f.antworten += [[{"v": {"id": BID, "status": "wartet"}}], [{"g": True}], [{"id": BID}]]
+    r = c.put(basis, json={"nachricht": "Danach kürzer", "kontext": {"fenster": "newsletter"}}, headers=H)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"id": BID, "status": "wartet"}
+    assert "marketing.pult_chat_vormerken(" in f.sql[0] and "Danach kürzer" in f.sql[0] and "newsletter" in f.sql[0]
+    assert c.delete(basis, headers=H).json() == {"geloescht": True}
+    assert "marketing.pult_chat_vormerkung_loeschen(" in f.sql[1]
+    assert c.post(basis + "/starten", headers=H).json() == {"auftrag": BID}
+    assert "marketing.pult_chat_vormerkung_starten(" in f.sql[2]
+
+
+def test_vormerken_ohne_lauf_startet_sofort(umg):
+    """Review Focus 4: die DB startet die Nachricht sofort ('offen'); die API reicht das durch."""
+    f, _, c = umg
+    f.antworten.append([{"v": {"id": BID, "status": "offen"}}])
+    r = c.put(f"/api/pult/inhalte/{IID}/chat/vormerkung", json={"nachricht": "Jetzt"}, headers=H)
+    assert r.json() == {"id": BID, "status": "offen"} and "'{}'::jsonb" in f.sql[0]
+
+
+def test_vormerken_formen_und_schluessel(umg):
+    f, _, c = umg
+    basis = f"/api/pult/inhalte/{IID}/chat/vormerkung"
+    assert c.put(basis, json={"nachricht": "x"}).status_code == 401
+    assert c.delete(basis).status_code == 401
+    assert c.post(basis + "/starten").status_code == 401
+    assert c.put(basis, json={"nachricht": "  "}, headers=H).status_code == 422
+    assert c.put(basis, json={"nachricht": "x" * 2001}, headers=H).status_code == 422
+    assert c.put(basis, json={"nachricht": "x", "kontext": ["fenster"]}, headers=H).status_code == 422
+    assert f.sql == []
+    f.fehler.append(_db_fehler("Keine vorgemerkte Nachricht"))
+    r = c.post(basis + "/starten", headers=H)
+    assert r.status_code == 422 and r.json()["detail"] == "Keine vorgemerkte Nachricht"
+
+
+def test_stopp_arten_validiert(umg):
+    f, _, c = umg
+    basis = f"/api/pult/inhalte/{IID}/chat/stopp"
+    assert c.post(basis, json={"art": "behalten"}).status_code == 401
+    for art in (None, "", "weg", 1):
+        assert c.post(basis, json={"art": art}, headers=H).status_code == 422
+    assert c.post(basis, json={"art": "behalten", "auftrag": 5}, headers=H).status_code == 422
+    assert f.sql == []
+    f.antworten += [[{"s": {"abgeschlossen": False, "id": AID}}], [{"s": {"abgeschlossen": True, "id": AID}}]]
+    r = c.post(basis, json={"art": "behalten"}, headers=H)
+    assert r.status_code == 200 and r.json() == {"abgeschlossen": False}
+    assert "marketing.pult_chat_stoppen(" in f.sql[0] and "'behalten', NULL)" in f.sql[0]
+    r = c.post(basis, json={"art": "verwerfen", "auftrag": AID}, headers=H)
+    assert r.json() == {"abgeschlossen": True} and f"'verwerfen', '{AID}'::uuid)" in f.sql[1]
+
+
+def test_stopp_veraltet_und_nichts_laeuft(umg):
+    f, _, c = umg
+    basis = f"/api/pult/inhalte/{IID}/chat/stopp"
+    f.antworten.append([{"s": {"abgeschlossen": False, "veraltet": True}}])
+    assert c.post(basis, json={"art": "verwerfen", "auftrag": AID}, headers=H).json() == \
+        {"abgeschlossen": False, "veraltet": True}
+    f.fehler.append(_db_fehler("Der Assistent arbeitet gerade nicht"))
+    r = c.post(basis, json={"art": "verwerfen"}, headers=H)
+    assert r.status_code == 422 and r.json()["detail"] == "Der Assistent arbeitet gerade nicht"
+
+
+def test_stand_enthaelt_live_und_vorgemerkt(umg):
+    f, _, c = umg
+    verlauf = [{"id": AID, "art": "chat", "nachricht": "c", "antwort": "", "status": "in_arbeit", "hinweise": [],
+                "ergebnis": {}, "fassung_vorher": 2, "fassung_nachher": None, "erstellt_am": "2", "sortiert_am": "2"}]
+    f.antworten += [[{"ok": True}], [], verlauf, [
+        {"id": AID, "status": "in_arbeit", "nachricht": "c", "schritt": "Titel setzen", "schritt_nr": 3,
+         "zwischenstand": _dok()},
+        {"id": BID, "status": "wartet", "nachricht": "Danach kürzer", "schritt": "", "schritt_nr": 0,
+         "zwischenstand": None}]]
+    r = c.get(f"/api/pult/inhalte/{IID}/chat", headers=H)
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["laeuft"] is True
+    assert d["live"] == {"schritt": "Titel setzen", "schritt_nr": 3, "zwischenstand": _dok()}
+    assert d["vorgemerkt"] == {"id": BID, "nachricht": "Danach kürzer"}
+    assert "status IN ('in_arbeit', 'wartet')" in f.sql[3]
+
+
+def _faellig(f, stopp, zwischenstand):
+    """GET …/chat mit einem faelligen Stopp: aufraeumen, faellig, Auftrag lesen, [Validator], abschliessen, ..."""
+    f.antworten += [[{"ok": True}], [{"id": AID}],
+                    [{"stopp": stopp, "status": "in_arbeit", "zwischenstand": zwischenstand}]]
+
+
+def test_faelliger_stopp_behalten_gueltig_mit_bloecken(umg):
+    f, _, c = umg
+    _faellig(f, "behalten", _dok())
+    f.antworten += [[{"f": None}], [{"e": {"status": "fertig", "fassung": 9}}], [], []]
+    r = c.get(f"/api/pult/inhalte/{IID}/chat", headers=H)
+    assert r.status_code == 200, r.text
+    ab = [s for s in f.sql if "marketing.pult_chat_stopp_abschliessen(" in s]
+    assert len(ab) == 1 and f"'{AID}'::uuid" in ab[0]
+    assert "medien:gs-" in ab[0]                       # Flaechen gerechnet
+    assert any("pult_bloecke_fehler(" in s for s in f.sql)
+    assert f.sql.index(ab[0]) < next(i for i, s in enumerate(f.sql) if "LIMIT 30" in s)
+
+
+def test_faelliger_stopp_behalten_ungueltig_mit_null_und_hinweis(umg):
+    f, _, c = umg
+    _faellig(f, "behalten", _dok())
+    f.antworten += [[{"f": "Unbekannter Blocktyp in x"}], [{"e": {"status": "fehler"}}], [], []]
+    assert c.get(f"/api/pult/inhalte/{IID}/chat", headers=H).status_code == 200
+    ab = next(s for s in f.sql if "marketing.pult_chat_stopp_abschliessen(" in s)
+    assert f"'{AID}'::uuid, NULL, " in ab and "Unbekannter Blocktyp in x" in ab and "nicht übernommen" in ab
+
+
+def test_faelliger_stopp_behalten_flaeche_kaputt_mit_null(umg):
+    f, _, c = umg
+    _faellig(f, "behalten", _dok(G_WEG))
+    f.antworten += [[{"e": {"status": "fehler"}}], [], []]
+    assert c.get(f"/api/pult/inhalte/{IID}/chat", headers=H).status_code == 200
+    ab = next(s for s in f.sql if "marketing.pult_chat_stopp_abschliessen(" in s)
+    assert ", NULL, " in ab and "weg.png fehlt" in ab
+    assert all("pult_bloecke_fehler" not in s for s in f.sql)
+
+
+def test_faelliger_stopp_verwerfen_ohne_rechnen(umg):
+    f, ordner, c = umg
+    _faellig(f, "verwerfen", _dok())
+    f.antworten += [[{"e": {"status": "fehler"}}], [], []]
+    assert c.get(f"/api/pult/inhalte/{IID}/chat", headers=H).status_code == 200
+    ab = next(s for s in f.sql if "marketing.pult_chat_stopp_abschliessen(" in s)
+    assert f"'{AID}'::uuid, NULL, ''" in ab
+    assert all("pult_bloecke_fehler" not in s for s in f.sql) and list(ordner.iterdir()) == []
+
+
+def test_faelliger_stopp_inzwischen_gespeichert_zweiter_versuch_mit_null(umg):
+    f, _, c = umg
+    _faellig(f, "behalten", _dok())
+    f.antworten += [[{"f": None}], [{"e": {"status": "fehler"}}], [], []]
+    f.fehler += [None, None, None, None, _db_fehler("Inzwischen gibt es Fassung 9 - neu laden oder als Kopie behalten")]
+    assert c.get(f"/api/pult/inhalte/{IID}/chat", headers=H).status_code == 200
+    ab = [s for s in f.sql if "marketing.pult_chat_stopp_abschliessen(" in s]
+    assert len(ab) == 2 and "medien:gs-" in ab[0]
+    assert ", NULL, 'Inzwischen gespeichert – Zwischenstand verworfen'" in ab[1]
+
+
+def test_faelliger_stopp_fehler_bricht_stand_nicht_ab(umg):
+    f, _, c = umg
+    f.antworten += [[{"ok": True}], [{"id": AID}, {"id": BID}],
+                    [{"stopp": "verwerfen", "status": "in_arbeit", "zwischenstand": None}],
+                    [{"stopp": "verwerfen", "status": "in_arbeit", "zwischenstand": None}],
+                    [{"e": {"status": "fehler"}}], [], []]
+    f.fehler += [None, None, None, RuntimeError("ssh weg")]
+    r = c.get(f"/api/pult/inhalte/{IID}/chat", headers=H)
+    assert r.status_code == 200, r.text
+    ab = [s for s in f.sql if "marketing.pult_chat_stopp_abschliessen(" in s]
+    assert len(ab) == 2 and f"'{BID}'::uuid" in ab[1]       # der zweite laeuft trotzdem
+    # auch ein Fehler beim Abfragen der faelligen Stopps bricht den Stand nicht ab
+    f.sql.clear()
+    f.antworten += [[{"ok": True}], [], []]
+    f.fehler += [None, RuntimeError("ssh weg")]
+    assert c.get(f"/api/pult/inhalte/{IID}/chat", headers=H).status_code == 200
+
+
+def test_gestoppt_behalten_gueltig(umg):
+    f, _, c = umg
+    f.antworten += [[{"stopp": "behalten", "status": "in_arbeit", "zwischenstand": None}], [{"f": None}],
+                    [{"e": {"status": "fertig", "fassung": 9}}]]
+    r = c.post(GESTOPPT, json={"bloecke": _dok()}, headers=HB)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"status": "fertig", "fassung": 9}
+    assert "marketing.pult_chat_stopp_abschliessen(" in f.sql[-1] and "medien:gs-" in f.sql[-1]
+
+
+def test_gestoppt_behalten_ungueltig_mit_null(umg):
+    f, _, c = umg
+    f.antworten += [[{"stopp": "behalten", "status": "in_arbeit", "zwischenstand": None}],
+                    [{"f": "Kaputt"}], [{"e": {"status": "fehler"}}]]
+    r = c.post(GESTOPPT, json={"bloecke": _dok()}, headers=HB)
+    assert r.json() == {"status": "fehler"}
+    assert ", NULL, " in f.sql[-1] and "Kaputt" in f.sql[-1]
+
+
+def test_gestoppt_ohne_bloecke_nimmt_letzten_zwischenstand(umg):
+    f, _, c = umg
+    f.antworten += [[{"stopp": "behalten", "status": "in_arbeit", "zwischenstand": _dok()}], [{"f": None}],
+                    [{"e": {"status": "fertig", "fassung": 4}}]]
+    assert c.post(GESTOPPT, json={"bloecke": None}, headers=HB).json() == {"status": "fertig", "fassung": 4}
+    assert "medien:gs-" in f.sql[-1]
+
+
+def test_gestoppt_verwerfen_und_schon_abgeschlossen(umg):
+    f, _, c = umg
+    f.antworten += [[{"stopp": "verwerfen", "status": "in_arbeit", "zwischenstand": _dok()}],
+                    [{"e": {"status": "fehler"}}]]
+    assert c.post(GESTOPPT, json={"bloecke": _dok()}, headers=HB).json() == {"status": "fehler"}
+    assert len(f.sql) == 2 and ", NULL, ''" in f.sql[-1]
+    # VM war schneller: nichts mehr rechnen, die DB meldet den Endstand
+    f.antworten += [[{"stopp": "behalten", "status": "fertig", "zwischenstand": None}],
+                    [{"e": {"status": "fertig", "fassung": 9}}]]
+    assert c.post(GESTOPPT, json={"bloecke": _dok()}, headers=HB).json() == {"status": "fertig", "fassung": 9}
+    assert all("pult_bloecke_fehler" not in s for s in f.sql)
+
+
+def test_gestoppt_formen_und_schluessel(umg):
+    f, _, c = umg
+    assert c.post(GESTOPPT, json={"bloecke": None}).status_code == 401
+    assert c.post(GESTOPPT, json={"bloecke": []}, headers=HB).status_code == 422
+    assert f.sql == []
+    assert c.post(GESTOPPT, json={"bloecke": None}, headers=HB).status_code == 404     # unbekannter Auftrag

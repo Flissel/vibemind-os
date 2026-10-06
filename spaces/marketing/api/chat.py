@@ -3,17 +3,22 @@
   /api/pult/inhalte/{iid}/chat|export  Sales-Oberflaeche (X-Pult-Key, pult._schluessel)
   /api/chat/arbeiter/*                 Chat-Arbeiter am PC (X-Bild-Key, bilder._bild_schluessel)
 Regeln (ein laufender Auftrag je Inhalt, Sperre, Vergabe) stehen in den DB-Funktionen
-aus 060; hier nur Formen, Rechnen (Pillow), Dateiablage und Weitergabe."""
+aus 060; hier nur Formen, Rechnen (Pillow), Dateiablage und Weitergabe.
+Live-Lauf (Spec 2026-10-02-newsletter-agent-live-design.md §2/§3, Migration 061):
+Zwischenstand, Vormerken und Stopp; gestoppte Auftraege schliesst der Arbeiter
+(/gestoppt) oder nach 15 s die VM beim naechsten Stand-Abruf ab."""
 from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import re
 import tempfile
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 
 from spaces.marketing.api.bilder import (_BILDTYP, _PLATZ, _anlegen, _auftrag_id, _bild_schluessel,
                                          _im_ordner, _ordner)
@@ -21,6 +26,7 @@ from spaces.marketing.api.gestaltung import aufraeumen_falls_faellig, gestaltung
 from spaces.marketing.api.pult import _lesen, _lesen_einer, _schluessel, _schreiben, _uuid_oder_404, lit
 from spaces.marketing.claw import gestaltung, schoenheit
 
+log = logging.getLogger(__name__)
 pult_router = APIRouter(prefix="/api/pult")
 arbeiter_router = APIRouter(prefix="/api/chat/arbeiter")
 
@@ -34,6 +40,11 @@ MEDIEN_MAX = 500
 DATEI_BREITE_MAX, DATEI_HOEHE_MAX, DATEI_KANTE_MIN = 1200, 20000, 64
 NICHT_UMGESETZT = "Das habe ich nicht umsetzen können: "
 GEAENDERT = "Der Newsletter wurde inzwischen geändert – bitte schick die Nachricht noch einmal."
+ZWISCHENSTAND_KOERPER_MAX = 300 * 1024    # ganzer Body; die Bloecke selbst prueft die DB (<= 256 KB)
+SCHRITT_MAX = 80
+STOPP_ARTEN = ("behalten", "verwerfen")
+STOPP_UNGUELTIG = "Zwischenstand nicht übernommen: "
+STOPP_GESPEICHERT = "Inzwischen gespeichert – Zwischenstand verworfen"
 _ENTWURF = re.compile(r"gs-[0-9a-f]{12}\.jpg")                                   # nur fullmatch
 _MEDIEN_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(png|jpe?g|gif|webp)")   # DB-URL-Regex ohne medien:
 _EXPORT_NAME = re.compile(r"([a-z0-9-]{1,60})-(handy|tablet|pc)\.jpg")
@@ -48,10 +59,7 @@ def slug(titel: str) -> str:
 # ─── Pult ───────────────────────────────────────────────────────────────
 
 
-@pult_router.post("/inhalte/{iid}/chat")
-def chat_anlegen(iid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
-    _schluessel(x_pult_key)
-    i = _uuid_oder_404(iid)
+def _nachricht_und_kontext(payload: dict) -> tuple[str, dict]:
     nachricht = payload.get("nachricht")
     if not isinstance(nachricht, str) or not nachricht.strip():
         raise HTTPException(422, "Ohne Nachricht kein Auftrag")
@@ -60,6 +68,14 @@ def chat_anlegen(iid: str, payload: dict = Body(...), x_pult_key: str | None = H
     kontext = payload.get("kontext") or {}
     if not isinstance(kontext, dict):
         raise HTTPException(422, "kontext muss ein Objekt sein")
+    return nachricht, kontext
+
+
+@pult_router.post("/inhalte/{iid}/chat")
+def chat_anlegen(iid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    _schluessel(x_pult_key)
+    i = _uuid_oder_404(iid)
+    nachricht, kontext = _nachricht_und_kontext(payload)
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_chat_anlegen({lit(i)}::uuid, 'chat', {lit(nachricht)}, "
         f"{lit(json.dumps(kontext, ensure_ascii=False))}::jsonb) AS id")
@@ -71,14 +87,70 @@ def chat_stand(iid: str, x_pult_key: str | None = Header(None)):
     _schluessel(x_pult_key)
     i = _uuid_oder_404(iid)
     _schreiben(lambda: f"SELECT marketing.pult_chat_aufraeumen({lit(i)}::uuid) IS NULL AS ok")
+    _stopps_abschliessen()
     verlauf = _lesen(lambda:
         "SELECT * FROM (SELECT id, art, nachricht, antwort, status, hinweise, ergebnis, fassung_vorher, "
         "fassung_nachher, erstellt_am::text AS erstellt_am, erstellt_am AS sortiert_am "
-        f"FROM marketing.chat_auftraege WHERE inhalt = {lit(i)}::uuid ORDER BY erstellt_am DESC LIMIT 30) q "
-        "ORDER BY sortiert_am")
+        f"FROM marketing.chat_auftraege WHERE inhalt = {lit(i)}::uuid AND status <> 'wartet' "
+        "ORDER BY erstellt_am DESC LIMIT 30) q ORDER BY sortiert_am")
     for z in verlauf:
         z.pop("sortiert_am", None)
-    return {"laeuft": any(z.get("status") in ("offen", "in_arbeit") for z in verlauf), "verlauf": verlauf}
+    live, vorgemerkt = None, None
+    for z in _lesen(lambda:
+            "SELECT id, status, nachricht, schritt, schritt_nr, zwischenstand FROM marketing.chat_auftraege "
+            f"WHERE inhalt = {lit(i)}::uuid AND status IN ('in_arbeit', 'wartet')"):
+        if z.get("status") == "in_arbeit":
+            live = {"schritt": z.get("schritt") or "", "schritt_nr": z.get("schritt_nr") or 0,
+                    "zwischenstand": z.get("zwischenstand")}
+        else:
+            vorgemerkt = {"id": str(z.get("id")), "nachricht": z.get("nachricht")}
+    return {"laeuft": any(z.get("status") in ("offen", "in_arbeit") for z in verlauf), "verlauf": verlauf,
+            "live": live, "vorgemerkt": vorgemerkt}
+
+
+@pult_router.put("/inhalte/{iid}/chat/vormerkung")
+def chat_vormerken(iid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    _schluessel(x_pult_key)
+    i = _uuid_oder_404(iid)
+    nachricht, kontext = _nachricht_und_kontext(payload)
+    v = _schreiben(lambda:
+        f"SELECT marketing.pult_chat_vormerken({lit(i)}::uuid, {lit(nachricht)}, "
+        f"{lit(json.dumps(kontext, ensure_ascii=False))}::jsonb) AS v").get("v") or {}
+    return {"id": str(v.get("id")), "status": v.get("status")}
+
+
+@pult_router.delete("/inhalte/{iid}/chat/vormerkung")
+def chat_vormerkung_loeschen(iid: str, x_pult_key: str | None = Header(None)):
+    _schluessel(x_pult_key)
+    i = _uuid_oder_404(iid)
+    zeile = _schreiben(lambda: f"SELECT marketing.pult_chat_vormerkung_loeschen({lit(i)}::uuid) AS g")
+    return {"geloescht": bool(zeile.get("g"))}
+
+
+@pult_router.post("/inhalte/{iid}/chat/vormerkung/starten")
+def chat_vormerkung_starten(iid: str, x_pult_key: str | None = Header(None)):
+    _schluessel(x_pult_key)
+    i = _uuid_oder_404(iid)
+    zeile = _schreiben(lambda: f"SELECT marketing.pult_chat_vormerkung_starten({lit(i)}::uuid) AS id")
+    return {"auftrag": str(zeile["id"])}
+
+
+@pult_router.post("/inhalte/{iid}/chat/stopp")
+def chat_stoppen(iid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    """Laeuft inzwischen ein anderer als der mitgegebene Auftrag, passiert nichts ({veraltet: true})."""
+    _schluessel(x_pult_key)
+    i = _uuid_oder_404(iid)
+    art, auftrag = payload.get("art"), payload.get("auftrag")
+    if art not in STOPP_ARTEN:
+        raise HTTPException(422, "art muss behalten oder verwerfen sein")
+    if auftrag is not None and not isinstance(auftrag, str):
+        raise HTTPException(422, "auftrag muss eine Auftrags-ID sein")
+    a = f"{lit(_auftrag_id(auftrag))}::uuid" if auftrag is not None else "NULL"
+    s = _schreiben(lambda: f"SELECT marketing.pult_chat_stoppen({lit(i)}::uuid, {lit(art)}, {a}) AS s").get("s") or {}
+    erg = {"abgeschlossen": bool(s.get("abgeschlossen"))}
+    if s.get("veraltet"):
+        erg["veraltet"] = True
+    return erg
 
 
 @pult_router.post("/inhalte/{iid}/chat/rueckgaengig")
@@ -309,6 +381,68 @@ def _bloecke_fehler(bloecke: dict) -> str | None:
     return z.get("f") or None
 
 
+def _rechnen_und_pruefen(bloecke: dict) -> tuple[dict | None, list[str], str | None]:
+    """Weg einer neuen Fassung (fertig und Stopp-Behalten): Flaechen rechnen, Validator,
+    Schoenheit als Hinweise. -> (bloecke, hinweise, None) oder (None, [], fehler)."""
+    try:
+        bloecke, h = gestaltungen_rechnen(bloecke)
+    except gestaltung.GestaltungFehler as e:
+        return None, [], str(e)
+    fehler = _bloecke_fehler(bloecke)
+    if fehler:
+        return None, [], str(fehler)
+    return bloecke, h + [b["satz"] for b in schoenheit.bloecke_pruefen(bloecke)], None
+
+
+def _abschliessen_sql(a: str, bloecke: dict | None, hinweis: str) -> dict:
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_chat_stopp_abschliessen({lit(a)}::uuid, "
+        + (f"{lit(json.dumps(bloecke, ensure_ascii=False))}::jsonb" if bloecke is not None else "NULL")
+        + f", {lit(hinweis)}) AS e")
+    return zeile.get("e") or {}
+
+
+def _stopp_abschliessen(a: str, job: dict, bloecke) -> dict:
+    """Schliesst einen gestoppten Auftrag ab. Nur bei 'behalten' (und noch in_arbeit) wird
+    gerechnet und geprueft; ungueltig => NULL mit Hinweis. Hat der Betreiber inzwischen
+    gespeichert, zweiter Versuch mit NULL - der Auftrag darf nie in_arbeit haengen bleiben."""
+    hinweis = ""
+    if job.get("status") != "in_arbeit" or job.get("stopp") != "behalten" or not isinstance(bloecke, dict):
+        bloecke = None
+    else:
+        bloecke, hinweise, fehler = _rechnen_und_pruefen(bloecke)
+        hinweis = STOPP_UNGUELTIG + fehler if fehler else "; ".join(hinweise)
+    try:
+        return _abschliessen_sql(a, bloecke, hinweis)
+    except HTTPException as e:
+        if bloecke is None or e.status_code != 422 or not str(e.detail).startswith("Inzwischen gibt es Fassung"):
+            raise
+        return _abschliessen_sql(a, None, STOPP_GESPEICHERT)
+
+
+def _gestoppter_auftrag(a: str) -> dict | None:
+    return _lesen_einer(lambda:
+        f"SELECT stopp, status, zwischenstand FROM marketing.chat_auftraege WHERE id = {lit(a)}::uuid")
+
+
+def _stopps_abschliessen() -> None:
+    """Gestoppte Auftraege, deren Arbeiter sich binnen 15 s nicht gemeldet hat, aus dem
+    letzten Zwischenstand abschliessen. Wirft nie (der Stand-Abruf darf daran nicht scheitern)."""
+    try:
+        faellig = _lesen(lambda: "SELECT id FROM marketing.pult_chat_stopp_faellig() AS id")
+    except HTTPException as e:
+        log.warning("Faellige Stopps nicht lesbar: %s", e.detail)
+        return
+    for z in faellig:
+        a = str(z.get("id"))
+        try:
+            job = _gestoppter_auftrag(a)
+            if job:
+                _stopp_abschliessen(a, job, job.get("zwischenstand"))
+        except Exception as e:   # noqa: BLE001 - naechster Abruf versucht es erneut
+            log.warning("Stopp von %s nicht abgeschlossen: %s", a, getattr(e, "detail", e))
+
+
 @arbeiter_router.post("/{aid}/pruefen")
 def arbeiter_pruefen(aid: str, payload: dict = Body(...), x_bild_key: str | None = Header(None)):
     _bild_schluessel(x_bild_key)
@@ -356,14 +490,10 @@ def arbeiter_fertig(aid: str, payload: dict = Body(...), x_bild_key: str | None 
     job = _in_arbeit(a)
     hinweise: list[str] = []
     if bloecke is not None:
-        try:
-            bloecke, h = gestaltungen_rechnen(bloecke)
-        except gestaltung.GestaltungFehler as e:
-            return _zurueck(a, NICHT_UMGESETZT + str(e))
-        fehler = _bloecke_fehler(bloecke)
+        bloecke, h, fehler = _rechnen_und_pruefen(bloecke)
         if fehler:
-            return _zurueck(a, NICHT_UMGESETZT + str(fehler))
-        hinweise += h + [b["satz"] for b in schoenheit.bloecke_pruefen(bloecke)]
+            return _zurueck(a, NICHT_UMGESETZT + fehler)
+        hinweise += h
     hinweise += [f"{b.get('platz', 'Bild')}: {b['grund']}" for b in auftraege if "grund" in b]
     ergebnis = {"export_vorschlag": export_vorschlag, "notiz": notiz, "bildauftraege": auftraege}
     try:
@@ -399,6 +529,67 @@ def arbeiter_zurueck(aid: str, payload: dict = Body(...), x_bild_key: str | None
     if not isinstance(antwort, str):
         raise HTTPException(422, "antwort muss Text sein")
     return _zurueck(a, antwort)
+
+
+async def _json_gekappt(request: Request, grenze: int) -> dict:
+    """JSON-Objekt aus dem Body, hoechstens grenze Bytes (Content-Length und gekappt gelesen)."""
+    try:
+        laenge = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        laenge = 0
+    if laenge > grenze:
+        raise HTTPException(413, "Zwischenstand zu groß")
+    roh = bytearray()
+    async for stueck in request.stream():
+        roh += stueck
+        if len(roh) > grenze:
+            raise HTTPException(413, "Zwischenstand zu groß")
+    try:
+        payload = json.loads(bytes(roh))
+    except (ValueError, UnicodeDecodeError):
+        raise HTTPException(422, "Body muss JSON sein")
+    if not isinstance(payload, dict):
+        raise HTTPException(422, "Body muss ein Objekt sein")
+    return payload
+
+
+@arbeiter_router.post("/{aid}/zwischenstand")
+async def arbeiter_zwischenstand(aid: str, request: Request, x_bild_key: str | None = Header(None)):
+    """Nur Form und Groesse, kein Validator, nie eine Fassung; verlaengert die Vergabe und
+    meldet einen Stopp ({weiter: false, grund: "stopp", stopp})."""
+    _bild_schluessel(x_bild_key)
+    a = _auftrag_id(aid)
+    payload = await _json_gekappt(request, ZWISCHENSTAND_KOERPER_MAX)
+    bloecke, schritt, nr = payload.get("bloecke"), payload.get("schritt", ""), payload.get("nr", 0)
+    if not isinstance(bloecke, dict):
+        raise HTTPException(422, "bloecke muss ein Objekt sein")
+    if not isinstance(schritt, str) or len(schritt) > SCHRITT_MAX:
+        raise HTTPException(422, f"schritt muss Text mit hoechstens {SCHRITT_MAX} Zeichen sein")
+    if isinstance(nr, bool) or not isinstance(nr, int) or not 0 <= nr < 2 ** 31:
+        raise HTTPException(422, "nr muss eine ganze Zahl >= 0 sein")
+    zeile = await run_in_threadpool(_schreiben, lambda:
+        f"SELECT marketing.pult_chat_zwischenstand({lit(a)}::uuid, "
+        f"{lit(json.dumps(bloecke, ensure_ascii=False))}::jsonb, {lit(schritt)}, {nr}, {lit(FRIST)}::interval) AS z")
+    return zeile.get("z") or {"weiter": False, "grund": "verloren"}
+
+
+@arbeiter_router.post("/{aid}/gestoppt")
+async def arbeiter_gestoppt(aid: str, request: Request, x_bild_key: str | None = Header(None)):
+    """Arbeiter meldet nach einem Stopp ab. bloecke = sein letzter Stand; null => der letzte
+    gemeldete Zwischenstand. Kam die VM (15 s) zuvor, meldet die DB nur den Endstand."""
+    _bild_schluessel(x_bild_key)
+    a = _auftrag_id(aid)
+    payload = await _json_gekappt(request, ZWISCHENSTAND_KOERPER_MAX)
+    bloecke = payload.get("bloecke")
+    if bloecke is not None and not isinstance(bloecke, dict):
+        raise HTTPException(422, "bloecke muss ein Objekt oder null sein")
+
+    def abschliessen() -> dict:
+        job = _gestoppter_auftrag(a)
+        if not job:
+            raise HTTPException(404, "Unbekannter Auftrag")
+        return _stopp_abschliessen(a, job, bloecke if bloecke is not None else job.get("zwischenstand"))
+    return await run_in_threadpool(abschliessen)
 
 
 @arbeiter_router.get("/{aid}/medien/{name}")
