@@ -196,3 +196,159 @@ def test_stream_ohne_flag_cli_fehler_ist_502(server):
     assert resp.status == 502
     body = json.loads(resp.read())
     assert body["error"]["type"] == "shim_error"
+
+
+# --- Bildteile (Task 1) ----------------------------------------------------
+
+import base64  # noqa: E402
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 20
+
+
+def _bild(mime: str = "png", daten: bytes = PNG) -> dict:
+    url = f"data:image/{mime};base64," + base64.b64encode(daten).decode()
+    return {"type": "image_url", "image_url": {"url": url}}
+
+
+def test_bildteile_ablegen_ersetzt_durch_verweis_und_schreibt_datei(tmp_path):
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": [{"type": "text", "text": "Schau:"}, _bild("png"), _bild("jpeg", b"JPG!")]},
+    ]
+    neu, pfade = shim.bildteile_ablegen(messages, str(tmp_path))
+    assert [Path(p).name for p in pfade] == ["bild-1.png", "bild-2.jpg"]
+    assert Path(pfade[0]).read_bytes() == PNG and Path(pfade[1]).read_bytes() == b"JPG!"
+    teile = neu[1]["content"]
+    assert teile[0] == {"type": "text", "text": "Schau:"}
+    assert teile[1] == {"type": "text", "text": f"[Bild 1: {pfade[0]} – lies die Datei mit dem Read-Werkzeug]"}
+    assert teile[2]["text"].startswith("[Bild 2: ")
+    assert neu[0] == messages[0]
+    assert messages[1]["content"][1]["type"] == "image_url"  # Original unberuehrt
+
+
+def test_bildteile_ablegen_webp_endung(tmp_path):
+    _, pfade = shim.bildteile_ablegen([{"role": "user", "content": [_bild("webp")]}], str(tmp_path))
+    assert Path(pfade[0]).name == "bild-1.webp"
+
+
+@pytest.mark.parametrize("url", [
+    "data:image/gif;base64,R0lGOA==",
+    "https://example.com/x.png",
+    "data:image/png;base64,@@@nicht-base64@@@",
+    "data:image/png,rohtext",
+])
+def test_bildteile_ablegen_lehnt_falsches_ab(tmp_path, url):
+    msg = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}]
+    with pytest.raises(shim.ShimEingabeFehler):
+        shim.bildteile_ablegen(msg, str(tmp_path))
+
+
+def test_bildteile_ablegen_grenzen(tmp_path):
+    zu_gross = [{"role": "user", "content": [_bild("png", b"x" * (10 * 1024 * 1024 + 1))]}]
+    with pytest.raises(shim.ShimEingabeFehler):
+        shim.bildteile_ablegen(zu_gross, str(tmp_path))
+    genau = [{"role": "user", "content": [_bild("png", b"x" * (10 * 1024 * 1024))]}]
+    assert len(shim.bildteile_ablegen(genau, str(tmp_path))[1]) == 1
+    sechs = [{"role": "user", "content": [_bild() for _ in range(6)]}]
+    assert len(shim.bildteile_ablegen(sechs, str(tmp_path))[1]) == 6
+    sieben = [{"role": "user", "content": [_bild() for _ in range(7)]}]
+    with pytest.raises(shim.ShimEingabeFehler):
+        shim.bildteile_ablegen(sieben, str(tmp_path))
+
+
+def test_render_messages_liste_nur_text_wie_string():
+    als_liste = [{"role": "user", "content": [{"type": "text", "text": "hallo"}]}]
+    als_text = [{"role": "user", "content": "hallo"}]
+    assert shim.render_messages(als_liste) == shim.render_messages(als_text)
+
+
+def _post_bilder(port: int, bilder: int, stream: bool = False, echt: bool = False):
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+    body = {"model": "claude-code-sonnet", "stream": stream,
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "Was siehst du?"}]
+                          + [_bild() for _ in range(bilder)]}]}
+    if echt:
+        body["marketing_stream"] = True
+    conn.request("POST", "/v1/chat/completions", json.dumps(body),
+                 {"Content-Type": "application/json"})
+    return conn.getresponse()
+
+
+@pytest.fixture()
+def protokoll(tmp_path, monkeypatch):
+    pfad = tmp_path / "protokoll.json"
+    monkeypatch.setenv("FALSCH_PROTOKOLL", str(pfad))
+    return pfad
+
+
+def _geladen(pfad: Path) -> dict:
+    return json.loads(pfad.read_text(encoding="utf-8"))
+
+
+def test_bild_anfrage_cli_sieht_datei_flags_und_verweis_dann_geloescht(server, protokoll):
+    resp = _post_bilder(server(), 1)
+    assert resp.status == 200
+    p = _geladen(protokoll)
+    argv = p["argv"]
+    assert argv[argv.index("--add-dir") + 1] == p["ordner"]
+    assert Path(p["ordner"]).name.startswith("mshim-")
+    assert "Read" in argv[argv.index("--allowedTools") + 1:]
+    assert p["dateien"] == {"bild-1.png": PNG.hex()}
+    assert f"[Bild 1: {os.path.join(p['ordner'], 'bild-1.png')}" in p["stdin"]
+    assert "Read-Werkzeug" in p["stdin"]
+    assert not os.path.exists(p["ordner"])
+    # Read allein loest den Captain-Systemprompt-Zusatz NICHT aus
+    assert "--system-prompt-file" not in argv
+
+
+def test_read_als_einziges_werkzeug_laesst_systemprompt_unveraendert(server, protokoll):
+    conn = http.client.HTTPConnection("127.0.0.1", server(), timeout=30)
+    body = {"messages": [{"role": "system", "content": "Du bist Designer."},
+                         {"role": "user", "content": [_bild()]}]}
+    conn.request("POST", "/v1/chat/completions", json.dumps(body), {"Content-Type": "application/json"})
+    assert conn.getresponse().status == 200
+    p = _geladen(protokoll)
+    assert p["system"] == "Du bist Designer."
+    assert "Read" in p["argv"]
+
+
+def test_bild_anfrage_cli_exit_loescht_ordner_und_gibt_502(server, protokoll):
+    resp = _post_bilder(server("exit"), 1)
+    assert resp.status == 502
+    assert not os.path.exists(_geladen(protokoll)["ordner"])
+
+
+def test_bild_anfrage_im_stream_pfad(server, protokoll):
+    daten = list(_chunks(_post_bilder(server(), 2, stream=True, echt=True)))
+    assert daten[-1][1] == "[DONE]"
+    p = _geladen(protokoll)
+    assert "--add-dir" in p["argv"] and "Read" in p["argv"]
+    assert sorted(p["dateien"]) == ["bild-1.png", "bild-2.png"]
+    assert not os.path.exists(p["ordner"])
+
+
+def test_bild_anfrage_im_stream_pfad_cli_exit_loescht_ordner(server, protokoll):
+    daten = list(_chunks(_post_bilder(server("exit"), 1, stream=True, echt=True)))
+    assert json.loads(daten[-2][1])["choices"][0]["finish_reason"] == "error"
+    assert not os.path.exists(_geladen(protokoll)["ordner"])
+
+
+def test_sieben_bilder_ist_400(server, protokoll):
+    resp = _post_bilder(server(), 7)
+    assert resp.status == 400
+    assert not protokoll.exists()  # CLI nie gestartet
+
+
+def test_gif_ist_400(server):
+    conn = http.client.HTTPConnection("127.0.0.1", server(), timeout=30)
+    body = {"messages": [{"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": "data:image/gif;base64,R0lGOA=="}}]}]}
+    conn.request("POST", "/v1/chat/completions", json.dumps(body), {"Content-Type": "application/json"})
+    assert conn.getresponse().status == 400
+
+
+def test_ohne_bildteile_argumente_unveraendert(server, protokoll):
+    assert _post(server(), False).status == 200
+    argv = _geladen(protokoll)["argv"]
+    assert "--add-dir" not in argv and "--allowedTools" not in argv and "Read" not in argv
+    assert argv[:3] == ["-p", "--output-format", "json"]

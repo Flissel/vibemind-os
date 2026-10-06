@@ -1,12 +1,31 @@
 """Falsche Claude-CLI fuer die Shim-Tests (kein echtes Modell)."""
+import json
 import os
 import sys
 import time
 
 argv = sys.argv[1:]
-sys.stdin.read()
+eingabe = sys.stdin.read()
 modus = os.environ.get("FALSCH_MODUS")
 START = '{"type":"stream_event","event":{"type":"message_start"}}'
+
+protokoll = os.environ.get("FALSCH_PROTOKOLL")
+if protokoll:
+    # Haelt fest, was die CLI empfangen hat -- samt Inhalt des --add-dir-Ordners
+    # ZUM ZEITPUNKT des Aufrufs (danach wird er vom Shim geloescht).
+    ordner = argv[argv.index("--add-dir") + 1] if "--add-dir" in argv else None
+    dateien = {}
+    if ordner and os.path.isdir(ordner):
+        for name in sorted(os.listdir(ordner)):
+            with open(os.path.join(ordner, name), "rb") as f:
+                dateien[name] = f.read().hex()
+    with open(protokoll, "w", encoding="utf-8") as f:
+        system = ""
+        if "--system-prompt-file" in argv:
+            with open(argv[argv.index("--system-prompt-file") + 1], encoding="utf-8") as sf:
+                system = sf.read()
+        json.dump({"argv": argv, "stdin": eingabe, "ordner": ordner, "dateien": dateien,
+                   "system": system}, f)
 
 
 def delta(text):

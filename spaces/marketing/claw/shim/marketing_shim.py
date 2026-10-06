@@ -29,9 +29,12 @@ Then point Hermes at it:
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -55,6 +58,69 @@ _MODEL_ALIASES = {
 
 class ShimError(RuntimeError):
     """Raised when the CLI could not produce a usable answer."""
+
+
+class ShimEingabeFehler(ValueError):
+    """Die Anfrage selbst ist ungueltig (z. B. falsches Bildformat) -> HTTP 400."""
+
+
+MAX_BILDER = 6
+MAX_BILD_BYTES = 10 * 1024 * 1024
+_BILD_URL = re.compile(r"^data:image/(png|jpeg|webp);base64,(.*)$", re.DOTALL)
+_BILD_ENDUNG = {"png": "png", "jpeg": "jpg", "webp": "webp"}
+
+
+def bildteile_ablegen(
+    messages: list[dict[str, Any]], ordner: str
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Ersetzt image_url-Teile der user-Nachrichten durch Textverweise auf Dateien.
+
+    Die dekodierten Bytes landen als bild-N.<png|jpg|webp> in ``ordner``; die CLI
+    liest sie dort mit dem Read-Werkzeug. Gibt (neue Nachrichten, Pfade) zurueck,
+    die Originale bleiben unveraendert. Wirft ShimEingabeFehler bei anderem Schema,
+    mehr als 6 Bildern, Bildern ueber 10 MB (dekodiert) oder ungueltigem Base64.
+    """
+
+    pfade: list[str] = []
+    neu: list[dict[str, Any]] = []
+    for message in messages or []:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not (isinstance(message, dict) and message.get("role") == "user" and isinstance(content, list)):
+            neu.append(message)
+            continue
+        teile: list[Any] = []
+        for teil in content:
+            if not (isinstance(teil, dict) and teil.get("type") == "image_url"):
+                teile.append(teil)
+                continue
+            if len(pfade) >= MAX_BILDER:
+                raise ShimEingabeFehler(f"mehr als {MAX_BILDER} Bilder in einer Anfrage")
+            bild = teil.get("image_url")
+            url = bild.get("url") if isinstance(bild, dict) else bild
+            treffer = _BILD_URL.match(url) if isinstance(url, str) else None
+            if not treffer:
+                raise ShimEingabeFehler("Bildteile nur als data:image/(png|jpeg|webp);base64,...")
+            art, b64 = treffer.groups()
+            if len(b64) > MAX_BILD_BYTES * 4 // 3 + 8:
+                raise ShimEingabeFehler("Bild groesser als 10 MB")
+            try:
+                daten = base64.b64decode(b64, validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise ShimEingabeFehler("Bild ist kein gueltiges Base64") from exc
+            if not daten:
+                raise ShimEingabeFehler("Bild ist leer")
+            if len(daten) > MAX_BILD_BYTES:
+                raise ShimEingabeFehler("Bild groesser als 10 MB")
+            pfad = os.path.join(ordner, f"bild-{len(pfade) + 1}.{_BILD_ENDUNG[art]}")
+            with open(pfad, "wb") as datei:
+                datei.write(daten)
+            pfade.append(pfad)
+            teile.append({
+                "type": "text",
+                "text": f"[Bild {len(pfade)}: {pfad} – lies die Datei mit dem Read-Werkzeug]",
+            })
+        neu.append({**message, "content": teile})
+    return neu, pfade
 
 
 def resolve_cli() -> str:
@@ -102,6 +168,16 @@ def render_messages(messages: list[dict[str, Any]]) -> tuple[str, str]:
     if not transcript:
         transcript = "(no user message)"
     return "\n\n".join(system_parts).strip(), transcript
+
+
+def _hat_bildteile(messages: Any) -> bool:
+    return any(
+        isinstance(m, dict)
+        and m.get("role") == "user"
+        and isinstance(m.get("content"), list)
+        and any(isinstance(t, dict) and t.get("type") == "image_url" for t in m["content"])
+        for m in (messages if isinstance(messages, list) else [])
+    )
 
 
 def schema_instruction(response_format: Any) -> str:
@@ -157,6 +233,7 @@ def _build_command(
     model: str | None,
     response_format: Any,
     streaming: bool,
+    bilder_ordner: str | None = None,
 ) -> tuple[list[str], str | None, dict[str, str]]:
     """Baut (argv, system_prompt_file, environment) -- gemeinsam fuer beide Pfade."""
 
@@ -223,8 +300,14 @@ def _build_command(
 
     argv += ["--strict-mcp-config", "--mcp-config", json.dumps({"mcpServers": mcp_servers})]
     argv += ["--setting-sources", ""]
-    if allowed_tools:
-        argv += ["--allowedTools", *allowed_tools]
+    # Bilder: Ordner freigeben und Read erlauben. allowed_tools bleibt bewusst
+    # unberuehrt, denn der Captain-Systemprompt-Zusatz unten haengt daran.
+    cli_tools = list(allowed_tools)
+    if bilder_ordner:
+        argv += ["--add-dir", bilder_ordner]
+        cli_tools.append("Read")
+    if cli_tools:
+        argv += ["--allowedTools", *cli_tools]
 
     # The caller's own prompt asks for opaque artifact references but cannot know
     # how this backend produces one, so the side that supplies the tool documents
@@ -299,12 +382,14 @@ def run_claude(
     model: str | None,
     timeout: float,
     response_format: Any = None,
+    bilder_ordner: str | None = None,
 ) -> dict[str, Any]:
     argv, system_prompt_file, environment = _build_command(
         system_prompt=system_prompt,
         model=model,
         response_format=response_format,
         streaming=False,
+        bilder_ordner=bilder_ordner,
     )
 
     try:
@@ -401,6 +486,7 @@ def stream_claude(
     model: str | None,
     timeout: float,
     response_format: Any = None,
+    bilder_ordner: str | None = None,
 ) -> Iterator[str]:
     """Startet die CLI mit stream-json und liefert Text-Stuecke, sobald sie kommen."""
 
@@ -409,6 +495,7 @@ def stream_claude(
         model=model,
         response_format=response_format,
         streaming=True,
+        bilder_ordner=bilder_ordner,
     )
     fehler_datei = tempfile.TemporaryFile()
     proc: subprocess.Popen[str] | None = None
@@ -638,9 +725,26 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         model = str(body.get("model") or DEFAULT_MODEL_ID)
-        system_prompt, transcript = render_messages(body.get("messages") or [])
+        messages = body.get("messages") or []
+        bilder_ordner: str | None = None
+        try:
+            if _hat_bildteile(messages):
+                bilder_ordner = tempfile.mkdtemp(prefix="mshim-")
+                messages, _ = bildteile_ablegen(messages, bilder_ordner)
+            self._antworten(body, messages, model, bilder_ordner)
+        except ShimEingabeFehler as exc:
+            self._send_error(400, str(exc))
+        finally:
+            if bilder_ordner:
+                shutil.rmtree(bilder_ordner, ignore_errors=True)
 
-        roles = [str(m.get("role", "?")) for m in (body.get("messages") or [])]
+    def _antworten(
+        self, body: dict[str, Any], messages: list[dict[str, Any]], model: str,
+        bilder_ordner: str | None,
+    ) -> None:
+        system_prompt, transcript = render_messages(messages)
+
+        roles = [str(m.get("role", "?")) for m in messages]
         tool_names = [
             str((t.get("function") or {}).get("name") or t.get("name") or "?")
             for t in (body.get("tools") or [])
@@ -688,6 +792,7 @@ class Handler(BaseHTTPRequestHandler):
                     model=model,
                     timeout=self.timeout_seconds,
                     response_format=body.get("response_format"),
+                    bilder_ordner=bilder_ordner,
                 ),
                 model,
             )
@@ -700,6 +805,7 @@ class Handler(BaseHTTPRequestHandler):
                 model=model,
                 timeout=self.timeout_seconds,
                 response_format=body.get("response_format"),
+                bilder_ordner=bilder_ordner,
             )
             completion = to_completion(payload, model)
         except ShimError as exc:
