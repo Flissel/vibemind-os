@@ -1968,3 +1968,52 @@ Also 0 rows in `vault.secrets` on the VM Supabase.
 - **`GET /api/approvals` is public in the daemon by design**, so every device that may
   reach PC:443 can read it. The tailscale grants allow only the owner's devices; the
   guest has no route to the PC.
+
+---
+
+# Part VIII — the integrations core: GitHub directly through OpenFang, without OpenAI
+
+Date: 2026-10-06. Spec `docs/superpowers/specs/2026-10-06-integrationen-kern-openfang-design.md`,
+plan `docs/superpowers/plans/2026-10-06-integrationen-kern-openfang.md`. openfang `39514ed`,
+vibemind-os pin `1cd20098`, template `integrations/github.toml`.
+
+## VIII.1 Headline
+
+The OpenFang daemon on the PC connects the official remote GitHub MCP server
+(`https://api.githubcopilot.com/mcp/`) as an *integration*:
+- **Key handling.** OpenFang takes `GITHUB_PAT_TOKEN` from its own vault and puts it only into the
+  `Authorization` header of that one connection. It does not go into the process environment, the API, logs or the audit.
+- **Visibility.** The 46 tools are visible only to agents that list the integration explicitly.
+- **Approval.** Every non-read-only tool needs an OpenFang approval.
+- **Audit.** Every call writes one audit row with no content.
+- **No OpenAI.** No OpenAI key and no OpenAI catalog id is involved.
+
+## VIII.2 Live proof (spec §7)
+
+| Step | Result |
+|---|---|
+| Boot | `1 Vorlagen aus Ordnern geladen loaded=1 skipped_files=0 unreadable_dirs=0`. Agent `integrations-hub` was auto-spawned. |
+| 1 `POST /api/integrations/add {"id":"github"}` | `zustand: verbunden`, 46 tools. `/api/integrations` lists only `{"name":"Authorization","credential":"GITHUB_PAT_TOKEN"}`. |
+| 2 `integrations-hub` → `/mcp` `mcp_github_get_me` | No approval. Result `login: Flissel`. |
+| 3 `mcp_github_issue_write` (create, non-existent repo) | Approval raised after 2 s and rejected. Answer: "Execution denied … The operation was not performed." |
+| 4 Visibility | Of 42 agents, only `integrations-hub` sees `mcp_github_*`. The 26 agents with an empty list (`mode: all_except_integrations`) see none. |
+| 5 Probe template with reference `GITHUB_PAT_TOKEN_FEHLT` | `zustand: fehlt_schluessel`, `detail: fehlende Schluessel: GITHUB_PAT_TOKEN_FEHLT`. The probe was removed and only `github` stays installed. |
+| 6 Leak scan `github_pat_` / `ghp_` | 0 hits in `logs/openfang/*`, `/api/config`, `/api/integrations`, `/health`, `/available`, `/api/audit/recent`, `/api/approvals`. |
+
+Audit rows, which contain no inputs or outputs:
+```
+ToolInvoke  integration_tool=mcp_github_get_me approval=read_only            ok
+ToolInvoke  integration_tool=mcp_github_issue_write approval=freigabe_abgelehnt  denied
+```
+
+## VIII.3 What is not proven, and known exceptions
+
+- **The environment of the 29 child processes** under `openfang.exe` could not be read on Windows. That the
+  key never lands there is covered by the code path, which has no `set_var` for http/sse templates, and by unit tests.
+- **`GITHUB_PAT_TOKEN` is still on `issuable_credentials.list`.** The Rowboat-VM path from Part VII needs it.
+  Whoever holds the bearer AND the issue key can therefore still fetch the value through `/api/credentials/issue`.
+  For this integration, "value only in the header" fully holds only once it gets its own non-issuable reference
+  (pending user decision).
+- **Tool names changed upstream.** The pilot template's `read_only_tools` lists `get_issue` / `get_pull_request`.
+  The live server now calls them `issue_read` / `pull_request_read`. Those tools therefore currently need approval,
+  which is the safe direction. The template should be updated.
