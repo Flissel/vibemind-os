@@ -810,7 +810,6 @@ def test_kontext_auswahl_altform_bleibt_erlaubt(umg, auswahl):
     {"anhaenge": [{"name": "x.exe", "art": "dokument"}]},
     {"anhaenge": ["foto.jpg"]},
     {"anhaenge": "foto.jpg"},
-    {"anhaenge": None},
 ])
 def test_kontext_ungueltig_422_ohne_sql(umg, kontext):
     f, _, c = umg
@@ -839,3 +838,9 @@ def test_medien_liefert_dokumente_nur_ueber_arbeiterroute(umg):
     # die Medienliste (Bilder fuer den Agenten) bleibt bilderrein
     from spaces.marketing.api import chat
     assert "preise.pdf" not in chat._medien()
+
+
+def test_kontext_anhaenge_null_gilt_als_leer(umg):
+    f, _, c = umg
+    f.antworten.append([{"id": AID}])
+    assert _anlegen_mit(c, {"anhaenge": None}).status_code == 200

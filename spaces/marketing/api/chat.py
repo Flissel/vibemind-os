@@ -80,7 +80,7 @@ def _nachricht_und_kontext(payload: dict) -> tuple[str, dict]:
     if len(json.dumps(kontext, ensure_ascii=False).encode("utf-8")) > KONTEXT_MAX:
         raise HTTPException(422, "kontext ist zu groß (höchstens 4 KB)")
     _auswahl_pruefen(kontext.get("auswahl"))
-    if "anhaenge" in kontext:
+    if kontext.get("anhaenge") is not None:
         _anhaenge_pruefen(kontext["anhaenge"])
     return nachricht, kontext
 
