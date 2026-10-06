@@ -96,7 +96,7 @@ def ordner_finden(wurzel: str, mandant: str, name: str) -> str | None:
     Ohne Gross-/Kleinschreibung und ohne Leerraum am Rand; bei mehreren
     Treffern der alphabetisch erste. Verknuepfungen zaehlen nicht.
     """
-    gesucht = {str(mandant or "").casefold(), str(name or "").casefold()} - {""}
+    gesucht = {str(mandant or "").strip().casefold(), str(name or "").strip().casefold()} - {""}
     try:
         eintraege = sorted(os.scandir(wurzel), key=lambda e: e.name)
         wurzel_real = os.path.realpath(wurzel)
@@ -223,20 +223,26 @@ def _kappen(stuecke: list[dict], belegt: int) -> list[dict]:
 def _laden(ordner: str, name: str, frage: str) -> Wissen:
     hinweise: list[str] = []
     dateien = _neueste_notizen(_dateien(ordner, hinweise))
-    if len(dateien) > MAX_DATEIEN:
+    # Marke.md vor dem Kappen herausnehmen: sonst verdraengen 200 Dateien, die
+    # alphabetisch davor liegen (Archiv/…), genau die eine, die immer gilt.
+    marke_datei = next((d for d in dateien if d[0].casefold() == _MARKE), None)
+    uebrige = [d for d in dateien if d is not marke_datei]
+    platz = MAX_DATEIEN - (marke_datei is not None)
+    if len(uebrige) > platz:
         hinweise.append(_gekuerzt(MAX_DATEIEN, len(dateien)))
-        dateien = dateien[:MAX_DATEIEN]
+        uebrige = uebrige[:platz]
 
     marke: tuple[str, str] | None = None
+    if marke_datei is not None:
+        text = _lesen(*marke_datei, hinweise)
+        if text is not None and not ist_leer(text):
+            marke = (marke_datei[0], text if len(text) <= MARKE_MAX else text[:MARKE_MAX] + _VERMERK)
     stuecke = []
-    for rel, pfad in dateien:
+    for rel, pfad in uebrige:
         text = _lesen(rel, pfad, hinweise)
         if text is None or ist_leer(text):
             continue
-        if rel.casefold() == _MARKE and marke is None:
-            marke = (rel, text if len(text) <= MARKE_MAX else text[:MARKE_MAX] + _VERMERK)
-        else:
-            stuecke.append({"quelle": name, "dokument": rel, "text": text})
+        stuecke.append({"quelle": name, "dokument": rel, "text": text})
 
     vorhanden = len(stuecke) + (marke is not None)
     if not vorhanden:
@@ -309,19 +315,36 @@ def _inhalt(titel: str, text: str, kopf: dict, heute: datetime.date) -> str:
 
 
 def _ablegen(ziel: str, firma_real: str, titel: str, inhalt: str, heute: datetime.date) -> bool:
-    """Exklusiv neu anlegen, bei Kollision -2, -3 … bis -99. Nie ueberschreiben."""
+    """Exklusiv neu anlegen, bei Kollision -2, -3 … bis -99. Nie ueberschreiben.
+
+    Der Inhalt wird VOR dem Anlegen kodiert: ein einzelnes Surrogat (in JSON
+    gueltig, in UTF-8 nicht) scheitert so, bevor eine leere Datei entstehen kann.
+    """
+    roh = inhalt.encode("utf-8")
     basis = f"{heute:%Y-%m-%d} {slug(titel)}"
     for nummer in range(1, _SUFFIX_MAX + 1):
         pfad = os.path.join(ziel, f"{basis}.md" if nummer == 1 else f"{basis}-{nummer}.md")
         if not _echt(pfad, ziel, firma_real):
             continue  # verwaister Link unter diesem Namen: nicht hindurchschreiben
         try:
-            with open(pfad, "x", encoding="utf-8") as f:
-                f.write(inhalt)
-            return True
+            f = open(pfad, "xb")
         except FileExistsError:
             continue
+        try:
+            with f:
+                f.write(roh)
+        except OSError:
+            _entfernen(pfad)  # keine halbe Notiz liegen lassen
+            raise
+        return True
     return False
+
+
+def _entfernen(pfad: str) -> None:
+    try:
+        os.remove(pfad)
+    except OSError:
+        pass
 
 
 def notizen_schreiben(ordner: str | None, name: str, notizen: list[dict], kopf: dict,
@@ -346,20 +369,20 @@ def notizen_schreiben(ordner: str | None, name: str, notizen: list[dict], kopf: 
             pass
         if not os.path.isdir(ziel) or not _echt(ziel, ordner, firma_real):
             return [], [gescheitert]
-    except OSError:
+    except (OSError, ValueError):
         return [], [gescheitert]
 
     kopf = kopf if isinstance(kopf, dict) else {}
     geschrieben: list[str] = []
     hinweise: list[str] = []
-    for eintrag in list(notizen or [])[:NOTIZEN_JE_ANTWORT]:
+    for eintrag in (notizen if isinstance(notizen, list) else [])[:NOTIZEN_JE_ANTWORT]:
         notiz = _gueltig(eintrag)
         if notiz is None:
             continue
         titel, text = notiz
         try:
             ok = _ablegen(ziel, firma_real, titel, _inhalt(titel, text, kopf, heute), heute)
-        except OSError:
+        except (OSError, ValueError):  # UnicodeEncodeError ist ein ValueError
             ok = False
         if ok:
             geschrieben.append(titel)

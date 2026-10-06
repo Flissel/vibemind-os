@@ -337,7 +337,7 @@ def test_schreibfehler_ergibt_hinweis_und_naechste_notiz(wurzel, monkeypatch):
     aufrufe = []
 
     def wackelig(pfad, modus="r", *a, **k):
-        if modus == "x":
+        if modus == "xb":
             aufrufe.append(pfad)
             if len(aufrufe) == 1:
                 raise PermissionError("gesperrt")
@@ -366,3 +366,79 @@ def test_vorlagen_bestehendes_unangetastet_neues_angelegt(tmp_path):
     assert vorlage.count("<!--") == 7
     assert mw.ist_leer(vorlage)
     assert mw.vorlagen_anlegen(str(wurzel), ["fin2gether"]) == []
+
+
+# --- Fix-Runde 1 ----------------------------------------------------------------
+
+def test_einzelnes_surrogat_wirft_nicht_und_hinterlaesst_keine_datei(wurzel):
+    firma = wurzel / "VibeMind"
+    firma.mkdir()
+    notizen = [{"titel": "Kaputt", "text": "x\ud800y"}, {"titel": "Heil", "text": "in Ordnung"}]
+    titel, hinweise = mw.notizen_schreiben(str(firma), "VibeMind", notizen, KOPF, HEUTE)
+    assert titel == ["Heil"]
+    assert hinweise == ["Notiz konnte nicht abgelegt werden"]
+    assert os.listdir(firma / "Agent-Notizen") == ["2026-10-06 heil.md"]
+
+
+def test_surrogat_im_titel_und_kopf_hinterlaesst_keine_datei(wurzel):
+    firma = wurzel / "VibeMind"
+    firma.mkdir()
+    titel, hinweise = mw.notizen_schreiben(
+        str(firma), "VibeMind", [{"titel": "A\udc00", "text": "t"}],
+        {"newsletter": "N\ud800", "bitte": "b"}, HEUTE)
+    assert titel == []
+    assert hinweise == ["Notiz konnte nicht abgelegt werden"]
+    assert os.listdir(firma / "Agent-Notizen") == []
+
+
+def test_schreibfehler_nach_anlegen_entfernt_halbe_datei(wurzel, monkeypatch):
+    firma = wurzel / "VibeMind"
+    firma.mkdir()
+    echtes_open = open
+
+    class Voll:
+        def __init__(self, f):
+            self.f = f
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            self.f.close()
+
+        def write(self, _roh):
+            raise OSError("Platte voll")
+
+    def halb(pfad, modus="r", *a, **k):
+        f = echtes_open(pfad, modus, *a, **k)
+        return Voll(f) if modus == "xb" else f
+
+    monkeypatch.setattr("builtins.open", halb)
+    titel, hinweise = mw.notizen_schreiben(str(firma), "VibeMind", [{"titel": "a", "text": "b"}], KOPF, HEUTE)
+    assert titel == []
+    assert hinweise == ["Notiz konnte nicht abgelegt werden"]
+    assert os.listdir(firma / "Agent-Notizen") == []
+
+
+@pytest.mark.parametrize("notizen", [5, None, "text", {"titel": "a", "text": "b"}])
+def test_notizen_kein_list_wirft_nicht(wurzel, notizen):
+    firma = wurzel / "VibeMind"
+    firma.mkdir()
+    assert mw.notizen_schreiben(str(firma), "VibeMind", notizen, KOPF, HEUTE) == ([], [])
+
+
+def test_marke_bleibt_bei_mehr_als_200_dateien_davor(wurzel):
+    firma = wurzel / "VibeMind"
+    _schreiben(str(firma / "Marke.md"), "# VibeMind\n" + INHALT)
+    for i in range(201):
+        _schreiben(str(firma / "Aaa" / f"d{i:03d}.md"), f"Datei {i:03d} mit gerade genug Inhalt fuer die Pruefung.")
+    w = mw.laden(str(wurzel), "vibemind", "VibeMind", "Datei")
+    assert w.text.startswith("### Marke.md\n# VibeMind\n" + INHALT)
+    assert "Markenwissen gekürzt (200 von 202 Dateien)" in w.hinweise
+    assert w.text.count("### ") == 200
+
+
+def test_mandant_und_name_mit_leerraum_am_rand(wurzel):
+    (wurzel / "VibeMind").mkdir()
+    assert mw.ordner_finden(str(wurzel), " vibemind ", "") == os.path.join(str(wurzel), "VibeMind")
+    assert mw.ordner_finden(str(wurzel), "", "\tVibeMind\n") == os.path.join(str(wurzel), "VibeMind")
