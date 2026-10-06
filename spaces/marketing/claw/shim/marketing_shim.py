@@ -1,5 +1,6 @@
 # Kopie vom 02.10.2026 aus ~/.local/bin/claude_code_openai_shim.py; gehoert ab jetzt dem Marketing-Claw.
-# Aenderung gegenueber dem Original: stream:true streamt echt (stream-json), siehe stream_argv/text_stuecke.
+# Aenderung gegenueber dem Original: Body-Flag "marketing_stream": true streamt echt (stream-json), siehe stream_argv/text_stuecke.
+# Ohne das Flag verhaelt sich stream:true exakt wie im Original (ein Chunk + stop + [DONE], 502 bei CLI-Fehler).
 """OpenAI-compatible HTTP shim backed by the Claude Code CLI subscription.
 
 Hermes' ``custom`` provider speaks OpenAI's wire format and resolves its
@@ -571,6 +572,33 @@ class Handler(BaseHTTPRequestHandler):
             if close:
                 close()
 
+    def _send_stream_einzeln(self, completion: dict[str, Any]) -> None:
+        """Wie das Original: die fertige Antwort als ein SSE-Chunk, dann stop und [DONE]."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        content = completion["choices"][0]["message"]["content"]
+        chunk = {
+            "id": completion["id"],
+            "object": "chat.completion.chunk",
+            "created": completion["created"],
+            "model": completion["model"],
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": content},
+                    "finish_reason": None,
+                }
+            ],
+        }
+        final = dict(chunk)
+        final["choices"] = [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+        for item in (chunk, final):
+            self.wfile.write(f"data: {json.dumps(item)}\n\n".encode("utf-8"))
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
+
     # -- routes --------------------------------------------------------
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0].rstrip("/")
@@ -650,7 +678,9 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:  # noqa: BLE001 -- Diagnose darf den Dienst nicht kippen
                 sys.stderr.write("request dump failed: %s\n" % exc)
 
-        if body.get("stream"):
+        # Echtes Streaming nur auf ausdruecklichen Wunsch (der Chat-Arbeiter sendet das Flag);
+        # andere Aufrufer (z. B. openclaw mit stream:true) bekommen das Original-Verhalten.
+        if body.get("stream") and body.get("marketing_stream") is True:
             self._send_stream(
                 stream_claude(
                     system_prompt=system_prompt,
@@ -679,6 +709,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_error(500, f"unexpected shim failure: {exc}")
             return
 
+        if body.get("stream"):
+            self._send_stream_einzeln(completion)
+            return
         self._send_json(200, completion)
 
 

@@ -607,6 +607,27 @@ def test_faelliger_stopp_inzwischen_gespeichert_zweiter_versuch_mit_null(umg):
     assert ", NULL, 'Inzwischen gespeichert – Zwischenstand verworfen'" in ab[1]
 
 
+def test_faelliger_stopp_db_ablehnung_beim_speichern_schliesst_mit_null_und_hinweis(umg):
+    f, _, c = umg
+    _faellig(f, "behalten", _dok())
+    f.antworten += [[{"f": None}], [{"e": {"status": "fehler"}}], [], []]
+    f.fehler += [None, None, None, None, _db_fehler("Block-Dokument ungültig")]
+    assert c.get(f"/api/pult/inhalte/{IID}/chat", headers=H).status_code == 200
+    ab = [s for s in f.sql if "marketing.pult_chat_stopp_abschliessen(" in s]
+    assert len(ab) == 2 and "medien:gs-" in ab[0]
+    assert ", NULL, 'Zwischenstand nicht übernommen: Block-Dokument ungültig'" in ab[1]
+
+
+def test_faelliger_stopp_db_weg_beim_speichern_bleibt_wiederholbar(umg):
+    f, _, c = umg
+    _faellig(f, "behalten", _dok())
+    f.antworten += [[{"f": None}], [], []]
+    f.fehler += [None, None, None, None, RuntimeError("ssh weg")]
+    assert c.get(f"/api/pult/inhalte/{IID}/chat", headers=H).status_code == 200
+    ab = [s for s in f.sql if "marketing.pult_chat_stopp_abschliessen(" in s]
+    assert len(ab) == 1                       # 503: kein Ersatzversuch mit NULL, spaeter erneut
+
+
 def test_faelliger_stopp_fehler_bricht_stand_nicht_ab(umg):
     f, _, c = umg
     f.antworten += [[{"ok": True}], [{"id": AID}, {"id": BID}],

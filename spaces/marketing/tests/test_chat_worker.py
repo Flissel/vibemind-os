@@ -621,7 +621,7 @@ def test_frage_strom_liefert_stuecke_und_fragt_mit_stream(monkeypatch):
     monkeypatch.setattr(cw.urllib.request, "urlopen", fake)
     assert list(cw.frage_strom("SYS", [{"role": "user", "content": "hi"}])) == ["Hal", "lö", "\n\nWelt"]
     assert gesehen["url"] == cw.LLM_URL + "/chat/completions" and gesehen["timeout"] == 300
-    assert gesehen["body"] == {"model": cw.MODELL, "stream": True,
+    assert gesehen["body"] == {"model": cw.MODELL, "stream": True, "marketing_stream": True,
                                "messages": [{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}]}
 
 

@@ -4,7 +4,7 @@
 --   2) Vormerken / Loeschen / Starten: hoechstens ein 'wartet' je Inhalt
 --   3) Zwischenstand vom Arbeiter (verlaengert die Vergabe, meldet einen Stopp)
 --   4) Stopp (behalten|verwerfen); die API schliesst nach 15 s selbst ab
---   5) 060-Funktionen neu: aufraeumen (gestoppte nicht neu starten), fertig (leert den
+--   5) 060-Funktionen neu: anlegen (uebernimmt eine liegengebliebene Vormerkung), aufraeumen (gestoppte nicht neu starten), fertig (leert den
 --      Zwischenstand, gibt die Vormerkung frei, nicht nach Stopp), zurueck (leert), Entscheiden
 --      beendet auch 'wartet'.
 -- 'wartet' zaehlt weder fuer die Speichersperre (pult_bloecke_speichern prueft nur
@@ -57,6 +57,44 @@ BEGIN
          vergeben_bis = NULL, geaendert_am = now()
    WHERE status = 'in_arbeit' AND vergeben_bis < now() AND stopp IS NULL
      AND (p_inhalt IS NULL OR inhalt = p_inhalt);
+END $$;
+
+-- 2b) Anlegen wie 060 + eine liegengebliebene Vormerkung (wartet) wird bei art='chat'
+--     uebernommen statt daneben ein zweiter Auftrag angelegt (R13): Text/Kontext ersetzt,
+--     status 'offen', erstellt_am jetzt. Export-Auftraege ignorieren 'wartet'.
+CREATE OR REPLACE FUNCTION marketing.pult_chat_anlegen(
+    p_inhalt uuid, p_art text, p_nachricht text, p_kontext jsonb) RETURNS uuid
+LANGUAGE plpgsql AS $$
+DECLARE v_art text; v_status text; v_neueste int; v_id uuid;
+BEGIN
+  -- Inhalt sperren: serialisiert Anlegen und Handspeichern desselben Newsletters
+  SELECT art, status INTO v_art, v_status FROM marketing.inhalte WHERE id = p_inhalt FOR UPDATE;
+  IF v_art IS DISTINCT FROM 'newsletter' OR v_status IS DISTINCT FROM 'entwurf' THEN
+    RAISE EXCEPTION 'Nur Newsletter-Entwürfe'; END IF;
+  PERFORM marketing.pult_chat_aufraeumen(p_inhalt);
+  IF p_art IS NULL OR p_art NOT IN ('chat','export') THEN RAISE EXCEPTION 'Art muss chat oder export sein'; END IF;
+  IF p_art = 'chat' AND length(btrim(coalesce(p_nachricht, ''))) = 0 THEN
+    RAISE EXCEPTION 'Ohne Nachricht kein Auftrag'; END IF;
+  IF length(coalesce(p_nachricht, '')) > 2000 THEN
+    RAISE EXCEPTION 'Die Nachricht ist zu lang (hoechstens 2000 Zeichen)'; END IF;
+  IF p_kontext IS NOT NULL AND jsonb_typeof(p_kontext) <> 'object' THEN
+    RAISE EXCEPTION 'Kontext muss ein Objekt sein'; END IF;
+  IF EXISTS (SELECT 1 FROM marketing.chat_auftraege WHERE inhalt = p_inhalt AND status IN ('offen','in_arbeit')) THEN
+    RAISE EXCEPTION 'Der Assistent arbeitet gerade'; END IF;
+  SELECT max(fassung) INTO v_neueste FROM marketing.inhalt_fassungen WHERE inhalt = p_inhalt;
+  IF p_art = 'chat' THEN
+    UPDATE marketing.chat_auftraege
+       SET nachricht = btrim(p_nachricht), kontext = coalesce(p_kontext, '{}'::jsonb),
+           status = 'offen', erstellt_am = now(), stopp = NULL, stopp_am = NULL,
+           fassung_vorher = v_neueste, geaendert_am = now()
+     WHERE inhalt = p_inhalt AND status = 'wartet'
+    RETURNING id INTO v_id;
+    IF v_id IS NOT NULL THEN RETURN v_id; END IF;
+  END IF;
+  INSERT INTO marketing.chat_auftraege (inhalt, art, nachricht, kontext, fassung_vorher)
+  VALUES (p_inhalt, p_art, btrim(coalesce(p_nachricht, '')), coalesce(p_kontext, '{}'::jsonb), v_neueste)
+  RETURNING id INTO v_id;
+  RETURN v_id;
 END $$;
 
 -- 2) Vormerken
@@ -262,10 +300,11 @@ BEGIN
          fassung_nachher = v_n, vergeben_bis = NULL,
          zwischenstand = NULL, schritt = '', geaendert_am = now()
    WHERE id = a.id;
-  -- Vormerkung freigeben: der Arbeiter holt sie normal ab und baut auf der neuen Fassung auf
+  -- Vormerkung freigeben (nur nach einem Chat-Auftrag, nie nach einem Export): der Arbeiter holt
+  -- sie normal ab und baut auf der neuen Fassung auf
   UPDATE marketing.chat_auftraege
      SET status = 'offen', erstellt_am = now(), geaendert_am = now()
-   WHERE inhalt = a.inhalt AND status = 'wartet';
+   WHERE inhalt = a.inhalt AND status = 'wartet' AND a.art = 'chat';
   RETURN jsonb_build_object('fassung', v_n);
 END $$;
 

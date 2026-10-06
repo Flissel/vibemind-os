@@ -84,10 +84,12 @@ def server(tmp_path):
         p.wait()
 
 
-def _post(port: int, stream: bool):
+def _post(port: int, stream: bool, echt: bool = False):
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
     body = {"model": "claude-code-sonnet", "stream": stream,
             "messages": [{"role": "user", "content": "hallo"}]}
+    if echt:
+        body["marketing_stream"] = True
     conn.request("POST", "/v1/chat/completions", json.dumps(body),
                  {"Content-Type": "application/json"})
     return conn.getresponse()
@@ -107,7 +109,7 @@ def _chunks(resp):
 def test_stream_echt_und_in_reihenfolge(server):
     port = server()
     start = time.monotonic()
-    resp = _post(port, True)
+    resp = _post(port, True, echt=True)
     assert resp.status == 200
     assert resp.getheader("Content-Type") == "text/event-stream"
     daten = list(_chunks(resp))
@@ -133,7 +135,7 @@ def test_ohne_stream_normale_completion(server):
 
 
 def test_cli_exit_im_stream_gibt_error_chunk(server):
-    resp = _post(server("exit"), True)
+    resp = _post(server("exit"), True, echt=True)
     daten = list(_chunks(resp))
     assert daten[-1][1] == "[DONE]"
     letzter = json.loads(daten[-2][1])
@@ -160,16 +162,37 @@ def test_text_stuecke_result_rueckfall_ohne_delta():
 
 
 def test_stream_zwei_turns_e2e(server):
-    daten = list(_chunks(_post(server("zweiturns"), True)))
+    daten = list(_chunks(_post(server("zweiturns"), True, echt=True)))
     texte = [json.loads(p)["choices"][0]["delta"].get("content") for _, p in daten[:-1]]
     assert "".join(t for t in texte if t) == "Ich suche\n\nFertig"
 
 
 def test_fehlende_cli_gibt_error_chunk(server, tmp_path):
     nichts = str(tmp_path / "gibt-es-nicht.exe")
-    daten = list(_chunks(_post(server(cli=nichts), True)))
+    daten = list(_chunks(_post(server(cli=nichts), True, echt=True)))
     assert daten[-1][1] == "[DONE]"
     inhalt = json.loads(daten[-2][1])["choices"][0]
     assert inhalt["finish_reason"] == "error"
     assert "FileNotFoundError" in inhalt["delta"]["content"]
     assert nichts not in inhalt["delta"]["content"]
+
+
+def test_stream_ohne_flag_ist_ein_chunk_wie_das_original(server):
+    resp = _post(server(), True)
+    assert resp.status == 200
+    assert resp.getheader("Content-Type") == "text/event-stream"
+    daten = list(_chunks(resp))
+    assert daten[-1][1] == "[DONE]"
+    chunks = [json.loads(p) for _, p in daten[:-1]]
+    assert len(chunks) == 2
+    assert chunks[0]["choices"][0]["delta"] == {"role": "assistant", "content": "eins zwei drei"}
+    assert chunks[0]["choices"][0]["finish_reason"] is None
+    assert chunks[1]["choices"][0]["delta"] == {}
+    assert chunks[1]["choices"][0]["finish_reason"] == "stop"
+
+
+def test_stream_ohne_flag_cli_fehler_ist_502(server):
+    resp = _post(server("exit"), True)
+    assert resp.status == 502
+    body = json.loads(resp.read())
+    assert body["error"]["type"] == "shim_error"

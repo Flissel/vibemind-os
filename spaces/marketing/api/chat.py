@@ -415,7 +415,7 @@ def _abschliessen_sql(a: str, bloecke: dict | None, hinweis: str) -> dict:
 def _stopp_abschliessen(a: str, job: dict, bloecke) -> dict:
     """Schliesst einen gestoppten Auftrag ab. Nur bei 'behalten' (und noch in_arbeit) wird
     gerechnet und geprueft; ungueltig => NULL mit Hinweis. Hat der Betreiber inzwischen
-    gespeichert, zweiter Versuch mit NULL - der Auftrag darf nie in_arbeit haengen bleiben."""
+    gespeichert oder lehnt die DB das Speichern ab, zweiter Versuch mit NULL - der Auftrag darf nie in_arbeit haengen bleiben."""
     hinweis = ""
     if job.get("status") != "in_arbeit" or job.get("stopp") != "behalten" or not isinstance(bloecke, dict):
         bloecke = None
@@ -430,9 +430,12 @@ def _stopp_abschliessen(a: str, job: dict, bloecke) -> dict:
     try:
         return _abschliessen_sql(a, bloecke, hinweis)
     except HTTPException as e:
-        if bloecke is None or e.status_code != 422 or not str(e.detail).startswith("Inzwischen gibt es Fassung"):
-            raise
-        return _abschliessen_sql(a, None, STOPP_GESPEICHERT)
+        if bloecke is None or e.status_code != 422:
+            raise                      # 503 bleibt wiederholbar
+        if str(e.detail).startswith("Inzwischen gibt es Fassung"):
+            return _abschliessen_sql(a, None, STOPP_GESPEICHERT)
+        # Jede andere Ablehnung der DB beim Speichern: wie Verwerfen mit Hinweis, nie in_arbeit lassen
+        return _abschliessen_sql(a, None, STOPP_UNGUELTIG + str(e.detail))
 
 
 def _gestoppter_auftrag(a: str) -> dict | None:

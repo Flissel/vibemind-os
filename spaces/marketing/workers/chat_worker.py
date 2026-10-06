@@ -113,7 +113,7 @@ def frage_strom(system: str, nachrichten: list[dict], url: str = LLM_URL, modell
     """Wie frage, aber als SSE-Strom des Shims: liefert jedes Text-Stueck (delta.content), sobald es da ist.
     Fehler-Chunk (finish_reason "error"), Abbruch ohne Abschluss, Muell oder eine leere Antwort => LlmFehler.
     Schliesst der Aufrufer den Strom (close), wird die Verbindung zum Shim geschlossen."""
-    koerper = {"model": modell, "stream": True, "messages": [{"role": "system", "content": system}, *nachrichten]}
+    koerper = {"model": modell, "stream": True, "marketing_stream": True, "messages": [{"role": "system", "content": system}, *nachrichten]}
     req = urllib.request.Request(url.rstrip("/") + "/chat/completions",
                                  data=json.dumps(koerper).encode("utf-8"), method="POST",
                                  headers={"Content-Type": "application/json"})
