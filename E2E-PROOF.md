@@ -1894,3 +1894,77 @@ $ docker exec -i <supabase-db-container> psql -U postgres -d postgres -tA \
   or additive (the deliberate null-control error, see §VI.6).
 - `~/.openfang/` and the shared daemon on `:4200` were never touched.
 - Nothing was pushed; no gitlink was bumped; nothing was deployed.
+
+---
+
+# Part VII — the VM Rowboat fetches the credential from the PC daemon, per issue key
+
+Date: 2026-10-06. Plan: Vibemind_V1 `docs/superpowers/plans/2026-10-06-rowboat-plugin-laufzeit-auf-der-vm.md`.
+
+## VII.1 Headline
+
+The production Rowboat on the VM (`offload-vm`, image `vibemind-rowboat-rowboat:plugins`
+from `3f4accf8`) ran `get_me` on the pinned github MCP component and got
+`status=success, authenticated github login=Flissel`. The credential came from the
+OpenFang vault on the PC over the tailnet, gated by the bearer key AND
+`X-OpenFang-Issue-Key`. No value appeared in any log, receipt or database.
+
+## VII.2 The path
+
+- VM Mongo: single-node replica set `rs0`, migrated from standalone with a dump before
+  the change. Document counts were identical before and after.
+- `tailscale serve` on the PC exposes exactly `/api/credentials/issue` and
+  `/api/approvals` (plus subpaths) of `127.0.0.1:4200`.
+  - Every other path answers 404 from Serve.
+  - `/issue` without a header answers 401.
+  - `/issue` with a bearer but a missing or wrong issue key answers 404 `credential_unavailable`.
+- Issue key: stored in Windows Credential Manager (`VibeMind/OPENFANG_ISSUE_KEY`).
+  - `scripts/openfang_watchdog.py` is the only start path that hands it to the daemon.
+  - On the VM it lives in `~/.env.rowboat-plugins` (mode 600), loaded through `env_file`.
+- plugin-setup on the PC stages the value in the VM Supabase (`DOCKER_HOST=ssh://offload-vm`,
+  migrations 0001–0006). It stores the value into OpenFang and deletes the Supabase copy.
+  Afterwards `vault.secrets` = 0 and no row carries a `vault_secret_id`.
+
+## VII.3 The run
+
+`test/plugins/live-credential-acceptance-e2e.test.ts`, run in the `vibemind-rowboat-tools:plugins`
+container on the VM network, against `ROWBOAT_LIVE_OPENFANG_URL=https://desktop-p303ria.tail6c7d61.ts.net`:
+
+```
+06  runtime composed against https://desktop-p303ria.tail6c7d61.ts.net; operation=get_me
+07  OpenFang approval raised   id=78a593c9-4f38-47f5-9b3d-2749b772ac57 tool_name=get_me
+09    approve() -> status approved
+10  invocation outcome: success after 2515ms
+11  provider result: status=success, authenticated github login=Flissel
+12  execution receipt: status=success approvalId=78a593c9-...
+```
+
+Daemon log: `Credential issued reference=GITHUB_PAT_TOKEN` (11:55:19Z). The same probe
+with a wrong issue key is logged as `refused: missing or wrong X-OpenFang-Issue-Key`.
+
+## VII.4 Leak scan (prefixes `github_pat_`, `ghp_`)
+
+0 hits in each of these places:
+- PC `logs/plugin-setup` and `logs/openfang`
+- `docker logs --since 60m` of rowboat, jobs-worker, rag-worker, supabase-db, kong and rest
+- every document of every collection in the VM Rowboat Mongo
+- the evidence log
+
+Also 0 rows in `vault.secrets` on the VM Supabase.
+
+## VII.5 Findings this run forced into the open
+
+- **The plugin HTTP routes were unusable in any production build.** They answered
+  400 `request_invalid` because they required the route module's own bundled
+  `NextRequest.prototype`, and a standalone build has several copies of that class.
+  This is fixed in `3f4accf8`. vitest never saw the defect, because a test process
+  has only one copy.
+- **`app/lib/mongodb.ts` hard-codes the database `rowboat`.** The live test's
+  `ROWBOAT_LIVE_MONGO_URL` with another database name still writes into `rowboat`.
+  The test project was deleted afterwards; the receipts were kept as evidence.
+- **`api_keys` held a duplicate key, which blocked `ensure-indexes`.** The duplicate
+  came from `scripts/rowboat_create_project.py`, which upserts with
+  `_id vibemind-<project>`. Re-running that script will now fail on the unique index.
+- **`GET /api/approvals` is public in the daemon by design**, so every device that may
+  reach PC:443 can read it. The tailscale grants allow only the owner's devices; the
+  guest has no route to the PC.
