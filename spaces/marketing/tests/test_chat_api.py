@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from spaces.marketing.api import server
+from spaces.marketing.tests.test_medien_mandant import FalschePsql
 from spaces.marketing.tests.test_pult_api import FalscheDB
 
 PK, BK, AK = "pult-k", "bild-k", "api-k"
@@ -16,7 +17,21 @@ H = {"X-Pult-Key": PK}
 HB = {"X-Bild-Key": BK}
 G = {"version": 1, "format": "quer", "hintergrund": "#FFFFFF", "ebenen": []}
 G_WEG = dict(G, ebenen=[{"id": "b", "art": "bild", "quelle": "medien:weg.png", "x": 1, "y": 1, "breite": 10, "drehung": 0}])
-JOB = {"inhalt": IID, "art": "chat", "status": "in_arbeit", "kontext": {}, "gueltig": True}
+JOB = {"inhalt": IID, "art": "chat", "status": "in_arbeit", "kontext": {}, "gueltig": True, "mandant": "vibemind"}
+LOGO_F = "logo-laura-0123456789.png"
+LOGO_E = "logo-vibemind-0123456789.png"
+
+
+def _sicht(eigene=(), fremde=(), gemeinsam=()):
+    """Antwortzeile der Sichtabfrage (medien_mandant.sicht) fuer Mandant vibemind."""
+    return [{"name": "Vibemind", "eigene": list(eigene), "fremde": list(fremde), "gemeinsam": list(gemeinsam)}]
+
+
+def _dok_bilder(*namen):
+    d = _dok()
+    for i, n in enumerate(namen):
+        d[f"b{i}"] = {"type": "Image", "data": {"style": {}, "props": {"url": f"medien:{n}", "alt": "x"}}}
+    return d
 
 
 def _dok(g=G):
@@ -30,8 +45,10 @@ def umg(monkeypatch, tmp_path):
     from spaces.marketing.api import gestaltung as ga
     from spaces.marketing.sync import _db
     f = FalscheDB()
+    f.psql = FalschePsql()          # Schreibweg der Bildzuordnung (medien_mandant._schreiben_zahl)
     monkeypatch.setattr(_db, "query_via_docker", f.query)
     monkeypatch.setattr(_db, "query_one", f.one)
+    monkeypatch.setattr(_db, "_run_psql", f.psql)
     monkeypatch.setenv("MARKETING_PULT_KEY", PK)
     monkeypatch.setenv("MARKETING_BILD_KEY", BK)
     monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
@@ -173,6 +190,20 @@ def test_export_flaeche_drei_dateien_mit_slug_und_kollision(umg):
                         "oktober-angebot-f-pc.jpg": (1200, 800)}
     assert not any(n.startswith("gs-") or n.endswith(".teil") for n in (p.name for p in ordner.iterdir()))
     assert all("pult_chat_anlegen" not in s for s in f.sql)
+    # alle drei Geraetebilder gehen in EINER Zuordnung an den Mandanten des Inhalts
+    assert len(f.psql.sql) == 1 and "marketing.medien_mandant" in f.psql.sql[0]
+    for n in d["dateien"]:
+        assert f"'{n}'" in f.psql.sql[0]
+    assert IID in f.psql.sql[0]
+
+
+def test_export_zuordnung_scheitert_loescht_dateien_503(umg):
+    f, ordner, c = umg
+    f.antworten.append([{"titel": "Oktober-Angebot!", "bloecke": _dok()}])
+    f.psql.fehler.append(RuntimeError("psql weg"))
+    r = c.post(f"/api/pult/inhalte/{IID}/export", json={"flaechen": ["f"], "bestaetigt": True}, headers=H)
+    assert r.status_code == 503, r.text
+    assert list(ordner.iterdir()) == []      # nie eine Datei ohne Zuordnung (= Gemeinsam) liegen lassen
 
 
 def test_export_keine_flaeche_422_ohne_dateien(umg):
@@ -236,12 +267,53 @@ def test_naechster_mit_medienliste_ohne_entwuerfe(umg, monkeypatch, tmp_path_fac
     (ordner / "logo.png").write_bytes(b"x")
     (ordner / ("gs-" + "a" * 12 + ".jpg")).write_bytes(b"x")
     (ordner / "notiz.txt").write_bytes(b"x")
-    f.antworten.append([{"a": {"id": AID, "art": "chat", "nachricht": "n"}}])
+    f.antworten += [[{"a": {"id": AID, "art": "chat", "nachricht": "n", "mandant": "vibemind"}}], _sicht()]
     r = c.post("/api/chat/arbeiter/naechster", headers=HB)
     assert r.status_code == 200, r.text
     a = r.json()["auftrag"]
     assert a["id"] == AID and a["medien"] == ["foto.jpg", "logo.png"]
+    assert a["mandant_name"] == "Vibemind" and "medien_hinweis" not in a
     assert "marketing.pult_chat_naechster('5 minutes'::interval)" in f.sql[0]
+    assert "marketing.medien_mandant" in f.sql[1]
+
+
+def test_naechster_filtert_fremde_bilder_und_fremdes_logo(umg, monkeypatch, tmp_path_factory):
+    f, ordner, c = umg
+    mensch = tmp_path_factory.mktemp("mensch")
+    monkeypatch.setenv("MARKETING_MEDIEN_ORDNER", str(mensch))
+    for n in ("eigen.jpg", "fremd.jpg", "gemeinsam.jpg", "ohne-zeile.jpg", LOGO_E, LOGO_F):
+        (mensch / n).write_bytes(b"x")
+    f.antworten += [[{"a": {"id": AID, "art": "chat", "nachricht": "n", "mandant": "vibemind"}}],
+                    _sicht(eigene=["eigen.jpg"], fremde=["fremd.jpg"], gemeinsam=["gemeinsam.jpg"])]
+    a = c.post("/api/chat/arbeiter/naechster", headers=HB).json()["auftrag"]
+    assert a["medien"] == ["eigen.jpg", "gemeinsam.jpg", LOGO_E, "ohne-zeile.jpg"]   # kein fremd.jpg, kein Laura-Logo
+    assert a["mandant_name"] == "Vibemind"
+
+
+def test_naechster_kappt_erst_nach_dem_filtern(umg, monkeypatch, tmp_path_factory):
+    from spaces.marketing.api import chat
+    f, ordner, c = umg
+    mensch = tmp_path_factory.mktemp("mensch")
+    monkeypatch.setenv("MARKETING_MEDIEN_ORDNER", str(mensch))
+    monkeypatch.setattr(chat, "MEDIEN_MAX", 2)
+    for n in ("a-fremd.jpg", "b-fremd.jpg", "c-eigen.jpg", "d-eigen.jpg", "e-eigen.jpg"):
+        (mensch / n).write_bytes(b"x")
+    f.antworten += [[{"a": {"id": AID, "art": "chat", "nachricht": "n", "mandant": "vibemind"}}],
+                    _sicht(fremde=["a-fremd.jpg", "b-fremd.jpg"])]
+    a = c.post("/api/chat/arbeiter/naechster", headers=HB).json()["auftrag"]
+    assert a["medien"] == ["c-eigen.jpg", "d-eigen.jpg"]
+
+
+def test_naechster_sicht_ausfall_liefert_auftrag_ohne_bilder(umg):
+    f, ordner, c = umg
+    (ordner / "foto.jpg").write_bytes(b"x")
+    f.antworten += [[{"a": {"id": AID, "art": "chat", "nachricht": "n", "mandant": "laura"}}]]
+    f.fehler += [None, RuntimeError("db weg")]          # pult_chat_naechster ok, Sichtabfrage scheitert
+    r = c.post("/api/chat/arbeiter/naechster", headers=HB)
+    assert r.status_code == 200, r.text
+    a = r.json()["auftrag"]
+    assert a["id"] == AID and a["medien"] == [] and a["mandant_name"] == "laura"
+    assert a["medien_hinweis"] == "Bildzuordnung nicht erreichbar"
 
 
 def test_weiter_und_zurueck(umg):
@@ -255,11 +327,40 @@ def test_weiter_und_zurueck(umg):
 
 def test_fertig_ungueltige_gestaltung_geht_zurueck(umg):
     f, _, c = umg
-    f.antworten += [[JOB], [{"s": "fehler"}]]
+    f.antworten += [[JOB], _sicht(), [{"s": "fehler"}]]
     r = c.post(f"/api/chat/arbeiter/{AID}/fertig", json={"antwort": "Erledigt", "bloecke": _dok(G_WEG)}, headers=HB)
     assert r.status_code == 200 and r.json() == {"status": "fehler"}
     assert "pult_chat_zurueck(" in f.sql[-1]
     assert "Das habe ich nicht umsetzen können: f: Bild weg.png fehlt in den Medien" in f.sql[-1]
+    assert all("pult_chat_fertig" not in s for s in f.sql)
+
+
+def test_fertig_neues_fremdes_bild_geht_zurueck(umg):
+    f, _, c = umg
+    f.antworten += [[JOB], _sicht(fremde=["fremd.jpg"]), [{"bloecke": _dok_bilder("eigen.jpg")}], [{"s": "fehler"}]]
+    r = c.post(f"/api/chat/arbeiter/{AID}/fertig", json={"antwort": "x", "bloecke": _dok_bilder("fremd.jpg")}, headers=HB)
+    assert r.status_code == 200 and r.json() == {"status": "fehler"}
+    assert "pult_chat_zurueck(" in f.sql[-1]
+    assert "Das habe ich nicht umsetzen können: Bild nicht verfügbar: fremd.jpg" in f.sql[-1]
+    assert all("pult_chat_fertig" not in s for s in f.sql)
+
+
+def test_fertig_fremdes_bild_aus_basisfassung_bleibt_erlaubt(umg):
+    """Review Focus 1: Altbestand (schon in der Basisfassung) blockiert keine Aenderung."""
+    f, _, c = umg
+    f.antworten += [[JOB], _sicht(fremde=["fremd.jpg"]), [{"bloecke": _dok_bilder("fremd.jpg")}],
+                    [{"f": None}], [{"e": {"fassung": 3}}]]
+    r = c.post(f"/api/chat/arbeiter/{AID}/fertig", json={"antwort": "x", "bloecke": _dok_bilder("fremd.jpg")}, headers=HB)
+    assert r.status_code == 200 and r.json()["fassung"] == 3, r.text
+    assert "FROM marketing.chat_auftraege a JOIN marketing.inhalt_fassungen f" in f.sql[2]
+
+
+def test_fertig_sicht_ausfall_503_ohne_fassung(umg):
+    f, _, c = umg
+    f.antworten += [[JOB]]
+    f.fehler += [None, RuntimeError("db weg")]
+    r = c.post(f"/api/chat/arbeiter/{AID}/fertig", json={"antwort": "x", "bloecke": _dok_bilder("a.jpg")}, headers=HB)
+    assert r.status_code == 503
     assert all("pult_chat_fertig" not in s for s in f.sql)
 
 
@@ -342,6 +443,25 @@ def test_pruefen(umg):
     assert all(s.lstrip().upper().startswith("SELECT") for s in f.sql)
 
 
+def test_pruefen_neues_fremdes_bild_fehler(umg):
+    f, _, c = umg
+    f.antworten += [[JOB], _sicht(fremde=["fremd.jpg"]), [{"bloecke": _dok_bilder("eigen.jpg")}]]
+    r = c.post(f"/api/chat/arbeiter/{AID}/pruefen", json={"bloecke": _dok_bilder("fremd.jpg")}, headers=HB)
+    assert r.status_code == 200 and r.json()["fehler"].startswith("Bild nicht verfügbar"), r.text
+    assert "fremd.jpg" in r.json()["fehler"]
+    # Logo der anderen Firma ohne Zeile zaehlt ebenfalls
+    f.antworten += [[JOB], _sicht(), [{"bloecke": _dok()}]]
+    r = c.post(f"/api/chat/arbeiter/{AID}/pruefen", json={"bloecke": _dok_bilder(LOGO_F)}, headers=HB)
+    assert r.json()["fehler"] == f"Bild nicht verfügbar: {LOGO_F}"
+
+
+def test_pruefen_fremdes_bild_aus_basisfassung_kein_fehler(umg):
+    f, _, c = umg
+    f.antworten += [[JOB], _sicht(fremde=["fremd.jpg"]), [{"bloecke": _dok_bilder("fremd.jpg")}], [{"f": None}]]
+    r = c.post(f"/api/chat/arbeiter/{AID}/pruefen", json={"bloecke": _dok_bilder("fremd.jpg")}, headers=HB)
+    assert r.json() == {"fehler": None}
+
+
 def test_pruefen_nur_in_arbeit(umg):
     f, _, c = umg
     assert c.post(f"/api/chat/arbeiter/{AID}/pruefen", json={"bloecke": {}}, headers=HB).status_code == 404
@@ -352,13 +472,31 @@ def test_pruefen_nur_in_arbeit(umg):
 def test_medien_liefert_datei(umg):
     f, ordner, c = umg
     (ordner / "foto.jpg").write_bytes(b"JPEGDATEN")
-    f.antworten.append([JOB])
+    f.antworten += [[JOB], _sicht()]
     r = c.get(f"/api/chat/arbeiter/{AID}/medien/foto.jpg", headers=HB)
     assert r.status_code == 200 and r.content == b"JPEGDATEN"
     for boese in ("..%2Fx", "..%2F..%2Fgeheim.jpg", ".versteckt.jpg"):
         assert c.get(f"/api/chat/arbeiter/{AID}/medien/{boese}", headers=HB).status_code == 404
     f.antworten.append([dict(JOB, status="fertig")])
     assert c.get(f"/api/chat/arbeiter/{AID}/medien/foto.jpg", headers=HB).status_code == 404
+
+
+def test_medien_fremd_404_eigen_und_gemeinsam_200(umg):
+    f, ordner, c = umg
+    for n in ("fremd.jpg", "eigen.jpg", "gemeinsam.jpg", LOGO_F):
+        (ordner / n).write_bytes(b"BILD")
+    sicht = _sicht(eigene=["eigen.jpg"], fremde=["fremd.jpg"], gemeinsam=["gemeinsam.jpg"])
+    for name, status in (("fremd.jpg", 404), ("eigen.jpg", 200), ("gemeinsam.jpg", 200), (LOGO_F, 404)):
+        f.antworten += [[JOB], sicht]
+        assert c.get(f"/api/chat/arbeiter/{AID}/medien/{name}", headers=HB).status_code == status, name
+
+
+def test_medien_sicht_ausfall_503(umg):
+    f, ordner, c = umg
+    (ordner / "foto.jpg").write_bytes(b"BILD")
+    f.antworten += [[JOB]]
+    f.fehler += [None, RuntimeError("db weg")]
+    assert c.get(f"/api/chat/arbeiter/{AID}/medien/foto.jpg", headers=HB).status_code == 503
 
 
 def _jpeg(w=375, h=900):
@@ -377,6 +515,18 @@ def test_datei_speichert_sichtbar_mit_kollision(umg):
     assert c.post(url, content=_jpeg(), headers=HB).json() == {"name": "oktober-angebot-handy.jpg"}
     assert c.post(url, content=_jpeg(), headers=HB).json() == {"name": "oktober-angebot-handy-2.jpg"}
     assert Image.open(ordner / "oktober-angebot-handy-2.jpg").size == (375, 900)
+    assert len(f.psql.sql) == 2 and "marketing.medien_mandant" in f.psql.sql[0]
+    assert "'oktober-angebot-handy.jpg'" in f.psql.sql[0] and IID in f.psql.sql[0]
+    assert "'oktober-angebot-handy-2.jpg'" in f.psql.sql[1]
+
+
+def test_datei_zuordnung_scheitert_loescht_datei_503(umg):
+    f, ordner, c = umg
+    f.antworten += [[EXPORT_JOB]]
+    f.psql.fehler.append(RuntimeError("psql weg"))
+    r = c.post(f"/api/chat/arbeiter/{AID}/datei?name=oktober-angebot-handy.jpg", content=_jpeg(), headers=HB)
+    assert r.status_code == 503, r.text
+    assert list(ordner.iterdir()) == []
 
 
 def test_datei_zu_gross_422(umg):
@@ -828,7 +978,7 @@ def test_kontext_ueber_4kb_422(umg):
 def test_medien_liefert_dokumente_nur_ueber_arbeiterroute(umg):
     f, ordner, c = umg
     (ordner / "preise.pdf").write_bytes(b"%PDF-1.4")
-    f.antworten.append([JOB])
+    f.antworten += [[JOB], _sicht()]
     r = c.get(f"/api/chat/arbeiter/{AID}/medien/preise.pdf", headers=HB)
     assert r.status_code == 200 and r.content == b"%PDF-1.4"
     assert "pdf" in r.headers["content-type"]
@@ -837,7 +987,7 @@ def test_medien_liefert_dokumente_nur_ueber_arbeiterroute(umg):
         assert c.get(f"/api/chat/arbeiter/{AID}/medien/{boese}", headers=HB).status_code == 404
     # die Medienliste (Bilder fuer den Agenten) bleibt bilderrein
     from spaces.marketing.api import chat
-    assert "preise.pdf" not in chat._medien()
+    assert "preise.pdf" not in chat._medien(lambda n: True)
 
 
 def test_kontext_anhaenge_null_gilt_als_leer(umg):

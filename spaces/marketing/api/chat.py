@@ -16,6 +16,7 @@ import os
 import re
 import tempfile
 import uuid
+from collections.abc import Callable
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -25,6 +26,7 @@ from spaces.marketing.api.bilder import (_BILDTYP, _PLATZ, _anlegen, _auftrag_id
                                          _im_ordner, _ordner)
 from spaces.marketing.api.gestaltung import aufraeumen_falls_faellig, gestaltungen_rechnen, quellen
 from spaces.marketing.api.pult import _lesen, _lesen_einer, _schluessel, _schreiben, _uuid_oder_404, lit
+from spaces.marketing.api.medien_mandant import ist_fremd, sicht, zuordnen_fuer_inhalt
 from spaces.marketing.claw import gestaltung, schoenheit
 
 log = logging.getLogger(__name__)
@@ -57,6 +59,9 @@ _KONTEXT_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 KONTEXT_MAX = 4096
 AUSWAHL_MAX, ANHAENGE_MAX, KURZ_MAX = 8, 5, 80
 _EXPORT_NAME = re.compile(r"([a-z0-9-]{1,60})-(handy|tablet|pc)\.jpg")
+_MEDIEN_VERWEIS = re.compile(r'"medien:([^"\\]{1,200})"')
+BILD_FREMD = "Bild nicht verfügbar: "
+ZUORDNUNG_FEHLT = "Bildzuordnung nicht erreichbar"
 _UMLAUTE = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
 
 
@@ -318,6 +323,26 @@ def _sichtbar_ablegen(ordner: str, stamm: str, roh: bytes) -> str:
     raise HTTPException(422, "Kein freier Dateiname mehr")
 
 
+def _ablegen_und_zuordnen(ordner: str, iid: str, stuecke: list[tuple[str, bytes]]) -> list[str]:
+    """Legt die Dateien ab und ordnet sie dem Mandanten des Inhalts zu. Fail-closed: scheitert
+    eines von beiden, werden die eben abgelegten Dateien geloescht (sonst blieben sie ohne
+    Zuordnung = Gemeinsam liegen) und der Fehler weitergeworfen."""
+    namen: list[str] = []
+    try:
+        for stamm, roh in stuecke:
+            namen.append(_sichtbar_ablegen(ordner, stamm, roh))
+        if namen:
+            zuordnen_fuer_inhalt(iid, namen)
+    except Exception:
+        for n in namen:
+            try:
+                os.remove(os.path.join(ordner, n))
+            except OSError:
+                pass
+        raise
+    return namen
+
+
 @pult_router.post("/inhalte/{iid}/export")
 def export(iid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
     _schluessel(x_pult_key)
@@ -350,7 +375,7 @@ def export(iid: str, payload: dict = Body(...), x_pult_key: str | None = Header(
             f"SELECT marketing.pult_chat_anlegen({lit(i)}::uuid, 'export', '', "
             f"{lit(json.dumps(kontext, ensure_ascii=False))}::jsonb) AS id")
         auftrag = str(zeile["id"])
-    return {"dateien": [_sichtbar_ablegen(ordner, stamm, roh) for stamm, roh in fertig], "auftrag": auftrag}
+    return {"dateien": _ablegen_und_zuordnen(ordner, i, fertig), "auftrag": auftrag}
 
 
 # ─── Arbeiter ───────────────────────────────────────────────────────────
@@ -359,7 +384,8 @@ def export(iid: str, payload: dict = Body(...), x_pult_key: str | None = Header(
 def _in_arbeit(a: str, status_sonst: int = 409) -> dict:
     """Auftrag lesen; nur in_arbeit mit gueltiger Vergabe zaehlt (sonst 404/status_sonst)."""
     z = _lesen_einer(lambda:
-        "SELECT inhalt, art, status, kontext, coalesce(vergeben_bis > now(), false) AS gueltig "
+        "SELECT inhalt, art, status, kontext, coalesce(vergeben_bis > now(), false) AS gueltig, "
+        "(SELECT mandant FROM marketing.inhalte WHERE id = chat_auftraege.inhalt) AS mandant "
         f"FROM marketing.chat_auftraege WHERE id = {lit(a)}::uuid")
     if not z:
         raise HTTPException(404, "Unbekannter Auftrag")
@@ -368,7 +394,7 @@ def _in_arbeit(a: str, status_sonst: int = 409) -> dict:
     return z
 
 
-def _medien() -> list[str]:
+def _medien(sichtbar: Callable[[str], bool]) -> list[str]:
     namen: set[str] = set()
     for o in quellen():
         try:
@@ -376,9 +402,9 @@ def _medien() -> list[str]:
         except OSError:
             continue
         for n in eintraege:
-            if _MEDIEN_NAME.fullmatch(n) and not _ENTWURF.fullmatch(n) and os.path.isfile(os.path.join(o, n)):
+            if _MEDIEN_NAME.fullmatch(n) and not _ENTWURF.fullmatch(n) and os.path.isfile(os.path.join(o, n))                     and sichtbar(n):
                 namen.add(n)
-    return sorted(namen)[:MEDIEN_MAX]
+    return sorted(namen)[:MEDIEN_MAX]   # erst filtern, dann kappen
 
 
 @arbeiter_router.post("/naechster")
@@ -387,7 +413,15 @@ def arbeiter_naechster(x_bild_key: str | None = Header(None)):
     zeile = _schreiben(lambda: f"SELECT marketing.pult_chat_naechster({lit(FRIST)}::interval) AS a")
     a = zeile.get("a")
     if isinstance(a, dict) and a.get("id"):
-        a["medien"] = _medien()
+        m = a.get("mandant")
+        try:
+            s = sicht(m)
+            a["medien"] = _medien(lambda n: not ist_fremd(n, m, s))
+            a["mandant_name"] = s["name"]
+        except HTTPException:      # der Auftrag ist schon vergeben: nie scheitern lassen, nur ohne Bilder
+            a["medien"] = []
+            a["mandant_name"] = m
+            a["medien_hinweis"] = ZUORDNUNG_FEHLT
         antwort = {"auftrag": a}
     else:
         antwort = {"auftrag": None}
@@ -402,6 +436,25 @@ def arbeiter_weiter(aid: str, x_bild_key: str | None = Header(None)):
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_chat_verlaengern({lit(a)}::uuid, {lit(FRIST)}::interval) AS ok")
     return {"ok": bool(zeile.get("ok"))}
+
+
+def _fremde_neu(a: str, job: dict, bloecke: dict) -> str | None:
+    """Verweist die neue Fassung auf ein Bild einer anderen Firma, das die Basisfassung nicht
+    schon hatte? Altbestand bleibt unbeanstandet (sonst waere jede Aenderung blockiert)."""
+    verweise = set(_MEDIEN_VERWEIS.findall(json.dumps(bloecke, ensure_ascii=False)))
+    if not verweise:
+        return None
+    m = job.get("mandant")
+    s = sicht(m)
+    fremd = {n for n in verweise if ist_fremd(n, m, s)}
+    if not fremd:
+        return None
+    basis = _lesen_einer(lambda:
+        "SELECT f.bloecke FROM marketing.chat_auftraege a JOIN marketing.inhalt_fassungen f "
+        f"ON f.inhalt = a.inhalt AND f.fassung = a.fassung_vorher WHERE a.id = {lit(a)}::uuid")
+    alt = set(_MEDIEN_VERWEIS.findall(json.dumps((basis or {}).get("bloecke"), ensure_ascii=False)))
+    rest = fremd - alt
+    return BILD_FREMD + ", ".join(sorted(rest)) if rest else None
 
 
 def _zurueck(a: str, antwort: str) -> dict:
@@ -508,8 +561,8 @@ def arbeiter_pruefen(aid: str, payload: dict = Body(...), x_bild_key: str | None
     bloecke = payload.get("bloecke")
     if not isinstance(bloecke, dict):
         raise HTTPException(422, "bloecke muss ein Objekt sein")
-    _in_arbeit(a)
-    return {"fehler": _gestaltung_fehler(bloecke) or _bloecke_fehler(bloecke)}
+    job = _in_arbeit(a)
+    return {"fehler": _fremde_neu(a, job, bloecke) or _gestaltung_fehler(bloecke) or _bloecke_fehler(bloecke)}
 
 
 def _bildauftraege_formen(roh) -> list[dict]:
@@ -548,6 +601,9 @@ def arbeiter_fertig(aid: str, payload: dict = Body(...), x_bild_key: str | None 
     job = _in_arbeit(a)
     hinweise: list[str] = []
     if bloecke is not None:
+        f = _fremde_neu(a, job, bloecke)
+        if f:
+            return _zurueck(a, NICHT_UMGESETZT + f)
         bloecke, h, fehler = _rechnen_und_pruefen(bloecke)
         if fehler:
             return _zurueck(a, NICHT_UMGESETZT + fehler)
@@ -661,7 +717,9 @@ def arbeiter_medien(aid: str, name: str, x_bild_key: str | None = Header(None)):
     a = _auftrag_id(aid)
     if not _ARBEITER_DATEI.fullmatch(name):
         raise HTTPException(404, "Unbekannte Datei")
-    _in_arbeit(a, 404)
+    job = _in_arbeit(a, 404)
+    if ist_fremd(name, job.get("mandant"), sicht(job.get("mandant"))):
+        raise HTTPException(404, "Unbekannte Datei")
     for o in quellen():
         pfad = _im_ordner(o, name)
         if pfad:
@@ -712,4 +770,4 @@ async def arbeiter_datei(aid: str, request: Request, name: str = Query(""), x_bi
     job = _in_arbeit(a)
     if job.get("art") != "export" or (job.get("kontext") or {}).get("slug") != m.group(1):
         raise HTTPException(422, "Datei passt nicht zu diesem Export-Auftrag")
-    return {"name": _sichtbar_ablegen(ordner, name[:-len(".jpg")], bytes(roh))}
+    return {"name": _ablegen_und_zuordnen(ordner, str(job["inhalt"]), [(name[:-len(".jpg")], bytes(roh))])[0]}
