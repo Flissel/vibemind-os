@@ -220,8 +220,8 @@ def test_bildteile_ablegen_ersetzt_durch_verweis_und_schreibt_datei(tmp_path):
     assert Path(pfade[0]).read_bytes() == PNG and Path(pfade[1]).read_bytes() == b"JPG!"
     teile = neu[1]["content"]
     assert teile[0] == {"type": "text", "text": "Schau:"}
-    assert teile[1] == {"type": "text", "text": f"[Bild 1: {pfade[0]} – lies die Datei mit dem Read-Werkzeug]"}
-    assert teile[2]["text"].startswith("[Bild 2: ")
+    assert teile[1] == {"type": "text", "text": f"\n[Bild 1: {pfade[0]} – lies die Datei mit dem Read-Werkzeug]"}
+    assert teile[2]["text"].startswith("\n[Bild 2: ")
     assert neu[0] == messages[0]
     assert messages[1]["content"][1]["type"] == "image_url"  # Original unberuehrt
 
@@ -292,7 +292,12 @@ def test_bild_anfrage_cli_sieht_datei_flags_und_verweis_dann_geloescht(server, p
     argv = p["argv"]
     assert argv[argv.index("--add-dir") + 1] == p["ordner"]
     assert Path(p["ordner"]).name.startswith("mshim-")
-    assert "Read" in argv[argv.index("--allowedTools") + 1:]
+    erlaubt = argv[argv.index("--allowedTools") + 1:]
+    assert f"Read({p['ordner']}/**)" in erlaubt
+    assert "Read" not in argv  # nie das nackte Read: sonst liest die CLI jede Datei
+    gesperrt = argv[argv.index("--disallowedTools") + 1:]
+    for werkzeug in ("Bash", "Write", "Edit", "WebFetch", "WebSearch"):
+        assert werkzeug in gesperrt
     assert p["dateien"] == {"bild-1.png": PNG.hex()}
     assert f"[Bild 1: {os.path.join(p['ordner'], 'bild-1.png')}" in p["stdin"]
     assert "Read-Werkzeug" in p["stdin"]
@@ -309,7 +314,7 @@ def test_read_als_einziges_werkzeug_laesst_systemprompt_unveraendert(server, pro
     assert conn.getresponse().status == 200
     p = _geladen(protokoll)
     assert p["system"] == "Du bist Designer."
-    assert "Read" in p["argv"]
+    assert f"Read({p['ordner']}/**)" in p["argv"] and "Read" not in p["argv"]
 
 
 def test_bild_anfrage_cli_exit_loescht_ordner_und_gibt_502(server, protokoll):
@@ -322,7 +327,8 @@ def test_bild_anfrage_im_stream_pfad(server, protokoll):
     daten = list(_chunks(_post_bilder(server(), 2, stream=True, echt=True)))
     assert daten[-1][1] == "[DONE]"
     p = _geladen(protokoll)
-    assert "--add-dir" in p["argv"] and "Read" in p["argv"]
+    assert "--add-dir" in p["argv"] and "Read" not in p["argv"]
+    assert f"Read({p['ordner']}/**)" in p["argv"] and "--disallowedTools" in p["argv"]
     assert sorted(p["dateien"]) == ["bild-1.png", "bild-2.png"]
     assert not os.path.exists(p["ordner"])
 
@@ -351,4 +357,5 @@ def test_ohne_bildteile_argumente_unveraendert(server, protokoll):
     assert _post(server(), False).status == 200
     argv = _geladen(protokoll)["argv"]
     assert "--add-dir" not in argv and "--allowedTools" not in argv and "Read" not in argv
+    assert "--disallowedTools" not in argv
     assert argv[:3] == ["-p", "--output-format", "json"]

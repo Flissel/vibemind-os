@@ -67,6 +67,7 @@ class ShimEingabeFehler(ValueError):
 MAX_BILDER = 6
 MAX_BILD_BYTES = 10 * 1024 * 1024
 _BILD_URL = re.compile(r"^data:image/(png|jpeg|webp);base64,(.*)$", re.DOTALL)
+_BILD_GESPERRT = ("Bash", "Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch")
 _BILD_ENDUNG = {"png": "png", "jpeg": "jpg", "webp": "webp"}
 
 
@@ -117,7 +118,7 @@ def bildteile_ablegen(
             pfade.append(pfad)
             teile.append({
                 "type": "text",
-                "text": f"[Bild {len(pfade)}: {pfad} – lies die Datei mit dem Read-Werkzeug]",
+                "text": f"\n[Bild {len(pfade)}: {pfad} – lies die Datei mit dem Read-Werkzeug]",
             })
         neu.append({**message, "content": teile})
     return neu, pfade
@@ -305,9 +306,13 @@ def _build_command(
     cli_tools = list(allowed_tools)
     if bilder_ordner:
         argv += ["--add-dir", bilder_ordner]
-        cli_tools.append("Read")
+        # Nie das nackte "Read": es liesse die CLI jede Datei des PCs lesen
+        # (Prompt-Injection auf .env). Nur der Bildordner ist lesbar.
+        cli_tools.append(f"Read({bilder_ordner}/**)")
     if cli_tools:
         argv += ["--allowedTools", *cli_tools]
+    if bilder_ordner:
+        argv += ["--disallowedTools", *_BILD_GESPERRT]
 
     # The caller's own prompt asks for opaque artifact references but cannot know
     # how this backend produces one, so the side that supplies the tool documents
