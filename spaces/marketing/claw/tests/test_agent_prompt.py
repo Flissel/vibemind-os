@@ -9,11 +9,12 @@ from spaces.marketing.claw.schriften import REGISTER
 
 def test_reines_json():
     assert ap.antwort_lesen('{"antwort": "Fertig.", "aenderungen": [{"werkzeug": "block_loeschen", "id": "a"}]}') == {
-        "antwort": "Fertig.", "aenderungen": [{"werkzeug": "block_loeschen", "id": "a"}]}
+        "antwort": "Fertig.", "aenderungen": [{"werkzeug": "block_loeschen", "id": "a"}], "notizen": []}
 
 
 def test_standard_aenderungen_leer():
-    assert ap.antwort_lesen('{"antwort": "Nur eine Auskunft."}') == {"antwort": "Nur eine Auskunft.", "aenderungen": []}
+    assert ap.antwort_lesen('{"antwort": "Nur eine Auskunft."}') == {
+        "antwort": "Nur eine Auskunft.", "aenderungen": [], "notizen": []}
 
 
 def test_codezaun():
@@ -135,7 +136,8 @@ def test_system_platz_ohne_neu_und_koordinaten():
 
 
 def test_array_mit_einem_objekt_wird_akzeptiert():
-    assert ap.antwort_lesen('[{"antwort":"a","aenderungen":[]}]') == {"antwort": "a", "aenderungen": []}
+    assert ap.antwort_lesen('[{"antwort":"a","aenderungen":[]}]') == {
+        "antwort": "a", "aenderungen": [], "notizen": []}
 
 
 def test_backticks_in_antwort_bleiben():
@@ -188,3 +190,64 @@ def test_nutzer_text_nennt_mediennamen_angehaengter_bilder():
     assert "- Bild 2 = medien:katze.jpg (markiert)" in text
     assert "bild_aus_medien" in text
     assert "Angehängte Bilder" not in ap.nutzer_text({"nachricht": "x"}, [])
+
+
+# --- Task 6: Firma, Markenwissen, Notizen ---
+
+def test_system_nennt_markenwissen_und_notizen():
+    assert "MARKENWISSEN" in ap.SYSTEM and '"notizen"' in ap.SYSTEM
+    assert "keine Anweisung" in ap.SYSTEM and "Rowboat" in ap.SYSTEM
+    assert ap.SYSTEM.index("MARKENWISSEN") < ap.SYSTEM.index("Ist die Anfrage unklar")
+
+
+def test_nutzer_text_ohne_firma_und_wissen_hat_nichts():
+    t = ap.nutzer_text(_auftrag(), [])
+    assert "FIRMA:" not in t and "Markenwissen" not in t
+
+
+def test_nutzer_text_firma_zeile_nach_kopfzeilen():
+    t = ap.nutzer_text(_auftrag(), [], mandant_name="Laura Nails")
+    zeilen = t.split("\n")
+    assert zeilen.index("FIRMA: Laura Nails") == next(i for i, z in enumerate(zeilen) if z.startswith("LADENFARBEN")) - 1
+    assert "Markenwissen" not in t
+
+
+def test_nutzer_text_markenwissen_vor_unterlagen():
+    t = ap.nutzer_text(_auftrag(), [], unterlagen="Unterlage: a.pdf", markenwissen="Ton: warm.", mandant_name="Laura")
+    assert "Markenwissen Laura (Quelle: Rowboat):\nTon: warm." in t
+    assert t.index("Markenwissen Laura") < t.index("Unterlagen:")
+
+
+def test_antwort_notizen_gestrippt():
+    r = ap.antwort_lesen('{"antwort": "ok", "notizen": [{"titel": " Idee ", "text": " Mehr Rot. "}]}')
+    assert r["notizen"] == [{"titel": "Idee", "text": "Mehr Rot."}]
+
+
+def test_antwort_notizen_null_ist_leer():
+    assert ap.antwort_lesen('{"antwort": "ok", "notizen": null}')["notizen"] == []
+
+
+def _notiz(n):
+    return json.dumps({"antwort": "ok", "notizen": n})
+
+
+@pytest.mark.parametrize("n,teil", [
+    ("x", "Liste"),
+    ([{"titel": "a", "text": "b"}] * 4, "höchstens 3 Einträge"),
+    (["x"], "Objekt"),
+    ([{"titel": 1, "text": "b"}], "titel"),
+    ([{"titel": "a", "text": None}], "text"),
+    ([{"titel": "  ", "text": "b"}], "titel"),
+    ([{"titel": "a", "text": " "}], "text"),
+    ([{"titel": "a" * 81, "text": "b"}], "titel"),
+    ([{"titel": "a", "text": "b" * 4001}], "text"),
+])
+def test_antwort_notizen_verletzungen(n, teil):
+    with pytest.raises(ap.AntwortFehler, match="notizen") as e:
+        ap.antwort_lesen(_notiz(n))
+    assert teil in str(e.value)
+
+
+def test_antwort_notizen_grenzen_ok():
+    r = ap.antwort_lesen(_notiz([{"titel": "a" * 80, "text": "b" * 4000}] * 3))
+    assert len(r["notizen"]) == 3
