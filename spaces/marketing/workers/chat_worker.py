@@ -591,12 +591,16 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
     if auftrag.get("medien_hinweis"):
         hinweise.insert(0, str(auftrag["medien_hinweis"]))
     angehaengt = [n for n, _ in bilder]
-    medien = angehaengt + [m for m in medien if m not in angehaengt]   # Anhaenge zuerst, auch live erlaubt
-    live.medien.update(angehaengt)
+    # Markenlogo (von der VM als Mediendatei der Firma abgelegt, I5): fuer "… und Logo" setzbar
+    roh_logo = auftrag.get("markenlogo")
+    markenlogo = roh_logo[len("medien:"):] if isinstance(roh_logo, str) and roh_logo.startswith("medien:") else ""
+    vorne = angehaengt + ([markenlogo] if markenlogo and markenlogo not in angehaengt else [])
+    medien = vorne + [m for m in medien if m not in vorne]   # Anhaenge und Markenlogo zuerst, auch live erlaubt
+    live.medien.update(vorne)
     text_nutzer = agent_prompt.nutzer_text(auftrag, medien, unterlagen=unterlagen_text, auswahl_text=auswahl_text,
                                            hinweise=hinweise, bilder=bilder, markenwissen=wissen.text,
                                            mandant_name=name, notizen_text=wissen.notizen,
-                                           markenfarben=markenfarben,
+                                           markenfarben=markenfarben, markenlogo=markenlogo,
                                            feedback=[f for f in (auftrag.get("rueckmeldungen_offen") or [])
                                                      if isinstance(f, dict) and isinstance(f.get("text"), str)])
     # Mit Bildern ist die erste Nachricht eine Teil-Liste; sie bleibt auch in der Korrekturrunde so.
@@ -696,9 +700,14 @@ def ein_durchlauf(api, fragen_strom=frage_strom, exportieren=None, uhr=time.mono
     return chat_bearbeiten(api, auftrag, fragen_strom, uhr, schlafen, halten_takt_s)
 
 
+def _stand_json() -> str:
+    """STAND als JSON aus einer Kopie: Editor- und Marken-Faden schreiben ihn gleichzeitig."""
+    return json.dumps(dict(STAND), default=str)
+
+
 class _Gesundheit(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
-        rumpf = json.dumps(STAND, default=str).encode("utf-8")
+        rumpf = _stand_json().encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -727,21 +736,40 @@ def main() -> None:
     marke = marken_arbeiter.MarkenApi(basis, schluessel)
     abgleich = marken_arbeiter.Abgleich()                    # erster Schritt = Abgleich beim Start
     threading.Thread(target=HTTPServer(("127.0.0.1", PORT), _Gesundheit).serve_forever, daemon=True).start()
-    while True:
-        runde(api, marke, abgleich, marke_ein=marken_arbeiter.ein_durchlauf)
-        time.sleep(TAKT_S)
+    stopp = threading.Event()
+    faden = marken_starten(marke, abgleich, marken_arbeiter.ein_durchlauf, stopp)
+    try:
+        while True:
+            schleifenschritt(api, ein_durchlauf)
+            time.sleep(TAKT_S)
+    finally:                 # Strg+C/Ende: der Marken-Faden beendet seinen Schritt und haelt an
+        stopp.set()
+        faden.join(timeout=MARKE_ENDE_S)
 
 
-def runde(api, marke_api, abgleich, chat_ein=ein_durchlauf, marke_ein=None) -> None:
-    """Eine Schleifenrunde: ein Chat-/Export-Auftrag, ein Marken-Auftrag (Ruling R1: selber Prozess),
-    dann der Marken-Abgleich, wenn er faellig ist (beim Start und alle 10 Minuten)."""
-    schleifenschritt(api, chat_ein)
-    if marke_ein is not None:
+MARKE_ENDE_S = 10
+
+
+def marken_schleife(marke_api, abgleich, marke_ein, stopp: threading.Event, takt_s: float = TAKT_S) -> None:
+    """Eigene Schleife des Marken-Arbeiters (Ruling R1: selber Prozess, R15: eigener Faden): ein
+    Marken-Auftrag, dann der Abgleich, wenn er faellig ist (beim Start und alle 10 Minuten). So wartet
+    ein Marken-Chat nie hinter einem langen Editor-Auftrag (der ihn nach 2 min als "PC aus" verloere)."""
+    while not stopp.is_set():
         schleifenschritt(marke_api, marke_ein, "marke")
-    meldungen = abgleich.schritt(marke_api)
-    if meldungen:
-        STAND["abgleich"] = meldungen[-10:]
-        print({"abgleich": STAND["abgleich"]}, flush=True)
+        meldungen = abgleich.schritt(marke_api)
+        if meldungen:
+            STAND["abgleich"] = meldungen[-10:]
+            print({"abgleich": STAND["abgleich"]}, flush=True)
+        stopp.wait(takt_s)
+
+
+def marken_starten(marke_api, abgleich, marke_ein, stopp: threading.Event,
+                   takt_s: float = TAKT_S) -> threading.Thread:
+    """Startet marken_schleife als Daemon-Faden (haelt das Prozessende nie auf) und gibt ihn zurueck."""
+    faden = threading.Thread(target=marken_schleife, args=(marke_api, abgleich, marke_ein, stopp, takt_s),
+                             name="marke", daemon=True)
+    faden.start()
+    return faden
 
 
 if __name__ == "__main__":

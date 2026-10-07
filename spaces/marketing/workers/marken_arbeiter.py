@@ -6,7 +6,10 @@ Laeuft im Prozess des Chat-Arbeiters (Ruling R1) und holt Auftraege von /api/mar
   (die DB markiert dabei die offenen Entwuerfe). Scheitert etwas vor dem Schreiben, wird nichts
   geschrieben und der Auftrag mit Grund zurueckgegeben.
 - Abgleich (Start + alle 10 min): Kopfteil jeder Marke.md gegen den Spiegel; gueltige Werte, die
-  abweichen, werden gespiegelt, ungueltige nie (Rowboat bleibt Wahrheit)."""
+  abweichen, werden gespiegelt, ungueltige nie (Rowboat bleibt Wahrheit). Die Lese-Hinweise
+  ("Marke.md: akzent ungültig") gehen an die VM, damit die Profilseite sie zeigt.
+- Ein Chat-Auftrag bringt den offenen Vorschlag der Firma mit: Claude verfeinert ihn, sein Logo bleibt
+  gueltig (C1/R14). Laeuft in einem eigenen Faden des Chat-Arbeiters (R15)."""
 from __future__ import annotations
 
 import datetime
@@ -19,6 +22,7 @@ from spaces.marketing.workers import chat_worker as cw
 from spaces.marketing.workers.bild_worker import ApiFehler
 
 ABGLEICH_S = 600
+FEHLER_TAKT_S = 60         # nach einem gescheiterten Abgleich (VM weg) nicht 10 Minuten warten
 MAX_HINWEISE = 50          # Grenze der VM (api/marke._hinweise)
 MAX_HINWEIS = 300
 UNBEKANNT = "Unbekannte Auftragsart"
@@ -43,6 +47,9 @@ class MarkenApi(cw.ChatApi):
 
     def firmen(self) -> list[dict]:
         return json.loads(self._anfrage("GET", "/firmen") or b"{}").get("firmen") or []
+
+    def hinweise(self, mandant: str, hinweise: list[str]) -> dict:
+        return self._post("/hinweise", {"mandant": mandant, "hinweise": hinweise})
 
 
 class _Aufgeben(Exception):
@@ -146,10 +153,11 @@ def chat_bearbeiten(api, auftrag: dict, fragen_strom, webseite_lesen, logo_laden
     zustand = {"mit_bildern": bool(bildteile), "text_nutzer": text_nutzer, "hinweise": hinweise}
     anhaenge = [n for n, _ in bilder]
     logos = list(fund.logos) if fund is not None else []
+    bisher = marken_prompt.bisheriges_logo(auftrag)      # Logo des offenen Vorschlags (C1/R14)
     for versuch in (1, 2):
         text = _text_holen(api, aid, fragen_strom, nachrichten, zustand, uhr, schlafen, halten_takt_s)
         try:
-            erg = marken_prompt.antwort_lesen(text, anhaenge, len(logos))
+            erg = marken_prompt.antwort_lesen(text, anhaenge, len(logos), bisher)
             break
         except marken_prompt.AntwortFehler as e:
             if versuch == 2:
@@ -165,6 +173,8 @@ def chat_bearbeiten(api, auftrag: dict, fragen_strom, webseite_lesen, logo_laden
     logo = vorschlag.get("logo")
     if isinstance(logo, str) and logo.startswith("web:"):
         vorschlag["logo"] = _web_logo(api, aid, logos[int(logo[4:]) - 1], logo_laden, hinweise)
+    elif logo is None and bisher:
+        vorschlag["logo"] = bisher        # null = "Logo bleibt" - beim offenen Vorschlag also dessen Logo
     api.vorschlag(aid, {"vorschlag": vorschlag, "antwort": erg["antwort"], "hinweise": _hinweise(hinweise)})
     return "fertig"
 
@@ -196,23 +206,48 @@ def _spiegeln(api, mandant: str, gestalt: dict, stand: str) -> str | None:
     return f"Spiegel nicht aktualisiert: {grund or 'Gestalt ungültig'}"
 
 
-def abgleichen(api, wurzel: str, mandanten: list[dict]) -> list[str]:
-    """Je Firma: gueltige Kopfteil-Werte der Marke.md mit dem Spiegel vergleichen und bei Abweichung
-    spiegeln. Ohne Ordner, ohne Kopfteil oder ganz ohne gueltige Werte passiert nichts. -> Meldungen."""
+def _hinweise_melden(api, mandant: str, name: str, profil, firma: dict) -> str | None:
+    """Lese-Hinweise der Marke.md an die VM, wenn sie sich geaendert haben (I3) -> Meldung bei Fehlschlag."""
+    neu = _hinweise(profil.hinweise)
+    bisher = firma.get("hinweise") if isinstance(firma.get("hinweise"), list) else []
+    if neu == bisher:
+        return None
+    try:
+        api.hinweise(mandant, neu)
+    except (ApiFehler, OSError, ValueError) as e:
+        return f"{name}: Hinweise nicht gemeldet: {cw._kurz(e)}"
+    return None
+
+
+def abgleichen(api, wurzel: str, mandanten: list[dict], abgelehnt: dict | None = None) -> list[str]:
+    """Je Firma: Lese-Hinweise der Marke.md melden, gueltige Kopfteil-Werte mit dem Spiegel vergleichen und
+    bei Abweichung spiegeln. Ohne Ordner, ohne Kopfteil oder ganz ohne gueltige Werte wird nicht gespiegelt.
+    abgelehnt (mandant -> Gestalt) merkt sich, was die VM abgelehnt hat: dieselbe Gestalt wird nicht alle
+    10 Minuten erneut geschickt, solange der Spiegel den Fehler noch traegt (T5-b). -> Meldungen."""
     meldungen = []
+    abgelehnt = abgelehnt if abgelehnt is not None else {}
     for firma in mandanten:
         if not isinstance(firma, dict) or not firma.get("id"):
             continue
         mandant, name = str(firma["id"]), str(firma.get("name") or firma["id"])
         profil = markenprofil.lesen(wurzel, mandant, name)
+        meldung = _hinweise_melden(api, mandant, name, profil, firma)
+        if meldung:
+            meldungen.append(meldung)
         gestalt = spiegel_gestalt(profil)
         if not gestalt:
             continue
         spiegel = firma.get("gestalt") if isinstance(firma.get("gestalt"), dict) else {}
         if all(spiegel.get(k) == v for k, v in gestalt.items()):
+            abgelehnt.pop(mandant, None)
             continue
+        if firma.get("fehler") and abgelehnt.get(mandant) == gestalt:
+            continue
+        abgelehnt.pop(mandant, None)
         try:
             fehler = _spiegeln(api, mandant, gestalt, profil.werte.get("stand", ""))
+            if fehler:
+                abgelehnt[mandant] = gestalt
         except (ApiFehler, OSError, ValueError) as e:
             fehler = f"Spiegel nicht erreichbar: {cw._kurz(e)}"
         meldungen.append(f"{name}: {fehler or 'gespiegelt'}")
@@ -220,22 +255,27 @@ def abgleichen(api, wurzel: str, mandanten: list[dict]) -> list[str]:
 
 
 class Abgleich:
-    """Ruft abgleichen beim ersten Schritt und danach hoechstens alle ABGLEICH_S Sekunden."""
+    """Ruft abgleichen beim ersten Schritt und danach hoechstens alle ABGLEICH_S Sekunden; scheitert ein
+    Lauf (VM nicht erreichbar), schon nach FEHLER_TAKT_S erneut (T5-a)."""
 
     def __init__(self, uhr=time.monotonic, abgleichen=abgleichen, wurzel: str | None = None,
                  takt_s: float = ABGLEICH_S):
         self.uhr, self._abgleichen, self.wurzel, self.takt_s = uhr, abgleichen, wurzel, takt_s
         self.naechster: float | None = None
+        self.abgelehnt: dict = {}
 
     def schritt(self, api) -> list[str]:
         jetzt = self.uhr()
         if self.naechster is not None and jetzt < self.naechster:
             return []
-        self.naechster = jetzt + self.takt_s
         try:
-            return self._abgleichen(api, self.wurzel or markenwissen.wurzel(), api.firmen())
+            meldungen = self._abgleichen(api, self.wurzel or markenwissen.wurzel(), api.firmen(),
+                                         abgelehnt=self.abgelehnt)
         except Exception as e:  # noqa: BLE001 - der Abgleich darf die Schleife nie stoeren
+            self.naechster = jetzt + min(FEHLER_TAKT_S, self.takt_s)
             return [f"Abgleich gescheitert: {cw._kurz(e)}"]
+        self.naechster = jetzt + self.takt_s
+        return meldungen
 
 
 # --- Uebernehmen ---------------------------------------------------------------------
@@ -289,6 +329,10 @@ def uebernehmen(api, auftrag: dict, wurzel: str, jetzt, halten_takt_s) -> str:
         fehler = f"Spiegel nicht erreichbar: {cw._kurz(e)}"
     if fehler:
         hinweise.append(fehler + " – der Abgleich holt es nach.")
+    try:                    # Profilseite: Lese-Hinweise der neuen Marke.md (sonst erst beim naechsten Abgleich)
+        api.hinweise(mandant, _hinweise(neu.hinweise))
+    except (ApiFehler, OSError, ValueError):
+        pass                # nicht auftragsgebunden; der Abgleich meldet sie spaetestens in 10 Minuten
     api.fertig(aid, {"antwort": UEBERNOMMEN, "hinweise": _hinweise(hinweise)})
     return "fertig"
 

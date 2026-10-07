@@ -1025,3 +1025,40 @@ def test_naechster_rueckmeldungen_lesefehler_verliert_auftrag_nicht(umg):
     assert r.status_code == 200, r.text
     a = r.json()["auftrag"]
     assert a["id"] == AID and a["rueckmeldungen_offen"] == [] and a["mandant_name"] == "Vibemind"
+
+
+# --- Marke per Chat, Schlussrunde I5: Markenlogo als Mediendatei der Firma -----------
+
+
+def _png_b64():
+    import base64
+    puffer = io.BytesIO()
+    Image.new("RGB", (20, 10), "#b45309").save(puffer, "PNG")
+    return puffer.getvalue(), base64.b64encode(puffer.getvalue()).decode("ascii")
+
+
+def test_naechster_traegt_das_markenlogo_als_medium(umg):
+    import hashlib
+    f, ordner, c = umg
+    roh, b64 = _png_b64()
+    f.antworten += [[{"a": {"id": AID, "art": "chat", "nachricht": "n", "mandant": "vibemind"}}], _sicht(),
+                    [{"laden": "Vibemind", "layout": "marke-vibemind",
+                      "gestalt": {"akzent": "#b45309", "logo": f"data:image/png;base64,{b64}"}}]]
+    a = c.post("/api/chat/arbeiter/naechster", headers=HB).json()["auftrag"]
+    name = f"logo-vibemind-{hashlib.sha256(roh).hexdigest()[:10]}.png"
+    assert a["markenlogo"] == f"medien:{name}"
+    assert (ordner / name).read_bytes() == roh
+    assert a["medien"][0] == name                                       # der Agent darf es setzen
+    assert "layout_vorlagen" in f.sql[2] and "'vibemind'" in f.sql[2]
+
+
+def test_naechster_ohne_markenlogo_und_lesefehler_verliert_nichts(umg):
+    f, ordner, c = umg
+    f.antworten += [[{"a": {"id": AID, "art": "chat", "nachricht": "n", "mandant": "vibemind"}}], _sicht(),
+                    [{"laden": "Vibemind", "layout": None, "gestalt": None}]]
+    a = c.post("/api/chat/arbeiter/naechster", headers=HB).json()["auftrag"]
+    assert a["markenlogo"] is None
+    f.antworten += [[{"a": {"id": AID, "art": "chat", "nachricht": "n", "mandant": "vibemind"}}], _sicht()]
+    f.fehler += [None, None, RuntimeError("db weg")]
+    r = c.post("/api/chat/arbeiter/naechster", headers=HB)
+    assert r.status_code == 200 and r.json()["auftrag"]["markenlogo"] is None

@@ -327,3 +327,13 @@ def test_nutzer_text_nennt_markenfarben():
                                                      "grund": "#faf7f2", "text": "#2b2724"})
     assert "MARKENFARBEN (Marke.md): akzent #b45309, zweitfarbe #3b2f2f, grund #faf7f2, text #2b2724" in t
     assert "MARKENFARBEN" not in ap.nutzer_text(_auftrag(), [])
+
+
+def test_i5_nutzer_text_nennt_das_markenlogo():
+    t = ap.nutzer_text(_auftrag(), ["logo-x-0123456789.png"], markenlogo="logo-x-0123456789.png")
+    assert "MARKENLOGO (Marke): medien:logo-x-0123456789.png" in t
+    assert "MARKENLOGO" not in ap.nutzer_text(_auftrag(), [])
+
+
+def test_i5_system_erklaert_das_markenlogo():
+    assert "MARKENLOGO" in ap.SYSTEM

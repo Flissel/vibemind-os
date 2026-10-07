@@ -150,3 +150,47 @@ def test_nutzer_text_mit_profil_fund_bildern_unterlagen_hinweisen():
 def test_korrektur_text_nennt_fehler():
     t = kp.korrektur_text("Kontrast Text/Grund 1.6:1")
     assert "Kontrast Text/Grund 1.6:1" in t and "JSON" in t
+
+
+# --- Schlussrunde (final-review.md) -------------------------------------------------
+
+OFFEN = {"id": "v1", "vorschlag": _mit(logo="anhang:logo.png", abschnitte={"Ton": "Laut und frech."})}
+
+
+def test_c1_offener_vorschlag_steht_als_material_im_nutzertext():
+    """R14: die Folgerunde sieht den offenen Vorschlag und soll ihn verfeinern, nicht neu anfangen."""
+    t = kp.nutzer_text({**AUFTRAG, "nachricht": "Ton ruhiger", "vorschlag": OFFEN}, mp.Profil(), None, "", [], [])
+    assert "OFFENER VORSCHLAG (Material)" in t
+    assert "akzent #b45309" in t and "schrift_anzeige playfair" in t and "logo anhang:logo.png" in t
+    assert "## Ton\nLaut und frech." in t
+    assert "verfeinere" in t.lower()
+    ohne = kp.nutzer_text(AUFTRAG, mp.Profil(), None, "", [], [])
+    assert "OFFENER VORSCHLAG" not in ohne
+
+
+def test_c1_system_erklaert_den_offenen_vorschlag():
+    assert "OFFENER VORSCHLAG" in kp.SYSTEM
+
+
+def test_c1_logo_des_offenen_vorschlags_gilt_woertlich():
+    """Runde 2 ohne Upload: das Logo aus Runde 1 (Anhang oder abgelegtes Web-Logo) bleibt gueltig."""
+    for logo in ("anhang:logo.png", "marke-radhaus-logo-0123456789.png"):
+        erg = kp.antwort_lesen(_antwort(_mit(logo=logo)), bisher_logo=logo)
+        assert erg["vorschlag"]["logo"] == logo
+    with pytest.raises(kp.AntwortFehler, match="logo"):
+        kp.antwort_lesen(_antwort(_mit(logo="anhang:anders.png")), bisher_logo="anhang:logo.png")
+
+
+def test_minor1_als_logo_nur_png_oder_jpeg_anhaenge():
+    for name in ("bild.webp", "bild.gif"):
+        with pytest.raises(kp.AntwortFehler, match="PNG oder JPEG"):
+            kp.antwort_lesen(_antwort(_mit(logo=f"anhang:{name}")), anhaenge=[name])
+    for name in ("a.png", "b.jpg", "c.JPEG"):
+        assert kp.antwort_lesen(_antwort(_mit(logo=f"anhang:{name}")), anhaenge=[name])["vorschlag"]["logo"] \
+            == f"anhang:{name}"
+
+
+def test_minor1_nutzertext_markiert_bilder_die_kein_logo_sein_koennen():
+    t = kp.nutzer_text(AUFTRAG, mp.Profil(), None, "", [("foto.webp", "Anhang"), ("logo.png", "Anhang")], [])
+    assert "Bild 1 = anhang:foto.webp (Anhang; kein Logo möglich: nur PNG oder JPEG)" in t
+    assert "Bild 2 = anhang:logo.png (Anhang)" in t

@@ -427,10 +427,8 @@ def gestalt(werte: dict, logo: bytes | None, logo_typ: str | None) -> dict:
         url = _spiegel_logo(bytes(logo))
         if url:
             ergebnis["logo"] = url
-    schriften = {}
-    for ziel, quelle in (("anzeige", "schrift_anzeige"), ("text", "schrift_text")):
-        if _gueltig(quelle, werte.get(quelle)):
-            schriften[ziel] = werte[quelle]
-    if schriften:
-        ergebnis["schriften"] = schriften
+    # Nur als vollstaendiges Paar: die VM verlangt genau anzeige UND text und lehnte sonst die ganze
+    # Gestalt ab - ein kaputter Schriftwert blockierte dann auch gueltige Farben (I2).
+    if _gueltig("schrift_anzeige", werte.get("schrift_anzeige")) and _gueltig("schrift_text", werte.get("schrift_text")):
+        ergebnis["schriften"] = {"anzeige": werte["schrift_anzeige"], "text": werte["schrift_text"]}
     return ergebnis

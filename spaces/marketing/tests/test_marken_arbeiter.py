@@ -77,6 +77,9 @@ class Api:
     def firmen(self):
         return self._firmen
 
+    def hinweise(self, mandant, hinweise):
+        self.log.append(("hinweise", mandant, hinweise)); return {"ok": True}
+
     def aufrufe(self, name):
         return [e for e in self.log if e[0] == name]
 
@@ -379,7 +382,7 @@ def test_abgleich_spiegel_abgelehnt_wird_meldung_und_faellt_nicht_um(wurzel):
 def test_abgleich_takt_beim_start_und_alle_zehn_minuten(wurzel):
     gerufen = []
     zeit = [0.0]
-    takt = ma.Abgleich(uhr=lambda: zeit[0], abgleichen=lambda api, w, f: gerufen.append(f) or [])
+    takt = ma.Abgleich(uhr=lambda: zeit[0], abgleichen=lambda api, w, f, **kw: gerufen.append(f) or [])
     api = Api(firmen=[_spiegel()])
     takt.schritt(api)
     zeit[0] = 599.0
@@ -445,17 +448,189 @@ def test_schleifenschritt_schreibt_eigenes_feld(monkeypatch):
     assert cw.STAND["marke"] == "leer" and cw.STAND["letztes_ergebnis"] is None
 
 
-def test_runde_chat_dann_marke_dann_abgleich(monkeypatch):
+def test_i4_marken_schleife_laeuft_eigenstaendig_bis_zum_stopp(monkeypatch):
+    """R15: der Marken-Arbeiter hat seine eigene Schleife (Auftrag, dann Abgleich) und endet sauber."""
     monkeypatch.setattr(cw, "STAND", {"letzter_lauf": None, "letztes_ergebnis": None})
+    stopp = cw.threading.Event()
     reihenfolge = []
 
     class Takt:
         def schritt(self, api):
-            reihenfolge.append(("abgleich", api)); return ["Radhaus: gespiegelt"]
-    chat, marke = object(), object()
-    cw.runde(chat, marke, Takt(),
-             chat_ein=lambda api: reihenfolge.append(("chat", api)) or "leer",
-             marke_ein=lambda api: reihenfolge.append(("marke", api)) or "fertig")
-    assert reihenfolge == [("chat", chat), ("marke", marke), ("abgleich", marke)]
-    assert cw.STAND["letztes_ergebnis"] == "leer" and cw.STAND["marke"] == "fertig"
-    assert cw.STAND["abgleich"] == ["Radhaus: gespiegelt"]
+            reihenfolge.append(("abgleich", api))
+            if len(reihenfolge) >= 4:
+                stopp.set()
+            return ["Radhaus: gespiegelt"]
+    marke = object()
+    cw.marken_schleife(marke, Takt(), lambda api: reihenfolge.append(("marke", api)) or "fertig", stopp, takt_s=0)
+    assert reihenfolge == [("marke", marke), ("abgleich", marke)] * 2
+    assert cw.STAND["marke"] == "fertig" and cw.STAND["abgleich"] == ["Radhaus: gespiegelt"]
+    assert cw.STAND["letztes_ergebnis"] is None                    # der Editor-Teil laeuft woanders
+
+
+def test_i4_marke_laeuft_waehrend_der_editor_arbeitet(monkeypatch):
+    """Ein langer Editor-Auftrag haelt den Marken-Chat nicht auf (sonst stirbt er nach 2 min als "PC aus")."""
+    monkeypatch.setattr(cw, "STAND", {"letzter_lauf": None, "letztes_ergebnis": None})
+    stopp, marke_lief = cw.threading.Event(), cw.threading.Event()
+
+    class Takt:
+        def schritt(self, api):
+            return []
+    faden = cw.marken_starten(object(), Takt(), lambda api: marke_lief.set() or "fertig", stopp, takt_s=0.01)
+    try:
+        # der Editor-Schritt blockiert, bis der Marken-Auftrag gelaufen ist - nur mit eigenem Faden moeglich
+        cw.schleifenschritt(object(), lambda api: "fertig" if marke_lief.wait(5) else "blockiert")
+        assert cw.STAND["letztes_ergebnis"] == "fertig"
+    finally:
+        stopp.set()
+        faden.join(5)
+    assert not faden.is_alive() and faden.daemon
+
+
+def test_i4_gesundheit_liest_einen_schnappschuss(monkeypatch):
+    monkeypatch.setattr(cw, "STAND", {"letzter_lauf": None, "letztes_ergebnis": "leer", "marke": "fertig"})
+    assert json.loads(cw._stand_json()) == {"letzter_lauf": None, "letztes_ergebnis": "leer", "marke": "fertig"}
+
+
+# --- Schlussrunde (final-review.md) --------------------------------------------------
+
+OFFEN = {**VORSCHLAG, "logo": "anhang:logo.png", "abschnitte": {"Ton": "Laut und frech."}}
+RUNDE2 = {**CHAT, "nachricht": "Ton ruhiger", "verlauf": [{"nachricht": "Hier unsere Seite", "antwort": "Vorschlag"}],
+          "vorschlag": {"id": "v1", "vorschlag": OFFEN}}
+
+
+def test_c1_folgerunde_ohne_upload_behaelt_das_logo_der_ersten_runde(wurzel):
+    """R14 / Spec §6: Webseite + Logo -> Vorschlag -> "Ton ruhiger" (ohne Upload) -> Übernehmen schreibt logo.png."""
+    api = Api(dict(RUNDE2), medien={"logo.png": LOGO})
+    fragen = Fragen(_antwort({**OFFEN, "abschnitte": {"Ton": "Ruhig, per Du."}}))
+    assert _lauf(api, fragen) == "fertig"
+    assert len(fragen.gesehen) == 1                                # kein Korrekturversuch noetig
+    t = _text(fragen)
+    assert "OFFENER VORSCHLAG (Material)" in t and "logo anhang:logo.png" in t and "Laut und frech." in t
+    (_, _, daten), = api.aufrufe("vorschlag")
+    assert daten["vorschlag"]["logo"] == "anhang:logo.png" and daten["vorschlag"]["abschnitte"]["Ton"] == "Ruhig, per Du."
+    # ... und das Uebernehmen dieses Vorschlags schreibt das Logo nach Rowboat
+    api2 = Api(_uebernehmen(daten["vorschlag"]), medien={"logo.png": LOGO})
+    assert _lauf(api2, Fragen()) == "fertig"
+    assert (wurzel / "Radhaus" / "logo.png").read_bytes() == LOGO
+    assert mp.lesen(str(wurzel), "radhaus", "Radhaus").werte["logo"] == "logo.png"
+
+
+def test_c1_folgerunde_logo_null_behaelt_das_bisherige():
+    """null heisst "Logo bleibt" - mit offenem Vorschlag also dessen Logo (auch ein abgelegtes Web-Logo)."""
+    web = "marke-radhaus-logo-0123456789.png"
+    api = Api({**RUNDE2, "vorschlag": {"id": "v1", "vorschlag": {**OFFEN, "logo": web}}})
+    assert _lauf(api, Fragen(_antwort({**VORSCHLAG, "logo": None}))) == "fertig"
+    assert api.aufrufe("vorschlag")[0][2]["vorschlag"]["logo"] == web
+
+
+def test_c1_erste_runde_ohne_offenen_vorschlag_bleibt_wie_bisher():
+    api, fragen = Api(dict(CHAT)), Fragen(_antwort())
+    assert _lauf(api, fragen) == "fertig"
+    assert "OFFENER VORSCHLAG" not in _text(fragen)
+    assert api.aufrufe("vorschlag")[0][2]["vorschlag"]["logo"] is None
+
+
+def test_i3_abgleich_meldet_profil_hinweise_auch_ohne_spiegel_aenderung(wurzel):
+    (wurzel / "Radhaus").mkdir()
+    (wurzel / "Radhaus" / "Marke.md").write_text("---\nakzent: #12\nzweitfarbe: #3b2f2f\n---\n", encoding="utf-8")
+    api = Api()
+    ma.abgleichen(api, str(wurzel), [{**_spiegel(flaeche="#3b2f2f"), "hinweise": []}])
+    assert api.aufrufe("spiegeln") == []
+    assert api.aufrufe("hinweise") == [("hinweise", "radhaus", ["Marke.md: akzent ungültig"])]
+    # schon gemeldet: kein zweiter Aufruf
+    api = Api()
+    ma.abgleichen(api, str(wurzel), [{**_spiegel(flaeche="#3b2f2f"), "hinweise": ["Marke.md: akzent ungültig"]}])
+    assert api.aufrufe("hinweise") == []
+    # repariert: die Liste wird geleert
+    (wurzel / "Radhaus" / "Marke.md").write_text("---\nzweitfarbe: #3b2f2f\n---\n", encoding="utf-8")
+    api = Api()
+    ma.abgleichen(api, str(wurzel), [{**_spiegel(flaeche="#3b2f2f"), "hinweise": ["Marke.md: akzent ungültig"]}])
+    assert api.aufrufe("hinweise") == [("hinweise", "radhaus", [])]
+
+
+def test_i3_abgleich_hinweise_auch_ganz_ohne_gueltige_werte(wurzel):
+    (wurzel / "Radhaus").mkdir()
+    (wurzel / "Radhaus" / "Marke.md").write_text("---\nakzent: #12\n---\n", encoding="utf-8")
+    api = Api()
+    meldungen = ma.abgleichen(api, str(wurzel), [_spiegel()])
+    assert api.aufrufe("hinweise") == [("hinweise", "radhaus", ["Marke.md: akzent ungültig"])]
+    assert api.aufrufe("spiegeln") == [] and meldungen == []
+
+
+def test_i3_hinweise_nicht_meldbar_wird_meldung(wurzel):
+    class Weg(Api):
+        def hinweise(self, mandant, hinweise):
+            raise OSError("netz weg")
+    meldungen = ma.abgleichen(Weg(), str(wurzel), [{**_spiegel(), "hinweise": ["alt"]}])
+    assert any("netz weg" in m for m in meldungen)
+
+
+def test_i3_uebernehmen_meldet_die_hinweise_des_neuen_profils(wurzel):
+    api = Api(_uebernehmen())
+    assert _lauf(api, Fragen()) == "fertig"
+    assert api.aufrufe("hinweise") == [("hinweise", "radhaus", [])]
+
+
+def test_i2_ein_kaputter_schriftwert_blockiert_den_spiegel_nicht(wurzel):
+    (wurzel / "Radhaus").mkdir()
+    (wurzel / "Radhaus" / "Marke.md").write_text(
+        "---\nakzent: #b45309\nschrift_anzeige: playfair\nschrift_text: comic\n---\n", encoding="utf-8")
+    api = Api()
+    ma.abgleichen(api, str(wurzel), [_spiegel(akzent="#000000")])
+    (_, _, gestalt, _), = api.aufrufe("spiegeln")
+    assert gestalt == {"akzent": "#b45309"}
+
+
+def test_t5a_abgleich_nach_fehlschlag_bald_erneut():
+    """VM beim Start nicht erreichbar: nicht 10 Minuten warten, sondern nach FEHLER_TAKT_S erneut."""
+    zeit = [0.0]
+    gerufen = []
+
+    class Wackel(Api):
+        def firmen(self):
+            gerufen.append(zeit[0])
+            if len(gerufen) == 1:
+                raise OSError("netz weg")
+            return []
+    takt = ma.Abgleich(uhr=lambda: zeit[0])
+    api = Wackel()
+    assert "netz weg" in takt.schritt(api)[0]
+    zeit[0] = ma.FEHLER_TAKT_S - 1
+    takt.schritt(api)
+    zeit[0] = ma.FEHLER_TAKT_S
+    takt.schritt(api)
+    assert gerufen == [0.0, ma.FEHLER_TAKT_S]
+    assert ma.FEHLER_TAKT_S < ma.ABGLEICH_S
+    zeit[0] = ma.FEHLER_TAKT_S + ma.ABGLEICH_S - 1                 # nach Erfolg wieder der normale Takt
+    takt.schritt(api)
+    assert len(gerufen) == 2
+
+
+def test_t5b_abgelehnte_gestalt_wird_nicht_endlos_wiederholt(wurzel):
+    (wurzel / "Radhaus").mkdir()
+    marke = wurzel / "Radhaus" / "Marke.md"
+    marke.write_text("---\nakzent: #b45309\n---\n", encoding="utf-8")
+    zeit = [0.0]
+    firma = {**_spiegel(akzent="#000000"), "fehler": "Layout ungueltig: akzent"}
+    api = Api(firmen=[firma], spiegel={"ok": False, "fehler": "Layout ungueltig: akzent"})
+    takt = ma.Abgleich(uhr=lambda: zeit[0], wurzel=str(wurzel))
+    takt.schritt(api)
+    zeit[0] = ma.ABGLEICH_S
+    takt.schritt(api)
+    assert len(api.aufrufe("spiegeln")) == 1                       # dieselbe abgelehnte Gestalt: kein zweiter Versuch
+    marke.write_text("---\nakzent: #225588\n---\n", encoding="utf-8")   # von Hand repariert
+    zeit[0] = 2 * ma.ABGLEICH_S
+    takt.schritt(api)
+    assert len(api.aufrufe("spiegeln")) == 2
+
+
+def test_i3_markenapi_hinweise_route(monkeypatch):
+    gesehen = []
+
+    def fake(req, timeout=None, context=None):
+        gesehen.append((req.full_url, req.get_method(), req.data))
+        return _Antwort(b'{"ok": true}')
+    monkeypatch.setattr(cw.urllib.request, "urlopen", fake)
+    assert ma.MarkenApi("https://vm/", "K").hinweise("r", ["Marke.md: akzent ungültig"]) == {"ok": True}
+    assert gesehen[-1][:2] == ("https://vm/api/marke/arbeiter/hinweise", "POST")
+    assert json.loads(gesehen[-1][2]) == {"mandant": "r", "hinweise": ["Marke.md: akzent ungültig"]}

@@ -258,7 +258,7 @@ def test_gestalt_schluessel_und_werte():
 def test_gestalt_laesst_ungueltiges_weg():
     assert mp.gestalt({"akzent": "#12", "schrift_anzeige": "x"}, None, None) == {}
     assert mp.gestalt({"akzent": "#C8102E"}, b"kein bild", "image/png") == {"akzent": "#C8102E"}
-    assert mp.gestalt({"schrift_text": "dm-sans"}, None, None) == {"schriften": {"text": "dm-sans"}}
+    assert mp.gestalt({"schrift_text": "dm-sans"}, None, None) == {}      # I2: nur als Paar
 
 
 def _daten(url):
@@ -343,3 +343,13 @@ def test_ueberschrift_im_abschnittstext_ueberlebt_rundlauf(wurzel):
     p = mp.lesen(wurzel, "m1", "VibeMind")
     assert list(p.abschnitte) == ["Ton"]
     assert p.abschnitte["Ton"] == "Vorher\n ## Falsche Ueberschrift\n # Titel\nNachher"
+
+
+def test_i2_schriften_nur_als_vollstaendiges_paar():
+    """Ein kaputter Schriftwert darf den ganzen Spiegel nicht blockieren: ohne Paar keine schriften,
+    die uebrigen gueltigen Werte bleiben."""
+    g = mp.gestalt({"akzent": "#C8102E", "zweitfarbe": "#3b2f2f", "schrift_anzeige": "playfair",
+                    "schrift_text": "comic"}, None, None)
+    assert g == {"akzent": "#C8102E", "flaeche": "#3b2f2f"}
+    assert mp.gestalt({"schrift_anzeige": "playfair", "schrift_text": "manrope"}, None, None) == \
+        {"schriften": {"anzeige": "playfair", "text": "manrope"}}

@@ -1278,3 +1278,21 @@ def test_agent_ohne_markenwerte_behaelt_ladenregel(_wissen_ordner):
     fragen = Fragen(GUT)
     cw.chat_bearbeiten(Api(), _auftrag(), fragen)
     assert fragen.gesehen[0][0] == cw.agent_prompt.SYSTEM and "MARKENFARBEN" not in _prompt(fragen)
+
+
+# --- Schlussrunde I5: das Markenlogo als Mediendatei fuer "… und Logo" --------------
+
+def test_i5_agent_bekommt_das_markenlogo_als_mediendatei():
+    fragen = Fragen(GUT)
+    medien = ["foto.jpg"]
+    assert cw.chat_bearbeiten(Api(), _auftrag(medien=medien, markenlogo="medien:logo-vibemind-0123456789.png"),
+                              fragen) == "fertig"
+    p = _prompt(fragen)
+    assert "MARKENLOGO (Marke): medien:logo-vibemind-0123456789.png" in p
+    assert "MEDIEN (2): logo-vibemind-0123456789.png, foto.jpg" in p        # darf gesetzt werden
+
+
+def test_i5_ohne_markenlogo_keine_zeile():
+    fragen = Fragen(GUT)
+    cw.chat_bearbeiten(Api(), _auftrag(markenlogo=None), fragen)
+    assert "MARKENLOGO" not in _prompt(fragen)

@@ -25,9 +25,10 @@ from starlette.concurrency import run_in_threadpool
 from spaces.marketing.api.bilder import (_BILDTYP, _PLATZ, _anlegen, _auftrag_id, _bild_schluessel,
                                          _im_ordner, _ordner)
 from spaces.marketing.api.gestaltung import aufraeumen_falls_faellig, gestaltungen_rechnen, quellen
-from spaces.marketing.api.pult import _lesen, _lesen_einer, _schluessel, _schreiben, _uuid_oder_404, lit
+from spaces.marketing.api.pult import (_erzeugt_ordner, _laden_lesen, _lesen, _lesen_einer, _schluessel, _schreiben,
+                                       _uuid_oder_404, lit)
 from spaces.marketing.api.medien_mandant import ist_fremd, sicht, zuordnen_fuer_inhalt
-from spaces.marketing.claw import gestaltung, schoenheit
+from spaces.marketing.claw import gestaltung, schoenheit, vorlagen_marke
 
 log = logging.getLogger(__name__)
 pult_router = APIRouter(prefix="/api/pult")
@@ -430,6 +431,21 @@ def _rueckmeldungen_offen(inhalt) -> list[dict]:
     return [z for z in zeilen if isinstance(z, dict)]
 
 
+def _markenlogo(mandant) -> str | None:
+    """Logo aus dem Standard-Layout (Spiegel der Marke) als Mediendatei der Firma ablegen ->
+    "medien:logo-<firma>-<hash>.png" (I5: "… und Logo" braucht einen Namen, den der Agent setzen darf).
+    Gleiche Ablage wie "Neu aus Vorlage" (vorlagen_marke.logo_ablegen); der Name traegt die Firma und
+    gilt damit nur fuer sie. Wirft nie: der Auftrag ist schon vergeben."""
+    if not isinstance(mandant, str) or not mandant:
+        return None
+    try:
+        laden = _laden_lesen(mandant)
+    except HTTPException as e:
+        log.warning("Markenlogo nicht lesbar: %s", e.detail)
+        return None
+    return vorlagen_marke.logo_ablegen(laden.get("gestalt"), mandant, _erzeugt_ordner())
+
+
 @arbeiter_router.post("/naechster")
 def arbeiter_naechster(x_bild_key: str | None = Header(None)):
     _bild_schluessel(x_bild_key)
@@ -446,6 +462,10 @@ def arbeiter_naechster(x_bild_key: str | None = Header(None)):
             a["mandant_name"] = m
             a["medien_hinweis"] = ZUORDNUNG_FEHLT
         a["rueckmeldungen_offen"] = _rueckmeldungen_offen(a.get("inhalt"))
+        a["markenlogo"] = _markenlogo(m)
+        if a["markenlogo"]:
+            name = a["markenlogo"][len("medien:"):]
+            a["medien"] = [name] + [n for n in a.get("medien") or [] if n != name]
         antwort = {"auftrag": a}
     else:
         antwort = {"auftrag": None}
