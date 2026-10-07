@@ -22,7 +22,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from PIL import Image, ImageOps
 
-from spaces.marketing.claw import agent_prompt, agent_strom, agent_werkzeuge, bildplaetze, markenwissen, unterlagen
+from spaces.marketing.claw import (agent_prompt, agent_strom, agent_werkzeuge, bildplaetze, markenprofil, markenwissen,
+                                   unterlagen)
 from spaces.marketing.workers.bild_worker import ApiFehler, _grund, tls_kontext, umgebung_laden
 
 PORT = 8134
@@ -342,12 +343,13 @@ class _Live:
         self.melden(immer=True)
 
 
-def _strom_lesen(fragen_strom, nachrichten, live: _Live, halter) -> tuple[str, list[str]]:
+def _strom_lesen(fragen_strom, nachrichten, live: _Live, halter,
+                 system: str = agent_prompt.SYSTEM) -> tuple[str, list[str]]:
     """Liest einen Strom ganz; jede neue vollstaendige Aenderung geht sofort in den Live-Stand.
     Liefert den ganzen Text und die Lesefehler des StromLesers (unlesbare Aenderungen)."""
     live.neu_beginnen()
     leser = agent_strom.StromLeser()
-    strom = iter(fragen_strom(agent_prompt.SYSTEM, nachrichten))
+    strom = iter(fragen_strom(system, nachrichten))
     try:
         for stueck in strom:
             if halter.verloren.is_set():
@@ -577,10 +579,15 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
     mandant = str(auftrag.get("mandant") or "")
     name = str(auftrag.get("mandant_name") or mandant)
     wissen = markenwissen.Wissen(text="", hinweise=[], ordner=None)
+    markenfarben: dict = {}
     if name:
         wissen = markenwissen.laden(markenwissen.wurzel(), mandant, name,
                                     f"{auftrag.get('nachricht', '')} {auftrag.get('titel', '')}")
         hinweise += wissen.hinweise
+        # Gueltige Farben der Marke.md (Marke per Chat): dann gilt die Farbregel der Marke.
+        werte = markenprofil.lesen(markenwissen.wurzel(), mandant, name).werte
+        markenfarben = {k: werte[k] for k in agent_prompt.MARKENFARBEN if werte.get(k)}
+    system = agent_prompt.system(marke=bool(markenfarben))
     if auftrag.get("medien_hinweis"):
         hinweise.insert(0, str(auftrag["medien_hinweis"]))
     angehaengt = [n for n, _ in bilder]
@@ -589,6 +596,7 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
     text_nutzer = agent_prompt.nutzer_text(auftrag, medien, unterlagen=unterlagen_text, auswahl_text=auswahl_text,
                                            hinweise=hinweise, bilder=bilder, markenwissen=wissen.text,
                                            mandant_name=name, notizen_text=wissen.notizen,
+                                           markenfarben=markenfarben,
                                            feedback=[f for f in (auftrag.get("rueckmeldungen_offen") or [])
                                                      if isinstance(f, dict) and isinstance(f.get("text"), str)])
     # Mit Bildern ist die erste Nachricht eine Teil-Liste; sie bleibt auch in der Korrekturrunde so.
@@ -601,7 +609,7 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
         with halten(api, aid, halten_takt_s) as halter:
             while True:
                 try:
-                    text, leser_fehler = _strom_lesen(fragen_strom, nachrichten, live, halter)
+                    text, leser_fehler = _strom_lesen(fragen_strom, nachrichten, live, halter, system)
                     break
                 except LlmFehler as e:    # Shim nicht erreichbar oder Strom mittendrin abgebrochen
                     if halter.verloren.is_set():

@@ -480,3 +480,23 @@ def test_mandant_und_name_mit_leerraum_am_rand(wurzel):
     (wurzel / "VibeMind").mkdir()
     assert mw.ordner_finden(str(wurzel), " vibemind ", "") == os.path.join(str(wurzel), "VibeMind")
     assert mw.ordner_finden(str(wurzel), "", "\tVibeMind\n") == os.path.join(str(wurzel), "VibeMind")
+
+# --- Marke per Chat (Plan 2026-10-07, Task 5): Kopfteil nicht roh in den Prompt ------
+
+def test_kopfteil_der_marke_wird_lesbar_statt_roh(wurzel):
+    _schreiben(str(wurzel / "VibeMind" / "Marke.md"),
+               "---\nakzent: #b45309\ngrund: #12\nschrift_anzeige: playfair\nstand: 2026-10-07 10:00 von Anna\n---\n"
+               "## Ton\n" + INHALT + "\n")
+    w = mw.laden(str(wurzel), "vibemind", "VibeMind", "")
+    assert "Akzentfarbe #b45309" in w.text and "Playfair Display (playfair)" in w.text
+    assert "## Ton\n" + INHALT in w.text
+    assert "akzent: #b45309" not in w.text and "---" not in w.text and "#12" not in w.text
+    assert "Marke.md: grund ungültig" in w.hinweise
+
+
+def test_marke_verlauf_gehoert_nicht_ins_markenwissen(wurzel):
+    _schreiben(str(wurzel / "VibeMind" / "Marke.md"), "# VibeMind\n" + INHALT)
+    _schreiben(str(wurzel / "VibeMind" / "Marke-Verlauf" / "2026-10-06-1200.md"),
+               "---\nakzent: #000000\n---\n## Ton\nALTER TON, laengst ersetzt und nicht mehr gueltig.\n")
+    w = mw.laden(str(wurzel), "vibemind", "VibeMind", "")
+    assert INHALT in w.text and "ALTER TON" not in w.text and "Marke-Verlauf" not in w.text

@@ -171,3 +171,21 @@ def test_bearbeitungs_prompt_filtert_rohe_beschreibung(monkeypatch):
     monkeypatch.setattr(bp, "_ollama", http)
     bp.bearbeitungs_prompt("Skyline at night. A sign says CAFE.", PLATZ, "T", "warm")
     assert "CAFE" not in gesendet[0][1]["prompt"] and "Skyline at night." in gesendet[0][1]["prompt"]
+
+
+# --- Marke per Chat (Plan 2026-10-07, Task 5): Bildstil der Marke -------------------
+
+def test_bildstil_geht_in_die_bildbeschreibung(monkeypatch):
+    http, gesendet = falsch("A bike workshop in warm daylight")
+    monkeypatch.setattr(bp, "_ollama", http)
+    bp.prompt_schreiben({**PLATZ, "bildstil": "Warme Werkstattfotos, Tageslicht, keine Studios."}, "Oktober", "")
+    bp.bearbeitungs_prompt("A bike on a wall", {**PLATZ, "bildstil": "Warme Werkstattfotos"}, "Oktober", "heller")
+    assert "Bildstil der Marke: Warme Werkstattfotos, Tageslicht, keine Studios." in gesendet[0][1]["prompt"]
+    assert "Bildstil der Marke: Warme Werkstattfotos" in gesendet[1][1]["prompt"]
+
+
+def test_ohne_bildstil_steht_ein_strich(monkeypatch):
+    http, gesendet = falsch("A calm team")
+    monkeypatch.setattr(bp, "_ollama", http)
+    bp.prompt_schreiben(PLATZ, "Oktober", "")
+    assert "Bildstil der Marke: -" in gesendet[0][1]["prompt"]

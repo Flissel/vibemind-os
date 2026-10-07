@@ -961,3 +961,35 @@ def test_comfy_freistellen_laedt_hoch_und_setzt_bildname(monkeypatch):
     assert lauf[0][0]["2"]["inputs"]["bg_removal_name"] == "birefnet.safetensors"
     with pytest.raises(bild_comfy.ComfyFehler):
         bild_comfy.freistellen(b"")
+
+
+# --- Marke per Chat (Plan 2026-10-07, Task 5): Bildstil aus dem Markenprofil ---------
+
+class _MitPlatz(Prompt):
+    def __init__(self):
+        super().__init__()
+        self.plaetze = []
+
+    def prompt_schreiben(self, platz, titel, hinweis):
+        self.plaetze.append(platz)
+        return super().prompt_schreiben(platz, titel, hinweis)
+
+
+def test_bildstil_der_firma_reist_im_platz_mit(tmp_path, monkeypatch):
+    wurzel = tmp_path / "companys"
+    (wurzel / "Radhaus").mkdir(parents=True)
+    (wurzel / "Radhaus" / "Marke.md").write_text("## Bildstil\nWarme Werkstattfotos, Tageslicht.\n", encoding="utf-8")
+    (wurzel / "Andere").mkdir()
+    (wurzel / "Andere" / "Marke.md").write_text("## Bildstil\nKalte Studiofotos.\n", encoding="utf-8")
+    monkeypatch.setenv("ROWBOAT_WISSEN_ORDNER", str(wurzel))
+    prompt = _MitPlatz()
+    api = Api({**AUFTRAG, "mandant": "radhaus", "mandant_name": "Radhaus"})
+    assert bw.ein_durchlauf(api, Comfy(), prompt, starten=lambda: None) == "fertig"
+    assert prompt.plaetze[0]["bildstil"] == "Warme Werkstattfotos, Tageslicht."
+
+
+def test_ohne_mandant_kein_bildstil(tmp_path, monkeypatch):
+    monkeypatch.setenv("ROWBOAT_WISSEN_ORDNER", str(tmp_path))
+    prompt = _MitPlatz()
+    assert bw.ein_durchlauf(Api(dict(AUFTRAG)), Comfy(), prompt, starten=lambda: None) == "fertig"
+    assert prompt.plaetze[0]["bildstil"] == ""

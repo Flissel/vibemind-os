@@ -29,6 +29,7 @@ NOTIZ_ORDNER, NOTIZEN_JE_ANTWORT, TITEL_MAX, TEXT_MAX = "Agent-Notizen", 3, 80, 
 
 _ENDUNGEN = (".md", ".txt")
 _MARKE = "marke.md"
+_MARKE_VERLAUF = "marke-verlauf"   # = markenprofil.VERLAUF (dort importiert markenprofil dieses Modul)
 _VERMERK = " … (gekürzt)"
 _TRENNER = "\n\n"
 _BITTE_MAX = 300
@@ -147,6 +148,8 @@ def _dateien(ordner: str, hinweise: list[str]) -> list[tuple[str, str]]:
         unterordner.sort()
         echte = []
         for u in unterordner:
+            if ort == ordner and u.casefold() == _MARKE_VERLAUF:
+                continue  # fruehere Fassungen der Marke.md: ueberholt, nie Markenwissen
             pfad = os.path.join(ort, u)
             if _echt(pfad, ort, firma_real):
                 echte.append(u)
@@ -223,6 +226,18 @@ def _kappen(stuecke: list[dict], belegt: int) -> list[dict]:
     return genommen
 
 
+def _marke_lesbar(text: str, ordner: str, hinweise: list[str]) -> str:
+    """Marke.md mit Kopfteil (Marke per Chat) wird lesbar uebersetzt statt roh durchgereicht:
+    gueltige Werte als Zeilen ("- Akzentfarbe #…"), ungueltige als Hinweis. Ohne Kopfteil bleibt
+    der Text, wie er ist."""
+    from spaces.marketing.claw import markenprofil   # markenprofil importiert dieses Modul
+    if not markenprofil.hat_kopfteil(text):
+        return text
+    profil = markenprofil.aus_text(text, ordner)
+    hinweise += profil.hinweise
+    return markenprofil.fuer_prompt(profil)
+
+
 def _laden(ordner: str, name: str, frage: str) -> Wissen:
     hinweise: list[str] = []
     dateien = _neueste_notizen(_dateien(ordner, hinweise))
@@ -238,6 +253,8 @@ def _laden(ordner: str, name: str, frage: str) -> Wissen:
     marke: tuple[str, str] | None = None
     if marke_datei is not None:
         text = _lesen(*marke_datei, hinweise)
+        if text is not None:
+            text = _marke_lesbar(text, ordner, hinweise)
         if text is not None and not ist_leer(text):
             marke = (marke_datei[0], text if len(text) <= MARKE_MAX else text[:MARKE_MAX] + _VERMERK)
     stuecke = []

@@ -311,3 +311,19 @@ def test_nutzer_text_ohne_feedback_byte_gleich():
     t = ap.nutzer_text(a, ["a.png"])
     assert KOPF_FEEDBACK not in t
     assert ap.nutzer_text(a, ["a.png"], feedback=[]) == t == ap.nutzer_text(a, ["a.png"], feedback=())
+
+
+# --- Marke per Chat (Plan 2026-10-07, Task 5) ---------------------------------------
+
+def test_system_mit_marke_nennt_markenfarben_ohne_bleibt_ladenfarben():
+    mit = ap.system(marke=True)
+    assert "Farben nur aus der Marke (akzent, zweitfarbe, grund, text) und daraus abgeleiteten Tönen" in mit
+    assert "Farben nur aus den Ladenfarben" not in mit
+    assert ap.system(marke=False) == ap.SYSTEM and "Farben nur aus den Ladenfarben" in ap.SYSTEM
+
+
+def test_nutzer_text_nennt_markenfarben():
+    t = ap.nutzer_text(_auftrag(), [], markenfarben={"akzent": "#b45309", "zweitfarbe": "#3b2f2f",
+                                                     "grund": "#faf7f2", "text": "#2b2724"})
+    assert "MARKENFARBEN (Marke.md): akzent #b45309, zweitfarbe #3b2f2f, grund #faf7f2, text #2b2724" in t
+    assert "MARKENFARBEN" not in ap.nutzer_text(_auftrag(), [])

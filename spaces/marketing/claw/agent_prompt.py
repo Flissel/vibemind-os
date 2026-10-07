@@ -114,6 +114,16 @@ Ist die Anfrage unklar, frag in "antwort" kurz nach und lass "aenderungen" leer.
 
 SYSTEM: str = _SYSTEM.replace("__MAX__", str(MAX_AENDERUNGEN)).replace("__SCHRIFTEN__", _schnitte())
 
+REGEL_LADEN = "- Farben nur aus den Ladenfarben (siehe Kontext) oder abgeleiteten helleren/dunkleren Tönen davon; keine neuen Farbtöne."
+REGEL_MARKE = ("- Farben nur aus der Marke (akzent, zweitfarbe, grund, text) und daraus abgeleiteten Tönen; "
+               "keine neuen Farbtöne. Die Markenfarben stehen im Kontext unter MARKENFARBEN.")
+MARKENFARBEN = ("akzent", "zweitfarbe", "grund", "text")
+
+
+def system(marke: bool = False) -> str:
+    """SYSTEM; hat die Firma Markenfarben (Marke.md), gilt die Farbregel der Marke statt der Ladenfarben."""
+    return SYSTEM.replace(REGEL_LADEN, REGEL_MARKE) if marke else SYSTEM
+
 
 def _schriften_des_newsletters(dok: dict, root_daten: dict) -> str:
     teile: list[str] = []
@@ -148,11 +158,12 @@ def nutzer_text(auftrag: dict, medien: list[str], *, unterlagen: str = "", auswa
                 hinweise: list[str] | tuple[str, ...] = (),
                 bilder: list[tuple[str, str]] | tuple[tuple[str, str], ...] = (),
                 markenwissen: str = "", mandant_name: str = "", notizen_text: str = "",
-                feedback: list[dict] | tuple[dict, ...] = ()) -> str:
+                feedback: list[dict] | tuple[dict, ...] = (), markenfarben: dict | None = None) -> str:
     """Kontext der ersten Nutzernachricht. auswahl_text ist die markierte Auswahl als JSON (Blöcke/Ebenen
     vollständig), unterlagen der Text aus hochgeladenen Dokumenten, hinweise fehlende Elemente/Anhänge.
     notizen_text sind die früheren Agent-Notizen der Firma, getrennt vom Markenwissen. feedback sind die offenen
-    Rückmeldungen aus der Freigabe ({text, von, am, fassung}); sie sind Vorgabe des Betreibers, kein Material."""
+    Rückmeldungen aus der Freigabe ({text, von, am, fassung}); sie sind Vorgabe des Betreibers, kein Material.
+    markenfarben sind die gültigen Farben aus der Marke.md der Firma (akzent, zweitfarbe, grund, text)."""
     dok = auftrag.get("bloecke") if isinstance(auftrag.get("bloecke"), dict) else {}
     root = dok.get("root") if isinstance(dok.get("root"), dict) else {}
     root_daten = root.get("data") if isinstance(root.get("data"), dict) else {}
@@ -175,6 +186,8 @@ def nutzer_text(auftrag: dict, medien: list[str], *, unterlagen: str = "", auswa
         teile.append(f"FIRMA: {mandant_name}")
     teile += [
         "LADENFARBEN (root.data): " + json.dumps(farben, ensure_ascii=False),
+        *(["MARKENFARBEN (Marke.md): " + ", ".join(f"{k} {markenfarben[k]}" for k in MARKENFARBEN
+                                                   if markenfarben.get(k))] if markenfarben else []),
         "SCHRIFTEN IM NEWSLETTER: " + _schriften_des_newsletters(dok, root_daten),
         f"MEDIEN ({len(frei)}): " + (", ".join(frei) or "keine"),
         "BLÖCKE (JSON): " + json.dumps(dok, ensure_ascii=False, separators=(",", ":")),

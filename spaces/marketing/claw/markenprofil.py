@@ -140,6 +140,42 @@ def _datei_text(pfad: str) -> str | None:
         return roh.decode("latin-1")
 
 
+def _auswerten(profil: Profil, text: str) -> None:
+    kopf, profil.abschnitte = _zerlegen(text)
+    for schluessel in KOPF_REIHENFOLGE:
+        wert = kopf.get(schluessel, "")
+        if not wert:
+            continue
+        if _gueltig(schluessel, wert):
+            profil.werte[schluessel] = wert
+        else:
+            profil.hinweise.append(f"Marke.md: {schluessel} ungültig")
+    logo = profil.werte.get("logo")
+    if logo:
+        ziel = os.path.join(profil.ordner, logo) if profil.ordner else None
+        if ziel and os.path.isfile(ziel) and mw._echt(ziel, profil.ordner, os.path.realpath(profil.ordner)):
+            profil.logo_pfad = ziel
+        else:
+            profil.werte.pop("logo")
+            profil.hinweise.append("Marke.md: logo ungültig")
+
+
+def hat_kopfteil(text: str) -> bool:
+    """Beginnt der Text mit einem geschlossenen `---`-Kopfteil?"""
+    zeilen = str(text or "").replace("\r\n", "\n").lstrip("﻿").split("\n")
+    return bool(zeilen) and zeilen[0].strip() == "---" and any(z.strip() == "---" for z in zeilen[1:])
+
+
+def aus_text(text: str, ordner: str | None = None) -> Profil:
+    """Profil aus dem Inhalt einer Marke.md (fuer Leser, die die Datei schon haben). Wirft nie."""
+    profil = Profil(ordner=ordner)
+    try:
+        _auswerten(profil, str(text or ""))
+    except Exception:  # wie lesen: nie ein Abbruch
+        pass
+    return profil
+
+
 def lesen(wurzel: str, mandant: str, name: str) -> Profil:
     """Profil der Firma. Wirft nie; fehlt Ordner oder Datei, ist das Profil leer."""
     profil = Profil()
@@ -151,23 +187,7 @@ def lesen(wurzel: str, mandant: str, name: str) -> Profil:
         text = _datei_text(pfad) if pfad else None
         if text is None:
             return profil
-        kopf, profil.abschnitte = _zerlegen(text)
-        for schluessel in KOPF_REIHENFOLGE:
-            wert = kopf.get(schluessel, "")
-            if not wert:
-                continue
-            if _gueltig(schluessel, wert):
-                profil.werte[schluessel] = wert
-            else:
-                profil.hinweise.append(f"Marke.md: {schluessel} ungültig")
-        logo = profil.werte.get("logo")
-        if logo:
-            ziel = os.path.join(profil.ordner, logo)
-            if os.path.isfile(ziel) and mw._echt(ziel, profil.ordner, os.path.realpath(profil.ordner)):
-                profil.logo_pfad = ziel
-            else:
-                profil.werte.pop("logo")
-                profil.hinweise.append("Marke.md: logo ungültig")
+        _auswerten(profil, text)
     except Exception:  # Lesen darf den Lauf nie stoeren
         pass
     return profil

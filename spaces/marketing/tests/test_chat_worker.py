@@ -1258,3 +1258,23 @@ def test_ohne_rueckmeldungen_kein_feedback_abschnitt():
     fragen = Fragen(GUT)
     cw.chat_bearbeiten(Api(), _auftrag(rueckmeldungen_offen=None), fragen)
     assert "Offenes Feedback" not in _prompt(fragen)
+
+
+# --- Marke per Chat (Plan 2026-10-07, Task 5): Agent bekommt die Markenfarben --------
+
+def test_agent_bekommt_markenfarben_und_markenregel(_wissen_ordner):
+    _firma(_wissen_ordner, marke="---\nakzent: #b45309\nzweitfarbe: #3b2f2f\ngrund: #faf7f2\ntext: #2b2724\n---\n"
+                                 "## Ton\nRuhig und freundlich, wir duzen unsere Kundschaft.\n")
+    fragen = Fragen(GUT)
+    assert cw.chat_bearbeiten(Api(), _auftrag(), fragen) == "fertig"
+    system, _ = fragen.gesehen[0]
+    assert "Farben nur aus der Marke (akzent, zweitfarbe, grund, text)" in system
+    assert "MARKENFARBEN (Marke.md): akzent #b45309, zweitfarbe #3b2f2f, grund #faf7f2, text #2b2724" in _prompt(fragen)
+    assert "Akzentfarbe #b45309" in _prompt(fragen) and "akzent: #b45309" not in _prompt(fragen)
+
+
+def test_agent_ohne_markenwerte_behaelt_ladenregel(_wissen_ordner):
+    _firma(_wissen_ordner)
+    fragen = Fragen(GUT)
+    cw.chat_bearbeiten(Api(), _auftrag(), fragen)
+    assert fragen.gesehen[0][0] == cw.agent_prompt.SYSTEM and "MARKENFARBEN" not in _prompt(fragen)

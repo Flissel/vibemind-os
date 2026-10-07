@@ -19,7 +19,8 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from spaces.marketing.claw import bild_comfy, bild_farben, bild_messen, bild_prompt, bild_sehen, bildplaetze
+from spaces.marketing.claw import (bild_comfy, bild_farben, bild_messen, bild_prompt, bild_sehen, bildplaetze,
+                                   markenprofil, markenwissen)
 
 PORT = 8133
 TAKT_S = 20
@@ -290,6 +291,15 @@ def _freistellen(api, aid, auftrag, ziele, comfy):
     return {platz.id: name}, [f"freigestellt ({anteil:.0%} Motiv)"], {}
 
 
+def _bildstil(auftrag: dict) -> str:
+    """Abschnitt "Bildstil" aus companys/<Firma>/Marke.md der Firma des Auftrags ('' ohne Firma/Abschnitt)."""
+    mandant = str(auftrag.get("mandant") or "")
+    if not mandant:
+        return ""
+    profil = markenprofil.lesen(markenwissen.wurzel(), mandant, str(auftrag.get("mandant_name") or mandant))
+    return profil.abschnitte.get("Bildstil", "")
+
+
 def _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen):
     """Phase 1 (Ollama, keep_alive 0): je Platz Quelle holen, sehen, Prompt.
     Phase 2: alle Bilder am Stueck mit FLUX, /free am Ende - ComfyUI laedt die
@@ -304,6 +314,7 @@ def _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen):
     titel, hinweis = str(auftrag.get("titel") or ""), str(auftrag.get("hinweis") or "")
     befunde, arbeit = [], []
     palette = bild_farben.palette(auftrag.get("bloecke"))
+    bildstil = _bildstil(auftrag)
     for platz in ziele:
         quelle = None
         if modus == "ueberarbeiten" and staerke < 100 and not platz.leer:
@@ -330,7 +341,7 @@ def _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen):
         if quelle is not None and not beschreibung:
             befunde.append(f"{platz.id}: ohne Bildbeschreibung")
         # Layoutfarben der Fassung reisen im Platz mit (Betreiber 01.10.: Bild fuegt sich ins Layout).
-        daten = {**platz.als_dict(), "palette": palette}
+        daten = {**platz.als_dict(), "palette": palette, "bildstil": bildstil}
         if beschreibung:
             text = prompt.bearbeitungs_prompt(beschreibung, daten, titel, hinweis,
                                               nah=staerke <= GRENZE_STAERKE)
