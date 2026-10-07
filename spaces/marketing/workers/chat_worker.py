@@ -586,7 +586,9 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
     live.medien.update(angehaengt)
     text_nutzer = agent_prompt.nutzer_text(auftrag, medien, unterlagen=unterlagen_text, auswahl_text=auswahl_text,
                                            hinweise=hinweise, bilder=bilder, markenwissen=wissen.text,
-                                           mandant_name=name, notizen_text=wissen.notizen)
+                                           mandant_name=name, notizen_text=wissen.notizen,
+                                           feedback=[f for f in (auftrag.get("rueckmeldungen_offen") or [])
+                                                     if isinstance(f, dict) and isinstance(f.get("text"), str)])
     # Mit Bildern ist die erste Nachricht eine Teil-Liste; sie bleibt auch in der Korrekturrunde so.
     nachrichten = [{"role": "user", "content": [{"type": "text", "text": text_nutzer}, *bildteile]
                     if bildteile else text_nutzer}]

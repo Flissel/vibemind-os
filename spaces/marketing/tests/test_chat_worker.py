@@ -1241,3 +1241,20 @@ def test_hinweise_weichen_einer_langen_antwort():
     text = cw._mit_hinweisen(["eins", "zwei" * 30], antwort)
     assert len(text) <= cw.VM_ANTWORT_MAX and text.endswith(antwort)
     assert cw._mit_hinweisen(["x" * 150], "A" * 3990) == "A" * 3990
+
+
+def test_offenes_freigabe_feedback_kommt_in_den_prompt():
+    fb = [{"text": "Titel größer", "von": "anna", "am": "2026-10-05T09:30:00+00:00", "fassung": 2},
+          "kaputt", {"von": "x"}, {"text": 5}]
+    fragen = Fragen(GUT)
+    assert cw.chat_bearbeiten(Api(), _auftrag(rueckmeldungen_offen=fb), fragen) == "fertig"
+    p = _prompt(fragen)
+    assert "Offenes Feedback aus der Freigabe (vom Betreiber, bitte berücksichtigen):" in p
+    assert "- 2026-10-05 anna zu Fassung 2: Titel größer" in p
+    assert "kaputt" not in p
+
+
+def test_ohne_rueckmeldungen_kein_feedback_abschnitt():
+    fragen = Fragen(GUT)
+    cw.chat_bearbeiten(Api(), _auftrag(rueckmeldungen_offen=None), fragen)
+    assert "Offenes Feedback" not in _prompt(fragen)
