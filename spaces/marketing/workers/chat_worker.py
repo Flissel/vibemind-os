@@ -48,6 +48,8 @@ class ShimAbgelehnt(LlmFehler):
 
 
 class ChatApi:
+    PFAD = "/api/chat/arbeiter"
+
     def __init__(self, basis: str, schluessel: str):
         self.basis, self.schluessel = basis.rstrip("/"), schluessel
         self.tls = tls_kontext()
@@ -56,7 +58,7 @@ class ChatApi:
         koerper = roh if roh is not None else (json.dumps(daten).encode("utf-8") if daten is not None else None)
         if methode == "POST" and koerper is None:
             koerper = b""
-        req = urllib.request.Request(self.basis + "/api/chat/arbeiter" + pfad, data=koerper, method=methode,
+        req = urllib.request.Request(self.basis + self.PFAD + pfad, data=koerper, method=methode,
                                      headers={"Content-Type": typ} if koerper is not None else {})
         req.add_unredirected_header("X-Bild-Key", self.schluessel)
         try:
@@ -698,11 +700,11 @@ class _Gesundheit(BaseHTTPRequestHandler):
         pass
 
 
-def schleifenschritt(api, ein=ein_durchlauf) -> None:
+def schleifenschritt(api, ein=ein_durchlauf, feld: str = "letztes_ergebnis") -> None:
     try:
-        STAND["letztes_ergebnis"] = ein(api)
+        STAND[feld] = ein(api)
     except Exception as e:  # noqa: BLE001 - ein Fehler darf die Schleife nicht toeten
-        STAND["letztes_ergebnis"] = f"fehler: {type(e).__name__}: {e}"[:200]
+        STAND[feld] = f"fehler: {type(e).__name__}: {e}"[:200]
     STAND["letzter_lauf"] = time.strftime("%Y-%m-%d %H:%M:%S")
     print(STAND, flush=True)
 
@@ -712,11 +714,26 @@ def main() -> None:
     basis, schluessel = os.environ.get("MARKETING_BILD_URL", ""), os.environ.get("MARKETING_BILD_KEY", "")
     if not basis or not schluessel:
         raise SystemExit("MARKETING_BILD_URL/MARKETING_BILD_KEY fehlen in Vibemind_V1/.env")
+    from spaces.marketing.workers import marken_arbeiter   # importiert dieses Modul selbst
     api = ChatApi(basis, schluessel)
+    marke = marken_arbeiter.MarkenApi(basis, schluessel)
+    abgleich = marken_arbeiter.Abgleich()                    # erster Schritt = Abgleich beim Start
     threading.Thread(target=HTTPServer(("127.0.0.1", PORT), _Gesundheit).serve_forever, daemon=True).start()
     while True:
-        schleifenschritt(api)
+        runde(api, marke, abgleich, marke_ein=marken_arbeiter.ein_durchlauf)
         time.sleep(TAKT_S)
+
+
+def runde(api, marke_api, abgleich, chat_ein=ein_durchlauf, marke_ein=None) -> None:
+    """Eine Schleifenrunde: ein Chat-/Export-Auftrag, ein Marken-Auftrag (Ruling R1: selber Prozess),
+    dann der Marken-Abgleich, wenn er faellig ist (beim Start und alle 10 Minuten)."""
+    schleifenschritt(api, chat_ein)
+    if marke_ein is not None:
+        schleifenschritt(marke_api, marke_ein, "marke")
+    meldungen = abgleich.schritt(marke_api)
+    if meldungen:
+        STAND["abgleich"] = meldungen[-10:]
+        print({"abgleich": STAND["abgleich"]}, flush=True)
 
 
 if __name__ == "__main__":

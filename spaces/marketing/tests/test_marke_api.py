@@ -89,6 +89,7 @@ ARBEITER_ROUTEN = [
     ("post", f"/api/marke/arbeiter/{AID}/logo"),
     ("post", "/api/marke/arbeiter/spiegeln"),
     ("post", "/api/marke/arbeiter/markieren"),
+    ("get", "/api/marke/arbeiter/firmen"),
 ]
 
 
@@ -580,3 +581,43 @@ def test_hinweis_aus_ablehnung_422(umg):
     f, _, c = umg
     f.fehler += [_db_fehler("Hinweis abgelehnt")]
     assert c.post(f"/api/pult/inhalte/{IID}/marke_hinweis_aus", headers=H).status_code == 422
+
+
+# ─── Task 5: Firmenliste fuer den Abgleich, Urheber beim Uebernehmen ────
+
+
+def test_firmen_fuer_den_abgleich(umg):
+    """Der Arbeiter vergleicht Marke.md mit dem Spiegel: aktive Firmen + Spiegel-Teil des Standard-Layouts."""
+    f, _, c = umg
+    f.antworten.append([
+        {"id": "radhaus", "name": "Radhaus", "stand": "2026-10-07 10:00 von Anna",
+         "gestalt": {**GESTALT, "grund": "#ffffff", "logo": "data:image/png;base64,AAAA"}},
+        {"id": "fin2gether", "name": "fin2gether", "stand": None, "gestalt": None}])
+    r = c.get("/api/marke/arbeiter/firmen", headers=HB)
+    assert r.status_code == 200
+    assert r.json() == {"firmen": [
+        {"id": "radhaus", "name": "Radhaus", "stand": "2026-10-07 10:00 von Anna",
+         "gestalt": {**GESTALT, "logo": "data:image/png;base64,AAAA"}},
+        {"id": "fin2gether", "name": "fin2gether", "stand": "", "gestalt": {}}]}
+    assert "m.aktiv" in f.sql[0] and "marken_spiegel" in f.sql[0] and "l.standard" in f.sql[0]
+    f.fehler += [RuntimeError("db weg")]
+    assert c.get("/api/marke/arbeiter/firmen", headers=HB).status_code == 503
+
+
+def test_naechster_uebernehmen_traegt_den_urheber(umg):
+    f, _, c = umg
+    job = {"id": AID, "art": "uebernehmen", "mandant": "radhaus", "firma": "Radhaus", "nachricht": "",
+           "kontext": {}, "verlauf": [], "vorschlag": {"id": VID, "vorschlag": VORSCHLAG}}
+    f.antworten += [[{"a": job}], [{"von": "Anna"}]]
+    assert c.post("/api/marke/arbeiter/naechster", headers=HB).json() == {"auftrag": {**job, "von": "Anna"}}
+    assert "entschieden_von" in f.sql[1] and VID in f.sql[1]
+
+
+def test_naechster_urheber_nicht_lesbar_liefert_auftrag_trotzdem(umg):
+    """Der Auftrag ist schon vergeben: ein Lesefehler beim Urheber darf ihn nicht verlieren."""
+    f, _, c = umg
+    job = {"id": AID, "art": "uebernehmen", "mandant": "radhaus", "firma": "Radhaus", "nachricht": "",
+           "kontext": {}, "verlauf": [], "vorschlag": {"id": VID, "vorschlag": VORSCHLAG}}
+    f.antworten.append([{"a": job}])
+    f.fehler += [None, RuntimeError("db weg")]
+    assert c.post("/api/marke/arbeiter/naechster", headers=HB).json() == {"auftrag": job}

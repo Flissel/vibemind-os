@@ -232,7 +232,38 @@ def arbeiter_naechster(x_bild_key: str | None = Header(None)):
     _bild_schluessel(x_bild_key)
     zeile = _schreiben(lambda: f"SELECT marketing.pult_marke_naechster({lit(FRIST)}::interval) AS a")
     a = zeile.get("a")
-    return {"auftrag": a if isinstance(a, dict) and a.get("id") else None}
+    if not (isinstance(a, dict) and a.get("id")):
+        return {"auftrag": None}
+    v = a.get("vorschlag") if isinstance(a.get("vorschlag"), dict) else {}
+    if a.get("art") == "uebernehmen" and v.get("id"):
+        # Urheber fuer "stand: ... von <name>" in der Marke.md. Der Auftrag ist schon vergeben:
+        # scheitert das Lesen, geht er ohne Urheber raus (der PC schreibt dann "von Marken-Chat").
+        try:
+            von = _lesen_einer(lambda: "SELECT entschieden_von AS von FROM marketing.marken_vorschlaege "
+                                       f"WHERE id = {lit(str(v['id']))}::uuid")
+        except HTTPException:
+            von = None
+        if von and von.get("von"):
+            a["von"] = von["von"]
+    return {"auftrag": a}
+
+
+@arbeiter_router.get("/firmen")
+def arbeiter_firmen(x_bild_key: str | None = Header(None)):
+    """Aktive Firmen mit dem Spiegel-Teil ihres Standard-Newsletter-Layouts, fuer den Abgleich am PC."""
+    _bild_schluessel(x_bild_key)
+    zeilen = _lesen(lambda:
+        "SELECT m.id, m.name, s.stand, "
+        "(SELECT l.gestalt FROM marketing.layout_vorlagen l WHERE l.mandant = m.id AND l.standard "
+        "AND l.inhaltsart = 'newsletter' AND l.art = 'layout') AS gestalt "
+        "FROM marketing.mandanten m LEFT JOIN marketing.marken_spiegel s ON s.mandant = m.id "
+        "WHERE m.aktiv ORDER BY m.id")
+    firmen = []
+    for z in zeilen:
+        gestalt = z.get("gestalt") if isinstance(z.get("gestalt"), dict) else {}
+        firmen.append({"id": z.get("id"), "name": z.get("name"), "stand": z.get("stand") or "",
+                       "gestalt": {k: gestalt[k] for k in SPIEGEL_SCHLUESSEL if k in gestalt}})
+    return {"firmen": firmen}
 
 
 @arbeiter_router.post("/{aid}/weiter")
