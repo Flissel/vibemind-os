@@ -90,6 +90,7 @@ ARBEITER_ROUTEN = [
     ("post", "/api/marke/arbeiter/spiegeln"),
     ("post", "/api/marke/arbeiter/markieren"),
     ("get", "/api/marke/arbeiter/firmen"),
+    ("post", "/api/marke/arbeiter/hinweise"),
 ]
 
 
@@ -170,7 +171,7 @@ def test_stand_aktuell_aus_juengstem_angenommenen_vorschlag(umg):
     assert j["aktuell"]["abschnitte"] == {"Ton": "warm", "Zielgruppe": "Radfahrer"}
     assert j["aktuell"]["werte"]["akzent"] == "#b45309" and "mustertext" not in j["aktuell"]["werte"]
     assert j["uebernahme_seit"] is None
-    assert "status = 'angenommen'" in f.sql[-1] and "ORDER BY entschieden_am DESC LIMIT 1" in f.sql[-1]
+    assert "status = 'angenommen'" in f.sql[5] and "ORDER BY v.entschieden_am DESC LIMIT 1" in f.sql[5]
 
 
 def test_stand_unbekannter_mandant_404_ohne_mandant_422_db_weg_503(umg):
@@ -213,41 +214,41 @@ def test_chat_db_ablehnung_422_ausfall_503(umg):
 def test_uebernehmen_erfolg(umg):
     f, _, c = umg
     f.antworten.append([{"id": AID}])
-    r = c.post(f"/api/pult/marke/vorschlaege/{VID}/uebernehmen", headers=H, json={"von": "Anna"})
+    r = c.post(f"/api/pult/marke/vorschlaege/{VID}/uebernehmen", headers=H, json={"von": "Anna", "mandant": "radhaus"})
     assert r.status_code == 200 and r.json() == {"auftrag": AID}
-    assert f"pult_marke_uebernehmen('{VID}'::uuid, 'Anna')" in f.sql[0]
+    assert f"pult_marke_uebernehmen('{VID}'::uuid, 'Anna', 'radhaus')" in f.sql[0]
 
 
 def test_uebernehmen_konflikt_422_mit_meldung(umg):
     """Review Focus 3: ein inzwischen ersetzter Vorschlag kommt als 422 mit der Meldung der DB an."""
     f, _, c = umg
     f.fehler += [_db_fehler("Inzwischen gibt es ein neueres Profil – bitte neu laden")]
-    r = c.post(f"/api/pult/marke/vorschlaege/{VID}/uebernehmen", headers=H, json={"von": "Anna"})
+    r = c.post(f"/api/pult/marke/vorschlaege/{VID}/uebernehmen", headers=H, json={"von": "Anna", "mandant": "radhaus"})
     assert r.status_code == 422
     assert r.json()["detail"] == "Inzwischen gibt es ein neueres Profil – bitte neu laden"
 
 
 def test_uebernehmen_form_und_ausfall(umg):
     f, _, c = umg
-    assert c.post("/api/pult/marke/vorschlaege/kaputt/uebernehmen", headers=H, json={"von": "A"}).status_code == 404
+    assert c.post("/api/pult/marke/vorschlaege/kaputt/uebernehmen", headers=H, json={"von": "A", "mandant": "radhaus"}).status_code == 404
     for body in ({}, {"von": ""}, {"von": 3}):
         assert c.post(f"/api/pult/marke/vorschlaege/{VID}/uebernehmen", headers=H, json=body).status_code == 422
     assert f.sql == []
     f.fehler += [RuntimeError("db weg")]
-    assert c.post(f"/api/pult/marke/vorschlaege/{VID}/uebernehmen", headers=H, json={"von": "A"}).status_code == 503
+    assert c.post(f"/api/pult/marke/vorschlaege/{VID}/uebernehmen", headers=H, json={"von": "A", "mandant": "radhaus"}).status_code == 503
 
 
 def test_verwerfen(umg):
     f, _, c = umg
     f.antworten.append([{"status": "verworfen"}])
-    r = c.post(f"/api/pult/marke/vorschlaege/{VID}/verwerfen", headers=H, json={"von": "Anna"})
+    r = c.post(f"/api/pult/marke/vorschlaege/{VID}/verwerfen", headers=H, json={"von": "Anna", "mandant": "radhaus"})
     assert r.status_code == 200 and r.json() == {"status": "verworfen"}
-    assert f"pult_marke_verwerfen('{VID}'::uuid, 'Anna')" in f.sql[0]
+    assert f"pult_marke_verwerfen('{VID}'::uuid, 'Anna', 'radhaus')" in f.sql[0]
     f.fehler += [_db_fehler("Inzwischen gibt es ein neueres Profil – bitte neu laden")]
-    assert c.post(f"/api/pult/marke/vorschlaege/{VID}/verwerfen", headers=H, json={"von": "Anna"}).status_code == 422
+    assert c.post(f"/api/pult/marke/vorschlaege/{VID}/verwerfen", headers=H, json={"von": "Anna", "mandant": "radhaus"}).status_code == 422
     assert c.post(f"/api/pult/marke/vorschlaege/{VID}/verwerfen", headers=H, json={}).status_code == 422
     f.fehler += [RuntimeError("db weg")]
-    assert c.post(f"/api/pult/marke/vorschlaege/{VID}/verwerfen", headers=H, json={"von": "A"}).status_code == 503
+    assert c.post(f"/api/pult/marke/vorschlaege/{VID}/verwerfen", headers=H, json={"von": "A", "mandant": "radhaus"}).status_code == 503
 
 
 def test_hinweis_aus(umg):
@@ -277,7 +278,7 @@ def _vorschau_antworten(f, vorschlag=VORSCHLAG, sicht=None):
 def test_vorschau_rendert_mit_vorschlagsfarben_schriften_mustertext(umg):
     f, _, c = umg
     _vorschau_antworten(f)
-    r = c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?format=mail&bild_basis={BASIS}", headers=H)
+    r = c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?mandant=radhaus&format=mail&bild_basis={BASIS}", headers=H)
     assert r.status_code == 200, r.text
     assert "#b45309" in r.text                                   # Akzent (Knopf)
     assert "Playfair Display" in r.text and "Manrope" in r.text  # Schriftpaar
@@ -290,7 +291,7 @@ def test_vorschau_handy_und_logo_aus_anhang(umg):
     f, ordner, c = umg
     (ordner / "firmenlogo.png").write_bytes(_bild())
     _vorschau_antworten(f, dict(VORSCHLAG, logo="anhang:firmenlogo.png"), _sicht(eigene=["firmenlogo.png"]))
-    r = c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?format=handy&bild_basis={BASIS}", headers=H)
+    r = c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?mandant=radhaus&format=handy&bild_basis={BASIS}", headers=H)
     assert r.status_code == 200, r.text
     assert "firmenlogo.png" in r.text and "[Laden]" not in r.text
 
@@ -301,26 +302,26 @@ def test_vorschau_logo_eines_web_abgleichs_und_fremdes_logo(umg):
         (ordner / n).write_bytes(_bild())
     _vorschau_antworten(f, dict(VORSCHLAG, logo="marke-radhaus-logo-0123456789.png"),
                         _sicht(gemeinsam=["marke-radhaus-logo-0123456789.png"]))
-    r = c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?bild_basis={BASIS}", headers=H)
+    r = c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?mandant=radhaus&bild_basis={BASIS}", headers=H)
     assert r.status_code == 200 and "marke-radhaus-logo-0123456789.png" in r.text
     # fremdes Bild und noch nicht geladenes web:<n> erscheinen nie
     for logo, sicht in (("fremd.png", _sicht(fremde=["fremd.png"])), ("web:2", None)):
         _vorschau_antworten(f, dict(VORSCHLAG, logo=logo), sicht)
-        r = c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?bild_basis={BASIS}", headers=H)
+        r = c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?mandant=radhaus&bild_basis={BASIS}", headers=H)
         assert r.status_code == 200 and "fremd.png" not in r.text and "web:2" not in r.text and "Radhaus Jena" in r.text
 
 
 def test_vorschau_unbekannt_vorlage_fehlt_form_db_weg(umg):
     f, _, c = umg
     f.antworten.append([])
-    assert c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau", headers=H).status_code == 404
-    assert c.get("/api/pult/marke/vorschlaege/kaputt/vorschau", headers=H).status_code == 404
+    assert c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?mandant=radhaus", headers=H).status_code == 404
+    assert c.get("/api/pult/marke/vorschlaege/kaputt/vorschau?mandant=radhaus", headers=H).status_code == 404
     f.antworten += [[{"vorschlag": VORSCHLAG, "mandant": "radhaus", "name": "R", "pflichtteil": {}}], []]
-    assert c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau", headers=H).status_code == 422
-    assert c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?format=pdf", headers=H).status_code == 422
-    assert c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?bild_basis=http://x/", headers=H).status_code == 422
+    assert c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?mandant=radhaus", headers=H).status_code == 422
+    assert c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?mandant=radhaus&format=pdf", headers=H).status_code == 422
+    assert c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?mandant=radhaus&bild_basis=http://x/", headers=H).status_code == 422
     f.fehler += [RuntimeError("db weg")]
-    assert c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau", headers=H).status_code == 503
+    assert c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?mandant=radhaus", headers=H).status_code == 503
 
 
 # ─── Arbeiter: Warteschlange ────────────────────────────────────────────
@@ -562,7 +563,7 @@ def test_markieren(umg):
 def test_vorschau_logo_ohne_datei_wortmarke(umg):
     f, _, c = umg
     _vorschau_antworten(f, dict(VORSCHLAG, logo="anhang:weg.png"), _sicht(eigene=["weg.png"]))
-    r = c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?bild_basis={BASIS}", headers=H)
+    r = c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?mandant=radhaus&bild_basis={BASIS}", headers=H)
     assert r.status_code == 200 and "weg.png" not in r.text and "Radhaus Jena" in r.text
 
 
@@ -607,14 +608,17 @@ def test_firmen_fuer_den_abgleich(umg):
     f, _, c = umg
     f.antworten.append([
         {"id": "radhaus", "name": "Radhaus", "stand": "2026-10-07 10:00 von Anna",
-         "gestalt": {**GESTALT, "grund": "#ffffff", "logo": "data:image/png;base64,AAAA"}},
-        {"id": "fin2gether", "name": "fin2gether", "stand": None, "gestalt": None}])
+         "gestalt": {**GESTALT, "grund": "#ffffff", "logo": "data:image/png;base64,AAAA"},
+         "hinweise": ["Marke.md: akzent ungültig"], "fehler": "Layout ungueltig: x"},
+        {"id": "fin2gether", "name": "fin2gether", "stand": None, "gestalt": None, "hinweise": None, "fehler": None}])
     r = c.get("/api/marke/arbeiter/firmen", headers=HB)
     assert r.status_code == 200
     assert r.json() == {"firmen": [
         {"id": "radhaus", "name": "Radhaus", "stand": "2026-10-07 10:00 von Anna",
-         "gestalt": {**GESTALT, "logo": "data:image/png;base64,AAAA"}},
-        {"id": "fin2gether", "name": "fin2gether", "stand": "", "gestalt": {}}]}
+         "gestalt": {**GESTALT, "logo": "data:image/png;base64,AAAA"},
+         "hinweise": ["Marke.md: akzent ungültig"], "fehler": "Layout ungueltig: x"},
+        {"id": "fin2gether", "name": "fin2gether", "stand": "", "gestalt": {}, "hinweise": [], "fehler": None}]}
+    assert "s.hinweise" in f.sql[0] and "s.fehler" in f.sql[0]
     assert "m.aktiv" in f.sql[0] and "marken_spiegel" in f.sql[0] and "l.standard" in f.sql[0]
     f.fehler += [RuntimeError("db weg")]
     assert c.get("/api/marke/arbeiter/firmen", headers=HB).status_code == 503
@@ -637,3 +641,92 @@ def test_naechster_urheber_nicht_lesbar_liefert_auftrag_trotzdem(umg):
     f.antworten.append([{"a": job}])
     f.fehler += [None, RuntimeError("db weg")]
     assert c.post("/api/marke/arbeiter/naechster", headers=HB).json() == {"auftrag": job}
+
+
+# ─── Schlussrunde (final-review.md) ─────────────────────────────────────
+
+
+def _stand_kopf(**mehr):
+    return [{"name": "Radhaus", "stand": "s", "gespiegelt_am": None, "fehler": None, "gestalt": {}, **mehr}]
+
+
+def test_stand_profil_hinweise_und_letzte_uebernahme(umg):
+    """I3/I6: Lese-Hinweise der Marke.md und das Ergebnis der letzten Uebernahme (auch ein Fehlschlag)."""
+    f, _, c = umg
+    letzte = {"status": "fehler", "antwort": "Übernehmen nicht möglich: Logo x.png nicht gefunden",
+              "hinweise": [], "geaendert_am": "2026-10-07 11:00:00+00"}
+    f.antworten += [[{"ok": True}], _stand_kopf(hinweise=["Marke.md: akzent ungültig"]), [], [], [], [], [letzte]]
+    j = c.get("/api/pult/marke?mandant=radhaus", headers=H).json()
+    assert j["profil_hinweise"] == ["Marke.md: akzent ungültig"]
+    assert j["letzte_uebernahme"] == letzte
+    assert "s.hinweise" in f.sql[1]
+    sql = f.sql[6]
+    assert "art = 'uebernehmen'" in sql and "status IN ('fertig', 'fehler')" in sql
+    assert "ORDER BY geaendert_am DESC LIMIT 1" in sql and "mandant = 'radhaus'" in sql
+
+
+def test_stand_ohne_hinweise_und_ohne_uebernahme(umg):
+    f, _, c = umg
+    f.antworten += [[{"ok": True}], _stand_kopf(hinweise=None), [], [], [], [], []]
+    j = c.get("/api/pult/marke?mandant=radhaus", headers=H).json()
+    assert j["profil_hinweise"] == [] and j["letzte_uebernahme"] is None
+
+
+def test_stand_aktuell_nur_nach_fertiger_uebernahme(umg):
+    """Minor 5: ein angenommener Vorschlag, dessen Uebernahme noch laeuft, ist noch nicht das Profil."""
+    f, _, c = umg
+    f.antworten += [[{"ok": True}], _stand_kopf(), [], [], [], [], []]
+    c.get("/api/pult/marke?mandant=radhaus", headers=H)
+    sql = f.sql[5]
+    assert "a.art = 'uebernehmen'" in sql and "a.status = 'fertig'" in sql and "a.vorschlag = v.id" in sql
+
+
+def test_entscheiden_braucht_die_firma_der_oberflaeche(umg):
+    """Minor 4: ohne oder mit ungueltiger Firma kein Aufruf; die DB vergleicht sie mit dem Vorschlag."""
+    f, _, c = umg
+    for aktion in ("uebernehmen", "verwerfen"):
+        for body in ({"von": "A"}, {"von": "A", "mandant": "GROSS"}, {"von": "A", "mandant": 3}):
+            assert c.post(f"/api/pult/marke/vorschlaege/{VID}/{aktion}", headers=H, json=body).status_code == 422
+    assert f.sql == []
+    f.fehler += [_db_fehler("Der Vorschlag gehört zu einer anderen Firma – bitte neu laden")]
+    r = c.post(f"/api/pult/marke/vorschlaege/{VID}/uebernehmen", headers=H, json={"von": "A", "mandant": "fin2gether"})
+    assert r.status_code == 422 and r.json()["detail"] == "Der Vorschlag gehört zu einer anderen Firma – bitte neu laden"
+    assert "'fin2gether')" in f.sql[0]
+
+
+def test_vorschau_nur_fuer_die_firma_der_oberflaeche(umg):
+    f, _, c = umg
+    assert c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau", headers=H).status_code == 422
+    assert c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?mandant=GROSS", headers=H).status_code == 422
+    assert f.sql == []
+    f.antworten.append([])                    # Vorschlag einer anderen Firma: wie unbekannt
+    assert c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?mandant=fin2gether", headers=H).status_code == 404
+    assert "v.mandant = 'fin2gether'" in f.sql[0]
+
+
+def test_arbeiter_profil_hinweise(umg):
+    f, _, c = umg
+    f.antworten.append([{"ok": True}])
+    r = c.post("/api/marke/arbeiter/hinweise", headers=HB,
+               json={"mandant": "radhaus", "hinweise": ["Marke.md: akzent ungültig"]})
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert "marketing.pult_marke_profil_hinweise('radhaus', '[\"Marke.md: akzent ungültig\"]'::jsonb)" in f.sql[0]
+    n = len(f.sql)
+    for body in ({"hinweise": []}, {"mandant": "radhaus"}, {"mandant": "radhaus", "hinweise": "x"},
+                 {"mandant": "radhaus", "hinweise": [1]}, {"mandant": "radhaus", "hinweise": ["x"] * 51}):
+        assert c.post("/api/marke/arbeiter/hinweise", headers=HB, json=body).status_code == 422, body
+    assert len(f.sql) == n
+    assert c.post("/api/marke/arbeiter/hinweise", headers=H, json={"mandant": "radhaus", "hinweise": []}).status_code == 401
+    f.fehler += [RuntimeError("db weg")]
+    assert c.post("/api/marke/arbeiter/hinweise", headers=HB, json={"mandant": "radhaus", "hinweise": []}).status_code == 503
+
+
+def test_naechster_chat_traegt_den_offenen_vorschlag(umg):
+    """C1/R14: die DB liefert dem Chat-Auftrag den offenen Vorschlag; die Route reicht ihn unveraendert durch."""
+    f, _, c = umg
+    job = {"id": AID, "art": "chat", "mandant": "radhaus", "firma": "Radhaus", "nachricht": "Ton ruhiger",
+           "kontext": {}, "verlauf": [{"nachricht": "Hallo", "antwort": "Hier"}],
+           "vorschlag": {"id": VID, "vorschlag": dict(VORSCHLAG, logo="anhang:logo.png")}}
+    f.antworten.append([{"a": job}])
+    assert c.post("/api/marke/arbeiter/naechster", headers=HB).json() == {"auftrag": job}
+    assert len(f.sql) == 1                   # kein Urheber-Lesen beim Chat

@@ -44,11 +44,15 @@ DO $$ BEGIN
   ASSERT to_regprocedure('marketing.pult_marke_vorschlag(uuid, jsonb, text, jsonb)') IS NOT NULL, '0: vorschlag';
   ASSERT to_regprocedure('marketing.pult_marke_fertig(uuid, text, jsonb)') IS NOT NULL, '0: fertig';
   ASSERT to_regprocedure('marketing.pult_marke_zurueck(uuid, text)') IS NOT NULL, '0: zurueck';
-  ASSERT to_regprocedure('marketing.pult_marke_uebernehmen(uuid, text)') IS NOT NULL, '0: uebernehmen';
-  ASSERT to_regprocedure('marketing.pult_marke_verwerfen(uuid, text)') IS NOT NULL, '0: verwerfen';
+  ASSERT to_regprocedure('marketing.pult_marke_uebernehmen(uuid, text, text)') IS NOT NULL, '0: uebernehmen';
+  ASSERT to_regprocedure('marketing.pult_marke_verwerfen(uuid, text, text)') IS NOT NULL, '0: verwerfen';
   ASSERT to_regprocedure('marketing.pult_marke_spiegeln(text, jsonb, text)') IS NOT NULL, '0: spiegeln';
   ASSERT to_regprocedure('marketing.pult_marke_markieren(text)') IS NOT NULL, '0: markieren';
   ASSERT to_regprocedure('marketing.pult_marke_hinweis_aus(uuid)') IS NOT NULL, '0: hinweis_aus';
+  ASSERT to_regprocedure('marketing.pult_marke_profil_hinweise(text, jsonb)') IS NOT NULL, '0: profil_hinweise';
+  ASSERT EXISTS (SELECT 1 FROM information_schema.columns
+                  WHERE table_schema = 'marketing' AND table_name = 'marken_spiegel'
+                    AND column_name = 'hinweise'), '0: marken_spiegel.hinweise';
   ASSERT (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
            WHERE n.nspname = 'marketing' AND p.proname = 'pult_gestalt_fehler') = 1, '0: genau eine pult_gestalt_fehler';
   -- Schriftregister: dieselben ids wie claw/schriften.py REGISTER
@@ -150,6 +154,9 @@ BEGIN
   ASSERT j->>'id' = a2::text AND jsonb_array_length(j->'verlauf') = 1
      AND j->'verlauf'->0->>'nachricht' = 'Wir sind ein Steuerbuero'
      AND j->'verlauf'->0->>'antwort' = 'Hier ein erster Entwurf', format('5a: Verlauf: %s', j);
+  -- C1/R14: ein Chat-Auftrag bringt den offenen Vorschlag der Firma mit (Material zum Verfeinern)
+  ASSERT j->'vorschlag'->>'id' = v1::text AND j->'vorschlag'->'vorschlag'->>'akzent' = '#336699'
+     AND j->'vorschlag'->'vorschlag'->>'schrift_anzeige' = 'playfair', format('5a2: offener Vorschlag: %s', j);
   v2 := marketing.pult_marke_vorschlag(a2, '{"akzent":"#225588"}', 'Ruhiger', NULL);
   ASSERT (SELECT status FROM marketing.marken_vorschlaege WHERE id = v1) = 'ersetzt', '5b: aelterer ersetzt';
   ASSERT (SELECT status FROM marketing.marken_vorschlaege WHERE id = v2) = 'offen', '5b: neuer offen';
@@ -159,6 +166,7 @@ BEGIN
   a := marketing.pult_marke_anlegen('probe_marke', 'Was meinst du?', '{}');
   j := marketing.pult_marke_naechster(interval '5 minutes');
   ASSERT jsonb_array_length(j->'verlauf') = 2, format('6a: Verlauf 2: %s', j);
+  ASSERT j->'vorschlag'->>'id' = v2::text, format('6a2: der neue offene Vorschlag: %s', j);
   ASSERT marketing.pult_marke_fertig(a, 'Nur eine Antwort', '[]') = 0, '6b: fertig ohne Markierung';
   SELECT * INTO r FROM marketing.marken_auftraege WHERE id = a;
   ASSERT r.status = 'fertig' AND r.antwort = 'Nur eine Antwort' AND r.vorschlag IS NULL, format('6c: %s', row_to_json(r));
@@ -168,12 +176,20 @@ BEGIN
 
   -- 7) Uebernehmen - Review Focus 3: der aeltere (ersetzte) Vorschlag wird abgelehnt
   v_fehler := NULL;
-  BEGIN PERFORM marketing.pult_marke_uebernehmen(v1, 'probe'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+  BEGIN PERFORM marketing.pult_marke_uebernehmen(v1, 'probe', 'probe_marke'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
   ASSERT v_fehler = 'Inzwischen gibt es ein neueres Profil – bitte neu laden', format('7a: aelterer: %s', v_fehler);
   v_fehler := NULL;
-  BEGIN PERFORM marketing.pult_marke_uebernehmen(v2, '  '); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+  BEGIN PERFORM marketing.pult_marke_uebernehmen(v2, '  ', 'probe_marke'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
   ASSERT v_fehler = 'Ohne Namen kein Übernehmen', format('7b: ohne Namen: %s', v_fehler);
-  u := marketing.pult_marke_uebernehmen(v2, 'probe');
+  -- Minor 4: ein veralteter Tab (inzwischen andere Firma gewaehlt) handelt nie am fremden Vorschlag
+  v_fehler := NULL;
+  BEGIN PERFORM marketing.pult_marke_uebernehmen(v2, 'probe', 'probe_marke_b'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+  ASSERT v_fehler = 'Der Vorschlag gehört zu einer anderen Firma – bitte neu laden', format('7b2: fremde Firma: %s', v_fehler);
+  v_fehler := NULL;
+  BEGIN PERFORM marketing.pult_marke_verwerfen(v2, 'probe', 'probe_marke_b'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+  ASSERT v_fehler = 'Der Vorschlag gehört zu einer anderen Firma – bitte neu laden', format('7b3: fremde Firma: %s', v_fehler);
+  ASSERT (SELECT status FROM marketing.marken_vorschlaege WHERE id = v2) = 'offen', '7b4: unberuehrt';
+  u := marketing.pult_marke_uebernehmen(v2, 'probe', 'probe_marke');
   SELECT * INTO r FROM marketing.marken_vorschlaege WHERE id = v2;
   ASSERT r.status = 'angenommen' AND r.entschieden_von = 'probe' AND r.entschieden_am = now(),
          format('7c: angenommen: %s', row_to_json(r));
@@ -182,7 +198,7 @@ BEGIN
          format('7d: Auftrag uebernehmen: %s', row_to_json(r));
   -- zweiter Tab uebernimmt denselben (jetzt angenommenen) Vorschlag
   v_fehler := NULL;
-  BEGIN PERFORM marketing.pult_marke_uebernehmen(v2, 'probe'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+  BEGIN PERFORM marketing.pult_marke_uebernehmen(v2, 'probe', 'probe_marke'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
   ASSERT v_fehler = 'Inzwischen gibt es ein neueres Profil – bitte neu laden', format('7e: zweiter Tab: %s', v_fehler);
   v_fehler := NULL;
   BEGIN PERFORM marketing.pult_marke_anlegen('probe_marke', 'Noch was', '{}'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
@@ -204,7 +220,7 @@ BEGIN
   ASSERT marketing.pult_marke_zurueck(u, 'nochmal') = 'fehler', '8e: zurueck auf erledigtem: nichts zu tun';
 
   -- 9) erneut uebernehmen, fertig markiert die Entwuerfe der Firma
-  u := marketing.pult_marke_uebernehmen(v2, 'probe');
+  u := marketing.pult_marke_uebernehmen(v2, 'probe', 'probe_marke');
   j := marketing.pult_marke_naechster(interval '5 minutes');
   ASSERT j->>'id' = u::text, format('9a: %s', j);
   n := marketing.pult_marke_fertig(u, 'Übernommen', '[]');
@@ -233,17 +249,17 @@ BEGIN
   PERFORM marketing.pult_marke_naechster(interval '5 minutes');
   v3 := marketing.pult_marke_vorschlag(a, '{"akzent":"#aa3300"}', 'Kraeftiger', '[]');
   v_fehler := NULL;
-  BEGIN PERFORM marketing.pult_marke_verwerfen(v3, ''); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+  BEGIN PERFORM marketing.pult_marke_verwerfen(v3, '', 'probe_marke'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
   ASSERT v_fehler = 'Ohne Namen kein Verwerfen', format('11a: ohne Namen: %s', v_fehler);
-  ASSERT marketing.pult_marke_verwerfen(v3, 'probe') = 'verworfen', '11b: verwerfen';
+  ASSERT marketing.pult_marke_verwerfen(v3, 'probe', 'probe_marke') = 'verworfen', '11b: verwerfen';
   SELECT * INTO r FROM marketing.marken_vorschlaege WHERE id = v3;
   ASSERT r.status = 'verworfen' AND r.entschieden_von = 'probe' AND r.entschieden_am = now(), format('11c: %s', row_to_json(r));
-  ASSERT marketing.pult_marke_verwerfen(v3, 'probe') = 'verworfen', '11d: zweimal verwerfen';
+  ASSERT marketing.pult_marke_verwerfen(v3, 'probe', 'probe_marke') = 'verworfen', '11d: zweimal verwerfen';
   v_fehler := NULL;
-  BEGIN PERFORM marketing.pult_marke_verwerfen(v2, 'probe'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+  BEGIN PERFORM marketing.pult_marke_verwerfen(v2, 'probe', 'probe_marke'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
   ASSERT v_fehler = 'Inzwischen gibt es ein neueres Profil – bitte neu laden', format('11e: angenommenen verwerfen: %s', v_fehler);
   v_fehler := NULL;
-  BEGIN PERFORM marketing.pult_marke_uebernehmen(v3, 'probe'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+  BEGIN PERFORM marketing.pult_marke_uebernehmen(v3, 'probe', 'probe_marke'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
   ASSERT v_fehler = 'Inzwischen gibt es ein neueres Profil – bitte neu laden', format('11f: verworfenen uebernehmen: %s', v_fehler);
   v_fehler := NULL;   -- Regel: hoechstens ein offener Vorschlag je Firma
   BEGIN
@@ -261,7 +277,7 @@ BEGIN
   j := marketing.pult_marke_naechster(interval '5 minutes');
   ASSERT j->>'id' = a2::text AND j->'verlauf' = '[]'::jsonb, format('12b: fehler-Runden nicht im Verlauf: %s', j);
   v1 := marketing.pult_marke_vorschlag(a2, '{"akzent":"#123456"}', 'B', '[]');
-  u := marketing.pult_marke_uebernehmen(v1, 'probe');
+  u := marketing.pult_marke_uebernehmen(v1, 'probe', 'probe_marke_b');
   PERFORM marketing.pult_marke_naechster(interval '5 minutes');
   UPDATE marketing.marken_auftraege SET vergeben_bis = now() - interval '1 second' WHERE id = u;
   PERFORM marketing._marke_aufraeumen(NULL);
@@ -281,6 +297,12 @@ END $$;
 
 -- 13) Spiegel: Standard-Layout anlegen, neue Fassung, Firma mit eigenem Standard, ungueltig, Logo weg
 DO $$ DECLARE n int; r record; v_fehler text; g jsonb; v_dunkel jsonb; BEGIN
+  -- I1: 'dunkel' traegt VibeMinds Logo, Schriften und Kopf-/Fusstext (so schreibt es VibeMinds eigene
+  -- Uebernahme hinein); ein neues Firmen-Layout darf davon nichts erben
+  UPDATE marketing.layout_vorlagen
+     SET gestalt = gestalt || '{"logo":"data:image/png;base64,VklCRU1JTkQ=","kopf_text":"VibeMind",
+                               "fuss_text":"VibeMind GmbH","schriften":{"anzeige":"oxanium","text":"rajdhani"}}'
+   WHERE name = 'dunkel';
   SELECT gestalt INTO v_dunkel FROM marketing.layout_vorlagen WHERE name = 'dunkel';
   ASSERT NOT EXISTS (SELECT 1 FROM marketing.layout_vorlagen WHERE mandant = 'probe_marke'), '13: Probe ohne Layout';
   n := marketing.pult_marke_spiegeln('probe_marke',
@@ -291,16 +313,26 @@ DO $$ DECLARE n int; r record; v_fehler text; g jsonb; v_dunkel jsonb; BEGIN
   ASSERT r.name = 'marke-probe-marke' AND r.art = 'layout' AND r.standard AND r.inhaltsart = 'newsletter'
      AND r.status = 'freigegeben' AND r.entschieden_von = 'marke' AND r.fassung = 1,
          format('13b: Layout: %s', row_to_json(r));
-  ASSERT r.gestalt = v_dunkel || '{"akzent":"#336699","flaeche":"#eef2f7","logo":"data:image/png;base64,iVBORw0KGgo=",
+  ASSERT r.gestalt = (v_dunkel - ARRAY['logo','schriften','kopf_text','fuss_text'])
+                     || '{"akzent":"#336699","flaeche":"#eef2f7","logo":"data:image/png;base64,iVBORw0KGgo=",
            "schriften":{"anzeige":"playfair","text":"manrope"}}'::jsonb, format('13c: Gestalt: %s', r.gestalt);
+  -- ohne Logo und Schriften im Profil: nichts von VibeMind
+  n := marketing.pult_marke_spiegeln('probe_marke_aus', '{"akzent":"#336699"}', '2026-10-07 12:00 von probe');
+  SELECT gestalt INTO g FROM marketing.layout_vorlagen WHERE name = 'marke-probe-marke-aus';
+  ASSERT NOT (g ?| ARRAY['logo','schriften','kopf_text','fuss_text']), format('13c2: nichts geerbt: %s', g);
   ASSERT (SELECT gestalt FROM marketing.layout_fassungen WHERE layout = 'marke-probe-marke' AND fassung = 1) = r.gestalt,
          '13d: Fassung 1 aufgezeichnet';
   SELECT * INTO r FROM marketing.marken_spiegel WHERE mandant = 'probe_marke';
   ASSERT r.stand = '2026-10-07 12:00 von probe' AND r.gespiegelt_am = now() AND r.fehler IS NULL,
          format('13e: Spiegel-Stand: %s', row_to_json(r));
-  -- gleiche Werte: keine neue Fassung (Abgleich alle 10 min)
+  -- gleiche Werte: keine neue Fassung (Abgleich alle 10 min) und kein Speichern (T1: Muster bleibt)
+  UPDATE marketing.layout_vorlagen SET muster_datei = 'muster-probe.png', entschieden_von = 'hand'
+   WHERE name = 'marke-probe-marke';
   n := marketing.pult_marke_spiegeln('probe_marke', '{"akzent":"#336699"}', '2026-10-07 12:00 von probe');
   ASSERT n = 1, format('13f: unveraendert, ist %s', n);
+  SELECT * INTO r FROM marketing.layout_vorlagen WHERE name = 'marke-probe-marke';
+  ASSERT r.muster_datei = 'muster-probe.png' AND r.entschieden_von = 'hand',
+         format('13f2: unveraendert nicht gespeichert: %s', row_to_json(r));
   -- neue Werte: neue Fassung, uebrige Schluessel bleiben; null entfernt das Logo
   n := marketing.pult_marke_spiegeln('probe_marke', '{"akzent":"#225588","logo":null}', '2026-10-07 13:00 von probe');
   ASSERT n = 2, format('13g: Fassung 2, ist %s', n);
@@ -333,5 +365,36 @@ DO $$ DECLARE n int; r record; v_fehler text; g jsonb; v_dunkel jsonb; BEGIN
   ASSERT (SELECT count(*) FROM marketing.layout_vorlagen WHERE mandant = 'probe_marke_b') = 1, '13s: kein zweites Layout';
   ASSERT (SELECT erstellt_von FROM marketing.layout_fassungen WHERE layout = 'probe-marke-b-std' AND fassung = 2) = 'marke',
          '13t: Fassung von marke';
+END $$;
+-- 14) Profil-Hinweise (I3): der Abgleich meldet "Marke.md: ... ungültig" je Firma, auch ohne Spiegel-Aenderung
+DO $$ DECLARE r record; v_fehler text; BEGIN
+  ASSERT marketing.pult_marke_profil_hinweise('probe_marke', '["Marke.md: akzent ungültig"]'), '14a: gesetzt';
+  SELECT * INTO r FROM marketing.marken_spiegel WHERE mandant = 'probe_marke';
+  ASSERT r.hinweise = '["Marke.md: akzent ungültig"]'::jsonb AND r.stand = '2026-10-07 14:00 von probe'
+     AND r.fehler IS NULL, format('14b: Hinweise ohne Stand/Fehler zu aendern: %s', row_to_json(r));
+  -- Firma ohne Spiegelzeile: Zeile entsteht ohne Stand
+  ASSERT marketing.pult_marke_profil_hinweise('probe_marke_b', '["Marke.md: logo ungültig"]'), '14c: gesetzt';
+  DELETE FROM marketing.marken_spiegel WHERE mandant = 'probe_marke_b';
+  ASSERT marketing.pult_marke_profil_hinweise('probe_marke_b', '["Marke.md: logo ungültig"]'), '14c2: neue Zeile';
+  SELECT * INTO r FROM marketing.marken_spiegel WHERE mandant = 'probe_marke_b';
+  ASSERT r.stand = '' AND r.gespiegelt_am IS NULL AND r.hinweise = '["Marke.md: logo ungültig"]'::jsonb,
+         format('14d: %s', row_to_json(r));
+  ASSERT marketing.pult_marke_profil_hinweise('probe_marke', '[]'), '14e: leeren';
+  ASSERT (SELECT hinweise FROM marketing.marken_spiegel WHERE mandant = 'probe_marke') = '[]'::jsonb, '14f: leer';
+  -- ein erfolgreicher Spiegel laesst die Hinweise stehen (sie kommen aus der Datei, nicht aus dem Spiegel)
+  PERFORM marketing.pult_marke_profil_hinweise('probe_marke', '["Marke.md: text ungültig"]');
+  PERFORM marketing.pult_marke_spiegeln('probe_marke', '{"akzent":"#225589"}', '2026-10-07 15:00 von probe');
+  ASSERT (SELECT hinweise FROM marketing.marken_spiegel WHERE mandant = 'probe_marke')
+         = '["Marke.md: text ungültig"]'::jsonb, '14g: Spiegel laesst Hinweise';
+  v_fehler := NULL;
+  BEGIN PERFORM marketing.pult_marke_profil_hinweise('probe_marke', '{}'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+  ASSERT v_fehler = 'Hinweise muessen ein Array sein', format('14h: kein Array: %s', v_fehler);
+  v_fehler := NULL;
+  BEGIN PERFORM marketing.pult_marke_profil_hinweise('probe_marke', (SELECT jsonb_agg(i) FROM generate_series(1, 51) i));
+  EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+  ASSERT v_fehler = 'Hoechstens 50 Hinweise', format('14i: zu viele: %s', v_fehler);
+  v_fehler := NULL;
+  BEGIN PERFORM marketing.pult_marke_profil_hinweise('gibt_es_nicht', '[]'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+  ASSERT v_fehler = 'Unbekannte Firma', format('14j: unbekannte Firma: %s', v_fehler);
 END $$;
 SELECT 'verify_064 ok' AS ergebnis;

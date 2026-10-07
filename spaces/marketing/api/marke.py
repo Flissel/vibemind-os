@@ -71,7 +71,7 @@ def marke_stand(mandant: str | None = None, x_pult_key: str | None = Header(None
     m = _mandant_pflicht(mandant)
     _schreiben(lambda: f"SELECT marketing._marke_aufraeumen({lit(m)}) IS NULL AS ok")
     kopf = _lesen_einer(lambda:
-        "SELECT m.name, s.stand, s.gespiegelt_am::text AS gespiegelt_am, s.fehler, "
+        "SELECT m.name, s.stand, s.gespiegelt_am::text AS gespiegelt_am, s.fehler, s.hinweise, "
         "(SELECT l.gestalt FROM marketing.layout_vorlagen l WHERE l.mandant = m.id AND l.standard "
         "AND l.inhaltsart = 'newsletter' AND l.art = 'layout') AS gestalt "
         "FROM marketing.mandanten m LEFT JOIN marketing.marken_spiegel s ON s.mandant = m.id "
@@ -96,22 +96,33 @@ def marke_stand(mandant: str | None = None, x_pult_key: str | None = Header(None
         "SELECT id, vorschlag, erstellt_am::text AS erstellt_am FROM marketing.marken_vorschlaege "
         f"WHERE mandant = {lit(m)} AND status = 'offen'")
     # Das zuletzt uebernommene Profil (Rowboat-Text selbst liefert die API nicht): Abschnitte + Werte.
+    # Nur ein Vorschlag, dessen Uebernahme fertig ist - solange sie laeuft, steht er noch nicht in Rowboat.
     ang = _lesen_einer(lambda:
-        "SELECT vorschlag FROM marketing.marken_vorschlaege "
-        f"WHERE mandant = {lit(m)} AND status = 'angenommen' ORDER BY entschieden_am DESC LIMIT 1")
+        "SELECT v.vorschlag FROM marketing.marken_vorschlaege v "
+        f"WHERE v.mandant = {lit(m)} AND v.status = 'angenommen' AND EXISTS (SELECT 1 FROM "
+        "marketing.marken_auftraege a WHERE a.vorschlag = v.id AND a.art = 'uebernehmen' AND a.status = 'fertig') "
+        "ORDER BY v.entschieden_am DESC LIMIT 1")
     ang_v = ang.get("vorschlag") if isinstance(ang, dict) and isinstance(ang.get("vorschlag"), dict) else None
     aktuell = ({"abschnitte": ang_v.get("abschnitte") if isinstance(ang_v.get("abschnitte"), dict) else {},
                 "werte": {k: x for k, x in ang_v.items() if k not in ("abschnitte", "mustertext")}}
                if ang_v is not None else None)
+    # Ergebnis der letzten abgeschlossenen Uebernahme: ein Fehlschlag hat sonst keinen Ort auf der Seite (I6)
+    letzte = _lesen_einer(lambda:
+        "SELECT status, antwort, hinweise, geaendert_am::text AS geaendert_am FROM marketing.marken_auftraege "
+        f"WHERE mandant = {lit(m)} AND art = 'uebernehmen' AND status IN ('fertig', 'fehler') "
+        "ORDER BY geaendert_am DESC LIMIT 1")
+    hinweise = kopf.get("hinweise") if isinstance(kopf.get("hinweise"), list) else []
     return {"mandant": m, "name": kopf.get("name"),
             "spiegel": {"gestalt": {k: gestalt[k] for k in SPIEGEL_SCHLUESSEL if k in gestalt},
                         "stand": kopf.get("stand") or "", "gespiegelt_am": kopf.get("gespiegelt_am"),
                         "fehler": kopf.get("fehler")},
+            "profil_hinweise": [str(h) for h in hinweise],
             "auftraege": auftraege, "laeuft": "chat" in arten,
             "vorschlag": ({"id": str(v["id"]), "vorschlag": v.get("vorschlag"), "erstellt_am": v.get("erstellt_am")}
                           if v else None),
             "uebernahme": "laeuft" if "uebernehmen" in arten else None,
-            "uebernahme_seit": seit if "uebernehmen" in arten else None, "aktuell": aktuell}
+            "uebernahme_seit": seit if "uebernehmen" in arten else None, "aktuell": aktuell,
+            "letzte_uebernahme": letzte or None}
 
 
 @pult_router.post("/marke/chat")
@@ -132,7 +143,9 @@ def marke_uebernehmen(vid: str, payload: dict = Body(...), x_pult_key: str | Non
     _schluessel(x_pult_key)
     v = _vorschlag_id(vid)
     von = _von(payload)
-    zeile = _schreiben(lambda: f"SELECT marketing.pult_marke_uebernehmen({lit(v)}::uuid, {lit(von)}) AS id")
+    m = _mandant_pflicht(payload.get("mandant"))   # Firma der Oberflaeche; die DB vergleicht (Minor 4)
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_marke_uebernehmen({lit(v)}::uuid, {lit(von)}, {lit(m)}) AS id")
     return {"auftrag": str(zeile["id"])}
 
 
@@ -141,7 +154,9 @@ def marke_verwerfen(vid: str, payload: dict = Body(...), x_pult_key: str | None 
     _schluessel(x_pult_key)
     v = _vorschlag_id(vid)
     von = _von(payload)
-    zeile = _schreiben(lambda: f"SELECT marketing.pult_marke_verwerfen({lit(v)}::uuid, {lit(von)}) AS status")
+    m = _mandant_pflicht(payload.get("mandant"))
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_marke_verwerfen({lit(v)}::uuid, {lit(von)}, {lit(m)}) AS status")
     return {"status": zeile["status"]}
 
 
@@ -183,14 +198,17 @@ def _muster_einsetzen(dok: dict, muster) -> str:
 
 
 @pult_router.get("/marke/vorschlaege/{vid}/vorschau")
-def marke_vorschau(vid: str, format: str = "mail", bild_basis: str = "", x_pult_key: str | None = Header(None)):
+def marke_vorschau(vid: str, mandant: str | None = None, format: str = "mail", bild_basis: str = "",
+                   x_pult_key: str | None = Header(None)):
+    """Nur ein Vorschlag der Firma, die die Oberflaeche zeigt (Minor 4); sonst 404 wie unbekannt."""
     _schluessel(x_pult_key)
     v = _vorschlag_id(vid)
+    firma = _mandant_pflicht(mandant)
     fmt = _auswahl(format, ("mail", "handy"), "format") or "mail"
     basis = _bild_basis(bild_basis)
     z = _lesen_einer(lambda:
         "SELECT v.vorschlag, v.mandant, m.name, m.pflichtteil FROM marketing.marken_vorschlaege v "
-        f"JOIN marketing.mandanten m ON m.id = v.mandant WHERE v.id = {lit(v)}::uuid")
+        f"JOIN marketing.mandanten m ON m.id = v.mandant WHERE v.id = {lit(v)}::uuid AND v.mandant = {lit(firma)}")
     if not z:
         raise HTTPException(404, "Unbekannter Vorschlag")
     m, vorschlag = z["mandant"], z.get("vorschlag") if isinstance(z.get("vorschlag"), dict) else {}
@@ -265,7 +283,7 @@ def arbeiter_firmen(x_bild_key: str | None = Header(None)):
     """Aktive Firmen mit dem Spiegel-Teil ihres Standard-Newsletter-Layouts, fuer den Abgleich am PC."""
     _bild_schluessel(x_bild_key)
     zeilen = _lesen(lambda:
-        "SELECT m.id, m.name, s.stand, "
+        "SELECT m.id, m.name, s.stand, s.hinweise, s.fehler, "
         "(SELECT l.gestalt FROM marketing.layout_vorlagen l WHERE l.mandant = m.id AND l.standard "
         "AND l.inhaltsart = 'newsletter' AND l.art = 'layout') AS gestalt "
         "FROM marketing.mandanten m LEFT JOIN marketing.marken_spiegel s ON s.mandant = m.id "
@@ -274,8 +292,25 @@ def arbeiter_firmen(x_bild_key: str | None = Header(None)):
     for z in zeilen:
         gestalt = z.get("gestalt") if isinstance(z.get("gestalt"), dict) else {}
         firmen.append({"id": z.get("id"), "name": z.get("name"), "stand": z.get("stand") or "",
-                       "gestalt": {k: gestalt[k] for k in SPIEGEL_SCHLUESSEL if k in gestalt}})
+                       "gestalt": {k: gestalt[k] for k in SPIEGEL_SCHLUESSEL if k in gestalt},
+                       "hinweise": z.get("hinweise") if isinstance(z.get("hinweise"), list) else [],
+                       "fehler": z.get("fehler")})
     return {"firmen": firmen}
+
+
+@arbeiter_router.post("/hinweise")
+def arbeiter_hinweise(payload: dict = Body(...), x_bild_key: str | None = Header(None)):
+    """Lese-Hinweise der Marke.md einer Firma ("Marke.md: akzent ungültig"), vom Abgleich gemeldet (I3)."""
+    _bild_schluessel(x_bild_key)
+    m = _mandant_pflicht(payload.get("mandant"))
+    hinweise = payload.get("hinweise")
+    if not isinstance(hinweise, list):
+        raise HTTPException(422, "hinweise muss eine Liste von Texten sein")
+    hinweise = _hinweise(payload)
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_marke_profil_hinweise({lit(m)}, "
+        f"{lit(json.dumps([h[:300] for h in hinweise], ensure_ascii=False))}::jsonb) AS ok")
+    return {"ok": bool(zeile.get("ok"))}
 
 
 @arbeiter_router.post("/{aid}/weiter")

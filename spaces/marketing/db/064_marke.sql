@@ -18,12 +18,16 @@
 --      bis der PC laeuft ("Wird übernommen, sobald der PC läuft"); abgelaufene Vergabe: einmal neu,
 --      dann fehler. Endet ein Uebernehmen mit fehler, wird sein Vorschlag wieder 'offen'
 --      (sonst bliebe er 'angenommen', ohne je geschrieben worden zu sein).
---   5) Entscheiden: uebernehmen (nur der offene = neueste offene Vorschlag), verwerfen
+--      naechster liefert einem Chat-Auftrag den offenen Vorschlag der Firma mit (C1/R14).
+--   5) Entscheiden: uebernehmen (nur der offene = neueste offene Vorschlag), verwerfen - beide nur mit
+--      der Firma, die die Oberflaeche zeigt (veralteter Tab nach Firmenwechsel => Meldung)
 --   6) Spiegel: pult_marke_spiegeln schreibt akzent/flaeche/logo/schriften ins Standard-Newsletter-
---      Layout der Firma (neue Fassung ueber pult_layout_speichern aus 051) oder legt es an
---      ('marke-<firma>', Gestalt von 'dunkel' als Grundlage, standard, freigegeben). Ein JSON-null
+--      Layout der Firma (neue Fassung ueber pult_layout_speichern aus 051; unveraendert => kein
+--      Speichern) oder legt es an ('marke-<firma>', Gestalt von 'dunkel' OHNE logo/schriften/kopf_text/
+--      fuss_text als Grundlage, standard, freigegeben). Ein JSON-null
 --      entfernt den Schluessel (Logo geloescht). Ungueltige Gestalt: nichts gespiegelt, Fehler in
 --      marken_spiegel.fehler, Rueckgabe NULL (Spec §5: der Spiegel behaelt den letzten gueltigen Stand).
+--      pult_marke_profil_hinweise legt die Lese-Hinweise der Marke.md je Firma ab (Profilseite).
 --   7) Markierung: pult_marke_markieren (alle Newsletter-Entwuerfe der Firma), pult_marke_fertig
 --      eines Uebernehmen-Auftrags markiert selbst; pult_marke_hinweis_aus setzt zurueck.
 -- Sperrreihenfolge (wie 061/063: Elternzeile zuerst): erst marketing.mandanten (FOR NO KEY UPDATE -
@@ -136,7 +140,10 @@ CREATE TABLE IF NOT EXISTS marketing.marken_spiegel (
     mandant       text PRIMARY KEY REFERENCES marketing.mandanten(id),
     stand         text NOT NULL DEFAULT '',
     gespiegelt_am timestamptz,
-    fehler        text
+    fehler        text,
+    -- Hinweise beim Lesen der Marke.md ("Marke.md: akzent ungültig"), vom Abgleich am PC gemeldet -
+    -- auch wenn sich am Spiegel nichts aendert (die Profilseite zeigt sie)
+    hinweise      jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(hinweise) = 'array')
 );
 
 -- 4) Warteschlange
@@ -206,9 +213,14 @@ BEGIN
     FROM (SELECT nachricht, antwort, erstellt_am FROM marketing.marken_auftraege
            WHERE mandant = a.mandant AND art = 'chat' AND status = 'fertig'
            ORDER BY erstellt_am DESC LIMIT 10) v;
+  -- uebernehmen: sein Vorschlag. chat: der offene Vorschlag der Firma (C1/R14) - die naechste Runde
+  -- verfeinert ihn (samt Logo), statt ohne Gedaechtnis neu anzufangen; keiner offen => null
   IF a.art = 'uebernehmen' THEN
     SELECT jsonb_build_object('id', id, 'vorschlag', vorschlag) INTO v_vorschlag
       FROM marketing.marken_vorschlaege WHERE id = a.vorschlag;
+  ELSE
+    SELECT jsonb_build_object('id', id, 'vorschlag', vorschlag) INTO v_vorschlag
+      FROM marketing.marken_vorschlaege WHERE mandant = a.mandant AND status = 'offen';
   END IF;
   UPDATE marketing.marken_auftraege
      SET status = 'in_arbeit', versuche = versuche + 1, vergeben_bis = now() + p_frist, geaendert_am = now()
@@ -325,13 +337,17 @@ BEGIN
 END $$;
 
 -- 5) Entscheiden
-CREATE OR REPLACE FUNCTION marketing.pult_marke_uebernehmen(p_vorschlag uuid, p_von text) RETURNS uuid
+-- p_mandant = die Firma, die die Oberflaeche gerade zeigt: ein veralteter Tab (inzwischen andere
+-- Firma gewaehlt) handelt so nie am Vorschlag einer anderen Firma (Minor 4).
+CREATE OR REPLACE FUNCTION marketing.pult_marke_uebernehmen(p_vorschlag uuid, p_von text, p_mandant text) RETURNS uuid
 LANGUAGE plpgsql AS $$
 DECLARE v_mandant text; v_status text; v_id uuid;
 BEGIN
   IF length(btrim(coalesce(p_von, ''))) = 0 THEN RAISE EXCEPTION 'Ohne Namen kein Übernehmen'; END IF;
   SELECT mandant INTO v_mandant FROM marketing.marken_vorschlaege WHERE id = p_vorschlag;
   IF NOT FOUND THEN RAISE EXCEPTION 'Unbekannter Vorschlag'; END IF;
+  IF v_mandant IS DISTINCT FROM p_mandant THEN
+    RAISE EXCEPTION 'Der Vorschlag gehört zu einer anderen Firma – bitte neu laden'; END IF;
   PERFORM 1 FROM marketing.mandanten WHERE id = v_mandant AND aktiv FOR NO KEY UPDATE;
   IF NOT FOUND THEN RAISE EXCEPTION 'Unbekannte oder inaktive Firma'; END IF;
   SELECT status INTO v_status FROM marketing.marken_vorschlaege WHERE id = p_vorschlag FOR UPDATE;
@@ -351,13 +367,15 @@ BEGIN
   RETURN v_id;
 END $$;
 
-CREATE OR REPLACE FUNCTION marketing.pult_marke_verwerfen(p_vorschlag uuid, p_von text) RETURNS text
+CREATE OR REPLACE FUNCTION marketing.pult_marke_verwerfen(p_vorschlag uuid, p_von text, p_mandant text) RETURNS text
 LANGUAGE plpgsql AS $$
 DECLARE v_mandant text; v_status text;
 BEGIN
   IF length(btrim(coalesce(p_von, ''))) = 0 THEN RAISE EXCEPTION 'Ohne Namen kein Verwerfen'; END IF;
   SELECT mandant INTO v_mandant FROM marketing.marken_vorschlaege WHERE id = p_vorschlag;
   IF NOT FOUND THEN RAISE EXCEPTION 'Unbekannter Vorschlag'; END IF;
+  IF v_mandant IS DISTINCT FROM p_mandant THEN
+    RAISE EXCEPTION 'Der Vorschlag gehört zu einer anderen Firma – bitte neu laden'; END IF;
   PERFORM 1 FROM marketing.mandanten WHERE id = v_mandant FOR NO KEY UPDATE;
   SELECT status INTO v_status FROM marketing.marken_vorschlaege WHERE id = p_vorschlag FOR UPDATE;
   IF v_status = 'verworfen' THEN RETURN 'verworfen'; END IF;            -- zweiter Klick: nichts zu tun
@@ -386,7 +404,10 @@ BEGIN
   SELECT name, gestalt INTO v_name, v_alt FROM marketing.layout_vorlagen
    WHERE mandant = p_mandant AND inhaltsart = 'newsletter' AND standard AND art = 'layout' FOR UPDATE;
   IF v_name IS NULL THEN
-    v_alt := (SELECT gestalt FROM marketing.layout_vorlagen WHERE name = 'dunkel');
+    -- Nur das Aussehen von 'dunkel' (Farben, Abstand ...), nie VibeMinds Firmendaten: Logo,
+    -- Schriftpaar und Kopf-/Fusstext darf eine andere Firma nicht erben (I1)
+    v_alt := (SELECT gestalt FROM marketing.layout_vorlagen WHERE name = 'dunkel')
+             - ARRAY['logo','schriften','kopf_text','fuss_text'];
   END IF;
   -- JSON-null entfernt den Schluessel (z. B. Logo geloescht); nur die oberste Ebene
   SELECT coalesce(jsonb_object_agg(key, value), '{}'::jsonb) INTO v_neu
@@ -415,6 +436,10 @@ BEGIN
               'marke', now(), p_mandant, 'newsletter', true)
       RETURNING fassung INTO v_n;
     END IF;
+  ELSIF v_neu = v_alt THEN
+    -- unveraendert (Abgleich, wiederholte Uebernahme): nicht speichern - pult_layout_speichern
+    -- setzte sonst entschieden_von/-am neu und leerte muster_datei (T1)
+    SELECT fassung INTO v_n FROM marketing.layout_vorlagen WHERE name = v_name;
   ELSE
     v_n := marketing.pult_layout_speichern(v_name, v_neu, 'marke');
   END IF;
@@ -423,6 +448,20 @@ BEGIN
   ON CONFLICT (mandant) DO UPDATE
     SET stand = EXCLUDED.stand, gespiegelt_am = EXCLUDED.gespiegelt_am, fehler = NULL;
   RETURN v_n;
+END $$;
+
+-- Profil-Hinweise einer Firma (I3): ersetzt die Liste; Stand und Spiegel-Fehler bleiben unberuehrt.
+CREATE OR REPLACE FUNCTION marketing.pult_marke_profil_hinweise(p_mandant text, p_hinweise jsonb) RETURNS boolean
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF p_hinweise IS NULL OR jsonb_typeof(p_hinweise) <> 'array' THEN
+    RAISE EXCEPTION 'Hinweise muessen ein Array sein'; END IF;
+  IF jsonb_array_length(p_hinweise) > 50 THEN RAISE EXCEPTION 'Hoechstens 50 Hinweise'; END IF;
+  PERFORM 1 FROM marketing.mandanten WHERE id = p_mandant FOR NO KEY UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Unbekannte Firma'; END IF;
+  INSERT INTO marketing.marken_spiegel (mandant, hinweise) VALUES (p_mandant, p_hinweise)
+  ON CONFLICT (mandant) DO UPDATE SET hinweise = EXCLUDED.hinweise;
+  RETURN true;
 END $$;
 
 COMMIT;
