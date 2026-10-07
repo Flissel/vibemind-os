@@ -270,7 +270,8 @@ def test_vorschau_rendert_mit_vorschlagsfarben_schriften_mustertext(umg):
 
 
 def test_vorschau_handy_und_logo_aus_anhang(umg):
-    f, _, c = umg
+    f, ordner, c = umg
+    (ordner / "firmenlogo.png").write_bytes(_bild())
     _vorschau_antworten(f, dict(VORSCHLAG, logo="anhang:firmenlogo.png"), _sicht(eigene=["firmenlogo.png"]))
     r = c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?format=handy&bild_basis={BASIS}", headers=H)
     assert r.status_code == 200, r.text
@@ -278,7 +279,9 @@ def test_vorschau_handy_und_logo_aus_anhang(umg):
 
 
 def test_vorschau_logo_eines_web_abgleichs_und_fremdes_logo(umg):
-    f, _, c = umg
+    f, ordner, c = umg
+    for n in ("marke-radhaus-logo-0123456789.png", "fremd.png"):
+        (ordner / n).write_bytes(_bild())
     _vorschau_antworten(f, dict(VORSCHLAG, logo="marke-radhaus-logo-0123456789.png"),
                         _sicht(gemeinsam=["marke-radhaus-logo-0123456789.png"]))
     r = c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?bild_basis={BASIS}", headers=H)
@@ -534,3 +537,46 @@ def test_markieren(umg):
     assert c.post("/api/marke/arbeiter/markieren", headers=HB, json={"mandant": "radhaus"}).status_code == 422
     f.fehler += [RuntimeError("db weg")]
     assert c.post("/api/marke/arbeiter/markieren", headers=HB, json={"mandant": "radhaus"}).status_code == 503
+
+
+# ─── Fix-Runde 1 ────────────────────────────────────────────────────────
+
+
+def test_vorschau_logo_ohne_datei_wortmarke(umg):
+    f, _, c = umg
+    _vorschau_antworten(f, dict(VORSCHLAG, logo="anhang:weg.png"), _sicht(eigene=["weg.png"]))
+    r = c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?bild_basis={BASIS}", headers=H)
+    assert r.status_code == 200 and "weg.png" not in r.text and "Radhaus Jena" in r.text
+
+
+def test_logo_zwei_getrennte_meldungen(umg, monkeypatch):
+    f, _, c = umg
+    from spaces.marketing.api import marke
+    f.antworten.append([JOB])
+    assert "Bildpunkte" not in _logo(c, _bild("PNG")).text
+    monkeypatch.setattr(marke, "LOGO_PIXEL_MAX", 10)
+    f.antworten.append([JOB])
+    r = _logo(c, _bild("PNG"))
+    assert r.status_code == 422 and "Bildpunkte" in r.json()["detail"]
+    f.antworten.append([JOB])
+    r = _logo(c, b"\x89PNG\r\n\x1a\nkaputt")
+    assert r.status_code == 422 and "Bildpunkte" not in r.json()["detail"]
+
+
+def test_spiegeln_413_meldung_passt(umg):
+    _, _, c = umg
+    gross = {"mandant": "radhaus", "gestalt": {"logo": "x" * (500 * 1024)}, "stand": ""}
+    r = c.post("/api/marke/arbeiter/spiegeln", headers=HB, json=gross)
+    assert r.status_code == 413 and "Zwischenstand" not in r.json()["detail"]
+
+
+def test_stand_aufraeumen_ablehnung_422(umg):
+    f, _, c = umg
+    f.fehler += [_db_fehler("Aufraeumen abgelehnt")]
+    assert c.get("/api/pult/marke?mandant=radhaus", headers=H).status_code == 422
+
+
+def test_hinweis_aus_ablehnung_422(umg):
+    f, _, c = umg
+    f.fehler += [_db_fehler("Hinweis abgelehnt")]
+    assert c.post(f"/api/pult/inhalte/{IID}/marke_hinweis_aus", headers=H).status_code == 422

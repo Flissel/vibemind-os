@@ -21,10 +21,10 @@ from starlette.concurrency import run_in_threadpool
 
 from spaces.marketing.api import medien_mandant
 from spaces.marketing.api.bilder import _auftrag_id, _bild_schluessel, _im_ordner, _ordner
-from spaces.marketing.api.chat import (_ARBEITER_DATEI, _dateityp, _json_gekappt,
+from spaces.marketing.api.chat import (_ARBEITER_DATEI, _json_gekappt, _medien_ausliefern,
                                        _nachricht_und_kontext)
 from spaces.marketing.api.gestaltung import quellen
-from spaces.marketing.api.medien_mandant import ist_fremd, sicht
+from spaces.marketing.api.medien_mandant import _mandant_pflicht, ist_fremd, sicht
 from spaces.marketing.api.pult import (_auswahl, _bild_basis, _bloecke_html, _lesen,
                                        _lesen_einer, _schluessel, _schreiben, _uuid_oder_404,
                                        _vorlage_fuellen, lit)
@@ -46,10 +46,6 @@ MUSTER_VORLAGE = "studio"
 # Textplaetze der Vorlage studio (Ueberschrift und Absatz des Heldenblocks)
 _MUSTER_BLOECKE = {"ueberschrift": "held_titel", "absatz": "held_text"}
 VORLAGE_FEHLT = "Die Vorlage studio ist nicht verfügbar"
-
-
-def _mandant_pflicht(wert) -> str:
-    return medien_mandant._mandant_pflicht(wert)
 
 
 def _vorschlag_id(wert: str) -> str:
@@ -156,6 +152,8 @@ def _logo_verweis(vorschlag: dict, mandant: str) -> str | None:
     name = roh[len("anhang:"):] if roh.startswith("anhang:") else roh
     if not _LOGO_NAME.fullmatch(name) or ist_fremd(name, mandant, sicht(mandant)):
         return None
+    if not any(_im_ordner(o, name) for o in quellen()):
+        return None                                  # Datei fehlt: Wortmarke statt kaputtem Bild
     return name
 
 
@@ -283,19 +281,13 @@ def arbeiter_zurueck(aid: str, payload: dict = Body(...), x_bild_key: str | None
 
 @arbeiter_router.get("/{aid}/medien/{name}")
 def arbeiter_medien(aid: str, name: str, x_bild_key: str | None = Header(None)):
-    """Nur Medien der Firma des Auftrags und Gemeinsames (wie chat.arbeiter_medien)."""
+    """Nur Medien der Firma des Auftrags und Gemeinsames (geteilte Regel: chat._medien_ausliefern)."""
     _bild_schluessel(x_bild_key)
     a = _auftrag_id(aid)
     if not _ARBEITER_DATEI.fullmatch(name):
         raise HTTPException(404, "Unbekannte Datei")
     job = _in_arbeit(a, 404)
-    if ist_fremd(name, job.get("mandant"), sicht(job.get("mandant"))):
-        raise HTTPException(404, "Unbekannte Datei")
-    for o in quellen():
-        pfad = _im_ordner(o, name)
-        if pfad:
-            return FileResponse(pfad, media_type=_dateityp(name), headers={"Cache-Control": "no-store"})
-    raise HTTPException(404, "Unbekannte Datei")
+    return _medien_ausliefern(name, job.get("mandant"))
 
 
 def _logo_pruefen(roh: bytes) -> str:
@@ -309,8 +301,10 @@ def _logo_pruefen(roh: bytes) -> str:
     from PIL import Image, UnidentifiedImageError
     try:
         with Image.open(io.BytesIO(roh)) as bild:
-            if bild.format != fmt or bild.size[0] * bild.size[1] > LOGO_PIXEL_MAX:
-                raise HTTPException(422, "Logo ist kein gültiges PNG/JPEG (zu groß)")
+            if bild.format != fmt:
+                raise HTTPException(422, "Logo ist kein gültiges PNG/JPEG")
+            if bild.size[0] * bild.size[1] > LOGO_PIXEL_MAX:
+                raise HTTPException(422, "Logo hat zu viele Bildpunkte (höchstens 25 Megapixel)")
             bild.verify()
         with Image.open(io.BytesIO(roh)) as bild:
             bild.load()   # ganz dekodieren: abgeschnittene Dateien bestehen verify()
@@ -363,7 +357,7 @@ async def arbeiter_logo(aid: str, request: Request, x_bild_key: str | None = Hea
         if len(roh) > LOGO_MAX:
             raise HTTPException(422, "Logo größer als 2 MB")
     roh = bytes(roh)
-    endung = _logo_pruefen(roh)
+    endung = await run_in_threadpool(_logo_pruefen, roh)
     job = await run_in_threadpool(_in_arbeit, a)
     if job.get("art") != "chat":
         raise HTTPException(422, "Logos gibt es nur im Chat-Auftrag")
@@ -390,7 +384,7 @@ async def arbeiter_spiegeln(request: Request, x_bild_key: str | None = Header(No
     nicht (NULL + Fehler in marken_spiegel): Antwort {ok: false, fehler} mit 200, damit der PC
     es protokollieren kann; der Spiegel behaelt seinen letzten gueltigen Stand."""
     _bild_schluessel(x_bild_key)
-    payload = await _json_gekappt(request, SPIEGEL_KOERPER_MAX)
+    payload = await _json_gekappt(request, SPIEGEL_KOERPER_MAX, "Gestalt zu groß")
     m = _mandant_pflicht(payload.get("mandant"))
     gestalt, stand = payload.get("gestalt"), payload.get("stand")
     if not isinstance(gestalt, dict):

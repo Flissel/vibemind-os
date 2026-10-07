@@ -669,19 +669,19 @@ def arbeiter_zurueck(aid: str, payload: dict = Body(...), x_bild_key: str | None
     return _zurueck(a, antwort)
 
 
-async def _json_gekappt(request: Request, grenze: int) -> dict:
+async def _json_gekappt(request: Request, grenze: int, zu_gross: str = "Zwischenstand zu groß") -> dict:
     """JSON-Objekt aus dem Body, hoechstens grenze Bytes (Content-Length und gekappt gelesen)."""
     try:
         laenge = int(request.headers.get("content-length") or 0)
     except ValueError:
         laenge = 0
     if laenge > grenze:
-        raise HTTPException(413, "Zwischenstand zu groß")
+        raise HTTPException(413, zu_gross)
     roh = bytearray()
     async for stueck in request.stream():
         roh += stueck
         if len(roh) > grenze:
-            raise HTTPException(413, "Zwischenstand zu groß")
+            raise HTTPException(413, zu_gross)
     try:
         payload = json.loads(bytes(roh))
     except (ValueError, UnicodeDecodeError, RecursionError):
@@ -735,6 +735,20 @@ def _dateityp(name: str) -> str:
     return _BILDTYP.get(endung) or _DOK_TYP.get(endung, "application/octet-stream")
 
 
+def _medien_ausliefern(name: str, mandant: str):
+    """Die eine Stelle der Firmentrennung fuer Arbeiter-Medien: schlichter Name, nicht fremd
+    (sicht/ist_fremd), Datei nur aus den Medienordnern. Sonst 404."""
+    if not _ARBEITER_DATEI.fullmatch(name):
+        raise HTTPException(404, "Unbekannte Datei")
+    if ist_fremd(name, mandant, sicht(mandant)):
+        raise HTTPException(404, "Unbekannte Datei")
+    for o in quellen():
+        pfad = _im_ordner(o, name)
+        if pfad:
+            return FileResponse(pfad, media_type=_dateityp(name), headers={"Cache-Control": "no-store"})
+    raise HTTPException(404, "Unbekannte Datei")
+
+
 @arbeiter_router.get("/{aid}/medien/{name}")
 def arbeiter_medien(aid: str, name: str, x_bild_key: str | None = Header(None)):
     _bild_schluessel(x_bild_key)
@@ -742,14 +756,7 @@ def arbeiter_medien(aid: str, name: str, x_bild_key: str | None = Header(None)):
     if not _ARBEITER_DATEI.fullmatch(name):
         raise HTTPException(404, "Unbekannte Datei")
     job = _in_arbeit(a, 404)
-    if ist_fremd(name, job.get("mandant"), sicht(job.get("mandant"))):
-        raise HTTPException(404, "Unbekannte Datei")
-    for o in quellen():
-        pfad = _im_ordner(o, name)
-        if pfad:
-            return FileResponse(pfad, media_type=_dateityp(name),
-                                headers={"Cache-Control": "no-store"})
-    raise HTTPException(404, "Unbekannte Datei")
+    return _medien_ausliefern(name, job.get("mandant"))
 
 
 def _export_jpeg_pruefen(roh: bytes) -> None:
