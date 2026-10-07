@@ -49,7 +49,7 @@ END $$;
 
 DO $$ DECLARE
   v_i uuid; v_j uuid; v_k uuid; v_leer uuid; b jsonb; v_n int; v_fehler text; r record;
-  a uuid; bi uuid; rm1 uuid; j jsonb; v_felder jsonb;
+  a uuid; bi uuid; bo uuid; rm1 uuid; j jsonb; v_felder jsonb;
 BEGIN
   SELECT inhalt INTO v_i FROM _p063 WHERE k = 'i';
   SELECT inhalt INTO v_j FROM _p063 WHERE k = 'j';
@@ -73,10 +73,7 @@ BEGIN
   ASSERT marketing.pult_chat_zurueck(a, 'probe') = 'fehler', '1b: Chat beendet';
 
   bi := marketing.pult_bild_auftrag(v_i, 'held', false, '', 'mensch');
-  v_fehler := NULL;
-  BEGIN PERFORM marketing.pult_einreichen(v_i, 'probe'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
-  ASSERT v_fehler = 'Ein Bild wird gerade erzeugt', format('1c: Bild offen: %s', v_fehler);
-  -- Review Focus 1: Bild-Auftrag in Arbeit
+  -- Review Focus 1 / R4: nur ein Bild-Auftrag in Arbeit sperrt
   UPDATE marketing.bild_auftraege SET status = 'in_arbeit', versuche = 1, vergeben_bis = now() + interval '5 minutes',
          grund_fassung = v_n WHERE id = bi;
   v_fehler := NULL;
@@ -97,8 +94,14 @@ BEGIN
   EXCEPTION WHEN check_violation THEN v_fehler := SQLERRM; END;
   ASSERT v_fehler IS NOT NULL, '1g: eingereicht ohne Felder muss an der Regel scheitern';
 
-  -- 2) Einreichen (entwurf -> eingereicht)
+  -- 2) Einreichen (entwurf -> eingereicht); ein wartender Bild-Auftrag sperrt nicht, er wird verworfen (R4)
+  bo := marketing.pult_bild_auftrag(v_i, NULL, true, '', 'system');
+  ASSERT (SELECT status FROM marketing.bild_auftraege WHERE id = bo) = 'offen', '2: Bild-Auftrag wartet';
   ASSERT marketing.pult_einreichen(v_i, 'probe') = v_n, '2: liefert die neueste Fassung';
+  SELECT * INTO r FROM marketing.bild_auftraege WHERE id = bo;
+  ASSERT r.status = 'verworfen' AND r.befund = 'Newsletter eingereicht' AND r.geaendert_am = now(),
+         format('2: wartender Bild-Auftrag verworfen: %s / %s', r.status, r.befund);
+  ASSERT (SELECT status FROM marketing.bild_auftraege WHERE id = bi) = 'fehler', '2: andere Auftraege unberuehrt';
   SELECT * INTO r FROM marketing.inhalte WHERE id = v_i;
   ASSERT r.status = 'eingereicht' AND r.eingereichte_fassung = v_n AND r.eingereicht_am = now()
      AND r.eingereicht_von = 'probe' AND r.entschieden_von IS NULL, format('2: Felder: %s', row_to_json(r));

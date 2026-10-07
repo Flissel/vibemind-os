@@ -22,8 +22,9 @@
 --                        ruft sie und bleibt unveraendert)
 -- Sperrreihenfolge wie 061: erst marketing.inhalte, dann Auftraege.
 -- Die Trigger aus 056/060/061 (_bild_auftraege_verwerfen, _chat_auftraege_beenden) feuern bei
--- entwurf -> eingereicht: offene Auftraege kann es dann nicht geben (einreichen lehnt ab), eine
--- liegengebliebene Chat-Vormerkung ('wartet') wird beendet.
+-- entwurf -> eingereicht: offene Chat-Auftraege kann es dann nicht geben (einreichen lehnt ab), eine
+-- liegengebliebene Chat-Vormerkung ('wartet') wird beendet. Wartende Bild-Auftraege verwirft
+-- pult_einreichen selbst (R4, Befund "Newsletter eingereicht"); nur 'in_arbeit' sperrt.
 -- Rechte: wie 060 - keine eigenen GRANTs, Default Privileges aus 003 gelten.
 BEGIN;
 
@@ -82,10 +83,15 @@ BEGIN
   PERFORM marketing.pult_chat_aufraeumen(p_inhalt);
   IF EXISTS (SELECT 1 FROM marketing.chat_auftraege WHERE inhalt = p_inhalt AND status IN ('offen','in_arbeit')) THEN
     RAISE EXCEPTION 'Der Assistent arbeitet gerade'; END IF;
-  IF EXISTS (SELECT 1 FROM marketing.bild_auftraege WHERE inhalt = p_inhalt AND status IN ('offen','in_arbeit')) THEN
+  -- R4: nur ein laufender Bild-Auftrag sperrt; wartende werden unten verworfen
+  IF EXISTS (SELECT 1 FROM marketing.bild_auftraege WHERE inhalt = p_inhalt AND status = 'in_arbeit') THEN
     RAISE EXCEPTION 'Ein Bild wird gerade erzeugt'; END IF;
   SELECT max(fassung) INTO v_neueste FROM marketing.inhalt_fassungen WHERE inhalt = p_inhalt;
   IF v_neueste IS NULL THEN RAISE EXCEPTION 'Ohne Fassung gibt es nichts einzureichen'; END IF;
+  -- vor dem Statuswechsel: sonst verwirft sie zuerst der 056-Trigger mit "Inhalt entschieden"
+  UPDATE marketing.bild_auftraege
+     SET status = 'verworfen', befund = 'Newsletter eingereicht', vergeben_bis = NULL, geaendert_am = now()
+   WHERE inhalt = p_inhalt AND status = 'offen';
   UPDATE marketing.inhalte
      SET status = 'eingereicht', eingereichte_fassung = v_neueste, eingereicht_am = now(), eingereicht_von = p_von
    WHERE id = p_inhalt;
