@@ -500,3 +500,14 @@ def test_marke_verlauf_gehoert_nicht_ins_markenwissen(wurzel):
                "---\nakzent: #000000\n---\n## Ton\nALTER TON, laengst ersetzt und nicht mehr gueltig.\n")
     w = mw.laden(str(wurzel), "vibemind", "VibeMind", "")
     assert INHALT in w.text and "ALTER TON" not in w.text and "Marke-Verlauf" not in w.text
+
+
+def test_t5c_marke_nur_mit_kopfteil_bleibt_im_markenwissen(wurzel):
+    """Eine Marke.md nur mit Kopfteil (z. B. nur akzent) ist kurz, aber nicht leer: der Agent braucht die Farben."""
+    _schreiben(str(wurzel / "VibeMind" / "Marke.md"), "---\nakzent: #b45309\n---\n")
+    w = mw.laden(str(wurzel), "vibemind", "VibeMind", "")
+    assert "Akzentfarbe #b45309" in w.text
+    # ein Kopfteil ohne einen gueltigen Wert bleibt leer
+    _schreiben(str(wurzel / "VibeMind" / "Marke.md"), "---\nakzent: #12\n---\n")
+    w = mw.laden(str(wurzel), "vibemind", "VibeMind", "")
+    assert "Akzentfarbe" not in w.text and "Marke.md: akzent ungültig" in w.hinweise

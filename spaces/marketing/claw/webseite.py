@@ -206,13 +206,21 @@ class _FesteHTTPS(http.client.HTTPSConnection):
 
     def connect(self):
         sock = socket.create_connection((self._ip, self.port), self.timeout)
-        self._wache.bewachen(sock)                # auch ein troepfelnder TLS-Handshake endet zur Frist
+        self._wache.bewachen(sock)                # Verbindungsaufbau bis hier
         try:
-            self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+            # Handshake erst, wenn die Wache den TLS-Socket kennt: wrap_socket loest den rohen
+            # Socket ab, ein shutdown auf ihm traefe waehrend des Handshakes ins Leere.
+            tls = self._context.wrap_socket(sock, server_hostname=self.host, do_handshake_on_connect=False)
         except BaseException:
             sock.close()
             raise
-        self._wache.bewachen(self.sock)
+        self._wache.bewachen(tls)                 # auch ein troepfelnder TLS-Handshake endet zur Frist
+        try:
+            tls.do_handshake()
+        except BaseException:
+            tls.close()
+            raise
+        self.sock = tls
 
 
 _TLS: ssl.SSLContext | None = None
@@ -251,10 +259,11 @@ def _oeffnen(url: str, ip: str, grenze: int, frist: float) -> tuple[int, dict, b
     if teile.query:
         pfad += "?" + quote(teile.query, safe="/%:@!$&'()*+,;=-._~?")
     rest = _rest(frist)
-    wache = _Wache(rest)
-    conn = (_FesteHTTPS(host, ip, port, rest, wache, _tls()) if https
-            else _FesteHTTP(host, ip, port, rest, wache))
+    wache, conn = None, None
     try:
+        wache = _Wache(rest)                      # im try: scheitert die Verbindung, endet der Timer trotzdem
+        conn = (_FesteHTTPS(host, ip, port, rest, wache, _tls()) if https
+                else _FesteHTTP(host, ip, port, rest, wache))
         conn.request("GET", pfad, headers=_KOPF)
         antwort = conn.getresponse()
         kopf = {k.lower(): v for k, v in antwort.getheaders()}
@@ -281,12 +290,14 @@ def _oeffnen(url: str, ip: str, grenze: int, frist: float) -> tuple[int, dict, b
     except (socket.timeout, TimeoutError):
         raise LeseFehler("Zeitlimit überschritten") from None
     except Exception:
-        if wache.abgelaufen:
+        if wache is not None and wache.abgelaufen:
             raise LeseFehler("Zeitlimit überschritten") from None
         raise
     finally:
-        wache.beenden()
-        conn.close()
+        if wache is not None:
+            wache.beenden()
+        if conn is not None:
+            conn.close()
 
 
 Oeffnen = Callable[[str, str, int, float], "tuple[int, dict, bytes]"]
@@ -430,7 +441,7 @@ def _dekodieren(body: bytes, kopf: dict) -> str:
         zeichensatz = mm.group(1).decode("ascii") if mm else "utf-8"
     try:
         return body.decode(zeichensatz, errors="replace")
-    except LookupError:
+    except (LookupError, UnicodeError, TypeError):   # unbekannt, nur strict (idna) oder kein Text-Codec
         return body.decode("utf-8", errors="replace")
 
 

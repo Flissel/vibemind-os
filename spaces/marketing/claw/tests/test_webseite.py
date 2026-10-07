@@ -580,3 +580,102 @@ def test_umlautdomain_gilt_als_dieselbe_domain():
     fund = ws.lesen("https://xn--mller-kva.example/",
                     aufloesen=aufloeser({"xn--mller-kva.example": [OEFFENTLICH]}), oeffnen=srv)
     assert [s.url for s in fund.seiten][1:] == ["https://xn--mller-kva.example/seite"]
+
+
+# --- Schlussrunde (final-review.md T3) -------------------------------------------
+
+def test_t3a_troepfelnder_tls_handshake_endet_zur_frist(lokal, monkeypatch):
+    """Der Server schickt den Kopf eines TLS-Datensatzes und dann alle 0,3 s ein Byte: jedes recv
+    bekommt Daten, nur die Wache beendet den Handshake."""
+    lauscher = socket.socket()
+    lauscher.bind(("127.0.0.1", 0))
+    lauscher.listen(1)
+    port = lauscher.getsockname()[1]
+    stopp = threading.Event()
+
+    def bedienen():
+        try:
+            conn, _ = lauscher.accept()
+        except OSError:
+            return
+        with conn:
+            try:
+                conn.recv(4096)                                  # ClientHello
+                conn.sendall(b"\x16\x03\x03\x40\x00")            # Handshake-Datensatz, 16 KB angekuendigt
+                while not stopp.is_set():
+                    conn.sendall(b"\x00")
+                    time.sleep(0.3)
+            except OSError:
+                pass
+    t = threading.Thread(target=bedienen, daemon=True)
+    t.start()
+    monkeypatch.setattr(ws, "ZEITLIMIT_S", 1.0)
+    try:
+        t0 = time.monotonic()
+        fund = ws.lesen(f"https://firma.test:{port}/", aufloesen=aufloeser({"firma.test": ["127.0.0.1"]}))
+        assert time.monotonic() - t0 < 2.5
+        assert fund.seiten == [] and "Zeitlimit" in fund.hinweise[0]
+    finally:
+        stopp.set()
+        lauscher.close()
+
+
+def test_t3b_zeichensatz_der_beim_dekodieren_scheitert_faellt_auf_utf8_zurueck():
+    """idna kann nur strict: ein Codec, der UnicodeError wirft, darf die Seite nicht kosten."""
+    body = '<meta charset="idna"><p>Grüße</p>'.encode("utf-8")
+    srv = FalscherServer({"https://firma.example/": (200, {"content-type": "text/html"}, body)})
+    fund = ws.lesen("https://firma.example/", aufloesen=aufloeser({"firma.example": [OEFFENTLICH]}), oeffnen=srv)
+    assert fund.seiten and "Grüße" in fund.seiten[0].text
+    assert ws._dekodieren("ä".encode("utf-8"), {"content-type": "text/css; charset=idna"}) == "ä"
+
+
+def test_t3c_wache_endet_auch_wenn_die_verbindung_nicht_entsteht(monkeypatch):
+    wachen = []
+
+    class Wache(ws._Wache):
+        def __init__(self, rest):
+            super().__init__(rest)
+            wachen.append(self)
+
+    def kaputt(*a, **k):
+        raise RuntimeError("kaputt")
+    monkeypatch.setattr(ws, "_Wache", Wache)
+    monkeypatch.setattr(ws, "_FesteHTTP", kaputt)
+    with pytest.raises(RuntimeError):
+        ws._oeffnen("http://firma.example/", OEFFENTLICH, 100, time.monotonic() + 30)
+    assert len(wachen) == 1 and wachen[0]._timer.finished.is_set()
+
+
+def test_t3a_wache_bewacht_den_tls_socket_schon_waehrend_des_handshakes():
+    """Ohne do_handshake_on_connect=False loest wrap_socket den rohen Socket ab, bevor die Wache den
+    TLS-Socket kennt: ein shutdown der Wache traefe waehrend des Handshakes ins Leere."""
+    gesehen = {}
+    lauscher = socket.socket()
+    lauscher.bind(("127.0.0.1", 0))
+    lauscher.listen(1)
+    wache = ws._Wache(30)
+
+    class FalschesTLS:
+        def __init__(self, sock):
+            self.sock = sock
+
+        def do_handshake(self):
+            gesehen["bewacht"] = wache._sock is self
+
+        def close(self):
+            self.sock.close()
+
+    class Kontext:
+        verify_mode, check_hostname, post_handshake_auth = None, True, None
+
+        def wrap_socket(self, sock, server_hostname=None, do_handshake_on_connect=True):
+            gesehen["sofort"] = do_handshake_on_connect
+            return FalschesTLS(sock)
+    try:
+        conn = ws._FesteHTTPS("firma.test", "127.0.0.1", lauscher.getsockname()[1], 5, wache, Kontext())
+        conn.connect()
+        assert gesehen == {"sofort": False, "bewacht": True}
+        conn.sock.close()
+    finally:
+        wache.beenden()
+        lauscher.close()

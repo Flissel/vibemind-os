@@ -226,6 +226,11 @@ def _kappen(stuecke: list[dict], belegt: int) -> list[dict]:
     return genommen
 
 
+def _hat_kopfteil(text: str) -> bool:
+    from spaces.marketing.claw import markenprofil   # markenprofil importiert dieses Modul
+    return markenprofil.hat_kopfteil(text)
+
+
 def _marke_lesbar(text: str, ordner: str, hinweise: list[str]) -> str:
     """Marke.md mit Kopfteil (Marke per Chat) wird lesbar uebersetzt statt roh durchgereicht:
     gueltige Werte als Zeilen ("- Akzentfarbe #…"), ungueltige als Hinweis. Ohne Kopfteil bleibt
@@ -253,9 +258,11 @@ def _laden(ordner: str, name: str, frage: str) -> Wissen:
     marke: tuple[str, str] | None = None
     if marke_datei is not None:
         text = _lesen(*marke_datei, hinweise)
+        mit_kopf = text is not None and _hat_kopfteil(text)
         if text is not None:
             text = _marke_lesbar(text, ordner, hinweise)
-        if text is not None and not ist_leer(text):
+        # Uebersetzte Kopfwerte ("- Akzentfarbe #…") sind kurz, aber Inhalt: nur ganz leer zaehlt (T5-c)
+        if text is not None and (text.strip() if mit_kopf else not ist_leer(text)):
             marke = (marke_datei[0], text if len(text) <= MARKE_MAX else text[:MARKE_MAX] + _VERMERK)
     stuecke = []
     for rel, pfad in uebrige:
