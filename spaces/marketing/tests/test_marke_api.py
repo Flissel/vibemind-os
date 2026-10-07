@@ -131,8 +131,9 @@ def test_stand_liefert_alles(umg):
                       "fehler": None, "gestalt": gestalt}],
                     [{"id": AID, "nachricht": "Hallo", "antwort": "Hi", "status": "fertig", "hinweise": [],
                       "vorschlag": VID, "erstellt_am": "x", "sortiert_am": "y"}],
-                    [{"art": "chat"}],
-                    [{"id": VID, "vorschlag": VORSCHLAG, "erstellt_am": "z"}]]
+                    [{"art": "chat", "erstellt_am": "2026-10-07 10:02:00+00"}],
+                    [{"id": VID, "vorschlag": VORSCHLAG, "erstellt_am": "z"}],
+                    []]
     r = c.get("/api/pult/marke?mandant=radhaus", headers=H)
     assert r.status_code == 200, r.text
     j = r.json()
@@ -143,6 +144,7 @@ def test_stand_liefert_alles(umg):
                             "fehler": None}
     assert j["auftraege"][0]["id"] == AID and "sortiert_am" not in j["auftraege"][0]
     assert j["laeuft"] is True and j["uebernahme"] is None
+    assert j["uebernahme_seit"] is None and j["aktuell"] is None
     assert j["vorschlag"] == {"id": VID, "vorschlag": VORSCHLAG, "erstellt_am": "z"}
     assert "_marke_aufraeumen('radhaus')" in f.sql[0]
     assert "LIMIT 10" in f.sql[2] and "art = 'chat'" in f.sql[2]
@@ -151,10 +153,24 @@ def test_stand_liefert_alles(umg):
 def test_stand_ohne_spiegel_uebernahme_laeuft(umg):
     f, _, c = umg
     f.antworten += [[{"ok": True}], [{"name": "Radhaus", "stand": None, "gespiegelt_am": None, "fehler": "kaputt",
-                                       "gestalt": None}], [], [{"art": "uebernehmen"}], []]
+                                       "gestalt": None}], [], [{"art": "uebernehmen", "erstellt_am": "2026-10-07 10:05:00+00"}],
+                    [], []]
     j = c.get("/api/pult/marke?mandant=radhaus", headers=H).json()
     assert j["spiegel"] == {"gestalt": {}, "stand": "", "gespiegelt_am": None, "fehler": "kaputt"}
     assert j["laeuft"] is False and j["uebernahme"] == "laeuft" and j["vorschlag"] is None and j["auftraege"] == []
+    assert j["uebernahme_seit"] == "2026-10-07 10:05:00+00" and j["aktuell"] is None
+
+
+def test_stand_aktuell_aus_juengstem_angenommenen_vorschlag(umg):
+    f, _, c = umg
+    angenommen = {**VORSCHLAG, "abschnitte": {"Ton": "warm", "Zielgruppe": "Radfahrer"}}
+    f.antworten += [[{"ok": True}], [{"name": "Radhaus", "stand": "s", "gespiegelt_am": None, "fehler": None,
+                                       "gestalt": {}}], [], [], [], [{"vorschlag": angenommen}]]
+    j = c.get("/api/pult/marke?mandant=radhaus", headers=H).json()
+    assert j["aktuell"]["abschnitte"] == {"Ton": "warm", "Zielgruppe": "Radfahrer"}
+    assert j["aktuell"]["werte"]["akzent"] == "#b45309" and "mustertext" not in j["aktuell"]["werte"]
+    assert j["uebernahme_seit"] is None
+    assert "status = 'angenommen'" in f.sql[-1] and "ORDER BY entschieden_am DESC LIMIT 1" in f.sql[-1]
 
 
 def test_stand_unbekannter_mandant_404_ohne_mandant_422_db_weg_503(umg):

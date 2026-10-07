@@ -86,12 +86,23 @@ def marke_stand(mandant: str | None = None, x_pult_key: str | None = Header(None
     for z in auftraege:
         z.pop("sortiert_am", None)
     offen = _lesen(lambda:
-        "SELECT art FROM marketing.marken_auftraege "
-        f"WHERE mandant = {lit(m)} AND status IN ('offen', 'in_arbeit')")
+        "SELECT art, erstellt_am::text AS erstellt_am FROM marketing.marken_auftraege "
+        f"WHERE mandant = {lit(m)} AND status IN ('offen', 'in_arbeit') ORDER BY erstellt_am")
     arten = {z.get("art") for z in offen if isinstance(z, dict)}
+    # Alter des Uebernahme-Auftrags (aeltester offener): die Oberflaeche sagt nach 60 s "sobald der PC laeuft".
+    seit = next((z.get("erstellt_am") for z in offen
+                 if isinstance(z, dict) and z.get("art") == "uebernehmen"), None)
     v = _lesen_einer(lambda:
         "SELECT id, vorschlag, erstellt_am::text AS erstellt_am FROM marketing.marken_vorschlaege "
         f"WHERE mandant = {lit(m)} AND status = 'offen'")
+    # Das zuletzt uebernommene Profil (Rowboat-Text selbst liefert die API nicht): Abschnitte + Werte.
+    ang = _lesen_einer(lambda:
+        "SELECT vorschlag FROM marketing.marken_vorschlaege "
+        f"WHERE mandant = {lit(m)} AND status = 'angenommen' ORDER BY entschieden_am DESC LIMIT 1")
+    ang_v = ang.get("vorschlag") if isinstance(ang, dict) and isinstance(ang.get("vorschlag"), dict) else None
+    aktuell = ({"abschnitte": ang_v.get("abschnitte") if isinstance(ang_v.get("abschnitte"), dict) else {},
+                "werte": {k: x for k, x in ang_v.items() if k not in ("abschnitte", "mustertext")}}
+               if ang_v is not None else None)
     return {"mandant": m, "name": kopf.get("name"),
             "spiegel": {"gestalt": {k: gestalt[k] for k in SPIEGEL_SCHLUESSEL if k in gestalt},
                         "stand": kopf.get("stand") or "", "gespiegelt_am": kopf.get("gespiegelt_am"),
@@ -99,7 +110,8 @@ def marke_stand(mandant: str | None = None, x_pult_key: str | None = Header(None
             "auftraege": auftraege, "laeuft": "chat" in arten,
             "vorschlag": ({"id": str(v["id"]), "vorschlag": v.get("vorschlag"), "erstellt_am": v.get("erstellt_am")}
                           if v else None),
-            "uebernahme": "laeuft" if "uebernehmen" in arten else None}
+            "uebernahme": "laeuft" if "uebernehmen" in arten else None,
+            "uebernahme_seit": seit if "uebernehmen" in arten else None, "aktuell": aktuell}
 
 
 @pult_router.post("/marke/chat")
