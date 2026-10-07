@@ -1,7 +1,7 @@
 # Marketing cockpit contract
 
 > Moved on 2026-09-23 from the outer repo, where it guarded an unmaintained
-> copy of this space. The inventory below was re-measured against this copy.
+> copy of this space. The inventory below was re-measured against this copy; the counts were last re-measured on 2026-10-07.
 
 ## Purpose and authority
 
@@ -18,9 +18,11 @@ workflow, historical note, open port, test result, or static registry is never `
 The following facts are derived from the committed repository tree and are
 protected by `spaces/marketing/tests/test_cockpit_contract.py`:
 
-- 43 migration files: `001`–`044`; `039` is absent.
+- 62 migration files: `001`–`062`; `039` is absent (two files carry the number
+  `013`, which does not change the set of numbers).
 - 13 Marketing event-to-tool mappings in `MarketingBackendAgent.EVENT_TO_TOOL`.
-- 408 static pytest test definitions under `spaces/marketing`.
+- 1285 static pytest test definitions in 76 `test_*.py` files under
+  `spaces/marketing`.
 - zero bool-returning pytest tests in `sync/tests/test_render_md.py`; the nine
   former bool-returning tests now use pytest assertions while the local runner
   remains compatible.

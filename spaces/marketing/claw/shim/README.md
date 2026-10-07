@@ -2,7 +2,7 @@
 
 ## Warum eine zweite Instanz
 
-Der Claude-Shim (`C:\Users\User\.local\bin\claude_code_openai_shim.py`) spricht
+Der gemeinsame Claude-Shim (`claude_code_openai_shim.py` im Benutzer-`.local/bin`, Port :8114) spricht
 OpenAI-Protokoll und leitet an die Claude-Code-CLI weiter — die Subscription
 statt API-Budget. Er reicht die `tools` des Aufrufers aber **nicht als
 `tool_calls` zurück**, er protokolliert sie nur (gemessen 02.09.2026: openclaw
@@ -30,12 +30,20 @@ Ohne die Variable ändert sich für Hermes und Captain nichts — deshalb eine
 
 ## Start
 
-Der Launcher fährt die Instanz als Sidecar `marketing_claw_shim` mit gesetztem
-`SHIM_EXTRA_MCP_CONFIG`. Von Hand:
+Gestartet wird die Instanz von `claw/scripts/marketing-dienste-starten.ps1`
+(Dienst `marketing_claw_shim`) mit `SHIM_EXTRA_MCP_CONFIG` auf `marketing-mcp.json`,
+`SHIM_NEUTRALIZE_DOUBLE_BRACKETS=1` und `VIBEMIND_AGENT=marketing-chat`
+(Budget-Wächter). Sie führt die Datei **`marketing_shim.py` aus diesem
+Ordner** aus, eine Kopie des gemeinsamen Shims vom 02.10.2026 (zusätzlich:
+Body-Flag `marketing_stream` für echtes Streaming). Von Hand, mit gesetzten
+Variablen:
 
-    python "C:\Users\User\.local\bin\claude_code_openai_shim.py" --host 127.0.0.1 --port 8117
+    python spaces/marketing/claw/shim/marketing_shim.py --host 127.0.0.1 --port 8117
 
-mit `SHIM_EXTRA_MCP_CONFIG` auf diese Datei. Prüfen:
+Der Vorgabewert von `--port` in `marketing_shim.py` ist weiterhin 8114 (und
+`claw/llm.py` nutzt als Vorgabe `http://127.0.0.1:8114/v1`); die Instanz ist nur
+dann :8117, wenn der Port ausdrücklich übergeben wird, wie es das Startskript
+tut. Prüfen:
 
     curl -s http://127.0.0.1:8117/v1/models
 
@@ -62,6 +70,15 @@ nichts, was ein `[[reply_to_current]]` je rendern würde.
 ## Grenze
 
 Die CLI-Schleife läuft als der angemeldete Benutzer auf dem Host — sie kann
-genau die zehn Werkzeuge aus der `allowedTools`-Liste rufen
-(`--strict-mcp-config` schließt alles andere aus), und keines davon versendet
-etwas.
+nur die Werkzeuge aus der `allowedTools`-Liste von `marketing-mcp.json` rufen
+(`--strict-mcp-config` schließt alles andere aus). Stand dieser Datei: 51
+Einträge, 25 `mcp__marketing__*` und 26 `mcp__laura__*`. Kein Marketing-Werkzeug
+versendet etwas; Versand läuft nur über `versand_beauftragen` als Auftrag an
+sales-claw.
+
+**Bekannte Lücke:** Der Sidecar (`claw/server.py`) registriert 27 Werkzeuge, die
+Allow-List führt nur 25 davon. `newsletter_bildplaetze` und
+`newsletter_bild_beauftragen` fehlen, die CLI kann sie über diese Instanz also
+nicht rufen. Die Laura-Einträge umfassen auch schreibende Werkzeuge
+(z. B. `import_media`, `edit_timeline`, `render_timeline`). Die Liste ist hier
+nur dokumentiert, nicht geändert.

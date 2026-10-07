@@ -30,7 +30,7 @@ ENTRY_DOCUMENT_SAFETY_ANCHORS = {
     "STATUS.md": (
         "## Components live",
         "MARKETING_PROPOSAL_API_KEY",
-        "## HTTP routes (18 total)",
+        "## HTTP routes",
         "## Migrations",
     ),
 }
@@ -68,8 +68,8 @@ def test_marketing_cockpit_contract_is_evidence_classified_and_inventory_backed(
         for path in (MARKETING_ROOT / "db").glob("*.sql")
         if re.fullmatch(r"\d{3}", path.name.split("_", 1)[0])
     }
-    assert migration_numbers == {f"{number:03d}" for number in range(1, 45)} - {"039"}
-    assert _test_definition_count() == 408
+    assert migration_numbers == {f"{number:03d}" for number in range(1, 63)} - {"039"}
+    assert _test_definition_count() == 1285
     assert _bool_returning_render_tests() == 0
 
     agent_source = (MARKETING_ROOT / "agents" / "marketing_agent.py").read_text(encoding="utf-8")
@@ -78,9 +78,9 @@ def test_marketing_cockpit_contract_is_evidence_classified_and_inventory_backed(
     assert len(re.findall(r'^        "marketing\.', event_to_tool.group("body"), re.MULTILINE)) == 13
 
     required_contract_terms = (
-        "43 migration files: `001`–`044`; `039` is absent",
+        "62 migration files: `001`–`062`; `039` is absent",
         "13 Marketing event-to-tool mappings",
-        "408 static pytest test definitions",
+        "1285 static pytest test definitions",
         "zero bool-returning pytest tests",
         "`API :5510` | historical",
         "`n8n` | configured/static",

@@ -1,111 +1,219 @@
-# Vibemind Marketing-Ops Space
+# VibeMind Marketing-Space
 
 > **Cockpit evidence contract:** [COCKPIT_CONTRACT.md](docs/COCKPIT_CONTRACT.md)
 > is authoritative for the static inventory (migrations, event-to-tool mappings,
-> pytest definitions). Counts live only there, so they cannot drift here.
+> pytest definitions) and for what may be called `verified_live`. Zahlen stehen
+> dort und in [STATUS.md](STATUS.md); dieses README beschreibt Aufbau und Betrieb.
 
-**Status:** Foundation komplett (2026-06-02), bereit für Schicht 2 HTML-Mockup.
+This space lives at `vibemind-os/spaces/marketing/`. Module laufen als
+`python -m spaces.marketing...` mit Arbeitsverzeichnis `vibemind-os`. Pfadlogik:
+`PKG_ROOT` (Elternordner von `spaces/`, fuer Imports) und `REPO_ROOT` (naechster
+Vorfahre mit einem `vibemind-os/`-Ordner) werden aus `__file__` abgeleitet
+(`claw/server.py`, Zeilen 20-27). Fehlen Schluessel in der Umgebung, laedt der
+MCP-Sidecar sie aus der `.env` des aeusseren Repos nach, ohne Vorhandenes zu
+ueberschreiben (`_load_env_fallback`).
 
-This space lives at `vibemind-os/spaces/marketing/` (moved here 2026-08-17). It was
-originally kept at the outer repo root to avoid `vibemind-os/spaces/` being a git
-submodule that reset on pulls (lost an iteration that way 2026-05-26 → 06-02) — that no
-longer applies (`vibemind-os/spaces/` is a plain tracked dir now). Path handling was
-split first: `PKG_ROOT` (parent of `spaces/`, for imports) vs `REPO_ROOT` (nearest
-ancestor with a `vibemind-os/` dir, for `.env` / payment-infra / logs / skills), both
-derived from `__file__` so they resolve correctly here. The launcher runs the sidecars
-with `WorkDir = <repo>/vibemind-os` so `python -m spaces.marketing.workers.*` resolves.
+Weiterfuehrend: [AGENTS.md](AGENTS.md) (Regeln und Gate-Graph fuer Agenten und
+Entwickler), [STATUS.md](STATUS.md) (Stand und bekannte Luecken),
+[docs/](docs/) (Plaene, DSGVO-Datenfluss, Go-Live-Notizen).
 
-## What is this
+## Was ist das
 
-A Vibemind-Space for **multi-channel marketing operations**, comparable to Brevo / Mailchimp / HubSpot but:
+Ein Space fuer Marketing-Betrieb: Kampagnen, Newsletter, Vorlagen, Bilder und
+Texte entstehen hier, werden in Supabase (Schema `marketing`) gehalten und von
+Menschen freigegeben. **Marketing versendet nichts selbst.** Der einzige Weg
+nach draussen ist sales-claw (siehe unten).
 
-- **Self-hosted** (DSGVO, data stays in your stack)
-- **Multi-Channel** beyond email — 28 OpenFang channels marked production-ready (Telegram, Slack, LinkedIn, Mastodon, BlueSky, Discord, Webhook, Mastodon, …)
-- **AI-native** — Brain generates content, scores leads, optimises sends
-- **Integrated** with existing Vibemind stack (Supabase storage, Mailcow SMTP, OpenFang channels, n8n workflows, Rowboat AI-RAG)
+Bausteine:
 
-Full plan: [`C:\Users\User\.claude\plans\vibemind-marketing-ops.md`](file:///C:/Users/User/.claude/plans/vibemind-marketing-ops.md)
+- **marketing-api** (`api/server.py`, FastAPI): Entwuerfe, Vorschlaege, Vorlagen,
+  Versandauftraege, Pult-Routen fuer die Sales-Oberflaeche.
+- **marketing-claw** (`claw/`): MCP-Sidecar mit den Werkzeugen des Agenten,
+  eigene Shim-Instanz fuer das Modell, openclaw-Gateway (`claw/gateway/`).
+- **Arbeiter** (`workers/`): Vorlagen, Bilder, Chat-Agent und weitere.
+- **Newsletter-Pult**: Mandanten, Inhalte, Bloecke, Gestaltung, Bilder, Chat-Agent.
+- **Kurator** (`curator/`, UI unter `/curator`) und **Mockup** (`mockup/`, unter `/mockup`).
 
-## What's live
+## Dienste und Ports
 
-### Storage layer
+Das Startskript `claw/scripts/marketing-dienste-starten.ps1` startet sieben
+Host-Dienste (je Dienst Portpruefung, idempotent, `-Pruefen` nur melden):
 
-- **Supabase-DB schema `marketing`** with 13 tables (DEPLOYED 2026-05-26):
-  `accounts, emails, strategies, runs, tags, email_tags, audiences, audience_members, templates, campaigns, campaign_sends, inbound_messages, audit_log`
-- DDL: [`db/001_marketing_schema.sql`](db/001_marketing_schema.sql)
-- Live DB dump: [`db/_live_marketing_dump.sql`](db/_live_marketing_dump.sql)
-- 0 rows in any table (clean slate)
+| Dienst | Port | Code |
+|---|---|---|
+| marketing-api | 5510 | `api/server.py` |
+| marketing-claw MCP-Sidecar | 8130 | `claw/server.py` |
+| eigene Marketing-Shim-Instanz (Modell-Tuer) | 8117 | `claw/shim/marketing_shim.py` (die gemeinsame Shim-Instanz ist :8114) |
+| Vorlagen-Arbeiter | 8132 | `workers/vorlagen_worker.py` |
+| ComfyUI (FLUX.1-schnell) | 8188 | `claw/bild_comfy.py`, Workflows in `bilder/` |
+| Bild-Arbeiter | 8133 | `workers/bild_worker.py` |
+| Chat-Arbeiter (Gestaltungs-Agent) | 8134 | `workers/chat_worker.py` |
 
-### Mail infrastructure
+Weitere Prozesse:
 
-- **Mailcow** (WSL, separate compose, not in vibemind-stack):
-  - Domain: `vibemind.space` configured (DKIM 2048-bit ready)
-  - Service accounts: `marketing@vibemind.space`, `noreply@vibemind.space` (32-char random passwords in `.env`)
-  - 50 test audience mailboxes (Faker-generated names, tags, signup_dates) — credentials in `docs/test-audience.json` (file lives in mailcow run folder, NOT committed)
-  - **Loopback-mode active**: Postfix rejects external recipients with `554 LOOPBACK-MODE` (anti-foot-gun)
+- `delivered_webhook` :5512 (`workers/delivered_webhook.py`), PayPal-Webhook :5514
+  (`workers/paypal_webhook_handler.py`).
+- openclaw-Gateway als Container `marketing-claw` auf :18895
+  (`claw/gateway/docker-compose.yml`).
+- Arbeiter ohne Port, vom aeusseren Launcher gestartet: `bubble_*`,
+  `laura_rowboat_export`, `export_worker`, `webhook_delivery`, `mx_worker`,
+  `openfang_approval_bridge`.
 
-- **Mailpit (= supabase-inbucket)** as in-stack sandbox:
-  - Web UI: http://127.0.0.1:54324
-  - SMTP receive: 127.0.0.1:54325 (may need re-publishing — check `docker service inspect vibemind_supabase-inbucket`)
-  - API: http://127.0.0.1:54324/api/v1/messages
-  - Setting in `.env`: `MAILPIT_*` block
+```mermaid
+flowchart LR
+    Mensch[Sales-Oberflaeche und Pult] --> API[marketing-api :5510]
+    Agent[openclaw Gateway :18895] --> Shim[Marketing-Shim :8117]
+    Shim --> CLI[Claude-CLI]
+    CLI --> MCP[MCP-Sidecar :8130]
+    MCP --> API
+    API --> DB[(Supabase Schema marketing)]
+    Chat[Chat-Arbeiter :8134] --> Shim
+    Bild[Bild-Arbeiter :8133] --> Comfy[ComfyUI :8188]
+    API --> Auftrag[Versandauftrag]
+    Auftrag --> Sales[sales-claw]
+    Sales --> Freigabe[Freigabe durch einen Menschen]
+```
 
-### Channel layer
+## Versandmodell
 
-- **OpenFang `openfang-channels` crate**: 42 channel modules, of which 28 are `ready` (outbound+inbound+oauth+http, non-trivial LOC) and 14 are `outbound-only`. Inventory: [`docs/openfang-channels.md`](docs/openfang-channels.md) (when restored).
+Betreiber-Entscheid 2026-09-12: **sales-claw ist der einzige Versandweg**
+(Spec `docs/superpowers/specs/2026-09-12-sales-claw-einziger-versandweg.md`).
 
-### What's not here (yet)
+1. Das Werkzeug `versand_beauftragen` (`claw/werkzeuge.py`) sendet
+   `POST /api/versandauftraege`.
+2. Die API ruft `marketing.versandauftrag_anlegen` (Migration
+   `db/043_marketing_versandauftraege.sql`).
+3. sales-claw legt hoechstens einen offenen Entwurf an, den ein Mensch freigibt.
 
-- ❌ MarketingAgent Python code (skeleton documented but not written)
-- ❌ ClawPort Marketing-Tab in Electron-Dashboard
-- ❌ HTML-Mockup of UI (Schicht 2)
-- ❌ IMAP-Sync worker (Mailcow → `marketing.inbound_messages`)
-- ❌ AI-content-generation via Brain
+Kanaele, die das Werkzeug annimmt: `whatsapp`, `email`, `linkedin`,
+`linkedin_post` (`VERSANDKANAELE`; Telegram nicht, obwohl das CHECK in 043 es
+noch erlaubt). Die alten Versender `tools/_send_paranoid.py`,
+`tools/_send_telegram.py` und `tools/_send_openfang.py` sind durch
+`tools/versandsperre.py` gesperrt (Gate 0, nur im LIVE-Modus). Die Umgehung
+`MARKETING_VERSAND_TROTZDEM=1` ist moeglich und schreibt eine Warnung ins Log.
+Der Gateway-Agent hat keine Kanaele; seine Persona sagt "Du versendest NICHTS".
 
-## Architectural decisions (foundation-phase outputs)
+## Pult, Gestaltung, Bilder, Chat, Mandanten
 
-| Topic | Decision |
+- **Pult** (`api/pult.py`, `/api/pult/*`, Header `X-Pult-Key`): Uebersicht,
+  Inhalte, Newsletter-Bloecke, Vorlagen und Layouts, Entscheidungen. Datenmodell
+  in den Migrationen 050-055.
+- **Gestaltung** (`api/gestaltung.py`, `claw/gestaltung.py`): rechnet eine
+  Gestaltung zu einem Entwurfsbild. Die Operationen des Gestaltungs-Agenten
+  (17, z. B. `block_einfuegen`, `ebene_hinzufuegen`, `bild_erzeugen`) stehen in
+  `claw/agent_werkzeuge.py`. Migration 060.
+- **Bilder** (`api/bilder.py`, `claw/bild_*.py`): Bildauftraege mit Arbeiter-Routen
+  (Header `X-Bild-Key`), Ueberarbeiten, Freistellen, Profi-Vorlagen
+  (Migrationen 056-059).
+- **Chat-Agent** (`api/chat.py`, `workers/chat_worker.py`): Zwischenstand,
+  Vormerken und Stopp (Migration 061).
+- **Mandanten**: `vibemind` und `fin2gether` (Migrationen 050, 062).
+  Markenwissen wird aus `~/.rowboat/knowledge/companys/<Firma>/` gelesen
+  (`claw/markenwissen.py`, Ordner per `ROWBOAT_WISSEN_ORDNER` aenderbar),
+  Notizen des Agenten liegen in `<Firma>/Agent-Notizen/`. Die Zuordnung Bild zu
+  Mandant steht in `marketing.medien_mandant` (`api/medien_mandant.py`).
+
+Authentifizierung der HTTP-Schicht: global `X-API-Key` (`MARKETING_API_KEY`),
+`/api/pult/*` zusaetzlich `X-Pult-Key` (`MARKETING_PULT_KEY`), Arbeiter-Routen
+`X-Bild-Key` (`MARKETING_BILD_KEY`), mutierende Vorschlags-Routen
+`MARKETING_PROPOSAL_API_KEY`. Fehlt ein Schluessel, antworten die Routen mit 503
+(fail-closed).
+
+## Daten
+
+Supabase-Schema `marketing`. 62 Migrationsdateien `db/001` bis `db/062`
+(`039` fehlt, zwei Dateien tragen die Nummer `013`), dazu `verify_*.sql`:
+
+- 001-038: Grundschema, Sync, Vorschlaege, Webhooks, Tracking, Bubble-Pipeline.
+- 040 Crowdfunding; 041-043 Bruecke zu sales-claw inkl. `versandauftraege`;
+  044-049 Layout- und Formularvorlagen.
+- 050-052 Pult (Mandanten, Inhalte); 053-055 Newsletter-Bloecke;
+  056-059 Bildauftraege, Ueberarbeiten, Profi-Vorlagen, Freistellen;
+  060 Gestaltung und `chat_auftraege`; 061 Chat live; 062 `medien_mandant`.
+
+Ob eine Migration angewendet wurde, sagen die Dateien nicht; dafuer die
+`verify_*.sql` gegen die Datenbank laufen lassen.
+
+## Starten
+
+Vom Verzeichnis `vibemind-os` aus, mit dem gemeinsamen venv des aeusseren Repos
+(`reportlab` liegt nur dort):
+
+```powershell
+# alle sieben Host-Dienste, nur fehlende werden gestartet
+powershell -File spaces/marketing/claw/scripts/marketing-dienste-starten.ps1
+# nur pruefen
+powershell -File spaces/marketing/claw/scripts/marketing-dienste-starten.ps1 -Pruefen
+# einzeln
+python -m spaces.marketing.api.server
+python -m spaces.marketing.claw.server
+```
+
+Das Skript legt ausserdem leere Markenwissen-Vorlagen (`Marke.md`) je Firma an,
+wenn der Ordner fehlt.
+
+## Testen
+
+Aus `vibemind-os`:
+
+```powershell
+python -m pytest spaces/marketing -q
+python -m pytest spaces/marketing/tests/test_cockpit_contract.py -q   # Drift-Waechter der Doku
+```
+
+`spaces/marketing/scripts/conftest.py` schliesst `real_case_test.py` aus (ein
+Kommandozeilenwerkzeug gegen echte Postfaecher, kein Test). Messwerte (Dateien,
+Definitionen) stehen in STATUS.md; ein Durchlaufergebnis ist dort nur
+vermerkt, wenn es gemessen wurde.
+
+## Zweite Instanz auf der VM
+
+Laut Betriebsnotiz (seit 2026-09-25) laeuft marketing-api zusaetzlich auf der
+Proxmox-VM aus einem Sparse-Checkout `~/marketing-os`, aktualisiert ueber
+`deploy/marketing-aktualisieren.sh` in sales-claw und betrieben als systemd-Dienst
+`marketing-api.service`. Sie bindet an loopback :5510 und ist im Tailnet
+veroeffentlicht. Der PC-Dienst :5510 bleibt fuer die Agenten. Das Skript liegt im
+Submodul sales-claw und ist aus diesem Verzeichnis nicht pruefbar.
+
+## Beziehung zu sales-claw
+
+sales-claw liefert die Sales-Oberflaeche, die Kontakt-Tore (Verbotsliste,
+Loeschantrag, UWG-Pruefung, Kontakt-Freigabe) und stellt zu. Marketing liefert
+Inhalte, Vorlagen, Bilder und Versandauftraege; die Pult-Routen
+(`/api/pult/*`) und die Arbeiter-Routen sind die Schnittstelle. Marketing
+liest dort nur, was die Routen herausgeben.
+
+## Architectural decisions
+
+| Thema | Entscheidung |
 |---|---|
-| **Storage** | Supabase `marketing.*` schema (NOT separate `marketing-postgres`) |
-| **Auth** | Phase 1 admin-only (service-role-key); Phase 2 Supabase-Auth + RLS |
-| **Workflows** | Phase 1 self-contained Python (no n8n custom nodes); Phase 2 optional |
-| **Identity bridge** | Phase 2 — Supabase-Auth-user ↔ Mailcow-mailbox auto-provisioning |
-| **Sending** | Loopback-only until Production-Cutover at Homelab-Deploy |
+| Speicher | Supabase-Schema `marketing.*`, kein eigenes Postgres |
+| Versand | nur ueber sales-claw (Betreiber-Entscheid 2026-09-12); eigene Versender gesperrt (`tools/versandsperre.py`) |
+| Auth | globaler `X-API-Key`; `/api/pult/*` eigener `X-Pult-Key`; Arbeiter `X-Bild-Key`; fail-closed |
+| Modell | Claude-CLI ueber eigene Shim-Instanz :8117 (Subscription), keine API-Schluessel im Code |
+| Modelle lokal | Bilder per ComfyUI/FLUX im PC-Arbeiter; nichts davon auf der VM |
+| Workflows | Python-Arbeiter; n8n-Workflows liegen als Dateien in `n8n_workflows/` (7, Nummer 06 fehlt) |
+| Mandanten | `vibemind`, `fin2gether`; Markenwissen aus Rowboat |
 
-## Inventory documents
+## Weitere Ordner
 
-These were lost in the submodule-reset 2026-06-02 and need rebuilding from the plan file (`~/.claude/plans/vibemind-marketing-ops.md`) + live state. Status:
+`agents/` (MarketingBackendAgent mit 13 `EVENT_TO_TOOL`-Zuordnungen, `runner.py`),
+`skills/newsletter-bild`, `vorlagen/newsletter`, `bilder/` (3 ComfyUI-Workflows),
+`sync/` (Worker A/B/C: DB <-> Vault, IMAP), `mirofish/` (Qualitaetspruefung,
+AGPL-Hinweis in `NOTICE-AGPL.md`), `tools/`, `mockup/`, `curator/`.
 
-- [ ] `docs/mailcow-inventory.md` — 1 domain, 53 mailboxes, DKIM ready
-- [ ] `docs/rowboat-inventory.md` — NOT a CRM; AI-workflow engine, 7945 source_docs
-- [ ] `docs/brain-kg-inventory.md` — 9 Qdrant collections, all empty
-- [ ] `docs/pathfinder-emails-db.md` — schema heritage, 350 emails (data NOT migrated)
-- [ ] `docs/openfang-channels.md` — 42 channels, 28 ready
-- [ ] `docs/supabase-inventory.md` — full stack live, 27 public tables empty
-- [ ] `docs/loopback-mode.md` — postfix recipient-block active + reversal command
-- [ ] `docs/space-pattern.md` — BackendAgent + EVENT_TO_TOOL skeleton
-- [ ] `docs/n8n-decision.md` — no custom nodes phase 1
-- [ ] `docs/auth-concept.md` — admin-only phase 1
+## Helper scripts
 
-The **plan file** has all the original content from before — these docs are a derivative.
+In `scripts/` (Verzeichnis dieses Space):
 
-## Helper scripts (in `scripts/`, repo root)
-
-| Script | Purpose |
+| Skript | Zweck |
 |---|---|
-| `_mailcow_inventory.ps1` | Full mailcow read-only inventory via API |
-| `_mailcow_create_service_accounts.ps1` | Idempotent create marketing@ + noreply@ |
-| `_mailcow_create_test_audience.py` | 50 Faker mailboxes with tags |
-| `_mailcow_smoke_send.py` | Send personalised newsletter to all 50 |
-| `_mailcow_outbound_block.sh` | Apply postfix loopback-block |
-| `_mailcow_test_outbound_block.py` | Verify block (negative + positive test) |
-| `_openfang_channels_inventory.py` | Static scan of 42 channel modules |
-| `_qdrant_inventory.sh` | Brain-KG collections + sample payloads |
-| `_rowboat_inventory.sh` | MongoDB collections in rowboat DB |
+| `vorlagen_bauen.py`, `vorlagen_einspielen.py`, `vorlagen_galerie.py` | Newsletter-Vorlagen erzeugen, einspielen, ansehen |
+| `platzhalter_erzeugen.py` | Platzhalterbilder |
+| `bild_probe.py`, `freistellen_probe.py`, `ueberarbeiten_probe.py` | Proben gegen den Bild-Arbeiter |
+| `migration_probe.py`, `test_rls.py` | Pruefungen gegen die Datenbank |
+| `snapshot_pathx_data.py`, `migrate_pathx_to_supabase.py` | Einmal-Import der alten pathx-Daten |
+| `real_case_test.py` | Schleife durch echte Postfaecher; nie in einem Suitelauf |
 
-## Next steps
-
-1. Rebuild detail docs (optional — plan file has everything)
-2. Re-publish Mailpit SMTP port if missing
-3. **Schicht 2: HTML Mockup** — 8 tabs (Dashboard, Campaigns, Audiences, Templates, Channels, Inbox, Analytics, Settings) with mock data fed from Supabase + Mailcow inventory + OpenFang channel statuses
-4. **Schicht 3: Implementation** — MarketingAgent Python skeleton + ClawPort Marketing-Tab + IMAP sync worker
+Weitere Skripte im Space: `claw/scripts/` (Dienststart) und `n8n_workflows/`
+(`import.ps1`, `register_webhooks.ps1`).
