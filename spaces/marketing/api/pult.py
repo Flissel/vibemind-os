@@ -387,6 +387,7 @@ def inhalt(iid: str, x_pult_key: str | None = Header(None)):
     kopf = _lesen_einer(lambda:
         "SELECT i.id, i.mandant, i.art, i.titel, i.status, i.freigegebene_fassung, i.entschieden_von, "
         "i.entschieden_am::text AS entschieden_am, i.grund, "
+        "i.eingereichte_fassung, i.eingereicht_am::text AS eingereicht_am, i.eingereicht_von, "
         "CASE WHEN i.herkunft_proposal IS NULL THEN NULL "
         "ELSE jsonb_build_object('status', p.status, 'kanal', p.channel) END AS alter_weg "
         "FROM marketing.inhalte i "
@@ -404,7 +405,12 @@ def inhalt(iid: str, x_pult_key: str | None = Header(None)):
     for nr, f in enumerate(fassungen):
         if nr and isinstance(f, dict):
             f["bloecke"] = None
-    return {"inhalt": kopf, "fassungen": fassungen, "alter_weg": alter_weg or None}
+    rueckmeldungen = _lesen(lambda:
+        "SELECT r.id::text AS id, r.fassung, r.text, r.von, r.am::text AS am, "
+        "r.erledigt_am::text AS erledigt_am, (r.erledigt_am IS NOT NULL) AS erledigt "
+        f"FROM marketing.rueckmeldungen r WHERE r.inhalt = {lit(i)}::uuid ORDER BY r.am DESC")
+    return {"inhalt": kopf, "fassungen": fassungen, "alter_weg": alter_weg or None,
+            "rueckmeldungen": rueckmeldungen}
 
 
 @router.post("/inhalte/{iid}/in_bloecke")
@@ -487,6 +493,8 @@ def entscheiden(iid: str, payload: dict = Body(...), x_pult_key: str | None = He
     urteil = str(payload.get("urteil") or "")
     von = str(payload.get("von") or "")
     grund = str(payload.get("grund") or "")
+    if urteil == "ablehnen" and not grund.strip():
+        raise HTTPException(422, "Bitte gib einen Grund an")      # Verwerfen: Grund Pflicht (R6)
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_entscheiden({lit(i)}::uuid, {f}, {lit(urteil)}, "
         f"{lit(von)}, {lit(grund)}) AS status")

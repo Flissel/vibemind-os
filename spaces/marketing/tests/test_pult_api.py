@@ -465,7 +465,7 @@ def test_inhalt_liefert_format_und_bloecke(db, c):
     r = c.get(f"/api/pult/inhalte/{IID}", headers=H)
     assert r.status_code == 200 and r.json()["fassungen"][0]["format"] == "bloecke"
     import re
-    assert re.search(r"SELECT[^;]*\bformat\b[^;]*\bbloecke\b[^;]*FROM marketing\.inhalt_fassungen", db.sql[-1])
+    assert re.search(r"SELECT[^;]*\bformat\b[^;]*\bbloecke\b[^;]*FROM marketing\.inhalt_fassungen", db.sql[1])
 
 
 def test_vorlagen_liste_und_aus_vorlage(db, c):
@@ -606,7 +606,7 @@ def test_inhalt_bloecke_nur_fuer_neueste_fassung(db, c):
     r = c.get(f"/api/pult/inhalte/{IID}", headers=H)
     f = r.json()["fassungen"]
     assert f[0]["bloecke"] == DOK and f[1]["bloecke"] is None
-    assert "max(fassung) OVER ()" in db.sql[-1]
+    assert "max(fassung) OVER ()" in db.sql[1]
 
 
 def test_in_bloecke_uebernehmen(db, c):
@@ -721,3 +721,52 @@ def test_fuellen_ist_ein_gemeinsamer_helfer(monkeypatch, tmp_path):
                                            {"laden": "Radhaus Jena", "layout": "nl", "gestalt": {"akzent": "#123456"}})
     assert layout == "nl" and fertig["band"]["data"]["style"]["backgroundColor"] == "#123456"
     assert fertig["marke_wort"]["data"]["props"]["text"] == "Radhaus Jena" and "marke_logo" not in fertig
+
+
+# --- Task 2 (Newsletter-Freigabe): Verwerfen mit Grund, Einreich-Felder, Rueckmeldungen ---
+
+@pytest.mark.parametrize("grund", ["", "   ", None])
+def test_ablehnen_ohne_grund_422_ohne_sql(db, c, grund):
+    body = {"fassung": 1, "urteil": "ablehnen", "von": "Anna"}
+    if grund is not None:
+        body["grund"] = grund
+    r = c.post(f"/api/pult/inhalte/{IID}/entscheiden", json=body, headers=H)
+    assert r.status_code == 422 and r.json()["detail"] == "Bitte gib einen Grund an" and db.sql == []
+
+
+def test_ablehnen_mit_grund_geht_durch_und_freigeben_ohne_grund_auch(db, c):
+    db.antworten = [[{"status": "abgelehnt"}], [{"status": "freigegeben"}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/entscheiden",
+               json={"fassung": 1, "urteil": "ablehnen", "von": "Anna", "grund": "passt nicht"}, headers=H)
+    assert r.status_code == 200 and r.json() == {"status": "abgelehnt"}
+    r = c.post(f"/api/pult/inhalte/{IID}/entscheiden",
+               json={"fassung": 1, "urteil": "freigeben", "von": "Anna"}, headers=H)
+    assert r.status_code == 200 and len(db.sql) == 2
+
+
+def test_inhalt_liefert_einreichfelder_und_rueckmeldungen(db, c):
+    rm = [{"id": "r2", "fassung": 2, "text": "Preis fehlt", "von": "Anna", "am": "2026-10-07", "erledigt": False},
+          {"id": "r1", "fassung": 1, "text": "Betreff", "von": "Anna", "am": "2026-10-06", "erledigt": True}]
+    db.antworten = [[{"id": IID, "mandant": "vibemind", "art": "newsletter", "titel": "X", "status": "eingereicht",
+                      "eingereichte_fassung": 2, "eingereicht_am": "2026-10-07", "eingereicht_von": "Anna",
+                      "alter_weg": None}],
+                    [{"fassung": 2, "felder": FELDER, "layout": "dunkel", "urheber": "agent", "erstellt_am": "x"}],
+                    rm]
+    r = c.get(f"/api/pult/inhalte/{IID}", headers=H)
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["inhalt"]["eingereichte_fassung"] == 2 and j["inhalt"]["eingereicht_von"] == "Anna"
+    assert j["rueckmeldungen"] == rm
+    assert "i.eingereichte_fassung" in db.sql[0] and "i.eingereicht_am" in db.sql[0] and "i.eingereicht_von" in db.sql[0]
+    assert "marketing.rueckmeldungen" in db.sql[2] and "ORDER BY r.am DESC" in db.sql[2]
+
+
+def test_inhalt_ohne_rueckmeldungen_leere_liste_und_lesefehler_503(db, c):
+    db.antworten = [[{"id": IID, "mandant": "vibemind", "art": "newsletter", "titel": "X", "status": "entwurf",
+                      "alter_weg": None}], []]
+    r = c.get(f"/api/pult/inhalte/{IID}", headers=H)
+    assert r.status_code == 200 and r.json()["rueckmeldungen"] == []
+    db.antworten = [[{"id": IID, "mandant": "vibemind", "art": "newsletter", "titel": "X", "status": "entwurf",
+                      "alter_weg": None}], []]
+    db.fehler = [None, None, RuntimeError("weg")]
+    assert c.get(f"/api/pult/inhalte/{IID}", headers=H).status_code == 503

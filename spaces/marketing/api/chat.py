@@ -343,21 +343,13 @@ def _ablegen_und_zuordnen(ordner: str, iid: str, stuecke: list[tuple[str, bytes]
     return namen
 
 
-@pult_router.post("/inhalte/{iid}/export")
-def export(iid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
-    _schluessel(x_pult_key)
-    i = _uuid_oder_404(iid)
-    if payload.get("bestaetigt") is not True:
-        raise HTTPException(422, "Export nur mit Bestätigung")
-    newsletter = payload.get("newsletter", False)
-    if not isinstance(newsletter, bool):
-        raise HTTPException(422, "newsletter muss true oder false sein")
-    roh_flaechen = payload.get("flaechen", [])
-    if not newsletter and not roh_flaechen:
-        raise HTTPException(422, "Nichts zum Exportieren ausgewählt")
+def export_ausfuehren(i: str, flaechen_ids: list[str], newsletter: bool) -> dict:
+    """Kern des Exports (Route /export und Freigabe): Flaechen x 3 Geraete rechnen, optional den
+    Newsletter-Export-Auftrag anlegen, Dateien ablegen und der Firma zuordnen. Wirft HTTPException.
+    -> {"dateien": [...], "auftrag": id|None}"""
     z = _inhalt_lesen(i)
     s = slug(z.get("titel") or "")
-    flaechen = _flaechen(roh_flaechen, z.get("bloecke"))
+    flaechen = _flaechen(flaechen_ids, z.get("bloecke"))
     ordner = _ordner()
     # erst alles rechnen (ein Fehler laesst nichts zurueck), dann Auftrag, dann Dateien
     fertig: list[tuple[str, bytes]] = []
@@ -376,6 +368,21 @@ def export(iid: str, payload: dict = Body(...), x_pult_key: str | None = Header(
             f"{lit(json.dumps(kontext, ensure_ascii=False))}::jsonb) AS id")
         auftrag = str(zeile["id"])
     return {"dateien": _ablegen_und_zuordnen(ordner, i, fertig), "auftrag": auftrag}
+
+
+@pult_router.post("/inhalte/{iid}/export")
+def export(iid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    _schluessel(x_pult_key)
+    i = _uuid_oder_404(iid)
+    if payload.get("bestaetigt") is not True:
+        raise HTTPException(422, "Export nur mit Bestätigung")
+    newsletter = payload.get("newsletter", False)
+    if not isinstance(newsletter, bool):
+        raise HTTPException(422, "newsletter muss true oder false sein")
+    roh_flaechen = payload.get("flaechen", [])
+    if not newsletter and not roh_flaechen:
+        raise HTTPException(422, "Nichts zum Exportieren ausgewählt")
+    return export_ausfuehren(i, roh_flaechen, newsletter)
 
 
 # ─── Arbeiter ───────────────────────────────────────────────────────────
@@ -408,6 +415,21 @@ def _medien(sichtbar: Callable[[str], bool]) -> list[str]:
     return sorted(namen)[:MEDIEN_MAX]   # erst filtern, dann kappen
 
 
+def _rueckmeldungen_offen(inhalt) -> list[dict]:
+    """Offene Rueckmeldungen aus der Freigabe (gehen bei jeder Chat-Bitte an den Agenten).
+    Wirft nie: der Auftrag ist schon vergeben, ein Lesefehler darf ihn nicht kosten."""
+    if not inhalt:
+        return []
+    try:
+        zeilen = _lesen(lambda:
+            "SELECT r.text, r.von, r.am::text AS am, r.fassung FROM marketing.rueckmeldungen r "
+            f"WHERE r.inhalt = {lit(str(inhalt))}::uuid AND r.erledigt_am IS NULL ORDER BY r.am")
+    except HTTPException as e:
+        log.warning("Offene Rueckmeldungen nicht lesbar: %s", e.detail)
+        return []
+    return [z for z in zeilen if isinstance(z, dict)]
+
+
 @arbeiter_router.post("/naechster")
 def arbeiter_naechster(x_bild_key: str | None = Header(None)):
     _bild_schluessel(x_bild_key)
@@ -423,6 +445,7 @@ def arbeiter_naechster(x_bild_key: str | None = Header(None)):
             a["medien"] = []
             a["mandant_name"] = m
             a["medien_hinweis"] = ZUORDNUNG_FEHLT
+        a["rueckmeldungen_offen"] = _rueckmeldungen_offen(a.get("inhalt"))
         antwort = {"auftrag": a}
     else:
         antwort = {"auftrag": None}

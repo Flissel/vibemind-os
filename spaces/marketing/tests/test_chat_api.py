@@ -994,3 +994,34 @@ def test_kontext_anhaenge_null_gilt_als_leer(umg):
     f, _, c = umg
     f.antworten.append([{"id": AID}])
     assert _anlegen_mit(c, {"anhaenge": None}).status_code == 200
+
+
+# --- Task 2 (Newsletter-Freigabe): offene Rueckmeldungen im Auftrag ---
+
+
+def test_naechster_traegt_offene_rueckmeldungen(umg):
+    f, ordner, c = umg
+    rm = [{"text": "Preis fehlt", "von": "Anna", "am": "2026-10-07", "fassung": 2}]
+    f.antworten += [[{"a": {"id": AID, "inhalt": IID, "art": "chat", "nachricht": "n", "mandant": "vibemind"}}],
+                    _sicht(), rm]
+    a = c.post("/api/chat/arbeiter/naechster", headers=HB).json()["auftrag"]
+    assert a["rueckmeldungen_offen"] == rm
+    assert "marketing.rueckmeldungen" in f.sql[2] and "erledigt_am IS NULL" in f.sql[2] and IID in f.sql[2]
+
+
+def test_naechster_ohne_rueckmeldungen_leere_liste(umg):
+    f, ordner, c = umg
+    f.antworten += [[{"a": {"id": AID, "inhalt": IID, "art": "chat", "nachricht": "n", "mandant": "vibemind"}}],
+                    _sicht(), []]
+    assert c.post("/api/chat/arbeiter/naechster", headers=HB).json()["auftrag"]["rueckmeldungen_offen"] == []
+
+
+def test_naechster_rueckmeldungen_lesefehler_verliert_auftrag_nicht(umg):
+    f, ordner, c = umg
+    f.antworten += [[{"a": {"id": AID, "inhalt": IID, "art": "chat", "nachricht": "n", "mandant": "vibemind"}}],
+                    _sicht()]
+    f.fehler += [None, None, RuntimeError("db weg")]
+    r = c.post("/api/chat/arbeiter/naechster", headers=HB)
+    assert r.status_code == 200, r.text
+    a = r.json()["auftrag"]
+    assert a["id"] == AID and a["rueckmeldungen_offen"] == [] and a["mandant_name"] == "Vibemind"
