@@ -16,6 +16,7 @@ import datetime
 import io
 import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 
 from spaces.marketing.claw import markenwissen as mw
@@ -24,6 +25,7 @@ from spaces.marketing.claw.schriften import REGISTER
 DATEI = "Marke.md"
 VERLAUF = "Marke-Verlauf"
 LOGO_MAX_BYTES = 2 * 1024 * 1024
+MAX_PIXEL = 40_000_000
 SPIEGEL_KANTE = 600          # laengste Kante des gespiegelten Logos
 SPIEGEL_MAX_CHARS = 140 * 1024  # ganze data-URL
 _MIN_KANTE = 16
@@ -250,10 +252,10 @@ def _ablegen_exklusiv(pfad: str, roh: bytes) -> bool:
 
 
 def _ersetzen(pfad: str, roh: bytes) -> None:
-    """temp + replace; das Ziel wird nie halb geschrieben."""
-    temp = f"{pfad}.tmp-{os.getpid()}"
+    """Eindeutige temp-Datei im selben Ordner + replace; das Ziel wird nie halb geschrieben."""
+    fd, temp = tempfile.mkstemp(dir=os.path.dirname(pfad), prefix=".tmp-", suffix=".part")
     try:
-        with open(temp, "wb") as f:
+        with os.fdopen(fd, "wb") as f:
             f.write(roh)
         os.replace(temp, pfad)
     except OSError:
@@ -282,6 +284,20 @@ def _verlauf_sichern(ordner: str, firma_real: str, alt: str, jetzt: datetime.dat
     raise MarkenFehler("Verlauf konnte nicht gesichert werden")
 
 
+def _bild_pruefen(roh: bytes) -> None:
+    """Signatur reicht nicht: das Bild muss sich oeffnen lassen und darf nicht riesig sein."""
+    try:
+        from PIL import Image
+        img = Image.open(io.BytesIO(roh))
+        if img.width * img.height > MAX_PIXEL:
+            raise MarkenFehler("Das Logo hat zu viele Bildpunkte")
+        img.verify()
+    except MarkenFehler:
+        raise
+    except Exception as e:
+        raise MarkenFehler("Das Logo ist keine lesbare PNG- oder JPEG-Datei") from e
+
+
 def schreiben(wurzel: str, mandant: str, name: str, werte: dict, abschnitte: dict,
               logo: tuple[bytes, str] | None, von: str, jetzt: datetime.datetime) -> str:
     """Marke.md (und Logo) schreiben -> Pfad der Marke.md. Wirft MarkenFehler.
@@ -308,6 +324,7 @@ def schreiben(wurzel: str, mandant: str, name: str, werte: dict, abschnitte: dic
         logo_art = _logo_typ(logo_roh)
         if logo_art is None:
             raise MarkenFehler("Das Logo ist keine PNG- oder JPEG-Datei")
+        _bild_pruefen(logo_roh)
         werte["logo"] = f"logo.{logo_art}"
     werte["stand"] = f"{jetzt:%Y-%m-%d %H:%M} von {_einzeilig(von) or 'unbekannt'}"
     inhalt = text(werte, abschnitte or {}).encode("utf-8")
@@ -318,18 +335,19 @@ def schreiben(wurzel: str, mandant: str, name: str, werte: dict, abschnitte: dic
     try:
         if os.path.lexists(marke) and not (os.path.isfile(marke) and mw._echt(marke, ordner, firma_real)):
             raise MarkenFehler(f"{DATEI} ist keine gewöhnliche Datei")
-        if logo_roh is not None:
+        ziel = os.path.join(ordner, f"logo.{logo_art}") if logo_roh is not None else None
+        if ziel and os.path.lexists(ziel) and not mw._echt(ziel, ordner, firma_real):
+            raise MarkenFehler("Logo-Datei ist eine Verknüpfung")
+        if os.path.isfile(marke):
+            _verlauf_sichern(ordner, firma_real, marke, jetzt)
+        if ziel:
+            _ersetzen(ziel, logo_roh)
+        _ersetzen(marke, inhalt)
+        if ziel:  # erst jetzt, wo Marke.md das neue Logo nennt
             for endung in ("png", "jpg"):
                 altes = os.path.join(ordner, f"logo.{endung}")
                 if endung != logo_art and os.path.lexists(altes):
                     os.remove(altes)
-            ziel = os.path.join(ordner, f"logo.{logo_art}")
-            if os.path.lexists(ziel) and not mw._echt(ziel, ordner, firma_real):
-                raise MarkenFehler("Logo-Datei ist eine Verknüpfung")
-            _ersetzen(ziel, logo_roh)
-        if os.path.isfile(marke):
-            _verlauf_sichern(ordner, firma_real, marke, jetzt)
-        _ersetzen(marke, inhalt)
     except OSError as e:
         raise MarkenFehler(f"Marke.md konnte nicht geschrieben werden: {e}") from e
     return marke
@@ -348,6 +366,8 @@ def _spiegel_logo(roh: bytes) -> str | None:
     try:
         from PIL import Image
         img = Image.open(io.BytesIO(roh))
+        if img.width * img.height > MAX_PIXEL:
+            return None
         img.load()
         alpha = _hat_alpha(img)
         img = img.convert("RGBA" if alpha else "RGB")

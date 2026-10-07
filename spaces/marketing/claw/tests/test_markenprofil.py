@@ -293,3 +293,53 @@ def test_gestalt_png_ohne_alpha_wird_jpeg():
 def test_gestalt_kleines_logo_wird_nicht_vergroessert():
     _, roh = _daten(mp.gestalt({}, PNG, "image/png")["logo"])
     assert Image.open(io.BytesIO(roh)).size[0] <= 40
+
+
+# --- Fix-Runde 1 ----------------------------------------------------------------
+
+def test_schreiben_fehlschlag_laesst_profil_unveraendert(wurzel, tmp_path):
+    mp.schreiben(wurzel, "m1", "VibeMind", WERTE, {}, (PNG, "image/png"), "F", JETZT)
+    ordner = os.path.join(wurzel, "VibeMind")
+    fremd = tmp_path / "fremd"
+    fremd.mkdir()
+    _junction(os.path.join(ordner, "Marke-Verlauf"), fremd)
+    with pytest.raises(mp.MarkenFehler):
+        mp.schreiben(wurzel, "m1", "VibeMind", WERTE, {}, (JPG, "image/jpeg"), "F", JETZT)
+    assert os.path.exists(os.path.join(ordner, "logo.png"))
+    assert not os.path.exists(os.path.join(ordner, "logo.jpg"))
+    p = mp.lesen(wurzel, "m1", "VibeMind")
+    assert p.hinweise == [] and p.werte["logo"] == "logo.png"
+    assert not [n for n in os.listdir(ordner) if n.startswith(".tmp-")]
+
+
+def test_schreiben_signatur_aber_nicht_dekodierbar(wurzel):
+    with pytest.raises(mp.MarkenFehler):
+        mp.schreiben(wurzel, "m1", "VibeMind", WERTE, {}, (b"\x89PNG\r\n\x1a\nmuell", "image/png"), "F", JETZT)
+
+
+def test_gestalt_ueber_pixelgrenze_ohne_logo():
+    buf = io.BytesIO()
+    Image.new("1", (7000, 7000)).save(buf, "PNG")  # 49 MP, winzige Datei
+    assert "logo" not in mp.gestalt({"akzent": "#C8102E"}, buf.getvalue(), "image/png")
+    with pytest.raises(mp.MarkenFehler):
+        mp.schreiben("x", "m", "N", {}, {}, (buf.getvalue(), "image/png"), "F", JETZT)
+
+
+def test_schreiben_firmenordner_als_symlink_ist_fehler(wurzel, tmp_path):
+    fremd = tmp_path / "fremd"
+    fremd.mkdir()
+    try:
+        os.symlink(fremd, os.path.join(wurzel, "VibeMind"), target_is_directory=True)
+    except OSError:
+        pytest.skip("Symlinks nicht erlaubt")
+    with pytest.raises(mp.MarkenFehler):
+        mp.schreiben(wurzel, "m1", "VibeMind", WERTE, ABSCHNITTE, None, "F", JETZT)
+    assert os.listdir(fremd) == []
+
+
+def test_ueberschrift_im_abschnittstext_ueberlebt_rundlauf(wurzel):
+    abschnitte = {"Ton": "Vorher\n## Falsche Ueberschrift\n# Titel\nNachher"}
+    mp.schreiben(wurzel, "m1", "VibeMind", WERTE, abschnitte, None, "F", JETZT)
+    p = mp.lesen(wurzel, "m1", "VibeMind")
+    assert list(p.abschnitte) == ["Ton"]
+    assert p.abschnitte["Ton"] == "Vorher\n ## Falsche Ueberschrift\n # Titel\nNachher"
