@@ -780,4 +780,22 @@ def test_inhalte_filter_eingereicht_und_uebersicht_zaehlt_ihn(db, c):
     assert "i.status = 'eingereicht'" in db.sql[0]
     db.antworten = [[], [{"status": "eingereicht", "n": 2}]]
     z = c.get("/api/pult/uebersicht", headers=H).json()["zaehler"]
-    assert z == {"entwurf": 0, "eingereicht": 2, "freigegeben": 0, "abgelehnt": 0}
+    assert z == {"entwurf": 0, "eingereicht": 2, "freigegeben": 0, "abgelehnt": 0, "zurueckgegeben": 0}
+
+
+def test_inhalte_liefert_offene_rueckmeldungen_je_zeile(db, c):
+    db.antworten = [[{"id": "a1", "art": "newsletter", "titel": "X", "status": "entwurf",
+                      "erstellt_am": "2026-10-07", "fassungen": 2, "layout": None,
+                      "offene_rueckmeldungen": 2}]]
+    r = c.get("/api/pult/inhalte", headers=H)
+    assert r.json()["inhalte"][0]["offene_rueckmeldungen"] == 2
+    sql = db.sql[0]
+    assert "marketing.rueckmeldungen" in sql and "erledigt_am IS NULL" in sql and "AS offene_rueckmeldungen" in sql
+
+
+def test_uebersicht_zaehlt_zurueckgegeben_getrennt_von_entwurf(db, c):
+    db.antworten = [[], [{"status": "entwurf", "n": 3}, {"status": "zurueckgegeben", "n": 1}]]
+    z = c.get("/api/pult/uebersicht", headers=H).json()["zaehler"]
+    assert z["entwurf"] == 3 and z["zurueckgegeben"] == 1
+    sql = db.sql[1]
+    assert "'zurueckgegeben'" in sql and "erledigt_am IS NULL" in sql and "i.status = 'entwurf'" in sql

@@ -202,8 +202,11 @@ def uebersicht(mandant: str | None = None, x_pult_key: str | None = Header(None)
     mandanten = _lesen(lambda:
         "SELECT id, name, aktiv FROM marketing.mandanten ORDER BY aktiv DESC, name")
     zahlen = _lesen(lambda:
-        f"SELECT status, count(*)::int AS n FROM marketing.inhalte WHERE mandant = {lit(m)} GROUP BY status")
-    zaehler = {s: 0 for s in _STATUS}
+        "SELECT CASE WHEN i.status = 'entwurf' AND EXISTS (SELECT 1 FROM marketing.rueckmeldungen r "
+        "  WHERE r.inhalt = i.id AND r.erledigt_am IS NULL) THEN 'zurueckgegeben' ELSE i.status END AS status, "
+        f"count(*)::int AS n FROM marketing.inhalte i WHERE i.mandant = {lit(m)} GROUP BY 1")
+    # zurueckgegeben = Entwurf mit offener Rueckmeldung; "entwurf" zaehlt diese NICHT mit.
+    zaehler = {s: 0 for s in (*_STATUS, "zurueckgegeben")}
     zaehler.update({z["status"]: z["n"] for z in zahlen})
     return {"mandanten": mandanten, "zaehler": zaehler}
 
@@ -224,7 +227,9 @@ def inhalte(mandant: str | None = None, art: str | None = None, status: str | No
         "SELECT i.id, i.art, i.titel, i.status, i.erstellt_am::text AS erstellt_am, "
         "  (SELECT count(*) FROM marketing.inhalt_fassungen f WHERE f.inhalt = i.id)::int AS fassungen, "
         "  (SELECT f.layout FROM marketing.inhalt_fassungen f WHERE f.inhalt = i.id "
-        "     ORDER BY f.fassung DESC LIMIT 1) AS layout "
+        "     ORDER BY f.fassung DESC LIMIT 1) AS layout, "
+        "  (SELECT count(*) FROM marketing.rueckmeldungen r "
+        "     WHERE r.inhalt = i.id AND r.erledigt_am IS NULL)::int AS offene_rueckmeldungen "
         f"FROM marketing.inhalte i WHERE {' AND '.join(wo)} ORDER BY i.erstellt_am DESC")
     return {"inhalte": zeilen}
 
