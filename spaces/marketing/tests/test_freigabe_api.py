@@ -217,11 +217,13 @@ def test_freigeben_ohne_fassung_422_ohne_sql(umg):
 def test_export_nachholen_bei_freigegeben(umg):
     f, ordner, c = umg
     f.antworten += [_freigegeben(_dok()), [{"titel": "Oktober-Angebot!", "bloecke": _dok()}],
+                    [{"vorhanden": False}],
                     [{"titel": "Oktober-Angebot!", "bloecke": _dok()}], [{"id": AID}]]
     r = c.post(f"/api/pult/inhalte/{IID}/export_nachholen", json={}, headers=H)
     assert r.status_code == 200, r.text
     d = r.json()
     assert d["status"] == "freigegeben" and len(d["flaechen"]) == 3 and d["export_auftrag"] == AID
+    assert d["flaechen_uebersprungen"] == [] and d["auftrag_vorhanden"] is False
     assert d["export_fehler"] is None
     assert all("pult_entscheiden" not in s for s in f.sql)
 
@@ -292,3 +294,57 @@ def test_freigaben_db_weg_503(umg):
     f, _, c = umg
     f.fehler.append(RuntimeError("weg"))
     assert c.get("/api/pult/freigaben", headers=H).status_code == 503
+
+
+# --- Fix-Runde 1 ---
+
+
+def test_nachholen_ueberspringt_vorhandene_flaeche_und_laufenden_auftrag(umg):
+    """B: liegt schon <slug>-<id>-<geraet>.jpg, wird nichts neu gerendert; vorhandener Export-Auftrag -> kein neuer."""
+    f, ordner, c = umg
+    (ordner / "oktober-angebot-f-tablet.jpg").write_bytes(b"alt")
+    f.antworten += [_freigegeben(_dok()), [{"vorhanden": True}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/export_nachholen", json={}, headers=H)
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["flaechen"] == [] and d["flaechen_uebersprungen"] == ["f"]
+    assert d["export_auftrag"] is None and d["auftrag_vorhanden"] is True and d["export_fehler"] is None
+    assert [p.name for p in ordner.iterdir()] == ["oktober-angebot-f-tablet.jpg"] and f.psql.sql == []
+    assert all("pult_chat_anlegen" not in s for s in f.sql)
+    sql = f.sql[1]
+    assert "art = 'export'" in sql and "'offen', 'in_arbeit'" in sql and "'fertig'" in sql and "entschieden_am" in sql
+
+
+def test_freigeben_exportiert_immer_auch_bei_vorhandener_datei(umg):
+    """B gilt nur fuer nachholen: frisches Freigeben fragt nicht nach vorhandenen Dateien/Auftraegen."""
+    f, ordner, c = umg
+    (ordner / "oktober-angebot-f-tablet.jpg").write_bytes(b"alt")
+    f.antworten += [[{"status": "freigegeben"}], _freigegeben(_dok(), art="post"),
+                    [{"titel": "Oktober-Angebot!", "bloecke": _dok()}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/freigeben", json={"fassung": 2, "von": "Anna"}, headers=H)
+    assert len(r.json()["flaechen"]) == 3 and "flaechen_uebersprungen" not in r.json()
+
+
+def test_freigaben_entschieden_nur_offene_rueckmeldung(umg):
+    """C: eine zurueckgegebene, wieder eingereichte und zurueckgezogene Fassung (Rueckmeldung erledigt) fehlt."""
+    f, _, c = umg
+    f.antworten.append([])
+    c.get("/api/pult/freigaben?status=entschieden", headers=H)
+    assert "erledigt_am IS NULL" in f.sql[0] and f.sql[0].index("erledigt_am IS NULL") > f.sql[0].index("status = 'entwurf'")
+
+
+def test_freigeben_mehr_als_20_flaechen_in_stuecken(umg, monkeypatch):
+    """D: mehr Flaechen als FLAECHEN_MAX werden in Stuecken exportiert, kein export_fehler."""
+    from spaces.marketing.api import chat, freigabe
+    monkeypatch.setattr(chat, "FLAECHEN_MAX", 2)
+    monkeypatch.setattr(freigabe, "FLAECHEN_MAX", 2)
+    f, ordner, c = umg
+    dok = _dok()
+    for n in range(4):
+        dok[f"g{n}"] = dict(dok["f"])
+    f.antworten += [[{"status": "freigegeben"}], _freigegeben(dok, art="post")] +                    [[{"titel": "Oktober", "bloecke": dok}]] * 3
+    r = c.post(f"/api/pult/inhalte/{IID}/freigeben", json={"fassung": 2, "von": "Anna"}, headers=H)
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["export_fehler"] is None and len(d["flaechen"]) == 15           # 5 Flaechen x 3 Geraete
+    assert len(f.psql.sql) == 3                                              # 3 Stuecke (2+2+1)

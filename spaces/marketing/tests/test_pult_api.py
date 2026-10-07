@@ -770,3 +770,14 @@ def test_inhalt_ohne_rueckmeldungen_leere_liste_und_lesefehler_503(db, c):
                       "alter_weg": None}], []]
     db.fehler = [None, None, RuntimeError("weg")]
     assert c.get(f"/api/pult/inhalte/{IID}", headers=H).status_code == 503
+
+
+def test_inhalte_filter_eingereicht_und_uebersicht_zaehlt_ihn(db, c):
+    db.antworten = [[{"id": "a1", "art": "newsletter", "titel": "X", "status": "eingereicht",
+                      "erstellt_am": "2026-10-07", "fassungen": 2, "layout": None}]]
+    r = c.get("/api/pult/inhalte?status=eingereicht", headers=H)
+    assert r.status_code == 200 and r.json()["inhalte"][0]["status"] == "eingereicht"
+    assert "i.status = 'eingereicht'" in db.sql[0]
+    db.antworten = [[], [{"status": "eingereicht", "n": 2}]]
+    z = c.get("/api/pult/uebersicht", headers=H).json()["zaehler"]
+    assert z == {"entwurf": 0, "eingereicht": 2, "freigegeben": 0, "abgelehnt": 0}

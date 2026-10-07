@@ -10,10 +10,12 @@ die Freigabe NICHT ungueltig: Antwort 200 mit export_fehler, export_nachholen ho
 from __future__ import annotations
 
 import logging
+import os
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query
 
-from spaces.marketing.api.chat import export_ausfuehren
+from spaces.marketing.api.chat import FLAECHEN_MAX, GERAETE, export_ausfuehren, slug
+from spaces.marketing.api.gestaltung import quellen
 from spaces.marketing.api.pult import _fassung_pflicht, _lesen, _lesen_einer, _schluessel, _schreiben, _uuid_oder_404, lit
 
 log = logging.getLogger(__name__)
@@ -89,20 +91,46 @@ def _flaechen_ids(bloecke) -> list[str]:
     return erg
 
 
-def _export_nach_freigabe(i: str, z: dict | None = None) -> dict:
+def _vorhandene_flaechen(titel: str, ids: list[str]) -> set[str]:
+    """Flaechen, zu denen schon eine Geraetedatei <slug>-<id>-<geraet>.jpg liegt (in irgendeinem Medienordner)."""
+    s = slug(titel or "")
+    return {bid for bid in ids
+            if any(os.path.exists(os.path.join(o, f"{s}-{bid}-{g}.jpg")) for o in quellen() for g in GERAETE)}
+
+
+def _export_auftrag_vorhanden(i: str) -> bool:
+    """Gibt es fuer die Freigabe schon einen Export-Auftrag (offen/in_arbeit, oder fertig seit der Entscheidung)?"""
+    z = _lesen_einer(lambda:
+        "SELECT EXISTS (SELECT 1 FROM marketing.chat_auftraege a JOIN marketing.inhalte n ON n.id = a.inhalt "
+        f"WHERE a.inhalt = {lit(i)}::uuid AND a.art = 'export' AND (a.status IN ('offen', 'in_arbeit') "
+        "OR (a.status = 'fertig' AND a.erstellt_am >= n.entschieden_am))) AS vorhanden")
+    return bool(z and z.get("vorhanden"))
+
+
+def _export_nach_freigabe(i: str, z: dict | None = None, nachholen: bool = False) -> dict:
     """Flaechen-Export (+ Newsletter-Auftrag) der festgeschriebenen Fassung; wirft nie.
     z = schon gelesene Zeile aus _festgeschrieben (sonst wird sie gelesen).
-    -> {"status", "flaechen", "export_auftrag", "export_fehler"}"""
+    nachholen: nur, was noch fehlt (Flaeche ohne Geraetedatei, Auftrag ohne laufenden/fertigen Export);
+    die Antwort nennt zusaetzlich, was uebersprungen wurde."""
     erg = {"status": "freigegeben", "flaechen": [], "export_auftrag": None, "export_fehler": None}
+    if nachholen:
+        erg.update(flaechen_uebersprungen=[], auftrag_vorhanden=False)
     try:
         z = z if z is not None else _festgeschrieben(i)
         if z is None or z.get("status") != "freigegeben":
             raise HTTPException(422, "Nur freigegebene Inhalte lassen sich exportieren")
         ids = _flaechen_ids(z.get("bloecke"))
-        if ids:
-            erg["flaechen"] = export_ausfuehren(i, ids, False)["dateien"]
+        if nachholen:
+            da = _vorhandene_flaechen(z.get("titel"), ids)
+            erg["flaechen_uebersprungen"] = [b for b in ids if b in da]
+            ids = [b for b in ids if b not in da]
+        for n in range(0, len(ids), FLAECHEN_MAX):          # eine Anfrage nimmt hoechstens FLAECHEN_MAX Flaechen
+            erg["flaechen"] += export_ausfuehren(i, ids[n:n + FLAECHEN_MAX], False)["dateien"]
         if z.get("art") == "newsletter" and z.get("format") == "bloecke":
-            erg["export_auftrag"] = export_ausfuehren(i, [], True)["auftrag"]
+            if nachholen and _export_auftrag_vorhanden(i):
+                erg["auftrag_vorhanden"] = True
+            else:
+                erg["export_auftrag"] = export_ausfuehren(i, [], True)["auftrag"]
     except HTTPException as e:
         erg["export_fehler"] = str(e.detail)
     except Exception as e:  # noqa: BLE001 - die Freigabe steht; nie den Rohtext nach aussen
@@ -131,7 +159,7 @@ def export_nachholen(iid: str, payload: dict = Body(default={}), x_pult_key: str
         raise HTTPException(404, "Unbekannter Inhalt")
     if z.get("status") != "freigegeben":
         raise HTTPException(422, "Nur freigegebene Inhalte lassen sich exportieren")
-    return _export_nach_freigabe(i, z)
+    return _export_nach_freigabe(i, z, nachholen=True)
 
 
 _FREIGABE_SPALTEN = (
@@ -160,7 +188,8 @@ def freigaben(status: str = "eingereicht", limit: int = Query(20, ge=1, le=100),
     else:
         # freigegeben/verworfen plus zurueckgegebene (wieder Entwurf, mit Rueckmeldung) der letzten 30 Tage
         wo = ("((i.status IN ('freigegeben', 'abgelehnt') AND i.entschieden_am > now() - interval '30 days') "
-              f"OR (i.status = 'entwurf' AND {_LETZTE_RUECKMELDUNG} > now() - interval '30 days'))")
+              f"OR (i.status = 'entwurf' AND {_LETZTE_RUECKMELDUNG} > now() - interval '30 days' "
+              "AND EXISTS (SELECT 1 FROM marketing.rueckmeldungen WHERE inhalt = i.id AND erledigt_am IS NULL)))")
         ordnung = f"coalesce(i.entschieden_am, {_LETZTE_RUECKMELDUNG}) DESC"
     zeilen = _lesen(lambda:
         f"SELECT {_FREIGABE_SPALTEN} FROM marketing.inhalte i "

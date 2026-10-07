@@ -58,7 +58,7 @@ from spaces.marketing.sync import _db
 
 router = APIRouter(prefix="/api/pult")
 _ARTEN = ("newsletter", "post", "material")
-_STATUS = ("entwurf", "freigegeben", "abgelehnt")
+_STATUS = ("entwurf", "eingereicht", "freigegeben", "abgelehnt")
 _FORMATE = ("mail", "handy", "pdf")
 _NAME = re.compile(r"^[a-z][a-z0-9_-]{0,40}$")
 _VORLAGE = re.compile(r"^[a-z][a-z0-9-]{1,40}$")
