@@ -17,11 +17,12 @@ import ipaddress
 import re
 import socket
 import ssl
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
-from typing import Callable, Iterable
+from typing import Callable
 from urllib.parse import parse_qs, quote, urldefrag, urljoin, urlsplit
 
 SEITE_MAX = 2 * 1024 * 1024
@@ -37,6 +38,11 @@ MAX_FARBEN = 12
 MAX_SCHRIFTEN = 8
 MAX_UEBERSCHRIFTEN = 20
 THEMA_GEWICHT = 3             # <meta name="theme-color"> ist ein bewusstes Markensignal
+GESAMT_S = 30.0               # Gesamtbudget eines lesen()-Aufrufs (Aufloesung + alle Abrufe)
+
+# Nur fuer Tests: einzelne IPs, die trotz Sperre erlaubt sind (Tests patchen das
+# per monkeypatch). Im Betrieb immer leer - kein oeffentlicher Parameter.
+_TEST_ERLAUBT: frozenset[str] = frozenset()
 
 _UMLEITUNG = {301, 302, 303, 307, 308}
 _GEMEINSAM = ipaddress.ip_network("100.64.0.0/10")      # CGNAT / Tailscale
@@ -97,29 +103,44 @@ def _gesperrt(text: str) -> bool:
             or a.is_unspecified or not a.is_global)
 
 
-def _gepruefte_adressen(host: str, port: int, aufloesen, test_erlaubt: Iterable[str]) -> list[str]:
+def _aufloesen_bis(aufloesen, host: str, port: int, frist: float) -> list:
+    """getaddrinfo kennt kein Zeitlimit - darum in einem Hilfsfaden mit join(rest)."""
+    ergebnis: dict = {}
+
+    def lauf():
+        try:
+            ergebnis["infos"] = aufloesen(host, port, 0, socket.SOCK_STREAM)
+        except Exception as e:  # noqa: BLE001 - jeder Aufloesungsfehler ist "nicht aufloesbar"
+            ergebnis["fehler"] = e
+
+    faden = threading.Thread(target=lauf, name="webseite-dns", daemon=True)
+    faden.start()
+    faden.join(_rest(frist))
+    if faden.is_alive():
+        raise LeseFehler("Zeitlimit überschritten (Namensauflösung)")
+    if "fehler" in ergebnis:
+        raise LeseFehler("Adresse nicht auflösbar")
+    return list(ergebnis.get("infos") or [])
+
+
+def _gepruefte_adressen(host: str, port: int, aufloesen, frist: float) -> list[str]:
     """Alle Adressen des Ziels; gesperrt, sobald auch nur eine gesperrt ist."""
     host = host.strip("[]")
     try:
         kandidaten = [str(ipaddress.ip_address(host.split("%", 1)[0]))]
     except ValueError:
-        try:
-            infos = aufloesen(host, port, 0, socket.SOCK_STREAM)
-        except Exception:
-            raise LeseFehler("Adresse nicht auflösbar") from None
-        kandidaten = [str(info[4][0]) for info in infos]
+        kandidaten = [str(info[4][0]) for info in _aufloesen_bis(aufloesen, host, port, frist)]
     if not kandidaten:
         raise LeseFehler("Adresse nicht auflösbar")
-    erlaubt = set(test_erlaubt)
     for ip in kandidaten:
-        if ip not in erlaubt and _gesperrt(ip):
+        if ip not in _TEST_ERLAUBT and _gesperrt(ip):
             raise LeseFehler("Adresse gesperrt (privat oder lokal)")
     return list(dict.fromkeys(kandidaten))
 
 
-def adresse_erlaubt(host: str, aufloesen, *, _test_erlaubt: Iterable[str] = ()) -> bool:
+def adresse_erlaubt(host: str, aufloesen) -> bool:
     try:
-        _gepruefte_adressen(host, 0, aufloesen, _test_erlaubt)
+        _gepruefte_adressen(host, 0, aufloesen, time.monotonic() + ZEITLIMIT_S)
     except LeseFehler:
         return False
     return True
@@ -127,35 +148,71 @@ def adresse_erlaubt(host: str, aufloesen, *, _test_erlaubt: Iterable[str] = ()) 
 
 # --- Abruf an einer festen IP ----------------------------------------------------
 
+class _Wache:
+    """Harte Frist fuer einen Abruf. Socket-Timeouts gelten nur je recv - ein
+    Server, der Kopfzeilen oder Chunk-Groessen troepfelt, haelt sie ewig offen.
+    Darum schliesst ein Timer den Socket zur Frist (shutdown), egal wo der
+    Leser gerade blockiert: Verbindungsaufbau, TLS, Kopf, Chunk oder Koerper."""
+
+    def __init__(self, rest: float):
+        self._lock = threading.Lock()
+        self._sock: socket.socket | None = None
+        self.abgelaufen = False
+        self._timer = threading.Timer(rest, self._ausloesen)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def _zu(self) -> None:
+        if self._sock is not None:
+            try:
+                self._sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def _ausloesen(self) -> None:
+        with self._lock:
+            self.abgelaufen = True
+            self._zu()
+
+    def bewachen(self, sock: socket.socket) -> None:
+        with self._lock:
+            self._sock = sock
+            if self.abgelaufen:
+                self._zu()
+
+    def beenden(self) -> None:
+        self._timer.cancel()
+
+
 class _FesteHTTP(http.client.HTTPConnection):
     """Verbindet zur vorab geprueften IP; Host-Kopf bleibt der Name."""
 
-    def __init__(self, host: str, ip: str, port: int, timeout: float):
+    def __init__(self, host: str, ip: str, port: int, timeout: float, wache: _Wache):
         super().__init__(host, port, timeout=timeout)
-        self._ip = ip
-        self.roh: socket.socket | None = None
+        self._ip, self._wache = ip, wache
 
     def connect(self):
         self.sock = socket.create_connection((self._ip, self.port), self.timeout)
-        self.roh = self.sock
+        self._wache.bewachen(self.sock)
 
 
 class _FesteHTTPS(http.client.HTTPSConnection):
     """Wie _FesteHTTP; TLS-SNI und Zertifikatspruefung auf dem Namen."""
 
-    def __init__(self, host: str, ip: str, port: int, timeout: float, context: ssl.SSLContext):
+    def __init__(self, host: str, ip: str, port: int, timeout: float, wache: _Wache,
+                 context: ssl.SSLContext):
         super().__init__(host, port, timeout=timeout, context=context)
-        self._ip = ip
-        self.roh: socket.socket | None = None
+        self._ip, self._wache = ip, wache
 
     def connect(self):
         sock = socket.create_connection((self._ip, self.port), self.timeout)
+        self._wache.bewachen(sock)                # auch ein troepfelnder TLS-Handshake endet zur Frist
         try:
             self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
         except BaseException:
             sock.close()
             raise
-        self.roh = self.sock
+        self._wache.bewachen(self.sock)
 
 
 _TLS: ssl.SSLContext | None = None
@@ -193,8 +250,10 @@ def _oeffnen(url: str, ip: str, grenze: int, frist: float) -> tuple[int, dict, b
     pfad = quote(teile.path or "/", safe="/%:@!$&'()*+,;=-._~")
     if teile.query:
         pfad += "?" + quote(teile.query, safe="/%:@!$&'()*+,;=-._~?")
-    conn = (_FesteHTTPS(host, ip, port, _rest(frist), _tls()) if https
-            else _FesteHTTP(host, ip, port, _rest(frist)))
+    rest = _rest(frist)
+    wache = _Wache(rest)
+    conn = (_FesteHTTPS(host, ip, port, rest, wache, _tls()) if https
+            else _FesteHTTP(host, ip, port, rest, wache))
     try:
         conn.request("GET", pfad, headers=_KOPF)
         antwort = conn.getresponse()
@@ -206,9 +265,7 @@ def _oeffnen(url: str, ip: str, grenze: int, frist: float) -> tuple[int, dict, b
             raise LeseFehler(f"zu groß (über {_groesse(grenze)})")
         stuecke, gelesen = [], 0
         while True:
-            rest = _rest(frist)
-            if conn.roh is not None:
-                conn.roh.settimeout(rest)
+            _rest(frist)
             stueck = antwort.read1(65536)
             if not stueck:
                 break
@@ -216,10 +273,19 @@ def _oeffnen(url: str, ip: str, grenze: int, frist: float) -> tuple[int, dict, b
             if gelesen > grenze:
                 raise LeseFehler(f"zu groß (über {_groesse(grenze)})")
             stuecke.append(stueck)
+        if wache.abgelaufen:                      # shutdown sieht fuer read1 wie ein Ende aus
+            raise LeseFehler("Zeitlimit überschritten")
         return antwort.status, kopf, b"".join(stuecke)
+    except LeseFehler:
+        raise
     except (socket.timeout, TimeoutError):
         raise LeseFehler("Zeitlimit überschritten") from None
+    except Exception:
+        if wache.abgelaufen:
+            raise LeseFehler("Zeitlimit überschritten") from None
+        raise
     finally:
+        wache.beenden()
         conn.close()
 
 
@@ -227,11 +293,17 @@ Oeffnen = Callable[[str, str, int, float], "tuple[int, dict, bytes]"]
 
 
 def _holen(url: str, aufloesen, oeffnen: Oeffnen, grenze: int,
-           test_erlaubt: Iterable[str]) -> tuple[str, dict, bytes]:
-    """Laedt `url` mit Umleitungen; jedes Ziel wird vor dem Verbinden geprueft."""
+           gesamt_frist: float | None = None) -> tuple[str, dict, bytes]:
+    """Laedt `url` mit Umleitungen; jedes Ziel wird vor dem Verbinden geprueft.
+    Frist = ZEITLIMIT_S fuer diesen Abruf, hoechstens bis `gesamt_frist`."""
     frist = time.monotonic() + ZEITLIMIT_S
+    if gesamt_frist is not None:
+        frist = min(frist, gesamt_frist)
     for sprung in range(MAX_UMLEITUNGEN + 1):
-        teile = urlsplit(url)
+        try:
+            teile = urlsplit(url)
+        except ValueError:
+            raise LeseFehler("ungültige Adresse") from None
         if teile.scheme not in ("http", "https"):
             raise LeseFehler("nur http und https erlaubt")
         try:
@@ -245,7 +317,7 @@ def _holen(url: str, aufloesen, oeffnen: Oeffnen, grenze: int,
         netloc = (f"[{host}]" if ":" in host else host) + (f":{teile.port}" if teile.port else "")
         url = teile._replace(netloc=netloc).geturl()
         letzter: Exception | None = None
-        for ip in _gepruefte_adressen(host, port, aufloesen, test_erlaubt):
+        for ip in _gepruefte_adressen(host, port, aufloesen, frist):
             try:
                 status, kopf, body = oeffnen(url, ip, grenze, frist)
                 break
@@ -261,7 +333,13 @@ def _holen(url: str, aufloesen, oeffnen: Oeffnen, grenze: int,
                 raise LeseFehler("Umleitung ohne Ziel")
             if sprung == MAX_UMLEITUNGEN:
                 raise LeseFehler(f"zu viele Umleitungen (mehr als {MAX_UMLEITUNGEN})")
-            url = urldefrag(urljoin(url, ziel))[0]
+            try:
+                neu = urldefrag(urljoin(url, ziel))[0]
+            except ValueError:
+                raise LeseFehler("Umleitung auf ungültige Adresse") from None
+            if teile.scheme == "https" and urlsplit(neu).scheme == "http":
+                raise LeseFehler("Umleitung von https auf http abgelehnt")
+            url = neu
             continue
         if not 200 <= status < 300:
             raise LeseFehler(f"HTTP {status}")
@@ -340,10 +418,18 @@ class _Leser(HTMLParser):
             self._ueberschrift.append(data)
 
 
+_META_CHARSET = re.compile(rb"<meta[^>]+charset\s*=\s*[\"']?\s*([\w-]+)", re.IGNORECASE)
+
+
 def _dekodieren(body: bytes, kopf: dict) -> str:
+    """Zeichensatz aus dem Kopf, sonst aus <meta charset> (erste 4 KB), sonst UTF-8."""
     m = re.search(r"charset=([\w-]+)", kopf.get("content-type", ""), re.IGNORECASE)
+    zeichensatz = m.group(1) if m else None
+    if zeichensatz is None:
+        mm = _META_CHARSET.search(body[:4096])
+        zeichensatz = mm.group(1).decode("ascii") if mm else "utf-8"
     try:
-        return body.decode(m.group(1) if m else "utf-8", errors="replace")
+        return body.decode(zeichensatz, errors="replace")
     except LookupError:
         return body.decode("utf-8", errors="replace")
 
@@ -385,14 +471,24 @@ def _google_schriften(url: str) -> list[str]:
 
 def _domain(host: str | None) -> str:
     host = (host or "").lower()
+    try:
+        host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        pass
     return host[4:] if host.startswith("www.") else host
 
 
 def _absolut(basis: str, ziele: list[str]) -> list[str]:
+    """Absolute http(s)-URLs ohne Fragment; kaputte Eintraege fallen still weg."""
     out = []
     for z in ziele:
-        voll = urldefrag(urljoin(basis, z.strip()))[0]
-        if urlsplit(voll).scheme in ("http", "https"):
+        try:
+            voll = urldefrag(urljoin(basis, z.strip()))[0]
+            teile = urlsplit(voll)
+            teile.port                     # wirft ValueError bei kaputtem Port
+        except ValueError:
+            continue
+        if teile.scheme in ("http", "https") and teile.hostname:
             out.append(voll)
     return out
 
@@ -405,8 +501,8 @@ def _grund(e: Exception) -> str:
     return str(e) if isinstance(e, LeseFehler) else f"unerwarteter Fehler ({type(e).__name__})"
 
 
-def _seite_lesen(url, aufloesen, oeffnen, test_erlaubt) -> tuple[str, _Leser]:
-    endurl, kopf, body = _holen(url, aufloesen, oeffnen, SEITE_MAX, test_erlaubt)
+def _seite_lesen(url, aufloesen, oeffnen, gesamt_frist) -> tuple[str, _Leser]:
+    endurl, kopf, body = _holen(url, aufloesen, oeffnen, SEITE_MAX, gesamt_frist)
     art = kopf.get("content-type", "").lower()
     if art and "html" not in art:
         raise LeseFehler("keine HTML-Seite")
@@ -416,91 +512,120 @@ def _seite_lesen(url, aufloesen, oeffnen, test_erlaubt) -> tuple[str, _Leser]:
     return endurl, leser
 
 
-def lesen(url: str, *, aufloesen=socket.getaddrinfo, oeffnen=None,
-          _test_erlaubt: Iterable[str] = ()) -> Fund:
-    """Startseite + hoechstens 5 Unterseiten derselben Domain. Wirft nie; Fehler
-    stehen als "Webseite <url> nicht lesbar: <grund>" in `hinweise`.
-    `_test_erlaubt` gibt einzelne IPs frei - nur fuer Tests, nie im Betrieb."""
-    fund = Fund()
-    oeffnen = oeffnen or _oeffnen
-    test_erlaubt = frozenset(_test_erlaubt)
-    start = url.strip()
-    if "://" not in start:
-        start = "https://" + start
-    try:
-        basis, leser = _seite_lesen(start, aufloesen, oeffnen, test_erlaubt)
-    except Exception as e:
-        fund.hinweise.append(_hinweis(url, _grund(e)))
-        return fund
+class _Sammlung:
+    """Zwischenstand eines lesen()-Aufrufs; Text und Ueberschriften teilen sich TEXT_MAX."""
 
-    budget = TEXT_MAX
-    farben: Counter = Counter()
-    schriften: Counter = Counter()
-    schriftnamen: dict[str, str] = {}
+    def __init__(self, fund: Fund):
+        self.fund = fund
+        self.budget = TEXT_MAX
+        self.farben: Counter = Counter()
+        self.schriften: Counter = Counter()
+        self.schriftnamen: dict[str, str] = {}
 
-    def aufnehmen(seiten_url: str, l: _Leser) -> None:
-        nonlocal budget
-        text = " ".join(" ".join(l.text).split())[:budget]
-        budget -= len(text)
-        fund.seiten.append(Seite(url=seiten_url, text=text, ueberschriften=l.ueberschriften))
-        for css in l.css:
-            _farben(css, farben)
-            _schriften(css, schriften, schriftnamen)
+    def seite(self, seiten_url: str, leser: _Leser) -> None:
+        ueberschriften = []
+        for u in leser.ueberschriften:
+            if len(u) > self.budget:
+                break
+            ueberschriften.append(u)
+            self.budget -= len(u)
+        text = " ".join(" ".join(leser.text).split())[:self.budget]
+        self.budget -= len(text)
+        self.fund.seiten.append(Seite(url=seiten_url, text=text, ueberschriften=ueberschriften))
+        for css in leser.css:
+            self.css(css)
 
-    aufnehmen(basis, leser)
+    def css(self, css: str) -> None:
+        _farben(css, self.farben)
+        _schriften(css, self.schriften, self.schriftnamen)
+
+
+def _auswerten(url: str, basis: str, leser: _Leser, aufloesen, oeffnen, gesamt_frist: float,
+               s: _Sammlung) -> None:
+    fund = s.fund
+    s.seite(basis, leser)
     for farbe in leser.themenfarben:
-        _farben(":" + farbe, farben, THEMA_GEWICHT)
+        _farben(":" + farbe, s.farben, THEMA_GEWICHT)
+    fund.logos = list(dict.fromkeys(_absolut(
+        basis, leser.logo_bilder + leser.touch_icons + leser.og_bilder + leser.icons)))[:MAX_LOGOS]
 
     google: list[str] = []        # Google-Fonts-Links: Namen aus der URL, nicht laden
-    geladen = 0
+    stildateien = []
     for stil in _absolut(basis, leser.stildateien):
         if urlsplit(stil).hostname == "fonts.googleapis.com":
             google += _google_schriften(stil)
-            continue
-        if geladen >= MAX_STILDATEIEN:
-            continue
-        geladen += 1
-        try:
-            _, kopf, body = _holen(stil, aufloesen, oeffnen, CSS_MAX, test_erlaubt)
-        except Exception:
-            continue            # fehlendes Stylesheet: weniger Material, kein Abbruch
-        css = _dekodieren(body, kopf)
-        _farben(css, farben)
-        _schriften(css, schriften, schriftnamen)
-    for name in google:
-        _schrift_zaehlen(name, schriften, schriftnamen)
-
-    logos = _absolut(basis, leser.logo_bilder + leser.touch_icons + leser.og_bilder + leser.icons)
-    fund.logos = list(dict.fromkeys(logos))[:MAX_LOGOS]
+        elif len(stildateien) < MAX_STILDATEIEN:
+            stildateien.append(stil)
 
     domain = _domain(urlsplit(basis).hostname)
-    unterseiten = []
+    unterseiten: list[str] = []
     for link in _absolut(basis, leser.links):
         teile = urlsplit(link)
         if (_domain(teile.hostname) == domain and link != basis and link not in unterseiten
                 and not _KEINE_SEITE.search(teile.path)):
             unterseiten.append(link)
-    for unter in unterseiten[:MAX_UNTERSEITEN]:
-        if budget <= 0:
-            break
+    unterseiten = unterseiten[:MAX_UNTERSEITEN]
+
+    uebersprungen = 0
+    for stil in stildateien:
+        if time.monotonic() >= gesamt_frist:
+            uebersprungen += 1
+            continue
         try:
-            endurl, l = _seite_lesen(unter, aufloesen, oeffnen, test_erlaubt)
+            _, kopf, body = _holen(stil, aufloesen, oeffnen, CSS_MAX, gesamt_frist)
+        except Exception:
+            continue            # fehlendes Stylesheet: weniger Material, kein Abbruch
+        s.css(_dekodieren(body, kopf))
+    for name in google:
+        _schrift_zaehlen(name, s.schriften, s.schriftnamen)
+
+    for unter in unterseiten:
+        if s.budget <= 0:
+            break
+        if time.monotonic() >= gesamt_frist:
+            uebersprungen += 1
+            continue
+        try:
+            endurl, l = _seite_lesen(unter, aufloesen, oeffnen, gesamt_frist)
         except Exception as e:
             fund.hinweise.append(_hinweis(unter, _grund(e)))
             continue
         if _domain(urlsplit(endurl).hostname) == domain:
-            aufnehmen(endurl, l)
+            s.seite(endurl, l)
+    if uebersprungen:
+        fund.hinweise.append(_hinweis(
+            url, f"Zeitbudget von {GESAMT_S:g} s aufgebraucht, {uebersprungen} Abrufe übersprungen"))
 
-    fund.farben = [f for f, _ in farben.most_common(MAX_FARBEN)]
-    fund.schriften = [schriftnamen[s] for s, _ in schriften.most_common(MAX_SCHRIFTEN)]
+
+def lesen(url: str, *, aufloesen=socket.getaddrinfo, oeffnen=None) -> Fund:
+    """Startseite + hoechstens 5 Unterseiten derselben Domain, alles zusammen in
+    hoechstens GESAMT_S. Wirft nie; Fehler stehen als
+    "Webseite <url> nicht lesbar: <grund>" in `hinweise`."""
+    fund = Fund()
+    oeffnen = oeffnen or _oeffnen
+    gesamt_frist = time.monotonic() + GESAMT_S
+    s = _Sammlung(fund)
+    try:
+        start = url.strip()
+        if "://" not in start:
+            start = "https://" + start
+        basis, leser = _seite_lesen(start, aufloesen, oeffnen, gesamt_frist)
+    except Exception as e:
+        fund.hinweise.append(_hinweis(url, _grund(e)))
+        return fund
+    try:
+        _auswerten(url, basis, leser, aufloesen, oeffnen, gesamt_frist, s)
+    except Exception as e:      # wirft nie: was bis hier gesammelt ist, bleibt
+        fund.hinweise.append(_hinweis(url, _grund(e)))
+    fund.farben = [f for f, _ in s.farben.most_common(MAX_FARBEN)]
+    fund.schriften = [s.schriftnamen[k] for k, _ in s.schriften.most_common(MAX_SCHRIFTEN)]
     return fund
 
 
-def logo_laden(url: str, *, aufloesen=socket.getaddrinfo,
-               _test_erlaubt: Iterable[str] = ()) -> tuple[bytes, str] | None:
+def logo_laden(url: str, *, aufloesen=socket.getaddrinfo) -> tuple[bytes, str] | None:
     """Logo-Datei mit denselben Sperren; nur PNG/JPEG bis 2 MB, sonst None."""
     try:
-        _, _, body = _holen(url.strip(), aufloesen, _oeffnen, LOGO_MAX, frozenset(_test_erlaubt))
+        _, _, body = _holen(url.strip(), aufloesen, _oeffnen, LOGO_MAX)
     except Exception:
         return None
     if body.startswith(b"\x89PNG\r\n\x1a\n"):

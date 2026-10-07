@@ -2,7 +2,7 @@
 
 Kein Test geht ins Internet: die Adresssperre wird ueber eine injizierte
 Aufloesung geprueft, Inhalte kommen von einem lokalen http.server. 127.0.0.1
-ist nur ueber den ausdruecklichen Testparameter `_test_erlaubt` freigegeben."""
+ist nur ueber den modulprivaten Haken `_TEST_ERLAUBT` (Fixture `lokal`) freigegeben."""
 from __future__ import annotations
 
 import socket
@@ -76,10 +76,18 @@ def test_nicht_aufloesbar_ist_nicht_erlaubt():
     assert ws.adresse_erlaubt("gibtsnicht.example", aufloeser({})) is False
 
 
-def test_test_erlaubnis_nur_ausdruecklich():
+def test_test_erlaubnis_nur_ausdruecklich(monkeypatch):
     tab = {"firma.test": ["127.0.0.1"]}
+    assert ws._TEST_ERLAUBT == frozenset()
     assert ws.adresse_erlaubt("firma.test", aufloeser(tab)) is False
-    assert ws.adresse_erlaubt("firma.test", aufloeser(tab), _test_erlaubt={"127.0.0.1"}) is True
+    monkeypatch.setattr(ws, "_TEST_ERLAUBT", frozenset({"127.0.0.1"}))
+    assert ws.adresse_erlaubt("firma.test", aufloeser(tab)) is True
+
+
+def test_kein_oeffentlicher_testparameter():
+    import inspect
+    for f in (ws.lesen, ws.logo_laden, ws.adresse_erlaubt):
+        assert not [p for p in inspect.signature(f).parameters if "test" in p]
 
 
 @pytest.mark.parametrize("url", ["http://127.0.0.1/", "http://localhost/", "http://10.0.0.1/",
@@ -246,6 +254,12 @@ class Server(ThreadingHTTPServer):
 
 
 @pytest.fixture
+def lokal(monkeypatch):
+    """Gibt 127.0.0.1 fuer den lokalen Testserver frei - nur in diesem Test."""
+    monkeypatch.setattr(ws, "_TEST_ERLAUBT", frozenset({"127.0.0.1"}))
+
+
+@pytest.fixture
 def server():
     Handler.routen, Handler.pfade = {}, []
     srv = Server(("127.0.0.1", 0), Handler)
@@ -273,9 +287,9 @@ def seite_bauen(server) -> tuple[str, list[str]]:
     return f"http://firma.test:{port}/", protokoll
 
 
-def test_inhalt_farben_schriften_logos(server):
+def test_inhalt_farben_schriften_logos(server, lokal):
     url, protokoll = seite_bauen(server)
-    fund = ws.lesen(url, aufloesen=aufloeser({"firma.test": ["127.0.0.1"]}, protokoll), _test_erlaubt={"127.0.0.1"})
+    fund = ws.lesen(url, aufloesen=aufloeser({"firma.test": ["127.0.0.1"]}, protokoll))
     assert fund.hinweise == []
     start = fund.seiten[0]
     assert start.url == url
@@ -298,9 +312,9 @@ def test_inhalt_farben_schriften_logos(server):
     assert "fremd.test" not in protokoll and "fonts.googleapis.com" not in protokoll
 
 
-def test_nur_dieselbe_domain_hoechstens_fuenf_unterseiten(server):
+def test_nur_dieselbe_domain_hoechstens_fuenf_unterseiten(server, lokal):
     url, protokoll = seite_bauen(server)
-    fund = ws.lesen(url, aufloesen=aufloeser({"firma.test": ["127.0.0.1"]}, protokoll), _test_erlaubt={"127.0.0.1"})
+    fund = ws.lesen(url, aufloesen=aufloeser({"firma.test": ["127.0.0.1"]}, protokoll))
     assert len(fund.seiten) == 6               # Startseite + 5
     unterseiten = [s.url for s in fund.seiten[1:]]
     assert unterseiten[:2] == [f"{url}leistungen", f"{url}kontakt"]   # Fragment weg, doppelt nur einmal
@@ -310,15 +324,14 @@ def test_nur_dieselbe_domain_hoechstens_fuenf_unterseiten(server):
     assert "Beratung" in fund.seiten[1].ueberschriften
 
 
-def test_text_gesamt_auf_20000_gekuerzt(server):
+def test_text_gesamt_auf_20000_gekuerzt(server, lokal):
     port = server.server_address[1]
-    lang = "<p>" + ("Wort " * 3000) + "</p>"
+    lang = "<h2>" + "Titel " * 30 + "</h2><p>" + ("Wort " * 3000) + "</p>"
     Handler.routen.update({"/": html(lang + "".join(f'<a href="/u{i}">u</a>' for i in range(5))),
                            **{f"/u{i}": html(lang) for i in range(5)}})
-    fund = ws.lesen(f"http://firma.test:{port}/", aufloesen=aufloeser({"firma.test": ["127.0.0.1"]}),
-                    _test_erlaubt={"127.0.0.1"})
-    gesamt = sum(len(s.text) for s in fund.seiten)
-    assert 19_000 < gesamt <= 20_000
+    fund = ws.lesen(f"http://firma.test:{port}/", aufloesen=aufloeser({"firma.test": ["127.0.0.1"]}))
+    gesamt = sum(len(s.text) + sum(len(u) for u in s.ueberschriften) for s in fund.seiten)
+    assert 19_000 < gesamt <= 20_000      # Ueberschriften zaehlen mit
 
 
 def _grosse_antwort(mit_laenge: bool):
@@ -339,11 +352,10 @@ def _grosse_antwort(mit_laenge: bool):
 
 
 @pytest.mark.parametrize("mit_laenge", [True, False])
-def test_ueber_2_mb_abgebrochen(server, mit_laenge):
+def test_ueber_2_mb_abgebrochen(server, lokal, mit_laenge):
     port = server.server_address[1]
     Handler.routen["/"] = _grosse_antwort(mit_laenge)
-    fund = ws.lesen(f"http://firma.test:{port}/", aufloesen=aufloeser({"firma.test": ["127.0.0.1"]}),
-                    _test_erlaubt={"127.0.0.1"})
+    fund = ws.lesen(f"http://firma.test:{port}/", aufloesen=aufloeser({"firma.test": ["127.0.0.1"]}))
     assert fund.seiten == [] and "2 MB" in fund.hinweise[0]
 
 
@@ -355,7 +367,7 @@ def test_grenze_wird_beim_streamen_durchgesetzt(server):
         ws._oeffnen(f"http://firma.test:{port}/", "127.0.0.1", 100_000, time.monotonic() + 5)
 
 
-def test_zeitlimit(server, monkeypatch):
+def test_zeitlimit(server, lokal, monkeypatch):
     port = server.server_address[1]
 
     def tropfen(h):
@@ -372,13 +384,12 @@ def test_zeitlimit(server, monkeypatch):
     Handler.routen["/"] = tropfen
     monkeypatch.setattr(ws, "ZEITLIMIT_S", 0.5)
     t0 = time.monotonic()
-    fund = ws.lesen(f"http://firma.test:{port}/", aufloesen=aufloeser({"firma.test": ["127.0.0.1"]}),
-                    _test_erlaubt={"127.0.0.1"})
+    fund = ws.lesen(f"http://firma.test:{port}/", aufloesen=aufloeser({"firma.test": ["127.0.0.1"]}))
     assert time.monotonic() - t0 < 2.5
     assert fund.seiten == [] and "Zeitlimit" in fund.hinweise[0]
 
 
-def test_host_kopf_traegt_den_namen_nicht_die_ip(server):
+def test_host_kopf_traegt_den_namen_nicht_die_ip(server, lokal):
     port = server.server_address[1]
     gesehen = {}
 
@@ -393,19 +404,17 @@ def test_host_kopf_traegt_den_namen_nicht_die_ip(server):
         h.end_headers()
         h.wfile.write(body)
     Handler.routen["/"] = merken
-    ws.lesen(f"http://firma.test:{port}/", aufloesen=aufloeser({"firma.test": ["127.0.0.1"]}),
-             _test_erlaubt={"127.0.0.1"})
+    ws.lesen(f"http://firma.test:{port}/", aufloesen=aufloeser({"firma.test": ["127.0.0.1"]}))
     assert gesehen["host"] == f"firma.test:{port}"
     assert gesehen["cookie"] is None
 
 
-def test_proxy_umgebung_wird_ignoriert(server, monkeypatch):
+def test_proxy_umgebung_wird_ignoriert(server, lokal, monkeypatch):
     monkeypatch.setenv("HTTP_PROXY", "http://10.9.9.9:3128")
     monkeypatch.setenv("http_proxy", "http://10.9.9.9:3128")
     port = server.server_address[1]
     Handler.routen["/"] = html("<p>direkt</p>")
-    fund = ws.lesen(f"http://firma.test:{port}/", aufloesen=aufloeser({"firma.test": ["127.0.0.1"]}),
-                    _test_erlaubt={"127.0.0.1"})
+    fund = ws.lesen(f"http://firma.test:{port}/", aufloesen=aufloeser({"firma.test": ["127.0.0.1"]}))
     assert fund.seiten and "direkt" in fund.seiten[0].text
 
 
@@ -415,7 +424,7 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
 JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 100
 
 
-def test_logo_laden_png_jpeg(server):
+def test_logo_laden_png_jpeg(server, lokal):
     port = server.server_address[1]
     Handler.routen.update({
         "/l.png": (200, {"Content-Type": "image/png"}, PNG),
@@ -425,11 +434,11 @@ def test_logo_laden_png_jpeg(server):
     })
     a = aufloeser({"firma.test": ["127.0.0.1"]})
     basis = f"http://firma.test:{port}"
-    assert ws.logo_laden(f"{basis}/l.png", aufloesen=a, _test_erlaubt={"127.0.0.1"}) == (PNG, "image/png")
-    assert ws.logo_laden(f"{basis}/l.jpg", aufloesen=a, _test_erlaubt={"127.0.0.1"}) == (JPEG, "image/jpeg")
-    assert ws.logo_laden(f"{basis}/l.svg", aufloesen=a, _test_erlaubt={"127.0.0.1"}) is None
-    assert ws.logo_laden(f"{basis}/gross.png", aufloesen=a, _test_erlaubt={"127.0.0.1"}) is None
-    assert ws.logo_laden(f"{basis}/fehlt.png", aufloesen=a, _test_erlaubt={"127.0.0.1"}) is None
+    assert ws.logo_laden(f"{basis}/l.png", aufloesen=a) == (PNG, "image/png")
+    assert ws.logo_laden(f"{basis}/l.jpg", aufloesen=a) == (JPEG, "image/jpeg")
+    assert ws.logo_laden(f"{basis}/l.svg", aufloesen=a) is None
+    assert ws.logo_laden(f"{basis}/gross.png", aufloesen=a) is None
+    assert ws.logo_laden(f"{basis}/fehlt.png", aufloesen=a) is None
 
 
 def test_logo_laden_gesperrt_ohne_testerlaubnis(server):
@@ -439,3 +448,135 @@ def test_logo_laden_gesperrt_ohne_testerlaubnis(server):
     assert ws.logo_laden(f"http://firma.test:{port}/l.png", aufloesen=a) is None
     assert ws.logo_laden(f"http://127.0.0.1:{port}/l.png") is None
     assert Handler.pfade == []
+
+
+# --- Fix-Runde 1 (Review) --------------------------------------------------------
+
+def _roh_troepfeln(kopf: bytes, tropfen: bytes, anzahl: int, pause: float):
+    def senden(h: BaseHTTPRequestHandler):
+        try:
+            h.wfile.write(kopf)
+            for _ in range(anzahl):
+                h.wfile.write(tropfen)
+                time.sleep(pause)
+        except OSError:
+            pass
+    return senden
+
+
+def test_kopfzeilen_troepfeln_endet_zur_frist(server, lokal, monkeypatch):
+    """Socket-Timeout gilt je recv - ein Server, der alle 0,3 s eine Kopfzeile
+    schickt, darf den Leser nicht ueber die Frist hinaus festhalten."""
+    port = server.server_address[1]
+    Handler.routen["/"] = _roh_troepfeln(b"HTTP/1.1 200 OK\r\n", b"X-T: 1\r\n", 60, 0.3)
+    monkeypatch.setattr(ws, "ZEITLIMIT_S", 1.0)
+    t0 = time.monotonic()
+    fund = ws.lesen(f"http://firma.test:{port}/", aufloesen=aufloeser({"firma.test": ["127.0.0.1"]}))
+    assert time.monotonic() - t0 < 2.5
+    assert fund.seiten == [] and "Zeitlimit" in fund.hinweise[0]
+
+
+def test_chunk_groesse_troepfeln_endet_zur_frist(server, lokal, monkeypatch):
+    port = server.server_address[1]
+    kopf = (b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nTransfer-Encoding: chunked\r\n\r\n"
+            b"5\r\nhallo\r\n")
+    Handler.routen["/"] = _roh_troepfeln(kopf, b"0", 60, 0.3)      # Chunk-Groessenzeile ohne Ende
+    monkeypatch.setattr(ws, "ZEITLIMIT_S", 1.0)
+    t0 = time.monotonic()
+    fund = ws.lesen(f"http://firma.test:{port}/", aufloesen=aufloeser({"firma.test": ["127.0.0.1"]}))
+    assert time.monotonic() - t0 < 2.5
+    assert fund.seiten == [] and "Zeitlimit" in fund.hinweise[0]
+
+
+def test_namensaufloesung_hat_eine_frist(monkeypatch):
+    monkeypatch.setattr(ws, "ZEITLIMIT_S", 0.5)
+    los = threading.Event()
+
+    def haengt(host, port, *a, **k):
+        los.wait(5)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (OEFFENTLICH, port))]
+    try:
+        t0 = time.monotonic()
+        fund = ws.lesen("https://firma.example/", aufloesen=haengt, oeffnen=FalscherServer({}))
+        assert time.monotonic() - t0 < 1.5
+        assert fund.seiten == [] and "Namensauflösung" in fund.hinweise[0]
+        t0 = time.monotonic()
+        assert ws.adresse_erlaubt("firma.example", haengt) is False
+        assert time.monotonic() - t0 < 1.5
+    finally:
+        los.set()
+
+
+def test_gesamtbudget_begrenzt_den_ganzen_aufruf(monkeypatch):
+    monkeypatch.setattr(ws, "GESAMT_S", 0.5)
+    t0 = time.monotonic()
+    fristen = []
+    start = ("<link rel=stylesheet href='/a.css'><link rel=stylesheet href='/b.css'>"
+             + "".join(f"<a href='/s{i}'>s</a>" for i in range(5))).encode()
+
+    def langsam(url, ip, grenze, frist):
+        fristen.append(frist)
+        if url == "https://firma.example/":
+            return 200, {"content-type": "text/html"}, start
+        time.sleep(0.2)
+        return 200, {"content-type": "text/html"}, b"<p>x</p>"
+    fund = ws.lesen("https://firma.example/", aufloesen=aufloeser({"firma.example": [OEFFENTLICH]}),
+                    oeffnen=langsam)
+    assert time.monotonic() - t0 < 1.5
+    assert all(f <= t0 + 0.5 + 0.05 for f in fristen)          # keine Einzelfrist ueber das Gesamtbudget
+    assert len(fristen) < 1 + 2 + 5
+    assert fund.seiten and fund.seiten[0].url == "https://firma.example/"
+    assert any("Zeitbudget" in h and "übersprungen" in h for h in fund.hinweise)
+
+
+def test_kaputte_links_werfen_nicht():
+    start = (b'<p>Start</p><a href="http://[::1">kaputt</a><a href="http://firma.example:99999/">port</a>'
+             b'<link rel=stylesheet href="http://[bad"><img src="http://[x" alt="logo">'
+             b'<link rel="icon" href="/icon.png"><a href="/ok">ok</a>')
+    srv = FalscherServer({
+        "https://firma.example/": (200, {"content-type": "text/html"}, start),
+        "https://firma.example/ok": (200, {"content-type": "text/html"}, b"<p>Gut</p>"),
+    })
+    fund = ws.lesen("https://firma.example/", aufloesen=aufloeser({"firma.example": [OEFFENTLICH]}), oeffnen=srv)
+    assert [s.url for s in fund.seiten] == ["https://firma.example/", "https://firma.example/ok"]
+    assert fund.logos == ["https://firma.example/icon.png"]
+    assert fund.hinweise == []
+
+
+def test_kaputte_start_url_wird_hinweis():
+    fund = ws.lesen("http://[::1", aufloesen=nie_aufloesen)
+    assert fund.seiten == [] and fund.hinweise[0].startswith("Webseite http://[::1 nicht lesbar: ")
+
+
+def test_umleitung_https_auf_http_abgelehnt():
+    srv = FalscherServer({
+        "https://firma.example/": (301, {"location": "http://firma.example/"}, b""),
+        "http://firma.example/": (200, {"content-type": "text/html"}, b"<p>unverschluesselt</p>"),
+    })
+    fund = ws.lesen("https://firma.example/", aufloesen=aufloeser({"firma.example": [OEFFENTLICH]}), oeffnen=srv)
+    assert len(srv.aufrufe) == 1 and fund.seiten == []
+    assert "https auf http" in fund.hinweise[0]
+    hoch = FalscherServer({
+        "http://firma.example/": (301, {"location": "https://firma.example/"}, b""),
+        "https://firma.example/": (200, {"content-type": "text/html"}, b"<p>sicher</p>"),
+    })
+    fund = ws.lesen("http://firma.example/", aufloesen=aufloeser({"firma.example": [OEFFENTLICH]}), oeffnen=hoch)
+    assert fund.seiten and "sicher" in fund.seiten[0].text
+
+
+def test_meta_charset_ohne_kopfangabe():
+    body = '<meta charset="iso-8859-1"><p>Grüße aus Köln</p>'.encode("latin-1")
+    srv = FalscherServer({"https://firma.example/": (200, {"content-type": "text/html"}, body)})
+    fund = ws.lesen("https://firma.example/", aufloesen=aufloeser({"firma.example": [OEFFENTLICH]}), oeffnen=srv)
+    assert "Grüße aus Köln" in fund.seiten[0].text
+
+
+def test_umlautdomain_gilt_als_dieselbe_domain():
+    srv = FalscherServer({
+        "https://xn--mller-kva.example/": (200, {"content-type": "text/html"},
+                                           '<a href="https://müller.example/seite">s</a>'.encode()),
+        "https://xn--mller-kva.example/seite": (200, {"content-type": "text/html"}, b"<p>Unterseite</p>"),
+    })
+    fund = ws.lesen("https://xn--mller-kva.example/",
+                    aufloesen=aufloeser({"xn--mller-kva.example": [OEFFENTLICH]}), oeffnen=srv)
+    assert [s.url for s in fund.seiten][1:] == ["https://xn--mller-kva.example/seite"]
