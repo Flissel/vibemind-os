@@ -174,7 +174,9 @@ def arbeiter_naechster(x_bild_key: str | None = Header(None)):
     a = zeile.get("a")
     if isinstance(a, dict) and a.get("id"):
         z = _lesen_einer(lambda:
-            f"SELECT staerke, modus FROM marketing.bild_auftraege WHERE id = {lit(a['id'])}::uuid")
+            "SELECT b.staerke, b.modus, i.mandant, (SELECT m.name FROM marketing.mandanten m "
+            "WHERE m.id = i.mandant) AS mandant_name FROM marketing.bild_auftraege b "
+            f"JOIN marketing.inhalte i ON i.id = b.inhalt WHERE b.id = {lit(a['id'])}::uuid")
         a.update(z or {})
     return {"auftrag": a}
 

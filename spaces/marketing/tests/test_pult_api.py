@@ -799,3 +799,43 @@ def test_uebersicht_zaehlt_zurueckgegeben_getrennt_von_entwurf(db, c):
     assert z["entwurf"] == 3 and z["zurueckgegeben"] == 1
     sql = db.sql[1]
     assert "'zurueckgegeben'" in sql and "erledigt_am IS NULL" in sql and "i.status = 'entwurf'" in sql
+
+
+# --- Marke per Chat (064): Schriftpaar in der Vorlage, Markierung am Inhalt ---
+
+def test_fuellen_setzt_schriftpaar_aus_der_gestalt(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    gestalt = {"akzent": "#123456", "schriften": {"anzeige": "playfair", "text": "manrope"}}
+    fertig, _ = pult._vorlage_fuellen(VORLAGE_ROLLEN, "radhaus", {"laden": "L", "layout": None, "gestalt": gestalt})
+    assert fertig["root"]["data"]["schriften"] == {"anzeige": "playfair", "text": "manrope"}
+    assert "schriften" not in VORLAGE_ROLLEN["root"]["data"]       # Eingabe unveraendert
+
+
+def test_fuellen_ohne_schriften_laesst_die_vorlage_unveraendert(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    vorlage = {"root": {"type": "EmailLayout", "data": {"childrenIds": [], "rollen": {},
+                                                        "schriften": {"anzeige": "cormorant", "text": "dm-sans"}}}}
+    for gestalt in ({"akzent": "#123456"}, {"schriften": {"anzeige": "gibtsnicht", "text": "manrope"}},
+                    {"schriften": {"anzeige": "playfair"}}, {"schriften": "x"}):
+        fertig, _ = pult._vorlage_fuellen(vorlage, "radhaus", {"laden": "L", "layout": None, "gestalt": gestalt})
+        assert fertig["root"]["data"]["schriften"] == {"anzeige": "cormorant", "text": "dm-sans"}, gestalt
+
+
+def test_fuellen_mit_logo_verweis(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    vorlage = {"root": {"type": "EmailLayout", "data": {"childrenIds": ["marke_logo", "marke_wort"],
+                        "rollen": {"marke_logo/data/props/url": "logo", "marke_wort/data/props/text": "laden"}}},
+               "marke_logo": {"type": "Image", "data": {"props": {"url": "medien:platzhalter-3x1.png"}}},
+               "marke_wort": {"type": "Heading", "data": {"props": {"text": "[Laden]"}}}}
+    fertig, _ = pult._vorlage_fuellen(vorlage, "radhaus", {"laden": "L", "layout": None, "gestalt": None},
+                                      logo="medien:marke-radhaus-logo-0123456789.png")
+    assert fertig["marke_logo"]["data"]["props"]["url"] == "medien:marke-radhaus-logo-0123456789.png"
+    assert "marke_wort" not in fertig
+
+
+def test_inhalt_liefert_marke_geaendert_am(db, c):
+    db.antworten = [[{"id": IID, "mandant": "vibemind", "status": "entwurf", "alter_weg": None,
+                      "marke_geaendert_am": "2026-10-07 10:00:00+00"}], [], []]
+    r = c.get(f"/api/pult/inhalte/{IID}", headers=H)
+    assert r.status_code == 200 and r.json()["inhalt"]["marke_geaendert_am"] == "2026-10-07 10:00:00+00"
+    assert "i.marke_geaendert_am::text AS marke_geaendert_am" in db.sql[0]

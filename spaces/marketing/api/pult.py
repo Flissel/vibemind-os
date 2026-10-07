@@ -53,7 +53,7 @@ from typing import Callable
 from fastapi import APIRouter, Body, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response
 
-from spaces.marketing.claw import bloecke_mjml, pult_render, vorlagen_grafik, vorlagen_marke
+from spaces.marketing.claw import bloecke_mjml, pult_render, schriften, vorlagen_grafik, vorlagen_marke
 from spaces.marketing.sync import _db
 
 router = APIRouter(prefix="/api/pult")
@@ -279,15 +279,17 @@ def _laden_lesen(m: str) -> dict:
         f"WHERE m.id = {lit(m)}") or {}
 
 
-def _vorlage_fuellen(dok: dict, m: str, laden: dict) -> tuple[dict, str | None]:
+def _vorlage_fuellen(dok: dict, m: str, laden: dict, logo: str | None = None) -> tuple[dict, str | None]:
     """Vorlage mit der Marke des Ladens fuellen (Spec 2026-10-01 §5): Farbrollen, Name, Logo-Datei,
     tech-Grafiken. Gemeinsam fuer "Neu aus Vorlage" und die Vorlagen-Vorschau. Gibt das fertige
-    Dokument und den Namen des Standard-Layouts (oder None) zurueck."""
+    Dokument und den Namen des Standard-Layouts (oder None) zurueck. Das Schriftpaar der Marke
+    (gestalt.schriften, nur zwei Register-Ids) landet in root.data.schriften; ohne bleibt die Vorlage
+    unveraendert. logo = fertiger Medienverweis (medien:<name>), der das Logo aus der Gestalt ersetzt."""
     grund = ((dok.get("root") or {}).get("data") or {}).get("canvasColor") or "#ffffff"
     werte: dict = vorlagen_marke.rollen(laden.get("gestalt"), grund)
     ordner = _erzeugt_ordner()
     werte["laden"] = str(laden.get("laden") or m)
-    logo = vorlagen_marke.logo_ablegen(laden.get("gestalt"), m, ordner)
+    logo = logo or vorlagen_marke.logo_ablegen(laden.get("gestalt"), m, ordner)
     if logo:
         werte["logo"] = logo
     rollen_tab = ((dok.get("root") or {}).get("data") or {}).get("rollen") or {}
@@ -295,7 +297,21 @@ def _vorlage_fuellen(dok: dict, m: str, laden: dict) -> tuple[dict, str | None]:
         werte["signal_bild"] = vorlagen_grafik.signal(werte["akzent"], ordner) or "medien:platzhalter-4x3.png"
     if "glow_bild" in rollen_tab.values():
         werte["glow_bild"] = vorlagen_grafik.glow(werte["akzent"], ordner) or "medien:platzhalter-4x3.png"
-    return vorlagen_marke.einsetzen(dok, werte), laden.get("layout")
+    fertig = vorlagen_marke.einsetzen(dok, werte)
+    paar = _schriftpaar(laden.get("gestalt"))
+    if paar:
+        fertig.setdefault("root", {}).setdefault("data", {})["schriften"] = paar
+    return fertig, laden.get("layout")
+
+
+def _schriftpaar(gestalt) -> dict | None:
+    sw = gestalt.get("schriften") if isinstance(gestalt, dict) else None
+    if not isinstance(sw, dict):
+        return None
+    anzeige, text = sw.get("anzeige"), sw.get("text")
+    if isinstance(anzeige, str) and isinstance(text, str) and anzeige in schriften.REGISTER and text in schriften.REGISTER:
+        return {"anzeige": anzeige, "text": text}
+    return None
 
 
 @router.post("/inhalte/aus_vorlage")
@@ -393,6 +409,7 @@ def inhalt(iid: str, x_pult_key: str | None = Header(None)):
         "SELECT i.id, i.mandant, i.art, i.titel, i.status, i.freigegebene_fassung, i.entschieden_von, "
         "i.entschieden_am::text AS entschieden_am, i.grund, "
         "i.eingereichte_fassung, i.eingereicht_am::text AS eingereicht_am, i.eingereicht_von, "
+        "i.marke_geaendert_am::text AS marke_geaendert_am, "
         "CASE WHEN i.herkunft_proposal IS NULL THEN NULL "
         "ELSE jsonb_build_object('status', p.status, 'kanal', p.channel) END AS alter_weg "
         "FROM marketing.inhalte i "

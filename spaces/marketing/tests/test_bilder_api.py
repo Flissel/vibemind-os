@@ -568,3 +568,12 @@ def test_bild_db_verweigert_ordnet_nicht_zu(db, c):
     db.antworten = [[{"f": "Auftrag ist nicht (mehr) in Arbeit"}]]
     r = c.post(f"/api/bilder/arbeiter/{AID}/bild?platz=kopf", headers={"X-Bild-Key": BK}, content=jpeg())
     assert r.status_code == 422 and db.psql.sql == []
+
+
+def test_naechster_traegt_mandant_und_name(db, c):
+    db.antworten = [[{"a": {"id": AID, "platz": None}}],
+                    [{"staerke": 40, "modus": "neu", "mandant": "radhaus", "mandant_name": "Radhaus Jena"}]]
+    a = c.post("/api/bilder/arbeiter/naechster", headers={"X-Bild-Key": BK}).json()["auftrag"]
+    assert a["mandant"] == "radhaus" and a["mandant_name"] == "Radhaus Jena"
+    sql = db.sql[1]
+    assert "i.mandant" in sql and "mandant_name" in sql and "marketing.mandanten" in sql
