@@ -166,14 +166,20 @@ _FREIGABE_SPALTEN = (
     "i.id::text AS id, i.mandant, m.name AS mandant_name, i.art, i.titel, "
     "(SELECT f.felder->>'betreff' FROM marketing.inhalt_fassungen f WHERE f.inhalt = i.id "
     "  ORDER BY f.fassung DESC LIMIT 1) AS betreff, "
+    "(SELECT f.format FROM marketing.inhalt_fassungen f WHERE f.inhalt = i.id "
+    "  ORDER BY f.fassung DESC LIMIT 1) AS format, "
     "i.status, i.eingereichte_fassung, i.eingereicht_am::text AS eingereicht_am, i.eingereicht_von, "
     "i.entschieden_von, i.entschieden_am::text AS entschieden_am, i.grund, "
     "coalesce((SELECT jsonb_agg(jsonb_build_object('text', r.text, 'von', r.von, 'am', r.am, "
     "  'fassung', r.fassung, 'erledigt', r.erledigt_am IS NOT NULL) ORDER BY r.am DESC) "
     "  FROM (SELECT * FROM marketing.rueckmeldungen WHERE inhalt = i.id ORDER BY am DESC LIMIT 3) r), "
     "  '[]'::jsonb) AS rueckmeldungen, "
+    # bei freigegeben zaehlt nur ein Export seit der Entscheidung - ein alter aus der Entwurfszeit
+    # verdeckte sonst "Export offen – erneut anstoßen"
     "jsonb_build_object('auftrag_status', (SELECT a.status FROM marketing.chat_auftraege a "
-    "  WHERE a.inhalt = i.id AND a.art = 'export' ORDER BY a.erstellt_am DESC LIMIT 1)) AS export")
+    "  WHERE a.inhalt = i.id AND a.art = 'export' "
+    "  AND (i.status <> 'freigegeben' OR a.erstellt_am >= i.entschieden_am) "
+    "  ORDER BY a.erstellt_am DESC LIMIT 1)) AS export")
 _LETZTE_RUECKMELDUNG = "(SELECT max(am) FROM marketing.rueckmeldungen WHERE inhalt = i.id)"
 
 

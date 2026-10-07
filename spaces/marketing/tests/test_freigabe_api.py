@@ -251,7 +251,7 @@ def test_export_nachholen_fehler_im_export_200(umg):
 # --- Freigaben-Liste ---
 
 ZEILE = {"id": IID, "mandant": "vibemind", "mandant_name": "Vibemind", "art": "newsletter", "titel": "Oktober",
-         "betreff": "Hallo", "status": "eingereicht", "eingereichte_fassung": 2, "eingereicht_am": "2026-10-07 10:00",
+         "betreff": "Hallo", "format": "bloecke", "status": "eingereicht", "eingereichte_fassung": 2, "eingereicht_am": "2026-10-07 10:00",
          "eingereicht_von": "Anna", "entschieden_von": None, "entschieden_am": None, "grund": None,
          "rueckmeldungen": [{"text": "Preis", "von": "Anna", "am": "2026-10-06", "fassung": 1, "erledigt": True}],
          "export": {"auftrag_status": None}}
@@ -263,7 +263,7 @@ def test_freigaben_form_und_mandantenname(umg):
     r = c.get("/api/pult/freigaben", headers=H)
     assert r.status_code == 200, r.text
     z = r.json()["freigaben"][0]
-    for k in ("id", "mandant", "mandant_name", "art", "titel", "betreff", "status", "eingereichte_fassung",
+    for k in ("id", "mandant", "mandant_name", "art", "titel", "betreff", "format", "status", "eingereichte_fassung",
               "eingereicht_am", "eingereicht_von", "entschieden_von", "entschieden_am", "grund", "rueckmeldungen",
               "export"):
         assert k in z
@@ -272,6 +272,30 @@ def test_freigaben_form_und_mandantenname(umg):
     assert "status = 'eingereicht'" in sql and "marketing.mandanten" in sql and "LIMIT 20" in sql
     assert "i.art = " not in sql            # alle Arten (R7)
     assert "marketing.rueckmeldungen" in sql and "LIMIT 3" in sql and "art = 'export'" in sql
+
+
+def test_freigaben_format_der_neuesten_fassung(umg):
+    """F2b: format (bloecke|felder) der neuesten Fassung, damit sales-ui den Export-Knopf bei felder weglaesst."""
+    f, _, c = umg
+    f.antworten.append([dict(ZEILE, format="felder")])
+    r = c.get("/api/pult/freigaben?status=entschieden", headers=H)
+    assert r.json()["freigaben"][0]["format"] == "felder"
+    sql = f.sql[0]
+    teil = sql[sql.index("f.format"):sql.index("AS format")]
+    assert "ORDER BY f.fassung DESC LIMIT 1" in teil
+
+
+def test_freigaben_export_status_nur_seit_der_entscheidung(umg):
+    """F3: bei freigegeben zaehlt nur ein Export-Auftrag ab der Entscheidung - ein alter aus der
+    Entwurfszeit verdeckt sonst "Export offen – erneut anstoßen"."""
+    f, _, c = umg
+    f.antworten.append([])
+    c.get("/api/pult/freigaben?status=entschieden", headers=H)
+    sql = f.sql[0]
+    export = sql[sql.index("'auftrag_status'"):sql.index("AS export")]
+    assert "a.erstellt_am >= i.entschieden_am" in export
+    assert "i.status <> 'freigegeben' OR a.erstellt_am >= i.entschieden_am" in export
+    assert export.index("entschieden_am") < export.index("ORDER BY a.erstellt_am DESC LIMIT 1")
 
 
 def test_freigaben_entschieden_und_limit(umg):

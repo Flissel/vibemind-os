@@ -5,7 +5,7 @@
 
 CREATE TEMP TABLE _p063 ON COMMIT DROP AS SELECT NULL::text AS k, NULL::uuid AS inhalt LIMIT 0;
 
-DO $$ DECLARE v_i uuid; v_j uuid; v_k uuid; v_leer uuid; d jsonb; BEGIN
+DO $$ DECLARE v_i uuid; v_j uuid; v_k uuid; v_leer uuid; v_e uuid; d jsonb; BEGIN
   d := '{"root":{"type":"EmailLayout","data":{"childrenIds":["held","t"]}},
          "held":{"type":"Image","data":{"style":{"padding":{"top":0,"bottom":0,"left":0,"right":0}},"props":{"url":"medien:platzhalter-2x1.png","alt":"Team","width":600,"height":300}}},
          "t":{"type":"Text","data":{"style":{},"props":{"text":"eins","markdown":false}}}}'::jsonb;
@@ -22,7 +22,10 @@ DO $$ DECLARE v_i uuid; v_j uuid; v_k uuid; v_leer uuid; d jsonb; BEGIN
   PERFORM marketing.pult_bloecke_speichern(v_k, 0, 'Probe 063 K', '', d, 'betreiber', false);
   INSERT INTO marketing.inhalte (mandant, art, titel) VALUES ('vibemind', 'newsletter', 'Probe 063 leer')
   RETURNING id INTO v_leer;
-  INSERT INTO _p063 VALUES ('i', v_i), ('j', v_j), ('k', v_k), ('leer', v_leer);
+  INSERT INTO marketing.inhalte (mandant, art, titel) VALUES ('vibemind', 'newsletter', 'Probe 063 E')
+  RETURNING id INTO v_e;
+  PERFORM marketing.pult_bloecke_speichern(v_e, 0, 'Probe 063 E', '', d, 'betreiber', false);
+  INSERT INTO _p063 VALUES ('i', v_i), ('j', v_j), ('k', v_k), ('leer', v_leer), ('e', v_e);
 END $$;
 
 -- 0) Struktur
@@ -179,13 +182,13 @@ BEGIN
   -- Verbotenes aus entwurf
   v_fehler := NULL;
   BEGIN PERFORM marketing.pult_zurueckgeben(v_i, v_n, 'probe', 'nochmal'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
-  ASSERT v_fehler = 'Schon entschieden (entwurf)', format('5a: zurueckgeben aus entwurf: %s', v_fehler);
+  ASSERT v_fehler = 'Wurde zurückgezogen – bitte neu laden', format('5a: zurueckgeben aus entwurf: %s', v_fehler);
   v_fehler := NULL;
   BEGIN PERFORM marketing.pult_zurueckziehen(v_i, 'probe'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
-  ASSERT v_fehler = 'Schon entschieden (entwurf)', format('5b: zurueckziehen aus entwurf: %s', v_fehler);
+  ASSERT v_fehler = 'Wurde zurückgezogen – bitte neu laden', format('5b: zurueckziehen aus entwurf: %s', v_fehler);
   v_fehler := NULL;
   BEGIN PERFORM marketing.pult_entscheiden(v_i, v_n, 'freigeben', 'probe', NULL); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
-  ASSERT v_fehler = 'Schon entschieden (entwurf)', format('5c: freigeben aus entwurf: %s', v_fehler);
+  ASSERT v_fehler = 'Wurde zurückgezogen – bitte neu laden', format('5c: freigeben aus entwurf: %s', v_fehler);
   ASSERT (SELECT status FROM marketing.inhalte WHERE id = v_i) = 'entwurf', '5: Status bleibt entwurf';
 
   -- 6) Im Entwurf wieder bearbeitbar; erneutes Einreichen erledigt offene Rueckmeldungen
@@ -202,6 +205,17 @@ BEGIN
   ASSERT r.status = 'entwurf' AND r.eingereichte_fassung IS NULL AND r.eingereicht_am IS NULL AND r.eingereicht_von IS NULL,
          format('7: Felder leer: %s', row_to_json(r));
   ASSERT (SELECT count(*) FROM marketing.rueckmeldungen WHERE inhalt = v_i) = 1, '7: keine neue Rueckmeldung';
+  -- M3: ein zweiter Tab (Sales/Editor) trifft den zurueckgezogenen Newsletter
+  v_fehler := NULL;
+  BEGIN PERFORM marketing.pult_entscheiden(v_i, v_n, 'freigeben', 'chef', NULL); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+  ASSERT v_fehler = 'Wurde zurückgezogen – bitte neu laden', format('7a: freigeben nach zurueckziehen: %s', v_fehler);
+  v_fehler := NULL;
+  BEGIN PERFORM marketing.pult_zurueckgeben(v_i, v_n, 'chef', 'Preis fehlt'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+  ASSERT v_fehler = 'Wurde zurückgezogen – bitte neu laden', format('7b: zurueckgeben nach zurueckziehen: %s', v_fehler);
+  v_fehler := NULL;
+  BEGIN PERFORM marketing.pult_zurueckziehen(v_i, 'probe'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+  ASSERT v_fehler = 'Wurde zurückgezogen – bitte neu laden', format('7c: zurueckziehen nach zurueckziehen: %s', v_fehler);
+  ASSERT (SELECT count(*) FROM marketing.rueckmeldungen WHERE inhalt = v_i) = 1, '7: weiter keine neue Rueckmeldung';
 
   -- 8) Review Focus 2 (DB-Seite): zweiter Tab gibt Fassung 3 frei, nachdem zurueckgezogen und neu gespeichert wurde
   v_n := marketing.pult_bloecke_speichern(v_i, v_n, 'Probe 063', '', b, 'betreiber', false);
@@ -254,12 +268,27 @@ BEGIN
   -- 10) Verwerfen aus entwurf und aus eingereicht; freigeben aus entwurf verboten
   v_fehler := NULL;
   BEGIN PERFORM marketing.pult_entscheiden(v_k, 1, 'freigeben', 'chef', NULL); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
-  ASSERT v_fehler = 'Schon entschieden (entwurf)', format('10a: freigeben aus entwurf: %s', v_fehler);
+  ASSERT v_fehler = 'Wurde zurückgezogen – bitte neu laden', format('10a: freigeben aus entwurf: %s', v_fehler);
   ASSERT marketing.pult_entscheiden(v_j, 1, 'ablehnen', 'chef', 'passt nicht') = 'abgelehnt', '10b: verwerfen aus entwurf';
   ASSERT marketing.pult_einreichen(v_k, 'probe') = 1, '10c: K einreichen';
+  -- T1: bei eingereicht liegende Auftraege (Export erlaubt; Vormerkung/Bild-Rest direkt angelegt)
+  a := marketing.pult_chat_anlegen(v_k, 'export', '', '{}');
+  INSERT INTO marketing.chat_auftraege (inhalt, art, nachricht, kontext, status)
+  VALUES (v_k, 'chat', 'liegengeblieben', '{}', 'wartet') RETURNING id INTO rm1;
+  INSERT INTO marketing.bild_auftraege (inhalt, platz, nur_leere, hinweis, grund_fassung, urheber)
+  VALUES (v_k, NULL, true, '', 1, 'system') RETURNING id INTO bo;
   ASSERT marketing.pult_entscheiden(v_k, 1, 'ablehnen', 'chef', 'passt nicht') = 'abgelehnt', '10c: verwerfen aus eingereicht';
   SELECT * INTO r FROM marketing.inhalte WHERE id = v_k;
   ASSERT r.status = 'abgelehnt' AND r.grund = 'passt nicht' AND r.freigegebene_fassung IS NULL, '10c: Felder';
+  SELECT * INTO r FROM marketing.chat_auftraege WHERE id = a;
+  ASSERT r.status = 'fehler' AND r.antwort = 'Newsletter wurde entschieden' AND r.vergeben_bis IS NULL,
+         format('10f: Export beendet: %s / %s', r.status, r.antwort);
+  SELECT * INTO r FROM marketing.chat_auftraege WHERE id = rm1;
+  ASSERT r.status = 'fehler' AND r.antwort = 'Newsletter wurde entschieden', format('10f: Vormerkung beendet: %s', r.status);
+  SELECT * INTO r FROM marketing.bild_auftraege WHERE id = bo;
+  ASSERT r.status = 'verworfen' AND r.befund = 'Inhalt entschieden', format('10f: Bild verworfen: %s / %s', r.status, r.befund);
+  ASSERT NOT EXISTS (SELECT 1 FROM marketing.chat_auftraege WHERE inhalt = v_k AND status IN ('offen','in_arbeit','wartet')),
+         '10f: kein Chat-/Export-Auftrag lebt weiter';
   v_fehler := NULL;
   BEGIN PERFORM marketing.pult_einreichen(v_j, 'probe'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
   ASSERT v_fehler = 'Schon entschieden (abgelehnt)', format('10d: einreichen aus abgelehnt: %s', v_fehler);
@@ -272,5 +301,25 @@ BEGIN
   BEGIN INSERT INTO marketing.rueckmeldungen (inhalt, fassung, text, von) VALUES (v_j, 1, '   ', 'probe');
   EXCEPTION WHEN check_violation THEN v_fehler := SQLERRM; END;
   ASSERT v_fehler IS NOT NULL, '11: leerer Text an der Tabellenregel';
+
+  -- 12) F4: ein Bild-Auftrag mit abgelaufener Vergabe (PC aus) sperrt das Einreichen nicht, er wird
+  --     mit den wartenden verworfen; M4: eine liegengebliebene Vormerkung endet mit dem Einreich-Hinweis
+  SELECT inhalt INTO v_i FROM _p063 WHERE k = 'e';
+  bi := marketing.pult_bild_auftrag(v_i, 'held', false, '', 'mensch');
+  UPDATE marketing.bild_auftraege SET status = 'in_arbeit', versuche = 1, vergeben_bis = now() + interval '5 minutes'
+   WHERE id = bi;
+  v_fehler := NULL;
+  BEGIN PERFORM marketing.pult_einreichen(v_i, 'probe'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+  ASSERT v_fehler = 'Ein Bild wird gerade erzeugt', format('12a: gueltige Vergabe sperrt: %s', v_fehler);
+  UPDATE marketing.bild_auftraege SET vergeben_bis = now() - interval '1 minute' WHERE id = bi;   -- abgelaufen
+  INSERT INTO marketing.chat_auftraege (inhalt, art, nachricht, kontext, status)
+  VALUES (v_i, 'chat', 'liegengeblieben', '{}', 'wartet') RETURNING id INTO a;
+  ASSERT marketing.pult_einreichen(v_i, 'probe') = 1, '12b: einreichen trotz abgelaufener Vergabe';
+  SELECT * INTO r FROM marketing.bild_auftraege WHERE id = bi;
+  ASSERT r.status = 'verworfen' AND r.befund = 'Newsletter eingereicht' AND r.vergeben_bis IS NULL,
+         format('12b: abgelaufener Auftrag verworfen: %s / %s', r.status, r.befund);
+  SELECT * INTO r FROM marketing.chat_auftraege WHERE id = a;
+  ASSERT r.status = 'fehler' AND r.antwort = 'Newsletter wurde zur Freigabe eingereicht',
+         format('12c: Vormerkung beendet: %s / %s', r.status, r.antwort);
 END $$;
 SELECT 'verify_063 ok' AS ergebnis;

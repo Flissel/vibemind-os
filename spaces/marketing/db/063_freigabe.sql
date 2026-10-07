@@ -20,11 +20,18 @@
 --                        ruft sie und bleibt unveraendert)
 --   pult_bild_einsetzen(uuid, jsonb, text)                             aus 059 (die 4-arg-Huelle aus 057
 --                        ruft sie und bleibt unveraendert)
+--   _chat_auftraege_beenden() (Trigger-Funktion)                       aus 061 (nur der Antworttext je
+--                        Uebergang: bei entwurf -> eingereicht "Newsletter wurde zur Freigabe eingereicht")
 -- Sperrreihenfolge wie 061: erst marketing.inhalte, dann Auftraege.
 -- Die Trigger aus 056/060/061 (_bild_auftraege_verwerfen, _chat_auftraege_beenden) feuern bei
 -- entwurf -> eingereicht: offene Chat-Auftraege kann es dann nicht geben (einreichen lehnt ab), eine
--- liegengebliebene Chat-Vormerkung ('wartet') wird beendet. Wartende Bild-Auftraege verwirft
--- pult_einreichen selbst (R4, Befund "Newsletter eingereicht"); nur 'in_arbeit' sperrt.
+-- liegengebliebene Chat-Vormerkung ('wartet') wird beendet. Wartende Bild-Auftraege und solche, deren
+-- Vergabe abgelaufen ist, verwirft pult_einreichen selbst (R4, Befund "Newsletter eingereicht"); nur
+-- ein laufender ('in_arbeit' mit gueltiger Vergabe) sperrt.
+-- Die Trigger feuern NICHT bei eingereicht -> abgelehnt: das Verwerfen aus eingereicht beendet die
+-- Auftraege deshalb in pult_entscheiden selbst (wie die Trigger es fuer entwurf tun).
+-- Ist ein Newsletter schon wieder Entwurf, melden Freigeben/Zurueckgeben/Zurueckziehen
+-- "Wurde zurückgezogen – bitte neu laden" (statt "Schon entschieden (entwurf)").
 -- Rechte: wie 060 - keine eigenen GRANTs, Default Privileges aus 003 gelten.
 BEGIN;
 
@@ -83,15 +90,18 @@ BEGIN
   PERFORM marketing.pult_chat_aufraeumen(p_inhalt);
   IF EXISTS (SELECT 1 FROM marketing.chat_auftraege WHERE inhalt = p_inhalt AND status IN ('offen','in_arbeit')) THEN
     RAISE EXCEPTION 'Der Assistent arbeitet gerade'; END IF;
-  -- R4: nur ein laufender Bild-Auftrag sperrt; wartende werden unten verworfen
-  IF EXISTS (SELECT 1 FROM marketing.bild_auftraege WHERE inhalt = p_inhalt AND status = 'in_arbeit') THEN
+  -- R4: nur ein laufender Bild-Auftrag (gueltige Vergabe) sperrt; wartende und abgelaufene
+  -- werden unten verworfen - sonst bliebe einreichen bei ausgeschaltetem PC gesperrt
+  IF EXISTS (SELECT 1 FROM marketing.bild_auftraege
+              WHERE inhalt = p_inhalt AND status = 'in_arbeit' AND vergeben_bis > now()) THEN
     RAISE EXCEPTION 'Ein Bild wird gerade erzeugt'; END IF;
   SELECT max(fassung) INTO v_neueste FROM marketing.inhalt_fassungen WHERE inhalt = p_inhalt;
   IF v_neueste IS NULL THEN RAISE EXCEPTION 'Ohne Fassung gibt es nichts einzureichen'; END IF;
   -- vor dem Statuswechsel: sonst verwirft sie zuerst der 056-Trigger mit "Inhalt entschieden"
   UPDATE marketing.bild_auftraege
      SET status = 'verworfen', befund = 'Newsletter eingereicht', vergeben_bis = NULL, geaendert_am = now()
-   WHERE inhalt = p_inhalt AND status = 'offen';
+   WHERE inhalt = p_inhalt
+     AND (status = 'offen' OR (status = 'in_arbeit' AND NOT coalesce(vergeben_bis > now(), false)));
   UPDATE marketing.inhalte
      SET status = 'eingereicht', eingereichte_fassung = v_neueste, eingereicht_am = now(), eingereicht_von = p_von
    WHERE id = p_inhalt;
@@ -106,6 +116,7 @@ LANGUAGE plpgsql AS $$
 DECLARE v_status text;
 BEGIN
   SELECT status INTO v_status FROM marketing.inhalte WHERE id = p_inhalt FOR UPDATE;
+  IF v_status = 'entwurf' THEN RAISE EXCEPTION 'Wurde zurückgezogen – bitte neu laden'; END IF;
   IF v_status IS DISTINCT FROM 'eingereicht' THEN
     RAISE EXCEPTION 'Schon entschieden (%)', coalesce(v_status, 'unbekannt'); END IF;
   UPDATE marketing.inhalte
@@ -131,7 +142,7 @@ BEGIN
   SELECT max(fassung) INTO v_neueste FROM marketing.inhalt_fassungen WHERE inhalt = p_inhalt;
   IF p_fassung IS DISTINCT FROM v_neueste THEN
     RAISE EXCEPTION 'Inzwischen gibt es Fassung % – bitte neu laden', v_neueste; END IF;
-  IF v_status <> 'eingereicht' THEN RAISE EXCEPTION 'Schon entschieden (%)', v_status; END IF;
+  IF v_status = 'entwurf' THEN RAISE EXCEPTION 'Wurde zurückgezogen – bitte neu laden'; END IF;
   IF p_fassung IS DISTINCT FROM v_eingereicht THEN
     RAISE EXCEPTION 'Inzwischen gibt es Fassung % – bitte neu laden', v_neueste; END IF;
   INSERT INTO marketing.rueckmeldungen (inhalt, fassung, text, von)
@@ -164,10 +175,20 @@ BEGIN
   IF p_fassung <> v_neueste THEN
     RAISE EXCEPTION 'Inzwischen gibt es Fassung % – bitte neu laden', v_neueste; END IF;
   -- 063: freigeben nur, was eingereicht wurde - und genau diese Fassung
-  IF p_urteil = 'freigeben' AND v_status <> 'eingereicht' THEN
-    RAISE EXCEPTION 'Schon entschieden (%)', v_status; END IF;
+  IF p_urteil = 'freigeben' AND v_status <> 'eingereicht' THEN   -- hier also entwurf
+    RAISE EXCEPTION 'Wurde zurückgezogen – bitte neu laden'; END IF;
   IF p_urteil = 'freigeben' AND p_fassung IS DISTINCT FROM v_eingereicht THEN
     RAISE EXCEPTION 'Inzwischen gibt es Fassung % – bitte neu laden', v_neueste; END IF;
+  -- Verwerfen aus eingereicht: die Trigger aus 056/060/061 feuern nur ab entwurf - die Auftraege
+  -- hier genauso beenden (Export-Auftraege sind bei eingereicht erlaubt, Bild-/Chat-Reste moeglich)
+  IF p_urteil = 'ablehnen' AND v_status = 'eingereicht' THEN
+    UPDATE marketing.chat_auftraege SET status = 'fehler', antwort = 'Newsletter wurde entschieden',
+           vergeben_bis = NULL, zwischenstand = NULL, schritt = '', geaendert_am = now()
+     WHERE inhalt = p_inhalt AND status IN ('offen', 'in_arbeit', 'wartet');
+    UPDATE marketing.bild_auftraege SET status = 'verworfen', befund = 'Inhalt entschieden',
+           vergeben_bis = NULL, geaendert_am = now()
+     WHERE inhalt = p_inhalt AND status IN ('offen', 'in_arbeit');
+  END IF;
   UPDATE marketing.inhalte
      SET status = CASE p_urteil WHEN 'freigeben' THEN 'freigegeben' ELSE 'abgelehnt' END,
          freigegebene_fassung = CASE p_urteil WHEN 'freigeben' THEN p_fassung END,
@@ -419,6 +440,22 @@ BEGIN
          ergebnis = p_ergebnis, befund = coalesce(v_befund, ''),
          vergeben_bis = NULL, geaendert_am = now() WHERE id = a.id;
   RETURN jsonb_build_object('fassung', v_n, 'eingesetzt', to_jsonb(v_ein), 'uebersprungen', to_jsonb(v_weg));
+END $$;
+
+-- 6) Trigger-Funktion (aus 061; Trigger aus 060 bleibt): woertlich, nur der Antworttext haengt am
+--    Uebergang - beim Einreichen endet eine liegengebliebene Vormerkung mit dem passenden Hinweis
+CREATE OR REPLACE FUNCTION marketing._chat_auftraege_beenden() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.status <> 'entwurf' AND OLD.status = 'entwurf' THEN
+    UPDATE marketing.chat_auftraege
+       SET status = 'fehler',
+           antwort = CASE WHEN NEW.status = 'eingereicht' THEN 'Newsletter wurde zur Freigabe eingereicht'
+                          ELSE 'Newsletter wurde entschieden' END,
+           vergeben_bis = NULL, zwischenstand = NULL, schritt = '', geaendert_am = now()
+     WHERE inhalt = NEW.id AND status IN ('offen', 'in_arbeit', 'wartet');
+  END IF;
+  RETURN NEW;
 END $$;
 
 COMMIT;
