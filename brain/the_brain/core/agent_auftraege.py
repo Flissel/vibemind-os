@@ -47,6 +47,8 @@ class AuftragsTabelle:
             "capability": capability, "agent": agent, "auftrag": auftrag, "trace_id": trace_id,
             "plan_id": plan_id, "hop_id": hop_id, "status": "offen", "frist": frist,
             "uebergabe": uebergabe, "antwortkanal": antwortkanal})
+        if not isinstance(zeilen, list) or not zeilen or not isinstance(zeilen[0], dict) or "id" not in zeilen[0]:
+            raise RuntimeError("brain_agent_auftraege: Anlegen lieferte keine id")
         return str(zeilen[0]["id"])
 
     def plan_rest_setzen(self, auftrag_id: str, plan_rest: dict) -> None:
@@ -60,8 +62,12 @@ class AuftragsTabelle:
         return self._req("GET", params={"status": "in.(fehler,abgelehnt,abgelaufen)", "pruefung": "is.null",
                                         "order": "beendet.asc", "limit": str(limit)})
 
-    def pruefung_setzen(self, auftrag_id: str, pruefung: dict) -> None:
-        self._req("PATCH", params={"id": f"eq.{auftrag_id}"}, json={"pruefung": pruefung})
+    def pruefung_setzen(self, auftrag_id: str, pruefung: dict) -> bool:
+        """True, wenn gesetzt; False, wenn schon gesetzt oder id unbekannt."""
+        zeilen = self._req("PATCH", rueckgabe=True,
+                           params={"id": f"eq.{auftrag_id}", "pruefung": "is.null"},
+                           json={"pruefung": pruefung})
+        return bool(zeilen)
 
     def abgelaufene_markieren(self, jetzt_iso: Optional[str] = None) -> int:
         jetzt_iso = jetzt_iso or datetime.now(timezone.utc).isoformat()

@@ -1,4 +1,3 @@
-import json
 import pytest
 from core import agent_auftraege as aa
 
@@ -61,3 +60,20 @@ def test_http_fehler_wird_nicht_verschluckt():
     h = Attrappe([Antwort(500, {"message": "x"})])
     with pytest.raises(RuntimeError):
         aa.AuftragsTabelle("http://k", "s", http=h).pruefung_setzen("1", {"verified": True})
+
+
+def test_pruefung_setzen_nur_wenn_noch_leer():
+    h = Attrappe([Antwort(200, [{"id": "1"}]), Antwort(200, [])])
+    t = aa.AuftragsTabelle("http://k", "s", http=h)
+    assert t.pruefung_setzen("1", {"verified": True}) is True
+    assert h.aufrufe[0]["params"] == {"id": "eq.1", "pruefung": "is.null"}
+    assert h.aufrufe[0]["headers"]["Prefer"] == "return=representation"
+    assert t.pruefung_setzen("1", {"verified": False}) is False
+
+
+@pytest.mark.parametrize("antwort", [[], {"message": "x"}, [{"foo": 1}], None])
+def test_anlegen_ohne_id_wirft_runtimeerror(antwort):
+    h = Attrappe([Antwort(201, antwort)])
+    with pytest.raises(RuntimeError, match="Anlegen lieferte keine id"):
+        aa.AuftragsTabelle("http://k", "s", http=h).anlegen(
+            capability="c", agent="a", auftrag="x", trace_id="t", plan_id="p", hop_id="h")
