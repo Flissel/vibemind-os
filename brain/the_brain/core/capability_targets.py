@@ -1732,6 +1732,34 @@ class SupabaseExecutor(_BaseRemoteExecutor):
 # ── Factory + registry ───────────────────────────────────────────────
 
 
+class AuftragsExecutor:
+    """K1: Agenten-Arbeit asynchron ueber die Auftragstabelle statt OpenFang synchron.
+
+    Liefert das vorhandene pending-Signal; der Plan-Executor kehrt dann frueh
+    zurueck und speichert den Plan-Rest im Auftrag.
+    """
+
+    def __init__(self, agent: str) -> None:
+        self.agent = agent
+
+    def call_with_arg(self, arg: Any, arg_kwarg: Optional[str] = None,
+                      extra_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        from core import agent_auftraege as aa
+        x = extra_params or {}
+        try:
+            auftrag_id = aa.tabelle_aus_umgebung().anlegen(
+                capability=str(x.get("_capability") or ""), agent=self.agent,
+                auftrag=arg if isinstance(arg, str) else json.dumps(arg, ensure_ascii=False),
+                trace_id=str(x.get("_trace_id") or ""), plan_id=str(x.get("_plan_id") or ""),
+                hop_id=str(x.get("_step_id") or ""), uebergabe=x.get("_uebergabe"),
+                antwortkanal=x.get("_antwortkanal"))
+        except Exception as e:  # noqa: BLE001 - Anlegen gescheitert = echter Fehler, nicht pending
+            return {"ok": False, "error": f"Auftrag konnte nicht angelegt werden: {type(e).__name__}: {e}",
+                    "retryable": False}
+        return {"ok": False, "pending": True, "invocation_id": auftrag_id,
+                "result": {"auftrag_id": auftrag_id, "agent": self.agent, "status": "offen"}}
+
+
 _EXECUTOR_KINDS: Dict[str, type] = {
     "http": HttpExecutor,
     "n8n": N8nExecutor,
@@ -1756,6 +1784,10 @@ def build_executor(target: str):
     if kind == "research":
         from spaces.research.execution_target import ResearchTarget
         return ResearchTarget(target)
+    if kind == "openfang":
+        from core import agent_auftraege as _aa
+        if _aa.AGENT_AUFTRAEGE_ENABLED:
+            return AuftragsExecutor(target.split(":", 1)[1])
     cls = _EXECUTOR_KINDS.get(kind)
     if cls is None:
         raise ValueError(f"unsupported execution_target kind: {kind!r}")

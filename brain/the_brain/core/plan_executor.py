@@ -649,6 +649,8 @@ class PlanExecutor:
         replanner: Optional[Callable[[Plan, HopResult], Optional[Plan]]] = None,
         confirmed_events: Optional[Set[str]] = None,
         openfang_handoff_bundle: Optional[Dict[str, Any]] = None,
+        start_state: Optional[Dict[str, Any]] = None,
+        antwortkanal: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Walk the DAG. Returns a dict with `executed` (step_id → HopResult),
         `state`, `plan`, `ok`, `elapsed_s`, `replans`.
@@ -760,6 +762,7 @@ class PlanExecutor:
             "plan_revision": plan.plan_revision,
             "trace_id": getattr(plan, "trace_id", "") or "",
             "confirmed_events": set(confirmed_events or ()),
+            "antwortkanal": antwortkanal,
         }
         if isinstance(openfang_handoff_bundle, dict):
             for key in (
@@ -773,7 +776,7 @@ class PlanExecutor:
                     plan_ctx[key] = openfang_handoff_bundle[key]
 
         executed: Dict[str, HopResult] = {}
-        state: Dict[str, Any] = {}
+        state: Dict[str, Any] = dict(start_state or {})
         replan_count = 0
 
         all_hops_by_id: Dict[str, HopSpec] = {h.step_id: h for h in plan.hops}
@@ -1042,6 +1045,8 @@ class PlanExecutor:
             # learning outcome.  Stop before graph/recall/self-prior updates;
             # the finally block also suppresses recorder/sequence ingestion.
             if pending_hop is not None:
+                self._auftrag_plan_rest_speichern(
+                    plan, pending_hop, executed, state, plan_ctx)
                 return result
 
             # Phase 8.B — sync to Neo4j decision graph
@@ -1557,18 +1562,42 @@ class PlanExecutor:
         # Cognitive OpenFang dispatch is admitted only by the public Shared
         # handoff validator.  The bundle stays opaque here: Brain neither
         # creates approval/cost references nor selects any Space/provider/tool.
+        _auftrag_uebergabe: Optional[Dict[str, Any]] = None
         if isinstance(target, str) and target.startswith("openfang:"):
             try:
                 from vibemind_shared.contracts import (
                     validate_brain_openfang_handoff_bundle,
                 )
 
+                _ctx = plan_ctx
+                from core import agent_auftraege as _aa_gate
+                if _aa_gate.AGENT_AUFTRAEGE_ENABLED and not all(
+                        k in plan_ctx for k in (
+                            "channel_intent", "brain_plan",
+                            "space_execution_contracts", "lifecycle", "handoff")):
+                    # K1: kein Bundle von brain_chat/cortex -> eigenes bauen
+                    from core.handoff_bundle import baue_handoff_bundle
+                    _space = "agentfarm"
+                    try:
+                        if self.capability_router is not None and hop.capability:
+                            _d = self.capability_router.get_capability(hop.capability) or {}
+                            _space = _d.get("space_id") or _d.get("space") or _space
+                    except Exception:
+                        pass
+                    _auftrag_uebergabe = baue_handoff_bundle(
+                        plan_id=plan_ctx.get("plan_id", ""),
+                        trace_id=plan_ctx.get("trace_id", ""),
+                        intent=plan_ctx.get("plan_intent", ""),
+                        hop_id=hop.step_id, capability=hop.capability or "",
+                        agent=target.split(":", 1)[1], space_id=_space)
+                    _ctx = _auftrag_uebergabe
+
                 validate_brain_openfang_handoff_bundle(
-                    plan_ctx["channel_intent"],
-                    plan_ctx["brain_plan"],
-                    plan_ctx["space_execution_contracts"],
-                    plan_ctx["lifecycle"],
-                    plan_ctx["handoff"],
+                    _ctx["channel_intent"],
+                    _ctx["brain_plan"],
+                    _ctx["space_execution_contracts"],
+                    _ctx["lifecycle"],
+                    _ctx["handoff"],
                 )
             except Exception as e:
                 logger.warning(
@@ -1613,6 +1642,12 @@ class PlanExecutor:
             # pick the right one (idea_format_mindmap vs _swot, etc).
             "_capability": getattr(hop, "capability", "") or "",
         }
+        if _auftrag_uebergabe is not None:
+            _extra["_uebergabe"] = _auftrag_uebergabe
+        if isinstance(target, str) and target.startswith("openfang:"):
+            _extra["_trace_id"] = plan_ctx.get("trace_id", "") or ""
+            _extra["_plan_id"] = plan_ctx.get("plan_id", "") or ""
+            _extra["_antwortkanal"] = plan_ctx.get("antwortkanal")
         if isinstance(target, str) and target.startswith("mcp:"):
             try:
                 from .capability_targets import find_registered_mcp_authority
@@ -1982,6 +2017,47 @@ class PlanExecutor:
         except Exception as e:
             logger.debug(f"[plan-executor] kg capture failed: {e}")
             return []
+
+    def _auftrag_plan_rest_speichern(
+        self, plan: Plan, pending_hop: "HopResult",
+        executed: Dict[str, "HopResult"], state: Dict[str, Any],
+        plan_ctx: Dict[str, Any],
+    ) -> None:
+        """K1: Ist der pending Hop ein Agenten-Auftrag, den Plan-Rest im Auftrag
+        ablegen. Wirft nie; ein Fehler wird nur als WARNING geloggt."""
+        res = pending_hop.result
+        if not (isinstance(res, dict) and res.get("auftrag_id")):
+            return
+        auftrag_id = str(res["auftrag_id"])
+        try:
+            import dataclasses
+            from core import agent_auftraege as _aa
+
+            def _uebersprungen(hr: "HopResult") -> bool:
+                return (not hr.ok and not hr.pending and hr.contract_pass is None
+                        and str(hr.error or "").startswith("dependency failed"))
+
+            rest = [
+                h for h in plan.hops
+                if h.step_id != pending_hop.step_id
+                and (h.step_id not in executed or _uebersprungen(executed[h.step_id]))
+            ]
+            ids = {h.step_id for h in rest}
+            rest = [dataclasses.replace(
+                h, depends_on=[d for d in h.depends_on if d in ids]) for h in rest]
+            pending_spec = next(
+                (h for h in plan.hops if h.step_id == pending_hop.step_id), None)
+            _aa.tabelle_aus_umgebung().plan_rest_setzen(auftrag_id, {
+                "plan": dataclasses.replace(plan, hops=rest).to_dict(),
+                "state": state,
+                "pending_hop": pending_hop.step_id,
+                "output_var": getattr(pending_spec, "output_var", "") or "",
+                "antwortkanal": plan_ctx.get("antwortkanal"),
+            })
+        except Exception as e:  # noqa: BLE001 - Plan-Rest ist best effort
+            logger.warning(
+                "[plan-executor] plan_rest_setzen fuer Auftrag %s fehlgeschlagen: %s: %s",
+                auftrag_id, type(e).__name__, e)
 
     def _publish_started(self, hops: List[HopSpec], state: Dict[str, Any]) -> None:
         for h in hops:
