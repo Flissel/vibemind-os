@@ -261,6 +261,15 @@ class PlanRecorder:
 # ── Plan executor ─────────────────────────────────────────────────────
 
 
+def _auftraege_an() -> bool:
+    """K1-Schalter defensiv lesen: Importproblem = aus (altes Verhalten)."""
+    try:
+        from core import agent_auftraege as _aa
+        return bool(_aa.AGENT_AUFTRAEGE_ENABLED)
+    except Exception:
+        return False
+
+
 class PlanExecutor:
     def __init__(
         self,
@@ -893,6 +902,19 @@ class PlanExecutor:
                 except Exception as _ce:
                     logger.debug(f"[plan-executor] contract gate skipped: {_ce}")
 
+                # K1 (Flag an): hoechstens EIN openfang:-Hop je Batch; weitere
+                # openfang:-Hops warten und laufen in der naechsten Runde.
+                if _auftraege_an():
+                    _of_gesehen = False
+                    _batch = []
+                    for h in still_ready:
+                        if self._ist_openfang_hop(h):
+                            if _of_gesehen:
+                                continue
+                            _of_gesehen = True
+                        _batch.append(h)
+                    still_ready = _batch
+
                 # Run ready batch in parallel
                 with ThreadPoolExecutor(max_workers=_MAX_PARALLEL) as pool:
                     futures: Dict[Future, HopSpec] = {
@@ -1010,6 +1032,13 @@ class PlanExecutor:
                                     "new_hops": [h.step_id for h in fresh],
                                     "trigger_step": h.step_id,
                                 })
+
+                # K1: Auftrag offen -> keine weiteren Hops einplanen.
+                if _auftraege_an() and any(
+                        hr.pending and isinstance(hr.result, dict)
+                        and hr.result.get("auftrag_id")
+                        for hr in executed.values()):
+                    break
 
             elapsed = time.time() - t0
             with self._lock:
@@ -1570,8 +1599,7 @@ class PlanExecutor:
                 )
 
                 _ctx = plan_ctx
-                from core import agent_auftraege as _aa_gate
-                if _aa_gate.AGENT_AUFTRAEGE_ENABLED and not all(
+                if _auftraege_an() and not all(
                         k in plan_ctx for k in (
                             "channel_intent", "brain_plan",
                             "space_execution_contracts", "lifecycle", "handoff")):
@@ -1644,7 +1672,8 @@ class PlanExecutor:
         }
         if _auftrag_uebergabe is not None:
             _extra["_uebergabe"] = _auftrag_uebergabe
-        if isinstance(target, str) and target.startswith("openfang:"):
+        if (isinstance(target, str) and target.startswith("openfang:")
+                and _auftraege_an()):
             _extra["_trace_id"] = plan_ctx.get("trace_id", "") or ""
             _extra["_plan_id"] = plan_ctx.get("plan_id", "") or ""
             _extra["_antwortkanal"] = plan_ctx.get("antwortkanal")
@@ -2018,6 +2047,16 @@ class PlanExecutor:
             logger.debug(f"[plan-executor] kg capture failed: {e}")
             return []
 
+    def _ist_openfang_hop(self, hop: HopSpec) -> bool:
+        target = hop.execution_target
+        if not target and hop.capability and self.capability_router is not None:
+            try:
+                target = (self.capability_router.get_capability(hop.capability)
+                          or {}).get("execution_target")
+            except Exception:
+                target = None
+        return isinstance(target, str) and target.startswith("openfang:")
+
     def _auftrag_plan_rest_speichern(
         self, plan: Plan, pending_hop: "HopResult",
         executed: Dict[str, "HopResult"], state: Dict[str, Any],
@@ -2033,27 +2072,39 @@ class PlanExecutor:
             import dataclasses
             from core import agent_auftraege as _aa
 
-            def _uebersprungen(hr: "HopResult") -> bool:
-                return (not hr.ok and not hr.pending and hr.contract_pass is None
-                        and str(hr.error or "").startswith("dependency failed"))
-
+            # Nachfolger des pending Hops (transitiv ueber depends_on)
+            nachfolger = {pending_hop.step_id}
+            geaendert = True
+            while geaendert:
+                geaendert = False
+                for h in plan.hops:
+                    if h.step_id not in nachfolger and any(
+                            d in nachfolger for d in h.depends_on):
+                        nachfolger.add(h.step_id)
+                        geaendert = True
             rest = [
                 h for h in plan.hops
                 if h.step_id != pending_hop.step_id
-                and (h.step_id not in executed or _uebersprungen(executed[h.step_id]))
+                and (h.step_id not in executed or h.step_id in nachfolger)
             ]
             ids = {h.step_id for h in rest}
             rest = [dataclasses.replace(
                 h, depends_on=[d for d in h.depends_on if d in ids]) for h in rest]
             pending_spec = next(
                 (h for h in plan.hops if h.step_id == pending_hop.step_id), None)
-            _aa.tabelle_aus_umgebung().plan_rest_setzen(auftrag_id, {
+            plan_rest: Dict[str, Any] = {
                 "plan": dataclasses.replace(plan, hops=rest).to_dict(),
-                "state": state,
                 "pending_hop": pending_hop.step_id,
                 "output_var": getattr(pending_spec, "output_var", "") or "",
                 "antwortkanal": plan_ctx.get("antwortkanal"),
-            })
+            }
+            try:
+                plan_rest["state"] = json.loads(json.dumps(state, default=str))
+            except Exception as se:  # noqa: BLE001
+                logger.warning(
+                    "[plan-executor] state fuer Auftrag %s nicht serialisierbar, "
+                    "Plan-Rest ohne state: %s: %s", auftrag_id, type(se).__name__, se)
+            _aa.tabelle_aus_umgebung().plan_rest_setzen(auftrag_id, plan_rest)
         except Exception as e:  # noqa: BLE001 - Plan-Rest ist best effort
             logger.warning(
                 "[plan-executor] plan_rest_setzen fuer Auftrag %s fehlgeschlagen: %s: %s",

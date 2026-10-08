@@ -105,3 +105,89 @@ def test_start_state_wird_gerendert(monkeypatch):
     s2 = HopSpec("s2", "weiter", execution_target="direct:test:weiter", arg_template="{{state.treffer}}")
     r = PlanExecutor().execute(Plan("plan-k1b", "x", "", [s2]), start_state={"treffer": "abc"})
     assert seen == ["abc"] and r["ok"] is True
+
+
+# ---- Fix-Runde 1 ----------------------------------------------------------
+
+def _of(sid, deps=(), ov=""):
+    return HopSpec(sid, sid, capability="rowboat_search", execution_target="openfang:rowboat-chat",
+                   depends_on=list(deps), output_var=ov)
+
+
+def _direkt(sid, deps=()):
+    return HopSpec(sid, sid, execution_target="direct:test:x", depends_on=list(deps))
+
+
+def test_flag_aus_extra_params_unveraendert(monkeypatch):
+    from core.handoff_bundle import baue_handoff_bundle
+    monkeypatch.setattr(aa, "AGENT_AUFTRAEGE_ENABLED", False)
+    gesehen = []
+
+    class _Exe:
+        def call_with_arg(self, arg, arg_kwarg=None, extra_params=None):
+            gesehen.append(dict(extra_params or {}))
+            return {"ok": True, "result": "x"}
+
+    monkeypatch.setattr("core.capability_targets.build_executor", lambda _t: _Exe())
+    b = baue_handoff_bundle(plan_id="p", trace_id="t", intent="i", hop_id="s1",
+                            capability="rowboat_search", agent="rowboat-chat")
+    PlanExecutor()._exec_hop(_of("s1"), {}, plan_ctx=dict(b, plan_intent="i", plan_id="p", trace_id="t"))
+    assert gesehen and set(gesehen[0]) == {"_intent", "_description", "_step_id", "_capability"}
+
+
+def test_kette_rest_enthaelt_alle_nachfolger(tabelle):
+    plan = Plan("pk", "x", "", [_of("s1", ov="o"), _direkt("s2", ["s1"]), _direkt("s3", ["s2"])])
+    r = PlanExecutor().execute(plan)
+    assert r["pending"] is True
+    hops = {h["step_id"]: h for h in tabelle.plan_rest["auftrag-1"]["plan"]["hops"]}
+    assert set(hops) == {"s2", "s3"}
+    assert hops["s3"]["depends_on"] == ["s2"] and hops["s2"]["depends_on"] == []
+
+
+def test_zwei_unabhaengige_openfang_hops_ein_auftrag(tabelle):
+    plan = Plan("pk2", "x", "", [_of("s1"), _of("s2")])
+    r = PlanExecutor().execute(plan)
+    assert r["pending"] is True and len(tabelle.angelegt) == 1
+    ids = [h["step_id"] for h in tabelle.plan_rest["auftrag-1"]["plan"]["hops"]]
+    assert ids == ["s2"]
+
+
+def test_nicht_openfang_hop_laeuft_im_batch_mit(tabelle, monkeypatch):
+    lief = []
+    orig = ct.build_executor
+
+    class _Exe:
+        def call_with_arg(self, arg, arg_kwarg=None, extra_params=None):
+            lief.append(1)
+            return {"ok": True, "result": "x"}
+
+    monkeypatch.setattr("core.capability_targets.build_executor",
+                        lambda t: _Exe() if t.startswith("direct:") else orig(t))
+    PlanExecutor().execute(Plan("pk3", "x", "", [_of("s1"), _direkt("d1")]))
+    assert lief == [1] and len(tabelle.angelegt) == 1
+
+
+def test_flag_aus_paralleles_verhalten_unveraendert(monkeypatch):
+    monkeypatch.setattr(aa, "AGENT_AUFTRAEGE_ENABLED", False)
+    ziele = []
+
+    class _Exe:
+        def call_with_arg(self, arg, arg_kwarg=None, extra_params=None):
+            ziele.append(extra_params["_step_id"])
+            return {"ok": True, "result": "x"}
+
+    monkeypatch.setattr("core.capability_targets.build_executor", lambda _t: _Exe())
+    monkeypatch.setattr(PlanExecutor, "_ist_openfang_hop", lambda *_: pytest.fail("Flag aus"))
+    plan = Plan("pk4", "x", "", [_direkt("a"), _direkt("b")])
+    r = PlanExecutor().execute(plan)
+    assert sorted(ziele) == ["a", "b"] and r["ok"] is True
+
+
+def test_state_nicht_serialisierbar_wird_stringifiziert_oder_weggelassen(tabelle):
+    class Komisch:
+        def __str__(self):
+            return "komisch"
+
+    plan = Plan("pk5", "x", "", [_of("s1"), _direkt("s2", ["s1"])])
+    PlanExecutor().execute(plan, start_state={"k": Komisch()})
+    assert tabelle.plan_rest["auftrag-1"]["state"] == {"k": "komisch"}
