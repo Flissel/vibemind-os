@@ -1573,3 +1573,27 @@ def test_frage_strom_websuche_flag_und_werkzeug_meldung(monkeypatch):
     monkeypatch.setattr(cw.urllib.request, "urlopen", _sse_urlopen(gesendet, {"content": "x"}))
     list(cw.frage_strom("S", [{"role": "user", "content": "x"}]))
     assert "marketing_websuche" not in gesendet["body"]
+
+KONTRAST_DOC = {"root": {"type": "EmailLayout", "data": {"backdropColor": "#ffffff", "canvasColor": "#ffffff",
+                                                         "childrenIds": ["t"]}},
+                "t": {"type": "Text", "data": {"style": {"color": "#cccccc"}, "props": {"text": "Herbst"}}}}
+
+
+def test_kontrastprobleme_kommen_in_den_kontext():
+    fragen = Fragen(NUR_TEXT)
+    cw.chat_bearbeiten(Api(), {**AUFTRAG, "bloecke": KONTRAST_DOC}, fragen)
+    p = fragen.gesehen[0][1][0]["content"]
+    assert "KONTRASTPROBLEME (im aktuellen Entwurf):\n- t: #cccccc auf #ffffff unter 4.5:1" in p
+
+
+def test_ohne_kontrastproblem_kein_abschnitt():
+    fragen = Fragen(NUR_TEXT)
+    cw.chat_bearbeiten(Api(), AUFTRAG, fragen)
+    assert "KONTRASTPROBLEME" not in fragen.gesehen[0][1][0]["content"]
+
+
+def test_kontrastprobleme_wirft_nie_und_ist_begrenzt():
+    assert cw.kontrastprobleme(None) == [] and cw.kontrastprobleme({"root": "kaputt"}) == []
+    viele = {"root": {"type": "EmailLayout", "data": {"canvasColor": "#ffffff", "childrenIds": []}}}
+    viele.update({f"t{i}": {"type": "Text", "data": {"style": {"color": "#eeeeee"}}} for i in range(30)})
+    assert len(cw.kontrastprobleme(viele)) == cw.KONTRAST_MAX

@@ -350,7 +350,7 @@ def test_system_marke_regel_lesbare_farben_und_schriftpaar():
     mit = ap.system(marke=True)
     assert "nimm akzent_text statt akzent" in mit and "auf_akzent" in mit
     assert "schriften_setzen" in mit and "MARKENSCHRIFTEN" in mit
-    assert "akzent_text" not in ap.system(marke=False)
+    assert "nimm akzent_text statt akzent" not in ap.system(marke=False)
     assert ap.system(marke=False) == ap.SYSTEM
 
 
@@ -372,3 +372,14 @@ def test_markenlogo_dunkel_im_kontext_und_regel_im_system():
     assert "MARKENLOGO DUNKEL (Marke, für dunkle Flächen): medien:logo-x-2.png" in t
     assert "MARKENLOGO DUNKEL" in ap.SYSTEM and "0,2" in ap.SYSTEM
     assert "MARKENLOGO DUNKEL" not in ap.nutzer_text({"nachricht": "x"}, [], markenlogo="logo-x-1.png")
+
+
+def test_kontrastregel_im_system():
+    s = ap.SYSTEM
+    assert "KONTRASTPROBLEME" in s and "akzent_text" in s and "auf_akzent" in s
+    assert "nenne sie nur" in s
+
+
+def test_kontrastprobleme_im_kontext():
+    t = ap.nutzer_text({"nachricht": "x"}, [], kontrastprobleme=["t: #cccccc auf #ffffff unter 4.5:1"])
+    assert "KONTRASTPROBLEME (im aktuellen Entwurf):\n- t: #cccccc auf #ffffff unter 4.5:1" in t

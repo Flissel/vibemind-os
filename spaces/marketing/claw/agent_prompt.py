@@ -113,6 +113,9 @@ MARKENLOGO
 FREIGABE-FEEDBACK
 Offenes Feedback aus der Freigabe ist eine Vorgabe des Betreibers: setz es um, wenn die Bitte es betrifft, und sag kurz, was du davon berücksichtigt hast.
 
+KONTRAST
+„KONTRASTPROBLEME“ im Kontext sind Stellen des aktuellen Entwurfs, deren Schrift sich zu wenig vom Grund abhebt. Übernimmst du gerade die Marke (z. B. „übernimm die Marke“) oder änderst du Farben, behebe sie mit den lesbaren Markenfarben: akzent_text für Text auf hellem Grund, auf_akzent für Schrift auf Akzentflächen und Knöpfen. Sonst nenne sie nur kurz in der Antwort.
+
 Ist die Anfrage unklar, frag in "antwort" kurz nach und lass "aenderungen" leer. Meldet das System eine ungültige \
 Änderung, antworte erneut mit dem vollständigen, korrigierten JSON-Objekt.
 """
@@ -168,7 +171,8 @@ def nutzer_text(auftrag: dict, medien: list[str], *, unterlagen: str = "", auswa
                 markenwissen: str = "", mandant_name: str = "", notizen_text: str = "",
                 feedback: list[dict] | tuple[dict, ...] = (), markenfarben: dict | None = None,
                 markenlogo: str = "", markenschriften: dict | None = None,
-                markenlesbar: dict | None = None, markenlogo_dunkel: str = "") -> str:
+                markenlesbar: dict | None = None, markenlogo_dunkel: str = "",
+                kontrastprobleme: list[str] | tuple[str, ...] = ()) -> str:
     """Kontext der ersten Nutzernachricht. auswahl_text ist die markierte Auswahl als JSON (Blöcke/Ebenen
     vollständig), unterlagen der Text aus hochgeladenen Dokumenten, hinweise fehlende Elemente/Anhänge.
     notizen_text sind die früheren Agent-Notizen der Firma, getrennt vom Markenwissen. feedback sind die offenen
@@ -203,6 +207,8 @@ def nutzer_text(auftrag: dict, medien: list[str], *, unterlagen: str = "", auswa
           if markenschriften else []),
         *([f"LESBARE MARKENFARBEN: akzent_text {markenlesbar['akzent_text']} (Text auf hellem Grund), "
            f"auf_akzent {markenlesbar['auf_akzent']} (Schrift auf Akzentflächen/Knöpfen)"] if markenlesbar else []),
+        *(["KONTRASTPROBLEME (im aktuellen Entwurf):", *[f"- {k}" for k in kontrastprobleme]]
+          if kontrastprobleme else []),
         *([f"MARKENLOGO (Marke): medien:{markenlogo}"] if markenlogo else []),
         *([f"MARKENLOGO DUNKEL (Marke, für dunkle Flächen): medien:{markenlogo_dunkel}"]
           if markenlogo and markenlogo_dunkel else []),

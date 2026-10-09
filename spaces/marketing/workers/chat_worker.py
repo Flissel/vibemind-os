@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from PIL import Image, ImageOps
 
 from spaces.marketing.claw import (agent_prompt, agent_strom, agent_werkzeuge, bildplaetze, denkspur, markenprofil,
-                                   markenwissen, pdf_bilder, schriften, unterlagen, vorlagen_marke)
+                                   markenwissen, pdf_bilder, schoenheit, schriften, unterlagen, vorlagen_marke)
 from spaces.marketing.workers.bild_worker import ApiFehler, _grund, tls_kontext, umgebung_laden
 
 PORT = 8134
@@ -632,6 +632,19 @@ def chat_bearbeiten(api, auftrag, fragen_strom=frage_strom, uhr=time.monotonic, 
         return "fehler"
 
 
+KONTRAST_MAX = 20
+
+
+def kontrastprobleme(bloecke) -> list[str]:
+    """Kontrastfunde des aktuellen Entwurfs (claw/schoenheit), lokal vor jeder Editor-Runde. Wirft nie."""
+    try:
+        funde = schoenheit.bloecke_pruefen(bloecke if isinstance(bloecke, dict) else {})
+    except Exception:  # noqa: BLE001 - Kontext darf eine Runde nie kippen
+        return []
+    return [str(b["satz"]) for b in funde
+            if b.get("punkt") == "kontrast" and ": " in str(b.get("satz"))][:KONTRAST_MAX]
+
+
 def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, zurueckgeben, live: _Live,
                 spur: denkspur.Spur) -> str:
     medien = list(auftrag.get("medien") or [])
@@ -679,6 +692,7 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
                                            markenfarben=markenfarben, markenlogo=markenlogo,
                                            markenlogo_dunkel=markenlogo_dunkel,
                                            markenschriften=markenschriften, markenlesbar=markenlesbar,
+                                           kontrastprobleme=kontrastprobleme(auftrag.get("bloecke")),
                                            feedback=[f for f in (auftrag.get("rueckmeldungen_offen") or [])
                                                      if isinstance(f, dict) and isinstance(f.get("text"), str)])
     # Mit Bildern ist die erste Nachricht eine Teil-Liste; sie bleibt auch in der Korrekturrunde so.
