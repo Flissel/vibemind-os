@@ -25,6 +25,8 @@ TOLERANZ_S = 120
 SPERRORDNER = ("people", "bewerbung", "diary", "voice memos")
 VERLAUF = "Wissen-Verlauf"
 HANDBUCH = "Markenhandbuch.md"
+NEU_MAX = 20 * 1024            # je Ersetzung (Bytes UTF-8)
+HANDBUCH_MAX = 40 * 1024       # Markenhandbuch (Bytes UTF-8)
 _FIRMA_ORDNER_AUS = (markenprofil.VERLAUF.casefold(), VERLAUF.casefold())
 _FIRMA_DATEIEN_AUS = (markenprofil.DATEI.casefold(), HANDBUCH.casefold())
 _FIRMA_ENDUNGEN = (".md", ".txt")
@@ -106,8 +108,8 @@ def kandidaten(wurzel: str, firma_ordner: str, namen: list[str], fremde: list[st
         echte = []
         for u in unterordner:
             pfad = os.path.join(ort, u)
-            if ort_n == wurzel_n and u.casefold() in SPERRORDNER:
-                continue
+            if u.casefold() in SPERRORDNER:
+                continue                                   # People, Diary ... in jeder Tiefe
             if ort_n == firmen_wurzel and _norm(pfad) != firma:
                 continue                                   # Ordner anderer Firmen sind tabu
             if ort_n == firma and u.casefold() in _FIRMA_ORDNER_AUS:
@@ -179,9 +181,13 @@ def alt_profil(firma_ordner: str, seit: float | None) -> str:
 
 
 def ersetzen(text: str, alt: str, neu: str) -> str | None:
-    if not alt or text.count(alt) != 1:
+    if not alt:
         return None
-    return text.replace(alt, neu, 1)
+    treffer = [i for i in range(len(text)) if text.startswith(alt, i)]   # auch ueberlappende zaehlen
+    if len(treffer) != 1:
+        return None
+    i = treffer[0]
+    return text[:i] + neu + text[i + len(alt):]
 
 
 def _atomar(pfad: str, roh: bytes) -> None:
@@ -255,41 +261,94 @@ class _Sicherung:
             f.write(roh)
 
 
+def _kodierbar(text: str) -> bool:
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _form_fehler(e: object) -> str | None:
+    if not isinstance(e, dict):
+        return "Ersetzung ist kein Objekt"
+    for schluessel in ("pfad", "alt", "neu"):
+        if not isinstance(e.get(schluessel), str):
+            return f"Feld {schluessel} fehlt oder ist kein Text"
+    if not _kodierbar(e["neu"]) or not _kodierbar(e["alt"]):
+        return "Text nicht kodierbar"
+    if len(e["neu"].encode("utf-8")) > NEU_MAX:
+        return "Ersetzung größer als 20 KB"
+    return None
+
+
+def _firma_pruefen(wurzel: str, firma_ordner: str) -> None:
+    """Firmenordner und alle Eltern bis zur Wissenswurzel duerfen keine Verknuepfung sein."""
+    wurzel_n = _norm(wurzel)
+    pfad = os.path.normpath(firma_ordner)
+    while _norm(pfad) != wurzel_n:
+        if not mw._selbst_echt(pfad):
+            raise LaufFehler(f"Firmenordner ist eine Verknüpfung: {_rel(pfad, wurzel)}")
+        eltern = os.path.dirname(pfad)
+        if eltern == pfad:
+            raise LaufFehler("Firmenordner liegt nicht unter der Wissenswurzel")
+        pfad = eltern
+
+
 def anwenden(wurzel: str, firma_ordner: str, kandidaten: dict[str, Kandidat], ersetzungen: list[dict],
              handbuch: str, jetzt: datetime.datetime, schreiben_=None) -> Ergebnis:
     """Ersetzungen pruefen, sichern, schreiben; zum Schluss das Markenhandbuch. Ein Fehler beim Sichern oder
     Schreiben bricht ab: Geschriebenes bleibt stehen (gesichert), Ergebnis.abbruch nennt Datei und Grund."""
     schreiben_ = schreiben_ or schreiben
     erg = Ergebnis()
+    try:
+        _firma_pruefen(wurzel, firma_ordner)
+    except LaufFehler as e:
+        erg.abbruch = str(e)[:200]
+        return erg
     sicherung = _Sicherung(firma_ordner, jetzt)
     gruppen: dict[str, list[dict]] = {}
-    for e in ersetzungen:
+    for e in ersetzungen if isinstance(ersetzungen, list) else []:
+        grund = _form_fehler(e)
+        if grund:
+            pfad = e.get("pfad") if isinstance(e, dict) and isinstance(e.get("pfad"), str) else "?"
+            erg.verworfen.append(f"{pfad[:120]}: {grund} – verworfen")
+            continue
         gruppen.setdefault(e["pfad"], []).append(e)
     for rel, liste in gruppen.items():
-        k = kandidaten.get(rel)
-        if k is None:
-            erg.verworfen.append(f"{rel[:120]}: nicht in der Kandidatenliste – verworfen")
-            continue
-        text = k.text
-        for e in liste:
-            neu = ersetzen(text, e["alt"], e["neu"])
-            if neu is None:
-                erg.verworfen.append(f"{rel}: Ausschnitt nicht genau einmal gefunden – verworfen")
-                continue
-            text = neu
-        if text == k.text:
-            continue
-        aktuell = lesen(k.pfad)
-        if aktuell is None or aktuell[0] != k.text:
-            erg.verworfen.append(f"{rel}: inzwischen geändert – nicht geschrieben")
-            continue
         try:
+            k = kandidaten.get(rel)
+            if k is None:
+                erg.verworfen.append(f"{rel[:120]}: nicht in der Kandidatenliste – verworfen")
+                continue
+            text = k.text
+            for e in liste:
+                neu = ersetzen(text, e["alt"], e["neu"])
+                if neu is None:
+                    erg.verworfen.append(f"{rel}: Ausschnitt nicht genau einmal gefunden – verworfen")
+                    continue
+                text = neu
+            if text == k.text:
+                continue
+            aktuell = lesen(k.pfad)
+            if aktuell is None or aktuell[0] != k.text:
+                erg.verworfen.append(f"{rel}: inzwischen geändert – nicht geschrieben")
+                continue
             sicherung.sichern(rel, k.pfad)
             schreiben_(k.pfad, text, k.crlf, k.bom)
         except (OSError, LaufFehler) as e:
             erg.abbruch = f"{rel} ({type(e).__name__}: {e})"[:200]
             return erg
+        except Exception as e:                                # eine kaputte Datei kippt den Lauf nicht
+            erg.verworfen.append(f"{rel[:120]}: {type(e).__name__} – nicht geschrieben")
+            continue
         erg.geschrieben.append(rel)
+    if not isinstance(handbuch, str):
+        erg.verworfen.append(f"{HANDBUCH}: kein Text – nicht geschrieben")
+        return erg
+    if not _kodierbar(handbuch) or len(handbuch.encode("utf-8")) > HANDBUCH_MAX:
+        erg.verworfen.append(f"{HANDBUCH}: zu groß (über 40 KB) oder nicht kodierbar – nicht geschrieben")
+        return erg
     ziel = os.path.join(firma_ordner, HANDBUCH)
     rel = _rel(ziel, wurzel)
     try:

@@ -201,3 +201,57 @@ def test_wissen_wurzel(monkeypatch, tmp_path):
     monkeypatch.delenv("ROWBOAT_KNOWLEDGE_ORDNER")
     monkeypatch.setenv("ROWBOAT_WISSEN_ORDNER", str(tmp_path / "companys"))
     assert wl.wissen_wurzel() == str(tmp_path)
+
+
+def test_gesperrte_ordner_in_jeder_tiefe(baum):
+    w, firma = baum
+    _datei(w / "Archiv" / "People" / "x.md", "VibeMind")
+    _datei(w / "projects" / "diary" / "y.md", "VibeMind")
+    _datei(w / "Projekte" / "Voice Memos" / "z.md", "VibeMind")
+    rels = _rels(wl.kandidaten(str(w), str(firma), NAMEN, FREMDE, []))
+    assert not any(p in r.lower() for r in rels for p in ("people", "diary", "voice memos"))
+
+
+def test_ueberlappende_treffer_zaehlen():
+    assert wl.ersetzen("aaa", "aa", "x") is None
+    assert wl.ersetzen("aab", "aa", "x") == "xb"
+
+
+def test_fehlerhafte_agentenausgabe_wirft_nicht(baum):
+    w, firma, kand = _kand(baum)
+    erg = wl.anwenden(str(w), str(firma), kand, [
+        {"pfad": "Projekte/Plan.md", "alt": "in Türkis", "neu": "in Orange"},
+        {"pfad": "companys/VibeMind/Über uns.md", "alt": "Türkis", "neu": "Or\ud800ange"},
+        {"pfad": "companys/VibeMind/Agent-Notizen/a.md", "neu": "x"},
+        {"pfad": 5, "alt": "a", "neu": "b"},
+        {"pfad": "Projekte/Plan.md", "alt": None, "neu": "b"},
+        "kein objekt"], "# H \ud800\n", JETZT)
+    assert erg.geschrieben == ["Projekte/Plan.md"] and erg.abbruch is None
+    assert "in Orange" in (w / "Projekte" / "Plan.md").read_text(encoding="utf-8")
+    assert len(erg.verworfen) >= 5 and any("nicht kodierbar" in v for v in erg.verworfen)
+    assert (firma / "Markenhandbuch.md").read_text(encoding="utf-8") == "# Altes Handbuch"
+
+
+def test_groessengrenzen_der_agentenausgabe(baum):
+    w, firma, kand = _kand(baum)
+    erg = wl.anwenden(str(w), str(firma), kand, [
+        {"pfad": "Projekte/Plan.md", "alt": "in Türkis", "neu": "x" * (20 * 1024 + 1)}], "# H\n", JETZT)
+    assert any("größer als 20 KB" in v for v in erg.verworfen)
+    assert "Türkis" in (w / "Projekte" / "Plan.md").read_text(encoding="utf-8")
+    erg = wl.anwenden(str(w), str(firma), kand, [], "x" * (40 * 1024 + 1), JETZT)
+    assert erg.handbuch_rel is None and any("zu groß" in v for v in erg.verworfen)
+    assert (firma / "Markenhandbuch.md").read_text(encoding="utf-8").startswith("# H")
+
+
+def test_verknuepfter_firmenordner_schreibt_nichts(tmp_path):
+    if sys.platform != "win32":
+        pytest.skip("Junctions gibt es nur unter Windows")
+    w = tmp_path / "k"
+    echt = tmp_path / "echt" / "VibeMind"
+    echt.mkdir(parents=True)
+    (w / "companys").mkdir(parents=True)
+    firma = w / "companys" / "VibeMind"
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(firma), str(echt)], check=True, capture_output=True)
+    erg = wl.anwenden(str(w), str(firma), {}, [], "# H\n", JETZT)
+    assert erg.abbruch and "Verknüpfung" in erg.abbruch and erg.handbuch_rel is None
+    assert not list(echt.iterdir())
