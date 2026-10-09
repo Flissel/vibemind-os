@@ -782,7 +782,8 @@ class FalschesComfy:
     def laeuft(self):
         return self._laeuft
 
-    def freistellen(self, png):
+    def freistellen(self, png, zeitlimit_s=300):
+        self.zeitlimit_s = zeitlimit_s
         if self.fehler:
             raise self.fehler
         return self.ergebnis
@@ -875,3 +876,49 @@ def test_marken_chat_sieht_bisheriges_logo_und_web_kandidaten(wurzel):
     assert "Bild 1 = bisher (bisheriges Logo" in inhalt[0]["text"]
     assert "Bild 2 = web:1 (Logo-Kandidat der Webseite" in inhalt[0]["text"]
     assert geladen == ["https://radhaus.example/logo.png"]          # einmal geladen, auch fuer die Ablage
+
+
+class LangsamesComfy(FalschesComfy):
+    """ComfyUI, das waehrend des Freistellens Zeit braucht; zaehlt die Vergabe-Verlaengerungen daran."""
+    def __init__(self, api, dauer_s=0.4, fehler=None):
+        super().__init__(fehler=fehler)
+        self.api, self.dauer_s, self.weiter_waehrend = api, dauer_s, 0
+
+    def freistellen(self, png, zeitlimit_s=300):
+        import time
+        vorher = len(self.api.aufrufe("weiter"))
+        time.sleep(self.dauer_s)
+        self.weiter_waehrend = len(self.api.aufrufe("weiter")) - vorher
+        return super().freistellen(png, zeitlimit_s)
+
+
+def test_logo_ki_zeitueberschreitung_haelt_vergabe_und_runde_gelingt():
+    api = Api(dict(KARTE_CHAT), medien={"karte.png": _karte()})
+    comfy = LangsamesComfy(api, fehler=bild_comfy.ComfyFehler("Zeitüberschreitung"))
+    lb = {**LB, "freistellen": "ki"}
+    assert _lauf(api, Fragen(_antwort({**VORSCHLAG, "logo": "anhang:karte.png", "logo_bearbeiten": lb})),
+                 comfy=comfy, halten_takt_s=0.05) == "fertig"
+    assert comfy.weiter_waehrend >= 2                         # Vergabe wird waehrend des Freistellens verlaengert
+    assert comfy.zeitlimit_s == ma.LOGO_KI_ZEIT_S < 300       # kuerzer als die Vergabe
+    (_, _, daten), = api.aufrufe("vorschlag")
+    assert daten["vorschlag"]["logo"] == "anhang:karte.png" and "logo_dunkel" not in daten["vorschlag"]
+    assert any(h.startswith(ma.LOGO_NICHT) for h in daten["hinweise"])
+
+
+def test_logo_vergabe_waehrend_der_bearbeitung_verloren_stoppt_die_runde():
+    api = Api(dict(KARTE_CHAT), medien={"karte.png": _karte()})
+    comfy = LangsamesComfy(api, dauer_s=0.4)
+    comfy.ergebnis = _karte()
+    zustand = {"im_comfy": False}
+    vorher = api.weiter
+    api.weiter = lambda aid: False if zustand["im_comfy"] else vorher(aid)    # VM meldet: Vergabe weg
+    orig = comfy.freistellen
+
+    def freistellen(png, zeitlimit_s=300):
+        zustand["im_comfy"] = True
+        return orig(png, zeitlimit_s)
+    comfy.freistellen = freistellen
+    lb = {**LB, "freistellen": "ki"}
+    assert _lauf(api, Fragen(_antwort({**VORSCHLAG, "logo": "anhang:karte.png", "logo_bearbeiten": lb})),
+                 comfy=comfy, halten_takt_s=0.05) == "fehler"
+    assert api.aufrufe("vorschlag") == []

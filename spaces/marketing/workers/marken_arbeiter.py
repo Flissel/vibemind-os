@@ -146,6 +146,7 @@ def _web_logo(api, aid, url: str, logo_laden, hinweise: list[str]) -> str | None
 
 LOGO_NICHT = "Logo nicht bearbeitet: "
 LOGO_WEB_ANSICHTEN = 3
+LOGO_KI_ZEIT_S = 120       # kuerzer als die Vergabe (5 min): ein traeges ComfyUI heisst "Logo unbearbeitet"
 
 
 def _einmal(logo_laden):
@@ -218,7 +219,7 @@ def _ki(comfy):
         if not comfy.laeuft():
             raise logo_bearbeiten.LogoFehler("ComfyUI läuft nicht")
         try:
-            return comfy.freistellen(png)
+            return comfy.freistellen(png, zeitlimit_s=LOGO_KI_ZEIT_S)
         finally:
             try:
                 comfy.freigeben()
@@ -228,29 +229,33 @@ def _ki(comfy):
 
 
 def _logo_bearbeiten(api, aid, lb: dict, textfarbe: str, bilder, logos, laden, bisher, profil, comfy,
-                     hinweise: list[str], spur) -> dict | None:
+                     hinweise: list[str], spur, halten_takt_s: float = cw.HALTEN_TAKT_S) -> dict | None:
     """Logo in derselben Runde bearbeiten (Spec §1) -> {logo, logo_dunkel, logo_original} oder None: dann
     bleibt das Logo unbearbeitet und ein Hinweis nennt den Grund. Wirft nur, wenn der Auftrag nicht mehr
     uns gehoert."""
-    try:
-        roh, original = _logo_quelle(api, aid, lb["quelle"], bilder, logos, laden, bisher, profil)
-        f = logo_bearbeiten.fassungen(roh, freistellen=lb["freistellen"], zuschneiden=lb["zuschneiden"],
-                                      textfarbe=textfarbe, ki=_ki(comfy))
-        if original is None:
-            original = api.logo(aid, logo_bearbeiten.als_png(roh), "image/png")
-        hell = api.logo(aid, f.hell, "image/png")
-        dunkel = api.logo(aid, f.dunkel, "image/png")
-    except logo_bearbeiten.LogoFehler as e:
-        grund = str(e)
-    except bild_comfy.ComfyFehler as e:
-        grund = cw._kurz(e)
-    except ApiFehler as e:
-        if e.code in cw.FREMD and "in Arbeit" in e.grund:
-            raise
-        grund = e.grund[:150]
-    except (OSError, ValueError) as e:
-        grund = cw._kurz(e)
-    else:
+    grund = f = None
+    with cw.halten(api, aid, halten_takt_s) as halter:     # Freistellen und Ablage dauern: Vergabe verlaengern
+        try:
+            roh, original = _logo_quelle(api, aid, lb["quelle"], bilder, logos, laden, bisher, profil)
+            f = logo_bearbeiten.fassungen(roh, freistellen=lb["freistellen"], zuschneiden=lb["zuschneiden"],
+                                          textfarbe=textfarbe, ki=_ki(comfy))
+            if original is None:
+                original = api.logo(aid, logo_bearbeiten.als_png(roh), "image/png")
+            hell = api.logo(aid, f.hell, "image/png")
+            dunkel = api.logo(aid, f.dunkel, "image/png")
+        except logo_bearbeiten.LogoFehler as e:
+            grund = str(e)
+        except bild_comfy.ComfyFehler as e:
+            grund = cw._kurz(e)
+        except ApiFehler as e:
+            if e.code in cw.FREMD and "in Arbeit" in e.grund:
+                raise
+            grund = e.grund[:150]
+        except (OSError, ValueError) as e:
+            grund = cw._kurz(e)
+    if halter.verloren.is_set():
+        raise cw._Verloren
+    if grund is None:
         hinweise.extend(f.hinweise)
         spur.schritt(f"Logo bearbeitet ({'einfarbig' if f.einfarbig else 'mehrfarbig'})")
         return {"logo": hell, "logo_dunkel": dunkel, "logo_original": original}
@@ -323,7 +328,7 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
     lb = vorschlag.pop("logo_bearbeiten", None)
     offen = marken_prompt.offener_vorschlag(auftrag) or {}
     bearbeitet = (_logo_bearbeiten(api, aid, lb, vorschlag["text"], bilder, logos, laden, bisher, profil, comfy,
-                                   hinweise, spur) if lb else None)
+                                   hinweise, spur, halten_takt_s) if lb else None)
     if bearbeitet:
         vorschlag.update(bearbeitet)
     else:
