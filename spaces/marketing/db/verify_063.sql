@@ -128,9 +128,8 @@ BEGIN
   v_fehler := NULL;
   BEGIN PERFORM marketing.pult_chat_anlegen(v_i, 'chat', 'Noch was', '{}'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
   ASSERT v_fehler = 'Liegt zur Freigabe – erst zurückziehen', format('3d: chat_anlegen chat: %s', v_fehler);
-  v_fehler := NULL;
-  BEGIN PERFORM marketing.pult_chat_vormerken(v_i, 'Noch was', '{}'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
-  ASSERT v_fehler = 'Liegt zur Freigabe – erst zurückziehen', format('3e: chat_vormerken: %s', v_fehler);
+  -- 067: Vormerken gibt es nicht mehr (die Warteschlange laeuft ueber pult_chat_anlegen, 3d deckt sie ab)
+  ASSERT to_regprocedure('marketing.pult_chat_vormerken(uuid, text, jsonb)') IS NULL, '3e: Vormerken entfernt (067)';
   v_fehler := NULL;
   BEGIN PERFORM marketing.pult_bild_auftrag(v_i, 'held', false, '', 'mensch'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
   ASSERT v_fehler = 'Liegt zur Freigabe – erst zurückziehen', format('3f: bild_auftrag: %s', v_fehler);
@@ -312,14 +311,11 @@ BEGIN
   BEGIN PERFORM marketing.pult_einreichen(v_i, 'probe'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
   ASSERT v_fehler = 'Ein Bild wird gerade erzeugt', format('12a: gueltige Vergabe sperrt: %s', v_fehler);
   UPDATE marketing.bild_auftraege SET vergeben_bis = now() - interval '1 minute' WHERE id = bi;   -- abgelaufen
-  INSERT INTO marketing.chat_auftraege (inhalt, art, nachricht, kontext, status)
-  VALUES (v_i, 'chat', 'liegengeblieben', '{}', 'wartet') RETURNING id INTO a;
+  -- 067: die Vormerkung gibt es nicht mehr; eine wartende Runde rueckte beim Aufraeumen nach und sperrte das Einreichen
+  -- wie jede laufende. Die Warteschlange deckt verify_067 ab, hier bleibt nur der abgelaufene Bild-Auftrag.
   ASSERT marketing.pult_einreichen(v_i, 'probe') = 1, '12b: einreichen trotz abgelaufener Vergabe';
   SELECT * INTO r FROM marketing.bild_auftraege WHERE id = bi;
   ASSERT r.status = 'verworfen' AND r.befund = 'Newsletter eingereicht' AND r.vergeben_bis IS NULL,
          format('12b: abgelaufener Auftrag verworfen: %s / %s', r.status, r.befund);
-  SELECT * INTO r FROM marketing.chat_auftraege WHERE id = a;
-  ASSERT r.status = 'fehler' AND r.antwort = 'Newsletter wurde zur Freigabe eingereicht',
-         format('12c: Vormerkung beendet: %s / %s', r.status, r.antwort);
 END $$;
 SELECT 'verify_063 ok' AS ergebnis;

@@ -99,9 +99,10 @@ BEGIN
   v_a := marketing.pult_chat_anlegen(v_i, 'chat', 'Hallo', '{}');
   ASSERT v_a IS NOT NULL, '4: anlegen liefert uuid';
   ASSERT (SELECT fassung_vorher FROM marketing.chat_auftraege WHERE id = v_a) = v_n, '4: fassung_vorher = neueste';
-  v_fehler := NULL;
-  BEGIN PERFORM marketing.pult_chat_anlegen(v_i, 'chat', 'Nochmal', '{}'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
-  ASSERT v_fehler LIKE '%arbeitet gerade%', format('4: zweiter Auftrag nicht abgelehnt: %s', v_fehler);
+  -- 067: bis zu drei Runden je Entwurf - die zweite wird angelegt; fuer die folgenden Abschnitte wieder entfernt
+  v_a2 := marketing.pult_chat_anlegen(v_i, 'chat', 'Nochmal', '{}');
+  ASSERT v_a2 IS NOT NULL AND v_a2 <> v_a, '4: zweite Runde angelegt (067)';
+  DELETE FROM marketing.chat_auftraege WHERE id = v_a2;
 
   -- 5) Sperre fuer den Betreiber, nicht fuer den Agenten
   v_fehler := NULL;
