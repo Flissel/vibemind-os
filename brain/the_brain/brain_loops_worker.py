@@ -85,6 +85,21 @@ def main() -> int:
               f"Ereignis-Takt={_kur.KURATOR_EREIGNIS_TAKT_S}s, "
               f"Volllauf-Takt={_kur.KURATOR_INTERVAL_S}s)", flush=True)
 
+    # Ausfuehrungskette K1: Nachfasser fuer Agenten-Auftraege (hinter AGENT_AUFTRAEGE_ENABLED).
+    try:
+        from core import nachfasser as _nf
+        if _nf.NACHFASSER_ENABLED:
+            from core import agent_auftraege as _aa
+            _pe = state.plan_executor
+            nf = _nf.Nachfasser(_aa.tabelle_aus_umgebung(), validator=state.capability_validator,
+                                router=_pe.capability_router, plan_executor=_pe,
+                                exec_log=getattr(_pe, "_exec_log", None))
+            threading.Thread(target=lambda: _nf.takt_schleife(nf, takt_s=_nf.NACHFASSER_TAKT_S),
+                             name="Nachfasser", daemon=True).start()
+            print("[brain-loops] Nachfasser aktiv", flush=True)
+    except Exception as e:  # noqa: BLE001 - Worker darf nicht kippen
+        print(f"[brain-loops] Nachfasser nicht gestartet: {e}", flush=True)
+
     # Log-Retrainer (lebt sonst in der HTTP-Lifespan) — hier optional nachziehen,
     # damit der Worker auch das inkrementelle EventRoutingHead-Training uebernimmt.
     if getattr(state, "event_routing_head", None) is not None:
