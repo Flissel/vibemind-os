@@ -1063,10 +1063,6 @@ def test_denken_route_zu_gross_413(umg):
     assert f.sql == []
 
 
-def test_chat_stand_placeholder():
-    pass
-
-
 def _lauf(id_, status, **extra):
     return {"id": id_, "art": "chat", "nachricht": "n", "antwort": "", "status": status, "hinweise": [], "ergebnis": {},
             "fassung_vorher": 2, "fassung_nachher": None, "denken": "", "schritte": [], "schritt": "", "schritt_nr": 0,
