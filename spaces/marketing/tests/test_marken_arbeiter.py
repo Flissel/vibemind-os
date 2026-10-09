@@ -88,7 +88,7 @@ class Fragen:
     def __init__(self, *antworten):
         self.antworten, self.gesehen = list(antworten), []
 
-    def __call__(self, system, nachrichten):
+    def __call__(self, system, nachrichten, denken=None):
         self.gesehen.append((system, [dict(n) for n in nachrichten]))
         a = self.antworten.pop(0)
         if isinstance(a, Exception):

@@ -17,13 +17,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import warnings
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from PIL import Image, ImageOps
 
-from spaces.marketing.claw import (agent_prompt, agent_strom, agent_werkzeuge, bildplaetze, markenprofil, markenwissen,
-                                   unterlagen)
+from spaces.marketing.claw import (agent_prompt, agent_strom, agent_werkzeuge, bildplaetze, denkspur, markenprofil,
+                                   markenwissen, unterlagen)
 from spaces.marketing.workers.bild_worker import ApiFehler, _grund, tls_kontext, umgebung_laden
 
 PORT = 8134
@@ -103,6 +103,9 @@ class ChatApi:
     def gestoppt(self, aid, bloecke: dict | None) -> dict:
         return self._post(f"/{aid}/gestoppt", {"bloecke": bloecke})
 
+    def denken(self, aid, denken: str, schritte: list[dict]) -> dict:
+        return self._post(f"/{aid}/denken", {"denken": denken, "schritte": schritte})
+
 
 def frage(system: str, nachrichten: list[dict], url: str = LLM_URL, modell: str = MODELL) -> str:
     """Eine Anfrage an den OpenAI-kompatiblen Shim (kein tool_calls, nur Text)."""
@@ -123,11 +126,14 @@ def frage(system: str, nachrichten: list[dict], url: str = LLM_URL, modell: str 
     return text
 
 
-def frage_strom(system: str, nachrichten: list[dict], url: str = LLM_URL, modell: str = MODELL) -> Iterator[str]:
+def frage_strom(system: str, nachrichten: list[dict], url: str = LLM_URL, modell: str = MODELL,
+                denken: Callable[[str], None] | None = None) -> Iterator[str]:
     """Wie frage, aber als SSE-Strom des Shims: liefert jedes Text-Stueck (delta.content), sobald es da ist.
     Fehler-Chunk (finish_reason "error"), Abbruch ohne Abschluss, Muell oder eine leere Antwort => LlmFehler.
     Schliesst der Aufrufer den Strom (close), wird die Verbindung zum Shim geschlossen."""
     koerper = {"model": modell, "stream": True, "marketing_stream": True, "marketing_ohne_werkzeuge": True, "messages": [{"role": "system", "content": system}, *nachrichten]}
+    if denken is not None:
+        koerper["marketing_denken"] = True
     req = urllib.request.Request(url.rstrip("/") + "/chat/completions",
                                  data=json.dumps(koerper).encode("utf-8"), method="POST",
                                  headers={"Content-Type": "application/json"})
@@ -151,7 +157,11 @@ def frage_strom(system: str, nachrichten: list[dict], url: str = LLM_URL, modell
                     abgeschlossen = True
                     break
                 wahl = json.loads(daten)["choices"][0]
-                inhalt = (wahl.get("delta") or {}).get("content") or ""
+                d = wahl.get("delta") or {}
+                gedacht = d.get("reasoning_content")
+                if denken is not None and isinstance(gedacht, str) and gedacht:
+                    denken(gedacht)
+                inhalt = d.get("content") or ""
                 if wahl.get("finish_reason") == "error":
                     raise LlmFehler(("Shim: " + inhalt)[:200] if inhalt else "Shim-Fehler")
                 if wahl.get("finish_reason") == "stop":
@@ -170,6 +180,20 @@ def frage_strom(system: str, nachrichten: list[dict], url: str = LLM_URL, modell
 
 HALTEN_TAKT_S = 60
 FREMD = (404, 409, 422)      # Auftrag gehoert uns nicht mehr
+
+
+def spur_senden(api, aid):
+    """Senden fuer die Denkspur: False = Auftrag gehoert uns nicht mehr; sonst True (auch bei Netzfehler:
+    der naechste Takt versucht es erneut, der Auftrag laeuft weiter)."""
+    def senden(denken: str, schritte: list[dict]) -> bool:
+        try:
+            api.denken(aid, denken, schritte)
+        except ApiFehler as e:
+            return e.code not in FREMD
+        except (OSError, ValueError):
+            return True
+        return True
+    return senden
 
 
 class _Halter:
@@ -274,8 +298,10 @@ class _Live:
     Stand unveraendert - entscheidend bleibt die Gesamtpruefung am Ende. Meldet gedrosselt als Zwischenstand;
     die Antwort darauf kann _Stopp oder _Verloren ausloesen."""
 
-    def __init__(self, api, aid, original: dict, medien: set, uhr, drossel_s: float):
+    def __init__(self, api, aid, original: dict, medien: set, uhr, drossel_s: float,
+                 spur: denkspur.Spur | None = None):
         self.api, self.aid, self.original, self.medien = api, aid, original, medien
+        self.spur = spur
         self.uhr, self.drossel_s = uhr, drossel_s
         self.gesendet_am = None
         self.neu_beginnen()
@@ -313,6 +339,8 @@ class _Live:
         self.nr += 1
         self.schritt = str(a.get("schritt") or werkzeug)[:SCHRITT_MAX]
         self.offen = True
+        if self.spur is not None:
+            self.spur.schritt(self.schritt)
 
     def melden(self, immer: bool = False) -> None:
         if not (self.offen or immer):
@@ -344,12 +372,14 @@ class _Live:
 
 
 def _strom_lesen(fragen_strom, nachrichten, live: _Live, halter,
-                 system: str = agent_prompt.SYSTEM) -> tuple[str, list[str]]:
+                 system: str = agent_prompt.SYSTEM, spur: denkspur.Spur | None = None) -> tuple[str, list[str]]:
     """Liest einen Strom ganz; jede neue vollstaendige Aenderung geht sofort in den Live-Stand.
     Liefert den ganzen Text und die Lesefehler des StromLesers (unlesbare Aenderungen)."""
     live.neu_beginnen()
     leser = agent_strom.StromLeser()
-    strom = iter(fragen_strom(system, nachrichten))
+    if spur is not None:
+        spur.schritt("Frage an Claude")
+    strom = iter(fragen_strom(system, nachrichten, denken=spur.denken if spur is not None else None))
     try:
         for stueck in strom:
             if halter.verloren.is_set():
@@ -549,12 +579,15 @@ def chat_bearbeiten(api, auftrag, fragen_strom=frage_strom, uhr=time.monotonic, 
 
     def zurueckgeben(text: str) -> str:
         versucht.append(1)
+        spur.ende()
         api.zurueck(aid, text)
         return "fehler"
-    live = _Live(api, aid, auftrag.get("bloecke") or {}, set(auftrag.get("medien") or []), uhr, drossel_s)
+    spur = denkspur.Spur(spur_senden(api, aid), uhr=uhr)
+    live = _Live(api, aid, auftrag.get("bloecke") or {}, set(auftrag.get("medien") or []), uhr, drossel_s, spur=spur)
     try:
-        return _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, zurueckgeben, live)
+        return _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, zurueckgeben, live, spur)
     except _Stopp as s:
+        spur.ende()
         try:
             api.gestoppt(aid, live.gueltig if s.art == "behalten" else None)
         except (ApiFehler, OSError, ValueError):
@@ -568,7 +601,8 @@ def chat_bearbeiten(api, auftrag, fragen_strom=frage_strom, uhr=time.monotonic, 
         return "fehler"
 
 
-def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, zurueckgeben, live: _Live) -> str:
+def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, zurueckgeben, live: _Live,
+                spur: denkspur.Spur) -> str:
     medien = list(auftrag.get("medien") or [])
     bilder: list[tuple[str, str]] = []
     with halten(api, aid, halten_takt_s) as halter:      # Anhaenge laden kann dauern
@@ -613,7 +647,7 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
         with halten(api, aid, halten_takt_s) as halter:
             while True:
                 try:
-                    text, leser_fehler = _strom_lesen(fragen_strom, nachrichten, live, halter, system)
+                    text, leser_fehler = _strom_lesen(fragen_strom, nachrichten, live, halter, system, spur)
                     break
                 except LlmFehler as e:    # Shim nicht erreichbar oder Strom mittendrin abgebrochen
                     if halter.verloren.is_set():
@@ -647,10 +681,12 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
                     return "fehler"
                 grund = api.pruefen(aid, bloecke)
                 if grund:
+                    spur.schritt(f"Schönheitsprüfung: {grund}")
                     raise agent_werkzeuge.WerkzeugFehler(grund)
         except (agent_prompt.AntwortFehler, agent_werkzeuge.WerkzeugFehler) as e:
             fehler = str(e)
             if versuch == 1:
+                spur.korrektur()
                 nachrichten += [{"role": "assistant", "content": text},
                                 {"role": "user", "content": agent_prompt.korrektur_text(fehler)}]
                 continue
@@ -673,6 +709,11 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
             hinweise[vor:vor] = notiz_hinweise
             if titel:
                 text_antwort += "\n\n" + "\n".join(f"Notiz in Rowboat abgelegt: {t}" for t in titel)
+        if bildauftraege:
+            spur.schritt(f"Bilder beauftragt: {len(bildauftraege)}")
+        if ergebnis.geaendert:
+            spur.schritt("Fassung gespeichert")
+        spur.ende()
         antwort_vm = api.fertig(aid, {
             "antwort": _mit_hinweisen(hinweise, text_antwort),
             "bloecke": bloecke if ergebnis.geaendert else None,

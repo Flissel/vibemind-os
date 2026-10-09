@@ -55,6 +55,11 @@ class Api:
     def gestoppt(self, aid, bloecke):
         self.log.append(("gestoppt", aid, bloecke)); return {"status": "fertig"}
 
+    def denken(self, aid, denken, schritte):
+        self.denk = getattr(self, "denk", [])
+        self.denk.append(("denken", denken, [dict(x) for x in schritte]))
+        return {"ok": True}
+
     def aufrufe(self, name):
         return [e for e in self.log if e[0] == name]
 
@@ -64,7 +69,7 @@ class Fragen:
     def __init__(self, *antworten):
         self.antworten, self.gesehen = list(antworten), []
 
-    def __call__(self, system, nachrichten):
+    def __call__(self, system, nachrichten, denken=None):
         self.gesehen.append((system, [dict(n) for n in nachrichten]))
         a = self.antworten.pop(0)
         if isinstance(a, Exception):
@@ -162,7 +167,7 @@ class Uhr:
 def test_shim_dauerhaft_down_gibt_nach_180_s_zurueck_und_verlaengert_dazwischen():
     uhr, api = Uhr(), Api()
 
-    def tot(system, nachrichten):
+    def tot(system, nachrichten, denken=None):
         raise cw.LlmFehler("down")
     assert cw.chat_bearbeiten(api, AUFTRAG, tot, uhr, uhr.schlafen) == "fehler"
     assert api.aufrufe("zurueck")[0][2] == "Der Assistent ist gerade nicht erreichbar"
@@ -181,7 +186,7 @@ def test_verlorene_vergabe_bricht_ohne_zurueck_ab():
     uhr, api = Uhr(), Api()
     api.weiter = lambda aid: False
 
-    def tot(system, nachrichten):
+    def tot(system, nachrichten, denken=None):
         raise cw.LlmFehler("down")
     assert cw.chat_bearbeiten(api, AUFTRAG, tot, uhr, uhr.schlafen) == "fehler"
     assert api.aufrufe("zurueck") == []
@@ -296,7 +301,7 @@ import time
 def test_keepalive_ruft_weiter_waehrend_langsamer_frage():
     api, auf, frei = Api(), threading.Event(), threading.Event()
 
-    def langsam(system, nachrichten):
+    def langsam(system, nachrichten, denken=None):
         deadline = time.monotonic() + 5
         while len(api.aufrufe("weiter")) < 3 and time.monotonic() < deadline:
             time.sleep(0.005)
@@ -313,7 +318,7 @@ def test_keepalive_auch_in_der_korrekturfrage():
     api = Api()
     zaehler = []
 
-    def langsam(system, nachrichten):
+    def langsam(system, nachrichten, denken=None):
         zaehler.append(len(api.aufrufe("weiter")))
         deadline = time.monotonic() + 5
         start = len(api.aufrufe("weiter"))
@@ -328,7 +333,7 @@ def test_verlorene_vergabe_waehrend_der_frage_kein_fertig():
     api = Api()
     api.weiter = lambda aid: (api.log.append(("weiter", aid)), False)[1]
 
-    def langsam(system, nachrichten):
+    def langsam(system, nachrichten, denken=None):
         deadline = time.monotonic() + 5
         while not api.aufrufe("weiter") and time.monotonic() < deadline:
             time.sleep(0.005)
@@ -349,7 +354,7 @@ def test_shim_fenster_startet_je_frage_neu():
     uhr, api = Uhr(), Api()
     n = []
 
-    def fragen(system, nachrichten):
+    def fragen(system, nachrichten, denken=None):
         n.append(1)
         if len(n) == 1:
             uhr.t += 170           # erste Frage dauert lange, klappt aber
@@ -444,7 +449,7 @@ class Strom:
     def __init__(self, uhr, *runden):
         self.uhr, self.runden, self.gesehen, self.geschlossen = uhr, list(runden), [], 0
 
-    def __call__(self, system, nachrichten):
+    def __call__(self, system, nachrichten, denken=None):
         self.gesehen.append([dict(n) for n in nachrichten])
         runde = self.runden.pop(0)
         if isinstance(runde, Exception):
@@ -1296,3 +1301,179 @@ def test_i5_ohne_markenlogo_keine_zeile():
     fragen = Fragen(GUT)
     cw.chat_bearbeiten(Api(), _auftrag(markenlogo=None), fragen)
     assert "MARKENLOGO" not in _prompt(fragen)
+
+
+# ---- Denkspur: Denken anfordern und Editor-Spur -------------------------------------------
+def _sse_zeilen(*deltas):
+    zeilen = [b"data: " + json.dumps({"choices": [{"delta": d, "finish_reason": None}]}).encode() + b"\n\n"
+              for d in deltas]
+    zeilen.append(b"data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}]}).encode() + b"\n\n")
+    zeilen.append(b"data: [DONE]\n\n")
+    return zeilen
+
+
+class _SseAntwort:
+    def __init__(self, zeilen):
+        self.zeilen = zeilen
+
+    def __iter__(self):
+        return iter(self.zeilen)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _sse_urlopen(gesendet, *deltas):
+    def urlopen(req, timeout=None, context=None):
+        gesendet["body"] = json.loads(req.data)
+        return _SseAntwort(_sse_zeilen(*deltas))
+    return urlopen
+
+
+def test_frage_strom_trennt_denken_und_inhalt(monkeypatch):
+    gesendet = {}
+    monkeypatch.setattr(cw.urllib.request, "urlopen", _sse_urlopen(
+        gesendet, {"reasoning_content": "Let me"}, {"content": '{"a":'}, {"reasoning_content": " think"},
+        {"content": "1}"}))
+    gedacht = []
+    teile = list(cw.frage_strom("S", [{"role": "user", "content": "x"}], denken=gedacht.append))
+    assert "".join(teile) == '{"a":1}'
+    assert "".join(gedacht) == "Let me think"
+    assert gesendet["body"]["marketing_denken"] is True
+
+
+def test_frage_strom_ohne_denken_fordert_nichts_an(monkeypatch):
+    gesendet = {}
+    monkeypatch.setattr(cw.urllib.request, "urlopen", _sse_urlopen(
+        gesendet, {"reasoning_content": "Let me"}, {"content": '{"a":'}, {"reasoning_content": " think"},
+        {"content": "1}"}))
+    assert "".join(cw.frage_strom("S", [{"role": "user", "content": "x"}])) == '{"a":1}'
+    assert "marketing_denken" not in gesendet["body"]
+
+
+def test_chatapi_denken_route(monkeypatch):
+    api, g = _api_mit_antwort(monkeypatch, b'{"ok": true}')
+    schritte = [{"zeit": "10:00:00", "text": "Schritt"}]
+    assert api.denken("a1", "Gedanke", schritte) == {"ok": True}
+    assert g["url"] == "https://vm/api/chat/arbeiter/a1/denken" and g["methode"] == "POST"
+    assert json.loads(g["data"]) == {"denken": "Gedanke", "schritte": schritte} and g["key"] == "GEHEIM"
+
+
+class DenkStrom:
+    """Fake fuer frage_strom: je Aufruf eine Runde (Text oder Exception); ruft denken(...) wie der echte Strom."""
+    def __init__(self, *runden, gedanke="Let me think"):
+        self.runden, self.gedanke, self.denken_gesehen = list(runden), gedanke, []
+
+    def __call__(self, system, nachrichten, denken=None):
+        self.denken_gesehen.append(denken)
+        runde = self.runden.pop(0)
+        if isinstance(runde, Exception):
+            raise runde
+        return self._lauf(runde, denken)
+
+    def _lauf(self, text, denken):
+        if denken is not None:
+            denken(self.gedanke)
+        yield text
+
+
+EDIT_GUT = json.dumps({"antwort": "Erledigt.", "aenderungen": [
+    {"werkzeug": "farben_setzen", "backdropColor": "#ff0000", "schritt": "Titel kuerzen"}]})
+
+
+def _denk_texte(api):
+    return [d[1] for d in getattr(api, "denk", [])]
+
+
+def test_editor_spur_schritte_und_ende():
+    uhr, api = Uhr(), Api()
+    strom = DenkStrom(EDIT_GUT)
+    assert cw.chat_bearbeiten(api, AUFTRAG, strom, uhr, uhr.schlafen, halten_takt_s=60) == "fertig"
+    assert callable(strom.denken_gesehen[0])
+    letzte = api.denk[-1]
+    assert "Let me think" in letzte[1]
+    assert [s["text"] for s in letzte[2]] == ["Frage an Claude", "Titel kuerzen", "Fassung gespeichert"]
+    assert all(set(s) == {"zeit", "text"} for s in letzte[2])
+
+
+def test_korrekturrunde_in_spur():
+    uhr, api = Uhr(), Api()
+    strom = DenkStrom("kein json", EDIT_GUT)
+    assert cw.chat_bearbeiten(api, AUFTRAG, strom, uhr, uhr.schlafen, halten_takt_s=60) == "fertig"
+    letzte = api.denk[-1]
+    assert "— Korrekturrunde —" in letzte[1]
+    assert "Korrekturrunde" in [s["text"] for s in letzte[2]]
+
+
+def test_schoenheitspruefung_als_schritt():
+    uhr = Uhr()
+    api = Api(pruefen=["knopf: #ffffff auf #f66c1e unter 3.0:1"])
+    strom = DenkStrom(EDIT_GUT, EDIT_GUT)
+    assert cw.chat_bearbeiten(api, AUFTRAG, strom, uhr, uhr.schlafen, halten_takt_s=60) == "fertig"
+    assert "Schönheitsprüfung: knopf: #ffffff auf #f66c1e unter 3.0:1" in [s["text"] for s in api.denk[-1][2]]
+
+
+def test_stopp_sendet_spur_vor_gestoppt():
+    uhr, api = Uhr(), Api()
+    api.zwischen = [{"weiter": False, "grund": "stopp", "stopp": "verwerfen"}]
+    api.denk = []
+    echt = api.gestoppt
+    api.gestoppt = lambda aid, bloecke: (api.denk.append(("gestoppt",)), echt(aid, bloecke))[1]
+    strom = DenkStrom(EDIT_GUT)
+    assert cw.chat_bearbeiten(api, AUFTRAG, strom, uhr, uhr.schlafen, halten_takt_s=60) == "gestoppt"
+    namen = [d[0] for d in api.denk]
+    assert namen[-1] == "gestoppt" and namen[-2] == "denken"
+    assert "Let me think" in api.denk[-2][1]
+
+
+def test_aufgeben_sendet_spur_vor_zurueck():
+    uhr, api = Uhr(), Api()
+    api.denk = []
+    echt = api.zurueck
+    api.zurueck = lambda aid, text: (api.denk.append(("zurueck",)), echt(aid, text))[1]
+    strom = DenkStrom("kein json", "wieder kein json")
+    assert cw.chat_bearbeiten(api, AUFTRAG, strom, uhr, uhr.schlafen, halten_takt_s=60) == "fehler"
+    namen = [d[0] for d in api.denk]
+    assert namen[-1] == "zurueck" and namen[-2] == "denken"
+    assert "— Korrekturrunde —" in api.denk[-2][1]
+
+
+def test_denken_route_weg_kippt_auftrag_nicht():
+    uhr, api = Uhr(), Api()
+    aufrufe = []
+
+    def weg(aid, denken, schritte):
+        aufrufe.append(1)
+        raise OSError("Route weg")
+    api.denken = weg
+    assert cw.chat_bearbeiten(api, AUFTRAG, DenkStrom(EDIT_GUT), uhr, uhr.schlafen, halten_takt_s=60) == "fertig"
+    assert aufrufe and len(api.aufrufe("fertig")) == 1 and api.aufrufe("zurueck") == []
+
+
+def test_denken_409_schaltet_spur_ab():
+    uhr, api = Uhr(), Api()
+    aufrufe = []
+
+    def fremd(aid, denken, schritte):
+        aufrufe.append(1)
+        raise cw.ApiFehler(409, "nicht in Arbeit")
+    api.denken = fremd
+    assert cw.chat_bearbeiten(api, AUFTRAG, DenkStrom(EDIT_GUT), uhr, uhr.schlafen, halten_takt_s=60) == "fertig"
+    assert len(aufrufe) == 1
+
+
+def test_spur_senden_uebersetzt_fehler():
+    class A:
+        def __init__(self, fehler):
+            self.fehler = fehler
+
+        def denken(self, aid, denken, schritte):
+            if self.fehler is not None:
+                raise self.fehler
+    assert cw.spur_senden(A(None), "a")("x", []) is True
+    assert cw.spur_senden(A(cw.ApiFehler(404, "x")), "a")("x", []) is False
+    assert cw.spur_senden(A(cw.ApiFehler(500, "x")), "a")("x", []) is True
+    assert cw.spur_senden(A(OSError("weg")), "a")("x", []) is True
