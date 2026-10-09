@@ -147,3 +147,24 @@ def test_dunkler_grund_laesst_lesbaren_akzent():
 def test_heller_grund_unveraendert(akzent):
     assert vm.rollen({"akzent": akzent}, WEISS)["akzent"] == akzent
     assert vm.rollen({"akzent": akzent}, "#faf7f2")["akzent"] == akzent
+
+
+def test_logo_grund_und_dunkel():
+    dok = {"root": {"type": "EmailLayout", "data": {"canvasColor": "#faf7f2", "childrenIds": ["kopf"]}},
+           "kopf": {"type": "Container", "data": {"style": {"backgroundColor": "#080b13"},
+                                                   "props": {"childrenIds": ["marke_logo"]}}},
+           "marke_logo": {"type": "Image", "data": {"props": {"url": "x"}}}}
+    assert vm.logo_grund(dok) == "#080b13" and vm.ist_dunkel("#080b13")
+    dok["kopf"]["data"]["style"] = {}
+    assert vm.logo_grund(dok) == "#faf7f2" and not vm.ist_dunkel("#faf7f2")
+    dok["marke_logo"]["data"]["style"] = {"backgroundColor": "#1A1A1A"}
+    assert vm.logo_grund(dok) == "#1a1a1a"
+    assert vm.logo_grund({"root": {"data": {}}}) == "#ffffff"
+    assert not vm.ist_dunkel("kaputt") and not vm.ist_dunkel(None)
+
+
+def test_logo_ablegen_fuer_logo_dunkel(tmp_path):
+    roh = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+    g = {"logo_dunkel": "data:image/png;base64," + base64.b64encode(roh).decode()}
+    assert vm.logo_ablegen(g, "radhaus", str(tmp_path), "logo_dunkel").startswith("medien:logo-radhaus-")
+    assert vm.logo_ablegen(g, "radhaus", str(tmp_path)) is None

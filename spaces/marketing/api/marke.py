@@ -176,10 +176,10 @@ def marke_hinweis_aus(iid: str, x_pult_key: str | None = Header(None)):
     return {"ok": True}
 
 
-def _logo_verweis(vorschlag: dict, mandant: str) -> str | None:
+def _logo_verweis(vorschlag: dict, mandant: str, schluessel: str = "logo") -> str | None:
     """Logo des Vorschlags als Medienname der Firma: "anhang:<name>" oder ein ueber /logo
     abgelegter Name. "web:<n>" (noch nicht geladen) und fremde Bilder gibt es nicht."""
-    roh = vorschlag.get("logo")
+    roh = vorschlag.get(schluessel)
     if not isinstance(roh, str):
         return None
     name = roh[len("anhang:"):] if roh.startswith("anhang:") else roh
@@ -228,8 +228,10 @@ def marke_vorschau(vid: str, mandant: str | None = None, format: str = "mail", b
     if anzeige in schriften.REGISTER and text in schriften.REGISTER:
         gestalt["schriften"] = {"anzeige": anzeige, "text": text}
     logo = _logo_verweis(vorschlag, m)
+    dunkel = _logo_verweis(vorschlag, m, "logo_dunkel") if logo else None
     fertig, _ = _vorlage_fuellen(vorlage["bloecke"], m, {"laden": z.get("name"), "layout": None, "gestalt": gestalt},
-                                 logo=f"medien:{logo}" if logo else None)
+                                 logo=f"medien:{logo}" if logo else None,
+                                 logo_dunkel=f"medien:{dunkel}" if dunkel else None)
     betreff = _muster_einsetzen(fertig, vorschlag.get("mustertext"))
     return _bloecke_html(fertig, betreff, "", z.get("pflichtteil"), fmt, basis)
 

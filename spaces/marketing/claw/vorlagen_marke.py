@@ -74,9 +74,46 @@ def rollen(gestalt: dict | None, grund: str) -> dict[str, str]:
     }
 
 
-def logo_ablegen(gestalt: dict | None, mandant: str, ordner: str) -> str | None:
+DUNKEL_GRENZE = 0.2          # Hintergrund-Leuchtdichte, unter der logo_dunkel gilt (Spec 2026-10-09 §1)
+
+
+def ist_dunkel(farbe) -> bool:
+    return isinstance(farbe, str) and bool(_HEX.match(farbe)) and leuchtdichte(farbe) < DUNKEL_GRENZE
+
+
+def _kinder(block) -> list:
+    data = block.get("data") if isinstance(block, dict) and isinstance(block.get("data"), dict) else {}
+    props = data.get("props") if isinstance(data.get("props"), dict) else {}
+    kinder = list(data.get("childrenIds") or []) + list(props.get("childrenIds") or [])
+    for spalte in props.get("columns") or []:
+        if isinstance(spalte, dict):
+            kinder += list(spalte.get("childrenIds") or [])
+    return kinder
+
+
+def logo_grund(dok: dict, bid: str = "marke_logo") -> str:
+    """Grund unter dem Logo-Block: eigener Hintergrund, sonst der des naechsten Vorfahren mit Hintergrund,
+    sonst canvasColor der Wurzel, sonst Weiss."""
+    eltern = {kind: id_ for id_, b in dok.items() for kind in _kinder(b) if isinstance(kind, str)}
+    knoten, gesehen = bid, set()
+    while isinstance(knoten, str) and knoten != "root" and knoten not in gesehen:
+        gesehen.add(knoten)
+        b = dok.get(knoten)
+        data = b.get("data") if isinstance(b, dict) and isinstance(b.get("data"), dict) else {}
+        stil = data.get("style") if isinstance(data.get("style"), dict) else {}
+        farbe = str(stil.get("backgroundColor") or "")
+        if _HEX.match(farbe):
+            return farbe.lower()
+        knoten = eltern.get(knoten)
+    wurzel = dok.get("root") if isinstance(dok.get("root"), dict) else {}
+    daten = wurzel.get("data") if isinstance(wurzel.get("data"), dict) else {}
+    farbe = str(daten.get("canvasColor") or "")
+    return farbe.lower() if _HEX.match(farbe) else "#ffffff"
+
+
+def logo_ablegen(gestalt: dict | None, mandant: str, ordner: str, schluessel: str = "logo") -> str | None:
     g = gestalt if isinstance(gestalt, dict) else {}
-    m = _LOGO.match(str(g.get("logo") or ""))
+    m = _LOGO.match(str(g.get(schluessel) or ""))
     if not m or not ordner or not os.path.isdir(ordner) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,40}", mandant or ""):
         return None
     try:

@@ -1058,11 +1058,31 @@ def test_naechster_ohne_markenlogo_und_lesefehler_verliert_nichts(umg):
     f.antworten += [[{"a": {"id": AID, "art": "chat", "nachricht": "n", "mandant": "vibemind"}}], _sicht(),
                     [{"laden": "Vibemind", "layout": None, "gestalt": None}]]
     a = c.post("/api/chat/arbeiter/naechster", headers=HB).json()["auftrag"]
-    assert a["markenlogo"] is None
+    assert a["markenlogo"] is None and a["markenlogo_dunkel"] is None
     f.antworten += [[{"a": {"id": AID, "art": "chat", "nachricht": "n", "mandant": "vibemind"}}], _sicht()]
     f.fehler += [None, None, RuntimeError("db weg")]
     r = c.post("/api/chat/arbeiter/naechster", headers=HB)
     assert r.status_code == 200 and r.json()["auftrag"]["markenlogo"] is None
+
+
+def test_naechster_traegt_auch_die_dunkle_fassung(umg):
+    import base64
+    import hashlib
+    f, ordner, c = umg
+    roh, b64 = _png_b64()
+    puffer = io.BytesIO()
+    Image.new("RGBA", (20, 10), (255, 255, 255, 255)).save(puffer, "PNG")
+    dunkel = puffer.getvalue()
+    f.antworten += [[{"a": {"id": AID, "art": "chat", "nachricht": "n", "mandant": "vibemind"}}], _sicht(),
+                    [{"laden": "Vibemind", "layout": "marke-vibemind",
+                      "gestalt": {"akzent": "#b45309", "logo": f"data:image/png;base64,{b64}",
+                                  "logo_dunkel": "data:image/png;base64," + base64.b64encode(dunkel).decode()}}]]
+    a = c.post("/api/chat/arbeiter/naechster", headers=HB).json()["auftrag"]
+    hell_name = f"logo-vibemind-{hashlib.sha256(roh).hexdigest()[:10]}.png"
+    dunkel_name = f"logo-vibemind-{hashlib.sha256(dunkel).hexdigest()[:10]}.png"
+    assert a["markenlogo"] == f"medien:{hell_name}" and a["markenlogo_dunkel"] == f"medien:{dunkel_name}"
+    assert a["medien"][:2] == [hell_name, dunkel_name]
+    assert (ordner / dunkel_name).read_bytes() == dunkel
 
 
 # ─── Denkspur (Spec 2026-10-09, Migration 065) ──────────────────────────

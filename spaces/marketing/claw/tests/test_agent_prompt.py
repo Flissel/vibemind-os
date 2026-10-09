@@ -363,3 +363,12 @@ def test_nutzer_text_markenschriften_und_lesbar_nur_wenn_gegeben():
     leer = ap.nutzer_text(_auftrag(), [])
     assert "MARKENSCHRIFTEN" not in leer and "LESBARE" not in leer
     assert leer == ap.nutzer_text(_auftrag(), [], markenschriften=None, markenlesbar={})
+
+
+def test_markenlogo_dunkel_im_kontext_und_regel_im_system():
+    t = ap.nutzer_text({"nachricht": "Logo rein"}, [], markenlogo="logo-x-1.png",
+                       markenlogo_dunkel="logo-x-2.png")
+    assert "MARKENLOGO (Marke): medien:logo-x-1.png" in t
+    assert "MARKENLOGO DUNKEL (Marke, für dunkle Flächen): medien:logo-x-2.png" in t
+    assert "MARKENLOGO DUNKEL" in ap.SYSTEM and "0,2" in ap.SYSTEM
+    assert "MARKENLOGO DUNKEL" not in ap.nutzer_text({"nachricht": "x"}, [], markenlogo="logo-x-1.png")

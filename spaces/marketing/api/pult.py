@@ -279,7 +279,8 @@ def _laden_lesen(m: str) -> dict:
         f"WHERE m.id = {lit(m)}") or {}
 
 
-def _vorlage_fuellen(dok: dict, m: str, laden: dict, logo: str | None = None) -> tuple[dict, str | None]:
+def _vorlage_fuellen(dok: dict, m: str, laden: dict, logo: str | None = None,
+                    logo_dunkel: str | None = None) -> tuple[dict, str | None]:
     """Vorlage mit der Marke des Ladens fuellen (Spec 2026-10-01 §5): Farbrollen, Name, Logo-Datei,
     tech-Grafiken. Gemeinsam fuer "Neu aus Vorlage" und die Vorlagen-Vorschau. Gibt das fertige
     Dokument und den Namen des Standard-Layouts (oder None) zurueck. Das Schriftpaar der Marke
@@ -289,7 +290,11 @@ def _vorlage_fuellen(dok: dict, m: str, laden: dict, logo: str | None = None) ->
     werte: dict = vorlagen_marke.rollen(laden.get("gestalt"), grund)
     ordner = _erzeugt_ordner()
     werte["laden"] = str(laden.get("laden") or m)
-    logo = logo or vorlagen_marke.logo_ablegen(laden.get("gestalt"), m, ordner)
+    gestalt = laden.get("gestalt")
+    if logo is None:         # Logo aus der Gestalt: dann gilt auch deren dunkle Fassung
+        logo = vorlagen_marke.logo_ablegen(gestalt, m, ordner)
+        if logo and logo_dunkel is None:
+            logo_dunkel = vorlagen_marke.logo_ablegen(gestalt, m, ordner, "logo_dunkel")
     if logo:
         werte["logo"] = logo
     rollen_tab = ((dok.get("root") or {}).get("data") or {}).get("rollen") or {}
@@ -298,6 +303,8 @@ def _vorlage_fuellen(dok: dict, m: str, laden: dict, logo: str | None = None) ->
     if "glow_bild" in rollen_tab.values():
         werte["glow_bild"] = vorlagen_grafik.glow(werte["akzent"], ordner) or "medien:platzhalter-4x3.png"
     fertig = vorlagen_marke.einsetzen(dok, werte)
+    if logo and logo_dunkel and vorlagen_marke.ist_dunkel(vorlagen_marke.logo_grund(fertig)):
+        fertig = vorlagen_marke.einsetzen(dok, {**werte, "logo": logo_dunkel})   # dunkle Flaeche: logo_dunkel
     paar = _schriftpaar(laden.get("gestalt"))
     if paar:
         fertig.setdefault("root", {}).setdefault("data", {})["schriften"] = paar

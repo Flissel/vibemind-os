@@ -1,4 +1,5 @@
 """Marken-Routen (Pult + Arbeiter) ohne echte DB (FalscheDB wie test_pult_api)."""
+import base64
 import io
 import json
 import re
@@ -825,3 +826,41 @@ def test_logo_auch_im_bearbeitungs_auftrag(umg):
     f.antworten.append([dict(JOB, art="bearbeitung")])
     r = _logo(c, _bild())
     assert r.status_code == 200 and re.fullmatch(r"marke-radhaus-logo-[0-9a-f]{10}\.png", r.json()["name"])
+
+
+TECH = json.loads((MARKE / "vorlagen" / "newsletter" / "tech.json").read_text(encoding="utf-8"))["bloecke"]
+
+
+def test_vorlage_nimmt_logo_dunkel_auf_dunklem_grund(umg):
+    from spaces.marketing.api import pult
+    from spaces.marketing.claw import vorlagen_marke
+    _, ordner, _ = umg
+    hell_b64 = base64.b64encode(_bild()).decode()
+    dunkel_b64 = base64.b64encode(_bild(groesse=(41, 30))).decode()
+    gestalt = {"akzent": "#b45309", "logo": f"data:image/png;base64,{hell_b64}",
+               "logo_dunkel": f"data:image/png;base64,{dunkel_b64}"}
+    laden = {"laden": "Radhaus", "layout": None, "gestalt": gestalt}
+    hell = vorlagen_marke.logo_ablegen(gestalt, "radhaus", str(ordner))
+    dunkel = vorlagen_marke.logo_ablegen(gestalt, "radhaus", str(ordner), "logo_dunkel")
+    fertig, _ = pult._vorlage_fuellen(TECH, "radhaus", laden)
+    assert fertig["marke_logo"]["data"]["props"]["url"] == dunkel          # tech: Kopf #080b13
+    fertig, _ = pult._vorlage_fuellen(STUDIO, "radhaus", laden)
+    assert fertig["marke_logo"]["data"]["props"]["url"] == hell            # studio: heller Grund
+    ohne = {**laden, "gestalt": {"akzent": "#b45309", "logo": gestalt["logo"]}}
+    fertig, _ = pult._vorlage_fuellen(TECH, "radhaus", ohne)
+    assert fertig["marke_logo"]["data"]["props"]["url"] == hell            # ohne logo_dunkel wie heute
+
+
+def test_vorschau_reicht_logo_dunkel_des_vorschlags_weiter(umg, monkeypatch):
+    from spaces.marketing.api import marke
+    f, _, c = umg
+    gesehen = {}
+    monkeypatch.setattr(marke, "_logo_verweis", lambda v, m, schluessel="logo": v.get(schluessel))
+
+    def fuellen(dok, m, laden, logo=None, logo_dunkel=None):
+        gesehen.update(logo=logo, logo_dunkel=logo_dunkel)
+        return json.loads(json.dumps(dok)), None          # Kopie: STUDIO bleibt fuer andere Tests unberuehrt
+    monkeypatch.setattr(marke, "_vorlage_fuellen", fuellen)
+    _vorschau_antworten(f, dict(VORSCHLAG, logo="hell.png", logo_dunkel="dunkel.png"))
+    assert c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?mandant=radhaus", headers=H).status_code == 200
+    assert gesehen == {"logo": "medien:hell.png", "logo_dunkel": "medien:dunkel.png"}

@@ -1326,6 +1326,16 @@ def test_i5_ohne_markenlogo_keine_zeile():
     assert "MARKENLOGO" not in _prompt(fragen)
 
 
+def test_agent_bekommt_die_dunkle_logo_fassung_als_mediendatei():
+    fragen = Fragen(GUT)
+    assert cw.chat_bearbeiten(Api(), _auftrag(medien=["foto.jpg"], markenlogo="medien:logo-vibemind-0123456789.png",
+                                              markenlogo_dunkel="medien:logo-vibemind-abcdefabcd.png"),
+                              fragen) == "fertig"
+    p = _prompt(fragen)
+    assert "MARKENLOGO DUNKEL (Marke, für dunkle Flächen): medien:logo-vibemind-abcdefabcd.png" in p
+    assert "MEDIEN (3): logo-vibemind-0123456789.png, logo-vibemind-abcdefabcd.png, foto.jpg" in p
+
+
 # ---- Denkspur: Denken anfordern und Editor-Spur -------------------------------------------
 def _sse_zeilen(*deltas):
     zeilen = [b"data: " + json.dumps({"choices": [{"delta": d, "finish_reason": None}]}).encode() + b"\n\n"

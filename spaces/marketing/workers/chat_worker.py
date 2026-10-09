@@ -638,15 +638,19 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
         hinweise.insert(0, str(auftrag["medien_hinweis"]))
     angehaengt = [n for n, _ in bilder]
     # Markenlogo (von der VM als Mediendatei der Firma abgelegt, I5): fuer "… und Logo" setzbar
-    roh_logo = auftrag.get("markenlogo")
+    roh_logo, roh_dunkel = auftrag.get("markenlogo"), auftrag.get("markenlogo_dunkel")
     markenlogo = roh_logo[len("medien:"):] if isinstance(roh_logo, str) and roh_logo.startswith("medien:") else ""
-    vorne = angehaengt + ([markenlogo] if markenlogo and markenlogo not in angehaengt else [])
+    markenlogo_dunkel = (roh_dunkel[len("medien:"):] if markenlogo and isinstance(roh_dunkel, str)
+                         and roh_dunkel.startswith("medien:") else "")
+    marke_medien = [n for n in (markenlogo, markenlogo_dunkel) if n and n not in angehaengt]
+    vorne = angehaengt + marke_medien
     medien = vorne + [m for m in medien if m not in vorne]   # Anhaenge und Markenlogo zuerst, auch live erlaubt
     live.medien.update(vorne)
     text_nutzer = agent_prompt.nutzer_text(auftrag, medien, unterlagen=unterlagen_text, auswahl_text=auswahl_text,
                                            hinweise=hinweise, bilder=bilder, markenwissen=wissen.text,
                                            mandant_name=name, notizen_text=wissen.notizen,
                                            markenfarben=markenfarben, markenlogo=markenlogo,
+                                           markenlogo_dunkel=markenlogo_dunkel,
                                            markenschriften=markenschriften, markenlesbar=markenlesbar,
                                            feedback=[f for f in (auftrag.get("rueckmeldungen_offen") or [])
                                                      if isinstance(f, dict) and isinstance(f.get("text"), str)])

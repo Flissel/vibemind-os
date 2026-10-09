@@ -439,19 +439,20 @@ def _rueckmeldungen_offen(inhalt) -> list[dict]:
     return [z for z in zeilen if isinstance(z, dict)]
 
 
-def _markenlogo(mandant) -> str | None:
-    """Logo aus dem Standard-Layout (Spiegel der Marke) als Mediendatei der Firma ablegen ->
-    "medien:logo-<firma>-<hash>.png" (I5: "… und Logo" braucht einen Namen, den der Agent setzen darf).
-    Gleiche Ablage wie "Neu aus Vorlage" (vorlagen_marke.logo_ablegen); der Name traegt die Firma und
-    gilt damit nur fuer sie. Wirft nie: der Auftrag ist schon vergeben."""
+def _markenlogos(mandant) -> tuple[str | None, str | None]:
+    """Logo und dunkle Fassung aus dem Standard-Layout (Spiegel der Marke) als Mediendateien der Firma ablegen
+    -> ("medien:logo-<firma>-<hash>.png" | None, dito | None). Wirft nie: der Auftrag ist schon vergeben."""
     if not isinstance(mandant, str) or not mandant:
-        return None
+        return None, None
     try:
         laden = _laden_lesen(mandant)
     except HTTPException as e:
         log.warning("Markenlogo nicht lesbar: %s", e.detail)
-        return None
-    return vorlagen_marke.logo_ablegen(laden.get("gestalt"), mandant, _erzeugt_ordner())
+        return None, None
+    ordner = _erzeugt_ordner()
+    logo = vorlagen_marke.logo_ablegen(laden.get("gestalt"), mandant, ordner)
+    dunkel = vorlagen_marke.logo_ablegen(laden.get("gestalt"), mandant, ordner, "logo_dunkel") if logo else None
+    return logo, dunkel
 
 
 @arbeiter_router.post("/naechster")
@@ -470,10 +471,10 @@ def arbeiter_naechster(x_bild_key: str | None = Header(None)):
             a["mandant_name"] = m
             a["medien_hinweis"] = ZUORDNUNG_FEHLT
         a["rueckmeldungen_offen"] = _rueckmeldungen_offen(a.get("inhalt"))
-        a["markenlogo"] = _markenlogo(m)
-        if a["markenlogo"]:
-            name = a["markenlogo"][len("medien:"):]
-            a["medien"] = [name] + [n for n in a.get("medien") or [] if n != name]
+        a["markenlogo"], a["markenlogo_dunkel"] = _markenlogos(m)
+        vorne = [x[len("medien:"):] for x in (a["markenlogo"], a["markenlogo_dunkel"]) if x]
+        if vorne:
+            a["medien"] = vorne + [n for n in a.get("medien") or [] if n not in vorne]
         antwort = {"auftrag": a}
     else:
         antwort = {"auftrag": None}
