@@ -477,3 +477,85 @@ def anwenden(dok: dict, aenderungen: list, medien: set[str]) -> Ergebnis:
         raise WerkzeugFehler(f"{e.werkzeug}: {e.grund}") from None
     return Ergebnis(bloecke=lauf.b, geaendert=lauf.b != dok, bildauftraege=auftraege,
                     export_vorschlag=export, notiz=lauf.notiz or "")
+
+
+# ---- Nachspielen auf eine neuere Fassung (Spec 2026-10-09-editor-parallele-runden §1) ------------------------
+UEBERSPRUNGEN = "Übersprungen, weil eine andere Runde inzwischen den Entwurf geändert hat: "
+NEU_WERKZEUGE = ("flaeche_anlegen",)
+
+
+def neu_aufloesen(wert, neu_ids: list):
+    """Ersetzt neu:<n> durch die id, die die n-te flaeche_anlegen bekommen hat. Ohne bekannte id bleibt der Verweis
+    stehen, dann lehnt anwenden die Aenderung ab."""
+    if isinstance(wert, str):
+        m = NEU.match(wert)
+        if m and int(m.group(1)) <= len(neu_ids) and neu_ids[int(m.group(1)) - 1]:
+            return neu_ids[int(m.group(1)) - 1]
+        return wert
+    if isinstance(wert, dict):
+        return {k: v if k == "schritt" else neu_aufloesen(v, neu_ids) for k, v in wert.items()}
+    if isinstance(wert, list):
+        return [neu_aufloesen(v, neu_ids) for v in wert]
+    return wert
+
+
+@dataclass
+class Nachspiel:
+    bloecke: dict
+    geaendert: bool
+    angewandt: list[dict]
+    uebersprungen: list[str]
+    bildauftraege: list[dict] = field(default_factory=list)
+    export_vorschlag: dict | None = None
+    notiz: str = ""
+
+
+def nachspielen(dok: dict, aenderungen: list, medien: set[str]) -> Nachspiel:
+    """Spielt eine Aenderungsliste einzeln auf dok nach. Jede Aenderung laeuft durch anwenden (dieselben Pruefungen);
+    eine ungueltige wird uebersprungen und gemeldet, der Stand bleibt. neu:<n> zeigt auf die Flaeche, die die n-te
+    flaeche_anlegen HIER bekommen hat (neue ids; eine uebersprungene zaehlt mit). Bildauftraege und der
+    Export-Vorschlag gelten nur, wenn ihr Platz bzw. ihre Flaechen am Ende noch da sind."""
+    if not isinstance(aenderungen, list):
+        raise WerkzeugFehler("Die Änderungen müssen eine Liste sein")
+    if len(aenderungen) > MAX_AENDERUNGEN:
+        raise WerkzeugFehler(f"Höchstens {MAX_AENDERUNGEN} Änderungen je Antwort")
+    if not isinstance(dok, dict) or not isinstance((dok.get("root") or {}).get("data", {}).get("childrenIds"), list):
+        raise WerkzeugFehler("Newsletter hat kein gültiges root")
+    stand, neu_ids = dok, []
+    angewandt: list[dict] = []
+    weg: list[str] = []
+    bild: list[tuple[str, dict]] = []
+    export, notiz = None, ""
+    for a in aenderungen:
+        werkzeug = a.get("werkzeug") if isinstance(a, dict) else None
+        schritt = str((a.get("schritt") if isinstance(a, dict) else None) or werkzeug or "Änderung")[:MAX_SCHRITT]
+        vorher = set(stand)
+        try:
+            erg = anwenden(stand, [neu_aufloesen(a, neu_ids)], medien)
+        except WerkzeugFehler:
+            weg.append(UEBERSPRUNGEN + schritt)
+            if werkzeug in NEU_WERKZEUGE:
+                neu_ids.append(None)
+            continue
+        if werkzeug in NEU_WERKZEUGE:
+            neue = [k for k in erg.bloecke if k not in vorher]
+            neu_ids.append(neue[0] if len(neue) == 1 else None)
+        stand = erg.bloecke
+        angewandt.append(a)
+        bild += [(schritt, b) for b in erg.bildauftraege]
+        if erg.export_vorschlag is not None:
+            export = erg.export_vorschlag
+        if erg.notiz:
+            notiz = erg.notiz
+    plaetze = {p.id for p in bildplaetze.finde(stand)}
+    bildauftraege = []
+    for schritt, b in bild:                 # spaetere Aenderungen derselben Liste koennen den Platz geloescht haben
+        if b["platz"] in plaetze:
+            bildauftraege.append(b)
+        else:
+            weg.append(UEBERSPRUNGEN + schritt)
+    if export is not None:
+        pruefer = _Lauf(stand, medien)
+        export = {**export, "flaechen": [f for f in export["flaechen"] if pruefer.ist_flaeche(f)]}
+    return Nachspiel(bloecke=stand, geaendert=stand != dok, angewandt=angewandt, uebersprungen=weg,
+                     bildauftraege=bildauftraege, export_vorschlag=export, notiz=notiz)

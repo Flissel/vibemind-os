@@ -419,3 +419,70 @@ def test_schritt_ist_bei_farben_setzen_keine_farbe():
     e = lauf([{"werkzeug": "farben_setzen", "backdropColor": "#000000", "schritt": "Hintergrund dunkel"}])
     assert e.bloecke["root"]["data"]["backdropColor"] == "#000000"
     assert "schritt" not in e.bloecke["root"]["data"]
+
+
+# ---- Nachspielen (Spec 2026-10-09-editor-parallele-runden §1) ----------------------------------
+def _ohne(dok, bid):
+    d = copy.deepcopy(dok)
+    d.pop(bid)
+    d["root"]["data"]["childrenIds"] = [k for k in d["root"]["data"]["childrenIds"] if k != bid]
+    return d
+
+
+def test_nachspielen_ueberspringt_geloeschten_block_mit_hinweis():
+    liste = [{"werkzeug": "block_aendern", "id": "kopf", "props": {"text": "Neu"}, "schritt": "Titel ändern"},
+             {"werkzeug": "farben_setzen", "backdropColor": "#000000", "schritt": "Grund dunkel"}]
+    n = aw.nachspielen(_ohne(DOK, "kopf"), liste, MEDIEN)
+    assert n.uebersprungen == [aw.UEBERSPRUNGEN + "Titel ändern"]
+    assert n.geaendert and n.bloecke["root"]["data"]["backdropColor"] == "#000000" and "kopf" not in n.bloecke
+    assert n.angewandt == [liste[1]]
+
+
+def test_nachspielen_neue_flaeche_bekommt_neue_id_und_neu_verweis_folgt():
+    liste = [fl(), {"werkzeug": "hintergrund_setzen", "flaeche": "neu:1", "farbe": "#112233"}]
+    n = aw.nachspielen(DOK, liste, MEDIEN)
+    fid = [k for k, b in n.bloecke.items() if "gestaltung" in b.get("data", {}).get("props", {})][0]
+    assert fid.startswith("agent-") and n.bloecke[fid]["data"]["props"]["gestaltung"]["hintergrund"] == "#112233"
+    assert "neu:1" not in str(n.bloecke) and n.uebersprungen == []
+
+
+def test_uebersprungene_flaeche_haelt_die_nummerierung():
+    """Review Focus 2: die erste flaeche_anlegen scheitert - neu:2 trifft trotzdem die zweite, neu:1 wird uebersprungen."""
+    liste = [{**fl(nach="weg"), "schritt": "Fläche eins"}, {**fl(), "schritt": "Fläche zwei"},
+             {"werkzeug": "hintergrund_setzen", "flaeche": "neu:1", "farbe": "#111111", "schritt": "Eins dunkel"},
+             {"werkzeug": "hintergrund_setzen", "flaeche": "neu:2", "farbe": "#222222", "schritt": "Zwei dunkel"}]
+    n = aw.nachspielen(DOK, liste, MEDIEN)
+    flaechen = [k for k, b in n.bloecke.items() if "gestaltung" in b.get("data", {}).get("props", {})]
+    assert len(flaechen) == 1
+    assert n.bloecke[flaechen[0]]["data"]["props"]["gestaltung"]["hintergrund"] == "#222222"
+    assert n.uebersprungen == [aw.UEBERSPRUNGEN + "Fläche eins", aw.UEBERSPRUNGEN + "Eins dunkel"]
+
+
+def test_nachspielen_bildauftrag_ohne_platz_wird_verworfen():
+    liste = [{"werkzeug": "bild_erzeugen", "platz": "held", "hinweis": "Kerzen", "schritt": "Bild beauftragen"},
+             {"werkzeug": "farben_setzen", "textColor": "#000000"}]
+    assert aw.nachspielen(DOK, liste, MEDIEN).bildauftraege == [{"platz": "held", "modus": "neu", "hinweis": "Kerzen"}]
+    n = aw.nachspielen(_ohne(DOK, "held"), liste, MEDIEN)
+    assert n.bildauftraege == [] and n.uebersprungen == [aw.UEBERSPRUNGEN + "Bild beauftragen"]
+
+
+def test_nachspielen_ohne_konflikt_wie_anwenden():
+    liste = [{"werkzeug": "block_aendern", "id": "text1", "props": {"text": "Hi"}},
+             {"werkzeug": "entwurf_speichern", "notiz": "kurz"},
+             {"werkzeug": "export_vorschlagen", "newsletter": True, "flaechen": []}]
+    n, e = aw.nachspielen(DOK, liste, MEDIEN), lauf(liste)
+    assert n.bloecke == e.bloecke and n.notiz == e.notiz == "kurz" and n.export_vorschlag == e.export_vorschlag
+    assert n.uebersprungen == [] and n.angewandt == liste and DOK["text1"]["data"]["props"]["text"] == "Hallo"
+
+
+def test_nachspielen_nichts_passt_mehr():
+    liste = [{"werkzeug": "block_loeschen", "id": "kopf", "schritt": "Kopf weg"}]
+    n = aw.nachspielen(_ohne(DOK, "kopf"), liste, MEDIEN)
+    assert not n.geaendert and n.angewandt == [] and n.uebersprungen == [aw.UEBERSPRUNGEN + "Kopf weg"]
+
+
+def test_nachspielen_kaputte_liste_wirft():
+    with pytest.raises(WerkzeugFehler):
+        aw.nachspielen(DOK, "keine Liste", MEDIEN)
+    with pytest.raises(WerkzeugFehler):
+        aw.nachspielen({"root": {}}, [], MEDIEN)

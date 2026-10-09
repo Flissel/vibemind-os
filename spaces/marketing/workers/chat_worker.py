@@ -261,22 +261,8 @@ class _Verloren(Exception):
 
 
 # Werkzeuge, deren Flaeche Claude spaeter mit neu:<n> anspricht (agent_werkzeuge._Lauf.neu)
-NEU_WERKZEUGE = ("flaeche_anlegen",)
-
-
-def _neu_aufloesen(wert, neu_ids: list):
-    """Ersetzt neu:<n> durch die id, die die n-te flaeche_anlegen im Live-Stand bekommen hat. Ohne
-    bekannte id bleibt der Verweis stehen, dann lehnt anwenden die Aenderung ab."""
-    if isinstance(wert, str):
-        m = agent_werkzeuge.NEU.match(wert)
-        if m and int(m.group(1)) <= len(neu_ids) and neu_ids[int(m.group(1)) - 1]:
-            return neu_ids[int(m.group(1)) - 1]
-        return wert
-    if isinstance(wert, dict):
-        return {k: v if k == "schritt" else _neu_aufloesen(v, neu_ids) for k, v in wert.items()}
-    if isinstance(wert, list):
-        return [_neu_aufloesen(v, neu_ids) for v in wert]
-    return wert
+NEU_WERKZEUGE = agent_werkzeuge.NEU_WERKZEUGE
+_neu_aufloesen = agent_werkzeuge.neu_aufloesen     # Live-Stand und Nachspielen loesen gleich auf
 
 
 # zufaellige ids aus agent_werkzeuge (neue_id: agent-<hex6>, Ebenen: e-<hex6>), als JSON-String
