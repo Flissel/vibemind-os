@@ -201,7 +201,7 @@ def frage_strom(system: str, nachrichten: list[dict], url: str = LLM_URL, modell
         raise LlmFehler("Leere Antwort")
 
 
-HALTEN_TAKT_S = 60
+HALTEN_TAKT_S = 40      # drei Verlaengerungen passen in das 2-min-Fenster von 067 _chat_pc_lebt
 FREMD = (404, 409, 422)      # Auftrag gehoert uns nicht mehr
 
 
