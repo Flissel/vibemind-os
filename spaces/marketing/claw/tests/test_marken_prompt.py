@@ -372,5 +372,4 @@ def test_korrekturen_im_vorschlag_nur_mit_heben_nach_oben():
 
 
 def test_prompt_leeres_webseitenfeld_heisst_unveraendert():
-    assert "Ein leeres Webseitenfeld heißt unverändert – melde dafür keine Korrektur." in kp.SYSTEM_PROMPT \
-        if hasattr(kp, "SYSTEM_PROMPT") else True
+    assert "Ein leeres Webseitenfeld heißt unverändert – melde dafür keine Korrektur." in kp.SYSTEM

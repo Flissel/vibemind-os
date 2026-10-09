@@ -722,8 +722,19 @@ def test_tools_fehlt_ohne_ohne_werkzeuge(tmp_path):
     assert "--tools" not in _bauen(bilder_ordner=str(tmp_path))
 
 
-def test_tools_websuche_rueckfall_ohne_websearch(server, protokoll, tmp_path, monkeypatch):
+def test_tools_websuche_rueckfall_ohne_websearch(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_CLI", _cli_huelle(tmp_path))
+    monkeypatch.setenv("FALSCH_MODUS", "websuche_abgelehnt")
     monkeypatch.setenv("FALSCH_ZAEHLER", str(tmp_path / "zaehler.txt"))
-    _sse(server, _web_body(), modus="websuche_abgelehnt")
-    argv = json.loads(protokoll.read_text(encoding="utf-8"))["argv"]
-    assert _tools(argv) == [""]
+    gebaut = []
+    echt = shim._build_command
+
+    def merke(**kw):
+        ergebnis = echt(**kw)
+        gebaut.append(list(ergebnis[0]))
+        return ergebnis
+    monkeypatch.setattr(shim, "_build_command", merke)
+    list(shim.stream_denkend(system_prompt="S", transcript="hi", model=None, timeout=30,
+                             ohne_werkzeuge=True, websuche=True))
+    assert len(gebaut) == 2
+    assert _tools(gebaut[0]) == ["WebSearch"] and _tools(gebaut[1]) == [""]
