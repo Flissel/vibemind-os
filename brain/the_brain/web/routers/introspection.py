@@ -2731,7 +2731,12 @@ async def multihop_execute(request: Request):
                              "ts": __import__("time").time(), "outcome": "plan_ready"})
     except Exception:  # noqa: BLE001
         pass
-    exec_result = await _asyncio.to_thread(pe.execute, plan)
+    # K1: Antwortkanal nur aus der festen Whitelist (nie ein Zustellziel vom Aufrufer
+    # uebernehmen, keine chat_id durchreichen).
+    _kanal_roh = body.get("antwortkanal")
+    _art = _kanal_roh.get("art") if isinstance(_kanal_roh, dict) else None
+    antwortkanal = {"art": _art if isinstance(_art, str) and _art in ("api", "telegram", "dashboard") else "api"}
+    exec_result = await _asyncio.to_thread(pe.execute, plan, antwortkanal=antwortkanal)
     # MH-5a (Phase 0) — top-level plan_id: the reward-capable correlate.
     # POST /api/multihop/plan/{plan_id}/reward and /api/decisions/reward both
     # key on plan_id; the voice bridge reads data.get("plan_id") — nested-only
@@ -2742,6 +2747,26 @@ async def multihop_execute(request: Request):
         "plan_id": plan.plan_id,
         **exec_result,
     }
+
+    # K1: wartet ein Agenten-Auftrag, sofort quittieren - keine LLM-Synthese.
+    _auftraege = []
+    if exec_result.get("pending"):
+        for _sid, _hop in (exec_result.get("executed") or {}).items():
+            _res = _hop.get("result") if isinstance(_hop, dict) else None
+            if isinstance(_hop, dict) and _hop.get("pending") and isinstance(_res, dict) and _res.get("auftrag_id"):
+                _auftraege.append({"auftrag_id": str(_res["auftrag_id"]),
+                                   "agent": _res.get("agent"),
+                                   "capability": _hop.get("capability")})
+    if _auftraege:
+        _a = _auftraege[0]
+        out["auftraege"] = _auftraege
+        out["final_text"] = (f"Auftrag angenommen, Nr. {_a['auftrag_id'][:8]} – zuständig: {_a['agent']}. "
+                             "Das Ergebnis kommt, sobald es geprüft ist.")
+        try:
+            pe.recorder.attach_final(plan.plan_id, out["final_text"])
+        except Exception:  # noqa: BLE001
+            pass
+        return JSONResponse(out)
 
     # Optional final synthesis — Phase 11.T.4 uses asynthesize() so the
     # synth LLM call doesn't burn a threadpool worker.

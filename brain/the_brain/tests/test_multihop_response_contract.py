@@ -39,7 +39,7 @@ class _StubPlanExecutor:
 
     recorder = _StubRecorder()
 
-    def execute(self, plan):
+    def execute(self, plan, **kw):
         return {
             "ok": True,
             "plan": plan.to_dict(),
@@ -53,7 +53,7 @@ class _StubPlanExecutor:
 class _PendingPlanExecutor:
     recorder = _StubRecorder()
 
-    def execute(self, plan):
+    def execute(self, plan, **kw):
         return {
             "ok": False,
             "pending": True,
