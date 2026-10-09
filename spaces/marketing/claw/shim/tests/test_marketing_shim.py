@@ -495,3 +495,61 @@ def test_body_flag_marketing_ohne_werkzeuge_erreicht_die_cli(server, protokoll, 
     server_cfg = json.loads(argv[argv.index("--mcp-config") + 1])["mcpServers"]
     assert ("marketing" in server_cfg) is (not flag)
     assert ("mcp__marketing__versand_beauftragen" in argv) is (not flag)
+
+
+# --- Denken sichtbar -------------------------------------------------------
+def _sse(server, body, modus: str = ""):
+    port = server(modus)
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+    conn.request("POST", "/v1/chat/completions", json.dumps(body),
+                 {"Content-Type": "application/json"})
+    resp = conn.getresponse()
+    return [json.loads(p) for _, p in _chunks(resp) if p != "[DONE]"]
+
+
+def _denk_body(**extra):
+    return {"model": "claude-code-sonnet", "stream": True, "marketing_stream": True,
+            "messages": [{"role": "user", "content": "hi"}], **extra}
+
+
+def test_denk_schalter_nur_auf_anforderung(server, protokoll):
+    _sse(server, _denk_body())
+    argv = json.loads(protokoll.read_text(encoding="utf-8"))["argv"]
+    assert "--thinking-display" not in argv
+    _sse(server, _denk_body(marketing_denken=True))
+    argv = json.loads(protokoll.read_text(encoding="utf-8"))["argv"]
+    i = argv.index("--thinking-display")
+    assert argv[i + 1] == "summarized"
+    assert argv[argv.index("--max-thinking-tokens") + 1] == "4000"
+
+
+def test_marketing_denken_0_schaltet_ab(server, protokoll, monkeypatch):
+    monkeypatch.setenv("MARKETING_DENKEN", "0")
+    _sse(server, _denk_body(marketing_denken=True))
+    argv = json.loads(protokoll.read_text(encoding="utf-8"))["argv"]
+    assert "--thinking-display" not in argv and "--max-thinking-tokens" not in argv
+
+
+def test_denken_kommt_als_reasoning_content(server):
+    chunks = _sse(server, _denk_body(marketing_denken=True))
+    deltas = [c["choices"][0]["delta"] for c in chunks]
+    denken = "".join(d.get("reasoning_content", "") for d in deltas)
+    inhalt = "".join(d.get("content", "") or "" for d in deltas)
+    assert denken == "Let me think about it."
+    assert inhalt == "Antwort"                 # Denken nie im Inhalt
+
+
+def test_rueckfall_ohne_denk_schalter(server):
+    chunks = _sse(server, _denk_body(marketing_denken=True), modus="denken_abgelehnt")
+    deltas = [c["choices"][0]["delta"] for c in chunks]
+    assert "".join(d.get("reasoning_content", "") for d in deltas) == "(Denken nicht verfügbar)"
+    assert "".join(d.get("content", "") or "" for d in deltas) == "eins zwei drei"
+    assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
+
+
+def test_text_stuecke_ohne_mit_denken_ignoriert_thinking():
+    zeilen = ['{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"x"}}}',
+              '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"a"}}}']
+    assert list(shim.text_stuecke(zeilen)) == ["a"]
+    mit = list(shim.text_stuecke(zeilen, mit_denken=True))
+    assert mit == ["x", "a"] and isinstance(mit[0], shim.Denken) and not isinstance(mit[1], shim.Denken)

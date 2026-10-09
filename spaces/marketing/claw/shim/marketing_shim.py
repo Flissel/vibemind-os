@@ -287,6 +287,18 @@ def stream_argv(cli: str, model: str | None) -> list[str]:
     ] + _model_args(model)
 
 
+DENK_TOKEN = 4000
+DENKEN_NICHT_VERFUEGBAR = "(Denken nicht verfügbar)"
+
+
+class Denken(str):
+    """Ein Strom-Stueck mit Claudes (zusammengefasstem) Denken - nie Antworttext."""
+
+
+def _denken_erlaubt() -> bool:
+    return os.environ.get("MARKETING_DENKEN", "1").strip() != "0"
+
+
 def _build_command(
     *,
     system_prompt: str,
@@ -295,12 +307,15 @@ def _build_command(
     streaming: bool,
     bilder_ordner: str | None = None,
     ohne_werkzeuge: bool = False,
+    denken: bool = False,
 ) -> tuple[list[str], str | None, dict[str, str]]:
     """Baut (argv, system_prompt_file, environment) -- gemeinsam fuer beide Pfade."""
 
     cli = resolve_cli()
     if streaming:
         argv = stream_argv(cli, model)
+        if denken and _denken_erlaubt():
+            argv += ["--max-thinking-tokens", str(DENK_TOKEN), "--thinking-display", "summarized"]
     else:
         argv = [cli, "-p", "--output-format", "json"] + _model_args(model)
 
@@ -502,7 +517,7 @@ def run_claude(
     return payload
 
 
-def text_stuecke(zeilen: Iterable[str]) -> Iterator[str]:
+def text_stuecke(zeilen: Iterable[str], mit_denken: bool = False) -> Iterator[str]:
     """Aus stream-json-Zeilen nur die text_delta-Texte liefern.
 
     Alles andere (Signaturen, Metaereignisse, kaputte Zeilen) wird uebersprungen.
@@ -527,6 +542,16 @@ def text_stuecke(zeilen: Iterable[str]) -> Iterator[str]:
                 # Neue Assistenten-Nachricht (nach Werkzeugaufruf): Text davor
                 # sauber trennen, sonst klebt "Ich suche ..." an der Antwort.
                 neuer_turn = geliefert
+            elif (
+                mit_denken
+                and isinstance(event, dict)
+                and event.get("type") == "content_block_delta"
+                and isinstance(delta, dict)
+                and delta.get("type") == "thinking_delta"
+                and isinstance(delta.get("thinking"), str)
+                and delta["thinking"]
+            ):
+                yield Denken(delta["thinking"])
             elif (
                 isinstance(event, dict)
                 and event.get("type") == "content_block_delta"
@@ -557,6 +582,7 @@ def stream_claude(
     response_format: Any = None,
     bilder_ordner: str | None = None,
     ohne_werkzeuge: bool = False,
+    denken: bool = False,
 ) -> Iterator[str]:
     """Startet die CLI mit stream-json und liefert Text-Stuecke, sobald sie kommen."""
 
@@ -567,6 +593,7 @@ def stream_claude(
         streaming=True,
         bilder_ordner=bilder_ordner,
         ohne_werkzeuge=ohne_werkzeuge,
+        denken=denken,
     )
     fehler_datei = tempfile.TemporaryFile()
     proc: subprocess.Popen[str] | None = None
@@ -604,7 +631,7 @@ def stream_claude(
 
             threading.Thread(target=_eingabe, daemon=True).start()
             assert proc.stdout is not None
-            yield from text_stuecke(proc.stdout)
+            yield from text_stuecke(proc.stdout, mit_denken=denken)
             rc = proc.wait()
             if zeit_ueberschritten.is_set():
                 raise ShimError(f"Claude Code CLI timed out after {timeout}s")
@@ -623,6 +650,25 @@ def stream_claude(
             proc.wait()
         fehler_datei.close()
         _unlink_quiet(system_prompt_file)
+
+
+def stream_denkend(**kw: Any) -> Iterator[str]:
+    """stream_claude mit Rueckfall: lehnt die CLI den (undokumentierten) Denk-Schalter ab, bevor
+    etwas kam, einmal ohne ihn - vorher ein Denk-Stueck "(Denken nicht verfuegbar)"."""
+    if not kw.get("denken"):
+        yield from stream_claude(**kw)
+        return
+    geliefert = False
+    try:
+        for stueck in stream_claude(**kw):
+            geliefert = True
+            yield stueck
+        return
+    except ShimError as exc:
+        if geliefert or "unknown option" not in str(exc).lower():
+            raise
+    yield Denken(DENKEN_NICHT_VERFUEGBAR)
+    yield from stream_claude(**{**kw, "denken": False})
 
 
 def to_completion(payload: dict[str, Any], model: str) -> dict[str, Any]:
@@ -706,7 +752,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             try:
                 for text in pieces:
-                    delta: dict[str, Any] = {"content": text}
+                    delta: dict[str, Any] = (
+                        {"reasoning_content": str(text)} if isinstance(text, Denken) else {"content": text})
                     if erster:
                         delta["role"] = "assistant"
                         erster = False
@@ -866,7 +913,7 @@ class Handler(BaseHTTPRequestHandler):
         if body.get("stream") and body.get("marketing_stream") is True:
             self._send_stream(
                 _gebucht(
-                    stream_claude(
+                    stream_denkend(
                         system_prompt=system_prompt,
                         transcript=transcript,
                         model=model,
@@ -874,6 +921,7 @@ class Handler(BaseHTTPRequestHandler):
                         response_format=body.get("response_format"),
                         bilder_ordner=bilder_ordner,
                         ohne_werkzeuge=ohne_werkzeuge,
+                        denken=body.get("marketing_denken") is True,
                     ),
                     budget_start,
                 ),

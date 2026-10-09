@@ -33,6 +33,23 @@ def delta(text):
           '"delta":{"type":"text_delta","text":"%s"}}}' % text, flush=True)
 
 
+def denk_delta(text):
+    print('{"type":"stream_event","event":{"type":"content_block_delta","index":0,'
+          '"delta":{"type":"thinking_delta","thinking":"%s"}}}' % text, flush=True)
+
+
+if modus == "denken_abgelehnt" and "--thinking-display" in argv:
+    sys.stderr.write("error: unknown option '--thinking-display'\n")
+    sys.exit(1)
+if "stream-json" in argv and "--thinking-display" in argv and modus != "denken_abgelehnt":
+    print(START, flush=True)
+    denk_delta("Let me think")
+    denk_delta(" about it.")
+    delta("Antwort")
+    print('{"type":"result","subtype":"success","is_error":false,"result":"Antwort"}', flush=True)
+    sys.exit(0)
+
+
 if modus == "exit":
     sys.stderr.write("kaputt\n")
     sys.exit(3)
