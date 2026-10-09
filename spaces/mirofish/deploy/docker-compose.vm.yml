@@ -6,6 +6,7 @@
 #     das OpenFang-Tor am PC (nur brain-forecaster, scripts/openfang_forecaster_tor.py).
 #   - Neo4j ohne Host-Ports (nur intern), damit nichts mit debian-neo4j-mirofish-1
 #     (7475/7688) kollidiert.
+#   - FLASK_DEBUG hart aus, Ports nur 127.0.0.1 (Tailnet per tailscale serve).
 #   - Image mit festem Namen, damit update.sh einen Rueckweg-Tag setzen kann.
 #
 # Secrets liegen NICHT im Git, sondern in ${MIROFISH_BETRIEB}/.env
@@ -19,9 +20,15 @@ services:
     container_name: mirofish-offline
     env_file:
       - ${MIROFISH_BETRIEB:?MIROFISH_BETRIEB_setzen}/.env
+    environment:
+      # config.py setzt FLASK_DEBUG ohne Angabe auf True; der Werkzeug-Debugger
+      # erlaubt Codeausfuehrung. Hier hart aus, unabhaengig von der .env.
+      - FLASK_DEBUG=false
+    # Nur loopback. Ins Tailnet (nicht LAN) per `tailscale serve --tcp=5101/3000`
+    # auf der VM; die Marketing-API auf der VM nutzt 127.0.0.1:5101 direkt.
     ports:
-      - "3000:3000"
-      - "5101:5001"
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:5101:5001"
     restart: unless-stopped
     volumes:
       - ${MIROFISH_BETRIEB:?MIROFISH_BETRIEB_setzen}/uploads:/app/backend/uploads
