@@ -604,3 +604,78 @@ def test_text_stuecke_ohne_mit_denken_ignoriert_thinking():
     assert list(shim.text_stuecke(zeilen)) == ["a"]
     mit = list(shim.text_stuecke(zeilen, mit_denken=True))
     assert mit == ["x", "a"] and isinstance(mit[0], shim.Denken) and not isinstance(mit[1], shim.Denken)
+
+
+# --- Websuche (Spec 2026-10-09-marke-exakt §2) -------------------------------
+def _web_body(**extra):
+    return _denk_body(marketing_websuche=True, **extra)
+
+
+def _liste(argv, schalter):
+    i, aus = argv.index(schalter) + 1, []
+    while i < len(argv) and not argv[i].startswith("--"):
+        aus.append(argv[i])
+        i += 1
+    return aus
+
+
+def test_websuche_nur_mit_flag(server, protokoll):
+    _sse(server, _denk_body())
+    assert "WebSearch" not in json.loads(protokoll.read_text(encoding="utf-8"))["argv"]
+    _sse(server, _web_body())
+    argv = json.loads(protokoll.read_text(encoding="utf-8"))["argv"]
+    assert "WebSearch" in _liste(argv, "--allowedTools")
+    gesperrt = _liste(argv, "--disallowedTools")
+    assert "WebFetch" in gesperrt and "Bash" in gesperrt and "WebSearch" not in gesperrt
+
+
+def test_websuche_mit_bildern_webfetch_bleibt_gesperrt(tmp_path, monkeypatch):
+    monkeypatch.setattr(shim, "resolve_cli", lambda: "cli")
+    argv = _bauen(ohne_werkzeuge=True, bilder_ordner=str(tmp_path), websuche=True)
+    assert _liste(argv, "--allowedTools")[-2:] == [f"Read({tmp_path}/**)", "WebSearch"]
+    gesperrt = _liste(argv, "--disallowedTools")
+    assert "WebFetch" in gesperrt and "WebSearch" not in gesperrt
+
+
+def test_websuche_genutzt_kommt_als_marketing_werkzeug(server):
+    chunks = _sse(server, _web_body(), modus="websuche_genutzt")
+    deltas = [c["choices"][0]["delta"] for c in chunks]
+    assert [d["marketing_werkzeug"] for d in deltas if "marketing_werkzeug" in d] == ["WebSearch"]
+    assert "".join(d.get("content", "") or "" for d in deltas) == "Antwort"
+
+
+def test_websuche_abgelehnt_einmal_ohne(server, tmp_path, monkeypatch):
+    zaehler = tmp_path / "zaehler.txt"
+    monkeypatch.setenv("FALSCH_ZAEHLER", str(zaehler))
+    chunks = _sse(server, _web_body(), modus="websuche_abgelehnt")
+    deltas = [c["choices"][0]["delta"] for c in chunks]
+    assert [d["marketing_werkzeug"] for d in deltas if "marketing_werkzeug" in d] == ["WebSearch:aus"]
+    assert "".join(d.get("content", "") or "" for d in deltas) == "eins zwei drei"
+    assert chunks[-1]["choices"][0]["finish_reason"] == "stop" and _laeufe(zaehler) == 2
+
+
+def test_rueckfall_reihenfolge_erst_websuche_dann_denken():
+    aufrufe = []
+
+    def kaputt(**kw):
+        aufrufe.append((kw.get("websuche"), kw.get("denken")))
+        raise shim.ShimError("immer kaputt")
+        yield  # pragma: no cover
+
+    original = shim.stream_claude
+    shim.stream_claude = kaputt
+    try:
+        with pytest.raises(shim.ShimError, match="immer kaputt"):
+            list(shim.stream_denkend(websuche=True, denken=True))
+    finally:
+        shim.stream_claude = original
+    assert aufrufe == [(True, True), (False, True), (False, False)]
+
+
+def test_text_stuecke_meldet_websuche_nur_auf_wunsch():
+    zeilen = ['{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":'
+              '{"type":"server_tool_use","id":"s","name":"web_search","input":{}}}}',
+              '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"a"}}}']
+    assert list(shim.text_stuecke(zeilen)) == ["a"]
+    mit = list(shim.text_stuecke(zeilen, mit_werkzeug=True))
+    assert mit == ["WebSearch", "a"] and isinstance(mit[0], shim.Werkzeug) and not isinstance(mit[1], shim.Werkzeug)

@@ -16,9 +16,10 @@ import datetime
 import json
 import re
 import time
+import urllib.parse
 
 from spaces.marketing.claw import (bild_comfy, denkspur, logo_bearbeiten, markenprofil, marken_prompt,
-                                   markenwissen, pdf_bilder, webseite)
+                                   markenwissen, pdf_bilder, webseite, webseite_speicher)
 from spaces.marketing.workers import chat_worker as cw
 from spaces.marketing.workers.bild_worker import ApiFehler
 
@@ -84,15 +85,25 @@ def _firma(auftrag: dict) -> tuple[str, str]:
 # --- Claude --------------------------------------------------------------------------
 
 def _text_holen(api, aid, fragen_strom, nachrichten: list, zustand: dict, uhr, schlafen, halten_takt_s,
-                spur) -> str:
+                spur, *, system=marken_prompt.SYSTEM, websuche=False) -> str:
     """Ganzer Antworttext eines Stroms. Shim weg: Wiederholung bis SHIM_BIS_S, dann _Aufgeben; lehnt der
     Shim die Bilder ab, einmal sofort ohne sie. Verlorene Vergabe => cw._Verloren."""
+    extra: dict = {}
+    if websuche:
+        gemeldet: set[str] = set()
+
+        def werkzeug(w: str) -> None:
+            satz = "Websuche nicht verfügbar" if w == cw.WEBSUCHE_AUS else "Websuche genutzt"
+            if satz not in gemeldet:
+                gemeldet.add(satz)
+                spur.schritt(satz)
+        extra = {"websuche": True, "werkzeug": werkzeug}
     beginn = None
     with cw.halten(api, aid, halten_takt_s) as halter:
         while True:
             try:
                 spur.schritt("Frage an Claude")
-                strom = iter(fragen_strom(marken_prompt.SYSTEM, nachrichten, denken=spur.denken))
+                strom = iter(fragen_strom(system, nachrichten, denken=spur.denken, **extra))
                 try:
                     teile = []
                     for stueck in strom:
@@ -276,62 +287,108 @@ def _logo_bearbeiten(api, aid, lb: dict, textfarbe: str, bilder, logos, laden, b
     return None
 
 
+def _webseite_holen(url_neu: str | None, gemerkt: str | None, mandant: str, webseite_lesen, ordner: str,
+                    jetzt_s: float, spur):
+    """Webseite der Runde: eine Adresse aus der Nachricht, sonst die gemerkte. Frisch (< 24 h, gleiche Adresse)
+    aus dem Zwischenspeicher am PC, sonst mit dem gesicherten Leser gelesen und gemerkt."""
+    url = url_neu or gemerkt
+    if not url:
+        return None
+    fund = webseite_speicher.laden(ordner, mandant, url, jetzt_s)
+    if fund is not None:
+        spur.schritt("Webseite aus Zwischenspeicher")
+    else:
+        fund = webseite_lesen(url)
+        if fund is not None and fund.seiten:
+            webseite_speicher.ablegen(ordner, mandant, url, fund, jetzt_s)
+        spur.schritt(f"Webseite gelesen ({len(fund.seiten)} Seiten)" if fund is not None and fund.seiten
+                     else "Webseite nicht lesbar")
+    if fund is not None and fund.logos:
+        spur.schritt(f"Logo-Kandidaten: {len(fund.logos)}")
+    return fund
+
+
+def _seiten_lesen(urls: list[str], seite_lesen, hinweise: list[str], spur) -> str:
+    """Die `lesen`-Adressen des Agenten mit dem gesicherten Leser (Adresssperre inklusive) -> Material."""
+    teile: list[str] = []
+    for url in urls:
+        host = urllib.parse.urlsplit(url).hostname or url
+        fund = seite_lesen(url)
+        if fund is not None and fund.seiten:
+            spur.schritt(f"Gelesen: {host}")
+            teile += marken_prompt._fund_text(fund)
+        else:
+            spur.schritt(f"Nicht lesbar: {host}")
+            hinweise += list(fund.hinweise) if fund is not None else [f"Webseite {url} nicht lesbar"]
+    return "\n".join(teile)
+
+
 def chat_bearbeiten(api, auftrag: dict, fragen_strom, webseite_lesen, logo_laden, wurzel: str,
-                    uhr, schlafen, halten_takt_s, *, comfy=bild_comfy) -> str:
+                    uhr, schlafen, halten_takt_s, *, comfy=bild_comfy, jetzt=datetime.datetime.now,
+                    seite_lesen=webseite.einzelseite, arbeit_ordner: str | None = None) -> str:
     aid = str(auftrag["id"])
     spur = denkspur.Spur(cw.spur_senden(api, aid), uhr=uhr)
     try:
         return _chat_mit_spur(api, auftrag, aid, spur, fragen_strom, webseite_lesen, logo_laden, wurzel,
-                              uhr, schlafen, halten_takt_s, comfy=comfy)
+                              uhr, schlafen, halten_takt_s, comfy=comfy, jetzt=jetzt, seite_lesen=seite_lesen,
+                              arbeit_ordner=arbeit_ordner or webseite_speicher.ordner())
     except (_Aufgeben, cw._Verloren, ApiFehler, OSError, ValueError):
         _spur_ende(spur)
         raise
 
 
 def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_lesen, logo_laden, wurzel: str,
-                   uhr, schlafen, halten_takt_s, *, comfy) -> str:
-    laden = _einmal(logo_laden)
+                   uhr, schlafen, halten_takt_s, *, comfy, jetzt, seite_lesen, arbeit_ordner: str) -> str:
     mandant, name = _firma(auftrag)
+    laden = _einmal(logo_laden)
+    offen = marken_prompt.offener_vorschlag(auftrag) or {}
     bilder: list[tuple[str, str]] = []
-    with cw.halten(api, aid, halten_takt_s) as halter:          # Anhaenge und Webseite dauern
+    with cw.halten(api, aid, halten_takt_s) as halter:          # Anhaenge, Webseite und Wissen dauern
         bildteile, unterlagen_text, _, hinweise = cw.anhaenge_vorbereiten(api, aid, auftrag, bilder)
-        url = adresse(auftrag.get("nachricht"))
-        fund = webseite_lesen(url) if url else None
-        if url:
-            spur.schritt(f"Webseite gelesen ({len(fund.seiten)} Seiten)" if fund is not None and fund.seiten
-                         else "Webseite nicht lesbar")
-            if fund is not None and fund.logos:
-                spur.schritt(f"Logo-Kandidaten: {len(fund.logos)}")
-        if fund is not None:
-            hinweise += fund.hinweise
         profil = markenprofil.lesen(wurzel, mandant, name)
         hinweise += profil.hinweise
-        wissen = markenwissen.laden(wurzel, mandant, name, str(auftrag.get("nachricht") or ""), ohne_marke=True)
-        hinweise += [h for h in wissen.hinweise if not h.startswith("Kein Markenwissen")]
+        gemerkt = offen.get("webseite") or profil.werte.get("webseite")
+        fund = _webseite_holen(adresse(auftrag.get("nachricht")), gemerkt, mandant, webseite_lesen, arbeit_ordner,
+                               jetzt().timestamp(), spur)
+        if fund is not None:
+            hinweise += fund.hinweise
         logos = list(fund.logos) if fund is not None else []
         bisher = marken_prompt.bisheriges_logo(auftrag)      # Logo des offenen Vorschlags (C1/R14)
         _logo_ansichten(api, aid, bisher, profil, logos, laden, bildteile, bilder)
+        wissen = markenwissen.laden(wurzel, mandant, name, str(auftrag.get("nachricht") or ""), ohne_marke=True)
+        hinweise += [h for h in wissen.hinweise if not h.startswith("Kein Markenwissen")]
     if halter.verloren.is_set():
         return "fehler"
     text_nutzer = marken_prompt.nutzer_text(auftrag, profil, fund, unterlagen_text, bilder, hinweise,
-                                          firmenwissen=wissen.text, notizen=wissen.notizen)
+                                            firmenwissen=wissen.text, notizen=wissen.notizen)
     nachrichten = [{"role": "user", "content": [{"type": "text", "text": text_nutzer}, *bildteile]
                     if bildteile else text_nutzer}]
     zustand = {"mit_bildern": bool(bildteile), "text_nutzer": text_nutzer, "hinweise": hinweise}
     anhaenge = [n for n, h in bilder if h not in marken_prompt.LOGO_ANSICHTEN]
-    for versuch in (1, 2):
-        text = _text_holen(api, aid, fragen_strom, nachrichten, zustand, uhr, schlafen, halten_takt_s, spur)
+    bisher_vorhanden = bool(bisher or profil.logo_pfad)
+    lesen_frei, versuch = True, 1
+    while True:
+        text = _text_holen(api, aid, fragen_strom, nachrichten, zustand, uhr, schlafen, halten_takt_s, spur,
+                           websuche=True)
         try:
             erg = marken_prompt.antwort_lesen(text, anhaenge, len(logos), bisher,
-                                              bisher_vorhanden=bool(bisher or profil.logo_pfad))
-            break
+                                              bisher_vorhanden=bisher_vorhanden, lesen_erlaubt=lesen_frei)
         except marken_prompt.AntwortFehler as e:
             if versuch == 2:
                 raise _Aufgeben(cw.NICHT_UMGESETZT + str(e)) from None
+            versuch = 2
             spur.schritt(f"Antwort geprüft: {e}")
             spur.korrektur()
             nachrichten += [{"role": "assistant", "content": text},
                             {"role": "user", "content": marken_prompt.korrektur_text(str(e))}]
+            continue
+        if erg["lesen"]:                     # hoechstens eine Folgerunde je Auftrag
+            lesen_frei = False
+            material = _seiten_lesen(erg["lesen"], seite_lesen, hinweise, spur)
+            nachrichten += [{"role": "assistant", "content": text},
+                            {"role": "user", "content": marken_prompt.folge_text(material)}]
+            continue
+        break
     if not api.weiter(aid):
         return "fehler"
     vorschlag = erg["vorschlag"]
@@ -340,8 +397,9 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
         spur.ende()
         api.fertig(aid, {"antwort": erg["antwort"], "hinweise": _hinweise(hinweise)})
         return "fertig"
+    if vorschlag.get("webseite") is None and isinstance(offen.get("webseite"), str):
+        vorschlag["webseite"] = offen["webseite"]       # null = bleibt: die Webseite des offenen Vorschlags
     lb = vorschlag.pop("logo_bearbeiten", None)
-    offen = marken_prompt.offener_vorschlag(auftrag) or {}
     bearbeitet = (_logo_bearbeiten(api, aid, lb, vorschlag["text"], bilder, logos, laden, bisher, profil, comfy,
                                    hinweise, spur, halten_takt_s) if lb else None)
     if bearbeitet:
@@ -358,7 +416,6 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
     spur.ende()
     api.vorschlag(aid, {"vorschlag": vorschlag, "antwort": erg["antwort"], "hinweise": _hinweise(hinweise)})
     return "fertig"
-
 
 # --- Spiegel -------------------------------------------------------------------------
 
@@ -543,7 +600,7 @@ def _uebernehmen_mit_spur(api, auftrag: dict, aid: str, spur, wurzel: str, jetzt
 def ein_durchlauf(api, fragen_strom=cw.frage_strom, webseite_lesen=webseite.lesen,
                   logo_laden=webseite.logo_laden, wurzel: str | None = None, jetzt=datetime.datetime.now,
                   uhr=time.monotonic, schlafen=time.sleep, halten_takt_s: float = cw.HALTEN_TAKT_S,
-                  comfy=bild_comfy) -> str:
+                  comfy=bild_comfy, seite_lesen=webseite.einzelseite, arbeit_ordner: str | None = None) -> str:
     auftrag = api.naechster()
     if not auftrag:
         return "leer"
@@ -552,7 +609,8 @@ def ein_durchlauf(api, fragen_strom=cw.frage_strom, webseite_lesen=webseite.lese
     try:
         if auftrag.get("art") == "chat":
             return chat_bearbeiten(api, auftrag, fragen_strom, webseite_lesen, logo_laden, wurzel,
-                                   uhr, schlafen, halten_takt_s, comfy=comfy)
+                                   uhr, schlafen, halten_takt_s, comfy=comfy, jetzt=jetzt, seite_lesen=seite_lesen,
+                                   arbeit_ordner=arbeit_ordner)
         if auftrag.get("art") == "uebernehmen":
             return uebernehmen(api, auftrag, wurzel, jetzt, halten_takt_s)
         raise _Aufgeben(UNBEKANNT)

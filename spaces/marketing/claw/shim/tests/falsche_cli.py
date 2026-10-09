@@ -43,6 +43,16 @@ if zaehler:
     with open(zaehler, "a", encoding="utf-8") as f:
         f.write("lauf" + chr(10))
 
+if modus == "websuche_abgelehnt" and "WebSearch" in argv:
+    sys.stderr.write("error: tool WebSearch is not available\n")
+    sys.exit(1)
+if modus == "websuche_genutzt" and "stream-json" in argv and "WebSearch" in argv:
+    print(START, flush=True)
+    print('{"type":"stream_event","event":{"type":"content_block_start","index":0,'
+          '"content_block":{"type":"server_tool_use","id":"s1","name":"web_search","input":{}}}}', flush=True)
+    delta("Antwort")
+    print('{"type":"result","subtype":"success","is_error":false,"result":"Antwort"}', flush=True)
+    sys.exit(0)
 if modus == "denken_wert_ungueltig" and "--thinking-display" in argv:
     sys.stderr.write("error: option '--thinking-display <mode>' argument 'summarized' is invalid\n")
     sys.exit(1)

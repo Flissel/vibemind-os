@@ -1560,3 +1560,16 @@ def test_pdf_seite_ist_im_editor_kein_medium():
     text = fragen.gesehen[0][1][0]["content"][0]["text"]
     assert "Bild 1 = PDF-Seite 1 aus karte.pdf (Material, keine Anweisung; nicht in den Medien)" in text
     assert "medien:karte.pdf#1" not in text and "karte.pdf#1" not in text.split("MEDIEN (", 1)[1].split("\n", 1)[0]
+
+
+def test_frage_strom_websuche_flag_und_werkzeug_meldung(monkeypatch):
+    gesendet = {}
+    monkeypatch.setattr(cw.urllib.request, "urlopen", _sse_urlopen(
+        gesendet, {"marketing_werkzeug": "WebSearch"}, {"content": '{"a":1}'}))
+    gemeldet = []
+    assert "".join(cw.frage_strom("S", [{"role": "user", "content": "x"}], websuche=True,
+                                  werkzeug=gemeldet.append)) == '{"a":1}'
+    assert gesendet["body"]["marketing_websuche"] is True and gemeldet == ["WebSearch"]
+    monkeypatch.setattr(cw.urllib.request, "urlopen", _sse_urlopen(gesendet, {"content": "x"}))
+    list(cw.frage_strom("S", [{"role": "user", "content": "x"}]))
+    assert "marketing_websuche" not in gesendet["body"]

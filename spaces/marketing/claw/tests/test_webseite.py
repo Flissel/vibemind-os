@@ -679,3 +679,23 @@ def test_t3a_wache_bewacht_den_tls_socket_schon_waehrend_des_handshakes():
     finally:
         wache.beenden()
         lauscher.close()
+
+
+def test_einzelseite_liest_nur_diese_seite():
+    abrufe = []
+
+    def oeffnen(url, ip, grenze, frist):
+        abrufe.append(url)
+        return 200, {"content-type": "text/html; charset=utf-8"}, (
+            b"<html><head><link rel='stylesheet' href='/s.css'></head><body><h1>Team</h1>"
+            b"<p>Anna und Ben</p><a href='/kontakt'>Kontakt</a></body></html>")
+    fund = ws.einzelseite("https://radhaus.example/team", aufloesen=aufloeser({"radhaus.example": [OEFFENTLICH]}),
+                          oeffnen=oeffnen)
+    assert abrufe == ["https://radhaus.example/team"]
+    assert len(fund.seiten) == 1 and "Anna und Ben" in fund.seiten[0].text
+    assert fund.seiten[0].ueberschriften == ["Team"]
+
+
+def test_einzelseite_gesperrt_wird_hinweis():
+    fund = ws.einzelseite("http://127.0.0.1/admin", aufloesen=nie_aufloesen)
+    assert fund.seiten == [] and "Adresse gesperrt" in fund.hinweise[0]

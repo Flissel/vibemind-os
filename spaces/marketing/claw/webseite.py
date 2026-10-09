@@ -633,6 +633,19 @@ def lesen(url: str, *, aufloesen=socket.getaddrinfo, oeffnen=None) -> Fund:
     return fund
 
 
+def einzelseite(url: str, *, aufloesen=socket.getaddrinfo, oeffnen=None) -> Fund:
+    """Nur diese eine Seite (fuer `lesen` des Marken-Agenten): Text und Ueberschriften, keine Unterseiten,
+    keine Stildateien. Gleiche Adresssperre wie lesen; wirft nie."""
+    fund = Fund()
+    try:
+        basis, leser = _seite_lesen(url.strip(), aufloesen, oeffnen or _oeffnen, time.monotonic() + GESAMT_S)
+    except Exception as e:
+        fund.hinweise.append(_hinweis(url, _grund(e)))
+        return fund
+    _Sammlung(fund).seite(basis, leser)
+    return fund
+
+
 def logo_laden(url: str, *, aufloesen=socket.getaddrinfo) -> tuple[bytes, str] | None:
     """Logo-Datei mit denselben Sperren; nur PNG/JPEG bis 2 MB, sonst None."""
     try:

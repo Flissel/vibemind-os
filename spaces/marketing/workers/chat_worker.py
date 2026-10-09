@@ -37,6 +37,7 @@ LLM_URL = os.environ.get("MARKETING_CHAT_LLM_URL", "http://127.0.0.1:8117/v1")
 MODELL = os.environ.get("MARKETING_CHAT_MODELL", "claude-code-sonnet")
 NICHT_ERREICHBAR = "Der Assistent ist gerade nicht erreichbar"
 NICHT_UMGESETZT = "Das habe ich nicht umsetzen können: "
+WEBSUCHE_AUS = "WebSearch:aus"   # wie marketing_shim.WEBSUCHE_AUS
 STAND = {"letzter_lauf": None, "letztes_ergebnis": None}
 
 
@@ -127,13 +128,16 @@ def frage(system: str, nachrichten: list[dict], url: str = LLM_URL, modell: str 
 
 
 def frage_strom(system: str, nachrichten: list[dict], url: str = LLM_URL, modell: str = MODELL,
-                denken: Callable[[str], None] | None = None) -> Iterator[str]:
+                denken: Callable[[str], None] | None = None, websuche: bool = False,
+                werkzeug: Callable[[str], None] | None = None) -> Iterator[str]:
     """Wie frage, aber als SSE-Strom des Shims: liefert jedes Text-Stueck (delta.content), sobald es da ist.
     Fehler-Chunk (finish_reason "error"), Abbruch ohne Abschluss, Muell oder eine leere Antwort => LlmFehler.
     Schliesst der Aufrufer den Strom (close), wird die Verbindung zum Shim geschlossen."""
     koerper = {"model": modell, "stream": True, "marketing_stream": True, "marketing_ohne_werkzeuge": True, "messages": [{"role": "system", "content": system}, *nachrichten]}
     if denken is not None:
         koerper["marketing_denken"] = True
+    if websuche:
+        koerper["marketing_websuche"] = True
     req = urllib.request.Request(url.rstrip("/") + "/chat/completions",
                                  data=json.dumps(koerper).encode("utf-8"), method="POST",
                                  headers={"Content-Type": "application/json"})
@@ -161,6 +165,9 @@ def frage_strom(system: str, nachrichten: list[dict], url: str = LLM_URL, modell
                 gedacht = d.get("reasoning_content")
                 if denken is not None and isinstance(gedacht, str) and gedacht:
                     denken(gedacht)
+                genutzt = d.get("marketing_werkzeug")
+                if werkzeug is not None and isinstance(genutzt, str) and genutzt:
+                    werkzeug(genutzt)
                 inhalt = d.get("content") or ""
                 if wahl.get("finish_reason") == "error":
                     raise LlmFehler(("Shim: " + inhalt)[:200] if inhalt else "Shim-Fehler")

@@ -295,6 +295,14 @@ class Denken(str):
     """Ein Strom-Stueck mit Claudes (zusammengefasstem) Denken - nie Antworttext."""
 
 
+WEBSUCHE = "WebSearch"
+WEBSUCHE_AUS = "WebSearch:aus"
+
+
+class Werkzeug(str):
+    """Strom-Stueck: die CLI hat ein Werkzeug benutzt (oder es ist nicht verfuegbar) - nie Antworttext."""
+
+
 def _denken_erlaubt() -> bool:
     return os.environ.get("MARKETING_DENKEN", "1").strip() != "0"
 
@@ -308,6 +316,7 @@ def _build_command(
     bilder_ordner: str | None = None,
     ohne_werkzeuge: bool = False,
     denken: bool = False,
+    websuche: bool = False,
 ) -> tuple[list[str], str | None, dict[str, str]]:
     """Baut (argv, system_prompt_file, environment) -- gemeinsam fuer beide Pfade."""
 
@@ -386,10 +395,12 @@ def _build_command(
         # Nie das nackte "Read": es liesse die CLI jede Datei des PCs lesen
         # (Prompt-Injection auf .env). Nur der Bildordner ist lesbar.
         cli_tools.append(f"Read({bilder_ordner}/**)")
+    if websuche:
+        cli_tools.append(WEBSUCHE)          # nur Suchen; Seiten liest der gesicherte Leser des Arbeiters
     if cli_tools:
         argv += ["--allowedTools", *cli_tools]
-    if bilder_ordner:
-        argv += ["--disallowedTools", *_BILD_GESPERRT]
+    if bilder_ordner or websuche:
+        argv += ["--disallowedTools", *[t for t in _BILD_GESPERRT if not (websuche and t == WEBSUCHE)]]
 
     # The caller's own prompt asks for opaque artifact references but cannot know
     # how this backend produces one, so the side that supplies the tool documents
@@ -517,7 +528,7 @@ def run_claude(
     return payload
 
 
-def text_stuecke(zeilen: Iterable[str], mit_denken: bool = False) -> Iterator[str]:
+def text_stuecke(zeilen: Iterable[str], mit_denken: bool = False, mit_werkzeug: bool = False) -> Iterator[str]:
     """Aus stream-json-Zeilen nur die text_delta-Texte liefern.
 
     Alles andere (Signaturen, Metaereignisse, kaputte Zeilen) wird uebersprungen.
@@ -542,6 +553,15 @@ def text_stuecke(zeilen: Iterable[str], mit_denken: bool = False) -> Iterator[st
                 # Neue Assistenten-Nachricht (nach Werkzeugaufruf): Text davor
                 # sauber trennen, sonst klebt "Ich suche ..." an der Antwort.
                 neuer_turn = geliefert
+            elif (
+                mit_werkzeug
+                and isinstance(event, dict)
+                and event.get("type") == "content_block_start"
+                and isinstance(event.get("content_block"), dict)
+                and event["content_block"].get("type") in ("tool_use", "server_tool_use")
+                and event["content_block"].get("name") in (WEBSUCHE, "web_search")
+            ):
+                yield Werkzeug(WEBSUCHE)
             elif (
                 mit_denken
                 and isinstance(event, dict)
@@ -583,6 +603,7 @@ def stream_claude(
     bilder_ordner: str | None = None,
     ohne_werkzeuge: bool = False,
     denken: bool = False,
+    websuche: bool = False,
 ) -> Iterator[str]:
     """Startet die CLI mit stream-json und liefert Text-Stuecke, sobald sie kommen."""
 
@@ -594,6 +615,7 @@ def stream_claude(
         bilder_ordner=bilder_ordner,
         ohne_werkzeuge=ohne_werkzeuge,
         denken=denken,
+        websuche=websuche,
     )
     fehler_datei = tempfile.TemporaryFile()
     proc: subprocess.Popen[str] | None = None
@@ -631,7 +653,7 @@ def stream_claude(
 
             threading.Thread(target=_eingabe, daemon=True).start()
             assert proc.stdout is not None
-            yield from text_stuecke(proc.stdout, mit_denken=denken)
+            yield from text_stuecke(proc.stdout, mit_denken=denken, mit_werkzeug=websuche)
             rc = proc.wait()
             if zeit_ueberschritten.is_set():
                 raise ShimError(f"Claude Code CLI timed out after {timeout}s")
@@ -653,23 +675,28 @@ def stream_claude(
 
 
 def stream_denkend(**kw: Any) -> Iterator[str]:
-    """stream_claude mit Rueckfall: scheitert die CLI mit Denk-Schaltern an irgendeinem Fehler, bevor
-    etwas kam, einmal ohne ihn - vorher ein Denk-Stueck "(Denken nicht verfuegbar)"."""
-    if not kw.get("denken"):
-        yield from stream_claude(**kw)
-        return
-    geliefert = False
-    try:
-        for stueck in stream_claude(**kw):
-            geliefert = True
-            yield stueck
-        return
-    except ShimError as exc:
-        if geliefert:
-            raise
-    yield Denken(DENKEN_NICHT_VERFUEGBAR)
-    yield from stream_claude(**{**kw, "denken": False})
-
+    """stream_claude mit Rueckfall: scheitert die CLI, bevor etwas kam, zuerst einmal ohne Websuche
+    (Stueck Werkzeug("WebSearch:aus")), dann ohne Denk-Schalter (Stueck Denken("(Denken nicht verfuegbar)"))."""
+    versuche = [dict(kw)]
+    if kw.get("websuche"):
+        versuche.append({**versuche[-1], "websuche": False})
+    if kw.get("denken"):
+        versuche.append({**versuche[-1], "denken": False})
+    for i, versuch in enumerate(versuche):
+        geliefert = False
+        try:
+            for stueck in stream_claude(**versuch):
+                geliefert = True
+                yield stueck
+            return
+        except ShimError:
+            if geliefert or i == len(versuche) - 1:
+                raise
+        naechster = versuche[i + 1]
+        if versuch.get("websuche") and not naechster.get("websuche"):
+            yield Werkzeug(WEBSUCHE_AUS)
+        if versuch.get("denken") and not naechster.get("denken"):
+            yield Denken(DENKEN_NICHT_VERFUEGBAR)
 
 def to_completion(payload: dict[str, Any], model: str) -> dict[str, Any]:
     text = payload.get("result")
@@ -752,8 +779,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             try:
                 for text in pieces:
-                    delta: dict[str, Any] = (
-                        {"reasoning_content": str(text)} if isinstance(text, Denken) else {"content": text})
+                    if isinstance(text, Denken):
+                        delta: dict[str, Any] = {"reasoning_content": str(text)}
+                    elif isinstance(text, Werkzeug):
+                        delta = {"marketing_werkzeug": str(text)}
+                    else:
+                        delta = {"content": text}
                     if erster:
                         delta["role"] = "assistant"
                         erster = False
@@ -922,6 +953,7 @@ class Handler(BaseHTTPRequestHandler):
                         bilder_ordner=bilder_ordner,
                         ohne_werkzeuge=ohne_werkzeuge,
                         denken=body.get("marketing_denken") is True,
+                        websuche=body.get("marketing_websuche") is True,
                     ),
                     budget_start,
                 ),
