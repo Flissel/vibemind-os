@@ -56,8 +56,11 @@ def test_bestaetigtes_ergebnis_setzt_plan_fort():
     z = Nachfasser(t, validator=Val({"valid": True, "verified": True, "reason": "ok"}),
                    router=Router({"kind": "rule:non_empty_result", "on_fail": "block"}), plan_executor=pe).runde()
     assert t.gesetzt["1"]["verified"] is True and z["fortgesetzt"] == 1
+    assert t.gesetzt["1"]["fortsetzung"] == "laeuft"
+    assert t.ergaenzt == [("1", {**t.gesetzt["1"], "fortsetzung": "fertig"})]
     plan, state, kanal = pe.calls[0]
-    assert state == {"treffer": "treffer A"} and kanal == {"art": "telegram"} and plan.hops[0].step_id == "s2"
+    # M2: Paritaet zum synchronen Pfad (OpenFangExecutor liefert ein dict mit response)
+    assert state == {"treffer": {"response": "treffer A"}} and kanal == {"art": "telegram"} and plan.hops[0].step_id == "s2"
 
 
 def test_fehlender_state_im_rest_gilt_als_leer():
@@ -66,7 +69,7 @@ def test_fehlender_state_im_rest_gilt_als_leer():
     t, pe = Tab(fertige=[_auftrag(plan_rest=rest)]), PE()
     Nachfasser(t, validator=Val({"valid": True, "verified": True}),
                router=Router({"kind": "rule:x"}), plan_executor=pe).runde()
-    assert pe.calls[0][1] == {"treffer": "treffer A"}
+    assert pe.calls[0][1] == {"treffer": {"response": "treffer A"}}
 
 
 def test_leeres_ergebnis_bei_block_ist_nicht_bestaetigt_und_setzt_nicht_fort():
@@ -87,7 +90,8 @@ def test_ueberlappender_lauf_setzt_nicht_doppelt_fort():
 def test_ohne_pruefer_verified_none():
     t = Tab(fertige=[_auftrag()])
     Nachfasser(t, validator=Val({}), router=Router(None), plan_executor=PE()).runde()
-    assert t.gesetzt["1"] == {"verified": None, "reason": "kein Pruefer", "kind": None}
+    assert t.gesetzt["1"] == {"verified": None, "reason": "kein Pruefer", "kind": None,
+                              "fortsetzung": "keine"}
 
 
 def test_beendete_werden_zur_meldung_freigegeben_und_ablaufen_laeuft():
@@ -125,6 +129,7 @@ def test_fortsetzung_wirft_wird_sichtbar():
     t, z = _lauf(Boese())
     (i, p), = t.ergaenzt
     assert i == "1" and p["verified"] is True and p["fortsetzung_fehler"].startswith("ValueError: kaputt")
+    assert p["fortsetzung"] == "fehler"
     assert z["fehler"] == 1 and z["fortgesetzt"] == 0
 
 
@@ -135,9 +140,10 @@ def test_fortsetzung_ok_false_wird_sichtbar():
     assert "fortsetzung_fehler" in t.ergaenzt[0][1] and z["fehler"] == 1
 
 
-def test_erfolgreiche_fortsetzung_ergaenzt_nichts():
+def test_erfolgreiche_fortsetzung_meldet_nur_fertig():
     t, z = _lauf(PE())
-    assert not hasattr(t, "ergaenzt") and z["fortgesetzt"] == 1
+    (i, p), = t.ergaenzt
+    assert p["fortsetzung"] == "fertig" and "fortsetzung_fehler" not in p and z["fortgesetzt"] == 1
 
 
 def test_agent_pruefer_wird_nicht_aufgerufen():
@@ -145,4 +151,83 @@ def test_agent_pruefer_wird_nicht_aufgerufen():
     t = Tab(fertige=[_auftrag()])
     Nachfasser(t, validator=v, router=Router({"kind": "agent:pruefer"}), plan_executor=PE()).runde()
     assert v.calls == []
-    assert t.gesetzt["1"] == {"verified": None, "reason": "agent-Pruefer nicht im Takt", "kind": "agent:pruefer"}
+    assert t.gesetzt["1"] == {"verified": None, "reason": "agent-Pruefer nicht im Takt", "kind": "agent:pruefer",
+                              "fortsetzung": "keine"}
+
+
+# ---- Schlussreview (I3/I7/M1/M2) -----------------------------------------
+
+def test_roh_ergebnis_ist_der_string_leer_wird_none():
+    for ergebnis, erwartet in (("treffer A", "treffer A"), ("", None), ("  \n", None), (None, None)):
+        v = Val({"valid": True, "verified": None})
+        Nachfasser(Tab(fertige=[_auftrag(ergebnis=ergebnis)]), validator=v,
+                   router=Router({"kind": "rule:x"}), plan_executor=PE()).runde()
+        assert v.calls == [erwartet]
+
+
+def test_echter_validator_leeres_ergebnis_nicht_bestaetigt_kein_fortsetzen():
+    # I3: mit dem ECHTEN CapabilityValidator und rule:non_empty_result.
+    from core.capability_validator import CapabilityValidator
+    for leer in ("", "   "):
+        t, pe = Tab(fertige=[_auftrag(ergebnis=leer, plan_rest=_rest())]), PE()
+        z = Nachfasser(t, validator=CapabilityValidator(),
+                       router=Router({"kind": "rule:non_empty_result", "on_fail": "block"}),
+                       plan_executor=pe).runde()
+        assert t.gesetzt["1"]["verified"] is False and pe.calls == []
+        assert t.gesetzt["1"]["fortsetzung"] == "keine" and z["fortgesetzt"] == 0
+
+
+def test_echter_validator_nicht_leeres_ergebnis_setzt_fort():
+    from core.capability_validator import CapabilityValidator
+    t, pe = Tab(fertige=[_auftrag(plan_rest=_rest())]), PE()
+    Nachfasser(t, validator=CapabilityValidator(),
+               router=Router({"kind": "rule:non_empty_result", "on_fail": "block"}), plan_executor=pe).runde()
+    assert t.gesetzt["1"]["verified"] is not False and len(pe.calls) == 1
+
+
+def test_fortsetzung_laeuft_ist_gesetzt_waehrend_der_plan_rest_laeuft():
+    # I7: Zustellung erst nach der Fortsetzung - waehrend execute steht "laeuft".
+    t = Tab(fertige=[_auftrag(plan_rest=_rest())])
+    gesehen = []
+
+    class Beobachter(PE):
+        def execute(self, plan, **kw):
+            gesehen.append(dict(t.gesetzt["1"]))
+            return {"ok": True}
+
+    Nachfasser(t, validator=Val({"valid": True, "verified": True}), router=Router({"kind": "rule:x"}),
+               plan_executor=Beobachter()).runde()
+    assert gesehen[0]["fortsetzung"] == "laeuft"
+    assert t.ergaenzt[-1][1]["fortsetzung"] == "fertig"
+
+
+def test_busy_wird_sichtbarer_fortsetzungsfehler():
+    class Busy(PE):
+        def execute(self, *a, **k): return {"ok": False, "busy": True, "error": "cap"}
+    t, z = _lauf(Busy())
+    (i, p), = t.ergaenzt
+    assert p["fortsetzung"] == "fehler"
+    assert p["fortsetzung_fehler"] == "Brain ausgelastet – bitte erneut anfragen"
+    assert z["fehler"] == 1 and z["fortgesetzt"] == 0
+
+
+def test_leerer_plan_rest_heisst_keine_fortsetzung():
+    for rest in ({}, {"plan": {"plan_id": "p", "intent": "i", "hops": []}}):
+        t, pe = Tab(fertige=[_auftrag(plan_rest=rest)]), PE()
+        Nachfasser(t, validator=Val({"valid": True, "verified": True}), router=Router({"kind": "rule:x"}),
+                   plan_executor=pe).runde()
+        assert pe.calls == [] and t.gesetzt["1"]["fortsetzung"] == "keine"
+        assert not hasattr(t, "ergaenzt")
+
+
+def test_plan_rest_null_wartet_bis_60s_nach_beendet():
+    # M1: NULL = noch nicht geschrieben -> bis 60 s nach beendet warten.
+    from datetime import datetime, timedelta, timezone
+    jetzt = datetime(2026, 10, 9, 12, 0, 0, tzinfo=timezone.utc)
+    frisch = _auftrag(id="f", beendet=(jetzt - timedelta(seconds=10)).isoformat())
+    alt = _auftrag(id="a", beendet=(jetzt - timedelta(seconds=61)).isoformat().replace("+00:00", "Z"))
+    t = Tab(fertige=[frisch, alt])
+    z = Nachfasser(t, validator=Val({"valid": True, "verified": True}), router=Router({"kind": "rule:x"}),
+                   plan_executor=PE(), jetzt=lambda: jetzt.timestamp()).runde()
+    assert "f" not in t.gesetzt and z["wartet"] == 1
+    assert t.gesetzt["a"]["fortsetzung"] == "keine"
