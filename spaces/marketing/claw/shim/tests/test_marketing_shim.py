@@ -547,6 +547,57 @@ def test_rueckfall_ohne_denk_schalter(server):
     assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
 
 
+def _laeufe(zaehler: Path) -> int:
+    return len(zaehler.read_text(encoding="utf-8").splitlines()) if zaehler.exists() else 0
+
+
+def test_rueckfall_bei_anderem_fehlertext(server, tmp_path, monkeypatch):
+    zaehler = tmp_path / "zaehler.txt"
+    monkeypatch.setenv("FALSCH_ZAEHLER", str(zaehler))
+    chunks = _sse(server, _denk_body(marketing_denken=True), modus="denken_wert_ungueltig")
+    deltas = [c["choices"][0]["delta"] for c in chunks]
+    assert "".join(d.get("reasoning_content", "") for d in deltas) == "(Denken nicht verfügbar)"
+    assert "".join(d.get("content", "") or "" for d in deltas) == "eins zwei drei"
+    assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
+    assert _laeufe(zaehler) == 2
+
+
+def test_fehler_nach_erstem_stueck_wird_nicht_wiederholt(server, tmp_path, monkeypatch):
+    zaehler = tmp_path / "zaehler.txt"
+    monkeypatch.setenv("FALSCH_ZAEHLER", str(zaehler))
+    chunks = _sse(server, _denk_body(marketing_denken=True), modus="fehler_nach_stueck")
+    deltas = [c["choices"][0]["delta"] for c in chunks]
+    assert "reasoning_content" not in "".join(d for x in deltas for d in x)
+    assert chunks[-1]["choices"][0]["finish_reason"] == "error"
+    assert _laeufe(zaehler) == 1
+
+
+def test_fehler_ohne_denken_wird_nicht_wiederholt(server, tmp_path, monkeypatch):
+    zaehler = tmp_path / "zaehler.txt"
+    monkeypatch.setenv("FALSCH_ZAEHLER", str(zaehler))
+    chunks = _sse(server, _denk_body(), modus="exit")
+    assert chunks[-1]["choices"][0]["finish_reason"] == "error"
+    assert _laeufe(zaehler) == 1
+
+
+def test_rueckfall_wird_nicht_selbst_wiederholt():
+    aufrufe = []
+
+    def kaputt(**kw):
+        aufrufe.append(kw.get("denken"))
+        raise shim.ShimError("immer kaputt")
+        yield  # pragma: no cover
+
+    original = shim.stream_claude
+    shim.stream_claude = kaputt
+    try:
+        with pytest.raises(shim.ShimError, match="immer kaputt"):
+            list(shim.stream_denkend(denken=True))
+    finally:
+        shim.stream_claude = original
+    assert aufrufe == [True, False]
+
+
 def test_text_stuecke_ohne_mit_denken_ignoriert_thinking():
     zeilen = ['{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"x"}}}',
               '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"a"}}}']

@@ -653,7 +653,7 @@ def stream_claude(
 
 
 def stream_denkend(**kw: Any) -> Iterator[str]:
-    """stream_claude mit Rueckfall: lehnt die CLI den (undokumentierten) Denk-Schalter ab, bevor
+    """stream_claude mit Rueckfall: scheitert die CLI mit Denk-Schaltern an irgendeinem Fehler, bevor
     etwas kam, einmal ohne ihn - vorher ein Denk-Stueck "(Denken nicht verfuegbar)"."""
     if not kw.get("denken"):
         yield from stream_claude(**kw)
@@ -665,7 +665,7 @@ def stream_denkend(**kw: Any) -> Iterator[str]:
             yield stueck
         return
     except ShimError as exc:
-        if geliefert or "unknown option" not in str(exc).lower():
+        if geliefert:
             raise
     yield Denken(DENKEN_NICHT_VERFUEGBAR)
     yield from stream_claude(**{**kw, "denken": False})

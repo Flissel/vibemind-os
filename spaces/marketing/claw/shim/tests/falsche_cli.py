@@ -38,10 +38,23 @@ def denk_delta(text):
           '"delta":{"type":"thinking_delta","thinking":"%s"}}}' % text, flush=True)
 
 
+zaehler = os.environ.get("FALSCH_ZAEHLER")
+if zaehler:
+    with open(zaehler, "a", encoding="utf-8") as f:
+        f.write("lauf" + chr(10))
+
+if modus == "denken_wert_ungueltig" and "--thinking-display" in argv:
+    sys.stderr.write("error: option '--thinking-display <mode>' argument 'summarized' is invalid\n")
+    sys.exit(1)
+if modus == "fehler_nach_stueck" and "stream-json" in argv:
+    print(START, flush=True)
+    delta("halb")
+    sys.stderr.write("abgestuerzt\n")
+    sys.exit(1)
 if modus == "denken_abgelehnt" and "--thinking-display" in argv:
     sys.stderr.write("error: unknown option '--thinking-display'\n")
     sys.exit(1)
-if "stream-json" in argv and "--thinking-display" in argv and modus != "denken_abgelehnt":
+if "stream-json" in argv and "--thinking-display" in argv and modus not in ("denken_abgelehnt", "denken_wert_ungueltig"):
     print(START, flush=True)
     denk_delta("Let me think")
     denk_delta(" about it.")
