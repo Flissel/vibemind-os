@@ -5,8 +5,10 @@
 Regeln (ein laufender Auftrag je Inhalt, Sperre, Vergabe) stehen in den DB-Funktionen
 aus 060; hier nur Formen, Rechnen (Pillow), Dateiablage und Weitergabe.
 Live-Lauf (Spec 2026-10-02-newsletter-agent-live-design.md §2/§3, Migration 061):
-Zwischenstand, Vormerken und Stopp; gestoppte Auftraege schliesst der Arbeiter
-(/gestoppt) oder nach 15 s die VM beim naechsten Stand-Abruf ab."""
+Zwischenstand und Stopp; gestoppte Auftraege schliesst der Arbeiter
+(/gestoppt) oder nach 15 s die VM beim naechsten Stand-Abruf ab.
+Mehrere Runden (Spec 2026-10-09-editor-parallele-runden-design.md, Migration 067): bis zu 3 laufen, 5 warten;
+fertig/gestoppt speichern auf `basis` (Nachspielen am PC), ein verlorenes Rennen meldet {"status": "veraltet"}."""
 from __future__ import annotations
 
 import io
@@ -43,13 +45,14 @@ BILDAUFTRAEGE_MAX = 10
 MEDIEN_MAX = 500
 DATEI_BREITE_MAX, DATEI_HOEHE_MAX, DATEI_KANTE_MIN = 1200, 20000, 64
 NICHT_UMGESETZT = "Das habe ich nicht umsetzen können: "
-GEAENDERT = "Der Newsletter wurde inzwischen geändert – bitte schick die Nachricht noch einmal."
 ZWISCHENSTAND_KOERPER_MAX = 300 * 1024    # ganzer Body; die Bloecke selbst prueft die DB (<= 256 KB)
 SCHRITT_MAX = 80
 SPUR_DENKEN_MAX = 20_100
 SPUR_SCHRITTE_MAX = 60
 SPUR_SCHRITT_MAX = 200
 SPUR_KOERPER_MAX = 256 * 1024
+HINWEISE_MAX, HINWEIS_MAX = 40, 300
+LAUFEND = ("offen", "in_arbeit")
 STOPPS_JE_ABRUF = 2                        # Rechnen kostet; der Rest kommt beim naechsten Abruf
 STOPP_ARTEN = ("behalten", "verwerfen")
 STOPP_UNGUELTIG = "Zwischenstand nicht übernommen: "
@@ -128,10 +131,10 @@ def chat_anlegen(iid: str, payload: dict = Body(...), x_pult_key: str | None = H
     _schluessel(x_pult_key)
     i = _uuid_oder_404(iid)
     nachricht, kontext = _nachricht_und_kontext(payload)
-    zeile = _schreiben(lambda:
-        f"SELECT marketing.pult_chat_anlegen({lit(i)}::uuid, 'chat', {lit(nachricht)}, "
-        f"{lit(json.dumps(kontext, ensure_ascii=False))}::jsonb) AS id")
-    return {"auftrag": str(zeile["id"])}
+    s = _schreiben(lambda:
+        f"SELECT marketing.pult_chat_senden({lit(i)}::uuid, {lit(nachricht)}, "
+        f"{lit(json.dumps(kontext, ensure_ascii=False))}::jsonb) AS s").get("s") or {}
+    return {"auftrag": str(s.get("id")), "status": "wartet" if s.get("status") == "wartet" else "offen"}
 
 
 @pult_router.get("/inhalte/{iid}/chat")
@@ -143,52 +146,29 @@ def chat_stand(iid: str, x_pult_key: str | None = Header(None)):
     verlauf = _lesen(lambda:
         "SELECT * FROM (SELECT id, art, nachricht, antwort, status, hinweise, ergebnis, fassung_vorher, "
         "fassung_nachher, coalesce(denken, '') AS denken, coalesce(schritte, '[]'::jsonb) AS schritte, "
+        "schritt, schritt_nr, stopp, marketing.pult_chat_bild_hinweise(ergebnis) AS bild_hinweise, "
         "erstellt_am::text AS erstellt_am, erstellt_am AS sortiert_am "
-        f"FROM marketing.chat_auftraege WHERE inhalt = {lit(i)}::uuid AND status <> 'wartet' "
+        f"FROM marketing.chat_auftraege WHERE inhalt = {lit(i)}::uuid "
         "ORDER BY erstellt_am DESC LIMIT 30) q ORDER BY sortiert_am")
     for z in verlauf:
         z.pop("sortiert_am", None)
         z["denken"], z["schritte"] = z.get("denken") or "", z.get("schritte") or []
-    live, vorgemerkt = None, None
-    for z in _lesen(lambda:
-            "SELECT id, status, nachricht, schritt, schritt_nr, zwischenstand, stopp, coalesce(denken, '') AS denken, "
-            "coalesce(schritte, '[]'::jsonb) AS schritte FROM marketing.chat_auftraege "
-            f"WHERE inhalt = {lit(i)}::uuid AND status IN ('in_arbeit', 'wartet')"):
-        if z.get("status") == "in_arbeit":
-            live = {"schritt": z.get("schritt") or "", "schritt_nr": z.get("schritt_nr") or 0,
-                    "zwischenstand": z.get("zwischenstand"), "stopp": z.get("stopp"),
-                    "denken": z.get("denken") or "", "schritte": z.get("schritte") or []}
-        else:
-            vorgemerkt = {"id": str(z.get("id")), "nachricht": z.get("nachricht")}
-    return {"laeuft": any(z.get("status") in ("offen", "in_arbeit") for z in verlauf), "verlauf": verlauf,
-            "live": live, "vorgemerkt": vorgemerkt}
-
-
-@pult_router.put("/inhalte/{iid}/chat/vormerkung")
-def chat_vormerken(iid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
-    _schluessel(x_pult_key)
-    i = _uuid_oder_404(iid)
-    nachricht, kontext = _nachricht_und_kontext(payload)
-    v = _schreiben(lambda:
-        f"SELECT marketing.pult_chat_vormerken({lit(i)}::uuid, {lit(nachricht)}, "
-        f"{lit(json.dumps(kontext, ensure_ascii=False))}::jsonb) AS v").get("v") or {}
-    return {"id": str(v.get("id")), "status": v.get("status")}
-
-
-@pult_router.delete("/inhalte/{iid}/chat/vormerkung")
-def chat_vormerkung_loeschen(iid: str, x_pult_key: str | None = Header(None)):
-    _schluessel(x_pult_key)
-    i = _uuid_oder_404(iid)
-    zeile = _schreiben(lambda: f"SELECT marketing.pult_chat_vormerkung_loeschen({lit(i)}::uuid) AS g")
-    return {"geloescht": bool(zeile.get("g"))}
-
-
-@pult_router.post("/inhalte/{iid}/chat/vormerkung/starten")
-def chat_vormerkung_starten(iid: str, x_pult_key: str | None = Header(None)):
-    _schluessel(x_pult_key)
-    i = _uuid_oder_404(iid)
-    zeile = _schreiben(lambda: f"SELECT marketing.pult_chat_vormerkung_starten({lit(i)}::uuid) AS id")
-    return {"auftrag": str(zeile["id"])}
+        z["schritt"], z["schritt_nr"] = z.get("schritt") or "", int(z.get("schritt_nr") or 0)
+        z["bild_hinweise"] = z.get("bild_hinweise") or []
+    neueste = (_lesen_einer(lambda:
+        f"SELECT max(fassung) AS n FROM marketing.inhalt_fassungen WHERE inhalt = {lit(i)}::uuid") or {}).get("n")
+    # Live-Zwischenstand nur bei genau einer laufenden Runde (Spec §2); bei mehreren wechselt die Flaeche erst
+    # beim Fertigwerden.
+    laufend = [z for z in verlauf if z.get("status") in LAUFEND]
+    live = None
+    if len(laufend) == 1 and laufend[0].get("status") == "in_arbeit" and laufend[0].get("art") == "chat":
+        z = laufend[0]
+        zs = _lesen_einer(lambda:
+            f"SELECT zwischenstand FROM marketing.chat_auftraege WHERE id = {lit(str(z['id']))}::uuid") or {}
+        live = {"schritt": z["schritt"], "schritt_nr": z["schritt_nr"], "zwischenstand": zs.get("zwischenstand"),
+                "stopp": z.get("stopp"), "denken": z["denken"], "schritte": z["schritte"]}
+    return {"laeuft": any(z.get("status") in LAUFEND + ("wartet",) for z in verlauf), "verlauf": verlauf,
+            "live": live, "neueste_fassung": neueste}
 
 
 @pult_router.post("/inhalte/{iid}/chat/stopp")
@@ -491,7 +471,21 @@ def arbeiter_weiter(aid: str, x_bild_key: str | None = Header(None)):
     return {"ok": bool(zeile.get("ok"))}
 
 
-def _fremde_neu(a: str, job: dict, bloecke: dict) -> str | None:
+@arbeiter_router.get("/{aid}/neueste")
+def arbeiter_neueste(aid: str, x_bild_key: str | None = Header(None)):
+    """Neueste Fassung des Entwurfs fuer das Nachspielen (Spec 2026-10-09 §1); nur fuer einen Auftrag in Arbeit."""
+    _bild_schluessel(x_bild_key)
+    a = _auftrag_id(aid)
+    job = _in_arbeit(a)
+    z = _lesen_einer(lambda:
+        "SELECT fassung, bloecke FROM marketing.inhalt_fassungen "
+        f"WHERE inhalt = {lit(str(job['inhalt']))}::uuid ORDER BY fassung DESC LIMIT 1")
+    if not z or not isinstance(z.get("bloecke"), dict):
+        raise HTTPException(409, "Der Newsletter hat keine Blöcke")
+    return {"fassung": int(z["fassung"]), "bloecke": z["bloecke"]}
+
+
+def _fremde_neu(a: str, job: dict, bloecke: dict, basis: int | None = None) -> str | None:
     """Verweist die neue Fassung auf ein Bild einer anderen Firma, das die Basisfassung nicht
     schon hatte? Altbestand bleibt unbeanstandet (sonst waere jede Aenderung blockiert)."""
     verweise = set(_MEDIEN_VERWEIS.findall(json.dumps(bloecke, ensure_ascii=False)))
@@ -502,10 +496,11 @@ def _fremde_neu(a: str, job: dict, bloecke: dict) -> str | None:
     fremd = {n for n in verweise if ist_fremd(n, m, s)}
     if not fremd:
         return None
-    basis = _lesen_einer(lambda:
+    bedingung = f"f.fassung = {int(basis)}" if basis is not None else "f.fassung = a.fassung_vorher"
+    alt_dok = _lesen_einer(lambda:
         "SELECT f.bloecke FROM marketing.chat_auftraege a JOIN marketing.inhalt_fassungen f "
-        f"ON f.inhalt = a.inhalt AND f.fassung = a.fassung_vorher WHERE a.id = {lit(a)}::uuid")
-    alt = set(_MEDIEN_VERWEIS.findall(json.dumps((basis or {}).get("bloecke"), ensure_ascii=False)))
+        f"ON f.inhalt = a.inhalt AND {bedingung} WHERE a.id = {lit(a)}::uuid")
+    alt = set(_MEDIEN_VERWEIS.findall(json.dumps((alt_dok or {}).get("bloecke"), ensure_ascii=False)))
     rest = fremd - alt
     return BILD_FREMD + ", ".join(sorted(rest)) if rest else None
 
@@ -550,18 +545,19 @@ def _rechnen_und_pruefen(bloecke: dict) -> tuple[dict | None, list[str], str | N
     return bloecke, h + [b["satz"] for b in schoenheit.bloecke_pruefen(bloecke)], None
 
 
-def _abschliessen_sql(a: str, bloecke: dict | None, hinweis: str) -> dict:
+def _abschliessen_sql(a: str, bloecke: dict | None, hinweis: str, basis: int | None = None) -> dict:
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_chat_stopp_abschliessen({lit(a)}::uuid, "
         + (f"{lit(json.dumps(bloecke, ensure_ascii=False))}::jsonb" if bloecke is not None else "NULL")
-        + f", {lit(hinweis)}) AS e")
+        + f", {lit(hinweis)}, {int(basis) if basis is not None else 'NULL'}) AS e")
     return zeile.get("e") or {}
 
 
-def _stopp_abschliessen(a: str, job: dict, bloecke) -> dict:
-    """Schliesst einen gestoppten Auftrag ab. Nur bei 'behalten' (und noch in_arbeit) wird
-    gerechnet und geprueft; ungueltig => NULL mit Hinweis. Hat der Betreiber inzwischen
-    gespeichert oder lehnt die DB das Speichern ab, zweiter Versuch mit NULL - der Auftrag darf nie in_arbeit haengen bleiben."""
+def _stopp_abschliessen(a: str, job: dict, bloecke, basis: int | None = None, extra: list[str] | None = None) -> dict:
+    """Schliesst einen gestoppten Auftrag ab. Nur bei 'behalten' (und noch in_arbeit) wird gerechnet und geprueft;
+    ungueltig => NULL mit Hinweis. basis/extra: der Arbeiter hat auf eine neuere Fassung nachgespielt. Hat jemand
+    inzwischen gespeichert oder lehnt die DB das Speichern ab, zweiter Versuch mit NULL - der Auftrag darf nie
+    in_arbeit haengen bleiben."""
     hinweis = ""
     if job.get("status") != "in_arbeit" or job.get("stopp") != "behalten" or not isinstance(bloecke, dict):
         bloecke = None
@@ -573,14 +569,15 @@ def _stopp_abschliessen(a: str, job: dict, bloecke) -> dict:
         except Exception as e:         # noqa: BLE001 - kaputter Zwischenstand darf nie haengen bleiben
             bloecke, hinweise, fehler = None, [], f"{type(e).__name__}: {e}"
         hinweis = STOPP_UNGUELTIG + fehler if fehler else "; ".join(hinweise)
+    if extra:
+        hinweis = "; ".join([*extra, hinweis] if hinweis else extra)
     try:
-        return _abschliessen_sql(a, bloecke, hinweis)
+        return _abschliessen_sql(a, bloecke, hinweis, basis if bloecke is not None else None)
     except HTTPException as e:
         if bloecke is None or e.status_code != 422:
             raise                      # 503 bleibt wiederholbar
         if str(e.detail).startswith("Inzwischen gibt es Fassung"):
             return _abschliessen_sql(a, None, STOPP_GESPEICHERT)
-        # Jede andere Ablehnung der DB beim Speichern: wie Verwerfen mit Hinweis, nie in_arbeit lassen
         return _abschliessen_sql(a, None, STOPP_UNGUELTIG + str(e.detail))
 
 
@@ -618,6 +615,17 @@ def arbeiter_pruefen(aid: str, payload: dict = Body(...), x_bild_key: str | None
     return {"fehler": _fremde_neu(a, job, bloecke) or _gestaltung_fehler(bloecke) or _bloecke_fehler(bloecke)}
 
 
+def _basis_und_hinweise(payload: dict) -> tuple[int | None, list[str]]:
+    """basis (Fassung, auf die der Arbeiter nachgespielt hat) und seine Hinweise (Uebersprungenes)."""
+    basis, hinweise = payload.get("basis"), payload.get("hinweise", [])
+    if basis is not None and (isinstance(basis, bool) or not isinstance(basis, int) or not 1 <= basis < 2 ** 31):
+        raise HTTPException(422, "basis muss eine Fassungsnummer sein")
+    if (not isinstance(hinweise, list) or len(hinweise) > HINWEISE_MAX
+            or not all(isinstance(h, str) and len(h) <= HINWEIS_MAX for h in hinweise)):
+        raise HTTPException(422, f"hinweise muss eine Liste mit hoechstens {HINWEISE_MAX} Texten sein")
+    return basis, hinweise
+
+
 def _bildauftraege_formen(roh) -> list[dict]:
     """Form-Vorpruefung; ungueltige Eintraege bekommen einen grund (nicht fatal)."""
     if not isinstance(roh, list) or len(roh) > BILDAUFTRAEGE_MAX:
@@ -650,11 +658,12 @@ def arbeiter_fertig(aid: str, payload: dict = Body(...), x_bild_key: str | None 
         raise HTTPException(422, "export_vorschlag muss ein Objekt oder null sein")
     if not isinstance(notiz, str) or len(notiz) > 500:
         raise HTTPException(422, "notiz muss Text mit hoechstens 500 Zeichen sein")
+    basis, extra = _basis_und_hinweise(payload)
     auftraege = _bildauftraege_formen(payload.get("bildauftraege", []))
     job = _in_arbeit(a)
-    hinweise: list[str] = []
+    hinweise: list[str] = list(extra)
     if bloecke is not None:
-        f = _fremde_neu(a, job, bloecke)
+        f = _fremde_neu(a, job, bloecke, basis)
         if f:
             return _zurueck(a, NICHT_UMGESETZT + f)
         bloecke, h, fehler = _rechnen_und_pruefen(bloecke)
@@ -668,10 +677,11 @@ def arbeiter_fertig(aid: str, payload: dict = Body(...), x_bild_key: str | None 
             f"SELECT marketing.pult_chat_fertig({lit(a)}::uuid, {lit(antwort[:4000])}, "
             + (f"{lit(json.dumps(bloecke, ensure_ascii=False))}::jsonb" if bloecke is not None else "NULL")
             + f", {lit(json.dumps(hinweise, ensure_ascii=False))}::jsonb, "
-            f"{lit(json.dumps(ergebnis, ensure_ascii=False))}::jsonb) AS e")
+            f"{lit(json.dumps(ergebnis, ensure_ascii=False))}::jsonb, "
+            f"{int(basis) if basis is not None else 'NULL'}) AS e")
     except HTTPException as e:
         if e.status_code == 422 and str(e.detail).startswith("Inzwischen gibt es Fassung"):
-            return _zurueck(a, GEAENDERT)
+            return {"status": "veraltet"}      # der Arbeiter spielt auf die neueste Fassung nach
         raise
     fassung = (zeile.get("e") or {}).get("fassung")
     ids: list[str | None] = []
@@ -685,6 +695,13 @@ def arbeiter_fertig(aid: str, payload: dict = Body(...), x_bild_key: str | None 
         except HTTPException as e:
             ids.append(None)
             hinweise.append(f"{b['platz']}: Bild nicht beauftragt – {e.detail}")
+    gemerkt = [i for i in ids if i]
+    if gemerkt:
+        try:   # nur fuer den Hinweis "Bild nicht erzeugt" an der Runde; darf fertig nie kippen
+            _schreiben(lambda: f"SELECT marketing.pult_chat_bild_ids({lit(a)}::uuid, "
+                               f"{lit(json.dumps(gemerkt))}::jsonb) AS ok")
+        except HTTPException as e:
+            log.warning("Bildauftraege nicht an der Runde vermerkt: %s", e.detail)
     return {"fassung": fassung, "hinweise": hinweise, "bildauftraege": ids}
 
 
@@ -778,12 +795,13 @@ async def arbeiter_gestoppt(aid: str, request: Request, x_bild_key: str | None =
     bloecke = payload.get("bloecke")
     if bloecke is not None and not isinstance(bloecke, dict):
         raise HTTPException(422, "bloecke muss ein Objekt oder null sein")
+    basis, extra = _basis_und_hinweise(payload)
 
     def abschliessen() -> dict:
         job = _gestoppter_auftrag(a)
         if not job:
             raise HTTPException(404, "Unbekannter Auftrag")
-        return _stopp_abschliessen(a, job, bloecke if bloecke is not None else job.get("zwischenstand"))
+        return _stopp_abschliessen(a, job, bloecke if bloecke is not None else job.get("zwischenstand"), basis, extra)
     return await run_in_threadpool(abschliessen)
 
 

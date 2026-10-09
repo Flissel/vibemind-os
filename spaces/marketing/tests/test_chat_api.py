@@ -67,18 +67,34 @@ def _db_fehler(text):
 
 def test_anlegen_reicht_durch(umg):
     f, _, c = umg
-    f.antworten.append([{"id": AID}])
+    f.antworten.append([{"s": {"id": AID, "status": "wartet"}}])
     r = c.post(f"/api/pult/inhalte/{IID}/chat", json={"nachricht": "Mach es wärmer", "kontext": {"fenster": "newsletter"}},
                headers=H)
     assert r.status_code == 200, r.text
-    assert r.json() == {"auftrag": AID}
-    assert "marketing.pult_chat_anlegen(" in f.sql[0] and "'chat'" in f.sql[0] and "newsletter" in f.sql[0]
+    assert r.json() == {"auftrag": AID, "status": "wartet"}
+    assert "marketing.pult_chat_senden(" in f.sql[0] and "Mach es wärmer" in f.sql[0] and "newsletter" in f.sql[0]
+
+
+def test_sechste_wartende_runde_422(umg):
+    f, _, c = umg
+    f.fehler.append(_db_fehler("Bitte warten, bis eine Runde fertig ist"))
+    r = c.post(f"/api/pult/inhalte/{IID}/chat", json={"nachricht": "noch eine"}, headers=H)
+    assert r.status_code == 422 and r.json()["detail"] == "Bitte warten, bis eine Runde fertig ist"
+
+
+def test_vormerk_routen_gibt_es_nicht_mehr(umg):
+    f, _, c = umg
+    basis = f"/api/pult/inhalte/{IID}/chat/vormerkung"
+    assert c.put(basis, json={"nachricht": "x"}, headers=H).status_code in (404, 405)
+    assert c.delete(basis, headers=H).status_code in (404, 405)
+    assert c.post(basis + "/starten", headers=H).status_code in (404, 405)
+    assert f.sql == []
 
 
 def test_zweites_anlegen_waehrend_laufendem_auftrag_422(umg):
     """Review Focus 4: zweiter Tab, waehrend der Assistent arbeitet."""
     f, _, c = umg
-    f.antworten.append([{"id": AID}])
+    f.antworten.append([{"s": {"id": AID, "status": "offen"}}])
     f.fehler += [None, _db_fehler("Der Assistent arbeitet gerade")]
     assert c.post(f"/api/pult/inhalte/{IID}/chat", json={"nachricht": "eins"}, headers=H).status_code == 200
     r = c.post(f"/api/pult/inhalte/{IID}/chat", json={"nachricht": "zwei"}, headers=H)
@@ -96,22 +112,6 @@ def test_anlegen_ohne_pult_schluessel_401(umg):
     assert c.post(f"/api/pult/inhalte/{IID}/chat", json={"nachricht": "x"}).status_code == 401
 
 
-def test_stand_raeumt_zuerst_auf(umg):
-    f, _, c = umg
-    f.antworten += [[{"ok": True}], [], [
-        {"id": BID, "art": "chat", "nachricht": "a", "antwort": "b", "status": "fertig", "hinweise": [], "ergebnis": {},
-         "fassung_vorher": 1, "fassung_nachher": 2, "erstellt_am": "1", "sortiert_am": "1"},
-        {"id": AID, "art": "chat", "nachricht": "c", "antwort": "", "status": "in_arbeit", "hinweise": [], "ergebnis": {},
-         "fassung_vorher": 2, "fassung_nachher": None, "erstellt_am": "2", "sortiert_am": "2"}], []]
-    r = c.get(f"/api/pult/inhalte/{IID}/chat", headers=H)
-    assert r.status_code == 200, r.text
-    d = r.json()
-    assert "marketing.pult_chat_aufraeumen(" in f.sql[0]
-    assert "marketing.pult_chat_stopp_faellig()" in f.sql[1]
-    assert "chat_auftraege" in f.sql[2] and "LIMIT 30" in f.sql[2] and "<> 'wartet'" in f.sql[2]
-    assert d["live"] is None and d["vorgemerkt"] is None
-    assert d["laeuft"] is True and [z["id"] for z in d["verlauf"]] == [BID, AID]
-    assert "sortiert_am" not in d["verlauf"][0] and d["verlauf"][0]["fassung_nachher"] == 2
 
 
 def test_stand_sql_ohne_spaltenname_t(umg):
@@ -412,16 +412,6 @@ def test_fertig_ohne_bloecke_keine_fassung(umg):
     assert "marketing.pult_chat_fertig(" in f.sql[1] and ", NULL," in f.sql[1]
 
 
-def test_fertig_neuere_fassung_wird_zurueck(umg):
-    f, _, c = umg
-    f.antworten += [[JOB], [{"f": None}], [{"s": "fehler"}]]
-    f.fehler += [None, None, _db_fehler("Inzwischen gibt es Fassung 9 - neu laden oder als Kopie behalten")]
-    r = c.post(f"/api/chat/arbeiter/{AID}/fertig", json={"antwort": "x", "bloecke": _dok()}, headers=HB)
-    assert r.status_code == 200 and r.json() == {"status": "fehler"}
-    assert "pult_chat_zurueck(" in f.sql[-1]
-    assert "Der Newsletter wurde inzwischen geändert – bitte schick die Nachricht noch einmal." in f.sql[-1]
-
-
 def test_fertig_abgelaufene_vergabe_409(umg):
     f, _, c = umg
     f.antworten.append([dict(JOB, gueltig=False)])
@@ -616,43 +606,6 @@ def test_zwischenstand_db_ablehnung_422(umg):
     assert r.status_code == 422 and r.json()["detail"] == "Zwischenstand zu groß"
 
 
-def test_vormerken_put_delete_starten(umg):
-    f, _, c = umg
-    basis = f"/api/pult/inhalte/{IID}/chat/vormerkung"
-    f.antworten += [[{"v": {"id": BID, "status": "wartet"}}], [{"g": True}], [{"id": BID}]]
-    r = c.put(basis, json={"nachricht": "Danach kürzer", "kontext": {"fenster": "newsletter"}}, headers=H)
-    assert r.status_code == 200, r.text
-    assert r.json() == {"id": BID, "status": "wartet"}
-    assert "marketing.pult_chat_vormerken(" in f.sql[0] and "Danach kürzer" in f.sql[0] and "newsletter" in f.sql[0]
-    assert c.delete(basis, headers=H).json() == {"geloescht": True}
-    assert "marketing.pult_chat_vormerkung_loeschen(" in f.sql[1]
-    assert c.post(basis + "/starten", headers=H).json() == {"auftrag": BID}
-    assert "marketing.pult_chat_vormerkung_starten(" in f.sql[2]
-
-
-def test_vormerken_ohne_lauf_startet_sofort(umg):
-    """Review Focus 4: die DB startet die Nachricht sofort ('offen'); die API reicht das durch."""
-    f, _, c = umg
-    f.antworten.append([{"v": {"id": BID, "status": "offen"}}])
-    r = c.put(f"/api/pult/inhalte/{IID}/chat/vormerkung", json={"nachricht": "Jetzt"}, headers=H)
-    assert r.json() == {"id": BID, "status": "offen"} and "'{}'::jsonb" in f.sql[0]
-
-
-def test_vormerken_formen_und_schluessel(umg):
-    f, _, c = umg
-    basis = f"/api/pult/inhalte/{IID}/chat/vormerkung"
-    assert c.put(basis, json={"nachricht": "x"}).status_code == 401
-    assert c.delete(basis).status_code == 401
-    assert c.post(basis + "/starten").status_code == 401
-    assert c.put(basis, json={"nachricht": "  "}, headers=H).status_code == 422
-    assert c.put(basis, json={"nachricht": "x" * 2001}, headers=H).status_code == 422
-    assert c.put(basis, json={"nachricht": "x", "kontext": ["fenster"]}, headers=H).status_code == 422
-    assert f.sql == []
-    f.fehler.append(_db_fehler("Keine vorgemerkte Nachricht"))
-    r = c.post(basis + "/starten", headers=H)
-    assert r.status_code == 422 and r.json()["detail"] == "Keine vorgemerkte Nachricht"
-
-
 def test_stopp_arten_validiert(umg):
     f, _, c = umg
     basis = f"/api/pult/inhalte/{IID}/chat/stopp"
@@ -678,25 +631,6 @@ def test_stopp_veraltet_und_nichts_laeuft(umg):
     f.fehler.append(_db_fehler("Der Assistent arbeitet gerade nicht"))
     r = c.post(basis, json={"art": "verwerfen"}, headers=H)
     assert r.status_code == 422 and r.json()["detail"] == "Der Assistent arbeitet gerade nicht"
-
-
-def test_stand_enthaelt_live_und_vorgemerkt(umg):
-    f, _, c = umg
-    verlauf = [{"id": AID, "art": "chat", "nachricht": "c", "antwort": "", "status": "in_arbeit", "hinweise": [],
-                "ergebnis": {}, "fassung_vorher": 2, "fassung_nachher": None, "erstellt_am": "2", "sortiert_am": "2"}]
-    f.antworten += [[{"ok": True}], [], verlauf, [
-        {"id": AID, "status": "in_arbeit", "nachricht": "c", "schritt": "Titel setzen", "schritt_nr": 3,
-         "zwischenstand": _dok(), "stopp": "verwerfen", "denken": "", "schritte": []},
-        {"id": BID, "status": "wartet", "nachricht": "Danach kürzer", "schritt": "", "schritt_nr": 0,
-         "zwischenstand": None}]]
-    r = c.get(f"/api/pult/inhalte/{IID}/chat", headers=H)
-    assert r.status_code == 200, r.text
-    d = r.json()
-    assert d["laeuft"] is True
-    assert d["live"] == {"schritt": "Titel setzen", "schritt_nr": 3, "zwischenstand": _dok(), "stopp": "verwerfen",
-                         "denken": "", "schritte": []}
-    assert d["vorgemerkt"] == {"id": BID, "nachricht": "Danach kürzer"}
-    assert "status IN ('in_arbeit', 'wartet')" in f.sql[3]
 
 
 def _faellig(f, stopp, zwischenstand):
@@ -930,18 +864,15 @@ GUTE_ANHAENGE = [{"name": "foto.jpg", "art": "bild"}, {"name": "preise.pdf", "ar
 
 def test_kontext_gueltige_auswahl_und_anhaenge(umg):
     f, _, c = umg
-    f.antworten.append([{"id": AID}])
+    f.antworten.append([{"s": {"id": AID, "status": "offen"}}])
     r = _anlegen_mit(c, {"auswahl": GUTE_AUSWAHL, "anhaenge": GUTE_ANHAENGE})
-    assert r.status_code == 200, r.text
-    f.antworten.append([{"v": {}}])
-    r = c.put(f"/api/pult/inhalte/{IID}/chat/vormerkung", json={"nachricht": "y", "kontext": {"auswahl": GUTE_AUSWAHL, "anhaenge": GUTE_ANHAENGE}}, headers=H)
     assert r.status_code == 200, r.text
 
 
 @pytest.mark.parametrize("auswahl", [None, "Titel", [], "b-1"])
 def test_kontext_auswahl_altform_bleibt_erlaubt(umg, auswahl):
     f, _, c = umg
-    f.antworten.append([{"id": AID}])
+    f.antworten.append([{"s": {"id": AID, "status": "offen"}}])
     assert _anlegen_mit(c, {"auswahl": auswahl}).status_code == 200
 
 
@@ -967,8 +898,6 @@ def test_kontext_ungueltig_422_ohne_sql(umg, kontext):
     r = _anlegen_mit(c, kontext)
     assert r.status_code == 422 and r.json()["detail"], r.text
     assert f.sql == []
-    r = c.put(f"/api/pult/inhalte/{IID}/chat/vormerkung", json={"nachricht": "y", "kontext": kontext}, headers=H)
-    assert r.status_code == 422 and f.sql == []
 
 
 def test_kontext_ueber_4kb_422(umg):
@@ -1134,17 +1063,111 @@ def test_denken_route_zu_gross_413(umg):
     assert f.sql == []
 
 
+def test_chat_stand_placeholder():
+    pass
+
+
+def _lauf(id_, status, **extra):
+    return {"id": id_, "art": "chat", "nachricht": "n", "antwort": "", "status": status, "hinweise": [], "ergebnis": {},
+            "fassung_vorher": 2, "fassung_nachher": None, "denken": "", "schritte": [], "schritt": "", "schritt_nr": 0,
+            "stopp": None, "bild_hinweise": [], "erstellt_am": id_, "sortiert_am": id_, **extra}
+
+
+def test_stand_raeumt_zuerst_auf(umg):
+    f, _, c = umg
+    fertig = _lauf(BID, "fertig", fassung_nachher=2, bild_hinweise=["Bild für held nicht erzeugt: Zeitüberschreitung"])
+    f.antworten += [[{"ok": True}], [], [fertig, _lauf(AID, "wartet")], [{"n": 2}]]
+    r = c.get(f"/api/pult/inhalte/{IID}/chat", headers=H)
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert "marketing.pult_chat_aufraeumen(" in f.sql[0] and "marketing.pult_chat_stopp_faellig()" in f.sql[1]
+    assert "chat_auftraege" in f.sql[2] and "LIMIT 30" in f.sql[2] and "wartet" not in f.sql[2]
+    assert "marketing.pult_chat_bild_hinweise(ergebnis)" in f.sql[2] and "max(fassung)" in f.sql[3]
+    assert d["live"] is None and "vorgemerkt" not in d and d["neueste_fassung"] == 2
+    assert d["laeuft"] is True and [z["id"] for z in d["verlauf"]] == [BID, AID]
+    assert d["verlauf"][0]["bild_hinweise"] == ["Bild für held nicht erzeugt: Zeitüberschreitung"]
+    assert "sortiert_am" not in d["verlauf"][0] and d["verlauf"][1]["status"] == "wartet"
+
+
+def test_stand_live_nur_bei_genau_einer_laufenden_runde(umg):
+    f, _, c = umg
+    eine = _lauf(AID, "in_arbeit", schritt="Titel setzen", schritt_nr=3, stopp="verwerfen", denken="d", schritte=[SCHRITT])
+    f.antworten += [[{"ok": True}], [], [eine], [{"n": 5}], [{"zwischenstand": _dok()}]]
+    d = c.get(f"/api/pult/inhalte/{IID}/chat", headers=H).json()
+    assert d["live"] == {"schritt": "Titel setzen", "schritt_nr": 3, "zwischenstand": _dok(), "stopp": "verwerfen",
+                         "denken": "d", "schritte": [SCHRITT]}
+    assert "zwischenstand" in f.sql[4] and AID in f.sql[4]
+    f.sql.clear()
+    f.antworten += [[{"ok": True}], [], [_lauf(AID, "in_arbeit"), _lauf(BID, "offen")], [{"n": 5}]]
+    d = c.get(f"/api/pult/inhalte/{IID}/chat", headers=H).json()
+    assert d["live"] is None and d["laeuft"] is True and len(f.sql) == 4
+    assert [z["schritt_nr"] for z in d["verlauf"]] == [0, 0]
+
+
 def test_chat_stand_liefert_denken_und_schritte(umg):
     f, _, c = umg
-    alt = {"id": BID, "art": "chat", "nachricht": "a", "antwort": "b", "status": "fertig", "hinweise": [],
-           "ergebnis": {}, "fassung_vorher": 1, "fassung_nachher": 2, "denken": None, "schritte": None,
-           "erstellt_am": "1", "sortiert_am": "1"}
-    neu = dict(alt, id=AID, denken="Let me think", schritte=[SCHRITT], erstellt_am="2", sortiert_am="2")
-    f.antworten += [[{"ok": True}], [], [alt, neu],
-                    [{"id": AID, "status": "in_arbeit", "nachricht": "c", "schritt": "", "schritt_nr": 0,
-                      "zwischenstand": None, "stopp": None, "denken": "laufend", "schritte": [SCHRITT]}]]
+    alt = _lauf(BID, "fertig", fassung_nachher=2, denken=None, schritte=None)
+    neu = _lauf(AID, "in_arbeit", denken="Let me think", schritte=[SCHRITT])
+    f.antworten += [[{"ok": True}], [], [alt, neu], [{"n": 2}], [{"zwischenstand": None}]]
     j = c.get(f"/api/pult/inhalte/{IID}/chat", headers=H).json()
     assert j["verlauf"][0]["denken"] == "" and j["verlauf"][0]["schritte"] == []
     assert j["verlauf"][1]["denken"] == "Let me think" and j["verlauf"][1]["schritte"] == [SCHRITT]
-    assert j["live"]["denken"] == "laufend" and j["live"]["schritte"][0]["text"] == "Frage an Claude"
-    assert "coalesce(denken, '')" in f.sql[2] and "coalesce(denken, '')" in f.sql[3]
+    assert j["live"]["denken"] == "Let me think" and j["live"]["schritte"][0]["text"] == "Frage an Claude"
+    assert "coalesce(denken, '')" in f.sql[2]
+
+
+def test_neueste_liefert_die_neueste_fassung(umg):
+    f, _, c = umg
+    f.antworten += [[JOB], [{"fassung": 5, "bloecke": _dok()}]]
+    r = c.get(f"/api/chat/arbeiter/{AID}/neueste", headers=HB)
+    assert r.status_code == 200 and r.json() == {"fassung": 5, "bloecke": _dok()}
+    assert "ORDER BY fassung DESC LIMIT 1" in f.sql[1] and IID in f.sql[1]
+    assert c.get(f"/api/chat/arbeiter/{AID}/neueste").status_code == 401
+    f.antworten.append([dict(JOB, gueltig=False)])
+    assert c.get(f"/api/chat/arbeiter/{AID}/neueste", headers=HB).status_code == 409
+
+
+def test_fertig_neuere_fassung_meldet_veraltet_statt_zurueck(umg):
+    f, _, c = umg
+    f.antworten += [[JOB], [{"f": None}]]
+    f.fehler += [None, None, _db_fehler("Inzwischen gibt es Fassung 9 - neu laden oder als Kopie behalten")]
+    body = {"antwort": "x", "bloecke": _dok(), "basis": 8, "hinweise": ["Übersprungen: Titel"]}
+    r = c.post(f"/api/chat/arbeiter/{AID}/fertig", json=body, headers=HB)
+    assert r.status_code == 200 and r.json() == {"status": "veraltet"}
+    assert not any("pult_chat_zurueck(" in s for s in f.sql)
+    assert f.sql[-1].rstrip().endswith(", 8) AS e") and "Übersprungen: Titel" in f.sql[-1]
+
+
+@pytest.mark.parametrize("extra", [{"basis": 0}, {"basis": "5"}, {"basis": True}, {"hinweise": "x"},
+                                   {"hinweise": ["x" * 301]}, {"hinweise": ["x"] * 41}, {"hinweise": [5]}])
+def test_fertig_basis_und_hinweise_formen_422(umg, extra):
+    f, _, c = umg
+    r = c.post(f"/api/chat/arbeiter/{AID}/fertig", json={"antwort": "x", **extra}, headers=HB)
+    assert r.status_code == 422 and f.sql == []
+
+
+def test_fertig_merkt_die_bildauftraege_an_der_runde(umg):
+    f, _, c = umg
+    f.antworten += [[JOB], [{"f": None}], [{"e": {"fassung": 7}}], [{"id": BID}], [{"ok": True}]]
+    body = {"antwort": "Fertig", "bloecke": _dok(), "bildauftraege": [{"platz": "held", "modus": "neu", "hinweis": "K"}]}
+    r = c.post(f"/api/chat/arbeiter/{AID}/fertig", json=body, headers=HB)
+    assert r.status_code == 200 and r.json()["bildauftraege"] == [BID]
+    assert "marketing.pult_chat_bild_ids(" in f.sql[-1] and BID in f.sql[-1]
+
+
+def test_fertig_bildauftraege_merken_scheitert_still(umg):
+    f, _, c = umg
+    f.antworten += [[JOB], [{"f": None}], [{"e": {"fassung": 7}}], [{"id": BID}]]
+    f.fehler += [None, None, None, None, RuntimeError("ssh weg")]
+    body = {"antwort": "Fertig", "bloecke": _dok(), "bildauftraege": [{"platz": "held", "modus": "neu", "hinweis": "K"}]}
+    r = c.post(f"/api/chat/arbeiter/{AID}/fertig", json=body, headers=HB)
+    assert r.status_code == 200 and r.json()["fassung"] == 7
+
+
+def test_gestoppt_mit_basis_und_hinweisen(umg):
+    f, _, c = umg
+    f.antworten += [[{"stopp": "behalten", "status": "in_arbeit", "zwischenstand": None}], [{"f": None}],
+                    [{"e": {"status": "fertig", "fassung": 9}}]]
+    r = c.post(GESTOPPT, json={"bloecke": _dok(), "basis": 7, "hinweise": ["Übersprungen: Titel"]}, headers=HB)
+    assert r.status_code == 200 and r.json() == {"status": "fertig", "fassung": 9}
+    assert f.sql[-1].rstrip().endswith(", 7) AS e") and "Übersprungen: Titel" in f.sql[-1]
