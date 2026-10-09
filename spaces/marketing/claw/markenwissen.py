@@ -30,6 +30,7 @@ NOTIZ_ORDNER, NOTIZEN_JE_ANTWORT, TITEL_MAX, TEXT_MAX = "Agent-Notizen", 3, 80, 
 _ENDUNGEN = (".md", ".txt")
 _MARKE = "marke.md"
 _MARKE_VERLAUF = "marke-verlauf"   # = markenprofil.VERLAUF (dort importiert markenprofil dieses Modul)
+_WISSEN_VERLAUF = "wissen-verlauf"   # Sicherungen des Rowboat-Laufs (claw/wissen_lauf.VERLAUF)
 _VERMERK = " … (gekürzt)"
 _TRENNER = "\n\n"
 _BITTE_MAX = 300
@@ -148,8 +149,8 @@ def _dateien(ordner: str, hinweise: list[str]) -> list[tuple[str, str]]:
         unterordner.sort()
         echte = []
         for u in unterordner:
-            if ort == ordner and u.casefold() == _MARKE_VERLAUF:
-                continue  # fruehere Fassungen der Marke.md: ueberholt, nie Markenwissen
+            if ort == ordner and u.casefold() in (_MARKE_VERLAUF, _WISSEN_VERLAUF):
+                continue  # fruehere Fassungen und Sicherungen: ueberholt, nie Markenwissen
             pfad = os.path.join(ort, u)
             if _echt(pfad, ort, firma_real):
                 echte.append(u)
@@ -243,13 +244,15 @@ def _marke_lesbar(text: str, ordner: str, hinweise: list[str]) -> str:
     return markenprofil.fuer_prompt(profil)
 
 
-def _laden(ordner: str, name: str, frage: str) -> Wissen:
+def _laden(ordner: str, name: str, frage: str, ohne_marke: bool = False) -> Wissen:
     hinweise: list[str] = []
     dateien = _neueste_notizen(_dateien(ordner, hinweise))
     # Marke.md vor dem Kappen herausnehmen: sonst verdraengen 200 Dateien, die
     # alphabetisch davor liegen (Archiv/…), genau die eine, die immer gilt.
     marke_datei = next((d for d in dateien if d[0].casefold() == _MARKE), None)
     uebrige = [d for d in dateien if d is not marke_datei]
+    if ohne_marke:           # Marken-Chat: das Profil steht dort schon vollstaendig im Kontext
+        marke_datei = None
     platz = MAX_DATEIEN - (marke_datei is not None)
     if len(uebrige) > platz:
         hinweise.append(_gekuerzt(MAX_DATEIEN, len(dateien)))
@@ -296,7 +299,7 @@ def _laden(ordner: str, name: str, frage: str) -> Wissen:
                   notizen=_TRENNER.join(notizen))
 
 
-def laden(wurzel: str, mandant: str, name: str, frage: str) -> Wissen:
+def laden(wurzel: str, mandant: str, name: str, frage: str, ohne_marke: bool = False) -> Wissen:
     """Markenwissen der Firma als Prompt-Abschnitt. Wirft nie.
 
     `Marke.md` steht immer vorn (hoechstens MARKE_MAX Zeichen), der Rest
@@ -308,7 +311,7 @@ def laden(wurzel: str, mandant: str, name: str, frage: str) -> Wissen:
         ordner = ordner_finden(wurzel, mandant, name)
         if ordner is None:
             return Wissen(text="", hinweise=[_kein_wissen(name)], ordner=None)
-        return _laden(ordner, name, frage)
+        return _laden(ordner, name, frage, ohne_marke)
     except Exception:  # Fehler jeder Art = kein Markenwissen, der Lauf geht weiter
         return Wissen(text="", hinweise=[_kein_wissen(name)], ordner=ordner)
 

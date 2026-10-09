@@ -306,12 +306,15 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
             hinweise += fund.hinweise
         profil = markenprofil.lesen(wurzel, mandant, name)
         hinweise += profil.hinweise
+        wissen = markenwissen.laden(wurzel, mandant, name, str(auftrag.get("nachricht") or ""), ohne_marke=True)
+        hinweise += [h for h in wissen.hinweise if not h.startswith("Kein Markenwissen")]
         logos = list(fund.logos) if fund is not None else []
         bisher = marken_prompt.bisheriges_logo(auftrag)      # Logo des offenen Vorschlags (C1/R14)
         _logo_ansichten(api, aid, bisher, profil, logos, laden, bildteile, bilder)
     if halter.verloren.is_set():
         return "fehler"
-    text_nutzer = marken_prompt.nutzer_text(auftrag, profil, fund, unterlagen_text, bilder, hinweise)
+    text_nutzer = marken_prompt.nutzer_text(auftrag, profil, fund, unterlagen_text, bilder, hinweise,
+                                          firmenwissen=wissen.text, notizen=wissen.notizen)
     nachrichten = [{"role": "user", "content": [{"type": "text", "text": text_nutzer}, *bildteile]
                     if bildteile else text_nutzer}]
     zustand = {"mit_bildern": bool(bildteile), "text_nutzer": text_nutzer, "hinweise": hinweise}

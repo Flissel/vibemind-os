@@ -949,3 +949,31 @@ def test_pdf_seite_direkt_als_logo_ist_korrekturfall():
     fragen = Fragen(_antwort({**VORSCHLAG, "logo": "anhang:karte.pdf#1"}), _antwort())
     assert _lauf(api, fragen) == "fertig"
     assert "kein PNG oder JPEG" in fragen.gesehen[1][1][-1]["content"]
+
+LANG = " – genug Text, damit die Datei nicht als leer gilt."
+
+
+def test_marken_chat_bekommt_firmenwissen_ohne_verlaeufe_und_ohne_andere_firmen(wurzel):
+    radhaus = wurzel / "Radhaus"
+    (radhaus / "Marke-Verlauf").mkdir(parents=True)
+    (radhaus / "Wissen-Verlauf" / "2026-10-08-0900").mkdir(parents=True)
+    (radhaus / "Marke.md").write_text("---\nakzent: #b45309\n---\n## Ton\nLocker und kurz" + LANG, encoding="utf-8")
+    (radhaus / "Angebote.md").write_text("# Angebote\nInspektion für 49 Euro" + LANG, encoding="utf-8")
+    (radhaus / "Markenhandbuch.md").write_text("# Markenhandbuch\nLogo immer mit Schutzraum" + LANG, encoding="utf-8")
+    (radhaus / "Marke-Verlauf" / "2026-10-01-1200.md").write_text("ALTES PROFIL GEHEIM" + LANG, encoding="utf-8")
+    (radhaus / "Wissen-Verlauf" / "2026-10-08-0900" / "x.md").write_text("ALTE SICHERUNG GEHEIM" + LANG,
+                                                                          encoding="utf-8")
+    (wurzel / "Velo").mkdir()
+    (wurzel / "Velo" / "Preise.md").write_text("FREMDE FIRMA GEHEIM" + LANG, encoding="utf-8")
+    fragen = Fragen(_antwort(None, "ok"))
+    _lauf(Api(dict(CHAT)), fragen)
+    t = _text(fragen)
+    assert "FIRMENWISSEN Radhaus" in t and "Inspektion für 49 Euro" in t and "Logo immer mit Schutzraum" in t
+    assert "GEHEIM" not in t
+    assert t.count("Locker und kurz") == 1                 # Marke.md nur als AKTUELLES PROFIL, nicht doppelt
+
+
+def test_ohne_firmenordner_kein_wissens_hinweis():
+    api = Api(dict(CHAT))
+    _lauf(api, Fragen(_antwort(None, "ok")))
+    assert not any("Kein Markenwissen" in h for h in api.aufrufe("fertig")[0][2]["hinweise"])

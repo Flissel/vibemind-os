@@ -511,3 +511,14 @@ def test_t5c_marke_nur_mit_kopfteil_bleibt_im_markenwissen(wurzel):
     _schreiben(str(wurzel / "VibeMind" / "Marke.md"), "---\nakzent: #12\n---\n")
     w = mw.laden(str(wurzel), "vibemind", "VibeMind", "")
     assert "Akzentfarbe" not in w.text and "Marke.md: akzent ungültig" in w.hinweise
+
+def test_wissen_verlauf_ist_nie_markenwissen_und_ohne_marke(tmp_path):
+    firma = tmp_path / "VibeMind"
+    _schreiben(str(firma / "Marke.md"), "# VibeMind\n\n## Ton\n" + INHALT)
+    _schreiben(str(firma / "Angebote.md"), "# Angebote\n" + INHALT)
+    _schreiben(str(firma / "Wissen-Verlauf" / "2026-10-09-1200" / "Plan.md"), "ALTE SICHERUNG " + INHALT)
+    _schreiben(str(firma / "Marke-Verlauf" / "2026-10-01-1200.md"), "ALTES PROFIL " + INHALT)
+    w = mw.laden(str(tmp_path), "vibemind", "VibeMind", "Angebote")
+    assert "ALTE SICHERUNG" not in w.text and "ALTES PROFIL" not in w.text and "### Marke.md" in w.text
+    ohne = mw.laden(str(tmp_path), "vibemind", "VibeMind", "Angebote", ohne_marke=True)
+    assert "### Marke.md" not in ohne.text and "### Angebote.md" in ohne.text
