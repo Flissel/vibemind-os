@@ -18,7 +18,7 @@ import re
 import time
 
 from spaces.marketing.claw import (bild_comfy, denkspur, logo_bearbeiten, markenprofil, marken_prompt,
-                                   markenwissen, webseite)
+                                   markenwissen, pdf_bilder, webseite)
 from spaces.marketing.workers import chat_worker as cw
 from spaces.marketing.workers.bild_worker import ApiFehler
 
@@ -206,6 +206,18 @@ def _logo_quelle(api, aid, quelle: str, bilder, logos, laden, bisher, profil) ->
             raise logo_bearbeiten.LogoFehler("Logo der Webseite nicht ladbar")
         return geladen[0], None
     name = quelle[len("anhang:"):]
+    if any(n == name and pdf_bilder.ist_seite(h) for n, h in bilder):
+        datei, nr = name.rsplit("#", 1)
+        roh = api.medium(aid, datei)
+        if not roh:
+            raise logo_bearbeiten.LogoFehler(f"{datei} fehlt in den Medien")
+        try:
+            pngs = pdf_bilder.seiten(roh, max_seiten=int(nr))
+        except pdf_bilder.PdfBildFehler as e:
+            raise logo_bearbeiten.LogoFehler(str(e)) from None
+        if len(pngs) < int(nr):
+            raise logo_bearbeiten.LogoFehler(f"{datei} hat keine Seite {nr}")
+        return pngs[int(nr) - 1], None
     roh = api.medium(aid, name)
     if not roh:
         raise logo_bearbeiten.LogoFehler(f"{name} fehlt in den Medien")

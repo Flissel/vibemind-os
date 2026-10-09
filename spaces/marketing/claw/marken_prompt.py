@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 
-from spaces.marketing.claw import markenprofil
+from spaces.marketing.claw import markenprofil, pdf_bilder
 from spaces.marketing.claw.agent_prompt import _ZAUN, _objekte
 from spaces.marketing.claw.schoenheit import KONTRAST_TEXT, kontrast
 from spaces.marketing.claw.schriften import REGISTER
@@ -178,6 +178,8 @@ def nutzer_text(auftrag: dict, profil, fund, unterlagen: str,
         for i, (name, herkunft) in enumerate(bilder, 1):
             if herkunft in LOGO_ANSICHTEN:
                 teile.append(f"- Bild {i} = {name} ({herkunft}; als Quelle für logo_bearbeiten)")
+            elif pdf_bilder.ist_seite(herkunft):
+                teile.append(f"- Bild {i} = anhang:{name} ({herkunft}; als Logo nur über logo_bearbeiten)")
             else:
                 teile.append(f"- Bild {i} = anhang:{name} ({herkunft}"
                              + ("" if ist_logo_bild(name) else "; kein Logo möglich: nur PNG oder JPEG") + ")")

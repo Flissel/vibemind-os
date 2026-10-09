@@ -922,3 +922,30 @@ def test_logo_vergabe_waehrend_der_bearbeitung_verloren_stoppt_die_runde():
     assert _lauf(api, Fragen(_antwort({**VORSCHLAG, "logo": "anhang:karte.png", "logo_bearbeiten": lb})),
                  comfy=comfy, halten_takt_s=0.05) == "fehler"
     assert api.aufrufe("vorschlag") == []
+
+
+def _karten_pdf() -> bytes:
+    bild = Image.open(io.BytesIO(_karte())).convert("RGB")
+    puffer = io.BytesIO()
+    bild.save(puffer, "PDF")
+    return puffer.getvalue()
+
+
+def test_marken_chat_sieht_pdf_seiten_und_nimmt_eine_als_logo_quelle():
+    auftrag = {**CHAT, "kontext": {"anhaenge": [{"name": "karte.pdf", "art": "dokument"}]}}
+    api = Api(auftrag, medien={"karte.pdf": _karten_pdf()}, logo_name=["orig.png", "hell.png", "dunkel.png"])
+    fragen = Fragen(_antwort({**VORSCHLAG, "logo_bearbeiten": {**LB, "quelle": "anhang:karte.pdf#1"}}))
+    assert _lauf(api, fragen) == "fertig"
+    inhalt = fragen.gesehen[0][1][0]["content"]
+    assert inhalt[1]["type"] == "image_url"
+    assert "Bild 1 = anhang:karte.pdf#1 (PDF-Seite 1; als Logo nur über logo_bearbeiten)" in inhalt[0]["text"]
+    v = api.aufrufe("vorschlag")[0][2]["vorschlag"]
+    assert (v["logo_original"], v["logo"], v["logo_dunkel"]) == ("orig.png", "hell.png", "dunkel.png")
+
+
+def test_pdf_seite_direkt_als_logo_ist_korrekturfall():
+    auftrag = {**CHAT, "kontext": {"anhaenge": [{"name": "karte.pdf", "art": "dokument"}]}}
+    api = Api(auftrag, medien={"karte.pdf": _karten_pdf()})
+    fragen = Fragen(_antwort({**VORSCHLAG, "logo": "anhang:karte.pdf#1"}), _antwort())
+    assert _lauf(api, fragen) == "fertig"
+    assert "kein PNG oder JPEG" in fragen.gesehen[1][1][-1]["content"]

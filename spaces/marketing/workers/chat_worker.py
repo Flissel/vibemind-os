@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from PIL import Image, ImageOps
 
 from spaces.marketing.claw import (agent_prompt, agent_strom, agent_werkzeuge, bildplaetze, denkspur, markenprofil,
-                                   markenwissen, schriften, unterlagen, vorlagen_marke)
+                                   markenwissen, pdf_bilder, schriften, unterlagen, vorlagen_marke)
 from spaces.marketing.workers.bild_worker import ApiFehler, _grund, tls_kontext, umgebung_laden
 
 PORT = 8134
@@ -543,11 +543,31 @@ def anhaenge_vorbereiten(api, aid, auftrag: dict,
         if bilder is not None:
             bilder.append((name, "Anhang" if name in anhang_namen else "markiert"))
     dateien = []
+    pdf_seiten: list[tuple[str, bytes]] = []
     for a in anhaenge:
         if a.get("art") == "dokument":
             roh = _holen(api, aid, a["name"], hinweise)
-            if roh is not None:
-                dateien.append((a["name"], roh))
+            if roh is None:
+                continue
+            dateien.append((a["name"], roh))
+            if a["name"].lower().endswith(".pdf"):
+                try:
+                    pdf_seiten += [(pdf_bilder.seiten_name(a["name"], i), png)
+                                   for i, png in enumerate(pdf_bilder.seiten(roh), 1)]
+                except pdf_bilder.PdfBildFehler as e:
+                    hinweise.append(f"{a['name']}: Seiten nicht als Bild darstellbar ({e})")
+    for i, (name, png) in enumerate(pdf_seiten):
+        if len(bildteile) >= MAX_BILDER:
+            hinweise.append(f"Höchstens {MAX_BILDER} Bilder je Nachricht, PDF-Seiten nicht mitgeschickt: "
+                            f"{', '.join(n for n, _ in pdf_seiten[i:])}.")
+            break
+        teil = _bild_als_teil(png)
+        if teil is None:
+            hinweise.append(f"{name} ließ sich nicht als Bild übergeben.")
+            continue
+        bildteile.append(teil)
+        if bilder is not None:
+            bilder.append((name, f"{pdf_bilder.HERKUNFT} {name.rsplit('#', 1)[1]}"))
     text, unlesbar = unterlagen.unterlagen_text(dateien) if dateien else ("", [])
     hinweise += unlesbar
     auswahl_text = json.dumps(markiert, ensure_ascii=False, separators=(",", ":")) if markiert else ""
@@ -636,7 +656,7 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
     system = agent_prompt.system(marke=bool(markenfarben))
     if auftrag.get("medien_hinweis"):
         hinweise.insert(0, str(auftrag["medien_hinweis"]))
-    angehaengt = [n for n, _ in bilder]
+    angehaengt = [n for n, h in bilder if not pdf_bilder.ist_seite(h)]
     # Markenlogo (von der VM als Mediendatei der Firma abgelegt, I5): fuer "… und Logo" setzbar
     roh_logo, roh_dunkel = auftrag.get("markenlogo"), auftrag.get("markenlogo_dunkel")
     markenlogo = roh_logo[len("medien:"):] if isinstance(roh_logo, str) and roh_logo.startswith("medien:") else ""
