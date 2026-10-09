@@ -344,6 +344,27 @@ def vorschlag_pruefen(v: dict, anhaenge=(), web_logos: int = 0, bisher_logo: str
             "webseite": webseite_pruefen(v.get("webseite"))}
 
 
+def logo_verwerfen(text: str) -> tuple[str, bool]:
+    """Formular-Bearbeitung (R4): Logo-Angaben des Agenten (logo ausser null, logo_bearbeiten) entfernen.
+    -> (Text, ob etwas verworfen wurde). Unlesbares bleibt unveraendert (antwort_lesen meldet es)."""
+    gefunden = _objekte(_ZAUN.sub("", text if isinstance(text, str) else ""))
+    if len(gefunden) != 1:
+        return text, False
+    try:
+        d = json.loads(gefunden[0])
+    except ValueError:
+        return text, False
+    v = d.get("vorschlag") if isinstance(d, dict) else None
+    if not isinstance(v, dict):
+        return text, False
+    verworfen = v.get("logo") is not None or v.get("logo_bearbeiten") is not None
+    v.pop("logo_bearbeiten", None)
+    v["logo"] = None
+    for k in WERKZEUG_FELDER:
+        v.pop(k, None)
+    return json.dumps(d, ensure_ascii=False), verworfen
+
+
 def platzhalter_fehler(abschnitte: dict) -> str | None:
     for name, text in abschnitte.items():
         treffer = PLATZHALTER.search(text or "")

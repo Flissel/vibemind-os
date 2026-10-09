@@ -1153,3 +1153,59 @@ def test_bearbeitung_ohne_vorschlag_wird_zurueckgegeben():
     api = Api(dict(BEARB))
     assert _lauf(api, Fragen(_antwort(None, "?"), _antwort(None, "?"))) == "fehler"
     assert "vollständiger Vorschlag" in api.aufrufe("zurueck")[0][2]
+
+
+# --- Task 9 Fix round 1 (R3/R4/R4b) ---------------------------------------------------
+
+def _profil_mit_webseite(wurzel, url="https://radhaus.example/"):
+    mp.schreiben(str(wurzel), "radhaus", "Radhaus",
+                 {"akzent": "#b45309", "zweitfarbe": "#3b2f2f", "grund": "#faf7f2", "text": "#2b2724",
+                  "schrift_anzeige": "playfair", "schrift_text": "manrope", "webseite": url},
+                 {}, None, "Test", JETZT)
+
+
+def test_bearbeitung_leere_webseite_behaelt_die_des_profils(wurzel):
+    _profil_mit_webseite(wurzel)
+    offen = {"id": "v0", "vorschlag": {**VORSCHLAG, "webseite": "https://anders.example/"}}
+    api = Api({**BEARB, "vorschlag": offen})
+    fragen = Fragen(_antwort({**VORSCHLAG, "webseite": "https://radhaus.example/"}))
+    assert _lauf(api, fragen) == "fertig"
+    assert api.aufrufe("vorschlag")[0][2]["vorschlag"]["webseite"] == "https://radhaus.example/"
+    assert "anders.example" not in api.aufrufe("vorschlag")[0][2]["vorschlag"]["webseite"]
+
+
+def test_bearbeitung_webseite_aus_dem_formular_woertlich(wurzel):
+    _profil_mit_webseite(wurzel)
+    form = {**FORMULAR, "webseite": "https://neu.example/"}
+    api = Api({**BEARB, "kontext": {"formular": form, "woertlich": True}})
+    assert _lauf(api, Fragen(_antwort({**VORSCHLAG, "webseite": "https://neu.example/"}))) == "fertig"
+    assert api.aufrufe("vorschlag")[0][2]["vorschlag"]["webseite"] == "https://neu.example/"
+
+
+@pytest.mark.parametrize("logo_felder", [
+    {"logo": "bisher-unbekannt", "logo_bearbeiten": {"quelle": "bisher", "zuschneiden": True, "freistellen": "farbe"}},
+    {"logo": "anhang:x.png"}])
+def test_bearbeitung_fasst_das_logo_nie_an(logo_felder):
+    api = Api(dict(BEARB))
+    assert _lauf(api, Fragen(_antwort({**VORSCHLAG, **logo_felder}))) == "fertig"
+    gesendet = api.aufrufe("vorschlag")[0][2]
+    assert gesendet["vorschlag"]["logo"] is None and "logo_dunkel" not in gesendet["vorschlag"]
+    assert "logo_bearbeiten" not in gesendet["vorschlag"]
+    assert ma.LOGO_BLEIBT in gesendet["hinweise"]
+    assert api.aufrufe("logo") == []
+
+
+def test_bearbeitung_behaelt_logo_des_offenen_vorschlags():
+    offen = {"id": "v0", "vorschlag": {**VORSCHLAG, "logo": "marke-radhaus-logo-0123456789.png",
+                                       "logo_dunkel": "marke-radhaus-logo-aaaaaaaaaa.png"}}
+    api = Api({**BEARB, "vorschlag": offen})
+    assert _lauf(api, Fragen(_antwort())) == "fertig"
+    v = api.aufrufe("vorschlag")[0][2]["vorschlag"]
+    assert v["logo"] == "marke-radhaus-logo-0123456789.png" and v["logo_dunkel"] == "marke-radhaus-logo-aaaaaaaaaa.png"
+
+
+def test_bearbeitung_ohne_formular_scheitert_geschlossen():
+    api = Api({**BEARB, "kontext": {}})
+    fragen = Fragen()
+    assert _lauf(api, fragen) == "fehler"
+    assert fragen.gesehen == [] and "ohne Formular" in api.aufrufe("zurueck")[0][2]

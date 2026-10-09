@@ -165,6 +165,7 @@ def _web_logo(api, aid, url: str, logo_laden, hinweise: list[str]) -> str | None
 
 
 LOGO_NICHT = "Logo nicht bearbeitet: "
+LOGO_BLEIBT = "Logo bleibt bei der Formular-Bearbeitung unverändert"
 LOGO_WEB_ANSICHTEN = 3
 LOGO_KI_ZEIT_S = 120       # kuerzer als die Vergabe (5 min): ein traeges ComfyUI heisst "Logo unbearbeitet"
 
@@ -359,13 +360,18 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
     kontext = auftrag.get("kontext") if isinstance(auftrag.get("kontext"), dict) else {}
     formular = (kontext.get("formular") if auftrag.get("art") == "bearbeitung"
                 and isinstance(kontext.get("formular"), dict) else None)
+    if auftrag.get("art") == "bearbeitung" and formular is None:     # nie als freier Chat mit Websuche (R4b)
+        raise _Aufgeben("Bearbeitung ohne Formular – nichts geändert")
     laden = _einmal(logo_laden)
-    offen =marken_prompt.offener_vorschlag(auftrag) or {}
+    offen = marken_prompt.offener_vorschlag(auftrag) or {}
     bilder: list[tuple[str, str]] = []
     with cw.halten(api, aid, halten_takt_s) as halter:          # Anhaenge, Webseite und Wissen dauern
         bildteile, unterlagen_text, _, hinweise = cw.anhaenge_vorbereiten(api, aid, auftrag, bilder)
         profil = markenprofil.lesen(wurzel, mandant, name)
         hinweise += profil.hinweise
+        if formular is not None:       # leere Webseite im Formular = die des aktuellen Profils bleibt (R3)
+            formular = {**formular, "webseite": str(formular.get("webseite") or "").strip()
+                        or str(profil.werte.get("webseite") or "")}
         gemerkt = offen.get("webseite")
         if not markenprofil.webseite_gueltig(gemerkt):
             gemerkt = None
@@ -389,11 +395,14 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
     zustand = {"mit_bildern": bool(bildteile), "text_nutzer": text_nutzer, "hinweise": hinweise}
     anhaenge = [n for n, h in bilder if h not in marken_prompt.LOGO_ANSICHTEN]
     bisher_vorhanden = bool(bisher or profil.logo_pfad)
-    lesen_frei, versuch, korrigiert = formular is None, 1, []
+    lesen_frei, versuch, korrigiert, logo_hinweis = formular is None, 1, [], False
     while True:
         text = _text_holen(api, aid, fragen_strom, nachrichten, zustand, uhr, schlafen, halten_takt_s, spur,
                            websuche=formular is None)
         try:
+            if formular is not None:       # Logo bleibt bei der Formular-Bearbeitung unveraendert (R4)
+                text, logo_verworfen = marken_prompt.logo_verwerfen(text)
+                logo_hinweis = logo_hinweis or logo_verworfen
             erg = marken_prompt.antwort_lesen(text, anhaenge, len(logos), bisher,
                                               bisher_vorhanden=bisher_vorhanden, lesen_erlaubt=lesen_frei)
             if formular is not None:
@@ -420,6 +429,8 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
             continue
         break
     hinweise += korrigiert
+    if logo_hinweis:
+        hinweise.append(LOGO_BLEIBT)
     if not api.weiter(aid):
         return "fehler"
     vorschlag = erg["vorschlag"]
@@ -430,6 +441,15 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
         return "fertig"
     if formular is not None:           # leerer Formularabschnitt = Abschnitt geleert (Uebernehmen entfernt ihn)
         vorschlag["abschnitte"] = {n: vorschlag["abschnitte"].get(n, "") for n in markenprofil.ABSCHNITT_REIHENFOLGE}
+    if formular is not None:           # Logo und Webseite kommen nie vom Agenten (R3/R4)
+        vorschlag.pop("logo_bearbeiten", None)
+        vorschlag["logo"] = bisher
+        if bisher:
+            vorschlag.update({k: offen[k] for k in marken_prompt.WERKZEUG_FELDER if isinstance(offen.get(k), str)})
+        spur.schritt("Vorschlag abgelegt")
+        spur.ende()
+        api.vorschlag(aid, {"vorschlag": vorschlag, "antwort": erg["antwort"], "hinweise": _hinweise(hinweise)})
+        return "fertig"
     if vorschlag.get("webseite") is None and markenprofil.webseite_gueltig(offen.get("webseite")):
         vorschlag["webseite"] = offen["webseite"]       # null = bleibt: die Webseite des offenen Vorschlags
     lb = vorschlag.pop("logo_bearbeiten", None)
