@@ -356,8 +356,11 @@ def chat_bearbeiten(api, auftrag: dict, fragen_strom, webseite_lesen, logo_laden
 def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_lesen, logo_laden, wurzel: str,
                    uhr, schlafen, halten_takt_s, *, comfy, jetzt, seite_lesen, arbeit_ordner: str) -> str:
     mandant, name = _firma(auftrag)
+    kontext = auftrag.get("kontext") if isinstance(auftrag.get("kontext"), dict) else {}
+    formular = (kontext.get("formular") if auftrag.get("art") == "bearbeitung"
+                and isinstance(kontext.get("formular"), dict) else None)
     laden = _einmal(logo_laden)
-    offen = marken_prompt.offener_vorschlag(auftrag) or {}
+    offen =marken_prompt.offener_vorschlag(auftrag) or {}
     bilder: list[tuple[str, str]] = []
     with cw.halten(api, aid, halten_takt_s) as halter:          # Anhaenge, Webseite und Wissen dauern
         bildteile, unterlagen_text, _, hinweise = cw.anhaenge_vorbereiten(api, aid, auftrag, bilder)
@@ -367,8 +370,9 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
         if not markenprofil.webseite_gueltig(gemerkt):
             gemerkt = None
         gemerkt = gemerkt or profil.werte.get("webseite")
-        fund = _webseite_holen(adresse(auftrag.get("nachricht")), gemerkt, mandant, webseite_lesen, arbeit_ordner,
-                               jetzt().timestamp(), spur)
+        fund = (None if formular is not None      # Bearbeitung liest keine Webseite
+                else _webseite_holen(adresse(auftrag.get("nachricht")), gemerkt, mandant, webseite_lesen,
+                                     arbeit_ordner, jetzt().timestamp(), spur))
         if fund is not None:
             hinweise += fund.hinweise
         logos = list(fund.logos) if fund is not None else []
@@ -379,19 +383,23 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
     if halter.verloren.is_set():
         return "fehler"
     text_nutzer = marken_prompt.nutzer_text(auftrag, profil, fund, unterlagen_text, bilder, hinweise,
-                                            firmenwissen=wissen.text, notizen=wissen.notizen)
+                                            firmenwissen=wissen.text, notizen=wissen.notizen, formular=formular)
     nachrichten = [{"role": "user", "content": [{"type": "text", "text": text_nutzer}, *bildteile]
                     if bildteile else text_nutzer}]
     zustand = {"mit_bildern": bool(bildteile), "text_nutzer": text_nutzer, "hinweise": hinweise}
     anhaenge = [n for n, h in bilder if h not in marken_prompt.LOGO_ANSICHTEN]
     bisher_vorhanden = bool(bisher or profil.logo_pfad)
-    lesen_frei, versuch = True, 1
+    lesen_frei, versuch, korrigiert = formular is None, 1, []
     while True:
         text = _text_holen(api, aid, fragen_strom, nachrichten, zustand, uhr, schlafen, halten_takt_s, spur,
-                           websuche=True)
+                           websuche=formular is None)
         try:
             erg = marken_prompt.antwort_lesen(text, anhaenge, len(logos), bisher,
                                               bisher_vorhanden=bisher_vorhanden, lesen_erlaubt=lesen_frei)
+            if formular is not None:
+                if erg["vorschlag"] is None:
+                    raise marken_prompt.AntwortFehler("Zur Bearbeitung gehört ein vollständiger Vorschlag")
+                korrigiert = marken_prompt.formular_abgleich(formular, erg["vorschlag"], erg["korrekturen"])
         except marken_prompt.AntwortFehler as e:
             if versuch == 2:
                 raise _Aufgeben(cw.NICHT_UMGESETZT + str(e)) from None
@@ -411,6 +419,7 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
                             {"role": "user", "content": marken_prompt.folge_text(material)}]
             continue
         break
+    hinweise += korrigiert
     if not api.weiter(aid):
         return "fehler"
     vorschlag = erg["vorschlag"]
@@ -419,6 +428,8 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
         spur.ende()
         api.fertig(aid, {"antwort": erg["antwort"], "hinweise": _hinweise(hinweise)})
         return "fertig"
+    if formular is not None:           # leerer Formularabschnitt = Abschnitt geleert (Uebernehmen entfernt ihn)
+        vorschlag["abschnitte"] = {n: vorschlag["abschnitte"].get(n, "") for n in markenprofil.ABSCHNITT_REIHENFOLGE}
     if vorschlag.get("webseite") is None and markenprofil.webseite_gueltig(offen.get("webseite")):
         vorschlag["webseite"] = offen["webseite"]       # null = bleibt: die Webseite des offenen Vorschlags
     lb = vorschlag.pop("logo_bearbeiten", None)
@@ -629,7 +640,7 @@ def ein_durchlauf(api, fragen_strom=cw.frage_strom, webseite_lesen=webseite.lese
     aid = str(auftrag["id"])
     wurzel = wurzel or markenwissen.wurzel()
     try:
-        if auftrag.get("art") == "chat":
+        if auftrag.get("art") in ("chat", "bearbeitung"):
             return chat_bearbeiten(api, auftrag, fragen_strom, webseite_lesen, logo_laden, wurzel,
                                    uhr, schlafen, halten_takt_s, comfy=comfy, jetzt=jetzt, seite_lesen=seite_lesen,
                                    arbeit_ordner=arbeit_ordner)

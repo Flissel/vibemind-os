@@ -150,7 +150,7 @@ def test_stand_liefert_alles(umg):
     assert j["uebernahme_seit"] is None and j["aktuell"] is None
     assert j["vorschlag"] == {"id": VID, "vorschlag": VORSCHLAG, "erstellt_am": "z"}
     assert "_marke_aufraeumen('radhaus')" in f.sql[0]
-    assert "LIMIT 10" in f.sql[2] and "art = 'chat'" in f.sql[2]
+    assert "LIMIT 10" in f.sql[2] and "art IN ('chat', 'bearbeitung')" in f.sql[2]
 
 
 def test_stand_ohne_spiegel_uebernahme_laeuft(umg):
@@ -864,3 +864,66 @@ def test_vorschau_reicht_logo_dunkel_des_vorschlags_weiter(umg, monkeypatch):
     _vorschau_antworten(f, dict(VORSCHLAG, logo="hell.png", logo_dunkel="dunkel.png"))
     assert c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?mandant=radhaus", headers=H).status_code == 200
     assert gesehen == {"logo": "medien:hell.png", "logo_dunkel": "medien:dunkel.png"}
+
+
+# --- Task 9: Formular -> Agent ---------------------------------------------------
+
+FORM = {"akzent": "#b45309", "zweitfarbe": "#3b2f2f", "grund": "#faf7f2", "text": "#2b2724",
+        "schrift_anzeige": "playfair", "schrift_text": "manrope", "webseite": "https://radhaus.example/",
+        "abschnitte": {"Ton": "Ruhig, per Du.", "Bildstil": "Warme Werkstattfotos, Tageslicht."}}
+
+
+def test_bearbeiten_legt_nur_den_auftrag_an(umg):
+    f, ordner, c = umg
+    f.antworten.append([{"id": AID}])
+    r = c.post("/api/pult/marke/bearbeiten", headers=H, json={"mandant": "radhaus", "formular": FORM})
+    assert r.status_code == 200 and r.json() == {"auftrag": AID}
+    assert len(f.sql) == 1 and "marketing.pult_marke_bearbeitung_anlegen('radhaus'" in f.sql[0]
+    assert "Warme Werkstattfotos" in f.sql[0] and '"Angebote": ""' in f.sql[0]
+    assert list(ordner.iterdir()) == []                         # kein direktes Speichern, keine Datei
+
+
+@pytest.mark.parametrize("formular", [
+    None, [], {**FORM, "akzent": 5}, {**FORM, "akzent": "x" * 21}, {**FORM, "webseite": "x" * 301},
+    {**FORM, "abschnitte": {"Geheim": "x"}}, {**FORM, "abschnitte": {"Ton": "x" * 8001}},
+    {**FORM, "logo": "a.png"}, {**FORM, "abschnitte": []}])
+def test_bearbeiten_form_422(umg, formular):
+    f, _, c = umg
+    assert c.post("/api/pult/marke/bearbeiten", headers=H,
+                  json={"mandant": "radhaus", "formular": formular}).status_code == 422
+    assert f.sql == []
+
+
+def test_bearbeiten_db_ablehnung_422(umg):
+    f, _, c = umg
+    f.fehler += [_db_fehler("Der Assistent arbeitet gerade")]
+    r = c.post("/api/pult/marke/bearbeiten", headers=H, json={"mandant": "radhaus", "formular": FORM})
+    assert r.status_code == 422 and r.json()["detail"] == "Der Assistent arbeitet gerade"
+
+
+def test_kein_direktes_speichern_des_profils():
+    pfade = {getattr(r, "path", "") for r in server.app.routes}
+    assert "/api/pult/marke/bearbeiten" in pfade
+    assert not any(p.startswith("/api/pult/marke") and any(w in p for w in ("speichern", "profil", "schreiben"))
+                   for p in pfade)
+
+
+def test_abschnitte_gleich_markenprofil():
+    from spaces.marketing.api import marke
+    from spaces.marketing.claw import markenprofil
+    assert marke.ABSCHNITTE == markenprofil.ABSCHNITT_REIHENFOLGE
+
+
+def test_stand_laeuft_auch_bei_bearbeitung(umg):
+    f, _, c = umg
+    f.antworten += [[{"ok": True}], [{"name": "Radhaus", "stand": "s", "gespiegelt_am": None, "fehler": None,
+                                       "gestalt": {}}], [], [{"art": "bearbeitung", "erstellt_am": "x"}]]
+    assert c.get("/api/pult/marke?mandant=radhaus", headers=H).json()["laeuft"] is True
+
+
+def test_stand_laufend_ohne_wissen_lauf(umg):
+    """Task-1-Review: ein laufender Wissen-Lauf zeigt sein Denken nicht im Chat-Bereich."""
+    f, _, c = umg
+    f.antworten += [[{"ok": True}], _stand_kopf(), [], [], [], [], []]
+    c.get("/api/pult/marke?mandant=radhaus", headers=H)
+    assert "art IN ('chat', 'bearbeitung', 'uebernehmen')" in f.sql[7] and "wissen" not in f.sql[7]

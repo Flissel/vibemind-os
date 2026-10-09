@@ -38,6 +38,10 @@ FRIST = "5 minutes"
 LOGO_MAX = 2 * 1024 * 1024
 LOGO_PIXEL_MAX = 25_000_000
 SPIEGEL_KOERPER_MAX = 400 * 1024          # Logo <= 140 KB als data-URL, Rest klein
+ABSCHNITTE = ("Wer wir sind", "Zielgruppe", "Ton", "Angebote", "Do & Don'ts", "Fakten und Zahlen", "Bildstil")
+FORMULAR_GRENZEN = {"akzent": 20, "zweitfarbe": 20, "grund": 20, "text": 20, "schrift_anzeige": 40,
+                    "schrift_text": 40, "webseite": 300}
+ABSCHNITT_FORM_MAX = 8000
 SPIEGEL_SCHLUESSEL = ("akzent", "flaeche", "logo", "logo_dunkel", "schriften")
 _PNG, _JPEG = b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff"
 _LOGO_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(png|jpe?g)")
@@ -83,7 +87,7 @@ def marke_stand(mandant: str | None = None, x_pult_key: str | None = Header(None
         "SELECT * FROM (SELECT id, nachricht, antwort, status, hinweise, vorschlag, "
         "coalesce(denken, '') AS denken, coalesce(schritte, '[]'::jsonb) AS schritte, "
         "erstellt_am::text AS erstellt_am, erstellt_am AS sortiert_am FROM marketing.marken_auftraege "
-        f"WHERE mandant = {lit(m)} AND art = 'chat' ORDER BY erstellt_am DESC LIMIT 10) q ORDER BY sortiert_am")
+        f"WHERE mandant = {lit(m)} AND art IN ('chat', 'bearbeitung') ORDER BY erstellt_am DESC LIMIT 10) q ORDER BY sortiert_am")
     for z in auftraege:
         z.pop("sortiert_am", None)
     offen = _lesen(lambda:
@@ -116,6 +120,7 @@ def marke_stand(mandant: str | None = None, x_pult_key: str | None = Header(None
     laufend = _lesen_einer(lambda:
         "SELECT art, coalesce(denken, '') AS denken, coalesce(schritte, '[]'::jsonb) AS schritte "
         f"FROM marketing.marken_auftraege WHERE mandant = {lit(m)} AND status = 'in_arbeit' "
+        "AND art IN ('chat', 'bearbeitung', 'uebernehmen') "
         "ORDER BY geaendert_am DESC LIMIT 1")
     hinweise = kopf.get("hinweise") if isinstance(kopf.get("hinweise"), list) else []
     return {"mandant": m, "name": kopf.get("name"),
@@ -123,7 +128,7 @@ def marke_stand(mandant: str | None = None, x_pult_key: str | None = Header(None
                         "stand": kopf.get("stand") or "", "gespiegelt_am": kopf.get("gespiegelt_am"),
                         "fehler": kopf.get("fehler")},
             "profil_hinweise": [str(h) for h in hinweise],
-            "auftraege": auftraege, "laeuft": "chat" in arten,
+            "auftraege": auftraege, "laeuft": bool(arten & {"chat", "bearbeitung"}),
             "vorschlag": ({"id": str(v["id"]), "vorschlag": v.get("vorschlag"), "erstellt_am": v.get("erstellt_am")}
                           if v else None),
             "uebernahme": "laeuft" if "uebernehmen" in arten else None,
@@ -139,6 +144,41 @@ def marke_chat(payload: dict = Body(...), x_pult_key: str | None = Header(None))
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_marke_anlegen({lit(m)}, {lit(nachricht)}, "
         f"{lit(json.dumps(kontext, ensure_ascii=False))}::jsonb) AS id")
+    return {"auftrag": str(zeile["id"])}
+
+
+def _formular(roh) -> dict:
+    """Nur die Form: der Agent uebernimmt woertlich und korrigiert Ungueltiges mit Hinweis (Spec §2)."""
+    if not isinstance(roh, dict):
+        raise HTTPException(422, "formular muss ein Objekt sein")
+    if set(roh) - set(FORMULAR_GRENZEN) - {"abschnitte"}:
+        raise HTTPException(422, "formular kennt nur Farben, Schriften, webseite und abschnitte")
+    aus: dict = {}
+    for k, grenze in FORMULAR_GRENZEN.items():
+        wert = roh.get(k, "")
+        if not isinstance(wert, str) or len(wert) > grenze:
+            raise HTTPException(422, f"{k} muss Text mit höchstens {grenze} Zeichen sein")
+        aus[k] = wert.strip()
+    ab = roh.get("abschnitte", {})
+    if not isinstance(ab, dict) or set(ab) - set(ABSCHNITTE):
+        raise HTTPException(422, "abschnitte kennt nur die sieben Abschnitte des Profils")
+    for name, text in ab.items():
+        if not isinstance(text, str) or len(text) > ABSCHNITT_FORM_MAX:
+            raise HTTPException(422, f"Abschnitt {name} muss Text mit höchstens {ABSCHNITT_FORM_MAX} Zeichen sein")
+    aus["abschnitte"] = {n: str(ab.get(n, "")).replace("\r\n", "\n").strip() for n in ABSCHNITTE}
+    return aus
+
+
+@pult_router.post("/marke/bearbeiten")
+def marke_bearbeiten(payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    """Profil bearbeiten: legt NUR einen Bearbeitungs-Auftrag an (Formular -> Agent). Direktes Speichern
+    ohne Agent gibt es nicht (Spec §2)."""
+    _schluessel(x_pult_key)
+    m = _mandant_pflicht(payload.get("mandant"))
+    formular = _formular(payload.get("formular"))
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_marke_bearbeitung_anlegen({lit(m)}, "
+        f"{lit(json.dumps(formular, ensure_ascii=False))}::jsonb) AS id")
     return {"auftrag": str(zeile["id"])}
 
 

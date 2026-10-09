@@ -1113,3 +1113,43 @@ def test_lesen_verlaengert_die_vergabe_waehrend_der_leser_arbeitet():
     fragen = Fragen(_mit_lesen(["https://radhaus.example/a"]), _antwort())
     assert _lauf(api, fragen, seite_lesen=langsam, halten_takt_s=0.02) == "fertig"
     assert stand and stand[0] >= 2
+
+
+# --- Task 9: Bearbeitung (Formular, woertlich) --------------------------------------
+
+FORMULAR = {"akzent": "#b45309", "zweitfarbe": "#3b2f2f", "grund": "#faf7f2", "text": "#2b2724",
+            "schrift_anzeige": "playfair", "schrift_text": "manrope", "webseite": "",
+            "abschnitte": {"Ton": "Ruhig, per Du.", "Bildstil": "Warme Werkstattfotos, Tageslicht."}}
+BEARB = {**CHAT, "art": "bearbeitung", "nachricht": "Profil bearbeitet (Formular)",
+         "kontext": {"formular": FORMULAR, "woertlich": True}}
+
+
+def test_bearbeitung_woertlich_wird_vorschlag_ohne_websuche():
+    api, fragen = Api(dict(BEARB)), Fragen(_antwort())
+    assert _lauf(api, fragen, webseite_lesen=lambda u: pytest.fail("keine Webseite")) == "fertig"
+    assert "FORMULAR" in _text(fragen) and "Warme Werkstattfotos" in _text(fragen)
+    assert "websuche" not in fragen.kw[0]
+    v = api.aufrufe("vorschlag")[0][2]["vorschlag"]
+    assert v["abschnitte"]["Ton"] == "Ruhig, per Du." and v["abschnitte"]["Angebote"] == ""
+
+
+def test_bearbeitung_abweichung_bekommt_korrekturrunde():
+    api, fragen = Api(dict(BEARB)), Fragen(_antwort({**VORSCHLAG, "akzent": "#9a3412"}), _antwort())
+    assert _lauf(api, fragen) == "fertig"
+    assert "wörtlich" in fragen.gesehen[1][1][-1]["content"]
+
+
+def test_bearbeitung_ungueltiges_wird_mit_hinweis_korrigiert():
+    auftrag = {**BEARB, "kontext": {"formular": {**FORMULAR, "schrift_anzeige": "comic-sans"}, "woertlich": True}}
+    antwort = json.dumps({"antwort": "Schrift ersetzt.", "vorschlag": VORSCHLAG,
+                          "korrekturen": [{"feld": "schrift_anzeige", "grund": "nicht im Register"}]},
+                         ensure_ascii=False)
+    api = Api(auftrag)
+    assert _lauf(api, Fragen(antwort)) == "fertig"
+    assert "schrift_anzeige: comic-sans → playfair – nicht im Register" in api.aufrufe("vorschlag")[0][2]["hinweise"]
+
+
+def test_bearbeitung_ohne_vorschlag_wird_zurueckgegeben():
+    api = Api(dict(BEARB))
+    assert _lauf(api, Fragen(_antwort(None, "?"), _antwort(None, "?"))) == "fehler"
+    assert "vollständiger Vorschlag" in api.aufrufe("zurueck")[0][2]
