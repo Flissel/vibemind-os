@@ -304,6 +304,32 @@ def test_uebernahme_spiegel_abgelehnt_spur(wurzel, monkeypatch):
     assert api.aufrufe("denken")[-1][3][-1] == "Spiegel abgelehnt: Logo zu gross"
 
 
+@pytest.mark.parametrize("fehler", [cw.ApiFehler(500, "kaputt"), OSError("netz"), ValueError("json")])
+def test_chat_stoerung_sendet_spur_vor_freigabe(fehler):
+    def lesen(url):
+        raise fehler
+    api = Api({**CHAT, "nachricht": "Unsere Seite: https://radhaus.example/"})
+    assert _lauf(api, Fragen(_antwort()), webseite_lesen=lesen) == "fehler"
+    namen = _namen(api)
+    assert namen[-1] == "zurueck" and namen[-2] == "denken"
+
+
+@pytest.mark.parametrize("fehler", [cw.ApiFehler(500, "kaputt"), OSError("netz"), ValueError("json")])
+def test_uebernahme_stoerung_sendet_spur_vor_freigabe(wurzel, fehler):
+    class Kaputt(Api):
+        def hinweise(self, mandant, hinweise):
+            return {"ok": True}
+
+        def fertig(self, aid, daten):
+            raise fehler
+
+    api = Kaputt(_uebernehmen())
+    assert _lauf(api, Fragen()) == "fehler"
+    namen = _namen(api)
+    assert namen[-1] == "zurueck" and namen[-2] == "denken"
+    assert api.aufrufe("denken")[-1][3] == ["Rowboat geschrieben", "Spiegel aktualisiert"]
+
+
 # --- uebernehmen --------------------------------------------------------------------
 
 def _uebernehmen(vorschlag=VORSCHLAG, von="Anna"):

@@ -53,6 +53,14 @@ class MarkenApi(cw.ChatApi):
         return self._post("/hinweise", {"mandant": mandant, "hinweise": hinweise})
 
 
+def _spur_ende(spur) -> None:
+    """Letzter Stand vor Abschlussmeldung/Freigabe; darf nie selbst werfen."""
+    try:
+        spur.ende()
+    except Exception:  # noqa: BLE001 - Sichtbarkeit darf den Auftrag nie kippen
+        pass
+
+
 class _Aufgeben(Exception):
     """Auftrag mit dieser Meldung zurueckgeben."""
 
@@ -142,8 +150,8 @@ def chat_bearbeiten(api, auftrag: dict, fragen_strom, webseite_lesen, logo_laden
     try:
         return _chat_mit_spur(api, auftrag, aid, spur, fragen_strom, webseite_lesen, logo_laden, wurzel,
                               uhr, schlafen, halten_takt_s)
-    except (_Aufgeben, cw._Verloren):
-        spur.ende()
+    except (_Aufgeben, cw._Verloren, ApiFehler, OSError, ValueError):
+        _spur_ende(spur)
         raise
 
 
@@ -322,8 +330,8 @@ def uebernehmen(api, auftrag: dict, wurzel: str, jetzt, halten_takt_s) -> str:
     spur = denkspur.Spur(cw.spur_senden(api, aid))
     try:
         return _uebernehmen_mit_spur(api, auftrag, aid, spur, wurzel, jetzt, halten_takt_s)
-    except (_Aufgeben, cw._Verloren):
-        spur.ende()
+    except (_Aufgeben, cw._Verloren, ApiFehler, OSError, ValueError):
+        _spur_ende(spur)
         raise
 
 
