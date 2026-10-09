@@ -5,6 +5,9 @@
 -- vorhersagbar, solange jeweils nur EIN Auftrag offen ist (now() ist in der Probe konstant).
 
 CREATE TEMP TABLE _p064 ON COMMIT DROP AS SELECT NULL::text AS k, NULL::uuid AS id LIMIT 0;
+-- Wartende Auftraege echter Firmen (seit 066 z. B. ein Wissens-Lauf bei ausgeschaltetem PC) in DIESER
+-- Transaktion beiseite, damit pult_marke_naechster vorhersagbar bleibt; der ROLLBACK stellt sie wieder her.
+UPDATE marketing.marken_auftraege SET status = 'fehler' WHERE status = 'offen';
 
 DO $$ DECLARE v uuid; d jsonb; BEGIN
   INSERT INTO marketing.mandanten (id, name, aktiv) VALUES
@@ -354,7 +357,7 @@ DO $$ DECLARE n int; r record; v_fehler text; g jsonb; v_dunkel jsonb; BEGIN
   -- fremde Schluessel und unbekannte Firma
   v_fehler := NULL;
   BEGIN PERFORM marketing.pult_marke_spiegeln('probe_marke', '{"grund":"#000000"}', 'x'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
-  ASSERT v_fehler = 'Spiegel kennt nur akzent, flaeche, logo, schriften', format('13o: fremder Schluessel: %s', v_fehler);
+  ASSERT v_fehler = 'Spiegel kennt nur akzent, flaeche, logo, logo_dunkel, schriften', format('13o: fremder Schluessel: %s', v_fehler);
   v_fehler := NULL;
   BEGIN PERFORM marketing.pult_marke_spiegeln('gibt_es_nicht', '{"akzent":"#225588"}', 'x'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
   ASSERT v_fehler = 'Unbekannte Firma', format('13p: unbekannte Firma: %s', v_fehler);
