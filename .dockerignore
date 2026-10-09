@@ -19,6 +19,22 @@
 # Dockerfile kopiert die Space-Agent-Registry (COPY config/space_agent_registry.yml).
 !config/
 !config/space_agent_registry.yml
+# Dockerfile kopiert die Spaces (COPY spaces/ /app/spaces/) fuer direct:spaces.*-Targets.
+# Submodule und vendorierte Apps bleiben draussen - zusammen weit ueber 1 GB.
+!spaces/
+spaces/**/.git
+spaces/captain_cook/
+spaces/coding/
+spaces/desktop/
+spaces/learning/
+spaces/mirofish/mirofish/
+spaces/rowboat/rowboat/
+spaces/sales-claw/
+spaces/shuttles/swe_desgine/
+spaces/video/laura/
+spaces/video/vibevideo/
+spaces/video/vibevideo_deepfake/
+spaces/_navigator/state.json
 
 # Build artefacts / caches inside the re-included trees (these patterns are
 # matched at any depth, so they prune the kept subtrees too).

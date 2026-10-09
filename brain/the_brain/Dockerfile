@@ -81,6 +81,13 @@ COPY brain/the_brain/ /app/
 COPY config/space_agent_registry.yml /app/config/space_agent_registry.yml
 ENV SPACE_AGENT_REGISTRY_PATH=/app/config/space_agent_registry.yml
 
+# 4c. Die Spaces. capabilities.yaml fuehrt `direct:spaces.<x>`-Targets (minibook,
+#     schedule, video, research) und die Registry-Pruefung importiert
+#     spaces._navigator - ohne dieses COPY warf jeder dieser Pfade im Container
+#     ModuleNotFoundError (gemessen 2026-10-08, Vibemind_V1/docs/spaces/README.md
+#     Befund 1). Submodule und vendorierte Apps haelt vibemind-os/.dockerignore draussen.
+COPY spaces/ /app/spaces/
+
 # Persistent volume mount point (EventRoutingHead/SpaceRoutingHead .pt,
 # ctm_checkpoints, snapshots).
 RUN mkdir -p /app/data
