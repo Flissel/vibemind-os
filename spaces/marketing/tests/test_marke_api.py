@@ -83,6 +83,7 @@ ARBEITER_ROUTEN = [
     ("post", "/api/marke/arbeiter/naechster"),
     ("post", f"/api/marke/arbeiter/{AID}/weiter"),
     ("post", f"/api/marke/arbeiter/{AID}/vorschlag"),
+    ("post", f"/api/marke/arbeiter/{AID}/denken"),
     ("post", f"/api/marke/arbeiter/{AID}/fertig"),
     ("post", f"/api/marke/arbeiter/{AID}/zurueck"),
     ("get", f"/api/marke/arbeiter/{AID}/medien/foto.jpg"),
@@ -730,3 +731,79 @@ def test_naechster_chat_traegt_den_offenen_vorschlag(umg):
     f.antworten.append([{"a": job}])
     assert c.post("/api/marke/arbeiter/naechster", headers=HB).json() == {"auftrag": job}
     assert len(f.sql) == 1                   # kein Urheber-Lesen beim Chat
+
+
+# ─── Denkspur (Spec 2026-10-09, Migration 065) ──────────────────────────
+
+DENKEN = f"/api/marke/arbeiter/{AID}/denken"
+SCHRITT = {"zeit": "08:03:41", "text": "Frage an Claude"}
+
+
+def test_denken_route_schreibt_und_meldet_ok(umg):
+    f, _, c = umg
+    f.antworten.append([{"ok": True}])
+    r = c.post(DENKEN, headers=HB, json={"denken": "Let me think", "schritte": [SCHRITT]})
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert len(f.sql) == 1 and "marketing.pult_marke_denken(" in f.sql[0]
+    assert f"'{AID}'::uuid" in f.sql[0] and "Let me think" in f.sql[0] and "Frage an Claude" in f.sql[0]
+
+
+def test_denken_route_verloren_ist_409(umg):
+    f, _, c = umg
+    f.antworten.append([{"ok": False}])
+    r = c.post(DENKEN, headers=HB, json={"denken": "", "schritte": []})
+    assert r.status_code == 409 and r.json()["detail"] == "Auftrag nicht mehr in Arbeit"
+
+
+@pytest.mark.parametrize("body", [
+    {"denken": 5, "schritte": []},
+    {"denken": "x", "schritte": {}},
+    {"denken": "x" * 20101, "schritte": []},
+    {"denken": "x", "schritte": [{"zeit": "08:00:00", "text": "t" * 201}]},
+    {"denken": "x", "schritte": [{"zeit": "08:00:00"}]},
+    {"denken": "x", "schritte": [{"zeit": "08:00:00", "text": "s"}] * 61},
+])
+def test_denken_route_form_422(umg, body):
+    f, _, c = umg
+    assert c.post(DENKEN, headers=HB, json=body).status_code == 422
+    assert f.sql == []
+
+
+def test_denken_route_ohne_schluessel_401(umg):
+    f, _, c = umg
+    assert c.post(DENKEN, json={"denken": "", "schritte": []}).status_code == 401
+    assert f.sql == []
+
+
+def test_denken_route_zu_gross_413(umg):
+    f, _, c = umg
+    assert c.post(DENKEN, headers=HB, json={"denken": "x" * (300 * 1024), "schritte": []}).status_code == 413
+    assert f.sql == []
+
+
+def test_marke_stand_liefert_spur_und_laufend(umg):
+    f, _, c = umg
+    f.antworten += [[{"ok": True}], _stand_kopf(),
+                    [{"id": AID, "nachricht": "Hallo", "antwort": "Hi", "status": "fertig", "hinweise": [],
+                      "vorschlag": VID, "denken": "Gedanke",
+                      "schritte": [{"zeit": "08:00:00", "text": "Webseite gelesen (3 Seiten)"}],
+                      "erstellt_am": "x", "sortiert_am": "y"}],
+                    [], [], [],
+                    [{"status": "fertig", "antwort": "ok", "hinweise": [], "geaendert_am": "t",
+                      "schritte": [{"zeit": "08:05:00", "text": "Rowboat geschrieben"}]}],
+                    [{"art": "chat", "denken": "Let me", "schritte": [SCHRITT]}]]
+    j = c.get("/api/pult/marke?mandant=radhaus", headers=H).json()
+    assert j["auftraege"][0]["denken"] == "Gedanke"
+    assert j["auftraege"][0]["schritte"][0]["text"] == "Webseite gelesen (3 Seiten)"
+    assert j["letzte_uebernahme"]["schritte"][0]["text"] == "Rowboat geschrieben"
+    assert j["laufend"] == {"art": "chat", "denken": "Let me", "schritte": [SCHRITT]}
+    assert "coalesce(denken, '')" in f.sql[2] and "coalesce(schritte" in f.sql[2]
+    assert "coalesce(schritte" in f.sql[6]
+    assert "status = 'in_arbeit'" in f.sql[7] and "ORDER BY geaendert_am DESC LIMIT 1" in f.sql[7]
+
+
+def test_marke_stand_ohne_laufenden_auftrag(umg):
+    f, _, c = umg
+    f.antworten += [[{"ok": True}], _stand_kopf(), [], [], [], [], []]
+    j = c.get("/api/pult/marke?mandant=radhaus", headers=H).json()
+    assert j["laufend"] is None

@@ -46,6 +46,10 @@ NICHT_UMGESETZT = "Das habe ich nicht umsetzen können: "
 GEAENDERT = "Der Newsletter wurde inzwischen geändert – bitte schick die Nachricht noch einmal."
 ZWISCHENSTAND_KOERPER_MAX = 300 * 1024    # ganzer Body; die Bloecke selbst prueft die DB (<= 256 KB)
 SCHRITT_MAX = 80
+SPUR_DENKEN_MAX = 20_100
+SPUR_SCHRITTE_MAX = 60
+SPUR_SCHRITT_MAX = 200
+SPUR_KOERPER_MAX = 256 * 1024
 STOPPS_JE_ABRUF = 2                        # Rechnen kostet; der Rest kommt beim naechsten Abruf
 STOPP_ARTEN = ("behalten", "verwerfen")
 STOPP_UNGUELTIG = "Zwischenstand nicht übernommen: "
@@ -138,18 +142,22 @@ def chat_stand(iid: str, x_pult_key: str | None = Header(None)):
     _stopps_abschliessen()
     verlauf = _lesen(lambda:
         "SELECT * FROM (SELECT id, art, nachricht, antwort, status, hinweise, ergebnis, fassung_vorher, "
-        "fassung_nachher, erstellt_am::text AS erstellt_am, erstellt_am AS sortiert_am "
+        "fassung_nachher, coalesce(denken, '') AS denken, coalesce(schritte, '[]'::jsonb) AS schritte, "
+        "erstellt_am::text AS erstellt_am, erstellt_am AS sortiert_am "
         f"FROM marketing.chat_auftraege WHERE inhalt = {lit(i)}::uuid AND status <> 'wartet' "
         "ORDER BY erstellt_am DESC LIMIT 30) q ORDER BY sortiert_am")
     for z in verlauf:
         z.pop("sortiert_am", None)
+        z["denken"], z["schritte"] = z.get("denken") or "", z.get("schritte") or []
     live, vorgemerkt = None, None
     for z in _lesen(lambda:
-            "SELECT id, status, nachricht, schritt, schritt_nr, zwischenstand, stopp FROM marketing.chat_auftraege "
+            "SELECT id, status, nachricht, schritt, schritt_nr, zwischenstand, stopp, coalesce(denken, '') AS denken, "
+            "coalesce(schritte, '[]'::jsonb) AS schritte FROM marketing.chat_auftraege "
             f"WHERE inhalt = {lit(i)}::uuid AND status IN ('in_arbeit', 'wartet')"):
         if z.get("status") == "in_arbeit":
             live = {"schritt": z.get("schritt") or "", "schritt_nr": z.get("schritt_nr") or 0,
-                    "zwischenstand": z.get("zwischenstand"), "stopp": z.get("stopp")}
+                    "zwischenstand": z.get("zwischenstand"), "stopp": z.get("stopp"),
+                    "denken": z.get("denken") or "", "schritte": z.get("schritte") or []}
         else:
             vorgemerkt = {"id": str(z.get("id")), "nachricht": z.get("nachricht")}
     return {"laeuft": any(z.get("status") in ("offen", "in_arbeit") for z in verlauf), "verlauf": verlauf,
@@ -729,6 +737,34 @@ async def arbeiter_zwischenstand(aid: str, request: Request, x_bild_key: str | N
         f"SELECT marketing.pult_chat_zwischenstand({lit(a)}::uuid, "
         f"{lit(json.dumps(bloecke, ensure_ascii=False))}::jsonb, {lit(schritt)}, {nr}, {lit(FRIST)}::interval) AS z")
     return zeile.get("z") or {"weiter": False, "grund": "verloren"}
+
+
+def spur_pruefen(payload: dict) -> tuple[str, list[dict]]:
+    """Form von {denken, schritte} (Spec 2026-10-09); die DB prueft dieselben Grenzen noch einmal."""
+    denken, schritte = payload.get("denken", ""), payload.get("schritte", [])
+    if not isinstance(denken, str) or len(denken) > SPUR_DENKEN_MAX:
+        raise HTTPException(422, f"denken muss Text mit hoechstens {SPUR_DENKEN_MAX} Zeichen sein")
+    if not isinstance(schritte, list) or len(schritte) > SPUR_SCHRITTE_MAX:
+        raise HTTPException(422, f"schritte muss eine Liste mit hoechstens {SPUR_SCHRITTE_MAX} Eintraegen sein")
+    for s in schritte:
+        if (not isinstance(s, dict) or set(s) != {"zeit", "text"} or not isinstance(s["zeit"], str)
+                or len(s["zeit"]) > 20 or not isinstance(s["text"], str) or len(s["text"]) > SPUR_SCHRITT_MAX):
+            raise HTTPException(422, "Schritt muss {zeit, text} mit hoechstens 200 Zeichen Text sein")
+    return denken, schritte
+
+
+@arbeiter_router.post("/{aid}/denken")
+async def arbeiter_denken(aid: str, request: Request, x_bild_key: str | None = Header(None)):
+    """Denkspur des Arbeiters (Text + Schritte) an den laufenden Auftrag; 409 wenn er nicht mehr in Arbeit ist."""
+    _bild_schluessel(x_bild_key)
+    a = _auftrag_id(aid)
+    denken, schritte = spur_pruefen(await _json_gekappt(request, SPUR_KOERPER_MAX))
+    zeile = await run_in_threadpool(_schreiben, lambda:
+        f"SELECT marketing.pult_chat_denken({lit(a)}::uuid, {lit(denken)}, "
+        f"{lit(json.dumps(schritte, ensure_ascii=False))}::jsonb) AS ok")
+    if not zeile.get("ok"):
+        raise HTTPException(409, "Auftrag nicht mehr in Arbeit")
+    return {"ok": True}
 
 
 @arbeiter_router.post("/{aid}/gestoppt")

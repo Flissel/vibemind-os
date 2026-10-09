@@ -686,14 +686,15 @@ def test_stand_enthaelt_live_und_vorgemerkt(umg):
                 "ergebnis": {}, "fassung_vorher": 2, "fassung_nachher": None, "erstellt_am": "2", "sortiert_am": "2"}]
     f.antworten += [[{"ok": True}], [], verlauf, [
         {"id": AID, "status": "in_arbeit", "nachricht": "c", "schritt": "Titel setzen", "schritt_nr": 3,
-         "zwischenstand": _dok(), "stopp": "verwerfen"},
+         "zwischenstand": _dok(), "stopp": "verwerfen", "denken": "", "schritte": []},
         {"id": BID, "status": "wartet", "nachricht": "Danach kürzer", "schritt": "", "schritt_nr": 0,
          "zwischenstand": None}]]
     r = c.get(f"/api/pult/inhalte/{IID}/chat", headers=H)
     assert r.status_code == 200, r.text
     d = r.json()
     assert d["laeuft"] is True
-    assert d["live"] == {"schritt": "Titel setzen", "schritt_nr": 3, "zwischenstand": _dok(), "stopp": "verwerfen"}
+    assert d["live"] == {"schritt": "Titel setzen", "schritt_nr": 3, "zwischenstand": _dok(), "stopp": "verwerfen",
+                         "denken": "", "schritte": []}
     assert d["vorgemerkt"] == {"id": BID, "nachricht": "Danach kürzer"}
     assert "status IN ('in_arbeit', 'wartet')" in f.sql[3]
 
@@ -1062,3 +1063,68 @@ def test_naechster_ohne_markenlogo_und_lesefehler_verliert_nichts(umg):
     f.fehler += [None, None, RuntimeError("db weg")]
     r = c.post("/api/chat/arbeiter/naechster", headers=HB)
     assert r.status_code == 200 and r.json()["auftrag"]["markenlogo"] is None
+
+
+# ─── Denkspur (Spec 2026-10-09, Migration 065) ──────────────────────────
+
+DENKEN = f"/api/chat/arbeiter/{AID}/denken"
+SCHRITT = {"zeit": "08:03:41", "text": "Frage an Claude"}
+
+
+def test_denken_route_schreibt_und_meldet_ok(umg):
+    f, _, c = umg
+    f.antworten.append([{"ok": True}])
+    r = c.post(DENKEN, headers=HB, json={"denken": "Let me think", "schritte": [SCHRITT]})
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert len(f.sql) == 1 and "marketing.pult_chat_denken(" in f.sql[0]
+    assert f"'{AID}'::uuid" in f.sql[0] and "Let me think" in f.sql[0] and "Frage an Claude" in f.sql[0]
+
+
+def test_denken_route_verloren_ist_409(umg):
+    f, _, c = umg
+    f.antworten.append([{"ok": False}])
+    r = c.post(DENKEN, headers=HB, json={"denken": "", "schritte": []})
+    assert r.status_code == 409 and r.json()["detail"] == "Auftrag nicht mehr in Arbeit"
+
+
+@pytest.mark.parametrize("body", [
+    {"denken": 5, "schritte": []},
+    {"denken": "x", "schritte": {}},
+    {"denken": "x" * 20101, "schritte": []},
+    {"denken": "x", "schritte": [{"zeit": "08:00:00", "text": "t" * 201}]},
+    {"denken": "x", "schritte": [{"zeit": "08:00:00"}]},
+    {"denken": "x", "schritte": [{"zeit": "08:00:00", "text": "s"}] * 61},
+])
+def test_denken_route_form_422(umg, body):
+    f, _, c = umg
+    assert c.post(DENKEN, headers=HB, json=body).status_code == 422
+    assert f.sql == []
+
+
+def test_denken_route_ohne_schluessel_401(umg):
+    f, _, c = umg
+    assert c.post(DENKEN, json={"denken": "", "schritte": []}).status_code == 401
+    assert c.post(DENKEN, json={"denken": "", "schritte": []}, headers=H).status_code == 401
+    assert f.sql == []
+
+
+def test_denken_route_zu_gross_413(umg):
+    f, _, c = umg
+    assert c.post(DENKEN, headers=HB, json={"denken": "x" * (300 * 1024), "schritte": []}).status_code == 413
+    assert f.sql == []
+
+
+def test_chat_stand_liefert_denken_und_schritte(umg):
+    f, _, c = umg
+    alt = {"id": BID, "art": "chat", "nachricht": "a", "antwort": "b", "status": "fertig", "hinweise": [],
+           "ergebnis": {}, "fassung_vorher": 1, "fassung_nachher": 2, "denken": None, "schritte": None,
+           "erstellt_am": "1", "sortiert_am": "1"}
+    neu = dict(alt, id=AID, denken="Let me think", schritte=[SCHRITT], erstellt_am="2", sortiert_am="2")
+    f.antworten += [[{"ok": True}], [], [alt, neu],
+                    [{"id": AID, "status": "in_arbeit", "nachricht": "c", "schritt": "", "schritt_nr": 0,
+                      "zwischenstand": None, "stopp": None, "denken": "laufend", "schritte": [SCHRITT]}]]
+    j = c.get(f"/api/pult/inhalte/{IID}/chat", headers=H).json()
+    assert j["verlauf"][0]["denken"] == "" and j["verlauf"][0]["schritte"] == []
+    assert j["verlauf"][1]["denken"] == "Let me think" and j["verlauf"][1]["schritte"] == [SCHRITT]
+    assert j["live"]["denken"] == "laufend" and j["live"]["schritte"][0]["text"] == "Frage an Claude"
+    assert "coalesce(denken, '')" in f.sql[2] and "coalesce(denken, '')" in f.sql[3]

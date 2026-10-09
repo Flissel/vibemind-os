@@ -21,8 +21,8 @@ from starlette.concurrency import run_in_threadpool
 
 from spaces.marketing.api import medien_mandant
 from spaces.marketing.api.bilder import _auftrag_id, _bild_schluessel, _im_ordner, _ordner
-from spaces.marketing.api.chat import (_ARBEITER_DATEI, _json_gekappt, _medien_ausliefern,
-                                       _nachricht_und_kontext)
+from spaces.marketing.api.chat import (_ARBEITER_DATEI, SPUR_KOERPER_MAX, _json_gekappt, _medien_ausliefern,
+                                       _nachricht_und_kontext, spur_pruefen)
 from spaces.marketing.api.gestaltung import quellen
 from spaces.marketing.api.medien_mandant import _mandant_pflicht, ist_fremd, sicht
 from spaces.marketing.api.pult import (_auswahl, _bild_basis, _bloecke_html, _lesen,
@@ -81,6 +81,7 @@ def marke_stand(mandant: str | None = None, x_pult_key: str | None = Header(None
     gestalt = kopf.get("gestalt") if isinstance(kopf.get("gestalt"), dict) else {}
     auftraege = _lesen(lambda:
         "SELECT * FROM (SELECT id, nachricht, antwort, status, hinweise, vorschlag, "
+        "coalesce(denken, '') AS denken, coalesce(schritte, '[]'::jsonb) AS schritte, "
         "erstellt_am::text AS erstellt_am, erstellt_am AS sortiert_am FROM marketing.marken_auftraege "
         f"WHERE mandant = {lit(m)} AND art = 'chat' ORDER BY erstellt_am DESC LIMIT 10) q ORDER BY sortiert_am")
     for z in auftraege:
@@ -108,8 +109,13 @@ def marke_stand(mandant: str | None = None, x_pult_key: str | None = Header(None
                if ang_v is not None else None)
     # Ergebnis der letzten abgeschlossenen Uebernahme: ein Fehlschlag hat sonst keinen Ort auf der Seite (I6)
     letzte = _lesen_einer(lambda:
-        "SELECT status, antwort, hinweise, geaendert_am::text AS geaendert_am FROM marketing.marken_auftraege "
+        "SELECT status, antwort, hinweise, coalesce(schritte, '[]'::jsonb) AS schritte, "
+        "geaendert_am::text AS geaendert_am FROM marketing.marken_auftraege "
         f"WHERE mandant = {lit(m)} AND art = 'uebernehmen' AND status IN ('fertig', 'fehler') "
+        "ORDER BY geaendert_am DESC LIMIT 1")
+    laufend = _lesen_einer(lambda:
+        "SELECT art, coalesce(denken, '') AS denken, coalesce(schritte, '[]'::jsonb) AS schritte "
+        f"FROM marketing.marken_auftraege WHERE mandant = {lit(m)} AND status = 'in_arbeit' "
         "ORDER BY geaendert_am DESC LIMIT 1")
     hinweise = kopf.get("hinweise") if isinstance(kopf.get("hinweise"), list) else []
     return {"mandant": m, "name": kopf.get("name"),
@@ -122,7 +128,7 @@ def marke_stand(mandant: str | None = None, x_pult_key: str | None = Header(None
                           if v else None),
             "uebernahme": "laeuft" if "uebernehmen" in arten else None,
             "uebernahme_seit": seit if "uebernehmen" in arten else None, "aktuell": aktuell,
-            "letzte_uebernahme": letzte or None}
+            "letzte_uebernahme": letzte or None, "laufend": laufend or None}
 
 
 @pult_router.post("/marke/chat")
@@ -320,6 +326,20 @@ def arbeiter_weiter(aid: str, x_bild_key: str | None = Header(None)):
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_marke_verlaengern({lit(a)}::uuid, {lit(FRIST)}::interval) AS ok")
     return {"ok": bool(zeile.get("ok"))}
+
+
+@arbeiter_router.post("/{aid}/denken")
+async def arbeiter_denken(aid: str, request: Request, x_bild_key: str | None = Header(None)):
+    """Denkspur des Arbeiters; 409 wenn der Auftrag nicht mehr in Arbeit ist."""
+    _bild_schluessel(x_bild_key)
+    a = _auftrag_id(aid)
+    denken, schritte = spur_pruefen(await _json_gekappt(request, SPUR_KOERPER_MAX))
+    zeile = await run_in_threadpool(_schreiben, lambda:
+        f"SELECT marketing.pult_marke_denken({lit(a)}::uuid, {lit(denken)}, "
+        f"{lit(json.dumps(schritte, ensure_ascii=False))}::jsonb) AS ok")
+    if not zeile.get("ok"):
+        raise HTTPException(409, "Auftrag nicht mehr in Arbeit")
+    return {"ok": True}
 
 
 @arbeiter_router.post("/{aid}/vorschlag")
