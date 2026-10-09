@@ -270,6 +270,21 @@ def _auftraege_an() -> bool:
         return False
 
 
+# Schluessel eines vollstaendigen Brain-zu-OpenFang-Handoff-Bundles.
+_BUNDLE_SCHLUESSEL = ("channel_intent", "brain_plan", "space_execution_contracts",
+                      "lifecycle", "handoff")
+
+
+def _auftragsweg(plan_ctx: Optional[Dict[str, Any]]) -> bool:
+    """K1-Auftragsweg nur bei Flag an UND Nutzeranfrage (plan_ctx hat antwortkanal).
+
+    Autonome Plaene (brain-loops, SelfSteerer, Discourse ...) setzen keinen
+    antwortkanal und bleiben beim Verhalten vor K1 (OpenFangExecutor,
+    Handoff-Gate fail-closed) - bis K4.
+    """
+    return _auftraege_an() and bool((plan_ctx or {}).get("antwortkanal"))
+
+
 class PlanExecutor:
     def __init__(
         self,
@@ -902,9 +917,9 @@ class PlanExecutor:
                 except Exception as _ce:
                     logger.debug(f"[plan-executor] contract gate skipped: {_ce}")
 
-                # K1 (Flag an): hoechstens EIN openfang:-Hop je Batch; weitere
+                # K1 (Auftragsweg): hoechstens EIN openfang:-Hop je Batch; weitere
                 # openfang:-Hops warten und laufen in der naechsten Runde.
-                if _auftraege_an():
+                if _auftragsweg(plan_ctx):
                     _of_gesehen = False
                     _batch = []
                     for h in still_ready:
@@ -1034,7 +1049,7 @@ class PlanExecutor:
                                 })
 
                 # K1: Auftrag offen -> keine weiteren Hops einplanen.
-                if _auftraege_an() and any(
+                if _auftragsweg(plan_ctx) and any(
                         hr.pending and isinstance(hr.result, dict)
                         and hr.result.get("auftrag_id")
                         for hr in executed.values()):
@@ -1589,9 +1604,21 @@ class PlanExecutor:
             )
 
         # Cognitive OpenFang dispatch is admitted only by the public Shared
-        # handoff validator.  The bundle stays opaque here: Brain neither
-        # creates approval/cost references nor selects any Space/provider/tool.
+        # handoff validator.
+        #
+        # K1, User-Entscheid 2026-10-09 (B): Mit AGENT_AUFTRAEGE_ENABLED und
+        # einer Nutzeranfrage (plan_ctx hat antwortkanal; gesetzt von
+        # /api/multihop/execute und brain_chat) stellt das Brain das
+        # Handoff-Bundle SELBST aus, wenn der Aufrufer GAR KEINES mitgibt
+        # (ein Teil-Bundle bleibt abgewiesen). Der Validator prueft dann nur
+        # die Form; approval_ref/cost_ref sind Platzhalter, kein
+        # Freigabe-Kanal. Schutz = Liste freigegebener Agenten im Ausfuehrer
+        # (config/agent_budget.yaml) + Budget-Waechter. Ohne antwortkanal
+        # (autonome Pfade) bleibt alles wie vor K1: OpenFangExecutor, Gate
+        # fail-closed, keine Selbstausstellung - bis K4.
         _auftrag_uebergabe: Optional[Dict[str, Any]] = None
+        _k1_auftrag = (isinstance(target, str) and target.startswith("openfang:")
+                       and _auftragsweg(plan_ctx))
         if isinstance(target, str) and target.startswith("openfang:"):
             try:
                 from vibemind_shared.contracts import (
@@ -1599,10 +1626,7 @@ class PlanExecutor:
                 )
 
                 _ctx = plan_ctx
-                if _auftraege_an() and not all(
-                        k in plan_ctx for k in (
-                            "channel_intent", "brain_plan",
-                            "space_execution_contracts", "lifecycle", "handoff")):
+                if _k1_auftrag and not any(k in plan_ctx for k in _BUNDLE_SCHLUESSEL):
                     # K1: kein Bundle von brain_chat/cortex -> eigenes bauen
                     from core.handoff_bundle import baue_handoff_bundle
                     _space = "agentfarm"
@@ -1643,8 +1667,14 @@ class PlanExecutor:
 
         # Build the right executor for the target prefix (Phase 4)
         try:
-            from .capability_targets import build_executor
-            exe = build_executor(target)
+            if _k1_auftrag:
+                # K1: nur hier (Plan-Executor, Nutzeranfrage) der Auftragsweg;
+                # build_executor bleibt fuer alle anderen Aufrufer unveraendert.
+                from .capability_targets import AuftragsExecutor
+                exe = AuftragsExecutor(target.split(":", 1)[1])
+            else:
+                from .capability_targets import build_executor
+                exe = build_executor(target)
         except Exception as e:
             return HopResult(
                 step_id=hop.step_id, ok=False,
@@ -1672,8 +1702,7 @@ class PlanExecutor:
         }
         if _auftrag_uebergabe is not None:
             _extra["_uebergabe"] = _auftrag_uebergabe
-        if (isinstance(target, str) and target.startswith("openfang:")
-                and _auftraege_an()):
+        if _k1_auftrag:
             _extra["_trace_id"] = plan_ctx.get("trace_id", "") or ""
             _extra["_plan_id"] = plan_ctx.get("plan_id", "") or ""
             _extra["_antwortkanal"] = plan_ctx.get("antwortkanal")
@@ -2064,9 +2093,15 @@ class PlanExecutor:
     ) -> None:
         """K1: Ist der pending Hop ein Agenten-Auftrag, den Plan-Rest im Auftrag
         ablegen. Wirft nie; ein Fehler wird nur als WARNING geloggt."""
+        def _ist_auftrag(hr: "HopResult") -> bool:
+            return bool(hr.pending and isinstance(hr.result, dict) and hr.result.get("auftrag_id"))
+
+        if not _ist_auftrag(pending_hop):
+            # Erster pending Hop ist evtl. kein Auftrag (z.B. Freigabe) -> Auftrag suchen.
+            pending_hop = next((hr for hr in executed.values() if _ist_auftrag(hr)), None)
+            if pending_hop is None:
+                return
         res = pending_hop.result
-        if not (isinstance(res, dict) and res.get("auftrag_id")):
-            return
         auftrag_id = str(res["auftrag_id"])
         try:
             import dataclasses
@@ -2087,6 +2122,28 @@ class PlanExecutor:
                 if h.step_id != pending_hop.step_id
                 and (h.step_id not in executed or h.step_id in nachfolger)
             ]
+            # T4: Rest-Hops, die (transitiv) an einem schon gelaufenen und
+            # fehlgeschlagenen Hop haengen, fallen weg - sonst liefen sie in der
+            # Fortsetzung ohne dessen Eingabe.
+            kaputt = {sid for sid, hr in executed.items() if not hr.ok and not hr.pending}
+            verworfen: List[str] = []
+            geaendert = True
+            while geaendert:
+                geaendert = False
+                for h in rest:
+                    if h.step_id not in verworfen and any(d in kaputt for d in h.depends_on):
+                        verworfen.append(h.step_id)
+                        kaputt.add(h.step_id)
+                        geaendert = True
+            if verworfen:
+                logger.warning(
+                    "[plan-executor] Auftrag %s: Rest-Hops %s verworfen "
+                    "(Abhaengigkeit fehlgeschlagen)", auftrag_id, sorted(verworfen))
+                rest = [h for h in rest if h.step_id not in verworfen]
+            if not rest:
+                # M1: immer schreiben; {} = kein Rest (NULL = noch nicht geschrieben).
+                _aa.tabelle_aus_umgebung().plan_rest_setzen(auftrag_id, {})
+                return
             ids = {h.step_id for h in rest}
             rest = [dataclasses.replace(
                 h, depends_on=[d for d in h.depends_on if d in ids]) for h in rest]

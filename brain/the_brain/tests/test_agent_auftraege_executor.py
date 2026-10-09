@@ -33,10 +33,14 @@ def tabelle(monkeypatch):
     return t
 
 
-def test_build_executor_waehlt_auftrag_nur_mit_schalter(monkeypatch, tabelle):
-    assert isinstance(ct.build_executor("openfang:rowboat-chat"), ct.AuftragsExecutor)
+KANAL = {"art": "telegram"}
+
+
+def test_build_executor_bleibt_openfang_auch_mit_schalter(monkeypatch, tabelle):
+    # Schlussreview I1: Discourse/SelfSteerer/gap/Startup-Check sehen den alten Executor.
+    assert isinstance(ct.build_executor("openfang:rowboat-chat"), ct.OpenFangExecutor)
     monkeypatch.setattr(aa, "AGENT_AUFTRAEGE_ENABLED", False)
-    assert not isinstance(ct.build_executor("openfang:rowboat-chat"), ct.AuftragsExecutor)
+    assert isinstance(ct.build_executor("openfang:rowboat-chat"), ct.OpenFangExecutor)
 
 
 def test_executor_legt_auftrag_an_und_meldet_pending(tabelle):
@@ -87,7 +91,7 @@ def test_plan_rest_fehler_wird_geloggt_und_nicht_geworfen(tabelle, caplog):
 
     tabelle.plan_rest_setzen = kaputt
     with caplog.at_level(logging.WARNING):
-        r = PlanExecutor().execute(_plan_zwei_hops())
+        r = PlanExecutor().execute(_plan_zwei_hops(), antwortkanal=KANAL)
     assert r["pending"] is True
     assert any("auftrag-1" in m for m in caplog.messages)
 
@@ -137,7 +141,7 @@ def test_flag_aus_extra_params_unveraendert(monkeypatch):
 
 def test_kette_rest_enthaelt_alle_nachfolger(tabelle):
     plan = Plan("pk", "x", "", [_of("s1", ov="o"), _direkt("s2", ["s1"]), _direkt("s3", ["s2"])])
-    r = PlanExecutor().execute(plan)
+    r = PlanExecutor().execute(plan, antwortkanal=KANAL)
     assert r["pending"] is True
     hops = {h["step_id"]: h for h in tabelle.plan_rest["auftrag-1"]["plan"]["hops"]}
     assert set(hops) == {"s2", "s3"}
@@ -146,7 +150,7 @@ def test_kette_rest_enthaelt_alle_nachfolger(tabelle):
 
 def test_zwei_unabhaengige_openfang_hops_ein_auftrag(tabelle):
     plan = Plan("pk2", "x", "", [_of("s1"), _of("s2")])
-    r = PlanExecutor().execute(plan)
+    r = PlanExecutor().execute(plan, antwortkanal=KANAL)
     assert r["pending"] is True and len(tabelle.angelegt) == 1
     ids = [h["step_id"] for h in tabelle.plan_rest["auftrag-1"]["plan"]["hops"]]
     assert ids == ["s2"]
@@ -163,7 +167,7 @@ def test_nicht_openfang_hop_laeuft_im_batch_mit(tabelle, monkeypatch):
 
     monkeypatch.setattr("core.capability_targets.build_executor",
                         lambda t: _Exe() if t.startswith("direct:") else orig(t))
-    PlanExecutor().execute(Plan("pk3", "x", "", [_of("s1"), _direkt("d1")]))
+    PlanExecutor().execute(Plan("pk3", "x", "", [_of("s1"), _direkt("d1")]), antwortkanal=KANAL)
     assert lief == [1] and len(tabelle.angelegt) == 1
 
 
@@ -189,5 +193,99 @@ def test_state_nicht_serialisierbar_wird_stringifiziert_oder_weggelassen(tabelle
             return "komisch"
 
     plan = Plan("pk5", "x", "", [_of("s1"), _direkt("s2", ["s1"])])
-    PlanExecutor().execute(plan, start_state={"k": Komisch()})
+    PlanExecutor().execute(plan, start_state={"k": Komisch()}, antwortkanal=KANAL)
     assert tabelle.plan_rest["auftrag-1"]["state"] == {"k": "komisch"}
+
+
+# ---- Schlussreview (I1/I2/M8/M1/T4) ---------------------------------------
+
+def _bundle_ctx(**extra):
+    from core.handoff_bundle import baue_handoff_bundle
+    b = baue_handoff_bundle(plan_id="p", trace_id="t", intent="i", hop_id="s1",
+                            capability="rowboat_search", agent="rowboat-chat")
+    return dict(b, plan_intent="i", plan_id="p", trace_id="t", **extra)
+
+
+def test_flag_an_ohne_antwortkanal_alter_weg_fail_closed(tabelle):
+    # Kein antwortkanal (autonomer Plan): kein Auftrag, keine Selbstausstellung, Gate weist ab.
+    hr = PlanExecutor()._exec_hop(_of("s1"), {}, plan_ctx={"plan_intent": "i", "plan_id": "p",
+                                                            "trace_id": "t", "antwortkanal": None})
+    assert hr.ok is False and "handoff admission rejected" in (hr.error or "")
+    assert tabelle.angelegt == []
+
+
+def test_flag_an_ohne_antwortkanal_mit_bundle_nutzt_openfang_executor(tabelle, monkeypatch):
+    gebaut = []
+
+    class _Exe:
+        def call_with_arg(self, arg, arg_kwarg=None, extra_params=None):
+            gebaut.append(dict(extra_params or {}))
+            return {"ok": True, "result": {"response": "x"}}
+
+    monkeypatch.setattr("core.capability_targets.build_executor",
+                        lambda t: (gebaut.append(t), _Exe())[1])
+    hr = PlanExecutor()._exec_hop(_of("s1"), {}, plan_ctx=_bundle_ctx())
+    assert hr.ok is True and gebaut[0] == "openfang:rowboat-chat"
+    assert set(gebaut[1]) == {"_intent", "_description", "_step_id", "_capability"}
+    assert tabelle.angelegt == []
+
+
+def test_flag_an_ohne_antwortkanal_keine_batch_begrenzung(tabelle, monkeypatch):
+    ziele = []
+
+    class _Exe:
+        def call_with_arg(self, arg, arg_kwarg=None, extra_params=None):
+            ziele.append(extra_params["_step_id"])
+            return {"ok": True, "result": "x"}
+
+    monkeypatch.setattr("core.capability_targets.build_executor", lambda _t: _Exe())
+    monkeypatch.setattr(PlanExecutor, "_ist_openfang_hop",
+                        lambda *_: pytest.fail("Batch-Begrenzung nur auf dem Auftragsweg"))
+    from core.handoff_bundle import baue_handoff_bundle
+    b = baue_handoff_bundle(plan_id="pk6", trace_id="t", intent="x", hop_id="s1",
+                            capability="rowboat_search", agent="rowboat-chat")
+    r = PlanExecutor().execute(Plan("pk6", "x", "", [_of("s1"), _of("s2")]), openfang_handoff_bundle=b)
+    assert sorted(ziele) == ["s1", "s2"] and r.get("pending") is not True
+    assert tabelle.angelegt == []
+
+
+def test_mit_antwortkanal_vollstaendiges_bundle_wird_nicht_ersetzt(tabelle):
+    hr = PlanExecutor()._exec_hop(_of("s1"), {}, plan_ctx=_bundle_ctx(antwortkanal=KANAL))
+    assert hr.pending is True
+    assert "_uebergabe" not in tabelle.angelegt[0] or tabelle.angelegt[0]["uebergabe"] is None
+
+
+def test_teil_bundle_bleibt_abgewiesen(tabelle):
+    # M8: nur ein Teil der Bundle-Schluessel -> keine Selbstausstellung, Gate weist ab.
+    ctx = _bundle_ctx(antwortkanal=KANAL)
+    del ctx["handoff"]
+    hr = PlanExecutor()._exec_hop(_of("s1"), {}, plan_ctx=ctx)
+    assert hr.ok is False and hr.pending is not True
+    assert "handoff admission rejected" in (hr.error or "")
+    assert tabelle.angelegt == []
+
+
+def test_ohne_nachfolger_wird_leerer_plan_rest_geschrieben(tabelle):
+    # M1: plan_rest immer schreiben; {} = kein Rest (null = noch nicht geschrieben).
+    PlanExecutor().execute(Plan("pk7", "x", "", [_of("s1")]), antwortkanal=KANAL)
+    assert tabelle.plan_rest["auftrag-1"] == {}
+
+
+def test_rest_ohne_hops_mit_fehlgeschlagener_abhaengigkeit(tabelle, monkeypatch, caplog):
+    # T4: s3 haengt an s1 (Auftrag) UND d1 (fehlgeschlagen) -> s3 und s4 fallen aus dem Rest.
+    orig = ct.build_executor
+
+    class _Kaputt:
+        def call_with_arg(self, arg, arg_kwarg=None, extra_params=None):
+            return {"ok": False, "error": "kaputt"}
+
+    monkeypatch.setattr("core.capability_targets.build_executor",
+                        lambda t: _Kaputt() if t.startswith("direct:") else orig(t))
+    plan = Plan("pk8", "x", "", [_of("s1", ov="o"), _direkt("d1"), _direkt("s3", ["s1", "d1"]),
+                                 _direkt("s4", ["s3"]), _direkt("s5", ["s1"])])
+    with caplog.at_level(logging.WARNING):
+        r = PlanExecutor().execute(plan, antwortkanal=KANAL)
+    assert r["pending"] is True
+    ids = [h["step_id"] for h in tabelle.plan_rest["auftrag-1"]["plan"]["hops"]]
+    assert ids == ["s5"]
+    assert any("s3" in m and "s4" in m for m in caplog.messages)

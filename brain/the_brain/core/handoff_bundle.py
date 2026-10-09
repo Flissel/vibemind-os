@@ -13,6 +13,11 @@ Festlegungen:
 - Der Validator kennt nur 13 kanonische Spaces. ``agent_auftraege`` ist keiner
   (und verletzt das Namensmuster); solche Werte werden auf ``agentfarm``
   abgebildet.
+- ``approval_ref``/``cost_ref`` (und die Executor-/Healthcheck-Referenzen) sind
+  PLATZHALTER, kein Freigabe- oder Kostenkanal (User-Entscheid 2026-10-09 B).
+  Der Validator prueft nur die Form. Der Schutz liegt in der Liste
+  freigegebener Agenten im Ausfuehrer (config/agent_budget.yaml) und im
+  Budget-Waechter. Ausgestellt wird nur fuer Nutzeranfragen (antwortkanal).
 """
 from __future__ import annotations
 

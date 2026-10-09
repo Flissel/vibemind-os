@@ -1736,7 +1736,11 @@ class AuftragsExecutor:
     """K1: Agenten-Arbeit asynchron ueber die Auftragstabelle statt OpenFang synchron.
 
     Liefert das vorhandene pending-Signal; der Plan-Executor kehrt dann frueh
-    zurueck und speichert den Plan-Rest im Auftrag.
+    zurueck und speichert den Plan-Rest im Auftrag. Wird NUR von
+    PlanExecutor._exec_hop gewaehlt (Flag an + Nutzeranfrage mit antwortkanal),
+    nie von build_executor - Discourse/SelfSteerer/gap/Startup-Check sehen
+    weiter OpenFangExecutor. Der _system_prompt_focus von DYNAMIC_TOOL_SCOPE
+    wird hier nicht weitergegeben; der Agent bekommt nur ``auftrag``.
     """
 
     def __init__(self, agent: str) -> None:
@@ -1784,10 +1788,6 @@ def build_executor(target: str):
     if kind == "research":
         from spaces.research.execution_target import ResearchTarget
         return ResearchTarget(target)
-    if kind == "openfang":
-        from core import agent_auftraege as _aa
-        if _aa.AGENT_AUFTRAEGE_ENABLED:
-            return AuftragsExecutor(target.split(":", 1)[1])
     cls = _EXECUTOR_KINDS.get(kind)
     if cls is None:
         raise ValueError(f"unsupported execution_target kind: {kind!r}")
