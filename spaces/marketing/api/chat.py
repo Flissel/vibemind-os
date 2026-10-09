@@ -158,10 +158,12 @@ def chat_stand(iid: str, x_pult_key: str | None = Header(None)):
     neueste = (_lesen_einer(lambda:
         f"SELECT max(fassung) AS n FROM marketing.inhalt_fassungen WHERE inhalt = {lit(i)}::uuid") or {}).get("n")
     # Live-Zwischenstand nur bei genau einer laufenden Runde (Spec §2); bei mehreren wechselt die Flaeche erst
-    # beim Fertigwerden.
+    # beim Fertigwerden. Baut die eine auf einer aelteren Fassung auf (eine andere Runde hat inzwischen gespeichert,
+    # nachgespielt wird erst beim Fertigwerden), zeigte ihr Zwischenstand die neueste Fassung ohne deren Aenderung.
     laufend = [z for z in verlauf if z.get("status") in LAUFEND]
     live = None
-    if len(laufend) == 1 and laufend[0].get("status") == "in_arbeit" and laufend[0].get("art") == "chat":
+    if (len(laufend) == 1 and laufend[0].get("status") == "in_arbeit" and laufend[0].get("art") == "chat"
+            and laufend[0].get("fassung_vorher") == neueste):
         z = laufend[0]
         zs = _lesen_einer(lambda:
             f"SELECT zwischenstand FROM marketing.chat_auftraege WHERE id = {lit(str(z['id']))}::uuid") or {}

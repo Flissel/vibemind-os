@@ -1087,7 +1087,8 @@ def test_stand_raeumt_zuerst_auf(umg):
 
 def test_stand_live_nur_bei_genau_einer_laufenden_runde(umg):
     f, _, c = umg
-    eine = _lauf(AID, "in_arbeit", schritt="Titel setzen", schritt_nr=3, stopp="verwerfen", denken="d", schritte=[SCHRITT])
+    eine = _lauf(AID, "in_arbeit", schritt="Titel setzen", schritt_nr=3, stopp="verwerfen", denken="d", schritte=[SCHRITT],
+                 fassung_vorher=5)
     f.antworten += [[{"ok": True}], [], [eine], [{"n": 5}], [{"zwischenstand": _dok()}]]
     d = c.get(f"/api/pult/inhalte/{IID}/chat", headers=H).json()
     assert d["live"] == {"schritt": "Titel setzen", "schritt_nr": 3, "zwischenstand": _dok(), "stopp": "verwerfen",
@@ -1098,6 +1099,22 @@ def test_stand_live_nur_bei_genau_einer_laufenden_runde(umg):
     d = c.get(f"/api/pult/inhalte/{IID}/chat", headers=H).json()
     assert d["live"] is None and d["laeuft"] is True and len(f.sql) == 4
     assert [z["schritt_nr"] for z in d["verlauf"]] == [0, 0]
+
+
+def test_stand_ohne_live_wenn_die_einzige_runde_auf_einer_alten_fassung_aufbaut(umg):
+    """Final-Review I4: A und B starten auf Fassung 5, A speichert 6. B laeuft allein weiter, sein Zwischenstand baut
+    aber auf 5 auf - als Live-Stand verschwaende A's Aenderung von der Flaeche."""
+    f, _, c = umg
+    b = _lauf(AID, "in_arbeit", schritt="Farbe", schritt_nr=2, fassung_vorher=5)
+    a = _lauf(BID, "fertig", fassung_vorher=5, fassung_nachher=6)
+    f.antworten += [[{"ok": True}], [], [a, b], [{"n": 6}]]
+    d = c.get(f"/api/pult/inhalte/{IID}/chat", headers=H).json()
+    assert d["live"] is None and d["laeuft"] is True and len(f.sql) == 4
+    f.sql.clear()
+    f.antworten += [[{"ok": True}], [], [a, _lauf(AID, "in_arbeit", fassung_vorher=6)], [{"n": 6}],
+                    [{"zwischenstand": _dok()}]]
+    d = c.get(f"/api/pult/inhalte/{IID}/chat", headers=H).json()
+    assert d["live"] is not None and d["live"]["zwischenstand"] == _dok()
 
 
 def test_chat_stand_liefert_denken_und_schritte(umg):
