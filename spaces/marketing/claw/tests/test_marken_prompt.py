@@ -318,6 +318,25 @@ def test_platzhalter_werden_abgelehnt(text):
         _v(abschnitte={"Ton": text})
 
 
+@pytest.mark.parametrize("text", ["Preis: [Betrag].", "[Name einfügen]", "[ab]", "[B1 und mehr]", "Gegründet [...]",
+                                  "Stand: todo", "xx"])
+def test_r9_gesperrt_bleibt(text):
+    """Ruling R9: [Text mit Buchstaben] ohne folgendes "(" und ganze Woerter TBD/TODO/Lorem/XX."""
+    assert kp.PLATZHALTER.search(text)
+    with pytest.raises(kp.AntwortFehler, match="Platzhalter"):
+        _v(abschnitte={"Ton": text})
+
+
+@pytest.mark.parametrize("text", ["Siehe [[VibeMind]] und [[Radhaus Werkstatt]].", "- [ ] offen\n- [x] erledigt\n- [X] fertig",
+                                  "Gegründet 2019 [B1], 12 Räder [A12].", "Fußnote [1]", "[Termin buchen](https://r.example)",
+                                  "Textbaustein, Lorempflicht nein, Todos nein, XXL ja"])
+def test_r9_erlaubt(text):
+    """Ruling R9: Wikilinks, Checkboxen, Belegmarken, Klammern ohne Buchstaben, Links und Teilwoerter sind keine
+    Platzhalter."""
+    assert kp.PLATZHALTER.search(text) is None
+    assert _v(abschnitte={"Ton": text})["abschnitte"]["Ton"] == text
+
+
 def test_markdown_link_ist_kein_platzhalter():
     """Review Focus 4."""
     v = _v(abschnitte={"Angebote": "Inspektion – [Termin buchen](https://radhaus.example/termin)"})

@@ -93,6 +93,7 @@ ARBEITER_ROUTEN = [
     ("post", "/api/marke/arbeiter/markieren"),
     ("get", "/api/marke/arbeiter/firmen"),
     ("post", "/api/marke/arbeiter/hinweise"),
+    ("post", "/api/marke/arbeiter/profil"),
 ]
 
 
@@ -350,7 +351,7 @@ def test_naechster(umg):
            "verlauf": [], "vorschlag": None}
     f.antworten.append([{"a": job}])
     assert c.post("/api/marke/arbeiter/naechster", headers=HB).json() == {"auftrag": job}
-    assert "pult_marke_naechster('5 minutes'::interval)" in f.sql[-1]
+    assert "pult_marke_naechster('5 minutes'::interval, NULL::text[])" in f.sql[-1]   # Marken-Faden (R7)
     f.fehler += [_db_fehler("kaputt")]
     assert c.post("/api/marke/arbeiter/naechster", headers=HB).status_code == 422
     f.fehler += [RuntimeError("db weg")]
@@ -624,16 +625,19 @@ def test_firmen_fuer_den_abgleich(umg):
     f.antworten.append([
         {"id": "radhaus", "name": "Radhaus", "stand": "2026-10-07 10:00 von Anna",
          "gestalt": {**GESTALT, "grund": "#ffffff", "logo": "data:image/png;base64,AAAA"},
-         "hinweise": ["Marke.md: akzent ungültig"], "fehler": "Layout ungueltig: x"},
+         "hinweise": ["Marke.md: akzent ungültig"], "fehler": "Layout ungueltig: x",
+         "profil": {"werte": {"akzent": "#b45309", "logo": "logo.png"}, "abschnitte": {"Ton": "warm", "x": "y"}}},
         {"id": "fin2gether", "name": "fin2gether", "stand": None, "gestalt": None, "hinweise": None, "fehler": None}])
     r = c.get("/api/marke/arbeiter/firmen", headers=HB)
     assert r.status_code == 200
     assert r.json() == {"firmen": [
         {"id": "radhaus", "name": "Radhaus", "stand": "2026-10-07 10:00 von Anna",
          "gestalt": {**GESTALT, "logo": "data:image/png;base64,AAAA"},
-         "hinweise": ["Marke.md: akzent ungültig"], "fehler": "Layout ungueltig: x"},
-        {"id": "fin2gether", "name": "fin2gether", "stand": "", "gestalt": {}, "hinweise": [], "fehler": None}]}
-    assert "s.hinweise" in f.sql[0] and "s.fehler" in f.sql[0]
+         "hinweise": ["Marke.md: akzent ungültig"], "fehler": "Layout ungueltig: x",
+         "profil": {"werte": {"akzent": "#b45309"}, "abschnitte": {"Ton": "warm"}}},
+        {"id": "fin2gether", "name": "fin2gether", "stand": "", "gestalt": {}, "hinweise": [], "fehler": None,
+         "profil": None}]}
+    assert "s.hinweise" in f.sql[0] and "s.fehler" in f.sql[0] and "s.profil" in f.sql[0]
     assert "m.aktiv" in f.sql[0] and "marken_spiegel" in f.sql[0] and "l.standard" in f.sql[0]
     f.fehler += [RuntimeError("db weg")]
     assert c.get("/api/marke/arbeiter/firmen", headers=HB).status_code == 503
@@ -940,3 +944,80 @@ def test_stand_laufend_ohne_wissen_lauf(umg):
     f.antworten += [[{"ok": True}], _stand_kopf(), [], [], [], [], []]
     c.get("/api/pult/marke?mandant=radhaus", headers=H)
     assert "art IN ('chat', 'bearbeitung', 'uebernehmen')" in f.sql[7] and "wissen" not in f.sql[7]
+
+
+# ─── Schlussrunde (final-review.md I1/I2, T13) ──────────────────────────
+
+
+def test_naechster_waehlt_arten_nur_aus_erlaubten(umg):
+    """R7: der Wissens-Faden holt mit ?arten=wissen nur Wissens-Laeufe; Unbekanntes geht nie an die DB."""
+    f, _, c = umg
+    f.antworten.append([{"a": None}])
+    assert c.post("/api/marke/arbeiter/naechster?arten=wissen", headers=HB).json() == {"auftrag": None}
+    assert "pult_marke_naechster('5 minutes'::interval, ARRAY['wissen']::text[])" in f.sql[-1]
+    f.antworten.append([{"a": None}])
+    c.post("/api/marke/arbeiter/naechster?arten=chat,wissen,chat", headers=HB)
+    assert "ARRAY['chat', 'wissen']::text[]" in f.sql[-1]
+    n = len(f.sql)
+    for falsch in ("", "unsinn", "wissen,unsinn", "wissen'); DROP TABLE x; --"):
+        r = c.post("/api/marke/arbeiter/naechster", params={"arten": falsch}, headers=HB)
+        assert r.status_code == 422, falsch
+    assert len(f.sql) == n
+
+
+def test_stand_wissen_laufender_vor_wartendem(umg):
+    """T13: ein laufender Wissens-Lauf steht vor einem neueren wartenden, sonst der neueste abgeschlossene."""
+    f, _, c = umg
+    f.antworten += [[{"ok": True}], _stand_kopf(), [], [], [], [], [], [], []]
+    c.get("/api/pult/marke?mandant=radhaus", headers=H)
+    assert ("ORDER BY CASE status WHEN 'in_arbeit' THEN 0 WHEN 'offen' THEN 1 ELSE 2 END, erstellt_am DESC"
+            in f.sql[8])
+    assert "Ersetzt durch einen neueren Wissens-Lauf." in f.sql[8]
+
+
+def test_stand_profil_aus_dem_spiegel_nicht_aus_dem_vorschlag(umg):
+    """R8: das Formular wird aus dem echten Profil der Marke.md vorbefuellt (marken_spiegel.profil)."""
+    f, _, c = umg
+    echt = {"werte": {"akzent": "#123456", "webseite": "https://radhaus.example"},
+            "abschnitte": {"Ton": "Aus Marke.md", "Bildstil": "Nur in Rowboat"}}
+    angenommen = {**VORSCHLAG, "abschnitte": {"Ton": "Aus dem Vorschlag"}}
+    f.antworten += [[{"ok": True}], _stand_kopf(profil=echt), [], [], [], [{"vorschlag": angenommen}]]
+    j = c.get("/api/pult/marke?mandant=radhaus", headers=H).json()
+    assert j["profil"] == echt
+    assert j["aktuell"]["abschnitte"] == {"Ton": "Aus dem Vorschlag"}
+    assert "s.profil" in f.sql[1]
+
+
+def test_stand_profil_rueckfall_auf_den_letzten_angenommenen(umg):
+    f, _, c = umg
+    angenommen = {**VORSCHLAG, "abschnitte": {"Ton": "warm"}}
+    f.antworten += [[{"ok": True}], _stand_kopf(profil=None), [], [], [], [{"vorschlag": angenommen}]]
+    j = c.get("/api/pult/marke?mandant=radhaus", headers=H).json()
+    assert j["profil"] == j["aktuell"] and j["profil"]["abschnitte"] == {"Ton": "warm"}
+    f.antworten += [[{"ok": True}], _stand_kopf(profil={"werte": "kaputt"}), [], [], [], []]
+    assert c.get("/api/pult/marke?mandant=radhaus", headers=H).json()["profil"] is None
+
+
+def test_arbeiter_profil_meldet_das_echte_profil(umg):
+    f, _, c = umg
+    profil = {"werte": {"akzent": "#123456", "webseite": "https://radhaus.example"},
+              "abschnitte": {"Ton": "Ruhig, per Du – \"klar\"."}}
+    f.antworten.append([{"ok": True}])
+    r = c.post("/api/marke/arbeiter/profil", headers=HB, json={"mandant": "radhaus", "profil": profil})
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert "pult_marke_profil_melden('radhaus'" in f.sql[-1] and "Ruhig, per Du" in f.sql[-1]
+
+
+@pytest.mark.parametrize("profil", [
+    None, [], {"werte": {}}, {"werte": {}, "abschnitte": {}, "x": 1},
+    {"werte": {"logo": "logo.png"}, "abschnitte": {}},
+    {"werte": {"akzent": "data:image/png;base64,AAAA"}, "abschnitte": {}},
+    {"werte": {"akzent": 5}, "abschnitte": {}}, {"werte": {"akzent": "x" * 301}, "abschnitte": {}},
+    {"werte": {}, "abschnitte": {"Geheim": "x"}}, {"werte": {}, "abschnitte": {"Ton": 1}},
+    {"werte": {}, "abschnitte": {n: "x" * 9000 for n in ("Wer wir sind", "Zielgruppe", "Ton", "Angebote",
+                                                           "Do & Don'ts", "Fakten und Zahlen", "Bildstil")}}])
+def test_arbeiter_profil_form_422(umg, profil):
+    f, _, c = umg
+    r = c.post("/api/marke/arbeiter/profil", headers=HB, json={"mandant": "radhaus", "profil": profil})
+    assert r.status_code == 422
+    assert f.sql == []

@@ -51,9 +51,13 @@ class Api:
         self._firmen = firmen or []
         self.logo_name = logo_name
 
-    def naechster(self):
+    def naechster(self, arten=None):
+        self.log.append(("naechster", arten))
         a, self.auftrag = self.auftrag, None
         return a
+
+    def profil(self, mandant, profil):
+        self.log.append(("profil", mandant, profil)); return {"ok": True}
 
     def weiter(self, aid):
         self.log.append(("weiter", aid)); return True
@@ -1209,3 +1213,122 @@ def test_bearbeitung_ohne_formular_scheitert_geschlossen():
     fragen = Fragen()
     assert _lauf(api, fragen) == "fehler"
     assert fragen.gesehen == [] and "ohne Formular" in api.aufrufe("zurueck")[0][2]
+
+
+# --- Schlussrunde Marke exakt (final-review.md I1, I2, T6) -----------------------------------------
+
+
+def test_r7_marken_faden_holt_ohne_arten_wissens_faden_nur_wissen():
+    from spaces.marketing.workers import wissen_arbeiter as wa
+    api = Api(dict(CHAT))
+    _lauf(api, Fragen(_antwort(None, "ok")))
+    assert api.aufrufe("naechster") == [("naechster", None)]
+    api = Api(None)
+    assert wa.ein_durchlauf(api, webseite_lesen=lambda u: Fund(), logo_laden=lambda u: None) == "leer"
+    assert api.aufrufe("naechster") == [("naechster", ("wissen",))]
+
+
+def test_r7_r8_markenapi_routen(monkeypatch):
+    gesehen = []
+
+    def fake(req, timeout=None, context=None):
+        gesehen.append((req.full_url, req.get_method(), req.data))
+        return _Antwort(b'{"auftrag": null, "ok": true}')
+    monkeypatch.setattr(cw.urllib.request, "urlopen", fake)
+    api = ma.MarkenApi("https://vm/", "K")
+    assert api.naechster() is None and gesehen[-1][0] == "https://vm/api/marke/arbeiter/naechster"
+    assert api.naechster(("wissen",)) is None
+    assert gesehen[-1][:2] == ("https://vm/api/marke/arbeiter/naechster?arten=wissen", "POST")
+    assert api.profil("r", {"werte": {}, "abschnitte": {"Ton": "x"}}) == {"auftrag": None, "ok": True}
+    assert gesehen[-1][:2] == ("https://vm/api/marke/arbeiter/profil", "POST")
+    assert json.loads(gesehen[-1][2]) == {"mandant": "r", "profil": {"werte": {}, "abschnitte": {"Ton": "x"}}}
+
+
+MARKE_MD = ("---\nakzent: #b45309\ntext: #2b2724\nlogo: logo.png\nwebseite: https://radhaus.example/\n"
+            "stand: 2026-10-09 10:00 von Hand\n---\n## Ton\nAus Marke.md, nicht aus dem Vorschlag\n"
+            "## Bildstil\nNur in Rowboat\n## Eigenes\nkein Formularabschnitt\n")
+
+
+def test_r8_abgleich_meldet_das_echte_profil_nur_bei_aenderung(wurzel):
+    (wurzel / "Radhaus").mkdir()
+    (wurzel / "Radhaus" / "Marke.md").write_text(MARKE_MD, encoding="utf-8")
+    (wurzel / "Radhaus" / "logo.png").write_bytes(LOGO)
+    api = Api()
+    ma.abgleichen(api, str(wurzel), [_spiegel()])
+    (_, mandant, profil), = api.aufrufe("profil")
+    assert mandant == "radhaus"
+    assert profil == {"werte": {"akzent": "#b45309", "text": "#2b2724", "webseite": "https://radhaus.example/"},
+                      "abschnitte": {"Ton": "Aus Marke.md, nicht aus dem Vorschlag", "Bildstil": "Nur in Rowboat"}}
+    api = Api()                                         # schon gemeldet: nichts
+    ma.abgleichen(api, str(wurzel), [{**_spiegel(), "profil": profil}])
+    assert api.aufrufe("profil") == []
+    api = Api()                                         # ohne Marke.md: nichts melden (Rueckfall der VM)
+    ma.abgleichen(api, str(wurzel), [{"id": "velo", "name": "Velo", "gestalt": {}}])
+    assert api.aufrufe("profil") == []
+
+
+def test_r8_profil_zu_gross_oder_nicht_meldbar_wird_meldung(wurzel, monkeypatch):
+    (wurzel / "Radhaus").mkdir()
+    (wurzel / "Radhaus" / "Marke.md").write_text(MARKE_MD, encoding="utf-8")
+    monkeypatch.setattr(ma, "PROFIL_MAX", 50)
+    api = Api()
+    meldungen = ma.abgleichen(api, str(wurzel), [_spiegel()])
+    assert api.aufrufe("profil") == [] and f"Radhaus: {ma.PROFIL_ZU_GROSS}" in meldungen
+    monkeypatch.setattr(ma, "PROFIL_MAX", 60 * 1024)
+
+    class Weg(Api):
+        def profil(self, mandant, profil):
+            raise OSError("netz weg")
+    assert any("Profil nicht gemeldet" in m and "netz weg" in m
+               for m in ma.abgleichen(Weg(), str(wurzel), [_spiegel()]))
+
+
+def test_r8_uebernehmen_meldet_das_neue_profil(wurzel):
+    api = Api(_uebernehmen())
+    assert _lauf(api, Fragen()) == "fertig"
+    (_, mandant, profil), = api.aufrufe("profil")
+    assert mandant == "radhaus" and profil["werte"]["akzent"] == VORSCHLAG["akzent"]
+    assert profil["abschnitte"] == VORSCHLAG["abschnitte"] and "logo" not in profil["werte"]
+
+
+def _seiten_pdf(n=4) -> bytes:
+    bilder = [Image.new("RGB", (300, 200), (i * 50, 100, 200)) for i in range(n)]
+    puffer = io.BytesIO()
+    bilder[0].save(puffer, "PDF", save_all=True, append_images=bilder[1:])
+    return puffer.getvalue()
+
+
+def test_t6_logo_plaetze_bleiben_frei_bei_pdf_und_bildern(wurzel):
+    """4-seitige PDF + 2 Bilder: das aktuelle Logo und ein Web-Logo bekommen trotzdem ihren Platz (MAX_BILDER);
+    was wegfaellt, nennt ein Hinweis."""
+    (wurzel / "Radhaus").mkdir()
+    (wurzel / "Radhaus" / "Marke.md").write_text("---\nlogo: logo.png\n---\n## Ton\nLocker\n", encoding="utf-8")
+    (wurzel / "Radhaus" / "logo.png").write_bytes(LOGO)
+    auftrag = {**CHAT, "nachricht": "Unsere Seite: https://radhaus.example",
+               "kontext": {"anhaenge": [{"name": "a.png", "art": "bild"}, {"name": "b.png", "art": "bild"},
+                                        {"name": "broschuere.pdf", "art": "dokument"}]}}
+    api = Api(auftrag, medien={"a.png": _png("#111111"), "b.png": _png("#222222"), "broschuere.pdf": _seiten_pdf(4)})
+    fund = Fund(logos=["https://radhaus.example/l1.png", "https://radhaus.example/l2.png"])
+    fragen = Fragen(_antwort(None, "ok"))
+    assert _lauf(api, fragen, webseite_lesen=lambda url: fund, logo_laden=lambda url: (LOGO, "image/png")) == "fertig"
+    inhalt = fragen.gesehen[0][1][0]["content"]
+    assert sum(1 for t in inhalt if t.get("type") == "image_url") == cw.MAX_BILDER
+    t = inhalt[0]["text"]
+    for zeile in ("Bild 1 = anhang:a.png", "Bild 2 = anhang:b.png", "Bild 3 = anhang:broschuere.pdf#1",
+                  "Bild 4 = anhang:broschuere.pdf#2", "Bild 5 = bisher", "Bild 6 = web:1"):
+        assert zeile in t, zeile
+    assert "web:2 (" not in t and "broschuere.pdf#3 (" not in t
+    hinweise = api.aufrufe("fertig")[0][2]["hinweise"]
+    assert "Logo-Ansichten weggelassen: web:2" in hinweise
+    assert any("PDF-Seiten nicht mitgeschickt: broschuere.pdf#3, broschuere.pdf#4" in h for h in hinweise)
+
+
+def test_t6_ohne_logo_keine_reservierung(wurzel):
+    auftrag = {**CHAT, "kontext": {"anhaenge": [{"name": "a.png", "art": "bild"}, {"name": "b.png", "art": "bild"},
+                                                {"name": "broschuere.pdf", "art": "dokument"}]}}
+    api = Api(auftrag, medien={"a.png": _png(), "b.png": _png(), "broschuere.pdf": _seiten_pdf(4)})
+    fragen = Fragen(_antwort(None, "ok"))
+    _lauf(api, fragen)
+    inhalt = fragen.gesehen[0][1][0]["content"]
+    assert sum(1 for t in inhalt if t.get("type") == "image_url") == 6
+    assert not any("weggelassen" in h or "nicht mitgeschickt" in h for h in api.aufrufe("fertig")[0][2]["hinweise"])

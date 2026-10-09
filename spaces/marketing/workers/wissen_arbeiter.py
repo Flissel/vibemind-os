@@ -1,7 +1,9 @@
 """Rowboat-Lauf am PC (Spec sales-claw 2026-10-09-marke-exakt-logo-wissen §3): nach jeder Uebernahme bringt
 Claude die Dokumente mit Firmenbezug auf den Stand des neuen Profils und schreibt das Markenhandbuch neu.
-Laeuft im Marken-Faden (marken_arbeiter.ein_durchlauf ruft wissen_bearbeiten fuer art 'wissen'). Geschrieben
-wird nur, was claw/wissen_lauf prueft und sichert; ein Abbruch endet 'fertig' mit dem Hinweis "teilweise: …"."""
+Laeuft in einem EIGENEN Faden des Chat-Arbeiters (Ruling R7, chat_worker.wissen_starten -> ein_durchlauf hier,
+naechster mit arten=wissen): ein Lauf dauert Minuten und haelt so nie Chat, Bearbeitung oder Uebernahme auf.
+Geschrieben wird nur, was claw/wissen_lauf prueft und sichert; ein Abbruch endet 'fertig' mit dem Hinweis
+"teilweise: …"."""
 from __future__ import annotations
 
 import math
@@ -10,6 +12,15 @@ import os
 from spaces.marketing.claw import denkspur, markenprofil, markenwissen, wissen_lauf, wissen_prompt
 from spaces.marketing.workers import chat_worker as cw
 from spaces.marketing.workers import marken_arbeiter as ma
+
+
+ARTEN = ("wissen",)
+
+
+def ein_durchlauf(api, **kw) -> str:
+    """Ein Schritt des Wissens-Fadens: holt nur Wissens-Laeufe (die VM filtert) und bearbeitet sie ueber
+    denselben Ablauf wie der Marken-Faden (marken_arbeiter.ein_durchlauf)."""
+    return ma.ein_durchlauf(api, arten=ARTEN, **kw)
 
 
 def _anzahl(n: int, einzahl: str, mehrzahl: str) -> str:

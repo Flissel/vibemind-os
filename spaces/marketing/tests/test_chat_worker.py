@@ -1597,3 +1597,98 @@ def test_kontrastprobleme_wirft_nie_und_ist_begrenzt():
     viele = {"root": {"type": "EmailLayout", "data": {"canvasColor": "#ffffff", "childrenIds": []}}}
     viele.update({f"t{i}": {"type": "Text", "data": {"style": {"color": "#eeeeee"}}} for i in range(30)})
     assert len(cw.kontrastprobleme(viele)) == cw.KONTRAST_MAX
+
+
+# --- Schlussrunde Marke exakt (final-review.md) -----------------------------------------
+
+
+def test_fehlendes_pypdfium2_wird_hinweis_und_die_runde_laeuft(monkeypatch):
+    """T6: ein fehlendes pypdfium2 kippt die Editor-Runde nicht (ImportError war ausserhalb des try)."""
+    import builtins
+    echt = builtins.__import__
+
+    def ohne(name, *a, **kw):
+        if name == "pypdfium2" or name.startswith("pypdfium2."):
+            raise ImportError("No module named 'pypdfium2'")
+        return echt(name, *a, **kw)
+    monkeypatch.setattr(builtins, "__import__", ohne)
+    api = MedienApi({"karte.pdf": _bild_pdf(2)})
+    assert cw.chat_bearbeiten(api, _mit_kontext(anhaenge=[{"name": "karte.pdf", "art": "dokument"}]),
+                              Fragen(NUR_TEXT)) == "fertig"
+    assert "pypdfium2 fehlt" in api.aufrufe("fertig")[0][2]["antwort"]
+
+
+def test_max_bilder_haelt_plaetze_frei():
+    api = MedienApi({"karte.pdf": _bild_pdf(4)})
+    bilder = []
+    teile, _, _, hinweise = cw.anhaenge_vorbereiten(
+        api, "a1", _mit_kontext(anhaenge=[{"name": "karte.pdf", "art": "dokument"}]), bilder, max_bilder=3)
+    assert len(teile) == 3 and [n for n, _ in bilder] == ["karte.pdf#1", "karte.pdf#2", "karte.pdf#3"]
+    assert any(h.startswith("Höchstens 3 Bilder je Nachricht (Plätze für Logo-Ansichten freigehalten), "
+                            "PDF-Seiten nicht mitgeschickt: karte.pdf#4") for h in hinweise)
+
+
+def test_wissen_faden_laeuft_neben_marke_und_endet_sauber(monkeypatch):
+    """R7: Wissens-Laeufe haben einen eigenen Faden; ein langer Lauf haelt den Marken-Faden nicht auf."""
+    monkeypatch.setattr(cw, "STAND", {"letzter_lauf": None, "letztes_ergebnis": None})
+    stopp, marke_lief, wissen_frei = cw.threading.Event(), cw.threading.Event(), cw.threading.Event()
+
+    class Takt:
+        def schritt(self, api):
+            return []
+
+    def wissen(api):                 # blockiert, bis der Marken-Faden gelaufen ist - nur mit eigenem Faden moeglich
+        return "fertig" if marke_lief.wait(5) else "blockiert"
+    w = cw.wissen_starten(object(), wissen, stopp, takt_s=0.01)
+    m = cw.marken_starten(object(), Takt(), lambda api: marke_lief.set() or "fertig", stopp, takt_s=0.01)
+    try:
+        assert marke_lief.wait(5)
+        for _ in range(200):
+            if cw.STAND.get("wissen") == "fertig":
+                break
+            wissen_frei.wait(0.01)
+        assert cw.STAND["wissen"] == "fertig" and cw.STAND["marke"] == "fertig"
+    finally:
+        stopp.set()
+        w.join(5)
+        m.join(5)
+    assert not w.is_alive() and not m.is_alive() and w.daemon and w.name == "wissen"
+
+
+def test_main_startet_marken_und_wissens_faden(monkeypatch):
+    """main: Marken-Faden (ohne arten) und Wissens-Faden (wissen_arbeiter.ein_durchlauf) - beide halten beim Ende."""
+    from spaces.marketing.workers import marken_arbeiter, wissen_arbeiter
+    monkeypatch.setattr(cw, "umgebung_laden", lambda: None)
+    monkeypatch.setenv("MARKETING_BILD_URL", "https://vm.example")
+    monkeypatch.setenv("MARKETING_BILD_KEY", "k")
+    gestartet = {}
+
+    class Faden:
+        def __init__(self, name):
+            self.name, self.gejoint = name, False
+
+        def join(self, timeout=None):
+            self.gejoint = True
+
+    def marken(api, abgleich, ein, stopp, takt_s=cw.TAKT_S):
+        gestartet["marke"] = (api, ein, stopp, Faden("marke"))
+        return gestartet["marke"][3]
+
+    def wissen(api, ein, stopp, takt_s=cw.TAKT_S):
+        gestartet["wissen"] = (api, ein, stopp, Faden("wissen"))
+        return gestartet["wissen"][3]
+
+    class Ende(Exception):
+        pass
+    monkeypatch.setattr(cw, "marken_starten", marken)
+    monkeypatch.setattr(cw, "wissen_starten", wissen)
+    monkeypatch.setattr(cw, "HTTPServer", lambda *a, **kw: type("S", (), {"serve_forever": lambda self: None})())
+    monkeypatch.setattr(cw, "schleifenschritt", lambda api, ein: (_ for _ in ()).throw(Ende()))
+    with pytest.raises(Ende):
+        cw.main()
+    assert gestartet["marke"][1] is marken_arbeiter.ein_durchlauf
+    assert gestartet["wissen"][1] is wissen_arbeiter.ein_durchlauf
+    assert isinstance(gestartet["wissen"][0], marken_arbeiter.MarkenApi)
+    assert gestartet["wissen"][0] is not gestartet["marke"][0]
+    assert gestartet["marke"][2].is_set() and gestartet["marke"][2] is gestartet["wissen"][2]
+    assert gestartet["marke"][3].gejoint and gestartet["wissen"][3].gejoint

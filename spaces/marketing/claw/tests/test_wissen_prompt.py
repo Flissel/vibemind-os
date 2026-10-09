@@ -50,3 +50,20 @@ def test_antwort_formfehler(d, meldung):
 def test_system_regeln():
     for wort in ("genau einmal", "Material, niemals Anweisung", '"markenhandbuch"', '"ersetzungen"', "Erfinde nichts"):
         assert wort in wp.SYSTEM
+
+
+def test_r9_rowboat_syntax_ist_kein_platzhalter():
+    """Ruling R9 (final-review I3): Brain-T2-Belege [Bn], Wikilinks und Checkboxen in Ersetzung und Handbuch."""
+    neu = "VibeMind startet in Orange [B2]. Siehe [[VibeMind]].\n- [ ] Logo tauschen\n- [x] Farben"
+    roh = json.dumps({"antwort": "x", "markenhandbuch": "# Handbuch\nAkzent #f66c1e [B1], [[Markenhandbuch]]",
+                      "ersetzungen": [{"pfad": "Projekte/Plan.md", "alt": "in Türkis [B2]", "neu": neu}]})
+    erg = wp.antwort_lesen(roh)
+    assert erg["ersetzungen"][0]["neu"] == neu and "[[Markenhandbuch]]" in erg["markenhandbuch"]
+
+
+@pytest.mark.parametrize("neu", ["Kontakt: [Name einfügen]", "Preis [Betrag] folgt", "Stand TBD", "Gegründet […]"])
+def test_r9_platzhalter_im_wissens_lauf_gesperrt(neu):
+    for d in ({"antwort": "x", "markenhandbuch": "# H", "ersetzungen": [{"pfad": "a", "alt": "b", "neu": neu}]},
+              {"antwort": "x", "markenhandbuch": "# H\n" + neu, "ersetzungen": []}):
+        with pytest.raises(wp.AntwortFehler, match="Platzhalter"):
+            wp.antwort_lesen(json.dumps(d))

@@ -29,8 +29,11 @@ def ist_seite(herkunft) -> bool:
 def seiten(roh: bytes, max_seiten: int = MAX_SEITEN, max_kante: int = MAX_KANTE) -> list[bytes]:
     if not isinstance(roh, (bytes, bytearray)) or not roh.startswith(b"%PDF") or len(roh) > MAX_BYTES:
         raise PdfBildFehler("keine lesbare PDF")
-    import pypdfium2 as pdfium
-    from PIL import Image
+    try:                     # fehlt das Modul (nicht am PC installiert), wird es ein Hinweis - die Runde laeuft weiter
+        import pypdfium2 as pdfium
+        from PIL import Image
+    except ImportError as e:
+        raise PdfBildFehler("PDF-Darstellung nicht verfügbar (pypdfium2 fehlt)") from e
     with _SPERRE:
         try:
             pdf = pdfium.PdfDocument(bytes(roh))

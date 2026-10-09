@@ -40,3 +40,17 @@ def test_kaputte_pdf_ist_fehler(roh):
 def test_namen_und_herkunft():
     assert pdf_bilder.seiten_name("karte.pdf", 2) == "karte.pdf#2"
     assert pdf_bilder.ist_seite("PDF-Seite 2") and not pdf_bilder.ist_seite("Anhang")
+
+
+def test_fehlendes_pypdfium2_ist_ein_hinweis_kein_absturz(monkeypatch):
+    """T6: fehlt das Modul, wird es PdfBildFehler (Hinweis) - kein ImportError, der Chat- und Editor-Runde kippt."""
+    import builtins
+    echt = builtins.__import__
+
+    def ohne(name, *a, **kw):
+        if name == "pypdfium2" or name.startswith("pypdfium2."):
+            raise ImportError("No module named 'pypdfium2'")
+        return echt(name, *a, **kw)
+    monkeypatch.setattr(builtins, "__import__", ohne)
+    with pytest.raises(pdf_bilder.PdfBildFehler, match="pypdfium2 fehlt"):
+        pdf_bilder.seiten(b"%PDF-1.4\n%%EOF")

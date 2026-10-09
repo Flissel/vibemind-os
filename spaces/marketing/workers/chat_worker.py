@@ -521,12 +521,14 @@ def _bildteil(art: str, puffer: io.BytesIO) -> dict:
     return {"type": "image_url", "image_url": {"url": url}}
 
 
-def anhaenge_vorbereiten(api, aid, auftrag: dict,
-                         bilder: list[tuple[str, str]] | None = None) -> tuple[list[dict], str, str, list[str]]:
+def anhaenge_vorbereiten(api, aid, auftrag: dict, bilder: list[tuple[str, str]] | None = None,
+                         max_bilder: int = MAX_BILDER) -> tuple[list[dict], str, str, list[str]]:
     """(bildteile, unterlagen, auswahl_text, hinweise) aus kontext.anhaenge und kontext.auswahl: Bilder
-    (Anhaenge vor markierten, hoechstens MAX_BILDER) als Bildteile, Dokumente als Unterlagen-Text, die
+    (Anhaenge vor markierten, hoechstens max_bilder) als Bildteile, Dokumente als Unterlagen-Text, die
     Auswahl als JSON. Was fehlt oder unlesbar ist, wird ein Hinweis; die Funktion wirft nicht.
-    bilder (optional, Ausgabe): (Mediennamen, Herkunft) je mitgeschicktem Bildteil, in Bildteil-Reihenfolge."""
+    bilder (optional, Ausgabe): (Mediennamen, Herkunft) je mitgeschicktem Bildteil, in Bildteil-Reihenfolge.
+    max_bilder < MAX_BILDER haelt Plaetze frei (Marken-Chat: Logo-Ansichten)."""
+    frei = " (Plätze für Logo-Ansichten freigehalten)" if max_bilder < MAX_BILDER else ""
     kontext = auftrag.get("kontext") if isinstance(auftrag.get("kontext"), dict) else {}
     markiert, chip_bilder, hinweise = _auswahl_aufloesen(auftrag, kontext)
     anhaenge = kontext.get("anhaenge") if isinstance(kontext.get("anhaenge"), list) else []
@@ -536,8 +538,9 @@ def anhaenge_vorbereiten(api, aid, auftrag: dict,
     namen = list(dict.fromkeys(anhang_namen + chip_bilder))
     bildteile: list[dict] = []
     for i, name in enumerate(namen):
-        if len(bildteile) >= MAX_BILDER:
-            hinweise.append(f"Höchstens {MAX_BILDER} Bilder je Nachricht, nicht mitgeschickt: {', '.join(namen[i:])}.")
+        if len(bildteile) >= max_bilder:
+            hinweise.append(f"Höchstens {max_bilder} Bilder je Nachricht{frei}, nicht mitgeschickt: "
+                            f"{', '.join(namen[i:])}.")
             break
         roh = _holen(api, aid, name, hinweise)
         if roh is None:
@@ -564,8 +567,8 @@ def anhaenge_vorbereiten(api, aid, auftrag: dict,
                 except pdf_bilder.PdfBildFehler as e:
                     hinweise.append(f"{a['name']}: Seiten nicht als Bild darstellbar ({e})")
     for i, (name, png) in enumerate(pdf_seiten):
-        if len(bildteile) >= MAX_BILDER:
-            hinweise.append(f"Höchstens {MAX_BILDER} Bilder je Nachricht, PDF-Seiten nicht mitgeschickt: "
+        if len(bildteile) >= max_bilder:
+            hinweise.append(f"Höchstens {max_bilder} Bilder je Nachricht{frei}, PDF-Seiten nicht mitgeschickt: "
                             f"{', '.join(n for n, _ in pdf_seiten[i:])}.")
             break
         teil = _bild_als_teil(png)
@@ -830,20 +833,22 @@ def main() -> None:
     basis, schluessel = os.environ.get("MARKETING_BILD_URL", ""), os.environ.get("MARKETING_BILD_KEY", "")
     if not basis or not schluessel:
         raise SystemExit("MARKETING_BILD_URL/MARKETING_BILD_KEY fehlen in Vibemind_V1/.env")
-    from spaces.marketing.workers import marken_arbeiter   # importiert dieses Modul selbst
+    from spaces.marketing.workers import marken_arbeiter, wissen_arbeiter   # importieren dieses Modul selbst
     api = ChatApi(basis, schluessel)
     marke = marken_arbeiter.MarkenApi(basis, schluessel)
     abgleich = marken_arbeiter.Abgleich()                    # erster Schritt = Abgleich beim Start
     threading.Thread(target=HTTPServer(("127.0.0.1", PORT), _Gesundheit).serve_forever, daemon=True).start()
     stopp = threading.Event()
-    faden = marken_starten(marke, abgleich, marken_arbeiter.ein_durchlauf, stopp)
+    faeden = [marken_starten(marke, abgleich, marken_arbeiter.ein_durchlauf, stopp),
+              wissen_starten(marken_arbeiter.MarkenApi(basis, schluessel), wissen_arbeiter.ein_durchlauf, stopp)]
     try:
         while True:
             schleifenschritt(api, ein_durchlauf)
             time.sleep(TAKT_S)
-    finally:                 # Strg+C/Ende: der Marken-Faden beendet seinen Schritt und haelt an
+    finally:                 # Strg+C/Ende: Marken- und Wissens-Faden beenden ihren Schritt und halten an
         stopp.set()
-        faden.join(timeout=MARKE_ENDE_S)
+        for faden in faeden:
+            faden.join(timeout=MARKE_ENDE_S)
 
 
 MARKE_ENDE_S = 10
@@ -867,6 +872,22 @@ def marken_starten(marke_api, abgleich, marke_ein, stopp: threading.Event,
     """Startet marken_schleife als Daemon-Faden (haelt das Prozessende nie auf) und gibt ihn zurueck."""
     faden = threading.Thread(target=marken_schleife, args=(marke_api, abgleich, marke_ein, stopp, takt_s),
                              name="marke", daemon=True)
+    faden.start()
+    return faden
+
+
+def wissen_schleife(wissen_api, wissen_ein, stopp: threading.Event, takt_s: float = TAKT_S) -> None:
+    """Eigener Faden fuer Wissens-Laeufe (Ruling R7): ein Rowboat-Lauf dauert Minuten und belegt so nie den
+    Marken-Faden - Chats und Formular-Bearbeitungen, die waehrenddessen kommen, laufen sofort."""
+    while not stopp.is_set():
+        schleifenschritt(wissen_api, wissen_ein, "wissen")
+        stopp.wait(takt_s)
+
+
+def wissen_starten(wissen_api, wissen_ein, stopp: threading.Event, takt_s: float = TAKT_S) -> threading.Thread:
+    """Startet wissen_schleife als Daemon-Faden und gibt ihn zurueck."""
+    faden = threading.Thread(target=wissen_schleife, args=(wissen_api, wissen_ein, stopp, takt_s),
+                             name="wissen", daemon=True)
     faden.start()
     return faden
 

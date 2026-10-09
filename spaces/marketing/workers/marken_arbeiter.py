@@ -5,10 +5,12 @@ Laeuft im Prozess des Chat-Arbeiters (Ruling R1) und holt Auftraege von /api/mar
 - uebernehmen: Logo holen -> companys/<Firma>/Marke.md (+ Logo) schreiben -> Spiegel -> fertig
   (die DB markiert dabei die offenen Entwuerfe). Scheitert etwas vor dem Schreiben, wird nichts
   geschrieben und der Auftrag mit Grund zurueckgegeben.
-- wissen: Rowboat-Lauf nach der Übernahme (workers/wissen_arbeiter)
+- wissen: Rowboat-Lauf nach der Übernahme (workers/wissen_arbeiter). Laeuft in einem EIGENEN Faden
+  (Ruling R7: naechster mit arten=wissen); der Marken-Faden holt ohne arten und bekommt nie wissen.
 - Abgleich (Start + alle 10 min): Kopfteil jeder Marke.md gegen den Spiegel; gueltige Werte, die
   abweichen, werden gespiegelt, ungueltige nie (Rowboat bleibt Wahrheit). Die Lese-Hinweise
-  ("Marke.md: akzent ungültig") gehen an die VM, damit die Profilseite sie zeigt.
+  ("Marke.md: akzent ungültig") gehen an die VM, damit die Profilseite sie zeigt, und das echte Profil
+  (Werte ohne Logos + Abschnitte) fuer die Vorbefuellung von "Profil bearbeiten" (Ruling R8).
 - Ein Chat-Auftrag bringt den offenen Vorschlag der Firma mit: Claude verfeinert ihn, sein Logo bleibt
   gueltig (C1/R14). Laeuft in einem eigenen Faden des Chat-Arbeiters (R15)."""
 from __future__ import annotations
@@ -25,6 +27,9 @@ from spaces.marketing.workers import chat_worker as cw
 from spaces.marketing.workers.bild_worker import ApiFehler
 
 ABGLEICH_S = 600
+PROFIL_WERTE = ("akzent", "zweitfarbe", "grund", "text", "schrift_anzeige", "schrift_text", "webseite")
+PROFIL_MAX = 60 * 1024     # wie api/marke.PROFIL_MAX (die DB nimmt hoechstens 64 KB)
+PROFIL_ZU_GROSS = "Profil zu groß für die Vorbefüllung des Formulars – nicht gemeldet"
 FEHLER_TAKT_S = 60         # nach einem gescheiterten Abgleich (VM weg) nicht 10 Minuten warten
 MAX_HINWEISE = 50          # Grenze der VM (api/marke._hinweise)
 MAX_HINWEIS = 300
@@ -39,6 +44,13 @@ _PNG = b"\x89PNG\r\n\x1a\n"
 
 class MarkenApi(cw.ChatApi):
     PFAD = "/api/marke/arbeiter"
+
+    def naechster(self, arten: tuple[str, ...] | None = None) -> dict | None:
+        pfad = "/naechster" + (f"?arten={urllib.parse.quote(','.join(arten))}" if arten else "")
+        return self._post(pfad).get("auftrag")
+
+    def profil(self, mandant: str, profil: dict) -> dict:
+        return self._post("/profil", {"mandant": mandant, "profil": profil})
 
     def vorschlag(self, aid, daten: dict) -> dict:
         return self._post(f"/{aid}/vorschlag", daten)
@@ -195,9 +207,12 @@ def _bisheriges_logo(api, aid, bisher: str | None, profil) -> tuple[bytes | None
     return _datei_bytes(profil.logo_pfad), None
 
 
-def _logo_ansichten(api, aid, bisher, profil, logos: list[str], laden, bildteile: list, bilder: list) -> None:
-    """Bisheriges Logo und Logo-Kandidaten der Webseite als Bildteile, damit Claude Rand und Flaeche sieht
-    (Spec §1). Nur solange Platz unter cw.MAX_BILDER ist; was nicht ladbar ist, faellt still weg."""
+LOGO_WEGGELASSEN = "Logo-Ansichten weggelassen: "
+
+
+def _logo_kandidaten(api, aid, bisher, profil, logos: list[str], laden) -> list[tuple[str, str, dict]]:
+    """(name, Herkunft, Bildteil) fuer das bisherige Logo und die Logo-Kandidaten der Webseite, damit Claude Rand
+    und Flaeche sieht (Spec §1). Was nicht ladbar oder kein Bild ist, faellt still weg."""
     kandidaten = []
     roh, _ = _bisheriges_logo(api, aid, bisher, profil)
     if roh:
@@ -206,13 +221,27 @@ def _logo_ansichten(api, aid, bisher, profil, logos: list[str], laden, bildteile
         geladen = laden(url)
         if geladen:
             kandidaten.append((f"web:{i}", marken_prompt.HERKUNFT_WEB, geladen[0]))
-    for name, herkunft, roh in kandidaten:
+    teile = [(name, herkunft, cw._bild_als_teil(roh)) for name, herkunft, roh in kandidaten]
+    return [(name, herkunft, teil) for name, herkunft, teil in teile if teil is not None]
+
+
+def _logo_plaetze(ansichten: list[tuple[str, str, dict]]) -> int:
+    """Plaetze unter cw.MAX_BILDER, die fuer Logo-Ansichten frei bleiben: das bisherige Logo und EIN Web-Logo."""
+    return int(any(n == "bisher" for n, _, _ in ansichten)) + int(any(n.startswith("web:") for n, _, _ in ansichten))
+
+
+def _logo_ansichten(ansichten: list[tuple[str, str, dict]], bildteile: list, bilder: list, hinweise: list[str]) -> None:
+    """Logo-Ansichten hinter die Anhaenge, solange Platz unter cw.MAX_BILDER ist; was nicht passt, nennt ein
+    Hinweis (sonst waehlte der Agent `bisher`/`web:n` blind)."""
+    weg = []
+    for name, herkunft, teil in ansichten:
         if len(bildteile) >= cw.MAX_BILDER:
-            break
-        teil = cw._bild_als_teil(roh)
-        if teil is not None:
-            bildteile.append(teil)
-            bilder.append((name, herkunft))
+            weg.append(name)
+            continue
+        bildteile.append(teil)
+        bilder.append((name, herkunft))
+    if weg:
+        hinweise.append(LOGO_WEGGELASSEN + ", ".join(weg))
 
 
 def _logo_quelle(api, aid, quelle: str, bilder, logos, laden, bisher, profil) -> tuple[bytes, str | None]:
@@ -367,9 +396,8 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
     offen = marken_prompt.offener_vorschlag(auftrag) or {}
     bilder: list[tuple[str, str]] = []
     with cw.halten(api, aid, halten_takt_s) as halter:          # Anhaenge, Webseite und Wissen dauern
-        bildteile, unterlagen_text, _, hinweise = cw.anhaenge_vorbereiten(api, aid, auftrag, bilder)
         profil = markenprofil.lesen(wurzel, mandant, name)
-        hinweise += profil.hinweise
+        hinweise = list(profil.hinweise)
         if formular is not None:       # leere Webseite im Formular = die des aktuellen Profils bleibt (R3)
             formular = {**formular, "webseite": str(formular.get("webseite") or "").strip()
                         or str(profil.werte.get("webseite") or "")}
@@ -384,7 +412,13 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
             hinweise += fund.hinweise
         logos = list(fund.logos) if fund is not None else []
         bisher = marken_prompt.bisheriges_logo(auftrag)      # Logo des offenen Vorschlags (C1/R14)
-        _logo_ansichten(api, aid, bisher, profil, logos, laden, bildteile, bilder)
+        # Logo-Ansichten zuerst bestimmen: ihre Plaetze (bisheriges + ein Web-Logo) bleiben frei, auch wenn
+        # Anhaenge und PDF-Seiten mehr fuellen koennten (sonst sieht der Agent das Logo nicht)
+        ansichten = _logo_kandidaten(api, aid, bisher, profil, logos, laden)
+        bildteile, unterlagen_text, _, anhang_hinweise = cw.anhaenge_vorbereiten(
+            api, aid, auftrag, bilder, max_bilder=cw.MAX_BILDER - _logo_plaetze(ansichten))
+        hinweise[:0] = anhang_hinweise
+        _logo_ansichten(ansichten, bildteile, bilder, hinweise)
         wissen = markenwissen.laden(wurzel, mandant, name, str(auftrag.get("nachricht") or ""), ohne_marke=True)
         hinweise += [h for h in wissen.hinweise if not h.startswith("Kein Markenwissen")]
     if halter.verloren.is_set():
@@ -512,6 +546,37 @@ def _hinweise_melden(api, mandant: str, name: str, profil, firma: dict) -> str |
     return None
 
 
+def profil_daten(profil) -> dict | None:
+    """Das echte Profil fuer die Formular-Vorbefuellung (Ruling R8): gueltige Werte ohne Logos/data-URLs und die
+    sieben Abschnitte der Marke.md. None ohne Marke.md-Inhalt; zu gross -> ValueError (nichts wird gekuerzt)."""
+    werte = {k: v for k, v in profil.werte.items()
+             if k in PROFIL_WERTE and isinstance(v, str) and not v.lstrip().lower().startswith("data:")}
+    abschnitte = {n: profil.abschnitte[n] for n in markenprofil.ABSCHNITT_REIHENFOLGE
+                  if isinstance(profil.abschnitte.get(n), str)}
+    if not werte and not abschnitte:
+        return None
+    daten = {"werte": werte, "abschnitte": abschnitte}
+    if len(json.dumps(daten, ensure_ascii=False).encode("utf-8")) > PROFIL_MAX:
+        raise ValueError(PROFIL_ZU_GROSS)
+    return daten
+
+
+def _profil_melden(api, mandant: str, name: str, profil, bisher=None) -> str | None:
+    """Echtes Profil an die VM, wenn es sich gegenueber `bisher` (Stand der VM) geaendert hat -> Meldung bei
+    Fehlschlag oder Uebergroesse."""
+    try:
+        daten = profil_daten(profil)
+    except ValueError as e:
+        return f"{name}: {e}"
+    if daten is None or daten == bisher:
+        return None
+    try:
+        api.profil(mandant, daten)
+    except (ApiFehler, OSError, ValueError) as e:
+        return f"{name}: Profil nicht gemeldet: {cw._kurz(e)}"
+    return None
+
+
 def abgleichen(api, wurzel: str, mandanten: list[dict], abgelehnt: dict | None = None) -> list[str]:
     """Je Firma: Lese-Hinweise der Marke.md melden, gueltige Kopfteil-Werte mit dem Spiegel vergleichen und
     bei Abweichung spiegeln. Ohne Ordner, ohne Kopfteil oder ganz ohne gueltige Werte wird nicht gespiegelt.
@@ -525,6 +590,9 @@ def abgleichen(api, wurzel: str, mandanten: list[dict], abgelehnt: dict | None =
         mandant, name = str(firma["id"]), str(firma.get("name") or firma["id"])
         profil = markenprofil.lesen(wurzel, mandant, name)
         meldung = _hinweise_melden(api, mandant, name, profil, firma)
+        if meldung:
+            meldungen.append(meldung)
+        meldung = _profil_melden(api, mandant, name, profil, firma.get("profil"))
         if meldung:
             meldungen.append(meldung)
         gestalt = spiegel_gestalt(profil)
@@ -644,6 +712,9 @@ def _uebernehmen_mit_spur(api, auftrag: dict, aid: str, spur, wurzel: str, jetzt
         api.hinweise(mandant, _hinweise(neu.hinweise))
     except (ApiFehler, OSError, ValueError):
         pass                # nicht auftragsgebunden; der Abgleich meldet sie spaetestens in 10 Minuten
+    meldung = _profil_melden(api, mandant, name, neu)   # Formular-Vorbefuellung sofort aus der neuen Marke.md (R8)
+    if meldung:
+        hinweise.append(meldung)
     spur.ende()
     api.fertig(aid, {"antwort": UEBERNOMMEN, "hinweise": _hinweise(hinweise)})
     return "fertig"
@@ -654,8 +725,12 @@ def _uebernehmen_mit_spur(api, auftrag: dict, aid: str, spur, wurzel: str, jetzt
 def ein_durchlauf(api, fragen_strom=cw.frage_strom, webseite_lesen=webseite.lesen,
                   logo_laden=webseite.logo_laden, wurzel: str | None = None, jetzt=datetime.datetime.now,
                   uhr=time.monotonic, schlafen=time.sleep, halten_takt_s: float = cw.HALTEN_TAKT_S,
-                  comfy=bild_comfy, seite_lesen=webseite.einzelseite, arbeit_ordner: str | None = None) -> str:
-    auftrag = api.naechster()
+                  comfy=bild_comfy, seite_lesen=webseite.einzelseite, arbeit_ordner: str | None = None,
+                  arten: tuple[str, ...] | None = None) -> str:
+    """Ein Auftrag. Ohne arten = Marken-Faden (die VM gibt alles ausser wissen), arten=("wissen",) =
+    Wissens-Faden (wissen_arbeiter.ein_durchlauf). Jede Art wird hier bearbeitet - auch wenn eine alte VM den
+    Filter nicht kennt, geht so kein Auftrag verloren."""
+    auftrag = api.naechster(arten) if arten else api.naechster()
     if not auftrag:
         return "leer"
     aid = str(auftrag["id"])

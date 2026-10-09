@@ -43,6 +43,10 @@ FORMULAR_GRENZEN = {"akzent": 20, "zweitfarbe": 20, "grund": 20, "text": 20, "sc
                     "schrift_text": 40, "webseite": 300}
 ABSCHNITT_FORM_MAX = 8000
 SPIEGEL_SCHLUESSEL = ("akzent", "flaeche", "logo", "logo_dunkel", "schriften")
+PROFIL_WERTE = ("akzent", "zweitfarbe", "grund", "text", "schrift_anzeige", "schrift_text", "webseite")
+PROFIL_WERT_MAX = 300
+PROFIL_MAX = 60 * 1024                    # die DB nimmt hoechstens 64 KB (jsonb-Text, 066)
+ARBEITER_ARTEN = ("chat", "uebernehmen", "bearbeitung", "wissen")
 _PNG, _JPEG = b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff"
 _LOGO_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(png|jpe?g)")
 MUSTER_MAX = {"betreff": 200, "ueberschrift": 200, "absatz": 1000}
@@ -57,6 +61,31 @@ def _vorschlag_id(wert: str) -> str:
         return _uuid_oder_404(wert)
     except HTTPException:
         raise HTTPException(404, "Unbekannter Vorschlag")
+
+
+def _profil_lesen(roh) -> dict | None:
+    """marken_spiegel.profil -> {werte, abschnitte} (nur Text-Werte) oder None, wenn nichts Brauchbares."""
+    if not isinstance(roh, dict) or not isinstance(roh.get("werte"), dict) or not isinstance(roh.get("abschnitte"), dict):
+        return None
+    return {"werte": {k: v for k, v in roh["werte"].items() if k in PROFIL_WERTE and isinstance(v, str)},
+            "abschnitte": {k: v for k, v in roh["abschnitte"].items() if k in ABSCHNITTE and isinstance(v, str)}}
+
+
+def _profil_pruefen(roh) -> dict:
+    """Form des vom PC gemeldeten Profils (Ruling R8): nur Werte ohne Logos/data-URLs, nur die sieben Abschnitte."""
+    if not isinstance(roh, dict) or set(roh) != {"werte", "abschnitte"}:
+        raise HTTPException(422, "profil braucht genau werte und abschnitte")
+    werte, ab = roh["werte"], roh["abschnitte"]
+    if not isinstance(werte, dict) or set(werte) - set(PROFIL_WERTE) or not all(
+            isinstance(v, str) and len(v) <= PROFIL_WERT_MAX and not v.lstrip().lower().startswith("data:")
+            for v in werte.values()):
+        raise HTTPException(422, "profil.werte kennt nur Farben, Schriften und webseite als kurzen Text")
+    if not isinstance(ab, dict) or set(ab) - set(ABSCHNITTE) or not all(isinstance(v, str) for v in ab.values()):
+        raise HTTPException(422, "profil.abschnitte kennt nur die sieben Abschnitte des Profils als Text")
+    profil = {"werte": werte, "abschnitte": ab}
+    if len(json.dumps(profil, ensure_ascii=False).encode("utf-8")) > PROFIL_MAX:
+        raise HTTPException(422, "profil zu groß")
+    return profil
 
 
 def _von(payload: dict) -> str:
@@ -75,7 +104,7 @@ def marke_stand(mandant: str | None = None, x_pult_key: str | None = Header(None
     m = _mandant_pflicht(mandant)
     _schreiben(lambda: f"SELECT marketing._marke_aufraeumen({lit(m)}) IS NULL AS ok")
     kopf = _lesen_einer(lambda:
-        "SELECT m.name, s.stand, s.gespiegelt_am::text AS gespiegelt_am, s.fehler, s.hinweise, "
+        "SELECT m.name, s.stand, s.gespiegelt_am::text AS gespiegelt_am, s.fehler, s.hinweise, s.profil, "
         "(SELECT l.gestalt FROM marketing.layout_vorlagen l WHERE l.mandant = m.id AND l.standard "
         "AND l.inhaltsart = 'newsletter' AND l.art = 'layout') AS gestalt "
         "FROM marketing.mandanten m LEFT JOIN marketing.marken_spiegel s ON s.mandant = m.id "
@@ -122,13 +151,18 @@ def marke_stand(mandant: str | None = None, x_pult_key: str | None = Header(None
         f"FROM marketing.marken_auftraege WHERE mandant = {lit(m)} AND status = 'in_arbeit' "
         "AND art IN ('chat', 'bearbeitung', 'uebernehmen') "
         "ORDER BY geaendert_am DESC LIMIT 1")
+    # Der laufende Wissens-Lauf vor einem wartenden (sonst verdeckte ein neuerer wartender sein Ergebnis),
+    # sonst der neueste abgeschlossene; ersetzte zaehlen nie.
     wissen = _lesen_einer(lambda:
         "SELECT status, antwort, hinweise, coalesce(denken, '') AS denken, "
         "coalesce(schritte, '[]'::jsonb) AS schritte, geaendert_am::text AS geaendert_am "
         f"FROM marketing.marken_auftraege WHERE mandant = {lit(m)} AND art = 'wissen' "
         "AND NOT (status = 'fertig' AND antwort = 'Ersetzt durch einen neueren Wissens-Lauf.') "
-        "ORDER BY erstellt_am DESC LIMIT 1")
+        "ORDER BY CASE status WHEN 'in_arbeit' THEN 0 WHEN 'offen' THEN 1 ELSE 2 END, erstellt_am DESC LIMIT 1")
     hinweise = kopf.get("hinweise") if isinstance(kopf.get("hinweise"), list) else []
+    # Formular-Vorbefuellung (Ruling R8): das echte Profil der Marke.md, vom PC gemeldet; ohne Meldung der
+    # zuletzt uebernommene Vorschlag wie bisher.
+    profil = _profil_lesen(kopf.get("profil")) or aktuell
     return {"mandant": m, "name": kopf.get("name"),
             "spiegel": {"gestalt": {k: gestalt[k] for k in SPIEGEL_SCHLUESSEL if k in gestalt},
                         "stand": kopf.get("stand") or "", "gespiegelt_am": kopf.get("gespiegelt_am"),
@@ -138,7 +172,7 @@ def marke_stand(mandant: str | None = None, x_pult_key: str | None = Header(None
             "vorschlag": ({"id": str(v["id"]), "vorschlag": v.get("vorschlag"), "erstellt_am": v.get("erstellt_am")}
                           if v else None),
             "uebernahme": "laeuft" if "uebernehmen" in arten else None,
-            "uebernahme_seit": seit if "uebernehmen" in arten else None, "aktuell": aktuell,
+            "uebernahme_seit": seit if "uebernehmen" in arten else None, "aktuell": aktuell, "profil": profil,
             "letzte_uebernahme": letzte or None, "laufend": laufend or None, "wissen": wissen or None}
 
 
@@ -311,10 +345,21 @@ def _antwort(payload: dict) -> str:
     return a[:4000]
 
 
+def _arten(roh: str | None) -> str:
+    """?arten=wissen (Wissens-Faden) oder ohne (Marken-Faden: alles ausser wissen, Ruling R7) -> SQL-Argument."""
+    if roh is None:
+        return "NULL::text[]"
+    arten = [a.strip() for a in roh.split(",")]
+    if not arten or len(arten) > len(ARBEITER_ARTEN) or any(a not in ARBEITER_ARTEN for a in arten):
+        raise HTTPException(422, f"arten kennt nur {', '.join(ARBEITER_ARTEN)}")
+    return "ARRAY[" + ", ".join(lit(a) for a in dict.fromkeys(arten)) + "]::text[]"
+
+
 @arbeiter_router.post("/naechster")
-def arbeiter_naechster(x_bild_key: str | None = Header(None)):
+def arbeiter_naechster(arten: str | None = None, x_bild_key: str | None = Header(None)):
     _bild_schluessel(x_bild_key)
-    zeile = _schreiben(lambda: f"SELECT marketing.pult_marke_naechster({lit(FRIST)}::interval) AS a")
+    auswahl = _arten(arten)
+    zeile = _schreiben(lambda: f"SELECT marketing.pult_marke_naechster({lit(FRIST)}::interval, {auswahl}) AS a")
     a = zeile.get("a")
     if not (isinstance(a, dict) and a.get("id")):
         return {"auftrag": None}
@@ -337,7 +382,7 @@ def arbeiter_firmen(x_bild_key: str | None = Header(None)):
     """Aktive Firmen mit dem Spiegel-Teil ihres Standard-Newsletter-Layouts, fuer den Abgleich am PC."""
     _bild_schluessel(x_bild_key)
     zeilen = _lesen(lambda:
-        "SELECT m.id, m.name, s.stand, s.hinweise, s.fehler, "
+        "SELECT m.id, m.name, s.stand, s.hinweise, s.fehler, s.profil, "
         "(SELECT l.gestalt FROM marketing.layout_vorlagen l WHERE l.mandant = m.id AND l.standard "
         "AND l.inhaltsart = 'newsletter' AND l.art = 'layout') AS gestalt "
         "FROM marketing.mandanten m LEFT JOIN marketing.marken_spiegel s ON s.mandant = m.id "
@@ -348,8 +393,21 @@ def arbeiter_firmen(x_bild_key: str | None = Header(None)):
         firmen.append({"id": z.get("id"), "name": z.get("name"), "stand": z.get("stand") or "",
                        "gestalt": {k: gestalt[k] for k in SPIEGEL_SCHLUESSEL if k in gestalt},
                        "hinweise": z.get("hinweise") if isinstance(z.get("hinweise"), list) else [],
-                       "fehler": z.get("fehler")})
+                       "fehler": z.get("fehler"), "profil": _profil_lesen(z.get("profil"))})
     return {"firmen": firmen}
+
+
+@arbeiter_router.post("/profil")
+def arbeiter_profil(payload: dict = Body(...), x_bild_key: str | None = Header(None)):
+    """Echtes Profil der Marke.md einer Firma (Werte ohne Logos + Abschnitte), vom Abgleich und nach jeder
+    Uebernahme gemeldet; das Formular "Profil bearbeiten" wird daraus vorbefuellt (Ruling R8)."""
+    _bild_schluessel(x_bild_key)
+    m = _mandant_pflicht(payload.get("mandant"))
+    profil = _profil_pruefen(payload.get("profil"))
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_marke_profil_melden({lit(m)}, "
+        f"{lit(json.dumps(profil, ensure_ascii=False))}::jsonb) AS ok")
+    return {"ok": bool(zeile.get("ok"))}
 
 
 @arbeiter_router.post("/hinweise")

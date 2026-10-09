@@ -27,8 +27,14 @@ SCHRIFTEN = ("schrift_anzeige", "schrift_text")
 SCHLUESSEL = (*FARBEN, *SCHRIFTEN, "logo", "logo_bearbeiten", "abschnitte", "mustertext", "webseite")
 MAX_LESEN = 3
 MAX_KORREKTUREN = 20
-# Platzhalter in Abschnitten (Spec §2): […]-Klammern (aber nie Markdown-Links [Text](url)), TBD, TODO, Lorem, XX
-PLATZHALTER = re.compile(r"\[[^\]\n]{0,60}\](?!\()|\bTBD\b|\bTODO\b|\bLorem\b|\bX{2,}\b", re.IGNORECASE)
+# Platzhalter in Abschnitten (Spec §2, Ruling R9): [Text mit Buchstaben] ohne folgendes "(" sowie die ganzen Woerter
+# TBD, TODO, Lorem, XX. Erlaubt bleiben Markdown-Links [Text](url), Wikilinks [[...]], Checkboxen [ ]/[x]/[X] und
+# Belegmarken wie [B1]/[A12] (Rowboat-Wissen, Brain-Schema) und Klammern ohne Buchstaben ([1]) - ausser der
+# Auslassung […]/[...], dem Platzhalter aus der Spec.
+PLATZHALTER = re.compile(
+    r"(?<!\[)\[(?![xX]\])(?![A-Z]\d+\])(?=[^\[\]\n]*[^\W\d_])[^\[\]\n]{1,60}\](?!\()"
+    r"|\[\s*(?:…|\.{3})\s*\](?!\()"
+    r"|\bTBD\b|\bTODO\b|\bLorem\b|\bX{2,}\b", re.IGNORECASE)
 MAX_LESEN_PFAD = 200
 FREISTELLEN = ("farbe", "ki", "nein")
 WERKZEUG_FELDER = ("logo_dunkel", "logo_original")      # setzt nur der Arbeiter

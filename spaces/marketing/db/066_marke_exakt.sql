@@ -1,5 +1,6 @@
 -- RUNBOOK: 066 ersetzt pult_gestalt_fehler, pult_marke_spiegeln, _marke_aufraeumen, pult_marke_anlegen,
--- pult_marke_naechster, pult_marke_vorschlag und pult_marke_uebernehmen aus 064. Nach einem Replay von 064
+-- pult_marke_naechster(interval) (jetzt Huelle um pult_marke_naechster(interval, text[])), pult_marke_vorschlag
+-- und pult_marke_uebernehmen aus 064. Nach einem Replay von 064
 -- IMMER 066 erneut einspielen; danach verify_060 .. verify_066 zusammen ueber migration_probe.
 -- 066: Marke exakt (sales-claw Spec 2026-10-09-marke-exakt-logo-wissen-design.md §1-§3). Idempotent, eine Transaktion.
 --   1) marken_auftraege.art zusaetzlich 'bearbeitung' (Formular -> Agent) und 'wissen' (Rowboat-Lauf)
@@ -10,8 +11,17 @@
 --   5) Trigger: nach jeder erfolgreichen Uebernahme ein Wissens-Lauf; ein neuer ersetzt einen wartenden
 --      (der alte endet 'fertig' "Ersetzt durch einen neueren Wissens-Lauf."), kontext.seit bleibt der frueheste
 --      Beginn - der Arbeiter nimmt die Marke.md-Sicherung ab diesem Zeitpunkt als "altes Profil"
---   6) naechster: Wissens-Laeufe nach allem anderen und nie, solange einer derselben Firma laeuft; ein nicht
---      abgeholter Bearbeitungs-Auftrag stirbt nach 2 min wie ein Chat; ein Wissens-Lauf wartet auf den PC.
+--   6) naechster(p_frist, p_arten): eigener Faden je Art-Gruppe (Ruling R7). p_arten NULL = alles ausser
+--      wissen (Marken-Faden: chat, bearbeitung, uebernehmen), ARRAY['wissen'] = nur Wissens-Laeufe
+--      (Wissens-Faden). Ein Wissens-Lauf blockiert so nie Chat/Bearbeitung/Uebernahme; je Firma laeuft
+--      hoechstens einer. Ein nicht abgeholter Bearbeitungs-Auftrag stirbt nach 2 min wie ein Chat; ein
+--      Wissens-Lauf wartet auf den PC.
+--   7) marken_spiegel.profil: das echte Profil der Marke.md ({werte, abschnitte}, ohne Logos), vom PC beim
+--      Abgleich und nach jeder Uebernahme gemeldet (pult_marke_profil_melden, <= 64 KB, Ruling R8); das
+--      Formular "Profil bearbeiten" wird daraus vorbefuellt.
+--   8) _marke_aufraeumen sperrt zuerst die betroffenen Firmen (mandanten, sortiert nach id), dann die
+--      Auftraege - sonst kollidiert das Zuruecksetzen eines abgelaufenen Wissens-Laufs mit dem Trigger einer
+--      gleichzeitigen Uebernahme (unique_violation auf marken_auftraege_ein_wissen).
 -- Sperrreihenfolge wie 064: mandanten -> marken_auftraege -> marken_vorschlaege.
 BEGIN;
 
@@ -26,6 +36,12 @@ CREATE UNIQUE INDEX marken_auftraege_ein_laufender ON marketing.marken_auftraege
   WHERE status IN ('offen','in_arbeit') AND art <> 'wissen';
 CREATE UNIQUE INDEX IF NOT EXISTS marken_auftraege_ein_wissen ON marketing.marken_auftraege (mandant)
   WHERE art = 'wissen' AND status = 'offen';
+
+-- 7) echtes Profil der Marke.md je Firma (Formular-Vorbefuellung)
+ALTER TABLE marketing.marken_spiegel ADD COLUMN IF NOT EXISTS profil jsonb;
+ALTER TABLE marketing.marken_spiegel DROP CONSTRAINT IF EXISTS marken_spiegel_profil_check;
+ALTER TABLE marketing.marken_spiegel ADD CONSTRAINT marken_spiegel_profil_check
+  CHECK (profil IS NULL OR (jsonb_typeof(profil) = 'object' AND octet_length(profil::text) <= 65536));
 
 -- 3) Gestalt-Pruefung: woertlich aus 064, nur die logo_dunkel-Pruefung nach logo ergaenzt
 CREATE OR REPLACE FUNCTION marketing.pult_gestalt_fehler(p jsonb) RETURNS text
@@ -85,6 +101,15 @@ $$;
 CREATE OR REPLACE FUNCTION marketing._marke_aufraeumen(p_mandant text) RETURNS void
 LANGUAGE plpgsql AS $$
 BEGIN
+  -- 8) Erst die betroffenen Firmen sperren (nach id sortiert: zwei Aufraeumer verklemmen sich nie), dann die
+  -- Auftraege. Haelt der Aufrufer die Firma schon (anlegen, bearbeiten, uebernehmen), aendert das nichts.
+  PERFORM 1 FROM marketing.mandanten
+   WHERE id IN (SELECT mandant FROM marketing.marken_auftraege
+                 WHERE ((status = 'offen' AND art IN ('chat','bearbeitung')
+                         AND erstellt_am < now() - interval '2 minutes')
+                        OR (status = 'in_arbeit' AND vergeben_bis < now()))
+                   AND (p_mandant IS NULL OR mandant = p_mandant))
+   ORDER BY id FOR NO KEY UPDATE;
   UPDATE marketing.marken_auftraege
      SET status = 'fehler', antwort = 'Der Assistent läuft am PC und ist gerade aus',
          vergeben_bis = NULL, geaendert_am = now()
@@ -154,14 +179,22 @@ BEGIN
   RETURN v_id;
 END $$;
 
-CREATE OR REPLACE FUNCTION marketing.pult_marke_naechster(p_frist interval) RETURNS jsonb
+-- Zwei Signaturen ohne Vorgabewert (sonst waere ein Aufruf mit einem Argument mehrdeutig): die alte aus 064
+-- (nur p_frist) bleibt als Marken-Faden erhalten und ruft die neue mit p_arten NULL.
+CREATE OR REPLACE FUNCTION marketing.pult_marke_naechster(p_frist interval, p_arten text[])
+RETURNS jsonb
 LANGUAGE plpgsql AS $$
 DECLARE a marketing.marken_auftraege; v_firma text; v_verlauf jsonb; v_vorschlag jsonb;
 BEGIN
+  IF p_arten IS NOT NULL AND (cardinality(p_arten) = 0 OR EXISTS (
+       SELECT 1 FROM unnest(p_arten) x WHERE x IS NULL OR x NOT IN ('chat','uebernehmen','bearbeitung','wissen'))) THEN
+    RAISE EXCEPTION 'Unbekannte Auftragsart'; END IF;
   PERFORM marketing._marke_aufraeumen(NULL);
-  -- Wissens-Laeufe zuletzt (Chat und Uebernehmen warten auf den Betreiber), nie zwei derselben Firma zugleich
+  -- p_arten NULL = Marken-Faden (alles ausser wissen), sonst genau die genannten Arten (Wissens-Faden:
+  -- ARRAY['wissen']). Nie zwei Wissens-Laeufe derselben Firma zugleich.
   SELECT m.* INTO a FROM marketing.marken_auftraege m
    WHERE m.status = 'offen'
+     AND (CASE WHEN p_arten IS NULL THEN m.art <> 'wissen' ELSE m.art = ANY (p_arten) END)
      AND NOT (m.art = 'wissen' AND EXISTS (SELECT 1 FROM marketing.marken_auftraege w
                                             WHERE w.mandant = m.mandant AND w.art = 'wissen'
                                               AND w.status = 'in_arbeit'))
@@ -189,6 +222,11 @@ BEGIN
            'nachricht', a.nachricht, 'kontext', a.kontext, 'verlauf', v_verlauf,
            'vorschlag', v_vorschlag);
 END $$;
+
+CREATE OR REPLACE FUNCTION marketing.pult_marke_naechster(p_frist interval) RETURNS jsonb
+LANGUAGE sql AS $$
+  SELECT marketing.pult_marke_naechster(p_frist, NULL::text[])
+$$;
 
 CREATE OR REPLACE FUNCTION marketing.pult_marke_vorschlag(
     p_auftrag uuid, p_vorschlag jsonb, p_antwort text, p_hinweise jsonb) RETURNS uuid
@@ -321,6 +359,27 @@ BEGIN
   ON CONFLICT (mandant) DO UPDATE
     SET stand = EXCLUDED.stand, gespiegelt_am = EXCLUDED.gespiegelt_am, fehler = NULL;
   RETURN v_n;
+END $$;
+
+-- 7) Echtes Profil der Marke.md (Ruling R8): {werte: {schluessel: text}, abschnitte: {name: text}}; ersetzt das
+-- zuletzt gemeldete. Stand, Hinweise und Spiegel-Fehler bleiben unberuehrt.
+CREATE OR REPLACE FUNCTION marketing.pult_marke_profil_melden(p_mandant text, p_profil jsonb) RETURNS boolean
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF p_profil IS NULL OR jsonb_typeof(p_profil) <> 'object' THEN
+    RAISE EXCEPTION 'Profil braucht genau werte und abschnitte als Objekte'; END IF;
+  IF (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(p_profil) k) IS DISTINCT FROM ARRAY['abschnitte','werte']
+     OR jsonb_typeof(p_profil->'werte') <> 'object' OR jsonb_typeof(p_profil->'abschnitte') <> 'object' THEN
+    RAISE EXCEPTION 'Profil braucht genau werte und abschnitte als Objekte'; END IF;
+  IF EXISTS (SELECT 1 FROM jsonb_each(p_profil->'werte') e WHERE jsonb_typeof(e.value) <> 'string')
+     OR EXISTS (SELECT 1 FROM jsonb_each(p_profil->'abschnitte') e WHERE jsonb_typeof(e.value) <> 'string') THEN
+    RAISE EXCEPTION 'Profilwerte und Abschnitte muessen Text sein'; END IF;
+  IF octet_length(p_profil::text) > 65536 THEN RAISE EXCEPTION 'Profil zu groß'; END IF;
+  PERFORM 1 FROM marketing.mandanten WHERE id = p_mandant FOR NO KEY UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Unbekannte Firma'; END IF;
+  INSERT INTO marketing.marken_spiegel (mandant, profil) VALUES (p_mandant, p_profil)
+  ON CONFLICT (mandant) DO UPDATE SET profil = EXCLUDED.profil;
+  RETURN true;
 END $$;
 
 COMMIT;
