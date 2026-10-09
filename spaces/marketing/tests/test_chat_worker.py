@@ -1656,8 +1656,7 @@ def test_wissen_faden_laeuft_neben_marke_und_endet_sauber(monkeypatch):
     assert not w.is_alive() and not m.is_alive() and w.daemon and w.name == "wissen"
 
 
-def test_main_startet_marken_und_wissens_faden(monkeypatch):
-    """main: Marken-Faden (ohne arten) und Wissens-Faden (wissen_arbeiter.ein_durchlauf) - beide halten beim Ende."""
+def test_main_startet_editor_plaetze_marke_und_wissen(monkeypatch):
     from spaces.marketing.workers import marken_arbeiter, wissen_arbeiter
     monkeypatch.setattr(cw, "umgebung_laden", lambda: None)
     monkeypatch.setenv("MARKETING_BILD_URL", "https://vm.example")
@@ -1679,20 +1678,82 @@ def test_main_startet_marken_und_wissens_faden(monkeypatch):
         gestartet["wissen"] = (api, ein, stopp, Faden("wissen"))
         return gestartet["wissen"][3]
 
+    def editor(api, ein, stopp, plaetze=cw.EDITOR_PLAETZE, takt_s=cw.TAKT_S):
+        gestartet["editor"] = (api, ein, stopp, plaetze, [Faden(f"editor-{n}") for n in range(1, plaetze + 1)])
+        return gestartet["editor"][4]
+
     class Ende(Exception):
         pass
     monkeypatch.setattr(cw, "marken_starten", marken)
     monkeypatch.setattr(cw, "wissen_starten", wissen)
+    monkeypatch.setattr(cw, "editor_starten", editor)
     monkeypatch.setattr(cw, "HTTPServer", lambda *a, **kw: type("S", (), {"serve_forever": lambda self: None})())
-    monkeypatch.setattr(cw, "schleifenschritt", lambda api, ein: (_ for _ in ()).throw(Ende()))
+    monkeypatch.setattr(cw, "_warten", lambda stopp: (_ for _ in ()).throw(Ende()))
     with pytest.raises(Ende):
         cw.main()
     assert gestartet["marke"][1] is marken_arbeiter.ein_durchlauf
     assert gestartet["wissen"][1] is wissen_arbeiter.ein_durchlauf
-    assert isinstance(gestartet["wissen"][0], marken_arbeiter.MarkenApi)
-    assert gestartet["wissen"][0] is not gestartet["marke"][0]
-    assert gestartet["marke"][2].is_set() and gestartet["marke"][2] is gestartet["wissen"][2]
+    assert isinstance(gestartet["editor"][0], cw.ChatApi) and gestartet["editor"][1] is cw.ein_durchlauf
+    assert gestartet["editor"][3] == 3
+    assert gestartet["marke"][2].is_set() and gestartet["marke"][2] is gestartet["wissen"][2] is gestartet["editor"][2]
     assert gestartet["marke"][3].gejoint and gestartet["wissen"][3].gejoint
+    assert all(f.gejoint for f in gestartet["editor"][4])
+
+
+def test_drei_editor_plaetze_laufen_gleichzeitig(monkeypatch):
+    monkeypatch.setattr(cw, "STAND", {"letzter_lauf": None, "letztes_ergebnis": None})
+    stopp, schranke = cw.threading.Event(), cw.threading.Barrier(3, timeout=5)
+
+    def ein(api):
+        schranke.wait()            # kehrt nur zurueck, wenn drei Plaetze gleichzeitig arbeiten
+        stopp.set()
+        return "fertig"
+    faeden = cw.editor_starten(object(), ein, stopp, takt_s=0.01)
+    for f in faeden:
+        f.join(5)
+    assert cw.EDITOR_PLAETZE == 3 and [f.name for f in faeden] == ["editor-1", "editor-2", "editor-3"]
+    assert all(f.daemon and not f.is_alive() for f in faeden)
+    assert [cw.STAND[f"editor_{n}"] for n in (1, 2, 3)] == ["fertig"] * 3 and cw.STAND["letztes_ergebnis"] == "fertig"
+
+
+def test_spur_und_denken_bleiben_je_runde_getrennt():
+    schranke, sperre, erg = cw.threading.Barrier(2, timeout=5), cw.threading.Lock(), {}
+
+    class Parallel:
+        def __init__(self, gedanke, antwort):
+            self.gedanke, self.antwort = gedanke, antwort
+
+        def __call__(self, system, nachrichten, denken=None):
+            return self._lauf(denken)
+
+        def _lauf(self, denken):
+            denken(self.gedanke)
+            schranke.wait()             # beide Runden denken gleichzeitig
+            yield self.antwort
+
+    class SpurApi(Api):
+        def denken(self, aid, denken, schritte):
+            with sperre:
+                self.spur.setdefault(aid, []).append((denken, [s["text"] for s in schritte]))
+            return {"ok": True}
+    api = SpurApi()
+    api.spur = {}
+    rot = json.dumps({"antwort": "a", "aenderungen": [farbe("#ff0000", "Rot A")]})
+    blau = json.dumps({"antwort": "b", "aenderungen": [farbe("#0000ff", "Blau B")]})
+
+    def lauf(aid, gedanke, antwort):
+        erg[aid] = cw.chat_bearbeiten(api, {**AUFTRAG, "id": aid}, Parallel(gedanke, antwort))
+    faeden = [cw.threading.Thread(target=lauf, args=("a1", "Denke A", rot)),
+              cw.threading.Thread(target=lauf, args=("a2", "Denke B", blau))]
+    for f in faeden:
+        f.start()
+    for f in faeden:
+        f.join(10)
+    assert erg == {"a1": "fertig", "a2": "fertig"}
+    denken_a, schritte_a = api.spur["a1"][-1]
+    denken_b, schritte_b = api.spur["a2"][-1]
+    assert "Denke A" in denken_a and "Denke B" not in denken_a and "Rot A" in schritte_a and "Blau B" not in schritte_a
+    assert "Denke B" in denken_b and "Denke A" not in denken_b and "Blau B" in schritte_b and "Rot A" not in schritte_b
 
 
 # ---- Nachspielen beim Fertigwerden (Spec 2026-10-09-editor-parallele-runden §1) -----------------------

@@ -1,7 +1,8 @@
 """Chat-Arbeiter am PC (sales-claw Spec 2026-10-02-newsletter-gestaltung-und-agent).
 Holt Chat-Auftraege von der Marketing-API der VM (Tailnet, X-Bild-Key), fragt Claude
 ueber den lokalen OpenAI-kompatiblen Shim :8117, prueft und wendet die JSON-Aenderungen
-an und meldet zurueck. Gestartet von marketing-dienste-starten.ps1; Gesundheits-Port 8134."""
+an und meldet zurueck. Gestartet von marketing-dienste-starten.ps1; Gesundheits-Port 8134.
+Drei Editor-Plaetze (Spec 2026-10-09-editor-parallele-runden) neben Marken- und Wissens-Faden."""
 from __future__ import annotations
 
 import base64
@@ -45,6 +46,8 @@ NACHGESPIELT = ("Auf Fassung {n} nachgespielt – eine andere Runde war schnelle
                 "bei widersprüchlichen Bitten gilt diese Runde.")
 WEBSUCHE_AUS = "WebSearch:aus"   # wie marketing_shim.WEBSUCHE_AUS
 STAND = {"letzter_lauf": None, "letztes_ergebnis": None}
+_STAND_SPERRE = threading.Lock()      # STAND schreiben alle Faeden; Lesen/Ausgeben nur als Kopie unter der Sperre
+_EXPORT_SPERRE = threading.Lock()     # ein Newsletter-Export laeuft allein (auch gegen einen zweiten Export)
 
 
 class LlmFehler(Exception):
@@ -898,7 +901,8 @@ def ein_durchlauf(api, fragen_strom=frage_strom, exportieren=None, uhr=time.mono
         try:
             if exportieren is None:
                 from spaces.marketing.workers.export_worker import exportieren   # Task 12; braucht Playwright
-            return exportieren(api, auftrag)
+            with _EXPORT_SPERRE:
+                return exportieren(api, auftrag)
         except Exception as e:  # noqa: BLE001 - Auftrag gehoert uns, also zurueckgeben
             _freigeben(api, str(auftrag["id"]), "Export nicht möglich: " + _kurz(e), e)
             return "fehler"
@@ -907,7 +911,9 @@ def ein_durchlauf(api, fragen_strom=frage_strom, exportieren=None, uhr=time.mono
 
 def _stand_json() -> str:
     """STAND als JSON aus einer Kopie: Editor- und Marken-Faden schreiben ihn gleichzeitig."""
-    return json.dumps(dict(STAND), default=str)
+    with _STAND_SPERRE:
+        kopie = dict(STAND)
+    return json.dumps(kopie, default=str)
 
 
 class _Gesundheit(BaseHTTPRequestHandler):
@@ -924,11 +930,17 @@ class _Gesundheit(BaseHTTPRequestHandler):
 
 def schleifenschritt(api, ein=ein_durchlauf, feld: str = "letztes_ergebnis") -> None:
     try:
-        STAND[feld] = ein(api)
+        ergebnis = ein(api)
     except Exception as e:  # noqa: BLE001 - ein Fehler darf die Schleife nicht toeten
-        STAND[feld] = f"fehler: {type(e).__name__}: {e}"[:200]
-    STAND["letzter_lauf"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    print(STAND, flush=True)
+        ergebnis = f"fehler: {type(e).__name__}: {e}"[:200]
+    with _STAND_SPERRE:
+        STAND[feld] = ergebnis
+        STAND["letzter_lauf"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        kopie = dict(STAND)
+    print(kopie, flush=True)
+
+
+EDITOR_PLAETZE = 3
 
 
 def main() -> None:
@@ -943,15 +955,42 @@ def main() -> None:
     threading.Thread(target=HTTPServer(("127.0.0.1", PORT), _Gesundheit).serve_forever, daemon=True).start()
     stopp = threading.Event()
     faeden = [marken_starten(marke, abgleich, marken_arbeiter.ein_durchlauf, stopp),
-              wissen_starten(marken_arbeiter.MarkenApi(basis, schluessel), wissen_arbeiter.ein_durchlauf, stopp)]
+              wissen_starten(marken_arbeiter.MarkenApi(basis, schluessel), wissen_arbeiter.ein_durchlauf, stopp),
+              *editor_starten(api, ein_durchlauf, stopp)]
     try:
-        while True:
-            schleifenschritt(api, ein_durchlauf)
-            time.sleep(TAKT_S)
-    finally:                 # Strg+C/Ende: Marken- und Wissens-Faden beenden ihren Schritt und halten an
+        _warten(stopp)
+    finally:                 # Strg+C/Ende: alle Faeden beenden ihren Schritt und halten an
         stopp.set()
         for faden in faeden:
             faden.join(timeout=MARKE_ENDE_S)
+
+
+def _warten(stopp: threading.Event) -> None:
+    """Der Hauptfaden wartet nur (kurzer Takt, damit Strg+C unter Windows durchkommt)."""
+    while not stopp.wait(1):
+        pass
+
+
+def editor_schleife(api, ein, stopp: threading.Event, nr: int, takt_s: float = TAKT_S) -> None:
+    """Ein Editor-Platz (Spec 2026-10-09 §1): holt Runden, solange er frei ist. Drei Plaetze = bis zu drei Runden
+    gleichzeitig; die Grenzen je Entwurf setzt die DB durch."""
+    feld = f"editor_{nr}"
+    while not stopp.is_set():
+        schleifenschritt(api, ein, feld)
+        with _STAND_SPERRE:
+            STAND["letztes_ergebnis"] = STAND.get(feld)
+        stopp.wait(takt_s)
+
+
+def editor_starten(api, ein, stopp: threading.Event, plaetze: int = EDITOR_PLAETZE,
+                   takt_s: float = TAKT_S) -> list[threading.Thread]:
+    faeden = []
+    for nr in range(1, plaetze + 1):
+        faden = threading.Thread(target=editor_schleife, args=(api, ein, stopp, nr, takt_s),
+                                 name=f"editor-{nr}", daemon=True)
+        faden.start()
+        faeden.append(faden)
+    return faeden
 
 
 MARKE_ENDE_S = 10
@@ -965,8 +1004,9 @@ def marken_schleife(marke_api, abgleich, marke_ein, stopp: threading.Event, takt
         schleifenschritt(marke_api, marke_ein, "marke")
         meldungen = abgleich.schritt(marke_api)
         if meldungen:
-            STAND["abgleich"] = meldungen[-10:]
-            print({"abgleich": STAND["abgleich"]}, flush=True)
+            with _STAND_SPERRE:
+                STAND["abgleich"] = meldungen[-10:]
+            print({"abgleich": meldungen[-10:]}, flush=True)
         stopp.wait(takt_s)
 
 
