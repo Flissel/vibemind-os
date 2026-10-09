@@ -13,10 +13,10 @@ url = "https://api.githubcopilot.com/mcp/"
 [[auth_headers]]
 name = "Authorization"
 format = "Bearer {credential}"
-credential = "GITHUB_PAT_TOKEN"
+credential = "INTEGRATION_GITHUB_PAT"
 
 [[required_env]]
-name = "GITHUB_PAT_TOKEN"
+name = "INTEGRATION_GITHUB_PAT"
 label = "GitHub Personal Access Token (fein granuliert)"
 help = "Fein granulierter Token; Rechte nach Bedarf, fuer get_me reichen keine"
 is_secret = true

@@ -1,0 +1,20 @@
+id = "vercel"
+name = "Vercel"
+description = "Vercel ueber den offiziellen Remote-MCP-Server"
+category = "devtools"
+icon = "▲"
+tags = ["deploy", "hosting", "projects"]
+read_only_tools = []
+
+[transport]
+type = "http"
+url = "https://mcp.vercel.com/"
+
+[auth]
+type = "oauth"
+scopes = ["offline_access"]
+
+[catalog]
+replaces_openai_plugin = "vercel"
+license = "proprietary-service"
+admission = "admitted"
