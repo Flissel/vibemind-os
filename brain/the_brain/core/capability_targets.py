@@ -1743,17 +1743,44 @@ class AuftragsExecutor:
     wird hier nicht weitergegeben; der Agent bekommt nur ``auftrag``.
     """
 
+    # Nur fuer den Transport der Auftragstabelle; gehoeren nicht in die Agenten-Nachricht.
+    _TRANSPORT = frozenset({"_trace_id", "_plan_id", "_antwortkanal", "_uebergabe",
+                            "_step_id", "_capability", "_system_prompt_focus"})
+
     def __init__(self, agent: str) -> None:
         self.agent = agent
+
+    def _nachricht(self, arg: Any, arg_kwarg: Optional[str], x: Dict[str, Any]) -> str:
+        """Agenten-Nachricht; bei leerem arg wie OpenFangExecutor._call aus der Nutzlast.
+
+        Live 09.10.: rowboat_search liefert arg="" - ohne diesen Rueckfall bekam
+        der Agent eine leere Nachricht, der synchrone Weg schickt dagegen die
+        Nutzlast (u. a. _intent).
+        """
+        if isinstance(arg, str) and arg.strip():
+            return arg
+        if arg not in (None, "") and not isinstance(arg, str):
+            return json.dumps(arg, ensure_ascii=False)
+        nutzlast = {k: v for k, v in x.items() if k not in self._TRANSPORT and v not in (None, "")}
+        if not nutzlast:
+            return ""
+        nachricht = nutzlast.get("message") or nutzlast.get("input")
+        if isinstance(nachricht, str) and nachricht.strip():
+            return nachricht
+        return json.dumps(nutzlast, ensure_ascii=False, default=str)
 
     def call_with_arg(self, arg: Any, arg_kwarg: Optional[str] = None,
                       extra_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         from core import agent_auftraege as aa
         x = extra_params or {}
+        nachricht = self._nachricht(arg, arg_kwarg, x)
+        if not nachricht.strip():
+            return {"ok": False, "error": "Auftrag waere leer (kein arg, keine Nutzlast)",
+                    "retryable": False}
         try:
             auftrag_id = aa.tabelle_aus_umgebung().anlegen(
                 capability=str(x.get("_capability") or ""), agent=self.agent,
-                auftrag=arg if isinstance(arg, str) else json.dumps(arg, ensure_ascii=False),
+                auftrag=nachricht,
                 trace_id=str(x.get("_trace_id") or ""), plan_id=str(x.get("_plan_id") or ""),
                 hop_id=str(x.get("_step_id") or ""), uebergabe=x.get("_uebergabe"),
                 antwortkanal=x.get("_antwortkanal"))

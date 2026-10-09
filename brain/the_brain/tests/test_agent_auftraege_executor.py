@@ -53,6 +53,35 @@ def test_executor_legt_auftrag_an_und_meldet_pending(tabelle):
         "rowboat-chat", "rowboat_search", "suche x", {"art": "telegram"})
 
 
+K1_TRANSPORT = {"_capability": "rowboat_search", "_step_id": "s1", "_trace_id": "test_1",
+                "_plan_id": "p1", "_antwortkanal": {"art": "api"}, "_uebergabe": {"bundle": 1}}
+
+
+def test_leeres_arg_nimmt_nachricht_wie_openfang_weg(tabelle):
+    # Live 09.10. (test_k1_1): rowboat_search lieferte arg="" -> der Agent bekam eine
+    # LEERE Nachricht. Der synchrone Weg baut die Nachricht aus der ganzen Nutzlast.
+    ct.AuftragsExecutor("rowboat-chat").call_with_arg(
+        "", arg_kwarg="query",
+        extra_params={**K1_TRANSPORT, "_intent": "durchsuche Rowboat nach Agenten-Landkarte"})
+    auftrag = tabelle.angelegt[0]["auftrag"]
+    assert "durchsuche Rowboat nach Agenten-Landkarte" in auftrag
+    for intern in ("_antwortkanal", "_uebergabe", "_trace_id", "_plan_id"):
+        assert intern not in auftrag
+
+
+def test_leeres_arg_mit_message_feld(tabelle):
+    ct.AuftragsExecutor("rowboat-chat").call_with_arg(
+        "", extra_params={**K1_TRANSPORT, "message": "hallo rowboat"})
+    assert tabelle.angelegt[0]["auftrag"] == "hallo rowboat"
+
+
+def test_ganz_leerer_auftrag_ist_fehler(tabelle):
+    r = ct.AuftragsExecutor("rowboat-chat").call_with_arg("", extra_params=dict(K1_TRANSPORT))
+    assert r["ok"] is False and not r.get("pending")
+    assert "leer" in r["error"]
+    assert tabelle.angelegt == []
+
+
 def test_anlegen_fehlgeschlagen_ist_fehler_nicht_pending(monkeypatch):
     monkeypatch.setattr(aa, "AGENT_AUFTRAEGE_ENABLED", True)
 
