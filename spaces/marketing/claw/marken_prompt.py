@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from spaces.marketing.claw import markenprofil, pdf_bilder
 from spaces.marketing.claw.agent_prompt import _ZAUN, _objekte
@@ -26,6 +26,7 @@ FARBEN = ("akzent", "zweitfarbe", "grund", "text")
 SCHRIFTEN = ("schrift_anzeige", "schrift_text")
 SCHLUESSEL = (*FARBEN, *SCHRIFTEN, "logo", "logo_bearbeiten", "abschnitte", "mustertext", "webseite")
 MAX_LESEN = 3
+MAX_LESEN_PFAD = 200
 FREISTELLEN = ("farbe", "ki", "nein")
 WERKZEUG_FELDER = ("logo_dunkel", "logo_original")      # setzt nur der Arbeiter
 HERKUNFT_BISHER = "bisheriges Logo"
@@ -352,7 +353,7 @@ def lesen_pruefen(roh, erlaubt: bool) -> list[str]:
         if (teile is None or teile.scheme not in ("http", "https") or not teile.hostname
                 or teile.username is not None or teile.password is not None):
             raise AntwortFehler("lesen: nur http(s)-Adressen ohne Zugangsdaten")
-        aus.append(url)
+        aus.append(urlunsplit((teile.scheme, teile.netloc, teile.path, "", "")))   # ohne Query und Fragment
     return list(dict.fromkeys(aus))
 
 

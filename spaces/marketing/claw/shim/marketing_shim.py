@@ -953,7 +953,8 @@ class Handler(BaseHTTPRequestHandler):
                         bilder_ordner=bilder_ordner,
                         ohne_werkzeuge=ohne_werkzeuge,
                         denken=body.get("marketing_denken") is True,
-                        websuche=body.get("marketing_websuche") is True,
+                        # Websuche gilt nur zusammen mit ohne_werkzeuge (keine Zusatz-MCP-Werkzeuge daneben)
+                        websuche=body.get("marketing_websuche") is True and ohne_werkzeuge,
                     ),
                     budget_start,
                 ),

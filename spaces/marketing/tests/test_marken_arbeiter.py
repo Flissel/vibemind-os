@@ -1067,3 +1067,49 @@ def test_websuche_im_marken_chat_und_schritte():
     assert fragen.kw[0]["websuche"] is True and callable(fragen.kw[0]["werkzeug"])
     s = _schritte(api)
     assert s.count("Websuche genutzt") == 1 and "Websuche nicht verfügbar" in s
+
+
+def test_zugangsdaten_in_der_adresse_werden_nie_gemerkt_oder_weitergegeben(wurzel, tmp_path):
+    gelesen = []
+    api = Api({**CHAT, "nachricht": "Seite: https://user:pass@radhaus.example/start"})
+    _lauf(api, Fragen(_antwort(None, "ok")), webseite_lesen=lambda u: gelesen.append(u) or FUND)
+    assert gelesen == ["https://radhaus.example/start"]
+    dateien = [p for p in (tmp_path / "arbeit").rglob("*") if p.is_file()]
+    assert dateien
+    for p in dateien:
+        inhalt = p.read_text(encoding="utf-8")
+        assert "user" not in inhalt and "pass" not in inhalt and "@" not in inhalt
+    assert "user" not in str(_schritte(api)) and "pass" not in str(_schritte(api))
+
+
+def test_lesen_ohne_query_und_fragment():
+    gelesen = []
+    api = Api(dict(CHAT))
+    fragen = Fragen(_mit_lesen(["https://evil.example/x?d=SECRET#y"]), _antwort())
+    _lauf(api, fragen, seite_lesen=lambda u: gelesen.append(u) or Fund())
+    assert gelesen == ["https://evil.example/x"]
+    assert "SECRET" not in fragen.gesehen[1][1][-1]["content"]
+
+
+def test_lesen_pfad_ueber_200_zeichen_wird_hinweis():
+    gelesen = []
+    api = Api(dict(CHAT))
+    fragen = Fragen(_mit_lesen(["https://evil.example/" + "a" * 300]), _antwort(None, "nicht lesbar"))
+    assert _lauf(api, fragen, seite_lesen=lambda u: gelesen.append(u) or Fund()) == "fertig"
+    assert gelesen == [] and "Nicht lesbar: evil.example" in _schritte(api)
+    assert any("Pfad länger als 200" in h for h in api.aufrufe("fertig")[0][2]["hinweise"])
+
+
+def test_lesen_verlaengert_die_vergabe_waehrend_der_leser_arbeitet():
+    import time
+    api = Api(dict(CHAT))
+    stand = []
+
+    def langsam(u):
+        vor = len(api.aufrufe("weiter"))
+        time.sleep(0.3)
+        stand.append(len(api.aufrufe("weiter")) - vor)
+        return Fund()
+    fragen = Fragen(_mit_lesen(["https://radhaus.example/a"]), _antwort())
+    assert _lauf(api, fragen, seite_lesen=langsam, halten_takt_s=0.02) == "fertig"
+    assert stand and stand[0] >= 2

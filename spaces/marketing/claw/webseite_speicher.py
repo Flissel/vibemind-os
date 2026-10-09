@@ -8,6 +8,7 @@ import os
 import re
 import tempfile
 from dataclasses import asdict
+from urllib.parse import urlsplit
 
 from spaces.marketing.claw.webseite import Fund, Seite
 
@@ -19,6 +20,15 @@ _MANDANT = re.compile(r"[a-z][a-z0-9_-]{0,40}")
 def ordner() -> str:
     """Arbeitsordner des Marken-Arbeiters: MARKETING_ARBEITER_ORDNER oder ~/.vibemind/marketing-arbeiter."""
     return os.environ.get("MARKETING_ARBEITER_ORDNER") or ORDNER_VORGABE
+
+
+def _mit_zugang(url) -> bool:
+    """Adressen mit Zugangsdaten (oder unlesbare) werden nie gemerkt."""
+    try:
+        t = urlsplit(url)
+        return not isinstance(url, str) or t.username is not None or t.password is not None or "@" in t.netloc
+    except ValueError:
+        return True
 
 
 def _datei(basis: str, mandant) -> str | None:
@@ -33,7 +43,7 @@ def _texte(liste) -> list[str]:
 
 def laden(basis: str, mandant: str, url: str, jetzt_s: float) -> Fund | None:
     pfad = _datei(basis, mandant)
-    if pfad is None:
+    if pfad is None or _mit_zugang(url):
         return None
     try:
         with open(pfad, encoding="utf-8") as f:
@@ -51,7 +61,7 @@ def laden(basis: str, mandant: str, url: str, jetzt_s: float) -> Fund | None:
 
 def ablegen(basis: str, mandant: str, url: str, fund: Fund | None, jetzt_s: float) -> None:
     pfad = _datei(basis, mandant)
-    if pfad is None or fund is None or not fund.seiten:
+    if pfad is None or fund is None or not fund.seiten or _mit_zugang(url):
         return
     daten = json.dumps({"url": url, "zeit": jetzt_s, "fund": {**asdict(fund), "hinweise": []}}, ensure_ascii=False)
     temp = None

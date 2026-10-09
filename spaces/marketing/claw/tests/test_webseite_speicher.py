@@ -38,3 +38,10 @@ def test_ordner_aus_der_umgebung(monkeypatch, tmp_path):
     assert sp.ordner() == str(tmp_path)
     monkeypatch.delenv("MARKETING_ARBEITER_ORDNER")
     assert sp.ordner().endswith(os.path.join(".vibemind", "marketing-arbeiter"))
+
+
+def test_adresse_mit_zugangsdaten_wird_nie_gemerkt(tmp_path):
+    for u in ("https://user:pass@r.example/", "https://user@r.example/"):
+        sp.ablegen(str(tmp_path), "radhaus", u, FUND, 1000.0)
+        assert sp.laden(str(tmp_path), "radhaus", u, 1000.0) is None
+    assert not (tmp_path / "webseiten").exists()

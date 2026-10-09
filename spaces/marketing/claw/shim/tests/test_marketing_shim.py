@@ -608,7 +608,7 @@ def test_text_stuecke_ohne_mit_denken_ignoriert_thinking():
 
 # --- Websuche (Spec 2026-10-09-marke-exakt §2) -------------------------------
 def _web_body(**extra):
-    return _denk_body(marketing_websuche=True, **extra)
+    return _denk_body(marketing_websuche=True, marketing_ohne_werkzeuge=True, **extra)
 
 
 def _liste(argv, schalter):
@@ -679,3 +679,9 @@ def test_text_stuecke_meldet_websuche_nur_auf_wunsch():
     assert list(shim.text_stuecke(zeilen)) == ["a"]
     mit = list(shim.text_stuecke(zeilen, mit_werkzeug=True))
     assert mit == ["WebSearch", "a"] and isinstance(mit[0], shim.Werkzeug) and not isinstance(mit[1], shim.Werkzeug)
+
+
+def test_websuche_ohne_ohne_werkzeuge_wird_ignoriert(server, protokoll):
+    _sse(server, _denk_body(marketing_websuche=True))
+    argv = json.loads(protokoll.read_text(encoding="utf-8"))["argv"]
+    assert "WebSearch" not in argv and "--allowedTools" not in argv

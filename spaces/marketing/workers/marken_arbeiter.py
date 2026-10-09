@@ -70,7 +70,16 @@ class _Aufgeben(Exception):
 def adresse(nachricht) -> str | None:
     """Erste http(s)-Adresse der Nachricht (ohne Satzzeichen am Ende) oder None."""
     m = _ADRESSE.search(str(nachricht or ""))
-    return m.group(0).rstrip(_SATZZEICHEN) if m else None
+    if not m:
+        return None
+    url = m.group(0).rstrip(_SATZZEICHEN)
+    try:
+        t = urllib.parse.urlsplit(url)
+        if "@" in t.netloc:           # nie Zugangsdaten weitertragen (Cache, Hinweise, Schritte)
+            url = urllib.parse.urlunsplit((t.scheme, t.netloc.rsplit("@", 1)[1], t.path, t.query, t.fragment))
+    except ValueError:
+        return None
+    return url
 
 
 def _hinweise(hinweise: list[str]) -> list[str]:
@@ -312,7 +321,14 @@ def _seiten_lesen(urls: list[str], seite_lesen, hinweise: list[str], spur) -> st
     """Die `lesen`-Adressen des Agenten mit dem gesicherten Leser (Adresssperre inklusive) -> Material."""
     teile: list[str] = []
     for url in urls:
-        host = urllib.parse.urlsplit(url).hostname or url
+        z = urllib.parse.urlsplit(url)
+        host = z.hostname or url
+        url = urllib.parse.urlunsplit((z.scheme, z.netloc, z.path, "", ""))   # ohne Query/Fragment
+        if z.username is not None or z.password is not None or len(z.path) > marken_prompt.MAX_LESEN_PFAD:
+            spur.schritt(f"Nicht lesbar: {host}")
+            hinweise.append(f"Adresse {host} nicht gelesen: Pfad länger als {marken_prompt.MAX_LESEN_PFAD} Zeichen "
+                            "oder mit Zugangsdaten")
+            continue
         fund = seite_lesen(url)
         if fund is not None and fund.seiten:
             spur.schritt(f"Gelesen: {host}")
@@ -347,7 +363,10 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
         bildteile, unterlagen_text, _, hinweise = cw.anhaenge_vorbereiten(api, aid, auftrag, bilder)
         profil = markenprofil.lesen(wurzel, mandant, name)
         hinweise += profil.hinweise
-        gemerkt = offen.get("webseite") or profil.werte.get("webseite")
+        gemerkt = offen.get("webseite")
+        if not markenprofil.webseite_gueltig(gemerkt):
+            gemerkt = None
+        gemerkt = gemerkt or profil.werte.get("webseite")
         fund = _webseite_holen(adresse(auftrag.get("nachricht")), gemerkt, mandant, webseite_lesen, arbeit_ordner,
                                jetzt().timestamp(), spur)
         if fund is not None:
@@ -384,7 +403,10 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
             continue
         if erg["lesen"]:                     # hoechstens eine Folgerunde je Auftrag
             lesen_frei = False
-            material = _seiten_lesen(erg["lesen"], seite_lesen, hinweise, spur)
+            with cw.halten(api, aid, halten_takt_s) as halter:     # bis 3 Abrufe: Vergabe verlaengern
+                material = _seiten_lesen(erg["lesen"], seite_lesen, hinweise, spur)
+            if halter.verloren.is_set():
+                return "fehler"
             nachrichten += [{"role": "assistant", "content": text},
                             {"role": "user", "content": marken_prompt.folge_text(material)}]
             continue
@@ -397,7 +419,7 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
         spur.ende()
         api.fertig(aid, {"antwort": erg["antwort"], "hinweise": _hinweise(hinweise)})
         return "fertig"
-    if vorschlag.get("webseite") is None and isinstance(offen.get("webseite"), str):
+    if vorschlag.get("webseite") is None and markenprofil.webseite_gueltig(offen.get("webseite")):
         vorschlag["webseite"] = offen["webseite"]       # null = bleibt: die Webseite des offenen Vorschlags
     lb = vorschlag.pop("logo_bearbeiten", None)
     bearbeitet = (_logo_bearbeiten(api, aid, lb, vorschlag["text"], bilder, logos, laden, bisher, profil, comfy,
