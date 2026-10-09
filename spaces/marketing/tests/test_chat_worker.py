@@ -1391,9 +1391,13 @@ def _denk_texte(api):
 def test_editor_spur_schritte_und_ende():
     uhr, api = Uhr(), Api()
     strom = DenkStrom(EDIT_GUT)
+    api.denk = []
+    echt = api.fertig
+    api.fertig = lambda aid, daten: (api.denk.append(("fertig",)), echt(aid, daten))[1]
     assert cw.chat_bearbeiten(api, AUFTRAG, strom, uhr, uhr.schlafen, halten_takt_s=60) == "fertig"
     assert callable(strom.denken_gesehen[0])
-    letzte = api.denk[-1]
+    assert [d[0] for d in api.denk][-2:] == ["denken", "fertig"]      # Spur vor fertig
+    letzte = api.denk[-2]
     assert "Let me think" in letzte[1]
     assert [s["text"] for s in letzte[2]] == ["Frage an Claude", "Titel kuerzen", "Fassung gespeichert"]
     assert all(set(s) == {"zeit", "text"} for s in letzte[2])
@@ -1477,3 +1481,15 @@ def test_spur_senden_uebersetzt_fehler():
     assert cw.spur_senden(A(cw.ApiFehler(404, "x")), "a")("x", []) is False
     assert cw.spur_senden(A(cw.ApiFehler(500, "x")), "a")("x", []) is True
     assert cw.spur_senden(A(OSError("weg")), "a")("x", []) is True
+
+
+def test_allgemeiner_fehler_sendet_spur_vor_zurueck():
+    uhr, api = Uhr(), Api()
+    api.denk = []
+    echt = api.zurueck
+    api.zurueck = lambda aid, text: (api.denk.append(("zurueck",)), echt(aid, text))[1]
+    api.pruefen = lambda aid, bloecke: (_ for _ in ()).throw(OSError("db weg"))
+    assert cw.chat_bearbeiten(api, AUFTRAG, DenkStrom(EDIT_GUT), uhr, uhr.schlafen, halten_takt_s=60) == "fehler"
+    namen = [d[0] for d in api.denk]
+    assert namen[-1] == "zurueck" and namen[-2] == "denken"
+    assert "Let me think" in api.denk[-2][1]

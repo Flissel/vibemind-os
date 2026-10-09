@@ -597,6 +597,10 @@ def chat_bearbeiten(api, auftrag, fragen_strom=frage_strom, uhr=time.monotonic, 
         return "fehler"
     except (ApiFehler, OSError, ValueError) as e:
         if not versucht:
+            try:
+                spur.ende()          # das Gesammelte vor der Abschlussmeldung ein letztes Mal senden
+            except Exception:  # noqa: BLE001 - Sichtbarkeit darf nie den Fehlerweg stoeren
+                pass
             _freigeben(api, aid, NICHT_ERREICHBAR, e)
         return "fehler"
 
