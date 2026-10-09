@@ -839,3 +839,47 @@ def test_inhalt_liefert_marke_geaendert_am(db, c):
     r = c.get(f"/api/pult/inhalte/{IID}", headers=H)
     assert r.status_code == 200 and r.json()["inhalt"]["marke_geaendert_am"] == "2026-10-07 10:00:00+00"
     assert "i.marke_geaendert_am::text AS marke_geaendert_am" in db.sql[0]
+
+
+def _png_bytes(b, h):
+    import io
+    from PIL import Image
+    puffer = io.BytesIO()
+    Image.new("RGBA", (b, h), (10, 20, 30, 255)).save(puffer, "PNG")
+    return puffer.getvalue()
+
+
+def _kasten_vorlage(grund="#ffffff"):
+    return {"root": {"type": "EmailLayout", "data": {"canvasColor": grund, "childrenIds": ["marke_logo", "marke_wort"],
+                        "rollen": {"marke_logo/data/props/url": "logo", "marke_wort/data/props/text": "laden"}}},
+            "marke_logo": {"type": "Image", "data": {"props": {"url": "medien:platzhalter-3x1.png",
+                                                               "width": 150, "height": 50}}},
+            "marke_wort": {"type": "Heading", "data": {"props": {"text": "[Laden]"}}}}
+
+
+def test_fuellen_passt_logo_verweis_in_den_kasten(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    (tmp_path / "marke-radhaus-logo-0123456789.png").write_bytes(_png_bytes(218, 184))
+    fertig, _ = pult._vorlage_fuellen(_kasten_vorlage(), "radhaus", {"laden": "L", "layout": None, "gestalt": None},
+                                      logo="medien:marke-radhaus-logo-0123456789.png")
+    p = fertig["marke_logo"]["data"]["props"]
+    assert (p["width"], p["height"]) == (59, 50)
+
+
+def test_fuellen_dunkle_flaeche_passt_logo_dunkel_ein(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    (tmp_path / "hell.png").write_bytes(_png_bytes(218, 184))
+    (tmp_path / "dunkel.png").write_bytes(_png_bytes(600, 100))
+    fertig, _ = pult._vorlage_fuellen(_kasten_vorlage("#080b13"), "radhaus",
+                                      {"laden": "L", "layout": None, "gestalt": None},
+                                      logo="medien:hell.png", logo_dunkel="medien:dunkel.png")
+    p = fertig["marke_logo"]["data"]["props"]
+    assert p["url"] == "medien:dunkel.png" and (p["width"], p["height"]) == (150, 25)
+
+
+def test_fuellen_logo_datei_fehlt_laesst_kasten(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    fertig, _ = pult._vorlage_fuellen(_kasten_vorlage(), "radhaus", {"laden": "L", "layout": None, "gestalt": None},
+                                      logo="medien:weg.png")
+    p = fertig["marke_logo"]["data"]["props"]
+    assert (p["width"], p["height"]) == (150, 50)

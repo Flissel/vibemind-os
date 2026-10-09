@@ -168,3 +168,49 @@ def test_logo_ablegen_fuer_logo_dunkel(tmp_path):
     g = {"logo_dunkel": "data:image/png;base64," + base64.b64encode(roh).decode()}
     assert vm.logo_ablegen(g, "radhaus", str(tmp_path), "logo_dunkel").startswith("medien:logo-radhaus-")
     assert vm.logo_ablegen(g, "radhaus", str(tmp_path)) is None
+
+
+# --- Logo in den Kasten der Vorlage einpassen (contain, Seitenverhaeltnis bleibt) ---
+
+def _png(b, h):
+    import io
+    from PIL import Image
+    puffer = io.BytesIO()
+    Image.new("RGBA", (b, h), (10, 20, 30, 255)).save(puffer, "PNG")
+    return puffer.getvalue()
+
+
+def _dok_kasten(b=150, h=50):
+    return {"root": {"type": "EmailLayout", "data": {"childrenIds": ["marke_logo"],
+                     "rollen": {"marke_logo/data/props/url": "logo"}}},
+            "marke_logo": {"type": "Image", "data": {"props": {"url": "x", "width": b, "height": h}}}}
+
+
+def test_logo_masse_aus_bytes_und_pfad(tmp_path):
+    roh = _png(218, 184)
+    assert vm.logo_masse(roh) == (218, 184)
+    datei = tmp_path / "l.png"
+    datei.write_bytes(roh)
+    assert vm.logo_masse(str(datei)) == (218, 184)
+
+
+@pytest.mark.parametrize("quelle", [None, b"kein bild", "/gibt/es/nicht.png", ""])
+def test_logo_masse_unlesbar_gibt_none(quelle):
+    assert vm.logo_masse(quelle) is None
+
+
+@pytest.mark.parametrize("masse,erwartet", [((218, 184), (59, 50)), ((600, 100), (150, 25)),
+                                            ((100, 100), (50, 50)), ((1, 1000), (1, 50))])
+def test_logo_einpassen_contain(masse, erwartet):
+    d = vm.logo_einpassen(_dok_kasten(), masse)
+    p = d["marke_logo"]["data"]["props"]
+    assert (p["width"], p["height"]) == erwartet
+
+
+def test_logo_einpassen_ohne_masse_oder_kasten_unveraendert():
+    dok = _dok_kasten()
+    assert vm.logo_einpassen(dok, None) == dok
+    ohne = _dok_kasten()
+    del ohne["marke_logo"]["data"]["props"]["height"]
+    assert vm.logo_einpassen(ohne, (218, 184)) == ohne
+    assert dok["marke_logo"]["data"]["props"]["width"] == 150     # Eingabe nie veraendert

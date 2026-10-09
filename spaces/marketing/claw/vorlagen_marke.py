@@ -188,3 +188,46 @@ def einsetzen(dok: dict, werte: dict[str, str]) -> dict:
             _setzen(d, pfad, wert)
     _entfernen(d, "marke_wort" if werte.get("logo") else "marke_logo")
     return d
+
+
+def logo_masse(quelle) -> tuple[int, int] | None:
+    """Pixelmasse eines Logos (Bytes oder Dateipfad); None, wenn nicht lesbar."""
+    try:
+        from io import BytesIO
+        from PIL import Image
+        if isinstance(quelle, (bytes, bytearray)):
+            bild = Image.open(BytesIO(bytes(quelle)))
+        elif isinstance(quelle, str) and quelle:
+            bild = Image.open(quelle)
+        else:
+            return None
+        with bild:
+            b, h = bild.size
+        return (b, h) if b > 0 and h > 0 else None
+    except Exception:
+        return None
+
+
+def logo_einpassen(dok: dict, masse: tuple[int, int] | None) -> dict:
+    """Logo-Bloecke (Rolle "logo") in ihren Kasten (width/height der Vorlage) einpassen, ohne das
+    Seitenverhaeltnis zu aendern ("contain"). Ohne Masse oder Kasten bleibt der Block unveraendert."""
+    d = copy.deepcopy(dok)
+    if not masse:
+        return d
+    bw, bh = masse
+    rollen_tab = ((d.get("root") or {}).get("data") or {}).get("rollen") or {}
+    for pfad, rolle in rollen_tab.items():
+        if rolle != "logo":
+            continue
+        block = d.get(pfad.split("/")[0])
+        data = block.get("data") if isinstance(block, dict) else None
+        props = data.get("props") if isinstance(data, dict) else None
+        if not isinstance(props, dict):
+            continue
+        kw, kh = props.get("width"), props.get("height")
+        if not all(isinstance(x, (int, float)) and not isinstance(x, bool) and x > 0 for x in (kw, kh)):
+            continue
+        faktor = min(kw / bw, kh / bh)
+        props["width"] = max(1, round(bw * faktor))
+        props["height"] = max(1, round(bh * faktor))
+    return d

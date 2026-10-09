@@ -271,6 +271,26 @@ def _erzeugt_ordner() -> str:
     return ""
 
 
+def _medien_datei(verweis: str, ordner: str) -> str | None:
+    """Pfad der Datei zu "medien:<name>" in der Ablage bzw. den Medienordnern; None, wenn es sie nicht gibt.
+    Bewusst ohne api.bilder/api.gestaltung (Zirkelimport)."""
+    name = verweis[len("medien:"):] if verweis.startswith("medien:") else ""
+    if not name:
+        return None
+    for o in (ordner, os.environ.get("MARKETING_MEDIEN_ORDNER", ""), os.environ.get("MARKETING_BILD_ORDNER", "")):
+        if not o or not o.strip():
+            continue
+        basis = os.path.realpath(o.strip())
+        pfad = os.path.realpath(os.path.join(basis, name))
+        try:
+            drin = os.path.commonpath([basis, pfad]) == basis and pfad != basis
+        except ValueError:
+            continue
+        if drin and os.path.isfile(pfad):
+            return pfad
+    return None
+
+
 def _laden_lesen(m: str) -> dict:
     """Name und Standard-Newsletter-Layout (Gestalt) des Ladens; {} wenn es keins gibt."""
     return _lesen_einer(lambda:
@@ -304,7 +324,10 @@ def _vorlage_fuellen(dok: dict, m: str, laden: dict, logo: str | None = None,
         werte["glow_bild"] = vorlagen_grafik.glow(werte["akzent"], ordner) or "medien:platzhalter-4x3.png"
     fertig = vorlagen_marke.einsetzen(dok, werte)
     if logo and logo_dunkel and vorlagen_marke.ist_dunkel(vorlagen_marke.logo_grund(fertig)):
+        logo = logo_dunkel
         fertig = vorlagen_marke.einsetzen(dok, {**werte, "logo": logo_dunkel})   # dunkle Flaeche: logo_dunkel
+    if logo:   # Logo in den Kasten der Vorlage einpassen (Seitenverhaeltnis bleibt)
+        fertig = vorlagen_marke.logo_einpassen(fertig, vorlagen_marke.logo_masse(_medien_datei(logo, ordner)))
     paar = _schriftpaar(laden.get("gestalt"))
     if paar:
         fertig.setdefault("root", {}).setdefault("data", {})["schriften"] = paar
