@@ -266,12 +266,10 @@ def _freistellen(api, aid, auftrag, ziele, comfy):
     quelle = quelle_normalisieren(roh) if roh and len(roh) <= QUELLE_MAX else None
     if quelle is None:
         return {}, [f"{platz.id}: Quellbild fehlt oder unlesbar"], {}
-    try:
+    try:   # kein Ollama-Schritt: ComfyUI-Modelle bleiben geladen (Betreiber 09.10.)
         frei = comfy.freistellen(quelle)
     except bild_comfy.ComfyFehler as e:
         return {}, [f"Freistellen nicht verfügbar: {e}"], {}
-    finally:
-        comfy.freigeben()
     anteil = vordergrund_anteil(frei)
     if not FREI_MIN <= anteil <= FREI_MAX:
         return {}, ["Kein klares Motiv gefunden"], {}
@@ -302,10 +300,9 @@ def _bildstil(auftrag: dict) -> str:
 
 def _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen):
     """Phase 1 (Ollama, keep_alive 0): je Platz Quelle holen, sehen, Prompt.
-    Phase 2: alle Bilder am Stueck mit FLUX, /free am Ende - ComfyUI laedt die
-    Modelle (~11 GB, gemessen 01.10. ~92 s auch von der SSD, Rechnen ~6-10 s) so
-    EINMAL je Auftrag; je Bild freigeben nur, wenn danach das Sehmodell der
-    Selbstpruefung den Grafikspeicher braucht. CLIP-Messung je Bild auf der CPU.
+    Phase 2: alle Bilder am Stueck mit FLUX. ComfyUI-Modelle bleiben danach geladen
+    (Betreiber-Entscheid 09.10.: kalt von der HDD ~400 s); /free kommt nur VOR
+    einem Ollama-Schritt - einmal vor Phase 1 und, bei Selbstpruefung, je Bild vor dem Sehmodell. CLIP-Messung je Bild auf der CPU.
     Ueberarbeiten = "neu mit Motiv" (Betreiber-Entscheid 30.09.): immer
     Text-zu-Bild in Platzmassen, die Quelle dient nur Sehen und Messen.
     Rueckgabe (ergebnis, befunde, messwerte) oder "verworfen"."""
@@ -313,6 +310,7 @@ def _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen):
     modus = auftrag.get("modus") or "ueberarbeiten"
     titel, hinweis = str(auftrag.get("titel") or ""), str(auftrag.get("hinweis") or "")
     befunde, arbeit = [], []
+    comfy.freigeben()   # Phase 1 ruft Ollama: Grafikspeicher von FLUX leeren (vorheriger Auftrag)
     palette = bild_farben.palette(auftrag.get("bloecke"))
     bildstil = _bildstil(auftrag)
     for platz in ziele:
@@ -349,10 +347,7 @@ def _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen):
             text = prompt.prompt_schreiben(daten, titel, hinweis)
         arbeit.append((platz, text, quelle))
     je_bild_freigeben = os.environ.get("BILD_SELBSTPRUEFUNG", "") == "1"
-    try:
-        erg = _bilder(api, aid, arbeit, staerke, hinweis, comfy, prompt, messen, je_bild_freigeben, befunde)
-    finally:
-        comfy.freigeben()
+    erg = _bilder(api, aid, arbeit, staerke, hinweis, comfy, prompt, messen, je_bild_freigeben, befunde)
     if erg == "verworfen":
         return erg
     ergebnis, messwerte = erg

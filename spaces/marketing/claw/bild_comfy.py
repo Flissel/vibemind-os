@@ -17,10 +17,15 @@ URL = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188").rstrip("/")
 ABLAUF = Path(os.environ.get("COMFYUI_ABLAUF") or
               Path(__file__).resolve().parents[1] / "bilder" / "flux_schnell_api.json")
 TAKT_S = 2
+POLL_PAUSE_MAX_S = 10   # Pause nach fehlgeschlagenem Poll waechst bis hierhin
 
 
 class ComfyFehler(Exception):
     pass
+
+
+def _UHR() -> float:
+    return time.monotonic()
 
 
 def _SCHLAF(s: float) -> None:
@@ -58,29 +63,46 @@ def erzeugen(prompt: str, breite: int, hoehe: int, seed: int, zeitlimit_s: int =
     return _ausfuehren(ablauf, zeitlimit_s)
 
 
+def _abfragen(pid: str) -> bytes | None:
+    """Ein Poll: fertiges PNG, None solange ComfyUI noch rechnet; ComfyFehler bei
+    gemeldetem Fehler. Netzfehler (OSError) reicht er an _ausfuehren weiter."""
+    _, rumpf = _http("GET", f"/history/{pid}")
+    eintrag = json.loads(rumpf or b"{}").get(pid)
+    if not eintrag:
+        return None
+    if (eintrag.get("status") or {}).get("status_str") == "error":
+        raise ComfyFehler("Erzeugung in ComfyUI fehlgeschlagen")
+    for ausgabe in (eintrag.get("outputs") or {}).values():
+        for bild in ausgabe.get("images") or []:
+            q = urllib.parse.urlencode({"filename": bild["filename"],
+                                        "subfolder": bild.get("subfolder", ""),
+                                        "type": bild.get("type", "output")})
+            _, png = _http("GET", f"/view?{q}", zeitlimit=60)
+            return png
+    return None
+
+
 def _ausfuehren(ablauf: dict, zeitlimit_s: int) -> bytes:
     _, rumpf = _http("POST", "/prompt", {"prompt": ablauf})
     pid = json.loads(rumpf or b"{}").get("prompt_id")
     if not pid:
         raise ComfyFehler("ComfyUI hat keinen Auftrag angenommen")
-    ende = time.monotonic() + zeitlimit_s
-    runden = max(1, zeitlimit_s // TAKT_S)
-    for _ in range(runden):
-        _, rumpf = _http("GET", f"/history/{pid}")
-        eintrag = json.loads(rumpf or b"{}").get(pid)
-        if eintrag:
-            if (eintrag.get("status") or {}).get("status_str") == "error":
-                raise ComfyFehler("Erzeugung in ComfyUI fehlgeschlagen")
-            for ausgabe in (eintrag.get("outputs") or {}).values():
-                for bild in ausgabe.get("images") or []:
-                    q = urllib.parse.urlencode({"filename": bild["filename"],
-                                                "subfolder": bild.get("subfolder", ""),
-                                                "type": bild.get("type", "output")})
-                    _, png = _http("GET", f"/view?{q}", zeitlimit=60)
-                    return png
-        if time.monotonic() > ende:
+    ende = _UHR() + zeitlimit_s
+    fehlschlaege = 0
+    while True:
+        try:
+            png = _abfragen(pid)
+            fehlschlaege = 0
+        except ComfyFehler:
+            raise
+        except OSError:   # TimeoutError, URLError, ConnectionError: ComfyUI rechnet vielleicht noch
+            png = None    # (kalter Modellstart von der HDD dauerte 400 s) - weiter pollen
+            fehlschlaege += 1
+        if png is not None:
+            return png
+        if _UHR() >= ende:
             break
-        _SCHLAF(TAKT_S)
+        _SCHLAF(min(POLL_PAUSE_MAX_S, TAKT_S * fehlschlaege) if fehlschlaege else TAKT_S)
     raise ComfyFehler(f"Zeitlimit {zeitlimit_s} s ueberschritten")
 
 ABLAUF_UEBERARBEITEN = Path(os.environ.get("COMFYUI_ABLAUF_UEBERARBEITEN") or

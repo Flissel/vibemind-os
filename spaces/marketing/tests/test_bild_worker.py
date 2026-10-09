@@ -441,7 +441,8 @@ def test_tls_kontext_nimmt_certifi_wenn_vorhanden(monkeypatch):
 
 def test_modelle_einmal_je_auftrag_laden(monkeypatch):
     """Gemessen 30.09.: ~118 s von 124 s je Bild waren Modell-Laden von der HDD.
-    Ohne Selbstpruefung: erst alle Prompts, dann alle Bilder, EIN /free am Ende."""
+    Ohne Selbstpruefung: EIN /free vor dem ersten Ollama-Schritt, dann alle Prompts, alle Bilder;
+    nach dem FLUX-Stapel kein /free mehr (Betreiber 09.10.: Modelle geladen lassen)."""
     monkeypatch.delenv("BILD_SELBSTPRUEFUNG", raising=False)
     folge = []
 
@@ -460,14 +461,14 @@ def test_modelle_einmal_je_auftrag_laden(monkeypatch):
 
     a = dict(AUFTRAG, nur_leere=False)                       # beide Plaetze kopf + neben
     assert bw.ein_durchlauf(Api(a), C(), P(), starten=lambda: None) == "fertig"
-    assert folge == ["prompt", "prompt", "bild", "bild", "frei"]
+    assert folge == ["frei", "prompt", "prompt", "bild", "bild"]
 
 
 def test_mit_selbstpruefung_je_bild_freigeben(monkeypatch):
     monkeypatch.setenv("BILD_SELBSTPRUEFUNG", "1")
     comfy = Comfy()
     bw.ein_durchlauf(Api(dict(AUFTRAG, nur_leere=False)), comfy, Prompt(), starten=lambda: None)
-    assert comfy.frei == 3                                     # je Bild + einmal am Ende
+    assert comfy.frei == 3                                     # einmal vor dem Sehmodell + je Bild vor der Selbstpruefung
 
 
 class Sehen:
@@ -578,7 +579,7 @@ def test_erst_sehen_dann_flux_einmal_freigeben(monkeypatch):
     api = Api(dict(UEBER, platz=None))                     # kopf (leer, neu) + neben (ueberarbeiten)
     api.quellen["neben"] = ALT
     bw.ein_durchlauf(api, C(), Prompt(), starten=lambda: None, sehen=S(), messen=Messen([]))
-    assert folge == ["sehen", "flux", "flux", "frei"]
+    assert folge == ["frei", "sehen", "flux", "flux"]
 
 
 @pytest.mark.parametrize("staerke, nah", [(0, True), (40, True), (60, True), (61, False), (99, False)])
@@ -884,7 +885,7 @@ def test_freistellen_qualitaetsregel(anteil, erwartet):
     api.quellen["neben"] = ALT
     comfy.frei_png = _rgba(anteil)
     assert _frei_lauf(api, comfy) == erwartet
-    assert comfy.frei == 1
+    assert comfy.frei == 0
     if erwartet == "fertig":
         assert api.hochgeladen == [(FREI["id"], "neben", "png")]
         assert api.log[-1][:2] == ("fertig", {"neben": "nl-0123abcd-neben-frei.png"})
@@ -900,7 +901,7 @@ def test_freistellen_ohne_modell_gibt_zurueck():
     comfy = Comfy(fehler=bild_comfy.ComfyFehler("Erzeugung in ComfyUI fehlgeschlagen"))
     assert _frei_lauf(api, comfy) == "zurueck"
     assert api.log[-1][0] == "zurueck" and "Freistellen nicht verfügbar" in api.log[-1][1]
-    assert api.log[-1][2] is True and comfy.frei == 1
+    assert api.log[-1][2] is True and comfy.frei == 0
 
 
 def test_freistellen_quelle_fehlt_oder_unlesbar():
@@ -993,3 +994,49 @@ def test_ohne_mandant_kein_bildstil(tmp_path, monkeypatch):
     prompt = _MitPlatz()
     assert bw.ein_durchlauf(Api(dict(AUFTRAG)), Comfy(), prompt, starten=lambda: None) == "fertig"
     assert prompt.plaetze[0]["bildstil"] == ""
+
+
+def test_ohne_selbstpruefung_kein_free_nach_dem_flux_stapel(monkeypatch):
+    monkeypatch.delenv("BILD_SELBSTPRUEFUNG", raising=False)
+    folge = []
+
+    class C(Comfy):
+        def erzeugen(self, *a, **k):
+            folge.append("flux")
+            return super().erzeugen(*a, **k)
+
+        def freigeben(self):
+            folge.append("frei")
+
+    class P(Prompt):
+        def prompt_schreiben(self, platz, titel, hinweis):
+            folge.append("ollama")
+            return super().prompt_schreiben(platz, titel, hinweis)
+
+    assert bw.ein_durchlauf(Api(dict(AUFTRAG)), C(), P(), starten=lambda: None) == "fertig"
+    assert folge == ["frei", "ollama", "flux"] and folge.index("frei") < folge.index("ollama")
+
+
+def test_selbstpruefung_gibt_vor_dem_sehmodell_frei_nicht_danach(monkeypatch):
+    monkeypatch.setenv("BILD_SELBSTPRUEFUNG", "1")
+    folge = []
+
+    class C(Comfy):
+        def erzeugen(self, *a, **k):
+            folge.append("flux")
+            return super().erzeugen(*a, **k)
+
+        def freigeben(self):
+            folge.append("frei")
+
+    class P(Prompt):
+        def prompt_schreiben(self, platz, titel, hinweis):
+            folge.append("ollama")
+            return super().prompt_schreiben(platz, titel, hinweis)
+
+        def pruefen(self, png_, prompt):
+            folge.append("ollama-pruefen")
+            return True, ""
+
+    bw.ein_durchlauf(Api(dict(AUFTRAG)), C(), P(), starten=lambda: None)
+    assert folge == ["frei", "ollama", "flux", "frei", "ollama-pruefen"]

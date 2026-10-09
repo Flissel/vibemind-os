@@ -56,7 +56,9 @@ def test_fehler_in_der_ausfuehrung_wird_comfyfehler(monkeypatch):
 def test_zeitlimit(monkeypatch):
     http = FalschesHttp([(200, b'{"prompt_id": "p1"}')] + [(200, b"{}")] * 50)
     monkeypatch.setattr(bild_comfy, "_http", http)
-    monkeypatch.setattr(bild_comfy, "_SCHLAF", lambda s: None)
+    uhr = [0.0]
+    monkeypatch.setattr(bild_comfy, "_UHR", lambda: uhr[0])
+    monkeypatch.setattr(bild_comfy, "_SCHLAF", lambda s: uhr.__setitem__(0, uhr[0] + s))
     with pytest.raises(bild_comfy.ComfyFehler, match="Zeitlimit"):
         bild_comfy.erzeugen("x", 512, 512, 1, zeitlimit_s=4)
 
@@ -101,3 +103,68 @@ def test_ueberarbeiten_denoise_grenzen(monkeypatch):
         bild_comfy.ueberarbeiten("x", b"j", 500, 512, 1, 50)
     with pytest.raises(bild_comfy.ComfyFehler):
         bild_comfy.ueberarbeiten("x", b"", 512, 512, 1, 50)
+
+
+class Uhr:
+    """Falsche Uhr: Schlafen schiebt sie vor, nichts wartet wirklich."""
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+    def schlafen(self, s):
+        self.t += s
+
+
+FERTIG = json.dumps({"p1": {"outputs": {"9": {"images": [
+    {"filename": "a.png", "subfolder": "", "type": "output"}]}}}}).encode()
+
+
+def _uhr_einhaengen(monkeypatch):
+    uhr = Uhr()
+    monkeypatch.setattr(bild_comfy, "_UHR", uhr)
+    monkeypatch.setattr(bild_comfy, "_SCHLAF", uhr.schlafen)
+    return uhr
+
+
+def test_einzelner_poll_timeout_bricht_den_auftrag_nicht_ab(monkeypatch):
+    """09.10.: ComfyUI lud kalt 400 s, ein History-Poll lief in TimeoutError, der Auftrag
+    starb, obwohl der Prompt fertig wurde. Poll-Fehler -> weiter pollen bis zum Zeitlimit."""
+    _uhr_einhaengen(monkeypatch)
+    antworten = [(200, b'{"prompt_id": "p1"}')] + [TimeoutError("timed out")] * 7 + [
+        ConnectionResetError("reset"), (200, b"{}"), (200, FERTIG), (200, PNG)]
+    anfragen = []
+
+    def http(methode, pfad, daten=None, zeitlimit=30):
+        anfragen.append(pfad)
+        a = antworten.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return a
+    monkeypatch.setattr(bild_comfy, "_http", http)
+    assert bild_comfy.erzeugen("x", 512, 512, 1, zeitlimit_s=540) == PNG
+    assert anfragen[0] == "/prompt" and len(anfragen) == 12
+
+
+def test_poll_timeouts_ohne_ende_scheitern_am_gesamtzeitlimit(monkeypatch):
+    uhr = _uhr_einhaengen(monkeypatch)
+
+    def http(methode, pfad, daten=None, zeitlimit=30):
+        if pfad == "/prompt":
+            return 200, b'{"prompt_id": "p1"}'
+        raise TimeoutError("timed out")
+    monkeypatch.setattr(bild_comfy, "_http", http)
+    with pytest.raises(bild_comfy.ComfyFehler, match="Zeitlimit 540 s"):
+        bild_comfy.erzeugen("x", 512, 512, 1, zeitlimit_s=540)
+    assert 540 <= uhr.t < 540 + 3 * bild_comfy.POLL_PAUSE_MAX_S
+
+
+def test_submit_timeout_bleibt_ein_fehler(monkeypatch):
+    _uhr_einhaengen(monkeypatch)
+
+    def http(methode, pfad, daten=None, zeitlimit=30):
+        raise TimeoutError("timed out")
+    monkeypatch.setattr(bild_comfy, "_http", http)
+    with pytest.raises(TimeoutError):
+        bild_comfy.erzeugen("x", 512, 512, 1)
