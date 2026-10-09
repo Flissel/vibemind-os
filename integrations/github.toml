@@ -4,7 +4,7 @@ description = "GitHub ueber den offiziellen Remote-MCP-Server (GitHub Copilot MC
 category = "devtools"
 icon = "🐙"
 tags = ["git", "code", "issues", "pull-requests"]
-read_only_tools = ["get_me", "search_repositories", "get_file_contents", "list_issues", "get_issue", "list_pull_requests", "get_pull_request"]
+read_only_tools = ["get_me", "search_repositories", "get_file_contents", "list_issues", "issue_read", "list_pull_requests", "pull_request_read"]
 
 [transport]
 type = "http"
