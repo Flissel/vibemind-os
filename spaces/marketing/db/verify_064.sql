@@ -316,7 +316,8 @@ DO $$ DECLARE n int; r record; v_fehler text; g jsonb; v_dunkel jsonb; BEGIN
   ASSERT r.name = 'marke-probe-marke' AND r.art = 'layout' AND r.standard AND r.inhaltsart = 'newsletter'
      AND r.status = 'freigegeben' AND r.entschieden_von = 'marke' AND r.fassung = 1,
          format('13b: Layout: %s', row_to_json(r));
-  ASSERT r.gestalt = (v_dunkel - ARRAY['logo','schriften','kopf_text','fuss_text'])
+  -- 066: der Erbe nimmt dunkel ohne logo, logo_dunkel, schriften, kopf_text, fuss_text (Abzugsliste wie pult_marke_spiegeln)
+  ASSERT r.gestalt = (v_dunkel - ARRAY['logo','logo_dunkel','schriften','kopf_text','fuss_text'])
                      || '{"akzent":"#336699","flaeche":"#eef2f7","logo":"data:image/png;base64,iVBORw0KGgo=",
            "schriften":{"anzeige":"playfair","text":"manrope"}}'::jsonb, format('13c: Gestalt: %s', r.gestalt);
   -- ohne Logo und Schriften im Profil: nichts von VibeMind
