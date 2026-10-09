@@ -5,6 +5,7 @@ Laeuft im Prozess des Chat-Arbeiters (Ruling R1) und holt Auftraege von /api/mar
 - uebernehmen: Logo holen -> companys/<Firma>/Marke.md (+ Logo) schreiben -> Spiegel -> fertig
   (die DB markiert dabei die offenen Entwuerfe). Scheitert etwas vor dem Schreiben, wird nichts
   geschrieben und der Auftrag mit Grund zurueckgegeben.
+- wissen: Rowboat-Lauf nach der Übernahme (workers/wissen_arbeiter)
 - Abgleich (Start + alle 10 min): Kopfteil jeder Marke.md gegen den Spiegel; gueltige Werte, die
   abweichen, werden gespiegelt, ungueltige nie (Rowboat bleibt Wahrheit). Die Lese-Hinweise
   ("Marke.md: akzent ungültig") gehen an die VM, damit die Profilseite sie zeigt.
@@ -666,6 +667,9 @@ def ein_durchlauf(api, fragen_strom=cw.frage_strom, webseite_lesen=webseite.lese
                                    arbeit_ordner=arbeit_ordner)
         if auftrag.get("art") == "uebernehmen":
             return uebernehmen(api, auftrag, wurzel, jetzt, halten_takt_s)
+        if auftrag.get("art") == "wissen":
+            from spaces.marketing.workers import wissen_arbeiter   # importiert dieses Modul selbst
+            return wissen_arbeiter.wissen_bearbeiten(api, auftrag, fragen_strom, jetzt, uhr, schlafen, halten_takt_s)
         raise _Aufgeben(UNBEKANNT)
     except _Aufgeben as e:
         try:

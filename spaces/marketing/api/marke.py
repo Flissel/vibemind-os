@@ -122,6 +122,12 @@ def marke_stand(mandant: str | None = None, x_pult_key: str | None = Header(None
         f"FROM marketing.marken_auftraege WHERE mandant = {lit(m)} AND status = 'in_arbeit' "
         "AND art IN ('chat', 'bearbeitung', 'uebernehmen') "
         "ORDER BY geaendert_am DESC LIMIT 1")
+    wissen = _lesen_einer(lambda:
+        "SELECT status, antwort, hinweise, coalesce(denken, '') AS denken, "
+        "coalesce(schritte, '[]'::jsonb) AS schritte, geaendert_am::text AS geaendert_am "
+        f"FROM marketing.marken_auftraege WHERE mandant = {lit(m)} AND art = 'wissen' "
+        "AND NOT (status = 'fertig' AND antwort = 'Ersetzt durch einen neueren Wissens-Lauf.') "
+        "ORDER BY erstellt_am DESC LIMIT 1")
     hinweise = kopf.get("hinweise") if isinstance(kopf.get("hinweise"), list) else []
     return {"mandant": m, "name": kopf.get("name"),
             "spiegel": {"gestalt": {k: gestalt[k] for k in SPIEGEL_SCHLUESSEL if k in gestalt},
@@ -133,7 +139,7 @@ def marke_stand(mandant: str | None = None, x_pult_key: str | None = Header(None
                           if v else None),
             "uebernahme": "laeuft" if "uebernehmen" in arten else None,
             "uebernahme_seit": seit if "uebernehmen" in arten else None, "aktuell": aktuell,
-            "letzte_uebernahme": letzte or None, "laufend": laufend or None}
+            "letzte_uebernahme": letzte or None, "laufend": laufend or None, "wissen": wissen or None}
 
 
 @pult_router.post("/marke/chat")

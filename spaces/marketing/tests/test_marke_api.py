@@ -153,6 +153,19 @@ def test_stand_liefert_alles(umg):
     assert "LIMIT 10" in f.sql[2] and "art IN ('chat', 'bearbeitung')" in f.sql[2]
 
 
+def test_stand_liefert_den_letzten_wissens_lauf(umg):
+    f, _, c = umg
+    kopf = [{"name": "Radhaus", "stand": "s", "gespiegelt_am": None, "fehler": None, "gestalt": {}}]
+    lauf = {"status": "fertig", "antwort": "Wissen aktualisiert: 1 Datei\n- Projekte/Plan.md", "hinweise": [],
+            "denken": "", "schritte": [], "geaendert_am": "2026-10-09 14:31:00+00"}
+    f.antworten += [[{"ok": True}], kopf, [], [], [], [], [], [], [lauf]]
+    j = c.get("/api/pult/marke?mandant=radhaus", headers=H).json()
+    assert j["wissen"] == lauf
+    assert "art = 'wissen'" in f.sql[8] and "Ersetzt durch einen neueren Wissens-Lauf." in f.sql[8]
+    f.antworten += [[{"ok": True}], kopf]
+    assert c.get("/api/pult/marke?mandant=radhaus", headers=H).json()["wissen"] is None
+
+
 def test_stand_ohne_spiegel_uebernahme_laeuft(umg):
     f, _, c = umg
     f.antworten += [[{"ok": True}], [{"name": "Radhaus", "stand": None, "gespiegelt_am": None, "fehler": "kaputt",
