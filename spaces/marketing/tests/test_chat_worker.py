@@ -2038,3 +2038,12 @@ def test_fertig_422_ohne_stopp_bleibt_wie_bisher():
     api.fertig = lambda aid, d: (_ for _ in ()).throw(cw.ApiFehler(422, "Auftrag ist nicht (mehr) in Arbeit"))
     assert cw.chat_bearbeiten(api, AUFTRAG, Fragen(GUT), halten_takt_s=60) == "fehler"
     assert api.aufrufe("zurueck") == [] and api.aufrufe("gestoppt") == []
+
+
+def test_halten_meldet_sich_mindestens_zweimal_in_der_pc_aus_frist():
+    """Final-Review I2: die DB haelt den PC fuer lebendig, solange eine Runde in Arbeit in den letzten 2 min verlaengert
+    wurde (067 _chat_pc_lebt). halten verlaengert jede laufende Runde (Editor wie Export) alle HALTEN_TAKT_S - zwei
+    Verlaengerungen muessen in das Fenster passen, sonst verfielen offene Runden bei beschaeftigtem PC."""
+    assert cw.HALTEN_TAKT_S * 2 <= 120
+    from spaces.marketing.workers import export_worker
+    assert export_worker.halten is cw.halten and export_worker.HALTEN_TAKT_S == cw.HALTEN_TAKT_S

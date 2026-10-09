@@ -2,6 +2,28 @@
 -- Eigene Probe-Newsletter. Offene, laufende und wartende Runden echter Entwuerfe in DIESER Transaktion beiseite
 -- (pult_chat_naechster holt den aeltesten offenen ALLER Inhalte, eine abgelaufene Vergabe wuerde wieder offen);
 -- der ROLLBACK stellt sie wieder her.
+
+-- -1) Final-Review I1: alte Vormerkungen (061) beendet das erste Einspielen, ein erneutes laesst wartende Runden
+--     stehen. Nur mit dem Vorlauf verify_067_vorher.sql (Aufruf dort); ohne ihn entfaellt der Abschnitt.
+DO $$ DECLARE r record; v_ohne int := 0; BEGIN
+  IF to_regclass('pg_temp._p067_alt') IS NULL THEN RETURN; END IF;
+  FOR r IN SELECT a.status, a.antwort, p.mit_067 FROM _p067_alt p JOIN marketing.chat_auftraege a ON a.id = p.id LOOP
+    IF r.mit_067 THEN
+      ASSERT r.status = 'wartet', format('-1b: erneutes Einspielen laesst die wartende Runde stehen: %s', r.status);
+    ELSE
+      v_ohne := v_ohne + 1;
+      ASSERT r.status = 'fehler'
+         AND r.antwort = 'Vorgemerkte Nachricht aus der alten Version – bitte noch einmal senden',
+             format('-1a: alte Vormerkung beendet: %s|%s', r.status, r.antwort);
+    END IF;
+  END LOOP;
+  ASSERT (SELECT count(*) FROM _p067_alt) >= 1, '-1c: Vorlauf hat Vormerkungen angelegt';
+  ASSERT (SELECT count(*) FROM _p067_alt) = (SELECT count(*) FROM _p067_alt p JOIN marketing.chat_auftraege a ON a.id = p.id),
+         '-1d: alle Vormerkungen gefunden';
+  RAISE NOTICE 'verify_067 -1: % alte Vormerkung(en) beendet, % stehen geblieben', v_ohne,
+    (SELECT count(*) FROM _p067_alt) - v_ohne;
+END $$;
+
 UPDATE marketing.chat_auftraege SET status = 'fehler' WHERE status IN ('offen', 'in_arbeit', 'wartet');
 CREATE TEMP TABLE _p067 ON COMMIT DROP AS SELECT NULL::text AS k, NULL::uuid AS id LIMIT 0;
 
@@ -28,6 +50,7 @@ DO $$ BEGIN
   ASSERT to_regprocedure('marketing.pult_chat_senden(uuid, text, jsonb)') IS NOT NULL, '0: senden';
   ASSERT to_regprocedure('marketing._chat_nachruecken(uuid)') IS NOT NULL, '0: nachruecken';
   ASSERT to_regprocedure('marketing._chat_laufend(uuid)') IS NOT NULL, '0: laufend';
+  ASSERT to_regprocedure('marketing._chat_pc_lebt()') IS NOT NULL, '0: pc_lebt';
   ASSERT to_regprocedure('marketing.pult_chat_bild_ids(uuid, jsonb)') IS NOT NULL, '0: bild_ids';
   ASSERT to_regprocedure('marketing.pult_chat_bild_hinweise(jsonb)') IS NOT NULL, '0: bild_hinweise';
   ASSERT (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -183,6 +206,46 @@ DO $$ DECLARE v_k uuid := (SELECT id FROM _p067 WHERE k = 'k'); a uuid; bi uuid;
   v_fehler := NULL;
   BEGIN PERFORM marketing.pult_chat_bild_ids(a, '{}'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
   ASSERT v_fehler = 'Bild-Ids muessen eine Liste mit hoechstens 10 Eintraegen sein', format('7e: %s', v_fehler);
+END $$;
+
+-- 8) Final-Review I2: ein beschaeftigter PC ist nicht aus. Alle drei Plaetze arbeiten (hier: eine Runde von L in
+--    Arbeit, frisch verlaengert), fuenf Runden auf zwei Entwuerfen liegen seit 3 min offen: nichts verfaellt, die
+--    wartende Runde von M bleibt. Schweigt der PC (letzte Verlaengerung 3 min her), verfaellt alles wie in 5.
+DO $$ DECLARE d jsonb; v_l uuid; v_m uuid; v_lauf uuid; v_w uuid; n int; v_fehler text; r record; BEGIN
+  d := (SELECT bloecke FROM marketing.inhalt_fassungen WHERE inhalt = (SELECT id FROM _p067 WHERE k = 'i') AND fassung = 1);
+  INSERT INTO marketing.inhalte (mandant, art, titel) VALUES ('vibemind', 'newsletter', 'Probe 067 L') RETURNING id INTO v_l;
+  PERFORM marketing.pult_bloecke_speichern(v_l, 0, 'Probe 067 L', '', d, 'betreiber', false);
+  INSERT INTO marketing.inhalte (mandant, art, titel) VALUES ('vibemind', 'newsletter', 'Probe 067 M') RETURNING id INTO v_m;
+  PERFORM marketing.pult_bloecke_speichern(v_m, 0, 'Probe 067 M', '', d, 'betreiber', false);
+  FOR n IN 1..3 LOOP
+    PERFORM marketing.pult_chat_anlegen(v_l, 'chat', 'L' || n, '{}');
+    PERFORM marketing.pult_chat_anlegen(v_m, 'chat', 'M' || n, '{}');
+  END LOOP;
+  v_w := (marketing.pult_chat_senden(v_m, 'M4', '{}')->>'id')::uuid;
+  ASSERT (SELECT status FROM marketing.chat_auftraege WHERE id = v_w) = 'wartet', '8a: M4 wartet';
+  SELECT id INTO v_lauf FROM marketing.chat_auftraege WHERE inhalt = v_l ORDER BY erstellt_am, id LIMIT 1;
+  UPDATE marketing.chat_auftraege SET status = 'in_arbeit', versuche = 1, vergeben_bis = now() + interval '5 minutes',
+         geaendert_am = now() WHERE id = v_lauf;
+  UPDATE marketing.chat_auftraege SET erstellt_am = now() - interval '3 minutes', bereit_am = now() - interval '3 minutes'
+   WHERE inhalt IN (v_l, v_m) AND status = 'offen';
+  PERFORM marketing.pult_chat_aufraeumen(NULL);
+  ASSERT (SELECT count(*) FROM marketing.chat_auftraege WHERE inhalt IN (v_l, v_m) AND status = 'offen') = 5,
+         format('8b: PC arbeitet - nichts verfaellt: %s', (SELECT jsonb_agg(status || '|' || coalesce(antwort, ''))
+                FROM marketing.chat_auftraege WHERE inhalt IN (v_l, v_m)));
+  ASSERT (SELECT status FROM marketing.chat_auftraege WHERE id = v_w) = 'wartet', '8c: M4 wartet weiter';
+  v_fehler := NULL;
+  BEGIN PERFORM marketing.pult_bloecke_speichern(v_m, 1, 'Probe 067 M', '', d, 'betreiber', false);
+  EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+  ASSERT v_fehler = 'Der Assistent arbeitet gerade', format('8d: Handbearbeitung bleibt gesperrt: %s', v_fehler);
+  -- der PC schweigt: die letzte Verlaengerung ist 3 min her (die Vergabe selbst laeuft noch)
+  UPDATE marketing.chat_auftraege SET geaendert_am = now() - interval '3 minutes' WHERE id = v_lauf;
+  PERFORM marketing.pult_chat_aufraeumen(NULL);
+  ASSERT NOT EXISTS (SELECT 1 FROM marketing.chat_auftraege WHERE inhalt IN (v_l, v_m) AND status IN ('offen', 'wartet')),
+         '8e: PC aus - offene und wartende Runden verfallen';
+  FOR r IN SELECT status, antwort FROM marketing.chat_auftraege WHERE inhalt IN (v_l, v_m) AND id <> v_lauf LOOP
+    ASSERT r.status = 'fehler' AND r.antwort = 'Der Assistent läuft am PC und ist gerade aus', format('8f: %s', row_to_json(r));
+  END LOOP;
+  ASSERT (SELECT status FROM marketing.chat_auftraege WHERE id = v_lauf) = 'in_arbeit', '8g: die vergebene Runde bleibt';
 END $$;
 
 SELECT 'verify_067 ok' AS ergebnis;

@@ -2,8 +2,8 @@
 -- pult_chat_zurueck (061), pult_chat_stoppen (061), pult_chat_stopp_abschliessen (061, jetzt mit p_basis) und
 -- pult_bloecke_speichern (Huelle aus 063); es entfernt pult_chat_vormerken, pult_chat_vormerkung_loeschen und
 -- pult_chat_vormerkung_starten. Nach einem Replay von 060, 061 oder 063 IMMER 067 erneut einspielen; danach
--- verify_060, verify_062 .. verify_067 zusammen ueber migration_probe. verify_061 prueft das Vormerk-Modell von
--- 061 und gilt nach 067 nicht mehr (Stopp und Zwischenstand je Runde: verify_067 Abschnitt 4).
+-- verify_060, verify_062 .. verify_067 zusammen ueber migration_probe (fuer 067 mit dem Vorlauf verify_067_vorher).
+-- verify_061 prueft das Vormerk-Modell von 061 und gilt nach 067 nicht mehr (Stopp und Zwischenstand je Runde: verify_067 Abschnitt 4).
 -- 067: Editor - mehrere Runden gleichzeitig (sales-claw Spec 2026-10-09-editor-parallele-runden-design.md §1).
 -- Idempotent, eine Transaktion.
 --   1) je Inhalt hoechstens 3 Runden offen/in_arbeit und 5 wartende (durchgesetzt in pult_chat_anlegen unter
@@ -16,7 +16,26 @@
 --      gescheiterten
 -- Sperrreihenfolge wie 061: erst marketing.inhalte, dann marketing.chat_auftraege. _chat_nachruecken sperrt den
 -- Inhalt mit SKIP LOCKED: haelt ihn ein anderer, ruft der selbst nachruecken auf, sobald er seine Runde beendet.
+--   5) Final-Review I1: Vormerkungen aus 061 (status 'wartet', warteten auf ein manuelles "Starten") beendet das
+--      ERSTE Einspielen (fehler, "bitte noch einmal senden"), sonst ruecken sie beim ersten Aufraeumen nach und
+--      fuehren alte Bitten auf der neuesten Fassung aus. Erkennungszeichen: bereit_am fehlt noch - ein erneutes
+--      Einspielen laesst wartende Runden des neuen Modells stehen.
+--   6) Final-Review I2: ein beschaeftigter PC ist nicht aus. Offene Runden verfallen nach 2 min nur, wenn keine Runde
+--      in Arbeit ist, deren Vergabe der PC in den letzten 2 min verlaengert hat (_chat_pc_lebt; der Arbeiter
+--      verlaengert jede laufende Runde alle 60 s, Editor wie Export).
+-- Nachweis: verify_067_vorher.sql + verify_067.sql (Aufruf im Kopf von verify_067_vorher.sql).
 BEGIN;
+
+-- 0) Einmalig: alte Vormerkungen beenden (nur solange 067 noch nie eingespielt war)
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'marketing'
+                  AND table_name = 'chat_auftraege' AND column_name = 'bereit_am') THEN
+    UPDATE marketing.chat_auftraege
+       SET status = 'fehler', antwort = 'Vorgemerkte Nachricht aus der alten Version – bitte noch einmal senden',
+           geaendert_am = now()
+     WHERE status = 'wartet';
+  END IF;
+END $$;
 
 -- 1) Spalte und Indizes
 ALTER TABLE marketing.chat_auftraege ADD COLUMN IF NOT EXISTS bereit_am timestamptz;
@@ -53,18 +72,27 @@ BEGIN
   RETURN v_n;
 END $$;
 
--- 4) Aufraeumen: nicht abgeholt (2 min seit bereit) => fehler, die wartenden Runden desselben Entwurfs mit
---    (der PC ist aus); Vergabe abgelaufen => einmal neu, dann fehler; danach rueckt nach, wer kann.
+-- 4) Lebt der PC? Eine Runde in Arbeit, deren Vergabe er in den letzten 2 min verlaengert hat (naechster,
+--    weiter, zwischenstand setzen geaendert_am; ein Stopp des Betreibers zaehlt nicht).
+CREATE OR REPLACE FUNCTION marketing._chat_pc_lebt() RETURNS boolean
+LANGUAGE sql STABLE AS $$
+  SELECT EXISTS (SELECT 1 FROM marketing.chat_auftraege
+                  WHERE status = 'in_arbeit' AND stopp IS NULL AND vergeben_bis > now()
+                    AND geaendert_am > now() - interval '2 minutes')
+$$;
+
+-- 4b) Aufraeumen: nicht abgeholt (2 min seit bereit) und der PC lebt nicht => fehler, die wartenden Runden desselben
+--    Entwurfs mit (der PC ist aus); Vergabe abgelaufen => einmal neu, dann fehler; danach rueckt nach, wer kann.
 CREATE OR REPLACE FUNCTION marketing.pult_chat_aufraeumen(p_inhalt uuid) RETURNS void
 LANGUAGE plpgsql AS $$
-DECLARE v_i uuid;
+DECLARE v_i uuid; v_lebt boolean := marketing._chat_pc_lebt();
 BEGIN
   WITH tot AS (
     UPDATE marketing.chat_auftraege
        SET status = 'fehler', antwort = 'Der Assistent läuft am PC und ist gerade aus',
            vergeben_bis = NULL, geaendert_am = now()
      WHERE status = 'offen' AND coalesce(bereit_am, erstellt_am) < now() - interval '2 minutes'
-       AND (p_inhalt IS NULL OR inhalt = p_inhalt)
+       AND NOT v_lebt AND (p_inhalt IS NULL OR inhalt = p_inhalt)
     RETURNING inhalt)
   UPDATE marketing.chat_auftraege w
      SET status = 'fehler', antwort = 'Der Assistent läuft am PC und ist gerade aus', geaendert_am = now()
@@ -268,7 +296,7 @@ BEGIN
   RETURN jsonb_build_object('status', 'fertig', 'fassung', v_n);
 END $$;
 
--- 10) Speichern (Huelle aus 063, woertlich bis auf bereit_am): Betreiber gesperrt, solange eine Runde laeuft
+-- 10) Speichern (Huelle aus 063, woertlich bis auf bereit_am und _chat_pc_lebt): Betreiber gesperrt, solange eine Runde laeuft
 CREATE OR REPLACE FUNCTION marketing.pult_bloecke_speichern(
     p_inhalt uuid, p_basis int, p_betreff text, p_vorschautext text,
     p_bloecke jsonb, p_urheber text, p_als_kopie boolean) RETURNS int
@@ -281,7 +309,8 @@ BEGIN
     IF EXISTS (SELECT 1 FROM marketing.chat_auftraege
                 WHERE inhalt = p_inhalt AND status IN ('offen','in_arbeit')
                   AND (vergeben_bis IS NULL OR vergeben_bis > now())
-                  AND NOT (status = 'offen' AND coalesce(bereit_am, erstellt_am) < now() - interval '2 minutes')) THEN
+                  AND NOT (status = 'offen' AND coalesce(bereit_am, erstellt_am) < now() - interval '2 minutes'
+                           AND NOT marketing._chat_pc_lebt())) THEN
       RAISE EXCEPTION 'Der Assistent arbeitet gerade'; END IF;
   END IF;
   RETURN marketing._pult_bloecke_speichern_053(p_inhalt, p_basis, p_betreff, p_vorschautext,
