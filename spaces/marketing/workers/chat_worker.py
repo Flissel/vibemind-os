@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from PIL import Image, ImageOps
 
 from spaces.marketing.claw import (agent_prompt, agent_strom, agent_werkzeuge, bildplaetze, denkspur, markenprofil,
-                                   markenwissen, unterlagen)
+                                   markenwissen, schriften, unterlagen, vorlagen_marke)
 from spaces.marketing.workers.bild_worker import ApiFehler, _grund, tls_kontext, umgebung_laden
 
 PORT = 8134
@@ -618,6 +618,8 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
     name = str(auftrag.get("mandant_name") or mandant)
     wissen = markenwissen.Wissen(text="", hinweise=[], ordner=None)
     markenfarben: dict = {}
+    markenschriften: dict | None = None
+    markenlesbar: dict | None = None
     if name:
         wissen = markenwissen.laden(markenwissen.wurzel(), mandant, name,
                                     f"{auftrag.get('nachricht', '')} {auftrag.get('titel', '')}")
@@ -625,6 +627,12 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
         # Gueltige Farben der Marke.md (Marke per Chat): dann gilt die Farbregel der Marke.
         werte = markenprofil.lesen(markenwissen.wurzel(), mandant, name).werte
         markenfarben = {k: werte[k] for k in agent_prompt.MARKENFARBEN if werte.get(k)}
+        if werte.get("schrift_anzeige") in schriften.REGISTER and werte.get("schrift_text") in schriften.REGISTER:
+            markenschriften = {"anzeige": werte["schrift_anzeige"], "text": werte["schrift_text"]}
+        if werte.get("akzent"):   # lesbare Ableitungen (wie die Vorlagen): Text auf hellem Grund, Schrift auf Akzent
+            r = vorlagen_marke.rollen({"akzent": werte["akzent"], "flaeche": werte.get("zweitfarbe")},
+                                      werte.get("grund") or "#ffffff")
+            markenlesbar = {"akzent_text": r["akzent_text"], "auf_akzent": r["auf_akzent"]}
     system = agent_prompt.system(marke=bool(markenfarben))
     if auftrag.get("medien_hinweis"):
         hinweise.insert(0, str(auftrag["medien_hinweis"]))
@@ -639,6 +647,7 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
                                            hinweise=hinweise, bilder=bilder, markenwissen=wissen.text,
                                            mandant_name=name, notizen_text=wissen.notizen,
                                            markenfarben=markenfarben, markenlogo=markenlogo,
+                                           markenschriften=markenschriften, markenlesbar=markenlesbar,
                                            feedback=[f for f in (auftrag.get("rueckmeldungen_offen") or [])
                                                      if isinstance(f, dict) and isinstance(f.get("text"), str)])
     # Mit Bildern ist die erste Nachricht eine Teil-Liste; sie bleibt auch in der Korrekturrunde so.

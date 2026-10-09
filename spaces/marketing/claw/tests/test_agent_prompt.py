@@ -337,3 +337,29 @@ def test_i5_nutzer_text_nennt_das_markenlogo():
 
 def test_i5_system_erklaert_das_markenlogo():
     assert "MARKENLOGO" in ap.SYSTEM
+
+
+# --- Schriftpaar + lesbare Markenfarben (Fix 09.10.) ---------------------------------
+
+def test_system_nennt_schriften_setzen_und_root_fuer_beide():
+    assert "- schriften_setzen: anzeige und/oder text (Schrift-ids aus SCHRIFTEN; setzt das Schriftpaar des ganzen Newsletters)." in ap.SYSTEM
+    assert "nur für farben_setzen und schriften_setzen" in ap.SYSTEM
+
+
+def test_system_marke_regel_lesbare_farben_und_schriftpaar():
+    mit = ap.system(marke=True)
+    assert "nimm akzent_text statt akzent" in mit and "auf_akzent" in mit
+    assert "schriften_setzen" in mit and "MARKENSCHRIFTEN" in mit
+    assert "akzent_text" not in ap.system(marke=False)
+    assert ap.system(marke=False) == ap.SYSTEM
+
+
+def test_nutzer_text_markenschriften_und_lesbar_nur_wenn_gegeben():
+    t = ap.nutzer_text(_auftrag(), [], markenschriften={"anzeige": "montserrat", "text": "dm-sans"},
+                       markenlesbar={"akzent_text": "#b45309", "auf_akzent": "#ffffff"})
+    assert "MARKENSCHRIFTEN (Marke.md): anzeige montserrat, text dm-sans" in t
+    assert ("LESBARE MARKENFARBEN: akzent_text #b45309 (Text auf hellem Grund), "
+            "auf_akzent #ffffff (Schrift auf Akzentflächen/Knöpfen)") in t
+    leer = ap.nutzer_text(_auftrag(), [])
+    assert "MARKENSCHRIFTEN" not in leer and "LESBARE" not in leer
+    assert leer == ap.nutzer_text(_auftrag(), [], markenschriften=None, markenlesbar={})

@@ -42,7 +42,7 @@ Optional "notizen": [{"titel": "<höchstens 80 Zeichen>", "text": "<höchstens 4
 Jede Änderung beginnt mit "schritt": {"schritt": "<was du gerade tust, höchstens 80 Zeichen, Deutsch>", "werkzeug": "<name>", ...}; der Betreiber sieht es live, z. B. "Titel links oben setzen". Ordne die Änderungen so, dass jede einzeln Sinn ergibt: zuerst Struktur, dann Inhalt, dann Feinschliff.
 
 BLOCK-IDS UND neu:<n>
-Blöcke stehen im Kontext als {id: {type, data:{style, props}}}; "root" ist die Wurzel und nur für farben_setzen. \
+Blöcke stehen im Kontext als {id: {type, data:{style, props}}}; "root" ist die Wurzel und nur für farben_setzen und schriften_setzen. \
 "nach" = id des Blocks, hinter den eingefügt wird, null = ans Ende. Eine mit flaeche_anlegen neu erzeugte Fläche hat \
 noch keine id: verweise in späteren Änderungen derselben Antwort mit "neu:1" (erste angelegte Fläche), "neu:2" usw. \
 (neu:<n>) – in jedem Parameter, der eine Block-id nimmt (nach, id, flaeche, flaechen).
@@ -56,6 +56,7 @@ childrenIds, columns nicht; bei Flächen auch nicht url/width/height).
 - block_verschieben: id*, nach* (null = ans Ende; nicht hinter sich selbst).
 - block_loeschen: id* (mit allen Kindern).
 - farben_setzen: backdropColor, textColor, canvasColor (mindestens eine, je "#RRGGBB").
+- schriften_setzen: anzeige und/oder text (Schrift-ids aus SCHRIFTEN; setzt das Schriftpaar des ganzen Newsletters).
 Flächen (ein Image-Block mit Ebenen aus Text und Bildern; wird zu einem Bild gerechnet)
 - flaeche_anlegen: nach*, format*, hintergrund* (#RRGGBB), alt* (Bildbeschreibung, höchstens 200 Zeichen).
 - ebene_hinzufuegen: flaeche*, ebene* (Objekt, siehe unten; id optional, wird sonst vergeben).
@@ -119,7 +120,10 @@ SYSTEM: str = _SYSTEM.replace("__MAX__", str(MAX_AENDERUNGEN)).replace("__SCHRIF
 
 REGEL_LADEN = "- Farben nur aus den Ladenfarben (siehe Kontext) oder abgeleiteten helleren/dunkleren Tönen davon; keine neuen Farbtöne."
 REGEL_MARKE = ("- Farben nur aus der Marke (akzent, zweitfarbe, grund, text) und daraus abgeleiteten Tönen; "
-               "keine neuen Farbtöne. Die Markenfarben stehen im Kontext unter MARKENFARBEN.")
+               "keine neuen Farbtöne. Die Markenfarben stehen im Kontext unter MARKENFARBEN. "
+               "Für Text auf hellem Grund nimm akzent_text statt akzent; Schrift auf Akzentflächen und Knöpfen ist "
+               "auf_akzent (siehe LESBARE MARKENFARBEN). Bei einer neuen Marke setze auch das Schriftpaar aus "
+               "MARKENSCHRIFTEN mit schriften_setzen.")
 MARKENFARBEN = ("akzent", "zweitfarbe", "grund", "text")
 
 
@@ -162,7 +166,8 @@ def nutzer_text(auftrag: dict, medien: list[str], *, unterlagen: str = "", auswa
                 bilder: list[tuple[str, str]] | tuple[tuple[str, str], ...] = (),
                 markenwissen: str = "", mandant_name: str = "", notizen_text: str = "",
                 feedback: list[dict] | tuple[dict, ...] = (), markenfarben: dict | None = None,
-                markenlogo: str = "") -> str:
+                markenlogo: str = "", markenschriften: dict | None = None,
+                markenlesbar: dict | None = None) -> str:
     """Kontext der ersten Nutzernachricht. auswahl_text ist die markierte Auswahl als JSON (Blöcke/Ebenen
     vollständig), unterlagen der Text aus hochgeladenen Dokumenten, hinweise fehlende Elemente/Anhänge.
     notizen_text sind die früheren Agent-Notizen der Firma, getrennt vom Markenwissen. feedback sind die offenen
@@ -193,6 +198,10 @@ def nutzer_text(auftrag: dict, medien: list[str], *, unterlagen: str = "", auswa
         "LADENFARBEN (root.data): " + json.dumps(farben, ensure_ascii=False),
         *(["MARKENFARBEN (Marke.md): " + ", ".join(f"{k} {markenfarben[k]}" for k in MARKENFARBEN
                                                    if markenfarben.get(k))] if markenfarben else []),
+        *([f"MARKENSCHRIFTEN (Marke.md): anzeige {markenschriften['anzeige']}, text {markenschriften['text']}"]
+          if markenschriften else []),
+        *([f"LESBARE MARKENFARBEN: akzent_text {markenlesbar['akzent_text']} (Text auf hellem Grund), "
+           f"auf_akzent {markenlesbar['auf_akzent']} (Schrift auf Akzentflächen/Knöpfen)"] if markenlesbar else []),
         *([f"MARKENLOGO (Marke): medien:{markenlogo}"] if markenlogo else []),
         "SCHRIFTEN IM NEWSLETTER: " + _schriften_des_newsletters(dok, root_daten),
         f"MEDIEN ({len(frei)}): " + (", ".join(frei) or "keine"),

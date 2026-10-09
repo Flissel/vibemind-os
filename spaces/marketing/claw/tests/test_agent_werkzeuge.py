@@ -177,6 +177,27 @@ def test_farben_setzen():
     fehler([{"werkzeug": "farben_setzen", "childrenIds": []}], "Unbekannter Parameter")
 
 
+def test_schriften_setzen_paar_und_einzeln():
+    e = lauf([{"werkzeug": "schriften_setzen", "anzeige": "montserrat", "text": "dm-sans", "schritt": "Schriften"}])
+    assert e.bloecke["root"]["data"]["schriften"] == {"anzeige": "montserrat", "text": "dm-sans"}
+    assert e.geaendert
+    dok = copy.deepcopy(e.bloecke)
+    e2 = lauf([{"werkzeug": "schriften_setzen", "text": "manrope"}], dok)
+    assert e2.bloecke["root"]["data"]["schriften"] == {"anzeige": "montserrat", "text": "manrope"}
+    assert dok["root"]["data"]["schriften"]["text"] == "dm-sans"
+
+
+def test_schriften_setzen_fehler():
+    fehler([{"werkzeug": "schriften_setzen", "anzeige": "comic"}], "anzeige: unbekannte Schrift comic")
+    fehler([{"werkzeug": "schriften_setzen", "text": 5}], "text: unbekannte Schrift")
+    fehler([{"werkzeug": "schriften_setzen"}], "mindestens anzeige oder text")
+    fehler([{"werkzeug": "schriften_setzen", "anzeige": "montserrat"}], "Schriftpaar braucht anzeige und text")
+    dok = copy.deepcopy(DOK)
+    dok["root"]["data"]["schriften"] = "kaputt"
+    fehler([{"werkzeug": "schriften_setzen", "text": "dm-sans"}], "Schriftpaar braucht", dok)
+    fehler([{"werkzeug": "schriften_setzen", "foo": "x"}], "Unbekannter Parameter")
+
+
 # ---- Flaechen ---------------------------------------------------------------------------------
 def test_flaeche_anlegen():
     e = lauf([fl("kopf", "hoch")])
@@ -374,7 +395,7 @@ def test_fehler_bricht_alles_ab_und_original_bleibt():
 
 
 def test_werkzeuge_vollstaendig():
-    assert len(aw.WERKZEUGE) == 17 and set(aw.WERKZEUGE) == set(aw.PARAMETER)
+    assert len(aw.WERKZEUGE) == 18 and set(aw.WERKZEUGE) == set(aw.PARAMETER)
 
 
 def test_schritt_wird_akzeptiert_und_aendert_nichts():

@@ -1,5 +1,6 @@
 import io
 import json
+import re
 import urllib.error
 
 import pytest
@@ -1283,6 +1284,28 @@ def test_agent_ohne_markenwerte_behaelt_ladenregel(_wissen_ordner):
     fragen = Fragen(GUT)
     cw.chat_bearbeiten(Api(), _auftrag(), fragen)
     assert fragen.gesehen[0][0] == cw.agent_prompt.SYSTEM and "MARKENFARBEN" not in _prompt(fragen)
+
+
+def test_agent_bekommt_markenschriften_und_lesbare_markenfarben(_wissen_ordner):
+    from spaces.marketing.claw import schoenheit
+    _firma(_wissen_ordner, marke="---\nakzent: #f66c1e\ngrund: #ffffff\nschrift_anzeige: montserrat\n"
+                                 "schrift_text: dm-sans\n---\n## Ton\nRuhig und freundlich, wir duzen unsere Kundschaft.\n")
+    fragen = Fragen(GUT)
+    assert cw.chat_bearbeiten(Api(), _auftrag(), fragen) == "fertig"
+    p = _prompt(fragen)
+    assert "MARKENSCHRIFTEN (Marke.md): anzeige montserrat, text dm-sans" in p
+    zeile = next(z for z in p.splitlines() if z.startswith("LESBARE MARKENFARBEN:"))
+    akzent_text = re.search(r"akzent_text (#[0-9a-f]{6})", zeile).group(1)
+    auf_akzent = re.search(r"auf_akzent (#[0-9a-f]{6})", zeile).group(1)
+    assert schoenheit.kontrast(akzent_text, "#ffffff") >= 4.5
+    assert schoenheit.kontrast(auf_akzent, "#f66c1e") >= 3.0   # _auf waehlt die bessere von Weiss/Tinte
+
+
+def test_agent_ohne_marke_md_keine_schrift_und_lesbar_zeilen(_wissen_ordner):
+    _firma(_wissen_ordner)
+    fragen = Fragen(GUT)
+    cw.chat_bearbeiten(Api(), _auftrag(), fragen)
+    assert "MARKENSCHRIFTEN" not in _prompt(fragen) and "LESBARE MARKENFARBEN" not in _prompt(fragen)
 
 
 # --- Schlussrunde I5: das Markenlogo als Mediendatei fuer "… und Logo" --------------

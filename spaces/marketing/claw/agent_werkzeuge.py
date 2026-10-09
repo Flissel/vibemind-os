@@ -8,7 +8,7 @@ import re
 import secrets
 from dataclasses import dataclass, field
 
-from spaces.marketing.claw import bildplaetze, gestaltung
+from spaces.marketing.claw import bildplaetze, gestaltung, schriften
 
 MAX_AENDERUNGEN = 40
 MAX_SCHRITT = 80
@@ -26,7 +26,7 @@ EBENE_FELDER = {
 
 WERKZEUGE: tuple[str, ...] = (
     "block_einfuegen", "block_aendern", "block_verschieben", "block_loeschen", "farben_setzen",
-    "flaeche_anlegen", "ebene_hinzufuegen", "ebene_aendern", "ebene_reihenfolge", "ebene_loeschen",
+    "schriften_setzen", "flaeche_anlegen", "ebene_hinzufuegen", "ebene_aendern", "ebene_reihenfolge", "ebene_loeschen",
     "format_setzen", "hintergrund_setzen", "bild_erzeugen", "bild_freistellen", "bild_aus_medien",
     "entwurf_speichern", "export_vorschlagen")
 
@@ -37,6 +37,7 @@ PARAMETER: dict[str, tuple[set, set]] = {
     "block_verschieben": ({"id", "nach"}, set()),
     "block_loeschen": ({"id"}, set()),
     "farben_setzen": (set(), set(FARB_ROLLEN)),
+    "schriften_setzen": (set(), {"anzeige", "text"}),
     "flaeche_anlegen": ({"nach", "format", "hintergrund", "alt"}, set()),
     "ebene_hinzufuegen": ({"flaeche", "ebene"}, set()),
     "ebene_aendern": ({"flaeche", "id", "felder"}, set()),
@@ -213,7 +214,7 @@ class _Lauf:
     def block_aendern(self, a: dict) -> None:
         bid = self.ref(a["id"], "id")
         if bid == "root":
-            raise WerkzeugFehler("root nur über farben_setzen ändern")
+            raise WerkzeugFehler("root nur über farben_setzen und schriften_setzen ändern")
         props, style = a.get("props", {}), a.get("style", {})
         if not isinstance(props, dict) or not isinstance(style, dict):
             raise WerkzeugFehler("props und style müssen Objekte sein")
@@ -254,6 +255,19 @@ class _Lauf:
             if not isinstance(v, str) or not _FARBE.fullmatch(v):
                 raise WerkzeugFehler(f"{k} muss #RRGGBB sein")
         self.b["root"]["data"].update(farben)
+
+    def schriften_setzen(self, a: dict) -> None:
+        neu = {k: a[k] for k in ("anzeige", "text") if k in a}
+        if not neu:
+            raise WerkzeugFehler("mindestens anzeige oder text")
+        for k, v in neu.items():
+            if not isinstance(v, str) or v not in schriften.REGISTER:
+                raise WerkzeugFehler(f"{k}: unbekannte Schrift {v}")
+        alt = self.b["root"]["data"].get("schriften")
+        paar = {**(alt if isinstance(alt, dict) else {}), **neu}
+        if not all(isinstance(paar.get(k), str) for k in ("anzeige", "text")):
+            raise WerkzeugFehler("Schriftpaar braucht anzeige und text")
+        self.b["root"]["data"]["schriften"] = {"anzeige": paar["anzeige"], "text": paar["text"]}
 
     def flaeche_anlegen(self, a: dict) -> None:
         if a["format"] not in gestaltung.FORMATE:
