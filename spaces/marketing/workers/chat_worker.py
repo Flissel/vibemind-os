@@ -37,6 +37,11 @@ LLM_URL = os.environ.get("MARKETING_CHAT_LLM_URL", "http://127.0.0.1:8117/v1")
 MODELL = os.environ.get("MARKETING_CHAT_MODELL", "claude-code-sonnet")
 NICHT_ERREICHBAR = "Der Assistent ist gerade nicht erreichbar"
 NICHT_UMGESETZT = "Das habe ich nicht umsetzen können: "
+NACHSPIELEN_MAX = 3
+ZU_VIELE = "Zu viele gleichzeitige Änderungen – bitte noch einmal senden"
+NICHTS_UMGESETZT = "Fertig, nichts umgesetzt – eine andere Runde hat den Entwurf inzwischen geändert."
+NACHGESPIELT = ("Auf Fassung {n} nachgespielt – eine andere Runde war schneller; "
+                "bei widersprüchlichen Bitten gilt diese Runde.")
 WEBSUCHE_AUS = "WebSearch:aus"   # wie marketing_shim.WEBSUCHE_AUS
 STAND = {"letzter_lauf": None, "letztes_ergebnis": None}
 
@@ -101,8 +106,14 @@ class ChatApi:
     def zwischenstand(self, aid, bloecke: dict, schritt: str, nr: int) -> dict:
         return self._post(f"/{aid}/zwischenstand", {"bloecke": bloecke, "schritt": schritt[:SCHRITT_MAX], "nr": nr})
 
-    def gestoppt(self, aid, bloecke: dict | None) -> dict:
-        return self._post(f"/{aid}/gestoppt", {"bloecke": bloecke})
+    def neueste(self, aid) -> dict:
+        return json.loads(self._anfrage("GET", f"/{aid}/neueste") or b"{}")
+
+    def gestoppt(self, aid, bloecke: dict | None, basis: int | None = None, hinweise=()) -> dict:
+        daten: dict = {"bloecke": bloecke}
+        if basis is not None:
+            daten.update(basis=basis, hinweise=list(hinweise))
+        return self._post(f"/{aid}/gestoppt", daten)
 
     def denken(self, aid, denken: str, schritte: list[dict]) -> dict:
         return self._post(f"/{aid}/denken", {"denken": denken, "schritte": schritte})
@@ -292,9 +303,10 @@ class _Live:
     die Antwort darauf kann _Stopp oder _Verloren ausloesen."""
 
     def __init__(self, api, aid, original: dict, medien: set, uhr, drossel_s: float,
-                 spur: denkspur.Spur | None = None):
+                 spur: denkspur.Spur | None = None, basis: int | None = None):
         self.api, self.aid, self.original, self.medien = api, aid, original, medien
         self.spur = spur
+        self.basis = basis             # die Fassung, auf der der Live-Stand aufbaut (fassung_vorher)
         self.uhr, self.drossel_s = uhr, drossel_s
         self.gesendet_am = None
         self.neu_beginnen()
@@ -588,6 +600,54 @@ def _mit_hinweisen(hinweise: list[str], antwort: str) -> str:
     return "\n".join(zeilen) + "\n\n" + antwort
 
 
+class _Neuer(Exception):
+    """Die Schoenheitspruefung schlug nach dem Nachspielen an: Korrekturrunde von der neuesten Fassung."""
+    def __init__(self, grund: str, neu: dict):
+        super().__init__(grund)
+        self.grund, self.neu = grund, neu
+
+
+def _neueste_lesen(api, aid) -> dict:
+    neu = api.neueste(aid)
+    if (not isinstance(neu, dict) or not isinstance(neu.get("bloecke"), dict)
+            or isinstance(neu.get("fassung"), bool) or not isinstance(neu.get("fassung"), int)):
+        raise ValueError("neueste Fassung unlesbar")
+    return neu
+
+
+def _speichern(api, aid, daten: dict, aenderungen: list, medien: set, basis, spur: denkspur.Spur) -> dict:
+    """fertig mit Nachspielen (Spec 2026-10-09 §1): verliert das Speichern das Rennen, die Aenderungsliste auf die
+    neueste Fassung nachspielen, pruefen und erneut speichern - hoechstens NACHSPIELEN_MAX-mal. -> Antwort der VM,
+    {"status": "zu_viele"} nach dem letzten verlorenen Rennen. Wirft _Neuer, wenn die Schoenheitspruefung nach dem
+    Nachspielen anschlaegt."""
+    hinweise: list[str] = []
+    for runde in range(NACHSPIELEN_MAX + 1):
+        antwort = api.fertig(aid, {**daten, "basis": basis, "hinweise": hinweise})
+        if antwort.get("status") != "veraltet":
+            return antwort
+        if runde == NACHSPIELEN_MAX:
+            break
+        if not api.weiter(aid):
+            return {"status": "fehler"}
+        neu = _neueste_lesen(api, aid)
+        spur.schritt(f"Nachspielen auf Fassung {neu['fassung']}")
+        ns = agent_werkzeuge.nachspielen(neu["bloecke"], aenderungen, medien)
+        basis, hinweise = neu["fassung"], [NACHGESPIELT.format(n=neu["fassung"]), *ns.uebersprungen]
+        if not ns.geaendert:      # keine Aenderung passt mehr: fertig ohne Fassung (dann gibt es kein Rennen)
+            daten = {**daten, "antwort": NICHTS_UMGESETZT, "bloecke": None, "bildauftraege": [],
+                     "export_vorschlag": None}
+            spur.ende()           # die Denkspur geht vor fertig raus
+            continue
+        grund = api.pruefen(aid, ns.bloecke)
+        if grund:
+            spur.schritt(f"Schönheitsprüfung: {grund}")
+            raise _Neuer(grund, neu)
+        daten = {**daten, "bloecke": ns.bloecke, "bildauftraege": ns.bildauftraege,
+                 "export_vorschlag": ns.export_vorschlag, "notiz": ns.notiz or daten.get("notiz", "")}
+        spur.ende()
+    return {"status": "zu_viele"}
+
+
 def chat_bearbeiten(api, auftrag, fragen_strom=frage_strom, uhr=time.monotonic, schlafen=time.sleep,
                     halten_takt_s: float = HALTEN_TAKT_S, drossel_s: float = DROSSEL_S) -> str:
     aid = str(auftrag["id"])
@@ -599,13 +659,32 @@ def chat_bearbeiten(api, auftrag, fragen_strom=frage_strom, uhr=time.monotonic, 
         api.zurueck(aid, text)
         return "fehler"
     spur = denkspur.Spur(spur_senden(api, aid), uhr=uhr)
-    live = _Live(api, aid, auftrag.get("bloecke") or {}, set(auftrag.get("medien") or []), uhr, drossel_s, spur=spur)
+    live = _Live(api, aid, auftrag.get("bloecke") or {}, set(auftrag.get("medien") or []), uhr, drossel_s, spur=spur,
+                 basis=auftrag.get("fassung"))
     try:
         return _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, zurueckgeben, live, spur)
     except _Stopp as s:
         spur.ende()
+        bloecke, basis, extra = (live.gueltig if s.art == "behalten" else None), None, []
+        if s.art == "behalten" and live.angewandt and live.basis is not None:
+            try:   # "Behalten" nach demselben Verfahren: auf eine inzwischen neuere Fassung nachspielen
+                neu = _neueste_lesen(api, aid)
+                if neu["fassung"] != live.basis:
+                    ns = agent_werkzeuge.nachspielen(neu["bloecke"], live.angewandt, live.medien)
+                    if ns.geaendert:
+                        bloecke = ns.bloecke
+                        basis, extra = neu["fassung"], [NACHGESPIELT.format(n=neu["fassung"]), *ns.uebersprungen]
+                    else:
+                        # Nichts passt mehr: ohne basis, damit die VM nicht den alten Zwischenstand auf die neue
+                        # Fassung legt (bloecke None = "letzter Zwischenstand"); sie verwirft dann wie bisher.
+                        bloecke = None
+            except (ApiFehler, OSError, ValueError, agent_werkzeuge.WerkzeugFehler):
+                pass               # wie bisher: der letzte gueltige Stand, die VM entscheidet
         try:
-            api.gestoppt(aid, live.gueltig if s.art == "behalten" else None)
+            if basis is None:
+                api.gestoppt(aid, bloecke)
+            else:
+                api.gestoppt(aid, bloecke, basis, extra)
         except (ApiFehler, OSError, ValueError):
             pass             # die VM schliesst einen gestoppten Auftrag nach 15 s selbst ab
         return "gestoppt"
@@ -761,13 +840,23 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
         if ergebnis.geaendert:
             spur.schritt("Fassung gespeichert")
         spur.ende()
-        antwort_vm = api.fertig(aid, {
-            "antwort": _mit_hinweisen(hinweise, text_antwort),
-            "bloecke": bloecke if ergebnis.geaendert else None,
-            "bildauftraege": bildauftraege,
-            "export_vorschlag": export,
-            "notiz": ergebnis.notiz,
-        })
+        daten = {"antwort": _mit_hinweisen(hinweise, text_antwort),
+                 "bloecke": bloecke if ergebnis.geaendert else None,
+                 "bildauftraege": bildauftraege, "export_vorschlag": export, "notiz": ergebnis.notiz}
+        try:
+            antwort_vm = _speichern(api, aid, daten, antwort["aenderungen"], set(medien), live.basis, spur)
+        except _Neuer as n:
+            fehler = n.grund
+            if versuch == 1:       # Korrekturrunde von der neuesten Fassung
+                auftrag = {**auftrag, "bloecke": n.neu["bloecke"], "fassung": n.neu["fassung"]}
+                live.original, live.basis = n.neu["bloecke"], n.neu["fassung"]
+                spur.korrektur()
+                nachrichten += [{"role": "assistant", "content": text},
+                                {"role": "user", "content": agent_prompt.korrektur_text(fehler, n.neu["bloecke"])}]
+                continue
+            return zurueckgeben(NICHT_UMGESETZT + fehler)
+        if antwort_vm.get("status") == "zu_viele":
+            return zurueckgeben(ZU_VIELE)
         return "fehler" if antwort_vm.get("status") == "fehler" else "fertig"
     return zurueckgeben(NICHT_UMGESETZT + fehler)
 

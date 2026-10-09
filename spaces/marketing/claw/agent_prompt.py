@@ -321,7 +321,12 @@ def antwort_lesen(text: str) -> dict:
     return {"antwort": antwort.strip(), "aenderungen": aenderungen, "notizen": _notizen(d.get("notizen"))}
 
 
-def korrektur_text(fehler: str) -> str:
-    return (f"Deine letzte Antwort konnte nicht umgesetzt werden: {fehler}\n"
+def korrektur_text(fehler: str, bloecke: dict | None = None) -> str:
+    text = (f"Deine letzte Antwort konnte nicht umgesetzt werden: {fehler}\n"
             "Nichts wurde geändert. Antworte erneut mit genau einem vollständigen, korrigierten JSON-Objekt "
             '{"antwort": ..., "aenderungen": [...]} und sonst nichts.')
+    if bloecke is not None:
+        text += ("\nEine andere Runde hat den Entwurf inzwischen geändert. Deine Änderungen werden auf diesen "
+                 "aktuellen Stand angewendet – beziehe dich nur auf ihn:\nBLÖCKE (JSON): "
+                 + json.dumps(bloecke, ensure_ascii=False, separators=(",", ":")))
+    return text

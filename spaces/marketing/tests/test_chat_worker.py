@@ -1692,3 +1692,152 @@ def test_main_startet_marken_und_wissens_faden(monkeypatch):
     assert gestartet["wissen"][0] is not gestartet["marke"][0]
     assert gestartet["marke"][2].is_set() and gestartet["marke"][2] is gestartet["wissen"][2]
     assert gestartet["marke"][3].gejoint and gestartet["wissen"][3].gejoint
+
+
+# ---- Nachspielen beim Fertigwerden (Spec 2026-10-09-editor-parallele-runden §1) -----------------------
+VERALTET = {"status": "veraltet"}
+AUFTRAG4 = {**AUFTRAG, "fassung": 4}
+DOC_B = {"root": {"type": "EmailLayout", "data": {"backdropColor": "#ffffff", "childrenIds": ["u"]}},
+         "u": {"type": "Text", "data": {"props": {"text": "Neu von Runde B"}}}}
+
+
+class RennApi(Api):
+    """fertig antwortet der Reihe nach (die letzte Antwort wiederholt sich); neueste ebenso."""
+    def __init__(self, fertig_folge, neueste_folge, **kw):
+        super().__init__(**kw)
+        self.fertig_folge, self.neueste_folge = list(fertig_folge), list(neueste_folge)
+
+    def fertig(self, aid, daten):
+        self.log.append(("fertig", aid, daten))
+        return self.fertig_folge.pop(0) if len(self.fertig_folge) > 1 else self.fertig_folge[0]
+
+    def neueste(self, aid):
+        self.log.append(("neueste", aid))
+        return self.neueste_folge.pop(0) if len(self.neueste_folge) > 1 else self.neueste_folge[0]
+
+
+def _fertig_daten(api):
+    return [e[2] for e in api.aufrufe("fertig")]
+
+
+def test_ohne_rennen_speichert_auf_der_eigenen_basis():
+    api = Api()
+    assert cw.chat_bearbeiten(api, AUFTRAG4, Fragen(GUT)) == "fertig"
+    (daten,) = _fertig_daten(api)
+    assert daten["basis"] == 4 and daten["hinweise"] == []
+
+
+def test_rennen_verloren_spielt_auf_neueste_nach_und_meldet_geloeschten_block():
+    api = RennApi([VERALTET, {"fassung": 6}], [{"fassung": 5, "bloecke": DOC_B}])
+    antwort = json.dumps({"antwort": "Erledigt.", "aenderungen": [text("Eins", "Titel ändern"), farbe("#ff0000", "Rot")]})
+    assert cw.chat_bearbeiten(api, AUFTRAG4, Fragen(antwort)) == "fertig"
+    erst, zweit = _fertig_daten(api)
+    assert erst["basis"] == 4 and erst["bloecke"]["t"]["data"]["props"]["text"] == "Eins"
+    assert zweit["basis"] == 5 and "t" not in zweit["bloecke"]
+    assert zweit["bloecke"]["root"]["data"]["backdropColor"] == "#ff0000"
+    assert zweit["bloecke"]["u"]["data"]["props"]["text"] == "Neu von Runde B"      # die andere Runde bleibt
+    assert zweit["hinweise"] == [cw.NACHGESPIELT.format(n=5), cw.agent_werkzeuge.UEBERSPRUNGEN + "Titel ändern"]
+    assert api.aufrufe("pruefen")[-1][2] == zweit["bloecke"] and api.aufrufe("zurueck") == []
+
+
+def test_nachspielen_mit_neuer_flaeche_bekommt_neue_ids():
+    neuer = {**DOC, "u": DOC_B["u"], "root": {"type": "EmailLayout", "data": {"childrenIds": ["t", "u"]}}}
+    hg = {"werkzeug": "hintergrund_setzen", "flaeche": "neu:1", "farbe": "#000000", "schritt": "Hintergrund"}
+    api = RennApi([VERALTET, {"fassung": 6}], [{"fassung": 5, "bloecke": neuer}])
+    assert cw.chat_bearbeiten(api, AUFTRAG4, Fragen(json.dumps({"antwort": "Fläche da.", "aenderungen": [FL, hg]}))) == "fertig"
+    erst, zweit = [d["bloecke"] for d in _fertig_daten(api)]
+    alt_id, (neu_id,) = _agent_ids(erst)[0], _agent_ids(zweit)
+    assert neu_id != alt_id and zweit[neu_id]["data"]["props"]["gestaltung"]["hintergrund"] == "#000000"
+    assert "u" in zweit and "neu:1" not in json.dumps(zweit)
+
+
+def test_rennen_dreimal_verloren_gibt_mit_zu_vielen_zurueck():
+    api = RennApi([VERALTET], [{"fassung": 5, "bloecke": DOC}, {"fassung": 6, "bloecke": DOC}, {"fassung": 7, "bloecke": DOC}])
+    assert cw.chat_bearbeiten(api, AUFTRAG4, Fragen(GUT)) == "fehler"
+    assert [d["basis"] for d in _fertig_daten(api)] == [4, 5, 6, 7] and cw.NACHSPIELEN_MAX == 3
+    assert api.aufrufe("zurueck")[0][2] == cw.ZU_VIELE
+
+
+def test_nichts_passt_mehr_endet_fertig_ohne_fassung():
+    api = RennApi([VERALTET, {"fassung": None}], [{"fassung": 5, "bloecke": DOC_B}])
+    nur_t = json.dumps({"antwort": "Titel geändert.", "aenderungen": [text("Eins", "Titel ändern")]})
+    assert cw.chat_bearbeiten(api, AUFTRAG4, Fragen(nur_t)) == "fertig"
+    zweit = _fertig_daten(api)[1]
+    assert zweit["bloecke"] is None and zweit["antwort"] == cw.NICHTS_UMGESETZT
+    assert cw.agent_werkzeuge.UEBERSPRUNGEN + "Titel ändern" in zweit["hinweise"]
+
+
+def test_bildauftrag_mit_fehlendem_platz_wird_verworfen():
+    held = {"type": "Image", "data": {"props": {"url": "medien:nl-12345678-held.jpg", "alt": "Team",
+                                              "width": 600, "height": 300}}}   # ohne Masse kein Bildplatz
+    mit_held = {"root": {"type": "EmailLayout", "data": {"backdropColor": "#ffffff", "childrenIds": ["t", "held"]}},
+                "t": DOC["t"], "held": held}
+    bild = {"werkzeug": "bild_erzeugen", "platz": "held", "hinweis": "Kerzen", "schritt": "Bild beauftragen"}
+    api = RennApi([VERALTET, {"fassung": 6}], [{"fassung": 5, "bloecke": DOC}])
+    antwort = json.dumps({"antwort": "Bild kommt.", "aenderungen": [farbe("#ff0000", "Rot"), bild]})
+    assert cw.chat_bearbeiten(api, {**AUFTRAG4, "bloecke": mit_held}, Fragen(antwort)) == "fertig"
+    erst, zweit = _fertig_daten(api)
+    assert erst["bildauftraege"] == [{"platz": "held", "modus": "neu", "hinweis": "Kerzen"}]
+    assert zweit["bildauftraege"] == [] and cw.agent_werkzeuge.UEBERSPRUNGEN + "Bild beauftragen" in zweit["hinweise"]
+
+
+def test_schoenheit_nach_nachspielen_korrekturrunde_von_der_neuesten_fassung():
+    api = RennApi([VERALTET, {"fassung": 6}], [{"fassung": 5, "bloecke": DOC_B}], pruefen=[None, "u: Kontrast zu gering"])
+    zweite = json.dumps({"antwort": "Korrigiert.", "aenderungen": [farbe("#222222", "Dunkler")]})
+    fragen = Fragen(GUT, zweite)
+    assert cw.chat_bearbeiten(api, AUFTRAG4, fragen) == "fertig"
+    korrektur = fragen.gesehen[1][1][-1]["content"]
+    assert "u: Kontrast zu gering" in korrektur and "Neu von Runde B" in korrektur and "BLÖCKE (JSON)" in korrektur
+    letzte = _fertig_daten(api)[-1]
+    assert letzte["basis"] == 5 and letzte["bloecke"]["root"]["data"]["backdropColor"] == "#222222"
+    assert "u" in letzte["bloecke"] and api.aufrufe("zurueck") == []
+
+
+def test_stopp_behalten_spielt_die_gueltigen_schritte_auf_die_neueste_fassung():
+    """Review Focus 5: eine andere Runde hat inzwischen gespeichert - Behalten verliert die Schritte nicht."""
+    uhr = Uhr()
+    api = RennApi([{"fassung": 9}], [{"fassung": 5, "bloecke": DOC_B}])
+    api.zwischen = [{"weiter": True}, {"weiter": False, "grund": "stopp", "stopp": "behalten"}]
+    gestoppt = []
+    api.gestoppt = lambda aid, bloecke, basis=None, hinweise=(): gestoppt.append((bloecke, basis, list(hinweise))) or {}
+    s = stuecke([text("Eins", "Titel"), farbe("#111111", "Farbe"), farbe("#222222", "Noch eine")])
+    strom = Strom(uhr, [s[0], 1.0, s[1], 1.0, s[2], s[3]])
+    assert cw.chat_bearbeiten(api, AUFTRAG4, strom, uhr, uhr.schlafen, halten_takt_s=60, drossel_s=1.0) == "gestoppt"
+    ((bloecke, basis, hinweise),) = gestoppt
+    assert basis == 5 and bloecke["root"]["data"]["backdropColor"] == "#111111"
+    assert "u" in bloecke and "t" not in bloecke
+    assert hinweise == [cw.NACHGESPIELT.format(n=5), cw.agent_werkzeuge.UEBERSPRUNGEN + "Titel"]
+
+
+def test_stopp_behalten_ohne_fremde_fassung_wie_bisher():
+    uhr = Uhr()
+    api = RennApi([{"fassung": 9}], [{"fassung": 4, "bloecke": DOC}])
+    api.zwischen = [{"weiter": False, "grund": "stopp", "stopp": "behalten"}]
+    strom = Strom(uhr, stuecke([text("Eins", "Titel"), farbe("#111111", "Farbe")]))
+    assert cw.chat_bearbeiten(api, AUFTRAG4, strom, uhr, uhr.schlafen, halten_takt_s=60, drossel_s=0) == "gestoppt"
+    ((_, _, bloecke),) = api.aufrufe("gestoppt")
+    assert bloecke["t"]["data"]["props"]["text"] == "Eins"
+
+
+def test_chatapi_neueste_und_gestoppt_mit_basis(monkeypatch):
+    api, g = _api_mit_antwort(monkeypatch, b'{"fassung": 5, "bloecke": {}}')
+    assert api.neueste("a1") == {"fassung": 5, "bloecke": {}}
+    assert g["url"] == "https://vm/api/chat/arbeiter/a1/neueste" and g["methode"] == "GET"
+    api, g = _api_mit_antwort(monkeypatch, b'{"status": "fertig"}')
+    api.gestoppt("a1", DOC, 5, ["x"])
+    assert json.loads(g["data"]) == {"bloecke": DOC, "basis": 5, "hinweise": ["x"]}
+    api.gestoppt("a1", None)
+    assert json.loads(g["data"]) == {"bloecke": None}
+
+
+def test_stopp_behalten_nichts_passt_mehr_ohne_basis():
+    """Passt keine Aenderung mehr, darf die VM nicht den alten Zwischenstand (bloecke None) auf die neue Fassung legen:
+    gestoppt ohne basis, die VM verwirft dann wie bisher."""
+    uhr = Uhr()
+    api = RennApi([{"fassung": 9}], [{"fassung": 5, "bloecke": DOC_B}])
+    api.zwischen = [{"weiter": False, "grund": "stopp", "stopp": "behalten"}]
+    gestoppt = []
+    api.gestoppt = lambda aid, bloecke, basis=None, hinweise=(): gestoppt.append((bloecke, basis, list(hinweise))) or {}
+    strom = Strom(uhr, stuecke([text("Eins", "Titel"), text("Zwei", "Noch ein Titel")]))
+    assert cw.chat_bearbeiten(api, AUFTRAG4, strom, uhr, uhr.schlafen, halten_takt_s=60, drossel_s=0) == "gestoppt"
+    assert gestoppt == [(None, None, [])]

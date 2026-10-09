@@ -383,3 +383,10 @@ def test_kontrastregel_im_system():
 def test_kontrastprobleme_im_kontext():
     t = ap.nutzer_text({"nachricht": "x"}, [], kontrastprobleme=["t: #cccccc auf #ffffff unter 4.5:1"])
     assert "KONTRASTPROBLEME (im aktuellen Entwurf):\n- t: #cccccc auf #ffffff unter 4.5:1" in t
+
+
+def test_korrektur_mit_neuester_fassung():
+    t = ap.korrektur_text("u: Kontrast", {"root": {"type": "EmailLayout", "data": {"childrenIds": []}}, "u": {"x": 1}})
+    assert t.startswith("Deine letzte Antwort konnte nicht umgesetzt werden: u: Kontrast")
+    assert "Eine andere Runde hat den Entwurf inzwischen geändert" in t and 'BLÖCKE (JSON): {"root"' in t
+    assert "BLÖCKE" not in ap.korrektur_text("x")
