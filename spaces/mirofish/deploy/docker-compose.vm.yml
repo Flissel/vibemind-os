@@ -1,0 +1,53 @@
+# MiroFish auf der Proxmox-VM (offload-vm), seit 2026-10-09.
+#
+# Unterschiede zur PC-Datei ../mirofish/docker-compose.yml:
+#   - kein Ollama-Dienst: auf der VM laufen keine Modelle. Embeddings kommen
+#     ueber das Tailnet vom PC-Ollama (tailscale serve :11435), das LLM ueber
+#     das OpenFang-Tor am PC (nur brain-forecaster, scripts/openfang_forecaster_tor.py).
+#   - Neo4j ohne Host-Ports (nur intern), damit nichts mit debian-neo4j-mirofish-1
+#     (7475/7688) kollidiert.
+#   - Image mit festem Namen, damit update.sh einen Rueckweg-Tag setzen kann.
+#
+# Secrets liegen NICHT im Git, sondern in ${MIROFISH_BETRIEB}/.env
+# (Vorgabe ~/mirofish-betrieb/.env). Aufruf nur ueber update.sh.
+name: mirofish
+
+services:
+  mirofish:
+    build: ../mirofish
+    image: mirofish-offline:aktuell
+    container_name: mirofish-offline
+    env_file:
+      - ${MIROFISH_BETRIEB:?MIROFISH_BETRIEB_setzen}/.env
+    ports:
+      - "3000:3000"
+      - "5101:5001"
+    restart: unless-stopped
+    volumes:
+      - ${MIROFISH_BETRIEB:?MIROFISH_BETRIEB_setzen}/uploads:/app/backend/uploads
+    depends_on:
+      neo4j:
+        condition: service_healthy
+
+  neo4j:
+    image: neo4j:5.18-community
+    container_name: mirofish-neo4j
+    environment:
+      - NEO4J_AUTH=${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:?NEO4J_PASSWORD_setzen}
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_server_memory_heap_initial__size=512m
+      - NEO4J_server_memory_heap_max__size=2g
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
