@@ -818,3 +818,10 @@ def test_spiegel_schluessel_kennen_logo_dunkel(umg):
                                        "gestalt": gestalt}]]
     j = c.get("/api/pult/marke?mandant=radhaus", headers=H).json()
     assert j["spiegel"]["gestalt"]["logo_dunkel"] == "data:image/png;base64,BBBB"
+
+
+def test_logo_auch_im_bearbeitungs_auftrag(umg):
+    f, _, c = umg
+    f.antworten.append([dict(JOB, art="bearbeitung")])
+    r = _logo(c, _bild())
+    assert r.status_code == 200 and re.fullmatch(r"marke-radhaus-logo-[0-9a-f]{10}\.png", r.json()["name"])

@@ -23,7 +23,13 @@ MUSTER_MAX = {"betreff": 200, "ueberschrift": 200, "absatz": 1000}   # wie api/m
 SEITE_MAX = 6000                       # je Webseite im Prompt (der Leser kappt gesamt auf 20 000)
 FARBEN = ("akzent", "zweitfarbe", "grund", "text")
 SCHRIFTEN = ("schrift_anzeige", "schrift_text")
-SCHLUESSEL = (*FARBEN, *SCHRIFTEN, "logo", "abschnitte", "mustertext")
+SCHLUESSEL = (*FARBEN, *SCHRIFTEN, "logo", "logo_bearbeiten", "abschnitte", "mustertext")
+FREISTELLEN = ("farbe", "ki", "nein")
+WERKZEUG_FELDER = ("logo_dunkel", "logo_original")      # setzt nur der Arbeiter
+HERKUNFT_BISHER = "bisheriges Logo"
+HERKUNFT_WEB = "Logo-Kandidat der Webseite"
+LOGO_ANSICHTEN = (HERKUNFT_BISHER, HERKUNFT_WEB)
+_LB_SCHLUESSEL = {"quelle", "zuschneiden", "freistellen"}
 KNOPFTEXT = ("#ffffff", FAST_SCHWARZ)  # wie vorlagen_marke._auf: der besser lesbare gewinnt
 _HEX = re.compile(r"#[0-9A-Fa-f]{6}")
 _WEB = re.compile(r"web:([1-9][0-9]?)")
@@ -49,6 +55,7 @@ Ohne Vorschlag (Rückfrage, Auskunft): "vorschlag": null. Ein Vorschlag ist imme
 {"akzent": "#RRGGBB", "zweitfarbe": "#RRGGBB", "grund": "#RRGGBB", "text": "#RRGGBB",
  "schrift_anzeige": "<id>", "schrift_text": "<id>",
  "logo": "anhang:<name>" | "web:<n>" | null,
+ "logo_bearbeiten": null | {"quelle": "anhang:<name>" | "web:<n>" | "bisher", "zuschneiden": true | false, "freistellen": "farbe" | "ki" | "nein"},
  "abschnitte": {"<Abschnitt>": "<Text, höchstens 4000 Zeichen>", ...},
  "mustertext": {"betreff": "<höchstens 200>", "ueberschrift": "<höchstens 200>", "absatz": "<höchstens 1000>"}}
 
@@ -66,6 +73,12 @@ LOGO
 - "anhang:<name>" = ein angehängtes PNG- oder JPEG-Bild aus „Angehängte Bilder“, "web:<n>" = Logo-Kandidat n der \
 Webseite, der Logo-Wert des OFFENEN VORSCHLAGS wörtlich, null = Logo bleibt wie es ist (oder es gibt keins). \
 Nie erfundene Namen oder Adressen.
+- LOGO BEARBEITEN: Zeigt ein Logo-Bild (Anhang, Webseite, bisheriges Logo) Rand, Kartenhintergrund oder eine \
+Fläche hinter dem Zeichen, setz "logo_bearbeiten": quelle = das Bild ("bisher" = das bisherige Logo), \
+zuschneiden = true, wenn Rand weg soll, freistellen = "farbe" bei ruhigem, einfarbigem Hintergrund (Normalfall), \
+"ki" bei Foto oder unruhigem Hintergrund, "nein", wenn das Zeichen schon frei steht. Das System stellt das Zeichen \
+frei und rechnet zwei Fassungen (für hellen Grund und für dunkle Flächen); "logo" setzt du auf dieselbe Quelle \
+oder null. Sonst "logo_bearbeiten": null.
 
 OFFENER VORSCHLAG
 Steht im Kontext ein „OFFENER VORSCHLAG“, hat der Betreiber ihn noch nicht übernommen: verfeinere ihn nach seiner \
@@ -132,6 +145,8 @@ def _offen_text(v: dict) -> list[str]:
     zeilen += [f"- {k} {v[k]}" for k in (*FARBEN, *SCHRIFTEN) if isinstance(v.get(k), str)]
     logo = v.get("logo")
     zeilen.append(f"- logo {logo}" if isinstance(logo, str) and logo else "- logo null")
+    if isinstance(v.get("logo_dunkel"), str) and v["logo_dunkel"]:
+        zeilen.append("- logo_dunkel vorhanden (gehört zum Logo, bleibt mit ihm)")
     ab = v.get("abschnitte") if isinstance(v.get("abschnitte"), dict) else {}
     zeilen += [f"## {n}\n{t}" for n, t in ab.items() if isinstance(t, str) and t.strip()]
     return zeilen
@@ -160,9 +175,12 @@ def nutzer_text(auftrag: dict, profil, fund, unterlagen: str,
     teile += _fund_text(fund)
     if bilder:
         teile.append("Angehängte Bilder (in dieser Reihenfolge als Bild 1, 2, … beigefügt; Material):")
-        teile += [f"- Bild {i} = anhang:{name} ({herkunft}"
-                  + ("" if ist_logo_bild(name) else "; kein Logo möglich: nur PNG oder JPEG") + ")"
-                  for i, (name, herkunft) in enumerate(bilder, 1)]
+        for i, (name, herkunft) in enumerate(bilder, 1):
+            if herkunft in LOGO_ANSICHTEN:
+                teile.append(f"- Bild {i} = {name} ({herkunft}; als Quelle für logo_bearbeiten)")
+            else:
+                teile.append(f"- Bild {i} = anhang:{name} ({herkunft}"
+                             + ("" if ist_logo_bild(name) else "; kein Logo möglich: nur PNG oder JPEG") + ")")
     if unterlagen:
         teile += ["Unterlagen (Material):", unterlagen]
     if hinweise:
@@ -259,16 +277,42 @@ def werte_pruefen(v: dict) -> dict:
     return {**{k: v[k].lower() for k in FARBEN}, **{k: v[k] for k in SCHRIFTEN}}
 
 
-def vorschlag_pruefen(v: dict, anhaenge=(), web_logos: int = 0, bisher_logo: str | None = None) -> dict:
+def logo_bearbeiten_pruefen(roh, anhaenge, web_logos: int, bisher_vorhanden: bool) -> dict | None:
+    if roh is None:
+        return None
+    if not isinstance(roh, dict) or set(roh) != _LB_SCHLUESSEL:
+        raise AntwortFehler("Feld logo_bearbeiten braucht genau quelle, zuschneiden und freistellen")
+    quelle, zuschneiden, freistellen = roh["quelle"], roh["zuschneiden"], roh["freistellen"]
+    if not isinstance(zuschneiden, bool):
+        raise AntwortFehler("logo_bearbeiten.zuschneiden muss true oder false sein")
+    if freistellen not in FREISTELLEN:
+        raise AntwortFehler('logo_bearbeiten.freistellen muss "farbe", "ki" oder "nein" sein')
+    web = _WEB.fullmatch(quelle) if isinstance(quelle, str) else None
+    gueltig = isinstance(quelle, str) and (
+        (quelle == "bisher" and bisher_vorhanden)
+        or (quelle.startswith("anhang:") and quelle[len("anhang:"):] in anhaenge)
+        or (web is not None and 1 <= int(web.group(1)) <= web_logos))
+    if not gueltig:
+        raise AntwortFehler("logo_bearbeiten.quelle muss anhang:<name> eines angehängten Bildes, web:<n> eines "
+                            "Logo-Kandidaten oder bisher (nur mit bisherigem Logo) sein")
+    return {"quelle": quelle, "zuschneiden": zuschneiden, "freistellen": freistellen}
+
+
+def vorschlag_pruefen(v: dict, anhaenge=(), web_logos: int = 0, bisher_logo: str | None = None,
+                      bisher_vorhanden: bool = False) -> dict:
+    v = {k: w for k, w in v.items() if k not in WERKZEUG_FELDER}
     unbekannt = [str(k) for k in v if k not in SCHLUESSEL]
     if unbekannt:
         raise AntwortFehler("Vorschlag enthält unbekannte Felder: " + ", ".join(unbekannt[:5]))
     return {**werte_pruefen(v),
             "logo": _logo(v.get("logo"), set(anhaenge), web_logos, bisher_logo),
+            "logo_bearbeiten": logo_bearbeiten_pruefen(v.get("logo_bearbeiten"), set(anhaenge), web_logos,
+                                                       bisher_vorhanden or bool(bisher_logo)),
             "abschnitte": abschnitte_pruefen(v.get("abschnitte")), "mustertext": _mustertext(v.get("mustertext"))}
 
 
-def antwort_lesen(text: str, anhaenge=(), web_logos: int = 0, bisher_logo: str | None = None) -> dict:
+def antwort_lesen(text: str, anhaenge=(), web_logos: int = 0, bisher_logo: str | None = None, *,
+                  bisher_vorhanden: bool = False) -> dict:
     """{"antwort", "vorschlag"|None}. anhaenge = Mediennamen der angehaengten Bilder,
     web_logos = Zahl der Logo-Kandidaten der Webseite, bisher_logo = Logo-Wert des offenen
     Vorschlags (gilt woertlich). Wirft AntwortFehler."""
@@ -288,4 +332,5 @@ def antwort_lesen(text: str, anhaenge=(), web_logos: int = 0, bisher_logo: str |
     if roh is not None and not isinstance(roh, dict):
         raise AntwortFehler("Feld vorschlag muss ein Objekt oder null sein")
     return {"antwort": antwort.strip(),
-            "vorschlag": vorschlag_pruefen(roh, anhaenge, web_logos, bisher_logo) if roh is not None else None}
+            "vorschlag": vorschlag_pruefen(roh, anhaenge, web_logos, bisher_logo, bisher_vorhanden)
+            if roh is not None else None}

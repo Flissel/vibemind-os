@@ -457,7 +457,7 @@ async def arbeiter_logo(aid: str, request: Request, x_bild_key: str | None = Hea
     roh = bytes(roh)
     endung = await run_in_threadpool(_logo_pruefen, roh)
     job = await run_in_threadpool(_in_arbeit, a)
-    if job.get("art") != "chat":
+    if job.get("art") not in ("chat", "bearbeitung"):
         raise HTTPException(422, "Logos gibt es nur im Chat-Auftrag")
     name = f"marke-{job['mandant']}-logo-{hashlib.sha256(roh).hexdigest()[:10]}.{endung}"
 

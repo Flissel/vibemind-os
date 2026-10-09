@@ -5,8 +5,9 @@ import io
 import json
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
+from spaces.marketing.claw import bild_comfy
 from spaces.marketing.claw import markenprofil as mp
 from spaces.marketing.claw.webseite import Fund, Seite
 from spaces.marketing.workers import chat_worker as cw
@@ -60,7 +61,8 @@ class Api:
         self.log.append(("medium", aid, name)); return self.medien.get(name)
 
     def logo(self, aid, roh, typ):
-        self.log.append(("logo", aid, roh, typ)); return self.logo_name
+        self.log.append(("logo", aid, roh, typ))
+        return self.logo_name.pop(0) if isinstance(self.logo_name, list) else self.logo_name
 
     def vorschlag(self, aid, daten):
         self.log.append(("vorschlag", aid, daten)); return {"vorschlag": "v1"}
@@ -759,3 +761,117 @@ def test_uebernehmen_ungueltige_webseite_bleibt_weg(wurzel):
     api = Api(_uebernehmen({**VORSCHLAG, "webseite": "http://radhaus.example/"}))
     assert _lauf(api, Fragen()) == "fertig"
     assert "webseite:" not in (wurzel / "Radhaus" / "Marke.md").read_text(encoding="utf-8")
+
+
+def _karte():
+    bild = Image.new("RGB", (200, 120), "#ffffff")
+    ImageDraw.Draw(bild).rectangle((60, 30, 139, 89), fill="#111111")
+    puffer = io.BytesIO()
+    bild.save(puffer, "PNG")
+    return puffer.getvalue()
+
+
+LB = {"quelle": "anhang:karte.png", "zuschneiden": True, "freistellen": "farbe"}
+KARTE_CHAT = {**CHAT, "kontext": {"anhaenge": [{"name": "karte.png", "art": "bild"}]}}
+
+
+class FalschesComfy:
+    def __init__(self, fehler=None, ergebnis=None, laeuft=True):
+        self.fehler, self.ergebnis, self._laeuft, self.freigegeben = fehler, ergebnis, laeuft, 0
+
+    def laeuft(self):
+        return self._laeuft
+
+    def freistellen(self, png):
+        if self.fehler:
+            raise self.fehler
+        return self.ergebnis
+
+    def freigeben(self):
+        self.freigegeben += 1
+
+
+def _schritte(api):
+    """Schritte des letzten (vollstaendigen) Denkspur-Stands."""
+    return api.aufrufe("denken")[-1][3]
+
+
+def test_logo_bearbeiten_legt_zwei_fassungen_in_derselben_runde_ab():
+    api = Api(dict(KARTE_CHAT), medien={"karte.png": _karte()},
+              logo_name=["marke-radhaus-logo-hell.png", "marke-radhaus-logo-dunkel.png"])
+    assert _lauf(api, Fragen(_antwort({**VORSCHLAG, "logo": "anhang:karte.png", "logo_bearbeiten": LB}))) == "fertig"
+    (_, _, daten), = api.aufrufe("vorschlag")
+    v = daten["vorschlag"]
+    assert v["logo"] == "marke-radhaus-logo-hell.png" and v["logo_dunkel"] == "marke-radhaus-logo-dunkel.png"
+    assert v["logo_original"] == "karte.png" and "logo_bearbeiten" not in v
+    hell = Image.open(io.BytesIO(api.aufrufe("logo")[0][2])).convert("RGBA")
+    dunkel = Image.open(io.BytesIO(api.aufrufe("logo")[1][2])).convert("RGBA")
+    assert hell.size == (86, 66) and hell.getpixel((0, 0))[3] == 0
+    assert hell.getpixel((43, 33)) == (0x2b, 0x27, 0x24, 255)        # einfarbig -> Markentextfarbe
+    assert dunkel.getpixel((43, 33)) == (255, 255, 255, 255)
+    assert "Logo bearbeitet (einfarbig)" in _schritte(api)
+
+
+def test_logo_ki_fehler_bleibt_unbearbeitet_und_die_runde_gelingt():
+    api = Api(dict(KARTE_CHAT), medien={"karte.png": _karte()})
+    comfy = FalschesComfy(fehler=bild_comfy.ComfyFehler("BiRefNet fehlt"))
+    lb = {**LB, "freistellen": "ki"}
+    assert _lauf(api, Fragen(_antwort({**VORSCHLAG, "logo": "anhang:karte.png", "logo_bearbeiten": lb})),
+                 comfy=comfy) == "fertig"
+    (_, _, daten), = api.aufrufe("vorschlag")
+    assert daten["vorschlag"]["logo"] == "anhang:karte.png" and "logo_dunkel" not in daten["vorschlag"]
+    assert any(h.startswith("Logo nicht bearbeitet: KI-Freistellen gescheitert") for h in daten["hinweise"])
+    assert comfy.freigegeben == 1 and api.aufrufe("logo") == []
+
+
+def test_logo_ki_comfy_aus_wird_hinweis():
+    api = Api(dict(KARTE_CHAT), medien={"karte.png": _karte()})
+    _lauf(api, Fragen(_antwort({**VORSCHLAG, "logo_bearbeiten": {**LB, "freistellen": "ki"}})),
+          comfy=FalschesComfy(laeuft=False))
+    assert "Logo nicht bearbeitet: ComfyUI läuft nicht" in api.aufrufe("vorschlag")[0][2]["hinweise"]
+
+
+def test_logo_bearbeiten_aus_bisherigem_rowboat_logo(wurzel):
+    (wurzel / "Radhaus").mkdir()
+    (wurzel / "Radhaus" / "logo.png").write_bytes(_karte())
+    (wurzel / "Radhaus" / "Marke.md").write_text("---\nlogo: logo.png\n---\n", encoding="utf-8")
+    api = Api(dict(CHAT), logo_name=["orig.png", "hell.png", "dunkel.png"])
+    _lauf(api, Fragen(_antwort({**VORSCHLAG, "logo_bearbeiten": {**LB, "quelle": "bisher"}})))
+    v = api.aufrufe("vorschlag")[0][2]["vorschlag"]
+    assert (v["logo_original"], v["logo"], v["logo_dunkel"]) == ("orig.png", "hell.png", "dunkel.png")
+
+
+def test_folgerunde_behaelt_dunkle_fassung_des_offenen_vorschlags():
+    offen = {**VORSCHLAG, "logo": "hell.png", "logo_dunkel": "dunkel.png", "logo_original": "karte.png"}
+    api = Api({**CHAT, "vorschlag": {"id": "v0", "vorschlag": offen}})
+    _lauf(api, Fragen(_antwort({**VORSCHLAG, "logo": None})))
+    v = api.aufrufe("vorschlag")[0][2]["vorschlag"]
+    assert (v["logo"], v["logo_dunkel"], v["logo_original"]) == ("hell.png", "dunkel.png", "karte.png")
+
+
+def test_neues_logo_ohne_bearbeitung_hat_keine_dunkle_fassung():
+    offen = {**VORSCHLAG, "logo": "hell.png", "logo_dunkel": "dunkel.png"}
+    auftrag = {**CHAT, "vorschlag": {"id": "v0", "vorschlag": offen},
+               "kontext": {"anhaenge": [{"name": "neu.png", "art": "bild"}]}}
+    api = Api(auftrag, medien={"neu.png": LOGO})
+    _lauf(api, Fragen(_antwort({**VORSCHLAG, "logo": "anhang:neu.png"})))
+    v = api.aufrufe("vorschlag")[0][2]["vorschlag"]
+    assert v["logo"] == "anhang:neu.png" and "logo_dunkel" not in v
+
+
+def test_marken_chat_sieht_bisheriges_logo_und_web_kandidaten(wurzel):
+    (wurzel / "Radhaus").mkdir()
+    (wurzel / "Radhaus" / "logo.png").write_bytes(LOGO)
+    (wurzel / "Radhaus" / "Marke.md").write_text("---\nlogo: logo.png\n---\n## Ton\nLocker\n", encoding="utf-8")
+    geladen = []
+    fund = Fund(seiten=[Seite(url="https://radhaus.example/", text="Räder", ueberschriften=[])],
+                logos=["https://radhaus.example/logo.png"])
+    api = Api({**CHAT, "nachricht": "https://radhaus.example/"})
+    fragen = Fragen(_antwort({**VORSCHLAG, "logo": "web:1"}))
+    _lauf(api, fragen, webseite_lesen=lambda u: fund,
+          logo_laden=lambda u: geladen.append(u) or (LOGO, "image/png"))
+    inhalt = fragen.gesehen[0][1][0]["content"]
+    assert [t["type"] for t in inhalt] == ["text", "image_url", "image_url"]
+    assert "Bild 1 = bisher (bisheriges Logo" in inhalt[0]["text"]
+    assert "Bild 2 = web:1 (Logo-Kandidat der Webseite" in inhalt[0]["text"]
+    assert geladen == ["https://radhaus.example/logo.png"]          # einmal geladen, auch fuer die Ablage

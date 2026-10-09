@@ -17,7 +17,8 @@ import json
 import re
 import time
 
-from spaces.marketing.claw import denkspur, markenprofil, marken_prompt, markenwissen, webseite
+from spaces.marketing.claw import (bild_comfy, denkspur, logo_bearbeiten, markenprofil, marken_prompt,
+                                   markenwissen, webseite)
 from spaces.marketing.workers import chat_worker as cw
 from spaces.marketing.workers.bild_worker import ApiFehler
 
@@ -143,20 +144,136 @@ def _web_logo(api, aid, url: str, logo_laden, hinweise: list[str]) -> str | None
         return None
 
 
+LOGO_NICHT = "Logo nicht bearbeitet: "
+LOGO_WEB_ANSICHTEN = 3
+
+
+def _einmal(logo_laden):
+    """Jeder Logo-Kandidat wird je Runde hoechstens einmal geladen (Ansicht, Bearbeitung, Ablage)."""
+    geladen: dict = {}
+
+    def laden(url):
+        if url not in geladen:
+            geladen[url] = logo_laden(url)
+        return geladen[url]
+    return laden
+
+
+def _bisheriges_logo(api, aid, bisher: str | None, profil) -> tuple[bytes | None, str | None]:
+    """(Bytes, Medienname) des bisherigen Logos: das Logo des offenen Vorschlags, sonst die Rowboat-Datei."""
+    if bisher:
+        name = bisher[len("anhang:"):] if bisher.startswith("anhang:") else bisher
+        try:
+            roh = api.medium(aid, name)
+        except (ApiFehler, OSError, ValueError):
+            roh = None
+        if roh:
+            return roh, name
+    return _datei_bytes(profil.logo_pfad), None
+
+
+def _logo_ansichten(api, aid, bisher, profil, logos: list[str], laden, bildteile: list, bilder: list) -> None:
+    """Bisheriges Logo und Logo-Kandidaten der Webseite als Bildteile, damit Claude Rand und Flaeche sieht
+    (Spec §1). Nur solange Platz unter cw.MAX_BILDER ist; was nicht ladbar ist, faellt still weg."""
+    kandidaten = []
+    roh, _ = _bisheriges_logo(api, aid, bisher, profil)
+    if roh:
+        kandidaten.append(("bisher", marken_prompt.HERKUNFT_BISHER, roh))
+    for i, url in enumerate(logos[:LOGO_WEB_ANSICHTEN], 1):
+        geladen = laden(url)
+        if geladen:
+            kandidaten.append((f"web:{i}", marken_prompt.HERKUNFT_WEB, geladen[0]))
+    for name, herkunft, roh in kandidaten:
+        if len(bildteile) >= cw.MAX_BILDER:
+            break
+        teil = cw._bild_als_teil(roh)
+        if teil is not None:
+            bildteile.append(teil)
+            bilder.append((name, herkunft))
+
+
+def _logo_quelle(api, aid, quelle: str, bilder, logos, laden, bisher, profil) -> tuple[bytes, str | None]:
+    """(Bytes, Medienname des Originals oder None) der Logo-Quelle. Wirft LogoFehler mit lesbarem Grund."""
+    if quelle == "bisher":
+        roh, name = _bisheriges_logo(api, aid, bisher, profil)
+        if not roh:
+            raise logo_bearbeiten.LogoFehler("kein bisheriges Logo")
+        return roh, name
+    if quelle.startswith("web:"):
+        geladen = laden(logos[int(quelle[4:]) - 1])
+        if not geladen:
+            raise logo_bearbeiten.LogoFehler("Logo der Webseite nicht ladbar")
+        return geladen[0], None
+    name = quelle[len("anhang:"):]
+    roh = api.medium(aid, name)
+    if not roh:
+        raise logo_bearbeiten.LogoFehler(f"{name} fehlt in den Medien")
+    return roh, name
+
+
+def _ki(comfy):
+    """BiRefNet ueber ComfyUI am PC (derselbe Weg wie bild_worker._freistellen); gibt danach den
+    Grafikspeicher frei. Laeuft ComfyUI nicht, LogoFehler."""
+    def freistellen(png: bytes) -> bytes:
+        if not comfy.laeuft():
+            raise logo_bearbeiten.LogoFehler("ComfyUI läuft nicht")
+        try:
+            return comfy.freistellen(png)
+        finally:
+            try:
+                comfy.freigeben()
+            except Exception:  # noqa: BLE001 - Freigeben ist nur Hoeflichkeit gegenueber Ollama
+                pass
+    return freistellen
+
+
+def _logo_bearbeiten(api, aid, lb: dict, textfarbe: str, bilder, logos, laden, bisher, profil, comfy,
+                     hinweise: list[str], spur) -> dict | None:
+    """Logo in derselben Runde bearbeiten (Spec §1) -> {logo, logo_dunkel, logo_original} oder None: dann
+    bleibt das Logo unbearbeitet und ein Hinweis nennt den Grund. Wirft nur, wenn der Auftrag nicht mehr
+    uns gehoert."""
+    try:
+        roh, original = _logo_quelle(api, aid, lb["quelle"], bilder, logos, laden, bisher, profil)
+        f = logo_bearbeiten.fassungen(roh, freistellen=lb["freistellen"], zuschneiden=lb["zuschneiden"],
+                                      textfarbe=textfarbe, ki=_ki(comfy))
+        if original is None:
+            original = api.logo(aid, logo_bearbeiten.als_png(roh), "image/png")
+        hell = api.logo(aid, f.hell, "image/png")
+        dunkel = api.logo(aid, f.dunkel, "image/png")
+    except logo_bearbeiten.LogoFehler as e:
+        grund = str(e)
+    except bild_comfy.ComfyFehler as e:
+        grund = cw._kurz(e)
+    except ApiFehler as e:
+        if e.code in cw.FREMD and "in Arbeit" in e.grund:
+            raise
+        grund = e.grund[:150]
+    except (OSError, ValueError) as e:
+        grund = cw._kurz(e)
+    else:
+        hinweise.extend(f.hinweise)
+        spur.schritt(f"Logo bearbeitet ({'einfarbig' if f.einfarbig else 'mehrfarbig'})")
+        return {"logo": hell, "logo_dunkel": dunkel, "logo_original": original}
+    hinweise.append(LOGO_NICHT + grund)
+    spur.schritt((LOGO_NICHT + grund)[:200])
+    return None
+
+
 def chat_bearbeiten(api, auftrag: dict, fragen_strom, webseite_lesen, logo_laden, wurzel: str,
-                    uhr, schlafen, halten_takt_s) -> str:
+                    uhr, schlafen, halten_takt_s, *, comfy=bild_comfy) -> str:
     aid = str(auftrag["id"])
     spur = denkspur.Spur(cw.spur_senden(api, aid), uhr=uhr)
     try:
         return _chat_mit_spur(api, auftrag, aid, spur, fragen_strom, webseite_lesen, logo_laden, wurzel,
-                              uhr, schlafen, halten_takt_s)
+                              uhr, schlafen, halten_takt_s, comfy=comfy)
     except (_Aufgeben, cw._Verloren, ApiFehler, OSError, ValueError):
         _spur_ende(spur)
         raise
 
 
 def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_lesen, logo_laden, wurzel: str,
-                   uhr, schlafen, halten_takt_s) -> str:
+                   uhr, schlafen, halten_takt_s, *, comfy) -> str:
+    laden = _einmal(logo_laden)
     mandant, name = _firma(auftrag)
     bilder: list[tuple[str, str]] = []
     with cw.halten(api, aid, halten_takt_s) as halter:          # Anhaenge und Webseite dauern
@@ -172,19 +289,21 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
             hinweise += fund.hinweise
         profil = markenprofil.lesen(wurzel, mandant, name)
         hinweise += profil.hinweise
+        logos = list(fund.logos) if fund is not None else []
+        bisher = marken_prompt.bisheriges_logo(auftrag)      # Logo des offenen Vorschlags (C1/R14)
+        _logo_ansichten(api, aid, bisher, profil, logos, laden, bildteile, bilder)
     if halter.verloren.is_set():
         return "fehler"
     text_nutzer = marken_prompt.nutzer_text(auftrag, profil, fund, unterlagen_text, bilder, hinweise)
     nachrichten = [{"role": "user", "content": [{"type": "text", "text": text_nutzer}, *bildteile]
                     if bildteile else text_nutzer}]
     zustand = {"mit_bildern": bool(bildteile), "text_nutzer": text_nutzer, "hinweise": hinweise}
-    anhaenge = [n for n, _ in bilder]
-    logos = list(fund.logos) if fund is not None else []
-    bisher = marken_prompt.bisheriges_logo(auftrag)      # Logo des offenen Vorschlags (C1/R14)
+    anhaenge = [n for n, h in bilder if h not in marken_prompt.LOGO_ANSICHTEN]
     for versuch in (1, 2):
         text = _text_holen(api, aid, fragen_strom, nachrichten, zustand, uhr, schlafen, halten_takt_s, spur)
         try:
-            erg = marken_prompt.antwort_lesen(text, anhaenge, len(logos), bisher)
+            erg = marken_prompt.antwort_lesen(text, anhaenge, len(logos), bisher,
+                                              bisher_vorhanden=bool(bisher or profil.logo_pfad))
             break
         except marken_prompt.AntwortFehler as e:
             if versuch == 2:
@@ -201,11 +320,20 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
         spur.ende()
         api.fertig(aid, {"antwort": erg["antwort"], "hinweise": _hinweise(hinweise)})
         return "fertig"
-    logo = vorschlag.get("logo")
-    if isinstance(logo, str) and logo.startswith("web:"):
-        vorschlag["logo"] = _web_logo(api, aid, logos[int(logo[4:]) - 1], logo_laden, hinweise)
-    elif logo is None and bisher:
-        vorschlag["logo"] = bisher        # null = "Logo bleibt" - beim offenen Vorschlag also dessen Logo
+    lb = vorschlag.pop("logo_bearbeiten", None)
+    offen = marken_prompt.offener_vorschlag(auftrag) or {}
+    bearbeitet = (_logo_bearbeiten(api, aid, lb, vorschlag["text"], bilder, logos, laden, bisher, profil, comfy,
+                                   hinweise, spur) if lb else None)
+    if bearbeitet:
+        vorschlag.update(bearbeitet)
+    else:
+        logo = vorschlag.get("logo")
+        if isinstance(logo, str) and logo.startswith("web:"):
+            vorschlag["logo"] = _web_logo(api, aid, logos[int(logo[4:]) - 1], laden, hinweise)
+        elif logo is None and bisher:
+            vorschlag["logo"] = bisher        # null = "Logo bleibt" - beim offenen Vorschlag also dessen Logo
+        if bisher and vorschlag.get("logo") == bisher:     # dunkle Fassung und Original gehoeren zum Logo
+            vorschlag.update({k: offen[k] for k in marken_prompt.WERKZEUG_FELDER if isinstance(offen.get(k), str)})
     spur.schritt("Vorschlag abgelegt")
     spur.ende()
     api.vorschlag(aid, {"vorschlag": vorschlag, "antwort": erg["antwort"], "hinweise": _hinweise(hinweise)})
@@ -394,7 +522,8 @@ def _uebernehmen_mit_spur(api, auftrag: dict, aid: str, spur, wurzel: str, jetzt
 
 def ein_durchlauf(api, fragen_strom=cw.frage_strom, webseite_lesen=webseite.lesen,
                   logo_laden=webseite.logo_laden, wurzel: str | None = None, jetzt=datetime.datetime.now,
-                  uhr=time.monotonic, schlafen=time.sleep, halten_takt_s: float = cw.HALTEN_TAKT_S) -> str:
+                  uhr=time.monotonic, schlafen=time.sleep, halten_takt_s: float = cw.HALTEN_TAKT_S,
+                  comfy=bild_comfy) -> str:
     auftrag = api.naechster()
     if not auftrag:
         return "leer"
@@ -403,7 +532,7 @@ def ein_durchlauf(api, fragen_strom=cw.frage_strom, webseite_lesen=webseite.lese
     try:
         if auftrag.get("art") == "chat":
             return chat_bearbeiten(api, auftrag, fragen_strom, webseite_lesen, logo_laden, wurzel,
-                                   uhr, schlafen, halten_takt_s)
+                                   uhr, schlafen, halten_takt_s, comfy=comfy)
         if auftrag.get("art") == "uebernehmen":
             return uebernehmen(api, auftrag, wurzel, jetzt, halten_takt_s)
         raise _Aufgeben(UNBEKANNT)

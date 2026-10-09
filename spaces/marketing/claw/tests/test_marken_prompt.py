@@ -194,3 +194,40 @@ def test_minor1_nutzertext_markiert_bilder_die_kein_logo_sein_koennen():
     t = kp.nutzer_text(AUFTRAG, mp.Profil(), None, "", [("foto.webp", "Anhang"), ("logo.png", "Anhang")], [])
     assert "Bild 1 = anhang:foto.webp (Anhang; kein Logo möglich: nur PNG oder JPEG)" in t
     assert "Bild 2 = anhang:logo.png (Anhang)" in t
+
+
+LB = {"quelle": "anhang:karte.png", "zuschneiden": True, "freistellen": "farbe"}
+
+
+def test_logo_bearbeiten_gueltig_und_im_system():
+    assert "logo_bearbeiten" in kp.SYSTEM and '"ki"' in kp.SYSTEM and "bisher" in kp.SYSTEM
+    v = kp.antwort_lesen(_antwort(_mit(logo_bearbeiten=LB)), anhaenge=["karte.png"])["vorschlag"]
+    assert v["logo_bearbeiten"] == LB
+    assert kp.antwort_lesen(_antwort())["vorschlag"]["logo_bearbeiten"] is None
+
+
+@pytest.mark.parametrize("lb,meldung", [
+    ({**LB, "quelle": "anhang:fremd.png"}, "quelle"), ({**LB, "quelle": "web:2"}, "quelle"),
+    ({**LB, "quelle": "bisher"}, "quelle"), ({**LB, "freistellen": "magie"}, "freistellen"),
+    ({**LB, "zuschneiden": "ja"}, "zuschneiden"), ({**LB, "extra": 1}, "genau"), ("anhang:karte.png", "genau")])
+def test_logo_bearbeiten_fehler(lb, meldung):
+    with pytest.raises(kp.AntwortFehler, match=meldung):
+        kp.antwort_lesen(_antwort(_mit(logo_bearbeiten=lb)), anhaenge=["karte.png"], web_logos=1)
+
+
+def test_logo_bearbeiten_bisher_nur_mit_bisherigem_logo():
+    v = kp.antwort_lesen(_antwort(_mit(logo_bearbeiten={**LB, "quelle": "bisher"})), bisher_vorhanden=True)["vorschlag"]
+    assert v["logo_bearbeiten"]["quelle"] == "bisher"
+
+
+def test_arbeiterfelder_werden_still_verworfen():
+    v = kp.antwort_lesen(_antwort(_mit(logo_dunkel="x.png", logo_original="y.png")))["vorschlag"]
+    assert "logo_dunkel" not in v and "logo_original" not in v
+
+
+def test_logo_ansichten_stehen_als_quelle_im_text():
+    t = kp.nutzer_text({"firma": "Radhaus", "nachricht": "x"}, None, None, "",
+                       [("bisher", kp.HERKUNFT_BISHER), ("web:1", kp.HERKUNFT_WEB), ("foto.png", "Anhang")])
+    assert "- Bild 1 = bisher (bisheriges Logo; als Quelle für logo_bearbeiten)" in t
+    assert "- Bild 2 = web:1 (Logo-Kandidat der Webseite; als Quelle für logo_bearbeiten)" in t
+    assert "- Bild 3 = anhang:foto.png (Anhang)" in t
