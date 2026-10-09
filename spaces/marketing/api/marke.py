@@ -38,7 +38,7 @@ FRIST = "5 minutes"
 LOGO_MAX = 2 * 1024 * 1024
 LOGO_PIXEL_MAX = 25_000_000
 SPIEGEL_KOERPER_MAX = 400 * 1024          # Logo <= 140 KB als data-URL, Rest klein
-SPIEGEL_SCHLUESSEL = ("akzent", "flaeche", "logo", "schriften")
+SPIEGEL_SCHLUESSEL = ("akzent", "flaeche", "logo", "logo_dunkel", "schriften")
 _PNG, _JPEG = b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff"
 _LOGO_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(png|jpe?g)")
 MUSTER_MAX = {"betreff": 200, "ueberschrift": 200, "absatz": 1000}

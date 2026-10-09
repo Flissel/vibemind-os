@@ -214,11 +214,11 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
 
 # --- Spiegel -------------------------------------------------------------------------
 
-def _logo_bytes(profil) -> bytes | None:
-    if not profil.logo_pfad:
+def _datei_bytes(pfad: str | None) -> bytes | None:
+    if not pfad:
         return None
     try:
-        with open(profil.logo_pfad, "rb") as f:
+        with open(pfad, "rb") as f:
             roh = f.read(markenprofil.LOGO_MAX_BYTES + 1)
     except OSError:
         return None
@@ -227,7 +227,8 @@ def _logo_bytes(profil) -> bytes | None:
 
 def spiegel_gestalt(profil) -> dict:
     """Spiegel-Gestalt aus den gueltigen Werten des Profils (ungueltige fehlen schon in profil.werte)."""
-    return markenprofil.gestalt(profil.werte, _logo_bytes(profil), None)
+    return markenprofil.gestalt(profil.werte, _datei_bytes(profil.logo_pfad), None,
+                                _datei_bytes(profil.logo_dunkel_pfad))
 
 
 def _spiegeln(api, mandant: str, gestalt: dict, stand: str) -> str | None:
@@ -347,15 +348,19 @@ def _uebernehmen_mit_spur(api, auftrag: dict, aid: str, spur, wurzel: str, jetzt
         except marken_prompt.AntwortFehler as e:
             raise _Aufgeben(f"Übernehmen nicht möglich: {e}") from None
         logo = _logo_holen(api, aid, v.get("logo"))       # vor dem ersten Schreiben (nichts halb)
+        logo_dunkel = _logo_holen(api, aid, v.get("logo_dunkel")) if logo is not None else None
         if halter.verloren.is_set():
             raise cw._Verloren
         alt = markenprofil.lesen(wurzel, mandant, name)
         # Bisheriges bleibt, was der Vorschlag nicht nennt - auch das Logo, wenn kein neues kommt.
         werte = {k: w for k, w in alt.werte.items() if k != "stand"}
         werte.update(neue_werte)
+        if markenprofil.webseite_gueltig(v.get("webseite")):
+            werte["webseite"] = v["webseite"]
         try:
             markenprofil.schreiben(wurzel, mandant, name, werte, {**alt.abschnitte, **abschnitte}, logo,
-                                   str(auftrag.get("von") or VON_VORGABE), jetzt())
+                                   str(auftrag.get("von") or VON_VORGABE), jetzt(),
+                                   logo_dunkel=logo_dunkel)
             spur.schritt("Rowboat geschrieben")
         except markenprofil.MarkenFehler as e:
             raise _Aufgeben(f"Übernehmen nicht möglich: {e}") from None

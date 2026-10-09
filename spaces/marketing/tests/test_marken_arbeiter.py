@@ -738,3 +738,24 @@ def test_i3_markenapi_hinweise_route(monkeypatch):
     assert ma.MarkenApi("https://vm/", "K").hinweise("r", ["Marke.md: akzent ungültig"]) == {"ok": True}
     assert gesehen[-1][:2] == ("https://vm/api/marke/arbeiter/hinweise", "POST")
     assert json.loads(gesehen[-1][2]) == {"mandant": "r", "hinweise": ["Marke.md: akzent ungültig"]}
+
+
+def test_uebernehmen_schreibt_logo_dunkel_und_webseite(wurzel):
+    puffer = io.BytesIO()
+    Image.new("RGBA", (40, 30), (255, 255, 255, 128)).save(puffer, "PNG")
+    dunkel = puffer.getvalue()      # mit Alpha, sonst spiegelt gestalt() als JPEG
+    api = Api(_uebernehmen({**VORSCHLAG, "logo": "marke-radhaus-logo-hell.png",
+                            "logo_dunkel": "marke-radhaus-logo-dunkel.png", "webseite": "https://radhaus.example/"}),
+              medien={"marke-radhaus-logo-hell.png": LOGO, "marke-radhaus-logo-dunkel.png": dunkel})
+    assert _lauf(api, Fragen()) == "fertig"
+    text = (wurzel / "Radhaus" / "Marke.md").read_text(encoding="utf-8")
+    assert "logo_dunkel: logo-dunkel.png" in text and "webseite: https://radhaus.example/" in text
+    assert (wurzel / "Radhaus" / "logo-dunkel.png").read_bytes() == dunkel
+    (_, _, gestalt, _), = api.aufrufe("spiegeln")
+    assert gestalt["logo_dunkel"].startswith("data:image/png;base64,")
+
+
+def test_uebernehmen_ungueltige_webseite_bleibt_weg(wurzel):
+    api = Api(_uebernehmen({**VORSCHLAG, "webseite": "http://radhaus.example/"}))
+    assert _lauf(api, Fragen()) == "fertig"
+    assert "webseite:" not in (wurzel / "Radhaus" / "Marke.md").read_text(encoding="utf-8")

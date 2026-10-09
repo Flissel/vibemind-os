@@ -18,6 +18,7 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 from spaces.marketing.claw import markenwissen as mw
 from spaces.marketing.claw.schriften import REGISTER
@@ -31,7 +32,10 @@ SPIEGEL_MAX_CHARS = 140 * 1024  # ganze data-URL
 _MIN_KANTE = 16
 _LESE_MAX = 200_000
 
-KOPF_REIHENFOLGE = ("akzent", "zweitfarbe", "grund", "text", "schrift_anzeige", "schrift_text", "logo", "stand")
+KOPF_REIHENFOLGE = ("akzent", "zweitfarbe", "grund", "text", "schrift_anzeige", "schrift_text", "logo",
+                    "logo_dunkel", "webseite", "stand")
+_LOGOS = (("logo", "logo_pfad"), ("logo_dunkel", "logo_dunkel_pfad"))
+WEBSEITE_MAX = 300
 _FARBEN = ("akzent", "zweitfarbe", "grund", "text")
 _SCHRIFTEN = ("schrift_anzeige", "schrift_text")
 ABSCHNITT_REIHENFOLGE = ("Wer wir sind", "Zielgruppe", "Ton", "Angebote", "Do & Don'ts",
@@ -60,9 +64,23 @@ class Profil:
     hinweise: list[str] = field(default_factory=list)
     ordner: str | None = None
     logo_pfad: str | None = None
+    logo_dunkel_pfad: str | None = None
 
 
 # --- Pruefung -------------------------------------------------------------------
+
+def webseite_gueltig(wert: object) -> bool:
+    """https-Adresse mit Host, ohne Zugangsdaten und ohne Leerraum (Spec 2026-10-09 §2)."""
+    if not isinstance(wert, str) or not wert or len(wert) > WEBSEITE_MAX or any(c.isspace() for c in wert):
+        return False
+    try:
+        teile = urlsplit(wert)
+        teile.port                       # wirft ValueError bei kaputtem Port
+    except ValueError:
+        return False
+    return (teile.scheme == "https" and bool(teile.hostname)
+            and teile.username is None and teile.password is None)
+
 
 def _gueltig(schluessel: str, wert: object) -> bool:
     if not isinstance(wert, str):
@@ -71,8 +89,10 @@ def _gueltig(schluessel: str, wert: object) -> bool:
         return _FARBE.fullmatch(wert) is not None
     if schluessel in _SCHRIFTEN:
         return wert in REGISTER
-    if schluessel == "logo":
+    if schluessel in ("logo", "logo_dunkel"):
         return _LOGO_NAME.fullmatch(wert) is not None
+    if schluessel == "webseite":
+        return webseite_gueltig(wert)
     return bool(wert.strip()) and "\n" not in wert and "\r" not in wert  # stand
 
 
@@ -150,14 +170,16 @@ def _auswerten(profil: Profil, text: str) -> None:
             profil.werte[schluessel] = wert
         else:
             profil.hinweise.append(f"Marke.md: {schluessel} ungültig")
-    logo = profil.werte.get("logo")
-    if logo:
-        ziel = os.path.join(profil.ordner, logo) if profil.ordner else None
+    for schluessel, attribut in _LOGOS:
+        name = profil.werte.get(schluessel)
+        if not name:
+            continue
+        ziel = os.path.join(profil.ordner, name) if profil.ordner else None
         if ziel and os.path.isfile(ziel) and mw._echt(ziel, profil.ordner, os.path.realpath(profil.ordner)):
-            profil.logo_pfad = ziel
+            setattr(profil, attribut, ziel)
         else:
-            profil.werte.pop("logo")
-            profil.hinweise.append("Marke.md: logo ungültig")
+            profil.werte.pop(schluessel)
+            profil.hinweise.append(f"Marke.md: {schluessel} ungültig")
 
 
 def hat_kopfteil(text: str) -> bool:
@@ -227,6 +249,10 @@ def fuer_prompt(profil: Profil) -> str:
             zeilen.append(f"- {bezeichnung}: {REGISTER[sid]['familie']} ({sid})")
     if profil.logo_pfad:
         zeilen.append("- Logo: vorhanden")
+    if profil.logo_dunkel_pfad:
+        zeilen.append("- Logo für dunkle Flächen: vorhanden")
+    if profil.werte.get("webseite"):
+        zeilen.append(f"- Webseite: {profil.werte['webseite']}")
     teile = ["\n".join(zeilen)] if zeilen else []
     teile += [f"## {n}\n{t}" for n, t in profil.abschnitte.items()]
     return "\n\n".join(teile)
@@ -318,8 +344,25 @@ def _bild_pruefen(roh: bytes) -> None:
         raise MarkenFehler("Das Logo ist keine lesbare PNG- oder JPEG-Datei") from e
 
 
+def _logo_roh(logo, wofuer: str) -> tuple[bytes | None, str | None]:
+    if logo is None:
+        return None, None
+    roh = logo[0]
+    if not isinstance(roh, (bytes, bytearray)) or not roh:
+        raise MarkenFehler(f"{wofuer} ist keine PNG- oder JPEG-Datei")
+    roh = bytes(roh)
+    if len(roh) > LOGO_MAX_BYTES:
+        raise MarkenFehler(f"{wofuer} ist größer als 2 MB")
+    art = _logo_typ(roh)
+    if art is None:
+        raise MarkenFehler(f"{wofuer} ist keine PNG- oder JPEG-Datei")
+    _bild_pruefen(roh)
+    return roh, art
+
+
 def schreiben(wurzel: str, mandant: str, name: str, werte: dict, abschnitte: dict,
-              logo: tuple[bytes, str] | None, von: str, jetzt: datetime.datetime) -> str:
+              logo: tuple[bytes, str] | None, von: str, jetzt: datetime.datetime, *,
+              logo_dunkel: tuple[bytes, str] | None = None) -> str:
     """Marke.md (und Logo) schreiben -> Pfad der Marke.md. Wirft MarkenFehler.
 
     Pruefungen (Werte, Logo) laufen vor dem ersten Schreiben. Die bisherige Marke.md
@@ -333,19 +376,14 @@ def schreiben(wurzel: str, mandant: str, name: str, werte: dict, abschnitte: dic
             del werte[k]
         elif k != "stand" and not _gueltig(k, v):
             raise MarkenFehler(f"Wert für {k} ungültig")
-    logo_roh, logo_art = None, None
-    if logo is not None:
-        logo_roh = logo[0]
-        if not isinstance(logo_roh, (bytes, bytearray)) or not logo_roh:
-            raise MarkenFehler("Das Logo ist keine PNG- oder JPEG-Datei")
-        logo_roh = bytes(logo_roh)
-        if len(logo_roh) > LOGO_MAX_BYTES:
-            raise MarkenFehler("Das Logo ist größer als 2 MB")
-        logo_art = _logo_typ(logo_roh)
-        if logo_art is None:
-            raise MarkenFehler("Das Logo ist keine PNG- oder JPEG-Datei")
-        _bild_pruefen(logo_roh)
+    logo_roh, logo_art = _logo_roh(logo, "Das Logo")
+    dunkel_roh, dunkel_art = _logo_roh(logo_dunkel, "Das dunkle Logo")
+    if logo_roh is not None:
         werte["logo"] = f"logo.{logo_art}"
+        if dunkel_roh is None:
+            werte.pop("logo_dunkel", None)    # neues Logo: eine alte dunkle Fassung passt nicht mehr dazu
+    if dunkel_roh is not None:
+        werte["logo_dunkel"] = f"logo-dunkel.{dunkel_art}"
     werte["stand"] = f"{jetzt:%Y-%m-%d %H:%M} von {_einzeilig(von) or 'unbekannt'}"
     inhalt = text(werte, abschnitte or {}).encode("utf-8")
 
@@ -355,18 +393,21 @@ def schreiben(wurzel: str, mandant: str, name: str, werte: dict, abschnitte: dic
     try:
         if os.path.lexists(marke) and not (os.path.isfile(marke) and mw._echt(marke, ordner, firma_real)):
             raise MarkenFehler(f"{DATEI} ist keine gewöhnliche Datei")
-        ziel = os.path.join(ordner, f"logo.{logo_art}") if logo_roh is not None else None
-        if ziel and os.path.lexists(ziel) and not mw._echt(ziel, ordner, firma_real):
-            raise MarkenFehler("Logo-Datei ist eine Verknüpfung")
+        dateien = [(os.path.join(ordner, f"{basis}.{art}"), roh, basis, art)
+                   for basis, roh, art in (("logo", logo_roh, logo_art), ("logo-dunkel", dunkel_roh, dunkel_art))
+                   if roh is not None]
+        for ziel, *_ in dateien:
+            if os.path.lexists(ziel) and not mw._echt(ziel, ordner, firma_real):
+                raise MarkenFehler("Logo-Datei ist eine Verknüpfung")
         if os.path.isfile(marke):
             _verlauf_sichern(ordner, firma_real, marke, jetzt)
-        if ziel:
-            _ersetzen(ziel, logo_roh)
+        for ziel, roh, _, _ in dateien:
+            _ersetzen(ziel, roh)
         _ersetzen(marke, inhalt)
-        if ziel:  # erst jetzt, wo Marke.md das neue Logo nennt
+        for _, _, basis, art in dateien:      # erst jetzt, wo Marke.md die neue Datei nennt
             for endung in ("png", "jpg"):
-                altes = os.path.join(ordner, f"logo.{endung}")
-                if endung != logo_art and os.path.lexists(altes):
+                altes = os.path.join(ordner, f"{basis}.{endung}")
+                if endung != art and os.path.lexists(altes):
                     os.remove(altes)
     except OSError as e:
         raise MarkenFehler(f"Marke.md konnte nicht geschrieben werden: {e}") from e
@@ -411,7 +452,7 @@ def _spiegel_logo(roh: bytes) -> str | None:
         return None
 
 
-def gestalt(werte: dict, logo: bytes | None, logo_typ: str | None) -> dict:
+def gestalt(werte: dict, logo: bytes | None, logo_typ: str | None, logo_dunkel: bytes | None = None) -> dict:
     """Spiegel-Gestalt fuer die VM: akzent, flaeche (= zweitfarbe), logo (data-URL), schriften.
 
     Ungueltige oder fehlende Werte fehlen im Ergebnis. Die Profildatei behaelt das
@@ -427,6 +468,8 @@ def gestalt(werte: dict, logo: bytes | None, logo_typ: str | None) -> dict:
         url = _spiegel_logo(bytes(logo))
         if url:
             ergebnis["logo"] = url
+            # None entfernt eine alte dunkle Fassung im Spiegel (die DB loescht Schluessel mit JSON-null)
+            ergebnis["logo_dunkel"] = _spiegel_logo(bytes(logo_dunkel)) if logo_dunkel else None
     # Nur als vollstaendiges Paar: die VM verlangt genau anzeige UND text und lehnte sonst die ganze
     # Gestalt ab - ein kaputter Schriftwert blockierte dann auch gueltige Farben (I2).
     if _gueltig("schrift_anzeige", werte.get("schrift_anzeige")) and _gueltig("schrift_text", werte.get("schrift_text")):

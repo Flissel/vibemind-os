@@ -807,3 +807,14 @@ def test_marke_stand_ohne_laufenden_auftrag(umg):
     f.antworten += [[{"ok": True}], _stand_kopf(), [], [], [], [], []]
     j = c.get("/api/pult/marke?mandant=radhaus", headers=H).json()
     assert j["laufend"] is None
+
+
+def test_spiegel_schluessel_kennen_logo_dunkel(umg):
+    from spaces.marketing.api import marke
+    assert marke.SPIEGEL_SCHLUESSEL == ("akzent", "flaeche", "logo", "logo_dunkel", "schriften")
+    f, _, c = umg
+    gestalt = {"akzent": "#b45309", "logo": "data:image/png;base64,AAAA", "logo_dunkel": "data:image/png;base64,BBBB"}
+    f.antworten += [[{"ok": True}], [{"name": "Radhaus", "stand": "s", "gespiegelt_am": None, "fehler": None,
+                                       "gestalt": gestalt}]]
+    j = c.get("/api/pult/marke?mandant=radhaus", headers=H).json()
+    assert j["spiegel"]["gestalt"]["logo_dunkel"] == "data:image/png;base64,BBBB"

@@ -6,6 +6,7 @@ import base64
 import datetime
 import io
 import os
+import pathlib
 import subprocess
 import sys
 
@@ -252,7 +253,7 @@ def test_gestalt_schluessel_und_werte():
     assert g["akzent"] == "#C8102E" and g["flaeche"] == "#F4EFE6"
     assert g["schriften"] == {"anzeige": "playfair", "text": "dm-sans"}
     assert g["logo"].startswith("data:image/")
-    assert set(g) == {"akzent", "flaeche", "logo", "schriften"}
+    assert set(g) == {"akzent", "flaeche", "logo", "logo_dunkel", "schriften"} and g["logo_dunkel"] is None
 
 
 def test_gestalt_laesst_ungueltiges_weg():
@@ -353,3 +354,77 @@ def test_i2_schriften_nur_als_vollstaendiges_paar():
     assert g == {"akzent": "#C8102E", "flaeche": "#3b2f2f"}
     assert mp.gestalt({"schrift_anzeige": "playfair", "schrift_text": "manrope"}, None, None) == \
         {"schriften": {"anzeige": "playfair", "text": "manrope"}}
+
+
+PNG_ALPHA = _bild("PNG", modus="RGBA")
+
+
+@pytest.mark.parametrize("wert,gueltig", [
+    ("https://radhaus.example/", True), ("https://radhaus.example/ueber-uns?x=1", True),
+    ("http://radhaus.example/", False), ("https://anna:geheim@radhaus.example/", False),
+    ("https://", False), ("https://radhaus.example/ mit leer", False), ("https://" + "a" * 300 + ".de", False),
+    (None, False), ("", False)])
+def test_webseite_gueltig(wert, gueltig):
+    assert mp.webseite_gueltig(wert) is gueltig
+
+
+def test_logo_dunkel_und_webseite_hin_und_zurueck(wurzel):
+    werte = {**WERTE, "webseite": "https://radhaus.example/"}
+    pfad = mp.schreiben(str(wurzel), "radhaus", "Radhaus", werte, ABSCHNITTE, (PNG, "image/png"), "Anna", JETZT,
+                        logo_dunkel=(PNG_ALPHA, "image/png"))
+    text = open(pfad, encoding="utf-8").read()
+    kopf = text.split("---")[1]
+    assert kopf.index("logo: logo.png") < kopf.index("logo_dunkel: logo-dunkel.png") < kopf.index("webseite: https://radhaus.example/")
+    p = mp.lesen(str(wurzel), "radhaus", "Radhaus")
+    assert p.werte["logo_dunkel"] == "logo-dunkel.png" and p.logo_dunkel_pfad.endswith("logo-dunkel.png")
+    assert p.werte["webseite"] == "https://radhaus.example/" and p.hinweise == []
+    prompt = mp.fuer_prompt(p)
+    assert "- Logo für dunkle Flächen: vorhanden" in prompt and "- Webseite: https://radhaus.example/" in prompt
+
+
+def test_neues_logo_ohne_dunkle_fassung_entfernt_die_alte_kopfzeile(wurzel):
+    mp.schreiben(str(wurzel), "radhaus", "Radhaus", WERTE, ABSCHNITTE, (PNG, "image/png"), "Anna", JETZT,
+                 logo_dunkel=(PNG_ALPHA, "image/png"))
+    alt = mp.lesen(str(wurzel), "radhaus", "Radhaus").werte
+    mp.schreiben(str(wurzel), "radhaus", "Radhaus", {k: v for k, v in alt.items() if k != "stand"}, ABSCHNITTE,
+                 (JPG, "image/jpeg"), "Anna", JETZT)
+    p = mp.lesen(str(wurzel), "radhaus", "Radhaus")
+    assert "logo_dunkel" not in p.werte and p.logo_dunkel_pfad is None and p.werte["logo"] == "logo.jpg"
+
+
+def test_ohne_neues_logo_bleibt_die_dunkle_fassung(wurzel):
+    mp.schreiben(str(wurzel), "radhaus", "Radhaus", WERTE, ABSCHNITTE, (PNG, "image/png"), "Anna", JETZT,
+                 logo_dunkel=(PNG_ALPHA, "image/png"))
+    alt = mp.lesen(str(wurzel), "radhaus", "Radhaus").werte
+    mp.schreiben(str(wurzel), "radhaus", "Radhaus", {k: v for k, v in alt.items() if k != "stand"}, ABSCHNITTE,
+                 None, "Anna", JETZT)
+    assert mp.lesen(str(wurzel), "radhaus", "Radhaus").werte["logo_dunkel"] == "logo-dunkel.png"
+
+
+@pytest.mark.parametrize("zeile", ["webseite: http://radhaus.example/", "webseite: https://a:b@radhaus.example/",
+                                   "logo_dunkel: ../geheim.png"])
+def test_ungueltige_neue_kopfwerte_werden_hinweis(wurzel, zeile):
+    ordner = pathlib.Path(wurzel) / "Radhaus"
+    ordner.mkdir()
+    (ordner / "Marke.md").write_text(f"---\nakzent: #C8102E\n{zeile}\n---\n## Ton\nLocker\n", encoding="utf-8")
+    p = mp.lesen(str(wurzel), "radhaus", "Radhaus")
+    schluessel = zeile.split(":", 1)[0]
+    assert f"Marke.md: {schluessel} ungültig" in p.hinweise and schluessel not in p.werte
+
+
+def test_dunkles_logo_kaputt_schreibt_nichts(wurzel):
+    with pytest.raises(mp.MarkenFehler, match="dunkle Logo"):
+        mp.schreiben(str(wurzel), "radhaus", "Radhaus", WERTE, ABSCHNITTE, (PNG, "image/png"), "Anna", JETZT,
+                     logo_dunkel=(b"kein bild", "image/png"))
+    assert not (pathlib.Path(wurzel) / "Radhaus" / "Marke.md").exists()
+
+
+def test_gestalt_mit_logo_dunkel():
+    g = mp.gestalt(WERTE, PNG, None, PNG_ALPHA)
+    assert g["logo"].startswith("data:image/") and g["logo_dunkel"].startswith("data:image/png;base64,")
+    gross = _bild("PNG", groesse=(640, 640), modus="RGBA", rauschen=True)
+    g = mp.gestalt(WERTE, PNG, None, gross)
+    roh = base64.b64decode(g["logo_dunkel"].split(",", 1)[1])
+    assert len(g["logo_dunkel"]) <= mp.SPIEGEL_MAX_CHARS and max(Image.open(io.BytesIO(roh)).size) <= 600
+    assert mp.gestalt(WERTE, PNG, None)["logo_dunkel"] is None          # neues Logo ohne dunkle Fassung
+    assert "logo_dunkel" not in mp.gestalt(WERTE, None, None, PNG_ALPHA)  # ohne Logo keine dunkle Fassung
