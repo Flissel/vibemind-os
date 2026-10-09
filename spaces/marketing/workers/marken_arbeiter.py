@@ -17,7 +17,7 @@ import json
 import re
 import time
 
-from spaces.marketing.claw import markenprofil, marken_prompt, markenwissen, webseite
+from spaces.marketing.claw import denkspur, markenprofil, marken_prompt, markenwissen, webseite
 from spaces.marketing.workers import chat_worker as cw
 from spaces.marketing.workers.bild_worker import ApiFehler
 
@@ -28,6 +28,7 @@ MAX_HINWEIS = 300
 UNBEKANNT = "Unbekannte Auftragsart"
 VON_VORGABE = "Marken-Chat"
 UEBERNOMMEN = "Die Marke ist übernommen."
+SPIEGEL_FEHLER = "Spiegel nicht aktualisiert: "
 _ADRESSE = re.compile(r"\bhttps?://[^\s<>\"'`]+", re.IGNORECASE)
 _SATZZEICHEN = ".,;:!?)]}–—»“”'\""
 _PNG = b"\x89PNG\r\n\x1a\n"
@@ -73,14 +74,16 @@ def _firma(auftrag: dict) -> tuple[str, str]:
 
 # --- Claude --------------------------------------------------------------------------
 
-def _text_holen(api, aid, fragen_strom, nachrichten: list, zustand: dict, uhr, schlafen, halten_takt_s) -> str:
+def _text_holen(api, aid, fragen_strom, nachrichten: list, zustand: dict, uhr, schlafen, halten_takt_s,
+                spur) -> str:
     """Ganzer Antworttext eines Stroms. Shim weg: Wiederholung bis SHIM_BIS_S, dann _Aufgeben; lehnt der
     Shim die Bilder ab, einmal sofort ohne sie. Verlorene Vergabe => cw._Verloren."""
     beginn = None
     with cw.halten(api, aid, halten_takt_s) as halter:
         while True:
             try:
-                strom = iter(fragen_strom(marken_prompt.SYSTEM, nachrichten))
+                spur.schritt("Frage an Claude")
+                strom = iter(fragen_strom(marken_prompt.SYSTEM, nachrichten, denken=spur.denken))
                 try:
                     teile = []
                     for stueck in strom:
@@ -135,12 +138,28 @@ def _web_logo(api, aid, url: str, logo_laden, hinweise: list[str]) -> str | None
 def chat_bearbeiten(api, auftrag: dict, fragen_strom, webseite_lesen, logo_laden, wurzel: str,
                     uhr, schlafen, halten_takt_s) -> str:
     aid = str(auftrag["id"])
+    spur = denkspur.Spur(cw.spur_senden(api, aid), uhr=uhr)
+    try:
+        return _chat_mit_spur(api, auftrag, aid, spur, fragen_strom, webseite_lesen, logo_laden, wurzel,
+                              uhr, schlafen, halten_takt_s)
+    except (_Aufgeben, cw._Verloren):
+        spur.ende()
+        raise
+
+
+def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_lesen, logo_laden, wurzel: str,
+                   uhr, schlafen, halten_takt_s) -> str:
     mandant, name = _firma(auftrag)
     bilder: list[tuple[str, str]] = []
     with cw.halten(api, aid, halten_takt_s) as halter:          # Anhaenge und Webseite dauern
         bildteile, unterlagen_text, _, hinweise = cw.anhaenge_vorbereiten(api, aid, auftrag, bilder)
         url = adresse(auftrag.get("nachricht"))
         fund = webseite_lesen(url) if url else None
+        if url:
+            spur.schritt(f"Webseite gelesen ({len(fund.seiten)} Seiten)" if fund is not None and fund.seiten
+                         else "Webseite nicht lesbar")
+            if fund is not None and fund.logos:
+                spur.schritt(f"Logo-Kandidaten: {len(fund.logos)}")
         if fund is not None:
             hinweise += fund.hinweise
         profil = markenprofil.lesen(wurzel, mandant, name)
@@ -155,19 +174,23 @@ def chat_bearbeiten(api, auftrag: dict, fragen_strom, webseite_lesen, logo_laden
     logos = list(fund.logos) if fund is not None else []
     bisher = marken_prompt.bisheriges_logo(auftrag)      # Logo des offenen Vorschlags (C1/R14)
     for versuch in (1, 2):
-        text = _text_holen(api, aid, fragen_strom, nachrichten, zustand, uhr, schlafen, halten_takt_s)
+        text = _text_holen(api, aid, fragen_strom, nachrichten, zustand, uhr, schlafen, halten_takt_s, spur)
         try:
             erg = marken_prompt.antwort_lesen(text, anhaenge, len(logos), bisher)
             break
         except marken_prompt.AntwortFehler as e:
             if versuch == 2:
                 raise _Aufgeben(cw.NICHT_UMGESETZT + str(e)) from None
+            spur.schritt(f"Antwort geprüft: {e}")
+            spur.korrektur()
             nachrichten += [{"role": "assistant", "content": text},
                             {"role": "user", "content": marken_prompt.korrektur_text(str(e))}]
     if not api.weiter(aid):
         return "fehler"
     vorschlag = erg["vorschlag"]
     if vorschlag is None:
+        spur.schritt("Antwort ohne Vorschlag")
+        spur.ende()
         api.fertig(aid, {"antwort": erg["antwort"], "hinweise": _hinweise(hinweise)})
         return "fertig"
     logo = vorschlag.get("logo")
@@ -175,6 +198,8 @@ def chat_bearbeiten(api, auftrag: dict, fragen_strom, webseite_lesen, logo_laden
         vorschlag["logo"] = _web_logo(api, aid, logos[int(logo[4:]) - 1], logo_laden, hinweise)
     elif logo is None and bisher:
         vorschlag["logo"] = bisher        # null = "Logo bleibt" - beim offenen Vorschlag also dessen Logo
+    spur.schritt("Vorschlag abgelegt")
+    spur.ende()
     api.vorschlag(aid, {"vorschlag": vorschlag, "antwort": erg["antwort"], "hinweise": _hinweise(hinweise)})
     return "fertig"
 
@@ -203,7 +228,7 @@ def _spiegeln(api, mandant: str, gestalt: dict, stand: str) -> str | None:
     if isinstance(r, dict) and r.get("ok"):
         return None
     grund = r.get("fehler") if isinstance(r, dict) else None
-    return f"Spiegel nicht aktualisiert: {grund or 'Gestalt ungültig'}"
+    return f"{SPIEGEL_FEHLER}{grund or 'Gestalt ungültig'}"
 
 
 def _hinweise_melden(api, mandant: str, name: str, profil, firma: dict) -> str | None:
@@ -294,6 +319,15 @@ def _logo_holen(api, aid, verweis) -> tuple[bytes, str] | None:
 
 def uebernehmen(api, auftrag: dict, wurzel: str, jetzt, halten_takt_s) -> str:
     aid = str(auftrag["id"])
+    spur = denkspur.Spur(cw.spur_senden(api, aid))
+    try:
+        return _uebernehmen_mit_spur(api, auftrag, aid, spur, wurzel, jetzt, halten_takt_s)
+    except (_Aufgeben, cw._Verloren):
+        spur.ende()
+        raise
+
+
+def _uebernehmen_mit_spur(api, auftrag: dict, aid: str, spur, wurzel: str, jetzt, halten_takt_s) -> str:
     mandant, name = _firma(auftrag)
     v = (auftrag.get("vorschlag") or {}).get("vorschlag") if isinstance(auftrag.get("vorschlag"), dict) else None
     if not isinstance(v, dict):
@@ -314,25 +348,31 @@ def uebernehmen(api, auftrag: dict, wurzel: str, jetzt, halten_takt_s) -> str:
         try:
             markenprofil.schreiben(wurzel, mandant, name, werte, {**alt.abschnitte, **abschnitte}, logo,
                                    str(auftrag.get("von") or VON_VORGABE), jetzt())
+            spur.schritt("Rowboat geschrieben")
         except markenprofil.MarkenFehler as e:
             raise _Aufgeben(f"Übernehmen nicht möglich: {e}") from None
     # Ab hier ist Rowboat geschrieben: ein Spiegel-Fehler wird Hinweis, der Abgleich holt nach.
     neu = markenprofil.lesen(wurzel, mandant, name)
     hinweise = list(neu.hinweise)
     try:
-        fehler = _spiegeln(api, mandant, spiegel_gestalt(neu), neu.werte.get("stand", ""))
+        gestalt = spiegel_gestalt(neu)
+        if gestalt.get("logo"):
+            spur.schritt("Logo verkleinert")
+        fehler = _spiegeln(api, mandant, gestalt, neu.werte.get("stand", ""))
     except ApiFehler as e:
         if e.code in cw.FREMD and "in Arbeit" in e.grund:
             raise
         fehler = f"Spiegel nicht aktualisiert: {e.grund[:150]}"
     except (OSError, ValueError) as e:
         fehler = f"Spiegel nicht erreichbar: {cw._kurz(e)}"
+    spur.schritt(f"Spiegel abgelehnt: {fehler.removeprefix(SPIEGEL_FEHLER)}" if fehler else "Spiegel aktualisiert")
     if fehler:
         hinweise.append(fehler + " – der Abgleich holt es nach.")
     try:                    # Profilseite: Lese-Hinweise der neuen Marke.md (sonst erst beim naechsten Abgleich)
         api.hinweise(mandant, _hinweise(neu.hinweise))
     except (ApiFehler, OSError, ValueError):
         pass                # nicht auftragsgebunden; der Abgleich meldet sie spaetestens in 10 Minuten
+    spur.ende()
     api.fertig(aid, {"antwort": UEBERNOMMEN, "hinweise": _hinweise(hinweise)})
     return "fertig"
 

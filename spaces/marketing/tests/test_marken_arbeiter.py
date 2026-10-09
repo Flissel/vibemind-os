@@ -80,17 +80,22 @@ class Api:
     def hinweise(self, mandant, hinweise):
         self.log.append(("hinweise", mandant, hinweise)); return {"ok": True}
 
+    def denken(self, aid, denken, schritte):
+        self.log.append(("denken", aid, denken, [x["text"] for x in schritte])); return {"ok": True}
+
     def aufrufe(self, name):
         return [e for e in self.log if e[0] == name]
 
 
 class Fragen:
-    def __init__(self, *antworten):
-        self.antworten, self.gesehen = list(antworten), []
+    def __init__(self, *antworten, denkt=None):
+        self.antworten, self.gesehen, self.denkt = list(antworten), [], denkt
 
     def __call__(self, system, nachrichten, denken=None):
         self.gesehen.append((system, [dict(n) for n in nachrichten]))
         a = self.antworten.pop(0)
+        if denken is not None and self.denkt:
+            denken(self.denkt)
         if isinstance(a, Exception):
             raise a
         return iter([a[: len(a) // 2], a[len(a) // 2:]])   # wie ein Strom in Stuecken
@@ -224,6 +229,79 @@ def test_shim_aus_gibt_auftrag_zurueck(monkeypatch):
     assert ma.ein_durchlauf(api, fragen, webseite_lesen=lambda u: Fund(), logo_laden=lambda u: None,
                             uhr=lambda: next(uhr), schlafen=lambda s: None) == "fehler"
     assert api.aufrufe("zurueck")[0][2] == cw.NICHT_ERREICHBAR
+
+
+# --- Spur ---------------------------------------------------------------------------
+
+def _namen(api):
+    return [e[0] for e in api.log if e[0] in ("denken", "vorschlag", "fertig", "zurueck")]
+
+
+def test_marken_chat_spur():
+    fund = Fund(seiten=[Seite(url=f"https://radhaus.example/{i}", text="Text", ueberschriften=[]) for i in range(3)],
+                logos=["https://radhaus.example/a.png", "https://radhaus.example/b.png"])
+    api = Api({**CHAT, "nachricht": "Unsere Seite: https://radhaus.example/"})
+    fragen = Fragen(_antwort(), denkt="Thinking about colors")
+    assert _lauf(api, fragen, webseite_lesen=lambda url: fund) == "fertig"
+    namen = _namen(api)
+    assert namen[-1] == "vorschlag" and namen[-2] == "denken"       # Spur geht vor dem Vorschlag raus
+    letztes = api.aufrufe("denken")[-1]
+    assert "Thinking about colors" in letztes[2]
+    assert letztes[3] == ["Webseite gelesen (3 Seiten)", "Logo-Kandidaten: 2", "Frage an Claude",
+                          "Vorschlag abgelegt"]
+
+
+def test_marken_chat_webseite_nicht_lesbar():
+    api = Api({**CHAT, "nachricht": "Unsere Seite: https://radhaus.example/"})
+    assert _lauf(api, Fragen(_antwort()), webseite_lesen=lambda url: Fund()) == "fertig"
+    assert api.aufrufe("denken")[-1][3][0] == "Webseite nicht lesbar"
+
+
+def test_marken_chat_korrektur():
+    api = Api(dict(CHAT))
+    schlecht = _antwort({**VORSCHLAG, "grund": "#ffffff", "text": "#cccccc"})
+    fragen = Fragen(schlecht, _antwort(), denkt="Thinking")
+    assert _lauf(api, fragen) == "fertig"
+    letztes = api.aufrufe("denken")[-1]
+    pruef = [t for t in letztes[3] if t.startswith("Antwort geprüft: ")]
+    assert len(pruef) == 1 and "Kontrast" in pruef[0]
+    assert "Korrekturrunde" in letztes[3]
+    assert letztes[3].count("Frage an Claude") == 2
+    assert "Korrekturrunde" in letztes[2]
+
+
+def test_marken_chat_rueckfrage_spur():
+    api = Api(dict(CHAT))
+    assert _lauf(api, Fragen(_antwort(None, "Wie heißt eure Webseite?"))) == "fertig"
+    namen = _namen(api)
+    assert namen[-1] == "fertig" and namen[-2] == "denken"
+    assert api.aufrufe("denken")[-1][3] == ["Frage an Claude", "Antwort ohne Vorschlag"]
+
+
+def test_aufgeben_sendet_spur():
+    api = Api(dict(CHAT))
+    schlecht = _antwort({**VORSCHLAG, "grund": "#ffffff", "text": "#cccccc"})
+    assert _lauf(api, Fragen(schlecht, schlecht, denkt="Thinking")) == "fehler"
+    namen = _namen(api)
+    assert namen[-1] == "zurueck" and namen[-2] == "denken"
+    assert "Korrekturrunde" in api.aufrufe("denken")[-1][3]
+
+
+def test_uebernahme_spur(wurzel):
+    api = Api(_uebernehmen({**VORSCHLAG, "logo": "anhang:logo.png"}), medien={"logo.png": LOGO})
+    assert _lauf(api, Fragen()) == "fertig"
+    namen = _namen(api)
+    assert namen[-1] == "fertig" and namen[-2] == "denken"
+    letztes = api.aufrufe("denken")[-1]
+    assert letztes[3] == ["Rowboat geschrieben", "Logo verkleinert", "Spiegel aktualisiert"]
+    assert letztes[2] == ""
+
+
+def test_uebernahme_spiegel_abgelehnt_spur(wurzel, monkeypatch):
+    monkeypatch.setattr(ma, "_spiegeln", lambda api, mandant, gestalt, stand: "Logo zu gross")
+    api = Api(_uebernehmen())
+    assert _lauf(api, Fragen()) == "fertig"
+    assert api.aufrufe("denken")[-1][3][-1] == "Spiegel abgelehnt: Logo zu gross"
 
 
 # --- uebernehmen --------------------------------------------------------------------
