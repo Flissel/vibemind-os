@@ -42,6 +42,7 @@ NACHSPIELEN_MAX = 3
 ZU_VIELE = "Zu viele gleichzeitige Änderungen – bitte noch einmal senden"
 NICHTS_UMGESETZT = "Fertig, nichts umgesetzt – eine andere Runde hat den Entwurf inzwischen geändert."
 VM_HINWEISE_MAX = 40     # wie api/chat.py HINWEISE_MAX: mehr Hinweise lehnt die VM mit 422 ab
+GESTOPPT_VM = "Auftrag wurde gestoppt"   # pult_chat_fertig (067): der Betreiber hat die Runde gestoppt
 NACHGESPIELT = ("Auf Fassung {n} nachgespielt – eine andere Runde war schneller; "
                 "bei widersprüchlichen Bitten gilt diese Runde.")
 WEBSUCHE_AUS = "WebSearch:aus"   # wie marketing_shim.WEBSUCHE_AUS
@@ -636,17 +637,26 @@ def _schritte_zuruecknehmen(spur: denkspur.Spur, eintraege: list[dict]) -> None:
     spur.schritte[:] = [s for s in spur.schritte if not any(s is e for e in eintraege)]
 
 
-def _speichern(api, aid, daten: dict, aenderungen: list, medien: set, basis, spur: denkspur.Spur) -> dict:
+def _speichern(api, aid, daten: dict, aenderungen: list, medien: set, basis, spur: denkspur.Spur,
+               stopp_pruefen: Callable[[], None] | None = None) -> dict:
     """fertig mit Nachspielen (Spec 2026-10-09 §1): verliert das Speichern das Rennen, die Aenderungsliste auf die
     neueste Fassung nachspielen, pruefen und erneut speichern - hoechstens NACHSPIELEN_MAX-mal. -> Antwort der VM,
     {"status": "zu_viele"} nach dem letzten verlorenen Rennen. Wirft _Neuer, wenn die Schoenheitspruefung nach dem
     Nachspielen anschlaegt. Die Abschluss-Schritte stehen nur fuer den Versuch in der Spur, der gespeichert hat;
-    die Denkspur geht vor jedem fertig raus."""
+    die Denkspur geht vor jedem fertig raus. Lehnt fertig ab, weil die Runde inzwischen gestoppt wurde (der Stopp
+    kam waehrend des Nachspielens), wirft stopp_pruefen den _Stopp - der Stopp-Weg (Behalten/Verwerfen) gilt, nicht
+    "nicht erreichbar"."""
     hinweise: list[str] = []
     for runde in range(NACHSPIELEN_MAX + 1):
         schritte = _abschluss_schritte(spur, daten)
         spur.ende()
-        antwort = api.fertig(aid, {**daten, "basis": basis, "hinweise": hinweise})
+        try:
+            antwort = api.fertig(aid, {**daten, "basis": basis, "hinweise": hinweise})
+        except ApiFehler as e:
+            _schritte_zuruecknehmen(spur, schritte)     # nichts gespeichert
+            if e.code == 422 and str(e.grund).startswith(GESTOPPT_VM) and stopp_pruefen is not None:
+                stopp_pruefen()                          # wirft _Stopp mit der Art des Stopps
+            raise
         if antwort.get("status") != "veraltet":
             return antwort
         _schritte_zuruecknehmen(spur, schritte)
@@ -875,7 +885,8 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
                  "bloecke": bloecke if ergebnis.geaendert else None,
                  "bildauftraege": bildauftraege, "export_vorschlag": export, "notiz": ergebnis.notiz}
         try:
-            antwort_vm = _speichern(api, aid, daten, antwort["aenderungen"], set(medien), live.basis, spur)
+            antwort_vm = _speichern(api, aid, daten, antwort["aenderungen"], set(medien), live.basis, spur,
+                                    stopp_pruefen=lambda: live.melden(immer=True))
         except _Neuer as n:
             fehler = n.grund
             if versuch == 1:       # Korrekturrunde von der neuesten Fassung

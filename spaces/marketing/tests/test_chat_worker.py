@@ -1982,3 +1982,59 @@ def test_nachspiel_hinweise_bleiben_unter_der_vm_grenze():
     zweit = _fertig_daten(api)[1]
     assert len(zweit["hinweise"]) == cw.VM_HINWEISE_MAX == 40
     assert zweit["hinweise"][0] == cw.NACHGESPIELT.format(n=5) and zweit["bloecke"] is None
+
+
+# ---- Final-Review M1: Stopp waehrend des Nachspielens --------------------------------------------------------
+def test_stopp_waehrend_des_nachspielens_nimmt_den_stopp_weg():
+    """Der Stopp kommt, waehrend der Arbeiter nachspielt: fertig lehnt mit 422 "Auftrag wurde gestoppt" ab. Das ist
+    kein "nicht erreichbar" - "Behalten" spielt die gueltigen Schritte auf die neueste Fassung und meldet gestoppt."""
+    uhr = Uhr()
+    api = RennApi([VERALTET], [{"fassung": 5, "bloecke": DOC_B}])
+    gestoppt_am_vm = []
+    echt_fertig = api.fertig
+
+    def fertig(aid, daten):
+        if api.aufrufe("fertig"):                 # der zweite Versuch (nach dem Nachspielen) trifft den Stopp
+            api.log.append(("fertig", aid, daten))
+            gestoppt_am_vm.append(1)
+            raise cw.ApiFehler(422, "Auftrag wurde gestoppt")
+        return echt_fertig(aid, daten)
+    api.fertig = fertig
+    api.zwischenstand = lambda aid, bloecke, schritt, nr: (
+        api.log.append(("zwischenstand", aid, bloecke, schritt, nr)) or
+        ({"weiter": False, "grund": "stopp", "stopp": "behalten"} if gestoppt_am_vm else {"weiter": True}))
+    gestoppt = []
+    api.gestoppt = lambda aid, bloecke, basis=None, hinweise=(): gestoppt.append((bloecke, basis, list(hinweise))) or {}
+    strom = Strom(uhr, stuecke([text("Eins", "Titel"), farbe("#111111", "Farbe")]))
+    assert cw.chat_bearbeiten(api, AUFTRAG4, strom, uhr, uhr.schlafen, halten_takt_s=60, drossel_s=0) == "gestoppt"
+    assert api.aufrufe("zurueck") == []
+    ((bloecke, basis, hinweise),) = gestoppt
+    assert basis == 5 and bloecke["root"]["data"]["backdropColor"] == "#111111" and "u" in bloecke
+    assert hinweise == [cw.NACHGESPIELT.format(n=5), cw.agent_werkzeuge.UEBERSPRUNGEN + "Titel"]
+
+
+def test_stopp_verwerfen_waehrend_des_nachspielens():
+    uhr = Uhr()
+    api = RennApi([VERALTET], [{"fassung": 5, "bloecke": DOC_B}])
+    echt_fertig = api.fertig
+    stopp = []
+
+    def fertig(aid, daten):
+        if api.aufrufe("fertig"):
+            stopp.append(1)
+            raise cw.ApiFehler(422, "Auftrag wurde gestoppt")
+        return echt_fertig(aid, daten)
+    api.fertig = fertig
+    api.zwischenstand = lambda aid, bloecke, schritt, nr: (
+        {"weiter": False, "grund": "stopp", "stopp": "verwerfen"} if stopp else {"weiter": True})
+    strom = Strom(uhr, stuecke([farbe("#111111", "Farbe")]))
+    assert cw.chat_bearbeiten(api, AUFTRAG4, strom, uhr, uhr.schlafen, halten_takt_s=60, drossel_s=0) == "gestoppt"
+    assert [e[2] for e in api.aufrufe("gestoppt")] == [None] and api.aufrufe("zurueck") == []
+
+
+def test_fertig_422_ohne_stopp_bleibt_wie_bisher():
+    """Ein anderer 422 (Auftrag nicht mehr in Arbeit) bleibt "fehler" ohne zurueck und ohne gestoppt."""
+    api = Api()
+    api.fertig = lambda aid, d: (_ for _ in ()).throw(cw.ApiFehler(422, "Auftrag ist nicht (mehr) in Arbeit"))
+    assert cw.chat_bearbeiten(api, AUFTRAG, Fragen(GUT), halten_takt_s=60) == "fehler"
+    assert api.aufrufe("zurueck") == [] and api.aufrufe("gestoppt") == []
