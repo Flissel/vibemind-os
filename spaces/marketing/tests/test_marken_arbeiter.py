@@ -1332,3 +1332,29 @@ def test_t6_ohne_logo_keine_reservierung(wurzel):
     inhalt = fragen.gesehen[0][1][0]["content"]
     assert sum(1 for t in inhalt if t.get("type") == "image_url") == 6
     assert not any("weggelassen" in h or "nicht mitgeschickt" in h for h in api.aufrufe("fertig")[0][2]["hinweise"])
+
+
+# --- Formular-Runde: korrekturen im Vorschlag, leere Webseite ----------------------------
+
+def test_bearbeitung_korrekturen_im_vorschlag_werden_nach_oben_gehoben():
+    auftrag = {**BEARB, "kontext": {"formular": {**FORMULAR, "schrift_anzeige": "comic-sans"}, "woertlich": True}}
+    antwort = json.dumps({"antwort": "Schrift ersetzt.",
+                          "vorschlag": {**VORSCHLAG,
+                                        "korrekturen": [{"feld": "schrift_anzeige", "grund": "nicht im Register"}]}},
+                         ensure_ascii=False)
+    api, fragen = Api(auftrag), Fragen(antwort)
+    assert _lauf(api, fragen) == "fertig"
+    assert len(fragen.gesehen) == 1
+    assert "schrift_anzeige: comic-sans → playfair – nicht im Register" in api.aufrufe("vorschlag")[0][2]["hinweise"]
+    assert "korrekturen" not in api.aufrufe("vorschlag")[0][2]["vorschlag"]
+
+
+def test_bearbeitung_korrektur_fuer_leere_webseite_wird_verworfen(monkeypatch):
+    gesehen = []
+    echt = ma.marken_prompt.formular_abgleich
+    monkeypatch.setattr(ma.marken_prompt, "formular_abgleich",
+                        lambda f, v, k: gesehen.append(k) or echt(f, v, k))
+    antwort = json.dumps({"antwort": "ok", "vorschlag": VORSCHLAG,
+                          "korrekturen": [{"feld": "webseite", "grund": "leer"}]}, ensure_ascii=False)
+    assert _lauf(Api(dict(BEARB)), Fragen(antwort)) == "fertig"
+    assert gesehen == [[]]

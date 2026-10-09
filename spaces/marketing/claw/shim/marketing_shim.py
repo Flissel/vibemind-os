@@ -397,6 +397,11 @@ def _build_command(
         cli_tools.append(f"Read({bilder_ordner}/**)")
     if websuche:
         cli_tools.append(WEBSUCHE)          # nur Suchen; Seiten liest der gesicherte Leser des Arbeiters
+    if ohne_werkzeuge:
+        # Eingebaute CLI-Werkzeuge hart auf den Bedarf begrenzen (sonst hat die CLI Bash, Write, WebFetch, ...).
+        # Leere Liste = die zwei argv-Stuecke "--tools", "".
+        eingebaut = (["Read"] if bilder_ordner else []) + ([WEBSUCHE] if websuche else [])
+        argv += ["--tools", *(eingebaut or [""])]
     if cli_tools:
         argv += ["--allowedTools", *cli_tools]
     if bilder_ordner or websuche:

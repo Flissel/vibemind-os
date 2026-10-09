@@ -398,6 +398,7 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
     with cw.halten(api, aid, halten_takt_s) as halter:          # Anhaenge, Webseite und Wissen dauern
         profil = markenprofil.lesen(wurzel, mandant, name)
         hinweise = list(profil.hinweise)
+        webseite_im_formular = bool(str((formular or {}).get("webseite") or "").strip())
         if formular is not None:       # leere Webseite im Formular = die des aktuellen Profils bleibt (R3)
             formular = {**formular, "webseite": str(formular.get("webseite") or "").strip()
                         or str(profil.werte.get("webseite") or "")}
@@ -439,8 +440,11 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
                 text, logo_verworfen = marken_prompt.logo_verwerfen(text)
                 logo_hinweis = logo_hinweis or logo_verworfen
             erg = marken_prompt.antwort_lesen(text, anhaenge, len(logos), bisher,
-                                              bisher_vorhanden=bisher_vorhanden, lesen_erlaubt=lesen_frei)
+                                              bisher_vorhanden=bisher_vorhanden, lesen_erlaubt=lesen_frei,
+                                              korrekturen_heben=formular is not None)
             if formular is not None:
+                if not webseite_im_formular:     # leeres Webseitenfeld = unveraendert: keine Korrektur dafuer
+                    erg["korrekturen"] = [k for k in erg["korrekturen"] if k["feld"] != "webseite"]
                 if erg["vorschlag"] is None:
                     raise marken_prompt.AntwortFehler("Zur Bearbeitung gehört ein vollständiger Vorschlag")
                 korrigiert = marken_prompt.formular_abgleich(formular, erg["vorschlag"], erg["korrekturen"])

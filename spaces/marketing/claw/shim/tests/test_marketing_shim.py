@@ -685,3 +685,45 @@ def test_websuche_ohne_ohne_werkzeuge_wird_ignoriert(server, protokoll):
     _sse(server, _denk_body(marketing_websuche=True))
     argv = json.loads(protokoll.read_text(encoding="utf-8"))["argv"]
     assert "WebSearch" not in argv and "--allowedTools" not in argv
+
+# --- Eingebaute Werkzeuge sperren (--tools) -----------------------------------
+def _tools(argv):
+    i = argv.index("--tools") + 1
+    aus = []
+    while i < len(argv) and not (argv[i].startswith("--") and argv[i] != ""):
+        aus.append(argv[i])
+        i += 1
+    return aus
+
+
+def test_tools_leer_ohne_bilder_ohne_websuche():
+    argv = _bauen(ohne_werkzeuge=True)
+    assert argv[argv.index("--tools") + 1] == ""
+    assert _tools(argv) == [""]
+
+
+def test_tools_nur_read_mit_bildern(tmp_path):
+    argv = _bauen(ohne_werkzeuge=True, bilder_ordner=str(tmp_path))
+    assert _tools(argv) == ["Read"]
+
+
+def test_tools_nur_websearch_mit_websuche():
+    argv = _bauen(ohne_werkzeuge=True, websuche=True)
+    assert _tools(argv) == ["WebSearch"]
+
+
+def test_tools_read_und_websearch(tmp_path):
+    argv = _bauen(ohne_werkzeuge=True, bilder_ordner=str(tmp_path), websuche=True)
+    assert _tools(argv) == ["Read", "WebSearch"]
+
+
+def test_tools_fehlt_ohne_ohne_werkzeuge(tmp_path):
+    assert "--tools" not in _bauen()
+    assert "--tools" not in _bauen(bilder_ordner=str(tmp_path))
+
+
+def test_tools_websuche_rueckfall_ohne_websearch(server, protokoll, tmp_path, monkeypatch):
+    monkeypatch.setenv("FALSCH_ZAEHLER", str(tmp_path / "zaehler.txt"))
+    _sse(server, _web_body(), modus="websuche_abgelehnt")
+    argv = json.loads(protokoll.read_text(encoding="utf-8"))["argv"]
+    assert _tools(argv) == [""]

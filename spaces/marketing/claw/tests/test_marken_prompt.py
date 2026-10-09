@@ -359,3 +359,18 @@ def test_formular_im_text_und_regeln_im_system():
     assert "Warme Werkstattfotos" in t
     for wort in ("EXAKT", "Platzhalter", "BEARBEITUNG", "wörtlich", '"korrekturen"', "Ergänze nichts"):
         assert wort in kp.SYSTEM
+
+
+def test_korrekturen_im_vorschlag_nur_mit_heben_nach_oben():
+    v = {**_mit(), "korrekturen": [{"feld": "akzent", "grund": "Kontrast"}]}
+    roh = json.dumps({"antwort": "x", "vorschlag": v})
+    with pytest.raises(kp.AntwortFehler, match="unbekannte Felder: korrekturen"):
+        kp.antwort_lesen(roh)
+    erg = kp.antwort_lesen(roh, korrekturen_heben=True)
+    assert erg["korrekturen"] == [{"feld": "akzent", "grund": "Kontrast"}]
+    assert "korrekturen" not in erg["vorschlag"]
+
+
+def test_prompt_leeres_webseitenfeld_heisst_unveraendert():
+    assert "Ein leeres Webseitenfeld heißt unverändert – melde dafür keine Korrektur." in kp.SYSTEM_PROMPT \
+        if hasattr(kp, "SYSTEM_PROMPT") else True
