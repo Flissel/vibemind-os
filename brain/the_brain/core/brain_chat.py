@@ -4354,21 +4354,30 @@ class BrainChat:
                             content=f"Plan {plan.plan_id} with {len(plan.hops)} hops: {plan.rationale[:120]}",
                             module="PlannerLLM", confidence=0.8,
                         ))
-                        if openfang_handoff_bundle is None:
-                            exec_result = pe.execute(plan)
+                        # K1 (Schlussreview I8): mit Flag ist der Chat eine
+                        # Nutzeranfrage -> antwortkanal dashboard (Auftragsweg).
+                        from core import agent_auftraege as _aa
+                        _exec_kw: Dict[str, Any] = {}
+                        if openfang_handoff_bundle is not None:
+                            _exec_kw["openfang_handoff_bundle"] = openfang_handoff_bundle
+                        if _aa.AGENT_AUFTRAEGE_ENABLED:
+                            _exec_kw["antwortkanal"] = {"art": "dashboard"}
+                        exec_result = pe.execute(plan, **_exec_kw)
+                        # K1: wartet ein Agenten-Auftrag, quittieren statt
+                        # ueber einen pending Hop zu synthetisieren.
+                        _auftraege = (_aa.offene_auftraege(exec_result)
+                                      if _aa.AGENT_AUFTRAEGE_ENABLED else [])
+                        if _auftraege:
+                            final_text = _aa.quittung(_auftraege)
                         else:
-                            exec_result = pe.execute(
-                                plan,
-                                openfang_handoff_bundle=openfang_handoff_bundle,
+                            # Synthesize final user-facing answer
+                            final_text = synth.synthesize(
+                                intent=message,
+                                plan=plan,
+                                executed=exec_result.get("executed", {}),
+                                state=exec_result.get("state", {}),
+                                custom_prompt=plan.final_synthesis_prompt or None,
                             )
-                        # Synthesize final user-facing answer
-                        final_text = synth.synthesize(
-                            intent=message,
-                            plan=plan,
-                            executed=exec_result.get("executed", {}),
-                            state=exec_result.get("state", {}),
-                            custom_prompt=plan.final_synthesis_prompt or None,
-                        )
                         response.response_text = final_text
                         response.confidence = 0.85 if exec_result.get("ok") else 0.5
                         response.routing_mode = "multihop"
@@ -4381,6 +4390,8 @@ class BrainChat:
                             "replans": exec_result.get("replans", 0),
                             "trigger": verdict.triggered_by,
                         }
+                        if _auftraege:
+                            response.multihop["auftraege"] = _auftraege
                         # Phase 7.1 — track for retroactive reward
                         self._last_plan_id = plan.plan_id
                         trace.append(ThoughtTrace(

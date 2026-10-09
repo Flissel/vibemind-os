@@ -2749,19 +2749,11 @@ async def multihop_execute(request: Request):
     }
 
     # K1: wartet ein Agenten-Auftrag, sofort quittieren - keine LLM-Synthese.
-    _auftraege = []
-    if exec_result.get("pending"):
-        for _sid, _hop in (exec_result.get("executed") or {}).items():
-            _res = _hop.get("result") if isinstance(_hop, dict) else None
-            if isinstance(_hop, dict) and _hop.get("pending") and isinstance(_res, dict) and _res.get("auftrag_id"):
-                _auftraege.append({"auftrag_id": str(_res["auftrag_id"]),
-                                   "agent": _res.get("agent"),
-                                   "capability": _hop.get("capability")})
+    from core.agent_auftraege import offene_auftraege, quittung
+    _auftraege = offene_auftraege(exec_result)
     if _auftraege:
-        _a = _auftraege[0]
         out["auftraege"] = _auftraege
-        out["final_text"] = (f"Auftrag angenommen, Nr. {_a['auftrag_id'][:8]} – zuständig: {_a['agent']}. "
-                             "Das Ergebnis kommt, sobald es geprüft ist.")
+        out["final_text"] = quittung(_auftraege)
         try:
             pe.recorder.attach_final(plan.plan_id, out["final_text"])
         except Exception:  # noqa: BLE001

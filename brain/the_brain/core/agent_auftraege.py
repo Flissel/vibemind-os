@@ -81,6 +81,30 @@ class AuftragsTabelle:
         return len(zeilen or [])
 
 
+def offene_auftraege(exec_result: Any) -> List[dict]:
+    """Wartende Agenten-Auftraege aus einem PlanExecutor-Ergebnis (pending Hops mit auftrag_id)."""
+    if not isinstance(exec_result, dict) or not exec_result.get("pending"):
+        return []
+    aus: List[dict] = []
+    for _sid, hop in (exec_result.get("executed") or {}).items():
+        res = hop.get("result") if isinstance(hop, dict) else None
+        if isinstance(hop, dict) and hop.get("pending") and isinstance(res, dict) and res.get("auftrag_id"):
+            aus.append({"auftrag_id": str(res["auftrag_id"]), "agent": res.get("agent"),
+                        "capability": hop.get("capability")})
+    return aus
+
+
+def quittung(auftraege: List[dict]) -> str:
+    """Sofort-Antwort fuer einen angenommenen Auftrag (Route und brain_chat).
+
+    Ohne agent faellt "zustaendig" auf den Capability-Namen zurueck (nie "None").
+    """
+    a = auftraege[0]
+    zustaendig = a.get("agent") or a.get("capability") or "unbekannt"
+    return (f"Auftrag angenommen, Nr. {str(a['auftrag_id'])[:8]} – zuständig: {zustaendig}. "
+            "Das Ergebnis kommt, sobald es geprüft ist.")
+
+
 def tabelle_aus_umgebung() -> AuftragsTabelle:
     url = (os.environ.get("SUPABASE_URL") or "").strip()
     schluessel = (get_secret("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
