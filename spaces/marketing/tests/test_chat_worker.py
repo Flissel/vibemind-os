@@ -53,8 +53,9 @@ class Api:
         zwischen = getattr(self, "zwischen", None)
         return zwischen.pop(0) if zwischen else {"weiter": True}
 
-    def gestoppt(self, aid, bloecke):
-        self.log.append(("gestoppt", aid, bloecke)); return {"status": "fertig"}
+    def gestoppt(self, aid, bloecke, basis=None, hinweise=()):
+        self.log.append(("gestoppt", aid, bloecke)); self.gestoppt_basis = (basis, list(hinweise))
+        return {"status": "fertig"}
 
     def denken(self, aid, denken, schritte):
         self.denk = getattr(self, "denk", [])
@@ -1841,3 +1842,82 @@ def test_stopp_behalten_nichts_passt_mehr_ohne_basis():
     strom = Strom(uhr, stuecke([text("Eins", "Titel"), text("Zwei", "Noch ein Titel")]))
     assert cw.chat_bearbeiten(api, AUFTRAG4, strom, uhr, uhr.schlafen, halten_takt_s=60, drossel_s=0) == "gestoppt"
     assert gestoppt == [(None, None, [])]
+
+
+# ---- Fix-Runde 1 (Review Task 4: I1, I2, M1) ----------------------------------------------------------------
+def test_korrektur_nach_nachspielen_schreibt_notizen_einmal_und_spur_ohne_doppelten_abschluss(_wissen_ordner,
+                                                                                            monkeypatch):
+    """I1: Rennen verloren, Schoenheit nach dem Nachspielen schlaegt an, Korrekturrunde gelingt: die Notizen werden
+    einmal geschrieben, ihre Hinweise stehen einmal in der Antwort, "Fassung gespeichert" steht einmal in der Spur."""
+    _firma(_wissen_ordner)
+    from spaces.marketing.claw import markenwissen
+    geschrieben = []
+
+    def spion(ordner, name, notizen, kopf, heute):
+        geschrieben.append([n["titel"] for n in notizen])
+        return ["Ton gelernt"], ["Notizhinweis X"]
+    monkeypatch.setattr(markenwissen, "notizen_schreiben", spion)
+    notiz = [{"titel": "Ton gelernt", "text": "Duzen."}]
+    erste = json.dumps({"antwort": "Erledigt.", "aenderungen": [farbe("#ff0000", "Rot")], "notizen": notiz})
+    zweite = json.dumps({"antwort": "Korrigiert.", "aenderungen": [farbe("#222222", "Dunkler")], "notizen": notiz})
+    api = RennApi([VERALTET, {"fassung": 6}], [{"fassung": 5, "bloecke": DOC_B}], pruefen=[None, "u: Kontrast"])
+    api.denk = []
+    echt = api.fertig
+    api.fertig = lambda aid, daten: (api.denk.append(("fertig",)), echt(aid, daten))[1]
+    assert cw.chat_bearbeiten(api, _auftrag(fassung=4), Fragen(erste, zweite)) == "fertig"
+    assert geschrieben == [["Ton gelernt"]]
+    letzte = _fertig_daten(api)[-1]
+    assert letzte["basis"] == 5 and letzte["bloecke"]["root"]["data"]["backdropColor"] == "#222222"
+    assert letzte["antwort"].count("Notizhinweis X") == 1
+    assert letzte["antwort"].count("Notiz in Rowboat abgelegt: Ton gelernt") == 1
+    vor_letztem_fertig = [d for d in api.denk[:len(api.denk) - 1 - api.denk[::-1].index(("fertig",))]
+                          if d[0] == "denken"][-1]
+    texte = [s["text"] for s in vor_letztem_fertig[2]]
+    assert texte.count("Fassung gespeichert") == 1 and texte[-1] == "Fassung gespeichert"
+    assert "Nachspielen auf Fassung 5" in texte and "Korrekturrunde" in texte
+
+
+def test_verlorenes_rennen_nimmt_fassung_gespeichert_zurueck():
+    """I1: der Versuch, der das Rennen verlor, hat nichts gespeichert - sein Abschluss-Schritt verschwindet."""
+    api = RennApi([VERALTET, {"fassung": 6}], [{"fassung": 5, "bloecke": DOC_B}])
+    api.denk = []
+    echt = api.fertig
+    api.fertig = lambda aid, daten: (api.denk.append(("fertig",)), echt(aid, daten))[1]
+    assert cw.chat_bearbeiten(api, AUFTRAG4, Fragen(GUT)) == "fertig"
+    assert [d[0] for d in api.denk][-2:] == ["denken", "fertig"]
+    texte = [s["text"] for s in api.denk[-2][2]]
+    assert texte.count("Fassung gespeichert") == 1 and texte[-2:] == ["Nachspielen auf Fassung 5", "Fassung gespeichert"]
+
+
+def test_stopp_behalten_in_der_korrekturrunde_nach_nachspielen_traegt_die_basis():
+    """I2: nach _Neuer baut der Live-Stand auf Fassung 5 auf; ohne basis pruefte die DB gegen fassung_vorher 4 und
+    verwuerfe die gueltigen Schritte immer."""
+    uhr = Uhr()
+    api = RennApi([VERALTET], [{"fassung": 5, "bloecke": DOC_B}], pruefen=[None, "u: Kontrast"])
+    api.zwischen = [{"weiter": True}, {"weiter": True}, {"weiter": False, "grund": "stopp", "stopp": "behalten"}]
+    gestoppt = []
+    api.gestoppt = lambda aid, bloecke, basis=None, hinweise=(): gestoppt.append((bloecke, basis, list(hinweise))) or {}
+    strom = Strom(uhr, stuecke([farbe("#ff0000", "Rot")]), stuecke([farbe("#222222", "Dunkler"), text("X", "Mehr")]))
+    assert cw.chat_bearbeiten(api, AUFTRAG4, strom, uhr, uhr.schlafen, halten_takt_s=60, drossel_s=0) == "gestoppt"
+    ((bloecke, basis, hinweise),) = gestoppt
+    assert basis == 5 and hinweise == []
+    assert bloecke["root"]["data"]["backdropColor"] == "#222222" and "u" in bloecke
+
+
+def test_stopp_behalten_ohne_fremde_fassung_sendet_die_eigene_basis():
+    uhr = Uhr()
+    api = RennApi([{"fassung": 9}], [{"fassung": 4, "bloecke": DOC}])
+    api.zwischen = [{"weiter": False, "grund": "stopp", "stopp": "behalten"}]
+    strom = Strom(uhr, stuecke([text("Eins", "Titel"), farbe("#111111", "Farbe")]))
+    assert cw.chat_bearbeiten(api, AUFTRAG4, strom, uhr, uhr.schlafen, halten_takt_s=60, drossel_s=0) == "gestoppt"
+    assert api.gestoppt_basis == (4, [])
+
+
+def test_nachspiel_hinweise_bleiben_unter_der_vm_grenze():
+    """M1: 40 uebersprungene Aenderungen + "nachgespielt" waeren 41 Hinweise - die VM nimmt hoechstens 40."""
+    api = RennApi([VERALTET, {"fassung": None}], [{"fassung": 5, "bloecke": DOC_B}])
+    viele = json.dumps({"antwort": "ok", "aenderungen": [text(f"T{i}", f"Schritt {i}") for i in range(40)]})
+    assert cw.chat_bearbeiten(api, AUFTRAG4, Fragen(viele)) == "fertig"
+    zweit = _fertig_daten(api)[1]
+    assert len(zweit["hinweise"]) == cw.VM_HINWEISE_MAX == 40
+    assert zweit["hinweise"][0] == cw.NACHGESPIELT.format(n=5) and zweit["bloecke"] is None

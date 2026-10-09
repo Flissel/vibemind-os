@@ -40,6 +40,7 @@ NICHT_UMGESETZT = "Das habe ich nicht umsetzen können: "
 NACHSPIELEN_MAX = 3
 ZU_VIELE = "Zu viele gleichzeitige Änderungen – bitte noch einmal senden"
 NICHTS_UMGESETZT = "Fertig, nichts umgesetzt – eine andere Runde hat den Entwurf inzwischen geändert."
+VM_HINWEISE_MAX = 40     # wie api/chat.py HINWEISE_MAX: mehr Hinweise lehnt die VM mit 422 ab
 NACHGESPIELT = ("Auf Fassung {n} nachgespielt – eine andere Runde war schneller; "
                 "bei widersprüchlichen Bitten gilt diese Runde.")
 WEBSUCHE_AUS = "WebSearch:aus"   # wie marketing_shim.WEBSUCHE_AUS
@@ -615,16 +616,37 @@ def _neueste_lesen(api, aid) -> dict:
     return neu
 
 
+def _abschluss_schritte(spur: denkspur.Spur, daten: dict) -> list[dict]:
+    """Die Schritte "Bilder beauftragt"/"Fassung gespeichert" fuer genau diesen Speicherversuch; -> die Eintraege,
+    damit ein verlorenes Rennen sie wieder zuruecknimmt (es wurde nichts gespeichert)."""
+    eintraege = []
+    if daten.get("bildauftraege"):
+        spur.schritt(f"Bilder beauftragt: {len(daten['bildauftraege'])}")
+        eintraege.append(spur.schritte[-1])
+    if daten.get("bloecke") is not None:
+        spur.schritt("Fassung gespeichert")
+        eintraege.append(spur.schritte[-1])
+    return eintraege
+
+
+def _schritte_zuruecknehmen(spur: denkspur.Spur, eintraege: list[dict]) -> None:
+    spur.schritte[:] = [s for s in spur.schritte if not any(s is e for e in eintraege)]
+
+
 def _speichern(api, aid, daten: dict, aenderungen: list, medien: set, basis, spur: denkspur.Spur) -> dict:
     """fertig mit Nachspielen (Spec 2026-10-09 §1): verliert das Speichern das Rennen, die Aenderungsliste auf die
     neueste Fassung nachspielen, pruefen und erneut speichern - hoechstens NACHSPIELEN_MAX-mal. -> Antwort der VM,
     {"status": "zu_viele"} nach dem letzten verlorenen Rennen. Wirft _Neuer, wenn die Schoenheitspruefung nach dem
-    Nachspielen anschlaegt."""
+    Nachspielen anschlaegt. Die Abschluss-Schritte stehen nur fuer den Versuch in der Spur, der gespeichert hat;
+    die Denkspur geht vor jedem fertig raus."""
     hinweise: list[str] = []
     for runde in range(NACHSPIELEN_MAX + 1):
+        schritte = _abschluss_schritte(spur, daten)
+        spur.ende()
         antwort = api.fertig(aid, {**daten, "basis": basis, "hinweise": hinweise})
         if antwort.get("status") != "veraltet":
             return antwort
+        _schritte_zuruecknehmen(spur, schritte)
         if runde == NACHSPIELEN_MAX:
             break
         if not api.weiter(aid):
@@ -632,11 +654,11 @@ def _speichern(api, aid, daten: dict, aenderungen: list, medien: set, basis, spu
         neu = _neueste_lesen(api, aid)
         spur.schritt(f"Nachspielen auf Fassung {neu['fassung']}")
         ns = agent_werkzeuge.nachspielen(neu["bloecke"], aenderungen, medien)
-        basis, hinweise = neu["fassung"], [NACHGESPIELT.format(n=neu["fassung"]), *ns.uebersprungen]
+        basis = neu["fassung"]
+        hinweise = [NACHGESPIELT.format(n=neu["fassung"]), *ns.uebersprungen][:VM_HINWEISE_MAX]
         if not ns.geaendert:      # keine Aenderung passt mehr: fertig ohne Fassung (dann gibt es kein Rennen)
             daten = {**daten, "antwort": NICHTS_UMGESETZT, "bloecke": None, "bildauftraege": [],
                      "export_vorschlag": None}
-            spur.ende()           # die Denkspur geht vor fertig raus
             continue
         grund = api.pruefen(aid, ns.bloecke)
         if grund:
@@ -644,7 +666,6 @@ def _speichern(api, aid, daten: dict, aenderungen: list, medien: set, basis, spu
             raise _Neuer(grund, neu)
         daten = {**daten, "bloecke": ns.bloecke, "bildauftraege": ns.bildauftraege,
                  "export_vorschlag": ns.export_vorschlag, "notiz": ns.notiz or daten.get("notiz", "")}
-        spur.ende()
     return {"status": "zu_viele"}
 
 
@@ -673,13 +694,18 @@ def chat_bearbeiten(api, auftrag, fragen_strom=frage_strom, uhr=time.monotonic, 
                     ns = agent_werkzeuge.nachspielen(neu["bloecke"], live.angewandt, live.medien)
                     if ns.geaendert:
                         bloecke = ns.bloecke
-                        basis, extra = neu["fassung"], [NACHGESPIELT.format(n=neu["fassung"]), *ns.uebersprungen]
+                        basis, extra = neu["fassung"], [NACHGESPIELT.format(n=neu["fassung"]),
+                                                        *ns.uebersprungen][:VM_HINWEISE_MAX]
                     else:
                         # Nichts passt mehr: ohne basis, damit die VM nicht den alten Zwischenstand auf die neue
                         # Fassung legt (bloecke None = "letzter Zwischenstand"); sie verwirft dann wie bisher.
                         bloecke = None
             except (ApiFehler, OSError, ValueError, agent_werkzeuge.WerkzeugFehler):
                 pass               # wie bisher: der letzte gueltige Stand, die VM entscheidet
+            if bloecke is not None and basis is None:
+                # Der Live-Stand baut auf live.basis auf - nach einer Korrekturrunde von der neuesten Fassung ist
+                # das nicht mehr fassung_vorher der VM. Ohne basis verlöre "Behalten" dort immer das Rennen.
+                basis = live.basis
         try:
             if basis is None:
                 api.gestoppt(aid, bloecke)
@@ -768,6 +794,7 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
                     if bildteile else text_nutzer}]
     mit_bildern = bool(bildteile)
     fehler = ""
+    notizen_geschrieben: tuple[list, list] | None = None     # (titel, hinweise) - Notizen nur einmal je Auftrag
     for versuch in (1, 2):
         beginn = None        # Shim-Fenster je Frage, ab dem ersten Ausfall (ein langer Strom zaehlt nicht mit)
         with halten(api, aid, halten_takt_s) as halter:
@@ -825,22 +852,23 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
         text_antwort = antwort["antwort"]
         # Ruling R2: erst jetzt, unmittelbar vor fertig - Stopp/Fehler kommen nie hierher.
         # Alter Auftrag ohne Firma: keine Notiz und kein Hinweis (es gibt keinen Ordner zu nennen).
-        if antwort["notizen"] and name:
-            titel, notiz_hinweise = markenwissen.notizen_schreiben(
+        # Je Auftrag hoechstens einmal: eine Korrekturrunde nach dem Nachspielen (_Neuer) kommt erneut hierher,
+        # Rowboat legte gleichnamige Notizen doppelt an. Die Hinweise kommen in eine Kopie, nie zweimal.
+        if antwort["notizen"] and name and notizen_geschrieben is None:
+            notizen_geschrieben = markenwissen.notizen_schreiben(
                 wissen.ordner, name, antwort["notizen"],
                 {"newsletter": auftrag.get("titel", ""), "bitte": auftrag.get("nachricht", "")},
                 datetime.date.today())
+        antwort_hinweise = list(hinweise)
+        if notizen_geschrieben is not None:
+            titel, notiz_hinweise = notizen_geschrieben
             # Vor die Markenwissen-Hinweise (uebersprungen/gekuerzt): die kappt die Hinweisgrenze zuerst.
-            vor = next((i for i, h in enumerate(hinweise) if h in wissen.hinweise), len(hinweise))
-            hinweise[vor:vor] = notiz_hinweise
+            vor = next((i for i, h in enumerate(antwort_hinweise) if h in wissen.hinweise), len(antwort_hinweise))
+            antwort_hinweise[vor:vor] = notiz_hinweise
             if titel:
                 text_antwort += "\n\n" + "\n".join(f"Notiz in Rowboat abgelegt: {t}" for t in titel)
-        if bildauftraege:
-            spur.schritt(f"Bilder beauftragt: {len(bildauftraege)}")
-        if ergebnis.geaendert:
-            spur.schritt("Fassung gespeichert")
-        spur.ende()
-        daten = {"antwort": _mit_hinweisen(hinweise, text_antwort),
+        # "Bilder beauftragt"/"Fassung gespeichert" setzt _speichern je Speicherversuch (verlorenes Rennen: zurueck)
+        daten = {"antwort": _mit_hinweisen(antwort_hinweise, text_antwort),
                  "bloecke": bloecke if ergebnis.geaendert else None,
                  "bildauftraege": bildauftraege, "export_vorschlag": export, "notiz": ergebnis.notiz}
         try:
