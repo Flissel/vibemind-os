@@ -390,3 +390,11 @@ def test_korrektur_mit_neuester_fassung():
     assert t.startswith("Deine letzte Antwort konnte nicht umgesetzt werden: u: Kontrast")
     assert "Eine andere Runde hat den Entwurf inzwischen geändert" in t and 'BLÖCKE (JSON): {"root"' in t
     assert "BLÖCKE" not in ap.korrektur_text("x")
+
+
+def test_bezugsregel_ohne_markierung():
+    assert ap.REGEL_BEZUG == (
+        'Ohne Markierung beziehen sich Verweise wie „das", „hier" oder „so nicht" auf deine eigene letzte Runde '
+        '(die letzte Antwort unter BISHERIGER CHAT). Ist der Bezug nicht eindeutig, frag kurz nach und ändere '
+        'nichts ("aenderungen": []).')
+    assert ap.REGEL_BEZUG in ap.SYSTEM and ap.REGEL_BEZUG in ap.system(marke=True)
