@@ -69,6 +69,10 @@ class AuftragsTabelle:
                            json={"pruefung": pruefung})
         return bool(zeilen)
 
+    def pruefung_ergaenzen(self, auftrag_id: str, pruefung: dict) -> None:
+        """Schreibt die volle Pruefung neu (PATCH nur nach id, ohne is.null-Schutz)."""
+        self._req("PATCH", params={"id": f"eq.{auftrag_id}"}, json={"pruefung": pruefung})
+
     def abgelaufene_markieren(self, jetzt_iso: Optional[str] = None) -> int:
         jetzt_iso = jetzt_iso or datetime.now(timezone.utc).isoformat()
         zeilen = self._req("PATCH", rueckgabe=True,

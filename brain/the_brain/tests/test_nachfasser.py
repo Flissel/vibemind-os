@@ -17,6 +17,9 @@ class Tab:
 
     def abgelaufene_markieren(self, jetzt_iso=None): self.abgelaufen_calls += 1; return 0
 
+    def pruefung_ergaenzen(self, i, p):
+        self.ergaenzt = getattr(self, "ergaenzt", []) + [(i, p)]
+
 
 class Router:
     def __init__(self, cfg): self.cfg = cfg
@@ -107,3 +110,39 @@ def test_takt_schleife_laeuft_runden_mal():
     takt_schleife(Nachfasser(t, validator=Val({}), router=Router(None), plan_executor=PE()),
                   takt_s=0.0, schlafen=lambda s: n.append(s), runden=3)
     assert t.abgelaufen_calls == 3
+
+
+def _lauf(pe, verdict=None, cfg=None):
+    t = Tab(fertige=[_auftrag(plan_rest=_rest())])
+    z = Nachfasser(t, validator=Val(verdict or {"valid": True, "verified": True, "reason": "ok"}),
+                   router=Router(cfg or {"kind": "rule:x"}), plan_executor=pe).runde()
+    return t, z
+
+
+def test_fortsetzung_wirft_wird_sichtbar():
+    class Boese(PE):
+        def execute(self, *a, **k): raise ValueError("kaputt")
+    t, z = _lauf(Boese())
+    (i, p), = t.ergaenzt
+    assert i == "1" and p["verified"] is True and p["fortsetzung_fehler"].startswith("ValueError: kaputt")
+    assert z["fehler"] == 1 and z["fortgesetzt"] == 0
+
+
+def test_fortsetzung_ok_false_wird_sichtbar():
+    class NichtOk(PE):
+        def execute(self, *a, **k): return {"ok": False}
+    t, z = _lauf(NichtOk())
+    assert "fortsetzung_fehler" in t.ergaenzt[0][1] and z["fehler"] == 1
+
+
+def test_erfolgreiche_fortsetzung_ergaenzt_nichts():
+    t, z = _lauf(PE())
+    assert not hasattr(t, "ergaenzt") and z["fortgesetzt"] == 1
+
+
+def test_agent_pruefer_wird_nicht_aufgerufen():
+    v = Val({"valid": True, "verified": True})
+    t = Tab(fertige=[_auftrag()])
+    Nachfasser(t, validator=v, router=Router({"kind": "agent:pruefer"}), plan_executor=PE()).runde()
+    assert v.calls == []
+    assert t.gesetzt["1"] == {"verified": None, "reason": "agent-Pruefer nicht im Takt", "kind": "agent:pruefer"}

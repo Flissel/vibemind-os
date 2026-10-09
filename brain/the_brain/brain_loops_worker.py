@@ -98,6 +98,8 @@ def main() -> int:
                              name="Nachfasser", daemon=True).start()
             print("[brain-loops] Nachfasser aktiv", flush=True)
     except Exception as e:  # noqa: BLE001 - Worker darf nicht kippen
+        import logging as _logging
+        _logging.getLogger("brain.nachfasser").exception("Nachfasser nicht gestartet")
         print(f"[brain-loops] Nachfasser nicht gestartet: {e}", flush=True)
 
     # Log-Retrainer (lebt sonst in der HTTP-Lifespan) — hier optional nachziehen,

@@ -77,3 +77,11 @@ def test_anlegen_ohne_id_wirft_runtimeerror(antwort):
     with pytest.raises(RuntimeError, match="Anlegen lieferte keine id"):
         aa.AuftragsTabelle("http://k", "s", http=h).anlegen(
             capability="c", agent="a", auftrag="x", trace_id="t", plan_id="p", hop_id="h")
+
+
+def test_pruefung_ergaenzen_patcht_nur_nach_id():
+    h = Attrappe([Antwort(204, None)])
+    aa.AuftragsTabelle("http://k", "s", http=h).pruefung_ergaenzen("7", {"verified": True, "fortsetzung_fehler": "x"})
+    a = h.aufrufe[0]
+    assert a["methode"] == "PATCH" and a["params"] == {"id": "eq.7"} and "pruefung" not in a["params"]
+    assert a["json"] == {"pruefung": {"verified": True, "fortsetzung_fehler": "x"}}

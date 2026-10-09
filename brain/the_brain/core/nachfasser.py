@@ -69,9 +69,14 @@ class Nachfasser:
         cap = a.get("capability") or ""
         ergebnis = a.get("ergebnis")
         cfg = (self.router.get_capability(cap) or {}).get("validator")
+        kind = cfg.get("kind") if isinstance(cfg, dict) else None
         if not cfg:
             pruefung = {"verified": None, "reason": "kein Pruefer", "kind": None}
             verified: Optional[bool] = None
+        elif isinstance(kind, str) and kind.startswith("agent:"):
+            # agent-Pruefer sind zu teuer/langsam fuer den Takt: nicht aufrufen.
+            pruefung = {"verified": None, "reason": "agent-Pruefer nicht im Takt", "kind": kind}
+            verified = None
         else:
             verdict = self.validator.validate(
                 cfg, intent=a.get("auftrag"), arg=a.get("auftrag"), raw_result={"response": ergebnis}) or {}
@@ -91,12 +96,24 @@ class Nachfasser:
         self._protokollieren(a, cap, verified, pruefung.get("reason"))
         rest = a.get("plan_rest")
         if verified is not False and rest:
-            from core.plan_schema import Plan
-            state = dict(rest.get("state") or {})
-            if rest.get("output_var"):
-                state[rest["output_var"]] = ergebnis
-            self.plan_executor.execute(Plan.from_dict(rest["plan"]), start_state=state,
-                                       antwortkanal=rest.get("antwortkanal"))
+            try:
+                from core.plan_schema import Plan
+                state = dict(rest.get("state") or {})
+                if rest.get("output_var"):
+                    state[rest["output_var"]] = ergebnis
+                res = self.plan_executor.execute(Plan.from_dict(rest["plan"]), start_state=state,
+                                                 antwortkanal=rest.get("antwortkanal"))
+                if isinstance(res, dict) and res.get("ok") is False and not res.get("pending"):
+                    raise RuntimeError(f"Fortsetzung nicht ok: {str(res.get('error') or res)[:200]}")
+            except Exception as e:  # noqa: BLE001 - Fehlschlag sichtbar machen, nicht verschlucken
+                meldung = f"{type(e).__name__}: {e}"[:300]
+                logger.warning("Fortsetzung von Auftrag %s fehlgeschlagen: %s", a.get("id"), meldung)
+                z["fehler"] += 1
+                try:
+                    self.tabelle.pruefung_ergaenzen(a["id"], {**pruefung, "fortsetzung_fehler": meldung})
+                except Exception:  # noqa: BLE001
+                    logger.exception("pruefung_ergaenzen fuer Auftrag %s fehlgeschlagen", a.get("id"))
+                return
             z["fortgesetzt"] += 1
 
     def _protokollieren(self, a: dict, cap: str, verified: Optional[bool], reason: Any) -> None:
