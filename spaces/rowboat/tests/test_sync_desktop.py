@@ -116,6 +116,41 @@ def test_changes_outside_the_targets_stop_the_sync(world, monkeypatch):
         (world["vos"] / "README.md").write_text("collateral\n", encoding="utf-8")
 
     monkeypatch.setattr(sync_desktop, "replace", leaky)
-    with pytest.raises(SyncError, match="README.md"):
+    with pytest.raises(SyncError, match="README.md") as info:
         run_sync(world)
+    assert "unknown state" in str(info.value)
+    assert "git restore --source=HEAD --staged --worktree -- " in str(info.value)
+    assert "spaces/rowboat/rowboat/apps/x" in str(info.value)
+    assert not (world["space"] / "rowboat/UPSTREAM.md").exists()
+
+
+def test_failed_replace_reports_unknown_state_and_keeps_upstream(world, monkeypatch):
+    real_replace = sync_desktop.replace
+    calls: list[Path] = []
+
+    def locked(dest, source):
+        calls.append(dest)
+        if len(calls) == 2:
+            raise PermissionError("locked by another process")
+        real_replace(dest, source)
+
+    monkeypatch.setattr(sync_desktop, "replace", locked)
+    with pytest.raises(SyncError, match="unknown state") as info:
+        run_sync(world)
+    message = str(info.value)
+    assert "git restore --source=HEAD --staged --worktree -- " in message
+    assert "git clean -fd -- " in message
+    assert "spaces/rowboat/rowboat/apps/harbor" in message
+    assert "locked by another process" in message
+    assert not (world["space"] / "rowboat/UPSTREAM.md").exists()
+
+
+def test_patch_listing_fails_before_any_replace(world, monkeypatch):
+    def broken(fork, sha, base):
+        raise SyncError("git log failed")
+
+    monkeypatch.setattr(sync_desktop, "patches", broken)
+    with pytest.raises(SyncError, match="git log failed"):
+        run_sync(world)
+    assert (world["space"] / "rowboat/apps/x/apps/renderer/old.ts").exists()
     assert not (world["space"] / "rowboat/UPSTREAM.md").exists()

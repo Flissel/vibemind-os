@@ -147,6 +147,15 @@ def upstream_text(fork_sha: str, ehl_sha: str, base: str, patch_lines: list[str]
     return "\n".join(lines) + "\n"
 
 
+def unknown_state(rel_targets: list[str], why: str) -> str:
+    targets = " ".join(rel_targets)
+    return ("the pinned copies are now in an unknown state (replaced in part or not at all) and UPSTREAM.md was not "
+            "updated. Restore the copies before running the sync again:\n"
+            f"  git restore --source=HEAD --staged --worktree -- {targets}\n"
+            f"  git clean -fd -- {targets}\n"
+            f"reason: {why}")
+
+
 def sync(space: Path, repo: Path, fork: Path, fork_ref: str, ehl: Path, ehl_ref: str,
          upstream_base: str = UPSTREAM_BASE) -> dict[str, str]:
     sources = {"fork": fork, "ehl": ehl}
@@ -171,15 +180,23 @@ def sync(space: Path, repo: Path, fork: Path, fork_ref: str, ehl: Path, ehl_ref:
         new = {t: export(sources[t.source], shas[t.source], t.subdir, tmpdir / f"new{i}") for i, t in enumerate(tgts)}
         if not (new[tgts[0]] / PIN_FILE).is_file():
             raise SyncError(f"apps/x/{PIN_FILE} is missing at fork commit {shas['fork']}; the web app's pin test needs it")
+        patch_lines = patches(fork, shas["fork"], upstream_base)   # before any replace: a failing git log must not leave half a sync
         before = changed_paths(repo)
-        for t in tgts:
-            replace(t.dest, new[t])
-        allowed = [t.dest.relative_to(repo).as_posix() + "/" for t in tgts]
+        rel_targets = [t.dest.relative_to(repo).as_posix() for t in tgts]
+        try:
+            for t in tgts:
+                replace(t.dest, new[t])
+        except OSError as err:
+            raise SyncError(unknown_state(rel_targets, f"{type(err).__name__}: {err}")) from err
+        allowed = [p + "/" for p in rel_targets]
         outside = sorted(p for p in changed_paths(repo) - before if not any(p.startswith(a) for a in allowed))
         if outside:
-            raise SyncError("changes outside the pinned copies (check the worktree):\n  " + "\n  ".join(outside))
-    upstream_md.write_text(upstream_text(shas["fork"], shas["ehl"], upstream_base,
-                                         patches(fork, shas["fork"], upstream_base)), encoding="utf-8", newline="\n")
+            raise SyncError(unknown_state(rel_targets, "changes outside the pinned copies:\n  " + "\n  ".join(outside)))
+    try:
+        upstream_md.write_text(upstream_text(shas["fork"], shas["ehl"], upstream_base, patch_lines),
+                               encoding="utf-8", newline="\n")
+    except OSError as err:
+        raise SyncError(unknown_state(rel_targets, f"writing {upstream_md}: {type(err).__name__}: {err}")) from err
     return shas
 
 
