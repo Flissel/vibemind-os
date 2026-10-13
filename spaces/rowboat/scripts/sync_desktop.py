@@ -29,7 +29,7 @@ SPACE = Path(__file__).resolve().parents[1]
 FORK_URL = "https://github.com/Flissel/rowboat"
 EHL_URL = "https://github.com/Flissel/ehl-munich-2026"
 UPSTREAM_BASE = "72e9d8c"
-IGNORED = ("node_modules", ".venv", "__pycache__", "dist", ".vite", ".pytest_cache")
+IGNORED = ("node_modules", ".venv", "__pycache__", "dist", ".vite", ".pytest_cache", ".pnpm-store")
 PIN_FILE = "apps/renderer/src/lib/rowboat-plugin-api.ts"   # inside apps/x; read by apps/rowboat's catalog-pin-guard test
 PIN_LINE = re.compile(r"^- (Fork|EHL) commit: `([0-9a-f]{40})`$", re.M)
 
@@ -82,6 +82,17 @@ def files_of(root: Path) -> dict[str, bytes]:
             file = dirpath / name
             out[file.relative_to(root).as_posix()] = file.read_bytes().replace(b"\r\n", b"\n")
     return out
+
+
+def ignored_paths(repo: Path, paths: list[str]) -> set[str]:
+    """The given repo-relative posix paths that git ignores in repo (patterns only; tracked or not does not matter)."""
+    if not paths:
+        return set()
+    proc = subprocess.run(["git", "-C", str(repo), "check-ignore", "--no-index", "-z", "--stdin"],
+                          input="\0".join(paths) + "\0", capture_output=True, text=True, encoding="utf-8")
+    if proc.returncode not in (0, 1):   # 1 = none of the paths is ignored
+        raise SyncError(f"git check-ignore in {repo}: {proc.stderr.strip()}")
+    return {p for p in proc.stdout.split("\0") if p}
 
 
 def export(repo: Path, ref: str, subdir: str, dest: Path) -> Path:
@@ -172,8 +183,10 @@ def sync(space: Path, repo: Path, fork: Path, fork_ref: str, ehl: Path, ehl_ref:
             edited: list[str] = []
             for i, t in enumerate(tgts):
                 pinned = export(sources[t.source], old[t.source], t.subdir, tmpdir / f"old{i}")
-                prefix = t.dest.relative_to(space).as_posix()
-                edited += [f"{prefix}/{p}" for p in differences(files_of(pinned), files_of(t.dest))]
+                prefix = t.dest.relative_to(repo).as_posix()
+                diff = [f"{prefix}/{p}" for p in differences(files_of(pinned), files_of(t.dest))]
+                skip = ignored_paths(repo, diff)   # tracked in the source repo but git-ignored here: absent on a fresh clone
+                edited += [p for p in diff if p not in skip]
             if edited:
                 raise SyncError("edited by hand since the last sync (change the fork or the EHL repo instead):\n  "
                                 + "\n  ".join(edited[:50]))

@@ -33,11 +33,11 @@ def new_repo(path: Path, files: dict[str, str]) -> tuple[Path, str]:
 @pytest.fixture
 def world(tmp_path):
     fork, fork_sha = new_repo(tmp_path / "fork", {
-        "apps/x/package.json": "x1\n", PIN: "pin\n", "apps/harbor/package.json": "h1\n", "README.md": "fork\n"})
+        "apps/x/package.json": "x1\n", PIN: "pin\n", "apps/harbor/package.json": "h1\n", "apps/x/cache/blob.db": "db1\n", "README.md": "fork\n"})
     ehl, ehl_sha = new_repo(tmp_path / "ehl", {
         "schema/pyproject.toml": "s1\n", "schema/profiles/vibemind.yaml": "company: VibeMind\n", "market/x.py": "bmw\n"})
     vos, _ = new_repo(tmp_path / "vos", {
-        ".gitignore": "node_modules/\n.venv/\n",
+        ".gitignore": "node_modules/\n.venv/\n*.db\n",
         "spaces/rowboat/rowboat/apps/x/apps/renderer/old.ts": "old\n",
         "spaces/rowboat/rowboat/apps/rowboat/web.ts": "web\n",
         "README.md": "vos\n"})
@@ -72,6 +72,16 @@ def test_unchanged_copy_syncs_to_a_new_commit(world):
     run_sync(world, fork_ref=new_sha)
     assert (world["space"] / "rowboat/apps/x/package.json").read_text(encoding="utf-8") == "x2\n"
     assert read_pins(world["space"] / "rowboat/UPSTREAM.md")["Fork"] == new_sha
+
+
+def test_file_tracked_in_fork_but_git_ignored_here_is_not_a_hand_edit(world):
+    run_sync(world)
+    blob = world["space"] / "rowboat/apps/x/cache/blob.db"
+    assert blob.is_file()
+    blob.unlink()   # a fresh clone of this repo does not have it: *.db is ignored
+    new_sha = commit_files(world["fork"], {"apps/x/package.json": "x4\n"})
+    run_sync(world, fork_ref=new_sha)
+    assert (world["space"] / "rowboat/apps/x/package.json").read_text(encoding="utf-8") == "x4\n"
 
 
 def test_crlf_checkout_is_not_a_hand_edit(world):
