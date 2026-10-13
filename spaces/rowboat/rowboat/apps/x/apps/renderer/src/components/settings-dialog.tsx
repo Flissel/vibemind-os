@@ -1,4 +1,4 @@
-// Modified for VibeMind (Flissel/rowboat vibemind): Plugins tab, accessible tab navigation.
+// Modified for VibeMind (Flissel/rowboat vibemind): Plugins tab, accessible tab navigation, accessible dialog name.
 "use client"
 
 import * as React from "react"
@@ -8,6 +8,8 @@ import { Server, Key, Shield, ShieldCheck, Palette, Monitor, Sun, Moon, Loader2,
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
@@ -2056,7 +2058,8 @@ export function SettingsDialog({ children, defaultTab = "account", open: control
           {/* Sidebar */}
           <div className="w-48 border-r bg-muted/30 p-2 flex flex-col">
             <div className="px-2 pt-3.5 pb-3 mb-2">
-              <h2 className="font-semibold text-base tracking-tight">Settings</h2>
+              <DialogTitle className="font-semibold text-base tracking-tight">Settings</DialogTitle>
+              <DialogDescription className="sr-only">Configure Desktop settings.</DialogDescription>
             </div>
             <nav className="flex flex-col" role="tablist" aria-label="Settings tabs">
               {NAV_SECTIONS.map((section) => {

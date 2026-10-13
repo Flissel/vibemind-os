@@ -1,5 +1,6 @@
 // VibeMind addition (Flissel/rowboat vibemind): video links as inline players (vibemind-os f6695d46).
 // Fix (Flissel/rowboat vibemind): replacement positions are mapped through the transaction, so several video links in one note all load.
+// Fix (Flissel/rowboat vibemind): only top-level paragraphs become players, so video links in lists, quotes and tables survive saving.
 /**
  * Video Link Extension for TipTap
  *
@@ -95,7 +96,8 @@ export const VideoLinkExtension = Node.create({
           let tr = newState.tr
           let modified = false
 
-          newState.doc.descendants((node, pos) => {
+          // Top-level paragraphs only: the editor's nested serializers (lists, blockquotes, tables) drop atom nodes.
+          newState.doc.forEach((node, pos) => {
             // Find paragraph nodes that contain a single link to a video file
             if (node.type.name !== 'paragraph') return
             if (node.childCount !== 1) return
@@ -115,7 +117,7 @@ export const VideoLinkExtension = Node.create({
               title: child.text || '',
             })
             if (videoNode) {
-              // descendants() reports positions in newState.doc; earlier replacements already shifted tr.doc.
+              // forEach() reports positions in newState.doc; earlier replacements already shifted tr.doc.
               const from = tr.mapping.map(pos)
               const to = tr.mapping.map(pos + node.nodeSize)
               tr = tr.replaceWith(from, to, videoNode)

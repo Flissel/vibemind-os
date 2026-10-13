@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { Editor } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
 import Link from '@tiptap/extension-link'
+import TaskList from '@tiptap/extension-task-list'
+import TaskItem from '@tiptap/extension-task-item'
 import { Markdown } from 'tiptap-markdown'
 
 // markdown-editor pulls in embed-block, whose react-tweet import loads a .css file Node cannot parse.
@@ -36,6 +38,8 @@ function loadMarkdown(markdown: string): DocNode[] {
     extensions: [
       StarterKit.configure({ link: false }),
       Link.configure({ openOnClick: false }),
+      TaskList,
+      TaskItem.configure({ nested: true }),
       VideoLinkExtension,
       Markdown.configure({ html: true, breaks: true }),
     ],
@@ -70,5 +74,32 @@ describe('video link loading', () => {
   it('leaves links to non-video targets alone', () => {
     const blocks = loadMarkdown('[Site](http://x/index.html)')
     expect(blocks.map(b => b.type)).toEqual(['paragraph'])
+  })
+})
+
+function saveMarkdown(markdown: string): string {
+  return loadMarkdown(markdown).map(b => blockToMarkdown(b)).join('\n\n')
+}
+
+describe('video links nested in other blocks', () => {
+  it('keeps video links in a bullet list when the note is saved', () => {
+    const saved = saveMarkdown('- [Intro](http://x/a.mp4)\n- [Demo](http://x/b.mp4)')
+    expect(saved).toContain('[Intro](http://x/a.mp4)')
+    expect(saved).toContain('[Demo](http://x/b.mp4)')
+  })
+
+  it('keeps video links in a task list when the note is saved', () => {
+    const saved = saveMarkdown('- [ ] [Intro](http://x/a.mp4)\n- [x] [Demo](http://x/b.mp4)')
+    expect(saved).toContain('[Intro](http://x/a.mp4)')
+    expect(saved).toContain('[Demo](http://x/b.mp4)')
+  })
+
+  it('keeps a video link in a blockquote when the note is saved', () => {
+    expect(saveMarkdown('> [Intro](http://x/a.mp4)')).toContain('[Intro](http://x/a.mp4)')
+  })
+
+  it('does not turn nested video links into player nodes', () => {
+    const blocks = loadMarkdown('- [Intro](http://x/a.mp4)')
+    expect(JSON.stringify(blocks)).not.toContain('videoLink')
   })
 })

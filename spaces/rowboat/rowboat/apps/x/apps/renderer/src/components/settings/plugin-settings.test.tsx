@@ -34,6 +34,7 @@ describe('PluginSettings', () => {
     render(<SettingsDialog><button type="button">Open settings</button></SettingsDialog>);
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
     expect(await screen.findByRole('tab', { name: 'Plugins' })).toBeVisible();
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeVisible();
   });
 
   it.each([
