@@ -1,6 +1,6 @@
 """Start the Rowboat desktop app of this space in dev mode on the VibeMind vault (~/.rowboat).
 
-    python spaces/rowboat/scripts/start_desktop.py --install   # once: build harbor, install the app, schema venv
+    python spaces/rowboat/scripts/start_desktop.py --install   # first time and after every sync: build harbor, install the app, schema venv
     python spaces/rowboat/scripts/start_desktop.py             # Rowboat + vault-map refresh; Ctrl+C stops both
 
 The vault map (config/vault-map.json) places VibeMind's notes in the schema hierarchy for the 3D brain graph.
@@ -119,6 +119,14 @@ def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS) -> int:
     if subprocess.run(map_command(venv_python(lay.venv, windows), workdir), cwd=lay.schema).returncode != 0:
         log.warning("vault map failed once; Rowboat starts anyway, the refresh retries every %d s", MAP_SECONDS)
     env = {**os.environ, "ROWBOAT_WORKDIR": str(workdir)}
+    if not windows:
+        # Closing the terminal (SIGHUP) or a plain kill (SIGTERM) must reach the finally below like Ctrl+C does:
+        # the jobs run in their own sessions, so they would otherwise keep running.
+        def _interrupt(signum: int, frame: object) -> None:
+            raise KeyboardInterrupt
+
+        for name in ("SIGHUP", "SIGTERM"):
+            signal.signal(getattr(signal, name), _interrupt)
     procs: list[subprocess.Popen] = []
     try:
         for name, cmd, cwd in jobs(lay, workdir, windows):
@@ -145,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     lay = layout()
     if args.install:
         return install(lay)
-    return start(lay, args.workdir.expanduser())
+    return start(lay, args.workdir.expanduser().resolve())
 
 
 if __name__ == "__main__":

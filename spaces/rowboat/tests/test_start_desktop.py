@@ -116,6 +116,8 @@ def test_jobs_get_their_own_process_group_on_posix(tmp_path, monkeypatch):
     monkeypatch.setattr(start_desktop.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(start_desktop.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0))
     monkeypatch.setattr(start_desktop, "stop", lambda proc, windows=False: None)
+    monkeypatch.setattr(signal, "SIGHUP", 1, raising=False)
+    monkeypatch.setattr(start_desktop.signal, "signal", lambda sig, handler: None)
     assert start_desktop.start(lay, tmp_path, windows=False) == 0
     assert [k["start_new_session"] for k in kwargs_seen] == [True, True]
 
@@ -156,3 +158,37 @@ def test_posix_stop_tolerates_a_group_that_is_already_gone(monkeypatch):
     proc = FakeProc(pid=7)
     start_desktop.stop(proc, windows=False)  # must not raise
     assert killed == [(70, signal.SIGTERM)]
+
+
+def test_posix_hangup_and_terminate_stop_the_jobs(tmp_path, monkeypatch):
+    lay = _prereqs(tmp_path, windows=False)
+    registered = {}
+    monkeypatch.setattr(signal, "SIGHUP", 1, raising=False)
+    monkeypatch.setattr(start_desktop.signal, "signal", lambda sig, handler: registered.setdefault(sig, handler))
+    monkeypatch.setattr(start_desktop.subprocess, "Popen", lambda cmd, **k: FakeProc())
+    monkeypatch.setattr(start_desktop.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0))
+    monkeypatch.setattr(start_desktop, "stop", lambda proc, windows=False: None)
+    assert start_desktop.start(lay, tmp_path, windows=False) == 0
+    assert set(registered) == {signal.SIGHUP, signal.SIGTERM}
+    for handler in registered.values():
+        with pytest.raises(KeyboardInterrupt):  # reaches the finally that stops the jobs
+            handler(0, None)
+
+
+def test_windows_installs_no_signal_handlers(tmp_path, monkeypatch):
+    lay = _prereqs(tmp_path, windows=True)
+    registered = []
+    monkeypatch.setattr(start_desktop.signal, "signal", lambda sig, handler: registered.append(sig))
+    monkeypatch.setattr(start_desktop.subprocess, "Popen", lambda cmd, **k: FakeProc())
+    monkeypatch.setattr(start_desktop.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0))
+    monkeypatch.setattr(start_desktop, "stop", lambda proc, windows=False: None)
+    assert start_desktop.start(lay, tmp_path, windows=True) == 0
+    assert registered == []
+
+
+def test_relative_workdir_is_made_absolute(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(start_desktop, "start", lambda lay, workdir, windows=False: seen.append(workdir) or 0)
+    assert start_desktop.main(["--workdir", "data"]) == 0
+    assert seen == [(tmp_path / "data").resolve()]

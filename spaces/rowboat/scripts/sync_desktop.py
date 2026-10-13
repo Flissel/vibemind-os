@@ -34,6 +34,10 @@ PIN_FILE = "apps/renderer/src/lib/rowboat-plugin-api.ts"   # inside apps/x; read
 PIN_LINE = re.compile(r"^- (Fork|EHL) commit: `([0-9a-f]{40})`$", re.M)
 
 
+AFTER_SYNC_HINT = ("next: run `python spaces/rowboat/scripts/start_desktop.py --install` so the dependencies and "
+                   "harbor build match the new copy (the sync keeps node_modules and dist)")
+
+
 class SyncError(Exception):
     """The sync stopped; the step that failed says why."""
 
@@ -148,6 +152,8 @@ def upstream_text(fork_sha: str, ehl_sha: str, base: str, patch_lines: list[str]
              "`apps/x` and `apps/harbor` (Rowboat desktop app) and `../schema` (vault schema) are copies made by",
              "`spaces/rowboat/scripts/sync_desktop.py`. Change the fork or the EHL repo, then run the script again;",
              "it refuses to run when these copies were edited here.", "",
+             "To re-pin the kernel plugin catalog, change `DESKTOP_PLUGIN_CATALOG_PIN` on branch `vibemind` of",
+             "Flissel/rowboat (in `apps/x/apps/renderer/src/lib/rowboat-plugin-api.ts`), then run the sync.", "",
              f"- Fork: {FORK_URL} (branch `vibemind`)",
              f"- Fork commit: `{fork_sha}`",
              f"- Upstream base: rowboatlabs/rowboat `{base}`",
@@ -229,6 +235,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     log.info("synced apps/x + apps/harbor from %s and schema from %s; see spaces/rowboat/rowboat/UPSTREAM.md",
              shas["fork"][:9], shas["ehl"][:9])
+    log.info(AFTER_SYNC_HINT)
     return 0
 
 

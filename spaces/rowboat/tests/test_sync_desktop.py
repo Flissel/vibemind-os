@@ -164,3 +164,19 @@ def test_patch_listing_fails_before_any_replace(world, monkeypatch):
         run_sync(world)
     assert (world["space"] / "rowboat/apps/x/apps/renderer/old.ts").exists()
     assert not (world["space"] / "rowboat/UPSTREAM.md").exists()
+
+
+def test_upstream_md_tells_how_to_repin_the_kernel_catalog(world):
+    run_sync(world)
+    text = (world["space"] / "rowboat/UPSTREAM.md").read_text(encoding="utf-8")
+    assert "DESKTOP_PLUGIN_CATALOG_PIN" in text
+    assert "branch `vibemind`" in text and "Flissel/rowboat" in text
+
+
+def test_successful_sync_tells_to_reinstall_dependencies(world, monkeypatch, caplog):
+    monkeypatch.setattr(sync_desktop, "SPACE", world["space"])
+    args = ["--fork", str(world["fork"]), "--fork-ref", world["fork_sha"],
+            "--ehl", str(world["ehl"]), "--ehl-ref", world["ehl_sha"]]
+    with caplog.at_level("INFO", logger="sync_desktop"):
+        assert sync_desktop.main(args) == 0
+    assert "start_desktop.py --install" in caplog.text

@@ -10,6 +10,8 @@ import { PINNED_PLUGIN_CATALOG_DIGEST } from "@rowboat/openai-plugin-runtime";
 // DESKTOP_PLUGIN_CATALOG_PIN.catalogDigest still carried the old one. This
 // guard makes the NEXT re-pin fail here instead of silently shipping a
 // mismatched desktop UI.
+// That file is a pinned copy (see spaces/rowboat/rowboat/UPSTREAM.md): re-pin on
+// fork branch `vibemind` (Flissel/rowboat), then run scripts/sync_desktop.py.
 const RENDERER_PLUGIN_API_URL = new URL(
   "../../../x/apps/renderer/src/lib/rowboat-plugin-api.ts",
   import.meta.url,
