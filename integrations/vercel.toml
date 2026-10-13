@@ -4,9 +4,12 @@ description = "Vercel ueber den offiziellen Remote-MCP-Server"
 category = "devtools"
 icon = "▲"
 tags = ["deploy", "hosting", "projects"]
-# Lesende Werkzeuge ohne Freigabe (136). Bewusst NICHT enthalten, weil sie Geheimnisse
-# oder Umgebungswerte liefern, Freigabe-Links ohne Anmeldung anlegen oder zu Loeschen/Kauf fuehren:
-# filter_project_envs, get_access_to_vercel_url, get_edge_config_token, get_edge_config_tokens, get_project_deletion_link, get_project_env, get_purchase_quote, get_shared_env_var, list_feature_flag_sdk_keys
+# Lesende Werkzeuge ohne Freigabe (122). Freigabepflichtig bleiben bewusst:
+# - Werkzeuge mit Nebenwirkung (Freigabe-Link ohne Anmeldung, Loesch-Link, Kauf-Angebot):
+#   get_access_to_vercel_url, get_project_deletion_link, get_purchase_quote
+# - Werkzeuge, deren Antwort Geheimnisse oder personenbezogene Daten enthalten kann
+#   (Umgebungswerte, Tokens/SDK-Keys, Dateiinhalte, Logs, Edge-Config-Werte, Webhooks, Kontaktdaten):
+#   filter_project_envs, get_deployment_file_contents, get_domain_contact_verification, get_edge_config_backup, get_edge_config_backups, get_edge_config_item, get_edge_config_items, get_edge_config_token, get_edge_config_tokens, get_project_env, get_runtime_logs, get_session_command_logs, get_shared_env_var, get_vercel_ci_invocation_logs, get_vercel_ci_job_run_logs, get_vercel_ci_task_logs, get_vercel_ci_task_run_logs, get_webhooks, list_feature_flag_sdk_keys, read_session_file
 read_only_tools = [
   "aggregate_events",
   "aggregate_pageviews",
@@ -28,11 +31,9 @@ read_only_tools = [
   "get_custom_environment",
   "get_deployment",
   "get_deployment_feature_flags",
-  "get_deployment_file_contents",
   "get_domain",
   "get_domain_availability",
   "get_domain_config",
-  "get_domain_contact_verification",
   "get_domain_order",
   "get_domain_price",
   "get_domain_project_domains",
@@ -40,10 +41,6 @@ read_only_tools = [
   "get_domains_records_by_record_id",
   "get_drain",
   "get_edge_config",
-  "get_edge_config_backup",
-  "get_edge_config_backups",
-  "get_edge_config_item",
-  "get_edge_config_items",
   "get_edge_configs",
   "get_firewall_config",
   "get_flag",
@@ -66,10 +63,8 @@ read_only_tools = [
   "get_rolling_release_billing_status",
   "get_rolling_release_config",
   "get_runtime_errors",
-  "get_runtime_logs",
   "get_session",
   "get_session_command",
-  "get_session_command_logs",
   "get_session_snapshot",
   "get_storage_stores_by_id",
   "get_team",
@@ -77,14 +72,9 @@ read_only_tools = [
   "get_tld_price",
   "get_toolbar_thread",
   "get_vercel_ci_invocation",
-  "get_vercel_ci_invocation_logs",
   "get_vercel_ci_invocation_tree",
   "get_vercel_ci_job_definition",
   "get_vercel_ci_job_run",
-  "get_vercel_ci_job_run_logs",
-  "get_vercel_ci_task_logs",
-  "get_vercel_ci_task_run_logs",
-  "get_webhooks",
   "list_access_group_members",
   "list_access_group_projects",
   "list_access_groups",
@@ -140,7 +130,6 @@ read_only_tools = [
   "list_vercel_ci_task_runs",
   "read_access_group",
   "read_access_group_project",
-  "read_session_file",
   "search_domains",
   "search_repo",
   "search_vercel_documentation",
