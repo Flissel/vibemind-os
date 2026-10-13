@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -85,8 +86,20 @@ def stop(proc: subprocess.Popen, windows: bool = IS_WINDOWS) -> None:
         return
     if windows:
         subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
-    else:
-        proc.terminate()
+        return
+    # POSIX: each job leads its own process group (start_new_session), so signal the group
+    # to reach npm's children too, not just npm itself.
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def install(lay: Layout, windows: bool = IS_WINDOWS) -> int:
@@ -106,16 +119,18 @@ def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS) -> int:
     if subprocess.run(map_command(venv_python(lay.venv, windows), workdir), cwd=lay.schema).returncode != 0:
         log.warning("vault map failed once; Rowboat starts anyway, the refresh retries every %d s", MAP_SECONDS)
     env = {**os.environ, "ROWBOAT_WORKDIR": str(workdir)}
-    procs = []
-    for name, cmd, cwd in jobs(lay, workdir, windows):
-        log.info("starting %s: %s", name, " ".join(cmd))
-        procs.append(subprocess.Popen(cmd, cwd=cwd, env=env, shell=_shell(cmd, windows)))
-    log.info("Rowboat opens after its first build (a few minutes). Ctrl+C stops everything.")
+    procs: list[subprocess.Popen] = []
     try:
+        for name, cmd, cwd in jobs(lay, workdir, windows):
+            log.info("starting %s: %s", name, " ".join(cmd))
+            procs.append(subprocess.Popen(cmd, cwd=cwd, env=env, shell=_shell(cmd, windows),
+                                          start_new_session=not windows))
+        log.info("Rowboat opens after its first build (a few minutes). Ctrl+C stops everything.")
         procs[0].wait()
     except KeyboardInterrupt:
         pass
     finally:
+        # Runs on Ctrl+C and on a failed spawn too, so no started job is left behind.
         for proc in procs:
             stop(proc, windows)
     return 0
