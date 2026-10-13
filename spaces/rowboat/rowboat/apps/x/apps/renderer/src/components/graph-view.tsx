@@ -1,7 +1,12 @@
+// Modified for EHL (Flissel/rowboat ehl-schema-graph): hierarchical brain graph.
 import type * as React from 'react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Loader2, Search, X } from 'lucide-react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Search, X } from 'lucide-react'
 import { Input } from '@/components/ui/input'
+import { DEFAULT_FORCES, hierarchyForces, initialHierarchyPositions } from '@/lib/graph-hierarchy'
+
+// three.js is only loaded when the 3D view is shown
+const GraphView3D = lazy(() => import('./graph-view-3d').then((module) => ({ default: module.GraphView3D })))
 
 export type GraphNode = {
   id: string
@@ -11,11 +16,16 @@ export type GraphNode = {
   group: string
   color: string
   stroke: string
+  level?: number
+  parentId?: string
+  domain?: string
 }
 
 export type GraphEdge = {
   source: string
   target: string
+  kind?: 'parent' | 'relation' | 'link'
+  relation?: string
 }
 
 type GraphViewProps = {
@@ -48,7 +58,7 @@ const FLOAT_VARIANCE = 2
 const FLOAT_SPEED_BASE = 0.0006
 const FLOAT_SPEED_VARIANCE = 0.00025
 
-export function GraphView({ nodes, edges, isLoading, error, onSelectNode }: GraphViewProps) {
+export function GraphView({ nodes, edges, error, onSelectNode }: GraphViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const positionsRef = useRef<Map<string, NodePosition>>(new Map())
   const motionSeedsRef = useRef<Map<string, { phase: number; amplitude: number; speed: number }>>(new Map())
@@ -115,6 +125,16 @@ export function GraphView({ nodes, edges, isLoading, error, onSelectNode }: Grap
     return centers
   }, [nodes])
 
+  const hierarchyMode = useMemo(() => nodes.some((node) => node.level !== undefined), [nodes])
+  const [view3d, setView3d] = useState(true)
+  // while the 3D view is shown, the 2D simulation and float animation pause (they re-render every frame)
+  const show3d = hierarchyMode && view3d
+  const ringRadii = useMemo(() => {
+    if (!hierarchyMode) return []
+    const levels = new Set(nodes.map((node) => node.level).filter((level): level is number => level !== undefined && level > 0))
+    return Array.from(levels).sort((a, b) => a - b).map((level) => level * DEFAULT_FORCES.ringSpacing)
+  }, [nodes, hierarchyMode])
+
   const getMotionSeed = useCallback((id: string) => {
     const existing = motionSeedsRef.current.get(id)
     if (existing) return existing
@@ -176,10 +196,12 @@ export function GraphView({ nodes, edges, isLoading, error, onSelectNode }: Grap
       positionsRef.current = new Map()
       return
     }
+    if (show3d) return
 
     const nextPositions = new Map<string, NodePosition>()
     const count = nodes.length
     const radius = Math.max(110, Math.min(220, count * 9))
+    const ringStart = hierarchyMode ? initialHierarchyPositions(nodes) : new Map<string, { x: number; y: number }>()
 
     nodes.forEach((node, index) => {
       const existing = positionsRef.current.get(node.id)
@@ -187,10 +209,11 @@ export function GraphView({ nodes, edges, isLoading, error, onSelectNode }: Grap
         nextPositions.set(node.id, { ...existing })
         return
       }
+      const start = ringStart.get(node.id)
       const angle = (index / count) * Math.PI * 2
       nextPositions.set(node.id, {
-        x: radius * Math.cos(angle),
-        y: radius * Math.sin(angle),
+        x: start ? start.x : radius * Math.cos(angle),
+        y: start ? start.y : radius * Math.sin(angle),
         vx: 0,
         vy: 0,
       })
@@ -208,6 +231,7 @@ export function GraphView({ nodes, edges, isLoading, error, onSelectNode }: Grap
 
       const positions = positionsRef.current
       const ids = nodes.map((node) => node.id)
+      const leveled = hierarchyMode ? new Set(nodes.filter((node) => node.level !== undefined).map((node) => node.id)) : null
       const forces = new Map<string, { x: number; y: number }>()
 
       ids.forEach((id) => forces.set(id, { x: 0, y: 0 }))
@@ -246,7 +270,8 @@ export function GraphView({ nodes, edges, isLoading, error, onSelectNode }: Grap
         const dx = posB.x - posA.x
         const dy = posB.y - posA.y
         const distance = Math.max(20, Math.hypot(dx, dy))
-        const delta = distance - SPRING_LENGTH
+        const springLength = hierarchyMode && edge.kind === 'parent' ? DEFAULT_FORCES.ringSpacing : SPRING_LENGTH
+        const delta = distance - springLength
         const force = delta * SPRING_STRENGTH
         const fx = (force * dx) / distance
         const fy = (force * dy) / distance
@@ -266,6 +291,7 @@ export function GraphView({ nodes, edges, isLoading, error, onSelectNode }: Grap
         const pos = positions.get(id)
         const force = forces.get(id)
         if (!pos || !force) return
+        if (leveled?.has(id)) return
         const group = nodeGroupMap.get(id) ?? 'root'
         const center = groupCenters.get(group)
         if (!center) return
@@ -274,6 +300,15 @@ export function GraphView({ nodes, edges, isLoading, error, onSelectNode }: Grap
         force.x += dx * CLUSTER_STRENGTH
         force.y += dy * CLUSTER_STRENGTH
       })
+
+      if (hierarchyMode) {
+        hierarchyForces(nodes, positions).forEach((extra, id) => {
+          const force = forces.get(id)
+          if (!force) return
+          force.x += extra.x
+          force.y += extra.y
+        })
+      }
 
       ids.forEach((id) => {
         const pos = positions.get(id)
@@ -302,10 +337,10 @@ export function GraphView({ nodes, edges, isLoading, error, onSelectNode }: Grap
       active = false
       if (rafId) cancelAnimationFrame(rafId)
     }
-  }, [nodes, edgeList, groupCenters, nodeGroupMap])
+  }, [nodes, edgeList, groupCenters, nodeGroupMap, hierarchyMode, show3d])
 
   useEffect(() => {
-    if (nodes.length === 0) return
+    if (nodes.length === 0 || show3d) return
     let rafId = 0
     let lastTime = performance.now()
 
@@ -323,7 +358,7 @@ export function GraphView({ nodes, edges, isLoading, error, onSelectNode }: Grap
     return () => {
       if (rafId) cancelAnimationFrame(rafId)
     }
-  }, [nodes.length])
+  }, [nodes.length, show3d])
 
   const handlePointerDown = (event: React.PointerEvent) => {
     if (event.button !== 0) return
@@ -456,22 +491,13 @@ export function GraphView({ nodes, edges, isLoading, error, onSelectNode }: Grap
 
   return (
     <div ref={containerRef} className="graph-view relative h-full w-full">
-      {isLoading ? (
-        <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/70 backdrop-blur-sm">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" />
-            <span>Building graph…</span>
-          </div>
-        </div>
-      ) : null}
-
-      {error ? (
+{error ? (
         <div className="absolute inset-0 z-10 flex items-center justify-center text-sm text-destructive">
           {error}
         </div>
       ) : null}
 
-      {!isLoading && !error && nodes.length === 0 ? (
+      {!error && nodes.length === 0 ? (
         <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
           No notes found.
         </div>
@@ -479,10 +505,10 @@ export function GraphView({ nodes, edges, isLoading, error, onSelectNode }: Grap
 
       {legendItems.length > 0 ? (
         <div
-          className="absolute right-3 top-3 z-20 rounded-md border border-border/80 bg-background/90 px-3 py-2 text-xs text-foreground shadow-sm backdrop-blur"
+          className="absolute right-3 top-3 z-20 rounded-md border-none bg-[var(--rowboat-raised)] px-3 py-2 text-xs text-foreground shadow-[var(--rowboat-shadow-soft)]"
           onPointerDown={(event) => event.stopPropagation()}
         >
-          <div className="mb-2 text-[0.7rem] font-semibold uppercase tracking-wide text-muted-foreground">
+          <div className="mb-2 text-[13px] text-muted-foreground">
             Folders
           </div>
           <div className="grid gap-1">
@@ -509,7 +535,24 @@ export function GraphView({ nodes, edges, isLoading, error, onSelectNode }: Grap
         </div>
       ) : null}
 
+      {hierarchyMode ? (
+        <button
+          type="button"
+          className="absolute right-4 top-4 z-20 rounded-md border border-border bg-background/80 px-3 py-1 text-xs"
+          onClick={() => setView3d((value) => !value)}
+        >
+          {view3d ? '2D' : '3D'}
+        </button>
+      ) : null}
+
+      {show3d ? (
+        <Suspense fallback={null}>
+          <GraphView3D nodes={nodes} edges={edges} onSelectNode={onSelectNode} />
+        </Suspense>
+      ) : null}
+
       <svg
+        style={show3d ? { display: 'none' } : undefined}
         className="h-full w-full touch-none"
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
@@ -540,6 +583,9 @@ export function GraphView({ nodes, edges, isLoading, error, onSelectNode }: Grap
           ))}
         </defs>
         <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
+          {ringRadii.map((r) => (
+            <circle key={`ring-${r}`} cx={0} cy={0} r={r} fill="none" stroke="#888" strokeOpacity={0.12} strokeWidth={1} />
+          ))}
           {edgeList.map((edge, index) => {
             const source = displayPositions.get(edge.source)
             const target = displayPositions.get(edge.target)
@@ -555,7 +601,7 @@ export function GraphView({ nodes, edges, isLoading, error, onSelectNode }: Grap
             const isGroupEdge = selectedGroup
               ? sourceGroup === selectedGroup && targetGroup === selectedGroup
               : false
-            let strokeOpacity = 0.4
+            let strokeOpacity = edge.kind === 'link' ? 0.12 : edge.kind === 'relation' ? 0.45 : edge.kind === 'parent' ? 0.5 : 0.4
             let strokeWidth = 1
             if (selectedGroup) {
               strokeOpacity = isGroupEdge ? 0.6 : 0.05
@@ -581,8 +627,11 @@ export function GraphView({ nodes, edges, isLoading, error, onSelectNode }: Grap
                 stroke={stroke}
                 strokeOpacity={strokeOpacity}
                 strokeWidth={strokeWidth}
+                strokeDasharray={edge.kind === 'relation' ? '4 3' : undefined}
                 style={{ transition: 'stroke 0.2s, stroke-opacity 0.2s, stroke-width 0.2s' }}
-              />
+              >
+                {edge.relation ? <title>{edge.relation}</title> : null}
+              </path>
             )
           })}
 
@@ -663,7 +712,7 @@ export function GraphView({ nodes, edges, isLoading, error, onSelectNode }: Grap
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search nodes..."
-            className="w-64 pl-9 pr-20 shadow-lg backdrop-blur"
+            className="w-64 border-none bg-[var(--rowboat-raised)] pl-9 pr-20 shadow-[var(--rowboat-shadow-soft)]"
           />
           <div className="absolute right-3 flex items-center gap-2">
             {searchMatchingNodes && (

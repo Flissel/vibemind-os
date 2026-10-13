@@ -1,5 +1,6 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): video link blocks.
 import { useEditor, EditorContent, Extension, Editor } from '@tiptap/react'
-import { Plugin, PluginKey } from '@tiptap/pm/state'
+import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state'
 import { Decoration, DecorationSet, EditorView } from '@tiptap/pm/view'
 import StarterKit from '@tiptap/starter-kit'
 import Link from '@tiptap/extension-link'
@@ -7,17 +8,23 @@ import Image from '@tiptap/extension-image'
 import Placeholder from '@tiptap/extension-placeholder'
 import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
+import { TableKit, renderTableToMarkdown } from '@tiptap/extension-table'
+import type { JSONContent, MarkdownRendererHelpers } from '@tiptap/react'
 import { ImageUploadPlaceholderExtension, createImageUploadHandler } from '@/extensions/image-upload'
 import { TaskBlockExtension } from '@/extensions/task-block'
+import { PromptBlockExtension } from '@/extensions/prompt-block'
 import { ImageBlockExtension } from '@/extensions/image-block'
 import { EmbedBlockExtension } from '@/extensions/embed-block'
+import { IframeBlockExtension } from '@/extensions/iframe-block'
 import { ChartBlockExtension } from '@/extensions/chart-block'
 import { TableBlockExtension } from '@/extensions/table-block'
 import { CalendarBlockExtension } from '@/extensions/calendar-block'
-import { EmailBlockExtension } from '@/extensions/email-block'
+import { EmailBlockExtension, EmailsBlockExtension } from '@/extensions/email-block'
+import { TranscriptBlockExtension } from '@/extensions/transcript-block'
+import { MermaidBlockExtension } from '@/extensions/mermaid-block'
 import { VideoLinkExtension } from '@/extensions/video-link'
 import { Markdown } from 'tiptap-markdown'
-import { useEffect, useCallback, useMemo, useRef, useState } from 'react'
+import { useEffect, useCallback, useMemo, useRef, useState, forwardRef, useImperativeHandle } from 'react'
 import { Calendar, ChevronDown, ExternalLink } from 'lucide-react'
 
 // Zero-width space used as invisible marker for blank lines
@@ -53,157 +60,253 @@ function postprocessMarkdown(markdown: string): string {
   }).join('\n')
 }
 
-// Custom function to get markdown that preserves empty paragraphs as blank lines
-function getMarkdownWithBlankLines(editor: Editor): string {
-  const json = editor.getJSON()
-  if (!json.content) return ''
+type JsonNode = {
+  type?: string
+  content?: JsonNode[]
+  text?: string
+  marks?: Array<{ type: string; attrs?: Record<string, unknown> }>
+  attrs?: Record<string, unknown>
+}
 
-  const blocks: string[] = []
-
-  // Helper to convert a node to markdown text
-  const nodeToText = (node: {
-    type?: string
-    content?: Array<{
-      type?: string
-      text?: string
-      marks?: Array<{ type: string; attrs?: Record<string, unknown> }>
-      attrs?: Record<string, unknown>
-    }>
-    attrs?: Record<string, unknown>
-  }): string => {
-    if (!node.content) return ''
-    return node.content.map(child => {
-      if (child.type === 'text') {
-        let text = child.text || ''
-        // Apply marks (bold, italic, etc.)
-        if (child.marks) {
-          for (const mark of child.marks) {
-            if (mark.type === 'bold') text = `**${text}**`
-            else if (mark.type === 'italic') text = `*${text}*`
-            else if (mark.type === 'code') text = `\`${text}\``
-            else if (mark.type === 'link' && mark.attrs?.href) text = `[${text}](${mark.attrs.href})`
-          }
+// Convert a node's inline content (text + marks + wikiLinks + hardBreaks) to markdown text
+function nodeToText(node: JsonNode): string {
+  if (!node.content) return ''
+  return node.content.map(child => {
+    if (child.type === 'text') {
+      let text = child.text || ''
+      if (child.marks) {
+        for (const mark of child.marks) {
+          if (mark.type === 'bold') text = `**${text}**`
+          else if (mark.type === 'italic') text = `*${text}*`
+          else if (mark.type === 'code') text = `\`${text}\``
+          else if (mark.type === 'link' && mark.attrs?.href) text = `[${text}](${mark.attrs.href})`
         }
-        return text
-      } else if (child.type === 'wikiLink') {
-        const path = (child.attrs?.path as string) || ''
-        return path ? `[[${path}]]` : ''
-      } else if (child.type === 'hardBreak') {
-        return '\n'
       }
-      return ''
-    }).join('')
-  }
+      return text
+    } else if (child.type === 'wikiLink') {
+      const path = (child.attrs?.path as string) || ''
+      const label = (child.attrs?.label as string | null | undefined) || ''
+      return path ? `[[${path}${label ? `|${label}` : ''}]]` : ''
+    } else if (child.type === 'hardBreak') {
+      return '\n'
+    }
+    return ''
+  }).join('')
+}
 
-  for (const node of json.content) {
-    if (node.type === 'paragraph') {
-      const text = nodeToText(node)
-      // If the paragraph contains only the blank line marker or is empty, it's a blank line
-      if (!text || text === BLANK_LINE_MARKER || text.trim() === BLANK_LINE_MARKER) {
-        // Push empty string to represent blank line - will add extra newline when joining
-        blocks.push('')
+// Recursively serialize a list node (one line per item; nested lists indented two spaces)
+function serializeList(listNode: JsonNode, indent: number): string[] {
+  const lines: string[] = []
+  const items = (listNode.content || []) as JsonNode[]
+  items.forEach((item, index) => {
+    const indentStr = '  '.repeat(indent)
+    let prefix: string
+    if (listNode.type === 'taskList') {
+      const checked = item.attrs?.checked ? 'x' : ' '
+      prefix = `- [${checked}] `
+    } else if (listNode.type === 'orderedList') {
+      prefix = `${index + 1}. `
+    } else {
+      prefix = '- '
+    }
+    const itemContent = (item.content || []) as JsonNode[]
+    let firstPara = true
+    itemContent.forEach(child => {
+      if (child.type === 'bulletList' || child.type === 'orderedList' || child.type === 'taskList') {
+        lines.push(...serializeList(child, indent + 1))
       } else {
-        blocks.push(text)
+        const text = nodeToText(child)
+        if (firstPara) {
+          lines.push(indentStr + prefix + text)
+          firstPara = false
+        } else {
+          lines.push(indentStr + '  ' + text)
+        }
       }
-    } else if (node.type === 'heading') {
-      const level = (node.attrs?.level as number) || 1
+    })
+  })
+  return lines
+}
+
+// Adapter for tiptap's first-party renderTableToMarkdown. Only renderChildren is
+// actually invoked — the other helpers are stubs to satisfy the type.
+const tableRenderHelpers: MarkdownRendererHelpers = {
+  renderChildren: (nodes) => {
+    const arr = Array.isArray(nodes) ? nodes : [nodes]
+    return arr.map(n => n.type === 'paragraph' ? nodeToText(n as JsonNode) : '').join('')
+  },
+  wrapInBlock: (prefix, content) => prefix + content,
+  indent: (content) => content,
+}
+
+// Serialize a single top-level block to its markdown string. Empty paragraphs (or blank-marker
+// paragraphs) return '' to signal "blank line slot" for the join logic in serializeBlocksToMarkdown.
+export function blockToMarkdown(node: JsonNode): string {
+  switch (node.type) {
+    case 'paragraph': {
       const text = nodeToText(node)
-      blocks.push('#'.repeat(level) + ' ' + text)
-    } else if (node.type === 'bulletList' || node.type === 'orderedList') {
-      // Handle lists - all items are part of one block
-      const listLines: string[] = []
-      const listItems = (node.content || []) as Array<{ content?: Array<unknown>; attrs?: Record<string, unknown> }>
-      listItems.forEach((item, index) => {
-        const prefix = node.type === 'orderedList' ? `${index + 1}. ` : '- '
-        const itemContent = (item.content || []) as Array<{ type?: string; content?: Array<{ type?: string; text?: string; marks?: Array<{ type: string; attrs?: Record<string, unknown> }> }>; attrs?: Record<string, unknown> }>
-        itemContent.forEach((para: { type?: string; content?: Array<{ type?: string; text?: string; marks?: Array<{ type: string; attrs?: Record<string, unknown> }> }>; attrs?: Record<string, unknown> }, paraIndex: number) => {
-          const text = nodeToText(para)
-          if (paraIndex === 0) {
-            listLines.push(prefix + text)
-          } else {
-            listLines.push('  ' + text)
-          }
-        })
-      })
-      blocks.push(listLines.join('\n'))
-    } else if (node.type === 'taskList') {
-      const listLines: string[] = []
-      const listItems = (node.content || []) as Array<{ content?: Array<unknown>; attrs?: Record<string, unknown> }>
-      listItems.forEach(item => {
-        const checked = item.attrs?.checked ? 'x' : ' '
-        const itemContent = (item.content || []) as Array<{ type?: string; content?: Array<{ type?: string; text?: string; marks?: Array<{ type: string; attrs?: Record<string, unknown> }> }>; attrs?: Record<string, unknown> }>
-        itemContent.forEach((para: { type?: string; content?: Array<{ type?: string; text?: string; marks?: Array<{ type: string; attrs?: Record<string, unknown> }> }>; attrs?: Record<string, unknown> }, paraIndex: number) => {
-          const text = nodeToText(para)
-          if (paraIndex === 0) {
-            listLines.push(`- [${checked}] ${text}`)
-          } else {
-            listLines.push('  ' + text)
-          }
-        })
-      })
-      blocks.push(listLines.join('\n'))
-    } else if (node.type === 'taskBlock') {
-      blocks.push('```task\n' + (node.attrs?.data as string || '{}') + '\n```')
-    } else if (node.type === 'imageBlock') {
-      blocks.push('```image\n' + (node.attrs?.data as string || '{}') + '\n```')
-    } else if (node.type === 'embedBlock') {
-      blocks.push('```embed\n' + (node.attrs?.data as string || '{}') + '\n```')
-    } else if (node.type === 'chartBlock') {
-      blocks.push('```chart\n' + (node.attrs?.data as string || '{}') + '\n```')
-    } else if (node.type === 'tableBlock') {
-      blocks.push('```table\n' + (node.attrs?.data as string || '{}') + '\n```')
-    } else if (node.type === 'calendarBlock') {
-      blocks.push('```calendar\n' + (node.attrs?.data as string || '{}') + '\n```')
-    } else if (node.type === 'emailBlock') {
-      blocks.push('```email\n' + (node.attrs?.data as string || '{}') + '\n```')
-    } else if (node.type === 'codeBlock') {
+      if (!text || text === BLANK_LINE_MARKER || text.trim() === BLANK_LINE_MARKER) return ''
+      return text
+    }
+    case 'heading': {
+      const level = (node.attrs?.level as number) || 1
+      return '#'.repeat(level) + ' ' + nodeToText(node)
+    }
+    case 'bulletList':
+    case 'orderedList':
+    case 'taskList':
+      return serializeList(node, 0).join('\n')
+    case 'taskBlock':
+      return '```task\n' + (node.attrs?.data as string || '{}') + '\n```'
+    case 'promptBlock':
+      return '```prompt\n' + (node.attrs?.data as string || '') + '\n```'
+    case 'imageBlock':
+      return '```image\n' + (node.attrs?.data as string || '{}') + '\n```'
+    case 'embedBlock':
+      return '```embed\n' + (node.attrs?.data as string || '{}') + '\n```'
+    case 'iframeBlock':
+      return '```iframe\n' + (node.attrs?.data as string || '{}') + '\n```'
+    case 'chartBlock':
+      return '```chart\n' + (node.attrs?.data as string || '{}') + '\n```'
+    case 'tableBlock':
+      return '```table\n' + (node.attrs?.data as string || '{}') + '\n```'
+    case 'calendarBlock':
+      return '```calendar\n' + (node.attrs?.data as string || '{}') + '\n```'
+    case 'emailBlock':
+      return '```email\n' + (node.attrs?.data as string || '{}') + '\n```'
+    case 'transcriptBlock':
+      return '```transcript\n' + (node.attrs?.data as string || '{}') + '\n```'
+    case 'mermaidBlock':
+      return '```mermaid\n' + (node.attrs?.data as string || '') + '\n```'
+    case 'table':
+      return renderTableToMarkdown(node as JSONContent, tableRenderHelpers).trim()
+    case 'codeBlock': {
       const lang = (node.attrs?.language as string) || ''
-      blocks.push('```' + lang + '\n' + nodeToText(node) + '\n```')
-    } else if (node.type === 'blockquote') {
-      const content = node.content || []
-      const quoteLines = content.map(para => '> ' + nodeToText(para))
-      blocks.push(quoteLines.join('\n'))
-    } else if (node.type === 'horizontalRule') {
-      blocks.push('---')
-    } else if (node.type === 'wikiLink') {
+      return '```' + lang + '\n' + nodeToText(node) + '\n```'
+    }
+    case 'blockquote': {
+      const content = (node.content || []) as JsonNode[]
+      return content.map(para => '> ' + nodeToText(para)).join('\n')
+    }
+    case 'horizontalRule':
+      return '---'
+    case 'wikiLink': {
       const path = (node.attrs?.path as string) || ''
-      blocks.push(`[[${path}]]`)
-    } else if (node.type === 'image') {
+      const label = (node.attrs?.label as string | null | undefined) || ''
+      return `[[${path}${label ? `|${label}` : ''}]]`
+    }
+    case 'image': {
       const src = (node.attrs?.src as string) || ''
       const alt = (node.attrs?.alt as string) || ''
-      blocks.push(`![${alt}](${src})`)
+      return `![${alt}](${src})`
     }
+    case 'videoLink': {
+      const src = (node.attrs?.src as string) || ''
+      const title = (node.attrs?.title as string) || '▶ Video abspielen'
+      return src ? `[${title}](${src})` : ''
+    }
+    default:
+      return ''
   }
+}
 
-  // Custom join: content blocks get \n\n before them, empty blocks add \n each
-  // This produces: 1 empty paragraph = 3 newlines (1 blank line on disk)
+// Pure helper: serialize a slice of top-level block nodes to markdown.
+// Custom join: content blocks get \n\n before them, empty blocks add \n each.
+// 1 empty paragraph = 3 newlines on disk (1 blank line).
+function serializeBlocksToMarkdown(blocks: JsonNode[]): string {
   if (blocks.length === 0) return ''
-
   let result = ''
-
   for (let i = 0; i < blocks.length; i++) {
-    const block = blocks[i]
+    const block = blockToMarkdown(blocks[i])
     const isContent = block !== ''
-
     if (i === 0) {
       result = block
     } else if (isContent) {
-      // Content block: add \n\n before it (standard paragraph break)
       result += '\n\n' + block
     } else {
-      // Empty block: just add \n (one extra newline for blank line)
       result += '\n'
     }
   }
-
   return result
 }
-import { EditorToolbar } from './editor-toolbar'
+
+// Custom function to get markdown that preserves empty paragraphs as blank lines
+function getMarkdownWithBlankLines(editor: Editor): string {
+  const json = editor.getJSON() as JsonNode
+  if (!json.content) return ''
+  return serializeBlocksToMarkdown(json.content as JsonNode[])
+}
+
+// Compute the cursor's 1-indexed line number in the markdown that getMarkdownWithBlankLines
+// would produce. Used to attach precise line-references when inserting editor-context mentions.
+function getCursorContextLine(editor: Editor): number {
+  const $from = editor.state.selection.$from
+  const json = editor.getJSON() as JsonNode
+  const blocks = (json.content ?? []) as JsonNode[]
+  if (blocks.length === 0) return 1
+
+  const blockIndex = $from.index(0)
+  if (blockIndex < 0 || blockIndex >= blocks.length) return 1
+
+  // Line where the cursor's top-level block starts.
+  // Joining: prefix + '\n\n' + nextContentBlock → next block sits two lines below the prefix's last line.
+  let blockStartLine: number
+  if (blockIndex === 0) {
+    blockStartLine = 1
+  } else {
+    const prefix = serializeBlocksToMarkdown(blocks.slice(0, blockIndex))
+    const prefixLineCount = prefix === '' ? 0 : prefix.split('\n').length
+    blockStartLine = prefixLineCount + 2
+  }
+
+  return blockStartLine + computeWithinBlockOffset(blocks[blockIndex], $from)
+}
+
+// Lines into the cursor's top-level block. 0 for the common single-line cases (paragraph/heading);
+// for multi-line containers, computed against how the block serializes.
+function computeWithinBlockOffset(
+  block: JsonNode,
+  $from: { parentOffset: number; depth: number; index: (depth: number) => number }
+): number {
+  switch (block.type) {
+    case 'paragraph':
+    case 'heading': {
+      // Each hardBreak before the cursor moves us down one rendered line.
+      const offset = $from.parentOffset
+      let pos = 0
+      let hbCount = 0
+      for (const child of (block.content ?? [])) {
+        if (pos >= offset) break
+        const size = child.type === 'text' ? (child.text?.length ?? 0) : 1
+        if (child.type === 'hardBreak' && pos < offset) hbCount++
+        pos += size
+      }
+      return hbCount
+    }
+    case 'bulletList':
+    case 'orderedList':
+    case 'taskList':
+    case 'blockquote':
+      // Item index within the container = lines into the block (one item per line for shallow lists/quotes).
+      return $from.depth >= 1 ? $from.index(1) : 0
+    case 'codeBlock': {
+      // +1 for the opening ``` fence line, plus newlines within the code text before the cursor.
+      const text = block.content?.[0]?.text ?? ''
+      const before = text.substring(0, $from.parentOffset)
+      return 1 + (before.match(/\n/g)?.length ?? 0)
+    }
+    default:
+      return 0
+  }
+}
+import { EditorToolbar, type GoogleDocToolbarState, type LivePillState } from './editor-toolbar'
+import { useLiveNoteForPath } from '@/hooks/use-live-note-for-path'
+import { formatRelativeTime } from '@/lib/relative-time'
 import { FrontmatterProperties } from './frontmatter-properties'
 import { WikiLink } from '@/extensions/wiki-link'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { Command, CommandEmpty, CommandItem, CommandList } from '@/components/ui/command'
-import { ensureMarkdownExtension, normalizeWikiPath, wikiLabel } from '@/lib/wiki-links'
+import { ensureMarkdownExtension, normalizeWikiPath, splitWikiFragment, wikiLabel } from '@/lib/wiki-links'
 import { extractAllFrontmatterValues, buildFrontmatter } from '@/lib/frontmatter'
 import { RowboatMentionPopover } from './rowboat-mention-popover'
 import '@/styles/editor.css'
@@ -352,6 +455,7 @@ interface MarkdownEditorProps {
   onFrontmatterChange?: (raw: string | null) => void
   onExport?: (format: 'md' | 'pdf' | 'docx') => void
   notePath?: string
+  googleDoc?: GoogleDocToolbarState
 }
 
 type WikiLinkMatch = {
@@ -429,7 +533,112 @@ const TabIndentExtension = Extension.create({
   },
 })
 
-export function MarkdownEditor({
+const slugifyHeading = (text: string) =>
+  text
+    .trim()
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+
+const decodeLinkTarget = (target: string) => {
+  try {
+    return decodeURIComponent(target)
+  } catch {
+    return target
+  }
+}
+
+const scrollToHeading = (view: EditorView, rawTarget: string) => {
+  const target = decodeLinkTarget(rawTarget.replace(/^#/, '')).trim()
+  if (!target) return false
+
+  const targetSlug = slugifyHeading(target)
+  let foundPos: number | null = null
+  view.state.doc.descendants((node, pos) => {
+    if (node.type.name !== 'heading') return true
+    const headingText = node.textContent.trim()
+    if (
+      headingText.toLowerCase() === target.toLowerCase()
+      || slugifyHeading(headingText) === targetSlug
+    ) {
+      foundPos = pos
+      return false
+    }
+    return true
+  })
+
+  if (foundPos === null) return false
+
+  const selectionPos = Math.min(foundPos + 1, view.state.doc.content.size)
+  view.dispatch(
+    view.state.tr.setSelection(TextSelection.near(view.state.doc.resolve(selectionPos)))
+  )
+  view.focus()
+
+  const domAtPos = view.domAtPos(foundPos + 1)
+  const node = domAtPos.node
+  const headingEl = node.nodeType === Node.ELEMENT_NODE
+    ? (node as HTMLElement)
+    : node.parentElement
+  headingEl?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+  return true
+}
+
+const stripMarkdownExtension = (path: string) =>
+  path.toLowerCase().endsWith('.md') ? path.slice(0, -3) : path
+
+const isSameNotePath = (linkPath: string, notePath?: string) => {
+  if (!notePath) return false
+  const normalizedLink = stripMarkdownExtension(normalizeWikiPath(linkPath)).toLowerCase()
+  const normalizedNote = stripMarkdownExtension(normalizeWikiPath(notePath)).toLowerCase()
+  return normalizedLink === normalizedNote
+}
+
+const isExternalHref = (href: string) =>
+  /^(https?:|mailto:|tel:)/i.test(href)
+
+const collapseRelativeSegments = (relPath: string) => {
+  const parts = relPath.split('/').filter((part) => part !== '' && part !== '.')
+  const stack: string[] = []
+  for (const part of parts) {
+    if (part === '..') {
+      if (stack.length === 0) return null
+      stack.pop()
+    } else {
+      stack.push(part)
+    }
+  }
+  return stack.join('/')
+}
+
+const resolveWorkspaceLinkPath = (href: string, notePath?: string) => {
+  const withoutHash = href.split('#')[0]
+  const withoutQuery = withoutHash.split('?')[0]
+  const decoded = decodeLinkTarget(withoutQuery)
+  if (!decoded) return null
+
+  if (/^file:\/\//i.test(decoded)) {
+    try {
+      return decodeURIComponent(new URL(decoded).pathname)
+    } catch {
+      return decoded
+    }
+  }
+
+  if (/^[a-zA-Z]:[\\/]/.test(decoded) || decoded.startsWith('/')) return decoded
+  if (decoded.startsWith('knowledge/') || !notePath) return collapseRelativeSegments(decoded.replace(/^\.\//, ''))
+
+  const noteDir = notePath.split('/').slice(0, -1).join('/')
+  return collapseRelativeSegments(`${noteDir}/${decoded.replace(/^\.\//, '')}`)
+}
+
+export interface MarkdownEditorHandle {
+  /** Returns {path, lineNumber} for the cursor's current position, or null if no notePath / no editor. */
+  getCursorContext: () => { path: string; lineNumber: number } | null
+}
+
+export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorProps>(function MarkdownEditor({
   content,
   onChange,
   onPrimaryHeadingCommit,
@@ -444,9 +653,17 @@ export function MarkdownEditor({
   onFrontmatterChange,
   onExport,
   notePath,
-}: MarkdownEditorProps) {
+  googleDoc,
+}, ref) {
   const isInternalUpdate = useRef(false)
   const wrapperRef = useRef<HTMLDivElement>(null)
+  // Read wikiLinks lazily inside the editor config via this ref. wikiLinks changes
+  // identity whenever the workspace directory tree changes (file watcher → new file
+  // list), and it used to be a useEditor() dependency — so any background write to
+  // the workspace destroyed and recreated the entire editor, resetting scroll to the
+  // top. Keeping it off the dep array (and reading the ref at event time) means the
+  // editor instance survives directory changes.
+  const wikiLinksRef = useRef(wikiLinks)
   const [activeWikiLink, setActiveWikiLink] = useState<WikiLinkMatch | null>(null)
   const [anchorPosition, setAnchorPosition] = useState<{ left: number; top: number } | null>(null)
   const [selectionHighlight, setSelectionHighlight] = useState<SelectionHighlightRange>(null)
@@ -469,6 +686,7 @@ export function MarkdownEditor({
 
   // Keep ref in sync with state for the plugin to access
   selectionHighlightRef.current = selectionHighlight
+  wikiLinksRef.current = wikiLinks
 
   // Memoize the selection highlight extension
   const selectionHighlightExtension = useMemo(
@@ -545,6 +763,7 @@ export function MarkdownEditor({
         heading: {
           levels: [1, 2, 3],
         },
+        link: false,
       }),
       Link.configure({
         openOnClick: false,
@@ -562,23 +781,29 @@ export function MarkdownEditor({
       }),
       ImageUploadPlaceholderExtension,
       TaskBlockExtension,
+      PromptBlockExtension.configure({ notePath }),
       ImageBlockExtension,
       EmbedBlockExtension,
+      IframeBlockExtension,
       ChartBlockExtension,
       TableBlockExtension,
       CalendarBlockExtension,
+      EmailsBlockExtension,
       EmailBlockExtension,
+      TranscriptBlockExtension,
+      MermaidBlockExtension,
       VideoLinkExtension,
       WikiLink.configure({
-        onCreate: wikiLinks?.onCreate
-          ? (path) => {
-              void wikiLinks.onCreate(path)
-            }
-          : undefined,
+        onCreate: (path: string) => {
+          void wikiLinksRef.current?.onCreate?.(path)
+        },
       }),
       TaskList,
       TaskItem.configure({
         nested: true,
+      }),
+      TableKit.configure({
+        table: { resizable: false },
       }),
       Placeholder.configure({
         placeholder,
@@ -698,15 +923,57 @@ export function MarkdownEditor({
       handleClickOn: (_view, _pos, node, _nodePos, event) => {
         if (node.type.name === 'wikiLink') {
           event.preventDefault()
-          wikiLinks?.onOpen?.(node.attrs.path)
+          const wikiPath = String(node.attrs.path ?? '')
+          const { path: linkedNotePath, heading } = splitWikiFragment(wikiPath)
+          if (heading && (!linkedNotePath || isSameNotePath(linkedNotePath, notePath))) {
+            return scrollToHeading(_view, heading)
+          }
+          wikiLinksRef.current?.onOpen?.(node.attrs.path)
           return true
         }
         return false
       },
+      handleDOMEvents: {
+        click: (view, event) => {
+          const target = event.target as Element | null
+          const link = target?.closest('a[href]') as HTMLAnchorElement | null
+          if (!link) return false
+          if (link.dataset.type === 'wiki-link') return false
+
+          const href = link.getAttribute('href') ?? ''
+          if (!href) return false
+
+          if (href.startsWith('#')) {
+            event.preventDefault()
+            return scrollToHeading(view, href)
+          }
+
+          if (isExternalHref(href)) {
+            event.preventDefault()
+            window.open(href, '_blank')
+            return true
+          }
+
+          const workspacePath = resolveWorkspaceLinkPath(href, notePath)
+          if (!workspacePath) return false
+
+          event.preventDefault()
+          void window.ipc.invoke('shell:openPath', { path: workspacePath }).then((result) => {
+            if (result.error) console.error('Failed to open linked file:', result.error)
+          }).catch((err) => {
+            console.error('Failed to open linked file:', err)
+          })
+          return true
+        },
+      },
     },
+    // NOTE: wikiLinks is intentionally NOT a dependency — it's read via wikiLinksRef
+    // at event time. Including it rebuilds the whole editor on every directory change
+    // (file watcher), which resets scroll to the top. See wikiLinksRef declaration.
   }, [
     editorSessionKey,
     maybeCommitPrimaryHeading,
+    notePath,
     preventTitleHeadingDemotion,
     promoteFirstParagraphToTitleHeading,
   ])
@@ -777,6 +1044,17 @@ export function MarkdownEditor({
       top: coords.bottom - wrapperRect.top,
     })
   }, [editor, wikiLinks])
+
+  useImperativeHandle(ref, () => ({
+    getCursorContext: () => {
+      if (!notePath || !editor) return null
+      try {
+        return { path: notePath, lineNumber: getCursorContextLine(editor) }
+      } catch {
+        return null
+      }
+    },
+  }), [notePath, editor])
 
   const updateRowboatMentionState = useCallback(() => {
     if (!editor) return
@@ -943,12 +1221,37 @@ export function MarkdownEditor({
       // Normalize for comparison (trim trailing whitespace from lines)
       const normalizeForCompare = (s: string) => s.split('\n').map(line => line.trimEnd()).join('\n').trim()
       if (normalizeForCompare(currentContent) !== normalizeForCompare(content)) {
+        // Preserve scroll + selection across an external content sync. setContent()
+        // resets the selection to the top of the doc and ProseMirror scrolls it into
+        // view; without restoring, a background writer touching the open file (graph
+        // builder, live-note runner, version-history commit) yanks the viewport back
+        // to the top repeatedly — making the note impossible to scroll. This editor
+        // instance is bound to a single note path, so the prior scrollTop is always
+        // valid for the reloaded content.
+        const wrapper = wrapperRef.current
+        const prevScrollTop = wrapper?.scrollTop ?? 0
+        const hadFocus = editor.isFocused
+        const { from: prevFrom, to: prevTo } = editor.state.selection
+
         isInternalUpdate.current = true
-        // Pre-process to preserve blank lines
         const preprocessed = preprocessMarkdown(content)
         // Treat tab-open content as baseline: do not add hydration to undo history.
         editor.chain().setMeta('addToHistory', false).setContent(preprocessed).run()
+
+        // Only restore the caret for a focused editor, so we never steal focus or
+        // scroll for a passive viewer. Clamp to the (possibly shorter) new doc.
+        if (hadFocus) {
+          const docSize = editor.state.doc.content.size
+          const from = Math.min(prevFrom, docSize)
+          const to = Math.min(prevTo, docSize)
+          try {
+            editor.chain().setMeta('addToHistory', false).setTextSelection({ from, to }).run()
+          } catch { /* selection no longer valid in the new doc — ignore */ }
+        }
         isInternalUpdate.current = false
+
+        // Restore scroll last so it wins over any scrollIntoView triggered above.
+        if (wrapper) wrapper.scrollTop = prevScrollTop
       }
     }
   }, [editor, content])
@@ -1308,6 +1611,26 @@ export function MarkdownEditor({
     return createImageUploadHandler(editor, onImageUpload)
   }, [editor, onImageUpload])
 
+  // Live-note pill state for the toolbar — derived from the on-disk `live:`
+  // block plus the agent-status bus. The `tick` dependency keeps the relative
+  // time label fresh as minutes roll over.
+  const { live: currentLive, isRunning: liveIsRunning, tick: liveTick } = useLiveNoteForPath(notePath)
+  const livePillStateForCurrentNote: LivePillState = useMemo(() => {
+    void liveTick // re-run on tick to refresh relative-time label
+    if (!currentLive) return { variant: 'passive', label: 'Make live' }
+    if (liveIsRunning) return { variant: 'running', label: 'Updating…' }
+    if (currentLive.lastRunError) {
+      const when = currentLive.lastAttemptAt ? formatRelativeTime(currentLive.lastAttemptAt) : ''
+      return { variant: 'error', label: when ? `Live · failed ${when}` : 'Live · failed' }
+    }
+    if (currentLive.active === false) return { variant: 'passive', label: 'Live · paused' }
+    if (currentLive.lastRunAt) {
+      const when = formatRelativeTime(currentLive.lastRunAt)
+      return { variant: 'idle', label: when ? `Live · ${when}` : 'Live' }
+    }
+    return { variant: 'idle', label: 'Live · never run' }
+  }, [currentLive, liveIsRunning, liveTick])
+
   return (
     <div className="tiptap-editor" onKeyDown={handleKeyDown}>
       <EditorToolbar
@@ -1315,6 +1638,13 @@ export function MarkdownEditor({
         onSelectionHighlight={setSelectionHighlight}
         onImageUpload={handleImageUploadWithPlaceholder}
         onExport={onExport}
+        googleDoc={googleDoc}
+        onOpenLiveNote={notePath ? () => {
+          window.dispatchEvent(new CustomEvent('rowboat:open-live-note-panel', {
+            detail: { filePath: notePath },
+          }))
+        } : undefined}
+        liveState={notePath ? livePillStateForCurrentNote : undefined}
       />
       {(frontmatter !== undefined) && onFrontmatterChange && (
         <FrontmatterProperties
@@ -1441,4 +1771,4 @@ export function MarkdownEditor({
       </div>
     </div>
   )
-}
+})

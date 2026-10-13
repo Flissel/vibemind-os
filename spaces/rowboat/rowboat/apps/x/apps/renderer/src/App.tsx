@@ -1,46 +1,76 @@
+// Modified for EHL (Flissel/rowboat ehl-schema-graph): hierarchical brain graph.
+// Modified for VibeMind (Flissel/rowboat vibemind): tolerant graph file read (graphFileData).
+import { loadSpaceDirectory, getDirectorySpace } from '@/hooks/use-space-directory'
+import { OpenBrowserContext } from '@/contexts/browser-context';
+import { WorkspaceSessionTabs } from './components/code/workspace-session-tabs'
+import { DocumentFileViewer } from '@/components/document-file-viewer'
+import { parseSpacesLink, readLastSpace, resolveSpacesLocation, serverLandingSpaceId, type SpacesLinkTarget } from '@/lib/spaces-navigation'
+import { openServerDialog } from '@/lib/server-dialog'
+import { ServerDialogs } from '@/components/spaces/server-dialogs'
+import { noteSpaceVisit } from '@/lib/spaces-visits'
+import { railForOpening, rememberRail } from '@/lib/spaces-rail-memory'
 import * as React from 'react'
-import { useCallback, useEffect, useState, useRef } from 'react'
-import { workspace } from '@x/shared';
-import { RunEvent, ListRunsResponse } from '@x/shared/src/runs.js';
-import type { LanguageModelUsage, ToolUIPart } from 'ai';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useRef } from 'react'
+import { workspace, quickAskShortcut, pttKey, type ipc } from '@x/shared';
+import { RunEvent } from '@x/shared/src/runs.js';
+import type { ToolUIPart } from 'ai';
 import './App.css'
 import z from 'zod';
-import { CheckIcon, LoaderIcon, PanelLeftIcon, Maximize2, Minimize2, ChevronLeftIcon, ChevronRightIcon, SquarePen, SearchIcon, HistoryIcon, RadioIcon, SquareIcon } from 'lucide-react';
-import { cn } from '@/lib/utils';
-import { MarkdownEditor } from './components/markdown-editor';
-import { ChatSidebar } from './components/chat-sidebar';
-import { ChatInputWithMentions, type StagedAttachment } from './components/chat-input-with-mentions';
-import { ChatMessageAttachments } from '@/components/chat-message-attachments'
+import { CheckIcon, LoaderIcon, PanelLeftIcon, ChevronLeftIcon, ChevronRightIcon, Plus, HistoryIcon, SquarePen, MessageSquare } from 'lucide-react';
+import { cn, compactPath, parentPath } from '@/lib/utils';
+import { SPACES_ENABLED } from '@/lib/feature-flags';
+import { MarkdownEditor, type MarkdownEditorHandle } from './components/markdown-editor';
+import { AssistantWorkspace } from './components/assistant/assistant-workspace';
+import { ASSISTANT_LAYOUT_KEY, chatLocation, defaultWindowSize, restoreAssistantLayout, useAssistantLayout, type ChatLocation } from './lib/assistant-layout';
+import { ASSISTANT_TABS_KEY, createAssistantTab, readAssistantPreference, restoreAssistantTabs, writeAssistantPreference } from './lib/assistant-dock';
+import { useSessionChat } from '@/hooks/useSessionChat';
+import { subscribeSessionFeed } from '@/lib/session-chat/feed';
+import { queuedMessageText } from './components/chat-session';
+// Value import: the Home to-do surface mounts a standalone composer directly
+// (not tab-bound); chat tabs render theirs through ChatSessionComposer.
+import { ChatInputWithMentions, type CallPreset, type PermissionMode, type StagedAttachment, type ModelSelection } from './components/chat-input-with-mentions';
 import { GraphView, type GraphEdge, type GraphNode } from '@/components/graph-view';
 import { BasesView, type BaseConfig, DEFAULT_BASE_CONFIG } from '@/components/bases-view';
+import { PersistentViewerCache } from '@/components/persistent-viewer-cache';
+import { getViewerType, isCacheableViewerPath } from '@/lib/file-types';
+import {
+  readFileAfterExternalChangesSettle,
+  reloadCleanActiveMarkdownAfterExternalChange,
+} from '@/lib/active-markdown-external-change';
 import { useDebounce } from './hooks/use-debounce';
+import { DockSidebar, DOCK_GUTTER_PX, LAST_SPACE_STORAGE_KEY } from '@/components/dock-sidebar';
 import { SidebarContentPanel } from '@/components/sidebar-content';
+import { SuggestedTopicsView } from '@/components/suggested-topics-view';
+import { LiveNotesView } from '@/components/live-notes-view';
+import { BgTasksView } from '@/components/bg-tasks-view';
+import { AppsView } from '@/components/apps/apps-view';
+import { SpacesView, type SpaceSelection } from '@/components/spaces-view';
+import { KeepAliveSection } from '@/components/keep-alive-section';
+import { railKey, readRailSelection, type RailSelection } from '@/lib/spaces-selection';
+import { boardPathById } from '@/hooks/use-space-boards';
+import { STREAM_READ_KEY } from '@/hooks/use-space-chat';
+import { requestJump } from '@/lib/spaces-jump';
+import { findSpace, getSpacesOrgs, refreshSpacesOrgs, useSpacesOrgs } from '@/hooks/use-spaces';
+import { spaceDisplayName } from '@/lib/spaces-direct';
+import { EmailView } from '@/components/email-view';
+import { KnowledgeView, type KnowledgeViewMode } from '@/components/knowledge-view';
+import { GoogleDocPickerDialog } from '@/components/google-doc-picker-dialog';
+import { NewPresentationDialog } from '@/components/new-presentation-dialog';
+import { ChatHistoryView } from '@/components/chat-history-view';
+import { TodoView } from '@/components/todo-view';
+import { MeetingsView } from '@/components/meetings-view';
+import { CodeView, type ActiveCodeSession } from '@/components/code/code-view';
+import { CodeWorkspaceDrawer } from '@/components/code/workspace-drawer';
+import type { CodePanel } from '@/components/code/code-panels';
 import { SidebarSectionProvider } from '@/contexts/sidebar-context';
-import {
-  Conversation,
-  ConversationContent,
-  ConversationEmptyState,
-  ScrollPositionPreserver,
-} from '@/components/ai-elements/conversation';
-import {
-  Message,
-  MessageContent,
-  MessageResponse,
-} from '@/components/ai-elements/message';
 import {
   type PromptInputMessage,
   type FileMention,
+  type Mention,
 } from '@/components/ai-elements/prompt-input';
+import { splitMentions } from '@/lib/mention-payload';
 
-import { Shimmer } from '@/components/ai-elements/shimmer';
-import { useSmoothedText } from './hooks/useSmoothedText';
-import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@/components/ai-elements/tool';
-import { WebSearchResult } from '@/components/ai-elements/web-search-result';
-import { AppActionCard } from '@/components/ai-elements/app-action-card';
-import { PermissionRequest } from '@/components/ai-elements/permission-request';
-import { AskHumanRequest } from '@/components/ai-elements/ask-human-request';
-import { Suggestions } from '@/components/ai-elements/suggestions';
-import { ToolPermissionRequestEvent, AskHumanRequestEvent } from '@x/shared/src/runs.js';
+import { ToolPermissionAutoDecisionEvent, ToolPermissionRequestEvent, AskHumanRequestEvent } from '@x/shared/src/runs.js';
 import {
   SidebarInset,
   SidebarProvider,
@@ -48,59 +78,76 @@ import {
 } from "@/components/ui/sidebar"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
+import { SettingsDialog, type ConfigTab } from "@/components/settings-dialog"
+import { AboutDialog } from "@/components/about-dialog"
 import { Button } from "@/components/ui/button"
 import { Toaster } from "@/components/ui/sonner"
-import { stripKnowledgePrefix, toKnowledgePath, wikiLabel } from '@/lib/wiki-links'
+import { UpdateCard } from "@/components/update-card"
+import { BillingErrorDialog } from "@/components/billing-error-dialog"
+import { CreditCelebration } from "@/components/credit-celebration"
+import { matchBillingError, type BillingErrorMatch } from "@/lib/billing-error"
+import { dispatchCreditExhausted, dispatchCreditReplenished } from "@/lib/credit-status"
+import { ensureMarkdownExtension, normalizeWikiPath, splitWikiFragment, stripKnowledgePrefix, toKnowledgePath, wikiLabel } from '@/lib/wiki-links'
+import { buildHierarchyGraph, graphFileData, parseVaultMap, vaultMapNodeId, type NodeInfo } from '@/lib/graph-hierarchy'
 import { splitFrontmatter, joinFrontmatter } from '@/lib/frontmatter'
+import { extractConferenceLink } from '@/lib/calendar-event'
 import { OnboardingModal } from '@/components/onboarding'
-import { SearchDialog } from '@/components/search-dialog'
+import { ComposioGoogleMigrationModal } from '@/components/composio-google-migration-modal'
+import { ModelRecommendationUpdateModal, type RecommendationUpdate } from '@/components/model-recommendation-update-modal'
+import { CommandPalette, type CommandPaletteMention } from '@/components/command-palette'
+import type { PaletteDestination, PaletteScope } from '@/lib/command-palette/destinations'
+import { brainNotes } from '@/lib/command-palette/notes'
+import { LiveNoteSidebar } from '@/components/live-note-sidebar'
 import { BackgroundTaskDetail } from '@/components/background-task-detail'
+import { BrowserPane } from '@/components/browser-pane/BrowserPane'
 import { VersionHistoryPanel } from '@/components/version-history-panel'
-import { FileCardProvider } from '@/contexts/file-card-context'
-import { MarkdownPreOverride } from '@/components/ai-elements/markdown-code-override'
-import { TabBar, type ChatTab, type FileTab } from '@/components/tab-bar'
+import { TabBar, type ChatTab } from '@/components/tab-bar'
+import { closeTabs } from '@/lib/close-tabs'
+import { CaffeinateToggle } from '@/components/caffeinate-toggle'
 import {
   type ChatMessage,
+  type ChatViewportAnchorState,
   type ChatTabViewState,
   type ConversationItem,
   type ToolCall,
   createEmptyChatTabViewState,
-  getWebSearchCardData,
-  getAppActionCardData,
+  getToolDisplayName,
   inferRunTitleFromMessage,
   isChatMessage,
   isErrorMessage,
   isToolCall,
   normalizeToolInput,
-  normalizeToolOutput,
-  parseAttachedFiles,
-  toToolState,
 } from '@/lib/chat-conversation'
+import { COMPOSIO_DISPLAY_NAMES as composioDisplayNames } from '@x/shared/src/composio.js'
+import { COMMAND_CENTER_CHAT_SENTINEL } from '@x/shared/src/home-threads.js'
+import { isChatListSession } from '@x/shared/src/sessions.js'
+import type { SessionOrigin, SpaceThreadOrigin } from '@x/shared/src/origins.js'
 import { AgentScheduleConfig } from '@x/shared/dist/agent-schedule.js'
 import { AgentScheduleState } from '@x/shared/dist/agent-schedule-state.js'
 import { toast } from "sonner"
 import { useVoiceMode } from '@/hooks/useVoiceMode'
+import { CALL_VOICE_HOLDER, acquireVoice, releaseVoice, useVoiceOwner, voiceOwnerId } from '@/lib/voice-ownership'
+import { useVideoMode } from '@/hooks/useVideoMode'
 import { useVoiceTTS } from '@/hooks/useVoiceTTS'
-import { useMeetingTranscription, type MeetingTranscriptionState, type CalendarEventMeta } from '@/hooks/useMeetingTranscription'
+import { VideoCallView } from '@/components/video-call-view'
+import { PermissionDialog, type PermissionKind } from '@/components/permission-dialog'
+import { ProductTour, type TourNavTarget } from '@/components/product-tour'
+import { useMeetingTranscription, type CalendarEventMeta } from '@/hooks/useMeetingTranscription'
+import { useAnalyticsIdentity } from '@/hooks/useAnalyticsIdentity'
+import * as analytics from '@/lib/analytics'
+import { playAckCue, playAlertCue, playPopCue } from '@/lib/call-sounds'
+import { useTheme } from '@/contexts/theme-context'
+import { isMac } from '@/lib/shortcut'
 
 type DirEntry = z.infer<typeof workspace.DirEntry>
 type RunEventType = z.infer<typeof RunEvent>
-type ListRunsResponseType = z.infer<typeof ListRunsResponse>
 
 interface TreeNode extends DirEntry {
   children?: TreeNode[]
   loaded?: boolean
 }
 
-const streamdownComponents = { pre: MarkdownPreOverride }
-
-function SmoothStreamingMessage({ text, components }: { text: string; components: typeof streamdownComponents }) {
-  const smoothText = useSmoothedText(text)
-  return <MessageResponse components={components}>{smoothText}</MessageResponse>
-}
-
-const DEFAULT_SIDEBAR_WIDTH = 256
-const wikiLinkRegex = /\[\[([^[\]]+)\]\]/g
+const DEFAULT_CHAT_PANE_WIDTH = 460
 const graphPalette = [
   { hue: 210, sat: 72, light: 52 },
   { hue: 28, sat: 78, light: 52 },
@@ -112,15 +159,68 @@ const graphPalette = [
   { hue: 0, sat: 72, light: 52 },
 ]
 
+// Push-to-talk gesture timing: a talk-key press shorter than PTT_TAP_MS is
+// a tap (toggles hands-free lock); anything longer is a hold (release
+// submits). PTT_EDGE_ECHO_MS collapses the same key edge arriving from two
+// sources at once (global uiohook hook + in-window DOM listener).
+// The key is right ⌘ on macOS, right Ctrl elsewhere — shared/ptt-key.ts.
+const PTT_TAP_MS = 350
+const PTT_CODE = pttKey.pttEventCode(isMac)
+const PTT_KEY_LABEL = pttKey.pttKeyLabel(isMac)
+// Mic-ownership token for the Home composer (chat composers use their chatId).
+const HOME_VOICE_HOLDER = 'home-composer'
+const PTT_EDGE_ECHO_MS = 80
+// How long a hover summon waits for the voice/TTS probe to settle before
+// deciding voice isn't configured. Long enough for a cold boot (config read
+// + oauth state), short enough that a hung probe still gets the user a
+// surface (the text card) instead of silence.
+const VOICE_PROBE_WAIT_MS = 4000
+
+// Speakable fallback for a call reply that skipped <voice> tags: strip the
+// markdown that reads terribly aloud and cap the length — a minute-long
+// monologue helps nobody.
+function toSpeakableText(markdown: string): string {
+  const text = markdown
+    .replace(/```[\s\S]*?(```|$)/g, ' — code omitted — ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^[-*+]\s+/gm, '')
+    .replace(/\*\*|__|\*/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (text.length <= 700) return text
+  const cut = text.slice(0, 700)
+  const lastStop = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '))
+  return lastStop > 200 ? cut.slice(0, lastStop + 1) : cut
+}
+
+// Everything the middle pane can show, in the precedence order of the old
+// view ternary. Section views in KEEP_ALIVE_SECTIONS stay mounted inside a
+// <KeepAliveSection> once visited — hidden ones keep state and DOM (instant
+// switches, scroll preserved) while React pauses their effects. The rest
+// (overlays, file editors, the full-screen chat) mount and unmount as before.
+type MiddleView =
+  | 'browser' | 'home' | 'suggested-topics' | 'meetings' | 'code' | 'live-notes'
+  | 'bg-tasks' | 'apps' | 'spaces' | 'email' | 'workspace' | 'knowledge'
+  | 'chat-history' | 'bases' | 'graph' | 'file' | 'task' | 'chat'
+
+const KEEP_ALIVE_SECTIONS: ReadonlySet<MiddleView> = new Set<MiddleView>([
+  'home', 'meetings', 'code', 'bg-tasks', 'apps', 'spaces', 'email', 'workspace', 'knowledge',
+])
+
 const MACOS_TRAFFIC_LIGHTS_RESERVED_PX = 16 + 12 * 3 + 8 * 2
-const TITLEBAR_BUTTON_PX = 32
-const TITLEBAR_BUTTON_GAP_PX = 4
-const TITLEBAR_HEADER_GAP_PX = 8
 const TITLEBAR_TOGGLE_MARGIN_LEFT_PX = 12
-const TITLEBAR_BUTTONS_COLLAPSED = 5
-const TITLEBAR_BUTTON_GAPS_COLLAPSED = 4
-const GRAPH_TAB_PATH = '__rowboat_graph_view__'
+const SIDEBAR_VIEW_STORAGE_KEY = 'x:sidebar-view'
+const WORKSPACE_ROOT = 'knowledge/Workspace'
+// Sentinel path for the default Bases view (a virtual "file" the bases table
+// renders under). The other __rowboat_* sentinel tab paths died with the tab
+// strip — sections are plain view state now.
 const BASES_DEFAULT_TAB_PATH = '__rowboat_bases_default__'
+
+// Stable empty conversation for unbound sessions (identity-stable for deps).
+const EMPTY_CONVERSATION: ConversationItem[] = []
 
 const clampNumber = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value))
@@ -172,6 +272,43 @@ const stripKnowledgePrefixForWiki = (relPath: string) => {
 
 const stripMarkdownExtensionForWiki = (wikiPath: string) =>
   wikiPath.toLowerCase().endsWith('.md') ? wikiPath.slice(0, -3) : wikiPath
+
+type LinkedGoogleDocMeta = {
+  id: string
+  title: string
+  url?: string
+  syncedAt?: string
+}
+
+const parseLinkedGoogleDocFrontmatter = (raw: string | null | undefined): LinkedGoogleDocMeta | null => {
+  if (!raw?.includes('google_doc:')) return null
+  const doc: Partial<LinkedGoogleDocMeta> = {}
+  let inGoogleDoc = false
+  for (const line of raw.split('\n')) {
+    if (line.trim() === '---') {
+      inGoogleDoc = false
+      continue
+    }
+    const topLevel = line.match(/^([A-Za-z_][\w-]*):\s*.*$/)
+    if (topLevel) {
+      inGoogleDoc = topLevel[1] === 'google_doc'
+      continue
+    }
+    if (!inGoogleDoc) continue
+    const nested = line.match(/^\s+([A-Za-z_][\w-]*):\s*(.*)$/)
+    if (!nested) continue
+    const key = nested[1] as keyof LinkedGoogleDocMeta
+    if (!['id', 'title', 'url', 'syncedAt'].includes(key)) continue
+    let value = nested[2].trim()
+    try {
+      value = JSON.parse(value)
+    } catch {
+      value = value.replace(/^['"]|['"]$/g, '')
+    }
+    doc[key] = value
+  }
+  return doc.id && doc.title ? doc as LinkedGoogleDocMeta : null
+}
 
 const wikiPathCompareKey = (wikiPath: string) =>
   stripMarkdownExtensionForWiki(wikiPath).toLowerCase()
@@ -247,10 +384,82 @@ const getAncestorDirectoryPaths = (path: string): string[] => {
   return ancestors
 }
 
-const isGraphTabPath = (path: string) => path === GRAPH_TAB_PATH
 const isBaseFilePath = (path: string) => path.endsWith('.base') || path === BASES_DEFAULT_TAB_PATH
 
-const normalizeUsage = (usage?: Partial<LanguageModelUsage> | null): LanguageModelUsage | null => {
+const getSuggestedTopicTargetFolder = (category?: string) => {
+  const normalized = category?.trim().toLowerCase()
+  switch (normalized) {
+    case 'people':
+    case 'person':
+      return 'People'
+    case 'organizations':
+    case 'organization':
+      return 'Organizations'
+    case 'projects':
+    case 'project':
+      return 'Projects'
+    case 'meetings':
+    case 'meeting':
+      return 'Meetings'
+    case 'topics':
+    case 'topic':
+    default:
+      return 'Topics'
+  }
+}
+
+const buildSuggestedTopicExplorePrompt = ({
+  title,
+  description,
+  category,
+}: {
+  title: string
+  description: string
+  category?: string
+}) => {
+  const folder = getSuggestedTopicTargetFolder(category)
+  const categoryLabel = category?.trim() || 'Topics'
+  return [
+    'I am exploring a suggested topic card from the Suggested Topics panel.',
+    'This card may represent a person, organization, topic, or project.',
+    '',
+    'Card context:',
+    `- Title: ${title}`,
+    `- Category: ${categoryLabel}`,
+    `- Description: ${description}`,
+    `- Target folder if we set this up: knowledge/${folder}/`,
+    '',
+    `Please start by telling me that you can set up a live note for "${title}" under knowledge/${folder}/.`,
+    'Then briefly explain what that live note would track and ask me if you should set it up.',
+    'Do not create or modify anything yet.',
+    'Treat a clear confirmation from me as explicit approval to proceed.',
+    `If I confirm later, load the \`live-note\` skill first, check whether a matching note already exists under knowledge/${folder}/, and extend its existing live objective instead of creating a duplicate.`,
+    `If no matching note exists, create a new note under knowledge/${folder}/ with an appropriate filename.`,
+    'Make the new note live (add a `live:` block to its frontmatter) rather than only writing static content, and keep any surrounding note scaffolding short and useful.',
+    'Do not ask me to choose a note path unless there is a real ambiguity you cannot resolve from the card.',
+  ].join('\n')
+}
+
+const buildLiveNoteSetupPrompt = () =>
+  'I want to set up a Live note / task.'
+
+const buildBgTaskSetupPrompt = (description: string) =>
+  `Create a background task for me. Here's what I want it to do:\n\n${description}`
+
+const buildBgTaskEditPrompt = (slug: string) =>
+  `Let's tweak the background task \`${slug}\`. Please load the \`background-task\` skill first, read the task's current \`bg-tasks/${slug}/task.yaml\`, then ask me what I want to change.`
+
+// The renderer displays our internal (flat) usage shape that arrives over IPC,
+// not the AI SDK's restructured LanguageModelUsage (nested token details).
+type UsageSummary = {
+  inputTokens?: number
+  outputTokens?: number
+  totalTokens?: number
+  reasoningTokens?: number
+  cachedInputTokens?: number
+}
+
+const normalizeUsage = (usage?: UsageSummary | null): UsageSummary | null => {
   if (!usage) return null
   const hasNumbers = Object.values(usage).some((value) => typeof value === 'number')
   if (!hasNumbers) return null
@@ -267,18 +476,49 @@ const normalizeUsage = (usage?: Partial<LanguageModelUsage> | null): LanguageMod
   }
 }
 
-// Pinned folders appear first in the sidebar (in this order)
-const PINNED_FOLDERS = ['Notes']
+// Sidebar folder ordering — listed folders appear in this order, unlisted ones follow alphabetically
+const FOLDER_ORDER = ['People', 'Organizations', 'Projects', 'Topics', 'Meetings', 'Agent Notes', 'Notes']
 
-// Sort nodes (dirs first, pinned folders at top, then alphabetically)
+/**
+ * Per-folder base view config: which columns to show and default sort.
+ * Folders not listed here fall back to DEFAULT_BASE_CONFIG.
+ */
+const FOLDER_BASE_CONFIGS: Record<string, { visibleColumns: string[]; sort: { field: string; dir: 'asc' | 'desc' } }> = {
+  'Agent Notes': {
+    visibleColumns: ['name', 'folder', 'mtimeMs'],
+    sort: { field: 'mtimeMs', dir: 'desc' },
+  },
+  People: {
+    visibleColumns: ['name', 'relationship', 'organization', 'mtimeMs'],
+    sort: { field: 'name', dir: 'asc' },
+  },
+  Organizations: {
+    visibleColumns: ['name', 'relationship', 'mtimeMs'],
+    sort: { field: 'name', dir: 'asc' },
+  },
+  Projects: {
+    visibleColumns: ['name', 'status', 'topic', 'mtimeMs'],
+    sort: { field: 'name', dir: 'asc' },
+  },
+  Topics: {
+    visibleColumns: ['name', 'mtimeMs'],
+    sort: { field: 'name', dir: 'asc' },
+  },
+  Meetings: {
+    visibleColumns: ['name', 'topic', 'mtimeMs'],
+    sort: { field: 'mtimeMs', dir: 'desc' },
+  },
+}
+
+// Sort nodes (dirs first, ordered folders by FOLDER_ORDER, then alphabetically)
 function sortNodes(nodes: TreeNode[]): TreeNode[] {
   return nodes.sort((a, b) => {
     if (a.kind !== b.kind) return a.kind === 'dir' ? -1 : 1
-    const aPinned = PINNED_FOLDERS.indexOf(a.name)
-    const bPinned = PINNED_FOLDERS.indexOf(b.name)
-    if (aPinned !== -1 && bPinned !== -1) return aPinned - bPinned
-    if (aPinned !== -1) return -1
-    if (bPinned !== -1) return 1
+    const aOrder = FOLDER_ORDER.indexOf(a.name)
+    const bOrder = FOLDER_ORDER.indexOf(b.name)
+    if (aOrder !== -1 && bOrder !== -1) return aOrder - bOrder
+    if (aOrder !== -1) return -1
+    if (bOrder !== -1) return 1
     return a.name.localeCompare(b.name)
   }).map(node => {
     if (node.children) {
@@ -322,7 +562,8 @@ function flattenMeetingsTree(nodes: TreeNode[]): TreeNode[] {
       }
       collectFiles(sourceNode, [])
 
-      if (dateGroups.size === 0) return []
+      // Pass through user-created folders that have no meeting-style date files
+      if (dateGroups.size === 0) return [sourceNode]
 
       // Build date folder nodes, sorted reverse chronologically
       const dateFolderNodes: TreeNode[] = [...dateGroups.entries()]
@@ -394,139 +635,226 @@ const collectFilePaths = (nodes: TreeNode[]): string[] =>
   nodes.flatMap(n => n.kind === 'file' ? [n.path] : (n.children ? collectFilePaths(n.children) : []))
 
 /** A snapshot of which view the user is on */
+// Where the Home composer's next send goes — set by the list's ＋/reply
+// affordances, shown as a destination chip. Null = plain assistant chat.
+export type HomeComposeTarget =
+  | { kind: 'todo'; prefill?: string }
+  | { kind: 'sub'; parentKey: string; parentText: string; prefill?: string }
+  | { kind: 'comment'; key: string; itemText: string; quote?: string }
+  | { kind: 'chatReply'; sessionId: string; title: string; quote?: string }
+
 type ViewState =
   | { type: 'chat'; runId: string | null }
   | { type: 'file'; path: string }
   | { type: 'graph' }
   | { type: 'task'; name: string }
+  | { type: 'suggested-topics' }
+  | { type: 'meetings' }
+  | { type: 'live-notes' }
+  | { type: 'email'; threadId?: string; searchQuery?: string }
+  | { type: 'workspace'; path?: string; runId?: string; filePath?: string }
+  | { type: 'knowledge-view'; folderPath?: string; mode?: KnowledgeViewMode }
+  | { type: 'chat-history' }
+  | { type: 'home' }
+  | { type: 'code' }
+  | { type: 'bg-tasks' }
+  | { type: 'apps' }
+  | {
+      type: 'spaces'
+      orgId?: string
+      spaceId?: string
+      rail?: RailSelection
+      /** An org-level surface instead of a space: Activity (layer 3, 2026-09-10). */
+      view?: 'activity' | 'browse'
+      /** Scroll to this message once the pane paints (a notification or Activity click). */
+      messageId?: string
+      /** Its offset, when the producer fetched the message — the pane can load around it without asking. */
+      messageOffset?: number
+    }
+
+/** A view naming a message: the pane consumes the jump once it paints (the thread's when the rail is one, else the stream's). */
+function requestViewJump(view: ViewState): void {
+  if (view.type !== 'spaces' || !view.messageId) return
+  requestJump({
+    topicId: view.rail?.kind === 'thread' ? view.rail.rootMessageId : STREAM_READ_KEY,
+    messageId: view.messageId,
+    ...(view.messageOffset !== undefined ? { offset: view.messageOffset } : {}),
+  })
+}
 
 function viewStatesEqual(a: ViewState, b: ViewState): boolean {
   if (a.type !== b.type) return false
   if (a.type === 'chat' && b.type === 'chat') return a.runId === b.runId
   if (a.type === 'file' && b.type === 'file') return a.path === b.path
   if (a.type === 'task' && b.type === 'task') return a.name === b.name
+  if (a.type === 'workspace' && b.type === 'workspace') return (a.path ?? '') === (b.path ?? '') && (a.runId ?? '') === (b.runId ?? '') && (a.filePath ?? '') === (b.filePath ?? '')
+  if (a.type === 'knowledge-view' && b.type === 'knowledge-view') return (a.folderPath ?? '') === (b.folderPath ?? '') && (a.mode ?? '') === (b.mode ?? '')
+  if (a.type === 'email' && b.type === 'email') return (a.threadId ?? '') === (b.threadId ?? '') && (a.searchQuery ?? '') === (b.searchQuery ?? '')
+  if (a.type === 'spaces' && b.type === 'spaces') return (a.orgId ?? '') === (b.orgId ?? '') && (a.spaceId ?? '') === (b.spaceId ?? '') && (a.view ?? '') === (b.view ?? '') && railKey(a.rail) === railKey(b.rail)
   return true // both graph
 }
 
-/** Sidebar toggle + back/forward nav */
+/**
+ * Parse a rowboat:// deep link into a ViewState. Returns null if the URL is
+ * malformed or names an unknown target.
+ *
+ * Shape: rowboat://open?type=<file|chat|graph|task|suggested-topics|meetings|live-notes|email>&...
+ *   file:             ?type=file&path=knowledge/foo.md
+ *   chat:             ?type=chat&runId=abc123        (runId optional)
+ *   graph:            ?type=graph
+ *   task:             ?type=task&name=daily-brief
+ *   suggested-topics: ?type=suggested-topics
+ *   meetings:         ?type=meetings
+ *   live-notes:       ?type=live-notes
+ *   email:            ?type=email
+ */
+function parseDeepLink(input: string): ViewState | null {
+  const SCHEME = 'rowboat://'
+  if (!input.startsWith(SCHEME)) return null
+  const rest = input.slice(SCHEME.length)
+  const queryIdx = rest.indexOf('?')
+  const host = (queryIdx >= 0 ? rest.slice(0, queryIdx) : rest).replace(/\/$/, '')
+  if (host !== 'open') return null
+  const params = new URLSearchParams(queryIdx >= 0 ? rest.slice(queryIdx + 1) : '')
+  switch (params.get('type')) {
+    case 'file': {
+      const path = params.get('path')
+      return path ? { type: 'file', path } : null
+    }
+    case 'chat':
+      return { type: 'chat', runId: params.get('runId') || null }
+    case 'graph':
+      return { type: 'graph' }
+    case 'task': {
+      const name = params.get('name')
+      return name ? { type: 'task', name } : null
+    }
+    case 'suggested-topics':
+      return { type: 'suggested-topics' }
+    case 'meetings':
+      return { type: 'meetings' }
+    case 'live-notes':
+      return { type: 'live-notes' }
+    case 'email': {
+      const threadId = params.get('threadId')
+      return { type: 'email', threadId: threadId || undefined }
+    }
+    case 'workspace': {
+      const path = params.get('path')
+      return { type: 'workspace', path: path ?? undefined }
+    }
+    case 'knowledge-view': {
+      const folderPath = params.get('folderPath')
+      const mode = params.get('mode')
+      return {
+        type: 'knowledge-view',
+        folderPath: folderPath ?? undefined,
+        mode: mode === 'graph' || mode === 'basis' || mode === 'files' ? mode : undefined,
+      }
+    }
+    case 'chat-history':
+      return { type: 'chat-history' }
+    case 'home':
+      return { type: 'home' }
+    case 'code':
+      return { type: 'code' }
+    case 'bg-tasks':
+      return { type: 'bg-tasks' }
+    case 'apps':
+      return { type: 'apps' }
+    case 'spaces': {
+      // Only the orgId form resolves synchronously here (notifications write
+      // it). The org's own landings name the org by ADDRESS and may point at
+      // a file, a person, or a message whose thread is unknown — those go
+      // through openSpacesLink, which looks things up first.
+      const orgId = params.get('orgId')
+      const spaceId = params.get('spaceId')
+      if (orgId && (params.get('view') === 'activity' || params.get('view') === 'browse')) return { type: 'spaces', orgId, view: params.get('view') as 'activity' | 'browse' }
+      if (!orgId || !spaceId) return { type: 'spaces' }
+      const threadRootId = params.get('threadRootId')
+      const messageId = params.get('messageId')
+      return {
+        type: 'spaces',
+        orgId,
+        spaceId,
+        ...(threadRootId ? { rail: { kind: 'thread' as const, rootMessageId: threadRootId } } : {}),
+        ...(messageId ? { messageId } : {}),
+      }
+    }
+    default:
+      return null
+  }
+}
+
+/** Sidebar toggle (fixed position, top-left) — one persistent control that
+    swaps between the expanded panel and the icon rail, in both directions.
+    Reports its rendered width so collapsed-mode headers can pad past the
+    whole cluster (its contents vary: new chat, caffeinate). */
 function FixedSidebarToggle({
-  onNavigateBack,
-  onNavigateForward,
-  canNavigateBack,
-  canNavigateForward,
-  onNewChat,
-  onOpenSearch,
-  meetingState,
-  meetingSummarizing,
-  meetingAvailable,
-  onToggleMeeting,
   leftInsetPx,
+  onNewChat,
+  onWidthChange,
 }: {
-  onNavigateBack: () => void
-  onNavigateForward: () => void
-  canNavigateBack: boolean
-  canNavigateForward: boolean
-  onNewChat: () => void
-  onOpenSearch: () => void
-  meetingState: MeetingTranscriptionState
-  meetingSummarizing: boolean
-  meetingAvailable: boolean
-  onToggleMeeting: () => void
   leftInsetPx: number
+  onNewChat?: () => void
+  onWidthChange?: (px: number) => void
 }) {
   const { toggleSidebar, state } = useSidebar()
-  const isCollapsed = state === "collapsed"
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    const el = rootRef.current
+    if (!el || !onWidthChange) return
+    onWidthChange(el.offsetWidth)
+    const observer = new ResizeObserver(() => onWidthChange(el.offsetWidth))
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [onWidthChange])
   return (
-    <div className="fixed left-0 top-0 z-50 flex h-10 items-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+    <div ref={rootRef} className="fixed left-0 top-0 z-50 flex h-10 items-center gap-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
       <div aria-hidden="true" className="h-10 shrink-0" style={{ width: leftInsetPx }} />
-      {/* Sidebar toggle */}
       <button
         type="button"
         onClick={toggleSidebar}
-        className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+        className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
         style={{ marginLeft: TITLEBAR_TOGGLE_MARGIN_LEFT_PX }}
-        aria-label="Toggle Sidebar"
+        aria-label="Toggle sidebar"
+        title={state === 'collapsed' ? 'Expand sidebar' : 'Collapse sidebar'}
       >
-        <PanelLeftIcon className="size-5" />
+        <PanelLeftIcon className="size-[17px]" strokeWidth={1.5} />
       </button>
-      <button
-        type="button"
-        onClick={onNewChat}
-        className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-        style={{ marginLeft: TITLEBAR_BUTTON_GAP_PX }}
-        aria-label="New chat"
-      >
-        <SquarePen className="size-5" />
-      </button>
-      <button
-        type="button"
-        onClick={onOpenSearch}
-        className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-        style={{ marginLeft: TITLEBAR_BUTTON_GAP_PX }}
-        aria-label="Search"
-      >
-        <SearchIcon className="size-5" />
-      </button>
-      {meetingAvailable && (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              onClick={onToggleMeeting}
-              disabled={meetingState === 'connecting' || meetingState === 'stopping' || meetingSummarizing}
-              className={cn(
-                "flex h-8 w-8 items-center justify-center rounded-md transition-colors disabled:pointer-events-none",
-                meetingSummarizing
-                  ? "text-muted-foreground"
-                  : meetingState === 'recording'
-                    ? "text-red-500 hover:bg-accent"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
-              )}
-              style={{ marginLeft: TITLEBAR_BUTTON_GAP_PX }}
-            >
-              {meetingSummarizing || meetingState === 'connecting' ? (
-                <LoaderIcon className="size-4 animate-spin" />
-              ) : meetingState === 'recording' ? (
-                <SquareIcon className="size-4 animate-pulse" />
-              ) : (
-                <RadioIcon className="size-5" />
-              )}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">
-            {meetingSummarizing ? 'Generating meeting notes...' : meetingState === 'connecting' ? 'Starting transcription...' : meetingState === 'recording' ? 'Stop meeting notes' : 'Take new meeting notes'}
-          </TooltipContent>
-        </Tooltip>
+      {onNewChat && (
+        <button
+          type="button"
+          onClick={onNewChat}
+          className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+          aria-label="New chat"
+          title="New chat"
+        >
+          <SquarePen className="size-[17px]" strokeWidth={1.5} />
+        </button>
       )}
-      {/* Back / Forward navigation */}
-      {isCollapsed && (
-        <>
-          <button
-            type="button"
-            onClick={onNavigateBack}
-            disabled={!canNavigateBack}
-            className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors disabled:opacity-30 disabled:pointer-events-none"
-            style={{ marginLeft: TITLEBAR_BUTTON_GAP_PX }}
-            aria-label="Go back"
-          >
-            <ChevronLeftIcon className="size-5" />
-          </button>
-          <button
-            type="button"
-            onClick={onNavigateForward}
-            disabled={!canNavigateForward}
-            className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors disabled:opacity-30 disabled:pointer-events-none"
-            aria-label="Go forward"
-          >
-            <ChevronRightIcon className="size-5" />
-          </button>
-        </>
-      )}
+      {/* Caffeinate lives here rather than in a pane header: it is app-wide
+          state, and this cluster is the one control group present on every
+          view, sidebar expanded or docked. */}
+      <CaffeinateToggle />
     </div>
   )
 }
 
-/** Main content header that adjusts padding based on sidebar state */
+/** Application-menu "View > Toggle Sidebar" (menu:toggleSidebar). A bridge
+ * component because useSidebar() must be called under the SidebarProvider,
+ * below where the menu:command dispatcher sits. Renders nothing. */
+function MenuSidebarToggleBridge() {
+  const { toggleSidebar } = useSidebar()
+  const toggleRef = useRef(toggleSidebar)
+  useEffect(() => { toggleRef.current = toggleSidebar }, [toggleSidebar])
+  useEffect(() => window.ipc.on('menu:toggleSidebar', () => toggleRef.current()), [])
+  return null
+}
+
+/** Main content header. Expanded, the panel absorbs the fixed toggle cluster
+    so ordinary padding works; collapsed, the header pads past the cluster's
+    measured width (collapsedLeftPaddingPx) so back/forward never sit under it. */
 function ContentHeader({
   children,
   onNavigateBack,
@@ -534,6 +862,7 @@ function ContentHeader({
   canNavigateBack,
   canNavigateForward,
   collapsedLeftPaddingPx,
+  className,
 }: {
   children: React.ReactNode
   onNavigateBack?: () => void
@@ -541,20 +870,19 @@ function ContentHeader({
   canNavigateBack?: boolean
   canNavigateForward?: boolean
   collapsedLeftPaddingPx?: number
+  className?: string
 }) {
   const { state } = useSidebar()
-  const isCollapsed = state === "collapsed"
   return (
     <header
-      className={cn(
-        "titlebar-drag-region flex h-10 shrink-0 items-stretch border-b border-border px-3 bg-sidebar transition-[padding] duration-200 ease-linear overflow-hidden",
-        // When the sidebar is collapsed the content area shifts left, so we need enough left padding
-        // to avoid overlapping the fixed traffic-lights/toggle/back/forward controls.
-        isCollapsed && !collapsedLeftPaddingPx && "pl-[196px]"
-      )}
-      style={isCollapsed && collapsedLeftPaddingPx ? { paddingLeft: collapsedLeftPaddingPx } : undefined}
+      className={cn("rowboat-titlebar titlebar-drag-region flex h-10 shrink-0 items-stretch border-b border-border bg-background overflow-hidden", className)}
+      style={{
+        paddingLeft: state === 'collapsed' ? (collapsedLeftPaddingPx ?? 12) : 12,
+        paddingRight: 12,
+        transition: 'padding-left 200ms linear',
+      }}
     >
-      {!isCollapsed && onNavigateBack && onNavigateForward ? (
+      {onNavigateBack && onNavigateForward ? (
         <div className="titlebar-no-drag flex items-center gap-1 pr-2 shrink-0">
           <button
             type="button"
@@ -585,21 +913,92 @@ function ContentHeader({
 }
 
 function App() {
+  const { chatPanePlacement, chatPaneSize } = useTheme()
+  const isChatPaneInMiddle = chatPanePlacement === 'middle'
+
   type ShortcutPane = 'left' | 'right'
   type MarkdownHistoryHandlers = { undo: () => boolean; redo: () => boolean }
 
+  useAnalyticsIdentity()
+
   // File browser state (for Knowledge section)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
-  const [fileContent, setFileContent] = useState<string>('')
+  const [openFilePaths, setOpenFilePaths] = useState<string[]>([])
+  const openFilePathsRef = useRef(openFilePaths)
+  openFilePathsRef.current = openFilePaths
+  const fileTabNavigationRef = useRef(0)
+  useEffect(() => {
+    if (selectedPath) setOpenFilePaths((prev) => prev.includes(selectedPath) ? prev : [...prev, selectedPath])
+  }, [selectedPath])
+  const [, setFileContent] = useState<string>('')
   const [editorContent, setEditorContent] = useState<string>('')
   const editorContentRef = useRef<string>('')
+  // The open deck's selected slide, reported by PptxEditor — the deck-kind
+  // sibling of editorContentRef: what the middle pane currently SHOWS, read
+  // when building each message's user context. slideNumber is 1-based.
+  const deckStateRef = useRef<{ path: string; slideNumber: number; slideCount: number } | null>(null)
   const [editorContentByPath, setEditorContentByPath] = useState<Record<string, string>>({})
   const editorContentByPathRef = useRef<Map<string, string>>(new Map())
   const [tree, setTree] = useState<TreeNode[]>([])
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
   const [recentWikiFiles, setRecentWikiFiles] = useState<string[]>([])
   const [isGraphOpen, setIsGraphOpen] = useState(false)
-  const [expandedFrom, setExpandedFrom] = useState<{ path: string | null; graph: boolean } | null>(null)
+  const [aboutOpen, setAboutOpen] = useState(false)
+  const [isBrowserOpen, setIsBrowserOpen] = useState(false)
+  const [isSuggestedTopicsOpen, setIsSuggestedTopicsOpen] = useState(false)
+  const [isMeetingsOpen, setIsMeetingsOpen] = useState(false)
+  const [isLiveNotesOpen, setIsLiveNotesOpen] = useState(false)
+  const [isBgTasksOpen, setIsBgTasksOpen] = useState(false)
+  const [isAppsOpen, setIsAppsOpen] = useState(false)
+  const [isSpacesOpen, setIsSpacesOpen] = useState(false)
+  // The space open in the Spaces view (org + space); the sidebar highlights it.
+  const [spaceSelection, setSpaceSelection] = useState<SpaceSelection>(null)
+  // Remember the last space opened (any route in) — the ⌥Tab switcher lands
+  // there directly instead of opening the spaces flyout.
+  useEffect(() => {
+    if (!spaceSelection) return
+    try {
+      window.localStorage.setItem(LAST_SPACE_STORAGE_KEY, JSON.stringify(spaceSelection))
+    } catch { /* ignore */ }
+  }, [spaceSelection])
+  // What's selected inside the open space (general / topic / file) — part of the history.
+  const [railSelection, setRailSelection] = useState<RailSelection>({ kind: 'general' })
+  /**
+   * The Spaces view correcting its own selection (the open space was deleted,
+   * or the last server went away). Not a navigation — no history entry. The
+   * rail selection goes with it: it names a discussion or a file IN the space
+   * it was made in, so it cannot follow to another one, and re-entering the
+   * section restores whatever is left here.
+   */
+  const selectSpace = useCallback((next: SpaceSelection) => {
+    setSpaceSelection(next)
+    if ((next?.orgId ?? '') !== (spaceSelection?.orgId ?? '') || (next?.spaceId ?? '') !== (spaceSelection?.spaceId ?? '')) {
+      setRailSelection({ kind: 'general' })
+    }
+  }, [spaceSelection])
+  const [isEmailOpen, setIsEmailOpen] = useState(false)
+  const [isKnowledgeViewOpen, setIsKnowledgeViewOpen] = useState(false)
+  const [knowledgeViewMode, setKnowledgeViewMode] = useState<KnowledgeViewMode>('graph')
+  // Folder being browsed inside the knowledge view (null = root overview).
+  // Lives in ViewState so folder drill-down participates in back/forward history.
+  const [knowledgeViewFolderPath, setKnowledgeViewFolderPath] = useState<string | null>(null)
+  const [googleDocPickerOpen, setGoogleDocPickerOpen] = useState(false)
+  const [googleDocPickerTargetFolder, setGoogleDocPickerTargetFolder] = useState('knowledge')
+  const [newPresentationOpen, setNewPresentationOpen] = useState(false)
+  const [newPresentationTargetFolder, setNewPresentationTargetFolder] = useState('knowledge')
+  const [isChatHistoryOpen, setIsChatHistoryOpen] = useState(false)
+  // Default landing view: the Assistant. No section open means the middle
+  // pane falls through to full-screen chat, which IS the Assistant surface —
+  // so Todo (this flag) starts closed and is one click away in the nav.
+  const [isHomeOpen, setIsHomeOpen] = useState(false)
+  // Home surface: the to-do list is the primary tab; the legacy dashboard
+  // stays reachable via its Overview toggle.
+  const [emailInitialThreadId, setEmailInitialThreadId] = useState<string | null>(null)
+  const [emailThreadIdVersion, setEmailThreadIdVersion] = useState(0)
+  // Search query pushed into the email view's search box (e.g. the assistant's
+  // read-view email query), so threads outside the synced inbox get real rows.
+  const [emailInitialSearchQuery, setEmailInitialSearchQuery] = useState<string | null>(null)
+  const [emailSearchQueryVersion, setEmailSearchQueryVersion] = useState(0)
   const [baseConfigByPath, setBaseConfigByPath] = useState<Record<string, BaseConfig>>({})
   const [graphData, setGraphData] = useState<{ nodes: GraphNode[]; edges: GraphEdge[] }>({
     nodes: [],
@@ -607,23 +1006,61 @@ function App() {
   })
   const [graphStatus, setGraphStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const [graphError, setGraphError] = useState<string | null>(null)
-  const [isChatSidebarOpen, setIsChatSidebarOpen] = useState(true)
   const [isRightPaneMaximized, setIsRightPaneMaximized] = useState(false)
-  const [activeShortcutPane, setActiveShortcutPane] = useState<ShortcutPane>('left')
-  const isMac = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac')
-  const collapsedLeftPaddingPx =
-    (isMac ? MACOS_TRAFFIC_LIGHTS_RESERVED_PX : 0) +
-    TITLEBAR_TOGGLE_MARGIN_LEFT_PX +
-    TITLEBAR_BUTTON_PX * TITLEBAR_BUTTONS_COLLAPSED +
-    TITLEBAR_BUTTON_GAP_PX * TITLEBAR_BUTTON_GAPS_COLLAPSED +
-    TITLEBAR_HEADER_GAP_PX
+  // Middle-pane collapse animation. Animating its max-width from 100% is janky:
+  // 100% is relative to the parent (far wider than the pane's real width), so the
+  // transition spends its first frames non-binding (nothing moves) then snaps shut.
+  // Instead we snapshot the pane's real px width before it collapses and drive the
+  // transition from that value.
+  const [insetCollapseFromPx, setInsetCollapseFromPx] = useState<number | null>(null)
+  const [insetMaxWidth, setInsetMaxWidth] = useState<string>('100%')
+  const [insetAnimateMaxWidth, setInsetAnimateMaxWidth] = useState(true)
+  // Live-note panel: bound to a single note path. Mounted as a sibling of the
+  // markdown editor so it shares the layout (no overlap with chat) and
+  // auto-closes when the active note changes.
+  const [liveNotePanelPath, setLiveNotePanelPath] = useState<string | null>(null)
+  const [, setActiveShortcutPane] = useState<ShortcutPane>('left')
+  // In collapsed mode the fixed toggle cluster (traffic lights + toggle +
+  // new chat + caffeinate) overhangs the pane's left edge (the rail gutter
+  // is narrower than it), so top bars pad past its MEASURED width — the
+  // cluster's contents vary; the expanded panel absorbs it, so ordinary
+  // padding there. Initial estimate covers first paint until the observer
+  // reports.
+  const [titlebarControlsWidthPx, setTitlebarControlsWidthPx] = useState(
+    (isMac ? MACOS_TRAFFIC_LIGHTS_RESERVED_PX : 0) + TITLEBAR_TOGGLE_MARGIN_LEFT_PX + 3 * 32,
+  )
+  const collapsedLeftPaddingPx = Math.max(12, titlebarControlsWidthPx + 8 - DOCK_GUTTER_PX)
+  // Expanded panel vs. collapsed dock — the collapse button swaps between
+  // them; the choice persists per machine.
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem(SIDEBAR_VIEW_STORAGE_KEY) !== 'dock'
+    } catch {
+      return true
+    }
+  })
+  const handleSidebarOpenChange = useCallback((open: boolean) => {
+    setSidebarOpen(open)
+    try {
+      window.localStorage.setItem(SIDEBAR_VIEW_STORAGE_KEY, open ? 'panel' : 'dock')
+    } catch { /* keep in-memory behavior */ }
+  }, [])
 
   // Keep the latest selected path in a ref (avoids stale async updates when switching rapidly)
   const selectedPathRef = useRef<string | null>(null)
+  // The slide editor reporting which slide is on screen. Stamped with the path
+  // it belongs to, so a stale report from a deck the user has closed can never
+  // be attributed to whatever is open now.
+  const handleDeckSlideChange = useCallback((slideNumber: number, slideCount: number) => {
+    const path = selectedPathRef.current
+    if (!path) return
+    deckStateRef.current = { path, slideNumber, slideCount }
+  }, [])
   const editorPathRef = useRef<string | null>(null)
   const fileLoadRequestIdRef = useRef(0)
   const initialContentByPathRef = useRef<Map<string, string>>(new Map())
-  const recentLocalMarkdownWritesRef = useRef<Map<string, number>>(new Map())
+  const documentRevisionByPathRef = useRef<Map<string, number>>(new Map())
+  const externalChangeRevisionByPathRef = useRef<Map<string, number>>(new Map())
   const untitledRenameReadyPathsRef = useRef<Set<string>>(new Set())
 
   // Pending app-navigation result to process once navigation functions are ready
@@ -640,6 +1077,7 @@ function App() {
   // Auto-save state
   const [isSaving, setIsSaving] = useState(false)
   const [lastSaved, setLastSaved] = useState<Date | null>(null)
+  const [googleDocSyncDirection, setGoogleDocSyncDirection] = useState<'up' | 'down' | null>(null)
   const debouncedContent = useDebounce(editorContent, 500)
   const initialContentRef = useRef<string>('')
   const renameInProgressRef = useRef(false)
@@ -657,9 +1095,71 @@ function App() {
   // Chat state
   const [, setMessage] = useState<string>('')
   const [conversation, setConversation] = useState<ConversationItem[]>([])
+  const [billingErrorMatch, setBillingErrorMatch] = useState<BillingErrorMatch | null>(null)
+  const [billingErrorOpen, setBillingErrorOpen] = useState(false)
+  const handledBillingErrorIdsRef = useRef<Set<string>>(new Set())
   const [currentAssistantMessage, setCurrentAssistantMessage] = useState<string>('')
-  const [, setModelUsage] = useState<LanguageModelUsage | null>(null)
+  const [, setModelUsage] = useState<UsageSummary | null>(null)
   const [runId, setRunId] = useState<string | null>(null)
+  // New runtime: the active session's chat data + actions. All logic lives in
+  // SessionChatStore (tested headlessly); the hook is a thin subscription.
+  // runId IS the session id in the sessions runtime.
+  const sessionChat = useSessionChat(runId)
+
+  // The companion's OWN conversation binding. The hover bar, the Skipper,
+  // and every call talk to THIS session — never to whatever chat the app
+  // happens to be showing. Seeded from the chat a call was started on;
+  // switched from the companion's chip; untouched by app navigation, so hovering
+  // and browsing the app are fully independent.
+  const [hoverRunId, setHoverRunId] = useState<string | null>(null)
+  const hoverRunIdRef = useRef<string | null>(null)
+  hoverRunIdRef.current = hoverRunId
+  const hoverChat = useSessionChat(hoverRunId)
+  const hoverChatRef = useRef(hoverChat)
+  hoverChatRef.current = hoverChat
+  // The bar's model/effort picks — scoped to the companion, never overlaid
+  // onto the app chat's selection.
+  const hoverSelectionRef = useRef<ModelSelection | null>(null)
+  const hoverIsProcessing = hoverChat.chatState?.isProcessing ?? false
+  const hoverIsReasoning = hoverChat.chatState?.isReasoning ?? false
+  const hoverConversation = hoverChat.chatState?.conversation ?? EMPTY_CONVERSATION
+  const hoverAssistantMessage = hoverChat.chatState?.currentAssistantMessage ?? ''
+
+  // Watch the conversation that is actually rendered — the sessions-runtime
+  // one when loaded, the legacy state otherwise — so billing failures
+  // (out of credits, subscription lapsed) always pop the upgrade dialog.
+  // Only errors that APPEAR while a conversation is on screen count: when a
+  // context first renders (session loaded/switched, app relaunched), errors
+  // already in its transcript are history — replaying them would pop the
+  // dialog and flip the credit state on every open of that chat.
+  const billingWatchedConversation = sessionChat.chatState?.conversation ?? conversation
+  const billingContextKeyRef = useRef<string | null>(null)
+  useEffect(() => {
+    const contextKey = sessionChat.chatState ? `session:${sessionChat.sessionId}` : 'legacy'
+    const isNewContext = billingContextKeyRef.current !== contextKey
+    billingContextKeyRef.current = contextKey
+    if (isNewContext) {
+      for (const item of billingWatchedConversation) {
+        if (isErrorMessage(item) && matchBillingError(item.message)) {
+          handledBillingErrorIdsRef.current.add(item.id)
+        }
+      }
+      return
+    }
+    for (let i = billingWatchedConversation.length - 1; i >= 0; i--) {
+      const item = billingWatchedConversation[i]
+      if (!isErrorMessage(item)) continue
+      if (handledBillingErrorIdsRef.current.has(item.id)) return
+      const match = matchBillingError(item.message)
+      if (match) {
+        handledBillingErrorIdsRef.current.add(item.id)
+        setBillingErrorMatch(match)
+        setBillingErrorOpen(true)
+        if (match.kind === 'out_of_credits') dispatchCreditExhausted()
+      }
+      return
+    }
+  }, [billingWatchedConversation, sessionChat.chatState, sessionChat.sessionId])
   const runIdRef = useRef<string | null>(null)
   const loadRunRequestIdRef = useRef(0)
   const [isProcessing, setIsProcessing] = useState(false)
@@ -667,17 +1167,59 @@ function App() {
   const processingRunIdsRef = useRef<Set<string>>(new Set())
   const streamingBuffersRef = useRef<Map<string, { assistant: string }>>(new Map())
   const [isStopping, setIsStopping] = useState(false)
-  const [stopClickedAt, setStopClickedAt] = useState<number | null>(null)
+  const [, setStopClickedAt] = useState<number | null>(null)
+  // Sessions runtime: whole-turn liveness drives the composer Stop control
+  // and running indicator. Model reasoning is a narrower state used only to
+  // label that indicator "Thinking..." while reasoning is actually streaming.
+  const activeIsProcessing = sessionChat.chatState?.isProcessing ?? isProcessing
+  const activeIsReasoning = sessionChat.chatState?.isReasoning ?? false
+  const activeIsWaitingOnHuman = sessionChat.chatState?.isWaitingOnHuman ?? false
+  // (The in-flight-reply mirrors — pill response panel, fallback speech,
+  // quick-ask state — read the HOVER session's store, declared above.)
+  // A failed session load must be visible, not a blank chat.
+  const sessionLoadErrorItems = React.useMemo<ConversationItem[]>(() => (
+    sessionChat.error
+      ? [{ id: 'session-load-error', kind: 'error', message: `Failed to load chat: ${sessionChat.error}`, timestamp: 0 }]
+      : []
+  ), [sessionChat.error])
   const [agentId] = useState<string>('copilot')
   const [presetMessage, setPresetMessage] = useState<string | undefined>(undefined)
 
   // Voice mode state
   const [voiceAvailable, setVoiceAvailable] = useState(false)
   const [ttsAvailable, setTtsAvailable] = useState(false)
-  const [ttsEnabled, setTtsEnabled] = useState(false)
+  // Both start false and are filled by an async probe (two IPC round-trips
+  // at mount). A hover summon that lands before it resolves must NOT read
+  // that `false` as "no voice configured" — that answered the chord with
+  // the text card for the first seconds after every app start (the "old
+  // quick access comes up instead of hover mode" glitch). Refs + the
+  // in-flight promise let the summon WAIT for a real answer; the refs are
+  // written inside the probe too, so a waiter sees the result without
+  // depending on a React re-render.
+  const voiceAvailableRef = useRef(false)
+  voiceAvailableRef.current = voiceAvailable
+  const ttsAvailableRef = useRef(false)
+  ttsAvailableRef.current = ttsAvailable
+  const voiceProbeRef = useRef<Promise<void> | null>(null)
+  // TTS plays only during calls now (the standing read-aloud toggle was
+  // retired; a per-message "read aloud" action may replace it later).
   const ttsEnabledRef = useRef(false)
-  const [ttsMode, setTtsMode] = useState<'summary' | 'full'>('summary')
+  // Voice-to-voice latency marks for the current call turn (performance.now):
+  // t0 = utterance accepted, submit = message sent, speak = first TTS
+  // speak(). Emitted as call_turn_latency when audio actually starts.
+  const callTurnMarksRef = useRef<{ t0: number; submit?: number; speak?: number } | null>(null)
+  // A summon that CAN'T become a session (voice unconfigured, or the call
+  // engine failed to start) is explained by the APP window — the companion
+  // has no second surface of its own any more. Late-bound: the toast lives
+  // with the settings state far below.
+  const notifyVoiceUnavailableRef = useRef<((reason: 'voice' | 'failed') => void) | null>(null)
+  // Late-bound handle to handleStop (defined much further down) so early
+  // call handlers can stop the run without reordering the component.
+  const stopRunRef = useRef<(() => Promise<void>) | null>(null)
+  // Read-aloud style: 'summary' for typed chat, forced to 'full' during a
+  // call and restored after. Context decides — the user never picks it.
   const ttsModeRef = useRef<'summary' | 'full'>('summary')
+  const [tourActive, setTourActive] = useState(false)
   const [isRecording, setIsRecording] = useState(false)
   const voiceTextBufferRef = useRef('')
   const spokenIndexRef = useRef(0)
@@ -687,34 +1229,258 @@ function App() {
   const ttsRef = useRef(tts)
   ttsRef.current = tts
 
+  // Latest assistant line handed to TTS — shown as the caption in the
+  // full-screen call view while the assistant is speaking.
+  const [assistantCaption, setAssistantCaption] = useState('')
+  useEffect(() => {
+    if (tts.state === 'idle') setAssistantCaption('')
+  }, [tts.state])
+
+  // Push-to-talk: the mic gate is open while 'held' (key or on-screen button
+  // down) or 'locked' (a quick tap toggled hands-free capture). 'idle' means
+  // the assistant hears nothing. Declared here (above the segment player)
+  // because segment consumption freezes while the gate is open.
+  const [pttStatus, setPttStatus] = useState<'idle' | 'held' | 'locked'>('idle')
+  const pttStatusRef = useRef<'idle' | 'held' | 'locked'>('idle')
+  // Ghostwriter chord (⇧ + the talk key): the NEXT utterance's result gets
+  // pasted at the user's cursor. Set on the down edge, consumed by the
+  // utterance callback, cleared on cancel.
+  const pttPasteIntentRef = useRef(false)
+  const setPttState = useCallback((s: 'idle' | 'held' | 'locked') => {
+    pttStatusRef.current = s
+    setPttStatus(s)
+  }, [])
+
+  // Speak newly completed <voice> blocks from the new runtime's live stream.
+  // Speech is a COMPANION concern (the hover session's replies), so the
+  // segments come from the hover session's store — the app's visible chat
+  // never starts talking, whatever it's bound to.
+  const spokenVoiceRef = useRef<{ key: string | null; count: number }>({ key: null, count: 0 })
+  const voiceSegments = hoverChat.chatState?.voiceSegments
+  const voiceSegmentsRef = useRef(voiceSegments)
+  voiceSegmentsRef.current = voiceSegments
+  // Whether any voice segment of the CURRENT call turn has been spoken —
+  // cleared at submit, set by the segment player; the fallback-speech net
+  // fires only when this is still false at turn completion.
+  const spokeSegmentThisTurnRef = useRef(false)
+  // Fallback-speech bookkeeping, armed per call turn at submit (see
+  // handlePromptSubmit) and consumed by the effect below the segment player.
+  const callTurnVoiceRef = useRef<{ pending: boolean; submitAt: number }>({
+    pending: false,
+    submitAt: 0,
+  })
+  useEffect(() => {
+    if (!voiceSegments) return
+    if (spokenVoiceRef.current.key !== hoverRunId) {
+      // Session switch: skip anything already streamed before we arrived.
+      spokenVoiceRef.current = { key: hoverRunId, count: voiceSegments.length }
+      return
+    }
+    // The overlay's segment list is PER-TURN: the store resets it to [] on
+    // every turn_created (store.ts). A shrink therefore means "new turn" —
+    // restart consumption from the top. Without this, the new reply's first
+    // segments sat below the stale counter and only the tail was spoken
+    // (or nothing at all when the new reply was shorter than the old one).
+    if (voiceSegments.length < spokenVoiceRef.current.count) {
+      spokenVoiceRef.current.count = 0
+    }
+    while (spokenVoiceRef.current.count < voiceSegments.length) {
+      // The user is mid-capture (PTT held/locked): speaking now would play
+      // TTS into their open mic. FREEZE consumption (no skip) — if they
+      // release without submitting, the effect re-runs (pttStatus dep) and
+      // the reply resumes; a real submit drops the backlog instead.
+      if (pttStatusRef.current !== 'idle') break
+      const segment = voiceSegments[spokenVoiceRef.current.count]
+      spokenVoiceRef.current.count += 1
+      if (
+        ttsEnabledRef.current &&
+        !suppressSpeechTurnRef.current &&
+        !speakerMutedRef.current
+      ) {
+        const marks = callTurnMarksRef.current
+        if (marks && marks.speak === undefined) marks.speak = performance.now()
+        spokeSegmentThisTurnRef.current = true
+        ttsRef.current.speak(segment)
+        setAssistantCaption(segment)
+      }
+    }
+  }, [voiceSegments, hoverRunId, pttStatus])
+
+  // Consistency net: 'full' voice output relies on the model wrapping its
+  // reply in <voice> tags — when it doesn't, the turn used to end in total
+  // silence. If a call turn finishes with no voice segment, read the reply
+  // text itself aloud.
+  useEffect(() => {
+    if (hoverIsProcessing) return
+    const turn = callTurnVoiceRef.current
+    if (!turn.pending) return
+    // Typed turn or speaker muted: no fallback read-aloud.
+    if (suppressSpeechTurnRef.current || speakerMutedRef.current) {
+      turn.pending = false
+      return
+    }
+    // Speaking this turn at all? (Only a live session speaks.)
+    if (!ttsEnabledRef.current) {
+      turn.pending = false
+      return
+    }
+    // Mid-capture: stay armed and re-evaluate on release (pttStatus dep) —
+    // speaking now would go into the open mic, and the frozen segment
+    // backlog may still cover this turn once it drains.
+    if (pttStatusRef.current !== 'idle') return
+    if (spokeSegmentThisTurnRef.current) {
+      // The segment player voiced (part of) this turn — no fallback.
+      turn.pending = false
+      return
+    }
+    for (let i = hoverConversation.length - 1; i >= 0; i--) {
+      const item = hoverConversation[i]
+      if (!isChatMessage(item) || item.role !== 'assistant') continue
+      // Only a reply from THIS turn counts — an errored turn would otherwise
+      // re-speak the previous answer. An older newest-message means this
+      // turn's reply hasn't landed in the conversation yet: stay armed and
+      // let the next conversation update resolve it.
+      if (item.timestamp >= turn.submitAt) {
+        turn.pending = false
+        const speakable = toSpeakableText(item.content)
+        if (speakable) {
+          ttsRef.current.speak(speakable)
+          setAssistantCaption(speakable)
+        }
+      }
+      break
+    }
+  }, [hoverIsProcessing, hoverConversation, pttStatus])
+
+  // Emit the turn's voice-to-voice latency breakdown once audio is audible.
+  useEffect(() => {
+    if (tts.state !== 'speaking') return
+    const marks = callTurnMarksRef.current
+    if (!marks || marks.submit === undefined || marks.speak === undefined) return
+    callTurnMarksRef.current = null
+    const now = performance.now()
+    analytics.callTurnLatency({
+      endpointToSubmitMs: marks.submit - marks.t0,
+      submitToSpeakMs: marks.speak - marks.submit,
+      speakToAudioMs: now - marks.speak,
+      totalMs: now - marks.t0,
+    })
+  }, [tts.state])
+
   const voice = useVoiceMode()
   const voiceRef = useRef(voice)
   voiceRef.current = voice
+  // Which chat (or the call engine) holds the mic — render gating for the
+  // per-chat recording UI reads this instead of "is this the active tab".
+  const voiceOwner = useVoiceOwner()
+
+  // Calls: one engine (hands-free voice loop + forced read-aloud TTS + frame
+  // capture), started via presets that only differ in device defaults. The
+  // presentation is DERIVED from devices, never picked: screen sharing →
+  // floating popout; camera on → full-screen call; camera off → popout
+  // (mascot pill). Handlers live below the voice/submit plumbing they drive.
+  const video = useVideoMode()
+  // Assistant calls hold the mic — tell main so ambient meeting detection
+  // doesn't mistake our own capture for an external meeting.
+  useEffect(() => {
+    void window.ipc
+      .invoke('voice:setCallActive', { active: video.state !== 'idle' })
+      .catch(() => { /* detection may be unavailable */ })
+  }, [video.state])
+  const [inCall, setInCall] = useState(false)
+  const inCallRef = useRef(false)
+  // User explicitly shrank the full-screen call to the floating pill.
+  const [callMinimized, setCallMinimized] = useState(false)
+  // A voice session started from the companion (⌥⇧Space summon or the
+  // card's tuck handle): its share toggle is STICKY — opted in once, every
+  // future summon starts already sharing, until toggled off.
+  const companionVoiceRef = useRef(false)
+  const companionVoiceStartingRef = useRef(false)
+  // Speech follows the QUESTION's modality, not the surface: a spoken
+  // question (PTT utterance) gets a spoken reply — even with the Skipper's
+  // text panel open — while a typed question renders silently. Stamped
+  // per-turn at submit so the choice sticks for the whole reply.
+  const suppressSpeechTurnRef = useRef(false)
+  // Output mute (the Skipper's speaker pin): no reply audio while set —
+  // independent of micMuted (which pauses INPUT).
+  const [speakerMuted, setSpeakerMuted] = useState(false)
+  const speakerMutedRef = useRef(false)
+  speakerMutedRef.current = speakerMuted
+  // In-call mute: a full input pause, not just audio — mic audio stops
+  // reaching Deepgram AND camera/screen frame capture stops, so nothing said
+  // or shown while muted ever reaches the assistant. Output is untouched
+  // (in-flight speech keeps playing; the Stop control handles that).
+  const [micMuted, setMicMuted] = useState(false)
+  const micMutedRef = useRef(false)
+  micMutedRef.current = micMuted
+  // Practice preset: adds the coaching persona to the system prompt.
+  const [practiceMode, setPracticeMode] = useState(false)
+  const practiceModeRef = useRef(false)
 
   const handleToggleMeetingRef = useRef<(() => void) | undefined>(undefined)
   const meetingTranscription = useMeetingTranscription(() => {
     handleToggleMeetingRef.current?.()
   })
 
+  // Keep the tray menu in sync with meeting capture ("Start meeting notes"
+  // vs "Stop recording & generate notes").
+  useEffect(() => {
+    void window.ipc
+      .invoke('meeting:setRecordingState', { recording: meetingTranscription.state === 'recording' })
+      .catch(() => { /* tray may be unavailable */ })
+  }, [meetingTranscription.state])
+
+  // Main detected the meeting app released the mic (call ended) — stop and
+  // generate notes, exactly like a manual stop. Listener only exists while
+  // recording, so a stale signal can never toggle a new recording ON.
+  useEffect(() => {
+    if (meetingTranscription.state !== 'recording') return
+    return window.ipc.on('meeting:externalCallEnded', () => {
+      handleToggleMeetingRef.current?.()
+    })
+  }, [meetingTranscription.state])
+
   // Check if voice is available on mount and when OAuth state changes
   const refreshVoiceAvailability = useCallback(() => {
-    Promise.all([
+    const probe = Promise.all([
       window.ipc.invoke('voice:getConfig', null),
       window.ipc.invoke('oauth:getState', null),
     ]).then(([config, oauthState]) => {
       const rowboatConnected = oauthState.config?.rowboat?.connected ?? false
       const hasVoice = !!config.deepgram || rowboatConnected
+      const hasTts = !!config.elevenlabs || rowboatConnected
+      voiceAvailableRef.current = hasVoice
+      ttsAvailableRef.current = hasTts
       setVoiceAvailable(hasVoice)
-      setTtsAvailable(!!config.elevenlabs || rowboatConnected)
+      setTtsAvailable(hasTts)
       // Pre-cache auth details so mic click skips IPC round-trips
       if (hasVoice) {
         voice.warmup()
       }
     }).catch(() => {
+      voiceAvailableRef.current = false
+      ttsAvailableRef.current = false
       setVoiceAvailable(false)
       setTtsAvailable(false)
     })
+    voiceProbeRef.current = probe
+    return probe
   }, [voice.warmup])
+
+  /**
+   * Wait for a definitive voice/TTS answer before treating "not available"
+   * as the truth. Capped: a probe that never settles must not swallow the
+   * summon — the caller falls back to the text card instead.
+   */
+  const awaitVoiceProbe = useCallback(async () => {
+    // Start one if nothing has probed yet — a summon must never decide
+    // "no voice" off a value nobody has looked up.
+    const probe = voiceProbeRef.current ?? refreshVoiceAvailability()
+    await Promise.race([
+      probe,
+      new Promise((resolve) => setTimeout(resolve, VOICE_PROBE_WAIT_MS)),
+    ])
+  }, [refreshVoiceAvailability])
 
   useEffect(() => {
     refreshVoiceAvailability()
@@ -724,46 +1490,1166 @@ function App() {
     return cleanup
   }, [refreshVoiceAvailability])
 
-  const handleStartRecording = useCallback(() => {
-    setIsRecording(true)
-    isRecordingRef.current = true
-    voice.start()
-  }, [voice])
+  // One-time Composio→native Google migration check. Runs on mount and again
+  // after the user signs in to Rowboat (so we catch users who weren't signed
+  // in at startup). The IPC is idempotent — once `dismissed_at` is set on the
+  // main side, every subsequent call returns `{shouldShow: false}`.
+  useEffect(() => {
+    const run = async () => {
+      try {
+        const result = await window.ipc.invoke('migration:check-composio-google', null)
+        if (result.shouldShow) {
+          setShowComposioGoogleMigration(true)
+        }
+      } catch (error) {
+        console.error('[migration] check-composio-google failed:', error)
+      }
+    }
+    void run()
+    const cleanup = window.ipc.on('oauth:didConnect', (event) => {
+      if (event.provider === 'rowboat' && event.success) {
+        void run()
+      }
+    })
+    return cleanup
+  }, [])
 
-  const handlePromptSubmitRef = useRef<((message: PromptInputMessage, mentions?: FileMention[], stagedAttachments?: StagedAttachment[], searchEnabled?: boolean) => Promise<void>) | null>(null)
-  const pendingVoiceInputRef = useRef(false)
+  // Recommendation-update prompt: checked at launch and again after a
+  // Rowboat sign-in (sign-in seeds the initial selection main-side and marks
+  // that version seen, so this only fires for a genuinely newer one). The
+  // check is idempotent — a version already answered returns shouldShow
+  // false — and never throws.
+  useEffect(() => {
+    const run = async () => {
+      try {
+        const result = await window.ipc.invoke('models:checkRecommendationUpdate', null)
+        if (result.shouldShow) setRecommendationUpdate(result)
+      } catch (error) {
+        console.error('[models] checkRecommendationUpdate failed:', error)
+      }
+    }
+    void run()
+    const cleanup = window.ipc.on('oauth:didConnect', (event) => {
+      if (event.provider === 'rowboat' && event.success) {
+        void run()
+      }
+    })
+    return cleanup
+  }, [])
 
-  const handleSubmitRecording = useCallback(() => {
-    const text = voice.submit()
+  // Which macOS permission explainer is up, if any (replaces the old silent
+  // failures: mic/camera denials did nothing visible).
+  const [permissionDialog, setPermissionDialog] = useState<PermissionKind | null>(null)
+
+  // A permission problem must be impossible to miss: chime and bring the app
+  // window to the front — the user may be in another app entirely (pill
+  // share toggle, global PTT) when the failure fires.
+  useEffect(() => {
+    if (!permissionDialog) return
+    playAlertCue()
+    void window.ipc.invoke('app:focusMainWindow', null).catch(() => {})
+  }, [permissionDialog])
+
+  // Components outside App's prop reach (the Spaces composer's dictation)
+  // surface permission problems through this event — same dialog, same cue.
+  useEffect(() => {
+    const onNeeded = (e: Event) => {
+      const kind = (e as CustomEvent<{ kind?: PermissionKind }>).detail?.kind
+      if (kind) setPermissionDialog(kind)
+    }
+    window.addEventListener('rowboat:permission-needed', onNeeded)
+    return () => window.removeEventListener('rowboat:permission-needed', onNeeded)
+  }, [])
+
+  // Steal handler for PTT: another holder is taking the mic — drop the
+  // in-flight recording without releasing ownership (the thief owns it now).
+  const cancelPttForSteal = useCallback(() => {
+    voice.cancel()
     setIsRecording(false)
     isRecordingRef.current = false
-    if (text) {
-      pendingVoiceInputRef.current = true
-      handlePromptSubmitRef.current?.({ text, files: [] })
-    }
   }, [voice])
 
-  const handleToggleTts = useCallback(() => {
-    setTtsEnabled(prev => {
-      const next = !prev
-      ttsEnabledRef.current = next
-      if (!next) {
-        ttsRef.current.cancel()
+  const handleStartRecording = useCallback((holderId: string) => {
+    // A live call owns the mic — ignore push-to-talk while one is running.
+    if (inCallRef.current) return
+    acquireVoice(holderId, cancelPttForSteal)
+    setIsRecording(true)
+    isRecordingRef.current = true
+    void voice.start().then((result) => {
+      if (result === 'mic-denied') {
+        setIsRecording(false)
+        isRecordingRef.current = false
+        releaseVoice(holderId)
+        setPermissionDialog('microphone')
       }
-      return next
     })
-  }, [])
+  }, [voice, cancelPttForSteal])
 
-  const handleTtsModeChange = useCallback((mode: 'summary' | 'full') => {
-    setTtsMode(mode)
-    ttsModeRef.current = mode
-  }, [])
+  const handlePromptSubmitRef = useRef<((message: PromptInputMessage, mentions?: Mention[], stagedAttachments?: StagedAttachment[], searchEnabled?: boolean, codeMode?: 'claude' | 'codex', permissionMode?: PermissionMode) => Promise<void>) | null>(null)
+  // Companion sends (bar submits, call utterances) — filled once
+  // handleHoverSubmit exists; early callers (startCall's PTT callback) fire
+  // at event time, long after render.
+  const handleHoverSubmitRef = useRef<((message: PromptInputMessage, mentions?: Mention[], stagedAttachments?: StagedAttachment[], searchEnabled?: boolean, codeMode?: 'claude' | 'codex', permissionMode?: PermissionMode) => Promise<void>) | null>(null)
+  // Late-bound handle to bindChatToRun (declared with the chat plumbing far
+  // below) for early-declared effects like quick-ask open-chat.
+  const bindChatToRunRef = useRef<((rid: string) => void) | null>(null)
+  const openRunInSidebarRef = useRef<((rid: string) => void) | null>(null)
+  const showChatInSidebarRef = useRef<((tabId: string) => void) | null>(null)
+  const loadRunRef = useRef<((id: string) => Promise<void>) | null>(null)
+  // A call was started from a FRESH (unbound) chat: when the hover session
+  // materializes on the first utterance, bind that chat to it too — the
+  // call button means "float THIS chat", so both surfaces must end up on
+  // the same conversation instead of hover minting an orphan chat. Chat
+  // identity is captured so a user who switched away is never hijacked.
+  const bindAppChatOnHoverCreateRef = useRef<{ tabId: string; chatId: string } | null>(null)
+  // The Home composer's submit (routes to a to-do target or a fresh chat);
+  // dictation started from the Home composer flows through it, so a spoken
+  // to-do lands on the list, not in some chat.
+  const handleHomeComposerSubmitRef = useRef<((message: PromptInputMessage) => void) | null>(null)
+  const pendingVoiceInputRef = useRef(false)
+
+  // The (single) mounted markdown editor's imperative handle, and the pending
+  // palette payload queued across the new-chat state flush before submit fires.
+  const markdownEditorRef = useRef<MarkdownEditorHandle | null>(null)
+  const [pendingPaletteSubmit, setPendingPaletteSubmit] = useState<{ text: string; mention: CommandPaletteMention | null } | null>(null)
+
+  const handleSubmitRecording = useCallback(async () => {
+    if (!isRecordingRef.current) return
+    const text = await voice.submit()
+    setIsRecording(false)
+    isRecordingRef.current = false
+    const holder = voiceOwnerId()
+    if (holder && holder !== CALL_VOICE_HOLDER) releaseVoice(holder)
+    if (text) {
+      pendingVoiceInputRef.current = true
+      // Route by mic owner: the transcript belongs to the composer that
+      // started the recording, not blindly to the active chat.
+      if (holder === HOME_VOICE_HOLDER) {
+        handleHomeComposerSubmitRef.current?.({ text, files: [] })
+      } else {
+        handlePromptSubmitRef.current?.({ text, files: [] })
+      }
+    }
+  }, [voice])
 
   const handleCancelRecording = useCallback(() => {
     voice.cancel()
     setIsRecording(false)
     isRecordingRef.current = false
+    const holder = voiceOwnerId()
+    if (holder && holder !== CALL_VOICE_HOLDER) releaseVoice(holder)
   }, [voice])
+
+  // Start a call. Presets only differ in device defaults — the engine
+  // (continuous listening, auto-submitted utterances, forced read-aloud TTS,
+  // frame capture) is identical for all of them. The default entry ('share',
+  // the call button's main click) is "work together": screen shared, camera
+  // off, floating pill — the user keeps working while the assistant watches
+  // along. 'video'/'practice' open face-to-face full screen instead.
+  const callStartedAtMsRef = useRef<number | null>(null)
+  // Epoch twin of the perf-clock mark above — gates which conversation
+  // messages belong to THIS call (the pill's response mirror).
+  const callStartedEpochRef = useRef(0)
+
+  const startCall = useCallback(async (preset: CallPreset) => {
+    if (inCallRef.current) return
+    // The call engine owns the mic for the call's whole duration; any live
+    // push-to-talk recording is stolen (cancelled cleanly) here. Nothing
+    // steals FROM a call — handleStartRecording defers while in-call — so
+    // the call's own onStolen is defensively a no-op.
+    acquireVoice(CALL_VOICE_HOLDER, () => {})
+    const camera = preset === 'video' || preset === 'practice'
+    const ok = await video.start({ camera })
+    if (!ok) {
+      // Camera denied/unavailable — stay out of the call, and say why.
+      releaseVoice(CALL_VOICE_HOLDER)
+      if (camera) setPermissionDialog('camera')
+      return
+    }
+    if (preset === 'share') {
+      // If screen capture fails (usually the macOS Screen Recording
+      // permission), continue as a voice call — sharing is one tap away on
+      // the pill once permission is granted. The dialog explains the grant +
+      // relaunch dance instead of failing silently.
+      const shared = await video.startScreenShare()
+      if (!shared) setPermissionDialog('screen-recording')
+    } else {
+      // Presets that don't share at start still settle the Screen Recording
+      // permission NOW — triggering the macOS prompt (first use) and the
+      // audible in-app dialog when the grant isn't effective — so by the
+      // time the user reaches for the share button it just works, instead
+      // of the permission dance ambushing them mid-call.
+      void window.ipc
+        .invoke('meeting:checkScreenPermission', null)
+        .then(({ granted }) => {
+          if (!granted) setPermissionDialog('screen-recording')
+        })
+        .catch(() => {})
+    }
+
+    // A manual push-to-talk recording can't coexist with the call's mic.
+    if (isRecordingRef.current) {
+      voiceRef.current.cancel()
+      setIsRecording(false)
+      isRecordingRef.current = false
+    }
+    ttsEnabledRef.current = true
+    ttsModeRef.current = 'full'
+    // Push-to-talk: the mic + Deepgram socket stay warm for the whole call,
+    // but nothing is heard until the user opens the gate (hold the talk key, or
+    // tap it to lock hands-free capture). The key release is the endpoint —
+    // no silence detection, no misfires.
+    void voiceRef.current
+      .startPtt((text) => {
+        // Instant "heard you" feedback + start of the latency clock.
+        playAckCue()
+        callTurnMarksRef.current = { t0: performance.now() }
+        pendingVoiceInputRef.current = true
+        // Ghostwriter chord: the marker rides the message itself — durable
+        // in the transcript ("why did it paste?" answers itself), cache-safe
+        // (no per-turn composition churn). It carries the chord's TWO modes:
+        // dictation (the utterance IS the content — paste the user's words)
+        // vs. ghostwriting (the utterance instructs — compose). Ties break
+        // toward verbatim: pasting the user's own words when they meant
+        // "compose" is a cheap delete; composing when they were dictating
+        // puts words in their mouth.
+        const paste = pttPasteIntentRef.current
+        pttPasteIntentRef.current = false
+        const message = paste
+          ? `${text}\n\n[⇧⌘ chord — paste at my cursor. If I'm dictating content, paste MY words verbatim (fix punctuation, drop fillers, change nothing else) and reply "Done." at most — I watch the text land; never narrate it. Compose only when I'm clearly instructing you to write something. Unsure → verbatim.]`
+          : text
+        // Calls talk to the companion's session — the app window can browse
+        // any chat mid-call without retargeting the conversation.
+        handleHoverSubmitRef.current?.({ text: message, files: [] })
+      })
+      .then((result) => {
+        if (result === 'mic-denied') setPermissionDialog('microphone')
+      })
+
+    setPttState('idle')
+    setPracticeMode(preset === 'practice')
+    practiceModeRef.current = preset === 'practice'
+    setMicMuted(false)
+    setSpeakerMuted(false)
+    // Every preset starts in the floating pill (video included — the camera
+    // preview lives in the pill) except practice, where the coaching session
+    // is a deliberate face-to-face full screen.
+    setCallMinimized(preset !== 'practice')
+    inCallRef.current = true
+    setInCall(true)
+    callStartedAtMsRef.current = performance.now()
+    callStartedEpochRef.current = Date.now()
+    analytics.callStarted(preset)
+  }, [video, setPttState])
+
+  const endCall = useCallback(() => {
+    if (!inCallRef.current) return
+    const startedAt = callStartedAtMsRef.current
+    callStartedAtMsRef.current = null
+    analytics.callEnded(startedAt != null ? (performance.now() - startedAt) / 1000 : 0)
+    voiceRef.current.cancel()
+    ttsEnabledRef.current = false
+    ttsModeRef.current = 'summary'
+    ttsRef.current.cancel()
+    callTurnMarksRef.current = null
+    video.stop()
+    setPracticeMode(false)
+    practiceModeRef.current = false
+    setMicMuted(false)
+    setPttState('idle')
+    setCallMinimized(false)
+    inCallRef.current = false
+    setInCall(false)
+    companionVoiceRef.current = false
+    releaseVoice(CALL_VOICE_HOLDER)
+    // A call seeded from the app's own chat was just a mirror of it — release
+    // the companion binding so its second store unsubscribes instead of
+    // double-processing that conversation forever. ⌥⇧Space-born conversations
+    // (hover ≠ app chat) keep continuity for the next summon.
+    if (hoverRunIdRef.current && hoverRunIdRef.current === runIdRef.current) {
+      hoverRunIdRef.current = null
+      setHoverRunId(null)
+    }
+  }, [video, setPttState])
+
+  // ONE hover mode: the ⌥⇧Space relay (chord, tray item, the card's tuck
+  // handle), the composer's call button, the Home Skipper, and the
+  // discoverability toast all start THIS — a companion voice session on the
+  // Skipper surface. Sticky screen share replays the user's standing choice
+  // (`share` forces it on for this summon); without voice configured it
+  // falls back to the text card — and so does a session that fails to
+  // start, so a summon is never a silent no-op.
+  const startHoverCall = useCallback(async (opts: { share?: boolean } = {}) => {
+    // Tell main the relay landed and a session is coming — stops its
+    // watchdog from re-sending the relay while devices are still starting
+    // up (acquisition can take seconds).
+    void window.ipc.invoke('quickAsk:tuckAck', null).catch(() => {})
+    if (inCallRef.current) {
+      // Already on a call — just make sure the floating surface is up
+      // (re-assert even when callSurface didn't change, so a destroyed or
+      // desynced companion window self-heals).
+      setCallMinimized(true)
+      void window.ipc.invoke('video:setPopout', { show: true }).catch(() => {})
+      return
+    }
+    // A start is already in flight — its pin is coming.
+    if (companionVoiceStartingRef.current) return
+    // Guard covers the probe wait too, so a second chord can't start a
+    // parallel session while we're deciding.
+    companionVoiceStartingRef.current = true
+    try {
+      if (!(voiceAvailableRef.current && ttsAvailableRef.current)) {
+        // Not "no voice" — just "not known yet" right after an app start.
+        await awaitVoiceProbe()
+      }
+      if (inCallRef.current) {
+        // Another entry point started a call while we waited — just make
+        // sure its floating surface is up.
+        setCallMinimized(true)
+        void window.ipc.invoke('video:setPopout', { show: true }).catch(() => {})
+        return
+      }
+      if (!(voiceAvailableRef.current && ttsAvailableRef.current)) {
+        // Genuinely no voice configured — say so in the app window.
+        notifyVoiceUnavailableRef.current?.('voice')
+        return
+      }
+      companionVoiceRef.current = true
+      await startCall('voice')
+    } finally {
+      // Released the moment the call engine settles — NOT held across the
+      // screen share below: a share that stalls on the Screen Recording
+      // permission (getDisplayMedia can hang for seconds) used to leave
+      // this latched, and every later summon died silently against it.
+      companionVoiceStartingRef.current = false
+    }
+    if (!inCallRef.current) {
+      // The session didn't start (device denied/unavailable — startCall
+      // already raised the permission dialog). Bring the app forward so the
+      // user actually sees that explanation.
+      companionVoiceRef.current = false
+      notifyVoiceUnavailableRef.current?.('failed')
+      return
+    }
+    // Sticky screen share: opted in once from the mascot's share pin →
+    // every summon starts already sharing, until toggled off. Fire-and-
+    // forget: the Skipper is already up, the share badge lights when the
+    // capture is really live.
+    if (opts.share || localStorage.getItem('companion-share-sticky') === '1') {
+      void video.startScreenShare().then((shared) => {
+        if (!shared) setPermissionDialog('screen-recording')
+      })
+    }
+  }, [awaitVoiceProbe, startCall, video])
+  // Stable handle for the tuck-relay listener below — registered once,
+  // always calling the latest closure.
+  const startHoverCallRef = useRef(startHoverCall)
+  startHoverCallRef.current = startHoverCall
+
+  // Composer call buttons: the call button on a chat always means "float
+  // THIS chat". No call yet → start the hover session bound to it; call
+  // already live on another chat → re-point the live call at it (same
+  // devices, same Skipper — only the conversation switches); a fresh
+  // (unbound) chat defer-binds, so the first utterance creates ONE session
+  // both surfaces share. ⌥⇧Space summons keep the companion's previous
+  // conversation instead (no composer context to seed from).
+  const handleStartCall = useCallback((preset: CallPreset) => {
+    const activeTab = chatTabsRef.current.find((t) => t.id === activeChatTabIdRef.current)
+    const seedRunId = activeTab?.runId ?? null
+    if (seedRunId) {
+      hoverRunIdRef.current = seedRunId
+      setHoverRunId(seedRunId)
+      bindAppChatOnHoverCreateRef.current = null
+    } else if (activeTab) {
+      hoverRunIdRef.current = null
+      setHoverRunId(null)
+      bindAppChatOnHoverCreateRef.current = { tabId: activeTab.id, chatId: activeTab.chatId }
+    }
+    if (inCallRef.current) {
+      // Live-call retarget: silence whatever of the OLD conversation's reply
+      // was still playing, and make sure the floating surface is up. The
+      // segment player re-keys itself off the new hover binding.
+      ttsRef.current.cancel()
+      void window.ipc.invoke('video:setPopout', { show: true }).catch(() => {})
+      return
+    }
+    if (preset === 'voice' || preset === 'share') {
+      // Both are the hover companion — 'share' is the same summon with the
+      // screen shared from the start (the menu's "Share screen").
+      void startHoverCall({ share: preset === 'share' })
+    } else {
+      void startCall(preset)
+    }
+  }, [startHoverCall, startCall])
+
+  // The user-mute half that lives in the video pipeline: stop sampling
+  // camera/screen frames while muted (see useVideoMode.setCapturePaused).
+  const setCapturePaused = video.setCapturePaused
+  useEffect(() => {
+    setCapturePaused(micMuted)
+  }, [micMuted, setCapturePaused])
+
+  // Screen sharing: frames of the shared screen ride along with each message
+  // next to the webcam frames. The surface change (full screen → pill) falls
+  // out of the derivation below.
+  const handleToggleScreenShare = useCallback(async () => {
+    if (video.screenState === 'live') {
+      video.stopScreenShare()
+    } else {
+      const shared = await video.startScreenShare()
+      if (!shared) setPermissionDialog('screen-recording')
+    }
+  }, [video])
+
+  // Meet-style camera mute: the call (and any screen share) stays on, but no
+  // webcam frames are captured while the camera is off. Deliberately does NOT
+  // change the surface — turning your camera on from the pill puts your video
+  // IN the pill; expanding to full screen is its own explicit action.
+  const handleToggleCamera = useCallback(() => {
+    void video.setCameraEnabled(!video.cameraOn)
+  }, [video])
+
+  // Zoom-style mute button, except it pauses ALL input (mic + frames) so the
+  // user can talk to someone in the room without the assistant listening in.
+  // Devices stay acquired (camera light and share indicator stay on) so
+  // unmuting is instant.
+  const handleToggleMic = useCallback(() => {
+    setMicMuted((m) => !m)
+  }, [])
+
+  // Minimizing the full-screen call drops you back to working — and the pill
+  // exists to work *together*, so sharing starts automatically (the symmetric
+  // twin of expand, which stops it). If capture fails (permission), the call
+  // still minimizes as a plain pill. `callMinimized` is also set so stopping
+  // the share from the pill keeps you in the pill rather than snapping back
+  // to full screen.
+  const handleMinimizeCall = useCallback(async () => {
+    setCallMinimized(true)
+    const shared = await video.startScreenShare()
+    if (!shared) setPermissionDialog('screen-recording')
+  }, [video])
+
+  // Interrupt the assistant: silence TTS immediately, skip anything already
+  // queued from the in-flight turn, and stop the run if it's still
+  // generating (if it already finished, stopping the speech is all there is
+  // to do). Wired to the Stop control next to the mascot on both surfaces.
+  const handleInterruptAssistant = useCallback(() => {
+    ttsRef.current.cancel()
+    setAssistantCaption('')
+    if (voiceSegments) {
+      spokenVoiceRef.current.count = voiceSegments.length
+    }
+    // An interrupted turn must not fallback-speak its (aborted) reply.
+    callTurnVoiceRef.current.pending = false
+    // Speech comes from the COMPANION's session — stop THAT turn, not
+    // whatever chat the app window happens to be showing.
+    if (hoverChatRef.current.chatState?.isProcessing) {
+      void hoverChatRef.current.stop().catch(() => {})
+    }
+  }, [voiceSegments])
+
+  // --- Push-to-talk state machine ---
+  // One edge-triggered machine fed by every source: the global key hook
+  // (uiohook in main), the in-window DOM fallback, and the on-screen talk
+  // buttons (full-screen call + popout). Sources overlap while the app is
+  // focused, so identical edges arriving within the echo window collapse
+  // into one.
+  const pttDownAtRef = useRef(0)
+  // The assistant was audibly speaking (or about to) when this press began:
+  // a quick TAP then means "stop talking" — full interrupt, mic stays shut —
+  // not "lock hands-free capture". A HOLD still barges in (silence + talk)
+  // in one gesture, and the next tap after a stop behaves normally.
+  const pttSpokeAtDownRef = useRef(false)
+  const pttLastEdgeRef = useRef<{ type: 'down' | 'up'; at: number } | null>(null)
+  // The talk key was used as a modifier (⌘C / Ctrl+C etc.) during this
+  // press — the matching release must not commit/lock.
+  const pttChordedRef = useRef(false)
+
+  const pttEdgeIsEcho = useCallback((type: 'down' | 'up') => {
+    const now = performance.now()
+    const last = pttLastEdgeRef.current
+    pttLastEdgeRef.current = { type, at: now }
+    return !!last && last.type === type && now - last.at < PTT_EDGE_ECHO_MS
+  }, [])
+
+  const handlePttDown = useCallback((paste?: boolean) => {
+    if (!inCallRef.current || micMutedRef.current) return
+    if (pttEdgeIsEcho('down')) return
+    pttChordedRef.current = false
+    pttDownAtRef.current = performance.now()
+    if (pttStatusRef.current === 'idle') {
+      // Ghostwriter chord: this capture's utterance wants its result pasted
+      // at the cursor — consumed by the utterance callback in startCall.
+      pttPasteIntentRef.current = !!paste
+      // Captured BEFORE the cancel below wipes it — the release edge needs
+      // to know whether this press interrupted speech.
+      pttSpokeAtDownRef.current = ttsRef.current.state !== 'idle'
+      // Silence the assistant's AUDIO the moment the user starts talking —
+      // but do NOT abort the run or discard its reply: an accidental or
+      // empty press must never cost the answer. The run is stopped only
+      // when a real utterance actually submits (handlePromptSubmit), or by
+      // a deliberate stop-tap (see handlePttUp).
+      ttsRef.current.cancel()
+      setAssistantCaption('')
+      voiceRef.current.pttBegin()
+      setPttState('held')
+    }
+    // 'locked': the mic is already open — the release decides what happens.
+  }, [pttEdgeIsEcho, setPttState])
+
+  const handlePttUp = useCallback(() => {
+    if (pttStatusRef.current === 'idle') return
+    if (pttEdgeIsEcho('up')) return
+    if (pttChordedRef.current) {
+      pttChordedRef.current = false
+      return
+    }
+    const heldMs = performance.now() - pttDownAtRef.current
+    if (pttStatusRef.current === 'held' && heldMs < PTT_TAP_MS) {
+      if (pttSpokeAtDownRef.current) {
+        // Tap while the assistant was talking = "stop": full interrupt
+        // (silence + drop the queued reply + stop generation, so it can't
+        // resume a beat later) with the mic left CLOSED — never a hot mic
+        // the user didn't ask for. The next tap lists as usual.
+        pttSpokeAtDownRef.current = false
+        voiceRef.current.pttCancel()
+        setPttState('idle')
+        handleInterruptAssistant()
+        return
+      }
+      // Quick tap in silence: lock hands-free capture until the next press.
+      setPttState('locked')
+      return
+    }
+    if (pttStatusRef.current === 'held') {
+      // First couple of real holds: teach the hands-free tap.
+      const shown = Number(localStorage.getItem('ptt-hold-tip-shown') ?? '0')
+      if (shown < 2) {
+        localStorage.setItem('ptt-hold-tip-shown', String(shown + 1))
+        toast('No need to keep holding', {
+          description: `For longer turns, quick-tap ${PTT_KEY_LABEL} instead — talk hands-free, then tap again to send.`,
+          duration: 6000,
+        })
+      }
+    }
+    // Releasing a hold (or pressing again while locked) submits.
+    setPttState('idle')
+    void voiceRef.current.pttEnd()
+  }, [pttEdgeIsEcho, setPttState, handleInterruptAssistant])
+
+  const handlePttCancel = useCallback(() => {
+    if (pttStatusRef.current === 'idle') return
+    pttPasteIntentRef.current = false
+    voiceRef.current.pttCancel()
+    setPttState('idle')
+  }, [setPttState])
+
+  const handlePttChord = useCallback(() => {
+    // The press was a keyboard shortcut, not a talk gesture.
+    if (pttStatusRef.current === 'held') {
+      voiceRef.current.pttCancel()
+      setPttState('idle')
+    } else if (pttStatusRef.current === 'locked') {
+      pttChordedRef.current = true
+    }
+  }, [setPttState])
+
+  // PTT key sources: the global hook (works over any app) plus in-window DOM
+  // listeners — the fallback that keeps PTT working while the app is focused
+  // even when macOS Input Monitoring hasn't been granted.
+  useEffect(() => {
+    if (!inCall) return
+    const offKey = window.ipc.on('voice:ptt-key', ({ type, paste }) => {
+      if (type === 'down') handlePttDown(paste)
+      else if (type === 'up') handlePttUp()
+      else handlePttChord()
+    })
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === PTT_CODE) {
+        if (!e.repeat) handlePttDown(e.shiftKey)
+        return
+      }
+      if (e.key === 'Escape' && pttStatusRef.current !== 'idle') {
+        e.preventDefault()
+        handlePttCancel()
+        return
+      }
+      if (pttStatusRef.current === 'held') handlePttChord()
+      else if (pttStatusRef.current === 'locked' && pttKey.pttModifierHeld(e, isMac)) handlePttChord()
+    }
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === PTT_CODE) handlePttUp()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    document.addEventListener('keyup', onKeyUp)
+    return () => {
+      offKey()
+      document.removeEventListener('keydown', onKeyDown)
+      document.removeEventListener('keyup', onKeyUp)
+    }
+  }, [inCall, handlePttDown, handlePttUp, handlePttChord, handlePttCancel])
+
+  // Muting mid-capture discards the capture — nothing said while muted may
+  // reach the assistant.
+  useEffect(() => {
+    if (micMuted) handlePttCancel()
+  }, [micMuted, handlePttCancel])
+
+  // Global-PTT onboarding: shortly into a call, if the key hook is running
+  // but has seen zero input events, macOS Input Monitoring hasn't taken
+  // effect — explain it instead of letting the talk key silently do nothing
+  // from other apps. At most once per app session: once-ever proved too little
+  // (dismiss without granting and global PTT stayed silently broken), every
+  // call would nag. (In-window PTT works regardless.)
+  const inputMonitoringPromptedRef = useRef(false)
+  useEffect(() => {
+    if (!inCall) return
+    // macOS-only: Input Monitoring is a TCC grant with no Windows or Linux
+    // equivalent, so a dead hook there means something else entirely and
+    // this dialog would send the user looking for a switch that isn't there.
+    if (!isMac) return
+    if (inputMonitoringPromptedRef.current) return
+    const timer = setTimeout(async () => {
+      try {
+        const status = await window.ipc.invoke('ptt:getStatus', null)
+        if (status.supported && status.running && !status.eventsSeen) {
+          inputMonitoringPromptedRef.current = true
+          setPermissionDialog('input-monitoring')
+        }
+      } catch {
+        // Hook unavailable — the DOM fallback still covers in-app PTT.
+      }
+    }, 4000)
+    return () => clearTimeout(timer)
+  }, [inCall])
+
+  // Current phase of the call (null when not in one). An open mic gate reads
+  // as listening no matter what the assistant is doing — the user is talking.
+  const videoCallStatus: 'idle' | 'listening' | 'thinking' | 'speaking' | null =
+    inCall
+      ? pttStatus !== 'idle'
+        ? 'listening'
+        : tts.state === 'speaking'
+          ? 'speaking'
+          : tts.state === 'synthesizing' || hoverIsProcessing
+            ? 'thinking'
+            : 'idle'
+      : null
+
+  // The call's surface follows one rule: full screen and screen sharing are
+  // mutually exclusive (a full-screen call covers the screen — sharing it
+  // would show the call itself). Sharing → floating pill, always. Not
+  // sharing → full screen unless the user shrank it (`callMinimized`).
+  // Expanding the pill auto-stops any share; presenting from full screen
+  // auto-collapses to the pill.
+  const callSurface: 'fullscreen' | 'popout' | null = !inCall
+    ? null
+    : video.screenState === 'live' || callMinimized
+      ? 'popout'
+      : 'fullscreen'
+
+  useEffect(() => {
+    void window.ipc.invoke('video:setPopout', { show: callSurface === 'popout' }).catch(() => {})
+  }, [callSurface])
+
+  // Consent surface for screen sharing: an unmissable toast the moment any
+  // share starts (auto-started calls included), with one-tap stop. The pill
+  // also carries a persistent "Sharing screen" badge, and macOS shows its
+  // purple recording indicator.
+  const prevScreenStateRef = useRef(video.screenState)
+  useEffect(() => {
+    const prev = prevScreenStateRef.current
+    prevScreenStateRef.current = video.screenState
+    if (video.screenState === 'live' && prev !== 'live') {
+      toast('Your screen is being shared', {
+        description: 'The assistant sees snapshots of it along with what you say.',
+        action: { label: 'Stop sharing', onClick: () => video.stopScreenShare() },
+        duration: 6000,
+      })
+    }
+  }, [video.screenState, video])
+
+  // Latest assistant reply of this call — mirrored into the pill so a typed
+  // question can be READ there without switching back to the app (replies
+  // are spoken too; this is the visual half). Streaming text while the turn
+  // generates, the final message once it lands. Only replies from after the
+  // call started count.
+  let callResponseText: string | null = null
+  let callQuestionText: string | null = null
+  if (inCall) {
+    // The question the reply answers — shown above it in the panel. All of
+    // this reads the HOVER session: the call's conversation, regardless of
+    // what the app window is showing.
+    let questionAt = 0
+    for (let i = hoverConversation.length - 1; i >= 0; i--) {
+      const item = hoverConversation[i]
+      if (isChatMessage(item) && item.role === 'user') {
+        if (item.timestamp >= callStartedEpochRef.current) {
+          callQuestionText = item.content
+          questionAt = item.timestamp
+        }
+        break
+      }
+    }
+    callResponseText = hoverAssistantMessage || null
+    if (!callResponseText) {
+      for (let i = hoverConversation.length - 1; i >= 0; i--) {
+        const item = hoverConversation[i]
+        if (isChatMessage(item) && item.role === 'assistant') {
+          // Only a reply to the CURRENT question counts — right after a
+          // submit the newest assistant message is still the previous
+          // answer, which must not linger under the new question.
+          if (item.timestamp >= callStartedEpochRef.current && item.timestamp >= questionAt) {
+            callResponseText = item.content
+          }
+          break
+        }
+      }
+    }
+  }
+
+  // What's happening right now, at tool-NAME level ("Searching the web…",
+  // "Reasoning…" — never arguments): the most recent activity wins — a
+  // running tool by display name, else reasoning, else plain thinking.
+  // Feeds the Skipper's status chip and text panel, so
+  // it reads the HOVER session's turn.
+  const hoverActivityText = useMemo(() => {
+    if (!hoverIsProcessing) return null
+    let label = hoverIsReasoning ? 'Reasoning…' : 'Thinking…'
+    for (let i = hoverConversation.length - 1; i >= 0; i--) {
+      const item = hoverConversation[i]
+      if (isToolCall(item)) {
+        if (item.status === 'pending' || item.status === 'running') {
+          label = `${getToolDisplayName(item)}…`
+        }
+        break
+      }
+      if (isChatMessage(item)) break
+    }
+    return label
+  }, [hoverIsProcessing, hoverIsReasoning, hoverConversation])
+
+  // Keep the popout's mascot/status/devices/caption mirror of the call fresh.
+  // The main process caches the latest state and replays it when the popout
+  // loads.
+  useEffect(() => {
+    if (!inCall) {
+      // Call over (or not started): push an explicit idle state so main's
+      // cache can't carry a stale cameraOn/status into the next summon —
+      // main keeps the cache across fullscreen ⇄ popout flaps of a LIVE
+      // call (camera on must come back as the pill), so only this end
+      // marker clears it.
+      void window.ipc
+        .invoke('video:popoutState', {
+          ttsState: 'idle',
+          status: null,
+          cameraOn: false,
+          micMuted: false,
+          screenSharing: false,
+          speakerMuted: false,
+          activityText: null,
+          interimText: null,
+          pttLocked: false,
+          responseText: null,
+          questionText: null,
+        })
+        .catch(() => {})
+      return
+    }
+    void window.ipc
+      .invoke('video:popoutState', {
+        ttsState: tts.state,
+        status: videoCallStatus,
+        cameraOn: video.cameraOn,
+        micMuted,
+        screenSharing: video.screenState === 'live',
+        speakerMuted,
+        activityText: hoverActivityText,
+        interimText: voice.interimText || null,
+        pttLocked: pttStatus === 'locked',
+        responseText: callResponseText,
+        questionText: callQuestionText,
+      })
+      .catch(() => {})
+  }, [inCall, tts.state, videoCallStatus, video.cameraOn, micMuted, video.screenState, speakerMuted, hoverActivityText, voice.interimText, pttStatus, callResponseText, callQuestionText])
+
+  // Relay the recording waveform's raw amplitudes to the companion: the
+  // voice hook records one auto-gained level per captured audio frame
+  // (~16/s, and NOTHING while the mic gate is paused), and the hover
+  // recording bar draws them with the same VoiceWaveform as this window's
+  // composer — real speech, the app composer's own cadence. Batched on a
+  // short interval; the cursor survives across captures (the hook's array
+  // only ever appends within a call), and resets if the array shrinks.
+  useEffect(() => {
+    if (!inCall) return
+    const levelsRef = voice.audioLevelsRef
+    let cursor = levelsRef.current.length
+    const id = setInterval(() => {
+      const arr = levelsRef.current
+      if (arr.length < cursor) cursor = 0
+      if (arr.length === cursor) return
+      const batch = arr.slice(cursor)
+      cursor = arr.length
+      void window.ipc.invoke('video:popoutLevels', { levels: batch }).catch(() => {})
+    }, 128)
+    return () => clearInterval(id)
+  }, [inCall, voice.audioLevelsRef])
+
+  // Screen-pointer gate: tell main whether a share is live (call OR
+  // quick-ask — this window owns the capture either way). While true the
+  // assistant's screen-pointer tool may draw on the shared display; flipping
+  // false tears the pointer overlay down instantly.
+  useEffect(() => {
+    try {
+      void window.ipc
+        .invoke('screenPointer:setShareActive', { active: video.screenState === 'live' })
+        .catch((err) => console.warn('[screen-pointer] setShareActive failed:', err))
+    } catch (err) {
+      // A stale preload (app not restarted since the channel was added)
+      // throws synchronously from schema validation — must not break the app.
+      console.warn('[screen-pointer] setShareActive failed:', err)
+    }
+  }, [video.screenState])
+
+  // Execute popout control-bar actions (the popout window has no access to
+  // the call's mic/camera/capture — they live here). 'expand' goes full
+  // screen, which by the exclusivity rule stops any running share; the main
+  // process already refocused the app window.
+  useEffect(() => {
+    return window.ipc.on('video:popout-action', ({ action }) => {
+      if (action === 'toggle-mic') handleToggleMic()
+      else if (action === 'toggle-camera') handleToggleCamera()
+      else if (action === 'toggle-share') {
+        // Companion voice sessions remember the choice: sharing becomes the
+        // default for future summons until turned off.
+        if (companionVoiceRef.current) {
+          localStorage.setItem('companion-share-sticky', video.screenState !== 'live' ? '1' : '0')
+        }
+        void handleToggleScreenShare()
+      }
+      else if (action === 'toggle-speaker') {
+        setSpeakerMuted((muted) => {
+          const next = !muted
+          if (next) {
+            // Muting hushes NOW: silence in-flight speech and drop the
+            // queued backlog (marked as voiced so the fallback net doesn't
+            // read the reply aloud after an unmute).
+            ttsRef.current.cancel()
+            if (voiceSegmentsRef.current) {
+              spokenVoiceRef.current.count = voiceSegmentsRef.current.length
+            }
+            spokeSegmentThisTurnRef.current = true
+          }
+          return next
+        })
+      }
+      else if (action === 'stop-speaking') handleInterruptAssistant()
+      else if (action === 'ptt-down') handlePttDown()
+      else if (action === 'ptt-up') handlePttUp()
+      else if (action === 'ptt-cancel') handlePttCancel()
+      else if (action === 'end-call') endCall()
+      else if (action === 'expand') {
+        if (video.screenState === 'live') video.stopScreenShare()
+        setCallMinimized(false)
+      }
+    })
+  }, [handleToggleMic, handleToggleCamera, handleToggleScreenShare, handleInterruptAssistant, handlePttDown, handlePttUp, handlePttCancel, endCall, video])
+
+  // Discoverability: nothing else in the UI reveals the global quick-ask
+  // shortcut. One toast, once per install, shortly after launch. The chord
+  // is fetched at fire time — it's customizable (Settings → Shortcuts).
+  useEffect(() => {
+    if (localStorage.getItem('quick-ask-tip-shown')) return
+    const timer = setTimeout(async () => {
+      localStorage.setItem('quick-ask-tip-shown', '1')
+      const accelerator = await window.ipc
+        .invoke('quickAsk:getShortcut', null)
+        .then((s) => s.accelerator)
+        .catch(() => quickAskShortcut.DEFAULT_QUICK_ASK_SHORTCUT)
+      playPopCue()
+      toast('Ask Rowboat from anywhere', {
+        description: `Press ${quickAskShortcut.formatShortcut(accelerator, isMac)} in any app to summon your Skipper — talk or type, the answer shows up right there.`,
+        duration: 12000,
+        closeButton: true,
+        // Lift the card off the page, and move sonner's close button (which
+        // defaults to the top-LEFT corner) to the top right.
+        className:
+          'shadow-xl shadow-black/25 [&_[data-close-button]]:!left-auto [&_[data-close-button]]:!right-0 [&_[data-close-button]]:!translate-x-[15%] [&_[data-close-button]]:!-translate-y-[15%]',
+        action: {
+          label: 'Try it',
+          // The SAME summon the chord performs — through main's relay, so
+          // the Skipper lands focused exactly as it does for the shortcut
+          // (text card only as its own voice-unavailable fallback).
+          onClick: () => void window.ipc.invoke('quickAsk:tuck', null).catch(() => {}),
+        },
+      })
+    }, 3000)
+    return () => clearTimeout(timer)
+  }, [])
+
+  // Quick-ask "Open in Rowboat": the ONE deliberate bridge between the
+  // companion and the app — bind the app's chat to the companion's
+  // conversation and land on it full-view. (Everything else keeps the two
+  // bindings independent.)
+  useEffect(() => {
+    return window.ipc.on('quick-ask:open-chat', () => {
+      const hoverId = hoverRunIdRef.current
+      // Side pane, not the maximized full view — the user keeps whatever
+      // they were working on in the middle.
+      if (hoverId) openRunInSidebarRef.current?.(hoverId)
+      setIsRightPaneMaximized(false)
+    })
+  }, [])
+
+  // A screen share ended since the last message: the NEXT message tells the
+  // model its earlier frames are stale (history keeps frames inline forever,
+  // so without this it answers "what's on my screen" from the past).
+  const screenShareEndedRef = useRef(false)
+  const lastScreenStateForNoticeRef = useRef(video.screenState)
+  useEffect(() => {
+    if (lastScreenStateForNoticeRef.current === 'live' && video.screenState !== 'live') {
+      screenShareEndedRef.current = true
+    }
+    // Sharing again supersedes the notice — fresh frames arrive with the
+    // next message anyway.
+    if (video.screenState === 'live') screenShareEndedRef.current = false
+    lastScreenStateForNoticeRef.current = video.screenState
+  }, [video.screenState])
+
+  // (The companion's old standalone toggles — speak-the-answer and
+  // share-without-a-call — went with the retired ask bar. Sharing is a
+  // session control now: the Skipper's bow-light pin, on a live session.)
+
+  // Send into the COMPANION's session. The lean twin of handlePromptSubmit:
+  // same per-turn config (voice flags, frames, search/code, permissions,
+  // fast-thinking default) but no middle-pane context and none of the
+  // visible-chat bookkeeping — the app window's conversation is not
+  // involved, whatever it's currently bound to.
+  const handleHoverSubmit = useCallback(async (
+    message: PromptInputMessage,
+    mentions?: Mention[],
+    stagedAttachments: StagedAttachment[] = [],
+    searchEnabled?: boolean,
+    codeMode?: 'claude' | 'codex',
+    permissionMode?: PermissionMode,
+  ) => {
+    const userMessage = message.text.trim()
+    const hasAttachments = stagedAttachments.length > 0
+    if (!userMessage && !hasAttachments) return
+
+    if (hoverChatRef.current.chatState?.isProcessing) {
+      // In-call and quick-ask input arrives at arbitrary moments — finish
+      // the previous turn's stop and proceed instead of dropping the message.
+      await hoverChatRef.current.stop().catch(() => {})
+    }
+
+    const marks = callTurnMarksRef.current
+    if (inCallRef.current && marks && marks.submit === undefined) {
+      marks.submit = performance.now()
+    }
+    // Speech follows the QUESTION's modality: a TYPED question renders its
+    // reply silently; a SPOKEN one (PTT utterance) is read aloud.
+    suppressSpeechTurnRef.current = inCallRef.current && !pendingVoiceInputRef.current
+    if (inCallRef.current) {
+      // A new question supersedes whatever of the previous reply was still
+      // unspoken — silence it and drop the frozen backlog.
+      ttsRef.current.cancel()
+      if (voiceSegmentsRef.current) {
+        spokenVoiceRef.current.count = voiceSegmentsRef.current.length
+      }
+      spokeSegmentThisTurnRef.current = false
+      callTurnVoiceRef.current = { pending: true, submitAt: Date.now() }
+    }
+
+    // Frames ride along whenever capture is live — calls, and quick-ask
+    // questions with the share toggle on.
+    const videoFrames =
+      inCallRef.current || video.screenState === 'live' ? video.collectFrames() : []
+
+    try {
+      let sessionId = hoverRunIdRef.current
+      if (!sessionId) {
+        const created = await window.ipc.invoke('sessions:create', {})
+        sessionId = created.sessionId
+        hoverRunIdRef.current = sessionId
+        setHoverRunId(sessionId)
+        analytics.chatSessionCreated(sessionId)
+        // The call was started from a fresh chat: bind that chat to the
+        // session we just created — both surfaces show ONE conversation.
+        // Only if the user hasn't switched or reset that chat since (its
+        // chat identity still matches) and it's still unbound.
+        const pending = bindAppChatOnHoverCreateRef.current
+        if (pending) {
+          bindAppChatOnHoverCreateRef.current = null
+          const activeTab = chatTabsRef.current.find((t) => t.id === pending.tabId)
+          if (activeTab && activeTab.chatId === pending.chatId && !activeTab.runId) {
+            const boundSessionId = sessionId
+            setChatTabs((prev) => prev.map((t) => (
+              // Keep the chatId: same conversation identity getting its
+              // session, exactly like a first composer send — no remount.
+              t.id === pending.tabId ? { ...t, runId: boundSessionId } : t
+            )))
+            if (activeChatTabIdRef.current === pending.tabId) void loadRunRef.current?.(boundSessionId)
+          }
+        }
+      }
+
+      const selected = hoverSelectionRef.current
+      // Hover turns default to FAST thinking when there's no explicit pick —
+      // voice-to-first-word is the experience, and a long reasoning phase is
+      // dead air.
+      const reasoningEffort =
+        selected?.effort ??
+        (inCallRef.current && companionVoiceRef.current ? ('low' as const) : undefined)
+      const chatMaxModelCalls = await window.ipc
+        .invoke('turnLimits:getSettings', null)
+        .then((settings) => settings.chatMaxModelCalls)
+        .catch(() => undefined)
+      const sendConfig = {
+        agent: {
+          agentId: 'copilot',
+          overrides: {
+            ...(selected ? { model: { provider: selected.provider, model: selected.model } } : {}),
+            composition: {
+              workDirId: sessionId,
+              ...(pendingVoiceInputRef.current ? { voiceInput: true } : {}),
+              ...(ttsEnabledRef.current ? { voiceOutput: ttsModeRef.current } : {}),
+              ...(searchEnabled ? { searchEnabled: true } : {}),
+              ...(codeMode ? { codeMode } : {}),
+              ...((inCallRef.current && video.cameraOn) || video.screenState === 'live'
+                ? { videoMode: true }
+                : {}),
+              ...(practiceModeRef.current ? { coachMode: true } : {}),
+            },
+          },
+        },
+        autoPermission: (permissionMode ?? 'auto') === 'auto',
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(chatMaxModelCalls !== undefined ? { maxModelCalls: chatMaxModelCalls } : {}),
+      }
+      // The @ menu's picks: files become attachment parts; spaces and
+      // people ride the context with their ids (see splitMentions).
+      const { fileMentions, spaceMentions } = splitMentions(mentions)
+      const userMessageContext = {
+        currentDateTime: `${new Date().toLocaleString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit',
+          timeZoneName: 'short',
+        })} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`,
+        middlePane: { kind: 'empty' as const },
+        ...(spaceMentions.length > 0 ? { spaceMentions } : {}),
+      }
+
+      type HoverContentPart =
+        | { type: 'text'; text: string }
+        | { type: 'attachment'; path: string; filename: string; mimeType: string; size?: number; lineNumber?: number }
+        | { type: 'image'; data: string; mediaType: string; source: 'camera' | 'screen'; capturedAt: string }
+      const hasMentions = fileMentions.length > 0
+      const content: string | HoverContentPart[] = hasAttachments || hasMentions || videoFrames.length > 0
+        ? [
+            ...fileMentions.map((mention): HoverContentPart => ({
+              type: 'attachment',
+              path: mention.path,
+              filename: mention.displayName || mention.path.split('/').pop() || mention.path,
+              mimeType: 'text/markdown',
+              ...(mention.lineNumber !== undefined ? { lineNumber: mention.lineNumber } : {}),
+            })),
+            ...stagedAttachments.map((attachment): HoverContentPart => ({
+              type: 'attachment',
+              path: attachment.path,
+              filename: attachment.filename,
+              mimeType: attachment.mimeType,
+              size: attachment.size,
+            })),
+            ...(userMessage ? [{ type: 'text', text: userMessage } satisfies HoverContentPart] : []),
+            ...videoFrames.map((frame): HoverContentPart => ({
+              type: 'image',
+              data: frame.data,
+              mediaType: frame.mediaType,
+              source: frame.source,
+              capturedAt: frame.capturedAt,
+            })),
+          ]
+        : userMessage
+
+      // One retry: an in-call submit can land while the previous turn's
+      // abort hasn't fully settled in the runtime.
+      const payload = {
+        sessionId,
+        input: { role: 'user' as const, content, userMessageContext },
+        config: sendConfig,
+      }
+      try {
+        await window.ipc.invoke('sessions:sendMessage', payload)
+      } catch (err) {
+        console.error('[hover] sendMessage failed, retrying once:', err)
+        await new Promise((resolve) => setTimeout(resolve, 600))
+        await window.ipc.invoke('sessions:sendMessage', payload)
+      }
+      analytics.chatMessageSent({
+        voiceInput: pendingVoiceInputRef.current || undefined,
+        voiceOutput: ttsEnabledRef.current ? ttsModeRef.current : undefined,
+        searchEnabled: searchEnabled || undefined,
+      })
+    } catch (err) {
+      console.error('[hover] submit failed:', err)
+    } finally {
+      pendingVoiceInputRef.current = false
+    }
+  }, [video])
+  handleHoverSubmitRef.current = handleHoverSubmit
+
+  useEffect(() => {
+    return window.ipc.on('quick-ask:submit', (payload) => {
+      const trimmed = payload.text.trim()
+      if (!trimmed && !payload.attachments?.length) return
+      if (payload.model) {
+        hoverSelectionRef.current = {
+          provider: payload.model.provider,
+          model: payload.model.model,
+          ...(payload.reasoningEffort
+            ? { effort: payload.reasoningEffort }
+            : hoverSelectionRef.current?.effort
+              ? { effort: hoverSelectionRef.current.effort }
+              : {}),
+        }
+      } else if (payload.reasoningEffort && hoverSelectionRef.current) {
+        hoverSelectionRef.current = { ...hoverSelectionRef.current, effort: payload.reasoningEffort }
+      }
+      void handleHoverSubmitRef.current?.(
+        { text: trimmed, files: [] },
+        payload.mentions,
+        payload.attachments ?? [],
+        payload.searchEnabled,
+        payload.codeMode,
+        payload.permissionMode,
+      )
+    })
+  }, [])
+
+  // (The old surface-based text-mode hush is gone: speech now follows each
+  // question's modality, plus the explicit speaker mute below.)
+
+  // Tuck relay (⌥⇧Space, the tray item, the card's tuck handle): the ONE
+  // hover flow. Registered once (via the ref), then main is told this
+  // window can take relays — a summon that arrived while this window was
+  // still loading (or didn't exist yet: the user had closed it and the
+  // shortcut recreated it hidden) is delivered on that handshake.
+  useEffect(() => {
+    const off = window.ipc.on('quick-ask:tuck', () => {
+      void startHoverCallRef.current()
+    })
+    void window.ipc.invoke('quickAsk:appReady', null).catch(() => {})
+    return off
+  }, [])
+
+  // (No answer mirror any more: a typed question on the Skipper rides the
+  // SAME call mirror as a spoken one — video:popoutState — because there is
+  // always a live session behind the companion now.)
 
   // Enter to submit voice input, Escape to cancel
   useEffect(() => {
@@ -781,42 +2667,125 @@ function App() {
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [handleSubmitRecording, handleCancelRecording])
 
-  // Helper to cancel recording from any navigation handler
+  // Helper to cancel recording from any navigation handler. Releases the mic
+  // ownership token too — a cancelled dictation must not leave its composer
+  // marked as the owner (that pinned the recording UI to a dead chat id).
   const cancelRecordingIfActive = useCallback(() => {
     if (isRecordingRef.current) {
       voiceRef.current.cancel()
       setIsRecording(false)
       isRecordingRef.current = false
+      const holder = voiceOwnerId()
+      if (holder && holder !== CALL_VOICE_HOLDER) releaseVoice(holder)
     }
   }, [])
 
   // Runs history state
-  type RunListItem = { id: string; title?: string; createdAt: string; agentId: string }
+  // origin: what owns the session when something outside the runtime does
+  // (a space thread). Lists that show "your chats" filter on it via
+  // isChatListSession; lookups by id (tab titles, hover) use the full list.
+  type RunListItem = { id: string; title?: string; createdAt: string; modifiedAt: string; agentId: string; useCase?: string; origin?: SessionOrigin }
   const [runs, setRuns] = useState<RunListItem[]>([])
 
   // Chat tab state
-  const [chatTabs, setChatTabs] = useState<ChatTab[]>([{ id: 'default-chat-tab', runId: null }])
-  const [activeChatTabId, setActiveChatTabId] = useState('default-chat-tab')
+  const [chatTabs, setChatTabs] = useState<ChatTab[]>(() => {
+    // Only chats that were showing somewhere come back; a chat has no
+    // identity of its own until its first message, and a hidden sent one is
+    // reachable from history.
+    const restored = restoreAssistantTabs(readAssistantPreference(ASSISTANT_TABS_KEY))
+    const layout = restoreAssistantLayout(readAssistantPreference(ASSISTANT_LAYOUT_KEY), restored.map((tab) => tab.id))
+    const placed = restored.filter((tab) => chatLocation(layout, tab.id))
+    if (placed.length) return placed
+    return [{ id: 'default-chat-tab', runId: null, chatId: crypto.randomUUID() }]
+  })
+  const { layout: assistantLayout, dispatch: dispatchAssistantLayout, place: placeAssistantChat } = useAssistantLayout(chatTabs.map((tab) => tab.id))
+  const [assistantPageHost, setAssistantPageHost] = useState<HTMLDivElement | null>(null)
+  const chatTabsRef = useRef(chatTabs)
+  chatTabsRef.current = chatTabs
+  // A tab's current chat identity (see ChatTab.chatId). Session-scoped maps
+  // below are keyed by chatId, not tab id, so rebinding a tab to another
+  // session can never leak the previous chat's draft/model/effort into it.
+  const chatIdForTab = useCallback((tabId: string) => (
+    chatTabsRef.current.find((t) => t.id === tabId)?.chatId ?? tabId
+  ), [])
+  const [activeChatTabId, setActiveChatTabId] = useState(() => {
+    const saved = readAssistantPreference('rowboat-assistant-active-tab')
+    if (saved && chatTabs.some((tab) => tab.id === saved)) return saved
+    return assistantLayout.focused ?? assistantLayout.assistant ?? chatTabs[0].id
+  })
+  useEffect(() => {
+    writeAssistantPreference(ASSISTANT_TABS_KEY, JSON.stringify(chatTabs))
+    writeAssistantPreference('rowboat-assistant-active-tab', activeChatTabId)
+  }, [chatTabs, activeChatTabId])
   const [chatViewStateByTab, setChatViewStateByTab] = useState<Record<string, ChatTabViewState>>({
     'default-chat-tab': createEmptyChatTabViewState(),
   })
   const chatViewStateByTabRef = useRef(chatViewStateByTab)
-  const chatTabIdCounterRef = useRef(0)
-  const newChatTabId = () => `chat-tab-${++chatTabIdCounterRef.current}`
   const chatDraftsRef = useRef(new Map<string, string>())
-  const chatScrollTopByTabRef = useRef(new Map<string, number>())
+  const draftsRestoredRef = useRef(false)
+  if (!draftsRestoredRef.current) {
+    draftsRestoredRef.current = true
+    for (const tab of chatTabs) {
+      const draft = readAssistantPreference(`rowboat-assistant-draft:${tab.chatId}`)
+      if (draft) chatDraftsRef.current.set(tab.chatId, draft)
+    }
+  }
+  const creatingSessionByChatRef = useRef(new Map<string, Promise<{ sessionId: string }>>())
+  // Per-tab selection (model + effort as ONE value) — the composer reports
+  // every change (settings seed included) and reads it back on remount, so
+  // a tab's selection survives tab switches for the life of the app.
+  const selectionByTabRef = useRef(new Map<string, { provider: string; model: string; effort?: 'low' | 'medium' | 'high' }>())
+  // Work directory is per-chat. Keyed by tab id; null/absent means none set.
+  const [workDirByTab, setWorkDirByTab] = useState<Record<string, string | null>>({})
+  const workDirByTabRef = useRef(workDirByTab)
+  workDirByTabRef.current = workDirByTab
   const [toolOpenByTab, setToolOpenByTab] = useState<Record<string, Record<string, boolean>>>({})
+  const [chatViewportAnchorByTab, setChatViewportAnchorByTab] = useState<Record<string, ChatViewportAnchorState>>({})
   const activeChatTabIdRef = useRef(activeChatTabId)
   activeChatTabIdRef.current = activeChatTabId
   const setChatDraftForTab = useCallback((tabId: string, text: string) => {
+    const chatId = chatIdForTab(tabId)
     if (text) {
-      chatDraftsRef.current.set(tabId, text)
+      chatDraftsRef.current.set(chatId, text)
     } else {
-      chatDraftsRef.current.delete(tabId)
+      chatDraftsRef.current.delete(chatId)
+    }
+    writeAssistantPreference(`rowboat-assistant-draft:${chatId}`, text || null)
+  }, [chatIdForTab])
+  // Persist a run's work directory to its per-run sidecar config file. The agent
+  // runtime reads this same file (config/workdir-<runId>.json) on each turn.
+  const persistRunWorkDir = useCallback(async (runId: string, value: string | null) => {
+    try {
+      await window.ipc.invoke('workspace:writeFile', {
+        path: `config/workdir-${runId}.json`,
+        data: JSON.stringify(value ? { path: value } : {}, null, 2),
+      })
+    } catch (err) {
+      console.error('Failed to persist work directory for run', runId, err)
     }
   }, [])
-  const isToolOpenForTab = useCallback((tabId: string, toolId: string): boolean => {
-    return toolOpenByTab[tabId]?.[toolId] ?? false
+  // Read a run's persisted work directory (used when (re)opening a run into a tab).
+  const loadRunWorkDir = useCallback(async (runId: string): Promise<string | null> => {
+    try {
+      const result = await window.ipc.invoke('workspace:readFile', { path: `config/workdir-${runId}.json` })
+      const parsed = JSON.parse(result.data)
+      const value = typeof parsed?.path === 'string' ? parsed.path.trim() : ''
+      return value || null
+    } catch {
+      return null
+    }
+  }, [])
+  const setTabWorkDir = useCallback((tabId: string, value: string | null) => {
+    setWorkDirByTab((prev) => ({ ...prev, [tabId]: value }))
+    // If the tab is already bound to a run, persist immediately so the change
+    // applies to that chat's subsequent messages.
+    const runId = chatTabsRef.current.find((t) => t.id === tabId)?.runId
+    if (runId) void persistRunWorkDir(runId, value)
+  }, [persistRunWorkDir])
+  // `undefined` = no explicit user choice — TurnConversation then applies the
+  // per-tool default (coding-run cards open, everything else closed).
+  const isToolOpenForTab = useCallback((tabId: string, toolId: string): boolean | undefined => {
+    return toolOpenByTab[tabId]?.[toolId]
   }, [toolOpenByTab])
   const setToolOpenForTab = useCallback((tabId: string, toolId: string, open: boolean) => {
     setToolOpenByTab((prev) => {
@@ -831,52 +2800,56 @@ function App() {
       }
     })
   }, [])
-  const getChatScrollContainer = useCallback((tabId: string): HTMLElement | null => {
-    if (typeof document === 'undefined') return null
-    const panel = document.querySelector<HTMLElement>(
-      `[data-chat-tab-panel="${tabId}"][aria-hidden="false"]`
-    )
-    if (!panel) return null
-    const logRoot = panel.querySelector<HTMLElement>('[role="log"]')
-    if (!logRoot) return null
-    const children = Array.from(logRoot.children) as HTMLElement[]
-    for (const child of children) {
-      const style = window.getComputedStyle(child)
-      if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
-        return child
+  const setChatViewportAnchor = useCallback((tabId: string, messageId: string | null) => {
+    setChatViewportAnchorByTab((prev) => {
+      const prevForTab = prev[tabId]
+      return {
+        ...prev,
+        [tabId]: {
+          messageId,
+          requestKey: (prevForTab?.requestKey ?? 0) + 1,
+        },
       }
-    }
-    return null
+    })
   }, [])
-  const saveChatScrollForTab = useCallback((tabId: string) => {
-    const container = getChatScrollContainer(tabId)
-    if (!container) return
-    chatScrollTopByTabRef.current.set(tabId, container.scrollTop)
-  }, [getChatScrollContainer])
-
   const getChatTabTitle = useCallback((tab: ChatTab) => {
-    if (!tab.runId) return 'New chat'
+    if (!tab.runId) {
+      const draft = chatDraftsRef.current.get(tab.chatId)?.trim()
+      return draft ? `Draft: ${draft.slice(0, 48)}` : 'New chat'
+    }
     return runs.find(r => r.id === tab.runId)?.title || '(Untitled chat)'
   }, [runs])
 
-  const isChatTabProcessing = useCallback((tab: ChatTab) => {
-    return tab.runId ? processingRunIds.has(tab.runId) : false
-  }, [processingRunIds])
 
-  // File tab state
-  const [fileTabs, setFileTabs] = useState<FileTab[]>([])
-  const [activeFileTabId, setActiveFileTabId] = useState<string | null>(null)
-  const [editorSessionByTabId, setEditorSessionByTabId] = useState<Record<string, number>>({})
-  const fileHistoryHandlersRef = useRef<Map<string, MarkdownHistoryHandlers>>(new Map())
-  const fileTabIdCounterRef = useRef(0)
-  const newFileTabId = () => `file-tab-${++fileTabIdCounterRef.current}`
-
-  const getFileTabTitle = useCallback((tab: FileTab) => {
-    if (isGraphTabPath(tab.path)) return 'Graph View'
-    if (tab.path === BASES_DEFAULT_TAB_PATH) return 'Bases'
-    if (tab.path.endsWith('.base')) return tab.path.split('/').pop()?.replace(/\.base$/i, '') || 'Base'
-    return tab.path.split('/').pop()?.replace(/\.md$/i, '') || tab.path
-  }, [])
+  // The Code section is a plain section boolean like every other section. (It
+  // used to be derived from a sentinel entry in an editor-style tab strip,
+  // which made it the ONE section bulk section-clears couldn't close — the
+  // root of a whole family of stuck/inert-UI navigation bugs.)
+  const [isCodeOpen, setIsCodeOpen] = useState(false)
+  // The code session that owns the right-hand chat pane: selecting a session
+  // binds the assistant chat to it (a code session IS a chat session).
+  const [activeCodeSession, setActiveCodeSession] = useState<ActiveCodeSession | null>(null)
+  // Deep-link into the Code section (a Home Deck strip's door): select this
+  // session when the view opens, then clear.
+  const [codeFocusSessionId, setCodeFocusSessionId] = useState<string | null>(null)
+  const [codeFocusProjectPath, setCodeFocusProjectPath] = useState<string | null>(null)
+  // The code rail's width (drag-resizable, persisted by its SecondaryRail
+  // shell) — the middle pane hugs it while a session's chat is the main
+  // surface. The rail reports before first paint, so the default never shows.
+  const [codeRailWidth, setCodeRailWidth] = useState(280)
+  // The project terminal opens beside the conversation.
+  const [codePanel, setCodePanel] = useState<CodePanel | null>(null)
+  // Composer locks for runs that are code sessions: the session's cwd + agent
+  // are frozen in the chat input (the backend pins them server-side anyway).
+  // Kept after the Code view unmounts — the chat stays bound to the session.
+  const [codeSessionLocks, setCodeSessionLocks] = useState<Record<string, { cwd: string; agent: 'claude' | 'codex'; codeModeEnabled?: boolean }>>({})
+  const codeSessionLocksRef = useRef(codeSessionLocks)
+  codeSessionLocksRef.current = codeSessionLocks
+  // Undo/redo handlers of the (single) mounted markdown editor.
+  const fileHistoryHandlersRef = useRef<MarkdownHistoryHandlers | null>(null)
+  // Bumped when a file's content is reloaded from disk behind the editor's
+  // back — remounts the editor session (clears undo history) for that path.
+  const [editorSessionByPath, setEditorSessionByPath] = useState<Record<string, number>>({})
 
   // Pending requests state
   const [, setPendingPermissionRequests] = useState<Map<string, z.infer<typeof ToolPermissionRequestEvent>>>(new Map())
@@ -885,6 +2858,7 @@ function App() {
   const [allPermissionRequests, setAllPermissionRequests] = useState<Map<string, z.infer<typeof ToolPermissionRequestEvent>>>(new Map())
   // Track permission responses (toolCallId -> response)
   const [permissionResponses, setPermissionResponses] = useState<Map<string, 'approve' | 'deny'>>(new Map())
+  const [autoPermissionDecisions, setAutoPermissionDecisions] = useState<Map<string, z.infer<typeof ToolPermissionAutoDecisionEvent>>>(new Map())
 
   useEffect(() => {
     chatViewStateByTabRef.current = chatViewStateByTab
@@ -895,19 +2869,29 @@ function App() {
       runId,
       conversation,
       currentAssistantMessage,
+      // The legacy mirrors this snapshot is built from never carried usage,
+      // so inactive tabs showed zero tokens; take it from the live session
+      // store instead.
+      sessionUsage: sessionChat.chatState?.sessionUsage ?? {},
       pendingAskHumanRequests: new Map(pendingAskHumanRequests),
       allPermissionRequests: new Map(allPermissionRequests),
       permissionResponses: new Map(permissionResponses),
+      autoPermissionDecisions: new Map(autoPermissionDecisions),
     }
-    setChatViewStateByTab((prev) => ({ ...prev, [activeChatTabId]: snapshot }))
+    const liveSnapshot = sessionChat.sessionId === runId && sessionChat.chatState
+      ? { runId, ...sessionChat.chatState } : snapshot
+    setChatViewStateByTab((prev) => ({ ...prev, [activeChatTabId]: liveSnapshot }))
   }, [
     activeChatTabId,
     runId,
     conversation,
     currentAssistantMessage,
+    sessionChat.chatState,
+    sessionChat.sessionId,
     pendingAskHumanRequests,
     allPermissionRequests,
     permissionResponses,
+    autoPermissionDecisions,
   ])
 
   useEffect(() => {
@@ -932,14 +2916,37 @@ function App() {
     })
   }, [chatTabs])
 
+  useEffect(() => {
+    const tabIds = new Set(chatTabs.map((tab) => tab.id))
+    setChatViewportAnchorByTab((prev) => {
+      let changed = false
+      const next: Record<string, ChatViewportAnchorState> = {}
+      for (const [tabId, state] of Object.entries(prev)) {
+        if (tabIds.has(tabId)) {
+          next[tabId] = state
+        } else {
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [chatTabs])
+
   // Workspace root for full paths
   const [workspaceRoot, setWorkspaceRoot] = useState<string>('')
 
   // Onboarding state
   const [showOnboarding, setShowOnboarding] = useState(false)
 
+  // One-time Composio→native Google migration modal
+  const [showComposioGoogleMigration, setShowComposioGoogleMigration] = useState(false)
+  // The pending "Rowboat now recommends…" prompt, if any (see the modal).
+  const [recommendationUpdate, setRecommendationUpdate] = useState<RecommendationUpdate | null>(null)
+
   // Search state
   const [isSearchOpen, setIsSearchOpen] = useState(false)
+  // Optional scope override for the next time search opens (cleared on close).
+  const [searchDefaultScope, setSearchDefaultScope] = useState<PaletteScope | undefined>(undefined)
 
   // Background tasks state
   type BackgroundTaskItem = {
@@ -997,9 +3004,23 @@ function App() {
     })
   }, [])
 
+  const bumpDocumentRevisionForPath = useCallback((path: string) => {
+    const revisions = documentRevisionByPathRef.current
+    revisions.set(path, (revisions.get(path) ?? 0) + 1)
+  }, [])
+
+  const setInitialContentForPath = useCallback((path: string, content: string) => {
+    initialContentByPathRef.current.set(path, content)
+    bumpDocumentRevisionForPath(path)
+  }, [bumpDocumentRevisionForPath])
+
+  const deleteInitialContentForPath = useCallback((path: string) => {
+    initialContentByPathRef.current.delete(path)
+    bumpDocumentRevisionForPath(path)
+  }, [bumpDocumentRevisionForPath])
+
   const removeEditorCacheForPath = useCallback((path: string) => {
     editorContentByPathRef.current.delete(path)
-    untitledRenameReadyPathsRef.current.delete(path)
     setEditorContentByPath((prev) => {
       if (!(path in prev)) return prev
       const next = { ...prev }
@@ -1008,28 +3029,20 @@ function App() {
     })
   }, [])
 
-  const markRecentLocalMarkdownWrite = useCallback((path: string) => {
-    if (!path.endsWith('.md')) return
-    const now = Date.now()
-    recentLocalMarkdownWritesRef.current.set(path, now)
-    if (recentLocalMarkdownWritesRef.current.size > 200) {
-      for (const [knownPath, timestamp] of recentLocalMarkdownWritesRef.current.entries()) {
-        if (now - timestamp > 10_000) {
-          recentLocalMarkdownWritesRef.current.delete(knownPath)
-        }
-      }
-    }
-  }, [])
-
-  const consumeRecentLocalMarkdownWrite = useCallback((path: string, windowMs: number = 2_500) => {
-    const timestamp = recentLocalMarkdownWritesRef.current.get(path)
-    if (timestamp === undefined) return false
-    const isRecent = Date.now() - timestamp <= windowMs
-    if (!isRecent) {
-      recentLocalMarkdownWritesRef.current.delete(path)
-    }
-    return isRecent
-  }, [])
+  const reloadMarkdownFileIntoEditor = useCallback(async (path: string) => {
+    const result = await window.ipc.invoke('workspace:readFile', { path, encoding: 'utf8' })
+    const { raw: fm, body } = splitFrontmatter(result.data)
+    frontmatterByPathRef.current.set(path, fm)
+    setFileContent(result.data)
+    setEditorContent(body)
+    setEditorCacheForPath(path, body)
+    editorContentRef.current = body
+    editorPathRef.current = path
+    setInitialContentForPath(path, body)
+    initialContentRef.current = body
+    setLastSaved(new Date())
+    setEditorSessionByPath((prev) => ({ ...prev, [path]: (prev[path] ?? 0) + 1 }))
+  }, [setEditorCacheForPath, setInitialContentForPath])
 
   const handleEditorChange = useCallback((path: string, markdown: string) => {
     setEditorCacheForPath(path, markdown)
@@ -1044,6 +3057,57 @@ function App() {
     editorContentRef.current = markdown
     setEditorContent(markdown)
   }, [setEditorCacheForPath])
+
+  const syncGoogleDocDown = useCallback(async (targetPath?: string) => {
+    const path = targetPath ?? selectedPathRef.current
+    if (!path || !path.startsWith('knowledge/') || !path.endsWith('.md')) return
+
+    setGoogleDocSyncDirection('down')
+    try {
+      await window.ipc.invoke('google-docs:refreshSnapshot', { path })
+      await reloadMarkdownFileIntoEditor(path)
+      toast.success('Pulled latest Google Doc')
+    } catch (err) {
+      console.error('Failed to sync Google Doc down:', err)
+      toast.error(err instanceof Error ? err.message : 'Failed to pull Google Doc')
+    } finally {
+      setGoogleDocSyncDirection(null)
+    }
+  }, [reloadMarkdownFileIntoEditor])
+
+  const syncGoogleDocUp = useCallback(async (targetPath?: string) => {
+    const path = targetPath ?? selectedPathRef.current
+    if (!path || !path.startsWith('knowledge/') || !path.endsWith('.md')) return
+
+    const body = editorContentByPathRef.current.get(path) ?? editorContentRef.current
+    const markdown = joinFrontmatter(frontmatterByPathRef.current.get(path) ?? null, body)
+    setGoogleDocSyncDirection('up')
+    try {
+      let result = await window.ipc.invoke('google-docs:sync', { path, markdown })
+      if (result.conflict) {
+        const overwrite = window.confirm(
+          'This Google Doc changed since your last sync.\n\n' +
+          'Overwrite it with your local version? Cancel to keep the remote copy ' +
+          '(use “Sync down” to pull it first).',
+        )
+        if (!overwrite) {
+          toast.info('Sync up cancelled — remote Google Doc is unchanged')
+          return
+        }
+        result = await window.ipc.invoke('google-docs:sync', { path, markdown, force: true })
+      }
+      if (!result.synced) {
+        throw new Error(result.error || 'This note is not linked to a Google Doc.')
+      }
+      await reloadMarkdownFileIntoEditor(path)
+      toast.success('Pushed changes to Google Doc')
+    } catch (err) {
+      console.error('Failed to sync Google Doc up:', err)
+      toast.error(err instanceof Error ? err.message : 'Failed to push Google Doc')
+    } finally {
+      setGoogleDocSyncDirection(null)
+    }
+  }, [reloadMarkdownFileIntoEditor])
   // Keep processingRunIdsRef in sync for use in async callbacks
   useEffect(() => {
     processingRunIdsRef.current = processingRunIds
@@ -1133,6 +3197,27 @@ function App() {
         return []
       })()
       const selectedPathAtEvent = selectedPathRef.current
+      if (event.type === 'moved') {
+        const movedPath = (path: string) => path === event.from || path.startsWith(`${event.from}/`)
+          ? event.to + path.slice(event.from.length) : path
+        setOpenFilePaths((prev) => [...new Set(prev.map(movedPath))])
+        if (selectedPathAtEvent && selectedPathAtEvent.startsWith(`${event.from}/`)) setSelectedPath(movedPath(selectedPathAtEvent))
+      } else if (event.type === 'deleted') {
+        setOpenFilePaths((prev) => prev.filter((path) => path !== event.path && !path.startsWith(`${event.path}/`)))
+        if (selectedPathAtEvent && (selectedPathAtEvent === event.path || selectedPathAtEvent.startsWith(`${event.path}/`))) {
+          setSelectedPath(null)
+          setIsKnowledgeViewOpen(true)
+        }
+      }
+
+      // Initial hydration owns its read until editorPath/baseline are ready.
+      // Record every Markdown event so that loader can detect an in-flight
+      // stale snapshot and repeat the read instead of losing this notification.
+      for (const path of new Set(eventPaths)) {
+        if (!path.endsWith('.md')) continue
+        const revisions = externalChangeRevisionByPathRef.current
+        revisions.set(path, (revisions.get(path) ?? 0) + 1)
+      }
 
       // Reload background tasks if agent-schedule.json changed
       if (
@@ -1142,13 +3227,20 @@ function App() {
         loadBackgroundTasks()
       }
 
+      // Reload bg-task summaries if anything under bg-tasks/ changed
+      if (
+        eventPaths.some((p) => p === 'bg-tasks' || p.startsWith('bg-tasks/'))
+      ) {
+        loadBgTaskSummaries()
+      }
+
       // Invalidate cached content for files changed outside the active editor.
       // This prevents stale backlinks after rename-rewrite passes touch many files.
       for (const path of eventPaths) {
         if (!path.endsWith('.md')) continue
         if (selectedPathAtEvent && path === selectedPathAtEvent) continue
         removeEditorCacheForPath(path)
-        initialContentByPathRef.current.delete(path)
+        deleteInitialContentForPath(path)
       }
 
       // Keep selection stable if a file is moved externally.
@@ -1168,33 +3260,50 @@ function App() {
         changedPath === pathToReload || changedPaths.includes(pathToReload)
 
       if (isCurrentFileChanged) {
-        // Ignore immediate watcher echoes of our own autosaves to preserve undo history.
-        if (consumeRecentLocalMarkdownWrite(pathToReload)) {
-          return
-        }
-        // Only reload if no unsaved edits
-        const baseline = initialContentByPathRef.current.get(pathToReload) ?? initialContentRef.current
-        if (editorContentRef.current === baseline) {
-          const result = await window.ipc.invoke('workspace:readFile', { path: pathToReload })
-          if (selectedPathRef.current !== pathToReload) return
-          setFileContent(result.data)
-          const { raw: fm, body } = splitFrontmatter(result.data)
-          frontmatterByPathRef.current.set(pathToReload, fm)
-          setEditorContent(body)
-          setEditorCacheForPath(pathToReload, body)
-          editorContentRef.current = body
-          editorPathRef.current = pathToReload
-          initialContentByPathRef.current.set(pathToReload, body)
-          initialContentRef.current = body
-        }
+        await reloadCleanActiveMarkdownAfterExternalChange({
+          path: pathToReload,
+          getSelectedPath: () => selectedPathRef.current,
+          getEditorPath: () => editorPathRef.current,
+          getEditorContent: () => editorContentRef.current,
+          getBaseline: () => initialContentByPathRef.current.get(pathToReload),
+          getDocumentRevision: () => documentRevisionByPathRef.current.get(pathToReload) ?? 0,
+          invalidateCache: () => {
+            removeEditorCacheForPath(pathToReload)
+          },
+          beginRequest: () => (fileLoadRequestIdRef.current += 1),
+          isCurrentRequest: (requestId) => fileLoadRequestIdRef.current === requestId,
+          readFile: () => window.ipc.invoke('workspace:readFile', { path: pathToReload }),
+          getDiskEditorContent: (data) => splitFrontmatter(data).body,
+          applyReload: (data) => {
+            setFileContent(data)
+            const { raw: fm, body } = splitFrontmatter(data)
+            frontmatterByPathRef.current.set(pathToReload, fm)
+            setEditorContent(body)
+            setEditorCacheForPath(pathToReload, body)
+            editorContentRef.current = body
+            editorPathRef.current = pathToReload
+            setInitialContentForPath(pathToReload, body)
+            initialContentRef.current = body
+          },
+          applyUnchangedReload: (data) => {
+            setFileContent(data)
+            const { raw: fm, body } = splitFrontmatter(data)
+            frontmatterByPathRef.current.set(pathToReload, fm)
+            setEditorCacheForPath(pathToReload, body)
+            setInitialContentForPath(pathToReload, body)
+            initialContentRef.current = body
+          },
+          onReadError: (error) => console.error('Failed to reload externally changed file:', error),
+        })
       }
     })
     return cleanup
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadDirectory, removeEditorCacheForPath, setEditorCacheForPath])
+  }, [deleteInitialContentForPath, loadDirectory, removeEditorCacheForPath, setEditorCacheForPath, setInitialContentForPath])
 
   // Load file content when selected
   useEffect(() => {
+    const requestId = (fileLoadRequestIdRef.current += 1)
     if (!selectedPath) {
       setFileContent('')
       setEditorContent('')
@@ -1242,8 +3351,14 @@ function App() {
         return
       }
     }
-    const requestId = (fileLoadRequestIdRef.current += 1)
     const pathToLoad = selectedPath
+    // Only the markdown editor still consumes fileContent. Every other viewer
+    // (media + UnsupportedFileViewer) self-loads, so skip the generic UTF-8
+    // loader to avoid double-fetching and to avoid slurping binary bytes.
+    if (!pathToLoad.endsWith('.md')) {
+      setFileContent('')
+      return
+    }
     let cancelled = false
     ;(async () => {
       try {
@@ -1261,8 +3376,16 @@ function App() {
             return
           }
         }
-        const result = await window.ipc.invoke('workspace:readFile', { path: pathToLoad })
-        if (cancelled || fileLoadRequestIdRef.current !== requestId || selectedPathRef.current !== pathToLoad) return
+        const result = await readFileAfterExternalChangesSettle({
+          getExternalRevision: () => externalChangeRevisionByPathRef.current.get(pathToLoad) ?? 0,
+          isCurrent: () => (
+            !cancelled
+            && fileLoadRequestIdRef.current === requestId
+            && selectedPathRef.current === pathToLoad
+          ),
+          readFile: () => window.ipc.invoke('workspace:readFile', { path: pathToLoad }),
+        })
+        if (!result) return
         setFileContent(result.data)
         const { raw: fm, body } = splitFrontmatter(result.data)
         frontmatterByPathRef.current.set(pathToLoad, fm)
@@ -1281,7 +3404,7 @@ function App() {
           }
           editorContentRef.current = body
           editorPathRef.current = pathToLoad
-          initialContentByPathRef.current.set(pathToLoad, body)
+          setInitialContentForPath(pathToLoad, body)
           initialContentRef.current = body
           setLastSaved(null)
         } else {
@@ -1301,7 +3424,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [selectedPath, setEditorCacheForPath])
+  }, [selectedPath, setEditorCacheForPath, setInitialContentForPath])
 
   // Track recently opened markdown files for wiki links
   useEffect(() => {
@@ -1321,6 +3444,7 @@ function App() {
     const baseline = initialContentByPathRef.current.get(pathAtStart) ?? initialContentRef.current
     if (debouncedContent === baseline) return
     if (!debouncedContent) return
+    if (selectedPathRef.current === pathAtStart && debouncedContent !== editorContentRef.current) return
 
     const saveFile = async () => {
       const wasActiveAtStart = selectedPathRef.current === pathAtStart
@@ -1366,12 +3490,11 @@ function App() {
                 renamedTo = targetPath
                 editorPathRef.current = targetPath
                 untitledRenameReadyPathsRef.current.delete(pathAtStart)
-                setFileTabs(prev => prev.map(tab => (tab.path === pathAtStart ? { ...tab, path: targetPath } : tab)))
                 // Migrate frontmatter entry
                 const fmEntry = frontmatterByPathRef.current.get(pathAtStart)
                 frontmatterByPathRef.current.delete(pathAtStart)
                 frontmatterByPathRef.current.set(targetPath, fmEntry ?? null)
-                initialContentByPathRef.current.delete(pathAtStart)
+                deleteInitialContentForPath(pathAtStart)
                 const cachedContent = editorContentByPathRef.current.get(pathAtStart)
                 if (cachedContent !== undefined) {
                   const rewrittenCachedContent = rewriteWikiLinksForRenamedFileInMarkdown(
@@ -1408,9 +3531,9 @@ function App() {
           data: contentToSave,
           opts: { encoding: 'utf8' }
         })
-        markRecentLocalMarkdownWrite(pathToSave)
+        analytics.noteEdited(pathToSave)
         // Store body-only baseline (matches what debouncedContent compares against)
-        initialContentByPathRef.current.set(pathToSave, splitFrontmatter(contentToSave).body)
+        setInitialContentForPath(pathToSave, splitFrontmatter(contentToSave).body)
 
         // If we renamed the active file, update state/history AFTER the write completes so the editor
         // doesn't reload stale on-disk content mid-typing (which can drop the latest character).
@@ -1444,7 +3567,7 @@ function App() {
       }
     }
     saveFile()
-  }, [debouncedContent, markRecentLocalMarkdownWrite, setHistory])
+  }, [debouncedContent, deleteInitialContentForPath, setHistory, setInitialContentForPath])
 
   // Close version history panel when switching files
   useEffect(() => {
@@ -1457,21 +3580,17 @@ function App() {
   // Load runs list (all pages)
   const loadRuns = useCallback(async () => {
     try {
-      const allRuns: RunListItem[] = []
-      let cursor: string | undefined = undefined
-
-      // Fetch all pages
-      do {
-        const result: ListRunsResponseType = await window.ipc.invoke('runs:list', { cursor })
-        allRuns.push(...result.runs)
-        cursor = result.nextCursor
-      } while (cursor)
-
-      // Filter for copilot runs only
-      const copilotRuns = allRuns.filter((run: RunListItem) => run.agentId === 'copilot')
-      setRuns(copilotRuns)
+      const { sessions } = await window.ipc.invoke('sessions:list', {})
+      setRuns(sessions.map((entry) => ({
+        id: entry.sessionId,
+        title: entry.title ?? 'New chat',
+        createdAt: entry.createdAt,
+        modifiedAt: entry.updatedAt,
+        agentId: entry.lastAgentId ?? 'copilot',
+        ...(entry.origin ? { origin: entry.origin } : {}),
+      })))
     } catch (err) {
-      console.error('Failed to load runs:', err)
+      console.error('Failed to load sessions:', err)
     }
   }, [])
 
@@ -1479,6 +3598,78 @@ function App() {
   useEffect(() => {
     loadRuns()
   }, [loadRuns])
+
+  // Keep the runs list live: the session index publishes index-changed on
+  // every write (session created, turn settled, title change, delete), so the
+  // list stays current without re-fetching.
+  useEffect(() => {
+    return subscribeSessionFeed((event) => {
+      if (event.kind !== 'index-changed') return
+      setRuns((prev) => {
+        if (event.entry === null) {
+          return prev.filter((run) => run.id !== event.sessionId)
+        }
+        const next: RunListItem = {
+          id: event.entry.sessionId,
+          title: event.entry.title ?? 'New chat',
+          createdAt: event.entry.createdAt,
+          modifiedAt: event.entry.updatedAt,
+          agentId: event.entry.lastAgentId ?? 'copilot',
+          ...(event.entry.origin ? { origin: event.entry.origin } : {}),
+        }
+        // Re-sort: chat-header slices the top of this list without sorting,
+        // so it must stay newest-first like sessions:list.
+        const recency = (run: RunListItem) => {
+          const ms = new Date(run.modifiedAt).getTime()
+          return Number.isNaN(ms) ? 0 : ms
+        }
+        return [...prev.filter((run) => run.id !== next.id), next]
+          .sort((a, b) => recency(b) - recency(a))
+      })
+    })
+  }, [])
+
+  // The person's own chats — what every "recent chats" surface lists. Space
+  // threads and other owned sessions stay in `runs` (tab titles, the history
+  // pane's explicit filter) but out of these. One predicate, applied to the
+  // seed and to every feed event above, so seed and feed never disagree.
+  const chatRuns = useMemo(() => runs.filter(isChatListSession), [runs])
+
+  const [bgTaskSummaries, setBgTaskSummaries] = useState<Array<{
+    slug: string
+    name: string
+    active: boolean
+    createdAt: string
+    lastAttemptAt?: string
+    lastRunAt?: string
+    lastRunError?: string
+  }>>([])
+  const [bgTaskInitialSlug, setBgTaskInitialSlug] = useState<string | null>(null)
+  const [bgTaskSlugVersion, setBgTaskSlugVersion] = useState(0)
+  // Mini App to auto-open in the Mini Apps view (set by app-navigation open-app).
+  const [appInitialId, setAppInitialId] = useState<string | null>(null)
+  const [appIdVersion, setAppIdVersion] = useState(0)
+
+  const loadBgTaskSummaries = useCallback(async () => {
+    try {
+      const result = await window.ipc.invoke('bg-task:list', { limit: 200 })
+      setBgTaskSummaries(result.items.map((it) => ({
+        slug: it.slug,
+        name: it.name,
+        active: it.active,
+        createdAt: it.createdAt,
+        lastAttemptAt: it.lastAttemptAt,
+        lastRunAt: it.lastRunAt,
+        lastRunError: it.lastRunError,
+      })))
+    } catch (err) {
+      console.error('Failed to load bg-task summaries:', err)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadBgTaskSummaries()
+  }, [loadBgTaskSummaries])
 
   // Load background tasks
   const loadBackgroundTasks = useCallback(async () => {
@@ -1537,176 +3728,36 @@ function App() {
     }
   }, [backgroundTasks, loadBackgroundTasks])
 
-  // Load a specific run and populate conversation
+  // Switch the active session. The useSessionChat hook loads and follows the
+  // conversation; this only resets composer/tab state.
   const loadRun = useCallback(async (id: string) => {
     const requestId = (loadRunRequestIdRef.current += 1)
+    setConversation([])
+    setCurrentAssistantMessage('')
+    setRunId(id)
+    setMessage('')
+    setIsProcessing(false)
+    setIsStopping(false)
+    setStopClickedAt(null)
+    setPendingPermissionRequests(new Map())
+    setPendingAskHumanRequests(new Map())
+    setAllPermissionRequests(new Map())
+    setPermissionResponses(new Map())
+    setAutoPermissionDecisions(new Map())
     try {
-      const run = await window.ipc.invoke('runs:fetch', { runId: id })
+      // Restore the session's per-chat work directory into the tab BOUND to
+      // this run when one exists — targeting the active tab is racy under
+      // fast switching (the guard below narrows but can't close the gap).
+      const tabId = chatTabsRef.current.find((t) => t.runId === id)?.id
+        ?? activeChatTabIdRef.current
+      const wd = await loadRunWorkDir(id)
       if (loadRunRequestIdRef.current !== requestId) return
-
-      // Parse the log events into conversation items
-      const items: ConversationItem[] = []
-      const toolCallMap = new Map<string, ToolCall>()
-
-      for (const event of run.log) {
-        switch (event.type) {
-          case 'message': {
-            const msg = event.message
-            if (msg.role === 'user' || msg.role === 'assistant') {
-              // Extract text content from message
-              let textContent = ''
-              let msgAttachments: ChatMessage['attachments'] = undefined
-              if (typeof msg.content === 'string') {
-                textContent = msg.content
-              } else if (Array.isArray(msg.content)) {
-                const contentParts = msg.content as Array<{
-                  type: string
-                  text?: string
-                  path?: string
-                  filename?: string
-                  mimeType?: string
-                  size?: number
-                  toolCallId?: string
-                  toolName?: string
-                  arguments?: ToolUIPart['input']
-                }>
-
-                textContent = contentParts
-                  .filter((part) => part.type === 'text')
-                  .map((part) => part.text || '')
-                  .join('')
-
-                const attachmentParts = contentParts.filter((part) => part.type === 'attachment' && part.path)
-                if (attachmentParts.length > 0) {
-                  msgAttachments = attachmentParts.map((part) => ({
-                    path: part.path!,
-                    filename: part.filename || part.path!.split('/').pop() || part.path!,
-                    mimeType: part.mimeType || 'application/octet-stream',
-                    size: part.size,
-                  }))
-                }
-
-                // Also extract tool-call parts from assistant messages
-                if (msg.role === 'assistant') {
-                  for (const part of contentParts) {
-                    if (part.type === 'tool-call' && part.toolCallId && part.toolName) {
-                      const toolCall: ToolCall = {
-                        id: part.toolCallId,
-                        name: part.toolName,
-                        input: normalizeToolInput(part.arguments),
-                        status: 'pending',
-                        timestamp: event.ts ? new Date(event.ts).getTime() : Date.now(),
-                      }
-                      toolCallMap.set(toolCall.id, toolCall)
-                      items.push(toolCall)
-                    }
-                  }
-                }
-              }
-              if (textContent || msgAttachments) {
-                items.push({
-                  id: event.messageId,
-                  role: msg.role,
-                  content: textContent,
-                  attachments: msgAttachments,
-                  timestamp: event.ts ? new Date(event.ts).getTime() : Date.now(),
-                })
-              }
-            }
-            break
-          }
-          case 'tool-invocation': {
-            // Update existing tool call status or create new one
-            const existingTool = event.toolCallId ? toolCallMap.get(event.toolCallId) : null
-            if (existingTool) {
-              existingTool.input = normalizeToolInput(event.input)
-              existingTool.status = 'running'
-            } else {
-              const toolCall: ToolCall = {
-                id: event.toolCallId || `tool-${Date.now()}-${Math.random()}`,
-                name: event.toolName,
-                input: normalizeToolInput(event.input),
-                status: 'running',
-                timestamp: event.ts ? new Date(event.ts).getTime() : Date.now(),
-              }
-              toolCallMap.set(toolCall.id, toolCall)
-              items.push(toolCall)
-            }
-            break
-          }
-          case 'tool-result': {
-            const existingTool = event.toolCallId ? toolCallMap.get(event.toolCallId) : null
-            if (existingTool) {
-              existingTool.result = event.result
-              existingTool.status = 'completed'
-            }
-            break
-          }
-          case 'error': {
-            items.push({
-              id: `error-${Date.now()}-${Math.random()}`,
-              kind: 'error',
-              message: event.error,
-              timestamp: event.ts ? new Date(event.ts).getTime() : Date.now(),
-            })
-            break
-          }
-          case 'llm-stream-event': {
-            // We don't need to reconstruct streaming events for history
-            // Reasoning is captured in the final message
-            break
-          }
-        }
-      }
-      if (loadRunRequestIdRef.current !== requestId) return
-
-      // Track permission requests and responses from history
-      const allPermissionRequests = new Map<string, z.infer<typeof ToolPermissionRequestEvent>>()
-      const permResponseMap = new Map<string, 'approve' | 'deny'>()
-      const askHumanRequests = new Map<string, z.infer<typeof AskHumanRequestEvent>>()
-      const respondedAskHumanIds = new Set<string>()
-
-      for (const event of run.log) {
-        if (event.type === 'tool-permission-request') {
-          allPermissionRequests.set(event.toolCall.toolCallId, event)
-        } else if (event.type === 'tool-permission-response') {
-          permResponseMap.set(event.toolCallId, event.response)
-        } else if (event.type === 'ask-human-request') {
-          askHumanRequests.set(event.toolCallId, event)
-        } else if (event.type === 'ask-human-response') {
-          respondedAskHumanIds.add(event.toolCallId)
-        }
-      }
-      if (loadRunRequestIdRef.current !== requestId) return
-
-      // Separate pending vs responded permission requests
-      const pendingPerms = new Map<string, z.infer<typeof ToolPermissionRequestEvent>>()
-      for (const [id, req] of allPermissionRequests.entries()) {
-        if (!permResponseMap.has(id)) {
-          pendingPerms.set(id, req)
-        }
-      }
-
-      const pendingAsks = new Map<string, z.infer<typeof AskHumanRequestEvent>>()
-      for (const [id, req] of askHumanRequests.entries()) {
-        if (!respondedAskHumanIds.has(id)) {
-          pendingAsks.set(id, req)
-        }
-      }
-      if (loadRunRequestIdRef.current !== requestId) return
-
-      // Set the conversation and runId
-      setConversation(items)
-      setRunId(id)
-      setMessage('')
-      setPendingPermissionRequests(pendingPerms)
-      setPendingAskHumanRequests(pendingAsks)
-      setAllPermissionRequests(allPermissionRequests)
-      setPermissionResponses(permResponseMap)
+      setWorkDirByTab((prev) => ({ ...prev, [tabId]: wd }))
     } catch (err) {
-      console.error('Failed to load run:', err)
+      console.error('Failed to load session work dir:', err)
     }
-  }, [])
+  }, [loadRunWorkDir])
+  loadRunRef.current = loadRun
 
   const getStreamingBuffer = useCallback((id: string) => {
     const existing = streamingBuffersRef.current.get(id)
@@ -1762,6 +3813,11 @@ function App() {
         break
 
       case 'start':
+        // Run creation alone isn't a turn. Code-session runs are created when
+        // the session is (no message follows until the user sends one), so
+        // marking them processing here would never be cleared — and wedge the
+        // composer (Stop shown, send blocked) once the session binds a chat tab.
+        if (event.useCase === 'code_session') return
         setProcessingRunIds(prev => {
           if (prev.has(event.runId)) return prev
           const next = new Set(prev)
@@ -1805,6 +3861,7 @@ function App() {
               console.log('[voice] extracted voice tag:', voiceContent)
               if (voiceContent && ttsEnabledRef.current) {
                 ttsRef.current.speak(voiceContent)
+                setAssistantCaption(voiceContent)
               }
               spokenIndexRef.current += voiceMatch.index + voiceMatch[0].length
             }
@@ -1820,6 +3877,7 @@ function App() {
             const nextUsage = normalizeUsage(llmEvent.usage)
             if (nextUsage) {
               setModelUsage(nextUsage)
+              dispatchCreditReplenished()
             }
           }
         }
@@ -1832,7 +3890,7 @@ function App() {
             const inferredTitle = inferRunTitleFromMessage(msg.content)
             if (inferredTitle) {
               setRuns(prev => prev.map(run => (
-                run.id === event.runId && run.title !== inferredTitle
+                run.id === event.runId && !run.title
                   ? { ...run, title: inferredTitle }
                   : run
               )))
@@ -1913,6 +3971,8 @@ function App() {
                   ...item,
                   result: event.result as ToolUIPart['output'],
                   status: 'completed' as const,
+                  // a code_agent_run finished — drop any lingering permission card
+                  pendingCodePermission: null,
                 }
               }
               return item
@@ -1930,6 +3990,12 @@ function App() {
             return next
           })
 
+          // Coding-run cards stay expanded after the run settles — the card is
+          // the primary output surface (the assistant only confirms in a line).
+          if (event.toolCallId && event.toolName !== 'code_agent_run') {
+            setToolOpenForTab(activeChatTabIdRef.current, event.toolCallId, false)
+          }
+
           // Handle app-navigation tool results — trigger UI side effects
           if (event.toolName === 'app-navigation') {
             const result = event.result as { success?: boolean; action?: string; [key: string]: unknown } | undefined
@@ -1940,6 +4006,23 @@ function App() {
 
           break
         }
+
+      case 'tool-output-stream': {
+        if (!isActiveRun) return
+        setConversation(prev => prev.map(item => {
+          if (
+            isToolCall(item)
+            && item.id === event.toolCallId
+          ) {
+            if (!item.streamingOutput) {
+              setToolOpenForTab(activeChatTabIdRef.current, item.id, true)
+            }
+            return { ...item, streamingOutput: (item.streamingOutput ?? '') + event.output }
+          }
+          return item
+        }))
+        break
+      }
 
       case 'tool-permission-request': {
         if (!isActiveRun) return
@@ -1967,6 +4050,43 @@ function App() {
         setPermissionResponses(prev => {
           const next = new Map(prev)
           next.set(event.toolCallId, event.response)
+          return next
+        })
+        break
+      }
+
+      case 'code-run-event': {
+        if (!isActiveRun) return
+        setConversation(prev => prev.map(item => {
+          if (isToolCall(item) && item.id === event.toolCallId) {
+            const existing = item.codeRunEvents ?? []
+            if (existing.length === 0) {
+              setToolOpenForTab(activeChatTabIdRef.current, item.id, true)
+            }
+            return { ...item, codeRunEvents: [...existing, event.event] }
+          }
+          return item
+        }))
+        break
+      }
+
+      case 'code-run-permission-request': {
+        if (!isActiveRun) return
+        setConversation(prev => prev.map(item => {
+          if (isToolCall(item) && item.id === event.toolCallId) {
+            setToolOpenForTab(activeChatTabIdRef.current, item.id, true)
+            return { ...item, pendingCodePermission: { requestId: event.requestId, ask: event.ask } }
+          }
+          return item
+        }))
+        break
+      }
+
+      case 'tool-permission-auto-decision': {
+        if (!isActiveRun) return
+        setAutoPermissionDecisions(prev => {
+          const next = new Map(prev)
+          next.set(event.toolCallId, event)
           return next
         })
         break
@@ -2038,7 +4158,9 @@ function App() {
           message: event.error,
           timestamp: Date.now(),
         }])
-        toast.error(event.error.split('\n')[0] || 'Model error')
+        if (!matchBillingError(event.error)) {
+          toast.error(event.error.split('\n')[0] || 'Model error')
+        }
         console.error('Run error:', event.error)
         break
     }
@@ -2052,13 +4174,98 @@ function App() {
     return cleanup
   }, [handleRunEvent])
 
+  type MiddlePaneContextPayload =
+    | { kind: 'note'; path: string; content: string }
+    | { kind: 'browser'; url: string; title: string }
+    | { kind: 'deck'; path: string; slideNumber: number; slideCount: number }
+    | { kind: 'whiteboard'; orgId: string; orgName: string; spaceId: string; spaceName: string; assetId: string; path: string }
+  const buildMiddlePaneContext = async (): Promise<MiddlePaneContextPayload | undefined> => {
+    // Nothing visible in the middle pane when the right pane is maximized.
+    if (isRightPaneMaximized) return undefined
+
+    // A shared board open in Spaces: what the user is looking at is the board,
+    // and the ids here are exactly what the whiteboard tools take. No content
+    // — the board's content is what whiteboard-read reads.
+    if (isSpacesOpen && spaceSelection && !spaceSelection.view && railSelection.kind === 'whiteboard') {
+      const org = getSpacesOrgs().find((o) => o.id === spaceSelection.orgId)
+      const space = org ? findSpace(org, spaceSelection.spaceId) : undefined
+      if (org && space) {
+        // The board is named by its asset id; its display path comes from the
+        // boards store the open space pane primes from its listing.
+        return {
+          kind: 'whiteboard',
+          orgId: org.id,
+          orgName: org.name,
+          spaceId: space.id,
+          spaceName: org.directLabels[space.id] ?? space.name,
+          assetId: railSelection.assetId,
+          path: boardPathById(org.id, space.id, railSelection.assetId) ?? '',
+        }
+      }
+    }
+
+    // Browser is an overlay on top of any note — when it's open, it's what the user is looking at.
+    if (isBrowserOpen) {
+      try {
+        const state = await window.ipc.invoke('browser:getState', null)
+        const activeTab = state.tabs.find((t) => t.id === state.activeTabId)
+        if (activeTab) {
+          return { kind: 'browser', url: activeTab.url, title: activeTab.title }
+        }
+      } catch {
+        // fall through to no-context if browser state is unavailable
+      }
+      return undefined
+    }
+
+    const path = selectedPathRef.current
+    if (!path) return undefined
+
+    // Deck case: a .pptx open in the slide editor. The predicate matches the
+    // one that mounts PptxEditor, so the context and the editor can't drift.
+    // No content — a deck's content is what deck-review reads.
+    if (getViewerType(path) === 'pptx') {
+      const deck = deckStateRef.current
+      if (!deck || deck.path !== path) return undefined
+      return {
+        kind: 'deck',
+        path,
+        slideNumber: deck.slideNumber,
+        slideCount: deck.slideCount,
+      }
+    }
+
+    // Note case: only markdown files are meaningfully readable as context.
+    if (!path.endsWith('.md')) return undefined
+    const content = editorContentRef.current ?? ''
+    return { kind: 'note', path, content }
+  }
+
   const handlePromptSubmit = async (
     message: PromptInputMessage,
-    mentions?: FileMention[],
+    mentions?: Mention[],
     stagedAttachments: StagedAttachment[] = [],
     searchEnabled?: boolean,
+    codeMode?: 'claude' | 'codex',
+    permissionMode?: PermissionMode,
+    targetTabId?: string,
   ) => {
-    if (isProcessing) return
+    const submitTabId = targetTabId ?? activeChatTabIdRef.current
+    const submitTab = chatTabsRef.current.find((tab) => tab.id === submitTabId)
+    if (!submitTab) return
+    const submitInCall = inCallRef.current && submitTab.runId === hoverRunIdRef.current
+    const isSubmitTabActive = () => activeChatTabIdRef.current === submitTabId
+      && chatTabsRef.current.find((tab) => tab.id === submitTabId)?.chatId === submitTab.chatId
+    const submittedSelection = selectionByTabRef.current.get(submitTab.chatId)
+    const submittedContext = buildMiddlePaneContext()
+    if (activeIsProcessing && submitInCall) {
+      // In-call input arrives at arbitrary moments — a hard
+      // drop here silently ate utterances submitted while the previous turn
+      // was still stopping (the PTT interrupt is async). Finish the stop and
+      // proceed with this message instead. Ordinary typed sends proceed while
+      // busy: sessions:sendOrQueueMessage queues them to steer the live turn.
+      await stopRunRef.current?.()
+    }
 
     const { text } = message
     const userMessage = text.trim()
@@ -2067,47 +4274,195 @@ function App() {
 
     setMessage('')
 
+    // Video chat mode: drain the webcam frames buffered since the last send
+    // so they ride along with this message as inline image parts.
+    const marks = callTurnMarksRef.current
+    if (submitInCall && marks && marks.submit === undefined) {
+      marks.submit = performance.now()
+    }
+
+    // Modality decides speech on calls: a TYPED question (composer, Skipper
+    // panel, popout input) renders its reply silently; a SPOKEN one (PTT
+    // utterance — pendingVoiceInputRef is set just before submit) is spoken
+    // even with the text panel open. Stamped per-turn so tucking or typing
+    // mid-reply never flips an in-flight answer.
+    suppressSpeechTurnRef.current = submitInCall && !pendingVoiceInputRef.current
+
+    if (submitInCall) {
+      // A new question supersedes whatever of the previous reply was still
+      // unspoken — silence it and drop the frozen backlog so it never plays
+      // over the new turn. (The overlay resets its segment list when the
+      // new turn starts; the segment player detects that shrink and
+      // restarts from the top.)
+      ttsRef.current.cancel()
+      if (voiceSegmentsRef.current) {
+        spokenVoiceRef.current.count = voiceSegmentsRef.current.length
+      }
+      // Bookkeeping for the fallback-speech net: if this call turn ends with
+      // no <voice> segment spoken, the reply text itself gets read aloud.
+      spokeSegmentThisTurnRef.current = false
+      callTurnVoiceRef.current = {
+        pending: true,
+        submitAt: Date.now(),
+      }
+    }
+
+    // Frames ride along whenever screen capture is live — during calls, and
+    // for quick-ask questions with the share toggle on.
+    const videoFrames =
+      submitInCall || video.screenState === 'live' ? video.collectFrames() : []
+
     const userMessageId = `user-${Date.now()}`
-    const displayAttachments: ChatMessage['attachments'] = hasAttachments
-      ? stagedAttachments.map((attachment) => ({
-          path: attachment.path,
-          filename: attachment.filename,
-          mimeType: attachment.mimeType,
-          size: attachment.size,
-          thumbnailUrl: attachment.thumbnailUrl,
-        }))
+    const displayAttachments: ChatMessage['attachments'] = hasAttachments || videoFrames.length > 0
+      ? [
+          ...stagedAttachments.map((attachment) => ({
+            path: attachment.path,
+            filename: attachment.filename,
+            mimeType: attachment.mimeType,
+            size: attachment.size,
+            thumbnailUrl: attachment.thumbnailUrl,
+          })),
+          ...videoFrames.map((frame, index) => ({
+            path: '',
+            filename: `${frame.source}-frame-${index + 1}.jpg`,
+            mimeType: frame.mediaType,
+            thumbnailUrl: frame.dataUrl,
+            isVideoFrame: true,
+          })),
+        ]
       : undefined
-    setConversation((prev) => [...prev, {
+    if (isSubmitTabActive()) setConversation((prev) => [...prev, {
       id: userMessageId,
       role: 'user',
       content: userMessage,
       attachments: displayAttachments,
       timestamp: Date.now(),
     }])
+    setChatViewportAnchor(submitTabId, userMessageId)
 
     try {
-      let currentRunId = runId
+      let currentRunId = submitTab.runId
       let isNewRun = false
       let newRunCreatedAt: string | null = null
+      const selected = submittedSelection
       if (!currentRunId) {
-        const run = await window.ipc.invoke('runs:create', {
-          agentId,
-        })
-        currentRunId = run.id
-        newRunCreatedAt = run.createdAt
-        setRunId(currentRunId)
+        let creation = creatingSessionByChatRef.current.get(submitTab.chatId)
+        if (!creation) {
+          creation = window.ipc.invoke('sessions:create', {})
+          creatingSessionByChatRef.current.set(submitTab.chatId, creation)
+          void creation.catch(() => creatingSessionByChatRef.current.delete(submitTab.chatId))
+        }
+        const createdSession = await creation
+        currentRunId = createdSession.sessionId
+        newRunCreatedAt = new Date().toISOString()
+        if (isSubmitTabActive()) setRunId(currentRunId)
+        analytics.chatSessionCreated(currentRunId)
         // Update active chat tab's runId to the new run
         setChatTabs((prev) => prev.map((tab) => (
-          tab.id === activeChatTabId
+          tab.id === submitTabId && tab.chatId === submitTab.chatId
             ? { ...tab, runId: currentRunId }
             : tab
         )))
+        // Flush this tab's pending work directory onto the freshly created run so
+        // the agent picks it up on the first turn. Done before createMessage below.
+        const pendingWorkDir = workDirByTabRef.current[submitTabId] ?? null
+        if (pendingWorkDir) await persistRunWorkDir(currentRunId, pendingWorkDir)
         isNewRun = true
       }
 
       let titleSource = userMessage
+      // The @ menu's picks: files become attachment parts; spaces and
+      // people ride userMessageContext with their ids (see splitMentions).
+      const { fileMentions, spaceMentions } = splitMentions(mentions)
+      const hasMentions = fileMentions.length > 0
 
-      if (hasAttachments) {
+      // Per-message turn config. Composition inputs land in the system prompt
+      // via the agent resolver; keep them session-sticky where possible so the
+      // provider prefix cache survives across turns.
+      // Effort rides the ModelSelection. Hover-mode turns (companion voice
+      // sessions) default to FAST thinking when there's no explicit pick —
+      // voice-to-first-word is the experience, and a long reasoning phase
+      // is dead air.
+      const reasoningEffort =
+        selected?.effort ??
+        (submitInCall && companionVoiceRef.current ? ('low' as const) : undefined)
+      // The runtime defaults omitted maxModelCalls to the global limit; the
+      // chat-specific override is the UI's job to pass explicitly. A failed
+      // settings read just falls back to the global limit.
+      const chatMaxModelCalls = await window.ipc
+        .invoke('turnLimits:getSettings', null)
+        .then((settings) => settings.chatMaxModelCalls)
+        .catch(() => undefined)
+      // A to-do item's session keeps its own agent on continuation — typing
+      // in that chat steers the item's work, it doesn't summon the copilot.
+      const sessionAgentId = runs.find((r) => r.id === currentRunId)?.agentId
+      const effectiveAgentId = sessionAgentId === 'todo-item-agent' ? sessionAgentId : agentId
+      const sendConfig = {
+        agent: {
+          agentId: effectiveAgentId,
+          overrides: {
+            ...(selected ? { model: { provider: selected.provider, model: selected.model } } : {}),
+            composition: {
+              workDirId: currentRunId,
+              ...(pendingVoiceInputRef.current ? { voiceInput: true } : {}),
+              ...((submitInCall && ttsEnabledRef.current) ? { voiceOutput: ttsModeRef.current } : {}),
+              ...(searchEnabled ? { searchEnabled: true } : {}),
+              // Code-session pins: a bound chat always carries the session's
+              // agent + cwd, so voice/quick-ask submits (which don't thread
+              // the composer chip) still assemble the code-mode prompt. The
+              // backend pins these server-side regardless.
+              ...(currentRunId && codeSessionLocksRef.current[currentRunId]
+                ? {
+                    codeMode: codeSessionLocksRef.current[currentRunId].codeModeEnabled === false ? null : codeSessionLocksRef.current[currentRunId].agent,
+                    codeCwd: codeSessionLocksRef.current[currentRunId].cwd,
+                  }
+                : (codeMode ? { codeMode } : {})),
+              ...((submitInCall && video.cameraOn) || video.screenState === 'live'
+                ? { videoMode: true }
+                : {}),
+              ...(practiceModeRef.current ? { coachMode: true } : {}),
+            },
+          },
+        },
+        // Default matches the composer toggle's default (auto): submissions
+        // that don't thread a mode — voice/PTT utterances, quick-ask, popout
+        // text — must not silently fall back to manual, which skipped the
+        // auto-permission classifier and carded EVERY gated tool mid-call.
+        autoPermission: (permissionMode ?? 'auto') === 'auto',
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(chatMaxModelCalls !== undefined ? { maxModelCalls: chatMaxModelCalls } : {}),
+      }
+      const userMessageContextFor = (middlePane: Awaited<ReturnType<typeof buildMiddlePaneContext>>) => {
+        // One-shot: the stale-frames notice rides on exactly one message.
+        const screenShareEnded = screenShareEndedRef.current
+        screenShareEndedRef.current = false
+        return {
+          // Local wall-clock with explicit timezone, never toISOString: the model
+          // adopts this as its time frame, so a UTC "now" makes it quote email
+          // timestamps (which carry their own offsets) in UTC instead of local.
+          currentDateTime: `${new Date().toLocaleString('en-US', {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+            timeZoneName: 'short',
+          })} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`,
+          middlePane: middlePane ?? { kind: 'empty' as const },
+          ...(screenShareEnded ? { screenShareEnded: true } : {}),
+          ...(spaceMentions.length > 0 ? { spaceMentions } : {}),
+        }
+      }
+
+      // Deliver-ASAP: a busy session queues the message (it steers the live
+      // turn at the next model-call boundary or starts the next turn), so a
+      // mid-turn send is never rejected or dropped.
+      const sendSessionMessage = (payload: Parameters<typeof window.ipc.invoke<'sessions:sendOrQueueMessage'>>[1]) =>
+        window.ipc.invoke('sessions:sendOrQueueMessage', payload)
+
+      let sendResult: Awaited<ReturnType<typeof sendSessionMessage>>
+      if (hasAttachments || hasMentions || videoFrames.length > 0) {
         type ContentPart =
           | { type: 'text'; text: string }
           | {
@@ -2116,17 +4471,33 @@ function App() {
               filename: string
               mimeType: string
               size?: number
+              lineNumber?: number
+            }
+          | {
+              type: 'image'
+              data: string
+              mediaType: string
+              source: 'camera' | 'screen'
+              capturedAt: string
             }
 
         const contentParts: ContentPart[] = []
 
-        if (mentions && mentions.length > 0) {
-          for (const mention of mentions) {
+        if (fileMentions.length > 0) {
+          const mentionMimeTypes: Record<string, string> = {
+            xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            xls: 'application/vnd.ms-excel',
+            csv: 'text/csv',
+            tsv: 'text/tab-separated-values',
+          }
+          for (const mention of fileMentions) {
+            const ext = mention.path.split('.').pop()?.toLowerCase() ?? ''
             contentParts.push({
               type: 'attachment',
               path: mention.path,
               filename: mention.displayName || mention.path.split('/').pop() || mention.path,
-              mimeType: 'text/markdown',
+              mimeType: mentionMimeTypes[ext] ?? 'text/markdown',
+              ...(mention.lineNumber !== undefined ? { lineNumber: mention.lineNumber } : {}),
             })
           }
         }
@@ -2144,51 +4515,58 @@ function App() {
         if (userMessage) {
           contentParts.push({ type: 'text', text: userMessage })
         } else {
-          titleSource = stagedAttachments[0]?.filename ?? ''
+          titleSource = stagedAttachments[0]?.filename ?? fileMentions[0]?.displayName ?? fileMentions[0]?.path ?? ''
         }
 
-        // Shared IPC payload types can lag until package rebuilds; runtime validation still enforces schema.
-        const attachmentPayload = contentParts as unknown as string
-        await window.ipc.invoke('runs:createMessage', {
-          runId: currentRunId,
-          message: attachmentPayload,
+        for (const frame of videoFrames) {
+          contentParts.push({
+            type: 'image',
+            data: frame.data,
+            mediaType: frame.mediaType,
+            source: frame.source,
+            capturedAt: frame.capturedAt,
+          })
+        }
+
+        const middlePaneContext = await submittedContext
+        sendResult = await sendSessionMessage({
+          sessionId: currentRunId,
+          input: {
+            role: 'user',
+            content: contentParts,
+            userMessageContext: userMessageContextFor(middlePaneContext),
+          },
+          config: sendConfig,
+        })
+        analytics.chatMessageSent({
           voiceInput: pendingVoiceInputRef.current || undefined,
-          voiceOutput: ttsEnabledRef.current ? ttsModeRef.current : undefined,
+          voiceOutput: (submitInCall && ttsEnabledRef.current) ? ttsModeRef.current : undefined,
           searchEnabled: searchEnabled || undefined,
         })
       } else {
-        // Legacy path: plain string with optional XML-formatted @mentions.
-        let formattedMessage = userMessage
-        if (mentions && mentions.length > 0) {
-          const attachedFiles = await Promise.all(
-            mentions.map(async (mention) => {
-              try {
-                const result = await window.ipc.invoke('workspace:readFile', { path: mention.path })
-                return { path: mention.path, content: result.data as string }
-              } catch (err) {
-                console.error('Failed to read mentioned file:', mention.path, err)
-                return { path: mention.path, content: `[Error reading file: ${mention.path}]` }
-              }
-            })
-          )
-
-          if (attachedFiles.length > 0) {
-            const filesXml = attachedFiles
-              .map((file) => `<file path="${file.path}">\n${file.content}\n</file>`)
-              .join('\n')
-            formattedMessage = `<attached-files>\n${filesXml}\n</attached-files>\n\n${userMessage}`
-          }
-        }
-
-        await window.ipc.invoke('runs:createMessage', {
-          runId: currentRunId,
-          message: formattedMessage,
+        const middlePaneContext = await submittedContext
+        sendResult = await sendSessionMessage({
+          sessionId: currentRunId,
+          input: {
+            role: 'user',
+            content: userMessage,
+            userMessageContext: userMessageContextFor(middlePaneContext),
+          },
+          config: sendConfig,
+        })
+        analytics.chatMessageSent({
           voiceInput: pendingVoiceInputRef.current || undefined,
-          voiceOutput: ttsEnabledRef.current ? ttsModeRef.current : undefined,
+          voiceOutput: (submitInCall && ttsEnabledRef.current) ? ttsModeRef.current : undefined,
           searchEnabled: searchEnabled || undefined,
         })
+      }
 
-        titleSource = formattedMessage
+      // Queued (the latest turn was still running): there is no turn for
+      // this message yet — the pending chip above the composer represents it,
+      // and the real bubble arrives via turn events when it is delivered.
+      // Retract the optimistic bubble so it can't double-render.
+      if (sendResult.queued && isSubmitTabActive()) {
+        setConversation((prev) => prev.filter((item) => item.id !== userMessageId))
       }
 
       pendingVoiceInputRef.current = false
@@ -2197,10 +4575,12 @@ function App() {
         const inferredTitle = inferRunTitleFromMessage(titleSource)
         setRuns((prev) => {
           const withoutCurrent = prev.filter((run) => run.id !== currentRunId)
+          const createdAt = newRunCreatedAt ?? new Date().toISOString()
           return [{
             id: currentRunId!,
             title: inferredTitle,
-            createdAt: newRunCreatedAt ?? new Date().toISOString(),
+            createdAt,
+            modifiedAt: createdAt,
             agentId,
           }, ...withoutCurrent]
         })
@@ -2211,452 +4591,663 @@ function App() {
   }
   handlePromptSubmitRef.current = handlePromptSubmit
 
+  const handleComposioConnected = useCallback((toolkitSlug: string, tabId = activeChatTabId) => {
+    // Auto-send a continuation message when a Composio toolkit connects
+    const name = composioDisplayNames[toolkitSlug] || toolkitSlug
+    if (tabId !== activeChatTabIdRef.current) {
+      toast(`${name} connected successfully`, { description: 'Return to the original chat to continue.' })
+      return
+    }
+    handlePromptSubmitRef.current?.({ text: `${name} connected successfully.`, files: [] })
+  }, [activeChatTabId])
+
+  // The composer's stop state clears when the active turn settles.
+  useEffect(() => {
+    if (sessionChat.chatState && !sessionChat.chatState.isProcessing) {
+      setIsStopping(false)
+      setStopClickedAt(null)
+    }
+  }, [sessionChat.chatState])
+
   const handleStop = useCallback(async () => {
     if (!runId) return
-    const now = Date.now()
-    const isForce = isStopping && stopClickedAt !== null && (now - stopClickedAt) < 2000
-
-    setStopClickedAt(now)
+    const stoppedTabId = activeChatTabIdRef.current
+    const stoppedChatId = chatIdForTab(stoppedTabId)
+    setStopClickedAt(Date.now())
     setIsStopping(true)
-
+    // Stopping the run must also silence it — the TTS queue holds segments
+    // that were already extracted from the stream and would keep playing
+    // long after the turn is aborted.
+    ttsRef.current.cancel()
+    setAssistantCaption('')
     try {
-      await window.ipc.invoke('runs:stop', { runId, force: isForce })
+      // Stop drains the pending queue (queued messages must not auto-start
+      // after an explicit stop) — restore their text into the composer so
+      // nothing the user typed is lost.
+      const dequeued = await sessionChat.stop()
+      const drainedText = dequeued
+        .map((entry) => queuedMessageText(entry.message))
+        .filter(Boolean)
+        .join('\n\n')
+      if (drainedText) {
+        const draft = chatDraftsRef.current.get(stoppedChatId)?.trim()
+        const restored = draft ? `${draft}\n\n${drainedText}` : drainedText
+        chatDraftsRef.current.set(stoppedChatId, restored)
+        if (activeChatTabIdRef.current === stoppedTabId) setPresetMessage(restored)
+      }
     } catch (error) {
-      console.error('Failed to stop run:', error)
+      console.error('Failed to stop turn:', error)
     }
-  }, [runId, isStopping, stopClickedAt])
+  }, [runId, sessionChat, chatIdForTab])
+  stopRunRef.current = handleStop
+
+  // Pending-queue chips (messages sent while the turn was running): ✕
+  // discards the message; clicking the chip body pulls it back out of the
+  // queue and into the composer for editing.
+  const handleRemoveQueued = useCallback((queueId: string) => {
+    sessionChat.removeQueued(queueId).catch((error) => {
+      console.error('Failed to remove queued message:', error)
+    })
+  }, [sessionChat])
+
+  const handlePullQueued = useCallback(async (queueId: string) => {
+    const targetTabId = activeChatTabIdRef.current
+    const targetChatId = chatIdForTab(targetTabId)
+    try {
+      const removed = await sessionChat.removeQueued(queueId)
+      const text = removed ? queuedMessageText(removed.message) : ''
+      if (text) {
+        const draft = chatDraftsRef.current.get(targetChatId)?.trim()
+        const restored = draft ? `${draft}\n\n${text}` : text
+        chatDraftsRef.current.set(targetChatId, restored)
+        if (activeChatTabIdRef.current === targetTabId) setPresetMessage(restored)
+      }
+    } catch (error) {
+      console.error('Failed to pull back queued message:', error)
+    }
+  }, [sessionChat, chatIdForTab])
 
   const handlePermissionResponse = useCallback(async (
     toolCallId: string,
     subflow: string[],
     response: 'approve' | 'deny',
-    scope?: 'once' | 'session' | 'always',
   ) => {
     if (!runId) return
 
-    // Optimistically update the UI immediately
-    setPermissionResponses(prev => {
-      const next = new Map(prev)
-      next.set(toolCallId, response)
-      return next
-    })
-    setPendingPermissionRequests(prev => {
-      const next = new Map(prev)
-      next.delete(toolCallId)
-      return next
-    })
-
+    void subflow // subflows retired with the runs runtime
     try {
-      await window.ipc.invoke('runs:authorizePermission', {
-        runId,
-        authorization: { subflow, toolCallId, response, scope }
-      })
+      await sessionChat.respondToPermission(
+        toolCallId,
+        response === 'approve' ? 'allow' : 'deny',
+      )
     } catch (error) {
       console.error('Failed to authorize permission:', error)
-      // Revert the optimistic update on error
-      setPermissionResponses(prev => {
-        const next = new Map(prev)
-        next.delete(toolCallId)
-        return next
-      })
     }
-  }, [runId])
+  }, [runId, sessionChat])
+
+  // Answer a mid-run permission request from a code_agent_run coding turn. The
+  // pending ask lives on the tool call itself, so we optimistically clear it and
+  // tell main which decision the user picked (keyed by the request id).
+  const handleCodePermissionResponse = useCallback(async (
+    toolCallId: string,
+    requestId: string,
+    decision: 'allow_once' | 'allow_always' | 'reject',
+  ) => {
+    setConversation(prev => prev.map(item =>
+      isToolCall(item) && item.id === toolCallId
+        ? { ...item, pendingCodePermission: null }
+        : item
+    ))
+    try {
+      await window.ipc.invoke('codeRun:resolvePermission', { requestId, decision })
+    } catch (error) {
+      console.error('Failed to resolve code permission:', error)
+    }
+  }, [])
 
   const handleAskHumanResponse = useCallback(async (toolCallId: string, subflow: string[], response: string) => {
     if (!runId) return
+    void subflow // subflows retired with the runs runtime
     try {
-      await window.ipc.invoke('runs:provideHumanInput', {
-        runId,
-        reply: { subflow, toolCallId, response }
-      })
+      await sessionChat.answerAskHuman(toolCallId, response)
     } catch (error) {
       console.error('Failed to provide human input:', error)
     }
-  }, [runId])
+  }, [runId, sessionChat])
 
-  const handleNewChat = useCallback(() => {
-    // Invalidate any in-flight run loads (rapid switching can otherwise "pop" old conversations back in)
-    loadRunRequestIdRef.current += 1
-    setConversation([])
-    setCurrentAssistantMessage('')
-    setRunId(null)
-    setMessage('')
-    setModelUsage(null)
-    setIsProcessing(false)
-    setPendingPermissionRequests(new Map())
-    setPendingAskHumanRequests(new Map())
-    setAllPermissionRequests(new Map())
-    setPermissionResponses(new Map())
-    setSelectedBackgroundTask(null)
-    setChatViewStateByTab(prev => ({
-      ...prev,
-      [activeChatTabIdRef.current]: createEmptyChatTabViewState(),
-    }))
+  const dismissBrowserOverlay = useCallback(() => {
+    setIsBrowserOpen(false)
   }, [])
 
-  // Chat tab operations
-  const applyChatTab = useCallback((tab: ChatTab) => {
-    if (tab.runId) {
-      loadRun(tab.runId)
-    } else {
+  const activateAssistantTab = useCallback((tab: ChatTab) => {
+    cancelRecordingIfActive()
+    setPresetMessage(chatDraftsRef.current.get(tab.chatId))
+    activeChatTabIdRef.current = tab.id
+    setActiveChatTabId(tab.id)
+    if (tab.runId) void loadRun(tab.runId)
+    else {
       loadRunRequestIdRef.current += 1
+      setRunId(null)
       setConversation([])
       setCurrentAssistantMessage('')
-      setRunId(null)
-      setMessage('')
-      setModelUsage(null)
       setIsProcessing(false)
-      setPendingPermissionRequests(new Map())
+      setIsStopping(false)
       setPendingAskHumanRequests(new Map())
       setAllPermissionRequests(new Map())
       setPermissionResponses(new Map())
+      setAutoPermissionDecisions(new Map())
     }
-  }, [loadRun])
-
-  const restoreChatTabState = useCallback((tabId: string, fallbackRunId: string | null): boolean => {
-    const cached = chatViewStateByTabRef.current[tabId]
-    if (!cached) return false
-    // Ignore stale cache snapshots that don't match the tab's current run binding.
-    if (cached.runId !== fallbackRunId) return false
-
-    const resolvedRunId = fallbackRunId
-    setRunId(resolvedRunId)
-    setConversation(cached.conversation)
-    setCurrentAssistantMessage(cached.currentAssistantMessage)
-
-    const pendingPermissions = new Map<string, z.infer<typeof ToolPermissionRequestEvent>>()
-    for (const [toolCallId, request] of cached.allPermissionRequests.entries()) {
-      if (!cached.permissionResponses.has(toolCallId)) {
-        pendingPermissions.set(toolCallId, request)
-      }
-    }
-    setPendingPermissionRequests(pendingPermissions)
-    setPendingAskHumanRequests(new Map(cached.pendingAskHumanRequests))
-    setAllPermissionRequests(new Map(cached.allPermissionRequests))
-    setPermissionResponses(new Map(cached.permissionResponses))
-    setIsProcessing(Boolean(resolvedRunId && processingRunIdsRef.current.has(resolvedRunId)))
-    return true
-  }, [])
-
-  const openChatInNewTab = useCallback((targetRunId: string) => {
-    cancelRecordingIfActive()
-    const existingTab = chatTabs.find(t => t.runId === targetRunId)
-    if (existingTab) {
-      // Cancel stale in-flight loads from previously focused tabs.
-      loadRunRequestIdRef.current += 1
-      setActiveChatTabId(existingTab.id)
-      const restored = restoreChatTabState(existingTab.id, existingTab.runId)
-      if (processingRunIdsRef.current.has(targetRunId) || !restored) {
-        loadRun(targetRunId)
-      }
-      return
-    }
-    const id = newChatTabId()
-    setChatTabs(prev => [...prev, { id, runId: targetRunId }])
-    setActiveChatTabId(id)
-    loadRun(targetRunId)
-  }, [chatTabs, loadRun, restoreChatTabState, cancelRecordingIfActive])
-
-  const switchChatTab = useCallback((tabId: string) => {
-    const tab = chatTabs.find(t => t.id === tabId)
-    if (!tab) return
-    if (tabId === activeChatTabId) return
-    // Cancel any active recording when switching tabs
-    if (isRecordingRef.current) {
-      voiceRef.current.cancel()
-      setIsRecording(false)
-      isRecordingRef.current = false
-    }
-    saveChatScrollForTab(activeChatTabId)
-    // Cancel stale in-flight loads from previously focused tabs.
-    loadRunRequestIdRef.current += 1
-    setActiveChatTabId(tabId)
-    const restored = restoreChatTabState(tabId, tab.runId)
-    if (tab.runId && processingRunIdsRef.current.has(tab.runId)) {
-      loadRun(tab.runId)
-      return
-    }
-    if (!restored) {
-      applyChatTab(tab)
-    }
-  }, [chatTabs, activeChatTabId, applyChatTab, loadRun, restoreChatTabState, saveChatScrollForTab])
-
-  const closeChatTab = useCallback((tabId: string) => {
-    if (chatTabs.length <= 1) return
-    const idx = chatTabs.findIndex(t => t.id === tabId)
-    if (idx === -1) return
-    saveChatScrollForTab(tabId)
-    const nextTabs = chatTabs.filter(t => t.id !== tabId)
-    setChatTabs(nextTabs)
-    setChatViewStateByTab(prev => {
-      if (!(tabId in prev)) return prev
-      const next = { ...prev }
-      delete next[tabId]
-      return next
-    })
-    chatDraftsRef.current.delete(tabId)
-    chatScrollTopByTabRef.current.delete(tabId)
-    setToolOpenByTab((prev) => {
-      if (!(tabId in prev)) return prev
-      const next = { ...prev }
-      delete next[tabId]
-      return next
-    })
-
-    if (tabId === activeChatTabId && nextTabs.length > 0) {
-      const newIdx = Math.min(idx, nextTabs.length - 1)
-      const newActiveTab = nextTabs[newIdx]
-      // Cancel stale in-flight loads from the closing tab.
-      loadRunRequestIdRef.current += 1
-      setActiveChatTabId(newActiveTab.id)
-      const restored = restoreChatTabState(newActiveTab.id, newActiveTab.runId)
-      if (newActiveTab.runId && processingRunIdsRef.current.has(newActiveTab.runId)) {
-        loadRun(newActiveTab.runId)
-      } else if (!restored) {
-        applyChatTab(newActiveTab)
-      }
-    }
-  }, [chatTabs, activeChatTabId, applyChatTab, loadRun, restoreChatTabState, saveChatScrollForTab])
+  }, [cancelRecordingIfActive, loadRun])
 
   useEffect(() => {
-    let cleanupScrollListener: (() => void) | undefined
-    let pollRaf: number | undefined
-    let restoreRafA: number | undefined
-    let restoreRafB: number | undefined
-    let restoreTimeout: ReturnType<typeof setTimeout> | undefined
-    let cancelled = false
+    const initialTab = chatTabsRef.current.find((tab) => tab.id === activeChatTabIdRef.current)
+    if (initialTab?.runId) activateAssistantTab(initialTab)
+  }, [activateAssistantTab])
 
-    const restoreScrollTop = (container: HTMLElement, top: number) => {
-      const maxScroll = Math.max(0, container.scrollHeight - container.clientHeight)
-      const clampedTop = clampNumber(top, 0, maxScroll)
-      container.scrollTop = clampedTop
-    }
+  const addAssistantTab = useCallback((initialSelection?: ModelSelection | null, activate = true) => {
+    const tab = createAssistantTab()
+    if (initialSelection) selectionByTabRef.current.set(tab.chatId, initialSelection)
+    chatTabsRef.current = [...chatTabsRef.current, tab]
+    setChatTabs(chatTabsRef.current)
+    if (activate) activateAssistantTab(tab)
+    return tab
+  }, [activateAssistantTab])
 
-    const attach = (): boolean => {
-      if (cancelled) return true
-      const container = getChatScrollContainer(activeChatTabId)
-      if (!container) return false
+  const switchChatTab = useCallback((tabId: string) => {
+    const tab = chatTabsRef.current.find((entry) => entry.id === tabId)
+    if (!tab || tabId === activeChatTabIdRef.current) return
+    activateAssistantTab(tab)
+  }, [activateAssistantTab])
 
-      const savedTop = chatScrollTopByTabRef.current.get(activeChatTabId)
-      if (savedTop !== undefined) {
-        // Reinforce restoration across a couple frames because stick-to-bottom
-        // may schedule scroll adjustments during mount/resize.
-        restoreScrollTop(container, savedTop)
-        restoreRafA = requestAnimationFrame(() => {
-          restoreScrollTop(container, savedTop)
-          restoreRafB = requestAnimationFrame(() => {
-            restoreScrollTop(container, savedTop)
-          })
-        })
-        restoreTimeout = setTimeout(() => {
-          restoreScrollTop(container, savedTop)
-        }, 220)
-      }
+  const closeChatTabs = useCallback((ids: string[]) => {
+    for (const id of ids) dispatchAssistantLayout({ type: 'close', id })
+    const next = closeTabs(chatTabsRef.current, activeChatTabIdRef.current, ids, (tab) => tab.id)
+    if (!next.activeId) return // Keep one chat, matching the tab strip's close rules.
+    switchChatTab(next.activeId)
+    chatTabsRef.current = next.tabs
+    setChatTabs(next.tabs)
+  }, [switchChatTab, dispatchAssistantLayout])
 
-      const onScroll = () => {
-        chatScrollTopByTabRef.current.set(activeChatTabId, container.scrollTop)
-      }
-      container.addEventListener('scroll', onScroll, { passive: true })
-      cleanupScrollListener = () => {
-        chatScrollTopByTabRef.current.set(activeChatTabId, container.scrollTop)
-        container.removeEventListener('scroll', onScroll)
-      }
-      return true
-    }
+  // Closing a chat from a container drops its tab: a sent conversation lives
+  // on in history; an unsent one had no identity to keep.
+  const closeAssistantChat = useCallback((id: string) => {
+    const tab = chatTabsRef.current.find((entry) => entry.id === id)
+    if (tab && !tab.runId) setChatDraftForTab(tab.id, '')
+    closeChatTabs([id])
+  }, [closeChatTabs, setChatDraftForTab])
 
-    let attempts = 0
-    const maxAttempts = 60
-    const pollAttach = () => {
-      if (cancelled) return
-      if (attach()) return
-      if (attempts >= maxAttempts) return
-      attempts += 1
-      pollRaf = requestAnimationFrame(pollAttach)
-    }
-    pollAttach()
+  // Reuse an existing session tab, or open a new one without replacing a draft.
+  const bindChatToRun = useCallback((rid: string) => {
+    const existing = chatTabsRef.current.find((tab) => tab.runId === rid)
+    if (existing) { switchChatTab(existing.id); return }
+    const active = chatTabsRef.current.find((t) => t.id === activeChatTabIdRef.current)
+    if (active?.runId === rid) return
+    const tab = createAssistantTab(rid)
+    chatTabsRef.current = [...chatTabsRef.current, tab]
+    setChatTabs(chatTabsRef.current)
+    activateAssistantTab(tab)
+  }, [switchChatTab, activateAssistantTab])
+  bindChatToRunRef.current = bindChatToRun
 
-    return () => {
-      cancelled = true
-      cleanupScrollListener?.()
-      if (pollRaf !== undefined) cancelAnimationFrame(pollRaf)
-      if (restoreRafA !== undefined) cancelAnimationFrame(restoreRafA)
-      if (restoreRafB !== undefined) cancelAnimationFrame(restoreRafB)
-      if (restoreTimeout !== undefined) clearTimeout(restoreTimeout)
+  // A code session was selected in the Code view: bind the chat to it — the
+  // conversation IS the assistant chat, no separate chat surface. No local
+  // "already bound" guard here: bindChatToRun dedupes on the live binding,
+  // and a stale guard is exactly how re-selecting a session after opening
+  // another chat used to do nothing (the stuck-binding family).
+  const handleCodeSessionSelected = useCallback((active: ActiveCodeSession | null) => {
+    setActiveCodeSession(active)
+    if (active) {
+      const { id, cwd, agent, codeModeEnabled } = active.session
+      setCodeSessionLocks((prev) => (
+        prev[id]?.cwd === cwd && prev[id]?.agent === agent && prev[id]?.codeModeEnabled === codeModeEnabled
+          ? prev
+          : { ...prev, [id]: { cwd, agent, codeModeEnabled } }
+      ))
     }
-  }, [
-    activeChatTabId,
-    selectedPath,
-    isGraphOpen,
-    isChatSidebarOpen,
-    isRightPaneMaximized,
-    getChatScrollContainer,
-  ])
+    const sessionId = active?.session.id ?? null
+    if (!sessionId) return
+    bindChatToRun(sessionId)
+  }, [bindChatToRun])
 
-  // File tab operations
-  const openFileInNewTab = useCallback((path: string) => {
-    const existingTab = fileTabs.find(t => t.path === path)
-    if (existingTab) {
-      setActiveFileTabId(existingTab.id)
-      setIsGraphOpen(false)
-      setSelectedPath(path)
-      return
-    }
-    const id = newFileTabId()
-    setFileTabs(prev => [...prev, { id, path }])
-    setActiveFileTabId(id)
-    setIsGraphOpen(false)
-    setSelectedPath(path)
-  }, [fileTabs])
-
-  const switchFileTab = useCallback((tabId: string) => {
-    const tab = fileTabs.find(t => t.id === tabId)
-    if (!tab) return
-    setActiveFileTabId(tabId)
-    setSelectedBackgroundTask(null)
-    setExpandedFrom(null)
-    // If chat-only maximize is active, drop back to a visible knowledge layout.
-    if (isRightPaneMaximized) {
-      setIsRightPaneMaximized(false)
-    }
-    if (isGraphTabPath(tab.path)) {
-      setSelectedPath(null)
-      setIsGraphOpen(true)
-      return
-    }
-    setIsGraphOpen(false)
-    setSelectedPath(tab.path)
-  }, [fileTabs, isRightPaneMaximized])
-
-  const closeFileTab = useCallback((tabId: string) => {
-    const closingTab = fileTabs.find(t => t.id === tabId)
-    if (closingTab && !isGraphTabPath(closingTab.path) && !isBaseFilePath(closingTab.path)) {
-      removeEditorCacheForPath(closingTab.path)
-      initialContentByPathRef.current.delete(closingTab.path)
-      untitledRenameReadyPathsRef.current.delete(closingTab.path)
-      frontmatterByPathRef.current.delete(closingTab.path)
-      if (editorPathRef.current === closingTab.path) {
-        editorPathRef.current = null
-      }
-    }
-    if (closingTab && isBaseFilePath(closingTab.path)) {
-      setBaseConfigByPath((prev) => {
-        const next = { ...prev }
-        delete next[closingTab.path]
-        return next
-      })
-    }
-    setFileTabs(prev => {
-      if (prev.length <= 1) {
-        // Last file tab - close it and go back to chat
-        setActiveFileTabId(null)
-        setSelectedPath(null)
-        setIsGraphOpen(false)
-          return []
-      }
-      const idx = prev.findIndex(t => t.id === tabId)
-      if (idx === -1) return prev
-      const next = prev.filter(t => t.id !== tabId)
-      if (tabId === activeFileTabId && next.length > 0) {
-        const newIdx = Math.min(idx, next.length - 1)
-        const newActiveTab = next[newIdx]
-        setActiveFileTabId(newActiveTab.id)
-        if (isGraphTabPath(newActiveTab.path)) {
-          setSelectedPath(null)
-          setIsGraphOpen(true)
-        } else {
-          setIsGraphOpen(false)
-              setSelectedPath(newActiveTab.path)
-        }
-      }
-      return next
-    })
-    setEditorSessionByTabId((prev) => {
-      if (!(tabId in prev)) return prev
-      const next = { ...prev }
-      delete next[tabId]
-      return next
-    })
-    fileHistoryHandlersRef.current.delete(tabId)
-  }, [activeFileTabId, fileTabs, removeEditorCacheForPath])
-
-  const handleNewChatTab = useCallback(() => {
-    // If there's already an empty "New chat" tab, switch to it
-    const emptyTab = chatTabs.find(t => !t.runId)
-    if (emptyTab) {
-      if (emptyTab.id !== activeChatTabId) {
-        setActiveChatTabId(emptyTab.id)
-      }
-    } else {
-      // Create a new tab
-      const id = newChatTabId()
-      setChatTabs(prev => [...prev, { id, runId: null }])
-      setActiveChatTabId(id)
-    }
-    handleNewChat()
-    // Left-pane "new chat" should always open full chat view.
-    if (selectedPath || isGraphOpen) {
-      setExpandedFrom({ path: selectedPath, graph: isGraphOpen })
-    } else {
-      setExpandedFrom(null)
-    }
-    setIsRightPaneMaximized(false)
-    setSelectedPath(null)
-    setIsGraphOpen(false)
-  }, [chatTabs, activeChatTabId, handleNewChat, selectedPath, isGraphOpen])
-
-  // Sidebar variant: create/switch chat tab without leaving file/graph context.
-  const handleNewChatTabInSidebar = useCallback(() => {
-    const emptyTab = chatTabs.find(t => !t.runId)
-    if (emptyTab) {
-      if (emptyTab.id !== activeChatTabId) {
-        setActiveChatTabId(emptyTab.id)
-      }
-    } else {
-      const id = newChatTabId()
-      setChatTabs(prev => [...prev, { id, runId: null }])
-      setActiveChatTabId(id)
-    }
-    handleNewChat()
-  }, [chatTabs, activeChatTabId, handleNewChat])
-
-  const toggleKnowledgePane = useCallback(() => {
-    setIsRightPaneMaximized(false)
-    setIsChatSidebarOpen(prev => !prev)
+  // Chat-header doors to the workspace drawer: clicking the open one closes it.
+  const toggleCodePanel = useCallback((panel: CodePanel) => {
+    setCodePanel((prev) => (prev === panel ? null : panel))
   }, [])
 
-  const toggleRightPaneMaximize = useCallback(() => {
-    setIsChatSidebarOpen(true)
-    setIsRightPaneMaximized(prev => !prev)
-  }, [])
+  // Reading-position persistence across pane remounts (view toggles,
+  // dock/full-screen switches, run rebinds) lives inside the conversation
+  // scroll controller now — see lib/chat-scroll.ts (keyed by tab.chatId).
 
-  const handleOpenFullScreenChat = useCallback(() => {
-    // Remember where we came from so the close button can return
-    if (selectedPath || isGraphOpen) {
-      setExpandedFrom({ path: selectedPath, graph: isGraphOpen })
-    }
-    setIsRightPaneMaximized(false)
-    setSelectedPath(null)
-    setIsGraphOpen(false)
-  }, [selectedPath, isGraphOpen])
-
-  const handleCloseFullScreenChat = useCallback(() => {
-    if (expandedFrom) {
-      if (expandedFrom.graph) {
-        setIsGraphOpen(true)
-      } else if (expandedFrom.path) {
-        setSelectedPath(expandedFrom.path)
-      }
-      setExpandedFrom(null)
-      setIsRightPaneMaximized(false)
-    }
-  }, [expandedFrom])
+  // No section, file, or task open: the Assistant page.
+  const isFullScreenChat = !selectedPath && !isGraphOpen && !isSuggestedTopicsOpen && !isMeetingsOpen && !isLiveNotesOpen && !isBgTasksOpen && !isAppsOpen && !isSpacesOpen && !isEmailOpen && !isKnowledgeViewOpen && !isChatHistoryOpen && !isHomeOpen && !isCodeOpen && !selectedBackgroundTask && !isBrowserOpen
 
   const currentViewState = React.useMemo<ViewState>(() => {
     if (selectedBackgroundTask) return { type: 'task', name: selectedBackgroundTask }
+    if (isEmailOpen) return { type: 'email' }
+    if (isMeetingsOpen) return { type: 'meetings' }
+    if (isLiveNotesOpen) return { type: 'live-notes' }
+    if (isSuggestedTopicsOpen) return { type: 'suggested-topics' }
+    if (isKnowledgeViewOpen) return { type: 'knowledge-view', folderPath: knowledgeViewFolderPath ?? undefined, mode: knowledgeViewMode }
+    if (isChatHistoryOpen) return { type: 'chat-history' }
+    if (isHomeOpen) return { type: 'home' }
+    if (isCodeOpen) return { type: 'code' }
+    if (isBgTasksOpen) return { type: 'bg-tasks' }
+    if (isAppsOpen) return { type: 'apps' }
+    // The org-level surface (Activity) belongs in here too: without it, history
+    // records Activity as a plain space view and ‹ lands somewhere else.
+    if (isSpacesOpen) return spaceSelection ? { type: 'spaces', orgId: spaceSelection.orgId, spaceId: spaceSelection.spaceId, rail: railSelection, ...(spaceSelection.view ? { view: spaceSelection.view } : {}) } : { type: 'spaces' }
     if (selectedPath) return { type: 'file', path: selectedPath }
     if (isGraphOpen) return { type: 'graph' }
     return { type: 'chat', runId }
-  }, [selectedBackgroundTask, selectedPath, isGraphOpen, runId])
+  }, [selectedBackgroundTask, isEmailOpen, isMeetingsOpen, isLiveNotesOpen, isBgTasksOpen, isAppsOpen, isSpacesOpen, spaceSelection, railSelection, isSuggestedTopicsOpen, selectedPath, isGraphOpen, isKnowledgeViewOpen, knowledgeViewFolderPath, knowledgeViewMode, isChatHistoryOpen, isHomeOpen, isCodeOpen, runId])
+
+  // Navigation handlers can be invoked from closures frozen in older renders
+  // (Spaces' MessageRow memoizes by data and ignores handler identity), so
+  // dedupe/history logic must read the view state through this render-filled
+  // ref — a captured `currentViewState` can be stale, making "already there"
+  // checks eat real navigations.
+  const currentViewStateRef = useRef(currentViewState)
+  currentViewStateRef.current = currentViewState
+
+  // applyViewState is declared further down (it needs the chat-binding
+  // helpers); handlers above it reach it through this render-filled ref.
+  const applyViewStateRef = useRef<((view: ViewState) => Promise<void>) | null>(null)
+
+  // Header title for the current view (the tab strip is gone — the header
+  // names where you are instead).
+  const { orgs: spacesOrgs, loading: spacesLoading } = useSpacesOrgs()
+  const currentViewTitle = React.useMemo(() => {
+    switch (currentViewState.type) {
+      case 'home': return 'Todo'
+      case 'chat': return 'Chat'
+      case 'chat-history': return 'Chat history'
+      case 'code': return 'Projects'
+      case 'email': return 'Email'
+      case 'meetings': return 'Meetings'
+      case 'live-notes': return 'Live notes'
+      case 'bg-tasks': return 'Background tasks'
+      case 'apps': return 'Apps'
+      case 'spaces': {
+        const org = spacesOrgs.find((o) => o.id === currentViewState.orgId)
+        if (org && currentViewState.view) return currentViewState.view === 'browse' ? 'Browse spaces' : 'Activity'
+        const space = org ? findSpace(org, currentViewState.spaceId) : undefined
+        return org && space ? spaceDisplayName(org, space) : 'Spaces'
+      }
+      case 'workspace': return 'Projects'
+      case 'knowledge-view': return 'Brain'
+      case 'graph': return 'Graph View'
+      case 'suggested-topics': return 'Suggested Topics'
+      case 'task': return currentViewState.name
+      case 'file': {
+        const path = currentViewState.path
+        if (path === BASES_DEFAULT_TAB_PATH) return 'Bases'
+        if (path.endsWith('.base')) return path.split('/').pop()?.replace(/\.base$/i, '') || 'Base'
+        return path.split('/').pop()?.replace(/\.md$/i, '') || path
+      }
+    }
+  }, [currentViewState, spacesOrgs])
+
+  // Close every section flag — THE single place a section switch resets the
+  // rest of the world. Every navigation path funnels through this (via
+  // applyViewState or directly), so no switch can leave two sections both
+  // claiming the screen, or a section flag stuck on with no way to clear it.
+  const closeAllSections = useCallback(() => {
+    setSelectedPath(null)
+    setIsGraphOpen(false)
+    setIsBrowserOpen(false)
+    setIsSuggestedTopicsOpen(false)
+    setIsMeetingsOpen(false)
+    setIsLiveNotesOpen(false)
+    setIsBgTasksOpen(false)
+    setIsAppsOpen(false)
+    setIsSpacesOpen(false)
+    setIsEmailOpen(false)
+    setIsKnowledgeViewOpen(false)
+    setIsChatHistoryOpen(false)
+    setIsHomeOpen(false)
+    setIsCodeOpen(false)
+    setSelectedBackgroundTask(null)
+    setIsRightPaneMaximized(false)
+  }, [])
+
+  const newChatAt = useCallback((location: ChatLocation, replacing?: string, selection?: ModelSelection | null, activate = true) => {
+    const tab = addAssistantTab(selection, activate)
+    dispatchAssistantLayout({ type: 'place', id: tab.id, location, replacing, size: defaultWindowSize() })
+    return tab
+  }, [addAssistantTab, dispatchAssistantLayout])
+
+  // The Assistant page always holds a conversation — a fresh one when its
+  // chat was moved out before the last quit.
+  useEffect(() => {
+    if (!assistantLayout.assistant) newChatAt('assistant', undefined, undefined, false)
+  }, [assistantLayout.assistant, newChatAt])
+
+  const handleNewChatTab = useCallback(() => {
+    newChatAt('assistant')
+    dismissBrowserOverlay()
+    closeAllSections()
+  }, [newChatAt, dismissBrowserOverlay, closeAllSections])
+
+  const handleNewChatTabInSidebar = useCallback((selection?: ModelSelection | null) => {
+    newChatAt('sidebar', undefined, selection)
+  }, [newChatAt])
+
+  // A chat was deleted (sessions:delete succeeded): drop it from the recents
+  // list, and if it was the one on screen, reset the chat surface in place to
+  // a fresh conversation so a dead transcript never stays visible.
+  const handleRunDeleted = useCallback((rid: string) => {
+    setRuns((prev) => prev.filter((r) => r.id !== rid))
+    // The companion must not keep pointing at a deleted conversation.
+    if (hoverRunIdRef.current === rid) {
+      hoverRunIdRef.current = null
+      setHoverRunId(null)
+    }
+    const openTab = chatTabs.find((t) => t.runId === rid)
+    if (!openTab) return
+    // The Assistant page always shows a conversation, so a fresh one takes the
+    // dead transcript's place there — and anywhere when it was the last chat.
+    const location = chatLocation(assistantLayout, openTab.id)
+    if (location === 'assistant' || chatTabs.length === 1) newChatAt(location ?? 'assistant', openTab.id)
+    closeChatTabs([openTab.id])
+  }, [chatTabs, assistantLayout, newChatAt, closeChatTabs])
+
+  // The companion's "+": a fresh COMPANION conversation for its next
+  // question. The app window's chat is untouched.
+  useEffect(() => {
+    return window.ipc.on('quick-ask:new-chat', () => {
+      setHoverRunId(null)
+    })
+  }, [])
+
+  // Companion-bar chat context: which conversation the companion is bound to
+  // (shown as the companion's destination chip) plus recents for its switcher.
+  // This is the HOVER binding — the app window's chat plays no part in it.
+  useEffect(() => {
+    void window.ipc
+      .invoke('quickAsk:chatContext', {
+        activeRunId: hoverRunId,
+        activeTitle: hoverRunId
+          ? (runs.find((r) => r.id === hoverRunId)?.title || '(Untitled chat)')
+          : null,
+        recent: chatRuns.slice(0, 10).map((r) => ({ id: r.id, title: r.title || '(Untitled chat)' })),
+      })
+      .catch(() => {})
+  }, [hoverRunId, runs, chatRuns])
+
+  // The bar's chip switcher picked a chat: rebind the COMPANION to it. The
+  // app window keeps showing whatever it was showing. The Command Center
+  // sentinel resolves to THE standing operator session (created on first
+  // use) — its frame rides server-side composition pins, so nothing else
+  // here changes.
+  useEffect(() => {
+    return window.ipc.on('quick-ask:select-chat', ({ runId: rid }) => {
+      if (rid === COMMAND_CENTER_CHAT_SENTINEL) {
+        void window.ipc.invoke('home:commandCenter', {})
+          .then(({ sessionId }) => setHoverRunId(sessionId))
+          .catch(() => {})
+        return
+      }
+      setHoverRunId(rid)
+    })
+  }, [])
+
+  // Palette → sidebar submission. Opens the sidebar (if closed), forces a fresh chat tab,
+  // queues the message; the pending-submit effect (below) flushes it once state has settled
+  // so handlePromptSubmit sees the new tab's null runId.
+  const submitFromPalette = useCallback((text: string, mention: CommandPaletteMention | null) => {
+    handleNewChatTabInSidebar()
+    setPendingPaletteSubmit({ text, mention })
+  }, [handleNewChatTabInSidebar])
+
+  // Open the chat sidebar on a fresh tab and pre-fill (not send) a builder prompt.
+  const prefillChat = useCallback((text: string) => {
+    handleNewChatTabInSidebar()
+    setPresetMessage(text)
+  }, [handleNewChatTabInSidebar])
+
+  useEffect(() => {
+    if (!pendingPaletteSubmit) return
+    const fileMention: FileMention | undefined = pendingPaletteSubmit.mention
+      ? {
+          kind: 'file',
+          id: `palette-${Date.now()}`,
+          path: pendingPaletteSubmit.mention.path,
+          displayName: pendingPaletteSubmit.mention.displayName,
+          lineNumber: pendingPaletteSubmit.mention.lineNumber,
+        }
+      : undefined
+    void handlePromptSubmitRef.current?.(
+      { text: pendingPaletteSubmit.text, files: [] },
+      fileMention ? [fileMention] : undefined,
+    )
+    setPendingPaletteSubmit(null)
+  }, [pendingPaletteSubmit])
+
+  // Home composer → a fresh dock chat. Same settle-then-flush dance as the
+  // palette: the fresh tab's null runId must be visible to handlePromptSubmit
+  // before the message goes out. Model/effort picked on the Home composer are
+  // copied onto the fresh tab at flush time.
+  // The Home composer's selection (model + effort as one value) — handed to
+  // todo:* calls and onto the chat tab a home submit turns into.
+  const homeSelectionRef = useRef<ModelSelection | null>(null)
+  // Destination chip: when set, the Home composer writes to the to-do list
+  // instead of the chat. Entered via the list's ＋ affordances, announced by
+  // the chip + tint, cleared on send/Escape/✕.
+  const [homeComposeTarget, setHomeComposeTarget] = useState<HomeComposeTarget | null>(null)
+  const [homeComposerFocusSignal, setHomeComposerFocusSignal] = useState(0)
+  const [homeComposerPreset, setHomeComposerPreset] = useState<string | undefined>(undefined)
+  // Code dispatch from Home (the Helm): an optional repo lane for the to-do
+  // being composed. Picking a lane makes the item a real code session
+  // (worktree by default) before its first turn — see todo:addItem `code`.
+  const [homeCodeProjects, setHomeCodeProjects] = useState<{ id: string; name: string; path: string }[]>([])
+  const [homeCodeProject, setHomeCodeProject] = useState<{ id: string; name: string; path: string } | null>(null)
+  const [homeCodeIsolation, setHomeCodeIsolation] = useState<'worktree' | 'in-repo'>('worktree')
+  const homeCodeProjectRef = useRef(homeCodeProject)
+  useEffect(() => { homeCodeProjectRef.current = homeCodeProject }, [homeCodeProject])
+  const homeCodeIsolationRef = useRef(homeCodeIsolation)
+  useEffect(() => { homeCodeIsolationRef.current = homeCodeIsolation }, [homeCodeIsolation])
+  const [homeDefaultProjectId, setHomeDefaultProjectId] = useState<string | null>(null)
+  useEffect(() => {
+    if (homeComposeTarget?.kind !== 'todo') return
+    let cancelled = false
+    void Promise.all([
+      window.ipc.invoke('codeProject:list', null),
+      window.ipc.invoke('codeMode:getConfig', null).catch(() => null),
+    ]).then(([list, config]) => {
+      if (cancelled) return
+      const projects = list.projects.map((p) => ({ id: p.project.id, name: p.project.name, path: p.project.path }))
+      // The default repo (explicit, or the only one registered) leads the
+      // lane row — one click, and it's the same repo voice dispatch uses.
+      const defaultId = config?.defaultProjectId ?? (projects.length === 1 ? projects[0].id : null)
+      setHomeDefaultProjectId(defaultId)
+      setHomeCodeProjects(defaultId
+        ? [...projects.filter((p) => p.id === defaultId), ...projects.filter((p) => p.id !== defaultId)]
+        : projects)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [homeComposeTarget?.kind])
+  useEffect(() => {
+    // The lane lives and dies with the destination chip.
+    if (!homeComposeTarget) {
+      setHomeCodeProject(null)
+      setHomeCodeIsolation('worktree')
+    }
+  }, [homeComposeTarget])
+  const composeTodoOnHome = useCallback((target: HomeComposeTarget) => {
+    setHomeComposeTarget(target)
+    if ((target.kind === 'todo' || target.kind === 'sub') && target.prefill) {
+      // Mid-thought handoff from an inline row — carry the typed text along.
+      setHomeComposerPreset(target.prefill.endsWith(' ') ? target.prefill : `${target.prefill} `)
+    }
+    setHomeComposerFocusSignal((n) => n + 1)
+  }, [])
+  const [pendingHomeSubmit, setPendingHomeSubmit] = useState<{
+    message: PromptInputMessage
+    mentions?: Mention[]
+    attachments: StagedAttachment[]
+    searchEnabled?: boolean
+    codeMode?: 'claude' | 'codex'
+    permissionMode?: PermissionMode
+  } | null>(null)
+
+  const handleHomeComposerSubmit = useCallback((
+    message: PromptInputMessage,
+    mentions?: Mention[],
+    stagedAttachments: StagedAttachment[] = [],
+    searchEnabled?: boolean,
+    codeMode?: 'claude' | 'codex',
+    permissionMode?: PermissionMode,
+  ) => {
+    const text = message.text?.trim() ?? ''
+    if (!text && stagedAttachments.length === 0) return
+    // Destination chip set → this is a to-do (or a step), not a chat. The
+    // composer's attachments become links on the line; its model selection
+    // rides along for the run when the item is delegated.
+    const target = homeComposeTargetRef.current
+    if (target) {
+      if (!text) return
+      const attachments = stagedAttachments.length > 0
+        ? stagedAttachments.map((a) => ({ path: a.path, name: a.filename }))
+        : undefined
+      // The full selection — model plus its paired reasoning effort —
+      // rides todo:* into the runner, matching chat.
+      const model = homeSelectionRef.current
+        ? { provider: homeSelectionRef.current.provider, model: homeSelectionRef.current.model, effort: homeSelectionRef.current.effort }
+        : undefined
+      if (target.kind === 'comment') {
+        void window.ipc.invoke('todo:comment', { key: target.key, message: text, attachments, model, permissionMode })
+      } else if (target.kind === 'chatReply') {
+        void window.ipc.invoke('todo:chatReply', { sessionId: target.sessionId, message: text, attachments, model, permissionMode })
+      } else if (target.kind === 'sub') {
+        void window.ipc.invoke('todo:addSubItem', { parentKey: target.parentKey, text, run: /(^|\s)@rowboat\b/i.test(text), attachments, model, permissionMode })
+      } else {
+        // A picked code lane is delegation intent as explicit as @rowboat —
+        // the item runs immediately in its repo.
+        const codeProject = homeCodeProjectRef.current
+        const code = codeProject
+          ? { projectId: codeProject.id, agent: codeMode, isolation: homeCodeIsolationRef.current }
+          : undefined
+        void window.ipc.invoke('todo:addItem', { text, run: /(^|\s)@rowboat\b/i.test(text) || !!code, attachments, model, permissionMode, code })
+      }
+      setHomeComposeTarget(null)
+      return
+    }
+    // Chat mode has NO routing rules: mentions here just address the
+    // assistant. Tasks are born via the chip, the list, or by asking.
+    handleNewChatTabInSidebar(homeSelectionRef.current)
+    setPendingHomeSubmit({ message, mentions, attachments: stagedAttachments, searchEnabled, codeMode, permissionMode })
+  }, [handleNewChatTabInSidebar])
+  handleHomeComposerSubmitRef.current = handleHomeComposerSubmit
+  const homeComposeTargetRef = useRef(homeComposeTarget)
+  useEffect(() => { homeComposeTargetRef.current = homeComposeTarget }, [homeComposeTarget])
+
+  useEffect(() => {
+    if (!pendingHomeSubmit) return
+    const tabId = activeChatTabIdRef.current
+    if (homeSelectionRef.current) selectionByTabRef.current.set(chatIdForTab(tabId), homeSelectionRef.current)
+    void handlePromptSubmitRef.current?.(
+      pendingHomeSubmit.message,
+      pendingHomeSubmit.mentions,
+      pendingHomeSubmit.attachments,
+      pendingHomeSubmit.searchEnabled,
+      pendingHomeSubmit.codeMode,
+      pendingHomeSubmit.permissionMode,
+    )
+    setPendingHomeSubmit(null)
+  }, [pendingHomeSubmit])
+
+  // Listener for "Edit with Copilot" events from the live-note panel.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ev = e as CustomEvent<{
+        filePath?: string
+      }>
+      const filePath = ev.detail?.filePath
+      if (!filePath) return
+      const displayName = filePath.split('/').pop() ?? filePath
+      submitFromPalette(
+        `Let's tweak the live note objective in this note. Please load the \`live-note\` skill first, then ask me what I want to change.`,
+        { path: filePath, displayName },
+      )
+    }
+    window.addEventListener('rowboat:open-copilot-edit-live-note', handler as EventListener)
+    return () => window.removeEventListener('rowboat:open-copilot-edit-live-note', handler as EventListener)
+  }, [submitFromPalette])
+
+  // Listener for the toolbar "Live note" button — opens the panel for a path.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ev = e as CustomEvent<{ filePath?: string }>
+      const filePath = ev.detail?.filePath
+      if (!filePath) return
+      setLiveNotePanelPath(filePath)
+    }
+    window.addEventListener('rowboat:open-live-note-panel', handler as EventListener)
+    return () => window.removeEventListener('rowboat:open-live-note-panel', handler as EventListener)
+  }, [])
+
+  // Auto-close the live-note panel when the active note changes — the panel is
+  // bound to a specific path, so switching notes invalidates it.
+  useEffect(() => {
+    if (liveNotePanelPath && liveNotePanelPath !== selectedPath) {
+      setLiveNotePanelPath(null)
+    }
+  }, [selectedPath, liveNotePanelPath])
+
+  // Listener for prompt-block "Run" events
+  // (dispatched by apps/renderer/src/extensions/prompt-block.tsx)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ev = e as CustomEvent<{
+        instruction?: string
+        filePath?: string
+        label?: string
+      }>
+      const instruction = ev.detail?.instruction
+      const filePath = ev.detail?.filePath
+      if (!instruction) return
+      const mention = filePath
+        ? { path: filePath, displayName: filePath.split('/').pop() ?? filePath }
+        : null
+      submitFromPalette(instruction, mention)
+    }
+    window.addEventListener('rowboat:open-copilot-prompt', handler as EventListener)
+    return () => window.removeEventListener('rowboat:open-copilot-prompt', handler as EventListener)
+  }, [submitFromPalette])
+
+  const handleCloseBrowser = useCallback(() => {
+    setIsBrowserOpen(false)
+  }, [])
+
+  const toggleRightPaneMaximize = useCallback(() => {
+    setIsRightPaneMaximized(prev => {
+      if (!prev) {
+        // About to collapse the middle pane: capture its real width now, while it's
+        // still laid out, so the collapse can animate from a binding px value.
+        const px = document.querySelector('[data-slot="sidebar-inset"]')?.getBoundingClientRect().width
+        setInsetCollapseFromPx(px && px > 0 ? px : null)
+      }
+      return !prev
+    })
+  }, [])
+
+  // Feature-importance funnel: one event per view the user lands on. Keyed on
+  // the view *type* so switching files/threads inside a view doesn't re-fire.
+  useEffect(() => {
+    analytics.viewOpened(currentViewState.type)
+  }, [currentViewState.type])
+
+  // Safety net: Radix modal dialogs set `pointer-events: none` on <body> and
+  // restore it on close — but a navigation that unmounts the dialog's owner
+  // (deep link, assistant navigation, tour) skips the restore and leaves the
+  // whole window inert. Any view change clears the lock.
+  useEffect(() => {
+    if (document.body.style.pointerEvents === 'none') {
+      document.body.style.pointerEvents = ''
+    }
+    // Keyed on the whole view state (not just .type): file→file navigation
+    // must also clear the lock.
+  }, [currentViewState])
 
   const appendUnique = useCallback((stack: ViewState[], entry: ViewState) => {
     const last = stack[stack.length - 1]
@@ -2664,93 +5255,135 @@ function App() {
     return [...stack, entry]
   }, [])
 
-  const ensureFileTabForPath = useCallback((path: string) => {
-    const existingTab = fileTabs.find((tab) => tab.path === path)
-    if (existingTab) {
-      setActiveFileTabId(existingTab.id)
-      return
-    }
-
-    if (activeFileTabId) {
-      const activeTab = fileTabs.find((tab) => tab.id === activeFileTabId)
-      if (activeTab && !isGraphTabPath(activeTab.path) && !isBaseFilePath(activeTab.path)) {
-        setFileTabs((prev) => prev.map((tab) => (
-          tab.id === activeFileTabId ? { ...tab, path } : tab
-        )))
-        // Rebinds this tab to a different note path: reset editor session to clear undo history.
-        setEditorSessionByTabId((prev) => ({
-          ...prev,
-          [activeFileTabId]: (prev[activeFileTabId] ?? 0) + 1,
-        }))
+  // Make a ViewState the world: close every section, then open the one the
+  // view names. Because closeAllSections resets everything (including Code,
+  // which used to live outside this system as a sentinel tab), applying a
+  // view can never strand a stale section on screen.
+  const applyViewState = useCallback(async (view: ViewState) => {
+    // Whether this navigation ENTERS Spaces (vs a click within it) — read
+    // before closeAllSections resets the flag.
+    closeAllSections()
+    switch (view.type) {
+      case 'file':
+        setSelectedPath(view.path)
+        return
+      case 'graph':
+        setIsGraphOpen(true)
+        return
+      case 'task':
+        setSelectedBackgroundTask(view.name)
+        return
+      case 'suggested-topics':
+        setIsSuggestedTopicsOpen(true)
+        return
+      case 'meetings':
+        setIsMeetingsOpen(true)
+        return
+      case 'live-notes':
+        setIsLiveNotesOpen(true)
+        return
+      case 'email':
+        setIsEmailOpen(true)
+        // Deep links (e.g. a new-email notification) carry the thread to open;
+        // bump the version so EmailView re-selects it even if email is already open.
+        if (view.threadId) {
+          setEmailInitialThreadId(view.threadId)
+          setEmailThreadIdVersion((v) => v + 1)
+        }
+        if (view.searchQuery) {
+          setEmailInitialSearchQuery(view.searchQuery)
+          setEmailSearchQueryVersion((v) => v + 1)
+        } else {
+          // Otherwise a past assistant-driven search would be re-applied on
+          // every re-entry, even after the user cleared the search box.
+          setEmailInitialSearchQuery(null)
+        }
+        return
+      case 'workspace':
+        setIsCodeOpen(true)
+        if (view.runId) setCodeFocusSessionId(view.runId)
+        else if (view.path) setCodeFocusProjectPath(view.path)
+        return
+      case 'knowledge-view':
+        setIsKnowledgeViewOpen(true)
+        setKnowledgeViewMode(view.mode ?? (view.folderPath ? 'files' : 'graph'))
+        setKnowledgeViewFolderPath(view.folderPath ?? null)
+        return
+      case 'chat-history':
+        setIsChatHistoryOpen(true)
+        return
+      case 'home':
+        setIsHomeOpen(true)
+        return
+      case 'code':
+        setIsCodeOpen(true)
+        return
+      case 'bg-tasks':
+        setIsBgTasksOpen(true)
+        return
+      case 'apps':
+        setIsAppsOpen(true)
+        return
+      case 'spaces': {
+        // Feature-flag gate: every route into Spaces (sidebar, palette, deep
+        // links, notification clicks, history, relaunch restore) funnels
+        // through here. With the flag off, closeAllSections has already run,
+        // so the app lands on the default full-screen chat.
+        if (!SPACES_ENABLED) return
+        if (view.orgId) setSpaceSelection({ orgId: view.orgId, spaceId: view.spaceId ?? '', ...(view.view ? { view: view.view } : {}) })
+        // Checked, not trusted: a history entry from before files were named by
+        // id degrades to the stream rather than reaching the org with a path.
+        const rail = view.rail ? readRailSelection(view.rail) : { kind: 'general' as const }
+        setRailSelection(rail)
+        // A navigation IS the visit the sidebar's working set remembers, and
+        // the place the space is left in — the Spaces view correcting its own
+        // selection goes through selectSpace instead and does not count.
+        if (view.orgId && view.spaceId) {
+          noteSpaceVisit(view.orgId, view.spaceId)
+          rememberRail(view.orgId, view.spaceId, rail)
+        }
+        requestViewJump(view)
+        // Spaces carries its own conversation surface, so entering it
+        // collapses the assistant chat pane by default; in-space navigation
+        // (topics, files, history within Spaces) leaves it as the user set it.
+        setIsSpacesOpen(true)
+        return
+      }
+      case 'chat': {
+        dismissBrowserOverlay()
+        if (view.runId) {
+          // A specific conversation: it becomes the Assistant page's chat.
+          bindChatToRun(view.runId)
+          const tab = chatTabsRef.current.find((entry) => entry.runId === view.runId)
+          if (tab) placeAssistantChat(tab.id, 'assistant')
+        } else {
+          // The Assistant page resumes its own chat; only an empty page
+          // starts a fresh one.
+          const tab = chatTabsRef.current.find((entry) => entry.id === assistantLayout.assistant)
+          if (tab) { activateAssistantTab(tab); dispatchAssistantLayout({ type: 'focus', id: tab.id }) }
+          else newChatAt('assistant')
+        }
         return
       }
     }
-
-    const id = newFileTabId()
-    setFileTabs((prev) => [...prev, { id, path }])
-    setActiveFileTabId(id)
-  }, [fileTabs, activeFileTabId])
-
-  const ensureGraphFileTab = useCallback(() => {
-    const existingGraphTab = fileTabs.find((tab) => isGraphTabPath(tab.path))
-    if (existingGraphTab) {
-      setActiveFileTabId(existingGraphTab.id)
-      return
-    }
-    const id = newFileTabId()
-    setFileTabs((prev) => [...prev, { id, path: GRAPH_TAB_PATH }])
-    setActiveFileTabId(id)
-  }, [fileTabs])
-
-  const applyViewState = useCallback(async (view: ViewState) => {
-    switch (view.type) {
-      case 'file':
-        setSelectedBackgroundTask(null)
-        setIsGraphOpen(false)
-        setExpandedFrom(null)
-        // Preserve split vs knowledge-max mode when navigating knowledge files.
-        // Only exit chat-only maximize, because that would hide the selected file.
-        if (isRightPaneMaximized) {
-          setIsRightPaneMaximized(false)
-        }
-        setSelectedPath(view.path)
-        ensureFileTabForPath(view.path)
-        return
-      case 'graph':
-        setSelectedBackgroundTask(null)
-        setSelectedPath(null)
-        setExpandedFrom(null)
-        setIsGraphOpen(true)
-        ensureGraphFileTab()
-        if (isRightPaneMaximized) {
-          setIsRightPaneMaximized(false)
-        }
-        return
-      case 'task':
-        setSelectedPath(null)
-        setIsGraphOpen(false)
-        setExpandedFrom(null)
-        setIsRightPaneMaximized(false)
-        setSelectedBackgroundTask(view.name)
-        return
-      case 'chat':
-        setSelectedPath(null)
-        setIsGraphOpen(false)
-        setExpandedFrom(null)
-        setIsRightPaneMaximized(false)
-        setSelectedBackgroundTask(null)
-        if (view.runId) {
-          await loadRun(view.runId)
-        } else {
-          handleNewChat()
-        }
-        return
-    }
-  }, [ensureFileTabForPath, ensureGraphFileTab, handleNewChat, isRightPaneMaximized, loadRun])
+  }, [closeAllSections, dismissBrowserOverlay, bindChatToRun, placeAssistantChat, assistantLayout.assistant, activateAssistantTab, newChatAt, dispatchAssistantLayout])
+  applyViewStateRef.current = applyViewState
 
   const navigateToView = useCallback(async (nextView: ViewState) => {
-    const current = currentViewState
-    if (viewStatesEqual(current, nextView)) return
+    const current = currentViewStateRef.current
+    if (current.type === 'workspace' && nextView.type === 'file') {
+      nextView = { ...current, filePath: nextView.path }
+    }
+    if (viewStatesEqual(current, nextView)) {
+      if (isBrowserOpen) {
+        dismissBrowserOverlay()
+      }
+      // Same view, but a message to land on (a message link or a
+      // notification into the space already open): the jump still fires —
+      // views compare without it, and the pane consumes it in place.
+      requestViewJump(nextView)
+      return
+    }
 
     cancelRecordingIfActive()
     const nextHistory = {
@@ -2759,14 +5392,166 @@ function App() {
     }
     setHistory(nextHistory)
     await applyViewState(nextView)
-  }, [appendUnique, applyViewState, cancelRecordingIfActive, currentViewState, setHistory])
+  }, [appendUnique, applyViewState, cancelRecordingIfActive, setHistory, isBrowserOpen, dismissBrowserOverlay])
+
+  const openAssistantRun = useCallback((sessionId: string) => {
+    void window.ipc.invoke('codeSession:list', null).then(({ sessions }) => {
+      if (sessions.some((session) => session.id === sessionId)) {
+        setCodeFocusSessionId(sessionId)
+        void navigateToView({ type: 'code' })
+      } else void navigateToView({ type: 'chat', runId: sessionId })
+    }).catch(() => { void navigateToView({ type: 'chat', runId: sessionId }) })
+  }, [navigateToView])
+
+  // The sidebar item / tour stop: the Assistant page, resuming its chat. Goes
+  // through navigation so Back returns to the section the user came from.
+  const openAssistant = useCallback(() => {
+    void navigateToView({ type: 'chat', runId: null })
+  }, [navigateToView])
+
+  const moveAssistantChat = useCallback((id: string, location: ChatLocation) => {
+    const tab = chatTabsRef.current.find((entry) => entry.id === id)
+    if (!tab) return
+    // Moving the Assistant page's chat out leaves a fresh one behind (placed
+    // first so the moved chat keeps focus).
+    if (assistantLayout.assistant === id && location !== 'assistant') newChatAt('assistant', undefined, undefined, false)
+    dispatchAssistantLayout({ type: 'place', id, location, size: defaultWindowSize() })
+    if (location === 'assistant') { dismissBrowserOverlay(); closeAllSections() }
+    activateAssistantTab(tab)
+  }, [assistantLayout.assistant, newChatAt, activateAssistantTab, dismissBrowserOverlay, closeAllSections, dispatchAssistantLayout])
+
+  const handleOpenBrowser = useCallback(() => {
+    if (isFullScreenChat && assistantLayout.assistant) {
+      moveAssistantChat(assistantLayout.assistant, 'sidebar')
+    } else if (assistantLayout.sidebar) {
+      dispatchAssistantLayout({ type: 'show-sidebar' })
+      switchChatTab(assistantLayout.sidebar)
+    } else {
+      newChatAt('sidebar')
+    }
+    setIsRightPaneMaximized(false)
+    setIsBrowserOpen(true)
+  }, [isFullScreenChat, assistantLayout.assistant, assistantLayout.sidebar, moveAssistantChat, dispatchAssistantLayout, switchChatTab, newChatAt])
+
+  const handleToggleBrowser = useCallback(() => {
+    if (isBrowserOpen) handleCloseBrowser()
+    else handleOpenBrowser()
+  }, [isBrowserOpen, handleCloseBrowser, handleOpenBrowser])
+
+  // Surfaces that hand a conversation to the sidebar (quick-ask, email
+  // drafts, Home items). Projects keeps its own session-bound pane,
+  // so the request is a no-op there.
+  const showChatInSidebar = useCallback((tabId: string) => {
+    if (isCodeOpen) return
+    placeAssistantChat(tabId, 'sidebar')
+  }, [isCodeOpen, placeAssistantChat])
+  showChatInSidebarRef.current = showChatInSidebar
+  const openRunInSidebar = useCallback((rid: string) => {
+    bindChatToRun(rid)
+    const tab = chatTabsRef.current.find((entry) => entry.runId === rid)
+    if (tab) showChatInSidebar(tab.id)
+  }, [bindChatToRun, showChatInSidebar])
+  openRunInSidebarRef.current = openRunInSidebar
+
+  // Cmd+L hides the sidebar without closing its chat. The same tab and session
+  // return when it is reopened, just as the Assistant page does after navigation.
+  const toggleChatSidebar = useCallback(() => {
+    if (assistantLayout.sidebar && assistantLayout.sidebarVisible) dispatchAssistantLayout({ type: 'hide-sidebar' })
+    else if (assistantLayout.sidebar) {
+      dispatchAssistantLayout({ type: 'show-sidebar' })
+      switchChatTab(assistantLayout.sidebar)
+    }
+    else if (isFullScreenChat && assistantLayout.assistant) moveAssistantChat(assistantLayout.assistant, 'sidebar')
+    else newChatAt('sidebar')
+  }, [assistantLayout.sidebar, assistantLayout.sidebarVisible, assistantLayout.assistant, isFullScreenChat, switchChatTab, moveAssistantChat, newChatAt, dispatchAssistantLayout])
+
+  const selectChatAt = useCallback((id: string, location: ChatLocation, replacing?: string) => {
+    let tab = chatTabsRef.current.find((entry) => entry.id === id || entry.runId === id)
+    if (!tab) {
+      tab = createAssistantTab(id)
+      chatTabsRef.current = [...chatTabsRef.current, tab]
+      setChatTabs(chatTabsRef.current)
+    }
+    placeAssistantChat(tab.id, location, replacing)
+    activateAssistantTab(tab)
+  }, [placeAssistantChat, activateAssistantTab])
+
+  const openProjects = useCallback((path?: string) => {
+    void navigateToView(path ? { type: 'workspace', path } : { type: 'code' })
+  }, [navigateToView])
+
+  // Section entry points (sidebar items, deep links, the tour). Thin wrappers
+  // over navigateToView so every entry records history — the old direct
+  // state-twiddling versions didn't, which made Back skip whole sections.
+  const openEmailView = useCallback((threadId?: string) => {
+    void navigateToView({ type: 'email', ...(threadId ? { threadId } : {}) })
+  }, [navigateToView])
+
+  const openBgTasksView = useCallback(() => {
+    void navigateToView({ type: 'bg-tasks' })
+  }, [navigateToView])
+
+  const openAppsView = useCallback(() => {
+    void navigateToView({ type: 'apps' })
+  }, [navigateToView])
+
+  // navigateToView early-returns when the apps view is already showing, so
+  // `openAppsView` alone is a no-op while an app is open — the sidebar "Apps"
+  // item did nothing. Bumping the version with a null folder tells AppsView to
+  // drop its selection (mirrors onOpenBgTasks).
+  const openAppsGrid = useCallback(() => {
+    setAppInitialId(null)
+    setAppIdVersion((v) => v + 1)
+    openAppsView()
+  }, [openAppsView])
+
+  /**
+   * Open a space. A caller naming what to open inside it wins; one that just
+   * names the room — a sidebar row, the server switcher, the palette — gets it
+   * back as it was left, discussion and all (railForOpening).
+   */
+  const openSpace = useCallback((orgId: string, spaceId: string, rail?: RailSelection) => {
+    void navigateToView({ type: 'spaces', orgId, spaceId, rail: railForOpening(orgId, spaceId, rail) })
+  }, [navigateToView])
+
+  /** The org's Activity surface (layer 3): everything that involves you, newest first. */
+  const openBrowse = useCallback((orgId: string) => {
+    void navigateToView({ type: 'spaces', orgId, view: 'browse' })
+  }, [navigateToView])
+
+  const openActivity = useCallback((orgId: string) => {
+    void navigateToView({ type: 'spaces', orgId, view: 'activity' })
+  }, [navigateToView])
+
+  /**
+   * Re-entering the section (the nav item, the ⌥Tab switcher, the assistant)
+   * lands exactly where Spaces was left: the same space AND what was open
+   * inside it — a discussion, a file, a board — or the org's Activity surface.
+   * Both selections survive a section switch in state, so the live values ARE
+   * the memory; storage only covers the first entry after a relaunch.
+   */
+  const openSpaces = useCallback(async () => {
+    if (spacesLoading) await refreshSpacesOrgs()
+    const previous = spaceSelection ? { ...spaceSelection, rail: railSelection } : readLastSpace()
+    const target = resolveSpacesLocation(getSpacesOrgs(), previous)
+    void navigateToView(target ? { type: 'spaces', ...target } : { type: 'spaces' })
+  }, [spacesLoading, spaceSelection, railSelection, navigateToView])
+
+  const openMeetingsView = useCallback(() => {
+    void navigateToView({ type: 'meetings' })
+  }, [navigateToView])
+
+  const openCodeView = useCallback(() => {
+    void navigateToView({ type: 'code' })
+  }, [navigateToView])
 
   const navigateBack = useCallback(async () => {
+    const current = currentViewStateRef.current
     const { back, forward } = historyRef.current
     if (back.length === 0) return
 
     let i = back.length - 1
-    while (i >= 0 && viewStatesEqual(back[i], currentViewState)) i -= 1
+    while (i >= 0 && viewStatesEqual(back[i], current)) i -= 1
     if (i < 0) {
       setHistory({ back: [], forward })
       return
@@ -2775,18 +5560,19 @@ function App() {
     const target = back[i]
     const nextHistory = {
       back: back.slice(0, i),
-      forward: appendUnique(forward, currentViewState),
+      forward: appendUnique(forward, current),
     }
     setHistory(nextHistory)
     await applyViewState(target)
-  }, [appendUnique, applyViewState, currentViewState, setHistory])
+  }, [appendUnique, applyViewState, setHistory])
 
   const navigateForward = useCallback(async () => {
+    const current = currentViewStateRef.current
     const { back, forward } = historyRef.current
     if (forward.length === 0) return
 
     let i = forward.length - 1
-    while (i >= 0 && viewStatesEqual(forward[i], currentViewState)) i -= 1
+    while (i >= 0 && viewStatesEqual(forward[i], current)) i -= 1
     if (i < 0) {
       setHistory({ back, forward: [] })
       return
@@ -2794,12 +5580,12 @@ function App() {
 
     const target = forward[i]
     const nextHistory = {
-      back: appendUnique(back, currentViewState),
+      back: appendUnique(back, current),
       forward: forward.slice(0, i),
     }
     setHistory(nextHistory)
     await applyViewState(target)
-  }, [appendUnique, applyViewState, currentViewState, setHistory])
+  }, [appendUnique, applyViewState, setHistory])
 
   const canNavigateBack = React.useMemo(() => {
     for (let i = viewHistory.back.length - 1; i >= 0; i--) {
@@ -2819,14 +5605,265 @@ function App() {
     void navigateToView({ type: 'file', path })
   }, [navigateToView])
 
+  const saveTabMarkdown = useCallback(async (paths: string[]) => {
+    for (const path of paths) {
+      if (!path.endsWith('.md')) continue
+      const content = editorContentByPathRef.current.get(path)
+      const baseline = initialContentByPathRef.current.get(path)
+      if (content === undefined || baseline === undefined || content === baseline) continue
+      await window.ipc.invoke('workspace:writeFile', {
+        path, data: joinFrontmatter(frontmatterByPathRef.current.get(path) ?? null, content),
+      })
+      setInitialContentForPath(path, content)
+    }
+  }, [setInitialContentForPath])
+
+  const switchFileTab = useCallback((path: string) => {
+    const request = ++fileTabNavigationRef.current
+    void (async () => {
+      try {
+        await saveTabMarkdown(selectedPathRef.current ? [selectedPathRef.current] : [])
+        if (request !== fileTabNavigationRef.current) return
+        navigateToFile(path)
+      } catch { toast.error('Could not save the current file; tab kept open') }
+    })()
+  }, [saveTabMarkdown, navigateToFile])
+
+  const closeFileTabs = useCallback((paths: string[]) => {
+    ++fileTabNavigationRef.current // A close supersedes an in-flight tab switch.
+    void (async () => {
+      try {
+        await saveTabMarkdown(paths)
+        const next = closeTabs(openFilePathsRef.current, selectedPathRef.current, paths, (path) => path)
+        openFilePathsRef.current = next.tabs
+        setOpenFilePaths(next.tabs)
+        if (next.activeId !== selectedPathRef.current) {
+          if (next.activeId) navigateToFile(next.activeId)
+          else void navigateToView({ type: 'knowledge-view', mode: 'files' })
+        }
+      } catch { toast.error('Could not save files; tabs kept open') }
+    })()
+  }, [saveTabMarkdown, navigateToFile, navigateToView])
+
+  // Deep-link handler kept in a ref so the useEffect below can register the
+  // IPC listener (and run the one-time pending-link drain) just once on mount,
+  // rather than re-running on every navigation when navigateToView's identity
+  // changes.
+  const navigateToViewRef = useRef(navigateToView)
+  useEffect(() => { navigateToViewRef.current = navigateToView }, [navigateToView])
+
+  // Stable across navigations (EmailView's memoized rows compare prop
+  // identity) — the email view's people-note chips navigate through the ref.
+  const openNoteFromEmail = useCallback((path: string) => {
+    void navigateToViewRef.current({ type: 'file', path })
+  }, [])
+
+  const openSpacesLink = useCallback(async (target: SpacesLinkTarget) => {
+    if (getSpacesOrgs().length === 0) await refreshSpacesOrgs()
+    const org = getSpacesOrgs().find((o) => o.address === target.orgAddress)
+    if (target.inviteToken) {
+      // An invite is joined, not navigated to: rebuild the https link (a
+      // signed-in org's own base URL, else https on the address) and hand it
+      // to the join dialog, which resolves it pre-auth and shows the card.
+      const base = org?.baseUrl ?? `https://${target.orgAddress}`
+      openServerDialog({ kind: 'join', inviteUrl: `${base}/join/${target.inviteToken}` })
+      void navigateToViewRef.current({ type: 'spaces' })
+      return
+    }
+    if (!org) {
+      toast.error(`Sign in to ${target.orgAddress} to open this link`)
+      void navigateToViewRef.current({ type: 'spaces' })
+      return
+    }
+    try {
+      if (target.memberId) {
+        // A person: their DM, created on first use, then opened.
+        const { space } = await window.ipc.invoke('spaces:openDirect', { orgId: org.id, memberId: target.memberId })
+        await refreshSpacesOrgs()
+        void navigateToViewRef.current({ type: 'spaces', orgId: org.id, spaceId: space.id, rail: { kind: 'general' } })
+        return
+      }
+      if (!target.spaceId) {
+        void navigateToViewRef.current({ type: 'spaces', orgId: org.id, view: 'activity' })
+        return
+      }
+      if (!findSpace(org, target.spaceId)) await loadSpaceDirectory(org.id)
+      if (!findSpace(org, target.spaceId) && !getDirectorySpace(org.id, target.spaceId)) {
+        toast.error('This space is unavailable or you do not have access')
+        void navigateToViewRef.current({ type: 'spaces', orgId: org.id, view: 'activity' })
+        return
+      }
+      if (target.assetId) {
+        void navigateToViewRef.current({ type: 'spaces', orgId: org.id, spaceId: target.spaceId, rail: { kind: 'file', assetId: target.assetId } })
+        return
+      }
+      if (target.messageId) {
+        // A reply lands in its thread; the org says which one.
+        const { message } = await window.ipc.invoke('spaces:getMessage', { orgId: org.id, spaceId: target.spaceId, messageId: target.messageId })
+        void navigateToViewRef.current({
+          type: 'spaces',
+          orgId: org.id,
+          spaceId: target.spaceId,
+          rail: message.threadRoot ? { kind: 'thread', rootMessageId: message.threadRoot } : { kind: 'general' },
+          messageId: target.messageId,
+          messageOffset: message.offset,
+        })
+        return
+      }
+      void navigateToViewRef.current({ type: 'spaces', orgId: org.id, spaceId: target.spaceId, rail: { kind: 'general' } })
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not open that link')
+    }
+  }, [])
+
+  useEffect(() => {
+    const handle = (url: string) => {
+      const link = parseSpacesLink(url)
+      if (link) {
+        void openSpacesLink(link)
+        return
+      }
+      const view = parseDeepLink(url)
+      if (view) void navigateToViewRef.current(view)
+    }
+    void window.ipc.invoke('app:consumePendingDeepLink', null).then(({ url }) => {
+      if (url) handle(url)
+    })
+    return window.ipc.on('app:openUrl', ({ url }) => handle(url))
+  }, [openSpacesLink])
+
+  // "Updated to vX.Y.Z" card on the first launch after an update. Main
+  // compares its persisted version stamp against the running version and
+  // hands out `updatedFrom` exactly once, so reloads don't re-show this.
+  useEffect(() => {
+    void window.ipc.invoke('app:consumeUpdateInfo', null).then(({ version, updatedFrom }) => {
+      if (!updatedFrom) return
+      toast(`Updated to v${version}`, {
+        description: `Rowboat was updated from v${updatedFrom}.`,
+        action: {
+          label: "What's new",
+          onClick: () => window.open(`https://github.com/rowboatlabs/rowboat/releases/tag/v${version}`, '_blank'),
+        },
+        duration: 10000,
+        closeButton: true,
+      })
+    })
+  }, [])
+
+  // Keep the legacy retention gate initialized after removing the startup
+  // popup (2026-09-22, onboarding simplification); controls remain in Settings.
+  useEffect(() => {
+    void window.ipc.invoke('retention:consumeFirstRunNotice', null)
+      .catch(() => { /* settings unavailable — try again next launch */ })
+  }, [])
+
+  // The quick-ask chord failed to register at boot — another app owns it.
+  // Say so (once per launch) with a path to fix it, instead of quick-ask
+  // being silently dead. Deliberately no automatic rebinding: a shortcut
+  // that moves on its own is worse than one that's honestly broken.
+  const [shortcutSettingsOpen, setShortcutSettingsOpen] = useState(false)
+  // Voice-setup nudge for a summon that can't start a session (see
+  // notifyVoiceUnavailableRef). The user is in another app when they press
+  // the chord, so the app window has to come forward to be seen.
+  const [voiceSetupOpen, setVoiceSetupOpen] = useState(false)
+  const notifyVoiceUnavailable = useCallback((reason: 'voice' | 'failed') => {
+    void window.ipc.invoke('app:focusMainWindow', null).catch(() => {})
+    // 'failed' already raised its own permission dialog — don't double up.
+    if (reason === 'failed') return
+    toast('Hover mode needs voice', {
+      description:
+        'Sign in to Rowboat — or add your own Deepgram and ElevenLabs keys — to talk to your Skipper.',
+      duration: 8000,
+      action: { label: 'Open settings', onClick: () => setVoiceSetupOpen(true) },
+    })
+  }, [])
+  notifyVoiceUnavailableRef.current = notifyVoiceUnavailable
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      try {
+        const s = await window.ipc.invoke('quickAsk:getShortcut', null)
+        if (s.registered) return
+        const isMacHere = navigator.platform.toLowerCase().includes('mac')
+        toast.warning('Hover shortcut unavailable', {
+          description: `${quickAskShortcut.formatShortcut(s.accelerator, isMacHere)} is in use by another app, so your Skipper can't be summoned right now. Pick a different shortcut in Settings.`,
+          duration: 15000,
+          closeButton: true,
+          action: {
+            label: 'Change shortcut',
+            onClick: () => setShortcutSettingsOpen(true),
+          },
+        })
+      } catch { /* stale preload — channel not there yet */ }
+    }, 2000)
+    return () => clearTimeout(timer)
+  }, [])
+
+  // Report the UI theme to the apps server (spec §7.1): apps read it from
+  // GET /_rowboat/app and get live changes via the SSE theme event.
+  useEffect(() => {
+    const report = () => {
+      const theme = document.documentElement.classList.contains('dark') ? 'dark' as const : 'light' as const
+      void window.ipc.invoke('apps:setTheme', { theme }).catch(() => { /* server may be down */ })
+    }
+    report()
+    const observer = new MutationObserver(report)
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+    return () => observer.disconnect()
+  }, [])
+
+  // Tray menu "Start/Stop meeting notes": same toggle as the Meetings header
+  // button. Also drains a toggle parked while the window was closed/loading
+  // (mirrors the pending deep-link pull above).
+  useEffect(() => {
+    void window.ipc.invoke('app:consumePendingTrayCommand', null).then(({ toggleMeetingNotes }) => {
+      if (toggleMeetingNotes) handleToggleMeetingRef.current?.()
+    })
+    return window.ipc.on('app:toggleMeetingNotes', () => {
+      handleToggleMeetingRef.current?.()
+    })
+  }, [])
+
+  // Triggered by main when the user clicks a calendar-meeting notification.
+  // Reuses the same flow as the in-app "Join meeting & take notes" button.
+  // When `openMeeting` is true, also opens the meeting URL in the system browser.
+  useEffect(() => {
+    return window.ipc.on('app:takeMeetingNotes', ({ event, openMeeting, source }) => {
+      const e = event as {
+        summary?: string
+        start?: { dateTime?: string; date?: string; timeZone?: string }
+        end?: { dateTime?: string; date?: string; timeZone?: string }
+        location?: string
+        htmlLink?: string
+        hangoutLink?: string
+        conferenceData?: { entryPoints?: Array<{ entryPointType?: string; uri?: string }> }
+      }
+      if (!e || typeof e !== 'object') return
+      const conferenceLink = extractConferenceLink(e as Record<string, unknown>)
+      if (openMeeting && conferenceLink) {
+        window.open(conferenceLink, '_blank')
+      } else if (openMeeting) {
+        console.warn('[take-meeting-notes] openMeeting requested but event has no conference link', e)
+      }
+      window.__pendingCalendarEvent = {
+        summary: e.summary,
+        start: e.start,
+        end: e.end,
+        location: e.location,
+        htmlLink: e.htmlLink,
+        conferenceLink,
+        source: source ?? 'calendar-sync',
+      }
+      window.dispatchEvent(new Event('calendar-block:join-meeting'))
+    })
+  }, [])
+
   const handleBaseConfigChange = useCallback((path: string, config: BaseConfig) => {
     setBaseConfigByPath((prev) => ({ ...prev, [path]: config }))
   }, [])
 
-  const handleBaseSave = useCallback(async (name: string | null) => {
-    if (!selectedPath) return
-    const isDefault = selectedPath === BASES_DEFAULT_TAB_PATH
-    const config = baseConfigByPath[selectedPath] ?? DEFAULT_BASE_CONFIG
+  const handleBaseSave = useCallback(async (path: string, name: string | null) => {
+    const isDefault = path === BASES_DEFAULT_TAB_PATH
+    const config = baseConfigByPath[path] ?? DEFAULT_BASE_CONFIG
 
     if (isDefault && name) {
       // Save as new base file
@@ -2850,32 +5887,90 @@ function App() {
       // Save in place
       try {
         await window.ipc.invoke('workspace:writeFile', {
-          path: selectedPath,
+          path,
           data: JSON.stringify(config, null, 2),
         })
       } catch (err) {
         console.error('Failed to save base:', err)
       }
     }
-  }, [selectedPath, baseConfigByPath, loadDirectory, navigateToView])
+  }, [baseConfigByPath, loadDirectory, navigateToView])
 
   // External search set by app-navigation tool (passed to BasesView)
   const [externalBaseSearch, setExternalBaseSearch] = useState<string | undefined>(undefined)
 
-  // Process pending app-navigation results
-  useEffect(() => {
-    const result = pendingAppNavRef.current
-    if (!result) return
-    pendingAppNavRef.current = null
+  // Apply an app-navigation tool result to the UI. Shared by both event
+  // paths (legacy runs:events and the session-chat turn runtime).
+  const applyAppNavigation = useCallback((result: Record<string, unknown>) => {
+    // During a call, navigation must be VISIBLE: the full-screen call view
+    // would cover the very thing being shown — collapse it to the pill —
+    // and if the user is in another app, bring Rowboat forward.
+    const visibleActions = ['open-note', 'open-view', 'read-view', 'open-item', 'update-base-view', 'create-base']
+    if (inCallRef.current && visibleActions.includes(result.action as string)) {
+      setCallMinimized(true)
+      void window.ipc.invoke('app:focusMainWindow', null).catch(() => {})
+    }
+
+    // Views the assistant can open (or auto-open while reading them via
+    // read-view — the user should SEE what's being read).
+    const navigateToNamedView = (view: string) => {
+      switch (view) {
+        case 'graph': void navigateToView({ type: 'graph' }); break
+        case 'bases': void navigateToView({ type: 'file', path: BASES_DEFAULT_TAB_PATH }); break
+        case 'home': void navigateToView({ type: 'home' }); break
+        case 'email': void navigateToView({ type: 'email' }); break
+        case 'meetings': void navigateToView({ type: 'meetings' }); break
+        case 'live-notes': void navigateToView({ type: 'live-notes' }); break
+        case 'bg-tasks': void navigateToView({ type: 'bg-tasks' }); break
+        case 'chat-history': void navigateToView({ type: 'chat-history' }); break
+        case 'knowledge': void navigateToView({ type: 'knowledge-view' }); break
+        case 'workspace': openProjects(); break
+        case 'code': void navigateToView({ type: 'code' }); break
+        case 'apps': openAppsGrid(); break
+        // Through openSpaces, like the nav item: a bare spaces view state would
+        // reset the rail and close whatever discussion was open.
+        case 'spaces': void openSpaces(); break
+      }
+    }
 
     switch (result.action) {
       case 'open-note':
         navigateToFile(result.path as string)
         break
       case 'open-view':
-        if (result.view === 'graph') void navigateToView({ type: 'graph' })
-        if (result.view === 'bases') {
-          void navigateToView({ type: 'file', path: BASES_DEFAULT_TAB_PATH })
+      case 'read-view':
+        // A read-view email search runs against the whole mailbox, so drive
+        // the email view's own search box with the same query — matched
+        // threads get real rows even when they're outside the synced inbox
+        // (and a follow-up open-item can then select them).
+        if (result.action === 'read-view' && result.view === 'email' && typeof result.query === 'string' && result.query.trim()) {
+          void navigateToView({ type: 'email', searchQuery: result.query.trim() })
+        } else {
+          navigateToNamedView(result.view as string)
+        }
+        break
+      case 'open-item': {
+        switch (result.kind) {
+          case 'email-thread':
+            void navigateToView({ type: 'email', threadId: result.threadId as string })
+            break
+          case 'note':
+            navigateToFile(result.path as string)
+            break
+          case 'bg-task':
+            void navigateToView({ type: 'task', name: result.taskName as string })
+            break
+          case 'session':
+            void navigateToView({ type: 'chat', runId: result.sessionId as string })
+            break
+        }
+        break
+      }
+      case 'open-app':
+        if (result.appId) {
+          setAppInitialId(result.appId as string)
+          setAppIdVersion((v) => v + 1)
+          openAppsView()
         }
         break
       case 'update-base-view': {
@@ -2957,19 +6052,118 @@ function App() {
         }
         break
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigateToFile, navigateToView, openAppsGrid, openProjects, openSpaces, selectedPath])
+
+  // Legacy runs:events path: handleRunEvent stashes the result in a ref;
+  // polled every render (the triggering event always causes one).
+  useEffect(() => {
+    const result = pendingAppNavRef.current
+    if (!result) return
+    pendingAppNavRef.current = null
+    applyAppNavigation(result)
   })
 
-  const navigateToFullScreenChat = useCallback(() => {
-    // Only treat this as navigation when coming from another view
-    if (currentViewState.type !== 'chat') {
-      const nextHistory = {
-        back: appendUnique(historyRef.current.back, currentViewState),
-        forward: [] as ViewState[],
-      }
-      setHistory(nextHistory)
+  // Turn-runtime path: the session-chat store surfaces tool results in the
+  // conversation; apply newly completed app-navigation calls exactly once.
+  // On session switch/load, everything already in the transcript happened in
+  // the past — seed as processed without replaying navigations.
+  const processedAppNavRef = useRef<{ key: string | null; ids: Set<string> }>({ key: null, ids: new Set() })
+  useEffect(() => {
+    const conversation = sessionChat.chatState?.conversation
+    if (!conversation) return
+    const completed = conversation.filter(
+      (item): item is ToolCall => isToolCall(item) && item.name === 'app-navigation' && item.status === 'completed'
+    )
+    if (processedAppNavRef.current.key !== runId) {
+      processedAppNavRef.current = { key: runId, ids: new Set(completed.map((t) => t.id)) }
+      return
     }
-    handleOpenFullScreenChat()
-  }, [appendUnique, currentViewState, handleOpenFullScreenChat, setHistory])
+    for (const tool of completed) {
+      if (processedAppNavRef.current.ids.has(tool.id)) continue
+      processedAppNavRef.current.ids.add(tool.id)
+      const result = tool.result as Record<string, unknown> | undefined
+      if (result && result.success) applyAppNavigation(result)
+    }
+  }, [sessionChat.chatState?.conversation, runId, applyAppNavigation])
+
+  // Deck auto-open / refresh: when the assistant writes a .pptx inside the
+  // workspace, open the editor on a brand-new deck (deck-create) and tell an
+  // already-open editor the file changed underneath it. Same seeding semantics
+  // as app-navigation above: transcript entries present on session switch are
+  // marked processed without replaying.
+  const processedDeckToolsRef = useRef<{ key: string | null; ids: Set<string> }>({ key: null, ids: new Set() })
+  useEffect(() => {
+    const conversation = sessionChat.chatState?.conversation
+    if (!conversation) return
+    const completed = conversation.filter(
+      (item): item is ToolCall =>
+        isToolCall(item) &&
+        (item.name === 'deck-create' ||
+          item.name === 'deck-add-slide' ||
+          item.name === 'deck-edit-slide' ||
+          item.name === 'deck-restructure' ||
+          item.name === 'deck-restyle') &&
+        item.status === 'completed'
+    )
+    if (processedDeckToolsRef.current.key !== runId) {
+      processedDeckToolsRef.current = { key: runId, ids: new Set(completed.map((t) => t.id)) }
+      return
+    }
+    for (const tool of completed) {
+      if (processedDeckToolsRef.current.ids.has(tool.id)) continue
+      processedDeckToolsRef.current.ids.add(tool.id)
+      const result = tool.result as Record<string, unknown> | undefined
+      if (result && result.success && typeof result.workspaceRelPath === 'string') {
+        // Only a brand-new deck steals the view; edits to an existing one
+        // must not yank the user away from what they are doing.
+        if (tool.name === 'deck-create') {
+          void navigateToView({ type: 'file', path: result.workspaceRelPath })
+        }
+        // If the editor is already open on this file the navigation is a
+        // no-op, and the workspace watcher only covers allowlisted roots —
+        // so tell the editor directly that the file changed.
+        window.dispatchEvent(new CustomEvent('rowboat:deck-touched', { detail: { path: result.workspaceRelPath } }))
+      }
+    }
+  }, [sessionChat.chatState?.conversation, runId, navigateToView])
+
+  // Spreadsheet auto-open / refresh: when the assistant writes a spreadsheet
+  // inside the workspace, open the viewer on a brand-new file
+  // (spreadsheet-create) and tell an already-open viewer the file changed
+  // underneath it. Same seeding semantics as app-navigation above: transcript
+  // entries present on session switch are marked processed without replaying.
+  const processedSpreadsheetToolsRef = useRef<{ key: string | null; ids: Set<string> }>({ key: null, ids: new Set() })
+  useEffect(() => {
+    const conversation = sessionChat.chatState?.conversation
+    if (!conversation) return
+    const completed = conversation.filter(
+      (item): item is ToolCall =>
+        isToolCall(item) &&
+        (item.name === 'spreadsheet-create' || item.name === 'spreadsheet-edit') &&
+        item.status === 'completed'
+    )
+    if (processedSpreadsheetToolsRef.current.key !== runId) {
+      processedSpreadsheetToolsRef.current = { key: runId, ids: new Set(completed.map((t) => t.id)) }
+      return
+    }
+    for (const tool of completed) {
+      if (processedSpreadsheetToolsRef.current.ids.has(tool.id)) continue
+      processedSpreadsheetToolsRef.current.ids.add(tool.id)
+      const result = tool.result as Record<string, unknown> | undefined
+      if (result && result.success && typeof result.workspaceRelPath === 'string') {
+        // Only a brand-new spreadsheet steals the view; edits to an existing
+        // one must not yank the user away from what they are doing.
+        if (tool.name === 'spreadsheet-create') {
+          void navigateToView({ type: 'file', path: result.workspaceRelPath })
+        }
+        // If the viewer is already open on this file the navigation is a
+        // no-op, and the workspace watcher only covers allowlisted roots —
+        // so tell the viewer directly that the file changed.
+        window.dispatchEvent(new CustomEvent('rowboat:spreadsheet-touched', { detail: { path: result.workspaceRelPath } }))
+      }
+    }
+  }, [sessionChat.chatState?.conversation, runId, navigateToView])
 
   // Handle image upload for the markdown editor
   const handleImageUpload = useCallback(async (file: File): Promise<string | null> => {
@@ -3011,35 +6205,51 @@ function App() {
   }, [])
 
   // Keyboard shortcut: Ctrl+L to toggle main chat view
-  const isFullScreenChat = !selectedPath && !isGraphOpen && !selectedBackgroundTask
+  // The call button on a chat means "float THIS chat": it reads as End call
+  // only on the chat the live call is actually bound to; on any other chat
+  // it stays a call button that re-points the live call (see handleStartCall).
+  const callOnActiveChat = inCall
+    && hoverRunId != null
+    && chatTabs.find((t) => t.id === activeChatTabId)?.runId === hoverRunId
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
         e.preventDefault()
-        if (isFullScreenChat && expandedFrom) {
-          handleCloseFullScreenChat()
-        } else {
-          navigateToFullScreenChat()
-        }
+        toggleChatSidebar()
       }
     }
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [handleCloseFullScreenChat, isFullScreenChat, expandedFrom, navigateToFullScreenChat])
+  }, [toggleChatSidebar])
 
-  // Keyboard shortcut: Cmd+K / Ctrl+K to open search
+  // Keyboard shortcut: Cmd+K / Ctrl+K toggles the palette (navigation and
+  // search, Spotlight-style). Plain K only — ⌘⇧K belongs to the open space's
+  // own search bar, which claims it in the capture phase.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') {
         e.preventDefault()
-        setIsSearchOpen(true)
+        setIsSearchOpen((open) => !open)
       }
     }
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [])
 
-  // Route undo/redo to the active markdown tab only (prevents cross-tab browser undo behavior).
+  // Keyboard shortcut: Cmd+N / Ctrl+N opens a new chat tab.
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'n') {
+        e.preventDefault()
+        handleNewChatTab()
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [handleNewChatTab])
+
+  // Route undo/redo to the open markdown editor (prevents browser undo).
   useEffect(() => {
     const handleHistoryKeyDown = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey
@@ -3050,7 +6260,7 @@ function App() {
       const wantsRedo = (key === 'z' && e.shiftKey) || (!isMac && key === 'y')
       if (!wantsUndo && !wantsRedo) return
 
-      if (!selectedPath || !selectedPath.endsWith('.md') || !activeFileTabId) return
+      if (!selectedPath || !selectedPath.endsWith('.md')) return
 
       const target = e.target as EventTarget | null
       if (target instanceof HTMLElement) {
@@ -3063,7 +6273,7 @@ function App() {
         if (inOtherTextInput) return
       }
 
-      const handlers = fileHistoryHandlersRef.current.get(activeFileTabId)
+      const handlers = fileHistoryHandlersRef.current
       if (!handlers) return
 
       e.preventDefault()
@@ -3077,77 +6287,34 @@ function App() {
 
     document.addEventListener('keydown', handleHistoryKeyDown, true)
     return () => document.removeEventListener('keydown', handleHistoryKeyDown, true)
-  }, [activeFileTabId, isMac, selectedPath])
-
-  // Keyboard shortcuts for tab management
-  useEffect(() => {
-    const handleTabKeyDown = (e: KeyboardEvent) => {
-      const mod = e.metaKey || e.ctrlKey
-      if (!mod) return
-      const rightPaneAvailable = Boolean((selectedPath || isGraphOpen) && isChatSidebarOpen)
-      const targetPane: ShortcutPane = rightPaneAvailable
-        ? (isRightPaneMaximized ? 'right' : activeShortcutPane)
-        : 'left'
-      const inFileView = targetPane === 'left' && Boolean(selectedPath || isGraphOpen)
-      const selectedKnowledgePath = isGraphOpen ? GRAPH_TAB_PATH : selectedPath
-      const targetFileTabId = activeFileTabId ?? (
-        selectedKnowledgePath
-          ? (fileTabs.find((tab) => tab.path === selectedKnowledgePath)?.id ?? null)
-          : null
-      )
-
-      // Cmd+W — close active tab
-      if (e.key === 'w') {
-        e.preventDefault()
-        if (inFileView && targetFileTabId) {
-          closeFileTab(targetFileTabId)
-        } else {
-          closeChatTab(activeChatTabId)
-        }
-        return
-      }
-
-      // Cmd+1..9 — switch to tab N (Cmd+9 always goes to last tab)
-      if (/^[1-9]$/.test(e.key)) {
-        e.preventDefault()
-        const n = parseInt(e.key, 10)
-        if (inFileView) {
-          const idx = e.key === '9' ? fileTabs.length - 1 : n - 1
-          const tab = fileTabs[idx]
-          if (tab) switchFileTab(tab.id)
-        } else {
-          const idx = e.key === '9' ? chatTabs.length - 1 : n - 1
-          const tab = chatTabs[idx]
-          if (tab) switchChatTab(tab.id)
-        }
-        return
-      }
-
-      // Cmd+Shift+] — next tab, Cmd+Shift+[ — previous tab
-      if (e.shiftKey && (e.key === ']' || e.key === '[')) {
-        e.preventDefault()
-        const direction = e.key === ']' ? 1 : -1
-        if (inFileView) {
-          const currentIdx = fileTabs.findIndex(t => t.id === targetFileTabId)
-          if (currentIdx === -1) return
-          const nextIdx = (currentIdx + direction + fileTabs.length) % fileTabs.length
-          switchFileTab(fileTabs[nextIdx].id)
-        } else {
-          const currentIdx = chatTabs.findIndex(t => t.id === activeChatTabId)
-          if (currentIdx === -1) return
-          const nextIdx = (currentIdx + direction + chatTabs.length) % chatTabs.length
-          switchChatTab(chatTabs[nextIdx].id)
-        }
-        return
-      }
-    }
-    document.addEventListener('keydown', handleTabKeyDown)
-    return () => document.removeEventListener('keydown', handleTabKeyDown)
-  }, [selectedPath, isGraphOpen, isChatSidebarOpen, isRightPaneMaximized, activeShortcutPane, chatTabs, fileTabs, activeChatTabId, activeFileTabId, closeChatTab, closeFileTab, switchChatTab, switchFileTab])
+    // isMac is a module constant now (lib/shortcut), not a component value.
+  }, [selectedPath])
 
   const toggleExpand = (path: string, kind: 'file' | 'dir') => {
     if (kind === 'file') {
       navigateToFile(path)
+      return
+    }
+
+    // Top-level knowledge folders open as a bases view with folder filter
+    const parts = path.split('/')
+    if (parts.length === 2 && parts[0] === 'knowledge') {
+      const folderName = parts[1]
+      const folderCfg = FOLDER_BASE_CONFIGS[folderName]
+      setBaseConfigByPath((prev) => ({
+        ...prev,
+        [BASES_DEFAULT_TAB_PATH]: {
+          ...DEFAULT_BASE_CONFIG,
+          name: folderName,
+          filters: [{ category: 'folder', value: folderName }],
+          ...(folderCfg && {
+            visibleColumns: folderCfg.visibleColumns,
+            sort: folderCfg.sort,
+          }),
+        },
+      }))
+      if (isFullScreenChat) setIsRightPaneMaximized(false)
+      void navigateToView({ type: 'file', path: BASES_DEFAULT_TAB_PATH })
       return
     }
 
@@ -3163,6 +6330,15 @@ function App() {
   // Knowledge quick actions
   const knowledgeFiles = React.useMemo(() => {
     const files = collectFilePaths(tree).filter((path) => path.endsWith('.md'))
+    return Array.from(new Set(files.map(stripKnowledgePrefix)))
+  }, [tree])
+  // Chat @-mention candidates: notes plus spreadsheets (the assistant reads
+  // workbooks via its spreadsheet/parse tools). Wiki links and the graph stay
+  // markdown-only via knowledgeFiles above.
+  const mentionableFiles = React.useMemo(() => {
+    const files = collectFilePaths(tree).filter(
+      (path) => path.endsWith('.md') || getViewerType(path) === 'spreadsheet',
+    )
     return Array.from(new Set(files.map(stripKnowledgePrefix)))
   }, [tree])
   const knowledgeFilePaths = React.useMemo(() => (
@@ -3188,14 +6364,14 @@ function App() {
       return true
     }
 
-    for (const file of knowledgeFiles) {
+    for (const file of mentionableFiles) {
       const fullPath = toKnowledgePath(file)
       if (fullPath && isPathVisible(fullPath)) {
         visible.push(file)
       }
     }
     return visible
-  }, [knowledgeFiles, expandedPaths])
+  }, [mentionableFiles, expandedPaths])
 
   // Load workspace root on mount
   useEffect(() => {
@@ -3217,19 +6393,24 @@ function App() {
     checkOnboarding()
   }, [])
 
-  // Handler for onboarding completion
-  const handleOnboardingComplete = useCallback(async () => {
+  // Handler for onboarding completion. When the user accepts the tour offer
+  // on the final step, hand off to the mascot tour once the modal's exit
+  // animation has cleared.
+  const handleOnboardingComplete = useCallback(async (opts?: { startTour?: boolean }) => {
     try {
       await window.ipc.invoke('onboarding:markComplete', null)
-      setShowOnboarding(false)
     } catch (err) {
       console.error('Failed to mark onboarding complete:', err)
-      setShowOnboarding(false)
+    }
+    analytics.onboardingCompleted()
+    setShowOnboarding(false)
+    if (opts?.startTour) {
+      window.setTimeout(() => setTourActive(true), 400)
     }
   }, [])
 
   const knowledgeActions = React.useMemo(() => ({
-    createNote: async (parentPath: string = 'knowledge/Notes') => {
+    createNote: async (parentPath: string = 'knowledge') => {
       try {
         let index = 0
         let name = untitledBaseName
@@ -3246,18 +6427,40 @@ function App() {
           data: `# ${name}\n\n`,
           opts: { encoding: 'utf8' }
         })
+        analytics.noteCreated()
+        setExpandedPaths(prev => new Set([...prev, parentPath]))
         navigateToFile(fullPath)
       } catch (err) {
         console.error('Failed to create note:', err)
         throw err
       }
     },
-    createFolder: async (parentPath: string = 'knowledge/Notes') => {
+    addGoogleDoc: (parentPath: string = 'knowledge') => {
+      setGoogleDocPickerTargetFolder(parentPath)
+      setGoogleDocPickerOpen(true)
+    },
+    createPresentation: (parentPath: string = 'knowledge') => {
+      setNewPresentationTargetFolder(parentPath)
+      setNewPresentationOpen(true)
+    },
+    createFolder: async (parentPath: string = 'knowledge'): Promise<string> => {
       try {
+        let index = 1
+        let name = 'New folder'
+        let fullPath = `${parentPath}/${name}`
+        while (index < 1000) {
+          const exists = await window.ipc.invoke('workspace:exists', { path: fullPath })
+          if (!exists.exists) break
+          index += 1
+          name = `New folder ${index}`
+          fullPath = `${parentPath}/${name}`
+        }
         await window.ipc.invoke('workspace:mkdir', {
-          path: `${parentPath}/new-folder-${Date.now()}`,
+          path: fullPath,
           recursive: true
         })
+        setExpandedPaths(prev => new Set([...prev, parentPath]))
+        return fullPath
       } catch (err) {
         console.error('Failed to create folder:', err)
         throw err
@@ -3265,18 +6468,38 @@ function App() {
     },
     openGraph: () => {
       // From chat-only landing state, open graph directly in full knowledge view.
-      if (!selectedPath && !isGraphOpen && !selectedBackgroundTask) {
-        setIsChatSidebarOpen(false)
-        setIsRightPaneMaximized(false)
-      }
+      if (isFullScreenChat) setIsRightPaneMaximized(false)
       void navigateToView({ type: 'graph' })
     },
     openBases: () => {
-      if (!selectedPath && !isGraphOpen && !selectedBackgroundTask) {
-        setIsChatSidebarOpen(false)
-        setIsRightPaneMaximized(false)
-      }
+      if (isFullScreenChat) setIsRightPaneMaximized(false)
       void navigateToView({ type: 'file', path: BASES_DEFAULT_TAB_PATH })
+    },
+    openWorkspaceAt: (path?: string) => {
+      if (isFullScreenChat) setIsRightPaneMaximized(false)
+      openProjects(path)
+    },
+    openKnowledgeView: () => {
+      // Open in the middle pane without touching the chat sidebar — leave it
+      // open or closed exactly as the user had it (matches Email/Meetings).
+      void navigateToView({ type: 'knowledge-view' })
+    },
+    createWorkspace: async (name: string): Promise<string> => {
+      const trimmed = name.trim()
+      if (!trimmed) throw new Error('Name is required')
+      if (trimmed.includes('/')) throw new Error('Name cannot contain "/"')
+      const rootExists = await window.ipc.invoke('workspace:exists', { path: WORKSPACE_ROOT })
+      if (!rootExists.exists) {
+        await window.ipc.invoke('workspace:mkdir', { path: WORKSPACE_ROOT, recursive: true })
+      }
+      const target = `${WORKSPACE_ROOT}/${trimmed}`
+      const exists = await window.ipc.invoke('workspace:exists', { path: target })
+      if (exists.exists) {
+        throw new Error(`A project named "${trimmed}" already exists`)
+      }
+      await window.ipc.invoke('workspace:mkdir', { path: target, recursive: true })
+      await window.ipc.invoke('codeProject:add', { path: target })
+      return target
     },
     expandAll: () => setExpandedPaths(new Set(collectDirPaths(tree))),
     collapseAll: () => setExpandedPaths(new Set()),
@@ -3291,7 +6514,6 @@ function App() {
         untitledRenameReadyPathsRef.current.delete(oldPath)
         const rewriteForRename = (content: string) =>
           isDir ? content : rewriteWikiLinksForRenamedFileInMarkdown(content, oldPath, newPath)
-        setFileTabs(prev => prev.map(tab => (tab.path === oldPath ? { ...tab, path: newPath } : tab)))
         if (editorPathRef.current === oldPath) {
           editorPathRef.current = newPath
         }
@@ -3303,8 +6525,8 @@ function App() {
         }
         const baseline = initialContentByPathRef.current.get(oldPath)
         if (baseline !== undefined) {
-          initialContentByPathRef.current.delete(oldPath)
-          initialContentByPathRef.current.set(newPath, rewriteForRename(baseline))
+          deleteInitialContentForPath(oldPath)
+          setInitialContentForPath(newPath, rewriteForRename(baseline))
         }
         const cachedContent = editorContentByPathRef.current.get(oldPath)
         if (cachedContent !== undefined) {
@@ -3336,15 +6558,12 @@ function App() {
         await window.ipc.invoke('workspace:remove', { path, opts: { trash: true } })
         if (path.endsWith('.md')) {
           removeEditorCacheForPath(path)
-          initialContentByPathRef.current.delete(path)
+          deleteInitialContentForPath(path)
           untitledRenameReadyPathsRef.current.delete(path)
           frontmatterByPathRef.current.delete(path)
         }
-        // Close any file tab showing the deleted file
-        const tabForFile = fileTabs.find(t => t.path === path)
-        if (tabForFile) {
-          closeFileTab(tabForFile.id)
-        } else if (selectedPath === path) {
+        // If the deleted file is on screen, clear it (falls back to chat).
+        if (selectedPath === path) {
           setSelectedPath(null)
         }
       } catch (err) {
@@ -3354,12 +6573,205 @@ function App() {
     },
     copyPath: (path: string) => {
       const fullPath = workspaceRoot ? `${workspaceRoot}/${path}` : path
-      navigator.clipboard.writeText(fullPath)
+      navigator.clipboard.writeText(fullPath).catch(() => {
+        const textarea = document.createElement('textarea')
+        textarea.value = fullPath
+        document.body.appendChild(textarea)
+        textarea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textarea)
+      })
     },
-    onOpenInNewTab: (path: string) => {
-      openFileInNewTab(path)
+    revealInFileManager: (path: string, isDir: boolean) => {
+      const channel = isDir ? 'shell:openPath' : 'shell:showItemInFolder'
+      void window.ipc.invoke(channel, { path }).catch((err) => {
+        console.error('Failed to open in file manager:', err)
+      })
     },
-  }), [tree, selectedPath, isGraphOpen, selectedBackgroundTask, workspaceRoot, navigateToFile, navigateToView, openFileInNewTab, fileTabs, closeFileTab, removeEditorCacheForPath])
+  }), [deleteInitialContentForPath, setInitialContentForPath, tree, selectedPath, isGraphOpen, selectedBackgroundTask, workspaceRoot, navigateToFile, navigateToView, openProjects, removeEditorCacheForPath])
+
+  // Settings opened from the application menu (Settings… / Keyboard
+  // Shortcuts…) — its own dialog instance so the menu can deep-link any tab.
+  const [menuSettings, setMenuSettings] = useState<{ open: boolean; tab: ConfigTab }>({ open: false, tab: 'account' })
+
+  // Native application-menu commands (apps/main/src/menu.ts). The dispatcher
+  // lives in a ref refreshed every render so the one-time IPC subscription
+  // below always routes into the current handlers — same pattern as
+  // navigateToViewRef above. Each command reuses the exact code path of the
+  // in-app control it mirrors.
+  const menuCommandRef = useRef<(cmd: ipc.IPCChannels['menu:command']['req']) => void>(() => {})
+  useEffect(() => {
+    menuCommandRef.current = (cmd) => {
+      switch (cmd.command) {
+        case 'new-chat':
+          handleNewChatTab()
+          break
+        case 'new-note':
+          void knowledgeActions.createNote()
+          break
+        case 'new-presentation':
+          knowledgeActions.createPresentation()
+          break
+        case 'undo':
+        case 'redo': {
+          // Mirrors the ⌘Z keydown routing above: the open markdown editor's
+          // history when it applies, the focused input's native undo otherwise.
+          const active = document.activeElement
+          const inTipTap = active instanceof HTMLElement && Boolean(active.closest('.tiptap-editor'))
+          const inOtherTextInput = (
+            active instanceof HTMLInputElement
+            || active instanceof HTMLTextAreaElement
+            || (active instanceof HTMLElement && active.isContentEditable)
+          ) && !inTipTap
+          const handlers = fileHistoryHandlersRef.current
+          if (!inOtherTextInput && selectedPath?.endsWith('.md') && handlers) {
+            if (cmd.command === 'undo') handlers.undo()
+            else handlers.redo()
+          } else {
+            document.execCommand(cmd.command)
+          }
+          break
+        }
+        case 'open-search':
+          setIsSearchOpen(true)
+          break
+        case 'toggle-browser':
+          handleToggleBrowser()
+          break
+        case 'toggle-full-screen-chat':
+          toggleChatSidebar()
+          break
+        case 'go-back':
+          void navigateBack()
+          break
+        case 'go-forward':
+          void navigateForward()
+          break
+        case 'open-settings':
+          setMenuSettings({ open: true, tab: cmd.tab ?? 'account' })
+          break
+        case 'open-about':
+          setAboutOpen(true)
+          break
+        case 'export-note': {
+          const path = selectedPath
+          if (!path || !path.endsWith('.md')) {
+            toast('Open a note to export it')
+            break
+          }
+          const markdown = editorContentByPath[path]
+            ?? (editorPathRef.current === path ? editorContent : '')
+          void window.ipc.invoke('export:note', { markdown, format: cmd.format, title: getBaseName(path) })
+            .then(() => analytics.noteExported(cmd.format))
+            .catch((err) => { console.error('Export failed:', err) })
+          break
+        }
+      }
+    }
+  })
+  useEffect(() => {
+    return window.ipc.on('menu:command', (cmd) => menuCommandRef.current(cmd))
+  }, [])
+
+  // The ⌘K palette's destinations, routed through the same entry points the
+  // sidebar, the Go menu, and the tour use — every route records history and
+  // honours the section gates. Same ref idiom as menuCommandRef: the palette
+  // holds one stable callback, the dispatcher sees the current handlers.
+  const paletteNavigateRef = useRef<(dest: PaletteDestination) => void>(() => {})
+  useEffect(() => {
+    paletteNavigateRef.current = (dest) => {
+      switch (dest.kind) {
+        case 'section':
+          switch (dest.section) {
+            case 'home': void navigateToView({ type: 'home' }); break
+            case 'spaces': void openSpaces(); break
+            case 'email': openEmailView(); break
+            case 'code': openCodeView(); break
+            case 'meetings': openMeetingsView(); break
+            case 'brain': knowledgeActions.openKnowledgeView(); break
+            case 'apps': openAppsGrid(); break
+            case 'bg-tasks': openBgTasksView(); break
+            case 'projects': knowledgeActions.openWorkspaceAt(); break
+            case 'chat-history': void navigateToView({ type: 'chat-history' }); break
+            case 'live-notes': void navigateToView({ type: 'live-notes' }); break
+            case 'graph': void navigateToView({ type: 'graph' }); break
+            case 'settings': setMenuSettings({ open: true, tab: 'account' }); break
+          }
+          break
+        case 'space':
+          void navigateToView({
+            type: 'spaces',
+            orgId: dest.orgId,
+            spaceId: dest.spaceId,
+            rail: dest.rail ?? { kind: 'general' },
+            ...(dest.messageId ? { messageId: dest.messageId } : {}),
+          })
+          break
+        case 'activity':
+          openActivity(dest.orgId)
+          break
+        case 'person':
+          // No DM with this person yet: the org creates it on first use (as
+          // the New DM dialog does), the listing learns it, then it opens.
+          void window.ipc.invoke('spaces:openDirect', { orgId: dest.orgId, memberId: dest.memberId })
+            .then(async ({ space }) => {
+              await refreshSpacesOrgs()
+              openSpace(dest.orgId, space.id)
+            })
+            .catch((err) => toast.error(err instanceof Error ? err.message : String(err)))
+          break
+        case 'chat':
+          openAssistantRun(dest.sessionId)
+          break
+        case 'code-session':
+          // The Code section, focused on this session (as Home's code strips do).
+          setCodeFocusSessionId(dest.sessionId)
+          void navigateToView({ type: 'code' })
+          break
+        case 'note':
+          navigateToFile(dest.path)
+          break
+      }
+    }
+  })
+  const handlePaletteNavigate = useCallback((dest: PaletteDestination) => paletteNavigateRef.current(dest), [])
+  // Brain notes for the palette's Notes scope and its "jump to a note" rows,
+  // off the same tree the Brain view renders.
+  const paletteNotes = React.useMemo(() => brainNotes(tree), [tree])
+
+  // Drives the mascot product tour through the app's main sections
+  const handleTourNavigate = useCallback((target: TourNavTarget) => {
+    switch (target) {
+      case 'assistant': { openAssistant(); break }
+      case 'spaces':
+        void openSpaces()
+        break
+      case 'home':
+        void navigateToView({ type: 'home' })
+        break
+      case 'email':
+        openEmailView()
+        break
+      case 'meetings':
+        openMeetingsView()
+        break
+      case 'code':
+        openCodeView()
+        break
+      case 'knowledge':
+        knowledgeActions.openKnowledgeView()
+        break
+      case 'agents':
+        openBgTasksView()
+        break
+      case 'apps':
+        openAppsGrid()
+        break
+      case 'workspaces':
+        knowledgeActions.openWorkspaceAt()
+        break
+    }
+  }, [openAssistant, openSpaces, navigateToView, openEmailView, openMeetingsView, openCodeView, knowledgeActions, openBgTasksView, openAppsGrid])
 
   // Handler for when a voice note is created/updated
   const handleVoiceNoteCreated = useCallback(async (notePath: string) => {
@@ -3379,51 +6791,38 @@ function App() {
       return newSet
     })
 
-    // If tab already exists for this path (e.g. second call after transcription),
-    // force a content reload instead of creating a duplicate tab.
-    const existingTab = fileTabs.find(tab => tab.path === notePath)
-    if (existingTab) {
-      setActiveFileTabId(existingTab.id)
-      // Read fresh content from disk and update the editor
+    // If the note is already on screen (e.g. second call after transcription),
+    // force a content reload instead of re-navigating.
+    if (selectedPathRef.current === notePath) {
       try {
-        const result = await window.ipc.invoke('workspace:readFile', { path: notePath, encoding: 'utf8' })
-        const { raw: fm, body } = splitFrontmatter(result.data)
-        frontmatterByPathRef.current.set(notePath, fm)
-        setFileContent(body)
-        setEditorContent(body)
-        editorContentRef.current = body
-        editorPathRef.current = notePath
-        initialContentRef.current = body
-        initialContentByPathRef.current.set(notePath, body)
-        setEditorContentByPath(prev => ({ ...prev, [notePath]: body }))
-        editorContentByPathRef.current.set(notePath, body)
-        // Bump editor session to force TipTap to pick up the new content
-        setEditorSessionByTabId(prev => ({
-          ...prev,
-          [existingTab.id]: (prev[existingTab.id] ?? 0) + 1,
-        }))
+        await reloadMarkdownFileIntoEditor(notePath)
       } catch {
         // File read failed — ignore
       }
       return
     }
 
-    // First call — open the file in a tab
+    // First call — open the file
     navigateToFile(notePath)
-  }, [loadDirectory, navigateToFile, fileTabs])
+  }, [loadDirectory, navigateToFile, reloadMarkdownFileIntoEditor])
 
   const meetingNotePathRef = useRef<string | null>(null)
+  const meetingRecordingStartedAtMsRef = useRef<number | null>(null)
   const pendingCalendarEventRef = useRef<CalendarEventMeta | undefined>(undefined)
   const [meetingSummarizing, setMeetingSummarizing] = useState(false)
   const [showMeetingPermissions, setShowMeetingPermissions] = useState(false)
+  const [recordingMeetingSource, setRecordingMeetingSource] = useState<string | null>(null)
 
   const [checkingPermission, setCheckingPermission] = useState(false)
 
   const startMeetingNow = useCallback(async () => {
     const calEvent = pendingCalendarEventRef.current
     pendingCalendarEventRef.current = undefined
+    setRecordingMeetingSource(calEvent?.source ?? null)
     const notePath = await meetingTranscription.start(calEvent)
     if (notePath) {
+      meetingRecordingStartedAtMsRef.current = performance.now()
+      analytics.meetingRecordingStarted(Boolean(calEvent))
       meetingNotePathRef.current = notePath
       await handleVoiceNoteCreated(notePath)
     }
@@ -3449,6 +6848,10 @@ function App() {
   const handleToggleMeeting = useCallback(async () => {
     if (meetingTranscription.state === 'recording') {
       await meetingTranscription.stop()
+      const recordingStartedAt = meetingRecordingStartedAtMsRef.current
+      meetingRecordingStartedAtMsRef.current = null
+      analytics.meetingRecordingStopped(recordingStartedAt != null ? (performance.now() - recordingStartedAt) / 1000 : 0)
+      setRecordingMeetingSource(null)
 
       // Read the final transcript and generate meeting notes via LLM
       const notePath = meetingNotePathRef.current
@@ -3467,16 +6870,15 @@ function App() {
             const calendarEventJson = calEventMatch?.[1]?.replace(/''/g, "'")
             const { notes } = await window.ipc.invoke('meeting:summarize', { transcript: fileContent, meetingStartTime, calendarEventJson })
             if (notes) {
-              // Prepend meeting notes below the title but above the transcript
-              const { raw: fm, body: transcriptBody } = splitFrontmatter(fileContent)
-              // Use frontmatter title as the heading (set from calendar event summary)
+              // Prepend meeting notes above the existing transcript block
+              const { raw: fm, body } = splitFrontmatter(fileContent)
               const fmTitleMatch = fileContent.match(/^title:\s*(.+)$/m)
-              const noteTitle = fmTitleMatch?.[1]?.trim() || 'Meeting note'
-              // Strip any existing top-level heading from body
-              const bodyWithoutTitle = transcriptBody.replace(/^#\s+.+\s*\n*/, '')
-              // Also strip any title/heading the LLM may have generated
+              const noteTitle = fmTitleMatch?.[1]?.trim() || 'Meeting Notes'
               const cleanedNotes = notes.replace(/^#{1,2}\s+.+\n+/, '')
-              const newBody = `# ${noteTitle}\n\n` + cleanedNotes + '\n\n---\n\n## Raw transcript\n\n' + bodyWithoutTitle
+              // Extract the existing transcript block and preserve it as-is
+              const transcriptBlockMatch = body.match(/(```transcript\n[\s\S]*?\n```)/)
+              const transcriptBlock = transcriptBlockMatch?.[1] || ''
+              const newBody = `# ${noteTitle}\n\n` + cleanedNotes + (transcriptBlock ? '\n\n' + transcriptBlock : '')
               const newContent = fm ? `${fm}\n${newBody}` : newBody
               await window.ipc.invoke('workspace:writeFile', {
                 path: notePath,
@@ -3485,9 +6887,18 @@ function App() {
               })
               // Refresh the file view
               await handleVoiceNoteCreated(notePath)
+              // Notes are done — bring Rowboat to the foreground on the
+              // finished note (the post-call "redirect"). The notification
+              // below is background-only, so it only fires if the focus
+              // grab didn't take.
+              void window.ipc.invoke('app:focusMainWindow', null).catch(() => {})
+              void window.ipc
+                .invoke('meeting:notifyNotesReady', { notePath, title: noteTitle })
+                .catch(() => { /* notification is best-effort */ })
             }
           }
         } catch (err) {
+          analytics.meetingSummarizeFailed()
           console.error('[meeting] Failed to generate meeting notes:', err)
         }
         setMeetingSummarizing(false)
@@ -3538,7 +6949,7 @@ function App() {
       const pending = window.__pendingEmailDraft
       if (pending) {
         setPresetMessage(pending.prompt)
-        setIsChatSidebarOpen(true)
+        showChatInSidebarRef.current?.(activeChatTabIdRef.current)
         window.__pendingEmailDraft = undefined
       }
     }
@@ -3546,8 +6957,44 @@ function App() {
     return () => window.removeEventListener('email-block:draft-with-assistant', handler)
   }, [])
 
+  // Meeting prep: create a person note for an unmatched attendee via Copilot.
+  useEffect(() => {
+    const handler = () => {
+      const pending = window.__pendingMeetingPrepCreate
+      if (pending) {
+        setPresetMessage(pending.prompt)
+        showChatInSidebarRef.current?.(activeChatTabIdRef.current)
+        window.__pendingMeetingPrepCreate = undefined
+      }
+    }
+    window.addEventListener('meeting-prep:create-note', handler)
+    return () => window.removeEventListener('meeting-prep:create-note', handler)
+  }, [])
+
+  const resolveWikiFilePath = useCallback((wikiPath: string) => {
+    const normalized = normalizeWikiPath(wikiPath)
+    const { path: basePath } = splitWikiFragment(normalized)
+    if (!basePath) return null
+
+    const targetPath = ensureMarkdownExtension(basePath)
+    const targetKey = targetPath.toLowerCase()
+    const exactMatch = knowledgeFiles.find((filePath) => normalizeWikiPath(filePath).toLowerCase() === targetKey)
+    if (exactMatch) return toKnowledgePath(exactMatch)
+
+    if (!basePath.includes('/')) {
+      const targetBaseName = targetPath.split('/').pop()?.toLowerCase()
+      const basenameMatches = knowledgeFiles.filter((filePath) => {
+        const normalizedFile = normalizeWikiPath(filePath)
+        return normalizedFile.split('/').pop()?.toLowerCase() === targetBaseName
+      })
+      if (basenameMatches.length === 1) return toKnowledgePath(basenameMatches[0])
+    }
+
+    return toKnowledgePath(basePath)
+  }, [knowledgeFiles])
+
   const ensureWikiFile = useCallback(async (wikiPath: string) => {
-    const resolvedPath = toKnowledgePath(wikiPath)
+    const resolvedPath = resolveWikiFilePath(wikiPath)
     if (!resolvedPath) return null
     try {
       const exists = await window.ipc.invoke('workspace:exists', { path: resolvedPath })
@@ -3564,9 +7011,11 @@ function App() {
       console.error('Failed to ensure wiki link target:', err)
       return null
     }
-  }, [])
+  }, [resolveWikiFilePath])
 
   const openWikiLink = useCallback(async (wikiPath: string) => {
+    const { path: basePath } = splitWikiFragment(normalizeWikiPath(wikiPath))
+    if (!basePath) return
     const resolvedPath = await ensureWikiFile(wikiPath)
     if (resolvedPath) {
       navigateToFile(resolvedPath)
@@ -3584,8 +7033,10 @@ function App() {
     },
   }), [knowledgeFiles, recentWikiFiles, openWikiLink, ensureWikiFile])
 
+  const isBrainGraphOpen = isKnowledgeViewOpen && knowledgeViewMode === 'graph'
+
   useEffect(() => {
-    if (!isGraphOpen) return
+    if (!isGraphOpen && !isBrainGraphOpen) return
     let cancelled = false
 
     const buildGraph = async () => {
@@ -3605,13 +7056,12 @@ function App() {
 
       const nodeSet = new Set(graphFilePaths)
       const edges: GraphEdge[] = []
-      const edgeKeys = new Set<string>()
 
       const contents = await Promise.all(
         graphFilePaths.map(async (path) => {
           try {
             const result = await window.ipc.invoke('workspace:readFile', { path })
-            return { path, data: (typeof result?.data === 'string' ? result.data : '') }
+            return { path, data: graphFileData(result) }
           } catch (err) {
             console.error('Failed to read file for graph:', path, err)
             return { path, data: '' }
@@ -3619,18 +7069,16 @@ function App() {
         })
       )
 
-      for (const { path, data } of contents) {
-        for (const match of data.matchAll(wikiLinkRegex)) {
-          const rawTarget = match[1]?.trim() ?? ''
-          const targetPath = toKnowledgePath(rawTarget)
-          if (!targetPath || targetPath === path) continue
-          if (!nodeSet.has(targetPath)) continue
-          const edgeKey = path < targetPath ? `${path}|${targetPath}` : `${targetPath}|${path}`
-          if (edgeKeys.has(edgeKey)) continue
-          edgeKeys.add(edgeKey)
-          edges.push({ source: path, target: targetPath })
-        }
+      // config/vault-map.json (ehl-schema map) places notes that carry no hierarchy front matter; optional.
+      let vaultMap: Map<string, NodeInfo> | undefined
+      try {
+        const mapFile = await window.ipc.invoke('workspace:readFile', { path: 'config/vault-map.json', encoding: 'utf8' })
+        vaultMap = parseVaultMap(mapFile.data as string, vaultMapNodeId)
+      } catch {
+        vaultMap = undefined
       }
+      const { edges: typedEdges, info: hierarchyInfo } = buildHierarchyGraph(contents, nodeSet, toKnowledgePath, vaultMap)
+      edges.push(...typedEdges)
 
       const degreeMap = new Map<string, number>()
       edges.forEach((edge) => {
@@ -3670,7 +7118,10 @@ function App() {
       const nodes = graphFilePaths.map((path) => {
         const degree = degreeMap.get(path) ?? 0
         const radius = 6 + Math.min(18, degree * 2)
-        const { group, depth } = getNodeGroup(path)
+        const hierarchy = hierarchyInfo.get(path)
+        const folderGroup = getNodeGroup(path)
+        const group = hierarchy?.domain ?? folderGroup.group
+        const depth = folderGroup.depth
         const groupIndex = getGroupIndex(group)
         const colors = getNodeColors(groupIndex, depth)
         return {
@@ -3681,6 +7132,9 @@ function App() {
           group,
           color: colors.fill,
           stroke: colors.stroke,
+          level: hierarchy?.level,
+          parentId: hierarchy?.parentId,
+          domain: hierarchy?.domain,
         }
       })
 
@@ -3700,245 +7154,228 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [isGraphOpen, knowledgeFilePaths])
+  }, [isGraphOpen, isBrainGraphOpen, knowledgeFilePaths])
 
-  const renderConversationItem = (item: ConversationItem, tabId: string) => {
-    if (isChatMessage(item)) {
-      if (item.role === 'user') {
-        if (item.attachments && item.attachments.length > 0) {
-          return (
-            <Message key={item.id} from={item.role}>
-              <MessageContent className="group-[.is-user]:bg-transparent group-[.is-user]:px-0 group-[.is-user]:py-0 group-[.is-user]:rounded-none">
-                <ChatMessageAttachments attachments={item.attachments} />
-              </MessageContent>
-              {item.content && (
-                <MessageContent>{item.content}</MessageContent>
-              )}
-            </Message>
-          )
+  // The active chat's view state, backed by the sessions hook (legacy
+  // standalone states remain only as the pre-load fallback until stage 7).
+  const activeChatTabState = React.useMemo<ChatTabViewState>(() => (
+    sessionChat.sessionId === runId && sessionChat.chatState
+      ? { runId, ...sessionChat.chatState }
+      : {
+          runId,
+          sessionUsage: {},
+          conversation: sessionLoadErrorItems.length > 0 ? sessionLoadErrorItems : conversation,
+          currentAssistantMessage,
+          pendingAskHumanRequests,
+          allPermissionRequests,
+          permissionResponses,
+          autoPermissionDecisions,
         }
-        const { message, files } = parseAttachedFiles(item.content)
-        return (
-          <Message key={item.id} from={item.role}>
-            <MessageContent>
-              {files.length > 0 && (
-                <div className="flex flex-wrap gap-1.5 mb-2">
-                  {files.map((filePath, index) => (
-                    <span
-                      key={index}
-                      className="inline-flex items-center gap-1 text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full"
-                    >
-                      @{wikiLabel(filePath)}
-                    </span>
-                  ))}
-                </div>
-              )}
-              {message}
-            </MessageContent>
-          </Message>
-        )
-      }
-      return (
-        <Message key={item.id} from={item.role}>
-          <MessageContent>
-            <MessageResponse components={streamdownComponents}>{item.content}</MessageResponse>
-          </MessageContent>
-        </Message>
-      )
-    }
-
-    if (isToolCall(item)) {
-      const appActionData = getAppActionCardData(item)
-      if (appActionData) {
-        return <AppActionCard key={item.id} data={appActionData} status={item.status} />
-      }
-      const webSearchData = getWebSearchCardData(item)
-      if (webSearchData) {
-        return (
-          <WebSearchResult
-            key={item.id}
-            query={webSearchData.query}
-            results={webSearchData.results}
-            status={item.status}
-            title={webSearchData.title}
-          />
-        )
-      }
-      const errorText = item.status === 'error' ? 'Tool error' : ''
-      const output = normalizeToolOutput(item.result, item.status)
-      const input = normalizeToolInput(item.input)
-      return (
-        <Tool
-          key={item.id}
-          open={isToolOpenForTab(tabId, item.id)}
-          onOpenChange={(open) => setToolOpenForTab(tabId, item.id, open)}
-        >
-          <ToolHeader
-            title={item.name}
-            type={`tool-${item.name}`}
-            state={toToolState(item.status)}
-          />
-          <ToolContent>
-            <ToolInput input={input} />
-            {output !== null ? (
-              <ToolOutput output={output} errorText={errorText} />
-            ) : null}
-          </ToolContent>
-        </Tool>
-      )
-    }
-
-    if (isErrorMessage(item)) {
-      return (
-        <Message key={item.id} from="assistant">
-          <MessageContent className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-destructive">
-            <pre className="whitespace-pre-wrap font-mono text-xs">{item.message}</pre>
-          </MessageContent>
-        </Message>
-      )
-    }
-
-    return null
-  }
-
-  const activeChatTabState = React.useMemo<ChatTabViewState>(() => ({
+  ), [
     runId,
+    sessionChat.sessionId,
+    sessionChat.chatState,
+    sessionLoadErrorItems,
     conversation,
     currentAssistantMessage,
     pendingAskHumanRequests,
     allPermissionRequests,
     permissionResponses,
-  }), [
-    runId,
-    conversation,
-    currentAssistantMessage,
-    pendingAskHumanRequests,
-    allPermissionRequests,
-    permissionResponses,
+    autoPermissionDecisions,
   ])
-  const emptyChatTabState = React.useMemo<ChatTabViewState>(() => createEmptyChatTabViewState(), [])
-  const getChatTabStateForRender = useCallback((tabId: string): ChatTabViewState => {
-    if (tabId === activeChatTabId) return activeChatTabState
-    return chatViewStateByTab[tabId] ?? emptyChatTabState
-  }, [activeChatTabId, activeChatTabState, chatViewStateByTab, emptyChatTabState])
-  const hasConversation = activeChatTabState.conversation.length > 0 || activeChatTabState.currentAssistantMessage
+  const chatTabStatesForRender = React.useMemo(() => ({
+    ...chatViewStateByTab,
+    [activeChatTabId]: activeChatTabState,
+  }), [chatViewStateByTab, activeChatTabId, activeChatTabState])
   const selectedTask = selectedBackgroundTask
     ? backgroundTasks.find(t => t.name === selectedBackgroundTask)
     : null
-  const isRightPaneContext = Boolean(selectedPath || isGraphOpen)
-  const isRightPaneOnlyMode = isRightPaneContext && isChatSidebarOpen && isRightPaneMaximized
+  const isRightPaneContext = Boolean(selectedPath || isGraphOpen || isSuggestedTopicsOpen || isMeetingsOpen || isLiveNotesOpen || isBgTasksOpen || isAppsOpen || isSpacesOpen || isEmailOpen || isKnowledgeViewOpen || isChatHistoryOpen || isHomeOpen || isCodeOpen || isBrowserOpen)
+  // Code mode with a session selected: the chat is the main surface — the
+  // middle pane is just the session rail and the chat fills the rest, with
+  // the workspace drawer at its edge. Before a session is picked the empty
+  // state owns the pane and the chat stays out of the way.
+  const isCodePaneActive = isCodeOpen && !isBrowserOpen
+  const codeChatMain = isCodePaneActive && activeCodeSession !== null
+  const chatPaneOpen = isCodePaneActive ? codeChatMain : !!assistantLayout.sidebar && assistantLayout.sidebarVisible
+  // The document pane shares the window with a docked chat (not maximized
+  // over it, not floating above it). The editor reads this to step its
+  // headings down so they sit level with chat prose.
+  const isSplitPane = chatPaneOpen && !isRightPaneMaximized
+  const isRightPaneOnlyMode = isRightPaneContext && chatPaneOpen && isRightPaneMaximized
   const shouldCollapseLeftPane = isRightPaneOnlyMode
-  const openMarkdownTabs = React.useMemo(() => {
-    const markdownTabs = fileTabs.filter(tab => tab.path.endsWith('.md'))
-    if (selectedPath?.endsWith('.md')) {
-      const hasSelectedTab = markdownTabs.some(tab => tab.path === selectedPath)
-      if (!hasSelectedTab) {
-        return [...markdownTabs, { id: '__active-markdown-tab__', path: selectedPath }]
-      }
+  const nonChatPaneStyle = React.useMemo<React.CSSProperties>(() => {
+    const style: React.CSSProperties = { maxWidth: insetMaxWidth }
+    // A rail-only pane must size to the rail, overriding SidebarInset's w-full.
+    if (!isCodePaneActive) return style
+    if (!isRightPaneContext || !chatPaneOpen || isRightPaneMaximized) return style
+    if (codeChatMain) {
+      return { ...style, width: codeRailWidth, flex: '0 0 auto' }
     }
-    return markdownTabs
-  }, [fileTabs, selectedPath])
+    if (chatPaneSize === 'chat-equal') {
+      return { ...style, width: 0, flex: '1 1 0' }
+    }
+    if (chatPaneSize === 'chat-bigger') {
+      return { ...style, width: DEFAULT_CHAT_PANE_WIDTH, flex: '0 0 auto' }
+    }
+    return style
+  }, [ chatPaneSize, codeChatMain, codeRailWidth, chatPaneOpen, insetMaxWidth, isRightPaneContext, isRightPaneMaximized, isCodePaneActive])
+  // Collapsing: pin max-width to the snapshot px (no transition) for one frame so it's
+  // binding immediately (no flex jump), then animate to 0. Expanding goes back to 100%
+  // — its non-binding range lands at the end of the range, where it isn't visible.
+  useLayoutEffect(() => {
+    if (!shouldCollapseLeftPane) {
+      setInsetAnimateMaxWidth(true)
+      setInsetMaxWidth('100%')
+      return
+    }
+    if (insetCollapseFromPx == null) {
+      setInsetMaxWidth('0px')
+      return
+    }
+    setInsetAnimateMaxWidth(false)
+    setInsetMaxWidth(`${insetCollapseFromPx}px`)
+    const id = requestAnimationFrame(() => {
+      setInsetAnimateMaxWidth(true)
+      setInsetMaxWidth('0px')
+    })
+    return () => cancelAnimationFrame(id)
+  }, [shouldCollapseLeftPane, insetCollapseFromPx])
+  // What the middle pane shows right now — same precedence the old view
+  // ternary had. Keep-alive sections stay mounted (hidden) once visited.
+  const activeMiddle: MiddleView =
+    isBrowserOpen ? 'browser'
+    : isHomeOpen ? 'home'
+    : isSuggestedTopicsOpen ? 'suggested-topics'
+    : isMeetingsOpen ? 'meetings'
+    : isCodeOpen ? 'code'
+    : isLiveNotesOpen ? 'live-notes'
+    : isBgTasksOpen ? 'bg-tasks'
+    : isAppsOpen ? 'apps'
+    : isSpacesOpen ? 'spaces'
+    : isEmailOpen ? 'email'
+    : isKnowledgeViewOpen ? 'knowledge'
+    : isChatHistoryOpen ? 'chat-history'
+    : selectedPath && isBaseFilePath(selectedPath) ? 'bases'
+    : isGraphOpen ? 'graph'
+    : selectedPath ? 'file'
+    : selectedTask ? 'task'
+    : 'chat'
+  const keepAliveSection = activeMiddle
+  const [visitedSections, setVisitedSections] = useState<ReadonlySet<MiddleView>>(() => new Set())
+  useEffect(() => {
+    if (!KEEP_ALIVE_SECTIONS.has(keepAliveSection)) return
+    setVisitedSections((prev) => {
+      if (prev.has(keepAliveSection)) return prev
+      const next = new Set(prev)
+      next.add(keepAliveSection)
+      return next
+    })
+  }, [keepAliveSection])
+  /** Mounted = visited at least once (or showing now); visible = showing now. */
+  const sectionMounted = (key: MiddleView) => activeMiddle === key || visitedSections.has(key)
 
+  // Everything the left navigation needs, shared by its two forms: the
+  // expanded panel sidebar and the collapsed floating dock.
+  const sidebarNavProps = {
+    tree,
+    knowledgeActions,
+    bgTaskSummaries,
+    activeNav: (
+      isBrowserOpen ? null
+      : isHomeOpen ? 'home'
+      : isEmailOpen ? 'email'
+      : isMeetingsOpen ? 'meetings'
+      : isCodeOpen ? 'workspaces'
+      : (isKnowledgeViewOpen || isGraphOpen || (selectedPath != null && selectedPath.startsWith('knowledge/'))) ? 'knowledge'
+      : isBgTasksOpen ? 'agents'
+      : isAppsOpen ? 'apps'
+      : isSpacesOpen ? 'spaces'
+      // Full-screen chat (no section, file, or task open) is the Assistant's
+      // own surface — it carries the dock dot and the switcher's MRU rank.
+      : isFullScreenChat ? 'assistant'
+      : null
+    ) as 'assistant' | 'home' | 'email' | 'meetings' | 'code' | 'knowledge' | 'agents' | 'apps' | 'spaces' | 'workspaces' | null,
+    onOpenMeetings: openMeetingsView,
+    onOpenCode: openCodeView,
+    onOpenBgTasks: () => { setBgTaskInitialSlug(null); setBgTaskSlugVersion((v) => v + 1); openBgTasksView() },
+    onOpenApps: openAppsGrid,
+    onOpenApp: (folder: string) => { setAppInitialId(folder); setAppIdVersion((v) => v + 1); openAppsView() },
+    onOpenSpace: openSpace,
+    onOpenActivity: openActivity,
+    onOpenSpaces: () => { void openSpaces() },
+    activeSpace: spaceSelection,
+    recentRuns: chatRuns,
+    onOpenRun: openAssistantRun,
+    onOpenAssistant: openAssistant,
+    onRenameRun: (rid: string, title: string) => {
+      void window.ipc.invoke('sessions:setTitle', { sessionId: rid, title })
+        .then(() => setRuns((prev) => prev.map((r) => (r.id === rid ? { ...r, title } : r))))
+        .catch((err) => console.error('Failed to rename chat:', err))
+    },
+    onDeleteRun: (rid: string) => {
+      void window.ipc.invoke('sessions:delete', { sessionId: rid })
+        .then(() => handleRunDeleted(rid))
+        .catch((err) => console.error('Failed to delete chat:', err))
+    },
+    onOpenChatHistory: () => void navigateToView({ type: 'chat-history' }),
+    onOpenEmail: (threadId?: string) => openEmailView(threadId),
+    onOpenHome: () => void navigateToView({ type: 'home' }),
+    onNewChat: handleNewChatTab,
+    onStartTour: () => setTourActive(true),
+    meetingRecordingState: meetingTranscription.state,
+    recordingMeetingSource,
+    onToggleMeetingRecording: () => { void handleToggleMeeting() },
+  }
   return (
+    <OpenBrowserContext.Provider value={handleOpenBrowser}>
     <TooltipProvider delayDuration={0}>
       <SidebarSectionProvider defaultSection="tasks" onSectionChange={(section) => {
-        if (section === 'knowledge' && !selectedPath && !isGraphOpen) {
+        if (section === 'knowledge' && isFullScreenChat) {
           void navigateToView({ type: 'file', path: BASES_DEFAULT_TAB_PATH })
         }
       }}>
-        <div className="flex h-svh w-full overflow-hidden">
-          {/* Content sidebar with SidebarProvider for collapse functionality */}
+        <div className="rowboat-shell flex h-svh w-full overflow-hidden">
+          {/* Left navigation, two forms: expanded = the panel sidebar,
+              collapsed = the slim icon rail. The collapse button (fixed
+              top-left) swaps between them; the gutter padding clears the
+              rail when it's showing. */}
           <SidebarProvider
+            open={sidebarOpen}
+            onOpenChange={handleSidebarOpenChange}
             style={{
-              "--sidebar-width": `${DEFAULT_SIDEBAR_WIDTH}px`,
-            } as React.CSSProperties}
+              paddingLeft: sidebarOpen ? 0 : DOCK_GUTTER_PX,
+              transition: 'padding-left 200ms linear',
+            }}
           >
             <SidebarContentPanel
-              tree={tree}
-              selectedPath={selectedPath}
-              expandedPaths={expandedPaths}
+              {...sidebarNavProps}
               onSelectFile={toggleExpand}
-              knowledgeActions={knowledgeActions}
+              onOpenAgent={(slug) => { setBgTaskInitialSlug(slug); setBgTaskSlugVersion((v) => v + 1); openBgTasksView() }}
               onVoiceNoteCreated={handleVoiceNoteCreated}
-              runs={runs}
-              currentRunId={runId}
-              processingRunIds={processingRunIds}
-              tasksActions={{
-                onNewChat: handleNewChatTab,
-                onSelectRun: (runIdToLoad) => {
-                  cancelRecordingIfActive()
-                  if (selectedPath || isGraphOpen) {
-                    setIsChatSidebarOpen(true)
-                  }
-
-                  // If already open in a chat tab, switch to it
-                  const existingTab = chatTabs.find(t => t.runId === runIdToLoad)
-                  if (existingTab) {
-                    switchChatTab(existingTab.id)
-                    return
-                  }
-                  // In two-pane mode, keep current knowledge/graph context and just swap chat context.
-                  if (selectedPath || isGraphOpen) {
-                    setChatTabs(prev => prev.map(t => t.id === activeChatTabId ? { ...t, runId: runIdToLoad } : t))
-                    loadRun(runIdToLoad)
-                    return
-                  }
-
-                  // Outside two-pane mode, navigate to chat.
-                  setChatTabs(prev => prev.map(t => t.id === activeChatTabId ? { ...t, runId: runIdToLoad } : t))
-                  void navigateToView({ type: 'chat', runId: runIdToLoad })
-                },
-                onOpenInNewTab: (targetRunId) => {
-                  openChatInNewTab(targetRunId)
-                },
-                onDeleteRun: async (runIdToDelete) => {
-                  try {
-                    await window.ipc.invoke('runs:delete', { runId: runIdToDelete })
-                    // Close any chat tab showing the deleted run
-                    const tabForRun = chatTabs.find(t => t.runId === runIdToDelete)
-                    if (tabForRun) {
-                      if (chatTabs.length > 1) {
-                        closeChatTab(tabForRun.id)
-                      } else {
-                        // Only one tab, reset it to new chat
-                        setChatTabs([{ id: tabForRun.id, runId: null }])
-                        if (selectedPath || isGraphOpen) {
-                          handleNewChat()
-                        } else {
-                          void navigateToView({ type: 'chat', runId: null })
-                        }
-                      }
-                    } else if (runId === runIdToDelete) {
-                      if (selectedPath || isGraphOpen) {
-                        setChatTabs(prev => prev.map(t => t.id === activeChatTabId ? { ...t, runId: null } : t))
-                        handleNewChat()
-                      } else {
-                        void navigateToView({ type: 'chat', runId: null })
-                      }
-                    }
-                    await loadRuns()
-                  } catch (err) {
-                    console.error('Failed to delete run:', err)
-                  }
-                },
-                onSelectBackgroundTask: (taskName) => {
-                  void navigateToView({ type: 'task', name: taskName })
-                },
-              }}
-              backgroundTasks={backgroundTasks}
-              selectedBackgroundTask={selectedBackgroundTask}
+            />
+            {/* Always mounted: renders the tray when collapsed, and only the
+                ⌥/⌃+Tab switcher while the panel is expanded (so the MRU order
+                survives toggling between the two). */}
+            <DockSidebar
+              {...sidebarNavProps}
+              switcherOnly={sidebarOpen}
             />
             <SidebarInset
               className={cn(
-                "overflow-hidden! min-h-0 min-w-0 transition-[max-width] duration-200 ease-linear",
+                "min-h-0 min-w-0",
+                "overflow-hidden!",
+                (isCodePaneActive && isChatPaneInMiddle) && "order-3",
+                insetAnimateMaxWidth && "transition-[max-width] duration-200 ease-linear",
                 shouldCollapseLeftPane && "pointer-events-none select-none"
               )}
-              style={shouldCollapseLeftPane ? { maxWidth: 0 } : { maxWidth: '100%' }}
+              style={nonChatPaneStyle}
+              data-split-pane={isSplitPane ? '' : undefined}
               aria-hidden={shouldCollapseLeftPane}
               onMouseDownCapture={() => setActiveShortcutPane('left')}
               onFocusCapture={() => setActiveShortcutPane('left')}
             >
-              {/* Header - also serves as titlebar drag region, adjusts padding when sidebar collapsed */}
+              {/* Header - also serves as titlebar drag region */}
               <ContentHeader
                 onNavigateBack={() => { void navigateBack() }}
                 onNavigateForward={() => { void navigateForward() }}
@@ -3946,26 +7383,26 @@ function App() {
                 canNavigateForward={canNavigateForward}
                 collapsedLeftPaddingPx={collapsedLeftPaddingPx}
               >
-                {(selectedPath || isGraphOpen) && fileTabs.length >= 1 ? (
+                {isFullScreenChat ? (
+                  <span className="self-center px-3 text-sm font-medium">Assistant</span>
+                ) : currentViewState.type === 'file' && selectedPath ? (
                   <TabBar
-                    tabs={fileTabs}
-                    activeTabId={activeFileTabId ?? ''}
-                    getTabTitle={getFileTabTitle}
-                    getTabId={(t) => t.id}
+                    tabs={openFilePaths.includes(selectedPath) ? openFilePaths : [...openFilePaths, selectedPath]}
+                    activeTabId={selectedPath}
+                    getTabId={(path) => path}
+                    getTabTitle={(path) => path.split('/').pop() ?? path}
                     onSwitchTab={switchFileTab}
-                    onCloseTab={closeFileTab}
-                    allowSingleTabClose={fileTabs.length === 1 && (isGraphOpen || (selectedPath != null && isBaseFilePath(selectedPath)))}
+                    onCloseTab={(path) => closeFileTabs([path])}
+                    onCloseTabs={closeFileTabs}
+                    layout="scroll"
+                    allowSingleTabClose
                   />
                 ) : (
-                  <TabBar
-                    tabs={chatTabs}
-                    activeTabId={activeChatTabId}
-                    getTabTitle={getChatTabTitle}
-                    getTabId={(t) => t.id}
-                    isProcessing={isChatTabProcessing}
-                    onSwitchTab={switchChatTab}
-                    onCloseTab={closeChatTab}
-                  />
+                  <div className="flex min-w-0 flex-1 items-center self-center">
+                    <span className="truncate text-sm font-medium text-foreground/80">
+                      {currentViewTitle}
+                    </span>
+                  </div>
                 )}
                 {selectedPath && selectedPath.endsWith('.md') && (
                   <div className="flex items-center gap-1 text-xs text-muted-foreground self-center shrink-0 pl-2">
@@ -4007,56 +7444,354 @@ function App() {
                     <TooltipContent side="bottom">Version history</TooltipContent>
                   </Tooltip>
                 )}
-                {!selectedPath && !isGraphOpen && !selectedTask && (
+                {isHomeOpen && !isBrowserOpen && (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <button
                         type="button"
                         onClick={handleNewChatTab}
                         className="titlebar-no-drag flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors self-center shrink-0"
-                        aria-label="New chat tab"
+                        aria-label="New chat"
                       >
-                        <SquarePen className="size-5" />
+                        <Plus className="size-5" />
                       </button>
                     </TooltipTrigger>
-                    <TooltipContent side="bottom">New chat tab</TooltipContent>
+                    <TooltipContent side="bottom">New chat</TooltipContent>
                   </Tooltip>
                 )}
-                {!selectedPath && !isGraphOpen && expandedFrom && (
+                {!assistantLayout.sidebarVisible && (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <button
                         type="button"
-                        onClick={handleCloseFullScreenChat}
-                        className="titlebar-no-drag flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors self-center shrink-0"
-                        aria-label="Restore two-pane view"
+                        onClick={toggleChatSidebar}
+                        className="titlebar-no-drag ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                        aria-label="Open chat sidebar"
                       >
-                        <Minimize2 className="size-5" />
+                        <MessageSquare className="size-4" />
                       </button>
                     </TooltipTrigger>
-                    <TooltipContent side="bottom">Restore two-pane view</TooltipContent>
-                  </Tooltip>
-                )}
-                {(selectedPath || isGraphOpen) && (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        onClick={toggleKnowledgePane}
-                        className="titlebar-no-drag flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors -mr-1 self-center shrink-0"
-                        aria-label={isChatSidebarOpen ? "Maximize knowledge view" : "Restore two-pane view"}
-                      >
-                        {isChatSidebarOpen ? <Maximize2 className="size-5" /> : <Minimize2 className="size-5" />}
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom">
-                      {isChatSidebarOpen ? "Maximize knowledge view" : "Restore two-pane view"}
-                    </TooltipContent>
+                    <TooltipContent side="bottom">Open chat sidebar</TooltipContent>
                   </Tooltip>
                 )}
               </ContentHeader>
 
-              {selectedPath && isBaseFilePath(selectedPath) ? (
+              <div className="contents">
+              <div className="contents">
+{/* Middle pane. Section views wrapped in <Activity> stay
+                  mounted once visited — hidden = state+DOM kept, effects
+                  paused — so section switches are instant. The other branches
+                  mount/unmount exactly as before. */}
+              {activeMiddle === 'browser' && (
+                <BrowserPane
+                  onClose={handleCloseBrowser}
+                  forceHidden={isSearchOpen || showMeetingPermissions}
+                />
+              )}
+              {sectionMounted('home') && (
+                <KeepAliveSection visible={activeMiddle === 'home'}>
+                <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                    <TodoView
+                      composer={
+                        <div className="flex flex-col gap-1.5">
+                          {homeComposeTarget?.kind === 'todo' && homeCodeProjects.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-1.5 px-1">
+                              <span className="text-[11px] font-medium text-muted-foreground">Code lane:</span>
+                              {homeCodeProjects.slice(0, 6).map((p) => (
+                                <button
+                                  key={p.id}
+                                  type="button"
+                                  title={p.path}
+                                  onClick={() => setHomeCodeProject((cur) => (cur?.id === p.id ? null : p))}
+                                  className={`rounded-md border px-2 py-0.5 text-[11px] transition-colors ${
+                                    homeCodeProject?.id === p.id
+                                      ? 'border-primary bg-primary text-primary-foreground'
+                                      : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'
+                                  }`}
+                                >
+                                  {p.name}
+                                  {/* Same-named repos elsewhere on disk — show where this one lives. */}
+                                  {homeCodeProjects.some((o) => o.id !== p.id && o.name === p.name) && (
+                                    <span className="ml-1 opacity-60">{compactPath(parentPath(p.path), 20)}</span>
+                                  )}
+                                  {p.id === homeDefaultProjectId && <span className="ml-1 opacity-60">· default</span>}
+                                </button>
+                              ))}
+                              {homeCodeProject && (
+                                <button
+                                  type="button"
+                                  onClick={() => setHomeCodeIsolation((v) => (v === 'worktree' ? 'in-repo' : 'worktree'))}
+                                  title="Where the agent works: an isolated worktree branch (parallel-safe, reviewed before merge), or directly in the repo"
+                                  className="rounded-md border border-dashed border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+                                >
+                                  {homeCodeIsolation}
+                                </button>
+                              )}
+                            </div>
+                          )}
+                          <ChatInputWithMentions
+                          knowledgeFiles={mentionableFiles}
+                          recentFiles={recentWikiFiles}
+                          visibleFiles={visibleKnowledgeFiles}
+                          onSubmit={handleHomeComposerSubmit}
+                          isProcessing={false}
+                          runId={null}
+                          presetMessage={homeComposerPreset}
+                          onPresetMessageConsumed={() => setHomeComposerPreset(undefined)}
+                          onSelectionChange={(selection) => { homeSelectionRef.current = selection }}
+                          workDir={null}
+                          focusSignal={homeComposerFocusSignal}
+                          contextChip={homeComposeTarget ? {
+                            label: homeComposeTarget.kind === 'sub'
+                              ? `Step of: ${homeComposeTarget.parentText.slice(0, 40)}`
+                              : homeComposeTarget.kind === 'comment'
+                                ? `Reply: ${homeComposeTarget.itemText.slice(0, 40)}`
+                                : homeComposeTarget.kind === 'chatReply'
+                                  ? `Reply: ${homeComposeTarget.title.slice(0, 40)}`
+                                  : 'To-do',
+                            icon: homeComposeTarget.kind === 'comment' || homeComposeTarget.kind === 'chatReply' ? 'reply' : 'todo',
+                            quote: homeComposeTarget.kind === 'comment' || homeComposeTarget.kind === 'chatReply'
+                              ? homeComposeTarget.quote
+                              : undefined,
+                            onDismiss: () => setHomeComposeTarget(null),
+                          } : undefined}
+                          placeholder={homeComposeTarget
+                            ? (homeComposeTarget.kind === 'sub'
+                                ? 'Add a step… @rowboat hands it off'
+                                : homeComposeTarget.kind === 'comment'
+                                  ? 'Tell @rowboat what to change…'
+                                  : homeComposeTarget.kind === 'chatReply'
+                                    ? 'Reply…'
+                                    : 'Add a to-do… @rowboat hands it off')
+                            : 'Ask anything — starts a new chat'}
+                          isRecording={isRecording && voiceOwner === HOME_VOICE_HOLDER}
+                          recordingText={voiceOwner === HOME_VOICE_HOLDER ? voice.interimText : undefined}
+                          recordingState={voiceOwner === HOME_VOICE_HOLDER
+                            ? (voice.state === 'submitting' ? 'stopping' : voice.state === 'connecting' ? 'connecting' : 'listening')
+                            : undefined}
+                          audioLevelsRef={voice.audioLevelsRef}
+                          onStartRecording={() => handleStartRecording(HOME_VOICE_HOLDER)}
+                          onSubmitRecording={handleSubmitRecording}
+                          onCancelRecording={handleCancelRecording}
+                          voiceAvailable={voiceAvailable}
+                          inCall={inCall}
+                          callOnThisChat={callOnActiveChat}
+                          onStartCall={handleStartCall}
+                          onEndCall={endCall}
+                          callAvailable={voiceAvailable && ttsAvailable}
+                          />
+                        </div>
+                      }
+                      onComposeTodo={composeTodoOnHome}
+                      composeTarget={homeComposeTarget}
+                      getRunModel={() => homeSelectionRef.current ?? undefined}
+                      onFocusComposer={() => setHomeComposerFocusSignal((n) => n + 1)}
+                      onOpenNote={(path) => navigateToFile(path)}
+                      // The item's session in the sidebar, not the full page.
+                      onOpenInChat={openRunInSidebar}
+                      onOpenCodeSession={(sessionId) => {
+                        // A code strip's door: the Code section (diffs,
+                        // terminal, worktree), focused on this session.
+                        setCodeFocusSessionId(sessionId)
+                        void navigateToView({ type: 'code' })
+                      }}
+                      attendedSessionId={inCall ? hoverRunId : null}
+                    />
+                </div>
+                </KeepAliveSection>
+              )}
+              {activeMiddle === 'suggested-topics' && (
+                <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                  <SuggestedTopicsView
+                    onExploreTopic={(topic) => {
+                      const prompt = buildSuggestedTopicExplorePrompt(topic)
+                      submitFromPalette(prompt, null)
+                    }}
+                  />
+                </div>
+              )}
+              {sectionMounted('meetings') && (
+                <KeepAliveSection visible={activeMiddle === 'meetings'}>
+                <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                  <MeetingsView
+                    onOpenNote={(path) => navigateToFile(path)}
+                    onTakeMeetingNotes={() => { void handleToggleMeeting() }}
+                    meetingState={meetingTranscription.state}
+                    meetingSummarizing={meetingSummarizing}
+                  />
+                </div>
+                </KeepAliveSection>
+              )}
+              {sectionMounted('code') && (
+                <KeepAliveSection visible={activeMiddle === 'code'}>
+                <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                  <CodeView
+                    onSessionSelected={handleCodeSessionSelected}
+                    focusSessionId={codeFocusSessionId}
+                    focusProjectPath={codeFocusProjectPath}
+                    onProjectFocusConsumed={() => setCodeFocusProjectPath(null)}
+                    onFocusConsumed={() => setCodeFocusSessionId(null)}
+                    onRailWidthChange={setCodeRailWidth}
+                  />
+                </div>
+                </KeepAliveSection>
+              )}
+              {activeMiddle === 'live-notes' && (
+                <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                  <LiveNotesView
+                    onOpenNote={(path) => navigateToFile(path)}
+                    onAddNewLiveNote={() => {
+                      submitFromPalette(buildLiveNoteSetupPrompt(), null)
+                    }}
+                  />
+                </div>
+              )}
+              {sectionMounted('bg-tasks') && (
+                <KeepAliveSection visible={activeMiddle === 'bg-tasks'}>
+                <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                  <BgTasksView
+                    initialSlug={bgTaskInitialSlug}
+                    slugVersion={bgTaskSlugVersion}
+                    onCreateWithCopilot={(description) => {
+                      submitFromPalette(buildBgTaskSetupPrompt(description), null)
+                    }}
+                    onEditWithCopilot={(slug) => {
+                      submitFromPalette(buildBgTaskEditPrompt(slug), null)
+                    }}
+                  />
+                </div>
+                </KeepAliveSection>
+              )}
+              {sectionMounted('apps') && (
+                <KeepAliveSection visible={activeMiddle === 'apps'}>
+                <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                  <AppsView
+                    initialAppFolder={appInitialId}
+                    initialVersion={appIdVersion}
+                    onNewApp={() => prefillChat('Build me an app that ')}
+                  />
+                </div>
+                </KeepAliveSection>
+              )}
+              {sectionMounted('spaces') && (
+                <KeepAliveSection visible={activeMiddle === 'spaces'}>
+                <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                  <SpacesView
+                    active={activeMiddle === 'spaces'}
+                    selection={spaceSelection}
+                    onSelect={selectSpace}
+                    onSwitchSpace={openSpace}
+                    railSelection={railSelection}
+                    onRailSelect={(rail) => {
+                      // In-space navigation is real navigation: each selection is a history entry,
+                      // so the top ‹ › retrace general → topic → file.
+                      if (spaceSelection && spaceSelection.spaceId) void navigateToView({ type: 'spaces', orgId: spaceSelection.orgId, spaceId: spaceSelection.spaceId, rail })
+                      else setRailSelection(rail)
+                    }}
+                    // Activity → a message: one navigation entry that opens the
+                    // space (or thread) and lands on the row.
+                    onOpenMessage={(target) => void navigateToView({ type: 'spaces', ...target })}
+                    onOpenBrowse={openBrowse}
+                    onOpenActivity={openActivity}
+                    onOpenSession={openAssistantRun}
+                  />
+                </div>
+                </KeepAliveSection>
+              )}
+              {sectionMounted('email') && (
+                <KeepAliveSection visible={activeMiddle === 'email'}>
+                <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                  <EmailView initialThreadId={emailInitialThreadId} threadIdVersion={emailThreadIdVersion} initialSearchQuery={emailInitialSearchQuery} searchQueryVersion={emailSearchQueryVersion} onOpenNote={openNoteFromEmail} />
+                </div>
+                </KeepAliveSection>
+              )}
+              {sectionMounted('knowledge') && (
+                <KeepAliveSection visible={activeMiddle === 'knowledge'}>
+                <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                  <KnowledgeView
+                    tree={tree}
+                    actions={{
+                      createNote: knowledgeActions.createNote,
+                      addGoogleDoc: knowledgeActions.addGoogleDoc,
+                      createFolder: knowledgeActions.createFolder,
+                      rename: knowledgeActions.rename,
+                      remove: knowledgeActions.remove,
+                      copyPath: knowledgeActions.copyPath,
+                      revealInFileManager: knowledgeActions.revealInFileManager,
+                    }}
+                    mode={knowledgeViewMode}
+                    onModeChange={setKnowledgeViewMode}
+                    graphContent={(
+                      <GraphView
+                        nodes={graphData.nodes}
+                        edges={graphData.edges}
+                        isLoading={false}
+                        error={graphStatus === 'error' ? (graphError ?? 'Failed to build graph') : null}
+                        onSelectNode={(path) => {
+                          navigateToFile(path)
+                        }}
+                      />
+                    )}
+                    basisContent={(
+                      <BasesView
+                        tree={tree}
+                        onSelectNote={(path) => navigateToFile(path)}
+                        config={baseConfigByPath[BASES_DEFAULT_TAB_PATH] ?? DEFAULT_BASE_CONFIG}
+                        onConfigChange={(cfg) => handleBaseConfigChange(BASES_DEFAULT_TAB_PATH, cfg)}
+                        isDefaultBase
+                        onSave={(name) => void handleBaseSave(BASES_DEFAULT_TAB_PATH, name)}
+                        externalSearch={externalBaseSearch}
+                        onExternalSearchConsumed={() => setExternalBaseSearch(undefined)}
+                        actions={{
+                          rename: knowledgeActions.rename,
+                          remove: knowledgeActions.remove,
+                          copyPath: knowledgeActions.copyPath,
+                          revealInFileManager: knowledgeActions.revealInFileManager,
+                        }}
+                      />
+                    )}
+                    folderPath={knowledgeViewFolderPath}
+                    onNavigateFolder={(path) => {
+                      setKnowledgeViewMode('files')
+                      void navigateToView({ type: 'knowledge-view', folderPath: path ?? undefined, mode: 'files' })
+                    }}
+                    onOpenNote={(path) => navigateToFile(path)}
+                    onOpenSearch={() => { setSearchDefaultScope('brain'); setIsSearchOpen(true) }}
+                    onVoiceNoteCreated={handleVoiceNoteCreated}
+                  />
+                </div>
+                </KeepAliveSection>
+              )}
+              {activeMiddle === 'chat-history' && (
+                <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                  <ChatHistoryView
+                    runs={runs}
+                    currentRunId={runId}
+                    processingRunIds={processingRunIds}
+                    onSelectRun={openAssistantRun}
+                    onOpenSpaceThread={(origin: SpaceThreadOrigin) => {
+                      void navigateToView({ type: 'spaces', orgId: origin.orgId, spaceId: origin.spaceId, rail: { kind: 'thread', rootMessageId: origin.threadRootId } })
+                    }}
+                    onRenameRun={(rid, title) => {
+                      void window.ipc.invoke('sessions:setTitle', { sessionId: rid, title })
+                        .then(() => setRuns((prev) => prev.map((r) => (r.id === rid ? { ...r, title } : r))))
+                        .catch((err) => console.error('Failed to rename chat:', err))
+                    }}
+                    onDeleteRun={async (rid) => {
+                      try {
+                        await window.ipc.invoke('sessions:delete', { sessionId: rid })
+                        handleRunDeleted(rid)
+                        await loadRuns()
+                      } catch (err) {
+                        console.error('Failed to delete run:', err)
+                      }
+                    }}
+                    onNewChat={handleNewChatTab}
+                    onOpenSearch={() => { setSearchDefaultScope('chats'); setIsSearchOpen(true) }}
+                  />
+                </div>
+              )}
+              {activeMiddle === 'bases' && selectedPath && (
                 <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
                   <BasesView
                     tree={tree}
@@ -4064,85 +7799,110 @@ function App() {
                     config={baseConfigByPath[selectedPath] ?? DEFAULT_BASE_CONFIG}
                     onConfigChange={(cfg) => handleBaseConfigChange(selectedPath, cfg)}
                     isDefaultBase={selectedPath === BASES_DEFAULT_TAB_PATH}
-                    onSave={(name) => void handleBaseSave(name)}
+                    onSave={(name) => void handleBaseSave(selectedPath, name)}
                     externalSearch={externalBaseSearch}
                     onExternalSearchConsumed={() => setExternalBaseSearch(undefined)}
+                    actions={{
+                      rename: knowledgeActions.rename,
+                      remove: knowledgeActions.remove,
+                      copyPath: knowledgeActions.copyPath,
+                      revealInFileManager: knowledgeActions.revealInFileManager,
+                    }}
                   />
                 </div>
-              ) : isGraphOpen ? (
+              )}
+              {activeMiddle === 'graph' && (
                 <div className="flex-1 min-h-0">
                   <GraphView
                     nodes={graphData.nodes}
                     edges={graphData.edges}
-                    isLoading={graphStatus === 'loading'}
+                    isLoading={false}
                     error={graphStatus === 'error' ? (graphError ?? 'Failed to build graph') : null}
                     onSelectNode={(path) => {
                       navigateToFile(path)
                     }}
                   />
                 </div>
-              ) : selectedPath ? (
+              )}
+              {activeMiddle === 'file' && selectedPath && (
+                <>
+                {/* Always-mounted persistent cache for HTML/PDF — hidden when active file is something else, so iframes preserve scroll/page/zoom across switches. */}
+                <div
+                  className="flex-1 min-h-0 overflow-hidden"
+                  style={{ display: isCacheableViewerPath(selectedPath) ? 'block' : 'none' }}
+                >
+                  <PersistentViewerCache activePath={selectedPath} />
+                </div>
+                {!isCacheableViewerPath(selectedPath) && (
                 selectedPath.endsWith('.md') ? (
                   <div className="flex-1 min-h-0 flex flex-row overflow-hidden">
                     <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-                      {openMarkdownTabs.map((tab) => {
-                        const isActive = activeFileTabId
-                          ? tab.id === activeFileTabId || tab.path === selectedPath
-                          : tab.path === selectedPath
-                        const isViewingHistory = viewingHistoricalVersion && isActive && versionHistoryPath === tab.path
-                        const tabContent = isViewingHistory
+                      {(() => {
+                        const notePath = selectedPath
+                        const isViewingHistory = viewingHistoricalVersion && versionHistoryPath === notePath
+                        const noteFrontmatter = frontmatterByPathRef.current.get(notePath) ?? null
+                        const linkedGoogleDoc = parseLinkedGoogleDocFrontmatter(noteFrontmatter)
+                        const noteContent = isViewingHistory
                           ? viewingHistoricalVersion.content
-                          : editorContentByPath[tab.path]
-                            ?? (isActive && editorPathRef.current === tab.path ? editorContent : '')
+                          : editorContentByPath[notePath]
+                            ?? (editorPathRef.current === notePath ? editorContent : '')
                         return (
                           <div
-                            key={tab.id}
-                            className={cn(
-                              'min-h-0 flex-1 flex-col overflow-hidden',
-                              isActive ? 'flex' : 'hidden'
-                            )}
-                            data-file-tab-panel={tab.id}
-                            aria-hidden={!isActive}
+                            // Keyed by path: switching files remounts the
+                            // editor with a fresh undo history.
+                            key={notePath}
+                            className="flex min-h-0 flex-1 flex-col overflow-hidden"
+                            data-file-tab-panel={notePath}
                           >
                             <MarkdownEditor
-                              content={tabContent}
-                              notePath={tab.path}
-                              onChange={(markdown) => { if (!isViewingHistory) handleEditorChange(tab.path, markdown) }}
+                              ref={(el) => { markdownEditorRef.current = el }}
+                              content={noteContent}
+                              notePath={notePath}
+                              onChange={(markdown) => { if (!isViewingHistory) handleEditorChange(notePath, markdown) }}
                               onPrimaryHeadingCommit={() => {
-                                untitledRenameReadyPathsRef.current.add(tab.path)
+                                untitledRenameReadyPathsRef.current.add(notePath)
                               }}
-                              preserveUntitledTitleHeading={isUntitledPlaceholderName(getBaseName(tab.path))}
+                              preserveUntitledTitleHeading={isUntitledPlaceholderName(getBaseName(notePath))}
                               placeholder="Start writing..."
                               wikiLinks={wikiLinkConfig}
                               onImageUpload={handleImageUpload}
-                              editorSessionKey={editorSessionByTabId[tab.id] ?? 0}
-                              frontmatter={frontmatterByPathRef.current.get(tab.path) ?? null}
+                              editorSessionKey={editorSessionByPath[notePath] ?? 0}
+                              frontmatter={noteFrontmatter}
                               onFrontmatterChange={(newRaw) => {
-                                frontmatterByPathRef.current.set(tab.path, newRaw)
+                                frontmatterByPathRef.current.set(notePath, newRaw)
                                 // Write updated frontmatter to disk immediately
                                 const currentBody = editorContentRef.current
                                 const fullContent = joinFrontmatter(newRaw, currentBody)
-                                initialContentByPathRef.current.set(tab.path, splitFrontmatter(fullContent).body)
+                                setInitialContentForPath(notePath, splitFrontmatter(fullContent).body)
                                 initialContentRef.current = splitFrontmatter(fullContent).body
                                 void window.ipc.invoke('workspace:writeFile', {
-                                  path: tab.path,
+                                  path: notePath,
                                   data: fullContent,
                                   opts: { encoding: 'utf8' },
                                 })
                               }}
                               onHistoryHandlersChange={(handlers) => {
-                                if (handlers) {
-                                  fileHistoryHandlersRef.current.set(tab.id, handlers)
-                                } else {
-                                  fileHistoryHandlersRef.current.delete(tab.id)
-                                }
+                                fileHistoryHandlersRef.current = handlers ?? null
                               }}
                               editable={!isViewingHistory}
+                              googleDoc={linkedGoogleDoc && !isViewingHistory ? {
+                                title: linkedGoogleDoc.title,
+                                isSyncing: googleDocSyncDirection,
+                                lastSyncedAt: linkedGoogleDoc.syncedAt,
+                                onOpen: () => {
+                                  if (linkedGoogleDoc.url) {
+                                    window.open(linkedGoogleDoc.url, '_blank')
+                                  }
+                                },
+                                onSyncDown: () => { void syncGoogleDocDown(notePath) },
+                                onSyncUp: () => { void syncGoogleDocUp(notePath) },
+                              } : undefined}
                               onExport={async (format) => {
-                                const markdown = tabContent
-                                const title = getBaseName(tab.path)
+                                const markdown = noteContent
+                                const title = getBaseName(notePath)
                                 try {
                                   await window.ipc.invoke('export:note', { markdown, format, title })
+                                  analytics.noteExported(format)
                                 } catch (err) {
                                   console.error('Export failed:', err)
                                 }
@@ -4150,8 +7910,12 @@ function App() {
                             />
                           </div>
                         )
-                      })}
+                      })()}
                     </div>
+                    <LiveNoteSidebar
+                      filePath={liveNotePanelPath}
+                      onClose={() => setLiveNotePanelPath(null)}
+                    />
                     {versionHistoryPath && (
                       <VersionHistoryPanel
                         path={versionHistoryPath}
@@ -4187,13 +7951,14 @@ function App() {
                     )}
                   </div>
                 ) : (
-                  <div className="flex-1 overflow-auto p-4">
-                    <pre className="text-sm font-mono text-foreground whitespace-pre-wrap">
-                      {fileContent || 'Loading...'}
-                    </pre>
+                  <div className="flex-1 min-h-0 overflow-hidden">
+                    <DocumentFileViewer path={selectedPath ?? ''} onSlideChange={handleDeckSlideChange} />
                   </div>
                 )
-              ) : selectedTask ? (
+                )}
+                </>
+              )}
+              {activeMiddle === 'task' && selectedTask && (
                 <div className="flex-1 min-h-0 overflow-hidden">
                   <BackgroundTaskDetail
                     name={selectedTask.name}
@@ -4208,230 +7973,299 @@ function App() {
                     onToggleEnabled={(enabled) => handleToggleBackgroundTask(selectedTask.name, enabled)}
                   />
                 </div>
-              ) : (
-              <FileCardProvider onOpenKnowledgeFile={(path) => { navigateToFile(path) }}>
-              <div className="flex min-h-0 flex-1 flex-col">
-                <div className="relative min-h-0 flex-1">
-                  {chatTabs.map((tab) => {
-                    const isActive = tab.id === activeChatTabId
-                    const tabState = getChatTabStateForRender(tab.id)
-                    const tabHasConversation = tabState.conversation.length > 0 || tabState.currentAssistantMessage
-                    const tabConversationContentClassName = tabHasConversation
-                      ? "mx-auto w-full max-w-4xl pb-28"
-                      : "mx-auto w-full max-w-4xl min-h-full items-center justify-center pb-0"
-                    return (
-                      <div
-                        key={tab.id}
-                        className={cn(
-                          'min-h-0 h-full flex-col',
-                          isActive
-                            ? 'flex'
-                            : 'pointer-events-none invisible absolute inset-0 flex'
-                        )}
-                        data-chat-tab-panel={tab.id}
-                        aria-hidden={!isActive}
-                      >
-                        <Conversation className="relative flex-1 overflow-y-auto [scrollbar-gutter:stable]">
-                          <ScrollPositionPreserver />
-                          <ConversationContent className={tabConversationContentClassName}>
-                            {!tabHasConversation ? (
-                              <ConversationEmptyState className="h-auto">
-                                <div className="text-2xl font-semibold tracking-tight text-foreground/80 sm:text-3xl md:text-4xl">
-                                  What are we working on?
-                                </div>
-                              </ConversationEmptyState>
-                            ) : (
-                              <>
-                                {tabState.conversation.map(item => {
-                                  const rendered = renderConversationItem(item, tab.id)
-                                  if (isToolCall(item)) {
-                                    const permRequest = tabState.allPermissionRequests.get(item.id)
-                                    if (permRequest) {
-                                      const response = tabState.permissionResponses.get(item.id) || null
-                                      return (
-                                        <React.Fragment key={item.id}>
-                                          {rendered}
-                                          <PermissionRequest
-                                            toolCall={permRequest.toolCall}
-                                            onApprove={() => handlePermissionResponse(permRequest.toolCall.toolCallId, permRequest.subflow, 'approve')}
-                                            onApproveSession={() => handlePermissionResponse(permRequest.toolCall.toolCallId, permRequest.subflow, 'approve', 'session')}
-                                            onApproveAlways={() => handlePermissionResponse(permRequest.toolCall.toolCallId, permRequest.subflow, 'approve', 'always')}
-                                            onDeny={() => handlePermissionResponse(permRequest.toolCall.toolCallId, permRequest.subflow, 'deny')}
-                                            isProcessing={isActive && isProcessing}
-                                            response={response}
-                                          />
-                                        </React.Fragment>
-                                      )
-                                    }
-                                  }
-                                  return rendered
-                                })}
-
-                                {Array.from(tabState.pendingAskHumanRequests.values()).map((request) => (
-                                  <AskHumanRequest
-                                    key={request.toolCallId}
-                                    query={request.query}
-                                    onResponse={(response) => handleAskHumanResponse(request.toolCallId, request.subflow, response)}
-                                    isProcessing={isActive && isProcessing}
-                                  />
-                                ))}
-
-                                {tabState.currentAssistantMessage && (
-                                  <Message from="assistant">
-                                    <MessageContent>
-                                      <SmoothStreamingMessage text={tabState.currentAssistantMessage.replace(/<\/?voice>/g, '')} components={streamdownComponents} />
-                                    </MessageContent>
-                                  </Message>
-                                )}
-
-                                {isActive && isProcessing && !tabState.currentAssistantMessage && (
-                                  <Message from="assistant">
-                                    <MessageContent>
-                                      <Shimmer duration={1}>Thinking...</Shimmer>
-                                    </MessageContent>
-                                  </Message>
-                                )}
-                              </>
-                            )}
-                          </ConversationContent>
-                        </Conversation>
-                      </div>
-                    )
-                  })}
-                </div>
-
-                <div className="sticky bottom-0 z-10 bg-background pb-12 pt-0 shadow-lg">
-                  <div className="pointer-events-none absolute inset-x-0 -top-6 h-6 bg-linear-to-t from-background to-transparent" />
-                  <div className="mx-auto w-full max-w-4xl px-4">
-                    {!hasConversation && (
-                      <Suggestions onSelect={setPresetMessage} className="mb-3 justify-center" />
-                    )}
-                    {chatTabs.map((tab) => {
-                      const isActive = tab.id === activeChatTabId
-                      const tabState = getChatTabStateForRender(tab.id)
-                      return (
-                        <div
-                          key={tab.id}
-                          className={isActive ? 'block' : 'hidden'}
-                          data-chat-input-panel={tab.id}
-                          aria-hidden={!isActive}
-                        >
-                          <ChatInputWithMentions
-                            knowledgeFiles={knowledgeFiles}
-                            recentFiles={recentWikiFiles}
-                            visibleFiles={visibleKnowledgeFiles}
-                            onSubmit={handlePromptSubmit}
-                            onStop={handleStop}
-                            isProcessing={isActive && isProcessing}
-                            isStopping={isActive && isStopping}
-                            isActive={isActive}
-                            presetMessage={isActive ? presetMessage : undefined}
-                            onPresetMessageConsumed={isActive ? () => setPresetMessage(undefined) : undefined}
-                            runId={tabState.runId}
-                            initialDraft={chatDraftsRef.current.get(tab.id)}
-                            onDraftChange={(text) => setChatDraftForTab(tab.id, text)}
-                            isRecording={isActive && isRecording}
-                            recordingText={isActive ? voice.interimText : undefined}
-                            recordingState={isActive ? (voice.state === 'connecting' ? 'connecting' : 'listening') : undefined}
-                            onStartRecording={isActive ? handleStartRecording : undefined}
-                            onSubmitRecording={isActive ? handleSubmitRecording : undefined}
-                            onCancelRecording={isActive ? handleCancelRecording : undefined}
-                            voiceAvailable={isActive && voiceAvailable}
-                            ttsAvailable={isActive && ttsAvailable}
-                            ttsEnabled={ttsEnabled}
-                            ttsMode={ttsMode}
-                            onToggleTts={isActive ? handleToggleTts : undefined}
-                            onTtsModeChange={isActive ? handleTtsModeChange : undefined}
-                          />
-                        </div>
-                      )
-                    })}
-                  </div>
-                </div>
-              </div>
-              </FileCardProvider>
               )}
+              <div ref={setAssistantPageHost} hidden={activeMiddle !== 'chat' || !assistantLayout.assistant} className={cn('min-h-0 flex-1', activeMiddle === 'chat' && assistantLayout.assistant ? 'flex flex-col' : 'hidden')}
+                onFocusCapture={() => { if (assistantLayout.assistant) { dispatchAssistantLayout({ type: 'focus', id: assistantLayout.assistant }); switchChatTab(assistantLayout.assistant) } }}
+                onPointerDownCapture={() => { if (assistantLayout.assistant) { dispatchAssistantLayout({ type: 'focus', id: assistantLayout.assistant }); switchChatTab(assistantLayout.assistant) } }} />
+              </div>
+              </div>
             </SidebarInset>
 
-            {/* Chat sidebar - shown when viewing files/graph */}
-            {isRightPaneContext && (
-              <ChatSidebar
-                defaultWidth={460}
-                isOpen={isChatSidebarOpen}
+              <AssistantWorkspace
+                layout={assistantLayout} dispatch={dispatchAssistantLayout} pageHost={assistantPageHost} pageVisible={activeMiddle === 'chat'}
+                legacyPane={isCodePaneActive} workspaceSessionId={activeCodeSession?.session.id ?? null}
+                onMoveChat={moveAssistantChat} onNewChatAt={newChatAt} onSelectChatAt={selectChatAt} onFocusChat={switchChatTab}
+                onHideSidebar={() => dispatchAssistantLayout({ type: 'hide-sidebar' })} onCloseChat={closeAssistantChat}
+                onSubmitForTab={(id, message, mentions, attachments, search, mode, permission) => handlePromptSubmit(message, mentions, attachments, search, mode, permission, id)}
+                voiceOwner={voiceOwner} callChatId={hoverRunId}
+                onStartRecordingForTab={(id) => { switchChatTab(id); handleStartRecording(chatIdForTab(id)) }}
+                onStartCallForTab={(id, preset) => { switchChatTab(id); handleStartCall(preset) }}
+                keepMounted placement={chatPanePlacement}
+                paneSize={codeChatMain ? 'chat-bigger' : chatPaneSize}
+                // Flex order of the legacy (Code / Projects) chat pane: after
+                // the SidebarInset, before the assistant sidebar (order-4).
+                // Middle placement in Code swaps it in front of the rail.
+                className={isChatPaneInMiddle ? "order-2" : "order-3"}
+                defaultWidth={DEFAULT_CHAT_PANE_WIDTH}
+                isOpen={chatPaneOpen}
                 isMaximized={isRightPaneMaximized}
+                codeSessionTabs={codeChatMain && activeCodeSession ? <WorkspaceSessionTabs session={activeCodeSession.session} onSelect={setCodeFocusSessionId} /> : undefined}
                 chatTabs={chatTabs}
+                onSwitchChatTab={switchChatTab}
+                onCloseChatTabs={closeChatTabs}
                 activeChatTabId={activeChatTabId}
                 getChatTabTitle={getChatTabTitle}
-                isChatTabProcessing={isChatTabProcessing}
-                onSwitchChatTab={switchChatTab}
-                onCloseChatTab={closeChatTab}
+                recentRuns={chatRuns}
+                onSelectRun={bindChatToRun}
                 onNewChatTab={handleNewChatTabInSidebar}
-                onOpenFullScreen={toggleRightPaneMaximize}
-                conversation={conversation}
-                currentAssistantMessage={currentAssistantMessage}
-                chatTabStates={chatViewStateByTab}
-                isProcessing={isProcessing}
+                onOpenChatHistory={() => void navigateToView({ type: 'chat-history' })}
+                // In Code the chat already is the main pane: no "Expand chat".
+                onOpenFullScreen={codeChatMain ? undefined : toggleRightPaneMaximize}
+                onNavigateBack={() => { void navigateBack() }}
+                onNavigateForward={() => { void navigateForward() }}
+                canNavigateBack={canNavigateBack}
+                canNavigateForward={canNavigateForward}
+                conversation={activeChatTabState.conversation}
+                currentAssistantMessage={activeChatTabState.currentAssistantMessage}
+                currentReasoning={activeChatTabState.currentReasoning}
+                sessionUsage={activeChatTabState.sessionUsage}
+                chatTabStates={chatTabStatesForRender}
+                viewportAnchors={chatViewportAnchorByTab}
+                isProcessing={activeIsProcessing}
                 isStopping={isStopping}
                 onStop={handleStop}
                 onSubmit={handlePromptSubmit}
-                knowledgeFiles={knowledgeFiles}
+                queuedForActive={
+                  runId && sessionChat.sessionId === runId ? sessionChat.queued : undefined
+                }
+                onRemoveQueued={handleRemoveQueued}
+                onPullQueued={handlePullQueued}
+                knowledgeFiles={mentionableFiles}
                 recentFiles={recentWikiFiles}
                 visibleFiles={visibleKnowledgeFiles}
                 runId={runId}
                 presetMessage={presetMessage}
                 onPresetMessageConsumed={() => setPresetMessage(undefined)}
-                getInitialDraft={(tabId) => chatDraftsRef.current.get(tabId)}
+                getInitialDraft={(tabId) => chatDraftsRef.current.get(chatIdForTab(tabId))}
                 onDraftChangeForTab={setChatDraftForTab}
-                pendingAskHumanRequests={pendingAskHumanRequests}
-                allPermissionRequests={allPermissionRequests}
-                permissionResponses={permissionResponses}
+                onSelectionChangeForTab={(tabId, selection) => {
+                  if (selection) {
+                    selectionByTabRef.current.set(chatIdForTab(tabId), selection)
+                  } else {
+                    selectionByTabRef.current.delete(chatIdForTab(tabId))
+                  }
+                }}
+                getInitialSelection={(tabId) => selectionByTabRef.current.get(chatIdForTab(tabId)) ?? null}
+                restoredSelectionForActive={
+                  runId && sessionChat.sessionId === runId && sessionChat.chatState
+                    ? sessionChat.chatState.lastSelection
+                    : undefined
+                }
+                workDirByTab={workDirByTab}
+                onWorkDirChangeForTab={setTabWorkDir}
+                codeSessionLocks={codeSessionLocks}
+                pinnedToCodeSession={
+                  codeChatMain
+                    && activeCodeSession
+                    ? {
+                        session: activeCodeSession.session,
+                        status: activeCodeSession.status,
+                        panel: codePanel,
+                        onTogglePanel: toggleCodePanel,
+                      }
+                    : null
+                }
+                pendingAskHumanRequests={activeChatTabState.pendingAskHumanRequests}
+                allPermissionRequests={activeChatTabState.allPermissionRequests}
+                permissionResponses={activeChatTabState.permissionResponses}
+                autoPermissionDecisions={activeChatTabState.autoPermissionDecisions}
+                isReasoning={activeIsReasoning}
+                isWaitingOnHuman={activeIsWaitingOnHuman}
                 onPermissionResponse={handlePermissionResponse}
                 onAskHumanResponse={handleAskHumanResponse}
+                onCodePermissionResponse={handleCodePermissionResponse}
                 isToolOpenForTab={isToolOpenForTab}
                 onToolOpenChangeForTab={setToolOpenForTab}
                 onOpenKnowledgeFile={(path) => { navigateToFile(path) }}
+                onOpenFile={(path) => { navigateToFile(path) }}
                 onActivate={() => setActiveShortcutPane('right')}
+                collapsedLeftPaddingPx={collapsedLeftPaddingPx}
+                // Gated on mic ownership: when another composer (Home, a
+                // call) owns the mic, the dock must not mirror the recording.
                 isRecording={isRecording}
                 recordingText={voice.interimText}
-                recordingState={voice.state === 'connecting' ? 'connecting' : 'listening'}
-                onStartRecording={handleStartRecording}
+                recordingState={voice.state === 'submitting' ? 'stopping' : voice.state === 'connecting' ? 'connecting' : 'listening'}
+                audioLevelsRef={voice.audioLevelsRef}
+                onStartRecording={() => handleStartRecording(chatIdForTab(activeChatTabIdRef.current))}
                 onSubmitRecording={handleSubmitRecording}
                 onCancelRecording={handleCancelRecording}
                 voiceAvailable={voiceAvailable}
-                ttsAvailable={ttsAvailable}
-                ttsEnabled={ttsEnabled}
-                ttsMode={ttsMode}
-                onToggleTts={handleToggleTts}
-                onTtsModeChange={handleTtsModeChange}
+                inCall={inCall}
+                callOnThisChat={callOnActiveChat}
+                onStartCall={handleStartCall}
+                onEndCall={endCall}
+                callAvailable={voiceAvailable && ttsAvailable}
+                onComposioConnected={handleComposioConnected}
+              />
+            {/* Terminal drawer beside the project chat:
+                terminal — one of the chat header's buttons opens it. */}
+            {codeChatMain && activeCodeSession && activeCodeSession.session.codeModeEnabled !== false && codePanel && (
+              <CodeWorkspaceDrawer
+                key={`${activeCodeSession.session.id}:${activeCodeSession.session.worktree?.baseCommit ?? ''}`}
+                session={activeCodeSession.session}
+                panel={codePanel}
+                onClose={() => setCodePanel(null)}
+                placement={chatPanePlacement}
+                // Same order as the chat pane; later in the DOM, so it lands on
+                // the chat's far side (right of it, or between it and the rail
+                // in middle placement) and its resize handle sits on the seam.
+                className={isChatPaneInMiddle ? "order-2" : "order-3"}
               />
             )}
-            {/* Rendered last so its no-drag region paints over the sidebar drag region */}
-            <FixedSidebarToggle
-              onNavigateBack={() => { void navigateBack() }}
-              onNavigateForward={() => { void navigateForward() }}
-              canNavigateBack={canNavigateBack}
-              canNavigateForward={canNavigateForward}
-              onNewChat={handleNewChatTab}
-              onOpenSearch={() => setIsSearchOpen(true)}
-              meetingState={meetingTranscription.state}
-              meetingSummarizing={meetingSummarizing}
-              meetingAvailable={voiceAvailable}
-              onToggleMeeting={() => { void handleToggleMeeting() }}
-              leftInsetPx={isMac ? MACOS_TRAFFIC_LIGHTS_RESERVED_PX : 0}
+            {/* Full-screen call: user tile + animated mascot tile. Shown only
+                when the derived surface says so (camera on, no screen share,
+                not minimized) — otherwise the call lives in the floating
+                popout window. */}
+            {callSurface === 'fullscreen' && (
+              <VideoCallView
+                streamRef={video.streamRef}
+                onToggleScreenShare={handleToggleScreenShare}
+                cameraOn={video.cameraOn}
+                onToggleCamera={handleToggleCamera}
+                micMuted={micMuted}
+                onToggleMic={handleToggleMic}
+                practiceMode={practiceMode}
+                onMinimize={() => void handleMinimizeCall()}
+                onInterrupt={handleInterruptAssistant}
+                ttsState={tts.state}
+                getTtsLevel={tts.getLevel}
+                status={videoCallStatus ?? 'idle'}
+                pttStatus={pttStatus}
+                onPttDown={handlePttDown}
+                onPttUp={handlePttUp}
+                interimText={voice.interimText}
+                assistantCaption={assistantCaption}
+                onLeave={endCall}
+              />
+            )}
+            {/* macOS permission explainers (mic / camera / input monitoring) */}
+            <PermissionDialog
+              kind={permissionDialog}
+              onOpenChange={(open) => {
+                if (!open) setPermissionDialog(null)
+              }}
+              onRetry={() => void window.ipc.invoke('ptt:retryHook', null).catch(() => {})}
             />
+            {/* Mascot-guided product tour */}
+            {tourActive && (
+              <ProductTour
+                onClose={() => setTourActive(false)}
+                onNavigate={handleTourNavigate}
+                ttsAvailable={ttsAvailable}
+                ttsState={tts.state}
+                speak={tts.speak}
+                speakUrl={tts.speakUrl}
+                cancelSpeech={tts.cancel}
+                getLevel={tts.getLevel}
+              />
+            )}
+            {/* Top-left gutter strip: continues the titlebar band across the
+                icon rail (the traffic lights are wider than the rail, so the
+                band must be one uninterrupted surface — the rail itself starts
+                below it) and keeps that corner draggable. */}
+            {!sidebarOpen && (
+              <div
+                aria-hidden="true"
+                className="titlebar-drag-region fixed left-0 top-0 z-20 h-10 border-b border-border bg-background"
+                style={{ width: DOCK_GUTTER_PX }}
+              />
+            )}
+            {/* Sidebar toggle — always present (both directions), rendered
+                last so its no-drag region paints over the drag regions. */}
+            <FixedSidebarToggle
+              leftInsetPx={isMac ? MACOS_TRAFFIC_LIGHTS_RESERVED_PX : 0}
+              onNewChat={handleNewChatTab}
+              onWidthChange={setTitlebarControlsWidthPx}
+            />
+            <MenuSidebarToggleBridge />
           </SidebarProvider>
         </div>
-        <SearchDialog
+        <CommandPalette
           open={isSearchOpen}
-          onOpenChange={setIsSearchOpen}
-          onSelectFile={navigateToFile}
-          onSelectRun={(id) => { void navigateToView({ type: 'chat', runId: id }) }}
+          onOpenChange={(o) => { setIsSearchOpen(o); if (!o) setSearchDefaultScope(undefined) }}
+          defaultScope={searchDefaultScope}
+          chats={chatRuns}
+          notes={paletteNotes}
+          onNavigate={handlePaletteNavigate}
         />
       </SidebarSectionProvider>
       <Toaster />
+      <UpdateCard />
+      <CreditCelebration />
+      <BillingErrorDialog
+        open={billingErrorOpen}
+        match={billingErrorMatch}
+        onOpenChange={setBillingErrorOpen}
+      />
+      <AboutDialog open={aboutOpen} onOpenChange={setAboutOpen} />
+      {/* The one host for Create / Join a server (lib/server-dialog.ts): whatever
+          opened it, a finished dialog lands in the org — the joined space, or
+          the server's landing space. */}
+      <ServerDialogs
+        onDone={(orgId, spaceId) => {
+          const org = getSpacesOrgs().find((o) => o.id === orgId)
+          const landing = spaceId ?? (org ? serverLandingSpaceId(org) : '')
+          void navigateToViewRef.current(landing ? { type: 'spaces', orgId, spaceId: landing, rail: { kind: 'general' } } : { type: 'spaces' })
+        }}
+      />
+      <SettingsDialog
+        open={shortcutSettingsOpen}
+        onOpenChange={setShortcutSettingsOpen}
+        defaultTab="shortcuts"
+      />
+      {/* Application menu: Settings… / Help > Keyboard Shortcuts… */}
+      <SettingsDialog
+        open={menuSettings.open}
+        onOpenChange={(open) => setMenuSettings((s) => ({ ...s, open }))}
+        defaultTab={menuSettings.tab}
+      />
+      <SettingsDialog
+        open={voiceSetupOpen}
+        onOpenChange={setVoiceSetupOpen}
+        defaultTab="account"
+      />
       <OnboardingModal
         open={showOnboarding}
         onComplete={handleOnboardingComplete}
+      />
+      <ComposioGoogleMigrationModal
+        open={showComposioGoogleMigration}
+        onOpenChange={setShowComposioGoogleMigration}
+        onReconnect={() => {
+          // Trigger the rowboat-mode Google connect flow. With no credentials
+          // and the user signed in to Rowboat, the main process opens the
+          // webapp `/oauth/google/start` URL. The deep link returns and
+          // completeRowboatGoogleConnect persists the tokens.
+          void window.ipc.invoke('oauth:connect', { provider: 'google' })
+        }}
+      />
+      {!showOnboarding && (
+        <ModelRecommendationUpdateModal
+          update={recommendationUpdate}
+          onClose={() => setRecommendationUpdate(null)}
+        />
+      )}
+      <GoogleDocPickerDialog
+        open={googleDocPickerOpen}
+        targetFolder={googleDocPickerTargetFolder}
+        onOpenChange={setGoogleDocPickerOpen}
+        onImported={(path) => {
+          const parentPath = path.split('/').slice(0, -1).join('/') || 'knowledge'
+          setExpandedPaths(prev => new Set([...prev, parentPath]))
+          void loadDirectory().then(setTree)
+          navigateToFile(path)
+        }}
+      />
+      <NewPresentationDialog
+        open={newPresentationOpen}
+        targetFolder={newPresentationTargetFolder}
+        onOpenChange={setNewPresentationOpen}
+        onCreated={(path) => {
+          const parentPath = path.split('/').slice(0, -1).join('/') || 'knowledge'
+          setExpandedPaths(prev => new Set([...prev, parentPath]))
+          void loadDirectory().then(setTree)
+          navigateToFile(path)
+        }}
       />
       <Dialog open={showMeetingPermissions} onOpenChange={setShowMeetingPermissions}>
         <DialogContent showCloseButton={false}>
@@ -4459,6 +8293,7 @@ function App() {
         </DialogContent>
       </Dialog>
     </TooltipProvider>
+    </OpenBrowserContext.Provider>
   )
 }
 

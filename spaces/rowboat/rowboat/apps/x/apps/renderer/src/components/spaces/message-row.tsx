@@ -1,0 +1,773 @@
+import { useSpaceAccess } from '@/lib/spaces-access'
+import { useReactionReadMark } from '@/hooks/use-reaction-read-mark'
+import { MESSAGE_PROSE } from '@/components/spaces/message-prose'
+import { memo, useState } from 'react'
+import { Bookmark, BookmarkCheck, Bot, ChevronRight, Copy, Forward, Link as LinkIcon, Loader2, MessageSquare, MessageSquareText, MoreHorizontal, Pencil, Pin, PinOff, Quote, SmilePlus, Square, Trash2, X } from 'lucide-react'
+import type { spaces } from '@x/shared'
+import { cn } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
+import {
+    ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSub,
+    ContextMenuSubContent, ContextMenuSubTrigger, ContextMenuTrigger,
+} from '@/components/ui/context-menu'
+import {
+    DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
+import { AgentMark, MemberAvatar, MemberProfilePopover } from '@/components/spaces/atoms'
+import { InvocationLines } from '@/components/spaces/invocation-lines'
+import { MessageEditBox } from '@/components/spaces/edit-box'
+import { EmojiPickerPopover } from '@/components/spaces/emoji-picker'
+import { MessageLinkPreview } from '@/components/spaces/link-preview-card'
+import { ApprovalCard } from '@/components/spaces/approval-card'
+import { PollCard } from '@/components/spaces/poll-card'
+import { SpaceMarkdown, useSpaceRefs } from '@/components/spaces/space-markdown'
+import { frequentEmoji, noteEmojiUsed } from '@/lib/emoji-data'
+import { PIN_EMOJI } from '@/lib/spaces-corpus'
+import {
+    blobAppUrl, formatFeedTime, formatFullTimestamp, joinImageEmbeds,
+    parseBlobAppUrl, resolveMentions, rewriteBlobLinks, splitImageEmbeds, type ImageEmbed,
+} from '@/lib/spaces-presentation'
+import { toast } from '@/lib/toast'
+
+// One message in a stream (general or a thread). Consecutive messages by the
+// same author compact to a time gutter; hover reveals the action bar.
+
+/** The full searchable picker; kept under the old name for the two call sites here. */
+const ReactionPicker = EmojiPickerPopover
+
+// Main's --accent is a 5–6% wash — as a menu highlight it barely reads on the
+// new dark ground. Spaces menus and the hover-bar icons use the stronger wash
+// and tint the label + glyph, so the pointer's target is never in doubt.
+const MENU_HIGHLIGHT =
+    '[&_[role^=menuitem]:focus]:bg-[var(--rowboat-wash)] [&_[role^=menuitem]:focus]:text-[var(--stream-link)] [&_[role^=menuitem]:focus_svg]:text-[var(--stream-link)]!'
+const ICON_HOVER =
+    'transition-colors hover:bg-[var(--rowboat-wash)] hover:text-[var(--stream-link)] active:bg-[var(--stream-mention-wash)] data-[state=open]:bg-[var(--rowboat-wash)] data-[state=open]:text-[var(--stream-link)]'
+
+function joinNames(names: string[]): string {
+    if (names.length <= 1) return names[0] ?? ''
+    return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+}
+
+/** How many reactor avatars the hover card shows before collapsing to +N. */
+const REACTOR_AVATAR_CAP = 8
+
+function ReactionChips({ message, memberNames, selfMemberId, onReact, onPickerOpenChange, orgId, visible }: {
+    message: spaces.Message
+    memberNames: Map<string, string>
+    selfMemberId?: string
+    onReact?: (message: spaces.Message, emoji: string) => void
+    onPickerOpenChange: (open: boolean) => void
+    orgId?: string
+    visible?: boolean
+}) {
+    // The 📌 group is the pin's storage, not a reaction to show: the Bookmarks
+    // panel's Pinned section is its only surface.
+    const groups = (message.reactions ?? []).filter((g) => g.emoji !== PIN_EMOJI)
+    const readRef = useReactionReadMark({ orgId, spaceId: message.spaceId, threadRootId: message.threadRoot,
+        offset: Math.max(0, ...groups.map((g) => g.lastOffset ?? 0)),
+        active: visible !== false && message.author.memberId === selfMemberId })
+    if (groups.length === 0) return null
+    return (
+        <div ref={readRef} className="mt-1 flex flex-wrap items-center gap-1">
+            {groups.map((group) => {
+                const mine = !!selfMemberId && group.memberIds.includes(selfMemberId)
+                const nameOf = (id: string) => (id === selfMemberId ? 'You' : memberNames.get(id) ?? id)
+                return (
+                    <HoverCard key={group.emoji} openDelay={250} closeDelay={100}>
+                        <HoverCardTrigger asChild>
+                            {/* Keep the toggle state available to assistive technology. */}
+                            <button
+                                type="button"
+                                disabled={!onReact} onClick={() => onReact?.(message, group.emoji)}
+                                aria-pressed={mine}
+                                aria-label={`${group.emoji}, ${group.memberIds.length} reactions, ${joinNames(group.memberIds.map(nameOf))}${mine ? ", including you" : ""}`}
+                                className={cn(
+                                    'spaces-reaction inline-flex items-center gap-1 rounded-full border transition-colors',
+                                    mine ? 'border-[var(--stream-link)] bg-[var(--stream-mention-wash)]' : 'border-border bg-background hover:border-foreground/30',
+                                )}
+                            >
+                                <span key={group.memberIds.length} className="text-base leading-none">{group.emoji}</span>
+                                <span className={cn('text-xs font-medium leading-none tabular-nums', mine ? 'text-[var(--stream-link)]' : 'text-muted-foreground')}>{group.memberIds.length}</span>
+                            </button>
+                        </HoverCardTrigger>
+                        <HoverCardContent side="top" className="w-auto max-w-60 p-3">
+                            <div className="flex flex-col items-center gap-1.5 text-center">
+                                <span className="text-2xl leading-none">{group.emoji}</span>
+                                <div className="flex flex-wrap items-center justify-center -space-x-1">
+                                    {group.memberIds.slice(0, REACTOR_AVATAR_CAP).map((id) => (
+                                        <MemberAvatar key={id} id={id} name={nameOf(id)} size="sm" className="ring-2 ring-popover" />
+                                    ))}
+                                    {group.memberIds.length > REACTOR_AVATAR_CAP && (
+                                        <span className="inline-flex size-5 items-center justify-center rounded-full bg-muted text-[9px] font-semibold text-muted-foreground ring-2 ring-popover">
+                                            +{group.memberIds.length - REACTOR_AVATAR_CAP}
+                                        </span>
+                                    )}
+                                </div>
+                                <p className="text-xs leading-snug text-muted-foreground">
+                                    <span className="font-medium text-foreground">{joinNames(group.memberIds.map(nameOf))}</span> reacted with {group.emoji}
+                                </p>
+                            </div>
+                        </HoverCardContent>
+                    </HoverCard>
+                )
+            })}
+            {onReact && <ReactionPicker onPick={(emoji) => onReact?.(message, emoji)} onOpenChange={onPickerOpenChange}>
+                <button
+                    type="button"
+                    title="Add reaction"
+                    className="spaces-reaction spaces-reaction-add inline-flex items-center justify-center rounded-full border border-border bg-background text-muted-foreground hover:text-foreground"
+                >
+                    <SmilePlus className="size-3.5" />
+                </button>
+            </ReactionPicker>}
+        </div>
+    )
+}
+
+
+
+export interface ThreadRowData {
+    /** The thread's identity: its root message id (the row's own message). */
+    rootMessageId: string
+    /** The topic annotation's archived flag (false when the thread is plain). */
+    archived: boolean
+    replyCount: number
+    lastActivityAt: string
+    unreadCount: number
+    workingAgents: string[]
+    /** The topic annotation's stated goal, mentions already resolved; null = a plain thread. */
+    title?: string | null
+}
+
+function MessageRowImpl({
+    message, memberNames, spaceNames, continuation, thread, onOpenThread, onPrefetchThread, onOpenAgentChat, onOpenResponseChat, onStopAgent, onReplyInThread, onAskRowboat, onCopyLink, onReact, onDelete, onEdit, onQuoteReply, onForward, onToggleSave, saved, onRetryFailed, onDiscardFailed, onVotePoll, onRemovePollVote, onEndPoll, dense, selfMemberId, orgId, visible,
+}: {
+    message: spaces.Message & { pending?: boolean; failed?: boolean }
+    orgId?: string
+    visible?: boolean
+    memberNames: Map<string, string>
+    /** Space id → current name (useSpaceNames) — the `#Name` face of a space token in copied text. */
+    spaceNames?: ReadonlyMap<string, string>
+    /** Names the viewer's own agent "Your Rowboat" on thread rows. */
+    selfMemberId?: string
+    continuation: boolean
+    /** Present when a thread hangs under this message (stream only). */
+    thread?: ThreadRowData | null
+    onOpenThread?: (rootMessageId: string) => void
+    /** Hover = intent: warm the thread's replies so the click paints instantly. */
+    onPrefetchThread?: (rootMessageId: string) => void
+    /** Opens the thread's agent session in the chat view (working strip's "Open chat"). */
+    onOpenAgentChat?: (rootMessageId: string) => void
+    /**
+     * Opens the run that posted THIS message (the viewer's own Rowboat's
+     * reply), landing on its turn — the "via Rowboat" label and the menu's
+     * "Open agent chat". Offered only on the viewer's own agent posts: the
+     * session lives on this machine, nobody else's.
+     */
+    onOpenResponseChat?: (message: spaces.Message) => void
+    /** Stops the viewer's own Rowboat working this thread (working strip's stop square). */
+    onStopAgent?: (rootMessageId: string) => void
+    onReplyInThread?: (message: spaces.Message) => void
+    onAskRowboat?: (message: spaces.Message) => void
+    onCopyLink?: (message: spaces.Message) => void
+    /** Toggles the caller's reaction (add when absent, remove when present). */
+    onReact?: (message: spaces.Message, emoji: string) => void
+    /** Deletes the message — only offered on the viewer's own (the org enforces it too). */
+    onDelete?: (message: spaces.Message) => void
+    /** Rewrites the body — only offered on the viewer's own text messages. */
+    onEdit?: (message: spaces.Message, body: string) => void
+    /** Seeds the composer with a quoted copy of this message. */
+    onQuoteReply?: (message: spaces.Message) => void
+    /** Opens the forward-to-destination dialog. */
+    onForward?: (message: spaces.Message) => void
+    /** Toggles the personal saved-for-later bookmark. */
+    onToggleSave?: (message: spaces.Message) => void
+    /** Whether this message sits in the viewer's saved list. */
+    saved?: boolean
+    /** A failed optimistic send: try it again / drop the row. */
+    onRetryFailed?: (message: spaces.Message) => void
+    onDiscardFailed?: (message: spaces.Message) => void
+    /** Submits the poll selection (one answer, or several on multiselect). */
+    onVotePoll?: (message: spaces.Message, answerIds: number[]) => void
+    /** Withdraws all of the viewer's poll votes. */
+    onRemovePollVote?: (message: spaces.Message) => void
+    /** Ends the poll early — only offered on the author's own, open polls. */
+    onEndPoll?: (message: spaces.Message) => void
+    /** Marks thread rows; message geometry stays consistent across both panes. */
+    dense?: boolean
+}) {
+    const { member } = useSpaceAccess()
+    if (!member) {
+        onAskRowboat = undefined
+        onStopAgent = undefined
+        onReplyInThread = undefined
+        onReact = undefined
+        onDelete = undefined
+        onEdit = undefined
+        onQuoteReply = undefined
+        onForward = undefined
+        onToggleSave = undefined
+        onRetryFailed = undefined
+        onDiscardFailed = undefined
+        onVotePoll = undefined
+        onRemovePollVote = undefined
+        onEndPoll = undefined
+    }
+    const name = memberNames.get(message.author.memberId) ?? message.author.memberId
+    const viaAgent = message.author.actingMode !== 'direct'
+    const avatarSize = 'xl'
+    const gutter = 'w-9'
+    // A tombstone renders only its note (and any thread row under it) — no
+    // reactions, no hover actions; the deed is done.
+    const deleted = !!message.deletedAt
+    // Unconfirmed sends (pending or failed) have no server id yet — nothing
+    // can act on them either.
+    const unconfirmed = !!message.pending || !!message.failed
+    const canDelete = !!onDelete && !deleted && !unconfirmed && selfMemberId === message.author.memberId
+    // Poll messages are immutable once posted (the org refuses too).
+    const canEdit = !!onEdit && !deleted && !unconfirmed && !message.poll && selfMemberId === message.author.memberId
+    // The inline editor: null = not editing. Images live beside the text, not
+    // in it — the box edits prose while the embeds show as removable
+    // thumbnails (the Slack model); split/joinImageEmbeds carry the round trip.
+    // `initial` seeds the editor once; `text` is its live markdown; `baseline`
+    // is what an untouched draft serializes to (see MessageEditBox.onChange).
+    const [edit, setEdit] = useState<{ initial: string; text: string; images: ImageEmbed[]; baseline: string | null } | null>(null)
+    const refs = useSpaceRefs()
+    // A thumbnail address for an extracted embed: the org's blob links render
+    // through the app:// cache (their https wire form doesn't), anything
+    // external is its own src.
+    const editThumbSrc = (url: string): string => {
+        if (!refs) return url
+        const parsed = parseBlobAppUrl(rewriteBlobLinks(url, refs))
+        return parsed ? blobAppUrl(parsed, parsed.hash, { thumb: 128 }) : url
+    }
+    // The edit box parses the stored markdown itself: mention tokens become
+    // pills and serialize back to tokens, so nothing is rewritten on the way
+    // in or out.
+    const beginEdit = () => {
+        const { text, images } = splitImageEmbeds(message.body)
+        setEdit({ initial: text, text, images, baseline: null })
+    }
+    const commitEdit = () => {
+        if (!edit) return
+        const body = joinImageEmbeds(edit.text, edit.images)
+        setEdit(null)
+        if (!body || body === message.body) return
+        // A no-change save must never rewrite the message, and the assembled
+        // body alone can't tell: the editor normalizes markdown, legacy inline
+        // images move to the tile row, mentions re-encode. Compare the parts
+        // instead — text against the editor's own baseline, images by url.
+        const orig = splitImageEmbeds(message.body)
+        const untouched = edit.baseline !== null
+            && edit.text === edit.baseline
+            && edit.images.length === orig.images.length
+            && edit.images.every((img, i) => img.url === orig.images[i]?.url)
+        if (!untouched) onEdit!(message, body)
+    }
+    const showActions = !deleted && !unconfirmed && !!(onReplyInThread || onAskRowboat || onCopyLink || onReact || canDelete)
+    // While the emoji picker or the ⋯ menu is open the hover-revealed chrome
+    // must stay put — unmounting it collapses the popper anchor and the menu
+    // would jump to the viewport edge.
+    const [pickerOpen, setPickerOpen] = useState(false)
+    const [menuOpen, setMenuOpen] = useState(false)
+
+    // What "Copy message" copies: mentions resolved to names, image embeds
+    // dropped — their app:// addresses mean nothing outside the app. Empty
+    // (image-only message, tombstone) hides the item.
+    const messageText = deleted || unconfirmed ? '' : resolveMentions(message.body, memberNames, spaceNames).replace(/!\[[^\]]*\]\([^)]*\)/g, '').trim()
+    // The selection as it stood when the context menu opened (opening keeps it).
+    const [selectionText, setSelectionText] = useState('')
+    const copyToClipboard = (text: string) => {
+        void navigator.clipboard.writeText(text).then(
+            () => toast('Copied', 'success'),
+            () => toast('Could not copy', 'error'),
+        )
+    }
+
+    // Pin state rides the reactions (the 📌 group): pinned = anyone's 📌,
+    // "Unpin" removes the viewer's own. Shared with zero wire change.
+    const pinnedByMe = !!selfMemberId && !!(message.reactions ?? []).find((g) => g.emoji === PIN_EMOJI)?.memberIds.includes(selfMemberId)
+    const canPin = !!onReact && !deleted && !unconfirmed
+    const canSave = !!onToggleSave && !deleted && !unconfirmed
+    const canQuote = !!onQuoteReply && !deleted && !unconfirmed && !!messageText
+    const canForward = !!onForward && !deleted && !unconfirmed
+    const canOpenResponseChat = !!onOpenResponseChat && viaAgent && !deleted && !unconfirmed && selfMemberId === message.author.memberId
+
+    const row = (
+        <div
+            data-mid={message.id}
+            tabIndex={showActions ? 0 : undefined}
+            data-continuation={continuation || undefined}
+            data-dense={dense || undefined}
+            className={cn(
+                'spaces-message group/msg relative flex items-start',
+                continuation ? 'spaces-message--continuation' : 'spaces-message--start',
+            )}
+        >
+            {continuation ? (
+                <span title={formatFullTimestamp(message.postedAt)} className={cn('shrink-0 pt-1 text-right text-[11px] leading-[22px] tabular-nums text-muted-foreground/0 group-hover/msg:text-muted-foreground', gutter)}>
+                    {formatFeedTime(message.postedAt).replace(/^Yesterday /, '')}
+                </span>
+            ) : (
+                <MemberProfilePopover id={message.author.memberId}>
+                    <button type="button" aria-label={`${name}’s profile`} className="mt-0.5 shrink-0 cursor-pointer rounded-full">
+                        <MemberAvatar id={message.author.memberId} name={name} size={avatarSize} />
+                    </button>
+                </MemberProfilePopover>
+            )}
+            <div className="min-w-0 flex-1">
+                {!continuation && (
+                    <div className="flex flex-wrap items-baseline gap-x-2 text-xs">
+                        <MemberProfilePopover id={message.author.memberId}>
+                            <button type="button" className="cursor-pointer text-[15px] font-bold leading-[22px] text-foreground hover:underline">{name}</button>
+                        </MemberProfilePopover>
+                        <AgentMark id={message.author.memberId} />
+                        {viaAgent && (
+                            canOpenResponseChat ? (
+                                // Your own Rowboat's post: the label is the subtle way in
+                                // to the run that wrote it (the ⋯ menu has it too).
+                                <button
+                                    type="button"
+                                    onClick={() => onOpenResponseChat!(message)}
+                                    title="Open the agent chat that wrote this"
+                                    className="cursor-pointer text-muted-foreground hover:text-[var(--stream-link)] hover:underline"
+                                >
+                                    via {message.author.agentName ?? 'agent'}{message.author.actingMode === 'scheduled' ? ', scheduled' : ''}
+                                </button>
+                            ) : (
+                                <span className="text-muted-foreground">
+                                    via {message.author.agentName ?? 'agent'}{message.author.actingMode === 'scheduled' ? ', scheduled' : ''}
+                                </span>
+                            )
+                        )}
+                        <span title={formatFullTimestamp(message.postedAt)} className="text-muted-foreground">{formatFeedTime(message.postedAt)}</span>
+                    </div>
+                )}
+                {member && edit !== null ? (
+                    <div className="mt-1">
+                        <MessageEditBox
+                            initial={edit.initial}
+                            onChange={(text) => setEdit((e) => (e ? { ...e, text, baseline: e.baseline ?? text } : e))}
+                            onSave={commitEdit}
+                            onCancel={() => setEdit(null)}
+                        >
+                            {edit.images.length > 0 && (
+                                <div className="flex flex-wrap items-center gap-1.5 px-2.5 pb-1 pt-1">
+                                    {edit.images.map((img, i) => (
+                                        <span key={`${img.url}-${i}`} className="group/edit-thumb relative">
+                                            <img src={editThumbSrc(img.url)} alt={img.alt} title={img.alt} className="size-16 rounded-lg border border-border object-cover" />
+                                            <button
+                                                type="button"
+                                                onClick={() => setEdit({ ...edit, images: edit.images.filter((_, j) => j !== i) })}
+                                                aria-label={`Remove ${img.alt || 'image'}`}
+                                                className="absolute -right-1.5 -top-1.5 hidden rounded-full border border-border bg-background p-0.5 text-muted-foreground shadow-xs hover:text-foreground group-hover/edit-thumb:block"
+                                            >
+                                                <X className="size-3" />
+                                            </button>
+                                        </span>
+                                    ))}
+                                </div>
+                            )}
+                            <div className="flex items-center gap-2 px-2 pb-2 pt-1 text-xs">
+                                <span className="text-muted-foreground/70">Enter to save · Esc to cancel</span>
+                                <Button variant="outline" size="sm" className="ml-auto" onClick={() => setEdit(null)}>Cancel</Button>
+                                <Button size="sm" disabled={!edit.text.trim() && edit.images.length === 0} onClick={commitEdit}>Save</Button>
+                            </div>
+                        </MessageEditBox>
+                    </div>
+                ) : deleted ? (
+                    <div className="text-sm italic leading-relaxed text-muted-foreground">This message was deleted</div>
+                ) : message.approval ? (
+                    // An agent's approval card (spec §8 part 4) replaces the body,
+                    // which is its text rendering for card-blind clients.
+                    <ApprovalCard approval={message.approval} orgId={orgId} selfMemberId={selfMemberId} memberNames={memberNames} />
+                ) : message.poll ? (
+                    // The card replaces the body — the body is the poll's
+                    // markdown fallback for poll-blind clients, not content.
+                    <PollCard
+                        message={message}
+                        poll={message.poll}
+                        selfMemberId={selfMemberId}
+                        memberNames={memberNames}
+                        onVote={onVotePoll}
+                        onRemoveVote={onRemovePollVote}
+                        onEndPoll={onEndPoll}
+                    />
+                ) : (
+                    <div className={cn(MESSAGE_PROSE, message.pending && 'opacity-60')}>
+                        <SpaceMarkdown body={message.body} />
+                        {message.editedAt && (
+                            <span title={formatFullTimestamp(message.editedAt)} className="text-[10.5px] text-muted-foreground/70">(edited)</span>
+                        )}
+                        <MessageLinkPreview body={message.body} messageId={message.id} />
+                    </div>
+                )}
+                {message.failed && (
+                    <div className="mt-0.5 flex items-center gap-2 text-xs text-destructive">
+                        <span>Failed to send</span>
+                        {onRetryFailed && (
+                            <button type="button" onClick={() => onRetryFailed(message)} className="font-medium underline hover:no-underline">
+                                Retry
+                            </button>
+                        )}
+                        {onDiscardFailed && (
+                            <button type="button" onClick={() => onDiscardFailed(message)} className="underline hover:no-underline">
+                                Discard
+                            </button>
+                        )}
+                    </div>
+                )}
+                {!deleted && !unconfirmed && <InvocationLines messageId={message.id} />}
+                {!deleted && !unconfirmed && (
+                    <ReactionChips
+                        message={message}
+                        memberNames={memberNames}
+                        selfMemberId={selfMemberId}
+                        onReact={onReact}
+                        onPickerOpenChange={setPickerOpen}
+                        orgId={orgId}
+                        visible={visible}
+                    />
+                )}
+                {thread && thread.replyCount > 0 && onOpenThread && (
+                    // An explicit reply summary preserves the message as a reading surface.
+                    <button
+                        type="button"
+                        onClick={() => onOpenThread(thread.rootMessageId)}
+                        onMouseEnter={() => onPrefetchThread?.(thread.rootMessageId)}
+                        className={cn(
+                            'spaces-reply-link group/thread mt-1 flex w-fit max-w-full flex-wrap items-center gap-x-2 gap-y-1 rounded border border-transparent px-1 py-1 text-left text-xs transition-colors hover:border-border hover:bg-[var(--rowboat-raised)]',
+                            thread.archived && 'opacity-60',
+                        )}
+                    >
+                        <MessageSquare className="size-3 text-muted-foreground" />
+                        {thread.title && <span className="max-w-48 truncate font-semibold">{thread.title}</span>}
+                        <span className={cn('font-bold text-[var(--stream-link)]', thread.title && 'font-normal text-muted-foreground')}>
+                            {thread.replyCount} {thread.replyCount === 1 ? 'reply' : 'replies'}
+                        </span>
+                        {thread.unreadCount > 0 && <span className="font-semibold text-[var(--rowboat-attention)]">New replies</span>}
+                        <span title={formatFullTimestamp(thread.lastActivityAt)} className="text-muted-foreground">Last reply {formatFeedTime(thread.lastActivityAt)}</span>
+                        {thread.archived && <span className="text-muted-foreground">archived</span>}
+                        {thread.workingAgents.length > 0 && (
+                            <span className="inline-flex items-center gap-1 text-muted-foreground">
+                                <Bot className="size-3" />
+                                {thread.workingAgents.length === 1
+                                    ? thread.workingAgents[0] === selfMemberId
+                                        ? 'Your Rowboat is working…'
+                                        : `${memberNames.get(thread.workingAgents[0]!) ?? thread.workingAgents[0]}’s Rowboat is working…`
+                                    : `${thread.workingAgents.length} agents working…`}
+                            </span>
+                        )}
+                        <span className="flex-1" />
+                        {thread.unreadCount > 0 ? (
+                            <span className="size-1.5 rounded-full bg-foreground" />
+                        ) : (
+                            <ChevronRight className="size-3 text-muted-foreground transition-transform group-hover/thread:translate-x-0.5" />
+                        )}
+                    </button>
+                )}
+                {thread && thread.replyCount === 0 && thread.workingAgents.length > 0 && onOpenThread && (
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                        <button
+                            type="button"
+                            onClick={() => onOpenThread(thread.rootMessageId)}
+                            title="Open the thread"
+                            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                        >
+                            <Loader2 className="size-3 animate-spin" /> Rowboat is working on a reply…
+                        </button>
+                        {onOpenAgentChat && (
+                            <button
+                                type="button"
+                                onClick={() => onOpenAgentChat(thread.rootMessageId)}
+                                title="Open the agent chat for this run"
+                                className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-xs font-medium text-[var(--stream-link)] hover:bg-accent/50"
+                            >
+                                <MessageSquareText className="size-3" /> Open chat
+                            </button>
+                        )}
+                        {onStopAgent && !!selfMemberId && thread.workingAgents.includes(selfMemberId) && (
+                            <button
+                                type="button"
+                                onClick={() => onStopAgent(thread.rootMessageId)}
+                                title="Stop your Rowboat"
+                                className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
+                            >
+                                <Square className="size-2.5 fill-current" /> Stop
+                            </button>
+                        )}
+                    </div>
+                )}
+            </div>
+            {showActions && (
+                <div className={cn('spaces-message-actions absolute right-4 flex items-center rounded-md border border-border bg-[var(--rowboat-raised)] p-1 shadow-sm', (pickerOpen || menuOpen) && 'spaces-message-actions--open')}>
+                    {onReact && (
+                        <ReactionPicker onPick={(emoji) => onReact?.(message, emoji)} onOpenChange={setPickerOpen}>
+                            <button
+                                type="button"
+                                title="Add reaction"
+                                className={cn('inline-flex size-8 items-center justify-center rounded text-muted-foreground', ICON_HOVER)}
+                            >
+                                <SmilePlus className="size-3.5" />
+                            </button>
+                        </ReactionPicker>
+                    )}
+                    {onReplyInThread && (
+                        // Labelled, not icon-only: replying is THE core action
+                        // and a bare glyph made people hunt for it.
+                        <button
+                            type="button"
+                            title={thread && thread.replyCount > 0 ? 'Open thread' : 'Reply in thread'}
+                            onClick={() => (thread && thread.replyCount > 0 && onOpenThread ? onOpenThread(thread.rootMessageId) : onReplyInThread(message))}
+                            className={cn('inline-flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground', ICON_HOVER)}
+                        >
+                            <MessageSquare className="size-3.5" />
+                            {thread && thread.replyCount > 0 ? 'Open' : 'Reply'}
+                        </button>
+                    )}
+                    {onAskRowboat && (
+                        <button
+                            type="button"
+                            title="Ask @rowboat about this"
+                            onClick={() => onAskRowboat(message)}
+                            className={cn('inline-flex size-8 items-center justify-center rounded text-muted-foreground', ICON_HOVER)}
+                        >
+                            <Bot className="size-3.5" />
+                        </button>
+                    )}
+                    {(onCopyLink || canDelete || canEdit || canQuote || canForward || canPin || canSave || canOpenResponseChat) && (
+                        <DropdownMenu onOpenChange={setMenuOpen}>
+                            <DropdownMenuTrigger asChild>
+                                <button type="button" title="More" className={cn('inline-flex size-8 items-center justify-center rounded text-muted-foreground', ICON_HOVER)}>
+                                    <MoreHorizontal className="size-3.5" />
+                                </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className={MENU_HIGHLIGHT}>
+                                {canOpenResponseChat && (
+                                    <DropdownMenuItem onClick={() => onOpenResponseChat!(message)}>
+                                        <Bot className="size-3.5 mr-2" /> Open agent chat
+                                    </DropdownMenuItem>
+                                )}
+                                {canQuote && (
+                                    <DropdownMenuItem onClick={() => onQuoteReply!(message)}>
+                                        <Quote className="size-3.5 mr-2" /> Quote reply
+                                    </DropdownMenuItem>
+                                )}
+                                {canForward && (
+                                    <DropdownMenuItem onClick={() => onForward!(message)}>
+                                        <Forward className="size-3.5 mr-2" /> Forward message
+                                    </DropdownMenuItem>
+                                )}
+                                {canPin && (
+                                    <DropdownMenuItem onClick={() => onReact!(message, PIN_EMOJI)}>
+                                        {pinnedByMe ? <PinOff className="size-3.5 mr-2" /> : <Pin className="size-3.5 mr-2" />}
+                                        {pinnedByMe ? 'Unpin message' : 'Pin message'}
+                                    </DropdownMenuItem>
+                                )}
+                                {canSave && (
+                                    <DropdownMenuItem onClick={() => onToggleSave!(message)}>
+                                        {saved ? <BookmarkCheck className="size-3.5 mr-2" /> : <Bookmark className="size-3.5 mr-2" />}
+                                        {saved ? 'Remove from saved' : 'Save for later'}
+                                    </DropdownMenuItem>
+                                )}
+                                {canEdit && (
+                                    <DropdownMenuItem onClick={beginEdit}>
+                                        <Pencil className="size-3.5 mr-2" /> Edit message
+                                    </DropdownMenuItem>
+                                )}
+                                {messageText && (
+                                    <DropdownMenuItem onClick={() => copyToClipboard(messageText)}>
+                                        <Copy className="size-3.5 mr-2" /> Copy message
+                                    </DropdownMenuItem>
+                                )}
+                                {onCopyLink && (
+                                    <DropdownMenuItem onClick={() => onCopyLink(message)}>
+                                        <LinkIcon className="size-3.5 mr-2" /> Copy link
+                                    </DropdownMenuItem>
+                                )}
+                                {canDelete && (
+                                    <DropdownMenuItem variant="destructive" onClick={() => onDelete!(message)}>
+                                        <Trash2 className="size-3.5 mr-2" /> Delete message
+                                    </DropdownMenuItem>
+                                )}
+                            </DropdownMenuContent>
+                        </DropdownMenu>
+                    )}
+                </div>
+            )}
+        </div>
+    )
+
+    // Right-click mirrors the hover bar. Reactions live behind a submenu on
+    // purpose — the menu opens at the cursor, and an inline emoji row right
+    // under it kept catching accidental clicks. Tombstones and action-less
+    // rows get the plain row.
+    if (!showActions) return row
+    const hasTopItems = !!(onReact || onReplyInThread || onAskRowboat || onCopyLink || messageText)
+    return (
+        <ContextMenu onOpenChange={(open) => { if (open) setSelectionText(window.getSelection()?.toString().trim() ?? '') }}>
+            <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
+            <ContextMenuContent className={cn('w-56', MENU_HIGHLIGHT)}>
+                {selectionText && (
+                    <ContextMenuItem onSelect={() => copyToClipboard(selectionText)}>
+                        <Copy className="size-3.5 mr-2" /> Copy
+                    </ContextMenuItem>
+                )}
+                {onReact && (
+                    <ContextMenuSub>
+                        <ContextMenuSubTrigger>
+                            <SmilePlus className="size-3.5 mr-2" /> Add reaction
+                        </ContextMenuSubTrigger>
+                        <ContextMenuSubContent className={cn('w-auto p-1.5', MENU_HIGHLIGHT)}>
+                            <div className="grid grid-cols-6 gap-0.5">
+                                {frequentEmoji(12).map((emoji) => (
+                                    <ContextMenuItem
+                                        key={emoji}
+                                        onSelect={() => {
+                                            noteEmojiUsed(emoji)
+                                            onReact(message, emoji)
+                                        }}
+                                        className="size-7 justify-center p-0 text-base"
+                                    >
+                                        {emoji}
+                                    </ContextMenuItem>
+                                ))}
+                            </div>
+                        </ContextMenuSubContent>
+                    </ContextMenuSub>
+                )}
+                {onReplyInThread && (
+                    <ContextMenuItem
+                        onSelect={() => (thread && thread.replyCount > 0 && onOpenThread ? onOpenThread(thread.rootMessageId) : onReplyInThread(message))}
+                    >
+                        <MessageSquare className="size-3.5 mr-2" /> {thread && thread.replyCount > 0 ? 'Open thread' : 'Reply in thread'}
+                    </ContextMenuItem>
+                )}
+                {canQuote && (
+                    <ContextMenuItem onSelect={() => onQuoteReply!(message)}>
+                        <Quote className="size-3.5 mr-2" /> Quote reply
+                    </ContextMenuItem>
+                )}
+                {canForward && (
+                    <ContextMenuItem onSelect={() => onForward!(message)}>
+                        <Forward className="size-3.5 mr-2" /> Forward message
+                    </ContextMenuItem>
+                )}
+                {onAskRowboat && (
+                    <ContextMenuItem onSelect={() => onAskRowboat(message)}>
+                        <Bot className="size-3.5 mr-2" /> Ask @rowboat about this
+                    </ContextMenuItem>
+                )}
+                {canEdit && (
+                    <ContextMenuItem onSelect={beginEdit}>
+                        <Pencil className="size-3.5 mr-2" /> Edit message
+                    </ContextMenuItem>
+                )}
+                {messageText && (
+                    <ContextMenuItem onSelect={() => copyToClipboard(messageText)}>
+                        <Copy className="size-3.5 mr-2" /> Copy message
+                    </ContextMenuItem>
+                )}
+                {onCopyLink && (
+                    <ContextMenuItem onSelect={() => onCopyLink(message)}>
+                        <LinkIcon className="size-3.5 mr-2" /> Copy link
+                    </ContextMenuItem>
+                )}
+                {canPin && (
+                    <ContextMenuItem onSelect={() => onReact!(message, PIN_EMOJI)}>
+                        {pinnedByMe ? <PinOff className="size-3.5 mr-2" /> : <Pin className="size-3.5 mr-2" />}
+                        {pinnedByMe ? 'Unpin message' : 'Pin message'}
+                    </ContextMenuItem>
+                )}
+                {canSave && (
+                    <ContextMenuItem onSelect={() => onToggleSave!(message)}>
+                        {saved ? <BookmarkCheck className="size-3.5 mr-2" /> : <Bookmark className="size-3.5 mr-2" />}
+                        {saved ? 'Remove from saved' : 'Save for later'}
+                    </ContextMenuItem>
+                )}
+                {canDelete && (
+                    <>
+                        {hasTopItems && <ContextMenuSeparator />}
+                        <ContextMenuItem variant="destructive" onSelect={() => onDelete!(message)}>
+                            <Trash2 className="size-3.5 mr-2" /> Delete message
+                        </ContextMenuItem>
+                    </>
+                )}
+            </ContextMenuContent>
+        </ContextMenu>
+    )
+}
+
+type MessageRowProps = Parameters<typeof MessageRowImpl>[0]
+
+function threadRowEqual(a: ThreadRowData | null | undefined, b: ThreadRowData | null | undefined): boolean {
+    if (!a || !b) return !a === !b
+    return (
+        a.rootMessageId === b.rootMessageId &&
+        a.archived === b.archived &&
+        a.replyCount === b.replyCount &&
+        a.lastActivityAt === b.lastActivityAt &&
+        a.unreadCount === b.unreadCount &&
+        a.title === b.title &&
+        a.workingAgents.length === b.workingAgents.length &&
+        a.workingAgents.every((id, i) => id === b.workingAgents[i])
+    )
+}
+
+/**
+ * Memoized by DATA, deliberately ignoring the handler props: the stream
+ * recreates its closures every render (presence frames, visibility flips),
+ * and comparing them would make the memo worthless. Safe because everything
+ * a handler reads is either per-pane-stable (org, space) or flows through a
+ * compared prop — a thread index change reaches the row as a new `thread`
+ * object, which re-renders it with fresh closures.
+ */
+export const MessageRow = memo(MessageRowImpl, (prev: MessageRowProps, next: MessageRowProps) =>
+    prev.message === next.message &&
+    prev.continuation === next.continuation &&
+    prev.selfMemberId === next.selfMemberId &&
+    prev.orgId === next.orgId &&
+    prev.visible === next.visible &&
+    prev.dense === next.dense &&
+    prev.saved === next.saved &&
+    prev.memberNames === next.memberNames &&
+    prev.spaceNames === next.spaceNames &&
+    threadRowEqual(prev.thread, next.thread),
+)
+
+export function DayDivider({ label }: { label: string }) {
+    return (
+        <div className="spaces-day-divider flex items-center gap-3">
+            <span className="h-px flex-1 bg-border" />
+            <span className="rounded-full border border-border bg-background px-4 py-1 text-[13px] font-semibold">{label}</span>
+            <span className="h-px flex-1 bg-border" />
+        </div>
+    )
+}
+
+/** The line has been seen: fade over 700ms; the pane drops it after. */
+export function NewDivider({ fading = false }: { fading?: boolean }) {
+    return (
+        // data-new-divider: the jump-to-unread pill scrolls to this element.
+        <div data-new-divider className={cn('flex items-center gap-2.5 px-2 py-1 transition-opacity duration-700', fading && 'opacity-0')}>
+            <span className="h-px flex-1 bg-[var(--rowboat-attention)]" />
+            <span className="text-[11px] font-medium text-[var(--rowboat-attention)]">New</span>
+        </div>
+    )
+}
+
+export function TypingIndicator({ names }: { names: string[] }) {
+    if (names.length === 0) return null
+    const label = names.length === 1 ? `${names[0]} is typing…` : names.length === 2 ? `${names[0]} and ${names[1]} are typing…` : `${names.length} people are typing…`
+    return (
+        <div className="flex items-center gap-1.5 px-2 pl-12 text-xs text-muted-foreground">
+            <span className="inline-flex gap-0.5">
+                <span className="size-1 rounded-full bg-muted-foreground/70 animate-pulse" />
+                <span className="size-1 rounded-full bg-muted-foreground/70 animate-pulse [animation-delay:150ms]" />
+                <span className="size-1 rounded-full bg-muted-foreground/70 animate-pulse [animation-delay:300ms]" />
+            </span>
+            {label}
+        </div>
+    )
+}

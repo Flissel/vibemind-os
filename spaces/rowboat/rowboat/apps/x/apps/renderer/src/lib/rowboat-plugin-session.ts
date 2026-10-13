@@ -1,3 +1,4 @@
+// VibeMind addition (Flissel/rowboat vibemind): plugin settings (vibemind-os 3b282629 and follow-ups).
 import {
   canonicalPluginOrigin,
   parsePluginApiJson,
@@ -38,22 +39,34 @@ function record(value: unknown, keys: readonly string[]): object {
   return value;
 }
 
+function plainObject(value: unknown): object {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('plugin_session_unavailable');
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) throw new Error('plugin_session_unavailable');
+  return value;
+}
+
+// Rowboat at 72e9d8c: account:getRowboat carries only the sign-in state; the service URLs come from
+// rowboat:getConfig (a larger object, so only appUrl is checked there).
 async function acquire() {
-  let raw: unknown;
-  try { raw = await window.ipc.invoke('account:getRowboat', null); }
+  let rawAccount: unknown;
+  try { rawAccount = await window.ipc.invoke('account:getRowboat', null); }
+  catch { throw new Error('plugin_session_unavailable'); }
+  let accessToken: string;
+  try {
+    const account = record(rawAccount, ['signedIn', 'accessToken']);
+    const signedIn = ownData(account, 'signedIn');
+    const token = ownData(account, 'accessToken');
+    if (signedIn === false && token === null) return null;
+    if (signedIn !== true || typeof token !== 'string' || token.length < 1 || token.length > TOKEN_LIMIT || /[,\s\0]/.test(token)) throw new Error();
+    accessToken = token;
+  } catch { throw new Error('plugin_session_unavailable'); }
+  let rawConfig: unknown;
+  try { rawConfig = await window.ipc.invoke('rowboat:getConfig', null); }
   catch { throw new Error('plugin_session_unavailable'); }
   try {
-    const account = record(raw, ['signedIn', 'accessToken', 'config']);
-    const signedIn = ownData(account, 'signedIn');
-    const accessToken = ownData(account, 'accessToken');
-    const configValue = ownData(account, 'config');
-    if (signedIn === false && accessToken === null && configValue === null) return null;
-    if (signedIn !== true || typeof accessToken !== 'string' || accessToken.length < 1 || accessToken.length > TOKEN_LIMIT || /[,\s\0]/.test(accessToken)) throw new Error();
-    const config = record(configValue, ['appUrl', 'websocketApiUrl', 'supabaseUrl']);
-    const appUrl = ownData(config, 'appUrl');
-    const websocketApiUrl = ownData(config, 'websocketApiUrl');
-    const supabaseUrl = ownData(config, 'supabaseUrl');
-    if (typeof appUrl !== 'string' || typeof websocketApiUrl !== 'string' || typeof supabaseUrl !== 'string') throw new Error();
+    const appUrl = ownData(plainObject(rawConfig), 'appUrl');
+    if (typeof appUrl !== 'string') throw new Error();
     const origin = canonicalPluginOrigin(appUrl);
     return Object.freeze({ baseUrl: appUrl, accessToken, origin });
   } catch { throw new Error('plugin_session_unavailable'); }

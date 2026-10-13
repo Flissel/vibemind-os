@@ -1,0 +1,981 @@
+import type { SqlDb } from './sql.js';
+
+// Versioned schema migrations, in code (no files, no CLI — Harbor stays a
+// single artifact). Each entry is an ordered list of single statements
+// (PGlite's query path is single-statement). Applied entries are recorded in
+// schema_migrations and never rerun; application takes a transaction-scoped
+// advisory lock so concurrently booting nodes can't race.
+//
+// Rules for new migrations: append only, never edit an applied entry; one
+// concern per migration; keep statements idempotent where cheap (belt), but
+// ordering + recording is the real contract. 001 is the pre-migration-era
+// bootstrap verbatim — fully idempotent, so an existing database adopts the
+// ladder by simply no-opping through it.
+
+export interface Migration {
+  id: string;
+  statements: string[];
+}
+
+export const MIGRATIONS: Migration[] = [
+  {
+    id: '001-init',
+    statements: [
+      `create table if not exists members (
+        id text primary key,
+        display_name text not null,
+        avatar_url text
+      )`,
+      `create table if not exists member_identities (
+        iss text not null,
+        sub text not null,
+        member_id text not null,
+        primary key (iss, sub)
+      )`,
+      `create table if not exists spaces (
+        id text primary key,
+        name text not null,
+        created_at text not null
+      )`,
+      `create table if not exists memberships (
+        space_id text not null,
+        member_id text not null,
+        joined_at text not null,
+        primary key (space_id, member_id)
+      )`,
+      `create table if not exists assets (
+        space_id text not null,
+        path text not null,
+        version int not null,
+        updated_at text not null,
+        primary key (space_id, path)
+      )`,
+      `create table if not exists asset_versions (
+        space_id text not null,
+        path text not null,
+        version int not null,
+        content text not null,
+        primary key (space_id, path, version)
+      )`,
+      `create table if not exists change_sets (
+        id text primary key,
+        space_id text not null,
+        asset_path text not null,
+        base_version int not null,
+        result_version int not null,
+        attribution jsonb not null,
+        reason text,
+        committed_at text not null,
+        stream_offset int not null
+      )`,
+      `create index if not exists change_sets_space_offset on change_sets (space_id, stream_offset desc)`,
+      `create table if not exists topics (
+        id text primary key,
+        space_id text not null,
+        title text not null,
+        created_by jsonb not null,
+        created_at text not null,
+        archived boolean not null,
+        anchor_change_set_id text,
+        last_activity_at text not null,
+        message_count int not null
+      )`,
+      `create index if not exists topics_space on topics (space_id, last_activity_at desc)`,
+      `create table if not exists messages (
+        id text primary key,
+        space_id text not null,
+        topic_id text not null,
+        author jsonb not null,
+        body text not null,
+        posted_at text not null,
+        stream_offset int not null
+      )`,
+      `create index if not exists messages_topic on messages (space_id, topic_id, stream_offset)`,
+      `create table if not exists invites (
+        token text primary key,
+        space_id text not null,
+        created_by text not null,
+        created_at text not null,
+        expires_at text,
+        revoked boolean not null default false
+      )`,
+      `create table if not exists events (
+        space_id text not null,
+        stream_offset int not null,
+        at text not null,
+        event jsonb not null,
+        primary key (space_id, stream_offset)
+      )`,
+    ],
+  },
+  {
+    id: '002-member-role',
+    statements: [
+      // The org-level admin bit (spec §4, 2026-08-19 amendment). Data first;
+      // enforcement routes arrive with org management.
+      `alter table members add column if not exists role text not null default 'member'`,
+    ],
+  },
+  {
+    id: '003-multi-org',
+    statements: [
+      // Spec §4 "Deployment and tenancy": one deployment serves 1..N orgs,
+      // resolved from the Host header. Org-scoped tables gain org_id;
+      // space-scoped tables (assets, topics, messages, events, change_sets)
+      // key off globally-unique ULIDs and need nothing. Existing single-org
+      // data adopts the default org id.
+      `create table if not exists orgs (
+        id text primary key,
+        name text not null,
+        created_at text not null,
+        issuer text,
+        allowed_email_domains jsonb
+      )`,
+      `create table if not exists org_domains (
+        domain text primary key,
+        org_id text not null
+      )`,
+      `alter table members add column if not exists org_id text not null default 'org-default'`,
+      `alter table members drop constraint members_pkey`,
+      `alter table members add primary key (org_id, id)`,
+      `alter table spaces add column if not exists org_id text not null default 'org-default'`,
+      `create index if not exists spaces_org on spaces (org_id)`,
+      // The same (iss, sub) is legitimately a DIFFERENT member in each org.
+      `alter table member_identities add column if not exists org_id text not null default 'org-default'`,
+      `alter table member_identities drop constraint member_identities_pkey`,
+      `alter table member_identities add primary key (org_id, iss, sub)`,
+      // Invites need no org_id: resolution goes token → space, and the space
+      // lookup is org-scoped, so a foreign org's token is already not_found.
+    ],
+  },
+  {
+    id: '004-topic-contract',
+    statements: [
+      // Promote the chat-first client conventions (apps/x spaces-conventions.ts)
+      // into the contract: Topic.kind, Topic.anchorMessageId, ChangeSet.topicId.
+      // The backfills below parse the exact legacy shapes those conventions
+      // wrote, so pre-004 data reads identically through the new fields.
+      `alter table topics add column if not exists kind text not null default 'discussion'`,
+      `alter table topics add column if not exists anchor_message_id text`,
+      `alter table change_sets add column if not exists topic_id text`,
+      // The stream: the oldest open topic titled "messages" (legacy "general")
+      // per space — same tie-break as the client's findGeneralTopic.
+      `update topics set kind = 'general' where id in (
+        select distinct on (space_id) id from topics
+        where lower(btrim(title)) in ('messages', 'general') and archived = false
+        order by space_id, created_at asc, id asc
+      )`,
+      // Thread parentage: the "<!-- rowboat:topic parent=msg:<id> … -->" marker
+      // in each topic's first message. Oldest claimant wins a contested parent
+      // (same rule the client's thread index applies).
+      `update topics set anchor_message_id = claims.parent from (
+        select distinct on (parent) topic_id, parent from (
+          select distinct on (topic_id) topic_id, posted_at,
+            substring(body from '<!--\\s*rowboat:(?:topic|thread)\\s+parent=msg:([0-9A-Za-z_-]+)') as parent
+          from messages
+          order by topic_id, stream_offset asc
+        ) firsts
+        where parent is not null
+        order by parent, posted_at asc, topic_id asc
+      ) claims
+      where topics.id = claims.topic_id and topics.anchor_message_id is null`,
+      // Artifact provenance: the "· topic:<id>" reason suffix (legacy "thread:",
+      // or a bare "topic:<id>" reason).
+      `update change_sets set topic_id = coalesce(
+        substring(reason from '·\\s*(?:topic|thread):([0-9A-Za-z_-]+)\\s*$'),
+        substring(reason from '^(?:topic|thread):([0-9A-Za-z_-]+)$')
+      ) where reason is not null and topic_id is null`,
+      // What the conventions could never have: invariants. Exactly one stream
+      // per space; at most one topic grown from any message.
+      `create unique index if not exists topics_one_general_per_space on topics (space_id) where kind = 'general'`,
+      `create unique index if not exists topics_anchor_message on topics (anchor_message_id) where anchor_message_id is not null`,
+    ],
+  },
+  {
+    id: '005-reactions',
+    statements: [
+      // Slack-style reactions: one row per (message, emoji, member) — the
+      // primary key IS the toggle invariant. `attribution` mirrors the
+      // change_sets column (jsonb Attribution); topic membership is derived
+      // through messages so merge_into needs no backfill here.
+      `create table if not exists reactions (
+        space_id text not null,
+        message_id text not null,
+        emoji text not null,
+        member_id text not null,
+        attribution jsonb not null,
+        at text not null,
+        primary key (space_id, message_id, emoji, member_id)
+      )`,
+      `create index if not exists reactions_space_message on reactions (space_id, message_id)`,
+    ],
+  },
+  {
+    id: '006-blobs',
+    statements: [
+      // Spec §6 binary assets: bytes live in the content-addressed BlobStore;
+      // the database carries {hash, size, mime} as jsonb (the attribution
+      // pattern). A version is text (content) XOR binary (blob) — one
+      // namespace, one log, only the populated column differs.
+      `alter table asset_versions alter column content drop not null`,
+      `alter table asset_versions add column if not exists blob jsonb`,
+      `alter table change_sets add column if not exists blob jsonb`,
+      // The space-level read gate for uploads: bytes dedup per org underneath,
+      // but a blob is referencable/servable only in spaces it was uploaded to.
+      `create table if not exists space_blobs (
+        space_id text not null,
+        hash text not null,
+        size bigint not null,
+        mime text not null,
+        uploaded_by text not null,
+        uploaded_at text not null,
+        primary key (space_id, hash)
+      )`,
+    ],
+  },
+  {
+    id: '007-asset-ids',
+    statements: [
+      // The inode model (decision 2026-08-26): the PATH stays the product's
+      // identity — every wire surface is unchanged — but STORAGE keys on an
+      // internal per-asset id, so move/delete/restore are property updates
+      // and version rows never relocate. The backfill joins by path, which is
+      // unambiguous precisely because no move has ever happened before 007.
+      `alter table assets add column if not exists id text`,
+      `alter table assets add column if not exists state text not null default 'live'`,
+      `update assets set id = gen_random_uuid()::text where id is null`,
+      `alter table assets alter column id set not null`,
+      `alter table asset_versions add column if not exists asset_id text`,
+      `update asset_versions v set asset_id = a.id from assets a
+        where v.space_id = a.space_id and v.path = a.path and v.asset_id is null`,
+      `alter table asset_versions alter column asset_id set not null`,
+      `alter table change_sets add column if not exists asset_id text`,
+      `update change_sets c set asset_id = a.id from assets a
+        where c.space_id = a.space_id and c.asset_path = a.path and c.asset_id is null`,
+      // Identity swap: assets key on id; the path is a mutable property,
+      // unique only among the living (the trash never blocks a name).
+      `alter table assets drop constraint assets_pkey`,
+      `alter table assets add primary key (space_id, id)`,
+      `create unique index if not exists assets_live_path on assets (space_id, path) where state = 'live'`,
+      `alter table asset_versions drop constraint asset_versions_pkey`,
+      `alter table asset_versions add primary key (space_id, asset_id, version)`,
+      // The path column on versions is now derivable and would only go stale.
+      `alter table asset_versions drop column path`,
+      // Namespace op columns on the log (op: move|delete|restore; moved_from on moves).
+      `alter table change_sets add column if not exists op text`,
+      `alter table change_sets add column if not exists moved_from text`,
+      // Old paths forward to their asset — reads follow, proposes refuse-with-pointer.
+      `create table if not exists asset_redirects (
+        space_id text not null,
+        path text not null,
+        asset_id text not null,
+        moved_at text not null,
+        primary key (space_id, path)
+      )`,
+    ],
+  },
+  {
+    id: '008-message-deletion',
+    statements: [
+      // Author-only tombstones: deleted_at is the marker; the body is redacted
+      // in place — in the messages row AND the stored message event, the one
+      // log rewrite the design allows (replay must never resurrect a deleted
+      // body). No backfill: nothing was deletable before this.
+      `alter table messages add column if not exists deleted_at text`,
+    ],
+  },
+  {
+    id: '009-blob-dimensions',
+    statements: [
+      // Pixel dimensions for sniffed images, parsed at upload (BlobInfo doc).
+      // Display hint only — no backfill: blobs uploaded before this simply
+      // have no dimensions, and clients fall back to unreserved rendering.
+      `alter table space_blobs add column if not exists width int`,
+      `alter table space_blobs add column if not exists height int`,
+    ],
+  },
+  {
+    id: '010-message-editing',
+    statements: [
+      // Author-only body rewrites: edited_at is the marker; the body column
+      // and the stored message event are rewritten in place (see editMessage).
+      `alter table messages add column if not exists edited_at text`,
+    ],
+  },
+  {
+    id: '011-annotation-model',
+    statements: [
+      // The annotation model (spec §7, decided 2026-09-01): one stream per
+      // space; a reply is a write-once thread_root pointer on the message; a
+      // topic is one row pointing at a root (title + archived), holding no
+      // messages. This migration REINTERPRETS the old container world — the
+      // event log is untouched (old-shape events go inert; projections and
+      // contract change).
+      //
+      // Conversion map:
+      //   general topic            → gone; its messages are the stream's roots
+      //   anchored thread topics   → replies re-point at the anchor message
+      //     (pre-004 threads' machine copy of the parent is dropped)
+      //   other discussion topics  → oldest message becomes the root
+      //   explicitly-retitled ones → survive as annotation rows (title kept)
+      //   first-line-titled ones   → plain threads; the rail empties of accidents
+      `alter table messages add column if not exists thread_root text`,
+      `alter table messages add column if not exists reply_count int not null default 0`,
+      `alter table messages add column if not exists last_reply_at text`,
+      `alter table messages add column if not exists anchor_change_set_id text`,
+      // Anchored threads ("reply became a thread"): every message in the topic
+      // is a reply to the anchor, which lives in the stream already.
+      `update messages m set thread_root = t.anchor_message_id
+        from topics t
+        where m.topic_id = t.id and t.kind = 'discussion' and t.anchor_message_id is not null
+          and m.id <> t.anchor_message_id`,
+      // Pre-004 threads opened with a machine COPY of the parent (marker
+      // comment) as their first message. The original stays in the stream —
+      // the copy would render as a stray first reply, so it goes. Its stored
+      // message event stays in the log, inert.
+      `delete from messages where thread_root is not null
+        and body ~ '<!--\\s*rowboat:(topic|thread)\\s+parent=msg:'`,
+      // Un-anchored topics (standalone, or anchored to a change-set): the
+      // oldest message becomes the thread root and joins the stream at its
+      // existing offset; the rest become its replies.
+      `update messages m set thread_root = f.first_id
+        from topics t,
+          (select distinct on (topic_id) topic_id, id as first_id
+            from messages order by topic_id, stream_offset asc) f
+        where m.topic_id = t.id and t.kind = 'discussion' and t.anchor_message_id is null
+          and f.topic_id = m.topic_id and m.id <> f.first_id`,
+      // Change-set-anchored topics: the anchor rides the new root as message
+      // provenance (reply-to-activity-row).
+      `update messages m set anchor_change_set_id = t.anchor_change_set_id
+        from topics t
+        where m.topic_id = t.id and t.kind = 'discussion'
+          and t.anchor_change_set_id is not null and t.anchor_message_id is null
+          and m.thread_root is null`,
+      // Flatten: a topic could anchor on a message that is itself a reply
+      // (thread grown from inside a thread). thread_root must always name a
+      // ROOT — two passes cover any depth real data can have.
+      `update messages m set thread_root = r.thread_root
+        from messages r
+        where m.thread_root = r.id and r.thread_root is not null`,
+      `update messages m set thread_root = r.thread_root
+        from messages r
+        where m.thread_root = r.id and r.thread_root is not null`,
+      // Reply denorm on roots: live replies + newest reply stamp.
+      `update messages r set reply_count = s.cnt, last_reply_at = s.last_at
+        from (select thread_root, count(*) filter (where deleted_at is null) as cnt,
+                     max(posted_at) as last_at
+              from messages where thread_root is not null group by thread_root) s
+        where r.id = s.thread_root`,
+      // The topics table becomes the annotation table: one row per DELIBERATE
+      // topic, pointing at its thread root. A topic is deliberate when its
+      // title is not just the root's first line (i.e. someone retitled it) —
+      // everything else was an accident of the reply gesture and dissolves
+      // into a plain thread. Root resolution mirrors the message backfills,
+      // flattened the same way.
+      `alter table topics add column if not exists root_message_id text`,
+      `update topics t set root_message_id = roots.root_id
+        from (select t2.id as topic_id,
+                coalesce(
+                  (select coalesce(a.thread_root, a.id) from messages a where a.id = t2.anchor_message_id),
+                  (select m.id from messages m where m.topic_id = t2.id and m.thread_root is null
+                    order by m.stream_offset asc limit 1))
+                as root_id
+              from topics t2 where t2.kind = 'discussion') roots
+        where t.id = roots.topic_id`,
+      // Change-set provenance maps through EVERY old topic (dissolved ones
+      // included — their threads survive even though their rows don't), so
+      // this runs before the trim. General-topic provenance had no thread —
+      // it nulls out.
+      `alter table change_sets add column if not exists thread_root_id text`,
+      `update change_sets c set thread_root_id = t.root_message_id
+        from topics t where c.topic_id = t.id and t.root_message_id is not null`,
+      `alter table change_sets drop column if exists topic_id`,
+      `delete from topics t
+        where t.kind <> 'discussion' or t.root_message_id is null
+          or exists (select 1 from messages r where r.id = t.root_message_id
+                      and position(lower(left(t.title, 64)) in lower(left(coalesce(r.body, ''), 512))) > 0)`,
+      // Two annotations can resolve to one root only via pathological legacy
+      // data; keep the oldest, the invariant is one topic per thread.
+      `delete from topics t using topics other
+        where t.root_message_id = other.root_message_id and t.id > other.id`,
+      `alter table topics alter column root_message_id set not null`,
+      `alter table topics drop column if exists kind`,
+      `alter table topics drop column if exists anchor_change_set_id`,
+      `alter table topics drop column if exists anchor_message_id`,
+      `alter table topics drop column if exists last_activity_at`,
+      `alter table topics drop column if exists message_count`,
+      `drop index if exists topics_one_general_per_space`,
+      `drop index if exists topics_anchor_message`,
+      `drop index if exists topics_space`,
+      `create unique index if not exists topics_root on topics (root_message_id)`,
+      `create index if not exists topics_space_archived on topics (space_id, archived)`,
+      // The stream's and threads' read paths, then the container key retires.
+      `create index if not exists messages_stream on messages (space_id, stream_offset) where thread_root is null`,
+      `create index if not exists messages_thread on messages (space_id, thread_root, stream_offset) where thread_root is not null`,
+      `drop index if exists messages_topic`,
+      `alter table messages drop column if exists topic_id`,
+    ],
+  },
+  {
+    id: '012-search',
+    statements: [
+      // Space search (search.ts). Messages and topics index via GENERATED
+      // columns — a formula cell, not a hook: Postgres recomputes the tsvector
+      // whenever the source column changes, in the same transaction, so the
+      // tombstone (body blanked) and edit (body rewritten) semantics apply to
+      // search with zero code and zero drift. Adding a STORED generated column
+      // rewrites the table, so every EXISTING row is indexed right here — the
+      // message/topic backfill IS this migration. 'simple' config on purpose:
+      // no stemming, language-neutral, predictable for names/code/ids; the
+      // query side compensates with last-term prefix matching. Mention ids
+      // ("@<ulid>") tokenize to the bare id, which is what makes query-time
+      // mention expansion (search.ts) an index no-op.
+      `alter table messages add column if not exists body_tsv tsvector
+        generated always as (to_tsvector('simple', coalesce(body, ''))) stored`,
+      `create index if not exists messages_search on messages using gin (body_tsv)`,
+      `alter table topics add column if not exists title_tsv tsvector
+        generated always as (to_tsvector('simple', title)) stored`,
+      `create index if not exists topics_search on topics using gin (title_tsv)`,
+      // Assets need a side table because what's searchable is an EXTRACTION
+      // (an Excalidraw board is geometry JSON wrapping the words on it) and
+      // extraction is TypeScript, which a generated column can't call. The
+      // TS-maintained part is only `extracted` (upserted in the same
+      // transaction as each version write); tsv still derives in-database.
+      // One row per live head per asset — keyed by asset_id (the inode
+      // model), so moves/renames never touch it; deletion is filtered at
+      // query time via assets.state. No SQL backfill (extraction is code):
+      // PgStore.init() fills missing rows on boot, idempotently — which is
+      // also the standing repair path.
+      `create table if not exists asset_search (
+        space_id text not null,
+        asset_id text not null,
+        extracted text not null,
+        tsv tsvector generated always as (to_tsvector('simple', extracted)) stored,
+        updated_at text not null,
+        primary key (space_id, asset_id)
+      )`,
+      `create index if not exists asset_search_gin on asset_search using gin (tsv)`,
+    ],
+  },
+  {
+    // Runs AFTER the annotation model (011) and search (012) by necessity, not preference:
+    // that migration deletes the pre-004 machine parent-copies and re-points
+    // thread_root, so anything keyed on message ids must land once the ids
+    // have settled. Polls never shipped before this, so there is nothing to
+    // backfill and nothing 011 can orphan.
+    id: '013-polls',
+    statements: [
+      // Discord-model polls: the poll definition (question, answers, expiry,
+      // multiselect, endedAt) rides the message row as jsonb — immutable
+      // content except endedAt. Votes mirror reactions: one row per
+      // (message, answer, member) — the primary key IS the toggle invariant.
+      `alter table messages add column if not exists poll jsonb`,
+      `create table if not exists poll_votes (
+        space_id text not null,
+        message_id text not null,
+        answer_id int not null,
+        member_id text not null,
+        attribution jsonb not null,
+        at text not null,
+        primary key (space_id, message_id, answer_id, member_id)
+      )`,
+      `create index if not exists poll_votes_space_message on poll_votes (space_id, message_id)`,
+    ],
+  },
+  {
+    // Direct messages: a DM is a space of kind 'direct' whose identity is its
+    // sorted participant set (direct_key = JSON of the sorted member ids).
+    // The partial unique index IS the get-or-create race guard: two members
+    // opening the same DM at once both pass the lookup, one insert wins, the
+    // other re-reads. Membership rows are the access truth as for any space;
+    // the key only answers "which space is the DM between these two".
+    id: '014-direct-spaces',
+    statements: [
+      `alter table spaces add column if not exists kind text not null default 'shared'`,
+      `alter table spaces add column if not exists direct_key text`,
+      `create unique index if not exists spaces_direct_key on spaces (org_id, direct_key) where kind = 'direct'`,
+    ],
+  },
+  {
+    // Push notifications (CONTRACT.md, the push bullet): device tokens + member levels.
+    id: '015-push',
+    statements: [
+      `create table if not exists push_tokens (
+        org_id text not null,
+        token text not null,
+        member_id text not null,
+        updated_at text not null,
+        primary key (org_id, token)
+      )`,
+      `create index if not exists push_tokens_member on push_tokens (org_id, member_id)`,
+      `create table if not exists push_prefs (
+        org_id text not null,
+        member_id text not null,
+        level text not null,
+        primary key (org_id, member_id)
+      )`,
+    ],
+  },
+  {
+    id: '016-read-marks',
+    statements: [
+      // Read state (2026-09-09): per-member cursors the org owns. The unit is
+      // the space's event offset — `int`, like stream_offset everywhere (the
+      // 2.1B-per-space ceiling is a recorded decision, CONTRACT.md).
+      `create table if not exists space_read_marks (
+        space_id text not null,
+        member_id text not null,
+        read_offset int not null default 0,
+        updated_at text not null,
+        primary key (space_id, member_id)
+      )`,
+      // Followed threads only (v1): the row IS the follow. `following` false
+      // keeps the cursor across an unfollow so re-following never floods.
+      `create table if not exists thread_read_marks (
+        space_id text not null,
+        root_message_id text not null,
+        member_id text not null,
+        following boolean not null default true,
+        read_offset int not null default 0,
+        updated_at text not null,
+        primary key (space_id, root_message_id, member_id)
+      )`,
+      `create index if not exists thread_read_marks_following on thread_read_marks (member_id, space_id) where following`,
+      // The reply denorm gains the newest LIVE reply's offset beside
+      // last_reply_at (which counts tombstones): "thread has unread" is one
+      // comparison against the member's mark.
+      `alter table messages add column if not exists last_reply_offset int`,
+      `update messages r set last_reply_offset = s.o
+        from (select space_id, thread_root, max(stream_offset) as o
+              from messages where thread_root is not null and deleted_at is null
+              group by space_id, thread_root) s
+        where r.space_id = s.space_id and r.id = s.thread_root`,
+    ],
+  },
+  {
+    id: '017-mentions',
+    statements: [
+      // Mentions (2026-09-10, protocol mentions.ts): the org stamps who a
+      // message addresses, from its mention tokens alone. Stamps are derived
+      // columns on the projection row (and mirrored into the stored message
+      // event on write); the boot pass (service.migrateMentions) fills them.
+      `alter table messages add column if not exists mentions jsonb not null default '[]'::jsonb`,
+      `alter table messages add column if not exists mentions_here boolean not null default false`,
+      `alter table messages add column if not exists mentions_rowboat boolean not null default false`,
+      `create index if not exists messages_mentions on messages using gin (mentions)`,
+      // The search index moves off the raw body onto app-computed text
+      // (search.ts searchTextFor): tokens collapse to their key so labels and
+      // the word "member" never index. NOT NULL, no coalesce fallback — a
+      // write path that forgets it fails loudly. Legacy rows take the body
+      // verbatim (the pre-token spelling already tokenized to the bare id).
+      `alter table messages add column if not exists search_text text`,
+      `update messages set search_text = body where search_text is null`,
+      `alter table messages alter column search_text set not null`,
+      `alter table messages drop column if exists body_tsv`,
+      `alter table messages add column body_tsv tsvector
+        generated always as (to_tsvector('simple', coalesce(search_text, ''))) stored`,
+      `create index if not exists messages_search on messages using gin (body_tsv)`,
+      `alter table topics add column if not exists search_text text`,
+      `update topics set search_text = title where search_text is null`,
+      `alter table topics alter column search_text set not null`,
+      `alter table topics drop column if exists title_tsv`,
+      `alter table topics add column title_tsv tsvector
+        generated always as (to_tsvector('simple', search_text)) stored`,
+      `create index if not exists topics_search on topics using gin (title_tsv)`,
+    ],
+  },
+  {
+    id: '018-activity',
+    statements: [
+      // Activity (2026-09-10, layer 3 of the unread arc): a time-ordered,
+      // cross-space query over existing facts, so it needs what no per-space
+      // pager did — messages by time within a space, @here reachable without
+      // a scan, reactions by time — plus the one new fact: the member's
+      // activity-seen mark (reactions have no cursor of their own).
+      `create index if not exists messages_space_posted on messages (space_id, posted_at desc)`,
+      `create index if not exists messages_here on messages (space_id, posted_at desc) where mentions_here`,
+      `create index if not exists reactions_space_at on reactions (space_id, at desc)`,
+      `create table if not exists activity_seen (
+        member_id text primary key,
+        seen_at text not null
+      )`,
+    ],
+  },
+  {
+    id: '019-topic-document',
+    statements: [
+      // The discussion's one file (2026-09-11): a nullable pointer on the
+      // annotation row to the asset's INTERNAL id (the inode model, 007), so
+      // a rename never breaks the link. Reads project the asset's current
+      // live path onto the wire; a trashed file simply projects nothing
+      // until restored — no cascade, no cleanup. The partial index answers
+      // "which discussions are about this file" from the file's side.
+      `alter table topics add column if not exists document_asset_id text`,
+      `create index if not exists topics_document on topics (space_id, document_asset_id) where document_asset_id is not null`,
+    ],
+  },
+  {
+    id: '020-asset-ids-canonical',
+    statements: [
+      // Asset ids on the wire (2026-09-14): the id every operation addresses
+      // is the one 007 minted; the path is a display property. Redirects
+      // existed only because paths were addresses — a moved file kept
+      // answering at its old name. By id a move changes nothing an address
+      // depends on, so the table goes. The change log's lineage column is
+      // now a wire field (ChangeSet.assetId), so it binds NOT NULL, and the
+      // stored `change` events on the log gain it too (replay must parse).
+      `drop table if exists asset_redirects`,
+      // 007 filled asset_id by joining paths; a change-set whose path never
+      // matched an asset row (none are expected, but a bind must not fail a
+      // deploy) gets one minted lineage id per (space, path) so history stays
+      // coherent and the column can bind.
+      `update change_sets c set asset_id = o.id
+        from (select space_id, asset_path, gen_random_uuid()::text as id
+              from change_sets where asset_id is null group by space_id, asset_path) o
+        where c.space_id = o.space_id and c.asset_path = o.asset_path and c.asset_id is null`,
+      `alter table change_sets alter column asset_id set not null`,
+      `update events e set event = jsonb_set(e.event, '{changeSet,assetId}', to_jsonb(c.asset_id))
+        from change_sets c
+        where e.space_id = c.space_id
+          and e.event->>'type' = 'change'
+          and e.event->'changeSet'->>'id' = c.id
+          and e.event->'changeSet'->>'assetId' is null`,
+    ],
+  },
+  {
+    id: '021-reaction-read-offsets',
+    statements: [
+      `alter table reactions add column if not exists stream_offset int not null default 0`,
+      // Recover existing reactions' positions from their durable add events.
+      `update reactions r set stream_offset = e.last_offset from (
+        select space_id, event->'reaction'->>'messageId' as message_id,
+          event->'reaction'->>'emoji' as emoji, event->'reaction'->'by'->>'memberId' as member_id,
+          max(stream_offset) as last_offset
+        from events where event->>'type' = 'reaction' and event->>'action' = 'added'
+        group by space_id, event->'reaction'->>'messageId', event->'reaction'->>'emoji', event->'reaction'->'by'->>'memberId'
+      ) e where r.space_id = e.space_id and r.message_id = e.message_id and r.emoji = e.emoji and r.member_id = e.member_id`,
+    ],
+  },
+  {
+    id: '022-hygiene',
+    statements: [
+      // The five enum-shaped text columns get the database's own guard. Zod
+      // covers the wire, but migrations and backfills write SQL straight past
+      // it. Existing rows are validated as each constraint lands — a bad
+      // legacy row fails the deploy loudly instead of surfacing later as a
+      // row nothing knows how to render.
+      `alter table members add constraint members_role_check check (role in ('admin', 'member'))`,
+      `alter table spaces add constraint spaces_kind_check check (kind in ('shared', 'direct'))`,
+      `alter table assets add constraint assets_state_check check (state in ('live', 'deleted'))`,
+      `alter table change_sets add constraint change_sets_op_check check (op is null or op in ('move', 'delete', 'restore'))`,
+      `alter table push_prefs add constraint push_prefs_level_check check (level in ('off', 'mentions', 'dms', 'all'))`,
+      // The author as a column. Seven hot queries filtered on
+      // author->>'memberId' — a per-row jsonb extraction with no index and no
+      // statistics. A stored generated column (the body_tsv technique) is
+      // computed by Postgres for every existing row right here and on every
+      // later write, so no code path can forget it, and it indexes.
+      // Attribution.memberId is required, so NOT NULL holds.
+      `alter table messages add column if not exists author_member_id text generated always as (author->>'memberId') stored not null`,
+      `create index if not exists messages_space_author on messages (space_id, author_member_id)`,
+      // The one member-keyed table without an org (015 gave push its own):
+      // member ids are org-scoped, and the schema now says so.
+      `alter table activity_seen add column if not exists org_id text not null default 'org-default'`,
+      `alter table activity_seen drop constraint activity_seen_pkey`,
+      `alter table activity_seen add primary key (org_id, member_id)`,
+    ],
+  },
+  {
+    id: '023-open-spaces',
+    statements: [
+      `alter table spaces add column visibility text not null default 'private'`,
+      `alter table spaces add constraint spaces_visibility_check check (visibility in ('private', 'open'))`,
+      `alter table spaces add constraint spaces_direct_private_check check (kind <> 'direct' or visibility = 'private')`,
+    ],
+  },
+  {
+    id: '024-agent-members',
+    statements: [
+      // Agent members (spec §4, 2026-09-29). Every existing row is a person.
+      `alter table members add column kind text not null default 'human'`,
+      `alter table members add constraint members_kind_check check (kind in ('human', 'agent'))`,
+      // Admin powers are membership and policy; an agent holding them could
+      // add itself to spaces past the people who invoke it. Held here, not
+      // only in code, because seeds and backfills write SQL directly.
+      `alter table members add constraint members_agent_not_admin_check check (kind = 'human' or role = 'member')`,
+    ],
+  },
+  {
+    // 025 was reserved for PR #1130's replicas-threads, which the 2026-09-30
+    // redesign on the agent contract replaced (028); the gap stays.
+    id: '026-agent-keys',
+    statements: [
+      // An agent's owner (spec §4 Agent members, 2026-09-29): the person who
+      // added it. Null for people. (Replicas was to be org-owned; the
+      // 2026-09-30 redesign gave every agent an owner.)
+      `alter table members add column owner_id text`,
+      `alter table members add constraint members_owner_agent_check check (owner_id is null or kind = 'agent')`,
+      // Keys stored as a SHA-256 of the secret, never the secret: a 256-bit
+      // random token needs no slow hash, and a leaked table grants nothing.
+      `create table agent_keys (
+        org_id text not null,
+        id text not null,
+        agent_id text not null,
+        hash text not null,
+        created_by text not null,
+        created_at text not null,
+        last_used_at text,
+        revoked_at text,
+        primary key (org_id, id),
+        foreign key (org_id, agent_id) references members(org_id, id)
+      )`,
+      `create unique index agent_keys_hash on agent_keys (hash)`,
+      `create index agent_keys_agent on agent_keys (org_id, agent_id)`,
+    ],
+  },
+  {
+    // Agent invocations (spec §8 Invoking agent members, 2026-09-30). The
+    // object lives in `data` (protocol Invocation); the columns are what the
+    // queue and the listings query on. One invocation per (message, agent):
+    // the unique index makes a replayed post a no-op. The queue runs in the
+    // order the messages were posted — `message_offset`, the space's log
+    // order, allocated under the space lock — never by a machine's clock,
+    // which can disagree across Harbor instances.
+    id: '027-invocations',
+    statements: [
+      `create table invocations (
+        org_id text not null,
+        id text not null,
+        agent_id text not null,
+        space_id text not null,
+        thread_root_id text not null,
+        message_id text not null,
+        message_offset int not null,
+        state text not null,
+        created_at text not null,
+        data jsonb not null,
+        primary key (org_id, id)
+      )`,
+      `alter table invocations add constraint invocations_state_check
+        check (state in ('queued', 'pending', 'working', 'waiting', 'done', 'failed', 'cancelled', 'refused'))`,
+      `create unique index invocations_message_agent on invocations (org_id, message_id, agent_id)`,
+      `create index invocations_agent_state on invocations (org_id, agent_id, state)`,
+      `create index invocations_conversation on invocations (space_id, thread_root_id, message_offset)`,
+      `create table agent_capabilities (
+        org_id text not null,
+        agent_id text not null,
+        data jsonb not null,
+        updated_at text not null,
+        primary key (org_id, agent_id)
+      )`,
+    ],
+  },
+  {
+    // What an agent is and how Harbor reaches it, and what a connector Harbor
+    // runs keeps (spec §4 Agent members and §8 Connectors, 2026-09-30: the
+    // Replicas redesign on the agent contract). Open strings: which pairs are
+    // valid is AGENT_PAIRS in the protocol, so a new pair needs no migration.
+    id: '028-agent-connections',
+    statements: [
+      `alter table members add column agent_kind text`,
+      `alter table members add column agent_connection text`,
+      `update members set agent_kind = 'custom', agent_connection = 'contract' where kind = 'agent'`,
+      `alter table members add constraint members_agent_connection_check check (
+        (kind = 'agent' and agent_kind is not null and agent_connection is not null)
+        or (kind = 'human' and agent_kind is null and agent_connection is null)
+      )`,
+      // A platform's key, which Harbor presents, so sealed rather than hashed
+      // (sealing.ts), unlike agent_keys. One per agent; replacing it clears a rejection.
+      `create table agent_connection_credentials (
+        org_id text not null,
+        agent_id text not null,
+        sealed text not null,
+        hint text not null,
+        set_by text not null,
+        set_at text not null,
+        rejected_at text,
+        rejected_reason text,
+        primary key (org_id, agent_id),
+        foreign key (org_id, agent_id) references members(org_id, id)
+      )`,
+      // A connector's record per thread (its platform session, how far
+      // delivery reached, what is in flight), for follow-ups and restart
+      // recovery. `data` is the connector's own shape.
+      `create table agent_connection_threads (
+        org_id text not null,
+        agent_id text not null,
+        space_id text not null,
+        thread_root_id text not null,
+        data jsonb not null,
+        updated_at text not null,
+        primary key (org_id, agent_id, space_id, thread_root_id),
+        foreign key (org_id, agent_id) references members(org_id, id)
+      )`,
+    ],
+  },
+  {
+    // Approvals (spec §8 part 4, 2026-10-01): an agent's request for a
+    // person's OK, its own record on an invocation. `data` is the whole
+    // Approval; the columns are what the queries need. One per request key
+    // per invocation, so a connector raising it again gets the first back.
+    id: '029-approvals',
+    statements: [
+      `create table approvals (
+        org_id text not null,
+        id text not null,
+        invocation_id text not null,
+        agent_id text not null,
+        space_id text not null,
+        message_id text not null,
+        request_key text not null,
+        state text not null,
+        applied boolean not null default false,
+        created_at text not null,
+        data jsonb not null,
+        primary key (org_id, id)
+      )`,
+      `alter table approvals add constraint approvals_state_check
+        check (state in ('open', 'allowed', 'denied', 'expired', 'cancelled'))`,
+      `create unique index approvals_request on approvals (org_id, invocation_id, request_key)`,
+      `create index approvals_agent_state on approvals (org_id, agent_id, state)`,
+      `create index approvals_message on approvals (space_id, message_id)`,
+      // The card's approval as raised rides its message row, as a poll does.
+      `alter table messages add column approval jsonb`,
+    ],
+  },
+  {
+    // An agent's option defaults, set by its owner (spec §8 Invocation
+    // options, 2026-10-01): kept apart from agent_capabilities, which its
+    // connector rewrites whenever it declares, so a reconnect never loses them.
+    id: '030-agent-option-defaults',
+    statements: [
+      `create table agent_option_defaults (
+        org_id text not null,
+        agent_id text not null,
+        data jsonb not null,
+        set_by text not null,
+        set_at text not null,
+        primary key (org_id, agent_id),
+        foreign key (org_id, agent_id) references members(org_id, id)
+      )`,
+    ],
+  },
+  {
+    // Profile images (2026-10-02): the hashes this org serves to all of its
+    // members (avatars, the logo) — the org-wide counterpart of space_blobs —
+    // and the one logo an org has. An avatar's URL rides members.avatar_url.
+    id: '031-profile-images',
+    statements: [
+      `create table org_images (
+        org_id text not null,
+        hash text not null,
+        size bigint not null,
+        mime text not null,
+        width integer,
+        height integer,
+        uploaded_by text not null,
+        uploaded_at text not null,
+        primary key (org_id, hash)
+      )`,
+      `create table org_logos (
+        org_id text primary key,
+        hash text not null,
+        set_by text not null,
+        set_at text not null
+      )`,
+    ],
+  },
+  {
+    // The platform instance an agent is (spec §8 Connectors, Agent37,
+    // 2026-10-05): set at creation for a connection in INSTANCE_CONNECTIONS,
+    // null for every other agent and for people.
+    id: '032-agent-instance',
+    statements: [
+      `alter table members add column agent_instance text`,
+      `alter table members add constraint members_agent_instance_check check (kind = 'agent' or agent_instance is null)`,
+    ],
+  },
+  {
+    // How many agent hand-offs led to a message (spec §8 Jev, 2026-10-07):
+    // the depth an agent it mentions is invoked at, recorded when an agent
+    // posts, because by the time Jev tags someone for the message the turn
+    // that posted it may have finished. A person's message is depth 0 and
+    // has no row.
+    id: '033-message-hops',
+    statements: [
+      `create table message_hops (
+        space_id text not null,
+        message_id text not null,
+        depth integer not null,
+        primary key (space_id, message_id)
+      )`,
+    ],
+  },
+  {
+    // The key a connector Harbor runs hands its agent's workspaces, so the
+    // coding agent there can call Spaces as its agent (spec §8 Connectors,
+    // 2026-10-06: Conductor passes it as a workspace variable). An ordinary
+    // agent key (its hash in agent_keys, revocable by the owner), whose secret
+    // Harbor must present again, so it is also kept sealed here. One per agent.
+    id: '034-agent-connector-keys',
+    statements: [
+      `create table agent_connector_keys (
+        org_id text not null,
+        agent_id text not null,
+        key_id text not null,
+        sealed text not null,
+        created_at text not null,
+        primary key (org_id, agent_id),
+        foreign key (org_id, agent_id) references members(org_id, id)
+      )`,
+    ],
+  },
+  {
+    // Agent37's Effort option is keyed `effort` (2026-10-08), as the composer's
+    // model picker expects of every agent; it was `reasoning`. Owners' defaults
+    // move with it, or Harbor would skip them as an option no longer declared.
+    id: '035-agent37-effort-key',
+    statements: [
+      `update agent_option_defaults d
+         set data = (d.data - 'reasoning') || jsonb_build_object('effort', d.data -> 'reasoning')
+         from members m
+        where m.org_id = d.org_id and m.id = d.agent_id
+          and m.agent_connection = 'agent37' and d.data ? 'reasoning'`,
+    ],
+  },
+  {
+    // A platform agent's alert hook (spec §8 Alerts, 2026-10-03): the hash of
+    // the secret in its address, like agent_keys, and the space its alerts
+    // land in. One per agent; setting it again replaces the secret.
+    id: '036-agent-hooks',
+    statements: [
+      `create table agent_hooks (
+        org_id text not null,
+        agent_id text not null,
+        token_hash text not null,
+        space_id text not null,
+        set_by text not null,
+        set_at text not null,
+        primary key (org_id, agent_id),
+        foreign key (org_id, agent_id) references members(org_id, id)
+      )`,
+    ],
+  },
+];
+
+export async function migrate(db: SqlDb): Promise<void> {
+  await db.exec(
+    'create table if not exists schema_migrations (id text primary key, applied_at text not null)',
+  );
+  for (const m of MIGRATIONS) {
+    await db.withTransaction(async (tx) => {
+      await tx.query('select pg_advisory_xact_lock(hashtext($1))', ['harbor-schema-migrations']);
+      const done = await tx.query('select id from schema_migrations where id = $1', [m.id]);
+      if (done.length > 0) return;
+      for (const statement of m.statements) await tx.query(statement);
+      await tx.query('insert into schema_migrations (id, applied_at) values ($1, $2)', [
+        m.id,
+        new Date().toISOString(),
+      ]);
+    });
+  }
+}

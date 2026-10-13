@@ -133,9 +133,19 @@ export function extractFrontmatterFields(raw: string | null): FrontmatterFields 
 }
 
 /**
- * Extract ALL top-level YAML key/value pairs from raw frontmatter.
- * Returns a flat record where scalar values are strings and list values are string[].
- * Skips `---` delimiters and blank lines.
+ * Keys that hold structured (nested object/array-of-object) data and must NOT
+ * be mangled by the flat-string FrontmatterProperties UI. These pass through
+ * unchanged on a round-trip — never exposed as editable fields, never
+ * re-emitted by buildFrontmatter (callers must splice them back from the
+ * original raw if they want to preserve them on save — see the helpers below).
+ */
+const STRUCTURED_KEYS = new Set(['live', 'google_doc'])
+
+/**
+ * Extract editable top-level YAML key/value pairs from raw frontmatter.
+ * Returns a flat record where scalar values are strings and list-of-string
+ * values are string[]. Structured keys (e.g. `live:`) and any nested-object
+ * shapes are filtered out — they are not editable via this surface.
  */
 export function extractAllFrontmatterValues(raw: string | null): Record<string, string | string[]> {
   const result: Record<string, string | string[]> = {}
@@ -143,10 +153,12 @@ export function extractAllFrontmatterValues(raw: string | null): Record<string, 
 
   const lines = raw.split('\n')
   let currentKey: string | null = null
+  let pendingNested = false
 
   for (const line of lines) {
     if (line === '---' || line.trim() === '') {
       currentKey = null
+      pendingNested = false
       continue
     }
 
@@ -155,39 +167,61 @@ export function extractAllFrontmatterValues(raw: string | null): Record<string, 
     if (topMatch) {
       const key = topMatch[1]
       const value = topMatch[2].trim()
+      pendingNested = false
+      if (STRUCTURED_KEYS.has(key)) {
+        currentKey = null
+        continue
+      }
       if (value) {
         result[key] = value
         currentKey = null
       } else {
-        // List will follow
         currentKey = key
         result[key] = []
       }
       continue
     }
 
-    // List item under current key
-    if (currentKey) {
-      const itemMatch = line.match(/^\s+-\s+(.+)$/)
-      if (itemMatch) {
-        const arr = result[currentKey]
-        if (Array.isArray(arr)) {
-          arr.push(itemMatch[1].trim())
-        }
+    if (!currentKey) continue
+
+    // List item under current key.
+    const itemMatch = line.match(/^\s+-\s+(.*)$/)
+    if (itemMatch) {
+      const item = itemMatch[1].trim()
+      // If the list-item line itself contains a `key: value` pair, this is a
+      // nested-object shape (e.g. `- startTime: "09:00"` under a windows list). We
+      // can't represent that as a flat string array — drop the whole key.
+      if (/^\w[\w\s]*\w?:\s*\S/.test(item)) {
+        delete result[currentKey]
+        currentKey = null
+        pendingNested = true
+        continue
       }
+      const arr = result[currentKey]
+      if (Array.isArray(arr)) arr.push(item)
+      continue
     }
+
+    // Indented continuation of a nested object — keep dropping its parent.
+    if (pendingNested && /^\s/.test(line)) continue
   }
 
   return result
 }
 
 /**
- * Convert a Record of frontmatter fields back to a raw YAML frontmatter string.
- * Returns null if no non-empty fields remain.
+ * Convert a Record of editable frontmatter fields back to a raw YAML
+ * frontmatter string. If `preserveRaw` is provided, structured keys (e.g.
+ * `live:`) are spliced back from the original raw byte-for-byte, so
+ * round-trips through the FrontmatterProperties UI never lose them.
  */
-export function buildFrontmatter(fields: Record<string, string | string[]>): string | null {
+export function buildFrontmatter(
+  fields: Record<string, string | string[]>,
+  preserveRaw: string | null = null,
+): string | null {
   const lines: string[] = []
   for (const [key, value] of Object.entries(fields)) {
+    if (STRUCTURED_KEYS.has(key)) continue
     if (Array.isArray(value)) {
       if (value.length === 0) continue
       lines.push(`${key}:`)
@@ -200,8 +234,55 @@ export function buildFrontmatter(fields: Record<string, string | string[]>): str
       lines.push(`${key}: ${trimmed}`)
     }
   }
-  if (lines.length === 0) return null
-  return `---\n${lines.join('\n')}\n---`
+
+  // Splice preserved structured-key blocks (e.g. live:) back from preserveRaw.
+  const preservedBlocks: string[] = []
+  if (preserveRaw) {
+    for (const key of STRUCTURED_KEYS) {
+      const block = extractTopLevelBlock(preserveRaw, key)
+      if (block) preservedBlocks.push(block)
+    }
+  }
+
+  if (lines.length === 0 && preservedBlocks.length === 0) return null
+  const allLines = [...lines, ...preservedBlocks.flatMap(b => b.split('\n'))]
+  return `---\n${allLines.join('\n')}\n---`
+}
+
+/**
+ * Return the byte-for-byte line block for a top-level key in raw frontmatter,
+ * including its nested children (any indented lines that follow), or null if
+ * the key is absent. Used to round-trip structured keys safely.
+ */
+function extractTopLevelBlock(raw: string, key: string): string | null {
+  const lines = raw.split('\n')
+  let start = -1
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (line === '---') continue
+    const m = line.match(/^(\w[\w\s]*\w|\w+):\s*(.*)$/)
+    if (m && m[1] === key) {
+      start = i
+      break
+    }
+  }
+  if (start === -1) return null
+  let end = start
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i]
+    if (line === '---') break
+    if (/^\s/.test(line)) {
+      end = i
+      continue
+    }
+    if (line.trim() === '') {
+      // blank line — end of this top-level block
+      break
+    }
+    // another top-level key — stop
+    break
+  }
+  return lines.slice(start, end + 1).join('\n')
 }
 
 /** Map known tag values → category for legacy flat-list frontmatter. */

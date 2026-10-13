@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react"
-import { getGoogleClientId, setGoogleClientId } from "@/lib/google-client-id-store"
+import { setGoogleCredentials } from "@/lib/google-credentials-store"
 import { toast } from "sonner"
 
 export interface ProviderState {
@@ -8,40 +8,13 @@ export interface ProviderState {
   isConnecting: boolean
 }
 
-export type Step = 0 | 1 | 2 | 3
+export type Step = 0 | 1 | 2 | 3 | 4
 
-export type OnboardingPath = 'rowboat' | 'byok' | null
+export type OnboardingPath = 'rowboat' | 'chatgpt' | 'byok' | null
 
-export type LlmProviderFlavor = "openai" | "anthropic" | "google" | "openrouter" | "aigateway" | "ollama" | "openai-compatible"
-
-export interface LlmModelOption {
-  id: string
-  name?: string
-  release_date?: string
-}
-
-export function useOnboardingState(open: boolean, onComplete: () => void) {
+export function useOnboardingState(open: boolean, onComplete: (opts?: { startTour?: boolean }) => void) {
   const [currentStep, setCurrentStep] = useState<Step>(0)
   const [onboardingPath, setOnboardingPath] = useState<OnboardingPath>(null)
-
-  // LLM setup state
-  const [llmProvider, setLlmProvider] = useState<LlmProviderFlavor>("openai")
-  const [modelsCatalog, setModelsCatalog] = useState<Record<string, LlmModelOption[]>>({})
-  const [modelsLoading, setModelsLoading] = useState(false)
-  const [modelsError, setModelsError] = useState<string | null>(null)
-  const [providerConfigs, setProviderConfigs] = useState<Record<LlmProviderFlavor, { apiKey: string; baseURL: string; model: string; knowledgeGraphModel: string }>>({
-    openai: { apiKey: "", baseURL: "", model: "", knowledgeGraphModel: "" },
-    anthropic: { apiKey: "", baseURL: "", model: "", knowledgeGraphModel: "" },
-    google: { apiKey: "", baseURL: "", model: "", knowledgeGraphModel: "" },
-    openrouter: { apiKey: "", baseURL: "", model: "", knowledgeGraphModel: "" },
-    aigateway: { apiKey: "", baseURL: "", model: "", knowledgeGraphModel: "" },
-    ollama: { apiKey: "", baseURL: "http://localhost:11434", model: "", knowledgeGraphModel: "" },
-    "openai-compatible": { apiKey: "", baseURL: "http://localhost:1234/v1", model: "", knowledgeGraphModel: "" },
-  })
-  const [testState, setTestState] = useState<{ status: "idle" | "testing" | "success" | "error"; error?: string }>({
-    status: "idle",
-  })
-  const [showMoreProviders, setShowMoreProviders] = useState(false)
 
   // OAuth provider states
   const [providers, setProviders] = useState<string[]>([])
@@ -63,44 +36,19 @@ export function useOnboardingState(open: boolean, onComplete: () => void) {
   const [slackDiscovering, setSlackDiscovering] = useState(false)
   const [slackDiscoverError, setSlackDiscoverError] = useState<string | null>(null)
 
-  // Inline upsell callout dismissed
-  const [upsellDismissed, setUpsellDismissed] = useState(false)
-
-  // Composio/Gmail state (used when signed in with Rowboat account)
-  const [useComposioForGoogle, setUseComposioForGoogle] = useState(false)
+  // Composio Gmail/Calendar sync was removed — flags are seeded false and
+  // never flipped. Kept here so legacy gating expressions still type-check.
+  const [useComposioForGoogle] = useState(false)
   const [gmailConnected, setGmailConnected] = useState(false)
   const [gmailLoading, setGmailLoading] = useState(true)
   const [gmailConnecting, setGmailConnecting] = useState(false)
   const [composioApiKeyOpen, setComposioApiKeyOpen] = useState(false)
   const [composioApiKeyTarget, setComposioApiKeyTarget] = useState<'slack' | 'gmail'>('gmail')
 
-  // Composio/Google Calendar state
-  const [useComposioForGoogleCalendar, setUseComposioForGoogleCalendar] = useState(false)
+  const [useComposioForGoogleCalendar] = useState(false)
   const [googleCalendarConnected, setGoogleCalendarConnected] = useState(false)
   const [googleCalendarLoading, setGoogleCalendarLoading] = useState(true)
   const [googleCalendarConnecting, setGoogleCalendarConnecting] = useState(false)
-
-  const updateProviderConfig = useCallback(
-    (provider: LlmProviderFlavor, updates: Partial<{ apiKey: string; baseURL: string; model: string; knowledgeGraphModel: string }>) => {
-      setProviderConfigs(prev => ({
-        ...prev,
-        [provider]: { ...prev[provider], ...updates },
-      }))
-      setTestState({ status: "idle" })
-    },
-    []
-  )
-
-  const activeConfig = providerConfigs[llmProvider]
-  const showApiKey = llmProvider === "openai" || llmProvider === "anthropic" || llmProvider === "google" || llmProvider === "openrouter" || llmProvider === "aigateway" || llmProvider === "openai-compatible"
-  const requiresApiKey = llmProvider === "openai" || llmProvider === "anthropic" || llmProvider === "google" || llmProvider === "openrouter" || llmProvider === "aigateway"
-  const requiresBaseURL = llmProvider === "ollama" || llmProvider === "openai-compatible"
-  const showBaseURL = llmProvider === "ollama" || llmProvider === "openai-compatible" || llmProvider === "aigateway"
-  const isLocalProvider = llmProvider === "ollama" || llmProvider === "openai-compatible"
-  const canTest =
-    activeConfig.model.trim().length > 0 &&
-    (!requiresApiKey || activeConfig.apiKey.trim().length > 0) &&
-    (!requiresBaseURL || activeConfig.baseURL.trim().length > 0)
 
   // Track connected providers for the completion step
   const connectedProviders = Object.entries(providerStates)
@@ -123,76 +71,9 @@ export function useOnboardingState(open: boolean, onComplete: () => void) {
         setProvidersLoading(false)
       }
     }
-    async function loadComposioForGoogleFlag() {
-      try {
-        const result = await window.ipc.invoke('composio:use-composio-for-google', null)
-        setUseComposioForGoogle(result.enabled)
-      } catch (error) {
-        console.error('Failed to check composio-for-google flag:', error)
-      }
-    }
-    async function loadComposioForGoogleCalendarFlag() {
-      try {
-        const result = await window.ipc.invoke('composio:use-composio-for-google-calendar', null)
-        setUseComposioForGoogleCalendar(result.enabled)
-      } catch (error) {
-        console.error('Failed to check composio-for-google-calendar flag:', error)
-      }
-    }
+    // (Composio Gmail/Calendar flag fetches removed — sync was deleted; flags stay false.)
     loadProviders()
-    loadComposioForGoogleFlag()
-    loadComposioForGoogleCalendarFlag()
   }, [open])
-
-  // Load LLM models catalog on open
-  useEffect(() => {
-    if (!open) return
-
-    async function loadModels() {
-      try {
-        setModelsLoading(true)
-        setModelsError(null)
-        const result = await window.ipc.invoke("models:list", null)
-        const catalog: Record<string, LlmModelOption[]> = {}
-        for (const provider of result.providers || []) {
-          catalog[provider.id] = provider.models || []
-        }
-        setModelsCatalog(catalog)
-      } catch (error) {
-        console.error("Failed to load models catalog:", error)
-        setModelsError("Failed to load models list")
-        setModelsCatalog({})
-      } finally {
-        setModelsLoading(false)
-      }
-    }
-
-    loadModels()
-  }, [open])
-
-  // Preferred default models for each provider
-  const preferredDefaults: Partial<Record<LlmProviderFlavor, string>> = {
-    openai: "gpt-5.2",
-    anthropic: "claude-opus-4-6-20260202",
-  }
-
-  // Initialize default models from catalog
-  useEffect(() => {
-    if (Object.keys(modelsCatalog).length === 0) return
-    setProviderConfigs(prev => {
-      const next = { ...prev }
-      const cloudProviders: LlmProviderFlavor[] = ["openai", "anthropic", "google"]
-      for (const provider of cloudProviders) {
-        const models = modelsCatalog[provider]
-        if (models?.length && !next[provider].model) {
-          const preferredModel = preferredDefaults[provider]
-          const hasPreferred = preferredModel && models.some(m => m.id === preferredModel)
-          next[provider] = { ...next[provider], model: hasPreferred ? preferredModel : (models[0]?.id || "") }
-        }
-      }
-      return next
-    })
-  }, [modelsCatalog])
 
   // Load Granola config
   const refreshGranolaConfig = useCallback(async () => {
@@ -393,20 +274,15 @@ export function useOnboardingState(open: boolean, onComplete: () => void) {
     await startGoogleCalendarConnect()
   }, [startGoogleCalendarConnect])
 
-  // New step flow:
-  // Rowboat path: 0 (welcome) → 2 (connect) → 3 (done)
-  // BYOK path: 0 (welcome) → 1 (llm setup) → 2 (connect) → 3 (done)
   const handleNext = useCallback(() => {
     if (currentStep === 0) {
-      if (onboardingPath === 'byok') {
-        setCurrentStep(1)
-      } else {
-        setCurrentStep(2)
-      }
+      setCurrentStep(1)
     } else if (currentStep === 1) {
       setCurrentStep(2)
     } else if (currentStep === 2) {
       setCurrentStep(3)
+    } else if (currentStep === 3) {
+      setCurrentStep(4)
     }
   }, [currentStep, onboardingPath])
 
@@ -415,51 +291,24 @@ export function useOnboardingState(open: boolean, onComplete: () => void) {
       setCurrentStep(0)
       setOnboardingPath(null)
     } else if (currentStep === 2) {
-      if (onboardingPath === 'rowboat') {
-        setCurrentStep(0)
-      } else {
-        setCurrentStep(1)
-      }
+      setCurrentStep(1)
+    } else if (currentStep === 3) {
+      setCurrentStep(2)
+    } else if (currentStep === 4) {
+      setCurrentStep(3)
     }
   }, [currentStep, onboardingPath])
 
+  // Kept as no-arg handlers (rather than one that takes options) so the
+  // completion step can pass them straight to onClick without the mouse
+  // event leaking in as the options object.
   const handleComplete = useCallback(() => {
     onComplete()
   }, [onComplete])
 
-  const handleTestAndSaveLlmConfig = useCallback(async () => {
-    if (!canTest) return
-    setTestState({ status: "testing" })
-    try {
-      const apiKey = activeConfig.apiKey.trim() || undefined
-      const baseURL = activeConfig.baseURL.trim() || undefined
-      const model = activeConfig.model.trim()
-      const knowledgeGraphModel = activeConfig.knowledgeGraphModel.trim() || undefined
-      const providerConfig = {
-        provider: {
-          flavor: llmProvider,
-          apiKey,
-          baseURL,
-        },
-        model,
-        knowledgeGraphModel,
-      }
-      const result = await window.ipc.invoke("models:test", providerConfig)
-      if (result.success) {
-        setTestState({ status: "success" })
-        await window.ipc.invoke("models:saveConfig", providerConfig)
-        window.dispatchEvent(new Event('models-config-changed'))
-        handleNext()
-      } else {
-        setTestState({ status: "error", error: result.error })
-        toast.error(result.error || "Connection test failed")
-      }
-    } catch (error) {
-      console.error("Connection test failed:", error)
-      setTestState({ status: "error", error: "Connection test failed" })
-      toast.error("Connection test failed")
-    }
-  }, [activeConfig.apiKey, activeConfig.baseURL, activeConfig.model, activeConfig.knowledgeGraphModel, canTest, llmProvider, handleNext])
+  const handleCompleteWithTour = useCallback(() => {
+    onComplete({ startTour: true })
+  }, [onComplete])
 
   // Check connection status for all providers
   const refreshAllStatuses = useCallback(async () => {
@@ -529,30 +378,6 @@ export function useOnboardingState(open: boolean, onComplete: () => void) {
     return cleanup
   }, [])
 
-  // Auto-advance from Rowboat sign-in step when OAuth completes
-  useEffect(() => {
-    if (onboardingPath !== 'rowboat' || currentStep !== 0) return
-
-    const cleanup = window.ipc.on('oauth:didConnect', async (event) => {
-      if (event.provider === 'rowboat' && event.success) {
-        // Re-check composio flags now that the account is connected
-        try {
-          const [googleResult, calendarResult] = await Promise.all([
-            window.ipc.invoke('composio:use-composio-for-google', null),
-            window.ipc.invoke('composio:use-composio-for-google-calendar', null),
-          ])
-          setUseComposioForGoogle(googleResult.enabled)
-          setUseComposioForGoogleCalendar(calendarResult.enabled)
-        } catch (error) {
-          console.error('Failed to re-check composio flags:', error)
-        }
-        setCurrentStep(2) // Go to Connect Accounts
-      }
-    })
-
-    return cleanup
-  }, [onboardingPath, currentStep])
-
   // Listen for Composio connection events (state updates only — toasts handled by ConnectorsPopover)
   useEffect(() => {
     const cleanup = window.ipc.on('composio:didConnect', (event) => {
@@ -576,14 +401,14 @@ export function useOnboardingState(open: boolean, onComplete: () => void) {
     return cleanup
   }, [])
 
-  const startConnect = useCallback(async (provider: string, clientId?: string) => {
+  const startConnect = useCallback(async (provider: string, credentials?: { clientId: string; clientSecret: string }) => {
     setProviderStates(prev => ({
       ...prev,
       [provider]: { ...prev[provider], isConnecting: true }
     }))
 
     try {
-      const result = await window.ipc.invoke('oauth:connect', { provider, clientId })
+      const result = await window.ipc.invoke('oauth:connect', { provider, clientId: credentials?.clientId, clientSecret: credentials?.clientSecret })
 
       if (!result.success) {
         toast.error(result.error || `Failed to connect to ${provider}`)
@@ -605,29 +430,26 @@ export function useOnboardingState(open: boolean, onComplete: () => void) {
   // Connect to a provider
   const handleConnect = useCallback(async (provider: string) => {
     if (provider === 'google') {
-      const existingClientId = getGoogleClientId()
-      if (!existingClientId) {
-        setGoogleClientIdOpen(true)
+      // Signed-in users use the rowboat (managed-credentials) flow: opens
+      // the webapp in the browser, no BYOK modal. Falls back to BYOK modal
+      // for not-signed-in users. (Mirrors useConnectors.handleConnect.)
+      const isSignedIntoRowboat = providerStates.rowboat?.isConnected ?? false
+      if (isSignedIntoRowboat) {
+        await startConnect('google')
         return
       }
-      await startConnect(provider, existingClientId)
+      setGoogleClientIdOpen(true)
       return
     }
 
     await startConnect(provider)
-  }, [startConnect])
+  }, [startConnect, providerStates])
 
-  const handleGoogleClientIdSubmit = useCallback((clientId: string) => {
-    setGoogleClientId(clientId)
+  const handleGoogleClientIdSubmit = useCallback((clientId: string, clientSecret: string) => {
+    setGoogleCredentials(clientId, clientSecret)
     setGoogleClientIdOpen(false)
-    startConnect('google', clientId)
+    startConnect('google', { clientId, clientSecret })
   }, [startConnect])
-
-  // Switch to rowboat path from BYOK inline callout
-  const handleSwitchToRowboat = useCallback(() => {
-    setOnboardingPath('rowboat')
-    setCurrentStep(0)
-  }, [])
 
   return {
     // Step state
@@ -635,27 +457,6 @@ export function useOnboardingState(open: boolean, onComplete: () => void) {
     setCurrentStep,
     onboardingPath,
     setOnboardingPath,
-
-    // LLM state
-    llmProvider,
-    setLlmProvider,
-    modelsCatalog,
-    modelsLoading,
-    modelsError,
-    providerConfigs,
-    activeConfig,
-    testState,
-    setTestState,
-    showApiKey,
-    requiresApiKey,
-    requiresBaseURL,
-    showBaseURL,
-    isLocalProvider,
-    canTest,
-    showMoreProviders,
-    setShowMoreProviders,
-    updateProviderConfig,
-    handleTestAndSaveLlmConfig,
 
     // OAuth state
     providers,
@@ -687,10 +488,6 @@ export function useOnboardingState(open: boolean, onComplete: () => void) {
     handleSlackSaveWorkspaces,
     handleSlackDisable,
 
-    // Upsell
-    upsellDismissed,
-    setUpsellDismissed,
-
     // Composio/Gmail state
     useComposioForGoogle,
     gmailConnected,
@@ -713,7 +510,7 @@ export function useOnboardingState(open: boolean, onComplete: () => void) {
     handleNext,
     handleBack,
     handleComplete,
-    handleSwitchToRowboat,
+    handleCompleteWithTour,
   }
 }
 

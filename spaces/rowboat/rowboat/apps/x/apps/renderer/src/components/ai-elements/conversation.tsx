@@ -1,165 +1,210 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
+import {
+  ChatScrollController,
+  type ChatScrollMode,
+} from "@/lib/chat-scroll";
 import { cn } from "@/lib/utils";
 import { ArrowDownIcon } from "lucide-react";
-import type { ComponentProps, ReactNode } from "react";
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
+import type { ComponentProps, ReactNode, RefObject } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
-// Context to share scroll preservation state
-interface ScrollPreservationContextValue {
-  registerScrollContainer: (container: HTMLElement | null) => void;
-  markUserEngaged: () => void;
-  resetEngagement: () => void;
+interface ConversationContextValue {
+  contentRef: RefObject<HTMLDivElement | null>;
+  isAtBottom: boolean;
+  scrollRef: RefObject<HTMLDivElement | null>;
+  scrollToBottom: () => void;
 }
 
-const ScrollPreservationContext = createContext<ScrollPreservationContextValue | null>(null);
+const ConversationContext = createContext<ConversationContextValue | null>(null);
 
-export type ConversationProps = ComponentProps<typeof StickToBottom> & {
+export type ConversationProps = ComponentProps<"div"> & {
+  /** 'chat' anchors sends at the viewport top (ChatGPT); 'code' jumps sends
+   * to the live edge and follows the run (Codex). See lib/chat-scroll.ts. */
+  scrollMode?: ChatScrollMode;
+  /** Chat identity for cross-remount reading-position memory. */
+  scrollMemoryKey?: string;
+  anchorMessageId?: string | null;
+  anchorRequestKey?: number;
+  /** Deep link: pin this item's row near the viewport top once it renders
+   * (lib/chat-scroll.ts requestJump). Each new jumpRequestKey re-applies. */
+  jumpMessageId?: string | null;
+  jumpRequestKey?: number;
   children?: ReactNode;
 };
 
-export const Conversation = ({ className, children, ...props }: ConversationProps) => {
-  const [scrollContainer, setScrollContainer] = useState<HTMLElement | null>(null);
-  const isUserEngagedRef = useRef(false);
-  const savedScrollTopRef = useRef<number>(0);
-  const lastScrollHeightRef = useRef<number>(0);
+export const Conversation = ({
+  scrollMode = "chat",
+  scrollMemoryKey,
+  anchorMessageId = null,
+  anchorRequestKey,
+  jumpMessageId = null,
+  jumpRequestKey,
+  children,
+  className,
+  ...props
+}: ConversationProps) => {
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const spacerRef = useRef<HTMLDivElement | null>(null);
+  // One controller per mounted conversation (the pane remounts per chat
+  // identity, so mount lifetime == conversation binding lifetime).
+  const [controller] = useState(
+    () =>
+      new ChatScrollController({ mode: scrollMode, memoryKey: scrollMemoryKey })
+  );
+  const [isAtBottom, setIsAtBottom] = useState(true);
+  const [isFollowing, setIsFollowing] = useState(true);
 
-  const contextValue: ScrollPreservationContextValue = {
-    registerScrollContainer: (container) => {
-      setScrollContainer(container);
-    },
-    markUserEngaged: () => {
-      // Only save position on first engagement, not on repeated calls
-      if (!isUserEngagedRef.current && scrollContainer) {
-        savedScrollTopRef.current = scrollContainer.scrollTop;
-        lastScrollHeightRef.current = scrollContainer.scrollHeight;
-      }
-      isUserEngagedRef.current = true;
-    },
-    resetEngagement: () => {
-      isUserEngagedRef.current = false;
-    },
-  };
-
-  // Watch for content changes and restore scroll position if user was engaged
   useEffect(() => {
-    if (!scrollContainer) return;
+    controller.setMode(scrollMode);
+  }, [controller, scrollMode]);
 
-    let rafId: number | null = null;
+  useLayoutEffect(() => {
+    const container = scrollRef.current;
+    const content = contentRef.current;
+    const spacer = spacerRef.current;
+    if (!container || !content || !spacer) return;
 
-    const checkAndRestoreScroll = () => {
-      if (!isUserEngagedRef.current) return;
-
-      const currentScrollTop = scrollContainer.scrollTop;
-      const currentScrollHeight = scrollContainer.scrollHeight;
-      const savedScrollTop = savedScrollTopRef.current;
-
-      // If scroll position jumped significantly (auto-scroll happened)
-      // and scroll height also changed (content changed), restore position
-      if (
-        Math.abs(currentScrollTop - savedScrollTop) > 50 &&
-        currentScrollHeight !== lastScrollHeightRef.current
-      ) {
-        scrollContainer.scrollTop = savedScrollTop;
-      }
-
-      lastScrollHeightRef.current = currentScrollHeight;
-    };
-
-    // Use ResizeObserver to detect content changes
-    const resizeObserver = new ResizeObserver(() => {
-      if (rafId) cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(checkAndRestoreScroll);
+    controller.attach({ container, content, spacer });
+    const unsubscribe = controller.subscribe((snapshot) => {
+      setIsAtBottom(snapshot.nearBottom);
+      setIsFollowing(snapshot.following);
     });
 
-    resizeObserver.observe(scrollContainer);
-
     return () => {
-      resizeObserver.disconnect();
-      if (rafId) cancelAnimationFrame(rafId);
+      unsubscribe();
+      controller.detach();
     };
-  }, [scrollContainer]);
+  }, [controller]);
+
+  // A send bumps anchorRequestKey. Chat mode pins the new user message at the
+  // viewport top; code mode (or an anchorless bump, e.g. new-chat reset)
+  // returns to the live edge. The mount-time key is deliberately ignored:
+  // remounts restore the remembered reading position instead of re-applying
+  // a stale anchor.
+  const appliedRequestKeyRef = useRef(anchorRequestKey);
+  useLayoutEffect(() => {
+    if (
+      anchorRequestKey === undefined ||
+      anchorRequestKey === appliedRequestKeyRef.current
+    ) {
+      return;
+    }
+    appliedRequestKeyRef.current = anchorRequestKey;
+
+    if (scrollMode === "code" || !anchorMessageId) {
+      controller.jumpToLatest("instant");
+      return;
+    }
+
+    // The message row usually renders AFTER this bump (the active pane is
+    // store-backed — the row lands with the send's round-trip, under the
+    // store's own id). The controller keeps the request pending and applies
+    // it exactly once when the row appears.
+    controller.requestSendAnchor(anchorMessageId);
+  }, [anchorRequestKey, anchorMessageId, scrollMode, controller]);
+
+  // A deep link (Spaces' "Open agent chat" on a reply, landing on the run
+  // that wrote it). Unlike the send anchor, a mount-time request IS applied:
+  // the pane usually mounts because of the jump, and the controller keeps it
+  // pending until the transcript renders the row.
+  const appliedJumpKeyRef = useRef<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (jumpRequestKey === undefined || jumpRequestKey === appliedJumpKeyRef.current) {
+      return;
+    }
+    appliedJumpKeyRef.current = jumpRequestKey;
+    if (jumpMessageId) controller.requestJump(jumpMessageId);
+  }, [jumpRequestKey, jumpMessageId, controller]);
+
+  const scrollToBottom = useCallback(() => {
+    controller.jumpToLatest("smooth");
+  }, [controller]);
+
+  const contextValue = useMemo<ConversationContextValue>(
+    () => ({
+      contentRef,
+      // The jump button targets readers who left the live edge: hidden while
+      // near the bottom AND while following (following keeps the view pinned
+      // even when growth momentarily outruns the near-bottom band).
+      isAtBottom: isAtBottom || isFollowing,
+      scrollRef,
+      scrollToBottom,
+    }),
+    [isAtBottom, isFollowing, scrollToBottom]
+  );
 
   return (
-    <ScrollPreservationContext.Provider value={contextValue}>
-      <StickToBottom
-        className={cn("relative flex-1 overflow-y-hidden", className)}
-        initial="smooth"
-        resize="smooth"
+    <ConversationContext.Provider value={contextValue}>
+      <div
+        className={cn("relative flex-1 overflow-hidden", className)}
         role="log"
         {...props}
       >
-        {children}
-      </StickToBottom>
-    </ScrollPreservationContext.Provider>
+        <div
+          className="h-full w-full overflow-y-auto [scrollbar-gutter:stable]"
+          ref={scrollRef}
+        >
+          {children}
+          <div ref={spacerRef} aria-hidden="true" />
+        </div>
+      </div>
+    </ConversationContext.Provider>
   );
 };
 
-/**
- * Component that tracks scroll engagement and preserves position.
- * Must be used inside Conversation component.
- */
-export const ScrollPositionPreserver = () => {
-  const { isAtBottom, scrollRef } = useStickToBottomContext();
-  const preservationContext = useContext(ScrollPreservationContext);
-  const containerFoundRef = useRef(false);
+const useConversationContext = () => {
+  const context = useContext(ConversationContext);
 
-  // Find and register scroll container on mount
-  useLayoutEffect(() => {
-    if (containerFoundRef.current || !preservationContext) return;
+  if (!context) {
+    throw new Error(
+      "Conversation components must be used within a Conversation component."
+    );
+  }
 
-    // Use the local StickToBottom scroll container for this conversation instance.
-    const container = scrollRef.current;
-    if (container) {
-      preservationContext.registerScrollContainer(container);
-      containerFoundRef.current = true;
-    }
-  }, [preservationContext, scrollRef]);
-
-  // Track engagement based on scroll position
-  useEffect(() => {
-    if (!preservationContext) return;
-
-    if (!isAtBottom) {
-      // User is not at bottom - mark as engaged
-      preservationContext.markUserEngaged();
-    } else {
-      // User is back at bottom - reset
-      preservationContext.resetEngagement();
-    }
-  }, [isAtBottom, preservationContext]);
-
-  return null;
+  return context;
 };
 
-export type ConversationContentProps = ComponentProps<
-  typeof StickToBottom.Content
->;
+export type ConversationContentProps = ComponentProps<"div">;
 
 export const ConversationContent = ({
   className,
   ...props
-}: ConversationContentProps) => (
-  <StickToBottom.Content
-    className={cn("flex flex-col gap-8 p-4", className)}
-    {...props}
-  />
-);
+}: ConversationContentProps) => {
+  const { contentRef } = useConversationContext();
+
+  return (
+    <div
+      className={cn("flex flex-col gap-8 p-4", className)}
+      ref={contentRef}
+      {...props}
+    />
+  );
+};
 
 export type ConversationEmptyStateProps = ComponentProps<"div"> & {
-  title?: string;
   description?: string;
-  icon?: React.ReactNode;
+  icon?: ReactNode;
+  title?: string;
 };
 
 export const ConversationEmptyState = ({
+  children,
   className,
-  title = "No messages yet",
   description = "Start a conversation to see messages here",
   icon,
-  children,
+  title = "No messages yet",
   ...props
 }: ConversationEmptyStateProps) => (
   <div
@@ -189,7 +234,7 @@ export const ConversationScrollButton = ({
   className,
   ...props
 }: ConversationScrollButtonProps) => {
-  const { isAtBottom, scrollToBottom } = useStickToBottomContext();
+  const { isAtBottom, scrollToBottom } = useConversationContext();
 
   const handleScrollToBottom = useCallback(() => {
     scrollToBottom();
@@ -199,16 +244,18 @@ export const ConversationScrollButton = ({
     !isAtBottom && (
       <Button
         className={cn(
-          "absolute bottom-4 left-[50%] translate-x-[-50%] rounded-full",
+          // Floating circle: raised surface, hairline ring folded into
+          // the shadow, 36px.
+          "absolute bottom-6 left-[50%] z-10 h-9 w-9 translate-x-[-50%] rounded-full border-none bg-[var(--rowboat-raised)] text-[var(--rowboat-ink-secondary)] shadow-[var(--rowboat-shadow-soft)] transition hover:bg-[var(--rowboat-raised)] hover:text-foreground",
           className
         )}
+        aria-label="Scroll to latest message"
         onClick={handleScrollToBottom}
-        size="icon"
         type="button"
-        variant="outline"
+        variant="ghost"
         {...props}
       >
-        <ArrowDownIcon className="size-4" />
+        <ArrowDownIcon className="size-4.5" strokeWidth={1.5} />
       </Button>
     )
   );

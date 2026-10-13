@@ -1,0 +1,356 @@
+import z from "zod";
+import { LlmModelConfig, LlmProvider } from "@x/shared/dist/models.js";
+import { isSignedIn } from "../account/account.js";
+import { getChatGPTStatus } from "../auth/chatgpt-auth.js";
+import container from "../di/container.js";
+import { IModelConfigRepo } from "./repo.js";
+import { listGatewayImageModels, listGatewayModels } from "./gateway.js";
+import { listCodexModels } from "./codex.js";
+import { listImageModelsForProvider, listModelsForProvider } from "./models.js";
+import { getImageModelIds, listOnboardingModels } from "./models-dev.js";
+import { getDefaultModelAndProvider } from "./defaults.js";
+
+/**
+ * The unified model catalog: one function that answers "which providers are
+ * connected and what models does each offer", treating every provider the
+ * same way — the Rowboat gateway, the ChatGPT subscription (codex), BYOK
+ * cloud keys, and local/custom endpoints are all just providers. The
+ * per-provider listing mechanics (which endpoint, which fallback) live here
+ * and nowhere else; the renderer consumes this through the single models:list
+ * IPC call.
+ */
+
+export interface CatalogModelEntry {
+    id: string;
+    name?: string;
+    /** models.dev "supports reasoning" flag; absent = unknown. */
+    reasoning?: boolean;
+}
+
+export interface CatalogProviderEntry {
+    /**
+     * Provider INSTANCE identifier — what ModelRef.provider, assistantModel,
+     * task overrides, and refreshProvider all reference. Today one instance
+     * exists per flavor, so id always equals the flavor key ("openai",
+     * "ollama", "rowboat", …); a future multi-key setup ("openai-work" /
+     * "openai-personal") would yield two entries with distinct ids sharing
+     * one flavor, without changing what an id means anywhere.
+     */
+    id: string;
+    /** Provider TYPE ("openai", "ollama", …, "rowboat", "codex") — drives
+     * display naming, listing mechanics, and credential-field UI. */
+    flavor: string;
+    /** "error" = the provider is connected but its model list failed to load. */
+    status: "ok" | "error";
+    error?: string;
+    models: CatalogModelEntry[];
+}
+
+export interface ModelCatalogResult {
+    providers: CatalogProviderEntry[];
+    /** The effective runtime default (what runs when nothing is picked),
+     *  with the effort stored alongside it — seeds new chats' composers. */
+    defaultModel: { provider: string; model: string; effort?: "low" | "medium" | "high" } | null;
+}
+
+const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+    rowboat: "Rowboat",
+    codex: "OpenAI Codex",
+    openai: "OpenAI",
+    anthropic: "Anthropic",
+    google: "Gemini",
+    openrouter: "OpenRouter",
+    aigateway: "AI Gateway",
+    ollama: "Ollama",
+    "openai-compatible": "OpenAI-Compatible",
+};
+
+/**
+ * Display name for a provider flavor. Presentation only — nothing keys on
+ * it. (When multi-instance providers arrive, a user-chosen instance label
+ * would take precedence over this.)
+ */
+export function providerDisplayName(flavor: string): string {
+    return PROVIDER_DISPLAY_NAMES[flavor] ?? flavor;
+}
+
+// Flavors whose lists come from the models.dev catalog cache (stable ids,
+// no per-account variation); the live provider API is only a fallback when
+// the cache is empty. Everything else always lists live.
+const MODELS_DEV_FLAVORS = new Set(["openai", "anthropic", "google"]);
+
+// listModelsForProvider builds aigateway's URL from baseURL; apply the
+// service default here so a keyed-but-URL-less config still lists.
+const AIGATEWAY_DEFAULT_BASE_URL = "https://ai-gateway.vercel.sh/v1";
+
+// Successful lists are cached until the provider's credentials change or an
+// explicit refresh; failures retry after a short TTL so a temporarily-down
+// local server doesn't stay dark, without re-paying the fetch timeout on
+// every catalog build in between.
+const ERROR_RETRY_MS = 30_000;
+
+interface CacheEntry {
+    fingerprint: string;
+    fetchedAt: number;
+    status: "ok" | "error";
+    error?: string;
+    models: CatalogModelEntry[];
+}
+
+const cache = new Map<string, CacheEntry>();
+const inFlight = new Map<string, Promise<CacheEntry>>();
+
+type ProviderConfig = z.infer<typeof LlmProvider>;
+
+interface DiscoveredProvider {
+    id: string;
+    flavor: string;
+    /** Absent for rowboat/codex — their auth lives outside models.json. */
+    config?: ProviderConfig;
+}
+
+async function readModelConfig(): Promise<z.infer<typeof LlmModelConfig> | null> {
+    try {
+        const repo = container.resolve<IModelConfigRepo>("modelConfigRepo");
+        return await repo.getConfig();
+    } catch {
+        // Signed-in users may have no models.json at all.
+        return null;
+    }
+}
+
+/**
+ * Which providers are connected right now. Rowboat and ChatGPT come from
+ * their auth state; everything else from the models.json providers map
+ * (entries carry credentials by construction in v2). The assistant model's
+ * provider leads, matching picker ordering.
+ */
+async function discoverProviders(): Promise<DiscoveredProvider[]> {
+    const discovered: DiscoveredProvider[] = [];
+
+    if (await isSignedIn().catch(() => false)) {
+        discovered.push({ id: "rowboat", flavor: "rowboat" });
+    }
+    try {
+        const chatgpt = await getChatGPTStatus();
+        if (chatgpt.signedIn) discovered.push({ id: "codex", flavor: "codex" });
+    } catch {
+        // ChatGPT status failures must never break the main list.
+    }
+
+    const cfg = await readModelConfig();
+    const providersMap = cfg?.providers ?? {};
+    const assistantProvider = cfg?.assistantModel?.provider ?? "";
+    const ids = Object.keys(providersMap)
+        .sort((a, b) => (a === assistantProvider ? -1 : b === assistantProvider ? 1 : 0));
+
+    for (const id of ids) {
+        const entry = providersMap[id];
+        if (!entry) continue;
+        const config = { ...entry };
+        if (config.flavor === "aigateway" && !config.baseURL) {
+            config.baseURL = AIGATEWAY_DEFAULT_BASE_URL;
+        }
+        discovered.push({ id, flavor: entry.flavor, config });
+    }
+
+    return discovered;
+}
+
+/** Cache key input: listing output depends only on flavor + credentials. */
+function fingerprintOf(provider: DiscoveredProvider): string {
+    if (!provider.config) return provider.id;
+    const { flavor, apiKey, baseURL, headers } = provider.config;
+    return JSON.stringify({ flavor, apiKey, baseURL, headers });
+}
+
+async function fetchProviderEntry(
+    provider: DiscoveredProvider,
+    fingerprint: string,
+    modelsDevByFlavor: Map<string, CatalogModelEntry[]>,
+): Promise<CacheEntry> {
+    try {
+        let models: CatalogModelEntry[];
+        if (provider.id === "rowboat") {
+            const result = await listGatewayModels();
+            models = result.providers[0]?.models ?? [];
+        } else if (provider.id === "codex") {
+            const result = await listCodexModels();
+            models = result.providers[0]?.models ?? [];
+        } else if (MODELS_DEV_FLAVORS.has(provider.flavor) && (modelsDevByFlavor.get(provider.flavor)?.length ?? 0) > 0) {
+            models = modelsDevByFlavor.get(provider.flavor) ?? [];
+        } else if (!provider.config) {
+            throw new Error(`Provider '${provider.id}' has no configuration to list models with`);
+        } else {
+            // Live listing: local/custom flavors always, cloud flavors only
+            // when the models.dev cache is empty (offline fresh install).
+            const ids = await listModelsForProvider(provider.config);
+            models = ids.map((id) => ({ id }));
+        }
+        return { fingerprint, fetchedAt: Date.now(), status: "ok", models };
+    } catch (err) {
+        return {
+            fingerprint,
+            fetchedAt: Date.now(),
+            status: "error",
+            error: err instanceof Error ? err.message : "Failed to list models",
+            models: [],
+        };
+    }
+}
+
+async function resolveProviderEntry(
+    provider: DiscoveredProvider,
+    modelsDevByFlavor: Map<string, CatalogModelEntry[]>,
+    forceRefresh: boolean,
+): Promise<CacheEntry> {
+    const fingerprint = fingerprintOf(provider);
+    const cached = cache.get(provider.id);
+    if (!forceRefresh && cached && cached.fingerprint === fingerprint) {
+        const fresh = cached.status === "ok" || Date.now() - cached.fetchedAt < ERROR_RETRY_MS;
+        if (fresh) return cached;
+    }
+    const pending = inFlight.get(provider.id);
+    if (pending && !forceRefresh) return pending;
+
+    const request = fetchProviderEntry(provider, fingerprint, modelsDevByFlavor)
+        .then((entry) => {
+            cache.set(provider.id, entry);
+            return entry;
+        })
+        .finally(() => {
+            if (inFlight.get(provider.id) === request) inFlight.delete(provider.id);
+        });
+    inFlight.set(provider.id, request);
+    return request;
+}
+
+export interface GetModelCatalogOptions {
+    /** Drop this provider's cached list and refetch it (Retry / Refresh models). */
+    refreshProvider?: string;
+}
+
+export async function getModelCatalog(options?: GetModelCatalogOptions): Promise<ModelCatalogResult> {
+    const discovered = await discoverProviders();
+
+    // One models.dev read serves every cloud flavor in the build (disk cache,
+    // no network — refreshed by its own background loop).
+    const modelsDevByFlavor = new Map<string, CatalogModelEntry[]>();
+    if (discovered.some((p) => MODELS_DEV_FLAVORS.has(p.flavor))) {
+        try {
+            const catalog = await listOnboardingModels();
+            for (const p of catalog.providers) {
+                modelsDevByFlavor.set(p.id, p.models.map(({ id, name, reasoning }) => ({
+                    id,
+                    ...(name ? { name } : {}),
+                    ...(reasoning !== undefined ? { reasoning } : {}),
+                })));
+            }
+        } catch {
+            // Empty map → cloud flavors fall through to live listing.
+        }
+    }
+
+    const entries = await Promise.all(discovered.map(async (provider) => {
+        const entry = await resolveProviderEntry(
+            provider,
+            modelsDevByFlavor,
+            options?.refreshProvider === provider.id,
+        );
+        const result: CatalogProviderEntry = {
+            id: provider.id,
+            flavor: provider.flavor,
+            status: entry.status,
+            ...(entry.error ? { error: entry.error } : {}),
+            models: entry.models,
+        };
+        return result;
+    }));
+
+    let defaultModel: ModelCatalogResult["defaultModel"] = null;
+    try {
+        defaultModel = await getDefaultModelAndProvider();
+    } catch {
+        // No default resolvable (no config, signed out) — the picker copes.
+    }
+
+    return { providers: entries, defaultModel };
+}
+
+/**
+ * One provider in the image-model catalog (the settings "Image model"
+ * picker). Same id/flavor/status contract as CatalogProviderEntry; models
+ * are bare ids (no reasoning metadata — image models take no effort).
+ */
+export interface ImageCatalogProviderEntry {
+    id: string;
+    flavor: string;
+    status: "ok" | "error";
+    error?: string;
+    models: string[];
+}
+
+// Flavors generate-image can build an image model for (the gateway plus
+// runtime/tools/domains/image.ts makeBackend's cases). Every one of them
+// lists — the picker only ever offers models a provider reported.
+const IMAGE_FLAVORS = new Set(["rowboat", "openrouter", "google", "openai", "ollama", "openai-compatible"]);
+// …of which these two carry no image-capability metadata anywhere in their
+// listing (Ollama's /api/tags and an OpenAI-compatible /models are bare id
+// lists), so they offer their FULL model list. Picking a non-image model
+// there surfaces the runtime's own readable error — a worse pick than a
+// filtered list, a better one than a free-typed id nothing can check.
+const IMAGE_UNFILTERABLE_FLAVORS = new Set(["ollama", "openai-compatible"]);
+// Vendors whose image models come from the models.dev catalog's output
+// modalities; their own /models endpoints don't say who generates images.
+const IMAGE_MODELS_DEV_FLAVORS = new Set(["openai", "google"]);
+
+/** Where one provider's image-model list comes from. Throws on failure. */
+async function listImageModels(provider: DiscoveredProvider): Promise<string[]> {
+    if (provider.id === "rowboat") return await listGatewayImageModels();
+    if (IMAGE_MODELS_DEV_FLAVORS.has(provider.flavor)) {
+        const ids = await getImageModelIds(provider.flavor as "openai" | "google");
+        if (ids === null) {
+            throw new Error("Model catalog unavailable — check your connection and retry");
+        }
+        return ids;
+    }
+    if (!provider.config) {
+        throw new Error(`Provider '${provider.id}' has no configuration to list models with`);
+    }
+    if (IMAGE_UNFILTERABLE_FLAVORS.has(provider.flavor)) {
+        return await listModelsForProvider(provider.config);
+    }
+    return await listImageModelsForProvider(provider.config);
+}
+
+/**
+ * The image-model catalog: the connected providers that can generate
+ * images, each with the image models it lists. Same provider discovery as
+ * the chat catalog; no cache — it's fetched when the settings surface opens
+ * and on its Retry. Failures surface as status "error" per provider (the
+ * picker shows the message and a Retry row), never as a throw; an empty ok
+ * list means the provider genuinely reported nothing.
+ */
+export async function getImageModelCatalog(): Promise<{ providers: ImageCatalogProviderEntry[] }> {
+    const discovered = (await discoverProviders()).filter((p) => IMAGE_FLAVORS.has(p.flavor));
+    const providers = await Promise.all(discovered.map(async (provider): Promise<ImageCatalogProviderEntry> => {
+        const base = { id: provider.id, flavor: provider.flavor };
+        try {
+            return { ...base, status: "ok", models: await listImageModels(provider) };
+        } catch (err) {
+            return {
+                ...base,
+                status: "error",
+                error: err instanceof Error ? err.message : "Failed to list image models",
+                models: [],
+            };
+        }
+    }));
+    return { providers };
+}
+
+/** Test-only: reset the per-provider list cache. */
+export function __resetModelCatalogForTests(): void {
+    cache.clear();
+    inFlight.clear();
+}

@@ -1,0 +1,173 @@
+# Vault schema: one hierarchy for all business data. The single source of truth.
+# Spec: docs/superpowers/specs/2026-10-12-vault-schema-design.md
+# Company (L0), Domains (L1) and Areas (L2) are generated notes (schema build); the types below are L3/L4.
+# Folder name = type. parent = allowed parent types, in order of preference.
+schema_version: 1
+
+domains:
+  strategy:   {title: "Strategy & steering"}
+  legal:      {title: "Legal & compliance"}
+  finance:    {title: "Finance & funding"}
+  team:       {title: "Team & HR"}
+  sales:      {title: "Market & sales"}
+  success:    {title: "Customer success & support"}
+  partners:   {title: "Partners & vendors"}
+  marketing:  {title: "Marketing & brand"}
+  product:    {title: "Product & engineering"}
+  ai:         {title: "AI & agents"}
+  delivery:   {title: "Projects & delivery"}
+  operations: {title: "Operations & IT"}
+  register:   {title: "People & organisations", cross_cutting: true}
+  sources:    {title: "Raw inputs", cross_cutting: true}
+  knowledge:  {title: "Knowledge & evidence", cross_cutting: true}
+
+areas:        # area name (unique; note Areas/<name>) -> domain
+  Goals: strategy
+  KPIs: strategy
+  Decisions: strategy
+  Risks: strategy
+  Contracts: legal
+  Data protection: legal
+  AI Act: legal
+  IP & licences: legal
+  Budget: finance
+  Invoices: finance
+  Funding: finance
+  Pricing: finance
+  Roles: team
+  Recruiting: team
+  Onboarding: team
+  Segments: sales
+  Pipeline: sales
+  Competitors: sales
+  Customer onboarding: success
+  Support: success
+  Feedback: success
+  Design partners: success
+  Partnerships: partners
+  Vendors: partners
+  Brand: marketing
+  Campaigns: marketing
+  Content: marketing
+  Channels: marketing
+  Products: product
+  Roadmap: product
+  Requirements: product
+  Releases: product
+  Incidents: product
+  Agents: ai
+  Workflows: ai
+  Models & evals: ai
+  Datasets: ai
+  Compute: ai
+  Client projects: delivery
+  Initiatives: delivery
+  Milestones: delivery
+  Infrastructure: operations
+  Tools: operations
+  Security: operations
+  Runbooks: operations
+  Contacts: register
+  Companies: register
+  Meetings: sources
+  Mails: sources
+  Chats: sources
+  Voice memos: sources
+  Agent notes: sources
+  Discourse: sources
+  Topics: knowledge
+  Studies: knowledge
+  Data: knowledge
+  Assumptions: knowledge
+
+relations:    # flat front matter keys; link values are lists of quoted [[Folder/Name]] links
+  works_at:      {targets: [Organizations]}
+  contact_at:    {targets: [Organizations]}
+  investor_in:   {targets: [Organizations]}
+  candidate_for: {targets: [Roles]}
+  customer:      {targets: [Organizations]}
+  project:       {targets: [Projects]}
+  product:       {targets: [Products, Models]}
+  owner:         {targets: [People, Agents]}
+  about:         {targets: any}
+  evidence:      {targets: [Studies, Data, Topics, Meetings, Assumptions]}
+  executed_by:   {targets: [Agents]}
+  when:          {kind: date}
+
+types:
+  # strategy
+  OKRs:               {domain: strategy, level: 3, parent: [Areas], default_parent: Goals, optional: [owner, when]}
+  KPIs:               {domain: strategy, level: 3, parent: [Areas], default_parent: KPIs, optional: [owner, product, evidence]}
+  Decisions:          {domain: strategy, level: 3, parent: [Projects, Products, Areas], default_parent: Decisions, optional: [owner, about, evidence, when]}
+  Risks:              {domain: strategy, level: 3, parent: [Areas], default_parent: Risks, optional: [owner, about]}
+  # legal
+  Contracts:          {domain: legal, level: 3, parent: [Areas], default_parent: Contracts, optional: [customer, owner, project, when], statuses: [draft, sent, signed, expired, terminated]}
+  Processing Records: {domain: legal, level: 3, parent: [Areas], default_parent: Data protection, optional: [owner, about]}
+  AI Systems:         {domain: legal, level: 3, parent: [Areas], default_parent: AI Act, optional: [owner, product]}
+  Licences:           {domain: legal, level: 3, parent: [Areas], default_parent: IP & licences, optional: [owner, about]}
+  # finance
+  Budgets:            {domain: finance, level: 3, parent: [Projects, Areas], default_parent: Budget, optional: [owner, project, when]}
+  Invoices:           {domain: finance, level: 4, parent: [Deals, Projects, Areas], default_parent: Invoices, required: [customer, when], optional: [project], statuses: [draft, sent, paid, overdue, cancelled]}
+  Funding:            {domain: finance, level: 3, parent: [Areas], default_parent: Funding, optional: [owner, when, evidence], statuses: [idea, applied, granted, rejected, closed]}
+  Price Plans:        {domain: finance, level: 3, parent: [Products, Areas], default_parent: Pricing, optional: [product]}
+  # team
+  Roles:              {domain: team, level: 3, parent: [Areas], default_parent: Roles, optional: [owner]}
+  Candidates:         {domain: team, level: 4, parent: [Roles, Areas], default_parent: Recruiting, optional: [owner, when], statuses: [new, interview, offer, hired, rejected]}
+  # sales
+  Segments:           {domain: sales, level: 3, parent: [Areas], default_parent: Segments}
+  Leads:              {domain: sales, level: 3, parent: [Segments, Areas], default_parent: Pipeline, optional: [customer, owner, when], statuses: [new, researched, qualified, contacted, replied, meeting, won, lost]}
+  Deals:              {domain: sales, level: 3, parent: [Areas], default_parent: Pipeline, required: [customer, owner], optional: [project, product, evidence, when], statuses: [lead, qualified, proposal, won, lost]}
+  Competitors:        {domain: sales, level: 3, parent: [Segments, Areas], default_parent: Competitors, optional: [evidence]}
+  # success
+  Tickets:            {domain: success, level: 4, parent: [Projects, Products, Areas], default_parent: Support, required: [customer], optional: [owner, product, when], statuses: [open, waiting, solved, closed]}
+  Feedback:           {domain: success, level: 4, parent: [Components, Models, Products, Areas], default_parent: Feedback, optional: [customer, product, evidence]}
+  # partners
+  Partnerships:       {domain: partners, level: 3, parent: [Areas], default_parent: Partnerships, optional: [customer, owner, when]}
+  Vendors:            {domain: partners, level: 3, parent: [Areas], default_parent: Vendors, optional: [owner, about]}
+  # marketing
+  Brands:             {domain: marketing, level: 3, parent: [Areas], default_parent: Brand}
+  Campaigns:          {domain: marketing, level: 3, parent: [Projects, Areas], default_parent: Campaigns, optional: [owner, project, product, when], statuses: [draft, scheduled, running, done]}
+  Content:            {domain: marketing, level: 4, parent: [Campaigns, Brands, Areas], default_parent: Content, optional: [owner, about, when], statuses: [draft, approved, published]}
+  Assets:             {domain: marketing, level: 4, parent: [Campaigns, Content, Areas], default_parent: Content, optional: [about, executed_by]}
+  # product
+  Products:           {domain: product, level: 3, parent: [Areas], default_parent: Products, optional: [owner]}
+  Models:             {domain: product, level: 3, parent: [Brands, Products, Areas], default_parent: Products}
+  Components:         {domain: product, level: 4, parent: [Models, Products, Areas], default_parent: Products}
+  Feature Classes:    {domain: product, level: 4, parent: [Components, Models, Areas], default_parent: Products}
+  Requirements:       {domain: product, level: 3, parent: [Models, Products, Projects, Areas], default_parent: Requirements, optional: [product, owner, evidence], statuses: [proposed, in_review, approved, rejected, challenged, edited]}
+  Ideas:              {domain: product, level: 3, parent: [Areas], default_parent: Roadmap, optional: [owner, product], statuses: [pending_approval, active, done, rejected]}
+  Purchase Drivers:   {domain: product, level: 3, parent: [Projects, Purchase Drivers, Models, Areas], default_parent: Requirements, optional: [product, evidence]}
+  Releases:           {domain: product, level: 3, parent: [Products, Areas], default_parent: Releases, optional: [product, when]}
+  Incidents:          {domain: product, level: 4, parent: [Products, Systems, Areas], default_parent: Incidents, optional: [product, owner, when], statuses: [open, mitigated, resolved]}
+  # ai
+  Agents:             {domain: ai, level: 3, parent: [Areas], default_parent: Agents, optional: [owner], statuses: [active, paused, archived]}
+  Workflows:          {domain: ai, level: 3, parent: [Agents, Areas], default_parent: Workflows, optional: [owner, executed_by]}
+  AI Models:          {domain: ai, level: 3, parent: [Areas], default_parent: Models & evals, optional: [owner]}
+  Evals:              {domain: ai, level: 4, parent: [AI Models, Agents, Areas], default_parent: Models & evals, optional: [executed_by, evidence, when]}
+  Datasets:           {domain: ai, level: 3, parent: [Areas], default_parent: Datasets, optional: [owner, evidence]}
+  # delivery
+  Projects:           {domain: delivery, level: 3, parent: [Projects, Areas], default_parent: Client projects, builtin: true, optional: [customer, product, owner, when], statuses: [active, planning, on-hold, done, cancelled]}
+  Milestones:         {domain: delivery, level: 4, parent: [Projects, Areas], default_parent: Milestones, optional: [owner, when]}
+  Tasks:              {domain: delivery, level: 4, parent: [Milestones, Projects, Areas], default_parent: Milestones, optional: [owner, project, when], statuses: [open, doing, done]}
+  Initiatives:        {domain: delivery, level: 3, parent: [Areas], default_parent: Initiatives, optional: [owner, when]}
+  # operations
+  Systems:            {domain: operations, level: 3, parent: [Areas], default_parent: Infrastructure, optional: [owner]}
+  Tools:              {domain: operations, level: 3, parent: [Areas], default_parent: Tools, optional: [owner]}
+  Runbooks:           {domain: operations, level: 4, parent: [Systems, Tools, Areas], default_parent: Runbooks, optional: [owner, about]}
+  # register (Rowboat built-ins)
+  People:             {domain: register, level: 3, parent: [Areas], default_parent: Contacts, builtin: true, optional: [works_at, contact_at, investor_in, candidate_for]}
+  Organizations:      {domain: register, level: 3, parent: [Areas], default_parent: Companies, builtin: true}
+  # sources (raw inputs; parent = channel area)
+  Meetings:           {domain: sources, level: 4, parent: [Areas], default_parent: Meetings, builtin: true, optional: [about, customer, project, when]}
+  Mails:              {domain: sources, level: 4, parent: [Areas], default_parent: Mails, required: [about], optional: [customer, project, when]}
+  Chats:              {domain: sources, level: 4, parent: [Areas], default_parent: Chats, optional: [about, customer, project, when]}
+  Voice Memos:        {domain: sources, level: 4, parent: [Areas], default_parent: Voice memos, builtin: true, optional: [about, when]}
+  Agent Notes:        {domain: sources, level: 4, parent: [Brands, Projects, Agents, Areas], default_parent: Agent notes, builtin: true, optional: [about, executed_by]}
+  Discourse:          {domain: sources, level: 4, parent: [Areas], default_parent: Discourse, optional: [about]}
+  # knowledge
+  Topics:             {domain: knowledge, level: 3, parent: [Areas], default_parent: Topics, builtin: true}
+  Studies:            {domain: knowledge, level: 3, parent: [Areas], default_parent: Studies, optional: [about, evidence]}
+  Data:               {domain: knowledge, level: 4, parent: [Areas], default_parent: Data, optional: [about]}
+  Assumptions:        {domain: knowledge, level: 3, parent: [Areas], default_parent: Assumptions, optional: [about, evidence]}
+  # index notes kept by a curator; their domain is the domain of their parent area
+  Hubs:               {domain: "*", level: 3, parent: [Areas]}

@@ -35,6 +35,10 @@ declare global {
     };
     electronUtils: {
       getPathForFile: (file: File) => string;
+      getZoomFactor: () => number;
+    };
+    featureFlags?: {
+      spaces: boolean;
     };
   }
 }

@@ -1,6 +1,7 @@
 import { mergeAttributes, Node } from '@tiptap/react'
 import { ReactNodeViewRenderer, NodeViewWrapper } from '@tiptap/react'
 import { X, ExternalLink } from 'lucide-react'
+import { Tweet } from 'react-tweet'
 import { blocks } from '@x/shared'
 
 function getEmbedUrl(provider: string, url: string): string | null {
@@ -21,6 +22,28 @@ function getEmbedUrl(provider: string, url: string): string | null {
       return `https://embed.figma.com/design/${legacyMatch[1]}?embed-host=rowboat`
     }
   }
+  return null
+}
+
+function extractTweetId(url: string): string | null {
+  try {
+    const parsed = new URL(url)
+    const hostname = parsed.hostname
+      .toLowerCase()
+      .replace(/^www\./, '')
+      .replace(/^mobile\./, '')
+    if (hostname !== 'twitter.com' && hostname !== 'x.com') return null
+
+    const segments = parsed.pathname.split('/').filter(Boolean)
+    for (let i = 0; i < segments.length - 1; i += 1) {
+      if ((segments[i] === 'status' || segments[i] === 'statuses') && /^\d+$/.test(segments[i + 1])) {
+        return segments[i + 1]
+      }
+    }
+  } catch {
+    return null
+  }
+
   return null
 }
 
@@ -45,6 +68,7 @@ function EmbedBlockView({ node, deleteNode }: { node: { attrs: Record<string, un
     )
   }
 
+  const tweetId = extractTweetId(config.url)
   const embedUrl = getEmbedUrl(config.provider, config.url)
 
   return (
@@ -57,7 +81,14 @@ function EmbedBlockView({ node, deleteNode }: { node: { attrs: Record<string, un
         >
           <X size={14} />
         </button>
-        {embedUrl ? (
+        {config.provider === 'tweet' && tweetId ? (
+          <div
+            className="embed-block-tweet-shell"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <Tweet id={tweetId} />
+          </div>
+        ) : embedUrl ? (
           <div className="embed-block-iframe-container">
             <iframe
               src={embedUrl}

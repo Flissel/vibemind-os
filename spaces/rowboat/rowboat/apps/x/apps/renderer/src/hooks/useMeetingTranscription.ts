@@ -1,6 +1,9 @@
 import { useCallback, useRef, useState } from 'react';
+import { toast } from 'sonner';
 import { buildDeepgramListenUrl } from '@/lib/deepgram-listen-url';
+import { finalizeDeepgramStream } from '@/lib/deepgram-finalize';
 import { useRowboatAccount } from '@/hooks/useRowboatAccount';
+import { fetchRowboatConfig } from '@/hooks/use-rowboat-config';
 
 export type MeetingTranscriptionState = 'idle' | 'connecting' | 'recording' | 'stopping';
 
@@ -21,8 +24,44 @@ const DEEPGRAM_LISTEN_URL = `wss://api.deepgram.com/v1/listen?${DEEPGRAM_PARAMS.
 // RMS threshold: system audio above this = "active" (speakers playing)
 const SYSTEM_AUDIO_GATE_THRESHOLD = 0.005;
 
-// Auto-stop after 2 minutes of silence (no transcript from Deepgram)
-const SILENCE_AUTO_STOP_MS = 2 * 60 * 1000;
+// RMS threshold for "someone is talking" on either channel. Drives silence
+// detection — kept a touch above the gate threshold so faint room noise on the
+// mic doesn't read as speech and keep a finished recording alive.
+const SPEECH_RMS_THRESHOLD = 0.01;
+
+// Silence handling. "Silence" = no audio above SPEECH_RMS_THRESHOLD on EITHER
+// the mic or the system-audio channel (i.e. nobody — local or remote — talking).
+// - After SILENCE_NUDGE_MS we ask the user (toast) whether to stop.
+// - After SILENCE_BACKSTOP_MS we stop unconditionally.
+// - Once past the linked calendar event's end time we use the shorter
+//   POST_CALENDAR_END_SILENCE_MS, since a lull after the scheduled end is a
+//   strong signal the meeting is actually over.
+const SILENCE_NUDGE_MS = 2 * 60 * 1000;
+const SILENCE_BACKSTOP_MS = 5 * 60 * 1000;
+const POST_CALENDAR_END_SILENCE_MS = 2 * 60 * 1000;
+// How often the silence checker runs.
+const SILENCE_CHECK_INTERVAL_MS = 5 * 1000;
+
+// On macOS (ScreenCaptureKit) the system-audio track never fires "ended"/"mute"
+// when the meeting ends, and its readyState stays "live" — only track.muted flips
+// to true. But muted is ambiguous: it also goes true whenever no system audio is
+// playing (a quiet but live meeting), so muted alone can't safely trigger a stop.
+// See the poll in start() for how the muted signal is gated on the scheduled
+// calendar end so a quiet stretch never cuts a live meeting short.
+const TRACK_POLL_INTERVAL_MS = 3 * 1000;
+const MUTE_POLLS_TO_STOP = 3;
+
+// The ScreenCaptureKit quirk above is macOS-only; on Windows the track's "ended"
+// event fires normally (handled by the listener in start()), so the poll below is
+// gated to macOS.
+const isMac = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac');
+// On Linux getDisplayMedia loopback works too (Chromium captures the default
+// sink's monitor through the PulseAudio layer), but the request needs special
+// handling in main.ts — see setDisplayMediaRequestHandler there. Note that
+// capturing the monitor *source* directly via enumerateDevices/getUserMedia
+// is NOT an option: Chromium filters monitor sources out of device
+// enumeration on Linux (audio_manager_pulse.cc), so they never appear.
+const isLinux = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('linux');
 
 // ---------------------------------------------------------------------------
 // Headphone detection
@@ -60,7 +99,7 @@ export interface CalendarEventMeta {
 }
 
 function formatTranscript(entries: TranscriptEntry[], date: string, calendarEvent?: CalendarEventMeta): string {
-    const noteTitle = calendarEvent?.summary || 'Meeting note';
+    const noteTitle = calendarEvent?.summary || 'Meeting Notes';
     const lines = [
         '---',
         'type: meeting',
@@ -89,13 +128,18 @@ function formatTranscript(entries: TranscriptEntry[], date: string, calendarEven
         `# ${noteTitle}`,
         '',
     );
+    // Build the raw transcript text
+    const transcriptLines: string[] = [];
     for (let i = 0; i < entries.length; i++) {
         if (i > 0 && entries[i].speaker !== entries[i - 1].speaker) {
-            lines.push('');
+            transcriptLines.push('');
         }
-        lines.push(`**${entries[i].speaker}:** ${entries[i].text}`);
-        lines.push('');
+        transcriptLines.push(`**${entries[i].speaker}:** ${entries[i].text}`);
+        transcriptLines.push('');
     }
+    const transcriptText = transcriptLines.join('\n').trim();
+    const transcriptData = JSON.stringify({ transcript: transcriptText });
+    lines.push('```transcript', transcriptData, '```');
     return lines.join('\n');
 }
 
@@ -114,7 +158,17 @@ export function useMeetingTranscription(onAutoStop?: () => void) {
     const interimRef = useRef<Map<number, { speaker: string; text: string }>>(new Map());
     const notePathRef = useRef<string>('');
     const writeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // Silence detection: timestamp of the last speech-level audio on either
+    // channel, plus the interval that checks it. calendarEndMsRef holds the
+    // linked event's end time (null if none).
+    const lastAudioActivityRef = useRef<number>(0);
+    const silenceCheckRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const calendarEndMsRef = useRef<number | null>(null);
+    const nudgeToastIdRef = useRef<string | number | null>(null);
+    // On macOS (ScreenCaptureKit) the system-audio track doesn't reliably fire
+    // "ended"/"mute" when the meeting ends, so we poll its readyState/muted
+    // state instead.
+    const trackPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const onAutoStopRef = useRef(onAutoStop);
     onAutoStopRef.current = onAutoStop;
     const dateRef = useRef<string>('');
@@ -151,15 +205,7 @@ export function useMeetingTranscription(onAutoStop?: () => void) {
         }, 1000);
     }, [writeTranscriptToFile]);
 
-    const cleanup = useCallback(() => {
-        if (writeTimerRef.current) {
-            clearTimeout(writeTimerRef.current);
-            writeTimerRef.current = null;
-        }
-        if (silenceTimerRef.current) {
-            clearTimeout(silenceTimerRef.current);
-            silenceTimerRef.current = null;
-        }
+    const stopInputCapture = useCallback(() => {
         if (processorRef.current) {
             processorRef.current.disconnect();
             processorRef.current = null;
@@ -176,12 +222,32 @@ export function useMeetingTranscription(onAutoStop?: () => void) {
             systemStreamRef.current.getTracks().forEach(t => t.stop());
             systemStreamRef.current = null;
         }
+    }, []);
+
+    const cleanup = useCallback(() => {
+        if (writeTimerRef.current) {
+            clearTimeout(writeTimerRef.current);
+            writeTimerRef.current = null;
+        }
+        if (silenceCheckRef.current) {
+            clearInterval(silenceCheckRef.current);
+            silenceCheckRef.current = null;
+        }
+        if (nudgeToastIdRef.current !== null) {
+            toast.dismiss(nudgeToastIdRef.current);
+            nudgeToastIdRef.current = null;
+        }
+        if (trackPollingRef.current) {
+            clearInterval(trackPollingRef.current);
+            trackPollingRef.current = null;
+        }
+        stopInputCapture();
         if (wsRef.current) {
             wsRef.current.onclose = null;
             wsRef.current.close();
             wsRef.current = null;
         }
-    }, []);
+    }, [stopInputCapture]);
 
     const start = useCallback(async (calendarEvent?: CalendarEventMeta): Promise<string | null> => {
         if (state !== 'idle') return null;
@@ -193,14 +259,19 @@ export function useMeetingTranscription(onAutoStop?: () => void) {
             detectHeadphones(),
             // 2. Set up Deepgram WebSocket (account refresh + connect + wait for open)
             (async () => {
-                const account = await refreshRowboatAccount();
+                // Token from account refresh; websocket URL from the
+                // sign-in-independent bootstrap config store.
+                const [account, rowboatConfig] = await Promise.all([
+                    refreshRowboatAccount(),
+                    fetchRowboatConfig(),
+                ]);
                 let ws: WebSocket;
                 if (
                     account?.signedIn &&
                     account.accessToken &&
-                    account.config?.websocketApiUrl
+                    rowboatConfig?.websocketApiUrl
                 ) {
-                    const listenUrl = buildDeepgramListenUrl(account.config.websocketApiUrl, DEEPGRAM_PARAMS);
+                    const listenUrl = buildDeepgramListenUrl(rowboatConfig.websocketApiUrl, DEEPGRAM_PARAMS);
                     console.log('[meeting] Using Rowboat WebSocket');
                     ws = new WebSocket(listenUrl, ['bearer', account.accessToken]);
                 } else {
@@ -228,7 +299,10 @@ export function useMeetingTranscription(onAutoStop?: () => void) {
                     autoGainControl: true,
                 },
             }),
-            // 4. Get system audio via getDisplayMedia (loopback)
+            // 4. Get system audio via getDisplayMedia (loopback). Works on all
+            // platforms; on Linux main.ts answers this request with the
+            // requesting frame as the throwaway video source (avoids the
+            // flaky Wayland screen-capture portal) + Pulse loopback audio.
             (async () => {
                 const stream = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: true });
                 stream.getVideoTracks().forEach(t => t.stop());
@@ -249,7 +323,15 @@ export function useMeetingTranscription(onAutoStop?: () => void) {
         if (failed) {
             if (wsResult.status === 'rejected') console.error('[meeting] WebSocket setup failed:', wsResult.reason);
             if (micResult.status === 'rejected') console.error('[meeting] Microphone access denied:', micResult.reason);
-            if (systemResult.status === 'rejected') console.error('[meeting] System audio access denied:', systemResult.reason);
+            if (systemResult.status === 'rejected') {
+                console.error('[meeting] System audio access denied:', systemResult.reason);
+                if (isLinux) {
+                    toast.error('Could not capture system audio', {
+                        description: 'Meeting audio capture needs PipeWire or PulseAudio. Make sure one of them is running, then try again.',
+                        duration: 10000,
+                    });
+                }
+            }
             // Clean up any resources that did succeed
             if (wsResult.status === 'fulfilled') { wsResult.value.close(); }
             if (micResult.status === 'fulfilled') { micResult.value.getTracks().forEach(t => t.stop()); }
@@ -273,13 +355,6 @@ export function useMeetingTranscription(onAutoStop?: () => void) {
             if (!data.channel?.alternatives?.[0]) return;
             const transcript = data.channel.alternatives[0].transcript;
             if (!transcript) return;
-
-            // Reset silence auto-stop timer on any transcript
-            if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-            silenceTimerRef.current = setTimeout(() => {
-                console.log('[meeting] 2 minutes of silence — auto-stopping');
-                onAutoStopRef.current?.();
-            }, SILENCE_AUTO_STOP_MS);
 
             const channelIndex = data.channel_index?.[0] ?? 0;
             const isMic = channelIndex === 0;
@@ -320,6 +395,60 @@ export function useMeetingTranscription(onAutoStop?: () => void) {
         const systemStream = systemResult.value;
         systemStreamRef.current = systemStream;
 
+        // If the shared source goes away (user closes the call window / clicks
+        // "Stop sharing"), the track fires "ended" — treat that as the meeting
+        // ending and stop. Our own cleanup() calls track.stop(), which does NOT
+        // fire "ended", so this won't double-trigger on a manual stop.
+        // On Linux the loopback stream mirrors the default output device, not
+        // the meeting app, so it stays live after the meeting closes and
+        // "ended" never fires — auto-stop on Linux comes from the silence
+        // detector armed below.
+        systemStream.getAudioTracks().forEach(track => {
+            track.addEventListener('ended', () => {
+                console.log('[meeting] system-audio track ended (shared source closed) — auto-stopping');
+                onAutoStopRef.current?.();
+            });
+        });
+
+        // On macOS the system-audio track's "ended"/"mute" events don't fire when
+        // the meeting ends, so poll its state instead. (On Windows the "ended"
+        // listener above already covers this, so the poll is macOS-only.)
+        //
+        //  - readyState === 'ended' is unambiguous (the source is gone) → stop now.
+        //    It never actually fires on macOS (readyState stays 'live'); it's just
+        //    a safety net should polling ever observe the track ending.
+        //  - muted is ambiguous on macOS: it flips true both when the meeting ends
+        //    AND when nothing is playing system audio (a quiet but live meeting).
+        //    So we only treat sustained mute as "meeting over" once we're past the
+        //    linked event's scheduled end — a dead audio track after the meeting
+        //    was due to finish is a strong signal. With no calendar event, or
+        //    before the scheduled end, we DON'T hard-stop on mute; the silence
+        //    checker's nudge + backstop handles it, so a quiet stretch can never
+        //    silently cut a live meeting short.
+        const pollTrack = systemStream.getAudioTracks()[0];
+        if (isMac && pollTrack) {
+            let mutedPolls = 0;
+            if (trackPollingRef.current) clearInterval(trackPollingRef.current);
+            trackPollingRef.current = setInterval(() => {
+                if (pollTrack.readyState === 'ended') {
+                    console.log('[meeting] system-audio track ended (poll) — auto-stopping');
+                    onAutoStopRef.current?.();
+                    return;
+                }
+                if (pollTrack.muted) {
+                    mutedPolls++;
+                    const endMs = calendarEndMsRef.current;
+                    const pastCalendarEnd = endMs != null && Date.now() > endMs;
+                    if (pastCalendarEnd && mutedPolls >= MUTE_POLLS_TO_STOP) {
+                        console.log('[meeting] system-audio track muted past scheduled end (poll) — auto-stopping');
+                        onAutoStopRef.current?.();
+                    }
+                } else {
+                    mutedPolls = 0;
+                }
+            }, TRACK_POLL_INTERVAL_MS);
+        }
+
         // ----- Audio pipeline -----
         const audioCtx = new AudioContext({ sampleRate: 16000 });
         audioCtxRef.current = audioCtx;
@@ -340,24 +469,33 @@ export function useMeetingTranscription(onAutoStop?: () => void) {
             const micRaw = e.inputBuffer.getChannelData(0);
             const sysRaw = e.inputBuffer.getChannelData(1);
 
+            // RMS of each channel, computed once per frame and reused for
+            // silence detection and gating the mic in speaker mode.
+            let micSum = 0;
+            for (let i = 0; i < micRaw.length; i++) micSum += micRaw[i] * micRaw[i];
+            const micRms = Math.sqrt(micSum / micRaw.length);
+            let sysSum = 0;
+            for (let i = 0; i < sysRaw.length; i++) sysSum += sysRaw[i] * sysRaw[i];
+            const sysRms = Math.sqrt(sysSum / sysRaw.length);
+
+            // Reset the silence clock whenever EITHER channel has speech-level
+            // audio. Uses the raw mic (pre-gating) so the user's own voice counts
+            // even in speaker mode where the outgoing mic gets muted.
+            if (micRms > SPEECH_RMS_THRESHOLD || sysRms > SPEECH_RMS_THRESHOLD) {
+                lastAudioActivityRef.current = Date.now();
+            }
+
             // Mode 1 (headphones): pass both streams through unmodified
             // Mode 2 (speakers): gate/mute mic when system audio is active
             let micOut: Float32Array;
             if (usingHeadphones) {
                 micOut = micRaw;
+            } else if (sysRms > SYSTEM_AUDIO_GATE_THRESHOLD) {
+                // System audio is playing — mute mic to prevent bleed
+                micOut = new Float32Array(micRaw.length); // all zeros
             } else {
-                // Compute system audio RMS to detect activity
-                let sysSum = 0;
-                for (let i = 0; i < sysRaw.length; i++) sysSum += sysRaw[i] * sysRaw[i];
-                const sysRms = Math.sqrt(sysSum / sysRaw.length);
-
-                if (sysRms > SYSTEM_AUDIO_GATE_THRESHOLD) {
-                    // System audio is playing — mute mic to prevent bleed
-                    micOut = new Float32Array(micRaw.length); // all zeros
-                } else {
-                    // System audio is silent — pass mic through
-                    micOut = micRaw;
-                }
+                // System audio is silent — pass mic through
+                micOut = micRaw;
             }
 
             // Interleave mic (ch0) + system audio (ch1) into stereo int16 PCM
@@ -383,15 +521,69 @@ export function useMeetingTranscription(onAutoStop?: () => void) {
         const filename = calendarEvent?.summary
             ? calendarEvent.summary.replace(/[\\/*?:"<>|]/g, '').replace(/\s+/g, '_').substring(0, 100).trim()
             : `meeting-${timestamp}`;
-        const notePath = `knowledge/Meetings/rowboat/${dateFolder}/${filename}.md`;
+        let notePath = `knowledge/Meetings/rowboat/${dateFolder}/${filename}.md`;
+        // Title-derived names collide within a day — every ad-hoc detection is
+        // titled "Meeting", and recurring calendar events repeat their summary.
+        // Never overwrite an earlier meeting's note: suffix with the timestamp.
+        if (calendarEvent?.summary) {
+            try {
+                const { exists } = await window.ipc.invoke('workspace:exists', { path: notePath });
+                if (exists) notePath = `knowledge/Meetings/rowboat/${dateFolder}/${filename}-${timestamp}.md`;
+            } catch { /* fall through with the unsuffixed path */ }
+        }
         notePathRef.current = notePath;
         calendarEventRef.current = calendarEvent;
+
+        // Parse the linked event's end time (timed events only) so the silence
+        // window can shorten once the meeting is past its scheduled end.
+        const calEndMs = calendarEvent?.end?.dateTime ? Date.parse(calendarEvent.end.dateTime) : NaN;
+        calendarEndMsRef.current = Number.isFinite(calEndMs) ? calEndMs : null;
+
         const initialContent = formatTranscript([], dateStr, calendarEvent);
         await window.ipc.invoke('workspace:writeFile', {
             path: notePath,
             data: initialContent,
             opts: { encoding: 'utf8', mkdirp: true },
         });
+
+        // Arm silence detection. Initialise the activity clock to "now" so the
+        // checker is live from the very start of recording — a session that
+        // never captures any audio still auto-stops at the backstop instead of
+        // running forever.
+        lastAudioActivityRef.current = Date.now();
+        if (silenceCheckRef.current) clearInterval(silenceCheckRef.current);
+        silenceCheckRef.current = setInterval(() => {
+            const silentMs = Date.now() - lastAudioActivityRef.current;
+            const endMs = calendarEndMsRef.current;
+            const pastCalendarEnd = endMs != null && Date.now() > endMs;
+            const hardStopMs = pastCalendarEnd ? POST_CALENDAR_END_SILENCE_MS : SILENCE_BACKSTOP_MS;
+
+            if (silentMs >= hardStopMs) {
+                console.log(`[meeting] ${Math.round(silentMs / 1000)}s of silence${pastCalendarEnd ? ' (past scheduled end)' : ''} — auto-stopping`);
+                onAutoStopRef.current?.();
+                return;
+            }
+
+            if (silentMs >= SILENCE_NUDGE_MS) {
+                // Ask once; the toast persists until dismissed or acted on. Past
+                // the scheduled end we skip straight to the hard stop above, so
+                // the nudge only ever shows for an in-progress meeting.
+                if (nudgeToastIdRef.current === null) {
+                    nudgeToastIdRef.current = toast('Still in a meeting?', {
+                        description: "It's been quiet for a couple of minutes.",
+                        duration: Infinity,
+                        action: {
+                            label: 'Stop recording',
+                            onClick: () => { onAutoStopRef.current?.(); },
+                        },
+                    });
+                }
+            } else if (nudgeToastIdRef.current !== null) {
+                // Audio resumed before the backstop — retract the nudge.
+                toast.dismiss(nudgeToastIdRef.current);
+                nudgeToastIdRef.current = null;
+            }
+        }, SILENCE_CHECK_INTERVAL_MS);
 
         setState('recording');
         return notePath;
@@ -401,12 +593,14 @@ export function useMeetingTranscription(onAutoStop?: () => void) {
         if (state !== 'recording') return;
         setState('stopping');
 
+        stopInputCapture();
+        await finalizeDeepgramStream(wsRef.current, 2200);
         cleanup();
-        interimRef.current = new Map();
         await writeTranscriptToFile();
+        interimRef.current = new Map();
 
         setState('idle');
-    }, [state, cleanup, writeTranscriptToFile]);
+    }, [state, cleanup, stopInputCapture, writeTranscriptToFile]);
 
     return { state, start, stop };
 }

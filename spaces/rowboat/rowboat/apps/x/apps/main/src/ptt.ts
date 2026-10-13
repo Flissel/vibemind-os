@@ -1,0 +1,216 @@
+/**
+ * Global push-to-talk key hook (uiohook-napi).
+ *
+ * Watches the hold-to-talk key system-wide while a call (or the quick-ask
+ * bar) needs it and relays down/up/chord transitions to the app window,
+ * which owns the PTT state machine. The key is platform-dependent (right ⌘
+ * on macOS, right Ctrl elsewhere — see shared/ptt-key.ts); the hook only
+ * runs while a consumer is registered — no input monitoring outside calls.
+ *
+ * macOS gates global event taps behind the Input Monitoring permission
+ * (TCC). Starting the hook triggers the system consent prompt on first use,
+ * but a denied/pending grant doesn't error — events simply never arrive.
+ * `eventsSeen` is the liveness signal the renderer polls to distinguish
+ * "granted" from "silently dead" and show a proper permission dialog (its
+ * in-window DOM listener keeps PTT working while the app is focused either
+ * way).
+ */
+import { app, BrowserWindow, shell } from 'electron';
+import { pttKey } from '@x/shared';
+
+type PttKeyEvent = {
+  type: 'down' | 'up' | 'chord';
+  /** Ghostwriter chord: ⇧ was already held when the talk key went down —
+   * the utterance's result should be pasted at the user's cursor. */
+  paste?: boolean;
+};
+
+// The talk key's libuiohook keycode: VC_META_R (right ⌘) on macOS,
+// VC_CONTROL_R (right Ctrl) everywhere else — Windows owns the right Win
+// key, so a tap there opens the Start menu instead of talking.
+const PTT_KEYCODE = pttKey.pttUiohookKeycode(process.platform);
+
+type UiohookModule = typeof import('uiohook-napi');
+
+let hookModule: UiohookModule | null = null;
+let loadFailed = false;
+let listenersAttached = false;
+let running = false;
+// True once ANY input event arrives — mouse moves land within moments of
+// hook start on a granted system, so a stale false means no permission.
+let eventsSeen = false;
+let pttKeyHeld = false;
+
+const reasons = new Set<string>();
+
+let findTargetWindows: () => BrowserWindow[] = () => [];
+
+/** Wire where PTT key events get delivered (the app window). */
+export function initPtt(findTargets: () => BrowserWindow[]) {
+  findTargetWindows = findTargets;
+  // The shutdown half of the crash: the hook's native thread keeps pumping
+  // events while Node's environment tears down at quit — a delivery into
+  // the dying env is a napi fatal (the 23:11 crash report's
+  // CleanupHandles stack). The hook stays running for the app's LIFETIME
+  // (restarting it is what's unreliable) — but at final quit there is no
+  // restart to protect; stop it before teardown begins.
+  app.on('will-quit', () => stopHook());
+}
+
+function broadcast(event: PttKeyEvent) {
+  // Forwarding is gated on consumers, not on hook lifetime — see
+  // setPttActive for why the hook keeps running between calls.
+  if (reasons.size === 0) return;
+  for (const win of findTargetWindows()) {
+    try {
+      // Both checks: a window mid-teardown can survive isDestroyed() while
+      // its webContents is already gone — send() then THROWS, and a throw
+      // anywhere in a uiohook callback is a PROCESS ABORT (see
+      // attachListeners). Seen in the wild as the companion window being
+      // recreated during a call.
+      if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+        win.webContents.send('voice:ptt-key', event);
+      }
+    } catch {
+      // Never let a dying window take the app with it.
+    }
+  }
+}
+
+async function loadModule(): Promise<UiohookModule | null> {
+  if (hookModule || loadFailed) return hookModule;
+  try {
+    // Native module — load lazily so a missing/broken binary degrades to
+    // "global PTT unavailable" instead of crashing the main process.
+    hookModule = await import('uiohook-napi');
+  } catch (err) {
+    console.error('[ptt] failed to load uiohook-napi:', err);
+    loadFailed = true;
+  }
+  return hookModule;
+}
+
+// A JS exception inside a uiohook callback is NOT a normal error: the
+// module's threadsafe-function proxy escalates any callback failure to
+// napi_fatal_error → SIGABRT, taking the whole app down. Every handler body
+// is wrapped — all three crash reports on 0.8.7 carry exactly this
+// signature (tsfn_to_js_proxy → napi_fatal_error → abort).
+function guarded<T extends unknown[]>(fn: (...args: T) => void): (...args: T) => void {
+  return (...args) => {
+    try {
+      fn(...args);
+    } catch (err) {
+      console.error('[ptt] suppressed exception in uiohook callback:', err);
+    }
+  };
+}
+
+function attachListeners(mod: UiohookModule) {
+  if (listenersAttached) return;
+  listenersAttached = true;
+  mod.uIOhook.on('keydown', guarded((e: { keycode: number; shiftKey?: boolean }) => {
+    eventsSeen = true;
+    if (e.keycode === PTT_KEYCODE) {
+      // OS key-repeat refires keydown while held — only the edge matters.
+      if (!pttKeyHeld) {
+        pttKeyHeld = true;
+        const paste = e.shiftKey === true;
+        if (paste) {
+          // Remember the frontmost app NOW — it's the paste target.
+          void import('./text-insert.js').then((m) => m.textInsertService.captureTarget()).catch(() => {});
+        }
+        broadcast({ type: 'down', paste });
+      }
+    } else if (pttKeyHeld) {
+      // The talk key is acting as a modifier (⌘C / Ctrl+C etc.), not as the
+      // PTT key — the renderer cancels the capture.
+      broadcast({ type: 'chord' });
+    }
+  }));
+  mod.uIOhook.on('keyup', guarded((e: { keycode: number }) => {
+    eventsSeen = true;
+    if (e.keycode === PTT_KEYCODE && pttKeyHeld) {
+      pttKeyHeld = false;
+      broadcast({ type: 'up' });
+    }
+  }));
+  mod.uIOhook.on('mousedown', guarded(() => {
+    eventsSeen = true;
+    // A click with the talk key held: a chord, same as a keyboard one.
+    if (pttKeyHeld) broadcast({ type: 'chord' });
+  }));
+  mod.uIOhook.on('mousemove', guarded(() => {
+    eventsSeen = true;
+  }));
+}
+
+async function startHook() {
+  const mod = await loadModule();
+  if (!mod || running) return;
+  attachListeners(mod);
+  try {
+    mod.uIOhook.start();
+    running = true;
+  } catch (err) {
+    console.error('[ptt] failed to start hook:', err);
+    loadFailed = true;
+  }
+}
+
+function stopHook() {
+  if (!hookModule || !running) return;
+  try {
+    hookModule.uIOhook.stop();
+  } catch (err) {
+    console.error('[ptt] failed to stop hook:', err);
+  }
+  running = false;
+  pttKeyHeld = false;
+  eventsSeen = false;
+}
+
+/**
+ * Reference-counted activation: key events are forwarded while at least one
+ * consumer ('call', 'quick-ask') is active. The hook itself starts lazily on
+ * the first consumer and then STAYS running for the app's lifetime —
+ * libuiohook's stop/start cycle is unreliable on macOS (the recreated tap
+ * intermittently delivers nothing, which surfaced as PTT "randomly" dying
+ * on later calls). While no consumer is registered nothing is forwarded or
+ * retained.
+ */
+export async function setPttActive(reason: string, active: boolean) {
+  if (active) reasons.add(reason);
+  else reasons.delete(reason);
+  if (reasons.size > 0 && !running) await startHook();
+  else if (reasons.size === 0) pttKeyHeld = false;
+}
+
+export function getPttStatus() {
+  return {
+    supported: !loadFailed,
+    running,
+    eventsSeen,
+  };
+}
+
+/**
+ * Recreate the event tap after the user grants Input Monitoring — a tap
+ * created pre-grant stays dead forever; a fresh one picks the grant up.
+ */
+export async function retryPttHook() {
+  stopHook();
+  if (reasons.size > 0) await startHook();
+  return { running };
+}
+
+export async function openInputMonitoringSettings() {
+  if (process.platform !== 'darwin') return { success: false };
+  try {
+    await shell.openExternal(
+      'x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent',
+    );
+    return { success: true };
+  } catch {
+    return { success: false };
+  }
+}

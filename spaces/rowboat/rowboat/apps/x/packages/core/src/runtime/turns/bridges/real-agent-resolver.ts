@@ -1,0 +1,309 @@
+import { z } from "zod";
+import type { Agent } from "@x/shared/dist/agent.js";
+import {
+    AgentByIdRequest,
+    ResolvedAgent,
+    SPAWN_AGENT_TOOL_NAME,
+    type ToolDescriptor,
+} from "@x/shared/dist/turns.js";
+import { composeSystemInstructions } from "../../assembly/compose-instructions.js";
+import {
+    loadAgentNotesContext,
+    loadUserWorkDir,
+    loadWorkspaceContext,
+} from "../../assembly/workspace-context.js";
+import {
+    carriesSkillsForward,
+    hasWorkspaceContext,
+    loadAgent,
+} from "../../assembly/registry.js";
+import { HARNESS_TOOL } from "../../assembly/copilot/base-tools.js";
+import { BuiltinTools } from "../../tools/catalog.js";
+import { skillToolNames } from "../../assembly/skills/index.js";
+import { ModeFlags } from "../../assembly/capabilities/types.js";
+import { getDefaultModelAndProvider } from "../../../models/defaults.js";
+import {
+    builtinToolDescriptor,
+    toJsonValue,
+} from "../../tools/descriptors.js";
+
+export const ASK_HUMAN_TOOL = "ask-human";
+
+const ASK_HUMAN_DESCRIPTOR: z.infer<typeof ToolDescriptor> = {
+    toolId: `builtin:${ASK_HUMAN_TOOL}`,
+    name: ASK_HUMAN_TOOL,
+    description:
+        "Ask the user a question and wait for their answer before proceeding. " +
+        "Three modes:\n\n" +
+        "1. Single choice — provide up to 4 `options`. The UI renders them as " +
+        "selectable rows and always appends its own 'Other (type your answer)' " +
+        "row, so never add an 'Other'/'Something else' option yourself.\n" +
+        "2. Multiple choice — additionally set `multiSelect: true` when several " +
+        "options can apply at once ('pick all that apply'). The answer lists " +
+        "every selected option.\n" +
+        "3. Open-ended — omit `options` entirely. The user types a free-form " +
+        "answer.\n\n" +
+        "CRITICAL: when offering choices, put each choice ONLY in the `options` " +
+        "array — NEVER enumerate the choices inside the `question` text. The UI " +
+        "renders `options` as pickable rows; choices written into the question " +
+        "string render as dead prose the user can't pick. " +
+        "Right: question='Which deployment target?', options=['staging', 'prod']. " +
+        "Wrong: question='Which target? 1) staging 2) prod', options=[].\n\n" +
+        "Use this tool when:\n" +
+        "- The task is ambiguous and the user must choose an approach\n" +
+        "- A decision has meaningful trade-offs the user should weigh in on\n" +
+        "- You need a fact only the user knows before you can proceed\n\n" +
+        "Do NOT use it for low-stakes decisions — make a reasonable choice " +
+        "yourself and proceed. The user can skip the question; if the answer " +
+        "says they skipped, use your best judgment and continue without asking " +
+        "again.",
+    inputSchema: {
+        type: "object",
+        properties: {
+            question: {
+                type: "string",
+                description:
+                    "The question itself, and ONLY the question (e.g. 'Which " +
+                    "deployment target?'). Do NOT embed the answer choices here " +
+                    "— pass them as separate elements in `options`.",
+            },
+            options: {
+                type: "array",
+                items: { type: "string" },
+                maxItems: 4,
+                description:
+                    "REQUIRED whenever you are presenting selectable choices: " +
+                    "each distinct choice is its own short label (up to 4). The " +
+                    "UI auto-appends an 'Other (type your answer)' row. Omit " +
+                    "entirely ONLY for a genuinely open-ended question.",
+            },
+            multiSelect: {
+                type: "boolean",
+                description:
+                    "When true, the user can select MULTIPLE options " +
+                    "(checkboxes); the answer lists all selected options. " +
+                    "When false (default), single selection. No effect when " +
+                    "`options` is omitted.",
+            },
+        },
+        required: ["question"],
+        additionalProperties: false,
+    },
+    execution: "async",
+    requiresHuman: true,
+};
+
+// Recognized keys of the opaque RequestedAgent.overrides.composition value.
+// Unknown keys are ignored. Prompt-affecting inputs should be session-sticky:
+// every key here alters system-prompt bytes and therefore busts provider
+// prefix caching when it changes between turns.
+// The mode-flag keys come from the shared ModeFlags schema (the single
+// source of truth in capabilities/types.ts — defaults make the parse output
+// fully concrete); only the resolver-specific keys are declared here.
+const CompositionOverrides = ModeFlags.extend({
+    workDirId: z.string().nullable().optional(),
+    // Set by spawn-agent for by-id children: strips the spawn tool so depth
+    // is capped at 1 regardless of which stored agent is spawned.
+    subagent: z.boolean().optional(),
+    // Skills the session has loaded (maintained by the sessions layer from
+    // prior turns' tools_extended events): their declared tools attach on
+    // top of the copilot's base set. Order is preserved so identical sets
+    // produce byte-identical snapshots and inheritance keeps working.
+    activeSkills: z.array(z.string()).optional(),
+});
+
+// The harness (Claude Code / Codex) runs INSIDE a directory, so the
+// assistant is only offered it once this chat has one: a Code session's
+// pinned cwd, or the work directory the user picked beside the composer.
+// Without one the run would silently land in whatever repo happens to be
+// the default, which is not a choice the user made here (2026-09-30).
+// Agents with no work-directory concept (the to-do item agent, background
+// tasks) resolve their repo from their own pin and keep the tool.
+function harnessAvailable(
+    agentId: string | null | undefined,
+    context: { codeCwd: string | null; userWorkDir: string | null },
+): boolean {
+    if (!hasWorkspaceContext(agentId)) {
+        return true;
+    }
+    return Boolean(context.codeCwd ?? context.userWorkDir);
+}
+
+export interface RealAgentResolverDeps {
+    load?: typeof loadAgent;
+    builtins?: typeof BuiltinTools;
+    defaultModel?: () => Promise<{ model: string; provider: string }>;
+    loadNotes?: () => string | null;
+    loadWorkDir?: (workDirId: string) => string | null;
+    skillTools?: typeof skillToolNames;
+}
+
+// Bridges the existing agent system (loadAgent + dynamic builders, the
+// BuiltinTools catalog, MCP attachments) to the immutable ResolvedAgent
+// snapshot. The composed system prompt is byte-identical to the old
+// runtime's streamAgent assembly for the same inputs. Resolves only the
+// by-id RequestedAgent variant; inline agents go through
+// InlineAgentResolver via DispatchingAgentResolver.
+export class RealAgentResolver {
+    private readonly load: typeof loadAgent;
+    private readonly builtins: typeof BuiltinTools;
+    private readonly defaultModel: () => Promise<{ model: string; provider: string }>;
+    private readonly loadNotes: () => string | null;
+    private readonly loadWorkDir: (workDirId: string) => string | null;
+    private readonly skillTools: typeof skillToolNames;
+
+    constructor(deps: RealAgentResolverDeps = {}) {
+        this.load = deps.load ?? loadAgent;
+        this.builtins = deps.builtins ?? BuiltinTools;
+        this.defaultModel = deps.defaultModel ?? getDefaultModelAndProvider;
+        this.loadNotes = deps.loadNotes ?? loadAgentNotesContext;
+        this.loadWorkDir = deps.loadWorkDir ?? loadUserWorkDir;
+        this.skillTools = deps.skillTools ?? skillToolNames;
+    }
+
+    async resolve(
+        requested: z.infer<typeof AgentByIdRequest>,
+    ): Promise<z.infer<typeof ResolvedAgent>> {
+        const agent = await this.load(requested.agentId);
+        if (!agent) {
+            throw new Error(`agent not found: ${requested.agentId}`);
+        }
+
+        // Model precedence: createTurn override > agent config > app default.
+        let model = requested.overrides?.model;
+        if (!model) {
+            const fallback = await this.defaultModel();
+            model = {
+                provider: agent.provider ?? fallback.provider,
+                model: agent.model ?? fallback.model,
+            };
+        }
+
+        const parsed = CompositionOverrides.safeParse(
+            requested.overrides?.composition ?? {},
+        );
+        // An unparseable composition falls back to all defaults (same shape
+        // as parsing {}), preserving the historical "ignore garbage" rule.
+        const composition = parsed.success
+            ? parsed.data
+            : CompositionOverrides.parse({});
+        const { workDirId, subagent, activeSkills, ...modeFlags } = composition;
+        // The workspaceContext trait gate lives INSIDE loadWorkspaceContext
+        // (agents/workspace-context.ts) — no assembly site can forget it.
+        const workspace = loadWorkspaceContext(requested.agentId, workDirId, {
+            loadNotes: this.loadNotes,
+            loadWorkDir: this.loadWorkDir,
+        });
+        const systemPrompt = composeSystemInstructions({
+            instructions: agent.instructions,
+            ...workspace,
+            ...modeFlags,
+        });
+
+        const harness = harnessAvailable(requested.agentId, {
+            codeCwd: modeFlags.codeCwd,
+            userWorkDir: workspace.userWorkDir,
+        });
+        const tools = await this.resolveTools(agent, {
+            subagent: subagent ?? false,
+            harness,
+        });
+        if (carriesSkillsForward(requested.agentId) && activeSkills?.length) {
+            await this.appendSkillTools(tools, activeSkills, { harness });
+        }
+        return ResolvedAgent.parse({
+            agentId: requested.agentId,
+            systemPrompt,
+            model,
+            tools,
+        });
+    }
+
+    // Skill-scoped tools carried across turns: each active skill's declared
+    // BuiltinTools attach on top of the base set. Unknown skill ids (deleted
+    // disk skill) and unknown/unavailable tool names skip gracefully.
+    // Iteration order (skills, then declaration order) is deterministic, so
+    // an unchanged activeSkills list yields a byte-identical snapshot and
+    // agent-snapshot inheritance keeps working.
+    private async appendSkillTools(
+        tools: Array<z.infer<typeof ToolDescriptor>>,
+        activeSkills: string[],
+        options: { harness: boolean },
+    ): Promise<void> {
+        const attached = new Set(tools.map((tool) => tool.name));
+        for (const skillId of activeSkills) {
+            for (const name of this.skillTools(skillId)) {
+                if (attached.has(name)) {
+                    continue;
+                }
+                // A skill declaring the harness must not route around the
+                // work-directory gate (disk skills declare their own tools).
+                if (!options.harness && name === HARNESS_TOOL) {
+                    continue;
+                }
+                const builtin = this.builtins[name];
+                if (!builtin) {
+                    continue;
+                }
+                if (builtin.isAvailable && !(await builtin.isAvailable())) {
+                    continue;
+                }
+                tools.push(builtinToolDescriptor(name, builtin));
+                attached.add(name);
+            }
+        }
+    }
+
+    private async resolveTools(
+        agent: z.infer<typeof Agent>,
+        options: { subagent: boolean; harness: boolean },
+    ): Promise<Array<z.infer<typeof ToolDescriptor>>> {
+        const tools: Array<z.infer<typeof ToolDescriptor>> = [];
+        for (const [name, attachment] of Object.entries(agent.tools ?? {})) {
+            if (attachment.type === "agent") {
+                continue; // agent-as-tool is not supported in v1
+            }
+            if (attachment.type === "mcp") {
+                tools.push({
+                    toolId: `mcp:${attachment.mcpServerName}:${attachment.name}`,
+                    name,
+                    description: attachment.description,
+                    inputSchema:
+                        toJsonValue(attachment.inputSchema) ??
+                        { type: "object", properties: {} },
+                    execution: "sync",
+                    requiresHuman: false,
+                });
+                continue;
+            }
+            if (name === ASK_HUMAN_TOOL) {
+                tools.push(ASK_HUMAN_DESCRIPTOR);
+                continue;
+            }
+            // Depth cap: a spawned child never spawns, whichever stored
+            // agent it happens to be.
+            if (
+                options.subagent &&
+                attachment.name === SPAWN_AGENT_TOOL_NAME
+            ) {
+                continue;
+            }
+            // No work directory for this chat, no harness (see above).
+            if (!options.harness && attachment.name === HARNESS_TOOL) {
+                continue;
+            }
+            const builtin = this.builtins[attachment.name];
+            if (!builtin) {
+                continue;
+            }
+            if (builtin.isAvailable && !(await builtin.isAvailable())) {
+                continue;
+            }
+            tools.push({
+                ...builtinToolDescriptor(attachment.name, builtin),
+                name,
+            });
+        }
+        return tools;
+    }
+}

@@ -1,0 +1,481 @@
+import { createHash } from 'node:crypto';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { mcpTools } from '@rowboat/spaces-protocol';
+import type { RunningHarbor } from '../src/server.js';
+import { startTestHarbor } from './helpers.js';
+
+// Agent-face tests through a real MCP client: the exact path any agent
+// (Rowboat's included — no privileged path) uses.
+
+let harbor: RunningHarbor;
+let spaceId: string;
+let roadmapId: string; // the seeded roadmap.md's asset id — every later call names it by id
+
+beforeAll(async () => {
+  harbor = await startTestHarbor({
+    seedMembers: [
+      { id: 'harsh', displayName: 'Harsh' },
+      { id: 'ramnique', displayName: 'Ramnique' },
+    ],
+    seedSpaces: [
+      { name: 'Agent Space', creator: 'harsh', assets: [{ path: 'roadmap.md', content: '# Roadmap\n- [ ] SSO\n' }] },
+    ],
+  });
+  const spaces = await harbor.service.listSpaces({ memberId: 'harsh' });
+  spaceId = spaces[0]!.id;
+  const listing = await fetch(`${harbor.url}/v1/spaces/${spaceId}/assets`, {
+    headers: { authorization: 'Bearer dev-harsh' },
+  }).then((r) => r.json() as Promise<{ entries: Array<{ id: string; path: string }> }>);
+  roadmapId = listing.entries.find((e) => e.path === 'roadmap.md')!.id;
+});
+
+afterAll(async () => {
+  await harbor.close();
+});
+
+async function mcpClient(token: string, headers: Record<string, string> = {}): Promise<Client> {
+  const client = new Client({ name: 'test-agent', version: '0.0.1' });
+  const transport = new StreamableHTTPClientTransport(new URL(harbor.mcpUrl), {
+    requestInit: { headers: { authorization: `Bearer ${token}`, ...headers } },
+  });
+  await client.connect(transport);
+  return client;
+}
+
+describe('agent face (MCP)', () => {
+  it('lists exactly the protocol tools, with JSON schemas', async () => {
+    const client = await mcpClient('dev-harsh');
+    const { tools } = await client.listTools();
+    expect(tools.map((t) => t.name).sort()).toEqual([
+      'add_members',
+      'asset_history',
+      'browse_spaces',
+      'create_asset',
+      'create_invite',
+      'create_space',
+      'create_topic',
+      'delete_asset',
+      'delete_message',
+      'diff',
+      'edit_message',
+      'end_poll',
+      'get_invocations',
+      'join_space',
+      'leave_space',
+      'list_assets',
+      'list_members',
+      'list_spaces',
+      'list_topics',
+      'manage_topic',
+      'mark_all_read',
+      'move_asset',
+      'open_direct',
+      'post_message',
+      'propose_change',
+      'react',
+      'read_activity',
+      'read_asset',
+      'read_stream',
+      'read_thread',
+      'rename_space',
+      'restore_asset',
+      'search_space',
+      'stop_invocation',
+      'vote_poll',
+      'whoami',
+    ]);
+    expect(tools.map((t) => t.name).sort()).toEqual([...mcpTools].map((t) => t.name).sort());
+    const propose = tools.find((t) => t.name === 'propose_change')!;
+    expect(propose.inputSchema.required).toContain('reason'); // required on this face only
+    expect(propose.inputSchema.required).toContain('assetId'); // files are named by id, never by path
+    const create = tools.find((t) => t.name === 'create_asset')!;
+    expect(create.inputSchema.required).toContain('path'); // birth is the one op that takes a path
+    expect(create.inputSchema.required).toContain('reason');
+    await client.close();
+  });
+
+  it('list_spaces makes discovery mechanical: name → spaceId → asset path → assetId → content', async () => {
+    const client = await mcpClient('dev-harsh');
+    // The full resolution chain an agent runs for "read the Agent Space roadmap"
+    // with zero prior knowledge — no guessed ids, no guessed paths. The path is
+    // the display label; the id is what every later call takes.
+    const listed = (await client.callTool({ name: 'list_spaces', arguments: {} }))
+      .structuredContent as {
+      spaces: Array<{ id: string; name: string; memberCount: number; assets: Array<{ id: string; path: string; version: number }> }>;
+    };
+    const space = listed.spaces.find((s) => s.name.toLowerCase() === 'agent space');
+    expect(space).toBeDefined();
+    expect(space!.memberCount).toBe(2); // harsh + ramnique seeded
+    const roadmap = space!.assets.find((a) => a.path === 'roadmap.md');
+    expect(roadmap).toBeDefined();
+    expect(roadmap!.id).toBe(roadmapId);
+
+    const read = (await client.callTool({
+      name: 'read_asset',
+      arguments: { spaceId: space!.id, assetId: roadmap!.id },
+    })).structuredContent as { id: string; path: string; content: string; version: number };
+    expect(read.id).toBe(roadmap!.id);
+    expect(read.path).toBe('roadmap.md');
+    expect(read.content).toContain('# Roadmap');
+    expect(read.version).toBe(roadmap!.version);
+
+    // Membership scoping holds on this face too: a member of nothing sees nothing.
+    const outsider = await mcpClient('dev-nobody');
+    const empty = (await outsider.callTool({ name: 'list_spaces', arguments: {} }))
+      .structuredContent as { spaces: unknown[] };
+    expect(empty.spaces).toEqual([]);
+    await outsider.close();
+    await client.close();
+  });
+
+  it('read → propose(applied) round-trip, attributed as agent with the declared name', async () => {
+    const client = await mcpClient('dev-harsh', { 'x-agent-name': 'Claude Code' });
+    const read = (await client.callTool({ name: 'read_asset', arguments: { spaceId, assetId: roadmapId } }))
+      .structuredContent as { content: string; version: number };
+    const propose = (
+      await client.callTool({
+        name: 'propose_change',
+        arguments: {
+          spaceId,
+          assetId: roadmapId,
+          baseVersion: read.version,
+          newContent: read.content.replace('- [ ] SSO', '- [x] SSO'),
+          reason: 'standup: SSO shipped',
+        },
+      })
+    ).structuredContent as { outcome: string; changeSet: { assetId: string; assetPath: string; attribution: unknown; reason: string } };
+    expect(propose.outcome).toBe('applied');
+    expect(propose.changeSet.attribution).toEqual({ memberId: 'harsh', actingMode: 'agent', agentName: 'Claude Code' });
+    expect(propose.changeSet.reason).toBe('standup: SSO shipped');
+    expect(propose.changeSet.assetId).toBe(roadmapId);
+    expect(propose.changeSet.assetPath).toBe('roadmap.md'); // the path at commit time, a record
+    await client.close();
+  });
+
+  it('a conflict returns the retry bundle; re-proposing against current succeeds', async () => {
+    const harshAgent = await mcpClient('dev-harsh');
+    const ramniqueAgent = await mcpClient('dev-ramnique');
+
+    const read = (await harshAgent.callTool({ name: 'read_asset', arguments: { spaceId, assetId: roadmapId } }))
+      .structuredContent as { content: string; version: number };
+
+    // Ramnique's agent lands first.
+    await ramniqueAgent.callTool({
+      name: 'propose_change',
+      arguments: {
+        spaceId,
+        assetId: roadmapId,
+        baseVersion: read.version,
+        newContent: read.content.replace('# Roadmap', '# Roadmap (Q3)'),
+        reason: 'retitle for the quarter',
+      },
+    });
+
+    // Harsh's agent proposes the same line from the stale base → conflict.
+    const conflict = (
+      await harshAgent.callTool({
+        name: 'propose_change',
+        arguments: {
+          spaceId,
+          assetId: roadmapId,
+          baseVersion: read.version,
+          newContent: read.content.replace('# Roadmap', '# Roadmap — August'),
+          reason: 'retitle by month',
+        },
+      })
+    ).structuredContent as {
+      outcome: string;
+      currentVersion: number;
+      currentContent: string;
+      regions: unknown[];
+      recentHistory: unknown[];
+    };
+    expect(conflict.outcome).toBe('conflict');
+    expect(conflict.regions.length).toBeGreaterThan(0);
+    expect(conflict.recentHistory.length).toBeGreaterThan(0);
+
+    // Well-behaved retry: adjust against currentContent, propose on currentVersion.
+    const retry = (
+      await harshAgent.callTool({
+        name: 'propose_change',
+        arguments: {
+          spaceId,
+          assetId: roadmapId,
+          baseVersion: conflict.currentVersion,
+          newContent: conflict.currentContent.replace('(Q3)', '(Q3 — August)'),
+          reason: 'fold both retitles together',
+        },
+      })
+    ).structuredContent as { outcome: string };
+    expect(retry.outcome).toBe('applied');
+    await harshAgent.close();
+    await ramniqueAgent.close();
+  });
+
+  it('create_asset blob variant files an already-uploaded attachment — no byte movement', async () => {
+    // A member attached bytes in chat (render-face upload, phase 1)…
+    const bytes = new TextEncoder().encode('quarterly,signups\nQ1,40\nQ2,55\n');
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    const uploaded = await fetch(`${harbor.url}/v1/spaces/${spaceId}/blobs`, {
+      method: 'PUT',
+      headers: { authorization: 'Bearer dev-harsh', 'x-blob-sha256': hash, 'content-type': 'text/csv' },
+      body: bytes,
+    });
+    expect(uploaded.status).toBe(200);
+
+    // …and the agent files it into the tree by hash alone (phase 2 over MCP).
+    const client = await mcpClient('dev-harsh', { 'x-agent-name': 'Rowboat' });
+    const filed = (await client.callTool({
+      name: 'create_asset',
+      arguments: { spaceId, path: 'data/signups.csv', blob: hash, reason: 'file the chat attachment' },
+    })) as { isError?: boolean; structuredContent?: unknown };
+    expect(filed.isError).toBeFalsy();
+    const created = filed.structuredContent as {
+      asset: { id: string; path: string; version: number; blob?: { hash: string; mime: string } };
+      changeSet: { assetId: string; blob?: { hash: string; mime: string } };
+    };
+    expect(created.asset).toMatchObject({ path: 'data/signups.csv', version: 1 });
+    expect(created.asset.blob).toMatchObject({ hash, mime: 'text/csv' });
+    expect(created.changeSet.assetId).toBe(created.asset.id);
+    expect(created.changeSet.blob).toMatchObject({ hash, mime: 'text/csv' });
+
+    // Exactly one of newContent/blob — both and neither are refused, at birth…
+    const both = await client.callTool({
+      name: 'create_asset',
+      arguments: { spaceId, path: 'data/x.csv', newContent: 'a', blob: hash, reason: 'nope' },
+    });
+    expect(both.isError).toBe(true);
+    const neither = await client.callTool({
+      name: 'create_asset',
+      arguments: { spaceId, path: 'data/x.csv', reason: 'nope' },
+    });
+    expect(neither.isError).toBe(true);
+    // …and on a later propose against the file's id.
+    const proposeBoth = await client.callTool({
+      name: 'propose_change',
+      arguments: { spaceId, assetId: created.asset.id, baseVersion: 1, newContent: 'a', blob: hash, reason: 'nope' },
+    });
+    expect(proposeBoth.isError).toBe(true);
+
+    // A hash never uploaded to this space is refused, not invented — on create and on propose.
+    const phantom = await client.callTool({
+      name: 'create_asset',
+      arguments: { spaceId, path: 'data/ghost.csv', blob: 'e'.repeat(64), reason: 'nope' },
+    });
+    expect(phantom.isError).toBe(true);
+    const phantomReplace = await client.callTool({
+      name: 'propose_change',
+      arguments: { spaceId, assetId: created.asset.id, baseVersion: 1, blob: 'e'.repeat(64), reason: 'nope' },
+    });
+    expect(phantomReplace.isError).toBe(true);
+
+    // The path is taken by a live file: birth refuses, naming the occupant.
+    const occupied = await client.callTool({
+      name: 'create_asset',
+      arguments: { spaceId, path: 'data/signups.csv', newContent: 'x', reason: 'nope' },
+    });
+    expect(occupied.isError).toBe(true);
+    expect((occupied.content as Array<{ text: string }>)[0]!.text).toContain(created.asset.id);
+    await client.close();
+  });
+
+  it('read_asset of a binary file says where its bytes download, and they download there (2026-10-08)', async () => {
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    await fetch(`${harbor.url}/v1/spaces/${spaceId}/blobs`, {
+      method: 'PUT',
+      headers: { authorization: 'Bearer dev-harsh', 'x-blob-sha256': hash },
+      body: bytes,
+    });
+    const client = await mcpClient('dev-harsh');
+    const filed = (await client.callTool({
+      name: 'create_asset',
+      arguments: { spaceId, path: 'images/mock.png', blob: hash, reason: 'a binary file to read' },
+    })).structuredContent as { asset: { id: string } };
+
+    const read = await client.callTool({ name: 'read_asset', arguments: { spaceId, assetId: filed.asset.id } });
+    expect((read.structuredContent as { content: string; blob: { hash: string } })).toMatchObject({ content: '', blob: { hash } });
+    const url = `${harbor.url}/v1/spaces/${spaceId}/blobs/${hash}`;
+    expect((read.content as Array<{ text: string }>)[1]!.text).toContain(`GET ${url}`);
+    const downloaded = await fetch(url, { headers: { authorization: 'Bearer dev-harsh' } });
+    expect(new Uint8Array(await downloaded.arrayBuffer())).toEqual(bytes);
+
+    // A text file's read carries its content, and no note.
+    const text = await client.callTool({ name: 'read_asset', arguments: { spaceId, assetId: roadmapId } });
+    expect(text.content as unknown[]).toHaveLength(1);
+    await client.close();
+  });
+
+  it('reason is required on this face', async () => {
+    const client = await mcpClient('dev-harsh');
+    const result = await client.callTool({
+      name: 'propose_change',
+      arguments: { spaceId, assetId: roadmapId, baseVersion: 1, newContent: 'x\n' },
+    });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain('reason');
+    const birth = await client.callTool({
+      name: 'create_asset',
+      arguments: { spaceId, path: 'unreasoned.md', newContent: 'x\n' },
+    });
+    expect(birth.isError).toBe(true);
+    expect(JSON.stringify(birth.content)).toContain('reason');
+    await client.close();
+  });
+
+  it('read_thread returns the flat thread with attribution, windowed from the tail', async () => {
+    const client = await mcpClient('dev-harsh');
+    const started = (
+      await client.callTool({ name: 'post_message', arguments: { spaceId, body: 'Thread to read' } })
+    ).structuredContent as { messageId: string };
+    for (const body of ['first reply', 'second reply', 'third reply']) {
+      await client.callTool({ name: 'post_message', arguments: { spaceId, threadRoot: started.messageId, body } });
+    }
+
+    const full = (
+      await client.callTool({ name: 'read_thread', arguments: { spaceId, rootMessageId: started.messageId } })
+    ).structuredContent as {
+      root: { body: string; replyCount: number; author: { actingMode: string } };
+      topic: unknown;
+      messages: Array<{ body: string }>;
+      truncated: boolean;
+    };
+    expect(full.root.body).toBe('Thread to read');
+    expect(full.root.replyCount).toBe(3);
+    expect(full.root.author.actingMode).toBe('agent');
+    expect(full.topic).toBeNull(); // a plain thread — nobody gave it a goal
+    expect(full.messages.map((m) => m.body)).toEqual(['first reply', 'second reply', 'third reply']);
+    expect(full.truncated).toBe(false);
+
+    const tail = (
+      await client.callTool({ name: 'read_thread', arguments: { spaceId, rootMessageId: started.messageId, limit: 2 } })
+    ).structuredContent as { messages: Array<{ body: string }>; truncated: boolean };
+    expect(tail.messages.map((m) => m.body)).toEqual(['second reply', 'third reply']);
+    expect(tail.truncated).toBe(true);
+    await client.close();
+  });
+
+  it('post_message replies flat; create_topic annotates; list_topics and search_space navigate; manage_topic tidies', async () => {
+    const client = await mcpClient('dev-harsh');
+    const started = (
+      await client.callTool({
+        name: 'post_message',
+        arguments: { spaceId, body: 'Webhook retries: exponential backoff or fixed?' },
+      })
+    ).structuredContent as { messageId: string; threadRoot?: string };
+    expect(started.messageId).toBeTruthy();
+    expect(started.threadRoot).toBeUndefined();
+
+    const reply = (
+      await client.callTool({
+        name: 'post_message',
+        arguments: { spaceId, threadRoot: started.messageId, body: 'Exponential, capped at 10m.' },
+      })
+    ).structuredContent as { threadRoot?: string };
+    expect(reply.threadRoot).toBe(started.messageId);
+
+    const annotated = (
+      await client.callTool({
+        name: 'create_topic',
+        arguments: { spaceId, rootMessageId: started.messageId, title: 'Decide: webhook retry policy' },
+      })
+    ).structuredContent as { topic: { id: string; title: string }; rootMessageId: string };
+    expect(annotated.rootMessageId).toBe(started.messageId);
+
+    const rail = (
+      await client.callTool({ name: 'list_topics', arguments: { spaceId } })
+    ).structuredContent as { topics: Array<{ id: string; rootMessage: { replyCount: number } | null }> };
+    const row = rail.topics.find((t) => t.id === annotated.topic.id);
+    expect(row?.rootMessage?.replyCount).toBe(1);
+
+    const search = (
+      await client.callTool({ name: 'search_space', arguments: { spaceId, query: 'webhook retries' } })
+    ).structuredContent as { messages: Array<{ threadRootId: string; topicTitle?: string }> };
+    const hit = search.messages.find((r) => r.threadRootId === started.messageId);
+    expect(hit).toBeDefined();
+    expect(hit!.topicTitle).toBe('Decide: webhook retry policy');
+
+    const managed = (
+      await client.callTool({
+        name: 'manage_topic',
+        arguments: { spaceId, topicId: annotated.topic.id, action: 'retitle', title: 'Decide: webhook retry policy (v2)' },
+      })
+    ).structuredContent as { topic: { title: string } };
+    expect(managed.topic.title).toBe('Decide: webhook retry policy (v2)');
+
+    // The discussion can be about one file: attach needs the file's id, read_thread shows it.
+    const born = await client.callTool({
+      name: 'create_asset',
+      arguments: { spaceId, path: 'retries.md', newContent: '# Retry policy\n', reason: 'the policy doc' },
+    });
+    expect(born.isError, JSON.stringify(born.content)).toBeFalsy();
+    const retriesId = (born.structuredContent as { asset: { id: string } }).asset.id;
+    const noId = await client.callTool({
+      name: 'manage_topic',
+      arguments: { spaceId, topicId: annotated.topic.id, action: 'attach_document' },
+    });
+    expect(noId.isError).toBe(true);
+    const attachedResult = await client.callTool({
+      name: 'manage_topic',
+      arguments: { spaceId, topicId: annotated.topic.id, action: 'attach_document', assetId: retriesId },
+    });
+    expect(attachedResult.isError, JSON.stringify(attachedResult.content)).toBeFalsy();
+    const attached = attachedResult.structuredContent as { topic: { documentAssetId?: string } };
+    expect(attached.topic.documentAssetId).toBe(retriesId);
+    const withDoc = (
+      await client.callTool({ name: 'read_thread', arguments: { spaceId, rootMessageId: started.messageId } })
+    ).structuredContent as { topic: { documentAssetId?: string } | null };
+    expect(withDoc.topic?.documentAssetId).toBe(retriesId);
+
+    // remove converts back to a thread — the messages stay readable.
+    await client.callTool({
+      name: 'manage_topic',
+      arguments: { spaceId, topicId: annotated.topic.id, action: 'remove' },
+    });
+    const after = (
+      await client.callTool({ name: 'read_thread', arguments: { spaceId, rootMessageId: started.messageId } })
+    ).structuredContent as { topic: unknown; messages: Array<{ body: string }> };
+    expect(after.topic).toBeNull();
+    expect(after.messages).toHaveLength(1);
+    await client.close();
+  });
+
+  it('x-acting-mode: scheduled attributes automations honestly', async () => {
+    const client = await mcpClient('dev-harsh', { 'x-acting-mode': 'scheduled', 'x-agent-name': 'Rowboat' });
+    const read = (await client.callTool({ name: 'read_asset', arguments: { spaceId, assetId: roadmapId } }))
+      .structuredContent as { content: string; version: number };
+    const propose = (
+      await client.callTool({
+        name: 'propose_change',
+        arguments: {
+          spaceId,
+          assetId: roadmapId,
+          baseVersion: read.version,
+          newContent: `${read.content}- [ ] (cron) weekly tidy ran\n`,
+          reason: 'weekly housekeeping cron',
+        },
+      })
+    ).structuredContent as { changeSet: { attribution: { actingMode: string; agentName: string } } };
+    expect(propose.changeSet.attribution.actingMode).toBe('scheduled');
+    expect(propose.changeSet.attribution.agentName).toBe('Rowboat');
+    await client.close();
+  });
+
+  it('domain errors surface as tool errors with the ApiError shape', async () => {
+    const client = await mcpClient('dev-harsh');
+    const result = await client.callTool({
+      name: 'read_asset',
+      arguments: { spaceId, assetId: 'no-such-asset' },
+    });
+    expect(result.isError).toBe(true);
+    const text = (result.content as Array<{ text: string }>)[0]!.text;
+    expect(JSON.parse(text)).toMatchObject({ code: 'not_found', retryable: false });
+    await client.close();
+  });
+
+  it('rejects bad tokens at the HTTP layer', async () => {
+    await expect(mcpClient('nope')).rejects.toThrow();
+  });
+});

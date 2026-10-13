@@ -1,38 +1,54 @@
 "use client"
 
 import * as React from "react"
-import { Loader2, Mic, Mail, Calendar, MessageSquare } from "lucide-react"
+import { Loader2, Calendar } from "lucide-react"
+import { FirefliesIcon, GoogleIcon, OutlookIcon, SlackIcon } from "@/components/onboarding/provider-icons"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
-import { Separator } from "@/components/ui/separator"
+import { Textarea } from "@/components/ui/textarea"
 import { GoogleClientIdModal } from "@/components/google-client-id-modal"
 import { ComposioApiKeyModal } from "@/components/composio-api-key-modal"
-import { useConnectors } from "@/hooks/useConnectors"
+import { useConnectors, actionableSlackError } from "@/hooks/useConnectors"
 
 interface ConnectedAccountsSettingsProps {
   dialogOpen: boolean
 }
 
+function relativeTime(iso?: string): string {
+  if (!iso) return "never"
+  const then = Date.parse(iso)
+  if (!Number.isFinite(then)) return "never"
+  const diffSec = Math.round((Date.now() - then) / 1000)
+  if (diffSec < 60) return "just now"
+  const diffMin = Math.round(diffSec / 60)
+  if (diffMin < 60) return `${diffMin}m ago`
+  const diffHr = Math.round(diffMin / 60)
+  if (diffHr < 24) return `${diffHr}h ago`
+  return `${Math.round(diffHr / 24)}d ago`
+}
+
 export function ConnectedAccountsSettings({ dialogOpen }: ConnectedAccountsSettingsProps) {
   const c = useConnectors(dialogOpen)
+  // Windows exclusively locks Slack's Cookies DB while it runs, so we offer a
+  // "quit Slack first" one-click import there. mac/Linux import with Slack open.
+  const isWindows = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('win')
 
-  const renderOAuthProvider = (provider: string, displayName: string, icon: React.ReactNode, description: string) => {
+  const renderOAuthProvider = (provider: string, displayName: string, icon: React.ReactNode, description: string, disabledReason?: string) => {
     const state = c.providerStates[provider] || {
       isConnected: false,
       isLoading: true,
       isConnecting: false,
     }
     const needsReconnect = Boolean(c.providerStatus[provider]?.error)
+    const connectDisabled = !state.isConnected && !needsReconnect && Boolean(disabledReason)
 
     return (
       <div
         key={provider}
-        className="flex items-center justify-between gap-3 rounded-lg px-4 py-3 hover:bg-accent/50 transition-colors"
+        className="flex items-center justify-between gap-2 rounded-md px-3 py-2 hover:bg-accent/50 transition-colors"
       >
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="flex size-9 items-center justify-center rounded-lg bg-muted">
-            {icon}
-          </div>
+        <div className="flex items-center gap-2.5 min-w-0">
+          {icon}
           <div className="flex flex-col min-w-0">
             <span className="text-sm font-medium truncate">{displayName}</span>
             {state.isLoading ? (
@@ -40,7 +56,9 @@ export function ConnectedAccountsSettings({ dialogOpen }: ConnectedAccountsSetti
             ) : needsReconnect ? (
               <span className="text-xs text-amber-600">Needs reconnect</span>
             ) : state.isConnected ? (
-              <span className="text-xs text-emerald-600">Connected</span>
+              <span className="text-xs text-[var(--rowboat-success)]">Connected</span>
+            ) : connectDisabled ? (
+              <span className="text-xs text-muted-foreground truncate">{disabledReason}</span>
             ) : (
               <span className="text-xs text-muted-foreground truncate">{description}</span>
             )}
@@ -53,16 +71,7 @@ export function ConnectedAccountsSettings({ dialogOpen }: ConnectedAccountsSetti
             <Button
               variant="default"
               size="sm"
-              onClick={() => {
-                if (provider === 'google') {
-                  c.setGoogleClientIdDescription(
-                    "To keep your Google account connected, please re-enter your client ID. You only need to do this once."
-                  )
-                  c.setGoogleClientIdOpen(true)
-                  return
-                }
-                c.startConnect(provider)
-              }}
+              onClick={() => c.handleReconnect(provider)}
               className="h-7 px-3 text-xs"
             >
               Reconnect
@@ -81,7 +90,8 @@ export function ConnectedAccountsSettings({ dialogOpen }: ConnectedAccountsSetti
               variant="default"
               size="sm"
               onClick={() => c.handleConnect(provider)}
-              disabled={state.isConnecting}
+              disabled={state.isConnecting || connectDisabled}
+              title={connectDisabled ? disabledReason : undefined}
               className="h-7 px-3 text-xs"
             >
               {state.isConnecting ? (
@@ -127,25 +137,23 @@ export function ConnectedAccountsSettings({ dialogOpen }: ConnectedAccountsSetti
 
       <div className="space-y-1">
         {/* Email & Calendar Section */}
-        {(c.useComposioForGoogle || c.useComposioForGoogleCalendar || c.providers.includes('google')) && (
+        {(c.useComposioForGoogle || c.useComposioForGoogleCalendar || c.providers.includes('google') || c.providers.includes('microsoft')) && (
           <>
-            <div className="px-4 py-2">
-              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+            <div className="px-3 pt-1 pb-0.5">
+              <span className="text-[13px] text-muted-foreground">
                 Email & Calendar
               </span>
             </div>
             {c.useComposioForGoogle ? (
-              <div className="flex items-center justify-between gap-3 rounded-lg px-4 py-3 hover:bg-accent/50 transition-colors">
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="flex size-9 items-center justify-center rounded-lg bg-muted">
-                    <Mail className="size-4" />
-                  </div>
+              <div className="flex items-center justify-between gap-2 rounded-md px-3 py-2 hover:bg-accent/50 transition-colors">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <GoogleIcon className="size-5 shrink-0" />
                   <div className="flex flex-col min-w-0">
                     <span className="text-sm font-medium truncate">Gmail</span>
                     {c.gmailLoading ? (
                       <span className="text-xs text-muted-foreground">Checking...</span>
                     ) : c.gmailConnected ? (
-                      <span className="text-xs text-emerald-600">Connected</span>
+                      <span className="text-xs text-[var(--rowboat-success)]">Connected</span>
                     ) : (
                       <span className="text-xs text-muted-foreground truncate">Sync emails</span>
                     )}
@@ -181,20 +189,33 @@ export function ConnectedAccountsSettings({ dialogOpen }: ConnectedAccountsSetti
                 </div>
               </div>
             ) : (
-              c.providers.includes('google') && renderOAuthProvider('google', 'Google', <Mail className="size-4" />, 'Sync emails and calendar')
+              c.providers.includes('google') && renderOAuthProvider(
+                'google',
+                'Google',
+                <GoogleIcon className="size-5" />,
+                'Sync emails and calendar',
+                // Only one email provider at a time — the main process
+                // enforces this too; the disabled button just explains it.
+                c.providerStates.microsoft?.isConnected ? 'Disconnect Microsoft Outlook first' : undefined,
+              )
+            )}
+            {c.providers.includes('microsoft') && renderOAuthProvider(
+              'microsoft',
+              'Microsoft Outlook',
+              <OutlookIcon className="size-5" />,
+              'Sync email and calendar',
+              c.providerStates.google?.isConnected ? 'Disconnect Google first' : undefined,
             )}
             {c.useComposioForGoogleCalendar && (
-              <div className="flex items-center justify-between gap-3 rounded-lg px-4 py-3 hover:bg-accent/50 transition-colors">
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="flex size-9 items-center justify-center rounded-lg bg-muted">
-                    <Calendar className="size-4" />
-                  </div>
+              <div className="flex items-center justify-between gap-2 rounded-md px-3 py-2 hover:bg-accent/50 transition-colors">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <Calendar className="size-5 shrink-0" />
                   <div className="flex flex-col min-w-0">
                     <span className="text-sm font-medium truncate">Google Calendar</span>
                     {c.googleCalendarLoading ? (
                       <span className="text-xs text-muted-foreground">Checking...</span>
                     ) : c.googleCalendarConnected ? (
-                      <span className="text-xs text-emerald-600">Connected</span>
+                      <span className="text-xs text-[var(--rowboat-success)]">Connected</span>
                     ) : (
                       <span className="text-xs text-muted-foreground truncate">Sync calendar events</span>
                     )}
@@ -230,134 +251,234 @@ export function ConnectedAccountsSettings({ dialogOpen }: ConnectedAccountsSetti
                 </div>
               </div>
             )}
-            <Separator className="my-3" />
           </>
         )}
 
         {/* Meeting Notes Section */}
-        <div className="px-4 py-2">
-          <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-            Meeting Notes
-          </span>
-        </div>
-
-        {/* Granola */}
-        <div className="flex items-center justify-between gap-3 rounded-lg px-4 py-3 hover:bg-accent/50 transition-colors">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="flex size-9 items-center justify-center rounded-lg bg-muted">
-              <Mic className="size-4" />
-            </div>
-            <div className="flex flex-col min-w-0">
-              <span className="text-sm font-medium truncate">Granola</span>
-              <span className="text-xs text-muted-foreground truncate">
-                Local meeting notes
+        {c.providers.includes('fireflies-ai') && (
+          <>
+            <div className="px-3 pt-1 pb-0.5">
+              <span className="text-[13px] text-muted-foreground">
+                Meeting Notes
               </span>
             </div>
-          </div>
-          <div className="shrink-0 flex items-center gap-2">
-            {c.granolaLoading && (
-              <Loader2 className="size-3 animate-spin" />
-            )}
-            <Switch
-              checked={c.granolaEnabled}
-              onCheckedChange={c.handleGranolaToggle}
-              disabled={c.granolaLoading}
-            />
-          </div>
-        </div>
 
-        {/* Fireflies */}
-        {c.providers.includes('fireflies-ai') && renderOAuthProvider('fireflies-ai', 'Fireflies', <Mic className="size-4" />, 'AI meeting transcripts')}
-
-        <Separator className="my-3" />
+            {/* Fireflies */}
+            {renderOAuthProvider('fireflies-ai', 'Fireflies', <FirefliesIcon className="size-5" />, 'AI meeting transcripts')}
+          </>
+        )}
 
         {/* Team Communication Section */}
-        <div className="px-4 py-2">
-          <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-            Team Communication
-          </span>
-        </div>
-
-        {/* Slack */}
-        <div className="rounded-lg px-4 py-3 hover:bg-accent/50 transition-colors">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="flex size-9 items-center justify-center rounded-lg bg-muted">
-                <MessageSquare className="size-4" />
+        <>
+          <div className="px-3 pt-3 pb-0.5">
+            <span className="text-[13px] text-muted-foreground">
+              Team Communication
+            </span>
+          </div>
+          <div className="rounded-md px-3 py-2 hover:bg-accent/50 transition-colors">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <SlackIcon className="size-5 shrink-0" />
+                <div className="flex flex-col min-w-0">
+                  <span className="text-sm font-medium truncate">Slack</span>
+                  {c.slackLoading ? (
+                    <span className="text-xs text-muted-foreground">Checking...</span>
+                  ) : c.slackEnabled && c.slackWorkspaces.length > 0 ? (
+                    <span className="text-xs text-[var(--rowboat-success)] truncate">
+                      {c.slackWorkspaces.map(workspace => workspace.name).join(', ')}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-muted-foreground truncate">Send messages and view channels</span>
+                  )}
+                </div>
               </div>
-              <div className="flex flex-col min-w-0">
-                <span className="text-sm font-medium truncate">Slack</span>
-                {c.slackEnabled && c.slackWorkspaces.length > 0 ? (
-                  <span className="text-xs text-emerald-600 truncate">
-                    {c.slackWorkspaces.map(w => w.name).join(', ')}
-                  </span>
+              <div className="shrink-0">
+                {c.slackLoading || c.slackDiscovering ? (
+                  <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                ) : c.slackEnabled ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={c.handleSlackDisable}
+                    className="h-7 px-3 text-xs"
+                  >
+                    Disable
+                  </Button>
                 ) : (
-                  <span className="text-xs text-muted-foreground truncate">
-                    Send messages and view channels
-                  </span>
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={c.handleSlackEnable}
+                    className="h-7 px-3 text-xs"
+                  >
+                    Enable
+                  </Button>
                 )}
               </div>
             </div>
-            <div className="shrink-0 flex items-center gap-2">
-              {(c.slackLoading || c.slackDiscovering) && (
-                <Loader2 className="size-3 animate-spin" />
-              )}
-              {c.slackEnabled ? (
-                <Switch
-                  checked={true}
-                  onCheckedChange={() => c.handleSlackDisable()}
-                  disabled={c.slackLoading}
-                />
-              ) : (
-                <Button
-                  variant="default"
-                  size="sm"
-                  onClick={c.handleSlackEnable}
-                  disabled={c.slackLoading || c.slackDiscovering}
-                  className="h-7 px-3 text-xs"
-                >
-                  Enable
-                </Button>
-              )}
-            </div>
+            {c.slackPickerOpen && (
+              <div className="mt-2 ml-10 space-y-2">
+                {c.slackNeedsAuth ? (
+                  <>
+                    <p className="text-xs text-muted-foreground">
+                      {c.slackDiscoverError ?? 'Connect your signed-in Slack desktop app to continue.'}
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <Button
+                        size="sm"
+                        onClick={c.handleSlackImportDesktop}
+                        disabled={c.slackAuthImporting}
+                        className="h-7 px-3 text-xs"
+                      >
+                        {c.slackAuthImporting ? <Loader2 className="size-3 animate-spin" /> : "Connect Slack"}
+                      </Button>
+                      {isWindows && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={c.handleSlackQuitAndImport}
+                          disabled={c.slackAuthImporting}
+                          className="h-7 px-3 text-xs"
+                          title="Closes Slack so its data unlocks, then connects"
+                        >
+                          Quit Slack &amp; connect
+                        </Button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => c.setSlackCurlOpen(!c.slackCurlOpen)}
+                        className="text-xs text-primary underline-offset-2 hover:underline"
+                      >
+                        Paste from browser instead
+                      </button>
+                    </div>
+                    {c.slackCurlOpen && (
+                      <div className="space-y-1.5">
+                        <p className="text-[11px] leading-relaxed text-muted-foreground">
+                          In a browser signed in to Slack, open DevTools → Network, click any
+                          request to <code>app.slack.com</code>, right-click → Copy → Copy as cURL,
+                          then paste it below.
+                        </p>
+                        <Textarea
+                          value={c.slackCurlValue}
+                          onChange={(event) => c.setSlackCurlValue(event.target.value)}
+                          placeholder="curl 'https://your-team.slack.com/api/...' -H 'Cookie: d=xoxd-...' ..."
+                          className="min-h-20 text-[11px] font-mono"
+                          disabled={c.slackCurlSubmitting}
+                        />
+                        <Button
+                          size="sm"
+                          onClick={c.handleSlackParseCurl}
+                          disabled={c.slackCurlSubmitting || c.slackCurlValue.trim().length === 0}
+                          className="h-7 px-3 text-xs"
+                        >
+                          {c.slackCurlSubmitting ? <Loader2 className="size-3 animate-spin" /> : "Connect with cURL"}
+                        </Button>
+                      </div>
+                    )}
+                  </>
+                ) : c.slackDiscoverError ? (
+                  <p className="text-xs text-muted-foreground">{c.slackDiscoverError}</p>
+                ) : (
+                  <>
+                    {c.slackAvailableWorkspaces.map(workspace => (
+                      <label key={workspace.url} className="flex items-center gap-2 text-sm cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={c.slackSelectedUrls.has(workspace.url)}
+                          onChange={(event) => {
+                            c.setSlackSelectedUrls(prev => {
+                              const next = new Set(prev)
+                              if (event.target.checked) next.add(workspace.url)
+                              else next.delete(workspace.url)
+                              return next
+                            })
+                          }}
+                          className="rounded border-border"
+                        />
+                        <span className="truncate">{workspace.name}</span>
+                      </label>
+                    ))}
+                    <Button
+                      size="sm"
+                      onClick={c.handleSlackSaveWorkspaces}
+                      disabled={c.slackSelectedUrls.size === 0 || c.slackLoading}
+                      className="h-7 px-3 text-xs"
+                    >
+                      Save
+                    </Button>
+                  </>
+                )}
+              </div>
+            )}
           </div>
-          {c.slackPickerOpen && (
-            <div className="mt-2 ml-12 space-y-2">
-              {c.slackDiscoverError ? (
-                <p className="text-xs text-muted-foreground">{c.slackDiscoverError}</p>
-              ) : (
-                <>
-                  {c.slackAvailableWorkspaces.map(w => (
-                    <label key={w.url} className="flex items-center gap-2 text-sm cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={c.slackSelectedUrls.has(w.url)}
-                        onChange={(e) => {
-                          c.setSlackSelectedUrls(prev => {
-                            const next = new Set(prev)
-                            if (e.target.checked) next.add(w.url)
-                            else next.delete(w.url)
-                            return next
-                          })
-                        }}
-                        className="rounded border-border"
-                      />
-                      <span className="truncate">{w.name}</span>
-                    </label>
-                  ))}
-                  <Button
-                    size="sm"
-                    onClick={c.handleSlackSaveWorkspaces}
-                    disabled={c.slackSelectedUrls.size === 0 || c.slackLoading}
-                    className="h-7 px-3 text-xs"
-                  >
-                    Save
-                  </Button>
-                </>
-              )}
+        </>
+
+        {/* Knowledge Sources Section */}
+        {c.slackEnabled && (
+          <>
+            <div className="px-3 pt-3 pb-0.5">
+              <span className="text-[13px] text-muted-foreground">
+                Knowledge Sources
+              </span>
             </div>
-          )}
-        </div>
+            <div className="rounded-md px-3 py-2 hover:bg-accent/50 transition-colors">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <SlackIcon className="size-5 shrink-0" />
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-sm font-medium truncate">Slack to knowledge</span>
+                    <span className="text-xs text-muted-foreground truncate">
+                      Sync selected channels into the knowledge graph
+                    </span>
+                  </div>
+                </div>
+                <Switch
+                  checked={c.slackKnowledgeEnabled}
+                  onCheckedChange={c.setSlackKnowledgeEnabled}
+                  disabled={c.slackKnowledgeSaving}
+                />
+              </div>
+              <div className="mt-2 space-y-2">
+                <Textarea
+                  value={c.slackKnowledgeChannels}
+                  onChange={(event) => c.setSlackKnowledgeChannels(event.target.value)}
+                  placeholder={c.slackWorkspaces.length > 1 ? "https://team.slack.com #engineering" : "#engineering"}
+                  className="min-h-20 text-xs"
+                  disabled={!c.slackKnowledgeEnabled || c.slackKnowledgeSaving}
+                />
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs text-muted-foreground">
+                    One channel per line. Use channel names or IDs.
+                  </span>
+                  {(c.slackKnowledgeDirty || c.slackKnowledgeSaving) && (
+                    <Button
+                      size="sm"
+                      onClick={c.handleSlackKnowledgeSave}
+                      disabled={c.slackKnowledgeSaving || (c.slackKnowledgeEnabled && c.slackKnowledgeChannels.trim().length === 0)}
+                      className="h-7 px-3 text-xs"
+                    >
+                      {c.slackKnowledgeSaving ? <Loader2 className="size-3 animate-spin" /> : "Save"}
+                    </Button>
+                  )}
+                </div>
+                {c.slackKnowledgeEnabled && c.slackSyncStatuses.filter(s => s.enabled).map(status => (
+                  <div key={status.id} className="flex items-center gap-1.5 text-xs">
+                    {status.lastStatus === 'error' ? (
+                      <span className="text-amber-600 truncate">
+                        Sync failing — {actionableSlackError(status.lastError?.kind, status.lastError?.message)}
+                      </span>
+                    ) : status.lastSyncAt ? (
+                      <span className="text-muted-foreground">Last synced {relativeTime(status.lastSyncAt)}</span>
+                    ) : (
+                      <span className="text-muted-foreground">Not synced yet — first sync runs shortly</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </>
   )

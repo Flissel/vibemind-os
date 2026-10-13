@@ -1,0 +1,716 @@
+import { z } from 'zod';
+import { MENTION_GRAMMAR } from './mentions.js';
+import { ActivityKind, NewPoll } from './api.js';
+import {
+  Asset,
+  ChangeSet,
+  CreateAssetResult,
+  DeleteAssetResult,
+  MoveAssetResult,
+  ProposeChangeResult,
+  ReadAssetResult,
+  RestoreAssetResult,
+} from './changeset.js';
+import { Attribution, Member, Membership, Message, ReactionEmoji, Space, SpaceKind, SpaceVisibility, Topic } from './core.js';
+import { AssetId, AssetPath, BlobHash, MemberId, MessageId, SpaceId, TopicId } from './ids.js';
+import { CreateInviteResult } from './invite.js';
+import { Invocation, InvocationId, InvocationOptionValues, InvocationRefusal, InvocationState } from './invocation.js';
+import { SearchKind, SearchLimit, SearchResults } from './search.js';
+
+// Decision 5 (CONTRACT.md): the agent face — direct projections of the core
+// operations; the MCP server attributes every call as the token's member with
+// actingMode 'agent' (or 'scheduled' when the client declares it). Two
+// properties are load-bearing (spec §9):
+//   1. Semantics live in the tool design — list_spaces makes discovery
+//      mechanical (space ids + file listings in one call, no README-link
+//      convention required), read_asset bundles recent history, and a
+//      propose_change conflict returns current content + history, so ANY
+//      well-behaved agent gets read-before-write and retry for free.
+//   2. Rowboat's own agent uses these exact tools — no privileged path.
+// The agent navigates the same conversation model as the UI (annotation model
+// 2026-09-01): one stream of root messages, flat threads behind reply chips,
+// topics as archivable annotation rows on threads.
+//
+// PARITY (2026-09-09): the agent face projects EVERY member operation the
+// render face has — identity, roster, DMs, space lifecycle, invites, message
+// edit/delete/react, polls (create, vote, end), file restore/history/diff,
+// versioned reads. An agent acting for a member can do whatever that member
+// can do in the app; attribution (actingMode + agentName) records how, never
+// who else. The earlier "agents are silent / don't react / don't vote" posture
+// is retired — guidance about WHEN to act lives in the agent's skill, not in
+// the tool surface.
+//
+// NOTE: `reason` is REQUIRED here though optional on the render face. The spec's
+// convention ("agents essentially always attach a why") is enforced where only
+// agents call.
+
+export interface McpToolDef<In extends z.ZodType, Out extends z.ZodType> {
+  name: string;
+  description: string;
+  input: In;
+  output: Out;
+}
+
+function tool<In extends z.ZodType, Out extends z.ZodType>(t: McpToolDef<In, Out>): McpToolDef<In, Out> {
+  return t;
+}
+
+// --- identity & people --------------------------------------------------------
+
+export const whoami = tool({
+  name: 'whoami',
+  description:
+    'Who your person is on this org: their memberId, display name, and role, plus the org itself ' +
+    '(name and address — the host every link on this org is minted on, e.g. a file link ' +
+    'https://<address>/s/<spaceId>/a/<assetId>). Use it to recognise their own messages and ' +
+    'reactions in what you read, and to open their notes-to-self DM (open_direct with their own memberId).',
+  input: z.object({}),
+  output: z.object({ member: Member, org: z.object({ name: z.string(), address: z.string() }) }),
+});
+
+export const listMembers = tool({
+  name: 'list_members',
+  description:
+    'People and agents, with names. Omit spaceId for the whole org roster, sorted by display name. ' +
+    "Pass spaceId for that space's members only. This is how a name becomes a memberId — match displayName " +
+    '(case-insensitive, first name is usually enough); if several match, say so and ask. ' +
+    'Messages and reactions carry memberIds only; resolve them here before naming anyone.',
+  input: z.object({ spaceId: SpaceId.optional() }),
+  output: z.object({ members: z.array(Member) }),
+});
+
+// --- spaces & membership --------------------------------------------------------
+
+export const listSpaces = tool({
+  name: 'list_spaces',
+  description:
+    'List the spaces you are a member of on this org, each with its file listing. ' +
+    'Call this first: it resolves a space name (e.g. "Roadboard") to the spaceId every other ' +
+    'tool needs, and lists every file with its assetId (what read_asset and every file tool take) ' +
+    'and its path (the display name). Discovery is mechanical — never guess a spaceId or an assetId. ' +
+    'Shared spaces only by default; pass includeDirect to ' +
+    'also list your direct messages (kind "direct": a private conversation with exactly one other ' +
+    'member — its participants are listed; label it by the other member, its name is a placeholder). ' +
+    'groupChat: true means the org is one group conversation and DMs are off (open_direct refuses) until it has a second space. ' +
+    "A DM flagged self: true is your person's own notes-to-self space (they are its only participant) — " +
+    'the right place for "save this for me". Every other tool works on a DM exactly as on a space.',
+  input: z.object({
+    /** Also list the member's direct messages (kind 'direct'). Default false: pre-DM skills never see one. */
+    includeDirect: z.boolean().optional(),
+  }),
+  output: z.object({
+    spaces: z.array(
+      z.object({
+        id: SpaceId,
+        name: z.string(),
+        kind: SpaceKind,
+        visibility: SpaceVisibility.default('private'),
+        /** Direct spaces only: the member ids (one = a self-DM). */
+        participants: z.array(MemberId).optional(),
+        /** Direct spaces only: true when the caller is the only participant — their notes to self. */
+        self: z.boolean().optional(),
+        memberCount: z.number().int().nonnegative(),
+        /** Every live file: its id (what every file tool takes), its path (the display name), version, and blob metadata for binaries. */
+        assets: z.array(Asset.omit({ state: true })),
+      }),
+    ),
+    /** The org is a group chat (spec §4, 2026-10-07): one space, DMs off until a second space. */
+    groupChat: z.boolean(),
+  }),
+});
+
+export const openDirect = tool({
+  name: 'open_direct',
+  description:
+    'Open the direct message with one member (get-or-create: two people only ever have one DM, ' +
+    'so calling this for an existing DM just returns it). Returns the DM as a space — use its ' +
+    'spaceId with post_message, read_stream, files, exactly like any space. Opening a new DM ' +
+    'needs no acceptance; the other person simply sees it. Get the memberId from list_members; ' +
+    "your person's own memberId (whoami) opens their notes-to-self.",
+  input: z.object({ memberId: MemberId }),
+  output: z.object({ space: Space, created: z.boolean() }),
+});
+
+/** Browsers need file discovery without joining (spec §5, 2026-09-23). */
+export const listAssets = tool({
+  name: 'list_assets',
+  description: 'List files in a readable space, including an open space you have not joined. Returns asset IDs for read_asset, asset_history and diff. Set includeDeleted to also list trashed files.',
+  input: z.object({ spaceId: SpaceId, includeDeleted: z.boolean().optional() }),
+  output: z.object({ entries: z.array(Asset) }),
+});
+
+export const browseSpaces = tool({
+  name: 'browse_spaces',
+  description: 'Browse this org’s shared open spaces, including those already joined. Read any result without joining; call join_space before posting or other actions. Private spaces and DMs are never listed.',
+  input: z.object({}),
+  output: z.object({ spaces: z.array(z.object({ space: Space, joined: z.boolean() })) }),
+});
+
+export const joinSpace = tool({
+  name: 'join_space',
+  description: 'Join a shared open space as your person before posting or other actions. Repeated joins are a no-op. Private spaces and DMs cannot be self-joined.',
+  input: z.object({ spaceId: SpaceId }),
+  output: z.object({ space: Space, membership: Membership }),
+});
+
+export const createSpace = tool({
+  name: 'create_space',
+  description:
+    'Create a new shared space (a channel: one message stream plus a file folder). Your person ' +
+    'becomes its first member. Visibility defaults to private (invite required); open spaces allow org members to browse and self-join. Check list_spaces and browse_spaces ' +
+    'first so you do not create a duplicate of a space that already exists.',
+  input: z.object({ name: z.string().min(1).max(128), visibility: SpaceVisibility.default('private') }),
+  output: z.object({ space: Space }),
+});
+
+export const renameSpace = tool({
+  name: 'rename_space',
+  description:
+    'Rename a shared space (any member may; direct messages refuse — a DM is named by the other ' +
+    'person). An identical name is a no-op.',
+  input: z.object({ spaceId: SpaceId, name: z.string().min(1).max(128) }),
+  output: z.object({ space: Space }),
+});
+
+export const addMembers = tool({
+  name: 'add_members',
+  description:
+    'Add existing org members, people or agents, to a shared space your person is in. Take ' +
+    'memberIds from list_members. Anyone already in is a no-op. Direct messages cannot be added to. ' +
+    'Only when your person asked for it.',
+  input: z.object({ spaceId: SpaceId, memberIds: z.array(MemberId).min(1).max(100) }),
+  output: z.object({ memberships: z.array(Membership) }),
+});
+
+export const leaveSpace = tool({
+  name: 'leave_space',
+  description:
+    'Remove your person from a shared space. Direct messages cannot be left. Only when they ' +
+    'explicitly asked to leave — rejoining needs a fresh invite.',
+  input: z.object({ spaceId: SpaceId }),
+  output: z.object({ left: z.literal(true) }),
+});
+
+export const createInvite = tool({
+  name: 'create_invite',
+  description:
+    'Make an invite link for a shared space (any member may; DMs refuse). Returns the link to ' +
+    'share — delivery is up to your person (paste it in a DM, an email, wherever they said). ' +
+    'The org may cap expiresInHours.',
+  input: z.object({ spaceId: SpaceId, expiresInHours: z.number().int().positive().max(24 * 30).optional() }),
+  output: CreateInviteResult,
+});
+
+// --- reading ------------------------------------------------------------------
+
+export const readStream = tool({
+  name: 'read_stream',
+  description:
+    "A window of the space's message stream: ROOT messages only, newest window first, returned " +
+    'oldest first (default 50). Each message carries `replyCount` — a nonzero count means a flat ' +
+    'thread hangs under it (read_thread). `topics` holds the annotation rows for these roots ' +
+    "(a stated goal + archived flag). When `truncated` is true, older messages exist — pass " +
+    '`beforeOffset` (the oldest offset you received) to page back before summarising. To read ' +
+    'around one message (a link, an activity item), pass its `offset` as `aroundOffset`; ' +
+    '`truncatedAfter` then says newer messages exist above the window (page forward with `afterOffset`).',
+  input: z.object({
+    spaceId: SpaceId,
+    /** Page back: only messages with offset below this. */
+    beforeOffset: z.number().int().positive().optional(),
+    /** Page forward: only messages with offset above this. */
+    afterOffset: z.number().int().nonnegative().optional(),
+    /** Land on a message: half the window on each side of this offset. */
+    aroundOffset: z.number().int().positive().optional(),
+    limit: z.number().int().positive().max(200).optional(),
+  }),
+  output: z.object({
+    messages: z.array(Message),
+    topics: z.array(Topic),
+    /** True when older messages exist beyond the returned window. */
+    truncated: z.boolean(),
+    /** True when newer messages exist above the returned window (only after aroundOffset / afterOffset). */
+    truncatedAfter: z.boolean(),
+  }),
+});
+
+export const readThread = tool({
+  name: 'read_thread',
+  description:
+    'Read one flat thread: the root message, its topic row (null = a plain untitled thread; its ' +
+    'documentAssetId, when set, is the file the discussion is about — read_asset it for context), and ' +
+    'the replies (each attributed to its member and acting mode), oldest first (default 50). ' +
+    'Use this to catch up before replying or to answer questions about a conversation. A reply id ' +
+    'resolves to its root. When `truncated` is true, pass `beforeOffset` to page back before ' +
+    'summarising a whole thread; `aroundOffset` lands on one reply, `afterOffset` pages forward.',
+  input: z.object({
+    spaceId: SpaceId,
+    /** The thread root message id (from read_stream, list_topics, or a message link). */
+    rootMessageId: MessageId,
+    beforeOffset: z.number().int().positive().optional(),
+    afterOffset: z.number().int().nonnegative().optional(),
+    aroundOffset: z.number().int().positive().optional(),
+    limit: z.number().int().positive().max(200).optional(),
+  }),
+  output: z.object({
+    root: Message,
+    topic: Topic.nullable(),
+    messages: z.array(Message),
+    truncated: z.boolean(),
+    truncatedAfter: z.boolean(),
+  }),
+});
+
+export const searchSpace = tool({
+  name: 'search_space',
+  description:
+    'Search a space: messages, topic titles, and files (by extracted content or filename), ' +
+    'returned as three independently-ranked lists. Query words are AND-ed; a word that is a ' +
+    "member's name also matches @-mentions of them. Message hits name their thread " +
+    '(threadRootId — feed it to read_thread for context); asset hits carry the assetId for ' +
+    'read_asset and the path for display. A truncated flag means more hits existed than limit — refine the query ' +
+    'rather than raising the limit. Use before posting a new root to avoid duplicating a ' +
+    'conversation, and to locate files without listing everything.',
+  input: z.object({
+    spaceId: SpaceId,
+    query: z.string().min(1).max(512),
+    /** Narrow to specific categories; omit for all three. */
+    kinds: z.array(SearchKind).optional(),
+    /** Per-category cap, default 10. */
+    limit: SearchLimit.optional(),
+  }),
+  output: SearchResults,
+});
+
+// --- messages -----------------------------------------------------------------
+
+export const postMessage = tool({
+  name: 'post_message',
+  description:
+    'Post a message: provide threadRoot (a root message id) to reply in that flat thread; omit it ' +
+    'to post a new root into the stream. Posting never creates a topic (use create_topic to give a ' +
+    'thread a goal). Replying to an archived topic revives it. Attach a `poll` to post a poll ' +
+    '(question + 2–10 answers; the body must still carry a plain-text rendering of it for clients ' +
+    'that cannot show the card). Works on a DM exactly as on a space. ' +
+    MENTION_GRAMMAR,
+  input: z.object({
+    spaceId: SpaceId,
+    threadRoot: MessageId.optional(),
+    body: z.string().min(1).max(65_536),
+    poll: NewPoll.optional(),
+    /** Options for agents the message mentions, keyed by agent member id (their declared options; see get_invocations). */
+    agentOptions: z.record(MemberId, InvocationOptionValues).optional(),
+  }),
+  output: z.object({
+    messageId: MessageId,
+    threadRoot: MessageId.optional(),
+    /** Agents this message invoked, or was refused (spec §8): say so if a hand-off was refused. */
+    invocations: z.array(z.object({ agentId: MemberId, state: InvocationState, refusal: InvocationRefusal.optional() })).optional(),
+  }),
+});
+
+/** Agent invocations in a space (spec §8), for "is it still working?" and "why didn't it answer?". */
+export const getInvocations = tool({
+  name: 'get_invocations',
+  description:
+    'Agent invocations in a space, newest first: which agent was asked, by whom, and its state ' +
+    '(queued, pending, working, waiting on a person, done, failed, cancelled, refused), with any ' +
+    'activity line. Pass threadRootId for one thread.',
+  input: z.object({ spaceId: SpaceId, threadRootId: MessageId.optional() }),
+  output: z.object({ invocations: z.array(Invocation) }),
+});
+
+export const stopInvocation = tool({
+  name: 'stop_invocation',
+  description:
+    'Cancel an agent invocation your person queued, or stop a running one (your person invoked it, ' +
+    'or is an admin) when the agent can be stopped. Only when they asked for it.',
+  input: z.object({ invocationId: InvocationId }),
+  output: z.object({ invocation: Invocation }),
+});
+
+export const editMessage = tool({
+  name: 'edit_message',
+  description:
+    "Rewrite the body of one of your person's own messages in place (author-only: you act as " +
+    'them, so their messages and nothing else). The old text is gone everywhere; the message ' +
+    'shows an edited mark. Poll messages and deleted messages refuse. Returns the updated message. ' +
+    MENTION_GRAMMAR,
+  input: z.object({ spaceId: SpaceId, messageId: MessageId, body: z.string().min(1).max(65_536) }),
+  output: z.object({ message: Message }),
+});
+
+export const deleteMessage = tool({
+  name: 'delete_message',
+  description:
+    "Delete one of your person's own messages (author-only). The body is redacted everywhere; " +
+    'the row stays as a tombstone so the thread keeps its shape. Idempotent. Only when asked — ' +
+    'this cannot be undone.',
+  input: z.object({ spaceId: SpaceId, messageId: MessageId }),
+  output: z.object({ message: Message }),
+});
+
+export const react = tool({
+  name: 'react',
+  description:
+    'Add or remove an emoji reaction on any message, as your person (one per member per emoji; ' +
+    're-adding is a no-op). Pass the emoji character itself ("👍"), never a :name:. Pinning is ' +
+    'the 📌 reaction. Returns the message with reactions folded in.',
+  input: z.object({
+    spaceId: SpaceId,
+    messageId: MessageId,
+    emoji: ReactionEmoji,
+    action: z.enum(['add', 'remove']),
+  }),
+  output: z.object({ message: Message }),
+});
+
+export const votePoll = tool({
+  name: 'vote_poll',
+  description:
+    "Cast or withdraw your person's vote on a poll answer (answerId from the message's poll.answers). " +
+    "A vote you cast IS your person's vote — only do it when they told you their choice. " +
+    'Single-select polls move the vote; closed polls refuse.',
+  input: z.object({
+    spaceId: SpaceId,
+    messageId: MessageId,
+    answerId: z.number().int().min(1),
+    action: z.enum(['add', 'remove']),
+  }),
+  output: z.object({ message: Message }),
+});
+
+export const endPoll = tool({
+  name: 'end_poll',
+  description:
+    "Close one of your person's own polls early (author-only). Already-closed polls are a no-op. " +
+    'Natural expiry needs no call.',
+  input: z.object({ spaceId: SpaceId, messageId: MessageId }),
+  output: z.object({ message: Message }),
+});
+
+// --- topics (UI: "Discussions") -------------------------------------------------
+
+export const listTopics = tool({
+  name: 'list_topics',
+  description:
+    "The space's topics — threads a member deliberately annotated with a stated goal — sorted by " +
+    'last activity, newest first. Each entry carries the root message (its replyCount is the thread ' +
+    'size). Archived topics are off the rail but fully readable; pass includeArchived to see them. ' +
+    'Read the thread via read_thread with rootMessageId.',
+  input: z.object({
+    spaceId: SpaceId,
+    includeArchived: z.boolean().optional(),
+  }),
+  output: z.object({
+    topics: z.array(
+      Topic.extend({
+        rootMessage: Message.nullable(),
+        lastActivityAt: z.iso.datetime(),
+      }),
+    ),
+  }),
+});
+
+export const createTopic = tool({
+  name: 'create_topic',
+  description:
+    'Give a thread a title (the UI calls it a Discussion), putting it on the rail. Provide ' +
+    'rootMessageId to title an existing thread (use its root, not a reply), or body to post a new ' +
+    'root message and title it in one step — exactly one of the two. Titles are goals ' +
+    '("Decide: launch cut"), not summaries. At most one topic per thread. Pass documentAssetId ' +
+    "(a live file's id from list_spaces) to make the discussion about that file — the UI " +
+    'opens it beside the thread. ' +
+    MENTION_GRAMMAR,
+  input: z.object({
+    spaceId: SpaceId,
+    rootMessageId: MessageId.optional(),
+    title: z.string().min(1).max(256),
+    body: z.string().min(1).max(65_536).optional(),
+    documentAssetId: AssetId.optional(),
+  }),
+  output: z.object({ topic: Topic, rootMessageId: MessageId }),
+});
+
+export const manageTopic = tool({
+  name: 'manage_topic',
+  description:
+    'One-row lifecycle ops on a topic: retitle (needs title), archive (off the rail; a new reply ' +
+    'revives it), unarchive, remove (deletes the annotation — the thread and every message stay ' +
+    'in the stream untouched; "convert back to thread"), attach_document (needs assetId: link ONE ' +
+    "live space file as what the discussion is about — the topic's documentAssetId; the UI opens it " +
+    'beside the thread; read it with read_asset), or detach_document. None of these can touch a ' +
+    'message. Attributed to your person like everything else.',
+  input: z.object({
+    spaceId: SpaceId,
+    topicId: TopicId,
+    action: z.enum(['retitle', 'archive', 'unarchive', 'remove', 'attach_document', 'detach_document']),
+    title: z.string().min(1).max(256).optional(),
+    assetId: AssetId.optional(),
+  }),
+  output: z.object({ topic: Topic }),
+});
+
+// --- files --------------------------------------------------------------------
+// Files are addressed by id (2026-09-14): every tool here takes the assetId
+// from list_spaces (each space's `assets`), search_space, or a link. The path
+// is the file's display name — create_asset names it, move_asset renames it,
+// nothing else reads it.
+
+export const createAsset = tool({
+  name: 'create_asset',
+  description:
+    'Create a new file in a space at a path (folders are just path prefixes — "notes/plan.md" ' +
+    'makes the folder). Provide EXACTLY ONE of newContent (text) or blob (binary: the sha256 of ' +
+    'bytes already uploaded to this space, e.g. the hash inside an attachment link ".../b/<hash>"). ' +
+    'Refuses when a live file already has that path — read it and propose_change instead. Returns ' +
+    "the new file's id: use it for every later call (read_asset, propose_change, move_asset, …).",
+  input: z.object({
+    spaceId: SpaceId,
+    path: AssetPath,
+    newContent: z.string().max(1_048_576).optional(),
+    blob: BlobHash.optional(),
+    /** One line: why this file exists. Shown in the feed and in history forever. */
+    reason: z.string().min(1).max(1_000),
+  }),
+  output: CreateAssetResult,
+});
+
+export const readAsset = tool({
+  name: 'read_asset',
+  description:
+    'Read a file by its assetId (from list_spaces or search_space). Returns its current path, ' +
+    'content, current version, and recent change history. Always read before proposing a change; ' +
+    'the version you read is your base version. Pass `version` to read an older version (time ' +
+    'travel); omit for the current one. Binary files (images, pdfs, uploads) return empty content ' +
+    'plus a `blob` {hash, size, mime}: no tool carries the bytes, which download by that hash from ' +
+    'GET /v1/spaces/{spaceId}/blobs/{hash} on the org\'s address.',
+  input: z.object({ spaceId: SpaceId, assetId: AssetId, version: z.number().int().positive().optional() }),
+  output: ReadAssetResult,
+});
+
+export const proposeChange = tool({
+  name: 'propose_change',
+  description:
+    'Propose the full new content of an existing file (by assetId) against the version you read ' +
+    '(baseVersion). New files are born with create_asset, not here. Provide EXACTLY ONE of ' +
+    'newContent (text) or blob (binary: the sha256 of bytes already uploaded to this space — e.g. the ' +
+    'hash inside a message attachment link ".../b/<hash>" — so "put that attachment in the space ' +
+    'files" is a pure reference, no re-upload). ' +
+    'Outcome "applied"/"merged" means it is saved (on "merged", mergedContent is what now exists — re-read it). ' +
+    'Outcome "conflict" means nothing was written: adjust against currentContent and re-propose ' +
+    '(binary conflicts come with regions: [] — re-proposing at currentVersion is the explicit replace).',
+  // One-of newContent/blob is enforced by the server (kept out of the schema so
+  // the JSON-schema projection stays plain).
+  input: z.object({
+    spaceId: SpaceId,
+    assetId: AssetId,
+    baseVersion: z.number().int().positive(),
+    newContent: z.string().max(1_048_576).optional(),
+    blob: BlobHash.optional(),
+    /** One line: why this change. Shown in the feed and in history forever. */
+    reason: z.string().min(1).max(1_000),
+  }),
+  output: ProposeChangeResult,
+});
+
+export const moveAsset = tool({
+  name: 'move_asset',
+  description:
+    'Move or rename a file: set its path (folders are just path prefixes — moving into a new folder ' +
+    'creates it). The id, content, history, and blame are untouched — only the display path changes, ' +
+    'so nothing that references the file by id notices. Declare the baseVersion you last read: ' +
+    'outcome "conflict" means the file changed meanwhile — re-read and retry. An occupied ' +
+    'destination is refused (pick another name); this never overwrites.',
+  input: z.object({
+    spaceId: SpaceId,
+    assetId: AssetId,
+    toPath: AssetPath,
+    baseVersion: z.number().int().positive(),
+    /** One line: why this move. Shown in the feed and in history forever. */
+    reason: z.string().min(1).max(1_000),
+  }),
+  output: MoveAssetResult,
+});
+
+export const deleteAsset = tool({
+  name: 'delete_asset',
+  description:
+    'Delete a file from the space. Nothing is destroyed — every version and its history stay in the ' +
+    'record, it can be restored from Trash (restore_asset), and the feed shows who deleted it and why. ' +
+    'Declare the baseVersion you last read; "conflict" means it changed meanwhile. Delete conservatively: ' +
+    'prefer moving files into folders over deleting when tidying.',
+  input: z.object({
+    spaceId: SpaceId,
+    assetId: AssetId,
+    baseVersion: z.number().int().positive(),
+    /** One line: why this delete. Shown in the feed and in history forever. */
+    reason: z.string().min(1).max(1_000),
+  }),
+  output: DeleteAssetResult,
+});
+
+export const restoreAsset = tool({
+  name: 'restore_asset',
+  description:
+    'Bring a deleted file back from Trash at its old path, with its whole history and the same id. ' +
+    'Refuses when a live file now occupies that path — move that one first.',
+  input: z.object({
+    spaceId: SpaceId,
+    assetId: AssetId,
+    /** One line: why. Shown in the feed and in history forever. */
+    reason: z.string().min(1).max(1_000),
+  }),
+  output: RestoreAssetResult,
+});
+
+export const assetHistory = tool({
+  name: 'asset_history',
+  description:
+    "Change history. With assetId: that file's changes (across renames, and after deletion), newest " +
+    "first. Without: the whole space's change log — every file edit, move, delete, restore, " +
+    "with who, why, and when (the feed's Activity strand); each change-set names its file by " +
+    'assetId and by the path it had at the time. Page back with beforeOffset. Use `diff` to see ' +
+    'what one change altered.',
+  input: z.object({
+    spaceId: SpaceId,
+    assetId: AssetId.optional(),
+    beforeOffset: z.number().int().nonnegative().optional(),
+    limit: z.number().int().positive().max(200).optional(),
+  }),
+  output: z.object({ changeSets: z.array(ChangeSet) }),
+});
+
+export const diff = tool({
+  name: 'diff',
+  description:
+    'A unified diff of a text file between two versions (from < to; from 0 = the file did not ' +
+    'exist yet). Versions come from read_asset and asset_history. Answers "what changed in ' +
+    'the roadmap since yesterday" without reading both versions whole.',
+  input: z.object({
+    spaceId: SpaceId,
+    assetId: AssetId,
+    from: z.number().int().nonnegative(),
+    to: z.number().int().positive(),
+  }),
+  output: z.object({ unified: z.string() }),
+});
+
+/**
+ * Activity (2026-09-10): the one call behind "what's new for me?". Everything
+ * that involves the person across every space and DM, newest first, with the
+ * org's read marks saying what is still unread.
+ */
+export const readActivity = tool({
+  name: 'read_activity',
+  description:
+    "Everything that involves your person, across every space and DM they are in, newest first: " +
+    'messages that name them (`mention`), `@here` announcements (`here`), messages in their DMs (`dm`), ' +
+    'replies in threads they follow (`reply`), and reactions on their own messages (`reaction`, folded per ' +
+    "message and emoji). This is the one call for \"what's new for me?\", \"catch me up\", \"did anyone need " +
+    'me?\": call it once (`unread: true` for only what they have not read — the org\'s read marks decide), ' +
+    'then summarise by space, name people by displayName, lead with the unread items, and offer to open or ' +
+    'reply. Do not walk spaces one by one for this. `truncated` means more: pass `cursor` back to page.',
+  input: z.object({
+    kinds: z.array(ActivityKind).optional(),
+    spaceId: SpaceId.optional(),
+    unread: z.boolean().optional(),
+    cursor: z.string().optional(),
+    limit: z.number().int().positive().max(100).optional(),
+  }),
+  output: z.object({
+    items: z.array(
+      z.object({
+        id: z.string(),
+        kind: ActivityKind,
+        spaceId: SpaceId,
+        spaceKind: SpaceKind,
+        spaceName: z.string(),
+        threadRootId: MessageId.optional(),
+        message: Message,
+        actors: z.array(Attribution.extend({ displayName: z.string() })),
+        emoji: z.string().optional(),
+        at: z.iso.datetime(),
+        unread: z.boolean(),
+      }),
+    ),
+    truncated: z.boolean(),
+    cursor: z.string().optional(),
+  }),
+});
+
+/**
+ * Mark everything read for the person — the org's "mark all as read" (2026-09-11).
+ */
+export const markAllRead = tool({
+  name: 'mark_all_read',
+  description:
+    'Mark everything read for your person: every space and DM they are in reads through its newest ' +
+    'message, every thread with something for them (mentions, @here, DM replies, replies in threads they ' +
+    'follow) reads through its newest reply, and reactions on their messages read as seen — so Activity, ' +
+    'the unread badges and their other devices all clear together. Pass `spaceId` to do it for one space ' +
+    'only. Use it when they say "mark everything read", "clear my unread", "I\'m caught up" — after they ' +
+    'have heard the summary, not instead of it. Marks only advance: this cannot be undone.',
+  input: z.object({ spaceId: SpaceId.optional() }),
+  output: z.object({
+    spaces: z.array(z.object({ spaceId: SpaceId, readOffset: z.number().int().nonnegative() })),
+    threads: z.number().int().nonnegative(),
+    seenAt: z.iso.datetime(),
+  }),
+});
+
+export const mcpTools = [
+  whoami,
+  listMembers,
+  listSpaces,
+  browseSpaces,
+  listAssets,
+  joinSpace,
+  openDirect,
+  createSpace,
+  renameSpace,
+  addMembers,
+  leaveSpace,
+  createInvite,
+  readStream,
+  readThread,
+  readActivity,
+  markAllRead,
+  searchSpace,
+  postMessage,
+  getInvocations,
+  stopInvocation,
+  editMessage,
+  deleteMessage,
+  react,
+  votePoll,
+  endPoll,
+  listTopics,
+  createTopic,
+  manageTopic,
+  createAsset,
+  readAsset,
+  proposeChange,
+  moveAsset,
+  deleteAsset,
+  restoreAsset,
+  assetHistory,
+  diff,
+] as const;
+
+/** Tool names whose only effect is reading — no event is appended, nothing is written. */
+export const readOnlyMcpToolNames: ReadonlySet<string> = new Set([
+  whoami.name,
+  listMembers.name,
+  listSpaces.name,
+  browseSpaces.name,
+  listAssets.name,
+  readStream.name,
+  readThread.name,
+  readActivity.name,
+  searchSpace.name,
+  listTopics.name,
+  readAsset.name,
+  assetHistory.name,
+  diff.name,
+  getInvocations.name,
+]);

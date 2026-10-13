@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback } from "react"
-import { Loader2, User, CreditCard, LogOut } from "lucide-react"
+import { Loader2, User, CreditCard, LogOut, ExternalLink } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   AlertDialog,
@@ -16,10 +16,40 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Separator } from "@/components/ui/separator"
 import { useBilling } from "@/hooks/useBilling"
+import { useRowboatConfig } from "@/hooks/use-rowboat-config"
+import { CreditRewards } from "@/components/settings/credit-rewards"
 import { toast } from "sonner"
+import { getBillingPlanData, type BillingUsageBucket } from "@x/shared/dist/billing.js"
 
 interface AccountSettingsProps {
   dialogOpen: boolean
+}
+
+function CreditUsageBar({ label, bucket, helper }: {
+  label: string
+  bucket: BillingUsageBucket
+  helper?: string
+}) {
+  const pct = bucket.sanctionedCredits > 0
+    ? Math.min(100, Math.max(0, Math.round((bucket.usedCredits / bucket.sanctionedCredits) * 100)))
+    : 0
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-medium text-muted-foreground">{label}</p>
+          {helper ? <p className="text-[11px] text-muted-foreground">{helper}</p> : null}
+        </div>
+        <p className="shrink-0 text-xs font-medium tabular-nums">
+          {pct}%
+        </p>
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-muted">
+        <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  )
 }
 
 export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
@@ -27,7 +57,14 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
   const [connectionLoading, setConnectionLoading] = useState(true)
   const [disconnecting, setDisconnecting] = useState(false)
   const [connecting, setConnecting] = useState(false)
-  const { billing, isLoading: billingLoading } = useBilling(isRowboatConnected)
+  // A Rowboat session that exists only for Spaces (one session, two uses):
+  // the app reads as logged out, and logging in here is a flag flip — no
+  // browser trip — so the copy says so.
+  const [spacesOnlySession, setSpacesOnlySession] = useState(false)
+  const appUrl = useRowboatConfig()?.appUrl ?? null
+  const { billing, isLoading: billingLoading, refresh: refreshBilling } = useBilling(isRowboatConnected)
+  const currentPlan = billing ? getBillingPlanData(billing.catalog, billing.subscriptionPlanId) : null
+  const hasPaidSubscription = currentPlan?.category === 'starter' || currentPlan?.category === 'pro'
 
   const checkConnection = useCallback(async () => {
     try {
@@ -35,6 +72,8 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
       const result = await window.ipc.invoke('oauth:getState', null)
       const connected = result.config?.rowboat?.connected ?? false
       setIsRowboatConnected(connected)
+      const account = await window.ipc.invoke('spaces:accountState', null).catch(() => null)
+      setSpacesOnlySession(!!account && account.hasSession && !account.appSignedIn)
     } catch {
       setIsRowboatConnected(false)
     } finally {
@@ -60,6 +99,14 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
     })
     return cleanup
   }, [])
+
+  // A confirmed reward grant changes the bonus-credit balance; refetch so the
+  // Earn-credits section shows the updated number while the dialog is open.
+  useEffect(() => {
+    return window.ipc.on('credits:didActivate', () => {
+      refreshBilling()
+    })
+  }, [refreshBilling])
 
   const handleConnect = useCallback(async () => {
     try {
@@ -108,7 +155,11 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
         </div>
         <div className="text-center space-y-1">
           <p className="text-sm font-medium">Not logged in</p>
-          <p className="text-xs text-muted-foreground">Log in to your Rowboat account to access premium features</p>
+          <p className="text-xs text-muted-foreground">
+            {spacesOnlySession
+              ? 'Your Rowboat account is connected for Spaces. Log in to use it for premium features too.'
+              : 'Log in to your Rowboat account to access premium features'}
+          </p>
         </div>
         <Button onClick={handleConnect} disabled={connecting}>
           {connecting ? <Loader2 className="size-4 animate-spin mr-2" /> : null}
@@ -153,18 +204,69 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
           <div className="rounded-lg border p-4 space-y-3">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium capitalize">{billing.subscriptionPlan ?? 'Free'} Plan</p>
-                {billing.subscriptionStatus && (
+                <p className="text-sm font-medium capitalize">
+                  {currentPlan?.displayName ?? (billing.subscriptionPlanId ? 'Unknown' : 'No plan')}
+                </p>
+                {billing.subscriptionStatus === 'trialing' && billing.trialExpiresAt ? (() => {
+                  const days = Math.max(0, Math.ceil((new Date(billing.trialExpiresAt).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))
+                  return (
+                    <p className="text-xs text-muted-foreground">
+                      Trial · {days === 0 ? 'expires today' : days === 1 ? '1 day left' : `${days} days left`}
+                    </p>
+                  )
+                })() : billing.subscriptionStatus ? (
                   <p className="text-xs text-muted-foreground capitalize">{billing.subscriptionStatus}</p>
+                ) : null}
+                {!billing.subscriptionPlanId && (
+                  <p className="text-xs text-muted-foreground">Subscribe to access AI features</p>
                 )}
               </div>
-              <Button variant="outline" size="sm">
-                Upgrade
+              <Button variant="outline" size="sm" onClick={() => appUrl && window.open(`${appUrl}?intent=upgrade`)}>
+                {!billing.subscriptionPlanId ? 'Subscribe' : currentPlan?.category === 'free' ? 'Upgrade' : 'Change plan'}
               </Button>
+            </div>
+            <div className="space-y-3 border-t pt-3">
+              <CreditUsageBar label="Plan usage" bucket={billing.monthly} />
+              <CreditUsageBar
+                label="Daily use"
+                bucket={billing.daily}
+                helper="Daily usage resets at 00:00 UTC"
+              />
             </div>
           </div>
         ) : (
           <p className="text-xs text-muted-foreground">Unable to load plan details</p>
+        )}
+      </div>
+
+      <Separator />
+
+      {/* Earn Credits Section */}
+      <CreditRewards store={billing?.store ?? null} />
+
+      <Separator />
+
+      {/* Payment Section */}
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <CreditCard className="size-4 text-muted-foreground" />
+          <h4 className="text-sm font-medium">Payment</h4>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Manage invoices, payment methods, and billing details.
+        </p>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={!hasPaidSubscription}
+          onClick={() => appUrl && window.open(appUrl)}
+          className="gap-1.5"
+        >
+          <ExternalLink className="size-3" />
+          Manage in Stripe
+        </Button>
+        {!hasPaidSubscription && (
+          <p className="text-[11px] text-muted-foreground">Upgrade to a paid plan first</p>
         )}
       </div>
 

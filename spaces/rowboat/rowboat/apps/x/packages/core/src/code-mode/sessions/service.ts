@@ -1,0 +1,551 @@
+import { markWorkspaceStarted, workspaceHasStarted } from './workspace-started.js';
+import path from 'path';
+import fs from 'fs/promises';
+import { WorkDir } from '../../config/config.js';
+import { codeWorkspaceKey, type CodeSession } from '@x/shared/dist/code-sessions.js';
+import type { CodingAgent, ApprovalPolicy } from '@x/shared/dist/code-mode.js';
+import type { ISessions } from '../../runtime/sessions/api.js';
+import type { ISessionRepo } from '../../runtime/sessions/repo.js';
+import type { CodeModeManager } from '../acp/manager.js';
+import type { ICodeSessionsRepo } from './repo.js';
+import type { ICodeProjectsRepo } from '../projects/repo.js';
+import { clearStoredSession } from '../acp/session-store.js';
+import * as gitService from '../git/service.js';
+import { withFileLock } from '../../knowledge/file-lock.js';
+import type { EmitterSessionBus } from '../../runtime/sessions/bus.js';
+
+export interface CreateSessionArgs {
+    projectId: string;
+    title?: string;
+    agent: CodingAgent;
+    codeModeEnabled?: boolean;
+    // Only pass a policy the USER explicitly chose (dialog, rail select).
+    // Adoption/dispatch leave it unset — runs then resolve chip → global
+    // settings → ask, so the stored field always means "the user chose".
+    policy?: ApprovalPolicy;
+    isolation: 'in-repo' | 'worktree';
+    baseBranch?: string;
+    workspaceSessionId?: string;
+    // The coding agent's own model + reasoning effort (ACP engine); unset leaves
+    // the engine default. Re-applied to the ACP session on every turn.
+    agentModel?: string;
+    agentEffort?: string;
+    // In-repo only: pin a working directory inside the project (an adopted
+    // run may target a subdirectory). Worktree isolation always works in the
+    // worktree root.
+    cwd?: string;
+}
+
+function worktreeRoot(projectPath: string, sessionId: string): string {
+    return path.join(projectPath, '.rowboat', 'worktrees', sessionId);
+}
+
+// The per-chat work directory the copilot anchors its general context to
+// (same file the chat composer writes for regular chats, keyed by the
+// composition workDirId — the session id). Keeping it in sync with the
+// session cwd means turns see the right "# User Work Directory" even for
+// tools other than code_agent_run.
+async function persistRunWorkDir(sessionId: string, cwd: string): Promise<void> {
+    try {
+        const file = path.join(WorkDir, 'config', `workdir-${sessionId}.json`);
+        await fs.writeFile(file, JSON.stringify({ path: cwd }, null, 2));
+    } catch {
+        // best effort — the session meta still pins cwd for code_agent_run
+    }
+}
+
+// Manages Code-section sessions. A code session IS a chat session on the
+// turns runtime (same id): the conversation is an ordinary copilot chat, and
+// code_agent_run resolves this service's per-session meta (cwd, agent,
+// policy, engine model) by the turn's session id. This service owns only the
+// meta + workspace lifecycle (worktrees, merge-back, deletion) — messaging,
+// stop, and permission flow are the chat runtime's, with no special casing.
+export class CodeSessionService {
+    private readonly sessions: ISessions;
+    private readonly sessionRepo: ISessionRepo;
+    private readonly codeModeManager: CodeModeManager;
+    private readonly codeSessionsRepo: ICodeSessionsRepo;
+    private readonly codeProjectsRepo: ICodeProjectsRepo;
+    private readonly sessionBus: EmitterSessionBus;
+
+    constructor({
+        sessions,
+        sessionRepo,
+        codeModeManager,
+        codeSessionsRepo,
+        codeProjectsRepo,
+        sessionBus,
+    }: {
+        sessions: ISessions;
+        sessionRepo: ISessionRepo;
+        codeModeManager: CodeModeManager;
+        codeSessionsRepo: ICodeSessionsRepo;
+        codeProjectsRepo: ICodeProjectsRepo;
+        sessionBus: EmitterSessionBus;
+    }) {
+        this.sessions = sessions;
+        this.sessionRepo = sessionRepo;
+        this.codeModeManager = codeModeManager;
+        this.codeSessionsRepo = codeSessionsRepo;
+        this.codeProjectsRepo = codeProjectsRepo;
+        this.sessionBus = sessionBus;
+        this.sessionBus.subscribe((event) => {
+            if (event.kind !== 'index-changed' || !event.entry?.title) return;
+            void this.adoptChatTitle(event.sessionId, event.entry.title);
+        });
+    }
+
+    // Sessions created before code mode moved onto the turns runtime have meta
+    // files but no chat-session file, so the chat pane could not open them.
+    // The runs->turns migration converts their old JSONL history into real
+    // sessions; this backfill is the fallback for metas whose legacy run is
+    // gone (deleted, quarantined). Runs before the session index's startup
+    // scan so backfilled sessions get indexed — and exactly ONCE per install
+    // (marker file), so boots converge instead of rescanning forever.
+    async backfillChatSessions(): Promise<void> {
+        const marker = path.join(WorkDir, 'code-mode', '.chat-sessions-backfilled');
+        try {
+            await fs.access(marker);
+            return; // already ran
+        } catch {
+            // first run — proceed
+        }
+        const metas = await this.codeSessionsRepo.list().catch(() => [] as CodeSession[]);
+        for (const meta of metas) {
+            try {
+                await this.sessionRepo.create({
+                    type: 'session_created',
+                    schemaVersion: 1,
+                    sessionId: meta.id,
+                    ts: meta.createdAt,
+                    title: meta.title,
+                });
+            } catch {
+                // Already exists (migrated with history, or a prior backfill),
+                // or an id shape the session store can't hold — nothing to do.
+            }
+        }
+        await fs.mkdir(path.dirname(marker), { recursive: true }).catch(() => {});
+        await fs.writeFile(marker, new Date().toISOString()).catch(() => {});
+    }
+
+    async migrateLegacyProjects(): Promise<void> {
+        await withFileLock('projects-unification', async () => {
+            const marker = path.join(WorkDir, 'config', '.projects-unified');
+            try { await fs.access(marker); return; } catch { /* first migration */ }
+            const { listProjects } = await import('../../projects/projects.js');
+            let incomplete = false;
+            const liveIds = new Set(this.sessions.listSessions().map((s) => s.sessionId));
+            for (const legacy of await listProjects(this.sessions)) {
+                const project = await this.codeProjectsRepo.add(path.join(WorkDir, legacy.path));
+                for (const chat of legacy.chats) {
+                    // The legacy runtime still owns chats not converted to sessions.
+                    if (!liveIds.has(chat.id)) { incomplete = true; continue; }
+                    const workDirFile = path.join(WorkDir, 'config', `workdir-${chat.id}.json`);
+                    const saved = await fs.readFile(workDirFile, 'utf8').then((raw) => JSON.parse(raw)).catch(() => null);
+                    await this.createForSession(chat.id, {
+                        projectId: project.id, title: chat.title, agent: 'claude',
+                        isolation: 'in-repo', codeModeEnabled: false,
+                        ...(typeof saved?.path === 'string' ? { cwd: saved.path } : {}),
+                    });
+                }
+            }
+            await fs.mkdir(path.dirname(marker), { recursive: true });
+            if (!incomplete) await fs.writeFile(marker, new Date().toISOString());
+        });
+    }
+
+    async create(args: CreateSessionArgs): Promise<CodeSession> {
+        const project = await this.codeProjectsRepo.get(args.projectId);
+        if (!project) throw new Error(`Unknown project: ${args.projectId}`);
+
+        // The session is a real chat session, created first so its id becomes
+        // the code session id. Everything chat (messaging, stop, permission
+        // cards, history) works on it with no code-mode special casing.
+        //
+        // No name given → the chat is created UNTITLED so the runtime titles
+        // it from the first message (a placeholder, then a generated title);
+        // the index-changed subscription in the constructor carries that into
+        // the meta. Until then the meta wears a project-name placeholder so
+        // the rail has something to show.
+        const explicit = args.title?.trim();
+        const sessionId = await this.sessions.createSession(explicit ? { title: explicit } : undefined);
+        try {
+            return await this.createForSession(sessionId, { ...args, title: explicit || `${project.name} session` });
+        } catch (error) {
+            await this.sessions.deleteSession(sessionId).catch(() => {});
+            throw error;
+        }
+    }
+
+    // Code sessions show the CHAT's title (rail, chat header). The runtime
+    // titles untitled chats from their first message and renames flow through
+    // the index; mirror those into the meta so every list of code sessions
+    // stays in step. A rename made here (update → sessions.setTitle) comes
+    // back as an equal title and is a no-op.
+    private async adoptChatTitle(sessionId: string, title: string): Promise<void> {
+        try {
+            const meta = await this.codeSessionsRepo.get(sessionId);
+            if (!meta || meta.title === title) return;
+            await this.codeSessionsRepo.save({ ...meta, title });
+        } catch {
+            // Observational — a missed title never affects the session.
+        }
+    }
+
+    /**
+     * Adopt an EXISTING chat session as a code session: write the meta (and
+     * optional worktree) keyed by its id. This is how Home's code dispatch
+     * and the code_agent_run adoption hook materialize code sessions — the
+     * session already exists (a to-do item's thread, a plain chat), and after
+     * this the server-side pinning in code_agent_run resolves it like any
+     * Code-section session. Adopt-once: existing meta is returned untouched.
+     */
+    async createForSession(sessionId: string, args: CreateSessionArgs): Promise<CodeSession> {
+        // The Command Center session is the dispatcher — it assigns coding
+        // work to OTHER threads and must never itself become a code session.
+        // Guarded here (not just in the adoption hook) so no path can ever
+        // pin the operator channel to a repo/worktree.
+        const { getCommandCenterSessionId } = await import('../../home/command-center.js');
+        const commandCenterId = await getCommandCenterSessionId().catch(() => null);
+        if (commandCenterId && commandCenterId === sessionId) {
+            throw new Error('The Command Center session is the dispatcher — it cannot become a code session.');
+        }
+        const project = await this.codeProjectsRepo.get(args.projectId);
+        if (!project) throw new Error(`Unknown project: ${args.projectId}`);
+
+        // Adopt-once must be ATOMIC: the runtime allows parallel tool calls
+        // in one model response, so two code_agent_run calls can race here.
+        // Without the lock both pass the existence check, both cut
+        // worktrees, and the second save clobbers the first — one engine
+        // then works in a worktree the system has no record of. The whole
+        // read → (worktree) → save sequence runs under a per-session lock;
+        // the loser re-reads the winner's meta and returns it.
+        return withFileLock(`code-workspaces:${project.id}`, () => withFileLock(`code-session-adopt:${sessionId}`, async () => {
+            const existing = await this.codeSessionsRepo.get(sessionId);
+            if (existing) return existing;
+
+            // Meta title: the caller's, else the chat's own (a to-do session
+            // is titled by its item text — keep that identity in the rail).
+            let title = args.title?.trim();
+            if (!title) {
+                title = await this.sessions.getSession(sessionId).then((s) => s.title?.trim()).catch(() => undefined);
+            }
+            title = title || `${project.name} session`;
+
+            let cwd = args.cwd ?? project.path;
+            let worktree: CodeSession['worktree'];
+            let workspaceId = sessionId;
+            let codeModeEnabled = args.codeModeEnabled;
+            const info = args.workspaceSessionId ? null : await gitService.repoInfo(project.path);
+            if (args.workspaceSessionId) {
+                const source = await this.codeSessionsRepo.get(args.workspaceSessionId);
+                if (!source || source.projectId !== project.id) throw new Error('Workspace no longer exists in this project.');
+                if (source.worktree?.removedAt) throw new Error('This worktree has been removed.');
+                await fs.access(source.cwd);
+                cwd = source.cwd;
+                workspaceId = source.workspaceId ?? source.cwd;
+                codeModeEnabled ??= source.codeModeEnabled ?? true;
+                worktree = source.worktree ? { ...source.worktree } : undefined;
+            } else if (args.isolation === 'worktree' && info?.isGitRepo) {
+                const branch = `rowboat/${sessionId}`;
+                const wtPath = worktreeRoot(project.path, sessionId);
+                const baseBranch = args.baseBranch ?? info.branch ?? 'HEAD';
+                await gitService.excludeWorktrees(project.path);
+                const baseCommit = info.hasCommits
+                    ? await gitService.worktreeAdd(project.path, wtPath, branch, baseBranch)
+                    : await gitService.worktreeAddUnborn(project.path, wtPath, branch);
+                worktree = { path: wtPath, branch, baseBranch, baseCommit };
+                cwd = wtPath;
+            }
+
+            const session: CodeSession = {
+                id: sessionId,
+                projectId: project.id,
+                title,
+                agent: args.agent,
+                codeModeEnabled: codeModeEnabled ?? info?.isGitRepo ?? false,
+                workspaceId,
+                // Never freeze a transient posture: policy is stored only
+                // when the caller carries an explicit user choice.
+                ...(args.policy ? { policy: args.policy } : {}),
+                cwd,
+                ...(worktree ? { worktree } : {}),
+                ...(args.agentModel ? { agentModel: args.agentModel } : {}),
+                ...(args.agentEffort ? { agentEffort: args.agentEffort } : {}),
+                createdAt: new Date().toISOString(),
+            };
+            await this.codeSessionsRepo.save(session);
+            if (worktree && (await this.sessions.getSession(sessionId)).turns?.length) {
+                await markWorkspaceStarted(session);
+            }
+            await persistRunWorkDir(sessionId, cwd);
+            // One identity-change event; every "what kind of session is
+            // this" cache (status tracker, Home registry, future ones)
+            // corrects itself from the bus instead of per-cache hand-pokes.
+            this.sessionBus.publish({ kind: 'code-adopted', sessionId });
+            return session;
+        }));
+    }
+
+    /**
+     * The repo coding work defaults into when no path is named: the
+     * configured default project, or — when exactly one project is
+     * registered — that project implicitly (the common single-repo case
+     * needs no setup at all). Null when there are zero or several projects
+     * and no explicit choice.
+     */
+    async resolveDefaultProject(): Promise<{ id: string; path: string; name: string } | null> {
+        const projects = await this.codeProjectsRepo.list().catch(() => []);
+        if (projects.length === 0) return null;
+        try {
+            const { lazyResolve } = await import('../../di/lazy-resolve.js');
+            const configRepo = await lazyResolve<{ getConfig(): Promise<{ defaultProjectId?: string }> }>('codeModeConfigRepo');
+            const configured = (await configRepo.getConfig()).defaultProjectId;
+            if (configured) {
+                const match = projects.find((p) => p.id === configured);
+                if (match) return match;
+                // A stale id (project was removed) falls through to the
+                // single-project rule rather than dead-ending.
+            }
+        } catch {
+            // Config unavailable — the single-project rule still applies.
+        }
+        return projects.length === 1 ? projects[0] : null;
+    }
+
+    /**
+     * Clear code-mode residue whose chat session no longer exists: meta,
+     * stored ACP conversation, and workdir sidecar. Sessions can be deleted
+     * by paths that (correctly) know nothing of code-mode — the retention
+     * sweep, pre-fix delete flows — and each leaves a ghost row in the Code
+     * rail and a stale sidecar behind. Called from the app layer on the
+     * retention cadence, AFTER the session sweep. Worktree checkouts are
+     * deliberately left on disk: an unmerged worktree may hold the only
+     * copy of the work; removal stays an explicit user decision.
+     */
+    async sweepOrphanedMeta(): Promise<number> {
+        const live = new Set(this.sessions.listSessions().map((entry) => entry.sessionId));
+        const metas = await this.codeSessionsRepo.list().catch(() => [] as CodeSession[]);
+        let cleared = 0;
+        for (const meta of metas) {
+            if (live.has(meta.id)) continue;
+            try {
+                this.codeModeManager.dispose(meta.id);
+                await clearStoredSession(meta.id);
+                await this.codeSessionsRepo.remove(meta.id);
+                await fs.rm(path.join(WorkDir, 'config', `workdir-${meta.id}.json`), { force: true }).catch(() => {});
+                cleared += 1;
+            } catch (error) {
+                console.error(`[CodeSessions] failed to clear orphaned meta for ${meta.id}:`, error);
+            }
+        }
+        return cleared;
+    }
+
+    /** The registered project containing an absolute path, if any — longest
+     * path wins so nested registrations resolve to the closest project. */
+    async findProjectForPath(absPath: string): Promise<{ id: string; path: string; name: string } | null> {
+        const projects = await this.codeProjectsRepo.list().catch(() => []);
+        let best: { id: string; path: string; name: string } | null = null;
+        for (const project of projects) {
+            const root = path.resolve(project.path);
+            if (absPath === root || absPath.startsWith(root + path.sep)) {
+                if (!best || root.length > path.resolve(best.path).length) best = project;
+            }
+        }
+        return best;
+    }
+
+    async update(sessionId: string, patch: Partial<Pick<CodeSession, 'title' | 'policy' | 'agent' | 'agentModel' | 'agentEffort' | 'codeModeEnabled'>> & { clearPolicy?: boolean }): Promise<CodeSession> {
+        const session = await this.codeSessionsRepo.get(sessionId);
+        if (!session) throw new Error(`Unknown session: ${sessionId}`);
+        const { clearPolicy, ...values } = patch;
+        const updated: CodeSession = { ...session, ...values };
+        if (clearPolicy) delete updated.policy;
+        // Model and effort are ids of ONE engine's catalog — a Codex model on
+        // a Claude Code session is nonsense. Switching agents drops them back
+        // to the engine default unless the same patch chooses new ones.
+        if (patch.agent && patch.agent !== session.agent) {
+            if (patch.agentModel === undefined) delete updated.agentModel;
+            if (patch.agentEffort === undefined) delete updated.agentEffort;
+        }
+        await this.codeSessionsRepo.save(updated);
+        if (patch.title && patch.title !== session.title) {
+            // Keep the chat session's title (history list, notifications) in sync.
+            await this.sessions.setTitle(sessionId, patch.title).catch(() => {});
+        }
+        return updated;
+    }
+
+    // Done is the user's own verdict on a session (or the natural end of a
+    // merge-back). Worktree, branch and chat all stay on disk, so reopening
+    // is just clearing the flag — but the session's terminal PTY is killed:
+    // done means nothing keeps running on the session's behalf (a dev server
+    // or watcher left in the shell). The pane respawns a fresh shell on the
+    // next attach. Activity clears the flag too (status tracker) so a done
+    // session that gets a message comes back.
+    async setDone(sessionId: string, done: boolean): Promise<CodeSession> {
+        const session = await this.codeSessionsRepo.get(sessionId);
+        if (!session) throw new Error(`Unknown session: ${sessionId}`);
+        const updated: CodeSession = { ...session };
+        if (done) updated.doneAt = new Date().toISOString();
+        else delete updated.doneAt;
+        await this.codeSessionsRepo.save(updated);
+        if (done) await this.killTerminal(sessionId);
+        return updated;
+    }
+
+    // Best-effort PTY kill, shared by every path that files a session under
+    // Done. Dynamic import keeps node-pty (native) off the module graph of
+    // anything that merely imports this service.
+    private async killTerminal(sessionId: string): Promise<void> {
+        try {
+            const { disposeTerminal } = await import('../../terminal/terminal.js');
+            disposeTerminal(sessionId);
+        } catch {
+            // No terminal module or no PTY — never blocks Done.
+        }
+    }
+
+    // Stop whatever turn is live on the session's chat. The turn's abort
+    // signal unwinds code_agent_run (ACP cancel → grace → force-kill) and
+    // cancels any pending approval card.
+    async stop(sessionId: string): Promise<void> {
+        try {
+            const state = await this.sessions.getSession(sessionId);
+            if (state.latestTurnId) {
+                await this.sessions.stopTurn(state.latestTurnId, 'user-requested');
+            }
+        } catch {
+            // No chat session / no turns — nothing to stop.
+        }
+    }
+
+    private async workspaceMembers(session: CodeSession): Promise<CodeSession[]> {
+        return (await this.codeSessionsRepo.list()).filter((other) => codeWorkspaceKey(other) === codeWorkspaceKey(session));
+    }
+
+    async baseBranchStatus(sessionId: string): Promise<{ canChange: boolean; reason: string | null; baseBranch: string | null }> {
+        const session = await this.codeSessionsRepo.get(sessionId);
+        let reason: string | null = null;
+        if (!session?.worktree || session.worktree.removedAt) reason = 'This worktree is no longer available.';
+        else if (session.worktree.mergedAt) reason = 'This worktree has already been merged.';
+        else {
+            let started = await workspaceHasStarted(session);
+            for (const member of await this.workspaceMembers(session)) {
+                // Fail closed if history cannot be read; no best-effort reset.
+                const state = await this.sessions.getSession(member.id);
+                if (state.turns.length > 0 || member.lastActivityAt) started = true;
+            }
+            if (started) {
+                await markWorkspaceStarted(session);
+                reason = "Base branch can't be changed after a session has started.";
+            } else reason = await gitService.worktreeBaseChangeReason(session.cwd, session.worktree.branch, session.worktree.baseCommit);
+        }
+        return { canChange: reason === null, reason, baseBranch: session?.worktree?.baseBranch ?? null };
+    }
+
+    async changeBaseBranch(sessionId: string, baseBranch: string): Promise<void> {
+        const meta = await this.codeSessionsRepo.get(sessionId);
+        if (!meta) throw new Error('Session no longer exists.');
+        await withFileLock(`code-workspaces:${meta.projectId}`, async () => {
+            const members = (await this.workspaceMembers(meta)).sort((a, b) => a.id.localeCompare(b.id));
+            // The runtime holds these same locks while accepting first messages.
+            // A base change and a session start therefore cannot interleave.
+            const lockMembers = async (index: number): Promise<void> => {
+                if (index < members.length) return this.sessionRepo.withLock(members[index].id, () => lockMembers(index + 1));
+                const status = await this.baseBranchStatus(sessionId);
+                if (!status.canChange) throw new Error(status.reason!);
+                const session = (await this.codeSessionsRepo.get(sessionId))!;
+                for (const member of members) {
+                    this.codeModeManager.dispose(member.id);
+                    await this.killTerminal(member.id);
+                }
+                const baseCommit = await gitService.changeWorktreeBase(session.cwd, session.worktree!.branch, session.worktree!.baseCommit!, baseBranch);
+                for (const member of members) {
+                    const current = await this.codeSessionsRepo.get(member.id);
+                    if (current) await this.codeSessionsRepo.save({ ...current, worktree: { ...current.worktree!, baseBranch, baseCommit } });
+                }
+            };
+            await lockMembers(0);
+        });
+    }
+
+    async mergeBack(sessionId: string): Promise<gitService.MergeBackResult> {
+        const meta = await this.codeSessionsRepo.get(sessionId);
+        if (!meta) return { ok: false, message: 'Session no longer exists.' };
+        return withFileLock(`code-workspaces:${meta.projectId}`, async () => {
+            const session = await this.codeSessionsRepo.get(sessionId);
+            if (!session?.worktree || session.worktree.removedAt) {
+                return { ok: false, message: 'This session has no isolated worktree to merge.' };
+            }
+            const project = await this.codeProjectsRepo.get(session.projectId);
+            if (!project) return { ok: false, message: "The session's project is no longer registered." };
+            const result = await gitService.mergeBack(project.path, session.worktree.branch);
+            if (result.ok) {
+                const now = new Date().toISOString();
+                for (const member of await this.workspaceMembers(session)) {
+                    await this.codeSessionsRepo.save({ ...member, worktree: { ...member.worktree!, mergedAt: now }, doneAt: member.doneAt ?? now });
+                    await this.killTerminal(member.id);
+                }
+            }
+            return result;
+        });
+    }
+
+    async cleanupWorktree(sessionId: string, deleteBranch: boolean): Promise<void> {
+        const meta = await this.codeSessionsRepo.get(sessionId);
+        if (!meta) return;
+        return withFileLock(`code-workspaces:${meta.projectId}`, async () => {
+            const session = await this.codeSessionsRepo.get(sessionId);
+            if (!session?.worktree || session.worktree.removedAt) return;
+            const project = await this.codeProjectsRepo.get(session.projectId);
+            if (!project) throw new Error('The project is no longer registered.');
+            const members = await this.workspaceMembers(session);
+            for (const member of members) {
+                await this.stop(member.id);
+                this.codeModeManager.dispose(member.id);
+                await this.killTerminal(member.id);
+            }
+            await gitService.worktreeRemove(project.path, session.worktree.path, {
+                force: true,
+                ...(deleteBranch ? { deleteBranch: session.worktree.branch } : {}),
+            });
+            for (const member of members) {
+                await this.codeSessionsRepo.save({
+                    ...member, cwd: project.path,
+                    worktree: { ...member.worktree!, removedAt: new Date().toISOString() },
+                });
+                await persistRunWorkDir(member.id, project.path);
+            }
+        });
+    }
+
+    async delete(sessionId: string, opts: { removeWorktree?: boolean; deleteBranch?: boolean } = {}): Promise<void> {
+        const meta = await this.codeSessionsRepo.get(sessionId);
+        return withFileLock(`code-workspaces:${meta?.projectId ?? sessionId}`, () => this.deleteUnlocked(sessionId, opts));
+    }
+
+    private async deleteUnlocked(sessionId: string, opts: { removeWorktree?: boolean; deleteBranch?: boolean }): Promise<void> {
+        await this.stop(sessionId);
+        this.codeModeManager.dispose(sessionId);
+        const session = await this.codeSessionsRepo.get(sessionId);
+        if (opts.removeWorktree && session?.worktree && !session.worktree.removedAt
+            && (await this.workspaceMembers(session)).length === 1) {
+            const project = await this.codeProjectsRepo.get(session.projectId);
+            if (project) {
+                await gitService.worktreeRemove(project.path, session.worktree.path, {
+                    force: true,
+                    ...(opts.deleteBranch ? { deleteBranch: session.worktree.branch } : {}),
+                });
+            }
+        }
+        await clearStoredSession(sessionId);
+        await this.codeSessionsRepo.remove(sessionId);
+        // The chat session + its turn files; pre-runtime-move sessions may
+        // have none, and their legacy run JSONL is left for retention.
+        await this.sessions.deleteSession(sessionId).catch(() => {});
+        await fs.rm(path.join(WorkDir, 'config', `workdir-${sessionId}.json`), { force: true }).catch(() => {});
+    }
+}

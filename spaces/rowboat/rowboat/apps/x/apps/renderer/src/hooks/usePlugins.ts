@@ -1,3 +1,4 @@
+// VibeMind addition (Flissel/rowboat vibemind): plugin settings (vibemind-os 3b282629 and follow-ups).
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { DESKTOP_PLUGIN_CATALOG_PIN, type PluginCatalogItem, type PluginInstallReceipt, type PluginPreview, type PluginProjectItem } from '@/lib/rowboat-plugin-api';
