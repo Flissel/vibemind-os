@@ -2017,3 +2017,47 @@ ToolInvoke  integration_tool=mcp_github_issue_write approval=freigabe_abgelehnt 
 - **Tool names changed upstream.** The pilot template's `read_only_tools` lists `get_issue` / `get_pull_request`.
   The live server now calls them `issue_read` / `pull_request_read`. Those tools therefore currently need approval,
   which is the safe direction. The template should be updated.
+
+# Part IX — OAuth providers and non-issuable integration keys (Teilprojekt 1b)
+
+Date: 2026-10-10 to 2026-10-14. Spec `docs/superpowers/specs/2026-10-08-integrationen-oauth-design.md`,
+plan `docs/superpowers/plans/2026-10-09-integrationen-oauth.md`. openfang `68f4c03`
+(branch `claude/openfang-fork-reconciliation-v1`), vibemind-os pin `9f60059d`, templates
+`integrations/vercel.toml` (OAuth) and `integrations/github.toml` (`INTEGRATION_GITHUB_PAT`).
+
+## IX.1 Headline
+
+- **OAuth integrations.** OpenFang logs in to remote MCP servers via MCP-OAuth. It uses:
+  - discovery (RFC 9728 + RFC 8414)
+  - dynamic client registration
+  - PKCE S256
+  - the RFC 9207 `iss` check
+  - a loopback-only callback on the daemon
+
+  The record lives in the vault as `INTEGRATION_OAUTH_<ID>`. Refresh happens once per 401, deduplicated per connection. Logout revokes the refresh token and fails closed when the vault cannot be written.
+- **Non-issuable keys.** References starting with `INTEGRATION_` can never be fetched or stored through `/api/credentials/issue` or `/store`; the check ignores case. Static keys are entered only by the user, on a one-time loopback page that is valid for 10 minutes. The value is trimmed and checked for visible ASCII.
+- **Pilot.** Vercel (`https://mcp.vercel.com/`) uses OAuth. GitHub moved from the issuable `GITHUB_PAT_TOKEN` to its own reference, `INTEGRATION_GITHUB_PAT`.
+
+## IX.2 Live proof (spec §7)
+
+| Step | Result |
+|---|---|
+| Boot | `2 Vorlagen aus Ordnern geladen loaded=2 skipped_files=0 unreadable_dirs=0`. GitHub came up as `fehlt_schluessel` with `INTEGRATION_GITHUB_PAT`, not on stdio. |
+| 1 `POST /api/integrations/add {"id":"vercel"}` | `zustand: anmeldung_noetig`, `detail: nie angemeldet`. |
+| 2 `oauth/start` → user logs in in the browser | First try: `409 ermittlung fehlgeschlagen: fremder host`. Vercel's metadata now places token, registration and revocation on `api.vercel.com`, while the issuer is `vercel.com`. User decision A: endpoints may sit on a dot-bounded subdomain of the issuer host (openfang `c35dbad`). After that the login succeeded: `verbunden`, 236 tools. |
+| 3 Read-only tools | 122 tools are approval-free (vibemind-os `1f432d67`). `integrations-hub` → `/mcp` `mcp_vercel_list_teams` returned data with no approval. |
+| 3b Writes and secret-bearing reads | `mcp_vercel_create_project` and `mcp_vercel_get_webhooks` each raised an approval after 1 s. Both were rejected, with the answer "Execution denied … The operation was not performed." Tools whose output can carry secrets or personal data stay approval-gated, even though they only read: env values, tokens, file contents, logs, edge-config values, webhooks and contact data. |
+| 4 Forced refresh | Not forced live, because there is no live lever. It is proven in the end-to-end tests: one refresh, one audit row, and a deduplicated late rejection. |
+| 5 GitHub via a one-time link | The user entered the PAT on the loopback page, and the state became `verbunden` with 46 tools. `mcp_github_get_me` returned `login: Flissel` with no approval. `/api/credentials/issue` for `INTEGRATION_GITHUB_PAT` and for `integration_github_pat` returned `404`. The log shows no "missing Issue-Key" line, so the lock fires before the issue-key check and leaves no trace. |
+| 6 Leak scan `github_pat_` / `ghp_` / `vca_` / `vcr_` / `"access_token"` / `"refresh_token"` | 0 hits in `logs/openfang/*.log`, `/api/config`, `/api/integrations` (including `/available` and `/health`), `/api/audit/recent`, `/api/approvals` and `/api/health`. |
+| 7 `oauth/abmelden` | Audit row `integration_oauth=vercel ereignis=abmeldung ergebnis=ok`. `openfang vault list` no longer shows `INTEGRATION_OAUTH_VERCEL`. State is `anmeldung_noetig` with detail `abgemeldet`. A tool call returned "Tool not permitted". The user logged in again and the state returned to `verbunden`. |
+| After the final fix wave (`68f4c03`) | After the restart both integrations were `verbunden` with no new login and no key re-entry. `get_me` returned `Flissel`, `list_teams` returned ok, and there were 0 open approvals. |
+
+## IX.3 Findings during the live run, and what is not proven
+
+- **Two of the user's GitHub key entries on 2026-10-13 failed** with GitHub `400 Authorization header is badly formatted`. The stored value was not inspected. Since then the page trims the value and rejects a `Bearer`/`token` prefix, inner whitespace and non-ASCII with a clear message (`e6e7d69`). The later successful entry is not proof that the earlier entries had a format problem.
+- **An expired one-time link** used to show only "Link ungueltig". It now says "abgelaufen oder bereits benutzt" and states the 10-minute lifetime.
+- **Logout revokes only the refresh token.** The access token stays valid at the provider until it expires (≤ 1 h). This is documented in the code.
+- **The in-process "abgemeldet" marker** does not survive a daemon restart. If a logout failed with `409 tresor nicht verfuegbar` and the daemon restarts, the old record would be served again.
+- **The `get_auth_user` tool on Vercel returns 404** ("User not found"). That is Vercel's side; `list_teams` works.
+- **One test fails and is not part of 1b:** `openfang-types` `test_vibemind_brain_manifests_use_top_level_mcp_servers`. The `brain-researcher` manifest has drifted since `d422556`.
