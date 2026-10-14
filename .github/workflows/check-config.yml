@@ -33,6 +33,10 @@ jobs:
       - name: Run vibemind_shared tests
         run: python -m pytest shared/tests/ -v
 
+      - name: Run Musik-Space tests
+        # stdlib-only, ohne Engine; bis 2026-10 lief die Suite in der CI des aeusseren Repos
+        run: python -m pytest spaces/musik -q
+
       - name: Audit direct LLM usage (informational)
         run: |
           python shared/scripts/audit_llm_usage.py --root . --out LLM_AUDIT_REPORT.md
