@@ -121,8 +121,8 @@ def test_unknown_ref_stops_before_touching(world):
 def test_changes_outside_the_targets_stop_the_sync(world, monkeypatch):
     real_replace = sync_desktop.replace
 
-    def leaky(dest, source):
-        real_replace(dest, source)
+    def leaky(dest, source, keep=frozenset()):
+        real_replace(dest, source, keep)
         (world["vos"] / "README.md").write_text("collateral\n", encoding="utf-8")
 
     monkeypatch.setattr(sync_desktop, "replace", leaky)
@@ -138,11 +138,11 @@ def test_failed_replace_reports_unknown_state_and_keeps_upstream(world, monkeypa
     real_replace = sync_desktop.replace
     calls: list[Path] = []
 
-    def locked(dest, source):
+    def locked(dest, source, keep=frozenset()):
         calls.append(dest)
         if len(calls) == 2:
             raise PermissionError("locked by another process")
-        real_replace(dest, source)
+        real_replace(dest, source, keep)
 
     monkeypatch.setattr(sync_desktop, "replace", locked)
     with pytest.raises(SyncError, match="unknown state") as info:
@@ -180,3 +180,50 @@ def test_successful_sync_tells_to_reinstall_dependencies(world, monkeypatch, cap
     with caplog.at_level("INFO", logger="sync_desktop"):
         assert sync_desktop.main(args) == 0
     assert "start_desktop.py --install" in caplog.text
+
+
+# Review PR #151, Befund 1: ignorierte Dateien, die es nur hier gibt (.npmrc, .env, *.env.local),
+# sind Nutzerdaten - der Sync darf sie nicht loeschen.
+def _lokale_ignorierte_dateien(world):
+    app = world["space"] / "rowboat/apps/x"
+    dateien = {app / ".npmrc": "script-shell=pwsh\n", app / ".env": "KEY=lokal\n",
+               app / "apps/main/.env.local": "X=1\n"}
+    for f, text in dateien.items():
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(text, encoding="utf-8", newline="\n")
+    return dateien
+
+
+def _fork_mit_gitignore(world):
+    return commit_files(world["fork"], {"apps/x/.gitignore": ".npmrc\n*.env.local\n"})
+
+
+def test_lokale_ignorierte_dateien_ueberleben_den_sync(world):
+    commit_files(world["vos"], {".gitignore": "node_modules/\n.venv/\n*.db\n.env\n"})
+    run_sync(world, fork_ref=_fork_mit_gitignore(world))
+    dateien = _lokale_ignorierte_dateien(world)
+    new_sha = commit_files(world["fork"], {"apps/x/package.json": "x5\n"})
+    run_sync(world, fork_ref=new_sha)
+    assert (world["space"] / "rowboat/apps/x/package.json").read_text(encoding="utf-8") == "x5\n"
+    for f, text in dateien.items():
+        assert f.read_text(encoding="utf-8") == text, f
+
+
+def test_lokale_ignorierte_datei_ueberlebt_den_ersten_sync(world):
+    commit_files(world["vos"], {".gitignore": "node_modules/\n.venv/\n*.db\n.env\n"})
+    env = world["space"] / "rowboat/apps/x/.env"
+    env.parent.mkdir(parents=True, exist_ok=True)
+    env.write_text("KEY=lokal\n", encoding="utf-8", newline="\n")
+    run_sync(world)
+    assert env.read_text(encoding="utf-8") == "KEY=lokal\n"
+    assert not (world["space"] / "rowboat/apps/x/apps/renderer/old.ts").exists()
+
+
+def test_ignorierte_fork_datei_verschwindet_wenn_der_fork_sie_loescht(world):
+    run_sync(world)
+    blob = world["space"] / "rowboat/apps/x/cache/blob.db"
+    assert blob.is_file()
+    (world["fork"] / "apps/x/cache/blob.db").unlink()
+    new_sha = commit_files(world["fork"], {"apps/x/package.json": "x6\n"})
+    run_sync(world, fork_ref=new_sha)
+    assert not blob.exists()

@@ -116,18 +116,29 @@ def differences(expected: dict[str, bytes], actual: dict[str, bytes]) -> list[st
     return sorted(p for p in expected.keys() | actual.keys() if expected.get(p) != actual.get(p))
 
 
-def replace(dest: Path, source: Path) -> None:
-    """dest becomes a copy of source; ignored folders inside dest (node_modules, .venv, …) are kept."""
+def replace(dest: Path, source: Path, keep: frozenset[str] = frozenset()) -> None:
+    """dest becomes a copy of source; ignored folders inside dest (node_modules, .venv, …) are kept,
+    and so are the files in keep (paths relative to dest)."""
     if dest.is_dir():
         dirs: list[Path] = []
         for dirpath, _, filenames in _walk(dest):
             dirs.append(dirpath)
             for name in filenames:
-                (dirpath / name).unlink()
+                if (dirpath / name).relative_to(dest).as_posix() not in keep:
+                    (dirpath / name).unlink()
         for d in sorted(dirs, key=lambda p: len(p.parts), reverse=True):
             if d != dest and not any(d.iterdir()):
                 d.rmdir()
     shutil.copytree(source, dest, dirs_exist_ok=True)
+
+
+def local_ignored(repo: Path, dest: Path, from_source: set[str]) -> frozenset[str]:
+    """Files in dest that git ignores here and that did not come from the source repo (.npmrc, .env, …):
+    user data that only exists on this machine, so a sync must not delete it."""
+    prefix = dest.relative_to(repo).as_posix()
+    local = [p for p in files_of(dest) if p not in from_source] if dest.is_dir() else []
+    ignored = ignored_paths(repo, [f"{prefix}/{p}" for p in local])
+    return frozenset(p for p in local if f"{prefix}/{p}" in ignored)
 
 
 def changed_paths(repo: Path) -> set[str]:
@@ -179,6 +190,7 @@ def sync(space: Path, repo: Path, fork: Path, fork_ref: str, ehl: Path, ehl_ref:
     shas = {"fork": resolve(fork, fork_ref), "ehl": resolve(ehl, ehl_ref)}
     upstream_md = space / "rowboat" / "UPSTREAM.md"
     tgts = targets(space)
+    from_source: dict[Target, set[str]] = {}   # files of the old pin: ignored ones of these may go
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
         if upstream_md.exists():
@@ -189,6 +201,7 @@ def sync(space: Path, repo: Path, fork: Path, fork_ref: str, ehl: Path, ehl_ref:
             edited: list[str] = []
             for i, t in enumerate(tgts):
                 pinned = export(sources[t.source], old[t.source], t.subdir, tmpdir / f"old{i}")
+                from_source[t] = set(files_of(pinned))
                 prefix = t.dest.relative_to(repo).as_posix()
                 diff = [f"{prefix}/{p}" for p in differences(files_of(pinned), files_of(t.dest))]
                 skip = ignored_paths(repo, diff)   # tracked in the source repo but git-ignored here: absent on a fresh clone
@@ -202,9 +215,10 @@ def sync(space: Path, repo: Path, fork: Path, fork_ref: str, ehl: Path, ehl_ref:
         patch_lines = patches(fork, shas["fork"], upstream_base)   # before any replace: a failing git log must not leave half a sync
         before = changed_paths(repo)
         rel_targets = [t.dest.relative_to(repo).as_posix() for t in tgts]
+        keep = {t: local_ignored(repo, t.dest, from_source.get(t, set()) | set(files_of(new[t]))) for t in tgts}
         try:
             for t in tgts:
-                replace(t.dest, new[t])
+                replace(t.dest, new[t], keep[t])
         except OSError as err:
             raise SyncError(unknown_state(rel_targets, f"{type(err).__name__}: {err}")) from err
         allowed = [p + "/" for p in rel_targets]
